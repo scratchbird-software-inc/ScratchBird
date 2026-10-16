@@ -684,6 +684,8 @@ void BranchingAndIrregularSegments() {
 
 }  // namespace
 
+#include "blake3_keyed_v1_test.inc"
+
 int main() {
     static_assert(sizeof(h::Blake3IncrementalStateV3) == 1856);
     static_assert(h::kBlake3IncrementalCvStackCapacityV3 == 54);
@@ -697,6 +699,8 @@ int main() {
     PointerAliasingAndTransitions();
     RangeBoundaryAndWrapClassification();
     BranchingAndIrregularSegments();
+    OfficialKeyedAnswersAndSegmentation();
+    KeyedLifecycleAndPointerContracts();
 
     std::cout << "checks=" << g_checks << " failures=" << g_failures << '\n';
     return g_failures == 0 ? 0 : 1;

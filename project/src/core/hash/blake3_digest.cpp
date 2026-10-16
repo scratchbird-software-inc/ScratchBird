@@ -36,6 +36,19 @@ constexpr Word kChunkStart = 1U;
 constexpr Word kChunkEnd = 2U;
 constexpr Word kParent = 4U;
 constexpr Word kRoot = 8U;
+constexpr Word kKeyedHash = 16U;
+constexpr std::uint32_t kKeyedMagicV1 = 0x314b4b42U;
+constexpr std::uint16_t kKeyedAbiV1 = 1;
+
+// Non-owning key reference; never copies secret material into mode dispatch.
+struct HashMode final {
+    const Chain& key;
+    Word flags;
+    std::uint32_t magic;
+    std::uint16_t abi;
+};
+const HashMode kUnkeyedMode{kIv, 0, kBlake3IncrementalStateMagicV3,
+                            kBlake3IncrementalStateAbiVersionV3};
 
 constexpr std::array<std::uint8_t, 16> kMessagePermutation = {
     2, 6, 3, 10, 7, 0, 4, 13, 1, 11, 12, 5, 9, 14, 15, 8,
@@ -103,11 +116,11 @@ void Permute(Block& message) noexcept {
     SecureZero(original);
 }
 
-[[nodiscard]] Chain Compress(const Chain& chaining_value,
+void Compress(const Chain& chaining_value,
                              const Block& input_block,
                              std::uint64_t counter,
                              Word block_length,
-                             Word flags) noexcept {
+                             Word flags, Chain& output) noexcept {
     std::array<Word, 16> state{};
     for (std::size_t index = 0; index < chaining_value.size(); ++index) {
         state[index] = chaining_value[index];
@@ -129,13 +142,11 @@ void Permute(Block& message) noexcept {
         }
     }
 
-    Chain output{};
     for (std::size_t index = 0; index < output.size(); ++index) {
         output[index] = state[index] ^ state[index + 8];
     }
     SecureZero(state);
     SecureZero(message);
-    return output;
 }
 
 [[nodiscard]] Word Load32(const std::uint8_t* bytes) noexcept {
@@ -152,13 +163,11 @@ void Store32(Word value, std::uint8_t* output) noexcept {
     output[3] = static_cast<std::uint8_t>(value >> 24U);
 }
 
-[[nodiscard]] Block LoadBlock(
-    const std::array<std::uint8_t, kBlockBytes>& bytes) noexcept {
-    Block block{};
+void LoadBlock(
+    const std::array<std::uint8_t, kBlockBytes>& bytes, Block& block) noexcept {
     for (std::size_t index = 0; index < block.size(); ++index) {
         block[index] = Load32(bytes.data() + (index * sizeof(Word)));
     }
-    return block;
 }
 
 [[nodiscard]] Word ChunkStartFlag(
@@ -172,54 +181,50 @@ void Store32(Word value, std::uint8_t* output) noexcept {
            state.block_length;
 }
 
-[[nodiscard]] Output CurrentChunkOutput(
-    const Blake3IncrementalStateV3& state) noexcept {
-    return Output{state.current_chunk_chaining_value,
-                  LoadBlock(state.current_block),
-                  state.current_chunk_counter,
-                  state.block_length,
-                  ChunkStartFlag(state) | kChunkEnd};
+// Secret-derived arrays are filled directly into caller-owned, explicitly
+// scrubbed objects. Returning named arrays/Output by value could leave an
+// unerased local copy when optional NRVO is disabled. No copy-elision assumption
+// may be part of keyed-mode erasure correctness.
+void CurrentChunkOutput(const Blake3IncrementalStateV3& state,
+                        const HashMode& mode, Output& output) noexcept {
+    output.input_chaining_value = state.current_chunk_chaining_value;
+    LoadBlock(state.current_block, output.block);
+    output.counter = state.current_chunk_counter;
+    output.block_length = state.block_length;
+    output.flags = ChunkStartFlag(state) | kChunkEnd | mode.flags;
 }
 
-[[nodiscard]] Chain OutputChainingValue(const Output& output) noexcept {
-    return Compress(output.input_chaining_value,
-                    output.block,
-                    output.counter,
-                    output.block_length,
-                    output.flags);
+void OutputChainingValue(const Output& output, Chain& result) noexcept {
+    Compress(output.input_chaining_value, output.block, output.counter,
+             output.block_length, output.flags, result);
 }
 
-[[nodiscard]] Output ParentOutput(const Chain& left, const Chain& right) noexcept {
-    Output output{};
-    output.input_chaining_value = kIv;
+void ParentOutput(const Chain& left, const Chain& right,
+                  const HashMode& mode, Output& output) noexcept {
+    output.input_chaining_value = mode.key;
     std::copy(left.begin(), left.end(), output.block.begin());
     std::copy(right.begin(), right.end(), output.block.begin() + left.size());
     output.counter = 0;
     output.block_length = static_cast<Word>(kBlockBytes);
-    output.flags = kParent;
-    return output;
+    output.flags = kParent | mode.flags;
 }
 
-[[nodiscard]] Chain ParentChainingValue(const Chain& left,
-                                        const Chain& right) noexcept {
-    Output output = ParentOutput(left, right);
-    Chain result = OutputChainingValue(output);
+void ParentChainingValue(const Chain& left, const Chain& right,
+                         const HashMode& mode, Chain& result) noexcept {
+    Output output{};
+    ParentOutput(left, right, mode, output);
+    OutputChainingValue(output, result);
     SecureZero(output);
-    return result;
 }
 
-[[nodiscard]] Blake3Digest RootDigest(const Output& output) noexcept {
-    Chain words = Compress(output.input_chaining_value,
-                           output.block,
-                           0,
-                           output.block_length,
-                           output.flags | kRoot);
-    Blake3Digest digest{};
+void RootDigest(const Output& output, Blake3Digest& digest) noexcept {
+    Chain words{};
+    Compress(output.input_chaining_value, output.block, 0, output.block_length,
+             output.flags | kRoot, words);
     for (std::size_t index = 0; index < words.size(); ++index) {
         Store32(words[index], digest.data() + (index * sizeof(Word)));
     }
     SecureZero(words);
-    return digest;
 }
 
 [[nodiscard]] std::uint8_t PopulationCount(std::uint64_t value) noexcept {
@@ -265,15 +270,16 @@ void Store32(Word value, std::uint8_t* output) noexcept {
 }
 
 [[nodiscard]] bool HasValidHeader(
-    const Blake3IncrementalStateV3& state) noexcept {
-    return state.magic == kBlake3IncrementalStateMagicV3 &&
-           state.abi_version == kBlake3IncrementalStateAbiVersionV3;
+    const Blake3IncrementalStateV3& state,
+    const HashMode& mode = kUnkeyedMode) noexcept {
+    return state.magic == mode.magic && state.abi_version == mode.abi;
 }
 
 [[nodiscard]] bool IsCleanTerminalState(
     const Blake3IncrementalStateV3& state,
-    Blake3IncrementalLifecycleV3 lifecycle) noexcept {
-    return HasValidHeader(state) &&
+    Blake3IncrementalLifecycleV3 lifecycle,
+    const HashMode& mode) noexcept {
+    return HasValidHeader(state, mode) &&
            state.lifecycle == lifecycle &&
            state.block_length == 0 && state.blocks_compressed == 0 &&
            state.cv_stack_length == 0 &&
@@ -286,14 +292,16 @@ void Store32(Word value, std::uint8_t* output) noexcept {
 }
 
 [[nodiscard]] bool IsCleanFinalizedState(
-    const Blake3IncrementalStateV3& state) noexcept {
+    const Blake3IncrementalStateV3& state,
+    const HashMode& mode = kUnkeyedMode) noexcept {
     return IsCleanTerminalState(
-        state, Blake3IncrementalLifecycleV3::kFinalized);
+        state, Blake3IncrementalLifecycleV3::kFinalized, mode);
 }
 
 [[nodiscard]] bool IsCleanFailedState(
-    const Blake3IncrementalStateV3& state) noexcept {
-    return IsCleanTerminalState(state, Blake3IncrementalLifecycleV3::kFailed);
+    const Blake3IncrementalStateV3& state,
+    const HashMode& mode = kUnkeyedMode) noexcept {
+    return IsCleanTerminalState(state, Blake3IncrementalLifecycleV3::kFailed, mode);
 }
 
 [[nodiscard]] bool IsUninitializedState(
@@ -302,8 +310,9 @@ void Store32(Word value, std::uint8_t* output) noexcept {
 }
 
 [[nodiscard]] bool IsValidActiveState(
-    const Blake3IncrementalStateV3& state) noexcept {
-    if (!HasValidHeader(state) ||
+    const Blake3IncrementalStateV3& state,
+    const HashMode& mode = kUnkeyedMode) noexcept {
+    if (!HasValidHeader(state, mode) ||
         state.lifecycle != Blake3IncrementalLifecycleV3::kActive ||
         state.block_length > kBlockBytes || state.blocks_compressed > 15 ||
         state.cv_stack_length > kBlake3IncrementalCvStackCapacityV3 ||
@@ -342,11 +351,11 @@ void Store32(Word value, std::uint8_t* output) noexcept {
     }
 
     // Before the first block in the current chunk is compressed, its chaining
-    // value can only be the unkeyed BLAKE3 IV. This catches corruption of the
+    // value can only be the selected mode's initial chaining value. This catches corruption of the
     // one chaining field whose exact value is structurally knowable. Later CVs
     // depend on caller bytes and cannot be revalidated without replaying input.
     if (state.blocks_compressed == 0 &&
-        state.current_chunk_chaining_value != kIv) {
+        state.current_chunk_chaining_value != mode.key) {
         return false;
     }
 
@@ -367,46 +376,50 @@ void Store32(Word value, std::uint8_t* output) noexcept {
     return true;
 }
 
-void TransitionToFailed(Blake3IncrementalStateV3& state) noexcept {
+void TransitionToFailed(Blake3IncrementalStateV3& state,
+                        const HashMode& mode = kUnkeyedMode) noexcept {
     SecureZero(state);
-    state.magic = kBlake3IncrementalStateMagicV3;
-    state.abi_version = kBlake3IncrementalStateAbiVersionV3;
+    state.magic = mode.magic;
+    state.abi_version = mode.abi;
     state.lifecycle = Blake3IncrementalLifecycleV3::kFailed;
 }
 
 [[nodiscard]] Blake3IncrementalStatusV3 StateLifecycleStatusAndFail(
-    Blake3IncrementalStateV3& state) noexcept {
-    if (IsCleanFailedState(state)) {
+    Blake3IncrementalStateV3& state, const HashMode& mode) noexcept {
+    if (IsCleanFailedState(state, mode)) {
         return Blake3IncrementalStatusV3::kFailedState;
     }
-    if (IsCleanFinalizedState(state)) {
-        TransitionToFailed(state);
+    if (IsCleanFinalizedState(state, mode)) {
+        TransitionToFailed(state, mode);
         return Blake3IncrementalStatusV3::kAlreadyFinalized;
     }
     if (IsUninitializedState(state)) {
-        TransitionToFailed(state);
+        TransitionToFailed(state, mode);
         return Blake3IncrementalStatusV3::kInitializationRequired;
     }
-    TransitionToFailed(state);
+    TransitionToFailed(state, mode);
     return Blake3IncrementalStatusV3::kInvalidState;
 }
 
 void ResetCurrentChunk(Blake3IncrementalStateV3& state,
-                       std::uint64_t chunk_counter) noexcept {
+                       std::uint64_t chunk_counter, const HashMode& mode) noexcept {
     state.current_chunk_counter = chunk_counter;
-    state.current_chunk_chaining_value = kIv;
+    state.current_chunk_chaining_value = mode.key;
     state.current_block.fill(0);
     state.block_length = 0;
     state.blocks_compressed = 0;
 }
 
-void CompressBufferedBlock(Blake3IncrementalStateV3& state) noexcept {
-    Block block = LoadBlock(state.current_block);
-    Chain next = Compress(state.current_chunk_chaining_value,
+void CompressBufferedBlock(Blake3IncrementalStateV3& state,
+                           const HashMode& mode) noexcept {
+    Block block{};
+    LoadBlock(state.current_block, block);
+    Chain next{};
+    Compress(state.current_chunk_chaining_value,
                           block,
                           state.current_chunk_counter,
                           static_cast<Word>(kBlockBytes),
-                          ChunkStartFlag(state));
+                          ChunkStartFlag(state) | mode.flags, next);
     state.current_chunk_chaining_value = next;
     state.current_block.fill(0);
     state.block_length = 0;
@@ -418,10 +431,10 @@ void CompressBufferedBlock(Blake3IncrementalStateV3& state) noexcept {
 
 void UpdateCurrentChunk(Blake3IncrementalStateV3& state,
                         const std::uint8_t* input,
-                        std::size_t input_size) noexcept {
+                        std::size_t input_size, const HashMode& mode) noexcept {
     while (input_size != 0) {
         if (state.block_length == kBlockBytes) {
-            CompressBufferedBlock(state);
+            CompressBufferedBlock(state, mode);
         }
         const std::size_t available = kBlockBytes - state.block_length;
         const std::size_t take = std::min(available, input_size);
@@ -435,8 +448,8 @@ void UpdateCurrentChunk(Blake3IncrementalStateV3& state,
 
 [[nodiscard]] bool AddCompletedChunk(
     Blake3IncrementalStateV3& state,
-    Chain new_chaining_value,
-    std::uint64_t total_completed_chunks) noexcept {
+    Chain& new_chaining_value,
+    std::uint64_t total_completed_chunks, const HashMode& mode) noexcept {
     while ((total_completed_chunks & 1U) == 0U) {
         if (state.cv_stack_length == 0) {
             SecureZero(new_chaining_value);
@@ -446,7 +459,8 @@ void UpdateCurrentChunk(Blake3IncrementalStateV3& state,
             static_cast<std::uint8_t>(state.cv_stack_length - 1U);
         Chain left = state.cv_stack[state.cv_stack_length];
         state.cv_stack[state.cv_stack_length].fill(0);
-        Chain parent = ParentChainingValue(left, new_chaining_value);
+        Chain parent{};
+        ParentChainingValue(left, new_chaining_value, mode, parent);
         SecureZero(left);
         SecureZero(new_chaining_value);
         new_chaining_value = parent;
@@ -490,26 +504,29 @@ Blake3IncrementalStatusV3 InitializeBlake3IncrementalV3(
     return Blake3IncrementalStatusV3::kOk;
 }
 
-Blake3IncrementalStatusV3 UpdateBlake3IncrementalV3(
+namespace {
+
+Blake3IncrementalStatusV3 UpdateIncremental(
     Blake3IncrementalStateV3* state,
     const std::uint8_t* input,
-    std::size_t input_size) noexcept {
+    std::size_t input_size, const HashMode& mode,
+    const void* owner, std::size_t owner_size) noexcept {
     if (state == nullptr) {
         return Blake3IncrementalStatusV3::kNullState;
     }
-    if (IsCleanFailedState(*state)) {
+    if (IsCleanFailedState(*state, mode)) {
         return Blake3IncrementalStatusV3::kFailedState;
     }
     if (input_size != 0 && input == nullptr) {
-        TransitionToFailed(*state);
+        TransitionToFailed(*state, mode);
         return Blake3IncrementalStatusV3::kNullInput;
     }
     if (input_size != 0 &&
-        RangesOverlap(input, input_size, state, sizeof(*state))) {
+        RangesOverlap(input, input_size, owner, owner_size)) {
         return Blake3IncrementalStatusV3::kStateOverlap;
     }
-    if (!IsValidActiveState(*state)) {
-        return StateLifecycleStatusAndFail(*state);
+    if (!IsValidActiveState(*state, mode)) {
+        return StateLifecycleStatusAndFail(*state, mode);
     }
 
     static_assert(sizeof(std::size_t) <= sizeof(std::uint64_t));
@@ -517,7 +534,7 @@ Blake3IncrementalStatusV3 UpdateBlake3IncrementalV3(
         static_cast<std::uint64_t>(input_size);
     if (input_size_u64 >
         (kBlake3IncrementalMaximumInputBytesV3 - state->total_input_bytes)) {
-        TransitionToFailed(*state);
+        TransitionToFailed(*state, mode);
         return Blake3IncrementalStatusV3::kLengthOverflow;
     }
     if (input_size == 0) {
@@ -527,72 +544,137 @@ Blake3IncrementalStatusV3 UpdateBlake3IncrementalV3(
     state->total_input_bytes += input_size_u64;
     while (input_size != 0) {
         if (CurrentChunkLength(*state) == kChunkBytes) {
-            Output completed_output = CurrentChunkOutput(*state);
-            Chain completed_cv = OutputChainingValue(completed_output);
+            Output completed_output{};
+            CurrentChunkOutput(*state, mode, completed_output);
+            Chain completed_cv{};
+            OutputChainingValue(completed_output, completed_cv);
             const std::uint64_t completed_chunks =
                 state->current_chunk_counter + 1U;
             const bool added =
-                AddCompletedChunk(*state, completed_cv, completed_chunks);
+                AddCompletedChunk(*state, completed_cv, completed_chunks, mode);
             SecureZero(completed_output);
             SecureZero(completed_cv);
             if (!added) {
-                TransitionToFailed(*state);
+                TransitionToFailed(*state, mode);
                 return Blake3IncrementalStatusV3::kInternalCapacityExceeded;
             }
-            ResetCurrentChunk(*state, completed_chunks);
+            ResetCurrentChunk(*state, completed_chunks, mode);
         }
 
         const std::size_t chunk_remaining =
             kChunkBytes - CurrentChunkLength(*state);
         const std::size_t take = std::min(chunk_remaining, input_size);
-        UpdateCurrentChunk(*state, input, take);
+        UpdateCurrentChunk(*state, input, take, mode);
         input += take;
         input_size -= take;
     }
     return Blake3IncrementalStatusV3::kOk;
 }
 
-Blake3IncrementalStatusV3 FinalizeBlake3IncrementalV3(
+Blake3IncrementalStatusV3 FinalizeIncremental(
     Blake3IncrementalStateV3* state,
-    Blake3Digest* digest_out) noexcept {
+    Blake3Digest* digest_out, const HashMode& mode) noexcept {
     if (state == nullptr) {
         return Blake3IncrementalStatusV3::kNullState;
     }
-    if (IsCleanFailedState(*state)) {
+    if (IsCleanFailedState(*state, mode)) {
         return Blake3IncrementalStatusV3::kFailedState;
     }
     if (digest_out == nullptr) {
-        TransitionToFailed(*state);
+        TransitionToFailed(*state, mode);
         return Blake3IncrementalStatusV3::kNullDigest;
     }
     if (RangesOverlap(digest_out, sizeof(*digest_out), state, sizeof(*state))) {
         return Blake3IncrementalStatusV3::kStateOverlap;
     }
-    if (!IsValidActiveState(*state)) {
-        return StateLifecycleStatusAndFail(*state);
+    if (!IsValidActiveState(*state, mode)) {
+        return StateLifecycleStatusAndFail(*state, mode);
     }
 
-    Output output = CurrentChunkOutput(*state);
+    Output output{};
+    CurrentChunkOutput(*state, mode, output);
     for (std::size_t index = state->cv_stack_length; index != 0; --index) {
-        Chain right = OutputChainingValue(output);
-        Output parent = ParentOutput(state->cv_stack[index - 1U], right);
+        Chain right{};
+        OutputChainingValue(output, right);
+        Output parent{};
+        ParentOutput(state->cv_stack[index - 1U], right, mode, parent);
         SecureZero(right);
         SecureZero(output);
         output = parent;
         SecureZero(parent);
     }
 
-    Blake3Digest digest = RootDigest(output);
+    Blake3Digest digest{};
+    RootDigest(output, digest);
     SecureZero(output);
 
     SecureZero(*state);
-    state->magic = kBlake3IncrementalStateMagicV3;
-    state->abi_version = kBlake3IncrementalStateAbiVersionV3;
+    state->magic = mode.magic;
+    state->abi_version = mode.abi;
     state->lifecycle = Blake3IncrementalLifecycleV3::kFinalized;
 
     *digest_out = digest;
     SecureZero(digest);
     return Blake3IncrementalStatusV3::kOk;
+}
+
+}  // namespace
+
+Blake3IncrementalStatusV3 UpdateBlake3IncrementalV3(
+    Blake3IncrementalStateV3* state, const std::uint8_t* input,
+    std::size_t input_size) noexcept {
+    return UpdateIncremental(state, input, input_size, kUnkeyedMode,
+                             state, sizeof(Blake3IncrementalStateV3));
+}
+
+Blake3IncrementalStatusV3 FinalizeBlake3IncrementalV3(
+    Blake3IncrementalStateV3* state, Blake3Digest* digest_out) noexcept {
+    return FinalizeIncremental(state, digest_out, kUnkeyedMode);
+}
+
+Blake3KeyedHasherV1::Blake3KeyedHasherV1(const Blake3KeyV1& key) noexcept {
+    for (std::size_t i = 0; i < key_words_.size(); ++i) {
+        key_words_[i] = Load32(key.data() + i * sizeof(Word));
+    }
+    state_.magic = kKeyedMagicV1;
+    state_.abi_version = kKeyedAbiV1;
+    state_.lifecycle = Blake3IncrementalLifecycleV3::kActive;
+    state_.current_chunk_chaining_value = key_words_;
+}
+
+Blake3KeyedHasherV1::~Blake3KeyedHasherV1() noexcept {
+    SecureZero(state_);
+    SecureZero(key_words_);
+}
+
+Blake3IncrementalStatusV3 Blake3KeyedHasherV1::Update(
+    const std::uint8_t* input, std::size_t input_size) noexcept {
+    const HashMode mode{key_words_, kKeyedHash, kKeyedMagicV1, kKeyedAbiV1};
+    const auto status = UpdateIncremental(&state_, input, input_size, mode,
+                                          this, sizeof(*this));
+    if (status != Blake3IncrementalStatusV3::kOk &&
+        status != Blake3IncrementalStatusV3::kStateOverlap) {
+        SecureZero(key_words_);
+    }
+    return status;
+}
+
+Blake3IncrementalStatusV3 Blake3KeyedHasherV1::Finalize(
+    Blake3Digest128V1* digest_out) noexcept {
+    if (digest_out != nullptr &&
+        RangesOverlap(digest_out, sizeof(*digest_out), this, sizeof(*this))) {
+        return Blake3IncrementalStatusV3::kStateOverlap;
+    }
+    const HashMode mode{key_words_, kKeyedHash, kKeyedMagicV1, kKeyedAbiV1};
+    Blake3Digest digest{};
+    const auto status = FinalizeIncremental(
+        &state_, digest_out == nullptr ? nullptr : &digest, mode);
+    if (status == Blake3IncrementalStatusV3::kOk) {
+        std::copy_n(digest.begin(), digest_out->size(), digest_out->begin());
+    }
+    SecureZero(digest);
+    SecureZero(key_words_);
+    return status;
 }
 
 void ScrubBlake3IncrementalV3(Blake3IncrementalStateV3* state) noexcept {

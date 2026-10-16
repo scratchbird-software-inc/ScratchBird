@@ -127,4 +127,40 @@ static_assert(offsetof(Blake3IncrementalStateV3, cv_stack) == 128);
 // only legal call after failure. Scrubbing nullptr is an intentional no-op.
 void ScrubBlake3IncrementalV3(Blake3IncrementalStateV3* state) noexcept;
 
+using Blake3KeyV1 = std::array<std::uint8_t, 32>;
+using Blake3Digest128V1 = std::array<std::uint8_t, 16>;
+
+// Bounded keyed-mode computation only; this class does not generate keys or
+// establish custody, authorization, storage admission or equality. The caller
+// supplies a valid disjoint 32-byte key and charges this entire fixed object to
+// its actual memory owner. The original key remains the caller's responsibility.
+// No allocation, implicit copies or moves. Secret-derived state is erased on
+// finalization, admitted failure and destruction (including unfinished work).
+// Overlap refusals change neither range, as in V3. Finalize writes exactly the
+// first 16 BLAKE3 output bytes, once, and leaves disjoint output unchanged on
+// error. Unkeyed V3's ABI, lifecycle and outputs remain unchanged.
+class alignas(8) Blake3KeyedHasherV1 final {
+public:
+    explicit Blake3KeyedHasherV1(const Blake3KeyV1& key) noexcept;
+    ~Blake3KeyedHasherV1() noexcept;
+    Blake3KeyedHasherV1(const Blake3KeyedHasherV1&) = delete;
+    Blake3KeyedHasherV1& operator=(const Blake3KeyedHasherV1&) = delete;
+    Blake3KeyedHasherV1(Blake3KeyedHasherV1&&) = delete;
+    Blake3KeyedHasherV1& operator=(Blake3KeyedHasherV1&&) = delete;
+
+    [[nodiscard]] Blake3IncrementalStatusV3 Update(
+        const std::uint8_t* input, std::size_t input_size) noexcept;
+    [[nodiscard]] Blake3IncrementalStatusV3 Finalize(
+        Blake3Digest128V1* digest_out) noexcept;
+
+private:
+    Blake3IncrementalStateV3 state_{};
+    std::array<std::uint32_t, 8> key_words_{};
+};
+
+static_assert(sizeof(Blake3KeyedHasherV1) == 1888);
+static_assert(alignof(Blake3KeyedHasherV1) == 8);
+static_assert(!std::is_copy_constructible_v<Blake3KeyedHasherV1>);
+static_assert(!std::is_move_constructible_v<Blake3KeyedHasherV1>);
+
 }  // namespace scratchbird::core::hash
