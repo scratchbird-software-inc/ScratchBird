@@ -12,17 +12,20 @@
 #include "catalog_page.hpp"
 #include "catalog/name_resolution_api.hpp"
 #include "catalog/resource_catalog_admission.hpp"
+#include "catalog/text_resource_selection.hpp"
 #include "behavior_support/api_behavior_store.hpp"
 #include "behavior_support/api_behavior_record_codec.hpp"
 #include "local_transaction_store.hpp"
 #include "transaction_inventory.hpp"
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <stdexcept>
+#include <type_traits>
 
 namespace db = scratchbird::storage::database;
 namespace r = scratchbird::core::resources;
@@ -35,6 +38,9 @@ namespace platform = scratchbird::core::platform;
 using scratchbird::core::platform::UuidKind;
 namespace engine = scratchbird::engine::internal_api;
 namespace mga = scratchbird::transaction::mga;
+static_assert(!std::is_default_constructible_v<engine::EngineTextResourceReadScopeV1>);
+static_assert(!std::is_copy_constructible_v<engine::EngineTextResourceReadScopeV1>);
+static_assert(!std::is_move_constructible_v<engine::EngineTextResourceReadScopeV1>);
 void Require(bool ok, const char* message) { if (!ok) throw std::runtime_error(message); }
 void Good(const db::DatabaseLifecycleResult& result) {
   if (!result.ok()) {
@@ -276,229 +282,353 @@ void ResourceAdmission(const fs::path& path) {
     check(pair_empty(pair) && pair.diagnostic.code=="CATALOG.INVALID_INPUT" &&
         pair.diagnostic.message_key==key,
         "TEXT pair bypassed actual node/transaction/resource admission or published a half-pair");
+    engine::EngineTextResourceSelectionSourcesV1 sources;
+    sources.session_override = engine::EngineTextResourceSelectorsV1{
+        image.collations.front().charset_uuid, image.collations.front().resource_uuid};
+    const auto selected=engine::SelectEngineTextResourcePairV1(candidate,sources);
+    check(pair_empty(selected.pair) &&
+        selected.source==engine::EngineTextResourceSelectionSourceV1::none &&
+        selected.pair.diagnostic.message_key==key,
+        "TEXT precedence selection bypassed admission or published a refused source");
+    bool visited=false;
+    const auto read=engine::WithEngineTextResourceCatalogV1(candidate,
+        [&](const engine::EngineTextResourceReadScopeV1&) {visited=true;});
+    check(read.error && read.canonical_metadata.has_value() &&
+        read.message_key==key && !visited,
+        "refused resource admission entered the borrowed read scope");
   };
-  const auto charset=lookup(context);
-  check(charset.ok && charset.resource_descriptor.resource_uuid==image.charsets.front().resource_uuid &&
-        charset.resource_descriptor.default_collation_uuid==image.charsets.front().default_collation_uuid &&
-        charset.resource_descriptor.family_epoch==image.charsets.front().family_epoch &&
-        charset.resource_descriptor.canonical_name==image.charsets.front().canonical_name,
-        "actual charset lookup changed binary identity or cohort");
-  const auto collation=engine::LookupEngineResourceDescriptorByUuid(
-      context,image.collations.front().resource_uuid,"COLLATION");
-  check(collation.ok && collation.resource_descriptor.resource_uuid==image.collations.front().resource_uuid &&
-        collation.resource_descriptor.database_uuid==context.database_uuid &&
-        collation.resource_descriptor.comparison_profile==image.collations.front().comparison_profile &&
-        collation.resource_descriptor.parent_resource_uuid==image.collations.front().charset_uuid &&
-        collation.resource_descriptor.family_version==image.collations.front().family_version,
-        "actual collation lookup changed binary identity or parent");
-  unsigned default_pairs=0;
+  using TextSources=engine::EngineTextResourceSelectionSourcesV1;
+  using TextSelectors=engine::EngineTextResourceSelectorsV1;
+  using TextSource=engine::EngineTextResourceSelectionSourceV1;
+  std::array<const r::ResourceSeedCharsetDescriptor*,4> profiles{};
+  unsigned profile_count=0;
   for(const auto& row:image.charsets) {
-    const auto pair=engine::LookupEngineTextResourcePair(context,row.resource_uuid,{});
-    if(row.default_collation_uuid.is_nil()) {
-      check(pair_empty(pair) &&
-          pair.diagnostic.message_key=="catalog.resource.default_collation_required",
-          "missing registered default selected an arbitrary collation or published a charset");
-      continue;
-    }
-    ++default_pairs;
-    check(pair.ok && !pair.diagnostic.error && pair.charset.present && pair.collation.present &&
-        pair.charset.resource_uuid==row.resource_uuid &&
-        pair.collation.resource_uuid==row.default_collation_uuid &&
-        pair.collation.canonical_name==row.default_collation_name &&
-        pair.collation.parent_resource_uuid==row.resource_uuid && pair.collation.default_for_parent &&
-        pair.charset.database_uuid==context.database_uuid && pair.collation.database_uuid==context.database_uuid &&
-        pair.charset.resource_epoch==image.resource_epoch && pair.collation.resource_epoch==image.resource_epoch &&
-        pair.charset.family_epoch==row.family_epoch,
-        "registered-default TEXT pair changed actual identities, ownership or epochs");
+    if(row.default_collation_uuid.is_nil())continue;
+    profiles[profile_count++]=&row;
+    if(profile_count==profiles.size())break;
   }
-  check(default_pairs!=0,"actual seed has no registered default TEXT pairs");
-  const auto pair_refused=[&](const platform::Uuid& cs,const platform::Uuid& co,
-                             const char* code,const char* key) {
-    const auto pair=engine::LookupEngineTextResourcePair(context,cs,co);
-    check(pair_empty(pair) && pair.diagnostic.code==code && pair.diagnostic.message_key==key,
-        "invalid TEXT pair was defaulted, partially published or lost its exact diagnostic");
-  };
-  pair_refused({},image.collations.front().resource_uuid,
-      "CATALOG.INVALID_INPUT","catalog.resource.uuid_required");
-  pair_refused(image.collations.front().resource_uuid,{},
-      "CATALOG.INVALID_INPUT","catalog.resource.family_mismatch");
-  pair_refused(image.charsets.front().resource_uuid,image.charsets.front().resource_uuid,
-      "CATALOG.INVALID_INPUT","catalog.resource.family_mismatch");
-  const auto foreign_parent=std::find_if(image.charsets.begin(),image.charsets.end(),[&](const auto& row) {
-    return row.resource_uuid!=image.collations.front().charset_uuid;
+  check(profile_count==profiles.size(),"actual seed lacks four distinct charset/default pairs");
+  unsigned read_visits=0;
+  const auto grouped_admission=engine::WithEngineTextResourceCatalogV1(context,
+      [&](const engine::EngineTextResourceReadScopeV1& read_scope) {
+    ++read_visits;
+    const auto charset=lookup(context);
+    check(charset.ok && charset.resource_descriptor.resource_uuid==image.charsets.front().resource_uuid &&
+          charset.resource_descriptor.default_collation_uuid==image.charsets.front().default_collation_uuid &&
+          charset.resource_descriptor.family_epoch==image.charsets.front().family_epoch &&
+          charset.resource_descriptor.canonical_name==image.charsets.front().canonical_name,
+          "actual charset lookup changed binary identity or cohort");
+    const auto collation=engine::LookupEngineResourceDescriptorByUuid(
+        context,image.collations.front().resource_uuid,"COLLATION");
+    check(collation.ok && collation.resource_descriptor.resource_uuid==image.collations.front().resource_uuid &&
+          collation.resource_descriptor.database_uuid==context.database_uuid &&
+          collation.resource_descriptor.comparison_profile==image.collations.front().comparison_profile &&
+          collation.resource_descriptor.parent_resource_uuid==image.collations.front().charset_uuid &&
+          collation.resource_descriptor.family_version==image.collations.front().family_version,
+          "actual collation lookup changed binary identity or parent");
+    unsigned default_pairs=0;
+    for(const auto& row:image.charsets) {
+      const auto pair=read_scope.LookupPair(row.resource_uuid,{});
+      if(row.default_collation_uuid.is_nil()) {
+        check(pair_empty(pair) &&
+            pair.diagnostic.message_key=="catalog.resource.default_collation_required",
+            "missing registered default selected an arbitrary collation or published a charset");
+        continue;
+      }
+      ++default_pairs;
+      check(pair.ok && !pair.diagnostic.error && pair.charset.present && pair.collation.present &&
+          pair.charset.resource_uuid==row.resource_uuid &&
+          pair.collation.resource_uuid==row.default_collation_uuid &&
+          pair.collation.canonical_name==row.default_collation_name &&
+          pair.collation.parent_resource_uuid==row.resource_uuid && pair.collation.default_for_parent &&
+          pair.charset.database_uuid==context.database_uuid && pair.collation.database_uuid==context.database_uuid &&
+          pair.charset.resource_epoch==image.resource_epoch && pair.collation.resource_epoch==image.resource_epoch &&
+          pair.charset.family_epoch==row.family_epoch,
+          "registered-default TEXT pair changed actual identities, ownership or epochs");
+    }
+    check(default_pairs!=0,"actual seed has no registered default TEXT pairs");
+    const auto candidates=[](TextSources& sources) {
+      return std::array{&sources.explicit_bound,&sources.session_override,
+                        &sources.current_schema,&sources.node_database};
+    };
+    const auto source_ids=std::array{TextSource::explicit_bound,TextSource::session_override,
+                                    TextSource::current_schema,TextSource::node_database};
+    for(unsigned mask=0;mask<16;++mask) {
+      TextSources sources;
+      const auto slots=candidates(sources);
+      unsigned winner=4;
+      for(unsigned i=0;i<slots.size();++i) {
+        if(!(mask&(1u<<i)))continue;
+        if(winner==4)winner=i;
+        *slots[i]=TextSelectors{profiles[i]->resource_uuid,{}};
+      }
+      const auto selected=read_scope.SelectPair(sources);
+      if(!mask) {
+        check(pair_empty(selected.pair) && selected.source==TextSource::none &&
+            selected.pair.diagnostic.code=="CATALOG.INVALID_INPUT" &&
+            selected.pair.diagnostic.message_key=="catalog.resource.text_profile_required",
+            "absent TEXT defaults invented a profile");
+        continue;
+      }
+      check(selected.pair.ok && selected.source==source_ids[winner] &&
+          selected.pair.charset.resource_uuid==profiles[winner]->resource_uuid &&
+          selected.pair.collation.resource_uuid==profiles[winner]->default_collation_uuid &&
+          selected.pair.charset.database_uuid==context.database_uuid &&
+          selected.pair.collation.database_uuid==context.database_uuid &&
+          selected.pair.charset.resource_epoch==context.resource_epoch &&
+          selected.pair.collation.resource_epoch==context.resource_epoch,
+          "TEXT precedence mixed candidate levels or selected the wrong source/default pair");
+    }
+    TextSources override_sources;
+    override_sources.session_override=TextSelectors{profiles[1]->resource_uuid,{}};
+    override_sources.current_schema=TextSelectors{profiles[2]->resource_uuid,
+                                                 profiles[2]->default_collation_uuid};
+    override_sources.node_database=TextSelectors{profiles[3]->resource_uuid,
+                                                profiles[3]->default_collation_uuid};
+    const auto default_a=read_scope.SelectPair(override_sources);
+    check(default_a.pair.ok && default_a.source==TextSource::session_override &&
+        default_a.pair.collation.resource_uuid==profiles[1]->default_collation_uuid &&
+        default_a.pair.collation.parent_resource_uuid==profiles[1]->resource_uuid,
+        "session charset A inherited schema charset B's collation instead of A's registered default");
+    auto bad_lower=profiles[2]->resource_uuid;bad_lower.bytes[6]=0x40;
+    override_sources.current_schema=TextSelectors{bad_lower,bad_lower};
+    const auto shadowed=read_scope.SelectPair(override_sources);
+    check(shadowed.pair.ok && shadowed.source==TextSource::session_override &&
+        shadowed.pair.collation.resource_uuid==profiles[1]->default_collation_uuid,
+        "shadowed lower TEXT selectors were resolved or altered the winning pair");
+    const auto selection_refused=[&](const TextSources& sources,const char* key) {
+      const auto selected=read_scope.SelectPair(sources);
+      check(pair_empty(selected.pair) && selected.source==TextSource::none &&
+          selected.pair.diagnostic.message_key==key,
+          "invalid winning TEXT selector fell through or published partial selection");
+    };
+    override_sources.session_override=TextSelectors{profiles[1]->resource_uuid,
+                                                   profiles[2]->default_collation_uuid};
+    selection_refused(override_sources,"catalog.resource.collation_charset_mismatch");
+    override_sources.explicit_bound=TextSelectors{};
+    selection_refused(override_sources,"catalog.resource.uuid_required");
+    override_sources.explicit_bound=TextSelectors{bad_lower,{}};
+    selection_refused(override_sources,"catalog.resource.uuid_invalid");
+    override_sources.explicit_bound=TextSelectors{profiles[0]->resource_uuid,bad_lower};
+    selection_refused(override_sources,"catalog.resource.uuid_invalid");
+    const auto pair_refused=[&](const platform::Uuid& cs,const platform::Uuid& co,
+                               const char* code,const char* key) {
+      const auto pair=read_scope.LookupPair(cs,co);
+      check(pair_empty(pair) && pair.diagnostic.code==code && pair.diagnostic.message_key==key,
+          "invalid TEXT pair was defaulted, partially published or lost its exact diagnostic");
+    };
+    pair_refused({},image.collations.front().resource_uuid,
+        "CATALOG.INVALID_INPUT","catalog.resource.uuid_required");
+    pair_refused(image.collations.front().resource_uuid,{},
+        "CATALOG.INVALID_INPUT","catalog.resource.family_mismatch");
+    pair_refused(image.charsets.front().resource_uuid,image.charsets.front().resource_uuid,
+        "CATALOG.INVALID_INPUT","catalog.resource.family_mismatch");
+    const auto foreign_parent=std::find_if(image.charsets.begin(),image.charsets.end(),[&](const auto& row) {
+      return row.resource_uuid!=image.collations.front().charset_uuid;
+    });
+    check(foreign_parent!=image.charsets.end(),"seed lacks distinct charset parents");
+    pair_refused(foreign_parent->resource_uuid,image.collations.front().resource_uuid,
+        "CATALOG.INVALID_INPUT","catalog.resource.collation_charset_mismatch");
+    unsigned executable_profiles=0;
+    for(const auto& row:image.collations) {
+      if(row.comparison_profile==r::CollationProfile::unbound)continue;
+      ++executable_profiles;
+      const auto found=engine::LookupEngineResourceDescriptorByUuid(context,row.resource_uuid,"collation");
+      check(found.ok && found.resource_descriptor.database_uuid==context.database_uuid &&
+          found.resource_descriptor.resource_uuid==row.resource_uuid &&
+          found.resource_descriptor.parent_resource_uuid==row.charset_uuid &&
+          found.resource_descriptor.resource_epoch==image.resource_epoch &&
+          found.resource_descriptor.family_epoch==row.family_epoch &&
+          found.resource_descriptor.comparison_profile==row.comparison_profile,
+          "live binary lookup lost comparison profile or owning cohort");
+      const auto pair=read_scope.LookupPair(row.charset_uuid,row.resource_uuid);
+      check(pair.ok && pair.charset.resource_uuid==row.charset_uuid &&
+          pair.collation.resource_uuid==row.resource_uuid &&
+          pair.collation.family_epoch==row.family_epoch &&
+          pair.collation.comparison_profile==row.comparison_profile &&
+          pair.collation.resource_epoch==pair.charset.resource_epoch &&
+          pair.collation.parent_canonical_name==pair.charset.canonical_name,
+          "explicit executable TEXT pair changed actual resource profile");
+      TextSources explicit_sources;
+      explicit_sources.explicit_bound=TextSelectors{row.charset_uuid,row.resource_uuid};
+      const auto explicit_pair=read_scope.SelectPair(explicit_sources);
+      check(explicit_pair.pair.ok && explicit_pair.source==TextSource::explicit_bound &&
+          explicit_pair.pair.collation.resource_uuid==row.resource_uuid &&
+          explicit_pair.pair.collation.default_for_parent==row.default_for_charset &&
+          explicit_pair.pair.collation.comparison_profile==row.comparison_profile,
+          "explicit TEXT collation was replaced by a registered default or lost its profile");
+      std::string folded_name=row.canonical_name;
+      for(auto& ch:folded_name)if(ch>='A'&&ch<='Z')ch+=('a'-'A');
+      const auto named=engine::LookupEngineResourceDescriptorByName(context,folded_name,"COLLATION");
+      const auto& n=named.resource_descriptor;
+      const auto& d=found.resource_descriptor;
+      check(named.ok && n.present && n.database_uuid==d.database_uuid &&
+            n.resource_uuid==d.resource_uuid && n.parent_resource_uuid==d.parent_resource_uuid &&
+            n.default_collation_uuid==d.default_collation_uuid && n.canonical_name==d.canonical_name &&
+            n.resource_family==d.resource_family && n.parent_canonical_name==d.parent_canonical_name &&
+            n.default_collation_name==d.default_collation_name && n.seed_pack_name==d.seed_pack_name &&
+            n.seed_pack_version==d.seed_pack_version && n.resource_epoch==d.resource_epoch &&
+            n.family_epoch==d.family_epoch && n.family_version==d.family_version &&
+            n.min_bytes==d.min_bytes && n.max_bytes==d.max_bytes && n.variable_width==d.variable_width &&
+            n.default_for_parent==d.default_for_parent && n.case_insensitive==d.case_insensitive &&
+            n.accent_insensitive==d.accent_insensitive && n.comparison_profile==d.comparison_profile &&
+            bool(n.unicode_collation)==bool(d.unicode_collation),
+            "name resolution and binary lookup published different resource cohorts");
+      const bool root=r::UsesUnicodeRoot(row.comparison_profile);
+      namespace dt=scratchbird::core::datatypes;
+      const auto seed=engine::TextSeedFromResource(named.resource_descriptor);
+      dt::DatatypeComparisonRequest compare;
+      compare.left={dt::CanonicalTypeId::character,"\xc3\xa9",false};
+      compare.right={dt::CanonicalTypeId::character,"e\xcc\x81",false};compare.text_seed=seed;
+      const auto compared=dt::CompareDatatypeValues(compare);
+      check(compared.ok() && (compared.comparison==0)==root,
+          "actual resource lookup to datatype comparison lost profile semantics");
+      dt::DatatypeSortKeyRequest sort;sort.text_seed=seed;sort.value=compare.left;
+      const auto first=dt::MakeDatatypeSortKey(sort);sort.value=compare.right;
+      const auto second=dt::MakeDatatypeSortKey(sort);
+      check(first.ok()&&second.ok()&&(first.sort_key==second.sort_key)==root,
+          "actual resource lookup to sort key lost canonical equivalence");
+      dt::DatatypeHashRequest hash;hash.text_seed=seed;hash.value=compare.left;
+      const auto first_hash=dt::HashDatatypeValue(hash);hash.value=compare.right;
+      const auto second_hash=dt::HashDatatypeValue(hash);
+      check(first_hash.ok()&&second_hash.ok()&&(!root||first_hash.stable_hash_hex==second_hash.stable_hash_hex),
+          "actual resource lookup produced inconsistent text hash");
+      check(bool(found.resource_descriptor.unicode_collation)==root,
+          "resolved profile has missing or extraneous root authority");
+      if(root) {
+        int order=99;
+        const auto strength=static_cast<r::UnicodeCollationStrength>(
+            static_cast<std::uint64_t>(row.comparison_profile)-1);
+        check(found.resource_descriptor.unicode_collation->Compare("\xc3\xa9","e\xcc\x81",strength,
+            {64,64},&order)==r::UnicodeNormalizationStatus::ok && order==0,
+            "resolved database-owned recipe failed canonical equivalence");
+      }
+    }
+    check(executable_profiles==5,"native comparison recipes missing from live catalog");
+    const auto charset_name=engine::LookupEngineResourceDescriptorByName(
+        context,image.charsets.front().canonical_name,"charset");
+    check(charset_name.ok && charset_name.resource_descriptor.database_uuid==context.database_uuid &&
+          charset_name.resource_descriptor.resource_uuid==charset.resource_descriptor.resource_uuid &&
+          charset_name.resource_descriptor.default_collation_uuid==charset.resource_descriptor.default_collation_uuid &&
+          charset_name.resource_descriptor.min_bytes==charset.resource_descriptor.min_bytes &&
+          charset_name.resource_descriptor.max_bytes==charset.resource_descriptor.max_bytes &&
+          charset_name.resource_descriptor.variable_width==charset.resource_descriptor.variable_width &&
+          !charset_name.resource_descriptor.unicode_collation,
+          "charset name lookup lost its exact descriptor");
+    const auto alias_name=engine::LookupEngineResourceDescriptorByName(context,"cp936","charset");
+    const auto* gbk=r::FindResourceSeedCharset(image,"GBK");
+    check(gbk && alias_name.ok && alias_name.resource_descriptor.resource_uuid==gbk->resource_uuid &&
+          alias_name.resource_descriptor.database_uuid==context.database_uuid,
+          "charset alias did not resolve the database-owned binary identity");
+    const auto ambiguous_name=engine::LookupEngineResourceDescriptorByName(context,"GB2312","charset");
+    check(!ambiguous_name.ok && ambiguous_name.diagnostic.code=="SB_RESOURCE_ALIAS_AMBIGUOUS" &&
+          ambiguous_name.diagnostic.canonical_metadata.has_value() && !ambiguous_name.resource_descriptor.present,
+          "ambiguous resource alias published a descriptor");
+    for(const auto& invalid:std::vector<std::string>{"",std::string("UTF\0-8",6),"\xc0\xaf","\xed\xa0\x80"}) {
+      const auto bad_name=engine::LookupEngineResourceDescriptorByName(context,invalid,"charset");
+      check(!bad_name.ok && bad_name.diagnostic.code=="CATALOG.INVALID_INPUT" &&
+            bad_name.diagnostic.message_key=="catalog.resource.name_invalid" &&
+            !bad_name.resource_descriptor.present,"invalid UTF8 resource name was admitted");
+    }
+    for(const auto& family:std::vector<std::string>{"charset","collation"}) {
+      const auto absent_name=engine::LookupEngineResourceDescriptorByName(context,"__missing_resource__",family);
+      check(!absent_name.ok && absent_name.diagnostic.code=="CATALOG.NAME.NOT_FOUND_OR_NOT_VISIBLE" &&
+            !absent_name.resource_descriptor.present,"unknown name fell back to a default resource");
+    }
+    const auto bad_family=engine::LookupEngineResourceDescriptorByName(context,"UTF-8","not_a_family");
+    check(!bad_family.ok && bad_family.diagnostic.message_key=="catalog.resource.family_invalid" &&
+          !bad_family.resource_descriptor.present,"unknown name family was admitted");
+    const auto zone=engine::LookupEngineTimezoneSeedAuthority(context);
+    check(zone.ok && zone.authority.active && zone.authority.timezone_epoch==image.timezone_epoch &&
+          zone.authority.timezone_records==image.timezone_records,
+          "actual timezone lookup rejected exact active transaction");
+    auto bad=context; bad.database_uuid={}; refused(bad,"catalog.resource.database_required");
+    bad=context; bad.database_path.clear(); refused(bad,"catalog.resource.database_required");
+    bad=context; bad.database_uuid.bytes[6]=0x40;
+    refused(bad,"catalog.resource.database_identity_mismatch");
+    bad=context; bad.database_uuid.bytes[15]^=1;
+    refused(bad,"catalog.resource.database_identity_mismatch");
+    bad=context; bad.transaction_uuid={}; refused(bad,"catalog.resource.transaction_required");
+    bad=context; bad.local_transaction_id=0; refused(bad,"catalog.resource.transaction_required");
+    for (unsigned version=1;version<=6;++version) {
+      bad=context; bad.transaction_uuid.bytes[6]=static_cast<unsigned char>(version<<4);
+      refused(bad,"catalog.resource.transaction_invalid");
+      auto identity=image.charsets.front().resource_uuid;
+      identity.bytes[6]=static_cast<unsigned char>(version<<4);
+      const auto result=engine::LookupEngineResourceDescriptorByUuid(context,identity,"charset");
+      check(!result.ok && result.diagnostic.code=="CATALOG.INVALID_INPUT" && result.diagnostic.message_key=="catalog.resource.uuid_invalid" &&
+            result.diagnostic.canonical_metadata.has_value() &&
+            !result.resource_descriptor.present,"old UUID version admitted as system resource identity");
+      pair_refused(identity,image.collations.front().resource_uuid,
+          "CATALOG.INVALID_INPUT","catalog.resource.uuid_invalid");
+      pair_refused(image.collations.front().charset_uuid,identity,
+          "CATALOG.INVALID_INPUT","catalog.resource.uuid_invalid");
+    }
+    bad=context; bad.transaction_uuid.bytes[15]^=1;
+    refused(bad,"catalog.resource.transaction_not_active");
+    bad=context; bad.local_transaction_id+=100;
+    refused(bad,"catalog.resource.transaction_not_active");
+    bad=context; bad.resource_epoch=0; refused(bad,"catalog.resource.epoch_required");
+    bad=context; ++bad.resource_epoch; refused(bad,"catalog.resource.epoch_stale");
+    const auto wrong_family=engine::LookupEngineResourceDescriptorByUuid(
+        context,image.collations.front().resource_uuid,"charset");
+    check(!wrong_family.ok && wrong_family.diagnostic.code=="CATALOG.INVALID_INPUT" &&
+          wrong_family.diagnostic.message_key=="catalog.resource.family_mismatch" &&
+          wrong_family.diagnostic.canonical_metadata.has_value() &&
+          !wrong_family.resource_descriptor.present,"resource family mismatch was not refused");
+    const auto invalid_resource=[&](platform::Uuid id,const char* family,const char* key) {
+      const auto result=engine::LookupEngineResourceDescriptorByUuid(context,id,family);
+      check(!result.ok && result.diagnostic.code=="CATALOG.INVALID_INPUT" &&
+            result.diagnostic.message_key==key && result.diagnostic.canonical_metadata.has_value() &&
+            !result.resource_descriptor.present && result.resource_descriptor.resource_uuid.is_nil(),
+            "invalid resource identity/family published a descriptor");
+    };
+    invalid_resource({},"charset","catalog.resource.uuid_required");
+    invalid_resource(image.charsets.front().resource_uuid,"unknown","catalog.resource.family_invalid");
+    auto invalid_id=image.charsets.front().resource_uuid; invalid_id.bytes[8]&=0x3f;
+    invalid_resource(invalid_id,"charset","catalog.resource.uuid_invalid");
+    const auto unknown_id=uuid::GenerateEngineIdentityV7(UuidKind::object,Now());
+    Require(unknown_id.ok(),"absent resource fixture identity generation failed");
+    override_sources.explicit_bound=TextSelectors{unknown_id.value.value,{}};
+    selection_refused(override_sources,"catalog.resource.uuid_not_found");
+    override_sources.explicit_bound=TextSelectors{profiles[0]->resource_uuid,unknown_id.value.value};
+    selection_refused(override_sources,"catalog.resource.uuid_not_found");
+    pair_refused(unknown_id.value.value,{},
+        "CATALOG.NAME.NOT_FOUND_OR_NOT_VISIBLE","catalog.resource.uuid_not_found");
+    pair_refused(image.collations.front().charset_uuid,unknown_id.value.value,
+        "CATALOG.NAME.NOT_FOUND_OR_NOT_VISIBLE","catalog.resource.uuid_not_found");
+    const auto absent=engine::LookupEngineResourceDescriptorByUuid(context,unknown_id.value.value,"charset");
+    check(!absent.ok && absent.diagnostic.code=="CATALOG.NAME.NOT_FOUND_OR_NOT_VISIBLE" &&
+          absent.diagnostic.canonical_metadata.has_value() && !absent.resource_descriptor.present,
+          "absent resource used a name fallback or unregistered diagnostic");
+    bad=context; bad.database_path=(path.parent_path()/"missing.sbdb").string();
+    const auto missing=lookup(bad);
+    auto missing_config=open; missing_config.path=bad.database_path;
+    const auto native_missing=db::OpenDatabaseFile(missing_config);
+    check(!missing.ok && missing.diagnostic.native_source.has_value() && missing.diagnostic.canonical_metadata.has_value() &&
+          !native_missing.ok() && missing.diagnostic.native_source->record.diagnostic_code==
+              native_missing.diagnostic.diagnostic_code &&
+          missing.diagnostic.native_source->record.message_key==native_missing.diagnostic.message_key &&
+          !missing.resource_descriptor.present,"native storage failure cause was discarded");
   });
-  check(foreign_parent!=image.charsets.end(),"seed lacks distinct charset parents");
-  pair_refused(foreign_parent->resource_uuid,image.collations.front().resource_uuid,
-      "CATALOG.INVALID_INPUT","catalog.resource.collation_charset_mismatch");
-  unsigned executable_profiles=0;
-  for(const auto& row:image.collations) {
-    if(row.comparison_profile==r::CollationProfile::unbound)continue;
-    ++executable_profiles;
-    const auto found=engine::LookupEngineResourceDescriptorByUuid(context,row.resource_uuid,"collation");
-    check(found.ok && found.resource_descriptor.database_uuid==context.database_uuid &&
-        found.resource_descriptor.resource_uuid==row.resource_uuid &&
-        found.resource_descriptor.parent_resource_uuid==row.charset_uuid &&
-        found.resource_descriptor.resource_epoch==image.resource_epoch &&
-        found.resource_descriptor.family_epoch==row.family_epoch &&
-        found.resource_descriptor.comparison_profile==row.comparison_profile,
-        "live binary lookup lost comparison profile or owning cohort");
-    const auto pair=engine::LookupEngineTextResourcePair(context,row.charset_uuid,row.resource_uuid);
-    check(pair.ok && pair.charset.resource_uuid==row.charset_uuid &&
-        pair.collation.resource_uuid==row.resource_uuid &&
-        pair.collation.family_epoch==row.family_epoch &&
-        pair.collation.comparison_profile==row.comparison_profile &&
-        pair.collation.resource_epoch==pair.charset.resource_epoch &&
-        pair.collation.parent_canonical_name==pair.charset.canonical_name,
-        "explicit executable TEXT pair changed actual resource profile");
-    std::string folded_name=row.canonical_name;
-    for(auto& ch:folded_name)if(ch>='A'&&ch<='Z')ch+=('a'-'A');
-    const auto named=engine::LookupEngineResourceDescriptorByName(context,folded_name,"COLLATION");
-    const auto& n=named.resource_descriptor;
-    const auto& d=found.resource_descriptor;
-    check(named.ok && n.present && n.database_uuid==d.database_uuid &&
-          n.resource_uuid==d.resource_uuid && n.parent_resource_uuid==d.parent_resource_uuid &&
-          n.default_collation_uuid==d.default_collation_uuid && n.canonical_name==d.canonical_name &&
-          n.resource_family==d.resource_family && n.parent_canonical_name==d.parent_canonical_name &&
-          n.default_collation_name==d.default_collation_name && n.seed_pack_name==d.seed_pack_name &&
-          n.seed_pack_version==d.seed_pack_version && n.resource_epoch==d.resource_epoch &&
-          n.family_epoch==d.family_epoch && n.family_version==d.family_version &&
-          n.min_bytes==d.min_bytes && n.max_bytes==d.max_bytes && n.variable_width==d.variable_width &&
-          n.default_for_parent==d.default_for_parent && n.case_insensitive==d.case_insensitive &&
-          n.accent_insensitive==d.accent_insensitive && n.comparison_profile==d.comparison_profile &&
-          bool(n.unicode_collation)==bool(d.unicode_collation),
-          "name resolution and binary lookup published different resource cohorts");
-    const bool root=r::UsesUnicodeRoot(row.comparison_profile);
-    namespace dt=scratchbird::core::datatypes;
-    const auto seed=engine::TextSeedFromResource(named.resource_descriptor);
-    dt::DatatypeComparisonRequest compare;
-    compare.left={dt::CanonicalTypeId::character,"\xc3\xa9",false};
-    compare.right={dt::CanonicalTypeId::character,"e\xcc\x81",false};compare.text_seed=seed;
-    const auto compared=dt::CompareDatatypeValues(compare);
-    check(compared.ok() && (compared.comparison==0)==root,
-        "actual resource lookup to datatype comparison lost profile semantics");
-    dt::DatatypeSortKeyRequest sort;sort.text_seed=seed;sort.value=compare.left;
-    const auto first=dt::MakeDatatypeSortKey(sort);sort.value=compare.right;
-    const auto second=dt::MakeDatatypeSortKey(sort);
-    check(first.ok()&&second.ok()&&(first.sort_key==second.sort_key)==root,
-        "actual resource lookup to sort key lost canonical equivalence");
-    dt::DatatypeHashRequest hash;hash.text_seed=seed;hash.value=compare.left;
-    const auto first_hash=dt::HashDatatypeValue(hash);hash.value=compare.right;
-    const auto second_hash=dt::HashDatatypeValue(hash);
-    check(first_hash.ok()&&second_hash.ok()&&(!root||first_hash.stable_hash_hex==second_hash.stable_hash_hex),
-        "actual resource lookup produced inconsistent text hash");
-    check(bool(found.resource_descriptor.unicode_collation)==root,
-        "resolved profile has missing or extraneous root authority");
-    if(root) {
-      int order=99;
-      const auto strength=static_cast<r::UnicodeCollationStrength>(
-          static_cast<std::uint64_t>(row.comparison_profile)-1);
-      check(found.resource_descriptor.unicode_collation->Compare("\xc3\xa9","e\xcc\x81",strength,
-          {64,64},&order)==r::UnicodeNormalizationStatus::ok && order==0,
-          "resolved database-owned recipe failed canonical equivalence");
-    }
-  }
-  check(executable_profiles==5,"native comparison recipes missing from live catalog");
-  const auto charset_name=engine::LookupEngineResourceDescriptorByName(
-      context,image.charsets.front().canonical_name,"charset");
-  check(charset_name.ok && charset_name.resource_descriptor.database_uuid==context.database_uuid &&
-        charset_name.resource_descriptor.resource_uuid==charset.resource_descriptor.resource_uuid &&
-        charset_name.resource_descriptor.default_collation_uuid==charset.resource_descriptor.default_collation_uuid &&
-        charset_name.resource_descriptor.min_bytes==charset.resource_descriptor.min_bytes &&
-        charset_name.resource_descriptor.max_bytes==charset.resource_descriptor.max_bytes &&
-        charset_name.resource_descriptor.variable_width==charset.resource_descriptor.variable_width &&
-        !charset_name.resource_descriptor.unicode_collation,
-        "charset name lookup lost its exact descriptor");
-  const auto alias_name=engine::LookupEngineResourceDescriptorByName(context,"cp936","charset");
-  const auto* gbk=r::FindResourceSeedCharset(image,"GBK");
-  check(gbk && alias_name.ok && alias_name.resource_descriptor.resource_uuid==gbk->resource_uuid &&
-        alias_name.resource_descriptor.database_uuid==context.database_uuid,
-        "charset alias did not resolve the database-owned binary identity");
-  const auto ambiguous_name=engine::LookupEngineResourceDescriptorByName(context,"GB2312","charset");
-  check(!ambiguous_name.ok && ambiguous_name.diagnostic.code=="SB_RESOURCE_ALIAS_AMBIGUOUS" &&
-        ambiguous_name.diagnostic.canonical_metadata.has_value() && !ambiguous_name.resource_descriptor.present,
-        "ambiguous resource alias published a descriptor");
-  for(const auto& invalid:std::vector<std::string>{"",std::string("UTF\0-8",6),"\xc0\xaf","\xed\xa0\x80"}) {
-    const auto bad_name=engine::LookupEngineResourceDescriptorByName(context,invalid,"charset");
-    check(!bad_name.ok && bad_name.diagnostic.code=="CATALOG.INVALID_INPUT" &&
-          bad_name.diagnostic.message_key=="catalog.resource.name_invalid" &&
-          !bad_name.resource_descriptor.present,"invalid UTF8 resource name was admitted");
-  }
-  for(const auto& family:std::vector<std::string>{"charset","collation"}) {
-    const auto absent_name=engine::LookupEngineResourceDescriptorByName(context,"__missing_resource__",family);
-    check(!absent_name.ok && absent_name.diagnostic.code=="CATALOG.NAME.NOT_FOUND_OR_NOT_VISIBLE" &&
-          !absent_name.resource_descriptor.present,"unknown name fell back to a default resource");
-  }
-  const auto bad_family=engine::LookupEngineResourceDescriptorByName(context,"UTF-8","not_a_family");
-  check(!bad_family.ok && bad_family.diagnostic.message_key=="catalog.resource.family_invalid" &&
-        !bad_family.resource_descriptor.present,"unknown name family was admitted");
-  const auto zone=engine::LookupEngineTimezoneSeedAuthority(context);
-  check(zone.ok && zone.authority.active && zone.authority.timezone_epoch==image.timezone_epoch &&
-        zone.authority.timezone_records==image.timezone_records,
-        "actual timezone lookup rejected exact active transaction");
-  auto bad=context; bad.database_uuid={}; refused(bad,"catalog.resource.database_required");
-  bad=context; bad.database_path.clear(); refused(bad,"catalog.resource.database_required");
-  bad=context; bad.database_uuid.bytes[6]=0x40;
-  refused(bad,"catalog.resource.database_identity_mismatch");
-  bad=context; bad.database_uuid.bytes[15]^=1;
-  refused(bad,"catalog.resource.database_identity_mismatch");
-  bad=context; bad.transaction_uuid={}; refused(bad,"catalog.resource.transaction_required");
-  bad=context; bad.local_transaction_id=0; refused(bad,"catalog.resource.transaction_required");
-  for (unsigned version=1;version<=6;++version) {
-    bad=context; bad.transaction_uuid.bytes[6]=static_cast<unsigned char>(version<<4);
-    refused(bad,"catalog.resource.transaction_invalid");
-    auto identity=image.charsets.front().resource_uuid;
-    identity.bytes[6]=static_cast<unsigned char>(version<<4);
-    const auto result=engine::LookupEngineResourceDescriptorByUuid(context,identity,"charset");
-    check(!result.ok && result.diagnostic.code=="CATALOG.INVALID_INPUT" && result.diagnostic.message_key=="catalog.resource.uuid_invalid" &&
-          result.diagnostic.canonical_metadata.has_value() &&
-          !result.resource_descriptor.present,"old UUID version admitted as system resource identity");
-    pair_refused(identity,image.collations.front().resource_uuid,
-        "CATALOG.INVALID_INPUT","catalog.resource.uuid_invalid");
-    pair_refused(image.collations.front().charset_uuid,identity,
-        "CATALOG.INVALID_INPUT","catalog.resource.uuid_invalid");
-  }
-  bad=context; bad.transaction_uuid.bytes[15]^=1;
-  refused(bad,"catalog.resource.transaction_not_active");
-  bad=context; bad.local_transaction_id+=100;
-  refused(bad,"catalog.resource.transaction_not_active");
-  bad=context; bad.resource_epoch=0; refused(bad,"catalog.resource.epoch_required");
-  bad=context; ++bad.resource_epoch; refused(bad,"catalog.resource.epoch_stale");
-  const auto wrong_family=engine::LookupEngineResourceDescriptorByUuid(
-      context,image.collations.front().resource_uuid,"charset");
-  check(!wrong_family.ok && wrong_family.diagnostic.code=="CATALOG.INVALID_INPUT" &&
-        wrong_family.diagnostic.message_key=="catalog.resource.family_mismatch" &&
-        wrong_family.diagnostic.canonical_metadata.has_value() &&
-        !wrong_family.resource_descriptor.present,"resource family mismatch was not refused");
-  const auto invalid_resource=[&](platform::Uuid id,const char* family,const char* key) {
-    const auto result=engine::LookupEngineResourceDescriptorByUuid(context,id,family);
-    check(!result.ok && result.diagnostic.code=="CATALOG.INVALID_INPUT" &&
-          result.diagnostic.message_key==key && result.diagnostic.canonical_metadata.has_value() &&
-          !result.resource_descriptor.present && result.resource_descriptor.resource_uuid.is_nil(),
-          "invalid resource identity/family published a descriptor");
-  };
-  invalid_resource({},"charset","catalog.resource.uuid_required");
-  invalid_resource(image.charsets.front().resource_uuid,"unknown","catalog.resource.family_invalid");
-  auto invalid_id=image.charsets.front().resource_uuid; invalid_id.bytes[8]&=0x3f;
-  invalid_resource(invalid_id,"charset","catalog.resource.uuid_invalid");
-  const auto unknown_id=uuid::GenerateEngineIdentityV7(UuidKind::object,Now());
-  Require(unknown_id.ok(),"absent resource fixture identity generation failed");
-  pair_refused(unknown_id.value.value,{},
-      "CATALOG.NAME.NOT_FOUND_OR_NOT_VISIBLE","catalog.resource.uuid_not_found");
-  pair_refused(image.collations.front().charset_uuid,unknown_id.value.value,
-      "CATALOG.NAME.NOT_FOUND_OR_NOT_VISIBLE","catalog.resource.uuid_not_found");
-  const auto absent=engine::LookupEngineResourceDescriptorByUuid(context,unknown_id.value.value,"charset");
-  check(!absent.ok && absent.diagnostic.code=="CATALOG.NAME.NOT_FOUND_OR_NOT_VISIBLE" &&
-        absent.diagnostic.canonical_metadata.has_value() && !absent.resource_descriptor.present,
-        "absent resource used a name fallback or unregistered diagnostic");
-  bad=context; bad.database_path=(path.parent_path()/"missing.sbdb").string();
-  const auto missing=lookup(bad);
-  auto missing_config=open; missing_config.path=bad.database_path;
-  const auto native_missing=db::OpenDatabaseFile(missing_config);
-  check(!missing.ok && missing.diagnostic.native_source.has_value() && missing.diagnostic.canonical_metadata.has_value() &&
-        !native_missing.ok() && missing.diagnostic.native_source->record.diagnostic_code==
-            native_missing.diagnostic.diagnostic_code &&
-        missing.diagnostic.native_source->record.message_key==native_missing.diagnostic.message_key &&
-        !missing.resource_descriptor.present,"native storage failure cause was discarded");
+  check(!grouped_admission.error && read_visits==1,
+      "grouped TEXT resource read did not perform exactly one actual admitted visit");
+  const auto empty_visitor=engine::WithEngineTextResourceCatalogV1(context,{});
+  check(empty_visitor.error && empty_visitor.canonical_metadata.has_value() &&
+      empty_visitor.message_key=="catalog.resource.visitor_required",
+      "empty resource visitor was accepted as a completed lookup operation");
+  struct VisitorFailure {};
+  bool unwound=false;
+  try {
+    engine::WithEngineTextResourceCatalogV1(context,
+        [&](const engine::EngineTextResourceReadScopeV1& scope) {
+      const auto pair=scope.LookupPair(profiles[0]->resource_uuid,{});
+      Require(pair.ok,"actual resource pair failed before intentional visitor exception");
+      throw VisitorFailure{};
+    });
+  } catch(const VisitorFailure&) {unwound=true;}
+  check(unwound && lookup(context).ok,
+      "resource visitor exception did not unwind its image/device ownership");
   const auto finalize=[&] {
     const auto committed=mga::CommitLocalTransaction(inventory,{context.local_transaction_id},Now());
     Require(committed.ok(),"resource admission actual transaction commit failed");
@@ -511,6 +641,12 @@ void ResourceAdmission(const fs::path& path) {
   begin(true);
   check(lookup(context).ok,"read-only-active transaction could not admit resource");
   check(engine::LookupEngineTimezoneSeedAuthority(context).ok,"read-only-active timezone admission failed");
+  TextSources read_only_sources;
+  read_only_sources.node_database=TextSelectors{profiles[3]->resource_uuid,{}};
+  const auto read_only_pair=engine::SelectEngineTextResourcePairV1(context,read_only_sources);
+  check(read_only_pair.pair.ok && read_only_pair.source==TextSource::node_database &&
+      read_only_pair.pair.collation.resource_uuid==profiles[3]->default_collation_uuid,
+      "read-only-active transaction could not resolve the actual TEXT default pair");
   finalize();
   std::cout << "PASS actual resource engine admission checks=" << checks << '\n';
 }

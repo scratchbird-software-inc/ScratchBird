@@ -21,6 +21,7 @@
 #include "catalog/column_metadata_codec.hpp"
 #include "catalog/global_aggregate_view.hpp"
 #include "catalog/name_resolution_api.hpp"
+#include "catalog/text_resource_selection.hpp"
 #include "catalog/name_registry.hpp"
 #include "catalog/relation_descriptor_projection.hpp"
 #include "catalog/schema_tree_api.hpp"
@@ -313,7 +314,10 @@ EngineApiDiagnostic ValidateAndCanonicalizeColumnTextResources(
   }
 
   if (!charset_uuid.is_nil()) {
-    auto pair = LookupEngineTextResourcePair(context, charset_uuid, collation_uuid);
+    EngineTextResourceSelectionSourcesV1 sources;
+    sources.explicit_bound = EngineTextResourceSelectorsV1{charset_uuid, collation_uuid};
+    auto selected_resources = SelectEngineTextResourcePairV1(context, sources);
+    auto& pair = selected_resources.pair;
     if (!pair.ok) {
       // Preserve the established DDL diagnostic vector while sharing the
       // single-image lookup with contextual literal and assignment admission.

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "dml/update_text_target_authority_provider.hpp"
+#include "catalog/text_resource_selection.hpp"
 #include "api_diagnostics.hpp"
 #include "mga_relation_store/mga_contextual_text_descriptor.hpp"
 #include "query/contextual_text_policy_registry_v2.hpp"
@@ -131,9 +132,12 @@ EngineDmlUpdateTextTargetCaptureResultV2 CaptureDmlUpdateTextTargetV2(
   EngineResolvedResourceDescriptor cs;
   EngineResolvedResourceDescriptor co;
   if (contextual) {
-    auto pair = LookupEngineTextResourcePair(
-        context, EngineUuid{ContextualUuidNativeV2(descriptor.charset_uuid)},
-        EngineUuid{ContextualUuidNativeV2(descriptor.collation_uuid)});
+    EngineTextResourceSelectionSourcesV1 sources;
+    sources.explicit_bound = EngineTextResourceSelectorsV1{
+        EngineUuid{ContextualUuidNativeV2(descriptor.charset_uuid)},
+        EngineUuid{ContextualUuidNativeV2(descriptor.collation_uuid)}};
+    auto selected_resources = SelectEngineTextResourcePairV1(context, sources);
+    auto& pair = selected_resources.pair;
     if (!pair.ok) { result.diagnostic = std::move(pair.diagnostic); return result; }
     cs = std::move(pair.charset);
     co = std::move(pair.collation);

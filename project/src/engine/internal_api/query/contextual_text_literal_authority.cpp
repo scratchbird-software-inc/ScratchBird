@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "query/contextual_text_literal_authority.hpp"
+#include "catalog/text_resource_selection.hpp"
 #include "query/contextual_text_descriptor_match.hpp"
 
 #include "api_diagnostics.hpp"
@@ -271,7 +272,10 @@ bool ResolveLiveComparisonResources(
 
   const EngineUuid charset_uuid{profile.charset_uuid};
   const EngineUuid collation_uuid{profile.collation_uuid};
-  const auto pair = LookupEngineTextResourcePair(context, charset_uuid, collation_uuid);
+  EngineTextResourceSelectionSourcesV1 sources;
+  sources.explicit_bound = EngineTextResourceSelectorsV1{charset_uuid, collation_uuid};
+  const auto selected = SelectEngineTextResourcePairV1(context, sources);
+  const auto& pair = selected.pair;
   if (!pair.ok) {
     if (diagnostic != nullptr) *diagnostic = pair.diagnostic;
     return false;

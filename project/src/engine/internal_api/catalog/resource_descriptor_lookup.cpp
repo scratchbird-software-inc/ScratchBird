@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "catalog/name_resolution_api.hpp"
 #include "catalog/resource_catalog_admission.hpp"
+#include "catalog/text_resource_selection.hpp"
 #include "api_diagnostics.hpp"
 #include "uuid.hpp"
 #include "../../../core/datatypes/canonical_utf8.hpp"
@@ -90,7 +91,7 @@ namespace {
 // Do not reopen between alias resolution and descriptor publication: identity,
 // epochs and compiled comparison tables must belong to one resource cohort.
 EngineResourceDescriptorLookupResult ProjectResourceDescriptor(
-    const EngineRequestContext& context,
+    const EngineUuid& database_uuid,
     const scratchbird::core::resources::ResourceSeedCatalogImage& image,
     const EngineUuid& resource_uuid,
     const std::string& resource_family) {
@@ -106,7 +107,7 @@ EngineResourceDescriptorLookupResult ProjectResourceDescriptor(
 
   EngineResolvedResourceDescriptor descriptor;
   descriptor.present = true;
-  descriptor.database_uuid = context.database_uuid;
+  descriptor.database_uuid = database_uuid;
   descriptor.resource_family = resource_family;
   descriptor.seed_pack_name = image.seed_pack_name;
   descriptor.seed_pack_version = image.seed_pack_version;
@@ -217,7 +218,7 @@ EngineResourceDescriptorLookupResult LookupEngineResourceDescriptorByUuid(
   }
   auto admission = OpenEngineResourceCatalog(context);
   if (!admission.ok()) { result.diagnostic = std::move(admission.diagnostic); return result; }
-  return ProjectResourceDescriptor(context, admission.state->resource_seed_catalog,
+  return ProjectResourceDescriptor(context.database_uuid, admission.state->resource_seed_catalog,
                                    resource_uuid, family);
 }
 
@@ -225,6 +226,43 @@ EngineTextResourcePairLookupResult LookupEngineTextResourcePair(
     const EngineRequestContext& context,
     const EngineUuid& charset_uuid,
     const EngineUuid& collation_uuid) {
+  EngineTextResourcePairLookupResult result;
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(charset_uuid)) {
+    result.diagnostic = MakeEngineApiDiagnostic("CATALOG.INVALID_INPUT",
+        charset_uuid.is_nil() ? "catalog.resource.uuid_required" : "catalog.resource.uuid_invalid",
+        "charset_uuid_required_or_malformed");
+    return result;
+  }
+  if (!collation_uuid.is_nil() &&
+      !scratchbird::core::uuid::IsEngineIdentityUuid(collation_uuid)) {
+    result.diagnostic = MakeEngineApiDiagnostic("CATALOG.INVALID_INPUT",
+        "catalog.resource.uuid_invalid", "collation_uuid_malformed");
+    return result;
+  }
+  const auto admission = WithEngineTextResourceCatalogV1(context,
+      [&](const EngineTextResourceReadScopeV1& scope) {
+        result = scope.LookupPair(charset_uuid, collation_uuid);
+      });
+  if (admission.error) result.diagnostic = admission;
+  return result;
+}
+
+EngineApiDiagnostic WithEngineTextResourceCatalogV1(
+    const EngineRequestContext& context,
+    const EngineTextResourceCatalogVisitorV1& visitor) {
+  if (!visitor)
+    return MakeEngineApiDiagnostic("CATALOG.INVALID_INPUT",
+        "catalog.resource.visitor_required", "synchronous_resource_visitor_required");
+  auto admission = OpenEngineResourceCatalog(context);
+  if (!admission.ok()) return std::move(admission.diagnostic);
+  const EngineTextResourceReadScopeV1 scope(context.database_uuid,
+      admission.state->resource_seed_catalog);
+  visitor(scope);
+  return std::move(admission.diagnostic);
+}
+
+EngineTextResourcePairLookupResult EngineTextResourceReadScopeV1::LookupPair(
+    const EngineUuid& charset_uuid, const EngineUuid& collation_uuid) const {
   EngineTextResourcePairLookupResult result;
   const auto fail = [&](const char* key, const char* detail) {
     result.diagnostic = MakeEngineApiDiagnostic("CATALOG.INVALID_INPUT", key, detail);
@@ -237,16 +275,7 @@ EngineTextResourcePairLookupResult LookupEngineTextResourcePair(
   if (!collation_uuid.is_nil() &&
       !scratchbird::core::uuid::IsEngineIdentityUuid(collation_uuid))
     return fail("catalog.resource.uuid_invalid", "collation_uuid_malformed");
-
-  // Never reopen between the two projections. Both descriptors (including the
-  // compiled collation tables) must come from the same admitted immutable image.
-  auto admission = OpenEngineResourceCatalog(context);
-  if (!admission.ok()) {
-    result.diagnostic = std::move(admission.diagnostic);
-    return result;
-  }
-  const auto& image = admission.state->resource_seed_catalog;
-  auto charset = ProjectResourceDescriptor(context, image, charset_uuid, "charset");
+  auto charset = ProjectResourceDescriptor(database_, image_, charset_uuid, "charset");
   if (!charset.ok) {
     result.diagnostic = std::move(charset.diagnostic);
     return result;
@@ -256,7 +285,7 @@ EngineTextResourcePairLookupResult LookupEngineTextResourcePair(
   if (selected_collation.is_nil())
     return fail("catalog.resource.default_collation_required",
                 "charset_default_collation_uuid_required");
-  auto collation = ProjectResourceDescriptor(context, image, selected_collation,
+  auto collation = ProjectResourceDescriptor(database_, image_, selected_collation,
                                               "collation");
   if (!collation.ok) {
     result.diagnostic = std::move(collation.diagnostic);
@@ -278,6 +307,47 @@ EngineTextResourcePairLookupResult LookupEngineTextResourcePair(
   result.collation = std::move(collation.resource_descriptor);
   result.ok = true;
   return result;
+}
+
+namespace {
+template<class ResolvePair>
+EngineTextResourceSelectionResultV1 SelectTextPair(
+    const EngineTextResourceSelectionSourcesV1& sources, ResolvePair&& resolve) {
+  EngineTextResourceSelectionResultV1 result;
+  using Source = EngineTextResourceSelectionSourceV1;
+  const std::pair<const std::optional<EngineTextResourceSelectorsV1>*, Source>
+      candidates[] = {
+          {&sources.explicit_bound, Source::explicit_bound},
+          {&sources.session_override, Source::session_override},
+          {&sources.current_schema, Source::current_schema},
+          {&sources.node_database, Source::node_database}};
+  for (const auto& [candidate, source] : candidates) {
+    if (!candidate->has_value()) continue;
+    const auto& selected = candidate->value();
+    result.pair = resolve(selected.charset_uuid, selected.collation_uuid);
+    if (result.pair.ok) result.source = source;
+    return result;
+  }
+  result.pair.diagnostic = MakeEngineApiDiagnostic(
+      "CATALOG.INVALID_INPUT", "catalog.resource.text_profile_required",
+      "explicit_session_schema_and_node_text_profiles_absent");
+  return result;
+}
+}  // namespace
+
+EngineTextResourceSelectionResultV1 SelectEngineTextResourcePairV1(
+    const EngineRequestContext& context,
+    const EngineTextResourceSelectionSourcesV1& sources) {
+  return SelectTextPair(sources, [&](const EngineUuid& cs, const EngineUuid& co) {
+    return LookupEngineTextResourcePair(context, cs, co);
+  });
+}
+
+EngineTextResourceSelectionResultV1 EngineTextResourceReadScopeV1::SelectPair(
+    const EngineTextResourceSelectionSourcesV1& sources) const {
+  return SelectTextPair(sources, [&](const EngineUuid& cs, const EngineUuid& co) {
+    return LookupPair(cs, co);
+  });
 }
 
 EngineResourceDescriptorLookupResult LookupEngineResourceDescriptorByName(
@@ -326,7 +396,7 @@ EngineResourceDescriptorLookupResult LookupEngineResourceDescriptorByName(
     }
     return result;
   }
-  return ProjectResourceDescriptor(context, image, identity, family);
+  return ProjectResourceDescriptor(context.database_uuid, image, identity, family);
 }
 
 EngineTimezoneSeedAuthorityLookupResult LookupEngineTimezoneSeedAuthority(
