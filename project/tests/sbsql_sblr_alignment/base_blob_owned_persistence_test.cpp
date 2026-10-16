@@ -5,6 +5,7 @@
 #include "disk_device.hpp"
 #include "datatype_blob_hash_candidate.hpp"
 #include "index_hash_page.hpp"
+#include "index_family_registry.hpp"
 #include <algorithm>
 #include <atomic>
 #include <cstdlib>

@@ -8,8 +8,8 @@ namespace scratchbird::core::datatypes {
 namespace {
 constexpr std::array<byte,8> kMagic{'S','B','B','L','H','K','0','3'};
 constexpr char kDomain[] = "ScratchBird/base.blob/profile-bound-equality/v3";
-struct Family { platform::Uuid uuid; u8 ordering; bool hash; bool included = false; };
-constexpr std::array<Family,16> kFamilies{{
+struct Compatibility { platform::Uuid uuid; u8 ordering; bool hash; bool included = false; };
+constexpr std::array<Compatibility,16> kCompatibilities{{
   {{{0x01,0xa1,0x09,0x5f,0xf2,0x05,0x7e,0xd9,0x91,0xf1,0xce,0x92,0x48,0x84,0x07,0x58}},0,false}, // aggregate_sketch
   {{{0x01,0xa1,0x09,0x5f,0xf2,0x05,0x7c,0xdb,0xa2,0x54,0x02,0x6a,0x09,0x4d,0x36,0xea}},0,false}, // bitmap
   {{{0x01,0xa1,0x09,0x5f,0xf2,0x05,0x76,0x8b,0xa1,0x9e,0x82,0x78,0xdb,0x41,0x6b,0xb7}},8,false}, // brin_like
@@ -72,7 +72,7 @@ void Identity(BlobHashCandidateFrameV3& h, const BlobValidatedProfileHandleV3& p
 
 BlobRawIndexPolicyResultV3 SelectBlobRawIndexPolicyNoAllocV3(
     const BlobValidatedProfileHandleV3& profile,
-    const platform::Uuid& family, u64 generation,
+    const platform::Uuid& index_compatibility_uuid, u64 index_compatibility_generation,
     u64 length, u64 budget, u64 target_limit) noexcept {
   BlobRawIndexPolicyResultV3 result;
   if (!ValidateBlobProfileHandleV3(profile).ok()) return result;
@@ -80,10 +80,10 @@ BlobRawIndexPolicyResultV3 SelectBlobRawIndexPolicyNoAllocV3(
     result.disposition=BlobRawIndexPolicyDispositionV3::input_invalid;
     return result;
   }
-  result.disposition=BlobRawIndexPolicyDispositionV3::family_binding_invalid;
-  if (generation!=1) return result;
-  for (const auto& row:kFamilies) {
-    if (row.uuid.bytes!=family.bytes) continue;
+  result.disposition=BlobRawIndexPolicyDispositionV3::compatibility_binding_invalid;
+  if (index_compatibility_generation!=1) return result;
+  for (const auto& row:kCompatibilities) {
+    if (row.uuid.bytes!=index_compatibility_uuid.bytes) continue;
     if (row.hash) {
       result.disposition=BlobRawIndexPolicyDispositionV3::hash_candidate_requires_recheck;
       return result;

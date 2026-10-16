@@ -132,13 +132,47 @@ void BlobHashCandidateMalformed() {
 }
 void BlobRawIndexFamilyPolicy() {
   Fixture f;
-  unsigned hashes=0,refusals=0;
-  for (const auto& row:kBlobIndexFamilyGolden) {
+  // Warm the actual immutable family registry before the allocation barrier.
+  // These are engine-wide family identities, never BLOB compatibility rows.
+  const auto& families=scratchbird::core::index::BuiltinIndexFamilyDescriptors();
+  Check(!families.empty(),"global family registry is empty");
+  for (const auto& family:families) {
+    for (const auto& compatibility:kBlobIndexCompatibilityGolden)
+      Check(family.family_uuid.value.bytes!=compatibility.index_compatibility_uuid.bytes,
+            "global family identity aliases a BLOB datatype compatibility identity");
     allocation_fault_triggered=false; allocation_budget=0;
-    const auto result=dt::SelectBlobRawIndexPolicyNoAllocV3(f.profile,row.uuid,1,73,4096,8192);
+    const auto refused=dt::SelectBlobRawIndexPolicyNoAllocV3(
+        f.profile,family.family_uuid.value,1,0,0,0);
+    allocation_budget=-1;
+    Check(!allocation_fault_triggered &&
+        refused.disposition==dt::BlobRawIndexPolicyDispositionV3::compatibility_binding_invalid &&
+        refused.diagnostic_code.empty() && refused.diagnostic_uuid.is_nil(),
+        "global family UUID was treated as BLOB compatibility authority");
+  }
+  // Independent registered DATE/TIME/TIMESTAMP/INTERVAL HASH compatibility
+  // rows must not select the BLOB profile, even though all classify as HASH.
+  constexpr scratchbird::core::platform::Uuid foreign_compatibilities[]{
+    {{0x01,0xa1,0x00,0x8e,0xc1,0x00,0x70,0x0b,0x80,0,0,0,0,0,0,0x0b}},
+    {{0x01,0xa1,0x03,0x2b,0x9f,0x51,0x72,0x29,0x97,0x7b,0x45,0x73,0x0f,0x3d,0xff,0x52}},
+    {{0x01,0xa1,0x04,0xfb,0x3b,0xb7,0x77,0x16,0x93,0x9b,0x99,0x85,0x45,0xbd,0xbd,0x6e}},
+    {{0x01,0xa1,0x06,0x64,0x77,0xd0,0x73,0xf4,0xa0,0xdd,0xb6,0x87,0x2f,0xd4,0x1a,0xc4}},
+    {},
+  };
+  for (const auto& id:foreign_compatibilities) {
+    allocation_fault_triggered=false; allocation_budget=0;
+    const auto refused=dt::SelectBlobRawIndexPolicyNoAllocV3(f.profile,id,1,0,0,0);
+    allocation_budget=-1;
+    Check(!allocation_fault_triggered &&
+        refused.disposition==dt::BlobRawIndexPolicyDispositionV3::compatibility_binding_invalid &&
+        refused.diagnostic_code.empty(),"foreign or nil compatibility UUID selected BLOB policy");
+  }
+  unsigned hashes=0,refusals=0;
+  for (const auto& row:kBlobIndexCompatibilityGolden) {
+    allocation_fault_triggered=false; allocation_budget=0;
+    const auto result=dt::SelectBlobRawIndexPolicyNoAllocV3(f.profile,row.index_compatibility_uuid,1,73,4096,8192);
     allocation_budget=-1;
     Check(!allocation_fault_triggered && result.diagnostic_code==row.diagnostic,
-          "binary family policy differs from exact specification disposition");
+          "binary compatibility policy differs from exact specification disposition");
     if (row.diagnostic.empty()) {
       ++hashes;
       Check(result.disposition==dt::BlobRawIndexPolicyDispositionV3::hash_candidate_requires_recheck &&
@@ -163,20 +197,20 @@ void BlobRawIndexFamilyPolicy() {
           "nonordering refusal fabricated ordering or lost descriptor vector");
     }
     for (auto generation:{std::uint64_t{0},std::uint64_t{2},UINT64_MAX})
-      Check(dt::SelectBlobRawIndexPolicyNoAllocV3(f.profile,row.uuid,generation,0,0,0).disposition==
-          dt::BlobRawIndexPolicyDispositionV3::family_binding_invalid,"wrong family generation admitted");
+      Check(dt::SelectBlobRawIndexPolicyNoAllocV3(f.profile,row.index_compatibility_uuid,generation,0,0,0).disposition==
+          dt::BlobRawIndexPolicyDispositionV3::compatibility_binding_invalid,"wrong datatype/index compatibility generation admitted");
     for (std::size_t i=0;i<16;++i) {
-      auto wrong=row.uuid; wrong.bytes[i]^=0x80;
+      auto wrong=row.index_compatibility_uuid; wrong.bytes[i]^=0x80;
       const auto refused=dt::SelectBlobRawIndexPolicyNoAllocV3(f.profile,wrong,1,0,0,0);
-      Check(refused.disposition==dt::BlobRawIndexPolicyDispositionV3::family_binding_invalid &&
-          refused.diagnostic_code.empty(),"substituted family identity fabricated policy authority");
+      Check(refused.disposition==dt::BlobRawIndexPolicyDispositionV3::compatibility_binding_invalid &&
+          refused.diagnostic_code.empty(),"substituted compatibility identity fabricated policy authority");
     }
   }
   Check(hashes==1 && refusals==15,"raw BLOB family policy is not hash-only");
   auto bad=f.profile; bad.policy_bindings[static_cast<std::size_t>(dt::BlobPolicyKindV3::index)].generation++;
-  Check(dt::SelectBlobRawIndexPolicyNoAllocV3(bad,kBlobIndexFamilyGolden[3].uuid,1,0,0,0).disposition==
+  Check(dt::SelectBlobRawIndexPolicyNoAllocV3(bad,kBlobIndexCompatibilityGolden[3].index_compatibility_uuid,1,0,0,0).disposition==
       dt::BlobRawIndexPolicyDispositionV3::profile_invalid,"unbound policy emitted a B-tree refusal");
-  Check(dt::SelectBlobRawIndexPolicyNoAllocV3(f.profile,kBlobIndexFamilyGolden[10].uuid,1,
+  Check(dt::SelectBlobRawIndexPolicyNoAllocV3(f.profile,kBlobIndexCompatibilityGolden[10].index_compatibility_uuid,1,
       dt::kBlobMaximumLogicalBytesV3+1,0,0).disposition==dt::BlobRawIndexPolicyDispositionV3::input_invalid,
       "impossible policy input bound admitted");
   Clean(f);

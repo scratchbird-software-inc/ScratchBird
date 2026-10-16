@@ -1,12 +1,13 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
-// Exact binary family bindings from Core base-blob-index-projection-registry.csv.
-struct BlobIndexFamilyGolden {
-  scratchbird::core::platform::Uuid uuid;
+// Exact datatype/index compatibility bindings, NOT global family identities,
+// from Core base-blob-index-projection-registry.csv. Labels are comments only.
+struct BlobIndexCompatibilityGolden {
+  scratchbird::core::platform::Uuid index_compatibility_uuid;
   std::string_view diagnostic;
   unsigned ordering;
 };
-constexpr std::array<BlobIndexFamilyGolden,16> kBlobIndexFamilyGolden{{
+constexpr std::array<BlobIndexCompatibilityGolden,16> kBlobIndexCompatibilityGolden{{
   {{{0x01,0xa1,0x09,0x5f,0xf2,0x05,0x7e,0xd9,0x91,0xf1,0xce,0x92,0x48,0x84,0x07,0x58}},"CINL.LOB.DESCRIPTOR_INVALID",0}, // aggregate_sketch
   {{{0x01,0xa1,0x09,0x5f,0xf2,0x05,0x7c,0xdb,0xa2,0x54,0x02,0x6a,0x09,0x4d,0x36,0xea}},"CINL.LOB.DESCRIPTOR_INVALID",0}, // bitmap
   {{{0x01,0xa1,0x09,0x5f,0xf2,0x05,0x76,0x8b,0xa1,0x9e,0x82,0x78,0xdb,0x41,0x6b,0xb7}},"BLOB.ORDERING_REFUSED",8}, // brin_like

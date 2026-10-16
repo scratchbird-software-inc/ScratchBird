@@ -13,7 +13,7 @@ enum class BlobRawIndexPolicyDispositionV3 : u8 {
   hash_candidate_requires_recheck = 0,
   refused,
   profile_invalid,
-  family_binding_invalid,
+  compatibility_binding_invalid,
   input_invalid,
 };
 struct BlobRawIndexPolicyResultV3 {
@@ -28,12 +28,15 @@ struct BlobRawIndexPolicyResultV3 {
   u64 logical_length_u64 = 0, budget_octets_u64 = 0, target_limit_u64 = 0;
 };
 
-// Actual binary registry identity and generation, never a caller family label.
+// Exact datatype/index compatibility identity from the BLOB registry, NOT the
+// engine's global index-family identity. Neither a family UUID nor a label can
+// select a datatype policy. The actual engine index owner must independently
+// resolve/bind the global family and this compatibility row before effects.
 // A hash result is conditional policy admission, NOT permission to read/write
 // or a claim that an index exists. All fifteen other raw-key families refuse.
 BlobRawIndexPolicyResultV3 SelectBlobRawIndexPolicyNoAllocV3(
     const BlobValidatedProfileHandleV3& profile,
-    const platform::Uuid& index_family_uuid, u64 index_family_generation,
+    const platform::Uuid& index_compatibility_uuid, u64 index_compatibility_generation,
     u64 logical_length, u64 budget_octets, u64 target_limit) noexcept;
 
 // Fixed-workspace representation machinery ONLY. A digest supplied by a caller,
