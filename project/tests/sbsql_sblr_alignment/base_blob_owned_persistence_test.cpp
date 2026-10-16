@@ -53,6 +53,7 @@ namespace {
 #include "base_blob_component_vectors.inc"
 #include "base_blob_hash_candidate_vectors.inc"
 #include "base_blob_index_family_vectors.inc"
+#include "native_index_family_identity_vectors.inc"
 std::vector<byte> Golden(unsigned index) {
   const auto hex = kBlobComponentGoldenVectors[index].component_hex;
   const auto digit = [](char c) -> byte {

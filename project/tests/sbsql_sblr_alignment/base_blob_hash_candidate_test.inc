@@ -136,6 +136,13 @@ void BlobRawIndexFamilyPolicy() {
   // These are engine-wide family identities, never BLOB compatibility rows.
   const auto& families=scratchbird::core::index::BuiltinIndexFamilyDescriptors();
   Check(!families.empty(),"global family registry is empty");
+  Check(families.size()==kNativeFamilyIdentityGolden.size(),"unregistered or missing global-family identity");
+  for(const auto& expected:kNativeFamilyIdentityGolden) {
+    const auto* actual=scratchbird::core::index::FindBuiltinIndexFamily(expected.family);
+    Check(actual&&actual->family_uuid.value.bytes==expected.uuid.bytes&&actual->family_generation==1&&
+        scratchbird::core::index::FindBuiltinIndexFamilyByIdentity(expected.uuid,1)==actual,
+        "global-family identity drifted from its frozen binary registry");
+  }
   for (const auto& family:families) {
     Check(family.family_generation==1 &&
         scratchbird::core::index::FindBuiltinIndexFamilyByIdentity(
