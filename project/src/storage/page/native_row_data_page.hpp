@@ -31,7 +31,14 @@ struct NativeRowDataReference {
 // ownership, catalog/security, allocation, overflow and publication are separate.
 NativeRowDataResult EncodeNativeRowDataPage(const NativeRowDataPage&) noexcept;
 NativeRowDataResult DecodeNativeRowDataPage(const std::vector<byte>&) noexcept;
+NativeRowDataResult EncodeNativeRowDataPage(const NativeRowDataPage&,
+    const RowDataProfileReceiver&) noexcept;
+NativeRowDataResult DecodeNativeRowDataPage(const std::vector<byte>&,
+    const RowDataProfileReceiver&) noexcept;
 // Borrows and guards one already-owned filespace; never opens/closes/writes it.
 NativeRowDataResult ReadNativeRowDataPageFromOpenDevice(disk::FileDevice&,
     const core::platform::Uuid& database_uuid,const NativeRowDataReference&) noexcept;
+NativeRowDataResult ReadNativeRowDataPageFromOpenDevice(disk::FileDevice&,
+    const core::platform::Uuid& database_uuid,const NativeRowDataReference&,
+    const RowDataProfileReceiver&) noexcept;
 }  // namespace scratchbird::storage::page

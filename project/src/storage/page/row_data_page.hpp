@@ -30,6 +30,7 @@ struct TimeValidatedProfileHandleV3;
 struct TimestampValidatedProfileHandleV3;
 struct IntervalValidatedProfileHandleV3;
 struct BitStringDescriptorProfileV3;
+struct BlobValidatedProfileHandleV3;
 }
 
 namespace scratchbird::storage::page {
@@ -59,16 +60,25 @@ struct RowDataProfileColumnBinding {
   std::shared_ptr<const core::datatypes::TimestampValidatedProfileHandleV3> timestamp;
   std::shared_ptr<const core::datatypes::IntervalValidatedProfileHandleV3> interval;
   std::shared_ptr<const core::datatypes::BitStringDescriptorProfileV3> bit_string;
+  std::shared_ptr<const core::datatypes::BlobValidatedProfileHandleV3> blob;
+  // BLOB-only native catalog occurrence binding, stored once per page.
+  core::platform::Uuid column_uuid;
+  u64 column_generation = 0;
 };
 struct RowDataProfileReceiver {
   TypedUuid relation_uuid;
   std::span<const RowDataProfileColumnBinding> columns;
+  // Exact catalog binding for native BLOB pages; never inferred from payload.
+  u64 relation_generation = 0;
 };
 // Lifetime owner for operations which retain work beyond the submitting call.
 struct RowDataProfileSchema {
   TypedUuid relation_uuid;
   std::vector<RowDataProfileColumnBinding> columns;
-  RowDataProfileReceiver receiver() const noexcept { return {relation_uuid, columns}; }
+  u64 relation_generation = 0;
+  RowDataProfileReceiver receiver() const noexcept {
+    return {relation_uuid, columns, relation_generation};
+  }
 };
 // Source compatibility for existing temporal-only consumers. These are the
 // same profile-bearing receiver, not a second encoding or admission path.

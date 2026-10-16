@@ -14,6 +14,7 @@
 #include "datatype_timestamp.hpp"
 #include "datatype_interval.hpp"
 #include "datatype_bit_string.hpp"
+#include "datatype_blob.hpp"
 
 #include <algorithm>
 #include <array>
@@ -47,6 +48,9 @@ using scratchbird::storage::disk::kPageHeaderSerializedBytes;
 
 inline constexpr byte kRowDataMagic[8] = {'S', 'B', 'R', 'O', 'W', '0', '0', '4'};
 inline constexpr byte kExternalRowDataMagic[8] = {'S', 'B', 'R', 'O', 'W', '0', '0', '5'};
+inline constexpr byte kBlobRowDataMagic[8] = {'S', 'B', 'R', 'O', 'W', '0', '0', '6'};
+inline constexpr u32 kBlobBodyHeaderBytes = 112;
+inline constexpr u32 kBlobColumnBindingBytes = 32;
 inline constexpr byte kRowDataMagicPrefix[5] = {'S', 'B', 'R', 'O', 'W'};
 inline constexpr u32 kOffsetMagic = 0;
 inline constexpr u32 kOffsetHeaderBytes = 8;
@@ -108,6 +112,40 @@ RowDataPageResult RowPageError(std::string diagnostic_code,
 namespace dt = scratchbird::core::datatypes;
 bool IsTypedEngineIdentity(const TypedUuid& uuid, UuidKind expected_kind);
 
+bool HasBlobProfile(const RowDataProfileReceiver* receiver) {
+  return receiver && std::any_of(receiver->columns.begin(), receiver->columns.end(),
+      [](const auto& column) { return bool(column.blob); });
+}
+
+RowDataPageResult BlobStructureError(dt::BlobValidationResultV3 fact) {
+  const char* code = "CINL.LOB.DESCRIPTOR_INVALID";
+  switch (fact.diagnostic) {
+    case dt::BlobStructuralDiagnosticV3::state_invalid: code = "BLOB.STATE_INVALID"; break;
+    case dt::BlobStructuralDiagnosticV3::length_exceeded: code = "BLOB.LENGTH_EXCEEDED"; break;
+    case dt::BlobStructuralDiagnosticV3::canonical_encoding_invalid: code = "BLOB.CANONICAL_ENCODING_INVALID"; break;
+    case dt::BlobStructuralDiagnosticV3::resource_budget_exceeded: code = "RESOURCE.BUDGET_EXCEEDED"; break;
+    default: break;
+  }
+  auto result = RowPageError(code, "storage.row_data_page.blob_structure_refused");
+  result.status = fact.status;
+  result.diagnostic.status = fact.status;
+  return result;
+}
+
+// Stored representation only. The datatype's materialized-view validator
+// deliberately refuses nonempty raw spans as live values. Do not weaken it or
+// manufacture lifetime tickets here. The actual engine owner admits input
+// lifetime before staging; decoding these bytes grants no execution access.
+RowDataPageResult ValidateStoredBlobBytes(u64 bytes, bool sql_null, bool nullable) {
+  if (sql_null && (bytes || !nullable))
+    return RowPageError("BLOB.STATE_INVALID", "storage.row_data_page.blob_null_invalid");
+  if (bytes > dt::kBlobMaximumLogicalBytesV3)
+    return RowPageError("BLOB.LENGTH_EXCEEDED", "storage.row_data_page.blob_length_invalid");
+  RowDataPageResult result;
+  result.status = RowPageOkStatus();
+  return result;
+}
+
 template<class Fact>
 RowDataPageResult ProfileError(const Fact& fact) {
   auto result = RowPageError(std::string(fact.diagnostic_code),
@@ -129,17 +167,27 @@ RowDataPageResult ProfileError(const DiagnosticRecord& fact) {
 
 RowDataPageResult ValidateProfileReceiver(const RowDataProfileReceiver& receiver,
                                          const TypedUuid& relation) {
-  const auto code = std::any_of(receiver.columns.begin(), receiver.columns.end(),
+  if (receiver.columns.size() > std::numeric_limits<u16>::max())
+    return RowPageError("CATALOG.INVALID_INPUT", "storage.row_data_page.profile_column_count_invalid");
+  const bool blob_format = HasBlobProfile(&receiver);
+  const auto code = blob_format ? "CINL.LOB.DESCRIPTOR_INVALID" : std::any_of(receiver.columns.begin(), receiver.columns.end(),
       [](const auto& column){ return bool(column.bit_string); })
       ? "CTB.BIT.DESCRIPTOR_INVALID" : "CTI.TEMPORAL.DESCRIPTOR_INVALID";
   if (!IsTypedEngineIdentity(receiver.relation_uuid, UuidKind::object) ||
       receiver.relation_uuid.value != relation.value || receiver.relation_uuid.kind != relation.kind)
     return RowPageError(code, "storage.row_data_page.profile_relation_mismatch");
+  if (blob_format && !receiver.relation_generation)
+    return RowPageError(code, "storage.row_data_page.profile_generation_missing");
+  // One bounded allocation and O(n log n) binary-UUID duplicate admission,
+  // rather than quadratic pointer/UUID scans for wide column profiles.
+  std::vector<scratchbird::core::platform::Uuid> blob_ids;
+  if (blob_format) blob_ids.reserve(std::count_if(receiver.columns.begin(), receiver.columns.end(),
+      [](const auto& column) { return bool(column.blob); }));
   bool first = true;
   u16 previous = 0;
   for (const auto& column : receiver.columns) {
-    if ((!first && column.column_ordinal <= previous) ||
-        unsigned(bool(column.date)) + unsigned(bool(column.time)) + unsigned(bool(column.timestamp)) + unsigned(bool(column.interval)) + unsigned(bool(column.bit_string)) != 1)
+    if ((blob_format && !column.column_ordinal) || (!first && column.column_ordinal <= previous) ||
+        unsigned(bool(column.date)) + unsigned(bool(column.time)) + unsigned(bool(column.timestamp)) + unsigned(bool(column.interval)) + unsigned(bool(column.bit_string)) + unsigned(bool(column.blob)) != 1)
       return RowPageError(code, "storage.row_data_page.profile_schema_invalid");
     if (column.date) {
       const auto valid = dt::ValidateDateProfileHandleV3(*column.date);
@@ -153,13 +201,23 @@ RowDataPageResult ValidateProfileReceiver(const RowDataProfileReceiver& receiver
     } else if (column.interval) {
       const auto valid = dt::ValidateIntervalProfileHandleV3(*column.interval);
       if (!valid.ok()) return ProfileError(valid.diagnostic);
-    } else {
+    } else if (column.bit_string) {
       const auto valid = dt::ValidateBitStringDescriptorProfileNoAllocV3(*column.bit_string);
       if (!valid.ok()) return ProfileError(valid.diagnostic);
+    } else {
+      if (!IsEngineIdentityUuid(column.column_uuid) || !column.column_generation ||
+          column.column_uuid == relation.value)
+        return RowPageError(code, "storage.row_data_page.blob_column_identity_invalid");
+      blob_ids.push_back(column.column_uuid);
+      const auto valid = dt::ValidateBlobProfileHandleV3(*column.blob);
+      if (!valid.ok()) return BlobStructureError(valid);
     }
     first = false;
     previous = column.column_ordinal;
   }
+  std::sort(blob_ids.begin(), blob_ids.end());
+  if (std::adjacent_find(blob_ids.begin(), blob_ids.end()) != blob_ids.end())
+    return RowPageError(code, "storage.row_data_page.blob_column_identity_duplicate");
   RowDataPageResult result;
   result.status = RowPageOkStatus();
   return result;
@@ -511,7 +569,13 @@ static RowDataPageResult BuildRowDataPageBodyImpl(RowDataPageBody body, u32 page
 
   std::vector<std::vector<byte>> encoded_cells;
   bool external_cells = false;
-  u64 body_bytes = kRowDataPageBodyHeaderBytes;
+  const bool blob_format = HasBlobProfile(receiver);
+  const auto blob_columns = blob_format ? std::count_if(receiver->columns.begin(), receiver->columns.end(),
+      [](const auto& column) { return bool(column.blob); }) : 0;
+  if (blob_columns > std::numeric_limits<u16>::max())
+    return RowPageError("CINL.LOB.DESCRIPTOR_INVALID", "storage.row_data_page.blob_binding_count_invalid");
+  const u32 body_header_bytes = blob_format ? kBlobBodyHeaderBytes + kBlobColumnBindingBytes * blob_columns : kRowDataPageBodyHeaderBytes;
+  u64 body_bytes = body_header_bytes;
   std::set<scratchbird::core::platform::Uuid> version_ids;
   std::set<std::pair<scratchbird::core::platform::Uuid, u64>> row_sequences;
   for (const RowDataRecord& row : body_with_ordinals.rows) {
@@ -537,14 +601,28 @@ static RowDataPageResult BuildRowDataPageBodyImpl(RowDataPageBody body, u32 page
       return RowPageError("CATALOG.INVALID_INPUT", "storage.row_data_page.cell_count_invalid");
     }
     body_bytes += kRowHeaderBytes;
+    u16 previous_column = 0;
     for (const RowDataCell& cell : row.cells) {
+      if (blob_format && cell.column_ordinal <= previous_column)
+        return RowPageError("CINL.LOB.DESCRIPTOR_INVALID", "storage.row_data_page.blob_column_order");
+      previous_column = cell.column_ordinal;
       scratchbird::core::datatypes::DatatypeBinaryResult encoded;
-      if (const auto* binding = ProfileColumn(receiver, cell.column_ordinal)) {
+      const auto* binding = ProfileColumn(receiver, cell.column_ordinal);
+      if (binding && binding->blob && !cell.external_value) {
+        if (cell.value.type_id != dt::CanonicalTypeId::blob || cell.value.payload_is_toast_reference)
+          return RowPageError("CINL.LOB.DESCRIPTOR_INVALID", "storage.row_data_page.blob_type_mismatch");
+        auto valid = ValidateStoredBlobBytes(cell.value.payload.size(), cell.value.is_null, binding->null_allowed);
+        if (!valid.ok()) return valid;
+        encoded.status = RowPageOkStatus();
+        encoded.encoded = cell.value.payload;
+      } else if (binding && !binding->blob) {
         auto temporal = EncodeProfileCell(cell, *binding);
         if (!temporal.ok()) return temporal;
         encoded.status = temporal.status;
         encoded.encoded = std::move(temporal.serialized);
       } else if (cell.external_value) {
+        if (binding && binding->blob && cell.external_value->logical_bytes > dt::kBlobMaximumLogicalBytesV3)
+          return RowPageError("BLOB.LENGTH_EXCEEDED", "storage.row_data_page.blob_external_length");
         const auto locator = EncodeRowExternalValueLocator(*cell.external_value);
         if (!locator || cell.value.type_id != scratchbird::core::datatypes::CanonicalTypeId::unknown ||
             cell.value.is_null || cell.value.payload_is_toast_reference || !cell.value.payload.empty())
@@ -591,8 +669,19 @@ static RowDataPageResult BuildRowDataPageBodyImpl(RowDataPageBody body, u32 page
   result.body = body_with_ordinals;
   result.serialized.assign(page_size - kPageHeaderSerializedBytes, 0);
   std::memcpy(result.serialized.data() + kOffsetMagic,
-              external_cells ? kExternalRowDataMagic : kRowDataMagic, sizeof(kRowDataMagic));
-  StoreLittle32(result.serialized.data() + kOffsetHeaderBytes, kRowDataPageBodyHeaderBytes);
+              blob_format ? kBlobRowDataMagic : external_cells ? kExternalRowDataMagic : kRowDataMagic, sizeof(kRowDataMagic));
+  StoreLittle32(result.serialized.data() + kOffsetHeaderBytes, body_header_bytes);
+  if (blob_format) {
+    StoreLittle64(result.serialized.data() + 96, receiver->relation_generation);
+    StoreLittle32(result.serialized.data() + 104, blob_columns);
+    u32 binding_offset = kBlobBodyHeaderBytes;
+    for (const auto& column : receiver->columns) if (column.blob) {
+      StoreLittle16(result.serialized.data() + binding_offset, column.column_ordinal);
+      std::copy(column.column_uuid.bytes.begin(), column.column_uuid.bytes.end(), result.serialized.begin() + binding_offset + 8);
+      StoreLittle64(result.serialized.data() + binding_offset + 24, column.column_generation);
+      binding_offset += kBlobColumnBindingBytes;
+    }
+  }
   StoreLittle32(result.serialized.data() + kOffsetRowCount, static_cast<u32>(body_with_ordinals.rows.size()));
   StoreLittle64(result.serialized.data() + kOffsetNextPageNumber, body_with_ordinals.next_page_number);
   std::copy(body_with_ordinals.relation_uuid.value.bytes.begin(),
@@ -611,7 +700,7 @@ static RowDataPageResult BuildRowDataPageBodyImpl(RowDataPageBody body, u32 page
   StoreLittle32(result.serialized.data() + kOffsetFreeSpaceBytes,
                 static_cast<u32>(result.serialized.size() - body_bytes));
 
-  u32 offset = kRowDataPageBodyHeaderBytes;
+  u32 offset = body_header_bytes;
   std::size_t cell_index = 0;
   std::vector<RowDataSlot> slots;
   slots.reserve(body_with_ordinals.rows.size());
@@ -644,7 +733,9 @@ static RowDataPageResult BuildRowDataPageBodyImpl(RowDataPageBody body, u32 page
     for (const RowDataCell& cell : row.cells) {
       const std::vector<byte>& encoded = encoded_cells[cell_index++];
       StoreLittle16(result.serialized.data() + offset, cell.column_ordinal);
-      StoreLittle16(result.serialized.data() + offset + 2, cell.external_value ? 1 : 0);
+      const auto* binding = ProfileColumn(receiver, cell.column_ordinal);
+      StoreLittle16(result.serialized.data() + offset + 2, cell.external_value ? 1 :
+          binding && binding->blob ? (cell.value.is_null ? 3 : 2) : 0);
       StoreLittle32(result.serialized.data() + offset + 4, static_cast<u32>(encoded.size()));
       StoreLittle64(result.serialized.data() + offset + 8, Fnv1a64(encoded.data(), encoded.size()));
       offset += kCellHeaderBytes;
@@ -839,8 +930,12 @@ ReadResult<Borrowed> ParseRowDataPageBodyImpl(
   }
   const bool external_format =
       std::memcmp(serialized.data() + kOffsetMagic, kExternalRowDataMagic, sizeof(kExternalRowDataMagic)) == 0;
-  if ((external_format && binary_context != nullptr) ||
-      (!external_format && std::memcmp(serialized.data() + kOffsetMagic, kRowDataMagic, sizeof(kRowDataMagic)) != 0)) {
+  const bool blob_format =
+      std::memcmp(serialized.data() + kOffsetMagic, kBlobRowDataMagic, sizeof(kBlobRowDataMagic)) == 0;
+  if (((external_format || blob_format) && binary_context != nullptr) ||
+      (blob_format && (!HasBlobProfile(receiver) || Borrowed)) ||
+      (!blob_format && HasBlobProfile(receiver)) ||
+      (!external_format && !blob_format && std::memcmp(serialized.data() + kOffsetMagic, kRowDataMagic, sizeof(kRowDataMagic)) != 0)) {
     if (HasRowDataMagicPrefix(serialized)) {
       return RowReadError<Borrowed>("SB-ROW-DATA-PAGE-FORMAT-UNSUPPORTED",
                           "storage.row_data_page.format_unsupported");
@@ -849,20 +944,29 @@ ReadResult<Borrowed> ParseRowDataPageBodyImpl(
                         "storage.row_data_page.magic_invalid");
   }
   const u32 row_header_bytes = kRowHeaderBytes;
+  if (blob_format && serialized.size() < kBlobBodyHeaderBytes)
+    return RowReadError<Borrowed>("SB-ROW-DATA-PAGE-BODY-SHORT", "storage.row_data_page.body_short");
+  const u32 blob_columns = blob_format ? LoadLittle32(serialized.data() + 104) : 0;
+  if (blob_columns > std::numeric_limits<u16>::max())
+    return RowReadError<Borrowed>("CINL.LOB.DESCRIPTOR_INVALID", "storage.row_data_page.blob_binding_count_invalid");
+  const u32 expected_header_bytes = blob_format ? kBlobBodyHeaderBytes + kBlobColumnBindingBytes * blob_columns : kRowDataPageBodyHeaderBytes;
   const u32 header_bytes = LoadLittle32(serialized.data() + kOffsetHeaderBytes);
   const u32 row_count = LoadLittle32(serialized.data() + kOffsetRowCount);
   const u32 body_bytes = LoadLittle32(serialized.data() + kOffsetBodyBytes);
   const u32 slot_directory_offset =
       LoadLittle32(serialized.data() + kOffsetSlotDirectoryOffset);
   const u32 free_space_bytes = LoadLittle32(serialized.data() + kOffsetFreeSpaceBytes);
-  if (header_bytes != kRowDataPageBodyHeaderBytes || body_bytes > serialized.size() ||
+  if (header_bytes != expected_header_bytes || serialized.size() < expected_header_bytes || body_bytes > serialized.size() ||
       serialized.size() > std::numeric_limits<u32>::max() ||
       LoadLittle32(serialized.data() + 20) != 0) {
     return RowReadError<Borrowed>("SB-ROW-DATA-PAGE-BODY-SIZE-INVALID",
                         "storage.row_data_page.body_size_invalid");
   }
+  if (blob_format && (LoadLittle64(serialized.data() + 96) != receiver->relation_generation ||
+                     LoadLittle32(serialized.data() + 108) != 0))
+    return RowReadError<Borrowed>("CINL.LOB.DESCRIPTOR_INVALID", "storage.row_data_page.profile_generation_mismatch");
   const u64 slot_bytes = static_cast<u64>(row_count) * kSlotEntryBytes;
-  if (slot_directory_offset < kRowDataPageBodyHeaderBytes ||
+  if (slot_directory_offset < expected_header_bytes ||
       static_cast<u64>(slot_directory_offset) + slot_bytes != body_bytes ||
       free_space_bytes != serialized.size() - body_bytes) {
     return RowReadError<Borrowed>("SB-ROW-DATA-PAGE-SLOT-DIRECTORY-INVALID",
@@ -904,10 +1008,25 @@ ReadResult<Borrowed> ParseRowDataPageBodyImpl(
     if (receiver != nullptr) {
       auto valid = ValidateProfileReceiver(*receiver, result.body.relation_uuid);
       if (!valid.ok()) return valid;
+      if (blob_format) {
+        u32 binding_offset = kBlobBodyHeaderBytes;
+        for (const auto& column : receiver->columns) if (column.blob) {
+          if (binding_offset >= expected_header_bytes ||
+              LoadLittle16(serialized.data() + binding_offset) != column.column_ordinal ||
+              !std::all_of(serialized.begin() + binding_offset + 2, serialized.begin() + binding_offset + 8,
+                  [](byte b) { return b == 0; }) ||
+              !std::equal(column.column_uuid.bytes.begin(), column.column_uuid.bytes.end(), serialized.begin() + binding_offset + 8) ||
+              LoadLittle64(serialized.data() + binding_offset + 24) != column.column_generation)
+            return RowPageError("CINL.LOB.DESCRIPTOR_INVALID", "storage.row_data_page.blob_column_binding_mismatch");
+          binding_offset += kBlobColumnBindingBytes;
+        }
+        if (binding_offset != expected_header_bytes)
+          return RowPageError("CINL.LOB.DESCRIPTOR_INVALID", "storage.row_data_page.blob_column_binding_mismatch");
+      }
     }
   }
   RowReadState<Borrowed> state(workspace);
-  u32 offset = kRowDataPageBodyHeaderBytes;
+  u32 offset = expected_header_bytes;
   state.Prepare(row_count);
   for (u32 row_index = 0; row_index < row_count; ++row_index) {
     if (offset > slot_directory_offset || row_header_bytes > slot_directory_offset - offset) {
@@ -962,6 +1081,7 @@ ReadResult<Borrowed> ParseRowDataPageBodyImpl(
     }
     offset += row_header_bytes;
 
+    u16 previous_column = 0;
     for (u16 cell_index = 0; cell_index < cell_count; ++cell_index) {
       if (offset > row_end || kCellHeaderBytes > row_end - offset) {
         return RowReadError<Borrowed>("SB-ROW-DATA-PAGE-CELL-SHORT",
@@ -970,10 +1090,17 @@ ReadResult<Borrowed> ParseRowDataPageBodyImpl(
       }
       typename RowReadState<Borrowed>::Cell cell;
       cell.column_ordinal = LoadLittle16(serialized.data() + offset);
+      if (blob_format && cell.column_ordinal <= previous_column)
+        return RowReadError<Borrowed>("CINL.LOB.DESCRIPTOR_INVALID", "storage.row_data_page.blob_column_order");
+      previous_column = cell.column_ordinal;
       const auto cell_kind = LoadLittle16(serialized.data() + offset + 2);
-      if (cell_kind > 1 || (cell_kind == 1 && !external_format)) {
+      if (cell_kind > (blob_format ? 3 : 1) || (cell_kind == 1 && !external_format && !blob_format)) {
         return RowReadError<Borrowed>("CATALOG.INVALID_INPUT", "storage.row_data_page.cell_reserved_invalid");
       }
+      const auto* binding = ProfileColumn(receiver, cell.column_ordinal);
+      if ((cell_kind >= 2 && (!binding || !binding->blob)) ||
+          (cell_kind == 0 && binding && binding->blob))
+        return RowReadError<Borrowed>("CINL.LOB.DESCRIPTOR_INVALID", "storage.row_data_page.blob_kind_mismatch");
       const u32 payload_bytes = LoadLittle32(serialized.data() + offset + 4);
       const u64 payload_checksum = LoadLittle64(serialized.data() + offset + 8);
       offset += kCellHeaderBytes;
@@ -988,7 +1115,7 @@ ReadResult<Borrowed> ParseRowDataPageBodyImpl(
                             cell_index);
       }
       if (cell_kind == 1) {
-        if (const auto* binding = ProfileColumn(receiver, cell.column_ordinal))
+        if (binding && !binding->blob)
           return RowReadError<Borrowed>(binding->bit_string ? "CTB.BIT.DESCRIPTOR_INVALID" : "CTI.TEMPORAL.DESCRIPTOR_INVALID",
                                        "storage.row_data_page.profile_external_refused");
         if (binary_context != nullptr)
@@ -996,8 +1123,18 @@ ReadResult<Borrowed> ParseRowDataPageBodyImpl(
         const auto locator = DecodeRowExternalValueLocator(serialized.subspan(offset, payload_bytes));
         if (!locator)
           return RowReadError<Borrowed>("CATALOG.INVALID_INPUT", "storage.row_data_page.external_value_invalid");
+        if (binding && binding->blob && locator->logical_bytes > dt::kBlobMaximumLogicalBytesV3)
+          return RowReadError<Borrowed>("BLOB.LENGTH_EXCEEDED", "storage.row_data_page.blob_external_length");
         external_seen = true;
         if constexpr (!Borrowed) cell.external_value = *locator;
+      } else if (cell_kind >= 2) {
+        if constexpr (!Borrowed) {
+          auto valid = ValidateStoredBlobBytes(payload_bytes, cell_kind == 3, binding->null_allowed);
+          if (!valid.ok()) return valid;
+          cell.value.type_id = dt::CanonicalTypeId::blob;
+          cell.value.is_null = cell_kind == 3;
+          cell.value.payload.assign(serialized.begin() + offset, serialized.begin() + offset + payload_bytes);
+        }
       } else if (binary_context != nullptr) {
         const auto decoded = scratchbird::core::datatypes::DecodeCanonicalBinaryValueViewNoAlloc(
             serialized.data() + offset, payload_bytes, *binary_context);
@@ -1090,7 +1227,7 @@ ReadResult<Borrowed> ParseRowDataPageBodyImpl(
     state.Slot(result.body,slot);
     offset += kSlotEntryBytes;
   }
-  if (external_format != external_seen)
+  if (!blob_format && external_format != external_seen)
     return RowReadError<Borrowed>("CATALOG.INVALID_INPUT", "storage.row_data_page.external_format_noncanonical");
   if (!state.Links(result.body)) {
     return RowReadError<Borrowed>("CATALOG.INVALID_INPUT", "storage.row_data_page.previous_identity_mismatch");

@@ -26,12 +26,14 @@ core::hash::HashDigestResult Digest(const std::vector<byte>& bytes) {
   return core::hash::ComputeSha256DigestParts(parts,2);
 }
 }
-NativeRowDataResult EncodeNativeRowDataPage(const NativeRowDataPage& p) noexcept {
+static NativeRowDataResult EncodeNativeRowDataPageImpl(const NativeRowDataPage& p,
+    const RowDataProfileReceiver* receiver) noexcept {
   try {
     const auto h=disk::EncodeNativeCommonPageHeader(p.header);
     if(!h.ok()||p.header.page_type!=0x0100)return Fail(E::invalid_header);
     if(!Bound(p))return Fail(E::invalid_body);
-    auto body=BuildRowDataPageBody(p.body,p.header.page_size_bytes-32);
+    auto body=receiver ? BuildRowDataPageBody(p.body,p.header.page_size_bytes-32,*receiver)
+                       : BuildRowDataPageBody(p.body,p.header.page_size_bytes-32);
     if(!body.ok())return Fail(body.resource_failure()?E::resource_exhausted:E::invalid_body);
     std::vector<byte> b(p.header.page_size_bytes,0);
     std::copy(h.bytes->begin(),h.bytes->end(),b.begin());
@@ -43,17 +45,20 @@ NativeRowDataResult EncodeNativeRowDataPage(const NativeRowDataPage& p) noexcept
    catch(const std::length_error&){return Fail(E::resource_exhausted);}
    catch(...){return Fail(E::invalid_body);}
 }
-NativeRowDataResult DecodeNativeRowDataPage(const std::vector<byte>& b) noexcept {
+static NativeRowDataResult DecodeNativeRowDataPageImpl(const std::vector<byte>& b,
+    const RowDataProfileReceiver* receiver) noexcept {
   try {
     const auto h=disk::DecodeNativeCommonPageHeader(b.data(),std::min<std::size_t>(b.size(),128));
     if(!h.ok()||h.header->page_type!=0x0100||b.size()!=h.header->page_size_bytes)return Fail(E::invalid_header);
     const auto hash=Digest(b);if(!hash.ok())return Fail(E::hash_failure);
     if(!std::equal(hash.digest.begin(),hash.digest.end(),b.end()-32))return Fail(E::invalid_integrity);
     const std::span<const byte> bytes(b.data()+128,b.size()-160);
-    auto body=ParseRowDataPageRows(bytes,h.header->page_number);
+    auto body=receiver ? ParseRowDataPageRows(bytes,h.header->page_number,*receiver)
+                       : ParseRowDataPageRows(bytes,h.header->page_number);
     if(!body.ok())return Fail(body.resource_failure()?E::resource_exhausted:E::invalid_body);
     NativeRowDataPage p{*h.header,std::move(body.body)};if(!Bound(p))return Fail(E::invalid_body);
-    const auto canonical=BuildRowDataPageBody(p.body,p.header.page_size_bytes-32);
+    const auto canonical=receiver ? BuildRowDataPageBody(p.body,p.header.page_size_bytes-32,*receiver)
+                                 : BuildRowDataPageBody(p.body,p.header.page_size_bytes-32);
     if(!canonical.ok())return Fail(canonical.resource_failure()?E::resource_exhausted:E::invalid_body);
     if(!std::equal(canonical.serialized.begin(),canonical.serialized.end(),bytes.begin(),bytes.end()))return Fail(E::invalid_body);
     return {E::none,std::move(p),b};
@@ -61,8 +66,9 @@ NativeRowDataResult DecodeNativeRowDataPage(const std::vector<byte>& b) noexcept
    catch(const std::length_error&){return Fail(E::resource_exhausted);}
    catch(...){return Fail(E::invalid_body);}
 }
-NativeRowDataResult ReadNativeRowDataPageFromOpenDevice(disk::FileDevice& device,
-    const core::platform::Uuid& database_uuid,const NativeRowDataReference& ref) noexcept {
+static NativeRowDataResult ReadNativeRowDataPageFromOpenDeviceImpl(disk::FileDevice& device,
+    const core::platform::Uuid& database_uuid,const NativeRowDataReference& ref,
+    const RowDataProfileReceiver* receiver) noexcept {
   try {
     const auto& p=ref.page;const auto* profile=disk::FindCanonicalFilespacePageProfile(p.page_size_profile_uuid);
     const auto valid=[](const core::platform::Uuid& id){return core::uuid::IsEngineIdentityUuid(id);};
@@ -95,11 +101,34 @@ NativeRowDataResult ReadNativeRowDataPageFromOpenDevice(disk::FileDevice& device
     if(h.header->flags&1u)return Fail(E::encrypted_requires_crypto_authority);
     if(h.header->flags&2u)return Fail(E::cluster_requires_authority);
     if(h.header->flags&12u)return Fail(E::header_policy_requires_authority);
-    auto result=DecodeNativeRowDataPage(bytes);
+    auto result=DecodeNativeRowDataPageImpl(bytes,receiver);
     if(result.ok()&&result.page->body.relation_uuid.value!=ref.relation_uuid)return Fail(E::binding_mismatch);
     return result;
   }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}
    catch(const std::length_error&){return Fail(E::resource_exhausted);}
    catch(...){return Fail(E::io_failure);}
+}
+NativeRowDataResult EncodeNativeRowDataPage(const NativeRowDataPage& p) noexcept {
+  return EncodeNativeRowDataPageImpl(p,nullptr);
+}
+NativeRowDataResult EncodeNativeRowDataPage(const NativeRowDataPage& p,
+    const RowDataProfileReceiver& receiver) noexcept {
+  return EncodeNativeRowDataPageImpl(p,&receiver);
+}
+NativeRowDataResult DecodeNativeRowDataPage(const std::vector<byte>& b) noexcept {
+  return DecodeNativeRowDataPageImpl(b,nullptr);
+}
+NativeRowDataResult DecodeNativeRowDataPage(const std::vector<byte>& b,
+    const RowDataProfileReceiver& receiver) noexcept {
+  return DecodeNativeRowDataPageImpl(b,&receiver);
+}
+NativeRowDataResult ReadNativeRowDataPageFromOpenDevice(disk::FileDevice& device,
+    const core::platform::Uuid& database_uuid,const NativeRowDataReference& ref) noexcept {
+  return ReadNativeRowDataPageFromOpenDeviceImpl(device,database_uuid,ref,nullptr);
+}
+NativeRowDataResult ReadNativeRowDataPageFromOpenDevice(disk::FileDevice& device,
+    const core::platform::Uuid& database_uuid,const NativeRowDataReference& ref,
+    const RowDataProfileReceiver& receiver) noexcept {
+  return ReadNativeRowDataPageFromOpenDeviceImpl(device,database_uuid,ref,&receiver);
 }
 }  // namespace scratchbird::storage::page

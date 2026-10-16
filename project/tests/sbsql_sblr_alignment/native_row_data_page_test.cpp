@@ -8,6 +8,10 @@
 #include "datatype_timestamp.hpp"
 #include "datatype_interval.hpp"
 #include "datatype_bit_string.hpp"
+#include "datatype_blob.hpp"
+#include "filespace_page_zero.hpp"
+#include <filesystem>
+#include <unistd.h>
 #include <openssl/sha.h>
 namespace page=scratchbird::storage::page;
 namespace disk=scratchbird::storage::disk;
@@ -19,23 +23,30 @@ void Number(Bytes& b,std::size_t at,unsigned width,u64 n){Put(b,at,n,width);}
 void PutUuid(Bytes& b,std::size_t at,const m::MetricUuid& u){std::copy(u.bytes.begin(),u.bytes.end(),b.begin()+at);}
 u64 BodyFnv(const byte* b,std::size_t n){u64 h=1469598103934665603ull;for(std::size_t i=0;i<n;++i){h^=b[i];h*=1099511628211ull;}return h;}
 void RowSeal(Bytes& b){std::fill(b.end()-32,b.end(),0);std::array<byte,32> h{};SHA256(b.data(),b.size(),h.data());std::copy(h.begin(),h.end(),b.end()-32);}
-Bytes RowOracle(const page::NativeRowDataPage& leaf) {
+Bytes RowOracle(const page::NativeRowDataPage& leaf, u64 relation_generation=0,
+    std::span<const page::RowDataProfileColumnBinding> columns={}) {
   const auto& h=leaf.header; const auto& body=leaf.body; Bytes b(h.page_size_bytes,0);
   const bool external=std::any_of(body.rows.begin(),body.rows.end(),[](const auto& row){
     return std::any_of(row.cells.begin(),row.cells.end(),[](const auto& cell){return cell.external_value.has_value();});});
-  const std::string_view cm="SBPGV002",rm=external?"SBROW005":"SBROW004",vm="SBDVAL01";
+  const bool blob=!columns.empty();
+  const unsigned bindings=std::count_if(columns.begin(),columns.end(),[](const auto& c){return bool(c.blob);});
+  const unsigned body_header=blob?112+32*bindings:96;
+  const std::string_view cm="SBPGV002",rm=blob?"SBROW006":external?"SBROW005":"SBROW004",vm="SBDVAL01";
   std::copy(cm.begin(),cm.end(),b.begin()); Number(b,8,4,128); Number(b,12,4,h.page_size_bytes);
   Number(b,16,4,h.page_type); Number(b,20,2,1); Number(b,22,2,1);
   PutUuid(b,24,h.database_uuid); PutUuid(b,40,h.filespace_uuid); PutUuid(b,56,h.page_uuid);
   Number(b,72,8,h.page_number); Number(b,80,8,h.page_generation); Number(b,88,8,h.flags);
   PutUuid(b,104,h.page_size_profile_uuid); Number(b,120,2,1);
   u64 common=14695981039346656037ull; for(unsigned i=0;i<128;++i) {common^=b[i];common*=1099511628211ull;} Number(b,96,8,common);
-  std::copy(rm.begin(),rm.end(),b.begin()+128); Number(b,136,4,96); Number(b,140,4,body.rows.size());
+  std::copy(rm.begin(),rm.end(),b.begin()+128); Number(b,136,4,body_header); Number(b,140,4,body.rows.size());
+  if(blob){Number(b,224,8,relation_generation);Number(b,232,4,bindings);unsigned entry=240;
+    for(const auto& c:columns)if(c.blob){Number(b,entry,2,c.column_ordinal);PutUuid(b,entry+8,c.column_uuid);
+      Number(b,entry+24,8,c.column_generation);entry+=32;}}
   Number(b,152,8,body.next_page_number); PutUuid(b,168,body.relation_uuid.value);
   Number(b,184,8,body.page_generation); Number(b,192,8,body.segment_id);
   Number(b,200,8,body.segment_generation); Number(b,208,8,body.compaction_generation);
   struct Slot {unsigned stable,offset,size;u64 hash;bool deleted;}; std::vector<Slot> slots;
-  unsigned at=224;
+  unsigned at=128+body_header;
   for(unsigned i=0;i<body.rows.size();++i) {
     const auto& row=body.rows[i]; const auto start=at;
     PutUuid(b,at,row.row_uuid.value); PutUuid(b,at+16,row.transaction_uuid.value);
@@ -55,6 +66,11 @@ Bytes RowOracle(const page::NativeRowDataPage& leaf) {
         Number(b,at+8,8,BodyFnv(b.data()+value,40));at+=56;continue;
       }
       const auto& payload=cell.value.payload; const unsigned value=at+16;
+      if(blob&&cell.value.type_id==scratchbird::core::datatypes::CanonicalTypeId::blob){
+        Number(b,at,2,cell.column_ordinal);Number(b,at+2,2,cell.value.is_null?3:2);
+        Number(b,at+4,4,payload.size());std::copy(payload.begin(),payload.end(),b.begin()+value);
+        Number(b,at+8,8,BodyFnv(payload.data(),payload.size()));at+=16+payload.size();continue;
+      }
       Number(b,at,2,cell.column_ordinal); Number(b,at+4,4,32+payload.size());
       std::copy(vm.begin(),vm.end(),b.begin()+value); Number(b,value+8,4,static_cast<unsigned>(cell.value.type_id));
       Number(b,value+12,2,(cell.value.is_null?1:0)|(cell.value.payload_is_toast_reference?2:0));
@@ -547,5 +563,140 @@ void BitReceivers() {
   }
 }
 
-int main(){MetricSamplePageBaseMain();auto before=checks;Images();SemanticImages();PageFaults();ExternalImages();TemporalReceivers();BitReceivers();
+namespace {
+void BlobReceivers(){
+  namespace dt=scratchbird::core::datatypes;
+  const auto profile=dt::BuildCurrentBlobValidatedProfileHandleV3(dt::kBlobV11ReceiptUuid);
+  Check(profile.ok(),"native BLOB exact profile");if(!profile.ok())return;
+  const auto f=Sample();
+  std::string pattern=(std::filesystem::temp_directory_path()/"sb_blob_rows.XXXXXX").string();
+  std::vector<char> root(pattern.begin(),pattern.end());root.push_back(0);
+  const auto* created=::mkdtemp(root.data());Check(created,"BLOB row private fixture");if(!created)return;
+  struct Cleanup{std::filesystem::path path;~Cleanup(){std::error_code e;std::filesystem::remove_all(path,e);}} cleanup{created};
+  for(unsigned size=0;size<5;++size){
+    auto p=RowExample(size,f);
+    std::vector<page::RowDataProfileColumnBinding> columns;
+    for(unsigned ordinal=2;ordinal<=5;++ordinal){
+      page::RowDataProfileColumnBinding column;column.column_ordinal=ordinal;column.null_allowed=true;
+      column.column_uuid=Id(90+ordinal);column.column_generation=17+ordinal;
+      column.blob=std::make_shared<const dt::BlobValidatedProfileHandleV3>(profile.profile);columns.push_back(column);
+      page::RowDataCell cell;cell.column_ordinal=ordinal;
+      if(ordinal==5)cell.external_value=page::RowExternalValueLocator{Id(80),123,12000};
+      else{cell.value.type_id=dt::CanonicalTypeId::blob;cell.value.is_null=ordinal==3;
+        if(ordinal==4){for(unsigned i=0;i<1024;++i)cell.value.payload.push_back(static_cast<byte>(i));
+          const std::string_view magic="SBBLOB03SBMGLV02SBDVAL01";cell.value.payload.insert(cell.value.payload.end(),magic.begin(),magic.end());}}
+      p.body.rows[0].cells.push_back(std::move(cell));
+    }
+    const page::RowDataProfileReceiver receiver{p.body.relation_uuid,columns,13};
+    const auto expected=RowOracle(p,13,columns);
+    auto encoded=page::EncodeNativeRowDataPage(p,receiver);
+    auto decoded=page::DecodeNativeRowDataPage(expected,receiver);
+    Check(encoded.ok()&&encoded.bytes==expected&&decoded.ok(),"BLOB native page disagrees with independent oracle");
+    if(decoded.ok()){
+      const auto& cells=decoded.page->body.rows[0].cells;
+      Check(cells.size()==5&&!cells[1].value.is_null&&cells[1].value.payload.empty()&&
+          cells[2].value.is_null&&cells[2].value.payload.empty()&&
+          cells[3].value.payload==p.body.rows[0].cells[3].value.payload&&
+          cells[4].external_value==p.body.rows[0].cells[4].external_value,
+          "native BLOB changed octets,empty,NULL or external locator");
+    }
+    const auto refused=[&](const auto& result){Check(!result.ok()&&!result.page&&result.bytes.empty(),"BLOB refused image leaked rows");};
+    refused(page::EncodeNativeRowDataPage(p));refused(page::DecodeNativeRowDataPage(expected));
+    for(unsigned fault=0;fault<16;++fault){
+      auto bad=p;auto bindings=columns;auto receiving=receiver;receiving.columns=bindings;
+      if(fault==0)receiving.relation_generation=0;
+      if(fault==1)bindings[0].column_generation=0;
+      if(fault==2)receiving.relation_uuid.value=Id(90);
+      if(fault==3)bindings[0].blob.reset();
+      if(fault==4){auto stale=profile.profile;++stale.profile_generation;bindings[0].blob=std::make_shared<const dt::BlobValidatedProfileHandleV3>(stale);}
+      if(fault==5)bad.body.rows[0].cells[2].value.payload={0};
+      if(fault==6)bindings[1].null_allowed=false;
+      if(fault==7)bad.body.rows[0].cells[4].external_value->logical_bytes=dt::kBlobMaximumLogicalBytesV3+1;
+      if(fault==8)bad.body.rows[0].cells[3].value.type_id=dt::CanonicalTypeId::binary;
+      if(fault==9)bindings[1].column_ordinal=2;
+      if(fault==10)bindings[0].column_ordinal=0;
+      if(fault==11)bad.body.rows[0].cells[1].column_ordinal=0;
+      if(fault==12)bad.body.rows[0].cells[2].column_ordinal=2;
+      if(fault==13)bindings[0].column_uuid={};
+      if(fault==14)bindings[0].column_uuid=p.body.relation_uuid.value;
+      if(fault==15)bindings[1].column_uuid=bindings[0].column_uuid;
+      refused(page::EncodeNativeRowDataPage(bad,receiving));
+      refused(page::DecodeNativeRowDataPage(RowOracle(bad,13,columns),receiving));
+    }
+    for(unsigned fault=0;fault<2;++fault){auto stale=receiver;auto bindings=columns;stale.columns=bindings;
+      if(fault)++bindings[0].column_generation;else ++stale.relation_generation;
+      refused(page::DecodeNativeRowDataPage(expected,stale));
+    }
+    // The binding directory itself is covered by the body/native seals.
+    // Reseal mutations to exercise exact structural/schema admission.
+    for(unsigned fault=0;fault<9;++fault){auto bad=expected;
+      if(fault==0)Number(bad,232,4,0);
+      if(fault==1)Number(bad,232,4,65536);
+      if(fault==2)Number(bad,232,4,columns.size()+1);
+      if(fault==3)bad[236]=1;
+      if(fault==4)bad[242]=1;
+      if(fault==5)bad[248]^=1;
+      if(fault==6)Number(bad,264,8,0);
+      if(fault==7)Number(bad,240,2,0);
+      if(fault==8)Number(bad,136,4,96);
+      BodySeal(bad);refused(page::DecodeNativeRowDataPage(bad,receiver));
+    }
+    // Recompute every container checksum after changing the kind. A failure
+    // must come from representation admission, not an earlier damaged seal.
+    const auto read_number=[](const Bytes& b,std::size_t at,unsigned width){
+      u64 result=0;for(unsigned i=0;i<width;++i)result|=u64(b[at+i])<<(8*i);return result;};
+    const unsigned row_start=128+112+32*columns.size();
+    unsigned first_blob=row_start+144+16+32+p.body.rows[0].cells[0].value.payload.size();
+    for(unsigned kind:{0u,4u,65535u}){
+      auto malformed=expected;Number(malformed,first_blob+2,2,kind);
+      const auto row_bytes=read_number(malformed,row_start+56,4);
+      Number(malformed,row_start+64,8,0);const auto hash=BodyFnv(malformed.data()+row_start,row_bytes);
+      Number(malformed,row_start+64,8,hash);
+      const auto directory=read_number(malformed,216,4)+128;Number(malformed,directory+16,8,hash);
+      BodySeal(malformed);refused(page::DecodeNativeRowDataPage(malformed,receiver));
+    }
+    // A generic V1/V2 route remains refused even after a native row positive.
+    dt::DatatypeBinaryValue legacy;legacy.type_id=dt::CanonicalTypeId::blob;legacy.payload={0,255};
+    const auto generic=dt::EncodeDatatypeBinaryValue(legacy);
+    Check(!generic.ok()&&generic.diagnostic.diagnostic_code=="BLOB.V1_V2_REFUSED", "native row enabled generic BLOB");
+    auto oversized=p;oversized.body.rows[0].cells[3].value.payload.resize(p.header.page_size_bytes);
+    refused(page::EncodeNativeRowDataPage(oversized,receiver));
+    auto empty=p;empty.body.rows.clear();auto empty_bytes=page::EncodeNativeRowDataPage(empty,receiver);
+    Check(empty_bytes.ok()&&empty_bytes.bytes==RowOracle(empty,13,columns)&&
+        page::DecodeNativeRowDataPage(empty_bytes.bytes,receiver).ok(),"empty BLOB-profile page lost binding");
+    for(unsigned operation=0;operation<2;++operation){bool finished=false;unsigned faults=0;
+      for(long point=0;point<200;++point){codec_fault::remaining=point;codec_fault::fired=false;
+        auto result=operation?page::DecodeNativeRowDataPage(expected,receiver):page::EncodeNativeRowDataPage(p,receiver);
+        const bool fired=codec_fault::fired;codec_fault::remaining=-1;
+        if(fired){++faults;refused(result);}else{Check(result.ok(),"unfaulted native BLOB image failed");finished=true;break;}}
+      Check(finished&&faults,"native BLOB allocation sweep incomplete");
+    }
+    disk::FilespacePageZero zero;zero.bootstrap.database_uuid=p.header.database_uuid;
+    zero.bootstrap.filespace_uuid=p.header.filespace_uuid;zero.bootstrap.page_size_profile_uuid=p.header.page_size_profile_uuid;
+    zero.bootstrap.page_size_bytes=p.header.page_size_bytes;zero.bootstrap.filespace_role=5;zero.bootstrap.lifecycle_state=1;
+    zero.bootstrap.checksum_profile_uuid=disk::kNativeBootstrapIntegrityProfile;
+    zero.page_uuid=Id(81);zero.creation_operation_uuid=Id(82);zero.writer_identity_uuid=Id(83);
+    zero.page_generation=1;zero.root_set_generation=1;zero.total_pages=32;zero.free_pages=9;zero.creation_utc_millis=1790000000000ull;
+    zero.roots.push_back({3,3,p.header.filespace_uuid,13,1,p.header.page_size_profile_uuid,Id(84)});
+    const auto bootstrap=disk::EncodeFilespacePageZero(zero);Check(bootstrap.ok(),"BLOB fixture native pagezero");if(!bootstrap.ok())continue;
+    const auto path=(cleanup.path/std::to_string(size)).string();disk::FileDevice file;
+    Check(file.Open(path,disk::FileOpenMode::create_new).ok(),"BLOB fixture own device");
+    const byte padding=0;
+    Check(file.WriteAt(0,bootstrap.bytes->data(),bootstrap.bytes->size()).ok()&&
+        file.WriteAt(zero.total_pages*p.header.page_size_bytes-1,&padding,1).ok()&&
+        file.WriteAt(p.header.page_number*p.header.page_size_bytes,expected.data(),expected.size()).ok()&&file.Sync().ok(),
+        "BLOB exact native image physical write/sync");
+    Check(file.Close().ok()&&file.Open(path,disk::FileOpenMode::open_existing_read_only).ok(),"BLOB independent read-only reopen");
+    const page::NativeRowDataReference reference{p.body.relation_uuid.value,
+        {p.header.filespace_uuid,p.header.page_number,p.header.page_generation,p.header.page_size_profile_uuid},p.header.page_uuid};
+    auto reopened=page::ReadNativeRowDataPageFromOpenDevice(file,p.header.database_uuid,reference,receiver);
+    Check(reopened.ok()&&reopened.bytes==expected,"BLOB actual owned-device reopen lost native image");
+    refused(page::ReadNativeRowDataPageFromOpenDevice(file,p.header.database_uuid,reference));
+    auto stale=receiver;auto bindings=columns;++bindings[0].column_generation;stale.columns=bindings;
+    refused(page::ReadNativeRowDataPageFromOpenDevice(file,p.header.database_uuid,reference,stale));
+    Check(file.Close().ok(),"BLOB fixture release device");
+  }
+}
+}
+int main(){MetricSamplePageBaseMain();auto before=checks;Images();SemanticImages();PageFaults();ExternalImages();TemporalReceivers();BitReceivers();BlobReceivers();
   std::cout<<"native row image checks="<<checks-before<<" combined="<<checks<<" failures="<<failures<<'\n';return failures?1:0;}
