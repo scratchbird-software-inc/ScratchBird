@@ -466,6 +466,28 @@ class BlobLifetimeReceiverHostV3Generation1 final {
     result.status=result.runtime.ok() ? SB_ENGINE_STATUS_OK : SB_ENGINE_STATUS_CONFLICT;
     return result;
   }
+  api::StatementBlobValueResultV3 RetainTyped(engine::ExecutionTypeDescriptor&& descriptor,
+      api::StatementBlobValueV3& destination) noexcept {
+    using Failure=api::StatementBlobValueFailureV3;
+    api::StatementBlobValueResultV3 result;
+    result.lifetime.status=SB_ENGINE_STATUS_INVALID_ARGUMENT;
+    if(destination.used_) { result.failure=Failure::destination_used; return result; }
+    if(!ValidateBlobExecutionDescriptorV3(profile_,descriptor).ok()) {
+      result.failure=Failure::descriptor_invalid; return result;
+    }
+    if(bounds_.state==BlobValueStateV3::sql_null && !descriptor.nullable_allowed) {
+      result.failure=Failure::sql_null_not_admitted; return result;
+    }
+    result.lifetime=Retain(destination.lease_);
+    if(!result.lifetime.ok()) { result.failure=Failure::lifetime; return result; }
+    destination.descriptor_=std::move(descriptor);
+    destination.profile_=profile_;
+    destination.state_=bounds_.state;
+    destination.length_=content_->size();
+    destination.used_=true;
+    result.failure=Failure::none; result.category=DatatypeCastCategory::identity;
+    return result;
+  }
 };
 } // namespace scratchbird::core::datatypes
 
@@ -477,6 +499,39 @@ const core::datatypes::BlobValidatedProfileHandleV3* StatementBlobInputV3::profi
 }
 StatementBlobInputRetainV3 StatementBlobInputV3::Retain(core::datatypes::BlobRetainedLifetimeLeaseV3& lease) noexcept {
   return host_ ? host_->Retain(lease) : StatementBlobInputRetainV3{};
+}
+StatementBlobValueResultV3 StatementBlobInputV3::RetainTyped(
+    ExecutionTypeDescriptor&& descriptor,StatementBlobValueV3& destination) noexcept {
+  return host_ ? host_->RetainTyped(std::move(descriptor),destination) : StatementBlobValueResultV3{};
+}
+StatementBlobValueResultV3 StatementBlobValueV3::CastIdentityInto(
+    ExecutionTypeDescriptor&& target,core::datatypes::DatatypeCastContext context,
+    StatementBlobValueV3& destination) noexcept {
+  using Failure=StatementBlobValueFailureV3;
+  StatementBlobValueResultV3 result;
+  if(!bound()) return result;
+  result.lifetime.status=SB_ENGINE_STATUS_INVALID_ARGUMENT;
+  if(this==&destination) { result.failure=Failure::self_alias; return result; }
+  if(destination.used_) { result.failure=Failure::destination_used; return result; }
+  result.lifetime.runtime_invoked=true;
+  result.lifetime.runtime=lease_.CastIdentityInto(profile_,descriptor_,target,context,destination.lease_);
+  result.lifetime.status=result.lifetime.runtime.ok() ? SB_ENGINE_STATUS_OK : SB_ENGINE_STATUS_CONFLICT;
+  if(!result.lifetime.ok()) { result.failure=Failure::lifetime; return result; }
+  destination.descriptor_=std::move(target);
+  destination.profile_=profile_; destination.state_=state_; destination.length_=length_;
+  destination.used_=true;
+  result.failure=Failure::none; result.category=core::datatypes::DatatypeCastCategory::identity;
+  return result;
+}
+core::datatypes::BlobLifetimeRuntimeResultV3 StatementBlobValueV3::Release() noexcept {
+  const auto result=lease_.Release();
+  if(!lease_.retained()) {
+    descriptor_={}; profile_={}; state_=core::datatypes::BlobValueStateV3::sql_null; length_=0;
+    // Even a failed retention can leave an internal terminal lease. Do not
+    // promise that a retired typed wrapper can be rearmed as a fresh receiver.
+    used_=true;
+  }
+  return result;
 }
 StatementBlobInputAdmissionV3 ReceiveStatementBlobInputV3(server_engine_bridge::StatementContextReceiptHandle handle,
     const wire::TypedResultUuid& session,const wire::TypedResultUuid& receipt,std::span<const core::platform::byte> input,

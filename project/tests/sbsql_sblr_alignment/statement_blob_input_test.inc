@@ -259,6 +259,128 @@ void Revocation(tests::FixtureEngineSession& session,const api::EngineRequestCon
     value.Reset(); SameMemory(baseline);
   }
 }
+scratchbird::engine::ExecutionTypeDescriptor Descriptor(const dt::BlobValidatedProfileHandleV3& profile) {
+  namespace engine=scratchbird::engine;
+  engine::ExecutionTypeDescriptor descriptor;
+  std::copy(profile.identity.descriptor_uuid.bytes.begin(),profile.identity.descriptor_uuid.bytes.end(),descriptor.descriptor_uuid.bytes);
+  descriptor.descriptor_epoch=profile.identity.descriptor_generation;
+  descriptor.canonical_type_id=static_cast<std::uint32_t>(dt::CanonicalTypeId::blob);
+  descriptor.family=engine::ExecutionTypeFamily::blob;
+  descriptor.width_class=engine::ExecutionTypeWidthClass::descriptor_defined;
+  descriptor.stable_name="source presentation alias is not identity";
+  return descriptor;
+}
+bool ExactDescriptor(const scratchbird::engine::ExecutionTypeDescriptor& a,
+    const scratchbird::engine::ExecutionTypeDescriptor& b) {
+  const auto uuid=[](const auto& x,const auto& y) { return std::equal(std::begin(x.bytes),std::end(x.bytes),std::begin(y.bytes)); };
+  if(!uuid(a.descriptor_uuid,b.descriptor_uuid) || a.descriptor_epoch!=b.descriptor_epoch ||
+      a.canonical_type_id!=b.canonical_type_id || a.family!=b.family || a.width_class!=b.width_class ||
+      a.stable_name!=b.stable_name || a.bit_width!=b.bit_width || a.precision!=b.precision || a.scale!=b.scale ||
+      a.length!=b.length || a.vector_dimensions!=b.vector_dimensions || a.container_rank!=b.container_rank ||
+      a.modifier_flags!=b.modifier_flags || !uuid(a.domain_uuid,b.domain_uuid) || a.domain_stack.size()!=b.domain_stack.size() ||
+      !uuid(a.charset_uuid,b.charset_uuid) || !uuid(a.collation_uuid,b.collation_uuid) || !uuid(a.timezone_uuid,b.timezone_uuid) ||
+      !uuid(a.element_descriptor_uuid,b.element_descriptor_uuid) || !uuid(a.security_policy_uuid,b.security_policy_uuid) ||
+      a.nullable_allowed!=b.nullable_allowed || a.descriptor_authoritative!=b.descriptor_authoritative ||
+      a.parser_independent!=b.parser_independent) return false;
+  for(std::size_t n=0;n<a.domain_stack.size();++n) if(!uuid(a.domain_stack[n],b.domain_stack[n])) return false;
+  return true;
+}
+void TypedValues(tests::FixtureEngineSession& session,const api::EngineRequestContext& context) {
+  Statement statement(session,context);
+  const auto baseline=mm::DefaultMemoryManager().Snapshot();
+  const std::array<platform::byte,3> content{0,255,129};
+  for(bool logical:{false,true}) for(unsigned state=0;state<3;++state) {
+    api::StatementBlobInputV3 input; auto bounds=Bounds(logical);
+    if(state==2) bounds.state=dt::BlobValueStateV3::sql_null;
+    const auto bytes=state==0 ? std::span<const platform::byte>{content} : std::span<const platform::byte>{};
+    Check(Receive(statement,bytes,bounds,input)==SB_ENGINE_STATUS_OK,"typed native BLOB source receiving");
+    auto expected_source=Descriptor(*input.profile());
+    auto receiving_descriptor=expected_source;
+    api::StatementBlobValueV3 source;
+    // Every refusal preserves full caller metadata and produces no typed owner.
+    for(unsigned fault=0;fault<8;++fault) {
+      auto descriptor=expected_source;
+      if(fault==0) ++descriptor.descriptor_epoch;
+      if(fault==1) descriptor.canonical_type_id=static_cast<std::uint32_t>(dt::CanonicalTypeId::binary);
+      if(fault==2) descriptor.family=scratchbird::engine::ExecutionTypeFamily::binary;
+      if(fault==3) descriptor.width_class=scratchbird::engine::ExecutionTypeWidthClass::variable;
+      if(fault==4) descriptor.domain_uuid.bytes[0]=1;
+      if(fault==5) descriptor.charset_uuid.bytes[0]=1;
+      if(fault==6) descriptor.descriptor_authoritative=false;
+      if(fault==7) descriptor.parser_independent=false;
+      const auto preserved=descriptor;
+      api::StatementBlobValueV3 refused;
+      const auto result=input.RetainTyped(std::move(descriptor),refused);
+      Check(!result.ok() && result.failure==api::StatementBlobValueFailureV3::descriptor_invalid &&
+          !result.lifetime.runtime_invoked && !refused.bound() && !refused.descriptor() && !refused.profile() &&
+          !refused.state() && !refused.length() && ExactDescriptor(descriptor,preserved),
+          "typed BLOB invalid descriptor reached lifetime or moved/published metadata");
+    }
+    allocation_count=0; allocation_budget=0;
+    const auto retained=input.RetainTyped(std::move(receiving_descriptor),source);
+    const auto allocations=allocation_count; allocation_budget=-1;
+    Check(retained.ok() && source.bound() && !allocations && source.descriptor() &&
+        ExactDescriptor(*source.descriptor(),expected_source) && source.state()==bounds.state && source.length()==bytes.size(),
+        "typed native BLOB receiving lost exact owned descriptor/state/extent or allocated");
+    std::array<api::StatementBlobValueV3,3> targets;
+    const std::array contexts{dt::DatatypeCastContext::implicit,dt::DatatypeCastContext::assignment,dt::DatatypeCastContext::explicit_cast};
+    for(std::size_t n=0;n<contexts.size();++n) {
+      auto expected=expected_source; expected.stable_name="target localized display alias with independent owned storage";
+      expected.nullable_allowed=state==2;
+      auto bad=expected; ++bad.descriptor_epoch; const auto preserved=bad;
+      const auto refused=source.CastIdentityInto(std::move(bad),contexts[n],targets[n]);
+      Check(!refused.ok() && refused.lifetime.runtime_invoked && !targets[n].bound() &&
+          !targets[n].descriptor() && ExactDescriptor(bad,preserved),"typed BLOB cast moved invalid target or published a value");
+      auto target=expected;
+      allocation_count=0; allocation_budget=0;
+      const auto cast=source.CastIdentityInto(std::move(target),contexts[n],targets[n]);
+      const auto allocated=allocation_count; allocation_budget=-1;
+      Check(cast.ok() && cast.category==dt::DatatypeCastCategory::identity &&
+          targets[n].bound() && source.bound() && !allocated && targets[n].descriptor() &&
+          ExactDescriptor(*targets[n].descriptor(),expected) && targets[n].state()==bounds.state &&
+          targets[n].length()==bytes.size(),"typed BLOB cast lost exact owned target/state/extent or allocated");
+      // Mutating the caller's moved-from descriptor cannot mutate result data.
+      target.stable_name="changed moved-from caller data";
+      Check(ExactDescriptor(*targets[n].descriptor(),expected),"typed BLOB result borrowed caller metadata");
+      auto replacement=expected;
+      Check(!source.CastIdentityInto(std::move(replacement),contexts[n],targets[n]).ok() &&
+          ExactDescriptor(replacement,expected) && ExactDescriptor(*targets[n].descriptor(),expected),
+          "typed BLOB cast overwrote an armed destination or consumed failed target metadata");
+    }
+    auto bad_context_target=expected_source; api::StatementBlobValueV3 bad_context;
+    Check(!source.CastIdentityInto(std::move(bad_context_target),static_cast<dt::DatatypeCastContext>(65535),bad_context).ok() &&
+        ExactDescriptor(bad_context_target,expected_source) && !bad_context.bound(),"typed BLOB cast accepted undefined context");
+    auto alias=expected_source;
+    Check(!source.CastIdentityInto(std::move(alias),dt::DatatypeCastContext::implicit,source).ok() &&
+        ExactDescriptor(alias,expected_source) && ExactDescriptor(*source.descriptor(),expected_source),"typed BLOB self-cast changed source");
+    if(state==2) {
+      auto nonnullable=expected_source; nonnullable.nullable_allowed=false;
+      auto preserved=nonnullable; api::StatementBlobValueV3 refused;
+      const auto receive=input.RetainTyped(std::move(nonnullable),refused);
+      Check(!receive.ok() && receive.failure==api::StatementBlobValueFailureV3::sql_null_not_admitted &&
+          !receive.lifetime.runtime_invoked && !refused.bound() && ExactDescriptor(nonnullable,preserved),
+          "typed BLOB NULL receiving bypassed nullability or consumed metadata");
+      const auto cast=source.CastIdentityInto(std::move(nonnullable),dt::DatatypeCastContext::assignment,refused);
+      Check(!cast.ok() && cast.lifetime.runtime_invoked && cast.lifetime.runtime.diagnostic_code=="BLOB.STATE_INVALID" &&
+          !refused.bound() && ExactDescriptor(nonnullable,preserved),"typed BLOB NULL cast lost actual nullability vector");
+    }
+    Check(source.Release().ok() && !source.bound() && !source.descriptor() && !source.profile() &&
+        !source.state() && !source.length(),"typed BLOB source release retained public value metadata");
+    auto consumed=expected_source;
+    Check(!input.RetainTyped(std::move(consumed),source).ok() && ExactDescriptor(consumed,expected_source),
+        "typed BLOB retired wrapper was rearmed or consumed caller metadata");
+    input.Reset();
+    for(auto& target:targets) {
+      Read read{bytes}; auto visitor=dt::BlobLifetimeRuntimeConformanceAccessV3::Visitor(Read::Visit,&read);
+      const auto result=state ? target.Probe() : logical ? target.VisitLogical(visitor) : target.VisitMaterialized(visitor);
+      Check(result.ok() && read.matches && read.at==bytes.size() && target.descriptor() &&
+          target.length()==bytes.size() && target.state()==bounds.state,
+          "typed BLOB result depended on source wrapper or lost actual guarded contents");
+      Check(target.Release().ok() && !target.bound() && !target.descriptor(),"typed BLOB result exact owner cleanup failed");
+    }
+    SameMemory(baseline);
+  }
+}
 void ConcurrentReaders(tests::FixtureEngineSession& session,const api::EngineRequestContext& context) {
   Statement statement(session,context);
   const auto baseline=mm::DefaultMemoryManager().Snapshot();
@@ -327,6 +449,7 @@ void NativeBlobInput(tests::FixtureEngineSession& session,const api::EngineReque
   blob_input_test::Refusals(session,context);
   blob_input_test::AllocationFailures(session,context);
   blob_input_test::IdentityCasts(session,context);
+  blob_input_test::TypedValues(session,context);
   blob_input_test::Revocation(session,context);
   blob_input_test::ConcurrentReaders(session,context);
   blob_input_test::ForeignProcess(session,context);
