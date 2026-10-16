@@ -28,22 +28,34 @@ constexpr CatalogValueSchemaView kDatabaseSchemaV1{
     65537, 1, std::span(kDatabaseFields).first<9>()};
 constexpr CatalogValueSchemaView kDatabaseSchemaV2{65537, 2, std::span(kDatabaseFields).first<12>()};
 constexpr CatalogValueSchemaView kDatabaseSchemaV3{65537, 3, kDatabaseFields};
-bool ValidTextDefaults(const CatalogDatabaseTextDefaults& d) {
+bool ValidTextDefaults(const CatalogDatabaseTextDefaults& d,
+    const Uuid& database,const Uuid& cohort) {
   const auto object=[](const TypedUuid& id) {
     return id.kind==UuidKind::object&&uuid::IsEngineIdentityUuid(id.value);
   };
   if(!object(d.charset_uuid)||!object(d.collation_uuid)||!object(d.source_object_uuid)||
-      d.charset_uuid.value==d.collation_uuid.value||d.charset_uuid.value==d.source_object_uuid.value||
-      d.collation_uuid.value==d.source_object_uuid.value||!d.resource_activation_epoch||
+      !d.resource_activation_epoch||
       !d.charset_family_epoch||!d.collation_family_epoch||!d.source_generation)return false;
   switch(d.source) {
     case CatalogDatabaseTextDefaultSource::explicit_selection:
-    case CatalogDatabaseTextDefaultSource::creation_policy:return !d.cluster_uuid;
+    case CatalogDatabaseTextDefaultSource::creation_policy:
+      if(d.cluster_uuid)return false;
+      break;
     case CatalogDatabaseTextDefaultSource::cluster_default:
-      return d.cluster_uuid&&d.cluster_uuid->kind==UuidKind::cluster&&
-          uuid::IsEngineIdentityUuid(d.cluster_uuid->value);
+      if(!d.cluster_uuid||d.cluster_uuid->kind!=UuidKind::cluster||
+          !uuid::IsEngineIdentityUuid(d.cluster_uuid->value))return false;
+      break;
+    default:return false;
   }
-  return false;
+  // UUID is the identity across families; changing its kind cannot turn the
+  // node/cohort/resource/source object into another object or a cluster.
+  const std::array<Uuid,6> identities{database,cohort,d.charset_uuid.value,
+      d.collation_uuid.value,d.source_object_uuid.value,
+      d.cluster_uuid?d.cluster_uuid->value:Uuid{}};
+  const std::size_t count=d.cluster_uuid?6:5;
+  for(std::size_t i=0;i<count;++i)for(std::size_t j=0;j<i;++j)
+    if(identities[i]==identities[j])return false;
+  return true;
 }
 bool Valid(const CatalogDatabaseRecord& r) {
   constexpr auto max = std::numeric_limits<u32>::max();
@@ -52,7 +64,8 @@ bool Valid(const CatalogDatabaseRecord& r) {
       r.database_header_format_minor <= max &&
       r.catalog_manifest_format_version > 0 && r.catalog_manifest_format_version <= max &&
       r.page_size > 0 && r.page_size <= max && r.creator_transaction_number > 0 &&
-      (!r.text_defaults||(r.datatype_cohort&&ValidTextDefaults(*r.text_defaults)))&&
+      (!r.text_defaults||(r.datatype_cohort&&ValidTextDefaults(*r.text_defaults,
+          r.database_uuid.value,r.datatype_cohort->catalog_snapshot_uuid.value)))&&
       (!r.datatype_cohort ||
        (r.datatype_cohort->catalog_snapshot_uuid.kind == UuidKind::object &&
         datatypes::IsAdmittedDatatypeCohort(

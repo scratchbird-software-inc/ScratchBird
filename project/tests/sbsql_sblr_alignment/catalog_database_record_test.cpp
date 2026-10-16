@@ -337,6 +337,24 @@ void TextDefaultsCodec(const c::CatalogDatabaseRecord& base) {
     }
     auto no_cohort=r;no_cohort.datatype_cohort.reset();
     Check(!c::EncodeCatalogDatabaseRecord(no_cohort).ok(),"TEXT defaults cannot omit node datatype cohort");
+    const std::array<p::Uuid,6> identities{r.database_uuid.value,r.datatype_cohort->catalog_snapshot_uuid.value,
+        r.text_defaults->charset_uuid.value,r.text_defaults->collation_uuid.value,
+        r.text_defaults->source_object_uuid.value,source==3?r.text_defaults->cluster_uuid->value:p::Uuid{}};
+    for(unsigned field=0;field<(source==3?4u:3u);++field)for(unsigned alias=0;alias<(source==3?6u:5u);++alias) {
+      if(alias==field+2)continue;
+      auto wrong=r;auto& d=*wrong.text_defaults;
+      auto* id=field==0?&d.charset_uuid:field==1?&d.collation_uuid:field==2?&d.source_object_uuid:&*d.cluster_uuid;
+      id->value=identities[alias];
+      std::array<p::byte,416> backing;backing.fill(0xa7);
+      allocation_probe::forbidden=true;
+      const auto encoded=c::EncodeCatalogDatabaseRecordInto(wrong,backing);
+      const auto extent=c::CatalogDatabaseRecordEncodedBytes(wrong);
+      allocation_probe::forbidden=false;
+      Check(!encoded.ok()&&encoded.bytes.empty()&&!extent&&
+          std::all_of(backing.begin(),backing.end(),[](auto b){return b==0xa7;}),
+          "retyping node/cohort/resource/source UUID cannot create another identity");
+      Refused(Golden(wrong));
+    }
     auto extreme=r;auto& d=*extreme.text_defaults;
     d.resource_activation_epoch=d.charset_family_epoch=d.collation_family_epoch=d.source_generation=~p::u64{0};
     Roundtrip(extreme);
