@@ -1543,6 +1543,9 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatchToO
     prepared_pages.push_back(std::move(prepared));
   }
   mark_phase("prepare_page_images");
+  if (prepared_pages.size() > std::numeric_limits<u64>::max()/context.page_size)
+    return ErrorResult<PhysicalMgaCowMutationBatchResult>("CATALOG.INVALID_INPUT",
+        "storage.physical_mga_cow.batch_observed_extent_overflow");
   for (auto& receipt : row_receipts) {
     const auto& location = page_locations.at(receipt.page_number);
     receipt.page_uuid = location.first; receipt.page_generation = location.second;
@@ -1555,29 +1558,35 @@ PhysicalMgaCowMutationBatchResult WritePhysicalMgaCowUnpublishedMutationBatchToO
   const auto marked = scratchbird::transaction::mga::MarkLocalTransactionRollbackOnly(
       active_inventory, active_entry.identity.local_id);
   if (!marked.ok()) return Propagate<PhysicalMgaCowMutationBatchResult>(marked.status, marked.diagnostic);
+  PhysicalMgaCowMutationBatchResult result;
   const auto guarded = PersistLocalTransactionInventoryToOpenDevice(&device, context.page_size, marked.inventory);
   const auto unresolved = [&](Status status, DiagnosticRecord diagnostic) {
     auto failed = Propagate<PhysicalMgaCowMutationBatchResult>(status, std::move(diagnostic));
     failed.unresolved_mutation_transaction = active_entry.identity;
+    failed.row_io_effects = result.row_io_effects;
     return failed;
   };
   if (!guarded.ok()) return unresolved(guarded.status, guarded.diagnostic);
 
-  PhysicalMgaCowMutationBatchResult result;
   result.status = CowStoreOkStatus();
   for (const auto& prepared : prepared_pages) {
+    ++result.row_io_effects.write_calls;
     const auto written = device.WriteAt(prepared.offset, prepared.image.data(), prepared.image.size());
+    result.row_io_effects.write_bytes_observed += written.bytes_transferred;
     if (!written.ok()) {
       return unresolved(written.status, written.diagnostic);
     }
     ++result.pages_written;
+    ++result.row_io_effects.complete_page_writes;
   }
   mark_phase("write_pages");
   if (request.sync_after_batch) {
+    ++result.row_io_effects.sync_calls;
     const auto sync = device.Sync();
     if (!sync.ok()) {
       return unresolved(sync.status, sync.diagnostic);
     }
+    ++result.row_io_effects.completed_syncs;
   }
   mark_phase("sync");
   result.written_rows = static_cast<u64>(request.mutations.size());

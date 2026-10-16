@@ -114,7 +114,62 @@ void TestPhysicalBulkVersionIdentityProvenance() {
   }
 }
 
+void TestNativePhysicalFailureCannotFallback() {
+#ifdef SCRATCHBIRD_CDP_NATIVE_ROW_IO_FAULT_TEST
+  for(const auto size:{8192u,16384u,32768u,65536u,131072u}) {
+    auto fixture=MakeInt64IndexFixture("native_optional_physical_failure",1970,"int64",false,{},size);
+    // Reuse actual provisioned storage only after confirmed MGA rollback, not
+    // a reset of observations or an unresolved-operation retry. Both real I/O
+    // failures retain independent transactions/identities and full assertions.
+    for(bool partial:{false,true}) {
+    auto context=Begin(fixture,"native-optional-physical-failure");
+    auto request=NativeRequest(fixture,context,{Int64IndexedRow(1),Int64IndexedRow(2),Int64IndexedRow(3)});
+    for(auto& option:request.option_envelopes)
+      if(option=="physical_mga_cow.required=true")option="physical_mga_cow.required=false";
+    request.option_envelopes.push_back("physical_mga_cow.rows_per_page=1");
+    struct stat file{};
+    Require(::stat(fixture.database_path.c_str(),&file)==0,"native physical failure node identity unavailable");
+    native_row_io_device=file.st_dev;native_row_io_inode=file.st_ino;
+    native_row_io_offset.store(static_cast<off_t>((fixture.physical_page+1)*size),std::memory_order_release);
+    struct Disarm {~Disarm(){native_row_io_fault.store(0,std::memory_order_release);}} disarm;
+    native_row_io_fault.store(partial?2:1,std::memory_order_release);
+    const auto refused=api::EngineExecuteNativeBulkIngest(request);
+    Require(native_row_io_fault.load(std::memory_order_acquire)==0,
+        "native optional physical write failure was not exercised");
+    Require(!refused.ok&&!refused.diagnostics.empty(),
+        "unresolved native publication became an optional-storage success");
+    const auto evidence=[&](std::string_view kind,std::string_view value) {
+      return HasEvidence(refused.evidence,kind,value);
+    };
+    Require(!evidence("direct_physical_bulk_row_page_writer","fallback")&&
+        evidence("direct_physical_bulk_row_page_write_calls","2")&&
+        evidence("direct_physical_bulk_row_page_complete_writes","1")&&
+        evidence("direct_physical_bulk_row_page_write_bytes_observed",std::to_string(size+(partial?size/2:0))),
+        "native failure lost exact partial-I/O observations or claimed a fallback");
+    const auto inventory=db::AcquireStrongLocalTransactionInventorySnapshot(context.database_path);
+    Require(inventory.ok(),"native failed-batch inventory could not be reconciled");
+    const auto transaction=scratchbird::transaction::mga::LookupLocalTransaction(inventory.snapshot->inventory,
+        scratchbird::transaction::mga::MakeLocalTransactionId(context.local_transaction_id));
+    Require(transaction.ok()&&(transaction.entry.rollback_only||
+        transaction.entry.state==scratchbird::transaction::mga::TransactionState::rolled_back),
+        "native partial write lost the actual noncommittable MGA fence");
+    api::EngineCommitTransactionRequest commit;commit.context=context;
+    Require(!api::EngineCommitTransaction(commit).ok,"native failed physical prefix could be committed");
+    if(transaction.entry.state!=scratchbird::transaction::mga::TransactionState::rolled_back)
+      Rollback(context);
+    auto reader=Begin(fixture,"native-failed-prefix-reader");
+    Require(SelectCount(fixture,reader)==0,"native failed physical prefix escaped as visible rows");
+    Rollback(reader);
+    // NativeRequest selects a fresh component destination beyond the current
+    // actual file end. Never overwrite an old prefix or new inventory pages.
+    fixture.physical_page=0;
+    }
+  }
+#endif
+}
+
 void TestNativeBlobInputBoundary() {
+  TestNativePhysicalFailureCannotFallback();
   TestPhysicalBulkVersionIdentityProvenance();
   auto fixture=MakeDescriptorPayloadFixture("native_blob_inputs",1910);
   auto context=Begin(fixture,"native-blob-input-boundary");

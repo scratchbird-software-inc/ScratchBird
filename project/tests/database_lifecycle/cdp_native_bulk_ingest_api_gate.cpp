@@ -34,6 +34,7 @@
 #include "memory.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "physical_mga_cow_store.hpp"
+#include "local_transaction_store.hpp"
 #include "hash_digest.hpp"
 #include "sblr_dispatch_server.hpp"
 #include "sblr_dispatch.hpp"
@@ -52,6 +53,36 @@
 #include <array>
 #include <bit>
 #include <chrono>
+#ifdef SCRATCHBIRD_CDP_NATIVE_ROW_IO_FAULT_TEST
+#include <atomic>
+#include <cerrno>
+#include <sys/stat.h>
+#include <unistd.h>
+namespace {
+std::atomic<unsigned> native_row_io_fault{0};
+dev_t native_row_io_device{};
+ino_t native_row_io_inode{};
+std::atomic<off_t> native_row_io_offset{0};
+}
+extern "C" ssize_t __real_pwrite(int,const void*,size_t,off_t);
+extern "C" ssize_t __wrap_pwrite(int fd,const void* bytes,size_t count,off_t offset) {
+  const auto mode=native_row_io_fault.load(std::memory_order_acquire);
+  if(mode&&offset==native_row_io_offset.load(std::memory_order_acquire)) {
+    struct stat file{};
+    if(::fstat(fd,&file)==0&&file.st_dev==native_row_io_device&&file.st_ino==native_row_io_inode) {
+      if(mode==2) {
+        const auto written=__real_pwrite(fd,bytes,count/2,offset);
+        if(written>0)native_row_io_offset.fetch_add(written,std::memory_order_release);
+        native_row_io_fault.store(1,std::memory_order_release);
+        return written;
+      }
+      native_row_io_fault.store(0,std::memory_order_release);
+      errno=EIO;return -1;
+    }
+  }
+  return __real_pwrite(fd,bytes,count,offset);
+}
+#endif
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>

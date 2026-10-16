@@ -764,6 +764,11 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   set_tests_properties(dml_ingestion_lifetime_conformance PROPERTIES
     TIMEOUT 30 LABELS "database_lifecycle;dml_ingestion;worker_lifetime;concurrency")
   target_compile_features(cdp_native_bulk_ingest_api_gate PRIVATE cxx_std_20)
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    target_compile_definitions(cdp_native_bulk_ingest_api_gate PRIVATE
+      SCRATCHBIRD_CDP_NATIVE_ROW_IO_FAULT_TEST=1)
+    target_link_options(cdp_native_bulk_ingest_api_gate PRIVATE "-Wl,--wrap=pwrite")
+  endif()
   target_link_libraries(cdp_native_bulk_ingest_api_gate
     PRIVATE
       sb_core_platform

@@ -627,6 +627,19 @@ struct PhysicalMgaCowRowReceipt {
   bool deleted = false;
 };
 
+// Observed row-page I/O, independent of successful batch publication. Not MGA
+// commit, a row receipt, durable completion or proof of no physical effects.
+// Returned I/O failures retain these exact counters. An escaping exception or
+// process exit can lose transient observations: reconcile the original native
+// rollback-only transaction, never infer no effects from a missing result.
+struct PhysicalMgaCowBatchRowIoEffects {
+  u64 write_calls = 0;
+  u64 write_bytes_observed = 0;
+  u64 complete_page_writes = 0;
+  // Explicit row-batch Sync only; inventory barriers have their own protocol.
+  u64 sync_calls = 0;
+  u64 completed_syncs = 0;
+};
 struct PhysicalMgaCowMutationBatchResult {
   Status status;
   DiagnosticRecord diagnostic;
@@ -641,6 +654,8 @@ struct PhysicalMgaCowMutationBatchResult {
   std::optional<scratchbird::core::datatypes::TimeDiagnosticFactV3> time_diagnostic;
   std::optional<scratchbird::core::datatypes::TimestampDiagnosticFactV3> timestamp_diagnostic;
   std::optional<scratchbird::core::datatypes::IntervalDiagnosticFactV3> interval_diagnostic;
+
+  PhysicalMgaCowBatchRowIoEffects row_io_effects;
 
   bool ok() const {
     return status.ok();

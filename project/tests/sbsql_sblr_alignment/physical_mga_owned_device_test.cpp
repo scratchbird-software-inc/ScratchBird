@@ -1258,6 +1258,15 @@ void FailedNativeBatchCannotCommitPrefix() {
       failed.unresolved_mutation_transaction.transaction_uuid.value == tx.transaction_uuid.value &&
       failed.unresolved_mutation_transaction.local_id.value == tx.local_id.value,
       "failed batch issued partial receipt or lost recovery identity");
+  if(!threw) {
+    const auto complete=fault==OwnedFault::row_write?1u:2u;
+    Check(failed.row_io_effects.write_calls==2&&
+        failed.row_io_effects.complete_page_writes==complete&&
+        failed.row_io_effects.write_bytes_observed==static_cast<u64>(complete)*page_size&&
+        failed.row_io_effects.sync_calls==static_cast<u64>(explicit_sync&&fault!=OwnedFault::row_write)&&
+        failed.row_io_effects.completed_syncs==static_cast<u64>(explicit_sync&&fault==OwnedFault::batch_release_write),
+        "failed native batch erased or overstated actual row-page I/O effects");
+  }
   Check(f.device.Close().ok() && f.device.Open(f.path, disk::FileOpenMode::open_existing).ok(), "reopen after partial batch");
   const auto inventory = db::LoadLocalTransactionInventoryFromOpenDevice(&f.device, page_size);
   Check(inventory.ok(), "read failed batch durable inventory");
@@ -1284,6 +1293,11 @@ void FailedNativeBatchCannotCommitPrefix() {
     const auto written = db::WritePhysicalMgaCowUnpublishedMutationBatchToOpenDevice(f.device, batch);
     Check(written.ok() && written.written_rows == 2 && written.pages_written == 2 &&
         !written.unresolved_mutation_transaction.valid(), "complete batch lacked success receipt");
+    Check(written.row_io_effects.write_calls==2&&written.row_io_effects.complete_page_writes==2&&
+        written.row_io_effects.write_bytes_observed==2*page_size&&
+        written.row_io_effects.sync_calls==static_cast<u64>(explicit_sync)&&
+        written.row_io_effects.completed_syncs==static_cast<u64>(explicit_sync),
+        "complete native batch row I/O observations differ from actual work");
     const auto fast_path_evidence = std::string("physical_mga_cow.empty_page_insert_fast_path=") + (explicit_sync ? "true" : "false");
     Check(std::find(written.evidence.begin(), written.evidence.end(), fast_path_evidence) != written.evidence.end(),
         "batch reported a fast path that was not used");

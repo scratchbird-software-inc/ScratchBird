@@ -4304,6 +4304,8 @@ struct DirectPhysicalMgaCowWriteResult {
   EngineApiDiagnostic diagnostic;
   std::vector<EngineEvidenceReference> evidence;
   std::uint64_t written_rows = 0;
+  scratchbird::storage::database::PhysicalMgaCowBatchRowIoEffects row_io_effects;
+  scratchbird::transaction::mga::TransactionIdentity unresolved_mutation_transaction;
 };
 
 DirectPhysicalMgaCowWriteResult WriteDirectPhysicalMgaCowRows(
@@ -4421,6 +4423,18 @@ DirectPhysicalMgaCowWriteResult WriteDirectPhysicalMgaCowRows(
   const auto written =
       scratchbird::storage::database::WritePhysicalMgaCowUnpublishedMutationBatch(
           std::move(batch));
+  result.row_io_effects = written.row_io_effects;
+  result.unresolved_mutation_transaction = written.unresolved_mutation_transaction;
+  result.evidence.push_back({"direct_physical_bulk_row_page_write_calls",
+      std::to_string(result.row_io_effects.write_calls)});
+  result.evidence.push_back({"direct_physical_bulk_row_page_write_bytes_observed",
+      std::to_string(result.row_io_effects.write_bytes_observed)});
+  result.evidence.push_back({"direct_physical_bulk_row_page_complete_writes",
+      std::to_string(result.row_io_effects.complete_page_writes)});
+  result.evidence.push_back({"direct_physical_bulk_row_page_sync_calls",
+      std::to_string(result.row_io_effects.sync_calls)});
+  result.evidence.push_back({"direct_physical_bulk_row_page_completed_syncs",
+      std::to_string(result.row_io_effects.completed_syncs)});
   if (!written.ok()) {
     result.ok = false;
     result.diagnostic = MakeEngineApiDiagnosticFromNative(
@@ -8595,7 +8609,11 @@ static DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppendImpl(
 	                                               &batch_context.row_encoder_plan,
                                                  temporal_schema,
                                                  &uuid_batch.physical_versions);
-	             if (!row_page_write.ok && DirectPhysicalMgaCowRequired(request)) {
+	             // A native publication/exclusion barrier can have effects even
+	             // when no row receipt exists. Optional alternate storage cannot
+	             // turn that unresolved owning transaction into a success.
+	             if (!row_page_write.ok && (DirectPhysicalMgaCowRequired(request) ||
+                     row_page_write.unresolved_mutation_transaction.valid())) {
 	               set_ingestion_write_failure_reason(
 	                   "physical_mga_cow_row_page_refused");
                return row_page_write.diagnostic;
