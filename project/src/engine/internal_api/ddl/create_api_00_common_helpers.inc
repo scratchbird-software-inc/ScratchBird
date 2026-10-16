@@ -313,31 +313,20 @@ EngineApiDiagnostic ValidateAndCanonicalizeColumnTextResources(
   }
 
   if (!charset_uuid.is_nil()) {
-    EngineUuid requested_charset;
-    requested_charset = charset_uuid;
-    const auto charset = LookupEngineResourceDescriptorByUuid(
-        context, requested_charset, "charset");
-    if (!charset.ok) return charset.diagnostic;
-
-    if (collation_uuid.is_nil()) {
-      collation_uuid =
-          charset.resource_descriptor.default_collation_uuid;
-      if (collation_uuid.is_nil()) {
+    auto pair = LookupEngineTextResourcePair(context, charset_uuid, collation_uuid);
+    if (!pair.ok) {
+      // Preserve the established DDL diagnostic vector while sharing the
+      // single-image lookup with contextual literal and assignment admission.
+      if (pair.diagnostic.message_key == "catalog.resource.default_collation_required")
         return MakeInvalidRequestDiagnostic(
             "ddl.create_table", "charset_default_collation_uuid_required");
-      }
+      if (pair.diagnostic.message_key == "catalog.resource.collation_charset_mismatch")
+        return MakeInvalidRequestDiagnostic(
+            "ddl.create_table", "collation_charset_relationship_mismatch");
+      return pair.diagnostic;
     }
-
-    EngineUuid requested_collation;
-    requested_collation = collation_uuid;
-    const auto collation = LookupEngineResourceDescriptorByUuid(
-        context, requested_collation, "collation");
-    if (!collation.ok) return collation.diagnostic;
-    if (collation.resource_descriptor.parent_resource_uuid !=
-        charset.resource_descriptor.resource_uuid) {
-      return MakeInvalidRequestDiagnostic(
-          "ddl.create_table", "collation_charset_relationship_mismatch");
-    }
+    const auto& charset = pair.charset;
+    const auto& collation = pair.collation;
 
     const auto validate_or_set_u64 =
         [&](const std::string& key,
@@ -355,26 +344,26 @@ EngineApiDiagnostic ValidateAndCanonicalizeColumnTextResources(
     };
     if (!validate_or_set_u64(
             "charset_generation", charset_generation_text,
-            charset.resource_descriptor.family_epoch) ||
+            charset.family_epoch) ||
         !validate_or_set_u64(
             "collation_generation", collation_generation_text,
-            collation.resource_descriptor.family_epoch) ||
+            collation.family_epoch) ||
         !validate_or_set_u64(
             "resource_epoch", resource_epoch_text,
-            charset.resource_descriptor.resource_epoch) ||
-        collation.resource_descriptor.resource_epoch !=
-            charset.resource_descriptor.resource_epoch ||
-        charset.resource_descriptor.resource_epoch != context.resource_epoch) {
+            charset.resource_epoch) ||
+        collation.resource_epoch !=
+            charset.resource_epoch ||
+        charset.resource_epoch != context.resource_epoch) {
       return MakeInvalidRequestDiagnostic(
           "ddl.create_table", "text_resource_authority_stale");
     }
 
     *column_descriptor = SetDescriptorFieldLocal(
         std::move(*column_descriptor), "charset_uuid",
-        charset.resource_descriptor.resource_uuid);
+        charset.resource_uuid);
     *column_descriptor = SetDescriptorFieldLocal(
         std::move(*column_descriptor), "collation_uuid",
-        collation.resource_descriptor.resource_uuid);
+        collation.resource_uuid);
   }
   if (character_length != 0) {
     *column_descriptor = SetDescriptorFieldLocal(

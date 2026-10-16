@@ -245,6 +245,15 @@ void ResourceAdmission(const fs::path& path) {
   const auto lookup=[&](const engine::EngineRequestContext& candidate) {
     return engine::LookupEngineResourceDescriptorByUuid(candidate,image.charsets.front().resource_uuid,"charset");
   };
+  const auto pair_empty=[](const engine::EngineTextResourcePairLookupResult& result) {
+    return !result.ok && result.diagnostic.error &&
+        result.diagnostic.canonical_metadata.has_value() &&
+        !result.charset.present && !result.collation.present &&
+        result.charset.resource_uuid.is_nil() && result.collation.resource_uuid.is_nil() &&
+        result.charset.database_uuid.is_nil() && result.collation.database_uuid.is_nil() &&
+        !result.charset.unicode_collation && !result.collation.unicode_collation &&
+        result.charset.canonical_name.empty() && result.collation.canonical_name.empty();
+  };
   const auto refused=[&](const engine::EngineRequestContext& candidate,const char* key) {
     const auto resource=lookup(candidate);
     check(!resource.ok && resource.diagnostic.error && resource.diagnostic.code=="CATALOG.INVALID_INPUT" && resource.diagnostic.message_key==key &&
@@ -262,6 +271,11 @@ void ResourceAdmission(const fs::path& path) {
           timezone.diagnostic.canonical_metadata.has_value() &&
           !timezone.authority.active && timezone.authority.timezone_names.empty(),
           "timezone lookup published authority for invalid context");
+    const auto pair=engine::LookupEngineTextResourcePair(candidate,
+        image.collations.front().charset_uuid,image.collations.front().resource_uuid);
+    check(pair_empty(pair) && pair.diagnostic.code=="CATALOG.INVALID_INPUT" &&
+        pair.diagnostic.message_key==key,
+        "TEXT pair bypassed actual node/transaction/resource admission or published a half-pair");
   };
   const auto charset=lookup(context);
   check(charset.ok && charset.resource_descriptor.resource_uuid==image.charsets.front().resource_uuid &&
@@ -277,6 +291,45 @@ void ResourceAdmission(const fs::path& path) {
         collation.resource_descriptor.parent_resource_uuid==image.collations.front().charset_uuid &&
         collation.resource_descriptor.family_version==image.collations.front().family_version,
         "actual collation lookup changed binary identity or parent");
+  unsigned default_pairs=0;
+  for(const auto& row:image.charsets) {
+    const auto pair=engine::LookupEngineTextResourcePair(context,row.resource_uuid,{});
+    if(row.default_collation_uuid.is_nil()) {
+      check(pair_empty(pair) &&
+          pair.diagnostic.message_key=="catalog.resource.default_collation_required",
+          "missing registered default selected an arbitrary collation or published a charset");
+      continue;
+    }
+    ++default_pairs;
+    check(pair.ok && !pair.diagnostic.error && pair.charset.present && pair.collation.present &&
+        pair.charset.resource_uuid==row.resource_uuid &&
+        pair.collation.resource_uuid==row.default_collation_uuid &&
+        pair.collation.canonical_name==row.default_collation_name &&
+        pair.collation.parent_resource_uuid==row.resource_uuid && pair.collation.default_for_parent &&
+        pair.charset.database_uuid==context.database_uuid && pair.collation.database_uuid==context.database_uuid &&
+        pair.charset.resource_epoch==image.resource_epoch && pair.collation.resource_epoch==image.resource_epoch &&
+        pair.charset.family_epoch==row.family_epoch,
+        "registered-default TEXT pair changed actual identities, ownership or epochs");
+  }
+  check(default_pairs!=0,"actual seed has no registered default TEXT pairs");
+  const auto pair_refused=[&](const platform::Uuid& cs,const platform::Uuid& co,
+                             const char* code,const char* key) {
+    const auto pair=engine::LookupEngineTextResourcePair(context,cs,co);
+    check(pair_empty(pair) && pair.diagnostic.code==code && pair.diagnostic.message_key==key,
+        "invalid TEXT pair was defaulted, partially published or lost its exact diagnostic");
+  };
+  pair_refused({},image.collations.front().resource_uuid,
+      "CATALOG.INVALID_INPUT","catalog.resource.uuid_required");
+  pair_refused(image.collations.front().resource_uuid,{},
+      "CATALOG.INVALID_INPUT","catalog.resource.family_mismatch");
+  pair_refused(image.charsets.front().resource_uuid,image.charsets.front().resource_uuid,
+      "CATALOG.INVALID_INPUT","catalog.resource.family_mismatch");
+  const auto foreign_parent=std::find_if(image.charsets.begin(),image.charsets.end(),[&](const auto& row) {
+    return row.resource_uuid!=image.collations.front().charset_uuid;
+  });
+  check(foreign_parent!=image.charsets.end(),"seed lacks distinct charset parents");
+  pair_refused(foreign_parent->resource_uuid,image.collations.front().resource_uuid,
+      "CATALOG.INVALID_INPUT","catalog.resource.collation_charset_mismatch");
   unsigned executable_profiles=0;
   for(const auto& row:image.collations) {
     if(row.comparison_profile==r::CollationProfile::unbound)continue;
@@ -289,6 +342,14 @@ void ResourceAdmission(const fs::path& path) {
         found.resource_descriptor.family_epoch==row.family_epoch &&
         found.resource_descriptor.comparison_profile==row.comparison_profile,
         "live binary lookup lost comparison profile or owning cohort");
+    const auto pair=engine::LookupEngineTextResourcePair(context,row.charset_uuid,row.resource_uuid);
+    check(pair.ok && pair.charset.resource_uuid==row.charset_uuid &&
+        pair.collation.resource_uuid==row.resource_uuid &&
+        pair.collation.family_epoch==row.family_epoch &&
+        pair.collation.comparison_profile==row.comparison_profile &&
+        pair.collation.resource_epoch==pair.charset.resource_epoch &&
+        pair.collation.parent_canonical_name==pair.charset.canonical_name,
+        "explicit executable TEXT pair changed actual resource profile");
     std::string folded_name=row.canonical_name;
     for(auto& ch:folded_name)if(ch>='A'&&ch<='Z')ch+=('a'-'A');
     const auto named=engine::LookupEngineResourceDescriptorByName(context,folded_name,"COLLATION");
@@ -391,6 +452,10 @@ void ResourceAdmission(const fs::path& path) {
     check(!result.ok && result.diagnostic.code=="CATALOG.INVALID_INPUT" && result.diagnostic.message_key=="catalog.resource.uuid_invalid" &&
           result.diagnostic.canonical_metadata.has_value() &&
           !result.resource_descriptor.present,"old UUID version admitted as system resource identity");
+    pair_refused(identity,image.collations.front().resource_uuid,
+        "CATALOG.INVALID_INPUT","catalog.resource.uuid_invalid");
+    pair_refused(image.collations.front().charset_uuid,identity,
+        "CATALOG.INVALID_INPUT","catalog.resource.uuid_invalid");
   }
   bad=context; bad.transaction_uuid.bytes[15]^=1;
   refused(bad,"catalog.resource.transaction_not_active");
@@ -417,6 +482,10 @@ void ResourceAdmission(const fs::path& path) {
   invalid_resource(invalid_id,"charset","catalog.resource.uuid_invalid");
   const auto unknown_id=uuid::GenerateEngineIdentityV7(UuidKind::object,Now());
   Require(unknown_id.ok(),"absent resource fixture identity generation failed");
+  pair_refused(unknown_id.value.value,{},
+      "CATALOG.NAME.NOT_FOUND_OR_NOT_VISIBLE","catalog.resource.uuid_not_found");
+  pair_refused(image.collations.front().charset_uuid,unknown_id.value.value,
+      "CATALOG.NAME.NOT_FOUND_OR_NOT_VISIBLE","catalog.resource.uuid_not_found");
   const auto absent=engine::LookupEngineResourceDescriptorByUuid(context,unknown_id.value.value,"charset");
   check(!absent.ok && absent.diagnostic.code=="CATALOG.NAME.NOT_FOUND_OR_NOT_VISIBLE" &&
         absent.diagnostic.canonical_metadata.has_value() && !absent.resource_descriptor.present,

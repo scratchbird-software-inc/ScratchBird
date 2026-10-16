@@ -131,14 +131,12 @@ EngineDmlUpdateTextTargetCaptureResultV2 CaptureDmlUpdateTextTargetV2(
   EngineResolvedResourceDescriptor cs;
   EngineResolvedResourceDescriptor co;
   if (contextual) {
-    const auto charset = LookupEngineResourceDescriptorByUuid(
-        context, EngineUuid{ContextualUuidNativeV2(descriptor.charset_uuid)}, "charset");
-    if (!charset.ok) { result.diagnostic = charset.diagnostic; return result; }
-    const auto collation = LookupEngineResourceDescriptorByUuid(
-        context, EngineUuid{ContextualUuidNativeV2(descriptor.collation_uuid)}, "collation");
-    if (!collation.ok) { result.diagnostic = collation.diagnostic; return result; }
-    cs = charset.resource_descriptor;
-    co = collation.resource_descriptor;
+    auto pair = LookupEngineTextResourcePair(
+        context, EngineUuid{ContextualUuidNativeV2(descriptor.charset_uuid)},
+        EngineUuid{ContextualUuidNativeV2(descriptor.collation_uuid)});
+    if (!pair.ok) { result.diagnostic = std::move(pair.diagnostic); return result; }
+    cs = std::move(pair.charset);
+    co = std::move(pair.collation);
   } else {
     // The exact d718/d71a row already fixes UTF-8 assignment encoding. Resolve
     // its live engine resource; do not fabricate a collation or a contextual

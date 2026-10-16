@@ -270,45 +270,46 @@ bool ResolveLiveComparisonResources(
   }
 
   const EngineUuid charset_uuid{profile.charset_uuid};
-  const auto charset = LookupEngineResourceDescriptorByUuid(
-      context, charset_uuid, "charset");
-  if (!charset.ok || !charset.resource_descriptor.present ||
-      charset.resource_descriptor.resource_uuid !=
+  const EngineUuid collation_uuid{profile.collation_uuid};
+  const auto pair = LookupEngineTextResourcePair(context, charset_uuid, collation_uuid);
+  if (!pair.ok) {
+    if (diagnostic != nullptr) *diagnostic = pair.diagnostic;
+    return false;
+  }
+  // Keep the original per-resource profile checks below, but do not admit
+  // them independently from different database observations.
+  const auto& charset = pair.charset;
+  const auto& collation = pair.collation;
+  if (!charset.present ||
+      charset.resource_uuid !=
           charset_uuid ||
-      charset.resource_descriptor.resource_epoch != profile.resource_epoch ||
-      charset.resource_descriptor.family_epoch != profile.charset_generation ||
-      charset.resource_descriptor.canonical_name.empty()) {
+      charset.resource_epoch != profile.resource_epoch ||
+      charset.family_epoch != profile.charset_generation ||
+      charset.canonical_name.empty()) {
     if (diagnostic != nullptr) {
-      *diagnostic = charset.ok
-                        ? Diagnostic(
-                              "CTB.TEXT.RESOURCE_EPOCH_MISMATCH",
-                              "engine.contextual_text_literal.charset_stale")
-                        : charset.diagnostic;
+      *diagnostic = Diagnostic(
+          "CTB.TEXT.RESOURCE_EPOCH_MISMATCH",
+          "engine.contextual_text_literal.charset_stale");
     }
     return false;
   }
-  const EngineUuid collation_uuid{profile.collation_uuid};
-  const auto collation = LookupEngineResourceDescriptorByUuid(
-      context, collation_uuid, "collation");
-  if (!collation.ok || !collation.resource_descriptor.present ||
-      collation.resource_descriptor.resource_uuid !=
+  if (!collation.present ||
+      collation.resource_uuid !=
           collation_uuid ||
-      collation.resource_descriptor.parent_resource_uuid !=
+      collation.parent_resource_uuid !=
           charset_uuid ||
-      collation.resource_descriptor.parent_canonical_name !=
-          charset.resource_descriptor.canonical_name ||
-      collation.resource_descriptor.resource_epoch != profile.resource_epoch ||
-      collation.resource_descriptor.family_epoch !=
+      collation.parent_canonical_name !=
+          charset.canonical_name ||
+      collation.resource_epoch != profile.resource_epoch ||
+      collation.family_epoch !=
           profile.collation_generation ||
-      collation.resource_descriptor.seed_pack_name.empty() ||
-      collation.resource_descriptor.seed_pack_version.empty() ||
-      collation.resource_descriptor.canonical_name.empty()) {
+      collation.seed_pack_name.empty() ||
+      collation.seed_pack_version.empty() ||
+      collation.canonical_name.empty()) {
     if (diagnostic != nullptr) {
-      *diagnostic = collation.ok
-                        ? Diagnostic(
-                              "CTB.TEXT.RESOURCE_EPOCH_MISMATCH",
-                              "engine.contextual_text_literal.collation_stale")
-                        : collation.diagnostic;
+      *diagnostic = Diagnostic(
+          "CTB.TEXT.RESOURCE_EPOCH_MISMATCH",
+          "engine.contextual_text_literal.collation_stale");
     }
     return false;
   }
@@ -316,22 +317,22 @@ bool ResolveLiveComparisonResources(
   EngineContextualTextComparisonResourceSnapshotV2 resolved;
   resolved.charset_uuid = profile.charset_uuid;
   resolved.charset_generation = profile.charset_generation;
-  resolved.charset_name = charset.resource_descriptor.canonical_name;
+  resolved.charset_name = charset.canonical_name;
   resolved.charset_identity = charset_uuid;
   resolved.charset_resource_epoch =
-      charset.resource_descriptor.resource_epoch;
-  resolved.charset_family_epoch = charset.resource_descriptor.family_epoch;
+      charset.resource_epoch;
+  resolved.charset_family_epoch = charset.family_epoch;
   resolved.collation_uuid = profile.collation_uuid;
   resolved.collation_generation = profile.collation_generation;
-  resolved.collation_name = collation.resource_descriptor.canonical_name;
+  resolved.collation_name = collation.canonical_name;
   resolved.collation_identity = collation_uuid;
   resolved.collation_resource_epoch =
-      collation.resource_descriptor.resource_epoch;
+      collation.resource_epoch;
   resolved.collation_family_epoch =
-      collation.resource_descriptor.family_epoch;
-  resolved.text_seed = TextSeedFromResource(collation.resource_descriptor);
-  resolved.charset_resource = charset.resource_descriptor;
-  resolved.collation_resource = collation.resource_descriptor;
+      collation.family_epoch;
+  resolved.text_seed = TextSeedFromResource(collation);
+  resolved.charset_resource = charset;
+  resolved.collation_resource = collation;
   resolved.target_projection_sha256 = profile.target_projection_sha256;
   resolved.descriptor_evidence_sha256 =
       profile.descriptor_evidence_sha256;

@@ -82,6 +82,23 @@ EngineResourceDescriptorLookupResult LookupEngineResourceDescriptorByUuid(
     const EngineUuid& resource_uuid,
     const std::string& expected_resource_family);
 
+// Resolve both halves of one TEXT profile from one admitted physical resource
+// image. A nil collation requests this charset's registered default, never a
+// process/session/locale fallback. UUID arguments are lookup selectors, not
+// authorization or occurrence/profile receipts. Callers still validate their
+// bound generations and retain the pair under the owning statement authority.
+// Failure publishes neither descriptor, including a late collation failure.
+struct EngineTextResourcePairLookupResult {
+  bool ok = false;
+  EngineApiDiagnostic diagnostic;
+  EngineResolvedResourceDescriptor charset;
+  EngineResolvedResourceDescriptor collation;
+};
+EngineTextResourcePairLookupResult LookupEngineTextResourcePair(
+    const EngineRequestContext& context,
+    const EngineUuid& charset_uuid,
+    const EngineUuid& collation_uuid);
+
 // Catalog-facing name lookup. Alias resolution and executable descriptor
 // projection share one admitted node/transaction/resource snapshot. It does
 // not grant SQL visibility or bypass the server's name/disclosure policy.

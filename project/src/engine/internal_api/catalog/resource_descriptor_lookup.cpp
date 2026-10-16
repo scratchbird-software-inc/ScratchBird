@@ -221,6 +221,65 @@ EngineResourceDescriptorLookupResult LookupEngineResourceDescriptorByUuid(
                                    resource_uuid, family);
 }
 
+EngineTextResourcePairLookupResult LookupEngineTextResourcePair(
+    const EngineRequestContext& context,
+    const EngineUuid& charset_uuid,
+    const EngineUuid& collation_uuid) {
+  EngineTextResourcePairLookupResult result;
+  const auto fail = [&](const char* key, const char* detail) {
+    result.diagnostic = MakeEngineApiDiagnostic("CATALOG.INVALID_INPUT", key, detail);
+    return std::move(result);
+  };
+  if (!scratchbird::core::uuid::IsEngineIdentityUuid(charset_uuid))
+    return fail(charset_uuid.is_nil() ? "catalog.resource.uuid_required"
+                                     : "catalog.resource.uuid_invalid",
+                "charset_uuid_required_or_malformed");
+  if (!collation_uuid.is_nil() &&
+      !scratchbird::core::uuid::IsEngineIdentityUuid(collation_uuid))
+    return fail("catalog.resource.uuid_invalid", "collation_uuid_malformed");
+
+  // Never reopen between the two projections. Both descriptors (including the
+  // compiled collation tables) must come from the same admitted immutable image.
+  auto admission = OpenEngineResourceCatalog(context);
+  if (!admission.ok()) {
+    result.diagnostic = std::move(admission.diagnostic);
+    return result;
+  }
+  const auto& image = admission.state->resource_seed_catalog;
+  auto charset = ProjectResourceDescriptor(context, image, charset_uuid, "charset");
+  if (!charset.ok) {
+    result.diagnostic = std::move(charset.diagnostic);
+    return result;
+  }
+  const auto selected_collation = collation_uuid.is_nil()
+      ? charset.resource_descriptor.default_collation_uuid : collation_uuid;
+  if (selected_collation.is_nil())
+    return fail("catalog.resource.default_collation_required",
+                "charset_default_collation_uuid_required");
+  auto collation = ProjectResourceDescriptor(context, image, selected_collation,
+                                              "collation");
+  if (!collation.ok) {
+    result.diagnostic = std::move(collation.diagnostic);
+    return result;
+  }
+  const auto& cs = charset.resource_descriptor;
+  const auto& co = collation.resource_descriptor;
+  if (co.parent_resource_uuid != cs.resource_uuid ||
+      co.parent_canonical_name != cs.canonical_name)
+    return fail("catalog.resource.collation_charset_mismatch",
+                "collation_charset_relationship_mismatch");
+  if (collation_uuid.is_nil() &&
+      (!co.default_for_parent || co.canonical_name != cs.default_collation_name))
+    return fail("catalog.resource.default_collation_invalid",
+                "charset_registered_default_collation_mismatch");
+
+  result.diagnostic = std::move(collation.diagnostic);
+  result.charset = std::move(charset.resource_descriptor);
+  result.collation = std::move(collation.resource_descriptor);
+  result.ok = true;
+  return result;
+}
+
 EngineResourceDescriptorLookupResult LookupEngineResourceDescriptorByName(
     const EngineRequestContext& context,
     const std::string& name,
