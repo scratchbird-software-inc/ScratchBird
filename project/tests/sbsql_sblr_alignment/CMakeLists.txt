@@ -2856,7 +2856,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_include_directories(sbsql_sblr_alignment_direct_bulk_binary_identity PRIVATE
     ${CMAKE_SOURCE_DIR}/src ../../src/engine/internal_api)
   target_link_libraries(sbsql_sblr_alignment_direct_bulk_binary_identity PRIVATE
-    sb_core_uuid sb_core_time sb_core_diagnostic_catalog)
+    sb_core_uuid sb_core_time sb_core_hash sb_core_diagnostic_catalog)
   target_link_options(sbsql_sblr_alignment_direct_bulk_binary_identity PRIVATE
     "-Wl,--wrap=RAND_bytes"
     "-Wl,--wrap=_ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv")

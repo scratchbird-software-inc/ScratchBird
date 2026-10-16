@@ -21,6 +21,7 @@
 #include "datatype_interval.hpp"
 #include "datatype_bit_string.hpp"
 #include "dml/direct_bulk_typed_row_codec.hpp"
+#include "dml/direct_bulk_uuid_authority.hpp"
 #include "engine/statement_blob_row_value.hpp"
 #include "engine/statement_cancellation.hpp"
 #include "engine/executor/descriptor_value_runtime.hpp"
@@ -54,6 +55,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <future>
 #include <fstream>
 #include <iostream>
 #include <iterator>
@@ -657,12 +659,13 @@ Fixture MakeFixture(std::string name, platform::u64 salt) {
 
 Fixture MakeInt64IndexFixture(std::string name, platform::u64 salt,
                               std::string_view integer_type = "int64", bool with_index = true,
-                              std::string_view modifiers = {}) {
+                              std::string_view modifiers = {}, platform::u32 page_size = 0) {
   Fixture fixture;
   fixture.salt = salt;
   InitializeOwnedFixtureDirectory(fixture, name);
 
   db::DatabaseCreateConfig create;
+  if (page_size) create.page_size = page_size;
   create.path = fixture.database_path.string();
   create.database_uuid = NewTypedUuid(platform::UuidKind::database, salt + 1);
   create.filespace_uuid = NewTypedUuid(platform::UuidKind::filespace, salt + 2);

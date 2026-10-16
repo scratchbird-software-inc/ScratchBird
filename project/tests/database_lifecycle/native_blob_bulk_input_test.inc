@@ -1,6 +1,121 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
+void TestPhysicalBulkVersionIdentityProvenance() {
+  namespace bulk=api::dml::detail;
+  for (const platform::u32 profile : {8192u,16384u,32768u,65536u,131072u}) {
+    auto fixture=MakeInt64IndexFixture("physical_version_provenance",1960,"int64",false,{},profile);
+    auto context=Begin(fixture,"physical-version-provenance");
+    api::dml::DirectPhysicalBulkAppendRequest issuer;
+    issuer.context=context;issuer.target_table.uuid=fixture.table_uuid;
+    const auto page=(std::filesystem::file_size(fixture.database_path)+profile-1)/profile+4;
+    fixture.physical_page=page;
+    const auto request_for=[&](bulk::DirectBulkUuidBatch& source, std::uint64_t destination,
+                              std::uint32_t first_slot=1) {
+      db::PhysicalMgaCowMutationBatchRequest batch;
+      batch.version_identity_batch=&source.physical_versions;
+      for (std::size_t i=0;i<source.row_uuids.size();++i) {
+        db::PhysicalMgaCowMutationRequest row;
+        row.database_path=fixture.database_path.string();row.relation_uuid=RelationUuid(fixture);
+        row.row_uuid={platform::UuidKind::row,source.row_uuids[i]};
+        row.transaction_uuid={platform::UuidKind::transaction,context.transaction_uuid};
+        row.existing_local_transaction_id=scratchbird::transaction::mga::MakeLocalTransactionId(context.local_transaction_id);
+        row.use_existing_transaction=true;row.page_number=destination;row.stable_slot_id=first_slot+i;
+        scratchbird::storage::page::RowDataCell cell;
+        cell.column_ordinal=1;cell.value.type_id=dt::CanonicalTypeId::int64;
+        cell.value.payload.assign(8,0);cell.value.payload[0]=i+1;
+        row.cells.push_back(std::move(cell));batch.mutations.push_back(std::move(row));
+      }
+      return batch;
+    };
+    for (unsigned mutation=0;mutation<13;++mutation) {
+      auto source=bulk::BuildDirectBulkUuidBatch(issuer,3);
+      auto request=request_for(source,page);
+      db::PhysicalMgaCowVersionBatch unbound;
+      switch(mutation) {
+        case 0: request.version_identity_batch=&unbound;break;
+        case 1: request.mutations.front().relation_uuid.value.bytes.back()^=1;break;
+        case 2: request.mutations.front().row_uuid.value.bytes.back()^=1;break;
+        case 3: request.mutations.back().transaction_uuid.value.bytes.back()^=1;break;
+        case 4: ++request.mutations.back().existing_local_transaction_id.value;break;
+        case 5: request.mutations.back().use_existing_transaction=false;break;
+        case 6: request.mutations.pop_back();break;
+        case 7: std::swap(request.mutations.front(),request.mutations.back());break;
+        case 8: source.version_uuids.front()=NewIdentity(platform::UuidKind::row,1970);break;
+        case 9: source.row_uuids.front()=NewIdentity(platform::UuidKind::row,1971);
+                request.mutations.front().row_uuid.value=source.row_uuids.front();break;
+        case 10: request.mutations.front().kind=db::PhysicalMgaCowMutationKind::update;break;
+        case 11: request.mutations.front().kind=db::PhysicalMgaCowMutationKind::delete_row;break;
+        case 12: {
+          auto foreign=issuer;foreign.context.database_uuid=NewIdentity(platform::UuidKind::database,1972);
+          source=bulk::BuildDirectBulkUuidBatch(foreign,3);request=request_for(source,page);break;
+        }
+      }
+      const auto bytes=std::filesystem::file_size(fixture.database_path);
+      const auto refused=db::WritePhysicalMgaCowUnpublishedMutationBatch(std::move(request));
+      Require(!refused.ok() && refused.row_receipts.empty() && refused.pages_written==0 &&
+          std::filesystem::file_size(fixture.database_path)==bytes,
+          "physical writer accepted substituted/default/foreign pre-issued identity provenance or wrote pages");
+    }
+    {
+      auto failed_source=bulk::BuildDirectBulkUuidBatch(issuer,3);
+      auto failed_request=request_for(failed_source,page);
+      failed_request.mutations.front().cells.front().value.payload.pop_back();
+      const auto bytes=std::filesystem::file_size(fixture.database_path);
+      const auto refused=db::WritePhysicalMgaCowUnpublishedMutationBatch(failed_request);
+      Require(!refused.ok() && refused.row_receipts.empty() && refused.pages_written==0 &&
+          std::filesystem::file_size(fixture.database_path)==bytes,
+          "malformed physical value published a consumed identity cohort");
+      failed_request.mutations.front().cells.front().value.payload.push_back(0);
+      const auto retry=db::WritePhysicalMgaCowUnpublishedMutationBatch(failed_request);
+      Require(!retry.ok() && retry.row_receipts.empty() && retry.pages_written==0 &&
+          std::filesystem::file_size(fixture.database_path)==bytes,
+          "post-claim physical failure silently rearmed its issued identity cohort");
+    }
+    auto source=bulk::BuildDirectBulkUuidBatch(issuer,3);
+    auto request=request_for(source,page);
+    const auto staged=db::WritePhysicalMgaCowUnpublishedMutationBatch(request);
+    Require(staged.ok() && staged.row_receipts.size()==3 && staged.written_rows==3,
+        "actual sealed native version cohort failed physical staging");
+    for (std::size_t i=0;i<3;++i) {
+      const auto& receipt=staged.row_receipts[i];
+      Require(receipt.version_uuid==source.version_uuids[i] && receipt.row_uuid.value==source.row_uuids[i] &&
+          receipt.row_version==1 && receipt.database_uuid.value==fixture.database_uuid &&
+          receipt.creator.transaction_uuid.value==context.transaction_uuid,
+          "physical receipt substituted the actual pre-issued binary version identity");
+    }
+    // The same source is consumed even if its request projection is copied or
+    // the enclosing owning batch is moved. Neither permits a second write.
+    auto moved=std::move(source);request.version_identity_batch=&moved.physical_versions;
+    for(auto& row:request.mutations) row.page_number=page+1;
+    const auto bytes=std::filesystem::file_size(fixture.database_path);
+    const auto replay=db::WritePhysicalMgaCowUnpublishedMutationBatch(request);
+    Require(!replay.ok() && replay.row_receipts.empty() && replay.pages_written==0 &&
+        std::filesystem::file_size(fixture.database_path)==bytes,
+        "moving an already consumed native identity cohort rearmed it");
+    auto concurrent=bulk::BuildDirectBulkUuidBatch(issuer,3);
+    // Append into the existing page: physical page-generation changes must
+    // preserve previously issued version identities and immutable ordinals.
+    const auto concurrent_request=request_for(concurrent,page,4);
+    auto first=std::async(std::launch::async,[&]{return db::WritePhysicalMgaCowUnpublishedMutationBatch(concurrent_request);});
+    auto second=std::async(std::launch::async,[&]{return db::WritePhysicalMgaCowUnpublishedMutationBatch(concurrent_request);});
+    const auto a=first.get(),b=second.get();
+    Require(a.ok()!=b.ok() && (a.ok()?b.row_receipts.empty():a.row_receipts.empty()) &&
+        (a.ok()?a.row_receipts.size():b.row_receipts.size())==3,
+        "copied concurrent requests consumed a native identity cohort more than once");
+    Commit(context);
+    const auto reopened=ReadPhysicalPage(fixture,page);
+    Require(reopened.visible_rows.size()==6,"committed native version cohorts failed actual physical reopen");
+    for(const auto* identity : {&moved,&concurrent}) for(std::size_t i=0;i<3;++i) {
+      const auto found=std::find_if(reopened.visible_rows.begin(),reopened.visible_rows.end(),
+          [&](const auto& row){return row.row_uuid.value==identity->row_uuids[i];});
+      Require(found!=reopened.visible_rows.end() && found->version_uuid==identity->version_uuids[i] &&
+          found->row_version==1,"page-generation change altered a sealed version UUID or immutable chain ordinal");
+    }
+  }
+}
+
 void TestNativeBlobInputBoundary() {
+  TestPhysicalBulkVersionIdentityProvenance();
   auto fixture=MakeDescriptorPayloadFixture("native_blob_inputs",1910);
   auto context=Begin(fixture,"native-blob-input-boundary");
   const auto& types=DescriptorPayloadTypeNames();
@@ -127,15 +242,24 @@ void TestNativeBlobInputBoundary() {
   const auto inserted=api::EngineExecuteNativeBulkIngest(request);
   RequireOk(inserted,"actual native BLOB input bulk mutation failed");
   Require(inserted.inserted_rows==3 && inserted.accepted_rows==3 && inserted.row_uuids.size()==3 &&
+      inserted.row_version_uuids.size()==3 &&
       published==1 && SelectCount(fixture,context)==3,
       "actual native BLOB input lost row counts/identity publication/visibility");
   Commit(context);
+  const auto logical=api::LoadMgaRelationStoreState(BaseContext(fixture,"native-blob-version-reopen"));
+  Require(logical.ok,"native BLOB committed logical versions could not be reopened");
   const auto recovered=ReadPhysicalPage(fixture,fixture.physical_page);
   Require(recovered.visible_rows.size()==3,"native BLOB committed physical reopen lost rows");
   for(std::size_t r=0;r<expected.size();++r) {
     const auto row=std::find_if(recovered.visible_rows.begin(),recovered.visible_rows.end(),
         [&](const auto& stored){return stored.row_uuid.value==inserted.row_uuids[r];});
     Require(row!=recovered.visible_rows.end(),"native BLOB reopen lost actual row identity");
+    Require(row->version_uuid==inserted.row_version_uuids[r] && row->row_version==1,
+        "native BLOB physical reopen has a different version identity than native DML publication");
+    const auto logical_row=std::find_if(logical.state.row_versions.begin(),logical.state.row_versions.end(),
+        [&](const auto& stored){return stored.row_uuid==inserted.row_uuids[r];});
+    Require(logical_row!=logical.state.row_versions.end() && logical_row->version_uuid==row->version_uuid,
+        "native BLOB logical and physical MGA reopen disagree on the true version identity");
     const auto cell=std::find_if(row->cells.begin(),row->cells.end(),
         [&](const auto& stored){return stored.column_ordinal==field+1;});
     const auto& golden=expected[r].fields[field].second;

@@ -63,6 +63,12 @@ DirectBulkUuidBatch BuildDirectBulkUuidBatch(
     batch.version_uuids.push_back(fresh("row"));
     if(images)batch.row_image_uuids.push_back(fresh("row"));
   }
+  batch.physical_versions = storage::database::PhysicalMgaCowVersionBatch(
+      request.context.database_uuid, request.target_table.uuid,
+      request.context.transaction_uuid, request.context.local_transaction_id,
+      batch.row_uuids, batch.version_uuids);
+  if (batch.physical_versions.claimed_.load(std::memory_order_relaxed))
+    InvalidIdentity("BULK.IMPORT.RECOVERY_CONFLICT","dml.bulk_uuid.identity_seal_failed");
   return batch;
 }
 

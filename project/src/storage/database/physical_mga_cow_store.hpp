@@ -24,6 +24,7 @@
 #include "transaction_inventory.hpp"
 #include "transaction_snapshot.hpp"
 #include "node_uuid_issuer.hpp"
+#include "physical_mga_version_batch.hpp"
 
 #include <string>
 #include <map>
@@ -536,6 +537,9 @@ struct PhysicalMgaCowMutationBatch {
   // in native inventory publication before the batch commit fence is released.
   bool sync_after_batch = true;
   bool engine_generated_unique_insert_rows = false;
+  // Optional, engine-issued binary identity provenance; stable through return.
+  // Actual inventory/storage admission is always revalidated independently.
+  PhysicalMgaCowVersionBatch* version_identity_batch = nullptr;
 };
 
 struct PhysicalMgaCowMutationBatchRequest {
@@ -543,6 +547,7 @@ struct PhysicalMgaCowMutationBatchRequest {
   // Same durability rule as the retained-device batch above.
   bool sync_after_batch = true;
   bool engine_generated_unique_insert_rows = false;
+  PhysicalMgaCowVersionBatch* version_identity_batch = nullptr;
 };
 
 struct PhysicalMgaCowFinalization {

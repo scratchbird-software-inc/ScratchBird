@@ -4313,7 +4313,8 @@ DirectPhysicalMgaCowWriteResult WriteDirectPhysicalMgaCowRows(
         value_batch = nullptr,
     bool engine_generated_unique_insert_rows = false,
     const InsertRowEncoderPlan* row_encoder_plan = nullptr,
-    std::shared_ptr<const scratchbird::storage::page::RowDataTemporalSchema> temporal_schema = {}) {
+    std::shared_ptr<const scratchbird::storage::page::RowDataTemporalSchema> temporal_schema = {},
+    scratchbird::storage::database::PhysicalMgaCowVersionBatch* version_identity_batch = nullptr) {
   DirectPhysicalMgaCowWriteResult result;
   if (!DirectPhysicalMgaCowRequested(request)) {
     result.evidence.push_back({"direct_physical_bulk_row_page_writer", "disabled"});
@@ -4371,6 +4372,7 @@ DirectPhysicalMgaCowWriteResult WriteDirectPhysicalMgaCowRows(
   std::uint64_t typed_character_cells = 0;
   std::map<dt::CanonicalTypeId, std::uint64_t> typed_cell_counts;
   scratchbird::storage::database::PhysicalMgaCowMutationBatchRequest batch;
+  batch.version_identity_batch = version_identity_batch;
   batch.mutations.reserve(staged_rows.size());
   batch.sync_after_batch = false;
   batch.engine_generated_unique_insert_rows =
@@ -8591,7 +8593,8 @@ static DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppendImpl(
 	                                               external_write_value_batch,
 	                                               uuid_batch.caller_row_uuids == 0,
 	                                               &batch_context.row_encoder_plan,
-                                                 temporal_schema);
+                                                 temporal_schema,
+                                                 &uuid_batch.physical_versions);
 	             if (!row_page_write.ok && DirectPhysicalMgaCowRequired(request)) {
 	               set_ingestion_write_failure_reason(
 	                   "physical_mga_cow_row_page_refused");

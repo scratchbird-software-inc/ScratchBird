@@ -9,6 +9,7 @@
 #pragma once
 
 #include "dml/direct_bulk_append_api.hpp"
+#include "storage/database/physical_mga_version_batch.hpp"
 
 #include <cstddef>
 #include <string>
@@ -24,6 +25,7 @@ struct DirectBulkUuidBatch {
   std::vector<EngineUuid> row_uuids;
   std::vector<EngineUuid> version_uuids;
   std::vector<EngineUuid> row_image_uuids;
+  storage::database::PhysicalMgaCowVersionBatch physical_versions;
   std::size_t generated_row_uuids = 0;
   std::size_t caller_row_uuids = 0;
   std::size_t reservoir_served_uuids = 0;
