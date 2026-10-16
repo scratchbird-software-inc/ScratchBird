@@ -95,6 +95,49 @@ bool HashDomain(hash::Blake3IncrementalStateV3& state, const char (&text)[N]) no
 
 } // namespace
 
+void BlobLogicalDigestPassV3::Scrub() noexcept {
+  hash::ScrubBlake3IncrementalV3(&hash_);
+  ScrubBytes(staged_); ScrubBytes(integer_);
+  expected_=consumed_=0; phase_=Phase::empty;
+}
+BlobComponentPassResultV3 BlobLogicalDigestPassV3::Fail(BlobComponentPassFailureV3 failure) noexcept {
+  Scrub(); phase_=Phase::failed; return {failure};
+}
+bool BlobLogicalDigestPassV3::Integer(u64 value) noexcept {
+  for(unsigned i=0;i<8;++i) integer_[i]=static_cast<byte>(value>>(8*i));
+  return HashUpdate(hash_,integer_);
+}
+BlobComponentPassResultV3 BlobLogicalDigestPassV3::Begin(
+    const BlobValidatedProfileHandleV3& profile,u64 length) noexcept {
+  if(phase_!=Phase::empty) return Fail(BlobComponentPassFailureV3::invalid_phase);
+  if(!ValidateBlobProfileHandleV3(profile).ok()) return Fail(BlobComponentPassFailureV3::profile_invalid);
+  if(length>kBlobMaximumLogicalBytesV3) return Fail(BlobComponentPassFailureV3::invalid_encode_state);
+  const auto& id=profile.identity;
+  if(hash::InitializeBlake3IncrementalV3(&hash_)!=hash::Blake3IncrementalStatusV3::kOk ||
+      !HashDomain(hash_,kLogicalDomain) ||
+      !HashUpdate(hash_,id.descriptor_uuid.bytes) || !Integer(id.descriptor_generation) ||
+      !HashUpdate(hash_,id.type_uuid.bytes) || !Integer(id.type_generation) ||
+      !HashUpdate(hash_,id.codec_uuid.bytes) || !Integer(id.codec_version) || !Integer(id.codec_generation) ||
+      !HashUpdate(hash_,id.hash_policy.uuid.bytes) || !Integer(id.hash_policy.generation) || !Integer(length))
+    return Fail(BlobComponentPassFailureV3::hash_state_failed);
+  expected_=length; phase_=Phase::active; return {};
+}
+BlobComponentPassResultV3 BlobLogicalDigestPassV3::Update(std::span<const byte> bytes) noexcept {
+  if(Overlaps(this,sizeof(*this),bytes.data(),bytes.size())) return {BlobComponentPassFailureV3::input_overlap};
+  if(phase_!=Phase::active) return Fail(BlobComponentPassFailureV3::invalid_phase);
+  if(bytes.size()>expected_-consumed_) return Fail(BlobComponentPassFailureV3::content_extent_mismatch);
+  if(!HashUpdate(hash_,bytes)) return Fail(BlobComponentPassFailureV3::hash_state_failed);
+  consumed_+=bytes.size(); return {};
+}
+BlobComponentPassResultV3 BlobLogicalDigestPassV3::Finish(hash::Blake3Digest& output) noexcept {
+  if(Overlaps(this,sizeof(*this),output.data(),output.size())) return {BlobComponentPassFailureV3::input_overlap};
+  if(phase_!=Phase::active) return Fail(BlobComponentPassFailureV3::invalid_phase);
+  if(consumed_!=expected_) return Fail(BlobComponentPassFailureV3::content_extent_mismatch);
+  if(hash::FinalizeBlake3IncrementalV3(&hash_,&staged_)!=hash::Blake3IncrementalStatusV3::kOk)
+    return Fail(BlobComponentPassFailureV3::hash_state_failed);
+  output=staged_; Scrub(); phase_=Phase::finished; return {};
+}
+
 BlobComponentPassResultV3 ValidateBlobComponentHeaderNoAllocV3(
     const BlobValidatedProfileHandleV3& profile, u64 extent,
     std::span<const byte> header, bool null_allowed) noexcept {

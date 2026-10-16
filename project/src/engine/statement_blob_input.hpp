@@ -24,6 +24,8 @@ struct StatementBlobInputBoundsV3 {
   // Requests/bounds, never authority or permission to enlarge runtime grants.
   std::uint64_t resident_bytes = 0, valid_for_ns = 0;
   std::uint32_t retain_tickets = 0, access_tickets = 0;
+  // Zero-based limits in registered resource order (enum value minus one).
+  // WorkSnapshot counters instead have an unused0 and use enum value directly.
   std::array<std::uint64_t,11> maximum_work{};
   std::uint64_t scratch_bytes = 0, window_bytes = 0, relative_timeout_ns = 0;
 };
@@ -55,6 +57,7 @@ struct StatementBlobValueResultV3;
 class StatementBlobComponentV3;
 class StatementBlobSerializedComponentV3;
 struct StatementBlobComponentResultV3;
+struct StatementBlobHashResultV3;
 class StatementBlobInputV3 final {
  public:
   StatementBlobInputV3() noexcept = default;
@@ -126,6 +129,9 @@ class StatementBlobValueV3 final {
   // Explicit consuming serialization: on success the exact typed owner moves
   // with its actual component bytes. No copied/reconstructed metadata sidecar.
   StatementBlobComponentResultV3 SerializeAndRetire(StatementBlobSerializedComponentV3&) noexcept;
+  // Requires actual HASH operation admission. SQL NULL has no logical content
+  // digest; containing operators own its bitmap/UNKNOWN semantics separately.
+  StatementBlobHashResultV3 HashLogical() noexcept;
   core::datatypes::BlobLifetimeRuntimeResultV3 Probe() noexcept { return lease_.Probe(); }
   core::datatypes::BlobLifetimeRuntimeResultV3 VisitMaterialized(
       const core::datatypes::BlobTrustedInternalVisitorV3& visitor) noexcept { return lease_.VisitBoundMaterializedBytes(visitor); }

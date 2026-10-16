@@ -108,6 +108,62 @@ void GoldenRoundTrips() {
     }
   }
 }
+void LogicalDigestPasses() {
+  Fixture f;
+  for(unsigned index=1;index<5;++index) {
+    const auto frame=Golden(index);
+    const auto content=std::span<const byte>(frame).subspan(320);
+    for(std::size_t chunk:{1uL,2uL,3uL,31uL,64uL,65536uL}) {
+      dt::BlobLogicalDigestPassV3 pass; scratchbird::core::hash::Blake3Digest digest{};
+      allocation_fault_triggered=false; allocation_budget=0;
+      bool ok=pass.Begin(f.profile,content.size()).ok();
+      for(std::size_t at=0;at<content.size();at+=std::min(chunk,content.size()-at))
+        ok=ok && pass.Update(content.subspan(at,std::min(chunk,content.size()-at))).ok();
+      ok=ok && pass.Update({}).ok() && pass.Finish(digest).ok();
+      allocation_budget=-1;
+      Check(ok && !allocation_fault_triggered && Equal(digest,std::span<const byte>(frame).subspan(248,32)),
+            "single-pass logical digest differs from independent V11 vectors or allocated");
+      const auto saved=digest;
+      Check(!pass.Finish(digest).ok() && digest==saved,"logical digest finalized twice or overwrote failed output");
+      pass.Scrub();
+      Check(pass.Begin(f.profile,content.size()).ok() && pass.Update(content).ok() &&
+          pass.Finish(digest).ok() && digest==saved,"explicit logical digest scrub did not permit independent reuse");
+    }
+  }
+  using Cause=dt::BlobComponentPassFailureV3;
+  dt::BlobLogicalDigestPassV3 pass;
+  scratchbird::core::hash::Blake3Digest output{}; output.fill(0xa7); const auto preserved=output;
+  Check(pass.Finish(output).failure==Cause::invalid_phase && output==preserved,"uninitialized logical digest published");
+  pass.Scrub();
+  Check(pass.Begin(f.profile,1).ok() && pass.Finish(output).failure==Cause::content_extent_mismatch &&
+      output==preserved,"short logical content produced a digest");
+  pass.Scrub();
+  const std::array<byte,2> two{0,255};
+  Check(pass.Begin(f.profile,1).ok() && pass.Update(two).failure==Cause::content_extent_mismatch &&
+      !pass.Finish(output).ok() && output==preserved,"overlong logical content published");
+  pass.Scrub();
+  auto invalid=f.profile; invalid.profile_fingerprint[0]^=1;
+  Check(pass.Begin(invalid,0).failure==Cause::profile_invalid,"invalid logical hash profile admitted");
+  pass.Scrub();
+  Check(pass.Begin(f.profile,dt::kBlobMaximumLogicalBytesV3+1).failure==Cause::invalid_encode_state,
+      "oversized logical digest extent admitted");
+  pass.Scrub();
+  Check(pass.Begin(f.profile,dt::kBlobMaximumLogicalBytesV3).ok() &&
+      pass.Finish(output).failure==Cause::content_extent_mismatch && output==preserved,
+      "exact maximum logical digest length refused or missing content accepted");
+  pass.Scrub();
+  Check(pass.Begin(f.profile,0).ok(),"logical digest alias setup");
+  std::array<byte,sizeof(pass)> before{}; std::memcpy(before.data(),&pass,sizeof(pass));
+  Check(pass.Update({reinterpret_cast<const byte*>(&pass),sizeof(pass)}).failure==Cause::input_overlap &&
+      std::memcmp(&pass,before.data(),before.size())==0,"logical digest input alias mutated live workspace");
+  Check(pass.Update({static_cast<const byte*>(nullptr),1}).failure==Cause::input_overlap &&
+      pass.Update({reinterpret_cast<const byte*>(UINTPTR_MAX-1),3}).failure==Cause::input_overlap &&
+      std::memcmp(&pass,before.data(),before.size())==0,"invalid logical hash range was read or changed state");
+  Check(pass.Finish(*reinterpret_cast<scratchbird::core::hash::Blake3Digest*>(&pass)).failure==Cause::input_overlap &&
+      std::memcmp(&pass,before.data(),before.size())==0,"logical digest output alias changed live workspace");
+  Check(pass.Finish(output).ok(),"pre-admission alias refusal poisoned logical digest");
+  Clean(f);
+}
 void LongBinaryRoundTrips() {
   Fixture f;
   for (std::size_t length : {63,64,65,1023,1024,1025,65535,65536,65537,131073}) {
@@ -445,7 +501,7 @@ int main(int argc,char** argv) {
     if (argc==3 && std::string_view(argv[1])=="--reopen") return Reopen(argv[2]);
     if (argc==3 && std::string_view(argv[1])=="--reopen-hash") return BlobHashFileReopen(argv[2]);
     BlobHashCandidateVectors(); BlobHashCandidateMalformed(); BlobRawIndexFamilyPolicy();
-    GoldenRoundTrips(); LongBinaryRoundTrips(); PrivateRefusalsAndCancellation();
+    GoldenRoundTrips(); LogicalDigestPasses(); LongBinaryRoundTrips(); PrivateRefusalsAndCancellation();
     MalformedFrames(); Quotas(); AllocationFaults(); PhysicalAllocatorFaults();
     CancellationAtEveryAllocation(); ConcurrentReaders();
     const auto executable=std::filesystem::absolute(argv[0]); FilePersistence(executable.c_str());

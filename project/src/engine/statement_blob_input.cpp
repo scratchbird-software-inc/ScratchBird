@@ -3,6 +3,7 @@
 #include "engine/statement_blob_input.hpp"
 #include "engine/statement_blob_component.hpp"
 #include "engine/statement_blob_encoded_input.hpp"
+#include "engine/statement_blob_hash.hpp"
 #include "engine/statement_cancellation.hpp"
 #include "engine/statement_monotonic_clock.hpp"
 #include "core/uuid/uuid.hpp"
@@ -901,6 +902,99 @@ class BlobLifetimeReceiverHostV3Generation1 final {
     source.host_=nullptr; source.used_=true;
     return result;
   }
+ private:
+  struct LogicalHashWork {
+    BlobLogicalDigestPassV3 digest;
+    hash::Blake3Digest staged{};
+    api::StatementBlobHashResultV3* result=nullptr;
+    ~LogicalHashWork() noexcept { Erase(staged.data(),staged.size()); }
+  };
+  static BlobProtectedWorkResultV3 LogicalHashInput(void* raw,std::span<const byte> bytes) noexcept {
+    auto& work=*static_cast<LogicalHashWork*>(raw);
+    work.result->bytes_visited+=bytes.size();
+    work.result->computation=work.digest.Update(bytes);
+    // A failure here is an impossible private computation/schedule defect, not
+    // a fabricated reader IO or persisted-integrity error.
+    return work.result->computation.ok() ? BlobProtectedWorkResultV3{0,{},{}} : BlobProtectedWorkResultV3{};
+  }
+ public:
+  static api::StatementBlobHashResultV3 HashLogical(api::StatementBlobValueV3& source) noexcept {
+    using Failure=api::StatementBlobHashFailureV3;
+    api::StatementBlobHashResultV3 result;
+    if(!source.bound() || !source.host_) return result;
+    auto& host=*source.host_;
+    if(host.bounds_.operation!=SB_BLOB_OP_HASH_V3) { result.failure=Failure::operation_not_admitted; return result; }
+    // Cleanup custody for this already-retained operation, not a new factory
+    // admission or persistent owner. It remains legal after root retirement;
+    // real source gates still determine whether any computation may proceed.
+    auto pins=host.pins_.load(std::memory_order_acquire);
+    do {
+      if(!pins || pins==UINT64_MAX) { result.failure=Failure::admission_closed; return result; }
+    } while(!host.pins_.compare_exchange_weak(pins,pins+1,std::memory_order_acq_rel));
+    struct Pin { BlobLifetimeReceiverHostV3Generation1* host; ~Pin() { host->Drop(); } } pin{&host};
+    const auto probe=[&] {
+      result.lifetime_invoked=true; result.lifetime=source.lease_.Probe();
+      if(result.lifetime.ok()) return true;
+      result.failure=Failure::lifetime; Erase(result.digest.data(),result.digest.size()); return false;
+    };
+    if(!probe()) return result;
+    if(source.state_!=BlobValueStateV3::value) { result.failure=Failure::sql_null_has_no_content_hash; return result; }
+    const auto length=source.length_;
+    const bool reader=host.bounds_.carrier==api::StatementBlobInputCarrierV3::logical_reader;
+    const u64 window=reader ? std::min(length,host.bounds_.window_bytes) : 0;
+    const u64 calls=window ? length/window+(length%window!=0) : 0;
+    const auto budget=host.ledger_.Snapshot();
+    const auto need=[&](BlobLifetimeResourceV3 resource,u64 amount) {
+      const auto& counter=budget.counters[static_cast<std::size_t>(resource)];
+      const bool valid=budget.frozen && !budget.terminal_quarantined &&
+          counter.invoked<=counter.limit && counter.reserved_work<=counter.limit-counter.invoked &&
+          counter.reserved_cleanup<=counter.limit-counter.invoked-counter.reserved_work;
+      const auto available=valid ? counter.limit-counter.invoked-counter.reserved_work-counter.reserved_cleanup : 0;
+      if(valid && amount<=available) return true;
+      result.failure=Failure::resource_preflight; result.resource=resource; result.required=amount; result.available=available;
+      return false;
+    };
+    if(!need(BlobLifetimeResourceV3::logical_bytes_read,length) ||
+        !need(BlobLifetimeResourceV3::reader_calls,calls) ||
+        !need(BlobLifetimeResourceV3::temporary_bytes,sizeof(LogicalHashWork)+window)) return result;
+    u64 available=0;
+    if(!host.ledger_.Charge(BlobLifetimeResourceV3::temporary_bytes,sizeof(LogicalHashWork),&available)) {
+      result.failure=Failure::resource_preflight; result.resource=BlobLifetimeResourceV3::temporary_bytes;
+      result.required=sizeof(LogicalHashWork); result.available=available; return result;
+    }
+    struct Workspace {
+      std::pmr::memory_resource* allocator; LogicalHashWork* work=nullptr;
+      void Reset() noexcept {
+        if(!work) return;
+        work->~LogicalHashWork(); Erase(work,sizeof(LogicalHashWork));
+        try { allocator->deallocate(work,sizeof(LogicalHashWork),alignof(LogicalHashWork)); } catch(...) { std::terminate(); }
+        work=nullptr;
+      }
+      ~Workspace() noexcept { Reset(); }
+    } workspace{host.memory_->memory()};
+    try {
+      auto* block=workspace.allocator->allocate(sizeof(LogicalHashWork),alignof(LogicalHashWork));
+      workspace.work=new(block) LogicalHashWork;
+      auto& work=*workspace.work; work.result=&result;
+      result.computation=work.digest.Begin(source.profile_,length);
+      if(!result.computation.ok()) { result.failure=Failure::digest_failed; return result; }
+      const BlobTrustedInternalVisitorV3 visitor(LogicalHashInput,&work);
+      result.lifetime=length ? reader ? source.lease_.VisitBoundReaderBytes(visitor) :
+          source.lease_.VisitBoundMaterializedBytes(visitor) : source.lease_.Probe();
+      if(!result.lifetime.ok()) { result.failure=Failure::lifetime; return result; }
+      if(!result.computation.ok()) { result.failure=Failure::digest_failed; return result; }
+      if(result.bytes_visited!=length) { result.failure=Failure::internal_failure; return result; }
+      result.computation=work.digest.Finish(work.staged);
+      if(!result.computation.ok()) { result.failure=Failure::digest_failed; return result; }
+      result.digest=work.staged;
+      // No source pin or payload allocation escapes this operation. The
+      // existing retained value keeps the actual owner through these gates.
+      workspace.Reset();
+      if(!probe()) return result;
+      result.failure=Failure::none; return result;
+    } catch(const std::bad_alloc&) { result.failure=Failure::allocation_failed; return result; }
+    catch(...) { result.failure=Failure::internal_failure; return result; }
+  }
 };
 } // namespace scratchbird::core::datatypes
 
@@ -955,6 +1049,9 @@ StatementBlobComponentResultV3 StatementBlobValueV3::EncodeComponent(StatementBl
 }
 StatementBlobComponentResultV3 StatementBlobValueV3::SerializeAndRetire(StatementBlobSerializedComponentV3& output) noexcept {
   return core::datatypes::BlobLifetimeReceiverHostV3Generation1::SerializeAndRetire(*this,output);
+}
+StatementBlobHashResultV3 StatementBlobValueV3::HashLogical() noexcept {
+  return core::datatypes::BlobLifetimeReceiverHostV3Generation1::HashLogical(*this);
 }
 StatementBlobComponentV3::~StatementBlobComponentV3() noexcept { Reset(); }
 void StatementBlobComponentV3::Reset() noexcept {

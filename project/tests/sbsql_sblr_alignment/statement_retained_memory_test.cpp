@@ -6,6 +6,7 @@
 #include "engine/statement_blob_input.hpp"
 #include "engine/statement_blob_component.hpp"
 #include "engine/statement_blob_encoded_input.hpp"
+#include "engine/statement_blob_hash.hpp"
 #include "../support/blob_persistence_fixture.hpp"
 #include "engine/statement_cancellation.hpp"
 #include "datatype_operations.hpp"
@@ -369,6 +370,13 @@ int main() try {
     auto decoded_descriptor=blob_input_test::Descriptor(*decoding.profile());
     const auto expected_decoded_descriptor=decoded_descriptor;
     api::StatementBlobDecodedComponentV3 verified;
+    api::StatementBlobInputV3 hashing;
+    auto hash_bounds=blob_input_test::Bounds(true); hash_bounds.operation=SB_BLOB_OP_HASH_V3;
+    Check(blob_input_test::Receive(statement,blob_bytes,hash_bounds,hashing)==SB_ENGINE_STATUS_OK,
+        "native hash shutdown source");
+    api::StatementBlobValueV3 hash_value; auto hash_descriptor=blob_input_test::Descriptor(*hashing.profile());
+    Check(hashing.RetainTyped(std::move(hash_descriptor),hash_value).ok(),"native hash shutdown actual owner");
+    hashing.Reset();
     auto* p = owner->memory()->allocate(128, alignof(std::max_align_t));
     statement.Release();
     // Ordinary public retirement must not revoke the actual retained
@@ -376,6 +384,9 @@ int main() try {
     // independently through forced session teardown.
     Check(encoding_value.EncodeComponent(artifact).ok() && artifact.bound(),
         "native retained component could not encode after public receipt retirement");
+    const auto retained_hash=hash_value.HashLogical();
+    Check(retained_hash.ok() && std::equal(retained_hash.digest.begin(),retained_hash.digest.end(),artifact.bytes().begin()+248),
+        "native logical hash failed after actual root/public receipt retirement");
     Check(encoding_value.Release().ok(),"native artifact source release before session shutdown");
     encoding.Reset();
     Check(decoding.DecodeComponent(std::move(decoded_descriptor),verified).ok() && verified.bound(),
@@ -400,6 +411,13 @@ int main() try {
     allocate.join();
     Check(!unexpected && completed+refused==256,"racing actual shutdown failed allocator/cleanup protocol");
     Check(owner->Observe() == Observation::receipt_revoked, "session close did not revoke retained allocation admission");
+    const auto stopped_hash=hash_value.HashLogical();
+    Check(!stopped_hash.ok() && stopped_hash.failure==api::StatementBlobHashFailureV3::lifetime &&
+        stopped_hash.lifetime.diagnostic_code=="CINL.LOB.HANDLE_EXPIRED" && blob_input_test::EmptyHash(stopped_hash) &&
+        !stopped_hash.bytes_visited && static_cast<unsigned>(stopped_hash.lifetime.fact.parameters.lifetime_enum)==5 &&
+        static_cast<unsigned>(stopped_hash.lifetime.fact.parameters.expiry_reason_enum)==5,
+        "actual shutdown did not fence retained hashing with exact native5/5 revocation and last-owner cleanup");
+    if(hash_value.bound()) Check(hash_value.Release().ok(),"native hash forced-shutdown cleanup");
     const auto blob_stopped=blob_lease.Probe();
     // Public retirement closes cancellation lookup, but does not invent a
     // positive signal. Forced session teardown revokes this retained receipt.

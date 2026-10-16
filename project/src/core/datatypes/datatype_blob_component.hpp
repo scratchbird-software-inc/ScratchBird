@@ -38,6 +38,33 @@ struct BlobComponentPassResultV3 {
   bool ok() const noexcept { return failure == BlobComponentPassFailureV3::none; }
 };
 
+// Pure VALUE logical-content digest, NOT equality, lifetime or index authority.
+// A single hash state avoids constructing/hashing a component frame merely to
+// find its logical digest. The owning consumer accounts this complete workspace
+// and source windows, authenticates source reads and gates output publication.
+class BlobLogicalDigestPassV3 final {
+ public:
+  BlobLogicalDigestPassV3() noexcept = default;
+  ~BlobLogicalDigestPassV3() noexcept { Scrub(); }
+  BlobLogicalDigestPassV3(const BlobLogicalDigestPassV3&) = delete;
+  BlobLogicalDigestPassV3& operator=(const BlobLogicalDigestPassV3&) = delete;
+  BlobLogicalDigestPassV3(BlobLogicalDigestPassV3&&) = delete;
+  BlobLogicalDigestPassV3& operator=(BlobLogicalDigestPassV3&&) = delete;
+  BlobComponentPassResultV3 Begin(const BlobValidatedProfileHandleV3&, u64 length) noexcept;
+  BlobComponentPassResultV3 Update(std::span<const byte>) noexcept;
+  BlobComponentPassResultV3 Finish(hash::Blake3Digest&) noexcept;
+  void Scrub() noexcept;
+ private:
+  enum class Phase : u8 { empty, active, finished, failed };
+  BlobComponentPassResultV3 Fail(BlobComponentPassFailureV3) noexcept;
+  bool Integer(u64) noexcept;
+  hash::Blake3IncrementalStateV3 hash_{};
+  hash::Blake3Digest staged_{};
+  std::array<byte,8> integer_{};
+  u64 expected_=0, consumed_=0;
+  Phase phase_=Phase::empty;
+};
+
 // Initial decoder gate: validate the already admitted320-byte header without
 // constructing/reserving either hash state or any additional header buffer.
 // This lets malformed fields win before later hash/content/sink admission.

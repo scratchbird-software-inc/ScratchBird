@@ -1002,6 +1002,7 @@ void TypedSerialization(tests::FixtureEngineSession& session,const api::EngineRe
     }
   }
 }
+#include "statement_blob_hash_test.inc"
 void ForeignProcess(tests::FixtureEngineSession& session,const api::EngineRequestContext& context) {
 #if defined(__linux__)
   Statement statement(session,context);
@@ -1058,5 +1059,8 @@ void NativeBlobInput(tests::FixtureEngineSession& session,const api::EngineReque
   blob_input_test::DecodeFailures(session,context);
   blob_input_test::DecodeAdmissionAndRevocation(session,context);
   blob_input_test::TypedSerialization(session,context);
+  blob_input_test::LogicalHashes(session,context);
+  blob_input_test::LogicalHashFailures(session,context);
+  blob_input_test::LogicalHashRevocation(session,context);
   blob_input_test::ForeignProcess(session,context);
 }
