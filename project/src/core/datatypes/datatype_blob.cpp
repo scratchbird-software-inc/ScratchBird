@@ -2181,7 +2181,7 @@ bool BlobLifetimeBudgetLedgerV3Generation1::Freeze() noexcept {
 }
 
 BlobLifetimeBudgetSnapshotV3Generation1
-BlobLifetimeBudgetLedgerV3Generation1::SnapshotForConformance() noexcept {
+BlobLifetimeBudgetLedgerV3Generation1::Snapshot() noexcept {
   while (lock_.test_and_set(std::memory_order_acquire)) {}
   BlobLifetimeBudgetSnapshotV3Generation1 snapshot{};
   snapshot.configured = configured_.load(std::memory_order_relaxed);

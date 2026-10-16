@@ -449,7 +449,7 @@ class BlobLifetimeBudgetLedgerV3Generation1 final {
   bool frozen() const noexcept {
     return frozen_.load(std::memory_order_acquire);
   }
-  BlobLifetimeBudgetSnapshotV3Generation1 SnapshotForConformance() noexcept;
+  BlobLifetimeBudgetSnapshotV3Generation1 Snapshot() noexcept;
   bool ReserveOrdinaryAndCleanup(u64 ordinary, u64 cleanup,
                                  u64* available_before) noexcept;
   bool Charge(BlobLifetimeResourceV3 resource, u64 amount,
@@ -987,6 +987,7 @@ class BlobTrustedInternalVisitorV3 final {
   friend class BlobRetainedLifetimeLeaseV3;
   friend class BlobLifetimeRuntimeConformanceAccessV3;
   friend class BlobLifetimeDatatypeConsumerAccessV3Generation1;
+  friend class BlobLifetimeReceiverHostV3Generation1;
   using Function = BlobProtectedWorkResultV3 (*)(void*,
                                                  std::span<const byte>);
   BlobTrustedInternalVisitorV3(Function function, void* context) noexcept

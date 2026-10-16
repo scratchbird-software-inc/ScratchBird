@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "engine/statement_blob_input.hpp"
+#include "engine/statement_blob_component.hpp"
 #include "engine/statement_cancellation.hpp"
 #include "engine/statement_monotonic_clock.hpp"
 #include "core/uuid/uuid.hpp"
@@ -444,6 +445,7 @@ class BlobLifetimeReceiverHostV3Generation1 final {
   }
   void Close() noexcept { closing_.store(true,std::memory_order_release); Drop(); }
   const BlobValidatedProfileHandleV3& profile() const noexcept { return profile_; }
+  auto WorkSnapshot() noexcept { return ledger_.Snapshot().counters; }
   api::StatementBlobInputRetainV3 Retain(BlobRetainedLifetimeLeaseV3& lease) noexcept {
     api::StatementBlobInputRetainV3 result;
     BlobLifetimeAuthorityAdmissionV3Generation1 admission;
@@ -484,9 +486,188 @@ class BlobLifetimeReceiverHostV3Generation1 final {
     destination.profile_=profile_;
     destination.state_=bounds_.state;
     destination.length_=content_->size();
+    destination.host_=this;
     destination.used_=true;
     result.failure=Failure::none; result.category=DatatypeCastCategory::identity;
     return result;
+  }
+ private:
+  struct EncodeWork {
+    BlobComponentDigestPassV3 digest;
+    BlobComponentHeaderV3 header{};
+    BlobLifetimeReceiverHostV3Generation1* host;
+    api::StatementBlobComponentResultV3* result;
+    byte* staging;
+    std::size_t extent, offset=0;
+    bool header_ready=false;
+    EncodeWork(BlobLifetimeReceiverHostV3Generation1* h,api::StatementBlobComponentResultV3* r,
+        byte* s,std::size_t n) noexcept : host(h),result(r),staging(s),extent(n) {}
+    ~EncodeWork() noexcept { Erase(header.data(),header.size()); }
+  };
+  static bool SinkCharge(EncodeWork& work,BlobLifetimeResourceV3 resource,u64 amount) noexcept {
+    u64 available=0;
+    if(work.host->ledger_.Charge(resource,amount,&available)) return true;
+    work.result->resource=resource; work.result->required=amount; work.result->available=available;
+    return false;
+  }
+  static bool SinkAttempt(EncodeWork& work) noexcept {
+    // This is an actual invocation of the closed native writer lifecycle,
+    // not a fabricated external sink callback or successful publication.
+    ++work.result->sink_attempts;
+    return SinkCharge(work,BlobLifetimeResourceV3::sink_calls,1);
+  }
+  static bool SinkWrite(EncodeWork& work,std::span<const byte> bytes) noexcept {
+    if(!SinkAttempt(work)) return false;
+    if(work.offset>work.extent || bytes.size()>work.extent-work.offset) return false;
+    if(!SinkCharge(work,BlobLifetimeResourceV3::sink_bytes_written,bytes.size())) return false;
+    std::memcpy(work.staging+work.offset,bytes.data(),bytes.size());
+    work.offset+=bytes.size(); work.result->staged_bytes+=bytes.size(); return true;
+  }
+  static BlobProtectedWorkResultV3 EncodeFailure(EncodeWork& work) noexcept {
+    const auto& result=*work.result;
+    if(result.required<=result.available || work.host->ledger_.terminal_quarantined()) return {};
+    // Only the actual shared ledger shortage can produce this public fact.
+    // Internal codec/schedule errors return the private terminal fact instead.
+    BlobLifetimeTypedFactV3 fact;
+    fact.fact_class=BlobLifetimeFactClassV3::resource_budget;
+    fact.diagnostic=BlobLifetimeDiagnosticCodeV3::resource_budget_exceeded;
+    fact.stage=BlobLifetimeFactStageV3::callback_return;
+    fact.diagnostic_uuid=platform::Uuid{{0xde,0xdc,0x1c,0x9b,0x38,0x79,0x57,0x70,
+        0x8f,0x8e,0xc0,0xc9,0x27,0xa0,0xc3,0x4d}};
+    fact.diagnostic_generation=1;
+    fact.parameters.present=blob_parameter_resource|blob_parameter_required|blob_parameter_available;
+    fact.parameters.resource_enum=result.resource; fact.parameters.required_u64=result.required;
+    fact.parameters.available_u64=result.available;
+    return {1,{},fact};
+  }
+  static BlobProtectedWorkResultV3 DigestInput(void* raw,std::span<const byte> bytes) noexcept {
+    auto& work=*static_cast<EncodeWork*>(raw);
+    work.result->first_pass_bytes+=bytes.size();
+    work.result->component=work.digest.UpdateContent(bytes);
+    return work.result->component.ok() ? BlobProtectedWorkResultV3{0,{},{}} : EncodeFailure(work);
+  }
+  static bool FinishHeader(EncodeWork& work) noexcept {
+    if(work.header_ready) return true;
+    work.result->component=work.digest.FinishEncode(work.header);
+    if(!work.result->component.ok() || !SinkWrite(work,work.header)) return false;
+    work.header_ready=true; return true;
+  }
+  static BlobProtectedWorkResultV3 StageInput(void* raw,std::span<const byte> bytes) noexcept {
+    auto& work=*static_cast<EncodeWork*>(raw);
+    work.result->second_pass_bytes+=bytes.size();
+    if(!FinishHeader(work) || !SinkWrite(work,bytes)) return EncodeFailure(work);
+    return {0,{},{}};
+  }
+ public:
+  static api::StatementBlobComponentResultV3 EncodeComponent(api::StatementBlobValueV3& source,
+      api::StatementBlobComponentV3& output) noexcept {
+    using Failure=api::StatementBlobComponentFailureV3;
+    api::StatementBlobComponentResultV3 result;
+    if(output.bound()) { result.failure=Failure::output_in_use; return result; }
+    if(!source.bound() || !source.host_) return result;
+    auto& host=*source.host_;
+    if(host.bounds_.operation!=SB_BLOB_OP_COMPONENT_ENCODE_V3 ||
+        host.bounds_.carrier!=api::StatementBlobInputCarrierV3::logical_reader) {
+      result.failure=Failure::operation_not_admitted; return result;
+    }
+    const auto acquired=AcquirePin(&host);
+    if(acquired.status!=BlobReceiverPinAcquireStatusV3::acquired) {
+      result.failure=Failure::admission_closed; return result;
+    }
+    struct Pin {
+      BlobLifetimeReceiverHostV3Generation1* host;
+      ~Pin() { if(host) host->Drop(); }
+    } pin{&host};
+    const auto probe=[&] {
+      result.lifetime_invoked=true; result.lifetime=source.lease_.Probe();
+      if(!result.lifetime.ok()) { result.failure=Failure::lifetime; return false; }
+      return true;
+    };
+    if(!probe()) return result;
+    const auto length=source.length_;
+    if(length>SIZE_MAX-kBlobComponentHeaderBytesV3-sizeof(EncodeWork) ||
+        (length && !host.bounds_.window_bytes)) {
+      result.failure=Failure::extent_invalid; return result;
+    }
+    const auto extent=static_cast<std::size_t>(length)+kBlobComponentHeaderBytesV3;
+    const u64 windows=length ? length/host.bounds_.window_bytes+(length%host.bounds_.window_bytes!=0) : 0;
+    const u64 fixed_temporary=extent+sizeof(EncodeWork);
+    const u64 window=std::min(length,host.bounds_.window_bytes);
+    if(window>UINT64_MAX-fixed_temporary) { result.failure=Failure::extent_invalid; return result; }
+    const auto budget=host.ledger_.Snapshot();
+    const auto need=[&](BlobLifetimeResourceV3 resource,u64 amount) {
+      const auto& counter=budget.counters[static_cast<std::size_t>(resource)];
+      const bool valid=budget.frozen && !budget.terminal_quarantined &&
+          counter.invoked<=counter.limit && counter.reserved_work<=counter.limit-counter.invoked &&
+          counter.reserved_cleanup<=counter.limit-counter.invoked-counter.reserved_work;
+      const auto available=valid ? counter.limit-counter.invoked-counter.reserved_work-counter.reserved_cleanup : 0;
+      if(amount<=available) return true;
+      result.failure=Failure::resource_preflight; result.resource=resource;
+      result.required=amount; result.available=available; return false;
+    };
+    if(!need(BlobLifetimeResourceV3::logical_bytes_read,2*length) ||
+        !need(BlobLifetimeResourceV3::reader_calls,2*windows) ||
+        !need(BlobLifetimeResourceV3::sink_bytes_written,extent) ||
+        !need(BlobLifetimeResourceV3::sink_calls,3+windows) ||
+        !need(BlobLifetimeResourceV3::temporary_bytes,fixed_temporary+window)) return result;
+    u64 available=0;
+    if(!host.ledger_.Charge(BlobLifetimeResourceV3::temporary_bytes,extent+sizeof(EncodeWork),&available)) {
+      result.failure=Failure::resource_preflight; result.resource=BlobLifetimeResourceV3::temporary_bytes;
+      result.required=extent+sizeof(EncodeWork); result.available=available; return result;
+    }
+    auto* allocator=host.memory_->memory();
+    byte* allocation=nullptr; EncodeWork* work=nullptr;
+    struct Cleanup {
+      std::pmr::memory_resource* allocator; byte*& allocation; EncodeWork*& work; std::size_t allocated;
+      void Workspace() noexcept {
+        if(!work) return;
+        work->~EncodeWork(); Erase(work,sizeof(EncodeWork));
+        work=nullptr;
+      }
+      ~Cleanup() {
+        Workspace();
+        if(allocation) { Erase(allocation,allocated); try { allocator->deallocate(allocation,allocated,alignof(EncodeWork)); } catch(...) { std::terminate(); } }
+      }
+    } cleanup{allocator,allocation,work,extent+sizeof(EncodeWork)};
+    try {
+      // One actually charged allocation avoids duplicating physical grant,
+      // binary-owner/accounting-node and sharded-accounting registration work.
+      // The destroyed/scrubbed workspace prefix remains accounted padding of
+      // this allocation until artifact cleanup; never report it as released.
+      allocation=static_cast<byte*>(allocator->allocate(cleanup.allocated,alignof(EncodeWork)));
+      auto* bytes=allocation+sizeof(EncodeWork);
+      work=new(allocation) EncodeWork(&host,&result,bytes,extent);
+      result.component=work->digest.BeginEncode(source.profile_,source.state_,length);
+      if(!result.component.ok()) { result.failure=Failure::component_failed; return result; }
+      if(!SinkAttempt(*work)) { result.failure=Failure::resource_preflight; return result; }
+      const BlobTrustedInternalVisitorV3 first(DigestInput,work),second(StageInput,work);
+      result.lifetime=source.lease_.VisitBoundReplayableReaderBytes(first,second);
+      if(!result.lifetime.ok()) { result.failure=Failure::lifetime; return result; }
+      // The Core NULL/empty path authenticates a probe without a payload visit.
+      if(!FinishHeader(*work)) { result.failure=result.component.ok() ? Failure::resource_preflight : Failure::component_failed; return result; }
+      if(work->offset!=extent || result.first_pass_bytes!=length || result.second_pass_bytes!=length) {
+        result.failure=Failure::internal_failure; return result;
+      }
+      // Commit is this closed writer's real finalization attempt. Its quota
+      // admission, all workspace destruction and the complete native return
+      // gate precede irreversible output publication. No later sample exists.
+      if(!SinkAttempt(*work)) { result.failure=Failure::resource_preflight; return result; }
+      cleanup.Workspace();
+      if(!probe()) return result;
+      output.allocation_=allocation; output.allocated_=cleanup.allocated;
+      output.data_=bytes; output.size_=extent; output.host_=&host;
+      allocation=nullptr; pin.host=nullptr;
+      result.failure=Failure::none; return result;
+    } catch(const std::bad_alloc&) { result.failure=Failure::allocation_failed; return result; }
+    catch(...) { result.failure=Failure::internal_failure; return result; }
+  }
+  static void DestroyComponent(api::StatementBlobComponentV3& value) noexcept {
+    auto* host=value.host_; if(!host) return;
+    auto* allocation=value.allocation_; const auto size=value.allocated_;
+    value.host_=nullptr; value.allocation_=nullptr; value.data_=nullptr; value.size_=0; value.allocated_=0;
+    Erase(allocation,size);
+    try { host->memory_->memory()->deallocate(allocation,size,alignof(EncodeWork)); } catch(...) { std::terminate(); }
+    host->Drop();
   }
 };
 } // namespace scratchbird::core::datatypes
@@ -496,6 +677,9 @@ StatementBlobInputV3::~StatementBlobInputV3() noexcept { Reset(); }
 void StatementBlobInputV3::Reset() noexcept { auto* host=host_; host_=nullptr; if(host) host->Close(); }
 const core::datatypes::BlobValidatedProfileHandleV3* StatementBlobInputV3::profile() const noexcept {
   return host_ ? &host_->profile() : nullptr;
+}
+std::optional<std::array<core::datatypes::BlobLifetimeCounterV3,12>> StatementBlobInputV3::WorkSnapshot() noexcept {
+  return host_ ? std::optional{host_->WorkSnapshot()} : std::nullopt;
 }
 StatementBlobInputRetainV3 StatementBlobInputV3::Retain(core::datatypes::BlobRetainedLifetimeLeaseV3& lease) noexcept {
   return host_ ? host_->Retain(lease) : StatementBlobInputRetainV3{};
@@ -519,6 +703,7 @@ StatementBlobValueResultV3 StatementBlobValueV3::CastIdentityInto(
   if(!result.lifetime.ok()) { result.failure=Failure::lifetime; return result; }
   destination.descriptor_=std::move(target);
   destination.profile_=profile_; destination.state_=state_; destination.length_=length_;
+  destination.host_=host_;
   destination.used_=true;
   result.failure=Failure::none; result.category=core::datatypes::DatatypeCastCategory::identity;
   return result;
@@ -526,12 +711,19 @@ StatementBlobValueResultV3 StatementBlobValueV3::CastIdentityInto(
 core::datatypes::BlobLifetimeRuntimeResultV3 StatementBlobValueV3::Release() noexcept {
   const auto result=lease_.Release();
   if(!lease_.retained()) {
-    descriptor_={}; profile_={}; state_=core::datatypes::BlobValueStateV3::sql_null; length_=0;
+    descriptor_={}; profile_={}; state_=core::datatypes::BlobValueStateV3::sql_null; length_=0; host_=nullptr;
     // Even a failed retention can leave an internal terminal lease. Do not
     // promise that a retired typed wrapper can be rearmed as a fresh receiver.
     used_=true;
   }
   return result;
+}
+StatementBlobComponentResultV3 StatementBlobValueV3::EncodeComponent(StatementBlobComponentV3& output) noexcept {
+  return core::datatypes::BlobLifetimeReceiverHostV3Generation1::EncodeComponent(*this,output);
+}
+StatementBlobComponentV3::~StatementBlobComponentV3() noexcept { Reset(); }
+void StatementBlobComponentV3::Reset() noexcept {
+  core::datatypes::BlobLifetimeReceiverHostV3Generation1::DestroyComponent(*this);
 }
 StatementBlobInputAdmissionV3 ReceiveStatementBlobInputV3(server_engine_bridge::StatementContextReceiptHandle handle,
     const wire::TypedResultUuid& session,const wire::TypedResultUuid& receipt,std::span<const core::platform::byte> input,

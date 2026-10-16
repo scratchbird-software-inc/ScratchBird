@@ -405,6 +405,194 @@ void ConcurrentReaders(tests::FixtureEngineSession& session,const api::EngineReq
     value.Reset(); SameMemory(baseline);
   }
 }
+void Components(tests::FixtureEngineSession& session,const api::EngineRequestContext& context) {
+  Statement statement(session,context);
+  const auto baseline=mm::DefaultMemoryManager().Snapshot();
+  for(std::size_t size:{std::size_t{0},std::size_t{1},std::size_t{4095},std::size_t{4096},std::size_t{4097},std::size_t{131079}}) {
+    for(bool is_null:{false,true}) {
+      if(is_null && size) continue;
+      std::vector<platform::byte> bytes(size);
+      for(std::size_t n=0;n<size;++n) bytes[n]=static_cast<platform::byte>(n*71);
+      api::StatementBlobInputV3 input; auto bounds=Bounds(true); bounds.operation=SB_BLOB_OP_COMPONENT_ENCODE_V3;
+      if(is_null) { bounds.state=dt::BlobValueStateV3::sql_null; bounds.window_bytes=0; }
+      Check(Receive(statement,bytes,bounds,input)==SB_ENGINE_STATUS_OK,"native component actual input receiving");
+      auto descriptor=Descriptor(*input.profile()); api::StatementBlobValueV3 source;
+      Check(input.RetainTyped(std::move(descriptor),source).ok(),"native component actual typed ownership");
+      api::StatementBlobComponentV3 encoded;
+      const auto physical_before=mm::DefaultMemoryManager().Snapshot();
+      allocation_count=0;
+      const auto result=source.EncodeComponent(encoded);
+      const auto encode_allocations=allocation_count;
+      const auto physical_after=mm::DefaultMemoryManager().Snapshot();
+      const auto windows=size ? (size+bounds.window_bytes-1)/bounds.window_bytes : 0;
+      if(!result.ok()) std::cerr<<"native component failure="<<static_cast<unsigned>(result.failure)
+          <<" lifetime="<<result.lifetime.diagnostic_code<<':'<<result.lifetime.reason
+          <<" component="<<static_cast<unsigned>(result.component.failure)
+          <<" resource="<<static_cast<unsigned>(result.resource)<<" need="<<result.required<<" avail="<<result.available<<'\n';
+      Check(result.ok() && encoded.bound() && encoded.bytes().size()==320+size &&
+          result.first_pass_bytes==size && result.second_pass_bytes==size && result.staged_bytes==320+size &&
+          result.sink_attempts==3+windows,"native component did not perform exact guarded two-pass encode and atomic staging");
+      Check(physical_after.allocation_count==physical_before.allocation_count+1,
+          "native component duplicated physical allocation/accounting registration instead of one packed owner");
+      std::cout<<"native component logical_bytes="<<size<<" null="<<is_null<<" heap_allocations="<<encode_allocations<<'\n';
+      const auto work=input.WorkSnapshot();
+      const auto counter=[&](dt::BlobLifetimeResourceV3 resource) { return work->at(static_cast<std::size_t>(resource)); };
+      Check(work && counter(dt::BlobLifetimeResourceV3::logical_bytes_read).invoked==2*size &&
+          counter(dt::BlobLifetimeResourceV3::reader_calls).invoked==2*windows &&
+          counter(dt::BlobLifetimeResourceV3::sink_bytes_written).invoked==result.staged_bytes &&
+          counter(dt::BlobLifetimeResourceV3::sink_calls).invoked==result.sink_attempts,
+          "native component work observations disagree with actual shared ledger charges");
+      tests::BlobPersistenceFixture reference;
+      {
+        dt::BlobOwnedPersistenceBytesV3 plain,expected,reopened;
+        reference.Copy(bytes,plain); auto grant=reference.Grant();
+        Check(dt::EncodeOwnedBlobComponentV3(reference.profile,bounds.state,plain,grant,expected).ok() &&
+            std::equal(encoded.bytes().begin(),encoded.bytes().end(),expected.bytes().begin(),expected.bytes().end()),
+            "native guarded component differs from qualified independent owning-buffer codec");
+        auto* unchanged=encoded.bytes().data();
+        const auto duplicate=source.EncodeComponent(encoded);
+        Check(!duplicate.ok() && duplicate.failure==api::StatementBlobComponentFailureV3::output_in_use &&
+            !duplicate.lifetime_invoked && encoded.bytes().data()==unchanged &&
+            input.WorkSnapshot()->at(static_cast<std::size_t>(dt::BlobLifetimeResourceV3::sink_calls)).invoked==result.sink_attempts,
+            "native component overwrote occupied output or invoked work for it");
+        Check(source.Release().ok(),"native encoded source lifetime cleanup"); input.Reset();
+        Check(!input.WorkSnapshot() && encoded.bound() &&
+            std::equal(encoded.bytes().begin(),encoded.bytes().end(),expected.bytes().begin(),expected.bytes().end()),
+            "native component artifact borrowed its released input/root");
+        reference.Copy(encoded.bytes(),reopened); dt::BlobOwnedPersistenceDecodedV3 decoded; grant=reference.Grant();
+        Check(dt::DecodeOwnedBlobComponentV3(reference.profile,reopened,true,grant,decoded).ok() &&
+            decoded.state()==bounds.state && std::equal(decoded.content().bytes().begin(),decoded.content().bytes().end(),bytes.begin(),bytes.end()),
+            "native guarded component does not round trip exact binary bytes/NULL state");
+        if(is_null) {
+          dt::BlobOwnedPersistenceDecodedV3 refused; grant=reference.Grant();
+          const auto rejected=dt::DecodeOwnedBlobComponentV3(reference.profile,reopened,false,grant,refused);
+          Check(!rejected.ok() && rejected.component.reason_enum==50 && !refused.content().bound(),
+              "native encoded SQL NULL crossed a nonnullable receiving occurrence");
+        }
+      }
+      encoded.Reset(); Check(!encoded.bound() && encoded.bytes().empty(),"native component artifact reset did not disarm");
+      SameMemory(baseline);
+    }
+  }
+  // The method selector cannot upgrade an ordinary logical READ admission.
+  {
+    api::StatementBlobInputV3 input; const std::array<platform::byte,1> bytes{0x93};
+    Check(Receive(statement,bytes,Bounds(true),input)==SB_ENGINE_STATUS_OK,"native nonencode admission");
+    auto descriptor=Descriptor(*input.profile()); api::StatementBlobValueV3 source;
+    Check(input.RetainTyped(std::move(descriptor),source).ok(),"native nonencode source");
+    api::StatementBlobComponentV3 output; const auto refused=source.EncodeComponent(output);
+    Check(!refused.ok() && refused.failure==api::StatementBlobComponentFailureV3::operation_not_admitted &&
+        !refused.lifetime_invoked && !output.bound(),"component encoder upgraded ordinary reader authority");
+  }
+  SameMemory(baseline);
+  const std::array<platform::byte,3> bytes{0,255,129};
+  for(auto resource:{dt::BlobLifetimeResourceV3::logical_bytes_read,dt::BlobLifetimeResourceV3::reader_calls,
+      dt::BlobLifetimeResourceV3::sink_bytes_written,dt::BlobLifetimeResourceV3::sink_calls,
+      dt::BlobLifetimeResourceV3::temporary_bytes}) {
+    api::StatementBlobInputV3 input; auto bounds=Bounds(true); bounds.operation=SB_BLOB_OP_COMPONENT_ENCODE_V3;
+    bounds.maximum_work[static_cast<std::size_t>(resource)-1]=0;
+    Check(Receive(statement,bytes,bounds,input)==SB_ENGINE_STATUS_OK,"native zero-quota component receiving");
+    auto descriptor=Descriptor(*input.profile()); api::StatementBlobValueV3 source;
+    Check(input.RetainTyped(std::move(descriptor),source).ok(),"native zero-quota component source");
+    api::StatementBlobComponentV3 output; const auto refused=source.EncodeComponent(output);
+    Check(!refused.ok() && refused.failure==api::StatementBlobComponentFailureV3::resource_preflight &&
+        refused.resource==resource && refused.required>refused.available && !refused.first_pass_bytes &&
+        !refused.second_pass_bytes && !refused.staged_bytes && !refused.sink_attempts && !output.bound(),
+        "native component zero quota became unlimited or published a prefix");
+    Check(source.Release().ok(),"native component zero-quota cleanup"); input.Reset(); SameMemory(baseline);
+  }
+  {
+    api::StatementBlobInputV3 input; auto bounds=Bounds(true); bounds.operation=SB_BLOB_OP_COMPONENT_ENCODE_V3;
+    Check(Receive(statement,bytes,bounds,input)==SB_ENGINE_STATUS_OK,"native closed-root component receiving");
+    auto descriptor=Descriptor(*input.profile()); api::StatementBlobValueV3 source;
+    Check(input.RetainTyped(std::move(descriptor),source).ok(),"native closed-root component source");
+    input.Reset(); api::StatementBlobComponentV3 output; const auto refused=source.EncodeComponent(output);
+    Check(!refused.ok() && refused.failure==api::StatementBlobComponentFailureV3::admission_closed &&
+        !refused.lifetime_invoked && !output.bound() && source.Probe().ok(),
+        "native retired root admitted new artifact work or revoked existing retained source");
+    Check(source.Release().ok(),"native closed-root component cleanup"); SameMemory(baseline);
+  }
+}
+void ComponentAllocationFailures(tests::FixtureEngineSession& session,const api::EngineRequestContext& context) {
+  Statement statement(session,context); const auto baseline=mm::DefaultMemoryManager().Snapshot();
+  const std::array<platform::byte,3> bytes{0,255,129};
+  unsigned fired=0; bool completed=false;
+  for(long fault=0;fault<8192;++fault) {
+    {
+      api::StatementBlobInputV3 input; auto bounds=Bounds(true); bounds.operation=SB_BLOB_OP_COMPONENT_ENCODE_V3;
+      Check(Receive(statement,bytes,bounds,input)==SB_ENGINE_STATUS_OK,"native component allocation-fault source");
+      auto descriptor=Descriptor(*input.profile()); api::StatementBlobValueV3 source;
+      Check(input.RetainTyped(std::move(descriptor),source).ok(),"native component allocation-fault typed owner");
+      api::StatementBlobComponentV3 output;
+      allocation_fault_triggered=false; allocation_count=0; allocation_budget=fault;
+      const auto encoded=source.EncodeComponent(output);
+      allocation_budget=-1; const auto faulted=allocation_fault_triggered;
+      if(faulted) ++fired; else { completed=true; Check(encoded.ok() && output.bound(),"non-faulted native encode failed"); }
+      Check(encoded.ok()==output.bound(),"native failed encode published incomplete artifact");
+      if(!encoded.ok()) Check(!output.bound() && output.bytes().empty(),"native failed allocation exposed component prefix");
+      if(source.bound()) Check(source.Release().ok(),"native component allocation-fault source cleanup");
+      output.Reset(); input.Reset();
+      if(completed) break;
+    }
+    SameMemory(baseline);
+  }
+  SameMemory(baseline);
+  Check(completed,"native component allocation sweep did not reach real successful publication");
+  std::cout<<"actual native component allocation fault positions="<<fired<<'\n';
+  // The physical arena can fail without invoking global operator new. Find
+  // the exact native source-capacity boundary, then prove codec staging is
+  // refused and unwound until a real sufficiently sized grant admits it.
+  bool physical_failure=false, physical_success=false;
+  for(std::uint64_t capacity=8192;capacity<=65536;capacity+=512) {
+    {
+      api::StatementBlobInputV3 input; auto bounds=Bounds(true);
+      bounds.operation=SB_BLOB_OP_COMPONENT_ENCODE_V3; bounds.resident_bytes=capacity;
+      const auto received=Receive(statement,bytes,bounds,input);
+      if(received==SB_ENGINE_STATUS_OK) {
+        auto descriptor=Descriptor(*input.profile()); api::StatementBlobValueV3 source;
+        Check(input.RetainTyped(std::move(descriptor),source).ok(),"bounded native component physical source");
+        api::StatementBlobComponentV3 output; const auto encoded=source.EncodeComponent(output);
+        if(encoded.ok()) physical_success=true;
+        else {
+          Check(encoded.failure==api::StatementBlobComponentFailureV3::allocation_failed &&
+              !output.bound() && !encoded.staged_bytes,"bounded physical encode did not fail at actual private allocation");
+          physical_failure=true;
+        }
+        if(source.bound()) Check(source.Release().ok(),"bounded physical source cleanup");
+        output.Reset(); input.Reset();
+      }
+    }
+    SameMemory(baseline);
+    if(physical_success) break;
+  }
+  Check(physical_failure && physical_success,"native component capacity sweep did not prove real physical refusal and success");
+}
+void ComponentRevocation(tests::FixtureEngineSession& session,const api::EngineRequestContext& context) {
+  for(bool cancel:{false,true}) {
+    Statement statement(session,context); const auto baseline=mm::DefaultMemoryManager().Snapshot();
+    api::StatementBlobInputV3 input; auto bounds=Bounds(true); bounds.operation=SB_BLOB_OP_COMPONENT_ENCODE_V3;
+    const std::array<platform::byte,3> bytes{0,255,129};
+    Check(Receive(statement,bytes,bounds,input)==SB_ENGINE_STATUS_OK,"native component revocation receiving");
+    auto descriptor=Descriptor(*input.profile()); api::StatementBlobValueV3 source;
+    Check(input.RetainTyped(std::move(descriptor),source).ok(),"native component revocation typed owner");
+    if(cancel) {
+      std::optional<api::RetainedStatementCancellationV1> signal;
+      Check(api::RetainStatementCancellationV1(statement.handle,statement.context.session_uuid.bytes,
+          statement.context.statement_receipt_uuid.bytes,&signal)==SB_ENGINE_STATUS_OK && signal->Request(),
+          "native encoder actual cancellation request");
+    } else mga::RevokePublishedSnapshotVector({platform::UuidKind::object,platform::Uuid{statement.context.statement_snapshot_uuid.bytes}});
+    api::StatementBlobComponentV3 output; const auto encoded=source.EncodeComponent(output);
+    Check(!encoded.ok() && encoded.failure==api::StatementBlobComponentFailureV3::lifetime && encoded.lifetime_invoked &&
+        encoded.lifetime.diagnostic_code==(cancel ? "PROCESS.CANCELLED" : "CINL.LOB.HANDLE_EXPIRED") &&
+        !output.bound() && output.bytes().empty() && !encoded.first_pass_bytes && !encoded.second_pass_bytes &&
+        !encoded.staged_bytes && !encoded.sink_attempts,"native encoder ignored actual cancellation/MGA revocation or exposed staging");
+    if(!cancel) Check(static_cast<unsigned>(encoded.lifetime.fact.parameters.lifetime_enum)==3 &&
+        static_cast<unsigned>(encoded.lifetime.fact.parameters.expiry_reason_enum)==3,
+        "native encoder lost actual MGA stale-snapshot vector");
+    if(source.bound()) Check(source.Release().ok(),"native encoder revoked source cleanup");
+    input.Reset(); SameMemory(baseline);
+  }
+}
 void ForeignProcess(tests::FixtureEngineSession& session,const api::EngineRequestContext& context) {
 #if defined(__linux__)
   Statement statement(session,context);
@@ -452,5 +640,8 @@ void NativeBlobInput(tests::FixtureEngineSession& session,const api::EngineReque
   blob_input_test::TypedValues(session,context);
   blob_input_test::Revocation(session,context);
   blob_input_test::ConcurrentReaders(session,context);
+  blob_input_test::Components(session,context);
+  blob_input_test::ComponentAllocationFailures(session,context);
+  blob_input_test::ComponentRevocation(session,context);
   blob_input_test::ForeignProcess(session,context);
 }

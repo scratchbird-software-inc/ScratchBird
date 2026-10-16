@@ -4,6 +4,8 @@
 #include "../support/owned_temp_directory.hpp"
 #include "engine/statement_retained_memory.hpp"
 #include "engine/statement_blob_input.hpp"
+#include "engine/statement_blob_component.hpp"
+#include "../support/blob_persistence_fixture.hpp"
 #include "engine/statement_cancellation.hpp"
 #include "datatype_operations.hpp"
 #include "engine/statement_scratch_memory.hpp"
@@ -345,8 +347,23 @@ int main() try {
         "native BLOB shutdown source");
     scratchbird::core::datatypes::BlobRetainedLifetimeLeaseV3 blob_lease;
     Check(blob.Retain(blob_lease).ok(),"native BLOB shutdown retain");
+    api::StatementBlobInputV3 encoding;
+    auto encoding_bounds=blob_input_test::Bounds(true); encoding_bounds.operation=SB_BLOB_OP_COMPONENT_ENCODE_V3;
+    Check(blob_input_test::Receive(statement,blob_bytes,encoding_bounds,encoding)==SB_ENGINE_STATUS_OK,
+        "native artifact shutdown source");
+    auto encoding_descriptor=blob_input_test::Descriptor(*encoding.profile());
+    api::StatementBlobValueV3 encoding_value;
+    Check(encoding.RetainTyped(std::move(encoding_descriptor),encoding_value).ok(),"native artifact shutdown typed source");
+    api::StatementBlobComponentV3 artifact;
     auto* p = owner->memory()->allocate(128, alignof(std::max_align_t));
     statement.Release();
+    // Ordinary public retirement must not revoke the actual retained
+    // allocation/clock/MGA owner. Encode now, then retain artifact custody
+    // independently through forced session teardown.
+    Check(encoding_value.EncodeComponent(artifact).ok() && artifact.bound(),
+        "native retained component could not encode after public receipt retirement");
+    Check(encoding_value.Release().ok(),"native artifact source release before session shutdown");
+    encoding.Reset();
     std::barrier start(2);
     std::atomic<unsigned> completed{0}, refused{0}; std::atomic<bool> unexpected{false};
     std::thread allocate([&] {
@@ -375,6 +392,16 @@ int main() try {
         "actual session shutdown failed to revoke native BLOB access");
     if(blob_lease.retained()) Check(blob_lease.Release().ok(),"native BLOB shutdown cleanup");
     blob.Reset();
+    Check(artifact.bound() && artifact.bytes().size()==323 &&
+        std::equal(blob_bytes.begin(),blob_bytes.end(),artifact.bytes().begin()+320),
+        "session shutdown reclaimed or changed already-published native artifact bytes");
+    const auto before_artifact_cleanup=mm::DefaultMemoryManager().Snapshot();
+    artifact.Reset();
+    const auto after_artifact_cleanup=mm::DefaultMemoryManager().Snapshot();
+    Check(!artifact.bound() && artifact.bytes().empty() &&
+        after_artifact_cleanup.current_bytes<before_artifact_cleanup.current_bytes &&
+        after_artifact_cleanup.active_capacity_reservation_count+1==before_artifact_cleanup.active_capacity_reservation_count,
+        "native artifact shutdown cleanup did not release its actual physical backing and capacity owner");
     AllocationRefuses(*owner,1);
     owner->memory()->deallocate(p,128,alignof(std::max_align_t));
     Check(owner->Release() == SB_ENGINE_STATUS_OK, "post-session retained cleanup");

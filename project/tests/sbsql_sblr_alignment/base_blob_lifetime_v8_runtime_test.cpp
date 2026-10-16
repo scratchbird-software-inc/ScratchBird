@@ -104,7 +104,7 @@ class BlobLifetimeRuntimeConformanceAccessV3 final {
   }
   static BlobLifetimeBudgetSnapshotV3Generation1 Snapshot(
       BlobLifetimeBudgetLedgerV3Generation1& ledger) noexcept {
-    return ledger.SnapshotForConformance();
+    return ledger.Snapshot();
   }
   static bool Charge(BlobLifetimeBudgetLedgerV3Generation1& ledger,
                      BlobLifetimeResourceV3 resource, u64 amount,

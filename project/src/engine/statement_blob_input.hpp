@@ -52,6 +52,8 @@ struct StatementBlobInputAdmissionV3 {
 
 class StatementBlobValueV3;
 struct StatementBlobValueResultV3;
+class StatementBlobComponentV3;
+struct StatementBlobComponentResultV3;
 class StatementBlobInputV3 final {
  public:
   StatementBlobInputV3() noexcept = default;
@@ -65,6 +67,9 @@ class StatementBlobInputV3 final {
   void Reset() noexcept;
   bool bound() const noexcept { return host_ != nullptr; }
   const core::datatypes::BlobValidatedProfileHandleV3* profile() const noexcept;
+  // Actual shared cumulative work observations, never grants or admission.
+  // No scratch pointer, source bytes, ticket or lifetime identity is exposed.
+  std::optional<std::array<core::datatypes::BlobLifetimeCounterV3,12>> WorkSnapshot() noexcept;
   StatementBlobInputRetainV3 Retain(core::datatypes::BlobRetainedLifetimeLeaseV3&) noexcept;
   // The descriptor is an already admitted occurrence owned by the caller.
   // Move its exact metadata only after native lifetime retention succeeds.
@@ -114,6 +119,9 @@ class StatementBlobValueV3 final {
   StatementBlobValueResultV3 CastIdentityInto(
       ExecutionTypeDescriptor&&, core::datatypes::DatatypeCastContext,
       StatementBlobValueV3&) noexcept;
+  // Native atomic-buffer sink, not external I/O or wire publication. Requires
+  // this actual source to have logical replay + component_encode admission.
+  StatementBlobComponentResultV3 EncodeComponent(StatementBlobComponentV3&) noexcept;
   core::datatypes::BlobLifetimeRuntimeResultV3 Probe() noexcept { return lease_.Probe(); }
   core::datatypes::BlobLifetimeRuntimeResultV3 VisitMaterialized(
       const core::datatypes::BlobTrustedInternalVisitorV3& visitor) noexcept { return lease_.VisitBoundMaterializedBytes(visitor); }
@@ -126,6 +134,7 @@ class StatementBlobValueV3 final {
   core::datatypes::BlobValidatedProfileHandleV3 profile_{};
   core::datatypes::BlobValueStateV3 state_ = core::datatypes::BlobValueStateV3::sql_null;
   std::uint64_t length_ = 0;
+  core::datatypes::BlobLifetimeReceiverHostV3Generation1* host_ = nullptr;
   core::datatypes::BlobRetainedLifetimeLeaseV3 lease_;
   friend class core::datatypes::BlobLifetimeReceiverHostV3Generation1;
 };
