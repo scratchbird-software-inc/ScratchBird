@@ -440,10 +440,9 @@ class BlobLifetimeRuntimeConformanceAccessV3 final {
     return lease.EndAccessInternal(access, primary);
   }
 
-};
-
-class BlobLifetimeReceiverHostV3Generation1 final {
- public:
+  // Test capabilities belong to the existing conformance accessor, not the
+  // reserved production receiver-host identity. A different class definition
+  // under that production name would violate ODR once the real host is linked.
   static BlobReceiverEncodedReaderCapabilityV3Generation1 EncodedCapability(
       const BlobCarrierBindingV3& binding, u64 extent,
       void* context, BlobReadAtV3 read_at) noexcept {
@@ -1080,7 +1079,7 @@ void DropPin(void* context, std::uint64_t) noexcept {
       fake.poison_request_on_drop->required_owner_class = 0;
     }
     if (fake.poison_capability_on_drop != nullptr)
-      dt::BlobLifetimeReceiverHostV3Generation1::PoisonReleasedCapability(
+      dt::BlobLifetimeRuntimeConformanceAccessV3::PoisonReleasedCapability(
           *fake.poison_capability_on_drop);
   }
 }
@@ -1386,10 +1385,10 @@ void LogicalReaderFactoryAdmission() {
                                        SB_BLOB_MODE_LOGICAL_READER_V3;
         f.request.operation = op;
         f.carrier_binding.carrier_kind = SB_BLOB_MODE_LOGICAL_READER_V3;
-        auto cap = dt::BlobLifetimeReceiverHostV3Generation1::LogicalCapability(
+        auto cap = dt::BlobLifetimeRuntimeConformanceAccessV3::LogicalCapability(
             f.carrier_binding, dt::BlobValueStateV3::value,
             dt::kBlobMaximumLogicalBytesV3, &f.fake, NeverReadDuringAdmission);
-        auto budget = dt::BlobLifetimeReceiverHostV3Generation1::BudgetControl(
+        auto budget = dt::BlobLifetimeRuntimeConformanceAccessV3::BudgetControl(
             f.ledger, f.pins);
         const bool replay_required = op == 3 || op == 8;
         const bool expected = owner != 3 && op >= 2 && op <= 8 &&
@@ -1488,9 +1487,9 @@ void LogicalReaderFactoryAdmission() {
       case 26: length = 0; context = nullptr; break;
       case 27: length = 0; state = dt::BlobValueStateV3::sql_null; read_at = nullptr; break;
     }
-    auto cap = dt::BlobLifetimeReceiverHostV3Generation1::LogicalCapability(
+    auto cap = dt::BlobLifetimeRuntimeConformanceAccessV3::LogicalCapability(
         f.carrier_binding, state, length, context, read_at);
-    auto budget = dt::BlobLifetimeReceiverHostV3Generation1::BudgetControl(
+    auto budget = dt::BlobLifetimeRuntimeConformanceAccessV3::BudgetControl(
         f.ledger, f.pins);
     {
       dt::BlobLifetimeAuthorityAdmissionV3Generation1 admission;
@@ -1533,9 +1532,9 @@ void LogicalReaderFactoryAdmission() {
   Check(page != MAP_FAILED, "logical capability guard allocation");
   Fixture guarded(0);
   guarded.fake.pins = 0;
-  auto* cap = dt::BlobLifetimeReceiverHostV3Generation1::LogicalCapabilityAt(
+  auto* cap = dt::BlobLifetimeRuntimeConformanceAccessV3::LogicalCapabilityAt(
       page, guarded.carrier_binding, &guarded.fake, NeverReadDuringAdmission);
-  auto budget = dt::BlobLifetimeReceiverHostV3Generation1::BudgetControl(
+  auto budget = dt::BlobLifetimeRuntimeConformanceAccessV3::BudgetControl(
       guarded.ledger, guarded.pins);
   Check(mprotect(page, page_size, PROT_NONE) == 0, "logical capability guard");
   for (unsigned failed_pin = 1; failed_pin != 3; ++failed_pin) {
@@ -1785,10 +1784,10 @@ void FactoryF02AndRepresentability() {
       fixture.fake.pin_zero_cookie = true;
     }
     auto budget =
-        dt::BlobLifetimeReceiverHostV3Generation1::BudgetControl(
+        dt::BlobLifetimeRuntimeConformanceAccessV3::BudgetControl(
             fixture.ledger, fixture.pins);
     auto capability =
-        dt::BlobLifetimeReceiverHostV3Generation1::Capability(
+        dt::BlobLifetimeRuntimeConformanceAccessV3::Capability(
             fixture.carrier_binding, dt::BlobValueStateV3::value, nullptr, 0);
     dt::BlobLifetimeAuthorityAdmissionV3Generation1 admission;
     dt::BlobBoundMaterializedCarrierV3Generation1 carrier;
@@ -1817,10 +1816,10 @@ void FactoryF02AndRepresentability() {
     Fixture fixture(16);
     const platform::byte dummy = 0;
     auto budget =
-        dt::BlobLifetimeReceiverHostV3Generation1::BudgetControl(
+        dt::BlobLifetimeRuntimeConformanceAccessV3::BudgetControl(
             fixture.ledger, fixture.pins);
     auto capability =
-        dt::BlobLifetimeReceiverHostV3Generation1::Capability(
+        dt::BlobLifetimeRuntimeConformanceAccessV3::Capability(
             fixture.carrier_binding, dt::BlobValueStateV3::value, &dummy,
             dt::kBlobMaximumLogicalBytesV3 + 1);
     dt::BlobLifetimeAuthorityAdmissionV3Generation1 admission;
@@ -1906,14 +1905,14 @@ void FactoryAdmissionPrecedence() {
       if (fault(13)) authority.retain = nullptr;
       if (fault(14)) services.read_monotonic_ns = nullptr;
       if (fault(15)) ++services.monotonic_clock.clock_generation;
-      auto budget = dt::BlobLifetimeReceiverHostV3Generation1::BudgetControl(
+      auto budget = dt::BlobLifetimeRuntimeConformanceAccessV3::BudgetControl(
           fault(2) ? unfrozen : fixture.ledger, fixture.pins);
       const platform::byte dummy = 0;
       const auto state = fault(10)
           ? static_cast<dt::BlobValueStateV3>(255)
           : (fault(11) ? dt::BlobValueStateV3::sql_null
                        : dt::BlobValueStateV3::value);
-      auto capability = dt::BlobLifetimeReceiverHostV3Generation1::Capability(
+      auto capability = dt::BlobLifetimeRuntimeConformanceAccessV3::Capability(
           fixture.carrier_binding, state, &dummy,
           fault(12) ? dt::kBlobMaximumLogicalBytesV3 + 1 : 1);
       dt::BlobLifetimeAuthorityAdmissionV3Generation1 admission;
@@ -1969,11 +1968,11 @@ void FactoryDiagnosticsBeforeUnpin() {
     if (owner_failure)
       request.required_owner_class = SB_BLOB_OWNER_ENCODED_ARTIFACT_BORROW_V3;
     const auto admitted_operation = request.operation;
-    auto budget = dt::BlobLifetimeReceiverHostV3Generation1::BudgetControl(
+    auto budget = dt::BlobLifetimeRuntimeConformanceAccessV3::BudgetControl(
         fixture.ledger, fixture.pins);
     const platform::byte dummy = 0;
     const auto length = length_failure ? dt::kBlobMaximumLogicalBytesV3 + 1 : 1;
-    auto capability = dt::BlobLifetimeReceiverHostV3Generation1::Capability(
+    auto capability = dt::BlobLifetimeRuntimeConformanceAccessV3::Capability(
         fixture.carrier_binding, dt::BlobValueStateV3::value, &dummy, length);
     fixture.fake.poison_request_on_drop = &request;
     fixture.fake.poison_capability_on_drop = &capability;
@@ -2458,9 +2457,9 @@ void ExactMoveIdentityAndGuards() {
 
 void PinSelectorObservability() {
   Fixture fixture(16);
-  auto budget = dt::BlobLifetimeReceiverHostV3Generation1::BudgetControl(
+  auto budget = dt::BlobLifetimeRuntimeConformanceAccessV3::BudgetControl(
       fixture.ledger, fixture.pins);
-  auto capability = dt::BlobLifetimeReceiverHostV3Generation1::Capability(
+  auto capability = dt::BlobLifetimeRuntimeConformanceAccessV3::Capability(
       fixture.carrier_binding, dt::BlobValueStateV3::value, nullptr, 0);
   const auto page_size = static_cast<std::size_t>(sysconf(_SC_PAGESIZE));
   Check(page_size >= sizeof(BlobLifetimeUseRequestV3), "request guard page size");
@@ -2535,9 +2534,9 @@ void FactoryStateAndClockBoundaries() {
     fixture.token.mode_bits = SB_BLOB_MODE_IMMUTABLE_READ_V3 | (modes << 3) | (flags << 1);
     fixture.request.required_mode_bits = fixture.token.mode_bits;
     const bool single = modes == 1 || modes == 2 || modes == 4;
-    auto budget = dt::BlobLifetimeReceiverHostV3Generation1::BudgetControl(
+    auto budget = dt::BlobLifetimeRuntimeConformanceAccessV3::BudgetControl(
         fixture.ledger, fixture.pins);
-    auto capability = dt::BlobLifetimeReceiverHostV3Generation1::Capability(
+    auto capability = dt::BlobLifetimeRuntimeConformanceAccessV3::Capability(
         fixture.carrier_binding, dt::BlobValueStateV3::value, nullptr, 0);
     dt::BlobLifetimeAuthorityAdmissionV3Generation1 admission;
     dt::BlobBoundMaterializedCarrierV3Generation1 carrier;
@@ -2570,9 +2569,9 @@ void FactoryStateAndClockBoundaries() {
       auto carrier = dt::BlobLifetimeRuntimeConformanceAccessV3::Carrier(
           binding, static_cast<dt::BlobValueStateV3>(state),
           field == 7 ? &dummy : nullptr, field == 8 ? 1 : 0);
-      auto budget = dt::BlobLifetimeReceiverHostV3Generation1::BudgetControl(
+      auto budget = dt::BlobLifetimeRuntimeConformanceAccessV3::BudgetControl(
           fixture.ledger, fixture.pins);
-      auto capability = dt::BlobLifetimeReceiverHostV3Generation1::Capability(
+      auto capability = dt::BlobLifetimeRuntimeConformanceAccessV3::Capability(
           fixture.carrier_binding, dt::BlobValueStateV3::value, nullptr, 0);
       dt::BlobLifetimeAuthorityAdmissionV3Generation1 admission;
       const auto result = dt::BlobLifetimeRuntimeFactoryV3Generation1::AdmitMaterialized(
@@ -2598,9 +2597,9 @@ void FactoryStateAndClockBoundaries() {
     for (bool pointer : {false, true}) {
       for (bool length : {false, true}) {
         Fixture fixture(16);
-        auto budget = dt::BlobLifetimeReceiverHostV3Generation1::BudgetControl(
+        auto budget = dt::BlobLifetimeRuntimeConformanceAccessV3::BudgetControl(
             fixture.ledger, fixture.pins);
-        auto capability = dt::BlobLifetimeReceiverHostV3Generation1::Capability(
+        auto capability = dt::BlobLifetimeRuntimeConformanceAccessV3::Capability(
             fixture.carrier_binding, static_cast<dt::BlobValueStateV3>(state),
             pointer ? &dummy : nullptr, length ? 1 : 0);
         dt::BlobLifetimeAuthorityAdmissionV3Generation1 admission;
@@ -2640,9 +2639,9 @@ void FactoryStateAndClockBoundaries() {
         if (fault == 2) selected.clock_uuid = PlatformUuid(0xe0);
         if (fault == 3) ++selected.clock_generation;
         if (missing_service) services.read_monotonic_ns = nullptr;
-        auto budget = dt::BlobLifetimeReceiverHostV3Generation1::BudgetControl(
+        auto budget = dt::BlobLifetimeRuntimeConformanceAccessV3::BudgetControl(
             fixture.ledger, fixture.pins);
-        auto capability = dt::BlobLifetimeReceiverHostV3Generation1::Capability(
+        auto capability = dt::BlobLifetimeRuntimeConformanceAccessV3::Capability(
             fixture.carrier_binding, dt::BlobValueStateV3::value, nullptr, 0);
         dt::BlobLifetimeAuthorityAdmissionV3Generation1 admission;
         dt::BlobBoundMaterializedCarrierV3Generation1 carrier;
@@ -2664,9 +2663,9 @@ void FactoryStateAndClockBoundaries() {
     Fixture fixture(16);
     auto admission = fixture.Admission();
     const auto existing_pins = fixture.fake.pins;
-    auto budget = dt::BlobLifetimeReceiverHostV3Generation1::BudgetControl(
+    auto budget = dt::BlobLifetimeRuntimeConformanceAccessV3::BudgetControl(
         fixture.ledger, fixture.pins);
-    auto capability = dt::BlobLifetimeReceiverHostV3Generation1::Capability(
+    auto capability = dt::BlobLifetimeRuntimeConformanceAccessV3::Capability(
         fixture.carrier_binding, static_cast<dt::BlobValueStateV3>(255), nullptr, 0);
     dt::BlobBoundMaterializedCarrierV3Generation1 carrier;
     const auto result = dt::BlobLifetimeRuntimeFactoryV3Generation1::AdmitMaterialized(
@@ -2694,9 +2693,9 @@ void FactoryEarlyGateObservability() {
     const bool bad_abi = gate == 1;
     if (bad_abi) authority.struct_bytes = 0;
     dt::BlobLifetimeBudgetLedgerV3Generation1 unfrozen;
-    auto budget = dt::BlobLifetimeReceiverHostV3Generation1::BudgetControl(
+    auto budget = dt::BlobLifetimeRuntimeConformanceAccessV3::BudgetControl(
         bad_abi ? fixture.ledger : unfrozen, fixture.pins);
-    auto capability = dt::BlobLifetimeReceiverHostV3Generation1::Capability(
+    auto capability = dt::BlobLifetimeRuntimeConformanceAccessV3::Capability(
         fixture.carrier_binding, dt::BlobValueStateV3::value, nullptr, 0);
     dt::BlobLifetimeAuthorityAdmissionV3Generation1 admission;
     dt::BlobBoundMaterializedCarrierV3Generation1 carrier;
@@ -2791,9 +2790,9 @@ void PinResultProtocol() {
             fixture.fake.pin_zero_cookie = zero_cookie;
             fixture.fake.pin_dirty_reserved = dirty_byte >= 0;
             fixture.fake.pin_dirty_reserved_index = dirty_byte < 0 ? 0 : dirty_byte;
-            auto budget = dt::BlobLifetimeReceiverHostV3Generation1::BudgetControl(
+            auto budget = dt::BlobLifetimeRuntimeConformanceAccessV3::BudgetControl(
                 fixture.ledger, fixture.pins);
-            auto capability = dt::BlobLifetimeReceiverHostV3Generation1::Capability(
+            auto capability = dt::BlobLifetimeRuntimeConformanceAccessV3::Capability(
                 fixture.carrier_binding, dt::BlobValueStateV3::value, nullptr, 0);
             dt::BlobLifetimeAuthorityAdmissionV3Generation1 admission;
             dt::BlobBoundMaterializedCarrierV3Generation1 carrier;
@@ -2805,7 +2804,7 @@ void PinResultProtocol() {
                                           SB_BLOB_MODE_LOGICAL_READER_V3;
                 fixture.request.required_mode_bits = fixture.token.mode_bits;
                 fixture.carrier_binding.carrier_kind = SB_BLOB_MODE_LOGICAL_READER_V3;
-                auto logical = dt::BlobLifetimeReceiverHostV3Generation1::LogicalCapability(
+                auto logical = dt::BlobLifetimeRuntimeConformanceAccessV3::LogicalCapability(
                     fixture.carrier_binding, dt::BlobValueStateV3::value, 0,
                     &fixture.fake, NeverReadDuringAdmission);
                 return dt::BlobLifetimeRuntimeFactoryV3Generation1::AdmitLogicalReader(
@@ -2855,10 +2854,10 @@ void PinResultProtocol() {
   {
     Fixture fixture(16);
     auto budget =
-        dt::BlobLifetimeReceiverHostV3Generation1::BudgetControl(
+        dt::BlobLifetimeRuntimeConformanceAccessV3::BudgetControl(
             fixture.ledger, fixture.pins);
     auto capability =
-        dt::BlobLifetimeReceiverHostV3Generation1::Capability(
+        dt::BlobLifetimeRuntimeConformanceAccessV3::Capability(
             fixture.carrier_binding, dt::BlobValueStateV3::value, nullptr, 0);
     {
       dt::BlobLifetimeAuthorityAdmissionV3Generation1 admission;
@@ -2937,9 +2936,9 @@ void CleanupPrecedence() {
 void AllocationFreeMaterializedPath() {
   {
     Fixture factory_fixture(16);
-    auto budget = dt::BlobLifetimeReceiverHostV3Generation1::BudgetControl(
+    auto budget = dt::BlobLifetimeRuntimeConformanceAccessV3::BudgetControl(
         factory_fixture.ledger, factory_fixture.pins);
-    auto capability = dt::BlobLifetimeReceiverHostV3Generation1::Capability(
+    auto capability = dt::BlobLifetimeRuntimeConformanceAccessV3::Capability(
         factory_fixture.carrier_binding, dt::BlobValueStateV3::value,
         nullptr, 0);
     dt::BlobLifetimeAuthorityAdmissionV3Generation1 admission;
@@ -3148,9 +3147,9 @@ void BudgetConfigureFreezeLifecycle() {
 
   Fixture fixture(16);
   dt::BlobLifetimeBudgetLedgerV3Generation1 unfrozen;
-  auto budget = dt::BlobLifetimeReceiverHostV3Generation1::BudgetControl(
+  auto budget = dt::BlobLifetimeRuntimeConformanceAccessV3::BudgetControl(
       unfrozen, fixture.pins);
-  auto capability = dt::BlobLifetimeReceiverHostV3Generation1::Capability(
+  auto capability = dt::BlobLifetimeRuntimeConformanceAccessV3::Capability(
       fixture.carrier_binding, dt::BlobValueStateV3::value, nullptr, 0);
   dt::BlobLifetimeAuthorityAdmissionV3Generation1 admission;
   dt::BlobBoundMaterializedCarrierV3Generation1 carrier;
@@ -3734,7 +3733,7 @@ void RetainGuardedReader(Fixture& f, std::uint64_t extent, bool encoded,
     GuardedReaderContext& context, dt::BlobRetainedLifetimeLeaseV3& lease,
     dt::BlobValueStateV3 state = dt::BlobValueStateV3::value,
     dt::BlobReadAtV3 read_at = GuardedReader) {
-  using Host = dt::BlobLifetimeReceiverHostV3Generation1;
+  using Host = dt::BlobLifetimeRuntimeConformanceAccessV3;
   f.token.mode_bits = SB_BLOB_MODE_IMMUTABLE_READ_V3 |
       (encoded ? SB_BLOB_MODE_OPAQUE_ENCODED_READER_V3 : SB_BLOB_MODE_LOGICAL_READER_V3);
   if (!encoded && (f.request.operation == 3 || f.request.operation == 8))
@@ -4185,7 +4184,7 @@ void GuardedReaderAdmissionAndPinLifetime() {
 
 void GuardedReaderSharedArenaAndBytes() {
   using Access = dt::BlobLifetimeRuntimeConformanceAccessV3;
-  using Host = dt::BlobLifetimeReceiverHostV3Generation1;
+  using Host = dt::BlobLifetimeRuntimeConformanceAccessV3;
   for (std::uint64_t arena_bytes : {7U,8U}) {
     std::array<platform::byte,8> scratch{};
     dt::BlobLifetimeBudgetConfigurationV3Generation1 config;
@@ -4370,7 +4369,7 @@ void GuardedReaderEmptyAndPrivateGates() {
       result.status = 0; result.actual_octets = request.requested_octets;
       return result;
     };
-    using Host = dt::BlobLifetimeReceiverHostV3Generation1;
+    using Host = dt::BlobLifetimeRuntimeConformanceAccessV3;
     auto cap = Host::LogicalCapability(f.carrier_binding,dt::BlobValueStateV3::value,4,&context,reader);
     auto budget = Host::BudgetControl(f.ledger,f.pins);
     dt::BlobLifetimeAuthorityAdmissionV3Generation1 admission;
@@ -4443,7 +4442,7 @@ void ProtectedReaderSamplerAdmission() {
 }
 
 void EncodedReaderAdmissionAndRetention() {
-  using Host = dt::BlobLifetimeReceiverHostV3Generation1;
+  using Host = dt::BlobLifetimeRuntimeConformanceAccessV3;
   using Access = dt::BlobLifetimeRuntimeConformanceAccessV3;
   using Capability = dt::BlobReceiverEncodedReaderCapabilityV3Generation1;
   using Carrier = dt::BlobBoundEncodedReaderCarrierV3Generation1;
@@ -7746,9 +7745,9 @@ dt::BlobMaterializedLengthResultV3 AdmittedLength(
     Fixture& fixture, dt::BlobValueStateV3 state,
     std::span<const platform::byte> bytes, bool null_allowed = true,
     unsigned post_admission_mutation = 0, bool use_scoped_consumer = false) {
-  auto budget = dt::BlobLifetimeReceiverHostV3Generation1::BudgetControl(
+  auto budget = dt::BlobLifetimeRuntimeConformanceAccessV3::BudgetControl(
       fixture.ledger, fixture.pins);
-  auto capability = dt::BlobLifetimeReceiverHostV3Generation1::Capability(
+  auto capability = dt::BlobLifetimeRuntimeConformanceAccessV3::Capability(
       fixture.carrier_binding, state, bytes.data(), bytes.size());
   dt::BlobLifetimeAuthorityAdmissionV3Generation1 admission;
   dt::BlobBoundMaterializedCarrierV3Generation1 carrier;
@@ -7785,9 +7784,9 @@ dt::BlobLogicalReaderLengthResultV3 AdmittedLogicalLength(
     Fixture& fixture, dt::BlobValueStateV3 state, std::uint64_t length,
     bool null_allowed = true, unsigned post_admission_mutation = 0) {
   ConfigureLogicalFixture(fixture);
-  auto budget = dt::BlobLifetimeReceiverHostV3Generation1::BudgetControl(
+  auto budget = dt::BlobLifetimeRuntimeConformanceAccessV3::BudgetControl(
       fixture.ledger, fixture.pins);
-  auto capability = dt::BlobLifetimeReceiverHostV3Generation1::LogicalCapability(
+  auto capability = dt::BlobLifetimeRuntimeConformanceAccessV3::LogicalCapability(
       fixture.carrier_binding, state, length, &fixture.fake,
       NeverReadDuringAdmission);
   dt::BlobLifetimeAuthorityAdmissionV3Generation1 admission;
@@ -7831,11 +7830,11 @@ void AuthenticatedBlobIdentityCasts() {
         const auto length = null || scenario / 2 == 12 ? 0 :
             logical ? dt::kBlobMaximumLogicalBytesV3 : bytes.size();
         dt::BlobRetainedLifetimeLeaseV3 source, target;
-        auto control = dt::BlobLifetimeReceiverHostV3Generation1::BudgetControl(f.ledger, f.pins);
+        auto control = dt::BlobLifetimeRuntimeConformanceAccessV3::BudgetControl(f.ledger, f.pins);
         dt::BlobLifetimeAuthorityAdmissionV3Generation1 admission;
         if (logical) {
           ConfigureLogicalFixture(f);
-          const auto capability = dt::BlobLifetimeReceiverHostV3Generation1::LogicalCapability(
+          const auto capability = dt::BlobLifetimeRuntimeConformanceAccessV3::LogicalCapability(
               f.carrier_binding, state, length, &f.fake, NeverReadDuringAdmission);
           dt::BlobBoundLogicalReaderCarrierV3Generation1 carrier;
           Check(dt::BlobLifetimeRuntimeFactoryV3Generation1::AdmitLogicalReader(
@@ -7845,7 +7844,7 @@ void AuthenticatedBlobIdentityCasts() {
           Check(dt::RetainBaseBlobLifetimeLeaseV3Generation1(f.profile, std::move(admission),
               carrier, f.token, f.request, source).ok(), "identity logical retain");
         } else {
-          const auto capability = dt::BlobLifetimeReceiverHostV3Generation1::Capability(
+          const auto capability = dt::BlobLifetimeRuntimeConformanceAccessV3::Capability(
               f.carrier_binding, state, null ? nullptr : bytes.data(), length);
           dt::BlobBoundMaterializedCarrierV3Generation1 carrier;
           Check(dt::BlobLifetimeRuntimeFactoryV3Generation1::AdmitMaterialized(
@@ -8032,9 +8031,9 @@ void RetainedLogicalReaderTransfers() {
     fixture.token.mode_bits |= SB_BLOB_MODE_REPLAYABLE_SAME_SNAPSHOT_V3;
     fixture.request.required_mode_bits = fixture.token.mode_bits;
   }
-  auto budget = dt::BlobLifetimeReceiverHostV3Generation1::BudgetControl(
+  auto budget = dt::BlobLifetimeRuntimeConformanceAccessV3::BudgetControl(
       fixture.ledger, fixture.pins);
-  auto capability = dt::BlobLifetimeReceiverHostV3Generation1::LogicalCapability(
+  auto capability = dt::BlobLifetimeRuntimeConformanceAccessV3::LogicalCapability(
       fixture.carrier_binding, dt::BlobValueStateV3::value, 3, &fixture.fake,
       NeverReadDuringAdmission);
   dt::BlobLifetimeAuthorityAdmissionV3Generation1 admission;
@@ -8089,9 +8088,9 @@ void FailedLogicalRetainClearsAndReusesRouting() {
     ConfigureLogicalFixture(fixture);
     if (failure == 2) fixture.fake.cancelled = true;
     if (failure == 3) fixture.fake.retain_code = SB_BLOB_CALLBACK_SECURITY_DENIED_V3;
-    auto budget = dt::BlobLifetimeReceiverHostV3Generation1::BudgetControl(
+    auto budget = dt::BlobLifetimeRuntimeConformanceAccessV3::BudgetControl(
         fixture.ledger, fixture.pins);
-    auto capability = dt::BlobLifetimeReceiverHostV3Generation1::LogicalCapability(
+    auto capability = dt::BlobLifetimeRuntimeConformanceAccessV3::LogicalCapability(
         fixture.carrier_binding, dt::BlobValueStateV3::value, 7, &fixture.fake,
         NeverReadDuringAdmission);
     dt::BlobLifetimeAuthorityAdmissionV3Generation1 admission;
@@ -8113,10 +8112,10 @@ void FailedLogicalRetainClearsAndReusesRouting() {
           "failed logical retain left unowned routing or invented release");
     Fixture replacement(3);
     ConfigureLogicalFixture(replacement);
-    auto replacement_budget = dt::BlobLifetimeReceiverHostV3Generation1::BudgetControl(
+    auto replacement_budget = dt::BlobLifetimeRuntimeConformanceAccessV3::BudgetControl(
         replacement.ledger, replacement.pins);
     auto replacement_capability =
-        dt::BlobLifetimeReceiverHostV3Generation1::LogicalCapability(
+        dt::BlobLifetimeRuntimeConformanceAccessV3::LogicalCapability(
             replacement.carrier_binding, dt::BlobValueStateV3::value, 9,
             &replacement.fake, NeverReadDuringAdmission);
     dt::BlobLifetimeAuthorityAdmissionV3Generation1 replacement_admission;

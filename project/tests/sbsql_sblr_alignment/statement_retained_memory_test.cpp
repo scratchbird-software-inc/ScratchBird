@@ -3,6 +3,9 @@
 #include "../support/engine_statement_fixture.hpp"
 #include "../support/owned_temp_directory.hpp"
 #include "engine/statement_retained_memory.hpp"
+#include "engine/statement_blob_input.hpp"
+#include "engine/statement_cancellation.hpp"
+#include "datatype_operations.hpp"
 #include "engine/statement_scratch_memory.hpp"
 #include "transaction/transaction_api.hpp"
 #include "transaction_snapshot.hpp"
@@ -13,6 +16,10 @@
 #include <iostream>
 #include <thread>
 #include <cstdlib>
+#if defined(__linux__)
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
 
 thread_local long allocation_budget = -1;
 thread_local unsigned allocation_count = 0;
@@ -305,6 +312,8 @@ void ConcurrentAllocation(tests::FixtureEngineSession& session, const api::Engin
       owner->Release() == SB_ENGINE_STATUS_OK, "concurrent retained cleanup failed");
 }
 
+#include "statement_blob_input_test.inc"
+
 int main() try {
   Check(mm::ConfigureDefaultMemoryManagerForFixture(mm::DefaultLocalEngineMemoryPolicy(),
       "statement_retained_memory").ok(), "physical fixture policy");
@@ -326,9 +335,16 @@ int main() try {
   AdmissionAllocationFailures(session, context);
   ConcurrentAllocation(session, context);
   SnapshotRevocation(session, context);
+  NativeBlobInput(session, context);
   {
     Statement statement(session, context); Owner owner;
     Check(statement.Retain(4096, owner) == SB_ENGINE_STATUS_OK, "shutdown grant");
+    api::StatementBlobInputV3 blob;
+    const std::array<platform::byte,3> blob_bytes{0,0xff,0x41};
+    Check(blob_input_test::Receive(statement,blob_bytes,blob_input_test::Bounds(),blob)==SB_ENGINE_STATUS_OK,
+        "native BLOB shutdown source");
+    scratchbird::core::datatypes::BlobRetainedLifetimeLeaseV3 blob_lease;
+    Check(blob.Retain(blob_lease).ok(),"native BLOB shutdown retain");
     auto* p = owner->memory()->allocate(128, alignof(std::max_align_t));
     statement.Release();
     std::barrier start(2);
@@ -350,6 +366,15 @@ int main() try {
     allocate.join();
     Check(!unexpected && completed+refused==256,"racing actual shutdown failed allocator/cleanup protocol");
     Check(owner->Observe() == Observation::receipt_revoked, "session close did not revoke retained allocation admission");
+    const auto blob_stopped=blob_lease.Probe();
+    // Public retirement closes cancellation lookup, but does not invent a
+    // positive signal. Forced session teardown revokes this retained receipt.
+    Check(!blob_stopped.ok() && blob_stopped.diagnostic_code=="CINL.LOB.HANDLE_EXPIRED" &&
+        static_cast<unsigned>(blob_stopped.fact.parameters.lifetime_enum)==5 &&
+        static_cast<unsigned>(blob_stopped.fact.parameters.expiry_reason_enum)==5,
+        "actual session shutdown failed to revoke native BLOB access");
+    if(blob_lease.retained()) Check(blob_lease.Release().ok(),"native BLOB shutdown cleanup");
+    blob.Reset();
     AllocationRefuses(*owner,1);
     owner->memory()->deallocate(p,128,alignof(std::max_align_t));
     Check(owner->Release() == SB_ENGINE_STATUS_OK, "post-session retained cleanup");

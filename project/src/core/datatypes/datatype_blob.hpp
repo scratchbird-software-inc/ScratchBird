@@ -492,6 +492,7 @@ class BlobLifetimeBudgetControlCapabilityV3Generation1 final {
       const BlobLifetimeBudgetControlCapabilityV3Generation1&) = delete;
  private:
   friend class BlobLifetimeReceiverHostV3Generation1;
+  friend class BlobLifetimeRuntimeConformanceAccessV3;
   friend class BlobLifetimeRuntimeFactoryV3Generation1;
   BlobLifetimeBudgetControlCapabilityV3Generation1(
       BlobLifetimeBudgetLedgerV3Generation1& ledger,
@@ -646,6 +647,7 @@ class BlobReceiverLogicalReaderCapabilityV3Generation1 final {
       BlobReceiverLogicalReaderCapabilityV3Generation1&&) = delete;
  private:
   friend class BlobLifetimeReceiverHostV3Generation1;
+  friend class BlobLifetimeRuntimeConformanceAccessV3;
   friend class BlobLifetimeRuntimeFactoryV3Generation1;
   BlobReceiverLogicalReaderCapabilityV3Generation1(
       const BlobCarrierBindingV3& binding, BlobValueStateV3 state,
@@ -694,6 +696,7 @@ class BlobReceiverEncodedReaderCapabilityV3Generation1 final {
   BlobReceiverEncodedReaderCapabilityV3Generation1& operator=(BlobReceiverEncodedReaderCapabilityV3Generation1&&) = delete;
  private:
   friend class BlobLifetimeReceiverHostV3Generation1;
+  friend class BlobLifetimeRuntimeConformanceAccessV3;
   friend class BlobLifetimeRuntimeFactoryV3Generation1;
   BlobReceiverEncodedReaderCapabilityV3Generation1(const BlobCarrierBindingV3& binding,
       u64 extent, void* context, BlobReadAtV3 read_at) noexcept
@@ -736,6 +739,7 @@ class BlobReceiverMaterializedCapabilityV3Generation1 final {
       BlobReceiverMaterializedCapabilityV3Generation1&&) = delete;
  private:
   friend class BlobLifetimeReceiverHostV3Generation1;
+  friend class BlobLifetimeRuntimeConformanceAccessV3;
   friend class BlobLifetimeRuntimeFactoryV3Generation1;
   BlobReceiverMaterializedCapabilityV3Generation1(
       const BlobMaterializedCarrierBindingV3& binding,

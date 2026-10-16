@@ -2777,6 +2777,7 @@ if(NOT TARGET sb_engine)
     src/engine/engine_boundary.cpp
     src/engine/public_abi.cpp
     src/engine/statement_management_ack_codec.cpp
+    src/engine/statement_blob_input.cpp
   )
   target_compile_features(sb_engine PUBLIC cxx_std_20)
   target_include_directories(sb_engine PUBLIC
@@ -2790,6 +2791,7 @@ if(NOT TARGET sb_engine_shared)
     src/engine/engine_boundary.cpp
     src/engine/public_abi.cpp
     src/engine/statement_management_ack_codec.cpp
+    src/engine/statement_blob_input.cpp
   )
   target_compile_features(sb_engine_shared PUBLIC cxx_std_20)
   target_include_directories(sb_engine_shared PUBLIC
@@ -2844,6 +2846,7 @@ if(NOT TARGET sb_engine)
     src/engine/engine_boundary.cpp
     src/engine/public_abi.cpp
     src/engine/statement_management_ack_codec.cpp
+    src/engine/statement_blob_input.cpp
   )
   target_compile_features(sb_engine PUBLIC cxx_std_20)
   target_include_directories(sb_engine PUBLIC
@@ -2857,6 +2860,7 @@ if(NOT TARGET sb_engine_shared)
     src/engine/engine_boundary.cpp
     src/engine/public_abi.cpp
     src/engine/statement_management_ack_codec.cpp
+    src/engine/statement_blob_input.cpp
   )
   target_compile_features(sb_engine_shared PUBLIC cxx_std_20)
   target_include_directories(sb_engine_shared PUBLIC
