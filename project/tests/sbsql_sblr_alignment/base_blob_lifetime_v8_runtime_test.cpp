@@ -3773,6 +3773,8 @@ void GuardedReaderExecution() {
   using Access = dt::BlobLifetimeRuntimeConformanceAccessV3;
   for (unsigned op = 2; op <= 13; ++op) {
     const bool encoded = op >= 9;
+    for(bool ranged:{false,true}) {
+      if(ranged && !encoded) continue;
     for (unsigned mode = 0; mode <= 21; ++mode) {
       std::array<platform::byte,16> scratch{};
       dt::BlobLifetimeBudgetConfigurationV3Generation1 config;
@@ -3790,21 +3792,23 @@ void GuardedReaderExecution() {
         f.request.absolute_deadline_monotonic_ns = 200;
       }
       GuardedReaderContext context{&f.fake,mode};
+      if(ranged) context.expected_reader_offset=context.visited=2;
       dt::BlobRetainedLifetimeLeaseV3 lease;
-      RetainGuardedReader(f,mode == 19 ? 4 : 9,encoded,context,lease);
+      RetainGuardedReader(f,mode == 19 && !ranged ? 4 : 9,encoded,context,lease);
       const auto bytes_resource = encoded ? dt::BlobLifetimeResourceV3::encoded_bytes_read
                                           : dt::BlobLifetimeResourceV3::logical_bytes_read;
       if (mode == 18) Access::SetCounter(f.ledger,bytes_resource,UINT64_MAX,1,0);
       auto visitor = Access::Visitor(GuardedReaderVisitor,&context);
       const auto before = allocation_probe::calls.load();
       allocation_probe::enabled.store(true);
-      const auto result = lease.VisitBoundReaderBytes(visitor);
+      const auto result = ranged ? lease.VisitBoundEncodedRangeBytes(2,mode==19 ? 4 : 7,visitor)
+                                 : lease.VisitBoundReaderBytes(visitor);
       const bool success = mode <= 1;
       const auto released = success ? lease.Release() : dt::BlobLifetimeRuntimeResultV3{};
       allocation_probe::enabled.store(false);
       if (success) {
         Check(result.ok() && released.ok() && context.visited == 9 &&
-                  context.calls == (mode == 0 ? 3 : 9) &&
+                  context.calls == (mode == 0 ? (ranged ? 2 : 3) : (ranged ? 7 : 9)) &&
                   CountCall(f.fake,'B') == context.calls && CountCall(f.fake,'E') == context.calls &&
                   CountCall(f.fake,'P') == 1 && Access::Invoked(f.ledger) == 2*context.calls+3,
               "complete guarded traversal lost exact bytes/callback formula/final probe");
@@ -3837,9 +3841,62 @@ void GuardedReaderExecution() {
             "guarded reader leaked pins, dirty scratch, allocations or temporary charge");
       const auto observed = Access::Invoked(f.ledger,bytes_resource);
       Check(observed == (mode == 6 || mode == 18 ? (mode == 18 ? 1U : 0U) :
-              success ? 9U : mode == 2 ? 0U : mode == 3 || mode == 19 ? 5U : 4U),
+              success ? (ranged ? 7U : 9U) : mode == 2 ? 0U : mode == 3 || mode == 19 ? 5U : 4U),
             "returned byte count was not charged before malformed/failed reply rejection");
     }
+    }
+  }
+}
+
+void GuardedEncodedRangeBoundaries() {
+  using Access=dt::BlobLifetimeRuntimeConformanceAccessV3;
+  for(unsigned operation=9;operation<=13;++operation) for(unsigned edge=0;edge<8;++edge) {
+    std::array<platform::byte,16> scratch{};
+    dt::BlobLifetimeBudgetConfigurationV3Generation1 config;
+    config.limits.fill(UINT64_MAX); config.scratch=scratch; config.admitted_window_octets=4;
+    Fixture f(64,0,&config); f.fake.pins=0; f.request.operation=operation;
+    const std::uint64_t extent=edge<4 ? UINT64_MAX : 9;
+    std::uint64_t offset=extent,length=0;
+    if(edge==0) { offset=extent-3; length=3; }
+    if(edge==2) length=1; // End+one must not wrap to zero.
+    if(edge==3) { offset=extent-3; length=4; }
+    if(edge==4) offset=10;
+    if(edge==5) { offset=8; length=2; }
+    if(edge==6) { offset=0; length=UINT64_MAX; }
+    if(edge==7) { offset=9; length=0; }
+    const bool valid=edge==0 || edge==1 || edge==7;
+    GuardedReaderContext context{&f.fake,0};
+    context.expected_reader_offset=context.visited=offset;
+    dt::BlobRetainedLifetimeLeaseV3 lease;
+    RetainGuardedReader(f,extent,true,context,lease);
+    auto visitor=Access::Visitor(GuardedReaderVisitor,&context);
+    const auto before=allocation_probe::calls.load(); allocation_probe::enabled.store(true);
+    const auto result=lease.VisitBoundEncodedRangeBytes(offset,length,visitor);
+    if(lease.retained()) Check(lease.Release().ok(),"encoded range boundary retained cleanup");
+    allocation_probe::enabled.store(false);
+    Check(result.ok()==valid && (valid || result.disposition==dt::BlobLifetimeOuterDispositionV3::terminated_out_of_band),
+        "encoded range overflow/out-of-bounds was accepted or fabricated a public data failure");
+    Check(context.calls==(edge==0 ? 1u : 0u) && context.visitor_calls==context.calls &&
+        CountCall(f.fake,'B')==context.calls && CountCall(f.fake,'E')==context.calls &&
+        CountCall(f.fake,'P')==(valid ? 1u : 0u) && CountCall(f.fake,'L')==1 && f.fake.pins==0 &&
+        Access::Invoked(f.ledger,dt::BlobLifetimeResourceV3::encoded_bytes_read)==(edge==0 ? 3u : 0u) &&
+        Access::Invoked(f.ledger,dt::BlobLifetimeResourceV3::logical_bytes_read)==0 &&
+        Access::ReservedCleanup(f.ledger)==0 && allocation_probe::calls.load()==before &&
+        std::all_of(scratch.begin(),scratch.end(),[](auto b){return b==0;}),
+        "encoded range boundary read outside bounds, skipped empty probe or leaked scratch/tickets/pins");
+  }
+  // Range selection cannot turn a logical reader into an encoded capability.
+  {
+    std::array<platform::byte,16> scratch{};
+    dt::BlobLifetimeBudgetConfigurationV3Generation1 config;
+    config.limits.fill(UINT64_MAX); config.scratch=scratch; config.admitted_window_octets=4;
+    Fixture f(64,0,&config); f.fake.pins=0; f.request.operation=2;
+    GuardedReaderContext context{&f.fake,0}; dt::BlobRetainedLifetimeLeaseV3 lease;
+    RetainGuardedReader(f,9,false,context,lease); auto visitor=Access::Visitor(GuardedReaderVisitor,&context);
+    const auto result=lease.VisitBoundEncodedRangeBytes(0,1,visitor);
+    Check(!result.ok() && result.disposition==dt::BlobLifetimeOuterDispositionV3::terminated_out_of_band &&
+        context.calls==0 && context.visitor_calls==0 && f.fake.pins==0 && CountCall(f.fake,'L')==1,
+        "encoded range method upgraded a logical capability or leaked its cleanup");
   }
 }
 
@@ -8418,6 +8475,7 @@ int main(int argc, char** argv) {
   BudgetConfigureFreezeLifecycle();
   ContextualNullDescriptorBinding();
   EncodedReaderAdmissionAndRetention();
+  GuardedEncodedRangeBoundaries();
   IndependentResourceCleanupAccounting();
   TwoThreadCloneMoveGuardContention();
   AtomicWinnerReceiptProtocol();

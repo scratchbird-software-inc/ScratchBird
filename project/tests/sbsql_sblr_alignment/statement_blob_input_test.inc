@@ -690,6 +690,32 @@ void EncodedInputs(tests::FixtureEngineSession& session,const api::EngineRequest
     }
   }
 }
+void EncodedHeaderRange(tests::FixtureEngineSession& session,const api::EngineRequestContext& context) {
+  Statement statement(session,context); const auto baseline=mm::DefaultMemoryManager().Snapshot();
+  const std::vector<platform::byte> bytes(8193,0x93);
+  api::StatementBlobEncodedInputV3 input; auto bounds=EncodedBounds();
+  bounds.scratch_bytes=320;
+  bounds.maximum_work[static_cast<std::size_t>(dt::BlobLifetimeResourceV3::encoded_bytes_read)-1]=320;
+  bounds.maximum_work[static_cast<std::size_t>(dt::BlobLifetimeResourceV3::reader_calls)-1]=1;
+  bounds.maximum_work[static_cast<std::size_t>(dt::BlobLifetimeResourceV3::temporary_bytes)-1]=320;
+  Check(api::ReceiveStatementBlobEncodedInputV3(statement.handle,statement.context.session_uuid.bytes,
+      statement.context.statement_receipt_uuid.bytes,bytes,bounds,&input).ok(),"native exact header range receiving");
+  dt::BlobRetainedLifetimeLeaseV3 lease; Check(input.Retain(lease).ok(),"native exact header retained source");
+  Read header{std::span<const platform::byte>(bytes).first(320)};
+  auto visitor=dt::BlobLifetimeRuntimeConformanceAccessV3::Visitor(Read::Visit,&header);
+  const auto read=lease.VisitBoundEncodedRangeBytes(0,320,visitor);
+  Check(read.ok() && header.matches && header.at==320 && header.calls==1,
+      "native header range required body/hash/sink allowances or read more than exactly320bytes");
+  const auto work=input.WorkSnapshot();
+  Check(work && work->at(static_cast<std::size_t>(dt::BlobLifetimeResourceV3::encoded_bytes_read)).invoked==320 &&
+      work->at(static_cast<std::size_t>(dt::BlobLifetimeResourceV3::reader_calls)).invoked==1 &&
+      work->at(static_cast<std::size_t>(dt::BlobLifetimeResourceV3::temporary_bytes)).invoked==320,
+      "native header range did not settle exact independent initial resource admission");
+  Read empty{{}}; auto empty_visitor=dt::BlobLifetimeRuntimeConformanceAccessV3::Visitor(Read::Visit,&empty);
+  Check(lease.VisitBoundEncodedRangeBytes(bytes.size(),0,empty_visitor).ok() && !empty.calls,
+      "native empty encoded range required payload quota or skipped actual empty authentication");
+  Check(lease.Release().ok(),"native header range exact lease cleanup"); input.Reset(); SameMemory(baseline);
+}
 void ForeignProcess(tests::FixtureEngineSession& session,const api::EngineRequestContext& context) {
 #if defined(__linux__)
   Statement statement(session,context);
@@ -741,5 +767,6 @@ void NativeBlobInput(tests::FixtureEngineSession& session,const api::EngineReque
   blob_input_test::ComponentAllocationFailures(session,context);
   blob_input_test::ComponentRevocation(session,context);
   blob_input_test::EncodedInputs(session,context);
+  blob_input_test::EncodedHeaderRange(session,context);
   blob_input_test::ForeignProcess(session,context);
 }

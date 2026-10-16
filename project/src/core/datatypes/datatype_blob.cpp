@@ -4097,6 +4097,12 @@ BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::VisitBoundReaderBytes(
   return VisitBoundReaderBytesInternal(visitor, nullptr);
 }
 
+BlobLifetimeRuntimeResultV3 BlobRetainedLifetimeLeaseV3::VisitBoundEncodedRangeBytes(
+    u64 offset,u64 length,const BlobTrustedInternalVisitorV3& visitor) noexcept {
+  const std::array<u64,2> range{offset,length};
+  return VisitBoundReaderBytesInternal(visitor,nullptr,&range);
+}
+
 BlobLifetimeRuntimeResultV3
 BlobRetainedLifetimeLeaseV3::VisitBoundReplayableReaderBytes(
     const BlobTrustedInternalVisitorV3& first_pass,
@@ -4107,7 +4113,8 @@ BlobRetainedLifetimeLeaseV3::VisitBoundReplayableReaderBytes(
 BlobLifetimeRuntimeResultV3
 BlobRetainedLifetimeLeaseV3::VisitBoundReaderBytesInternal(
     const BlobTrustedInternalVisitorV3& first_pass,
-    const BlobTrustedInternalVisitorV3* second_pass) noexcept {
+    const BlobTrustedInternalVisitorV3* second_pass,
+    const std::array<u64,2>* encoded_range) noexcept {
   EntrantGuard entrant(state_);
   if (!entrant.acquired()) {
     const State observed = state_.load(std::memory_order_acquire);
@@ -4154,7 +4161,15 @@ BlobRetainedLifetimeLeaseV3::VisitBoundReaderBytesInternal(
     return ReleaseOwned(BlobLifetimePhaseV3::release, request_.operation, RuntimeTerminated());
   }
   const u64 extent = encoded ? carrier_encoded_extent_ : carrier_logical_length_;
-  if (extent == 0) return ProbeInternal(true, true);
+  // Inspect all immutable source/range metadata only while this wrapper is
+  // exclusively claimed. No method selector can manufacture an opaque route
+  // for a logical BLOB or read beyond the actual bound encoded artifact.
+  const u64 first_offset=encoded_range ? (*encoded_range)[0] : 0;
+  const u64 length=encoded_range ? (*encoded_range)[1] : extent;
+  if(encoded_range && (!encoded || second_pass || first_offset>extent || length>extent-first_offset))
+    return ReleaseOwned(BlobLifetimePhaseV3::release,request_.operation,RuntimeTerminated());
+  const u64 end_offset=first_offset+length; // Checked against actual extent.
+  if (length == 0) return ProbeInternal(true, true);
   const auto entry_gate = OrdinaryGate(BlobLifetimeGateV3::before_begin_access,
       BlobLifetimePublicPhaseV3::begin_access, BlobLifetimePhaseV3::begin_access);
   if (!entry_gate.ok() || state_.Deferred() != 0)
@@ -4167,7 +4182,7 @@ BlobRetainedLifetimeLeaseV3::VisitBoundReaderBytesInternal(
   }
   std::span<byte> workspace;
   u64 available = 0;
-  const u64 workspace_size = std::min(window, extent);
+  const u64 workspace_size = std::min(window, length);
   if (!admission_.budget_->ReserveReaderScratch(workspace_size, workspace, &available)) {
     if (admission_.budget_->terminal_quarantined()) {
       (void)PublishDeferredInvariant(BlobLifetimeInvariantEventV3::progress_counter_overflow,
@@ -4188,8 +4203,8 @@ BlobRetainedLifetimeLeaseV3::VisitBoundReaderBytesInternal(
   const unsigned passes = second_pass == nullptr ? 1U : 2U;
   for (unsigned pass = 0; pass < passes; ++pass) {
     const auto& visitor = pass == 0 ? first_pass : *second_pass;
-    u64 offset = 0;
-    while (offset < extent) {
+    u64 offset = first_offset;
+    while (offset < end_offset) {
       BlobLifetimeAccessTicketV3 access{};
       auto primary = BeginAccessInternal(access);
       // No workspace content survives any end or begin; a failed helper may
@@ -4201,7 +4216,7 @@ BlobRetainedLifetimeLeaseV3::VisitBoundReaderBytesInternal(
       if (primary.ok()) primary = OrdinaryGate(BlobLifetimeGateV3::before_protected_work,
           BlobLifetimePublicPhaseV3::protected_access, BlobLifetimePhaseV3::protected_access);
       if (primary.ok()) primary = ProtectedWorkAdmissionResult();
-      const u64 requested = std::min<u64>(workspace_size, extent-offset);
+      const u64 requested = std::min<u64>(workspace_size, end_offset-offset);
       bool exposed = false;
       BlobReaderResultV3 returned{};
       BlobReaderResultValidationV3 classified{};

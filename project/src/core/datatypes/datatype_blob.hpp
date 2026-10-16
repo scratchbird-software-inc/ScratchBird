@@ -1126,6 +1126,14 @@ class BlobRetainedLifetimeLeaseV3 final {
   // before the matching end_access; they are not output staging or a locator.
   BlobLifetimeRuntimeResultV3 VisitBoundReaderBytes(
       const BlobTrustedInternalVisitorV3& visitor) noexcept;
+  // Exact bounded encoded-byte range, NOT validation of the whole artifact.
+  // Only an opaque encoded capability may use this receiving primitive. Each
+  // call owns one complete range traversal, shared budget, final source probe
+  // and cleanup; zero length still authenticates a probe. The native codec
+  // exclusively owns its private lease across header admission and body read.
+  BlobLifetimeRuntimeResultV3 VisitBoundEncodedRangeBytes(
+      u64 offset, u64 length,
+      const BlobTrustedInternalVisitorV3& visitor) noexcept;
   // One exclusive operation, not two one-pass operations. Both logical passes
   // share one workspace/grant and one retain ticket, with a snapshot probe at
   // the transition and at final return. Empty/NULL still uses one probe only.
@@ -1270,7 +1278,8 @@ class BlobRetainedLifetimeLeaseV3 final {
       bool retain_operation_owner = false) noexcept;
   BlobLifetimeRuntimeResultV3 VisitBoundReaderBytesInternal(
       const BlobTrustedInternalVisitorV3& first_pass,
-      const BlobTrustedInternalVisitorV3* second_pass) noexcept;
+      const BlobTrustedInternalVisitorV3* second_pass,
+      const std::array<u64,2>* encoded_range = nullptr) noexcept;
   BlobLifetimeRuntimeResultV3 CallbackFailure(
       u8 code, BlobLifetimePhaseV3 phase,
       const BlobLifetimeUseRequestV3& request,
