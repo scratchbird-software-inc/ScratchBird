@@ -16,6 +16,36 @@ PROBE = Path(__file__).with_name("linux_owned_command_probe.py")
 
 
 class OwnedCommandProbeTest(unittest.TestCase):
+    def test_exited_process_task_directory_has_no_live_children(self):
+        for error in (FileNotFoundError("exited"), ProcessLookupError("exited during enumeration")):
+            with self.subTest(error=type(error).__name__), mock.patch.object(Path, "iterdir", side_effect=error):
+                self.assertEqual(probe.children(123), set())
+
+    def test_exited_task_children_file_does_not_abort_sampling(self):
+        for error in (FileNotFoundError("exited"), ProcessLookupError("exited during read")):
+            with self.subTest(error=type(error).__name__), \
+                    mock.patch.object(Path, "iterdir", return_value=iter([Path("/proc/123/task/123")])), \
+                    mock.patch.object(Path, "read_text", side_effect=error):
+                self.assertEqual(probe.children(123), set())
+
+    def test_child_enumeration_permissions_and_malformed_data_fail_closed(self):
+        with mock.patch.object(Path, "iterdir", side_effect=PermissionError("denied")):
+            with self.assertRaises(PermissionError):
+                probe.children(123)
+        with mock.patch.object(Path, "iterdir", return_value=iter([Path("/proc/123/task/123")])), \
+                mock.patch.object(Path, "read_text", side_effect=PermissionError("denied")):
+            with self.assertRaises(PermissionError):
+                probe.children(123)
+        with mock.patch.object(Path, "iterdir", return_value=iter([Path("/proc/123/task/123")])), \
+                mock.patch.object(Path, "read_text", return_value="bad pid"):
+            with self.assertRaises(ValueError):
+                probe.children(123)
+
+    def test_child_enumeration_unions_all_tasks_without_duplicates(self):
+        with mock.patch.object(Path, "iterdir", return_value=iter([Path("task1"), Path("task2")])), \
+                mock.patch.object(Path, "read_text", side_effect=["2 3", "3 4"]):
+            self.assertEqual(probe.children(123), {2, 3, 4})
+
     def test_unavailable_io_is_recorded_not_reported_as_zero(self):
         original = Path.read_bytes
         def read(path):

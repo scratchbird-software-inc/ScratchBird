@@ -24,7 +24,10 @@ def children(pid):
     result = set()
     try:
         tasks = list(Path(f"/proc/{pid}/task").iterdir())
-    except FileNotFoundError:
+    except (FileNotFoundError, ProcessLookupError):
+        # Procfs can report ESRCH as well as ENOENT when this sampled process
+        # exits during task-directory enumeration. Neither is a live child.
+        # Permission and other errors still fail closed in the controller.
         return result
     for task in tasks:
         try:
