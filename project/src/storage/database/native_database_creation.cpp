@@ -88,7 +88,8 @@ static NativeInitialDatabaseResult AssembleNativeInitialDatabaseRecordsImpl(
     definition.creation_unix_epoch_millis=physical.creation_utc_millis;
     definition.creator_transaction_number=physical.creator.local_id.value;
     definition.datatype_cohort=r.datatype_cohort;
-    std::array<byte,232> backing;
+    definition.text_defaults=r.text_defaults;
+    std::array<byte,c::kCatalogDatabaseRecordMaximumBytes> backing;
     const auto encoded=c::EncodeCatalogDatabaseRecordInto(definition,backing);
     if(!encoded.ok())return Fail(E::invalid_definition);
     std::array<c::CatalogMetadataVersionView,2> views;
@@ -131,7 +132,10 @@ static NativeInitialDatabaseResult AssembleNativeInitialDatabaseRecordsImpl(
     const auto distinct=[&](const c::CatalogMetadataVersion& m) {
       for(const auto& id:{m.record.header.object_uuid.value,m.record.header.row_uuid.value})
         if(id==r.datatype_cohort.catalog_snapshot_uuid.value||
-            std::find(enclosing.begin(),enclosing.end(),id)!=enclosing.end())return false;
+            std::find(enclosing.begin(),enclosing.end(),id)!=enclosing.end()||
+            (r.text_defaults&&(id==r.text_defaults->charset_uuid.value||
+                id==r.text_defaults->collation_uuid.value||id==r.text_defaults->source_object_uuid.value||
+                (r.text_defaults->cluster_uuid&&id==r.text_defaults->cluster_uuid->value))))return false;
       return true;
     };
     for(unsigned family=0;family<families;++family) {

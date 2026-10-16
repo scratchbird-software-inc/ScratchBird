@@ -80,6 +80,24 @@ std::string Golden(const c::CatalogDatabaseRecord& r) {
     Put(s,216,12,2);Put(s,218,1,1);Put(s,220,8,4);
     Put(s,224,r.datatype_cohort->registry_generation,8);
   }
+  if(r.text_defaults) {
+    const auto& d=*r.text_defaults;const bool cluster=d.cluster_uuid.has_value();
+    s.resize(cluster?408:384,'\0');Put(s,8,s.size(),4);Put(s,12,cluster?21:20,4);Put(s,20,3,2);
+    const auto identity=[&](unsigned offset,unsigned field,const p::TypedUuid& id) {
+      Put(s,offset,field,2);Put(s,offset+2,5,1);Put(s,offset+4,16,4);
+      s.replace(offset+8,16,reinterpret_cast<const char*>(id.value.bytes.data()),16);
+    };
+    identity(232,13,d.charset_uuid);identity(256,14,d.collation_uuid);
+    const std::array<p::u64,4> values{d.resource_activation_epoch,d.charset_family_epoch,
+        d.collation_family_epoch,static_cast<p::u64>(d.source)};
+    for(unsigned i=0;i<4;++i) {
+      const auto offset=280+16*i;Put(s,offset,15+i,2);Put(s,offset+2,1,1);
+      Put(s,offset+4,8,4);Put(s,offset+8,values[i],8);
+    }
+    identity(344,19,d.source_object_uuid);
+    Put(s,368,20,2);Put(s,370,1,1);Put(s,372,8,4);Put(s,376,d.source_generation,8);
+    if(cluster)identity(384,21,*d.cluster_uuid);
+  }
   return s;
 }
 void Roundtrip(const c::CatalogDatabaseRecord& r) {
@@ -87,7 +105,7 @@ void Roundtrip(const c::CatalogDatabaseRecord& r) {
   Check(encoded.ok(),"valid payload encode");
   if(!encoded.ok())return;
   Check(Bytes(encoded)==Golden(r),"independent complete payload byte oracle");
-  std::array<p::byte,240> backing;backing.fill(0xa7);
+  std::array<p::byte,416> backing;backing.fill(0xa7);
   allocation_probe::forbidden=true;
   const auto bounded=c::EncodeCatalogDatabaseRecordInto(r,backing);
   const auto extent=c::CatalogDatabaseRecordEncodedBytes(r);
@@ -97,7 +115,7 @@ void Roundtrip(const c::CatalogDatabaseRecord& r) {
       std::equal(bounded.bytes.begin(),bounded.bytes.end(),
           reinterpret_cast<const p::byte*>(golden.data()))&&
       std::all_of(backing.begin()+golden.size(),backing.end(),[](auto b){return b==0xa7;}),
-      "no-allocation bounded encoder matches independent V1/V2 bytes and preserves tail");
+      "no-allocation bounded encoder matches independent V1/V2/V3 bytes and preserves tail");
   for(std::size_t size=0;size<golden.size();++size) {
     backing.fill(0xa7);allocation_probe::forbidden=true;
     const auto refused=c::EncodeCatalogDatabaseRecordInto(r,std::span(backing).first(size));
@@ -122,6 +140,8 @@ void Roundtrip(const c::CatalogDatabaseRecord& r) {
     Check(Golden(*decoded.record)==Golden(r),"all fields preserved");
     Check(decoded.record->datatype_cohort==r.datatype_cohort,
           "cohort presence and exact tuple preserved without defaulting");
+    Check(decoded.record->text_defaults==r.text_defaults,
+          "exact binary TEXT defaults and provenance preserved without provisioning");
   }
 }
 void Refused(const std::string& bytes) {
@@ -231,6 +251,106 @@ void CohortCodec(const c::CatalogDatabaseRecord& base) {
   Check(legacy.ok()&&!legacy.record->datatype_cohort,
         "legacy database was implicitly assigned a current cohort");
 }
+c::CatalogDatabaseTextDefaults TextDefaults(const c::CatalogDatabaseRecord& base,unsigned source) {
+  c::CatalogDatabaseTextDefaults d;
+  const auto identity=[&](p::UuidKind kind,unsigned suffix) {
+    auto id=base.database_uuid;id.kind=kind;id.value.bytes[14]^=0x80;
+    id.value.bytes[15]=static_cast<p::byte>(suffix);return id;
+  };
+  d.charset_uuid=identity(p::UuidKind::object,21);
+  d.collation_uuid=identity(p::UuidKind::object,22);
+  d.source_object_uuid=identity(p::UuidKind::object,23);
+  d.resource_activation_epoch=17;d.charset_family_epoch=11;d.collation_family_epoch=13;
+  d.source=static_cast<c::CatalogDatabaseTextDefaultSource>(source);d.source_generation=19;
+  if(source==3)d.cluster_uuid=identity(p::UuidKind::cluster,24);
+  return d;
+}
+void TextDefaultsCodec(const c::CatalogDatabaseRecord& base) {
+  for(unsigned source=1;source<=3;++source) {
+    auto r=base;r.datatype_cohort=c::CatalogDatabaseDatatypeCohort{
+        {p::UuidKind::object,scratchbird::core::datatypes::kDatatypeCohortV11},11,11};
+    r.text_defaults=TextDefaults(base,source);
+    std::array<p::byte,416> first;first.fill(0xa7);
+    allocation_probe::forbidden=true;
+    const auto initial=c::EncodeCatalogDatabaseRecordInto(r,first);
+    allocation_probe::forbidden=false;
+    Check(initial.ok(),"first V3 bounded encode requires no heap/schema initialization");
+    Roundtrip(r);const auto valid=Golden(r);
+    for(std::size_t size=0;size<valid.size();++size)Refused(valid.substr(0,size));
+    Refused(valid+"x");
+    for(unsigned offset:{232,256,280,296,312,328,344,368,384}) {
+      if(offset>=valid.size())continue;
+      const bool identity=offset==232||offset==256||offset==344||offset==384;
+      for(unsigned type=0;type<256;++type) {
+        if(type==(identity?5:1))continue;
+        auto bytes=valid;Put(bytes,offset+2,type,1);Refused(bytes);
+      }
+      for(unsigned member:{0,3,4}) {
+        auto bytes=valid;Put(bytes,offset+member,member?0xff:0,member==4?4:1);Refused(bytes);
+      }
+      auto bytes=valid;Put(bytes,offset,1,2);Refused(bytes); // Duplicate field.
+    }
+    for(unsigned kind=0;kind<256;++kind)for(unsigned field=0;field<(source==3?4:3);++field) {
+      auto wrong=r;auto& d=*wrong.text_defaults;
+      auto* id=field==0?&d.charset_uuid:field==1?&d.collation_uuid:field==2?&d.source_object_uuid:&*d.cluster_uuid;
+      if(kind==static_cast<unsigned>(id->kind))continue;
+      id->kind=static_cast<p::UuidKind>(kind);
+      Check(!c::EncodeCatalogDatabaseRecord(wrong).ok(),"wrong V3 identity kind refused");
+    }
+    for(unsigned version=0;version<16;++version)for(unsigned variant=0;variant<4;++variant) {
+      if(version==7&&variant==2)continue;
+      for(unsigned field=0;field<(source==3?4:3);++field) {
+        auto wrong=r;auto& d=*wrong.text_defaults;
+        auto* id=field==0?&d.charset_uuid:field==1?&d.collation_uuid:field==2?&d.source_object_uuid:&*d.cluster_uuid;
+        id->value.bytes[6]=(id->value.bytes[6]&15)|(version<<4);
+        id->value.bytes[8]=(id->value.bytes[8]&63)|(variant<<6);
+        Check(!c::EncodeCatalogDatabaseRecord(wrong).ok(),"non-V7 default/provenance identity refused");
+        Refused(Golden(wrong));
+      }
+    }
+    for(unsigned fault=0;fault<13;++fault) {
+      auto wrong=r;auto& d=*wrong.text_defaults;
+      switch(fault) {
+        case 0:d.charset_uuid.value={};break;
+        case 1:d.collation_uuid.value={};break;
+        case 2:d.source_object_uuid.value={};break;
+        case 3:d.collation_uuid=d.charset_uuid;break;
+        case 4:d.source_object_uuid=d.charset_uuid;break;
+        case 5:d.source_object_uuid=d.collation_uuid;break;
+        case 6:d.resource_activation_epoch=0;break;
+        case 7:d.charset_family_epoch=0;break;
+        case 8:d.collation_family_epoch=0;break;
+        case 9:d.source_generation=0;break;
+        case 10:d.source=static_cast<c::CatalogDatabaseTextDefaultSource>(0);break;
+        case 11:d.source=static_cast<c::CatalogDatabaseTextDefaultSource>(~p::u64{0});break;
+        case 12:if(source==3)d.cluster_uuid.reset();else d.cluster_uuid=TextDefaults(base,3).cluster_uuid;break;
+      }
+      std::array<p::byte,416> backing;backing.fill(0xa7);
+      allocation_probe::forbidden=true;
+      const auto result=c::EncodeCatalogDatabaseRecordInto(wrong,backing);
+      const auto extent=c::CatalogDatabaseRecordEncodedBytes(wrong);
+      allocation_probe::forbidden=false;
+      Check(!result.ok()&&result.bytes.empty()&&!extent&&
+          std::all_of(backing.begin(),backing.end(),[](auto b){return b==0xa7;}),
+          "invalid V3 refuses allocation/output and preserves entire backing");
+      Refused(Golden(wrong));
+    }
+    auto no_cohort=r;no_cohort.datatype_cohort.reset();
+    Check(!c::EncodeCatalogDatabaseRecord(no_cohort).ok(),"TEXT defaults cannot omit node datatype cohort");
+    auto extreme=r;auto& d=*extreme.text_defaults;
+    d.resource_activation_epoch=d.charset_family_epoch=d.collation_family_epoch=d.source_generation=~p::u64{0};
+    Roundtrip(extreme);
+    for(unsigned version:{1,2,4,65535}) {auto bytes=valid;Put(bytes,20,version,2);Refused(bytes);}
+  }
+  for(const auto version:{1u,2u}) {
+    auto r=base;
+    if(version==2)r.datatype_cohort=c::CatalogDatabaseDatatypeCohort{
+        {p::UuidKind::object,scratchbird::core::datatypes::kDatatypeCohortV11},11,11};
+    const auto decoded=DecodeNoAllocation(Golden(r));
+    Check(decoded.ok()&&!decoded.record->text_defaults,"frozen V1/V2 never invent TEXT defaults");
+    auto bytes=Golden(r);Put(bytes,20,3,2);Refused(bytes);
+  }
+}
 std::string ReadAll(const std::string& path) {
   std::ifstream in(path,std::ios::binary);Setup(in.is_open(),"read fixture");
   return {std::istreambuf_iterator<char>(in),std::istreambuf_iterator<char>()};
@@ -264,6 +384,7 @@ int main() {
     expected.creator_transaction_number=1;
     Codec(expected);
     CohortCodec(expected);
+    TextDefaultsCodec(expected);
     expected.datatype_cohort=c::CatalogDatabaseDatatypeCohort{
         {p::UuidKind::object,scratchbird::core::datatypes::kDatatypeCohortV11},11,11};
     const auto created=db::CreateDatabaseFile(cfg);

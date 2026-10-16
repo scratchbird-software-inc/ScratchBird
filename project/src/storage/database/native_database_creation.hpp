@@ -16,6 +16,10 @@ struct NativeInitialDatabaseRequest {
   // definition payload is empty; native construction values supply it.
   core::catalog::CatalogNamedCreationInput definition;
   core::catalog::CatalogNamedCreationLimits limits;
+  // Exact already-selected binary pair/provenance. Absence preserves V2, not
+  // permission to invent runtime defaults or claim normal-node completion.
+  // The enclosing constructor owns resource/policy/cluster reference admission.
+  std::optional<core::catalog::CatalogDatabaseTextDefaults> text_defaults = std::nullopt;
 };
 enum class NativeInitialDatabaseError {
   none,invalid_request,invalid_construction,invalid_definition,invalid_names,

@@ -446,6 +446,81 @@ void DatabaseChecks() {
       std::get<c::CatalogNameEntry>(*made.records->names[1].name).display_name=="native_node",
       "owning database definition and alias retain independent admitted input snapshot");
 }
+c::CatalogDatabaseTextDefaults DefaultSelectors(unsigned source) {
+  c::CatalogDatabaseTextDefaults d;
+  d.charset_uuid=Typed(p::UuidKind::object,9101);d.collation_uuid=Typed(p::UuidKind::object,9102);
+  d.resource_activation_epoch=29;d.charset_family_epoch=17;d.collation_family_epoch=23;
+  d.source=static_cast<c::CatalogDatabaseTextDefaultSource>(source);
+  d.source_object_uuid=Typed(p::UuidKind::object,9103);d.source_generation=31;
+  if(source==3)d.cluster_uuid=Typed(p::UuidKind::cluster,9104);
+  return d;
+}
+void DatabaseTextDefaultsChecks() {
+  using DE=db::NativeInitialDatabaseError;
+  for(unsigned source=1;source<=3;++source) {
+    DatabasePackage package;auto request=package.Request();request.text_defaults=DefaultSelectors(source);
+    const auto made=db::AssembleNativeInitialDatabaseRecords(request);
+    Check(made.ok(),"native database accepts complete selected default metadata without selecting resources");
+    const auto decoded=c::DecodeCatalogDatabaseRecord(made.records->definitions[0].metadata.record.payload);
+    Check(decoded.ok()&&decoded.record->text_defaults==request.text_defaults,
+          "native definition retains exact binary selectors epochs and provenance");
+    Check(package.aliases.items[0].metadata.record.payload.empty(),"default assembly preserves borrowed input");
+    const c::CatalogNamedCreationLimits exact{3,made.records->encoded_bytes};
+    request.limits=exact;
+    Check(db::AssembleNativeInitialDatabaseRecords(request).ok(),"exact complete V3 package bounds");
+    --request.limits.maximum_encoded_bytes;allocation_calls=0;allocation_budget=0;
+    const auto short_result=db::AssembleNativeInitialDatabaseRecords(request);
+    const bool no_copy=allocation_calls==0;allocation_budget=-1;
+    Check(no_copy&&short_result.error==DE::resource_exhausted&&!short_result.records,
+          "one-short V3 bound refuses before payload/alias allocation");
+    request.limits=exact;
+    for(unsigned fault=0;fault<7;++fault) {
+      auto wrong=request;auto& d=*wrong.text_defaults;
+      if(fault==0)d.charset_uuid.value={};
+      if(fault==1)d.collation_uuid=d.charset_uuid;
+      if(fault==2)d.resource_activation_epoch=0;
+      if(fault==3)d.source_generation=0;
+      if(fault==4)d.source=static_cast<c::CatalogDatabaseTextDefaultSource>(0);
+      if(fault==5){if(source==3)d.cluster_uuid.reset();else d.cluster_uuid=DefaultSelectors(3).cluster_uuid;}
+      if(fault==6)wrong.datatype_cohort.registry_generation=0;
+      allocation_calls=0;allocation_budget=0;
+      const auto refused=db::AssembleNativeInitialDatabaseRecords(wrong);
+      const bool no_allocation=allocation_calls==0;allocation_budget=-1;
+      Check(no_allocation&&refused.error==DE::invalid_definition&&!refused.records,
+            "incomplete V3 defaults refuse before any owning package");
+    }
+    for(unsigned field=0;field<(source==3?4u:3u);++field)for(unsigned member=0;member<3;++member) {
+      auto wrong=request;auto& d=*wrong.text_defaults;
+      auto& metadata=member==0?package.aliases.items[0].metadata:
+          member==1?package.aliases.items[0].vector_metadata:package.aliases.items[0].entry_metadata;
+      const auto original=metadata.record.header.row_uuid;
+      const auto value=field==0?d.charset_uuid.value:field==1?d.collation_uuid.value:
+          field==2?d.source_object_uuid.value:d.cluster_uuid->value;
+      metadata.record.header.row_uuid={p::UuidKind::row,value};
+      allocation_calls=0;allocation_budget=0;
+      const auto refused=db::AssembleNativeInitialDatabaseRecords(wrong);
+      const bool no_allocation=allocation_calls==0;allocation_budget=-1;
+      metadata.record.header.row_uuid=original;
+      Check(no_allocation&&refused.error==DE::duplicate_identity&&!refused.records,
+            "definition/name rows cannot alias selected resource or source references");
+    }
+    allocation_calls=0;allocation_budget=1000000;
+    const auto counted=db::AssembleNativeInitialDatabaseRecords(request);
+    const auto sites=allocation_calls;allocation_budget=-1;
+    Check(counted.ok()&&sites,"V3 owning allocation calibration");
+    for(unsigned site=0;site<sites;++site) {
+      allocation_calls=0;allocation_budget=site;
+      const auto refused=db::AssembleNativeInitialDatabaseRecords(request);
+      const bool consumed=allocation_budget<0;allocation_budget=-1;
+      Check(consumed&&refused.error==DE::resource_exhausted&&!refused.records,
+            "every V3 owning allocation failure drops complete package");
+    }
+    const auto saved=made.records->definitions[0].metadata.record.payload;
+    request.text_defaults.reset();
+    Check(made.records->definitions[0].metadata.record.payload==saved,
+          "assembled defaults independent of subsequent caller input changes");
+  }
+}
 void LogicalChecks() {
   Package package;auto made=package.Assemble();Check(made.ok()&&made.records->definitions.size()==6&&
       made.records->names.size()==12,"whole local schema family and names assembled");
@@ -560,9 +635,16 @@ void LogicalChecks() {
 }
 void PhysicalChecks() {
   scratchbird::tests::OwnedTempDirectory artifacts;
-  for(unsigned profile=0;profile<5;++profile) {
+  // Preserve the original V2 cases and add all three V3 provenance shapes
+  // through real native indexed catalog construction/reopen at every page
+  // profile. These are persisted structural selectors, not admitted resource
+  // references, cluster membership, normal node activation or SQL execution.
+  for(unsigned profile=0;profile<5;++profile)for(unsigned source=0;source<=3;++source) {
     const auto& p=disk::kCanonicalFilespacePageProfiles[profile];Package package;
-    PrimaryPackage native(profile);const auto database=native.Assemble();Check(database.ok(),"native database/primary producer package");
+    PrimaryPackage native(profile);auto definitions_request=native.Request();
+    if(source)definitions_request.database.text_defaults=DefaultSelectors(source);
+    const auto database=db::AssembleNativeInitialDatabaseFilespaceRecords(definitions_request);
+    Check(database.ok(),"native database/primary producer package");
     package.database=database.records->definitions[0].metadata;
     const auto made=package.Assemble();Check(made.ok(),"schema producer package");
     db::NativeCreationCatalogSeed seed;seed[0]=made.records->definitions;seed[1]=made.records->names;
@@ -588,7 +670,7 @@ void PhysicalChecks() {
     }
     const auto& request=native.database.construction;
     u::StandaloneUuidV7Issuer issuer({Id(1),Id(10)},{{},0,1000});
-    const auto path=(artifacts.path()/std::to_string(profile)).string();disk::FileDevice device;
+    const auto path=(artifacts.path()/(std::to_string(profile)+"-"+std::to_string(source))).string();disk::FileDevice device;
     Check(device.Open(path,disk::FileOpenMode::create_new).ok(),"actual native schema filespace owner");
     const auto budget=512*p::u64{p.page_size_bytes};
     const auto created=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,request,seed,indexes,budget,issuer);
@@ -612,6 +694,11 @@ void PhysicalChecks() {
               c::CatalogMemoryConfigurationMatchesMetadata(c::BorrowCatalogMetadataVersion(row.metadata)):
               c::CatalogBootstrapPolicyMatchesMetadata(c::BorrowCatalogMetadataVersion(row.metadata))),
           "exact full schema/policy/provider/profile/memory definition survives native bytes/reopen");
+      if(row.metadata.record.header.kind==c::CatalogRecordKind::database) {
+        const auto node=c::DecodeCatalogDatabaseRecord(row.metadata.record.payload);
+        Check(node.ok()&&node.record->text_defaults==definitions_request.database.text_defaults,
+              "native MGA catalog reopen preserves exact V2 absence or V3 selectors without default authority");
+      }
     }
     const auto names=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(Id(1),devices,created.receipt->checkpoint,
         2,2,{indexes[1]->relation_uuid,indexes[1]->dependencies},budget);
@@ -636,5 +723,5 @@ void PhysicalChecks() {
   artifacts.Cleanup();
 }
 } // namespace
-int main() try {DatabaseChecks();PrimaryChecks();LogicalChecks();PhysicalChecks();std::cout<<"PASS complete initial database/primary/schema family construction\n";return 0;}
+int main() try {DatabaseChecks();PrimaryChecks();DatabaseTextDefaultsChecks();LogicalChecks();PhysicalChecks();std::cout<<"PASS complete initial database/primary/schema family construction\n";return 0;}
 catch(const std::exception& error){allocation_budget=-1;std::cerr<<error.what()<<'\n';return 1;}
