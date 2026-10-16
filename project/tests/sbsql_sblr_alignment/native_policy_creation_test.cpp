@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "native_policy_creation.hpp"
+#include "native_initial_policy_catalogs.hpp"
 #include "database_lifecycle.hpp"
 #include "bootstrap_security_validation.hpp"
 #include "native_creation_workspace.hpp"
@@ -16,8 +17,10 @@
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <limits>
 #include <new>
 #include <stdexcept>
+#include <type_traits>
 
 thread_local long allocation_budget=-1;
 thread_local bool allocation_failed=false;
@@ -557,13 +560,91 @@ void SecuritySourceMutations() {
     }
   }
 }
+auto NameBytes(const c::CatalogNamePayload& name) {
+  return std::visit([](const auto& value){
+    if constexpr(std::is_same_v<std::decay_t<decltype(value)>,c::CatalogNameVector>)
+      return c::EncodeCatalogNameVector(value);
+    else return c::EncodeCatalogNameEntry(value);
+  },name);
+}
+void PlacementLogical() {
+  using E=db::NativeInitialPolicyCatalogError;
+  for(unsigned cohort=0;cohort<4;++cohort){
+    const bool security=cohort>=1,bootstrap=cohort>=2,service=cohort>=3;
+    Package package(security,bootstrap,service);
+    const auto request=service?package.ServiceRequest():bootstrap?package.BootstrapRequest():package.SecurityRequest();
+    const auto assemble=[&]{return security?db::AssembleNativeInitialPolicySecurityCatalogs(request):
+        db::AssembleNativeInitialPolicyCatalogs(package.Request());};
+    const auto made=assemble();Check(made.ok()&&made.source_error==db::NativeInitialPolicyError::none,
+        "production initial policy placement consumes the complete actual admitted source");
+    const auto& catalogs=made.plan->catalogs;
+    const unsigned definitions=service?64:bootstrap?57:security?54:28;
+    const unsigned security_count=security?26+(bootstrap?3:0)+(service?6:0):0;
+    Check(catalogs[0].empty()&&catalogs[2].empty()&&catalogs[5].empty()&&
+        catalogs[1].size()==2*definitions&&catalogs[3].size()==security_count&&catalogs[4].size()==28+(service?1:0),
+        "exact names/security/configuration roles, no default object-head placement");
+    c::CatalogNamedCreationSet joined;joined.names=catalogs[1];joined.encoded_bytes=made.plan->encoded_bytes;
+    for(unsigned slot:{3u,4u})for(const auto& row:catalogs[slot]){
+      Check(!row.name&&((slot==3)==c::IsCatalogSecurityRecordKind(row.metadata.record.header.kind)),
+          "security and configuration family classification is not supplied placement authority");
+      joined.definitions.push_back(row);
+    }
+    Verify(joined,security,bootstrap,service);
+    for(const auto& row:catalogs[1])Check(row.name&&row.metadata.record.header.kind==c::CatalogRecordKind::localized_name,
+        "all supplied localized names and vectors reside only in name registry");
+    package.items[0].entry.display_name="caller data changed after production placement";
+    Check(std::get<c::CatalogNameEntry>(*catalogs[1][1].name).display_name=="supplied_alias_0",
+        "production placement owns localized data after caller mutation");
+    package.items[0].entry.display_name="supplied_alias_0";
+    for(unsigned scenario=0;scenario<8;++scenario){
+      Package bad(security,bootstrap,service);
+      auto changed=service?bad.ServiceRequest():bootstrap?bad.BootstrapRequest():bad.SecurityRequest();
+      if(scenario==0)changed.policy.database_uuid={};
+      if(scenario==1)changed.policy.policy_seed_pack_root="/not-an-existing-scratchbird-policy-pack";
+      if(scenario==2)changed.policy.limits.maximum_records=3*definitions-1;
+      if(scenario==3)changed.policy.limits.maximum_encoded_bytes=made.plan->encoded_bytes-1;
+      if(scenario==4)bad.items[0].definition.object_subtype="unsupported_future_definition";
+      if(scenario==5)bad.items[0].entry.default_for_object=false;
+      if(scenario==6)bad.items[0].definition.record.header.row_uuid=bad.items[1].definition.record.header.row_uuid;
+      if(scenario==7)changed.policy.definitions=changed.policy.definitions.first(definitions-1);
+      const auto direct=security?db::AssembleNativeInitialPolicySecurityRecords(changed):db::AssembleNativeInitialPolicyRecords(changed.policy);
+      const auto refused=security?db::AssembleNativeInitialPolicySecurityCatalogs(changed):db::AssembleNativeInitialPolicyCatalogs(changed.policy);
+      Check(!direct.ok()&&!refused.ok()&&!refused.plan&&refused.error==E::source_failure&&
+          refused.source_error==direct.error&&refused.name_error==direct.name_error&&
+          refused.source_diagnostic.has_value()==direct.source_diagnostic.has_value(),
+          "placement cannot bypass source coverage, canonical family/name, identity or exact limits and preserves typed refusal");
+      if(direct.source_diagnostic)Check(refused.source_diagnostic->diagnostic_code==direct.source_diagnostic->diagnostic_code&&
+          refused.source_diagnostic->message_key==direct.source_diagnostic->message_key,
+          "owning source diagnostic survives failed placement without replacement or partial catalogs");
+    }
+    // Warm the same real source, then distinguish source assembly allocations
+    // from the one/two actual destination reserves. No mutable prebuilt package
+    // is injected to bypass the public complete-source boundary.
+    allocation_budget=std::numeric_limits<long>::max();
+    const auto measured=security?db::AssembleNativeInitialPolicySecurityRecords(request):db::AssembleNativeInitialPolicyRecords(package.Request());
+    const auto source_allocations=std::numeric_limits<long>::max()-allocation_budget;allocation_budget=-1;
+    Check(measured.ok()&&source_allocations>0,"measure actual complete-source allocation positions before placement");
+    const long destination_reserves=security?2:1;
+    for(const long budget:{0L,1L,5L,31L,97L,257L,source_allocations-1,source_allocations,source_allocations+destination_reserves-1}){
+      allocation_failed=false;allocation_budget=budget;const auto refused=assemble();allocation_budget=-1;
+      Check(allocation_failed&&!refused.ok()&&!refused.plan,
+          "source or destination allocation fault never exposes moved/partial native role cohorts");
+      if(budget>=source_allocations)Check(refused.source_error==db::NativeInitialPolicyError::none&&refused.error==E::resource_exhausted,
+          "failure during actual placement reserves preserves successful source classification and fails atomically");
+    }
+    allocation_budget=source_allocations+destination_reserves;const auto exact=assemble();allocation_budget=-1;
+    Check(exact.ok()&&exact.plan->encoded_bytes==made.plan->encoded_bytes,
+        "exact measured source plus destination-reserve allocation bound succeeds without payload recopy");
+  }
+}
 void Physical(bool security=false,bool bootstrap=false,bool service=false) {
   scratchbird::tests::OwnedTempDirectory artifacts;
-  Package package(security,bootstrap,service);const auto made=security?db::AssembleNativeInitialPolicySecurityRecords(service?package.ServiceRequest():bootstrap?package.BootstrapRequest():package.SecurityRequest()):db::AssembleNativeInitialPolicyRecords(package.Request());Check(made.ok(),"actual source producer before physical construction");
+  Package package(security,bootstrap,service);const auto made=security?db::AssembleNativeInitialPolicySecurityCatalogs(service?package.ServiceRequest():bootstrap?package.BootstrapRequest():package.SecurityRequest()):db::AssembleNativeInitialPolicyCatalogs(package.Request());Check(made.ok(),"actual production source and role placement before physical construction");
   for(const auto& profile:d::kCanonicalFilespacePageProfiles) {
-    db::NativeCreationCatalogSeed seed;seed[0]=made.records->definitions;seed[1]=made.records->names;
+    const auto& seed=made.plan->catalogs;
     db::NativeCreationCatalogIndexes indexes;
-    for(unsigned role=0;role<2;++role) {
+    for(unsigned role:{1u,3u,4u}) {
+      if(seed[role].empty())continue;
       scratchbird::storage::page::NativeBtreeDependencies deps;deps.index_uuid=f::Id(8010+role);
       deps.descriptor_generation=deps.storage_generation=1;deps.key_profile_uuid=f::Id(8020+role);deps.visibility_profile_uuid=f::Id(8030+role);
       deps.dependency_map_uuid=f::Id(8040+role);deps.dependency_map_sha256.fill(1+role);indexes[role]=db::NativeCreationCatalogIndexBinding{f::Id(8000+role),deps};
@@ -579,28 +660,42 @@ void Physical(bool security=false,bool bootstrap=false,bool service=false) {
     Check(created.ok(),"actual imported native policy/name cohort persists through indexed construction");
     Check(device.Close().ok()&&device.Open(path,d::FileOpenMode::open_existing).ok(),"independent native policy reopen");
     const std::vector<d::NativeFilespaceDevice> devices{{f::Id(2),profile.uuid,&device}};
-    const auto rows=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(f::Id(1),devices,created.receipt->checkpoint,2,1,
-        {indexes[0]->relation_uuid,indexes[0]->dependencies},budget);
-    Check(rows.ok()&&rows.rows.size()==package.items.size(),"all actual native imported definitions visible after committed construction and reopen");
-    for(const auto& row:rows.rows) {
-      const auto original=std::find_if(seed[0].begin(),seed[0].end(),[&](const auto& r){return r.metadata.record.header.object_uuid.value==row.metadata.record.header.object_uuid.value;});
-      Check(original!=seed[0].end()&&row.metadata.record.payload==original->metadata.record.payload,"exact native imported bytes and raw identity survive persistence");
+    std::vector<c::CatalogTypedRecord> security_records;
+    std::size_t definition_count=0,name_count=0;
+    for(unsigned role=0;role<seed.size();++role){
+      const auto rows=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(f::Id(1),devices,created.receipt->checkpoint,2,role+1,
+          {created.receipt->relation_uuids[role],created.receipt->index_dependencies[role]},budget);
+      Check(rows.ok()&&rows.rows.size()==seed[role].size(),"every native relation preserves its exact production-placed cohort after independent reopen");
+      for(const auto& row:rows.rows){
+        const auto original=std::find_if(seed[role].begin(),seed[role].end(),[&](const auto& r){return r.metadata.record.header.object_uuid.value==row.metadata.record.header.object_uuid.value;});
+        Check(original!=seed[role].end()&&!row.provisional,"exact raw identity remains committed under its actual native role");
+        auto expected=original->metadata;
+        if(role==1){
+          ++name_count;Check(original->name&&row.name_payload,"actual name envelope survives native reopen");
+          const auto before=NameBytes(*original->name),after=NameBytes(*row.name_payload);
+          Check(before.ok()&&after.ok()&&before.bytes==after.bytes,"all localized vector/entry values survive exact native persistence without identity replacement");
+          expected.record.payload=row.metadata.record.payload;
+        }else{
+          ++definition_count;Check(row.metadata.record.payload==original->metadata.record.payload,
+              "exact native imported definition bytes survive in the correct security/configuration relation");
+          if(role==3)security_records.push_back(row.metadata.record);
+        }
+        const auto before=c::EncodeCatalogMetadataVersion(expected),after=c::EncodeCatalogMetadataVersion(row.metadata);
+        Check(before.ok()&&after.ok()&&before.bytes==after.bytes,"complete owner/origin/name/governance/common metadata survives native reopen unchanged");
+      }
     }
+    Check(definition_count==package.items.size()&&name_count==2*package.items.size(),
+        "all original definitions and every supplied name are retained exactly once across declared roles");
     if(bootstrap){
-      std::vector<c::CatalogTypedRecord> security_records;
-      for(const auto& row:rows.rows)if(c::IsCatalogSecurityRecordKind(row.metadata.record.header.kind))security_records.push_back(row.metadata.record);
       const auto validated=db::ValidateBootstrapSecurityRecords(security_records,"actual-native-bootstrap-reopen");
       Check(validated.ok()&&validated.state.present&&!validated.state.committed_by_inventory&&validated.state.principal_uuid.value==f::Id(14000)&&
           validated.state.membership_uuid.value==f::Id(14001)&&validated.state.credential_fingerprint==fingerprint,
           "actual reopened native records preserve bootstrap semantics without claiming authentication or activation");
     }
-    const auto names=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(f::Id(1),devices,created.receipt->checkpoint,2,2,
-        {indexes[1]->relation_uuid,indexes[1]->dependencies},budget);
-    Check(names.ok()&&names.rows.size()==2*package.items.size(),"every supplied localized name persists separately from object identity");
     const auto zero=d::ReadFilespacePageZeroFromOpenDevice(device);Check(zero.ok()&&zero.record->bootstrap.lifecycle_state==7,"construction does not falsely activate node or authorize service");
     Check(device.Close().ok(),"actual native policy construction device released");
   }
 }
 }
-int main()try{Logical();SecurityLogical();BootstrapLogical();ServiceLogical();CustomSource();CustomSource(true);SecuritySourceMutations();ServiceSourceMutations();Physical();Physical(true);Physical(true,true);Physical(true,true,true);std::cout<<"PASS native policy creation "<<checks<<" checks\n";return 0;}
+int main()try{Logical();SecurityLogical();BootstrapLogical();ServiceLogical();PlacementLogical();CustomSource();CustomSource(true);SecuritySourceMutations();ServiceSourceMutations();Physical();Physical(true);Physical(true,true);Physical(true,true,true);std::cout<<"PASS native policy creation "<<checks<<" checks\n";return 0;}
 catch(const std::exception& e){allocation_budget=-1;std::cerr<<e.what()<<'\n';return 1;}
