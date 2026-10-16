@@ -13,6 +13,11 @@ struct RetainedStatementMemoryBindingV1 {
       snapshot{}, security_context{}, resource_admission{};
   std::uint64_t local_transaction_id = 0, snapshot_generation = 0,
       security_generation = 0;
+  // The persisted datatype cohort is separate from the statement catalog
+  // epoch. These are observations of the actual private receipt, not values
+  // supplied by a caller's mutable EngineRequestContext.
+  wire::TypedResultUuid datatype_catalog_snapshot{};
+  std::uint64_t datatype_catalog_generation = 0, datatype_registry_generation = 0;
 };
 enum class RetainedStatementMemoryObservationV1 : std::uint8_t {
   live = 0, receipt_revoked, snapshot_revoked, released, unavailable

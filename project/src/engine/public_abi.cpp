@@ -5812,12 +5812,17 @@ sb_engine_status_t RetainStatementMemoryForResultV1(
         issued.statement_snapshot_uuid.bytes, issued.authorization_context.authority_uuid.bytes,
         issued.resource_admission_uuid.bytes, issued.local_transaction_id,
         issued.statement_snapshot_generation, issued.authorization_context.security_context_generation};
+    state.binding.datatype_catalog_snapshot = state.receipt->view.literal_catalog_snapshot_uuid.bytes;
+    state.binding.datatype_catalog_generation = state.receipt->view.literal_catalog_generation;
+    state.binding.datatype_registry_generation = state.receipt->view.literal_registry_generation;
     for (const auto& id : {state.binding.database, state.binding.session, state.binding.transaction,
              state.binding.statement, state.binding.receipt, state.binding.snapshot,
-             state.binding.security_context, state.binding.resource_admission})
+             state.binding.security_context, state.binding.resource_admission,
+             state.binding.datatype_catalog_snapshot})
       if (!core::uuid::IsEngineIdentityUuid(core::platform::Uuid{id})) return SB_ENGINE_STATUS_INVALID_HANDLE;
     if (!issued.security_context_present || !issued.authorization_context.present ||
-        !state.binding.local_transaction_id || !state.binding.snapshot_generation || !state.binding.security_generation)
+        !state.binding.local_transaction_id || !state.binding.snapshot_generation || !state.binding.security_generation ||
+        !state.binding.datatype_catalog_generation || !state.binding.datatype_registry_generation)
       return SB_ENGINE_STATUS_INVALID_HANDLE;
     if (!state.receipt->scalar_scratch_ledger)
       state.receipt->scalar_scratch_ledger = std::make_shared<core::memory::HierarchicalMemoryBudgetLedger>();

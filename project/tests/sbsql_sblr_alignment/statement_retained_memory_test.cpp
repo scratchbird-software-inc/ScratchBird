@@ -106,6 +106,23 @@ void IdentityAndRetirement(tests::FixtureEngineSession& session, const api::Engi
       b.snapshot == statement.context.statement_snapshot_uuid.bytes && b.snapshot_generation != 0 &&
       b.security_generation != 0 && b.security_context == statement.context.authorization_context.authority_uuid.bytes,
       "actual binary binding changed or absent");
+  Check(b.datatype_catalog_snapshot == statement.context.datatype_catalog_snapshot_uuid.bytes &&
+      b.datatype_catalog_generation == statement.context.datatype_catalog_generation &&
+      b.datatype_registry_generation == statement.context.datatype_registry_generation &&
+      b.datatype_catalog_generation != 0 && b.datatype_registry_generation != 0,
+      "retained owner lost the actual persisted datatype cohort");
+  // Mutating an observation cannot rewrite the private retained binding.
+  statement.context.datatype_catalog_snapshot_uuid.bytes[0] ^= 1;
+  ++statement.context.datatype_catalog_generation;
+  ++statement.context.datatype_registry_generation;
+  Owner cohort_owner;
+  Check(statement.Retain(4096, cohort_owner) == SB_ENGINE_STATUS_OK && cohort_owner &&
+      cohort_owner->binding().datatype_catalog_snapshot == b.datatype_catalog_snapshot &&
+      cohort_owner->binding().datatype_catalog_generation == b.datatype_catalog_generation &&
+      cohort_owner->binding().datatype_registry_generation == b.datatype_registry_generation,
+      "caller datatype observations became retained cohort authority");
+  Check(cohort_owner->Release() == SB_ENGINE_STATUS_OK, "cohort observation owner cleanup");
+  cohort_owner.reset();
   Check(owner->Observe() == Observation::live && owner->Snapshot().active &&
         owner->Snapshot().reserved_bytes == 4096 && owner->Snapshot().binary_operation_uuid == b.statement,
         "retained owner not backed by actual live reservation");
