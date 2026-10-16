@@ -159,8 +159,8 @@ api::EngineDescriptor Descriptor(unsigned p, unsigned s) {
 }
 scratchbird::engine::ExecutionTypeDescriptor Core(const api::EngineDescriptor& descriptor) {
   api::bound_index_key::OrderedIndexColumn binding;
-  Check(dt::LookupDatatypeStorageIdentityV3(api::kBootstrapDatatypeCatalogUuid,
-      api::kBootstrapDatatypeCatalogGeneration,api::kBootstrapDatatypeRegistryGeneration,
+  Check(dt::LookupDatatypeStorageIdentityV3(descriptor.datatype_cohort.catalog_snapshot_uuid,
+      descriptor.datatype_cohort.catalog_generation,descriptor.datatype_cohort.registry_generation,
       descriptor.datatype_descriptor_uuid,descriptor.datatype_descriptor_generation,&binding.datatype),"type binding");
   std::string detail;
   Check(api::bound_index_key::BuildOrderedColumnExecutionDescriptor(descriptor,binding.datatype,true,
@@ -316,10 +316,14 @@ void CoreAndEngine() {
     request.descriptors={exec::MakeExecutorDescriptor("boolean","nullability=nullable")};
     request.descriptors.front().descriptor_kind="scalar";
     answer=api::EngineApplyNumericOperation(request);
-    Check(answer.ok && answer.comparison==0 && answer.value.encoded_value=="true","engine decimal comparison");
+    Check(answer.ok && answer.comparison==0 && answer.value.state==api::EngineValueState::value &&
+          !answer.value.is_null && answer.value.encoded_value.empty() &&
+          answer.value.binary_value==std::vector<std::uint8_t>{1},"engine decimal comparison");
     request.right_value.encoded_value=std::string(expected.begin(),expected.end());
     answer=api::EngineApplyNumericOperation(request);
-    Check(answer.ok && answer.comparison==-1 && answer.value.encoded_value=="false","engine comparison sign");
+    Check(answer.ok && answer.comparison==-1 && answer.value.state==api::EngineValueState::value &&
+          !answer.value.is_null && answer.value.encoded_value.empty() &&
+          answer.value.binary_value==std::vector<std::uint8_t>{0},"engine comparison sign");
     for(unsigned mutation=0;mutation<4;++mutation) for(bool is_null : {false,true}) {
       auto bad=request;
       api::CatalogColumnMetadata fields;

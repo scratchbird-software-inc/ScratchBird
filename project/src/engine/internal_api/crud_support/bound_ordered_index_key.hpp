@@ -113,14 +113,15 @@ inline bool BuildOrderedColumnExecutionDescriptor(
   if (!output || !detail) return false;
   const auto type = datatype.type_id;
   const auto* column_codec = datatype.codec ? &*datatype.codec : nullptr;
-  if (type == core::datatypes::CanonicalTypeId::boolean) {
+  if (type == core::datatypes::CanonicalTypeId::boolean ||
+      type == core::datatypes::CanonicalTypeId::decimal) {
     const auto* registered = core::datatypes::FindDatatypeTypeCodecIdentityV3(
         source.datatype_cohort.catalog_snapshot_uuid,
         source.datatype_cohort.catalog_generation, source.datatype_cohort.registry_generation,
         source.datatype_descriptor_uuid, source.datatype_descriptor_generation);
     if (!registered || !column_codec ||
         !core::datatypes::SameDatatypeTypeCodecIdentityV3(*registered, *column_codec)) {
-      *detail = "BOOLEAN column codec is not the exact retained registry binding";
+      *detail = "column codec is not the exact retained registry binding";
       return false;
     }
     column_codec = registered;
@@ -248,8 +249,14 @@ inline bool BuildOrderedColumnExecutionDescriptor(
       return false;
     }
     const bool wide = staged.precision > 38;
+    // A published column retains its exact catalog/literal codec tuple as
+    // well as its parameterized occurrence profile. Those UUID namespaces
+    // deliberately differ. Do not demand that the immutable catalog row be
+    // rewritten to the occurrence codec (or accept an arbitrary alternate).
+    const bool catalog_codec = column_codec && fields.identities.contains("codec_uuid") &&
+        fields.identities.at("codec_uuid") == column_codec->legacy_fields.codec_uuid;
     const bool explicit_codec = fields.identities.contains("decimal_codec_uuid") ||
-                                fields.identities.contains("codec_uuid");
+                                (fields.identities.contains("codec_uuid") && !catalog_codec);
     if (wide && !explicit_codec) {
       *detail = "wide decimal occurrence requires an explicit binary codec identity";
       return false;
@@ -258,16 +265,24 @@ inline bool BuildOrderedColumnExecutionDescriptor(
       const auto found = fields.identities.find(name);
       const char* generation = std::string_view(name) == "codec_uuid"
           ? "codec_generation" : "decimal_codec_generation";
+      const auto expected_uuid = std::string_view(name) == "codec_uuid" && catalog_codec
+          ? column_codec->legacy_fields.codec_uuid : expected.decimal_codec_uuid;
+      const auto expected_generation = std::string_view(name) == "codec_uuid" && catalog_codec
+          ? std::to_string(column_codec->legacy_fields.codec_generation) : "1";
       if ((found != fields.identities.end() &&
-           (found->second != expected.decimal_codec_uuid ||
-            !fields.text.contains(generation) || fields.text.at(generation) != "1")) ||
+           (found->second != expected_uuid ||
+            !fields.text.contains(generation) || fields.text.at(generation) != expected_generation)) ||
           (found == fields.identities.end() && fields.text.contains(generation))) {
         *detail = "decimal occurrence codec identity or generation disagrees";
         return false;
       }
     }
-    if (!agrees("codec_version", "1") ||
-        !agrees("codec_id", wide ? "datatype.decimal.base1e9.le40.v1" : "datatype.decimal.base1e9.le.v1")) {
+    const auto codec_version = catalog_codec
+        ? std::to_string(column_codec->legacy_fields.codec_version) : "1";
+    const auto codec_id = catalog_codec ? column_codec->legacy_fields.codec_id
+        : wide ? "datatype.decimal.base1e9.le40.v1" : "datatype.decimal.base1e9.le.v1";
+    if (!agrees("codec_version", codec_version.c_str()) ||
+        !agrees("codec_id", codec_id.c_str())) {
       *detail = "decimal occurrence codec format disagrees";
       return false;
     }

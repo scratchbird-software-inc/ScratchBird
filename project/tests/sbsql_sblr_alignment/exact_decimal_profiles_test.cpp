@@ -166,8 +166,8 @@ idx::OrderedIndexColumn Binding(unsigned p, unsigned s) {
     Check(api::EncodeCatalogColumnMetadata(fields,&source.encoded_descriptor), "binary codec metadata encode");
   }
   idx::OrderedIndexColumn result;
-  Check(dt::LookupDatatypeStorageIdentityV3(api::kBootstrapDatatypeCatalogUuid,
-      api::kBootstrapDatatypeCatalogGeneration,api::kBootstrapDatatypeRegistryGeneration,
+  Check(dt::LookupDatatypeStorageIdentityV3(source.datatype_cohort.catalog_snapshot_uuid,
+      source.datatype_cohort.catalog_generation,source.datatype_cohort.registry_generation,
       source.datatype_descriptor_uuid,source.datatype_descriptor_generation,&result.datatype), "storage base identity missing");
   result.descriptor = {scratchbird::core::platform::UuidKind::object,source.datatype_descriptor_uuid};
   std::string detail;

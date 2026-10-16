@@ -797,7 +797,106 @@ void BitBoundKeys() {
   }
 }
 
+void DecimalCatalogAndOccurrenceBindings() {
+  // Pure receiving conformance. These are deliberately supplied declaration
+  // projections, not claims to catalog admission, live values or publication.
+  auto source = Source("decimal", "nullable=true");
+  dt::DatatypeStorageIdentityV3 storage;
+  Check(dt::LookupDatatypeStorageIdentityV3(source.datatype_cohort.catalog_snapshot_uuid,
+      source.datatype_cohort.catalog_generation, source.datatype_cohort.registry_generation,
+      source.datatype_descriptor_uuid, source.datatype_descriptor_generation, &storage),
+      "decimal retained catalog identity missing");
+  const auto& row = storage.codec->legacy_fields;
+  for (std::uint32_t precision = 1; precision <= 76; ++precision) {
+    for (std::uint32_t scale = 0; scale <= precision; ++scale) {
+      api::CatalogColumnMetadata fields;
+      const auto native_codec = precision <= 38
+          ? dt::kExactDecimal24CodecUuid : dt::kExactDecimal40CodecUuid;
+      fields.identities = {{"type_uuid", row.type_uuid},
+          {"datatype_descriptor_uuid", row.descriptor_uuid},
+          {"codec_uuid", row.codec_uuid}, {"decimal_codec_uuid", native_codec}};
+      fields.text = {{"canonical", "decimal"}, {"nullable", "true"},
+          {"datatype_descriptor_generation", std::to_string(row.descriptor_generation)},
+          {"type_generation", std::to_string(row.type_generation)},
+          {"codec_id", row.codec_id}, {"codec_version", std::to_string(row.codec_version)},
+          {"codec_generation", std::to_string(row.codec_generation)},
+          {"null_encoding", std::to_string(row.null_encoding_code)},
+          {"precision", std::to_string(precision)}, {"scale", std::to_string(scale)},
+          {"decimal_codec_generation", "1"}};
+      scratchbird::engine::ExecutionTypeDescriptor execution;
+      std::string detail;
+      Check(api::EncodeCatalogColumnMetadata(fields, &source.encoded_descriptor) &&
+          key::BuildOrderedColumnExecutionDescriptor(source, storage, true, &execution, &detail) &&
+          execution.precision == precision && execution.scale == scale && execution.nullable_allowed,
+          "exact catalog codec displaced the parameterized decimal occurrence");
+      dt::DatatypeSortKeyRequest selected;
+      Check(dt::BindExactDecimalSortKeyProfile(execution, &selected) &&
+          selected.decimal_codec_uuid == native_codec && selected.decimal_codec_generation == 1,
+          "decimal occurrence chose its historical literal codec as native authority");
+      key::OrderedIndexColumn bound;
+      bound.datatype = storage;
+      bound.descriptor = {scratchbird::core::platform::UuidKind::object, row.descriptor_uuid};
+      bound.execution_descriptor = execution;
+      namespace numeric = scratchbird::libraries::sbl_numeric;
+      const numeric::ExactDecimalProfile profile{precision <= 38
+          ? numeric::ExactDecimalCodec::le24_v1 : numeric::ExactDecimalCodec::le40_v1,
+          precision, scale};
+      const auto quantum = scale ? "1e-" + std::to_string(scale) : "1";
+      const auto encode = [&](const std::string& lexical) {
+        const auto value = numeric::EncodeBoundExactDecimal(lexical, profile);
+        Check(value.ok() && value.bytes.size() == (precision <= 38 ? 24 : 40),
+            "decimal quantum fixture violated its explicit native profile");
+        return Encode(bound, api::CrudStoredValue{
+            std::string(value.bytes.begin(), value.bytes.end())});
+      };
+      const auto negative = encode("-" + quantum);
+      const auto zero = encode("0");
+      const auto positive = encode(quantum);
+      Check(negative < zero && zero < positive &&
+          Encode(bound, api::CrudStoredValue::SqlNull()) < negative,
+          "decimal catalog receiving lost signed numeric order or NULL distinction");
+      // Representative boundaries exercise all contradictory and partial
+      // tuples. All p/s pairs above remain positives, including both codecs.
+      if (scale != 0 && scale != precision) continue;
+      for (unsigned mutation = 0; mutation < 12; ++mutation) {
+        auto changed = fields;
+        auto changed_storage = storage;
+        switch (mutation) {
+          case 0: changed.identities["codec_uuid"] = scratchbird::tests::FixtureUuid(1401, 991); break;
+          case 1: changed.text["codec_generation"] = "2"; break;
+          case 2: changed.text["codec_id"] = "not-the-retained-codec"; break;
+          case 3: changed.text["codec_version"] = "2"; break;
+          case 4: changed.identities["decimal_codec_uuid"] = precision <= 38
+              ? dt::kExactDecimal40CodecUuid : dt::kExactDecimal24CodecUuid; break;
+          case 5: changed.text["decimal_codec_generation"] = "2"; break;
+          case 6: changed.identities.erase("decimal_codec_uuid"); break;
+          case 7: changed.text.erase("decimal_codec_generation"); break;
+          case 8: changed.text["null_encoding"] = "999"; break;
+          case 9: ++changed_storage.codec->legacy_fields.codec_generation; break;
+          case 10: changed.text.erase("codec_generation"); break;
+          case 11: changed.text["datatype_descriptor_generation"] = "2"; break;
+        }
+        auto output = execution;
+        detail.clear();
+        Check(api::EncodeCatalogColumnMetadata(changed, &source.encoded_descriptor) &&
+            !key::BuildOrderedColumnExecutionDescriptor(source, changed_storage, true, &output, &detail) &&
+            !detail.empty() && output.precision == execution.precision &&
+            output.scale == execution.scale && output.descriptor_epoch == execution.descriptor_epoch,
+            "contradictory decimal catalog/occurrence tuple accepted or changed output");
+      }
+      if (precision > 38) {
+        fields.identities.erase("decimal_codec_uuid");
+        fields.text.erase("decimal_codec_generation");
+        Check(api::EncodeCatalogColumnMetadata(fields, &source.encoded_descriptor) &&
+            !key::BuildOrderedColumnExecutionDescriptor(source, storage, true, &execution, &detail),
+            "historical catalog codec supplied missing wide-decimal authority");
+      }
+    }
+  }
+}
+
 int main() {
+  DecimalCatalogAndOccurrenceBindings();
   BooleanColumnProjection();
   BitBoundKeys();
   TimestampBoundKeys();
