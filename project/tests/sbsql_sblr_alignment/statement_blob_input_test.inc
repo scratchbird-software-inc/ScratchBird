@@ -593,6 +593,103 @@ void ComponentRevocation(tests::FixtureEngineSession& session,const api::EngineR
     input.Reset(); SameMemory(baseline);
   }
 }
+api::StatementBlobEncodedInputBoundsV3 EncodedBounds(unsigned operation=SB_BLOB_OP_COMPONENT_DECODE_V3) {
+  const auto base=Bounds(true);
+  api::StatementBlobEncodedInputBoundsV3 bounds;
+  bounds.operation=operation; bounds.resident_bytes=base.resident_bytes; bounds.valid_for_ns=base.valid_for_ns;
+  bounds.retain_tickets=base.retain_tickets; bounds.access_tickets=base.access_tickets;
+  bounds.maximum_work=base.maximum_work; bounds.scratch_bytes=base.scratch_bytes;
+  bounds.window_bytes=base.window_bytes; bounds.relative_timeout_ns=base.relative_timeout_ns;
+  return bounds;
+}
+template<class T> concept HasSqlState = requires(T& value) { value.state(); };
+static_assert(!HasSqlState<api::StatementBlobEncodedInputV3>);
+static_assert(!std::is_move_constructible_v<api::StatementBlobEncodedInputV3>);
+static_assert(!std::is_copy_constructible_v<api::StatementBlobEncodedInputV3>);
+void EncodedInputs(tests::FixtureEngineSession& session,const api::EngineRequestContext& context) {
+  Statement statement(session,context); const auto baseline=mm::DefaultMemoryManager().Snapshot();
+  for(unsigned operation=SB_BLOB_OP_COMPONENT_DECODE_V3;operation<=SB_BLOB_OP_RESTORE_V3;++operation) {
+    for(std::size_t size:{std::size_t{0},std::size_t{3},std::size_t{8193}}) {
+      api::StatementBlobEncodedInputV3 input; const auto bounds=EncodedBounds(operation);
+      // Arbitrary bytes deliberately have no valid component magic. This
+      // proves lifetime/ownership only, never successful format decoding.
+      std::vector<platform::byte> bytes(size),original(size);
+      for(std::size_t n=0;n<size;++n) original[n]=bytes[n]=static_cast<platform::byte>(n*41);
+      const auto received=api::ReceiveStatementBlobEncodedInputV3(statement.handle,statement.context.session_uuid.bytes,
+          statement.context.statement_receipt_uuid.bytes,bytes,bounds,&input);
+      Check(received.ok() && input.bound() && input.extent()==size && input.profile() &&
+          received.copied_bytes==size && received.identities_issued==4ULL+bounds.retain_tickets+bounds.access_tickets,
+          "native encoded input did not own actual copied bytes/unsigned encoded extent");
+      const auto profile=*input.profile();
+      std::fill(bytes.begin(),bytes.end(),0x5a);
+      dt::BlobRetainedLifetimeLeaseV3 source,clone;
+      allocation_count=0; allocation_budget=0;
+      const auto retained=input.Retain(source);
+      const auto allocated=allocation_count; allocation_budget=-1;
+      Check(retained.ok() && source.retained() && !allocated,"native encoded factory retention failed or allocated");
+      Check(source.CloneInto(clone).ok() && clone.retained(),"native encoded retained clone failed");
+      for(auto* lease:{&source,&clone}) {
+        Read read{original}; auto visitor=dt::BlobLifetimeRuntimeConformanceAccessV3::Visitor(Read::Visit,&read);
+        allocation_count=0; allocation_budget=0;
+        const auto read_result=size ? lease->VisitBoundReaderBytes(visitor) : lease->Probe();
+        const auto read_allocations=allocation_count; allocation_budget=-1;
+        Check(read_result.ok() && !read_allocations && read.matches && read.at==size &&
+            (size ? read.calls>0 : read.calls==0),"native encoded guarded read changed opaque bytes/extent or allocated");
+      }
+      const auto work=input.WorkSnapshot();
+      Check(work && work->at(static_cast<std::size_t>(dt::BlobLifetimeResourceV3::logical_bytes_read)).invoked==0 &&
+          work->at(static_cast<std::size_t>(dt::BlobLifetimeResourceV3::encoded_bytes_read)).invoked==2*size,
+          "opaque bytes were charged as logical BLOB content or not settled exactly");
+      auto descriptor=Descriptor(profile); dt::BlobRetainedLifetimeLeaseV3 illegal;
+      Check(!source.CastIdentityInto(profile,descriptor,descriptor,dt::DatatypeCastContext::explicit_cast,illegal).ok() &&
+          !illegal.retained(),"native opaque artifact became a scalar through BLOB identity cast");
+      if(source.retained()) Check(source.Release().ok(),"native encoded original cleanup");
+      input.Reset(); Check(!input.bound() && !input.extent() && !input.profile() && !input.WorkSnapshot(),
+          "native encoded reset retained public routing/extent observations");
+      Check(clone.Probe().ok() && clone.Release().ok(),"native encoded independent clone lost backing after root/source release");
+      SameMemory(baseline);
+    }
+  }
+  const std::array<platform::byte,3> bytes{0,255,129};
+  for(unsigned operation:{0u,1u,8u,14u,255u}) {
+    api::StatementBlobEncodedInputV3 input;
+    const auto refused=api::ReceiveStatementBlobEncodedInputV3(statement.handle,statement.context.session_uuid.bytes,
+        statement.context.statement_receipt_uuid.bytes,bytes,EncodedBounds(operation),&input);
+    Check(!refused.ok() && refused.failure==api::StatementBlobInputAdmissionFailureV3::invalid_request &&
+        !refused.copied_bytes && !refused.identities_issued && !input.bound(),
+        "native encoded input admitted a logical/unknown operation or performed work for it");
+    SameMemory(baseline);
+  }
+  {
+    api::StatementBlobEncodedInputV3 input;
+    auto bounds=EncodedBounds(); bounds.maximum_work[static_cast<std::size_t>(dt::BlobLifetimeResourceV3::encoded_bytes_read)-1]=0;
+    Check(api::ReceiveStatementBlobEncodedInputV3(statement.handle,statement.context.session_uuid.bytes,
+        statement.context.statement_receipt_uuid.bytes,bytes,bounds,&input).ok(),"native encoded zero-read-quota receiving");
+    const auto occupied=api::ReceiveStatementBlobEncodedInputV3(statement.handle,statement.context.session_uuid.bytes,
+        statement.context.statement_receipt_uuid.bytes,{},bounds,&input);
+    Check(!occupied.ok() && occupied.failure==api::StatementBlobInputAdmissionFailureV3::output_in_use &&
+        !occupied.copied_bytes && !occupied.identities_issued && input.extent()==bytes.size(),"native encoded occupied output was overwritten");
+    dt::BlobRetainedLifetimeLeaseV3 lease;
+    Check(input.Retain(lease).ok(),"native encoded zero-quota actual lease");
+    Read read{bytes}; auto visitor=dt::BlobLifetimeRuntimeConformanceAccessV3::Visitor(Read::Visit,&read);
+    const auto refused=lease.VisitBoundReaderBytes(visitor);
+    Check(!refused.ok() && refused.diagnostic_code=="RESOURCE.BUDGET_EXCEEDED" && !read.calls,
+        "native encoded zero allowance was unlimited or exposed reader bytes");
+    if(lease.retained()) Check(lease.Release().ok(),"native encoded zero-quota cleanup");
+    input.Reset(); SameMemory(baseline);
+  }
+  for(std::size_t n=0;n<16;++n) {
+    for(bool wrong_session:{false,true}) {
+      auto session_id=statement.context.session_uuid.bytes,receipt_id=statement.context.statement_receipt_uuid.bytes;
+      (wrong_session ? session_id : receipt_id)[n]^=1;
+      api::StatementBlobEncodedInputV3 input;
+      const auto refused=api::ReceiveStatementBlobEncodedInputV3(statement.handle,session_id,receipt_id,bytes,EncodedBounds(),&input);
+      Check(!refused.ok() && !input.bound() && !refused.copied_bytes && !refused.identities_issued,
+          "native encoded input trusted a foreign binary owner/receipt observation");
+      SameMemory(baseline);
+    }
+  }
+}
 void ForeignProcess(tests::FixtureEngineSession& session,const api::EngineRequestContext& context) {
 #if defined(__linux__)
   Statement statement(session,context);
@@ -643,5 +740,6 @@ void NativeBlobInput(tests::FixtureEngineSession& session,const api::EngineReque
   blob_input_test::Components(session,context);
   blob_input_test::ComponentAllocationFailures(session,context);
   blob_input_test::ComponentRevocation(session,context);
+  blob_input_test::EncodedInputs(session,context);
   blob_input_test::ForeignProcess(session,context);
 }

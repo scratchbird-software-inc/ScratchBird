@@ -5,6 +5,7 @@
 #include "engine/statement_retained_memory.hpp"
 #include "engine/statement_blob_input.hpp"
 #include "engine/statement_blob_component.hpp"
+#include "engine/statement_blob_encoded_input.hpp"
 #include "../support/blob_persistence_fixture.hpp"
 #include "engine/statement_cancellation.hpp"
 #include "datatype_operations.hpp"

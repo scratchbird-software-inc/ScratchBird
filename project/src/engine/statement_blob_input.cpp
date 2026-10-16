@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "engine/statement_blob_input.hpp"
 #include "engine/statement_blob_component.hpp"
+#include "engine/statement_blob_encoded_input.hpp"
 #include "engine/statement_cancellation.hpp"
 #include "engine/statement_monotonic_clock.hpp"
 #include "core/uuid/uuid.hpp"
@@ -40,6 +41,8 @@ bool Range(std::span<const byte> input) noexcept {
 // never a locator or permission to read another object's persisted content.
 // Its two Core factory pins retain the same physical owner, budget and services.
 class BlobLifetimeReceiverHostV3Generation1 final {
+  enum class Role : u8 { logical_value, encoded_artifact };
+  Role role_=Role::logical_value;
   struct Ticket {
     BlobUuid16V3 uuid{};
     bool used=false, released=false;
@@ -295,13 +298,15 @@ class BlobLifetimeReceiverHostV3Generation1 final {
       const wire::TypedResultUuid& session,const wire::TypedResultUuid& receipt,
       std::span<const byte> input,const api::StatementBlobInputBoundsV3& bounds,
       BlobLifetimeReceiverHostV3Generation1** output,api::StatementBlobInputAdmissionV3& observation,
-      platform::DiagnosticRecord* diagnostic) noexcept {
+      platform::DiagnosticRecord* diagnostic,Role role=Role::logical_value) noexcept {
     using Failure=api::StatementBlobInputAdmissionFailureV3;
+    const bool encoded=role==Role::encoded_artifact;
     if(!handle || !output || *output || !Range(input) || !bounds.resident_bytes || !bounds.valid_for_ns ||
-        !bounds.retain_tickets || bounds.operation<SB_BLOB_OP_VALIDATE_VIEW_V3 || bounds.operation>SB_BLOB_OP_RESTORE_V3 ||
+        !bounds.retain_tickets || bounds.operation<(encoded ? SB_BLOB_OP_COMPONENT_DECODE_V3 : SB_BLOB_OP_VALIDATE_VIEW_V3) ||
+        bounds.operation>SB_BLOB_OP_RESTORE_V3 ||
         (bounds.carrier!=api::StatementBlobInputCarrierV3::materialized && bounds.carrier!=api::StatementBlobInputCarrierV3::logical_reader) ||
         (bounds.state!=BlobValueStateV3::value && bounds.state!=BlobValueStateV3::sql_null) ||
-        (bounds.state==BlobValueStateV3::sql_null && !input.empty()) || input.size()>kBlobMaximumLogicalBytesV3 ||
+        (bounds.state==BlobValueStateV3::sql_null && !input.empty()) || (!encoded && input.size()>kBlobMaximumLogicalBytesV3) ||
         (bounds.carrier==api::StatementBlobInputCarrierV3::logical_reader && !input.empty() && !bounds.window_bytes) ||
         bounds.scratch_bytes>SIZE_MAX) return SB_ENGINE_STATUS_INVALID_ARGUMENT;
     BlobLifetimeReceiverHostV3Generation1* host=nullptr;
@@ -322,6 +327,7 @@ class BlobLifetimeReceiverHostV3Generation1 final {
       if(status!=SB_ENGINE_STATUS_OK) return status;
       auto* block=memory->memory()->allocate(sizeof(BlobLifetimeReceiverHostV3Generation1),alignof(BlobLifetimeReceiverHostV3Generation1));
       host=new(block) BlobLifetimeReceiverHostV3Generation1;
+      host->role_=role;
       host->memory_=std::move(memory);
       host->clock_=std::move(retained_clock); host->cancellation_=std::move(retained_cancellation);
       struct Cleanup {
@@ -408,7 +414,8 @@ class BlobLifetimeReceiverHostV3Generation1 final {
       }
       auto& t=host->token_; t.struct_bytes=sizeof(t); t.abi_major=3;
       t.lifetime_token_uuid=AbiUuid(token); t.lifetime_token_generation=binding.snapshot_generation;
-      t.owner_class=SB_BLOB_OWNER_EXECUTION_BORROW_V3; t.authority_instance_uuid=AbiUuid(authority);
+      t.owner_class=encoded ? SB_BLOB_OWNER_ENCODED_ARTIFACT_BORROW_V3 : SB_BLOB_OWNER_EXECUTION_BORROW_V3;
+      t.authority_instance_uuid=AbiUuid(authority);
       t.authority_instance_generation=1; t.database_uuid=AbiUuid(binding.database); t.session_uuid=AbiUuid(binding.session);
       t.statement_uuid=AbiUuid(binding.statement); t.transaction_uuid=AbiUuid(binding.transaction);
       t.snapshot_uuid=AbiUuid(binding.snapshot); t.snapshot_generation=binding.snapshot_generation;
@@ -416,7 +423,8 @@ class BlobLifetimeReceiverHostV3Generation1 final {
       t.immutable_binding_generation=1; t.valid_until_monotonic_ns=now.nanoseconds+bounds.valid_for_ns;
       const bool logical=bounds.carrier==api::StatementBlobInputCarrierV3::logical_reader;
       t.mode_bits=SB_BLOB_MODE_IMMUTABLE_READ_V3|SB_BLOB_MODE_CONCURRENT_IMMUTABLE_READ_V3|
-          (logical ? SB_BLOB_MODE_LOGICAL_READER_V3|SB_BLOB_MODE_REPLAYABLE_SAME_SNAPSHOT_V3 : SB_BLOB_MODE_MATERIALIZED_BYTES_V3);
+          (encoded ? SB_BLOB_MODE_OPAQUE_ENCODED_READER_V3 : logical ?
+              SB_BLOB_MODE_LOGICAL_READER_V3|SB_BLOB_MODE_REPLAYABLE_SAME_SNAPSHOT_V3 : SB_BLOB_MODE_MATERIALIZED_BYTES_V3);
       auto& r=host->request_; r.struct_bytes=sizeof(r); r.abi_major=3; r.operation=bounds.operation;
       r.required_owner_class=t.owner_class; r.required_mode_bits=t.mode_bits;
       r.expected_authority_instance_uuid=t.authority_instance_uuid; r.expected_authority_instance_generation=1;
@@ -426,7 +434,8 @@ class BlobLifetimeReceiverHostV3Generation1 final {
       r.expected_security_context_uuid=t.security_context_uuid; r.expected_security_generation=t.security_generation;
       r.absolute_deadline_monotonic_ns=t.valid_until_monotonic_ns;
       host->carrier_={authority,1,carrier,1,token,t.lifetime_token_generation,1,
-          static_cast<u8>(logical ? SB_BLOB_MODE_LOGICAL_READER_V3 : SB_BLOB_MODE_MATERIALIZED_BYTES_V3)};
+          static_cast<u8>(encoded ? SB_BLOB_MODE_OPAQUE_ENCODED_READER_V3 :
+              logical ? SB_BLOB_MODE_LOGICAL_READER_V3 : SB_BLOB_MODE_MATERIALIZED_BYTES_V3)};
       host->authority_={sizeof(BlobLifetimeAuthorityV3),3,0,AbiUuid(authority),1,host,
           RetainCallback,ProbeCallback,BeginCallback,EndCallback,ReleaseCallback};
       const auto& clock=*host->clock_->binding();
@@ -443,16 +452,35 @@ class BlobLifetimeReceiverHostV3Generation1 final {
       observation.failure=Failure::allocation_failed; return SB_ENGINE_STATUS_RESOURCE_EXHAUSTED;
     } catch(...) { observation.failure=Failure::internal_failure; return SB_ENGINE_STATUS_INTERNAL_ERROR; }
   }
+  static sb_engine_status_t CreateEncoded(server_engine_bridge::StatementContextReceiptHandle handle,
+      const wire::TypedResultUuid& session,const wire::TypedResultUuid& receipt,std::span<const byte> input,
+      const api::StatementBlobEncodedInputBoundsV3& bounds,BlobLifetimeReceiverHostV3Generation1** output,
+      api::StatementBlobInputAdmissionV3& observation,platform::DiagnosticRecord* diagnostic) noexcept {
+    api::StatementBlobInputBoundsV3 common;
+    common.operation=bounds.operation; common.carrier=api::StatementBlobInputCarrierV3::logical_reader;
+    common.resident_bytes=bounds.resident_bytes; common.valid_for_ns=bounds.valid_for_ns;
+    common.retain_tickets=bounds.retain_tickets; common.access_tickets=bounds.access_tickets;
+    common.maximum_work=bounds.maximum_work; common.scratch_bytes=bounds.scratch_bytes;
+    common.window_bytes=bounds.window_bytes; common.relative_timeout_ns=bounds.relative_timeout_ns;
+    return Create(handle,session,receipt,input,common,output,observation,diagnostic,Role::encoded_artifact);
+  }
   void Close() noexcept { closing_.store(true,std::memory_order_release); Drop(); }
   const BlobValidatedProfileHandleV3& profile() const noexcept { return profile_; }
   auto WorkSnapshot() noexcept { return ledger_.Snapshot().counters; }
+  u64 extent() const noexcept { return content_->size(); }
   api::StatementBlobInputRetainV3 Retain(BlobRetainedLifetimeLeaseV3& lease) noexcept {
     api::StatementBlobInputRetainV3 result;
     BlobLifetimeAuthorityAdmissionV3Generation1 admission;
     const auto pins=Pins();
     BlobLifetimeBudgetControlCapabilityV3Generation1 budget(ledger_,pins);
     result.runtime_invoked=true;
-    if(bounds_.carrier==api::StatementBlobInputCarrierV3::materialized) {
+    if(role_==Role::encoded_artifact) {
+      BlobReceiverEncodedReaderCapabilityV3Generation1 capability(carrier_,content_->size(),this,ReadAt);
+      BlobBoundEncodedReaderCarrierV3Generation1 carrier;
+      result.runtime=BlobLifetimeRuntimeFactoryV3Generation1::AdmitEncodedReader(bounds_.operation,profile_,&authority_,&services_,
+          pins,budget,services_.monotonic_clock,services_.monotonic_clock,token_,request_,capability,admission,carrier);
+      if(result.runtime.ok()) result.runtime=RetainBaseBlobLifetimeLeaseV3Generation1(profile_,std::move(admission),carrier,token_,request_,lease);
+    } else if(bounds_.carrier==api::StatementBlobInputCarrierV3::materialized) {
       BlobReceiverMaterializedCapabilityV3Generation1 capability(carrier_,bounds_.state,content_->data(),content_->size());
       BlobBoundMaterializedCarrierV3Generation1 carrier;
       result.runtime=BlobLifetimeRuntimeFactoryV3Generation1::AdmitMaterialized(bounds_.operation,profile_,&authority_,&services_,
@@ -473,6 +501,7 @@ class BlobLifetimeReceiverHostV3Generation1 final {
     using Failure=api::StatementBlobValueFailureV3;
     api::StatementBlobValueResultV3 result;
     result.lifetime.status=SB_ENGINE_STATUS_INVALID_ARGUMENT;
+    if(role_!=Role::logical_value) { result.failure=Failure::encoded_artifact_not_value; return result; }
     if(destination.used_) { result.failure=Failure::destination_used; return result; }
     if(!ValidateBlobExecutionDescriptorV3(profile_,descriptor).ok()) {
       result.failure=Failure::descriptor_invalid; return result;
@@ -733,6 +762,31 @@ StatementBlobInputAdmissionV3 ReceiveStatementBlobInputV3(server_engine_bridge::
   if(!output) return result;
   if(output->bound()) { result.failure=StatementBlobInputAdmissionFailureV3::output_in_use; return result; }
   result.status=core::datatypes::BlobLifetimeReceiverHostV3Generation1::Create(handle,session,receipt,input,bounds,&output->host_,result,diagnostic);
+  return result;
+}
+StatementBlobEncodedInputV3::~StatementBlobEncodedInputV3() noexcept { Reset(); }
+void StatementBlobEncodedInputV3::Reset() noexcept { auto* host=host_; host_=nullptr; if(host) host->Close(); }
+const core::datatypes::BlobValidatedProfileHandleV3* StatementBlobEncodedInputV3::profile() const noexcept {
+  return host_ ? &host_->profile() : nullptr;
+}
+std::optional<std::uint64_t> StatementBlobEncodedInputV3::extent() const noexcept {
+  return host_ ? std::optional{host_->extent()} : std::nullopt;
+}
+std::optional<std::array<core::datatypes::BlobLifetimeCounterV3,12>> StatementBlobEncodedInputV3::WorkSnapshot() noexcept {
+  return host_ ? std::optional{host_->WorkSnapshot()} : std::nullopt;
+}
+StatementBlobInputRetainV3 StatementBlobEncodedInputV3::Retain(core::datatypes::BlobRetainedLifetimeLeaseV3& lease) noexcept {
+  return host_ ? host_->Retain(lease) : StatementBlobInputRetainV3{};
+}
+StatementBlobInputAdmissionV3 ReceiveStatementBlobEncodedInputV3(server_engine_bridge::StatementContextReceiptHandle handle,
+    const wire::TypedResultUuid& session,const wire::TypedResultUuid& receipt,std::span<const core::platform::byte> input,
+    const StatementBlobEncodedInputBoundsV3& bounds,StatementBlobEncodedInputV3* output,core::platform::DiagnosticRecord* diagnostic) noexcept {
+  if(diagnostic) *diagnostic={};
+  StatementBlobInputAdmissionV3 result;
+  if(!output) return result;
+  if(output->bound()) { result.failure=StatementBlobInputAdmissionFailureV3::output_in_use; return result; }
+  result.status=core::datatypes::BlobLifetimeReceiverHostV3Generation1::CreateEncoded(handle,session,receipt,input,bounds,
+      &output->host_,result,diagnostic);
   return result;
 }
 } // namespace scratchbird::engine::internal_api

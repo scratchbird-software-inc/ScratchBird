@@ -86,7 +86,7 @@ class StatementBlobInputV3 final {
 
 enum class StatementBlobValueFailureV3 : std::uint8_t {
   none, source_unbound, destination_used, self_alias, descriptor_invalid,
-  sql_null_not_admitted, lifetime
+  sql_null_not_admitted, encoded_artifact_not_value, lifetime
 };
 struct StatementBlobValueResultV3 {
   StatementBlobInputRetainV3 lifetime;
