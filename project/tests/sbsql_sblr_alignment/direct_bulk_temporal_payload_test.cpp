@@ -636,11 +636,14 @@ void BitReceivers() {
     }
 }
 
+#include "direct_bulk_blob_receiver_test.inc"
+
 int main() {
   for (const auto type : {dt::CanonicalTypeId::date, dt::CanonicalTypeId::time, dt::CanonicalTypeId::timestamp, dt::CanonicalTypeId::interval})
     for (const unsigned generation : {10u, 11u}) Run(type, generation);
   RetainedColumnBindings();
   ReceiverConstruction();
   BitReceivers();
+  BlobReceiverConstruction();
   std::cout << "direct_bulk_temporal_payload checks=" << checks << '\n';
 }

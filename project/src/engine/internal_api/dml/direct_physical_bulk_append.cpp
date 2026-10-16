@@ -1079,7 +1079,7 @@ std::shared_ptr<const scratchbird::storage::page::RowDataTemporalSchema> DirectT
     const auto identity = datatypes.find(column.column_name);
     if (identity == datatypes.end()) throw std::invalid_argument("physical receiver datatype missing");
     const auto type = identity->second.type_id;
-    if (!detail::DirectRequiresNativeProfile(type)) continue;
+    if (!detail::DirectRequiresNativeProfile(type) && type != dt::CanonicalTypeId::blob) continue;
     const auto actual = std::find_if(relation.columns.begin(), relation.columns.end(),
         [&](const auto& candidate) { return candidate.canonical_name_key == column.column_name; });
     if (actual == relation.columns.end() || ordinal >= std::numeric_limits<std::uint16_t>::max())
@@ -1088,14 +1088,20 @@ std::shared_ptr<const scratchbird::storage::page::RowDataTemporalSchema> DirectT
     EngineApiDiagnostic diagnostic;
     const auto build_receiver = type == dt::CanonicalTypeId::bit_string
         ? detail::DirectBuildBitStringPageColumn : detail::DirectBuildTemporalPageColumn;
-    if (!build_receiver(actual->value_descriptor, identity->second,
-            static_cast<std::uint16_t>(ordinal + 1), actual->nullable, &receiver, &diagnostic)) {
+    const bool built = type == dt::CanonicalTypeId::blob
+        ? detail::DirectBuildBlobPageColumn(actual->value_descriptor, identity->second,
+              static_cast<std::uint16_t>(ordinal + 1), actual->nullable,
+              actual->column_uuid, actual->column_generation, &receiver, &diagnostic)
+        : build_receiver(actual->value_descriptor, identity->second,
+              static_cast<std::uint16_t>(ordinal + 1), actual->nullable, &receiver, &diagnostic);
+    if (!built) {
       failure = std::move(diagnostic);
       return {};
     }
     if (!schema) {
       schema = std::make_shared<page::RowDataTemporalSchema>();
       schema->relation_uuid = {UuidKind::object, relation.relation_uuid};
+      schema->relation_generation = relation.relation_generation;
     }
     schema->columns.push_back(std::move(receiver));
   }
@@ -5813,6 +5819,18 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
       for (std::size_t ordinal = 0; ordinal < row.fields.size(); ++ordinal) {
         const auto& field = DirectInputFieldName(request, row, ordinal);
         const auto type = DirectColumnTypeForField(batch_context.row_encoder_plan, field, ordinal);
+        if (type == dt::CanonicalTypeId::blob) {
+          // A column profile only describes stored bytes. It cannot turn a
+          // generic input carrier into the required actual native BLOB owner.
+          const auto& typed = row.fields[ordinal].second;
+          const auto refused = dt::ValidateDatatypeBinaryValueView(
+              {type, typed.isSqlNull(), false, typed.binary_value.data(), typed.binary_value.size()});
+          return DirectBulkFailureWithEvidence(request,
+              MakeEngineApiDiagnosticFromNative(refused.diagnostic,
+                  "BLOB.V1_V2_REFUSED", "datatype.native_blob.input_required",
+                  "native_statement_owned_blob_operand_required", true),
+              "destination_payload_refused", result.evidence, result.dml_summary);
+        }
         if (detail::DirectRequiresNativeProfile(type)) {
           const auto column = std::find_if(relation_descriptor.columns.begin(), relation_descriptor.columns.end(),
               [&](const auto& candidate) { return candidate.canonical_name_key == field; });

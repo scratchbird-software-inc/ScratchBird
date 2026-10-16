@@ -93,6 +93,16 @@ bool DirectBuildBitStringPageColumn(
     std::uint16_t ordinal, bool nullable,
     scratchbird::storage::page::RowDataProfileColumnBinding* output,
     EngineApiDiagnostic* diagnostic);
+
+// Stored BLOB representation only. The effectful caller supplies the exact
+// freshly admitted catalog column identity/generation and physical ordinal.
+// This does not accept a generic BLOB value or grant a live source capability.
+bool DirectBuildBlobPageColumn(
+    const EngineDescriptor& descriptor, const dt::DatatypeStorageIdentityV3& datatype,
+    std::uint16_t ordinal, bool nullable, const EngineUuid& column_uuid,
+    std::uint64_t column_generation,
+    scratchbird::storage::page::RowDataProfileColumnBinding* output,
+    EngineApiDiagnostic* diagnostic);
 bool DirectValidateNativeBitStringValue(
     const EngineTypedValue& typed, const EngineDescriptor* destination = nullptr,
     bool nullable = true, EngineApiDiagnostic* diagnostic = nullptr);
