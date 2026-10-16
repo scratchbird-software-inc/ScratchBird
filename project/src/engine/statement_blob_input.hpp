@@ -58,6 +58,8 @@ class StatementBlobComponentV3;
 class StatementBlobSerializedComponentV3;
 struct StatementBlobComponentResultV3;
 struct StatementBlobHashResultV3;
+class StatementBlobRowValueV3;
+struct StatementBlobRowResultV3;
 class StatementBlobInputV3 final {
  public:
   StatementBlobInputV3() noexcept = default;
@@ -132,6 +134,9 @@ class StatementBlobValueV3 final {
   // Requires actual HASH operation admission. SQL NULL has no logical content
   // digest; containing operators own its bitmap/UNKNOWN semantics separately.
   StatementBlobHashResultV3 HashLogical() noexcept;
+  // One protected pass into real reservation-backed native row staging, then
+  // transfer this exact typed lease. Does not encode a component or grant DML.
+  StatementBlobRowResultV3 StageForRowAndRetire(StatementBlobRowValueV3&) noexcept;
   core::datatypes::BlobLifetimeRuntimeResultV3 Probe() noexcept { return lease_.Probe(); }
   core::datatypes::BlobLifetimeRuntimeResultV3 VisitMaterialized(
       const core::datatypes::BlobTrustedInternalVisitorV3& visitor) noexcept { return lease_.VisitBoundMaterializedBytes(visitor); }

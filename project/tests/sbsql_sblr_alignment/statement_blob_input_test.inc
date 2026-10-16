@@ -1003,6 +1003,117 @@ void TypedSerialization(tests::FixtureEngineSession& session,const api::EngineRe
   }
 }
 #include "statement_blob_hash_test.inc"
+void RowStaging(tests::FixtureEngineSession& session,const api::EngineRequestContext& context) {
+  using Failure=api::StatementBlobRowFailureV3;
+  Statement statement(session,context);const auto baseline=mm::DefaultMemoryManager().Snapshot();
+  {api::StatementBlobValueV3 absent;api::StatementBlobRowValueV3 row;
+    Check(absent.StageForRowAndRetire(row).failure==Failure::source_unbound&&!row.bound(),"unbound source admitted row staging");}
+  for(bool logical:{false,true})for(bool hashing:{false,true})for(unsigned index=0;index<5;++index){
+    const auto frame=LogicalHashGolden(index);const auto bytes=std::span<const platform::byte>(frame).subspan(320);
+    api::StatementBlobInputV3 input;auto bounds=Bounds(logical);
+    bounds.state=static_cast<dt::BlobValueStateV3>(frame[24]);if(hashing)bounds.operation=SB_BLOB_OP_HASH_V3;
+    Check(Receive(statement,bytes,bounds,input)==SB_ENGINE_STATUS_OK,"row staging actual input");
+    api::StatementBlobValueV3 source;auto descriptor=Descriptor(*input.profile());const auto expected=descriptor;
+    Check(input.RetainTyped(std::move(descriptor),source).ok(),"row staging actual typed owner");
+    const auto work_before=*input.WorkSnapshot();api::StatementBlobRowValueV3 row;
+    const auto result=source.StageForRowAndRetire(row);
+    Check(result.ok()&&row.bound()&&!source.bound()&&!source.descriptor()&&
+        row.bytes().size()==bytes.size()&&std::equal(row.bytes().begin(),row.bytes().end(),bytes.begin())&&
+        row.state()==bounds.state&&row.descriptor()&&ExactDescriptor(*row.descriptor(),expected)&&
+        row.origin()&&row.origin()->database==statement.context.database_uuid.bytes&&
+        row.origin()->session==statement.context.session_uuid.bytes&&row.origin()->receipt==statement.context.statement_receipt_uuid.bytes&&
+        row.Probe().ok(),"row staging lost exact bytes,state,typed ownership or actual binary origin");
+    const auto work_after=*input.WorkSnapshot();
+    const auto delta=[&](dt::BlobLifetimeResourceV3 resource){const auto n=static_cast<std::size_t>(resource);
+      return work_after[n].invoked-work_before[n].invoked;};
+    Check(result.bytes_visited==bytes.size()&&delta(dt::BlobLifetimeResourceV3::logical_bytes_read)==bytes.size()&&
+        delta(dt::BlobLifetimeResourceV3::sink_bytes_written)==bytes.size()&&
+        delta(dt::BlobLifetimeResourceV3::sink_calls)==result.sink_attempts&&
+        !delta(dt::BlobLifetimeResourceV3::encoded_bytes_read),"row staging encoded,replayed or lost actual copied/sink work");
+    Check(source.StageForRowAndRetire(row).failure==Failure::output_in_use,"row staging overwrote populated output");
+    input.Reset();Check(row.Probe().ok(),"row staging lost independent lease after root retirement");
+    if(hashing&&bounds.state==dt::BlobValueStateV3::value){const auto digest=row.HashLogical();
+      Check(digest.ok()&&std::equal(digest.digest.begin(),digest.digest.end(),frame.begin()+248),"row staging lost protected HASH owner");}
+    Check(row.Release().ok()&&!row.bound()&&row.bytes().empty()&&!row.descriptor()&&!row.origin(),"row staging cleanup leaked typed input");
+    Check(source.StageForRowAndRetire(row).failure==Failure::output_in_use,"released row wrapper rearmed");
+    SameMemory(baseline);
+  }
+  {api::StatementBlobInputV3 input;auto bounds=Bounds(true);bounds.operation=SB_BLOB_OP_COMPONENT_ENCODE_V3;
+    const std::array<platform::byte,1> bytes{129};
+    Check(Receive(statement,bytes,bounds,input)==SB_ENGINE_STATUS_OK,"row staging wrong-operation actual input");
+    api::StatementBlobValueV3 source;auto descriptor=Descriptor(*input.profile());
+    Check(input.RetainTyped(std::move(descriptor),source).ok(),"row staging wrong-operation typed owner");
+    api::StatementBlobRowValueV3 row;const auto result=source.StageForRowAndRetire(row);
+    Check(!result.ok()&&result.failure==Failure::operation_not_admitted&&!result.lifetime_invoked&&!result.bytes_visited&&
+        !row.bound()&&source.bound(),"row staging bypassed native operation binding");
+    Check(source.Release().ok(),"row staging wrong-operation cleanup");input.Reset();SameMemory(baseline);}
+  for(unsigned fault=0;fault<5;++fault){
+    const std::array<platform::byte,3> bytes{0,255,129};api::StatementBlobInputV3 input;auto bounds=Bounds(true);
+    const auto resource=fault==0?dt::BlobLifetimeResourceV3::logical_bytes_read:fault==1?dt::BlobLifetimeResourceV3::reader_calls:
+        fault==2?dt::BlobLifetimeResourceV3::temporary_bytes:fault==3?dt::BlobLifetimeResourceV3::sink_bytes_written:dt::BlobLifetimeResourceV3::sink_calls;
+    bounds.maximum_work[static_cast<std::size_t>(resource)-1]=0;
+    Check(Receive(statement,bytes,bounds,input)==SB_ENGINE_STATUS_OK,"row staging resource test input");
+    api::StatementBlobValueV3 source;auto descriptor=Descriptor(*input.profile());
+    Check(input.RetainTyped(std::move(descriptor),source).ok(),"row staging resource actual owner");
+    api::StatementBlobRowValueV3 row;const auto before=mm::DefaultMemoryManager().Snapshot();
+    const auto result=source.StageForRowAndRetire(row);
+    Check(!result.ok()&&result.failure==Failure::resource_preflight&&result.resource==resource&&result.required&&
+        !result.available&&!row.bound()&&row.bytes().empty()&&source.bound()&&!result.bytes_visited&&
+        mm::DefaultMemoryManager().Snapshot().allocation_count==before.allocation_count,"row staging bypassed zero-resource preflight");
+    Check(source.Release().ok(),"row staging refused input cleanup");input.Reset();SameMemory(baseline);
+  }
+  unsigned fired=0,refused=0;bool completed=false;
+  const std::array<platform::byte,3> bytes{0,255,129};
+  for(long fault=0;fault<8192;++fault){bool injected=false;
+    {api::StatementBlobInputV3 input;Check(Receive(statement,bytes,Bounds(true),input)==SB_ENGINE_STATUS_OK,"row staging fault input");
+      api::StatementBlobValueV3 source;auto descriptor=Descriptor(*input.profile());
+      Check(input.RetainTyped(std::move(descriptor),source).ok(),"row staging fault actual owner");input.Reset();
+      api::StatementBlobRowValueV3 row;allocation_budget=fault;allocation_fault_triggered=false;
+      const auto result=source.StageForRowAndRetire(row);allocation_budget=-1;injected=allocation_fault_triggered;
+      if(!injected)Check(result.ok(),"unfaulted row staging failed after root retirement");
+      if(injected)++fired;
+      if(!result.ok()){++refused;Check(!row.bound()&&row.bytes().empty()&&!row.descriptor()&&!row.origin(),"row staging allocation failure exposed prefix");}
+      else Check(row.bound()&&row.bytes().size()==bytes.size()&&std::equal(row.bytes().begin(),row.bytes().end(),bytes.begin()),
+          "row staging fault/telemetry success lost actual ownership");
+      if(row.bound())Check(row.Release().ok(),"row staging fault output cleanup");
+      if(source.bound())Check(source.Release().ok(),"row staging fault source cleanup");
+    }
+    SameMemory(baseline);if(!injected){completed=true;break;}
+  }
+  Check(completed&&fired&&refused,"row staging full allocation-failure sweep incomplete");
+}
+void ConcurrentRowStaging(tests::FixtureEngineSession& session,const api::EngineRequestContext& context){
+  Statement statement(session,context);const auto baseline=mm::DefaultMemoryManager().Snapshot();
+  std::vector<platform::byte> bytes(4097);for(std::size_t i=0;i<bytes.size();++i)bytes[i]=static_cast<platform::byte>(i*17);
+  api::StatementBlobInputV3 input;Check(Receive(statement,bytes,Bounds(true),input)==SB_ENGINE_STATUS_OK,"concurrent row staging input");
+  std::array<api::StatementBlobValueV3,2> sources;
+  for(auto& source:sources){auto descriptor=Descriptor(*input.profile());Check(input.RetainTyped(std::move(descriptor),source).ok(),"concurrent row staging independent lease");}
+  std::array<api::StatementBlobRowValueV3,2> rows;std::array<api::StatementBlobRowResultV3,2> results;
+  std::barrier start(3);std::thread a([&]{start.arrive_and_wait();results[0]=sources[0].StageForRowAndRetire(rows[0]);});
+  std::thread b([&]{start.arrive_and_wait();results[1]=sources[1].StageForRowAndRetire(rows[1]);});
+  start.arrive_and_wait();a.join();b.join();input.Reset();
+  for(unsigned i=0;i<2;++i){Check(results[i].ok()&&rows[i].bound()&&!sources[i].bound()&&rows[i].bytes().size()==bytes.size()&&
+      std::equal(rows[i].bytes().begin(),rows[i].bytes().end(),bytes.begin())&&rows[i].Probe().ok(),"concurrent row staging shared or lost actual ownership");
+    Check(rows[i].Release().ok(),"concurrent row staging cleanup");}
+  SameMemory(baseline);
+}
+void RowStagingRevocation(tests::FixtureEngineSession& session,const api::EngineRequestContext& context){
+  for(bool cancel:{false,true}){Statement statement(session,context);const auto baseline=mm::DefaultMemoryManager().Snapshot();
+    const std::array<platform::byte,3> bytes{0,255,129};api::StatementBlobInputV3 input;
+    Check(Receive(statement,bytes,Bounds(true),input)==SB_ENGINE_STATUS_OK,"row staging revocation input");
+    api::StatementBlobValueV3 source;auto descriptor=Descriptor(*input.profile());
+    Check(input.RetainTyped(std::move(descriptor),source).ok(),"row staging revocation owner");input.Reset();
+    if(cancel){std::optional<api::RetainedStatementCancellationV1> signal;
+      Check(api::RetainStatementCancellationV1(statement.handle,statement.context.session_uuid.bytes,
+          statement.context.statement_receipt_uuid.bytes,&signal)==SB_ENGINE_STATUS_OK&&signal->Request(),"row staging actual cancellation");}
+    else mga::RevokePublishedSnapshotVector({platform::UuidKind::object,platform::Uuid{statement.context.statement_snapshot_uuid.bytes}});
+    api::StatementBlobRowValueV3 row;const auto result=source.StageForRowAndRetire(row);
+    Check(!result.ok()&&result.failure==api::StatementBlobRowFailureV3::lifetime&&result.lifetime_invoked&&!result.bytes_visited&&
+        result.lifetime.diagnostic_code==(cancel?"PROCESS.CANCELLED":"CINL.LOB.HANDLE_EXPIRED")&&!row.bound()&&row.bytes().empty(),
+        "row staging ignored actual cancellation/snapshot revocation or published bytes");
+    if(source.bound())Check(source.Release().ok(),"row staging revoked owner cleanup");SameMemory(baseline);
+  }
+}
 void ForeignProcess(tests::FixtureEngineSession& session,const api::EngineRequestContext& context) {
 #if defined(__linux__)
   Statement statement(session,context);
@@ -1062,5 +1173,8 @@ void NativeBlobInput(tests::FixtureEngineSession& session,const api::EngineReque
   blob_input_test::LogicalHashes(session,context);
   blob_input_test::LogicalHashFailures(session,context);
   blob_input_test::LogicalHashRevocation(session,context);
+  blob_input_test::RowStaging(session,context);
+  blob_input_test::ConcurrentRowStaging(session,context);
+  blob_input_test::RowStagingRevocation(session,context);
   blob_input_test::ForeignProcess(session,context);
 }

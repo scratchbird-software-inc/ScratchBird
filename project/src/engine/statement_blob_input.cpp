@@ -4,6 +4,7 @@
 #include "engine/statement_blob_component.hpp"
 #include "engine/statement_blob_encoded_input.hpp"
 #include "engine/statement_blob_hash.hpp"
+#include "engine/statement_blob_row_value.hpp"
 #include "engine/statement_cancellation.hpp"
 #include "engine/statement_monotonic_clock.hpp"
 #include "core/uuid/uuid.hpp"
@@ -903,6 +904,129 @@ class BlobLifetimeReceiverHostV3Generation1 final {
     return result;
   }
  private:
+  struct RowStageContext;
+  struct RowStageWork { RowStageContext* context; u64 offset=0; };
+  struct RowStageContext {
+    BlobLifetimeReceiverHostV3Generation1* host;
+    api::StatementBlobRowResultV3* result;
+    byte* allocation=nullptr;
+    std::size_t allocated=0;
+    RowStageWork* work=nullptr;
+    u64 reserved_bytes=0,reserved_calls=0;
+    void DestroyWork() noexcept {
+      if(work){work->~RowStageWork();Erase(work,sizeof(RowStageWork));work=nullptr;}
+    }
+    ~RowStageContext() noexcept {
+      if((reserved_bytes||reserved_calls)&&!host->ledger_.CancelSinkWork(reserved_bytes,reserved_calls))std::terminate();
+      DestroyWork();
+      if(allocation){Erase(allocation,allocated);
+        try{host->memory_->memory()->deallocate(allocation,allocated,alignof(RowStageWork));}catch(...){std::terminate();}}
+    }
+    bool Sink(u64 bytes=0) noexcept {
+      ++result->sink_attempts;
+      if(bytes>reserved_bytes||!reserved_calls||!host->ledger_.ConsumeReservedSinkCall(bytes)){
+        result->failure=api::StatementBlobRowFailureV3::internal_failure;return false;}
+      reserved_bytes-=bytes;--reserved_calls;return true;
+    }
+  };
+  static BlobProtectedWorkResultV3 StageRowBytes(void* raw,std::span<const byte> bytes) noexcept {
+    auto& work=*static_cast<RowStageWork*>(raw);auto& context=*work.context;
+    if(context.result->failure!=api::StatementBlobRowFailureV3::none)return {0,{},{}};
+    const auto extent=context.allocated-sizeof(RowStageWork);
+    if(work.offset>extent||bytes.size()>extent-work.offset||!context.Sink(bytes.size())){
+      context.result->failure=api::StatementBlobRowFailureV3::internal_failure;return {0,{},{}};}
+    if(!bytes.empty())std::memcpy(context.allocation+sizeof(RowStageWork)+work.offset,bytes.data(),bytes.size());
+    work.offset+=bytes.size();context.result->bytes_visited+=bytes.size();return {0,{},{}};
+  }
+ public:
+  static api::StatementBlobRowResultV3 StageForRowAndRetire(api::StatementBlobValueV3& source,
+      api::StatementBlobRowValueV3& output) noexcept {
+    using Failure=api::StatementBlobRowFailureV3;
+    api::StatementBlobRowResultV3 result;
+    if(output.host_||output.value_.used_){result.failure=Failure::output_in_use;return result;}
+    if(!source.bound()||!source.host_)return result;
+    auto& host=*source.host_;
+    if(host.bounds_.operation!=SB_BLOB_OP_READ_V3&&host.bounds_.operation!=SB_BLOB_OP_HASH_V3){
+      result.failure=Failure::operation_not_admitted;return result;}
+    // Cleanup custody for an already-retained input, not a fresh factory
+    // admission. A root's retirement does not invalidate an independent lease.
+    auto pins=host.pins_.load(std::memory_order_acquire);
+    do{if(!pins||pins==UINT64_MAX){result.failure=Failure::admission_closed;return result;}}
+    while(!host.pins_.compare_exchange_weak(pins,pins+1,std::memory_order_acq_rel));
+    struct Pin{BlobLifetimeReceiverHostV3Generation1* host;~Pin(){if(host)host->Drop();}}pin{&host};
+    const auto probe=[&]{result.lifetime_invoked=true;result.lifetime=source.lease_.Probe();
+      if(result.lifetime.ok())return true;result.failure=Failure::lifetime;return false;};
+    if(!probe())return result;
+    const u64 length=source.length_;
+    const bool reader=host.bounds_.carrier==api::StatementBlobInputCarrierV3::logical_reader;
+    const u64 window=reader?std::min(length,host.bounds_.window_bytes):0;
+    if(length>SIZE_MAX-sizeof(RowStageWork)||(reader&&length&&!window)){
+      result.failure=Failure::extent_invalid;return result;}
+    const u64 source_calls=window?length/window+(length%window!=0):0;
+    const u64 sink_calls=(length?(reader?source_calls:1):0)+2;
+    const u64 allocated=length+sizeof(RowStageWork);
+    if(window>UINT64_MAX-allocated){result.failure=Failure::extent_invalid;return result;}
+    const auto budget=host.ledger_.Snapshot();
+    const auto need=[&](BlobLifetimeResourceV3 resource,u64 amount){
+      const auto& counter=budget.counters[static_cast<std::size_t>(resource)];
+      const bool valid=budget.frozen&&!budget.terminal_quarantined&&counter.invoked<=counter.limit&&
+          counter.reserved_work<=counter.limit-counter.invoked&&
+          counter.reserved_cleanup<=counter.limit-counter.invoked-counter.reserved_work;
+      const u64 available=valid?counter.limit-counter.invoked-counter.reserved_work-counter.reserved_cleanup:0;
+      if(valid&&amount<=available)return true;
+      result.failure=Failure::resource_preflight;result.resource=resource;result.required=amount;result.available=available;return false;};
+    if(!need(BlobLifetimeResourceV3::logical_bytes_read,length)||!need(BlobLifetimeResourceV3::reader_calls,source_calls)||
+        !need(BlobLifetimeResourceV3::temporary_bytes,allocated+window)||
+        !need(BlobLifetimeResourceV3::sink_bytes_written,length)||!need(BlobLifetimeResourceV3::sink_calls,sink_calls))return result;
+    u64 available=0;
+    if(!host.ledger_.Charge(BlobLifetimeResourceV3::temporary_bytes,allocated,&available)){
+      result.failure=Failure::resource_preflight;result.resource=BlobLifetimeResourceV3::temporary_bytes;
+      result.required=allocated;result.available=available;return result;}
+    RowStageContext context{&host,&result};BlobLifetimeResourceV3 failed;
+    if(!host.ledger_.ReserveSinkWork(length,sink_calls,failed,available)){
+      result.failure=Failure::resource_preflight;result.resource=failed;
+      result.required=failed==BlobLifetimeResourceV3::sink_calls?sink_calls:length;result.available=available;return result;}
+    context.reserved_bytes=length;context.reserved_calls=sink_calls;
+    try{
+      context.allocated=static_cast<std::size_t>(allocated);
+      context.allocation=static_cast<byte*>(host.memory_->memory()->allocate(context.allocated,alignof(RowStageWork)));
+      context.work=new(context.allocation)RowStageWork{&context};
+      result.failure=Failure::none;
+      if(!context.Sink())return result;
+      result.lifetime=length?(reader?source.lease_.VisitBoundReaderBytes(BlobTrustedInternalVisitorV3(StageRowBytes,context.work)):
+          source.lease_.VisitBoundMaterializedBytes(BlobTrustedInternalVisitorV3(StageRowBytes,context.work))):source.lease_.Probe();
+      if(!result.lifetime.ok()){result.failure=Failure::lifetime;return result;}
+      if(result.failure!=Failure::none)return result;
+      if(context.work->offset!=length||result.bytes_visited!=length){result.failure=Failure::internal_failure;return result;}
+      if(!context.Sink())return result;
+      context.DestroyWork();
+      if(!probe())return result;
+      // One exact owner transfer, not metadata reconstruction or a permission
+      // boolean. All source observations and staged bytes precede publication.
+      output.value_.used_=true;
+      result.lifetime=output.value_.lease_.MoveReplaceFrom(std::move(source.lease_));
+      if(!result.lifetime.ok()){result.failure=Failure::lifetime;return result;}
+      output.value_.descriptor_=std::move(source.descriptor_);output.value_.profile_=source.profile_;
+      output.value_.state_=source.state_;output.value_.length_=source.length_;output.value_.host_=source.host_;
+      source.descriptor_={};source.profile_={};source.state_=BlobValueStateV3::sql_null;source.length_=0;source.host_=nullptr;source.used_=true;
+      output.host_=&host;output.allocation_=context.allocation;output.allocated_=context.allocated;
+      output.data_=context.allocation+sizeof(RowStageWork);output.size_=static_cast<std::size_t>(length);
+      context.allocation=nullptr;pin.host=nullptr;return result;
+    }catch(const std::bad_alloc&){result.failure=Failure::allocation_failed;return result;}
+    catch(...){result.failure=Failure::internal_failure;return result;}
+  }
+  static void DestroyRowBytes(api::StatementBlobRowValueV3& output) noexcept {
+    auto* host=output.host_;if(!host)return;
+    auto* allocation=output.allocation_;const auto bytes=output.allocated_;
+    output.host_=nullptr;output.allocation_=nullptr;output.data_=nullptr;output.size_=0;output.allocated_=0;
+    Erase(allocation,bytes);
+    try{host->memory_->memory()->deallocate(allocation,bytes,alignof(RowStageWork));}catch(...){std::terminate();}
+    host->Drop();
+  }
+  static const api::RetainedStatementMemoryBindingV1* RowOrigin(const api::StatementBlobRowValueV3& output) noexcept {
+    return output.bound()?&output.host_->memory_->binding():nullptr;
+  }
+ private:
   struct LogicalHashWork {
     BlobLogicalDigestPassV3 digest;
     hash::Blake3Digest staged{};
@@ -1053,6 +1177,19 @@ StatementBlobComponentResultV3 StatementBlobValueV3::SerializeAndRetire(Statemen
 StatementBlobHashResultV3 StatementBlobValueV3::HashLogical() noexcept {
   return core::datatypes::BlobLifetimeReceiverHostV3Generation1::HashLogical(*this);
 }
+StatementBlobRowResultV3 StatementBlobValueV3::StageForRowAndRetire(StatementBlobRowValueV3& output) noexcept {
+  return core::datatypes::BlobLifetimeReceiverHostV3Generation1::StageForRowAndRetire(*this,output);
+}
+StatementBlobRowValueV3::~StatementBlobRowValueV3() noexcept {(void)Release();}
+core::datatypes::BlobLifetimeRuntimeResultV3 StatementBlobRowValueV3::Release() noexcept {
+  const auto result=value_.Release();
+  core::datatypes::BlobLifetimeReceiverHostV3Generation1::DestroyRowBytes(*this);
+  return result;
+}
+const RetainedStatementMemoryBindingV1* StatementBlobRowValueV3::origin() const noexcept {
+  return core::datatypes::BlobLifetimeReceiverHostV3Generation1::RowOrigin(*this);
+}
+StatementBlobHashResultV3 StatementBlobRowValueV3::HashLogical() noexcept {return value_.HashLogical();}
 StatementBlobComponentV3::~StatementBlobComponentV3() noexcept { Reset(); }
 void StatementBlobComponentV3::Reset() noexcept {
   core::datatypes::BlobLifetimeReceiverHostV3Generation1::DestroyComponent(*this);
