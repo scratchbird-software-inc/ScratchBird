@@ -114,6 +114,10 @@ struct IndexFamilyDescriptor {
   bool supports_ordering = false;
   bool supports_uniqueness = false;
   bool approximate = false;
+  // Exact immutable global-family registry generation, not a datatype/index
+  // compatibility generation or a physical index rebuild/root generation.
+  // Default/caller-created descriptor projections are unbound.
+  platform::u64 family_generation = 0;
 };
 
 struct IndexFamilyPhysicalCapabilityState {
@@ -159,6 +163,14 @@ const std::vector<IndexFamilyDescriptor>& BuiltinIndexFamilyDescriptors();
 const std::vector<IndexFamilyPhysicalCapabilityState>&
 BuiltinIndexFamilyPhysicalCapabilityStates();
 const IndexFamilyDescriptor* FindBuiltinIndexFamily(IndexFamily family);
+// Resolve from the actual immutable registry using binary identity only.
+// Labels, ordinal values and caller descriptor copies are not authority.
+// A miss (including zero/stale generation) returns nullptr, without a public
+// capability diagnostic or a claim that a runtime provider is admitted.
+// As with the other registry accessors, first use may initialize its storage;
+// after initialization lookup allocates nothing and retains no caller data.
+const IndexFamilyDescriptor* FindBuiltinIndexFamilyByIdentity(
+    const platform::Uuid& family_uuid, platform::u64 family_generation);
 const IndexFamilyPhysicalCapabilityState*
 FindBuiltinIndexFamilyPhysicalCapabilityState(IndexFamily family);
 IndexFamilyLookupResult FindBuiltinIndexFamilyById(std::string_view id);

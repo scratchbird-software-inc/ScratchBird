@@ -53,7 +53,8 @@ IndexFamilyDescriptor D(IndexFamily family, const char* id, IndexPersistenceClas
                                true,
                                ordering,
                                unique,
-                               approximate};
+                               approximate,
+                               1};
 }
 
 IndexFamilyDescriptor P(IndexFamily family, const char* id, const char* policy) {
@@ -212,6 +213,16 @@ BuiltinIndexFamilyPhysicalCapabilityStates() {
 const IndexFamilyDescriptor* FindBuiltinIndexFamily(IndexFamily family) {
   for (const auto& descriptor : BuiltinIndexFamilyDescriptors()) {
     if (descriptor.family == family) return &descriptor;
+  }
+  return nullptr;
+}
+
+const IndexFamilyDescriptor* FindBuiltinIndexFamilyByIdentity(
+    const platform::Uuid& family_uuid, platform::u64 family_generation) {
+  if (family_uuid.is_nil() || family_generation == 0) return nullptr;
+  for (const auto& descriptor : BuiltinIndexFamilyDescriptors()) {
+    if (descriptor.family_uuid.value.bytes == family_uuid.bytes &&
+        descriptor.family_generation == family_generation) return &descriptor;
   }
   return nullptr;
 }

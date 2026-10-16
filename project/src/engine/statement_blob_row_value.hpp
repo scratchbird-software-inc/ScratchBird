@@ -39,7 +39,12 @@ class StatementBlobRowValueV3 final {
   const ExecutionTypeDescriptor* descriptor() const noexcept { return bound() ? value_.descriptor() : nullptr; }
   const core::datatypes::BlobValidatedProfileHandleV3* profile() const noexcept { return bound() ? value_.profile() : nullptr; }
   std::optional<core::datatypes::BlobValueStateV3> state() const noexcept { return bound() ? value_.state() : std::nullopt; }
-  const RetainedStatementMemoryBindingV1* origin() const noexcept;
+  // A borrowed observation of the actual retained owner's immutable binding,
+  // never a copied authority or independent owner. The row's existing custody
+  // pin retains it; it cannot outlive this wrapper's synchronous use.
+  const RetainedStatementMemoryBindingV1* origin() const noexcept {
+    return bound() ? origin_ : nullptr;
+  }
   core::datatypes::BlobLifetimeRuntimeResultV3 Probe() noexcept { return value_.Probe(); }
   // Available only when the actual original native operation admitted HASH.
   StatementBlobHashResultV3 HashLogical() noexcept;
@@ -49,6 +54,7 @@ class StatementBlobRowValueV3 final {
  private:
   StatementBlobValueV3 value_;
   core::datatypes::BlobLifetimeReceiverHostV3Generation1* host_ = nullptr;
+  const RetainedStatementMemoryBindingV1* origin_ = nullptr;
   core::platform::byte* allocation_ = nullptr;
   core::platform::byte* data_ = nullptr;
   std::size_t size_ = 0, allocated_ = 0;

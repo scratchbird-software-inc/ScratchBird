@@ -137,6 +137,26 @@ void BlobRawIndexFamilyPolicy() {
   const auto& families=scratchbird::core::index::BuiltinIndexFamilyDescriptors();
   Check(!families.empty(),"global family registry is empty");
   for (const auto& family:families) {
+    Check(family.family_generation==1 &&
+        scratchbird::core::index::FindBuiltinIndexFamilyByIdentity(
+            family.family_uuid.value,family.family_generation)==&family,
+        "binary lookup did not return the actual immutable global family");
+    auto copied=family;
+    copied.id="not-the-registered-alias"; copied.canonical_name="forged-display-name";
+    allocation_fault_triggered=false; allocation_budget=0;
+    Check(scratchbird::core::index::FindBuiltinIndexFamilyByIdentity(
+        copied.family_uuid.value,copied.family_generation)==&family,
+        "display labels changed binary global-family lookup");
+    Check(!allocation_fault_triggered,"hot binary family lookup allocated");
+    allocation_budget=-1;
+    for (auto generation:{std::uint64_t{0},std::uint64_t{2},UINT64_MAX})
+      Check(!scratchbird::core::index::FindBuiltinIndexFamilyByIdentity(
+          family.family_uuid.value,generation),"stale global-family generation resolved");
+    for (std::size_t i=0;i<16;++i) {
+      auto wrong=family.family_uuid.value; wrong.bytes[i]^=0x80;
+      Check(!scratchbird::core::index::FindBuiltinIndexFamilyByIdentity(wrong,1),
+            "mutated global-family UUID resolved");
+    }
     for (const auto& compatibility:kBlobIndexCompatibilityGolden)
       Check(family.family_uuid.value.bytes!=compatibility.index_compatibility_uuid.bytes,
             "global family identity aliases a BLOB datatype compatibility identity");
@@ -149,6 +169,12 @@ void BlobRawIndexFamilyPolicy() {
         refused.diagnostic_code.empty() && refused.diagnostic_uuid.is_nil(),
         "global family UUID was treated as BLOB compatibility authority");
   }
+  for (const auto& compatibility:kBlobIndexCompatibilityGolden)
+    Check(!scratchbird::core::index::FindBuiltinIndexFamilyByIdentity(
+        compatibility.index_compatibility_uuid,1),
+        "BLOB compatibility UUID was treated as global family authority");
+  Check(!scratchbird::core::index::FindBuiltinIndexFamilyByIdentity({},1),
+        "nil global-family UUID resolved");
   // Independent registered DATE/TIME/TIMESTAMP/INTERVAL HASH compatibility
   // rows must not select the BLOB profile, even though all classify as HASH.
   constexpr scratchbird::core::platform::Uuid foreign_compatibilities[]{

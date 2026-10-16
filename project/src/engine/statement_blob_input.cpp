@@ -1010,6 +1010,7 @@ class BlobLifetimeReceiverHostV3Generation1 final {
       output.value_.state_=source.state_;output.value_.length_=source.length_;output.value_.host_=source.host_;
       source.descriptor_={};source.profile_={};source.state_=BlobValueStateV3::sql_null;source.length_=0;source.host_=nullptr;source.used_=true;
       output.host_=&host;output.allocation_=context.allocation;output.allocated_=context.allocated;
+      output.origin_=&host.memory_->binding();
       output.data_=context.allocation+sizeof(RowStageWork);output.size_=static_cast<std::size_t>(length);
       context.allocation=nullptr;pin.host=nullptr;return result;
     }catch(const std::bad_alloc&){result.failure=Failure::allocation_failed;return result;}
@@ -1019,12 +1020,10 @@ class BlobLifetimeReceiverHostV3Generation1 final {
     auto* host=output.host_;if(!host)return;
     auto* allocation=output.allocation_;const auto bytes=output.allocated_;
     output.host_=nullptr;output.allocation_=nullptr;output.data_=nullptr;output.size_=0;output.allocated_=0;
+    output.origin_=nullptr;
     Erase(allocation,bytes);
     try{host->memory_->memory()->deallocate(allocation,bytes,alignof(RowStageWork));}catch(...){std::terminate();}
     host->Drop();
-  }
-  static const api::RetainedStatementMemoryBindingV1* RowOrigin(const api::StatementBlobRowValueV3& output) noexcept {
-    return output.bound()?&output.host_->memory_->binding():nullptr;
   }
  private:
   struct LogicalHashWork {
@@ -1185,9 +1184,6 @@ core::datatypes::BlobLifetimeRuntimeResultV3 StatementBlobRowValueV3::Release() 
   const auto result=value_.Release();
   core::datatypes::BlobLifetimeReceiverHostV3Generation1::DestroyRowBytes(*this);
   return result;
-}
-const RetainedStatementMemoryBindingV1* StatementBlobRowValueV3::origin() const noexcept {
-  return core::datatypes::BlobLifetimeReceiverHostV3Generation1::RowOrigin(*this);
 }
 StatementBlobHashResultV3 StatementBlobRowValueV3::HashLogical() noexcept {return value_.HashLogical();}
 StatementBlobComponentV3::~StatementBlobComponentV3() noexcept { Reset(); }

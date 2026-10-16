@@ -1016,6 +1016,7 @@ void RowStaging(tests::FixtureEngineSession& session,const api::EngineRequestCon
     api::StatementBlobValueV3 source;auto descriptor=Descriptor(*input.profile());const auto expected=descriptor;
     Check(input.RetainTyped(std::move(descriptor),source).ok(),"row staging actual typed owner");
     const auto work_before=*input.WorkSnapshot();api::StatementBlobRowValueV3 row;
+    Check(!row.origin(),"default row staging wrapper exposed an origin");
     const auto result=source.StageForRowAndRetire(row);
     Check(result.ok()&&row.bound()&&!source.bound()&&!source.descriptor()&&
         row.bytes().size()==bytes.size()&&std::equal(row.bytes().begin(),row.bytes().end(),bytes.begin())&&
@@ -1031,7 +1032,19 @@ void RowStaging(tests::FixtureEngineSession& session,const api::EngineRequestCon
         delta(dt::BlobLifetimeResourceV3::sink_calls)==result.sink_attempts&&
         !delta(dt::BlobLifetimeResourceV3::encoded_bytes_read),"row staging encoded,replayed or lost actual copied/sink work");
     Check(source.StageForRowAndRetire(row).failure==Failure::output_in_use,"row staging overwrote populated output");
+    const auto* actual_origin=row.origin();
+    const auto expected_origin=*actual_origin;
     input.Reset();Check(row.Probe().ok(),"row staging lost independent lease after root retirement");
+    Check(row.origin()==actual_origin&&row.origin()->database==expected_origin.database&&
+        row.origin()->session==expected_origin.session&&row.origin()->receipt==expected_origin.receipt&&
+        row.origin()->statement==expected_origin.statement&&row.origin()->transaction==expected_origin.transaction&&
+        row.origin()->snapshot==expected_origin.snapshot&&row.origin()->snapshot_generation==expected_origin.snapshot_generation&&
+        row.origin()->security_context==expected_origin.security_context&&row.origin()->security_generation==expected_origin.security_generation&&
+        row.origin()->resource_admission==expected_origin.resource_admission&&
+        row.origin()->datatype_catalog_snapshot==expected_origin.datatype_catalog_snapshot&&
+        row.origin()->datatype_catalog_generation==expected_origin.datatype_catalog_generation&&
+        row.origin()->datatype_registry_generation==expected_origin.datatype_registry_generation,
+        "row origin changed or lost its actual owner after input root retirement");
     if(hashing&&bounds.state==dt::BlobValueStateV3::value){const auto digest=row.HashLogical();
       Check(digest.ok()&&std::equal(digest.digest.begin(),digest.digest.end(),frame.begin()+248),"row staging lost protected HASH owner");}
     Check(row.Release().ok()&&!row.bound()&&row.bytes().empty()&&!row.descriptor()&&!row.origin(),"row staging cleanup leaked typed input");
