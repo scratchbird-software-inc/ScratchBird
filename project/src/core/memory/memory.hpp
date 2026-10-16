@@ -563,12 +563,6 @@ struct ScopedPageBufferResult {
 class ScopedProtectedBuffer {
  public:
   ScopedProtectedBuffer() = default;
-  ScopedProtectedBuffer(BoundedAllocator* allocator,
-                        void* pointer,
-                        usize bytes,
-                        usize alignment,
-                        MemoryTag tag,
-                        ProtectedMemoryEvidence evidence);
   ScopedProtectedBuffer(const ScopedProtectedBuffer&) = delete;
   ScopedProtectedBuffer& operator=(const ScopedProtectedBuffer&) = delete;
   ScopedProtectedBuffer(ScopedProtectedBuffer&& other) noexcept;
@@ -579,10 +573,18 @@ class ScopedProtectedBuffer {
   usize size() const { return bytes_; }
   bool valid() const { return pointer_ != nullptr; }
   const ProtectedMemoryEvidence& evidence() const { return evidence_; }
+  // Actual allocation observation, not authorization or a key-release grant.
+  const MemoryTag& tag() const noexcept { return tag_; }
   void Zeroize();
   DeallocationResult Reset();
 
  private:
+  friend class BoundedAllocator;
+  // Only the allocator that performed/accounted/protected the allocation may
+  // issue this owner. Public pointer/evidence construction could forge custody.
+  ScopedProtectedBuffer(BoundedAllocator* allocator, void* pointer, usize bytes,
+                        usize alignment, MemoryTag tag,
+                        ProtectedMemoryEvidence evidence);
   BoundedAllocator* allocator_ = nullptr;
   void* pointer_ = nullptr;
   usize bytes_ = 0;

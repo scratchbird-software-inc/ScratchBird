@@ -27,7 +27,8 @@ inline bool ValidCryptoMemoryBinding(const CryptoMemoryBinding& binding) noexcep
 }
 enum class CryptoMemoryError : unsigned char {
   none, invalid_binding, invalid_backing, not_installed, already_installed,
-  custom_allocator, late_installation, closed, revoked, busy, provider_failure
+  custom_allocator, late_installation, closed, revoked, busy, provider_failure,
+  no_explicit_scope, allocations_refused
 };
 struct CryptoMemorySnapshot {
   CryptoMemoryBinding binding{};
@@ -78,6 +79,12 @@ CryptoMemoryError CheckCryptoMemoryAdapter(const CryptoMemoryPool&,
 // every pointer/charge. Hooks remain installed in a terminal refusing state.
 CryptoMemoryError StopCryptoMemoryAdapter() noexcept;
 CryptoMemoryAdapterSnapshot SnapshotCryptoMemoryAdapter() noexcept;
+// Check the actual current thread's complete lexical scope chain under the
+// adapter lock. No implicit process-pool fallback. The innermost owning pool
+// must be bound to this database (not a process or another database).
+// This resource precondition is NOT a memory grant, key release, source lease
+// or authorization. Owner admission/publication fences remain separate.
+CryptoMemoryError CheckExplicitCryptoMemoryScope(const platform::Uuid& database) noexcept;
 
 class CryptoMemoryScope {
  public:

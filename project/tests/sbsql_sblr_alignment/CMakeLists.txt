@@ -101,6 +101,19 @@ set_tests_properties(sbsql_sblr_alignment_native_column_binding PROPERTIES
   TIMEOUT 30 LABELS "sbsql_sblr_alignment;binary_uuid;column_binding;component_regression;not_runtime_acceptance")
 
 add_executable(sbsql_sblr_alignment_openpgp_seipd openpgp_seipd_test.cpp)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  add_executable(sbsql_sblr_alignment_native_hash_key_record native_hash_key_record_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_native_hash_key_record PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_native_hash_key_record PRIVATE sb_storage_database sb_core_hash sb_core_memory)
+  target_link_options(sbsql_sblr_alignment_native_hash_key_record PRIVATE
+    "-Wl,--wrap=RAND_bytes" "-Wl,--wrap=EVP_PKEY_CTX_new_id" "-Wl,--wrap=EVP_PKEY_derive"
+    "-Wl,--wrap=EVP_CIPHER_CTX_new" "-Wl,--wrap=EVP_CipherInit_ex" "-Wl,--wrap=EVP_CipherUpdate"
+    "-Wl,--wrap=EVP_CipherFinal_ex" "-Wl,--wrap=EVP_CIPHER_CTX_ctrl"
+    "-Wl,--wrap=pread" "-Wl,--wrap=pwrite" "-Wl,--wrap=fsync" "-Wl,--wrap=munlock")
+  add_test(NAME sbsql_sblr_alignment_native_hash_key_record COMMAND sbsql_sblr_alignment_native_hash_key_record)
+  set_tests_properties(sbsql_sblr_alignment_native_hash_key_record PROPERTIES
+    TIMEOUT 90 LABELS "sbsql_sblr_alignment;crypto;binary_uuid;protected_memory;real_file_reopen;component_regression;not_runtime_acceptance")
+endif()
 add_executable(sbsql_sblr_alignment_openpgp_packet openpgp_packet_test.cpp)
 add_executable(sbsql_sblr_alignment_openpgp_password_message openpgp_password_message_test.cpp)
 target_compile_features(sbsql_sblr_alignment_openpgp_password_message PRIVATE cxx_std_17)

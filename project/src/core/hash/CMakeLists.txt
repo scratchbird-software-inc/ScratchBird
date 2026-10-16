@@ -29,6 +29,7 @@ set_source_files_properties(argon2_kdf.cpp PROPERTIES COMPILE_DEFINITIONS "${SB_
 
 add_library(sb_core_hash
   blake3_digest.cpp
+  native_hash_key_envelope.cpp
   hash_digest.cpp
   crypto_memory_adapter.cpp
   scrypt_kdf.cpp

@@ -39,6 +39,21 @@ struct alignas(std::max_align_t) CryptoMemoryPool::Block {
 };
 struct CryptoMemoryInternals {
   using Block=CryptoMemoryPool::Block;
+  static CryptoMemoryError CheckExplicitScope(const platform::Uuid& database) {
+    if(!State().installed)return CryptoMemoryError::not_installed;
+    if(State().stopped)return CryptoMemoryError::closed;
+    if(!scope)return CryptoMemoryError::no_explicit_scope;
+    for(auto* current=scope;current;current=current->previous_) {
+      if(!current->ok())return current->error();
+      if(current->reject_)return CryptoMemoryError::allocations_refused;
+      if(!current->pool_||!current->pool_->state_.open)return CryptoMemoryError::closed;
+      if(current->pool_->state_.revoked)return CryptoMemoryError::revoked;
+    }
+    const auto& binding=scope->pool_->state_.binding;
+    if(database.is_nil()||binding.database!=database||!binding.process.is_nil())
+      return CryptoMemoryError::invalid_binding;
+    return CryptoMemoryError::none;
+  }
   static void* Allocate(CryptoMemoryPool& p,std::size_t bytes){
     auto& s=p.state_;
     if(!s.open||s.revoked||!bytes||bytes>std::numeric_limits<std::size_t>::max()-(alignment-1)){
@@ -192,6 +207,12 @@ CryptoMemoryAdapterSnapshot SnapshotCryptoMemoryAdapter() noexcept {
   try{std::lock_guard lock(State().mutex);const auto& s=State();
     return {s.process_binding,s.blocks,s.scopes,s.installed,s.stopped,CryptoMemoryError::none};
   }catch(...){return {};}
+}
+CryptoMemoryError CheckExplicitCryptoMemoryScope(const platform::Uuid& database) noexcept {
+  try {
+    std::lock_guard lock(State().mutex);
+    return CryptoMemoryInternals::CheckExplicitScope(database);
+  }catch(...){return CryptoMemoryError::busy;}
 }
 CryptoMemoryScope::CryptoMemoryScope(CryptoMemoryPool& p,const CryptoMemoryBinding& b,bool reject) noexcept {
   previous_=scope;scope=this;
