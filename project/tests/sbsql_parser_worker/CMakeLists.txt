@@ -5578,6 +5578,16 @@ if(TARGET sbl_sbsql_parser_worker_core)
   add_test(NAME sbsql_native_scalar_submission_conformance COMMAND sbsql_native_scalar_submission_conformance)
   set_tests_properties(sbsql_native_scalar_submission_conformance PROPERTIES
     LABELS "sbsql_parser_worker;scalar_projection;binary_uuid;native_real64;component_not_live_admission")
+  add_executable(sbsql_boolean_literal_producer_conformance
+    sbsql_boolean_literal_producer_conformance.cpp)
+  target_compile_features(sbsql_boolean_literal_producer_conformance PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_boolean_literal_producer_conformance PRIVATE
+    sbl_sbsql_parser_worker_core sb_core_hash)
+  add_test(NAME sbsql_boolean_literal_producer_conformance
+    COMMAND sbsql_boolean_literal_producer_conformance)
+  set_tests_properties(sbsql_boolean_literal_producer_conformance PROPERTIES
+    LABELS "sbsql_parser_worker;boolean;literal_prebind;source_provenance;component_not_live_admission"
+    TIMEOUT 60)
   target_compile_features(
     sbsql_authoritative_multi_source_projection_conformance
     PRIVATE

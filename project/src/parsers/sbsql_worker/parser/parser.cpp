@@ -145,7 +145,7 @@ class NativeRelationalParser final {
     }
     const auto contains_word = [&](const std::string_view wanted) {
       return std::ranges::any_of(tokens_, [&](const auto* token) {
-        return !token->quoted && IsWord(*token, wanted);
+        return IsNameToken(*token) && !token->quoted && IsWord(*token, wanted);
       });
     };
     if (contains_word("MONGO_PIPELINE") || contains_word("CYPHER_TEXT") ||
@@ -160,6 +160,7 @@ class NativeRelationalParser final {
     }
     const std::size_t model_source_token_count = std::ranges::count_if(
         tokens_, [&](const auto* token) {
+          if (!IsNameToken(*token) || token->quoted) return false;
           return IsWord(*token, "DOCUMENT_SOURCE") ||
                  IsWord(*token, "GRAPH_SOURCE") ||
                  IsWord(*token, "KEY_VALUE_SOURCE") ||
@@ -298,6 +299,9 @@ class NativeRelationalParser final {
     if (LooksLikeBoundedObjectFreeScalarSelect()) {
       return ParseObjectFreeScalarSelect();
     }
+    if (LooksLikeObjectFreeScalarSyntax()) {
+      return ParseObjectFreeScalarSyntax();
+    }
     if (tokens_.empty() || !IsWord(*tokens_.front(), "VALUES")) {
       return std::move(document_);
     }
@@ -425,6 +429,65 @@ class NativeRelationalParser final {
     document_.relations.push_back(std::move(relation));
     document_.root_relation_id = 1;
     document_.status = NativeRelationalParseStatus::kAccepted;
+    return std::move(document_);
+  }
+
+  bool LooksLikeObjectFreeScalarSyntax() const {
+    if (tokens_.empty() || !IsWord(*tokens_.front(), "SELECT")) return false;
+    // FROM inside a string or quoted name is data, not a source clause. A
+    // nested SELECT is not object-free either and must keep its existing route.
+    for (std::size_t i = 1; i < tokens_.size(); ++i) {
+      if (!IsNameToken(*tokens_[i]) || tokens_[i]->quoted) continue;
+      if (IsWord(*tokens_[i], "FROM") || IsWord(*tokens_[i], "SELECT") ||
+          IsWord(*tokens_[i], "UNION") || IsWord(*tokens_[i], "INTERSECT") ||
+          IsWord(*tokens_[i], "EXCEPT")) return false;
+    }
+    return true;
+  }
+
+  NativeRelationalAstDocument ParseObjectFreeScalarSyntax() {
+    scalar_syntax_only_ = true;
+    document_.status = NativeRelationalParseStatus::kRefused;
+    if (cst_.messages.has_errors()) {
+      document_.messages = cst_.messages;
+      return FinishRefusal();
+    }
+    if (tokens_.size() > kMaximumNativeRelationalTokens) {
+      Refuse("token_limit_exceeded", "native scalar syntax token limit exceeded");
+      return FinishRefusal();
+    }
+    Consume();  // SELECT
+    while (!AtEnd() && !AtSymbol(";")) {
+      if (!ParseExpression(0, 0)) return FinishRefusal();
+      if (!AtEnd() && IsWord(Current(), "AS")) {
+        Consume();
+        if (AtEnd() || !IsNameToken(Current())) {
+          Refuse("scalar_alias_expected", "AS requires a scalar result alias");
+          return FinishRefusal();
+        }
+        Consume();
+      } else if (!AtEnd() && IsNameToken(Current())) {
+        Consume();
+      }
+      if (!AtSymbol(",")) break;
+      Consume();
+      if (AtEnd() || AtSymbol(";")) {
+        Refuse("scalar_projection_expected", "scalar separator requires an expression");
+        return FinishRefusal();
+      }
+    }
+    if (document_.expressions.empty()) {
+      Refuse("scalar_projection_expected", "SELECT requires an expression");
+      return FinishRefusal();
+    }
+    if (AtSymbol(";")) Consume();
+    if (!AtEnd()) {
+      Refuse("scalar_trailing_input", "unexpected input follows scalar projection");
+      return FinishRefusal();
+    }
+    // No fabricated VALUES relation, output descriptor, grant or executable
+    // root. This inventory supplies exact source occurrences to scalar binding.
+    document_.status = NativeRelationalParseStatus::kScalarSyntaxAccepted;
     return std::move(document_);
   }
 
@@ -7717,7 +7780,9 @@ class NativeRelationalParser final {
   }
 
   NativeRelationalAstDocument FinishRefusal() {
-    document_.status = NativeRelationalParseStatus::kRefused;
+    document_.status = scalar_syntax_only_
+        ? NativeRelationalParseStatus::kScalarSyntaxRefused
+        : NativeRelationalParseStatus::kRefused;
     document_.root_relation_id = 0;
     document_.relations.clear();
     document_.catalog_relation_sources.clear();
@@ -7811,6 +7876,10 @@ class NativeRelationalParser final {
   }
 
   std::optional<std::uint32_t> ParseUnary(const std::size_t depth) {
+    if (depth >= kMaximumNativeExpressionDepth) {
+      Refuse("expression_depth_exceeded", "native expression depth limit exceeded");
+      return std::nullopt;
+    }
     if (AtEnd()) {
       Refuse("expression_expected", "VALUES row requires an expression");
       return std::nullopt;
@@ -7940,6 +8009,10 @@ class NativeRelationalParser final {
     }
 
     Consume();
+    if (scalar_syntax_only_ && qualified_identifier.size() == 1 &&
+        !first.quoted && IsWord(first, "CAST")) {
+      return ParseScalarCast(first, depth);
+    }
     if (allow_count_star_expression_ &&
         ToUpperAscii(SourceSpelling(first, *last_name_token)) == "COUNT" &&
         AtSymbol("*")) {
@@ -7987,6 +8060,91 @@ class NativeRelationalParser final {
     function_call.range = Span(first, close);
     function_call.spelling = SourceSpelling(first, close);
     document_.expressions.push_back(std::move(function_call));
+    return document_.expressions.back().expression_id;
+  }
+
+  std::optional<std::uint32_t> ParseScalarCast(const Token& first,
+                                               const std::size_t depth) {
+    const auto value = ParseExpression(0, depth + 1);
+    if (!value || AtEnd() || !IsWord(Current(), "AS")) {
+      Refuse("cast_type_expected", "CAST requires a value followed by AS and a type");
+      return std::nullopt;
+    }
+    Consume();
+    if (AtEnd() || (Current().kind != TokenKind::kIdentifier &&
+                    Current().kind != TokenKind::kKeyword)) {
+      Refuse("cast_type_expected", "CAST requires type syntax after AS");
+      return std::nullopt;
+    }
+    const Token& type_start = Current();
+    // Type names, qualifiers and size/scale arguments are parser metadata.
+    // They are deliberately not passed through ParseExpression, so numeric
+    // precision/scale cannot consume literal occurrence identities.
+    Consume();
+    while (AtSymbol(".")) {
+      Consume();
+      if (AtEnd() || !IsNameToken(Current())) {
+        Refuse("cast_type_expected", "qualified CAST type name is incomplete");
+        return std::nullopt;
+      }
+      Consume();
+    }
+    const auto qualifier = [&](const std::string_view word) {
+      if (AtEnd() || Current().quoted || !IsWord(Current(), word)) return false;
+      Consume();
+      return true;
+    };
+    // Closed multiword type qualifiers; an arbitrary name cannot hide a
+    // second AS, alias or expression inside the target type's source extent.
+    const auto base_type = CanonicalTokenText(type_start);
+    if (base_type == "DOUBLE") {
+      qualifier("PRECISION");
+    } else if (base_type == "CHARACTER" || base_type == "CHAR" ||
+               base_type == "BIT" || base_type == "BINARY") {
+      qualifier("VARYING");
+    }
+    if (AtSymbol("(")) {
+      Consume();
+      for (;;) {
+        if (AtEnd() || Current().kind != TokenKind::kNumericLiteral ||
+            Current().text.empty() ||
+            Current().text.find_first_not_of("0123456789") != std::string::npos) {
+          Refuse("cast_size_expected", "CAST type parameters require unsigned integer syntax");
+          return std::nullopt;
+        }
+        Consume();
+        if (!AtSymbol(",")) break;
+        Consume();
+      }
+      if (!AtSymbol(")")) {
+        Refuse("cast_type_not_closed", "CAST type parameters are not closed");
+        return std::nullopt;
+      }
+      Consume();
+    }
+    if (base_type == "TIME" || base_type == "TIMESTAMP") {
+      if (qualifier("WITH") || qualifier("WITHOUT")) {
+        if (!qualifier("TIME") || !qualifier("ZONE")) {
+          Refuse("cast_type_expected", "time-zone CAST qualifier is incomplete");
+          return std::nullopt;
+        }
+      }
+    }
+    const Token& type_end = Previous();
+    if (!AtSymbol(")")) {
+      Refuse("cast_not_closed", "CAST expression is not closed");
+      return std::nullopt;
+    }
+    const Token& close = Consume();
+    NativeExpressionAstNode cast;
+    cast.expression_id = NextExpressionId();
+    cast.expression_kind = NativeExpressionAstKind::kFunctionCall;
+    cast.operator_name = "CAST";
+    cast.child_expression_ids = {*value};
+    cast.range = Span(first, close);
+    cast.spelling = SourceSpelling(first, close);
+    cast.cast_target_range = Span(type_start, type_end);
+    document_.expressions.push_back(std::move(cast));
     return document_.expressions.back().expression_id;
   }
 
@@ -8039,6 +8197,7 @@ class NativeRelationalParser final {
   std::vector<const Token*> tokens_;
   std::size_t cursor_{0};
   bool allow_count_star_expression_{false};
+  bool scalar_syntax_only_{false};
   NativeRelationalAstDocument document_;
 };
 

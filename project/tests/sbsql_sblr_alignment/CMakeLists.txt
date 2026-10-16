@@ -3553,6 +3553,38 @@ set_tests_properties(sbsql_sblr_alignment_parser_decimal_profile PROPERTIES
   LABELS "sbsql_sblr_alignment;binary_uuid;decimal;parser_lowering;component_regression;not_e2e"
   TIMEOUT 60)
 
+foreach(scalar_component crypto_function_return_binding scalar_projection_literal_demand)
+  add_executable(sbsql_sblr_alignment_${scalar_component} ${scalar_component}_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_${scalar_component} PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_${scalar_component} PRIVATE
+    sbl_sbsql_parser_pipeline sbl_sbsql_reservation_projection)
+  add_test(NAME sbsql_sblr_alignment_${scalar_component}
+    COMMAND sbsql_sblr_alignment_${scalar_component})
+  set_tests_properties(sbsql_sblr_alignment_${scalar_component} PROPERTIES
+    LABELS "sbsql_sblr_alignment;parser_lowering;source_provenance;component_not_live_admission"
+    TIMEOUT 60)
+endforeach()
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+add_executable(sbsql_sblr_alignment_native_runtime_security_observation
+  native_runtime_security_observation_test.cpp)
+target_compile_features(sbsql_sblr_alignment_native_runtime_security_observation PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_runtime_security_observation PRIVATE
+  ${PROJECT_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(sbsql_sblr_alignment_native_runtime_security_observation PRIVATE
+  sb_storage_database OpenSSL::Crypto)
+target_link_options(sbsql_sblr_alignment_native_runtime_security_observation PRIVATE
+  -Wl,--wrap=_ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv
+  "-Wl,--wrap=RAND_bytes" "-Wl,--wrap=EVP_Digest"
+  "-Wl,--wrap=EVP_MD_CTX_new" "-Wl,--wrap=EVP_DigestInit_ex" "-Wl,--wrap=EVP_DigestUpdate"
+  "-Wl,--wrap=EVP_DigestFinal_ex" "-Wl,--wrap=pread" "-Wl,--wrap=pwrite" "-Wl,--wrap=fsync")
+add_test(NAME sbsql_sblr_alignment_native_runtime_security_observation
+  COMMAND sbsql_sblr_alignment_native_runtime_security_observation)
+set_tests_properties(sbsql_sblr_alignment_native_runtime_security_observation PROPERTIES
+  LABELS "sbsql_sblr_alignment;native_storage;binary_uuid;security_source;component_not_live_admission"
+  TIMEOUT 120)
+endif()
+
 add_executable(sbsql_sblr_alignment_relational_descriptor_codec
   relational_descriptor_codec_test.cpp
   ${PROJECT_SOURCE_DIR}/src/engine/internal_api/mga_relation_store/mga_relation_descriptor_codec.cpp)

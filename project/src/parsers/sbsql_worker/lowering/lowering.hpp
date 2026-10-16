@@ -77,6 +77,44 @@ struct SblrVerifierResult {
 bool HasScalarProjectionDemand(const CstDocument& cst,
     const std::vector<core::platform::Uuid>& resolved_object_uuids = {});
 
+// Parser syntax demand only: contextual NULL inference and exact provenance
+// from the existing native AST. No datatype UUID, descriptor profile, memory
+// grant, receipt, authorization or execution authority is issued here.
+struct ScalarProjectionLiteralDemandV1 {
+  std::uint32_t expression_id = 0;
+  std::uint64_t structural_literal_occurrence_id = 0;
+  SourceRange range;
+  NativeLiteralAstKind literal_kind = NativeLiteralAstKind::kNull;
+  std::string canonical_type_name;
+  bool is_null = false;
+  std::string structural_path;
+};
+struct ScalarProjectionLiteralDemandLimitsV1 {
+  std::size_t maximum_entries = 0;
+  std::size_t maximum_depth = 0;
+};
+enum class ScalarProjectionLiteralDemandErrorV1 {
+  none, not_applicable, invalid_limits, invalid_scalar, missing_literal_mapping,
+  ambiguous_literal_mapping, resource_limit, allocation_failure, internal_failure
+};
+struct ScalarProjectionLiteralDemandDescriptionV1 {
+  bool applicable = false;
+  bool valid = false;
+  ScalarProjectionLiteralDemandErrorV1 error =
+      ScalarProjectionLiteralDemandErrorV1::not_applicable;
+  // Distinct structural paths may reference the same immutable source
+  // occurrence. Consumers deduplicate the exact native identity, never issue
+  // a new occurrence or infer identity from equal literal spelling.
+  std::vector<ScalarProjectionLiteralDemandV1> entries;
+};
+// Limits are explicit caller/parser bounds, not backend resource admission.
+// Match source offset/extent and literal kind against the supplied actual AST;
+// ambiguous/missing origins and failed inference expose no partial entries.
+ScalarProjectionLiteralDemandDescriptionV1 DescribeScalarProjectionLiteralDemandsV1(
+    const CstDocument&, const NativeRelationalAstDocument&,
+    ScalarProjectionLiteralDemandLimitsV1,
+    const std::vector<core::platform::Uuid>& resolved_object_uuids = {}) noexcept;
+
 enum class CentralImportCommandDisposition {
   kNotApplicable,
   kBulkImportStream,

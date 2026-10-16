@@ -7565,6 +7565,10 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
   std::cout<<"selector fixture written_bytes="<<fixture_written_bytes
     <<" unchanged_bytes="<<fixture_unchanged_bytes<<'\n';
 }
+// Shared byte/fault fixtures may be included by focused component executables.
+// Do not compile an unused external copy of this complete dispatcher into them:
+// it otherwise retains and optimizes every unrelated test path at -O3.
+#ifndef SB_NATIVE_STORAGE_FIXTURE_WITHOUT_MAIN
 int main(int argc,char** argv) {
   if(argc==2&&std::string_view(argv[1])=="--current-source-memory-only"){
     try{CanonicalCheckpointAllocation();CanonicalCheckpointDirectory(false,true);CanonicalCheckpointDirectory(true,true);
@@ -7862,3 +7866,4 @@ int main(int argc,char** argv) {
     std::cout<<"PASS checks="<<checks<<" canonical_page_image_and_chain_only=true\n"; return 0; }
   catch(const std::exception& e) { allocation_budget=-1; std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n'; return 1; }
 }
+#endif

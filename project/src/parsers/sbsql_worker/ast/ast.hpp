@@ -72,6 +72,10 @@ enum class NativeRelationalParseStatus {
   kNotRecognized,
   kAccepted,
   kRefused,
+  // Source provenance for the scalar lowering route, not an admitted native
+  // relational graph. Do not dispatch this through the native query binder.
+  kScalarSyntaxAccepted,
+  kScalarSyntaxRefused,
 };
 
 enum class NativeRelationAstKind {
@@ -333,6 +337,9 @@ struct NativeExpressionAstNode {
   std::string spelling;
   std::string operator_name;
   SourceRange range;
+  // CAST's type syntax is metadata, never a value/literal occurrence. Only
+  // populated by the object-free scalar syntax producer; no engine identity.
+  std::optional<SourceRange> cast_target_range;
   // Parser-assigned, source-order identity for literal descriptor negotiation.
   // It is independent of expression handles and remains stable if expression
   // records are reordered by later canonicalization.
@@ -478,7 +485,13 @@ struct NativeRelationalAstDocument {
   MessageVectorSet messages;
 
   [[nodiscard]] bool recognized() const {
-    return status != NativeRelationalParseStatus::kNotRecognized;
+    return status == NativeRelationalParseStatus::kAccepted ||
+           status == NativeRelationalParseStatus::kRefused;
+  }
+
+  [[nodiscard]] bool scalar_syntax_accepted() const {
+    return status == NativeRelationalParseStatus::kScalarSyntaxAccepted &&
+           !messages.has_errors();
   }
 
   [[nodiscard]] bool accepted() const {

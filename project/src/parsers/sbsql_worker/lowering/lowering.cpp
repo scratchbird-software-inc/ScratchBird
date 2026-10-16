@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "lowering/lowering.hpp"
+#include "lowering/crypto_function_return_binding.hpp"
 #include "lowering/relational_identity_operand.hpp"
 #include "binder/relational_property_identity.hpp"
 #include "common/native_datatype_codec_identity.hpp"
@@ -1290,6 +1291,10 @@ struct ScalarProjectionItem {
   std::string time_series_window_interval_value;
   std::string time_series_window_interval_unit;
   bool is_null{false};
+  // Actual source-token provenance only. Synthetic adapter operands (CAST's
+  // target label, implicit formatter options, etc.) deliberately have neither.
+  std::optional<SourceRange> literal_source_range;
+  std::optional<NativeLiteralAstKind> source_literal_kind;
 };
 
 struct ScalarProjectionInfo {
@@ -11113,14 +11118,6 @@ std::string ResultTypeForGeneratedCanonicalFunction(std::string_view function_id
     if (function_id.find("float16") != std::string_view::npos) return "float16_vector";
     return "dense_vector";
   }
-  if (StartsWithAscii(function_id, "sb.crypto.")) {
-    if (function_id.find("random_bytes") != std::string_view::npos ||
-        function_id.find("dearmor") != std::string_view::npos) {
-      return "binary";
-    }
-    if (function_id.find("random_uuid") != std::string_view::npos) return "uuid";
-    return "character";
-  }
   if (StartsWithAscii(function_id, "sb.cursor.")) {
     if (function_id.find(".active") != std::string_view::npos) return "boolean";
     if (function_id.find(".position") != std::string_view::npos) return "int64";
@@ -11306,9 +11303,10 @@ std::optional<std::string> GeneratedCanonicalSurfaceLookupName(std::string_view 
 }
 
 bool IsGeneratedCanonicalFunctionFallbackFamily(std::string_view function_id) {
+  const auto* crypto = FindCryptoFunctionReturnDeclaration(function_id);
   return StartsWithAscii(function_id, "sb.json.") ||
          StartsWithAscii(function_id, "sb.vector.") ||
-         StartsWithAscii(function_id, "sb.crypto.") ||
+         (crypto != nullptr && !crypto->result_type.empty()) ||
          StartsWithAscii(function_id, "sb.cursor.") ||
          StartsWithAscii(function_id, "sb.stream.") ||
          StartsWithAscii(function_id, "sb.rowset.") ||
@@ -11326,6 +11324,19 @@ bool IsGeneratedCanonicalFunctionFallbackFamily(std::string_view function_id) {
 std::optional<ScalarFunctionProjectionDescriptor> CanonicalFunctionForScalarProjection(
     std::string_view function_name) {
   const std::string lowered = LowerAscii(std::string(function_name));
+  if (const auto* crypto = FindCryptoFunctionReturnDeclaration(lowered)) {
+    // These are syntax/result declarations only. The existing bound cohort
+    // supplies the executable binary UUID; no label or static table grants it.
+    // pgcrypto is a package capability with no scalar result descriptor.
+    if (crypto->result_type.empty()) return std::nullopt;
+    const auto lookup = GeneratedCanonicalSurfaceLookupName(crypto->builtin_id);
+    if (!lookup) return std::nullopt;
+    return ScalarFunctionProjectionDescriptor{
+        std::string(crypto->builtin_id), std::string(crypto->result_type), *lookup};
+  }
+  // Unknown crypto names must not acquire a default character result through
+  // the generic generated-family path.
+  if (StartsWithAscii(lowered, "sb.crypto.")) return std::nullopt;
   if (const auto surface_lookup = GeneratedCanonicalSurfaceLookupName(lowered)) {
     const auto* descriptor = FindExpressionSurfaceByName(*surface_lookup);
     if (descriptor != nullptr &&
@@ -12823,6 +12834,19 @@ bool ParseScalarLiteralProjectionItem(const std::vector<const Token*>& tokens,
   if (*index >= tokens.size() || !IsScalarProjectionLiteral(*tokens[*index])) return false;
   const Token& token = *tokens[*index];
   item->expression_kind = "literal";
+  item->literal_source_range = TokenSourceRange(token);
+  switch (token.kind) {
+    case TokenKind::kNumericLiteral: item->source_literal_kind = NativeLiteralAstKind::kNumeric; break;
+    case TokenKind::kStringLiteral: item->source_literal_kind = NativeLiteralAstKind::kString; break;
+    case TokenKind::kBinaryLiteral: item->source_literal_kind = NativeLiteralAstKind::kBinary; break;
+    case TokenKind::kBooleanLiteral: item->source_literal_kind = NativeLiteralAstKind::kBoolean; break;
+    case TokenKind::kNullLiteral: item->source_literal_kind = NativeLiteralAstKind::kNull; break;
+    case TokenKind::kUuidLiteral: item->source_literal_kind = NativeLiteralAstKind::kUuid; break;
+    case TokenKind::kTemporalLiteral: item->source_literal_kind = NativeLiteralAstKind::kTemporal; break;
+    case TokenKind::kDocumentLiteral: item->source_literal_kind = NativeLiteralAstKind::kDocument; break;
+    case TokenKind::kVectorLiteral: item->source_literal_kind = NativeLiteralAstKind::kVector; break;
+    default: return false;
+  }
   item->type_name = ScalarProjectionTypeForToken(token);
   item->literal_family = token.literal_family;
   item->value = token.kind == TokenKind::kNumericLiteral
@@ -16351,9 +16375,19 @@ bool ParseScalarFunctionProjectionItem(const std::vector<const Token*>& tokens,
     cursor = parsed_name->end_index;
   }
 
+  if (const auto* crypto = FindCryptoFunctionReturnDeclaration(function->function_id)) {
+    if (arguments.size() > crypto->arguments.size()) return false;
+    std::array<std::string_view, 6> argument_types{};
+    for (std::size_t i = 0; i < arguments.size(); ++i) argument_types[i] = arguments[i].type_name;
+    const auto result_type = SelectCryptoFunctionReturnType(
+        crypto->builtin_id, std::span<const std::string_view>(argument_types.data(), arguments.size()));
+    if (!result_type) return false;
+    item->type_name = std::string(*result_type);
+  } else {
+    item->type_name = function->result_type_name;
+  }
   item->expression_kind = "function";
   item->function_id = function->function_id;
-  item->type_name = function->result_type_name;
   AppendIfMissing(&item->expression_surface_ids, "SBSQL-17B72695FA1A");
   if (descriptor != nullptr) {
     AppendIfMissing(&item->expression_surface_ids, std::string(descriptor->surface_id));
@@ -17115,7 +17149,13 @@ ScalarNullContext ScalarResultNullContext(const ScalarProjectionItem& item) {
 
 bool BindScalarNullContexts(ScalarProjectionItem* item, std::string_view inherited,
                             const std::string& occurrence, std::string* unresolved,
-                            std::string* reason) {
+                            std::string* reason, std::size_t depth,
+                            std::size_t maximum_depth) {
+  if (depth > maximum_depth) {
+    *unresolved = occurrence;
+    *reason = "maximum_depth_exceeded";
+    return false;
+  }
   if (item->expression_kind == "literal" && item->type_name == "null") {
     if (!item->is_null || !item->value.empty() || inherited.empty() ||
         inherited == "null" || inherited == "unknown") {
@@ -17160,14 +17200,16 @@ bool BindScalarNullContexts(ScalarProjectionItem* item, std::string_view inherit
     if (item->function_id == "data.scalar.cast" && at == 0) context = item->type_name;
     if (item->operator_id == "op_is_distinct") context = comparison_context;
     if (!BindScalarNullContexts(&item->arguments[at], context,
-                                occurrence + ".arg" + std::to_string(at), unresolved, reason))
+                                occurrence + ".arg" + std::to_string(at), unresolved, reason,
+                                depth + 1, maximum_depth))
       return false;
   }
   return true;
 }
 
 ScalarProjectionInfo AnalyzeScalarProjection(const CstDocument& cst,
-                                             const std::vector<core::platform::Uuid>& resolved_object_uuids = {}) {
+                                             const std::vector<core::platform::Uuid>& resolved_object_uuids = {},
+                                             std::size_t maximum_depth = std::numeric_limits<std::size_t>::max()) {
   ScalarProjectionInfo info;
   const auto words = MeaningfulUpperTokens(cst);
   const auto tokens = MeaningfulTokens(cst);
@@ -17262,7 +17304,8 @@ ScalarProjectionInfo AnalyzeScalarProjection(const CstDocument& cst,
   if (info.valid) {
     for (std::size_t at = 0; at < info.items.size(); ++at) {
       if (!BindScalarNullContexts(&info.items[at], {}, "projection" + std::to_string(at),
-                                  &info.null_context_occurrence, &info.null_context_reason)) {
+                                  &info.null_context_occurrence, &info.null_context_reason,
+                                  1, maximum_depth)) {
         info.valid = false;
         break;
       }
@@ -42644,6 +42687,164 @@ bool HasScalarProjectionDemand(const CstDocument& cst,
     const std::vector<core::platform::Uuid>& resolved_object_uuids) {
   const auto projection = AnalyzeScalarProjection(cst, resolved_object_uuids);
   return projection.active && projection.valid;
+}
+
+ScalarProjectionLiteralDemandDescriptionV1 DescribeScalarProjectionLiteralDemandsV1(
+    const CstDocument& cst, const NativeRelationalAstDocument& native,
+    const ScalarProjectionLiteralDemandLimitsV1 limits,
+    const std::vector<core::platform::Uuid>& resolved_object_uuids) noexcept {
+  using Error = ScalarProjectionLiteralDemandErrorV1;
+  ScalarProjectionLiteralDemandDescriptionV1 result;
+  const auto fail = [&](Error error) {
+    result.valid = false;
+    result.error = error;
+    result.entries.clear();
+  };
+  try {
+    if (!limits.maximum_entries || !limits.maximum_depth) {
+      fail(Error::invalid_limits);
+      return result;
+    }
+    const Token* first = nullptr;
+    for (const auto& token : cst.tokens) {
+      if (token.kind == TokenKind::kEnd) break;
+      if (!IsTriviaToken(token)) { first = &token; break; }
+    }
+    if (!first || ToUpperAscii(first->text) != "SELECT") return result;
+    result.applicable = true;
+    if (cst.messages.has_errors()) { fail(Error::invalid_scalar); return result; }
+
+    // Guard the recursive syntax analyzer BEFORE reparsing. These are caller's
+    // parser bounds, not executable resource grants. The existing native graph
+    // supplies operator/function depth even when the source is not parenthesized.
+    std::size_t nesting = 0, prefix_run = 0;
+    for (const auto& token : cst.tokens) {
+      if (token.kind == TokenKind::kEnd) break;
+      if (IsTriviaToken(token)) continue;
+      if (token.text == "(" || token.text == "[") {
+        if (nesting == limits.maximum_depth) { fail(Error::resource_limit); return result; }
+        ++nesting;
+      } else if (token.text == ")" || token.text == "]") {
+        if (nesting) --nesting;
+      }
+      if (ToUpperAscii(token.text) == "NOT" || token.text == "+" || token.text == "-") {
+        if (prefix_run == limits.maximum_depth) { fail(Error::resource_limit); return result; }
+        ++prefix_run;
+      } else prefix_run = 0;
+    }
+    std::unordered_map<std::uint32_t, std::size_t> expression_indices;
+    for (std::size_t i = 0; i < native.expressions.size(); ++i) {
+      const auto id = native.expressions[i].expression_id;
+      if (!id) { fail(Error::missing_literal_mapping); return result; }
+      if (!expression_indices.emplace(id, i).second) {
+        fail(Error::ambiguous_literal_mapping); return result;
+      }
+    }
+    struct Frame { std::size_t index, next_child, height; };
+    std::vector<unsigned char> state(native.expressions.size(), 0);
+    std::vector<std::size_t> heights(native.expressions.size(), 0);
+    std::vector<Frame> frames;
+    for (std::size_t root = 0; root < native.expressions.size(); ++root) {
+      if (state[root] == 2) continue;
+      frames.push_back({root, 0, 1}); state[root] = 1;
+      while (!frames.empty()) {
+        auto& frame = frames.back();
+        const auto& children = native.expressions[frame.index].child_expression_ids;
+        if (frame.next_child == children.size()) {
+          heights[frame.index] = frame.height; state[frame.index] = 2;
+          frames.pop_back();
+          continue;
+        }
+        const auto child = expression_indices.find(children[frame.next_child]);
+        if (child == expression_indices.end() || state[child->second] == 1) {
+          fail(Error::invalid_scalar); return result;
+        }
+        if (state[child->second] == 2) {
+          if (heights[child->second] >= limits.maximum_depth) {
+            fail(Error::resource_limit); return result;
+          }
+          frame.height = std::max(frame.height, heights[child->second] + 1);
+          ++frame.next_child;
+          continue;
+        }
+        if (frames.size() >= limits.maximum_depth) { fail(Error::resource_limit); return result; }
+        state[child->second] = 1;
+        frames.push_back({child->second, 0, 1});
+      }
+    }
+    using Origin = std::tuple<std::size_t, std::size_t, NativeLiteralAstKind>;
+    std::map<Origin, const NativeExpressionAstNode*> origins;
+    std::set<std::uint64_t> occurrences;
+    for (const auto& node : native.expressions) {
+      if (node.expression_kind != NativeExpressionAstKind::kLiteral) continue;
+      if (!node.literal_kind || !node.structural_literal_occurrence_id ||
+          !node.range.length || node.range.offset > cst.source.size() ||
+          node.range.length > cst.source.size() - node.range.offset) {
+        fail(Error::missing_literal_mapping); return result;
+      }
+      if (origins.size() == limits.maximum_entries) { fail(Error::resource_limit); return result; }
+      if (!origins.emplace(Origin{node.range.offset, node.range.length, *node.literal_kind}, &node).second ||
+          !occurrences.insert(node.structural_literal_occurrence_id).second) {
+        fail(Error::ambiguous_literal_mapping); return result;
+      }
+    }
+    auto projection = AnalyzeScalarProjection(cst, resolved_object_uuids, limits.maximum_depth);
+    if (!projection.active) {
+      result.applicable = false; fail(Error::not_applicable); return result;
+    }
+    if (!projection.valid) {
+      fail(projection.null_context_reason == "maximum_depth_exceeded"
+               ? Error::resource_limit : Error::invalid_scalar);
+      return result;
+    }
+    // Entry capacity counts real source-literal demands, not scalar adapter
+    // operands: CAST's synthetic target label is not a second literal. A DFS
+    // frame stack is independently bounded by maximum_depth and does not grow
+    // with sibling width or confuse metadata with occurrence capacity.
+    struct Work {
+      const ScalarProjectionItem* item;
+      std::size_t next_child;
+      std::string path;
+      bool entered;
+    };
+    std::vector<Work> pending;
+    for (std::size_t root = 0; root < projection.items.size(); ++root) {
+      pending.push_back({&projection.items[root], 0, "projection_" + std::to_string(root) + "_", false});
+      while (!pending.empty()) {
+        auto& work = pending.back();
+        const auto& item = *work.item;
+        if (!work.entered) {
+          work.entered = true;
+          if (item.expression_kind == "literal" && item.literal_source_range) {
+            if (!item.source_literal_kind) { fail(Error::missing_literal_mapping); return result; }
+            const auto& range = *item.literal_source_range;
+            const auto found = origins.find({range.offset, range.length, *item.source_literal_kind});
+            if (found == origins.end()) { fail(Error::missing_literal_mapping); return result; }
+            if (result.entries.size() == limits.maximum_entries) { fail(Error::resource_limit); return result; }
+            auto type = CastDescriptorTypeNameForScalarItem(item.type_name);
+            if (type.empty() || type == "null" || type == "unknown" ||
+                item.is_null != (*item.source_literal_kind == NativeLiteralAstKind::kNull)) {
+              fail(Error::invalid_scalar); return result;
+            }
+            result.entries.push_back({found->second->expression_id,
+                found->second->structural_literal_occurrence_id, range, *item.source_literal_kind,
+                std::move(type), item.is_null, work.path});
+          }
+        }
+        if (work.next_child == item.arguments.size()) {
+          pending.pop_back();
+          continue;
+        }
+        if (pending.size() == limits.maximum_depth) { fail(Error::resource_limit); return result; }
+        const auto child = work.next_child++;
+        pending.push_back({&item.arguments[child], 0,
+                           work.path + "arg_" + std::to_string(child) + "_", false});
+      }
+    }
+    result.valid = true; result.error = Error::none;
+  } catch (const std::bad_alloc&) { fail(Error::allocation_failure); }
+    catch (...) { fail(Error::internal_failure); }
+  return result;
 }
 
 CanonicalNamedWindowResolution ResolveCanonicalNamedWindows(

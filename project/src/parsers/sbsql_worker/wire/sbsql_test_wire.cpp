@@ -13,6 +13,7 @@
 #include "wire/sbsql_test_wire.hpp"
 #include "admitted_datatype_cohort.hpp"
 #include "datatype_type_codec_identity_v3.hpp"
+#include "datatype_boolean_alias_shape.hpp"
 #include "engine/sblr/native_row_field.hpp"
 #include "engine/sblr/sblr_bound_column_identity.hpp"
 #include "wire/native_insert_literals.hpp"
@@ -9017,6 +9018,8 @@ struct LiteralPrebindOccurrence {
   std::uint32_t intended_numeric_profile_slot{0};
   std::uint16_t lexical_class{0};
   std::array<std::uint8_t, 32> lexical_sha256{};
+  bool nullable{false};
+  std::uint8_t value_state{0};
 };
 
 struct LiteralPrebindState {
@@ -9437,12 +9440,51 @@ bool IsExactDecimalLiteralSpelling(const std::string_view spelling) {
 std::optional<std::pair<CanonicalBytes, LiteralPrebindState>>
 EncodeLiteralPrebindRequest(const NativeRelationalAstDocument& ast,
                             const ParserStatementContext& context,
-                            const bool allow_empty_contextual_subset) {
+                            const bool allow_empty_contextual_subset,
+                            const ScalarProjectionLiteralDemandDescriptionV1* scalar_demands = nullptr) {
+  std::set<std::uint64_t> boolean_null_occurrences;
+  if (scalar_demands != nullptr) {
+    if (!scalar_demands->applicable || !scalar_demands->valid ||
+        scalar_demands->error != ScalarProjectionLiteralDemandErrorV1::none) return std::nullopt;
+    std::map<std::uint64_t, const ScalarProjectionLiteralDemandV1*> selected;
+    std::set<std::string> paths;
+    for (const auto& demand : scalar_demands->entries) {
+      if (demand.literal_kind != NativeLiteralAstKind::kNull ||
+          demand.canonical_type_name != "boolean" || !demand.is_null) continue;
+      const auto source = std::ranges::find_if(ast.expressions, [&](const auto& expression) {
+        return expression.expression_id == demand.expression_id;
+      });
+      if (source == ast.expressions.end() || source->expression_id == 0 ||
+          source->expression_kind != NativeExpressionAstKind::kLiteral ||
+          source->literal_kind != NativeLiteralAstKind::kNull ||
+          source->structural_literal_occurrence_id == 0 ||
+          source->structural_literal_occurrence_id != demand.structural_literal_occurrence_id ||
+          source->range.offset != demand.range.offset || source->range.length != demand.range.length ||
+          demand.structural_path.empty() || !paths.insert(demand.structural_path).second ||
+          std::ranges::count_if(ast.expressions, [&](const auto& expression) {
+            return expression.structural_literal_occurrence_id == demand.structural_literal_occurrence_id;
+          }) != 1) return std::nullopt;
+      const auto [previous, inserted] = selected.emplace(demand.structural_literal_occurrence_id, &demand);
+      if (!inserted && (previous->second->expression_id != demand.expression_id ||
+          previous->second->range.offset != demand.range.offset ||
+          previous->second->range.length != demand.range.length ||
+          previous->second->literal_kind != demand.literal_kind ||
+          previous->second->canonical_type_name != demand.canonical_type_name ||
+          previous->second->is_null != demand.is_null)) return std::nullopt;
+      boolean_null_occurrences.insert(demand.structural_literal_occurrence_id);
+    }
+  }
   std::vector<const NativeExpressionAstNode*> literals;
   for (const auto& expression : ast.expressions) {
     if (expression.expression_kind == NativeExpressionAstKind::kLiteral &&
-        expression.literal_kind == NativeLiteralAstKind::kNumeric &&
-        !expression.spelling.empty()) {
+        (expression.literal_kind == NativeLiteralAstKind::kNumeric ||
+         expression.literal_kind == NativeLiteralAstKind::kBoolean ||
+         (expression.literal_kind == NativeLiteralAstKind::kNull &&
+          boolean_null_occurrences.contains(expression.structural_literal_occurrence_id)))) {
+      // A selected occurrence cannot disappear from the demand inventory
+      // merely because its syntax carrier is malformed. Refuse the whole
+      // request, including when other valid occurrences would remain.
+      if (expression.spelling.empty()) return std::nullopt;
       literals.push_back(&expression);
     }
   }
@@ -9450,8 +9492,11 @@ EncodeLiteralPrebindRequest(const NativeRelationalAstDocument& ast,
       context.descriptor_profiles, [](const auto& profile) {
         return profile.profile_kind == 1 && !profile.nullable;
       });
+  const auto numeric_count = std::ranges::count_if(literals, [](const auto* expression) {
+    return expression->literal_kind == NativeLiteralAstKind::kNumeric;
+  });
   if ((!allow_empty_contextual_subset && literals.empty()) ||
-      literals.size() > numeric_profile_count) {
+      literals.size() > 4096 || numeric_count > numeric_profile_count) {
     return std::nullopt;
   }
   std::ranges::sort(literals, {}, [](const auto* expression) {
@@ -9467,7 +9512,10 @@ EncodeLiteralPrebindRequest(const NativeRelationalAstDocument& ast,
     }
     previous_occurrence = literals[index]->structural_literal_occurrence_id;
   }
-  const auto* literal = literals.empty() ? nullptr : literals.front();
+  const auto first_numeric = std::ranges::find_if(literals, [](const auto* expression) {
+    return expression->literal_kind == NativeLiteralAstKind::kNumeric;
+  });
+  const auto* literal = first_numeric == literals.end() ? nullptr : *first_numeric;
   const bool slot_one_window_operand = literal != nullptr && std::ranges::any_of(
       ast.expressions, [&](const auto& expression) {
         if (expression.expression_kind !=
@@ -9497,9 +9545,15 @@ EncodeLiteralPrebindRequest(const NativeRelationalAstDocument& ast,
   demand.resource_epoch = context.literal_resource_epoch;
   demand.mga_snapshot_uuid = *mga;
   LiteralPrebindState state;
+  std::uint32_t numeric_slot = 0;
   for (std::size_t index = 0; index < literals.size(); ++index) {
+    const bool boolean_literal =
+        literals[index]->literal_kind == NativeLiteralAstKind::kBoolean ||
+        boolean_null_occurrences.contains(literals[index]->structural_literal_occurrence_id);
+    const bool boolean_null = boolean_literal &&
+        literals[index]->literal_kind == NativeLiteralAstKind::kNull;
     const bool exact_decimal =
-        IsExactDecimalLiteralSpelling(literals[index]->spelling);
+        !boolean_literal && IsExactDecimalLiteralSpelling(literals[index]->spelling);
     const auto decimal = exact_decimal
         ? scratchbird::engine::sblr::EncodeSblrLiteralExactDecimalV1(
               literals[index]->spelling)
@@ -9508,23 +9562,36 @@ EncodeLiteralPrebindRequest(const NativeRelationalAstDocument& ast,
     const std::string_view lexical = exact_decimal
         ? std::string_view(decimal.canonical_lexical)
         : std::string_view(literals[index]->spelling);
-    CanonicalBytes token(lexical.begin(), lexical.end());
-    const auto token_hash = CanonicalSha256(token);
+    std::optional<std::array<std::uint8_t, 32>> token_hash;
+    if (boolean_literal) {
+      const auto spelling = ToUpperAscii(literals[index]->spelling);
+      if (boolean_null ? spelling != "NULL" : (spelling != "TRUE" && spelling != "FALSE"))
+        return std::nullopt;
+      const std::uint8_t value = spelling == "TRUE" ? 1 : 0;
+      token_hash = scratchbird::engine::sblr::ComputeSblrBooleanLiteralLexicalSha256V1(
+          boolean_null ? 1 : 0, boolean_null ? nullptr : &value, boolean_null ? 0 : 1);
+    } else {
+      const CanonicalBytes token(lexical.begin(), lexical.end());
+      token_hash = CanonicalSha256(token);
+    }
     if (!token_hash) return std::nullopt;
     scratchbird::engine::sblr::SblrLiteralDemandV1 item;
     item.occurrence_id = literals[index]->structural_literal_occurrence_id;
-    item.lexical_class = exact_decimal ? 2 : 1;
+    item.lexical_class = boolean_literal ? 4 : exact_decimal ? 2 : 1;
     item.context_class = 1;
-    item.nullable = false;
+    item.nullable = boolean_null;
     item.lexical_sha256 = *token_hash;
     demand.demands.push_back(item);
     state.occurrences.push_back(
         {item.occurrence_id,
-         literals.size() == 1 && slot_one_window_operand
+         numeric_count == 1 && slot_one_window_operand
              ? 1U
-             : static_cast<std::uint32_t>(index),
+             : numeric_slot,
          item.lexical_class,
-         *token_hash});
+         *token_hash,
+         item.nullable,
+         static_cast<std::uint8_t>(boolean_null ? 1 : 0)});
+    if (!boolean_literal) ++numeric_slot;
   }
   demand.demand_sha256 =
       scratchbird::engine::sblr::ComputeSblrLiteralDemandSequenceSha256V1(
@@ -9646,9 +9713,11 @@ bool ConsumeLiteralPrebindResult(const CanonicalBytes& response,
         ? scratchbird::engine::sblr::kSblrLiteralInt64LeCodecId
         : state->occurrences[index].lexical_class == 2
               ? scratchbird::engine::sblr::kSblrLiteralExactDecimalCodecId
+        : state->occurrences[index].lexical_class == 4
+              ? std::string_view{"datatype.boolean.u8.v1"}
               : std::string_view{};
     if (expected_codec.empty() || profile.codec_id != expected_codec ||
-        profile.nullable ||
+        profile.nullable != state->occurrences[index].nullable ||
         profile.descriptor_generation == 0 || profile.codec_generation == 0 ||
         profile.statement_receipt_uuid !=
             context->literal_preliminary_receipt_uuid ||
@@ -9664,16 +9733,23 @@ bool ConsumeLiteralPrebindResult(const CanonicalBytes& response,
                     context->literal_resource_epoch) ||
         !binding_descriptor_uuids.insert(profile.binding_descriptor_uuid).second)
       return false;
-    const auto numeric = numeric_slots.find(
-        state->occurrences[index].intended_numeric_profile_slot);
-    if (numeric == numeric_slots.end()) return false;
-    const auto descriptor_index = numeric->second;
-    if (!targeted_descriptor_slots.insert(descriptor_index).second)
+    if (state->occurrences[index].lexical_class == 4 &&
+        !core::datatypes::IsExactCanonicalBooleanAliasShapeV1(
+            issued.descriptor_uuid, issued.descriptor_generation, issued.type_uuid,
+            1, issued.codec_id, issued.codec_version, issued.codec_generation, true))
       return false;
-    if (state->occurrences[index].lexical_class == 1) {
-      descriptor_patches.push_back(
-          {descriptor_index, profile.binding_descriptor_uuid,
-           profile.type_uuid});
+    if (state->occurrences[index].lexical_class != 4) {
+      const auto numeric = numeric_slots.find(
+          state->occurrences[index].intended_numeric_profile_slot);
+      if (numeric == numeric_slots.end()) return false;
+      const auto descriptor_index = numeric->second;
+      if (!targeted_descriptor_slots.insert(descriptor_index).second)
+        return false;
+      if (state->occurrences[index].lexical_class == 1) {
+        descriptor_patches.push_back(
+            {descriptor_index, profile.binding_descriptor_uuid,
+             profile.type_uuid});
+      }
     }
     staged_profiles.push_back(std::move(profile));
     mapping_offset += profile_bytes;
@@ -9696,16 +9772,39 @@ bool ConsumeLiteralPrebindResult(const CanonicalBytes& response,
 std::vector<std::string_view> SplitCanonicalFields(std::string_view value);
 std::optional<std::string> DecodeCanonicalHexBytes(std::string_view encoded);
 
+bool IsBoundBooleanLiteralV1(const std::set<std::uint32_t>& descriptor_ids,
+                             const BoundExpressionAstRecord& expression) {
+  if (expression.expression_kind != NativeExpressionAstKind::kLiteral ||
+      (expression.literal_kind != NativeLiteralAstKind::kBoolean &&
+       expression.literal_kind != NativeLiteralAstKind::kNull)) return false;
+  return descriptor_ids.contains(expression.result_descriptor_id);
+}
+
+std::set<std::uint32_t> BoundBooleanLiteralDescriptorIdsV1(const BoundStatement& bound) {
+  std::set<std::uint32_t> ids;
+  for (const auto& descriptor : bound.native_relational.descriptors) {
+    if (descriptor.canonical_type_name == "boolean" && descriptor.codec_id == "datatype.boolean.u8.v1" &&
+        descriptor.descriptor_generation != 0 && descriptor.type_generation != 0 &&
+        descriptor.codec_version != 0 && descriptor.codec_generation != 0 &&
+        !descriptor.statement_receipt_uuid.is_nil() && !descriptor.datatype_catalog_snapshot_uuid.is_nil() &&
+        descriptor.datatype_catalog_generation != 0 && descriptor.datatype_registry_generation != 0)
+      ids.insert(descriptor.descriptor_id);
+  }
+  return ids;
+}
+
 std::optional<CanonicalContextualOperandNodeOrdinalizerV2>
 BuildCanonicalContextualOperandNodeOrdinalizerV2(
     const NativeRelationalAstDocument& ast, const BoundStatement& bound,
     const SblrEnvelope& lowered) {
   CanonicalContextualOperandNodeOrdinalizerV2 ordinalizer;
+  const auto boolean_descriptors = BoundBooleanLiteralDescriptorIdsV1(bound);
   std::vector<std::uint32_t> literal_expression_ids;
   for (const auto& expression : bound.native_relational.expressions) {
     if (expression.expression_kind == NativeExpressionAstKind::kLiteral &&
         (expression.literal_kind == NativeLiteralAstKind::kNumeric ||
-         expression.literal_kind == NativeLiteralAstKind::kString)) {
+         expression.literal_kind == NativeLiteralAstKind::kString ||
+         IsBoundBooleanLiteralV1(boolean_descriptors, expression))) {
       if (expression.expression_id == 0) return std::nullopt;
       literal_expression_ids.push_back(expression.expression_id);
     }
@@ -10836,6 +10935,7 @@ std::optional<EncodedLiteralExpressionNodeTable> EncodeLiteralExpressionNodeTabl
     std::array<std::uint8_t, 16> descriptor_uuid{};
     std::uint64_t descriptor_generation{0};
     CanonicalBytes body;
+    std::uint8_t value_state{0};
   };
   std::map<std::string, scratchbird::engine::internal_api::RelationalTypeDescriptor> descriptors;
   for (const auto& operand : lowered.operands) {
@@ -10851,11 +10951,28 @@ std::optional<EncodedLiteralExpressionNodeTable> EncodeLiteralExpressionNodeTabl
     if (!descriptors.emplace(handle, std::move(descriptor)).second) return std::nullopt;
   }
 
+  std::map<core::platform::Uuid,
+      const ParserStatementContext::LiteralStatementDescriptorProfileV1*> boolean_profiles;
+  for (const auto& profile : statement_context.literal_statement_descriptor_profiles)
+    if (profile.codec_id == "datatype.boolean.u8.v1" &&
+        !boolean_profiles.emplace(profile.binding_descriptor_uuid, &profile).second) return std::nullopt;
+  std::map<std::uint32_t, const BoundDescriptorAstRecord*> bound_descriptors;
+  for (const auto& descriptor : bound.native_relational.descriptors)
+    if (!bound_descriptors.emplace(descriptor.descriptor_id, &descriptor).second) return std::nullopt;
   std::map<std::uint32_t, const BoundExpressionAstRecord*> bound_literals;
   for (const auto& expression : bound.native_relational.expressions) {
     const bool numeric =
         expression.expression_kind == NativeExpressionAstKind::kLiteral &&
         expression.literal_kind == NativeLiteralAstKind::kNumeric;
+    const auto boolean_descriptor = bound_descriptors.find(expression.result_descriptor_id);
+    const bool boolean_literal =
+        expression.expression_kind == NativeExpressionAstKind::kLiteral &&
+        (expression.literal_kind == NativeLiteralAstKind::kBoolean ||
+         expression.literal_kind == NativeLiteralAstKind::kNull) &&
+        boolean_descriptor != bound_descriptors.end() &&
+        boolean_profiles.contains(boolean_descriptor->second->descriptor_uuid) &&
+        boolean_profiles.at(boolean_descriptor->second->descriptor_uuid)->type_uuid ==
+            boolean_descriptor->second->type_uuid;
     const bool contextual =
         contextual_prebind != nullptr &&
         IsContextualTextEqualityLiteralV2(bound, expression) &&
@@ -10864,7 +10981,7 @@ std::optional<EncodedLiteralExpressionNodeTable> EncodeLiteralExpressionNodeTabl
               return occurrence.literal_expression_id ==
                      expression.expression_id;
             });
-    if (!numeric && !contextual) {
+    if (!numeric && !boolean_literal && !contextual) {
       continue;
     }
     if (expression.expression_id == 0 ||
@@ -10902,21 +11019,24 @@ std::optional<EncodedLiteralExpressionNodeTable> EncodeLiteralExpressionNodeTabl
     if (expression.expression_kind != scratchbird::engine::internal_api::RelationalExpressionKind::kLiteral) continue;
     const auto node_id = expression.expression_id;
     const auto bound_literal = bound_literals.find(node_id);
-    // SBXN is the exact proof table for negotiated numeric literals and
-    // contextual TEXT equality literals.  Other typed literals (for example
-    // NULL, BOOLEAN, or a non-contextual VALUES string) remain ordinary DAG
-    // nodes and must not be interpreted as malformed SBXN members.
+    // Only negotiated numeric/BOOLEAN occurrences and admitted contextual
+    // TEXT literals belong to this proof table. A bare NULL spelling does
+    // not select a descriptor or acquire occurrence authority.
     if (bound_literal == bound_literals.end()) {
       continue;
     }
     if (!expression.child_expression_ids.empty() ||
         (expression.literal_kind != scratchbird::engine::internal_api::RelationalLiteralKind::kNumeric &&
-         expression.literal_kind != scratchbird::engine::internal_api::RelationalLiteralKind::kString)) {
+         expression.literal_kind != scratchbird::engine::internal_api::RelationalLiteralKind::kString &&
+         expression.literal_kind != scratchbird::engine::internal_api::RelationalLiteralKind::kBoolean &&
+         expression.literal_kind != scratchbird::engine::internal_api::RelationalLiteralKind::kNull)) {
       return std::nullopt;
     }
     const auto& literal = expression.literal_or_parameter_ref;
     const auto descriptor = descriptors.find(std::to_string(expression.result_descriptor_id));
-    if (!literal.has_value() || descriptor == descriptors.end() ||
+    if (descriptor == descriptors.end() ||
+        (!literal.has_value() && expression.literal_kind !=
+            scratchbird::engine::internal_api::RelationalLiteralKind::kNull) ||
         ((expression.literal_kind == scratchbird::engine::internal_api::RelationalLiteralKind::kNumeric) !=
          (bound_literal->second->literal_kind ==
           NativeLiteralAstKind::kNumeric)) ||
@@ -10927,7 +11047,71 @@ std::optional<EncodedLiteralExpressionNodeTable> EncodeLiteralExpressionNodeTabl
     LiteralNode node;
     node.node_id = node_id;
     node.descriptor_uuid = descriptor->second.descriptor_uuid.bytes;
-    if (bound_literal->second->literal_kind ==
+    if (bound_literal->second->literal_kind == NativeLiteralAstKind::kBoolean ||
+        bound_literal->second->literal_kind == NativeLiteralAstKind::kNull) {
+      const auto selected_profile = boolean_profiles.find(descriptor->second.descriptor_uuid);
+      if (selected_profile == boolean_profiles.end()) return std::nullopt;
+      const auto* profile = selected_profile->second;
+      if (profile->profile_version != 1) return std::nullopt;
+      const bool is_null = bound_literal->second->literal_kind == NativeLiteralAstKind::kNull;
+      if (expression.literal_kind != (is_null
+              ? scratchbird::engine::internal_api::RelationalLiteralKind::kNull
+              : scratchbird::engine::internal_api::RelationalLiteralKind::kBoolean)) return std::nullopt;
+      if (is_null && !profile->nullable) return std::nullopt;
+      NativeDescriptorBindingInput expected;
+      expected.descriptor_uuid = profile->binding_descriptor_uuid;
+      expected.type_uuid = profile->type_uuid;
+      expected.canonical_type_name = "boolean";
+      expected.nullability = profile->nullable ? BoundNullability::kNullable : BoundNullability::kNonNull;
+      if (!PreserveNativeDescriptorAuthority(&expected, statement_context)) return std::nullopt;
+      const auto bound_descriptor_entry = bound_descriptors.find(bound_literal->second->result_descriptor_id);
+      if (bound_descriptor_entry == bound_descriptors.end()) return std::nullopt;
+      const auto* bound_descriptor = bound_descriptor_entry->second;
+      if (bound_descriptor->canonical_type_name != "boolean" ||
+          bound_descriptor->descriptor_uuid != expected.descriptor_uuid ||
+          bound_descriptor->type_uuid != expected.type_uuid ||
+          bound_descriptor->nullability != expected.nullability ||
+          bound_descriptor->descriptor_generation != expected.descriptor_generation ||
+          bound_descriptor->type_generation != expected.type_generation ||
+          bound_descriptor->codec_id != expected.codec_id ||
+          bound_descriptor->codec_version != expected.codec_version ||
+          bound_descriptor->codec_generation != expected.codec_generation ||
+          bound_descriptor->statement_receipt_uuid != expected.statement_receipt_uuid ||
+          bound_descriptor->datatype_catalog_snapshot_uuid != expected.datatype_catalog_snapshot_uuid ||
+          bound_descriptor->datatype_catalog_generation != expected.datatype_catalog_generation ||
+          bound_descriptor->datatype_registry_generation != expected.datatype_registry_generation ||
+          bound_descriptor->collation_uuid || bound_descriptor->timezone_profile_id ||
+          bound_descriptor->width_precision_scale.width || bound_descriptor->width_precision_scale.precision ||
+          bound_descriptor->width_precision_scale.scale || bound_descriptor->decimal_codec_profile ||
+          !bound_descriptor->element_profile.empty()) return std::nullopt;
+      const auto& actual = descriptor->second;
+      if (!actual.datatype_identity_authoritative ||
+          actual.descriptor_uuid != expected.descriptor_uuid ||
+          actual.type_uuid != expected.type_uuid ||
+          actual.descriptor_generation != expected.descriptor_generation ||
+          actual.type_generation != expected.type_generation ||
+          actual.codec_id != expected.codec_id || actual.codec_version != expected.codec_version ||
+          actual.codec_generation != expected.codec_generation ||
+          actual.statement_receipt_uuid != expected.statement_receipt_uuid ||
+          actual.datatype_catalog_snapshot_uuid != expected.datatype_catalog_snapshot_uuid ||
+          actual.datatype_catalog_generation != expected.datatype_catalog_generation ||
+          actual.datatype_registry_generation != expected.datatype_registry_generation ||
+          actual.nullability != (profile->nullable
+              ? scratchbird::engine::internal_api::RelationalNullability::kNullable
+              : scratchbird::engine::internal_api::RelationalNullability::kNonNull) ||
+          actual.collation_uuid || actual.timezone_profile_id || actual.width ||
+          actual.precision || actual.scale || actual.decimal_codec_profile) return std::nullopt;
+      node.descriptor_generation = profile->descriptor_generation;
+      node.value_state = is_null ? 1 : 0;
+      if (is_null) {
+        if (literal && !literal->empty() && ToUpperAscii(*literal) != "NULL") return std::nullopt;
+      } else {
+        if (!literal) return std::nullopt;
+        const auto spelling = ToUpperAscii(*literal);
+        if (spelling != "TRUE" && spelling != "FALSE") return std::nullopt;
+        node.body = {static_cast<std::uint8_t>(spelling == "TRUE" ? 1 : 0)};
+      }
+    } else if (bound_literal->second->literal_kind ==
         NativeLiteralAstKind::kString) {
       const auto mapping = contextual_profiles.find(node_id);
       if (contextual_prebind == nullptr ||
@@ -11047,40 +11231,27 @@ std::optional<EncodedLiteralExpressionNodeTable> EncodeLiteralExpressionNodeTabl
   }
 
   EncodedLiteralExpressionNodeTable encoded;
-  auto& table = encoded.bytes;
-  table.assign(32, 0);
-  table[0] = 'S'; table[1] = 'B'; table[2] = 'X'; table[3] = 'N';
-  CanonicalStoreU16(&table, 4, 1);
-  CanonicalStoreU16(&table, 6, 32);
-  CanonicalStoreU32(&table, 8, static_cast<std::uint32_t>(nodes.size()));
-  CanonicalStoreU64(&table, 24, 32);
+  scratchbird::engine::sblr::SblrExpressionNodeTableV1 table;
+  table.nodes.reserve(nodes.size());
   for (const auto& node : nodes) {
     encoded.references.emplace(
         std::to_string(node.node_id),
         EncodedLiteralExpressionNodeTable::Reference{
             node.occurrence_ordinal, node.node_id, node.descriptor_uuid,
             node.descriptor_generation});
-    const auto record_offset = table.size();
-    CanonicalAppendU32(&table, 0);
-    CanonicalAppendU64(&table, node.node_id);
-    CanonicalAppendU64(&table, 0);
-    CanonicalAppendU32(&table, node.occurrence_ordinal);
-    CanonicalAppendU16(&table, 3);
-    CanonicalAppendU16(&table, 1);
-    CanonicalAppendU16(&table, 0);
-    CanonicalAppendU64(&table, node.descriptor_generation);
-    table.insert(table.end(), node.descriptor_uuid.begin(), node.descriptor_uuid.end());
-    CanonicalAppendU64(&table, node.body.size());
-    CanonicalAppendU16(&table, 12); table.insert(table.end(), {'S','B','L','R','_','L','I','T','E','R','A','L'});
-    CanonicalAppendU16(&table, 13); table.insert(table.end(), {'t','y','p','e','d','_','l','i','t','e','r','a','l'});
-    table.insert(table.end(), node.body.begin(), node.body.end());
-    CanonicalAppendU16(&table, 17); table.insert(table.end(), {'e','n','g','i','n','e','.','o','p','.','l','i','t','e','r','a','l'});
-    CanonicalAppendU16(&table, 11); table.insert(table.end(), {'t','y','p','e','d','_','v','a','l','u','e'});
-    CanonicalAppendU16(&table, 1);
-    CanonicalStoreU32(&table, record_offset,
-                      static_cast<std::uint32_t>(table.size() - record_offset));
+    scratchbird::engine::sblr::SblrExpressionLiteralNodeV1 value;
+    value.node_id = node.node_id;
+    value.parent_operand_ordinal = node.occurrence_ordinal;
+    value.descriptor_uuid = node.descriptor_uuid;
+    value.descriptor_generation = node.descriptor_generation;
+    value.literal_body = node.body;
+    value.value_state = node.value_state;
+    table.nodes.push_back(std::move(value));
   }
-  CanonicalStoreU64(&table, 16, table.size());
+  encoded.bytes = contextual_prebind == nullptr
+      ? scratchbird::engine::sblr::EncodeSblrStatefulExpressionNodeTableV2(table)
+      : scratchbird::engine::sblr::EncodeSblrStatefulComposedExpressionNodeTableV2(table);
+  if (encoded.bytes.empty()) return std::nullopt;
   return encoded;
 }
 
@@ -11110,9 +11281,11 @@ bool FinalizeLiteralSubmission(
     return refuse("The literal finalization preconditions are incomplete.");
   }
   std::vector<const BoundExpressionAstRecord*> expressions;
+  const auto boolean_descriptors = BoundBooleanLiteralDescriptorIdsV1(bound);
   for (const auto& expression : bound.native_relational.expressions) {
     if (expression.expression_kind == NativeExpressionAstKind::kLiteral &&
-        expression.literal_kind == NativeLiteralAstKind::kNumeric) {
+        (expression.literal_kind == NativeLiteralAstKind::kNumeric ||
+         IsBoundBooleanLiteralV1(boolean_descriptors, expression))) {
       expressions.push_back(&expression);
     }
   }
@@ -11167,7 +11340,11 @@ bool FinalizeLiteralSubmission(
         descriptor==bound.native_relational.descriptors.end()||
         node_reference == sbxn->references.end() ||
         descriptor->descriptor_uuid!=profile.binding_descriptor_uuid||
-        descriptor->type_uuid!=profile.type_uuid||!descriptor_uuid||
+        descriptor->type_uuid!=profile.type_uuid||
+        profile.nullable != occurrence.nullable ||
+        (occurrence.lexical_class == 4 &&
+         (expression->literal_kind == NativeLiteralAstKind::kNull) !=
+             (occurrence.value_state == 1)) || !descriptor_uuid||
         !type_uuid||!profile_uuid) {
       std::string issued_profile_bindings;
       for (const auto& issued_profile :
@@ -11244,6 +11421,7 @@ bool FinalizeLiteralSubmission(
     std::copy(profile_uuid->begin(),profile_uuid->end(),record.begin()+56);
     CanonicalStoreU64(&record,72,occurrence.occurrence_id);
     std::copy(occurrence.lexical_sha256.begin(),occurrence.lexical_sha256.end(),record.begin()+80);
+    record[112] = profile.nullable ? 1 : 0;
     sbba.insert(sbba.end(),record.begin(),record.end());
   }
   CanonicalBytes bound_hash_input;
@@ -11973,7 +12151,8 @@ std::optional<CanonicalBytes> EncodeNativeQueryOperationBinary(
   if (expression_nodes.has_value()) {
     engine_sblr::SblrOperand table;
     table.ordinal = static_cast<std::uint32_t>(canonical_operands.size() + 1);
-    table.type = "expression.node_table.v1";
+    table.type = LiteralReadU16(expression_nodes->bytes, 4) == 2
+        ? "expression.node_table.v2" : "expression.node_table.v1";
     table.name = "expression_nodes";
     table.value_kind = engine_sblr::SblrValueKind::expression_node_table;
     table.value_body = expression_nodes->bytes;
@@ -25141,6 +25320,61 @@ BuildCanonicalScalarProjectionSubmissionForTest(const SblrEnvelope& lowered,
   return BuildCanonicalScalarProjectionSubmission(lowered, context, session);
 }
 
+// Component-only seams: these preserve caller-supplied fixture projections;
+// they do not acquire an engine receipt or confer execution authority.
+std::optional<CanonicalBytes> EncodeBooleanLiteralPrebindForTest(
+    const NativeRelationalAstDocument& ast, const ParserStatementContext& context,
+    const ScalarProjectionLiteralDemandDescriptionV1* scalar_demands) {
+  const auto encoded = EncodeLiteralPrebindRequest(ast, context, false, scalar_demands);
+  return encoded ? std::optional<CanonicalBytes>{encoded->first} : std::nullopt;
+}
+
+bool ConsumeBooleanLiteralPrebindForTest(
+    const NativeRelationalAstDocument& ast, ParserStatementContext* context,
+    const CanonicalBytes& response,
+    const ScalarProjectionLiteralDemandDescriptionV1* scalar_demands) {
+  if (context == nullptr) return false;
+  auto encoded = EncodeLiteralPrebindRequest(ast, *context, false, scalar_demands);
+  return encoded && ConsumeLiteralPrebindResult(response, &encoded->second, context, false);
+}
+
+std::optional<CanonicalBytes> EncodeBooleanLiteralTableForTest(
+    const BoundStatement& bound, const SblrEnvelope& lowered,
+    const ParserStatementContext& context) {
+  auto encoded = EncodeLiteralExpressionNodeTable(bound, lowered, context, nullptr);
+  return encoded ? std::optional<CanonicalBytes>{std::move(encoded->bytes)} : std::nullopt;
+}
+
+std::optional<CanonicalBytes> CaptureBooleanLiteralFinalizeForTest(
+    const NativeRelationalAstDocument& ast, const BoundStatement& bound,
+    const SblrEnvelope& lowered, const ParserStatementContext& context,
+    const CanonicalBytes& response,
+    const ScalarProjectionLiteralDemandDescriptionV1* scalar_demands) {
+  auto staged_context = context;
+  auto prebind = EncodeLiteralPrebindRequest(ast, staged_context, false, scalar_demands);
+  if (!prebind || !ConsumeLiteralPrebindResult(response, &prebind->second, &staged_context, false))
+    return std::nullopt;
+  struct Capture {
+    CanonicalBytes request;
+    std::size_t calls = 0;
+    ipc::ServerLiteralBindingResult FinalizeLiteralBinding(
+        const SessionContext&, const CanonicalBytes& value) {
+      ++calls;
+      request = value;
+      // Deliberately never synthesize a successful engine admission.
+      return {};
+    }
+  } capture;
+  ParserCanonicalSblrSubmission submission;
+  submission.canonical_operation_bytes = {1};
+  SessionContext session;
+  MessageVectorSet messages;
+  const auto accepted = FinalizeLiteralSubmission(bound, lowered, staged_context, session,
+      &prebind->second, nullptr, &capture, &submission, &messages);
+  if (accepted || capture.calls != 1 || capture.request.empty()) return std::nullopt;
+  return std::move(capture.request);
+}
+
 PreparedParameterCanonicalValue CanonicalizePreparedParameterWireValue(
     const PreparedParameterWireValue& value,
     const core::platform::Uuid& authenticated_descriptor_uuid,
@@ -28274,11 +28508,36 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
   std::optional<ContextualTextPrebindStateV2> contextual_text_prebind_state;
   std::optional<ParameterPrebindState> parameter_prebind_state;
   std::optional<VariablePrebindState> variable_prebind_state;
-  const bool requires_numeric_literal_finalization = std::ranges::any_of(
+  std::optional<ScalarProjectionLiteralDemandDescriptionV1> scalar_literal_demands;
+  if (scalar_projection_demand && std::ranges::any_of(ast.native_relational.expressions,
+          [](const auto& expression) {
+            return expression.expression_kind == NativeExpressionAstKind::kLiteral &&
+                expression.literal_kind == NativeLiteralAstKind::kNull;
+          })) {
+    scalar_literal_demands = DescribeScalarProjectionLiteralDemandsV1(
+        cst, ast.native_relational,
+        {static_cast<std::size_t>(std::min<std::uint64_t>(
+             config_.resource_budget.max_token_count, 4096)),
+         static_cast<std::size_t>(std::min<std::uint64_t>(
+             config_.resource_budget.max_ast_depth, 256))},
+        resolved_object_uuids);
+    if (!scalar_literal_demands->applicable || !scalar_literal_demands->valid) {
+      result.messages.diagnostics.push_back(MakeDiagnostic(
+          "DATATYPE.DESCRIPTOR.INVALID", "ERROR",
+          "The scalar literal occurrence context could not be matched to the actual native AST.",
+          "sbp_sbsql.wire.literal_prebind"));
+    }
+  }
+  const bool requires_ordinary_literal_finalization = std::ranges::any_of(
       ast.native_relational.expressions, [](const auto& expression) {
         return expression.expression_kind == NativeExpressionAstKind::kLiteral &&
-               expression.literal_kind == NativeLiteralAstKind::kNumeric;
-      });
+               (expression.literal_kind == NativeLiteralAstKind::kNumeric ||
+                expression.literal_kind == NativeLiteralAstKind::kBoolean);
+      }) || (scalar_literal_demands && scalar_literal_demands->valid &&
+          std::ranges::any_of(scalar_literal_demands->entries, [](const auto& entry) {
+            return entry.literal_kind == NativeLiteralAstKind::kNull &&
+                entry.is_null && entry.canonical_type_name == "boolean";
+          }));
   std::optional<scratchbird::engine::sblr::SblrVariableFrameBeginResultV1>
       automatic_variable_frame;
   std::optional<ipc::VariableFrameCoordination>
@@ -28586,13 +28845,14 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           WriteParserPipelinePhaseTrace(sql, result, phase_micros);
           return result;
         }
-        if (requires_numeric_literal_finalization) {
+        if (requires_ordinary_literal_finalization) {
           const auto prebind = EncodeLiteralPrebindRequest(
-              ast.native_relational, *native_statement_context, false);
+              ast.native_relational, *native_statement_context, false,
+              scalar_literal_demands ? &*scalar_literal_demands : nullptr);
           if (!prebind.has_value()) {
             result.messages.diagnostics.push_back(MakeDiagnostic(
                 "DATATYPE.DESCRIPTOR.INVALID", "ERROR",
-                "The native numeric literal negotiation request was unavailable.",
+                "The native ordinary literal negotiation request was unavailable.",
                 "sbp_sbsql.wire"));
           } else {
             auto negotiated = embedded_native_route
@@ -28605,7 +28865,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
               if (!result.messages.has_errors()) {
                 result.messages.diagnostics.push_back(MakeDiagnostic(
                     "DATATYPE.DESCRIPTOR.INVALID", "ERROR",
-                    "The engine refused native numeric literal descriptor negotiation.",
+                    "The engine refused native ordinary literal descriptor negotiation.",
                     "sbp_sbsql.wire"));
               }
             } else {
@@ -29116,6 +29376,9 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
             const bool decimal_literal =
                 profile.codec_id == scratchbird::engine::sblr::
                                         kSblrLiteralExactDecimalCodecId;
+            const bool boolean_literal =
+                profile.codec_id == "datatype.boolean.u8.v1" &&
+                occurrence.lexical_class == 4;
             const auto decimal =
                 decimal_literal &&
                         ast_literal != ast.native_relational.expressions.end()
@@ -29123,7 +29386,12 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                           EncodeSblrLiteralExactDecimalV1(ast_literal->spelling)
                     : scratchbird::engine::sblr::
                           SblrLiteralExactDecimalCodecResultV1{};
-            if ((!bigint_literal && !decimal_literal) ||
+            if ((!bigint_literal && !decimal_literal && !boolean_literal) ||
+                (boolean_literal &&
+                 (ast_literal == ast.native_relational.expressions.end() ||
+                  (ast_literal->literal_kind != NativeLiteralAstKind::kBoolean &&
+                   ast_literal->literal_kind != NativeLiteralAstKind::kNull) ||
+                  profile.nullable != occurrence.nullable)) ||
                 (decimal_literal && !decimal.ok)) {
               result.messages.diagnostics.push_back(MakeDiagnostic(
                   decimal_literal ? decimal.diagnostic_id
@@ -29142,8 +29410,9 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                       profile.binding_descriptor_uuid;
                   projected.type_uuid = profile.type_uuid;
                   projected.canonical_type_name =
-                      bigint_literal ? "int64" : "decimal";
-                  projected.nullability = BoundNullability::kNonNull;
+                      boolean_literal ? "boolean" : bigint_literal ? "int64" : "decimal";
+                  projected.nullability = profile.nullable
+                      ? BoundNullability::kNullable : BoundNullability::kNonNull;
                   if (decimal_literal) {
                     projected.width_precision_scale.precision =
                         decimal.precision;
@@ -30385,7 +30654,7 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           "SBSQL.NATIVE_SBLR.CANONICAL_ENCODING_FAILED", "ERROR",
           "The native relational operation could not be encoded as canonical SBLR/SBEE/SBOP.",
           "sbp_sbsql.wire"));
-    } else if ((requires_numeric_literal_finalization ||
+    } else if ((requires_ordinary_literal_finalization ||
                 contextual_text_prebind_state.has_value()) &&
                (!literal_prebind_state.has_value() ||
                 !(embedded_native_route
