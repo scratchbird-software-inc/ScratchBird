@@ -6,6 +6,7 @@
 #include "catalog_identifier_profile.hpp"
 #include "catalog_construction_intent.hpp"
 #include "catalog_policy_descriptor.hpp"
+#include "catalog_database_record_codec.hpp"
 
 namespace scratchbird::storage::database {
 // Exact size of the encoded first-version row including its stable slot and
@@ -31,6 +32,19 @@ template<class Reserve> void ReserveNativeCreationCatalogReferences(
       m.retired_transaction_uuid,m.default_name_uuid,m.name_vector_uuid,m.security_policy_uuid,
       m.dependency_group_uuid,m.storage_binding_uuid,m.donor_overlay_uuid,m.audit_uuid,m.owning_schema_uuid})
     if(!id.value.is_nil())reserve(id.value);
+  if(m.record.header.kind==core::catalog::CatalogRecordKind::database) {
+    const auto database=core::catalog::DecodeCatalogDatabaseRecord(m.record.payload);
+    if(database.ok()) {
+      const auto& d=*database.record;reserve(d.database_uuid.value);
+      if(d.datatype_cohort)reserve(d.datatype_cohort->catalog_snapshot_uuid.value);
+      if(d.text_defaults) {
+        const auto& defaults=*d.text_defaults;
+        for(const auto& id:{defaults.charset_uuid.value,defaults.collation_uuid.value,
+            defaults.source_object_uuid.value})reserve(id);
+        if(defaults.cluster_uuid)reserve(defaults.cluster_uuid->value);
+      }
+    }
+  }
   if(core::catalog::IsCatalogIdentifierProfilePayload(m.record.payload)){
     const auto profile=core::catalog::DecodeCatalogIdentifierProfile(m.record.payload);
     if(profile.ok()){

@@ -8,6 +8,7 @@
 #include "admitted_datatype_cohort.hpp"
 #include "native_creation_workspace.hpp"
 #include "native_database_creation.hpp"
+#include "native_creation_catalog_input.hpp"
 #include "../support/catalog_filespace_golden.hpp"
 #include "physical_mga_cow_store.hpp"
 #include "../support/owned_temp_directory.hpp"
@@ -464,6 +465,62 @@ void DatabaseTextDefaultsChecks() {
     const auto decoded=c::DecodeCatalogDatabaseRecord(made.records->definitions[0].metadata.record.payload);
     Check(decoded.ok()&&decoded.record->text_defaults==request.text_defaults,
           "native definition retains exact binary selectors epochs and provenance");
+    std::array<p::Uuid,32> references{};std::size_t count=0;
+    const auto& definition=made.records->definitions[0];
+    allocation_calls=0;allocation_budget=0;
+    db::ReserveNativeCreationCatalogReferences(definition,[&](const p::Uuid& id) {
+      if(count>=references.size())throw std::runtime_error("bounded default reference test capacity");
+      references[count++]=id;
+    });
+    const bool allocation_free=allocation_calls==0;allocation_budget=-1;
+    Check(allocation_free,"construction/recovery reserve complete binary node references without decoding allocations");
+    const auto reserved=[&](const p::Uuid& id) {
+      return std::find(references.begin(),references.begin()+count,id)!=references.begin()+count;
+    };
+    const auto& defaults=*request.text_defaults;
+    Check(reserved(package.construction.bootstrap.database_uuid)&&
+        reserved(package.cohort.catalog_snapshot_uuid.value)&&reserved(defaults.charset_uuid.value)&&
+        reserved(defaults.collation_uuid.value)&&reserved(defaults.source_object_uuid.value)&&
+        (!defaults.cluster_uuid||reserved(defaults.cluster_uuid->value)),
+        "native physical identity issuance reserves node/cohort and every default/provenance/cluster reference");
+    // Reservation is not permission to use these references. In particular a
+    // malformed family payload must never contribute a partly decoded pair.
+    auto malformed=definition;
+    // Mutate the resource epoch, not a still-valid high source generation.
+    std::fill_n(malformed.metadata.record.payload.begin()+288,8,0);
+    std::array<p::Uuid,32> invalid_references{};std::size_t invalid_count=0;
+    allocation_calls=0;allocation_budget=0;
+    db::ReserveNativeCreationCatalogReferences(malformed,[&](const p::Uuid& id) {
+      if(invalid_count>=invalid_references.size())throw std::runtime_error("bounded malformed reference test capacity");
+      invalid_references[invalid_count++]=id;
+    });
+    const bool invalid_allocation_free=allocation_calls==0;allocation_budget=-1;
+    Check(invalid_allocation_free&&std::none_of(invalid_references.begin(),invalid_references.begin()+invalid_count,
+        [&](const p::Uuid& id){return id==defaults.charset_uuid.value||id==defaults.collation_uuid.value||
+            id==defaults.source_object_uuid.value||(defaults.cluster_uuid&&id==defaults.cluster_uuid->value);}),
+        "malformed default payload contributes no partial resource/provenance reservation");
+    for(unsigned version=1;version<=2;++version) {
+      auto frozen=*decoded.record;frozen.text_defaults.reset();
+      if(version==1)frozen.datatype_cohort.reset();
+      const auto bytes=c::EncodeCatalogDatabaseRecord(frozen);Check(bytes.ok(),"frozen reservation source encode");
+      auto input=definition;input.metadata.record.payload.assign(bytes.bytes.begin(),bytes.bytes.end());
+      std::array<p::Uuid,32> frozen_references{};std::size_t frozen_count=0;
+      allocation_calls=0;allocation_budget=0;
+      db::ReserveNativeCreationCatalogReferences(input,[&](const p::Uuid& id) {
+        if(frozen_count>=frozen_references.size())throw std::runtime_error("bounded frozen reference test capacity");
+        frozen_references[frozen_count++]=id;
+      });
+      const bool frozen_allocation_free=allocation_calls==0;allocation_budget=-1;
+      const auto found=[&](const p::Uuid& id) {
+        return std::find(frozen_references.begin(),frozen_references.begin()+frozen_count,id)!=
+            frozen_references.begin()+frozen_count;
+      };
+      Check(frozen_allocation_free&&found(frozen.database_uuid.value)&&
+          found(package.cohort.catalog_snapshot_uuid.value)==(version==2)&&
+          !found(defaults.charset_uuid.value)&&!found(defaults.collation_uuid.value)&&
+          !found(defaults.source_object_uuid.value)&&(!defaults.cluster_uuid||!found(defaults.cluster_uuid->value)),
+          "frozen V1/V2 reservation retains exact reference absence without current-cohort or UTF8 invention");
+    }
     Check(package.aliases.items[0].metadata.record.payload.empty(),"default assembly preserves borrowed input");
     const c::CatalogNamedCreationLimits exact{3,made.records->encoded_bytes};
     request.limits=exact;
