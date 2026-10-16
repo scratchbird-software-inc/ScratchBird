@@ -21,6 +21,10 @@
 #include "datatype_interval.hpp"
 #include "datatype_bit_string.hpp"
 #include "dml/direct_bulk_typed_row_codec.hpp"
+#include "engine/statement_blob_row_value.hpp"
+#include "engine/statement_cancellation.hpp"
+#include "engine/executor/descriptor_value_runtime.hpp"
+#include "dml/native_blob_bulk_diagnostic.hpp"
 #include "sbl_numeric.hpp"
 #include "index_key_encoding.hpp"
 #include "dml/native_bulk_ingest_api.hpp"
@@ -411,6 +415,7 @@ api::EngineApiDiagnostic PublishFixtureTable(
     const auto stored=api::LoadMgaRelationStorageDescriptor(context,published.table_uuid);
     Require(stored.ok&&stored.descriptor.columns.size()==published.columns.size(),
             "actual receiving relation descriptor absent");
+    schema->relation_generation=stored.descriptor.relation_generation;
     for(std::size_t ordinal=0;ordinal<stored.descriptor.columns.size();++ordinal) {
       const auto& column=stored.descriptor.columns[ordinal];
       const auto& d=column.value_descriptor;
@@ -419,12 +424,21 @@ api::EngineApiDiagnostic PublishFixtureTable(
           d.datatype_cohort.registry_generation,d.datatype_descriptor_uuid,d.datatype_descriptor_generation);
       if(!identity)continue;
       const auto type=static_cast<dt::CanonicalTypeId>(identity->legacy_fields.canonical_binary_type_code);
-      if(!api::dml::detail::DirectRequiresNativeProfile(type))continue;
+      if(!api::dml::detail::DirectRequiresNativeProfile(type)&&type!=dt::CanonicalTypeId::blob)continue;
       Require(identity->legacy_fields.type_uuid==d.type_uuid&&ordinal<65535,"invalid actual temporal binding");
       page::RowDataTemporalColumnBinding binding;
       binding.column_ordinal=static_cast<std::uint16_t>(ordinal+1);binding.null_allowed=column.nullable;
       const auto& row=identity->legacy_fields;
-      if(type==dt::CanonicalTypeId::date) {
+      if(type==dt::CanonicalTypeId::blob) {
+        dt::DatatypeStorageIdentityV3 storage_identity;
+        Require(dt::LookupDatatypeStorageIdentityV3(row.catalog_snapshot_uuid,row.catalog_generation,
+            row.registry_generation,row.descriptor_uuid,row.descriptor_generation,&storage_identity),
+            "actual BLOB storage identity missing");
+        api::EngineApiDiagnostic diagnostic;
+        Require(api::dml::detail::DirectBuildBlobPageColumn(d,storage_identity,binding.column_ordinal,
+            column.nullable,column.column_uuid,column.column_generation,&binding,&diagnostic),
+            "actual BLOB column receiver invalid");
+      } else if(type==dt::CanonicalTypeId::date) {
         auto p=dt::BuildDateValidatedProfileHandleV3({row.catalog_snapshot_uuid,row.catalog_snapshot_uuid,row.catalog_generation,row.registry_generation},*identity);
         Require(p.ok(),"actual DATE receiver invalid");binding.date=std::make_shared<const dt::DateValidatedProfileHandleV3>(std::move(p.profile));
       } else if(type==dt::CanonicalTypeId::time) {
@@ -1033,15 +1047,71 @@ std::vector<api::EngineRowValue> DescriptorPayloadRows() {
   return rows;
 }
 
-scratchbird::tests::FixtureEngineRequest<api::EngineExecuteNativeBulkIngestRequest> NativeRequest(
+struct NativeFixtureRequest : scratchbird::tests::FixtureEngineRequest<api::EngineExecuteNativeBulkIngestRequest> {
+  using FixtureEngineRequest::FixtureEngineRequest;
+  // Stable real native wrappers, not caller-supplied lifetime callbacks. The
+  // derived owners retire before the base's actual statement receipt.
+  std::vector<std::shared_ptr<api::StatementBlobRowValueV3>> blob_sources;
+};
+
+NativeFixtureRequest NativeRequest(
     const Fixture& fixture,
     const api::EngineRequestContext& context,
-    std::vector<api::EngineRowValue> rows) {
-  scratchbird::tests::FixtureEngineRequest<api::EngineExecuteNativeBulkIngestRequest>
-      request(*fixture.session, context);
+    std::vector<api::EngineRowValue> rows,
+    const api::StatementBlobInputBoundsV3* supplied_blob_bounds=nullptr) {
+  NativeFixtureRequest request(*fixture.session, context);
   request.target_table.uuid = fixture.table_uuid;
   request.target_table.object_kind = "table";
   request.canonical_rows = std::move(rows);
+  bool has_blob=false;
+  for(const auto& row:request.canonical_rows)for(const auto& [name,value]:row.fields)
+    has_blob=has_blob||value.descriptor.canonical_type_name=="blob";
+  if(has_blob) {
+    const auto loaded=api::LoadMgaRelationStorageDescriptor(request.context,fixture.table_uuid);
+    Require(loaded.ok,"native BLOB fixture actual destination descriptor missing");
+    for(std::size_t r=0;r<request.canonical_rows.size();++r) {
+      auto& row=request.canonical_rows[r];
+      for(std::size_t f=0;f<row.fields.size();++f) {
+        auto& [name,value]=row.fields[f];
+        if(value.descriptor.canonical_type_name!="blob")continue;
+        const auto column=std::find_if(loaded.descriptor.columns.begin(),loaded.descriptor.columns.end(),
+            [&](const auto& c){return c.canonical_name_key==name;});
+        Require(column!=loaded.descriptor.columns.end()&&value.encoded_value.empty(),
+            "native BLOB fixture has no actual column or carries display bytes");
+        api::StatementBlobInputBoundsV3 bounds;
+        bounds.operation=r%2?SB_BLOB_OP_HASH_V3:SB_BLOB_OP_READ_V3;
+        bounds.resident_bytes=1024*1024;bounds.valid_for_ns=600'000'000'000ULL;
+        bounds.retain_tickets=4;bounds.access_tickets=128;
+        bounds.maximum_work.fill(4*1024*1024);
+        bounds.scratch_bytes=8192;bounds.window_bytes=4096;bounds.relative_timeout_ns=60'000'000'000ULL;
+        if(supplied_blob_bounds)bounds=*supplied_blob_bounds;
+        if(value.binary_value.empty())bounds.resident_bytes=std::min<std::uint64_t>(bounds.resident_bytes,1024*1024);
+        bounds.state=value.isSqlNull()?dt::BlobValueStateV3::sql_null:dt::BlobValueStateV3::value;
+        api::StatementBlobInputV3 input;
+        platform::DiagnosticRecord receiving_diagnostic;
+        const auto received=api::ReceiveStatementBlobInputV3(request.statement_receipt(),request.context.session_uuid.bytes,
+            request.context.statement_receipt_uuid.bytes,value.binary_value,bounds,&input,&receiving_diagnostic);
+        if(!received.ok())std::cerr<<"native BLOB receiving row="<<r<<" field="<<f
+            <<" status="<<received.status<<" cause="<<static_cast<unsigned>(received.failure)
+            <<" native="<<receiving_diagnostic.diagnostic_code<<'\n';
+        Require(received.ok(),"native BLOB fixture failed actual private statement receiving");
+        scratchbird::engine::ExecutionTypeDescriptor execution;
+        std::string detail;
+        Require(scratchbird::engine::executor::BuildBoundExecutionTypeDescriptor(column->value_descriptor,
+            dt::CanonicalTypeId::blob,&execution,&detail),"native BLOB fixture exact execution descriptor invalid");
+        api::StatementBlobValueV3 typed;
+        Require(input.RetainTyped(std::move(execution),typed).ok(),"native BLOB fixture typed retention failed");
+        auto source=std::make_shared<api::StatementBlobRowValueV3>();
+        Require(typed.StageForRowAndRetire(*source).ok(),"native BLOB fixture protected row staging failed");
+        value.descriptor=column->value_descriptor;
+        memory::SecureZeroMemory(value.binary_value.data(),value.binary_value.size());
+        std::vector<std::uint8_t>{}.swap(value.binary_value); // retire the legacy input buffer
+        request.native_blob_operands.push_back({r,f,column->column_uuid,loaded.descriptor.relation_generation,
+            column->column_generation,source.get()});
+        request.blob_sources.push_back(std::move(source));
+      }
+    }
+  }
   request.estimated_row_count = static_cast<api::EngineApiU64>(request.canonical_rows.size());
   request.import_policy.reject_mode = "fail_fast";
   request.import_policy.reject_payload_policy = "diagnostic_only";
@@ -3945,6 +4015,8 @@ void TestSblrRegistryEntry() {
           "CDP-040 native ingest SBLR-to-SBsql refusal diagnostic drifted");
 }
 
+#include "native_blob_bulk_input_test.inc"
+
 }  // namespace
 
 int main(int argc, char** argv) try {
@@ -3959,10 +4031,15 @@ int main(int argc, char** argv) try {
   const bool interval_only = argc == 2 && std::string_view(argv[1]) == "--native-interval-storage";
   const bool bit_only = argc == 2 && std::string_view(argv[1]) == "--native-bit-storage";
   const bool descriptor_only = argc == 2 && std::string_view(argv[1]) == "--native-descriptor-storage";
+  const bool blob_only = argc == 2 && std::string_view(argv[1]) == "--native-blob-input";
   const bool ordered_only = argc == 2 && std::string_view(argv[1]) == "--native-ordered-index";
-  Require(argc == 1 || fixed_scalar_only || typed_null_only || integer_only || ordered_only || uint16_only || narrow_real_only || network_only || temporal_only || scalar_index_only || interval_only || descriptor_only || bit_only,
+  Require(argc == 1 || fixed_scalar_only || typed_null_only || integer_only || ordered_only || uint16_only || narrow_real_only || network_only || temporal_only || scalar_index_only || interval_only || descriptor_only || bit_only || blob_only,
           "unknown native bulk gate arguments");
   ConfigureMemoryFixture();
+  if(blob_only) {
+    TestNativeBlobInputBoundary();
+    return EXIT_SUCCESS;
+  }
   if(bit_only) {
     TestNativeBitStorage();
     std::cout<<"native_bit_storage=passed native_profiles_null_empty_commit_reopen\n";
@@ -4056,6 +4133,7 @@ int main(int argc, char** argv) try {
     return EXIT_SUCCESS;
   }
   TestDescriptorPayloadRowPageStorage();
+  TestNativeBlobInputBoundary();
   TestDescriptorPayloadIndexKeysUseBinaryPayloads();
   TestOpaqueRenderOnlyDescriptorPayloadRefusals();
   TestDecimalIndexKeysPreserveNumericOrder();

@@ -11,6 +11,7 @@
 #include "api_types.hpp"
 #include "dml/import_api.hpp"
 #include "dml/import_resume_checkpoint.hpp"
+#include "dml/native_blob_row_operand.hpp"
 
 #include <span>
 
@@ -20,6 +21,9 @@ namespace scratchbird::engine::internal_api {
 struct EngineExecuteNativeBulkIngestRequest : public EngineApiRequest {
   EngineObjectReference target_table;
   std::vector<EngineRowValue> canonical_rows;
+  // Strictly ordered by (row_index, field_index); owners remain caller-owned
+  // through this synchronous operation, including rollback and publication.
+  std::vector<NativeBlobRowOperandV3> native_blob_operands;
   EngineImportPolicyEnvelope import_policy;
   EngineImportCheckpointPolicyEnvelope checkpoint_policy;
   EngineApiU64 estimated_row_count = 0;
@@ -51,6 +55,7 @@ struct EngineExecuteNativeBulkIngestResult : public EngineApiResult {
   std::vector<EngineUuid> row_version_uuids;
   std::vector<EngineUuid> row_image_uuids;
   bool delegated_to_import_execution = false;
+  std::shared_ptr<const NativeBlobBulkLifetimeDiagnosticV3> native_blob_lifetime_diagnostic;
 };
 
 EngineExecuteNativeBulkIngestResult EngineExecuteNativeBulkIngest(

@@ -334,7 +334,10 @@ PreparedInsertRow PrepareInsertRowForBatch(const EngineInsertRowsRequest& reques
 PreparedInsertRow PrepareInsertRowForBatch(const EngineInsertRowsRequest& request,
                                            const EngineRowValue& input_row,
                                            const BoundInsertRowTemplate& row_template,
-                                           const InsertRowEncoderPlan& row_encoder_plan);
+                                           const InsertRowEncoderPlan& row_encoder_plan,
+                                           const std::function<CrudStoredValue(std::size_t,
+                                               const InsertRowEncoderColumnPlan&,const EngineTypedValue&)>&
+                                               stored_value_converter = {});
 // Complete the engine-bound storage shape without executing any default.
 // DEFAULT placeholders still pass through the normal constraint provider;
 // omitted columns with no default are SQL NULL and remain subject to NOT NULL.

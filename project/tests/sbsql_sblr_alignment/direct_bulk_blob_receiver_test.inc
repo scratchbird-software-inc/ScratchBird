@@ -156,6 +156,47 @@ void BlobReceiverConstruction() {
       Check(bulk::DirectBuildBlobPageColumn(descriptor,identity,9,nullable,column,29,&output,&diagnostic) &&
           output.column_generation==29,"BLOB receiver fresh retry failed");
     }
+    // The explicit stored-representation converter is not live source
+    // admission. Check its state, payload and locator handling independently.
+    for(unsigned state=0;state<4;++state) {
+      api::EngineTypedValue typed;typed.descriptor=descriptor;
+      api::CrudStoredValue stored;
+      if(state==1) {typed.setState(api::EngineValueState::sql_null);stored=api::CrudStoredValue::SqlNull();}
+      if(state==2)stored=api::CrudStoredValue(std::string("\0\xff\x80",3));
+      if(state==3) {
+        const auto locator=page::EncodeRowExternalValueLocator({column,123,12000});
+        Check(locator.has_value(),"stored BLOB locator fixture invalid");
+        stored={api::EngineValueState::lob_handle,std::string(locator->begin(),locator->end())};
+      }
+      api::EngineRowValue row;row.fields.push_back({"v",typed});
+      const auto encoder=Plan(typed);
+      api::CrudValueFields values{{"v",stored}};
+      const auto physical=bulk::DirectPhysicalCellsFromTypedInputRow(row,encoder,nullptr,&values);
+      Check(physical.cells.size()==1 && physical.cells[0].column_ordinal==1 &&
+          physical.null_cells==(state==1?1u:0u) && physical.typed_binary_cells==(state==1?0u:1u) &&
+          (state==1 || physical.typed_cell_counts.at(dt::CanonicalTypeId::blob)==1),
+          "stored BLOB conversion shape/state/type accounting drifted");
+      if(state==3)Check(physical.cells[0].external_value.has_value() &&
+          physical.cells[0].external_value->logical_bytes==12000,"stored BLOB lost exact external locator");
+      else Check(physical.cells[0].value.type_id==dt::CanonicalTypeId::blob &&
+          physical.cells[0].value.is_null==typed.isSqlNull() &&
+          std::string(physical.cells[0].value.payload.begin(),physical.cells[0].value.payload.end())==stored.bytes,
+          "stored BLOB conversion changed exact bytes/empty/NULL");
+      for(unsigned mutation=0;mutation<7;++mutation) {
+        auto bad_row=row;auto bad_values=values;
+        if(mutation==0)bad_values.clear();
+        if(mutation==1)bad_values.push_back(bad_values.front());
+        if(mutation==2)bad_values.front().second={api::EngineValueState::missing,{}};
+        if(mutation==3)bad_row.fields.front().second.binary_value={0};
+        if(mutation==4)bad_row.fields.front().second.encoded_value="shadow";
+        if(mutation==5)bad_values.front().second={api::EngineValueState::lob_handle,std::string(24,'\0')};
+        if(mutation==6)bad_row.fields.front().second.setState(typed.isSqlNull()?api::EngineValueState::value:api::EngineValueState::sql_null);
+        bool refused=false;
+        try{(void)bulk::DirectPhysicalCellsFromTypedInputRow(bad_row,encoder,nullptr,&bad_values);}
+        catch(const std::invalid_argument&){refused=true;}
+        Check(refused,"stored BLOB conversion admitted dirty/ambiguous/mismatched or legacy locator state");
+      }
+    }
     // Representation admission never enables a caller's raw BLOB as a live
     // generic V1/V2 value, including empty VALUE or contextual SQL NULL.
     for (unsigned state=0;state<3;++state) {

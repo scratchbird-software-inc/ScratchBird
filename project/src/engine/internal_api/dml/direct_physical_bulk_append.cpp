@@ -55,6 +55,9 @@
 #include "index_key_encoding.hpp"
 #include "index_root_generation_publish.hpp"
 #include "physical_mga_cow_store.hpp"
+#include "engine/statement_blob_row_value.hpp"
+#include "dml/native_blob_bulk_diagnostic.hpp"
+#include "memory.hpp"
 #include "sorted_bulk_index_build.hpp"
 #include "uuid.hpp"
 
@@ -4143,23 +4146,64 @@ bool DirectBulkSourceCarriersMatchDestination(
   return true;
 }
 
+struct DirectNativeBlobLifetimeFailure {
+  std::shared_ptr<const NativeBlobBulkLifetimeDiagnosticV3> cause;
+};
+// Borrow only within this synchronous operation. No per-cell map, duplicated
+// payload staging, source-pointer cache, or ownership escaping worker joins.
+struct DirectAdmittedBlobRows {
+  std::span<const NativeBlobRowOperandV3> operands;
+  std::size_t first_row = 0;
+};
+
+CrudStoredValue DirectStoredInputValue(const EngineTypedValue& typed,
+    dt::CanonicalTypeId target, DirectAdmittedBlobRows& blobs,
+    std::size_t row, std::size_t field) {
+  if(target!=dt::CanonicalTypeId::blob) return detail::DirectStoredValueForColumn(typed,target);
+  const auto key=std::pair{blobs.first_row+row,field};
+  const auto found=std::lower_bound(blobs.operands.begin(),blobs.operands.end(),key,
+      [](const auto& operand,const auto& key){return std::pair{operand.row_index,operand.field_index}<key;});
+  if(found==blobs.operands.end() || std::pair{found->row_index,found->field_index}!=key ||
+      !found->source || !found->source->bound())
+    throw std::invalid_argument("native BLOB admitted row operand no longer bound");
+  const auto probe=[&](CrudStoredValue* provisional) {
+    const auto fact=found->source->Probe();
+    if(!fact.ok()) {
+      if(provisional)core::memory::SecureZeroMemory(provisional->bytes.data(),provisional->bytes.size());
+      throw DirectNativeBlobLifetimeFailure{
+          std::make_shared<const NativeBlobBulkLifetimeDiagnosticV3>(key.first,key.second,fact)};
+    }
+  };
+  probe(nullptr);
+  CrudStoredValue result;
+  if(found->source->state()==dt::BlobValueStateV3::sql_null) result=CrudStoredValue::SqlNull();
+  else {
+    const auto bytes=found->source->bytes();
+    result=CrudStoredValue(bytes.empty()?std::string{}:
+        std::string(reinterpret_cast<const char*>(bytes.data()),bytes.size()));
+  }
+  probe(&result);
+  return result;
+}
+
 PreparedInsertRow PrepareDirectBulkOrderedRowFast(
     const EngineRowValue& input_row,
     const BoundInsertRowTemplate& row_template,
     const InsertRowEncoderPlan& encoder,
     const EngineUuid& row_uuid,
-    bool force_large_values) {
+    bool force_large_values, DirectAdmittedBlobRows& blobs, std::size_t row_index) {
   PreparedInsertRow row;
   row.row_uuid = row_uuid;
   row.values.reserve(input_row.fields.size());
   for (std::size_t index = 0; index < input_row.fields.size(); ++index) {
     const auto& [field, typed] = input_row.fields[index];
-    if (typed.is_null) {
+    const auto target=DirectColumnTypeForField(encoder,field,index);
+    if (typed.is_null && target!=dt::CanonicalTypeId::blob) {
       row.values.push_back({field, CrudStoredValue::SqlNull()});
       row.encoded_bytes += field.size() + 0;
     } else {
-      row.values.push_back({field, detail::DirectStoredValueForColumn(typed,
-          DirectColumnTypeForField(encoder, field, index))});
+      row.values.push_back({field, DirectStoredInputValue(typed,
+          target,blobs,row_index,index)});
       row.encoded_bytes += field.size() + row.values.back().second.bytes.size();
     }
   }
@@ -4174,19 +4218,20 @@ PreparedInsertRow PrepareDirectBulkSharedFieldOrderRowFast(
     const BoundInsertRowTemplate& row_template,
     const InsertRowEncoderPlan& encoder,
     const EngineUuid& row_uuid,
-    bool force_large_values) {
+    bool force_large_values, DirectAdmittedBlobRows& blobs, std::size_t row_index) {
   PreparedInsertRow row;
   row.row_uuid = row_uuid;
   row.values.reserve(input_row.fields.size());
   for (std::size_t field_index = 0; field_index < input_row.fields.size(); ++field_index) {
     const auto& typed = input_row.fields[field_index].second;
     const std::string& field = DirectInputFieldName(request, input_row, field_index);
-    if (typed.is_null) {
+    const auto target=DirectColumnTypeForField(encoder,field,field_index);
+    if (typed.is_null && target!=dt::CanonicalTypeId::blob) {
       row.values.push_back({field, CrudStoredValue::SqlNull()});
       row.encoded_bytes += field.size() + 0;
     } else {
-      row.values.push_back({field, detail::DirectStoredValueForColumn(typed,
-          DirectColumnTypeForField(encoder, field, field_index))});
+      row.values.push_back({field, DirectStoredInputValue(typed,
+          target,blobs,row_index,field_index)});
       row.encoded_bytes += field.size() + row.values.back().second.bytes.size();
     }
   }
@@ -4353,7 +4398,9 @@ DirectPhysicalMgaCowWriteResult WriteDirectPhysicalMgaCowRows(
       auto typed_cells =
           DirectPhysicalCellsFromTypedInputRow(request.borrowed_input_rows[index],
                                               *row_encoder_plan,
-                                              &physical_cell_plan);
+                                              &physical_cell_plan,
+                                              request.native_blob_operands.empty()?nullptr:
+                                                  value_batch?&(*value_batch)[index]:&row.values);
       typed_int64_cells += typed_cells.int64_cells;
       typed_binary_cells += typed_cells.typed_binary_cells;
       typed_null_cells += typed_cells.null_cells;
@@ -5333,7 +5380,7 @@ DirectPhysicalBulkAppendResult PublishDirectStrictBulkAfterPhysicalSuccess(
 
 }  // namespace
 
-DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
+static DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppendImpl(
     const DirectPhysicalBulkAppendRequest& request) {
   const auto test_profile = SelectedTestOptimizationProfile();
   if (test_profile == TestOptimizationProfile::invalid) {
@@ -5808,6 +5855,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   // before row identities, preallocation workers or staging. This also covers
   // reordered/subset input outside the exact-order bulk validator.
   std::shared_ptr<const scratchbird::storage::page::RowDataTemporalSchema> temporal_schema;
+  DirectAdmittedBlobRows admitted_blob_rows{request.native_blob_operands,request.native_blob_first_row};
+  std::size_t admitted_blob_count=0;
   try {
     std::optional<EngineApiDiagnostic> receiver_diagnostic;
     temporal_schema = DirectTemporalPageSchema(relation_descriptor, batch_context.row_encoder_plan,
@@ -5815,7 +5864,22 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     if (receiver_diagnostic)
       return DirectBulkFailureWithEvidence(request, *receiver_diagnostic,
           "destination_receiver_refused", result.evidence, result.dml_summary);
-    for (const auto& row : request.borrowed_input_rows) {
+    if(request.native_blob_first_row>std::numeric_limits<std::size_t>::max()-request.borrowed_input_rows.size())
+      throw std::invalid_argument("native BLOB row window overflow");
+    std::pair<std::size_t,std::size_t> previous_blob{};
+    bool first_blob=true;
+    for(const auto& operand:request.native_blob_operands) {
+      const auto key=std::pair{operand.row_index,operand.field_index};
+      if(!operand.source || request.native_row_packet ||
+          operand.row_index<request.native_blob_first_row ||
+          operand.row_index-request.native_blob_first_row>=request.borrowed_input_rows.size() ||
+          operand.field_index>=request.borrowed_input_rows[operand.row_index-request.native_blob_first_row].fields.size() ||
+          (!first_blob && key<=previous_blob))
+        throw std::invalid_argument("native BLOB operand window/shape/order invalid");
+      first_blob=false;previous_blob=key;
+    }
+    for (std::size_t row_index=0;row_index<request.borrowed_input_rows.size();++row_index) {
+      const auto& row=request.borrowed_input_rows[row_index];
       for (std::size_t ordinal = 0; ordinal < row.fields.size(); ++ordinal) {
         const auto& field = DirectInputFieldName(request, row, ordinal);
         const auto type = DirectColumnTypeForField(batch_context.row_encoder_plan, field, ordinal);
@@ -5823,6 +5887,65 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
           // A column profile only describes stored bytes. It cannot turn a
           // generic input carrier into the required actual native BLOB owner.
           const auto& typed = row.fields[ordinal].second;
+          const auto key=std::pair{request.native_blob_first_row+row_index,ordinal};
+          const auto operand=std::lower_bound(request.native_blob_operands.begin(),request.native_blob_operands.end(),key,
+              [](const auto& item,const auto& key){return std::pair{item.row_index,item.field_index}<key;});
+          if(operand!=request.native_blob_operands.end() && std::pair{operand->row_index,operand->field_index}==key) {
+            const auto column=std::find_if(relation_descriptor.columns.begin(),relation_descriptor.columns.end(),
+                [&](const auto& candidate){return candidate.canonical_name_key==field;});
+            if(column==relation_descriptor.columns.end() || operand->column_uuid!=column->column_uuid ||
+                operand->column_generation!=column->column_generation ||
+                operand->relation_generation!=relation_descriptor.relation_generation ||
+                !typed.binary_value.empty() || !typed.encoded_value.empty() ||
+                (typed.state!=EngineValueState::value && typed.state!=EngineValueState::sql_null))
+              throw std::invalid_argument("native BLOB column/generation/placeholder mismatch");
+            auto& source=*operand->source;
+            const auto* origin=source.origin();
+            const auto& context=request.context;
+            if(!source.bound() || !origin || origin->database!=context.database_uuid.bytes ||
+                origin->session!=context.session_uuid.bytes || origin->transaction!=context.transaction_uuid.bytes ||
+                origin->statement!=context.statement_uuid.bytes || origin->receipt!=context.statement_receipt_uuid.bytes ||
+                origin->snapshot!=context.statement_snapshot_uuid.bytes ||
+                origin->security_context!=context.authorization_context.authority_uuid.bytes ||
+                origin->resource_admission!=context.resource_admission_uuid.bytes ||
+                origin->local_transaction_id!=context.local_transaction_id ||
+                origin->snapshot_generation!=context.statement_snapshot_generation ||
+                origin->security_generation!=context.authorization_context.security_context_generation ||
+                origin->datatype_catalog_snapshot!=context.datatype_catalog_snapshot_uuid.bytes ||
+                origin->datatype_catalog_generation!=context.datatype_catalog_generation ||
+                origin->datatype_registry_generation!=context.datatype_registry_generation)
+              throw std::invalid_argument("native BLOB actual origin does not match current admitted statement");
+            if(!source.profile() || !source.descriptor() || !source.state() ||
+                !dt::ValidateBlobProfileHandleV3(*source.profile()).ok() ||
+                !dt::ValidateBlobExecutionDescriptorV3(*source.profile(),*source.descriptor()).ok())
+              throw std::invalid_argument("native BLOB actual source descriptor/profile invalid");
+            const bool null=*source.state()==dt::BlobValueStateV3::sql_null;
+            if(typed.state!=(null?EngineValueState::sql_null:EngineValueState::value) ||
+                typed.isSqlNull()!=null || (null && (!column->nullable || !source.bytes().empty())))
+              throw std::invalid_argument("native BLOB actual state/nullable destination mismatch");
+            scratchbird::storage::page::RowDataProfileColumnBinding source_binding;
+            EngineApiDiagnostic binding_diagnostic;
+            const auto identity=index_datatypes.find(field);
+            if(identity==index_datatypes.end())
+              throw std::invalid_argument("native BLOB destination datatype binding missing");
+            if(!detail::DirectBuildBlobPageColumn(typed.descriptor,
+                identity->second,1,source.descriptor()->nullable_allowed,column->column_uuid,
+                column->column_generation,&source_binding,&binding_diagnostic))
+              return DirectBulkFailureWithEvidence(request,binding_diagnostic,
+                  "native_blob_source_binding_refused",result.evidence,result.dml_summary);
+            const auto probe_failure=[&](const auto& fact) {
+              auto failure=DirectBulkFailureWithEvidence(request,MakeEngineApiDiagnostic(
+                  std::string(fact.diagnostic_code),"datatype.native_blob.lifetime_refused",std::string(fact.reason),true),
+                  "native_blob_lifetime_refused",result.evidence,result.dml_summary);
+              failure.native_blob_lifetime_diagnostic=std::make_shared<const NativeBlobBulkLifetimeDiagnosticV3>(
+                  key.first,key.second,fact);
+              return failure;
+            };
+            const auto before=source.Probe();
+            if(!before.ok())return probe_failure(before);
+            ++admitted_blob_count;
+            continue;
+          }
           const auto refused = dt::ValidateDatatypeBinaryValueView(
               {type, typed.isSqlNull(), false, typed.binary_value.data(), typed.binary_value.size()});
           return DirectBulkFailureWithEvidence(request,
@@ -5846,6 +5969,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
           (void)detail::DirectStoredValueForColumn(row.fields[ordinal].second, type);
       }
     }
+    if(admitted_blob_count!=request.native_blob_operands.size())
+      throw std::invalid_argument("native BLOB operand is not a supplied BLOB column");
     if (request.native_row_packet != nullptr && request.native_row_packet->present) {
       const auto& frame = *request.native_row_packet;
       if (frame.field_order.size() != frame.column_count)
@@ -5866,9 +5991,29 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
     // preallocation; a NULL row cannot grant a missing datatype capability.
     for (const auto& index : visible_indexes) {
       const auto family = index.family.empty() ? CrudIndexFamilyForProfile(index.profile) : index.family;
-      if (family != kCrudIndexFamilyBtree && family != "unique_btree") continue;
       for (const auto& name : DirectIndexKeyColumns(index)) {
         const auto binding = index_datatypes.find(name);
+        if(binding!=index_datatypes.end() && binding->second.type_id==dt::CanonicalTypeId::blob) {
+          // Native input admission cannot silently activate the old generic
+          // raw-byte index writer. BLOB is unordered; HASH additionally needs
+          // actual binary family/profile and protected persisted-row recheck
+          // bindings, not this legacy label-only index projection.
+          const bool ordered=family==kCrudIndexFamilyBtree || family=="unique_btree";
+          auto diagnostic=MakeEngineApiDiagnostic(
+              ordered?"BLOB.ORDERING_REFUSED":"DATATYPE.DESCRIPTOR.INVALID",
+              "datatype.native_blob.index_binding_refused",ordered?"binary_blob_is_not_an_ordered_index_key":
+                  "native_blob_index_missing_authoritative_family_profile_and_protected_recheck_binding",true);
+          diagnostic.identity_fields.push_back({"index_uuid",index.index_uuid});
+          diagnostic.identity_fields.push_back({"descriptor_uuid",binding->second.descriptor_uuid});
+          diagnostic.fields.push_back({"descriptor_generation",std::to_string(binding->second.descriptor_generation)});
+          if(ordered) {
+            diagnostic.fields.push_back({"ordering_operation_enum","9"});
+            diagnostic.fields.push_back({"reason_enum","83"});
+          }
+          return DirectBulkFailureWithEvidence(request,std::move(diagnostic),
+              "index_datatype_capability_refused",result.evidence,result.dml_summary);
+        }
+        if (family != kCrudIndexFamilyBtree && family != "unique_btree") continue;
         if (binding == index_datatypes.end() || binding->second.type_id != dt::CanonicalTypeId::interval) continue;
         dt::DatatypeSortKeyRequest capability;
         capability.value.type_id = binding->second.type_id;
@@ -6155,6 +6300,7 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   const bool native_bulk_source_carriers_match_destination =
       DirectBulkSourceCarriersMatchDestination(request, batch_context.row_encoder_plan);
   bool native_bulk_typed_logical_batch_bypass =
+      request.native_blob_operands.empty() &&
       request.lane_operation == "native_bulk" &&
       can_use_shared_row_stage_fast_path &&
       native_bulk_source_carriers_match_destination &&
@@ -7121,7 +7267,8 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                     : field;
             break;
           }
-          if (typed.is_null) {
+          const auto target=DirectColumnTypeForField(batch_context.row_encoder_plan,field,field_index);
+          if (typed.is_null && target!=dt::CanonicalTypeId::blob) {
             if (!native_bulk_typed_logical_batch_bypass) {
               staged_value_target.emplace_back(field, CrudStoredValue::SqlNull());
             }
@@ -7129,8 +7276,9 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
               encoded_bytes += field.size() + 0;
             }
           } else {
-            auto stored = detail::DirectStoredValueForColumn(typed,
-                DirectColumnTypeForField(batch_context.row_encoder_plan, field, field_index));
+            auto stored = DirectStoredInputValue(typed,
+                target,
+                admitted_blob_rows,row_ordinal,field_index);
             const auto stored_bytes = stored.bytes.size();
             if (!native_bulk_typed_logical_batch_bypass) {
               staged_value_target.emplace_back(field,
@@ -7266,13 +7414,13 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                                        batch_context.row_template,
                                                        batch_context.row_encoder_plan,
                                                        uuid_batch.row_uuids[row_ordinal],
-                                                       force_large_values_for_insert)
+                                                       force_large_values_for_insert,admitted_blob_rows,row_ordinal)
         : can_use_shared_ordered_row_fast_path
             ? PrepareDirectBulkOrderedRowFast(input_row,
                                               batch_context.row_template,
                                               batch_context.row_encoder_plan,
                                               uuid_batch.row_uuids[row_ordinal],
-                                              force_large_values_for_insert)
+                                              force_large_values_for_insert,admitted_blob_rows,row_ordinal)
             : can_use_ordered_row_fast_path &&
                 DirectInputMatchesEncoderOrder(request,
                                                input_row,
@@ -7281,11 +7429,19 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
                                                     batch_context.row_template,
                                                     batch_context.row_encoder_plan,
                                                     uuid_batch.row_uuids[row_ordinal],
-                                                    force_large_values_for_insert)
-                  : PrepareInsertRowForBatch(synthetic_insert,
+                                                    force_large_values_for_insert,admitted_blob_rows,row_ordinal)
+                  : request.native_blob_operands.empty()
+                      ? PrepareInsertRowForBatch(synthetic_insert,input_row,batch_context.row_template,
+                                                batch_context.row_encoder_plan)
+                      : PrepareInsertRowForBatch(synthetic_insert,
                                              input_row,
                                              batch_context.row_template,
-                                             batch_context.row_encoder_plan);
+                                             batch_context.row_encoder_plan,
+                                             [&](std::size_t field,const auto& column,const auto& typed) {
+                                               return DirectStoredInputValue(typed,
+                                                   dt::CanonicalTypeIdFromStableName(column.canonical_type_name),
+                                                   admitted_blob_rows,row_ordinal,field);
+                                             });
     prepared.row_uuid = uuid_batch.row_uuids[row_ordinal];
     auto values = std::move(prepared.values);
     add_row_stage_elapsed(row_stage_prepare_us, prepare_start);
@@ -9003,6 +9159,18 @@ DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
   AddDirectBulkPhaseEvidence(phase_micros, &result);
   WriteDirectBulkPhaseTrace(request, result, phase_micros);
   return result;
+}
+
+DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(
+    const DirectPhysicalBulkAppendRequest& request) {
+  try { return ExecuteDirectPhysicalBulkAppendImpl(request); }
+  catch(const DirectNativeBlobLifetimeFailure& native) {
+    const auto& fact=native.cause->lifetime;
+    auto failure=DirectBulkFailure(request,MakeEngineApiDiagnostic(std::string(fact.diagnostic_code),
+        "datatype.native_blob.lifetime_refused",std::string(fact.reason),true),"native_blob_lifetime_refused");
+    failure.native_blob_lifetime_diagnostic=native.cause;
+    return failure;
+  }
 }
 
 }  // namespace scratchbird::engine::internal_api::dml

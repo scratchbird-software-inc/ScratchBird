@@ -8,6 +8,7 @@
 
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "dml/native_bulk_ingest_api.hpp"
+#include "engine/statement_blob_row_value.hpp"
 #include "dml/test_optimization_profile.hpp"
 
 #include "api_diagnostics.hpp"
@@ -182,10 +183,26 @@ std::size_t AdaptiveWindowRows(const EngineExecuteNativeBulkIngestRequest& reque
   const std::size_t sample_rows = std::min<std::size_t>(request.canonical_rows.size(), 256);
   const EngineApiU64 sample_bytes = EstimateRowsetBytes(
       std::span<const EngineRowValue>(request.canonical_rows.data(), sample_rows));
-  const EngineApiU64 average_bytes =
+  // Native placeholders intentionally contain no shadow payload. Account the
+  // actual sealed staging extent as an estimate, not authority to read it or
+  // enlarge the source/destination grants. No data or component is copied.
+  EngineApiU64 blob_row_bytes=0, maximum_blob_row_bytes=0;
+  std::size_t blob_row=std::numeric_limits<std::size_t>::max();
+  for(const auto& operand:request.native_blob_operands) {
+    if(operand.row_index!=blob_row) {blob_row=operand.row_index;blob_row_bytes=0;}
+    const auto bytes=operand.source->bytes().size();
+    if(bytes>std::numeric_limits<EngineApiU64>::max()-blob_row_bytes) return 1;
+    blob_row_bytes+=bytes;
+    maximum_blob_row_bytes=std::max(maximum_blob_row_bytes,blob_row_bytes);
+  }
+  EngineApiU64 average_bytes =
       std::max<EngineApiU64>(1, sample_bytes / static_cast<EngineApiU64>(sample_rows));
+  // Scan every native extent, not just the first sampled rows: a late large
+  // value or several BLOB columns must not create an oversized copy window.
+  if(maximum_blob_row_bytes>std::numeric_limits<EngineApiU64>::max()-average_bytes) return 1;
+  average_bytes+=maximum_blob_row_bytes;
   std::size_t rows = static_cast<std::size_t>(kDefaultTargetBytes / average_bytes);
-  rows = std::clamp(rows, kMinRows, kMaxRows);
+  rows = std::clamp(rows, request.native_blob_operands.empty()?kMinRows:std::size_t{1}, kMaxRows);
   return std::min(rows, row_count);
 }
 
@@ -196,6 +213,12 @@ MakeDirectPhysicalRequest(const EngineExecuteNativeBulkIngestRequest& request,
   scratchbird::engine::internal_api::dml::DirectPhysicalBulkAppendRequest direct;
   direct.context = request.context;
   direct.target_table = request.target_table;
+  direct.native_blob_first_row = first_row;
+  const auto first_blob=std::lower_bound(request.native_blob_operands.begin(),request.native_blob_operands.end(),
+      first_row,[](const auto& operand,std::size_t row){return operand.row_index<row;});
+  const auto last_blob=std::lower_bound(first_blob,request.native_blob_operands.end(),first_row+row_count,
+      [](const auto& operand,std::size_t row){return operand.row_index<row;});
+  direct.native_blob_operands={first_blob,last_blob};
   if (!request.canonical_rows.empty()) {
     direct.borrowed_input_rows = std::span<const EngineRowValue>(
         request.canonical_rows.data() + first_row,
@@ -251,6 +274,7 @@ EngineExecuteNativeBulkIngestResult WrapDirectPhysicalResult(
     scratchbird::engine::internal_api::dml::DirectPhysicalBulkAppendResult direct) {
   EngineExecuteNativeBulkIngestResult result;
   result.ok = direct.ok;
+  result.native_blob_lifetime_diagnostic = std::move(direct.native_blob_lifetime_diagnostic);
   result.operation_id = kOperationId;
   result.diagnostics = std::move(direct.diagnostics);
   result.unsupported_features = std::move(direct.unsupported_features);
@@ -395,6 +419,17 @@ EngineExecuteNativeBulkIngestResult EngineExecuteNativeBulkIngest(
         true);
   }
   const std::size_t row_count = NativeBulkRequestRowCount(request);
+  std::pair<std::size_t,std::size_t> previous_blob{};
+  bool first_blob=true;
+  for(const auto& operand:request.native_blob_operands) {
+    const auto key=std::pair{operand.row_index,operand.field_index};
+    if(request.native_row_packet.present || operand.row_index>=request.canonical_rows.size() ||
+        operand.field_index>=request.canonical_rows[operand.row_index].fields.size() ||
+        !operand.source || (!first_blob && key<=previous_blob))
+      return NativeFailure(request,MakeInvalidRequestDiagnostic(kOperationId,
+          "native_blob_operand_shape_or_order_invalid"),true);
+    previous_blob=key;first_blob=false;
+  }
   if (row_count == 0) {
     return NativeFailure(
         request,
@@ -411,7 +446,7 @@ EngineExecuteNativeBulkIngestResult EngineExecuteNativeBulkIngest(
             true),
         true);
   }
-  const bool scan_scalar_fallback = dml::TestScanScalarProfile() &&
+  const bool scan_scalar_fallback = request.native_blob_operands.empty() && dml::TestScanScalarProfile() &&
       !request.canonical_rows.empty() && !request.before_row_publication &&
       !request.before_mutation_publication && !request.before_statement_publication &&
       !request.after_statement_publication && !request.after_statement_rollback &&
@@ -419,6 +454,9 @@ EngineExecuteNativeBulkIngestResult EngineExecuteNativeBulkIngest(
   if (dml_trigger_runtime::HasActiveTableTriggerDescriptors(
           request.context,
           request.target_table.uuid)) {
+    if(!request.native_blob_operands.empty())
+      return NativeFailure(request,MakeInvalidRequestDiagnostic(kOperationId,
+          "native_blob_operands_cannot_be_dropped_by_trigger_fallback"),true);
     if (request.canonical_rows.empty()) {
       return NativeFailure(
           request,

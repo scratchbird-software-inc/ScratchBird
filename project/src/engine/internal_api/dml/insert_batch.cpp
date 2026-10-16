@@ -1585,7 +1585,10 @@ PreparedInsertRow PrepareInsertRowForBatch(const EngineInsertRowsRequest& reques
 PreparedInsertRow PrepareInsertRowForBatch(const EngineInsertRowsRequest& request,
                                            const EngineRowValue& input_row,
                                            const BoundInsertRowTemplate& row_template,
-                                           const InsertRowEncoderPlan& row_encoder_plan) {
+                                           const InsertRowEncoderPlan& row_encoder_plan,
+                                           const std::function<CrudStoredValue(std::size_t,
+                                               const InsertRowEncoderColumnPlan&,const EngineTypedValue&)>&
+                                               stored_value_converter) {
   PreparedInsertRow row;
   if (row_encoder_plan.columns.empty()) {
     row.values = RowValuePairs(input_row);
@@ -1598,6 +1601,7 @@ PreparedInsertRow PrepareInsertRowForBatch(const EngineInsertRowsRequest& reques
         }
         const auto& typed = input_row.fields[index].second;
         row.values.push_back({input_row.fields[index].first,
+                              stored_value_converter?stored_value_converter(index,column,typed):
                               dml::detail::DirectStoredValueForColumn(typed,
                                   core::datatypes::CanonicalTypeIdFromStableName(
                                       column.canonical_type_name))});

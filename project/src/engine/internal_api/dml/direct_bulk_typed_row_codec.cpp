@@ -1148,7 +1148,7 @@ std::vector<scratchbird::storage::page::RowDataCell> DirectPhysicalCells(
       // The receiver's owner must still validate these canonical components.
       // A retained profile-bound value cannot masquerade as opaque BINARY to
       // evade the receiving profile-aware row codec.
-      if (DirectRequiresNativeProfile(retained_type))
+      if (DirectRequiresNativeProfile(retained_type) || retained_type==dt::CanonicalTypeId::blob)
         cell.value.type_id = retained_type;
     }
     if (lob) {
@@ -1174,7 +1174,8 @@ std::vector<scratchbird::storage::page::RowDataCell> DirectPhysicalCells(
 DirectPhysicalTypedCells DirectPhysicalCellsFromTypedInputRow(
     const EngineRowValue& input_row,
     const InsertRowEncoderPlan& row_encoder_plan,
-    const std::vector<DirectFixedWidthPayloadValidationColumnPlan>* column_plan) {
+    const std::vector<DirectFixedWidthPayloadValidationColumnPlan>* column_plan,
+    const CrudValueFields* stored_native_blob_row) {
   DirectPhysicalTypedCells result;
   result.cells.reserve(input_row.fields.size());
   std::uint16_t ordinal = 1;
@@ -1191,8 +1192,34 @@ DirectPhysicalTypedCells DirectPhysicalCellsFromTypedInputRow(
         column_plan != nullptr && field_index < column_plan->size()
             ? (*column_plan)[field_index].target_type
             : dt::CanonicalTypeIdFromStableName(std::string(target_type));
-    auto cell =
-        column_plan != nullptr && field_index < column_plan->size()
+    scratchbird::storage::page::RowDataCell cell;
+    if(target_type_id==dt::CanonicalTypeId::blob && stored_native_blob_row) {
+      if(!typed.binary_value.empty() || !typed.encoded_value.empty())
+        throw std::invalid_argument("native BLOB placeholder carries a shadow payload");
+      if(field_index>=row_encoder_plan.columns.size())
+        throw std::invalid_argument("stored BLOB column layout missing");
+      const auto& name=row_encoder_plan.columns[field_index].column_name;
+      const CrudStoredValue* stored=nullptr;
+      for(const auto& [field,value]:*stored_native_blob_row) if(field==name) {
+        if(stored)throw std::invalid_argument("ambiguous stored BLOB column");
+        stored=&value;
+      }
+      if(!stored || !stored->valid() ||
+          (!stored->isPresent() && !stored->isSqlNull() && stored->state!=EngineValueState::lob_handle))
+        throw std::invalid_argument("stored BLOB representation missing or unresolved");
+      if(stored->isSqlNull()!=typed.isSqlNull())
+        throw std::invalid_argument("stored BLOB and input states disagree");
+      cell.column_ordinal=ordinal++;
+      if(stored->state==EngineValueState::lob_handle) {
+        cell.external_value=scratchbird::storage::page::DecodeRowExternalValueLocator(
+            {reinterpret_cast<const std::uint8_t*>(stored->bytes.data()),stored->bytes.size()});
+        if(!cell.external_value)throw std::invalid_argument("stored BLOB external locator invalid");
+      } else {
+        cell.value.type_id=dt::CanonicalTypeId::blob;
+        cell.value.is_null=stored->isSqlNull();
+        cell.value.payload.assign(stored->bytes.begin(),stored->bytes.end());
+      }
+    } else cell = column_plan != nullptr && field_index < column_plan->size()
             ? DirectPhysicalCellFromTypedValueWithPlan(
                   ordinal++, typed, (*column_plan)[field_index])
             : DirectPhysicalCellFromTypedValue(ordinal++, typed, target_type);
@@ -1204,10 +1231,11 @@ DirectPhysicalTypedCells DirectPhysicalCellsFromTypedInputRow(
                target_type_id == dt::CanonicalTypeId::character) {
       ++result.character_cells;
     }
-    if (!cell.value.is_null &&
-        cell.value.type_id != dt::CanonicalTypeId::character) {
+    const auto counted_type=cell.external_value && target_type_id==dt::CanonicalTypeId::blob
+        ? dt::CanonicalTypeId::blob:cell.value.type_id;
+    if (!cell.value.is_null && counted_type != dt::CanonicalTypeId::character) {
       ++result.typed_binary_cells;
-      ++result.typed_cell_counts[cell.value.type_id];
+      ++result.typed_cell_counts[counted_type];
     }
     result.cells.push_back(std::move(cell));
   }

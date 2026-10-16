@@ -131,7 +131,10 @@ DirectPhysicalTypedCells DirectPhysicalCellsFromTypedInputRow(
     const EngineRowValue& input_row,
     const InsertRowEncoderPlan& row_encoder_plan,
     const std::vector<DirectFixedWidthPayloadValidationColumnPlan>* column_plan =
-        nullptr);
+        nullptr,
+    // Already-admitted stored representations, not source permissions. The
+    // effectful caller must authenticate every native input before conversion.
+    const CrudValueFields* stored_native_blob_row = nullptr);
 
 std::vector<DirectFixedWidthPayloadValidationColumnPlan>
 BuildDirectFixedWidthPayloadValidationPlan(

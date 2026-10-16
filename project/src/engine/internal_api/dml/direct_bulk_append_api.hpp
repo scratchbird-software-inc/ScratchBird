@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 #include "api_types.hpp"
+#include "dml/native_blob_row_operand.hpp"
 #include <functional>
 #include <span>
 #include <string>
@@ -11,6 +12,8 @@ struct DirectPhysicalBulkAppendRequest {
   EngineRequestContext context;
   EngineObjectReference target_table;
   std::span<const EngineRowValue> borrowed_input_rows;
+  std::span<const NativeBlobRowOperandV3> native_blob_operands;
+  std::size_t native_blob_first_row = 0;
   const EngineNativeRowPacketFrame* native_row_packet = nullptr;
   std::vector<std::string> owned_shared_row_field_order;
   std::span<const std::string> shared_row_field_order;
@@ -39,6 +42,7 @@ struct DirectPhysicalBulkAppendResult : EngineApiResult {
   std::vector<EngineUuid> row_version_uuids;
   std::vector<EngineUuid> row_image_uuids;
   bool direct_lane_selected = false;
+  std::shared_ptr<const NativeBlobBulkLifetimeDiagnosticV3> native_blob_lifetime_diagnostic;
 };
 
 DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppend(

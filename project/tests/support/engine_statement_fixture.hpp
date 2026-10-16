@@ -151,6 +151,7 @@ class FixtureEngineStatement {
   }
   FixtureEngineStatement(const FixtureEngineStatement&) = delete;
   FixtureEngineStatement& operator=(const FixtureEngineStatement&) = delete;
+  scratchbird::server_engine_bridge::StatementContextReceiptHandle receipt() const noexcept { return receipt_; }
   api::EngineRequestContext context;
  private:
   scratchbird::server_engine_bridge::StatementContextReceiptHandle receipt_;
@@ -165,6 +166,9 @@ struct FixtureEngineRequest : Request {
                        const api::EngineRequestContext& context)
       : statement(std::make_shared<FixtureEngineStatement>(session, context)) {
     this->context = statement->context;
+  }
+  scratchbird::server_engine_bridge::StatementContextReceiptHandle statement_receipt() const noexcept {
+    return statement->receipt();
   }
  private:
   std::shared_ptr<FixtureEngineStatement> statement;
