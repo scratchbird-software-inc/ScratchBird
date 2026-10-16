@@ -716,6 +716,241 @@ void EncodedHeaderRange(tests::FixtureEngineSession& session,const api::EngineRe
       "native empty encoded range required payload quota or skipped actual empty authentication");
   Check(lease.Release().ok(),"native header range exact lease cleanup"); input.Reset(); SameMemory(baseline);
 }
+void DecodeComponents(tests::FixtureEngineSession& session,const api::EngineRequestContext& context) {
+  Statement statement(session,context); const auto baseline=mm::DefaultMemoryManager().Snapshot();
+  tests::BlobPersistenceFixture reference;
+  for(std::size_t size:{std::size_t{0},std::size_t{1},std::size_t{4095},std::size_t{4096},std::size_t{4097},std::size_t{131079}}) {
+    for(bool is_null:{false,true}) {
+      if(is_null && size) continue;
+      std::vector<platform::byte> content(size);
+      for(std::size_t n=0;n<size;++n) content[n]=static_cast<platform::byte>(n*71);
+      dt::BlobOwnedPersistenceBytesV3 plain,frame; reference.Copy(content,plain); auto grant=reference.Grant();
+      const auto state=is_null ? dt::BlobValueStateV3::sql_null : dt::BlobValueStateV3::value;
+      Check(dt::EncodeOwnedBlobComponentV3(reference.profile,state,plain,grant,frame).ok(),"native decode independent encoded fixture");
+      api::StatementBlobEncodedInputV3 input;
+      Check(api::ReceiveStatementBlobEncodedInputV3(statement.handle,statement.context.session_uuid.bytes,
+          statement.context.statement_receipt_uuid.bytes,frame.bytes(),EncodedBounds(),&input).ok(),"native decode actual encoded receiving");
+      const auto expected=Descriptor(*input.profile()); auto target=expected;
+      api::StatementBlobDecodedComponentV3 output;
+      const auto before=mm::DefaultMemoryManager().Snapshot();
+      const auto decoded=input.DecodeComponent(std::move(target),output);
+      const auto after=mm::DefaultMemoryManager().Snapshot();
+      if(!decoded.ok()) std::cerr<<"native decode failure="<<static_cast<unsigned>(decoded.failure)
+          <<" lifetime="<<decoded.lifetime.diagnostic_code<<':'<<decoded.lifetime.reason
+          <<" component="<<static_cast<unsigned>(decoded.component.failure)<<" reason="<<decoded.component.reason_enum
+          <<" resource="<<static_cast<unsigned>(decoded.resource)<<" need="<<decoded.required<<" avail="<<decoded.available<<'\n';
+      const auto calls=size ? (size+4095)/4096 : 0;
+      Check(decoded.ok() && output.bound() && output.state()==state && output.profile() &&
+          output.descriptor() && ExactDescriptor(*output.descriptor(),expected) &&
+          std::equal(output.bytes().begin(),output.bytes().end(),content.begin(),content.end()) &&
+          decoded.header_bytes_visited==320 && decoded.content_bytes_visited==size && decoded.staged_bytes==size &&
+          decoded.sink_attempts==2+calls && after.allocation_count==before.allocation_count+1,
+          "native decoder did not publish exact descriptor/state/bytes through one real packed allocation");
+      const auto work=input.WorkSnapshot();
+      Check(work && work->at(static_cast<std::size_t>(dt::BlobLifetimeResourceV3::encoded_bytes_read)).invoked==320+size &&
+          work->at(static_cast<std::size_t>(dt::BlobLifetimeResourceV3::reader_calls)).invoked==1+calls &&
+          work->at(static_cast<std::size_t>(dt::BlobLifetimeResourceV3::sink_bytes_written)).invoked==size &&
+          work->at(static_cast<std::size_t>(dt::BlobLifetimeResourceV3::sink_calls)).invoked==2+calls &&
+          work->at(static_cast<std::size_t>(dt::BlobLifetimeResourceV3::sink_bytes_written)).reserved_work==0 &&
+          work->at(static_cast<std::size_t>(dt::BlobLifetimeResourceV3::sink_calls)).reserved_work==0,
+          "native decoder lost actual encoded/body/sink accounting or leaked reserved sink work");
+      auto occupied_target=expected; const auto* saved=output.bytes().data();
+      const auto occupied=input.DecodeComponent(std::move(occupied_target),output);
+      Check(!occupied.ok() && occupied.failure==api::StatementBlobDecodeFailureV3::output_in_use &&
+          !occupied.lifetime_invoked && output.bytes().data()==saved && ExactDescriptor(occupied_target,expected),
+          "native decoder overwrote occupied output or moved refused target metadata");
+      input.Reset();
+      Check(output.bound() && ExactDescriptor(*output.descriptor(),expected) &&
+          std::equal(output.bytes().begin(),output.bytes().end(),content.begin(),content.end()),
+          "native verified artifact depended on retired input/root");
+      output.Reset(); Check(!output.bound() && !output.descriptor() && !output.profile() && !output.state() && output.bytes().empty(),
+          "native decoded reset did not disarm metadata/payload");
+      SameMemory(baseline);
+    }
+  }
+  const std::array<platform::byte,3> content{0,255,129};
+  dt::BlobOwnedPersistenceBytesV3 plain,frame; reference.Copy(content,plain); auto grant=reference.Grant();
+  Check(dt::EncodeOwnedBlobComponentV3(reference.profile,dt::BlobValueStateV3::value,plain,grant,frame).ok(),
+      "native invalid-frame decoder fixture");
+  for(unsigned fault=0;fault<8;++fault) {
+    std::vector<platform::byte> corrupt(frame.bytes().begin(),frame.bytes().end());
+    if(fault==0) corrupt[0]^=1;
+    if(fault==1) corrupt[8]^=1;
+    if(fault==2) corrupt[40]^=1;
+    if(fault==3) corrupt[248]^=1;
+    if(fault==4) corrupt[280]^=1;
+    if(fault==5) corrupt[320]^=1;
+    if(fault==6) corrupt.push_back(1);
+    if(fault==7) corrupt.resize(319);
+    api::StatementBlobEncodedInputV3 input; auto bounds=EncodedBounds();
+    const bool early=fault<3 || fault>5;
+    if(early) {
+      bounds.scratch_bytes=320;
+      bounds.maximum_work[static_cast<std::size_t>(dt::BlobLifetimeResourceV3::encoded_bytes_read)-1]=320;
+      bounds.maximum_work[static_cast<std::size_t>(dt::BlobLifetimeResourceV3::reader_calls)-1]=1;
+      bounds.maximum_work[static_cast<std::size_t>(dt::BlobLifetimeResourceV3::temporary_bytes)-1]=320;
+      bounds.maximum_work[static_cast<std::size_t>(dt::BlobLifetimeResourceV3::sink_bytes_written)-1]=0;
+      bounds.maximum_work[static_cast<std::size_t>(dt::BlobLifetimeResourceV3::sink_calls)-1]=0;
+    }
+    Check(api::ReceiveStatementBlobEncodedInputV3(statement.handle,statement.context.session_uuid.bytes,
+        statement.context.statement_receipt_uuid.bytes,corrupt,bounds,&input).ok(),"native malformed artifact receiving ownership");
+    auto target=Descriptor(*input.profile()); const auto preserved=target;
+    api::StatementBlobDecodedComponentV3 output;
+    const auto physical=mm::DefaultMemoryManager().Snapshot();
+    const auto decoded=input.DecodeComponent(std::move(target),output);
+    const std::array<unsigned,8> reasons{42,43,51,30,31,30,48,41};
+    Check(!decoded.ok() && decoded.failure==api::StatementBlobDecodeFailureV3::component_failed &&
+        decoded.component.reason_enum==reasons[fault] && !output.bound() && !output.descriptor() && output.bytes().empty() &&
+        ExactDescriptor(target,preserved),"native decoder accepted malformed component, lost exact vector or moved failed target");
+    if(early) Check(decoded.content_bytes_visited==0 && !decoded.staged_bytes && !decoded.sink_attempts &&
+        mm::DefaultMemoryManager().Snapshot().allocation_count==physical.allocation_count,
+        "malformed initial header was outranked by unavailable body/hash/output admission");
+    else Check(decoded.staged_bytes==content.size(),"native failed digest lost actual discarded staging work");
+    const auto work=input.WorkSnapshot();
+    Check(work && work->at(static_cast<std::size_t>(dt::BlobLifetimeResourceV3::sink_bytes_written)).reserved_work==0 &&
+        work->at(static_cast<std::size_t>(dt::BlobLifetimeResourceV3::sink_calls)).reserved_work==0,
+        "native failed decode leaked sink reservations");
+    input.Reset(); SameMemory(baseline);
+  }
+  for(std::size_t size=0;size<320;++size) {
+    api::StatementBlobEncodedInputV3 input;
+    Check(api::ReceiveStatementBlobEncodedInputV3(statement.handle,statement.context.session_uuid.bytes,
+        statement.context.statement_receipt_uuid.bytes,frame.bytes().first(size),EncodedBounds(),&input).ok(),
+        "native short artifact receiving");
+    auto descriptor=Descriptor(*input.profile()); api::StatementBlobDecodedComponentV3 output;
+    const auto refused=input.DecodeComponent(std::move(descriptor),output);
+    Check(!refused.ok() && refused.failure==api::StatementBlobDecodeFailureV3::component_failed &&
+        refused.component.reason_enum==41 && refused.component.failure_offset_present && refused.component.failure_offset==size &&
+        !refused.header_bytes_visited && !refused.content_bytes_visited && !refused.staged_bytes && !output.bound(),
+        "native actual short extent read beyond its bound or lost exact first-unavailable offset");
+    input.Reset(); SameMemory(baseline);
+  }
+}
+void DecodeFailures(tests::FixtureEngineSession& session,const api::EngineRequestContext& context) {
+  Statement statement(session,context); const auto baseline=mm::DefaultMemoryManager().Snapshot();
+  tests::BlobPersistenceFixture reference; const std::array<platform::byte,3> content{0,255,129};
+  dt::BlobOwnedPersistenceBytesV3 plain,frame; reference.Copy(content,plain); auto grant=reference.Grant();
+  Check(dt::EncodeOwnedBlobComponentV3(reference.profile,dt::BlobValueStateV3::value,plain,grant,frame).ok(),"native decode failure fixture");
+  {
+    api::StatementBlobEncodedInputV3 input; auto bounds=EncodedBounds();
+    bounds.maximum_work[static_cast<std::size_t>(dt::BlobLifetimeResourceV3::encoded_bytes_read)-1]=320;
+    bounds.maximum_work[static_cast<std::size_t>(dt::BlobLifetimeResourceV3::reader_calls)-1]=1;
+    Check(api::ReceiveStatementBlobEncodedInputV3(statement.handle,statement.context.session_uuid.bytes,
+        statement.context.statement_receipt_uuid.bytes,frame.bytes(),bounds,&input).ok(),"native insufficient-body receiving");
+    auto descriptor=Descriptor(*input.profile()); api::StatementBlobDecodedComponentV3 output;
+    const auto physical=mm::DefaultMemoryManager().Snapshot(); const auto rejected=input.DecodeComponent(std::move(descriptor),output);
+    Check(!rejected.ok() && rejected.failure==api::StatementBlobDecodeFailureV3::resource_preflight &&
+        rejected.resource==dt::BlobLifetimeResourceV3::encoded_bytes_read && rejected.header_bytes_visited==320 &&
+        !rejected.content_bytes_visited && !rejected.staged_bytes && !output.bound() &&
+        mm::DefaultMemoryManager().Snapshot().allocation_count==physical.allocation_count,
+        "valid native header bypassed remaining body admission or allocated output before it");
+  }
+  SameMemory(baseline);
+  for(unsigned fault=0;fault<8;++fault) {
+    api::StatementBlobEncodedInputV3 input;
+    Check(api::ReceiveStatementBlobEncodedInputV3(statement.handle,statement.context.session_uuid.bytes,
+        statement.context.statement_receipt_uuid.bytes,frame.bytes(),EncodedBounds(),&input).ok(),"native bad target receiving");
+    auto descriptor=Descriptor(*input.profile());
+    if(fault==0) descriptor.descriptor_uuid.bytes[0]^=1;
+    if(fault==1) ++descriptor.descriptor_epoch;
+    if(fault==2) descriptor.canonical_type_id=static_cast<std::uint32_t>(dt::CanonicalTypeId::binary);
+    if(fault==3) descriptor.family=scratchbird::engine::ExecutionTypeFamily::binary;
+    if(fault==4) descriptor.domain_uuid.bytes[0]=1;
+    if(fault==5) descriptor.charset_uuid.bytes[0]=1;
+    if(fault==6) descriptor.descriptor_authoritative=false;
+    if(fault==7) descriptor.parser_independent=false;
+    const auto preserved=descriptor; api::StatementBlobDecodedComponentV3 output;
+    const auto rejected=input.DecodeComponent(std::move(descriptor),output);
+    Check(!rejected.ok() && rejected.failure==api::StatementBlobDecodeFailureV3::descriptor_invalid &&
+        !rejected.lifetime_invoked && !output.bound() && ExactDescriptor(descriptor,preserved),
+        "native decoder admitted wrong target metadata or moved it before lifetime");
+    input.Reset(); SameMemory(baseline);
+  }
+  unsigned fired=0; bool completed=false;
+  for(long fault=0;fault<8192;++fault) {
+    {
+      api::StatementBlobEncodedInputV3 input;
+      Check(api::ReceiveStatementBlobEncodedInputV3(statement.handle,statement.context.session_uuid.bytes,
+          statement.context.statement_receipt_uuid.bytes,frame.bytes(),EncodedBounds(),&input).ok(),"native decode fault input");
+      auto descriptor=Descriptor(*input.profile()); const auto expected=descriptor;
+      api::StatementBlobDecodedComponentV3 output;
+      allocation_count=0; allocation_fault_triggered=false; allocation_budget=fault;
+      const auto decoded=input.DecodeComponent(std::move(descriptor),output);
+      allocation_budget=-1; const bool faulted=allocation_fault_triggered;
+      if(faulted) ++fired; else { completed=true; Check(decoded.ok() && output.bound(),"non-faulted native decode failed"); }
+      Check(decoded.ok()==output.bound(),"failed native decode exposed a partial output");
+      if(decoded.ok()) Check(ExactDescriptor(*output.descriptor(),expected) &&
+          std::equal(output.bytes().begin(),output.bytes().end(),content.begin(),content.end()),"faulted optional allocation changed decoded data");
+      else Check(ExactDescriptor(descriptor,expected) && !output.descriptor() && output.bytes().empty(),
+          "native allocation failure consumed metadata or exposed plaintext prefix");
+      const auto work=input.WorkSnapshot();
+      Check(work && !work->at(static_cast<std::size_t>(dt::BlobLifetimeResourceV3::sink_calls)).reserved_work &&
+          !work->at(static_cast<std::size_t>(dt::BlobLifetimeResourceV3::sink_bytes_written)).reserved_work,
+          "failed native decoder left hidden sink reservation debt");
+      output.Reset(); input.Reset();
+    }
+    SameMemory(baseline);
+    if(completed) break;
+  }
+  Check(fired>0 && completed,"native decoder allocation sweep did not reach actual non-faulted completion");
+  std::cout<<"actual native decoder allocation fault positions="<<fired<<'\n';
+  bool failed_capacity=false,passed_capacity=false;
+  for(std::uint64_t capacity=8192;capacity<=65536;capacity+=512) {
+    {
+      api::StatementBlobEncodedInputV3 input; auto bounds=EncodedBounds(); bounds.resident_bytes=capacity;
+      const auto received=api::ReceiveStatementBlobEncodedInputV3(statement.handle,statement.context.session_uuid.bytes,
+          statement.context.statement_receipt_uuid.bytes,frame.bytes(),bounds,&input);
+      if(received.ok()) {
+        auto descriptor=Descriptor(*input.profile()); api::StatementBlobDecodedComponentV3 output;
+        const auto decoded=input.DecodeComponent(std::move(descriptor),output);
+        if(decoded.ok()) passed_capacity=true;
+        else { Check(decoded.failure==api::StatementBlobDecodeFailureV3::allocation_failed && !output.bound(),
+            "native bounded decoder failed outside real physical allocation"); failed_capacity=true; }
+        output.Reset(); input.Reset();
+      }
+    }
+    SameMemory(baseline); if(passed_capacity) break;
+  }
+  Check(failed_capacity && passed_capacity,"native decoder did not prove actual physical refusal and successful capacity admission");
+}
+void DecodeAdmissionAndRevocation(tests::FixtureEngineSession& session,const api::EngineRequestContext& context) {
+  tests::BlobPersistenceFixture reference; const std::array<platform::byte,3> content{0,255,129};
+  dt::BlobOwnedPersistenceBytesV3 plain,frame,null_source,null_frame;
+  reference.Copy(content,plain); auto grant=reference.Grant();
+  Check(dt::EncodeOwnedBlobComponentV3(reference.profile,dt::BlobValueStateV3::value,plain,grant,frame).ok(),"native decode admission fixture");
+  reference.Copy({},null_source); grant=reference.Grant();
+  Check(dt::EncodeOwnedBlobComponentV3(reference.profile,dt::BlobValueStateV3::sql_null,null_source,grant,null_frame).ok(),"native decode NULL admission fixture");
+  for(unsigned mode=0;mode<4;++mode) {
+    Statement statement(session,context); const auto baseline=mm::DefaultMemoryManager().Snapshot();
+    api::StatementBlobEncodedInputV3 input;
+    auto bounds=EncodedBounds(mode==0 ? SB_BLOB_OP_BACKUP_ENCODE_V3 : SB_BLOB_OP_COMPONENT_DECODE_V3);
+    Check(api::ReceiveStatementBlobEncodedInputV3(statement.handle,statement.context.session_uuid.bytes,
+        statement.context.statement_receipt_uuid.bytes,mode==1 ? null_frame.bytes() : frame.bytes(),bounds,&input).ok(),"native decode admission receiving");
+    auto target=Descriptor(*input.profile()); if(mode==1) target.nullable_allowed=false;
+    const auto expected=target; api::StatementBlobDecodedComponentV3 output;
+    if(mode==2) {
+      std::optional<api::RetainedStatementCancellationV1> signal;
+      Check(api::RetainStatementCancellationV1(statement.handle,statement.context.session_uuid.bytes,
+          statement.context.statement_receipt_uuid.bytes,&signal)==SB_ENGINE_STATUS_OK && signal->Request(),"native decoder actual cancellation");
+    }
+    if(mode==3) mga::RevokePublishedSnapshotVector({platform::UuidKind::object,platform::Uuid{statement.context.statement_snapshot_uuid.bytes}});
+    const auto decoded=input.DecodeComponent(std::move(target),output);
+    Check(!decoded.ok() && !output.bound() && !output.descriptor() && output.bytes().empty() && ExactDescriptor(target,expected),
+        "native decode refused admission exposed data or consumed target metadata");
+    if(mode==0) Check(decoded.failure==api::StatementBlobDecodeFailureV3::operation_not_admitted && !decoded.lifetime_invoked,
+        "native decoder upgraded a different encoded operation");
+    if(mode==1) Check(decoded.failure==api::StatementBlobDecodeFailureV3::component_failed &&
+        decoded.component.reason_enum==50 && decoded.component.failure_offset==32 && !decoded.staged_bytes &&
+        !decoded.content_bytes_visited && !decoded.sink_attempts,"native decoder admitted NULL to a nonnullable occurrence");
+    if(mode>1) Check(decoded.failure==api::StatementBlobDecodeFailureV3::lifetime && decoded.lifetime_invoked &&
+        decoded.lifetime.diagnostic_code==(mode==2 ? "PROCESS.CANCELLED" : "CINL.LOB.HANDLE_EXPIRED") &&
+        !decoded.header_bytes_visited && !decoded.content_bytes_visited && !decoded.staged_bytes,
+        "native decoder missed actual cancellation/MGA rejection or read bytes first");
+    if(mode==3) Check(static_cast<unsigned>(decoded.lifetime.fact.parameters.lifetime_enum)==3 &&
+        static_cast<unsigned>(decoded.lifetime.fact.parameters.expiry_reason_enum)==3,"native decoder lost exact stale-snapshot vector");
+    input.Reset(); SameMemory(baseline);
+  }
+}
 void ForeignProcess(tests::FixtureEngineSession& session,const api::EngineRequestContext& context) {
 #if defined(__linux__)
   Statement statement(session,context);
@@ -768,5 +1003,8 @@ void NativeBlobInput(tests::FixtureEngineSession& session,const api::EngineReque
   blob_input_test::ComponentRevocation(session,context);
   blob_input_test::EncodedInputs(session,context);
   blob_input_test::EncodedHeaderRange(session,context);
+  blob_input_test::DecodeComponents(session,context);
+  blob_input_test::DecodeFailures(session,context);
+  blob_input_test::DecodeAdmissionAndRevocation(session,context);
   blob_input_test::ForeignProcess(session,context);
 }

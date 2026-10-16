@@ -4,6 +4,8 @@
 #include "engine/statement_blob_input.hpp"
 
 namespace scratchbird::engine::internal_api {
+class StatementBlobDecodedComponentV3;
+struct StatementBlobDecodeResultV3;
 // Encoded artifacts have an unsigned encoded extent, not SQL state or logical
 // BLOB length. Copying/authenticating an artifact never validates its format.
 struct StatementBlobEncodedInputBoundsV3 {
@@ -29,6 +31,8 @@ class StatementBlobEncodedInputV3 final {
   std::optional<std::uint64_t> extent() const noexcept;
   std::optional<std::array<core::datatypes::BlobLifetimeCounterV3,12>> WorkSnapshot() noexcept;
   StatementBlobInputRetainV3 Retain(core::datatypes::BlobRetainedLifetimeLeaseV3&) noexcept;
+  StatementBlobDecodeResultV3 DecodeComponent(
+      ExecutionTypeDescriptor&& target,StatementBlobDecodedComponentV3&) noexcept;
  private:
   core::datatypes::BlobLifetimeReceiverHostV3Generation1* host_ = nullptr;
   friend StatementBlobInputAdmissionV3 ReceiveStatementBlobEncodedInputV3(

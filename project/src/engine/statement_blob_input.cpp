@@ -698,6 +698,191 @@ class BlobLifetimeReceiverHostV3Generation1 final {
     try { host->memory_->memory()->deallocate(allocation,size,alignof(EncodeWork)); } catch(...) { std::terminate(); }
     host->Drop();
   }
+ private:
+  struct DecodeWork {
+    BlobComponentDigestPassV3 digest;
+    BlobValueStateV3 state=BlobValueStateV3::value;
+    std::size_t length=0;
+  };
+  struct DecodeContext {
+    BlobLifetimeReceiverHostV3Generation1* host;
+    api::StatementBlobDecodeResultV3* result;
+    bool nullable;
+    byte* allocation=nullptr;
+    DecodeWork* work=nullptr;
+    std::size_t allocated=0;
+    u64 reserved_bytes=0,reserved_calls=0;
+    ~DecodeContext() noexcept {
+      if((reserved_bytes || reserved_calls) && !host->ledger_.CancelSinkWork(reserved_bytes,reserved_calls)) std::terminate();
+      DestroyWork(); if(allocation) Free(allocation,allocated);
+    }
+    void DestroyWork() noexcept {
+      if(work) { work->~DecodeWork(); Erase(work,sizeof(DecodeWork)); work=nullptr; }
+    }
+    void Free(byte* bytes,std::size_t count) noexcept {
+      Erase(bytes,count);
+      try { host->memory_->memory()->deallocate(bytes,count,alignof(DecodeWork)); } catch(...) { std::terminate(); }
+    }
+    bool Need(BlobLifetimeResourceV3 resource,u64 amount) noexcept {
+      const auto snapshot=host->ledger_.Snapshot();
+      const auto& counter=snapshot.counters[static_cast<std::size_t>(resource)];
+      const bool valid=snapshot.frozen && !snapshot.terminal_quarantined && counter.invoked<=counter.limit &&
+          counter.reserved_cleanup<=counter.limit-counter.invoked &&
+          counter.reserved_work<=counter.limit-counter.invoked-counter.reserved_cleanup;
+      const u64 available=valid ? counter.limit-counter.invoked-counter.reserved_cleanup-counter.reserved_work : 0;
+      if(amount<=available) return true;
+      result->failure=api::StatementBlobDecodeFailureV3::resource_preflight;
+      result->resource=resource; result->required=amount; result->available=available; return false;
+    }
+    bool Charge(BlobLifetimeResourceV3 resource,u64 amount) noexcept {
+      u64 available=0;
+      if(host->ledger_.Charge(resource,amount,&available)) return true;
+      result->failure=api::StatementBlobDecodeFailureV3::resource_preflight;
+      result->resource=resource; result->required=amount; result->available=available; return false;
+    }
+    bool SinkAttempt(u64 bytes=0) noexcept {
+      ++result->sink_attempts;
+      if(bytes>reserved_bytes || !reserved_calls || !host->ledger_.ConsumeReservedSinkCall(bytes)) {
+        result->failure=api::StatementBlobDecodeFailureV3::internal_failure; return false;
+      }
+      reserved_bytes-=bytes; --reserved_calls; return true;
+    }
+  };
+  static BlobProtectedWorkResultV3 DecodeHeader(void* raw,std::span<const byte> header) noexcept {
+    auto& context=*static_cast<DecodeContext*>(raw); auto& result=*context.result;
+    using Failure=api::StatementBlobDecodeFailureV3;
+    result.header_bytes_visited+=header.size();
+    // This closed native reader returns the complete exact requested range.
+    // Do not accept fragmented header delivery as a complete header admission.
+    result.component=ValidateBlobComponentHeaderNoAllocV3(context.host->profile_,context.host->content_->size(),header,context.nullable);
+    if(!result.component.ok()) { result.failure=Failure::component_failed; return {0,{},{}}; }
+    u64 length=0;
+    for(unsigned n=0;n<8;++n) length|=static_cast<u64>(header[32+n])<<(8*n);
+    if(length>SIZE_MAX-sizeof(DecodeWork)) { result.failure=Failure::extent_invalid; return {0,{},{}}; }
+    const u64 window=std::min(length,context.host->bounds_.window_bytes);
+    const u64 calls=length ? length/context.host->bounds_.window_bytes+(length%context.host->bounds_.window_bytes!=0) : 0;
+    const u64 allocation=length+sizeof(DecodeWork);
+    if(window>UINT64_MAX-allocation) { result.failure=Failure::extent_invalid; return {0,{},{}}; }
+    // Only after the complete actual shape/identity/nullability gate succeeds
+    // may body reads, output, hash workspace or sink work be admitted.
+    if(!context.Need(BlobLifetimeResourceV3::encoded_bytes_read,length) ||
+        !context.Need(BlobLifetimeResourceV3::reader_calls,calls) ||
+        !context.Need(BlobLifetimeResourceV3::sink_bytes_written,length) ||
+        !context.Need(BlobLifetimeResourceV3::sink_calls,2+calls) ||
+        !context.Need(BlobLifetimeResourceV3::temporary_bytes,allocation+window) ||
+        !context.Charge(BlobLifetimeResourceV3::temporary_bytes,allocation)) return {0,{},{}};
+    BlobLifetimeResourceV3 failed; u64 available=0;
+    if(!context.host->ledger_.ReserveSinkWork(length,2+calls,failed,available)) {
+      result.failure=Failure::resource_preflight; result.resource=failed;
+      result.required=failed==BlobLifetimeResourceV3::sink_calls ? 2+calls : length;
+      result.available=available; return {0,{},{}};
+    }
+    context.reserved_bytes=length; context.reserved_calls=2+calls;
+    try {
+      context.allocated=static_cast<std::size_t>(allocation);
+      context.allocation=static_cast<byte*>(context.host->memory_->memory()->allocate(context.allocated,alignof(DecodeWork)));
+      context.work=new(context.allocation) DecodeWork;
+      context.work->length=static_cast<std::size_t>(length);
+      context.work->state=static_cast<BlobValueStateV3>(header[24]);
+      result.component=context.work->digest.BeginDecode(context.host->profile_,context.host->content_->size(),header,context.nullable);
+      if(!result.component.ok()) { result.failure=Failure::component_failed; return {0,{},{}}; }
+      if(!context.SinkAttempt()) return {0,{},{}};
+      result.failure=Failure::none;
+    } catch(const std::bad_alloc&) { result.failure=Failure::allocation_failed; }
+    catch(...) { result.failure=Failure::internal_failure; }
+    // This visitor reports the actual bounded reader lifetime work only. Data,
+    // allocation and format outcomes remain in the owning codec result, never
+    // fake C-ABI callback facts or authority-quarantine for malformed user data.
+    return {0,{},{}};
+  }
+  static BlobProtectedWorkResultV3 DecodeContent(void* raw,std::span<const byte> bytes) noexcept {
+    auto& context=*static_cast<DecodeContext*>(raw); auto& result=*context.result;
+    if(result.failure!=api::StatementBlobDecodeFailureV3::none) return {};
+    const auto offset=result.content_bytes_visited;
+    result.content_bytes_visited+=bytes.size();
+    if(offset>context.work->length || bytes.size()>context.work->length-offset) {
+      result.failure=api::StatementBlobDecodeFailureV3::internal_failure; return {};
+    }
+    result.component=context.work->digest.UpdateContent(bytes);
+    if(!result.component.ok()) { result.failure=api::StatementBlobDecodeFailureV3::component_failed; return {}; }
+    if(!context.SinkAttempt(bytes.size())) return {};
+    std::memcpy(context.allocation+sizeof(DecodeWork)+offset,bytes.data(),bytes.size()); result.staged_bytes+=bytes.size();
+    if(result.content_bytes_visited==context.work->length) {
+      result.component=context.work->digest.FinishDecode();
+      if(!result.component.ok()) result.failure=api::StatementBlobDecodeFailureV3::component_failed;
+    }
+    return {0,{},{}};
+  }
+ public:
+  api::StatementBlobDecodeResultV3 DecodeComponent(engine::ExecutionTypeDescriptor&& target,
+      api::StatementBlobDecodedComponentV3& output) noexcept {
+    using Failure=api::StatementBlobDecodeFailureV3;
+    api::StatementBlobDecodeResultV3 result;
+    if(output.bound()) { result.failure=Failure::output_in_use; return result; }
+    if(!ValidateBlobExecutionDescriptorV3(profile_,target).ok()) { result.failure=Failure::descriptor_invalid; return result; }
+    if(role_!=Role::encoded_artifact || bounds_.operation!=SB_BLOB_OP_COMPONENT_DECODE_V3) {
+      result.failure=Failure::operation_not_admitted; return result;
+    }
+    const auto acquired=AcquirePin(this);
+    if(acquired.status!=BlobReceiverPinAcquireStatusV3::acquired) { result.failure=Failure::admission_closed; return result; }
+    struct Pin { BlobLifetimeReceiverHostV3Generation1* host; ~Pin(){if(host)host->Drop();} } pin{this};
+    DecodeContext context{this,&result,target.nullable_allowed};
+    BlobRetainedLifetimeLeaseV3 source;
+    const auto observe=[&](const BlobLifetimeRuntimeResultV3& value) {
+      result.lifetime_invoked=true; result.lifetime=value;
+      if(!value.ok()) { result.failure=Failure::lifetime; return false; } return true;
+    };
+    const auto finish=[&]() {
+      if(source.retained()) {
+        const auto released=source.Release();
+        if(!released.ok()) { result.failure=Failure::lifetime; result.lifetime=released; }
+      }
+      return result;
+    };
+    const auto retained=Retain(source);
+    if(!observe(retained.runtime)) return finish();
+    if(content_->size()<kBlobComponentHeaderBytesV3) {
+      // Closed copied-input ownership establishes the actual missing header
+      // extent. Authenticate that owner, but never read past its real bounds.
+      if(!observe(source.Probe())) return finish();
+      result.component=ValidateBlobComponentHeaderNoAllocV3(profile_,content_->size(),{});
+      result.component.failure_offset=content_->size();
+      result.failure=Failure::component_failed; return finish();
+    }
+    const BlobTrustedInternalVisitorV3 header(DecodeHeader,&context);
+    if(!observe(source.VisitBoundEncodedRangeBytes(0,kBlobComponentHeaderBytesV3,header))) return finish();
+    if(result.failure!=Failure::none || !context.work) return finish();
+    const auto length=context.work->length; const auto state=context.work->state;
+    const BlobTrustedInternalVisitorV3 body(DecodeContent,&context);
+    if(!observe(source.VisitBoundEncodedRangeBytes(kBlobComponentHeaderBytesV3,length,body))) return finish();
+    if(result.failure!=Failure::none) return finish();
+    if(!length) {
+      result.component=context.work->digest.FinishDecode();
+      if(!result.component.ok()) { result.failure=Failure::component_failed; return finish(); }
+    }
+    if(result.content_bytes_visited!=length || result.staged_bytes!=length) {
+      result.failure=Failure::internal_failure; return finish();
+    }
+    if(!context.SinkAttempt()) return finish();
+    context.DestroyWork();
+    if(!observe(source.Probe())) return finish();
+    result=finish();
+    if(result.failure!=Failure::none) return result;
+    output.allocation_=context.allocation; output.allocated_=context.allocated;
+    output.data_=context.allocation+sizeof(DecodeWork); output.size_=length;
+    output.descriptor_=std::move(target); output.profile_=profile_; output.state_=state; output.host_=this;
+    context.allocation=nullptr; pin.host=nullptr;
+    return result;
+  }
+  static void DestroyDecoded(api::StatementBlobDecodedComponentV3& value) noexcept {
+    auto* host=value.host_; if(!host) return;
+    auto* allocation=value.allocation_; const auto bytes=value.allocated_;
+    value.host_=nullptr; value.allocation_=nullptr; value.data_=nullptr; value.size_=0; value.allocated_=0;
+    value.descriptor_={}; value.profile_={}; value.state_=BlobValueStateV3::sql_null;
+    Erase(allocation,bytes);
+    try { host->memory_->memory()->deallocate(allocation,bytes,alignof(DecodeWork)); } catch(...) { std::terminate(); }
+    host->Drop();
+  }
 };
 } // namespace scratchbird::core::datatypes
 
@@ -777,6 +962,14 @@ std::optional<std::array<core::datatypes::BlobLifetimeCounterV3,12>> StatementBl
 }
 StatementBlobInputRetainV3 StatementBlobEncodedInputV3::Retain(core::datatypes::BlobRetainedLifetimeLeaseV3& lease) noexcept {
   return host_ ? host_->Retain(lease) : StatementBlobInputRetainV3{};
+}
+StatementBlobDecodeResultV3 StatementBlobEncodedInputV3::DecodeComponent(
+    ExecutionTypeDescriptor&& target,StatementBlobDecodedComponentV3& output) noexcept {
+  return host_ ? host_->DecodeComponent(std::move(target),output) : StatementBlobDecodeResultV3{};
+}
+StatementBlobDecodedComponentV3::~StatementBlobDecodedComponentV3() noexcept { Reset(); }
+void StatementBlobDecodedComponentV3::Reset() noexcept {
+  core::datatypes::BlobLifetimeReceiverHostV3Generation1::DestroyDecoded(*this);
 }
 StatementBlobInputAdmissionV3 ReceiveStatementBlobEncodedInputV3(server_engine_bridge::StatementContextReceiptHandle handle,
     const wire::TypedResultUuid& session,const wire::TypedResultUuid& receipt,std::span<const core::platform::byte> input,

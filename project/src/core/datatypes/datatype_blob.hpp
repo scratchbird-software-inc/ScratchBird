@@ -454,6 +454,10 @@ class BlobLifetimeBudgetLedgerV3Generation1 final {
                                  u64* available_before) noexcept;
   bool Charge(BlobLifetimeResourceV3 resource, u64 amount,
               u64* available_before) noexcept;
+  bool ReserveSinkWork(u64 bytes,u64 calls,BlobLifetimeResourceV3& failed_resource,
+                       u64& available) noexcept;
+  bool ConsumeReservedSinkCall(u64 bytes) noexcept;
+  bool CancelSinkWork(u64 bytes,u64 calls) noexcept;
   bool ReserveReaderCall(BlobLifetimeResourceV3 resource, u64 requested,
                          BlobLifetimeResourceV3& failed_resource,
                          u64& available_before) noexcept;

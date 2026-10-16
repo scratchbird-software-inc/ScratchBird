@@ -356,6 +356,19 @@ int main() try {
     api::StatementBlobValueV3 encoding_value;
     Check(encoding.RetainTyped(std::move(encoding_descriptor),encoding_value).ok(),"native artifact shutdown typed source");
     api::StatementBlobComponentV3 artifact;
+    tests::BlobPersistenceFixture decode_fixture;
+    scratchbird::core::datatypes::BlobOwnedPersistenceBytesV3 decode_plain,decode_frame;
+    decode_fixture.Copy(blob_bytes,decode_plain); auto decode_grant=decode_fixture.Grant();
+    Check(scratchbird::core::datatypes::EncodeOwnedBlobComponentV3(decode_fixture.profile,
+        scratchbird::core::datatypes::BlobValueStateV3::value,decode_plain,decode_grant,decode_frame).ok(),
+        "native decoded shutdown fixture");
+    api::StatementBlobEncodedInputV3 decoding;
+    Check(api::ReceiveStatementBlobEncodedInputV3(statement.handle,statement.context.session_uuid.bytes,
+        statement.context.statement_receipt_uuid.bytes,decode_frame.bytes(),blob_input_test::EncodedBounds(),&decoding).ok(),
+        "native decoded shutdown encoded owner");
+    auto decoded_descriptor=blob_input_test::Descriptor(*decoding.profile());
+    const auto expected_decoded_descriptor=decoded_descriptor;
+    api::StatementBlobDecodedComponentV3 verified;
     auto* p = owner->memory()->allocate(128, alignof(std::max_align_t));
     statement.Release();
     // Ordinary public retirement must not revoke the actual retained
@@ -365,6 +378,9 @@ int main() try {
         "native retained component could not encode after public receipt retirement");
     Check(encoding_value.Release().ok(),"native artifact source release before session shutdown");
     encoding.Reset();
+    Check(decoding.DecodeComponent(std::move(decoded_descriptor),verified).ok() && verified.bound(),
+        "native retained decoder failed after ordinary public receipt retirement");
+    decoding.Reset();
     std::barrier start(2);
     std::atomic<unsigned> completed{0}, refused{0}; std::atomic<bool> unexpected{false};
     std::thread allocate([&] {
@@ -403,6 +419,15 @@ int main() try {
         after_artifact_cleanup.current_bytes<before_artifact_cleanup.current_bytes &&
         after_artifact_cleanup.active_capacity_reservation_count+1==before_artifact_cleanup.active_capacity_reservation_count,
         "native artifact shutdown cleanup did not release its actual physical backing and capacity owner");
+    Check(verified.bound() && verified.descriptor() && blob_input_test::ExactDescriptor(*verified.descriptor(),expected_decoded_descriptor) &&
+        std::equal(verified.bytes().begin(),verified.bytes().end(),blob_bytes.begin(),blob_bytes.end()),
+        "session shutdown reclaimed decoded verified artifact or exact occurrence metadata");
+    const auto before_verified_cleanup=mm::DefaultMemoryManager().Snapshot(); verified.Reset();
+    const auto after_verified_cleanup=mm::DefaultMemoryManager().Snapshot();
+    Check(!verified.bound() && !verified.descriptor() && !verified.profile() && !verified.state() &&
+        after_verified_cleanup.current_bytes<before_verified_cleanup.current_bytes &&
+        after_verified_cleanup.active_capacity_reservation_count+1==before_verified_cleanup.active_capacity_reservation_count,
+        "native decoded artifact teardown failed actual physical/metadata/capacity cleanup");
     AllocationRefuses(*owner,1);
     owner->memory()->deallocate(p,128,alignof(std::max_align_t));
     Check(owner->Release() == SB_ENGINE_STATUS_OK, "post-session retained cleanup");

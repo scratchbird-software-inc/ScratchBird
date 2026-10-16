@@ -111,6 +111,14 @@ class BlobLifetimeRuntimeConformanceAccessV3 final {
                      u64* available) noexcept {
     return ledger.Charge(resource, amount, available);
   }
+  static bool ReserveSink(BlobLifetimeBudgetLedgerV3Generation1& ledger,u64 bytes,u64 calls,
+      BlobLifetimeResourceV3& resource,u64& available) noexcept { return ledger.ReserveSinkWork(bytes,calls,resource,available); }
+  static bool ConsumeSink(BlobLifetimeBudgetLedgerV3Generation1& ledger,u64 bytes) noexcept {
+    return ledger.ConsumeReservedSinkCall(bytes);
+  }
+  static bool CancelSink(BlobLifetimeBudgetLedgerV3Generation1& ledger,u64 bytes,u64 calls) noexcept {
+    return ledger.CancelSinkWork(bytes,calls);
+  }
   static bool Reserve(BlobLifetimeBudgetLedgerV3Generation1& ledger,
                       u64 ordinary, u64 cleanup, u64* available) noexcept {
     return ledger.ReserveOrdinaryAndCleanup(ordinary, cleanup, available);
@@ -3898,6 +3906,55 @@ void GuardedEncodedRangeBoundaries() {
         context.calls==0 && context.visitor_calls==0 && f.fake.pins==0 && CountCall(f.fake,'L')==1,
         "encoded range method upgraded a logical capability or leaked its cleanup");
   }
+}
+
+void ReservedSinkWorkAccounting() {
+  using Access=dt::BlobLifetimeRuntimeConformanceAccessV3;
+  using Resource=dt::BlobLifetimeResourceV3;
+  dt::BlobLifetimeBudgetLedgerV3Generation1 ledger;
+  dt::BlobLifetimeBudgetConfigurationV3Generation1 config;
+  config.limits.fill(UINT64_MAX);
+  config.limits[static_cast<unsigned>(Resource::sink_bytes_written)-1]=12;
+  config.limits[static_cast<unsigned>(Resource::sink_calls)-1]=3;
+  Check(Access::Configure(ledger,config)&&Access::Freeze(ledger),"reserved sink actual ledger construction");
+  Resource resource{}; std::uint64_t available=0;
+  Check(Access::ReserveSink(ledger,8,2,resource,available),"exact sink reservation refused");
+  const auto initial=Access::Snapshot(ledger);
+  Check(initial.counters[4].reserved_work==8 && initial.counters[6].reserved_work==2,
+      "sink reservation did not atomically retain both credits");
+  Check(!Access::ReserveSink(ledger,5,1,resource,available) && resource==Resource::sink_bytes_written && available==4 &&
+      !Access::ReserveSink(ledger,1,2,resource,available) && resource==Resource::sink_calls && available==1,
+      "sink reservation admitted excess bytes/calls or lost exact shortage");
+  const auto refused=Access::Snapshot(ledger);
+  Check(refused.counters[4].reserved_work==8 && refused.counters[6].reserved_work==2 &&
+      refused.counters[4].invoked==0 && refused.counters[6].invoked==0,
+      "failed sink reservation partially changed other credits or fabricated invocation");
+  Check(!Access::Charge(ledger,Resource::sink_bytes_written,5,&available) && available==4 &&
+      Access::Charge(ledger,Resource::sink_bytes_written,4,&available) && Access::ConsumeSink(ledger,2) &&
+      Access::CancelSink(ledger,6,1),"reserved sink work was stolen, not settled or not cancelled");
+  auto settled=Access::Snapshot(ledger);
+  Check(settled.counters[4].invoked==6 && settled.counters[6].invoked==1 &&
+      !settled.counters[4].reserved_work && !settled.counters[6].reserved_work,
+      "sink cancellation refunded real work or retained unused debt");
+  Check(Access::ReserveSink(ledger,6,1,resource,available),"remaining exact sink capacity refused");
+  Access::SetCounter(ledger,Resource::logical_bytes_read,1,2,0);
+  Check(!Access::Charge(ledger,Resource::logical_bytes_read,0,&available) &&
+      Access::Snapshot(ledger).terminal_quarantined && Access::CancelSink(ledger,6,1),
+      "other-resource quarantine blocked unconditional reserved sink cleanup");
+  settled=Access::Snapshot(ledger);
+  Check(settled.counters[4].invoked==6 && settled.counters[6].invoked==1 &&
+      !settled.counters[4].reserved_work && !settled.counters[6].reserved_work && settled.terminal_quarantined,
+      "sink cleanup hid quarantine or invented/refunded actual work");
+  dt::BlobLifetimeBudgetLedgerV3Generation1 maximum;
+  config.limits.fill(UINT64_MAX);
+  Check(Access::Configure(maximum,config)&&Access::Freeze(maximum)&&
+      Access::ReserveSink(maximum,UINT64_MAX,1,resource,available)&&Access::ConsumeSink(maximum,UINT64_MAX)&&
+      !Access::ReserveSink(maximum,1,0,resource,available)&&resource==Resource::sink_bytes_written&&available==0&&
+      Access::CancelSink(maximum,0,0),"sink UINT64_MAX settlement wrapped or rejected its exact maximum");
+  const auto exact=Access::Snapshot(maximum);
+  Check(exact.counters[4].invoked==UINT64_MAX && exact.counters[6].invoked==1 &&
+      !exact.counters[4].reserved_work && !exact.counters[6].reserved_work && !exact.terminal_quarantined,
+      "exact maximum sink settlement corrupted other counters");
 }
 
 dt::BlobReaderResultV3 ReplayReader(void* raw, const dt::BlobReaderRequestV3& request) {
@@ -8476,6 +8533,7 @@ int main(int argc, char** argv) {
   ContextualNullDescriptorBinding();
   EncodedReaderAdmissionAndRetention();
   GuardedEncodedRangeBoundaries();
+  ReservedSinkWorkAccounting();
   IndependentResourceCleanupAccounting();
   TwoThreadCloneMoveGuardContention();
   AtomicWinnerReceiptProtocol();

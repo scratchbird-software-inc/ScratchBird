@@ -2257,6 +2257,51 @@ bool BlobLifetimeBudgetLedgerV3Generation1::Charge(
   return admitted;
 }
 
+bool BlobLifetimeBudgetLedgerV3Generation1::ReserveSinkWork(
+    u64 byte_count,u64 call_count,BlobLifetimeResourceV3& failed_resource,u64& available) noexcept {
+  while(lock_.test_and_set(std::memory_order_acquire)) {}
+  auto& bytes=counters_[static_cast<std::size_t>(BlobLifetimeResourceV3::sink_bytes_written)];
+  auto& calls=counters_[static_cast<std::size_t>(BlobLifetimeResourceV3::sink_calls)];
+  const auto valid=[](const auto& c) { return c.invoked<=c.limit && c.reserved_cleanup<=c.limit-c.invoked &&
+      c.reserved_work<=c.limit-c.invoked-c.reserved_cleanup; };
+  const bool numeric=valid(bytes)&&valid(calls);
+  if(!numeric) terminal_quarantined_.store(true,std::memory_order_release);
+  const bool live=numeric&&frozen_.load(std::memory_order_relaxed)&&!terminal_quarantined_.load(std::memory_order_relaxed);
+  failed_resource=BlobLifetimeResourceV3::sink_bytes_written;
+  available=live ? bytes.limit-bytes.invoked-bytes.reserved_cleanup-bytes.reserved_work : 0;
+  bool accepted=live&&byte_count<=available;
+  if(accepted) {
+    failed_resource=BlobLifetimeResourceV3::sink_calls;
+    available=calls.limit-calls.invoked-calls.reserved_cleanup-calls.reserved_work;
+    accepted=call_count<=available;
+  }
+  if(accepted) { bytes.reserved_work+=byte_count; calls.reserved_work+=call_count; }
+  lock_.clear(std::memory_order_release); return accepted;
+}
+bool BlobLifetimeBudgetLedgerV3Generation1::ConsumeReservedSinkCall(u64 byte_count) noexcept {
+  while(lock_.test_and_set(std::memory_order_acquire)) {}
+  auto& bytes=counters_[static_cast<std::size_t>(BlobLifetimeResourceV3::sink_bytes_written)];
+  auto& calls=counters_[static_cast<std::size_t>(BlobLifetimeResourceV3::sink_calls)];
+  const auto valid=[](const auto& c) { return c.invoked<=c.limit && c.reserved_cleanup<=c.limit-c.invoked &&
+      c.reserved_work<=c.limit-c.invoked-c.reserved_cleanup; };
+  const bool numeric=valid(bytes)&&valid(calls)&&byte_count<=bytes.reserved_work&&calls.reserved_work!=0;
+  if(!numeric) terminal_quarantined_.store(true,std::memory_order_release);
+  const bool accepted=numeric&&frozen_.load(std::memory_order_relaxed)&&!terminal_quarantined_.load(std::memory_order_relaxed);
+  if(accepted) { bytes.reserved_work-=byte_count; bytes.invoked+=byte_count; --calls.reserved_work; ++calls.invoked; }
+  lock_.clear(std::memory_order_release); return accepted;
+}
+bool BlobLifetimeBudgetLedgerV3Generation1::CancelSinkWork(u64 byte_count,u64 call_count) noexcept {
+  while(lock_.test_and_set(std::memory_order_acquire)) {}
+  auto& bytes=counters_[static_cast<std::size_t>(BlobLifetimeResourceV3::sink_bytes_written)];
+  auto& calls=counters_[static_cast<std::size_t>(BlobLifetimeResourceV3::sink_calls)];
+  const bool valid=byte_count<=bytes.reserved_work&&call_count<=calls.reserved_work;
+  // Reserved cleanup is unconditional even after another resource quarantines
+  // this operation. Never refund actual calls/bytes already consumed.
+  if(valid) { bytes.reserved_work-=byte_count; calls.reserved_work-=call_count; }
+  else terminal_quarantined_.store(true,std::memory_order_release);
+  lock_.clear(std::memory_order_release); return valid;
+}
+
 bool BlobLifetimeBudgetLedgerV3Generation1::ReserveReaderCall(
     BlobLifetimeResourceV3 resource, u64 requested,
     BlobLifetimeResourceV3& failed_resource, u64& available_before) noexcept {
