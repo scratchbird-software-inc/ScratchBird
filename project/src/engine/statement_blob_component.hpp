@@ -95,4 +95,28 @@ struct StatementBlobComponentResultV3 {
       staged_bytes = 0, sink_attempts = 0;
   bool ok() const noexcept { return failure == StatementBlobComponentFailureV3::none && lifetime_invoked && lifetime.ok(); }
 };
+// Datatype-owned native typed serialization, not SBPS/SBWP/SBLR lane adoption.
+// Owns both the real transferred runtime value and canonical SBBLOB03 bytes.
+class StatementBlobSerializedComponentV3 final {
+ public:
+  StatementBlobSerializedComponentV3() noexcept = default;
+  StatementBlobSerializedComponentV3(const StatementBlobSerializedComponentV3&) = delete;
+  StatementBlobSerializedComponentV3& operator=(const StatementBlobSerializedComponentV3&) = delete;
+  StatementBlobSerializedComponentV3(StatementBlobSerializedComponentV3&&) = delete;
+  StatementBlobSerializedComponentV3& operator=(StatementBlobSerializedComponentV3&&) = delete;
+  bool bound() const noexcept { return frame_.bound() && value_.bound(); }
+  std::span<const core::platform::byte> bytes() const noexcept { return bound() ? frame_.bytes() : std::span<const core::platform::byte>{}; }
+  const ExecutionTypeDescriptor* descriptor() const noexcept { return bound() ? value_.descriptor() : nullptr; }
+  const core::datatypes::BlobValidatedProfileHandleV3* profile() const noexcept { return bound() ? value_.profile() : nullptr; }
+  std::optional<core::datatypes::BlobValueStateV3> state() const noexcept { return bound() ? value_.state() : std::nullopt; }
+  core::datatypes::BlobLifetimeRuntimeResultV3 Release() noexcept {
+    const auto result=value_.Release(); frame_.Reset(); return result;
+  }
+ private:
+  // Reverse destruction drains the actual runtime lease before its remaining
+  // artifact pin, with no borrowed source wrapper or metadata pointer.
+  StatementBlobComponentV3 frame_;
+  StatementBlobValueV3 value_;
+  friend class core::datatypes::BlobLifetimeReceiverHostV3Generation1;
+};
 } // namespace scratchbird::engine::internal_api

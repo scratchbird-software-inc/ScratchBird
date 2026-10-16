@@ -883,6 +883,24 @@ class BlobLifetimeReceiverHostV3Generation1 final {
     try { host->memory_->memory()->deallocate(allocation,bytes,alignof(DecodeWork)); } catch(...) { std::terminate(); }
     host->Drop();
   }
+  static api::StatementBlobComponentResultV3 SerializeAndRetire(api::StatementBlobValueV3& source,
+      api::StatementBlobSerializedComponentV3& output) noexcept {
+    using Failure=api::StatementBlobComponentFailureV3;
+    api::StatementBlobComponentResultV3 result;
+    if(output.frame_.bound() || output.value_.used_) { result.failure=Failure::output_in_use; return result; }
+    result=EncodeComponent(source,output.frame_);
+    if(!result.ok()) return result;
+    // The real, qualified explicit transfer owns the original retain ticket,
+    // pins and shared budget. No new authority or fake metadata clone exists.
+    result.lifetime=output.value_.lease_.MoveReplaceFrom(std::move(source.lease_));
+    if(!result.lifetime.ok()) { output.frame_.Reset(); result.failure=Failure::lifetime; return result; }
+    output.value_.descriptor_=std::move(source.descriptor_);
+    output.value_.profile_=source.profile_; output.value_.state_=source.state_; output.value_.length_=source.length_;
+    output.value_.host_=source.host_; output.value_.used_=true;
+    source.descriptor_={}; source.profile_={}; source.state_=BlobValueStateV3::sql_null; source.length_=0;
+    source.host_=nullptr; source.used_=true;
+    return result;
+  }
 };
 } // namespace scratchbird::core::datatypes
 
@@ -934,6 +952,9 @@ core::datatypes::BlobLifetimeRuntimeResultV3 StatementBlobValueV3::Release() noe
 }
 StatementBlobComponentResultV3 StatementBlobValueV3::EncodeComponent(StatementBlobComponentV3& output) noexcept {
   return core::datatypes::BlobLifetimeReceiverHostV3Generation1::EncodeComponent(*this,output);
+}
+StatementBlobComponentResultV3 StatementBlobValueV3::SerializeAndRetire(StatementBlobSerializedComponentV3& output) noexcept {
+  return core::datatypes::BlobLifetimeReceiverHostV3Generation1::SerializeAndRetire(*this,output);
 }
 StatementBlobComponentV3::~StatementBlobComponentV3() noexcept { Reset(); }
 void StatementBlobComponentV3::Reset() noexcept {

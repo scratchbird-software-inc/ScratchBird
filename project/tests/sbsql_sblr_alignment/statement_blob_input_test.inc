@@ -951,6 +951,57 @@ void DecodeAdmissionAndRevocation(tests::FixtureEngineSession& session,const api
     input.Reset(); SameMemory(baseline);
   }
 }
+void TypedSerialization(tests::FixtureEngineSession& session,const api::EngineRequestContext& context) {
+  Statement statement(session,context); const auto baseline=mm::DefaultMemoryManager().Snapshot();
+  for(std::size_t size:{std::size_t{0},std::size_t{3},std::size_t{4097},std::size_t{131079}}) {
+    for(bool is_null:{false,true}) {
+      if(is_null && size) continue;
+      std::vector<platform::byte> content(size);
+      for(std::size_t n=0;n<size;++n) content[n]=static_cast<platform::byte>(n*97);
+      api::StatementBlobInputV3 input; auto bounds=Bounds(true); bounds.operation=SB_BLOB_OP_COMPONENT_ENCODE_V3;
+      if(is_null) bounds.state=dt::BlobValueStateV3::sql_null;
+      Check(Receive(statement,content,bounds,input)==SB_ENGINE_STATUS_OK,"typed serializer actual native input");
+      auto descriptor=Descriptor(*input.profile()); const auto expected=descriptor;
+      api::StatementBlobValueV3 source;
+      Check(input.RetainTyped(std::move(descriptor),source).ok(),"typed serializer actual source binding");
+      api::StatementBlobSerializedComponentV3 serialized;
+      const auto before=mm::DefaultMemoryManager().Snapshot();
+      const auto result=source.SerializeAndRetire(serialized);
+      const auto after=mm::DefaultMemoryManager().Snapshot();
+      Check(result.ok() && serialized.bound() && serialized.descriptor() && serialized.profile() &&
+          serialized.state()==bounds.state && serialized.bytes().size()==320+size &&
+          ExactDescriptor(*serialized.descriptor(),expected) && !source.bound() && !source.descriptor() && !source.profile() &&
+          after.allocation_count==before.allocation_count+1,
+          "native typed serializer copied/invented sidecar, lost transferred ownership or duplicated payload allocation");
+      api::StatementBlobSerializedComponentV3 second;
+      const auto consumed=source.SerializeAndRetire(second);
+      Check(!consumed.ok() && consumed.failure==api::StatementBlobComponentFailureV3::source_unbound &&
+          !second.bound() && second.bytes().empty() && !second.descriptor(),
+          "native typed serializer reused moved source or published a second serialization");
+      input.Reset();
+      Check(serialized.bound() && ExactDescriptor(*serialized.descriptor(),expected),"typed serialized output borrowed source/root metadata");
+      api::StatementBlobEncodedInputV3 receiver;
+      Check(api::ReceiveStatementBlobEncodedInputV3(statement.handle,statement.context.session_uuid.bytes,
+          statement.context.statement_receipt_uuid.bytes,serialized.bytes(),EncodedBounds(),&receiver).ok(),
+          "typed serialized output actual native encoded receiving");
+      auto target=expected;
+      target.stable_name="receiving language's independent alias";
+      const auto expected_target=target;
+      api::StatementBlobDecodedComponentV3 decoded;
+      Check(receiver.DecodeComponent(std::move(target),decoded).ok() && decoded.bound() && decoded.descriptor() &&
+          ExactDescriptor(*decoded.descriptor(),expected_target) && decoded.state()==bounds.state &&
+          std::equal(decoded.bytes().begin(),decoded.bytes().end(),content.begin(),content.end()),
+          "actual typed native serialization round trip lost binary bytes/state/independent target metadata");
+      Check(serialized.Release().ok() && !serialized.bound() && !serialized.descriptor() && !serialized.profile() &&
+          !serialized.state() && serialized.bytes().empty(),"typed serialization did not drain real lease/artifact owners");
+      receiver.Reset();
+      Check(decoded.bound() && ExactDescriptor(*decoded.descriptor(),expected_target) &&
+          std::equal(decoded.bytes().begin(),decoded.bytes().end(),content.begin(),content.end()),
+          "typed decoded output borrowed sender/receiver metadata or payload");
+      decoded.Reset(); SameMemory(baseline);
+    }
+  }
+}
 void ForeignProcess(tests::FixtureEngineSession& session,const api::EngineRequestContext& context) {
 #if defined(__linux__)
   Statement statement(session,context);
@@ -1006,5 +1057,6 @@ void NativeBlobInput(tests::FixtureEngineSession& session,const api::EngineReque
   blob_input_test::DecodeComponents(session,context);
   blob_input_test::DecodeFailures(session,context);
   blob_input_test::DecodeAdmissionAndRevocation(session,context);
+  blob_input_test::TypedSerialization(session,context);
   blob_input_test::ForeignProcess(session,context);
 }

@@ -53,6 +53,7 @@ struct StatementBlobInputAdmissionV3 {
 class StatementBlobValueV3;
 struct StatementBlobValueResultV3;
 class StatementBlobComponentV3;
+class StatementBlobSerializedComponentV3;
 struct StatementBlobComponentResultV3;
 class StatementBlobInputV3 final {
  public:
@@ -122,6 +123,9 @@ class StatementBlobValueV3 final {
   // Native atomic-buffer sink, not external I/O or wire publication. Requires
   // this actual source to have logical replay + component_encode admission.
   StatementBlobComponentResultV3 EncodeComponent(StatementBlobComponentV3&) noexcept;
+  // Explicit consuming serialization: on success the exact typed owner moves
+  // with its actual component bytes. No copied/reconstructed metadata sidecar.
+  StatementBlobComponentResultV3 SerializeAndRetire(StatementBlobSerializedComponentV3&) noexcept;
   core::datatypes::BlobLifetimeRuntimeResultV3 Probe() noexcept { return lease_.Probe(); }
   core::datatypes::BlobLifetimeRuntimeResultV3 VisitMaterialized(
       const core::datatypes::BlobTrustedInternalVisitorV3& visitor) noexcept { return lease_.VisitBoundMaterializedBytes(visitor); }

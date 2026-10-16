@@ -22,6 +22,8 @@
 #include "../support/blob_persistence_fixture.hpp"
 #include "../support/engine_statement_fixture.hpp"
 #include "engine/statement_blob_input.hpp"
+#include "engine/statement_blob_component.hpp"
+#include "engine/statement_blob_encoded_input.hpp"
 #include "transaction/transaction_api.hpp"
 
 #include <algorithm>
@@ -241,29 +243,40 @@ void StandaloneNullIsNotADatatype() {
         "null_type resolved as a datatype name");
 }
 
-void NativeBlobNullIdentity(const engine::ExecutionTypeDescriptor& target_descriptor,
-    dt::DatatypeCastContext context,const std::string& label) {
+class NativeBlobFixture {
+ public:
+  scratchbird::tests::OwnedTempDirectory directory;
+  engine::internal_api::EngineRequestContext context;
+  std::unique_ptr<scratchbird::tests::FixtureEngineSession> session;
+  NativeBlobFixture() {
+    namespace tests=scratchbird::tests;
+    namespace api=engine::internal_api;
+    scratchbird::storage::database::DatabaseCreateConfig create;
+    create.path=(directory.path()/"blob-null.sbdb").string(); create.page_size=8192;
+    create.database_uuid={platform::UuidKind::database,api::GenerateCrudEngineUuid("database")};
+    create.filespace_uuid={platform::UuidKind::filespace,api::GenerateCrudEngineUuid("filespace")};
+    tests::ConfigureCredentialedFixtureBootstrap(create);
+    const auto created=scratchbird::storage::database::CreateDatabaseFile(create);
+    Check(created.ok(),"actual credentialed native BLOB test node");
+    if(!created.ok()) throw std::runtime_error("native BLOB test node creation failed");
+    context=tests::BootstrapFixtureOwnerContext(create);
+    session=std::make_unique<tests::FixtureEngineSession>(context);
+    api::EngineBeginTransactionRequest begin; begin.context=context; begin.isolation_level="read_committed";
+    const auto begun=api::EngineBeginTransaction(begin);
+    Check(begun.ok,"actual MGA transaction for native BLOB tests");
+    if(!begun.ok) throw std::runtime_error("native BLOB test MGA BEGIN failed");
+    context.transaction_uuid=begun.transaction_uuid; context.local_transaction_id=begun.local_transaction_id;
+    context.snapshot_visible_through_local_transaction_id=begun.snapshot_visible_through_local_transaction_id;
+  }
+  void Close() { session->Close(); directory.Cleanup(); }
+};
+
+void NativeBlobNullIdentity(NativeBlobFixture& fixture,const engine::ExecutionTypeDescriptor& target_descriptor,
+    dt::DatatypeCastContext context,const std::string& label,bool codec=false) {
   namespace tests=scratchbird::tests;
   namespace api=engine::internal_api;
-  namespace db=scratchbird::storage::database;
   namespace bridge=scratchbird::server_engine_bridge;
-  tests::OwnedTempDirectory directory;
-  db::DatabaseCreateConfig create;
-  create.path=(directory.path()/"blob-null.sbdb").string(); create.page_size=8192;
-  create.database_uuid={platform::UuidKind::database,api::GenerateCrudEngineUuid("database")};
-  create.filespace_uuid={platform::UuidKind::filespace,api::GenerateCrudEngineUuid("filespace")};
-  tests::ConfigureCredentialedFixtureBootstrap(create);
-  const auto created=db::CreateDatabaseFile(create);
-  Check(created.ok(),"actual credentialed node for typed BLOB NULL identity");
-  if(!created.ok()) return;
-  auto issued=tests::BootstrapFixtureOwnerContext(create);
-  tests::FixtureEngineSession session(issued);
-  api::EngineBeginTransactionRequest begin; begin.context=issued; begin.isolation_level="read_committed";
-  const auto begun=api::EngineBeginTransaction(begin);
-  Check(begun.ok,"actual MGA transaction for typed BLOB NULL identity");
-  if(!begun.ok) return;
-  issued.transaction_uuid=begun.transaction_uuid; issued.local_transaction_id=begun.local_transaction_id;
-  issued.snapshot_visible_through_local_transaction_id=begun.snapshot_visible_through_local_transaction_id;
+  auto& issued=fixture.context;
   struct Statement {
     bridge::StatementContextReceiptHandle handle;
     api::EngineRequestContext context;
@@ -275,7 +288,7 @@ void NativeBlobNullIdentity(const engine::ExecutionTypeDescriptor& target_descri
   bridge::StatementContextAcquireRequest request; request.engine_context=&issued;
   request.exact_transaction_uuid=issued.transaction_uuid;
   bridge::StatementContextReceiptView view;
-  tests::FixtureEngineSession::Check(bridge::AcquireStatementContextReceipt(session.get(),&request,&statement.handle,&view,nullptr),
+  tests::FixtureEngineSession::Check(bridge::AcquireStatementContextReceipt(fixture.session->get(),&request,&statement.handle,&view,nullptr),
       nullptr,"typed BLOB NULL actual statement");
   tests::FixtureEngineSession::Check(bridge::CopyStatementContextEngineContextV1(statement.handle,&statement.context,nullptr),
       nullptr,"typed BLOB NULL issued context");
@@ -286,6 +299,7 @@ void NativeBlobNullIdentity(const engine::ExecutionTypeDescriptor& target_descri
     bounds.retain_tickets=2; bounds.access_tickets=8;
     bounds.maximum_work.fill(65536); bounds.scratch_bytes=4096;
     bounds.window_bytes=1024; bounds.relative_timeout_ns=1'000'000'000;
+    if(codec) { bounds.operation=SB_BLOB_OP_COMPONENT_ENCODE_V3; bounds.carrier=api::StatementBlobInputCarrierV3::logical_reader; }
     api::StatementBlobInputV3 input;
     const auto received=api::ReceiveStatementBlobInputV3(statement.handle,statement.context.session_uuid.bytes,
         statement.context.statement_receipt_uuid.bytes,{},bounds,&input);
@@ -294,6 +308,43 @@ void NativeBlobNullIdentity(const engine::ExecutionTypeDescriptor& target_descri
     auto source_descriptor=target_descriptor;
     const auto retained=input.RetainTyped(std::move(source_descriptor),source);
     Check(retained.ok(),"actual typed BLOB NULL source ownership");
+    if(codec) {
+      api::StatementBlobSerializedComponentV3 serialized;
+      const auto written=source.SerializeAndRetire(serialized);
+      Check(written.ok() && serialized.bound() && !source.bound() && !source.descriptor(),
+          "native typed BLOB NULL serialization failed or left an aliased source in "+label);
+      Check(serialized.bytes().size()==dt::kBlobComponentHeaderBytesV3 &&
+          std::equal(serialized.bytes().begin(),serialized.bytes().begin()+8,
+              reinterpret_cast<const platform::byte*>("SBBLOB03")) &&
+          serialized.state()==dt::BlobValueStateV3::sql_null,
+          "native typed BLOB NULL binary envelope contains content or lost its current format/state in "+label);
+      Check(serialized.descriptor() && DescriptorEquals(*serialized.descriptor(),target_descriptor),
+          "typed NULL serialization lost exact owned descriptor sidecar in "+label);
+      input.Reset();
+      api::StatementBlobEncodedInputBoundsV3 encoded_bounds;
+      encoded_bounds.operation=SB_BLOB_OP_COMPONENT_DECODE_V3;
+      encoded_bounds.resident_bytes=65536; encoded_bounds.valid_for_ns=60'000'000'000ULL;
+      encoded_bounds.retain_tickets=2; encoded_bounds.access_tickets=8;
+      encoded_bounds.maximum_work.fill(65536); encoded_bounds.scratch_bytes=4096;
+      encoded_bounds.window_bytes=1024; encoded_bounds.relative_timeout_ns=1'000'000'000;
+      api::StatementBlobEncodedInputV3 encoded_input;
+      Check(api::ReceiveStatementBlobEncodedInputV3(statement.handle,statement.context.session_uuid.bytes,
+          statement.context.statement_receipt_uuid.bytes,serialized.bytes(),encoded_bounds,&encoded_input).ok(),
+          "native serialized BLOB NULL encoded receiving in "+label);
+      auto expected_descriptor=target_descriptor; api::StatementBlobDecodedComponentV3 decoded;
+      const auto restored=encoded_input.DecodeComponent(std::move(expected_descriptor),decoded);
+      Check(restored.ok() && decoded.bound() && decoded.descriptor() &&
+          decoded.descriptor()->canonical_type_id==static_cast<std::uint32_t>(dt::CanonicalTypeId::blob) &&
+          decoded.state()==dt::BlobValueStateV3::sql_null && decoded.bytes().empty(),
+          "native typed BLOB NULL binary/serialization round trip lost concrete type/state/content in "+label);
+      Check(decoded.descriptor() && DescriptorEquals(*decoded.descriptor(),target_descriptor),
+          "native typed BLOB NULL deserialization lost exact expected descriptor in "+label);
+      Check(serialized.Release().ok(),"native serialized BLOB NULL exact runtime-owner cleanup in "+label);
+      encoded_input.Reset();
+      Check(decoded.bound() && decoded.bytes().empty() && decoded.descriptor() &&
+          DescriptorEquals(*decoded.descriptor(),target_descriptor),"decoded typed BLOB NULL borrowed source metadata in "+label);
+      decoded.Reset();
+    } else {
     // A concrete runtime BLOB cannot become the untyped parser sentinel.
     // This native negative is separate from the legacy carrier refusal.
     engine::ExecutionTypeDescriptor contextual_target;
@@ -316,14 +367,14 @@ void NativeBlobNullIdentity(const engine::ExecutionTypeDescriptor& target_descri
     input.Reset();
     Check(result.Probe().ok(),"typed BLOB NULL independent result lost real lifetime after source release");
     Check(result.Release().ok() && !result.bound(),"typed BLOB NULL exact result cleanup");
+    }
   }
   tests::FixtureEngineSession::Check(bridge::ReleaseStatementContextReceipt(statement.handle),nullptr,
       "typed BLOB NULL statement cleanup");
   statement.handle={};
-  session.Close(); directory.Cleanup();
 }
 
-void ContextualBindingPreservesTargetType() {
+void ContextualBindingPreservesTargetType(NativeBlobFixture& fixture) {
   for (const auto& descriptor : dt::BuiltinDatatypeDescriptors()) {
     const auto target_descriptor = DescriptorFor(descriptor.type_id, 0x10u);
     for (const auto context : {dt::DatatypeCastContext::implicit,
@@ -408,7 +459,7 @@ void ContextualBindingPreservesTargetType() {
       if(descriptor.type_id==dt::CanonicalTypeId::blob) {
         CheckRejectedAs(identity_result,"BLOB.V1_V2_REFUSED",
                         "generic typed BLOB NULL identity without native lifetime");
-        NativeBlobNullIdentity(target_descriptor,context,label);
+        NativeBlobNullIdentity(fixture,target_descriptor,context,label);
         continue;
       }
       Check(identity_result.ok() &&
@@ -995,7 +1046,7 @@ void BoundOperationsRetainConcreteTypeIds() {
         "character set operation refusal published output or lost policy detail");
 }
 
-void DurableCodecsRequireConcreteTypes() {
+void DurableCodecsRequireConcreteTypes(NativeBlobFixture& fixture) {
   for (const auto& descriptor : dt::BuiltinDatatypeDescriptors()) {
     const std::string label = descriptor.stable_name;
     dt::DatatypeBinaryValue binary_null;
@@ -1026,6 +1077,10 @@ void DurableCodecsRequireConcreteTypes() {
                       "generic temporal NULL physical encode without D710 profile");
       continue;
     }
+    if(descriptor.type_id==dt::CanonicalTypeId::blob) {
+      CheckRejectedAs(encoded,"BLOB.V1_V2_REFUSED","generic BLOB NULL binary envelope without native profile/owner");
+      NativeBlobNullIdentity(fixture,DescriptorFor(descriptor.type_id,0x71u),dt::DatatypeCastContext::explicit_cast,"binary codec",true);
+    } else {
     Check(encoded.ok(), "typed NULL binary encoding failed for " + label);
     Check(encoded.encoded.size() == dt::kDatatypeBinaryEnvelopeHeaderBytes,
           "typed NULL binary envelope contains payload bytes for " + label);
@@ -1034,6 +1089,7 @@ void DurableCodecsRequireConcreteTypes() {
       Check(decoded.ok() && decoded.value.type_id == descriptor.type_id &&
                 decoded.value.is_null && decoded.value.payload.empty(),
             "typed NULL binary round trip lost concrete type/state for " + label);
+    }
     }
 
     dt::DatatypePhysicalValue physical_null;
@@ -1104,7 +1160,7 @@ void DurableCodecsRequireConcreteTypes() {
                   "DATATYPE.NULL_STATE.INVALID", "payload-bearing typed NULL physical encoding");
 }
 
-void SerializationRetainsConcreteType() {
+void SerializationRetainsConcreteType(NativeBlobFixture& fixture) {
   const auto present_descriptor =
       DescriptorFor(dt::CanonicalTypeId::int64, 0x6fu);
   dt::DatatypeSerializationRequest present_request;
@@ -1227,6 +1283,12 @@ void SerializationRetainsConcreteType() {
                 !decoded.value.is_null &&
                 decoded.value.encoded_value.empty(),
             "typed binary NULL generic deserialization published a value");
+      continue;
+    }
+    if(descriptor.type_id==dt::CanonicalTypeId::blob) {
+      CheckRejectedAs(serialized,"BLOB.V1_V2_REFUSED","generic BLOB NULL serialization without native profile/owner");
+      Check(serialized.serialized_value.empty(),"refused generic BLOB serialization published a prefix");
+      NativeBlobNullIdentity(fixture,execution_descriptor,dt::DatatypeCastContext::explicit_cast,"typed serialization codec",true);
       continue;
     }
     Check(serialized.ok(), "typed NULL serialization failed for " + label);
@@ -2440,11 +2502,15 @@ int main(int argc, char** argv) {
       scratchbird::core::memory::DefaultLocalEngineMemoryPolicy(),"base_null_contextual_state").ok(),
       "actual native BLOB NULL fixture memory policy");
   StandaloneNullIsNotADatatype();
-  ContextualBindingPreservesTargetType();
+  {
+  NativeBlobFixture fixture;
+  ContextualBindingPreservesTargetType(fixture);
   ExactDescriptorFidelityAndRefusal();
   BoundOperationsRetainConcreteTypeIds();
-  DurableCodecsRequireConcreteTypes();
-  SerializationRetainsConcreteType();
+  DurableCodecsRequireConcreteTypes(fixture);
+  SerializationRetainsConcreteType(fixture);
+  fixture.Close();
+  }
   PhysicalMalformedRecordsAreRefused();
   PhysicalCodecPersistsThroughFileDevice(fs::absolute(argv[0]));
   BitStringNullRequiresExactV3Profile();
