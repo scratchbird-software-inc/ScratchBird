@@ -37,6 +37,13 @@ bool MatchesExplicitDecimalCodecProfileV1(
 
 bool BuildExactCanonicalUuidRuntimeDescriptorV1(
     const api::RelationalTypeDescriptor& source, api::EngineDescriptor* output) {
+  if (!output) return false;
+  // This exact UUID receiving adapter has a reject/no-output contract. The
+  // shared speculative scalar projector deliberately preserves its caller's
+  // prior selection; do not change that different contract to repair this
+  // boundary. Clear first so an allocation exception also cannot expose a
+  // stale UUID binding. The shared helper publishes only its completed result.
+  *output = {};
   return scratchbird::engine::sblr::BuildExactCanonicalScalarRuntimeDescriptorV1(
       source, core::datatypes::CanonicalTypeId::uuid, output);
 }

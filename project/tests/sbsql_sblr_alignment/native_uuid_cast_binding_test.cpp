@@ -204,6 +204,9 @@ void LiteralBindings() {
     auto refused=expected;
     Check(!s::BuildExactCanonicalUuidRuntimeDescriptorV1(invalid,&refused)&&
         refused==api::EngineDescriptor{},"invalid exact UUID binding clears previous output");
+    auto preserved=expected;
+    Check(!s::BuildExactCanonicalScalarRuntimeDescriptorV1(invalid,dt::CanonicalTypeId::uuid,&preserved)&&
+        preserved==expected,"generic speculative projection preserves prior output on invalid UUID binding");
     dag.descriptors.front()=invalid;const auto failure=s::MaterializeValues(dag,logical,{});
     Check(!failure.ok&&failure.batch.rows.empty()&&failure.batch.columns.empty()&&
         failure.result_bindings.empty(),"invalid UUID cohort publishes no VALUES prefix");
@@ -212,6 +215,28 @@ void LiteralBindings() {
   auto refused=expected;
   Check(!s::BuildExactCanonicalUuidRuntimeDescriptorV1(unadmitted,&refused)&&
       refused==api::EngineDescriptor{},"bare registry fields are not an admitted literal binding");
+  Check(!s::BuildExactCanonicalUuidRuntimeDescriptorV1(source,nullptr),"null exact UUID output admitted");
+  for (const bool uuid_receiver:{false,true}) {
+    const auto project=[&](api::EngineDescriptor* output) {
+      return uuid_receiver ? s::BuildExactCanonicalUuidRuntimeDescriptorV1(source,output)
+          : s::BuildExactCanonicalScalarRuntimeDescriptorV1(source,dt::CanonicalTypeId::uuid,output);
+    };
+    auto calibrated=expected;
+    uuid_key_allocation_count=fail_uuid_key_allocation=0; track_uuid_key_allocations=true;
+    const auto built=project(&calibrated);
+    track_uuid_key_allocations=false;
+    const auto allocations=uuid_key_allocation_count;
+    Check(built && calibrated==expected && allocations>0,"exact UUID allocation-failure calibration");
+    for (std::size_t position=1;position<=allocations;++position) {
+      auto output=expected; bool threw=false;
+      uuid_key_allocation_count=0; fail_uuid_key_allocation=position; track_uuid_key_allocations=true;
+      try {(void)project(&output);} catch (const std::bad_alloc&) {threw=true;}
+      const bool injected=!track_uuid_key_allocations && fail_uuid_key_allocation==0;
+      track_uuid_key_allocations=false; fail_uuid_key_allocation=0;
+      Check(threw && injected && output==(uuid_receiver?api::EngineDescriptor{}:expected),
+            "allocation failure confused UUID reject/no-output with generic failure atomicity");
+    }
+  }
   dag.descriptors.front()=unadmitted;
   const auto unbound_values=s::MaterializeValues(dag,logical,{});
   Check(!unbound_values.ok&&unbound_values.batch.rows.empty()&&
