@@ -24,6 +24,7 @@
 #include <map>
 #include <set>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace scratchbird::storage::page {
@@ -84,6 +85,14 @@ inline constexpr u32 kSlotOffsetRowOffset = 4;
 inline constexpr u32 kSlotOffsetRowBytes = 8;
 inline constexpr u32 kSlotOffsetFlags = 12;
 inline constexpr u32 kSlotOffsetRowChecksum = 16;
+
+// Raw BLOB cell bytes already belong to the builder's exclusive row owner.
+// Borrow them for synchronous serialization only; other codecs own their
+// framed output. No span survives the call or points into this variant itself.
+using EncodedRowCell = std::variant<std::vector<byte>, std::span<const byte>>;
+std::span<const byte> EncodedRowCellBytes(const EncodedRowCell& cell) {
+  return std::visit([](const auto& bytes) -> std::span<const byte> { return bytes; }, cell);
+}
 
 namespace RowFlag {
 inline constexpr u16 deleted = 1u << 0;
@@ -567,7 +576,7 @@ static RowDataPageResult BuildRowDataPageBodyImpl(RowDataPageBody body, u32 page
     body_with_ordinals.compaction_generation = body_with_ordinals.page_generation;
   }
 
-  std::vector<std::vector<byte>> encoded_cells;
+  std::vector<EncodedRowCell> encoded_cells;
   bool external_cells = false;
   const bool blob_format = HasBlobProfile(receiver);
   const auto blob_columns = blob_format ? std::count_if(receiver->columns.begin(), receiver->columns.end(),
@@ -608,13 +617,13 @@ static RowDataPageResult BuildRowDataPageBodyImpl(RowDataPageBody body, u32 page
       previous_column = cell.column_ordinal;
       scratchbird::core::datatypes::DatatypeBinaryResult encoded;
       const auto* binding = ProfileColumn(receiver, cell.column_ordinal);
-      if (binding && binding->blob && !cell.external_value) {
+      const bool raw_blob = binding && binding->blob && !cell.external_value;
+      if (raw_blob) {
         if (cell.value.type_id != dt::CanonicalTypeId::blob || cell.value.payload_is_toast_reference)
           return RowPageError("CINL.LOB.DESCRIPTOR_INVALID", "storage.row_data_page.blob_type_mismatch");
         auto valid = ValidateStoredBlobBytes(cell.value.payload.size(), cell.value.is_null, binding->null_allowed);
         if (!valid.ok()) return valid;
         encoded.status = RowPageOkStatus();
-        encoded.encoded = cell.value.payload;
       } else if (binding && !binding->blob) {
         auto temporal = EncodeProfileCell(cell, *binding);
         if (!temporal.ok()) return temporal;
@@ -641,13 +650,15 @@ static RowDataPageResult BuildRowDataPageBodyImpl(RowDataPageBody body, u32 page
         result.diagnostic = encoded.diagnostic;
         return result;
       }
-      if (encoded.encoded.size() > page_size || body_bytes > page_size ||
-          kCellHeaderBytes + encoded.encoded.size() > page_size - body_bytes) {
+      const auto payload_bytes = raw_blob ? cell.value.payload.size() : encoded.encoded.size();
+      if (payload_bytes > page_size || body_bytes > page_size ||
+          kCellHeaderBytes + payload_bytes > page_size - body_bytes) {
         return RowPageError("SB-ROW-DATA-PAGE-BODY-TOO-LARGE",
                             "storage.row_data_page.body_too_large");
       }
-      body_bytes += kCellHeaderBytes + encoded.encoded.size();
-      encoded_cells.push_back(std::move(encoded.encoded));
+      body_bytes += kCellHeaderBytes + payload_bytes;
+      if (raw_blob) encoded_cells.emplace_back(std::in_place_index<1>, cell.value.payload.data(), cell.value.payload.size());
+      else encoded_cells.emplace_back(std::in_place_index<0>, std::move(encoded.encoded));
     }
   }
   if (body_bytes > page_size) {
@@ -666,7 +677,6 @@ static RowDataPageResult BuildRowDataPageBodyImpl(RowDataPageBody body, u32 page
 
   RowDataPageResult result;
   result.status = RowPageOkStatus();
-  result.body = body_with_ordinals;
   result.serialized.assign(page_size - kPageHeaderSerializedBytes, 0);
   std::memcpy(result.serialized.data() + kOffsetMagic,
               blob_format ? kBlobRowDataMagic : external_cells ? kExternalRowDataMagic : kRowDataMagic, sizeof(kRowDataMagic));
@@ -731,7 +741,7 @@ static RowDataPageResult BuildRowDataPageBodyImpl(RowDataPageBody body, u32 page
                   row.storage_generation);
     offset += kRowHeaderBytes;
     for (const RowDataCell& cell : row.cells) {
-      const std::vector<byte>& encoded = encoded_cells[cell_index++];
+      const auto encoded = EncodedRowCellBytes(encoded_cells[cell_index++]);
       StoreLittle16(result.serialized.data() + offset, cell.column_ordinal);
       const auto* binding = ProfileColumn(receiver, cell.column_ordinal);
       StoreLittle16(result.serialized.data() + offset + 2, cell.external_value ? 1 :
@@ -769,11 +779,11 @@ static RowDataPageResult BuildRowDataPageBodyImpl(RowDataPageBody body, u32 page
                   slot.row_checksum);
     offset += kSlotEntryBytes;
   }
-  body_with_ordinals.slots = slots;
+  body_with_ordinals.slots = std::move(slots);
   body_with_ordinals.free_space_offset = offset;
   body_with_ordinals.free_space_bytes =
       static_cast<u32>(result.serialized.size() - offset);
-  result.body = body_with_ordinals;
+  result.body = std::move(body_with_ordinals);
   StoreLittle32(result.serialized.data() + kOffsetBodyBytes, offset);
   StoreLittle64(result.serialized.data() + kOffsetBodyChecksum, ComputeRowDataPageChecksum(result.serialized));
   return result;

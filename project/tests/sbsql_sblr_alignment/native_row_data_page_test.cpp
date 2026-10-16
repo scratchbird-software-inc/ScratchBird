@@ -592,6 +592,12 @@ void BlobReceivers(){
     auto encoded=page::EncodeNativeRowDataPage(p,receiver);
     auto decoded=page::DecodeNativeRowDataPage(expected,receiver);
     Check(encoded.ok()&&encoded.bytes==expected&&decoded.ok(),"BLOB native page disagrees with independent oracle");
+    {auto body=p.body;
+      const auto* original_payload=body.rows[0].cells[3].value.payload.data();
+      auto owned=page::BuildRowDataPageBodyOwned(std::move(body),p.header.page_size_bytes-32,receiver);
+      Check(owned.ok()&&owned.body.rows[0].cells[3].value.payload.data()==original_payload&&
+          std::equal(owned.serialized.begin(),owned.serialized.end(),expected.begin()+128,expected.end()-32),
+          "owned BLOB row builder cloned payload ownership or changed canonical image");}
     if(decoded.ok()){
       const auto& cells=decoded.page->body.rows[0].cells;
       Check(cells.size()==5&&!cells[1].value.is_null&&cells[1].value.payload.empty()&&
