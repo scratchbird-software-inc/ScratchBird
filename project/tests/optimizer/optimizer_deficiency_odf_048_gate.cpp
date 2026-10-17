@@ -8,6 +8,7 @@
 
 #include "../support/engine_evidence_fixture.hpp"
 #include "../support/engine_statement_fixture.hpp"
+#include "../support/native_key_value_collection_fixture.hpp"
 #include "catalog/column_metadata_codec.hpp"
 #include "memory.hpp"
 #include "database_lifecycle.hpp"
@@ -78,6 +79,7 @@ platform::Uuid NewNativeUuid(platform::UuidKind kind, platform::u64 salt) {
 }
 
 struct Fixture {
+  platform::Uuid kv_collection_uuid;
   std::filesystem::path dir;
   std::filesystem::path database_path;
   platform::Uuid database_uuid;
@@ -255,6 +257,7 @@ Fixture MakeFixture() {
           "ODF-048 table metadata append failed");
   Require(!api::AppendMgaIndexMetadata(metadata, UniqueIdIndex(fixture, metadata)).error,
           "ODF-048 index metadata append failed");
+  fixture.kv_collection_uuid=scratchbird::tests::PublishNativeKeyValueCollectionFixture(metadata,"odf048_native_kv");
   Commit(metadata);
   fixture.owner_context.current_schema_uuid = metadata.current_schema_uuid;
   fixture.session = std::make_shared<scratchbird::tests::FixtureEngineSession>(
@@ -364,9 +367,15 @@ void RequireSummaryOnly(const api::EngineApiResult& result,
           "ODF-048 summary_only result kind drifted");
   Require(result.result_shape.rows.size() == 1,
           "ODF-048 summary_only row count drifted");
-  Require(FieldValue(result.result_shape, 0, "rows_changed") ==
-              std::to_string(rows_changed),
-          "ODF-048 summary_only rows_changed drifted");
+  const auto& fields=result.result_shape.rows.front().fields;
+  const auto count=std::find_if(fields.begin(),fields.end(),[](const auto& field){return field.first=="rows_changed";});
+  Require(count!=fields.end() && count->second.descriptor.canonical_type_name=="uint64" &&
+      count->second.state==api::EngineValueState::value && !count->second.is_null &&
+      count->second.encoded_value.empty() && count->second.binary_value.size()==8,
+      "ODF-048 summary_only rows_changed must be actual native UINT64, not text");
+  std::uint64_t actual=0;
+  for(unsigned i=0;i<8;++i)actual|=std::uint64_t(count->second.binary_value[i])<<(8*i);
+  Require(actual==rows_changed,"ODF-048 summary_only rows_changed drifted");
   Require(!HasField(result.result_shape, 0, "note") &&
               !HasField(result.result_shape, 0, "payload"),
           "ODF-048 summary_only leaked payload");
@@ -452,14 +461,21 @@ void ExerciseDmlPolicies(const Fixture& fixture,
                         "write_result_policy=ids_only")));
 }
 
-void ExerciseNoSqlPolicies(const Fixture& fixture,
+api::EngineUuid ExerciseNoSqlPolicies(const Fixture& fixture,
                            const api::EngineRequestContext& context) {
   scratchbird::tests::FixtureEngineRequest<api::EngineKeyValuePutRequest> kv(
       *fixture.session, context);
-  SetNoSqlWriteRequest(&kv,
-                       NewNativeUuid(platform::UuidKind::object, fixture.salt + 200),
-                       "write_result_policy=return_none");
+  kv.target_object.uuid=fixture.kv_collection_uuid;kv.target_object.object_kind="table";
+  kv.key="policy-persisted-key";kv.value="policy-persisted-value";
+  kv.option_envelopes={"write_result_policy=return_none"};
   RequireReturnNone(api::EngineKeyValuePut(kv));
+  scratchbird::tests::FixtureEngineRequest<api::EngineKeyValueGetRequest> read(*fixture.session,context);
+  read.target_object=kv.target_object;read.key=kv.key;
+  const auto stored=api::EngineKeyValueGet(read);RequireOk(stored,"ODF-048 return_none must actually persist its native KV row");
+  Require(stored.result_shape.rows.size()==1&&FieldValue(stored.result_shape,0,"value")==kv.value,
+      "ODF-048 return_none suppressed or altered actual stored value");
+  const auto stored_identity=stored.result_shape.rows.front().requested_row_uuid;
+  Require(uuid::IsEngineIdentityUuid(stored_identity),"ODF-048 persisted KV row identity must be actual binary UUIDv7");
 
   scratchbird::tests::FixtureEngineRequest<api::EngineDocumentInsertRequest> document_insert(
       *fixture.session, context);
@@ -500,6 +516,7 @@ void ExerciseNoSqlPolicies(const Fixture& fixture,
       NewNativeUuid(platform::UuidKind::object, fixture.salt + 205),
       "odf048.write_result_policy=ids_only");
   RequireIdsOnly(api::EngineTimeSeriesAppend(time_series));
+  return stored_identity;
 }
 
 }  // namespace
@@ -513,7 +530,16 @@ int main() {
   auto fixture = MakeFixture();
   auto context = Begin(fixture, "odf048-write-result-policies");
   ExerciseDmlPolicies(fixture, context);
-  ExerciseNoSqlPolicies(fixture, context);
+  const auto kv_identity=ExerciseNoSqlPolicies(fixture, context);
   Commit(context);
+  const auto reopened=Begin(fixture,"odf048-native-kv-committed-reopen");
+  scratchbird::tests::FixtureEngineRequest<api::EngineKeyValueGetRequest> read(*fixture.session,reopened);
+  read.target_object.uuid=fixture.kv_collection_uuid;read.target_object.object_kind="table";
+  read.key="policy-persisted-key";
+  const auto persisted=api::EngineKeyValueGet(read);RequireOk(persisted,"ODF-048 committed KV reopen failed");
+  Require(persisted.result_shape.rows.size()==1&&persisted.result_shape.rows.front().requested_row_uuid==kv_identity&&
+      FieldValue(persisted.result_shape,0,"value")=="policy-persisted-value",
+      "ODF-048 committed return_none storage/value/binary-identity proof failed");
+  Commit(reopened);
   return EXIT_SUCCESS;
 }

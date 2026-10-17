@@ -377,6 +377,25 @@ EngineTypedValue ScalarValue(const EngineDescriptor& descriptor,
   return typed;
 }
 
+EngineTypedValue UnsignedValue(const EngineDescriptor& descriptor,
+                              EngineApiU64 value) {
+  EngineTypedValue typed;
+  typed.descriptor = descriptor;
+  typed.binary_value.resize(8);
+  for (unsigned i = 0; i < 8; ++i)
+    typed.binary_value[i] = static_cast<std::uint8_t>(value >> (8 * i));
+  typed.setState(EngineValueState::value);
+  return typed;
+}
+
+EngineTypedValue BooleanValue(const EngineDescriptor& descriptor, bool value) {
+  EngineTypedValue typed;
+  typed.descriptor = descriptor;
+  typed.binary_value = {static_cast<std::uint8_t>(value)};
+  typed.setState(EngineValueState::value);
+  return typed;
+}
+
 EngineTypedValue NullValue(const EngineDescriptor& descriptor) {
   EngineTypedValue typed;
   typed.descriptor = descriptor;
@@ -888,7 +907,7 @@ EngineSelectRowsResult EngineSelectRelationDescriptorProjection(
          ScalarValue(text_descriptor, column.canonical_name_key)});
     row.fields.push_back(
         {"ordinal",
-         ScalarValue(ordinal_descriptor, std::to_string(column.ordinal))});
+         UnsignedValue(ordinal_descriptor, column.ordinal)});
     row.fields.push_back(
         {"canonical_type_name",
          ScalarValue(text_descriptor,
@@ -897,8 +916,7 @@ EngineSelectRowsResult EngineSelectRelationDescriptorProjection(
         {"character_length",
          column.character_length == 0
              ? NullValue(ordinal_descriptor)
-             : ScalarValue(ordinal_descriptor,
-                           std::to_string(column.character_length))});
+             : UnsignedValue(ordinal_descriptor, column.character_length)});
     row.fields.push_back(
         {"charset_uuid",
          column.charset_uuid.is_nil()
@@ -921,8 +939,7 @@ EngineSelectRowsResult EngineSelectRelationDescriptorProjection(
              : ScalarValue(text_descriptor, resources.collation_name)});
     row.fields.push_back(
         {"text_large_object",
-         ScalarValue(boolean_descriptor,
-                     *text_large_object ? "true" : "false")});
+         BooleanValue(boolean_descriptor, *text_large_object)});
     rows.push_back(std::move(row));
   }
 

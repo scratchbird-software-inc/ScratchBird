@@ -618,6 +618,7 @@ set_tests_properties(sbsql_sblr_alignment_index_apply_binary_identity PROPERTIES
 add_executable(sbsql_sblr_alignment_write_result_binary_identity
   write_result_binary_identity_test.cpp
   ../../src/engine/internal_api/dml/write_result_policy.cpp
+  ../../src/engine/internal_api/dml/import_reject_model.cpp
   ../../src/engine/internal_api/api_unsupported.cpp)
 target_compile_features(sbsql_sblr_alignment_write_result_binary_identity PRIVATE cxx_std_23)
 target_include_directories(sbsql_sblr_alignment_write_result_binary_identity PRIVATE

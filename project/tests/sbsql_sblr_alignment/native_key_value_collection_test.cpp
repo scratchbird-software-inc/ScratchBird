@@ -699,6 +699,52 @@ api::EngineUuid NativeStoredExpiry(Transaction& transaction, api::EngineUuid col
   return version;
 }
 
+void WritePolicyControls(Transaction& transaction,api::EngineUuid collection) {
+  for(const std::string policy:{"full_payload","return_none","ids_only","summary_only","changed_fields"}) {
+    const auto key="policy-"+policy;
+    auto request=transaction.RequestFor<api::EngineKeyValuePutRequest>(collection);
+    request.key=key;request.value="native-policy-value";
+    request.option_envelopes={"write_result_policy="+policy};
+    const auto result=api::EngineKeyValuePut(request);
+    Good(result,"actual KV mutation must retain selected shared write-result policy");
+    Check(result.dml_summary.rows_changed==1,"write-result policy changed actual physical mutation accounting");
+    Check(std::any_of(result.evidence.begin(),result.evidence.end(),[&](const auto& evidence){
+      const auto* value=std::get_if<std::string>(&evidence.evidence_id);
+      return evidence.evidence_kind=="write_result_policy"&&value&&*value==policy;
+    }),"KV result lacks actual selected write-result policy evidence");
+    const auto stored=transaction.Get(collection,key);Good(stored,"policy must not suppress actual stored effects");
+    Row(stored,0,key,"native-policy-value");
+    if(policy=="return_none")Check(result.result_shape.rows.empty(),"return_none leaked a result row");
+    else if(policy=="summary_only") {
+      const auto& count=Field(result,0,"rows_changed");
+      Check(count.descriptor.canonical_type_name=="uint64"&&count.encoded_value.empty()&&
+          count.binary_value==std::vector<std::uint8_t>({1,0,0,0,0,0,0,0}),"KV summary count is not native UINT64 one");
+    } else {
+      Check(result.result_shape.rows.size()==1&&result.result_shape.rows[0].requested_row_uuid==RowIdentity(stored),
+          "write-result projection changed the actual stored row identity");
+      if(policy=="full_payload")Row(result,0,key,"native-policy-value");
+      if(policy=="ids_only") {
+        Check(RowIdentity(result)==RowIdentity(stored),"ids_only changed native binary identity");
+        for(const auto& [name,value]:result.result_shape.rows[0].fields)
+          Check(value.descriptor.canonical_type_name=="uuid"&&value.binary_value.size()==16&&value.encoded_value.empty(),
+              "ids_only leaked payload or formatted an identity");
+      }
+      if(policy=="changed_fields")Check(Payload(Field(result,0,"changed.value"))=="native-policy-value",
+          "changed_fields lost exact native value bytes");
+    }
+  }
+  for(bool conflict:{false,true}) {
+    auto request=transaction.RequestFor<api::EngineKeyValuePutRequest>(collection);
+    request.key="invalid-result-policy";request.value="must-not-exist";
+    request.option_envelopes=conflict?std::vector<std::string>{"write_result_policy=return_none","result_payload_policy=ids_only"}:
+        std::vector<std::string>{"write_result_policy=unregistered"};
+    Refused(api::EngineKeyValuePut(request),"invalid or conflicting result policy must refuse before native writes",
+        "SB_ENGINE_API_INVALID_REQUEST",conflict?"nosql.key_value_put:write_result_policy_conflict:return_none:ids_only":
+        "nosql.key_value_put:write_result_policy_unsupported:unregistered","engine.api.invalid_request");
+    Check(transaction.Get(collection,request.key).result_shape.rows.empty(),"invalid result policy retained a real row");
+  }
+}
+
 void ExactRows(Transaction& transaction, api::EngineUuid collection) {
   const std::string nul_key("a\0b", 3), nul_value("v\0alue", 6);
   const std::string unicode_key("\xc3\xa9\xf0\x9f\x90\xa6"), unicode_value("\xe4\xb8\xad\xe6\x96\x87");
@@ -1502,7 +1548,7 @@ void Run(const std::string& executable) {
     OperationMemoryControls(transaction);
     OperationPipelineControls(transaction,a);
     OperationInventoryLockOrder(transaction,a);
-    ExactRows(transaction,a); AtomicAndLimits(transaction,a,late_collection);
+    ExactRows(transaction,a); WritePolicyControls(transaction,a); AtomicAndLimits(transaction,a,late_collection);
     ProviderScopeRouting(transaction,a);
     Good(transaction.Put(a,"durable","original"),"persist original stable-identity row");
     durable = RowIdentity(transaction.Get(a,"durable"));

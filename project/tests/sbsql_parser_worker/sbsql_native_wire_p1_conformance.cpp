@@ -1081,6 +1081,62 @@ void CheckSignedPublicResultRows() {
   std::cout << "signed public result renderer conformance passed\n";
 }
 
+void CheckUnsignedPublicResultRows() {
+  namespace packet=scratchbird::wire::public_result;
+  namespace parser=scratchbird::parser::sbsql;
+  const auto frame=[](packet::Kind kind,std::string bytes,std::string metadata) {
+    std::string row,result;
+    Require(packet::Encode(std::vector<packet::Field>{{"v",kind,std::move(bytes)}},&row),"UINT64 row encode failed");
+    Require(packet::Encode(std::vector<packet::Field>{{"row[0]",packet::Kind::row,row},
+        {"row_meta[0]",packet::Kind::text,std::move(metadata)}},&result),"UINT64 result encode failed");
+    return result;
+  };
+  std::vector<std::uint32_t> types;
+  std::vector<std::vector<std::optional<std::string>>> rows;
+  for(const auto value:{std::uint64_t{0},std::uint64_t{1},std::uint64_t{1}<<63,UINT64_MAX}) {
+    Require(parser::DecodePublicResultRowsForTest(frame(packet::Kind::unsigned_integer,
+        packet::Unsigned(value),"v:uint64:not_null"),&types,&rows)&&
+        types==std::vector<std::uint32_t>{1700}&&rows.size()==1&&rows[0].size()==1&&rows[0][0]==std::to_string(value),
+        "UINT64 native bits were lost, sign-cast or narrowed at parser presentation");
+  }
+  const std::array<std::string,6> profiles{
+      frame(packet::Kind::unsigned_integer,packet::Unsigned(UINT64_MAX),"v:uint64:not_null"),
+      frame(packet::Kind::text,{},"v:UiNt64:null"),
+      frame(packet::Kind::signed_integer,std::string(8,'\0'),"v:int64:not_null"),
+      frame(packet::Kind::text,{},"v:int64:null"),
+      frame(packet::Kind::text,"x","v:text:not_null"),
+      frame(packet::Kind::real64,std::string(8,'\0'),"v:real64:not_null")};
+  Require(parser::DecodePublicResultRowsForTest(profiles[1],&types,&rows)&&types==std::vector<std::uint32_t>{1700}&&
+      rows.size()==1&&!rows[0][0],"all-NULL UINT64 exact metadata lost");
+  const auto refuse=[&](std::string payload) {
+    const auto prior_types=types;const auto prior_rows=rows;
+    Require(!parser::DecodePublicResultRowsForTest(payload,&types,&rows)&&types==prior_types&&rows==prior_rows,
+        "malformed UINT64 result published or modified prior caller outputs");
+  };
+  refuse(frame(packet::Kind::text,"18446744073709551615","v:uint64:not_null"));
+  refuse(frame(packet::Kind::bytes,std::string(8,'\xff'),"v:uint64:not_null"));
+  refuse(frame(packet::Kind::signed_integer,std::string(8,'\xff'),"v:uint64:not_null"));
+  refuse(frame(packet::Kind::unsigned_integer,packet::Unsigned(1),"v:int64:not_null"));
+  refuse(frame(packet::Kind::unsigned_integer,packet::Unsigned(1),"v:uint64:null"));
+  refuse(frame(packet::Kind::text,"0","v:uint64:null"));
+  for(unsigned first=0;first<profiles.size();++first)
+    for(unsigned second=0;second<profiles.size();++second) {
+      std::vector<packet::Field> fields,tail;
+      Require(packet::Decode(profiles[first],&fields)&&packet::Decode(profiles[second],&tail),"UINT64 fixture decode failed");
+      tail[0].name="row[1]";tail[1].name="row_meta[1]";fields.insert(fields.end(),tail.begin(),tail.end());
+      std::string payload;Require(packet::Encode(fields,&payload),"UINT64 two-row encode failed");
+      const bool same=(first<2&&second<2)||(first>=2&&first<4&&second>=2&&second<4)||first==second;
+      Require(parser::DecodePublicResultRowsForTest(payload,&types,&rows)==same,"UINT64 cross-row/NULL-first type changed");
+    }
+  std::vector<packet::Field> missing;
+  Require(packet::Decode(profiles[0],&missing),"UINT64 missing-metadata fixture decode failed");
+  missing.pop_back();std::string payload;Require(packet::Encode(missing,&payload),"UINT64 missing-metadata encode failed");
+  refuse(payload);
+  Require(!parser::PublicResultBatchSchemaMatchesForTest(profiles[0],profiles[2])&&
+      parser::PublicResultBatchSchemaMatchesForTest(profiles[0],profiles[1]),"UINT64 batch schema was narrowed or lost on NULL");
+  std::cout<<"UINT64 public result renderer conformance passed\n";
+}
+
 void CheckReal64PublicResultRows() {
   namespace packet = scratchbird::wire::public_result;
   namespace parser = scratchbird::parser::sbsql;
@@ -1139,6 +1195,7 @@ void CheckReal64PublicResultRows() {
 
 int main(int argc, char** argv) {
   CheckSignedPublicResultRows();
+  CheckUnsignedPublicResultRows();
   CheckReal64PublicResultRows();
   if (argc == 2 && std::string_view(argv[1]) == "--result-renderer-only") return EXIT_SUCCESS;
   ::signal(SIGPIPE, SIG_IGN);

@@ -10,6 +10,7 @@
 
 #include "../support/binary_uuid_fixture.hpp"
 #include "../support/engine_statement_fixture.hpp"
+#include "../support/sb_test_temp_compat.hpp"
 #include "catalog/relation_descriptor_projection.hpp"
 #include "catalog/catalog_object_lifecycle.hpp"
 #include "catalog/binary_view_options.hpp"
@@ -24,6 +25,8 @@
 #include "uuid.hpp"
 #include "catalog/column_metadata_codec.hpp"
 #include "datatype_storage_identity.hpp"
+#include "../../src/engine/public_abi_int64_payload.hpp"
+#include "../../src/engine/public_abi_boolean_payload.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -137,10 +140,17 @@ struct Fixture {
 Fixture CreateFixture() {
   Fixture fixture;
   fixture.salt = UniqueMillis();
-  fixture.directory = std::filesystem::temp_directory_path() /
-                      ("scratchbird_relation_descriptor_projection_" +
-                       std::to_string(fixture.salt));
-  std::filesystem::create_directories(fixture.directory);
+  auto pattern = (std::filesystem::temp_directory_path() /
+                  "scratchbird_relation_descriptor_projection_XXXXXX").string();
+  Require(::mkdtemp(pattern.data()) != nullptr,
+          "catalog projection owned fixture directory creation failed");
+  try {
+    fixture.directory = pattern;
+  } catch (...) {
+    std::error_code ignored;
+    std::filesystem::remove(pattern, ignored);
+    throw;
+  }
   fixture.database_path = fixture.directory / "projection.sbdb";
 
   db::DatabaseCreateConfig create;
@@ -433,7 +443,8 @@ api::EngineColumnDefinition Column(const api::EngineRequestContext& context,
 
 api::MgaRelationStorageDescriptor CreateSourceRelation(
     Fixture& fixture,
-    const api::EngineRequestContext& context) {
+    const api::EngineRequestContext& context,
+    bool include_text_lob = true) {
   const auto* utf8 = resources::FindResourceSeedCharset(
       fixture.created.state.resource_seed_catalog, "UTF8");
   Require(utf8 != nullptr && !utf8->resource_uuid.is_nil() &&
@@ -458,6 +469,7 @@ api::MgaRelationStorageDescriptor CreateSourceRelation(
       "text_value",
       "text",
       ResourceMetadata("type=text;character_length=20", utf8->resource_uuid, utf8->default_collation_uuid)));
+  if (include_text_lob) {
   table.table_columns.push_back(Column(
       context,
       2,
@@ -473,11 +485,13 @@ api::MgaRelationStorageDescriptor CreateSourceRelation(
   Require(!rejected_blob_identity.ok &&
               std::any_of(rejected_blob_identity.diagnostics.begin(),
                           rejected_blob_identity.diagnostics.end(), [](const auto& diagnostic) {
-                            return diagnostic.code == "SB_ENGINE_API_INVALID_REQUEST" &&
-                                diagnostic.detail ==
-                                    "ddl.create_table:bound_column_datatype_catalog_mismatch";
+                            return diagnostic.error &&
+                                diagnostic.code == "DATATYPE.DESCRIPTOR.INVALID" &&
+                                diagnostic.message_key == "datatype.native_blob.descriptor" &&
+                                diagnostic.detail == "column_datatype_storage_identity_mismatch";
                           }),
-          "catalog projection accepted a TEXT identity for its BLOB column");
+          "catalog projection did not preserve the owning BLOB identity refusal");
+  }
   RequireOk(api::EngineCreateTable(table),
             "catalog projection source table create failed");
 
@@ -485,7 +499,7 @@ api::MgaRelationStorageDescriptor CreateSourceRelation(
       api::LoadMgaRelationStorageDescriptor(context, fixture.relation_uuid);
   Require(descriptor.ok,
           "catalog projection source descriptor load failed");
-  Require(descriptor.descriptor.columns.size() == 3,
+  Require(descriptor.descriptor.columns.size() == (include_text_lob ? 3 : 2),
           "catalog projection source descriptor column count is invalid");
   Require(descriptor.descriptor.schema_uuid == fixture.schema_uuid,
           "explicit target schema was not persisted in the relation descriptor");
@@ -593,21 +607,34 @@ void RequireProjectionRows(
   const auto& integer = selected.result_shape.rows[0];
   const auto& character = selected.result_shape.rows[1];
   const auto& text_blob = selected.result_shape.rows[2];
-  Require(Field(integer, "ordinal").encoded_value == "0" &&
-              Field(character, "ordinal").encoded_value == "1" &&
-              Field(text_blob, "ordinal").encoded_value == "2",
+  const auto unsigned_value = [](const api::EngineTypedValue& value) {
+    std::string_view bytes;
+    Require(scratchbird::engine::PublicUInt64ScalarPayloadV1(value, &bytes) &&
+                bytes.size() == 8,
+            "catalog UINT64 projection is not the actual native carrier");
+    std::uint64_t result = 0;
+    for (unsigned i = 0; i < 8; ++i)
+      result |= std::uint64_t(static_cast<unsigned char>(bytes[i])) << (8 * i);
+    return result;
+  };
+  Require(unsigned_value(Field(integer, "ordinal")) == 0 &&
+              unsigned_value(Field(character, "ordinal")) == 1 &&
+              unsigned_value(Field(text_blob, "ordinal")) == 2,
           "catalog projection rows are not in descriptor ordinal order");
   Require(Field(integer, "character_length").isSqlNull() &&
               Field(integer, "charset_uuid").isSqlNull() &&
               Field(integer, "collation_uuid").isSqlNull(),
           "non-character projection resources are not SQL NULL");
   Require(!Field(character, "character_length").isSqlNull() &&
-              Field(character, "character_length").encoded_value == "20" &&
+              unsigned_value(Field(character, "character_length")) == 20 &&
               !Field(character, "charset_canonical_name").isSqlNull() &&
               !Field(character, "collation_canonical_name").isSqlNull(),
           "character projection resources are incomplete");
+  std::string_view large_object;
   Require(Field(text_blob, "character_length").isSqlNull() &&
-              Field(text_blob, "text_large_object").encoded_value == "true",
+              scratchbird::engine::PublicBooleanScalarPayloadV1(
+                  Field(text_blob, "text_large_object"), &large_object) &&
+              large_object.size() == 1 && large_object[0] == 1,
           "text large-object length/state is invalid");
   for (std::size_t i = 0; i < selected.result_shape.rows.size(); ++i) {
     const auto& row = selected.result_shape.rows[i];
@@ -632,6 +659,13 @@ void RequireProjectionRows(
     }
   }
   for (const auto& row : selected.result_shape.rows) {
+    std::string_view bytes;
+    Require(scratchbird::engine::PublicUInt64ScalarPayloadV1(
+                Field(row, "character_length"), &bytes),
+            "catalog nullable length contains display bytes or invalid state");
+    Require(scratchbird::engine::PublicBooleanScalarPayloadV1(
+                Field(row, "text_large_object"), &bytes) && bytes.size() == 1,
+            "catalog Boolean projection contains display bytes or invalid state");
     Require(row.fields.size() == 10,
             "catalog projection row field count is invalid");
     for (const auto& field : row.fields) {
@@ -705,10 +739,56 @@ void RequireProjectionRows(
           "catalog projection accepted a metadata-excluded function");
 }
 
+void RequireNativeScalarProjection(
+    const Fixture& fixture, const api::EngineRequestContext& context,
+    const api::MgaRelationStorageDescriptor& descriptor) {
+  const auto selected = api::EngineSelectRows(SelectRequest(fixture, context, descriptor));
+  RequireOk(selected, "native catalog scalar projection failed");
+  Require(selected.visible_count == 2 && selected.result_shape.rows.size() == 2 &&
+              selected.result_shape.columns.size() == 10,
+          "native catalog scalar projection shape invalid");
+  for (std::size_t i = 0; i < 2; ++i) {
+    const auto& row = selected.result_shape.rows[i];
+    Require(row.requested_row_uuid == descriptor.columns[i].column_uuid,
+            "native scalar projection lost actual persisted column identity");
+    std::string_view bytes;
+    Require(scratchbird::engine::PublicUInt64ScalarPayloadV1(Field(row, "ordinal"), &bytes) &&
+                bytes.size() == 8,
+            "live catalog ordinal not native UINT64");
+    for (unsigned n = 0; n < 8; ++n)
+      Require(static_cast<unsigned char>(bytes[n]) == ((std::uint64_t(i) >> (8 * n)) & 255),
+              "live catalog ordinal byte significance changed");
+    const auto& length = Field(row, "character_length");
+    Require(scratchbird::engine::PublicUInt64ScalarPayloadV1(length, &bytes),
+            "live catalog nullable length has malformed carrier");
+    if (!i) Require(length.isSqlNull() && bytes.empty(),
+                    "absent native length became zero or display text");
+    else {
+      Require(!length.isSqlNull() && bytes.size() == 8 &&
+                  static_cast<unsigned char>(bytes[0]) == 20,
+              "live catalog character length changed");
+      for (unsigned n = 1; n < 8; ++n)
+        Require(bytes[n] == 0, "live character length high bits changed");
+    }
+    Require(scratchbird::engine::PublicBooleanScalarPayloadV1(
+                Field(row, "text_large_object"), &bytes) &&
+                bytes.size() == 1 && bytes[0] == 0,
+            "live catalog false flag is not native BOOLEAN");
+    const auto& identity = Field(row, "column_uuid");
+    Require(identity.descriptor.canonical_type_name == "uuid" && identity.encoded_value.empty() &&
+                identity.binary_value.size() == 16 &&
+                std::equal(identity.binary_value.begin(), identity.binary_value.end(),
+                           descriptor.columns[i].column_uuid.bytes.begin()),
+            "live catalog scalar row carries a textual or changed UUID");
+  }
+}
+
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
   try {
+  const bool native_scalars = argc == 2 && std::string_view(argv[1]) == "--native-scalars";
+  Require(argc == 1 || native_scalars, "unexpected catalog projection test mode");
   auto policy = memory::DefaultLocalEngineMemoryPolicy();
   policy.policy_name = "database_lifecycle_relation_descriptor_projection";
   const auto configured = memory::ConfigureDefaultMemoryManagerForFixture(
@@ -740,18 +820,20 @@ int main() {
   Commit(view_tx);
 
   auto relation_tx = Begin(fixture, 3);
-  const auto descriptor = CreateSourceRelation(fixture, relation_tx);
+  const auto descriptor = CreateSourceRelation(fixture, relation_tx, !native_scalars);
   Commit(relation_tx);
 
   auto read_tx = Begin(fixture, 4);
-  RequireProjectionRows(fixture, read_tx, descriptor);
+  if (native_scalars) RequireNativeScalarProjection(fixture, read_tx, descriptor);
+  else RequireProjectionRows(fixture, read_tx, descriptor);
   Rollback(read_tx);
 
   std::error_code cleanup_error;
   std::filesystem::remove_all(fixture.directory, cleanup_error);
   Require(!cleanup_error, "catalog projection fixture cleanup failed");
 
-  std::cout << "database_lifecycle_relation_descriptor_projection_conformance: PASS\n";
+  std::cout << "database_lifecycle_relation_descriptor_projection_conformance"
+            << (native_scalars ? " native_scalars" : "") << ": PASS\n";
   return EXIT_SUCCESS;
   } catch (const std::exception& error) {
     std::cerr << error.what() << '\n';

@@ -671,7 +671,8 @@ EngineTypedValue RejectU64Value(EngineApiU64 value) {
   typed.descriptor.descriptor_kind = "scalar";
   typed.descriptor.canonical_type_name = "uint64";
   typed.descriptor.encoded_descriptor = "type=uint64;nullable=false";
-  typed.encoded_value = std::to_string(value);
+  typed.binary_value.resize(8);
+  for(unsigned i=0;i<8;++i)typed.binary_value[i]=static_cast<std::uint8_t>(value>>(8*i));
   return typed;
 }
 

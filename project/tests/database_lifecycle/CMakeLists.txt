@@ -4243,6 +4243,10 @@ if(TARGET sb_core_resources AND TARGET sb_storage_database AND
   set_tests_properties(database_lifecycle_relation_descriptor_projection_conformance PROPERTIES
     LABELS "database_lifecycle_relation_descriptor_projection_conformance;engine_catalog_projection;relation_descriptor_v3;exact_mga_metadata_visibility;database_lifecycle;database_lifecycle_catalog;mga_transaction_regression;standalone_parser_authority"
   )
+  add_test(NAME database_lifecycle_relation_descriptor_native_scalar_conformance
+    COMMAND database_lifecycle_relation_descriptor_projection_conformance --native-scalars)
+  set_tests_properties(database_lifecycle_relation_descriptor_native_scalar_conformance PROPERTIES
+    TIMEOUT 120 LABELS "database_lifecycle;engine_catalog_projection;native_uint64;native_boolean;binary_uuid;real_catalog;not_full_text_lob_closure")
 endif()
 
 if(TARGET sb_core_memory)

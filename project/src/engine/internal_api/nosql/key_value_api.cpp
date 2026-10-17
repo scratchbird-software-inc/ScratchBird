@@ -16,6 +16,7 @@
 #include "catalog/name_resolution_api.hpp"
 #include "dml/insert_api.hpp"
 #include "dml/update_api.hpp"
+#include "dml/write_result_policy.hpp"
 #include "transaction/transaction_api.hpp"
 #include "engine/statement_scratch_memory.hpp"
 #include "hash_digest.hpp"
@@ -443,6 +444,12 @@ Result RunKv(const Request& request,const char* operation,bool mutation,Planner&
   if(EngineNoSqlRequiresClusterAuthority(request)||request.context.cluster_transaction_active||
       request.context.route_fence_present)
     return EngineNoSqlClusterAuthorityUnavailable<Result>(request,operation);
+  const auto write_policy=mutation?ResolveWriteResultPolicy(request,operation):EngineWriteResultPolicyResolution{};
+  if(!write_policy.ok) {
+    auto refused=MakeApiBehaviorDiagnostic<Result>(request.context,operation,write_policy.diagnostic);
+    AddWriteResultPolicyRefusalEvidence(write_policy,&refused);
+    return refused;
+  }
   auto result=MakeApiBehaviorSuccess<Result>(request.context,operation);
   std::optional<KvFailure> execution_failure;
   std::optional<EngineApiDiagnostic> recovery_diagnostic;
@@ -512,6 +519,9 @@ Result RunKv(const Request& request,const char* operation,bool mutation,Planner&
           });
           PublishKvRows(request,fresh,reads,result);
         }
+        // Result preparation may allocate. It must finish before releasing the
+        // actual statement fence so a failure still rewinds preceding writes.
+        if(mutation)ApplyWriteResultPolicy(write_policy,&result);
         KvPoll(actual);
         KvPoll(request.context);
         if(savepoint_owner.active) {

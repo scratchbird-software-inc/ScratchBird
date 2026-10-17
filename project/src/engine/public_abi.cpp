@@ -4036,6 +4036,13 @@ std::string api_row_value(const scratchbird::engine::internal_api::EngineApiResu
       bytes.assign(payload);
       if (!value.is_null) kind = public_result::Kind::signed_integer;
     }
+    else if (scratchbird::engine::PublicUInt64ScalarTypeV1(type)) {
+      std::string_view payload;
+      if (!scratchbird::engine::PublicUInt64ScalarPayloadV1(value, &payload))
+        throw std::invalid_argument("public_result_uint64_carrier_invalid");
+      bytes.assign(payload);
+      if (!value.is_null) kind = public_result::Kind::unsigned_integer;
+    }
     else if (scratchbird::engine::PublicReal64ScalarTypeV1(type)) {
       std::string_view payload;
       if (!scratchbird::engine::PublicReal64ScalarPayloadV1(value, &payload))
@@ -15538,13 +15545,19 @@ sb_engine_status_t BindStatementCatalogIntrospectAuthorityV1(
   authority.result_shape.columns.assign(kColumns.size(), text_descriptor);
   authority.result_shape.columns[1] = ordinal_descriptor;
   authority.result_shape.columns[2] = ordinal_descriptor;
-  const auto add_row = [&](std::array<std::optional<std::string>, 12> values) {
+  const auto add_row = [&](std::array<std::optional<std::string>, 12> values,
+                           std::uint64_t section_ordinal, std::uint64_t element_ordinal) {
     scratchbird::engine::internal_api::EngineRowValue row;
     row.fields.reserve(kColumns.size());
     for (std::size_t index = 0; index < kColumns.size(); ++index) {
       auto value = scratchbird::engine::internal_api::EngineTypedValue{};
       value.descriptor = authority.result_shape.columns[index];
-      if (values[index].has_value()) {
+      if (index == 1 || index == 2) {
+        const auto ordinal=index==1?section_ordinal:element_ordinal;
+        value.binary_value.resize(8);
+        for(unsigned byte=0;byte<8;++byte)value.binary_value[byte]=static_cast<std::uint8_t>(ordinal>>(8*byte));
+        value.setState(scratchbird::engine::internal_api::EngineValueState::value);
+      } else if (values[index].has_value()) {
         value.encoded_value = std::move(*values[index]);
         value.setState(
             scratchbird::engine::internal_api::EngineValueState::value);
@@ -15556,14 +15569,14 @@ sb_engine_status_t BindStatementCatalogIntrospectAuthorityV1(
     }
     authority.result_shape.rows.push_back(std::move(row));
   };
-  add_row({"identity", "1", "1", "table",
+  add_row({"identity", std::nullopt, std::nullopt, "table",
            authority.canonical_path_utf8, std::nullopt, std::nullopt,
            std::nullopt, std::nullopt, std::nullopt,
-           loaded.descriptor.relation_kind, std::nullopt});
+           loaded.descriptor.relation_kind, std::nullopt},1,1);
   for (std::size_t index = 0; index < loaded.descriptor.columns.size();
        ++index) {
     const auto& column = loaded.descriptor.columns[index];
-    add_row({"columns", "2", std::to_string(index + 1), "column",
+    add_row({"columns", std::nullopt, std::nullopt, "column",
              column.canonical_name_key,
              column.value_descriptor.canonical_type_name.empty()
                  ? column.value_descriptor.descriptor_kind
@@ -15574,16 +15587,16 @@ sb_engine_status_t BindStatementCatalogIntrospectAuthorityV1(
              column.generated ? "generated"
                               : (column.identity_column ? "identity"
                                                         : "stored"),
-             std::nullopt});
+             std::nullopt},2,index+1);
   }
   for (std::size_t index = 0; index < loaded.descriptor.indexes.size();
        ++index) {
     const auto& catalog_index = loaded.descriptor.indexes[index];
-    add_row({"indexes", "6", std::to_string(index + 1), "index",
+    add_row({"indexes", std::nullopt, std::nullopt, "index",
              std::nullopt, std::nullopt, std::nullopt, std::nullopt,
              std::nullopt, authority.canonical_path_utf8,
              catalog_index.family + ":" + catalog_index.profile,
-             std::nullopt});
+             std::nullopt},6,index+1);
   }
   const std::array<std::pair<std::string, std::string>, 4>
       properties{{{"relation_kind", loaded.descriptor.relation_kind},
@@ -15591,11 +15604,11 @@ sb_engine_status_t BindStatementCatalogIntrospectAuthorityV1(
                   {"descriptor_status", loaded.descriptor.descriptor_status},
                   {"row_identity_rule", loaded.descriptor.row_identity_rule}}};
   for (std::size_t index = 0; index < properties.size(); ++index) {
-    add_row({"properties", "11", std::to_string(index + 1), "property",
+    add_row({"properties", std::nullopt, std::nullopt, "property",
              std::string(properties[index].first), std::nullopt,
              std::nullopt, std::nullopt, std::nullopt,
              authority.canonical_path_utf8,
-             std::string(properties[index].second), std::nullopt});
+             std::string(properties[index].second), std::nullopt},11,index+1);
   }
   if (authority.result_shape.rows.empty()) {
     return refuse(SB_ENGINE_STATUS_CONFLICT,
@@ -15605,7 +15618,7 @@ sb_engine_status_t BindStatementCatalogIntrospectAuthorityV1(
 
   std::vector<std::uint8_t> row_material;
   constexpr std::string_view kRowDomain =
-      "ScratchBird.CatalogIntrospectShowObjectDetailRows.V1";
+      "ScratchBird.CatalogIntrospectShowObjectDetailRows.V2";
   row_material.insert(row_material.end(), kRowDomain.begin(),
                       kRowDomain.end());
   const auto append_u64 = [&](std::uint64_t value) {
@@ -15626,6 +15639,8 @@ sb_engine_status_t BindStatementCatalogIntrospectAuthorityV1(
       row_material.insert(row_material.end(),
                           field.second.encoded_value.begin(),
                           field.second.encoded_value.end());
+      append_u64(field.second.binary_value.size());
+      row_material.insert(row_material.end(),field.second.binary_value.begin(),field.second.binary_value.end());
     }
   }
   const auto row_digest =

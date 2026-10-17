@@ -5794,6 +5794,13 @@ std::string ServerApiRowValue(const engine_api::EngineApiResult& api_result,
       bytes.assign(payload);
       if (!value.is_null) kind = public_result::Kind::signed_integer;
     }
+    else if (scratchbird::engine::PublicUInt64ScalarTypeV1(type)) {
+      std::string_view payload;
+      if (!scratchbird::engine::PublicUInt64ScalarPayloadV1(value, &payload))
+        throw std::invalid_argument("public_result_uint64_carrier_invalid");
+      bytes.assign(payload);
+      if (!value.is_null) kind = public_result::Kind::unsigned_integer;
+    }
     else if (scratchbird::engine::PublicReal64ScalarTypeV1(type)) {
       std::string_view payload;
       if (!scratchbird::engine::PublicReal64ScalarPayloadV1(value, &payload))

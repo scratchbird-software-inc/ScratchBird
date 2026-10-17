@@ -6,6 +6,29 @@
 #include <string_view>
 
 namespace scratchbird::engine {
+inline bool PublicUInt64ScalarTypeV1(std::string_view type) noexcept {
+  constexpr std::string_view canonical="uint64";
+  if(type.size()!=canonical.size())return false;
+  for(std::size_t i=0;i<type.size();++i) {
+    const auto c=type[i];
+    if((c>='A'&&c<='Z'?c+('a'-'A'):c)!=canonical[i])return false;
+  }
+  return true;
+}
+// UINT64 is distinct from the signed field: no display spelling, sign cast or
+// narrowing may intervene between the native value and the LE8 wire carrier.
+inline bool PublicUInt64ScalarPayloadV1(const internal_api::EngineTypedValue& value,
+                                      std::string_view* payload) noexcept {
+  if(!payload || !PublicUInt64ScalarTypeV1(value.descriptor.canonical_type_name) ||
+      !value.encoded_value.empty())return false;
+  using State=internal_api::EngineValueState;
+  if(value.state==State::sql_null) {
+    if(!value.is_null || !value.binary_value.empty())return false;
+    *payload={};return true;
+  }
+  if(value.state!=State::value || value.is_null || value.binary_value.size()!=8)return false;
+  *payload={reinterpret_cast<const char*>(value.binary_value.data()),8};return true;
+}
 inline bool PublicInt64ScalarTypeV1(std::string_view type) noexcept {
   return type.size() == 5 && (type[0] == 'i' || type[0] == 'I') &&
          (type[1] == 'n' || type[1] == 'N') &&

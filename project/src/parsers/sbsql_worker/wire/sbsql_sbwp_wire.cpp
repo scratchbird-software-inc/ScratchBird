@@ -3616,7 +3616,7 @@ RowSet ParseRowsFromResultPayload(std::string_view payload) {
   // vary from row to row.
   std::map<std::pair<std::string, std::size_t>, std::size_t> column_index;
   // 0: unknown, 1: INT64, 2: other, 3: INT32, 4: awaiting integer metadata,
-  // 5: REAL64, 6: awaiting REAL64 metadata.
+  // 5: REAL64, 6: awaiting REAL64 metadata, 7: UINT64, 8: awaiting UINT64 metadata.
   // Use the exact name-plus-occurrence column ordinal, not the display name.
   std::vector<std::uint8_t> integer_column_kinds;
   std::string previous_row_index;
@@ -3625,7 +3625,7 @@ RowSet ParseRowsFromResultPayload(std::string_view payload) {
   const auto pending_integer_metadata = [&]() {
     return std::ranges::any_of(previous_fields, [&](const auto& field) {
       const auto kind = integer_column_kinds[field.second];
-      return kind == 1 || kind == 3 || kind == 4 || kind == 5 || kind == 6;
+      return kind == 1 || kind == 3 || kind == 4 || kind == 5 || kind == 6 || kind == 7 || kind == 8;
     });
   };
   std::vector<std::string> records;
@@ -3682,14 +3682,16 @@ RowSet ParseRowsFromResultPayload(std::string_view payload) {
         const bool int64_type = type_is("int64"), int32_type = type_is("int32");
         const bool integer_type = int64_type || int32_type;
         const bool real64_type = type_is("real64");
+        const bool uint64_type = type_is("uint64");
         const auto kind = previous_kinds[ordinal];
         const auto& cell = rowset.rows.back()[previous_fields[ordinal].second];
         auto& column_kind = integer_column_kinds[previous_fields[ordinal].second];
         // 4 means a native signed field whose metadata has not arrived yet.
         // Once declared, widths remain distinct even across NULL-first rows.
-        const auto declared_kind = int64_type ? 1 : int32_type ? 3 : real64_type ? 5 : 2;
-        if (column_kind && column_kind != 4 && column_kind != 6 && column_kind != declared_kind) return malformed_metadata();
-        if ((column_kind == 4 && !integer_type) || (column_kind == 6 && !real64_type))
+        const auto declared_kind = int64_type ? 1 : int32_type ? 3 : real64_type ? 5 : uint64_type ? 7 : 2;
+        if (column_kind && column_kind != 4 && column_kind != 6 && column_kind != 8 && column_kind != declared_kind) return malformed_metadata();
+        if ((column_kind == 4 && !integer_type) || (column_kind == 6 && !real64_type) ||
+            (column_kind == 8 && !uint64_type))
           return malformed_metadata();
         column_kind = declared_kind;
         if (kind == scratchbird::wire::public_result::Kind::signed_integer &&
@@ -3719,6 +3721,17 @@ RowSet ParseRowsFromResultPayload(std::string_view payload) {
           auto& column = rowset.columns[previous_fields[ordinal].second];
           column.type_oid = kOidFloat8;
           column.type_size = 8;
+          column.format = 0;
+        }
+        if (kind == scratchbird::wire::public_result::Kind::unsigned_integer &&
+            (!uint64_type || state != "not_null")) return malformed_metadata();
+        if (uint64_type) {
+          if ((state == "not_null" && kind != scratchbird::wire::public_result::Kind::unsigned_integer) ||
+              (state == "null" && (kind != scratchbird::wire::public_result::Kind::text ||
+                                   !cell || !cell->empty()))) return malformed_metadata();
+          auto& column = rowset.columns[previous_fields[ordinal].second];
+          column.type_oid = kOidNumeric;
+          column.type_size = -1;
           column.format = 0;
         }
         if (state == "null") {
@@ -3794,7 +3807,9 @@ RowSet ParseRowsFromResultPayload(std::string_view payload) {
       if (!typed_fields.empty() && typed_fields[field_ordinal].kind == scratchbird::wire::public_result::Kind::signed_integer) {
         if (integer_column_kinds[found->second] == 2 ||
             integer_column_kinds[found->second] == 5 ||
-            integer_column_kinds[found->second] == 6) {
+            integer_column_kinds[found->second] == 6 ||
+            integer_column_kinds[found->second] == 7 ||
+            integer_column_kinds[found->second] == 8) {
           rowset.malformed = true;
           rowset.malformed_detail = "The engine result column changed its signed integer type.";
           return rowset;
@@ -3809,6 +3824,20 @@ RowSet ParseRowsFromResultPayload(std::string_view payload) {
         auto& column = rowset.columns[found->second];
         column.type_oid = kOidInt8; column.type_size = 8; column.format = 0;
         row[found->second] = std::to_string(*number);
+      } else if (!typed_fields.empty() && typed_fields[field_ordinal].kind == scratchbird::wire::public_result::Kind::unsigned_integer) {
+        auto& kind=integer_column_kinds[found->second];
+        const auto number=scratchbird::wire::public_result::AsUnsigned(typed_fields[field_ordinal]);
+        if((kind!=0 && kind!=7 && kind!=8) || !number) {
+          rowset.malformed=true;
+          rowset.malformed_detail="The engine UINT64 carrier or column type is invalid.";
+          return rowset;
+        }
+        if(!kind)kind=8;
+        auto& column=rowset.columns[found->second];
+        column.type_oid=kOidNumeric;column.type_size=-1;column.format=0;
+        // Rendering is a parser/client responsibility, after exact native
+        // unsigned admission. UINT64_MAX must never pass through INT64.
+        row[found->second]=std::to_string(*number);
       } else if (!typed_fields.empty() && typed_fields[field_ordinal].kind == scratchbird::wire::public_result::Kind::real64) {
         auto& kind = integer_column_kinds[found->second];
         const auto number = scratchbird::wire::public_result::AsReal64(typed_fields[field_ordinal]);
@@ -3834,7 +3863,9 @@ RowSet ParseRowsFromResultPayload(std::string_view payload) {
             integer_column_kinds[found->second] == 3 ||
             integer_column_kinds[found->second] == 4 ||
             integer_column_kinds[found->second] == 5 ||
-            integer_column_kinds[found->second] == 6) {
+            integer_column_kinds[found->second] == 6 ||
+            integer_column_kinds[found->second] == 7 ||
+            integer_column_kinds[found->second] == 8) {
           rowset.malformed = true;
           rowset.malformed_detail = "The engine result column lost its signed integer carrier.";
           return rowset;

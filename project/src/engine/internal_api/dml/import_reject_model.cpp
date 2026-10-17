@@ -53,6 +53,14 @@ EngineDescriptor UInt64Descriptor() {
   return descriptor;
 }
 
+EngineDescriptor UuidDescriptor(bool nullable=false) {
+  EngineDescriptor descriptor;
+  descriptor.descriptor_kind="scalar";
+  descriptor.canonical_type_name="uuid";
+  descriptor.encoded_descriptor=nullable?"type=uuid;nullable=true":"type=uuid;nullable=false";
+  return descriptor;
+}
+
 EngineDescriptor BoolDescriptor() {
   EngineDescriptor descriptor;
   descriptor.descriptor_kind = "scalar";
@@ -96,7 +104,7 @@ EngineImportErrorRowSchema BuildDefaultImportErrorRowSchema(bool include_payload
   schema.schema_version = 1;
   schema.columns.push_back(Column("source_row_number", UInt64Descriptor(), false, false));
   schema.columns.push_back(Column("source_position", NullableTextDescriptor(), true, false));
-  schema.columns.push_back(Column("target_table_uuid", TextDescriptor(), false, false));
+  schema.columns.push_back(Column("target_table_uuid", UuidDescriptor(), false, false));
   schema.columns.push_back(Column("target_column", NullableTextDescriptor(), true, false));
   schema.columns.push_back(Column("diagnostic_code", TextDescriptor(), false, false));
   schema.columns.push_back(Column("message_key", TextDescriptor(), false, false));
@@ -106,7 +114,7 @@ EngineImportErrorRowSchema BuildDefaultImportErrorRowSchema(bool include_payload
   schema.columns.push_back(Column("policy_name", NullableTextDescriptor(), true, false));
   schema.columns.push_back(Column("audit_evidence_id", NullableTextDescriptor(), true, false));
   if (include_payload_reference_columns) {
-    schema.columns.push_back(Column("payload_reference_uuid", NullableTextDescriptor(), true, false));
+    schema.columns.push_back(Column("payload_reference_uuid", UuidDescriptor(true), true, false));
     schema.columns.push_back(Column("payload_encryption_profile", NullableTextDescriptor(), true, false));
   }
   return schema;
