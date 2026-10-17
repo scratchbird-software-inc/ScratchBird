@@ -212,7 +212,28 @@ void FaultAndReentry(tests::FixtureEngineSession& session, const api::EngineRequ
         "second grant invalidated first reservation");
   Owner recursive;
   const auto before_reentry = manager.Snapshot();
-  Check(api::RunWithStatementScratchMemoryV1(statement.context, [&](auto&) {
+  Check(api::RunWithStatementScratchMemoryV1(statement.context, [&](auto& scratch) {
+    Check(scratch.memory() && scratch.protected_memory() &&
+          scratch.memory() != scratch.protected_memory(), "protected scratch adapter absent or ordinary alias");
+    const auto baseline = scratch.Snapshot();
+    auto* secret = scratch.protected_memory()->allocate(137, 256);
+    Check(std::all_of(static_cast<unsigned char*>(secret), static_cast<unsigned char*>(secret)+137,
+        [](auto byte){ return byte == 0; }), "protected statement scratch was not zeroed");
+    std::memset(secret, 0xa5, 137);
+    auto* ordinary = scratch.memory()->allocate(79, 64);
+    Check(scratch.Snapshot().allocated_bytes == baseline.allocated_bytes+216 &&
+          scratch.Snapshot().allocation_count == baseline.allocation_count+2,
+          "protected statement allocation bypassed the shared physical grant");
+    bool over_limit = false;
+    try { (void)scratch.protected_memory()->allocate(scratch.limit_bytes()+1); }
+    catch (const std::bad_alloc&) { over_limit = true; }
+    Check(over_limit && scratch.Snapshot().allocated_bytes == baseline.allocated_bytes+216,
+          "protected scratch escaped its exact shared capacity");
+    scratch.protected_memory()->deallocate(secret, 137, 256);
+    scratch.memory()->deallocate(ordinary, 79, 64);
+    Check(scratch.Snapshot().allocated_bytes == baseline.allocated_bytes &&
+          scratch.Snapshot().allocation_count == baseline.allocation_count,
+          "protected statement scratch failed actual physical cleanup");
     Check(statement.Retain(4096, recursive) == SB_ENGINE_STATUS_CONFLICT && !recursive,
           "retained acquisition recursively acquired live scratch lock");
     Check(owner->Observe() == Observation::unavailable && owner->Release() == SB_ENGINE_STATUS_CONFLICT,
@@ -243,13 +264,19 @@ void FaultAndReentry(tests::FixtureEngineSession& session, const api::EngineRequ
   Owner exceptional;
   Check(statement.Retain(4096, exceptional) == SB_ENGINE_STATUS_OK, "exception unwind grant");
   const auto before_exception = manager.Snapshot();
-  Check(api::RunWithStatementScratchMemoryV1(statement.context, [&](auto&) {
+  Check(api::RunWithStatementScratchMemoryV1(statement.context, [&](auto& scratch) {
+    auto* secret = scratch.protected_memory()->allocate(137, 256);
+    std::memset(secret, 0x5a, 137);
+    // Deliberately leave this owned block to the actual protected resource:
+    // exception unwind must erase/free it before dropping the receipt locks.
     exceptional.reset();
     throw std::runtime_error("owned callback exception fixture");
   }) == SB_ENGINE_STATUS_INTERNAL_ERROR, "callback exception was not contained");
   const auto after_exception = manager.Snapshot();
   Check(after_exception.reserved_capacity_bytes + 4096 == before_exception.reserved_capacity_bytes &&
-        after_exception.active_capacity_reservation_count + 1 == before_exception.active_capacity_reservation_count,
+        after_exception.active_capacity_reservation_count + 1 == before_exception.active_capacity_reservation_count &&
+        after_exception.current_bytes == before_exception.current_bytes &&
+        after_exception.active_allocation_count == before_exception.active_allocation_count,
         "exception unwind left deferred physical capacity queued");
 }
 

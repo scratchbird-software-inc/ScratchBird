@@ -115,6 +115,53 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     TIMEOUT 90 LABELS "sbsql_sblr_alignment;crypto;binary_uuid;protected_memory;real_file_reopen;component_regression;not_runtime_acceptance")
 endif()
 add_executable(sbsql_sblr_alignment_openpgp_packet openpgp_packet_test.cpp)
+foreach(component IN ITEMS x25519 public_key_message key_certificate)
+  # This certificate qualification observes native Linux provider cleanup and
+  # linker fault injection. Production codecs do not depend on this fixture.
+  if(component STREQUAL "key_certificate" AND NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    continue()
+  endif()
+  set(pgp_target sbsql_sblr_alignment_openpgp_${component})
+  add_executable(${pgp_target} openpgp_${component}_test.cpp)
+  target_compile_features(${pgp_target} PRIVATE cxx_std_17)
+  target_link_libraries(${pgp_target} PRIVATE sb_core_hash)
+  if(component STREQUAL "key_certificate")
+    target_link_libraries(${pgp_target} PRIVATE sb_core_memory)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+      foreach(symbol IN ITEMS EVP_MD_CTX_new EVP_PKEY_new_raw_public_key EVP_DigestVerifyInit
+          EVP_DigestVerify EVP_PKEY_CTX_new_id EVP_PKEY_derive EVP_CIPHER_CTX_new
+          EVP_CipherInit_ex EVP_CIPHER_CTX_ctrl EVP_CipherUpdate EVP_CipherFinal_ex
+          EVP_PKEY_new_raw_private_key)
+        target_link_options(${pgp_target} PRIVATE "-Wl,--wrap=${symbol}")
+      endforeach()
+    endif()
+  endif()
+  add_test(NAME ${pgp_target} COMMAND ${pgp_target})
+  set_tests_properties(${pgp_target} PROPERTIES
+    TIMEOUT 180 LABELS "sbsql_sblr_alignment;crypto;openpgp;component_regression;not_SQL_E2E")
+  if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND NOT component STREQUAL "key_certificate")
+    target_compile_definitions(${pgp_target} PRIVATE SB_X25519_PROVIDER_FAULTS=1)
+    foreach(symbol IN ITEMS
+        EVP_MD_CTX_new EVP_MD_CTX_free EVP_DigestInit_ex EVP_DigestUpdate EVP_DigestFinal_ex
+        EVP_PKEY_new_raw_private_key EVP_PKEY_new_raw_public_key EVP_PKEY_get_raw_public_key EVP_PKEY_free
+        EVP_PKEY_CTX_new EVP_PKEY_CTX_new_id EVP_PKEY_CTX_free EVP_PKEY_derive_init EVP_PKEY_derive_set_peer
+        EVP_PKEY_derive EVP_PKEY_CTX_set_hkdf_md EVP_PKEY_CTX_set1_hkdf_salt
+        EVP_PKEY_CTX_set1_hkdf_key EVP_PKEY_CTX_add1_hkdf_info
+        EVP_CIPHER_CTX_new EVP_CIPHER_CTX_free EVP_CipherInit_ex EVP_CipherUpdate EVP_CipherFinal_ex
+        EVP_sha256 EVP_aes_128_wrap OPENSSL_cleanse)
+      target_link_options(${pgp_target} PRIVATE "-Wl,--wrap=${symbol}")
+    endforeach()
+    if(component STREQUAL "public_key_message")
+      target_link_options(${pgp_target} PRIVATE "-Wl,--wrap=EVP_CIPHER_CTX_ctrl" "-Wl,--wrap=EVP_CIPHER_CTX_reset")
+    endif()
+  endif()
+endforeach()
+if(Python3_Interpreter_FOUND)
+  add_test(NAME sbsql_sblr_alignment_crypto_pgp_generator_metadata
+    COMMAND ${Python3_EXECUTABLE} -B ${PROJECT_SOURCE_DIR}/tools/sb_parser_gen/test_crypto_pgp_metadata.py)
+  set_tests_properties(sbsql_sblr_alignment_crypto_pgp_generator_metadata PROPERTIES
+    TIMEOUT 60 LABELS "sbsql_sblr_alignment;crypto;generator;metadata;not_runtime_acceptance")
+endif()
 add_executable(sbsql_sblr_alignment_openpgp_password_message openpgp_password_message_test.cpp)
 target_compile_features(sbsql_sblr_alignment_openpgp_password_message PRIVATE cxx_std_17)
 target_link_libraries(sbsql_sblr_alignment_openpgp_password_message PRIVATE sb_core_hash)
@@ -10051,6 +10098,11 @@ add_executable(sbsql_sblr_alignment_reservation_backed_resource_ownership
   reservation_backed_resource_ownership_test.cpp)
 target_compile_features(sbsql_sblr_alignment_reservation_backed_resource_ownership PRIVATE cxx_std_23)
 target_link_libraries(sbsql_sblr_alignment_reservation_backed_resource_ownership PRIVATE sb_core_memory)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_compile_definitions(sbsql_sblr_alignment_reservation_backed_resource_ownership PRIVATE
+    SB_PROTECTED_RESOURCE_NATIVE_OBSERVATION=1)
+  target_link_options(sbsql_sblr_alignment_reservation_backed_resource_ownership PRIVATE "-Wl,--wrap=munlock")
+endif()
 add_test(NAME sbsql_sblr_alignment_reservation_backed_resource_ownership
   COMMAND sbsql_sblr_alignment_reservation_backed_resource_ownership)
 set_tests_properties(sbsql_sblr_alignment_reservation_backed_resource_ownership PROPERTIES
@@ -10073,6 +10125,21 @@ add_test(NAME sbsql_sblr_alignment_physical_capacity_reservation
   COMMAND sbsql_sblr_alignment_physical_capacity_reservation)
 set_tests_properties(sbsql_sblr_alignment_physical_capacity_reservation PROPERTIES
   LABELS "sbsql_sblr_alignment;memory;reservation_adapter;allocation_failure;not_SQL_E2E"
+  TIMEOUT 180)
+add_executable(sbsql_sblr_alignment_protected_capacity_reservation protected_capacity_reservation_test.cpp)
+target_compile_features(sbsql_sblr_alignment_protected_capacity_reservation PRIVATE cxx_std_23)
+target_compile_definitions(sbsql_sblr_alignment_protected_capacity_reservation PRIVATE
+  SCRATCHBIRD_MEMORY_FAILURE_INJECTION_TEST_GUARD=1)
+target_link_libraries(sbsql_sblr_alignment_protected_capacity_reservation PRIVATE sb_core_memory)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_compile_definitions(sbsql_sblr_alignment_protected_capacity_reservation PRIVATE
+    SB_PROTECTED_PAGE_QUERY_OBSERVATION=1)
+  target_link_options(sbsql_sblr_alignment_protected_capacity_reservation PRIVATE "-Wl,--wrap=sysconf")
+endif()
+add_test(NAME sbsql_sblr_alignment_protected_capacity_reservation
+  COMMAND sbsql_sblr_alignment_protected_capacity_reservation)
+set_tests_properties(sbsql_sblr_alignment_protected_capacity_reservation PROPERTIES
+  LABELS "sbsql_sblr_alignment;memory;protected_memory;binary_ownership;allocation_failure;component_regression;not_SQL_E2E"
   TIMEOUT 180)
 add_executable(sbsql_sblr_alignment_typed_result_system_uuid
   typed_result_system_uuid_test.cpp)

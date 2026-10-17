@@ -37,6 +37,9 @@ add_library(sb_core_hash
   openpgp_armor.cpp
   openpgp_packet.cpp
   openpgp_password_message.cpp
+  openpgp_x25519.cpp
+  openpgp_public_key_message.cpp
+  openpgp_key_certificate.cpp
   argon2_kdf.cpp
 )
 

@@ -5879,6 +5879,7 @@ class NativeStatementScratchMemoryV1 final : public StatementScratchMemoryV1 {
   std::shared_ptr<core::memory::HierarchicalMemoryBudgetLedger> ledger;
   std::unique_ptr<core::memory::ReservationBackedMemoryResource> resource;
   std::unique_ptr<core::memory::ReservationBackedPmrMemoryResource> adapter;
+  std::unique_ptr<core::memory::ReservationBackedPmrMemoryResource> protected_adapter;
   std::function<bool()> cancellation;
   const EngineRequestContext* issued_context = nullptr;
   const std::atomic<std::uint64_t>* teardown_requests = nullptr;
@@ -5887,6 +5888,9 @@ class NativeStatementScratchMemoryV1 final : public StatementScratchMemoryV1 {
  std::pmr::memory_resource* memory() noexcept override {
   return state_->adapter.get();
 }
+ std::pmr::memory_resource* protected_memory() noexcept override {
+  return state_->protected_adapter.get();
+ }
  const EngineRequestContext& context() const noexcept override {
   return *state_->issued_context;
 }
@@ -6156,6 +6160,9 @@ class NativeStatementScratchAdmissionV1 final : public StatementScratchMemoryAdm
       state->resource = std::move(granted.resource);
       state->adapter = std::make_unique<core::memory::ReservationBackedPmrMemoryResource>(
           state->resource.get(), "native_scalar");
+      state->protected_adapter = std::make_unique<core::memory::ReservationBackedPmrMemoryResource>(
+          state->resource.get(), "native_scalar_protected",
+          core::memory::ProtectedMemoryPlatformPolicy::best_effort);
       state->cancellation = issued.query_cancellation_requested;
       state->issued_context = &issued;
       state->teardown_requests = &lifetime->teardown_requests;

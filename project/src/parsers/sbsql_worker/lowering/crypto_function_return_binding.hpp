@@ -57,8 +57,11 @@ inline constexpr auto kCryptoFunctionReturnDeclarations = [] {
       {"sb.crypto.hmac_value_key_algo", "hmac_value_key_algo", "binary", 3, 3,
        {F::character_or_binary, F::character_or_binary, F::character}, true},
       {"sb.crypto.pgcrypto", "pgcrypto", {}, 0, 0, {}},
-      {"sb.crypto.pgp_pub_decrypt", "pgp_pub_decrypt", "binary", 2, 3,
-       {F::binary, F::binary, F::character}},
+      // With three arguments the third remains options. Only the exact
+      // four-argument shape adds an explicit passphrase before options;
+      // this syntax declaration never admits or accesses either secret.
+      {"sb.crypto.pgp_pub_decrypt", "pgp_pub_decrypt", "binary", 2, 4,
+       {F::binary, F::binary, F::character, F::character}},
       {"sb.crypto.pgp_pub_encrypt", "pgp_pub_encrypt", "binary", 2, 3,
        {F::binary, F::binary, F::character}},
       {"sb.crypto.pgp_sym_decrypt", "pgp_sym_decrypt", "character", 2, 3,

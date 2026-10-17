@@ -216,6 +216,17 @@ const char* ReservationBackedMemoryConsumerKindName(
   return "unknown";
 }
 
+struct ReservationBackedMemoryResource::AllocationRecord {
+  void* pointer = nullptr;
+  usize bytes = 0;
+  usize alignment = 0;
+  usize requested_alignment = 0;
+  MemoryTag tag;
+  // Ordinary allocations pay only a pointer, not a full protected owner with
+  // duplicate tags/evidence. Prepare this optional owner BEFORE physical work.
+  std::unique_ptr<ScopedProtectedBuffer> protected_buffer;
+};
+
 ReservationBackedMemoryResource::ReservationBackedMemoryResource(
     ReservationBackedMemoryResourceRequest request,
     HierarchicalMemoryReservationToken token,
@@ -276,7 +287,18 @@ MemoryTag ReservationBackedMemoryResource::TagForAllocation(
 }
 
 AllocationResult ReservationBackedMemoryResource::Allocate(
-    ReservationBackedMemoryAllocationRequest allocation) try {
+    ReservationBackedMemoryAllocationRequest allocation) {
+  return AllocateImpl(std::move(allocation), false, ProtectedMemoryPlatformPolicy::best_effort);
+}
+
+AllocationResult ReservationBackedMemoryResource::AllocateProtected(
+    ReservationBackedMemoryAllocationRequest allocation, ProtectedMemoryPlatformPolicy policy) {
+  return AllocateImpl(std::move(allocation), true, policy);
+}
+
+AllocationResult ReservationBackedMemoryResource::AllocateImpl(
+    ReservationBackedMemoryAllocationRequest allocation, bool protected_material,
+    ProtectedMemoryPlatformPolicy policy) try {
   std::lock_guard lock(mutex_);
   auto grant_use = lease_.Use();
   AllocationResult result;
@@ -334,10 +356,24 @@ AllocationResult ReservationBackedMemoryResource::Allocate(
 
   AllocationRecord prepared;
   prepared.tag = TagForAllocation(allocation);
+  prepared.requested_alignment = std::max(allocation.alignment, alignof(std::max_align_t));
   allocations_.reserve(allocations_.size() + 1);
-  result = physical_capacity_->Allocate(
-      static_cast<usize>(allocation.bytes),
-      allocation.alignment);
+  if (protected_material) {
+    prepared.protected_buffer = std::make_unique<ScopedProtectedBuffer>();
+    auto protected_result = physical_capacity_->AllocateProtected(
+        static_cast<usize>(allocation.bytes), allocation.alignment, policy);
+    result.status = protected_result.status;
+    result.diagnostic = std::move(protected_result.diagnostic);
+    if (!protected_result.ok()) return result;
+    result.pointer = protected_result.buffer.data();
+    result.bytes = protected_result.buffer.size();
+    result.alignment = protected_result.buffer.alignment();
+    result.policy_binding = protected_result.policy_binding;
+    *prepared.protected_buffer = std::move(protected_result.buffer);
+  } else {
+    result = physical_capacity_->Allocate(
+        static_cast<usize>(allocation.bytes), allocation.alignment);
+  }
   if (!result.ok()) {
     return result;
   }
@@ -412,7 +448,8 @@ DeallocationResult ReservationBackedMemoryResource::Deallocate(
     return result;
   }
 
-  if (alignment != 0 && std::max(alignment, alignof(std::max_align_t)) != it->alignment) {
+  if (alignment != 0 && std::max(alignment, alignof(std::max_align_t)) != it->alignment &&
+      std::max(alignment, alignof(std::max_align_t)) != it->requested_alignment) {
     result.status = ErrorStatus(StatusCode::memory_invalid_request);
     result.diagnostic = MakeResourceDiagnostic(result.status,
         "SB_CEIC_012_MEMORY_RESOURCE.DEALLOCATE_ALIGNMENT_MISMATCH",
@@ -420,7 +457,13 @@ DeallocationResult ReservationBackedMemoryResource::Deallocate(
     return result;
   }
   const auto recorded_bytes = it->bytes;
-  auto deallocated = request_.memory_manager->Deallocate(it->pointer, it->tag);
+  if (it->protected_buffer && !it->protected_buffer->valid()) {
+    result.status = ErrorStatus(StatusCode::memory_invalid_request);
+    return result;
+  }
+  auto deallocated = it->protected_buffer
+      ? it->protected_buffer->Reset()
+      : request_.memory_manager->Deallocate(it->pointer, it->tag);
   if (!deallocated.ok()) {
     return deallocated;
   }
@@ -441,9 +484,14 @@ Status ReservationBackedMemoryResource::DeallocateNoAlloc(
                         [pointer](const auto& record) { return record.pointer == pointer; });
   if (it == allocations_.end()) return ErrorStatus(StatusCode::memory_unknown_pointer);
   if ((bytes != 0 && bytes != it->bytes) ||
-      (alignment != 0 && std::max(alignment, alignof(std::max_align_t)) != it->alignment))
+      (alignment != 0 && std::max(alignment, alignof(std::max_align_t)) != it->alignment &&
+       std::max(alignment, alignof(std::max_align_t)) != it->requested_alignment))
     return ErrorStatus(StatusCode::memory_invalid_request);
-  const auto status = request_.memory_manager->allocator()->DeallocateNoAlloc(pointer);
+  if (it->protected_buffer && !it->protected_buffer->valid())
+    return ErrorStatus(StatusCode::memory_invalid_request);
+  const auto status = it->protected_buffer
+      ? it->protected_buffer->ResetNoAlloc()
+      : request_.memory_manager->allocator()->DeallocateNoAlloc(pointer);
   if (!status.ok()) return status;
   allocated_bytes_ -= it->bytes;
   allocations_.erase(it);
@@ -454,8 +502,12 @@ Status ReservationBackedMemoryResource::ReleaseNoAllocLocked() {
   if (released_) return OkStatus();
   if (!request_.memory_manager || !request_.reservation_ledger) return ErrorStatus();
   while (!allocations_.empty()) {
-    const auto& record = allocations_.back();
-    const auto status = request_.memory_manager->allocator()->DeallocateNoAlloc(record.pointer);
+    auto& record = allocations_.back();
+    if (record.protected_buffer && !record.protected_buffer->valid())
+      return ErrorStatus(StatusCode::memory_invalid_request);
+    const auto status = record.protected_buffer
+        ? record.protected_buffer->ResetNoAlloc()
+        : request_.memory_manager->allocator()->DeallocateNoAlloc(record.pointer);
     if (!status.ok()) return status;
     allocated_bytes_ -= record.bytes;
     allocations_.pop_back();
@@ -532,6 +584,12 @@ ReservationBackedPmrMemoryResource::ReservationBackedPmrMemoryResource(
     std::string purpose_prefix)
     : resource_(resource), purpose_prefix_(std::move(purpose_prefix)) {}
 
+ReservationBackedPmrMemoryResource::ReservationBackedPmrMemoryResource(
+    ReservationBackedMemoryResource* resource, std::string purpose_prefix,
+    ProtectedMemoryPlatformPolicy protection)
+    : resource_(resource), purpose_prefix_(std::move(purpose_prefix)),
+      protected_material_(true), protection_(protection) {}
+
 ReservationBackedPmrMemoryResourceSnapshot
 ReservationBackedPmrMemoryResource::Snapshot() const {
   std::lock_guard lock(mutex_);
@@ -566,7 +624,9 @@ void* ReservationBackedPmrMemoryResource::do_allocate(
     request.bytes = static_cast<u64>(bytes);
     request.alignment = alignment;
     request.purpose = purpose_prefix_.empty() ? "reservation_backed_pmr" : purpose_prefix_ + ".pmr";
-    auto allocated = resource_->Allocate(std::move(request));
+    auto allocated = protected_material_
+        ? resource_->AllocateProtected(std::move(request), protection_)
+        : resource_->Allocate(std::move(request));
     if (!allocated.ok()) {
       failure_detail = std::move(allocated.diagnostic);
       failure = allocated.status;

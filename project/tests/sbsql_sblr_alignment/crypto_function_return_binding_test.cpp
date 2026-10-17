@@ -148,6 +148,87 @@ void ActualScalarSyntax() {
        "SELECT gen_random_bytes(7);", "SELECT pgcrypto();"})
     Check(!p::HasScalarProjectionDemand(p::BuildCst(sql)), "undeclared crypto shape acquired scalar result");
 }
+
+void PublicDecryptExplicitPassphraseOverload() {
+  using F = p::CryptoArgumentFamily;
+  for (const auto name : {"pgp_pub_decrypt", "sb.crypto.pgp_pub_decrypt"}) {
+    const auto* declaration = p::FindCryptoFunctionReturnDeclaration(name);
+    Check(declaration && declaration->minimum_arguments == 2 && declaration->maximum_arguments == 4 &&
+        declaration->arguments[0] == F::binary && declaration->arguments[1] == F::binary &&
+        declaration->arguments[2] == F::character && declaration->arguments[3] == F::character,
+        "public decrypt exact2/3/4 argument contract missing");
+    const std::array<std::string_view, 4> arguments{"bytea", "bytea", "text", "text"};
+    for (std::size_t count = 0; count <= arguments.size(); ++count) {
+      const auto selected = p::SelectCryptoFunctionReturnType(name,
+          std::span<const std::string_view>(arguments.data(), count));
+      Check(selected.has_value() == (count >= 2) && (!selected || *selected == "binary"),
+          "public decrypt overload arity or return changed");
+    }
+    for (std::size_t count = 5; count != 9; ++count) {
+      const std::vector<std::string_view> excess(count, "null");
+      Check(!p::SelectCryptoFunctionReturnType(name, excess), "public decrypt excess NULL operands admitted");
+    }
+    for (std::size_t mask = 0; mask != 16; ++mask) {
+      auto aliases = arguments;
+      aliases[0] = mask & 1 ? "binary" : "bytea";
+      aliases[1] = mask & 2 ? "binary" : "bytea";
+      aliases[2] = mask & 4 ? "character" : "text";
+      aliases[3] = mask & 8 ? "character" : "text";
+      Check(p::SelectCryptoFunctionReturnType(name, aliases) == "binary",
+          "public decrypt native family alias changed exact overload");
+    }
+    for (std::size_t position = 0; position != arguments.size(); ++position) {
+      for (const auto wrong : {"uuid", "uint16", "uint32", "uint64", "int32", "int64",
+                              "numeric", "boolean", "unknown", "", "blob"}) {
+        auto invalid = arguments;
+        invalid[position] = wrong;
+        Check(!p::SelectCryptoFunctionReturnType(name, invalid),
+            "public decrypt unrelated typed carrier acquired result");
+      }
+      auto crossed_family = arguments;
+      crossed_family[position] = position < 2 ? "text" : "binary";
+      Check(!p::SelectCryptoFunctionReturnType(name, crossed_family),
+          "public decrypt implicitly crossed bytea/text boundary");
+      // Result-family selection for an unresolved SQL NULL is not a typed
+      // occurrence, carrier, receipt, key-use or strict-NULL execution grant.
+      // A NULL already typed with the wrong family is rejected above.
+      auto unresolved_null = arguments;
+      unresolved_null[position] = "null";
+      Check(p::SelectCryptoFunctionReturnType(name, unresolved_null) == "binary",
+          "unresolved NULL changed sole declared result family");
+    }
+    const std::array<std::string_view, 4> all_null{"null", "null", "null", "null"};
+    Check(p::SelectCryptoFunctionReturnType(name, all_null) == "binary",
+          "sole result family became ambiguous for four unresolved NULLs");
+  }
+  for (const auto name : {"pgp_pub_encrypt", "pgp_sym_decrypt", "pgp_sym_encrypt"}) {
+    const auto* declaration = p::FindCryptoFunctionReturnDeclaration(name);
+    Check(declaration && declaration->minimum_arguments == 2 && declaration->maximum_arguments == 3,
+          "public decrypt overload widened another PGP builtin");
+    const std::array<std::string_view, 4> all_null{"null", "null", "null", "null"};
+    Check(!p::SelectCryptoFunctionReturnType(name, all_null), "another PGP builtin acquired four-argument overload");
+  }
+  for (std::string_view sql : {
+       "SELECT pgp_pub_decrypt(X'00',X'01');",
+       "SELECT pgp_pub_decrypt(X'00',X'01','armor=false');",
+       "SELECT pgp_pub_decrypt(X'00',X'01','passphrase','armor=false');",
+       "SELECT sb.crypto.pgp_pub_decrypt(X'00',X'01','passphrase','armor=false');"})
+    Check(p::HasScalarProjectionDemand(p::BuildCst(sql)),
+        "actual public decrypt2/3/4 argument syntax did not select scalar route");
+  for (std::string_view sql : {
+       "SELECT pgp_pub_decrypt();", "SELECT pgp_pub_decrypt(X'00');",
+       "SELECT pgp_pub_decrypt(X'00',X'01','passphrase','armor=false','extra');",
+       "SELECT pgp_pub_decrypt('message',X'01','passphrase','armor=false');",
+       "SELECT pgp_pub_decrypt(X'00','private-key','passphrase','armor=false');",
+       "SELECT pgp_pub_decrypt(X'00',X'01',X'02','armor=false');",
+       "SELECT pgp_pub_decrypt(X'00',X'01','passphrase',X'02');",
+       "SELECT pgp_pub_decrypt(X'00',X'01',X'02');",
+       "SELECT pgp_pub_encrypt(X'00',X'01','passphrase','armor=false');",
+       "SELECT pgp_sym_encrypt('message','password','passphrase','armor=false');",
+       "SELECT pgp_sym_decrypt(X'00','password','passphrase','armor=false');"})
+    Check(!p::HasScalarProjectionDemand(p::BuildCst(sql)),
+        "actual PGP parser accepted wrong overload, arity or bytea/text carrier");
+}
 }  // namespace
 
 int main() {
@@ -155,6 +236,7 @@ int main() {
     CompleteDeclarations();
     AlternativesAndWidths();
     ActualScalarSyntax();
+    PublicDecryptExplicitPassphraseOverload();
     std::cout << "crypto_function_return_binding=passed checks=" << checks << '\n';
     return 0;
   } catch (const std::exception& error) {

@@ -17,6 +17,10 @@ class StatementScratchMemoryV1 {
   StatementScratchMemoryV1(const StatementScratchMemoryV1&) = delete;
   StatementScratchMemoryV1& operator=(const StatementScratchMemoryV1&) = delete;
   virtual std::pmr::memory_resource* memory() noexcept = 0;
+  // Same actual live receipt, MGA pin and capacity as memory(), but every
+  // backing allocation has allocator-issued protected custody and zeroizing
+  // release. Borrowers/containers must be destroyed before this call returns.
+  virtual std::pmr::memory_resource* protected_memory() noexcept = 0;
   virtual const EngineRequestContext& context() const noexcept = 0;
   virtual std::uint64_t limit_bytes() const noexcept = 0;
   virtual bool cancelled() noexcept = 0;

@@ -571,12 +571,19 @@ class ScopedProtectedBuffer {
 
   void* data() const { return pointer_; }
   usize size() const { return bytes_; }
+  usize alignment() const { return alignment_; }
   bool valid() const { return pointer_ != nullptr; }
   const ProtectedMemoryEvidence& evidence() const { return evidence_; }
   // Actual allocation observation, not authorization or a key-release grant.
   const MemoryTag& tag() const noexcept { return tag_; }
+  const std::optional<MemoryPolicyBinding>& policy_binding() const noexcept {
+    return policy_binding_;
+  }
   void Zeroize();
   DeallocationResult Reset();
+  // Forced owner cleanup bypasses diagnostic/test allocation refusal. Failed
+  // actual release retains this owner and its storage for retry.
+  Status ResetNoAlloc();
 
  private:
   friend class BoundedAllocator;
@@ -584,13 +591,15 @@ class ScopedProtectedBuffer {
   // issue this owner. Public pointer/evidence construction could forge custody.
   ScopedProtectedBuffer(BoundedAllocator* allocator, void* pointer, usize bytes,
                         usize alignment, MemoryTag tag,
-                        ProtectedMemoryEvidence evidence);
+                        ProtectedMemoryEvidence evidence,
+                        std::optional<MemoryPolicyBinding> policy_binding);
   BoundedAllocator* allocator_ = nullptr;
   void* pointer_ = nullptr;
   usize bytes_ = 0;
   usize alignment_ = 0;
   MemoryTag tag_;
   ProtectedMemoryEvidence evidence_;
+  std::optional<MemoryPolicyBinding> policy_binding_;
 };
 
 struct ProtectedBufferResult {
@@ -598,6 +607,7 @@ struct ProtectedBufferResult {
   ScopedProtectedBuffer buffer;
   DiagnosticRecord diagnostic;
   ProtectedMemoryEvidence evidence;
+  std::optional<MemoryPolicyBinding> policy_binding;
 
   bool ok() const {
     return status.ok() && buffer.valid();
@@ -619,6 +629,11 @@ class MemoryCapacityReservation {
   // successful close makes destruction inert; no live buffer is freed here.
   void Close();
   AllocationResult Allocate(usize bytes, usize alignment = 0);
+  // Converts this lease's credit, using its immutable admitted owner and policy
+  // binding; zeroization and platform protection are the allocator's duties.
+  ProtectedBufferResult AllocateProtected(
+      usize bytes, usize alignment = 0,
+      ProtectedMemoryPlatformPolicy platform_policy = ProtectedMemoryPlatformPolicy::best_effort);
   // Immutable admission evidence; generation zero denotes constructor policy
   // before any typed activation, not a catalog-selected policy identity.
   MemoryPolicyBinding policy_binding() const { return policy_binding_; }
@@ -685,7 +700,9 @@ class BoundedAllocator {
   friend class EmergencyMemoryReserve;
   // Trusted reserve owner only; does not admit, release or allocate storage.
   void SetEmergencyReserveAvailable(void* pointer, bool available);
-  AllocationResult AllocateImpl(usize bytes, usize alignment, MemoryTag tag, u64 capacity_id);
+  AllocationResult AllocateImpl(usize bytes, usize alignment, MemoryTag tag, u64 capacity_id,
+                                bool preserve_callsite = false);
+  ProtectedBufferResult AllocateProtectedImpl(ProtectedMemoryRequest request, u64 capacity_id);
   void CloseCapacity(u64 id);
   struct CapacityRecord {
     u64 unused_bytes = 0;

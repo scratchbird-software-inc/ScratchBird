@@ -10389,12 +10389,16 @@ SBSFC057_CRYPTO_HASH_PROJECTION_SOURCE = SBSFC057_CRYPTO_HASH_RUNTIME_SOURCE
 
 
 def _sbsfc057_evidence(function_id: str, engine_entrypoint: str, proof: str, dependency: bool = False) -> dict[str, str]:
+    native_pgp = engine_entrypoint in {"pgcrypto", "pgp_pub_decrypt", "pgp_pub_encrypt",
+                                     "pgp_sym_decrypt", "pgp_sym_encrypt"}
     return {
         "function_id": function_id,
-        "sblr_binding": f"sblr.expr.crypto_hash.{engine_entrypoint}.v3",
+        "sblr_binding": (f"sblr.expr.crypto_{engine_entrypoint}.v3" if native_pgp
+                         else f"sblr.expr.crypto_hash.{engine_entrypoint}.v3"),
         "engine_entrypoint": engine_entrypoint,
-        "proof": proof,
+        "proof": "pending_native_core_pgp_row_qualification" if native_pgp else proof,
         "dependency": "yes" if dependency else "no",
+        "qualification": "evidence_required" if native_pgp else "legacy_row_evidence",
     }
 
 
@@ -12801,7 +12805,9 @@ def sbsfc057_crypto_hash_classification(
     evidence = SBSFC057_CRYPTO_HASH_ROW_EVIDENCE.get(surface["surface_id"])
     if evidence is None:
         fail(f"{surface['surface_id']} missing SBSFC-057 crypto/hash evidence")
-    if status_row["status"] != "native_now":
+    pending_native_pgp = evidence["qualification"] == "evidence_required"
+    if status_row["status"] != "native_now" and not (
+            pending_native_pgp and status_row["status"] == "evidence_required"):
         fail(f"{surface['surface_id']} SBSFC-057 crypto/hash override requires native_now status")
     if surface["cluster_scope"] != "noncluster_or_profile_scoped":
         fail(f"{surface['surface_id']} SBSFC-057 crypto/hash override requires noncluster/profile scope")
@@ -12826,6 +12832,20 @@ def sbsfc057_crypto_hash_classification(
     sblr_binding = evidence["sblr_binding"]
     engine_entrypoint = evidence["engine_entrypoint"]
     expected_proof = evidence["proof"]
+    if pending_native_pgp:
+        return {
+            "current_state": "lowering_family_mapped",
+            "parser_evidence": "pending_exact_typed_native_pgp_parser_evidence",
+            "binder_evidence": "pending_receipt_bound_native_pgp_occurrences",
+            "lowering_evidence": f"registered_contract_only;sblr_binding={sblr_binding}",
+            "server_admission_evidence": "pending_exact_native_pgp_admission_evidence",
+            "engine_runtime_evidence": expected_proof,
+            "function_or_api_operation_id": f"{function_id};sblr_binding={sblr_binding};engine_entrypoint={engine_entrypoint}",
+            "diagnostic_evidence": "pending_exact_native_CRYPTO.PGP_or_CRYPTO.PACKAGE.NOT_CALLABLE_diagnostics",
+            "fixture_evidence": "pending_native_core_pgp_row_qualification",
+            "evidence_complete": "no",
+            "notes": "Core status=evidence_required; execution_admission=refused_until_exact_semantics. Native RFC9580 typed packet/custody/full-route evidence must replace legacy envelope fixtures. Only pgp_pub_decrypt has the explicit fourth passphrase/options form; third argument remains options in the legacy form. pgcrypto is not a callable scalar. Metadata and seed identity alignment never prove execution.",
+        }
     diagnostic = (
         "SB_DIAG_FUNCTION_DEPENDENCY_UNAVAILABLE_for_unpinned_argon2_bcrypt_blake3_or_crypt_provider"
         if evidence["dependency"] == "yes"
@@ -12842,7 +12862,7 @@ def sbsfc057_crypto_hash_classification(
         "diagnostic_evidence": f"canonical_message_vector_set;SBLR.ENVELOPE.*;SBLR.OPCODE.*;{expected_proof};{diagnostic}",
         "fixture_evidence": f"{SBSFC057_CRYPTO_HASH_FIXTURE_CSV};ctest:{SBSFC057_CRYPTO_HASH_RUNTIME_CTEST};ctest:{SBSFC057_CRYPTO_HASH_PROJECTION_CTEST};source={SBSFC057_CRYPTO_HASH_RUNTIME_SOURCE};projection_source={SBSFC057_CRYPTO_HASH_PROJECTION_SOURCE}",
         "evidence_complete": "yes",
-        "notes": "SBSFC-057 crypto/hash and pgcrypto closure. Evidence covers OpenSSL EVP SHA3 and BLAKE2b digests, OpenSSL HMAC, RAND-backed random bytes and UUIDs with deterministic fixture overrides, bounded OpenSSL EVP_PBE_scrypt, in-core xxhash64, deterministic reversible ASCII armor/dearmor, and bounded ScratchBird PGP envelope encode/decode that is explicitly not OpenPGP. Argon2, bcrypt, blake3, and crypt rows are exact dependency-unavailable fail-closed runtime behavior because local pinned core providers/headers are unavailable. Runtime behavior is SBLR-internal, bounded in-core/provider-backed, returns deterministic character/binary/uuid/uint64 payloads or exact diagnostics, and does not perform parser SQL execution, reference execution, storage finality, WAL/recovery shortcut, SQLite shortcut, cluster-provider behavior, external service calls, or transaction finality change.",
+        "notes": "Legacy non-PGP SBSFC-057 crypto/hash evidence covers OpenSSL EVP SHA3/BLAKE2b, HMAC, RAND, bounded scrypt, xxhash64 and armor/dearmor. Native PGP and package rows remain evidence_required pending exact Core qualification. Other legacy provider refusals retain their existing evidence; no PGP execution or package scalar completion is claimed here.",
     }
 
 

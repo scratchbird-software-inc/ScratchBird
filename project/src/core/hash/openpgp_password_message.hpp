@@ -8,7 +8,8 @@ namespace scratchbird::core::crypto {
 // memory grant, public entropy override, authorization or publication authority.
 // All borrowed inputs remain immutable through the complete call, including
 // cancellation callbacks. The owner prevents concurrent mutation and release.
-// Native single-password/one-literal grammar: v6 type4 SKESK, then v2 SEIPD.
+// Native single-password/one-literal grammar: v6 type3 SKESK (Argon2 S2K
+// algorithm4), then v2 SEIPD. Packet type4 is not a session-key packet.
 // Wrapped-key cipher and SEIPD cipher must agree on session-key length, but
 // wrapping and data cipher profiles need not be identical.
 struct PasswordMessageProfile {

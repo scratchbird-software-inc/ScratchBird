@@ -78,8 +78,6 @@ import re
 import sys
 from pathlib import Path
 
-import yaml
-
 from match_recognize_generated_evidence import (
     SURFACE_ID as MATCH_RECOGNIZE_SURFACE_ID,
     oracle_record as match_recognize_oracle_record,
@@ -1662,7 +1660,7 @@ def _sbsfc057_oracle_record(
         },
         "security_policy": (
             "executes inside the SBLR crypto.hash runtime using OpenSSL EVP/RAND/HMAC/scrypt where locally available, "
-            "in-core xxhash64, deterministic ScratchBird armor/dearmor, and bounded ScratchBird PGP envelopes that do not claim OpenPGP compatibility; "
+            "in-core xxhash64 and armor/dearmor; native PGP requires its separate exact typed Core contract and runtime qualification; "
             "no parser SQL execution, reference execution, storage finality, WAL/recovery shortcut, cluster provider authority, or external service is used"
         ),
         "reference_rendering": "parser renders native SBsql spelling and diagnostics through generated registry evidence",
@@ -1673,6 +1671,70 @@ def _sbsfc057_oracle_record(
         ),
         "syntax_forms": ["function_call"],
         "conformance_cases": [proof],
+    }
+
+
+def _sbsfc057_native_pgp_oracle_record(name: str) -> dict[str, object]:
+    """Contract metadata only; neither this record nor a seed test admits execution."""
+    overloads = {
+        "pgp_pub_decrypt": [
+            {"signature": "pgp_pub_decrypt(message bytea, private_key bytea [, options text])",
+             "argument_rule": "exactly 2 or 3 arguments; exact bytea message/private_key; third argument is ASCII options, never an inferred passphrase"},
+            {"signature": "pgp_pub_decrypt(message bytea, private_key bytea, passphrase text, options text)",
+             "argument_rule": "exactly 4 arguments; exact bytea message/private_key and text passphrase/options; explicit passphrase unlocks the encrypted native version6 private key"}],
+        "pgp_pub_encrypt": [
+            {"signature": "pgp_pub_encrypt(message bytea, public_key bytea [, options text])",
+             "argument_rule": "exactly 2 or 3 arguments; exact bytea message/public_key and text options"}],
+        "pgp_sym_decrypt": [
+            {"signature": "pgp_sym_decrypt(message bytea, password text [, options text])",
+             "argument_rule": "exactly 2 or 3 arguments; exact bytea message and text password/options"}],
+        "pgp_sym_encrypt": [
+            {"signature": "pgp_sym_encrypt(message text, password text [, options text])",
+             "argument_rule": "exactly 2 or 3 arguments; exact text message/password/options"}],
+        "pgcrypto": [
+            {"signature": "pgcrypto()", "argument_rule": "exact zero arguments; package/capability spelling only, not an executable scalar function"}],
+    }
+    package = name == "pgcrypto"
+    encrypt = name in {"pgp_pub_encrypt", "pgp_sym_encrypt"}
+    text_result = name == "pgp_sym_decrypt"
+    return {
+        "builtin_id": f"sb.crypto.{name}",
+        "canonical_name": name,
+        "status": "evidence_required",
+        "execution_admission": "refused_until_exact_semantics",
+        "overloads": overloads[name],
+        "return_type_rule": "none; pgcrypto is not a callable value" if package else "text" if text_result else "bytea",
+        "coercion_rule": "no coercions" if package else
+            "exact declared bytea/text carriers; no implicit binary/text conversion; any typed NULL must retain its exact declared carrier",
+        "null_behavior": "not applicable" if package else
+            "strict; validate arity and declared carriers before NULL propagation; NULL returns NULL without key access",
+        "collation_charset_rule": "not applicable" if package else
+            "options is ASCII; public-key message/key are opaque bytes; symmetric plaintext is UTF-8 under admitted text profiles; no charset on bytea",
+        "timezone_rule": "not applicable",
+        "volatility": "not_executable" if package else "volatile" if encrypt else "immutable",
+        "determinism": "not_executable" if package else
+            "non_deterministic due to cryptographic packet randomness" if encrypt else
+            "deterministic for identical admitted packet, key/password, explicit passphrase if supplied, options and key-verification time/policy",
+        "side_effects": "none; no extension loading or dynamic library lookup" if package else
+            "none; keys, passwords and plaintext are never persisted",
+        "sblr_binding": f"sblr.expr.crypto_{name}.v3",
+        "ast_binding": f"ast.expr.crypto_{name}",
+        "engine_entrypoint": name,
+        "optimizer_properties": {"foldable": False, "index_eligible": False,
+                                 "generated_column_eligible": False, "cost_class": "runtime_seed"},
+        "security_policy": "no execution admission; package discovery is catalog-owned" if package else
+            "EXECUTE and applicable private-key authorization; RFC9580 authenticated native OpenPGP, version6 Ed25519/X25519 public-key profile; protected key/passphrase custody and redacted diagnostics; no legacy fake envelope fallback",
+        "reference_rendering": "parser renders dialect spelling and diagnostics; never execution authority",
+        "error_semantics": {
+            "pgcrypto": "CRYPTO.PACKAGE.NOT_CALLABLE",
+            "pgp_pub_decrypt": "CRYPTO.PGP.INVALID_MESSAGE, CRYPTO.PGP.INVALID_KEY, CRYPTO.PGP.UNSUPPORTED_OPTION, or CRYPTO.PGP.PROFILE_UNAVAILABLE; no partial result",
+            "pgp_pub_encrypt": "CRYPTO.PGP.INVALID_KEY, CRYPTO.PGP.UNSUPPORTED_OPTION, CRYPTO.PGP.RNG_UNAVAILABLE, or CRYPTO.PGP.PROFILE_UNAVAILABLE; no partial result",
+            "pgp_sym_decrypt": "CRYPTO.PGP.INVALID_MESSAGE, CRYPTO.PGP.INVALID_PASSWORD, CRYPTO.PGP.INVALID_UTF8, CRYPTO.PGP.UNSUPPORTED_OPTION, or CRYPTO.PGP.PROFILE_UNAVAILABLE; no partial result",
+            "pgp_sym_encrypt": "CRYPTO.PGP.INVALID_PASSWORD, CRYPTO.PGP.UNSUPPORTED_OPTION, CRYPTO.PGP.RNG_UNAVAILABLE, or CRYPTO.PGP.PROFILE_UNAVAILABLE; no partial result",
+        }[name],
+        "syntax_forms": ["function_call"],
+        # Catalog identity alignment does not prove packet execution or a route.
+        "conformance_cases": ["sbsql_fixed_uuid_catalog_seed_gate"],
     }
 
 
@@ -1694,11 +1756,11 @@ SBSFC057_CRYPTO_HASH_ORACLE_OVERRIDES = {
     "SBSQL-058471F02F03": _sbsfc057_oracle_record("sb.crypto.gen_salt_algo", "gen_salt(algo[,rounds])", "algorithm and optional rounds", "deterministic md5/bf salt descriptor", "sblr.expr.crypto_hash.gen_salt_algo.v3", "gen_salt_algo", "SBSFC057-gen-salt-md5"),
     "SBSQL-6144531FD80E": _sbsfc057_oracle_record("sb.crypto.hmac", "hmac", "zero or three value/key/algorithm arguments", "marker or OpenSSL HMAC hex text", "sblr.expr.crypto_hash.hmac.v3", "hmac", "SBSFC057-hmac-marker"),
     "SBSQL-D0FF02C4CDDE": _sbsfc057_oracle_record("sb.crypto.hmac_value_key_algo", "hmac(text|binary,key,algo)", "value, key, and algorithm", "OpenSSL HMAC hex text", "sblr.expr.crypto_hash.hmac_value_key_algo.v3", "hmac_value_key_algo", "SBSFC057-hmac-sha256"),
-    "SBSQL-AF4E7BFEFDD1": _sbsfc057_oracle_record("sb.crypto.pgcrypto", "pgcrypto", "no arguments", "compatibility envelope marker", "sblr.expr.crypto_hash.pgcrypto.v3", "pgcrypto", "SBSFC057-pgcrypto-marker"),
-    "SBSQL-6358314B6883": _sbsfc057_oracle_record("sb.crypto.pgp_pub_decrypt", "pgp_pub_decrypt", "ScratchBird pub envelope and key", "decrypted character payload", "sblr.expr.crypto_hash.pgp_pub_decrypt.v3", "pgp_pub_decrypt", "SBSFC057-pgp-pub-decrypt"),
-    "SBSQL-2854D8B0790B": _sbsfc057_oracle_record("sb.crypto.pgp_pub_encrypt", "pgp_pub_encrypt", "value and public key descriptor", "bounded ScratchBird pub envelope text", "sblr.expr.crypto_hash.pgp_pub_encrypt.v3", "pgp_pub_encrypt", "SBSFC057-pgp-pub-encrypt"),
-    "SBSQL-6DBE85C4B814": _sbsfc057_oracle_record("sb.crypto.pgp_sym_decrypt", "pgp_sym_decrypt", "ScratchBird sym envelope and key", "decrypted character payload", "sblr.expr.crypto_hash.pgp_sym_decrypt.v3", "pgp_sym_decrypt", "SBSFC057-pgp-sym-decrypt"),
-    "SBSQL-C98EC981ACD7": _sbsfc057_oracle_record("sb.crypto.pgp_sym_encrypt", "pgp_sym_encrypt", "value and symmetric key", "bounded ScratchBird sym envelope text", "sblr.expr.crypto_hash.pgp_sym_encrypt.v3", "pgp_sym_encrypt", "SBSFC057-pgp-sym-encrypt"),
+    "SBSQL-AF4E7BFEFDD1": _sbsfc057_native_pgp_oracle_record("pgcrypto"),
+    "SBSQL-6358314B6883": _sbsfc057_native_pgp_oracle_record("pgp_pub_decrypt"),
+    "SBSQL-2854D8B0790B": _sbsfc057_native_pgp_oracle_record("pgp_pub_encrypt"),
+    "SBSQL-6DBE85C4B814": _sbsfc057_native_pgp_oracle_record("pgp_sym_decrypt"),
+    "SBSQL-C98EC981ACD7": _sbsfc057_native_pgp_oracle_record("pgp_sym_encrypt"),
     "SBSQL-C8996122850A": _sbsfc057_oracle_record("sb.crypto.scrypt", "scrypt", "password, salt, and optional bounded parameters", "OpenSSL EVP_PBE_scrypt hex text", "sblr.expr.crypto_hash.scrypt.v3", "scrypt", "SBSFC057-scrypt"),
     "SBSQL-BD3080D87EA5": _sbsfc057_oracle_record("sb.crypto.sha3_256", "sha3_256", "zero or one text/binary value", "OpenSSL SHA3-256 hex text", "sblr.expr.crypto_hash.sha3_256.v3", "sha3_256", "SBSFC057-sha3-256"),
     "SBSQL-51BB6328126C": _sbsfc057_oracle_record("sb.crypto.sha3_512", "sha3_512", "zero or one text/binary value", "OpenSSL SHA3-512 hex text", "sblr.expr.crypto_hash.sha3_512.v3", "sha3_512", "SBSFC057-sha3-512"),
@@ -2526,11 +2588,17 @@ def read_csv(path: Path) -> list[dict[str, str]]:
 def read_yaml(path: Path) -> dict:
     if not path.is_file():
         fail(f"required YAML missing: {path}")
+    # Pure contract/classifier users do not read YAML. The real YAML-loading
+    # path still requires PyYAML and propagates import/parse errors unchanged.
+    import yaml
+
     with path.open(encoding="utf-8") as handle:
         return yaml.safe_load(handle)
 
 
 def read_yaml_or_empty_public_snapshot(path: Path) -> dict:
+    import yaml
+
     try:
         data = read_yaml(path)
     except yaml.YAMLError:
@@ -2930,12 +2998,17 @@ def _full_oracle_row(
     authority_source: str,
 ) -> dict[str, str]:
     overload = (expr.get("overloads") or [{}])[0] if expr.get("overloads") else {}
+    argument_rule = str(overload.get("argument_rule", PENDING))
+    if expr.get("builtin_id") == "sb.crypto.pgp_pub_decrypt":
+        argument_rule = " | ".join(
+            f"{item['signature']}: {item['argument_rule']}"
+            for item in expr["overloads"])
     return {
         "normalized_name": norm,
         "oracle_authority_status": "full_oracle",
         "matched_builtin_id": expr.get("builtin_id", ""),
         "matched_canonical_name": expr.get("canonical_name", ""),
-        "argument_descriptor_rule": str(overload.get("argument_rule", PENDING)),
+        "argument_descriptor_rule": argument_rule,
         "return_type_rule": str(expr.get("return_type_rule", PENDING)),
         "coercion_rule": str(expr.get("coercion_rule", PENDING)),
         "null_behavior": str(expr.get("null_behavior", PENDING)),
@@ -2957,7 +3030,9 @@ def _full_oracle_row(
         "reference_rendering": str(expr.get("reference_rendering", PENDING)),
         "syntax_forms": join_list(expr.get("syntax_forms")),
         "conformance_cases": join_list(expr.get("conformance_cases")),
-        "notes": f"oracle sourced from {authority_source}.",
+        "notes": f"oracle sourced from {authority_source}." + (
+            " Core status=evidence_required; execution_admission=refused_until_exact_semantics; contract metadata is not runtime proof."
+            if expr.get("status") == "evidence_required" else ""),
     }
 
 

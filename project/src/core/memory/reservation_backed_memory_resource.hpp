@@ -131,6 +131,11 @@ class ReservationBackedMemoryResource {
   ~ReservationBackedMemoryResource();
 
   AllocationResult Allocate(ReservationBackedMemoryAllocationRequest request);
+  // Protected storage consumes the same retained physical capacity and
+  // hierarchical grant as ordinary allocations. Custody remains here: release
+  // always zeroizes and reverses platform protection before returning credit.
+  AllocationResult AllocateProtected(ReservationBackedMemoryAllocationRequest request,
+      ProtectedMemoryPlatformPolicy policy = ProtectedMemoryPlatformPolicy::best_effort);
   DeallocationResult Deallocate(void* pointer, usize bytes, usize alignment);
   Status DeallocateNoAlloc(void* pointer, usize bytes, usize alignment);
   ReservationBackedMemoryResourceReleaseResult Release();
@@ -142,18 +147,17 @@ class ReservationBackedMemoryResource {
   const HierarchicalMemoryReservationToken& reservation_token() const;
 
  private:
-  struct AllocationRecord {
-    void* pointer = nullptr;
-    usize bytes = 0;
-    usize alignment = 0;
-    MemoryTag tag;
-  };
+  // Metadata/custody implementation stays out of every consumer translation
+  // unit. Constructor/destructor and all vector users are defined out of line.
+  struct AllocationRecord;
 
   ReservationBackedMemoryResource(ReservationBackedMemoryResourceRequest request,
                                   HierarchicalMemoryReservationToken token,
                                   HierarchicalMemoryReservationLease lease);
 
   MemoryTag TagForAllocation(const ReservationBackedMemoryAllocationRequest& request) const;
+  AllocationResult AllocateImpl(ReservationBackedMemoryAllocationRequest request,
+      bool protected_material, ProtectedMemoryPlatformPolicy policy);
   bool ActiveLocked() const;
   ReservationBackedMemoryResourceSnapshot SnapshotLocked() const;
   Status ReleaseNoAllocLocked();
@@ -178,6 +182,10 @@ class ReservationBackedPmrMemoryResource final : public std::pmr::memory_resourc
   // The bound resource must outlive this adapter and its allocated containers.
   ReservationBackedPmrMemoryResource(ReservationBackedMemoryResource* resource,
                                      std::string purpose_prefix);
+  // All allocations use protected allocator custody. This is a request for
+  // protection, not a new budget/authority or permission to weaken its policy.
+  ReservationBackedPmrMemoryResource(ReservationBackedMemoryResource* resource,
+      std::string purpose_prefix, ProtectedMemoryPlatformPolicy protection);
 
   ReservationBackedPmrMemoryResource(const ReservationBackedPmrMemoryResource&) = delete;
   ReservationBackedPmrMemoryResource& operator=(const ReservationBackedPmrMemoryResource&) = delete;
@@ -192,6 +200,8 @@ class ReservationBackedPmrMemoryResource final : public std::pmr::memory_resourc
   ReservationBackedMemoryResource* resource_ = nullptr;
   mutable std::mutex mutex_;
   std::string purpose_prefix_;
+  bool protected_material_ = false;
+  ProtectedMemoryPlatformPolicy protection_ = ProtectedMemoryPlatformPolicy::best_effort;
   u64 allocation_count_ = 0;
   u64 deallocation_count_ = 0;
   u64 failed_allocation_count_ = 0;

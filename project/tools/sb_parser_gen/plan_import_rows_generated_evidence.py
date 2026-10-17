@@ -30,8 +30,6 @@ import hashlib
 import json
 from pathlib import Path
 
-import yaml
-
 
 PLAN_IMPORT_ROWS_SURFACES = {
     "SBSQL-2DDA6BFD9B65": "copy_format",
@@ -183,6 +181,8 @@ def canonical_json_sha256(value: object) -> str:
 def _load_yaml(path: Path) -> object:
     if not path.is_file():
         raise ValueError(f"central-import authoritative input missing: {path}")
+    import yaml
+
     try:
         return yaml.safe_load(path.read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:

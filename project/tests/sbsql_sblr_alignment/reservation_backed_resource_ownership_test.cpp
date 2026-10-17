@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "reservation_backed_memory_resource.hpp"
 #include <cstdlib>
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <barrier>
@@ -17,6 +18,23 @@ long current_index = -1;
 void Arm(long n) { current_index = n; remaining = n; hit = false; }
 void Off() { remaining = -1; }
 }
+#ifdef SB_PROTECTED_RESOURCE_NATIVE_OBSERVATION
+namespace protected_watch {
+void* pointer = nullptr;
+std::size_t bytes = 0;
+bool unlocked = false, erased = false;
+}
+extern "C" int __real_munlock(const void*, std::size_t);
+extern "C" int __wrap_munlock(const void* pointer, std::size_t bytes) {
+  if (pointer == protected_watch::pointer && bytes == protected_watch::bytes) {
+    protected_watch::unlocked = true;
+    protected_watch::erased = true;
+    const auto* data = static_cast<const unsigned char*>(pointer);
+    for (std::size_t i=0; i<bytes; ++i) protected_watch::erased &= data[i] == 0;
+  }
+  return __real_munlock(pointer, bytes);
+}
+#endif
 #ifndef SB_ADAPTER_NO_ALLOC_OVERRIDE
 void* operator new(std::size_t n) {
   if (fault::remaining >= 0 && fault::remaining-- == 0) {
@@ -101,6 +119,8 @@ void Charges(mem::HierarchicalMemoryBudgetLedger& ledger, mem::MemoryManager& ma
 }
 #ifndef SB_ADAPTER_NO_ALLOC_OVERRIDE
 void Sweep(std::string_view mode) {
+  const bool protected_material = mode.substr(0, 10) == "protected_";
+  if (protected_material) mode.remove_prefix(10);
   bool complete = false;
   for (long n = 0; n != 8192 && !complete; ++n) {
     mem::HierarchicalMemoryBudgetLedger ledger(3, 5);
@@ -111,12 +131,16 @@ void Sweep(std::string_view mode) {
     if (mode != "acquire") acquired = mem::AcquireReservationBackedMemoryResource(request);
     if (mode != "acquire") Check(acquired.ok(), "actual adapter fixture acquire");
     if (mode == "release") {
-      Check(acquired.resource->Allocate({137, 256, "first-real-block"}).ok(), "first release block");
+      auto first = protected_material
+          ? acquired.resource->AllocateProtected({137, 256, "first-real-block"})
+          : acquired.resource->Allocate({137, 256, "first-real-block"});
+      Check(first.ok(), "first release block");
       Check(acquired.resource->Allocate({269, 512, "second-real-block"}).ok(), "second release block");
     }
     mem::AllocationResult existing;
     if (mode == "deallocate") {
-      existing = acquired.resource->Allocate({137, 256, {}});
+      existing = protected_material ? acquired.resource->AllocateProtected({137, 256, {}})
+                                    : acquired.resource->Allocate({137, 256, {}});
       Check(existing.ok(), "actual explicit deallocation fixture");
       std::memset(existing.pointer, 0xa5, 137);
     }
@@ -127,7 +151,11 @@ void Sweep(std::string_view mode) {
     fault::Arm(n);
     try {
       if (mode == "acquire") { acquired = mem::AcquireReservationBackedMemoryResource(std::move(request)); success = acquired.ok(); }
-      if (mode == "allocate") { allocation = acquired.resource->Allocate({137, 256, {}}); success = allocation.ok(); }
+      if (mode == "allocate") {
+        allocation = protected_material ? acquired.resource->AllocateProtected({137, 256, {}})
+                                        : acquired.resource->Allocate({137, 256, {}});
+        success = allocation.ok();
+      }
       if (mode == "release") { released = acquired.resource->Release(); success = released.ok() && released.released; }
       if (mode == "deallocate") { deallocated = acquired.resource->Deallocate(existing.pointer, 137, 256); success = deallocated.ok(); }
     } catch (const std::bad_alloc&) { threw = true; }
@@ -159,7 +187,7 @@ void Sweep(std::string_view mode) {
   Check(complete, "adapter fault sweep incomplete");
 }
 
-void PmrFaults() {
+void PmrFaults(bool protected_material = false) {
   bool complete = false;
   for (long n = 0; n < 8192 && !complete; ++n) {
     mem::HierarchicalMemoryBudgetLedger ledger(3, 5);
@@ -168,21 +196,24 @@ void PmrFaults() {
     auto acquired = mem::AcquireReservationBackedMemoryResource(Request(ledger, manager));
     Check(acquired.ok(), "PMR real reservation fixture");
     mem::ReservationBackedPmrMemoryResource pmr(acquired.resource.get(), "adapter-pmr-long-purpose");
+    mem::ReservationBackedPmrMemoryResource protected_pmr(acquired.resource.get(), "adapter-protected-pmr",
+        mem::ProtectedMemoryPlatformPolicy::best_effort);
+    auto& selected_pmr = protected_material ? protected_pmr : pmr;
     void* pointer = nullptr;
     fault::Arm(n);
-    try { pointer = pmr.allocate(137, 256); } catch (const std::bad_alloc&) {}
+    try { pointer = selected_pmr.allocate(137, 256); } catch (const std::bad_alloc&) {}
     fault::Off();
     Charges(ledger, manager, 4096, pointer ? 137 : 0, pointer ? 1 : 0);
-    const auto snapshot = pmr.Snapshot();
+    const auto snapshot = selected_pmr.Snapshot();
     Check(snapshot.allocated_bytes == (pointer ? 137u : 0u), "PMR publication count mismatch");
     Check(snapshot.failed_allocation_count == (pointer ? 0u : 1u), "PMR failure counted incorrectly");
     if (fault::hit) ++injected; else complete = true;
     if (pointer) {
       fault::Arm(0);
-      pmr.deallocate(pointer, 137, 256);
+      selected_pmr.deallocate(pointer, 137, 256);
       fault::Off();
       Check(!fault::hit, "PMR deallocation attempted allocation");
-      Check(pmr.Snapshot().allocated_bytes == 0 && pmr.Snapshot().deallocation_count == 1,
+      Check(selected_pmr.Snapshot().allocated_bytes == 0 && selected_pmr.Snapshot().deallocation_count == 1,
             "PMR teardown counters do not reflect physical release");
     }
     acquired.resource.reset();
@@ -502,6 +533,73 @@ void RevocationPublicationRace() {
     Charges(ledger, manager, 0, 0, 0);
   }
 }
+
+void ProtectedOwnership() {
+  mem::HierarchicalMemoryBudgetLedger ledger;
+  auto policy = Policy(); policy.hard_limit_bytes = policy.per_context_limit_bytes = 4096;
+  mem::MemoryManager manager(policy);
+  const auto id=[](unsigned n) { mem::MemoryBinaryUuid value{};
+    value[6]=0x70; value[8]=0x80; value[15]=n; return value; };
+  mem::ReservationBackedMemoryResourceRequest request;
+  request.reservation_ledger=&ledger; request.memory_manager=&manager;
+  request.requested_bytes=4096; request.binary_operation_uuid=id(1);
+  request.binary_ownership[mem::MemoryBinaryScopeKind::owner]=id(2);
+  request.binary_ownership[mem::MemoryBinaryScopeKind::context]=id(3);
+  request.binary_ownership[mem::MemoryBinaryScopeKind::database]=id(4);
+  request.scope_chain={{mem::HierarchicalMemoryScopeKind::database, {}, id(4)}};
+  request.provenance=Provenance(); request.route_label="protected-capacity-contract";
+  Check(ledger.SetBudget({request.scope_chain.front(),4096,4096,request.provenance}).ok(),
+        "protected binary actual parent budget");
+  auto acquired=mem::AcquireReservationBackedMemoryResource(request);
+  Check(acquired.ok(), "protected binary resource admission");
+  if(!acquired.ok()) return;
+  auto& resource=*acquired.resource;
+  Check(!resource.AllocateProtected({1,64,{}},static_cast<mem::ProtectedMemoryPlatformPolicy>(255)).ok(),
+        "unknown protected platform profile admitted");
+  Check(!resource.AllocateProtected({0,64,{}}).ok() && !resource.AllocateProtected({4097,64,{}}).ok() &&
+        !resource.AllocateProtected({1,3,{}}).ok() && resource.Snapshot().allocated_bytes==0 &&
+        manager.Snapshot().reserved_capacity_bytes==4096,
+        "invalid protected requests changed capacity ownership");
+  auto protection=mem::ProtectedMemoryPlatformPolicy::best_effort;
+#ifdef SB_PROTECTED_RESOURCE_NATIVE_OBSERVATION
+  protection=mem::ProtectedMemoryPlatformPolicy::require_platform_lock;
+#endif
+  auto allocated=resource.AllocateProtected({4096,256,{}},protection);
+  Check(allocated.ok() && allocated.bytes==4096 && allocated.alignment>=256 &&
+        (allocated.alignment & (allocated.alignment-1))==0,
+        "protected exact saturated capacity double-admitted or changed shape");
+  if(!allocated.ok()) return;
+  auto* bytes=static_cast<unsigned char*>(allocated.pointer);
+  Check(std::all_of(bytes,bytes+4096,[](auto byte){return byte==0;}), "protected resource not zeroed");
+  std::memset(bytes,0xa5,4096);
+  Charges(ledger,manager,4096,4096,1);
+  Check(!resource.Allocate({1,64,{}}).ok() && !resource.AllocateProtected({1,64,{}}).ok(),
+        "ordinary/protected resource did not share exact quota");
+  const auto revoked=ledger.Cancel(resource.reservation_token());
+  Check(!revoked.ok() && revoked.retained && !resource.active() &&
+        !resource.AllocateProtected({1,64,{}}).ok() && bytes[4095]==0xa5,
+        "revoked protected owner lost live bytes or admitted effects");
+  Check(resource.DeallocateNoAlloc(allocated.pointer,4095,256).code==Code::memory_invalid_request &&
+        resource.DeallocateNoAlloc(allocated.pointer,4096,512).code==Code::memory_invalid_request &&
+        resource.Snapshot().allocated_bytes==4096 && bytes[0]==0xa5,
+        "wrong protected deallocation tuple erased live owner");
+#ifdef SB_PROTECTED_RESOURCE_NATIVE_OBSERVATION
+  protected_watch::pointer=allocated.pointer; protected_watch::bytes=4096;
+  protected_watch::unlocked=protected_watch::erased=false;
+#endif
+  fault::Arm(0);
+  const auto released=resource.ReleaseNoAlloc();
+  fault::Off();
+  Check(released.ok() && !fault::hit, "revoked protected forced cleanup allocated or refused");
+#ifdef SB_PROTECTED_RESOURCE_NATIVE_OBSERVATION
+  Check(protected_watch::unlocked && protected_watch::erased,
+        "resource released physical protection before exact plaintext erasure");
+  protected_watch::pointer=nullptr;
+#endif
+  Charges(ledger,manager,0,0,0);
+  Check(!resource.AllocateProtected({1,64,{}}).ok() && resource.ReleaseNoAlloc().ok(),
+        "released protected resource resurrected or double-released");
+}
 }
 int main(int argc, char** argv) {
   std::set_terminate([] {
@@ -512,12 +610,14 @@ int main(int argc, char** argv) {
   WarmMetrics();
 #ifndef SB_ADAPTER_NO_ALLOC_OVERRIDE
   if (argc > 1) Sweep(argv[1]);
-  else { Sweep("acquire"); Sweep("allocate"); Sweep("deallocate"); Sweep("release"); PmrFaults(); ForcedCleanup(); }
+  else { Sweep("acquire"); Sweep("allocate"); Sweep("deallocate"); Sweep("release"); PmrFaults(); ForcedCleanup();
+    Sweep("protected_allocate"); Sweep("protected_deallocate"); Sweep("protected_release"); PmrFaults(true); }
 #else
   (void)argc; (void)argv;
 #endif
   BinaryScopeAdmission(); ProfilesAndOwnership(); SharedResourceConcurrency();
   ParentRevocation(); RetainedLeaseOwnership(); RevocationPublicationRace();
+  ProtectedOwnership();
   std::cout << checks << " checks; " << injected << " allocation faults; " << failures << " failures\n";
   return failures ? 1 : 0;
 }

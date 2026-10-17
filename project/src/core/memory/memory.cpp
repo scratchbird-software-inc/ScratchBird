@@ -184,24 +184,53 @@ std::string RedactProtectedMemoryText(std::string text) {
   return text.empty() ? std::string("protected_material") : std::move(text);
 }
 
+// Protection is page-granular, even when the payload is shorter than one page.
+// Give every allocator-issued protected owner a page-aligned base so another
+// live protected owner cannot share its final protection page. This remains
+// logical-payload accounting, not a measurement of OS/heap retained footprint.
+usize ProtectedPlatformPageSize() {
+  // Native page size is process invariant. Query once outside allocator locks,
+  // rather than issuing sysconf repeatedly on each allocate/protect/release.
+  static const usize page_size = []() noexcept -> usize {
+#if defined(_WIN32)
+  SYSTEM_INFO info{};
+  ::GetSystemInfo(&info);
+  const auto bytes = static_cast<usize>(info.dwPageSize);
+#elif defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+  const auto reported = ::sysconf(_SC_PAGESIZE);
+  if (reported <= 0 || static_cast<std::uintmax_t>(reported) >
+                           std::numeric_limits<usize>::max()) return 0;
+  const auto bytes = static_cast<usize>(reported);
+#else
+  return 0;
+#endif
+#if defined(_WIN32) || defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+  return IsPowerOfTwo(bytes) ? bytes : 0;
+#endif
+  }();
+  return page_size;
+}
+
 #if !defined(_WIN32) && (defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__))
 std::uintptr_t PageAlignDown(std::uintptr_t value, std::uintptr_t page_size) {
   return value & ~(page_size - 1u);
 }
 
 usize PageAlignLength(void* pointer, usize bytes) {
-  const long sys_page_size = ::sysconf(_SC_PAGESIZE);
-  const auto page_size = sys_page_size > 0 ? static_cast<std::uintptr_t>(sys_page_size) : 4096u;
+  const auto page_size = static_cast<std::uintptr_t>(ProtectedPlatformPageSize());
+  if (!page_size) return 0;
   const auto begin = reinterpret_cast<std::uintptr_t>(pointer);
+  if (bytes > std::numeric_limits<std::uintptr_t>::max() - begin) return 0;
   const auto aligned_begin = PageAlignDown(begin, page_size);
   const auto end = begin + static_cast<std::uintptr_t>(bytes);
+  if (page_size - 1u > std::numeric_limits<std::uintptr_t>::max() - end) return 0;
   const auto aligned_end = (end + page_size - 1u) & ~(page_size - 1u);
   return static_cast<usize>(aligned_end - aligned_begin);
 }
 
 void* PageAlignPointer(void* pointer) {
-  const long sys_page_size = ::sysconf(_SC_PAGESIZE);
-  const auto page_size = sys_page_size > 0 ? static_cast<std::uintptr_t>(sys_page_size) : 4096u;
+  const auto page_size = static_cast<std::uintptr_t>(ProtectedPlatformPageSize());
+  if (!page_size) return nullptr;
   const auto begin = reinterpret_cast<std::uintptr_t>(pointer);
   return reinterpret_cast<void*>(PageAlignDown(begin, page_size));
 }
@@ -225,8 +254,10 @@ void ApplyProtectedPlatformEvidence(void* pointer,
   evidence->platform_lock_succeeded = ::mlock(pointer, bytes) == 0;
 #if defined(MADV_DONTDUMP)
   evidence->no_dump_supported = true;
-  evidence->no_dump_succeeded =
-      ::madvise(PageAlignPointer(pointer), PageAlignLength(pointer, bytes), MADV_DONTDUMP) == 0;
+  const auto protected_length = PageAlignLength(pointer, bytes);
+  auto* protected_begin = PageAlignPointer(pointer);
+  evidence->no_dump_succeeded = protected_begin && protected_length &&
+      ::madvise(protected_begin, protected_length, MADV_DONTDUMP) == 0;
 #else
   evidence->no_dump_supported = false;
   evidence->no_dump_succeeded = false;
@@ -251,7 +282,10 @@ void ReleaseProtectedPlatformEvidence(void* pointer, usize bytes, const Protecte
 #elif defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
 #if defined(MADV_DODUMP)
   if (evidence.no_dump_succeeded) {
-    (void)::madvise(PageAlignPointer(pointer), PageAlignLength(pointer, bytes), MADV_DODUMP);
+    const auto protected_length = PageAlignLength(pointer, bytes);
+    auto* protected_begin = PageAlignPointer(pointer);
+    if (protected_begin && protected_length)
+      (void)::madvise(protected_begin, protected_length, MADV_DODUMP);
   }
 #endif
   if (evidence.platform_lock_succeeded) {
@@ -695,13 +729,15 @@ ScopedProtectedBuffer::ScopedProtectedBuffer(BoundedAllocator* allocator,
                                              usize bytes,
                                              usize alignment,
                                              MemoryTag tag,
-                                             ProtectedMemoryEvidence evidence)
+                                             ProtectedMemoryEvidence evidence,
+                                             std::optional<MemoryPolicyBinding> policy_binding)
     : allocator_(allocator),
       pointer_(pointer),
       bytes_(bytes),
       alignment_(alignment),
       tag_(std::move(tag)),
-      evidence_(std::move(evidence)) {}
+      evidence_(std::move(evidence)),
+      policy_binding_(policy_binding) {}
 
 ScopedProtectedBuffer::ScopedProtectedBuffer(ScopedProtectedBuffer&& other) noexcept
     : allocator_(other.allocator_),
@@ -709,28 +745,32 @@ ScopedProtectedBuffer::ScopedProtectedBuffer(ScopedProtectedBuffer&& other) noex
       bytes_(other.bytes_),
       alignment_(other.alignment_),
       tag_(std::move(other.tag_)),
-      evidence_(std::move(other.evidence_)) {
+      evidence_(std::move(other.evidence_)),
+      policy_binding_(other.policy_binding_) {
   other.allocator_ = nullptr;
   other.pointer_ = nullptr;
   other.bytes_ = 0;
   other.alignment_ = 0;
   other.evidence_ = {};
+  other.policy_binding_.reset();
 }
 
 ScopedProtectedBuffer& ScopedProtectedBuffer::operator=(ScopedProtectedBuffer&& other) noexcept {
   if (this != &other) {
-    if (allocator_ && pointer_) (void)allocator_->DeallocateProtectedNoAlloc(pointer_, evidence_);
+    if (!ResetNoAlloc().ok()) return *this;
     allocator_ = other.allocator_;
     pointer_ = other.pointer_;
     bytes_ = other.bytes_;
     alignment_ = other.alignment_;
     tag_ = std::move(other.tag_);
     evidence_ = std::move(other.evidence_);
+    policy_binding_ = other.policy_binding_;
     other.allocator_ = nullptr;
     other.pointer_ = nullptr;
     other.bytes_ = 0;
     other.alignment_ = 0;
     other.evidence_ = {};
+    other.policy_binding_.reset();
   }
   return *this;
 }
@@ -754,6 +794,17 @@ DeallocationResult ScopedProtectedBuffer::Reset() try {
   return result;
 } catch (const std::bad_alloc&) {
   return {{StatusCode::memory_allocation_failed, Severity::error, Subsystem::memory}, {}};
+}
+
+Status ScopedProtectedBuffer::ResetNoAlloc() {
+  if (allocator_ == nullptr || pointer_ == nullptr) return OkStatus();
+  const auto status = allocator_->DeallocateProtectedNoAlloc(pointer_, evidence_);
+  if (status.ok()) {
+    pointer_ = nullptr;
+    bytes_ = 0;
+    alignment_ = 0;
+  }
+  return status;
 }
 
 BoundedAllocator::BoundedAllocator(AllocationPolicy policy)
@@ -793,6 +844,25 @@ AllocationResult MemoryCapacityReservation::Allocate(usize bytes, usize alignmen
 } catch (const std::bad_alloc&) {
   return {{StatusCode::memory_allocation_failed, Severity::error, Subsystem::memory},
           nullptr, 0, 0, {}};
+}
+
+ProtectedBufferResult MemoryCapacityReservation::AllocateProtected(
+    usize bytes, usize alignment, ProtectedMemoryPlatformPolicy platform_policy) try {
+  if (!allocator_) {
+    ProtectedBufferResult result;
+    result.status = {StatusCode::memory_invalid_request, Severity::error, Subsystem::memory};
+    return result;
+  }
+  ProtectedMemoryRequest request;
+  request.bytes = bytes;
+  request.alignment = alignment;
+  request.tag = tag_;
+  request.platform_policy = platform_policy;
+  return allocator_->AllocateProtectedImpl(std::move(request), id_);
+} catch (const std::bad_alloc&) {
+  ProtectedBufferResult result;
+  result.status = {StatusCode::memory_allocation_failed, Severity::error, Subsystem::memory};
+  return result;
 }
 
 void BoundedAllocator::AddCapacityCredits(CapacityRecord& record, u64 bytes) {
@@ -914,7 +984,7 @@ MemoryCapacityAvailability BoundedAllocator::AvailableCapacity(const MemoryTag& 
 }
 
 AllocationResult BoundedAllocator::AllocateImpl(
-    usize bytes, usize alignment, MemoryTag tag, u64 capacity_id) {
+    usize bytes, usize alignment, MemoryTag tag, u64 capacity_id, bool preserve_callsite) {
   FailureTelemetryExit telemetry_exit{this};
   bool failure_recorded = false;
   try {
@@ -922,7 +992,7 @@ AllocationResult BoundedAllocator::AllocateImpl(
   AllocationMetricSnapshot metric_snapshot;
   AllocationResult result;
   result.status = OkStatus();
-  if (tag.callsite.empty()) {
+  if (tag.callsite.empty() && !preserve_callsite) {
     tag.callsite = kDefaultAllocationCallsite;
   }
 
@@ -1699,7 +1769,12 @@ DeallocationResult BoundedAllocator::ReleasePageBuffer(PageBuffer buffer, Memory
   return result;
 }
 
-ProtectedBufferResult BoundedAllocator::AllocateProtected(ProtectedMemoryRequest request) try {
+ProtectedBufferResult BoundedAllocator::AllocateProtected(ProtectedMemoryRequest request) {
+  return AllocateProtectedImpl(std::move(request), 0);
+}
+
+ProtectedBufferResult BoundedAllocator::AllocateProtectedImpl(
+    ProtectedMemoryRequest request, u64 capacity_id) try {
   FailureTelemetryExit telemetry_exit{this};
   ProtectedBufferResult result;
   result.status = OkStatus();
@@ -1710,15 +1785,32 @@ ProtectedBufferResult BoundedAllocator::AllocateProtected(ProtectedMemoryRequest
   result.evidence.authority_scope = kProtectedMemoryAuthorityNote;
 
   MemoryTag tag = request.tag;
-  tag.callsite = kProtectedMemoryAllocationCallsite;
-  tag.purpose = "protected_material";
-  if (tag.category == MemoryCategory::unknown || tag.category == MemoryCategory::core_runtime) {
-    tag.category = MemoryCategory::resource_seed;
-  }
-  if (tag.lifetime == MemoryLifetime::unknown || tag.lifetime == MemoryLifetime::temporary) {
-    tag.lifetime = MemoryLifetime::temporary;
+  if (capacity_id == 0) {
+    tag.callsite = kProtectedMemoryAllocationCallsite;
+    tag.purpose = "protected_material";
+    if (tag.category == MemoryCategory::unknown || tag.category == MemoryCategory::core_runtime) {
+      tag.category = MemoryCategory::resource_seed;
+    }
+    if (tag.lifetime == MemoryLifetime::unknown || tag.lifetime == MemoryLifetime::temporary) {
+      tag.lifetime = MemoryLifetime::temporary;
+    }
   }
   const std::string material_class = RedactProtectedMemoryText(request.material_class);
+
+  if (request.platform_policy != ProtectedMemoryPlatformPolicy::best_effort &&
+      request.platform_policy != ProtectedMemoryPlatformPolicy::require_platform_lock &&
+      request.platform_policy != ProtectedMemoryPlatformPolicy::require_no_dump &&
+      request.platform_policy != ProtectedMemoryPlatformPolicy::require_lock_and_no_dump) {
+    std::lock_guard lock(mutex_);
+    RecordFailure(tag, false, false);
+    result.status = MemoryStatus(StatusCode::memory_invalid_request, Severity::error);
+    result.diagnostic = MakeProtectedMemoryDiagnostic(
+        result.status, "SB-MEMORY-PROTECTED-PLATFORM-POLICY-INVALID",
+        "memory.protected.platform_policy_invalid", std::move(tag),
+        request.bytes, request.alignment, result.evidence,
+        {{"protected_material_class", material_class}});
+    return result;
+  }
 
   if (request.bytes == 0) {
     std::lock_guard<std::mutex> lock(mutex_);
@@ -1737,7 +1829,27 @@ ProtectedBufferResult BoundedAllocator::AllocateProtected(ProtectedMemoryRequest
     return result;
   }
 
-  AllocationResult allocation = Allocate(request.bytes, request.alignment, tag);
+  usize protected_alignment = request.alignment;
+  const auto protection_page_size = ProtectedPlatformPageSize();
+#if defined(_WIN32) || defined(__linux__) || defined(__APPLE__) || defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+  if (!protection_page_size ||
+      request.bytes > std::numeric_limits<usize>::max() - (protection_page_size - 1u)) {
+    std::lock_guard lock(mutex_);
+    RecordFailure(tag, false, false);
+    result.status = MemoryStatus(StatusCode::memory_invalid_request, Severity::error);
+    result.diagnostic = MakeProtectedMemoryDiagnostic(
+        result.status, "SB-MEMORY-PROTECTED-PLATFORM-PAGE-SIZE-INVALID",
+        "memory.protected.platform_page_size_invalid", std::move(tag),
+        request.bytes, request.alignment, result.evidence);
+    return result;
+  }
+#endif
+  // Do not hide an invalid caller alignment by replacing it with a valid page
+  // alignment: AllocateImpl still issues the original alignment diagnostic.
+  if (protection_page_size && (!protected_alignment || IsPowerOfTwo(protected_alignment)))
+    protected_alignment = std::max(protected_alignment, protection_page_size);
+  AllocationResult allocation = AllocateImpl(
+      request.bytes, protected_alignment, tag, capacity_id, capacity_id != 0);
   if (!allocation.ok()) {
     std::lock_guard lock(mutex_);
     result.status = allocation.status;
@@ -1797,7 +1909,9 @@ ProtectedBufferResult BoundedAllocator::AllocateProtected(ProtectedMemoryRequest
                                         allocation.bytes,
                                         allocation.alignment,
                                         tag,
-                                        result.evidence);
+                                        result.evidence,
+                                        allocation.policy_binding);
+  result.policy_binding = allocation.policy_binding;
   (void)pending.release();
   return result;
 } catch (const std::bad_alloc&) {
