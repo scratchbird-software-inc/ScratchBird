@@ -8,6 +8,7 @@
 
 #include "mga_relation_store/mga_relation_descriptor.hpp"
 #include "mga_relation_store/mga_binary_identity_codec.hpp"
+#include "mga_relation_store/native_blob_descriptor_validation.hpp"
 
 #include "api_diagnostics.hpp"
 #include "catalog/column_metadata_codec.hpp"
@@ -184,6 +185,14 @@ EngineApiDiagnostic ValidateMgaRelationStorageDescriptor(const MgaRelationStorag
       return MakeInvalidRequestDiagnostic(
           "mga.relation_descriptor",
           "column_bound_resource_identity_mismatch");
+    }
+    const auto binary_blob = ValidateNativeBinaryBlobDescriptorV1(column.value_descriptor, column.nullable);
+    if (!binary_blob.ok()) {
+      return MakeEngineApiDiagnostic(binary_blob.resource_failure ? "RESOURCE.BUDGET_EXCEEDED" :
+          "DATATYPE.DESCRIPTOR.INVALID", "datatype.native_blob.descriptor", binary_blob.reason, true);
+    }
+    if (binary_blob.binary_blob && column.character_length != 0) {
+      return MakeInvalidRequestDiagnostic("mga.relation_descriptor", "binary_blob_character_length_forbidden");
     }
     const std::string text_resource_storage = LowerDescriptorText(
         EncodedDescriptorField(column.value_descriptor.encoded_descriptor,

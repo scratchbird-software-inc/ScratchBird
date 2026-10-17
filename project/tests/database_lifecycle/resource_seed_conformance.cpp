@@ -9,6 +9,8 @@
 #include "../support/diagnostic_value_fixture.hpp"
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
 #include "catalog_page.hpp"
 #include "catalog_record_codec.hpp"
 #include "catalog_resource_record_codec.hpp"
@@ -17,6 +19,7 @@
 #include "ddl/create_api.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "datatype_operations.hpp"
+#include "datatype_storage_identity.hpp"
 #include "disk_device.hpp"
 #include "memory.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
@@ -37,6 +40,7 @@
 #include <iostream>
 #include <iterator>
 #include <map>
+#include <memory>
 #include <set>
 #include <sstream>
 #include <stdexcept>
@@ -105,14 +109,6 @@ std::uint64_t CurrentUnixMillis() {
 std::uint64_t UniqueMillis() {
   static std::uint64_t counter = 0;
   return CurrentUnixMillis() + (++counter * 1000);
-}
-
-std::filesystem::path TestDatabasePath() {
-  const auto directory = std::filesystem::temp_directory_path() /
-                         ("sb_dblc_013aa_resource_seed_" +
-                          std::to_string(UniqueMillis()));
-  std::filesystem::create_directories(directory);
-  return directory / "resource_seed.sbdb";
 }
 
 std::map<std::string, std::string> ParsePayloadFields(const std::string& payload) {
@@ -395,31 +391,25 @@ void RequirePersistedGbkRecords(const std::vector<DecodedRecord>& records,
 }
 
 engine::EngineRequestContext BeginEngineTransaction(
-    const std::filesystem::path& database_path,
+    const db::DatabaseCreateConfig& create,
     const db::DatabaseLifecycleResult& created,
-    std::uint64_t now,
+    std::unique_ptr<scratchbird::tests::FixtureEngineSession>& session,
     bool read_only = false) {
-  engine::EngineRequestContext context;
-  context.trust_mode = engine::EngineTrustMode::server_isolated;
+  Require(!session, "resource fixture session output must be empty");
+  auto context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   context.request_id = read_only
                            ? "resource-seed-descriptor-conformance-read-only"
                            : "resource-seed-descriptor-conformance";
-  context.database_path = database_path.string();
-  context.database_uuid = created.state.database_uuid.value;
-  context.default_root_uuid = created.state.filespace_uuid.value;
-  const auto principal = uuid::GenerateEngineIdentityV7(UuidKind::principal, now + 300);
-  const auto session = uuid::GenerateEngineIdentityV7(UuidKind::object, now + 301);
-  Require(principal.ok() && session.ok(), "engine context UUID generation failed");
-  context.principal_uuid = principal.value.value;
-  context.session_uuid = session.value.value;
-  context.security_context_present = true;
-  context.catalog_generation_id = 1;
-  context.security_epoch = 1;
   context.resource_epoch = created.state.resource_seed_catalog.resource_epoch;
-  context.datatype_catalog_snapshot_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701");
-  context.datatype_catalog_generation = 1;
-  context.datatype_registry_generation = 1;
-  context.name_resolution_epoch = 1;
+  const auto catalog_identity = db::ReadDatabaseCatalogIdentity(
+      context.database_path, context.database_uuid);
+  Require(catalog_identity.ok() && catalog_identity.record->datatype_cohort.has_value(),
+          "resource fixture requires its actual persisted datatype cohort");
+  const auto& cohort = *catalog_identity.record->datatype_cohort;
+  context.datatype_catalog_snapshot_uuid = cohort.catalog_snapshot_uuid.value;
+  context.datatype_catalog_generation = cohort.catalog_generation;
+  context.datatype_registry_generation = cohort.registry_generation;
+  session = std::make_unique<scratchbird::tests::FixtureEngineSession>(context);
 
   engine::EngineBeginTransactionRequest begin;
   begin.context = context;
@@ -554,17 +544,19 @@ engine::EngineColumnDefinition EngineColumn(std::string name,
 }
 
 engine::EngineCreateTableResult CreateEngineTable(
+    const scratchbird::tests::FixtureEngineSession& session,
     const engine::EngineRequestContext& context,
     const engine::EngineUuid& schema_uuid,
     std::string table_name,
     engine::EngineColumnDefinition column) {
-  engine::EngineCreateTableRequest table;
-  table.context = context;
+  scratchbird::tests::FixtureEngineRequest<engine::EngineCreateTableRequest> table(session, context);
   table.target_schema.uuid = schema_uuid;
   table.target_schema.object_kind = "schema";
   table.table_names.push_back(EngineName(std::move(table_name)));
   namespace types = scratchbird::core::datatypes;
-  const auto manifest = types::LoadCurrentCoreDatatypeCatalogManifest();
+  // Declaration-name classification does not issue authority. Resolve every
+  // descriptor/type against the actual database's retained cohort below.
+  static const auto manifest = types::LoadCurrentCoreDatatypeCatalogManifest();
   Require(manifest.ok(), "resource fixture datatype catalog unavailable");
   const auto name = column.descriptor.canonical_type_name.substr(
       0, column.descriptor.canonical_type_name.find('('));
@@ -573,20 +565,22 @@ engine::EngineCreateTableResult CreateEngineTable(
   Require(type.ok() && type.manifest.descriptor_rows.size() == 1,
           "resource fixture exact datatype descriptor unavailable");
   const auto& datatype = type.manifest.descriptor_rows.front();
-  const auto codec = types::LookupDatatypeTypeCodecIdentityV1(
-      context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
-      context.datatype_registry_generation, datatype.descriptor_uuid.value,
-      datatype.descriptor_epoch);
-  Require(codec.ok || types::CanonicalTypeIdFromStableName(name) == types::CanonicalTypeId::blob,
-          "resource fixture exact datatype codec unavailable");
+  types::DatatypeStorageIdentityV3 binding;
+  const bool bound = types::LookupDatatypeStorageIdentityV3(
+      table.context.datatype_catalog_snapshot_uuid, table.context.datatype_catalog_generation,
+      table.context.datatype_registry_generation, datatype.descriptor_uuid.value,
+      datatype.descriptor_epoch, &binding);
+  Require(bound && binding.type_id == datatype.type_id &&
+              !binding.type_uuid.is_nil(),
+          "resource fixture exact datatype storage identity unavailable");
   column.ordinal = 0;
   column.requested_column_uuid = NewEngineIdentity(UuidKind::object, CurrentUnixMillis());
   column.descriptor.descriptor_uuid = NewEngineIdentity(UuidKind::object, CurrentUnixMillis());
-  column.descriptor.datatype_descriptor_uuid = datatype.descriptor_uuid.value;
-  column.descriptor.datatype_descriptor_generation = datatype.descriptor_epoch;
-  // BLOB belongs to the full builtin catalog, not the six-row scalar codec
-  // registry. DDL validates its catalog descriptor identity directly.
-  column.descriptor.type_uuid = codec.ok ? codec.row.type_uuid : datatype.descriptor_uuid.value;
+  column.descriptor.datatype_descriptor_uuid = binding.descriptor_uuid;
+  column.descriptor.datatype_descriptor_generation = binding.descriptor_generation;
+  column.descriptor.type_uuid = binding.type_uuid;
+  column.descriptor.datatype_cohort = {table.context.datatype_catalog_snapshot_uuid,
+      table.context.datatype_catalog_generation, table.context.datatype_registry_generation};
   table.table_columns.push_back(std::move(column));
   return engine::EngineCreateTable(table);
 }
@@ -656,6 +650,18 @@ void RequireLargeTextResourceColumn(
   Require(descriptor.columns.size() == 1,
           "large-text relation descriptor column count is incorrect");
   const auto& column = descriptor.columns.front();
+  namespace types = scratchbird::core::datatypes;
+  types::DatatypeStorageIdentityV3 storage;
+  const auto& value = column.value_descriptor;
+  Require(types::LookupDatatypeStorageIdentityV3(
+              value.datatype_cohort.catalog_snapshot_uuid,
+              value.datatype_cohort.catalog_generation,
+              value.datatype_cohort.registry_generation,
+              value.datatype_descriptor_uuid,
+              value.datatype_descriptor_generation, &storage) &&
+              storage.type_uuid == value.type_uuid &&
+              storage.type_id != types::CanonicalTypeId::blob,
+          "required text LOB cannot use binary BLOB identity plus charset metadata");
   Require(column.charset_uuid == expected_charset_uuid,
           "large-text relation descriptor lost the charset UUID");
   Require(column.collation_uuid == expected_collation_uuid,
@@ -669,9 +675,10 @@ void RequireLargeTextResourceColumn(
 }
 
 void RequireGbkRelationDescriptorPersistence(
-    const std::filesystem::path& database_path,
+    const db::DatabaseCreateConfig& create,
     const db::DatabaseLifecycleResult& created,
     std::uint64_t now) {
+  const auto database_path = std::filesystem::path(create.path);
   const auto& image = created.state.resource_seed_catalog;
   const auto* gbk = resources::FindResourceSeedCharset(image, "GBK");
   const auto* gbk_default = resources::FindResourceSeedCollation(image, "GBK");
@@ -691,7 +698,8 @@ void RequireGbkRelationDescriptorPersistence(
   Require(foreign_collation != nullptr,
           "foreign charset collation is missing for mismatch refusal");
 
-  auto context = BeginEngineTransaction(database_path, created, now + 1000);
+  std::unique_ptr<scratchbird::tests::FixtureEngineSession> session;
+  auto context = BeginEngineTransaction(create, created, session);
   engine::EngineUuid gbk_uuid;
   gbk_uuid = gbk->resource_uuid;
   auto missing_epoch_context = context;
@@ -714,16 +722,18 @@ void RequireGbkRelationDescriptorPersistence(
 
   const engine::EngineUuid schema_uuid =
       NewEngineIdentity(UuidKind::schema, now + 1100);
+  {
+    scratchbird::tests::FixtureEngineRequest<engine::EngineCreateSchemaRequest> schema(*session, context);
+    schema.target_object.uuid = schema_uuid;
+    schema.target_object.object_kind = "schema";
+    schema.localized_names.push_back(EngineName("resource_relation"));
+    RequireEngineOk(engine::EngineCreateSchema(schema),
+                    "resource relation schema creation failed");
+  }
   context.current_schema_uuid = schema_uuid;
-  engine::EngineCreateSchemaRequest schema;
-  schema.context = context;
-  schema.target_object.uuid = schema_uuid;
-  schema.target_object.object_kind = "schema";
-  schema.localized_names.push_back(EngineName("resource_relation"));
-  RequireEngineOk(engine::EngineCreateSchema(schema),
-                  "resource relation schema creation failed");
 
   const auto explicit_table = CreateEngineTable(
+      *session,
       context,
       schema_uuid,
       "explicit_gbk",
@@ -738,11 +748,12 @@ void RequireGbkRelationDescriptorPersistence(
   auto conflicting_column = EngineColumn("f1", "text",
       ResourceColumnMetadata("type=text;character_length=20", gbk->resource_uuid, gbk_unicode->resource_uuid));
   conflicting_column.descriptor.charset_uuid = gbk_unicode->resource_uuid;
-  const auto conflicting = CreateEngineTable(context, schema_uuid, "conflicting_native_resource", conflicting_column);
+  const auto conflicting = CreateEngineTable(*session, context, schema_uuid, "conflicting_native_resource", conflicting_column);
   Require(!conflicting.ok && HasDiagnosticDetail(conflicting, "bound_column_resource_identity_mismatch"),
           "native resource identity conflict was accepted");
 
   const auto default_table = CreateEngineTable(
+      *session,
       context,
       schema_uuid,
       "default_gbk",
@@ -753,6 +764,7 @@ void RequireGbkRelationDescriptorPersistence(
                   "GBK default-collation table creation failed");
 
   const auto large_text_table = CreateEngineTable(
+      *session,
       context,
       schema_uuid,
       "large_text_gbk",
@@ -763,6 +775,7 @@ void RequireGbkRelationDescriptorPersistence(
                   "GBK large-text object table creation failed");
 
   const auto missing_character_length = CreateEngineTable(
+      *session,
       context,
       schema_uuid,
       "missing_character_length",
@@ -776,6 +789,7 @@ void RequireGbkRelationDescriptorPersistence(
           "bounded character string accepted resource UUIDs without a length");
 
   const auto unmarked_large_text = CreateEngineTable(
+      *session,
       context,
       schema_uuid,
       "unmarked_large_text",
@@ -789,6 +803,7 @@ void RequireGbkRelationDescriptorPersistence(
           "BLOB resource UUIDs were accepted without large-text semantics");
 
   const auto invalid_large_text_storage = CreateEngineTable(
+      *session,
       context,
       schema_uuid,
       "invalid_large_text_storage",
@@ -801,6 +816,7 @@ void RequireGbkRelationDescriptorPersistence(
           "unknown text resource storage semantics were accepted");
 
   const auto bounded_large_text = CreateEngineTable(
+      *session,
       context,
       schema_uuid,
       "bounded_large_text",
@@ -814,6 +830,7 @@ void RequireGbkRelationDescriptorPersistence(
           "large-text object accepted a fabricated character length");
 
   const auto incompatible_large_text = CreateEngineTable(
+      *session,
       context,
       schema_uuid,
       "incompatible_large_text",
@@ -827,6 +844,7 @@ void RequireGbkRelationDescriptorPersistence(
           "non-LOB column accepted large-text storage semantics");
 
   const auto mismatch = CreateEngineTable(
+      *session,
       context,
       schema_uuid,
       "mismatched_gbk",
@@ -839,6 +857,7 @@ void RequireGbkRelationDescriptorPersistence(
           "mismatched charset/collation relationship was accepted");
 
   const auto incompatible = CreateEngineTable(
+      *session,
       context,
       schema_uuid,
       "incompatible_integer",
@@ -898,6 +917,8 @@ void RequireGbkRelationDescriptorPersistence(
   commit.context = context;
   RequireEngineOk(engine::EngineCommitTransaction(commit),
                   "resource relation transaction commit failed");
+  session->Close();
+  session.reset();
 
   db::DatabaseOpenConfig reopen;
   reopen.path = database_path.string();
@@ -906,8 +927,7 @@ void RequireGbkRelationDescriptorPersistence(
   RequireOk(db::OpenDatabaseFile(reopen),
             "resource relation database read-only reopen failed");
 
-  auto reopened_context =
-      BeginEngineTransaction(database_path, created, now + 2000, true);
+  auto reopened_context = BeginEngineTransaction(create, created, session, true);
   reopened_context.current_schema_uuid = schema_uuid;
   const auto reopened_explicit = LoadPersistedDescriptorWithoutWrite(
       reopened_context,
@@ -935,6 +955,8 @@ void RequireGbkRelationDescriptorPersistence(
   rollback.context = reopened_context;
   RequireEngineOk(engine::EngineRollbackTransaction(rollback),
                   "read-only resource relation transaction rollback failed");
+  session->Close();
+  session.reset();
 }
 
 void RequireAllResourceDescriptorValues(const resources::ResourceSeedCatalogImage& expected,
@@ -1181,6 +1203,7 @@ void RequireBinaryResourceCorruptionRefusal(const std::filesystem::path& path,
 }  // namespace
 
 int RunConformance() {
+  scratchbird::tests::OwnedTempDirectory artifacts;
   auto memory_policy = memory::DefaultLocalEngineMemoryPolicy();
   memory_policy.policy_name = "database_lifecycle_resource_seed_conformance";
   const auto memory_configured = memory::ConfigureDefaultMemoryManagerForFixture(
@@ -1208,22 +1231,14 @@ int RunConformance() {
   RequireIndexDependencyEvidence(loaded_image);
 
   resources::ResourceSeedLoadConfig missing_seed;
-  missing_seed.seed_pack_root =
-      (std::filesystem::temp_directory_path() / "sb_missing_resource_seed_pack").string();
+  missing_seed.seed_pack_root = (artifacts.path() / "nonexistent-seed-pack").string();
   const auto missing = resources::LoadResourceSeedPack(missing_seed);
   Require(!missing.ok(), "missing required seed pack was accepted");
   Require(missing.diagnostic.diagnostic_code == "SB_RESOURCE_SEED_MISSING",
           "missing required seed pack used the wrong diagnostic");
 
-  const auto database_path = TestDatabasePath();
+  const auto database_path = artifacts.path() / "resource_seed.sbdb";
   std::cout << "resource_seed_fixture=" << database_path.parent_path() << '\n';
-  struct Cleanup {
-    std::filesystem::path path;
-    ~Cleanup() {
-      std::error_code ignored;
-      std::filesystem::remove_all(path.parent_path(), ignored);
-    }
-  } cleanup{database_path};
 
   const auto now = UniqueMillis();
   const auto database_uuid = uuid::GenerateEngineIdentityV7(UuidKind::database, now);
@@ -1231,6 +1246,7 @@ int RunConformance() {
   Require(database_uuid.ok() && filespace_uuid.ok(), "test UUID generation failed");
 
   db::DatabaseCreateConfig create;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   create.path = database_path.string();
   create.database_uuid = database_uuid.value;
   create.filespace_uuid = filespace_uuid.value;
@@ -1291,9 +1307,13 @@ int RunConformance() {
   RequirePersistedGbkRecords(records, opened.state.resource_seed_catalog);
   RequireBinaryResourceCorruptionRefusal(database_path,created.state.header.page_size,read_only_open,
                                         created.state.resource_seed_catalog);
-  RequireEngineResourceResolution(
-      BeginEngineTransaction(database_path, created, now));
-  RequireGbkRelationDescriptorPersistence(database_path, created, now);
+  {
+    std::unique_ptr<scratchbird::tests::FixtureEngineSession> session;
+    RequireEngineResourceResolution(BeginEngineTransaction(create, created, session));
+    session->Close();
+  }
+  RequireGbkRelationDescriptorPersistence(create, created, now);
+  artifacts.Cleanup();
 
   return EXIT_SUCCESS;
 }

@@ -14,6 +14,7 @@
 #include "datatype_bit_string.hpp"
 #include "datatype_blob.hpp"
 #include "mga_relation_store/mga_large_value_codec.hpp"
+#include "mga_relation_store/native_blob_descriptor_validation.hpp"
 #include <type_traits>
 
 #include <algorithm>
@@ -57,41 +58,20 @@ bool DirectBuildBlobPageColumn(
         datatype.type_uuid != row.type_uuid || descriptor.type_uuid != row.type_uuid ||
         row.canonical_binary_type_code != static_cast<std::uint32_t>(dt::CanonicalTypeId::blob))
       return refuse("blob_receiver_cohort_or_codec_identity_mismatch");
+    const auto binary_blob = ValidateNativeBinaryBlobDescriptorV1(descriptor, nullable);
+    if (!binary_blob.ok()) {
+      if (binary_blob.resource_failure) {
+        if (diagnostic) *diagnostic = MakeEngineApiDiagnostic("RESOURCE.BUDGET_EXCEEDED",
+            "datatype.native_blob.receiver", binary_blob.reason, true);
+        return false;
+      }
+      return refuse(binary_blob.reason);
+    }
+    if (!binary_blob.binary_blob) return refuse("blob_receiver_native_identity_required");
     auto profile = dt::BuildBlobValidatedProfileHandleV3(
         {row.catalog_snapshot_uuid, row.catalog_snapshot_uuid,
          row.catalog_generation, row.registry_generation}, codec);
     if (!profile.ok()) return refuse("blob_receiver_profile_invalid");
-    if (!descriptor.charset_uuid.is_nil() || !descriptor.collation_uuid.is_nil())
-      return refuse("binary_blob_has_no_charset_or_collation");
-    CatalogColumnMetadata fields;
-    if (!AdmitCatalogColumnMetadata(descriptor.encoded_descriptor, &fields))
-      return refuse("blob_receiver_metadata_invalid");
-    for (const auto& [name, identity] : fields.identities) {
-      if ((name == "type_uuid" && identity == row.type_uuid) ||
-          (name == "datatype_descriptor_uuid" && identity == row.descriptor_uuid) ||
-          (name == "codec_uuid" && identity == row.codec_uuid)) continue;
-      return refuse("blob_receiver_identity_modifier_not_admitted");
-    }
-    for (const auto& [name, value] : fields.text) {
-      if (name == "canonical" || name == "canonical_type" || name == "type") {
-        if (value != descriptor.canonical_type_name)
-          return refuse("blob_receiver_declaration_label_mismatch");
-        continue;
-      }
-      if ((name == "datatype_descriptor_generation" && value == std::to_string(row.descriptor_generation)) ||
-          (name == "type_generation" && value == std::to_string(row.type_generation)) ||
-          (name == "codec_id" && value == row.codec_id) ||
-          (name == "codec_version" && value == std::to_string(row.codec_version)) ||
-          (name == "codec_generation" && value == std::to_string(row.codec_generation)) ||
-          (name == "null_encoding" && value == std::to_string(row.null_encoding_code))) continue;
-      // Declaration/constraint data does not change the base byte profile.
-      // Its owning DDL/DML services still validate and execute those contracts.
-      if (name == "nullable" || name == "nullability" || name == "not_null" ||
-          name == "primary_key" || name == "pk" || name == "unique" ||
-          name == "generated" || name == "identity" || name == "default" ||
-          name == "default_value" || name == "check") continue;
-      return refuse("blob_receiver_modifier_not_admitted");
-    }
     engine::ExecutionTypeDescriptor execution;
     std::string detail;
     // This shared helper only projects exact column metadata; it does not

@@ -4198,6 +4198,7 @@ if(TARGET sb_core_resources AND TARGET sb_storage_database AND
   )
   target_link_libraries(database_lifecycle_resource_seed_conformance
     PRIVATE
+      sb_engine
       sb_core_catalog
       sb_core_platform
       sb_core_resources

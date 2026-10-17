@@ -31,6 +31,7 @@
 #include "extensibility/executable_object_lifecycle.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "mga_relation_store/mga_binary_identity_codec.hpp"
+#include "mga_relation_store/native_blob_descriptor_validation.hpp"
 #include "security/security_model.hpp"
 #include "transaction/transaction_api.hpp"
 #include "transaction/mutation_authority.hpp"

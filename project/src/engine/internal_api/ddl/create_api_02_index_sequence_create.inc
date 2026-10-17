@@ -328,17 +328,31 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
           request.context, "ddl.create_table", MakeInvalidRequestDiagnostic(
               "ddl.create_table", "column_metadata_encoding_failed:" + column_name));
     }
+    // Identity, not the declaration label, determines whether any text
+    // decoration is legal. Check before resource resolution/canonicalization.
+    const auto incoming_blob = ValidateNativeBinaryBlobDescriptorV1(
+        column.descriptor, column.nullable, column_descriptor);
+    if (!incoming_blob.ok()) {
+      return MakeCrudDiagnosticResult<EngineCreateTableResult>(request.context, "ddl.create_table",
+          MakeEngineApiDiagnostic(incoming_blob.resource_failure ? "RESOURCE.BUDGET_EXCEEDED" :
+              "DATATYPE.DESCRIPTOR.INVALID", "datatype.native_blob.descriptor",
+              incoming_blob.reason, true));
+    }
     auto append_descriptor_field = [&column_descriptor](const std::string& field,
                                                         const std::string& value) {
       if (!value.empty() && !DescriptorHasFieldLocal(column_descriptor, field))
         column_descriptor = SetDescriptorFieldLocal(column_descriptor, field, value);
     };
-    append_descriptor_field("nullable", column.nullable ? "true" : "false");
+    // Do not manufacture a second nullability authority beside an already
+    // admitted binary-BLOB spelling. The typed column remains authoritative.
+    if (!incoming_blob.binary_blob ||
+        (!admitted_column.text.contains("nullability") && !admitted_column.text.contains("not_null")))
+      append_descriptor_field("nullable", column.nullable ? "true" : "false");
     append_descriptor_field("default", column.default_expression_envelope);
     bool qualified_domain_lookup_required = false;
     std::string requested_domain_type_name;
     EngineUuid domain_uuid = DomainUuidFromDescriptor(column.descriptor);
-    if (domain_uuid.is_nil()) {
+    if (domain_uuid.is_nil() && !incoming_blob.binary_blob) {
       domain_uuid = ResolveDomainTypeUuidFromColumnDescriptor(request,
                                                              column_descriptor,
                                                              &qualified_domain_lookup_required,
@@ -398,8 +412,9 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
       engine_canonical_type_name = DescriptorFieldLocal(
           descriptor_fields, {"canonical", "type"});
     }
-    const auto canonical_type_id =
-        scratchbird::core::datatypes::CanonicalTypeIdFromStableName(
+    const auto canonical_type_id = incoming_blob.binary_blob
+        ? scratchbird::core::datatypes::CanonicalTypeId::blob
+        : scratchbird::core::datatypes::CanonicalTypeIdFromStableName(
             DescriptorBaseTypeLocal(engine_canonical_type_name));
     if (canonical_type_id ==
         scratchbird::core::datatypes::CanonicalTypeId::unknown) {
@@ -576,6 +591,14 @@ EngineCreateTableResult EngineCreateTable(const EngineCreateTableRequest& reques
       return MakeCrudDiagnosticResult<EngineCreateTableResult>(
           request.context, "ddl.create_table", MakeInvalidRequestDiagnostic(
               "ddl.create_table", "column_datatype_codec_registry_tuple_mismatch:" + column_name));
+    }
+    const auto binary_blob = ValidateNativeBinaryBlobDescriptorV1(
+        column.descriptor, column.nullable, column_descriptor);
+    if (!binary_blob.ok()) {
+      return MakeCrudDiagnosticResult<EngineCreateTableResult>(request.context, "ddl.create_table",
+          MakeEngineApiDiagnostic(binary_blob.resource_failure ? "RESOURCE.BUDGET_EXCEEDED" :
+              "DATATYPE.DESCRIPTOR.INVALID", "datatype.native_blob.descriptor",
+              binary_blob.reason, true));
     }
     auto published_column = column;
     const auto resource_identity = [&](const char* key) {

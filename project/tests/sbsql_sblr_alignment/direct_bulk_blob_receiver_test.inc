@@ -76,7 +76,7 @@ void BlobReceiverConstruction() {
           output.interval==original.interval && output.bit_string==original.bit_string;
     };
     auto output=original;
-    for (unsigned mutation=0;mutation<33;++mutation) {
+    for (unsigned mutation=0;mutation<49;++mutation) {
       auto invalid=descriptor;
       auto invalid_identity=identity;
       auto invalid_column=column;
@@ -116,6 +116,24 @@ void BlobReceiverConstruction() {
         case 30: invalid.encoded_descriptor+=";codec_id=unknown"; break;
         case 31: invalid.encoded_descriptor+=";scale=0"; break;
         case 32: invalid.encoded_descriptor+=";container_rank=0"; break;
+        case 33: invalid.encoded_descriptor+=";text_resource_storage=large_object"; break;
+        case 34: invalid.encoded_descriptor+=";text_resource_storage="; break;
+        case 35: invalid.encoded_descriptor+=";charset_generation=0"; break;
+        case 36: invalid.encoded_descriptor+=";collation_generation="; break;
+        case 37: invalid.encoded_descriptor+=";resource_epoch=0"; break;
+        case 38: invalid.encoded_descriptor+=";character_length=0"; break;
+        case 39: invalid.datatype_cohort={}; break;
+        case 40: invalid.datatype_cohort.catalog_generation=0; break;
+        case 41: invalid.datatype_cohort.registry_generation=0; break;
+        case 42: invalid.canonical_type_name="localized_blob_alias";
+          invalid.encoded_descriptor="canonical=localized_blob_alias;text_resource_storage=large_object"; break;
+        case 43: invalid.canonical_type_name="integer"; invalid.encoded_descriptor="canonical=integer"; break;
+        case 44: invalid.canonical_type_name=std::string("blob\0alias",10); break;
+        case 45: invalid.encoded_descriptor+=";not_null="+std::string(nullable?"false":"true"); break;
+        case 46: invalid.encoded_descriptor="nullable="+std::string(nullable?"true":"false")+
+          ";not_null="+std::string(nullable?"false":"true"); break;
+        case 47: invalid.encoded_descriptor+=";char_length=0"; break;
+        case 48: invalid.encoded_descriptor+=";codec_generation=01"; break;
       }
       output=original;
       diagnostic={};
