@@ -6,6 +6,7 @@
 #include "catalog_identifier_profile.hpp"
 #include "catalog_construction_intent.hpp"
 #include "catalog_policy_descriptor.hpp"
+#include "catalog_crypto_inline_private_key_policy.hpp"
 #include "catalog_database_record_codec.hpp"
 
 namespace scratchbird::storage::database {
@@ -68,6 +69,12 @@ template<class Reserve> void ReserveNativeCreationCatalogReferences(
       for(const auto& id:{p.policy_version_uuid,p.body_uuid,p.database_uuid,p.scope_uuid,p.authority_owner_uuid,
           p.origin_transaction_uuid.value,p.creating_transaction_uuid.value})reserve(id);
       for(const auto* id:{&p.evidence_profile_uuid,&p.disclosure_profile_uuid,&p.retention_profile_uuid,&p.cluster_uuid})if(*id)reserve(**id);
+    }
+  }
+  if(core::catalog::IsCatalogCryptoInlinePrivateKeyPolicyPayload(m.record.payload)){
+    const auto body=core::catalog::DecodeCatalogCryptoInlinePrivateKeyPolicy(m.record.payload);
+    if(body.ok()){
+      reserve(body.record->database_uuid);reserve(body.record->origin_transaction_uuid.value);
     }
   }
   if(!r.name)return;

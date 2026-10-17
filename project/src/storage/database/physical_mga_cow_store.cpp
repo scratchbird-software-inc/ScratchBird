@@ -12,6 +12,8 @@
 #include "catalog_identifier_profile.hpp"
 #include "catalog_construction_intent.hpp"
 #include "catalog_policy_descriptor.hpp"
+#include "catalog_crypto_inline_private_key_policy.hpp"
+#include "native_catalog_definition_generation.hpp"
 
 #include "database_format.hpp"
 #include "disk_device.hpp"
@@ -1944,6 +1946,8 @@ DecodedNativeCatalogRows DecodeNativeCatalogRows(const RowDataPageBody& body,
         !catalog::CatalogConstructionIntentMatchesDatabase(
             catalog::BorrowCatalogMetadataVersion(value.record),database_uuid.value)||
         !catalog::CatalogPolicyDescriptorMatchesDatabase(
+            catalog::BorrowCatalogMetadataVersion(value.record),database_uuid.value)||
+        !catalog::CatalogCryptoInlinePrivateKeyPolicyMatchesDatabase(
             catalog::BorrowCatalogMetadataVersion(value.record),database_uuid.value))
       return ErrorResult<DecodedNativeCatalogRows>("CATALOG.INVALID_INPUT", "catalog.native_version.mga_binding_invalid");
     if (!decoded.metadata.emplace(row.version_uuid, value.record).second)
@@ -2108,7 +2112,8 @@ NativeCatalogLeafViewResult DecodeNativeCatalogLeafInto(
           !catalog::CatalogContextNamespaceMatchesDatabase(value,header.header->database_uuid)||
           !catalog::CatalogIdentifierProfileMatchesDatabase(value,header.header->database_uuid)||
           !catalog::CatalogConstructionIntentMatchesDatabase(value,header.header->database_uuid)||
-          !catalog::CatalogPolicyDescriptorMatchesDatabase(value,header.header->database_uuid))return fail(LeafError::invalid_metadata);
+          !catalog::CatalogPolicyDescriptorMatchesDatabase(value,header.header->database_uuid)||
+          !catalog::CatalogCryptoInlinePrivateKeyPolicyMatchesDatabase(value,header.header->database_uuid))return fail(LeafError::invalid_metadata);
       auto& record=records[i];record={row.version_uuid,i,value,{}};
       if(value.record.header.kind==catalog::CatalogRecordKind::localized_name){
         const auto name=catalog::DecodeCatalogNameEnvelopeView(
@@ -2473,7 +2478,7 @@ NativePinnedCatalogReadResult ReadNativeCatalogVersionsAtCheckpoint(
             return fail(E::invalid_chain);
         }
         if (!catalog::CatalogMetadataPreservesFamilyOrigin(before,after) ||
-            before.definition_version==std::numeric_limits<u64>::max() || after.definition_version!=before.definition_version+1 ||
+            !NativeCatalogDefinitionGenerationFollows(before,after) ||
             after.schema_epoch<before.schema_epoch || after.security_epoch<before.security_epoch || after.resource_epoch<before.resource_epoch ||
             after.catalog_generation<before.catalog_generation || after.dependency_generation<before.dependency_generation ||
             after.invalidation_generation<before.invalidation_generation) return fail(E::invalid_chain);
@@ -2749,8 +2754,7 @@ PreparedNativeCatalogMutation PrepareNativeCatalogVersion(
         !catalog::CatalogMetadataPreservesFamilyOrigin(previous->metadata,request.metadata) ||
         (is_name && (!previous->name_payload ||
          !catalog::CatalogNamePayloadPreservesIdentity(*previous->name_payload,*request.name_payload))) ||
-        previous->metadata.definition_version == std::numeric_limits<u64>::max() ||
-        request.metadata.definition_version != previous->metadata.definition_version + 1 ||
+        !NativeCatalogDefinitionGenerationFollows(previous->metadata,request.metadata) ||
         request.metadata.schema_epoch < previous->metadata.schema_epoch ||
         request.metadata.security_epoch < previous->metadata.security_epoch ||
         request.metadata.resource_epoch < previous->metadata.resource_epoch ||

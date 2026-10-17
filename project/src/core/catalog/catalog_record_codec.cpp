@@ -21,6 +21,7 @@
 #include "catalog_identifier_profile.hpp"
 #include "catalog_construction_intent.hpp"
 #include "catalog_policy_descriptor.hpp"
+#include "catalog_crypto_inline_private_key_policy.hpp"
 #include "catalog_scheduler_policy.hpp"
 #include "catalog_scheduler_fairness.hpp"
 #include "catalog_metric_visibility_policy.hpp"
@@ -167,6 +168,10 @@ CatalogTypedRecordViewResult ValidateCatalogTypedRecordView(CatalogTypedRecordVi
       !CatalogPolicyDescriptorMatchesHeader(record))
     return RecordViewError("CATALOG.INVALID_INPUT", "catalog.policy_descriptor.invalid",
                           "policy_descriptor_binary_payload_or_header_invalid");
+  if (IsCatalogCryptoInlinePrivateKeyPolicyPayload(record.payload) &&
+      !CatalogCryptoInlinePrivateKeyPolicyMatchesHeader(record))
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.crypto_inline_private_key.invalid",
+                          "crypto_inline_private_key_binary_payload_or_header_invalid");
   if (IsCatalogIdentifierProfilePayload(record.payload) &&
       !CatalogIdentifierProfileMatchesHeader(record))
     return RecordViewError("CATALOG.INVALID_INPUT", "catalog.identifier_profile.invalid",
@@ -454,6 +459,9 @@ std::optional<CatalogRecordDiagnosticView> ValidateCatalogMetadataVersionView(co
        IsCatalogPolicyDescriptorPayload(value.record.payload)) &&
       !CatalogPolicyDescriptorMatchesMetadata(value))
     return MetadataViewError("policy_descriptor_definition_binding_invalid");
+  if (IsCatalogCryptoInlinePrivateKeyPolicyFamily(value) &&
+      !CatalogCryptoInlinePrivateKeyPolicyMatchesMetadata(value))
+    return MetadataViewError("crypto_inline_private_key_definition_binding_invalid");
   if ((value.object_subtype == "identifier_resolution_profile" ||
        IsCatalogIdentifierProfilePayload(value.record.payload)) &&
       !CatalogIdentifierProfileMatchesMetadata(value))
@@ -682,6 +690,7 @@ bool CatalogMetadataPreservesFamilyOrigin(
       CatalogIdentifierProfilePreservesOrigin(previous,successor) &&
       CatalogConstructionIntentPreservesOrigin(previous,successor) &&
       CatalogPolicyDescriptorPreservesOrigin(previous,successor) &&
+      CatalogCryptoInlinePrivateKeyPolicyPreservesOrigin(previous,successor) &&
       CatalogRuntimeAuthorityBindingPreservesOrigin(previous,successor) &&
       CatalogContextNamespacePreservesOrigin(previous,successor) &&
       CatalogSchedulerPolicyPreservesOrigin(previous,successor) &&

@@ -5,6 +5,8 @@
 #include "catalog_identifier_profile.hpp"
 #include "catalog_construction_intent.hpp"
 #include "catalog_policy_descriptor.hpp"
+#include "catalog_crypto_inline_private_key_policy.hpp"
+#include "native_catalog_definition_generation.hpp"
 #include "disk_device.hpp"
 #include "uuid.hpp"
 #include "hash_digest_parts.hpp"
@@ -87,7 +89,11 @@ NativeCatalogVersionStageResult detail::NativeCatalogVersionStager::Run(
        !catalog::CatalogConstructionIntentMatchesDatabase(
         catalog::BorrowCatalogMetadataVersion(desired),h.database_uuid)||
        !catalog::CatalogPolicyDescriptorMatchesDatabase(
-        catalog::BorrowCatalogMetadataVersion(desired),h.database_uuid))return Fail(E::invalid_metadata);
+        catalog::BorrowCatalogMetadataVersion(desired),h.database_uuid)||
+       !catalog::CatalogCryptoInlinePrivateKeyPolicyMatchesDatabase(
+        catalog::BorrowCatalogMetadataVersion(desired),h.database_uuid)||
+       ((desired.object_subtype=="crypto_inline_private_key"||catalog::IsCatalogCryptoInlinePrivateKeyPolicyPayload(desired.record.payload))&&
+        (selector!=2||role!=4)))return Fail(E::invalid_metadata);
     auto devices=supplied;std::sort(devices.begin(),devices.end(),[](const auto& a,const auto& b){return a.filespace_uuid<b.filespace_uuid;});
     std::set<disk::FileDevice*> handles;std::vector<std::unique_lock<std::recursive_mutex>> guards;guards.reserve(devices.size());
     for(std::size_t i=0;i<devices.size();++i){
@@ -124,7 +130,7 @@ NativeCatalogVersionStageResult detail::NativeCatalogVersionStager::Run(
     }else{
       if(!previous||previous->version_uuid!=request.expected_version_uuid||previous->version_uuid!=latest_uuid||!previous_sequence||
           !Same(previous->metadata.record.header.object_uuid,desired.record.header.object_uuid)||previous->metadata.record.header.kind!=desired.record.header.kind||previous->metadata.record.header.deleted||
-          previous->metadata.definition_version==std::numeric_limits<u64>::max()||desired.definition_version!=previous->metadata.definition_version+1||
+          !NativeCatalogDefinitionGenerationFollows(previous->metadata,desired)||
           desired.schema_epoch<previous->metadata.schema_epoch||desired.security_epoch<previous->metadata.security_epoch||desired.resource_epoch<previous->metadata.resource_epoch||
           desired.catalog_generation<previous->metadata.catalog_generation||desired.dependency_generation<previous->metadata.dependency_generation||desired.invalidation_generation<previous->metadata.invalidation_generation||
           !catalog::CatalogMetadataPreservesFamilyOrigin(previous->metadata,desired)||
