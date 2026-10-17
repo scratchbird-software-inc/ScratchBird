@@ -8,13 +8,16 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
-#include "../support/catalog_column_binding_fixture.hpp"
-#include "../support/database_fixture_cleanup.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "cst/cst.hpp"
 #include "database_lifecycle.hpp"
+#include "datatype_catalog_manifest.hpp"
+#include "datatype_operations.hpp"
+#include "datatype_storage_identity.hpp"
 #include "lowering/lowering.hpp"
 #include "catalog/schema_tree_api.hpp"
 #include "memory.hpp"
@@ -31,6 +34,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -469,8 +473,7 @@ constexpr std::array<TypeKeywordDescriptorEvidence, 157> kTypeKeywordRows{{
 
 void Require(bool condition, std::string_view message) {
   if (!condition) {
-    std::cerr << message << '\n';
-    std::exit(EXIT_FAILURE);
+    throw std::runtime_error(std::string(message));
   }
 }
 
@@ -750,53 +753,37 @@ void RequireServerAdmission(const SblrEnvelope& envelope) {
   Require(admission.operation_family == kFamily, "server admission operation family mismatch");
 }
 
-std::filesystem::path TestDatabasePath() {
-  return std::filesystem::temp_directory_path() /
-         "sbsql_create_table_exact_route_conformance.sbdb";
-}
-
-void RemoveTestDatabase() {
-  scratchbird::tests::RemoveDatabaseFixtureArtifacts(TestDatabasePath());
-}
-
-db::DatabaseCreateConfig CreateMinimalDatabaseForEngineDispatch() {
-  RemoveTestDatabase();
+db::DatabaseCreateConfig CreateDatabaseForEngineDispatch(const std::filesystem::path& path) {
   db::DatabaseCreateConfig create;
-  create.path = TestDatabasePath().string();
+  create.path = path.string();
   create.database_uuid =
       uuid::GenerateEngineIdentityV7(UuidKind::database, 1779810202000).value;
   create.filespace_uuid =
       uuid::GenerateEngineIdentityV7(UuidKind::filespace, 1779810202001).value;
   create.page_size = 16384;
   create.creation_unix_epoch_millis = 1779810202002;
-  create.allow_minimal_resource_bootstrap = true;
-  create.require_resource_seed_pack = false;
-  create.allow_overwrite = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
     std::cerr << created.diagnostic.diagnostic_code << ':' << created.diagnostic.message_key
               << '\n';
   }
-  Require(created.ok(), "CREATE TABLE engine dispatch test database create failed");
+  Require(created.ok() && created.create_finality == db::DatabaseCreateFinalityClass::committed,
+          "CREATE TABLE credentialed test database creation did not durably complete");
   return create;
 }
 
 api::EngineRequestContext EngineContext(const db::DatabaseCreateConfig& create) {
-  api::EngineRequestContext context;
+  auto context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
   context.request_id = "sbsql-create-table-exact-route";
-  context.database_path = TestDatabasePath().string();
-  context.database_uuid = create.database_uuid.value;
-  context.default_root_uuid = create.filespace_uuid.value;
-  context.session_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000020202");
-  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7000-8000-000000020203");
   context.current_schema_uuid = {};
-  context.security_context_present = true;
-  context.catalog_generation_id = 1;
-  scratchbird::tests::UseBootstrapDatatypeCohort(context);
-  context.security_epoch = 1;
-  context.resource_epoch = 1;
-  context.name_resolution_epoch = 1;
-  context.trace_tags.push_back("right:CATALOG_MUTATE");
+  const auto catalog = db::ReadDatabaseCatalogIdentity(create.path, create.database_uuid.value);
+  Require(catalog.ok() && catalog.record->datatype_cohort.has_value(),
+          "CREATE TABLE fixture requires the actual persisted datatype cohort");
+  const auto& cohort = *catalog.record->datatype_cohort;
+  context.datatype_catalog_snapshot_uuid = cohort.catalog_snapshot_uuid.value;
+  context.datatype_catalog_generation = cohort.catalog_generation;
+  context.datatype_registry_generation = cohort.registry_generation;
   context.trace_tags.push_back("sbsql_surface_id:SBSQL-E4E0E6EB328C");
   return context;
 }
@@ -834,8 +821,11 @@ std::string ResultFieldValue(const api::EngineRowValue& row,
   return {};
 }
 
-api::EngineRequestContext BeginEngineTransaction(const db::DatabaseCreateConfig& create) {
+api::EngineRequestContext BeginEngineTransaction(const db::DatabaseCreateConfig& create,
+    std::unique_ptr<scratchbird::tests::FixtureEngineSession>& session) {
   auto context = EngineContext(create);
+  Require(!session, "CREATE TABLE fixture session output must be empty");
+  session = std::make_unique<scratchbird::tests::FixtureEngineSession>(context);
   auto envelope = sblr::MakeSblrEnvelope("engine.op.txn_begin",
                                          "SBLR_TXN_BEGIN",
                                          "trace.create_table.exact_route.transaction.begin");
@@ -876,7 +866,7 @@ api::EngineRequestContext BeginEngineTransaction(const db::DatabaseCreateConfig&
   api::EngineBeginTransactionRequest begin;
   begin.context = context;
   begin.isolation_level = "read_committed";
-  const auto begun = api::EngineBeginTransaction(begin);
+  auto begun = api::EngineBeginTransaction(begin);
   for (const auto& diagnostic : begun.diagnostics) {
     std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
   }
@@ -887,9 +877,34 @@ api::EngineRequestContext BeginEngineTransaction(const db::DatabaseCreateConfig&
   context.transaction_uuid = begun.transaction_uuid;
   context.snapshot_visible_through_local_transaction_id =
       begun.snapshot_visible_through_local_transaction_id;
-  context.transaction_isolation_level = begun.isolation_level;
+  context.transaction_isolation_level = std::move(begun.isolation_level);
   return context;
 }
+
+// Roll back before session closure and before its owned directory is removed
+// on every assertion failure. An unresolved transaction must retain its files.
+class EngineTransactionOwner final {
+ public:
+  explicit EngineTransactionOwner(const api::EngineRequestContext& context) noexcept : context_(context) {}
+  EngineTransactionOwner(const EngineTransactionOwner&) = delete;
+  EngineTransactionOwner& operator=(const EngineTransactionOwner&) = delete;
+  ~EngineTransactionOwner() noexcept {
+    if (!active_) return;
+    api::EngineRollbackTransactionRequest rollback;
+    rollback.context = context_;
+    if (!api::EngineRollbackTransaction(rollback).ok) std::terminate();
+  }
+  void Commit() {
+    api::EngineCommitTransactionRequest commit;
+    commit.context = context_;
+    const auto result = api::EngineCommitTransaction(commit);
+    Require(result.ok, "CREATE TABLE fixture transaction durable completion failed");
+    active_ = false;
+  }
+ private:
+  const api::EngineRequestContext& context_;
+  bool active_ = true;
+};
 
 api::EngineApiRequest EngineCreateTableApiRequest(std::string_view canonical_type_name,
                                                   std::string_view column_name,
@@ -908,9 +923,25 @@ api::EngineApiRequest EngineCreateTableApiRequest(std::string_view canonical_typ
   column.descriptor.encoded_descriptor = std::string("type=") + std::string(canonical_type_name);
   column.ordinal = 0;
   column.nullable = true;
-  scratchbird::tests::BindFixtureColumnDatatype(
-      context, scratchbird::core::datatypes::CanonicalTypeIdFromStableName(
-                   std::string(canonical_type_name)), column);
+  namespace types = scratchbird::core::datatypes;
+  const auto manifest = types::LoadCurrentCoreDatatypeCatalogManifest();
+  Require(manifest.ok(), "CREATE TABLE fixture datatype manifest unavailable");
+  const auto type_id = types::CanonicalTypeIdFromStableName(std::string(canonical_type_name));
+  const auto datatype = types::LookupDatatypeCatalogRow(manifest.manifest, type_id);
+  Require(datatype.ok() && datatype.manifest.descriptor_rows.size() == 1,
+          "CREATE TABLE fixture datatype descriptor missing or ambiguous");
+  const auto& row = datatype.manifest.descriptor_rows.front();
+  types::DatatypeStorageIdentityV3 binding;
+  Require(types::LookupDatatypeStorageIdentityV3(context.datatype_catalog_snapshot_uuid,
+              context.datatype_catalog_generation, context.datatype_registry_generation,
+              row.descriptor_uuid.value, row.descriptor_epoch, &binding) && binding.type_id == type_id,
+          "CREATE TABLE fixture actual cohort has no exact native storage identity");
+  column.descriptor.descriptor_uuid = api::GenerateCrudEngineUuid("object");
+  column.descriptor.datatype_descriptor_uuid = binding.descriptor_uuid;
+  column.descriptor.datatype_descriptor_generation = binding.descriptor_generation;
+  column.descriptor.type_uuid = binding.type_uuid;
+  column.descriptor.datatype_cohort = {context.datatype_catalog_snapshot_uuid,
+      context.datatype_catalog_generation, context.datatype_registry_generation};
   request.columns.push_back(std::move(column));
   return request;
 }
@@ -931,14 +962,18 @@ void RequireEngineDispatch(std::string_view canonical_type_name,
                            std::string_view column_name,
                            bool temporary,
                            std::string_view on_commit_action) {
-  const auto create = CreateMinimalDatabaseForEngineDispatch();
-  auto context = BeginEngineTransaction(create);
+  scratchbird::tests::OwnedTempDirectory directory;
+  const auto create = CreateDatabaseForEngineDispatch(directory.path() / "create_table.sbdb");
+  std::unique_ptr<scratchbird::tests::FixtureEngineSession> session;
+  auto context = BeginEngineTransaction(create, session);
+  EngineTransactionOwner transaction(context);
   context.current_schema_uuid = SchemaUuidForPath(context, "users.public");
   Require(!context.current_schema_uuid.is_nil(),
           "CREATE TABLE engine dispatch users.public schema missing");
+  scratchbird::tests::FixtureEngineStatement statement(*session, context);
   auto api_request = EngineCreateTableApiRequest(canonical_type_name,
                                                 column_name,
-                                                context);
+                                                statement.context);
   const auto expected_column = api_request.columns.front();
   if (temporary) {
     api_request.option_envelopes.push_back("temporary:true");
@@ -947,7 +982,7 @@ void RequireEngineDispatch(std::string_view canonical_type_name,
                                            std::string(on_commit_action));
   }
   const sblr::SblrDispatchRequest request{
-      context,
+      statement.context,
       EngineEnvelope(),
       std::move(api_request)};
   const auto result = sblr::DispatchSblrOperation(request);
@@ -1031,12 +1066,16 @@ void RequireEngineDispatch(std::string_view canonical_type_name,
     Require(saw_temporary_scope, "EngineCreateTable missing temporary private scope evidence");
     Require(saw_temporary_on_commit, "EngineCreateTable missing temporary on-commit evidence");
   }
-  RemoveTestDatabase();
+  statement.Release();
+  transaction.Commit();
+  session->Close();
+  session.reset();
+  directory.Cleanup();
 }
 
 }  // namespace
 
-int main() {
+int main() try {
   ConfigureMemoryFixture();
   for (const auto& row : kCreateTableCoreRows) {
     RequireRegistryEvidence(row);
@@ -1130,4 +1169,7 @@ int main() {
 
   std::cout << "sbsql_create_table_exact_route_conformance=passed\n";
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

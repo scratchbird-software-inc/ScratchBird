@@ -4079,6 +4079,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
       sbl_sbsql_parser_pipeline
       sb_server_core
       sb_engine_sblr
+      sb_engine
   )
   add_test(
     NAME sbsql_create_table_exact_route_conformance
