@@ -18,7 +18,7 @@
 #include <thread>
 #include <array>
 
-namespace scratchbird::storage::database { class NativeOwnedCheckpointSource; }
+namespace scratchbird::storage::database { class NativeOwnedCheckpointSource; class NativeOwnedCheckpointWriter; }
 
 namespace scratchbird::storage::disk {
 
@@ -335,7 +335,19 @@ class FileDevice {
 
  private:
   friend class scratchbird::storage::database::NativeOwnedCheckpointSource;
+  friend class scratchbird::storage::database::NativeOwnedCheckpointWriter;
   friend class RouteSourceTransition;
+  enum class NativeWriterCloseDisposition {not_present,released,retained,released_after_error,indeterminate_quarantined};
+  struct NativeWriterHandleClose {
+    NativeWriterCloseDisposition disposition=NativeWriterCloseDisposition::not_present;
+    u32 native_error=0;
+    bool attempted=false;
+  };
+  struct NativeWriterDeviceClose {NativeWriterHandleClose data,ownership;};
+  // Only the exclusive native writer, after its separately recorded Sync.
+  // No implicit synchronization or diagnostic/metric allocation. Linux late
+  // close errors retire the descriptor: retry must NEVER target a reused FD.
+  NativeWriterDeviceClose CloseNativeWriterWithoutSync();
   // Only the native source factory may detach the path serialization guard,
   // while it transfers exclusive ownership of independently OS-locked handles.
   bool CanAdoptIndependentSource() const noexcept;

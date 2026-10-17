@@ -1188,7 +1188,7 @@ RouteWriteCustodyState RouteOwnershipLease::ObserveWriteCustody() const noexcept
 }
 
 RouteSourceTransitionError RouteSourceTransition::BeginSourceAdmission(
-    std::unique_ptr<FileDevice>& primary) noexcept {
+    std::unique_ptr<FileDevice>& primary,RouteSourceAdmissionKind kind) noexcept {
   using E = RouteSourceTransitionError;
   try {
     auto& registry = LeaseRegistry();
@@ -1200,23 +1200,37 @@ RouteSourceTransitionError RouteSourceTransition::BeginSourceAdmission(
     if (owner_->source_transferred_) return E::already_transferred;
     if (owner_->source_admission_active_) return E::admission_busy;
     if (owner_->legacy_borrowers_) return E::not_drained;
+    const bool writing=kind==RouteSourceAdmissionKind::initial_writer;
+    if(kind!=RouteSourceAdmissionKind::read_only&&!writing)return E::invalid_owner;
+    if(writing&&owner_->storage_access_!=RouteStorageAccess::read_write)return E::writable_not_requested;
     auto device = std::make_unique<FileDevice>();
     // Diagnostic path only. The actual retained object is the source, even
     // after unlink/rename/replacement. No path mutex or new path open is used.
     device->path_ = owner_->route_path_;
     device->metric_device_class_ = "file";
 #ifdef _WIN32
-    if (!owner_->data_handle_) return E::primary_not_bound;
+    const auto original=writing?owner_->write_data_handle_:owner_->data_handle_;
+    if (!original) return E::primary_not_bound;
     HANDLE duplicate = nullptr;
-    if (!::DuplicateHandle(::GetCurrentProcess(), static_cast<HANDLE>(owner_->data_handle_),
-          ::GetCurrentProcess(), &duplicate, GENERIC_READ, FALSE, 0)) return E::io_failure;
+    if (!::DuplicateHandle(::GetCurrentProcess(), static_cast<HANDLE>(original),
+          ::GetCurrentProcess(), &duplicate, writing?(GENERIC_READ|GENERIC_WRITE):GENERIC_READ, FALSE, 0)) return E::io_failure;
     device->file_handle_ = duplicate;
 #else
-    if (owner_->data_fd_ < 0) return E::primary_not_bound;
+    const int original=writing?owner_->write_data_fd_:owner_->data_fd_;
+    if (original < 0) return E::primary_not_bound;
+    if(writing){
+      struct stat read_inode{},write_inode{};
+      if(::fstat(owner_->data_fd_,&read_inode)!=0||::fstat(original,&write_inode)!=0)return E::io_failure;
+      if(!S_ISREG(write_inode.st_mode)||read_inode.st_dev!=write_inode.st_dev||read_inode.st_ino!=write_inode.st_ino)
+        return E::invalid_owner;
+      const int flags=::fcntl(original,F_GETFL);
+      if(flags<0)return E::io_failure;
+      if((flags&O_ACCMODE)!=O_RDWR)return E::writable_not_requested;
+    }
 #ifdef F_DUPFD_CLOEXEC
-    const int duplicate = ::fcntl(owner_->data_fd_, F_DUPFD_CLOEXEC, 0);
+    const int duplicate = ::fcntl(original, F_DUPFD_CLOEXEC, 0);
 #else
-    const int duplicate = ::dup(owner_->data_fd_);
+    const int duplicate = ::dup(original);
 #endif
     if (duplicate < 0) return E::io_failure;
     device->file_fd_ = duplicate;
@@ -1229,9 +1243,10 @@ RouteSourceTransitionError RouteSourceTransition::BeginSourceAdmission(
     device->route_owner_lease_ = owner_;
     device->open_process_id_ = OwnershipProcessId();
     device->open_thread_id_ = std::this_thread::get_id();
-    device->read_only_ = true;
-    device->capabilities_.write_at = false;
-    device->capabilities_.extent_preallocation = false;
+    device->read_only_ = !writing;
+    device->capabilities_.write_at = writing;
+    device->capabilities_.extent_preallocation = writing;
+    owner_->source_admission_kind_=kind;
     owner_->source_admission_active_ = true;
     primary = std::move(device);
     return E::none;
@@ -1251,6 +1266,7 @@ RouteSourceTransitionError RouteSourceTransition::CommitSourceAdmission() noexce
     if (!owner_->source_admission_active_) return E::invalid_owner;
     if (owner_->legacy_borrowers_) return E::not_drained;
     owner_->source_transferred_ = true;
+    owner_->source_transferred_as_writer_=owner_->source_admission_kind_==RouteSourceAdmissionKind::initial_writer;
     owner_->source_admission_active_ = false;
     return E::none;
   } catch (...) { return E::lock_failure; }
@@ -1261,6 +1277,19 @@ void RouteSourceTransition::AbortSourceAdmission() noexcept {
   if (owner_->owner_pid_ != OwnershipProcessId() || registry.process_id != OwnershipProcessId()) return;
   std::lock_guard<std::mutex> guard(registry.mutex);
   owner_->source_admission_active_ = false;
+  owner_->source_admission_kind_=RouteSourceAdmissionKind::read_only;
+}
+
+RouteSourceTransitionError RouteSourceTransition::CheckTransferredWriterAdmission() const noexcept {
+  using E=RouteSourceTransitionError;
+  auto& registry=LeaseRegistry();
+  if(owner_->owner_pid_!=OwnershipProcessId()||registry.process_id!=OwnershipProcessId())return E::wrong_process;
+  try{
+    std::lock_guard<std::mutex> guard(registry.mutex);
+    if(!owner_->issuing_||!owner_->valid())return E::withdrawn;
+    if(!owner_->source_transferred_||!owner_->source_transferred_as_writer_)return E::invalid_owner;
+    return E::none;
+  }catch(...){return E::lock_failure;}
 }
 
 bool RouteOwnershipLease::valid() const {
@@ -2126,6 +2155,58 @@ IoResult FileDevice::Close() {
   IoResult result;
   result.status = DiskOkStatus();
   return result;
+}
+
+FileDevice::NativeWriterDeviceClose FileDevice::CloseNativeWriterWithoutSync() {
+  NativeWriterDeviceClose out;
+  std::shared_ptr<RouteOwnershipLease> retired;
+  bool all_retired=false;
+  {
+    const auto guard=AcquireOperationGuard();
+    const auto close=[&](auto& handle){NativeWriterHandleClose result;
+#ifdef _WIN32
+      if(handle==nullptr)return result;
+      result.attempted=true;
+      if(::CloseHandle(static_cast<HANDLE>(handle))){handle=nullptr;result.disposition=NativeWriterCloseDisposition::released;}
+      else {result.native_error=::GetLastError();
+        if(result.native_error==ERROR_INVALID_HANDLE){handle=nullptr;result.disposition=NativeWriterCloseDisposition::released_after_error;}
+        else result.disposition=NativeWriterCloseDisposition::retained;}
+#else
+      if(handle<0)return result;
+      result.attempted=true;
+      const int original=handle;
+      if(::close(original)==0){handle=-1;result.disposition=NativeWriterCloseDisposition::released;}
+      else {result.native_error=errno;
+#if defined(__linux__)
+        // Linux releases its descriptor before reporting late errors. Even an
+        // EINTR is not retryable; another thread may already have reused it.
+        handle=-1;result.disposition=NativeWriterCloseDisposition::released_after_error;
+#else
+        // POSIX versions and platforms disagree about EINTR. Quarantine rather
+        // than guess/retry a potentially reused descriptor; retain uncertainty.
+        handle=-1;result.disposition=NativeWriterCloseDisposition::indeterminate_quarantined;
+#endif
+      }
+#endif
+      return result;};
+#ifdef _WIN32
+    out.data=close(file_handle_);
+    if(file_handle_==nullptr)out.ownership=close(owner_lock_handle_);
+    else if(owner_lock_handle_!=nullptr)out.ownership.disposition=NativeWriterCloseDisposition::retained;
+    all_retired=file_handle_==nullptr&&owner_lock_handle_==nullptr;
+#else
+    out.data=close(file_fd_);
+    if(file_fd_<0)out.ownership=close(owner_lock_fd_);
+    else if(owner_lock_fd_>=0)out.ownership.disposition=NativeWriterCloseDisposition::retained;
+    all_retired=file_fd_<0&&owner_lock_fd_<0;
+#endif
+    if(all_retired){retired=std::move(route_owner_lease_);open_process_id_=0;open_thread_id_={};
+      owner_lock_held_=owner_lock_exclusive_=false;capabilities_.write_at=false;capabilities_.extent_preallocation=false;}
+  }
+  // Erasing diagnostic strings and retiring route owners can invoke allocation
+  // or callbacks: never do it while the device operation guard is held.
+  if(all_retired){path_.clear();owner_lock_path_.clear();}
+  return out;
 }
 
 IoResult FileDevice::ReadAt(u64 offset, void* buffer, usize bytes) {

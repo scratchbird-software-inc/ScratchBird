@@ -70,6 +70,9 @@ struct NativeRuntimePrincipalCredentialRequest {
 };
 struct NativeRuntimePrincipalCredentialResult;
 class NativeRuntimePrincipalCredentialLease;
+struct NativeLocalServiceStartupSelectionResult;
+inline NativeLocalServiceStartupSelectionResult SelectNativeLocalServiceStartupDeclarations(
+    const NativeRuntimePrincipalCredentialLease&) noexcept;
 inline NativeRuntimePrincipalCredentialResult VerifyNativeRuntimePrincipalCredential(
     const NativeRuntimePrincipalCredentialRequest&,
     storage::database::NativeSelectedCheckpointMemoryHandle&,
@@ -91,7 +94,8 @@ class NativeRuntimePrincipalCredentialLease final {
       : workspace_(TakeWorkspace(other)), source_(std::move(other.source_)),
         credential_(std::move(other.credential_)), observation_(other.observation_),
         provider_(other.provider_), provider_version_(other.provider_version_),
-        credential_binding_(other.credential_binding_), thread_(std::this_thread::get_id()) {}
+        credential_binding_(other.credential_binding_), configuration_(other.configuration_),
+        thread_(std::this_thread::get_id()) {}
   NativeRuntimePrincipalCredentialLease& operator=(NativeRuntimePrincipalCredentialLease&&) = delete;
   ~NativeRuntimePrincipalCredentialLease() {
     CheckThread();
@@ -122,14 +126,18 @@ class NativeRuntimePrincipalCredentialLease final {
       const NativeRuntimePrincipalCredentialRequest&, storage::database::NativeSelectedCheckpointMemoryHandle&,
       NativeRuntimePrincipalCredentialPreparedMemory&, StartupCredentialSource::Lease&,
       const core::memory::ScopedProtectedBuffer&) noexcept;
+  friend NativeLocalServiceStartupSelectionResult SelectNativeLocalServiceStartupDeclarations(
+      const NativeRuntimePrincipalCredentialLease&) noexcept;
   NativeRuntimePrincipalCredentialLease(NativeRuntimePrincipalCredentialPreparedMemory&& workspace,
       storage::database::NativeSelectedCheckpointMemoryHandle&& source, StartupCredentialSource::Lease&& credential,
       engine::internal_api::NativeRuntimeSecurityObservationResult observation,
       core::catalog::CatalogBootstrapSecurityProvider provider, core::platform::Uuid provider_version,
-      StartupCredentialTransportBinding credential_binding) noexcept
+      StartupCredentialTransportBinding credential_binding,
+      std::span<const storage::database::NativeCatalogVisibleRow> configuration) noexcept
       : workspace_(std::move(workspace)), source_(std::move(source)), credential_(std::move(credential)),
         observation_(std::move(observation)), provider_(provider), provider_version_(provider_version),
-        credential_binding_(credential_binding), thread_(std::this_thread::get_id()) {}
+        credential_binding_(credential_binding), configuration_(configuration),
+        thread_(std::this_thread::get_id()) {}
   void CheckThread() const noexcept { if (thread_ != std::this_thread::get_id()) std::terminate(); }
   void CheckAccess() const noexcept { if (!valid()) std::terminate(); }
   static NativeRuntimePrincipalCredentialPreparedMemory TakeWorkspace(NativeRuntimePrincipalCredentialLease& other) noexcept {
@@ -144,6 +152,10 @@ class NativeRuntimePrincipalCredentialLease final {
   core::catalog::CatalogBootstrapSecurityProvider provider_;
   core::platform::Uuid provider_version_;
   StartupCredentialTransportBinding credential_binding_;
+  // Exact immutable rows already read into the retained provider workspace.
+  // Accessible only to the native declaration selector, not a mutable catalog
+  // or an independently constructible configuration/activation authority.
+  std::span<const storage::database::NativeCatalogVisibleRow> configuration_;
   std::thread::id thread_;
 };
 
@@ -271,7 +283,7 @@ inline NativeRuntimePrincipalCredentialResult VerifyNativeRuntimePrincipalCreden
   out.crypto_error = core::hash::CheckExplicitCryptoMemoryScope(request.security.database_uuid);
   if (out.crypto_error != core::hash::CryptoMemoryError::none) return fail(E::crypto_scope_unavailable);
   NativeRuntimePrincipalCredentialLease proof(std::move(workspace), std::move(source), std::move(credential),
-      std::move(observed), *provider.record, selected->version_uuid, *custody);
+      std::move(observed), *provider.record, selected->version_uuid, *custody, rows.rows);
   out.lease.emplace(std::move(proof)); out.error = E::none; return out;
 }
 } // namespace scratchbird::server

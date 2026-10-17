@@ -16,7 +16,7 @@
 #include <utility>
 
 namespace scratchbird::server { class DatabaseOwnershipLock; }
-namespace scratchbird::storage::database { class NativeOwnedCheckpointSource; }
+namespace scratchbird::storage::database { class NativeOwnedCheckpointSource; class NativeOwnedCheckpointWriter; }
 
 namespace scratchbird::storage::disk {
 
@@ -32,8 +32,10 @@ enum class RouteWriteCustodyState : std::uint8_t {
 enum class RouteSourceTransitionError {
   none, invalid_owner, wrong_process, withdrawn, resource_exhausted, lock_failure,
   invalid_deadline, not_drained, admission_busy, already_transferred,
-  primary_not_bound, io_failure
+  primary_not_bound, io_failure, writable_not_requested
 };
+// Private factory selector only; constructing this enum grants no capability.
+enum class RouteSourceAdmissionKind : std::uint8_t { read_only, initial_writer };
 enum class RouteSourceDrainState { pending, drained, withdrawn, wrong_process, lock_failure };
 // An observation only. Native source transfer must revalidate under the actual
 // owning admission fence; a copied zero count never authorizes a transfer.
@@ -97,9 +99,12 @@ class RouteSourceTransition final {
  private:
   friend class RouteOwnershipLease;
   friend class scratchbird::storage::database::NativeOwnedCheckpointSource;
+  friend class scratchbird::storage::database::NativeOwnedCheckpointWriter;
   // Only the validating source factory may reserve/consume admission. No
   // observation, pathname or ordinary borrower can construct this cohort.
-  RouteSourceTransitionError BeginSourceAdmission(std::unique_ptr<FileDevice>& primary) noexcept;
+  RouteSourceTransitionError BeginSourceAdmission(std::unique_ptr<FileDevice>& primary,
+      RouteSourceAdmissionKind=RouteSourceAdmissionKind::read_only) noexcept;
+  RouteSourceTransitionError CheckTransferredWriterAdmission() const noexcept;
   RouteSourceTransitionError CommitSourceAdmission() noexcept;
   void AbortSourceAdmission() noexcept;
   explicit RouteSourceTransition(std::shared_ptr<RouteOwnershipLease> owner)
@@ -181,6 +186,8 @@ class RouteOwnershipLease final {
   bool transition_started_ = false;
   bool source_admission_active_ = false;
   bool source_transferred_ = false;
+  RouteSourceAdmissionKind source_admission_kind_=RouteSourceAdmissionKind::read_only;
+  bool source_transferred_as_writer_=false;
   std::uint64_t legacy_borrowers_ = 0;
   std::weak_ptr<RouteSourceTransition> transition_;
 };

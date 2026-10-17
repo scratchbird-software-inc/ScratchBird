@@ -4,7 +4,7 @@
 #define SB_NATIVE_RUNTIME_SECURITY_FIXTURE_WITHOUT_MAIN
 #include "native_runtime_security_observation_test.cpp"
 #undef SB_NATIVE_RUNTIME_SECURITY_FIXTURE_WITHOUT_MAIN
-#include "../../src/server/native_runtime_principal_credential.hpp"
+#include "../../src/server/native_local_service_startup_selection.hpp"
 #include "runtime_crypto_pool_owner.hpp"
 #include <sys/mman.h>
 #include <sys/wait.h>
@@ -85,7 +85,9 @@ struct CredentialCryptoOwner {
 };
 
 enum class CredentialVariant { valid,malformed_verifier,inactive_principal,retired_principal,retired_binding,external_binding,
-    absent_provider,stale_provider,disabled_provider,wrong_provider_class,retired_provider };
+    absent_provider,stale_provider,disabled_provider,wrong_provider_class,retired_provider,
+    absent_posture,retired_posture,wrong_posture_class,wrong_posture_mode,foreign_posture_pack,
+    stale_posture_pack,absent_pack,retired_pack,wrong_pack_class,stale_pack_reference,posture_resource };
 struct CredentialNativeFixture {
   scratchbird::tests::OwnedTempDirectory artifacts;disk::FileDevice device;unsigned profile;u64 budget;
   db::NativeCreationWorkspaceReceipt receipt;
@@ -118,7 +120,15 @@ struct CredentialNativeFixture {
     if(variant==CredentialVariant::retired_binding){metadata.lifecycle=catalog::CatalogObjectLifecycle::archived;
       metadata.status=catalog::CatalogObjectStatus::retired;metadata.retired_transaction_uuid=security_tx;}
     seed[4].push_back({metadata,{}});
-    if(variant!=CredentialVariant::absent_provider){security_fixture::Fixture policy(security_tx);policy.provider.provider_uuid=Id(210);
+    security_fixture::Fixture policy(security_tx);policy.provider.provider_uuid=Id(210);
+    policy.profile.profile_uuid=Id(52);policy.profile.area="default_security_posture";policy.profile.mode="deny_by_default";
+    if(variant==CredentialVariant::foreign_posture_pack)policy.profile.policy_pack_uuid=Id(249);
+    if(variant==CredentialVariant::stale_posture_pack)policy.profile.policy_pack_generation=2;
+    if(variant==CredentialVariant::wrong_posture_mode)policy.profile.mode="allow_all";
+    if(variant==CredentialVariant::posture_resource){policy.profile.resource_definition_uuid=Id(248);
+      policy.profile.resource_definition_generation=1;}
+    if(variant==CredentialVariant::stale_pack_reference){policy.provider.policy_pack_generation=2;policy.profile.policy_pack_generation=2;}
+    if(variant!=CredentialVariant::absent_provider){
       if(variant==CredentialVariant::disabled_provider)policy.provider.enabled_by_default=false;
       auto provider_meta=security_fixture::Metadata(1,security_tx,Id(61),security_fixture::EncodeGolden(policy.provider));
       provider_meta.record.header.object_uuid={platform::UuidKind::object,Id(210)};
@@ -134,6 +144,27 @@ struct CredentialNativeFixture {
       if(variant==CredentialVariant::retired_provider){provider_meta.lifecycle=catalog::CatalogObjectLifecycle::archived;
         provider_meta.status=catalog::CatalogObjectStatus::retired;provider_meta.retired_transaction_uuid=security_tx;}
       seed[4].push_back({provider_meta,{}});}
+    if(variant!=CredentialVariant::absent_posture){
+      auto meta=security_fixture::Metadata(2,security_tx,Id(61),security_fixture::EncodeGolden(policy.profile));
+      meta.record.header.object_uuid={platform::UuidKind::object,Id(52)};
+      meta.record.header.row_uuid={platform::UuidKind::row,security_fixture::Id(3102)};
+      if(variant==CredentialVariant::retired_posture){meta.lifecycle=catalog::CatalogObjectLifecycle::archived;
+        meta.status=catalog::CatalogObjectStatus::retired;meta.retired_transaction_uuid=security_tx;}
+      if(variant==CredentialVariant::wrong_posture_class){auto other=binding;other.binding_uuid=Id(52);other.policy_uuid=Id(248);
+        const auto bytes=catalog::EncodeCatalogRuntimeAuthorityBinding(other);Check(bytes.ok(),"valid other family at selected posture identity");
+        meta.record.header.kind=K::config_profile;meta.object_subtype="agent_runtime_authority";
+        meta.security_policy_uuid={platform::UuidKind::object,other.policy_uuid};meta.record.payload.assign(bytes.bytes.begin(),bytes.bytes.end());}
+      seed[4].push_back({std::move(meta),{}});
+    }
+    if(variant!=CredentialVariant::absent_pack){
+      auto meta=security_fixture::Metadata(0,security_tx,Id(61),security_fixture::EncodeGolden(policy.pack));
+      meta.record.header.row_uuid={platform::UuidKind::row,security_fixture::Id(3103)};
+      if(variant==CredentialVariant::retired_pack){meta.lifecycle=catalog::CatalogObjectLifecycle::archived;
+        meta.status=catalog::CatalogObjectStatus::retired;meta.retired_transaction_uuid=security_tx;}
+      if(variant==CredentialVariant::wrong_pack_class){auto other=policy.profile;other.profile_uuid=policy.pack.policy_pack_uuid;
+        other.policy_pack_uuid=Id(247);meta.object_subtype="bootstrap_policy_profile";meta.record.payload=security_fixture::EncodeGolden(other);}
+      seed[4].push_back({std::move(meta),{}});
+    }
     if(indexed)for(unsigned role:{3u,4u}){page::NativeBtreeDependencies deps;deps.index_uuid=security_fixture::Id(8000+role);
       deps.descriptor_generation=deps.storage_generation=1;deps.key_profile_uuid=security_fixture::Id(8100+role);
       deps.visibility_profile_uuid=security_fixture::Id(8200+role);deps.dependency_map_uuid=security_fixture::Id(8300+role);
@@ -232,9 +263,19 @@ void Success(unsigned profile,bool indexed,int death_mode=0) {
         result.lease->provider().provider_uuid==Id(210)&&result.lease->provider().generation==1&&
         result.lease->credential_binding().generation==7&&result.lease->security_records().size()==2,
         "source/provider/credential generations stay distinct and exact real grants retained");
+    allocation_budget=0;const auto selected=server::SelectNativeLocalServiceStartupDeclarations(*result.lease);
+    const auto selection_budget=allocation_budget;allocation_budget=-1;
+    Check(selected.ok()&&selection_budget==0&&selected.declarations->posture.profile_uuid==Id(52)&&
+        selected.declarations->posture.area=="default_security_posture"&&selected.declarations->posture.mode=="deny_by_default"&&
+        selected.declarations->pack.policy_pack_uuid==security_fixture::Id(9000)&&selected.declarations->pack.generation==1&&
+        selected.declarations->posture.generation==1&&result.lease->binding().policy_epoch==31&&
+        !selected.declarations->pack_version_uuid.is_nil()&&!selected.declarations->posture_version_uuid.is_nil(),
+        "same actual retained configuration selects exact pack/posture without allocation or conflating context epochs");
     const auto row=result.lease->security_records().front().object_uuid;
     auto moved=std::move(*result.lease);Check(!result.ok()&&!result.lease->valid()&&moved.valid()&&moved.security_records().front().object_uuid==row,
         "proof move transfers original backing and invalidates old proof without copying secret");
+    Check(!server::SelectNativeLocalServiceStartupDeclarations(*result.lease).ok()&&
+        server::SelectNativeLocalServiceStartupDeclarations(moved).ok(),"declaration selection cannot reuse moved-from credential custody");
     if(death_mode){std::set_terminate([]{::_exit(73);});
       if(death_mode==1){std::thread other([&]{(void)moved.binding();});other.join();}
       if(death_mode==2){std::thread other([&]{auto foreign=std::move(moved);(void)foreign;});other.join();}
@@ -304,6 +345,28 @@ void Refusals(CredentialCryptoOwner& foreign) {
   });
   Check(stage_writes==before_writes&&stage_syncs==before_syncs,
       "default-disabled credential comparison publishes no activation or other storage effects");
+}
+void SelectionRefusals(){
+  using V=CredentialVariant;using E=server::NativeLocalServiceStartupSelectionError;
+  const std::array cases{std::pair{V::absent_posture,E::policy_absent},std::pair{V::retired_posture,E::policy_inactive},
+      std::pair{V::wrong_posture_class,E::policy_invalid},std::pair{V::wrong_posture_mode,E::posture_not_supported},
+      std::pair{V::foreign_posture_pack,E::pack_binding_mismatch},std::pair{V::stale_posture_pack,E::pack_binding_mismatch},
+      std::pair{V::absent_pack,E::pack_absent},std::pair{V::retired_pack,E::pack_inactive},
+      std::pair{V::wrong_pack_class,E::pack_invalid},std::pair{V::stale_pack_reference,E::pack_binding_mismatch},
+      std::pair{V::posture_resource,E::posture_not_supported}};
+  for(const auto& [variant,expected]:cases){CredentialNativeFixture fixture(0,false,variant);
+    const auto writes=stage_writes,syncs=stage_syncs;
+    OnActualSource(fixture,[&](auto& request,auto& source,auto& workspace,auto& credential,const auto& derived){
+      auto compared=Verify(request,source,workspace,credential,derived);
+      Check(compared.ok(),"credential comparison is distinct from actual selected policy/pack validation");
+      allocation_budget=0;const auto selected=server::SelectNativeLocalServiceStartupDeclarations(*compared.lease);
+      const auto remaining=allocation_budget;allocation_budget=-1;
+      Check(!selected.ok()&&!selected.declarations&&selected.error==expected&&!selected.failing_object_uuid.is_nil()&&
+          remaining==0&&compared.lease->valid()&&Zero(derived),
+          "actual native policy/pack refusal preserves precise binary cause and original custody with no partial selection");
+    });
+    Check(stage_writes==writes&&stage_syncs==syncs,"refused startup declaration selection has no physical effects");
+  }
 }
 void PreparationFaults(){const db::NativeCatalogRelationMemoryLimits limits{Profile(0),1,16,64,64,{4,16*static_cast<std::size_t>(sizes[0])}};
   const auto bytes=server::NativeRuntimePrincipalCredentialWorkspaceBytes(limits);
@@ -375,7 +438,7 @@ int CredentialMain(int argc,char** argv){
   Check(process->owner.InstallProcessAdapter().ok(),"actual process allocator installed before first OpenSSL allocation");installed=true;
   database->With([&]{if(death){Success(0,false,death);return;}
     for(unsigned profile=0;profile<5;++profile)for(bool indexed:{false,true})Success(profile,indexed);
-    Refusals(*foreign);PreparationFaults();});
+    Refusals(*foreign);SelectionRefusals();PreparationFaults();});
   // No implicit process fallback: construct/read selected source under a real
   // database scope, then explicitly execute the gate without an active scope.
   std::optional<CredentialNativeFixture> no_scope;

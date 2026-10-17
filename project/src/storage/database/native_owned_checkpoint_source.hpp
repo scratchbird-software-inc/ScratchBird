@@ -8,6 +8,7 @@
 
 namespace scratchbird::storage::database {
 class NativeOwnedCheckpointSource;
+class NativeOwnedCheckpointWriter;
 enum class NativeOwnedSourceError {
   none, invalid_request, device_ownership, bootstrap_failure, source_failure,
   resource_exhausted, lock_failure, withdrawn, wrong_process, io_failure, route_admission,
@@ -314,6 +315,12 @@ class NativeOwnedCheckpointSource {
   }
  private:
   friend class NativeOwnedCheckpointReadLease;
+  friend class NativeOwnedCheckpointWriter;
+  static NativeOwnedSourceResult AdoptRouteWithMemoryImpl(
+      const std::shared_ptr<disk::RouteSourceTransition>&,const Uuid&,const Uuid&,
+      std::vector<std::unique_ptr<disk::FileDevice>>&,NativeOwnedCheckpointMemoryLimits,
+      NativeStorageMemory&,const NativeStorageMemoryBinding&,
+      NativeStorageMemory&,const NativeStorageMemoryBinding&,disk::RouteSourceAdmissionKind) noexcept;
 
   friend class NativeOwnedCheckpointMemoryHandle;
   bool InOwningProcess() const noexcept {return process_==disk::FileDevice::SourceOwnershipProcessId();}
@@ -528,6 +535,15 @@ inline NativeOwnedSourceResult NativeOwnedCheckpointSource::AdoptRouteWithMemory
     std::vector<std::unique_ptr<disk::FileDevice>>& secondary,NativeOwnedCheckpointMemoryLimits limits,
     NativeStorageMemory& persistent,const NativeStorageMemoryBinding& persistent_binding,
     NativeStorageMemory& transient,const NativeStorageMemoryBinding& transient_binding) noexcept {
+  return AdoptRouteWithMemoryImpl(transition,database,primary,secondary,limits,persistent,persistent_binding,
+      transient,transient_binding,disk::RouteSourceAdmissionKind::read_only);
+}
+inline NativeOwnedSourceResult NativeOwnedCheckpointSource::AdoptRouteWithMemoryImpl(
+    const std::shared_ptr<disk::RouteSourceTransition>& transition,const Uuid& database,const Uuid& primary,
+    std::vector<std::unique_ptr<disk::FileDevice>>& secondary,NativeOwnedCheckpointMemoryLimits limits,
+    NativeStorageMemory& persistent,const NativeStorageMemoryBinding& persistent_binding,
+    NativeStorageMemory& transient,const NativeStorageMemoryBinding& transient_binding,
+    disk::RouteSourceAdmissionKind kind) noexcept {
   using E=NativeOwnedSourceError;NativeOwnedSourceResult out;
   try{
     if(!transition||&persistent==&transient||!core::uuid::IsEngineIdentityUuid(database)||!core::uuid::IsEngineIdentityUuid(primary)||
@@ -538,7 +554,7 @@ inline NativeOwnedSourceResult NativeOwnedCheckpointSource::AdoptRouteWithMemory
     }
     // The private transition itself checks its actual process before locks.
     auto retained=transition;std::unique_ptr<disk::FileDevice> primary_device;
-    out.route_error=retained->BeginSourceAdmission(primary_device);
+    out.route_error=retained->BeginSourceAdmission(primary_device,kind);
     if(out.route_error!=disk::RouteSourceTransitionError::none){out.error=E::route_admission;return out;}
     const auto abort=[&primary_device](disk::RouteSourceTransition* t){
       primary_device.reset();t->AbortSourceAdmission();
