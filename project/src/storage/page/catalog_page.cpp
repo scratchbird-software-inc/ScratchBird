@@ -89,13 +89,31 @@ CatalogPageSetResult CatalogPageSetError(std::string diagnostic_code,
   return result;
 }
 
-u64 Fnv1a64(const byte* data, std::size_t size) {
-  u64 hash = 1469598103934665603ull;
+inline constexpr u64 kFnv1a64OffsetBasis = 1469598103934665603ull;
+inline constexpr u64 kFnv1a64Prime = 1099511628211ull;
+
+u64 AppendFnv1a64(u64 hash, const byte* data, std::size_t size) {
   for (std::size_t i = 0; i < size; ++i) {
     hash ^= static_cast<u64>(data[i]);
-    hash *= 1099511628211ull;
+    hash *= kFnv1a64Prime;
   }
   return hash;
+}
+
+u64 Fnv1a64(const byte* data, std::size_t size) {
+  return AppendFnv1a64(kFnv1a64OffsetBasis, data, size);
+}
+
+// Keep the exact serialized FNV format, including the checksum hole and all
+// padding, without allocating/copying a normalized page. A short input used by
+// the checksum utility retains its historical all-or-nothing hole semantics.
+u64 NormalizedCatalogBodyPrefixChecksum(const std::vector<byte>& body, std::size_t size) {
+  if (body.size() < kOffsetBodyChecksum + sizeof(u64))
+    return Fnv1a64(body.data(), size);
+  u64 hash = Fnv1a64(body.data(), kOffsetBodyChecksum);
+  for (std::size_t i = 0; i < sizeof(u64); ++i) hash *= kFnv1a64Prime;
+  return AppendFnv1a64(hash, body.data() + kOffsetBodyChecksum + sizeof(u64),
+      size - kOffsetBodyChecksum - sizeof(u64));
 }
 
 u64 Fnv1a64(const std::string& payload) {
@@ -157,11 +175,7 @@ const char* CatalogPageRowKindName(CatalogPageRowKind kind) {
 }
 
 u64 ComputeCatalogPageBodyChecksum(const std::vector<byte>& body) {
-  std::vector<byte> normalized = body;
-  if (normalized.size() >= kOffsetBodyChecksum + sizeof(u64)) {
-    StoreLittle64(normalized.data() + kOffsetBodyChecksum, 0);
-  }
-  return Fnv1a64(normalized.data(), normalized.size());
+  return NormalizedCatalogBodyPrefixChecksum(body, body.size());
 }
 
 CatalogPageSetResult BuildCatalogPageSet(const std::vector<CatalogPageRow>& rows,
@@ -251,19 +265,63 @@ CatalogPageBodyResult ParseCatalogPageBody(const std::vector<byte>& body, u64 pa
   }
 
   const u64 stored_checksum = LoadLittle64(body.data() + kOffsetBodyChecksum);
-  const u64 expected_checksum = ComputeCatalogPageBodyChecksum(body);
-  if (stored_checksum != expected_checksum) {
+  const u32 row_count = LoadLittle32(body.data() + kOffsetRowCount);
+  const u32 body_bytes = LoadLittle32(body.data() + kOffsetBodyBytes);
+  enum class RowError { none, body_bytes, header_short, payload_short, payload_checksum };
+  RowError row_error = RowError::none;
+  u32 error_ordinal = 0;
+  u64 body_hash = NormalizedCatalogBodyPrefixChecksum(body, kCatalogPageBodyHeaderBytes);
+  std::size_t offset = kCatalogPageBodyHeaderBytes;
+  if (body_bytes > body.size() || body_bytes < kCatalogPageBodyHeaderBytes) {
+    row_error = RowError::body_bytes;
+  } else for (u32 i = 0; i < row_count; ++i) {
+    // Subtraction avoids wraparound on untrusted UINT32 row/payload lengths.
+    if (body_bytes - offset < kRowHeaderBytes) {
+      row_error = RowError::header_short; break;
+    }
+    const u32 ordinal = LoadLittle32(body.data() + offset + kRowOffsetOrdinal);
+    const u32 payload_bytes = LoadLittle32(body.data() + offset + kRowOffsetPayloadBytes);
+    const u64 payload_checksum = LoadLittle64(body.data() + offset + kRowOffsetPayloadChecksum);
+    body_hash = AppendFnv1a64(body_hash, body.data() + offset, kRowHeaderBytes);
+    offset += kRowHeaderBytes;
+    if (payload_bytes > body_bytes - offset) {
+      row_error = RowError::payload_short; break;
+    }
+    u64 payload_hash = kFnv1a64OffsetBasis;
+    // Independent dependency chains share one traversal/load of each payload.
+    // Do not allocate or expose a row until the whole body checksum succeeds.
+    for (std::size_t j = 0; j < payload_bytes; ++j) {
+      const u64 value = body[offset + j];
+      body_hash = (body_hash ^ value) * kFnv1a64Prime;
+      payload_hash = (payload_hash ^ value) * kFnv1a64Prime;
+    }
+    offset += payload_bytes;
+    if (payload_hash != payload_checksum) {
+      row_error = RowError::payload_checksum; error_ordinal = ordinal; break;
+    }
+  }
+  // Even after malformed framing, hash every remaining byte, including body
+  // header reserves, unused declared body bytes and physical page padding.
+  body_hash = AppendFnv1a64(body_hash, body.data() + offset, body.size() - offset);
+  if (stored_checksum != body_hash) {
     return CatalogPageBodyError("SB-CATALOG-PAGE-BODY-CHECKSUM-MISMATCH",
                                 "storage.catalog_page_body.checksum_mismatch",
                                 std::to_string(page_number));
   }
-
-  const u32 row_count = LoadLittle32(body.data() + kOffsetRowCount);
-  const u32 body_bytes = LoadLittle32(body.data() + kOffsetBodyBytes);
-  if (body_bytes > body.size() || body_bytes < kCatalogPageBodyHeaderBytes) {
-    return CatalogPageBodyError("SB-CATALOG-PAGE-BODY-BYTES-INVALID",
-                                "storage.catalog_page_body.bytes_invalid",
-                                std::to_string(page_number));
+  switch (row_error) {
+    case RowError::body_bytes:
+      return CatalogPageBodyError("SB-CATALOG-PAGE-BODY-BYTES-INVALID",
+          "storage.catalog_page_body.bytes_invalid", std::to_string(page_number));
+    case RowError::header_short:
+      return CatalogPageBodyError("SB-CATALOG-PAGE-BODY-ROW-SHORT",
+          "storage.catalog_page_body.row_short", std::to_string(page_number));
+    case RowError::payload_short:
+      return CatalogPageBodyError("SB-CATALOG-PAGE-BODY-PAYLOAD-SHORT",
+          "storage.catalog_page_body.payload_short", std::to_string(page_number));
+    case RowError::payload_checksum:
+      return CatalogPageBodyError("SB-CATALOG-PAGE-BODY-PAYLOAD-CHECKSUM-MISMATCH",
+          "storage.catalog_page_body.payload_checksum_mismatch", std::to_string(error_ordinal));
+    case RowError::none: break;
   }
 
   CatalogPageBody parsed;
@@ -271,30 +329,14 @@ CatalogPageBodyResult ParseCatalogPageBody(const std::vector<byte>& body, u64 pa
   parsed.page_number = page_number;
   parsed.next_page_number = LoadLittle64(body.data() + kOffsetNextPageNumber);
 
-  u32 offset = kCatalogPageBodyHeaderBytes;
+  offset = kCatalogPageBodyHeaderBytes;
   for (u32 i = 0; i < row_count; ++i) {
-    if (offset + kRowHeaderBytes > body_bytes) {
-      return CatalogPageBodyError("SB-CATALOG-PAGE-BODY-ROW-SHORT",
-                                  "storage.catalog_page_body.row_short",
-                                  std::to_string(page_number));
-    }
     CatalogPageRow row;
     row.kind = static_cast<CatalogPageRowKind>(LoadLittle16(body.data() + offset + kRowOffsetKind));
     row.ordinal = LoadLittle32(body.data() + offset + kRowOffsetOrdinal);
     const u32 payload_bytes = LoadLittle32(body.data() + offset + kRowOffsetPayloadBytes);
-    const u64 payload_checksum = LoadLittle64(body.data() + offset + kRowOffsetPayloadChecksum);
     offset += kRowHeaderBytes;
-    if (offset + payload_bytes > body_bytes) {
-      return CatalogPageBodyError("SB-CATALOG-PAGE-BODY-PAYLOAD-SHORT",
-                                  "storage.catalog_page_body.payload_short",
-                                  std::to_string(page_number));
-    }
     row.payload.assign(reinterpret_cast<const char*>(body.data() + offset), payload_bytes);
-    if (payload_checksum != Fnv1a64(row.payload)) {
-      return CatalogPageBodyError("SB-CATALOG-PAGE-BODY-PAYLOAD-CHECKSUM-MISMATCH",
-                                  "storage.catalog_page_body.payload_checksum_mismatch",
-                                  std::to_string(row.ordinal));
-    }
     parsed.rows.push_back(std::move(row));
     offset += payload_bytes;
   }

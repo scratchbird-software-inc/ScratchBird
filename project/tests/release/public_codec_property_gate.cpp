@@ -15,12 +15,14 @@
 #include "catalog_record_codec.hpp"
 #include "cluster_catalog_crypto_evidence.hpp"
 #include "cluster_catalog_record_codec.hpp"
+#include "filespace_bootstrap.hpp"
 #include "runtime_platform.hpp"
 #include "uuid.hpp"
 
 #include <algorithm>
 #include <cstdlib>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -126,6 +128,152 @@ catalog::ClusterCatalogRecord ClusterRecordFixture() {
         {column.column_name, ValueForColumn(table, column, ordinal++)});
   }
   return record;
+}
+
+// Independent, deliberately unoptimized copy-and-normalize checksum oracle.
+// This is the frozen SBCAT001 basis, not the standard FNV offset basis used by
+// the distinct native common-header format.
+u64 ReferenceFnv(const byte* bytes,std::size_t count) {
+  u64 hash = 1469598103934665603ull;
+  for (std::size_t i = 0; i < count; ++i) { hash ^= bytes[i]; hash *= 1099511628211ull; }
+  return hash;
+}
+u64 ReferenceBodyChecksum(std::vector<byte> body) {
+  if (body.size() >= 48) platform::StoreLittle64(body.data()+40,0);
+  return ReferenceFnv(body.data(),body.size());
+}
+struct ReferenceBodyError { std::string code,key,detail; };
+ReferenceBodyError ReferenceBodyAdmission(const std::vector<byte>& body,u64 number) {
+  const auto error = [&](std::string_view code,std::string_view key,std::string detail) {
+    return ReferenceBodyError{"SB-CATALOG-PAGE-BODY-"+std::string(code),
+        "storage.catalog_page_body."+std::string(key),std::move(detail)};
+  };
+  const auto detail = std::to_string(number);
+  if (body.size() < page::kCatalogPageBodyHeaderBytes) return error("SHORT","short",detail);
+  constexpr byte magic[]{'S','B','C','A','T','0','0','1'};
+  if (!std::equal(std::begin(magic),std::end(magic),body.begin())) return error("MAGIC-INVALID","magic_invalid",detail);
+  const auto major = platform::LoadLittle16(body.data()+8), minor = platform::LoadLittle16(body.data()+10);
+  if (major < page::kCatalogPageBodyFormatMajorMinSupported || major > page::kCatalogPageBodyFormatMajorMaxSupported ||
+      (major == page::kCatalogPageBodyFormatMajor && minor > page::kCatalogPageBodyFormatMinorMaxSupported))
+    return error("FORMAT-UNSUPPORTED","format_unsupported",detail);
+  if (platform::LoadLittle32(body.data()+12) != page::kCatalogPageBodyHeaderBytes)
+    return error("HEADER-SIZE-INVALID","header_size_invalid",detail);
+  if (platform::LoadLittle64(body.data()+40) != ReferenceBodyChecksum(body))
+    return error("CHECKSUM-MISMATCH","checksum_mismatch",detail);
+  const auto count = platform::LoadLittle32(body.data()+20), used = platform::LoadLittle32(body.data()+24);
+  if (used < page::kCatalogPageBodyHeaderBytes || used > body.size()) return error("BYTES-INVALID","bytes_invalid",detail);
+  std::size_t offset = page::kCatalogPageBodyHeaderBytes;
+  for (platform::u32 i = 0; i < count; ++i) {
+    if (used-offset < 20) return error("ROW-SHORT","row_short",detail);
+    const auto ordinal = platform::LoadLittle32(body.data()+offset+4);
+    const auto bytes = platform::LoadLittle32(body.data()+offset+8);
+    const auto checksum = platform::LoadLittle64(body.data()+offset+12);
+    offset += 20;
+    if (bytes > used-offset) return error("PAYLOAD-SHORT","payload_short",detail);
+    if (checksum != ReferenceFnv(body.data()+offset,bytes))
+      return error("PAYLOAD-CHECKSUM-MISMATCH","payload_checksum_mismatch",std::to_string(ordinal));
+    offset += bytes;
+  }
+  return {};
+}
+void RequireCatalogReference(const std::vector<byte>& body,u64 number) {
+  Require(page::ComputeCatalogPageBodyChecksum(body) == ReferenceBodyChecksum(body),
+      "allocation-free catalog body checksum differs from normalized reference");
+  const auto reference = ReferenceBodyAdmission(body,number);
+  const auto actual = page::ParseCatalogPageBody(body,number);
+  if (reference.code.empty()) {
+    Require(actual.ok(),"catalog parser refused independently validated body");
+    Require(actual.body.page_number == number && actual.body.page_sequence == platform::LoadLittle32(body.data()+16) &&
+        actual.body.next_page_number == platform::LoadLittle64(body.data()+32) &&
+        actual.body.rows.size() == platform::LoadLittle32(body.data()+20),"catalog parsed header/row count changed");
+    std::size_t offset = page::kCatalogPageBodyHeaderBytes;
+    for (const auto& row : actual.body.rows) {
+      Require(static_cast<platform::u16>(row.kind) == platform::LoadLittle16(body.data()+offset) &&
+          row.ordinal == platform::LoadLittle32(body.data()+offset+4),"catalog row kind/ordinal changed");
+      const auto bytes = platform::LoadLittle32(body.data()+offset+8); offset += 20;
+      Require(row.payload == std::string(reinterpret_cast<const char*>(body.data()+offset),bytes),
+          "catalog payload bytes changed after interleaved checksum traversal");
+      offset += bytes;
+    }
+  } else {
+    Require(!actual.ok() && actual.diagnostic.diagnostic_code == reference.code &&
+        actual.diagnostic.message_key == reference.key,"catalog parser changed exact reference diagnostic precedence");
+    Require(actual.diagnostic.arguments.size() == 1 && actual.diagnostic.arguments[0].key == "detail" &&
+        actual.diagnostic.arguments[0].text() && *actual.diagnostic.arguments[0].text() == reference.detail,
+        "catalog parser changed exact page/row diagnostic detail");
+    Require(actual.body.rows.empty(),"catalog parser exposed partial rows on failed body admission");
+  }
+}
+void CatalogInterleavedChecksumProperties() {
+  u64 random = 0x16384f19baca2517ull;
+  const auto next = [&] { random ^= random << 13; random ^= random >> 7; random ^= random << 17; return random; };
+  // Utility semantics include empty, partial-hole and complete-hole inputs.
+  for (std::size_t count = 0; count < 256; ++count) {
+    std::vector<byte> bytes(count);
+    for (auto& value : bytes) value = static_cast<byte>(next());
+    Require(page::ComputeCatalogPageBodyChecksum(bytes) == ReferenceBodyChecksum(bytes),
+        "short/random catalog checksum utility differs from frozen normalization");
+  }
+  for (const auto& profile : scratchbird::storage::disk::kCanonicalFilespacePageProfiles) {
+    std::vector<page::CatalogPageRow> rows;
+    for (platform::u32 i = 0; i < 25; ++i) {
+      std::string payload(i == 0 ? 0 : profile.page_size_bytes/7 + next()%31,'\0');
+      for (auto& value : payload) value = static_cast<char>(next());
+      rows.push_back({i%2 ? page::CatalogPageRowKind::typed_catalog_record : page::CatalogPageRowKind::charset_record,
+          std::numeric_limits<platform::u32>::max()-i,std::move(payload)});
+    }
+    const auto built = page::BuildCatalogPageSet(rows,profile.page_size_bytes,10,100);
+    Require(built.ok() && built.pages.size() > 1,"random all-profile catalog fixture must span multiple pages");
+    std::size_t consumed = 0;
+    for (const auto& serialized : built.pages) {
+      RequireCatalogReference(serialized.body,serialized.page_number);
+      const auto parsed = page::ParseCatalogPageBody(serialized.body,serialized.page_number);
+      for (const auto& row : parsed.body.rows) {
+        Require(consumed < rows.size() && row.kind == rows[consumed].kind && row.ordinal == rows[consumed].ordinal &&
+            row.payload == rows[consumed].payload,"multipage randomized rows changed order or exact content");
+        ++consumed;
+      }
+      // Include header, row metadata, payload, reserved bytes and page padding.
+      for (unsigned mutation = 0; mutation < 24; ++mutation) {
+        auto altered = serialized.body;
+        altered[next()%altered.size()] ^= static_cast<byte>(1u << (next()%8));
+        if (mutation%2) platform::StoreLittle64(altered.data()+40,ReferenceBodyChecksum(altered));
+        RequireCatalogReference(altered,serialized.page_number);
+      }
+    }
+    Require(consumed == rows.size(),"multipage catalog parser skipped rows");
+    const auto original = built.pages.front().body;
+    const auto check_mutation = [&](auto mutate,std::string_view code) {
+      auto altered = original; mutate(altered);
+      // Body failure must outrank even malformed row lengths/counts/checksums.
+      altered.back() ^= byte{1};
+      RequireDiagnostic(page::ParseCatalogPageBody(altered,10),"SB-CATALOG-PAGE-BODY-CHECKSUM-MISMATCH",
+          "row/body bounds escaped body-first checksum precedence");
+      platform::StoreLittle64(altered.data()+40,ReferenceBodyChecksum(altered));
+      RequireCatalogReference(altered,10);
+      RequireDiagnostic(page::ParseCatalogPageBody(altered,10),code,"exact post-checksum row bounds diagnostic changed");
+    };
+    check_mutation([](auto& bytes) { platform::StoreLittle32(bytes.data()+24,63); },"SB-CATALOG-PAGE-BODY-BYTES-INVALID");
+    check_mutation([](auto& bytes) { platform::StoreLittle32(bytes.data()+24,std::numeric_limits<platform::u32>::max()); },
+        "SB-CATALOG-PAGE-BODY-BYTES-INVALID");
+    check_mutation([](auto& bytes) { platform::StoreLittle32(bytes.data()+24,83); },"SB-CATALOG-PAGE-BODY-ROW-SHORT");
+    check_mutation([](auto& bytes) { platform::StoreLittle32(bytes.data()+64+8,std::numeric_limits<platform::u32>::max()); },
+        "SB-CATALOG-PAGE-BODY-PAYLOAD-SHORT");
+    check_mutation([](auto& bytes) { bytes[64+12] ^= byte{1}; },"SB-CATALOG-PAGE-BODY-PAYLOAD-CHECKSUM-MISMATCH");
+    check_mutation([](auto& bytes) { platform::StoreLittle32(bytes.data()+20,std::numeric_limits<platform::u32>::max()); },
+        "SB-CATALOG-PAGE-BODY-ROW-SHORT");
+    auto alias_kind = original;
+    // The old body envelope preserves opaque kinds/flags; their owning codecs
+    // perform semantic admission. This optimization must not invent a refusal.
+    platform::StoreLittle16(alias_kind.data()+64,0xffff);
+    platform::StoreLittle16(alias_kind.data()+66,0xffff);
+    platform::StoreLittle64(alias_kind.data()+40,ReferenceBodyChecksum(alias_kind));
+    RequireCatalogReference(alias_kind,10);
+    Require(page::ParseCatalogPageBody(alias_kind,10).ok(),"checksum optimization changed opaque row kind/flag framing");
+    const auto empty = page::BuildCatalogPageSet({},profile.page_size_bytes,10,100);
+    Require(empty.ok() && empty.pages.size() == 1,"empty catalog fixture");
+    RequireCatalogReference(empty.pages.front().body,10);
+  }
 }
 
 void CatalogPageBodyProperties() {
@@ -361,6 +509,7 @@ void ClusterEvidenceIntegrityProperties() {
 
 int main() {
   CatalogPageBodyProperties();
+  CatalogInterleavedChecksumProperties();
   CatalogTypedRecordProperties();
   ClusterCatalogRecordProperties();
   ClusterEvidenceIntegrityProperties();
