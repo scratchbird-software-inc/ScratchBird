@@ -1721,6 +1721,7 @@ add_executable(public_security_durable_crypto_hardening_gate
 )
 target_compile_features(public_security_durable_crypto_hardening_gate PRIVATE cxx_std_23)
 target_link_libraries(public_security_durable_crypto_hardening_gate PRIVATE
+  sb_engine
   sb_engine_internal_api
   sb_core_uuid
 )

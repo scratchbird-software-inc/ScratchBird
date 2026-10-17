@@ -15,6 +15,7 @@
 #include "security/security_crypto_policy.hpp"
 #include "security/security_principal_lifecycle.hpp"
 #include "security/runtime_principal_credential.hpp"
+#include "security/local_password_credential.hpp"
 #include "security/durable_authorization_projection.hpp"
 #include "transaction/transaction_api.hpp"
 #include "uuid.hpp"
@@ -68,6 +69,16 @@ EngineAuthenticateResult AuthenticationFailureResult(const EngineAuthenticateReq
       request.context,
       "security.authenticate",
       MakeSecurityDiagnostic(std::move(code), std::move(detail)));
+}
+
+// Preserve the owning source's complete canonical vector, including native
+// storage/I/O cause and redaction metadata. Rebuilding it from code/detail loses
+// that cause and incorrectly substitutes the generic security message key.
+EngineAuthenticateResult AuthenticationFailureResult(
+    const EngineAuthenticateRequest& request, EngineApiDiagnostic diagnostic) {
+  RecordAuthenticationFailure(request, diagnostic.code);
+  return SecurityFailure<EngineAuthenticateResult>(
+      request.context, "security.authenticate", std::move(diagnostic));
 }
 
 bool IsHexVerifier(std::string_view value) {
@@ -180,77 +191,12 @@ std::vector<std::string> DurableAuthorizationTagsForPrincipal(
   return tags;
 }
 
-int LowerHexValue(char value) {
-  if (value >= '0' && value <= '9') return value - '0';
-  if (value >= 'a' && value <= 'f') return 10 + value - 'a';
-  return -1;
-}
-
-template <std::size_t N>
-bool DecodeLowerHexExact(std::string_view value,
-                         std::array<unsigned char, N>* output) {
-  if (output == nullptr || value.size() != N * 2) return false;
-  for (std::size_t index = 0; index < N; ++index) {
-    const int high = LowerHexValue(value[index * 2]);
-    const int low = LowerHexValue(value[index * 2 + 1]);
-    if (high < 0 || low < 0) return false;
-    (*output)[index] = static_cast<unsigned char>((high << 4) | low);
-  }
-  return true;
-}
-
 bool VerifyLocalPasswordCredentialFingerprint(std::string_view stored,
                                               std::string_view password) {
-  static constexpr std::string_view kPrefix =
-      "local-password-pbkdf2-sha256:v1:iterations=";
-  static constexpr std::string_view kSaltMarker = ":salt=";
-  static constexpr std::string_view kVerifierMarker = ":verifier=";
-  if (password.empty() || password.size() > 1024 ||
-      password.find('\0') != std::string_view::npos ||
-      stored.rfind(kPrefix, 0) != 0) {
-    return false;
-  }
-  const std::size_t salt_marker = stored.find(kSaltMarker, kPrefix.size());
-  if (salt_marker == std::string_view::npos) return false;
-  const std::string_view iteration_text =
-      stored.substr(kPrefix.size(), salt_marker - kPrefix.size());
-  if (iteration_text.empty() || iteration_text.size() > 8 ||
-      (iteration_text.size() > 1 && iteration_text.front() == '0')) {
-    return false;
-  }
-  std::uint64_t iterations = 0;
-  for (const char value : iteration_text) {
-    if (value < '0' || value > '9') return false;
-    iterations = iterations * 10 + static_cast<std::uint64_t>(value - '0');
-  }
-  if (iterations < 600000 || iterations > 10000000) return false;
-  const std::size_t salt_begin = salt_marker + kSaltMarker.size();
-  const std::size_t verifier_marker = stored.find(kVerifierMarker, salt_begin);
-  if (verifier_marker == std::string_view::npos ||
-      verifier_marker - salt_begin != 32) {
-    return false;
-  }
-  const std::size_t verifier_begin = verifier_marker + kVerifierMarker.size();
-  if (stored.size() - verifier_begin != 64) return false;
-
-  std::array<unsigned char, 16> salt{};
-  std::array<unsigned char, 32> expected{};
-  std::array<unsigned char, 32> computed{};
-  const bool decoded = DecodeLowerHexExact(
-                           stored.substr(salt_begin, 32), &salt) &&
-                       DecodeLowerHexExact(
-                           stored.substr(verifier_begin, 64), &expected);
-  const bool derived = decoded &&
-      PKCS5_PBKDF2_HMAC(
-          password.data(), static_cast<int>(password.size()), salt.data(),
-          static_cast<int>(salt.size()), static_cast<int>(iterations),
-          EVP_sha256(), static_cast<int>(computed.size()), computed.data()) == 1;
-  const bool matches = derived &&
-      CRYPTO_memcmp(expected.data(), computed.data(), expected.size()) == 0;
-  OPENSSL_cleanse(salt.data(), salt.size());
-  OPENSSL_cleanse(expected.data(), expected.size());
-  OPENSSL_cleanse(computed.data(), computed.size());
-  return matches;
+  // Legacy caller's fixed scratch remains erased; the native startup adapter
+  // supplies its separately admitted protected workspace to the shared mechanism.
+  std::array<std::byte, 32> derived{};
+  return VerifyLocalPasswordCredential(stored, password, derived).verified();
 }
 
 std::string TemporaryTokenCredentialFingerprint(std::string_view token_handle,
@@ -658,7 +604,7 @@ EngineAuthenticateResult EngineAuthenticate(const EngineAuthenticateRequest& req
   if (canonical_provider == "security_database_temporary_token") {
     const auto temporary_token = VerifySecurityDatabaseTemporaryTokenEvidence(request, principal);
     if (temporary_token.error) {
-      return AuthenticationFailureResult(request, temporary_token.code, temporary_token.detail);
+      return AuthenticationFailureResult(request, temporary_token);
     }
     provider_request.option_envelopes.push_back("credential:valid");
     provider_request.option_envelopes.push_back("credential_evidence_present:true");
@@ -666,12 +612,7 @@ EngineAuthenticateResult EngineAuthenticate(const EngineAuthenticateRequest& req
   } else if ((provider.empty() || provider == "local_password") && credential_present) {
     auto loaded = LoadSecurityPrincipalLifecycleState(request.context);
     if (!loaded.ok) {
-      return AuthenticationFailureResult(
-          request,
-          "SECURITY.AUTH_SOURCE_UNAVAILABLE",
-          loaded.diagnostic.detail.empty()
-              ? "durable_security_state_unavailable"
-              : loaded.diagnostic.detail);
+      return AuthenticationFailureResult(request, std::move(loaded.diagnostic));
     }
     authentication_durable_security_state =
         std::make_shared<const EngineSecurityPrincipalLifecycleState>(
@@ -683,7 +624,7 @@ EngineAuthenticateResult EngineAuthenticate(const EngineAuthenticateRequest& req
         &server_derived_connect_right,
         authentication_durable_security_state.get());
     if (local_password.error) {
-      return AuthenticationFailureResult(request, local_password.code, local_password.detail);
+      return AuthenticationFailureResult(request, local_password);
     }
     if (!resolved_principal_uuid.is_nil()) {
       // Preserve the original selection across name/password resolution. The
@@ -732,8 +673,8 @@ EngineAuthenticateResult EngineAuthenticate(const EngineAuthenticateRequest& req
 
   if (!authentication_durable_security_state) {
     auto loaded = LoadSecurityPrincipalLifecycleState(request.context);
-    if (!loaded.ok) return AuthenticationFailureResult(request, "SECURITY.AUTH_SOURCE_UNAVAILABLE",
-                                                        "durable_security_state_unavailable");
+    if (!loaded.ok)
+      return AuthenticationFailureResult(request, std::move(loaded.diagnostic));
     authentication_durable_security_state =
         std::make_shared<const EngineSecurityPrincipalLifecycleState>(std::move(loaded.state));
   }

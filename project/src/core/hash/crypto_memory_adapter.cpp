@@ -4,6 +4,7 @@
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
 #include <algorithm>
+#include <bit>
 #include <cstdint>
 #include <cstring>
 #include <limits>
@@ -39,6 +40,35 @@ struct alignas(std::max_align_t) CryptoMemoryPool::Block {
 };
 struct CryptoMemoryInternals {
   using Block=CryptoMemoryPool::Block;
+  struct FreeLinks { Block* previous; Block* next; };
+  static constexpr std::size_t minimum_free_capacity=
+      (sizeof(FreeLinks)+alignment-1)/alignment*alignment;
+  static std::size_t FreeBin(std::size_t capacity) noexcept {
+    return std::bit_width(capacity)-1;
+  }
+  static FreeLinks& Links(Block* block) noexcept {
+    return *std::launder(reinterpret_cast<FreeLinks*>(block+1));
+  }
+  static void InsertFree(Block* block) noexcept {
+    auto& pool=*block->pool;
+    const auto bin=FreeBin(block->capacity);
+    auto* head=pool.free_bins_[bin];
+    new(static_cast<void*>(block+1)) FreeLinks{nullptr,head};
+    if(head)Links(head).previous=block;
+    pool.free_bins_[bin]=block;pool.free_bin_mask_|=u64{1}<<bin;
+  }
+  static void RemoveFree(Block* block) noexcept {
+    auto& pool=*block->pool;
+    const auto bin=FreeBin(block->capacity);
+    const auto links=Links(block);
+    if(links.previous)Links(links.previous).next=links.next;
+    else pool.free_bins_[bin]=links.next;
+    if(links.next)Links(links.next).previous=links.previous;
+    if(!pool.free_bins_[bin])pool.free_bin_mask_&=~(u64{1}<<bin);
+    // Free-list pointers are private allocator metadata, never returned as
+    // logical bytes or retained inside a coalesced block's reusable payload.
+    Wipe(block+1,sizeof(FreeLinks));
+  }
   static CryptoMemoryError CheckExplicitScope(const platform::Uuid& database) {
     if(!State().installed)return CryptoMemoryError::not_installed;
     if(State().stopped)return CryptoMemoryError::closed;
@@ -59,22 +89,31 @@ struct CryptoMemoryInternals {
     if(!s.open||s.revoked||!bytes||bytes>std::numeric_limits<std::size_t>::max()-(alignment-1)){
       Increment(s.refusals);return nullptr;
     }
-    const auto rounded=(bytes+alignment-1)/alignment*alignment;
-    for(auto* b=p.first_;b;b=b->next){
-      if(b->requested||b->capacity<rounded)continue;
-      if(b->capacity-rounded>=sizeof(Block)+alignment){
-        auto* next=new(static_cast<unsigned char*>(static_cast<void*>(b+1))+rounded)
-          Block{&p,b,b->next,b->capacity-rounded-sizeof(Block),0};
-        if(next->next)next->next->previous=next;
-        b->next=next;b->capacity=rounded;
+    const auto rounded=std::max((bytes+alignment-1)/alignment*alignment,minimum_free_capacity);
+    auto bins=p.free_bin_mask_&(~u64{}<<FreeBin(rounded));
+    while(bins){
+      const auto bin=static_cast<std::size_t>(std::countr_zero(bins));
+      for(auto* b=p.free_bins_[bin];b;b=Links(b).next){
+        Increment(s.allocation_search_steps);
+        if(b->capacity<rounded)continue;
+        RemoveFree(b);
+        if(b->capacity-rounded>=sizeof(Block)+minimum_free_capacity){
+          auto* next=new(static_cast<unsigned char*>(static_cast<void*>(b+1))+rounded)
+            Block{&p,b,b->next,b->capacity-rounded-sizeof(Block),0};
+          if(next->next)next->next->previous=next;
+          b->next=next;b->capacity=rounded;
+          InsertFree(next);
+        }
+        b->requested=bytes;s.live_bytes+=bytes;s.occupied_bytes+=sizeof(Block)+b->capacity;
+        ++s.live_blocks;++State().blocks;Increment(s.allocations);return b+1;
       }
-      b->requested=bytes;s.live_bytes+=bytes;s.occupied_bytes+=sizeof(Block)+b->capacity;
-      ++s.live_blocks;++State().blocks;Increment(s.allocations);return b+1;
+      bins&=bins-1;
     }
     Increment(s.refusals);return nullptr;
   }
   static void Merge(Block* b){
     if(b->next&&!b->next->requested){auto* next=b->next;
+      RemoveFree(next);
       b->capacity+=sizeof(Block)+next->capacity;b->next=next->next;
       if(b->next)b->next->previous=b;
       Wipe(next,sizeof(Block));
@@ -84,7 +123,17 @@ struct CryptoMemoryInternals {
     auto* b=static_cast<Block*>(pointer)-1;auto& s=b->pool->state_;
     s.live_bytes-=b->requested;s.occupied_bytes-=sizeof(Block)+b->capacity;
     --s.live_blocks;--State().blocks;Wipe(b+1,b->capacity);b->requested=0;
-    Merge(b);if(b->previous&&!b->previous->requested)Merge(b->previous);
+    Merge(b);
+    if(b->previous&&!b->previous->requested){
+      auto* previous=b->previous;
+      RemoveFree(previous);
+      // The newly released block is not in a free bin yet. Its former live
+      // header becomes erased payload, without a second free-list removal.
+      previous->capacity+=sizeof(Block)+b->capacity;previous->next=b->next;
+      if(previous->next)previous->next->previous=previous;
+      Wipe(b,sizeof(Block));b=previous;
+    }
+    InsertFree(b);
   }
   static CryptoMemoryPool* Selected(){
     if(!State().installed||State().stopped)return nullptr;
@@ -132,7 +181,7 @@ CryptoMemoryError CryptoMemoryPool::Open(const CryptoMemoryBinding& binding,void
     if(state_.open)return CryptoMemoryError::busy;
     if(!ValidCryptoMemoryBinding(binding))return CryptoMemoryError::invalid_binding;
     const auto begin=reinterpret_cast<std::uintptr_t>(backing),self=reinterpret_cast<std::uintptr_t>(this);
-    if(!backing||begin%alignment||bytes<sizeof(Block)+alignment||bytes>UINTPTR_MAX-begin||
+    if(!backing||begin%alignment||bytes<sizeof(Block)+CryptoMemoryInternals::minimum_free_capacity||bytes>UINTPTR_MAX-begin||
         (begin<self+sizeof(*this)&&self<begin+bytes))return CryptoMemoryError::invalid_backing;
     for(auto* other=State().pools;other;other=other->next_){
       const auto ob=reinterpret_cast<std::uintptr_t>(other->first_),oc=reinterpret_cast<std::uintptr_t>(other);
@@ -141,7 +190,9 @@ CryptoMemoryError CryptoMemoryPool::Open(const CryptoMemoryBinding& binding,void
          (self<ob+other->state_.backing_bytes&&ob<self+sizeof(*this)))return CryptoMemoryError::invalid_backing;
     }
     state_={};state_.binding=binding;state_.backing_bytes=bytes;state_.open=true;
+    free_bins_.fill(nullptr);free_bin_mask_=0;
     first_=new(backing) Block{this,nullptr,nullptr,(bytes-sizeof(Block))/alignment*alignment,0};
+    CryptoMemoryInternals::InsertFree(first_);
     next_=State().pools;State().pools=this;
     return CryptoMemoryError::none;
   }catch(...){return CryptoMemoryError::busy;}
@@ -153,7 +204,7 @@ CryptoMemoryError CryptoMemoryPool::Close() noexcept {
     auto** entry=&State().pools;while(*entry&&*entry!=this)entry=&(*entry)->next_;
     if(*entry)*entry=next_;next_=nullptr;
     if(first_)Wipe(first_,state_.backing_bytes);
-    first_=nullptr;state_.open=false;return CryptoMemoryError::none;
+    first_=nullptr;free_bins_.fill(nullptr);free_bin_mask_=0;state_.open=false;return CryptoMemoryError::none;
   }catch(...){return CryptoMemoryError::busy;}
 }
 CryptoMemoryError CryptoMemoryPool::Revoke() noexcept {

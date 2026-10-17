@@ -82,9 +82,11 @@ extern "C" int __wrap_pthread_cond_timedwait(pthread_cond_t* c, pthread_mutex_t*
 int main() {
   // Construct each death-test owner AFTER fork, before any parent worker or
   // memory-manager state exists. Never enter inherited source locks in a child.
-  for (const auto [foreign_move, reset_first] :
-       {std::pair{false, false}, std::pair{false, true},
-        std::pair{true, false}, std::pair{true, true}}) {
+  for (const auto [operation, reset_first] :
+       {std::pair{0, false}, std::pair{0, true},
+        std::pair{1, false}, std::pair{1, true},
+        std::pair{2, false}, std::pair{2, true}}) {
+    const bool foreign_move = operation == 1;
     const auto child = ::fork();
     if (child == 0) {
       std::set_terminate([] {
@@ -115,6 +117,8 @@ int main() {
           Source::Lease moved(std::move(*acquired.lease));
           foreign_move_completed.store(true);
           (void)moved.credential();
+        } else if (operation == 2) {
+          (void)acquired.lease->binding();
         } else {
           (void)acquired.lease->credential();
         }
@@ -125,7 +129,7 @@ int main() {
     int status = 0;
     const auto waited = child > 0 ? ::waitpid(child, &status, 0) : -1;
     Check(waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 73,
-          foreign_move
+          operation == 2 ? "foreign-thread binding access refuses before live/erased custody inspection" : foreign_move
               ? (reset_first ? "foreign-thread erased lease move refuses before custody transfer"
                              : "foreign-thread live lease move refuses before custody transfer")
               : (reset_first ? "foreign-thread erased lease refuses before state inspection"
@@ -161,10 +165,18 @@ int main() {
     Source::Lease moved(std::move(*held.lease));
     Check(held.lease->credential().empty() && moved.credential() == "fixture",
           "same-thread move retains exactly one credential owner");
+    const auto selected = moved.binding();
+    Check(!held.lease->binding() && selected && selected->database == binding.database &&
+              selected->principal == binding.principal && selected->provider == binding.provider &&
+              selected->credential_reference == binding.credential_reference &&
+              selected->generation == binding.generation && selected->custodian_uid == binding.custodian_uid,
+          "only live private lease exposes exact non-secret current binding values");
     held.lease.reset();
     Check(manager.Snapshot().current_bytes == page,
           "moved-from destruction does not release protected custody");
     moved.Reset();
+    Check(!moved.binding() && selected && selected->generation == 7,
+          "reset removes live binding evidence without dangling an earlier value copy");
     Check(manager.Snapshot().current_bytes == 0,
           "same-thread moved lease reset erases and releases its actual grant");
     Source::Lease erased_move(std::move(moved));
@@ -236,6 +248,12 @@ int main() {
   }
   Check(source.Acquire(request, manager, tag).outcome.error == Source::Error::stale, "replaced generation cannot be reacquired");
   request.generation = 9;
+  {
+    auto held = source.Acquire(request, manager, tag);
+    const auto selected = held.lease ? held.lease->binding() : std::nullopt;
+    Check(selected && selected->generation == 9 && selected->principal == binding.principal,
+          "replacement lease reports its actual higher generation, not old frame metadata");
+  }
   wrong = request; wrong.deadline = Source::Mutex::Clock::now();
   Check(source.Acquire(wrong, manager, tag).outcome.wait == Source::Mutex::Result::timed_out, "deadline before available grant");
   std::stop_source cancellation;

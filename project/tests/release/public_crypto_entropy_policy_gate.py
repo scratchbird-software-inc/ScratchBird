@@ -108,13 +108,27 @@ POLICY_ROWS: tuple[dict[str, Any], ...] = (
     {
         "row_id": "password_verifier_pbkdf2_verification",
         "surface": "password",
-        "path": "src/engine/internal_api/security/authentication_api.cpp",
+        "path": "src/engine/internal_api/security/local_password_credential.hpp",
         "tokens": (
             "local-password-pbkdf2-sha256:v1:iterations=",
             "iterations < 600000",
             "PKCS5_PBKDF2_HMAC(",
             "CRYPTO_memcmp(",
             "OPENSSL_cleanse(",
+            "LocalPasswordCredentialError",
+            "E::mismatch",
+            "E::provider_failure",
+            "invalid_workspace",
+            "std::span<std::byte, 32>",
+        ),
+    },
+    {
+        "row_id": "password_verifier_shared_authentication_adapter",
+        "surface": "password",
+        "path": "src/engine/internal_api/security/authentication_api.cpp",
+        "tokens": (
+            '#include "security/local_password_credential.hpp"',
+            "VerifyLocalPasswordCredential(stored, password, derived).verified()",
             "credential_verifier_mismatch",
         ),
     },
@@ -125,7 +139,7 @@ POLICY_ROWS: tuple[dict[str, Any], ...] = (
         "tokens": (
             "local-password-pbkdf2-sha256:v1:iterations=",
             "iterations < 600000",
-            "salt == std::string(32, '0')",
+            "std::all_of(salt.begin(),salt.end(),[](char c){return c=='0';})",
             "verifier_nonzero",
             "bootstrap_credential_fingerprint_invalid",
         ),

@@ -10,6 +10,10 @@
 #include "security/authentication_api.hpp"
 #include "security/security_crypto_policy.hpp"
 #include "security/security_principal_lifecycle.hpp"
+#include "transaction/transaction_api.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
+#include "memory.hpp"
 #include "uuid.hpp"
 
 #include <openssl/crypto.h>
@@ -22,6 +26,8 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <memory>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -45,8 +51,7 @@ constexpr std::string_view kWrongPassword = "scratchbird-wrong-password";
 constexpr int kPasswordPbkdf2Iterations = 600000;
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -105,16 +110,29 @@ api::EngineUuid MakeUuid(UuidKind kind, u64 offset) {
 }
 
 struct Fixture {
+  scratchbird::tests::OwnedTempDirectory directory;
   api::EngineUuid database = MakeUuid(UuidKind::database, 1);
   api::EngineUuid principal = MakeUuid(UuidKind::principal, 2);
   api::EngineUuid admin_principal = MakeUuid(UuidKind::principal, 3);
-  api::EngineUuid session = MakeUuid(UuidKind::object, 4);
-  api::EngineUuid transaction = MakeUuid(UuidKind::transaction, 5);
   api::EngineUuid unused_principal = MakeUuid(UuidKind::principal, 6);
   api::EngineUuid lifecycle_principal = MakeUuid(UuidKind::principal, 7);
   api::EngineUuid global_connect_grant = MakeUuid(UuidKind::object, 8);
-  std::filesystem::path work_dir;
-  std::filesystem::path database_path;
+  std::filesystem::path work_dir = directory.path();
+  std::filesystem::path database_path = work_dir / "pcr091.sbdb";
+  scratchbird::storage::database::DatabaseCreateConfig create;
+  Fixture() {
+    namespace db = scratchbird::storage::database;
+    create.path = database_path.string();
+    create.database_uuid = {UuidKind::database, database};
+    create.filespace_uuid = {UuidKind::filespace, MakeUuid(UuidKind::filespace, 9)};
+    scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+    const auto made = db::CreateDatabaseFile(create);
+    if (!made.ok()) std::cerr << made.diagnostic.diagnostic_code << ':' << made.diagnostic.message_key << '\n';
+    Require(made.ok() && made.create_finality == db::DatabaseCreateFinalityClass::committed,
+            "PCR-091 real credentialed node creation did not durably complete");
+    Require(scratchbird::tests::BootstrapFixtureOwnerContext(create).principal_uuid != admin_principal,
+            "unprivileged admin-named test principal must not be the bootstrap owner");
+  }
 };
 
 api::EngineRequestContext Context(const Fixture& fixture) {
@@ -123,11 +141,74 @@ api::EngineRequestContext Context(const Fixture& fixture) {
   context.request_id = "pcr091-security-durable-crypto";
   context.database_path = fixture.database_path.string();
   context.database_uuid = fixture.database;
-  context.session_uuid = fixture.session;
-  context.transaction_uuid = fixture.transaction;
-  context.catalog_generation_id = 7;
-  context.security_epoch = 7;
   return context;
+}
+
+void RequireOk(const api::EngineApiResult& result, std::string_view message) {
+  if (!result.ok) for (const auto& diagnostic : result.diagnostics)
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  Require(result.ok, message);
+}
+
+class AdminTransaction final {
+ public:
+  explicit AdminTransaction(const Fixture& fixture)
+      : context(scratchbird::tests::BootstrapFixtureOwnerContext(fixture.create)),
+        session(std::make_unique<scratchbird::tests::FixtureEngineSession>(context)) {
+    api::EngineBeginTransactionRequest begin;
+    begin.context = context;
+    begin.isolation_level = "read_committed";
+    auto started = api::EngineBeginTransaction(begin);
+    RequireOk(started, "PCR-091 real administrative BEGIN failed");
+    context.transaction_uuid = started.transaction_uuid;
+    context.local_transaction_id = started.local_transaction_id;
+    context.snapshot_visible_through_local_transaction_id = started.snapshot_visible_through_local_transaction_id;
+    context.transaction_isolation_level = std::move(started.isolation_level);
+    active = true;
+  }
+  ~AdminTransaction() noexcept {
+    if (!active) return;
+    api::EngineRollbackTransactionRequest rollback;
+    rollback.context = context;
+    if (!api::EngineRollbackTransaction(rollback).ok) std::terminate();
+  }
+  AdminTransaction(const AdminTransaction&) = delete;
+  AdminTransaction& operator=(const AdminTransaction&) = delete;
+  void Finish(bool commit = true) {
+    if (commit) {
+      api::EngineCommitTransactionRequest request;
+      request.context = context;
+      RequireOk(api::EngineCommitTransaction(request), "PCR-091 administrative COMMIT failed");
+    } else {
+      api::EngineRollbackTransactionRequest request;
+      request.context = context;
+      RequireOk(api::EngineRollbackTransaction(request), "PCR-091 administrative ROLLBACK failed");
+    }
+    active = false;
+    session->Close();
+    session.reset();
+  }
+  api::EngineRequestContext context;
+  std::unique_ptr<scratchbird::tests::FixtureEngineSession> session;
+ private:
+  bool active = false;
+};
+
+void RequireStoredCredential(const Fixture& fixture, const api::EngineUuid& identity,
+    std::string_view name, std::string_view fingerprint, std::uint64_t creator_tx) {
+  // This source has no active writer/session. Reload actual committed native
+  // catalog state independently, not the mutation result or an event sidecar.
+  const auto loaded = api::LoadSecurityPrincipalLifecycleState(Context(fixture));
+  Require(loaded.ok, "committed credential did not independently reload");
+  const api::EngineSecurityPrincipalRecord* exact = nullptr;
+  for (const auto& record : loaded.state.principals) if (record.principal_uuid == identity) {
+    Require(exact == nullptr, "committed credential principal identity duplicated");
+    exact = &record;
+  }
+  Require(exact && !exact->deleted && exact->lifecycle_state == "active" &&
+              exact->principal_name == name && exact->credential_fingerprint == fingerprint &&
+              exact->creator_tx == creator_tx && exact->security_generation != 0,
+          "committed native principal changed identity, credential or transaction ownership");
 }
 
 bool HasDiagnosticDetail(const api::EngineApiResult& result, std::string_view detail) {
@@ -166,20 +247,6 @@ std::string FieldValue(const api::EngineApiResult& result, std::string_view key)
   return {};
 }
 
-api::EngineRequestContext SecurityAdminContext(const Fixture& fixture,
-                                               std::uint64_t local_tx) {
-  auto context = Context(fixture);
-  context.trust_mode = api::EngineTrustMode::embedded_in_process;
-  context.security_context_present = true;
-  context.principal_uuid = fixture.admin_principal;
-  context.trace_tags.push_back("security.fixture_trace_authority");
-  context.trace_tags.push_back("right:SEC_IDENTITY_ADMIN");
-  context.trace_tags.push_back("right:SEC_GRANT_ADMIN");
-  context.local_transaction_id = local_tx;
-  context.snapshot_visible_through_local_transaction_id = local_tx;
-  return context;
-}
-
 std::string TemporaryTokenFingerprint(std::string_view token_handle,
                                       std::string_view token_digest,
                                       std::string_view state = "active",
@@ -197,65 +264,81 @@ std::string TemporaryTokenFingerprint(std::string_view token_handle,
 void CreatePrincipalCredential(const Fixture& fixture,
                                const api::EngineUuid& principal_uuid,
                                std::string_view principal_name,
-                               std::string credential_fingerprint,
-                               std::uint64_t local_tx) {
-  api::EngineSecurityCreatePrincipalRequest request;
-  request.context = SecurityAdminContext(fixture, local_tx);
+                               std::string credential_fingerprint) {
+  AdminTransaction transaction(fixture);
+  {
+  scratchbird::tests::FixtureEngineRequest<api::EngineSecurityCreatePrincipalRequest> request(
+      *transaction.session, transaction.context);
   request.target_object.uuid = principal_uuid;
   request.target_object.object_kind = "security_principal";
   request.principal_uuid = principal_uuid;
   request.principal_name = std::string(principal_name);
-  request.credential_fingerprint = std::move(credential_fingerprint);
+  request.credential_fingerprint = credential_fingerprint;
   const auto created = api::EngineSecurityCreatePrincipal(request);
+  RequireOk(created, "real principal credential creation failed");
   Require(created.ok && created.principal_created,
           "failed to create durable principal credential state");
+  }
+  transaction.Finish();
+  RequireStoredCredential(fixture, principal_uuid, principal_name, credential_fingerprint,
+                          transaction.context.local_transaction_id);
 }
 
 void AlterPrincipalCredential(const Fixture& fixture,
                               const api::EngineUuid& principal_uuid,
                               std::string_view principal_name,
-                              std::string credential_fingerprint,
-                              std::uint64_t local_tx) {
-  api::EngineSecurityAlterPrincipalRequest request;
-  request.context = SecurityAdminContext(fixture, local_tx);
+                              std::string credential_fingerprint) {
+  AdminTransaction transaction(fixture);
+  {
+  scratchbird::tests::FixtureEngineRequest<api::EngineSecurityAlterPrincipalRequest> request(
+      *transaction.session, transaction.context);
   request.target_object.uuid = principal_uuid;
   request.target_object.object_kind = "security_principal";
   request.principal_uuid = principal_uuid;
   request.principal_name = std::string(principal_name);
-  request.credential_fingerprint = std::move(credential_fingerprint);
+  request.credential_fingerprint = credential_fingerprint;
   const auto altered = api::EngineSecurityAlterPrincipal(request);
+  RequireOk(altered, "real principal credential alteration failed");
   Require(altered.ok && altered.principal_altered,
           "failed to alter durable principal credential state");
+  }
+  transaction.Finish();
+  RequireStoredCredential(fixture, principal_uuid, principal_name, credential_fingerprint,
+                          transaction.context.local_transaction_id);
 }
 
 void GrantGlobalConnectPrivilege(const Fixture& fixture,
-                                 const api::EngineUuid& principal_uuid,
-                                 std::uint64_t local_tx) {
-  api::EngineSecurityGrantPrivilegeRequest request;
-  request.context = SecurityAdminContext(fixture, local_tx);
-  request.grant_uuid = fixture.global_connect_grant;
+                                 const api::EngineUuid& principal_uuid) {
+  AdminTransaction transaction(fixture);
+  const auto grant_uuid = principal_uuid == fixture.principal
+      ? fixture.global_connect_grant : MakeUuid(UuidKind::object, 10);
+  {
+  scratchbird::tests::FixtureEngineRequest<api::EngineSecurityGrantPrivilegeRequest> request(
+      *transaction.session, transaction.context);
+  request.grant_uuid = grant_uuid;
   request.grantee_uuid = principal_uuid;
   request.grantee_kind = "principal";
   request.target_object_uuid = {};
   request.target_object_kind.clear();
   request.privilege = "CONNECT";
   request.grant_effect = "allow";
-  request.option_envelopes.push_back("grant_authority:engine");
-
   const auto granted = api::EngineSecurityGrantPrivilege(request);
+  RequireOk(granted, "real CONNECT grant failed");
   Require(granted.ok && granted.privilege_granted,
           "failed to grant durable global CONNECT privilege");
   Require(granted.primary_object.uuid ==
-              fixture.global_connect_grant &&
+              grant_uuid &&
               granted.primary_object.object_kind == "security_privilege_grant" &&
               granted.security_generation != 0,
           "global CONNECT grant result did not preserve exact durable identity");
 
-  const auto loaded = api::LoadSecurityPrincipalLifecycleState(request.context);
+  }
+  transaction.Finish();
+  const auto loaded = api::LoadSecurityPrincipalLifecycleState(Context(fixture));
   Require(loaded.ok, "global CONNECT grant durable state did not reload");
   const api::EngineSecurityPrivilegeGrantRecord* exact_grant = nullptr;
   for (const auto& grant : loaded.state.grants) {
-    if (grant.grant_uuid == fixture.global_connect_grant) {
+    if (grant.grant_uuid == grant_uuid) {
       Require(exact_grant == nullptr,
               "global CONNECT durable grant identity was duplicated");
       exact_grant = &grant;
@@ -270,8 +353,8 @@ void GrantGlobalConnectPrivilege(const Fixture& fixture,
               exact_grant->privilege == "CONNECT" &&
               exact_grant->grant_effect == "allow" &&
               exact_grant->grantor_principal_uuid ==
-                  request.context.principal_uuid &&
-              exact_grant->creator_tx == local_tx &&
+                  transaction.context.principal_uuid &&
+              exact_grant->creator_tx == transaction.context.local_transaction_id &&
               exact_grant->security_generation != 0,
           "reloaded global CONNECT grant did not preserve exact authority fields");
 }
@@ -301,15 +384,6 @@ api::EngineAuthenticateRequest LocalPasswordRequest(
   request.target_database.object_kind = "database";
   request.target_object.uuid = fixture.database;
   request.target_object.object_kind = "security_authority";
-  request.option_envelopes.push_back("auth_authority:engine");
-  request.option_envelopes.push_back("policy_generation_current:7");
-  request.option_envelopes.push_back("policy_generation_observed:7");
-  request.option_envelopes.push_back("security_epoch_current:7");
-  request.option_envelopes.push_back("security_epoch_observed:7");
-  request.option_envelopes.push_back("provider_generation_current:7");
-  request.option_envelopes.push_back("provider_generation_observed:7");
-  request.option_envelopes.push_back("provider_lifecycle_state:healthy");
-  request.option_envelopes.push_back("default_policy_installed:true");
   if (include_durable_hint && !principal_uuid.is_nil()) {
     request.durable_principal_uuid = principal_uuid;
   }
@@ -354,15 +428,6 @@ api::EngineAuthenticateRequest TokenRequest(const Fixture& fixture,
   request.target_database.object_kind = "database";
   request.target_object.uuid = fixture.database;
   request.target_object.object_kind = "security_authority";
-  request.option_envelopes.push_back("auth_authority:engine");
-  request.option_envelopes.push_back("policy_generation_current:7");
-  request.option_envelopes.push_back("policy_generation_observed:7");
-  request.option_envelopes.push_back("security_epoch_current:7");
-  request.option_envelopes.push_back("security_epoch_observed:7");
-  request.option_envelopes.push_back("provider_generation_current:7");
-  request.option_envelopes.push_back("provider_generation_observed:7");
-  request.option_envelopes.push_back("provider_lifecycle_state:healthy");
-  request.option_envelopes.push_back("default_policy_installed:true");
   return request;
 }
 
@@ -381,32 +446,91 @@ void TestCryptoPrimitives() {
 }
 
 void TestLocalPasswordDurableState(const Fixture& fixture) {
+  const auto sidecar_path = fixture.database_path.string() + ".sb.local_password_auth";
   {
-    std::ofstream sidecar(fixture.database_path.string() + ".sb.local_password_auth",
-                          std::ios::trunc);
+    std::ofstream sidecar(sidecar_path, std::ios::trunc);
     sidecar << "alice\tlocal_password\t" << kVerifier << '\n';
     Require(static_cast<bool>(sidecar), "sidecar fixture write failed");
   }
 
+  const auto quarantined = scratchbird::storage::database::ReadDatabaseBootstrapSecurityCatalog(
+      fixture.database_path.string());
+  Require(!quarantined.ok() && quarantined.diagnostic.diagnostic_code ==
+              "SB-DB-BOOTSTRAP-SECURITY-SIDECAR-FORBIDDEN" &&
+              quarantined.diagnostic.message_key ==
+              "storage.database_lifecycle.bootstrap_security_sidecar_forbidden",
+          "legacy password sidecar did not produce the exact native security quarantine vector");
   const auto sidecar_only = api::EngineAuthenticate(LocalPasswordRequest(
       fixture,
       "alice",
       fixture.principal,
       std::string(kInitialPassword),
       false));
-  Require(!sidecar_only.ok &&
-              HasDiagnosticDetail(sidecar_only,
-                                  "durable_principal_credential_missing"),
+  const bool refused_sidecar = !sidecar_only.ok && !sidecar_only.authenticated &&
+      !sidecar_only.durable_security_state && sidecar_only.primary_object.uuid.is_nil() &&
+      sidecar_only.connection_security_context.effective_user_uuid.is_nil() &&
+      sidecar_only.result_shape.rows.empty() && sidecar_only.diagnostics.size() == 1 &&
+      sidecar_only.diagnostics.front().code == "SECURITY.CATALOG.PRIVATE_LIFECYCLE_CORRUPT" &&
+      sidecar_only.diagnostics.front().message_key == quarantined.diagnostic.message_key &&
+      sidecar_only.diagnostics.front().detail == "bootstrap_security_catalog_invalid" &&
+      sidecar_only.diagnostics.front().error && sidecar_only.diagnostics.front().native_source.has_value();
+  if (!refused_sidecar) {
+    std::cerr << "unexpected sidecar-only authentication outcome: ok=" << sidecar_only.ok << '\n';
+    for (const auto& diagnostic : sidecar_only.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.message_key << ':' << diagnostic.detail << '\n';
+  }
+  Require(refused_sidecar,
           "sidecar local-password state or caller evidence was accepted as authority");
+  const auto& wrapper = sidecar_only.diagnostics.front();
+  const auto& source = wrapper.native_source->record;
+  const auto& expected = quarantined.diagnostic;
+  Require(source.diagnostic_code == expected.diagnostic_code && source.message_key == expected.message_key &&
+              source.status.code == expected.status.code && source.status.severity == expected.status.severity &&
+              source.status.subsystem == expected.status.subsystem &&
+              source.source_component == expected.source_component && source.remediation_hint == expected.remediation_hint &&
+              source.arguments.size() == expected.arguments.size(),
+          "authentication discarded the exact native sidecar quarantine cause");
+  for (std::size_t i = 0; i < source.arguments.size(); ++i)
+    Require(source.arguments[i].key == expected.arguments[i].key &&
+                source.arguments[i].value == expected.arguments[i].value,
+            "authentication changed private native quarantine arguments");
+  const auto same_metadata = [](const auto& actual, const auto& registered) {
+    if (actual.has_value() != registered.has_value()) return false;
+    return !actual || (actual->code == registered->code && actual->severity == registered->severity &&
+        actual->is_failure == registered->is_failure && actual->sqlstate == registered->sqlstate &&
+        actual->numeric_binding == registered->numeric_binding && actual->retry_class == registered->retry_class &&
+        actual->required_outcome == registered->required_outcome && actual->diagnostic_class == registered->diagnostic_class);
+  };
+  Require(same_metadata(wrapper.canonical_metadata,
+              scratchbird::core::diagnostics::CaptureCanonicalDiagnosticMetadata(wrapper.code)) &&
+              same_metadata(wrapper.native_source->canonical_metadata,
+                  scratchbird::core::diagnostics::CaptureCanonicalDiagnosticMetadata(expected.diagnostic_code)) &&
+              wrapper.fields.empty() && wrapper.identity_fields.empty(),
+          "authentication lost canonical disclosure metadata or flattened private native cause into public fields");
+  Require(std::filesystem::remove(sidecar_path) && !std::filesystem::exists(sidecar_path),
+          "fixture password sidecar quarantine cleanup failed");
+  const auto admitted = scratchbird::storage::database::ReadDatabaseBootstrapSecurityCatalog(
+      fixture.database_path.string());
+  Require(admitted.ok(), "valid native security catalog did not reopen after owned sidecar removal");
+
+  // An absent credential on a valid admitted node is a different refusal from
+  // quarantined legacy authority. Preserve the exact missing-principal control.
+  const auto missing_alice = api::EngineAuthenticate(LocalPasswordRequest(
+      fixture, "alice", fixture.principal, std::string(kInitialPassword), false));
+  if (missing_alice.ok || !HasDiagnosticDetail(missing_alice, "durable_principal_credential_missing"))
+    for (const auto& diagnostic : missing_alice.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.message_key << ':' << diagnostic.detail << '\n';
+  Require(!missing_alice.ok && !missing_alice.authenticated && !missing_alice.durable_security_state &&
+              HasDiagnosticDetail(missing_alice, "durable_principal_credential_missing"),
+          "missing Alice credential was not refused by the valid native security catalog");
 
   const std::string initial_fingerprint =
       DeriveLocalPasswordFingerprint(kInitialPassword);
   CreatePrincipalCredential(fixture,
                             fixture.principal,
                             "alice",
-                            initial_fingerprint,
-                            91);
-  GrantGlobalConnectPrivilege(fixture, fixture.principal, 92);
+                            initial_fingerprint);
+  GrantGlobalConnectPrivilege(fixture, fixture.principal);
 
   const auto structured_verifier_claim = api::EngineAuthenticate(LocalPasswordRequest(
       fixture,
@@ -450,8 +574,7 @@ void TestLocalPasswordDurableState(const Fixture& fixture) {
   AlterPrincipalCredential(fixture,
                            fixture.principal,
                            "alice",
-                           rotated_fingerprint,
-                           191);
+                           rotated_fingerprint);
 
   const auto previous_password = api::EngineAuthenticate(LocalPasswordRequest(
       fixture,
@@ -496,8 +619,8 @@ void TestPrincipalNameDoesNotEscalate(const Fixture& fixture) {
   CreatePrincipalCredential(fixture,
                             fixture.admin_principal,
                             "admin",
-                            DeriveLocalPasswordFingerprint(kPassword),
-                            92);
+                            DeriveLocalPasswordFingerprint(kPassword));
+  GrantGlobalConnectPrivilege(fixture, fixture.admin_principal);
   const auto admin = api::EngineAuthenticate(LocalPasswordRequest(
       fixture,
       "admin",
@@ -524,8 +647,7 @@ void TestTemporaryTokenDurableDigest(const Fixture& fixture) {
   AlterPrincipalCredential(fixture,
                            fixture.principal,
                            "alice",
-                           TemporaryTokenFingerprint("token-handle-pcr091", digest),
-                           93);
+                           TemporaryTokenFingerprint("token-handle-pcr091", digest));
   const auto good = api::EngineAuthenticate(
       TokenRequest(fixture, TokenEvidence("alice", fixture.principal, token)));
   Require(good.ok && good.authenticated,
@@ -559,20 +681,25 @@ void TestTemporaryTokenDurableDigest(const Fixture& fixture) {
 }
 
 void TestSecurityLifecycleStableTokenUsesSha256(const Fixture& fixture) {
-  api::EngineSecurityCreatePrincipalRequest request;
-  request.context = SecurityAdminContext(fixture, 94);
+  AdminTransaction transaction(fixture);
+  const std::string protected_reference = "protected-material-ref:v1:sha256:pcr091-local-password-verifier";
+  {
+  scratchbird::tests::FixtureEngineRequest<api::EngineSecurityCreatePrincipalRequest> request(
+      *transaction.session, transaction.context);
   request.target_object.uuid = fixture.lifecycle_principal;
   request.target_object.object_kind = "security_principal";
   request.principal_uuid = fixture.lifecycle_principal;
   request.principal_name = "lifecycle-proof";
-  request.credential_protected_material_ref =
-      "protected-material-ref:v1:sha256:pcr091-local-password-verifier";
+  request.credential_protected_material_ref = protected_reference;
   const auto created = api::EngineSecurityCreatePrincipal(request);
+  RequireOk(created, "real stable-token principal creation failed");
   Require(created.ok && created.principal_created,
           "security principal lifecycle did not create principal");
   Require(FieldValue(created, "credential_fingerprint").empty(),
           "security lifecycle response exposed the credential fingerprint");
-  const auto loaded = api::LoadSecurityPrincipalLifecycleState(request.context);
+  }
+  transaction.Finish();
+  const auto loaded = api::LoadSecurityPrincipalLifecycleState(Context(fixture));
   Require(loaded.ok, "security lifecycle durable state did not reload");
   std::string fingerprint;
   for (const auto& principal : loaded.state.principals) {
@@ -585,29 +712,68 @@ void TestSecurityLifecycleStableTokenUsesSha256(const Fixture& fixture) {
           "durable security lifecycle credential token did not use SHA-256");
   Require(fingerprint.find("fnv") == std::string::npos,
           "security lifecycle credential token exposed legacy FNV marker");
+  const std::string identity_bytes(reinterpret_cast<const char*>(fixture.lifecycle_principal.bytes.data()),
+                                    fixture.lifecycle_principal.bytes.size());
+  Require(fingerprint == "credential-fingerprint:v1:sha256:" +
+              api::SecuritySha256Hex(identity_bytes + protected_reference),
+          "durable security lifecycle token did not hash the exact binary identity and protected reference");
+  RequireStoredCredential(fixture, fixture.lifecycle_principal, "lifecycle-proof", fingerprint,
+                          transaction.context.local_transaction_id);
+}
+
+void TestCredentialRollback(const Fixture& fixture) {
+  AdminTransaction transaction(fixture);
+  {
+    scratchbird::tests::FixtureEngineRequest<api::EngineSecurityCreatePrincipalRequest> request(
+        *transaction.session, transaction.context);
+    request.principal_uuid = fixture.unused_principal;
+    request.target_object.uuid = fixture.unused_principal;
+    request.target_object.object_kind = "security_principal";
+    request.principal_name = "rollback-only";
+    request.credential_fingerprint = DeriveLocalPasswordFingerprint(kPassword);
+    const auto created = api::EngineSecurityCreatePrincipal(request);
+    RequireOk(created, "credential rollback positive staging failed");
+    Require(created.principal_created, "credential rollback did not stage a real principal");
+    const auto staged = api::LoadSecurityPrincipalLifecycleState(request.context);
+    Require(staged.ok, "credential rollback staged state did not load");
+    bool seen = false;
+    for (const auto& principal : staged.state.principals)
+      seen = seen || principal.principal_uuid == fixture.unused_principal;
+    Require(seen, "credential rollback fixture had no actual staged principal");
+  }
+  transaction.Finish(false);
+  const auto reopened = api::LoadSecurityPrincipalLifecycleState(Context(fixture));
+  Require(reopened.ok, "post-rollback independent native security reopen failed");
+  for (const auto& principal : reopened.state.principals)
+    Require(principal.principal_uuid != fixture.unused_principal,
+            "rolled-back principal was visible after independent reopen");
 }
 
 }  // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv) try {
   Require(argc == 2, "usage: public_security_durable_crypto_hardening_gate <tmp-dir>");
+  Require(argv[1] != nullptr && argv[1][0] != '\0', "PCR-091 legacy temporary-path hint is empty");
+  // The historical path argument is not cleanup authority. A private owned
+  // directory is created under the admitted test runtime's temporary root.
+  const auto configured = scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+      scratchbird::core::memory::DefaultLocalEngineMemoryPolicy(), "pcr091-durable-crypto");
+  Require(configured.ok() && configured.fixture_mode, "PCR-091 explicit memory fixture setup failed");
   Fixture fixture;
-  fixture.work_dir = argv[1];
-  std::error_code ignored;
-  std::filesystem::remove_all(fixture.work_dir, ignored);
-  Require(std::filesystem::create_directories(fixture.work_dir),
-          "failed to create PCR-091 work directory");
-  fixture.database_path = fixture.work_dir / "pcr091.sbdb";
-  Require(!std::filesystem::exists(fixture.database_path),
-          "PCR-091 must exercise the nonexistent-path security lifecycle");
+  Require(std::filesystem::exists(fixture.database_path),
+          "PCR-091 must exercise actual durable native node authority");
 
   TestCryptoPrimitives();
   TestLocalPasswordDurableState(fixture);
   TestPrincipalNameDoesNotEscalate(fixture);
+  TestCredentialRollback(fixture);
   TestTemporaryTokenDurableDigest(fixture);
   TestSecurityLifecycleStableTokenUsesSha256(fixture);
 
-  std::filesystem::remove_all(fixture.work_dir, ignored);
+  fixture.directory.Cleanup();
   std::cout << "public_security_durable_crypto_hardening_gate=passed\n";
   return EXIT_SUCCESS;
+} catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

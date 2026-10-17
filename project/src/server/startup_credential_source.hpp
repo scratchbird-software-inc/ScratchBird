@@ -40,6 +40,14 @@ class StartupCredentialSource {
       CheckThread();
       return source_ ? material_.credential() : std::string_view{};
     }
+    // A value copy of non-secret selectors, only while this private-issued use
+    // lease still holds the actual generation lock. Never expose a dangling
+    // reference to a later replacement's mutable binding. No source after reset
+    // or move: old frame bytes cannot manufacture current-generation evidence.
+    std::optional<StartupCredentialTransportBinding> binding() const noexcept {
+      CheckThread();
+      return source_ ? std::optional{source_->binding_} : std::nullopt;
+    }
     void Reset() noexcept {
       CheckThread();
       if (!source_) return;

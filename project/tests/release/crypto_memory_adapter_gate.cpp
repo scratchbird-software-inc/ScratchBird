@@ -160,6 +160,83 @@ void AllocatorChecks(h::CryptoMemoryPool& process){
   Check(!process.Snapshot().revoked&&process.Snapshot().observation_error==E::none,"failed revocation leaves live process pool unchanged");
 }
 
+void FreeIndexChecks(){
+  alignas(std::max_align_t) std::array<unsigned char,65536> backing{};
+  alignas(std::max_align_t) std::array<unsigned char,131072> other_backing{};
+  h::CryptoMemoryPool pool,other;
+  const auto binding=Binding(100),other_binding=Binding(110);
+  Check(pool.Open(binding,backing.data(),backing.size())==E::none&&
+        other.Open(other_binding,other_backing.data(),other_backing.size())==E::none,
+        "fixed free-index backing opens without a second heap/grant");
+  {
+    h::CryptoMemoryScope active(pool,binding);Check(active.ok(),"indexed allocator actual scope");
+    std::array<void*,256> live{};
+    deny_cpp=true;
+    for(auto& block:live){block=OPENSSL_malloc(48);Check(block,"many actual live provider-prefix blocks");std::memset(block,0x51,48);}
+    auto* large=OPENSSL_malloc(96);auto* barrier_one=OPENSSL_malloc(32);
+    auto* small=OPENSSL_malloc(64);auto* barrier_two=OPENSSL_malloc(32);
+    Check(large&&small&&barrier_one&&barrier_two,"bounded same-bin fragmentation fixtures");
+    std::memset(large,0xa5,96);std::memset(small,0x5a,64);
+    OPENSSL_free(large);OPENSSL_free(small);
+    const auto before=pool.Snapshot();
+    auto* fit=OPENSSL_malloc(80);
+    const auto fitted=pool.Snapshot();
+    Check(fit==large && fitted.allocation_search_steps-before.allocation_search_steps==2 &&
+          fitted.live_bytes==before.live_bytes+80 && fitted.live_blocks==before.live_blocks+1,
+          "same-bin smaller head cannot hide fitting tail or traverse any live provider block");
+    Check(std::all_of(static_cast<unsigned char*>(fit),static_cast<unsigned char*>(fit)+80,[](auto b){return !b;}),
+          "retired secret bytes and overlaid free links are erased before exact reuse");
+    OPENSSL_free(fit);
+    const auto fast=pool.Snapshot();
+    constexpr unsigned repetitions=10000;
+    for(unsigned n=0;n<repetitions;++n){
+      auto* current=OPENSSL_malloc(80);
+      Check(current==large,"same-class provider working set reuses actual free head");
+      std::memset(current,0xa7,80);OPENSSL_free(current);
+    }
+    const auto after=pool.Snapshot();
+    Check(after.allocations-fast.allocations==repetitions &&
+          after.allocation_search_steps-fast.allocation_search_steps==repetitions &&
+          after.live_bytes==fast.live_bytes && after.occupied_bytes==fast.occupied_bytes &&
+          after.live_blocks==fast.live_blocks && after.backing_bytes==backing.size(),
+          "actual free-only search remains one probe per allocation behind256live blocks without backing growth");
+    auto* retained=OPENSSL_malloc(96);Check(retained==large,"retained original-owner realloc fixture");
+    std::memset(retained,0x69,96);const auto original=pool.Snapshot();
+    {
+      h::CryptoMemoryScope selected(other,other_binding);Check(selected.ok(),"larger foreign pool selected for owner-atomic refusal");
+      Check(!OPENSSL_realloc(retained,backing.size()),"realloc exhaustion cannot transfer bytes into larger selected foreign pool");
+      const auto failed=pool.Snapshot();
+      Check(failed.live_bytes==original.live_bytes && failed.occupied_bytes==original.occupied_bytes &&
+            failed.live_blocks==original.live_blocks && failed.allocations==original.allocations &&
+            failed.refusals==original.refusals+1 && !other.Snapshot().live_blocks,
+            "failed indexed realloc preserves original physical accounting and exact pool identity");
+    }
+    Check(std::all_of(static_cast<unsigned char*>(retained),static_cast<unsigned char*>(retained)+96,[](auto b){return b==0x69;}),
+          "failed indexed realloc leaves every original requested byte unchanged");
+    OPENSSL_free(retained);
+    // Merge successor first, then both neighbors across size bins. None of
+    // their retired link/header metadata may become subsequent result bytes.
+    OPENSSL_free(barrier_two);OPENSSL_free(barrier_one);
+    for(unsigned n=0;n<live.size();n+=2)OPENSSL_free(live[n]);
+    for(unsigned n=1;n<live.size();n+=2)OPENSSL_free(live[n]);
+    Check(!pool.Snapshot().live_blocks&&!pool.Snapshot().occupied_bytes&&!pool.Snapshot().live_bytes,
+          "fragmented predecessor/successor merges reconcile all requested and occupied bytes");
+    auto* entire=OPENSSL_malloc(backing.size()-128);Check(entire,"cross-bin coalescing recovers full contiguous free capacity");
+    Check(std::all_of(static_cast<unsigned char*>(entire),static_cast<unsigned char*>(entire)+backing.size()-128,[](auto b){return !b;}),
+          "absorbed free links and physical headers never escape in reused contiguous payload");
+    OPENSSL_free(entire);deny_cpp=false;
+  }
+  Check(pool.Close()==E::none&&other.Close()==E::none&&
+        std::all_of(backing.begin(),backing.end(),[](auto b){return !b;}),
+        "indexed pool drains and erases entire original backing");
+  Check(pool.Open(binding,backing.data(),backing.size())==E::none&&
+        pool.Snapshot().allocations==0&&pool.Snapshot().allocation_search_steps==0,
+        "reopen resets free-index observations without stale linked backing");
+  {h::CryptoMemoryScope active(pool,binding);auto* next=OPENSSL_malloc(1);
+    Check(next&&pool.Snapshot().allocation_search_steps==1,"reopened index contains one actual free candidate");OPENSSL_free(next);}
+  Check(pool.Close()==E::none,"reopened indexed backing drains");
+}
+
 void DigestChecks(h::CryptoMemoryPool& pool,const h::CryptoMemoryBinding& binding){
   const auto abc=Hex("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad");
   const auto empty=Hex("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855");
@@ -477,7 +554,7 @@ int main(int argc,char** argv){
   Check(!h::SnapshotCryptoMemoryAdapter().installed,"failed installation has no effects");
   Check(h::InstallCryptoMemoryAdapter(process)==E::none,"early explicit adapter install");
   Check(h::InstallCryptoMemoryAdapter(process)==E::already_installed,"idempotent install does not replace hooks");
-  AllocatorChecks(process);DigestChecks(operation,op_binding);ProviderCapacityChecks();OpenPgpChecks(grant,process,operation);
+  AllocatorChecks(process);FreeIndexChecks();DigestChecks(operation,op_binding);ProviderCapacityChecks();OpenPgpChecks(grant,process,operation);
   ArgonOpenPgpChecks(grant,operation);
   PasswordMessageMemoryChecks(grant,operation);
   Check(grant.resource->Snapshot().allocated_bytes==grant.bytes&&grant.manager.Snapshot().current_bytes==grant.bytes,"provider work preserves actual backing charge");

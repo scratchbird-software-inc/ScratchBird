@@ -3,8 +3,10 @@
 #pragma once
 #include "hash_digest_parts.hpp"
 #include <atomic>
+#include <array>
 #include <cstddef>
 #include <initializer_list>
+#include <limits>
 
 namespace scratchbird::core::hash {
 
@@ -36,6 +38,9 @@ struct CryptoMemorySnapshot {
   u64 allocations=0, refusals=0;
   bool open=false, revoked=false;
   CryptoMemoryError observation_error=CryptoMemoryError::busy;
+  // Saturating mechanism observation: actual FREE candidates inspected, not
+  // live blocks, CPU time, a budget or an allocation/admission guarantee.
+  u64 allocation_search_steps=0;
 };
 struct CryptoMemoryAdapterSnapshot {
   CryptoMemoryBinding process_binding{};
@@ -59,6 +64,13 @@ class CryptoMemoryPool {
   struct Block;
   CryptoMemorySnapshot state_{};
   Block* first_=nullptr;
+  // Fixed allocator-control metadata, never another heap allocation/grant.
+  // Physical links remain in Block for coalescing; free links live ONLY in
+  // erased free payload and are erased again before reuse/absorption.
+  static constexpr std::size_t kFreeBinCount=std::numeric_limits<std::size_t>::digits;
+  static_assert(kFreeBinCount<=std::numeric_limits<u64>::digits);
+  std::array<Block*,kFreeBinCount> free_bins_{};
+  u64 free_bin_mask_=0;
   CryptoMemoryPool* next_=nullptr;
   friend struct CryptoMemoryInternals;
   friend class CryptoMemoryScope;

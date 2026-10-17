@@ -323,6 +323,7 @@ void BackingBounds() {
   memory.memory={};memory.Empty();
 }
 }
+#ifndef SB_NATIVE_RUNTIME_SECURITY_FIXTURE_WITHOUT_MAIN
 int main()try {
   BackingBounds();
   for(unsigned profile=0;profile<5;++profile){Governed(profile,false);Governed(profile,true);}
@@ -331,3 +332,4 @@ int main()try {
   Governed(0,false,0,5,true);
   std::cout<<"PASS native runtime security observation "<<checks<<" checks; no authentication or startup authority claimed\n";return 0;
 }catch(const std::exception& error){allocation_budget=-1;std::cerr<<"FAIL "<<error.what()<<" checks="<<checks<<'\n';return 1;}
+#endif

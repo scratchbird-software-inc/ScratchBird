@@ -3648,6 +3648,19 @@ foreach(scalar_component crypto_function_return_binding scalar_projection_litera
 endforeach()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+add_executable(sbsql_sblr_alignment_local_password_credential
+  local_password_credential_test.cpp)
+target_compile_features(sbsql_sblr_alignment_local_password_credential PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_local_password_credential PRIVATE
+  ${PROJECT_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(sbsql_sblr_alignment_local_password_credential PRIVATE OpenSSL::Crypto)
+target_link_options(sbsql_sblr_alignment_local_password_credential PRIVATE
+  "-Wl,--wrap=PKCS5_PBKDF2_HMAC")
+add_test(NAME sbsql_sblr_alignment_local_password_credential
+  COMMAND sbsql_sblr_alignment_local_password_credential)
+set_tests_properties(sbsql_sblr_alignment_local_password_credential PROPERTIES
+  LABELS "sbsql_sblr_alignment;security;credential_mechanism;component_not_live_admission"
+  TIMEOUT 60)
 add_executable(sbsql_sblr_alignment_native_runtime_security_observation
   native_runtime_security_observation_test.cpp)
 target_compile_features(sbsql_sblr_alignment_native_runtime_security_observation PRIVATE cxx_std_23)
@@ -3664,6 +3677,26 @@ add_test(NAME sbsql_sblr_alignment_native_runtime_security_observation
   COMMAND sbsql_sblr_alignment_native_runtime_security_observation)
 set_tests_properties(sbsql_sblr_alignment_native_runtime_security_observation PROPERTIES
   LABELS "sbsql_sblr_alignment;native_storage;binary_uuid;security_source;component_not_live_admission"
+  TIMEOUT 120)
+add_executable(sbsql_sblr_alignment_native_runtime_principal_credential
+  native_runtime_principal_credential_test.cpp)
+target_compile_features(sbsql_sblr_alignment_native_runtime_principal_credential PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_runtime_principal_credential PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+  ${PROJECT_SOURCE_DIR}/src/core/runtime
+  ${PROJECT_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(sbsql_sblr_alignment_native_runtime_principal_credential PRIVATE
+  sb_storage_database OpenSSL::Crypto)
+target_link_options(sbsql_sblr_alignment_native_runtime_principal_credential PRIVATE
+  -Wl,--wrap=_ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv
+  "-Wl,--wrap=RAND_bytes" "-Wl,--wrap=EVP_Digest"
+  "-Wl,--wrap=EVP_MD_CTX_new" "-Wl,--wrap=EVP_DigestInit_ex" "-Wl,--wrap=EVP_DigestUpdate"
+  "-Wl,--wrap=EVP_DigestFinal_ex" "-Wl,--wrap=pread" "-Wl,--wrap=pwrite" "-Wl,--wrap=fsync"
+  "-Wl,--wrap=PKCS5_PBKDF2_HMAC")
+add_test(NAME sbsql_sblr_alignment_native_runtime_principal_credential
+  COMMAND sbsql_sblr_alignment_native_runtime_principal_credential)
+set_tests_properties(sbsql_sblr_alignment_native_runtime_principal_credential PROPERTIES
+  LABELS "sbsql_sblr_alignment;native_storage;binary_uuid;security_source;protected_memory;credential_verification;component_not_live_admission"
   TIMEOUT 120)
 endif()
 
