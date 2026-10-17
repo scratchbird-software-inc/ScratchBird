@@ -33,4 +33,12 @@ int main(){
   Check(diagnostic.identity_fields.size()==6&&diagnostic.identity_fields[0].second==Id(1)&&diagnostic.identity_fields[1].second==Id(13));
   Check(diagnostic.detail.find(a::MetadataUuidBytes(Id(1)))==std::string::npos);
   Check(a::ConstraintUuid({},table,"id","unique").is_nil()); // no fabricated descriptor identity
+  fields.identities["candidate_key_constraint_uuid"]=Id(14);
+  Check(a::ConstraintUuid(fields,table,"id","unique_key")==Id(14));
+  Check(a::ConstraintUuid(fields,table,"id","primary_key")==Id(14));
+  Check(a::ConstraintUuid(fields,table,"id","foreign_key")==Id(1));
+  fields.identities.erase("candidate_key_constraint_uuid");
+  Check(a::ConstraintUuid(fields,table,"id","unique_key").is_nil());
+  Check(a::ConstraintUuid(fields,table,"id","primary_key").is_nil());
+  Check(a::ConstraintUuid(fields,table,"id","foreign_key")==Id(1));
 }

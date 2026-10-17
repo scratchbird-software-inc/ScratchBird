@@ -9,8 +9,26 @@
 #include <cstdlib>
 #include <future>
 #include <iostream>
+#include <new>
 #include <stdexcept>
 #include <thread>
+
+namespace allocation_fault {
+thread_local bool next = false;
+}
+void* operator new(std::size_t bytes) {
+  if (allocation_fault::next) {
+    allocation_fault::next=false;
+    throw std::bad_alloc();
+  }
+  if (auto* result=std::malloc(bytes ? bytes : 1)) return result;
+  throw std::bad_alloc();
+}
+void* operator new[](std::size_t bytes) { return ::operator new(bytes); }
+void operator delete(void* pointer) noexcept { std::free(pointer); }
+void operator delete[](void* pointer) noexcept { std::free(pointer); }
+void operator delete(void* pointer,std::size_t) noexcept { std::free(pointer); }
+void operator delete[](void* pointer,std::size_t) noexcept { std::free(pointer); }
 
 namespace api = scratchbird::engine::internal_api;
 using namespace std::chrono_literals;
@@ -170,10 +188,42 @@ void InlineExceptionAndReentrantSnapshot() {
           "inline exception outcome lost");
 }
 
+void InlineDiagnosticAllocationFailureDrains(bool during_catch) {
+  api::DmlIngestionPipeline pipeline(Config(false));
+  Require(pipeline.Start(),"inline allocation-fault pipeline startup");
+  unsigned calls=0;
+  api::DmlIngestionWriteTask task{"inline_allocation_failure",1,[&]() -> api::EngineApiDiagnostic {
+    ++calls;
+    allocation_fault::next=true;
+    throw std::bad_alloc(); // Catch-diagnostic construction must also unwind safely.
+  }};
+  if (!during_catch) allocation_fault::next=true;
+  bool failed=false;
+  try { (void)pipeline.EnqueueWrite(std::move(task)); }
+  catch (const std::bad_alloc&) { failed=true; }
+  Require(failed && !allocation_fault::next && calls==(during_catch?1u:0u),
+      "actual inline pre-callback/catch diagnostic allocation failure was not exercised");
+  allocation_fault::next=false;
+  // Before the repair this blocks forever on an orphaned active_writers_.
+  const auto drained=pipeline.DrainWriters();
+  Require(drained.failed && drained.diagnostic.error &&
+      drained.diagnostic.code=="SBLR.EXECUTION_FAILED" &&
+      drained.diagnostic.message_key=="engine.dml.ingestion.exceptional_completion" &&
+      drained.diagnostic.detail=="inline_writer_diagnostic_construction_failed",
+      "diagnostic OOM must retain an owned failure and cannot strand an incomplete task drain");
+  pipeline.StopAndJoin();
+  const auto receipt=pipeline.Snapshot();
+  Require(receipt.write_tasks_enqueued==1 && receipt.write_tasks_completed==0 &&
+      receipt.write_rows_completed==0 && !pipeline.Start(),
+      "diagnostic OOM must not report completed effects or reopen admission");
+}
+
 int main() {
   FailedDrainWaitsForOtherWriter(false);
   FailedDrainWaitsForOtherWriter(true);
   ConcurrentFencesAndClosedAdmission();
   ExceptionUnwindPreservesCaptureLifetime();
   InlineExceptionAndReentrantSnapshot();
+  InlineDiagnosticAllocationFailureDrains(false);
+  InlineDiagnosticAllocationFailureDrains(true);
 }

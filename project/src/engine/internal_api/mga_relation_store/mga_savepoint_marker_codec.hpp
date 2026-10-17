@@ -13,7 +13,7 @@ namespace scratchbird::engine::internal_api {
 // Named SQL boundaries carry labels; native boundaries carry UUID binary(16).
 // Internal map keys are not the durable representation.
 struct MgaSavepointMarkerRecord {
-  std::uint8_t kind = 0; // 1=create, 2=release, 3=rollback
+  std::uint8_t kind = 0; // 1=create, 2=release, 3=rollback, 4=native statement fence
   bool uuid_identity = false;
   scratchbird::core::platform::Uuid uuid;
   // Named SQL label only; empty for a native UUID marker.

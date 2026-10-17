@@ -9,6 +9,7 @@
 #include "dml/dml_ingestion_pipeline.hpp"
 
 #include "api_diagnostics.hpp"
+#include "engine/statement_scratch_memory.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -231,7 +232,12 @@ DmlIngestionPipelineConfig ApplyDmlIngestionOptions(
 }
 
 DmlIngestionPipeline::DmlIngestionPipeline(DmlIngestionPipelineConfig config)
-    : config_(ApplyDmlIngestionOptions(std::move(config))) {
+    : config_(ApplyDmlIngestionOptions(std::move(config))),
+      exceptional_completion_diagnostic_(MakeEngineApiDiagnostic(
+          "SBLR.EXECUTION_FAILED","engine.dml.ingestion.exceptional_completion",
+          "inline_writer_diagnostic_construction_failed")),
+      operation_owner_thread_(StatementOperationOwnsCurrentThreadV1(config_.context)),
+      issuing_thread_(std::this_thread::get_id()) {
   stats_.diagnostic = OkDiagnostic();
   stats_.source_size_bytes = config_.source_size_bytes;
   stats_.source_preallocation_bytes = SourcePreallocationBytes();
@@ -243,16 +249,29 @@ DmlIngestionPipeline::~DmlIngestionPipeline() {
 }
 
 bool DmlIngestionPipeline::Start() {
-  std::lock_guard<std::mutex> lock(mutex_);
+  const bool current_operation_owner = StatementOperationOwnsCurrentThreadV1(config_.context);
+  if (current_operation_owner != operation_owner_thread_ ||
+      (operation_owner_thread_ && std::this_thread::get_id() != issuing_thread_)) {
+    SetFailure(PipelineDiagnostic("native_operation_owner_thread_required"));
+    return false;
+  }
+  std::unique_lock<std::mutex> lock(mutex_);
   if (fenced_ || stats_.failed) return false;
   if (started_) {
     return !stats_.failed;
   }
   started_ = true;
   stats_.preallocator_enabled = PreallocatorShouldRun();
-  stats_.writer_enabled = WriterShouldRun();
+  stats_.writer_enabled = !operation_owner_thread_ && WriterShouldRun();
   stats_.writer_worker_count = stats_.writer_enabled ? config_.writer_worker_count : 0;
   EnqueueSourceSizeHintLocked();
+  if (operation_owner_thread_) {
+    // Retain real preallocation work; only its execution location changes.
+    auto hints = std::move(prework_queue_);
+    prework_queue_.clear();
+    ProcessInlinePreallocation(std::move(hints),lock);
+    return !fenced_ && !stats_.failed;
+  }
   StartPreallocatorIfNeeded();
   StartWritersIfNeeded();
   return !stats_.failed;
@@ -363,6 +382,18 @@ bool DmlIngestionPipeline::EnqueuePreallocationBatch(
     queued.logical_values = std::move(item.logical_values);
     queued.borrowed_logical_values = item.borrowed_logical_values;
     queued.encoded_bytes = item.encoded_bytes;
+    if (operation_owner_thread_) {
+      // A synchronous owner has no queued backlog and never drops a requested
+      // allocation merely to avoid a cross-thread inventory/receipt deadlock.
+      std::deque<PreworkQueueItem> work;
+      work.push_back(std::move(queued));
+      ++stats_.preallocation_rows_enqueued;
+      stats_.preallocation_bytes_enqueued += item.encoded_bytes;
+      stats_.preallocation_max_depth = std::max<EngineApiU64>(stats_.preallocation_max_depth,1);
+      ProcessInlinePreallocation(std::move(work),lock);
+      if (stats_.failed || fenced_ || prework_stop_requested_) return false;
+      continue;
+    }
     while (!prework_stop_requested_ && !stats_.failed &&
            !PreworkFitsLocked(queued)) {
       ++stats_.preallocation_wait_count;
@@ -396,6 +427,25 @@ bool DmlIngestionPipeline::EnqueueWrite(DmlIngestionWriteTask task) {
   if (fenced_ || write_stop_requested_ || stats_.failed) return false;
   if (!stats_.writer_enabled) {
     ++active_writers_;
+    struct Completion {
+      DmlIngestionPipeline& pipeline;
+      std::unique_lock<std::mutex>& lock;
+      bool completed = false;
+      ~Completion() noexcept {
+        if (completed) return;
+        if (!lock.owns_lock()) lock.lock();
+        --pipeline.active_writers_;
+        if (!pipeline.stats_.failed)
+          pipeline.stats_.diagnostic=std::move(pipeline.exceptional_completion_diagnostic_);
+        pipeline.stats_.failed=true;
+        pipeline.prework_stop_requested_=true;
+        pipeline.write_stop_requested_=true;
+        pipeline.prework_available_.notify_all();
+        pipeline.prework_space_available_.notify_all();
+        pipeline.write_available_.notify_all();
+        pipeline.write_drained_.notify_all();
+      }
+    } completion{*this,lock};
     ++stats_.write_tasks_enqueued;
     stats_.write_rows_enqueued += task.row_count;
     lock.unlock();
@@ -408,6 +458,7 @@ bool DmlIngestionPipeline::EnqueueWrite(DmlIngestionWriteTask task) {
     }
     lock.lock();
     --active_writers_;
+    completion.completed = true;
     stats_.write_inline_execute_us +=
         ElapsedMicros(execute_start, PipelineClock::now());
     if (diagnostic.error) {
@@ -451,7 +502,8 @@ DmlIngestionPipelineStats DmlIngestionPipeline::FencePreallocator() {
   if (preallocator_worker_.joinable()) {
     preallocator_worker_.join();
   }
-  std::lock_guard<std::mutex> lock(mutex_);
+  std::unique_lock<std::mutex> lock(mutex_);
+  write_drained_.wait(lock,[&] { return active_inline_preallocators_ == 0; });
   return stats_;
 }
 
@@ -489,6 +541,24 @@ void DmlIngestionPipeline::PreallocatorLoop() {
     }
     ProcessPreallocationBatch(std::move(work));
   }
+}
+
+void DmlIngestionPipeline::ProcessInlinePreallocation(
+    std::deque<PreworkQueueItem> work,std::unique_lock<std::mutex>& lock) {
+  ++active_inline_preallocators_;
+  struct Completion {
+    EngineApiU64& active;
+    std::unique_lock<std::mutex>& lock;
+    std::condition_variable& drained;
+    ~Completion() noexcept {
+      if (!lock.owns_lock()) lock.lock();
+      --active;
+      drained.notify_all();
+    }
+  } completion{active_inline_preallocators_,lock,write_drained_};
+  lock.unlock();
+  try { ProcessPreallocationBatch(std::move(work)); }
+  catch (...) { SetFailure(PipelineDiagnostic("preallocation_task_exception")); }
 }
 
 void DmlIngestionPipeline::ProcessPreallocationBatch(
@@ -719,7 +789,9 @@ void DmlIngestionPipeline::StopAndJoin() noexcept {
     }
   }
   std::unique_lock<std::mutex> lock(mutex_);
-  write_drained_.wait(lock, [&] { return active_writers_ == 0; });
+  write_drained_.wait(lock, [&] {
+    return active_writers_ == 0 && active_inline_preallocators_ == 0;
+  });
 }
 
 DmlIngestionPipelineStats DmlIngestionPipeline::Snapshot() const {

@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "batch_point_lookup.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <map>
@@ -542,6 +543,48 @@ DiagnosticRecord MakeBatchPointLookupDiagnostic(Status status,
   }
   record.source_component = "core.index.batch_point_lookup";
   return record;
+}
+
+BoundedUniqueBatchResultV1 RunBoundedUniqueBatchPointLookupV1(
+    const std::vector<std::string>& keys,const CandidateSetAuthorityContext& authority,
+    std::pmr::memory_resource* memory,void* source,BoundedUniqueBatchProviderV1 provider) {
+  BoundedUniqueBatchResultV1 result(memory?memory:std::pmr::null_memory_resource());
+  BatchPointLookupPlan profile;
+  profile.purpose=BatchPointLookupPurpose::key_value;
+  const auto checked=ValidateAuthority(profile,authority);
+  if(!checked.ok()) {result.status=checked.status;result.diagnostic=checked.diagnostic;return result;}
+  if(!memory||!provider) {
+    result.status=RefusalStatus();
+    result.diagnostic=MakeBatchPointLookupDiagnostic(result.status,
+        "SB_BATCH_POINT_LOOKUP.PROVIDER_REQUIRED","batch_point_lookup.provider_required");
+    return result;
+  }
+  struct Slot {BoundedUniqueBatchValueV1 value;u64 occurrences=0;};
+  std::pmr::map<std::string_view,Slot,std::less<>> slots(memory);
+  for(std::size_t i=0;i<keys.size();++i) {
+    const std::string_view key=keys[i];
+    auto [at,inserted]=slots.try_emplace(key);
+    auto& slot=at->second;
+    if(inserted) {
+      ++result.unique_key_count;
+      slot.value=provider(source,key);
+      if(slot.value.found&&(!ValidRowUuid(slot.value.row_uuid)||
+          !core::uuid::IsEngineIdentityUuid(slot.value.row_uuid.value)||!slot.value.exact_match||
+          !slot.value.mga_visible||!slot.value.security_authorized)) {
+        result.status=RefusalStatus();
+        result.rows.clear();result.misses.clear();
+        result.diagnostic=MakeBatchPointLookupDiagnostic(result.status,
+            "SB_BATCH_POINT_LOOKUP.EXACT_RECHECK_REQUIRED","batch_point_lookup.exact_recheck_required",
+            "bounded_unique_provider_row_not_rechecked");
+        return result;
+      }
+    }
+    const auto ordinal=slot.occurrences++;
+    if(!slot.value.found)result.misses.push_back({key,static_cast<u64>(i)});
+    else result.rows.push_back({key,slot.value.payload,slot.value.row_uuid,
+        static_cast<u64>(i),ordinal,ordinal!=0});
+  }
+  result.status=OkStatus();return result;
 }
 
 }  // namespace scratchbird::core::index

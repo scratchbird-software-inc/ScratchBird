@@ -23,6 +23,7 @@
 #include "dml/direct_bulk_generated_projection.hpp"
 #include "dml/direct_bulk_ordered_ingest.hpp"
 #include "dml/direct_bulk_typed_row_codec.hpp"
+#include "dml/text_destination_validation.hpp"
 #include "dml/direct_bulk_scalar_projection.hpp"
 #include "dml/direct_bulk_uuid_authority.hpp"
 
@@ -5970,6 +5971,20 @@ static DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppendImpl(
                   "native_statement_owned_blob_operand_required", true),
               "destination_payload_refused", result.evidence, result.dml_summary);
         }
+        if (type == dt::CanonicalTypeId::character) {
+          const auto column = std::find_if(relation_descriptor.columns.begin(), relation_descriptor.columns.end(),
+              [&](const auto& candidate) { return candidate.canonical_name_key == field; });
+          if (column == relation_descriptor.columns.end())
+            throw std::invalid_argument("TEXT destination column missing");
+          const auto& typed = row.fields[ordinal].second;
+          if (!typed.binary_value.empty() && !typed.encoded_value.empty())
+            throw std::invalid_argument("ambiguous TEXT value carrier");
+          const auto bytes = typed.binary_value.empty() ? std::string_view(typed.encoded_value) :
+              std::string_view(reinterpret_cast<const char*>(typed.binary_value.data()), typed.binary_value.size());
+          if (const auto diagnostic = dml::ValidateTextDestinationValue(*column, typed.state, bytes))
+            return DirectBulkFailureWithEvidence(request, *diagnostic,
+                "destination_payload_refused", result.evidence, result.dml_summary);
+        }
         if (detail::DirectRequiresNativeProfile(type)) {
           const auto column = std::find_if(relation_descriptor.columns.begin(), relation_descriptor.columns.end(),
               [&](const auto& candidate) { return candidate.canonical_name_key == field; });
@@ -5998,7 +6013,16 @@ static DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppendImpl(
           DirectNativePacketValueRef ref;
           if (!DirectNativePacketValueRefAt(frame, row, ordinal, &ref))
             throw std::invalid_argument("native packet scalar invalid");
-          (void)DirectNativePacketStoredValue(frame, ref, type);
+          const auto stored = DirectNativePacketStoredValue(frame, ref, type);
+          if (type == dt::CanonicalTypeId::character) {
+            const auto column = std::find_if(relation_descriptor.columns.begin(), relation_descriptor.columns.end(),
+                [&](const auto& candidate) { return candidate.canonical_name_key == frame.field_order[ordinal]; });
+            if (column == relation_descriptor.columns.end())
+              throw std::invalid_argument("native packet TEXT destination column missing");
+            if (const auto diagnostic = dml::ValidateTextDestinationValue(*column, stored.state, stored.bytes))
+              return DirectBulkFailureWithEvidence(request, *diagnostic,
+                  "destination_payload_refused", result.evidence, result.dml_summary);
+          }
         }
       }
     }
@@ -6626,6 +6650,8 @@ static DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppendImpl(
       const bool toast_required =
           encoded_bytes > batch_context.row_template.max_inline_encoded_bytes ||
           force_large_values_for_insert;
+      if (const auto diagnostic = dml::ValidateTextDestinationValues(relation_descriptor, row_values))
+        return DirectBulkFailure(request, *diagnostic, "destination_payload_refused");
       const std::uint64_t projected_memory_bytes =
           toast_required ? batch_context.row_template.max_inline_encoded_bytes
                          : encoded_bytes;
@@ -6980,6 +7006,15 @@ static DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppendImpl(
 	                               constraint_validation.evidence.end());
 	        add_row_stage_elapsed(row_stage_validation_us, validation_start);
 	      }
+	      for (const auto& column : relation_descriptor.columns) {
+            const auto value = std::find_if(values.begin(), values.end(), [&](const auto& field) {
+              return field.first == column.canonical_name_key;
+            });
+            if (value != values.end()) {
+              if (const auto diagnostic = dml::ValidateTextDestinationValue(column, value->second.state, value->second.bytes))
+                return DirectBulkFailure(request, *diagnostic, "destination_payload_refused");
+            }
+          }
 	      if (batch_context.row_encoder_plan.runtime_policy_recheck_count != 0) {
 	        const auto security_recheck_start = row_stage_timer_start();
 	        std::vector<EngineEvidenceReference> security_recheck_evidence;
@@ -7552,6 +7587,15 @@ static DirectPhysicalBulkAppendResult ExecuteDirectPhysicalBulkAppendImpl(
       add_row_stage_elapsed(row_stage_validation_us, validation_start);
     }
 
+    for (const auto& column : relation_descriptor.columns) {
+      const auto value = std::find_if(values.begin(), values.end(), [&](const auto& field) {
+        return field.first == column.canonical_name_key;
+      });
+      if (value != values.end()) {
+        if (const auto diagnostic = dml::ValidateTextDestinationValue(column, value->second.state, value->second.bytes))
+          return DirectBulkFailure(request, *diagnostic, "destination_payload_refused");
+      }
+    }
     if (batch_context.row_encoder_plan.runtime_policy_recheck_count != 0) {
       const auto security_recheck_start = row_stage_timer_start();
       std::vector<EngineEvidenceReference> security_recheck_evidence;

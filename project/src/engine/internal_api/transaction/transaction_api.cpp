@@ -1682,6 +1682,12 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
     return trace_and_return(RefuseCommitBeforeInventoryMutation(
         request.context, operation_id, exact_identity.refusal_reason));
   }
+  const auto statement_finality=ValidateMgaStatementSavepointFinality(request.context);
+  if(statement_finality.error) {
+    auto result=MakeTxnError<EngineCommitTransactionResult>(request.context,operation_id,statement_finality);
+    ClassifyCommitRefusalBeforeInventoryMutation(&result,&*exact_identity.entry);
+    return trace_and_return(std::move(result));
+  }
   if (!PrepareDmlUpdateTransactionFinalityV1(request.context) ||
       !PrepareDmlDeleteTransactionFinalityV1(request.context)) {
     return trace_and_return(RefuseCommitBeforeInventoryMutation(
@@ -2034,6 +2040,11 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
        !PrepareDmlDeleteTransactionFinalityV1(request.context))) {
     return MakeTxnError<EngineAutocommitBoundaryResult>(request.context, operation_id,
         MakeInvalidRequestDiagnostic(operation_id, "DML_statement_reconciliation_required"));
+  }
+  if(request.statement_succeeded) {
+    const auto statement_finality=ValidateMgaStatementSavepointFinality(request.context);
+    if(statement_finality.error)
+      return MakeTxnError<EngineAutocommitBoundaryResult>(request.context,operation_id,statement_finality);
   }
   std::uint64_t temporary_deleted_rows = 0;
   std::uint64_t temporary_reclaimed_large_values = 0;
@@ -2721,6 +2732,9 @@ EnginePrepareTransactionResult EnginePrepareTransaction(const EnginePrepareTrans
   }
   const bool read_only_prepare =
       exact_identity.entry->state == TransactionState::read_only_active;
+  const auto statement_finality=ValidateMgaStatementSavepointFinality(request.context);
+  if(statement_finality.error)
+    return MakeTxnError<EnginePrepareTransactionResult>(request.context,operation_id,statement_finality);
   LocalCommitPublicationResult publication_barrier;
   if (!read_only_prepare) {
     const auto deferred_constraints =

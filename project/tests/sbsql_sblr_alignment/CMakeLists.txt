@@ -574,7 +574,7 @@ add_executable(sbsql_sblr_alignment_savepoint_binary_identity
 target_compile_features(sbsql_sblr_alignment_savepoint_binary_identity PRIVATE cxx_std_23)
 target_include_directories(sbsql_sblr_alignment_savepoint_binary_identity PRIVATE
   ../../src/engine/internal_api)
-target_link_libraries(sbsql_sblr_alignment_savepoint_binary_identity PRIVATE sb_core_hash)
+target_link_libraries(sbsql_sblr_alignment_savepoint_binary_identity PRIVATE sb_core_hash sb_core_uuid)
 add_test(NAME sbsql_sblr_alignment_savepoint_binary_identity
   COMMAND sbsql_sblr_alignment_savepoint_binary_identity)
 set_tests_properties(sbsql_sblr_alignment_savepoint_binary_identity PROPERTIES
@@ -3747,6 +3747,38 @@ foreach(fault_shard RANGE 0 15)
     TIMEOUT 120)
 endforeach()
 endif()
+
+add_executable(sbsql_sblr_alignment_native_key_value_collection
+  native_key_value_collection_test.cpp)
+if(UNIX)
+add_executable(sbsql_sblr_alignment_savepoint_append_prefix savepoint_append_prefix_test.cpp)
+target_compile_features(sbsql_sblr_alignment_savepoint_append_prefix PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_savepoint_append_prefix PRIVATE
+  ${PROJECT_SOURCE_DIR}/src/engine/internal_api ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(sbsql_sblr_alignment_savepoint_append_prefix PRIVATE sb_core_hash sb_core_memory sb_core_uuid)
+add_test(NAME sbsql_sblr_alignment_savepoint_append_prefix COMMAND sbsql_sblr_alignment_savepoint_append_prefix)
+set_tests_properties(sbsql_sblr_alignment_savepoint_append_prefix PROPERTIES
+  LABELS "sbsql_sblr_alignment;native_storage;hash_lifecycle;component_not_recovery_authority" TIMEOUT 30)
+endif()
+target_compile_features(sbsql_sblr_alignment_native_key_value_collection PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_key_value_collection PRIVATE
+  ${PROJECT_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(sbsql_sblr_alignment_native_key_value_collection PRIVATE
+  sb_engine_internal_api sb_engine_executor sb_engine)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_compile_definitions(sbsql_sblr_alignment_native_key_value_collection PRIVATE SB_NATIVE_KV_WRITE_WRAP=1)
+  target_link_options(sbsql_sblr_alignment_native_key_value_collection PRIVATE
+    "-Wl,--wrap=write" "-Wl,--wrap=fsync" "-Wl,--wrap=close" "-Wl,--wrap=ftruncate")
+endif()
+add_test(NAME sbsql_sblr_alignment_native_key_value_collection
+  COMMAND sbsql_sblr_alignment_native_key_value_collection)
+set_tests_properties(sbsql_sblr_alignment_native_key_value_collection PROPERTIES
+  LABELS "sbsql_sblr_alignment;native_storage;binary_uuid;key_value;persistence;rollback"
+  TIMEOUT 180)
+add_test(NAME sbsql_sblr_alignment_text_destination_live
+  COMMAND sbsql_sblr_alignment_native_key_value_collection --text-destination)
+set_tests_properties(sbsql_sblr_alignment_text_destination_live PROPERTIES
+  LABELS "sbsql_sblr_alignment;native_storage;binary_uuid;text;dml;spill;persistence;not_SQL_E2E" TIMEOUT 120)
 
 add_executable(sbsql_sblr_alignment_relational_descriptor_codec
   relational_descriptor_codec_test.cpp

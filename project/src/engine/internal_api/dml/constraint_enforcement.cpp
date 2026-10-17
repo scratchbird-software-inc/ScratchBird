@@ -145,7 +145,11 @@ EngineUuid ConstraintUuid(const CatalogColumnMetadata& fields,
                            const CrudTableRecord& table,
                            const std::string& column_name,
                            const std::string& constraint_class) {
-  (void)table;(void)column_name;(void)constraint_class;
+  (void)table;(void)column_name;
+  // Candidate keys have a separate published identity. A column may also
+  // carry a foreign-key constraint; never report that as its UNIQUE/PK owner.
+  if (constraint_class == "primary_key" || constraint_class == "unique_key")
+    return IdentityOrNil(fields, {"candidate_key_constraint_uuid"});
   return IdentityOrNil(fields, {"constraint_uuid", "uuid"});
 }
 

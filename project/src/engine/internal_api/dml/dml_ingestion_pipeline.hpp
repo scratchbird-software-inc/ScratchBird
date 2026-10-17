@@ -136,6 +136,8 @@ class DmlIngestionPipeline {
   void PreallocatorLoop();
   void WriterLoop();
   void ProcessPreallocationBatch(std::deque<PreworkQueueItem> work);
+  void ProcessInlinePreallocation(std::deque<PreworkQueueItem> work,
+                                 std::unique_lock<std::mutex>& lock);
   void SetFailure(EngineApiDiagnostic diagnostic);
   bool PreallocatorShouldRun() const;
   bool WriterShouldRun() const;
@@ -144,6 +146,12 @@ class DmlIngestionPipeline {
   bool PreworkFitsLocked(const PreworkQueueItem& item) const;
 
   DmlIngestionPipelineConfig config_;
+  // Owned before effects; moving this into an exceptional completion cannot
+  // allocate while already handling diagnostic-construction failure.
+  EngineApiDiagnostic exceptional_completion_diagnostic_;
+  // Derived from a live private operation, never an option-envelope authority.
+  const bool operation_owner_thread_;
+  const std::thread::id issuing_thread_;
   mutable std::mutex mutex_;
   std::mutex join_mutex_;
   std::condition_variable prework_available_;
@@ -154,6 +162,7 @@ class DmlIngestionPipeline {
   std::deque<QueuedWriteTask> write_queue_;
   EngineApiU64 prework_queued_bytes_ = 0;
   EngineApiU64 active_writers_ = 0;
+  EngineApiU64 active_inline_preallocators_ = 0;
   bool started_ = false;
   bool prework_stop_requested_ = false;
   bool write_stop_requested_ = false;

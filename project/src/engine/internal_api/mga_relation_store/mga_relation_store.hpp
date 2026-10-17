@@ -1507,6 +1507,8 @@ ReleaseMgaDmlUpdateStatementSavepointAuthorityV1(
     const MgaDmlUpdateStatementSavepointAuthorityV1& admitted);
 
 EngineApiDiagnostic CreateMgaSavepointMarker(const EngineRequestContext& context, const std::string& savepoint_name);
+EngineApiDiagnostic CreateMgaStatementSavepointMarker(const EngineRequestContext&, const EngineUuid&);
+EngineApiDiagnostic ValidateMgaStatementSavepointFinality(const EngineRequestContext&);
 EngineApiDiagnostic ReleaseMgaSavepointMarker(const EngineRequestContext& context, const std::string& savepoint_name);
 EngineApiDiagnostic RollbackToMgaSavepointMarker(const EngineRequestContext& context, const std::string& savepoint_name);
 EngineApiDiagnostic ValidateMgaSavepointExists(const EngineRequestContext& context,

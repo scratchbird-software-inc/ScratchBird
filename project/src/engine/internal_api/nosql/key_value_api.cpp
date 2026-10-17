@@ -1,622 +1,642 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
-//
-// This Source Code Form is subject to the terms of the Mozilla Public
-// License, v. 2.0. If a copy of the MPL was not distributed with this
-// file, You can obtain one at https://mozilla.org/MPL/2.0/.
-//
 // SPDX-License-Identifier: MPL-2.0
-
 #include "nosql/key_value_api.hpp"
-
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
 #include "batch_point_lookup.hpp"
 #include "datatype_catalog_manifest.hpp"
+#include "datatype_type_codec_identity_v3.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
+#include "mga_relation_store/mga_savepoint_marker_codec.hpp"
 #include "nosql/nosql_surface_support.hpp"
+#include "observability/dml_summary_counters.hpp"
 #include "query/expression_api.hpp"
 #include "security/security_model.hpp"
-#include "uuid.hpp"
 #include "catalog/column_metadata_codec.hpp"
-#include <set>
-
+#include "catalog/name_resolution_api.hpp"
+#include "dml/insert_api.hpp"
+#include "dml/update_api.hpp"
+#include "transaction/transaction_api.hpp"
+#include "engine/statement_scratch_memory.hpp"
+#include "hash_digest.hpp"
+#include "uuid.hpp"
 #include <algorithm>
 #include <array>
-#include <cctype>
+#include <charconv>
 #include <limits>
 #include <map>
+#include <memory_resource>
 #include <optional>
+#include <set>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
 #include <unordered_set>
 #include <utility>
 
 namespace scratchbird::engine::internal_api {
 namespace {
+bool WellFormedUtf8(std::string_view);
+bool UnsignedUtf8Less(const std::string&,const std::string&);
 
-struct PhysicalKeyValueRecord {
-  std::string key;
-  EngineUuid object_uuid;
-  EngineUuid row_uuid;
-  std::string value;
-  EngineApiU64 creator_tx = 0;
-  EngineApiU64 expires_after_tx = 0;
+EngineApiDiagnostic KvError(const char* code,std::string detail) {
+  return MakeEngineApiDiagnostic(code,"engine.nosql.key_value.refused",std::move(detail),true);
+}
+bool KvCancelled(const EngineRequestContext& context) noexcept {
+  try {return context.query_cancellation_requested&&context.query_cancellation_requested();}
+  catch (...) {return true;}
+}
+struct KvFailure {
+  std::vector<EngineApiDiagnostic> diagnostics;
+  explicit KvFailure(EngineApiDiagnostic diagnostic):diagnostics{std::move(diagnostic)}{}
+  explicit KvFailure(const std::vector<EngineApiDiagnostic>& source):diagnostics(source){}
 };
-
-using KeyValueMap = std::map<std::string, PhysicalKeyValueRecord>;
-
-using PhysicalStoreKey = std::pair<std::string, EngineUuid>;
-std::map<PhysicalStoreKey, KeyValueMap>& PhysicalStores() {
-  static std::map<PhysicalStoreKey, KeyValueMap> stores;
-  return stores;
+void KvRequire(bool condition,const char* code,const char* detail) {
+  if(!condition)throw KvFailure{KvError(code,detail)};
 }
-
-PhysicalStoreKey StoreKey(const EngineRequestContext& context) {
-  return {context.database_path, context.database_uuid};
+void KvPoll(const EngineRequestContext& context) {
+  KvRequire(!KvCancelled(context),"PROCESS.CANCELLED","key_value_cancelled_before_publication");
 }
-
-std::string RequestKey(const EngineApiRequest& request,
-                       const std::string& explicit_key) {
-  if (!explicit_key.empty()) { return explicit_key; }
-  if (!request.localized_names.empty() && !request.localized_names.front().name.empty()) {
-    return request.localized_names.front().name;
+// This limits real allocations from the live receipt's physical memory owner;
+// it is not a charged but unused reservation or an ungoverned map/cache.
+class KvMemory final:public std::pmr::memory_resource {
+ public:
+  KvMemory(std::pmr::memory_resource* upstream,std::uint64_t limit):upstream_(upstream),limit_(limit){}
+  std::uint64_t used() const noexcept {return used_;}
+  void Restrict(std::uint64_t limit) {
+    if(used_>limit)throw std::bad_alloc();
+    limit_=std::min(limit_,limit);
   }
-  if (!request.target_object.uuid.is_nil()) {
-    const auto store = PhysicalStores().find(StoreKey(request.context));
-    if (store != PhysicalStores().end())
-      for (const auto& [key, record] : store->second)
-        if (record.object_uuid == request.target_object.uuid) return key;
+ private:
+  void* do_allocate(std::size_t n,std::size_t alignment) override {
+    if(n>limit_-used_)throw std::bad_alloc();
+    void* p=upstream_->allocate(n,alignment);used_+=n;return p;
   }
-  return {};
-}
-
-std::string RowField(const EngineApiResult& result, const std::string& field) {
-  if (result.result_shape.rows.empty()) { return {}; }
-  for (const auto& [name, value] : result.result_shape.rows.front().fields) {
-    if (name == field) { return value.encoded_value; }
+  void do_deallocate(void* p,std::size_t n,std::size_t alignment) override {
+    upstream_->deallocate(p,n,alignment);used_-=n;
   }
-  return {};
-}
-
-EngineNoSqlPhysicalProviderContract DefaultKvProviderContract() {
-  EngineNoSqlPhysicalProviderContract contract;
-  contract.family = EngineNoSqlProviderFamily::kKeyValue;
-  contract.scope = EngineNoSqlProviderScope::kLocal;
-  contract.provider_id = "nosql.local.kv_exact_prefix_provider";
-  contract.fallback_provider_id = "none";
-  contract.local_provider_available = true;
-  contract.exact_fallback_available = false;
-  contract.estimated_rows = 1;
-  contract.descriptor_visibility.proof_present = true;
-  contract.descriptor_visibility.visible_to_snapshot = true;
-  contract.descriptor_visibility.descriptor_shape_compatible = true;
-  contract.descriptor_visibility.proof_id = "kv-descriptor-visible";
-  contract.security_redaction.proof_present = true;
-  contract.security_redaction.redaction_policy_bound = true;
-  contract.security_redaction.security_snapshot_bound = true;
-  contract.security_redaction.proof_id = "kv-security-bound";
-  contract.index_generation.proof_present = true;
-  contract.index_generation.visible_to_snapshot = true;
-  contract.index_generation.covers_predicate = true;
-  contract.index_generation.required_generation = 1;
-  contract.index_generation.available_generation = 1;
-  contract.index_generation.index_name = "kv-exact-prefix-index";
-  contract.index_generation.proof_id = "kv-index-generation:1";
-  contract.delta_overlay.required = false;
-  contract.policy.proof_present = true;
-  contract.policy.allowed = true;
-  contract.policy.policy_name = "kv-policy-snapshot";
-  contract.mga_recheck.proof_present = true;
-  contract.mga_recheck.row_mga_recheck_required = true;
-  contract.mga_recheck.row_security_recheck_required = true;
-  contract.mga_recheck.authority_source = "engine_transaction_inventory";
-  return contract;
-}
-
-EngineKeyValuePhysicalProof DefaultExactProof() {
-  EngineKeyValuePhysicalProof proof;
-  proof.provider_contract = DefaultKvProviderContract();
-  proof.proof_supplied = true;
-  proof.exact_key_index_proof = true;
-  proof.ttl_visibility_proof = true;
-  return proof;
-}
-
-EngineKeyValuePhysicalProof DefaultPrefixProof() {
-  auto proof = DefaultExactProof();
-  proof.prefix_index_proof = true;
-  return proof;
-}
-
-template <typename TResult>
-TResult DiagnosticResult(const EngineRequestContext& context,
-                         const std::string& operation_id,
-                         const char* diagnostic_code) {
-  return MakeApiBehaviorDiagnostic<TResult>(
-      context,
-      operation_id,
-      MakeInvalidRequestDiagnostic(operation_id, diagnostic_code));
-}
-
-void AddSelectionEvidence(const EngineNoSqlPhysicalProviderSelection& selection,
-                          EngineApiResult* result) {
-  if (!selection.generation_uuid.is_nil()) {
-    result->evidence.push_back({"provider_generation_uuid", selection.generation_uuid});
+  bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override {return this==&other;}
+  std::pmr::memory_resource* upstream_;std::uint64_t limit_,used_=0;
+};
+struct KvRecord {
+  std::pmr::string value;
+  std::size_t identity_index;
+  EngineApiU64 expiry=0;
+  KvRecord(std::pmr::memory_resource* memory,std::size_t index,std::string_view bytes,EngineApiU64 ttl)
+      :value(bytes,memory),identity_index(index),expiry(ttl){}
+};
+struct KvWrite {
+  std::size_t identity_index;std::pmr::string key,value;EngineApiU64 expiry;
+  KvWrite(std::pmr::memory_resource* memory,std::size_t index,std::string_view k,std::string_view v,EngineApiU64 e)
+      :identity_index(index),key(k,memory),value(v,memory),expiry(e){}
+};
+struct KvOutput {
+  std::size_t identity_index;std::pmr::string key,value;EngineApiU64 expiry;
+  bool duplicate=false;EngineApiU64 duplicate_ordinal=0;
+  KvOutput(std::pmr::memory_resource* memory,std::size_t index,std::string_view k,std::string_view v,
+      EngineApiU64 e,bool d,EngineApiU64 ordinal)
+      :identity_index(index),key(k,memory),value(v,memory),expiry(e),duplicate(d),duplicate_ordinal(ordinal){}
+};
+struct KvPlan {
+  std::pmr::memory_resource* memory;
+  std::pmr::vector<EngineUuid> identities;
+  std::pmr::vector<KvWrite> writes;
+  std::pmr::vector<KvOutput> outputs;
+  std::uint64_t retained_bytes=0;
+  explicit KvPlan(std::pmr::memory_resource* source):memory(source),identities(source),writes(source),outputs(source){}
+  void Charge(std::uint64_t n,const EngineKeyValueResourceLimits& limits) {
+    KvRequire(n<=limits.maximum_decoded_bytes-retained_bytes,"RESOURCE.BUDGET_EXCEEDED",
+              "key_value_staging_bytes_exceeded");
+    retained_bytes+=n;
   }
-  for (const auto& item : selection.evidence) {
-    AddApiBehaviorEvidence(result, "kv_physical_provider", item);
+  void Output(std::string_view key,const KvRecord& row,const EngineKeyValueResourceLimits& limits,
+      bool duplicate=false,EngineApiU64 ordinal=0) {
+    KvRequire(outputs.size()<limits.maximum_output_rows,"RESOURCE.BUDGET_EXCEEDED",
+              "key_value_output_rows_exceeded");
+    Charge(sizeof(KvOutput)+key.size()+row.value.size(),limits);
+    outputs.emplace_back(memory,row.identity_index,key,row.value,row.expiry,duplicate,ordinal);
   }
+  void Write(std::string_view key,const KvRecord& row,const EngineKeyValueResourceLimits& limits) {
+    Charge(sizeof(KvWrite)+key.size()+row.value.size(),limits);
+    writes.emplace_back(memory,row.identity_index,key,row.value,row.expiry);
+  }
+};
+using KvRows=std::pmr::map<std::string_view,KvRecord,std::less<>>;
+struct KvCollection {
+  MgaVisibleHeapRelationReadResult read;
+};
+bool KvVisible(const KvRecord& row,EngineApiU64 reader) {return !row.expiry||reader<row.expiry;}
+
+template<class Request>
+void KvValidateInputBounds(const Request& request) {
+  const auto& limits=request.resource_limits;
+  std::uint64_t bytes=0;
+  const auto operand=[&](std::string_view value) {
+    KvRequire(value.size()<=limits.maximum_decoded_bytes-bytes,
+        "RESOURCE.BUDGET_EXCEEDED","key_value_operand_bytes_exceeded");
+    bytes+=value.size();
+  };
+  std::size_t operations=1;
+  if constexpr(std::is_same_v<Request,EngineKeyValueGetRequest>)
+    operand(request.prefix_scan||!request.prefix.empty()?request.prefix:request.key);
+  else if constexpr(std::is_same_v<Request,EngineKeyValuePutRequest>) {
+    operand(request.key);operand(request.value);
+  } else if constexpr(std::is_same_v<Request,EngineKeyValueMultiGetRequest>) {
+    operations=request.keys.size();
+    KvRequire(operations<=limits.maximum_operations,"RESOURCE.BUDGET_EXCEEDED","key_value_operation_count_exceeded");
+    for(const auto& key:request.keys)operand(key);
+  } else if constexpr(std::is_same_v<Request,EngineKeyValuePipelineRequest>) {
+    KvRequire(request.puts.size()<=std::numeric_limits<std::size_t>::max()-request.get_keys.size(),
+        "RESOURCE.BUDGET_EXCEEDED","key_value_operation_count_overflow");
+    operations=request.puts.size()+request.get_keys.size();
+    KvRequire(operations<=limits.maximum_operations,"RESOURCE.BUDGET_EXCEEDED","key_value_operation_count_exceeded");
+    KvRequire(!request.max_admitted_operations||operations<=request.max_admitted_operations,
+        kKeyValuePipelineAdmissionRefused,"key_value_pipeline_batch_limit_exceeded");
+    for(const auto& put:request.puts){operand(put.key);operand(put.value);}
+    for(const auto& key:request.get_keys)operand(key);
+  } else if constexpr(std::is_same_v<Request,EngineKeyValueAtomicProgramRequest>) {
+    operations=request.steps.size();
+    KvRequire(operations<=limits.maximum_operations,"RESOURCE.BUDGET_EXCEEDED","key_value_operation_count_exceeded");
+    for(const auto& step:request.steps){operand(step.key);operand(step.operand);}
+  }
+  KvRequire(operations<=limits.maximum_operations,"RESOURCE.BUDGET_EXCEEDED","key_value_operation_count_exceeded");
 }
 
-template <typename TResult>
-std::optional<TResult> ValidatePhysicalProof(const EngineApiRequest& request,
-                                             const std::string& operation_id,
-                                             const EngineKeyValuePhysicalProof& proof,
-                                             bool require_exact,
-                                             bool require_prefix) {
-  const auto selection = SelectLocalNoSqlPhysicalProvider(proof.provider_contract);
-  if (!proof.proof_supplied) {
-    return DiagnosticResult<TResult>(
-        request.context,
-        operation_id,
-        require_prefix ? kKeyValuePrefixProofMissing : kKeyValueExactKeyProofMissing);
+KvCollection LoadKvCollection(const EngineKeyValueRequest& request,const EngineRequestContext& context,
+    const char* operation,bool mutation) {
+  const auto& limits=request.resource_limits;
+  KvPoll(context);
+  KvPoll(request.context);
+  KvRequire(core::uuid::IsEngineIdentityUuid(request.target_object.uuid),"SB_ENGINE_API_INVALID_REQUEST",
+            "key_value_collection_identity_required");
+  KvRequire(limits.maximum_operations&&limits.maximum_scanned_row_versions&&
+      limits.maximum_decoded_bytes&&limits.maximum_output_rows&&limits.maximum_memory_bytes,
+      "RESOURCE.BUDGET_EXCEEDED","key_value_resource_limits_required");
+  for(const char* right:{"SELECT","INSERT","UPDATE"}) {
+    if(!mutation&&std::string_view(right)!="SELECT")continue;
+    const auto authorized=EvaluateMaterializedAuthorization(context,context.authorization_context,
+        right,request.target_object.uuid);
+    KvRequire(authorized.authorized&&!authorized.denied&&!authorized.policy_recheck_required&&
+        authorized.diagnostics.empty(),"SECURITY.ACCESS_DENIED","key_value_collection_right_required");
   }
-  if (!selection.selected) {
-    auto failure = MakeApiBehaviorDiagnostic<TResult>(
-        request.context,
-        operation_id,
-        MakeInvalidRequestDiagnostic(operation_id,
-                                     selection.missing_diagnostics.empty()
-                                         ? selection.refusal_diagnostics.front()
-                                         : selection.missing_diagnostics.front()));
-    AddSelectionEvidence(selection, &failure);
-    return failure;
+  const auto descriptor=LoadMgaRelationStorageDescriptor(context,request.target_object.uuid);
+  if(!descriptor.ok)throw KvFailure{descriptor.diagnostic};
+  const auto& d=descriptor.descriptor;
+  KvRequire(d.database_uuid==context.database_uuid&&d.relation_uuid==request.target_object.uuid&&
+      d.relation_kind=="table"&&d.storage_profile=="local_mga_rowstore_v1"&&d.columns.size()==3&&
+      !ValidateMgaRelationStorageDescriptor(d).error,"DATATYPE.DESCRIPTOR.INVALID",
+      "key_value_collection_storage_shape_invalid");
+  constexpr std::array<std::string_view,3> names{"key","value","expires_after_local_transaction_id"};
+  constexpr std::array<std::string_view,3> types{"text","text","uint64"};
+  // Resolve the pair from one actual admitted catalog image. This avoids a
+  // second complete node/resource read and cannot mix resource generations.
+  const auto resources=LookupEngineTextResourcePair(context,d.columns[0].charset_uuid,d.columns[0].collation_uuid);
+  const auto& charset=resources.charset;
+  const auto& collation=resources.collation;
+  KvRequire(resources.ok&&charset.present&&collation.present&&
+      charset.canonical_name=="UTF-8"&&collation.canonical_name=="SB_UTF8_BINARY"&&
+      collation.parent_resource_uuid==charset.resource_uuid,
+      "DATATYPE.DESCRIPTOR.INVALID","key_value_utf8_binary_profile_unavailable");
+  for(std::size_t i=0;i<3;++i) {
+    const auto& c=d.columns[i];const auto& value=c.value_descriptor;
+    const auto identity=core::datatypes::LookupDatatypeTypeCodecIdentityV3(
+        context.datatype_catalog_snapshot_uuid,context.datatype_catalog_generation,
+        context.datatype_registry_generation,value.datatype_descriptor_uuid,value.datatype_descriptor_generation);
+    const auto expected=i<2?core::datatypes::CanonicalTypeId::character:core::datatypes::CanonicalTypeId::uint64;
+    KvRequire(c.ordinal==i&&c.canonical_name_key==names[i]&&!c.nullable&&!c.generated&&!c.identity_column&&
+        value.canonical_type_name==types[i]&&QowCanonicalDescriptorIdentityV1(value)&&identity.ok&&
+        identity.row.legacy_fields.type_uuid==value.type_uuid&&
+        identity.row.legacy_fields.canonical_binary_type_code==static_cast<std::uint32_t>(expected),
+        "DATATYPE.DESCRIPTOR.INVALID","key_value_column_descriptor_invalid");
+    if(i<2)KvRequire(c.charset_uuid==charset.resource_uuid&&
+        c.collation_uuid==collation.resource_uuid,
+        "DATATYPE.DESCRIPTOR.INVALID","key_value_column_requires_utf8_binary_profile");
   }
-  if (require_exact && !proof.exact_key_index_proof) {
-    return DiagnosticResult<TResult>(
-        request.context, operation_id, kKeyValueExactKeyProofMissing);
-  }
-  if (require_prefix && !proof.prefix_index_proof) {
-    return DiagnosticResult<TResult>(
-        request.context, operation_id, kKeyValuePrefixProofMissing);
-  }
-  if (!proof.ttl_visibility_proof) {
-    return DiagnosticResult<TResult>(
-        request.context, operation_id, kKeyValueTtlVisibilityProofMissing);
-  }
-  return std::nullopt;
+  // Inventory ordering is not a uniqueness constraint across independently
+  // admitted MGA snapshots. The storage writer must have real exact-key
+  // support, including conflicts with non-KV DML and other transactions.
+  KvRequire(std::any_of(d.indexes.begin(),d.indexes.end(),[](const auto& index){
+      return index.unique&&!index.approximate&&index.key_envelopes.size()==1&&index.key_envelopes.front()=="key"&&
+          index.predicate_kind.empty();
+    }),"CLI.SUPPORT_STRUCTURE_UNAVAILABLE","key_value_unique_key_support_required");
+  MgaVisibleHeapRelationReadRequest read;
+  read.relation_uuid=request.target_object.uuid;
+  read.maximum_scanned_row_versions=limits.maximum_scanned_row_versions;
+  read.maximum_decoded_bytes=limits.maximum_decoded_bytes;
+  // Input materialization is bounded by the scanned-version and memory caps.
+  // The public output cap applies to selected/duplicate result rows, not to
+  // unrelated rows that must be examined to establish exact key equality.
+  read.maximum_output_rows=limits.maximum_scanned_row_versions;
+  read.maximum_memory_bytes=limits.maximum_memory_bytes;
+  read.cancellation_requested=[&]{return KvCancelled(context)||KvCancelled(request.context);};
+  KvCollection collection{ReadVisibleMgaHeapRelation(context,read)};
+  if(!collection.read.ok)throw KvFailure{collection.read.diagnostic};
+  KvRequire(collection.read.descriptor==d,"DATATYPE.DESCRIPTOR.INVALID","key_value_descriptor_changed_during_read");
+  return collection;
 }
 
-void AddKvEvidence(EngineApiResult* result,
-                   const EngineNoSqlPhysicalProviderSelection& selection,
-                   const std::string& access_kind) {
-  AddEngineNoSqlSurfaceEvidence(result, "key_value", access_kind);
-  AddSelectionEvidence(selection, result);
-  AddApiBehaviorEvidence(result, "kv_physical_access", access_kind);
-  AddApiBehaviorEvidence(result, "behavior_store_scan_selected", "false");
-  AddApiBehaviorEvidence(result, "ttl_visibility_evidence", "deterministic_local_transaction_id");
-  AddApiBehaviorEvidence(result, "mga_finality_authority", "engine_transaction_inventory");
-  AddApiBehaviorEvidence(result, "client_autocommit_authority", "false");
-}
-
-bool VisibleByTtl(const PhysicalKeyValueRecord& record, EngineApiU64 observer_tx) {
-  return record.expires_after_tx == 0 || observer_tx < record.expires_after_tx;
-}
-
-template <typename TResult>
-void AddKvRow(TResult* result, const PhysicalKeyValueRecord& record) {
-  AddApiBehaviorRow(result,
-                    {{"surface", "key_value"},
-                     {"key_uuid", record.object_uuid},
-                     {"row_uuid", record.row_uuid},
-                     {"key", record.key},
-                     {"state", "active"},
-                     {"value", record.value},
-                     {"ttl_expires_after_tx", std::to_string(record.expires_after_tx)}});
-}
-
-scratchbird::core::platform::TypedUuid AdmitStoredRowUuid(
-    const EngineUuid& row_uuid) {
-  const auto parsed = scratchbird::core::uuid::MakeDurableEngineIdentityUuid(
-      scratchbird::core::platform::UuidKind::row, row_uuid);
-  return parsed.ok() ? parsed.value
-                     : scratchbird::core::platform::TypedUuid{};
-}
-
-scratchbird::core::index::CandidateSetAuthorityContext
-BatchLookupAuthorityFromSelection(
-    const EngineNoSqlPhysicalProviderSelection& selection) {
-  scratchbird::core::index::CandidateSetAuthorityContext authority;
-  authority.engine_mga_authoritative = selection.selected;
-  authority.security_context_bound =
-      selection.selected && selection.row_security_recheck_required;
-  authority.row_mga_recheck_required = selection.row_mga_recheck_required;
-  authority.row_security_recheck_required =
-      selection.row_security_recheck_required;
-  authority.exact_recheck_available = selection.selected;
-  authority.exact_rerank_source_available = selection.selected;
-  authority.provider_finality_or_visibility_authority =
-      selection.provider_transaction_finality_authority ||
-      selection.provider_visibility_authority ||
-      selection.index_transaction_finality_authority ||
-      selection.delta_overlay_transaction_finality_authority;
-  authority.parser_or_reference_finality_or_visibility_authority =
-      selection.parser_transaction_finality_authority;
-  authority.wal_recovery_or_finality_authority =  // wal-not-authority
-      selection.write_ahead_log_transaction_finality_authority;  // wal-not-authority
-  return authority;
-}
-
-scratchbird::core::index::BatchPointLookupPlan MakeKvBatchLookupPlan(
-    const std::vector<std::string>& keys,
-    const std::string& operation_id,
-    const EngineNoSqlPhysicalProviderSelection& selection) {
-  scratchbird::core::index::BatchPointLookupPlan plan;
-  plan.purpose = scratchbird::core::index::BatchPointLookupPurpose::key_value;
-  plan.plan_id = operation_id + ":kv_batch_point_lookup";
-  plan.cluster_route_requested = false;
-  plan.cluster_guard_checked = true;
-  plan.cluster_provider_authorized = false;
-  plan.caller_evidence = selection.evidence;
-  plan.keys.reserve(keys.size());
-  for (std::size_t i = 0; i < keys.size(); ++i) {
-    plan.keys.push_back({keys[i], static_cast<EngineApiU64>(i)});
-  }
+template<class Callback>
+KvPlan PlanKv(const EngineKeyValueRequest& request,const EngineRequestContext& context,
+    const KvCollection& collection,KvMemory& memory,Callback&& callback) {
+  KvPlan plan(&memory);
+      KvRows rows(&memory);
+      for(const auto& row:collection.read.visible_rows) {
+        KvPoll(context);
+        KvPoll(request.context);
+        KvRequire(row.values.size()==3&&core::uuid::IsEngineIdentityUuid(row.row_uuid),
+                  "DATATYPE.DESCRIPTOR.INVALID","key_value_stored_row_shape_invalid");
+        std::array<const CrudStoredValue*,3> fields{};
+        for(const auto& [name,value]:row.values) {
+          std::size_t at=name=="key"?0:name=="value"?1:name=="expires_after_local_transaction_id"?2:3;
+          KvRequire(at<3&&!fields[at]&&value.isPresent(),"DATATYPE.DESCRIPTOR.INVALID","key_value_stored_field_invalid");
+          fields[at]=&value;
+        }
+        KvRequire(fields[0]&&fields[1]&&fields[2]&&fields[2]->bytes.size()==8&&
+            WellFormedUtf8(fields[0]->bytes)&&WellFormedUtf8(fields[1]->bytes),
+            "DATATYPE.DESCRIPTOR.INVALID","key_value_stored_native_value_invalid");
+        EngineApiU64 expiry=0;for(unsigned i=0;i<8;++i)
+          expiry|=static_cast<EngineApiU64>(static_cast<unsigned char>(fields[2]->bytes[i]))<<(i*8);
+        const auto index=plan.identities.size();plan.Charge(sizeof(EngineUuid),request.resource_limits);
+        plan.identities.push_back(row.row_uuid);
+        KvRequire(rows.try_emplace(fields[0]->bytes,&memory,index,fields[1]->bytes,expiry).second,
+            "SB_MODEL_KEY_VALUE_DUPLICATE_VISIBLE_KEY_REFUSED_V1","key_value_duplicate_visible_key");
+      }
+      callback(plan,rows,memory);
+      KvPoll(context);
+      KvPoll(request.context);
   return plan;
 }
-
-void AddKvLookupRow(EngineApiResult* result,
-                    const scratchbird::core::index::BatchPointLookupRow& row,
-                    const EngineUuid& object_uuid) {
-  ApiBehaviorFields fields = {
-      {"surface", "key_value"},
-      {"row_uuid", row.row_uuid.value},
-      {"key_uuid", object_uuid},
-      {"key", row.encoded_key},
-      {"state", "active"},
-      {"value", row.payload},
-      {"duplicate_key", row.duplicate_key ? "true" : "false"},
-      {"duplicate_ordinal", std::to_string(row.duplicate_ordinal)}};
-  for (const auto& [name, value] : row.attributes) {
-    fields.push_back({name, value});
+KvRecord& KvUpsertPlan(KvPlan& plan,KvRows& rows,std::pmr::memory_resource& memory,
+    const EngineKeyValueRequest& request,std::string_view key,std::string_view value,EngineApiU64 expiry) {
+  KvRequire(key.size()<=request.resource_limits.maximum_decoded_bytes&&
+      value.size()<=request.resource_limits.maximum_decoded_bytes,"RESOURCE.BUDGET_EXCEEDED","key_value_operand_bytes_exceeded");
+  KvRequire(WellFormedUtf8(key)&&WellFormedUtf8(value),"SB_MODEL_KEY_VALUE_TEXT_INVALID_V1","key_value_malformed_utf8");
+  auto found=rows.find(key);
+  if(found==rows.end()) {
+    plan.Charge(sizeof(EngineUuid),request.resource_limits);
+    const auto index=plan.identities.size();plan.identities.push_back({});
+    found=rows.try_emplace(key,&memory,index,std::string_view{},0).first;
   }
-  AddApiBehaviorRow(result, std::move(fields));
+  found->second.value.assign(value);found->second.expiry=expiry;
+  plan.Write(key,found->second,request.resource_limits);return found->second;
+}
+void KvBatchRead(KvPlan& plan,const KvRows& rows,const EngineKeyValueRequest& request,
+    const std::vector<std::string>& keys,EngineApiResult& result) {
+  for(const auto& key:keys) {
+    KvRequire(key.size()<=request.resource_limits.maximum_decoded_bytes,
+              "RESOURCE.BUDGET_EXCEEDED","key_value_operand_bytes_exceeded");
+    KvRequire(WellFormedUtf8(key),"SB_MODEL_KEY_VALUE_TEXT_INVALID_V1","key_value_malformed_utf8");
+  }
+  core::index::CandidateSetAuthorityContext authority;
+  // Observations of THIS completed engine-native read, not supplied proof flags.
+  authority.engine_mga_authoritative=true;authority.security_context_bound=true;
+  authority.row_mga_recheck_required=true;authority.row_security_recheck_required=true;
+  authority.exact_recheck_available=true;authority.exact_rerank_source_available=true;
+  struct Source {KvPlan& plan;const KvRows& rows;const EngineKeyValueRequest& request;};
+  Source source{plan,rows,request};
+  const auto lookup=core::index::RunBoundedUniqueBatchPointLookupV1(
+      keys,authority,plan.memory,&source,[](void* raw,std::string_view key){
+    auto& actual=*static_cast<Source*>(raw);
+    KvPoll(actual.request.context);
+    core::index::BoundedUniqueBatchValueV1 row;
+    const auto found=actual.rows.find(key);
+    if(found==actual.rows.end()||!KvVisible(found->second,actual.request.context.local_transaction_id))return row;
+    const auto identity=core::uuid::MakeDurableEngineIdentityUuid(core::platform::UuidKind::row,
+        actual.plan.identities[found->second.identity_index]);
+    KvRequire(identity.ok(),"DATATYPE.DESCRIPTOR.INVALID","key_value_stored_identity_unavailable");
+    row.found=true;row.row_uuid=identity.value;row.payload=found->second.value;
+    row.exact_match=true;row.mga_visible=true;row.security_authorized=true;
+    return row;
+  });
+  if(!lookup.ok())throw KvFailure{KvError("SB_ENGINE_API_INVALID_REQUEST",lookup.diagnostic.diagnostic_code)};
+  AddApiBehaviorEvidence(&result,"batch_point_lookup","batch_point_lookup.purpose=key_value");
+  AddApiBehaviorEvidence(&result,"batch_point_lookup","batch_point_lookup.input_key_count="+std::to_string(keys.size()));
+  AddApiBehaviorEvidence(&result,"batch_point_lookup","batch_point_lookup.unique_key_count="+std::to_string(lookup.unique_key_count));
+  AddApiBehaviorEvidence(&result,"batch_point_lookup","batch_point_lookup.miss_count="+std::to_string(lookup.misses.size()));
+  for(const auto& miss:lookup.misses) {
+    plan.Charge(sizeof(EngineEvidenceReference)+miss.encoded_key.size()+64,request.resource_limits);
+    AddApiBehaviorEvidence(&result,"batch_point_lookup_miss",
+        std::to_string(miss.input_ordinal)+":"+std::string(miss.encoded_key)+":key_not_found");
+  }
+  for(const auto& row:lookup.rows)plan.Output(row.encoded_key,rows.find(row.encoded_key)->second,
+      request.resource_limits,row.duplicate_key,row.duplicate_ordinal);
+  AddApiBehaviorEvidence(&result,"kv_ordered_batch_lookup_primitive","ODF-092");
 }
 
-void AddKvBatchLookupEvidence(
-    EngineApiResult* result,
-    const scratchbird::core::index::BatchPointLookupResult& lookup) {
-  for (const auto& item : lookup.evidence) {
-    AddApiBehaviorEvidence(result, "batch_point_lookup", item);
-  }
-  for (const auto& miss : lookup.misses) {
-    AddApiBehaviorEvidence(result,
-                           "batch_point_lookup_miss",
-                           std::to_string(miss.input_ordinal) + ":" +
-                               miss.encoded_key + ":" + miss.reason);
-  }
+EngineTypedValue KvNativeValue(const EngineDescriptor& descriptor,std::string_view bytes) {
+  EngineTypedValue value;value.descriptor=descriptor;value.encoded_value=bytes;return value;
 }
-
-template <typename TResult, typename TRequest>
-std::optional<TResult> AddKvBatchLookupRowsFromStore(
-    const TRequest& request,
-    const std::string& operation_id,
-    const std::vector<std::string>& keys,
-    const EngineNoSqlPhysicalProviderSelection& selection,
-    const KeyValueMap& lookup_store,
-    TResult* result) {
-  auto plan = MakeKvBatchLookupPlan(keys, operation_id, selection);
-  auto authority = BatchLookupAuthorityFromSelection(selection);
-  auto lookup = scratchbird::core::index::RunBatchPointLookup(
-      plan,
-      authority,
-      [&lookup_store, &request](
-          const scratchbird::core::index::BatchPointLookupProviderRequest&
-              provider_request) {
-        scratchbird::core::index::BatchPointLookupProviderResult provider_result;
-        provider_result.status = {scratchbird::core::platform::StatusCode::ok,
-                                  scratchbird::core::platform::Severity::info,
-                                  scratchbird::core::platform::Subsystem::engine};
-        provider_result.evidence.push_back(
-            "batch_point_lookup.provider=kv_exact_key_index");
-        provider_result.evidence.push_back(
-            "batch_point_lookup.provider.transaction_finality_authority=false");
-        for (const auto& key : provider_request.ordered_unique_keys) {
-          const auto it = lookup_store.find(key.encoded_key);
-          if (it == lookup_store.end() ||
-              !VisibleByTtl(it->second,
-                            request.context.local_transaction_id)) {
-            continue;
-          }
-          scratchbird::core::index::BatchPointLookupProviderRow row;
-          row.encoded_key = key.encoded_key;
-          row.candidate.row_uuid = AdmitStoredRowUuid(it->second.row_uuid);
-          row.candidate.exact_predicate_match = true;
-          row.candidate.mga_visible = true;
-          row.candidate.security_authorized = true;
-          row.candidate.exact_payload_available = true;
-          row.candidate.source = "nosql.key_value";
-          row.exact_row_uuid = row.candidate.row_uuid.valid();
-          row.payload = it->second.value;
-          row.attributes.push_back(
-              {"ttl_expires_after_tx",
-               std::to_string(it->second.expires_after_tx)});
-          provider_result.rows.push_back(std::move(row));
-        }
-        return provider_result;
-      });
-  if (!lookup.ok()) {
-    auto failure = MakeApiBehaviorDiagnostic<TResult>(
-        request.context,
-        operation_id,
-        MakeInvalidRequestDiagnostic(operation_id,
-                                     lookup.diagnostic.diagnostic_code));
-    AddKvBatchLookupEvidence(&failure, lookup);
-    return failure;
-  }
-  AddKvBatchLookupEvidence(result, lookup);
-  for (const auto& row : lookup.rows) {
-    AddKvLookupRow(result, row, lookup_store.at(row.encoded_key).object_uuid);
-  }
-  AddApiBehaviorEvidence(result,
-                         "kv_ordered_batch_lookup_primitive",
-                         "ODF-092");
-  return std::nullopt;
+EngineTypedValue KvNativeExpiry(const EngineDescriptor& descriptor,EngineApiU64 number) {
+  EngineTypedValue value;value.descriptor=descriptor;
+  for(unsigned i=0;i<8;++i)value.binary_value.push_back(static_cast<std::uint8_t>(number>>(i*8)));
+  return value;
 }
-
-template <typename TResult, typename TRequest>
-std::optional<TResult> AddKvBatchLookupRows(
-    const TRequest& request,
-    const std::string& operation_id,
-    const std::vector<std::string>& keys,
-    const EngineNoSqlPhysicalProviderSelection& selection,
-    TResult* result) {
-  const auto& store = PhysicalStores()[StoreKey(request.context)];
-  return AddKvBatchLookupRowsFromStore(
-      request, operation_id, keys, selection, store, result);
-}
-
-std::string RequestPayloadValue(const EngineKeyValuePutRequest& request,
-                                const EngineKeyValuePutResult& result) {
-  if (!request.value.empty()) { return request.value; }
-  return RowField(result, "payload");
-}
-
-void UpsertPhysicalRecord(const EngineKeyValuePutRequest& request,
-                          const EngineKeyValuePutResult& result) {
-  PhysicalKeyValueRecord record;
-  record.key = RequestKey(request, request.key);
-  record.object_uuid = result.primary_object.uuid;
-  record.row_uuid = result.catalog_row_uuid;
-  if (record.row_uuid.is_nil()) { record.row_uuid = GenerateCrudEngineUuid("row"); }
-  record.value = RequestPayloadValue(request, result);
-  record.creator_tx = request.context.local_transaction_id;
-  record.expires_after_tx = request.expires_after_local_transaction_id;
-  const auto option_ttl =
-      EngineNoSqlOptionU64(request, "kv.ttl.expires_after_tx");
-  if (option_ttl.first) { record.expires_after_tx = option_ttl.second; }
-  const auto logical_key = record.key;
-  if (!logical_key.empty()) {
-    auto& stored = PhysicalStores()[StoreKey(request.context)];
-    stored[logical_key] = std::move(record);
-
-  }
-}
-
-EngineKeyValueGetResult PhysicalGet(const EngineKeyValueGetRequest& request,
-                                    const std::string& operation_id,
-                                    const EngineKeyValuePhysicalProof& proof,
-                                    bool prefix) {
-  if (auto failure = ValidatePhysicalProof<EngineKeyValueGetResult>(
-          request, operation_id, proof, !prefix, prefix)) {
-    return *failure;
-  }
-  const auto selection = SelectLocalNoSqlPhysicalProvider(proof.provider_contract);
-  auto result = MakeApiBehaviorSuccess<EngineKeyValueGetResult>(
-      request.context, operation_id);
-  AddKvEvidence(&result, selection, prefix ? "prefix_index_probe" : "exact_key_index_probe");
-
-  const auto& store = PhysicalStores()[StoreKey(request.context)];
-  if (!prefix) {
-    const auto it = store.find(RequestKey(request, request.key));
-    if (it != store.end() && VisibleByTtl(it->second, request.context.local_transaction_id)) {
-      AddKvRow(&result, it->second);
-    }
-  } else {
-    const std::string prefix_key = request.prefix;
-    for (const auto& [key, record] : store) {
-      if (key.rfind(prefix_key, 0) == 0 &&
-          VisibleByTtl(record, request.context.local_transaction_id)) {
-        AddKvRow(&result, record);
+void ApplyKvWrites(const EngineKeyValueRequest& request,const EngineRequestContext& context,
+    const KvCollection& collection,KvPlan& plan,EngineApiResult& result) {
+  const auto& columns=collection.read.descriptor.columns;
+  for(const auto& write:plan.writes) {
+    KvPoll(context);
+    KvPoll(request.context);
+    auto& identity=plan.identities[write.identity_index];
+    EngineRowValue row;
+    row.fields={{"key",KvNativeValue(columns[0].value_descriptor,write.key)},
+                {"value",KvNativeValue(columns[1].value_descriptor,write.value)},
+                {"expires_after_local_transaction_id",KvNativeExpiry(columns[2].value_descriptor,write.expiry)}};
+    if(identity.is_nil()) {
+      EngineInsertRowsRequest insert;
+      insert.context=context;insert.target_table=request.target_object;
+      insert.input_rows.push_back(std::move(row));
+      const auto written=EngineInsertRows(insert);
+      AddDmlSummaryCounters(&result.dml_summary,written.dml_summary);
+      if(!written.ok) {
+        if(written.diagnostics.empty())throw KvFailure{KvError("SBLR.EXECUTION_FAILED","key_value_insert_failed")};
+        throw KvFailure{written.diagnostics};
       }
-    }
-  }
-  result.dml_summary.index_probes = prefix ? store.size() : 1;
-  result.dml_summary.visible_rows_scanned = 0;
-  AddApiBehaviorEvidence(&result, "kv_rows_returned",
-                         std::to_string(result.result_shape.rows.size()));
-  return result;
-}
-
-}  // namespace
-
-// SEARCH_KEY: SB_ENGINE_INTERNAL_API_NOSQL_KEY_VALUE_API_BEHAVIOR
-EngineKeyValueGetResult EngineKeyValueGet(const EngineKeyValueGetRequest& request) {
-  constexpr const char* kOperation = "nosql.key_value_get";
-  if (!request.context.cluster_authority_available &&
-      EngineNoSqlRequiresClusterAuthority(request)) {
-    return EngineNoSqlClusterAuthorityUnavailable<EngineKeyValueGetResult>(
-        request, kOperation);
-  }
-  EngineKeyValuePhysicalProof proof =
-      request.physical_proof.proof_supplied
-          ? request.physical_proof
-          : (request.prefix.empty() ? DefaultExactProof() : DefaultPrefixProof());
-  return PhysicalGet(request, kOperation, proof, !request.prefix.empty());
-}
-
-EngineKeyValuePutResult EngineKeyValuePut(const EngineKeyValuePutRequest& request) {
-  constexpr const char* kOperation = "nosql.key_value_put";
-  if (!request.context.cluster_authority_available &&
-      EngineNoSqlRequiresClusterAuthority(request)) {
-    return EngineNoSqlClusterAuthorityUnavailable<EngineKeyValuePutResult>(
-        request, kOperation);
-  }
-  auto result = EngineNoSqlPayloadAwarePersistedWriteResult<EngineKeyValuePutResult>(
-      request, kOperation, "key_value", true, "active");
-  if (result.ok) {
-    UpsertPhysicalRecord(request, result);
-    AddEngineNoSqlSurfaceEvidence(&result, "key_value", "physical_provider_put");
-    AddApiBehaviorEvidence(&result, "kv_physical_provider", "provider_family=key_value");
-    AddApiBehaviorEvidence(&result, "kv_physical_access", "write_through_exact_prefix_provider");
-    AddApiBehaviorEvidence(&result, "mga_finality_authority", "engine_transaction_inventory");
-    AddApiBehaviorEvidence(&result, "client_autocommit_authority", "false");
-    result.dml_summary.rows_changed = 1;
-  }
-  return result;
-}
-
-EngineKeyValueMultiGetResult EngineKeyValueMultiGet(
-    const EngineKeyValueMultiGetRequest& request) {
-  constexpr const char* kOperation = "nosql.key_value_multiget";
-  if (!request.context.cluster_authority_available &&
-      EngineNoSqlRequiresClusterAuthority(request)) {
-    return EngineNoSqlClusterAuthorityUnavailable<EngineKeyValueMultiGetResult>(
-        request, kOperation);
-  }
-  const auto proof =
-      request.physical_proof.proof_supplied ? request.physical_proof : DefaultExactProof();
-  if (auto failure = ValidatePhysicalProof<EngineKeyValueMultiGetResult>(
-          request, kOperation, proof, true, false)) {
-    return *failure;
-  }
-  const auto selection = SelectLocalNoSqlPhysicalProvider(proof.provider_contract);
-  auto result = MakeApiBehaviorSuccess<EngineKeyValueMultiGetResult>(
-      request.context, kOperation);
-  AddKvEvidence(&result, selection, "multiget_exact_key_index_probe");
-  if (auto failure = AddKvBatchLookupRows(
-          request, kOperation, request.keys, selection, &result)) {
-    return *failure;
-  }
-  result.dml_summary.index_probes = request.keys.size();
-  AddApiBehaviorEvidence(&result, "kv_multiget_keys", std::to_string(request.keys.size()));
-  AddApiBehaviorEvidence(&result, "kv_rows_returned",
-                         std::to_string(result.result_shape.rows.size()));
-  return result;
-}
-
-EngineKeyValuePipelineResult EngineKeyValuePipeline(
-    const EngineKeyValuePipelineRequest& request) {
-  constexpr const char* kOperation = "nosql.key_value_pipeline";
-  if (!request.context.cluster_authority_available &&
-      EngineNoSqlRequiresClusterAuthority(request)) {
-    return EngineNoSqlClusterAuthorityUnavailable<EngineKeyValuePipelineResult>(
-        request, kOperation);
-  }
-  const auto operation_count = request.puts.size() + request.get_keys.size();
-  if (request.max_admitted_operations != 0 &&
-      operation_count > request.max_admitted_operations) {
-    return DiagnosticResult<EngineKeyValuePipelineResult>(
-        request.context, kOperation, kKeyValuePipelineAdmissionRefused);
-  }
-  const auto proof =
-      request.physical_proof.proof_supplied ? request.physical_proof : DefaultExactProof();
-  if (auto failure = ValidatePhysicalProof<EngineKeyValuePipelineResult>(
-          request, kOperation, proof, true, false)) {
-    return *failure;
-  }
-  if (request.context.local_transaction_id == 0 && !request.puts.empty()) {
-    return MakeApiBehaviorDiagnostic<EngineKeyValuePipelineResult>(
-        request.context,
-        kOperation,
-        MakeInvalidRequestDiagnostic(kOperation, "local_transaction_id_required"));
-  }
-  const auto selection = SelectLocalNoSqlPhysicalProvider(proof.provider_contract);
-  auto result = MakeApiBehaviorSuccess<EngineKeyValuePipelineResult>(
-      request.context, kOperation);
-  AddKvEvidence(&result, selection, "pipeline_batch_exact_key_provider");
-  auto& store = PhysicalStores()[StoreKey(request.context)];
-  auto staged_store = store;
-  EngineApiU64 staged_rows_changed = 0;
-  for (const auto& put : request.puts) {
-    PhysicalKeyValueRecord record;
-    record.key = put.key;
-    const auto prior = staged_store.find(put.key);
-    record.object_uuid = prior == staged_store.end()
-        ? GenerateCrudEngineUuid("object") : prior->second.object_uuid;
-    record.row_uuid = GenerateCrudEngineUuid("row");
-    record.value = put.value;
-    record.creator_tx = request.context.local_transaction_id;
-    record.expires_after_tx = put.expires_after_local_transaction_id;
-    staged_store[record.key] = record;
-    ++staged_rows_changed;
-  }
-  if (auto failure = AddKvBatchLookupRowsFromStore(
-          request, kOperation, request.get_keys, selection, staged_store,
-          &result)) {
-    return *failure;
-  }
-  store = std::move(staged_store);
-  result.dml_summary.rows_changed = staged_rows_changed;
-  result.dml_summary.index_probes = request.get_keys.size();
-  AddApiBehaviorEvidence(&result, "kv_pipeline_admitted_operations",
-                         std::to_string(operation_count));
-  return result;
-}
-
-EngineKeyValueAtomicProgramResult EngineKeyValueAtomicProgram(
-    const EngineKeyValueAtomicProgramRequest& request) {
-  constexpr const char* kOperation = "nosql.key_value_atomic_program";
-  if (!request.context.cluster_authority_available &&
-      EngineNoSqlRequiresClusterAuthority(request)) {
-    return EngineNoSqlClusterAuthorityUnavailable<EngineKeyValueAtomicProgramResult>(
-        request, kOperation);
-  }
-  if (request.context.local_transaction_id == 0) {
-    return MakeApiBehaviorDiagnostic<EngineKeyValueAtomicProgramResult>(
-        request.context,
-        kOperation,
-        MakeInvalidRequestDiagnostic(kOperation, "local_transaction_id_required"));
-  }
-  const auto proof =
-      request.physical_proof.proof_supplied ? request.physical_proof : DefaultExactProof();
-  if (auto failure = ValidatePhysicalProof<EngineKeyValueAtomicProgramResult>(
-          request, kOperation, proof, true, false)) {
-    return *failure;
-  }
-  const auto selection = SelectLocalNoSqlPhysicalProvider(proof.provider_contract);
-  auto result = MakeApiBehaviorSuccess<EngineKeyValueAtomicProgramResult>(
-      request.context, kOperation);
-  AddKvEvidence(&result, selection, "sblr_atomic_read_compute_write");
-  auto& store = PhysicalStores()[StoreKey(request.context)];
-  for (const auto& step : request.steps) {
-    auto& record = store[step.key];
-    record.key = step.key;
-    if (record.object_uuid.is_nil()) record.object_uuid = GenerateCrudEngineUuid("object");
-    if (record.row_uuid.is_nil()) { record.row_uuid = GenerateCrudEngineUuid("row"); }
-    record.creator_tx = request.context.local_transaction_id;
-    if (step.opcode == "set") {
-      record.value = step.operand;
-    } else if (step.opcode == "append") {
-      record.value += step.operand;
-    } else if (step.opcode == "increment_i64") {
-      try {
-        const auto current = record.value.empty() ? 0 : std::stoll(record.value);
-        record.value = std::to_string(current + std::stoll(step.operand));
-      } catch (...) {
-        return DiagnosticResult<EngineKeyValueAtomicProgramResult>(
-            request.context, kOperation, kKeyValueAtomicProgramRefused);
-      }
+      KvRequire(written.row_uuids.size()==1&&written.inserted_count==1&&
+          core::uuid::IsEngineIdentityUuid(written.row_uuids.front()),
+          "SBLR.EXECUTION_FAILED","key_value_insert_identity_missing");
+      identity=written.row_uuids.front();
     } else {
-      return DiagnosticResult<EngineKeyValueAtomicProgramResult>(
-          request.context, kOperation, kKeyValueAtomicProgramRefused);
+      EngineUpdateRowsRequest update;
+      update.context=context;
+      update.target_table=request.target_object;update.update_predicate.predicate_kind="row_uuid_match";
+      update.update_predicate.row_uuid=identity;update.assignments=std::move(row.fields);
+      const auto written=EngineUpdateRows(update);
+      AddDmlSummaryCounters(&result.dml_summary,written.dml_summary);
+      if(!written.ok) {
+        if(written.diagnostics.empty())throw KvFailure{KvError("SBLR.EXECUTION_FAILED","key_value_update_failed")};
+        throw KvFailure{written.diagnostics};
+      }
+      // Native DML reports a validated equal-image update as matched without
+      // manufacturing a row version. Only a missing/multiple target is stale.
+      KvRequire(written.matched_count==1&&written.updated_count<=1,
+          "MGA.TRANSACTION.STALE","key_value_update_target_changed");
     }
-    AddKvRow(&result, record);
-    ++result.dml_summary.rows_changed;
   }
-  AddApiBehaviorEvidence(&result, "kv_atomic_program", "deterministic_sblr_read_compute_write");
-  AddApiBehaviorEvidence(&result, "parser_transaction_finality_authority", "false");
+}
+void PublishKvRows(const EngineKeyValueRequest& request,const KvCollection& collection,
+    const KvPlan& plan,EngineApiResult& result) {
+  const auto& expiry=collection.read.descriptor.columns[2].value_descriptor;
+  for(const auto& row:plan.outputs) {
+    KvRequire(core::uuid::IsEngineIdentityUuid(plan.identities[row.identity_index]),
+        "DATATYPE.DESCRIPTOR.INVALID","key_value_result_identity_missing");
+    EngineRowValue output;
+    // The result projects an actual stored row, not a new synthetic row. Apart
+    // from preserving source identity this avoids a UUID allocation per hit.
+    output.requested_row_uuid=plan.identities[row.identity_index];
+    output.fields={{"surface",ApiBehaviorValue("key_value")},
+        {"key_uuid",ApiBehaviorValue(output.requested_row_uuid)},
+        {"row_uuid",ApiBehaviorValue(output.requested_row_uuid)},
+        {"key",KvNativeValue(collection.read.descriptor.columns[0].value_descriptor,row.key)},
+        {"value",KvNativeValue(collection.read.descriptor.columns[1].value_descriptor,row.value)},
+        {"ttl_expires_after_tx",KvNativeExpiry(expiry,row.expiry)},
+        {"state",ApiBehaviorValue(row.expiry&&result.local_transaction_id>=row.expiry?"expired":"active")},
+        {"duplicate_key",ApiBehaviorBooleanValue(row.duplicate)},
+        {"duplicate_ordinal",ApiBehaviorUnsignedValue(row.duplicate_ordinal)}};
+    result.result_shape.rows.push_back(std::move(output));
+    result.result_shape.result_kind="api_behavior_rows";
+  }
+  result.primary_object=request.target_object;
+  result.dml_summary.visible_rows_scanned+=collection.read.scanned_row_version_count;
+  AddEngineNoSqlSurfaceEvidence(&result,"key_value","native_mga_collection");
+  AddApiBehaviorEvidence(&result,"kv_physical_access","bounded_native_mga_heap_exact_recheck");
+  AddApiBehaviorEvidence(&result,"ttl_visibility_evidence","deterministic_local_transaction_id");
+  AddApiBehaviorEvidence(&result,"mga_finality_authority","engine_transaction_inventory");
+  AddApiBehaviorEvidence(&result,"client_autocommit_authority","false");
+}
+
+// Failure recovery runs before formatting a public diagnostic can allocate.
+// The destructor also covers unexpected exception paths after marker creation.
+// A failed/uncertain recovery is not retried as a fresh storage operation.
+struct KvSavepointOwner {
+  const EngineRequestContext& context;
+  const std::string& name;
+  bool active=false,attempted=false,rolled_back=false,recovery_exception=false;
+  std::optional<EngineApiDiagnostic> recovery_diagnostic;
+  void Recover() noexcept {
+    if(!active||attempted)return;
+    attempted=true;
+    try {
+      auto diagnostic=RollbackToMgaSavepointMarker(context,name);
+      if(diagnostic.error) {recovery_diagnostic.emplace(std::move(diagnostic));return;}
+      rolled_back=true;
+      diagnostic=ReleaseMgaSavepointMarker(context,name);
+      if(diagnostic.error)recovery_diagnostic.emplace(std::move(diagnostic));
+      else active=false;
+    } catch(...) {recovery_exception=true;}
+  }
+  ~KvSavepointOwner() noexcept {Recover();}
+};
+
+template<class Result,class Request,class Planner>
+Result RunKv(const Request& request,const char* operation,bool mutation,Planner&& planner) {
+  // Legacy proof booleans grant nothing. An explicit non-local scope remains
+  // a routing demand, however; it must never silently select this local path.
+  if constexpr(requires {request.physical_proof.provider_contract.scope;}) {
+    const auto scope=request.physical_proof.provider_contract.scope;
+    if(scope==EngineNoSqlProviderScope::kClusterOnly||scope==EngineNoSqlProviderScope::kDistributed)
+      return EngineNoSqlClusterAuthorityUnavailable<Result>(request,operation);
+    if(scope!=EngineNoSqlProviderScope::kLocal)
+      return MakeApiBehaviorDiagnostic<Result>(request.context,operation,
+          KvError("SB_ENGINE_API_INVALID_REQUEST","key_value_provider_scope_invalid"));
+  }
+  if(EngineNoSqlRequiresClusterAuthority(request)||request.context.cluster_transaction_active||
+      request.context.route_fence_present)
+    return EngineNoSqlClusterAuthorityUnavailable<Result>(request,operation);
+  auto result=MakeApiBehaviorSuccess<Result>(request.context,operation);
+  std::optional<KvFailure> execution_failure;
+  std::optional<EngineApiDiagnostic> recovery_diagnostic;
+  bool succeeded=false,recovery_attempted=false,rolled_back=false,recovery_required=false;
+  enum class ExceptionKind {none,memory,execution};
+  auto exception_kind=ExceptionKind::none;
+  core::platform::DiagnosticRecord admission_cause;
+  sb_engine_status_t admitted=SB_ENGINE_STATUS_OK;
+  try {
+    const auto& limits=request.resource_limits;
+    KvRequire(limits.maximum_operations&&limits.maximum_scanned_row_versions&&
+        limits.maximum_decoded_bytes&&limits.maximum_output_rows&&limits.maximum_memory_bytes,
+        "RESOURCE.BUDGET_EXCEEDED","key_value_resource_limits_required");
+    KvValidateInputBounds(request);
+    KvPoll(request.context);
+    // Actual session/receipt ownership precedes inventory ordering, matching
+    // public dispatch. Direct API callers must never invert those locks.
+    admitted=RunWithStatementOperationMemoryV1(request.context,limits.maximum_memory_bytes,
+        [&](StatementScratchMemoryV1& scratch){
+      // Security/visibility/policy come from the privately issued immutable
+      // receipt, never replaced grant arrays in a copied request projection.
+      const auto& actual=scratch.context();
+      const auto ordering=AcquireTransactionInventoryGuard(actual.database_path);
+      result.transaction_uuid=scratch.context().transaction_uuid;
+      result.local_transaction_id=scratch.context().local_transaction_id;
+      std::string savepoint;
+      KvSavepointOwner savepoint_owner{actual,savepoint};
+      try {
+        if(actual.cluster_transaction_active||actual.route_fence_present) {
+          result.cluster_authority_required=true;
+          throw KvFailure{MakeClusterAuthorityUnavailableDiagnostic(operation)};
+        }
+        if(mutation) {
+          const auto pending=ValidateMgaStatementSavepointFinality(actual);
+          if(pending.error)throw KvFailure{pending};
+        }
+        auto collection=LoadKvCollection(request,actual,operation,mutation);
+        KvRequire(collection.read.current_live_memory_bytes<limits.maximum_memory_bytes,
+            "RESOURCE.BUDGET_EXCEEDED","key_value_source_memory_budget_exceeded");
+        KvMemory memory(scratch.memory(),std::min(scratch.limit_bytes(),
+            limits.maximum_memory_bytes-collection.read.current_live_memory_bytes));
+        {
+          auto plan=PlanKv(request,actual,collection,memory,[&](auto& p,auto& rows,auto& work){
+            planner(p,rows,work,result);
+          });
+          if(mutation) {
+            const auto identity=GenerateCrudEngineUuid("object");
+            savepoint=MgaSavepointUuidKey(identity);
+            AddApiBehaviorEvidence(&result,"kv_statement_savepoint_uuid",identity);
+            auto created=CreateMgaStatementSavepointMarker(actual,identity);
+            if(created.error)throw KvFailure{created};
+            savepoint_owner.active=true;
+            ApplyKvWrites(request,actual,collection,plan,result);
+          }
+          if constexpr(!std::is_same_v<Request,EngineKeyValuePipelineRequest>)
+            PublishKvRows(request,collection,plan,result);
+        }
+        if constexpr(std::is_same_v<Request,EngineKeyValuePipelineRequest>) {
+          // Drop the first materialization/plan before the second actual read.
+          collection=KvCollection{};
+          const auto fresh=LoadKvCollection(request,actual,operation,false);
+          KvRequire(fresh.read.current_live_memory_bytes<limits.maximum_memory_bytes,
+              "RESOURCE.BUDGET_EXCEEDED","key_value_source_memory_budget_exceeded");
+          memory.Restrict(limits.maximum_memory_bytes-fresh.read.current_live_memory_bytes);
+          auto reads=PlanKv(request,actual,fresh,memory,[&](auto& p,auto& rows,auto&){
+            KvBatchRead(p,rows,request,request.get_keys,result);
+          });
+          PublishKvRows(request,fresh,reads,result);
+        }
+        KvPoll(actual);
+        KvPoll(request.context);
+        if(savepoint_owner.active) {
+          auto released=ReleaseMgaSavepointMarker(actual,savepoint);
+          if(released.error)throw KvFailure{released};
+          savepoint_owner.active=false;
+        }
+        succeeded=true;
+      } catch(KvFailure& failure) {execution_failure.emplace(std::move(failure));}
+        catch(const std::bad_alloc&) {exception_kind=ExceptionKind::memory;}
+        catch(...) {exception_kind=ExceptionKind::execution;}
+      // Recovery precedes diagnostic formatting/allocation and remains inside
+      // BOTH the actual receipt scope and inventory publication ordering.
+      if(!succeeded) {
+        savepoint_owner.Recover();
+        recovery_attempted=savepoint_owner.attempted;
+        rolled_back=savepoint_owner.rolled_back;
+        recovery_required=savepoint_owner.active;
+        if(savepoint_owner.recovery_diagnostic)
+          recovery_diagnostic.emplace(std::move(*savepoint_owner.recovery_diagnostic));
+        if(savepoint_owner.recovery_exception)exception_kind=ExceptionKind::execution;
+      }
+    },&admission_cause);
+  } catch(KvFailure& failure) {execution_failure.emplace(std::move(failure));}
+    catch(const std::bad_alloc&) {exception_kind=ExceptionKind::memory;}
+    catch(...) {exception_kind=ExceptionKind::execution;}
+  if(succeeded&&admitted==SB_ENGINE_STATUS_OK)return result;
+  result.ok=false;
+  result.result_shape={};
+  if(execution_failure)result.diagnostics=std::move(execution_failure->diagnostics);
+  else if(admitted!=SB_ENGINE_STATUS_OK)
+    result.diagnostics.push_back(MakeEngineApiDiagnosticFromNative(admission_cause,
+        admitted==SB_ENGINE_STATUS_RESOURCE_EXHAUSTED?"RESOURCE.BUDGET_EXCEEDED":"MGA.TRANSACTION.STALE",
+        "engine.nosql.key_value.refused","key_value_live_statement_memory_admission_failed"));
+  else result.diagnostics.push_back(exception_kind==ExceptionKind::memory?
+      KvError("RESOURCE.BUDGET_EXCEEDED","key_value_memory_budget_exceeded"):
+      KvError("SBLR.EXECUTION_FAILED","key_value_execution_exception"));
+  if(recovery_diagnostic)result.diagnostics.push_back(std::move(*recovery_diagnostic));
+  if(recovery_required&&!recovery_diagnostic)
+    result.diagnostics.push_back(KvError("SBLR.EXECUTION_FAILED","key_value_recovery_exception"));
+  if(rolled_back)result.dml_summary.rows_changed=0;
+  if(recovery_attempted)AddApiBehaviorEvidence(&result,"kv_statement_atomicity",
+      recovery_required?"recovery_required":"rolled_back");
   return result;
+}
+void KvOperationBound(std::size_t count,const EngineKeyValueRequest& request) {
+  KvRequire(count<=request.resource_limits.maximum_operations,"RESOURCE.BUDGET_EXCEEDED","key_value_operation_count_exceeded");
+}
+} // namespace
+
+EngineKeyValueGetResult EngineKeyValueGet(const EngineKeyValueGetRequest& request) {
+  return RunKv<EngineKeyValueGetResult>(request,"nosql.key_value_get",false,[&](auto& plan,auto& rows,auto&,auto&){
+    const bool prefix=request.prefix_scan||!request.prefix.empty();
+    KvRequire((prefix?request.prefix.size():request.key.size())<=request.resource_limits.maximum_decoded_bytes,
+        "RESOURCE.BUDGET_EXCEEDED","key_value_operand_bytes_exceeded");
+    if(prefix) {
+      KvRequire(WellFormedUtf8(request.prefix),"SB_MODEL_KEY_VALUE_TEXT_INVALID_V1","key_value_malformed_utf8");
+      for(const auto& [key,row]:rows)if(key.starts_with(request.prefix)&&KvVisible(row,request.context.local_transaction_id))
+        plan.Output(key,row,request.resource_limits);
+      std::ranges::sort(plan.outputs,[](const KvOutput& a,const KvOutput& b){
+        return std::lexicographical_compare(a.key.begin(),a.key.end(),b.key.begin(),b.key.end(),
+            [](unsigned char left,unsigned char right){return left<right;});
+      });
+    } else {
+      KvRequire(WellFormedUtf8(request.key),"SB_MODEL_KEY_VALUE_TEXT_INVALID_V1","key_value_malformed_utf8");
+      const auto found=rows.find(request.key);
+      if(found!=rows.end()&&KvVisible(found->second,request.context.local_transaction_id))
+        plan.Output(found->first,found->second,request.resource_limits);
+    }
+  });
+}
+EngineKeyValuePutResult EngineKeyValuePut(const EngineKeyValuePutRequest& request) {
+  return RunKv<EngineKeyValuePutResult>(request,"nosql.key_value_put",true,[&](auto& plan,auto& rows,auto& memory,auto&){
+    KvOperationBound(1,request);
+    auto& row=KvUpsertPlan(plan,rows,memory,request,request.key,request.value,request.expires_after_local_transaction_id);
+    plan.Output(request.key,row,request.resource_limits);
+  });
+}
+EngineKeyValueMultiGetResult EngineKeyValueMultiGet(const EngineKeyValueMultiGetRequest& request) {
+  return RunKv<EngineKeyValueMultiGetResult>(request,"nosql.key_value_multiget",false,[&](auto& plan,auto& rows,auto&,auto& result){
+    KvOperationBound(request.keys.size(),request);KvBatchRead(plan,rows,request,request.keys,result);
+  });
+}
+EngineKeyValuePipelineResult EngineKeyValuePipeline(const EngineKeyValuePipelineRequest& request) {
+  return RunKv<EngineKeyValuePipelineResult>(request,"nosql.key_value_pipeline",!request.puts.empty(),[&](auto& plan,auto& rows,auto& memory,auto&){
+    KvRequire(request.puts.size()<=std::numeric_limits<std::size_t>::max()-request.get_keys.size(),
+        "RESOURCE.BUDGET_EXCEEDED","key_value_operation_count_overflow");
+    const auto count=request.puts.size()+request.get_keys.size();KvOperationBound(count,request);
+    KvRequire(!request.max_admitted_operations||count<=request.max_admitted_operations,
+        kKeyValuePipelineAdmissionRefused,"key_value_pipeline_batch_limit_exceeded");
+    for(const auto& put:request.puts)KvUpsertPlan(plan,rows,memory,request,put.key,put.value,put.expires_after_local_transaction_id);
+  });
+}
+EngineKeyValueAtomicProgramResult EngineKeyValueAtomicProgram(const EngineKeyValueAtomicProgramRequest& request) {
+  return RunKv<EngineKeyValueAtomicProgramResult>(request,"nosql.key_value_atomic_program",true,[&](auto& plan,auto& rows,auto& memory,auto&){
+    KvOperationBound(request.steps.size(),request);
+    for(const auto& step:request.steps) {
+      KvPoll(request.context);
+      const auto prior=rows.find(step.key);
+      const bool present=prior!=rows.end()&&KvVisible(prior->second,request.context.local_transaction_id);
+      std::pmr::string value(present?std::string_view(prior->second.value):std::string_view{},&memory);
+      const auto expiry=present?prior->second.expiry:0;
+      if(step.opcode=="set")value=step.operand;
+      else if(step.opcode=="append") {
+        KvRequire(step.operand.size()<=request.resource_limits.maximum_decoded_bytes&&
+            value.size()<=request.resource_limits.maximum_decoded_bytes-step.operand.size(),
+            "RESOURCE.BUDGET_EXCEEDED","key_value_append_bytes_exceeded");
+        value+=step.operand;
+      } else if(step.opcode=="increment_i64") {
+        std::int64_t lhs=0,rhs=0;
+        const auto parse=[](std::string_view text,std::int64_t& out){
+          const auto p=std::from_chars(text.data(),text.data()+text.size(),out);
+          return !text.empty()&&p.ec==std::errc{}&&p.ptr==text.data()+text.size();
+        };
+        KvRequire((!present||parse(value,lhs))&&parse(step.operand,rhs),
+            kKeyValueAtomicProgramRefused,"key_value_increment_requires_complete_int64");
+        KvRequire(!(rhs>0&&lhs>INT64_MAX-rhs)&&!(rhs<0&&lhs<INT64_MIN-rhs),
+            kKeyValueAtomicProgramRefused,"key_value_increment_int64_overflow");
+        std::array<char,32> buffer;const auto formatted=std::to_chars(buffer.data(),buffer.data()+buffer.size(),lhs+rhs);
+        value.assign(buffer.data(),formatted.ptr);
+      } else throw KvFailure{KvError(kKeyValueAtomicProgramRefused,"key_value_unregistered_atomic_step")};
+      auto& stored=KvUpsertPlan(plan,rows,memory,request,step.key,value,expiry);
+      plan.Output(step.key,stored,request.resource_limits);
+    }
+  });
 }
 
 namespace {

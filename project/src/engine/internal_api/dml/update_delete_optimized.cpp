@@ -38,6 +38,7 @@
 #include "dml/update_resource_authority_provider.hpp"
 #include "dml/delete_durable_owner_registry.hpp"
 #include "dml/update_text_value_preparation.hpp"
+#include "dml/text_destination_validation.hpp"
 #include "dml/update_statement_mga_authority_provider.hpp"
 #include "dml/transactional_relation_store.hpp"
 #include "dml/transactional_index_provider.hpp"
@@ -7434,6 +7435,15 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
       }
       values = constraint_validation.values;
       row_evidence_compactor.AppendOrCompact(constraint_validation.evidence, &result.evidence);
+    }
+    for (const auto& column : relation_descriptor.columns) {
+      const auto value = std::find_if(values.begin(), values.end(), [&](const auto& field) {
+        return field.first == column.canonical_name_key;
+      });
+      if (value != values.end()) {
+        if (const auto diagnostic = dml::ValidateTextDestinationValue(column, value->second.state, value->second.bytes))
+          return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(request.context, "dml.update_rows", *diagnostic);
+      }
     }
     if (validate_parent_key_update) {
       const auto parent_key_update = ValidateImmediateParentKeyUpdateConstraints(request.context,

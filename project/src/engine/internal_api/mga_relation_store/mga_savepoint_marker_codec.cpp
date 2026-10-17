@@ -3,6 +3,7 @@
 #include "mga_relation_store/mga_savepoint_marker_codec.hpp"
 #include "mga_relation_store/mga_binary_fields.hpp"
 #include "hash_digest.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -44,7 +45,8 @@ std::uint32_t MgaSavepointMarkerFrameSize(std::string_view bytes) {
 }
 
 std::string EncodeMgaSavepointMarker(const MgaSavepointMarkerRecord& r) {
-  if (r.kind < 1 || r.kind > 3 || !r.transaction ||
+  if (r.kind < 1 || r.kind > 4 || !r.transaction ||
+      (r.kind == 4 && (!r.uuid_identity || !core::uuid::IsEngineIdentityUuid(r.uuid))) ||
       (r.uuid_identity ? r.uuid.is_nil() || !r.identity.empty() ||
                             (r.uuid.bytes[8] & 0xc0u) != 0x80u
                        : r.identity.empty() || !r.uuid.is_nil())) return {};
@@ -86,7 +88,7 @@ bool DecodeMgaSavepointMarker(std::string_view bytes, MgaSavepointMarkerRecord* 
   std::uint8_t identity_kind = 0;
   std::uint16_t reserved = 0;
   MgaSavepointMarkerRecord out;
-  if (!ReadBinaryU8(body, &offset, &out.kind) || out.kind < 1 || out.kind > 3 ||
+  if (!ReadBinaryU8(body, &offset, &out.kind) || out.kind < 1 || out.kind > 4 ||
       !ReadBinaryU8(body, &offset, &identity_kind) || identity_kind > 1 ||
       !ReadBinaryU16(body, &offset, &reserved) || reserved != 0 ||
       !ReadBinaryU64(body, &offset, &out.transaction) || !out.transaction) return false;
@@ -103,6 +105,7 @@ bool DecodeMgaSavepointMarker(std::string_view bytes, MgaSavepointMarkerRecord* 
     out.identity.assign(reinterpret_cast<const char*>(body.data() + offset), size);
     if (out.identity.find('\0') != std::string::npos) return false;
   }
+  if (out.kind == 4 && (!out.uuid_identity || !core::uuid::IsEngineIdentityUuid(out.uuid))) return false;
   *r = std::move(out);
   return true;
 }

@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "dml/insert_api.hpp"
+#include "dml/text_destination_validation.hpp"
 #include "crud_support/retained_row_value_codec.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include <stdexcept>
@@ -3857,6 +3858,8 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
     values = domain_validation.values;
     validation_evidence.AppendOrCompact(domain_validation.evidence,
                                         &result.evidence);
+    if (const auto diagnostic = dml::ValidateTextDestinationValues(relation_descriptor, values))
+      return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", *diagnostic);
     if (conflict_index) {
       ++result.dml_summary.index_probes;
       const auto conflict = FindUniqueConflictByIndex(state,
@@ -3976,6 +3979,8 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
                                                                   update_constraint_validation.diagnostic);
         }
         update_values = update_constraint_validation.values;
+        if (const auto diagnostic = dml::ValidateTextDestinationValues(relation_descriptor, update_values))
+          return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", *diagnostic);
         validation_evidence.AppendOrCompact(update_constraint_validation.evidence,
                                             &result.evidence);
         const auto parent_key_update = ValidateImmediateParentKeyUpdateConstraints(request.context,
@@ -4264,6 +4269,8 @@ EngineInsertRowsResult EngineInsertRows(const EngineInsertRowsRequest& request) 
 	      return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", constraint_validation.diagnostic);
 	    }
 	    values = constraint_validation.values;
+	    if (const auto diagnostic = dml::ValidateTextDestinationValues(relation_descriptor, values))
+          return MakeCrudDiagnosticResult<EngineInsertRowsResult>(request.context, "dml.insert_rows", *diagnostic);
 	    validation_evidence.AppendOrCompact(constraint_validation.evidence,
 	                                        &result.evidence);
 	    if (batch_context.row_encoder_plan.runtime_policy_recheck_count != 0) {

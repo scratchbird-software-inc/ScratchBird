@@ -5965,10 +5965,22 @@ struct SynchronousStatementDispatchLockV1 {
 };
 thread_local SynchronousStatementDispatchLockV1* SynchronousStatementDispatchLockV1::current = nullptr;
 thread_local bool scalar_scratch_call_active = false;
+thread_local StatementScratchMemoryV1* native_operation_memory = nullptr;
+thread_local bool native_operation_call_active = false;
+thread_local std::uint64_t native_operation_process = 0;
+thread_local StatementMemoryBeforeLifetimeLockHookV1 statement_memory_before_lifetime_lock_hook=nullptr;
+thread_local void* statement_memory_before_lifetime_lock_context=nullptr;
 bool RetainedMemoryForbiddenLockScope() noexcept {
-  return scalar_scratch_call_active || SynchronousStatementDispatchLockV1::current != nullptr;
+  return scalar_scratch_call_active || native_operation_call_active ||
+      SynchronousStatementDispatchLockV1::current != nullptr;
 }
 } // namespace
+
+void SetThreadStatementMemoryBeforeLifetimeLockHookForTestingV1(
+    StatementMemoryBeforeLifetimeLockHookV1 hook,void* context) noexcept {
+  statement_memory_before_lifetime_lock_hook=hook;
+  statement_memory_before_lifetime_lock_context=context;
+}
 
 RetainedStatementCancellationV1::RetainedStatementCancellationV1(
     std::shared_ptr<StatementCancellationChannelStateV1> state) noexcept
@@ -6067,20 +6079,54 @@ sb_engine_status_t RetainStatementCancellationV1(
 
 class NativeStatementScratchAdmissionV1 final : public StatementScratchMemoryAdmissionV1 {
  public:
+ bool OwnsCurrentOperationThread(const EngineRequestContext& context) const noexcept override {
+  if (!native_operation_call_active || !native_operation_memory ||
+      native_operation_process != MonotonicClockProcessV1()) return false;
+  const auto& issued = native_operation_memory->context();
+  return context.database_uuid == issued.database_uuid &&
+      context.transaction_uuid == issued.transaction_uuid &&
+      context.local_transaction_id == issued.local_transaction_id &&
+      context.session_uuid == issued.session_uuid &&
+      context.statement_uuid == issued.statement_uuid &&
+      context.statement_receipt_uuid == issued.statement_receipt_uuid &&
+      this == issued.statement_scratch_memory_admission.lock().get() &&
+      context.statement_scratch_memory_admission.lock().get() == this;
+ }
  sb_engine_status_t Run(
     const EngineRequestContext& context,
     const std::function<void(StatementScratchMemoryV1&)>& callback,
     core::platform::DiagnosticRecord* diagnostic) noexcept override {
+  return RunImpl(context, 0, callback, diagnostic, false);
+ }
+ sb_engine_status_t RunOperation(const EngineRequestContext& context,
+    std::uint64_t requested_bytes,
+    const std::function<void(StatementScratchMemoryV1&)>& callback,
+    core::platform::DiagnosticRecord* diagnostic) noexcept override {
+  if (!requested_bytes) return SB_ENGINE_STATUS_INVALID_ARGUMENT;
+  return RunImpl(context, requested_bytes, callback, diagnostic, true);
+ }
+ private:
+ sb_engine_status_t RunImpl(const EngineRequestContext& context,
+    std::uint64_t requested_bytes,
+    const std::function<void(StatementScratchMemoryV1&)>& callback,
+    core::platform::DiagnosticRecord* diagnostic, bool operation_scope) noexcept {
   if (diagnostic) *diagnostic = {};
   if (!callback) return SB_ENGINE_STATUS_INVALID_ARGUMENT;
   // Synchronous scalar execution does not recursively loan its entire grant.
   // Reject before any lock, including reentry from cancellation callbacks.
-  if (scalar_scratch_call_active) return SB_ENGINE_STATUS_CONFLICT;
+  if (scalar_scratch_call_active || (operation_scope && native_operation_call_active))
+    return SB_ENGINE_STATUS_CONFLICT;
+  // Admission/teardown callbacks cannot recursively borrow a half-built owner.
+  // An inherited operation owner cannot authorize work in a forked process.
+  if ((!operation_scope && native_operation_call_active && !native_operation_memory) ||
+      (native_operation_memory && native_operation_process != MonotonicClockProcessV1()))
+    return SB_ENGINE_STATUS_CONFLICT;
   RetainedStatementMemoryCleanupScopeV1 deferred_memory_cleanup;
   struct ActiveCall {
-    ActiveCall() { scalar_scratch_call_active = true; }
-    ~ActiveCall() { scalar_scratch_call_active = false; }
-  } active;
+    bool& flag;
+    explicit ActiveCall(bool& value):flag(value) { flag = true; }
+    ~ActiveCall() { flag = false; }
+  } active(operation_scope ? native_operation_call_active : scalar_scratch_call_active);
   try {
     std::shared_ptr<server_engine_bridge::StatementContextReceiptOpaque> receipt;
     const auto* dispatch = SynchronousStatementDispatchLockV1::current;
@@ -6100,14 +6146,17 @@ class NativeStatementScratchAdmissionV1 final : public StatementScratchMemoryAdm
       }
     }
     if (!receipt) return SB_ENGINE_STATUS_INVALID_HANDLE;
-    auto state = std::make_unique<NativeStatementScratchMemoryV1::State>();
     {
       const auto lifetime = receipt->session_lifetime;
       std::unique_lock<std::mutex> lifetime_guard(lifetime->mutex, std::defer_lock);
       std::unique_lock<std::mutex> receipt_guard(receipt->mutex, std::defer_lock);
       const bool already_locked = dispatch && dispatch->receipt == receipt &&
           dispatch->lock->owns_lock() && dispatch->lock->mutex() == &receipt->mutex;
-      if (!already_locked) lifetime_guard.lock();
+      if (!already_locked) {
+        if(statement_memory_before_lifetime_lock_hook)
+          statement_memory_before_lifetime_lock_hook(statement_memory_before_lifetime_lock_context);
+        lifetime_guard.lock();
+      }
       if (lifetime->closed) return SB_ENGINE_STATUS_INVALID_HANDLE;
       if (!already_locked) receipt_guard.lock();
       if (receipt->released || receipt->invalidated)
@@ -6140,11 +6189,28 @@ class NativeStatementScratchAdmissionV1 final : public StatementScratchMemoryAdm
           this != receipt->scalar_scratch_admission.get() ||
           context.dml_update_resource_receipt.lock() != receipt->dml_update_resource_receipt)
         return SB_ENGINE_STATUS_SECURITY_DENIED;
+      // A nested leaf borrows the actual operation owner, not another full
+      // reservation. The same immutable private context/issuer checks above
+      // remain mandatory, and leaf recursion still refuses before any lock.
+      if (!operation_scope && native_operation_memory) {
+        if (&native_operation_memory->context() != &issued)
+          return SB_ENGINE_STATUS_SECURITY_DENIED;
+        try { callback(*native_operation_memory); }
+        catch (core::memory::ReservationBackedPmrAllocationFailure& failure) {
+          if (diagnostic) *diagnostic = failure.TakeDiagnostic();
+          return SB_ENGINE_STATUS_RESOURCE_EXHAUSTED;
+        }
+        return SB_ENGINE_STATUS_OK;
+      }
       auto& manager = core::memory::DefaultMemoryManager();
       const auto policy = manager.policy();
-      const auto limit = std::min(policy.hard_limit_bytes, policy.per_context_limit_bytes);
+      const auto policy_limit = std::min(policy.hard_limit_bytes, policy.per_context_limit_bytes);
+      const auto limit = operation_scope ? std::min(policy_limit, requested_bytes) : policy_limit;
       if (!limit || policy.refuse_all_allocations)
         return SB_ENGINE_STATUS_RESOURCE_EXHAUSTED;
+      // A nested leaf returns above with the real operation owner. Do not
+      // allocate a second, unused scratch state for every native DML scalar.
+      auto state = std::make_unique<NativeStatementScratchMemoryV1::State>();
       if (!receipt->scalar_scratch_ledger)
         receipt->scalar_scratch_ledger =
             std::make_shared<core::memory::HierarchicalMemoryBudgetLedger>();
@@ -6159,7 +6225,7 @@ class NativeStatementScratchAdmissionV1 final : public StatementScratchMemoryAdm
       provenance.source = core::memory::HierarchicalMemoryBudgetProvenanceSource::runtime_policy;
       provenance.source_label = "configured_physical_memory_manager";
       for (const auto& scope : scopes) {
-        auto budget = state->ledger->SetBudget({scope, limit, limit, provenance});
+        auto budget = state->ledger->SetBudget({scope, policy_limit, policy_limit, provenance});
         if (!budget.ok()) {
           if (diagnostic) *diagnostic = std::move(budget.diagnostic);
           return SB_ENGINE_STATUS_RESOURCE_EXHAUSTED;
@@ -6208,6 +6274,21 @@ class NativeStatementScratchAdmissionV1 final : public StatementScratchMemoryAdm
       state->issued_context = &issued;
       state->teardown_requests = &lifetime->teardown_requests;
       NativeStatementScratchMemoryV1 owner(std::move(state));
+      std::optional<SynchronousStatementDispatchLockV1> operation_dispatch;
+      if (operation_scope && !already_locked)
+        operation_dispatch.emplace(receipt, receipt_guard);
+      struct OperationMemoryScope {
+        StatementScratchMemoryV1* previous;
+        std::uint64_t previous_process;
+        explicit OperationMemoryScope(StatementScratchMemoryV1* current)
+            :previous(native_operation_memory),previous_process(native_operation_process) {
+          if(current) {
+            native_operation_memory=current;
+            native_operation_process=MonotonicClockProcessV1();
+          }
+        }
+        ~OperationMemoryScope(){native_operation_memory=previous;native_operation_process=previous_process;}
+      } operation_memory_scope(operation_scope ? &owner : nullptr);
       try {
         callback(owner);
       } catch (core::memory::ReservationBackedPmrAllocationFailure& failure) {

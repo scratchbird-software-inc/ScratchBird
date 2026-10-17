@@ -24,6 +24,13 @@ bool ParseSavepointsBounded(const EngineRequestContext& context,
   *output = {};
   output->diagnostic = MakeInvalidRequestDiagnostic("mga.savepoints", "savepoint_read_incomplete");
   if (control == nullptr) return false;
+  const auto pending_append = ValidateMgaPendingSavepointAppendRecoveryV1(context);
+  if (pending_append.error) {
+    output->diagnostic = pending_append;
+    control->failure_category = MgaHeapReadFailureCategoryV1::kStorage;
+    control->refusal_detail = pending_append.detail;
+    return false;
+  }
   SavepointParsedState staged;
   auto* state = &staged;
   std::uint64_t path_projection = retained_memory_bytes;

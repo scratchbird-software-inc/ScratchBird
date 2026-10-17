@@ -52,16 +52,32 @@ struct EngineKeyValueAtomicStep {
   std::string operand;
 };
 
+// Caller limits can restrict work, never grant memory or visibility authority.
+// The live statement, catalog and MGA owners still admit every operation.
+struct EngineKeyValueResourceLimits {
+  EngineApiU64 maximum_operations = 1024;
+  EngineApiU64 maximum_scanned_row_versions = 100000;
+  EngineApiU64 maximum_decoded_bytes = 64 * 1024 * 1024;
+  EngineApiU64 maximum_output_rows = 100000;
+  EngineApiU64 maximum_memory_bytes = 64 * 1024 * 1024;
+};
+struct EngineKeyValueRequest : EngineApiRequest {
+  // target_object.uuid identifies the persisted collection relation, NOT a
+  // key object. Returned key_uuid is that key's actual stored row UUID.
+  EngineKeyValueResourceLimits resource_limits;
+};
+
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_NOSQL_KEY_VALUE_API
-struct EngineKeyValueGetRequest : EngineApiRequest {
+struct EngineKeyValueGetRequest : EngineKeyValueRequest {
   std::string key;
   std::string prefix;
+  bool prefix_scan = false;
   EngineKeyValuePhysicalProof physical_proof;
 };
 struct EngineKeyValueGetResult : EngineApiResult {};
 EngineKeyValueGetResult EngineKeyValueGet(const EngineKeyValueGetRequest& request);
 
-struct EngineKeyValuePutRequest : EngineApiRequest {
+struct EngineKeyValuePutRequest : EngineKeyValueRequest {
   std::string key;
   std::string value;
   EngineApiU64 expires_after_local_transaction_id = 0;
@@ -69,7 +85,7 @@ struct EngineKeyValuePutRequest : EngineApiRequest {
 struct EngineKeyValuePutResult : EngineApiResult {};
 EngineKeyValuePutResult EngineKeyValuePut(const EngineKeyValuePutRequest& request);
 
-struct EngineKeyValueMultiGetRequest : EngineApiRequest {
+struct EngineKeyValueMultiGetRequest : EngineKeyValueRequest {
   std::vector<std::string> keys;
   EngineKeyValuePhysicalProof physical_proof;
 };
@@ -77,7 +93,7 @@ struct EngineKeyValueMultiGetResult : EngineApiResult {};
 EngineKeyValueMultiGetResult EngineKeyValueMultiGet(
     const EngineKeyValueMultiGetRequest& request);
 
-struct EngineKeyValuePipelineRequest : EngineApiRequest {
+struct EngineKeyValuePipelineRequest : EngineKeyValueRequest {
   std::vector<EngineKeyValueMutation> puts;
   std::vector<std::string> get_keys;
   EngineKeyValuePhysicalProof physical_proof;
@@ -87,7 +103,7 @@ struct EngineKeyValuePipelineResult : EngineApiResult {};
 EngineKeyValuePipelineResult EngineKeyValuePipeline(
     const EngineKeyValuePipelineRequest& request);
 
-struct EngineKeyValueAtomicProgramRequest : EngineApiRequest {
+struct EngineKeyValueAtomicProgramRequest : EngineKeyValueRequest {
   std::vector<EngineKeyValueAtomicStep> steps;
   EngineKeyValuePhysicalProof physical_proof;
 };

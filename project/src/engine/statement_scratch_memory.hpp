@@ -8,6 +8,13 @@
 
 namespace scratchbird::engine::internal_api {
 
+// Private thread-local observation seam for lock-order conformance. It runs
+// before acquisition, grants no ownership and cannot replace admission.
+using StatementMemoryBeforeLifetimeLockHookV1=void(*)(void*) noexcept;
+void SetThreadStatementMemoryBeforeLifetimeLockHookForTestingV1(
+    StatementMemoryBeforeLifetimeLockHookV1,void*) noexcept;
+
+
 // Issued only inside a synchronous live-receipt call. The owning bridge keeps
 // session/receipt guards and an actual MGA pin throughout the callback.
 // PMR users must die before the callback returns; this is not a result owner.
@@ -39,8 +46,18 @@ class StatementScratchMemoryV1 {
 class StatementScratchMemoryAdmissionV1 {
  public:
   virtual ~StatementScratchMemoryAdmissionV1() = default;
+  // Scheduling observation only; cannot mint admission or transfer locks.
+  virtual bool OwnsCurrentOperationThread(const EngineRequestContext&) const noexcept = 0;
   virtual sb_engine_status_t Run(const EngineRequestContext&,
       const std::function<void(StatementScratchMemoryV1&)>&, core::platform::DiagnosticRecord*) noexcept = 0;
+  // Synchronous operation scope, never a transferable result owner. Staging
+  // containers may remain live through native DML; nested leaf scratch shares
+  // the same actual grant after exact issuer/context validation. Recursive
+  // operation scopes refuse. requested_bytes is only a caller ceiling.
+  virtual sb_engine_status_t RunOperation(const EngineRequestContext&,
+      std::uint64_t requested_bytes,
+      const std::function<void(StatementScratchMemoryV1&)>&,
+      core::platform::DiagnosticRecord*) noexcept = 0;
  private:
   StatementScratchMemoryAdmissionV1() = default;
   friend class NativeStatementScratchAdmissionV1;
@@ -53,6 +70,22 @@ inline sb_engine_status_t RunWithStatementScratchMemoryV1(const EngineRequestCon
     core::platform::DiagnosticRecord* diagnostic = nullptr) noexcept {
   const auto issuer = context.statement_scratch_memory_admission.lock();
   return issuer ? issuer->Run(context, callback, diagnostic) : SB_ENGINE_STATUS_INVALID_HANDLE;
+}
+
+inline sb_engine_status_t RunWithStatementOperationMemoryV1(const EngineRequestContext& context,
+    std::uint64_t requested_bytes,
+    const std::function<void(StatementScratchMemoryV1&)>& callback,
+    core::platform::DiagnosticRecord* diagnostic = nullptr) noexcept {
+  const auto issuer = context.statement_scratch_memory_admission.lock();
+  return issuer ? issuer->RunOperation(context, requested_bytes, callback, diagnostic)
+                : SB_ENGINE_STATUS_INVALID_HANDLE;
+}
+
+// Ask the actual private issuer rather than introducing a dependency from the
+// internal ingestion library back to the public ABI implementation.
+inline bool StatementOperationOwnsCurrentThreadV1(const EngineRequestContext& context) noexcept {
+  const auto issuer = context.statement_scratch_memory_admission.lock();
+  return issuer && issuer->OwnsCurrentOperationThread(context);
 }
 
 }  // namespace scratchbird::engine::internal_api

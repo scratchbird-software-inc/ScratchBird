@@ -29,6 +29,9 @@ struct SavepointCutoffs {
   // Order in the validated savepoint marker stream, not row/index mutation
   // order. Adjacent savepoints can have identical mutation cutoffs.
   std::uint64_t creation_ordinal = 0;
+  // Durable native operation fence. Ordinary named/UUID user savepoints do
+  // not acquire this property; unresolved native statements block finality.
+  bool statement_fence = false;
 };
 
 struct SavepointRollbackRange {
@@ -87,6 +90,16 @@ MgaSavepointMarkerObservation ObserveUniqueMgaSavepointMarkerV1(
     const EngineRequestContext&, const std::string& identity);
 
 SavepointParsedState ParseSavepoints(const EngineRequestContext& context);
+// Fixed retained physical append ownership, not caller-supplied finality or an
+// execution receipt. Bounded readers must check before using supplied bytes.
+EngineApiDiagnostic ValidateMgaPendingSavepointAppendRecoveryV1(
+    const EngineRequestContext& context);
+// Restores the original prefix through the independent pre-write native handle.
+// Exact database/transaction/local-ID/operation ownership is mandatory. This
+// resolves physical append uncertainty; the original statement fence remains
+// active until actual rollback/release reconciliation subsequently completes.
+EngineApiDiagnostic ReconcileMgaPendingSavepointAppendRecoveryV1(
+    const EngineRequestContext& context, const EngineUuid& operation_uuid);
 // Parse the same admitted bytes used by metadata cache content identity.
 SavepointParsedState ParseSavepointBytes(
     const EngineRequestContext& context, std::span<const std::uint8_t> bytes);

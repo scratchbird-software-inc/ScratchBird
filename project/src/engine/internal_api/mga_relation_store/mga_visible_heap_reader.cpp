@@ -547,6 +547,9 @@ MgaVisibleHeapRelationReadResult ReadVisibleMgaHeapRelationWithObservation(
   SavepointParsedState savepoints;
   if (!ParseSavepointsBounded(context, &control, savepoint_parent_memory,
                               &savepoints)) {
+    if (savepoints.diagnostic.code == "MGA.STATEMENT.RECONCILIATION_REQUIRED")
+      return refuse(savepoints.diagnostic, &control,
+                    MgaHeapReadFailureCategoryV1::kStorage);
     return invalid(control.refusal_detail.empty()
                        ? "bounded_savepoint_read_failed"
                        : control.refusal_detail,
@@ -2533,6 +2536,12 @@ static MgaVisibleHeapRelationCountResult CountVisibleMgaHeapRelationObserved(
           savepoint_control.retained_parent_memory_bytes, &savepoints)) {
     result.cancellation_observed = savepoint_control.cancellation_observed;
     result.peak_live_memory_bytes = savepoint_control.peak_live_memory_bytes;
+    if (savepoints.diagnostic.code == "MGA.STATEMENT.RECONCILIATION_REQUIRED") {
+      auto failed = refuse(savepoints.diagnostic.detail,
+                           MgaHeapReadFailureCategoryV1::kStorage);
+      failed.diagnostic = savepoints.diagnostic;
+      return failed;
+    }
     return refuse(savepoint_control.refusal_detail.empty()
                       ? "bounded_savepoint_read_failed"
                       : savepoint_control.refusal_detail,

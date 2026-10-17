@@ -246,25 +246,22 @@ bool ExactTextDescriptorResourceShape(
       return false;
     }
     const EngineUuid charset_uuid = charset->second;
-    const auto live_charset = LookupEngineResourceDescriptorByUuid(
-        context, charset_uuid, "charset");
     const EngineUuid collation_uuid = collation->second;
-    const auto live_collation = LookupEngineResourceDescriptorByUuid(
-        context, collation_uuid, "collation");
-    if (!live_charset.ok || !live_collation.ok ||
-        live_charset.resource_descriptor.resource_uuid !=
+    const auto resources = LookupEngineTextResourcePair(context,charset_uuid,collation_uuid);
+    if (!resources.ok ||
+        resources.charset.resource_uuid !=
             charset_uuid ||
-        live_collation.resource_descriptor.resource_uuid !=
+        resources.collation.resource_uuid !=
             collation_uuid ||
-        live_collation.resource_descriptor.parent_resource_uuid !=
+        resources.collation.parent_resource_uuid !=
             charset_uuid ||
-        live_charset.resource_descriptor.family_epoch !=
+        resources.charset.family_epoch !=
             charset_generation_value ||
-        live_collation.resource_descriptor.family_epoch !=
+        resources.collation.family_epoch !=
             collation_generation_value ||
-        live_charset.resource_descriptor.resource_epoch !=
+        resources.charset.resource_epoch !=
             resource_epoch_value ||
-        live_collation.resource_descriptor.resource_epoch !=
+        resources.collation.resource_epoch !=
             resource_epoch_value) {
       return false;
     }

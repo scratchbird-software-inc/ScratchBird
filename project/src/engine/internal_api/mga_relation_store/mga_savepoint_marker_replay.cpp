@@ -62,16 +62,18 @@ std::string DecodeCrudTextLocal(const std::string& encoded) {
 }
 
 bool ApplyMarkerRecord(const MgaSavepointMarkerRecord& record, SavepointParsedState* state) {
-  if (!state || record.transaction == 0 || record.kind < 1 || record.kind > 3) return false;
+  if (!state || record.transaction == 0 || record.kind < 1 || record.kind > 4) return false;
   const auto tx = record.transaction;
   const auto name = record.uuid_identity ? MgaSavepointUuidKey(record.uuid) : record.identity;
   if (name.empty()) return false;
-  const bool create = record.kind == 1, release = record.kind == 2, rollback = record.kind == 3;
+  const bool create = record.kind == 1 || record.kind == 4;
+  const bool release = record.kind == 2, rollback = record.kind == 3;
   SavepointCutoffs cutoffs;
   cutoffs.row_event_sequence = record.cutoffs[0];
   cutoffs.metadata_event_sequence = record.cutoffs[1];
   cutoffs.index_event_sequence = record.cutoffs[2];
   if (create) {
+    cutoffs.statement_fence = record.kind == 4;
     if (state->next_creation_ordinal == UINT64_MAX) {
       state->marker_authority_corrupt = true;
       return false;

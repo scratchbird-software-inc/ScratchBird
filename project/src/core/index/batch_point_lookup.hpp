@@ -12,7 +12,9 @@
 #include "candidate_set.hpp"
 
 #include <functional>
+#include <memory_resource>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -137,5 +139,35 @@ DiagnosticRecord MakeBatchPointLookupDiagnostic(Status status,
                                                 std::string diagnostic_code,
                                                 std::string message_key,
                                                 std::string detail = {});
+
+// Bounded single-row exact profile. All work-scale indexing/results use the
+// admitted resource; key/payload views borrow the caller/provider until return
+// consumption. Empty native keys are valid data, not missing descriptors.
+struct BoundedUniqueBatchValueV1 {
+  bool found=false;
+  TypedUuid row_uuid;
+  std::string_view payload;
+  bool exact_match=false,mga_visible=false,security_authorized=false;
+};
+struct BoundedUniqueBatchRowV1 {
+  std::string_view encoded_key,payload;
+  TypedUuid row_uuid;
+  u64 input_ordinal=0,duplicate_ordinal=0;
+  bool duplicate_key=false;
+};
+struct BoundedUniqueBatchMissV1 {std::string_view encoded_key;u64 input_ordinal=0;};
+struct BoundedUniqueBatchResultV1 {
+  Status status;
+  DiagnosticRecord diagnostic;
+  std::pmr::vector<BoundedUniqueBatchRowV1> rows;
+  std::pmr::vector<BoundedUniqueBatchMissV1> misses;
+  u64 unique_key_count=0;
+  explicit BoundedUniqueBatchResultV1(std::pmr::memory_resource* memory):rows(memory),misses(memory){}
+  bool ok() const {return status.ok();}
+};
+using BoundedUniqueBatchProviderV1=BoundedUniqueBatchValueV1(*)(void*,std::string_view);
+BoundedUniqueBatchResultV1 RunBoundedUniqueBatchPointLookupV1(
+    const std::vector<std::string>& keys,const CandidateSetAuthorityContext& authority,
+    std::pmr::memory_resource* memory,void* source,BoundedUniqueBatchProviderV1 provider);
 
 }  // namespace scratchbird::core::index
