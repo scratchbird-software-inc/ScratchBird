@@ -13,14 +13,25 @@
 #include "catalog/catalog_object_lifecycle.hpp"
 #include "security/security_principal_lifecycle.hpp"
 #include "transaction/transaction_api.hpp"
+#include "transaction/local_commit_publication.hpp"
+#include "hash_digest.hpp"
 #include <filesystem>
 #include "nosql/key_value_api.hpp"
+#include "../support/native_key_value_collection_fixture.hpp"
+#include "../support/engine_statement_fixture.hpp"
+#include "../support/owned_temp_directory.hpp"
+#include "mga_relation_store/mga_row_version_reader.hpp"
+#include "mga_relation_store/mga_row_codec.hpp"
+#include "mga_relation_store/mga_large_value_codec.hpp"
+#include "mga_relation_store/mga_relation_metadata_store.hpp"
 #include "uuid.hpp"
 
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <map>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -33,8 +44,7 @@ namespace platform = scratchbird::core::platform;
 namespace uuid = scratchbird::core::uuid;
 
 [[noreturn]] void Fail(std::string_view message) {
-  std::cerr << message << '\n';
-  std::exit(EXIT_FAILURE);
+  throw std::runtime_error(std::string(message));
 }
 
 void Require(bool condition, std::string_view message) {
@@ -257,119 +267,316 @@ void GcRespectsMgaHorizonAndStaleLookupFailsClosed() {
   Require(!refused.ok(), "ODF-062 GC ran without authoritative MGA horizon");
 }
 
-void NoSqlKeyValueStoresAndFetchesDescriptor() {
+
+template<class Result>
+void RequireOk(const Result& result, std::string_view message) {
+  if (!result.ok) for (const auto& d : result.diagnostics)
+    std::cerr << d.code << ':' << d.message_key << ':' << d.detail << '\n';
+  Require(result.ok, message);
+}
+
+class NativeKvTransaction {
+ public:
+  NativeKvTransaction(const api::EngineRequestContext& base,
+                      const scratchbird::tests::FixtureEngineSession& owner,
+                      std::string isolation = "read_committed", bool read_only = false)
+      : session(owner), context(base) {
+    api::EngineBeginTransactionRequest begin;
+    begin.context = base; begin.isolation_level = std::move(isolation);
+    begin.transaction_policy_profile.encoded_profiles = {
+        read_only ? "transaction_read_mode:read_only" : "transaction_read_mode:read_write"};
+    const auto result = api::EngineBeginTransaction(begin);
+    RequireOk(result, "ODF-062 actual native transaction BEGIN failed");
+    context.local_transaction_id = result.local_transaction_id;
+    context.transaction_uuid = result.transaction_uuid;
+    context.snapshot_visible_through_local_transaction_id = result.snapshot_visible_through_local_transaction_id;
+    context.transaction_isolation_level = result.isolation_level;
+    context.read_only_mode = result.read_only;
+  }
+  ~NativeKvTransaction() {
+    if (!active) return;
+    api::EngineRollbackTransactionRequest rollback; rollback.context = context;
+    if (!api::EngineRollbackTransaction(rollback).ok) std::terminate();
+  }
+  void Finish(bool commit = true) {
+    if (commit) {
+      api::EngineCommitTransactionRequest request; request.context = context;
+      RequireOk(api::EngineCommitTransaction(request), "ODF-062 actual native COMMIT failed");
+    } else {
+      api::EngineRollbackTransactionRequest request; request.context = context;
+      RequireOk(api::EngineRollbackTransaction(request), "ODF-062 actual native ROLLBACK failed");
+    }
+    active = false;
+  }
+  api::EngineKeyValuePutResult Put(api::EngineUuid collection, const std::string& bytes) {
+    scratchbird::tests::FixtureEngineRequest<api::EngineKeyValuePutRequest> request(session, context);
+    request.target_object = {collection, "table"}; request.key = "odf062-key"; request.value = bytes;
+    auto result = api::EngineKeyValuePut(request);
+    RequireOk(result, "ODF-062 native KV PUT failed");
+    Require(RowField(result, "value") == bytes, "ODF-062 PUT replaced logical TEXT with storage metadata");
+    for (const auto& evidence : result.evidence)
+      Require(evidence.evidence_kind.find("uuid_ordering") == std::string::npos &&
+                  evidence.evidence_kind.find("timestamp") == std::string::npos,
+              "ODF-062 native KV result uses UUID/time ordering as visibility authority");
+    return result;
+  }
+  api::EngineKeyValueGetResult Get(api::EngineUuid collection, const std::string& expected) {
+    scratchbird::tests::FixtureEngineRequest<api::EngineKeyValueGetRequest> request(session, context);
+    request.target_object = {collection, "table"}; request.key = "odf062-key";
+    auto result = api::EngineKeyValueGet(request);
+    RequireOk(result, "ODF-062 native KV GET failed");
+    Require(RowField(result, "value") == expected, "ODF-062 GET did not resolve the actual snapshot's logical bytes");
+    return result;
+  }
+  const scratchbird::tests::FixtureEngineSession& session;
+  api::EngineRequestContext context;
+ private:
+  bool active = true;
+};
+
+api::EngineUuid NativeResultIdentity(const api::EngineApiResult& result) {
+  Require(result.result_shape.rows.size() == 1, "ODF-062 actual stored row missing");
+  const auto id = result.result_shape.rows[0].requested_row_uuid;
+  Require(uuid::IsEngineIdentityUuid(id), "ODF-062 actual stored UUID is not UUIDv7");
+  for (const auto& name : {"key_uuid", "row_uuid"}) {
+    bool found = false;
+    for (const auto& [field, value] : result.result_shape.rows[0].fields) if (field == name) {
+      found = true;
+      Require(value.descriptor.canonical_type_name == "uuid" && value.encoded_value.empty() &&
+          value.binary_value.size() == 16 &&
+          std::equal(value.binary_value.begin(), value.binary_value.end(), id.bytes.begin()),
+          "ODF-062 key identity is not the exact actual binary row identity");
+    }
+    Require(found, "ODF-062 binary identity field absent");
+  }
+  return id;
+}
+
+struct NativeLargeWitness {
+  api::EngineUuid version, previous_version, overflow;
+  std::uint64_t creator = 0, checksum = 0;
+};
+
+// Observe physical bytes only after a genuine MGA-visible read identifies the
+// exact row/version. A raw locator or companion record is never visibility.
+NativeLargeWitness NativeLargeValue(NativeKvTransaction& transaction,
+    api::EngineUuid collection, api::EngineUuid row_id, const std::string& expected) {
+  scratchbird::tests::FixtureEngineStatement statement(transaction.session, transaction.context);
+  const auto ordering = api::AcquireTransactionInventoryGuard(statement.context.database_path);
+  api::MgaVisibleHeapRelationReadRequest request;
+  request.relation_uuid = collection; request.maximum_scanned_row_versions = 128;
+  request.maximum_decoded_bytes = 1024*1024; request.maximum_output_rows = 128;
+  request.maximum_memory_bytes = 8*1024*1024;
+  request.cancellation_requested = statement.context.query_cancellation_requested;
+  Require(bool(request.cancellation_requested), "ODF-062 missing actual statement cancellation owner");
+  const auto visible = api::ReadVisibleMgaHeapRelation(statement.context, request);
+  Require(visible.ok && visible.visible_rows.size() == 1, "ODF-062 actual visible native row absent");
+  const auto& live = visible.visible_rows.front();
+  Require(live.table_uuid == collection && live.row_uuid == row_id &&
+      uuid::IsEngineIdentityUuid(live.version_uuid), "ODF-062 actual visible owner identity changed");
+  NativeLargeWitness witness;
+  witness.version = live.version_uuid; witness.previous_version = live.previous_version_uuid;
+  witness.creator = live.creator_tx;
+  bool logical = false;
+  for (const auto& [name, value] : live.values) if (name == "value") {
+    logical = true;
+    Require(value.isPresent() && value.bytes == expected,
+        "ODF-062 visible reader did not materialize exact logical large TEXT");
+  }
+  Require(logical, "ODF-062 visible value field absent");
+
+  api::BoundedScopedRowReadControl control;
+  control.maximum_bytes = 1024*1024; control.maximum_row_versions = 128;
+  control.maximum_memory_bytes = 8*1024*1024;
+  control.cancellation_requested = &request.cancellation_requested;
+  std::vector<api::CrudRowVersionRecord> rows; bool used = false;
+  Require(api::LoadDecodedScopedRowsForTableBounded(statement.context, collection, &control, &rows, &used) &&
+      used, "ODF-062 actual bounded physical row read failed");
+  unsigned exact = 0;
+  for (const auto& row : rows) if (row.row_uuid == row_id && row.version_uuid == witness.version) {
+    ++exact;
+    Require(row.table_uuid == collection && row.creator_tx == witness.creator && !row.deleted,
+        "ODF-062 raw physical row owner does not match actual visible row");
+    bool located = false;
+    for (const auto& [name, value] : row.values) if (name == "value") {
+      located = true;
+      std::uint64_t size = 0;
+      Require(value.state == api::EngineValueState::lob_handle && value.bytes.size() == 40 &&
+          api::ReadMgaLargeValueLocator(value.bytes, &witness.overflow, &witness.checksum, &size) &&
+          uuid::IsEngineIdentityUuid(witness.overflow) && size == expected.size(),
+          "ODF-062 physical large value is not a native 40-byte locator");
+      Require(value.bytes.find(expected.substr(0, 64)) == std::string::npos,
+          "ODF-062 raw row duplicated the full cold payload");
+    }
+    Require(located, "ODF-062 physical value field absent");
+  }
+  Require(exact == 1, "ODF-062 physical row/version identity ambiguous");
+
+  std::vector<std::string> records;
+  Require(api::ReadCompleteMgaMetadataRecords(statement.context.database_path+".sb.mga_large_values", &records),
+      "ODF-062 actual companion file is missing or incomplete");
+  unsigned headers = 0;
+  std::map<std::uint64_t, std::string> chunks;
+  const auto checksum = [](std::string_view bytes) {
+    std::uint64_t result = 1469598103934665603ull;
+    for (unsigned char byte : bytes) { result ^= byte; result *= 1099511628211ull; }
+    return result;
+  };
+  for (const auto& record : records) {
+    std::vector<std::string> fields; api::EngineUuid identity;
+    Require(api::DecodeMgaMetadataFields(record, &fields) && api::ValidateMgaLargeValueFields(fields) &&
+        api::ReadMetadataUuid(fields[3], &identity), "ODF-062 invalid actual companion record");
+    if (identity != witness.overflow) continue;
+    std::uint64_t creator = 0;
+    Require(api::LargeValueNumber(fields[2], &creator) && creator == witness.creator,
+        "ODF-062 companion creator does not match actual visible version");
+    if (fields[1] == "LARGE_VALUE") {
+      ++headers;
+      api::EngineUuid table, row, version; std::uint64_t size = 0, hash = 0;
+      Require(api::ReadMetadataUuid(fields[4], &table) && table == collection &&
+          api::ReadMetadataUuid(fields[5], &row) && row == row_id &&
+          api::ReadMetadataUuid(fields[6], &version) && version == witness.version &&
+          fields[7] == "value" && api::LargeValueNumber(fields[8], &size) && size == expected.size() &&
+          api::LargeValueNumber(fields[9], &hash) && hash == witness.checksum &&
+          fields[10] == "durable_uncommitted", "ODF-062 actual companion owner/header mismatch");
+    } else if (fields[1] == "LARGE_VALUE_CHUNK") {
+      std::uint64_t ordinal = 0, hash = 0;
+      Require(api::LargeValueNumber(fields[4], &ordinal) && fields[5].size() <= 2048 &&
+          api::LargeValueNumber(fields[6], &hash) && hash == checksum(fields[5]) &&
+          chunks.emplace(ordinal, fields[5]).second, "ODF-062 actual chunk duplicate/checksum invalid");
+    } else Fail("ODF-062 live visible version has a physical reclaim marker");
+  }
+  Require(headers == 1 && chunks.size() == (expected.size()+2047)/2048,
+      "ODF-062 actual companion header/chunk coverage incomplete");
+  std::string reconstructed;
+  for (std::uint64_t i = 0; i < chunks.size(); ++i) {
+    const auto chunk = chunks.find(i);
+    Require(chunk != chunks.end(), "ODF-062 actual companion chunk sequence has a hole");
+    reconstructed += chunk->second;
+  }
+  Require(reconstructed == expected && checksum(reconstructed) == witness.checksum,
+      "ODF-062 actual companion payload differs from logical bytes");
+  return witness;
+}
+
+void RequireCommittedPayloadBarrier(const api::EngineRequestContext& context,
+    api::EngineUuid collection, api::EngineUuid row, const NativeLargeWitness& witness) {
+  const auto inventory = scratchbird::storage::database::AcquireStrongLocalTransactionInventorySnapshot(
+      context.database_path);
+  Require(inventory.ok(), "ODF-062 actual committed native inventory unavailable");
+  const auto publication = api::ClassifyLocalCommitPublicationForRecovery(context, inventory.snapshot->inventory);
+  Require(publication.ok && publication.recovery_class == api::LocalCommitPublicationRecoveryClass::committed_by_inventory,
+      "ODF-062 large-value publication is not committed by actual inventory");
+  Require(std::any_of(publication.mutations.begin(), publication.mutations.end(),
+      [&](const auto& mutation) { return mutation.object_identity == collection &&
+          mutation.record_identity == row && mutation.version_identity == witness.version; }),
+      "ODF-062 real commit manifest omitted actual row/version");
+  const std::filesystem::path path(context.database_path + ".sb.mga_large_values");
+  unsigned matches = 0;
+  for (const auto& artifact : publication.artifacts)
+    if (artifact.artifact_identity == path.filename().string()) {
+      ++matches;
+      Require(artifact.mutation_domain == "overflow" && artifact.durable_size_bytes == std::filesystem::file_size(path),
+          "ODF-062 actual overflow publication extent does not cover companion");
+      std::ifstream input(path, std::ios::binary);
+      Require(bool(input), "ODF-062 actual synced companion cannot reopen");
+      const auto digest = scratchbird::core::hash::ComputeSha256Stream(input, artifact.durable_size_bytes);
+      Require(digest.ok() && scratchbird::core::hash::HexLower(digest.digest) == artifact.postcondition_sha256,
+          "ODF-062 owner-bound commit manifest hash does not match actual companion extent");
+    }
+  Require(matches == 1, "ODF-062 commit omitted or duplicated actual companion artifact");
+}
+
+void NoSqlKeyValuePersistsNativeLargeValues() {
   const Ids ids;
-  std::string pattern = (std::filesystem::temp_directory_path() / "sb_odf062_api.XXXXXX").string();
-  std::vector<char> writable(pattern.begin(), pattern.end());
-  writable.push_back('\0');
-  const char* made = ::mkdtemp(writable.data());
-  Require(made != nullptr, "ODF-062 temporary directory failed");
-  const std::filesystem::path directory(made);
-  const auto database_path = (directory / "test.sbdb").string();
+  scratchbird::tests::OwnedTempDirectory directory;
   scratchbird::storage::database::DatabaseCreateConfig create;
-  create.path = database_path;
-  create.database_uuid = ids.database_uuid;
-  create.filespace_uuid = ids.filespace_uuid;
-  create.page_size = 16384;
-  create.creation_unix_epoch_millis = 1779621000000ull;
-  create.resource_seed_pack_root = (std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() /
-      "resources/seed-packs/initial-resource-pack").string();
-  create.allow_minimal_resource_bootstrap = false;
-  create.require_resource_seed_pack = true;
-  create.bootstrap_principal_name = std::string(scratchbird::tests::database_lifecycle::kCredentialedFixturePrincipal);
-  create.bootstrap_credential_fingerprint = std::string(scratchbird::tests::database_lifecycle::kCredentialedFixtureFingerprint);
-  create.require_bootstrap_principal = true;
-  create.allow_uncredentialed_bootstrap = false;
+  create.path = (directory.path()/"native_kv.sbdb").string();
+  create.database_uuid = ids.database_uuid; create.filespace_uuid = ids.filespace_uuid;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   const auto created = scratchbird::storage::database::CreateDatabaseFile(create);
-  Require(created.ok(), "ODF-062 database creation failed");
-  api::EngineBeginTransactionRequest begin;
-  begin.context.database_path = database_path;
-  begin.context.database_uuid = ids.database_uuid.value;
-  begin.context.principal_uuid = created.bootstrap_principal_uuid.value;
-  begin.context.session_uuid = NewUuid(platform::UuidKind::object, 7).value;
-  begin.context.security_context_present = true;
-  const auto catalog = api::LoadCatalogObjectLifecycleState(begin.context);
-  const auto security = api::LoadSecurityPrincipalLifecycleState(begin.context);
-  Require(catalog.ok && security.ok && created.state.resource_seed_catalog.resource_epoch != 0,
-          "ODF-062 database authority generations unavailable");
-  begin.context.catalog_generation_id = std::max<std::uint64_t>(1, catalog.state.metadata_epoch);
-  begin.context.name_resolution_epoch = std::max<std::uint64_t>(1, catalog.state.name_resolution_epoch);
-  begin.context.security_epoch = security.state.security_generation;
-  begin.context.resource_epoch = created.state.resource_seed_catalog.resource_epoch;
-  begin.isolation_level = "read_committed";
-  begin.transaction_policy_profile.encoded_profiles = {
-      "fail_closed:true", "transaction_read_only:false", "transaction_read_mode:read_write"};
-  const auto begun = api::EngineBeginTransaction(begin);
-  Require(begun.ok && begun.local_transaction_id != 0, "ODF-062 engine begin failed");
-  api::EngineKeyValuePutRequest put;
-  put.context = begin.context;
-  put.context.local_transaction_id = begun.local_transaction_id;
-  put.context.transaction_uuid = begun.transaction_uuid;
-  put.context.snapshot_visible_through_local_transaction_id = begun.snapshot_visible_through_local_transaction_id;
-  put.target_object.uuid = ids.owner_uuid.value;
-  put.localized_names.push_back({"en", "primary", "", "odf062-key", true});
-  put.option_envelopes.push_back("large_payload.payload=" + std::string(6000, 'K'));
-  put.option_envelopes.push_back("large_payload.inline_threshold=64");
-  put.option_envelopes.push_back("large_payload.database_uuid=" + IdentityOptionBytes(ids.database_uuid.value));
-  put.option_envelopes.push_back("large_payload.filespace_uuid=" + IdentityOptionBytes(ids.filespace_uuid.value));
-  put.option_envelopes.push_back("large_payload.owner_object_uuid=" + IdentityOptionBytes(ids.owner_uuid.value));
-  put.option_envelopes.push_back("large_payload.transaction_uuid=" + IdentityOptionBytes(put.context.transaction_uuid));
-  put.option_envelopes.push_back("large_payload.chunk_policy_uuid=" + IdentityOptionBytes(ids.chunk_policy_uuid.value));
-
-  const auto put_result = api::EngineKeyValuePut(put);
-  for (const auto& diagnostic : put_result.diagnostics) {
-    if (diagnostic.error) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  Require(created.ok() && created.create_finality == scratchbird::storage::database::DatabaseCreateFinalityClass::committed,
+      "ODF-062 actual credentialed native database creation failed");
+  auto base = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  api::EngineUuid collection, row;
+  NativeLargeWitness first, second;
+  const std::string initial(6000, 'K'), replacement(6000, 'L'), aborted(6000, 'M');
+  {
+    scratchbird::tests::FixtureEngineSession session(base);
+    {
+      NativeKvTransaction setup(base, session);
+      collection = scratchbird::tests::PublishNativeKeyValueCollectionFixture(setup.context, "odf062_collection", 4096, 65536);
+      setup.Finish();
+    }
+    {
+      NativeKvTransaction write(base, session);
+      row = NativeResultIdentity(write.Put(collection, initial));
+      first = NativeLargeValue(write, collection, row, initial);
+      write.Finish();
+      RequireCommittedPayloadBarrier(write.context, collection, row, first);
+    }
+    NativeKvTransaction stable(base, session, "repeatable_read", true);
+    Require(NativeResultIdentity(stable.Get(collection, initial)) == row,
+        "ODF-062 initial committed large value changed row identity");
+    {
+      NativeKvTransaction write(base, session);
+      Require(NativeResultIdentity(write.Put(collection, replacement)) == row,
+          "ODF-062 native update replaced persistent row identity");
+      second = NativeLargeValue(write, collection, row, replacement);
+      Require(second.version != first.version && second.previous_version == first.version &&
+          second.overflow != first.overflow, "ODF-062 actual large-value successor chain did not advance");
+      write.Finish();
+      RequireCommittedPayloadBarrier(write.context, collection, row, second);
+    }
+    Require(NativeLargeValue(stable, collection, row, initial).version == first.version &&
+        NativeResultIdentity(stable.Get(collection, initial)) == row,
+        "ODF-062 repeatable reader lost retained committed large-value predecessor");
+    {
+      NativeKvTransaction current(base, session);
+      Require(NativeResultIdentity(current.Get(collection, replacement)) == row,
+          "ODF-062 current reader missed actual committed successor");
+      Require(NativeResultIdentity(current.Put(collection, replacement)) == row &&
+          NativeLargeValue(current, collection, row, replacement).version == second.version,
+          "ODF-062 equal-image upsert manufactured another physical large-value version");
+      current.Finish();
+    }
+    {
+      NativeKvTransaction rollback(base, session);
+      rollback.Put(collection, aborted);
+      Require(NativeLargeValue(rollback, collection, row, aborted).version != second.version,
+          "ODF-062 rollback probe did not actually stage a distinct physical version");
+      rollback.Finish(false);
+    }
+    stable.Finish(false);
+    session.Close();
   }
-  Require(put_result.ok, "ODF-062 NoSQL key/value large payload put failed");
-  const auto payload = RowField(put_result, "payload");
-  const auto descriptor = page::ParseLargePayloadDescriptor(payload);
-  Require(descriptor.has_value(), "ODF-062 NoSQL put did not store descriptor payload");
-  Require(descriptor->filespace_class == "large_blob" && descriptor->generation == 1,
-          "ODF-062 NoSQL descriptor lost large_blob generation data");
-  Require(EvidenceContains(put_result.evidence, "large_payload_descriptor_only", "true"),
-          "ODF-062 NoSQL put lacked descriptor evidence");
-  Require(EvidenceContains(put_result.evidence, "large_payload_finality_authority", "false"),
-          "ODF-062 NoSQL evidence treated descriptor as finality authority");
-  Require(EvidenceContains(put_result.evidence, "large_payload_visibility_authority", "false"),
-          "ODF-062 NoSQL evidence treated descriptor as visibility authority");
-  for (const auto& evidence : put_result.evidence) {
-    Require(evidence.evidence_kind.find("uuid_ordering") == std::string::npos,
-            "ODF-062 NoSQL evidence used UUID ordering as authority");
-    Require(evidence.evidence_kind.find("timestamp") == std::string::npos,
-            "ODF-062 NoSQL evidence used timestamp as authority");
+  {
+    // A new owned engine/session and actual BEGIN supply reopen authority.
+    auto reopened_base = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+    scratchbird::tests::FixtureEngineSession session(reopened_base);
+    NativeKvTransaction reopened(reopened_base, session, "read_committed", true);
+    Require(NativeResultIdentity(reopened.Get(collection, replacement)) == row,
+        "ODF-062 independent reopen lost committed value or admitted rolled-back value");
+    const auto persisted = NativeLargeValue(reopened, collection, row, replacement);
+    Require(persisted.version == second.version && persisted.overflow == second.overflow,
+        "ODF-062 reopened actual version/overflow identity changed");
+    reopened.Finish();
+    session.Close();
   }
-
-  auto second_put = put;
-  second_put.option_envelopes[0] = "large_payload.payload=" + std::string(6000, 'L');
-  const auto second_result = api::EngineKeyValuePut(second_put);
-  Require(second_result.ok, "ODF-062 NoSQL second large payload put failed");
-  const auto second_payload = RowField(second_result, "payload");
-  const auto second_descriptor = page::ParseLargePayloadDescriptor(second_payload);
-  Require(second_descriptor.has_value() && second_descriptor->generation == 2,
-          "ODF-062 NoSQL large payload store did not advance generation");
-
-  api::EngineKeyValueGetRequest get;
-  get.context = put.context;
-  get.target_object.uuid = ids.owner_uuid.value;
-  const auto get_result = api::EngineKeyValueGet(get);
-  Require(get_result.ok, "ODF-062 NoSQL key/value get failed");
-  const auto fetched = RowField(get_result, "value");
-  Require(fetched == second_payload, "ODF-062 NoSQL get did not fetch latest stored descriptor");
-
-  api::EngineRollbackTransactionRequest rollback;
-  rollback.context = put.context;
-  Require(api::EngineRollbackTransaction(rollback).ok, "ODF-062 engine rollback failed");
-  std::error_code ignored;
-  std::filesystem::remove_all(directory, ignored);
+  directory.Cleanup();
 }
 
 }  // namespace
 
-int main() {
+int main() try {
   scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture("optimizer_deficiency_odf_062_gate");
   AllLargeFamiliesUseBlobDescriptors();
   RoundTripInlineCacheAndPrefetch();
   GcRespectsMgaHorizonAndStaleLookupFailsClosed();
-  NoSqlKeyValueStoresAndFetchesDescriptor();
+  NoSqlKeyValuePersistsNativeLargeValues();
   return EXIT_SUCCESS;
+}
+catch (const std::exception& error) {
+  std::cerr << error.what() << '\n';
+  return EXIT_FAILURE;
 }

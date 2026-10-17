@@ -2487,6 +2487,7 @@ target_link_libraries(
   optimizer_deficiency_odf_062_gate
   PRIVATE
     sb_core_uuid
+    sb_engine
     sb_engine_internal_api
     sb_storage_page
 )
