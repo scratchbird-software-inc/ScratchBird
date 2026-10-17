@@ -20,6 +20,10 @@ inline constexpr u64 kMinimumProductionMemoryHardLimitBytes = 16ull * 1024ull * 
 // Process-provider backing is a sub-budget of the shared hard cap, never an
 // additional allowance. Configuration alone is not a physical memory grant.
 inline constexpr u64 kDefaultOpenSslMemoryBudgetBytes = 4ull * 1024ull * 1024ull;
+// Native crypto refuses work unless both actual platform protections succeed.
+// Generic protected-memory API defaults do not select the crypto profile.
+inline constexpr ProtectedMemoryPlatformPolicy kDefaultNativeCryptoProtectedMemoryPolicy =
+    ProtectedMemoryPlatformPolicy::require_lock_and_no_dump;
 
 enum class MemoryCeilingSignalKind {
   cgroup_v2_memory_max,

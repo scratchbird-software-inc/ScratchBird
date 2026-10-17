@@ -5559,10 +5559,12 @@ if(TARGET sb_server_core)
     add_dependencies(server_crypto_config_bootstrap_gate sb_server)
     target_link_libraries(server_crypto_config_bootstrap_gate PRIVATE sb_server_core)
     target_link_options(server_crypto_config_bootstrap_gate PRIVATE
-      "LINKER:--wrap=RAND_bytes" "LINKER:--wrap=getrandom" "LINKER:--wrap=write" "LINKER:--wrap=uname")
+      "LINKER:--wrap=RAND_bytes" "LINKER:--wrap=getrandom" "LINKER:--wrap=write" "LINKER:--wrap=uname"
+      "LINKER:--wrap=mlock" "LINKER:--wrap=madvise")
     foreach(mode default override diag diag_source_failure diag_write_eintr diag_write_partial diag_write_full
                  fail_adopt fail_install fail_prepare host_default host_override host_startup host_platform_startup host_platform_refusal host_bad_config
-                 host_low_budget host_reservation_refusal host_late_provider host_foreign_thread host_product)
+                 host_low_budget host_reservation_refusal host_late_provider host_foreign_thread host_product
+                 host_lock_refusal host_no_dump_refusal host_lock_startup_refusal host_no_dump_startup_refusal)
       add_test(NAME server_crypto_config_bootstrap_${mode}_gate COMMAND server_crypto_config_bootstrap_gate ${mode})
       set_tests_properties(server_crypto_config_bootstrap_${mode}_gate PROPERTIES
         TIMEOUT 30 LABELS "runtime;crypto;configuration;actual_memory;component;not_runtime_acceptance")

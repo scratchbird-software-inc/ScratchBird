@@ -640,6 +640,12 @@ void* ReservationBackedPmrMemoryResource::do_allocate(
     ++failed_allocation_count_;
     last_failure_status_ = failure;
     last_failure_ = std::move(failure_detail);
+    // Capture THIS failing allocation, not a later read of mutable last-error
+    // state after another allocation or a caller-handled exception. Preserve
+    // the observer snapshot separately. If diagnostic copying itself exhausts
+    // memory, ordinary bad_alloc still reports that real allocation failure.
+    if (protected_material_ && !last_failure_.diagnostic_code.empty())
+      throw ReservationBackedPmrAllocationFailure(last_failure_);
     throw;
   }
 }

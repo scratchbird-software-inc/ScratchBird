@@ -16,14 +16,45 @@
 #include "transaction_snapshot.hpp"
 #include "engine/internal_api/dml/update_resource_authority_provider.hpp"
 #include <atomic>
+#include <algorithm>
 #include <barrier>
+#include <cerrno>
 #include <cstring>
 #include <iostream>
 #include <thread>
 #include <cstdlib>
 #if defined(__linux__)
+#include <sys/mman.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
+
+#ifdef SB_RETAINED_PROTECTED_MEMORY_WRAP
+namespace {
+thread_local unsigned protected_lock_calls=0,protected_no_dump_calls=0,protected_zeroized_unlocks=0;
+thread_local bool refuse_protected_lock=false,refuse_protected_no_dump=false;
+thread_local const void* watched_protected_pointer=nullptr;
+thread_local std::size_t watched_protected_bytes=0;
+thread_local bool watched_protected_zero=true;
+}
+extern "C" int __real_mlock(const void*,size_t);
+extern "C" int __wrap_mlock(const void* pointer,size_t bytes){
+  ++protected_lock_calls;if(refuse_protected_lock){refuse_protected_lock=false;errno=EPERM;return -1;}
+  return __real_mlock(pointer,bytes);
+}
+extern "C" int __real_madvise(void*,size_t,int);
+extern "C" int __wrap_madvise(void* pointer,size_t bytes,int advice){
+  if(advice==MADV_DONTDUMP){++protected_no_dump_calls;
+    if(refuse_protected_no_dump){refuse_protected_no_dump=false;errno=EPERM;return -1;}}
+  return __real_madvise(pointer,bytes,advice);
+}
+extern "C" int __real_munlock(const void*,size_t);
+extern "C" int __wrap_munlock(const void* pointer,size_t bytes){
+  if(pointer==watched_protected_pointer){++protected_zeroized_unlocks;
+    watched_protected_zero=watched_protected_zero&&bytes==watched_protected_bytes&&
+        std::all_of(static_cast<const unsigned char*>(pointer),static_cast<const unsigned char*>(pointer)+bytes,[](auto b){return b==0;});}
+  return __real_munlock(pointer,bytes);
+}
 #endif
 
 thread_local long allocation_budget = -1;
@@ -83,6 +114,10 @@ struct Statement {
     return api::RetainStatementMemoryForResultV1(handle, context.session_uuid.bytes,
         context.statement_receipt_uuid.bytes, n, &owner);
   }
+  sb_engine_status_t RetainProtected(std::uint64_t n, mm::ProtectedMemoryPlatformPolicy protection, Owner& owner) {
+    return api::RetainStatementMemoryForProtectedResultV1(handle, context.session_uuid.bytes,
+        context.statement_receipt_uuid.bytes, n, protection, &owner);
+  }
 };
 void AllocationRefuses(api::RetainedStatementMemoryV1& owner, std::size_t n) {
   const auto before = owner.Snapshot();
@@ -91,6 +126,156 @@ void AllocationRefuses(api::RetainedStatementMemoryV1& owner, std::size_t n) {
   catch (const std::bad_alloc&) { refused = true; }
   Check(refused && owner.Snapshot().allocated_bytes == before.allocated_bytes,
         "refused payload allocation changed owned bytes");
+}
+
+void ProtectedRetainedPayload(tests::FixtureEngineSession& session,const api::EngineRequestContext& context){
+  using P=mm::ProtectedMemoryPlatformPolicy;
+  Statement statement(session,context);const auto baseline=mm::DefaultMemoryManager().Snapshot();
+  Owner owner;
+  Check(statement.RetainProtected(4096,static_cast<P>(255),owner)==SB_ENGINE_STATUS_INVALID_ARGUMENT&&!owner,
+      "invalid protected-result requirement must refuse before grant acquisition");
+  Check(statement.RetainProtected(4096,P::require_lock_and_no_dump,owner)==SB_ENGINE_STATUS_OK&&owner&&
+      owner->protection_policy()==P::require_lock_and_no_dump&&owner->Observe()==Observation::live,
+      "private actual receipt issues an explicitly protected retained output owner");
+  auto* unchanged=owner.get();Check(statement.RetainProtected(4096,P::best_effort,owner)==SB_ENGINE_STATUS_INVALID_ARGUMENT&&owner.get()==unchanged,
+      "protected acquisition never replaces a populated owner or its selected requirement");
+#ifdef SB_RETAINED_PROTECTED_MEMORY_WRAP
+  for(unsigned failure=0;failure!=2;++failure){
+    if(!failure)refuse_protected_lock=true;else refuse_protected_no_dump=true;
+    AllocationRefuses(*owner,64);
+    Check(!refuse_protected_lock&&!refuse_protected_no_dump&&owner->Snapshot().allocated_bytes==0,
+        "required platform protection failure has no ordinary-allocation fallback or retained charge");
+    const auto observed=owner->AllocationSnapshot();
+    Check(observed.last_failure.diagnostic_code=="SB-MEMORY-PROTECTED-PLATFORM-PROTECTION-REQUIRED"&&
+        observed.last_failure.message_key=="memory.protected.platform_protection_required"&&
+        observed.last_failure.status.code==platform::StatusCode::memory_invalid_request,
+        "protected retained telemetry keeps native cause independently of the allocation exception");
+  }
+  const auto locks=protected_lock_calls,no_dump=protected_no_dump_calls,zeroes=protected_zeroized_unlocks;
+#endif
+  auto* payload=owner->memory()->allocate(4096,alignof(std::max_align_t));std::memset(payload,0xa5,4096);
+  Check(owner->Snapshot().allocated_bytes==4096&&owner->AllocationSnapshot().allocated_bytes==4096&&
+      owner->Release()==SB_ENGINE_STATUS_CONFLICT,"protected owner consumes exact actual grant credit and retains live payload");
+#ifdef SB_RETAINED_PROTECTED_MEMORY_WRAP
+  const auto page=::sysconf(_SC_PAGESIZE);Check(page>0&&reinterpret_cast<std::uintptr_t>(payload)%page==0&&
+      protected_lock_calls>locks&&protected_no_dump_calls>no_dump,"protected result uses actual independent OS-page backing and both native protections");
+  watched_protected_pointer=payload;watched_protected_bytes=4096;watched_protected_zero=true;
+#endif
+  const auto original=statement.handle;const auto binding=owner->binding();statement.Release();
+  Check(owner->Observe()==Observation::live&&std::all_of(static_cast<const unsigned char*>(payload),static_cast<const unsigned char*>(payload)+4096,
+      [](auto n){return n==0xa5;}),"ordinary receipt retirement does not reclaim protected result bytes");
+  Owner late;Check(api::RetainStatementMemoryForProtectedResultV1(original,binding.session,binding.receipt,4096,P::require_lock_and_no_dump,&late)==
+      SB_ENGINE_STATUS_INVALID_HANDLE&&!late,"retired public receipt cannot issue another protected owner");
+  owner->memory()->deallocate(payload,4096,alignof(std::max_align_t));
+#ifdef SB_RETAINED_PROTECTED_MEMORY_WRAP
+  Check(protected_zeroized_unlocks==zeroes+1&&watched_protected_zero,"actual protected result bytes are erased before native unlock and release");
+  watched_protected_pointer=nullptr;watched_protected_bytes=0;
+#endif
+  Check(owner->Release()==SB_ENGINE_STATUS_OK&&owner->Release()==SB_ENGINE_STATUS_OK,"protected result releases capacity and retained authorities after erasure");
+  AllocationRefuses(*owner,1);owner.reset();
+  const auto after=mm::DefaultMemoryManager().Snapshot();
+  Check(after.current_bytes==baseline.current_bytes&&after.reserved_capacity_bytes==baseline.reserved_capacity_bytes&&
+      after.active_capacity_reservation_count==baseline.active_capacity_reservation_count,"protected result retirement has no physical-byte or capacity leak");
+
+  Statement revoked(session,context);Owner retained;
+  Check(revoked.RetainProtected(128,P::require_lock_and_no_dump,retained)==SB_ENGINE_STATUS_OK,"actual protected revocation fixture");
+  auto* data=retained->memory()->allocate(128,alignof(std::max_align_t));std::memset(data,0x5a,128);
+  mga::RevokePublishedSnapshotVector({platform::UuidKind::object,platform::Uuid{retained->binding().snapshot}});
+  Check(retained->Observe()==Observation::snapshot_revoked,"actual MGA revocation reaches protected result admission");
+  AllocationRefuses(*retained,1);Check(static_cast<unsigned char*>(data)[127]==0x5a,"revocation preserves already owned protected bytes for cleanup");
+  retained->memory()->deallocate(data,128,alignof(std::max_align_t));Check(retained->Release()==SB_ENGINE_STATUS_OK,"revoked protected owner can still erase and release");
+}
+
+void ProtectedScratchFailureDiagnostics(tests::FixtureEngineSession& session,const api::EngineRequestContext& context){
+#ifdef SB_RETAINED_PROTECTED_MEMORY_WRAP
+  Statement statement(session,context);
+  for(unsigned failure=0;failure!=2;++failure){
+    const auto before=mm::DefaultMemoryManager().Snapshot();
+    platform::DiagnosticRecord diagnostic;
+    const auto status=api::RunWithStatementScratchMemoryV1(statement.context,[&](auto& scratch){
+      if(!failure)refuse_protected_lock=true;else refuse_protected_no_dump=true;
+      (void)scratch.protected_memory()->allocate(137,256);
+    },&diagnostic);
+    const auto argument=[&](std::string_view key)->std::string_view{
+      for(const auto& field:diagnostic.arguments)if(field.key==key)if(const auto* text=field.text())return *text;
+      return {};
+    };
+    Check(status==SB_ENGINE_STATUS_RESOURCE_EXHAUSTED&&!refuse_protected_lock&&!refuse_protected_no_dump&&
+        diagnostic.diagnostic_code=="SB-MEMORY-PROTECTED-PLATFORM-PROTECTION-REQUIRED"&&
+        diagnostic.message_key=="memory.protected.platform_protection_required"&&
+        diagnostic.status.code==platform::StatusCode::memory_invalid_request&&
+        argument("platform_policy")=="require_lock_and_no_dump"&&
+        argument("required_lock_failed")==(!failure?"true":"false")&&
+        argument("required_no_dump_failed")==(!failure?"false":"true"),
+        "escaped native protected scratch failure preserves its exact typed cause and both protection outcomes");
+    const auto after=mm::DefaultMemoryManager().Snapshot();
+    Check(after.current_bytes==before.current_bytes&&after.reserved_capacity_bytes==before.reserved_capacity_bytes&&
+        after.active_capacity_reservation_count==before.active_capacity_reservation_count&&
+        after.active_allocation_count==before.active_allocation_count,
+        "escaped protected scratch failure releases all actual backing and capacity after cause transfer");
+  }
+  platform::DiagnosticRecord unrelated;
+  const auto status=api::RunWithStatementScratchMemoryV1(statement.context,[&](auto& scratch){
+    refuse_protected_lock=true;
+    try{(void)scratch.protected_memory()->allocate(137,256);}
+    catch(const std::bad_alloc&){}
+    throw std::bad_alloc();
+  },&unrelated);
+  Check(status==SB_ENGINE_STATUS_RESOURCE_EXHAUSTED&&!refuse_protected_lock&&unrelated.diagnostic_code.empty(),
+      "a handled protected failure is not misreported as the cause of a later unrelated exception");
+#endif
+}
+
+void ProtectedDeferredCleanup(tests::FixtureEngineSession& session,const api::EngineRequestContext& context){
+  using P=mm::ProtectedMemoryPlatformPolicy;
+  Statement statement(session,context);
+  auto& manager=mm::DefaultMemoryManager();
+  for(bool throwing:{false,true}){
+    const auto baseline=manager.Snapshot();
+    Owner deferred;
+    Check(statement.RetainProtected(4096,P::require_lock_and_no_dump,deferred)==SB_ENGINE_STATUS_OK,
+        "actual protected deferred cleanup grant");
+    auto* payload=deferred->memory()->allocate(137,alignof(std::max_align_t));
+    std::memset(payload,0x6b,137);
+#ifdef SB_RETAINED_PROTECTED_MEMORY_WRAP
+    const auto zeroes=protected_zeroized_unlocks;
+    watched_protected_pointer=payload;watched_protected_bytes=137;watched_protected_zero=true;
+#endif
+    const auto status=api::RunWithStatementScratchMemoryV1(statement.context,[&](auto&){
+      Owner recursive;
+      Check(statement.RetainProtected(4096,P::require_lock_and_no_dump,recursive)==SB_ENGINE_STATUS_CONFLICT&&!recursive,
+          "protected retained acquisition refuses synchronous receipt reentry");
+      const auto before=manager.Snapshot();
+      deferred.reset();
+      const auto held=manager.Snapshot();
+      Check(held.current_bytes==before.current_bytes&&held.reserved_capacity_bytes==before.reserved_capacity_bytes&&
+          held.active_capacity_reservation_count==before.active_capacity_reservation_count&&
+          std::all_of(static_cast<const unsigned char*>(payload),static_cast<const unsigned char*>(payload)+137,
+              [](auto n){return n==0x6b;}),
+          "protected retained destructor keeps live bytes and grant until receipt guards unwind");
+#ifdef SB_RETAINED_PROTECTED_MEMORY_WRAP
+      Check(protected_zeroized_unlocks==zeroes,"protected retained memory was unlocked inside receipt guards");
+#endif
+      if(throwing)throw std::runtime_error("protected retained deferred exception fixture");
+    });
+    Check(status==(throwing?SB_ENGINE_STATUS_INTERNAL_ERROR:SB_ENGINE_STATUS_OK),
+        "actual normal or exceptional callback unwind completes protected deferred cleanup");
+#ifdef SB_RETAINED_PROTECTED_MEMORY_WRAP
+    Check(protected_zeroized_unlocks==zeroes+1&&watched_protected_zero,
+        "deferred protected result is erased before actual native unlock exactly once");
+    watched_protected_pointer=nullptr;watched_protected_bytes=0;
+#endif
+    const auto after=manager.Snapshot();
+    Check(after.current_bytes==baseline.current_bytes&&after.reserved_capacity_bytes==baseline.reserved_capacity_bytes&&
+        after.active_capacity_reservation_count==baseline.active_capacity_reservation_count&&
+        after.active_allocation_count==baseline.active_allocation_count,
+        "protected deferred cleanup restores exact actual bytes, allocations and credits");
+  }
+}
+
+void RetainedAdmissionAllocationFailures(tests::FixtureEngineSession&,const api::EngineRequestContext&,bool);
+void ProtectedAdmissionAllocationFailures(tests::FixtureEngineSession& session,const api::EngineRequestContext& context){
+  RetainedAdmissionAllocationFailures(session,context,true);
 }
 
 void IdentityAndRetirement(tests::FixtureEngineSession& session, const api::EngineRequestContext& context) {
@@ -216,6 +401,18 @@ void FaultAndReentry(tests::FixtureEngineSession& session, const api::EngineRequ
     Check(scratch.memory() && scratch.protected_memory() &&
           scratch.memory() != scratch.protected_memory(), "protected scratch adapter absent or ordinary alias");
     const auto baseline = scratch.Snapshot();
+#ifdef SB_RETAINED_PROTECTED_MEMORY_WRAP
+    for(unsigned failure=0;failure!=2;++failure){
+      if(!failure)refuse_protected_lock=true;else refuse_protected_no_dump=true;
+      bool refused=false;
+      try{(void)scratch.protected_memory()->allocate(64,alignof(std::max_align_t));}
+      catch(const std::bad_alloc&){refused=true;}
+      Check(refused&&!refuse_protected_lock&&!refuse_protected_no_dump&&
+          scratch.Snapshot().allocated_bytes==baseline.allocated_bytes&&
+          scratch.Snapshot().allocation_count==baseline.allocation_count,
+          "native protected scratch requires both OS protections without ordinary fallback or charge leak");
+    }
+#endif
     auto* secret = scratch.protected_memory()->allocate(137, 256);
     Check(std::all_of(static_cast<unsigned char*>(secret), static_cast<unsigned char*>(secret)+137,
         [](auto byte){ return byte == 0; }), "protected statement scratch was not zeroed");
@@ -280,36 +477,105 @@ void FaultAndReentry(tests::FixtureEngineSession& session, const api::EngineRequ
         "exception unwind left deferred physical capacity queued");
 }
 
-void AdmissionAllocationFailures(tests::FixtureEngineSession& session, const api::EngineRequestContext& context) {
-  Statement statement(session, context); Owner owner;
-  Check(statement.Retain(4096,owner) == SB_ENGINE_STATUS_OK && owner->Release() == SB_ENGINE_STATUS_OK,
-        "allocation sweep warmup"); owner.reset();
-  allocation_count = 0;
-  Check(statement.Retain(4096,owner) == SB_ENGINE_STATUS_OK, "allocation sweep measurement");
-  const auto count = allocation_count;
-  Check(owner->Release() == SB_ENGINE_STATUS_OK, "allocation measurement release"); owner.reset();
-  Check(count > 0 && count < 4096, "bounded actual owning allocation inventory");
-  for (unsigned i=0;i<count;++i) {
-    const auto before = mm::DefaultMemoryManager().Snapshot();
-    allocation_fault_triggered = false;
-    allocation_budget = i;
-    const auto status = statement.Retain(4096,owner);
-    allocation_budget = -1;
-    Check(allocation_fault_triggered, "measured admission allocation position was not actually faulted");
-    if (status == SB_ENGINE_STATUS_OK) {
-      Check(owner && owner->Observe() == Observation::live && owner->Release() == SB_ENGINE_STATUS_OK,
-            "optional allocation failure published incomplete owner"); owner.reset();
-    } else Check(!owner && status == SB_ENGINE_STATUS_RESOURCE_EXHAUSTED,
-                 "owning allocation failure leaked partial output or wrong failure");
-    const auto after = mm::DefaultMemoryManager().Snapshot();
-    Check(after.current_bytes == before.current_bytes && after.reserved_capacity_bytes == before.reserved_capacity_bytes &&
-          after.active_capacity_reservation_count == before.active_capacity_reservation_count,
-          "actual owning allocation failure leaked physical bytes/capacity");
+void RetainedAdmissionAllocationFailures(tests::FixtureEngineSession& session,
+    const api::EngineRequestContext& context,bool protected_result) {
+  using P=mm::ProtectedMemoryPlatformPolicy;
+  const auto retain=[&](Statement& statement,Owner& owner) {
+    return protected_result?statement.RetainProtected(4096,P::require_lock_and_no_dump,owner):statement.Retain(4096,owner);
+  };
+  const auto release_owner=[&](Owner& owner) {
+    Check(owner && owner->Observe()==Observation::live &&
+          (protected_result?owner->protection_policy()==P::require_lock_and_no_dump:!owner->protection_policy()),
+          "successful actual admission preserves exact selected ordinary/protected owner and live authority");
+    const auto snapshot=owner->Snapshot();
+    Check(snapshot.active && snapshot.reserved_bytes==4096 && snapshot.allocated_bytes==0 &&
+          snapshot.allocation_count==0 && owner->binding().memory_token_shard_count>0,
+          "actual admitted owner has exact quota, observed issuing ledger and no provisional payload");
+    Check(owner->Release()==SB_ENGINE_STATUS_OK,"measured/faulted actual owner releases its grant");
+    owner.reset();
+  };
+  const auto release_statement=[](Statement& statement) {
+    const auto resources=statement.context.dml_update_resource_receipt.lock();
+    statement.Release();
+    Check(resources && resources->IsRevoked(),"allocation sweep leaves no retained statement authority after actual receipt retirement");
+  };
+  const auto fault=[&](Statement& statement,unsigned position,unsigned sites,bool cold) {
+    Owner owner;
+    const auto before=mm::DefaultMemoryManager().Snapshot();
+    allocation_fault_triggered=false;allocation_budget=position;
+    const auto status=retain(statement,owner);
+    allocation_budget=-1;
+    if(!allocation_fault_triggered)
+      std::cerr<<"unconsumed retained admission fault: profile="<<(protected_result?"protected":"ordinary")
+               <<" state="<<(cold?"cold":"warm")<<" index="<<position<<" measured_sites="<<sites
+               <<" status="<<static_cast<unsigned>(status)<<'\n';
+    Check(allocation_fault_triggered,"each measured actual cold/warm admission allocation fault is consumed");
+    if(status==SB_ENGINE_STATUS_OK)release_owner(owner);
+    else Check(!owner && status==SB_ENGINE_STATUS_RESOURCE_EXHAUSTED,
+        "failed actual admission publishes no partial ordinary/protected owner or wrong outcome");
+    const auto after=mm::DefaultMemoryManager().Snapshot();
+    Check(after.current_bytes==before.current_bytes && after.reserved_capacity_bytes==before.reserved_capacity_bytes &&
+          after.active_capacity_reservation_count==before.active_capacity_reservation_count &&
+          after.active_allocation_count==before.active_allocation_count,
+          "each actual admission fault restores all physical bytes, allocations and reserved credits");
+  };
+  const auto terminal=[&](Statement& statement,unsigned sites) {
+    Owner owner;allocation_fault_triggered=false;allocation_budget=sites;
+    const auto status=retain(statement,owner);
+    const auto remaining=allocation_budget;allocation_budget=-1;
+    Check(status==SB_ENGINE_STATUS_OK && !allocation_fault_triggered && remaining==0,
+          "complete actual allocation inventory reaches exact unfaulted terminal admission");
+    release_owner(owner);
+  };
+  // Every cold attempt gets a NEW issued receipt/ledger outside the injected
+  // window. Reusing a ledger would consume token IDs and lazily initialize
+  // different shard buckets, changing the measured path during the sweep.
+  unsigned cold_sites=0;
+  {
+    Statement statement(session,context);Owner owner;
+    allocation_count=0;
+    const auto status=retain(statement,owner);
+    cold_sites=allocation_count;
+    Check(status==SB_ENGINE_STATUS_OK,"measure actual cold admission including private ledger initialization");
+    release_owner(owner);release_statement(statement);
   }
-  const auto resources = statement.context.dml_update_resource_receipt.lock();
-  statement.Release();
-  Check(resources && resources->IsRevoked(), "allocation failure stranded retained statement ownership");
-  std::cout << "actual retained admission allocation fault positions=" << count << '\n';
+  Check(cold_sites>0 && cold_sites<4096,"bounded complete actual cold admission allocation inventory");
+  for(unsigned position=0;position<cold_sites;++position) {
+    Statement statement(session,context);
+    fault(statement,position,cold_sites,true);
+    release_statement(statement);
+  }
+  {
+    Statement statement(session,context);
+    terminal(statement,cold_sites);release_statement(statement);
+  }
+  Statement warm(session,context);Owner owner;
+  Check(retain(warm,owner)==SB_ENGINE_STATUS_OK,"actual warm admission discovers issuing ledger sharding");
+  const auto shards=owner->binding().memory_token_shard_count;
+  Check(shards>0 && shards<4096,"bounded observation of actual issuing token ledger sharding");
+  release_owner(owner);
+  // Successful consecutive admissions traverse every ACTUAL token shard.
+  // The count comes from the retained issuer, not a separate default ledger
+  // or a guessed number of warmups; cold first-use sites remain tested above.
+  for(std::uint64_t shard=0;shard<shards;++shard) {
+    Check(retain(warm,owner)==SB_ENGINE_STATUS_OK && owner->binding().memory_token_shard_count==shards,
+          "successful actual admissions warm all observed token shards without replacing the ledger");
+    release_owner(owner);
+  }
+  allocation_count=0;
+  const auto status=retain(warm,owner);
+  const auto warm_sites=allocation_count;
+  Check(status==SB_ENGINE_STATUS_OK,"measure actual fully warmed admission");
+  release_owner(owner);
+  Check(warm_sites>0 && warm_sites<4096,"bounded complete actual warm admission allocation inventory");
+  for(unsigned position=0;position<warm_sites;++position)fault(warm,position,warm_sites,false);
+  terminal(warm,warm_sites);
+  release_statement(warm);
+  std::cout<<"actual "<<(protected_result?"protected ":"")<<"retained admission fault positions cold="<<cold_sites
+           <<" warm="<<warm_sites<<'\n';
+}
+void AdmissionAllocationFailures(tests::FixtureEngineSession& session,const api::EngineRequestContext& context) {
+  RetainedAdmissionAllocationFailures(session,context,false);
 }
 
 void SnapshotRevocation(tests::FixtureEngineSession& session, const api::EngineRequestContext& context) {
@@ -363,6 +629,12 @@ int main() try {
   context.transaction_uuid = begun.transaction_uuid; context.local_transaction_id = begun.local_transaction_id;
   context.snapshot_visible_through_local_transaction_id = begun.snapshot_visible_through_local_transaction_id;
   IdentityAndRetirement(session, context);
+#if defined(__linux__)
+  ProtectedRetainedPayload(session,context);
+  ProtectedScratchFailureDiagnostics(session,context);
+  ProtectedDeferredCleanup(session,context);
+  ProtectedAdmissionAllocationFailures(session,context);
+#endif
   FaultAndReentry(session, context);
   AdmissionAllocationFailures(session, context);
   ConcurrentAllocation(session, context);

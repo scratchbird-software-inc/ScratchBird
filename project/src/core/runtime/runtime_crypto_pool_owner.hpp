@@ -5,6 +5,7 @@
 #include "reservation_backed_memory_resource.hpp"
 #include <exception>
 #include <new>
+#include <optional>
 #include <system_error>
 #include <type_traits>
 #include <utility>
@@ -12,12 +13,15 @@
 namespace scratchbird::core::runtime {
 enum class RuntimeCryptoPoolError {
   none, invalid_grant, invalid_binding, already_owned, allocation_failed,
-  memory_failure, adapter_failure, synchronization_failure
+  memory_failure, adapter_failure, synchronization_failure, invalid_protection_policy
 };
 struct RuntimeCryptoPoolResult {
   RuntimeCryptoPoolError error = RuntimeCryptoPoolError::none;
   hash::CryptoMemoryError adapter_error = hash::CryptoMemoryError::none;
   platform::Status memory_status{};
+  // Original redacted native allocator cause, moved without a second admission
+  // or allocation. A generic crypto error must not replace protection details.
+  platform::DiagnosticRecord memory_diagnostic;
   bool ok() const noexcept { return error == RuntimeCryptoPoolError::none; }
 };
 
@@ -34,12 +38,19 @@ class RuntimeCryptoPoolOwner {
 
   // Validation failure leaves the caller's grant unchanged. Once validated,
   // custody transfers even if allocation/Open fails: this object then owns
-  // the explicit Close retry. No fixed capacity or replacement identity.
+  // the explicit Close retry. No fixed capacity or replacement identity. The
+  // owning runtime must explicitly select its admitted platform policy; there
+  // is no implicit best-effort/strict profile or inferred OS-lock guarantee.
   RuntimeCryptoPoolResult Adopt(const hash::CryptoMemoryBinding& binding,
       std::unique_ptr<memory::ReservationBackedMemoryResource>& grant,
-      platform::usize bytes) noexcept {
+      platform::usize bytes, memory::ProtectedMemoryPlatformPolicy protection) noexcept {
     if (grant_) return {RuntimeCryptoPoolError::already_owned};
     if (!hash::ValidCryptoMemoryBinding(binding)) return {RuntimeCryptoPoolError::invalid_binding};
+    if (protection != memory::ProtectedMemoryPlatformPolicy::best_effort &&
+        protection != memory::ProtectedMemoryPlatformPolicy::require_platform_lock &&
+        protection != memory::ProtectedMemoryPlatformPolicy::require_no_dump &&
+        protection != memory::ProtectedMemoryPlatformPolicy::require_lock_and_no_dump)
+      return {RuntimeCryptoPoolError::invalid_protection_policy};
     try {
       if (!grant || !grant->active() || !bytes) return {RuntimeCryptoPoolError::invalid_grant};
       const auto& request = grant->request();
@@ -63,11 +74,19 @@ class RuntimeCryptoPoolOwner {
         return {RuntimeCryptoPoolError::invalid_grant};
       grant_ = std::move(grant);
       binding_ = binding;
-      auto allocation = grant_->Allocate({bytes, alignof(std::max_align_t), "runtime crypto backing"});
+      protection_ = protection;
+      // The SAME retained capacity and immutable binary owner supply actual
+      // protected custody. The selected policy is not a promise that this OS
+      // locked/excluded dumps; the allocator enforces required profiles and
+      // reports actual stronger alignment and originating policy binding.
+      auto allocation = grant_->AllocateProtected(
+          {bytes, alignof(std::max_align_t), "runtime crypto backing"}, protection);
       if (!allocation.ok()) return {RuntimeCryptoPoolError::memory_failure,
-                                   hash::CryptoMemoryError::none, allocation.status};
+                                   hash::CryptoMemoryError::none, allocation.status,
+                                   std::move(allocation.diagnostic)};
       // Fixed ownership fields are installed before any subsequent fallible call.
       backing_ = allocation.pointer; bytes_ = allocation.bytes; alignment_ = allocation.alignment;
+      policy_binding_ = allocation.policy_binding;
       const auto error = pool_.Open(binding_, backing_, bytes_);
       open_ = error == hash::CryptoMemoryError::none;
       return Adapter(error);
@@ -139,15 +158,21 @@ class RuntimeCryptoPoolOwner {
         const auto status = grant_->DeallocateNoAlloc(backing_, bytes_, alignment_);
         if (!status.ok()) return {RuntimeCryptoPoolError::memory_failure, hash::CryptoMemoryError::none, status};
         backing_ = nullptr; bytes_ = alignment_ = 0;
+        policy_binding_.reset();
       }
       const auto status = grant_->ReleaseNoAlloc();
       if (!status.ok()) return {RuntimeCryptoPoolError::memory_failure, hash::CryptoMemoryError::none, status};
-      grant_.reset(); binding_ = {};
+      grant_.reset(); binding_ = {}; protection_.reset();
       return {};
     } catch (const std::system_error&) { return {RuntimeCryptoPoolError::synchronization_failure}; }
   }
   bool has_custody() const noexcept { return bool(grant_); }
   platform::usize retained_backing_bytes() const noexcept { return bytes_; }
+  platform::usize backing_alignment() const noexcept { return alignment_; }
+  const std::optional<memory::MemoryPolicyBinding>& backing_policy_binding() const noexcept {
+    return policy_binding_;
+  }
+  const std::optional<memory::ProtectedMemoryPlatformPolicy>& protection_policy() const noexcept { return protection_; }
   hash::CryptoMemorySnapshot Snapshot() const noexcept { return pool_.Snapshot(); }
 
  private:
@@ -160,6 +185,8 @@ class RuntimeCryptoPoolOwner {
   hash::CryptoMemoryPool pool_;
   void* backing_ = nullptr;
   platform::usize bytes_ = 0, alignment_ = 0;
+  std::optional<memory::MemoryPolicyBinding> policy_binding_;
+  std::optional<memory::ProtectedMemoryPlatformPolicy> protection_;
   bool open_ = false;
 };
 } // namespace scratchbird::core::runtime

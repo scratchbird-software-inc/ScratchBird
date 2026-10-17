@@ -135,6 +135,12 @@ ServerStartupResult CompleteServerStartup(ServerConfigLoadResult config,
     const auto admitted=crypto->Start(config.config,memory_policy);
     if(!admitted.ok()) {
       result.exit_code=2;
+      if(!admitted.pool.memory_diagnostic.diagnostic_code.empty()) {
+        auto diagnostic=MemoryConfigInstallDiagnostic(admitted.pool.memory_diagnostic);
+        diagnostic.safe_message="The process crypto provider backing could not be protected.";
+        result.diagnostics.push_back(std::move(diagnostic));
+        return result;
+      }
       result.diagnostics.push_back({"CRYPTO.PROFILE.UNAVAILABLE","CRYPTO.PROFILE.UNAVAILABLE",
           ServerDiagnosticSeverity::kError,"The process crypto provider could not be admitted.",
           {{"startup_error",std::to_string(static_cast<unsigned>(admitted.error))},

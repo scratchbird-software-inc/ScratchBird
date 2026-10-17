@@ -72,10 +72,11 @@ ProcessCryptoStartResult ServerProcessCryptoOwner::Start(
     const core::hash::CryptoMemoryBinding binding{{},identities->operation,
         identities->owner,identities->context,identities->process};
     auto result=pool_.Adopt(binding,acquired.resource,
-        static_cast<core::platform::usize>(config.memory_openssl_budget_bytes));
-    if(!result.ok())return {E::pool_failure,result};
+        static_cast<core::platform::usize>(config.memory_openssl_budget_bytes),
+        m::kDefaultNativeCryptoProtectedMemoryPolicy);
+    if(!result.ok())return {E::pool_failure,std::move(result)};
     result=pool_.InstallProcessAdapter();
-    if(!result.ok())return {E::pool_failure,result};
+    if(!result.ok())return {E::pool_failure,std::move(result)};
     installed_=true;
     // No bootstrap UUID fallback is left selected after provider readiness.
     diagnostics_.reset();

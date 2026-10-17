@@ -21,6 +21,7 @@
 #include "engine/statement_context_receipt_retention.hpp"
 #include "engine/statement_scratch_memory.hpp"
 #include "engine/statement_retained_memory.hpp"
+#include "core/memory/memory_policy_config.hpp"
 #include "engine/statement_cancellation.hpp"
 #include "engine/statement_monotonic_clock.hpp"
 #include "engine/internal_api/api_diagnostics.hpp"
@@ -5650,6 +5651,7 @@ struct RetainedStatementMemoryV1::State {
   std::shared_ptr<core::memory::HierarchicalMemoryBudgetLedger> ledger;
   std::unique_ptr<core::memory::ReservationBackedMemoryResource> resource;
   std::unique_ptr<core::memory::ReservationBackedPmrMemoryResource> upstream;
+  std::optional<core::memory::ProtectedMemoryPlatformPolicy> protected_policy;
   RetainedStatementMemoryBindingV1 binding;
   mutable std::mutex mutex;
   bool released = false;
@@ -5727,6 +5729,8 @@ void RetainedStatementMemoryV1::DrainDeferred() noexcept {
   }
 }
 std::pmr::memory_resource* RetainedStatementMemoryV1::memory() noexcept { return &state_->proxy; }
+std::optional<core::memory::ProtectedMemoryPlatformPolicy>
+RetainedStatementMemoryV1::protection_policy() const noexcept { return state_->protected_policy; }
 const RetainedStatementMemoryBindingV1& RetainedStatementMemoryV1::binding() const noexcept {
   return state_->binding;
 }
@@ -5827,6 +5831,7 @@ sb_engine_status_t RetainStatementMemoryForResultV1(
     if (!state.receipt->scalar_scratch_ledger)
       state.receipt->scalar_scratch_ledger = std::make_shared<core::memory::HierarchicalMemoryBudgetLedger>();
     state.ledger = state.receipt->scalar_scratch_ledger;
+    state.binding.memory_token_shard_count = state.ledger->token_shard_count();
     using Scope = core::memory::HierarchicalMemoryScopeKind;
     std::vector<core::memory::HierarchicalMemoryScopeRef> scopes = {
         {Scope::database, {}, issued.database_uuid.bytes}, {Scope::session, {}, issued.session_uuid.bytes},
@@ -5866,6 +5871,42 @@ sb_engine_status_t RetainStatementMemoryForResultV1(
         state.resource.get(), "retained_statement_payload");
     if (state.authorities.snapshot->ObserveSnapshot(state.binding.snapshot, state.binding.snapshot) !=
         TypedResultProducerMgaObservationV1::live_and_equal) return SB_ENGINE_STATUS_INVALID_HANDLE;
+    *out = std::move(owner);
+    return SB_ENGINE_STATUS_OK;
+  } catch (const std::bad_alloc&) { return SB_ENGINE_STATUS_RESOURCE_EXHAUSTED; }
+    catch (...) { return SB_ENGINE_STATUS_INTERNAL_ERROR; }
+}
+
+sb_engine_status_t RetainStatementMemoryForProtectedResultV1(
+    server_engine_bridge::StatementContextReceiptHandle handle,
+    const wire::TypedResultUuid& expected_session,
+    const wire::TypedResultUuid& expected_receipt,
+    std::uint64_t requested_bytes,
+    core::memory::ProtectedMemoryPlatformPolicy protection,
+    std::unique_ptr<RetainedStatementMemoryV1>* out,
+    core::platform::DiagnosticRecord* diagnostic) noexcept {
+  if (diagnostic) *diagnostic = {};
+  if (!handle || !out || *out || !requested_bytes) return SB_ENGINE_STATUS_INVALID_ARGUMENT;
+  using P = core::memory::ProtectedMemoryPlatformPolicy;
+  switch (protection) {
+    case P::best_effort: case P::require_platform_lock:
+    case P::require_no_dump: case P::require_lock_and_no_dump: break;
+    default: return SB_ENGINE_STATUS_INVALID_ARGUMENT;
+  }
+  // Never publish the provisional ordinary adapter. The real issuer's receipt
+  // and physical grant are retained before choosing their protected allocation
+  // mode; any failed preparation destroys that owner outside receipt guards.
+  std::unique_ptr<RetainedStatementMemoryV1> owner;
+  const auto status = RetainStatementMemoryForResultV1(
+      handle, expected_session, expected_receipt, requested_bytes, &owner, diagnostic);
+  if (status != SB_ENGINE_STATUS_OK) return status;
+  try {
+    auto adapter = std::make_unique<core::memory::ReservationBackedPmrMemoryResource>(
+        owner->state_->resource.get(), "retained_protected_statement_payload", protection);
+    owner->state_->upstream = std::move(adapter);
+    owner->state_->protected_policy = protection;
+    if (owner->Observe() != RetainedStatementMemoryObservationV1::live)
+      return SB_ENGINE_STATUS_INVALID_HANDLE;
     *out = std::move(owner);
     return SB_ENGINE_STATUS_OK;
   } catch (const std::bad_alloc&) { return SB_ENGINE_STATUS_RESOURCE_EXHAUSTED; }
@@ -6162,12 +6203,19 @@ class NativeStatementScratchAdmissionV1 final : public StatementScratchMemoryAdm
           state->resource.get(), "native_scalar");
       state->protected_adapter = std::make_unique<core::memory::ReservationBackedPmrMemoryResource>(
           state->resource.get(), "native_scalar_protected",
-          core::memory::ProtectedMemoryPlatformPolicy::best_effort);
+          core::memory::kDefaultNativeCryptoProtectedMemoryPolicy);
       state->cancellation = issued.query_cancellation_requested;
       state->issued_context = &issued;
       state->teardown_requests = &lifetime->teardown_requests;
       NativeStatementScratchMemoryV1 owner(std::move(state));
-      callback(owner);
+      try {
+        callback(owner);
+      } catch (core::memory::ReservationBackedPmrAllocationFailure& failure) {
+        // The exception owns this exact protected-allocation cause. Do not
+        // infer it from a stale last-error snapshot or lose it on owner teardown.
+        if (diagnostic) *diagnostic = failure.TakeDiagnostic();
+        return SB_ENGINE_STATUS_RESOURCE_EXHAUSTED;
+      }
       // Physical scratch destruction precedes releasing the owning locks.
       return SB_ENGINE_STATUS_OK;
     }

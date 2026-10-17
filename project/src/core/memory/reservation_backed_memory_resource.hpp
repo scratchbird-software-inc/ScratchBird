@@ -15,6 +15,7 @@
 #include <memory_resource>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace scratchbird::core::memory {
@@ -104,6 +105,19 @@ struct ReservationBackedMemoryResourceReleaseResult {
   std::vector<std::string> evidence;
 
   bool ok() const { return status.ok() && !fail_closed; }
+};
+
+// A protected PMR failure carries its original redacted allocator diagnostic
+// across callback unwinding. Still catchable as std::bad_alloc. This is a
+// diagnostic, never a resource grant or evidence of protected-content access.
+class ReservationBackedPmrAllocationFailure final : public std::bad_alloc {
+ public:
+  DiagnosticRecord TakeDiagnostic() noexcept { return std::exchange(diagnostic_, {}); }
+ private:
+  friend class ReservationBackedPmrMemoryResource;
+  explicit ReservationBackedPmrAllocationFailure(DiagnosticRecord diagnostic) noexcept
+      : diagnostic_(std::move(diagnostic)) {}
+  DiagnosticRecord diagnostic_;
 };
 
 struct ReservationBackedPmrMemoryResourceSnapshot {

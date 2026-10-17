@@ -29,7 +29,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_compile_features(runtime_crypto_pool_owner_gate PRIVATE cxx_std_20)
   target_include_directories(runtime_crypto_pool_owner_gate PRIVATE "${PROJECT_SOURCE_DIR}/src/core/runtime")
   target_link_libraries(runtime_crypto_pool_owner_gate PRIVATE sb_core_hash sb_core_memory sb_core_uuid)
-  target_link_options(runtime_crypto_pool_owner_gate PRIVATE "LINKER:--wrap=pthread_mutex_lock")
+  target_link_options(runtime_crypto_pool_owner_gate PRIVATE "LINKER:--wrap=pthread_mutex_lock"
+    "LINKER:--wrap=mlock" "LINKER:--wrap=madvise" "LINKER:--wrap=munlock")
   foreach(mode lifecycle late custom cleanup_fault)
     add_test(NAME runtime_crypto_pool_owner_${mode}_gate COMMAND runtime_crypto_pool_owner_gate ${mode})
     set_tests_properties(runtime_crypto_pool_owner_${mode}_gate PROPERTIES

@@ -9,9 +9,13 @@
 #include <barrier>
 #include <cerrno>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
+#include <limits>
 #include <pthread.h>
+#include <sys/mman.h>
 #include <thread>
+#include <unistd.h>
 
 namespace h = scratchbird::core::hash;
 namespace m = scratchbird::core::memory;
@@ -21,6 +25,23 @@ using scratchbird::core::platform::Uuid;
 thread_local long fail_allocation = -1, fail_lock = -1;
 thread_local unsigned lock_calls = 0;
 thread_local bool lock_injected = false;
+constexpr auto test_protection=m::ProtectedMemoryPlatformPolicy::require_lock_and_no_dump;
+struct ProtectedWatch {
+  void* pointer=nullptr;std::size_t bytes=0;
+  bool lock_succeeded=false,no_dump_succeeded=false,zero_at_allocation=false;
+};
+std::array<ProtectedWatch,32> protected_watches{};
+unsigned protected_issued=0,protected_released=0,protected_unlocks=0,protected_dump_resets=0;
+bool all_protected_releases_zero=true,force_lock_failure=false,force_no_dump_failure=false;
+ProtectedWatch* LastProtected(){for(auto& w:protected_watches)if(w.pointer)return &w;return nullptr;}
+void ObserveProtectedRelease(void* pointer) noexcept {
+  if(!pointer)return;
+  for(auto& w:protected_watches)if(w.pointer==pointer){
+    all_protected_releases_zero &= std::all_of(static_cast<const unsigned char*>(pointer),
+        static_cast<const unsigned char*>(pointer)+w.bytes,[](auto b){return b==0;});
+    w={};++protected_released;return;
+  }
+}
 void* operator new(std::size_t n) {
   if (fail_allocation == 0) throw std::bad_alloc();
   if (fail_allocation > 0) --fail_allocation;
@@ -32,6 +53,45 @@ void operator delete(void* p) noexcept { std::free(p); }
 void operator delete[](void* p) noexcept { std::free(p); }
 void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 void operator delete[](void* p, std::size_t) noexcept { std::free(p); }
+void* operator new(std::size_t bytes,std::align_val_t alignment) {
+  if(fail_allocation==0)throw std::bad_alloc();if(fail_allocation>0)--fail_allocation;
+  const auto align=static_cast<std::size_t>(alignment);
+  if(bytes>std::numeric_limits<std::size_t>::max()-(align-1))throw std::bad_alloc();
+  const auto size=((bytes?bytes:1)+align-1)&~(align-1);
+  auto* pointer=std::aligned_alloc(align,size);if(!pointer)throw std::bad_alloc();
+  std::memset(pointer,0xa5,size);return pointer;
+}
+void* operator new[](std::size_t n,std::align_val_t a){return ::operator new(n,a);}
+void operator delete(void* p,std::align_val_t)noexcept{ObserveProtectedRelease(p);std::free(p);}
+void operator delete[](void* p,std::align_val_t a)noexcept{::operator delete(p,a);}
+void operator delete(void* p,std::size_t,std::align_val_t a)noexcept{::operator delete(p,a);}
+void operator delete[](void* p,std::size_t,std::align_val_t a)noexcept{::operator delete(p,a);}
+extern "C" int __real_mlock(const void*,std::size_t);
+extern "C" int __wrap_mlock(const void* pointer,std::size_t bytes) {
+  auto found=std::find_if(protected_watches.begin(),protected_watches.end(),[](const auto& w){return !w.pointer;});
+  if(found==protected_watches.end())std::abort();
+  const bool zero=std::all_of(static_cast<const unsigned char*>(pointer),static_cast<const unsigned char*>(pointer)+bytes,[](auto b){return b==0;});
+  int result;if(force_lock_failure){errno=ENOMEM;result=-1;}else result=__real_mlock(pointer,bytes);
+  *found={const_cast<void*>(pointer),bytes,result==0,false,zero};++protected_issued;return result;
+}
+extern "C" int __real_madvise(void*,std::size_t,int);
+extern "C" int __wrap_madvise(void* pointer,std::size_t bytes,int advice) {
+  if(advice==MADV_DONTDUMP && force_no_dump_failure){errno=ENOMEM;return -1;}
+  const auto result=__real_madvise(pointer,bytes,advice);
+  for(auto& w:protected_watches)if(w.pointer==pointer){
+    if(advice==MADV_DONTDUMP)w.no_dump_succeeded=result==0;
+    if(advice==MADV_DODUMP){++protected_dump_resets;
+      all_protected_releases_zero &= std::all_of(static_cast<const unsigned char*>(pointer),static_cast<const unsigned char*>(pointer)+w.bytes,[](auto b){return b==0;});}
+  }
+  return result;
+}
+extern "C" int __real_munlock(const void*,std::size_t);
+extern "C" int __wrap_munlock(const void* pointer,std::size_t bytes) {
+  for(auto& w:protected_watches)if(w.pointer==pointer){++protected_unlocks;
+    all_protected_releases_zero &= bytes==w.bytes && std::all_of(static_cast<const unsigned char*>(pointer),
+      static_cast<const unsigned char*>(pointer)+bytes,[](auto b){return b==0;});}
+  return __real_munlock(pointer,bytes);
+}
 extern "C" int __real_pthread_mutex_lock(pthread_mutex_t*);
 extern "C" int __wrap_pthread_mutex_lock(pthread_mutex_t* mutex) {
   ++lock_calls;
@@ -49,16 +109,21 @@ h::CryptoMemoryBinding Binding(unsigned n) { return {Id(1),Id(n),Id(n+1),Id(n+2)
 struct Fixture {
   static constexpr std::size_t bytes = 4*1024*1024;
   static m::AllocationPolicy Policy() { auto p=m::DefaultLocalEngineMemoryPolicy(); p.hard_limit_bytes=bytes*2;
-    p.per_context_limit_bytes=bytes*2; return p; }
+    p.soft_limit_bytes=p.per_context_limit_bytes=p.page_buffer_pool_limit_bytes=bytes*2; return p; }
   m::MemoryManager manager{Policy()};
   m::HierarchicalMemoryBudgetLedger ledger;
   h::CryptoMemoryBinding binding = Binding(20);
   std::unique_ptr<m::ReservationBackedMemoryResource> grant;
   explicit Fixture(unsigned binding_seed=20, bool process_scope=false,
                    unsigned charged_process=90,
-                   const h::CryptoMemoryBinding* issued=nullptr):binding(Binding(binding_seed)) {
+                   const h::CryptoMemoryBinding* issued=nullptr,bool typed_policy=false):binding(Binding(binding_seed)) {
     if (process_scope) {binding.database={}; binding.process=Id(90);}
     if (issued) binding=*issued;
+    if(typed_policy){m::MemoryLimitReduction selected;selected.policy_uuid=Id(200).bytes;
+      selected.hard_limit_bytes=selected.soft_limit_bytes=selected.per_context_limit_bytes=selected.page_buffer_pool_limit_bytes=bytes*2;
+      const auto receipt=manager.allocator()->ReduceLimits(selected);
+      Check(receipt.ok() && receipt.policy_uuid==selected.policy_uuid && receipt.generation==1,
+          "actual selected typed policy before capacity admission");}
     m::ReservationBackedMemoryResourceRequest q;
     q.memory_manager=&manager; q.reservation_ledger=&ledger; q.requested_bytes=bytes;
     q.category=m::MemoryCategory::core_runtime; q.memory_class="crypto_provider";
@@ -91,17 +156,101 @@ struct Fixture {
     manager.Snapshot().reserved_capacity_bytes==0 && ledger.Snapshot().current_bytes==0,
     "physical and logical charges drained"); }
 };
+void ProtectedBackingPolicies() {
+  {
+    Fixture f;r::RuntimeCryptoPoolOwner owner;const auto issued=protected_issued;
+    Check(!owner.protection_policy() && !owner.backing_policy_binding() && owner.backing_alignment()==0,
+        "empty owner has no selected platform policy or allocation evidence");
+    for(auto invalid:{static_cast<m::ProtectedMemoryPlatformPolicy>(-1),static_cast<m::ProtectedMemoryPlatformPolicy>(4)}) {
+      const auto refused=owner.Adopt(f.binding,f.grant,4097,invalid);
+      Check(refused.error==r::RuntimeCryptoPoolError::invalid_protection_policy && f.grant && !owner.has_custody() &&
+          !owner.protection_policy() && protected_issued==issued && f.manager.Snapshot().current_bytes==0 &&
+          f.manager.Snapshot().reserved_capacity_bytes==f.bytes,"invalid platform enum refuses before adoption/allocation/OS effects");
+    }
+    Check(f.grant->ReleaseNoAlloc().ok(),"invalid policy retains caller cleanup responsibility");f.grant.reset();f.Empty();
+  }
+  const auto page=static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
+  Check(page && (page&(page-1))==0,"actual Linux page profile");
+  for(auto policy:{m::ProtectedMemoryPlatformPolicy::best_effort,m::ProtectedMemoryPlatformPolicy::require_platform_lock,
+                  m::ProtectedMemoryPlatformPolicy::require_no_dump,m::ProtectedMemoryPlatformPolicy::require_lock_and_no_dump}) {
+    Fixture f(20,false,90,nullptr,true);r::RuntimeCryptoPoolOwner owner;
+    const auto admitted_owner=f.grant->request().binary_ownership;
+    auto* grant=f.grant.get();const auto before=f.manager.Snapshot();
+    Check(before.current_bytes==0 && before.reserved_capacity_bytes==f.bytes && f.ledger.Snapshot().current_bytes==f.bytes,
+        "real single physical/hierarchical capacity admission before protected conversion");
+    m::MemoryLimitReduction narrower;narrower.policy_uuid=Id(201).bytes;narrower.expected_generation=1;
+    narrower.hard_limit_bytes=narrower.soft_limit_bytes=narrower.per_context_limit_bytes=narrower.page_buffer_pool_limit_bytes=1024;
+    const auto reduced=f.manager.allocator()->ReduceLimits(narrower);
+    Check(reduced.ok() && reduced.policy_uuid==narrower.policy_uuid && reduced.generation==2,
+        "actual grandfathered policy reduction after capacity admission");
+    m::MemoryTag quota;quota.category=m::MemoryCategory::core_runtime;quota.binary_ownership=admitted_owner;
+    Check(!f.manager.Allocate(1,alignof(std::max_align_t),quota).ok(),"ordinary allocation cannot steal already reserved quota under reduced policy");
+    const auto issued=protected_issued,released=protected_released;
+    Check(owner.Adopt(f.binding,f.grant,4097,policy).ok() && !f.grant,"actual protected conversion uses admitted credit without second policy admission");
+    const auto* watched=LastProtected();
+    Check(watched && watched->bytes==4097 && watched->zero_at_allocation &&
+        reinterpret_cast<std::uintptr_t>(watched->pointer)%page==0 && owner.backing_alignment()>=page &&
+        owner.retained_backing_bytes()==4097 && protected_issued==issued+1,"actual provider backing is page-aligned/zero-initialized protected allocation, exact logical bytes retained");
+    const bool required_lock=policy==m::ProtectedMemoryPlatformPolicy::require_platform_lock || policy==m::ProtectedMemoryPlatformPolicy::require_lock_and_no_dump;
+    const bool required_dump=policy==m::ProtectedMemoryPlatformPolicy::require_no_dump || policy==m::ProtectedMemoryPlatformPolicy::require_lock_and_no_dump;
+    Check((!required_lock||watched->lock_succeeded) && (!required_dump||watched->no_dump_succeeded) && owner.protection_policy()==policy,
+        "actual observed OS protection satisfies explicitly selected policy, no fabricated lock guarantee");
+    Check(owner.backing_policy_binding() && owner.backing_policy_binding()->policy_uuid==Id(200).bytes &&
+        owner.backing_policy_binding()->generation==1,"protected conversion preserves original grant policy binding, not current replacement generation");
+    const auto actual=f.manager.Snapshot();
+    Check(actual.current_bytes==4097 && actual.reserved_capacity_bytes==f.bytes-4097 && actual.active_capacity_reservation_count==1 &&
+        f.ledger.Snapshot().current_bytes==f.bytes && grant->Snapshot().allocation_count==1 &&
+        grant->request().binary_ownership==admitted_owner,"same exact physical and hierarchical charge/binary owner, not a separate unaccounted allocator");
+    for(const auto& context:actual.contexts)Check(context.binary_scope.has_value() && context.scope_id.empty(),"protected conversion retains binary-only memory scopes");
+    Check(owner.Close().ok() && protected_released==released+1 && all_protected_releases_zero && !owner.protection_policy() &&
+        !owner.backing_policy_binding() && owner.backing_alignment()==0,"protected provider zero before dump-reset/unlock/actual free, then clear allocation observations");
+    f.Empty();
+    Fixture next(60);Check(owner.Adopt(next.binding,next.grant,4097,policy).ok(),"closed owner may adopt fresh actual protected grant without stale evidence");
+    Check(owner.Check(f.binding).error==r::RuntimeCryptoPoolError::invalid_binding && owner.Snapshot().binding==next.binding,
+        "reopen does not rebind old binary authority to new grant");
+    Check(owner.Close().ok(),"reopened owner drain");next.Empty();
+  }
+  for(unsigned kind=0;kind<3;++kind) {
+    Fixture f;r::RuntimeCryptoPoolOwner owner;const auto before=protected_released;
+    force_lock_failure=kind!=1;force_no_dump_failure=kind!=0;
+    const auto policy=kind==2?m::ProtectedMemoryPlatformPolicy::best_effort:
+        kind==0?m::ProtectedMemoryPlatformPolicy::require_platform_lock:m::ProtectedMemoryPlatformPolicy::require_no_dump;
+    const auto result=owner.Adopt(f.binding,f.grant,4097,policy);
+    force_lock_failure=force_no_dump_failure=false;
+    if(kind==2) {
+      const auto* watched=LastProtected();Check(result.ok() && watched && !watched->lock_succeeded && !watched->no_dump_succeeded,
+          "explicit best-effort profile records real platform refusals without claiming lock/no-dump");
+    } else Check(!result.ok() && result.error==r::RuntimeCryptoPoolError::memory_failure &&
+        result.memory_status.code==scratchbird::core::platform::StatusCode::memory_invalid_request &&
+        owner.has_custody() && !f.grant && !owner.retained_backing_bytes() && !owner.backing_policy_binding() &&
+        f.manager.Snapshot().current_bytes==0 && f.manager.Snapshot().reserved_capacity_bytes==f.bytes &&
+        f.ledger.Snapshot().current_bytes==f.bytes,"required platform failure erases rejected backing, restores same credit, retains grant cleanup ownership");
+    Check(owner.Close().ok() && protected_released==before+1 && all_protected_releases_zero,"platform refusal/best-effort cleanup erases exactly once");f.Empty();
+  }
+  {
+    Fixture f;r::RuntimeCryptoPoolOwner owner;Check(owner.Adopt(f.binding,f.grant,4097,test_protection).ok(),"protected failed-close setup");
+    const auto receipt=owner.backing_policy_binding();const auto alignment=owner.backing_alignment();const auto released=protected_released;
+    fail_lock=0;const auto failed=owner.Close();fail_lock=-1;
+    Check(!failed.ok() && owner.has_custody() && owner.retained_backing_bytes()==4097 &&
+        owner.backing_policy_binding()==receipt && owner.backing_alignment()==alignment && protected_released==released,
+        "failed close retains exact protected custody/alignment/original policy receipt, no premature credit refund");
+    Check(owner.Close().ok(),"protected failed-close actual retry");f.Empty();
+    Fixture next(70);Check(owner.Adopt(next.binding,next.grant,4097,test_protection).ok() && owner.Close().ok(),"reopen after failed-close recovery uses fresh actual grant");next.Empty();
+  }
+  Check(protected_unlocks && protected_dump_resets && protected_issued==protected_released && all_protected_releases_zero,
+      "all protected test backing erased before actual OS unprotect and physical release");
+}
 void CustodyFailures() {
   Fixture f; r::RuntimeCryptoPoolOwner owner;
   for (unsigned dim=0;dim<4;++dim) {
     auto wrong=f.binding;
     std::array<Uuid*,4> ids{&wrong.database,&wrong.operation,&wrong.owner,&wrong.context};
     *ids[dim]=Id(99);
-    Check(owner.Adopt(wrong,f.grant,f.bytes).error==r::RuntimeCryptoPoolError::invalid_binding &&
+    Check(owner.Adopt(wrong,f.grant,f.bytes,test_protection).error==r::RuntimeCryptoPoolError::invalid_binding &&
           f.grant && !owner.has_custody(),"wrong binding preserves caller grant");
   }
-  Check(!owner.Adopt(f.binding,f.grant,f.bytes+1).ok() && f.grant,"oversized backing preserves grant");
-  Check(owner.Adopt(f.binding,f.grant,f.bytes).ok() && !f.grant,"exact custody transferred");
+  Check(!owner.Adopt(f.binding,f.grant,f.bytes+1,test_protection).ok() && f.grant,"oversized backing preserves grant");
+  Check(owner.Adopt(f.binding,f.grant,f.bytes,test_protection).ok() && !f.grant,"exact custody transferred");
   Check(owner.InstallProcessAdapter().error==r::RuntimeCryptoPoolError::invalid_binding &&
         !h::SnapshotCryptoMemoryAdapter().installed,
         "database owner cannot impersonate process bootstrap");
@@ -115,7 +264,7 @@ void CustodyFailures() {
   bool passed=false;
   for (long at=0;at<256 && !passed;++at) {
     Fixture next; r::RuntimeCryptoPoolOwner pending;
-    fail_allocation=at; const auto result=pending.Adopt(next.binding,next.grant,next.bytes); fail_allocation=-1;
+    fail_allocation=at; const auto result=pending.Adopt(next.binding,next.grant,next.bytes,test_protection); fail_allocation=-1;
     passed=result.ok();
     Check(bool(next.grant)!=pending.has_custody(),"exactly one grant owner after allocation fault");
     Check(pending.Close().ok(),"allocation failure retains close path");
@@ -128,13 +277,13 @@ void CleanupLockFailures() {
   unsigned boundaries = 0;
   {
     Fixture baseline; r::RuntimeCryptoPoolOwner owner;
-    Check(owner.Adopt(baseline.binding,baseline.grant,baseline.bytes).ok(),"lock baseline setup");
+    Check(owner.Adopt(baseline.binding,baseline.grant,baseline.bytes,test_protection).ok(),"lock baseline setup");
     lock_calls=0; const auto closed=owner.Close(); boundaries=lock_calls;
     Check(closed.ok() && boundaries>3,"measured complete cleanup lock denominator"); baseline.Empty();
   }
   for (unsigned at=0;at<boundaries;++at) {
     Fixture next; r::RuntimeCryptoPoolOwner pending;
-    Check(pending.Adopt(next.binding,next.grant,next.bytes).ok(),"cleanup fault setup");
+    Check(pending.Adopt(next.binding,next.grant,next.bytes,test_protection).ok(),"cleanup fault setup");
     lock_injected=false; fail_lock=at; const auto result=pending.Close(); fail_lock=-1;
     Check(lock_injected,"each measured cleanup lock fault reached");
     Check(result.ok() || pending.has_custody(),"failed cleanup retains grant owner");
@@ -221,12 +370,13 @@ void ScopedProviderOperations(r::RuntimeCryptoPoolOwner& owner,
 }
 int main(int argc,char** argv) {
   const std::string_view mode=argc>1?argv[1]:"lifecycle";
+  ProtectedBackingPolicies();
   CustodyFailures();
   if (mode=="cleanup_fault") { CleanupLockFailures(); return 0; }
   {
     Fixture mislabeled(20,true,91); r::RuntimeCryptoPoolOwner rejected;
     Check(!mislabeled.grant &&
-          rejected.Adopt(mislabeled.binding,mislabeled.grant,mislabeled.bytes).error==
+          rejected.Adopt(mislabeled.binding,mislabeled.grant,mislabeled.bytes,test_protection).error==
               r::RuntimeCryptoPoolError::invalid_grant &&
               !rejected.has_custody(),"process tag cannot relabel another charged root");
     mislabeled.Empty();
@@ -239,10 +389,10 @@ int main(int argc,char** argv) {
     auto wrong=process.binding;
     std::array<Uuid*,5> ids{&wrong.database,&wrong.operation,&wrong.owner,&wrong.context,&wrong.process};
     *ids[dimension]=Id(99);
-    Check(owner.Adopt(wrong,process.grant,process.bytes).error==r::RuntimeCryptoPoolError::invalid_binding &&
+    Check(owner.Adopt(wrong,process.grant,process.bytes,test_protection).error==r::RuntimeCryptoPoolError::invalid_binding &&
           process.grant && !owner.has_custody(),"process binding refusal preserves real grant");
   }
-  Check(owner.Adopt(process.binding,process.grant,process.bytes).ok(),"process backing owner");
+  Check(owner.Adopt(process.binding,process.grant,process.bytes,test_protection).ok(),"process backing owner");
   Check(owner.CheckProcessAdapter(process.binding).adapter_error==h::CryptoMemoryError::not_installed,
         "process backing is not installed provider authority");
   if (mode=="late" || mode=="custom") {
@@ -288,7 +438,7 @@ int main(int argc,char** argv) {
     }
     {
       Fixture duplicate(20,true,90,&process_binding); r::RuntimeCryptoPoolOwner other;
-      Check(other.Adopt(duplicate.binding,duplicate.grant,duplicate.bytes).ok(),"separate real grant with same tuple");
+      Check(other.Adopt(duplicate.binding,duplicate.grant,duplicate.bytes,test_protection).ok(),"separate real grant with same tuple");
       Check(other.CheckProcessAdapter(duplicate.binding).adapter_error==h::CryptoMemoryError::invalid_binding,
             "duplicate tuple cannot impersonate installed backing owner");
       Check(other.Close().ok(),"uninstalled duplicate backing can close"); duplicate.Empty();
@@ -300,7 +450,7 @@ int main(int argc,char** argv) {
     ScopedProviderOperations(owner,process.binding);
     OPENSSL_thread_stop();
     Fixture operation(40); r::RuntimeCryptoPoolOwner operation_owner;
-    Check(operation_owner.Adopt(operation.binding,operation.grant,operation.bytes).ok(),"operation backing");
+    Check(operation_owner.Adopt(operation.binding,operation.grant,operation.bytes,test_protection).ok(),"operation backing");
     ScopedProviderOperations(operation_owner,operation.binding);
     OPENSSL_thread_stop();
     void* retained=nullptr;
@@ -384,5 +534,6 @@ int main(int argc,char** argv) {
     Check(closed.ok(),"process backing released only after terminal stop"); process.Empty();
     Check(!OPENSSL_malloc(1),"terminal hook refuses late allocation");
   }
+  Check(protected_issued==protected_released && all_protected_releases_zero,"all owner backing released protected and erased exactly once");
   std::cout << "PASS runtime crypto custody " << mode << " checks=" << checks << '\n';
 }

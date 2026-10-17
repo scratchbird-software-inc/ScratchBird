@@ -4212,6 +4212,11 @@ target_compile_definitions(sbsql_sblr_alignment_statement_retained_memory
 target_include_directories(sbsql_sblr_alignment_statement_retained_memory
   PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(sbsql_sblr_alignment_statement_retained_memory PRIVATE sb_engine sb_server_core sb_core_blob_persistence)
+if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+  target_compile_definitions(sbsql_sblr_alignment_statement_retained_memory PRIVATE SB_RETAINED_PROTECTED_MEMORY_WRAP=1)
+  target_link_options(sbsql_sblr_alignment_statement_retained_memory PRIVATE
+    -Wl,--wrap=mlock -Wl,--wrap=madvise -Wl,--wrap=munlock)
+endif()
 add_test(NAME sbsql_sblr_alignment_statement_retained_memory COMMAND sbsql_sblr_alignment_statement_retained_memory)
 set_tests_properties(sbsql_sblr_alignment_statement_retained_memory PROPERTIES
   LABELS "datatype;memory;receipt_lifetime;binary_uuid;allocation;concurrency" TIMEOUT 180)

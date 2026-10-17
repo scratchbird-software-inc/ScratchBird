@@ -20,6 +20,8 @@ class StatementScratchMemoryV1 {
   // Same actual live receipt, MGA pin and capacity as memory(), but every
   // backing allocation has allocator-issued protected custody and zeroizing
   // release. Borrowers/containers must be destroyed before this call returns.
+  // Native default requires actual OS locking AND dump exclusion; failure of
+  // either refuses the allocation, never ordinary/best-effort fallback.
   virtual std::pmr::memory_resource* protected_memory() noexcept = 0;
   virtual const EngineRequestContext& context() const noexcept = 0;
   virtual std::uint64_t limit_bytes() const noexcept = 0;

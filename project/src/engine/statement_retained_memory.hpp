@@ -4,6 +4,7 @@
 
 #include "engine/statement_context_receipt_retention.hpp"
 #include "core/memory/reservation_backed_memory_resource.hpp"
+#include <optional>
 
 namespace scratchbird::engine::internal_api {
 
@@ -18,6 +19,9 @@ struct RetainedStatementMemoryBindingV1 {
   // supplied by a caller's mutable EngineRequestContext.
   wire::TypedResultUuid datatype_catalog_snapshot{};
   std::uint64_t datatype_catalog_generation = 0, datatype_registry_generation = 0;
+  // Immutable observation of the ACTUAL issuing ledger's token sharding.
+  // For diagnostics/conformance, never a token, budget or admission authority.
+  std::uint64_t memory_token_shard_count = 0;
 };
 enum class RetainedStatementMemoryObservationV1 : std::uint8_t {
   live = 0, receipt_revoked, snapshot_revoked, released, unavailable
@@ -34,6 +38,10 @@ class RetainedStatementMemoryV1 final {
   // lock scopes. In that scope the PMR and Snapshot refuse by bad_alloc,
   // Observe returns unavailable, and Release returns CONFLICT before any lock.
   std::pmr::memory_resource* memory() noexcept;
+  // The private issuer's selected protection requirement, not proof that a
+  // payload exists or permission to read protected content. For a protected
+  // owner every memory() allocation uses the actual protected allocator.
+  std::optional<core::memory::ProtectedMemoryPlatformPolicy> protection_policy() const noexcept;
   const RetainedStatementMemoryBindingV1& binding() const noexcept;
   core::memory::ReservationBackedMemoryResourceSnapshot Snapshot() const;
   core::memory::ReservationBackedPmrMemoryResourceSnapshot AllocationSnapshot() const;
@@ -53,6 +61,12 @@ class RetainedStatementMemoryV1 final {
       const wire::TypedResultUuid&, const wire::TypedResultUuid&,
       std::uint64_t, std::unique_ptr<RetainedStatementMemoryV1>*,
       core::platform::DiagnosticRecord*) noexcept;
+  friend sb_engine_status_t RetainStatementMemoryForProtectedResultV1(
+      server_engine_bridge::StatementContextReceiptHandle,
+      const wire::TypedResultUuid&, const wire::TypedResultUuid&,
+      std::uint64_t, core::memory::ProtectedMemoryPlatformPolicy,
+      std::unique_ptr<RetainedStatementMemoryV1>*,
+      core::platform::DiagnosticRecord*) noexcept;
 };
 
 // Actual private receipt lookup/retention plus a real physical reservation.
@@ -66,6 +80,20 @@ sb_engine_status_t RetainStatementMemoryForResultV1(
     const wire::TypedResultUuid& expected_session_uuid,
     const wire::TypedResultUuid& expected_receipt_uuid,
     std::uint64_t requested_bytes,
+    std::unique_ptr<RetainedStatementMemoryV1>* out,
+    core::platform::DiagnosticRecord* diagnostic = nullptr) noexcept;
+
+// Same actual private receipt, MGA lifetime, hierarchy and physical admission
+// as the ordinary owner. No output escapes before the protected adapter is
+// installed. Selection must come from the owning policy; no implicit platform
+// protection default and no ordinary-allocation fallback. This grants memory
+// custody only, not EXECUTE, key release, content permission or publication.
+sb_engine_status_t RetainStatementMemoryForProtectedResultV1(
+    server_engine_bridge::StatementContextReceiptHandle,
+    const wire::TypedResultUuid& expected_session_uuid,
+    const wire::TypedResultUuid& expected_receipt_uuid,
+    std::uint64_t requested_bytes,
+    core::memory::ProtectedMemoryPlatformPolicy,
     std::unique_ptr<RetainedStatementMemoryV1>* out,
     core::platform::DiagnosticRecord* diagnostic = nullptr) noexcept;
 

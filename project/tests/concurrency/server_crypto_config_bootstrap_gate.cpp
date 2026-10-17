@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "config.hpp"
 #include "runtime_crypto_pool_owner.hpp"
+#include "memory_policy_config.hpp"
 #include "process_crypto_owner.hpp"
 #include "startup.hpp"
 #include "uuid.hpp"
@@ -19,6 +20,7 @@
 #include <string_view>
 #include <thread>
 #include <sys/random.h>
+#include <sys/mman.h>
 #include <sys/wait.h>
 #include <sys/utsname.h>
 #include <unistd.h>
@@ -35,6 +37,36 @@ bool provider_allowed=false;
 std::string_view test_mode;
 int status_descriptor=-1;
 unsigned write_calls=0;
+std::size_t selected_crypto_bytes=0,observed_crypto_bytes=0;
+const void* observed_crypto_backing=nullptr;
+bool actual_crypto_lock=false,actual_crypto_no_dump=false;
+unsigned crypto_lock_attempts=0,crypto_dump_attempts=0,crypto_lock_refusals=0,crypto_dump_refusals=0;
+static_assert(m::kDefaultNativeCryptoProtectedMemoryPolicy==m::ProtectedMemoryPlatformPolicy::require_lock_and_no_dump);
+extern "C" int __real_mlock(const void*,std::size_t);
+extern "C" int __wrap_mlock(const void* pointer,std::size_t bytes) {
+  // Bind observation to the actual provider-sized allocation before admission;
+  // no pointer or observed success manufactures a grant or readiness state.
+  if(!observed_crypto_backing && selected_crypto_bytes && bytes==selected_crypto_bytes) {
+    observed_crypto_backing=pointer;observed_crypto_bytes=bytes;
+  }
+  const bool provider_backing=pointer==observed_crypto_backing;
+  if(provider_backing)++crypto_lock_attempts;
+  int result;
+  if(provider_backing && test_mode.starts_with("host_lock_")) {++crypto_lock_refusals;errno=ENOMEM;result=-1;}
+  else result=__real_mlock(pointer,bytes);
+  if(provider_backing)actual_crypto_lock=result==0;
+  return result;
+}
+extern "C" int __real_madvise(void*,std::size_t,int);
+extern "C" int __wrap_madvise(void* pointer,std::size_t bytes,int advice) {
+  const bool provider_backing=pointer==observed_crypto_backing && advice==MADV_DONTDUMP;
+  if(provider_backing)++crypto_dump_attempts;
+  int result;
+  if(provider_backing && test_mode.starts_with("host_no_dump_")) {++crypto_dump_refusals;errno=ENOMEM;result=-1;}
+  else result=__real_madvise(pointer,bytes,advice);
+  if(provider_backing)actual_crypto_no_dump=result==0;
+  return result;
+}
 extern "C" int __real_uname(struct utsname*);
 extern "C" int __wrap_uname(struct utsname* out) {
   ++host_probe_calls;
@@ -64,6 +96,60 @@ extern "C" int __wrap_RAND_bytes(unsigned char* out,int bytes) {
 }
 void Check(bool value,const char* reason) {
   if(!value) {std::cerr<<reason<<'\n'; throw std::runtime_error(reason);}
+}
+void CheckNativeCryptoProtection() {
+  const auto page=static_cast<std::size_t>(::sysconf(_SC_PAGESIZE));
+  Check(page && observed_crypto_backing && reinterpret_cast<std::uintptr_t>(observed_crypto_backing)%page==0 &&
+        observed_crypto_bytes==selected_crypto_bytes && crypto_lock_attempts==1 && crypto_dump_attempts==1 &&
+        actual_crypto_lock && actual_crypto_no_dump && !crypto_lock_refusals && !crypto_dump_refusals,
+        "production native crypto backing has actual mandatory OS lock and dump exclusion, not best-effort claims");
+}
+void CheckProtectionRefusalDiagnostic(const scratchbird::core::platform::DiagnosticRecord& diagnostic) {
+  namespace p=scratchbird::core::platform;
+  const bool lock_failure=test_mode.starts_with("host_lock_");
+  Check(diagnostic.status.code==p::StatusCode::memory_invalid_request &&
+        diagnostic.status.severity==p::Severity::error && diagnostic.status.subsystem==p::Subsystem::memory &&
+        diagnostic.source_component=="core.memory" &&
+        diagnostic.diagnostic_code=="SB-MEMORY-PROTECTED-PLATFORM-PROTECTION-REQUIRED" &&
+        diagnostic.message_key=="memory.protected.platform_protection_required",
+        "actual allocator protection refusal preserves exact native status, source, code and message key");
+  const auto exact_argument=[&](std::string_view key,std::string_view value) {
+    unsigned count=0;
+    for(const auto& argument:diagnostic.arguments)if(argument.key==key) {
+      ++count;Check(argument.text()&&*argument.text()==value,"native protection diagnostic argument retains exact typed text value");
+    }
+    Check(count==1,"native protection diagnostic has one unambiguous required argument");
+  };
+  exact_argument("platform_policy","require_lock_and_no_dump");
+  exact_argument("required_lock_failed",lock_failure?"true":"false");
+  exact_argument("required_no_dump_failed",lock_failure?"false":"true");
+  exact_argument("requested_bytes",std::to_string(selected_crypto_bytes));
+  exact_argument("alignment",std::to_string(alignof(std::max_align_t)));
+  exact_argument("current_bytes","0");
+  exact_argument("protected_material_redacted","true");
+  exact_argument("protected_memory_zero_on_allocate","true");
+  exact_argument("protected_memory_zero_on_release","true");
+  exact_argument("protected_memory_lock_attempted","true");
+  exact_argument("protected_memory_lock_supported","true");
+  exact_argument("protected_memory_lock_succeeded",lock_failure?"false":"true");
+  exact_argument("protected_memory_no_dump_attempted","true");
+  exact_argument("protected_memory_no_dump_supported","true");
+  exact_argument("protected_memory_no_dump_succeeded",lock_failure?"true":"false");
+}
+void CheckProtectionRefusalEffects(s::ServerProcessCryptoOwner& host) {
+  const bool lock_failure=test_mode.starts_with("host_lock_");
+  const auto adapter=h::SnapshotCryptoMemoryAdapter();
+  const auto memory=m::DefaultMemoryManager().Snapshot();
+  Check(crypto_lock_attempts==1 && crypto_dump_attempts==1 &&
+        (lock_failure ?
+            crypto_lock_refusals==1 && !actual_crypto_lock && !crypto_dump_refusals && actual_crypto_no_dump :
+            crypto_dump_refusals==1 && !actual_crypto_no_dump && !crypto_lock_refusals && actual_crypto_lock),
+        "actual selected provider allocation exercises precise OS lock/dump-exclusion refusal and real other protection");
+  Check(!adapter.installed && !adapter.live_blocks && !adapter.active_scopes &&
+        adapter.process_binding==h::CryptoMemoryBinding{} && !host.installed() && !provider_allowed && rand_calls==0 &&
+        host.Snapshot().backing_bytes==0 && memory.current_bytes==0 &&
+        memory.reserved_capacity_bytes==selected_crypto_bytes && memory.active_capacity_reservation_count==1,
+        "required protection failure exposes no RAND/provider readiness or live allocation, retains exact grant credit for owner cleanup");
 }
 void DiagnosticBoundary() {
   using E=u::CryptoBootstrapDiagnosticError;
@@ -156,6 +242,7 @@ int main(int argc,char** argv) try {
   const auto policy=s::ResolveServerMemoryAllocationPolicy(loaded.config);
   Check(policy.ok() && rand_calls==0,"actual config policy resolution remains provider-free");
   const auto bytes=loaded.config.memory_openssl_budget_bytes;
+  selected_crypto_bytes=static_cast<std::size_t>(bytes);
   Check(bytes==(override_budget?8388608u:4194304u),"use actual selected budget");
   Check(m::ConfigureDefaultMemoryManager(policy.policy,loaded.config.memory_policy_provenance).ok(),
         "install actual shared process manager policy");
@@ -205,6 +292,46 @@ int main(int argc,char** argv) try {
           "actual host config rejection has source-owned diagnostics before provider admission");
       Check(u::IsEngineIdentityUuid(Uuid{startup.diagnostics.front().occurrence_uuid}),
           "bad host config retains a genuine binary diagnostic occurrence");
+    } else if(test_mode=="host_lock_startup_refusal"||test_mode=="host_no_dump_startup_refusal") {
+      auto resolved=s::ResolveServerBootstrapConfig(cli,context);
+      Check(resolved.ok(),"actual startup protection refusal uses successfully resolved configuration");
+      resolved.config.mode=s::ServerMode::kForeground;
+      resolved.config.data_dir=artifacts.path()/"data";
+      resolved.config.control_dir=artifacts.path()/"control";
+      resolved.config.pid_file=resolved.config.control_dir/"server.pid";
+      resolved.config.lifecycle_state_file=resolved.config.control_dir/"server.state";
+      resolved.config.lifecycle_journal_file=resolved.config.control_dir/"server.journal";
+      resolved.config.database_default_path=artifacts.path()/"node.sbdb";
+      const auto startup=s::RunServerStartup(std::move(resolved),host);
+      Check(startup.exit_code==2 && !startup.emergency_reserve && host_probe_calls==0 &&
+            startup.diagnostics.size()==1 && !std::filesystem::exists(startup.effective_config.data_dir) &&
+            !std::filesystem::exists(startup.effective_config.control_dir) &&
+            !std::filesystem::exists(startup.effective_config.pid_file) &&
+            !std::filesystem::exists(startup.effective_config.lifecycle_state_file) &&
+            !std::filesystem::exists(startup.effective_config.lifecycle_journal_file) &&
+            !std::filesystem::exists(startup.effective_config.database_default_path),
+            "full production startup refuses before emergency admission, platform probe or any lifecycle/database publication");
+      const auto& diagnostic=startup.diagnostics.front();
+      Check(diagnostic.native_platform_source.has_value(),"full startup retains owned native allocator protection cause");
+      CheckProtectionRefusalDiagnostic(*diagnostic.native_platform_source);
+      Check(diagnostic.code==diagnostic.native_platform_source->diagnostic_code &&
+            diagnostic.message_key==diagnostic.native_platform_source->message_key &&
+            diagnostic.severity==s::ServerDiagnosticSeverity::kError &&
+            u::IsEngineIdentityUuid(Uuid{diagnostic.occurrence_uuid}),
+            "full startup emits genuine source-owned error occurrence with exact native allocator code and message key");
+      for(const auto& argument:diagnostic.native_platform_source->arguments)if(const auto* text=argument.text()) {
+        unsigned count=0;
+        for(const auto& field:diagnostic.fields)if(field.key==argument.key) {
+          ++count;Check(field.value==*text,"emitted startup protection field preserves native allocator argument");
+        }
+        Check(count==1,"emitted startup protection field retains unique native argument");
+      }
+      unsigned source_fields=0;
+      for(const auto& field:diagnostic.fields)if(field.key=="source_component") {
+        ++source_fields;Check(field.value=="core.memory","emitted startup protection diagnostic preserves native component");
+      }
+      Check(source_fields==1,"full startup emits one exact native source component");
+      CheckProtectionRefusalEffects(host);
     } else if(test_mode=="host_startup"||test_mode=="host_platform_startup"||test_mode=="host_platform_refusal") {
       provider_allowed=true;
       auto resolved=s::ResolveServerBootstrapConfig(cli);
@@ -218,6 +345,7 @@ int main(int argc,char** argv) try {
         resolved.config.database_default_path=artifacts.path()/"node.sbdb";
       }
       auto startup=s::RunServerStartup(std::move(resolved),host);
+      CheckNativeCryptoProtection();
       if(test_mode=="host_platform_refusal") {
         Check(startup.exit_code==2&&host.installed()&&!startup.emergency_reserve&&host_probe_calls==1&&
             host.Snapshot().backing_bytes==bytes&&manager.Snapshot().current_bytes==bytes&&
@@ -255,15 +383,26 @@ int main(int argc,char** argv) try {
               "wrong native owner cannot claim bootstrap or touch provider");
       }
       const auto admitted=host.Start(selected,policy);
-      if(test_mode=="host_low_budget"||test_mode=="host_reservation_refusal"||test_mode=="host_late_provider") {
+      const bool protection_refusal=test_mode=="host_lock_refusal"||test_mode=="host_no_dump_refusal";
+      if(test_mode=="host_low_budget"||test_mode=="host_reservation_refusal"||test_mode=="host_late_provider"||protection_refusal) {
         Check(!admitted.ok()&&!host.installed()&&rand_calls==0,
               "actual resource or late-install refusal cannot yield provider readiness");
         if(test_mode=="host_late_provider")Check(admitted.pool.adapter_error==h::CryptoMemoryError::late_installation,
             "late provider refusal retains exact adapter cause");
         if(test_mode=="host_reservation_refusal")Check(admitted.error==s::ProcessCryptoStartError::reservation_failure,
             "budget refusal precedes backing allocation");
+        if(protection_refusal) {
+          Check(admitted.error==s::ProcessCryptoStartError::pool_failure &&
+                admitted.pool.error==r::RuntimeCryptoPoolError::memory_failure &&
+                admitted.pool.memory_status.code==scratchbird::core::platform::StatusCode::memory_invalid_request &&
+                admitted.pool.adapter_error==h::CryptoMemoryError::none,
+                "production protection refusal retains typed required-memory-protection cause before adapter installation");
+          CheckProtectionRefusalDiagnostic(admitted.pool.memory_diagnostic);
+          CheckProtectionRefusalEffects(host);
+        }
       } else {
         Check(admitted.ok()&&host.installed()&&rand_calls==0,"production owner installs before actual RAND");
+        CheckNativeCryptoProtection();
         provider_allowed=true;
         const auto identity=u::IssueRuntimeIdentityV7();
         Check(identity&&rand_calls>0&&u::IsEngineIdentityUuid(*identity),"actual admitted host UUID provider");
@@ -321,7 +460,8 @@ int main(int argc,char** argv) try {
       }
     }
     Check(host.CloseAfterUserDrain().ok()&&!host.installed()&&manager.Snapshot().current_bytes==0&&
-          manager.Snapshot().reserved_capacity_bytes==0,"actual production teardown releases all backing and reservations");
+          manager.Snapshot().reserved_capacity_bytes==0&&manager.Snapshot().active_capacity_reservation_count==0,
+          "actual production teardown releases all backing and reservations");
     Check(host.CloseAfterUserDrain().ok(),"host terminal close is idempotent");
     artifacts.Cleanup();return 0;
   }
@@ -355,7 +495,8 @@ int main(int argc,char** argv) try {
   };
   h::PreparedSha256 hash;
   try {
-  Check(owner.Adopt(binding,acquired.resource,bytes).ok(),"actual physical provider backing");
+  Check(owner.Adopt(binding,acquired.resource,bytes,m::kDefaultNativeCryptoProtectedMemoryPolicy).ok(),"actual physical provider backing");
+  CheckNativeCryptoProtection();
   inject("fail_adopt");
   installed=owner.InstallProcessAdapter().ok();
   Check(installed,"config must not have initialized provider behind explicit bootstrap");
