@@ -1408,10 +1408,17 @@ ResourceSeedCatalogImageResult LoadResourceSeedPack(const ResourceSeedLoadConfig
 }
 
 bool ValidateResourceSeedArtifactContent(const ResourceSeedArtifact& artifact) {
-  return static_cast<u16>(artifact.family) < static_cast<u16>(ResourceSeedFamily::unknown) &&
+  const bool structure_valid = static_cast<u16>(artifact.family) < static_cast<u16>(ResourceSeedFamily::unknown) &&
       !artifact.canonical_path.empty() && artifact.status == ResourceSeedArtifactStatus::loaded &&
-      artifact.content && artifact.content->size() == artifact.content_size_bytes &&
-      Fnv1a64Hex(*artifact.content) == artifact.content_hash;
+      artifact.content && artifact.content->size() == artifact.content_size_bytes;
+  if (!structure_valid) return false;
+  const auto& seal = artifact.content_validation;
+  const auto verified_content = seal.immutable_content_.lock();
+  if (verified_content && verified_content == artifact.content &&
+      artifact.content_hash.size() == seal.content_hash_.size() &&
+      std::equal(artifact.content_hash.begin(), artifact.content_hash.end(), seal.content_hash_.begin()))
+    return true;
+  return Fnv1a64Hex(*artifact.content) == artifact.content_hash;
 }
 
 ResourceSeedCatalogImageResult ValidateResourceSeedCatalogImage(const ResourceSeedCatalogImage& image,

@@ -497,11 +497,33 @@ bool BuildMgaContextualTextProjectionMaterialV2(
 
     std::optional<EngineResolvedResourceDescriptor> charset;
     std::optional<EngineResolvedResourceDescriptor> collation;
+    EngineResourceDescriptorLookupResult charset_lookup;
+    EngineResourceDescriptorLookupResult collation_lookup;
+    if (!column.charset_uuid.is_nil() && !column.collation_uuid.is_nil()) {
+      // A complete column profile belongs to one admitted resource cohort.
+      // Resolve both descriptors from that image, not two full file reopens
+      // which can observe different resource publications. This is a fresh
+      // per-column admission, never a cross-operation lookup cache.
+      auto pair = LookupEngineTextResourcePair(
+          context, column.charset_uuid, column.collation_uuid);
+      if (!pair.ok) {
+        *diagnostic = ContextualTextMgaDiagnostic(
+            "projected charset and collation resource pair is stale or invalid");
+        return false;
+      }
+      charset_lookup.ok = collation_lookup.ok = true;
+      charset_lookup.resource_descriptor = std::move(pair.charset);
+      collation_lookup.resource_descriptor = std::move(pair.collation);
+    } else {
+      if (!column.charset_uuid.is_nil())
+        charset_lookup = LookupEngineResourceDescriptorByUuid(
+            context, column.charset_uuid, "charset");
+      if (!column.collation_uuid.is_nil())
+        collation_lookup = LookupEngineResourceDescriptorByUuid(
+            context, column.collation_uuid, "collation");
+    }
     if (!column.charset_uuid.is_nil()) {
-      EngineUuid requested;
-      requested = column.charset_uuid;
-      const auto live = LookupEngineResourceDescriptorByUuid(
-          context, requested, "charset");
+      const auto& live = charset_lookup;
       if (!live.ok || !live.resource_descriptor.present ||
           live.resource_descriptor.resource_uuid !=
               column.charset_uuid ||
@@ -524,10 +546,7 @@ bool BuildMgaContextualTextProjectionMaterialV2(
       if (charset->variable_width) projected.attributes |= 0x08u;
     }
     if (!column.collation_uuid.is_nil()) {
-      EngineUuid requested;
-      requested = column.collation_uuid;
-      const auto live = LookupEngineResourceDescriptorByUuid(
-          context, requested, "collation");
+      const auto& live = collation_lookup;
       if (!live.ok || !live.resource_descriptor.present ||
           live.resource_descriptor.resource_uuid !=
               column.collation_uuid ||

@@ -173,6 +173,48 @@ void ArtifactContent(const r::ResourceSeedCatalogImage& image) {
   std::vector<r::ResourceSeedArtifact> decoded;
   Check(r::DecodeResourceSeedArtifactContents(views,&decoded), "actual seed fragment decode failed");
   Check(decoded.size() == snapshot.artifacts.size(), "artifact group count changed");
+  static_assert(std::is_aggregate_v<r::ResourceSeedArtifact>);
+  static_assert(!std::is_aggregate_v<r::ResourceSeedArtifactContentSeal>);
+  for (const auto& actual : decoded) {
+    Check(r::ValidateResourceSeedArtifactContent(actual), "fresh decoder-owned immutable artifact refused");
+    bool allocation_free = false;
+    fail_after = 0;
+    try { allocation_free = r::ValidateResourceSeedArtifactContent(actual); }
+    catch (const std::bad_alloc&) {}
+    catch (...) { fail_after = -1; throw; }
+    fail_after = -1;
+    Check(allocation_free, "exact immutable byte revalidation allocated or repeated materialized hashing");
+    auto copy = actual;
+    Check(r::ValidateResourceSeedArtifactContent(copy), "copied immutable artifact lost valid byte provenance");
+    // A changed pointer is not automatically invalid: a genuine equal copy
+    // must take the ordinary content-validation path and retain its meaning.
+    copy.content = std::make_shared<const std::string>(*actual.content);
+    Check(r::ValidateResourceSeedArtifactContent(copy), "equal foreign immutable body incorrectly refused");
+    auto corrupt = *actual.content;
+    if (corrupt.empty()) corrupt.push_back('x'); else corrupt[corrupt.size()/2] ^= 1;
+    copy = actual;
+    copy.content = std::make_shared<const std::string>(corrupt);
+    copy.content_size_bytes = corrupt.size();
+    Check(!r::ValidateResourceSeedArtifactContent(copy), "transferred byte seal authorized a foreign corrupt body");
+    copy = actual; copy.content_hash.back() ^= 1;
+    Check(!r::ValidateResourceSeedArtifactContent(copy), "sealed body accepted a changed full hash");
+    copy = actual; copy.content_hash.push_back('0');
+    Check(!r::ValidateResourceSeedArtifactContent(copy), "sealed body accepted an extended hash");
+    copy = actual; copy.content_hash.pop_back();
+    Check(!r::ValidateResourceSeedArtifactContent(copy), "sealed body accepted a shortened hash");
+    copy = actual; copy.content.reset();
+    Check(!r::ValidateResourceSeedArtifactContent(copy), "seal authorized absent content");
+    copy = actual; ++copy.content_size_bytes;
+    Check(!r::ValidateResourceSeedArtifactContent(copy), "seal bypassed actual content length");
+    copy = actual; copy.status = r::ResourceSeedArtifactStatus::pending;
+    Check(!r::ValidateResourceSeedArtifactContent(copy), "seal bypassed loaded status");
+    copy = actual; copy.family = r::ResourceSeedFamily::unknown;
+    Check(!r::ValidateResourceSeedArtifactContent(copy), "seal bypassed family validity");
+    copy = actual; copy.canonical_path.clear();
+    Check(!r::ValidateResourceSeedArtifactContent(copy), "seal bypassed required path metadata");
+    copy = actual; copy.content_validation = {};
+    Check(r::ValidateResourceSeedArtifactContent(copy), "unsealed valid body no longer validates normally");
+  }
   if (decoded.size() == snapshot.artifacts.size()) {
     for (std::size_t i=0;i<decoded.size();++i) {
       const auto& expected = snapshot.artifacts[i]; const auto& actual = decoded[i];
@@ -192,6 +234,26 @@ void ArtifactContent(const r::ResourceSeedCatalogImage& image) {
     std::vector<std::string> rows;
     Check(r::EncodeResourceSeedArtifactContent(*small,&rows) && rows.size() == 1, "small artifact is not single-fragment");
     if (rows.size() == 1) {
+      {
+        const std::vector<std::string_view> input{rows.front()};
+        std::vector<r::ResourceSeedArtifact> one;
+        Check(r::DecodeResourceSeedArtifactContents(input, &one) && one.size() == 1,
+              "private byte provenance fixture decode failed");
+        if (one.size() == 1) {
+          auto detached = one.front();
+          std::weak_ptr<const std::string> previous = detached.content;
+          one.clear(); detached.content.reset();
+          Check(previous.expired(), "byte provenance pinned retired artifact content");
+          detached.content = std::make_shared<const std::string>(*small->content);
+          Check(r::ValidateResourceSeedArtifactContent(detached),
+                "expired byte provenance prevented full validation of genuine replacement bytes");
+          auto bad = *detached.content;
+          if (bad.empty()) bad.push_back('x'); else bad[0] ^= 1;
+          detached.content = std::make_shared<const std::string>(bad);
+          Check(!r::ValidateResourceSeedArtifactContent(detached),
+                "expired byte provenance authorized corrupt replacement bytes");
+        }
+      }
       const auto reject = [&](const std::vector<std::string>& changed) {
         std::vector<std::string_view> input; for (const auto& row : changed) input.push_back(row);
         std::vector<r::ResourceSeedArtifact> sentinel{*small};

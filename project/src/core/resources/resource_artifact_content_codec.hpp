@@ -119,6 +119,13 @@ inline bool DecodeResourceSeedArtifactContents(const std::vector<std::string_vie
       artifact.content = std::make_shared<const std::string>(body.substr(pos));
       artifact.status = ResourceSeedArtifactStatus::loaded;
       if (!ValidateResourceSeedArtifactContent(artifact)) return false;
+      // This body was allocated const above, so no mutable alias escapes.
+      // Reuse only the byte validation; full image/identity/cohort validation
+      // remains required and is never authorized by the seal itself.
+      if (artifact.content_hash.size() != artifact.content_validation.content_hash_.size()) return false;
+      artifact.content_validation.immutable_content_ = artifact.content;
+      std::copy(artifact.content_hash.begin(), artifact.content_hash.end(),
+                artifact.content_validation.content_hash_.begin());
       staged.push_back(std::move(artifact)); start += static_cast<std::size_t>(count);
     }
     output->swap(staged); return true;

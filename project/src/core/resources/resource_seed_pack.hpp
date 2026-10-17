@@ -13,8 +13,10 @@
 #include "runtime_platform.hpp"
 #include "collation_profile.hpp"
 
+#include <array>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace scratchbird::core::resources {
@@ -56,6 +58,24 @@ enum class ResourceSeedArtifactStatus : u16 {
   ignored_by_profile
 };
 
+struct ResourceSeedArtifact;
+
+// Byte-validation provenance, not catalog/transaction/activation authority or
+// a lookup cache. Only the decoder may seal its freshly allocated const body.
+// Lock exact weak ownership while validating, never just a reused address;
+// replaced bodies are not pinned. A changed pointer/hash or expired owner
+// forces normal validation. Never serialized.
+class ResourceSeedArtifactContentSeal final {
+ public:
+  ResourceSeedArtifactContentSeal() noexcept = default;
+ private:
+  friend bool DecodeResourceSeedArtifactContents(
+      const std::vector<std::string_view>&, std::vector<ResourceSeedArtifact>*) noexcept;
+  friend bool ValidateResourceSeedArtifactContent(const ResourceSeedArtifact&);
+  std::weak_ptr<const std::string> immutable_content_;
+  std::array<char, 24> content_hash_{};
+};
+
 struct ResourceSeedArtifact {
   ResourceSeedFamily family = ResourceSeedFamily::unknown;
   std::string source_pattern;
@@ -69,6 +89,7 @@ struct ResourceSeedArtifact {
   // Null means missing; a non-null empty string is an explicitly empty artifact.
   std::shared_ptr<const std::string> content;
   scratchbird::core::platform::Uuid artifact_uuid;
+  ResourceSeedArtifactContentSeal content_validation;
 };
 
 struct ResourceSeedAlias {
