@@ -205,8 +205,9 @@ namespace btree_memory_detail {
 struct Reader {
  static NativeBtreeTreeReadResult Run(const Uuid& database,std::span<const disk::NativeFilespaceDevice> supplied,
      std::span<Batch> batches,const disk::NativePageReference& root,
-     const page::NativeBtreeDependencies& dependencies,NativeBtreeTreePreparedMemory& w,
-     std::size_t image_limit=std::numeric_limits<std::size_t>::max()) noexcept {
+     page::NativeBtreeDependencies dependencies,NativeBtreeTreePreparedMemory& w,
+     std::size_t image_limit=std::numeric_limits<std::size_t>::max(),
+     const Uuid* selected_index=nullptr) noexcept {
   using E=NativeBtreeTreeMemoryError;using T=page::NativeBtreeError;
   NativeBtreeTreeReadResult out;
   const auto fail=[&](T e){out.error=e==T::resource_exhausted?E::resource_exhausted:E::tree_failure;out.tree_error=e;};
@@ -214,7 +215,8 @@ struct Reader {
     if(!w||w.arena_.binding().database_uuid!=database||supplied.empty()||supplied.size()!=batches.size())return out;
     if(!core::uuid::IsEngineIdentityUuid(database)||!core::uuid::IsEngineIdentityUuid(root.filespace_uuid)||
        !root.page_number||!root.page_generation||!disk::FindCanonicalFilespacePageProfile(root.page_size_profile_uuid))return out;
-    if(!page::NativeBtreeDependenciesValid(dependencies)){fail(T::invalid_dependencies);return out;}
+    if(selected_index?!core::uuid::IsEngineIdentityUuid(*selected_index):!page::NativeBtreeDependenciesValid(dependencies)){
+      fail(T::invalid_dependencies);return out;}
     if(supplied.size()>w.files_.size()){fail(T::resource_exhausted);return out;}
     auto files=w.files_.first(supplied.size());
     for(std::size_t i=0;i<files.size();++i){
@@ -284,6 +286,13 @@ struct Reader {
       auto decoded=page::DecodeNativeBtreePageInto({image,f.size},{cells.subspan(cells_used,required.cells),references});
       if(!decoded.ok()){fail(decoded.error);return out;}
       const auto& p=*decoded.page;
+      // Only the selected-catalog reader may request root discovery. The actual
+      // selected root fixes the index identity; every descendant must retain
+      // the complete exact dependency tuple read from that root.
+      if(selected_index&&next.parent==missing){
+        if(p.dependencies.index_uuid!=*selected_index){fail(T::binding_mismatch);return out;}
+        dependencies=p.dependencies;
+      }
       if(p.dependencies!=dependencies){fail(T::binding_mismatch);return out;}
       const auto in_range=[&](const auto& r){return !r||r->filespace_uuid!=next.ref.filespace_uuid||r->page_number<f.total_pages;};
       if(!in_range(p.parent)||!in_range(p.left)||!in_range(p.right)||!in_range(p.first_child)){

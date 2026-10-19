@@ -5513,13 +5513,47 @@ if(TARGET sb_server_core)
     memory_policy_config_conformance.cpp
   )
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+    find_package(Threads REQUIRED)
+    add_executable(route_source_transition_allocation_gate
+      "${PROJECT_SOURCE_DIR}/tests/concurrency/route_source_transition_allocation_gate.cpp")
+    target_compile_features(route_source_transition_allocation_gate PRIVATE cxx_std_23)
+    target_link_libraries(route_source_transition_allocation_gate PRIVATE sb_server_core)
+    add_test(NAME route_source_transition_allocation_gate COMMAND route_source_transition_allocation_gate)
+    set_tests_properties(route_source_transition_allocation_gate PROPERTIES TIMEOUT 30
+      LABELS "runtime;ownership;concurrency;component;not_runtime_acceptance")
+    add_executable(hosted_process_admission_gate
+      "${PROJECT_SOURCE_DIR}/tests/concurrency/hosted_process_admission_gate.cpp")
+    target_compile_features(hosted_process_admission_gate PRIVATE cxx_std_23)
+    target_include_directories(hosted_process_admission_gate PRIVATE "${PROJECT_SOURCE_DIR}/src/server")
+    target_link_libraries(hosted_process_admission_gate PRIVATE Threads::Threads)
+    add_test(NAME hosted_process_admission_gate COMMAND hosted_process_admission_gate)
+    set_tests_properties(hosted_process_admission_gate PROPERTIES TIMEOUT 30
+      LABELS "runtime;ownership;concurrency;component;not_runtime_acceptance")
+    add_executable(server_agent_authority_admission_gate
+      "${PROJECT_SOURCE_DIR}/tests/concurrency/server_agent_authority_admission_gate.cpp")
+    target_compile_features(server_agent_authority_admission_gate PRIVATE cxx_std_23)
+    target_link_libraries(server_agent_authority_admission_gate PRIVATE sb_server_core)
+    target_link_options(server_agent_authority_admission_gate PRIVATE
+      -static-libstdc++
+      "LINKER:--wrap=pthread_join"
+      "LINKER:--wrap=pthread_create"
+      "LINKER:--wrap=_ZN11scratchbird6engine12internal_api22EngineBeginTransactionERKNS1_29EngineBeginTransactionRequestE"
+      "LINKER:--wrap=_ZN11scratchbird6engine12internal_api23EngineCommitTransactionERKNS1_30EngineCommitTransactionRequestE"
+      "LINKER:--wrap=_ZN11scratchbird6engine12internal_api25EngineRollbackTransactionERKNS1_32EngineRollbackTransactionRequestE"
+      "LINKER:--wrap=_ZN11scratchbird6engine12internal_api31PersistAgentDurableCatalogImageERKNS1_31AgentDurableCatalogStoreRequestE")
+    foreach(mode defaults zero-epochs unrelated-epochs health-claims coordinator coordinator-join-retry coordinator-drain
+                 coordinator-race coordinator-start-failure coordinator-launch-failure)
+      add_test(NAME server_agent_authority_admission_${mode}_gate COMMAND server_agent_authority_admission_gate ${mode})
+      set_tests_properties(server_agent_authority_admission_${mode}_gate PROPERTIES TIMEOUT 60
+        LABELS "runtime;security;admission;component;not_runtime_acceptance")
+    endforeach()
     add_executable(server_host_descriptor_recovery_gate
       "${PROJECT_SOURCE_DIR}/tests/concurrency/server_host_descriptor_recovery_gate.cpp")
     target_compile_features(server_host_descriptor_recovery_gate PRIVATE cxx_std_23)
     target_link_libraries(server_host_descriptor_recovery_gate PRIVATE sb_server_core)
     target_link_options(server_host_descriptor_recovery_gate PRIVATE
       "LINKER:--wrap=sb_engine_open" "LINKER:--wrap=sb_engine_close")
-    foreach(mode host-normal host-read-only host-maintenance host-restricted
+    foreach(mode host-normal host-read-only host-maintenance host-restricted host-fork
                  abi-normal abi-read-only abi-maintenance mismatch
                  host-corrupt-error host-corrupt-source abi-corrupt-error abi-corrupt-source)
       add_test(NAME server_host_descriptor_recovery_${mode}_gate COMMAND server_host_descriptor_recovery_gate ${mode})
@@ -5565,10 +5599,10 @@ if(TARGET sb_server_core)
     target_link_libraries(server_crypto_config_bootstrap_gate PRIVATE sb_server_core)
     target_link_options(server_crypto_config_bootstrap_gate PRIVATE
       "LINKER:--wrap=RAND_bytes" "LINKER:--wrap=getrandom" "LINKER:--wrap=write" "LINKER:--wrap=uname"
-      "LINKER:--wrap=mlock" "LINKER:--wrap=madvise")
+      "LINKER:--wrap=mlock" "LINKER:--wrap=madvise" "LINKER:--wrap=PKCS5_PBKDF2_HMAC")
     foreach(mode default override diag diag_source_failure diag_write_eintr diag_write_partial diag_write_full
                  fail_adopt fail_install fail_prepare host_default host_override host_startup host_platform_startup host_platform_refusal host_bad_config
-                 host_low_budget host_reservation_refusal host_late_provider host_foreign_thread host_product
+                 host_low_budget host_reservation_refusal host_late_provider host_foreign_thread host_product host_native_resources
                  host_lock_refusal host_no_dump_refusal host_lock_startup_refusal host_no_dump_startup_refusal)
       add_test(NAME server_crypto_config_bootstrap_${mode}_gate COMMAND server_crypto_config_bootstrap_gate ${mode})
       set_tests_properties(server_crypto_config_bootstrap_${mode}_gate PROPERTIES

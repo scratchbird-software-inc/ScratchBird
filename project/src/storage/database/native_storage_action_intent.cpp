@@ -152,7 +152,7 @@ template<class Operation> bool BindsIntent(const Operation& o,const I& i){
 NativeStorageIntentImage ReadNativeStorageActionIntentFromOperation(const NativeManagementOperation& o,u64 budget) noexcept {
   if(budget<kNativeStorageActionIntentBytes)return Fail(E::resource_exhausted);
   // Bound framing before hashing arbitrary retained input.
-  if(o.normalized_request_bytes.size()!=kNativeStorageActionIntentBytes)return Fail(E::invalid_header);
+  if(o.normalized_request_bytes.size()!=kNativeStorageActionIntentBytes||!o.operation_state_bytes.empty())return Fail(E::invalid_header);
   const auto validation=ValidateNativeManagementOperation(o);
   if(validation!=NativeManagementOperationError::none){
     auto r=Fail(validation==NativeManagementOperationError::hash_failure?E::hash_failure:
@@ -168,7 +168,7 @@ NativeStorageIntentViewImage ReadNativeStorageActionIntentFromOperationView(
     const NativeManagementOperationView& o,u64 budget,std::span<Uuid> identities) noexcept {
   const auto fail=[](E error){NativeStorageIntentViewImage out;out.error=error;return out;};
   if(budget<kNativeStorageActionIntentBytes)return fail(E::resource_exhausted);
-  if(o.normalized_request_bytes.size()!=kNativeStorageActionIntentBytes)return fail(E::invalid_header);
+  if(o.normalized_request_bytes.size()!=kNativeStorageActionIntentBytes||!o.operation_state_bytes.empty())return fail(E::invalid_header);
   const auto validation=ValidateNativeManagementOperationView(o,identities);
   if(validation!=NativeManagementOperationError::none){
     auto r=fail(validation==NativeManagementOperationError::hash_failure?E::hash_failure:

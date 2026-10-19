@@ -44,7 +44,8 @@ std::string StartupSummaryJson(const ServerBootstrapConfig& config,
                                const ServerLifecycleArtifacts& artifacts) {
   std::ostringstream out;
   out << "{\"server_startup\":{\"accepted\":true,"
-      << "\"serving\":" << (config.sbps_enabled ? "true" : "false") << ","
+      << "\"serving\":false,"
+      << "\"serving_requested\":" << (config.sbps_enabled ? "true" : "false") << ","
       << "\"mode\":\"" << ServerModeName(config.mode) << "\","
       << "\"state\":\"" << artifacts.state << "\","
       << "\"state_generation\":" << artifacts.generation << ","

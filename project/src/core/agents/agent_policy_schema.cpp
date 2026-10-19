@@ -106,6 +106,13 @@ AgentPolicyFieldSchema TokenList(std::string name,
                std::move(default_value), required);
 }
 
+AgentPolicyFieldSchema Choice(std::string name,std::string default_value,
+                              std::vector<std::string> allowed_values) {
+  auto field=Token(std::move(name),std::move(default_value));
+  field.allowed_values=std::move(allowed_values);
+  return field;
+}
+
 FieldList CommonResourceBudgetFields() {
   return {
       Bool("protect_foreground_work", "true", false),
@@ -227,12 +234,41 @@ const std::map<std::string, FieldList>& PolicySchemaMap() {
         Bool("version_compatibility_required")}},
       {"agent_coordinator_policy",
        {Bool("startup_launch_enabled", "true"),
+        Choice("startup_verification_class", "startup_full_verify",
+               {"startup_light_verify", "startup_full_verify"}),
+        Field("startup_clock_max_backward_ns",AgentPolicyFieldType::unsigned_integer,"nanoseconds","0",true,0.0),
+        Field("startup_clock_max_forward_jump_ns",AgentPolicyFieldType::unsigned_integer,"nanoseconds","60000000000",true,0.0),
+        Bool("startup_clock_fail_on_rollback","true"),
+        Bool("startup_clock_fail_on_monotonic_regression","true"),
+        Bool("startup_clock_fail_on_forward_jump","false"),
+        Field("startup_uuid_max_regression_ms",AgentPolicyFieldType::unsigned_integer,"milliseconds","0",true,0.0,281474976710655.0),
+        Field("startup_uuid_same_ms_wait_timeout_ms",AgentPolicyFieldType::unsigned_integer,"milliseconds","1000",true,1.0,18446744073709.0),
         Bool("go_no_go_required", "true"),
         TokenList("managed_layers", "L1,L2,L3"),
         Bool("worker_launch_forbidden", "true"),
         Count("max_agents_per_cycle", "128"),
         Count("max_schedule_queue_depth", "1024"),
-        DurationMicros("schedule_interval_microseconds", "1000000")}},
+        DurationMicros("schedule_interval_microseconds", "1000000"),
+        Token("startup_agent", "startup_agent"),
+        Token("shutdown_agent", "shutdown_agent"),
+        Bool("coordinator_stops_last", "true")}},
+      {"agent_startup_policy",
+       {Token("launch_trigger", "coordinator_startup"),
+        Bool("engine_verification_required", "true"),
+        Bool("committed_policy_required", "true"),
+        Bool("child_readiness_required", "true"),
+        Bool("configured_components_only", "true"),
+        TokenList("dependency_order", "memory_governor,filespace_capacity_manager,page_allocation_manager"),
+        DurationMicros("readiness_timeout_microseconds", "30000000"),
+        Count("max_retry_attempts", "3")}},
+      {"agent_shutdown_policy",
+       {Token("launch_trigger", "coordinator_shutdown"),
+        Bool("withdraw_admission_first", "true"),
+        Bool("reverse_dependency_drain", "true"),
+        Bool("drain_observations_before_recorders", "true"),
+        Bool("engine_final_receipt_required", "true"),
+        Bool("cooperative_cancellation_only", "true"),
+        DurationMicros("drain_timeout_microseconds", "30000000")}},
       {"coordinator_policy",
        {DurationMicros("heartbeat_interval_microseconds", "1000000"),
         DurationMicros("coordinator_log_poll_interval_microseconds", "10000"),
@@ -336,6 +372,9 @@ AgentRuntimeStatus ValidateFieldValue(const AgentPolicyFieldSchema& schema,
     return AgentError("SB_AGENT_POLICY_SCHEMA.EMPTY_VALUE",
                       policy_family + ":" + schema.name);
   }
+  if(!schema.allowed_values.empty()&&
+      std::find(schema.allowed_values.begin(),schema.allowed_values.end(),value)==schema.allowed_values.end())
+    return AgentError("SB_AGENT_POLICY_SCHEMA.RANGE_VIOLATION",policy_family+":"+schema.name);
   switch (schema.type) {
     case AgentPolicyFieldType::boolean:
       if (value != "true" && value != "false") {

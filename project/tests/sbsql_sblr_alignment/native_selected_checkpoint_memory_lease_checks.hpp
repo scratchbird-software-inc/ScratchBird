@@ -113,7 +113,8 @@ void Same(const db::NativeBoundCheckpointSelection& a,const db::NativeCheckpoint
   "both retained physical selector images");
  SameInventory(a.checkpoint_inventory,selected.checkpoint_inventory);SameInventory(a.predecessor,selected.predecessor);
  SameAllocation(a.allocation,selected.allocation);
- Check(b.retained_image_bytes==directory.retained_image_bytes,"complete current-directory verification charge");
+ Check(b.retained_image_bytes==selected.retained_image_bytes+directory.retained_image_bytes,
+  "directory retains the identical complete proof while shared selected images are charged once");
  SameInventory(b.checkpoint_inventory,directory.checkpoint_inventory);SameDirectory(b.directory,directory.directory);
 }
 
@@ -128,7 +129,7 @@ void Checks(std::span<const d::NativeFilespaceDevice> files,u64 allowance,bool d
   auto original=db::AcquireNativeSelectedCheckpointReadLease(database,supplied,primary,allowance);
   Check(original.ok(),"actual full selected lease independently verified before memory admission");
   expected_selection=original.lease->selection();expected_directory=original.lease->directory();
-  root=original.lease->checkpoint();images=original.lease->retained_image_bytes();
+  root=original.lease->checkpoint();images=original.lease->retained_image_bytes()-expected_selection.retained_image_bytes;
  } // Release every legacy guard before admitting the actual grant.
  // Measure actual decoded work, not four times a repeated proof-image charge.
  // The temporary measurement is test-only and is gone before real admission.
@@ -150,8 +151,11 @@ void Checks(std::span<const d::NativeFilespaceDevice> files,u64 allowance,bool d
   std::vector<std::unique_ptr<d::FileDevice::ReadLatencyBatch>> owners;
   std::vector<d::FileDevice::ReadLatencyBatch*> batches;
   for(const auto& file:files){owners.push_back(std::make_unique<d::FileDevice::ReadLatencyBatch>(*file.device));batches.push_back(owners.back().get());}
+  std::vector<std::unique_lock<std::recursive_mutex>> source_guards;
+  for(const auto& file:files)source_guards.push_back(file.device->AcquireOperationGuard());
   const auto selected=db::detail::ReadNativeBoundCheckpointSelectionBacked(database,files,primary,allowance,batches,resource);
-  const auto directory=db::detail::VerifyCurrentNativeCheckpointDirectoryBacked(database,files,root,allowance-selected.selection.retained_image_bytes,batches,resource);
+  const auto directory=db::detail::VerifyRetainedNativeCheckpointDirectoryBacked(database,files,root,selected.selection,
+      allowance-selected.selection.retained_image_bytes,batches,resource);
   Check(selected.ok()&&directory.ok(),"measure complete lease dependencies through the explicit test resource");
   measured=resource.used;
  }

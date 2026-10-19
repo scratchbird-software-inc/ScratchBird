@@ -1341,7 +1341,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_link_libraries(sbsql_sblr_alignment_database_creation_artifact_ownership PRIVATE sb_storage_database)
   target_link_options(sbsql_sblr_alignment_database_creation_artifact_ownership PRIVATE
     -Wl,--wrap=_ZNSt10filesystem14symlink_statusERKNS_7__cxx114pathERSt10error_code
-    -Wl,--wrap=_ZNSt10filesystem6removeERKNS_7__cxx114pathERSt10error_code -Wl,--wrap=pwrite)
+    -Wl,--wrap=_ZNSt10filesystem6removeERKNS_7__cxx114pathERSt10error_code
+    -Wl,--wrap=pwrite -Wl,--wrap=pread -Wl,--wrap=close)
   add_test(NAME sbsql_sblr_alignment_database_creation_artifact_ownership
     COMMAND sbsql_sblr_alignment_database_creation_artifact_ownership)
   set_tests_properties(sbsql_sblr_alignment_database_creation_artifact_ownership PROPERTIES
@@ -2465,12 +2466,92 @@ foreach(codec_target IN LISTS catalog_dispatcher_fixture_targets)
   target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_bootstrap_policy.cpp)
   target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_memory_configuration.cpp)
   target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_identifier_profile.cpp)
+  target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_naming_dialect_profile.cpp)
+  target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_naming_collision_policy.cpp)
   target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_construction_intent.cpp)
   target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_policy_descriptor.cpp)
+  target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_verification_policy.cpp)
+  target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_evidence_policy.cpp)
+  target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_authorization_policy.cpp)
+  target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_transaction_policy.cpp)
+  target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_lock_policy.cpp)
+  target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_isolation_profile.cpp)
+  target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_management_descriptor.cpp)
 endforeach()
 
 add_executable(sbsql_sblr_alignment_catalog_construction_intent catalog_construction_intent_test.cpp)
+add_executable(sbsql_sblr_alignment_catalog_management_descriptor catalog_management_descriptor_test.cpp)
+target_compile_features(sbsql_sblr_alignment_catalog_management_descriptor PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_catalog_management_descriptor PRIVATE sb_storage_database)
+add_test(NAME sbsql_sblr_alignment_catalog_management_descriptor COMMAND sbsql_sblr_alignment_catalog_management_descriptor)
+set_tests_properties(sbsql_sblr_alignment_catalog_management_descriptor PROPERTIES
+  LABELS "sbsql_sblr_alignment;catalog;binary_uuid;native_storage;component_not_live_admission" TIMEOUT 30)
 add_executable(sbsql_sblr_alignment_catalog_policy_descriptor catalog_policy_descriptor_test.cpp)
+add_executable(sbsql_sblr_alignment_catalog_evidence_policy catalog_evidence_policy_test.cpp)
+target_compile_features(sbsql_sblr_alignment_catalog_evidence_policy PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_catalog_evidence_policy PRIVATE sb_storage_database)
+add_test(NAME sbsql_sblr_alignment_catalog_evidence_policy COMMAND sbsql_sblr_alignment_catalog_evidence_policy)
+set_tests_properties(sbsql_sblr_alignment_catalog_evidence_policy PROPERTIES
+  LABELS "sbsql_sblr_alignment;catalog;binary_uuid;native_policy;not_runtime_acceptance" TIMEOUT 120)
+add_executable(sbsql_sblr_alignment_catalog_authorization_policy catalog_authorization_policy_test.cpp)
+target_compile_features(sbsql_sblr_alignment_catalog_authorization_policy PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_catalog_authorization_policy PRIVATE sb_storage_database)
+add_test(NAME sbsql_sblr_alignment_catalog_authorization_policy COMMAND sbsql_sblr_alignment_catalog_authorization_policy)
+set_tests_properties(sbsql_sblr_alignment_catalog_authorization_policy PROPERTIES
+  LABELS "sbsql_sblr_alignment;catalog;binary_uuid;native_policy;not_runtime_acceptance" TIMEOUT 120)
+add_executable(sbsql_sblr_alignment_catalog_transaction_policy catalog_transaction_policy_test.cpp)
+target_compile_features(sbsql_sblr_alignment_catalog_transaction_policy PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_catalog_transaction_policy PRIVATE sb_storage_database)
+add_test(NAME sbsql_sblr_alignment_catalog_transaction_policy COMMAND sbsql_sblr_alignment_catalog_transaction_policy)
+set_tests_properties(sbsql_sblr_alignment_catalog_transaction_policy PROPERTIES
+  LABELS "sbsql_sblr_alignment;catalog;binary_uuid;native_policy;not_runtime_acceptance" TIMEOUT 120)
+add_executable(sbsql_sblr_alignment_catalog_lock_policy catalog_lock_policy_test.cpp)
+target_compile_features(sbsql_sblr_alignment_catalog_lock_policy PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_catalog_lock_policy PRIVATE sb_storage_database)
+add_test(NAME sbsql_sblr_alignment_catalog_lock_policy COMMAND sbsql_sblr_alignment_catalog_lock_policy)
+set_tests_properties(sbsql_sblr_alignment_catalog_lock_policy PROPERTIES
+  LABELS "sbsql_sblr_alignment;catalog;binary_uuid;native_policy;not_runtime_acceptance" TIMEOUT 120)
+add_executable(sbsql_sblr_alignment_catalog_isolation_profile catalog_isolation_profile_test.cpp)
+target_compile_features(sbsql_sblr_alignment_catalog_isolation_profile PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_catalog_isolation_profile PRIVATE sb_storage_database)
+add_test(NAME sbsql_sblr_alignment_catalog_isolation_profile COMMAND sbsql_sblr_alignment_catalog_isolation_profile)
+set_tests_properties(sbsql_sblr_alignment_catalog_isolation_profile PROPERTIES
+  LABELS "sbsql_sblr_alignment;catalog;binary_uuid;native_policy;not_runtime_acceptance" TIMEOUT 120)
+add_executable(sbsql_sblr_alignment_native_local_transaction_candidate native_local_transaction_candidate_test.cpp)
+add_executable(sbsql_sblr_alignment_native_snapshot_inventory native_snapshot_inventory_test.cpp)
+target_compile_features(sbsql_sblr_alignment_native_snapshot_inventory PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_snapshot_inventory PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(sbsql_sblr_alignment_native_snapshot_inventory PRIVATE sb_storage_database)
+add_test(NAME sbsql_sblr_alignment_native_snapshot_inventory COMMAND sbsql_sblr_alignment_native_snapshot_inventory)
+set_tests_properties(sbsql_sblr_alignment_native_snapshot_inventory PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_transaction;snapshot_projection;component_not_live_admission" TIMEOUT 60)
+target_compile_features(sbsql_sblr_alignment_native_local_transaction_candidate PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_local_transaction_candidate PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(sbsql_sblr_alignment_native_local_transaction_candidate PRIVATE sb_storage_database)
+add_test(NAME sbsql_sblr_alignment_native_local_transaction_candidate COMMAND sbsql_sblr_alignment_native_local_transaction_candidate)
+set_tests_properties(sbsql_sblr_alignment_native_local_transaction_candidate PROPERTIES
+  LABELS "sbsql_sblr_alignment;native_storage;MGA;component_not_live_admission" TIMEOUT 30)
+
+add_executable(sbsql_sblr_alignment_native_startup_transaction_history native_startup_transaction_history_test.cpp)
+target_compile_features(sbsql_sblr_alignment_native_startup_transaction_history PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_startup_transaction_history PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(sbsql_sblr_alignment_native_startup_transaction_history PRIVATE sb_storage_database)
+add_test(NAME sbsql_sblr_alignment_native_startup_transaction_history COMMAND sbsql_sblr_alignment_native_startup_transaction_history)
+set_tests_properties(sbsql_sblr_alignment_native_startup_transaction_history PROPERTIES
+  LABELS "sbsql_sblr_alignment;native_storage;MGA;component_not_recovery_authority" TIMEOUT 30)
+
+add_executable(sbsql_sblr_alignment_catalog_agent_bootstrap catalog_agent_bootstrap_test.cpp)
+target_compile_features(sbsql_sblr_alignment_catalog_agent_bootstrap PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_catalog_agent_bootstrap PRIVATE sb_storage_database)
+add_test(NAME sbsql_sblr_alignment_catalog_agent_bootstrap COMMAND sbsql_sblr_alignment_catalog_agent_bootstrap)
+set_tests_properties(sbsql_sblr_alignment_catalog_agent_bootstrap PROPERTIES
+  LABELS "sbsql_sblr_alignment;catalog;binary_uuid;native_policy;not_runtime_acceptance" TIMEOUT 120)
+add_executable(sbsql_sblr_alignment_catalog_verification_policy catalog_verification_policy_test.cpp)
+target_compile_features(sbsql_sblr_alignment_catalog_verification_policy PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_catalog_verification_policy PRIVATE sb_storage_database)
+add_test(NAME sbsql_sblr_alignment_catalog_verification_policy COMMAND sbsql_sblr_alignment_catalog_verification_policy)
+set_tests_properties(sbsql_sblr_alignment_catalog_verification_policy PROPERTIES
+  LABELS "sbsql_sblr_alignment;catalog;binary_uuid;native_policy;not_runtime_acceptance" TIMEOUT 120)
 add_executable(sbsql_sblr_alignment_catalog_crypto_inline_private_key_policy catalog_crypto_inline_private_key_policy_test.cpp)
 target_compile_features(sbsql_sblr_alignment_catalog_crypto_inline_private_key_policy PRIVATE cxx_std_23)
 target_link_libraries(sbsql_sblr_alignment_catalog_crypto_inline_private_key_policy PRIVATE sb_storage_database)
@@ -2509,6 +2590,20 @@ target_link_libraries(sbsql_sblr_alignment_catalog_identifier_profile PRIVATE sb
 add_test(NAME sbsql_sblr_alignment_catalog_identifier_profile COMMAND sbsql_sblr_alignment_catalog_identifier_profile)
 set_tests_properties(sbsql_sblr_alignment_catalog_identifier_profile PROPERTIES
   LABELS "sbsql_sblr_alignment;catalog;binary_uuid;native_configuration;not_runtime_acceptance" TIMEOUT 120)
+
+add_executable(sbsql_sblr_alignment_catalog_naming_dialect_profile catalog_naming_dialect_profile_test.cpp)
+target_compile_features(sbsql_sblr_alignment_catalog_naming_dialect_profile PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_catalog_naming_dialect_profile PRIVATE sb_storage_database)
+add_test(NAME sbsql_sblr_alignment_catalog_naming_dialect_profile COMMAND sbsql_sblr_alignment_catalog_naming_dialect_profile)
+set_tests_properties(sbsql_sblr_alignment_catalog_naming_dialect_profile PROPERTIES
+  LABELS "sbsql_sblr_alignment;catalog;binary_uuid;native_configuration;not_runtime_acceptance" TIMEOUT 120)
+
+add_executable(sbsql_sblr_alignment_catalog_naming_collision_policy catalog_naming_collision_policy_test.cpp)
+target_compile_features(sbsql_sblr_alignment_catalog_naming_collision_policy PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_catalog_naming_collision_policy PRIVATE sb_storage_database)
+add_test(NAME sbsql_sblr_alignment_catalog_naming_collision_policy COMMAND sbsql_sblr_alignment_catalog_naming_collision_policy)
+set_tests_properties(sbsql_sblr_alignment_catalog_naming_collision_policy PROPERTIES
+  LABELS "sbsql_sblr_alignment;catalog;binary_uuid;native_policy;not_runtime_acceptance" TIMEOUT 120)
 
 add_executable(sbsql_sblr_alignment_catalog_memory_configuration catalog_memory_configuration_test.cpp)
 target_compile_features(sbsql_sblr_alignment_catalog_memory_configuration PRIVATE cxx_std_23)
@@ -3680,14 +3775,15 @@ set_tests_properties(sbsql_sblr_alignment_native_runtime_security_observation PR
   LABELS "sbsql_sblr_alignment;native_storage;binary_uuid;security_source;component_not_live_admission"
   TIMEOUT 120)
 add_executable(sbsql_sblr_alignment_native_runtime_principal_credential
-  native_runtime_principal_credential_test.cpp)
+  native_runtime_principal_credential_test.cpp
+  ${PROJECT_SOURCE_DIR}/src/server/database_ownership.cpp)
 target_compile_features(sbsql_sblr_alignment_native_runtime_principal_credential PRIVATE cxx_std_23)
 target_include_directories(sbsql_sblr_alignment_native_runtime_principal_credential PRIVATE
   ${PROJECT_SOURCE_DIR}/src
   ${PROJECT_SOURCE_DIR}/src/core/runtime
   ${PROJECT_SOURCE_DIR}/src/engine/internal_api)
 target_link_libraries(sbsql_sblr_alignment_native_runtime_principal_credential PRIVATE
-  sb_storage_database OpenSSL::Crypto)
+  sb_engine_internal_api sb_storage_database OpenSSL::Crypto)
 target_link_options(sbsql_sblr_alignment_native_runtime_principal_credential PRIVATE
   -Wl,--wrap=_ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv
   "-Wl,--wrap=RAND_bytes" "-Wl,--wrap=EVP_Digest"
@@ -3699,6 +3795,28 @@ add_test(NAME sbsql_sblr_alignment_native_runtime_principal_credential
 set_tests_properties(sbsql_sblr_alignment_native_runtime_principal_credential PROPERTIES
   LABELS "sbsql_sblr_alignment;native_storage;binary_uuid;security_source;protected_memory;credential_verification;component_not_live_admission"
   TIMEOUT 120)
+add_executable(sbsql_sblr_alignment_native_local_service_enrollment
+  native_local_service_enrollment_test.cpp
+  ${PROJECT_SOURCE_DIR}/src/server/database_ownership.cpp)
+target_compile_features(sbsql_sblr_alignment_native_local_service_enrollment PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_local_service_enrollment PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+  ${PROJECT_SOURCE_DIR}/src/core/runtime
+  ${PROJECT_SOURCE_DIR}/src/engine/internal_api)
+target_compile_definitions(sbsql_sblr_alignment_native_local_service_enrollment PRIVATE
+  SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password")
+target_link_libraries(sbsql_sblr_alignment_native_local_service_enrollment PRIVATE
+  sb_server_core sb_engine_internal_api sb_storage_database OpenSSL::Crypto)
+get_target_property(native_credential_fixture_link_options
+  sbsql_sblr_alignment_native_runtime_principal_credential LINK_OPTIONS)
+target_link_options(sbsql_sblr_alignment_native_local_service_enrollment PRIVATE
+  ${native_credential_fixture_link_options}
+  "-Wl,--wrap=free" "-Wl,--wrap=pthread_mutex_lock" "-Wl,--wrap=pthread_mutex_unlock" "-Wl,--wrap=clock_gettime")
+add_test(NAME sbsql_sblr_alignment_native_local_service_enrollment
+  COMMAND sbsql_sblr_alignment_native_local_service_enrollment)
+set_tests_properties(sbsql_sblr_alignment_native_local_service_enrollment PROPERTIES
+  LABELS "sbsql_sblr_alignment;native_storage;native_service_enrollment;protected_memory;selected_catalog_discovery;component_not_live_admission"
+  TIMEOUT 300)
 add_executable(sbsql_sblr_alignment_native_runtime_authorization_projection
   native_runtime_authorization_projection_test.cpp)
 target_compile_features(sbsql_sblr_alignment_native_runtime_authorization_projection PRIVATE cxx_std_23)
@@ -3747,6 +3865,22 @@ foreach(fault_shard RANGE 0 15)
     LABELS "sbsql_sblr_alignment;native_storage;binary_uuid;writer_custody;fault_injection;component_not_live_admission"
     TIMEOUT 120)
 endforeach()
+add_executable(sbsql_sblr_alignment_native_hosted_database_custody
+  native_hosted_database_custody_test.cpp
+  ${PROJECT_SOURCE_DIR}/src/server/database_ownership.cpp)
+target_compile_features(sbsql_sblr_alignment_native_hosted_database_custody PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_hosted_database_custody PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(sbsql_sblr_alignment_native_hosted_database_custody PRIVATE
+  sb_storage_database OpenSSL::Crypto Threads::Threads)
+target_link_options(sbsql_sblr_alignment_native_hosted_database_custody PRIVATE
+  -Wl,--wrap=_ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv
+  "-Wl,--wrap=RAND_bytes" "-Wl,--wrap=EVP_Digest" "-Wl,--wrap=posix_fallocate"
+  "-Wl,--wrap=EVP_MD_CTX_new" "-Wl,--wrap=EVP_DigestInit_ex" "-Wl,--wrap=EVP_DigestUpdate"
+  "-Wl,--wrap=EVP_DigestFinal_ex" "-Wl,--wrap=pread" "-Wl,--wrap=pwrite" "-Wl,--wrap=fsync" "-Wl,--wrap=malloc"
+  "-Wl,--wrap=free" "-Wl,--wrap=aligned_alloc" "-Wl,--wrap=pthread_mutex_lock" "-Wl,--wrap=pthread_mutex_unlock")
+add_test(NAME sbsql_sblr_alignment_native_hosted_database_custody COMMAND sbsql_sblr_alignment_native_hosted_database_custody)
+set_tests_properties(sbsql_sblr_alignment_native_hosted_database_custody PROPERTIES
+  LABELS "sbsql_sblr_alignment;native_storage;host_custody;component_not_live_admission" TIMEOUT 300)
 endif()
 
 add_executable(sbsql_sblr_alignment_native_key_value_collection
@@ -10255,7 +10389,8 @@ target_link_libraries(sbsql_sblr_alignment_reservation_backed_resource_ownership
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_compile_definitions(sbsql_sblr_alignment_reservation_backed_resource_ownership PRIVATE
     SB_PROTECTED_RESOURCE_NATIVE_OBSERVATION=1)
-  target_link_options(sbsql_sblr_alignment_reservation_backed_resource_ownership PRIVATE "-Wl,--wrap=munlock")
+  target_link_options(sbsql_sblr_alignment_reservation_backed_resource_ownership PRIVATE
+    "-Wl,--wrap=munlock" "-Wl,--wrap=_ZnwmSt11align_val_t" "-Wl,--wrap=_ZdlPvSt11align_val_t")
 endif()
 add_test(NAME sbsql_sblr_alignment_reservation_backed_resource_ownership
   COMMAND sbsql_sblr_alignment_reservation_backed_resource_ownership)
@@ -10408,6 +10543,27 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(sbsql_sblr_alignment_native_publication_watermark native_publication_watermark_test.cpp)
   add_executable(sbsql_sblr_alignment_native_publication_plan native_publication_plan_test.cpp)
   add_executable(sbsql_sblr_alignment_native_management_operation native_management_operation_test.cpp)
+  add_executable(sbsql_sblr_alignment_native_policy_activation_state native_policy_activation_state_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_native_policy_activation_state PRIVATE cxx_std_23)
+  target_include_directories(sbsql_sblr_alignment_native_policy_activation_state PRIVATE ${PROJECT_SOURCE_DIR}/src)
+  target_link_libraries(sbsql_sblr_alignment_native_policy_activation_state PRIVATE sb_storage_database)
+  add_test(NAME sbsql_sblr_alignment_native_policy_activation_state COMMAND sbsql_sblr_alignment_native_policy_activation_state)
+  set_tests_properties(sbsql_sblr_alignment_native_policy_activation_state PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_policy_activation;durable_state;component_not_live_admission" TIMEOUT 120)
+  add_executable(sbsql_sblr_alignment_native_startup_admission_evidence native_startup_admission_evidence_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_native_startup_admission_evidence PRIVATE cxx_std_23)
+  target_include_directories(sbsql_sblr_alignment_native_startup_admission_evidence PRIVATE ${PROJECT_SOURCE_DIR}/src)
+  target_link_libraries(sbsql_sblr_alignment_native_startup_admission_evidence PRIVATE sb_storage_database)
+  add_test(NAME sbsql_sblr_alignment_native_startup_admission_evidence COMMAND sbsql_sblr_alignment_native_startup_admission_evidence)
+  set_tests_properties(sbsql_sblr_alignment_native_startup_admission_evidence PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_startup_admission_evidence;durable_state;component_not_live_admission" TIMEOUT 120)
+  add_executable(sbsql_sblr_alignment_native_verification_operation native_verification_operation_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_native_verification_operation PRIVATE cxx_std_23)
+  target_include_directories(sbsql_sblr_alignment_native_verification_operation PRIVATE ${PROJECT_SOURCE_DIR}/src)
+  target_link_libraries(sbsql_sblr_alignment_native_verification_operation PRIVATE sb_storage_database)
+  add_test(NAME sbsql_sblr_alignment_native_verification_operation COMMAND sbsql_sblr_alignment_native_verification_operation)
+  set_tests_properties(sbsql_sblr_alignment_native_verification_operation PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_verification;durable_state;component_not_live_admission" TIMEOUT 120)
   add_executable(sbsql_sblr_alignment_native_management_extent native_management_extent_test.cpp)
   add_executable(sbsql_sblr_alignment_native_management_install native_management_install_test.cpp)
   add_executable(sbsql_sblr_alignment_native_management_history native_management_history_test.cpp)

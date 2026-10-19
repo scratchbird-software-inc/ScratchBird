@@ -29,8 +29,18 @@ add_library(sb_core_catalog
   catalog_bootstrap_policy.cpp
   catalog_memory_configuration.cpp
   catalog_identifier_profile.cpp
+  catalog_identifier_lookup_key.cpp
+  catalog_naming_dialect_profile.cpp
+  catalog_naming_collision_policy.cpp
   catalog_construction_intent.cpp
   catalog_policy_descriptor.cpp
+  catalog_management_descriptor.cpp
+  catalog_verification_policy.cpp
+  catalog_evidence_policy.cpp
+  catalog_authorization_policy.cpp
+  catalog_transaction_policy.cpp
+  catalog_lock_policy.cpp
+  catalog_isolation_profile.cpp
   memory_configuration_import.cpp
   catalog_table_definition.cpp
   catalog_table_datatype_binding.cpp

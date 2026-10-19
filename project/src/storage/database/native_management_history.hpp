@@ -114,6 +114,19 @@ NativeManagementGraphHistory ReadNativeManagementGraphHistoryAtHistoricalContext
 NativeManagementHistoryError ValidateNativeManagementHistoryAppend(
   const NativeManagementGraphHistory&,const NativeManagementOperation&,
   u64 maximum_index_bytes,const std::optional<NativeStartupBinding>& startup_binding = {}) noexcept;
+struct NativeManagementHistoryAppendResult {
+  NativeManagementHistoryError error=NativeManagementHistoryError::invalid_request;
+  std::size_t backing_bytes_used=0;
+  bool ok() const noexcept{return error==NativeManagementHistoryError::none;}
+};
+// Bounded equivalent of the owning append validator. Rebuilds semantic, step
+// and idempotency indexes from the complete chronological record sequence;
+// ignores caller-provided lookup indexes. Backing must exclude the history,
+// entry descriptors, appended binding and every operation/step field it reads.
+// No I/O, allocation grant, execution or publication authority is issued.
+NativeManagementHistoryAppendResult ValidateNativeManagementHistoryAppendInto(
+  const NativeManagementHistoryView&,const NativeManagementOperationView&,
+  std::span<byte> backing,const std::optional<NativeStartupBinding>& startup_binding={}) noexcept;
 // Actual selected physical history and common evolution/uniqueness only.
 // NOT allocation/creator outcome, kernel authentication, effects or serving.
 NativeManagementHistory ReadNativeManagementHistoryFromOpenDevices(const Uuid& database,

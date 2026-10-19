@@ -65,6 +65,11 @@ struct ServerAgentRuntimeStopResult {
 struct ServerAgentRuntimeSnapshot {
   bool started = false;
   bool stopping = false;
+  std::string startup_agent_state = "not_started";
+  std::string shutdown_agent_state = "not_started";
+  std::string coordinator_thread_id;
+  std::string startup_agent_thread_id;
+  std::string shutdown_agent_thread_id;
   ServerAgentRuntimeStopResult stop_result;
   // Retained failure evidence, not the current cleanup disposition. A later
   // successful join does not erase either original exception.
@@ -129,6 +134,16 @@ class ServerAgentRuntime {
              const HostedEngineState& engine_state,
              std::vector<ServerDiagnostic>* diagnostics,
              void (*before_failure_cleanup)() noexcept = nullptr);
+  // IPC startup owns a coordinator even when no background work is configured.
+  // Only committed database declarations may select its workers. A copyable
+  // status snapshot cannot substitute for the retained database owner.
+  bool StartCoordinator(const ServerBootstrapConfig& config,
+                        const HostedEngineState& engine_state,
+                        std::vector<ServerDiagnostic>* diagnostics,
+                        void (*before_failure_cleanup)() noexcept = nullptr);
+  // Withdraw new scheduled work while the IPC owner drains its sessions and
+  // components. Keep the coordinator and ownership until Stop completes joins.
+  void BeginDrain();
   // Start and Stop serialize their complete lifecycle operations. A Stop racing
   // with Start waits through native cohort creation or failure cleanup before
   // it examines/join-cleans that cohort. This does not cancel an in-flight Start.
@@ -146,8 +161,16 @@ class ServerAgentRuntime {
   ServerAgentRuntimeSnapshot Snapshot() const;
 
  private:
+  bool StartImpl(const ServerBootstrapConfig& config,
+                 const HostedEngineState& engine_state,
+                 std::vector<ServerDiagnostic>* diagnostics,
+                 void (*before_failure_cleanup)() noexcept,
+                 bool database_configured);
   // Caller holds lifecycle_mutex_; used by Start's native-failure unwind too.
   ServerAgentRuntimeStopResult StopWithLifecycleLock();
+  bool InitializeConfiguredAgents(const ServerBootstrapConfig& config,
+                                  std::vector<ServerDiagnostic>* diagnostics);
+  ServerAgentRuntimeStopResult CompleteDurableShutdown();
   struct WorkerEvidence {
     std::string name;
     std::string role;
@@ -193,6 +216,18 @@ class ServerAgentRuntime {
   std::mutex schedule_mutex_;
   std::condition_variable schedule_cv_;
   bool started_ = false;
+  bool durable_service_started_ = false;
+  bool coordinator_mode_ = false;
+  bool coordinator_startup_complete_ = false;
+  // Protected by schedule_mutex_. A failed native join leaves the coordinator
+  // waiting with its database owner retained until a later Stop retries it.
+  bool coordinator_children_joined_ = false;
+  std::exception_ptr coordinator_shutdown_failure_;
+  std::string startup_agent_state_ = "not_started";
+  std::string shutdown_agent_state_ = "not_started";
+  std::string startup_agent_thread_id_;
+  std::string shutdown_agent_thread_id_;
+  std::optional<DatabaseOwnershipLock::CoordinatorLease> coordinator_lease_;
   ServerAgentRuntimeStopResult last_stop_result_;
   std::exception_ptr startup_failure_;
   std::exception_ptr cleanup_failure_;
@@ -213,10 +248,6 @@ class ServerAgentRuntime {
   std::uint64_t scheduler_ticks_ = 0;
   std::vector<std::uint64_t> worker_completed_generations_;
   std::string scheduler_thread_id_;
-  std::uint64_t catalog_generation_id_ = 1;
-  std::uint64_t security_epoch_ = 1;
-  std::uint64_t resource_epoch_ = 1;
-  std::uint64_t name_resolution_epoch_ = 1;
   std::vector<std::string> selected_agents_;
   std::vector<std::string> server_agent_runtime_test_options_;
   std::vector<WorkerEvidence> worker_evidence_;

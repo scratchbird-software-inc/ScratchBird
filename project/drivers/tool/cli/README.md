@@ -71,6 +71,44 @@ authority and protected initial-password input. Ordinary `SBsql` embedded
 connections, listeners, managers, and parser processes never create a missing
 database.
 
+For a local POSIX create-and-connect sequence, use:
+
+```text
+SBsql create <first-principal> <database-path> --mode=embedded \
+  --resource-seed-pack-root <dir> \
+  --policy-seed-pack-root <dir> --start-server <SBsrv-executable> \
+  --server-config <file> --ipc-path <socket-path> -- -c "SELECT 1"
+```
+
+Creation runs under the current OS account and its filesystem permissions.
+It requires no database login, administrator privilege, or service account.
+To select the installer's administrator-authorized service-account handoff,
+add `--platform-profile <file>`. That selection is explicit; a failed service
+handoff does not fall back to the current account.
+
+The embedded constructor verifies the committed catalog while retaining its
+exclusive file ownership, then closes the database. Only a verified and closed
+creation can launch the dedicated server. The server opens under its own locks
+and reports its actual database UUID through a private inherited socket after
+runtime readiness. SBsql then connects using normal local IPC authentication.
+The creation password is erased before launch; connection authentication reads
+a separate password. For automation, `--password-stdin` and
+`--connect-password-stdin` consume separate input lines. Credentials are never
+passed to the child in command-line arguments.
+
+`--startup-timeout-ms` defaults to 30000 and accepts 1 through 600000. A launch,
+readiness, or authentication failure preserves the committed database. After
+readiness the server remains running independently of the client. Its PID is
+printed for management. Until readiness, the launcher owns the child and stops
+and reaps it on failure. A killed startup is not a clean database shutdown.
+
+This command uses the existing local-password creation profile and POSIX local
+IPC bridge. It does not provision external authentication providers or database
+encryption keys. Windows refuses this combined command before creating a file;
+the separate embedded bootstrap command remains available. A database that
+committed with verification or close warnings must be verified before launch.
+Creation success alone does not establish runtime activation or client rights.
+
 The network-backed tools `sb_isql`, `sb_admin`, and `sb_security` now expose
 the shared staged auth/bootstrap contract directly:
 

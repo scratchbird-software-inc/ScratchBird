@@ -15,6 +15,7 @@
 #include <chrono>
 #include <cerrno>
 #include <cstring>
+#include <exception>
 #include <filesystem>
 #include <fstream>
 #include <sstream>
@@ -140,21 +141,14 @@ DatabaseOwnershipLock::~DatabaseOwnershipLock() {
 }
 
 DatabaseOwnershipLock::DatabaseOwnershipLock(DatabaseOwnershipLock&& other) noexcept
-    : lease_(std::move(other.lease_)),
-      handle_(other.handle_), storage_handle_(other.storage_handle_),
-      owner_pid_(other.owner_pid_), lock_path_(std::move(other.lock_path_)) {
-#ifdef _WIN32
-  other.handle_ = nullptr;
-  other.storage_handle_ = nullptr;
-#else
-  other.handle_ = -1;
-  other.storage_handle_ = -1;
-#endif
-  other.owner_pid_ = 0;
+{
+  *this = std::move(other);
 }
 
 DatabaseOwnershipLock& DatabaseOwnershipLock::operator=(DatabaseOwnershipLock&& other) noexcept {
   if (this != &other) {
+    // Validate before transferring any part of a coordinator's retained owner.
+    if (other.coordinator_active_.load()) std::terminate();
     release();
     lease_ = std::move(other.lease_);
     handle_ = other.handle_;
@@ -171,6 +165,39 @@ DatabaseOwnershipLock& DatabaseOwnershipLock::operator=(DatabaseOwnershipLock&& 
     other.owner_pid_ = 0;
   }
   return *this;
+}
+
+DatabaseOwnershipLock::CoordinatorLease::CoordinatorLease(
+    std::shared_ptr<DatabaseOwnershipLock> owner) noexcept : owner_(std::move(owner)) {}
+
+DatabaseOwnershipLock::CoordinatorLease::CoordinatorLease(CoordinatorLease&& other) noexcept
+    : owner_(std::move(other.owner_)) {}
+
+DatabaseOwnershipLock::CoordinatorLease& DatabaseOwnershipLock::CoordinatorLease::operator=(
+    CoordinatorLease&& other) noexcept {
+  if (this != &other) {
+    Reset();
+    owner_ = std::move(other.owner_);
+  }
+  return *this;
+}
+
+DatabaseOwnershipLock::CoordinatorLease::~CoordinatorLease() { Reset(); }
+
+void DatabaseOwnershipLock::CoordinatorLease::Reset() noexcept {
+  if (!owner_) return;
+  if (owner_->owner_pid_ != CurrentProcessId() ||
+      !owner_->coordinator_active_.exchange(false)) std::terminate();
+  owner_.reset();
+}
+
+std::optional<DatabaseOwnershipLock::CoordinatorLease>
+DatabaseOwnershipLock::AcquireCoordinatorLease(
+    std::shared_ptr<DatabaseOwnershipLock> owner) noexcept {
+  if (!owner || !owner->valid()) return std::nullopt;
+  bool expected = false;
+  if (!owner->coordinator_active_.compare_exchange_strong(expected, true)) return std::nullopt;
+  return CoordinatorLease(std::move(owner));
 }
 
 #ifdef _WIN32
@@ -226,6 +253,9 @@ DatabaseOwnershipLock::BeginNativeSourceTransition() noexcept {
 }
 
 void DatabaseOwnershipLock::release() {
+  // Lifecycle owners must drain and join before releasing physical custody.
+  // Keep this check ahead of both route withdrawal and native handle changes.
+  if (coordinator_active_.load()) std::terminate();
   if (lease_) {
     lease_->Withdraw();
     lease_.reset();  // admitted FileDevices retain the OS locks until final close

@@ -24,6 +24,26 @@ void* pointer = nullptr;
 std::size_t bytes = 0;
 bool unlocked = false, erased = false;
 }
+namespace ordinary_watch {
+bool poison = false, erased = false, released = false;
+void* pointer = nullptr;
+std::size_t bytes = 0;
+}
+extern "C" void* __real__ZnwmSt11align_val_t(std::size_t, std::align_val_t);
+extern "C" void __real__ZdlPvSt11align_val_t(void*, std::align_val_t);
+extern "C" void* __wrap__ZnwmSt11align_val_t(std::size_t size, std::align_val_t alignment) {
+  auto* result = __real__ZnwmSt11align_val_t(size, alignment);
+  if (ordinary_watch::poison) std::memset(result, 0xa5, size);
+  return result;
+}
+extern "C" void __wrap__ZdlPvSt11align_val_t(void* pointer, std::align_val_t alignment) {
+  if (pointer && pointer == ordinary_watch::pointer) {
+    ordinary_watch::released = true;
+    const auto* bytes = static_cast<const unsigned char*>(pointer);
+    ordinary_watch::erased = std::all_of(bytes, bytes + ordinary_watch::bytes, [](auto b) {return b == 0;});
+  }
+  __real__ZdlPvSt11align_val_t(pointer, alignment);
+}
 extern "C" int __real_munlock(const void*, std::size_t);
 extern "C" int __wrap_munlock(const void* pointer, std::size_t bytes) {
   if (pointer == protected_watch::pointer && bytes == protected_watch::bytes) {
@@ -534,6 +554,110 @@ void RevocationPublicationRace() {
   }
 }
 
+void DatabaseAllocationBehavior() {
+  using S=mem::DatabaseAllocationBehaviorStatus;
+  const auto id=[](unsigned n) {mem::MemoryBinaryUuid v{};v[6]=0x70;v[8]=0x80;v[15]=n;return v;};
+  auto policy=Policy();policy.zero_memory_on_allocate=policy.zero_memory_on_release=false;
+  mem::MemoryManager manager(policy);auto& allocator=*manager.allocator();
+  mem::MemoryTag tag;tag.category=mem::MemoryCategory::core_runtime;
+  tag.binary_ownership[mem::MemoryBinaryScopeKind::database]=id(1);
+  tag.binary_ownership[mem::MemoryBinaryScopeKind::owner]=id(2);
+  tag.binary_ownership[mem::MemoryBinaryScopeKind::context]=id(3);
+  auto other=tag;other.binary_ownership[mem::MemoryBinaryScopeKind::database]=id(4);
+  other.binary_ownership[mem::MemoryBinaryScopeKind::owner]=id(5);
+  other.binary_ownership[mem::MemoryBinaryScopeKind::context]=id(6);
+  auto credit=allocator.ReserveCapacity(1024,tag);
+  Check(credit.ok(),"original bootstrap capacity before database behavior");if(!credit.ok())return;
+  auto before=credit.reservation->Allocate(128,64);Check(before.ok(),"real bootstrap storage before activation");
+  if(!before.ok())return;
+  std::memset(before.pointer,0xa5,128);
+  mem::DatabaseAllocationBehavior selected{id(1),{id(7),3},1023,mem::AllocationFailureMode::fatal_status,true,true};
+  const auto refused=allocator.InstallDatabaseAllocationBehavior(selected);
+  Check(refused.status==S::existing_credit_exceeds_limit&&refused.existing_bytes==1024&&refused.limit_bytes==1023,
+        "selected context counts actual unused capacity and live bootstrap bytes exactly once");
+  Check(static_cast<unsigned char*>(before.pointer)[0]==0xa5&&manager.Snapshot().reserved_capacity_bytes==896,
+        "refused installation preserves original payload and credit");
+  selected.per_context_limit_bytes=1536;
+#ifndef SB_ADAPTER_NO_ALLOC_OVERRIDE
+  fault::Arm(0);const auto exhausted=allocator.InstallDatabaseAllocationBehavior(selected);fault::Off();
+  Check(exhausted.status==S::allocation_failure,"failed policy metadata allocation leaves no selected behavior");
+#endif
+  Check(allocator.InstallDatabaseAllocationBehavior(selected).ok(),"same owning allocator installs after refusal");
+  fault::Arm(0);const auto repeated=allocator.InstallDatabaseAllocationBehavior(selected);fault::Off();
+  Check(repeated.ok()&&!fault::hit,"identical retained binding is idempotent without allocation");
+  auto changed=selected;changed.zero_memory_on_release=false;
+  Check(allocator.InstallDatabaseAllocationBehavior(changed).status==S::binding_mismatch,
+        "installed catalog binding cannot silently change behavior");
+  Check(allocator.RetireDatabaseAllocationBehavior(id(1),{id(7),4})==S::binding_mismatch,
+        "retirement requires exact installed definition generation");
+#ifdef SB_PROTECTED_RESOURCE_NATIVE_OBSERVATION
+  ordinary_watch::poison=true;
+#endif
+  auto direct=manager.Allocate(512,64,tag);
+  Check(direct.ok()&&direct.policy_binding==selected.binding,"new allocation binds actual selected policy UUID/generation");
+  Check(allocator.AvailableCapacity(tag).available_bytes==0,"physical headroom includes selected aggregate context cap");
+  const auto extra=manager.Allocate(1,64,tag);const auto reserved=allocator.ReserveCapacity(1,tag);
+  Check(!extra.ok()&&extra.status.code==Code::memory_limit_exceeded&&
+        extra.status.severity==scratchbird::core::platform::Severity::fatal&&
+        !reserved.ok()&&reserved.status.severity==scratchbird::core::platform::Severity::fatal,
+        "ordinary and reserved capacity share selected aggregate limit and failure severity");
+  auto retained=credit.reservation->Allocate(896,64);
+  Check(retained.ok()&&retained.policy_binding==credit.reservation->policy_binding(),
+        "old capacity converts admitted credit without regranting or bypassing selected behavior");
+  if(direct.ok())Check(std::all_of(static_cast<unsigned char*>(direct.pointer),
+      static_cast<unsigned char*>(direct.pointer)+512,[](auto b){return b==0;}),"selected zero-on-allocate clears poisoned ordinary storage");
+  if(retained.ok())Check(std::all_of(static_cast<unsigned char*>(retained.pointer),
+      static_cast<unsigned char*>(retained.pointer)+896,[](auto b){return b==0;}),"selected zeroing covers retained bootstrap capacity");
+  auto separate=selected;separate.database_uuid=id(4);separate.binding={id(8),9};separate.per_context_limit_bytes=512;
+  separate.failure_mode=mem::AllocationFailureMode::return_error;separate.zero_memory_on_allocate=separate.zero_memory_on_release=false;
+  Check(allocator.InstallDatabaseAllocationBehavior(separate).ok(),"second database selects independent behavior");
+  auto independent=manager.Allocate(512,64,other);
+  const auto second_extra=manager.Allocate(1,64,other);
+  Check(independent.ok()&&!second_extra.ok()&&second_extra.status.severity==scratchbird::core::platform::Severity::error,
+        "second database keeps its own limit and error severity");
+#ifdef SB_PROTECTED_RESOURCE_NATIVE_OBSERVATION
+  if(independent.ok())Check(static_cast<unsigned char*>(independent.pointer)[0]==0xa5,
+        "first database zeroing does not change another database's requested behavior");
+  ordinary_watch::poison=false;ordinary_watch::pointer=before.pointer;ordinary_watch::bytes=128;
+  ordinary_watch::released=ordinary_watch::erased=false;
+#endif
+  Check(allocator.DeallocateNoAlloc(before.pointer).ok(),"bootstrap storage retires under selected database policy");
+#ifdef SB_PROTECTED_RESOURCE_NATIVE_OBSERVATION
+  Check(ordinary_watch::released&&ordinary_watch::erased,"selected zero-on-release erases pre-installation ordinary storage before freeing");
+  ordinary_watch::pointer=nullptr;
+#endif
+  if(retained.ok())Check(allocator.DeallocateNoAlloc(retained.pointer).ok(),"retained credit payload retired");
+  if(direct.ok())Check(allocator.DeallocateNoAlloc(direct.pointer).ok(),"direct database allocation retired");
+  Check(allocator.RetireDatabaseAllocationBehavior(id(1),selected.binding)==S::busy,
+        "policy stays installed while empty bootstrap capacity still owns credit");
+  credit.reservation.reset();
+  auto fresh=allocator.ReserveCapacity(64,tag);
+  Check(fresh.ok()&&fresh.reservation->policy_binding()==selected.binding,"new capacity binds the selected definition");
+  auto outstanding=fresh.reservation->Allocate(64,64);fresh.reservation.reset();
+  Check(outstanding.ok()&&allocator.RetireDatabaseAllocationBehavior(id(1),selected.binding)==S::busy,
+        "closed capacity cannot retire policy while its payload survives");
+  if(outstanding.ok())Check(allocator.DeallocateNoAlloc(outstanding.pointer).ok(),"last capacity payload retires");
+  Check(allocator.RetireDatabaseAllocationBehavior(id(1),selected.binding)==S::applied,
+        "policy retirement follows actual storage and capacity drain");
+  if(independent.ok())Check(allocator.DeallocateNoAlloc(independent.pointer).ok(),"second database payload retires");
+  Check(allocator.RetireDatabaseAllocationBehavior(id(4),separate.binding)==S::applied,"second database retires independently");
+  Check(manager.Snapshot().current_bytes==0&&manager.Snapshot().reserved_capacity_bytes==0,"selected behavior preserves physical accounting balance");
+
+  for(unsigned i=0;i<8;++i) {
+    mem::MemoryManager racing(policy);auto& owned=*racing.allocator();
+    auto original=owned.ReserveCapacity(512,tag);Check(original.ok(),"race bootstrap capacity");
+    auto change=selected;change.per_context_limit_bytes=1024;
+    std::barrier boundary(2);mem::DatabaseAllocationBehaviorResult applied;
+    std::thread installer([&]{boundary.arrive_and_wait();applied=owned.InstallDatabaseAllocationBehavior(change);});
+    boundary.arrive_and_wait();auto concurrent=owned.ReserveCapacity(600,tag);installer.join();
+    Check((applied.ok()&&!concurrent.ok())||
+        (applied.status==S::existing_credit_exceeds_limit&&concurrent.ok()),
+        "concurrent installation/reservation cannot publish an overcommitted context");
+    concurrent.reservation.reset();original.reservation.reset();
+    if(applied.ok())Check(owned.RetireDatabaseAllocationBehavior(id(1),change.binding)==S::applied,"racing policy drains normally");
+  }
+}
+
 void ProtectedOwnership() {
   mem::HierarchicalMemoryBudgetLedger ledger;
   auto policy = Policy(); policy.hard_limit_bytes = policy.per_context_limit_bytes = 4096;
@@ -617,7 +741,7 @@ int main(int argc, char** argv) {
 #endif
   BinaryScopeAdmission(); ProfilesAndOwnership(); SharedResourceConcurrency();
   ParentRevocation(); RetainedLeaseOwnership(); RevocationPublicationRace();
-  ProtectedOwnership();
+  DatabaseAllocationBehavior(); ProtectedOwnership();
   std::cout << checks << " checks; " << injected << " allocation faults; " << failures << " failures\n";
   return failures ? 1 : 0;
 }

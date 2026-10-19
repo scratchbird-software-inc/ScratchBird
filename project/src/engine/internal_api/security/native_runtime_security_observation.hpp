@@ -13,7 +13,9 @@ enum class NativeRuntimeSecurityReadError {
   binding_generation_mismatch, external_authority_required, security_source_failure,
   security_record_invalid, origin_not_committed, duplicate_identity,
   principal_absent, principal_wrong_family, principal_not_active,
-  principal_not_service, principal_generation_invalid, resource_exhausted
+  principal_not_service, principal_generation_invalid, resource_exhausted,
+  binding_catalog_generation_mismatch, binding_security_epoch_mismatch,
+  catalog_source_mismatch
 };
 
 // Exact observed records, NOT effective privileges or authentication. Attribute
@@ -40,6 +42,24 @@ struct NativeRuntimeServicePrincipalObservation {
   core::platform::u64 definition_generation=0, security_context_generation=0;
   core::platform::u64 security_generation=0, policy_generation=0;
 };
+// Fixed observations from the actual selected catalog root. These are not
+// configuration policy epochs, name-resolution epochs or activation receipts.
+// A value copy is descriptive; only the retained selected source fences it.
+struct NativeRuntimeSelectedCatalogObservation {
+  storage::disk::FilespaceRootReference checkpoint;
+  EngineUuid root_object_uuid, root_page_uuid;
+  core::platform::u64 catalog_generation=0, schema_epoch=0, security_epoch=0, resource_epoch=0;
+  bool operator==(const NativeRuntimeSelectedCatalogObservation& other) const noexcept {
+    const auto& a=checkpoint;const auto& b=other.checkpoint;
+    return a.kind==b.kind&&a.page_type==b.page_type&&a.filespace_uuid==b.filespace_uuid&&
+        a.page_number==b.page_number&&a.page_generation==b.page_generation&&
+        a.page_size_profile_uuid==b.page_size_profile_uuid&&a.object_uuid==b.object_uuid&&
+        root_object_uuid==other.root_object_uuid&&root_page_uuid==other.root_page_uuid&&
+        catalog_generation==other.catalog_generation&&schema_epoch==other.schema_epoch&&
+        security_epoch==other.security_epoch&&resource_epoch==other.resource_epoch;
+  }
+};
+enum class NativeRuntimeCatalogSelection { compare_expected, discover_selected };
 struct NativeRuntimeSecurityReadRequest {
   EngineUuid database_uuid, runtime_binding_uuid;
   core::platform::u64 runtime_binding_generation=0, maximum_retained_image_bytes=0;
@@ -47,6 +67,9 @@ struct NativeRuntimeSecurityReadRequest {
   // every base leaf must match. Neither arbitrary relation roles nor a supplied
   // dependency tuple can establish selected catalog membership or permission.
   storage::database::NativeCatalogRelationBinding configuration_relation, security_relation;
+  // Production may discover physical layout through the actual selected root.
+  // Expected mode never falls back to discovery on a stale/missing comparison.
+  NativeRuntimeCatalogSelection catalog_selection=NativeRuntimeCatalogSelection::compare_expected;
 };
 struct NativeRuntimeSecurityObservationResult {
   NativeRuntimeSecurityReadError error=NativeRuntimeSecurityReadError::invalid_request;
@@ -58,6 +81,8 @@ struct NativeRuntimeSecurityObservationResult {
   core::platform::u64 physical_bytes_read=0;
   std::optional<storage::disk::BoundedIoResult> io_failure;
   EngineUuid io_failure_filespace_uuid;
+  core::platform::u64 expected_generation=0, observed_generation=0;
+  std::optional<NativeRuntimeSelectedCatalogObservation> selected_catalog;
   std::optional<core::catalog::CatalogRuntimeAuthorityBinding> binding;
   EngineUuid binding_version_uuid;
   std::optional<NativeRuntimeServicePrincipalObservation> principal;
@@ -148,9 +173,11 @@ inline NativeRuntimeSecurityObservationResult ReadCommittedNativeRuntimeSecurity
     const NativeRuntimeSecurityReadRequest& request,NativeRuntimeSecurityPreparedMemory& w) noexcept {
   namespace db=storage::database;namespace c=core::catalog;namespace mga=transaction::mga;
   using E=NativeRuntimeSecurityReadError;NativeRuntimeSecurityObservationResult out;
-  const auto fail=[&](E error){out.error=error;out.binding.reset();out.binding_version_uuid={};out.principal.reset();out.records={};};
+  const auto fail=[&](E error){out.error=error;out.binding.reset();out.binding_version_uuid={};out.principal.reset();out.selected_catalog.reset();out.records={};};
   try {
-    if(!core::uuid::IsEngineIdentityUuid(request.database_uuid)||
+    if((request.catalog_selection!=NativeRuntimeCatalogSelection::compare_expected&&
+        request.catalog_selection!=NativeRuntimeCatalogSelection::discover_selected)||
+        !core::uuid::IsEngineIdentityUuid(request.database_uuid)||
         !core::uuid::IsEngineIdentityUuid(request.runtime_binding_uuid)||!request.runtime_binding_generation||
         !request.maximum_retained_image_bytes||!source.selection().checkpoint_inventory.checkpoint||
         source.selection().checkpoint_inventory.checkpoint->header.database_uuid!=request.database_uuid)return out;
@@ -163,8 +190,10 @@ inline NativeRuntimeSecurityObservationResult ReadCommittedNativeRuntimeSecurity
       else if(!rows.source.tree.io.ok()){out.io_failure=rows.source.tree.io;out.io_failure_filespace_uuid=rows.source.tree.io_filespace_uuid;}
       else if(!rows.source.leaf_failure.io.ok()){out.io_failure=rows.source.leaf_failure.io;out.io_failure_filespace_uuid=rows.source.leaf_failure.io_filespace_uuid;}
     };
-    const auto configuration=db::NativeCatalogVisibilityLeaseReader::ReadCommitted(source,2,5,request.configuration_relation,
-        request.maximum_retained_image_bytes,w.visibility_);
+    const auto configuration=request.catalog_selection==NativeRuntimeCatalogSelection::discover_selected?
+        db::NativeCatalogVisibilityLeaseReader::ReadCommittedSelected(source,2,5,request.maximum_retained_image_bytes,w.visibility_):
+        db::NativeCatalogVisibilityLeaseReader::ReadCommitted(source,2,5,request.configuration_relation,
+            request.maximum_retained_image_bytes,w.visibility_);
     out.physical_bytes_read=configuration.source.physical_bytes_read;
     out.source_error=configuration.error;out.relation_error=configuration.source.error;
     out.visibility_diagnostic=configuration.visibility_diagnostic;
@@ -172,6 +201,27 @@ inline NativeRuntimeSecurityObservationResult ReadCommittedNativeRuntimeSecurity
       out.binding_error=RuntimeAuthorityBindingReadError::source_failure;io_failure(configuration);
       fail(E::binding_source_failure);return out;
     }
+    // Copy the actual owning root before the visibility workspace is reused
+    // for security. Do not infer any epoch from row birth/version numbers.
+    const auto catalog_observation=[&](const auto& rows)
+        ->std::optional<NativeRuntimeSelectedCatalogObservation>{
+      const auto targets=source.selection().checkpoint_inventory.checkpoint->roots;
+      const auto target=std::find_if(targets.begin(),targets.end(),[](const auto& r){return r.role==5;});
+      if(target==targets.end())return std::nullopt;
+      const db::NativeReadCatalogRoot* found=nullptr;
+      for(const auto& image:rows.source.roots.catalogs){
+        const auto& r=image.root;const auto& h=r.header;const auto& p=target->page;
+        if(r.root_kind!=2||r.object_uuid!=target->object_uuid||h.filespace_uuid!=p.filespace_uuid||
+            h.page_number!=p.page_number||h.page_generation!=p.page_generation||h.page_size_profile_uuid!=p.page_size_profile_uuid)continue;
+        if(found)return std::nullopt;found=&r;
+      }
+      if(!found||!found->catalog_generation||!found->schema_epoch||!found->security_epoch)return std::nullopt;
+      return NativeRuntimeSelectedCatalogObservation{source.checkpoint(),found->object_uuid,
+          found->header.page_uuid,found->catalog_generation,found->schema_epoch,
+          found->security_epoch,found->resource_epoch};
+    };
+    const auto selected_catalog=catalog_observation(configuration);
+    if(!selected_catalog){fail(E::catalog_source_mismatch);return out;}
     const db::NativeCatalogVisibleRow* selected=nullptr;
     for(const auto& row:configuration.rows){
       if(row.metadata.record.header.object_uuid.value!=request.runtime_binding_uuid)continue;
@@ -198,6 +248,18 @@ inline NativeRuntimeSecurityObservationResult ReadCommittedNativeRuntimeSecurity
     const auto binding=*decoded_binding.record;const auto version=selected->version_uuid;
     out.binding_error=RuntimeAuthorityBindingReadError::none;
     if(binding.authority_mode!=c::RuntimeAuthorityMode::database_local){fail(E::external_authority_required);return out;}
+    // Binding metadata may have been born before this selected root. Preserve
+    // that provenance and the actual current root separately; unrelated catalog
+    // publication must not retire an unchanged committed binding. Neither
+    // value substitutes for the eventual session owner's current authority.
+    if(binding.catalog_generation>selected_catalog->catalog_generation){
+      out.expected_generation=selected_catalog->catalog_generation;out.observed_generation=binding.catalog_generation;
+      fail(E::binding_catalog_generation_mismatch);return out;
+    }
+    if(binding.security_epoch>selected_catalog->security_epoch){
+      out.expected_generation=selected_catalog->security_epoch;out.observed_generation=binding.security_epoch;
+      fail(E::binding_security_epoch_mismatch);return out;
+    }
     const auto& inventory=source.selection().checkpoint_inventory.inventory.entries;
     const auto committed_origin=[&](core::platform::u64 local,const EngineUuid& identity){
       const auto entry=std::lower_bound(inventory.begin(),inventory.end(),local,
@@ -209,14 +271,17 @@ inline NativeRuntimeSecurityObservationResult ReadCommittedNativeRuntimeSecurity
     if(!committed_origin(binding.origin_local_transaction_id,binding.origin_transaction_uuid.value)){
       fail(E::origin_not_committed);return out;
     }
-    const auto rows=db::NativeCatalogVisibilityLeaseReader::ReadCommitted(source,2,4,request.security_relation,
-        request.maximum_retained_image_bytes,w.visibility_);
+    const auto rows=request.catalog_selection==NativeRuntimeCatalogSelection::discover_selected?
+        db::NativeCatalogVisibilityLeaseReader::ReadCommittedSelected(source,2,4,request.maximum_retained_image_bytes,w.visibility_):
+        db::NativeCatalogVisibilityLeaseReader::ReadCommitted(source,2,4,request.security_relation,
+            request.maximum_retained_image_bytes,w.visibility_);
     out.physical_bytes_read+=rows.source.physical_bytes_read;out.source_error=rows.error;
     out.relation_error=rows.source.error;out.visibility_diagnostic=rows.visibility_diagnostic;
     if(!rows.ok()){
       io_failure(rows);
       fail(E::security_source_failure);return out;
     }
+    if(catalog_observation(rows)!=selected_catalog){fail(E::catalog_source_mismatch);return out;}
     // Validate retained invisible/unindexed security versions too. They cannot
     // become a structurally corrupt bypass merely because MGA excludes them.
     for(const auto& base:rows.source.bases)for(const auto& indexed:base.page.metadata){
@@ -282,7 +347,8 @@ inline NativeRuntimeSecurityObservationResult ReadCommittedNativeRuntimeSecurity
     const auto records=w.records_.first(count);
     std::sort(records.begin(),records.end(),[](const auto& a,const auto& b){return a.object_uuid<b.object_uuid;});
     for(core::platform::usize n=1;n<count;++n)if(records[n-1].object_uuid==records[n].object_uuid){fail(E::duplicate_identity);return out;}
-    out.binding=binding;out.binding_version_uuid=version;out.principal=principal;out.records=w.records_.first(count);out.error=E::none;
+    out.binding=binding;out.binding_version_uuid=version;out.principal=principal;out.selected_catalog=selected_catalog;
+    out.records=w.records_.first(count);out.error=E::none;
   }catch(const std::bad_alloc&){fail(E::resource_exhausted);}
    catch(const std::length_error&){fail(E::resource_exhausted);}
    catch(...){fail(E::security_source_failure);}

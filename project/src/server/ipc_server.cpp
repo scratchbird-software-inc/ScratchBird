@@ -11,6 +11,7 @@
 // SEARCH_KEY: SB_SERVER_IPC_FOUNDATION_ENDPOINT
 
 #include "ipc_server.hpp"
+#include "startup_trace.hpp"
 #include "public_relation_decimal_profile.hpp"
 #include "ipc_client_io.hpp"
 #include "../core/uuid/uuid.hpp"
@@ -4751,6 +4752,7 @@ ServerIpcDrainResult DrainServerIpcEndpoint(ServerIpcEndpointOwner& owner) {
     if (!owner.first_failure) owner.first_failure = std::current_exception();
   };
   try {
+    owner.agents.BeginDrain();
     if (owner.clients) {
       RequestParserServerStop();
       owner.clients->Join();
@@ -4799,11 +4801,16 @@ ServerIpcDrainResult DrainServerIpcEndpoint(ServerIpcEndpointOwner& owner) {
     for (const auto& [_, prepared] : registry.prepared_by_uuid)
       result.sessions_complete = result.sessions_complete && !prepared.prepared_metadata_binding;
   } catch (...) { retain_failure(); }
-  try {
-    const auto stopped = owner.agents.Stop();
-    result.agents_complete = stopped.ok();
-    result.diagnostics.insert(result.diagnostics.end(), stopped.diagnostics.begin(), stopped.diagnostics.end());
-  } catch (...) { retain_failure(); }
+  // Quarantined sessions or an unfinished component retain their coordinator.
+  // BeginDrain has already stopped new scheduled work; a retry can finish the
+  // same ownership cohort without restarting or replacing its supervisor.
+  if (result.clients_complete && result.listeners_complete && result.sessions_complete) {
+    try {
+      const auto stopped = owner.agents.Stop();
+      result.agents_complete = stopped.ok();
+      result.diagnostics.insert(result.diagnostics.end(), stopped.diagnostics.begin(), stopped.diagnostics.end());
+    } catch (...) { retain_failure(); }
+  }
   result.complete = result.clients_complete && result.agents_complete && result.listeners_complete && result.sessions_complete;
   return result;
 }
@@ -4922,6 +4929,7 @@ static ServerIpcEndpointResult RunParserServerIpcEndpointImpl(const ServerBootst
     result.exit_code = 2;
     return result;
   }
+  TraceServerStartupPhase(config,"ipc_endpoint","listening");
   owner.clients = std::make_unique<ServerIpcClientCohort>(config, artifacts);
   auto& cohort = *owner.clients;
   cohort.parser_registry = LoadParserPackageRegistry(config);
@@ -4933,12 +4941,14 @@ static ServerIpcEndpointResult RunParserServerIpcEndpointImpl(const ServerBootst
                               stopped.diagnostics.end());
     return stopped.ok();
   };
-  if (!agent_runtime.Start(config, engine_state, &result.diagnostics, RequestParserServerStop)) {
+  if (!agent_runtime.StartCoordinator(config, engine_state, &result.diagnostics, RequestParserServerStop)) {
+    TraceServerStartupPhase(config,"agent_runtime","refused");
     RequestParserServerStop();
     result.exit_code = 2;
     server_endpoint.Reset();
     return result;
   }
+  TraceServerStartupPhase(config,"agent_runtime","accepted");
   auto& listener_orchestrator = owner.listeners;
   listener_orchestrator = BuildListenerOrchestrator(config, artifacts);
   const auto listener_start = StartEnabledServerListeners(&listener_orchestrator, config, artifacts);
@@ -4974,6 +4984,7 @@ static ServerIpcEndpointResult RunParserServerIpcEndpointImpl(const ServerBootst
   // failure must stop agents and listeners even before the first client exists;
   // the common cleanup path retains this first fault if stopping also fails.
   WriteServingState(config, artifacts, daemon_lifecycle);
+  TraceServerStartupPhase(config,"service_ready","published");
   if (!ParserServerStopRequested() && callbacks.on_ready) {
     callbacks.on_ready();
   }

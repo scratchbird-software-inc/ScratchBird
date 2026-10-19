@@ -1314,7 +1314,8 @@ template<class Receipt> NativeCheckpointAllocationView ReadCurrentAllocationView
 template<class Receipt> NativeCheckpointDirectoryView ReadCurrentDirectoryView(
  const Uuid& database_uuid,std::span<const disk::NativeFilespaceDevice> devices,
  const disk::FilespaceRootReference& checkpoint,u64 maximum_retained_image_bytes,
- std::span<CheckpointBatch* const> observations,std::pmr::memory_resource& resource,Receipt& receipt) noexcept {
+ std::span<CheckpointBatch* const> observations,std::pmr::memory_resource& resource,Receipt& receipt,
+ const NativeBoundCheckpointSelectionView* retained_selection=nullptr) noexcept {
   using namespace native_checkpoint;
   namespace mga=scratchbird::transaction::mga;
   namespace page=scratchbird::storage::page;
@@ -1322,7 +1323,17 @@ template<class Receipt> NativeCheckpointDirectoryView ReadCurrentDirectoryView(
   try {
     if(!V7(database_uuid)||devices.empty()||!maximum_retained_image_bytes)return fail(Error::invalid_reference);
     CurrentSourceContext context(database_uuid,devices,observations,resource,receipt);
-    auto current_inventory=context.Current(checkpoint,maximum_retained_image_bytes);
+    CurrentInventoryView current_inventory;
+    if(retained_selection){
+      if(!retained_selection->ok()||retained_selection->selection->header.database_uuid!=database_uuid)return fail(Error::binding_mismatch);
+      const auto& selected=*retained_selection->selection;
+      if(checkpoint.kind!=9||checkpoint.page_type!=0x300||checkpoint.object_uuid!=selected.checkpoint_object_uuid||
+          disk::NativePageReference{checkpoint.filespace_uuid,checkpoint.page_number,checkpoint.page_generation,checkpoint.page_size_profile_uuid}!=selected.checkpoint)
+        return fail(Error::binding_mismatch);
+      current_inventory.pair=retained_selection->checkpoint_inventory;
+      current_inventory.pair.retained_image_bytes=retained_selection->retained_image_bytes;
+      current_inventory.selector_bound=true;
+    }else current_inventory=context.Current(checkpoint,maximum_retained_image_bytes);
     auto pair=std::move(current_inventory.pair);
     if(!pair.ok()){auto failure=fail(pair.error);failure.checkpoint_inventory.error=pair.error;
       failure.checkpoint_inventory.inventory_error=pair.inventory_error;return failure;}
@@ -1351,14 +1362,16 @@ template<class Receipt> NativeCheckpointDirectoryView ReadCurrentDirectoryView(
     const disk::FilespaceRootReference expected{5,target->page_type,target->page.filespace_uuid,target->page.page_number,
       target->page.page_generation,target->page.page_size_profile_uuid,target->object_uuid};
     if(!current_inventory.selector_bound&&!same(*actual,expected))return fail(Error::binding_mismatch);
-    auto directory=context.Directory(expected,maximum_retained_image_bytes-pair.retained_image_bytes);
+    const u64 inventory_charge=retained_selection?0:pair.retained_image_bytes;
+    if(inventory_charge>=maximum_retained_image_bytes)return fail(Error::resource_exhausted);
+    auto directory=context.Directory(expected,maximum_retained_image_bytes-inventory_charge);
     if(!directory.ok()){auto failure=fail(Error::directory_failure);failure.directory_error=directory.error;return failure;}
     const auto digest=hash::ComputeSha256DigestNative(directory.pages.front().image.data(),directory.pages.front().image.size());
     if(!digest.ok())return fail(Error::hash_failure);
     if(digest.digest!=target->sha256)return fail(Error::invalid_integrity);
-    if(pair.retained_image_bytes>maximum_retained_image_bytes||directory.retained_image_bytes>maximum_retained_image_bytes-pair.retained_image_bytes)
+    if(directory.retained_image_bytes>maximum_retained_image_bytes-inventory_charge)
       return fail(Error::resource_exhausted);
-    u64 retained=pair.retained_image_bytes+directory.retained_image_bytes;
+    u64 retained=inventory_charge+directory.retained_image_bytes;
     const auto& root=directory.pages.front().directory;
     if(root.creator_operation_uuid.is_nil()){
       const auto creator=CurrentCreator(pair.inventory,root.creator_local_transaction_id);
@@ -1480,6 +1493,13 @@ NativeCurrentCheckpointDirectoryDeviceRead detail::VerifyCurrentNativeCheckpoint
  u64 budget,std::span<CheckpointBatch* const> observations,std::pmr::memory_resource& resource) noexcept {
  NativeCurrentCheckpointDirectoryDeviceRead out;
  out.directory=ReadCurrentDirectoryView(database,files,root,budget,observations,resource,out);return out;
+}
+NativeCurrentCheckpointDirectoryDeviceRead detail::VerifyRetainedNativeCheckpointDirectoryBacked(
+ const Uuid& database,std::span<const disk::NativeFilespaceDevice> files,const disk::FilespaceRootReference& root,
+ const NativeBoundCheckpointSelectionView& selected,u64 budget,std::span<CheckpointBatch* const> observations,
+ std::pmr::memory_resource& resource) noexcept {
+ NativeCurrentCheckpointDirectoryDeviceRead out;
+ out.directory=ReadCurrentDirectoryView(database,files,root,budget,observations,resource,out,&selected);return out;
 }
 NativeCurrentCheckpointDirectoryDeviceRead VerifyCurrentNativeCheckpointDirectoryInto(
  const Uuid& database,std::span<const disk::NativeFilespaceDevice> files,const disk::FilespaceRootReference& root,

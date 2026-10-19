@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "catalog_identifier_profile.hpp"
+#include "catalog_identifier_lookup_key.hpp"
 #include "bootstrap_policy_fixture.hpp"
 #include "native_creation_workspace.hpp"
 #include "physical_mga_cow_store.hpp"
@@ -174,6 +175,91 @@ void Bindings(){
     auto bad=Metadata(changed);bad.creator_transaction_uuid=successor.creator_transaction_uuid;bad.creator_local_transaction_id=2;
     Check(!c::CatalogMetadataPreservesFamilyOrigin(m,bad),"successor cannot rebind durable origin/database/profile");}
 }
+void LookupKeys(){
+  using E=c::CatalogIdentifierKeyError;
+  const auto bytes=[](std::string_view value){return std::span<const p::byte>(reinterpret_cast<const p::byte*>(value.data()),value.size());};
+  auto profile=Profile();profile.profile_name="postgresql_family_label_does_not_select_folding";
+  const std::string raw=" Aa_\xc3\xa9\xf0\x9f\x90\xa6 ";
+  const std::array<std::string,3> expected{raw," AA_\xc3\xa9\xf0\x9f\x90\xa6 "," aa_\xc3\xa9\xf0\x9f\x90\xa6 "};
+  c::CatalogIdentifierKeyRequest request{&profile,raw};std::array<p::byte,256> output;
+  for(unsigned fold=0;fold<3;++fold){
+    profile.unquoted_fold_mode=static_cast<c::IdentifierFoldMode>(fold);profile.comparison_mode=c::IdentifierComparisonMode::exact;
+    output.fill(0x5a);heap_denied=true;const auto result=c::DeriveCatalogIdentifierLookupKeysInto(request,output);heap_denied=false;
+    Check(result.ok()&&std::ranges::equal(result.normalized,bytes(expected[fold]))&&std::ranges::equal(result.exact,bytes(raw))&&
+        std::all_of(output.begin()+2*raw.size(),output.end(),[](auto b){return b==0x5a;}),
+        "explicit fold fields derive exact UTF-8 lanes, preserve non-ASCII and spaces, ignore profile label");
+    c::CatalogNameEntryView entry;entry.identifier_profile_uuid={p::UuidKind::object,profile.profile_uuid};
+    entry.raw_name_text=entry.display_name=raw;entry.normalized_lookup_key=result.normalized;
+    heap_denied=true;const auto checked=c::CheckCatalogIdentifierLookupKeys(profile,entry);heap_denied=false;
+    Check(checked==E::none,"actual normalized lane validates without heap or optional exact lane");
+    for(unsigned corrupt=0;corrupt<4;++corrupt){auto wrong=entry;
+      if(corrupt==0)wrong.normalized_lookup_key={};if(corrupt==1)wrong.exact_lookup_key=bytes("wrong");
+      if(corrupt==2)wrong.display_name="wrong";if(corrupt==3)wrong.identifier_profile_uuid.value=f::Id(9);
+      heap_denied=true;const auto e=c::CheckCatalogIdentifierLookupKeys(profile,wrong);heap_denied=false;
+      Check(e==(corrupt<2?E::key_mismatch:corrupt==2?E::display_mismatch:E::invalid_profile),"missing or altered key/display/profile refuses exactly");
+    }
+  }
+  profile=Profile();profile.quote_styles=15;request={&profile,raw,true,c::CatalogNameQuoteStyle::double_quote,true};
+  for(unsigned style=0;style<=5;++style)for(bool preserve:{false,true}){
+    profile.quoted_preserves_case=preserve;request.quote_style=static_cast<c::CatalogNameQuoteStyle>(style);
+    output.fill(0x5a);heap_denied=true;const auto result=c::DeriveCatalogIdentifierLookupKeysInto(request,output);heap_denied=false;
+    if(style==0||style==4){Check(result.error==E::invalid_quote_mode&&std::all_of(output.begin(),output.end(),[](auto b){return b==0x5a;}),"concrete admitted quote mode required");continue;}
+    Check(result.ok()&&std::ranges::equal(result.normalized,bytes(expected[1]))&&std::ranges::equal(result.exact,bytes(preserve?raw:expected[1])),"quoted exact lane follows explicitly supplied preservation rule");
+    c::CatalogNameEntryView entry;entry.identifier_profile_uuid={p::UuidKind::object,profile.profile_uuid};
+    entry.raw_name_text=entry.display_name=raw;entry.was_quoted=entry.requires_exact_match=true;entry.quote_style=request.quote_style;
+    entry.exact_lookup_key=result.exact;heap_denied=true;const auto e=c::CheckCatalogIdentifierLookupKeys(profile,entry);heap_denied=false;
+    Check(e==E::none,"quoted exact lane validated without requiring an unused normalized lane");
+    profile.storage_display_mode=c::IdentifierDisplayMode::store_folded_display;entry.display_name=preserve?raw:expected[1];
+    Check(c::CheckCatalogIdentifierLookupKeys(profile,entry)==E::none,"quoted display follows actual exact spelling");
+    profile.storage_display_mode=c::IdentifierDisplayMode::preserve_user_text;
+  }
+  profile=Profile();request={&profile,raw};
+  request.requires_exact_match=true;profile.storage_display_mode=c::IdentifierDisplayMode::store_folded_display;
+  const auto fixed=c::DeriveCatalogIdentifierLookupKeysInto(request,output);
+  c::CatalogNameEntryView fixed_entry;fixed_entry.identifier_profile_uuid={p::UuidKind::object,profile.profile_uuid};
+  fixed_entry.raw_name_text=fixed_entry.display_name=raw;fixed_entry.requires_exact_match=true;fixed_entry.exact_lookup_key=fixed.exact;
+  Check(fixed.ok()&&c::CheckCatalogIdentifierLookupKeys(profile,fixed_entry)==E::none,
+      "fixed unquoted identifier retains its exact spelling despite the profile's unquoted fold");
+  profile=Profile();request={&profile,raw};
+  for(std::size_t n=0;n<2*raw.size();++n){output.fill(0x5a);heap_denied=true;
+    const auto result=c::DeriveCatalogIdentifierLookupKeysInto(request,std::span(output).first(n));heap_denied=false;
+    Check(result.error==E::size_limit&&result.normalized.empty()&&result.exact.empty()&&
+        std::all_of(output.begin(),output.end(),[](auto b){return b==0x5a;}),"both complete lanes admitted before any destination write");}
+  const auto refuse=[&](E expected_error){output.fill(0x5a);heap_denied=true;
+    const auto result=c::DeriveCatalogIdentifierLookupKeysInto(request,output);heap_denied=false;
+    Check(result.error==expected_error&&result.normalized.empty()&&result.exact.empty()&&
+        std::all_of(output.begin(),output.end(),[](auto b){return b==0x5a;}),"invalid key request refuses unchanged without allocating");};
+  for(const std::string malformed:{std::string{},std::string("bad\0name",8),std::string("\xc0\xaf",2),
+      std::string("\xed\xa0\x80",3),std::string("\xf4\x90\x80\x80",4),std::string("\xe2\x82",2)}){
+    request.text=malformed;refuse(E::invalid_text);}
+  request.text={static_cast<const char*>(nullptr),1};refuse(E::invalid_text);
+  request.text="\xc3\xa9\xf0\x9f\x90\xa6";profile.maximum_identifier_length=2;
+  Check(c::DeriveCatalogIdentifierLookupKeysInto(request,output).ok(),"two Unicode scalars have six encoded octets");
+  profile.length_unit=c::IdentifierLengthUnit::encoded_octets;refuse(E::identifier_too_long);
+  profile.maximum_identifier_length=6;Check(c::DeriveCatalogIdentifierLookupKeysInto(request,output).ok(),"explicit octet limit admits exact encoded length");
+  profile.length_unit=c::IdentifierLengthUnit::unicode_scalar_values;profile.maximum_identifier_length=1;refuse(E::identifier_too_long);
+  profile=Profile();request={&profile,raw,true,c::CatalogNameQuoteStyle::double_quote,false};refuse(E::invalid_quote_mode);
+  request.requires_exact_match=true;request.quote_style=c::CatalogNameQuoteStyle::backtick;refuse(E::invalid_quote_mode);
+  request.was_quoted=false;refuse(E::invalid_quote_mode);
+  request={&profile,raw};profile.dialect_mode_flags=1;refuse(E::dialect_admission_required);
+  profile=Profile();profile.resources=c::CatalogIdentifierResourceBinding{f::Id(200),f::Id(201),1,1};refuse(E::resource_admission_required);
+  profile=Profile();profile.storage_display_mode=c::IdentifierDisplayMode::donor_projection;refuse(E::resource_admission_required);
+  profile=Profile();profile.generation=0;refuse(E::invalid_profile);
+  profile=Profile();request={&profile,raw};
+  for(const auto range:std::array<std::pair<void*,std::size_t>,2>{{{&profile,sizeof(profile)},{&request,sizeof(request)}}}){
+    std::vector<p::byte> before(range.second),after(range.second);std::memcpy(before.data(),range.first,range.second);
+    for(std::size_t at=0;at<range.second;++at){heap_denied=true;
+      const auto result=c::DeriveCatalogIdentifierLookupKeysInto(request,{reinterpret_cast<p::byte*>(range.first)+at,1});heap_denied=false;
+      std::memcpy(after.data(),range.first,range.second);Check(result.error==E::invalid_backing&&before==after,"whole request and profile objects cannot alias output");}
+  }
+  std::array<p::byte,256> text_backing{};std::copy(raw.begin(),raw.end(),text_backing.begin());
+  request.text={reinterpret_cast<const char*>(text_backing.data()),raw.size()};auto before=text_backing;
+  heap_denied=true;const auto text_alias=c::DeriveCatalogIdentifierLookupKeysInto(request,text_backing);heap_denied=false;
+  Check(text_alias.error==E::invalid_backing&&text_backing==before,"input text cannot be overwritten by key derivation");
+  request.text=raw;profile.profile_name={reinterpret_cast<const char*>(text_backing.data()),raw.size()};
+  heap_denied=true;const auto name_alias=c::DeriveCatalogIdentifierLookupKeysInto(request,text_backing);heap_denied=false;
+  Check(name_alias.error==E::invalid_backing&&text_backing==before,"even non-algorithm profile-label backing cannot alias output");
+}
 void Physical(){
   scratchbird::tests::OwnedTempDirectory artifacts;const auto value=Profile();const auto meta=Metadata(value);
   for(const auto& profile:d::kCanonicalFilespacePageProfiles){
@@ -219,5 +305,5 @@ void Physical(){
   }
 }
 }
-int main()try{Values();Bindings();Physical();std::cout<<"PASS identifier profile "<<checks<<" checks\n";return 0;}
+int main()try{LookupKeys();Values();Bindings();Physical();std::cout<<"PASS identifier profile "<<checks<<" checks\n";return 0;}
 catch(const std::exception& e){heap_denied=false;std::cerr<<e.what()<<'\n';return 1;}

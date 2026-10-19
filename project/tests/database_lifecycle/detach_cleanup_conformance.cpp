@@ -8,6 +8,7 @@
 
 #include "../support/binary_uuid_fixture.hpp"
 #include "../support/native_catalog_column_fixture.hpp"
+#include "../support/catalog_column_binding_fixture.hpp"
 #include "../support/durable_authorization_fixture.hpp"
 #include "mga_relation_store/mga_descriptor_record_codec.hpp"
 #include "server_engine_bridge/statement_context.hpp"
@@ -38,6 +39,7 @@
 #include "sblr_dispatch_server.hpp"
 #include "session_registry.hpp"
 #include "sblr_savepoint_coordinator.hpp"
+#include "sblr_session_setting_set_coordinator.hpp"
 #include "engine/sblr/sblr_savepoint_runtime.hpp"
 #include "hash_digest.hpp"
 #include "transaction/transaction_api.hpp"
@@ -47,6 +49,9 @@
 #include "wire/parser_server_ipc/disconnect_result_validation.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <barrier>
+#include <thread>
 #include <array>
 #include <cstdlib>
 #include <filesystem>
@@ -519,6 +524,75 @@ void VerifyLifecycleDetachClusterFailClosed(const std::filesystem::path& databas
           "DBLC-009 lifecycle detach did not fail closed with cluster diagnostic");
 }
 
+// Real engine receipt lifecycle, separate from scoped-value mutation semantics.
+void VerifySessionDescriptorRetirement(sb_engine_session_t session,
+                                      const api::EngineRequestContext& base) {
+  namespace bridge = scratchbird::server_engine_bridge;
+  namespace sblr = scratchbird::engine::sblr;
+  using Operation = api::SessionValueOperation;
+  for (const auto operation : {Operation::setting_set, Operation::context_get,
+                               Operation::context_unset, Operation::discard}) {
+    bridge::StatementContextAcquireRequest request;
+    request.engine_context = &base;
+    request.exact_transaction_uuid = base.transaction_uuid;
+    bridge::StatementContextReceiptHandle receipt;
+    bridge::StatementContextReceiptView view;
+    sb_engine_result_t diagnostic = nullptr;
+    const auto acquired = bridge::AcquireStatementContextReceipt(
+        session, &request, &receipt, &view, &diagnostic);
+    if (diagnostic) sb_engine_result_release(diagnostic);
+    Require(acquired == SB_ENGINE_STATUS_OK, "session coordinator fixture receipt failed");
+    api::EngineRequestContext owned;
+    diagnostic = nullptr;
+    const auto copied = bridge::CopyStatementContextEngineContextV1(receipt, &owned, &diagnostic);
+    if (diagnostic) sb_engine_result_release(diagnostic);
+    Require(copied == SB_ENGINE_STATUS_OK, "session coordinator owned context copy failed");
+    const sblr::SblrSessionSettingSetRequestV1 demand{view.receipt_uuid.bytes, 1};
+    sblr::SblrSessionSettingSetDescriptorV1 issued;
+    const auto issue = [&](const auto& owner, const auto& input, auto* output) {
+      sb_engine_result_t error = nullptr;
+      const auto status = bridge::CoordinateSessionValueDescriptorV1(
+          receipt, owner, operation, &input, output, &error);
+      if (error) sb_engine_result_release(error);
+      return status;
+    };
+    Require(issue(base.session_uuid.bytes, demand, &issued) == SB_ENGINE_STATUS_OK,
+            "live engine receipt did not issue session descriptor");
+    auto other_session = base.session_uuid.bytes;
+    other_session[15] ^= 1;
+    sblr::SblrSessionSettingSetDescriptorV1 refused;
+    Require(issue(other_session, demand, &refused) == SB_ENGINE_STATUS_SECURITY_DENIED,
+            "foreign session issued descriptor from another receipt");
+    auto other_receipt = demand;
+    other_receipt.receipt[15] ^= 1;
+    Require(issue(base.session_uuid.bytes, other_receipt, &refused) == SB_ENGINE_STATUS_SECURITY_DENIED,
+            "wrong receipt identity issued session descriptor");
+    std::barrier start(2);
+    std::atomic<bool> unexpected{false};
+    std::thread coordinate([&] {
+      start.arrive_and_wait();
+      for (unsigned iteration = 0; iteration != 32; ++iteration) {
+        sblr::SblrSessionSettingSetDescriptorV1 descriptor;
+        const auto status = issue(base.session_uuid.bytes, demand, &descriptor);
+        if (status != SB_ENGINE_STATUS_OK && status != SB_ENGINE_STATUS_INVALID_HANDLE)
+          unexpected.store(true);
+      }
+    });
+    start.arrive_and_wait();
+    const auto released = bridge::ReleaseStatementContextReceipt(receipt);
+    coordinate.join();
+    Require(released == SB_ENGINE_STATUS_OK && !unexpected.load(),
+            "session coordination/release race violated receipt lifetime");
+    Require(issue(base.session_uuid.bytes, demand, &refused) == SB_ENGINE_STATUS_INVALID_HANDLE,
+            "retired receipt issued a new session descriptor");
+    Require(refused.receipt == decltype(refused.receipt){},
+            "refused coordination retained an output descriptor");
+    Require(!api::ConsumeSblrSessionValueDescriptor(operation, owned, issued).ok,
+            "receipt retirement leaked an unexecuted session descriptor");
+  }
+  std::cout << "session_descriptor_retirement real_receipt=true owner_bound=true concurrent_release=true\n";
+}
+
 void VerifyDetachCleanup(const std::filesystem::path& database_path,
                          const api::EngineUuid& database_uuid) {
   ServerSessionRegistry registry;
@@ -944,23 +1018,11 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = "int64";
   namespace dt = scratchbird::core::datatypes;
-  const auto manifest = dt::LoadCurrentCoreDatatypeCatalogManifest();
-  Require(manifest.ok(), "metadata fixture datatype catalog missing");
-  const auto datatype_row = dt::LookupDatatypeCatalogRow(manifest.manifest, dt::CanonicalTypeId::int64);
-  Require(datatype_row.ok() && datatype_row.manifest.descriptor_rows.size() == 1, "metadata fixture int64 row missing");
-  const auto& datatype = datatype_row.manifest.descriptor_rows.front();
-  const auto binding = dt::LookupDatatypeTypeCodecIdentityV1(
-      table.context.datatype_catalog_snapshot_uuid, table.context.datatype_catalog_generation,
-      table.context.datatype_registry_generation, datatype.descriptor_uuid.value, datatype.descriptor_epoch);
-  Require(binding.ok, "metadata fixture int64 codec missing");
-  column.requested_column_uuid = api::GenerateCrudEngineUuid("object");
-  column.descriptor.descriptor_uuid = api::GenerateCrudEngineUuid("object");
-  column.descriptor.datatype_descriptor_uuid = binding.row.descriptor_uuid;
-  column.descriptor.datatype_descriptor_generation = binding.row.descriptor_generation;
-  column.descriptor.type_uuid = binding.row.type_uuid;
+  scratchbird::tests::BindFixtureColumnDatatype(table.context, dt::CanonicalTypeId::int64, column);
   column.descriptor.encoded_descriptor = scratchbird::tests::NativeCatalogColumnFixture({
       {{"type", "int64"}, {"nullable", "false"}},
-      {{"datatype_descriptor_uuid", binding.row.descriptor_uuid}, {"type_uuid", binding.row.type_uuid}}});
+      {{"datatype_descriptor_uuid", column.descriptor.datatype_descriptor_uuid},
+       {"type_uuid", column.descriptor.type_uuid}}});
   column.nullable = false;
   table.table_columns.push_back(column);
   table.option_envelopes = {"temporary:true", "temporary_scope:private", "on_commit:preserve_rows"};
@@ -1048,6 +1110,7 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
       CloseServerPublicAbiSessionForSession(registry, session_uuid, "metadata_fixture_complete");
     }
   } close_public_session{&registry, session.session_uuid};
+  VerifySessionDescriptorRetirement(public_session->engine_session, table.context);
   bridge::StatementContextAcquireRequest statement_request;
   statement_request.engine_context = &table.context;
   statement_request.exact_transaction_uuid = table.context.transaction_uuid;
@@ -1074,11 +1137,16 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
   insert.option_envelopes = {"large_value.force_toast=true"};
   api::EngineTypedValue value;
   value.descriptor = column.descriptor;
-  value.encoded_value = "17";
+  std::string native_integer;
+  Require(dt::EncodeCanonicalInt64Value(17, &native_integer),
+          "metadata fixture native int64 encoding failed");
+  value.binary_value.assign(native_integer.begin(), native_integer.end());
   api::EngineRowValue row;
   row.fields.push_back({"id", value});
   insert.input_rows.push_back(std::move(row));
-  value.encoded_value = "18";
+  Require(dt::EncodeCanonicalInt64Value(18, &native_integer),
+          "metadata fixture second native int64 encoding failed");
+  value.binary_value.assign(native_integer.begin(), native_integer.end());
   api::EngineRowValue second_row;
   second_row.fields.push_back({"id", value});
   insert.input_rows.push_back(std::move(second_row));
@@ -1712,6 +1780,12 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
   const std::array<std::string, 1> fixture_fields{"id"};
   Require(api::AppendScopedRowBinaryBatch(&binary_fixture, fixture_rows, insert.input_rows,
               fixture_fields, stored_row->event_sequence), "binary row fixture encoding failed");
+  const auto has_native_integer = [](const api::CrudRowVersionRecord& record, std::int64_t expected) {
+    std::int64_t actual = 0;
+    return record.values.size() == 1 && record.values.front().first == "id" &&
+        record.values.front().second.isPresent() &&
+        dt::DecodeCanonicalInt64Value(record.values.front().second.bytes, &actual) && actual == expected;
+  };
   const auto verify_binary_rows = [&] {
     binary_rows.clear();
     binary_summary = {};
@@ -1720,8 +1794,8 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
                 binary_summary.row_version_count == 2 && binary_rows.size() == 2 &&
                 binary_rows[0].row_uuid == stored_row->row_uuid &&
                 binary_rows[1].row_uuid == stored_second_row->row_uuid &&
-                binary_rows[0].values == api::CrudValueFields{{"id", "17"}} &&
-                binary_rows[1].values == api::CrudValueFields{{"id", "18"}},
+                has_native_integer(binary_rows[0], 17) &&
+                has_native_integer(binary_rows[1], 18),
             "complete binary segment did not publish exact actual row identities and values");
   };
   const auto verify_binary_refusal = [&] {
@@ -1815,32 +1889,33 @@ void VerifyMetadataReadFailure(const std::filesystem::path& database_path,
     out.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
     out.close(); Require(static_cast<bool>(out), "scoped binary cache fixture write failed");
   };
-  const auto verify_scoped_binary = [&](const std::string& second_value) {
+  const auto verify_scoped_binary = [&](std::int64_t second_value) {
     Require(api::LoadDecodedScopedRowsForTable(context, table_uuid, &scoped_rows, &used_rows) &&
                 used_rows && scoped_rows.size() == 2 &&
                 scoped_rows[0].row_uuid == stored_row->row_uuid &&
                 scoped_rows[1].row_uuid == stored_second_row->row_uuid &&
-                scoped_rows[1].values == api::CrudValueFields{{"id", second_value}},
+                has_native_integer(scoped_rows[0], 17) && has_native_integer(scoped_rows[1], second_value),
             "row cache did not decode exact current binary bytes");
   };
-  replace_scoped_binary(binary_fixture); verify_scoped_binary("18"); verify_scoped_binary("18");
+  replace_scoped_binary(binary_fixture); verify_scoped_binary(18); verify_scoped_binary(18);
   const auto scoped_binary_time = std::filesystem::last_write_time(scoped_binary_row_path);
   auto changed_values = insert.input_rows;
-  changed_values[1].fields[0].second.encoded_value = "19";
+  Require(dt::EncodeCanonicalInt64Value(19, &native_integer), "changed native integer encoding failed");
+  changed_values[1].fields[0].second.binary_value.assign(native_integer.begin(), native_integer.end());
   std::string changed_binary;
   Require(api::AppendScopedRowBinaryBatch(&changed_binary, fixture_rows, changed_values,
               fixture_fields, stored_row->event_sequence) && changed_binary.size() == binary_fixture.size(),
           "same-size binary replacement fixture not constructed");
   replace_scoped_binary(changed_binary);
   std::filesystem::last_write_time(scoped_binary_row_path, scoped_binary_time);
-  verify_scoped_binary("19"); bounded_scoped_read(true, 2);
+  verify_scoped_binary(19); bounded_scoped_read(true, 2);
   std::filesystem::permissions(scoped_binary_row_path, std::filesystem::perms::none);
   const bool denied_binary_cache = api::LoadDecodedScopedRowsForTable(context, table_uuid, &scoped_rows, &used_rows);
   Require(!denied_binary_cache && scoped_rows.empty() && !used_rows, "denied binary read published cached rows");
   bounded_scoped_read(false, 0);
   std::filesystem::permissions(scoped_binary_row_path, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
   Require(!denied_binary_cache && scoped_rows.empty() && !used_rows, "warm binary cache bypassed read denial");
-  verify_scoped_binary("19");
+  verify_scoped_binary(19);
   std::filesystem::remove(scoped_binary_row_path);
   std::filesystem::create_directory(scoped_binary_row_path);
   const bool directory_binary_cache = api::LoadDecodedScopedRowsForTable(context, table_uuid, &scoped_rows, &used_rows);

@@ -12,6 +12,7 @@ namespace mem = scratchbird::core::memory;
 using Source = srv::StartupCredentialSource;
 namespace {
 std::atomic<bool> foreign_move_completed{false};
+std::atomic<bool> inherited_custody_forbidden{false};
 unsigned checks = 0, failures = 0;
 std::atomic<bool> watch_park{false};
 std::binary_semaphore parked{0};
@@ -20,6 +21,9 @@ std::atomic<unsigned> erased{0};
 std::atomic<bool> clean{true}, deny_lock{false};
 std::atomic<bool> pause_import{false};
 std::binary_semaphore import_entered{0}, import_resume{0};
+void (*import_callback)() = nullptr;
+Source::Request* callback_request = nullptr;
+srv::StartupCredentialTransportBinding* callback_binding = nullptr;
 void Check(bool pass, const char* label) {
   ++checks;
   if (!pass) { ++failures; std::cerr << "FAIL " << label << '\n'; }
@@ -54,9 +58,24 @@ extern "C" int __real_pthread_cond_timedwait(pthread_cond_t*, pthread_mutex_t*, 
 extern "C" ssize_t __real_pread(int, void*, size_t, off_t);
 extern "C" int __real_munlock(const void*, size_t);
 extern "C" int __real_mlock(const void*, size_t);
+extern "C" int __real_pthread_mutex_lock(pthread_mutex_t*);
+extern "C" int __real_close(int);
+extern "C" int __wrap_pthread_mutex_lock(pthread_mutex_t* mutex) {
+  if (inherited_custody_forbidden.load()) ::_exit(78);
+  return __real_pthread_mutex_lock(mutex);
+}
+extern "C" int __wrap_close(int fd) {
+  if (inherited_custody_forbidden.load()) ::_exit(78);
+  return __real_close(fd);
+}
 extern "C" ssize_t __wrap_pread(int fd, void* p, size_t n, off_t at) {
+  if (inherited_custody_forbidden.load()) ::_exit(78);
   if (at == 88) secret = p;
   const auto result = __real_pread(fd, p, n, at);
+  if (at == 88 && import_callback) {
+    const auto callback = std::exchange(import_callback, nullptr);
+    callback();
+  }
   if (at == 88 && pause_import.exchange(false)) {
     import_entered.release();
     import_resume.acquire();
@@ -64,6 +83,7 @@ extern "C" ssize_t __wrap_pread(int fd, void* p, size_t n, off_t at) {
   return result;
 }
 extern "C" int __wrap_munlock(const void* p, size_t n) {
+  if (inherited_custody_forbidden.load()) ::_exit(78);
   if (secret.load() == p) {
     for (size_t i = 0; i < n; ++i)
       if (static_cast<const unsigned char*>(p)[i]) clean = false;
@@ -72,6 +92,7 @@ extern "C" int __wrap_munlock(const void* p, size_t n) {
   return __real_munlock(p, n);
 }
 extern "C" int __wrap_mlock(const void* p, size_t n) {
+  if (inherited_custody_forbidden.load()) ::_exit(78);
   if (deny_lock.exchange(false)) { errno = EPERM; return -1; }
   return __real_mlock(p, n);
 }
@@ -79,7 +100,141 @@ extern "C" int __wrap_pthread_cond_timedwait(pthread_cond_t* c, pthread_mutex_t*
   if (watch_park.exchange(false)) parked.release();
   return __real_pthread_cond_timedwait(c, m, t);
 }
-int main() {
+namespace {
+void ChangeCallerInputs() {
+  callback_request->task = Id(9);
+  callback_request->generation = 23;
+  callback_request->incarnation = Id(10);
+  if (callback_binding) {
+    callback_binding->generation = 23;
+    callback_binding->principal = Id(11);
+  }
+}
+
+int CallerInputMutationCase(bool publication) {
+  const auto page = static_cast<size_t>(::sysconf(_SC_PAGESIZE));
+  auto policy = mem::DefaultLocalEngineMemoryPolicy();
+  policy.hard_limit_bytes = page * 2; policy.per_context_limit_bytes = page * 2;
+  policy.soft_limit_bytes = 0;
+  mem::MemoryManager manager(policy);
+  srv::StartupCredentialTransportBinding binding{Id(1), Id(2), Id(3), Id(4), 7, ::geteuid()};
+  mem::MemoryTag tag;
+  tag.binary_ownership[mem::MemoryBinaryScopeKind::context] = Id(12).bytes;
+  tag.binary_ownership[mem::MemoryBinaryScopeKind::owner] = binding.principal.bytes;
+  tag.binary_ownership[mem::MemoryBinaryScopeKind::database] = binding.database.bytes;
+  Fd fd{Sealed(binding)};
+  Source source(Id(5), 4);
+  Source::Request request{Id(5), Id(6), 0, {}, {}};
+  callback_request = &request;
+  callback_binding = publication ? &binding : nullptr;
+  if (publication) import_callback = ChangeCallerInputs;
+  if (!source.Publish(request, fd.fd, binding, manager, tag).ok()) return 31;
+  if (publication && (request.task != Id(9) || binding.generation != 23)) return 32;
+  request = {Id(5), Id(6), 7, Source::Mutex::Clock::now()+std::chrono::seconds(1), {}};
+  if (!publication) import_callback = ChangeCallerInputs;
+  auto acquired = source.Acquire(request, manager, tag);
+  if (!acquired.outcome.ok() || !acquired.lease) return 33;
+  if (!publication && request.task != Id(9)) return 34;
+  const auto actual = acquired.lease->binding();
+  if (!actual || actual->principal != Id(2) || actual->generation != 7 ||
+      acquired.lease->credential() != "fixture") return 35;
+  acquired.lease->Reset(); // Must unlock the task actually granted before the callback.
+  if (!source.Revoke({Id(5), Id(6), 7, {}, {}}).ok()) return 36;
+  return manager.Snapshot().current_bytes == 0 && clean.load() ? 0 : 37;
+}
+
+void CallerInputMutationChecks() {
+  // Each actual import hook runs synchronously on its acquiring thread. This
+  // is caller-buffer reentrancy, not a concurrent data race or supplied proof.
+  for (bool publication : {true, false}) {
+    const auto child = ::fork();
+    if (!child) {
+      std::set_terminate([] { ::_exit(73); });
+      ::alarm(3);
+      ::_exit(CallerInputMutationCase(publication));
+    }
+    int status = 0;
+    const auto waited = child > 0 ? ::waitpid(child, &status, 0) : -1;
+    if (waited != child || !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+      std::cerr << "caller_input_mutation publication=" << publication << " child_status=" << status << '\n';
+    Check(waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+        publication ? "publication keeps the exact frame binding validated before a caller-input callback"
+                    : "acquisition unlocks the exact task admitted before a caller-input callback");
+  }
+}
+
+template<class Work>
+void RejectInherited(const char* label, Work&& work) {
+  const auto child = ::fork();
+  if (child == 0) {
+    std::set_terminate([] { ::_exit(73); });
+    inherited_custody_forbidden = true;
+    ::alarm(2); // Bound a regression that enters an inherited native mutex.
+    work();
+    ::_exit(76);
+  }
+  int status = 0;
+  const auto waited = child > 0 ? ::waitpid(child, &status, 0) : -1;
+  Check(child > 0 && waited == child && WIFEXITED(status) && WEXITSTATUS(status) == 73, label);
+}
+
+void InheritedLeaseChecks(Source::Lease& lease) {
+  RejectInherited("inherited credential access rejects before custody", [&] { (void)lease.credential(); });
+  RejectInherited("inherited binding access rejects before custody", [&] { (void)lease.binding(); });
+  RejectInherited("inherited reset rejects before protected cleanup or unlock", [&] { lease.Reset(); });
+  RejectInherited("inherited move rejects before custody transfer", [&] { Source::Lease moved(std::move(lease)); });
+  RejectInherited("inherited destruction rejects before protected cleanup or unlock", [&] { lease.~Lease(); });
+}
+
+void InheritedProcessChecks() {
+  const auto page = static_cast<size_t>(::sysconf(_SC_PAGESIZE));
+  auto policy = mem::DefaultLocalEngineMemoryPolicy();
+  policy.hard_limit_bytes = page * 2; policy.per_context_limit_bytes = page * 2;
+  policy.soft_limit_bytes = 0;
+  mem::MemoryManager manager(policy);
+  srv::StartupCredentialTransportBinding binding{Id(1), Id(2), Id(3), Id(4), 7, ::geteuid()};
+  mem::MemoryTag tag;
+  tag.binary_ownership[mem::MemoryBinaryScopeKind::context] = binding.database.bytes;
+  tag.binary_ownership[mem::MemoryBinaryScopeKind::owner] = binding.principal.bytes;
+  tag.binary_ownership[mem::MemoryBinaryScopeKind::database] = binding.database.bytes;
+  Fd fd{Sealed(binding)};
+  Source source(Id(5), 4);
+  Source::Request request{Id(5), Id(6), 0, {}, {}};
+  Check(source.Publish(request, fd.fd, binding, manager, tag).ok(), "parent source publication");
+  request.generation = binding.generation;
+  auto held = source.Acquire(request, manager, tag);
+  Check(held.outcome.ok() && held.lease.has_value(), "parent retains actual protected lease across fork");
+  if (!held.lease) return;
+  InheritedLeaseChecks(*held.lease);
+  Source::Lease moved(std::move(*held.lease));
+  InheritedLeaseChecks(*held.lease); // Immutable ownership survives a move.
+  Check(moved.credential() == "fixture" && !held.lease->binding(), "parent custody survives child refusals and own move");
+  const auto source_checks = [&] {
+    RejectInherited("inherited close rejects before source mutex", [&] { source.Close(); });
+    RejectInherited("inherited acquire rejects before source mutex/import", [&] { (void)source.Acquire(request, manager, tag); });
+    RejectInherited("inherited revoke rejects before source mutex", [&] { (void)source.Revoke(request); });
+    RejectInherited("inherited publish rejects before source mutex/descriptor duplication", [&] { (void)source.Publish(request, fd.fd, binding, manager, tag); });
+    RejectInherited("inherited source destruction rejects before source mutex", [&] { source.~StartupCredentialSource(); });
+    RejectInherited("inherited invalid request rejects before returning an ordinary source result", [&] { (void)source.Acquire({}, manager, tag); });
+  };
+  source_checks();
+  moved.Reset();
+  InheritedLeaseChecks(moved); // Reset must not erase the immutable process check.
+  source_checks(); // No current holder is needed to reproduce the old gap.
+  Check(manager.Snapshot().current_bytes == 0 && clean.load(), "parent erases its protected bytes after rejected child operations");
+  Check(source.Acquire(request, manager, tag).outcome.ok(), "parent source remains usable after all child refusals");
+  Check(source.Revoke(request).ok(), "parent revokes its actual source after child refusals");
+}
+}
+
+int main(int argc, char** argv) {
+  if (argc == 2 && std::string_view(argv[1]) == "fork") {
+    InheritedProcessChecks();
+    std::cout << checks << " inherited-process source checks; failures=" << failures << '\n';
+    return failures ? 1 : 0;
+  }
+  if (argc != 1) return 2;
+  CallerInputMutationChecks();
   // Construct each death-test owner AFTER fork, before any parent worker or
   // memory-manager state exists. Never enter inherited source locks in a child.
   for (const auto [operation, reset_first] :

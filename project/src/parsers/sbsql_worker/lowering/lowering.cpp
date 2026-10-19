@@ -33231,7 +33231,7 @@ SblrEnvelope LowerLifecycleMapping(const LifecycleMappingDescriptor& mapping,
   AppendJsonStringArray(out, "required_rights", envelope.required_rights);
   out << ',';
   AppendJsonStringArray(out, "required_authority_steps", envelope.required_authority_steps);
-  out << "]}";
+  out << '}';
   envelope.payload = out.str();
   return envelope;
 }

@@ -4,8 +4,18 @@
 #include "native_creation_workspace.hpp"
 #include "datatype_binary.hpp"
 #include "catalog_identifier_profile.hpp"
+#include "catalog_naming_dialect_profile.hpp"
+#include "catalog_naming_collision_policy.hpp"
 #include "catalog_construction_intent.hpp"
 #include "catalog_policy_descriptor.hpp"
+#include "catalog_verification_policy.hpp"
+#include "catalog_evidence_policy.hpp"
+#include "catalog_authorization_policy.hpp"
+#include "catalog_transaction_policy.hpp"
+#include "catalog_lock_policy.hpp"
+#include "catalog_isolation_profile.hpp"
+#include "catalog_management_descriptor.hpp"
+#include "catalog_agent_bootstrap.hpp"
 #include "catalog_crypto_inline_private_key_policy.hpp"
 #include "catalog_database_record_codec.hpp"
 
@@ -54,12 +64,106 @@ template<class Reserve> void ReserveNativeCreationCatalogReferences(
       if(p.platform)reserve(p.platform->profile_uuid);
     }
   }
+  if(core::catalog::IsCatalogNamingDialectProfilePayload(m.record.payload)){
+    const auto profile=core::catalog::DecodeCatalogNamingDialectProfile(m.record.payload);
+    if(profile.ok()){
+      const auto& p=*profile.record;
+      for(const auto& id:{p.database_uuid,p.identifier_profile_uuid,p.origin_transaction_uuid.value,p.creating_transaction_uuid.value})reserve(id);
+    }
+  }
+  if(core::catalog::IsCatalogNamingCollisionPolicyPayload(m.record.payload)){
+    const auto decoded=core::catalog::DecodeCatalogNamingCollisionPolicy(m.record.payload);
+    if(decoded.ok()){
+      const auto& body=*decoded.record;
+      for(const auto& id:{body.database_uuid,body.origin_transaction_uuid.value,body.creating_transaction_uuid.value})reserve(id);
+      for(std::size_t i=0;i<body.group_count;++i)reserve(body.groups[i].group_uuid);
+    }
+  }
   if(core::catalog::IsCatalogConstructionIntentPayload(m.record.payload)){
     const auto event=core::catalog::DecodeCatalogConstructionIntent(m.record.payload);
     if(event.ok()){
       const auto& e=*event.record;
       for(const auto& id:{e.database_uuid,e.engine_uuid,e.operation_uuid,e.filespace_uuid,e.origin_transaction_uuid.value})reserve(id);
       if(e.actor_uuid)reserve(e.actor_uuid->value);
+    }
+  }
+  if(core::catalog::IsCatalogAgentBootstrapPayload(m.record.payload)){
+    const auto decoded=core::catalog::DecodeCatalogAgentBootstrapDefinition(m.record.payload);
+    if(decoded.ok()){
+      const auto& p=*decoded.record;
+      for(const auto& id:{p.definition_uuid,p.database_uuid,p.policy_uuid,p.origin_transaction_uuid.value})reserve(id);
+      if(p.startup_verification){const auto& v=*p.startup_verification;
+        for(const auto& id:{v.repair_policy_uuid,v.quarantine_policy_uuid,v.salvage_policy_uuid,v.evidence_policy_uuid})reserve(id);
+      }
+    }
+  }
+  if(core::catalog::IsCatalogManagementProfilePayload(m.record.payload)){
+    const auto decoded=core::catalog::DecodeCatalogManagementProfile(m.record.payload);
+    if(decoded.ok()){const auto& p=*decoded.record;
+      for(const auto& id:{p.profile_uuid,p.database_uuid,p.origin_transaction_uuid.value,p.creating_transaction_uuid.value})reserve(id);}
+  }
+  if(core::catalog::IsCatalogManagementDescriptorPayload(m.record.payload)){
+    const auto decoded=core::catalog::DecodeCatalogManagementDescriptor(m.record.payload);
+    if(decoded.ok()){const auto& p=*decoded.record;
+      for(const auto& id:{p.descriptor_uuid,p.database_uuid,p.origin_transaction_uuid.value,p.creating_transaction_uuid.value})reserve(id);
+      for(const auto& id:p.profiles)reserve(id);}
+  }
+  if(core::catalog::IsCatalogIsolationProfilePayload(m.record.payload)){
+    const auto decoded=core::catalog::DecodeCatalogIsolationProfile(m.record.payload);
+    if(decoded.ok()){const auto& p=*decoded.record;
+      for(const auto& id:{p.profile_uuid,p.database_uuid,p.wait_policy_uuid,p.deadlock_policy_uuid,
+          p.origin_transaction_uuid.value,p.creating_transaction_uuid.value})reserve(id);
+      if(p.donor_mapping_uuid)reserve(*p.donor_mapping_uuid);
+      if(p.cluster_uuid)reserve(*p.cluster_uuid);
+    }
+  }
+  if(core::catalog::IsCatalogLockPolicyPayload(m.record.payload)){
+    const auto decoded=core::catalog::DecodeCatalogLockPolicy(m.record.payload);
+    if(decoded.ok()){const auto& p=*decoded.record;
+      for(const auto& id:{p.body_uuid,p.database_uuid,p.evidence_policy_uuid,
+          p.origin_transaction_uuid.value,p.creating_transaction_uuid.value})reserve(id);
+      if(p.donor_mapping_uuid)reserve(*p.donor_mapping_uuid);
+      if(p.maintenance_window_policy_uuid)reserve(*p.maintenance_window_policy_uuid);
+      if(p.cluster_uuid)reserve(*p.cluster_uuid);
+    }
+  }
+  if(core::catalog::IsCatalogTransactionPolicyPayload(m.record.payload)){
+    const auto decoded=core::catalog::DecodeCatalogTransactionPolicy(m.record.payload);
+    if(decoded.ok()){
+      const auto& p=*decoded.record;
+      for(const auto& id:{p.body_uuid,p.database_uuid,p.default_isolation_profile_uuid,p.startup_isolation_profile_uuid,
+          p.lock_policy_uuid,p.evidence_policy_uuid,p.origin_transaction_uuid.value,p.creating_transaction_uuid.value})reserve(id);
+      for(std::size_t i=0;i<p.allowed_isolation_profile_count;++i)reserve(p.allowed_isolation_profiles[i]);
+      if(p.cluster_uuid)reserve(*p.cluster_uuid);
+    }
+  }
+  if(core::catalog::IsCatalogAuthorizationPolicyPayload(m.record.payload)){
+    const auto decoded=core::catalog::DecodeCatalogAuthorizationPolicy(m.record.payload);
+    if(decoded.ok()){
+      const auto& p=*decoded.record;
+      for(const auto& id:{p.body_uuid,p.database_uuid,p.user_schema_uuid,p.role_schema_uuid,p.group_schema_uuid,
+          p.grant_schema_uuid,p.row_policy_schema_uuid,p.column_policy_schema_uuid,
+          p.origin_transaction_uuid.value,p.creating_transaction_uuid.value})reserve(id);
+      if(p.external_mapping_schema_uuid)reserve(*p.external_mapping_schema_uuid);
+      if(p.cluster_uuid)reserve(*p.cluster_uuid);
+    }
+  }
+  if(core::catalog::IsCatalogEvidencePolicyPayload(m.record.payload)){
+    const auto decoded=core::catalog::DecodeCatalogEvidencePolicy(m.record.payload);
+    if(decoded.ok()){
+      const auto& p=*decoded.record;
+      for(const auto& id:{p.body_uuid,p.database_uuid,p.storage_filespace_uuid,
+          p.origin_transaction_uuid.value,p.creating_transaction_uuid.value})reserve(id);
+      if(p.cluster_uuid)reserve(*p.cluster_uuid);
+    }
+  }
+  if(core::catalog::IsCatalogVerificationPolicyPayload(m.record.payload)){
+    const auto decoded=core::catalog::DecodeCatalogVerificationPolicy(m.record.payload);
+    if(decoded.ok()){
+      const auto& p=*decoded.record;
+      for(const auto& id:{p.body_uuid,p.database_uuid,p.evidence_policy_uuid,
+          p.origin_transaction_uuid.value,p.creating_transaction_uuid.value})reserve(id);
+      if(p.access_policy_uuid)reserve(*p.access_policy_uuid);
     }
   }
   if(core::catalog::IsCatalogPolicyDescriptorPayload(m.record.payload)){

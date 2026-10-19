@@ -6,8 +6,10 @@
 #include "process_crypto_owner.hpp"
 #include "startup.hpp"
 #include "uuid.hpp"
+#include "../../src/storage/database/native_storage_memory.hpp"
 #include "../support/owned_temp_directory.hpp"
 #include <openssl/crypto.h>
+#include <openssl/evp.h>
 #include <array>
 #include <atomic>
 #include <cerrno>
@@ -41,6 +43,20 @@ std::size_t selected_crypto_bytes=0,observed_crypto_bytes=0;
 const void* observed_crypto_backing=nullptr;
 bool actual_crypto_lock=false,actual_crypto_no_dump=false;
 unsigned crypto_lock_attempts=0,crypto_dump_attempts=0,crypto_lock_refusals=0,crypto_dump_refusals=0;
+s::ServerProcessCryptoOwner* profile_host=nullptr;
+bool refuse_profile=false,profile_reentry_refused=false,profile_close_refused=false;
+unsigned profile_calls=0;
+extern "C" int __real_PKCS5_PBKDF2_HMAC(const char*,int,const unsigned char*,int,int,const EVP_MD*,int,unsigned char*);
+extern "C" int __wrap_PKCS5_PBKDF2_HMAC(const char* password,int password_bytes,const unsigned char* salt,
+    int salt_bytes,int iterations,const EVP_MD* digest,int output_bytes,unsigned char* output) {
+  if(profile_host) {
+    ++profile_calls;
+    profile_reentry_refused=profile_host->PrepareNativeLocalPasswordAlgorithms().adapter_error==h::CryptoMemoryError::busy;
+    profile_close_refused=profile_host->CloseAfterUserDrain().adapter_error==h::CryptoMemoryError::busy;
+    if(refuse_profile){refuse_profile=false;return 0;}
+  }
+  return __real_PKCS5_PBKDF2_HMAC(password,password_bytes,salt,salt_bytes,iterations,digest,output_bytes,output);
+}
 static_assert(m::kDefaultNativeCryptoProtectedMemoryPolicy==m::ProtectedMemoryPlatformPolicy::require_lock_and_no_dump);
 extern "C" int __real_mlock(const void*,std::size_t);
 extern "C" int __wrap_mlock(const void* pointer,std::size_t bytes) {
@@ -360,10 +376,14 @@ int main(int argc,char** argv) try {
       }else {
         Check(startup.exit_code==0&&host.installed()&&startup.emergency_reserve&&rand_calls>0,
             "actual startup installs process provider before emergency owner UUID issuance");
-        if(test_mode=="host_platform_startup")
+        if(test_mode=="host_platform_startup") {
           Check(host_probe_calls==1&&std::filesystem::exists(startup.effective_config.lifecycle_state_file)&&
               startup.effective_config.mode==s::ServerMode::kForeground,
               "serving startup executes real host IPC probe after provider admission and publishes actual lifecycle artifacts");
+          Check(startup.stdout_text.find("\"serving\":false")!=std::string::npos&&
+              startup.stdout_text.find("\"serving_requested\":true")!=std::string::npos,
+              "configuration acceptance reports requested serving without claiming service readiness");
+        }
         Check(host.Snapshot().backing_bytes==bytes&&manager.Snapshot().current_bytes>bytes,
             "actual startup retains separately accounted provider and emergency backing");
       }
@@ -411,6 +431,91 @@ int main(int argc,char** argv) try {
               "selected host budget is charged once to the shared actual manager");
         Check(host.Start(selected,policy).error==s::ProcessCryptoStartError::already_started,
               "repeat host startup cannot replace process identities or grants");
+        if(test_mode=="host_native_resources") {
+          using NE=s::NativeBootstrapMemoryError;
+          const auto native_baseline=manager.Snapshot();
+          profile_host=&host;refuse_profile=true;
+          Check(host.PrepareNativeLocalPasswordAlgorithms().adapter_error==h::CryptoMemoryError::provider_failure&&
+              host.installed()&&profile_calls==1&&profile_reentry_refused&&profile_close_refused,
+              "actual native primitive refusal and reentrant callbacks retain the live process provider");
+          Check(host.PrepareNativeLocalPasswordAlgorithms().ok()&&profile_calls==2&&
+              profile_reentry_refused&&profile_close_refused,
+              "corrected native primitive preparation retries under actual process backing");
+          Check(host.PrepareNativeLocalPasswordAlgorithms().ok()&&profile_calls==2,
+              "successful native primitive preparation is retained without repeating provider work");
+          profile_host=nullptr;
+          const auto issue=[] {const auto id=u::IssueRuntimeIdentityV7();
+            Check(bool(id),"native resource runtime identity issuance");return *id;};
+          s::NativeBootstrapMemoryRequest request{issue(),issue(),issue(),issue(),1024*1024};
+          auto invalid=request;invalid.database={};
+          Check(host.AcquireNativeBootstrapResource(invalid).error==NE::invalid_request&&
+              manager.Snapshot().current_bytes==bytes,"invalid native binding has no admission effects");
+          invalid=request;invalid.kind=static_cast<s::NativeBootstrapMemoryKind>(99);
+          Check(host.AcquireNativeBootstrapResource(invalid).error==NE::invalid_request,
+              "unknown native memory consumer cannot acquire an untyped grant");
+          s::NativeBootstrapMemoryResult foreign;
+          r::RuntimeCryptoPoolResult foreign_profile;
+          std::thread other([&]{foreign=host.AcquireNativeBootstrapResource(request);
+            foreign_profile=host.PrepareNativeLocalPasswordAlgorithms();});other.join();
+          Check(foreign.error==NE::wrong_owner&&foreign_profile.error==r::RuntimeCryptoPoolError::invalid_binding,
+              "foreign thread cannot enter native process ledger or provider preparation");
+          const auto child=::fork();Check(child>=0,"fork inherited native admission refusal");
+          if(child==0)::_exit(host.AcquireNativeBootstrapResource(request).error==NE::wrong_owner&&
+              host.PrepareNativeLocalPasswordAlgorithms().error==r::RuntimeCryptoPoolError::invalid_binding?0:1);
+          int status=0;pid_t waited;
+          do{waited=::waitpid(child,&status,0);}while(waited<0&&errno==EINTR);
+          Check(waited==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,
+              "inherited process refuses before native ledger synchronization");
+          auto grant=host.AcquireNativeBootstrapResource(request);
+          Check(grant.ok(),"production owner issues native backing from actual shared process ledger");
+          const auto& native_request=grant.admission.resource->request();
+          Check(native_request.memory_manager==&manager&&native_request.scope_chain.size()==2&&
+              native_request.scope_chain[0].binary_scope_uuid==before.binding.process.bytes&&
+              native_request.scope_chain[1].binary_scope_uuid==request.database.bytes&&
+              native_request.binary_operation_uuid==request.operation.bytes&&
+              native_request.category==m::MemoryCategory::page_buffer&&
+              manager.Snapshot().reserved_capacity_bytes>=request.bytes,
+              "native backing retains actual process/database charges and exact private owner tuple");
+          auto excessive=request;excessive.bytes=policy.effective_hard_limit_bytes-bytes;
+          auto denied=host.AcquireNativeBootstrapResource(excessive);
+          Check(denied.error==NE::reservation_failure&&!denied.admission.ok()&&
+              denied.admission.status.code==scratchbird::core::platform::StatusCode::memory_limit_exceeded,
+              "existing native reservation participates in the same process limit with exact admission cause");
+          namespace db=scratchbird::storage::database;
+          const db::NativeStorageMemoryBinding binding{request.database,request.operation,request.owner,request.context};
+          auto storage=db::AdoptNativeStorageMemory(binding,grant.admission.resource);
+          Check(storage.ok(),"production native grant consumed without a replacement fixture ledger");
+          auto arena=storage.memory.CreateArena(binding,65536);
+          Check(arena.ok(),"native storage allocates actual governed arena backing");
+          storage.memory={};
+          const auto revoked=native_request.reservation_ledger->CleanupOwner(request.owner.bytes);
+          Check(!revoked.ok()&&revoked.status.code==scratchbird::core::platform::StatusCode::memory_invalid_request&&
+              revoked.revoked_reservation_count==1&&revoked.retained_bytes==request.bytes&&revoked.cleaned_bytes==0,
+              "revocation preserves the actual native charge while derived payload ownership remains live");
+          Check(host.CloseAfterUserDrain().adapter_error==h::CryptoMemoryError::busy&&host.installed()&&issue()!=Uuid{},
+              "derived native arena keeps issuing ledger and provider alive after facade release");
+          arena.arena={};
+          auto crypto_request=request;crypto_request.operation=issue();crypto_request.owner=issue();crypto_request.context=issue();
+          crypto_request.kind=s::NativeBootstrapMemoryKind::database_crypto;crypto_request.bytes=1024*1024;
+          auto crypto=host.AcquireNativeBootstrapResource(crypto_request);Check(crypto.ok(),"actual database crypto admission");
+          r::RuntimeCryptoPoolOwner database_pool;
+          const h::CryptoMemoryBinding database_binding{crypto_request.database,crypto_request.operation,
+              crypto_request.owner,crypto_request.context};
+          auto adopted=database_pool.Adopt(database_binding,crypto.admission.resource,crypto_request.bytes,
+              m::kDefaultNativeCryptoProtectedMemoryPolicy);
+          if(!adopted.ok()){Check(database_pool.Close().ok(),"release refused database pool");}
+          Check(adopted.ok(),"database pool consumes native process-funded grant with strict actual protection");
+          Check(database_pool.WithMemoryScope(database_binding,[&] {
+            Check(h::CheckExplicitCryptoMemoryScope(request.database)==h::CryptoMemoryError::none,
+                "native database provider work has an explicit matching scope");
+            Check(host.CloseAfterUserDrain().adapter_error==h::CryptoMemoryError::busy&&host.installed(),
+                "live database pool prevents process-global provider cleanup");
+          }).ok(),"actual admitted database provider scope");
+          Check(database_pool.Close().ok()&&manager.Snapshot().current_bytes==native_baseline.current_bytes&&
+              manager.Snapshot().reserved_capacity_bytes==native_baseline.reserved_capacity_bytes&&
+              manager.Snapshot().active_capacity_reservation_count==native_baseline.active_capacity_reservation_count,
+              "native derived owners release exact shared charges before process shutdown");
+        }
         if(test_mode=="host_foreign_thread") {
           r::RuntimeCryptoPoolResult foreign;
           h::CryptoMemorySnapshot observed;

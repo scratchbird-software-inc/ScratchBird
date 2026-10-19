@@ -48,6 +48,8 @@ void SameRecord(const db::NativeManagementOperation& a,const db::NativeManagemen
  Check(a.metrics_required==b.metrics_required,"complete history record metrics_required");
  Check(std::equal(a.normalized_request_bytes.begin(),a.normalized_request_bytes.end(),
   b.normalized_request_bytes.begin(),b.normalized_request_bytes.end()),"complete exact original request bytes");
+ Check(std::equal(a.operation_state_bytes.begin(),a.operation_state_bytes.end(),
+  b.operation_state_bytes.begin(),b.operation_state_bytes.end()),"complete typed operation state bytes");
  Check(a.steps.size()==b.steps.size(),"complete history steps");
  for(std::size_t i=0;i<a.steps.size();++i){const auto& x=a.steps[i];const auto& y=b.steps[i];
  Check(x.uuid==y.uuid,"complete history step uuid");
@@ -156,6 +158,37 @@ void Checks(const std::vector<d::NativeFilespaceDevice>& files,const db::NativeM
  };
  const auto full=direct(backing);Same(expected,full.history,context);const auto used=full.history.backing_bytes_used;
  Check(used&&used<=capacity&&full.io_status.ok()&&full.physical_bytes_read,"actual complete read observations");
+ if(!full.history.entries.empty()){
+  Bytes append_backing(capacity);
+  const auto append=[&](const db::NativeManagementHistoryView& prefix,const db::NativeManagementOperationView& next,
+      std::span<byte> region,const std::optional<db::NativeStartupBinding>& binding){
+    allocation_budget=0;
+    const auto result=db::ValidateNativeManagementHistoryAppendInto(prefix,next,region,binding);
+    const bool untouched=allocation_budget==0;allocation_budget=-1;
+    Check(untouched,"complete append validation has no heap fallback");return result;
+  };
+  for(std::size_t i=0;i<full.history.entries.size();++i){
+    auto prefix=full.history;prefix.entries=full.history.entries.first(i);
+    const auto& next=full.history.entries[i];
+    Check(append(prefix,next.record,append_backing,next.plan.intent.startup_binding).ok(),
+        "bounded admission accepts every actual chronological management revision");
+  }
+  const auto& last=full.history.entries.back();
+  const auto replay=append(full.history,last.record,append_backing,last.plan.intent.startup_binding);
+  Check(replay.ok()&&replay.backing_bytes_used>0,"bounded append accepts exact immutable replay");
+  Check(append(full.history,last.record,std::span(append_backing).first(replay.backing_bytes_used),
+      last.plan.intent.startup_binding).ok(),"append uses exact measured backing");
+  Check(append(full.history,last.record,std::span(append_backing).first(replay.backing_bytes_used-1),
+      last.plan.intent.startup_binding).error==H::resource_exhausted,"one byte short append has typed exhaustion");
+  auto changed=last.record;changed.updated_at=Id(65000);
+  Check(append(full.history,changed,append_backing,last.plan.intent.startup_binding).error==H::transition_failure,
+      "same revision with changed fields cannot be published");
+  auto alias=std::span<byte>{reinterpret_cast<byte*>(const_cast<db::NativeManagementHistoryEntryView*>(full.history.entries.data())),
+      full.history.entries.size_bytes()};
+  Check(append(full.history,last.record,alias,last.plan.intent.startup_binding).error==H::invalid_workspace,
+      "append rejects entry backing alias before changing retained history");
+ }
+
  Same(expected,direct(std::span(backing).first(used)).history,context);
  const auto short_read=direct(std::span(backing).first(used-1));
  Check(short_read.history.error==H::resource_exhausted,"one byte short complete history refuses");Empty(short_read.history);

@@ -896,18 +896,19 @@ MemoryCapacityReservationResult BoundedAllocator::ReserveCapacity(usize bytes, M
     return {MemoryStatus(StatusCode::memory_limit_exceeded, Severity::error), {}};
   if (WouldExceedHardLimit(bytes) || WouldExceedPerContextLimit(bytes, tag).exceeded)
     return {MemoryStatus(StatusCode::memory_limit_exceeded,
-        policy_.failure_mode == AllocationFailureMode::fatal_status ? Severity::fatal : Severity::error), {}};
+        LimitSeverityForTag(tag)), {}};
   if (policy_.reject_over_soft_limit && WouldExceedSoftLimit(bytes))
     return {MemoryStatus(StatusCode::memory_limit_exceeded, Severity::warning), {}};
   if (WouldExceedPageBufferPoolLimit(bytes, tag.category))
     return {MemoryStatus(StatusCode::memory_limit_exceeded, Severity::error), {}};
   category_accounting_.try_emplace(tag.category);
   for (const auto& key : prepared.context_keys) context_accounting_.try_emplace(key);
-  prepared.policy_binding = {active_policy_uuid_, active_policy_generation_};
+  const auto* behavior = DatabaseBehaviorForTag(tag);
+  prepared.policy_binding = behavior ? behavior->binding : MemoryPolicyBinding{active_policy_uuid_, active_policy_generation_};
+  lease->policy_binding_ = prepared.policy_binding;
   auto inserted = capacity_reservations_.emplace(next_capacity_id_, std::move(prepared));
   AddCapacityCredits(inserted.first->second, bytes);
   lease->id_ = next_capacity_id_++;
-  lease->policy_binding_ = {active_policy_uuid_, active_policy_generation_};
   ++accounting_.active_capacity_reservation_count;
   return {OkStatus(), std::move(lease)};
 } catch (const std::bad_alloc&) {
@@ -949,14 +950,15 @@ MemoryCapacityAvailability BoundedAllocator::AvailableCapacity(const MemoryTag& 
     constrain(policy_.page_buffer_pool_limit_bytes, accounting_.page_buffer_current_bytes,
               category == category_accounting_.end() ? 0 : category->second.reserved_capacity_bytes);
   }
-  if (policy_.per_context_limit_bytes != 0) {
+  const auto context_limit = ContextLimitForTag(tag);
+  if (context_limit != 0) {
     if (!tag.binary_ownership.empty()) {
       for (usize i = 0; i != tag.binary_ownership.scopes.size(); ++i) {
         const auto& id = tag.binary_ownership.scopes[i];
         if (!MemoryUuidPresent(id)) continue;
         const MemoryContextKey key = MemoryBinaryScopeKey{static_cast<MemoryBinaryScopeKind>(i), id};
         const auto context = context_accounting_.find(key);
-        constrain(policy_.per_context_limit_bytes,
+        constrain(context_limit,
                   context == context_accounting_.end() ? 0 : context->second.current_bytes,
                   context == context_accounting_.end() ? 0 : context->second.reserved_capacity_bytes);
       }
@@ -969,11 +971,11 @@ MemoryCapacityAvailability BoundedAllocator::AvailableCapacity(const MemoryTag& 
           {"statement", tag.statement_id}, {"query", tag.query_id}};
       for (const auto& [kind, id] : scopes) {
         if (id.empty()) continue;
-        constrain(policy_.per_context_limit_bytes, 0, 0);
+        constrain(context_limit, 0, 0);
         for (const auto& [key, context] : context_accounting_) {
           const auto* label = std::get_if<std::pair<std::string, std::string>>(&key);
           if (label && label->first == kind && label->second == id) {
-            constrain(policy_.per_context_limit_bytes, context.current_bytes, context.reserved_capacity_bytes);
+            constrain(context_limit, context.current_bytes, context.reserved_capacity_bytes);
             break;
           }
         }
@@ -987,6 +989,7 @@ AllocationResult BoundedAllocator::AllocateImpl(
     usize bytes, usize alignment, MemoryTag tag, u64 capacity_id, bool preserve_callsite) {
   FailureTelemetryExit telemetry_exit{this};
   bool failure_recorded = false;
+  bool zero_on_allocate = false;
   try {
   const auto metric_start = Clock::now();
   AllocationMetricSnapshot metric_snapshot;
@@ -1085,7 +1088,7 @@ AllocationResult BoundedAllocator::AllocateImpl(
       failure_recorded = true;
     RecordFailure(tag, true, false);
       result.status = MemoryStatus(StatusCode::memory_limit_exceeded,
-                                   policy_.failure_mode == AllocationFailureMode::fatal_status ? Severity::fatal : Severity::error);
+                                   LimitSeverityForTag(tag));
       result.diagnostic = MakeMemoryDiagnostic(result.status,
                                                "SB-MEMORY-ALLOC-CONTEXT-LIMIT-EXCEEDED",
                                                "memory.allocate.context_limit_exceeded",
@@ -1102,7 +1105,7 @@ AllocationResult BoundedAllocator::AllocateImpl(
       failure_recorded = true;
     RecordFailure(tag, true, false);
       result.status = MemoryStatus(StatusCode::memory_limit_exceeded,
-                                   policy_.failure_mode == AllocationFailureMode::fatal_status ? Severity::fatal : Severity::error);
+                                   LimitSeverityForTag(tag));
       result.diagnostic = MakeMemoryDiagnostic(result.status,
                                                "SB-MEMORY-ALLOC-LIMIT-EXCEEDED",
                                                "memory.allocate.limit_exceeded",
@@ -1136,7 +1139,9 @@ AllocationResult BoundedAllocator::AllocateImpl(
       return result;
     }
 
-    const auto binding = capacity_id ? capacity->second.policy_binding :
+    const auto* behavior = DatabaseBehaviorForTag(tag);
+    zero_on_allocate = policy_.zero_memory_on_allocate || (behavior && behavior->zero_memory_on_allocate);
+    const auto binding = capacity_id ? capacity->second.policy_binding : behavior ? behavior->binding :
         MemoryPolicyBinding{active_policy_uuid_, active_policy_generation_};
     result = AllocateRecorded(bytes, alignment, tag, binding);
     if (!result.ok()) {
@@ -1162,7 +1167,7 @@ AllocationResult BoundedAllocator::AllocateImpl(
     }
   }
 
-  if (policy_.zero_memory_on_allocate) {
+  if (zero_on_allocate) {
     std::memset(result.pointer, 0, bytes);
   }
 
@@ -1385,7 +1390,9 @@ Status BoundedAllocator::ReleaseAllocationLocked(
     auto& e = *static_cast<Effect*>(context);
     auto& a = *e.allocator;
     const auto& record = a.active_.find(e.pointer)->second;
-    if (a.policy_.zero_memory_on_release || e.evidence) SecureZeroMemory(e.pointer, record.bytes);
+    const auto* behavior = a.DatabaseBehaviorForTag(record.tag);
+    if (a.policy_.zero_memory_on_release || (behavior && behavior->zero_memory_on_release) || e.evidence)
+      SecureZeroMemory(e.pointer, record.bytes);
     if (e.evidence) ReleaseProtectedPlatformEvidence(e.pointer, record.bytes, *e.evidence);
     ReleaseAlignedAllocationStorage(e.pointer, record.alignment);
     bool found = false;
@@ -1486,6 +1493,86 @@ AllocationPolicy BoundedAllocator::policy() const {
 MemoryPolicyBinding BoundedAllocator::PolicyBinding() const {
   std::lock_guard lock(mutex_);
   return {active_policy_uuid_, active_policy_generation_};
+}
+
+const DatabaseAllocationBehavior* BoundedAllocator::DatabaseBehaviorForTag(const MemoryTag& tag) const {
+  if (tag.binary_ownership.empty()) return nullptr;
+  const auto found = database_behaviors_.find(tag.binary_ownership[MemoryBinaryScopeKind::database]);
+  return found == database_behaviors_.end() ? nullptr : &found->second;
+}
+
+u64 BoundedAllocator::ContextLimitForTag(const MemoryTag& tag) const {
+  const auto* behavior = DatabaseBehaviorForTag(tag);
+  const auto parent = policy_.per_context_limit_bytes;
+  if (!behavior || !behavior->per_context_limit_bytes) return parent;
+  return parent ? std::min(parent, behavior->per_context_limit_bytes) : behavior->per_context_limit_bytes;
+}
+
+Severity BoundedAllocator::LimitSeverityForTag(const MemoryTag& tag) const {
+  const auto* behavior = DatabaseBehaviorForTag(tag);
+  return policy_.failure_mode == AllocationFailureMode::fatal_status ||
+      (behavior && behavior->failure_mode == AllocationFailureMode::fatal_status) ? Severity::fatal : Severity::error;
+}
+
+DatabaseAllocationBehaviorResult BoundedAllocator::InstallDatabaseAllocationBehavior(
+    const DatabaseAllocationBehavior& request) try {
+  using S = DatabaseAllocationBehaviorStatus;
+  DatabaseAllocationBehaviorResult result;
+  result.binding = request.binding;
+  result.limit_bytes = request.per_context_limit_bytes;
+  if (!MemorySystemUuidValid(request.database_uuid) || !MemorySystemUuidValid(request.binding.policy_uuid) ||
+      !request.binding.generation || (request.failure_mode != AllocationFailureMode::return_error &&
+      request.failure_mode != AllocationFailureMode::fatal_status)) return result;
+  std::lock_guard lock(mutex_);
+  if (policy_.refuse_all_allocations) return result;
+  const auto previous = database_behaviors_.find(request.database_uuid);
+  if (previous != database_behaviors_.end()) {
+    result.status = previous->second == request ? S::applied : S::binding_mismatch;
+    result.binding = previous->second.binding;
+    return result;
+  }
+  // Inspect real bootstrap allocations AND unused physical capacity. Context
+  // identities retain the allocator's existing global binary UUID semantics;
+  // labels cannot select a database policy. No credit is moved or reissued.
+  const MemoryContextKey database = MemoryBinaryScopeKey{MemoryBinaryScopeKind::database, request.database_uuid};
+  const auto inspect = [&](const auto& keys) {
+    if (!request.per_context_limit_bytes || std::find(keys.begin(), keys.end(), database) == keys.end()) return;
+    for (const auto& key : keys) {
+      const auto found = context_accounting_.find(key);
+      if (found == context_accounting_.end()) continue;
+      const auto& count = found->second;
+      if (count.current_bytes > request.per_context_limit_bytes ||
+          count.reserved_capacity_bytes > request.per_context_limit_bytes - count.current_bytes) {
+        result.status = S::existing_credit_exceeds_limit;
+        result.existing_bytes = count.reserved_capacity_bytes > std::numeric_limits<u64>::max() - count.current_bytes ?
+            std::numeric_limits<u64>::max() : count.current_bytes + count.reserved_capacity_bytes;
+      }
+    }
+  };
+  for (const auto& [pointer, record] : active_) inspect(record.context_keys);
+  for (const auto& [id, record] : capacity_reservations_) inspect(record.context_keys);
+  if (result.status == S::existing_credit_exceeds_limit) return result;
+  // One atomic insertion after every validation. Allocation failure leaves
+  // the old manager behavior and all original storage/capacity unchanged.
+  database_behaviors_.emplace(request.database_uuid, request);
+  result.status = S::applied;
+  return result;
+} catch (const std::bad_alloc&) {
+  return {DatabaseAllocationBehaviorStatus::allocation_failure};
+}
+
+DatabaseAllocationBehaviorStatus BoundedAllocator::RetireDatabaseAllocationBehavior(
+    const MemoryBinaryUuid& database, MemoryPolicyBinding binding) {
+  using S = DatabaseAllocationBehaviorStatus;
+  std::lock_guard lock(mutex_);
+  const auto selected = database_behaviors_.find(database);
+  if (selected == database_behaviors_.end() || selected->second.binding != binding) return S::binding_mismatch;
+  const MemoryContextKey key = MemoryBinaryScopeKey{MemoryBinaryScopeKind::database, database};
+  const auto usage = context_accounting_.find(key);
+  if (usage != context_accounting_.end() && (usage->second.current_bytes || usage->second.reserved_capacity_bytes))
+    return S::busy;
+  database_behaviors_.erase(selected);
+  return S::applied;
 }
 
 MemoryLimitActivationReceipt BoundedAllocator::ReduceLimits(const MemoryLimitReduction& request) {
@@ -1952,7 +2039,8 @@ BoundedAllocator::ContextLimitEvidence BoundedAllocator::WouldExceedPerContextLi
     usize bytes,
     const MemoryTag& tag) const {
   ContextLimitEvidence evidence;
-  if (policy_.per_context_limit_bytes == 0) {
+  const auto limit = ContextLimitForTag(tag);
+  if (limit == 0) {
     return evidence;
   }
   const auto keys = ContextKeysForTag(tag);
@@ -1963,8 +2051,8 @@ BoundedAllocator::ContextLimitEvidence BoundedAllocator::WouldExceedPerContextLi
     const auto it = context_accounting_.find(key);
     const u64 current = it == context_accounting_.end() ? 0 :
         it->second.current_bytes + it->second.reserved_capacity_bytes;
-    if (bytes > policy_.per_context_limit_bytes ||
-        current > policy_.per_context_limit_bytes - bytes) {
+    if (bytes > limit ||
+        current > limit - bytes) {
       evidence.exceeded = true;
       if (const auto* binary = std::get_if<MemoryBinaryScopeKey>(&key)) {
         evidence.scope_kind = MemoryBinaryScopeKindName(binary->kind);
@@ -1974,7 +2062,7 @@ BoundedAllocator::ContextLimitEvidence BoundedAllocator::WouldExceedPerContextLi
         evidence.scope_id = legacy.second;
       }
       evidence.current_bytes = current;
-      evidence.limit_bytes = policy_.per_context_limit_bytes;
+      evidence.limit_bytes = limit;
       return evidence;
     }
   }
@@ -2216,12 +2304,14 @@ AllocationResult BoundedAllocator::AllocateRecorded(usize bytes, usize alignment
                             tag.lifetime == MemoryLifetime::page_buffer;
   const auto reserved = sharded_accounting_->Reserve(std::move(event));
   if (!reserved.ok()) return {reserved.status, nullptr, 0, 0, {}};
+  const auto* behavior = DatabaseBehaviorForTag(tag);
+  const bool zero_on_release = policy_.zero_memory_on_release || (behavior && behavior->zero_memory_on_release);
   void* pointer = nullptr;
   try {
     pointer = ::operator new(bytes, std::align_val_t(alignment));
     const auto committed = sharded_accounting_->Commit(reserved.token);
     if (!committed.ok()) {
-      if (policy_.zero_memory_on_release) SecureZeroMemory(pointer, bytes);
+      if (zero_on_release) SecureZeroMemory(pointer, bytes);
       ReleaseAlignedAllocationStorage(pointer, alignment);
       (void)sharded_accounting_->ReleaseNoAlloc(reserved.token);
       return {committed.status, nullptr, 0, 0, {}};
@@ -2265,7 +2355,7 @@ AllocationResult BoundedAllocator::AllocateRecorded(usize bytes, usize alignment
     return {OkStatus(), pointer, bytes, alignment, {}, published_record.policy_binding};
   } catch (...) {
     if (pointer) {
-      if (policy_.zero_memory_on_release) SecureZeroMemory(pointer, bytes);
+      if (zero_on_release) SecureZeroMemory(pointer, bytes);
       ReleaseAlignedAllocationStorage(pointer, alignment);
     }
     (void)sharded_accounting_->ReleaseNoAlloc(reserved.token);

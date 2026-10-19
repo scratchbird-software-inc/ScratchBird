@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "security/security_model.hpp"
+#include "security/materialized_authorization_identity.hpp"
 
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
@@ -524,18 +525,11 @@ MaterializedAuthorizationDecision EvaluateMaterializedAuthorization(
         right));
     return decision;
   }
-  if (authorization_context.security_epoch == 0 ||
-      !UuidPresent(authorization_context.authority_uuid) ||
-      authorization_context.security_context_generation == 0 ||
-      authorization_context.policy_epoch == 0 ||
-      authorization_context.catalog_generation_id == 0 ||
-      (request_context.security_epoch != 0 &&
-       request_context.security_epoch != authorization_context.security_epoch) ||
-      (request_context.catalog_generation_id != 0 &&
-       request_context.catalog_generation_id != authorization_context.catalog_generation_id)) {
-    decision.diagnostics.push_back(MakeSecurityDiagnostic(
-        "SECURITY.CONTEXT.EXPIRED",
-        right));
+  if (const auto failure = MaterializedAuthorizationIdentityFailure(
+          request_context, authorization_context); !failure.empty()) {
+    auto diagnostic = MakeSecurityDiagnostic("SECURITY.CONTEXT.EXPIRED", right);
+    diagnostic.fields.push_back({"authorization_context_failure", std::string(failure)});
+    decision.diagnostics.push_back(std::move(diagnostic));
     return decision;
   }
 

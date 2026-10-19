@@ -15,6 +15,8 @@
 #include "product_identity.hpp"
 #include "server_daemon_lifecycle.hpp"
 #include "startup.hpp"
+#include "startup_trace.hpp"
+#include "startup_notification.hpp"
 #include "process_crypto_owner.hpp"
 #include "standalone_shutdown_deadline.hpp"
 #include "windows_service_runtime.hpp"
@@ -24,6 +26,7 @@
 #include <string>
 #include <vector>
 #include <optional>
+#include <stdexcept>
 
 namespace {
 
@@ -37,6 +40,11 @@ int EmitDiagnostics(const std::vector<scratchbird::server::ServerDiagnostic>& di
 int RunServerProduct(
     const scratchbird::server::ServerCliOptions& options,
     const scratchbird::server::ParserServerIpcLifecycleCallbacks& ipc_callbacks = {}) {
+  scratchbird::server::StartupNotification startup_notification;
+  if (options.startup_notify_fd >= 0 && !startup_notification.Adopt(options.startup_notify_fd)) {
+    std::cerr << "SERVER.STARTUP.NOTIFICATION_CHANNEL_INVALID\n";
+    return 2;
+  }
   if (options.help) {
     std::cout << scratchbird::server::ServerHelpText();
     return 0;
@@ -69,6 +77,8 @@ int RunServerProduct(
   if (!startup.stdout_text.empty()) {
     std::cout << startup.stdout_text;
   }
+  scratchbird::server::TraceServerStartupPhase(startup.effective_config,
+      "configuration",startup.exit_code==0?"accepted":"refused");
   if (!scratchbird::server::WriteServerStartupDiagnostics(startup, std::cerr)) return 2;
   if (startup.exit_code != 0 ||
       startup.effective_config.mode == scratchbird::server::ServerMode::kValidationOnly) {
@@ -80,9 +90,12 @@ int RunServerProduct(
       startup.effective_config.shutdown_drain_timeout_ms,
       scratchbird::server::ParserServerStopRequested);
 #endif
+  scratchbird::server::TraceServerStartupPhase(startup.effective_config,"database_open","requested");
   const auto engine_host =
       scratchbird::server::StartHostedEngine(startup.effective_config,
                                             scratchbird::server::RequestParserServerStop);
+  scratchbird::server::TraceServerStartupPhase(startup.effective_config,"database_open",
+      engine_host.diagnostics.empty()?"accepted":"refused");
   struct ShutdownArm {
     ~ShutdownArm() { scratchbird::server::RequestParserServerStop(); }
   } shutdown_arm;
@@ -101,8 +114,18 @@ int RunServerProduct(
     scratchbird::server::ServerIpcEndpointOwner owner(engine_host.state);
     scratchbird::server::ServerIpcEndpointResult ipc;
     try {
+      auto callbacks = ipc_callbacks;
+      const auto external_ready = callbacks.on_ready;
+      callbacks.on_ready = [&] {
+        if (external_ready) external_ready();
+        if (options.startup_notify_fd >= 0 &&
+            (engine_host.state.databases.size() != 1 ||
+             !startup_notification.Send(engine_host.state.databases.front().database_uuid))) {
+          throw std::runtime_error("SERVER.STARTUP.NOTIFICATION_FAILED");
+        }
+      };
       ipc = scratchbird::server::RunParserServerIpcEndpoint(
-          startup.effective_config, startup.lifecycle_artifacts, owner, ipc_callbacks);
+          startup.effective_config, startup.lifecycle_artifacts, owner, callbacks);
     } catch (...) {
       if (!owner.first_failure) owner.first_failure = std::current_exception();
       ipc.exit_code = 2;
@@ -111,10 +134,15 @@ int RunServerProduct(
     // On persistent failure the independent deadline exits without destroying
     // this cohort. Embedded callers instead keep their own owner for retry.
     auto retry_delay = std::chrono::milliseconds(10);
+    bool drain_failure_reported = false;
     for (;;) {
       try {
         const auto drained = scratchbird::server::DrainServerIpcEndpoint(owner);
         if (drained.complete) break;
+        if (!drain_failure_reported) {
+          EmitDiagnostics(drained.diagnostics);
+          drain_failure_reported = true;
+        }
       } catch (...) {
         if (!owner.first_failure) owner.first_failure = std::current_exception();
       }
@@ -122,6 +150,8 @@ int RunServerProduct(
       std::this_thread::sleep_for(retry_delay);
       retry_delay = std::min(retry_delay * 2, std::chrono::milliseconds(250));
     }
+    scratchbird::server::TraceServerStartupPhase(startup.effective_config,"server_exit",
+        ipc.exit_code==0&&!owner.first_failure?"complete":"failed");
     if (!ipc.diagnostics.empty()) EmitDiagnostics(ipc.diagnostics);
     if (owner.first_failure) ipc.exit_code = 2;
     return ipc.exit_code;

@@ -133,6 +133,7 @@ struct NativeCatalogRelationLeaseResult {
   NativeCatalogRootsLeaseReadResult roots;
   NativeBtreeTreeReadResult tree;
   NativeCatalogLeafLeaseReadResult leaf_failure;
+  NativeCatalogRelationBinding relation;
   std::span<const NativeReadCatalogLeafImage> bases;
   std::span<const NativeCatalogRowImageBinding> bindings;
   std::span<const NativeCatalogCreatorBinding> row_creators;
@@ -147,13 +148,29 @@ class NativeCatalogRelationLeaseReader {
   static NativeCatalogRelationLeaseResult Read(const NativeSelectedCheckpointMemoryLease& source,
       u16 selector,u16 role,const NativeCatalogRelationBinding& binding,u64 maximum_total_image_bytes,
       NativeCatalogRelationPreparedMemory& w) noexcept {
+    return ReadImpl(source,selector,role,&binding,maximum_total_image_bytes,w);
+  }
+  // Discover layout exclusively through the privately selected root and its
+  // complete native navigation/base-leaf graph. No supplied dependency tuple
+  // or creation receipt is required. Result facts are observations, not rights.
+  static NativeCatalogRelationLeaseResult ReadSelected(const NativeSelectedCheckpointMemoryLease& source,
+      u16 selector,u16 role,u64 maximum_total_image_bytes,
+      NativeCatalogRelationPreparedMemory& w) noexcept {
+    return ReadImpl(source,selector,role,nullptr,maximum_total_image_bytes,w);
+  }
+ private:
+  static NativeCatalogRelationLeaseResult ReadImpl(const NativeSelectedCheckpointMemoryLease& source,
+      u16 selector,u16 role,const NativeCatalogRelationBinding* expected,u64 maximum_total_image_bytes,
+      NativeCatalogRelationPreparedMemory& w) noexcept {
+    NativeCatalogRelationBinding binding=expected?*expected:NativeCatalogRelationBinding{};
     using E=NativeCatalogRelationLeaseError;NativeCatalogRelationLeaseResult out;
     const auto fail=[&](E e){out.error=e;out.roots.catalogs={};out.roots.retained_image_bytes=0;out.roots.feature_root_index=0;
       out.tree.pages={};out.tree.leaves={};out.tree.retained_image_bytes=0;
       out.leaf_failure.image={};out.leaf_failure.leaf.page.reset();out.bases={};out.bindings={};
-      out.row_creators={};out.navigation_creators={};out.retained_image_bytes=0;};
+      out.row_creators={};out.navigation_creators={};out.retained_image_bytes=0;out.relation={};};
     try {
-      if(!w||(selector!=2&&selector!=8)||role<1||role>6||!core::uuid::IsEngineIdentityUuid(binding.relation_uuid))return out;
+      if(!w||(selector!=2&&selector!=8)||role<1||role>6||
+          (expected&&!core::uuid::IsEngineIdentityUuid(binding.relation_uuid)))return out;
       if(w.arena_.binding().database_uuid!=source.selection().checkpoint_inventory.checkpoint->header.database_uuid)return out;
       u64 retained=source.retained_image_bytes();
       if(retained>=maximum_total_image_bytes){fail(E::resource_exhausted);return out;}
@@ -166,13 +183,16 @@ class NativeCatalogRelationLeaseReader {
       if(head==catalog.roots.end()){fail(E::missing_relation);return out;}
       const bool indexed=head->page_type==0x200;
       if((!indexed&&head->page_type!=6)||
-          (indexed?(!binding.index_dependencies||binding.index_dependencies->index_uuid!=head->object_uuid):
-            (binding.index_dependencies.has_value()||head->object_uuid!=binding.relation_uuid))){fail(E::binding_mismatch);return out;}
+          (expected&&(indexed?(!binding.index_dependencies||binding.index_dependencies->index_uuid!=head->object_uuid):
+            (binding.index_dependencies.has_value()||head->object_uuid!=binding.relation_uuid)))){fail(E::binding_mismatch);return out;}
+      if(!indexed&&!expected)binding.relation_uuid=head->object_uuid;
       if(indexed){
-        out.tree=NativeBtreeTreeLeaseReader::Read(source,head->page,*binding.index_dependencies,w.tree_,
-          static_cast<usize>(std::min<u64>(maximum_total_image_bytes-retained,std::numeric_limits<usize>::max())));
+        const auto limit=static_cast<usize>(std::min<u64>(maximum_total_image_bytes-retained,std::numeric_limits<usize>::max()));
+        out.tree=expected?NativeBtreeTreeLeaseReader::Read(source,head->page,*binding.index_dependencies,w.tree_,limit):
+            NativeBtreeTreeLeaseReader::ReadSelected(source,head->page,head->object_uuid,w.tree_,limit);
         out.physical_bytes_read+=out.tree.physical_bytes_read;
         if(!out.tree.ok()){fail(E::tree_failure);return out;}retained+=out.tree.retained_image_bytes;
+        if(!expected)binding.index_dependencies=out.tree.pages.front().page->dependencies;
       }
       const auto& inventory=source.selection().checkpoint_inventory.inventory.entries;
       E failure=E::none;usize page_count=0,row_count=0,binding_count=0;
@@ -196,10 +216,13 @@ class NativeCatalogRelationLeaseReader {
         const auto* profile=disk::FindCanonicalFilespacePageProfile(ref.page_size_profile_uuid);
         if(!profile){failure=E::invalid_locator;return missing;}
         if(page_count==w.bases_.size()||profile->page_size_bytes>maximum_total_image_bytes-retained){failure=E::resource_exhausted;return missing;}
-        auto leaf=NativeCatalogLeafLeaseReader::Read(source,{role,6,ref,binding.relation_uuid},w.leaves_[page_count]);
+        const page::NativeCatalogRootReference target{role,6,ref,binding.relation_uuid};
+        auto leaf=binding.relation_uuid.is_nil()?NativeCatalogLeafLeaseReader::ReadSelected(source,target,w.leaves_[page_count]):
+            NativeCatalogLeafLeaseReader::Read(source,target,w.leaves_[page_count]);
         out.physical_bytes_read+=leaf.bytes_read;
         if(!leaf.ok()){out.leaf_failure=std::move(leaf);failure=E::leaf_failure;return missing;}
         const auto& p=*leaf.leaf.page;
+        if(binding.relation_uuid.is_nil())binding.relation_uuid=p.body.relation_uuid.value;
         for(const auto& n:out.tree.pages)if(n.page->header.page_uuid==p.header.page_uuid){failure=E::duplicate_identity;return missing;}
         for(usize i=0;i<page_count;++i)if(w.bases_[i].page.header.page_uuid==p.header.page_uuid){failure=E::duplicate_identity;return missing;}
         if(p.body.rows.size()>w.creators_.size()-row_count){failure=E::resource_exhausted;return missing;}
@@ -233,6 +256,10 @@ class NativeCatalogRelationLeaseReader {
           if(!append({NativeCatalogIndexEntryLocation{n,i},p,row->row_index})){fail(failure);return out;}
         }
       }
+      // Empty indexed heads contain no base relation identity to discover.
+      // They cannot manufacture one from the index UUID or caller expectations.
+      if(!core::uuid::IsEngineIdentityUuid(binding.relation_uuid)){fail(E::missing_relation);return out;}
+      out.relation=binding;
       out.bases=w.bases_.first(page_count);out.bindings=w.bindings_.first(binding_count);
       out.row_creators=w.creators_.first(row_count);out.navigation_creators=w.navigation_creators_.first(out.tree.pages.size());
       out.retained_image_bytes=retained;out.error=E::none;return out;

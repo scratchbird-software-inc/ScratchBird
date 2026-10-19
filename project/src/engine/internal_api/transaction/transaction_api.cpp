@@ -23,6 +23,7 @@
 #include "transaction/local_commit_publication.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
 #include "security/security_model.hpp"
+#include "security/materialized_authorization_identity.hpp"
 #include "transaction_inventory.hpp"
 #include "transaction_lock.hpp"
 #include "transaction_policy.hpp"
@@ -1038,7 +1039,24 @@ EngineApiDiagnostic DblcStandaloneClusterFailClosed(std::string detail) {
 EngineApiDiagnostic ValidateBeginTransactionAdmission(const EngineBeginTransactionRequest& request) {
   const auto& context = request.context;
   if (!context.security_context_present) {
-    return DblcTransactionAdmissionDenied("security_context_required");
+    auto diagnostic = DblcTransactionAdmissionDenied("security_context_required");
+    diagnostic.fields.push_back({"authorization_context_failure", "security_context_missing"});
+    return diagnostic;
+  }
+  // A declared materialized authority must be valid before allocating or
+  // publishing any transaction identity. Presence alone previously admitted
+  // generation-zero server startup, which failed only at later catalog DDL.
+  // This structural check does not authenticate an absent/legacy context or
+  // replace the source/provider fences owned by the actual admission route.
+  if (context.authorization_context.present) {
+    const auto failure = MaterializedAuthorizationIdentityFailure(
+        context, context.authorization_context);
+    if (!failure.empty()) {
+      auto diagnostic = MakeSecurityDiagnostic("SECURITY.CONTEXT.EXPIRED",
+                                               "transaction.begin");
+      diagnostic.fields.push_back({"authorization_context_failure", std::string(failure)});
+      return diagnostic;
+    }
   }
   if (context.session_uuid.is_nil() ||
       context.principal_uuid.is_nil() ||

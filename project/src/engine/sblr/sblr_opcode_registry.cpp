@@ -24,7 +24,7 @@ struct CanonicalOpcodeCodeRow {
 // Generated from the manifest-authoritative sblr-opcodes.yaml assignment.
 // The runtime never derives a code from vector order, text hashing, aliases,
 // or an implementation-private sequence.
-constexpr std::array<CanonicalOpcodeCodeRow, 631> kCanonicalOpcodeCodes{{
+constexpr std::array<CanonicalOpcodeCodeRow, 629> kCanonicalOpcodeCodes{{
     {"SBLR_PACKAGE_BEGIN", 0x0001u},
     {"SBLR_PACKAGE_END", 0x0002u},
     {"SBLR_LITERAL", 0x0003u},
@@ -118,8 +118,6 @@ constexpr std::array<CanonicalOpcodeCodeRow, 631> kCanonicalOpcodeCodes{{
     {"SBLR_DDL_DROP_TABLE", 0x0603u},
     {"SBLR_DDL_CREATE_INDEX", 0x0604u},
       {"SBLR_DDL_DROP_INDEX", 0x0605u},
-      {"SBLR_DDL_ALTER_GROUP", 0x0673u},
-    {"SBLR_DDL_ALTER_LOCALIZED_NAME", 0x0674u},
     {"SBLR_DDL_CREATE_TABLE_AS_QUERY_WITH_DATA", 0x0685u},
     {"SBLR_DDL_CREATE_TABLE_AS_QUERY_WITH_NO_DATA", 0x0686u},
     {"SBLR_ROUTINE_DEFINE", 0x0688u},

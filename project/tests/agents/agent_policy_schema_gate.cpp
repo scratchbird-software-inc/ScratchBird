@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "agent_policy_schema.hpp"
+#include "agent_engine_lifecycle.hpp"
 
 #include <cstdlib>
 #include <iostream>
@@ -77,6 +78,29 @@ void TestEveryRequiredPolicyFamilyHasTypedSchema() {
 }
 
 void TestBaselinePoliciesValidateThroughSchemas() {
+  for (const auto& descriptor : agents::RuntimeLifecycleAgentDescriptors()) {
+    const auto policy=agents::BaselineRuntimeLifecycleAgentPolicy(descriptor);
+    const auto status=agents::ValidateAgentPolicy(policy,descriptor);
+    Require(status.ok,"lifecycle policy rejected: "+descriptor.type_id+":"+status.diagnostic_code);
+    auto invalid=policy;invalid.policy_family="memory_governor_policy";
+    RequireDiagnostic(agents::ValidateAgentPolicy(invalid,descriptor),"SB_AGENT_POLICY.WRONG_FAMILY","lifecycle wrong family");
+    if(descriptor.type_id=="agent_coordinator"){
+      Require(policy.config_fields.at("startup_verification_class")=="startup_full_verify",
+              "coordinator creation must persist an explicit startup verification class");
+      for(const auto* value:{"startup_light_verify","startup_full_verify"}){
+        auto selected=policy;selected.config_fields["startup_verification_class"]=value;
+        Require(agents::ValidateAgentPolicy(selected,descriptor).ok,"valid startup verification class rejected");
+      }
+      for(const auto* value:{"skip","online_consistency_verify","startup_full_verify,startup_light_verify"}){
+        auto selected=policy;selected.config_fields["startup_verification_class"]=value;
+        RequireDiagnostic(agents::ValidateAgentPolicy(selected,descriptor),"SB_AGENT_POLICY_SCHEMA.RANGE_VIOLATION",
+                          "invalid startup verification class");
+      }
+      auto missing=policy;missing.config_fields.erase("startup_verification_class");
+      RequireDiagnostic(agents::ValidateAgentPolicy(missing,descriptor),"SB_AGENT_POLICY.REQUIRED_FIELD_MISSING",
+                        "missing startup verification class must not select a hidden default");
+    }
+  }
   for (const auto& descriptor : agents::CanonicalAgentRegistry()) {
     for (const auto& family : agents::RequiredPolicyFamiliesForAgent(descriptor)) {
       const auto policy = agents::BaselinePolicyForAgentFamily(descriptor, family, 9);

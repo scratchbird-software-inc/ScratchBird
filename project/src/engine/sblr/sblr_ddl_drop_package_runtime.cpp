@@ -1,12 +1,70 @@
 #include "sblr_ddl_drop_package_runtime.hpp"
 #include <algorithm>
+#include <string_view>
+
 namespace scratchbird::engine::sblr {
-static std::vector<std::uint8_t> Rewrite(std::vector<std::uint8_t>b,const char*m){if(b.size()>=4)for(int i=0;i<4;++i)b[i]=m[i];return b;}
-static std::vector<std::uint8_t> Copy(const std::uint8_t*p,std::size_t n,const char*m){return Rewrite(std::vector<std::uint8_t>(p,p+n),m);}
-std::vector<std::uint8_t> EncodeSblrDdlDropPackageRequestV1(const SblrDdlDropPackageRequestV1&v){return Rewrite(EncodeSblrDdlCreatePackageRequestV1(v),"PDQX");}
-bool DecodeSblrDdlDropPackageRequestV1(const std::uint8_t*b,std::size_t n,SblrDdlDropPackageRequestV1*o,std::string*d){if(o&&n==64&&b){std::copy(b,b+16,o->receipt.begin());o->occurrence=b[32];o->procedure_occurrence=b[40];if(o->occurrence&&o->procedure_occurrence)return true;}auto q=Copy(b,n,"PCQX");return DecodeSblrDdlCreatePackageRequestV1(q.data(),q.size(),o,d);}
-std::vector<std::uint8_t> EncodeSblrDdlDropPackageDescriptorV1(const SblrDdlDropPackageDescriptorV1&v,bool op){return Rewrite(EncodeSblrDdlCreatePackageDescriptorV1(v,op),op?"PDDO":"PDDX");}
-bool DecodeSblrDdlDropPackageDescriptorV1(const std::uint8_t*b,std::size_t n,SblrDdlDropPackageDescriptorV1*o,std::string*d,bool op){auto q=Copy(b,n,op?"PCDO":"PCDX");return DecodeSblrDdlCreatePackageDescriptorV1(q.data(),q.size(),o,d,op);}
-std::vector<std::uint8_t> EncodeSblrDdlDropPackageResultV1(const SblrDdlDropPackageResultV1&v){return Rewrite(EncodeSblrDdlCreatePackageResultV1(v),"PDRS");}
-bool DecodeSblrDdlDropPackageResultV1(const std::uint8_t*b,std::size_t n,SblrDdlDropPackageResultV1*o,std::string*d){auto q=Copy(b,n,"PCRS");return DecodeSblrDdlCreatePackageResultV1(q.data(),q.size(),o,d);}
+namespace {
+std::vector<std::uint8_t> Rewrite(std::vector<std::uint8_t> bytes,
+                                  std::string_view magic) {
+  if (bytes.size() >= magic.size())
+    std::copy(magic.begin(), magic.end(), bytes.begin());
+  return bytes;
 }
+bool Translate(const std::uint8_t* bytes, std::size_t size,
+               std::string_view expected, std::string_view underlying,
+               std::vector<std::uint8_t>* translated, std::string* detail) {
+  if (bytes == nullptr || size < expected.size() ||
+      !std::equal(expected.begin(), expected.end(), bytes)) {
+    if (detail) *detail = std::string(expected) + " identity invalid";
+    return false;
+  }
+  *translated = Rewrite(std::vector<std::uint8_t>(bytes, bytes + size), underlying);
+  return true;
+}
+}  // namespace
+
+std::vector<std::uint8_t> EncodeSblrDdlDropPackageRequestV1(
+    const SblrDdlDropPackageRequestV1& value) {
+  return Rewrite(EncodeSblrDdlCreatePackageRequestV1(value), "PDQX");
+}
+bool DecodeSblrDdlDropPackageRequestV1(
+    const std::uint8_t* bytes, std::size_t size,
+    SblrDdlDropPackageRequestV1* output, std::string* detail) {
+  if (output == nullptr) return false;
+  std::vector<std::uint8_t> translated;
+  if (!Translate(bytes, size, "PDQX", "PCQX", &translated, detail))
+    return false;
+  return DecodeSblrDdlCreatePackageRequestV1(
+      translated.data(), translated.size(), output, detail);
+}
+
+std::vector<std::uint8_t> EncodeSblrDdlDropPackageDescriptorV1(
+    const SblrDdlDropPackageDescriptorV1& value, bool operand) {
+  return Rewrite(EncodeSblrDdlCreatePackageDescriptorV1(value, operand), operand ? "PDDO" : "PDDX");
+}
+bool DecodeSblrDdlDropPackageDescriptorV1(
+    const std::uint8_t* bytes, std::size_t size,
+    SblrDdlDropPackageDescriptorV1* output, std::string* detail, bool operand) {
+  if (output == nullptr) return false;
+  std::vector<std::uint8_t> translated;
+  if (!Translate(bytes, size, operand ? "PDDO" : "PDDX", operand ? "PCDO" : "PCDX", &translated, detail))
+    return false;
+  return DecodeSblrDdlCreatePackageDescriptorV1(
+      translated.data(), translated.size(), output, detail, operand);
+}
+
+std::vector<std::uint8_t> EncodeSblrDdlDropPackageResultV1(
+    const SblrDdlDropPackageResultV1& value) {
+  return Rewrite(EncodeSblrDdlCreatePackageResultV1(value), "PDRS");
+}
+bool DecodeSblrDdlDropPackageResultV1(
+    const std::uint8_t* bytes, std::size_t size,
+    SblrDdlDropPackageResultV1* output, std::string* detail) {
+  if (output == nullptr) return false;
+  std::vector<std::uint8_t> translated;
+  if (!Translate(bytes, size, "PDRS", "PCRS", &translated, detail))
+    return false;
+  return DecodeSblrDdlCreatePackageResultV1(
+      translated.data(), translated.size(), output, detail);
+}
+}  // namespace scratchbird::engine::sblr

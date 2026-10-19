@@ -1,2 +1,70 @@
 #include "sblr_ddl_drop_foreign_table_runtime.hpp"
-namespace scratchbird::engine::sblr { static std::vector<uint8_t> M(std::vector<uint8_t>b,const char*x){if(b.size()>=4)for(int i=0;i<4;++i)b[i]=x[i];return b;} static std::vector<uint8_t>N(const uint8_t*p,size_t n,const char*x){return M(std::vector<uint8_t>(p,p+n),x);} std::vector<uint8_t> EncodeSblrDdlDropForeignTableRequestV1(const SblrDdlDropForeignTableRequestV1&v){return M(EncodeSblrDdlDropPackageRequestV1(v),"DFTQ");} bool DecodeSblrDdlDropForeignTableRequestV1(const uint8_t*p,size_t n,SblrDdlDropForeignTableRequestV1*o,std::string*d){auto b=N(p,n,"DFTQ");return DecodeSblrDdlDropPackageRequestV1(b.data(),b.size(),o,d);} std::vector<uint8_t> EncodeSblrDdlDropForeignTableDescriptorV1(const SblrDdlDropForeignTableDescriptorV1&v,bool q){return M(EncodeSblrDdlDropPackageDescriptorV1(v,q),q?"DFTO":"DFTD");} bool DecodeSblrDdlDropForeignTableDescriptorV1(const uint8_t*p,size_t n,SblrDdlDropForeignTableDescriptorV1*o,std::string*d,bool q){auto b=N(p,n,q?"DFTO":"DFTD");return DecodeSblrDdlDropPackageDescriptorV1(b.data(),b.size(),o,d,q);} std::vector<uint8_t> EncodeSblrDdlDropForeignTableResultV1(const SblrDdlDropForeignTableResultV1&v){return M(EncodeSblrDdlDropPackageResultV1(v),"DFTR");} bool DecodeSblrDdlDropForeignTableResultV1(const uint8_t*p,size_t n,SblrDdlDropForeignTableResultV1*o,std::string*d){auto b=N(p,n,"DFTR");return DecodeSblrDdlDropPackageResultV1(b.data(),b.size(),o,d);} }
+#include <algorithm>
+#include <string_view>
+
+namespace scratchbird::engine::sblr {
+namespace {
+std::vector<std::uint8_t> Rewrite(std::vector<std::uint8_t> bytes,
+                                  std::string_view magic) {
+  if (bytes.size() >= magic.size())
+    std::copy(magic.begin(), magic.end(), bytes.begin());
+  return bytes;
+}
+bool Translate(const std::uint8_t* bytes, std::size_t size,
+               std::string_view expected, std::string_view underlying,
+               std::vector<std::uint8_t>* translated, std::string* detail) {
+  if (bytes == nullptr || size < expected.size() ||
+      !std::equal(expected.begin(), expected.end(), bytes)) {
+    if (detail) *detail = std::string(expected) + " identity invalid";
+    return false;
+  }
+  *translated = Rewrite(std::vector<std::uint8_t>(bytes, bytes + size), underlying);
+  return true;
+}
+}  // namespace
+
+std::vector<std::uint8_t> EncodeSblrDdlDropForeignTableRequestV1(
+    const SblrDdlDropForeignTableRequestV1& value) {
+  return Rewrite(EncodeSblrDdlDropPackageRequestV1(value), "DFTQ");
+}
+bool DecodeSblrDdlDropForeignTableRequestV1(
+    const std::uint8_t* bytes, std::size_t size,
+    SblrDdlDropForeignTableRequestV1* output, std::string* detail) {
+  if (output == nullptr) return false;
+  std::vector<std::uint8_t> translated;
+  if (!Translate(bytes, size, "DFTQ", "PDQX", &translated, detail))
+    return false;
+  return DecodeSblrDdlDropPackageRequestV1(
+      translated.data(), translated.size(), output, detail);
+}
+
+std::vector<std::uint8_t> EncodeSblrDdlDropForeignTableDescriptorV1(
+    const SblrDdlDropForeignTableDescriptorV1& value, bool operand) {
+  return Rewrite(EncodeSblrDdlDropPackageDescriptorV1(value, operand), operand ? "DFTO" : "DFTD");
+}
+bool DecodeSblrDdlDropForeignTableDescriptorV1(
+    const std::uint8_t* bytes, std::size_t size,
+    SblrDdlDropForeignTableDescriptorV1* output, std::string* detail, bool operand) {
+  if (output == nullptr) return false;
+  std::vector<std::uint8_t> translated;
+  if (!Translate(bytes, size, operand ? "DFTO" : "DFTD", operand ? "PDDO" : "PDDX", &translated, detail))
+    return false;
+  return DecodeSblrDdlDropPackageDescriptorV1(
+      translated.data(), translated.size(), output, detail, operand);
+}
+
+std::vector<std::uint8_t> EncodeSblrDdlDropForeignTableResultV1(
+    const SblrDdlDropForeignTableResultV1& value) {
+  return Rewrite(EncodeSblrDdlDropPackageResultV1(value), "DFTR");
+}
+bool DecodeSblrDdlDropForeignTableResultV1(
+    const std::uint8_t* bytes, std::size_t size,
+    SblrDdlDropForeignTableResultV1* output, std::string* detail) {
+  if (output == nullptr) return false;
+  std::vector<std::uint8_t> translated;
+  if (!Translate(bytes, size, "DFTR", "PDRS", &translated, detail))
+    return false;
+  return DecodeSblrDdlDropPackageResultV1(
+      translated.data(), translated.size(), output, detail);
+}
+}  // namespace scratchbird::engine::sblr

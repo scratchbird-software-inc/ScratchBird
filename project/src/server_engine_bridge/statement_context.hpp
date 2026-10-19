@@ -23,6 +23,12 @@
 
 namespace scratchbird::engine::internal_api {
 class SblrBulkImportStreamRegistry;
+enum class SessionValueOperation : std::uint8_t;
+}
+
+namespace scratchbird::engine::sblr {
+struct SblrSessionSettingSetRequestV1;
+struct SblrSessionSettingSetDescriptorV1;
 }
 
 namespace scratchbird::server_engine_bridge {
@@ -1811,6 +1817,17 @@ sb_engine_status_t ReleaseStatementContextReceipt(
 sb_engine_status_t CopyStatementContextEngineContextV1(
     StatementContextReceiptHandle receipt,
     scratchbird::engine::internal_api::EngineRequestContext* out_context,
+    sb_engine_result_t* out_result);
+
+// Issue an ephemeral session-value descriptor while the actual receipt owner
+// remains live. The registry/receipt lock order matches retirement, so a copied
+// context can never register new coordinator state after receipt cleanup.
+sb_engine_status_t CoordinateSessionValueDescriptorV1(
+    StatementContextReceiptHandle receipt,
+    const std::array<std::uint8_t, 16>& owning_session,
+    scratchbird::engine::internal_api::SessionValueOperation operation,
+    const scratchbird::engine::sblr::SblrSessionSettingSetRequestV1* demand,
+    scratchbird::engine::sblr::SblrSessionSettingSetDescriptorV1* out_descriptor,
     sb_engine_result_t* out_result);
 
 // Attaches an engine-resolved relation mapping to a live receipt.  This is

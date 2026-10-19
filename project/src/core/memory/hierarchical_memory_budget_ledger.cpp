@@ -1070,6 +1070,47 @@ HierarchicalMemoryCleanupResult HierarchicalMemoryBudgetLedger::CleanupExpiredLe
   return cleanup;
 }
 
+bool HierarchicalMemoryBudgetLedger::HasReservationsOtherThan(
+    HierarchicalMemoryReservationToken excluded) const {
+  for (const auto& shard : token_shards_) {
+    std::lock_guard<std::mutex> lock(shard->mutex);
+    for (const auto& [id, record] : shard->tokens)
+      if (id != excluded.token_id || record.token.bytes != excluded.bytes) return true;
+  }
+  return false;
+}
+
+bool HierarchicalMemoryBudgetLedger::HasReservationsInScope(
+    HierarchicalMemoryScopeKind kind, const MemoryBinaryUuid& identity) const {
+  for (const auto& shard : token_shards_) {
+    std::lock_guard<std::mutex> lock(shard->mutex);
+    for (const auto& [id, record] : shard->tokens)
+      for (const auto& scope : record.scope_chain)
+        if (scope.kind == kind && scope.binary_scope_uuid == identity) return true;
+  }
+  return false;
+}
+
+u64 HierarchicalMemoryBudgetLedger::ReservationBytesInScope(
+    HierarchicalMemoryScopeKind kind, const MemoryBinaryUuid& identity,
+    MemoryCategory category) const {
+  u64 bytes = 0;
+  for (const auto& shard : token_shards_) {
+    std::lock_guard<std::mutex> lock(shard->mutex);
+    for (const auto& [id, record] : shard->tokens) {
+      if (record.category != category) continue;
+      for (const auto& scope : record.scope_chain) {
+        if (scope.kind != kind || scope.binary_scope_uuid != identity) continue;
+        if (record.token.bytes > std::numeric_limits<u64>::max() - bytes)
+          return std::numeric_limits<u64>::max();
+        bytes += record.token.bytes;
+        break;
+      }
+    }
+  }
+  return bytes;
+}
+
 HierarchicalMemoryBudgetSnapshot HierarchicalMemoryBudgetLedger::Snapshot() const {
   HierarchicalMemoryBudgetSnapshot snapshot;
   snapshot.shard_count = static_cast<u64>(scope_shards_.size());

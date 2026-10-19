@@ -8,6 +8,7 @@ namespace scratchbird::storage::database {
 // Navigation only: the caller's root/dependency tuple is not catalog authority.
 // Admit backing before the source handle; release it after the handle. Reuse
 // invalidates all previous borrowed results even when traversal fails.
+class NativeCatalogRelationLeaseReader;
 class NativeBtreeTreeLeaseReader {
  public:
   static NativeBtreeTreeReadResult Read(const NativeSelectedCheckpointMemoryLease& lease,
@@ -23,6 +24,23 @@ class NativeBtreeTreeLeaseReader {
     }
     return btree_memory_detail::Reader::Run(checkpoint.header.database_uuid,lease.devices_,
       {lease.batches_,lease.batch_count_},root,dependencies,backing,image_limit);
+  }
+ private:
+  friend class NativeCatalogRelationLeaseReader;
+  // This entry is restricted to traversal of a head obtained from the actual
+  // selected catalog root. It is not a public arbitrary-page discovery API.
+  static NativeBtreeTreeReadResult ReadSelected(const NativeSelectedCheckpointMemoryLease& lease,
+      const disk::NativePageReference& root,const Uuid& selected_index,
+      NativeBtreeTreePreparedMemory& backing,std::size_t image_limit) noexcept {
+    lease.CheckThread();
+    if(!lease.selection_.checkpoint_inventory.checkpoint)return {};
+    const auto& checkpoint=*lease.selection_.checkpoint_inventory.checkpoint;
+    if(checkpoint.flags&4u){
+      NativeBtreeTreeReadResult out;out.error=NativeBtreeTreeMemoryError::tree_failure;
+      out.tree_error=page::NativeBtreeError::cluster_requires_authority;return out;
+    }
+    return btree_memory_detail::Reader::Run(checkpoint.header.database_uuid,lease.devices_,
+        {lease.batches_,lease.batch_count_},root,{},backing,image_limit,&selected_index);
   }
 };
 } // namespace scratchbird::storage::database

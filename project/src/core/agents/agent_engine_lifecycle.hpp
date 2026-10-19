@@ -22,6 +22,13 @@
 
 namespace scratchbird::core::agents {
 
+// These lifecycle roles are event-driven, not periodic managed agents. The
+// server owns the coordinator; only that coordinator invokes startup/shutdown.
+// Registering them during creation does not run them or authorize engine work.
+std::vector<AgentTypeDescriptor> RuntimeLifecycleAgentDescriptors();
+std::string RuntimeLifecycleAgentPolicyFamily(const std::string& type_id);
+AgentPolicy BaselineRuntimeLifecycleAgentPolicy(const AgentTypeDescriptor& descriptor);
+
 // SEARCH_KEY: DATABASE_ENGINE_AGENT_LIFECYCLE_CLOSURE
 enum class DatabaseEngineAgentLifecycleState {
   not_started,

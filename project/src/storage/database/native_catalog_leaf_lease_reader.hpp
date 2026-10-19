@@ -105,6 +105,22 @@ class NativeCatalogLeafLeaseReader {
       const NativeSelectedCheckpointMemoryLease& lease,
       const page::NativeCatalogRootReference& ref,
       NativeCatalogLeafPreparedMemory& backing) noexcept {
+    return ReadImpl(lease,ref,backing,false);
+  }
+ private:
+  friend class NativeCatalogRelationLeaseReader;
+  // A selected index may locate the first base leaf before its relation UUID
+  // is known. Only its enclosing selected-root traversal may discover it.
+  static NativeCatalogLeafLeaseReadResult ReadSelected(
+      const NativeSelectedCheckpointMemoryLease& lease,
+      const page::NativeCatalogRootReference& ref,
+      NativeCatalogLeafPreparedMemory& backing) noexcept {
+    return ReadImpl(lease,ref,backing,true);
+  }
+  static NativeCatalogLeafLeaseReadResult ReadImpl(
+      const NativeSelectedCheckpointMemoryLease& lease,
+      const page::NativeCatalogRootReference& ref,
+      NativeCatalogLeafPreparedMemory& backing,bool discover_relation) noexcept {
     using E=NativeCatalogLeafMemoryError;
     NativeCatalogLeafLeaseReadResult out;
     try {
@@ -115,7 +131,8 @@ class NativeCatalogLeafLeaseReader {
       const auto* profile=disk::FindCanonicalFilespacePageProfile(target.page_size_profile_uuid);
       if(!profile||backing.arena_.binding().database_uuid!=database||
           (backing.profile_mode_==NativeCatalogLeafProfileMode::exact&&backing.profile_!=target.page_size_profile_uuid)||
-          ref.role<1||ref.role>6||ref.page_type!=6||!core::uuid::IsEngineIdentityUuid(ref.object_uuid)||
+          ref.role<1||ref.role>6||ref.page_type!=6||
+          (!discover_relation&&!core::uuid::IsEngineIdentityUuid(ref.object_uuid))||
           !target.page_number||!target.page_generation)return out;
       if(profile->page_size_bytes>backing.image_.size()){out.error=E::resource_exhausted;return out;}
       const auto image=backing.image_.first(profile->page_size_bytes);
@@ -167,7 +184,8 @@ class NativeCatalogLeafLeaseReader {
       if(header.header->flags&12u){out.error=E::header_policy_requires_authority;return out;}
       auto decoded=DecodeNativeCatalogLeafInto(image,backing.rows_,backing.metadata_);
       if(!decoded.ok()){out.error=E::leaf_failure;out.leaf=std::move(decoded);return out;}
-      if(decoded.page->body.relation_uuid.value!=ref.object_uuid){out.error=E::binding_mismatch;return out;}
+      if(!core::uuid::IsEngineIdentityUuid(decoded.page->body.relation_uuid.value)||
+          (!discover_relation&&decoded.page->body.relation_uuid.value!=ref.object_uuid)){out.error=E::binding_mismatch;return out;}
       out.leaf=std::move(decoded);out.image=image;out.error=E::none;return out;
     }catch(const std::bad_alloc&){out.error=E::resource_exhausted;}
      catch(const std::length_error&){out.error=E::resource_exhausted;}

@@ -61,6 +61,10 @@ struct NativeManagementOperation {
   NativeManagementRestart restart=NativeManagementRestart::resume;
   bool evidence_required=false,metrics_required=false;
   std::vector<NativeManagementStep> steps;
+  // V3 exact family-owned typed state. Its presence is immutable; bytes can
+  // evolve only with an admitted revision and the family's semantic checks.
+  // This is retained data, never a generic completion or execution grant.
+  std::vector<byte> operation_state_bytes;
   bool operator==(const NativeManagementOperation&) const=default;
 };
 struct NativeManagementStepView {
@@ -96,6 +100,7 @@ struct NativeManagementOperationView {
   NativeManagementRestart restart=NativeManagementRestart::resume;
   bool evidence_required=false,metrics_required=false;
   std::span<const NativeManagementStepView> steps;
+  std::span<const byte> operation_state_bytes;
 };
 enum class NativeManagementOperationError {
   none,invalid_header,invalid_identity,invalid_record,invalid_utf8,

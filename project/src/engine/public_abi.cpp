@@ -3612,6 +3612,8 @@ sb_engine_status_t finish_retired_statement_context_receipt(
       std::lock_guard<std::mutex> receipt_guard(receipt->mutex);
       if (receipt->cancellation_channel) receipt->cancellation_channel->ClosePublic();
       receipt->invalidated = true;
+      scratchbird::engine::internal_api::RetireSblrSessionSettingSetReceipt(
+          receipt->view.receipt_uuid);
       g_retired_statement_context_receipts.erase(id);
     }
     // Retire the publication owner, not a live result's separately owned pin.
@@ -9160,6 +9162,51 @@ sb_engine_status_t CopyStatementContextEngineContextV1(
   out_context->datatype_registry_generation =
       live->second->view.literal_registry_generation;
   return SB_ENGINE_STATUS_OK;
+}
+
+sb_engine_status_t CoordinateSessionValueDescriptorV1(
+    StatementContextReceiptHandle receipt_handle,
+    const std::array<std::uint8_t, 16>& owning_session,
+    scratchbird::engine::internal_api::SessionValueOperation operation,
+    const scratchbird::engine::sblr::SblrSessionSettingSetRequestV1* demand,
+    scratchbird::engine::sblr::SblrSessionSettingSetDescriptorV1* out_descriptor,
+    sb_engine_result_t* out_result) try {
+  clear_result(out_result);
+  if (out_descriptor) *out_descriptor = {};
+  if (!receipt_handle || !demand || !out_descriptor)
+    return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4050,
+        "SBLR.OPERAND.INVALID", "engine.session_value.coordination_invalid");
+  std::lock_guard<std::mutex> registry_guard(
+      g_statement_context_receipt_registry_mutex);
+  const auto live = g_live_statement_context_receipts.find(receipt_handle.opaque_id);
+  if (live == g_live_statement_context_receipts.end())
+    return fail_result(SB_ENGINE_STATUS_INVALID_HANDLE, out_result, 4050,
+        "SECURITY.ACCESS_DENIED", "engine.session_value.receipt_stale");
+  const auto& receipt = live->second;
+  std::lock_guard<std::mutex> receipt_guard(receipt->mutex);
+  if (receipt->released || receipt->invalidated ||
+      receipt->magic != kStatementContextReceiptMagic ||
+      receipt->binary_session_uuid != owning_session ||
+      receipt->view.receipt_uuid.bytes != demand->receipt)
+    return fail_result(SB_ENGINE_STATUS_SECURITY_DENIED, out_result, 4050,
+        "SECURITY.ACCESS_DENIED", "engine.session_value.receipt_owner_mismatch");
+  auto context = receipt->engine_context;
+  context.statement_receipt_uuid = receipt->view.receipt_uuid;
+  const auto coordinated = scratchbird::engine::internal_api::
+      CompileSblrSessionValueDescriptor(operation, context,
+          receipt->view.receipt_uuid, demand->occurrence, demand->occurrence);
+  if (!coordinated.ok)
+    return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4050,
+        coordinated.diagnostic.code, coordinated.diagnostic.message_key,
+        coordinated.diagnostic.detail);
+  *out_descriptor = coordinated.descriptor;
+  return SB_ENGINE_STATUS_OK;
+} catch (const std::bad_alloc&) {
+  if (out_descriptor) *out_descriptor = {};
+  return SB_ENGINE_STATUS_RESOURCE_EXHAUSTED;
+} catch (const std::length_error&) {
+  if (out_descriptor) *out_descriptor = {};
+  return SB_ENGINE_STATUS_RESOURCE_EXHAUSTED;
 }
 
 sb_engine_status_t AttachStatementRelationOccurrenceMappingsV1(
@@ -23650,7 +23697,6 @@ sb_engine_status_t DispatchStatementContextReceipt(
     ddl_create_fdw_root = member.operation_id == "engine.op.ddl_create_fdw" && member.opcode == "SBLR_DDL_CREATE_FDW" && member.opcode_code == 1578;
     if (ddl_create_fdw_root) { std::string detail; if (member.operands.size() != 1 || member.operands.front().type != "create_fdw_descriptor" || member.operands.front().name != "fdw" || !scratchbird::engine::sblr::DecodeSblrDdlCreateFdwDescriptorV1(member.operands.front().value_body.data(), member.operands.front().value_body.size(), &ddl_create_fdw_descriptor, &detail, true)) return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4157, "SBLR.OPERAND_INVALID", "sblr.ddl_create_fdw.operand_invalid", detail); ddl_create_fdw_availability_generation = ddl_create_fdw_descriptor.availability; }
     ddl_drop_fdw_root = member.operation_id == "engine.op.ddl_drop_fdw" && member.opcode == "SBLR_DDL_DROP_FDW" && member.opcode_code == 1579;
-    if (ddl_drop_fdw_root) { std::string detail; if (member.operands.size() != 1 || member.operands.front().type != "drop_fdw_descriptor" || member.operands.front().name != "fdw" || !scratchbird::engine::sblr::DecodeSblrDdlDropFdwDescriptorV1(member.operands.front().value_body.data(), member.operands.front().value_body.size(), &ddl_drop_fdw_descriptor, &detail, true)) return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4159, "SBLR.OPERAND_INVALID", "sblr.ddl_drop_fdw.operand_invalid", detail); ddl_drop_fdw_availability_generation = ddl_drop_fdw_descriptor.availability; }
     if (ddl_rename_object_root) { std::string detail; if (member.operands.size() != 1 || member.operands.front().type != "rename_object_descriptor" || member.operands.front().name != "rename" || !scratchbird::engine::sblr::DecodeSblrDdlRenameObjectDescriptorV1(member.operands.front().value_body.data(), member.operands.front().value_body.size(), &ddl_rename_object_descriptor, &detail, true)) return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4136, "SBLR.OPERAND_INVALID", "sblr.ddl_rename_object.operand_invalid", detail); ddl_rename_object_availability_generation = ddl_rename_object_descriptor.availability; }
     ddl_drop_sequence_root = member.operation_id == "engine.op.ddl_drop_sequence" && member.opcode == "SBLR_DDL_DROP_SEQUENCE" && member.opcode_code == 1565;
     ddl_create_temporary_table_root = member.operation_id == "engine.op.ddl_create_temporary_table" && member.opcode == "SBLR_DDL_CREATE_TEMPORARY_TABLE" && member.opcode_code == 1612;
@@ -23801,6 +23847,24 @@ sb_engine_status_t DispatchStatementContextReceipt(
       // evidence that the local receipt can supply cluster authority. Leave
       // that authority unchanged so the provider owns authorization and the
       // exact missing-provider refusal instead of a local SECURITY denial.
+    }
+    // Descriptor authority is required only after the exact operation passes
+    // static executor preflight. An unavailable executor cannot issue one.
+    if (ddl_drop_fdw_root) {
+      std::string detail;
+      if (member.operands.size() != 1 ||
+          member.operands.front().type != "drop_fdw_descriptor" ||
+          member.operands.front().name != "fdw" ||
+          !scratchbird::engine::sblr::DecodeSblrDdlDropFdwDescriptorV1(
+              member.operands.front().value_body.data(),
+              member.operands.front().value_body.size(),
+              &ddl_drop_fdw_descriptor, &detail, true)) {
+        return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4159,
+                           "SBLR.OPERAND_INVALID",
+                           "sblr.ddl_drop_fdw.operand_invalid", detail);
+      }
+      ddl_drop_fdw_availability_generation =
+          ddl_drop_fdw_descriptor.availability;
     }
     if (stmt_prepare_root) {
       std::string detail;
@@ -34103,8 +34167,8 @@ if(ddl_drop_function_root){auto c=receipt->engine_context;c.trace_tags.push_back
   if(session_default_qualifier_set_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_session_default_qualifier_set");auto consumed=scratchbird::engine::internal_api::ConsumeSblrSessionDefaultQualifierSetDescriptor(c,session_default_qualifier_set_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4234,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrSessionDefaultQualifierSetResultV1 rr;rr.status=1;rr.publication_barrier=1;rr.generation=session_default_qualifier_set_descriptor.expected_generation;rr.availability=session_default_qualifier_set_availability_generation;rr.key=session_default_qualifier_set_descriptor.key;std::copy(session_default_qualifier_set_descriptor.value.begin(),session_default_qualifier_set_descriptor.value.begin()+32,rr.effect_evidence.begin());session_default_qualifier_set_result_bytes=scratchbird::engine::sblr::EncodeSblrSessionDefaultQualifierSetResultV1(rr);if(session_default_qualifier_set_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4234,"SESSION.DEFAULT_QUALIFIER_FAILED","sblr.session_default_qualifier_set.result_encoding_failed");result->result_kind="session_setting_result";result->payload.assign(reinterpret_cast<const char*>(session_default_qualifier_set_result_bytes.data()),session_default_qualifier_set_result_bytes.size());}
   if(session_discard_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_session_discard");auto consumed=scratchbird::engine::internal_api::ConsumeSblrSessionDiscardDescriptor(c,session_discard_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4235,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrSessionDiscardResultV1 rr;rr.status=1;rr.publication_barrier=1;rr.generation=session_discard_descriptor.expected_generation;rr.availability=session_discard_availability_generation;rr.key=session_discard_descriptor.key;std::copy(session_discard_descriptor.value.begin(),session_discard_descriptor.value.begin()+32,rr.effect_evidence.begin());session_discard_result_bytes=scratchbird::engine::sblr::EncodeSblrSessionDiscardResultV1(rr);if(session_discard_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4235,"SESSION.DISCARD_FAILED","sblr.session_discard.result_encoding_failed");result->result_kind="session_setting_result";result->payload.assign(reinterpret_cast<const char*>(session_discard_result_bytes.data()),session_discard_result_bytes.size());}
   if(context_set_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_context_set");auto consumed=scratchbird::engine::internal_api::ConsumeSblrContextSetDescriptor(c,context_set_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4236,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrContextSetResultV1 rr;rr.status=1;rr.publication_barrier=1;rr.generation=context_set_descriptor.expected_generation;rr.availability=context_set_availability_generation;rr.key=context_set_descriptor.key;std::copy(context_set_descriptor.value.begin(),context_set_descriptor.value.begin()+32,rr.effect_evidence.begin());context_set_result_bytes=scratchbird::engine::sblr::EncodeSblrSessionSettingSetResultV1(rr);if(context_set_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4236,"CONTEXT.SET_FAILED","sblr.context_set.result_encoding_failed");result->result_kind="context_result";result->payload.assign(reinterpret_cast<const char*>(context_set_result_bytes.data()),context_set_result_bytes.size());}
-  if(context_unset_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_context_unset");auto consumed=scratchbird::engine::internal_api::ConsumeSblrContextSetDescriptor(c,context_unset_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4237,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrContextUnsetResultV1 rr;rr.status=1;rr.publication_barrier=1;rr.generation=context_unset_descriptor.expected_generation;rr.availability=context_unset_availability_generation;rr.key=context_unset_descriptor.key;std::copy(context_unset_descriptor.value.begin(),context_unset_descriptor.value.begin()+32,rr.effect_evidence.begin());context_unset_result_bytes=scratchbird::engine::sblr::EncodeSblrSessionSettingSetResultV1(rr);if(context_unset_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4237,"CONTEXT.UNSET_FAILED","sblr.context_unset.result_encoding_failed");result->result_kind="context_result";result->payload.assign(reinterpret_cast<const char*>(context_unset_result_bytes.data()),context_unset_result_bytes.size());}
-  if(context_get_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_context_get");auto consumed=scratchbird::engine::internal_api::ConsumeSblrContextSetDescriptor(c,context_get_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4238,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrContextGetResultV1 rr;rr.status=1;rr.publication_barrier=1;rr.generation=context_get_descriptor.expected_generation;rr.availability=context_get_availability_generation;rr.key=context_get_descriptor.key;std::copy(context_get_descriptor.value.begin(),context_get_descriptor.value.begin()+32,rr.effect_evidence.begin());context_get_result_bytes=scratchbird::engine::sblr::EncodeSblrSessionSettingSetResultV1(rr);if(context_get_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4238,"CONTEXT.GET_FAILED","sblr.context_get.result_encoding_failed");result->result_kind="context_value";result->payload.assign(reinterpret_cast<const char*>(context_get_result_bytes.data()),context_get_result_bytes.size());}
+  if(context_unset_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_context_unset");auto consumed=scratchbird::engine::internal_api::ConsumeSblrContextUnsetDescriptor(c,context_unset_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4237,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrContextUnsetResultV1 rr;rr.status=1;rr.publication_barrier=1;rr.generation=context_unset_descriptor.expected_generation;rr.availability=context_unset_availability_generation;rr.key=context_unset_descriptor.key;std::copy(context_unset_descriptor.value.begin(),context_unset_descriptor.value.begin()+32,rr.effect_evidence.begin());context_unset_result_bytes=scratchbird::engine::sblr::EncodeSblrSessionSettingSetResultV1(rr);if(context_unset_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4237,"CONTEXT.UNSET_FAILED","sblr.context_unset.result_encoding_failed");result->result_kind="context_result";result->payload.assign(reinterpret_cast<const char*>(context_unset_result_bytes.data()),context_unset_result_bytes.size());}
+  if(context_get_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_context_get");auto consumed=scratchbird::engine::internal_api::ConsumeSblrContextGetDescriptor(c,context_get_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4238,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrContextGetResultV1 rr;rr.status=1;rr.publication_barrier=1;rr.generation=context_get_descriptor.expected_generation;rr.availability=context_get_availability_generation;rr.key=context_get_descriptor.key;std::copy(context_get_descriptor.value.begin(),context_get_descriptor.value.begin()+32,rr.effect_evidence.begin());context_get_result_bytes=scratchbird::engine::sblr::EncodeSblrSessionSettingSetResultV1(rr);if(context_get_result_bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4238,"CONTEXT.GET_FAILED","sblr.context_get.result_encoding_failed");result->result_kind="context_value";result->payload.assign(reinterpret_cast<const char*>(context_get_result_bytes.data()),context_get_result_bytes.size());}
   if(sort_root){result->result_kind="rowset_descriptor";result->payload.assign(reinterpret_cast<const char*>(sort_result_bytes.data()),sort_result_bytes.size());}
   if(limit_root){result->result_kind="rowset_descriptor";result->payload.assign(reinterpret_cast<const char*>(limit_result_bytes.data()),limit_result_bytes.size());}
   if(window_root){auto c=receipt->engine_context;c.trace_tags.push_back("private_window");auto consumed=scratchbird::engine::internal_api::ConsumeSblrWindowDescriptor(c,window_descriptor);if(!consumed.ok)return fail_result(SB_ENGINE_STATUS_CONFLICT,out_result,4111,consumed.diagnostic.code,consumed.diagnostic.message_key);scratchbird::engine::sblr::SblrWindowResultV1 rr;rr.body[24]=1;rr.body[25]=1;rr.body[56]=1;rr.availability=window_availability_generation;rr.publication_barrier[0]=1;auto bytes=scratchbird::engine::sblr::EncodeSblrWindowResultV1(rr);if(bytes.empty())return fail_result(SB_ENGINE_STATUS_INTERNAL_ERROR,out_result,4111,"WINDOW.EXECUTION_FAILED","sblr.window.result_encoding_failed");result->result_kind="rowset_descriptor";result->payload.assign(reinterpret_cast<const char*>(bytes.data()),bytes.size());const auto digest=scratchbird::core::hash::ComputeSha256Digest(bytes);const char*path=std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");if(digest.ok()&&path&&*path){std::ofstream t(path,std::ios::app|std::ios::binary);if(t)t<<"layer=window_executor\texecutor_id=engine.op.window\topcode=SBLR_WINDOW\topcode_code=1285\topcode_version=1.0\toperand_descriptor_id=window_descriptor\tresult_descriptor_id=rowset_descriptor\tresult_descriptor_version=1\twindow_result_sha256=sha256:"<<scratchbird::core::hash::HexLower(digest.digest)<<"\texecutor_availability_generation="<<window_availability_generation<<"\tparent_success_barrier=passed\n";}}

@@ -11,6 +11,8 @@
 #include "catalog_bootstrap_policy.hpp"
 #include "catalog_memory_configuration.hpp"
 #include "catalog_runtime_authority_binding.hpp"
+#include "catalog_agent_bootstrap.hpp"
+#include "agent_bootstrap_configuration.hpp"
 #include "bootstrap_security_validation.hpp"
 #include "native_drop_evidence.hpp"
 #include "../disk/filespace_bootstrap.hpp"
@@ -79,6 +81,11 @@
 
 namespace scratchbird::storage::database {
 namespace {
+
+DatabaseBootstrapSecurityCatalogReadResult ReadBootstrapSecurityCatalogFromOwnedDevice(
+    disk::FileDevice& device, const std::string& path,
+    const core::platform::Uuid& expected_database = {},
+    const core::platform::Uuid& expected_filespace = {});
 
 using scratchbird::core::platform::DiagnosticArgument;
 using scratchbird::core::platform::MakeDiagnostic;
@@ -2416,6 +2423,7 @@ CatalogRowsBuildResult AddTypedCatalogRecord(std::vector<CatalogPageRow>* rows,
     }
   } else if (!scratchbird::core::catalog::IsCatalogSecurityRecordKind(kind) &&
              !scratchbird::core::catalog::IsCatalogBootstrapPolicyPayload(payload) &&
+             !scratchbird::core::catalog::IsCatalogAgentBootstrapPayload(payload) &&
              !scratchbird::core::catalog::IsCatalogMemoryConfigurationPayload(payload) &&
              !scratchbird::core::catalog::IsCatalogMetricRetentionPolicyPayload(payload) &&
              !scratchbird::core::catalog::IsCatalogMetricVisibilityPolicyPayload(payload) &&
@@ -3657,52 +3665,45 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
   }
 
   // SEARCH_KEY: SB_AGENT_POLICY_BOOTSTRAP_BASELINE
-  // New databases receive editable baseline operational-agent policy records.
-  // These records are safe by default: no agent is installed as live-action
-  // automation without explicit later policy change and approval.
-  for (const auto& agent : CanonicalAgentRegistry()) {
-    const auto policy = BaselinePolicyForAgent(agent);
-    std::string metrics;
-    bool first_metric = true;
-    for (const auto& metric : policy.required_metric_families) {
-      if (!first_metric) {
-        metrics += ",";
-      }
-      metrics += metric;
-      first_metric = false;
+  // Persist every family and its complete configuration at CREATE. Registration
+  // is configuration only: embedded creation must not activate any agent.
+  namespace agent_catalog = scratchbird::core::catalog;
+  const auto append_agent_definition = [&](agent_catalog::AgentBootstrapDefinitionKind kind,
+      const TypedUuid& identity, const TypedUuid& policy_identity, const std::string& agent_type,
+      const std::string& properties) {
+    agent_catalog::CatalogAgentBootstrapDefinition definition;
+    definition.definition_uuid = identity.value;
+    definition.database_uuid = config.database_uuid.value;
+    definition.policy_uuid = policy_identity.value;
+    definition.kind = kind;
+    definition.agent_type = agent_type;
+    definition.properties = properties;
+    definition.origin_transaction_uuid = bootstrap_transaction_uuid;
+    definition.origin_local_transaction_id = kBootstrapCatalogTransactionId;
+    definition.generation = 1;
+    const auto encoded = agent_catalog::EncodeCatalogAgentBootstrapDefinition(definition);
+    if (!encoded.ok()) {
+      const auto failure = LifecycleError("CATALOG.INVALID_INPUT", "catalog.agent_bootstrap.invalid",
+          config.path, "agent_bootstrap_encoding_failed");
+      return CatalogRowsBuildError(failure.status, failure.diagnostic);
     }
-    const std::string policy_payload =
-        KeyValuePayload({{"policy_name", policy.policy_name},
-                         {"policy_uuid", policy.policy_uuid},
-                         {"policy_class", "operational_agent"},
-                         {"agent_type", agent.type_id},
-                         {"layer", AgentRuntimeLayerName(agent.layer)},
-                         {"deployment", AgentDeploymentName(agent.deployment)},
-                         {"scope", agent.scope},
-                         {"authority", AgentAuthorityClassName(agent.authority)},
-                         {"activation", AgentActivationProfileName(policy.activation)},
-                         {"allow_live_action", policy.allow_live_action ? "1" : "0"},
-                         {"require_manual_approval", policy.require_manual_approval ? "1" : "0"},
-                         {"require_dry_run_before_live", policy.require_dry_run_before_live ? "1" : "0"},
-                         {"evidence_required", policy.evidence_required ? "1" : "0"},
-                         {"explainability_required", policy.explainability_required ? "1" : "0"},
-                         {"run_interval_microseconds", std::to_string(policy.run_interval_microseconds)},
-                         {"lease_microseconds", std::to_string(policy.lease_microseconds)},
-                         {"cooldown_microseconds", std::to_string(policy.cooldown_microseconds)},
-                         {"max_runtime_microseconds", std::to_string(policy.max_runtime_microseconds)},
-                         {"max_history_query_rows", std::to_string(policy.max_history_query_rows)},
-                         {"max_evidence_fanout", std::to_string(policy.max_evidence_fanout)},
-                         {"max_label_cardinality", std::to_string(policy.max_label_cardinality)},
-                         {"action_budget_per_window", std::to_string(policy.action_budget_per_window)},
-                         {"required_metric_families", metrics},
-                         {"editable_seed_policy", "1"}});
-    typed = AddTypedCatalogRecord(&result.rows,
-                                  CatalogRecordKind::policy,
-                                  &ordinal,
-                                  bootstrap_seed,
-                                  policy_payload,
-                                  sys_metrics_object.value);
-    if (!typed.ok()) { return typed; }
+    return AddTypedCatalogRecord(&result.rows,
+        kind == agent_catalog::AgentBootstrapDefinitionKind::policy
+            ? CatalogRecordKind::policy : CatalogRecordKind::config_profile,
+        &ordinal, bootstrap_seed, {encoded.bytes.begin(), encoded.bytes.end()},
+        sys_agents_object.value, identity);
+  };
+  const auto declarations = scratchbird::core::agents::DefaultAgentBootstrapDeclarations();
+  std::vector<TypedUuid> definition_identities;
+  definition_identities.reserve(declarations.size());
+  for (const auto& declaration : declarations) {
+    const auto identity = GenerateEngineIdentityV7(UuidKind::object, bootstrap_seed);
+    if (!identity.ok()) return CatalogRowsBuildError(identity.status, identity.diagnostic);
+    definition_identities.push_back(identity.value);
+    typed = append_agent_definition(declaration.kind, identity.value,
+        definition_identities.at(declaration.primary_policy_index), declaration.agent_type,
+        declaration.properties);
+    if (!typed.ok()) return typed;
     bootstrap_seed += 4;
   }
 
@@ -7711,6 +7712,27 @@ DatabaseLifecycleResult CreateDatabaseFile(const DatabaseCreateConfig& config) {
         "SB-DB-LIFECYCLE-CREATE-COMMITTED-HEALTH-WARNING",
         detail);
   }
+  // Keep the creator's original inode and exclusive locks through verification.
+  // A pathname reopen here would release ownership before creation was finished.
+  const auto bootstrap_security_readback = ReadBootstrapSecurityCatalogFromOwnedDevice(
+      device, config.path, config.database_uuid.value, config.filespace_uuid.value);
+  const bool bootstrap_matches = bootstrap_security_readback.ok() &&
+      bootstrap_security_readback.state.principal_uuid.value == bootstrap_principal_uuid.value &&
+      bootstrap_security_readback.state.sysarch_role_uuid.value == bootstrap_sysarch_role_uuid.value &&
+      bootstrap_security_readback.state.membership_uuid.value == bootstrap_membership_uuid.value &&
+      bootstrap_security_readback.state.principal_name == config.bootstrap_principal_name &&
+      bootstrap_security_readback.state.credential_fingerprint == config.bootstrap_credential_fingerprint;
+  if (!bootstrap_matches) {
+    const auto closed = device.Close();
+    auto detail = bootstrap_security_readback.ok()
+        ? std::string("bootstrap_creation_identity_mismatch")
+        : bootstrap_security_readback.diagnostic.diagnostic_code;
+    if (!closed.ok()) detail += ";close=" + closed.diagnostic.diagnostic_code;
+    return make_committed_result(
+        DatabaseCreateFinalityClass::committed_with_warning,
+        final_create_health.snapshot,
+        "SB-DB-LIFECYCLE-CREATE-COMMITTED-CATALOG-READBACK-WARNING", detail);
+  }
   const auto close = device.Close();
   if (!close.ok()) {
     return make_committed_result(
@@ -7720,18 +7742,11 @@ DatabaseLifecycleResult CreateDatabaseFile(const DatabaseCreateConfig& config) {
         close.diagnostic.diagnostic_code);
   }
 
-  const auto bootstrap_security_readback =
-      ReadDatabaseBootstrapSecurityCatalog(config.path);
-  if (!bootstrap_security_readback.ok()) {
-    return make_committed_result(
-        DatabaseCreateFinalityClass::committed_with_warning,
-        final_create_health.snapshot,
-        "SB-DB-LIFECYCLE-CREATE-COMMITTED-CATALOG-READBACK-WARNING",
-        bootstrap_security_readback.diagnostic.diagnostic_code);
-  }
-
-  return make_committed_result(DatabaseCreateFinalityClass::committed,
-                               final_create_health.snapshot);
+  auto result = make_committed_result(DatabaseCreateFinalityClass::committed,
+                                      final_create_health.snapshot);
+  result.create_handoff = DatabaseCreateHandoffState::verified_and_closed;
+  result.bootstrap_policy_generation = bootstrap_security_readback.state.policy_generation;
+  return result;
 }
 
 DatabaseCatalogIdentityReadResult ReadDatabaseCatalogIdentity(
@@ -8015,8 +8030,11 @@ DatabaseBootstrapMetricCatalogReadResult ReadDatabaseBootstrapMetricCatalog(
   return result;
 }
 
-DatabaseBootstrapSecurityCatalogReadResult
-ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
+namespace {
+DatabaseBootstrapSecurityCatalogReadResult ReadBootstrapSecurityCatalogFromOwnedDevice(
+    FileDevice& device, const std::string& path,
+    const core::platform::Uuid& expected_database,
+    const core::platform::Uuid& expected_filespace) {
   auto fail = [&](std::string code,
                   std::string message_key,
                   std::string detail = {}) {
@@ -8051,11 +8069,6 @@ ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
     }
   }
 
-  FileDevice device;
-  const auto open = device.Open(path, FileOpenMode::open_existing_read_only);
-  if (!open.ok()) {
-    return propagate(open.status, open.diagnostic);
-  }
   SerializedDatabaseHeader serialized_header{};
   const auto read_header = device.ReadAt(0,
                                          serialized_header.data(),
@@ -8077,6 +8090,10 @@ ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
   TypedUuid database_uuid;
   database_uuid.kind = UuidKind::database;
   database_uuid.value = parsed_header.header.database_uuid;
+  if (!expected_database.is_nil() && expected_database != database_uuid.value) {
+    return fail("SB-DB-BOOTSTRAP-SECURITY-DATABASE-UUID-MISMATCH",
+                "storage.database_lifecycle.bootstrap_security_database_uuid_mismatch");
+  }
   DatabaseLocalPrivateSecurityLocatorInspectRequestV1 locator_request;
   locator_request.device = &device;
   locator_request.marker_bytes = parsed_header.header
@@ -8107,6 +8124,11 @@ ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
     return fail(
         "SB-DB-BOOTSTRAP-SECURITY-DATABASE-UUID-MISMATCH",
         "storage.database_lifecycle.bootstrap_security_database_uuid_mismatch");
+  }
+  if (!expected_filespace.is_nil() &&
+      expected_filespace != startup.state.first_filespace_uuid.value) {
+    return fail("SB-DB-BOOTSTRAP-SECURITY-FILESPACE-UUID-MISMATCH",
+                "storage.database_lifecycle.bootstrap_security_filespace_uuid_mismatch");
   }
   const auto startup_identities = ValidateStartupPageIdentities(
       &device,
@@ -8168,12 +8190,32 @@ ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
   }
   auto validated = ValidateBootstrapSecurityRecords(records, path);
   if (!validated.ok()) return validated;
-  const auto close = device.Close();
-  if (!close.ok()) return propagate(close.status, close.diagnostic);
   // The shared validator cannot prove commitment. Only the actual source
   // reader above has verified the owning inventory and bootstrap transaction.
   validated.state.committed_by_inventory = true;
   return validated;
+}
+
+}  // namespace
+
+DatabaseBootstrapSecurityCatalogReadResult
+ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
+  FileDevice device;
+  if (path.empty()) return ReadBootstrapSecurityCatalogFromOwnedDevice(device, path);
+  const auto opened = device.Open(path, FileOpenMode::open_existing_read_only);
+  if (!opened.ok()) {
+    DatabaseBootstrapSecurityCatalogReadResult result;
+    result.status = opened.status;
+    result.diagnostic = opened.diagnostic;
+    return result;
+  }
+  auto result = ReadBootstrapSecurityCatalogFromOwnedDevice(device, path);
+  const auto closed = device.Close();
+  if (result.ok() && !closed.ok()) {
+    result.status = closed.status;
+    result.diagnostic = closed.diagnostic;
+  }
+  return result;
 }
 
 DatabaseBootstrapSecurityCatalogReadResult ValidateBootstrapSecurityRecords(

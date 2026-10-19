@@ -37,7 +37,8 @@ class NativeSelectedCheckpointMemoryLease {
   using Batch=disk::FileDevice::ReadLatencyBatch;
   using Guard=std::unique_lock<std::recursive_mutex>;
   NativeSelectedCheckpointMemoryLease() noexcept:thread_(std::this_thread::get_id()){}
-  ~NativeSelectedCheckpointMemoryLease(){
+  ~NativeSelectedCheckpointMemoryLease(){ReleaseDeviceGuards();}
+  void ReleaseDeviceGuards() noexcept {
     CheckThread();
     // Every source fence is released before the first observation callback.
     while(guard_count_)std::destroy_at(guards_+--guard_count_);
@@ -59,6 +60,7 @@ class NativeSelectedCheckpointMemoryLease {
   friend class NativeBtreeTreeLeaseReader;
   friend class NativeAllocationLeaseReader;
   friend class NativePageReservationLeaseReader;
+  friend class NativePublicationWatermarkLeaseReader;
   friend NativeSelectedCheckpointMemoryResult AcquireNativeSelectedCheckpointMemoryLease(
       const Uuid&,std::span<const disk::NativeFilespaceDevice>,const Uuid&,
       NativeSelectedCheckpointMemoryLimits,NativeStorageMemory&,const NativeStorageMemoryBinding&) noexcept;
@@ -87,6 +89,12 @@ class NativeSelectedCheckpointMemoryHandle {
     arena_=NativeStorageArena{};
   }
  private:
+  friend class NativeOwnedCheckpointWriter;
+  // Only the original writer can turn its held read into an immutable
+  // observation, retaining the admitted bytes and actual operation custody.
+  void ReleaseDeviceGuards() noexcept {
+    CheckThread();if(lease_)lease_->ReleaseDeviceGuards();
+  }
   void CheckThread() const noexcept {if(lease_)lease_->CheckThread();}
   NativeStorageArena arena_;
   NativeSelectedCheckpointMemoryLease* lease_=nullptr;
@@ -175,8 +183,10 @@ inline NativeSelectedCheckpointMemoryResult AcquireNativeSelectedCheckpointMemor
     if(consumed>=limits.maximum_verification_image_bytes){out.error=E::resource_exhausted;return out;}
     const auto& s=*selected.selection.selection;const auto& r=s.checkpoint;
     lease.checkpoint_={9,0x300,r.filespace_uuid,r.page_number,r.page_generation,r.page_size_profile_uuid,s.checkpoint_object_uuid};
-    auto directory=detail::VerifyCurrentNativeCheckpointDirectoryBacked(database,devices,lease.checkpoint_,
-        limits.maximum_verification_image_bytes-consumed,pointers,resource);
+    // Every device guard acquired above is still held. Retain the complete
+    // selected proof once instead of allocating a second identical history.
+    auto directory=detail::VerifyRetainedNativeCheckpointDirectoryBacked(database,devices,lease.checkpoint_,
+        selected.selection,limits.maximum_verification_image_bytes-consumed,pointers,resource);
     out.io_status=directory.io_status;out.io_diagnostic=std::move(directory.io_diagnostic);
     out.physical_bytes_read+=directory.physical_bytes_read;
     out.checkpoint_error=directory.directory.error;out.directory_error=directory.directory.directory_error;

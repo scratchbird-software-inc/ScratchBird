@@ -14,6 +14,9 @@
 #include "../support/catalog_security_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "bootstrap_security_validation.hpp"
+#include "agent_engine_lifecycle.hpp"
+#include "catalog_agent_bootstrap.hpp"
+#include "local_transaction_store.hpp"
 #include "disk_device.hpp"
 #include "hash_digest.hpp"
 #include "memory.hpp"
@@ -146,6 +149,8 @@ db::DatabaseLifecycleResult CreateCommitted(Cleanup* cleanup,
   Require(created.create_finality ==
               db::DatabaseCreateFinalityClass::committed,
           "normal bootstrap create was not classified committed");
+  Require(created.creation_ready_for_handoff(),
+          "ordinary create must finish verification and release ownership");
   if (path_out != nullptr) {
     *path_out = path;
   }
@@ -207,6 +212,104 @@ std::vector<page::CatalogPageRow> ReadCatalogRows(
     page_number = parsed.body.next_page_number;
   }
   return rows;
+}
+
+void TestCompleteAgentConfiguration(Cleanup* cleanup) {
+  namespace agents = scratchbird::core::agents;
+  std::filesystem::path path;
+  const auto created = CreateCommitted(cleanup, "agent_configuration", &path);
+  std::map<std::string, std::map<std::string, std::string>> policies;
+  std::map<std::string, std::map<std::string, std::string>> registrations;
+  std::map<std::string, scratchbird::core::platform::Uuid> policy_ids, registration_policies;
+  const auto inventory = db::LoadLocalTransactionInventoryFromDatabase(path.string());
+  Require(inventory.ok(), "agent creation inventory read failed");
+  for (const auto& row : ReadCatalogRows(path, created.state.header.page_size)) {
+    if (row.kind != page::CatalogPageRowKind::typed_catalog_record) continue;
+    const auto decoded = catalog::DecodeCatalogTypedRecord(row);
+    Require(decoded.ok(), "agent configuration catalog framing invalid");
+    const auto& record = decoded.record;
+    if (!catalog::IsCatalogAgentBootstrapPayload(record.payload)) continue;
+    const auto native = catalog::DecodeCatalogAgentBootstrapDefinition(record.payload);
+    Require(native.ok() && catalog::CatalogAgentBootstrapMatchesHeader(catalog::BorrowCatalogTypedRecord(record)),
+            "agent declaration lost native identity binding");
+    Require(native.record->database_uuid == created.state.database_uuid.value && native.record->generation == 1,
+            "agent declaration refers to another database or generation");
+    const auto origin = std::find_if(inventory.inventory.entries.begin(), inventory.inventory.entries.end(),
+        [&](const auto& entry) {
+          return entry.identity.local_id.value == native.record->origin_local_transaction_id &&
+              entry.identity.transaction_uuid.value == native.record->origin_transaction_uuid.value &&
+              scratchbird::transaction::mga::HasCommittedInventoryOutcome(entry);
+        });
+    Require(origin != inventory.inventory.entries.end(), "agent declaration lacks its exact committed origin");
+    auto mismatched = record;
+    mismatched.header.object_uuid = uuid::GenerateEngineIdentityV7(UuidKind::object, UniqueMillis()).value;
+    Require(!catalog::EncodeCatalogTypedRecord(mismatched, row.ordinal).ok(),
+            "catalog admitted an agent policy/registration with the wrong native object identity");
+    std::map<std::string, std::string> fields;
+    std::istringstream lines{std::string(native.record->properties)};
+    std::string line;
+    while (std::getline(lines, line)) {
+      const auto split = line.find('=');
+      if (split != std::string::npos) fields.emplace(line.substr(0, split), line.substr(split + 1));
+    }
+    Require(!fields.contains("policy_uuid") && !fields.contains("creator_tx") &&
+                fields.at("agent_type") == native.record->agent_type,
+            "agent identity/origin leaked into a text field or type binding drifted");
+    if (fields["profile_class"] == "agent_registration") {
+      Require(registrations.emplace(fields.at("agent_type"), fields).second,
+              "duplicate persisted agent registration");
+      registration_policies.emplace(fields.at("agent_type"), native.record->policy_uuid);
+    }
+    if (fields["policy_class"] == "operational_agent" ||
+        fields["policy_class"] == "runtime_lifecycle_agent") {
+      Require(policies.emplace(fields.at("agent_type") + "/" + fields.at("policy_family"), fields).second,
+              "duplicate persisted agent policy family");
+      policy_ids.emplace(fields.at("agent_type") + "/" + fields.at("policy_family"), native.record->policy_uuid);
+    }
+  }
+  auto expected = agents::CanonicalAgentRegistry();
+  const auto lifecycle = agents::RuntimeLifecycleAgentDescriptors();
+  expected.insert(expected.end(), lifecycle.begin(), lifecycle.end());
+  Require(registrations.size() == expected.size(), "CREATE omitted agent registrations");
+  std::size_t family_count = 0;
+  for (const auto& agent : expected) {
+    const auto& registration = registrations.at(agent.type_id);
+    Require(registration.at("starts_during_create") == "0",
+            "creation configuration permits premature agent startup");
+    Require(registration.at("managed_by") ==
+                (agent.type_id == "agent_coordinator" ? "ipc_server" : "agent_coordinator"),
+            "agent lifecycle owner is not its coordinator");
+    auto families = agents::RequiredPolicyFamiliesForAgent(agent);
+    const auto lifecycle_family = agents::RuntimeLifecycleAgentPolicyFamily(agent.type_id);
+    if (!lifecycle_family.empty()) families = {lifecycle_family};
+    Require(registration_policies.at(agent.type_id) == policy_ids.at(agent.type_id + "/" + families.front()),
+            "agent registration references a different policy object");
+    for (const auto& family : families) {
+      ++family_count;
+      const auto& fields = policies.at(agent.type_id + "/" + family);
+      Require(fields.at("policy_generation") == "1",
+              "agent policy is not part of committed creation");
+      const auto baseline = lifecycle_family.empty()
+          ? agents::BaselinePolicyForAgentFamily(agent, family, 1)
+          : agents::BaselineRuntimeLifecycleAgentPolicy(agent);
+      for (const auto& [key, value] : baseline.config_fields)
+        Require(fields.contains("config." + key) && !fields.at("config." + key).empty(),
+                "agent policy lost a configuration field");
+      Require(fields.contains("jitter_microseconds") && fields.contains("max_restart_attempts") &&
+              fields.contains("max_backoff_microseconds"), "agent scheduling/retry limits absent");
+      if (agent.cluster_only)
+        Require(fields.at("enabled") == "0" && fields.at("activation") == "disabled" &&
+                    registration.at("state") == "disabled",
+                "standalone CREATE enables a cluster agent");
+    }
+  }
+  Require(policies.size() == family_count, "unexpected bootstrap policy family");
+  Require(policies.contains("filespace_capacity_manager/filespace_shadow_promotion_policy") &&
+              policies.contains("page_allocation_manager/page_relocation_policy"),
+          "file/page manager secondary policy missing");
+  Require(registrations.at("startup_agent").at("launch_trigger") == "coordinator_startup" &&
+              registrations.at("shutdown_agent").at("launch_trigger") == "coordinator_shutdown",
+          "lifecycle agents were configured as periodic workers");
 }
 
 void WriteCatalogRows(const std::filesystem::path& path,
@@ -318,6 +421,8 @@ void TestPrepublicationFaults(Cleanup* cleanup) {
     cleanup->paths.push_back(path);
     const auto created = db::CreateDatabaseFile(MakeConfig(path, fault));
     Require(!created.ok(), "prepublication fault reported success");
+    Require(!created.creation_ready_for_handoff(),
+            "unpublished creation cannot launch a server");
     Require(created.create_finality ==
                 db::DatabaseCreateFinalityClass::not_published,
             "prepublication fault returned published finality");
@@ -336,6 +441,8 @@ void TestPostpublicationFaults(Cleanup* cleanup) {
     cleanup->paths.push_back(path);
     const auto created = db::CreateDatabaseFile(MakeConfig(path, fault));
     Require(created.ok(), "postpublication fault reported retryable failure");
+    Require(!created.creation_ready_for_handoff(),
+            "committed but unverified creation cannot launch a server");
     Require(created.create_finality ==
                 db::DatabaseCreateFinalityClass::committed_with_warning,
             "postpublication fault was not committed-with-warning");
@@ -929,6 +1036,7 @@ int main() try {
   Require(configured.ok(), "bootstrap security memory fixture failed");
 
   Cleanup cleanup;
+  TestCompleteAgentConfiguration(&cleanup);
   TestCommittedSecurityOrigin(&cleanup);
   TestBootstrapRecordOrder();
   TestPrepublicationFaults(&cleanup);

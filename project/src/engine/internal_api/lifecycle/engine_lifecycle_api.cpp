@@ -433,7 +433,10 @@ EngineCreateLifecycleResult EngineCreateLifecycle(const EngineCreateLifecycleReq
                     {{"operation_uuid", request.context.statement_uuid},
                      {"database_uuid", created.state.database_uuid.value},
                      {"filespace_uuid", created.state.filespace_uuid.value},
-                     {"lifecycle_state", "ready"},
+                     {"lifecycle_state", "created"},
+                     {"creation_handoff", created.creation_ready_for_handoff()
+                         ? "verified_and_closed" : "verification_required"},
+                     {"server_ready", "false"},
                      {"publication_barrier", "durable"},
                      {"creation_request_id", request.context.request_id}});
   AddApiBehaviorEvidence(&result, "engine_lifecycle", "database_created");

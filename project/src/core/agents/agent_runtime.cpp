@@ -1647,6 +1647,9 @@ AgentRuntimeStatus ValidateAgentLifecycleTransition(AgentLifecycleState from, Ag
 }
 
 std::vector<std::string> RequiredPolicyFamiliesForAgent(const AgentTypeDescriptor& descriptor) {
+  if (descriptor.type_id == "agent_coordinator") { return {"agent_coordinator_policy"}; }
+  if (descriptor.type_id == "startup_agent") { return {"agent_startup_policy"}; }
+  if (descriptor.type_id == "shutdown_agent") { return {"agent_shutdown_policy"}; }
   if (descriptor.type_id == "node_resource_agent") { return {"node_resource_policy"}; }
   if (descriptor.type_id == "metrics_registry_manager") { return {"metric_registry_policy"}; }
   if (descriptor.type_id == "storage_health_manager") { return {"storage_health_policy"}; }

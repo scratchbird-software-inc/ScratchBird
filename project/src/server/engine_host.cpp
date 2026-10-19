@@ -12,6 +12,7 @@
 // SEARCH_KEY: SB_SERVER_ENGINE_HOST_DATABASE_SUPERVISION
 
 #include "engine_host.hpp"
+#include "hosted_process_admission.hpp"
 
 #include "config_policy_security_lifecycle.hpp"
 #include "database_ownership.hpp"
@@ -23,7 +24,6 @@
 #include "uuid.hpp"
 
 #include <filesystem>
-#include <mutex>
 #include <sstream>
 
 namespace scratchbird::server {
@@ -39,10 +39,10 @@ scratchbird::core::platform::Uuid BinaryIdentity(std::string_view bytes) {
 
 
 // Server process lifetime, not a copyable HostedEngineState or a path namespace.
-// Serialize acquisition before any filesystem activity and permanently bind
-// this process after the first successful hosted open. Failed startup can retry.
-std::mutex hosted_process_mutex;
-bool hosted_process_bound = false;
+// Reserve before filesystem activity without holding a registry mutex across
+// I/O, provider work or governor callbacks. Failed startup can retry; a completed
+// open permanently binds this actual process, independently of copied status.
+HostedProcessAdmission hosted_process_admission;
 
 std::string JsonEscape(const std::string& value) {
   return EscapeMessageVectorText(value);
@@ -86,6 +86,10 @@ HostedDatabaseState StateForConfig(const ServerBootstrapConfig& config) {
 }
 
 }  // namespace
+
+HostedProcessAdmission& ServerHostedProcessAdmission() noexcept {
+  return hosted_process_admission;
+}
 
 const char* HostedDatabaseStateName(HostedDatabaseState state) {
   switch (state) {
@@ -135,6 +139,9 @@ std::shared_ptr<const HostedDatabaseRuntime> FindHostedDatabaseRuntime(
 
 HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
                                     void (*before_failure_cleanup)() noexcept) {
+  // A forked child must exec a fresh host. Refuse before constructing ordinary
+  // diagnostics, which could enter an inherited crypto provider or its mutex.
+  if (!hosted_process_admission.InOwningProcess()) std::terminate();
   HostedEngineResult result;
   result.state.engine_context_active = true;
 
@@ -166,8 +173,8 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
     return result;
   }
 
-  std::unique_lock process_lock(hosted_process_mutex, std::try_to_lock);
-  if (!process_lock.owns_lock() || hosted_process_bound) {
+  auto process_admission = hosted_process_admission.TryReserve();
+  if (!process_admission.ok()) {
     result.state.engine_context_active = false;
     snapshot.state = HostedDatabaseState::kFailed;
     snapshot.diagnostic_code = "SERVER.STARTUP.DATABASE_OPEN_FAILED";
@@ -197,6 +204,11 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
                                        ? "server"
                                        : config.database_ownership_owner_kind;
     ownership_request.sbps_endpoint = config.sbps_endpoint;
+    // Select the initial physical capability explicitly. A later native
+    // transfer cannot upgrade the read-only default to writable custody.
+    ownership_request.storage_access = OpenModeForConfig(config) == SB_ENGINE_OPEN_NORMAL
+        ? storage::disk::RouteStorageAccess::read_write
+        : storage::disk::RouteStorageAccess::read_only;
     auto ownership = AcquireDatabaseOwnership(ownership_request);
     if (!ownership.acquired) {
       snapshot.state = HostedDatabaseState::kFailed;
@@ -507,7 +519,7 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
   }
   result.state.database_runtimes.push_back(std::move(database_runtime));
   result.state.databases.push_back(snapshot);
-  hosted_process_bound = true;
+  if (!process_admission.reservation.Commit()) std::terminate();
   startup_completed = true;
   return result;
 }

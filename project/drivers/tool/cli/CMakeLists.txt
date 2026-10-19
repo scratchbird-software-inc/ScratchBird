@@ -114,6 +114,19 @@ add_library(sb_cli_first_principal_bootstrap STATIC
     bootstrap_os_authority.cpp
     bootstrap_password_verifier.cpp
 )
+add_library(sb_cli_create_and_connect STATIC create_and_connect.cpp)
+target_link_libraries(sb_cli_create_and_connect PUBLIC sb_cli_first_principal_bootstrap)
+target_link_libraries(sb_isql PRIVATE sb_cli_create_and_connect)
+if(BUILD_TESTING AND UNIX)
+    add_executable(cli_create_and_connect_test create_and_connect_test.cpp)
+    target_link_libraries(cli_create_and_connect_test PRIVATE sb_cli_create_and_connect)
+    target_compile_definitions(cli_create_and_connect_test PRIVATE
+        SB_BOOTSTRAP_SEED_PACK_ROOT="${SB_PROJECT_ROOT}/resources/seed-packs/initial-resource-pack"
+        SB_BOOTSTRAP_POLICY_PACK_ROOT="${SB_PROJECT_ROOT}/resources/policy-packs/default-local-password")
+    add_test(NAME cli_create_and_connect_test COMMAND cli_create_and_connect_test)
+    set_tests_properties(cli_create_and_connect_test PROPERTIES
+        TIMEOUT 60 LABELS "cli_tool_gate;creation_handoff;actual_files;process_lifecycle")
+endif()
 target_include_directories(sb_cli_first_principal_bootstrap
     PRIVATE
         "${SB_CPP_DRIVER_DIR}/include"

@@ -1,6 +1,8 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "native_management_control_bundle.hpp"
+#include "../../src/engine/internal_api/verification/native_verification_operation.hpp"
+#include "../../src/engine/internal_api/verification/native_verification_history.hpp"
 #include "native_management_control_bundle_memory.hpp"
 #include "physical_mga_cow_store.hpp"
 #include "native_management_control_allocation.hpp"
@@ -2608,6 +2610,20 @@ bool SameOwnedInventory(const mga::LocalTransactionInventory& actual,const mga::
  }
  return true;
 }
+// Deliberately declared fixture data for physical carrier/history tests. These
+// values neither resolve policy/lineage nor claim that a verifier ran.
+Bytes VerificationFixtureState(const db::NativeManagementOperation& operation,unsigned phase) {
+ namespace v=scratchbird::engine::internal_api;
+ v::NativeVerificationOperationState state;
+ state.operation_uuid=operation.uuid;state.database_uuid=operation.database_uuid;state.database_lineage_uuid=Id(22000);
+ state.repair_policy_uuid=Id(22001);state.quarantine_policy_uuid=Id(22002);state.salvage_policy_uuid=Id(22003);state.evidence_policy_uuid=Id(22004);
+ state.acting_subject_uuid=operation.initiator_uuid;
+ if(phase>1)state.maintenance_boundary_uuid=Id(22005);state.verification_levels=1;
+ state.created_at_micros=1000;state.updated_at_micros=1000+phase-1;state.phase=v::NativeVerificationPhase(phase);
+ const std::array<Uuid,1> filespaces{Id(2)};state.filespaces=filespaces;
+ std::array<byte,512> backing;const auto encoded=v::EncodeNativeVerificationOperationStateInto(state,backing.size(),backing);
+ Check(encoded.ok(),"complete typed verification carrier fixture");return Bytes(encoded.bytes.begin(),encoded.bytes.end());
+}
 void OwnedInventoryPublication(unsigned profile,bool read_only,bool mixed=false,bool startup=false) {
  Fixture f(profile);f.budget*=mixed?16:4;
  if(mixed)MixedInventoryPredecessor(f,profile);
@@ -2632,7 +2648,10 @@ void OwnedInventoryPublication(unsigned profile,bool read_only,bool mixed=false,
     Put(record.normalized_request_bytes,0,record.uuid);Put(record.normalized_request_bytes,16,record.request_context_uuid);
     Put(record.normalized_request_bytes,32,inventory.entries[1].identity.transaction_uuid.value);
     Num(record.normalized_request_bytes,48,8,inventory.entries[1].identity.local_id.value);Num(record.normalized_request_bytes,56,8,19);
-    record.normalized_request_sha256=Sha(record.normalized_request_bytes);}
+    const auto initial_state=VerificationFixtureState(record,1);
+    record.normalized_request_bytes.insert(record.normalized_request_bytes.end(),initial_state.begin(),initial_state.end());
+    record.normalized_request_sha256=Sha(record.normalized_request_bytes);
+    record.operation_state_bytes=VerificationFixtureState(record,phase+1);}
   if(phase==2)for(unsigned n=0;n<40;++n){auto step=records::Step(1,n+1);step.operation_uuid=record.uuid;record.steps.push_back(step);}
   db::NativePublicationIntent intent{record.initiator_uuid,record.request_context_uuid,record.policy_snapshot_uuid,
     record.normalized_request_sha256,record.initiator_kind};intent.recovery_profile=2;
@@ -2707,7 +2726,9 @@ void OwnedInventoryPublication(unsigned profile,bool read_only,bool mixed=false,
   if(startup){const auto history=db::ReadNativeManagementHistoryFromOpenDevices(Id(1),f.devices,Id(2),f.budget);
     Check(history.ok()&&history.entries.size()==phase+1,"startup exact retained publication history");
     for(const auto& entry:history.entries)Check(entry.plan.intent.startup_binding==intent.startup_binding&&
-      entry.record.normalized_request_bytes==record.normalized_request_bytes,"startup binding and full request survive subsequent publication phases");
+      entry.record.normalized_request_bytes==record.normalized_request_bytes&&
+      entry.record.operation_state_bytes==VerificationFixtureState(entry.record,entry.record.revision),
+      "startup binding immutable request and each original typed-state revision survive later publication");
     auto next=record;const auto absent=db::ValidateNativeManagementHistoryAppend(history,next,f.budget);
     Check(absent==db::NativeManagementHistoryError::history_mismatch,"bare replay cannot omit startup binding");
     for(unsigned field=0;field<5;++field){auto changed=intent.startup_binding;auto& b=*changed;
@@ -2753,7 +2774,20 @@ void OwnedInventoryPublication(unsigned profile,bool read_only,bool mixed=false,
     for(const auto& entry:history.entries)if(!entry.plan.intent.startup_binding||
       entry.plan.intent.startup_binding->operation_uuid!=Id(20000)||entry.plan.intent.startup_binding->session_uuid!=Id(21000)||
       entry.plan.intent.startup_binding->transaction_uuid!=Id(19000)||entry.plan.intent.startup_binding->fence_generation!=19||
-      entry.record.normalized_request_bytes.size()!=64)_exit(84);}
+      entry.record.normalized_request_bytes.size()!=64||
+      entry.record.operation_state_bytes!=VerificationFixtureState(entry.record,entry.record.revision))_exit(84);
+    Bytes history_backing(64*1024*1024);std::array<byte,16384> family_backing;
+    d::FileDevice::ReadLatencyBatch batch(file);std::array<d::FileDevice::ReadLatencyBatch*,1> observations{&batch};
+    if(files.size()!=1)_exit(85);
+    const auto retained=db::ReadNativeManagementHistoryInto(Id(1),files,Id(2),f.budget,
+        db::NativeManagementHistoryReadContext::selected,nullptr,{},observations,history_backing);
+    if(!retained.ok())_exit(86);
+    allocation_budget=0;
+    const auto checked=scratchbird::engine::internal_api::VerifyNativeVerificationHistory(retained.history,f.budget,family_backing);
+    const auto no_heap=allocation_budget;allocation_budget=-1;
+    if(!checked.ok()||checked.verified_operations!=1||checked.verified_revisions!=3||no_heap!=0||
+        checked.selection->checkpoint_sha256!=selected.selection->checkpoint_sha256)_exit(87);
+  }
   _exit(selected.ok()&&selected.selection->selection_generation==4&&SameOwnedInventory(selected.checkpoint_inventory.inventory,inventory)?0:81);
  }
  int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,
@@ -4111,6 +4145,27 @@ void Test(unsigned profile){Fixture f(profile);Graph g(f);Bundle b(g);BoundedBun
 int main(int argc,char** argv){
  try{
  std::cout<<std::unitbuf;
+ {
+   alignas(std::max_align_t) std::array<byte,96> backing{};
+   d::detail::NativeMetadataMemory memory(backing);
+   auto* retained=static_cast<byte*>(memory.allocate(16,1));std::fill_n(retained,16,42);
+   {
+     d::detail::NativeMetadataTemporaryFrame temporary(memory);
+     (void)memory.allocate(64,1);
+     try{
+       d::detail::NativeMetadataTemporaryFrame nested(memory);
+       (void)memory.allocate(16,1);(void)memory.allocate(1,1);
+       Check(false,"temporary metadata must enforce its actual backing ceiling");
+     }catch(const std::bad_alloc&){}
+     Check(memory.used()==96,"temporary exhaustion preserves peak required backing");
+     (void)memory.allocate(16,1);
+   }
+   auto* reused=static_cast<byte*>(memory.allocate(80,1));
+   Check(reused==backing.data()+16&&memory.used()==96&&std::all_of(retained,retained+16,[](byte b){return b==42;}),
+       "completed nested and throwing value-only validations reuse only their own scratch, preserving earlier retained data");
+   bool exhausted=false;try{(void)memory.allocate(1,1);}catch(const std::bad_alloc&){exhausted=true;}
+   Check(exhausted,"scratch retirement cannot grow the actual admitted capacity");
+ }
  if((argc==3||argc==4)&&std::string_view(argv[1])=="--bundle-encoding"){
    qualify_bundle_encoding=true;const auto primary=std::stoi(argv[2]);
    Check(primary>=0&&primary<5,"bundle encoding primary profile");

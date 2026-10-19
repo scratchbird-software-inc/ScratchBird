@@ -109,6 +109,7 @@
 #include "scratchbird/core/status.h"
 #include "scratchbird/core/error_context.h"
 #include "first_principal_bootstrap.hpp"
+#include "create_and_connect.hpp"
 #include "metadata_shaping.h"
 
 using namespace scratchbird;
@@ -4408,6 +4409,30 @@ int main(int argc, char* argv[]) {
         return scratchbird::cli::RunFirstPrincipalBootstrapCli(
             argv[0], argc - 2, argv + 2, std::cin, std::cout, std::cerr);
     }
+    std::optional<scratchbird::cli::CreateAndConnectRequest> creation;
+    std::vector<std::string> connection_arguments;
+    std::vector<char*> connection_argv;
+    if (argc >= 2 && std::string_view(argv[1]) == "create") {
+        auto parsed = scratchbird::cli::ParseCreateAndConnectArgs(argc - 2, argv + 2);
+        if (!parsed.ok) {
+            std::cerr << "Error: " << parsed.diagnostic_code << '\n';
+            return 1;
+        }
+        if (parsed.help_requested) {
+            scratchbird::cli::PrintCreateAndConnectUsage(argv[0], std::cout);
+            return 0;
+        }
+        creation = std::move(parsed.request);
+        connection_arguments = {argv[0], creation->creation.database_path,
+            "-U", creation->creation.principal_name, "--mode=local_ipc",
+            "--ipc-method=unix", "--ipc-path=" + creation->ipc_path};
+        connection_arguments.insert(connection_arguments.end(),
+            creation->client_arguments.begin(), creation->client_arguments.end());
+        for (auto& argument : connection_arguments) connection_argv.push_back(argument.data());
+        argc = static_cast<int>(connection_argv.size());
+        connection_argv.push_back(nullptr);
+        argv = connection_argv.data();
+    }
     if (argc < 2) {
         printUsage(argv[0]);
         return 1;
@@ -4437,6 +4462,29 @@ int main(int argc, char* argv[]) {
     }
 
     std::string conn_target = buildConnectionTarget();
+
+    // Validate the complete client command before any creation. This call
+    // returns only after the embedded creator has closed and the dedicated
+    // server has announced readiness for the exact newly created database.
+    if (creation) {
+        const auto handoff = scratchbird::cli::RunCreateAndConnect(*creation, std::cin, std::cout);
+        if (!handoff.ok) {
+            std::cerr << "Error: " << handoff.diagnostic_code << '\n';
+            if (handoff.creation.creation_handoff_ready) {
+                std::cerr << "Database creation completed; server startup failed. "
+                             "The database was preserved.\n";
+            } else if (handoff.creation.committed_with_warning) {
+                std::cerr << "The database committed but requires verification. "
+                             "It was preserved and no server was launched.\n";
+            }
+            return 1;
+        }
+        if (creation->connect_password_stdin &&
+            (!std::getline(std::cin, g_config.password) || g_config.password.empty())) {
+            std::cerr << "Error: BOOTSTRAP.CONNECT_PASSWORD_REQUIRED\n";
+            return 1;
+        }
+    }
 
     if (g_config.probe_auth_surface) {
         scratchbird::client::AuthProbeResult probe;

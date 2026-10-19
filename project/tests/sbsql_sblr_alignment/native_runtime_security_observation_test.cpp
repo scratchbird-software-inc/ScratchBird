@@ -123,6 +123,92 @@ struct SecurityFixture {
     r.configuration_relation={receipt.relation_uuids[4],receipt.index_dependencies[4]};
     r.security_relation={receipt.relation_uuids[3],receipt.index_dependencies[3]};return r;
   }
+  static void BindingEpochsOnDevice(disk::FileDevice& device,unsigned profile,
+      const page::NativeCatalogRootReference& relation,u64 catalog_generation,u64 security_epoch) {
+    const auto loaded=db::ReadNativeCatalogLeafFromOpenDevice(device,Id(1),relation);
+    Check(loaded.ok(),"actual unindexed binding leaf before future-provenance fixture");
+    auto leaf=*loaded.page;bool found=false;
+    for(auto& row:leaf.body.rows){auto metadata=loaded.metadata.at(row.version_uuid);
+      if(metadata.record.header.object_uuid.value!=Id(180))continue;
+      auto binding=catalog::DecodeCatalogRuntimeAuthorityBinding(metadata.record.payload);
+      Check(binding.ok(),"actual binding before independent provenance fixture");
+      binding.record->catalog_generation=catalog_generation;binding.record->security_epoch=security_epoch;
+      const auto encoded=catalog::EncodeCatalogRuntimeAuthorityBinding(*binding.record);
+      Check(encoded.ok(),"canonical full-width future provenance fixture fields");
+      metadata.catalog_generation=catalog_generation;metadata.security_epoch=security_epoch;
+      metadata.record.payload.assign(encoded.bytes.begin(),encoded.bytes.end());
+      const auto outer=catalog::EncodeCatalogMetadataVersion(metadata);Check(outer.ok(),"common binding provenance fixture");
+      row.cells.front().value.payload=outer.bytes;found=true;
+    }
+    Check(found,"actual selected binary binding changed in independent fixture");
+    const auto canonical=db::EncodeNativeCatalogLeaf(leaf);Check(canonical.ok(),"independent future binding native leaf framing");
+    const auto bytes=LeafOracle(leaf);Check(bytes==canonical.bytes,"independent future binding exact byte oracle");
+    const auto io=device.WriteAt(leaf.header.page_number*u64{sizes[profile]},bytes.data(),bytes.size());
+    Check(io.ok()&&io.bytes_transferred==bytes.size()&&device.Sync().ok(),"future binding fixture persisted before native source admission");
+  }
+  // Independent byte fixture, not a production policy/catalog mutation. Update
+  // the actual selected root AND its checkpoint/selector commitments; changing
+  // only a binding payload cannot establish a new current generation.
+  void SelectedCatalogEpochs(u64 catalog_generation,u64 security_epoch,u64 schema_epoch=1,u64 resource_epoch=0) {
+    SelectedCatalogEpochsOnDevice(device,profile,budget,catalog_generation,security_epoch,schema_epoch,resource_epoch);
+  }
+  static void SelectedCatalogEpochsOnDevice(disk::FileDevice& device,unsigned profile,u64 budget,
+      u64 catalog_generation,u64 security_epoch,u64 schema_epoch=1,u64 resource_epoch=0) {
+    const std::vector<disk::NativeFilespaceDevice> devices{{Id(2),Profile(profile),&device}};
+    const auto selected=db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),devices,Id(2),budget);
+    Check(selected.ok(),"actual selected catalog generation fixture base");
+    auto checkpoint=*selected.checkpoint_inventory.checkpoint;
+    const auto root=std::find_if(checkpoint.roots.begin(),checkpoint.roots.end(),[](const auto& r){return r.role==5;});
+    Check(root!=checkpoint.roots.end(),"actual selected catalog root identity");
+    const auto& ref=root->page;
+    const disk::FilespaceRootReference target{2,root->page_type,ref.filespace_uuid,ref.page_number,
+        ref.page_generation,ref.page_size_profile_uuid,root->object_uuid};
+    const auto loaded=page::ReadNativeCatalogRootFromOpenDevice(device,Id(1),target);
+    Check(loaded.ok(),"actual complete catalog root before independent epoch fixture");
+    Check(catalog_generation==2&&loaded.root->catalog_generation==1,
+        "independent epoch fixture constructs an exact generation-two successor");
+    auto predecessor=*loaded.root;predecessor.header.page_number=250;predecessor.header.page_uuid=Id(247);
+    const auto predecessor_bytes=RootOracle(predecessor);
+    Check(page::DecodeNativeCatalogRoot(predecessor_bytes).ok(),"actual retained generation-one predecessor image");
+    auto maps=selected.allocation.pages;bool allocated=false;
+    for(auto& image:maps){auto& m=*image.map;
+      if(250<m.first_page||250-m.first_page>=m.states.size())continue;
+      Check(m.states[250-m.first_page]==page::NativeAllocationState::free,"actual free predecessor page before fixture allocation");
+      m.states[250-m.first_page]=page::NativeAllocationState::allocated;
+      m.records.push_back({250,Id(246),predecessor.header.page_uuid,predecessor.object_uuid,
+          predecessor.creator_transaction_uuid,predecessor.creator_local_transaction_id,predecessor.header.page_generation,0,5});
+      std::sort(m.records.begin(),m.records.end(),[](const auto& a,const auto& b){return a.page_number<b.page_number;});allocated=true;
+    }
+    Check(allocated,"actual allocation cohort owns retained predecessor");
+    for(std::size_t i=maps.size();i-- >0;){auto& m=*maps[i].map;
+      if(i+1<maps.size())m.next_sha256=WholeRootHash(maps[i+1].bytes);
+      const auto canonical_map=page::EncodeNativeAllocationMap(m);Check(canonical_map.ok(),"actual predecessor allocation-map framing");
+      maps[i].bytes=AllocationOracle(m);Check(maps[i].bytes==canonical_map.bytes,"independent complete predecessor allocation oracle");
+    }
+    auto changed=*loaded.root;changed.catalog_generation=catalog_generation;
+    changed.security_epoch=security_epoch;changed.schema_epoch=schema_epoch;changed.resource_epoch=resource_epoch;
+    changed.predecessor=PageRef(predecessor);changed.predecessor_sha256=WholeRootHash(predecessor_bytes);
+    const auto canonical=page::EncodeNativeCatalogRoot(changed);Check(canonical.ok(),"actual root epoch field validation");
+    const auto root_bytes=RootOracle(changed);
+    Check(root_bytes==canonical.bytes,"independent catalog epoch root oracle");
+    for(auto& r:checkpoint.roots)if(r.page==ref&&r.object_uuid==root->object_uuid)r.sha256=WholeRootHash(root_bytes);
+    for(auto& r:checkpoint.roots)if(r.role==4)r.sha256=WholeRootHash(maps.front().bytes);
+    const auto checkpoint_bytes=CheckpointOracle(checkpoint);
+    Check(db::DecodeNativeCheckpointRoot(checkpoint_bytes).ok(),"actual checkpoint commits changed catalog epochs");
+    const auto put=[&](u64 number,const Bytes& bytes){const auto io=device.WriteAt(number*u64{sizes[profile]},bytes.data(),bytes.size());
+      Check(io.ok()&&io.bytes_transferred==bytes.size(),"actual independent selected epoch image write");};
+    put(250,predecessor_bytes);for(const auto& m:maps)put(m.map->header.page_number,m.bytes);
+    put(ref.page_number,root_bytes);put(checkpoint.header.page_number,checkpoint_bytes);
+    for(const auto& slot:selected.slots){const auto decoded=db::DecodeNativeCheckpointSelection(slot);
+      Check(decoded.ok(),"actual selector before independent epoch fixture");auto selection=*decoded.selection;
+      selection.checkpoint_sha256=WholeRootHash(checkpoint_bytes);put(selection.header.page_number,SelectionOracle(selection));}
+    Check(device.Sync().ok(),"actual selected epoch fixture synchronized before cold source admission");
+    const auto history=page::ReadNativeCatalogRootRangeFromOpenDevices(Id(1),devices,RootRef(changed),RootRef(predecessor),budget);
+    Check(history.ok()&&history.roots.size()==2&&history.roots.back().root->catalog_generation==1,
+        "actual complete immutable predecessor history verified before epoch observation");
+    Check(db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),devices,Id(2),budget).ok(),
+        "actual selected checkpoint and full allocation commitments verify after independent history construction");
+  }
   // Independent byte-fixture publication, never a production actuator or an
   // admission receipt. Build an actual on-disk inventory and retained chain so
   // the subject reader must use MGA, not a supplied visibility Boolean.
@@ -218,11 +304,14 @@ struct SecurityFixture {
 void Empty(const SecurityResult& result,SecurityError error) {
   if(result.error!=error)std::cerr<<"security error="<<int(result.error)<<" expected="<<int(error)<<" source="<<int(result.source_error)
       <<" relation="<<int(result.relation_error)<<" record="<<int(result.record_error)<<'\n';
-  Check(result.error==error&&!result.binding&&!result.principal&&result.binding_version_uuid.is_nil()&&result.records.empty(),
+  Check(result.error==error&&!result.binding&&!result.principal&&!result.selected_catalog&&result.binding_version_uuid.is_nil()&&result.records.empty(),
       "refusal exposes no usable security/binding prefix");
 }
-void Governed(unsigned profile,bool indexed,unsigned variant=0,unsigned mga_scenario=0,bool configuration_phase=false) {
+void Governed(unsigned profile,bool indexed,unsigned variant=0,unsigned mga_scenario=0,bool configuration_phase=false,bool discover=false,unsigned epochs=0) {
   SecurityFixture f(profile,variant,indexed);
+  if(epochs&&epochs<=4)SecurityFixture::BindingEpochsOnDevice(f.device,profile,f.receipt.relations[4],
+      epochs==1?2:epochs==3?UINT64_MAX:1,epochs==2?2:epochs==4?UINT64_MAX:1);
+  if(epochs==5)f.SelectedCatalogEpochs(2,4,19,23);
   if(mga_scenario)f.RetainedSuccessor(mga_scenario,configuration_phase);
   const db::NativeCatalogRelationMemoryLimits limits{Profile(profile),1,16,64,64,{4,16*static_cast<std::size_t>(sizes[profile])}};
   const auto amount=runtime_security::NativeRuntimeSecurityWorkspaceBytes(limits);Check(amount,"checked governed security backing size");
@@ -237,9 +326,16 @@ void Governed(unsigned profile,bool indexed,unsigned variant=0,unsigned mga_scen
     const auto remaining=allocation_budget;allocation_budget=-1;
     Check(remaining==0,"native security observation makes no heap allocation under source/device guards");return result;
   };
-  auto request=f.Request();const auto writes=stage_writes,syncs=stage_syncs;
+  auto request=f.Request();
+  if(discover){request.catalog_selection=runtime_security::NativeRuntimeCatalogSelection::discover_selected;
+    request.configuration_relation={};request.security_relation={};}
+  const auto writes=stage_writes,syncs=stage_syncs;
   reads=0;track_reads=true;const auto valid=read(request);track_reads=false;const auto read_count=reads;
-  if(mga_scenario>=4&&mga_scenario!=9){Empty(valid,configuration_phase?SecurityError::binding_source_failure:
+  if(epochs&&epochs<=4){
+    Empty(valid,epochs%2?SecurityError::binding_catalog_generation_mismatch:SecurityError::binding_security_epoch_mismatch);
+    Check(valid.expected_generation==1&&valid.observed_generation==(epochs<=2?2:UINT64_MAX),
+        "actual selected epoch mismatch preserves independent full-width expected/observed values");
+  }else if(mga_scenario>=4&&mga_scenario!=9){Empty(valid,configuration_phase?SecurityError::binding_source_failure:
         mga_scenario==4||mga_scenario==8?SecurityError::principal_not_active:SecurityError::security_source_failure);
     if(mga_scenario==5){
       const auto& diagnostic=valid.visibility_diagnostic;
@@ -259,6 +355,10 @@ void Governed(unsigned profile,bool indexed,unsigned variant=0,unsigned mga_scen
   else {
     if(!valid.ok())std::cerr<<"security read="<<int(valid.error)<<" binding="<<int(valid.binding_error)<<" relation="<<int(valid.relation_error)<<'\n';
     Check(valid.ok()&&valid.records.size()==6&&valid.physical_bytes_read,"actual committed native cohort returned");
+    Check(valid.selected_catalog&&valid.selected_catalog->catalog_generation==(epochs==5?2:1)&&valid.selected_catalog->security_epoch==(epochs==5?4:1)&&
+        valid.selected_catalog->schema_epoch==(epochs==5?19:1)&&valid.selected_catalog->resource_epoch==(epochs==5?23:0)&&
+        !valid.selected_catalog->root_page_uuid.is_nil(),
+        "actual root epochs remain independent of unchanged binding birth epochs; absent resource authority is never replaced");
     Check(valid.principal->principal_uuid==Id(200)&&valid.principal->security_context_generation==(variant==8?UINT64_MAX:9)&&
         valid.principal->security_generation==(variant==8?UINT64_MAX:11)&&valid.principal->policy_generation==(variant==8?UINT64_MAX:13)&&valid.binding->policy_epoch==31&&
         valid.binding->provider_generation==37,"actual source generations remain distinct from configuration epochs");
@@ -274,10 +374,15 @@ void Governed(unsigned profile,bool indexed,unsigned variant=0,unsigned mga_scen
     auto bad=request;bad.runtime_binding_generation=2;Empty(read(bad),SecurityError::binding_generation_mismatch);
     bad=request;bad.runtime_binding_uuid=Id(250);Empty(read(bad),SecurityError::binding_absent);
     bad=request;bad.database_uuid=Id(250);Empty(read(bad),SecurityError::invalid_request);
-    bad=request;bad.security_relation=request.configuration_relation;Empty(read(bad),SecurityError::security_source_failure);
-    bad=request;bad.configuration_relation=request.security_relation;Empty(read(bad),SecurityError::binding_source_failure);
+    // Expected comparisons remain mandatory in their original API, including
+    // when the selected-discovery request itself carries no physical identity.
+    bad=f.Request();bad.security_relation=bad.configuration_relation;Empty(read(bad),SecurityError::security_source_failure);
+    bad=f.Request();bad.configuration_relation=bad.security_relation;Empty(read(bad),SecurityError::binding_source_failure);
+    bad=f.Request();bad.configuration_relation={};Empty(read(bad),SecurityError::binding_source_failure);
+    bad=request;bad.catalog_selection=static_cast<runtime_security::NativeRuntimeCatalogSelection>(255);
+    Empty(read(bad),SecurityError::invalid_request);
     bad=request;bad.maximum_retained_image_bytes=1;Empty(read(bad),SecurityError::binding_source_failure);
-    if(indexed){bad=request;bad.security_relation.index_dependencies->descriptor_generation=2;Empty(read(bad),SecurityError::security_source_failure);}
+    if(indexed){bad=f.Request();bad.security_relation.index_dependencies->descriptor_generation=2;Empty(read(bad),SecurityError::security_source_failure);}
     auto saved=std::move(prepared.workspace);Empty(read(request),SecurityError::backing_unavailable);prepared.workspace=std::move(saved);
     const auto copied_binding=*valid.binding;const auto copied_principal=*valid.principal;
     Check(read(request).ok()&&copied_binding.binding_uuid==Id(180)&&copied_principal.security_generation==(variant==8?UINT64_MAX:11),
@@ -326,10 +431,16 @@ void BackingBounds() {
 #ifndef SB_NATIVE_RUNTIME_SECURITY_FIXTURE_WITHOUT_MAIN
 int main()try {
   BackingBounds();
-  for(unsigned profile=0;profile<5;++profile){Governed(profile,false);Governed(profile,true);}
-  for(unsigned variant=1;variant<=8;++variant)Governed(0,true,variant);
-  for(unsigned scenario=1;scenario<=9;++scenario)Governed(0,false,0,scenario);
-  Governed(0,false,0,5,true);
+  for(bool discover:{false,true}){
+    for(unsigned profile=0;profile<5;++profile){Governed(profile,false,0,0,false,discover);Governed(profile,true,0,0,false,discover);}
+    for(unsigned variant=1;variant<=8;++variant)Governed(0,true,variant,0,false,discover);
+    for(unsigned scenario=1;scenario<=9;++scenario)Governed(0,false,0,scenario,false,discover);
+    Governed(0,false,0,5,true,discover);
+    for(unsigned profile=0;profile<5;++profile){
+      for(unsigned epochs=1;epochs<=4;++epochs)Governed(profile,false,0,0,false,discover,epochs);
+      for(bool indexed:{false,true})Governed(profile,indexed,0,0,false,discover,5);
+    }
+  }
   std::cout<<"PASS native runtime security observation "<<checks<<" checks; no authentication or startup authority claimed\n";return 0;
 }catch(const std::exception& error){allocation_budget=-1;std::cerr<<"FAIL "<<error.what()<<" checks="<<checks<<'\n';return 1;}
 #endif

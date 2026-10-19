@@ -6,6 +6,7 @@
 #include <array>
 #include <iostream>
 #include <string_view>
+#include <tuple>
 
 namespace sblr = scratchbird::engine::sblr;
 
@@ -86,6 +87,30 @@ int main() {
     if (!identity.ok || identity.entry != entry) {
       std::cerr << "exact physical-provider identity was not admitted: "
                 << expected.operation_id << '\n';
+      return 1;
+    }
+  }
+
+  // Core assigns 0x0673/0x0674 to timeseries cache operations. Local-only
+  // refusal names have no wire allocation and must not shadow those identities.
+  for (const auto& [id, opcode, code] : std::array{
+      std::tuple{"engine.op.ddl_alter_timeseries_value_cache",
+                 "SBLR_DDL_ALTER_TIMESERIES_VALUE_CACHE", std::uint16_t{0x0673}},
+      std::tuple{"engine.op.ddl_drop_timeseries_value_cache",
+                 "SBLR_DDL_DROP_TIMESERIES_VALUE_CACHE", std::uint16_t{0x0674}}}) {
+    const auto identity = sblr::ValidateSblrOpcodeIdentity(code, id, opcode);
+    if (!identity.ok || sblr::LookupSblrOpcodeCode(code) == nullptr) {
+      std::cerr << "authoritative timeseries opcode is ambiguous\n";
+      return 1;
+    }
+  }
+  for (const auto* id : {"engine.op.ddl_alter_group",
+                         "engine.op.ddl_alter_localized_name"}) {
+    const auto* entry = sblr::LookupSblrOperation(id);
+    if (!entry || entry->code != 0 ||
+        entry->support != sblr::SblrOpcodeSupport::local_profile_refusal ||
+        sblr::ValidateSblrOpcodeIdentity(entry->code, id, entry->opcode).ok) {
+      std::cerr << "unallocated local refusal acquired a wire identity\n";
       return 1;
     }
   }

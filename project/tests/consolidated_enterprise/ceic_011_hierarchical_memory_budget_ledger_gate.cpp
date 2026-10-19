@@ -417,9 +417,43 @@ void ConcurrentReservationsAcrossTenants() {
           "CEIC-011 concurrent release count mismatch");
 }
 
+void ScopedCategoryUsageRetainsRevokedCredit() {
+  mem::HierarchicalMemoryBudgetLedger ledger;
+  const auto id=[](unsigned char tail) {
+    mem::MemoryBinaryUuid value{};value[6]=0x70;value[8]=0x80;value[15]=tail;return value;
+  };
+  const auto database=id(2), other_database=id(3);
+  const auto reserve=[&](mem::MemoryBinaryUuid db,mem::MemoryCategory category,mem::u64 bytes) {
+    auto request=Request({{mem::HierarchicalMemoryScopeKind::process,{},id(1)},
+                          {mem::HierarchicalMemoryScopeKind::database,{},db}},bytes,{});
+    request.binary_owner_uuid=id(4);request.category=category;
+    auto result=ledger.Reserve(std::move(request));
+    Require(result.ok(),"category usage fixture reservation failed");return result.token;
+  };
+  const auto page=reserve(database,mem::MemoryCategory::page_buffer,100);
+  const auto crypto=reserve(database,mem::MemoryCategory::core_runtime,200);
+  const auto other=reserve(other_database,mem::MemoryCategory::page_buffer,300);
+  const auto usage=[&](mem::MemoryCategory category) {
+    return ledger.ReservationBytesInScope(mem::HierarchicalMemoryScopeKind::database,database,category);
+  };
+  Require(usage(mem::MemoryCategory::page_buffer)==100&&usage(mem::MemoryCategory::core_runtime)==200,
+          "category usage must isolate the exact binary database and category");
+  Require(ledger.Commit(page).ok(),"category usage commit failed");
+  auto retained=ledger.Retain(page);Require(retained.ok(),"category usage retention failed");
+  const auto cancelled=ledger.Cancel(page);
+  Require(!cancelled.ok()&&cancelled.retained&&cancelled.newly_revoked&&cancelled.retained_bytes==100&&
+          !retained.lease.live()&&usage(mem::MemoryCategory::page_buffer)==100,
+          "retained revoked credit must remain charged to its original category");
+  Require(retained.lease.Reset().ok()&&usage(mem::MemoryCategory::page_buffer)==0,
+          "only payload retirement refunds retained category credit");
+  Require(ledger.Release(crypto).ok()&&ledger.Release(other).ok()&&
+          usage(mem::MemoryCategory::core_runtime)==0,"category usage cleanup failed");
+}
+
 }  // namespace
 
 int main() {
+  ScopedCategoryUsageRetainsRevokedCredit();
   ReserveCommitReleaseAcrossFullChain();
   HardLimitRefusalAtParentAndChild();
   SoftLimitRecommendationsDoNotReserve();

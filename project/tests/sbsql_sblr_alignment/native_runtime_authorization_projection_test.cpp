@@ -41,9 +41,9 @@ void AdvanceNativeSelectedBindingEpochs(SecurityFixture& f) {
   for(auto& row:leaf.body.rows){auto metadata=loaded.metadata.at(row.version_uuid);
     if(metadata.record.header.object_uuid.value!=Id(180))continue;
     auto binding=catalog::DecodeCatalogRuntimeAuthorityBinding(metadata.record.payload);Check(binding.ok(),"actual persisted binding decoded for fixture");
-    binding.record->security_epoch=4;binding.record->catalog_generation=7;
+    binding.record->security_epoch=4;binding.record->catalog_generation=2;
     const auto body=catalog::EncodeCatalogRuntimeAuthorityBinding(*binding.record);Check(body.ok(),"exact advanced selected epochs remain native u64");
-    metadata.security_epoch=4;metadata.catalog_generation=7;metadata.record.payload.assign(body.bytes.begin(),body.bytes.end());
+    metadata.security_epoch=4;metadata.catalog_generation=2;metadata.record.payload.assign(body.bytes.begin(),body.bytes.end());
     const auto outer=catalog::EncodeCatalogMetadataVersion(metadata);Check(outer.ok(),"complete advanced configuration common metadata");
     row.cells.front().value.payload=outer.bytes;found=true;
   }
@@ -52,6 +52,7 @@ void AdvanceNativeSelectedBindingEpochs(SecurityFixture& f) {
   const auto independent=LeafOracle(leaf);Check(independent==canonical.bytes,"independent advanced binding fixture byte oracle");
   const auto io=f.device.WriteAt(leaf.header.page_number*u64{sizes[f.profile]},independent.data(),independent.size());
   Check(io.ok()&&io.bytes_transferred==independent.size()&&f.device.Sync().ok(),"advanced native bound selection physically persisted");
+  f.SelectedCatalogEpochs(2,4,11,17);
 }
 void RealNativeProjection(unsigned profile,bool indexed,bool historical=false) {
   SecurityFixture f(profile,0,indexed);
@@ -76,7 +77,7 @@ void RealNativeProjection(unsigned profile,bool indexed,bool historical=false) {
   Check(result.ok()&&result.projection.subjects().size()==2&&result.projection.memberships().size()==1&&
       result.projection.grants().size()==2,"real native direct/inherited/denied cohort fully projected");
   const auto& p=result.projection;
-  Check(p.binding().database_uuid==Id(1)&&p.binding().security_epoch==(historical?4:1)&&p.binding().policy_epoch==31&&p.binding().catalog_generation==(historical?7:1)&&
+  Check(p.binding().database_uuid==Id(1)&&p.binding().security_epoch==(historical?4:1)&&p.binding().policy_epoch==31&&p.binding().catalog_generation==(historical?2:1)&&
       p.principal().security_context_generation==9&&p.principal().security_generation==11&&p.principal().policy_generation==13,
       "all real configuration and independent service event generations preserved without clamping/equating");
   if(historical)Check(p.grants()[0].security_epoch==4&&p.grants()[0].source_security_epoch==1&&p.grants()[0].catalog_generation==1&&
@@ -196,6 +197,35 @@ void Parity(const GraphData& data,const ProjectionResult& result){
     Check(old.authorized==result.projection.Allows(right,target),"all registered rights/global/target explicit-deny parity");
   }
 }
+void ImportedGroupRoleMembership(){
+  LeafMemoryFixture memory(authorization::NativeRuntimeAuthorizationWorkspaceBytes(projection_limits));
+  auto prepared=authorization::PrepareNativeRuntimeAuthorizationProjection(projection_limits,memory.memory,memory.binding);
+  Check(prepared.ok(),"imported group-to-role workspace admitted before projection");
+  GraphData graph;
+  const auto found=std::find_if(graph.rows.begin(),graph.rows.end(),[](const auto& row){
+    return row.Attribute("member_kind")=="group"&&row.Attribute("parent_kind")=="role";
+  });
+  Check(found!=graph.rows.end(),"actual typed group-to-role edge in mixed graph");
+  const auto at=static_cast<std::size_t>(found-graph.rows.begin());
+  // Match the actual native creation translator's durable grant class.
+  graph.rows[at].attributes["grant_class"]="group_membership";graph.Build();
+  auto projected=NoHeapProject(graph.observation,prepared.workspace);Parity(graph,projected);
+  Check(projected.ok()&&projected.projection.subjects().size()==5&&projected.projection.memberships().size()==5,
+      "imported group membership retains its actual role parent and exact transitive closure");
+  const auto original=graph.rows[at];
+  for(unsigned mode=0;mode<5;++mode){
+    if(mode==0)graph.rows[at].attributes["parent_kind"]="principal";
+    if(mode==1)graph.rows[at].attributes["member_kind"]="principal";
+    if(mode==2)graph.rows[at].attributes["effect"]="deny";
+    if(mode==3)graph.rows[at].attributes["parent_kind"]="group";
+    if(mode==4)graph.rows[at].identities.erase("parent_uuid");
+    graph.Build();ProjectionEmpty(NoHeapProject(graph.observation,prepared.workspace),
+        mode==3?ProjectionError::subject_missing:ProjectionError::malformed_membership);
+    graph.rows[at]=original;graph.Build();
+  }
+  projected=NoHeapProject(graph.observation,prepared.workspace);Parity(graph,projected);
+  prepared.workspace={};memory.memory={};memory.Empty();
+}
 void GraphSemantics(){
   const auto bytes=authorization::NativeRuntimeAuthorizationWorkspaceBytes(projection_limits);LeafMemoryFixture memory(bytes);
   auto prepared=authorization::PrepareNativeRuntimeAuthorizationProjection(projection_limits,memory.memory,memory.binding);Check(prepared.ok(),"governed graph preparation");
@@ -279,6 +309,9 @@ void GraphSemantics(){
   graph.Build();result=NoHeapProject(graph.observation,prepared.workspace);Parity(graph,result);
   Check(result.projection.engine_owned_bootstrap_role_uuid()==db::kCanonicalSysarchRoleIdentity&&result.projection.Allows("DELETE")&&
       !result.projection.Allows("UPDATE",Id(240)),"actual canonical immutable reachable role bundle still obeys explicit denial");
+  Check(!result.projection.Allows("DELETE",{},false)&&result.projection.Allows("UPDATE",{},false)&&
+      !result.projection.Allows("UPDATE",Id(240),false),
+      "a selected policy can disable the bootstrap bundle while retaining actual explicit grants and target denies");
   graph.rows[4].attributes["immutable"]=false;graph.Build();result=NoHeapProject(graph.observation,prepared.workspace);
   ProjectionEmpty(result,ProjectionError::invalid_record);
   prepared.workspace={};memory.memory={};memory.Empty();
@@ -291,6 +324,17 @@ void ProjectionBounds(){
   const auto prepare=[&](authorization::NativeRuntimeAuthorizationLimits l){return authorization::PrepareNativeRuntimeAuthorizationProjection(l,memory.memory,memory.binding);};
   {auto prepared=prepare(projection_limits);Check(prepared.ok(),"bounded prepared arena");
     auto result=NoHeapProject(graph.observation,prepared.workspace);Check(result.ok(),"bounded successful projection");
+    Check(result.projection.source_record_count()==graph.records.size()&&
+        result.projection.maximum_membership_depth()==5&&result.projection.work_performed()==result.work_performed,
+        "private projection retains actual source size, longest membership path and evaluated work");
+    const authorization::NativeRuntimeAuthorizationLimits measured{graph.records.size(),5,result.work_performed};
+    Check(result.projection.WithinLimits(measured),"exact selected policy bounds admit the actual evaluated closure");
+    auto short_limit=measured;--short_limit.maximum_records;
+    Check(!result.projection.WithinLimits(short_limit),"selected record bound applies to the complete source, not just reachable subjects");
+    short_limit=measured;--short_limit.maximum_depth;
+    Check(!result.projection.WithinLimits(short_limit),"selected depth bound applies to the actual longest membership path");
+    short_limit=measured;--short_limit.maximum_work;
+    Check(!result.projection.WithinLimits(short_limit),"selected work bound cannot be replaced by bootstrap workspace capacity");
     const auto exact_work=result.work_performed;prepared.workspace={};
     auto limited=projection_limits;limited.maximum_work=exact_work;prepared=prepare(limited);
     Check(prepared.ok()&&NoHeapProject(graph.observation,prepared.workspace).ok(),"exact measured work boundary accepted without off-by-one");
@@ -320,6 +364,16 @@ void ProjectionBounds(){
   {auto l=projection_limits;l.maximum_records=graph.records.size()-1;l.maximum_depth=1;auto p=prepare(l);Check(p.ok(),"smaller record capacity");ProjectionEmpty(NoHeapProject(graph.observation,p.workspace),ProjectionError::resource_exhausted);}
   {auto l=projection_limits;l.maximum_depth=4;auto p=prepare(l);Check(p.ok(),"shallower DFS capacity");ProjectionEmpty(NoHeapProject(graph.observation,p.workspace),ProjectionError::depth_limit);}
   {auto l=projection_limits;l.maximum_depth=5;auto p=prepare(l);Check(p.ok()&&NoHeapProject(graph.observation,p.workspace).ok(),"exact mixed graph depth admitted");}
+  {
+    GraphData diamond;
+    auto l=projection_limits;l.maximum_depth=4;auto p=prepare(l);
+    Check(p.ok(),"diamond graph workspace admitted");
+    ProjectionEmpty(NoHeapProject(diamond.observation,p.workspace),ProjectionError::depth_limit);
+    p.workspace={};l.maximum_depth=5;p=prepare(l);
+    const auto complete=NoHeapProject(diamond.observation,p.workspace);
+    Check(complete.ok()&&complete.projection.maximum_membership_depth()==5,
+        "a previously visited shared ancestor retains its depth on the longer branch");
+  }
   for(unsigned mode=0;mode<4;++mode){auto l=projection_limits;if(mode==0)l.maximum_records=0;else if(mode==1)l.maximum_depth=0;else if(mode==2)l.maximum_work=0;else l.maximum_depth=l.maximum_records+1;
     Check(!authorization::NativeRuntimeAuthorizationWorkspaceBytes(l)&&!prepare(l).ok(),"zero/contradictory caller bounds refuse without invented defaults");}
   {auto l=projection_limits;l.maximum_records=std::numeric_limits<std::size_t>::max();Check(!authorization::NativeRuntimeAuthorizationWorkspaceBytes(l),"all array multiplication/total overflow refuses");}
@@ -382,7 +436,7 @@ void ProjectionPreparationFaults(){
 }
 } // namespace
 int main()try{
-  ProjectionBounds();ProjectionPreparationFaults();GraphSemantics();
+  ProjectionBounds();ProjectionPreparationFaults();ImportedGroupRoleMembership();GraphSemantics();
   for(unsigned profile=0;profile<5;++profile){RealNativeProjection(profile,false);RealNativeProjection(profile,true);}
   RealNativeProjection(0,false,true);
   std::cout<<"PASS native runtime authorization projection "<<checks<<" checks; projection is not authentication/activation/BEGIN\n";return 0;

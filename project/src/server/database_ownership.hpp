@@ -11,8 +11,10 @@
 #pragma once
 
 #include <cstdint>
+#include <atomic>
 #include <filesystem>
 #include <memory>
+#include <optional>
 #include <string>
 #include "../storage/disk/route_ownership_lease.hpp"
 
@@ -25,6 +27,7 @@ namespace scratchbird::server {
 
 struct DatabaseOwnershipRequest;
 struct DatabaseOwnershipResult;
+class ServerAgentRuntime;
 
 struct DatabaseOwnershipDescriptor {
   std::string format;
@@ -67,6 +70,25 @@ class DatabaseOwnershipLock {
   void release();
 
  private:
+  friend class ServerAgentRuntime;
+  // One coordinator per actual route owner. This is native lifetime exclusion,
+  // never service authorization or an engine readiness/shutdown receipt.
+  class CoordinatorLease {
+   public:
+    CoordinatorLease(const CoordinatorLease&) = delete;
+    CoordinatorLease& operator=(const CoordinatorLease&) = delete;
+    CoordinatorLease(CoordinatorLease&& other) noexcept;
+    CoordinatorLease& operator=(CoordinatorLease&& other) noexcept;
+    ~CoordinatorLease();
+   private:
+    friend class DatabaseOwnershipLock;
+    explicit CoordinatorLease(std::shared_ptr<DatabaseOwnershipLock> owner) noexcept;
+    void Reset() noexcept;
+    std::shared_ptr<DatabaseOwnershipLock> owner_;
+  };
+  static std::optional<CoordinatorLease> AcquireCoordinatorLease(
+      std::shared_ptr<DatabaseOwnershipLock> owner) noexcept;
+  std::atomic<bool> coordinator_active_{false};
   friend DatabaseOwnershipResult AcquireDatabaseOwnership(const DatabaseOwnershipRequest&);
   DatabaseOwnershipLock(NativeHandle handle, NativeHandle storage_handle,
                         std::filesystem::path lock_path);

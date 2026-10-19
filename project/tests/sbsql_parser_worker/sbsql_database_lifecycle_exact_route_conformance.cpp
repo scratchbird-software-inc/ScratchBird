@@ -38,6 +38,7 @@ namespace {
 using namespace scratchbird::parser::sbsql;
 namespace api = scratchbird::engine::internal_api;
 namespace sblr = scratchbird::engine::sblr;
+bool emit_lowered_json = false;
 
 constexpr std::string_view kFamily = "sblr.management.runtime_operation.v3";
 constexpr std::string_view kAdmissionFamily = "sblr.database.management.v3";
@@ -221,6 +222,8 @@ PipelineArtifacts RunPipeline(std::string_view sql) {
   artifacts.ast = BuildAst(artifacts.cst);
   artifacts.bound = BindAst(artifacts.ast, artifacts.cst, ParserConfigForTest(), session, {});
   artifacts.envelope = LowerToSblr(artifacts.bound, artifacts.cst, session);
+  if (emit_lowered_json && !artifacts.envelope.payload.empty())
+    std::cout << "lowered_payload=" << artifacts.envelope.payload << '\n';
   artifacts.verifier = VerifySblrEnvelope(artifacts.envelope);
   return artifacts;
 }
@@ -1317,7 +1320,18 @@ void RequireRoutes() {
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
+  if (argc == 2 && std::string_view(argv[1]) == "--emit-lowered-json") {
+    emit_lowered_json = true;
+    for (const auto sql : {"CREATE DATABASE qa_lifecycle", "INSPECT DATABASE qa_lifecycle",
+                           "VERIFY DATABASE qa_lifecycle", "SHUTDOWN DATABASE qa_lifecycle"}) {
+      const auto lowered = RunPipeline(sql);
+      Require(!lowered.cst.messages.has_errors() && !lowered.ast.messages.has_errors() &&
+                  lowered.bound.bound && !lowered.envelope.payload.empty(),
+              "lifecycle JSON framing fixture did not lower");
+    }
+    return EXIT_SUCCESS;
+  }
   const auto memory_fixture =
       scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
           scratchbird::core::memory::DefaultLocalEngineMemoryPolicy(),

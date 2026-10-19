@@ -54,13 +54,15 @@ void Num(Bytes& b,std::size_t at,unsigned n,u64 v){for(unsigned i=0;i<n;++i)b[at
 void Put(Bytes& b,std::size_t at,const Uuid& u){std::copy(u.bytes.begin(),u.bytes.end(),b.begin()+at);}
 auto Sha(const Bytes& b){std::array<byte,32> h{};Check(SHA256(b.data(),b.size(),h.data()),"independent SHA256");return h;}
 void Seal(Bytes& b){std::fill(b.begin()+480,b.begin()+512,0);const auto h=Sha(b);std::copy(h.begin(),h.end(),b.begin()+480);}
-template<class Op> Bytes Oracle(const Op& o){Bytes b(512);const bool exact=!o.normalized_request_bytes.empty();std::copy_n(exact?"SBMGO002":"SBMGO001",8,b.begin());Num(b,8,2,exact?2:1);Num(b,10,2,512);Num(b,476,4,o.normalized_request_bytes.size());
+template<class Op> Bytes Oracle(const Op& o){Bytes b(512);const bool exact=!o.normalized_request_bytes.empty(),state=!o.operation_state_bytes.empty();std::copy_n(state?"SBMGO003":exact?"SBMGO002":"SBMGO001",8,b.begin());Num(b,8,2,state?3:exact?2:1);Num(b,10,2,512);Num(b,476,4,o.normalized_request_bytes.size());
  Put(b,16,o.database_uuid);Put(b,32,o.bootstrap_uuid);Put(b,48,o.uuid);Put(b,64,o.descriptor_uuid);Put(b,80,o.family_uuid);Put(b,96,o.target_type_uuid);Put(b,112,o.target_uuid);Put(b,128,o.initiator_uuid);Put(b,144,o.request_context_uuid);Put(b,160,o.policy_snapshot_uuid);Put(b,176,o.security_snapshot_uuid);Put(b,192,o.phase_uuid);Put(b,208,o.boundary_uuid);Put(b,224,o.created_at);Put(b,240,o.updated_at);Put(b,256,o.terminal_at);
  std::copy(o.normalized_request_sha256.begin(),o.normalized_request_sha256.end(),b.begin()+272);Put(b,304,o.resource_plan_uuid);Put(b,320,o.lock_plan_uuid);Put(b,336,o.result_uuid);Put(b,352,o.diagnostic_uuid);Put(b,368,o.evidence_uuid);Put(b,384,o.metric_evidence_uuid);Put(b,400,o.cluster_uuid);
  u32 flags=(o.evidence_required?16u:0u)|(o.metrics_required?32u:0u);for(unsigned i=0;i<4;++i)if(o.generation_guards[i]){flags|=1u<<i;Num(b,416+8*i,8,*o.generation_guards[i]);}
  Num(b,448,8,o.revision);Num(b,456,4,o.steps.size());Num(b,460,4,o.idempotency_key.size());Num(b,464,2,u16(o.state));Num(b,466,2,u16(o.scope));Num(b,468,2,o.initiator_kind);Num(b,470,2,u16(o.restart));Num(b,472,4,flags);
  b.insert(b.end(),o.idempotency_key.begin(),o.idempotency_key.end());
  b.insert(b.end(),o.normalized_request_bytes.begin(),o.normalized_request_bytes.end());
+ if(state){const auto at=b.size();b.resize(at+4);Num(b,at,4,o.operation_state_bytes.size());
+  b.insert(b.end(),o.operation_state_bytes.begin(),o.operation_state_bytes.end());}
  for(const auto& s:o.steps){const auto at=b.size();b.resize(at+256);Put(b,at,s.uuid);Put(b,at+16,s.operation_uuid);Put(b,at+32,s.family_uuid);Put(b,at+48,s.target_uuid);std::copy(s.precondition_sha256.begin(),s.precondition_sha256.end(),b.begin()+at+64);std::copy(s.postcondition_sha256.begin(),s.postcondition_sha256.end(),b.begin()+at+96);Put(b,at+128,s.started_at);Put(b,at+144,s.completed_at);Put(b,at+160,s.evidence_uuid);Put(b,at+176,s.metric_evidence_uuid);Put(b,at+192,s.diagnostic_uuid);Put(b,at+208,s.boundary_uuid);
   Num(b,at+224,4,s.ordinal);Num(b,at+228,4,s.idempotency_key.size());Num(b,at+232,2,u16(s.state));Num(b,at+234,2,u16(s.mutation));Num(b,at+236,2,u16(s.compensation));Num(b,at+238,2,u16(s.recovery));Num(b,at+240,4,(s.evidence_required?1u:0u)|(s.metrics_required?2u:0u)|(s.idempotent?4u:0u));b.insert(b.end(),s.idempotency_key.begin(),s.idempotency_key.end());}
  Num(b,12,4,b.size());Seal(b);return b;
@@ -98,7 +100,8 @@ void BorrowedParity(const Bytes& raw,u64 limit,const db::NativeManagementOperati
  const auto within=[&](const void* p,std::size_t n){return !n||(static_cast<const byte*>(p)>=raw.data()&&
    static_cast<const byte*>(p)<=raw.data()+raw.size()&&n<=static_cast<std::size_t>(raw.data()+raw.size()-static_cast<const byte*>(p)));};
  Check(within(value.idempotency_key.data(),value.idempotency_key.size())&&
-   within(value.normalized_request_bytes.data(),value.normalized_request_bytes.size()),"operation text and canonical request borrow original bytes");
+   within(value.normalized_request_bytes.data(),value.normalized_request_bytes.size())&&
+   within(value.operation_state_bytes.data(),value.operation_state_bytes.size()),"operation text request and state borrow original bytes");
  for(const auto& s:value.steps)Check(within(s.idempotency_key.data(),s.idempotency_key.size()),"step text borrows original bytes");
  allocation_budget=0;const auto valid=db::ValidateNativeManagementOperationView(value,storage.identities);
  const auto left=allocation_budget;allocation_budget=-1;Check(left==0&&valid==E::none,"view shape validation uses bounded full identities");
@@ -205,11 +208,44 @@ void ExactRequests(){
    const auto result=call();const bool consumed=!hash_fault;hash_fault=0;Empty(result);Check(consumed&&result.error==E::hash_failure,"request and aggregate digest failures are distinct from invalid input");}
  }
 }
+void TypedOperationState(){
+ auto o=Example();o.steps={Step()};o.normalized_request_bytes={0,1,255,0};
+ o.normalized_request_sha256=Sha(o.normalized_request_bytes);
+ for(std::size_t n:{1u,255u,256u,511u,512u,1024u}){
+  o.operation_state_bytes.resize(n);for(std::size_t i=0;i<n;++i)o.operation_state_bytes[i]=static_cast<byte>(i);
+  Good(o);
+ }
+ const auto raw=Oracle(o);const auto length_at=512+o.idempotency_key.size()+o.normalized_request_bytes.size();
+ for(u32 n:{0u,1023u,1025u,0xffffffffu}){auto bad=raw;Num(bad,length_at,4,n);Seal(bad);Empty(Decode(bad,budget));}
+ for(std::size_t n=length_at;n<raw.size();++n){Bytes bad(raw.begin(),raw.begin()+n);Num(bad,12,4,n);Seal(bad);Empty(Decode(bad,budget));}
+ for(std::size_t at=length_at;at<length_at+4+o.operation_state_bytes.size();++at){auto bad=raw;bad[at]^=1;Empty(Decode(bad,budget));}
+ auto bad=raw;bad.push_back(0);Num(bad,12,4,bad.size());Seal(bad);Empty(Decode(bad,budget));
+ for(unsigned version:{1u,2u}){bad=raw;bad[7]='0'+version;Num(bad,8,2,version);Seal(bad);Empty(Decode(bad,budget));}
+ Empty(db::EncodeNativeManagementOperation(o,raw.size()-1));Empty(Decode(raw,raw.size()-1));
+ Check(db::EncodeNativeManagementOperation(o,raw.size()).ok()&&Decode(raw,raw.size()).ok(),"state length and bytes count toward exact budget");
+ auto no_request=o;no_request.normalized_request_bytes.clear();Bad(no_request);
+ auto next=o;next.revision++;next.updated_at=Id(2001);next.operation_state_bytes[0]^=1;
+ Check(Evolution(o,next)==E::none,"common carrier retains state changes at a later revision for family validation");
+ auto replay=o;replay.operation_state_bytes[0]^=1;
+ Check(Evolution(o,replay)==E::invalid_transition,"same revision cannot replace any state byte");
+ auto absent=next;absent.operation_state_bytes.clear();Check(Evolution(o,absent)==E::immutable_field,"state cannot disappear from retained history");
+ absent=o;absent.operation_state_bytes.clear();Check(Evolution(absent,next)==E::immutable_field,"earlier formats cannot acquire retrospective typed state");
+ auto terminal=Example(14);terminal.normalized_request_bytes=o.normalized_request_bytes;terminal.normalized_request_sha256=o.normalized_request_sha256;
+ terminal.operation_state_bytes=o.operation_state_bytes;next=terminal;next.revision++;next.updated_at=Id(2001);next.operation_state_bytes[0]^=1;
+ Check(Evolution(terminal,next)==E::invalid_transition,"terminal typed state remains immutable");
+ Check(Evolution(terminal,terminal)==E::none,"exact terminal typed-state replay");
+ for(unsigned mode=0;mode<2;++mode){const auto call=[&]{return mode?Decode(raw,budget):db::EncodeNativeManagementOperation(o,budget);};
+  counting=true;allocations=0;const auto measured=call();counting=false;Check(measured.ok(),"typed-state allocation baseline");const auto sites=allocations;
+  for(unsigned long n=0;n<sites;++n){allocation_budget=n;const auto result=call();allocation_budget=-1;Empty(result);Check(result.error==E::resource_exhausted,"all typed-state allocation failures classified");}
+ }
+}
 void EncodingBounds(){
- for(bool exact:{false,true}){
+ for(unsigned version:{1u,2u,3u}){
+  const bool exact=version>=2;
   auto operation=Example();operation.steps={Step(),Step(1,2)};
   operation.idempotency_key=std::string(512,'k');operation.steps[1].idempotency_key=std::string(512,'s');
   if(exact){operation.normalized_request_bytes={0,255,1,0,2};operation.normalized_request_sha256=Sha(operation.normalized_request_bytes);}
+  if(version==3)operation.operation_state_bytes={0xff,0,1,2,3};
   const auto raw=Oracle(operation);BorrowedOperation backing(raw);
   backing.image=db::DecodeNativeManagementOperationInto(backing.bytes,budget,backing.Workspace());Check(backing.image.ok(),"encoding bounds fixture");
   auto value=*backing.image.record;const auto slots=2*(value.steps.size()+3)+1;
@@ -234,6 +270,10 @@ void EncodingBounds(){
   refuse(value,budget,bytes(value.idempotency_key.data(),value.idempotency_key.size()),scratch,E::invalid_workspace);
   refuse(value,budget,bytes(value.steps[1].idempotency_key.data(),value.steps[1].idempotency_key.size()),scratch,E::invalid_workspace);
   if(exact)refuse(value,budget,bytes(value.normalized_request_bytes.data(),value.normalized_request_bytes.size()),scratch,E::invalid_workspace);
+  if(version==3){
+   refuse(value,budget,bytes(value.operation_state_bytes.data(),value.operation_state_bytes.size()),scratch,E::invalid_workspace);
+   refuse(value,budget,output,{reinterpret_cast<Uuid*>(const_cast<byte*>(value.operation_state_bytes.data())),slots},E::invalid_workspace);
+  }
   refuse(value,budget,output,{reinterpret_cast<Uuid*>(output.data()+output.size()-1),slots},E::invalid_workspace);
   refuse(value,budget,output,{reinterpret_cast<Uuid*>(&value),slots},E::invalid_workspace);
   refuse(value,budget,output,{reinterpret_cast<Uuid*>(backing.steps.data()),slots},E::invalid_workspace);
@@ -354,7 +394,7 @@ void FixedHash(){
 }
 void Test(){
  FixedHash();BorrowedBounds();EncodingBounds();
- ExactRequests();
+ ExactRequests();TypedOperationState();
  for(unsigned state=1;state<=15;++state)Good(Example(state));
  auto early=Example(15);early.phase_uuid=early.resource_plan_uuid=early.lock_plan_uuid=early.security_snapshot_uuid={};early.generation_guards={};Good(early);
  for(auto member:{&O::phase_uuid,&O::resource_plan_uuid,&O::lock_plan_uuid}){auto invalid=early;invalid.*member=Id(44);Bad(invalid);for(unsigned state:{1u,2u}){invalid=Example(state);invalid.*member=Id(44);Bad(invalid);}}

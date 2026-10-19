@@ -22,8 +22,14 @@ enum class FirstPrincipalBootstrapPasswordSource {
     kProtectedStdin,
 };
 
+enum class EmbeddedCreationOwnership {
+    kServiceIdentity,
+    kCurrentProcess,
+};
+
 struct FirstPrincipalBootstrapRequest {
     bool explicit_embedded_mode = false;
+    EmbeddedCreationOwnership ownership = EmbeddedCreationOwnership::kServiceIdentity;
     std::string principal_name;
     std::string database_path;
     std::string platform_profile_path;
@@ -39,6 +45,8 @@ struct FirstPrincipalBootstrapResult {
     std::string principal_uuid;
     std::uint64_t policy_generation = 0;
     bool committed_with_warning = false;
+    bool creation_handoff_ready = false;
+    std::string database_uuid;
 };
 
 struct FirstPrincipalBootstrapParseResult {
@@ -54,6 +62,12 @@ struct FirstPrincipalBootstrapParseResult {
 // parser, query, manager, and delegated-authentication option before any
 // filesystem or engine action can occur.
 FirstPrincipalBootstrapParseResult ParseFirstPrincipalBootstrapArgs(
+    int argc, char* const argv[]);
+
+// Local CREATE uses the caller's OS file access by default. An explicit
+// platform profile selects the administrator/service-account handoff instead.
+// Neither choice authenticates against the database being constructed.
+FirstPrincipalBootstrapParseResult ParseEmbeddedDatabaseCreateArgs(
     int argc, char* const argv[]);
 
 // Execute the approved first-principal bootstrap path.  The caller supplies

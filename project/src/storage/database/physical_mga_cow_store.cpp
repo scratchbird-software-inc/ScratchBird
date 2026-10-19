@@ -10,8 +10,17 @@
 #include "identity_publication_fence.hpp"
 #include "catalog_context_namespace.hpp"
 #include "catalog_identifier_profile.hpp"
+#include "catalog_naming_dialect_profile.hpp"
+#include "catalog_naming_collision_policy.hpp"
 #include "catalog_construction_intent.hpp"
 #include "catalog_policy_descriptor.hpp"
+#include "catalog_verification_policy.hpp"
+#include "catalog_evidence_policy.hpp"
+#include "catalog_authorization_policy.hpp"
+#include "catalog_transaction_policy.hpp"
+#include "catalog_lock_policy.hpp"
+#include "catalog_isolation_profile.hpp"
+#include "catalog_management_descriptor.hpp"
 #include "catalog_crypto_inline_private_key_policy.hpp"
 #include "native_catalog_definition_generation.hpp"
 
@@ -1943,9 +1952,27 @@ DecodedNativeCatalogRows DecodeNativeCatalogRows(const RowDataPageBody& body,
             catalog::BorrowCatalogMetadataVersion(value.record),database_uuid.value)||
         !catalog::CatalogIdentifierProfileMatchesDatabase(
             catalog::BorrowCatalogMetadataVersion(value.record),database_uuid.value)||
+        !catalog::CatalogNamingDialectProfileMatchesDatabase(
+            catalog::BorrowCatalogMetadataVersion(value.record),database_uuid.value)||
+        !catalog::CatalogNamingCollisionPolicyMatchesDatabase(
+            catalog::BorrowCatalogMetadataVersion(value.record),database_uuid.value)||
         !catalog::CatalogConstructionIntentMatchesDatabase(
             catalog::BorrowCatalogMetadataVersion(value.record),database_uuid.value)||
         !catalog::CatalogPolicyDescriptorMatchesDatabase(
+            catalog::BorrowCatalogMetadataVersion(value.record),database_uuid.value)||
+        !catalog::CatalogVerificationPolicyMatchesDatabase(
+            catalog::BorrowCatalogMetadataVersion(value.record),database_uuid.value)||
+        !catalog::CatalogEvidencePolicyMatchesDatabase(
+            catalog::BorrowCatalogMetadataVersion(value.record),database_uuid.value)||
+        !catalog::CatalogAuthorizationPolicyMatchesDatabase(
+            catalog::BorrowCatalogMetadataVersion(value.record),database_uuid.value)||
+        !catalog::CatalogTransactionPolicyMatchesDatabase(
+            catalog::BorrowCatalogMetadataVersion(value.record),database_uuid.value)||
+        !catalog::CatalogLockPolicyMatchesDatabase(
+            catalog::BorrowCatalogMetadataVersion(value.record),database_uuid.value)||
+        !catalog::CatalogIsolationProfileMatchesDatabase(
+            catalog::BorrowCatalogMetadataVersion(value.record),database_uuid.value)||
+        !catalog::CatalogManagementDefinitionMatchesDatabase(
             catalog::BorrowCatalogMetadataVersion(value.record),database_uuid.value)||
         !catalog::CatalogCryptoInlinePrivateKeyPolicyMatchesDatabase(
             catalog::BorrowCatalogMetadataVersion(value.record),database_uuid.value))
@@ -2111,8 +2138,17 @@ NativeCatalogLeafViewResult DecodeNativeCatalogLeafInto(
           value.creator_local_transaction_id!=row.local_transaction_id||
           !catalog::CatalogContextNamespaceMatchesDatabase(value,header.header->database_uuid)||
           !catalog::CatalogIdentifierProfileMatchesDatabase(value,header.header->database_uuid)||
+          !catalog::CatalogNamingDialectProfileMatchesDatabase(value,header.header->database_uuid)||
+          !catalog::CatalogNamingCollisionPolicyMatchesDatabase(value,header.header->database_uuid)||
           !catalog::CatalogConstructionIntentMatchesDatabase(value,header.header->database_uuid)||
           !catalog::CatalogPolicyDescriptorMatchesDatabase(value,header.header->database_uuid)||
+          !catalog::CatalogVerificationPolicyMatchesDatabase(value,header.header->database_uuid)||
+          !catalog::CatalogEvidencePolicyMatchesDatabase(value,header.header->database_uuid)||
+          !catalog::CatalogAuthorizationPolicyMatchesDatabase(value,header.header->database_uuid)||
+          !catalog::CatalogTransactionPolicyMatchesDatabase(value,header.header->database_uuid)||
+          !catalog::CatalogLockPolicyMatchesDatabase(value,header.header->database_uuid)||
+          !catalog::CatalogIsolationProfileMatchesDatabase(value,header.header->database_uuid)||
+          !catalog::CatalogManagementDefinitionMatchesDatabase(value,header.header->database_uuid)||
           !catalog::CatalogCryptoInlinePrivateKeyPolicyMatchesDatabase(value,header.header->database_uuid))return fail(LeafError::invalid_metadata);
       auto& record=records[i];record={row.version_uuid,i,value,{}};
       if(value.record.header.kind==catalog::CatalogRecordKind::localized_name){

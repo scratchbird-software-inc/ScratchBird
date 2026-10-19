@@ -3,8 +3,17 @@
 #include "physical_mga_cow_store.hpp"
 #include "catalog_context_namespace.hpp"
 #include "catalog_identifier_profile.hpp"
+#include "catalog_naming_dialect_profile.hpp"
+#include "catalog_naming_collision_policy.hpp"
 #include "catalog_construction_intent.hpp"
 #include "catalog_policy_descriptor.hpp"
+#include "catalog_verification_policy.hpp"
+#include "catalog_evidence_policy.hpp"
+#include "catalog_authorization_policy.hpp"
+#include "catalog_transaction_policy.hpp"
+#include "catalog_lock_policy.hpp"
+#include "catalog_isolation_profile.hpp"
+#include "catalog_management_descriptor.hpp"
 #include "catalog_crypto_inline_private_key_policy.hpp"
 #include "native_catalog_definition_generation.hpp"
 #include "disk_device.hpp"
@@ -86,9 +95,27 @@ NativeCatalogVersionStageResult detail::NativeCatalogVersionStager::Run(
         catalog::BorrowCatalogMetadataVersion(desired),h.database_uuid)||
        !catalog::CatalogIdentifierProfileMatchesDatabase(
         catalog::BorrowCatalogMetadataVersion(desired),h.database_uuid)||
+       !catalog::CatalogNamingDialectProfileMatchesDatabase(
+        catalog::BorrowCatalogMetadataVersion(desired),h.database_uuid)||
+       !catalog::CatalogNamingCollisionPolicyMatchesDatabase(
+        catalog::BorrowCatalogMetadataVersion(desired),h.database_uuid)||
        !catalog::CatalogConstructionIntentMatchesDatabase(
         catalog::BorrowCatalogMetadataVersion(desired),h.database_uuid)||
        !catalog::CatalogPolicyDescriptorMatchesDatabase(
+        catalog::BorrowCatalogMetadataVersion(desired),h.database_uuid)||
+       !catalog::CatalogVerificationPolicyMatchesDatabase(
+        catalog::BorrowCatalogMetadataVersion(desired),h.database_uuid)||
+       !catalog::CatalogEvidencePolicyMatchesDatabase(
+        catalog::BorrowCatalogMetadataVersion(desired),h.database_uuid)||
+       !catalog::CatalogAuthorizationPolicyMatchesDatabase(
+        catalog::BorrowCatalogMetadataVersion(desired),h.database_uuid)||
+       !catalog::CatalogTransactionPolicyMatchesDatabase(
+        catalog::BorrowCatalogMetadataVersion(desired),h.database_uuid)||
+       !catalog::CatalogLockPolicyMatchesDatabase(
+        catalog::BorrowCatalogMetadataVersion(desired),h.database_uuid)||
+       !catalog::CatalogIsolationProfileMatchesDatabase(
+        catalog::BorrowCatalogMetadataVersion(desired),h.database_uuid)||
+       !catalog::CatalogManagementDefinitionMatchesDatabase(
         catalog::BorrowCatalogMetadataVersion(desired),h.database_uuid)||
        !catalog::CatalogCryptoInlinePrivateKeyPolicyMatchesDatabase(
         catalog::BorrowCatalogMetadataVersion(desired),h.database_uuid)||

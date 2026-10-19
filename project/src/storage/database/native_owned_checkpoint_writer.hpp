@@ -2,10 +2,13 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 #include "native_owned_checkpoint_source.hpp"
+#include "native_management_history_memory.hpp"
+#include "native_management_control_authority_memory.hpp"
 #include <span>
 #include <thread>
 
 namespace scratchbird::storage::database {
+class NativeOwnedInventoryPublication;
 enum class NativeWriterError {
   none,invalid_request,invalid_operation,wrong_process,withdrawn,busy,read_handle_live,
   source_failure,resource_exhausted,filespace_absent,profile_mismatch,invalid_buffer,
@@ -29,6 +32,25 @@ struct NativeWriterIoResult {
   NativeWriterPhysicalEffects effects;
   bool ok()const noexcept{return error==NativeWriterError::none&&io&&io->ok();}
 };
+// Immutable history observation from the retained native writer cohort. These
+// bytes do not authorize recovery or publication. The issuing memory manager
+// must outlive the result, as for other governed native storage readers.
+struct NativeOwnedHistoryReadResult : NativeManagementHistoryMemoryResult {
+  NativeWriterError writer_error=NativeWriterError::invalid_operation;
+  Uuid operation_uuid;
+  bool ok() const noexcept {
+    return writer_error==NativeWriterError::none&&NativeManagementHistoryMemoryResult::ok();
+  }
+};
+// Full control-allocation ancestry, acquired from this same retained cohort.
+// The view remains an observation; it grants no engine recovery or readiness.
+struct NativeOwnedControlReadResult : NativeManagementControlAuthorityMemoryResult {
+  NativeWriterError writer_error=NativeWriterError::invalid_operation;
+  Uuid operation_uuid;
+  bool ok() const noexcept {
+    return writer_error==NativeWriterError::none&&NativeManagementControlAuthorityMemoryResult::ok();
+  }
+};
 struct NativeOwnedWriterResult;
 enum class NativeWriterHandleCloseDisposition {not_present,released,retained,released_after_error,indeterminate_quarantined};
 struct NativeWriterHandleCloseReceipt {
@@ -42,7 +64,7 @@ struct NativeWriterMemberCloseReceipt {
 };
 struct NativeWriterCloseResult {
   NativeWriterError error=NativeWriterError::invalid_request;
-  usize member_count=0;
+  std::size_t member_count=0;
   // Adopted cohort FileDevice handles only, NOT the retained original route
   // owner/OS node locks, which remain held until this actual owner retires.
   // This is not a complete node-shutdown or durable publication receipt.
@@ -57,6 +79,7 @@ class NativeOwnedCheckpointWriter final {
   struct ReaderState;
  public:
   class ReadLease;
+  class OperationContinuity;
   struct ReadResult;
   class Operation;
   struct OperationResult;
@@ -103,6 +126,9 @@ class NativeOwnedCheckpointWriter final {
     explicit operator bool()const noexcept{CheckAccess();return bool(state_);}
     // No mutable devices, owner facade or selected-handle extraction API.
     const NativeSelectedCheckpointMemoryLease& source()const noexcept;
+    // The exact enclosing reservation identity; does not expose the operation
+    // or confer permission for physical I/O while this reader is retained.
+    const Uuid& operation_uuid()const noexcept;
     void Reset()noexcept;
    private:
     friend class NativeOwnedCheckpointWriter;friend class Operation;
@@ -113,6 +139,68 @@ class NativeOwnedCheckpointWriter final {
     NativeWriterError writer_error=NativeWriterError::invalid_operation;
     ReadLease lease;
     bool ok()const noexcept{return writer_error==NativeWriterError::none&&error==NativeOwnedSourceError::none&&bool(lease);}
+  };
+  // An immutable source snapshot for graph construction after device guards
+  // retire. The original operation and backing remain owned; this snapshot
+  // cannot be submitted as a live selected-source or publication capability.
+  class ReadObservation final {
+   public:
+    ReadObservation() noexcept=default;
+    ReadObservation(const ReadObservation&)=delete;
+    ReadObservation& operator=(const ReadObservation&)=delete;
+    ReadObservation(ReadObservation&& other) noexcept {
+      other.CheckAccess();custody_=std::move(other.custody_);state_=std::move(other.state_);
+    }
+    ReadObservation& operator=(ReadObservation&& other) noexcept {
+      if(this!=&other){other.CheckAccess();Reset();custody_=std::move(other.custody_);state_=std::move(other.state_);}return *this;
+    }
+    ~ReadObservation(){Reset();}
+    explicit operator bool() const noexcept {CheckAccess();return bool(state_);}
+    const NativeReadBoundCheckpointSelection& selection() const noexcept;
+    const NativeReadCheckpointDirectory& directory() const noexcept;
+    const Uuid& operation_uuid() const noexcept;
+    void Reset() noexcept;
+   private:
+    friend class NativeOwnedCheckpointWriter;
+    friend class Operation;
+    void CheckAccess() const noexcept;
+    std::shared_ptr<void> custody_;
+    std::unique_ptr<ReaderState> state_;
+  };
+  struct ObservationResult:NativeOwnedSourceDiagnostics {
+    NativeWriterError writer_error=NativeWriterError::invalid_operation;
+    ReadObservation observation;
+    bool ok() const noexcept {
+      return writer_error==NativeWriterError::none&&error==NativeOwnedSourceError::none&&bool(observation);
+    }
+  };
+  // Exact reservation lifetime, not a copy of its descriptive UUID. A retained
+  // pin prevents Reset/reacquire (even using the same UUID) from replacing the
+  // operation between an inspected preimage and its physical publication.
+  class OperationContinuity final {
+   public:
+    OperationContinuity()noexcept=default;
+    OperationContinuity(const OperationContinuity&)=delete;
+    OperationContinuity& operator=(const OperationContinuity&)=delete;
+    OperationContinuity(OperationContinuity&& other)noexcept {
+      other.Check();state_=std::move(other.state_);custody_=std::move(other.custody_);
+    }
+    OperationContinuity& operator=(OperationContinuity&& other)noexcept {
+      other.Check();Check();if(this!=&other){state_=std::move(other.state_);custody_=std::move(other.custody_);}return *this;
+    }
+    ~OperationContinuity(){Check();state_.reset();custody_.reset();}
+    explicit operator bool()const noexcept{Check();return bool(state_);}
+   private:
+    friend class Operation;
+    friend class NativeOwnedPublicationWatermark;
+    friend class NativeOwnedInventoryPublication;
+    friend class NativeOwnedInventoryRecovery;
+    void Check()const noexcept;
+    Operation BorrowOperation()const noexcept;
+    std::shared_ptr<OperationState> state_;
+    // Enclosing host supplies its actual full-custody owner. It is lifetime
+    // retention only; callers cannot use this to manufacture a writer state.
+    std::shared_ptr<void> custody_;
   };
   class Operation final {
    public:
@@ -125,8 +213,23 @@ class NativeOwnedCheckpointWriter final {
     void Reset()noexcept;
     const Uuid& identity()const noexcept;
     const NativeWriterPhysicalEffects& effects()const noexcept;
+    OperationContinuity RetainContinuity(std::shared_ptr<void> custody={})const noexcept {
+      OperationContinuity pin;if(Check()!=NativeWriterError::none)return pin;
+      pin.state_=state_;pin.custody_=std::move(custody);return pin;
+    }
+    bool HasContinuity(const OperationContinuity& pin)const noexcept {
+      pin.Check();return Check()==NativeWriterError::none&&state_==pin.state_;
+    }
     ReadResult ReadWithMemory(NativeSelectedCheckpointMemoryLimits,NativeStorageMemory&,
         const NativeStorageMemoryBinding&) noexcept;
+    ObservationResult ObserveWithMemory(NativeSelectedCheckpointMemoryLimits,NativeStorageMemory&,
+        const NativeStorageMemoryBinding&,std::shared_ptr<void> custody={}) noexcept;
+    NativeOwnedHistoryReadResult ReadHistoryWithMemory(NativeManagementHistoryMemoryLimits,
+        NativeStorageMemory&,const NativeStorageMemoryBinding&,
+        const NativeManagementCheckpointAnchor* = nullptr) noexcept;
+    NativeOwnedControlReadResult ReadControlWithMemory(NativeManagementControlAuthorityMemoryLimits,
+        NativeStorageMemory&,const NativeStorageMemoryBinding&,
+        const NativeManagementCheckpointAnchor* = nullptr) noexcept;
     // Exclusive buffers remain caller-owned. No extension, page allocation,
     // journal, implicit repair or new attempt identity. A failed call can have
     // effects: retain this operation and the original owning journal request.
@@ -135,6 +238,10 @@ class NativeOwnedCheckpointWriter final {
     NativeWriterIoResult Sync(const Uuid&,const Uuid& expected_profile) noexcept;
    private:
     friend class NativeOwnedCheckpointWriter;
+    friend class OperationContinuity;
+    friend class NativeOwnedInventoryPublication;
+    Operation& PublicationOperation() noexcept { return *this; }
+    NativeWriterError AdvancePublication(OperationContinuity&,const Uuid&) noexcept;
     NativeWriterError Check()const noexcept;
     std::shared_ptr<OperationState> state_;
   };
@@ -160,8 +267,16 @@ class NativeOwnedCheckpointWriter final {
   struct ReaderState {
     std::shared_ptr<OperationState> operation;
     NativeSelectedCheckpointMemoryHandle selected;
-    ~ReaderState(){selected.Reset();if(operation)operation->reader_live=false;}
+    bool owns_read_reservation=true;
+    ~ReaderState(){selected.Reset();if(operation&&owns_read_reservation)operation->reader_live=false;}
   };
+  static void RetireObservationGuards(ReadObservation& observation) noexcept {
+    auto& state=*observation.state_;
+    // Keep the reservation closed during every latency callback. Only after
+    // all physical guards retire may this same operation perform bounded I/O.
+    state.selected.ReleaseDeviceGuards();
+    state.owns_read_reservation=false;state.operation->reader_live=false;
+  }
   static NativeWriterIoResult Io(Operation&,disk::BoundedIoOperation,const Uuid&,const Uuid&,u64,
       std::span<byte>,std::span<const byte>) noexcept;
   std::shared_ptr<disk::RouteSourceTransition> transition_;
@@ -172,6 +287,13 @@ class NativeOwnedCheckpointWriter final {
   Uuid first_uncertain_filespace_;
   u32 first_uncertain_native_error_=0;
 };
+inline void NativeOwnedCheckpointWriter::OperationContinuity::Check()const noexcept {
+  if(state_&&(!state_->owner->InOwningProcess()||state_->thread!=std::this_thread::get_id()))std::terminate();
+}
+inline NativeOwnedCheckpointWriter::Operation
+NativeOwnedCheckpointWriter::OperationContinuity::BorrowOperation()const noexcept {
+  Check();Operation operation;operation.state_=state_;return operation;
+}
 struct NativeOwnedWriterResult:NativeOwnedSourceDiagnostics {
   std::shared_ptr<NativeOwnedCheckpointWriter> writer;
   bool ok()const noexcept{return error==NativeOwnedSourceError::none&&writer!=nullptr;}
@@ -238,7 +360,7 @@ inline NativeWriterCloseResult NativeOwnedCheckpointWriter::Close(std::shared_pt
   out.error=NativeWriterError::none;out.member_count=devices.size();out.all_members_retired=true;
   const auto remember=[&](const Uuid& filespace,u32 error){if(!owner->close_uncertain_){
     owner->close_uncertain_=true;owner->first_uncertain_filespace_=filespace;owner->first_uncertain_native_error_=error;}};
-  for(usize n=0;n<devices.size();++n){auto& receipt=receipts[n];receipt={};const auto& member=devices[n];
+  for(std::size_t n=0;n<devices.size();++n){auto& receipt=receipts[n];receipt={};const auto& member=devices[n];
     receipt.filespace_uuid=member.filespace_uuid;receipt.page_size_profile_uuid=member.page_size_profile_uuid;
     try{
       if(member.device->is_open()&&!member.device->read_only()){
@@ -275,6 +397,93 @@ inline NativeWriterError NativeOwnedCheckpointWriter::Operation::Check()const no
   if(state_->thread!=std::this_thread::get_id())std::terminate();
   return NativeWriterError::none;
 }
+inline NativeWriterError NativeOwnedCheckpointWriter::Operation::AdvancePublication(
+    OperationContinuity& completed,const Uuid& next_identity) noexcept {
+  using E=NativeWriterError;
+  const auto checked=Check();if(checked!=E::none)return checked;
+  completed.Check();
+  const auto next=next_identity;
+  if(!core::uuid::IsEngineIdentityUuid(next)||next==state_->identity)return E::invalid_request;
+  if(completed.state_!=state_)return E::invalid_operation;
+  // Only the actual completed publisher and this facade may retain the old
+  // operation. A reader or another publication pin must retire explicitly.
+  if(state_->reader_live||state_->io_active||state_.use_count()!=2)return E::busy;
+  auto retained=state_;auto owner=retained->owner;
+  if(!owner->accepting_.load(std::memory_order_acquire))return E::withdrawn;
+  retained->io_active=true;
+  struct Leave {OperationState& state;~Leave(){state.io_active=false;}} leave{*retained};
+  try {
+    // Allocate before touching either ownership record. The busy reservation
+    // remains held through allocation callbacks and the entire handoff.
+    auto successor=std::make_shared<OperationState>();
+    successor->owner=owner;successor->identity=next;
+    if(state_!=retained||completed.state_!=retained)return E::invalid_operation;
+    if(retained.use_count()!=3)return E::busy;
+    if(!owner->accepting_.load(std::memory_order_acquire)||
+        owner->transition_->CheckTransferredWriterAdmission()!=disk::RouteSourceTransitionError::none)
+      return E::withdrawn;
+    successor->registered=true;retained->registered=false;
+    state_=std::move(successor);
+    completed.state_.reset();completed.custody_.reset();
+    return E::none;
+  }catch(const std::bad_alloc&){return E::resource_exhausted;}
+}
+inline NativeOwnedHistoryReadResult NativeOwnedCheckpointWriter::Operation::ReadHistoryWithMemory(
+    NativeManagementHistoryMemoryLimits limits,NativeStorageMemory& memory,
+    const NativeStorageMemoryBinding& binding,const NativeManagementCheckpointAnchor* anchor)noexcept {
+  NativeOwnedHistoryReadResult out;out.writer_error=Check();
+  if(out.writer_error!=NativeWriterError::none)return out;
+  const auto retained=state_;
+  out.operation_uuid=retained->identity;
+  if(retained->reader_live){out.writer_error=NativeWriterError::read_handle_live;return out;}
+  if(retained->io_active){out.writer_error=NativeWriterError::busy;return out;}
+  if(!limits.maximum_backing_bytes||!limits.maximum_verification_image_bytes){
+    out.writer_error=NativeWriterError::invalid_request;return out;
+  }
+  // Retain the actual operation before allocation/latency callbacks. Its
+  // caller may Reset its facade, but cannot replace this cohort mid-read.
+  retained->io_active=true;
+  struct Leave {OperationState& state;~Leave(){state.io_active=false;}} leave{*retained};
+  const auto& cohort=*retained->owner->cohort_;
+  out.memory_error=cohort.memory_state_->memory.CheckBinding(cohort.memory_state_->memory.binding());
+  if(out.memory_error!=NativeStorageMemoryError::none){
+    out.error=NativeManagementHistoryMemoryError::memory_binding_failure;
+    out.writer_error=NativeWriterError::source_failure;return out;
+  }
+  static_cast<NativeManagementHistoryMemoryResult&>(out)=ReadNativeManagementHistoryWithMemoryFromOpenDevices(
+      cohort.database_,cohort.memory_state_->devices,cohort.primary_,limits,memory,binding,
+      anchor?NativeManagementHistoryReadContext::anchored:NativeManagementHistoryReadContext::selected,anchor);
+  out.writer_error=out.NativeManagementHistoryMemoryResult::ok()?NativeWriterError::none:NativeWriterError::source_failure;
+  return out;
+}
+inline NativeOwnedControlReadResult NativeOwnedCheckpointWriter::Operation::ReadControlWithMemory(
+    NativeManagementControlAuthorityMemoryLimits limits,NativeStorageMemory& memory,
+    const NativeStorageMemoryBinding& binding,const NativeManagementCheckpointAnchor* anchor)noexcept {
+  NativeOwnedControlReadResult out;out.writer_error=Check();
+  if(out.writer_error!=NativeWriterError::none)return out;
+  const auto retained=state_;
+  out.operation_uuid=retained->identity;
+  if(retained->reader_live){out.writer_error=NativeWriterError::read_handle_live;return out;}
+  if(retained->io_active){out.writer_error=NativeWriterError::busy;return out;}
+  if(!limits.maximum_backing_bytes||!limits.maximum_verification_image_bytes){
+    out.writer_error=NativeWriterError::invalid_request;return out;
+  }
+  // Retain the actual operation before allocation/latency callbacks. Its
+  // caller may Reset its facade, but cannot replace this cohort mid-read.
+  retained->io_active=true;
+  struct Leave {OperationState& state;~Leave(){state.io_active=false;}} leave{*retained};
+  const auto& cohort=*retained->owner->cohort_;
+  out.memory_error=cohort.memory_state_->memory.CheckBinding(cohort.memory_state_->memory.binding());
+  if(out.memory_error!=NativeStorageMemoryError::none){
+    out.error=NativeManagementControlAuthorityMemoryError::memory_binding_failure;
+    out.writer_error=NativeWriterError::source_failure;return out;
+  }
+  static_cast<NativeManagementControlAuthorityMemoryResult&>(out)=ReadNativeManagementControlAuthorityWithMemoryFromOpenDevices(
+      cohort.database_,cohort.memory_state_->devices,cohort.primary_,limits,memory,binding,
+      anchor?NativeManagementHistoryReadContext::anchored:NativeManagementHistoryReadContext::selected,anchor);
+  out.writer_error=out.NativeManagementControlAuthorityMemoryResult::ok()?NativeWriterError::none:NativeWriterError::source_failure;
+  return out;
+}
 inline void NativeOwnedCheckpointWriter::Operation::Reset()noexcept {
   if(state_&&state_->owner->InOwningProcess()&&state_->thread!=std::this_thread::get_id())std::terminate();
   state_.reset(); // A live restricted reader retains the same reservation.
@@ -291,6 +500,9 @@ inline void NativeOwnedCheckpointWriter::ReadLease::CheckAccess()const noexcept 
 inline const NativeSelectedCheckpointMemoryLease& NativeOwnedCheckpointWriter::ReadLease::source()const noexcept {
   CheckAccess();if(!state_)std::terminate();return *state_->selected;
 }
+inline const Uuid& NativeOwnedCheckpointWriter::ReadLease::operation_uuid()const noexcept {
+  CheckAccess();if(!state_)std::terminate();return state_->operation->identity;
+}
 inline void NativeOwnedCheckpointWriter::ReadLease::Reset()noexcept {
   if(!state_)return;
   if(!state_->operation->owner->InOwningProcess()){
@@ -298,6 +510,34 @@ inline void NativeOwnedCheckpointWriter::ReadLease::Reset()noexcept {
     state_->operation.reset();(void)state_.release();return;
   }
   CheckAccess();state_.reset();
+}
+inline void NativeOwnedCheckpointWriter::ReadObservation::CheckAccess() const noexcept {
+  if(state_&&(!state_->operation->owner->InOwningProcess()||state_->operation->thread!=std::this_thread::get_id()))std::terminate();
+}
+inline const NativeReadBoundCheckpointSelection& NativeOwnedCheckpointWriter::ReadObservation::selection() const noexcept {
+  CheckAccess();if(!state_)std::terminate();return state_->selected->selection();
+}
+inline const NativeReadCheckpointDirectory& NativeOwnedCheckpointWriter::ReadObservation::directory() const noexcept {
+  CheckAccess();if(!state_)std::terminate();return state_->selected->directory();
+}
+inline const Uuid& NativeOwnedCheckpointWriter::ReadObservation::operation_uuid() const noexcept {
+  CheckAccess();if(!state_)std::terminate();return state_->operation->identity;
+}
+inline void NativeOwnedCheckpointWriter::ReadObservation::Reset() noexcept {
+  CheckAccess();state_.reset();custody_.reset();
+}
+inline NativeOwnedCheckpointWriter::ObservationResult NativeOwnedCheckpointWriter::Operation::ObserveWithMemory(
+    NativeSelectedCheckpointMemoryLimits limits,NativeStorageMemory& memory,
+    const NativeStorageMemoryBinding& binding,std::shared_ptr<void> custody) noexcept {
+  ObservationResult out;
+  auto read=ReadWithMemory(limits,memory,binding);
+  static_cast<NativeOwnedSourceDiagnostics&>(out)=std::move(static_cast<NativeOwnedSourceDiagnostics&>(read));
+  out.writer_error=read.writer_error;
+  if(!read.ok())return out;
+  out.observation.custody_=std::move(custody);
+  out.observation.state_=std::move(read.lease.state_);
+  RetireObservationGuards(out.observation);
+  return out;
 }
 inline NativeOwnedCheckpointWriter::ReadResult NativeOwnedCheckpointWriter::Operation::ReadWithMemory(
     NativeSelectedCheckpointMemoryLimits limits,NativeStorageMemory& memory,const NativeStorageMemoryBinding& binding)noexcept {

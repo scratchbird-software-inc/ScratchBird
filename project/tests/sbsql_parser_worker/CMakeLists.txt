@@ -4472,6 +4472,12 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
   set_tests_properties(sbsql_database_lifecycle_exact_route_conformance PROPERTIES
     LABELS "sbsql_database_lifecycle_exact_route_conformance;SBSFC-020R-QV;SBSFC-020R-QW;SBSFC-020R-QX;SBSFC-020R-QY;SBSFC-030;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed;database_lifecycle"
   )
+  add_test(NAME sbsql_lifecycle_lowered_json_conformance
+    COMMAND ${Python3_EXECUTABLE}
+      "${CMAKE_CURRENT_SOURCE_DIR}/lifecycle_lowered_json_conformance.py"
+      $<TARGET_FILE:sbsql_database_lifecycle_exact_route_conformance>)
+  set_tests_properties(sbsql_lifecycle_lowered_json_conformance PROPERTIES
+    LABELS "sbsql_parser_worker;database_lifecycle;lowering_framing;component_not_live_admission")
 
   add_executable(
     sbsql_create_executable_exact_route_conformance

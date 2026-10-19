@@ -4,7 +4,9 @@
 #define SB_NATIVE_RUNTIME_SECURITY_FIXTURE_WITHOUT_MAIN
 #include "native_runtime_security_observation_test.cpp"
 #undef SB_NATIVE_RUNTIME_SECURITY_FIXTURE_WITHOUT_MAIN
+#include "../../src/server/database_ownership.hpp"
 #include "../../src/server/native_local_service_startup_selection.hpp"
+#include "../../src/server/native_local_service_startup_credentials.hpp"
 #include "runtime_crypto_pool_owner.hpp"
 #include <sys/mman.h>
 #include <sys/wait.h>
@@ -21,6 +23,11 @@ namespace hash=scratchbird::core::hash;
 namespace runtime=scratchbird::core::runtime;
 using CredentialError=server::NativeRuntimePrincipalCredentialError;
 using CredentialResult=server::NativeRuntimePrincipalCredentialResult;
+static_assert(!server::NativeRuntimeCredentialSource<db::NativeSelectedCheckpointMemoryLease>);
+static_assert(!server::NativeRuntimeCredentialSource<db::NativeOwnedCheckpointWriter::Operation>);
+static_assert(!server::NativeRuntimeCredentialSource<runtime_security::NativeRuntimeSecurityObservationResult>);
+static_assert(server::NativeRuntimeCredentialSource<server::NativeHostedDatabaseCustody::ReadLease>);
+static_assert(!server::NativeRuntimeCredentialSource<server::NativeHostedDatabaseCustody::Operation>);
 constexpr std::string_view password="DBLC013G-fixture-password";
 constexpr std::string_view verifier=
     "local-password-pbkdf2-sha256:v1:iterations=600000:salt=0123456789abcdef0123456789abcdef:"
@@ -229,6 +236,17 @@ void Refused(const CredentialResult& result,CredentialError expected){
 bool Zero(const mem::ScopedProtectedBuffer& buffer){return std::all_of(static_cast<const unsigned char*>(buffer.data()),
     static_cast<const unsigned char*>(buffer.data())+buffer.size(),[](auto b){return b==0;});}
 
+template<class Work>void InheritedCredentialRefusals(Work&& work) {
+  // The parent retains every actual guard, provider and protected-memory owner.
+  // The child must terminate before touching inherited custody or unlocking a
+  // parent mutex. It creates no fixture or ordinary cleanup obligation.
+  for(unsigned mode=0;mode<4;++mode){const auto child=::fork();Check(child>=0,"actual inherited credential child");
+    if(!child){std::set_terminate([]{::_exit(73);});work(mode);::_exit(74);}
+    int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==73,
+        "foreign process refuses live/moved-from credential access and moves before inherited custody");
+  }
+}
+
 template<class Work>void OnActualSource(CredentialNativeFixture& fixture,Work&& work,unsigned custody_mismatch=0,bool wrong_password=false,
     std::size_t derived_bytes=32,unsigned derived_database=1) {
   const db::NativeCatalogRelationMemoryLimits limits{Profile(fixture.profile),1,16,64,64,{4,16*static_cast<std::size_t>(sizes[fixture.profile])}};
@@ -244,16 +262,222 @@ template<class Work>void OnActualSource(CredentialNativeFixture& fixture,Work&& 
   selected.lease.Reset();custody.lease.reset();prepared.workspace={};
   memory.memory={};source_memory.memory={};memory.Empty();source_memory.Empty();
 }
-auto Verify(const server::NativeRuntimePrincipalCredentialRequest& request,db::NativeSelectedCheckpointMemoryHandle& source,
+template<server::NativeRuntimeCredentialSource Source>
+auto Verify(const server::NativeRuntimePrincipalCredentialRequest& request,Source& source,
     server::NativeRuntimePrincipalCredentialPreparedMemory& workspace,server::StartupCredentialSource::Lease& credential,
     const mem::ScopedProtectedBuffer& derived) {
   allocation_budget=0;auto result=server::VerifyNativeRuntimePrincipalCredential(request,source,workspace,credential,derived);
   const auto remaining=allocation_budget;allocation_budget=-1;
   Check(remaining==0,"native credential verification allocates no ordinary heap under device guards");return result;
 }
-void Success(unsigned profile,bool indexed,int death_mode=0) {
+template<class Work>void OnActualWriterSource(CredentialNativeFixture& fixture,Work&& work,bool wrong_password=false) {
+  const db::NativeCatalogRelationMemoryLimits limits{Profile(fixture.profile),1,16,64,64,{4,16*static_cast<std::size_t>(sizes[fixture.profile])}};
+  LeafMemoryFixture memory(server::NativeRuntimePrincipalCredentialWorkspaceBytes(limits));
+  LeafMemoryFixture persistent(64*1024),transient(32*1024*1024),reading(32*1024*1024);
+  auto prepared=server::PrepareNativeRuntimePrincipalCredential(limits,memory.memory,memory.binding);
+  Check(prepared.ok(),"writer credential readers prepared before actual native guards");
+  const auto path=fixture.device.path();Check(fixture.device.Close().ok(),"release fixture handle before real route ownership");
+  server::DatabaseOwnershipRequest ownership;ownership.database_path=path;ownership.storage_access=disk::RouteStorageAccess::read_write;
+  auto route=server::AcquireDatabaseOwnership(ownership);Check(route.acquired&&route.lock,"real credential writer route ownership");
+  auto transition=route.lock->BeginNativeSourceTransition();Check(transition.ok(),"real legacy drain and native writer transfer");
+  std::vector<std::unique_ptr<disk::FileDevice>> secondary;
+  using Writer=db::NativeOwnedCheckpointWriter;
+  auto adopted=Writer::AdoptRouteWithMemory(transition.transition,Id(1),Id(2),secondary,
+      {64*1024,{fixture.budget,32*1024*1024}},persistent.memory,persistent.binding,transient.memory,transient.binding);
+  Check(adopted.ok(),"actual writable primary adopted with complete real native checkpoint");
+  auto operation=Writer::TryBeginOperation(adopted.writer,Id(234));Check(operation.ok(),"real reserved writer operation before selected inspection");
+  CredentialCustody custody(0,wrong_password);
+  auto selected=operation.operation.ReadWithMemory({fixture.budget,32*1024*1024},reading.memory,reading.binding);
+  Check(selected.ok()&&selected.lease.operation_uuid()==Id(234),"restricted selected reader retains exact writer reservation");
+  auto request=fixture.Request();work(request,selected.lease,prepared.workspace,*custody.lease,custody.derived,
+      operation.operation,adopted.writer,custody);
+  selected.lease.Reset();operation.operation.Reset();custody.lease.reset();prepared.workspace={};
+  adopted.writer.reset();transition.transition.reset();route.lock.reset();
+  memory.memory={};persistent.memory={};transient.memory={};reading.memory={};
+  memory.Empty();persistent.Empty();transient.Empty();reading.Empty();
+}
+void WriterCredentials(unsigned profile,bool indexed,int death_mode=0) {
+  using Writer=db::NativeOwnedCheckpointWriter;using WE=db::NativeWriterError;
+  CredentialNativeFixture fixture(profile,indexed);
+  const runtime_security::NativeRuntimeAuthorizationLimits graph_limits{64,64,100000};
+  LeafMemoryFixture graph_memory(runtime_security::NativeRuntimeAuthorizationWorkspaceBytes(graph_limits));
+  auto graph=runtime_security::PrepareNativeRuntimeAuthorizationProjection(graph_limits,graph_memory.memory,graph_memory.binding);
+  Check(graph.ok(),"writer rights workspace admitted before guards");
+  OnActualWriterSource(fixture,[&](auto& request,auto& source,auto& workspace,auto& credential,const auto& derived,
+      auto& operation,const auto& writer,auto& custody){
+    const auto effects=operation.effects();const auto writes=stage_writes,syncs=stage_syncs;
+    auto bad=request;bad.security.runtime_binding_generation=2;
+    Refused(Verify(bad,source,workspace,credential,derived),CredentialError::security_source_failure);
+    Check(source&&workspace&&credential.binding()&&Zero(derived),"writer refusal preserves every original input owner and erases scratch");
+    auto result=Verify(request,source,workspace,credential,derived);
+    Check(result.ok()&&!source&&!workspace&&!credential.binding()&&Zero(derived)&&result.lease->writer_operation_uuid()==Id(234),
+        "actual password verification consumes restricted reader without extracting a writer or read-source handle");
+    allocation_budget=0;const auto selected=server::SelectNativeLocalServiceStartupDeclarations(*result.lease);
+    const auto rights=result.lease->ProjectAuthorization(graph.workspace);const auto remaining=allocation_budget;allocation_budget=-1;
+    Check(selected.ok()&&rights.ok()&&rights.projection.Allows("CONNECT")&&!rights.projection.Allows("CATALOG_MUTATE")&&remaining==0,
+        "writer comparison selects same committed policy and actual rights without ordinary allocation");
+    Check(operation.effects()==effects&&stage_writes==writes&&stage_syncs==syncs,
+        "writer credential comparison and projection perform no physical mutation or activation");
+    std::array<platform::byte,16> bytes{};
+    Check(operation.ReadAtBounded(Id(2),Profile(profile),0,bytes).error==WE::read_handle_live&&
+        operation.WriteAtBounded(Id(2),Profile(profile),0,bytes).error==WE::read_handle_live&&
+        operation.Sync(Id(2),Profile(profile)).error==WE::read_handle_live,
+        "private comparison keeps physical I/O excluded for entire borrowed observation lifetime");
+    WE contended=WE::none;std::thread contender([&]{contended=Writer::TryBeginOperation(writer,Id(235)).error;});contender.join();
+    Check(contended==WE::busy,"another thread cannot reserve the native writer during credential comparison");
+    auto moved=std::move(*result.lease);
+    Check(moved.valid()&&moved.writer_operation_uuid()==Id(234)&&!result.lease->valid(),"moving writer proof retains original reservation and invalidates old proof");
+    if(profile==0&&!indexed&&!death_mode)InheritedCredentialRefusals([&](unsigned mode){
+      if(mode==0)(void)moved.valid();
+      if(mode==1){auto inherited=std::move(moved);(void)inherited;}
+      if(mode==2)(void)result.lease->ProjectAuthorization(graph.workspace);
+      if(mode==3){auto inherited=std::move(*result.lease);(void)inherited;}
+    });
+    if(death_mode){std::set_terminate([]{::_exit(73);});
+      if(death_mode==6){std::thread other([&]{(void)moved.writer_operation_uuid();});other.join();}
+      if(death_mode==7){std::thread other([&]{auto foreign=std::move(moved);(void)foreign;});other.join();}
+      if(death_mode==8){std::thread other([&]{(void)result.lease->ProjectAuthorization(graph.workspace);});other.join();}
+      ::_exit(74);}
+    // The actual source-generation owner cannot finish revocation while the
+    // comparison holds its private use lease, including after a proof move.
+    server::StartupCredentialSource::Outcome revoke;
+    std::thread revoker([&]{revoke=custody.source.Revoke({Id(231),Id(236),7,
+        server::StartupCredentialSource::Mutex::Clock::now()+std::chrono::milliseconds(20),{}});});revoker.join();
+    Check(revoke.error==server::StartupCredentialSource::Error::wait,"source generation stays fenced during writer proof lifetime");
+    // Destroy the proof while preserving the SAME outer operation. Releasing
+    // selected guards must neither release nor re-create that reservation.
+    {auto final=std::move(moved);}
+    Check(!moved.valid()&&operation.identity()==Id(234)&&Writer::TryBeginOperation(writer,Id(235)).error==WE::busy,
+        "proof retirement releases readers but preserves original outer writer reservation");
+    Check(operation.ReadAtBounded(Id(2),Profile(profile),0,bytes).ok(),"bounded physical reads resume only after real native guards are released");
+    Check(custody.source.Revoke({Id(231),Id(236),7,{},{}}).ok(),"actual revocation completes after proof erases protected credential custody");
+    const auto reacquired=custody.source.Acquire({Id(231),Id(237),7,{},{}},custody.manager,custody.tag);
+    Check(reacquired.outcome.error==server::StartupCredentialSource::Error::revoked&&!reacquired.lease,
+        "retired comparison cannot reacquire revoked generation or authorize another startup");
+  });
+  graph.workspace={};graph_memory.memory={};graph_memory.Empty();
+  CredentialNativeFixture wrong(profile,indexed);
+  OnActualWriterSource(wrong,[&](auto& request,auto& source,auto& workspace,auto& credential,const auto& derived,
+      auto& operation,const auto&,auto&){
+    Refused(Verify(request,source,workspace,credential,derived),CredentialError::credential_rejected);
+    Check(source&&workspace&&credential.binding()&&Zero(derived),"writer wrong-password refusal preserves original custody and erases derived bytes");
+    std::array<platform::byte,1> byte{};Check(operation.ReadAtBounded(Id(2),Profile(profile),0,byte).error==WE::read_handle_live,
+        "failed verification leaves caller reader held rather than silently enabling physical I/O");
+  },true);
+  if(profile==0&&!indexed){CredentialNativeFixture reset(profile,indexed);
+    OnActualWriterSource(reset,[&](auto& request,auto& source,auto& workspace,auto& credential,const auto& derived,
+        auto& operation,const auto& writer,auto&){
+      auto result=Verify(request,source,workspace,credential,derived);Check(result.ok(),"real writer proof before caller handle retirement");
+      operation.Reset();
+      Check(!operation&&result.lease->writer_operation_uuid()==Id(234)&&
+          Writer::TryBeginOperation(writer,Id(235)).error==WE::busy&&
+          server::SelectNativeLocalServiceStartupDeclarations(*result.lease).ok(),
+          "private proof retains original operation and source after external operation handle reset");
+      result.lease.reset();auto next=Writer::TryBeginOperation(writer,Id(235));
+      Check(next.ok()&&next.operation.identity()==Id(235),"only final reader retirement releases a reset external reservation");
+    });}
+}
+void HostedCredentials(unsigned profile,bool indexed,bool compose=false) {
+  using Host=server::NativeHostedDatabaseCustody;
+  CredentialNativeFixture fixture(profile,indexed);
+  const db::NativeCatalogRelationMemoryLimits limits{Profile(profile),1,16,64,64,{4,16*static_cast<std::size_t>(sizes[profile])}};
+  LeafMemoryFixture memory(server::NativeRuntimePrincipalCredentialWorkspaceBytes(limits));
+  LeafMemoryFixture persistent(64*1024),transient(32*1024*1024),reading(32*1024*1024);
+  const runtime_security::NativeRuntimeAuthorizationLimits graph_limits{64,64,100000};
+  LeafMemoryFixture graph_memory(runtime_security::NativeRuntimeAuthorizationWorkspaceBytes(graph_limits));
+  auto prepared=server::PrepareNativeRuntimePrincipalCredential(limits,memory.memory,memory.binding);
+  auto graph=runtime_security::PrepareNativeRuntimeAuthorizationProjection(graph_limits,graph_memory.memory,graph_memory.binding);
+  Check(prepared.ok()&&graph.ok(),"host credential and actual rights backing admitted before native guards");
+  const auto path=fixture.device.path();Check(fixture.device.Close().ok(),"release independent fixture before hosted native ownership");
+  server::DatabaseOwnershipRequest ownership;ownership.database_path=path;ownership.storage_access=disk::RouteStorageAccess::read_write;
+  auto route=server::AcquireDatabaseOwnership(ownership);Check(route.acquired&&route.lock,"actual original server route owner");
+  auto hosted=Host::Begin(route.lock);Check(hosted.ok(),"host retains original route while fencing legacy borrowers");
+  std::vector<std::unique_ptr<disk::FileDevice>> secondary;
+  Check(Host::AdoptWriter(hosted.custody,Id(1),Id(2),secondary,{64*1024,{fixture.budget,32*1024*1024}},
+      persistent.memory,persistent.binding,transient.memory,transient.binding).ok(),"host adopts full actual native checkpoint and original writer capability");
+  auto operation=Host::TryBeginOperation(hosted.custody,Id(234));Check(operation.ok(),"hosted operation before credential inspection");
+  CredentialCustody custody;
+  Host::ReadResult selected;
+  auto result=[&]() -> CredentialResult {
+    if(!compose){
+      selected=operation.operation.ReadWithMemory({fixture.budget,32*1024*1024},reading.memory,reading.binding);
+      Check(selected.ok(),"actual hosted native selected reader");
+      return Verify(fixture.Request(),selected.lease,prepared.workspace,*custody.lease,custody.derived);
+    }
+    // The production composition must import protected material before it
+    // obtains any selected-checkpoint device guards. Release the fixture's
+    // earlier use lease so the actual source owner can issue that acquisition.
+    custody.lease->Reset();
+    server::NativeLocalServiceStartupCredentialsRequest request;
+    request.credential=fixture.Request();
+    request.credential.security.catalog_selection=runtime_security::NativeRuntimeCatalogSelection::discover_selected;
+    request.credential.security.configuration_relation={};request.credential.security.security_relation={};
+    request.source={Id(231),Id(235),7,
+        server::StartupCredentialSource::Mutex::Clock::now()+std::chrono::seconds(10),{}};
+    request.checkpoint_limits={fixture.budget,32*1024*1024};
+    const auto call=[&](const auto& input){
+      return server::ReadNativeLocalServiceStartupCredentials(input,std::move(operation.operation),
+          prepared.workspace,reading.memory,reading.binding,custody.source,custody.manager,custody.tag,custody.derived);
+    };
+    if(!profile&&!indexed){
+      using E=server::NativeLocalServiceStartupCredentialsError;
+      const auto writes=stage_writes,syncs=stage_syncs;
+      auto bad=request;bad.source.deadline.reset();auto invalid=call(bad);
+      Check(invalid.error==E::invalid_request&&invalid.operation&&!invalid.comparison&&prepared.workspace,
+          "startup composition requires a finite credential wait and retains original operation on refusal");
+      operation.operation=std::move(invalid.operation);
+      std::stop_source stop;stop.request_stop();bad=request;bad.credential.stop=stop.get_token();auto cancelled=call(bad);
+      Check(cancelled.error==E::cancelled&&cancelled.operation&&!cancelled.comparison&&prepared.workspace,
+          "pre-cancelled composition cannot acquire a credential or checkpoint source");
+      operation.operation=std::move(cancelled.operation);
+      bad=request;bad.source.generation=8;auto stale=call(bad);
+      Check(stale.error==E::credential_source&&stale.credential_source.error==server::StartupCredentialSource::Error::stale&&
+          stale.operation&&!stale.comparison&&prepared.workspace,
+          "startup source generation cannot be inferred from the native binding generation");
+      operation.operation=std::move(stale.operation);
+      bad=request;bad.credential.security.runtime_binding_generation=2;auto wrong=call(bad);
+      Check(wrong.error==E::credential_verification&&wrong.comparison&&
+          wrong.comparison->security_error==SecurityError::binding_generation_mismatch&&wrong.operation&&prepared.workspace,
+          "startup composition retains exact native binding failure and its operation for retry");
+      operation.operation=std::move(wrong.operation);
+      Check(stage_writes==writes&&stage_syncs==syncs,"startup prerequisite refusals create no physical publication");
+    }
+    auto composed=call(request);
+    Check(composed.ok()&&composed.selection.declarations&&composed.operation&&
+        composed.comparison->lease->writer_operation_uuid()==Id(234),
+        "composed protected-source acquisition and native verification retain the same original hosted operation");
+    return std::move(*composed.comparison);
+  }();
+  Check(result.ok()&&!selected.lease&&!prepared.workspace&&!custody.lease->binding()&&Zero(custody.derived),
+      "private native comparison consumes hosted reader without fabricating activation or rights");
+  const auto original_owner=std::weak_ptr(route.lock);const auto host_owner=std::weak_ptr(hosted.custody);
+  operation.operation.Reset();hosted.custody.reset();route.lock.reset();
+  Check(!original_owner.expired()&&!host_owner.expired()&&result.lease->writer_operation_uuid()==Id(234),
+      "credential proof alone retains complete original server owner as well as exact native writer operation");
+  allocation_budget=0;const auto declarations=server::SelectNativeLocalServiceStartupDeclarations(*result.lease);
+  const auto rights=result.lease->ProjectAuthorization(graph.workspace);const auto remaining=allocation_budget;allocation_budget=-1;
+  Check(declarations.ok()&&rights.ok()&&remaining==0&&rights.projection.Allows("CONNECT")&&!rights.projection.Allows("CATALOG_MUTATE"),
+      "hosted proof reads exact committed policy and rights without an allocation or invented catalog privilege");
+  server::StartupCredentialSource::Outcome revoke;
+  std::thread revoker([&]{revoke=custody.source.Revoke({Id(231),Id(236),7,
+      server::StartupCredentialSource::Mutex::Clock::now()+std::chrono::milliseconds(5),{}});});revoker.join();
+  Check(revoke.error==server::StartupCredentialSource::Error::wait,"hosted comparison retains actual protected source generation fence");
+  result.lease.reset();
+  Check(original_owner.expired()&&host_owner.expired(),"last proof releases selected guards before full original host custody");
+  Check(custody.source.Revoke({Id(231),Id(236),7,{},{}}).ok(),"owning thread can revoke source after hosted proof retirement");
+  custody.lease.reset();prepared.workspace={};graph.workspace={};
+  memory.memory={};persistent.memory={};transient.memory={};reading.memory={};graph_memory.memory={};
+  memory.Empty();persistent.Empty();transient.Empty();reading.Empty();graph_memory.Empty();
+}
+void Success(unsigned profile,bool indexed,int death_mode=0,bool discover=false) {
   CredentialNativeFixture fixture(profile,indexed);const auto writes=stage_writes,syncs=stage_syncs;
+  const runtime_security::NativeRuntimeAuthorizationLimits graph_limits{64,64,100000};
+  LeafMemoryFixture graph_memory(runtime_security::NativeRuntimeAuthorizationWorkspaceBytes(graph_limits));
+  auto graph=runtime_security::PrepareNativeRuntimeAuthorizationProjection(graph_limits,graph_memory.memory,graph_memory.binding);
+  Check(graph.ok(),"rights projection backing prepared before native/credential guards");
   OnActualSource(fixture,[&](auto& request,auto& source,auto& workspace,auto& credential,const auto& derived){
+    if(discover){request.security.catalog_selection=runtime_security::NativeRuntimeCatalogSelection::discover_selected;
+      request.security.configuration_relation={};request.security.security_relation={};}
     const auto calls=password_calls;auto result=Verify(request,source,workspace,credential,derived);
     if(!result.ok())std::cerr<<"positive credential="<<int(result.error)<<" verifier="<<int(result.verifier_error)<<" source="<<int(result.source_error)<<'\n';
     Check(result.ok()&&password_calls==calls+1,"real PBKDF2 against actual committed native verifier");
@@ -271,20 +495,62 @@ void Success(unsigned profile,bool indexed,int death_mode=0) {
         selected.declarations->posture.generation==1&&result.lease->binding().policy_epoch==31&&
         !selected.declarations->pack_version_uuid.is_nil()&&!selected.declarations->posture_version_uuid.is_nil(),
         "same actual retained configuration selects exact pack/posture without allocation or conflating context epochs");
+    allocation_budget=0;
+    const auto rights=result.lease->ProjectAuthorization(graph.workspace);
+    const auto graph_budget=allocation_budget;allocation_budget=-1;
+    Check(rights.ok()&&graph_budget==0&&rights.projection.Allows("CONNECT")&&
+        !rights.projection.Allows("CATALOG_MUTATE")&&rights.projection.grants().size()==1&&
+        rights.projection.principal().security_context_generation==9&&
+        rights.projection.binding().policy_epoch==31,
+        "verified credential projects only its actual retained rights and independent context generations");
     const auto row=result.lease->security_records().front().object_uuid;
     auto moved=std::move(*result.lease);Check(!result.ok()&&!result.lease->valid()&&moved.valid()&&moved.security_records().front().object_uuid==row,
         "proof move transfers original backing and invalidates old proof without copying secret");
     Check(!server::SelectNativeLocalServiceStartupDeclarations(*result.lease).ok()&&
         server::SelectNativeLocalServiceStartupDeclarations(moved).ok(),"declaration selection cannot reuse moved-from credential custody");
+    Check(!result.lease->ProjectAuthorization(graph.workspace).ok(),
+        "moved-from credential proof cannot project retained native rights");
+    if(profile==0&&!indexed&&!death_mode)InheritedCredentialRefusals([&](unsigned mode){
+      if(mode==0)(void)moved.binding();
+      if(mode==1){auto inherited=std::move(moved);(void)inherited;}
+      if(mode==2)(void)result.lease->valid();
+      if(mode==3){auto inherited=std::move(*result.lease);(void)inherited;}
+    });
     if(death_mode){std::set_terminate([]{::_exit(73);});
       if(death_mode==1){std::thread other([&]{(void)moved.binding();});other.join();}
       if(death_mode==2){std::thread other([&]{auto foreign=std::move(moved);(void)foreign;});other.join();}
       if(death_mode==3)(void)result.lease->binding();
+      if(death_mode==4){std::thread other([&]{(void)moved.ProjectAuthorization(graph.workspace);});other.join();}
+      if(death_mode==5){std::thread other([&]{(void)result.lease->ProjectAuthorization(graph.workspace);});other.join();}
       ::_exit(74);}
   });
+  graph.workspace={};graph_memory.memory={};graph_memory.Empty();
   Check(stage_writes==writes&&stage_syncs==syncs,"observation/authentication never creates or publishes BEGIN/storage effects");
 }
 void Refusals(CredentialCryptoOwner& foreign) {
+  for(unsigned epoch=0;epoch<2;++epoch){
+    CredentialNativeFixture stale_source(0);
+    SecurityFixture::BindingEpochsOnDevice(stale_source.device,0,stale_source.receipt.relations[4],epoch?1:2,epoch?2:1);
+    OnActualSource(stale_source,[&](auto& request,auto& source,auto& workspace,auto& credential,const auto& derived){
+      const auto calls=password_calls;const auto refused=Verify(request,source,workspace,credential,derived);
+      Refused(refused,CredentialError::security_source_failure);
+      Check(refused.security_error==(epoch?SecurityError::binding_security_epoch_mismatch:SecurityError::binding_catalog_generation_mismatch)&&
+          refused.expected_generation==1&&refused.observed_generation==2&&calls==password_calls&&
+          source&&workspace&&credential.binding()&&Zero(derived),
+          "actual future native binding provenance refuses before PBKDF2, preserving exact root generation cause and all original owners");
+    });
+  }
+  {
+    CredentialNativeFixture older_binding(0);
+    SecurityFixture::SelectedCatalogEpochsOnDevice(older_binding.device,0,older_binding.budget,2,4,19,23);
+    OnActualSource(older_binding,[&](auto& request,auto& source,auto& workspace,auto& credential,const auto& derived){
+      const auto compared=Verify(request,source,workspace,credential,derived);
+      Check(compared.ok()&&compared.lease->binding().catalog_generation==1&&compared.lease->binding().security_epoch==1&&
+          compared.lease->selected_catalog().catalog_generation==2&&compared.lease->selected_catalog().security_epoch==4&&
+          compared.lease->selected_catalog().schema_epoch==19&&compared.lease->selected_catalog().resource_epoch==23&&Zero(derived),
+          "unchanged visible binding remains eligible with distinct actual root epochs; comparison does not activate a session");
+    });
+  }
   CredentialNativeFixture fixture(0);
   OnActualSource(fixture,[&](auto& request,auto& source,auto& workspace,auto& credential,const auto& derived){
     const auto retained=credential.binding();const auto password_pointer=credential.credential().data();
@@ -429,15 +695,18 @@ extern "C" int __wrap_PKCS5_PBKDF2_HMAC(const char* p,int pn,const unsigned char
 int CredentialMain(int argc,char** argv){
   ParentOwnedArtifacts artifacts;
   const int death=argc==2?std::atoi(argv[1]):0;
-  if(!death)for(int mode=1;mode<=3;++mode){const auto pid=::fork();Check(pid>=0,"owned credential thread-affinity child");
+  if(!death)for(int mode=1;mode<=8;++mode){const auto pid=::fork();Check(pid>=0,"owned credential thread-affinity child");
     if(!pid){const std::string option=std::to_string(mode);::execl(argv[0],argv[0],option.c_str(),nullptr);::_exit(72);}
     int status=0;Check(::waitpid(pid,&status,0)==pid&&WIFEXITED(status)&&WEXITSTATUS(status)==73,"foreign access/move and moved-from access terminate before custody access");}
   std::optional<CredentialCryptoOwner> process,database,foreign;bool installed=false;int outcome=0;
   try {
   process.emplace(0,240,4*1024*1024);database.emplace(1,244,2*1024*1024);foreign.emplace(250,248,128*1024);
   Check(process->owner.InstallProcessAdapter().ok(),"actual process allocator installed before first OpenSSL allocation");installed=true;
-  database->With([&]{if(death){Success(0,false,death);return;}
-    for(unsigned profile=0;profile<5;++profile)for(bool indexed:{false,true})Success(profile,indexed);
+  database->With([&]{if(death){if(death<=5)Success(0,false,death);else WriterCredentials(0,false,death);return;}
+    for(unsigned profile=0;profile<5;++profile)for(bool indexed:{false,true}){Success(profile,indexed);Success(profile,indexed,0,true);}
+    for(unsigned profile=0;profile<5;++profile)for(bool indexed:{false,true})WriterCredentials(profile,indexed);
+    for(unsigned profile=0;profile<5;++profile)for(bool indexed:{false,true})HostedCredentials(profile,indexed);
+    for(unsigned profile=0;profile<5;++profile)for(bool indexed:{false,true})HostedCredentials(profile,indexed,true);
     Refusals(*foreign);SelectionRefusals();PreparationFaults();});
   // No implicit process fallback: construct/read selected source under a real
   // database scope, then explicitly execute the gate without an active scope.

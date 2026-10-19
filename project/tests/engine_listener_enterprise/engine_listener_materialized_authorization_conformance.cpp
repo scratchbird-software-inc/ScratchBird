@@ -11,6 +11,7 @@
 #include "security/security_model.hpp"
 #include "uuid.hpp"
 
+#include <algorithm>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -337,6 +338,33 @@ void MaterializedContextIsAuthority() {
           "EngineAuthorize accepted stale materialized authorization context");
   Require(HasDiagnosticCode(stale_authorize, "SECURITY.CONTEXT.EXPIRED"),
           "stale authorization diagnostic drifted");
+
+  for (unsigned fault=0; fault<7; ++fault) {
+    auto invalid=context;
+    const char* expected=nullptr;
+    switch (fault) {
+      case 0: invalid.authorization_context.security_context_generation=0;
+        expected="security_context_generation_missing"; break;
+      case 1: invalid.authorization_context.security_epoch=0;
+        expected="security_epoch_missing"; break;
+      case 2: invalid.authorization_context.policy_epoch=0;
+        expected="policy_epoch_missing"; break;
+      case 3: invalid.authorization_context.catalog_generation_id=0;
+        expected="catalog_generation_missing"; break;
+      case 4: invalid.authorization_context.authority_uuid={};
+        expected="authority_identity_invalid"; break;
+      case 5: ++invalid.security_epoch;
+        expected="security_epoch_mismatch"; break;
+      case 6: ++invalid.catalog_generation_id;
+        expected="catalog_generation_mismatch"; break;
+    }
+    const auto result=api::EngineAuthorize(AuthorizeRequest(invalid,ids.table,"SELECT"));
+    Require(!result.ok&&!result.authorized&&HasDiagnosticCode(result,"SECURITY.CONTEXT.EXPIRED"),
+        "invalid materialized identity retained its historical refusal");
+    Require(std::any_of(result.diagnostics.front().fields.begin(),result.diagnostics.front().fields.end(),
+        [&](const auto& field){return field.key=="authorization_context_failure"&&field.value==expected;}),
+        "identity refusal distinguishes the exact missing or mismatched field");
+  }
 }
 
 void RecursiveGroupAuthorizationDepthAndVariationsAreEngineOwned() {

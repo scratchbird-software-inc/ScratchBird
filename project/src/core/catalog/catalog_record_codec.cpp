@@ -16,11 +16,21 @@
 #include "catalog_metric_retention_policy.hpp"
 #include "catalog_storage_action_policy.hpp"
 #include "catalog_runtime_authority_binding.hpp"
+#include "catalog_agent_bootstrap.hpp"
 #include "catalog_bootstrap_policy.hpp"
 #include "catalog_memory_configuration.hpp"
 #include "catalog_identifier_profile.hpp"
+#include "catalog_naming_dialect_profile.hpp"
+#include "catalog_naming_collision_policy.hpp"
 #include "catalog_construction_intent.hpp"
 #include "catalog_policy_descriptor.hpp"
+#include "catalog_verification_policy.hpp"
+#include "catalog_evidence_policy.hpp"
+#include "catalog_authorization_policy.hpp"
+#include "catalog_transaction_policy.hpp"
+#include "catalog_lock_policy.hpp"
+#include "catalog_isolation_profile.hpp"
+#include "catalog_management_descriptor.hpp"
 #include "catalog_crypto_inline_private_key_policy.hpp"
 #include "catalog_scheduler_policy.hpp"
 #include "catalog_scheduler_fairness.hpp"
@@ -160,6 +170,10 @@ CatalogTypedRecordViewResult ValidateCatalogTypedRecordView(CatalogTypedRecordVi
       !CatalogRuntimeAuthorityBindingMatchesHeader(record))
     return RecordViewError("CATALOG.INVALID_INPUT", "catalog.runtime_authority_binding.invalid",
                       "runtime_authority_binary_payload_or_header_invalid");
+  if (IsCatalogAgentBootstrapPayload(record.payload) &&
+      !CatalogAgentBootstrapMatchesHeader(record))
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.agent_bootstrap.invalid",
+                          "agent_bootstrap_binary_payload_or_header_invalid");
   if (IsCatalogConstructionIntentPayload(record.payload) &&
       !CatalogConstructionIntentMatchesHeader(record))
     return RecordViewError("AUDIT.EVENT_INVALID", "audit.construction_intent.invalid",
@@ -168,6 +182,28 @@ CatalogTypedRecordViewResult ValidateCatalogTypedRecordView(CatalogTypedRecordVi
       !CatalogPolicyDescriptorMatchesHeader(record))
     return RecordViewError("CATALOG.INVALID_INPUT", "catalog.policy_descriptor.invalid",
                           "policy_descriptor_binary_payload_or_header_invalid");
+  if (IsCatalogEvidencePolicyPayload(record.payload) && !CatalogEvidencePolicyMatchesHeader(record))
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.evidence_policy.invalid",
+                          "evidence_policy_binary_payload_or_header_invalid");
+  if (IsCatalogAuthorizationPolicyPayload(record.payload) && !CatalogAuthorizationPolicyMatchesHeader(record))
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.authorization_policy.invalid",
+                          "authorization_policy_binary_payload_or_header_invalid");
+  if (IsCatalogTransactionPolicyPayload(record.payload) && !CatalogTransactionPolicyMatchesHeader(record))
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.transaction_policy.invalid",
+                          "transaction_policy_binary_payload_or_header_invalid");
+  if (IsCatalogLockPolicyPayload(record.payload) && !CatalogLockPolicyMatchesHeader(record))
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.lock_policy.invalid",
+                          "lock_policy_binary_payload_or_header_invalid");
+  if (IsCatalogIsolationProfilePayload(record.payload) && !CatalogIsolationProfileMatchesHeader(record))
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.isolation_profile.invalid",
+                          "isolation_profile_binary_payload_or_header_invalid");
+  if (IsCatalogVerificationPolicyPayload(record.payload) && !CatalogVerificationPolicyMatchesHeader(record))
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.verification_policy.invalid",
+                          "verification_policy_binary_payload_or_header_invalid");
+  if ((IsCatalogManagementProfilePayload(record.payload) && !CatalogManagementProfileMatchesHeader(record)) ||
+      (IsCatalogManagementDescriptorPayload(record.payload) && !CatalogManagementDescriptorMatchesHeader(record)))
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.management_descriptor.invalid",
+                          "management_definition_binary_payload_or_header_invalid");
   if (IsCatalogCryptoInlinePrivateKeyPolicyPayload(record.payload) &&
       !CatalogCryptoInlinePrivateKeyPolicyMatchesHeader(record))
     return RecordViewError("CATALOG.INVALID_INPUT", "catalog.crypto_inline_private_key.invalid",
@@ -176,6 +212,14 @@ CatalogTypedRecordViewResult ValidateCatalogTypedRecordView(CatalogTypedRecordVi
       !CatalogIdentifierProfileMatchesHeader(record))
     return RecordViewError("CATALOG.INVALID_INPUT", "catalog.identifier_profile.invalid",
                           "identifier_profile_binary_payload_or_header_invalid");
+  if (IsCatalogNamingDialectProfilePayload(record.payload) &&
+      !CatalogNamingDialectProfileMatchesHeader(record))
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.naming_dialect_profile.invalid",
+                          "naming_dialect_profile_binary_payload_or_header_invalid");
+  if (IsCatalogNamingCollisionPolicyPayload(record.payload) &&
+      !CatalogNamingCollisionPolicyMatchesHeader(record))
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.naming_collision_policy.invalid",
+                          "naming_collision_policy_binary_payload_or_header_invalid");
   if (IsCatalogBootstrapPolicyPayload(record.payload) &&
       !CatalogBootstrapPolicyMatchesHeader(record))
     return RecordViewError("CATALOG.INVALID_INPUT", "catalog.bootstrap_policy.invalid",
@@ -459,6 +503,28 @@ std::optional<CatalogRecordDiagnosticView> ValidateCatalogMetadataVersionView(co
        IsCatalogPolicyDescriptorPayload(value.record.payload)) &&
       !CatalogPolicyDescriptorMatchesMetadata(value))
     return MetadataViewError("policy_descriptor_definition_binding_invalid");
+  if ((value.object_subtype == "evidence_policy_body" || IsCatalogEvidencePolicyPayload(value.record.payload)) &&
+      !CatalogEvidencePolicyMatchesMetadata(value))
+    return MetadataViewError("evidence_policy_definition_binding_invalid");
+  if ((value.object_subtype == "authorization_policy_body" || IsCatalogAuthorizationPolicyPayload(value.record.payload)) &&
+      !CatalogAuthorizationPolicyMatchesMetadata(value))
+    return MetadataViewError("authorization_policy_definition_binding_invalid");
+  if ((value.object_subtype == "transaction_policy_body" || IsCatalogTransactionPolicyPayload(value.record.payload)) &&
+      !CatalogTransactionPolicyMatchesMetadata(value))
+    return MetadataViewError("transaction_policy_definition_binding_invalid");
+  if ((value.object_subtype == "lock_policy_body" || IsCatalogLockPolicyPayload(value.record.payload)) &&
+      !CatalogLockPolicyMatchesMetadata(value))
+    return MetadataViewError("lock_policy_definition_binding_invalid");
+  if ((value.object_subtype == "isolation_profile" || IsCatalogIsolationProfilePayload(value.record.payload)) &&
+      !CatalogIsolationProfileMatchesMetadata(value))
+    return MetadataViewError("isolation_profile_definition_binding_invalid");
+  if ((value.object_subtype == "verification_policy_body" || IsCatalogVerificationPolicyPayload(value.record.payload)) &&
+      !CatalogVerificationPolicyMatchesMetadata(value))
+    return MetadataViewError("verification_policy_definition_binding_invalid");
+  if ((value.object_subtype == "management_profile" || IsCatalogManagementProfilePayload(value.record.payload)) &&
+      !CatalogManagementProfileMatchesMetadata(value))return MetadataViewError("management_profile_definition_binding_invalid");
+  if ((value.object_subtype == "management_descriptor" || IsCatalogManagementDescriptorPayload(value.record.payload)) &&
+      !CatalogManagementDescriptorMatchesMetadata(value))return MetadataViewError("management_descriptor_definition_binding_invalid");
   if (IsCatalogCryptoInlinePrivateKeyPolicyFamily(value) &&
       !CatalogCryptoInlinePrivateKeyPolicyMatchesMetadata(value))
     return MetadataViewError("crypto_inline_private_key_definition_binding_invalid");
@@ -466,6 +532,14 @@ std::optional<CatalogRecordDiagnosticView> ValidateCatalogMetadataVersionView(co
        IsCatalogIdentifierProfilePayload(value.record.payload)) &&
       !CatalogIdentifierProfileMatchesMetadata(value))
     return MetadataViewError("identifier_profile_definition_binding_invalid");
+  if ((value.object_subtype == "naming_dialect_profile" ||
+       IsCatalogNamingDialectProfilePayload(value.record.payload)) &&
+      !CatalogNamingDialectProfileMatchesMetadata(value))
+    return MetadataViewError("naming_dialect_profile_definition_binding_invalid");
+  if ((value.object_subtype == "naming_collision_policy_body" ||
+       IsCatalogNamingCollisionPolicyPayload(value.record.payload)) &&
+      !CatalogNamingCollisionPolicyMatchesMetadata(value))
+    return MetadataViewError("naming_collision_policy_definition_binding_invalid");
   if ((IsCatalogTableDefinitionPayload(value.record.payload) ||
        value.object_subtype == "ordinary_persistent_table") &&
       !CatalogTableDefinitionMatchesMetadata(value))
@@ -688,8 +762,17 @@ bool CatalogMetadataPreservesFamilyOrigin(
       CatalogBootstrapPolicyPreservesOrigin(previous,successor) &&
       CatalogMemoryConfigurationPreservesOrigin(previous,successor) &&
       CatalogIdentifierProfilePreservesOrigin(previous,successor) &&
+      CatalogNamingDialectProfilePreservesOrigin(previous,successor) &&
+      CatalogNamingCollisionPolicyPreservesOrigin(previous,successor) &&
       CatalogConstructionIntentPreservesOrigin(previous,successor) &&
       CatalogPolicyDescriptorPreservesOrigin(previous,successor) &&
+      CatalogVerificationPolicyPreservesOrigin(previous,successor) &&
+      CatalogEvidencePolicyPreservesOrigin(previous,successor) &&
+      CatalogAuthorizationPolicyPreservesOrigin(previous,successor) &&
+      CatalogTransactionPolicyPreservesOrigin(previous,successor) &&
+      CatalogLockPolicyPreservesOrigin(previous,successor) &&
+      CatalogIsolationProfilePreservesOrigin(previous,successor) &&
+      CatalogManagementDefinitionPreservesOrigin(previous,successor) &&
       CatalogCryptoInlinePrivateKeyPolicyPreservesOrigin(previous,successor) &&
       CatalogRuntimeAuthorityBindingPreservesOrigin(previous,successor) &&
       CatalogContextNamespacePreservesOrigin(previous,successor) &&

@@ -60,6 +60,13 @@ int main() {
     require(valid.request.password_source ==
                 FirstPrincipalBootstrapPasswordSource::kProtectedStdin,
             "--password-stdin must select protected stdin");
+    const auto missing_service_profile = parse({
+        "qa_admin", "/tmp/qa.sbdb", "--mode=embedded",
+        "--resource-seed-pack-root=/tmp/resource-pack",
+        "--policy-seed-pack-root=/tmp/policy-pack",
+    });
+    require(!missing_service_profile.ok,
+            "installer bootstrap still requires its explicit service profile");
 
     const auto missing_mode = parse({
         "qa_admin", "/tmp/qa.sbdb",

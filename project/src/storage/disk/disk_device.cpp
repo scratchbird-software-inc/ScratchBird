@@ -1011,25 +1011,52 @@ RouteSourceTransitionResult RouteOwnershipLease::BeginNativeSourceTransition(
     const std::shared_ptr<RouteOwnershipLease>& owner) noexcept {
   RouteSourceTransitionResult out;
   try {
-    if (!owner) return out;
+    // The supplied reference can be a mutable DatabaseOwnershipLock member.
+    // Pin it before an allocator callback can withdraw/reset that member.
+    auto retained = owner;
+    if (!retained) return out;
     auto& registry = LeaseRegistry();
-    if (owner->owner_pid_ != OwnershipProcessId() || registry.process_id != OwnershipProcessId()) {
+    if (retained->owner_pid_ != OwnershipProcessId() || registry.process_id != OwnershipProcessId()) {
       out.error = RouteSourceTransitionError::wrong_process; return out;
     }
-    std::lock_guard<std::mutex> guard(registry.mutex);
-    if (!owner->valid() || !owner->issuing_) {
-      out.error = RouteSourceTransitionError::withdrawn; return out;
+    {
+      std::lock_guard<std::mutex> guard(registry.mutex);
+      if (!retained->valid() || !retained->issuing_) {
+        out.error = RouteSourceTransitionError::withdrawn; return out;
+      }
+      out.transition = retained->transition_.lock();
+      if (out.transition) {
+        retained->accepting_ = false;
+        retained->transition_started_ = true;
+        out.error = RouteSourceTransitionError::none;
+        return out;
+      }
     }
-    out.transition = owner->transition_.lock();
-    if (!out.transition) {
-      // Allocation failure precedes the admission fence. Recreating a dropped
-      // observer never resets the owner's already-started transition state.
-      out.transition = std::shared_ptr<RouteSourceTransition>(new RouteSourceTransition(owner));
-      owner->transition_ = out.transition;
+    // Neither allocation nor destruction of a losing candidate/expired weak
+    // observer may run under the registry mutex. Reentrant admission can win
+    // here, or withdrawal can invalidate this provisional attempt.
+    auto candidate = std::shared_ptr<RouteSourceTransition>(new RouteSourceTransition(retained));
+    std::weak_ptr<RouteSourceTransition> previous;
+    if (retained->owner_pid_ != OwnershipProcessId() || registry.process_id != OwnershipProcessId()) {
+      out.error = RouteSourceTransitionError::wrong_process; return out;
     }
-    owner->accepting_ = false;
-    owner->transition_started_ = true;
-    out.error = RouteSourceTransitionError::none;
+    {
+      std::lock_guard<std::mutex> guard(registry.mutex);
+      if (!retained->valid() || !retained->issuing_) {
+        out.error = RouteSourceTransitionError::withdrawn; return out;
+      }
+      out.transition = retained->transition_.lock();
+      if (!out.transition) {
+        previous.swap(retained->transition_);
+        retained->transition_ = candidate;
+        out.transition = std::move(candidate);
+      }
+      // Publish the actual fence only after final owning-state validation.
+      // Recreating a dropped observer never reopens legacy admission.
+      retained->accepting_ = false;
+      retained->transition_started_ = true;
+      out.error = RouteSourceTransitionError::none;
+    }
   } catch (const std::bad_alloc&) { out.error = RouteSourceTransitionError::resource_exhausted; }
     catch (...) { out.error = RouteSourceTransitionError::lock_failure; }
   return out;

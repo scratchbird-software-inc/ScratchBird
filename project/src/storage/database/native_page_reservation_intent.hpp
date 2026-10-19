@@ -171,6 +171,8 @@ inline NativePageReservationIntentImage ReadNativePageReservationIntentFromOpera
  using E=NativePageReservationIntentError;
  const auto fail=[](E e){return NativePageReservationIntentImage{e,{},{}};};
  if(operation.normalized_request_bytes.size()>budget)return fail(E::resource_exhausted);
+ // This request schema has no typed mutable state; a newer family must own it.
+ if(!operation.operation_state_bytes.empty())return fail(E::invalid_header);
  // Neither validation nor decoding may overwrite ANY retained record material,
  // even when the corresponding field is not part of this family's binding.
  const auto text=[](std::string_view s){return std::span<const char>{s.data(),s.size()};};

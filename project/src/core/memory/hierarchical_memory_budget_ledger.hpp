@@ -300,6 +300,18 @@ class HierarchicalMemoryBudgetLedger {
   HierarchicalMemoryCleanupResult CleanupOwner(const MemoryBinaryUuid& owner_uuid);
   HierarchicalMemoryCleanupResult CleanupExpiredLeases(u64 now_ms);
   HierarchicalMemoryBudgetSnapshot Snapshot() const;
+  // Teardown query without snapshot/diagnostic allocation. The caller must
+  // fence new reservations before using a negative result to retire an owner.
+  // Retained revoked reservations still count until their payloads release.
+  bool HasReservationsOtherThan(HierarchicalMemoryReservationToken excluded) const;
+  // Same teardown fence requirement; binary scope lookup allocates nothing.
+  // Revoked retained payloads remain live until their original token retires.
+  bool HasReservationsInScope(HierarchicalMemoryScopeKind, const MemoryBinaryUuid&) const;
+  // Includes reserved, active and retained revoked credit. No allocation; an
+  // overflowing sum saturates. The caller must fence new reservations while
+  // using this observation for admission. Concurrent releases only reduce it.
+  u64 ReservationBytesInScope(HierarchicalMemoryScopeKind, const MemoryBinaryUuid&,
+                              MemoryCategory) const;
 
   struct ScopeAccounting {
     HierarchicalMemoryScopeKind kind = HierarchicalMemoryScopeKind::process;

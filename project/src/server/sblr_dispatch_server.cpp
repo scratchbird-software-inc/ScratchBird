@@ -6537,7 +6537,8 @@ PublicAbiDispatchResult DispatchThroughStatementContextReceipt(
     if (dispatch_result.diagnostic_detail.empty()) {
       dispatch_result.diagnostic_detail =
           std::string("status=") + sb_engine_status_name(status) +
-          ";engine_result_missing";
+          (engine_result == nullptr ? ";engine_result_missing"
+                                    : ";engine_diagnostic_detail_absent");
     }
     const char* trace_path =
         std::getenv("SCRATCHBIRD_SBLR_DISPATCH_PHASE_TRACE_FILE");

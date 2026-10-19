@@ -10,6 +10,8 @@
 // SEARCH_KEY: SB_SERVER_AGENT_THREAD_RUNTIME
 
 #include "server_agent_runtime.hpp"
+#include <future>
+#include "startup_trace.hpp"
 
 #include "agent_runtime.hpp"
 #include "agents/agent_action_hooks_api.hpp"
@@ -323,13 +325,6 @@ ServerDiagnostic RuntimeDiagnostic(std::string code,
                           std::move(fields)};
 }
 
-struct ServerAgentAuthorityEpochs {
-  std::uint64_t catalog_generation_id = 1;
-  std::uint64_t security_epoch = 1;
-  std::uint64_t resource_epoch = 1;
-  std::uint64_t name_resolution_epoch = 1;
-};
-
 struct ProcessMemorySnapshot {
   bool available = false;
   std::uint64_t rss_kb = 0;
@@ -368,19 +363,6 @@ ProcessMemorySnapshot ReadCurrentProcessMemorySnapshot() {
   snapshot.available = snapshot.rss_kb != 0 || snapshot.vsize_kb != 0;
 #endif
   return snapshot;
-}
-
-ServerAgentAuthorityEpochs AuthorityEpochsFromDatabase(
-    const HostedDatabaseSnapshot& database) {
-  ServerAgentAuthorityEpochs epochs;
-  epochs.catalog_generation_id =
-      std::max<std::uint64_t>(1, database.policy_generation);
-  epochs.security_epoch = std::max<std::uint64_t>(1, database.security_epoch);
-  epochs.resource_epoch =
-      std::max<std::uint64_t>(1, database.cache_invalidation_epoch);
-  epochs.name_resolution_epoch =
-      std::max<std::uint64_t>(1, database.cache_invalidation_epoch);
-  return epochs;
 }
 
 const char* AgentRuntimeHostedStateName(HostedDatabaseState state) {
@@ -451,54 +433,20 @@ std::string EvidenceValue(const engine_api::EngineApiResult& result,
   return {};
 }
 
-engine_api::EngineRequestContext ServerAgentBaseContext(
+engine_api::EngineRequestContext ServerAgentRequestMetadata(
     const std::string& database_path,
     const std::string& database_uuid,
-    const ServerAgentAuthorityEpochs& epochs,
-    std::uint64_t generation,
     std::string request_id) {
   engine_api::EngineRequestContext context;
   context.trust_mode = engine_api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
   context.database_path = database_path;
   context.database_uuid = BinaryIdentity(database_uuid);
-  context.principal_uuid =
-      BinaryIdentity(agents::DeterministicAgentRuntimePrincipalUuidFromKey(
-          database_uuid + "|server_agent_runtime"));
-  context.session_uuid =
-      BinaryIdentity(ServerAgentRuntimeUuid(database_uuid,
-                             "session|" + std::to_string(generation),
-                             102 + generation));
-  context.security_context_present = true;
-  context.catalog_generation_id = epochs.catalog_generation_id;
-  context.security_epoch = epochs.security_epoch;
-  context.resource_epoch = epochs.resource_epoch;
-  context.name_resolution_epoch = epochs.name_resolution_epoch;
   context.current_monotonic_ns = std::to_string(CurrentMonotonicNs());
-  context.trace_tags.push_back("server.agent.engine_materialized_authority");
-
-  auto& authorization = context.authorization_context;
-  authorization.present = true;
-  authorization.authority_uuid = context.database_uuid;
-  authorization.principal_uuid = context.principal_uuid;
-  authorization.security_epoch = context.security_epoch;
-  authorization.policy_epoch = 1;
-  authorization.catalog_generation_id = context.catalog_generation_id;
-  authorization.effective_subjects.push_back({context.principal_uuid, "principal"});
-  for (const std::string_view right : {
-           "OBS_AGENT_STATE_READ",
-           "OBS_AGENT_EVIDENCE_READ",
-           "OBS_AGENT_CONTROL",
-       }) {
-    engine_api::EngineMaterializedAuthorizationGrant grant;
-    grant.grant_uuid = BinaryIdentity(NewTypedUuidBytes(platform::UuidKind::object,
-        database_uuid + std::string(right), generation));
-    grant.subject_uuid = context.principal_uuid;
-    grant.subject_kind = "principal";
-    grant.right = right;
-    grant.security_epoch = context.security_epoch;
-    authorization.grants.push_back(std::move(grant));
-  }
+  // Request metadata is not service admission. A hosted status snapshot cannot
+  // issue a principal/session, remap configuration epochs into authority or
+  // manufacture grants. Leave authority absent until the owning native
+  // provider/session admission path supplies it; the engine must refuse BEGIN.
   return context;
 }
 
@@ -507,21 +455,20 @@ struct ServerAgentTransactionContext {
   engine_api::EngineRequestContext context;
   std::string diagnostic_code;
   std::string diagnostic_detail;
+  std::optional<engine_api::EngineApiDiagnostic> source_diagnostic;
 };
 
 ServerAgentTransactionContext BeginServerAgentTransaction(
     const std::string& database_path,
     const std::string& database_uuid,
-    const ServerAgentAuthorityEpochs& epochs,
     std::uint64_t generation,
-    const std::string& purpose) {
+    const std::string& purpose,
+    const ServerBootstrapConfig* trace_config = nullptr) {
   ServerAgentTransactionContext out;
   engine_api::EngineBeginTransactionRequest begin;
-  begin.context = ServerAgentBaseContext(
+  begin.context = ServerAgentRequestMetadata(
       database_path,
       database_uuid,
-      epochs,
-      generation,
       "server-agent-" + purpose + "-" + std::to_string(generation));
   begin.context.local_transaction_id = 0;
   begin.context.transaction_uuid = {};
@@ -533,13 +480,17 @@ ServerAgentTransactionContext BeginServerAgentTransaction(
       "transaction_read_only:false");
   begin.transaction_policy_profile.encoded_profiles.push_back(
       "transaction_read_mode:read_write");
-  const auto begun = engine_api::EngineBeginTransaction(begin);
+  if(trace_config)TraceServerStartupPhase(*trace_config,"agent_transaction_begin","requested",&begin.context);
+  auto begun = engine_api::EngineBeginTransaction(begin);
   if (!begun.ok || begun.local_transaction_id == 0 ||
       begun.transaction_uuid.is_nil()) {
+    if(trace_config)TraceServerStartupPhase(*trace_config,"agent_transaction_begin","refused",&begin.context,
+        begun.diagnostics.empty()?nullptr:&begun.diagnostics.front());
     out.diagnostic_code =
         FirstDiagnosticCode(begun, "SERVER.AGENT_RUNTIME.MGA_BEGIN_FAILED");
     out.diagnostic_detail =
         FirstDiagnosticDetail(begun, "server_agent_transaction_begin_failed");
+    if (!begun.diagnostics.empty()) out.source_diagnostic=std::move(begun.diagnostics.front());
     return out;
   }
   out.context = begin.context;
@@ -550,6 +501,7 @@ ServerAgentTransactionContext BeginServerAgentTransaction(
   out.context.transaction_isolation_level = begun.isolation_level;
   out.context.read_only_mode = begun.read_only;
   out.context.transaction_timestamp = EvidenceValue(begun, "transaction_timestamp");
+  if(trace_config)TraceServerStartupPhase(*trace_config,"agent_transaction_begin","accepted",&out.context);
   out.ok = true;
   return out;
 }
@@ -670,13 +622,29 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
                                const HostedEngineState& engine_state,
                                std::vector<ServerDiagnostic>* diagnostics,
                                void (*before_failure_cleanup)() noexcept) {
+  return StartImpl(config, engine_state, diagnostics, before_failure_cleanup, false);
+}
+
+bool ServerAgentRuntime::StartCoordinator(const ServerBootstrapConfig& config,
+                                          const HostedEngineState& engine_state,
+                                          std::vector<ServerDiagnostic>* diagnostics,
+                                          void (*before_failure_cleanup)() noexcept) {
+  return StartImpl(config, engine_state, diagnostics, before_failure_cleanup, true);
+}
+
+bool ServerAgentRuntime::StartImpl(const ServerBootstrapConfig& config,
+                                  const HostedEngineState& engine_state,
+                                  std::vector<ServerDiagnostic>* diagnostics,
+                                  void (*before_failure_cleanup)() noexcept,
+                                  bool database_configured) {
+  TraceServerStartupPhase(config,"agent_runtime","entered");
   // SEARCH_KEY: SERVER_AGENT_START_STOP_LIFECYCLE_SERIALIZATION
   // Retain ownership through durable setup, publication and native launch.
   // started_ alone is not proof that the thread handles are fully installed.
   std::lock_guard<std::mutex> lifecycle_guard(lifecycle_mutex_);
   {
     std::lock_guard<std::mutex> guard(state_mutex_);
-    if (started_ && stopping_.load()) {
+    if ((started_ && stopping_.load()) || (!started_ && scheduler_thread_.joinable())) {
       if (diagnostics != nullptr) {
         diagnostics->push_back(ServerDiagnostic{
             "AGENT.INVALID_STATE", "AGENT.INVALID_STATE", ServerDiagnosticSeverity::kError,
@@ -745,11 +713,55 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
     }
     return true;
   }
-  const ServerAgentAuthorityEpochs authority_epochs =
-      AuthorityEpochsFromDatabase(*database);
-
   std::vector<std::string> assignments = database->selected_agent_type_ids;
-  if (assignments.empty()) {
+  std::optional<DatabaseOwnershipLock::CoordinatorLease> coordinator_lease;
+  if (database_configured) {
+    const auto runtime = FindHostedDatabaseRuntime(
+        engine_state, database->database_uuid, database->database_path);
+    const auto owner = std::find_if(engine_state.database_ownership_locks.begin(),
+        engine_state.database_ownership_locks.end(), [&](const auto& candidate) {
+          return candidate && candidate->valid() &&
+              candidate->lock_path() == DatabaseOwnershipLockPath(database->database_path);
+        });
+    if (!runtime || owner == engine_state.database_ownership_locks.end()) {
+      if (diagnostics) diagnostics->push_back(RuntimeDiagnostic(
+          "SERVER.AGENT_RUNTIME.OWNERSHIP_REQUIRED",
+          "The coordinator requires the opened database's retained exclusive owner."));
+      return false;
+    }
+    coordinator_lease = DatabaseOwnershipLock::AcquireCoordinatorLease(*owner);
+    if (!coordinator_lease) {
+      if (diagnostics) diagnostics->push_back(RuntimeDiagnostic(
+          "SB_DIAG_AGENT_COORDINATOR_DUPLICATE",
+          "This database owner already has a coordinator awaiting complete shutdown."));
+      return false;
+    }
+    // Absence means no configured background agents, never install defaults.
+    // This read does not create a session, begin a transaction or grant rights.
+    const auto loaded = engine_api::LoadAgentDurableCatalogImage(
+        ServerAgentRequestMetadata(database->database_path,
+            IdentityBytes(database->database_uuid), "coordinator-configuration"), true);
+    if (!loaded.ok && loaded.load_disposition !=
+        engine_api::AgentDurableCatalogLoadDisposition::absent) {
+      if (diagnostics) diagnostics->push_back(RuntimeDiagnostic(
+          loaded.diagnostic.code, "The coordinator could not read its database configuration.",
+          {{"detail", loaded.diagnostic.detail}}));
+      return false;
+    }
+    assignments.clear();
+    if (loaded.ok) {
+      for (const auto& instance : loaded.image.instances) {
+        const auto policy = std::find_if(loaded.image.policies.begin(),
+            loaded.image.policies.end(), [&](const auto& candidate) {
+              return candidate.policy_uuid == instance.policy_uuid;
+            });
+        if (policy != loaded.image.policies.end() && policy->enabled &&
+            (instance.state == agents::AgentLifecycleState::registered ||
+             instance.state == agents::AgentLifecycleState::running))
+          assignments.push_back(instance.agent_type_id);
+      }
+    }
+  } else if (assignments.empty()) {
     assignments = DefaultAgentAssignments();
   }
   assignments = PrioritizeDmlPreworkAssignments(std::move(assignments));
@@ -774,7 +786,7 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
       assignments.empty() ? planned_worker_count
                           : static_cast<std::uint32_t>(assignments.size());
   const std::uint32_t worker_count =
-      std::max<std::uint32_t>(1,
+      assignments.empty() ? 0 : std::max<std::uint32_t>(1,
                               std::min(planned_worker_count,
                                        std::min(assignment_worker_count,
                                                 kIdleResidentAgentSlots)));
@@ -799,17 +811,14 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
     database_path_ = database->database_path;
     database_uuid_ = IdentityBytes(database->database_uuid);
     filespace_uuid_ = IdentityBytes(database->filespace_uuid);
-    catalog_generation_id_ = authority_epochs.catalog_generation_id;
-    security_epoch_ = authority_epochs.security_epoch;
-    resource_epoch_ = authority_epochs.resource_epoch;
-    name_resolution_epoch_ = authority_epochs.name_resolution_epoch;
     status_path_ = config.control_dir / "sb_server.agent_runtime.json";
     hardware_concurrency_ = hardware;
     effective_cpu_count_ = static_cast<std::uint32_t>(capacity.effective_cpu_count);
     foreground_reserved_capacity_ =
         static_cast<std::uint32_t>(capacity.foreground_reserved_capacity);
     background_worker_slots_ = bounded_worker_count;
-    worker_wake_policy_ = "staggered_worker_per_scheduler_tick";
+    worker_wake_policy_ = bounded_worker_count == 0
+        ? "lifecycle_events_only" : "staggered_worker_per_scheduler_tick";
     selected_agents_ = std::move(assignments);
     server_agent_runtime_test_options_ =
         config.server_agent_runtime_test_options;
@@ -856,18 +865,156 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
     return false;
   }
 
-  {
+
+  coordinator_mode_ = database_configured;
+  coordinator_startup_complete_ = false;
+  coordinator_children_joined_ = false;
+  coordinator_shutdown_failure_ = nullptr;
+  try {
+    coordinator_lease_ = std::move(coordinator_lease);
+    if (coordinator_mode_) {
+      std::promise<bool> ready;
+      auto result = ready.get_future();
+      // Publish ownership before launch so partial startup uses the same
+      // cooperative join/cleanup path as a fully started runtime.
+      {
+        std::lock_guard<std::mutex> guard(state_mutex_);
+        started_ = true;
+      }
+      scheduler_thread_ = std::thread([this, &config, diagnostics, bounded_worker_count,
+                                       ready = std::move(ready)]() mutable {
+        SetCurrentThreadName("sb-agent-sch");
+        try {
+          {
+            std::lock_guard<std::mutex> guard(state_mutex_);
+            scheduler_thread_id_ = ThreadIdText(std::this_thread::get_id());
+            startup_agent_thread_id_ = scheduler_thread_id_;
+            shutdown_agent_thread_id_.clear();
+            startup_agent_state_ = "running";
+            shutdown_agent_state_ = "not_started";
+          }
+          const bool initialized = InitializeConfiguredAgents(config, diagnostics);
+          if (initialized) {
+            for (std::size_t i = 0; i < bounded_worker_count; ++i)
+              worker_threads_.emplace_back(&ServerAgentRuntime::WorkerLoop, this, i);
+          }
+          {
+            std::lock_guard<std::mutex> guard(state_mutex_);
+            startup_agent_state_ = initialized ? "completed" : "failed";
+          }
+          WriteStatusSnapshot();
+          coordinator_startup_complete_ = initialized;
+          ready.set_value(initialized);
+          if (!initialized) return;
+        } catch (...) {
+          {
+            std::lock_guard<std::mutex> guard(state_mutex_);
+            startup_agent_state_ = "failed";
+          }
+          ready.set_exception(std::current_exception());
+          return;
+        }
+        // Startup and shutdown are event-driven work on the sole coordinator,
+        // not additional resident threads. No stack references above are used
+        // after startup completion has been delivered to the caller.
+        try {
+          SchedulerLoop();
+        } catch (...) {
+          {
+            std::lock_guard<std::mutex> guard(state_mutex_);
+            coordinator_shutdown_failure_ = std::current_exception();
+          }
+          {
+            std::lock_guard<std::mutex> lock(schedule_mutex_);
+            stopping_.store(true);
+          }
+          schedule_cv_.notify_all();
+        }
+        try {
+          {
+            std::lock_guard<std::mutex> guard(state_mutex_);
+            shutdown_agent_state_ = "running";
+            shutdown_agent_thread_id_ = scheduler_thread_id_;
+          }
+          {
+            std::unique_lock<std::mutex> lock(schedule_mutex_);
+            schedule_cv_.wait(lock, [&] { return coordinator_children_joined_; });
+          }
+          const auto stopped = CompleteDurableShutdown();
+          {
+            std::lock_guard<std::mutex> guard(state_mutex_);
+            shutdown_agent_state_ = stopped.ok() && !coordinator_shutdown_failure_
+                ? "completed" : "failed";
+          }
+          WriteStatusSnapshot();
+        } catch (...) {
+          std::lock_guard<std::mutex> guard(state_mutex_);
+          shutdown_agent_state_ = "failed";
+          if (!coordinator_shutdown_failure_)
+            coordinator_shutdown_failure_ = std::current_exception();
+        }
+      });
+      if (!result.get()) {
+        StopWithLifecycleLock();
+        return false;
+      }
+    } else {
+      if (!InitializeConfiguredAgents(config, diagnostics)) return false;
+      scheduler_thread_ = std::thread(&ServerAgentRuntime::SchedulerLoop, this);
+      for (std::size_t i = 0; i < bounded_worker_count; ++i)
+        worker_threads_.emplace_back(&ServerAgentRuntime::WorkerLoop, this, i);
+      WriteStatusSnapshot();
+    }
+  } catch (...) {
+    // Retain the native exception contract, but never leave a partially launched
+    // or fully launched cohort running when construction/publication fails.
+    const auto startup_failure = std::current_exception();
+    if (before_failure_cleanup) before_failure_cleanup();
+    {
+      std::lock_guard<std::mutex> guard(state_mutex_);
+      if (!startup_failure_) startup_failure_ = startup_failure;
+    }
+    try {
+      StopWithLifecycleLock();
+#if defined(__GLIBCXX__) && !defined(_WIN32)
+    } catch (const __cxxabiv1::__forced_unwind&) {
+      throw;
+#endif
+    } catch (...) {
+      std::lock_guard<std::mutex> guard(state_mutex_);
+      if (!cleanup_failure_) {
+        cleanup_failure_ = std::current_exception();
+        cleanup_failure_stage_ = ServerAgentRuntimeSnapshot::CleanupFailureStage::kOther;
+      }
+      std::rethrow_exception(startup_failure);
+    }
+    throw;
+  }
+  return true;
+}
+
+bool ServerAgentRuntime::InitializeConfiguredAgents(
+    const ServerBootstrapConfig& config,
+    std::vector<ServerDiagnostic>* diagnostics) {
+  if (!selected_agents_.empty()) {
     auto seed_tx = BeginServerAgentTransaction(database_path_,
                                                database_uuid_,
-                                               authority_epochs,
                                                1,
-                                               "catalog-seed");
+                                               "catalog-seed",&config);
     if (!seed_tx.ok) {
       if (diagnostics != nullptr) {
-        diagnostics->push_back(RuntimeDiagnostic(
+        auto diagnostic=RuntimeDiagnostic(
             seed_tx.diagnostic_code,
             "The server agent runtime could not begin an MGA transaction for catalog seeding.",
-            {{"detail", seed_tx.diagnostic_detail}}));
+            {{"detail", seed_tx.diagnostic_detail},{"startup_phase","agent_catalog_begin"}});
+        if (seed_tx.source_diagnostic) {
+          // Carry the source occurrence and safe condition fields across the
+          // server wrapper; recreating only code/detail hides the failed gate.
+          diagnostic.occurrence_uuid=seed_tx.source_diagnostic->occurrence_uuid;
+          for(const auto& field:seed_tx.source_diagnostic->fields)
+            diagnostic.fields.push_back({field.key,field.value});
+        }
+        diagnostics->push_back(std::move(diagnostic));
       }
       return false;
     }
@@ -876,6 +1023,8 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
       engine_api::EngineRollbackTransactionRequest rollback;
       rollback.context = seed_tx.context;
       const auto rolled_back = engine_api::EngineRollbackTransaction(rollback);
+      TraceServerStartupPhase(config,"agent_catalog_rollback",rolled_back.ok?"accepted":"failed",&seed_tx.context,
+          rolled_back.diagnostics.empty()?nullptr:&rolled_back.diagnostics.front());
       std::vector<ServerDiagnostic> failures;
       failures.push_back(RuntimeDiagnostic(primary.code, message, {{"detail", primary.detail}}));
       if (!rolled_back.ok) {
@@ -894,6 +1043,9 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
       return false;
     };
     auto loaded = engine_api::LoadAgentDurableCatalogImage(seed_tx.context, true);
+    TraceServerStartupPhase(config,"agent_catalog_load",loaded.ok?"loaded":
+        loaded.load_disposition==engine_api::AgentDurableCatalogLoadDisposition::absent?"absent":"failed",
+        &seed_tx.context,loaded.ok?nullptr:&loaded.diagnostic);
     if (!loaded.ok) {
       if (loaded.load_disposition !=
           engine_api::AgentDurableCatalogLoadDisposition::absent) {
@@ -912,6 +1064,8 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
       seed_request.initialize_only = true;
       const auto seeded =
           engine_api::PersistAgentDurableCatalogImage(seed_request);
+      TraceServerStartupPhase(config,"agent_catalog_seed",seeded.ok?"accepted":"refused",
+          &seed_tx.context,seeded.ok?nullptr:&seeded.diagnostic);
       if (!seeded.ok) {
         return fail_seed(seeded.diagnostic,
             "The server agent runtime durable catalog seed could not be persisted.");
@@ -933,11 +1087,10 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
   }
 
   agents::AgentRuntimeServiceResult service_started;
-  {
+  if (!selected_agents_.empty()) {
     std::lock_guard<std::mutex> service_guard(runtime_service_mutex_);
     auto open_tx = BeginServerAgentTransaction(database_path_,
                                                database_uuid_,
-                                               authority_epochs,
                                                2,
                                                "service-open");
     if (!open_tx.ok) {
@@ -987,7 +1140,6 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
 
     auto recover_tx = BeginServerAgentTransaction(database_path_,
                                                   database_uuid_,
-                                                  authority_epochs,
                                                   4,
                                                   "service-recover");
     if (!recover_tx.ok) {
@@ -1040,7 +1192,6 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
 
     auto start_tx = BeginServerAgentTransaction(database_path_,
                                                 database_uuid_,
-                                                authority_epochs,
                                                 5,
                                                 "service-start");
     if (!start_tx.ok) {
@@ -1079,7 +1230,6 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
 
     auto lease_batch_tx = BeginServerAgentTransaction(database_path_,
                                                        database_uuid_,
-                                                       authority_epochs,
                                                        6,
                                                        "initial-worker-leases");
     if (!lease_batch_tx.ok) {
@@ -1144,48 +1294,26 @@ bool ServerAgentRuntime::Start(const ServerBootstrapConfig& config,
       }
     }
     service_started = std::move(initial_leases_acquired);
+    durable_service_started_ = true;
   }
   {
     std::lock_guard<std::mutex> guard(state_mutex_);
     started_ = true;
-    UpdateRuntimeCatalogSnapshotLocked(service_started.catalog);
+    if (durable_service_started_) UpdateRuntimeCatalogSnapshotLocked(service_started.catalog);
   }
 
-  try {
-    scheduler_thread_ = std::thread(&ServerAgentRuntime::SchedulerLoop, this);
-    for (std::size_t i = 0; i < bounded_worker_count; ++i) {
-      worker_threads_.emplace_back(&ServerAgentRuntime::WorkerLoop, this, i);
-    }
-    // Publication can allocate after the whole cohort has launched. Keep it
-    // inside the same cleanup boundary: failed Start must not strand live
-    // workers for its caller to discover and rescue.
-    WriteStatusSnapshot();
-  } catch (...) {
-    // Retain the native exception contract, but never leave a partially launched
-    // or fully launched cohort running when construction/publication fails.
-    const auto startup_failure = std::current_exception();
-    if (before_failure_cleanup) before_failure_cleanup();
-    {
-      std::lock_guard<std::mutex> guard(state_mutex_);
-      if (!startup_failure_) startup_failure_ = startup_failure;
-    }
-    try {
-      StopWithLifecycleLock();
-#if defined(__GLIBCXX__) && !defined(_WIN32)
-    } catch (const __cxxabiv1::__forced_unwind&) {
-      throw;
-#endif
-    } catch (...) {
-      std::lock_guard<std::mutex> guard(state_mutex_);
-      if (!cleanup_failure_) {
-        cleanup_failure_ = std::current_exception();
-        cleanup_failure_stage_ = ServerAgentRuntimeSnapshot::CleanupFailureStage::kOther;
-      }
-      std::rethrow_exception(startup_failure);
-    }
-    throw;
-  }
   return true;
+}
+
+void ServerAgentRuntime::BeginDrain() {
+  std::lock_guard<std::mutex> lifecycle_guard(lifecycle_mutex_);
+  {
+    std::lock_guard<std::mutex> guard(state_mutex_);
+    if (!started_) return;
+    std::lock_guard<std::mutex> schedule_guard(schedule_mutex_);
+    stopping_.store(true);
+  }
+  schedule_cv_.notify_all();
 }
 
 ServerAgentRuntimeStopResult ServerAgentRuntime::Stop() {
@@ -1196,20 +1324,17 @@ ServerAgentRuntimeStopResult ServerAgentRuntime::Stop() {
 }
 
 ServerAgentRuntimeStopResult ServerAgentRuntime::StopWithLifecycleLock() {
+  bool cleanup_completed = false;
   {
     std::lock_guard<std::mutex> guard(state_mutex_);
-    if (!started_) {
-      return last_stop_result_;
+    cleanup_completed = !started_;
+    if (!cleanup_completed) {
+      // A native join failure retains its handle for a later serialized Stop.
+      last_stop_result_.attempted = true;
+      last_stop_result_.durable_cleanup_complete = false;
+      std::lock_guard<std::mutex> schedule_guard(schedule_mutex_);
+      stopping_.store(true);
     }
-    // A native join can fail without consuming its thread handle. Preserve an
-    // incomplete receipt and let a later serialized Stop retry those handles;
-    // stopping=true alone must never return the previous empty/success receipt.
-    last_stop_result_.attempted = true;
-    last_stop_result_.durable_cleanup_complete = false;
-    // Publish under the waiters' mutex so notification cannot fall between a
-    // false stopping predicate and the condition variable's unlock-and-park.
-    std::lock_guard<std::mutex> schedule_guard(schedule_mutex_);
-    stopping_.store(true);
   }
   schedule_cv_.notify_all();
   const auto join_owned = [&](std::thread& thread,
@@ -1228,11 +1353,42 @@ ServerAgentRuntimeStopResult ServerAgentRuntime::StopWithLifecycleLock() {
       throw;
     }
   };
-  join_owned(scheduler_thread_, ServerAgentRuntimeSnapshot::CleanupFailureStage::kSchedulerJoin, 0);
+  if (cleanup_completed) {
+    // Durable cleanup may finish on the coordinator before its caller's join
+    // succeeds. A completed service result cannot abandon that native handle.
+    join_owned(scheduler_thread_, ServerAgentRuntimeSnapshot::CleanupFailureStage::kSchedulerJoin, 0);
+    if (coordinator_shutdown_failure_)
+      std::rethrow_exception(coordinator_shutdown_failure_);
+    coordinator_lease_.reset();
+    return last_stop_result_;
+  }
+  const bool coordinator_shutdown = coordinator_mode_ && coordinator_startup_complete_;
+  if (!coordinator_shutdown)
+    join_owned(scheduler_thread_, ServerAgentRuntimeSnapshot::CleanupFailureStage::kSchedulerJoin, 0);
   for (std::size_t i = 0; i < worker_threads_.size(); ++i) {
     join_owned(worker_threads_[i], ServerAgentRuntimeSnapshot::CleanupFailureStage::kWorkerJoin, i);
   }
   worker_threads_.clear();
+  if (coordinator_shutdown) {
+    {
+      std::lock_guard<std::mutex> lock(schedule_mutex_);
+      coordinator_children_joined_ = true;
+    }
+    schedule_cv_.notify_all();
+    // Coordinator remains alive through child joins and durable agent cleanup.
+    // This service result does not certify the engine's final node shutdown.
+    join_owned(scheduler_thread_, ServerAgentRuntimeSnapshot::CleanupFailureStage::kSchedulerJoin, 0);
+    if (coordinator_shutdown_failure_)
+      std::rethrow_exception(coordinator_shutdown_failure_);
+    coordinator_lease_.reset();
+    return last_stop_result_;
+  }
+  auto result = CompleteDurableShutdown();
+  coordinator_lease_.reset();
+  return result;
+}
+
+ServerAgentRuntimeStopResult ServerAgentRuntime::CompleteDurableShutdown() {
   // SEARCH_KEY: SERVER_AGENT_DURABLE_STOP_RESULT
   ServerAgentRuntimeStopResult result;
   result.attempted = true;
@@ -1244,6 +1400,7 @@ ServerAgentRuntimeStopResult ServerAgentRuntime::StopWithLifecycleLock() {
     // original diagnostic could not be constructed. All native users joined.
     static_assert(std::is_nothrow_move_assignable_v<ServerAgentRuntimeStopResult>);
     last_stop_result_ = std::move(result);
+    durable_service_started_ = false;
   };
   const auto record_failure = [&](const std::string& phase,
                                   const std::string& code,
@@ -1252,21 +1409,22 @@ ServerAgentRuntimeStopResult ServerAgentRuntime::StopWithLifecycleLock() {
         code, "Server agent durable cleanup did not complete.",
         {{"shutdown_phase", phase}, {"detail", detail}}));
   };
+  if (!durable_service_started_) {
+    result.durable_cleanup_complete = true;
+    publish_result();
+    WriteStatusSnapshot();
+    return last_stop_result_;
+  }
   try {
     std::lock_guard<std::mutex> service_guard(runtime_service_mutex_);
     const auto now = CurrentUnixMillis() * 1000;
-    const ServerAgentAuthorityEpochs authority_epochs{
-        catalog_generation_id_,
-        security_epoch_,
-        resource_epoch_,
-        name_resolution_epoch_};
     const auto run_phase = [&](bool shutdown) {
       const std::string phase = shutdown ? "service-shutdown" : "service-drain";
       std::string operation = phase + ":begin";
       try {
         const auto timestamp = shutdown ? now + 1 : now;
         auto tx = BeginServerAgentTransaction(database_path_, database_uuid_,
-                                              authority_epochs, timestamp, phase);
+                                              timestamp, phase);
         if (!tx.ok) {
           record_failure(phase + ":begin", tx.diagnostic_code, tx.diagnostic_detail);
           return false;
@@ -1347,6 +1505,11 @@ ServerAgentRuntimeSnapshot ServerAgentRuntime::Snapshot() const {
   ServerAgentRuntimeSnapshot snapshot;
   snapshot.started = started_;
   snapshot.stopping = stopping_.load();
+  snapshot.startup_agent_state = startup_agent_state_;
+  snapshot.shutdown_agent_state = shutdown_agent_state_;
+  snapshot.coordinator_thread_id = scheduler_thread_id_;
+  snapshot.startup_agent_thread_id = startup_agent_thread_id_;
+  snapshot.shutdown_agent_thread_id = shutdown_agent_thread_id_;
   snapshot.stop_result = last_stop_result_;
   snapshot.startup_failure = startup_failure_;
   snapshot.cleanup_failure = cleanup_failure_;
@@ -1360,7 +1523,9 @@ ServerAgentRuntimeSnapshot ServerAgentRuntime::Snapshot() const {
   snapshot.effective_cpu_count = effective_cpu_count_;
   snapshot.foreground_reserved_capacity = foreground_reserved_capacity_;
   snapshot.background_worker_slots = background_worker_slots_;
-  snapshot.worker_thread_count = static_cast<std::uint32_t>(worker_evidence_.size());
+  // Planned evidence is prepared before service admission. It cannot report
+  // a started worker cohort when admission failed before native launch.
+  snapshot.worker_thread_count = started_ ? static_cast<std::uint32_t>(worker_evidence_.size()) : 0;
   snapshot.worker_wake_policy = worker_wake_policy_;
   snapshot.scheduler_ticks = scheduler_ticks_;
   snapshot.workers.reserve(worker_evidence_.size());
@@ -1439,6 +1604,12 @@ void ServerAgentRuntime::SchedulerLoop() {
   }
   {
     std::unique_lock<std::mutex> lock(schedule_mutex_);
+    if (worker_completed_generations_.empty()) {
+      // No timers or periodic status I/O when there is no scheduled work.
+      // BeginDrain/Stop deliver the lifecycle event and wake this coordinator.
+      schedule_cv_.wait(lock, [&] { return stopping_.load(); });
+      return;
+    }
     if (schedule_cv_.wait_for(lock, kInitialAgentSchedulerDelay, [&] {
           return stopping_.load();
         })) {
@@ -1536,7 +1707,6 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
   bool durable_lease_acquired = false;
   std::uint64_t last_lease_heartbeat_generation = 0;
   std::uint64_t worker_ticks_so_far = 0;
-  ServerAgentAuthorityEpochs authority_epochs;
   {
     std::lock_guard<std::mutex> guard(state_mutex_);
     if (worker_index >= worker_evidence_.size()) {
@@ -1553,10 +1723,6 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
     last_lease_heartbeat_generation =
         worker_evidence_[worker_index].last_lease_heartbeat_generation;
     worker_ticks_so_far = worker_evidence_[worker_index].ticks;
-    authority_epochs.catalog_generation_id = catalog_generation_id_;
-    authority_epochs.security_epoch = security_epoch_;
-    authority_epochs.resource_epoch = resource_epoch_;
-    authority_epochs.name_resolution_epoch = name_resolution_epoch_;
   }
 
   ServerAgentActionOutcome action_outcome = ServerAgentActionOutcome::kNone;
@@ -1580,7 +1746,6 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
     auto lease_tx = BeginServerAgentTransaction(
         database_path,
         database_uuid,
-        authority_epochs,
         generation,
         "worker-lease-" + std::to_string(worker_index));
     if (!lease_tx.ok) {
@@ -1665,7 +1830,6 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
     auto action_tx = BeginServerAgentTransaction(
         database_path,
         database_uuid,
-        authority_epochs,
         generation,
         "page-preallocation");
     if (!action_tx.ok) {
@@ -1735,7 +1899,6 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
     auto action_tx = BeginServerAgentTransaction(
         database_path,
         database_uuid,
-        authority_epochs,
         generation,
         "filespace-growth");
     if (!action_tx.ok) {
@@ -1810,7 +1973,6 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
     auto heartbeat_tx = BeginServerAgentTransaction(
         database_path,
         database_uuid,
-        authority_epochs,
         generation,
         "worker-heartbeat-" + std::to_string(worker_index));
     if (!heartbeat_tx.ok) {
@@ -2031,6 +2193,8 @@ std::string ServerAgentRuntime::StatusJson() const {
       << "\"effective_cpu_count\":" << effective_cpu_count_ << ','
       << "\"foreground_reserved_capacity\":" << foreground_reserved_capacity_ << ','
       << "\"background_worker_slots\":" << background_worker_slots_ << ','
+      << "\"startup_agent_state\":\"" << JsonEscape(startup_agent_state_) << "\","
+      << "\"shutdown_agent_state\":\"" << JsonEscape(shutdown_agent_state_) << "\","
       << "\"scheduler_thread_name\":\"sb-agent-sch\","
       << "\"scheduler_thread_id\":\"" << JsonEscape(scheduler_thread_id_) << "\","
       << "\"worker_wake_policy\":\"" << JsonEscape(worker_wake_policy_) << "\","
@@ -2052,7 +2216,7 @@ std::string ServerAgentRuntime::StatusJson() const {
       << "\"process_rss_kb\":" << memory.rss_kb << ','
       << "\"process_rss_high_water_kb\":" << memory.rss_high_water_kb << ','
       << "\"process_vsize_kb\":" << memory.vsize_kb << ','
-      << "\"worker_thread_count\":" << worker_evidence_.size() << ','
+      << "\"worker_thread_count\":" << (started_ ? worker_evidence_.size() : 0) << ','
       << "\"total_worker_ticks\":" << total_ticks << ','
       << "\"total_actions_accepted\":" << total_accepted << ','
       << "\"total_actions_refused\":" << total_refused << ','

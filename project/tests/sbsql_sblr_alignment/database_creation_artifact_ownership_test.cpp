@@ -17,7 +17,12 @@
 #include <string>
 #include <string_view>
 #include <sys/types.h>
+#include <sys/stat.h>
+#include <sys/wait.h>
+#include <spawn.h>
 #include <unistd.h>
+
+extern char** environ;
 
 namespace {
 namespace db=scratchbird::storage::database;
@@ -28,6 +33,12 @@ const std::string sentinel("preserve\0private\xff" "data",21);
 std::string tracked_main,late_artifact;
 unsigned inspections=0,inspection_fault=0,inject_on_inspection=0,removals=0;
 bool inject_on_write=false,late_created=false,remove_fault=false,removal_owned=true;
+bool trace_handoff=false,readback_fault=false,close_fault=false;
+bool readback_observed=false,close_observed=false,read_after_close=false;
+bool contender_checked=false,contender_refused=false;
+dev_t creator_device=0;
+ino_t creator_inode=0;
+std::string executable;
 unsigned checks=0;
 void Check(bool value,std::string_view why,std::source_location at=std::source_location::current()){
   ++checks;if(!value)throw std::runtime_error(std::string(why)+" line="+std::to_string(at.line()));
@@ -58,8 +69,18 @@ db::DatabaseCreateConfig Config(const fs::path& path,std::string fault={}){
   config.create_fault_injection_point=std::move(fault);return config;
 }
 void Track(const fs::path& path){tracked_main=path.string();late_artifact.clear();inspections=inspection_fault=inject_on_inspection=removals=0;
-  inject_on_write=late_created=remove_fault=false;removal_owned=true;}
+  inject_on_write=late_created=remove_fault=false;removal_owned=true;
+  trace_handoff=readback_fault=close_fault=readback_observed=close_observed=read_after_close=false;
+  contender_checked=contender_refused=false;creator_device=0;creator_inode=0;}
 void Unpublished(const db::DatabaseLifecycleResult& result){Check(!result.ok()&&result.create_finality==db::DatabaseCreateFinalityClass::not_published,"refusal has no creation publication");}
+bool CreatorDescriptor(int fd){struct stat value{};return creator_inode&&::fstat(fd,&value)==0&&value.st_dev==creator_device&&value.st_ino==creator_inode;}
+bool ProbeInNewProcess(bool expect_owned){
+  std::string expected=expect_owned?"owned":"released";
+  char* args[]={executable.data(),const_cast<char*>("--probe-ownership"),tracked_main.data(),expected.data(),nullptr};
+  pid_t pid=-1;if(::posix_spawn(&pid,executable.c_str(),nullptr,nullptr,args,environ)!=0)return false;
+  int status=0;pid_t waited;do{waited=::waitpid(pid,&status,0);}while(waited<0&&errno==EINTR);
+  return waited==pid&&WIFEXITED(status)&&WEXITSTATUS(status)==0;
+}
 }
 
 extern "C" fs::file_status __real__ZNSt10filesystem14symlink_statusERKNS_7__cxx114pathERSt10error_code(const fs::path&,std::error_code&);
@@ -85,10 +106,38 @@ extern "C" bool __wrap__ZNSt10filesystem6removeERKNS_7__cxx114pathERSt10error_co
 extern "C" ssize_t __real_pwrite(int,const void*,size_t,off_t);
 extern "C" ssize_t __wrap_pwrite(int fd,const void* data,size_t count,off_t offset){
   if(inject_on_write){inject_on_write=false;Inject();}
+  if(trace_handoff&&!creator_inode){struct stat actual{},wanted{};
+    if(::fstat(fd,&actual)==0&&::stat(tracked_main.c_str(),&wanted)==0&&actual.st_dev==wanted.st_dev&&actual.st_ino==wanted.st_ino){creator_device=actual.st_dev;creator_inode=actual.st_ino;}}
   return __real_pwrite(fd,data,count,offset);
 }
+extern "C" ssize_t __real_pread(int,void*,size_t,off_t);
+extern "C" ssize_t __wrap_pread(int fd,void* data,size_t count,off_t offset){
+  if(trace_handoff&&CreatorDescriptor(fd)){
+    read_after_close|=close_observed;
+    if(offset==0){readback_observed=true;
+      if(!contender_checked){contender_checked=true;contender_refused=ProbeInNewProcess(true);}
+      if(readback_fault){readback_fault=false;errno=EIO;return -1;}
+    }
+  }
+  return __real_pread(fd,data,count,offset);
+}
+extern "C" int __real_close(int);
+extern "C" int __wrap_close(int fd){
+  if(trace_handoff&&CreatorDescriptor(fd)){
+    close_observed=true;
+    if(close_fault){close_fault=false;(void)__real_close(fd);errno=EIO;return -1;}
+  }
+  return __real_close(fd);
+}
 
-int main(){try{
+int main(int argc,char** argv){try{
+  executable=fs::canonical(argv[0]).string();
+  if(argc==4&&std::string_view(argv[1])=="--probe-ownership"){
+    disk::FileDevice probe;const auto opened=probe.Open(argv[2],disk::FileOpenMode::open_existing);
+    if(std::string_view(argv[3])=="released")return opened.ok()&&probe.Close().ok()?0:1;
+    const auto& code=opened.diagnostic.diagnostic_code;
+    return !opened.ok()&&(code=="SB-STORAGE-DISK-OWNER-LOCK-HELD"||code=="SB-STORAGE-DISK-DATA-OWNER-LOCK-HELD"||code=="SB-STORAGE-DISK-ROUTE-OWNER-LOCK-HELD")?0:1;
+  }
   auto policy=scratchbird::core::memory::DefaultLocalEngineMemoryPolicy();policy.policy_name="creation_artifact_ownership_test";
   Check(scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(policy,"creation_artifact_ownership_test").ok(),"fixture memory policy");
   Fixture fixture;unsigned serial=0;
@@ -132,5 +181,19 @@ int main(){try{
     const auto actual=db::ReadDatabaseBootstrapSecurityCatalog(path.string());Check(actual.ok()&&actual.state.present&&actual.state.committed_by_inventory,"independent bootstrap reader sees actual committed catalog");
     const auto bytes=Get(path);config.allow_overwrite=true;const auto replay=db::CreateDatabaseFile(config);Unpublished(replay);
     Check(Get(path)==bytes&&removals==0,"replay cannot erase or overwrite committed storage");}
+  for(unsigned fault=0;fault<3;++fault){const auto path=next();const auto config=Config(path);
+    trace_handoff=true;readback_fault=fault==1;close_fault=fault==2;
+    const auto created=db::CreateDatabaseFile(config);trace_handoff=false;
+    Check(readback_observed&&close_observed&&!read_after_close,"final catalog verification uses original still-owned device before close");
+    Check(contender_checked&&contender_refused,"fresh competing process cannot open during creator verification");
+    Check(created.ok()&&fs::exists(path)&&removals==0,"committed creation survives readback or close failure");
+    if(!fault){Check(created.creation_ready_for_handoff(),"verified and closed creation admits ownership handoff");
+      Check(created.state.phase==db::DatabaseLifecyclePhase::created&&created.state.startup_state.first_open_activation_local_transaction_id==0,"creation does not claim runtime activation");
+      Check(created.bootstrap_policy_generation>0,"creator returns verified policy generation");}
+    else Check(!created.creation_ready_for_handoff()&&created.create_finality==db::DatabaseCreateFinalityClass::committed_with_warning&&!readback_fault&&!close_fault,"readback and close failures preserve finality without admitting handoff");
+    Check(ProbeInNewProcess(false),"new server process can acquire file after creator releases ownership");
+    const auto read=db::ReadDatabaseBootstrapSecurityCatalog(path.string());
+    Check(read.ok()&&read.state.committed_by_inventory,"fresh read preserves original committed creation after handoff");
+  }
   std::cout<<"creation artifact ownership checks="<<checks<<" failures=0\n";return 0;
 }catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<" checks="<<checks<<'\n';return 1;}}

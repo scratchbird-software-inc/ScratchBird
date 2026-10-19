@@ -7,6 +7,7 @@
 #include <limits>
 #include <algorithm>
 #include <type_traits>
+#include <exception>
 
 // Shared storage-only backing; no database codec or execution dependency.
 namespace scratchbird::storage::disk::detail {
@@ -14,19 +15,40 @@ using namespace core::platform;
 using Image=std::span<const byte>;
 class NativeMetadataMemory final:public std::pmr::memory_resource {
   std::span<byte> bytes_;
-  std::size_t used_=0;
+  std::size_t used_=0,peak_=0;
+  friend class NativeMetadataTemporaryFrame;
   void* do_allocate(std::size_t bytes,std::size_t alignment) override {
     void* start=bytes_.data()?bytes_.data()+used_:nullptr;
     auto remaining=bytes_.size()-used_;
     if(!std::align(alignment,bytes,start,remaining))throw std::bad_alloc();
     const auto offset=static_cast<byte*>(start)-bytes_.data();
-    used_=offset+bytes;return start;
+    used_=offset+bytes;peak_=std::max(peak_,used_);return start;
   }
   void do_deallocate(void*,std::size_t,std::size_t) override {}
   bool do_is_equal(const std::pmr::memory_resource& other) const noexcept override {return this==&other;}
 public:
   explicit NativeMetadataMemory(std::span<byte> bytes):bytes_(bytes){}
-  std::size_t used() const noexcept{return used_;}
+  // Required backing remains the high-water mark even when a completed
+  // value-only validation releases its temporary decode workspace.
+  std::size_t used() const noexcept{return peak_;}
+};
+
+// Internal scratch lifetime for a call that returns ONLY values, never views,
+// containers, or pointers into this resource. Construct immediately before
+// that call and retire after all of its local PMR objects have been destroyed.
+// Existing retained output before the frame cannot be reclaimed. Other PMR
+// resources retain their normal allocation/deallocation behavior.
+class NativeMetadataTemporaryFrame final {
+  NativeMetadataMemory* memory_;
+  std::size_t position_;
+ public:
+  explicit NativeMetadataTemporaryFrame(std::pmr::memory_resource& resource) noexcept
+      :memory_(dynamic_cast<NativeMetadataMemory*>(&resource)),position_(memory_?memory_->used_:0){}
+  ~NativeMetadataTemporaryFrame(){
+    if(memory_){if(memory_->used_<position_)std::terminate();memory_->used_=position_;}
+  }
+  NativeMetadataTemporaryFrame(const NativeMetadataTemporaryFrame&)=delete;
+  NativeMetadataTemporaryFrame& operator=(const NativeMetadataTemporaryFrame&)=delete;
 };
 
 struct NativeMetadataScratch {

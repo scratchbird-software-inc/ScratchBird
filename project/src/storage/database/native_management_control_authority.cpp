@@ -348,7 +348,13 @@ NativeManagementControlAuthorityView ReadControlView(const Uuid& database,std::s
       const NativeManagementControlAllocationInputs delta_inputs{base.bytes,target.bytes,entry.plan_image,entry.extent_images,
         before_bytes,after_bytes,entry.bundle_images,before_inventory_bytes,
         entry.control_directory_images.empty()?nullptr:&directory_base,budget};
-      const auto delta=detail::ValidateNativeManagementControlAllocationBacked(delta_inputs,*scratch.resource);
+      const auto delta=[&]{
+        // This validator returns an enum. Its decoded maps, inventories and
+        // aggregate copies are dead before the next retained-history entry;
+        // no borrowed result escapes into the actual control proof below.
+        disk::detail::NativeMetadataTemporaryFrame temporary(*scratch.resource);
+        return detail::ValidateNativeManagementControlAllocationBacked(delta_inputs,*scratch.resource);
+      }();
       if(delta!=NativeManagementControlAllocationError::none)throw delta==NativeManagementControlAllocationError::hash_failure?E::hash_failure:delta==NativeManagementControlAllocationError::resource_exhausted?E::resource_exhausted:delta==NativeManagementControlAllocationError::cluster_requires_authority?E::cluster_requires_authority:delta==NativeManagementControlAllocationError::encrypted_requires_authority?E::encrypted_requires_authority:E::binding_mismatch;
       Require(result.publications.emplace(p.operation_uuid,NativeManagementPublishedCheckpoint{p.target_checkpoint,p.target_checkpoint_object_uuid,entry.checkpoint_sha256,Root(target.root,3)}).second,E::binding_mismatch);
       const auto retain=[&](const Uuid& fs,const page::NativeAllocationChainView& chain){for(const auto& image:chain.pages)for(const auto& record:image.map.records)if(record.creator_operation_uuid==p.operation_uuid){

@@ -99,17 +99,21 @@ class NativeCatalogVisibilityLeaseReader {
   static NativeCatalogVisibilityLeaseResult ReadCommitted(const NativeSelectedCheckpointMemoryLease& source,
       u16 selector,u16 role,const NativeCatalogRelationBinding& binding,u64 image_budget,
       NativeCatalogVisibilityPreparedMemory& w) noexcept {
-    return Read(source,selector,role,binding,nullptr,nullptr,image_budget,w);
+    return Read(source,selector,role,&binding,nullptr,nullptr,image_budget,w);
+  }
+  static NativeCatalogVisibilityLeaseResult ReadCommittedSelected(const NativeSelectedCheckpointMemoryLease& source,
+      u16 selector,u16 role,u64 image_budget,NativeCatalogVisibilityPreparedMemory& w) noexcept {
+    return Read(source,selector,role,nullptr,nullptr,nullptr,image_budget,w);
   }
   static NativeCatalogVisibilityLeaseResult ReadPinned(const NativeSelectedCheckpointMemoryLease& source,
       u16 selector,u16 role,const NativeCatalogRelationBinding& binding,
       const transaction::mga::TransactionIdentity& reader,const transaction::mga::PublishedSnapshotPin& pin,
       u64 image_budget,NativeCatalogVisibilityPreparedMemory& w) noexcept {
-    return Read(source,selector,role,binding,&reader,&pin,image_budget,w);
+    return Read(source,selector,role,&binding,&reader,&pin,image_budget,w);
   }
  private:
   static NativeCatalogVisibilityLeaseResult Read(const NativeSelectedCheckpointMemoryLease& source,
-      u16 selector,u16 role,const NativeCatalogRelationBinding& binding,
+      u16 selector,u16 role,const NativeCatalogRelationBinding* binding,
       const transaction::mga::TransactionIdentity* reader,const transaction::mga::PublishedSnapshotPin* pin,
       u64 image_budget,NativeCatalogVisibilityPreparedMemory& w) noexcept {
     namespace mga=transaction::mga;namespace catalog=core::catalog;
@@ -117,7 +121,7 @@ class NativeCatalogVisibilityLeaseReader {
     const auto fail=[&](E e){out.error=e;out.rows={};out.observations={};out.snapshot_uuid={};
       auto& s=out.source;s.roots.catalogs={};s.roots.retained_image_bytes=0;s.roots.feature_root_index=0;
       s.tree.pages={};s.tree.leaves={};s.tree.retained_image_bytes=0;s.bases={};s.bindings={};
-      s.row_creators={};s.navigation_creators={};s.retained_image_bytes=0;};
+      s.row_creators={};s.navigation_creators={};s.retained_image_bytes=0;s.relation={};};
     try{
       if(!w)return out;
       mga::PublishedSnapshotObservation captured;
@@ -127,7 +131,8 @@ class NativeCatalogVisibilityLeaseReader {
         if(captured.descriptor->owning_transaction_uuid.value!=reader->transaction_uuid.value||
             captured.descriptor->owning_transaction.value!=reader->local_id.value){fail(E::reader_mismatch);return out;}
       }
-      out.source=NativeCatalogRelationLeaseReader::Read(source,selector,role,binding,image_budget,w.relation_);
+      out.source=binding?NativeCatalogRelationLeaseReader::Read(source,selector,role,*binding,image_budget,w.relation_):
+          NativeCatalogRelationLeaseReader::ReadSelected(source,selector,role,image_budget,w.relation_);
       if(!out.source.ok()){fail(E::source_failure);return out;}
       const auto& inventory=source.selection().checkpoint_inventory.inventory;
       mga::VisibilitySnapshotView snapshot;

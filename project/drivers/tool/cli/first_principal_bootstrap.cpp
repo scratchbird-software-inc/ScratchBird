@@ -199,8 +199,9 @@ void PrintFirstPrincipalBootstrapUsage(const char* program, std::ostream& output
               "SQL client session.\n";
 }
 
-FirstPrincipalBootstrapParseResult ParseFirstPrincipalBootstrapArgs(
-    int argc, char* const argv[]) {
+namespace {
+FirstPrincipalBootstrapParseResult ParseCreationArgs(
+    int argc, char* const argv[], bool service_profile_required) {
     if (argc == 1 && argv != nullptr && argv[0] != nullptr &&
         std::string_view(argv[0]) == "--help") {
         FirstPrincipalBootstrapParseResult result;
@@ -304,18 +305,32 @@ FirstPrincipalBootstrapParseResult ParseFirstPrincipalBootstrapArgs(
     if (!mode_seen) {
         return parseFailure(kBootstrapEmbeddedModeRequired);
     }
-    if (!platform_profile_seen || !resource_seed_pack_seen ||
+    if ((service_profile_required && !platform_profile_seen) || !resource_seed_pack_seen ||
         !policy_seed_pack_seen || positional_arguments.size() != 2) {
         return parseFailure(kBootstrapInputInvalid);
     }
 
     result.request.principal_name = std::move(positional_arguments[0]);
     result.request.database_path = std::move(positional_arguments[1]);
+    result.request.ownership = platform_profile_seen
+        ? EmbeddedCreationOwnership::kServiceIdentity
+        : EmbeddedCreationOwnership::kCurrentProcess;
     if (!validBootstrapPrincipalName(result.request.principal_name)) {
         return parseFailure(kBootstrapInputInvalid);
     }
     result.ok = true;
     return result;
+}
+}  // namespace
+
+FirstPrincipalBootstrapParseResult ParseFirstPrincipalBootstrapArgs(
+    int argc, char* const argv[]) {
+    return ParseCreationArgs(argc, argv, true);
+}
+
+FirstPrincipalBootstrapParseResult ParseEmbeddedDatabaseCreateArgs(
+    int argc, char* const argv[]) {
+    return ParseCreationArgs(argc, argv, false);
 }
 
 FirstPrincipalBootstrapResult RunFirstPrincipalBootstrap(
@@ -325,8 +340,13 @@ FirstPrincipalBootstrapResult RunFirstPrincipalBootstrap(
     if (!request.explicit_embedded_mode) {
         return bootstrapFailure(kBootstrapEmbeddedModeRequired);
     }
-    if (!validBootstrapPrincipalName(request.principal_name) ||
-        request.database_path.empty() || request.platform_profile_path.empty() ||
+    const bool service_handoff = request.ownership == EmbeddedCreationOwnership::kServiceIdentity;
+    const bool current_process = request.ownership == EmbeddedCreationOwnership::kCurrentProcess;
+    if ((!service_handoff && !current_process) ||
+        (service_handoff && request.platform_profile_path.empty()) ||
+        (current_process && !request.platform_profile_path.empty()) ||
+        !validBootstrapPrincipalName(request.principal_name) ||
+        request.database_path.empty() ||
         request.resource_seed_pack_root.empty() || request.policy_seed_pack_root.empty()) {
         return bootstrapFailure(kBootstrapInputInvalid);
     }
@@ -334,21 +354,25 @@ FirstPrincipalBootstrapResult RunFirstPrincipalBootstrap(
         return bootstrapFailure("BOOTSTRAP.AUTH_DB_ALREADY_OWNED");
     }
 
-    const auto loaded_profile = LoadBootstrapPlatformProfile(
-        request.platform_profile_path);
-    if (!loaded_profile.ok) {
-        return bootstrapFailure(kBootstrapDeniedDiagnostic);
+    BootstrapPlatformProfileLoadResult loaded_profile;
+    if (service_handoff) {
+        loaded_profile = LoadBootstrapPlatformProfile(request.platform_profile_path);
+        if (!loaded_profile.ok) {
+            return bootstrapFailure(kBootstrapDeniedDiagnostic);
+        }
+        const auto os_authority = VerifyAndAssumeBootstrapServiceIdentity(loaded_profile.profile);
+        if (!os_authority.ok || !os_authority.ownership_handoff_ready) {
+            return bootstrapFailure(kBootstrapDeniedDiagnostic);
+        }
+        const auto prepared_access = EnsureBootstrapServiceIdentityAccess(
+            loaded_profile.profile, request.database_path);
+        if (!prepared_access.ok || !prepared_access.ownership_handoff_ready) {
+            return bootstrapFailure("BOOTSTRAP.DIRECTORY_PERMISSION_INVALID");
+        }
     }
-    const auto os_authority = VerifyAndAssumeBootstrapServiceIdentity(
-        loaded_profile.profile);
-    if (!os_authority.ok || !os_authority.ownership_handoff_ready) {
-        return bootstrapFailure(kBootstrapDeniedDiagnostic);
-    }
-    const auto prepared_access = EnsureBootstrapServiceIdentityAccess(
-        loaded_profile.profile, request.database_path);
-    if (!prepared_access.ok || !prepared_access.ownership_handoff_ready) {
-        return bootstrapFailure("BOOTSTRAP.DIRECTORY_PERMISSION_INVALID");
-    }
+    // Current-process creation relies on the actual exclusive file create and
+    // the OS access checks it performs. It never changes credentials, groups,
+    // directory ownership or existing permissions to manufacture file access.
 
     std::string password;
     if (request.password_source ==
@@ -424,33 +448,40 @@ FirstPrincipalBootstrapResult RunFirstPrincipalBootstrap(
                 ? kBootstrapInputInvalid
                 : create_result.diagnostic.diagnostic_code);
     }
-
-    const auto finalized_access = EnsureBootstrapServiceIdentityAccess(
-        loaded_profile.profile, request.database_path);
-    if (!finalized_access.ok || !finalized_access.ownership_handoff_ready) {
-        return bootstrapFailure("BOOTSTRAP.DIRECTORY_PERMISSION_INVALID");
+    if (!create_result.creation_ready_for_handoff()) {
+        auto result = bootstrapFailure("BOOTSTRAP.CREATE_VERIFICATION_REQUIRED");
+        result.committed_with_warning =
+            create_result.create_finality == db::DatabaseCreateFinalityClass::committed_with_warning;
+        return result;
     }
 
-    const auto committed_catalog = db::ReadDatabaseBootstrapSecurityCatalog(
-        request.database_path);
-    if (!committed_catalog.ok() || !committed_catalog.state.present ||
-        !committed_catalog.state.committed_by_inventory) {
-        return bootstrapFailure("BOOTSTRAP.SECURITY_DATABASE_UNAVAILABLE");
+    if (service_handoff) {
+        const auto finalized_access = EnsureBootstrapServiceIdentityAccess(
+            loaded_profile.profile, request.database_path);
+        if (!finalized_access.ok || !finalized_access.ownership_handoff_ready) {
+            auto result = bootstrapFailure("BOOTSTRAP.DIRECTORY_PERMISSION_INVALID");
+            result.committed_with_warning = true;
+            return result;
+        }
     }
+
+    // Use the constructor's verification through its original exclusive
+    // device. A second pathname open cannot certify the creator's file.
     const std::string principal_uuid =
-        uuid::UuidToString(committed_catalog.state.principal_uuid.value);
+        uuid::UuidToString(create_result.bootstrap_principal_uuid.value);
     const std::string sysarch_role_uuid =
-        uuid::UuidToString(committed_catalog.state.sysarch_role_uuid.value);
+        uuid::UuidToString(create_result.bootstrap_sysarch_role_uuid.value);
     if (sysarch_role_uuid != db::kCanonicalSysarchRoleObjectUuid ||
-        committed_catalog.state.principal_name != request.principal_name ||
-        principal_uuid.empty()) {
+        create_result.bootstrap_principal_uuid.value.is_nil()) {
         return bootstrapFailure("BOOTSTRAP.SECURITY_DATABASE_UNAVAILABLE");
     }
 
     FirstPrincipalBootstrapResult result;
     result.ok = true;
     result.principal_uuid = principal_uuid;
-    result.policy_generation = committed_catalog.state.policy_generation;
+    result.policy_generation = create_result.bootstrap_policy_generation;
+    result.creation_handoff_ready = true;
+    result.database_uuid = uuid::UuidToString(create_result.state.database_uuid.value);
     result.committed_with_warning =
         create_result.create_finality == db::DatabaseCreateFinalityClass::committed_with_warning;
     return result;
@@ -480,6 +511,9 @@ int RunFirstPrincipalBootstrapCli(
     const auto result = RunFirstPrincipalBootstrap(parsed.request, input, output);
     if (!result.ok) {
         error << "Error: " << result.diagnostic_code << "\n";
+        if (result.committed_with_warning) {
+            error << "The database committed but requires verification; it was preserved.\n";
+        }
         return 1;
     }
 
@@ -488,6 +522,9 @@ int RunFirstPrincipalBootstrapCli(
     output << "bootstrap_principal_uuid=" << result.principal_uuid << "\n";
     output << "bootstrap_scope=initial_local_embedded_database_security_tree\n";
     output << "policy_generation=" << result.policy_generation << "\n";
+    output << "database_state=created\n"
+              "creation_handoff=verified_and_closed\n"
+              "server_ready=false\n";
     if (result.committed_with_warning) {
         output << "Create finality: committed_with_warning\n";
     }

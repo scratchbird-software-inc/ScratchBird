@@ -49,6 +49,9 @@ struct AgentPolicyFieldSchema {
   AgentPolicyFieldSensitivity sensitivity =
       AgentPolicyFieldSensitivity::operational;
   bool required = true;
+  // Empty permits any value accepted by the field type. Enumerated policy
+  // choices must match one complete stored value; no runtime defaulting.
+  std::vector<std::string> allowed_values;
 };
 
 std::string AgentPolicyFieldTypeName(AgentPolicyFieldType type);

@@ -144,14 +144,33 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
            m.schema_epoch!=1||m.security_epoch!=1||m.catalog_generation!=1||
            !core::catalog::CatalogIdentifierProfileMatchesDatabase(
              core::catalog::BorrowCatalogMetadataVersion(m),b.database_uuid)||
+           !core::catalog::CatalogNamingDialectProfileMatchesDatabase(
+             core::catalog::BorrowCatalogMetadataVersion(m),b.database_uuid)||
+           !core::catalog::CatalogNamingCollisionPolicyMatchesDatabase(
+             core::catalog::BorrowCatalogMetadataVersion(m),b.database_uuid)||
            !NativeConstructionIntentMatchesRequest(core::catalog::BorrowCatalogMetadataVersion(m),request)||
            !core::catalog::CatalogPolicyDescriptorMatchesDatabase(core::catalog::BorrowCatalogMetadataVersion(m),b.database_uuid)||
+           !core::catalog::CatalogVerificationPolicyMatchesDatabase(core::catalog::BorrowCatalogMetadataVersion(m),b.database_uuid)||
+           !core::catalog::CatalogEvidencePolicyMatchesDatabase(core::catalog::BorrowCatalogMetadataVersion(m),b.database_uuid)||
+           !core::catalog::CatalogAuthorizationPolicyMatchesDatabase(core::catalog::BorrowCatalogMetadataVersion(m),b.database_uuid)||
+           !core::catalog::CatalogTransactionPolicyMatchesDatabase(core::catalog::BorrowCatalogMetadataVersion(m),b.database_uuid)||
+           !core::catalog::CatalogLockPolicyMatchesDatabase(core::catalog::BorrowCatalogMetadataVersion(m),b.database_uuid)||
+           !core::catalog::CatalogIsolationProfileMatchesDatabase(core::catalog::BorrowCatalogMetadataVersion(m),b.database_uuid)||
+           !core::catalog::CatalogManagementDefinitionMatchesDatabase(core::catalog::BorrowCatalogMetadataVersion(m),b.database_uuid)||
            !core::catalog::CatalogCryptoInlinePrivateKeyPolicyMatchesDatabase(core::catalog::BorrowCatalogMetadataVersion(m),b.database_uuid)||
            ((m.object_subtype=="crypto_inline_private_key"||core::catalog::IsCatalogCryptoInlinePrivateKeyPolicyPayload(m.record.payload))&&role!=3)||
            name!=record.name.has_value()||
            (name&&(!m.record.payload.empty()||!core::catalog::CatalogNamePayloadMatchesMetadata(*record.name,m)))||
            !ids.insert(m.record.header.object_uuid.value).second||
            !ids.insert(m.record.header.row_uuid.value).second) return Fail(E::invalid_catalog_input);
+        if(core::catalog::IsCatalogNamingCollisionPolicyPayload(m.record.payload)){
+          const auto body=core::catalog::DecodeCatalogNamingCollisionPolicy(m.record.payload);
+          if(!body.ok())return Fail(E::invalid_catalog_input);
+          // These are embedded definitions, not repeated references. Reserve
+          // their ownership against controls and every other supplied object.
+          for(std::size_t i=0;i<body.record->group_count;++i)
+            if(!ids.insert(body.record->groups[i].group_uuid).second)return Fail(E::invalid_catalog_input);
+        }
       }
     }
     for(const auto& index:indexes)if(index)

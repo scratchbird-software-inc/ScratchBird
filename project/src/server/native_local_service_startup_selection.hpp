@@ -50,7 +50,7 @@ inline NativeLocalServiceStartupSelectionResult SelectNativeLocalServiceStartupD
   const auto fail=[&](E error,const core::platform::Uuid& identity){
     out.error=error;out.failing_object_uuid=identity;out.declarations.reset();return out;
   };
-  if(!credential.valid())return out;
+  if(!credential.valid()||!credential.has_selected_source())return out;
   const auto& binding=credential.binding();
   const auto& provider=credential.provider();
   const auto rows=credential.configuration_;
@@ -106,7 +106,7 @@ inline NativeLocalServiceStartupSelectionResult SelectNativeLocalServiceStartupD
     return fail(E::pack_binding_mismatch,provider.policy_pack_uuid);
   // Verify the actual native origin decisions; metadata visibility alone
   // does not prove that the family's separately retained origin committed.
-  const auto entries=credential.source_->selection().checkpoint_inventory.inventory.entries;
+  const auto entries=credential.SelectedSource().selection().checkpoint_inventory.inventory.entries;
   const auto committed=[&](const auto& record){
     const auto found=std::lower_bound(entries.begin(),entries.end(),record.origin_local_transaction_id,
         [](const auto& entry,auto number){return entry.identity.local_id.value<number;});

@@ -124,6 +124,22 @@ ServerCliParseResult ParseServerCli(int argc, char** argv) {
       result.options.version = true;
     } else if (arg == "--foreground" || arg == "-F") {
       result.options.foreground = true;
+    } else if (arg == "--startup-notify-fd") {
+      const auto value = read_value(arg);
+      std::uint64_t descriptor = 0;
+#if defined(_WIN32)
+      const bool valid = false;
+#else
+      const bool valid = result.options.startup_notify_fd == -1 &&
+          ParseUint64(value, &descriptor) && descriptor >= 3 && descriptor <= 2147483647;
+#endif
+      if (!valid) {
+        result.diagnostics.push_back(CliDiagnostic(
+            "SERVER.CLI.STARTUP_NOTIFICATION_INVALID", "server.cli.startup_notification_invalid",
+            "The startup notification descriptor is invalid.", {}));
+      } else {
+        result.options.startup_notify_fd = static_cast<int>(descriptor);
+      }
     } else if (arg == "--service") {
       result.options.service = true;
     } else if (arg == "--validate-config") {
@@ -196,6 +212,13 @@ ServerCliParseResult ParseServerCli(int argc, char** argv) {
         "server.cli.mode_conflict",
         "Foreground and service modes are mutually exclusive.",
         {{"mode_a", "foreground"}, {"mode_b", "service"}}));
+  }
+  if (result.options.startup_notify_fd >= 0 &&
+      (!result.options.foreground || result.options.service || result.options.validate_config ||
+       result.options.validate_endpoints || result.options.help || result.options.version)) {
+    result.diagnostics.push_back(CliDiagnostic(
+        "SERVER.CLI.STARTUP_NOTIFICATION_INVALID", "server.cli.startup_notification_invalid",
+        "A startup notification requires a foreground serving process.", {}));
   }
 
   if (!IsKnownLogLevel(result.options.log_level)) {

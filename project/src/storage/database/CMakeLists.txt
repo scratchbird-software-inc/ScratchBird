@@ -36,6 +36,9 @@ add_library(sb_storage_database
   native_checkpoint_selection.cpp
   native_publication_watermark.cpp
   native_publication_coordinator.cpp
+  native_inventory_graph_builder.cpp
+  native_owned_inventory_publication.cpp
+  native_owned_inventory_recovery.cpp
   native_publication_plan.cpp
   native_management_operation.cpp
   native_management_extent.cpp
@@ -52,6 +55,7 @@ add_library(sb_storage_database
   native_database_creation.cpp
   native_construction_audit.cpp
   native_policy_descriptor_creation.cpp
+  native_verification_policy_creation.cpp
   native_initial_policy_catalogs.cpp
   native_creation_workspace_recovery.cpp
   repair_event_ledger.cpp

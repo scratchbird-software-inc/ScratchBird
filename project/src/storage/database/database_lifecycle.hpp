@@ -153,6 +153,15 @@ enum class DatabaseCreateFinalityClass : u16 {
   committed_with_warning
 };
 
+// Creation and runtime activation have separate boundaries. This observation
+// is issued only after verification through the original exclusive creator
+// and a successful close. It is not ownership, authentication or readiness;
+// the next owner must acquire its own locks and validate the database again.
+enum class DatabaseCreateHandoffState : u16 {
+  not_ready,
+  verified_and_closed
+};
+
 struct DatabaseBootstrapSecurityCatalogState {
   bool present = false;
   bool committed_by_inventory = false;
@@ -303,9 +312,16 @@ struct DatabaseLifecycleResult {
   DiagnosticRecord diagnostic;
   DatabaseCreateFinalityClass create_finality =
       DatabaseCreateFinalityClass::not_published;
+  DatabaseCreateHandoffState create_handoff = DatabaseCreateHandoffState::not_ready;
   TypedUuid bootstrap_principal_uuid;
   TypedUuid bootstrap_sysarch_role_uuid;
   TypedUuid bootstrap_membership_uuid;
+  u32 bootstrap_policy_generation = 0;
+
+  bool creation_ready_for_handoff() const {
+    return ok() && create_finality == DatabaseCreateFinalityClass::committed &&
+           create_handoff == DatabaseCreateHandoffState::verified_and_closed;
+  }
 
   bool ok() const {
     return status.ok();

@@ -339,6 +339,10 @@ void TestHostedEnginePublishesDurableDatabaseUuid(const std::filesystem::path& d
           "hosted engine did not publish durable database UUID");
   Require(uuid::IsEngineIdentityUuid(hosted.state.databases.front().database_uuid),
           "hosted engine published synthetic database UUID");
+  Require(hosted.state.database_ownership_locks.size()==1&&
+              hosted.state.database_ownership_locks.front()->ObserveWriteCustody()==
+                  scratchbird::storage::disk::RouteWriteCustodyState::retained,
+          "normal hosted open did not retain actual initial writable OS custody");
 
   const auto status_before = scratchbird::server::HostedEngineStatusJson(hosted.state);
   const auto first_bytes = ReadBytes(path), second_bytes = ReadBytes(second_path);

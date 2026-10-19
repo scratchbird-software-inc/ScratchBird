@@ -10,6 +10,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "agent_engine_lifecycle.hpp"
+#include "agent_policy_schema.hpp"
 
 #include "agent_runtime_manager.hpp"
 
@@ -18,6 +19,45 @@
 #include <utility>
 
 namespace scratchbird::core::agents {
+
+std::vector<AgentTypeDescriptor> RuntimeLifecycleAgentDescriptors() {
+  std::vector<AgentTypeDescriptor> result;
+  for (const auto* name : {"agent_coordinator", "startup_agent", "shutdown_agent"}) {
+    AgentTypeDescriptor descriptor;
+    descriptor.type_id = name;
+    descriptor.layer = descriptor.type_id == "agent_coordinator"
+        ? AgentRuntimeLayer::l5_coordinator : AgentRuntimeLayer::l3_dispatcher;
+    descriptor.scope = "database/runtime_lifecycle";
+    descriptor.authority = AgentAuthorityClass::request_action;
+    descriptor.default_activation = AgentActivationProfile::live_action;
+    result.push_back(std::move(descriptor));
+  }
+  return result;
+}
+
+std::string RuntimeLifecycleAgentPolicyFamily(const std::string& type_id) {
+  if (type_id == "agent_coordinator") return "agent_coordinator_policy";
+  if (type_id == "startup_agent") return "agent_startup_policy";
+  if (type_id == "shutdown_agent") return "agent_shutdown_policy";
+  return {};
+}
+
+AgentPolicy BaselineRuntimeLifecycleAgentPolicy(const AgentTypeDescriptor& descriptor) {
+  const auto family = RuntimeLifecycleAgentPolicyFamily(descriptor.type_id);
+  auto policy = BaselinePolicyForAgentFamily(descriptor, family, 1);
+  // Event delivery is enabled by default. This permits lifecycle requests,
+  // never grants engine/security authority or certifies a successful receipt.
+  policy.enabled = !family.empty();
+  policy.activation = AgentActivationProfile::live_action;
+  policy.action_mode = "request_action";
+  policy.allow_live_action = !family.empty();
+  policy.require_manual_approval = false;
+  policy.require_dry_run_before_live = false;
+  policy.jitter_microseconds = 0;
+  policy.invalid_policy_behavior = "deny_lifecycle_admission";
+  return policy;
+}
+
 namespace {
 
 scratchbird::core::platform::Uuid BinaryIdentity(std::string_view bytes) {

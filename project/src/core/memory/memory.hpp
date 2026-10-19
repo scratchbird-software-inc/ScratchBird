@@ -219,6 +219,32 @@ struct MemoryLimitActivationReceipt {
   bool ok() const { return status == MemoryLimitActivationStatus::applied; }
 };
 
+// Additional native database constraints on the existing physical allocator.
+// The caller selects these from its retained catalog; this API grants no
+// authentication, lifecycle admission or engine epoch. Process limits and
+// mandatory ownership accounting always remain in force. Limits reject live
+// conflicts; zeroing applies to subsequent allocation/release, including
+// allocation from bootstrap capacity retained before installation.
+struct DatabaseAllocationBehavior {
+  MemoryBinaryUuid database_uuid{};
+  MemoryPolicyBinding binding;
+  u64 per_context_limit_bytes = 0;
+  AllocationFailureMode failure_mode = AllocationFailureMode::return_error;
+  bool zero_memory_on_allocate = false;
+  bool zero_memory_on_release = false;
+  auto operator<=>(const DatabaseAllocationBehavior&) const = default;
+};
+enum class DatabaseAllocationBehaviorStatus {
+  applied, invalid_request, binding_mismatch, existing_credit_exceeds_limit,
+  allocation_failure, busy
+};
+struct DatabaseAllocationBehaviorResult {
+  DatabaseAllocationBehaviorStatus status = DatabaseAllocationBehaviorStatus::invalid_request;
+  MemoryPolicyBinding binding;
+  u64 existing_bytes = 0, limit_bytes = 0;
+  bool ok() const { return status == DatabaseAllocationBehaviorStatus::applied; }
+};
+
 // SB-MEMORY-CONTEXT-ANCHOR
 struct MemoryContext {
   std::string context_id;
@@ -686,6 +712,11 @@ class BoundedAllocator {
   // the receipt identifies the unchanged active generation and policy.
   MemoryLimitActivationReceipt ReduceLimits(const MemoryLimitReduction& request);
   MemoryPolicyBinding PolicyBinding() const;
+  DatabaseAllocationBehaviorResult InstallDatabaseAllocationBehavior(
+      const DatabaseAllocationBehavior& request);
+  // Requires the exact installed binding and no live storage or capacity.
+  DatabaseAllocationBehaviorStatus RetireDatabaseAllocationBehavior(
+      const MemoryBinaryUuid& database, MemoryPolicyBinding binding);
   MemoryFailureInjectionConfigurationResult EnableAllocationFailureInjection(
       MemoryFailureInjectionConfiguration configuration);
   MemoryFailureInjectionConfigurationResult DisableAllocationFailureInjection();
@@ -793,6 +824,9 @@ class BoundedAllocator {
   bool WouldExceedSoftLimit(usize bytes) const;
   bool WouldExceedPageBufferPoolLimit(usize bytes, MemoryCategory category) const;
   ContextLimitEvidence WouldExceedPerContextLimit(usize bytes, const MemoryTag& tag) const;
+  const DatabaseAllocationBehavior* DatabaseBehaviorForTag(const MemoryTag& tag) const;
+  u64 ContextLimitForTag(const MemoryTag& tag) const;
+  Severity LimitSeverityForTag(const MemoryTag& tag) const;
   FailureInjectionDecision EvaluateFailureInjectionLocked(const MemoryTag& tag);
   Status MemoryStatus(scratchbird::core::platform::StatusCode code, Severity severity) const;
   DiagnosticRecord MakeMemoryDiagnostic(Status status,
@@ -826,6 +860,7 @@ class BoundedAllocator {
   AllocationPolicy policy_;
   MemoryBinaryUuid active_policy_uuid_{};
   u64 active_policy_generation_ = 0;
+  std::map<MemoryBinaryUuid, DatabaseAllocationBehavior> database_behaviors_;
   mutable std::mutex mutex_;
   MemoryAccountingSnapshot accounting_;
   std::unique_ptr<ShardedMemoryAccountingLedger> sharded_accounting_;

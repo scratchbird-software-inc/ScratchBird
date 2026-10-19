@@ -640,35 +640,83 @@ int main() {
   // This coordinator does not prove execution of a SQL session setting.
   api::EngineRequestContext context;
   context.security_context_present = true;
+  context.statement_uuid = base;
+  context.statement_uuid.bytes[14] ^= 0xff;
   for (unsigned version = 0; version != 16; ++version) {
     for (unsigned variant = 0; variant != 4; ++variant) {
       if (version == 7 && variant == 2) continue;
       auto invalid = base;
       invalid.bytes[6] = static_cast<std::uint8_t>(version << 4);
       invalid.bytes[8] = static_cast<std::uint8_t>(variant << 6);
-      context.statement_uuid = invalid;
+      context.statement_receipt_uuid = invalid;
       check(!api::CompileSblrSessionSettingSetDescriptor(context, invalid, 1, 1).ok);
     }
   }
-  context.statement_uuid = {};
+  context.statement_receipt_uuid = {};
   check(!api::CompileSblrSessionSettingSetDescriptor(context, {}, 1, 1).ok);
-  context.statement_uuid = base;
+  context.statement_receipt_uuid = base;
   auto different = base;
   different.bytes[15] ^= 0xff;
   check(!api::CompileSblrSessionSettingSetDescriptor(context, different, 1, 1).ok);
   auto first = api::CompileSblrSessionSettingSetDescriptor(context, base, 1, 1);
   check(first.ok);
   check(first.descriptor.receipt == base.bytes);
-  context.statement_uuid = different;
+  // An attacker cannot consume or overwrite another session's admission,
+  // even when it copies the receipt UUID and changes no operand bytes.
+  auto other_session = context;
+  other_session.session_uuid = different;
+  check(!api::ConsumeSblrSessionSettingSetDescriptor(other_session, first.descriptor).ok);
+  check(!api::CompileSblrSessionSettingSetDescriptor(other_session, base, 1, 1).ok);
+  auto tampered = first.descriptor;
+  tampered.value[0] ^= 1;
+  check(!api::ConsumeSblrSessionSettingSetDescriptor(context, tampered).ok);
+  tampered = first.descriptor;
+  ++tampered.availability;
+  check(!api::ConsumeSblrSessionSettingSetDescriptor(context, tampered).ok);
+
+  context.statement_receipt_uuid = different;
   check(!api::ConsumeSblrSessionSettingSetDescriptor(context, first.descriptor).ok);
   auto second = api::CompileSblrSessionSettingSetDescriptor(context, different, 1, 1);
   check(second.ok);
   check(second.descriptor.receipt == different.bytes);
   check(api::ConsumeSblrSessionSettingSetDescriptor(context, second.descriptor).ok);
   check(!api::ConsumeSblrSessionSettingSetDescriptor(context, second.descriptor).ok);
-  context.statement_uuid = base;
+  context.statement_receipt_uuid = base;
   check(api::ConsumeSblrSessionSettingSetDescriptor(context, first.descriptor).ok);
   check(!api::ConsumeSblrSessionSettingSetDescriptor(context, first.descriptor).ok);
+  auto retired = context;
+  retired.statement_receipt_uuid.bytes[13] ^= 0xff;
+  const auto pending = api::CompileSblrSessionSettingSetDescriptor(
+      retired, retired.statement_receipt_uuid, 1, 1);
+  check(pending.ok);
+  api::RetireSblrSessionSettingSetReceipt(retired.statement_receipt_uuid);
+  check(!api::ConsumeSblrSessionSettingSetDescriptor(retired, pending.descriptor).ok);
+  // A shared carrier cannot turn GET into SET, UNSET, DISCARD, or any other
+  // operation. A refused cross-operation attempt must preserve the real owner.
+  using SessionOperation = api::SessionValueOperation;
+  for (unsigned source = 0; source != 9; ++source) {
+    auto owner = context;
+    owner.statement_receipt_uuid.bytes[12] = static_cast<std::uint8_t>(source + 17);
+    const auto operation = static_cast<SessionOperation>(source);
+    const auto issued = api::CompileSblrSessionValueDescriptor(operation, owner,
+        owner.statement_receipt_uuid, 1, 1);
+    check(issued.ok);
+    for (unsigned target = 0; target != 9; ++target) {
+      if (source == target) continue;
+      const auto other = static_cast<SessionOperation>(target);
+      check(!api::CompileSblrSessionValueDescriptor(other, owner,
+          owner.statement_receipt_uuid, 1, 1).ok);
+      check(!api::ConsumeSblrSessionValueDescriptor(other, owner,
+          issued.descriptor).ok);
+    }
+    check(api::ConsumeSblrSessionValueDescriptor(operation, owner,
+        issued.descriptor).ok);
+    check(!api::ConsumeSblrSessionValueDescriptor(operation, owner,
+        issued.descriptor).ok);
+    api::RetireSblrSessionSettingSetReceipt(owner.statement_receipt_uuid);
+  }
+  check(!api::CompileSblrSessionValueDescriptor(static_cast<SessionOperation>(255),
+      retired, retired.statement_receipt_uuid, 1, 1).ok);
   // The actual server handle/cache owner, not a copied test implementation.
   server::ServerSessionRecord session;
   session.session_uuid = base.bytes;

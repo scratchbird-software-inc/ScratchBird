@@ -224,7 +224,7 @@ NativeManagementExtentEncoding EncodeNativeManagementExtentInto(
   const auto excludes=[&](auto input){return DisjointNativeDecodeRegions(input,output,aggregate,identities);};
   const auto bytes=[](std::string_view key){return std::span<const byte>{reinterpret_cast<const byte*>(key.data()),key.size()};};
   if(!excludes(std::span(&record,1))||!excludes(std::span(&object,1))||!excludes(headers)||
-     !excludes(record.steps)||!excludes(record.normalized_request_bytes)||!excludes(bytes(record.idempotency_key))||
+     !excludes(record.steps)||!excludes(record.normalized_request_bytes)||!excludes(record.operation_state_bytes)||!excludes(bytes(record.idempotency_key))||
      (!headers.empty()&&reinterpret_cast<std::uintptr_t>(headers.data())%alignof(disk::NativeCommonPageHeader))||
      (!record.steps.empty()&&reinterpret_cast<std::uintptr_t>(record.steps.data())%alignof(NativeManagementStepView)))return fail(E::invalid_workspace);
   for(const auto& step:record.steps)if(!excludes(bytes(step.idempotency_key)))return fail(E::invalid_workspace);

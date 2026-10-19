@@ -217,13 +217,15 @@ void Index(const std::vector<NativeManagementHistoryEntry>& entries,
 }
 void IndexView(std::span<const NativeManagementHistoryEntryView> entries,
     std::pmr::map<Uuid,std::size_t>& latest,
-    std::pmr::map<std::pair<u16,std::string_view>,Uuid>& idempotency,Scratch& scratch){
+    std::pmr::map<std::pair<u16,std::string_view>,Uuid>& idempotency,Scratch& scratch,
+    const NativeManagementOperationView* append=nullptr,
+    const std::optional<NativeStartupBinding>& binding={}){
   std::pmr::map<Semantic,Uuid> semantics(scratch.resource);std::pmr::map<Uuid,Uuid> steps(scratch.resource);
   IndexValues(entries,latest,idempotency,semantics,steps,[&](const auto& a,const auto& b){
     const auto count=std::max(a.steps.size(),b.steps.size());
     Require(count<=(std::numeric_limits<std::size_t>::max()-7)/2,E::resource_exhausted);
     return ValidateNativeManagementOperationEvolutionView(a,b,scratch.Array<Uuid>(2*count+7));},
-    static_cast<const NativeManagementOperationView*>(nullptr));
+    append,binding);
 }
 NativeManagementHistoryView ReadHistoryView(const Uuid& database,std::span<const disk::NativeFilespaceDevice> supplied,
     const Uuid& primary,u64 budget,const NativeManagementCheckpointAnchor* requested,
@@ -446,6 +448,49 @@ NativeManagementHistoryDeviceRead ReadNativeManagementHistoryInto(
   }catch(const std::bad_alloc&){out.history=FailView(E::resource_exhausted);}
    catch(const std::length_error&){out.history=FailView(E::resource_exhausted);}
    catch(...){out.history=FailView(E::io_failure);}
+  return out;
+}
+NativeManagementHistoryAppendResult ValidateNativeManagementHistoryAppendInto(
+    const NativeManagementHistoryView& history,const NativeManagementOperationView& record,
+    std::span<byte> backing,const std::optional<NativeStartupBinding>& startup_binding) noexcept {
+  NativeManagementHistoryAppendResult out;
+  if(!history.ok())return out;
+  const auto disjoint=[&](auto input){return disk::detail::DisjointNativeDecodeRegions(backing,input);};
+  const auto operation_disjoint=[&](const NativeManagementOperationView& o){
+    if(!disjoint(std::span{&o,1})||!disjoint(o.steps)||!disjoint(o.normalized_request_bytes)||!disjoint(o.operation_state_bytes)||
+        !disjoint(std::span{o.idempotency_key.data(),o.idempotency_key.size()}))return false;
+    for(const auto& step:o.steps)
+      if(!disjoint(std::span{step.idempotency_key.data(),step.idempotency_key.size()}))return false;
+    return true;
+  };
+  if(!disjoint(std::span{&history,1})||!disjoint(history.entries)||
+      !disjoint(std::span{&startup_binding,1})||!operation_disjoint(record)){
+    out.error=E::invalid_workspace;return out;
+  }
+  for(const auto& entry:history.entries)if(!operation_disjoint(entry.record)){
+    out.error=E::invalid_workspace;return out;
+  }
+  try{
+    detail::NativeMetadataMemory resource(backing);Scratch scratch{&resource};
+    std::size_t maximum_steps=record.steps.size();
+    for(const auto& entry:history.entries)maximum_steps=std::max(maximum_steps,entry.record.steps.size());
+    Require(maximum_steps<=(std::numeric_limits<std::size_t>::max()-7)/2,E::resource_exhausted);
+    const auto identities=scratch.Array<Uuid>(2*maximum_steps+7);
+    const auto validate=[&](const NativeManagementOperationView& value){
+      const auto error=ValidateNativeManagementOperationView(value,identities);
+      if(error!=NativeManagementOperationError::none)throw
+          error==NativeManagementOperationError::resource_exhausted?E::resource_exhausted:
+          error==NativeManagementOperationError::hash_failure?E::hash_failure:E::transition_failure;
+    };
+    for(const auto& entry:history.entries)validate(entry.record);
+    validate(record);
+    std::pmr::map<Uuid,std::size_t> latest(&resource);
+    std::pmr::map<std::pair<u16,std::string_view>,Uuid> idempotency(&resource);
+    IndexView(history.entries,latest,idempotency,scratch,&record,startup_binding);
+    out.error=E::none;out.backing_bytes_used=resource.used();
+  }catch(E error){out.error=error;}
+   catch(const std::bad_alloc&){out.error=E::resource_exhausted;}
+   catch(const std::length_error&){out.error=E::resource_exhausted;}
   return out;
 }
 NativeManagementHistoryError ValidateNativeManagementHistoryAppend(const NativeManagementGraphHistory& history,

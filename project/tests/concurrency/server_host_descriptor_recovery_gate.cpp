@@ -7,8 +7,11 @@
 #include "../support/engine_statement_fixture.hpp"
 #include "../support/owned_temp_directory.hpp"
 #include <fstream>
+#include <cerrno>
 #include <iostream>
 #include <stdexcept>
+#include <sys/wait.h>
+#include <unistd.h>
 
 namespace a = scratchbird::engine::internal_api;
 namespace s = scratchbird::server;
@@ -76,6 +79,18 @@ int main(int argc,char** argv) try {
   const auto error_live=[&] {return a::LookupSblrErrorVectorDescriptorV1(context,context.statement_receipt_uuid.bytes,ev.snapshot.descriptor_uuid,1).ok;};
   const auto source_live=[&] {return a::LookupSblrSourceMapDescriptorV1(context,context.statement_receipt_uuid,sm.snapshot.descriptor_uuid,1,bound,sm.snapshot.registry_snapshot_uuid,1).ok;};
   Check(error_live()&&source_live(),"both descriptors active before startup");
+  if(mode=="host-fork") {
+    s::ServerBootstrapConfig inherited_config;
+    inherited_config.database_default_path=create.path;inherited_config.embedded_direct_mode=true;
+    const auto child=::fork();Check(child>=0,"fork real inherited host attempt");
+    if(!child){std::set_terminate([]{::_exit(73);});(void)s::StartHostedEngine(inherited_config);::_exit(74);}
+    int status=0;pid_t waited;
+    do {waited=::waitpid(child,&status,0);} while(waited<0&&errno==EINTR);
+    Check(waited==child&&WIFEXITED(status)&&WEXITSTATUS(status)==73,
+        "inherited host refuses before ordinary diagnostic/provider or storage access");
+    Check(Read(ep)==original_e&&Read(sp)==original_s&&error_live()&&source_live(),
+        "inherited host refusal preserves parent's actual descriptors before a real fresh open");
+  }
   if(mismatch) {
     auto foreign=context; foreign.database_uuid=Id();
     const auto refused=a::RecoverSblrStartupDescriptorsV1(foreign);
@@ -113,7 +128,13 @@ int main(int argc,char** argv) try {
                 result.state.databases.front().write_admission_fenced,"failed startup is fenced");
           Check(result.diagnostics.front().occurrence_uuid==result.descriptor_recovery_failure->occurrence_uuid,
                 "host preserves source occurrence");
-        } else Check(result.ok()&&result.state.databases.front().database_open,"host ready after recovery");
+        } else {
+          Check(result.ok()&&result.state.databases.front().database_open,"host ready after recovery");
+          Check(result.state.database_ownership_locks.size()==1&&result.state.database_ownership_locks.front()->
+              ObserveWriteCustody()==(recover?scratchbird::storage::disk::RouteWriteCustodyState::retained:
+                  scratchbird::storage::disk::RouteWriteCustodyState::not_requested),
+              "normal host retains actual initial writer capability; non-normal modes retain read-only capability");
+        }
         Check(native_opens==0&&native_closes==0,"host never allocates transient native facade");
       }
     };

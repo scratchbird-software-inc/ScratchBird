@@ -673,8 +673,8 @@ NativeTransactionInventoryPageResult DecodeNativeTransactionInventoryPage(const 
   catch(const std::bad_alloc&){return native_inventory::Fail(NativeInventoryError::resource_exhausted);}
   catch(const std::length_error&){return native_inventory::Fail(NativeInventoryError::resource_exhausted);}
 }
-NativeInventoryViewValidation ValidateNativeTransactionInventoryView(
-    const NativeTransactionInventoryView& inventory,std::span<std::size_t> indices,
+template<class Inventory> NativeInventoryViewValidation ValidateInventoryView(
+    const Inventory& inventory,std::span<std::size_t> indices,
     std::span<byte> markers) noexcept {
   using E=NativeInventoryError;
   const std::span<const byte> object{reinterpret_cast<const byte*>(&inventory),sizeof(inventory)};
@@ -687,6 +687,16 @@ NativeInventoryViewValidation ValidateNativeTransactionInventoryView(
     return {E::resource_exhausted,"insufficient_backing"};
   const auto* why=native_inventory::ValidateBorrowed(inventory,indices,markers);
   return {*why?E::invalid_inventory:E::none,why};
+}
+NativeInventoryViewValidation ValidateNativeTransactionInventoryView(
+    const NativeTransactionInventoryView& inventory,std::span<std::size_t> indices,
+    std::span<byte> markers) noexcept {
+  return ValidateInventoryView(inventory,indices,markers);
+}
+NativeInventoryViewValidation ValidateNativeTransactionInventoryConstView(
+    const NativeTransactionInventoryConstView& inventory,std::span<std::size_t> indices,
+    std::span<byte> markers) noexcept {
+  return ValidateInventoryView(inventory,indices,markers);
 }
 NativeInventoryViewValidation ValidateNativeTransactionInventoryEvolutionView(
     const NativeTransactionInventoryView& before,const NativeTransactionInventoryView& after,

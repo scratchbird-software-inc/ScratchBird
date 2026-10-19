@@ -3,11 +3,21 @@
 #pragma once
 
 #include "startup_credential_source.hpp"
+#include "native_hosted_database_custody.hpp"
 #include "engine/internal_api/security/native_runtime_security_observation.hpp"
+#include "engine/internal_api/security/native_runtime_authorization_projection.hpp"
 #include "engine/internal_api/security/local_password_credential.hpp"
 #include "core/catalog/catalog_bootstrap_policy.hpp"
 #include "core/hash/crypto_memory_adapter.hpp"
+#include "storage/database/native_owned_checkpoint_writer.hpp"
+#include <concepts>
 #include <stop_token>
+#include <variant>
+#if defined(_WIN32)
+#include <process.h>
+#else
+#include <unistd.h>
+#endif
 
 namespace scratchbird::server {
 enum class NativeRuntimePrincipalCredentialError {
@@ -71,11 +81,26 @@ struct NativeRuntimePrincipalCredentialRequest {
 struct NativeRuntimePrincipalCredentialResult;
 class NativeRuntimePrincipalCredentialLease;
 struct NativeLocalServiceStartupSelectionResult;
+struct NativeLocalServiceStartupConfigurationResult;
+struct NativeLocalServiceAgentConfigurationResult;
+class NativeHostedDatabaseRuntime;
+// Every alternative retains an actual selected checkpoint. The writer reader
+// additionally retains its outer operation reservation; it exposes no mutable
+// devices and cannot be converted to the independent read-source alternative.
+// Hosted readers also pin the original server route owner for their lifetime.
+template<class Source>
+concept NativeRuntimeCredentialSource =
+    std::same_as<Source, storage::database::NativeSelectedCheckpointMemoryHandle> ||
+    std::same_as<Source, storage::database::NativeOwnedCheckpointWriter::ReadLease> ||
+    std::same_as<Source, NativeHostedDatabaseCustody::ReadLease>;
 inline NativeLocalServiceStartupSelectionResult SelectNativeLocalServiceStartupDeclarations(
     const NativeRuntimePrincipalCredentialLease&) noexcept;
+inline NativeLocalServiceStartupConfigurationResult SelectNativeLocalServiceStartupConfiguration(
+    const NativeRuntimePrincipalCredentialLease&) noexcept;
+template<NativeRuntimeCredentialSource Source>
 inline NativeRuntimePrincipalCredentialResult VerifyNativeRuntimePrincipalCredential(
     const NativeRuntimePrincipalCredentialRequest&,
-    storage::database::NativeSelectedCheckpointMemoryHandle&,
+    Source&,
     NativeRuntimePrincipalCredentialPreparedMemory&, StartupCredentialSource::Lease&,
     const core::memory::ScopedProtectedBuffer&) noexcept;
 
@@ -92,18 +117,43 @@ class NativeRuntimePrincipalCredentialLease final {
   NativeRuntimePrincipalCredentialLease& operator=(const NativeRuntimePrincipalCredentialLease&) = delete;
   NativeRuntimePrincipalCredentialLease(NativeRuntimePrincipalCredentialLease&& other) noexcept
       : workspace_(TakeWorkspace(other)), source_(std::move(other.source_)),
+        retained_operation_(std::move(other.retained_operation_)),
         credential_(std::move(other.credential_)), observation_(other.observation_),
         provider_(other.provider_), provider_version_(other.provider_version_),
         credential_binding_(other.credential_binding_), configuration_(other.configuration_),
-        thread_(std::this_thread::get_id()) {}
+        process_(other.process_), thread_(other.thread_) {}
   NativeRuntimePrincipalCredentialLease& operator=(NativeRuntimePrincipalCredentialLease&&) = delete;
   ~NativeRuntimePrincipalCredentialLease() {
     CheckThread();
     // The credential owner erases/releases protected memory. Drop all native
     // device guards before that cleanup or either workspace's deallocation.
-    source_.Reset(); credential_.Reset();
+    std::visit([](auto& source) { source.Reset(); }, source_); credential_.Reset();
+    retained_operation_.Reset();
   }
-  bool valid() const noexcept { CheckThread(); return bool(source_) && credential_.binding().has_value(); }
+  bool valid() const noexcept {
+    CheckThread();
+    return (has_selected_source() || bool(retained_operation_)) &&
+        credential_.binding().has_value();
+  }
+  bool has_selected_source() const noexcept {
+    CheckThread();
+    return std::visit([](const auto& source) { return bool(source); }, source_);
+  }
+  // Actual custody, not a cached operation UUID or an admission declaration.
+  // Only the owning hosted runtime can transfer the matching reservation here.
+  bool has_retained_operation() const noexcept {
+    CheckThread(); return bool(retained_operation_);
+  }
+  // Reporting identity only, never a writable capability or BEGIN receipt.
+  std::optional<core::platform::Uuid> writer_operation_uuid() const noexcept {
+    CheckAccess();
+    if (retained_operation_) return retained_operation_.identity();
+    return std::visit([](const auto& source) -> std::optional<core::platform::Uuid> {
+      if constexpr (std::same_as<std::decay_t<decltype(source)>, storage::database::NativeSelectedCheckpointMemoryHandle>)
+        return std::nullopt;
+      else return source.operation_uuid();
+    }, source_);
+  }
   const core::catalog::CatalogRuntimeAuthorityBinding& binding() const noexcept {
     CheckAccess(); return *observation_.binding;
   }
@@ -113,6 +163,9 @@ class NativeRuntimePrincipalCredentialLease final {
   const core::platform::Uuid& binding_version_uuid() const noexcept {
     CheckAccess(); return observation_.binding_version_uuid;
   }
+  const engine::internal_api::NativeRuntimeSelectedCatalogObservation& selected_catalog() const noexcept {
+    CheckAccess(); return *observation_.selected_catalog;
+  }
   const core::catalog::CatalogBootstrapSecurityProvider& provider() const noexcept {
     CheckAccess(); return provider_;
   }
@@ -121,32 +174,89 @@ class NativeRuntimePrincipalCredentialLease final {
   std::span<const engine::internal_api::NativeRuntimeSecurityRecordObservation> security_records() const noexcept {
     CheckAccess(); return observation_.records;
   }
+  // Project the exact source retained by this private credential comparison,
+  // never caller-supplied security observations. Prepare graph backing before
+  // source acquisition; its result borrows that backing and this source owner.
+  // Base-rights data is not provider activation, session or BEGIN admission.
+  engine::internal_api::NativeRuntimeAuthorizationResult ProjectAuthorization(
+      engine::internal_api::NativeRuntimeAuthorizationPreparedMemory& workspace) const noexcept {
+    CheckThread();
+    if (!valid()) return {};
+    return engine::internal_api::ProjectNativeRuntimeAuthorization(observation_, workspace);
+  }
  private:
+  friend class NativeHostedDatabaseRuntime;
+  // Capture the exact outer reservation before dropping its reader. No new
+  // attempt or mutable device escapes; caller keeps the governed catalog
+  // workspace and protected-source generation owner alive. The reservation
+  // fences the observed graph while later resource/provider work may allocate.
+  bool RetainHostedOperationAndReleaseDeviceGuards(
+      NativeHostedDatabaseCustody::Operation& operation) noexcept {
+    CheckAccess();
+    if (retained_operation_) return !operation;
+    auto* hosted = std::get_if<NativeHostedDatabaseCustody::ReadLease>(&source_);
+    if (!hosted || !*hosted || !operation ||
+        hosted->operation_uuid() != operation.identity()) return false;
+    retained_operation_ = std::move(operation);
+    hosted->Reset();
+    return true;
+  }
+  template<NativeRuntimeCredentialSource Source>
   friend NativeRuntimePrincipalCredentialResult VerifyNativeRuntimePrincipalCredential(
-      const NativeRuntimePrincipalCredentialRequest&, storage::database::NativeSelectedCheckpointMemoryHandle&,
+      const NativeRuntimePrincipalCredentialRequest&, Source&,
       NativeRuntimePrincipalCredentialPreparedMemory&, StartupCredentialSource::Lease&,
       const core::memory::ScopedProtectedBuffer&) noexcept;
   friend NativeLocalServiceStartupSelectionResult SelectNativeLocalServiceStartupDeclarations(
       const NativeRuntimePrincipalCredentialLease&) noexcept;
+  friend NativeLocalServiceStartupConfigurationResult SelectNativeLocalServiceStartupConfiguration(
+      const NativeRuntimePrincipalCredentialLease&) noexcept;
+  friend NativeLocalServiceAgentConfigurationResult SelectNativeLocalServiceAgentConfiguration(
+      const NativeRuntimePrincipalCredentialLease&) noexcept;
+  template<NativeRuntimeCredentialSource Source>
   NativeRuntimePrincipalCredentialLease(NativeRuntimePrincipalCredentialPreparedMemory&& workspace,
-      storage::database::NativeSelectedCheckpointMemoryHandle&& source, StartupCredentialSource::Lease&& credential,
+      Source&& source, StartupCredentialSource::Lease&& credential,
       engine::internal_api::NativeRuntimeSecurityObservationResult observation,
       core::catalog::CatalogBootstrapSecurityProvider provider, core::platform::Uuid provider_version,
       StartupCredentialTransportBinding credential_binding,
       std::span<const storage::database::NativeCatalogVisibleRow> configuration) noexcept
-      : workspace_(std::move(workspace)), source_(std::move(source)), credential_(std::move(credential)),
+      : workspace_(std::move(workspace)), source_(std::in_place_type<Source>, std::move(source)), credential_(std::move(credential)),
         observation_(std::move(observation)), provider_(provider), provider_version_(provider_version),
         credential_binding_(credential_binding), configuration_(configuration),
-        thread_(std::this_thread::get_id()) {}
-  void CheckThread() const noexcept { if (thread_ != std::this_thread::get_id()) std::terminate(); }
+        process_(CurrentProcess()), thread_(std::this_thread::get_id()) {}
+  static std::uint64_t CurrentProcess() noexcept {
+#if defined(_WIN32)
+    return static_cast<std::uint64_t>(::_getpid());
+#else
+    return static_cast<std::uint64_t>(::getpid());
+#endif
+  }
+  void CheckThread() const noexcept {
+    // A fork preserves this thread's native identity but not permission to
+    // access inherited provider/source mutexes or transfer governed custody.
+    // Check immutable process/thread facts before ANY workspace or source use,
+    // including on an already moved-from proof and before TakeWorkspace.
+    if (process_ != CurrentProcess() || thread_ != std::this_thread::get_id()) std::terminate();
+  }
   void CheckAccess() const noexcept { if (!valid()) std::terminate(); }
+  const storage::database::NativeSelectedCheckpointMemoryLease& SelectedSource() const noexcept {
+    CheckAccess();
+    if (!has_selected_source()) std::terminate();
+    return std::visit([](const auto& source) -> const storage::database::NativeSelectedCheckpointMemoryLease& {
+      if constexpr (std::same_as<std::decay_t<decltype(source)>, storage::database::NativeSelectedCheckpointMemoryHandle>)
+        return *source;
+      else return source.source();
+    }, source_);
+  }
   static NativeRuntimePrincipalCredentialPreparedMemory TakeWorkspace(NativeRuntimePrincipalCredentialLease& other) noexcept {
     other.CheckThread(); return std::move(other.workspace_);
   }
   // Reverse destruction releases credential and source guards BEFORE governed
   // catalog backing; no allocation/deallocation callback runs under them.
   NativeRuntimePrincipalCredentialPreparedMemory workspace_;
-  storage::database::NativeSelectedCheckpointMemoryHandle source_;
+  std::variant<storage::database::NativeSelectedCheckpointMemoryHandle,
+      storage::database::NativeOwnedCheckpointWriter::ReadLease,
+      NativeHostedDatabaseCustody::ReadLease> source_;
+  NativeHostedDatabaseCustody::Operation retained_operation_;
   StartupCredentialSource::Lease credential_;
   engine::internal_api::NativeRuntimeSecurityObservationResult observation_;
   core::catalog::CatalogBootstrapSecurityProvider provider_;
@@ -156,12 +266,14 @@ class NativeRuntimePrincipalCredentialLease final {
   // Accessible only to the native declaration selector, not a mutable catalog
   // or an independently constructible configuration/activation authority.
   std::span<const storage::database::NativeCatalogVisibleRow> configuration_;
+  std::uint64_t process_;
   std::thread::id thread_;
 };
 
 struct NativeRuntimePrincipalCredentialResult {
   NativeRuntimePrincipalCredentialError error = NativeRuntimePrincipalCredentialError::invalid_request;
   engine::internal_api::NativeRuntimeSecurityReadError security_error = engine::internal_api::NativeRuntimeSecurityReadError::none;
+  engine::internal_api::RuntimeAuthorityBindingReadError binding_error = engine::internal_api::RuntimeAuthorityBindingReadError::none;
   storage::database::NativePinnedCatalogReadError source_error = storage::database::NativePinnedCatalogReadError::none;
   storage::database::NativeCatalogRelationLeaseError relation_error = storage::database::NativeCatalogRelationLeaseError::none;
   core::catalog::CatalogValueError record_error = core::catalog::CatalogValueError::none;
@@ -169,6 +281,7 @@ struct NativeRuntimePrincipalCredentialResult {
   core::hash::CryptoMemoryError crypto_error = core::hash::CryptoMemoryError::none;
   engine::internal_api::LocalPasswordCredentialError verifier_error = engine::internal_api::LocalPasswordCredentialError::none;
   core::platform::u64 physical_bytes_read = 0;
+  core::platform::u64 expected_generation = 0, observed_generation = 0;
   std::optional<storage::disk::BoundedIoResult> io_failure;
   core::platform::Uuid io_failure_filespace_uuid;
   std::optional<NativeRuntimePrincipalCredentialLease> lease;
@@ -181,9 +294,10 @@ struct NativeRuntimePrincipalCredentialResult {
 // retains that separate authority. No password, grant or snapshot supplied by
 // a caller substitutes the internal native reads below. Failure never consumes
 // the caller's source/workspace/credential owners or exposes a partial proof.
+template<NativeRuntimeCredentialSource Source>
 inline NativeRuntimePrincipalCredentialResult VerifyNativeRuntimePrincipalCredential(
     const NativeRuntimePrincipalCredentialRequest& request,
-    storage::database::NativeSelectedCheckpointMemoryHandle& source,
+    Source& source,
     NativeRuntimePrincipalCredentialPreparedMemory& workspace,
     StartupCredentialSource::Lease& credential,
     const core::memory::ScopedProtectedBuffer& derived) noexcept {
@@ -194,6 +308,10 @@ inline NativeRuntimePrincipalCredentialResult VerifyNativeRuntimePrincipalCreden
   const auto fail = [&](E error) { out.error = error; return std::move(out); };
   if (request.stop.stop_requested()) return fail(E::cancelled);
   if (!source || !workspace || !core::uuid::IsEngineIdentityUuid(request.security.database_uuid)) return out;
+  const auto& selected_source = [&]() -> const db::NativeSelectedCheckpointMemoryLease& {
+    if constexpr (std::same_as<Source, db::NativeSelectedCheckpointMemoryHandle>) return *source;
+    else return source.source();
+  }();
   const auto custody = credential.binding();
   if (!custody) return fail(E::credential_source_unavailable);
   if (!derived.valid() || derived.size() != 32 ||
@@ -206,9 +324,11 @@ inline NativeRuntimePrincipalCredentialResult VerifyNativeRuntimePrincipalCreden
   } erase_derived{derived.data()};
   out.crypto_error = core::hash::CheckExplicitCryptoMemoryScope(request.security.database_uuid);
   if (out.crypto_error != core::hash::CryptoMemoryError::none) return fail(E::crypto_scope_unavailable);
-  auto observed = api::ReadCommittedNativeRuntimeSecurityOnLease(*source, request.security, workspace.security);
+  auto observed = api::ReadCommittedNativeRuntimeSecurityOnLease(selected_source, request.security, workspace.security);
   out.physical_bytes_read = observed.physical_bytes_read;
   out.security_error = observed.error; out.source_error = observed.source_error;
+  out.binding_error = observed.binding_error;
+  out.expected_generation = observed.expected_generation; out.observed_generation = observed.observed_generation;
   out.relation_error = observed.relation_error; out.record_error = observed.record_error;
   out.visibility_diagnostic = observed.visibility_diagnostic;
   out.io_failure = observed.io_failure; out.io_failure_filespace_uuid = observed.io_failure_filespace_uuid;
@@ -219,8 +339,11 @@ inline NativeRuntimePrincipalCredentialResult VerifyNativeRuntimePrincipalCreden
       custody->credential_reference != *binding.credential_reference_uuid || !custody->generation)
     return fail(E::credential_binding_mismatch);
   if (request.stop.stop_requested()) return fail(E::cancelled);
-  const auto rows = db::NativeCatalogVisibilityLeaseReader::ReadCommitted(*source, 2, 5,
-      request.security.configuration_relation, request.security.maximum_retained_image_bytes, workspace.provider);
+  const auto rows = request.security.catalog_selection == api::NativeRuntimeCatalogSelection::discover_selected
+      ? db::NativeCatalogVisibilityLeaseReader::ReadCommittedSelected(selected_source, 2, 5,
+          request.security.maximum_retained_image_bytes, workspace.provider)
+      : db::NativeCatalogVisibilityLeaseReader::ReadCommitted(selected_source, 2, 5,
+          request.security.configuration_relation, request.security.maximum_retained_image_bytes, workspace.provider);
   if (rows.source.physical_bytes_read > std::numeric_limits<core::platform::u64>::max() - out.physical_bytes_read)
     return fail(E::resource_exhausted);
   out.physical_bytes_read += rows.source.physical_bytes_read;
@@ -258,7 +381,7 @@ inline NativeRuntimePrincipalCredentialResult VerifyNativeRuntimePrincipalCreden
     return fail(E::local_provider_required);
   // An imported default is not current provider activation. Preserve its exact
   // value in the comparison proof; actual admission decides activation later.
-  const auto& inventory = source->selection().checkpoint_inventory.inventory.entries;
+  const auto& inventory = selected_source.selection().checkpoint_inventory.inventory.entries;
   const auto origin = std::lower_bound(inventory.begin(), inventory.end(), provider.record->origin_local_transaction_id,
       [](const auto& e, auto id) { return e.identity.local_id.value < id; });
   if (origin == inventory.end() || origin->identity.local_id.value != provider.record->origin_local_transaction_id ||

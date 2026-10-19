@@ -64,13 +64,21 @@ class NativeRuntimeAuthorizationProjection {
   std::span<const NativeRuntimeAuthorizationMembership> memberships() const noexcept {return memberships_;}
   std::span<const NativeRuntimeAuthorizationGrant> grants() const noexcept {return grants_;}
   EngineUuid engine_owned_bootstrap_role_uuid() const noexcept {return bootstrap_;}
+  core::platform::usize source_record_count() const noexcept {return source_record_count_;}
+  core::platform::usize maximum_membership_depth() const noexcept {return maximum_membership_depth_;}
+  core::platform::u64 work_performed() const noexcept {return work_performed_;}
+  bool WithinLimits(NativeRuntimeAuthorizationLimits limits) const noexcept {
+    return present()&&limits.maximum_records&&limits.maximum_depth&&limits.maximum_work&&
+        source_record_count_<=limits.maximum_records&&maximum_membership_depth_<=limits.maximum_depth&&
+        work_performed_<=limits.maximum_work;
+  }
   // Base-right projection ONLY. Row/column/domain/runtime/cluster gates remain
   // mandatory at their owning operation. Explicit global/target denies precede
   // both grants and the genuinely resolved engine-owned bootstrap bundle.
-  bool Allows(std::string_view right,const EngineUuid& target={}) const noexcept {
+  bool Allows(std::string_view right,const EngineUuid& target={},bool permit_bootstrap_bundle=true) const noexcept {
     if(!present()||(!target.is_nil()&&!core::uuid::IsEngineIdentityUuid(target)))return false;
     if(std::find(rights_.begin(),rights_.end(),right)==rights_.end())return false;
-    bool allow=!bootstrap_.is_nil();
+    bool allow=permit_bootstrap_bundle&&!bootstrap_.is_nil();
     for(const auto& g:grants_)if(g.right==right&&(g.target_uuid.is_nil()||g.target_uuid==target)){
       if(g.deny)return false;allow=true;
     }
@@ -84,6 +92,8 @@ class NativeRuntimeAuthorizationProjection {
   std::span<const NativeRuntimeAuthorizationMembership> memberships_;
   std::span<const NativeRuntimeAuthorizationGrant> grants_;
   std::span<const std::string_view> rights_;
+  core::platform::usize source_record_count_=0,maximum_membership_depth_=0;
+  core::platform::u64 work_performed_=0;
   friend NativeRuntimeAuthorizationResult ProjectNativeRuntimeAuthorization(
       const NativeRuntimeSecurityObservationResult&,NativeRuntimeAuthorizationPreparedMemory&) noexcept;
 };
@@ -101,6 +111,7 @@ struct NativeRuntimeAuthorizationResult {
   transaction::mga::MgaObservationStatus visibility_diagnostic;
   std::optional<storage::disk::BoundedIoResult> io_failure;
   EngineUuid io_failure_filespace_uuid;
+  core::platform::u64 expected_generation=0, observed_generation=0;
   NativeRuntimeAuthorizationProjection projection;
   bool ok() const noexcept {return error==NativeRuntimeAuthorizationError::none&&projection.present();}
 };
@@ -116,7 +127,7 @@ inline Kind KindOf(core::catalog::CatalogRecordKind k) noexcept {
   using K=core::catalog::CatalogRecordKind;
   return k==K::user_account?Kind::principal:k==K::role_account?Kind::role:k==K::group_account?Kind::group:Kind::invalid;
 }
-struct Node {NativeRuntimeAuthorizationSubject value;Size first=absent;core::platform::u8 color=0;bool active=false,bootstrap=false;};
+struct Node {NativeRuntimeAuthorizationSubject value;Size first=absent,height=1;core::platform::u8 color=0;bool active=false,bootstrap=false;};
 struct Edge {NativeRuntimeAuthorizationMembership value;Size member=absent,parent=absent,next=absent;};
 struct Grant {NativeRuntimeAuthorizationGrant value;Size subject=absent;};
 struct Frame {Size node=absent,next=absent;};
@@ -276,6 +287,7 @@ inline NativeRuntimeAuthorizationResult ProjectNativeRuntimeAuthorization(
       source.relation_error!=storage::database::NativeCatalogRelationLeaseError::none||
       source.record_error!=c::CatalogValueError::none||source.io_failure){
     out.source_error=source.error;out.binding_error=source.binding_error;out.catalog_error=source.source_error;
+    out.expected_generation=source.expected_generation;out.observed_generation=source.observed_generation;
     out.relation_error=source.relation_error;out.record_error=source.record_error;
     out.visibility_diagnostic=source.visibility_diagnostic;out.io_failure=source.io_failure;
     out.io_failure_filespace_uuid=source.io_failure_filespace_uuid;return fail(E::source_failure);
@@ -399,7 +411,12 @@ inline NativeRuntimeAuthorizationResult ProjectNativeRuntimeAuthorization(
     if(cls=="role_membership"||cls=="group_membership"){
       const auto member=body.Identity("member_uuid"),parent=body.Identity("parent_uuid");
       const auto mk=KindOf(body.Attribute("member_kind").value_or("")),pk=KindOf(body.Attribute("parent_kind").value_or(""));
-      if(!id(member)||!id(parent)||mk==Kind::invalid||pk!=(cls=="role_membership"?Kind::role:Kind::group)||
+      // Native imported group-to-role links are group_membership records,
+      // as are links into a group. The actual typed endpoints determine the
+      // graph edge; the class label must not reinterpret a role as a group.
+      const bool parent_valid=cls=="role_membership"?pk==Kind::role:
+          pk==Kind::group||(mk==Kind::group&&pk==Kind::role);
+      if(!id(member)||!id(parent)||mk==Kind::invalid||!parent_valid||
           (body.Attribute("effect")&&body.Attribute("effect")!="allow")||
           (!body.Identity("membership_uuid").is_nil()&&body.Identity("membership_uuid")!=r.object_uuid)||
           (!body.Identity("principal_uuid").is_nil()&&(mk!=Kind::principal||body.Identity("principal_uuid")!=member))||
@@ -442,11 +459,22 @@ inline NativeRuntimeAuthorizationResult ProjectNativeRuntimeAuthorization(
   Size depth=1;w.nodes_[selected].color=1;w.frames_[0]={selected,w.nodes_[selected].first};
   while(depth){
     if(!spend())return fail(E::work_limit);auto& frame=w.frames_[depth-1];
-    if(frame.next==absent){w.nodes_[frame.node].color=2;--depth;continue;}
+    if(frame.next==absent){
+      auto& complete=w.nodes_[frame.node];complete.color=2;
+      if(depth>1){auto& child=w.nodes_[w.frames_[depth-2].node];
+        child.height=std::max(child.height,complete.height+1);}
+      --depth;continue;
+    }
     const auto& edge=w.edges_[frame.next];frame.next=edge.next;
     if(edge.parent==absent||!w.nodes_[edge.parent].active)return fail(E::subject_missing);
     auto& parent=w.nodes_[edge.parent];if(parent.color==1)return fail(E::membership_cycle);
-    if(parent.color==2)continue;if(depth==w.limits_.maximum_depth)return fail(E::depth_limit);
+    if(parent.color==2){
+      // A shared ancestor may already be black through a shorter branch.
+      // Retain its full height so a diamond cannot bypass the path bound.
+      if(parent.height>w.limits_.maximum_depth-depth)return fail(E::depth_limit);
+      auto& child=w.nodes_[frame.node];child.height=std::max(child.height,parent.height+1);continue;
+    }
+    if(depth==w.limits_.maximum_depth)return fail(E::depth_limit);
     parent.color=1;w.frames_[depth++]={edge.parent,parent.first};
   }
   Size subject_count=0,edge_count=0,grant_count=0;EngineUuid bootstrap;
@@ -458,6 +486,8 @@ inline NativeRuntimeAuthorizationResult ProjectNativeRuntimeAuthorization(
     if(w.grants_[g].subject!=absent&&w.nodes_[w.grants_[g].subject].color==2)w.grants_out_[grant_count++]=w.grants_[g].value;}
   auto& result=out.projection;result.binding_=binding;result.principal_=principal;result.bootstrap_=bootstrap;
   result.subjects_=w.subjects_out_.first(subject_count);result.memberships_=w.edges_out_.first(edge_count);
-  result.grants_=w.grants_out_.first(grant_count);result.rights_=w.rights_;out.error=E::none;return out;
+  result.grants_=w.grants_out_.first(grant_count);result.rights_=w.rights_;
+  result.source_record_count_=count;result.maximum_membership_depth_=w.nodes_[selected].height;
+  result.work_performed_=out.work_performed;out.error=E::none;return out;
 }
 } // namespace scratchbird::engine::internal_api

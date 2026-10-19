@@ -5,6 +5,7 @@
 #include "server/sblr_local_gateway.hpp"
 #include "engine/sblr/sblr_ddl_create_index_runtime.hpp"
 #include "engine/sblr/sblr_opcode_stream.hpp"
+#include "engine/sblr/sblr_opcode_registry.hpp"
 #include "engine/sblr/sblr_plan_import_rows_codec.hpp"
 
 #include <algorithm>
@@ -52,6 +53,22 @@ std::vector<std::uint8_t> CanonicalPackage() {
   root.diagnostic_shape = "diagnostic_vector";
   root.parser_package_uuid = kParserUuid;
   root.registry_snapshot_uuid = kRegistryUuid;
+  sblr::SblrOpcodeStream stream;
+  stream.package_descriptor_uuid = kPackageUuid;
+  stream.registry_snapshot_uuid = kRegistryUuid;
+  stream.operations = {Frame(true), std::move(root), Frame(false)};
+  return sblr::EncodeSblrOpcodeStream(stream);
+}
+
+std::vector<std::uint8_t> CanonicalPreflightPackage(const sblr::SblrOpcodeEntry& entry) {
+  auto root = sblr::MakeSblrEnvelope(entry.operation_id, entry.opcode, "gateway.preflight");
+  root.opcode_code = entry.code;
+  root.result_shape = entry.result_contract;
+  root.diagnostic_shape = "diagnostic_vector";
+  root.parser_package_uuid = kParserUuid;
+  root.registry_snapshot_uuid = kRegistryUuid;
+  root.requires_security_context = entry.requires_security_context;
+  root.requires_transaction_context = entry.requires_transaction_context;
   sblr::SblrOpcodeStream stream;
   stream.package_descriptor_uuid = kPackageUuid;
   stream.registry_snapshot_uuid = kRegistryUuid;
@@ -215,6 +232,38 @@ int main() {
             "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") {
       std::cerr << "cluster activation did not fail closed: " << predicate << '\n';
       ++failures;
+    }
+  }
+
+  for (const auto* id : {"engine.op.ddl_drop_fdw",
+                         "engine.op.ddl_drop_foreign_table",
+                         "engine.op.ddl_alter_timeseries_value_cache"}) {
+    const auto* entry = sblr::LookupSblrOperation(id);
+    if (!entry) { ++failures; continue; }
+    auto preflight = request;
+    preflight.root_opcode_code = entry->code;
+    preflight.root_opcode = entry->opcode;
+    preflight.root_operation_id = entry->operation_id;
+    preflight.canonical_sbos = CanonicalPreflightPackage(*entry);
+    if (preflight.canonical_sbos.empty() ||
+        !server::AdmitLocalNoClusterSblrGateway(preflight).ok) {
+      std::cerr << "unavailable opcode did not reach engine preflight: " << id << '\n';
+      ++failures;
+      if (preflight.canonical_sbos.empty()) continue;
+    }
+    for (unsigned invalid = 0; invalid != 7; ++invalid) {
+      auto denied = preflight;
+      if (invalid == 0) denied.route_snapshot_engine_owned = false;
+      if (invalid == 1) denied.security_snapshot_engine_owned = false;
+      if (invalid == 2) denied.route_generation = 0;
+      if (invalid == 3) denied.security_epoch = 0;
+      if (invalid == 4) denied.cluster_context_active = true;
+      if (invalid == 5) denied.root_opcode_code ^= 1;
+      if (invalid == 6) denied.canonical_sbos.back() ^= 1;
+      if (server::AdmitLocalNoClusterSblrGateway(denied).ok) {
+        std::cerr << "preflight demand bypassed ingress validation: " << invalid << '\n';
+        ++failures;
+      }
     }
   }
 

@@ -9,6 +9,7 @@
 #include "../support/binary_uuid_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "database_lifecycle_test_memory.hpp"
+#include "local_transaction_store.hpp"
 #include "sblr_transaction_begin_runtime.hpp"
 #include "sblr_transaction_commit_runtime.hpp"
 #include "sblr_transaction_rollback_runtime.hpp"
@@ -44,7 +45,9 @@ namespace sbps = scratchbird::server::sbps;
 namespace sbsql = scratchbird::parser::sbsql;
 
 constexpr std::string_view kVerifier =
-    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    "local-password-pbkdf2-sha256:v1:iterations=600000:salt=0123456789abcdef0123456789abcdef:"
+    "verifier=4ce03aa5a5657aaf221192635ed9c63acdb76d78a0994ec6e6ab55286e29e6a5";
+constexpr std::string_view kFixturePassword = "DBLC013G-fixture-password";
 constexpr std::string_view kAlicePrincipalUuid =
     "019e108d-1700-7000-8000-0000000008aa";
 
@@ -195,7 +198,8 @@ void WriteAuthStore(const std::filesystem::path& database_path,
       kVerifier,
       bootstrap.local_transaction_id,
       "DBLC-008",
-      bootstrap.transaction_uuid);
+      bootstrap.transaction_uuid,
+      kVerifier);
   scratchbird::tests::database_lifecycle::GrantDurablePrincipalPrivilege(
       database_path,
       database_uuid,
@@ -414,6 +418,28 @@ api::EngineRequestContext EngineContext(const std::filesystem::path& database_pa
 
 void TestDirectEngineAdmission(const std::filesystem::path& database_path,
                                const api::EngineUuid& database_uuid) {
+  const auto before=db::LoadLocalTransactionInventoryFromDatabase(database_path.string());
+  Require(before.ok(), "actual transaction inventory before invalid authority admission");
+  api::EngineBeginTransactionRequest missing_generation;
+  missing_generation.context=EngineContext(database_path,database_uuid);
+  auto& authority=missing_generation.context.authorization_context;
+  authority.present=true;
+  authority.authority_uuid=database_uuid;
+  authority.principal_uuid=missing_generation.context.principal_uuid;
+  authority.security_epoch=authority.policy_epoch=authority.catalog_generation_id=1;
+  const auto invalid_authority=api::EngineBeginTransaction(missing_generation);
+  Require(!invalid_authority.ok&&HasDiagnostic(invalid_authority,"SECURITY.CONTEXT.EXPIRED"),
+      "generation-zero materialized startup authority cannot begin a transaction");
+  bool exact_condition=false;
+  for(const auto& diagnostic:invalid_authority.diagnostics)
+    for(const auto& field:diagnostic.fields)
+      exact_condition|=field.key=="authorization_context_failure"&&field.value=="security_context_generation_missing";
+  Require(exact_condition,"startup admission preserves the exact generation-zero condition");
+  const auto after=db::LoadLocalTransactionInventoryFromDatabase(database_path.string());
+  Require(after.ok()&&after.inventory.next_local_transaction_id==before.inventory.next_local_transaction_id&&
+      after.inventory.entries.size()==before.inventory.entries.size(),
+      "invalid materialized authority creates no durable transaction identity");
+
   api::EngineBeginTransactionRequest missing_security;
   missing_security.context = EngineContext(database_path, database_uuid);
   missing_security.context.security_context_present = false;
@@ -421,6 +447,15 @@ void TestDirectEngineAdmission(const std::filesystem::path& database_path,
   Require(!denied.ok, "engine admitted transaction without security context");
   Require(HasDiagnostic(denied, "ENGINE.DBLC_TRANSACTION_ADMISSION_DENIED"),
           "engine missing-security denial did not use DBLC transaction diagnostic");
+  bool missing_context=false;
+  for(const auto& diagnostic:denied.diagnostics)
+    for(const auto& field:diagnostic.fields)
+      missing_context|=field.key=="authorization_context_failure"&&field.value=="security_context_missing";
+  Require(missing_context,"missing authority is reported distinctly from an expired materialized context");
+  const auto after_missing=db::LoadLocalTransactionInventoryFromDatabase(database_path.string());
+  Require(after_missing.ok()&&after_missing.inventory.next_local_transaction_id==before.inventory.next_local_transaction_id&&
+      after_missing.inventory.entries.size()==before.inventory.entries.size(),
+      "missing service authority allocates no durable transaction identity");
 
   api::EngineBeginTransactionRequest cluster;
   cluster.context = EngineContext(database_path, database_uuid);
@@ -461,13 +496,21 @@ void TestCanonicalServerTransactionLifecycle(
   config.probe_mode = true;
   config.embedded_engine_direct = true;
   config.allow_uncredentialed_fixture_database = true;
-  config.embedded_auth_bypass_sysarch = true;
+  config.embedded_auth_bypass_sysarch = false;
   config.embedded_database_path = database_path.string();
   sbsql::ParserMetrics metrics;
   sbsql::SblrTemplateCache cache;
   sbsql::SbsqlTestWireSession session(config, &metrics, &cache);
-  const auto authenticated = session.HandleLine("AUTH");
-  Require(Contains(authenticated.text, "OK AUTHENTICATED"),
+  sbsql::AuthCredentialEnvelope credentials;
+  credentials.principal="alice";
+  credentials.requested_database=database_path.string();
+  credentials.credential_evidence=std::string(kFixturePassword);
+  credentials.credential_evidence_present=true;
+  sbsql::MessageVectorSet messages;
+  const bool authenticated=session.AuthenticateCredentials(credentials,&messages);
+  if(!authenticated)for(const auto& diagnostic:messages.diagnostics)
+    std::cerr<<diagnostic.code<<": "<<diagnostic.message<<'\n';
+  Require(authenticated,
           "canonical server transaction fixture authentication failed");
 
   const auto first_begin = session.RunPipeline("BEGIN TRANSACTION", true);
