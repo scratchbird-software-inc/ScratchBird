@@ -1254,10 +1254,14 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(sbsql_sblr_alignment_filespace_page_zero filespace_page_zero_test.cpp)
   include(native_storage_components.cmake)
   # The standalone storage closure compiles the shared catalog dispatcher
-  # directly. Register its new ordinary-table family dependency without editing
-  # the storage owner's component-list file or changing any storage behavior.
-  target_sources(sbsql_sblr_alignment_native_storage_components PRIVATE
-    ../../src/core/catalog/catalog_table_definition.cpp)
+  # directly, so it needs every catalog family implementation the dispatcher
+  # resolves against. That closure is derived from sb_core_catalog's own source
+  # list rather than hand-listed here, so a new catalog family links without any
+  # edit to this file or to the storage owner's component-list file. Sources the
+  # component list already declares are not added twice, and no storage
+  # behaviour changes.
+  target_link_libraries(sbsql_sblr_alignment_native_storage_components PRIVATE
+    sb_core_catalog_dispatcher_objects)
   add_executable(sbsql_sblr_alignment_catalog_metric_retention_staging catalog_metric_retention_staging_test.cpp)
   target_compile_features(sbsql_sblr_alignment_catalog_metric_retention_staging PRIVATE cxx_std_23)
   target_link_libraries(sbsql_sblr_alignment_catalog_metric_retention_staging PRIVATE sb_storage_database OpenSSL::Crypto)
@@ -1718,22 +1722,14 @@ set_tests_properties(sbsql_sblr_alignment_metric_history_record_identity PROPERT
 
 add_executable(sbsql_sblr_alignment_catalog_metric_retention_policy
   catalog_metric_retention_policy_test.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_retention_policy.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_visibility_policy.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_descriptor.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_label_schema.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_series.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_history_record.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_scalar.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_value_update.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_value_codec.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_record_codec.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_context_namespace.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_security_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_storage_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_value_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_schema_definition.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_table_definition.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_records.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_retention_policy.cpp)
 target_compile_features(sbsql_sblr_alignment_catalog_metric_retention_policy PRIVATE cxx_std_23)
@@ -1752,20 +1748,12 @@ set_tests_properties(sbsql_sblr_alignment_catalog_metric_retention_policy PROPER
 
 add_executable(sbsql_sblr_alignment_catalog_metric_descriptor
   catalog_metric_descriptor_test.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_descriptor.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_label_schema.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_series.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_history_record.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_retention_policy.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_visibility_policy.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_value_codec.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_record_codec.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_context_namespace.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_security_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_storage_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_value_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_schema_definition.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_table_definition.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_records.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_scalar.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_value_update.cpp
@@ -1809,20 +1797,12 @@ endif()
 
 add_executable(sbsql_sblr_alignment_catalog_metric_label_schema
   catalog_metric_label_schema_test.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_label_schema.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_series.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_history_record.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_descriptor.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_retention_policy.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_visibility_policy.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_value_codec.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_record_codec.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_context_namespace.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_security_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_storage_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_value_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_schema_definition.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_table_definition.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_records.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_scalar.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_value_update.cpp
@@ -1842,20 +1822,12 @@ set_tests_properties(sbsql_sblr_alignment_catalog_metric_label_schema PROPERTIES
 
 add_executable(sbsql_sblr_alignment_catalog_metric_series
   catalog_metric_series_test.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_label_schema.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_series.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_history_record.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_descriptor.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_retention_policy.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_visibility_policy.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_value_codec.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_record_codec.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_context_namespace.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_security_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_storage_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_value_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_schema_definition.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_table_definition.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_records.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_scalar.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_value_update.cpp
@@ -1876,20 +1848,12 @@ set_tests_properties(sbsql_sblr_alignment_catalog_metric_series PROPERTIES
 add_executable(sbsql_sblr_alignment_catalog_metric_binding
   catalog_metric_binding_test.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_binding.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_label_schema.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_series.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_history_record.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_descriptor.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_retention_policy.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_metric_visibility_policy.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_value_codec.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_record_codec.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_context_namespace.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_security_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_storage_record_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_value_codec.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_schema_definition.cpp
-  ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_table_definition.cpp
   ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_records.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_scalar.cpp
   ${CMAKE_SOURCE_DIR}/src/core/metrics/metric_value_update.cpp
@@ -2463,20 +2427,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     sbsql_sblr_alignment_metric_visibility_policy)
 endif()
 foreach(codec_target IN LISTS catalog_dispatcher_fixture_targets)
-  target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_bootstrap_policy.cpp)
-  target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_memory_configuration.cpp)
-  target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_identifier_profile.cpp)
-  target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_naming_dialect_profile.cpp)
-  target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_naming_collision_policy.cpp)
-  target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_construction_intent.cpp)
-  target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_policy_descriptor.cpp)
-  target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_verification_policy.cpp)
-  target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_evidence_policy.cpp)
-  target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_authorization_policy.cpp)
-  target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_transaction_policy.cpp)
-  target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_lock_policy.cpp)
-  target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_isolation_profile.cpp)
-  target_sources(${codec_target} PRIVATE ${CMAKE_SOURCE_DIR}/src/core/catalog/catalog_management_descriptor.cpp)
+  # Consume the declared catalog dispatcher composition rather than
+  # restating its family implementations here. See
+  # `ARCH-BUILD-COMPOSITION-DECLARED-ONCE`.
+  target_link_libraries(${codec_target} PRIVATE sb_core_catalog_dispatcher_objects)
 endforeach()
 
 add_executable(sbsql_sblr_alignment_catalog_construction_intent catalog_construction_intent_test.cpp)

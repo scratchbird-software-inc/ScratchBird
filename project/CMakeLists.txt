@@ -548,6 +548,10 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/CommercialReadinessProductionBuildGat
 if(SB_COMMERCIAL_READINESS_PRODUCTION_BUILD)
   add_compile_definitions(SCRATCHBIRD_COMMERCIAL_READINESS_PRODUCTION_BUILD=1)
 endif()
+# Derives the catalog dispatcher family closure for fixtures that compile the
+# dispatcher directly, so new catalog families never need hand-registering in
+# each consumer. Included before any add_subdirectory(src/core/catalog).
+include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/CatalogDispatcherClosure.cmake")
 add_test(
   NAME commercial_readiness_production_build_cmake_gate
   COMMAND "${CMAKE_COMMAND}"

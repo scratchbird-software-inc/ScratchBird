@@ -47,24 +47,12 @@ add_executable(sbsql_sblr_alignment_native_storage_components
   ../../src/storage/disk/filespace_bootstrap.cpp
   ../../src/storage/disk/native_common_page_header.cpp
   ../../src/core/catalog/catalog_records.cpp
-  ../../src/core/catalog/catalog_record_codec.cpp
-  ../../src/core/catalog/catalog_bootstrap_policy.cpp
-  ../../src/core/catalog/catalog_construction_intent.cpp
-  ../../src/core/catalog/catalog_policy_descriptor.cpp
-  ../../src/core/catalog/catalog_memory_configuration.cpp
-  ../../src/core/catalog/catalog_identifier_profile.cpp
   ../../src/core/catalog/catalog_security_record_codec.cpp
-  ../../src/core/catalog/catalog_context_namespace.cpp
   ../../src/core/catalog/catalog_storage_record_codec.cpp
   ../../src/core/catalog/catalog_value_codec.cpp
   ../../src/core/catalog/catalog_schema_definition.cpp
   ../../src/core/catalog/catalog_schema_record_codec.cpp
   ../../src/core/catalog/catalog_metric_binding.cpp
-  ../../src/core/catalog/catalog_metric_series.cpp
-  ../../src/core/catalog/catalog_metric_label_schema.cpp
-  ../../src/core/catalog/catalog_metric_descriptor.cpp
-  ../../src/core/catalog/catalog_metric_retention_policy.cpp
-  ../../src/core/catalog/catalog_metric_visibility_policy.cpp
   ../../src/core/catalog/catalog_name_envelope.cpp
   ../../src/core/catalog/catalog_name_record_codec.cpp
   ../../src/core/datatypes/datatype_binary.cpp
