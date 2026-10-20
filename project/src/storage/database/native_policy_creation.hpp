@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
+#include "catalog_identifier_lookup_key.hpp"
 #include "catalog_named_creation.hpp"
 #include <array>
 
@@ -26,14 +27,13 @@ enum class NativeInitialPolicyError {
 // a whole cohort would flatten that tree and force labels to be disambiguated
 // that the tree already distinguishes.
 //
-// Label text is never derived from the source pack, and the normalized lookup
-// key is identifier-profile authority: a derived key would resolve wrongly
-// while encoding cleanly, so both are required inputs.
+// Label text is never derived from the source pack. Lookup keys are not asked
+// for: the engine's own name-to-UUID process derives both lanes from the
+// identifier resolution profile supplied below, and verifies them.
 struct NativeInitialDefinitionName {
   core::platform::Uuid object_uuid;
   core::platform::Uuid owning_schema_uuid;
   std::string_view name_text;
-  std::span<const core::platform::byte> normalized_lookup_key;
 };
 // Supplying this inverts the definitions contract. Without it the caller must
 // reproduce the assembler's identity, kind and subtype assignment for every
@@ -66,7 +66,13 @@ struct NativeInitialGeneratedDefinitions {
   // yet; they are the caller's to issue.
   core::platform::Uuid name_collision_policy_uuid;
   core::platform::Uuid dialect_profile_uuid;
-  core::platform::Uuid identifier_profile_uuid;
+  // Borrowed and caller-owned; must outlive the call, along with its
+  // profile_name backing. Supplied as the profile rather than its identity
+  // because both lookup lanes and the display form are derived from it by
+  // DeriveCatalogIdentifierLookupKeysInto, and the entry's
+  // identifier_profile_uuid is taken from the profile itself so the two cannot
+  // disagree. Collision handling and lookup remain the name registry's.
+  const core::catalog::CatalogIdentifierResolutionProfile* identifier_profile=nullptr;
   // Exactly five per enumerated object, consumed in enumeration order: the
   // definition row, the name-vector object and row, the name-entry object and
   // row. Exact rather than at-least, so an over-supplied pool cannot hide a

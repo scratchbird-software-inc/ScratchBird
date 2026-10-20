@@ -44,6 +44,34 @@ db::BootstrapDefinitionMetadataInput Good() {
   in.creator_transaction_uuid = {p::UuidKind::transaction, Id(0x56)};
   return in;
 }
+// An admitted ASCII-lane identifier profile: no resource, platform or dialect
+// binding, so the engine's key derivation can run without an admission this
+// path cannot give. Lower-folding, so the folded and exact lanes differ and a
+// test cannot pass by accident on identical lanes.
+c::CatalogIdentifierResolutionProfile Profile() {
+  c::CatalogIdentifierResolutionProfile profile;
+  profile.profile_uuid = Id(0x5e);
+  profile.database_uuid = Id(0x50);
+  profile.generation = 1;
+  profile.profile_name = "bootstrap_definition_metadata_gate_profile";
+  profile.quote_styles = 1;
+  profile.escape_rule = c::IdentifierEscapeRule::doubled_delimiter;
+  profile.unquoted_fold_mode = c::IdentifierFoldMode::lower_ascii;
+  profile.quoted_preserves_case = true;
+  profile.comparison_mode = c::IdentifierComparisonMode::folded;
+  profile.storage_display_mode = c::IdentifierDisplayMode::preserve_user_text;
+  profile.reserved_word_behavior = c::IdentifierReservedWordMode::reserved_requires_quote;
+  profile.maximum_identifier_length = 128;
+  profile.length_unit = c::IdentifierLengthUnit::unicode_scalar_values;
+  profile.origin_transaction_uuid = {p::UuidKind::transaction, Id(0x56)};
+  profile.origin_local_transaction_id = 1;
+  return profile;
+}
+// Static so the borrowed pointer and profile_name backing outlive every call.
+const c::CatalogIdentifierResolutionProfile& SharedProfile() {
+  static const c::CatalogIdentifierResolutionProfile profile = Profile();
+  return profile;
+}
 db::BootstrapNamedCreationUnitInput GoodUnit() {
   db::BootstrapNamedCreationUnitInput in;
   in.definition = Good();
@@ -51,11 +79,10 @@ db::BootstrapNamedCreationUnitInput GoodUnit() {
   in.name_entry_row_uuid = Id(0x5b);
   in.object_class = "config_profile";
   in.language_tag = "en-US";
-  in.name_text = "supplied_name";
-  in.normalized_lookup_key.assign(in.name_text.begin(), in.name_text.end());
+  in.name_text = "Supplied_Name";
   in.name_collision_policy_uuid = Id(0x5c);
   in.dialect_profile_uuid = Id(0x5d);
-  in.identifier_profile_uuid = Id(0x5e);
+  in.identifier_profile = &SharedProfile();
   return in;
 }
 }  // namespace
@@ -242,10 +269,26 @@ int main() {
           "the entry resolves within the owning schema");
     Check(e.scope_uuid.value == d.record.header.parent_uuid.value,
           "the entry scope is the schema, under the kind that field requires");
-    Check(e.raw_name_text == "supplied_name" && e.display_name == "supplied_name",
-          "the supplied name text is carried verbatim");
-    Check(!e.normalized_lookup_key.empty(),
-          "the supplied normalization is carried; none is derived here");
+    Check(e.raw_name_text == "Supplied_Name",
+          "the supplied label text is carried verbatim");
+    Check(e.display_name == "Supplied_Name",
+          "this profile preserves user text, so the display form is the supplied text");
+    Check(e.identifier_profile_uuid.value == SharedProfile().profile_uuid,
+          "the entry names the profile its keys were derived from, which is what the "
+          "engine's verifier requires");
+    const std::string folded = "supplied_name";
+    Check(std::string(e.normalized_lookup_key.begin(), e.normalized_lookup_key.end()) == folded,
+          "the folded lane is derived by the engine's own key derivation, not supplied");
+    Check(std::string(e.exact_lookup_key.begin(), e.exact_lookup_key.end()) == "Supplied_Name",
+          "the exact lane is derived too; it was previously left empty");
+    Check(e.normalized_lookup_key != e.exact_lookup_key,
+          "the two lanes actually differ under this profile, so neither is incidentally right");
+    Check(!e.was_quoted && e.quote_style == c::CatalogNameQuoteStyle::none &&
+          !e.requires_exact_match,
+          "an engine-supplied label is unquoted and matched on the folded lane");
+    Check(c::CheckCatalogIdentifierLookupKeys(SharedProfile(), c::BorrowCatalogNameEntry(e)) ==
+          c::CatalogIdentifierKeyError::none,
+          "the engine's own lookup-key verifier accepts the assembled entry");
     Check(e.created_transaction_uuid.value == d.creator_transaction_uuid.value,
           "the entry records the creating transaction the metadata version names");
     Check(e.resource_epoch == em.resource_epoch,
@@ -279,10 +322,14 @@ int main() {
     auto no_class = GoodUnit(); no_class.object_class.clear();
     auto no_language = GoodUnit(); no_language.language_tag.clear();
     auto no_text = GoodUnit(); no_text.name_text.clear();
-    auto no_key = GoodUnit(); no_key.normalized_lookup_key.clear();
+    auto no_profile = GoodUnit(); no_profile.identifier_profile = nullptr;
+    auto long_label = GoodUnit(); long_label.name_text = std::string(200, 'a');
+    static const auto dialect_bound = [] {
+      auto profile = Profile(); profile.dialect_mode_flags = 1; return profile;
+    }();
+    auto needs_dialect = GoodUnit(); needs_dialect.identifier_profile = &dialect_bound;
     auto nil_collision = GoodUnit(); nil_collision.name_collision_policy_uuid = {};
     auto nil_dialect = GoodUnit(); nil_dialect.dialect_profile_uuid = {};
-    auto nil_identifier = GoodUnit(); nil_identifier.identifier_profile_uuid = {};
     auto zero_resolution = GoodUnit(); zero_resolution.name_resolution_epoch = 0;
 
     const Case cases[] = {
@@ -296,11 +343,14 @@ int main() {
       {"an empty object class refuses", no_class, U::object_class_empty},
       {"an empty language tag refuses", no_language, U::language_tag_empty},
       {"an empty name text refuses", no_text, U::name_text_empty},
-      {"an absent normalized lookup key refuses rather than being derived from the text",
-       no_key, U::normalized_lookup_key_empty},
+      {"an absent identifier profile refuses: the keys cannot be derived without it",
+       no_profile, U::identifier_profile_missing},
+      {"a label longer than the profile admits is refused by the engine's derivation",
+       long_label, U::lookup_key_derivation_refused},
+      {"a profile needing a dialect admission this path cannot give is refused",
+       needs_dialect, U::lookup_key_derivation_refused},
       {"a nil name collision policy refuses", nil_collision, U::collision_policy_identity_invalid},
       {"a nil dialect profile refuses", nil_dialect, U::dialect_profile_identity_invalid},
-      {"a nil identifier profile refuses", nil_identifier, U::identifier_profile_identity_invalid},
       {"a zero name resolution epoch refuses", zero_resolution, U::name_resolution_epoch_invalid},
     };
     for (const auto& k : cases) {

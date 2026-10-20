@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
+#include "catalog_identifier_lookup_key.hpp"
 #include "catalog_named_creation.hpp"
 #include "catalog_record_codec.hpp"
 #include "catalog_runtime_authority_binding.hpp"
@@ -309,9 +310,14 @@ inline BootstrapDefinitionMetadataResult BuildBootstrapDefinitionMetadata(
 // the three naming-profile identities the name schemas require
 // (name_collision_policy, dialect_profile, identifier_profile).
 //
-// Normalization is NOT derived from the name text here. The normalized lookup
-// key is identifier-profile authority and a guessed one would resolve names
-// wrongly while encoding cleanly, so an absent key is a refusal.
+// Lookup keys are NOT invented and NOT asked of the caller. The engine already
+// owns the name-to-UUID process: DeriveCatalogIdentifierLookupKeysInto computes
+// both lanes from an admitted identifier resolution profile, and
+// CheckCatalogIdentifierLookupKeys recomputes and compares them. This builder
+// calls the first and then the second on its own output, so an entry it returns
+// is one the engine's own verifier accepts. The caller supplies the profile,
+// which it must own anyway: the verifier requires the entry's
+// identifier_profile_uuid to equal that profile's own UUID.
 
 struct BootstrapNamedCreationUnitInput {
   // Carries the object identity, the definition row identity, the two name
@@ -332,11 +338,13 @@ struct BootstrapNamedCreationUnitInput {
   // Caller authority. The source pack supplies identities and typed values,
   // never name authority.
   std::string name_text;
-  std::vector<core::platform::byte> normalized_lookup_key;
 
   core::platform::Uuid name_collision_policy_uuid;
   core::platform::Uuid dialect_profile_uuid;
-  core::platform::Uuid identifier_profile_uuid;
+  // Borrowed, caller-owned, and must outlive this call. Both lookup lanes are
+  // derived from it; its own profile_uuid becomes the entry's
+  // identifier_profile_uuid, because the verifier requires them equal.
+  const core::catalog::CatalogIdentifierResolutionProfile* identifier_profile = nullptr;
 
   // Non-zero by schema. Distinct from resource_epoch, which the metadata
   // version owns and the name entry must agree with.
@@ -351,10 +359,17 @@ enum class BootstrapNamedCreationUnitError {
   object_class_empty,
   language_tag_empty,
   name_text_empty,
-  normalized_lookup_key_empty,
   collision_policy_identity_invalid,
   dialect_profile_identity_invalid,
-  identifier_profile_identity_invalid,
+  identifier_profile_missing,
+  // The engine's own key derivation refused the label under this profile: the
+  // text is not canonical UTF-8, exceeds the profile's identifier length, or
+  // the profile needs a resource/dialect admission this path cannot give.
+  lookup_key_derivation_refused,
+  // Derived keys were written, then recomputed and compared by the engine's
+  // verifier, and disagreed. This cannot happen from caller input; it means the
+  // entry this builder assembled is not the entry the verifier reads.
+  lookup_key_verification_failed,
   name_resolution_epoch_invalid,
 };
 
@@ -369,10 +384,11 @@ inline const char* BootstrapNamedCreationUnitDiagnosticCode(
     case E::object_class_empty: return "CATALOG.NAMED_UNIT_OBJECT_CLASS_EMPTY";
     case E::language_tag_empty: return "CATALOG.NAMED_UNIT_LANGUAGE_TAG_EMPTY";
     case E::name_text_empty: return "CATALOG.NAMED_UNIT_NAME_TEXT_EMPTY";
-    case E::normalized_lookup_key_empty: return "CATALOG.NAMED_UNIT_NORMALIZED_KEY_EMPTY";
     case E::collision_policy_identity_invalid: return "CATALOG.NAMED_UNIT_COLLISION_POLICY_IDENTITY_INVALID";
     case E::dialect_profile_identity_invalid: return "CATALOG.NAMED_UNIT_DIALECT_PROFILE_IDENTITY_INVALID";
-    case E::identifier_profile_identity_invalid: return "CATALOG.NAMED_UNIT_IDENTIFIER_PROFILE_IDENTITY_INVALID";
+    case E::identifier_profile_missing: return "CATALOG.NAMED_UNIT_IDENTIFIER_PROFILE_MISSING";
+    case E::lookup_key_derivation_refused: return "CATALOG.NAMED_UNIT_LOOKUP_KEY_DERIVATION_REFUSED";
+    case E::lookup_key_verification_failed: return "CATALOG.NAMED_UNIT_LOOKUP_KEY_VERIFICATION_FAILED";
     case E::name_resolution_epoch_invalid: return "CATALOG.NAMED_UNIT_NAME_RESOLUTION_EPOCH_INVALID";
   }
   return "CATALOG.NAMED_UNIT_DEFINITION_INVALID";
@@ -454,10 +470,6 @@ inline BootstrapNamedCreationUnitResult BuildBootstrapNamedCreationUnit(
     out.error = E::name_text_empty;
     return out;
   }
-  if (input.normalized_lookup_key.empty()) {
-    out.error = E::normalized_lookup_key_empty;
-    return out;
-  }
   if (!IsEngineIdentityUuid(input.name_collision_policy_uuid)) {
     out.error = E::collision_policy_identity_invalid;
     return out;
@@ -466,8 +478,9 @@ inline BootstrapNamedCreationUnitResult BuildBootstrapNamedCreationUnit(
     out.error = E::dialect_profile_identity_invalid;
     return out;
   }
-  if (!IsEngineIdentityUuid(input.identifier_profile_uuid)) {
-    out.error = E::identifier_profile_identity_invalid;
+  if (!input.identifier_profile ||
+      !IsEngineIdentityUuid(input.identifier_profile->profile_uuid)) {
+    out.error = E::identifier_profile_missing;
     return out;
   }
   if (!input.name_resolution_epoch) {
@@ -528,10 +541,40 @@ inline BootstrapNamedCreationUnitResult BuildBootstrapNamedCreationUnit(
   e.language_tag = input.language_tag;
   e.name_class = c::CatalogNameClass::primary;
   e.dialect_profile_uuid = {p::UuidKind::object, input.dialect_profile_uuid};
-  e.identifier_profile_uuid = {p::UuidKind::object, input.identifier_profile_uuid};
+  // The verifier requires this to be the profile that produced the keys below.
+  e.identifier_profile_uuid = {p::UuidKind::object, input.identifier_profile->profile_uuid};
   e.raw_name_text = input.name_text;
-  e.display_name = input.name_text;
-  e.normalized_lookup_key = input.normalized_lookup_key;
+  // A bootstrap label is supplied by the engine, not typed by a user, so it is
+  // unquoted and matched on the folded lane. Quoted/exact-match labels would
+  // need the quote style admitted by the profile's own quote_styles mask.
+  e.was_quoted = false;
+  e.quote_style = c::CatalogNameQuoteStyle::none;
+  e.requires_exact_match = false;
+
+  // Both lanes come from the engine's own derivation, over caller-owned
+  // backing. Nothing here folds text itself.
+  {
+    const c::CatalogIdentifierKeyRequest key_request{
+        input.identifier_profile, input.name_text, e.was_quoted, e.quote_style,
+        e.requires_exact_match};
+    std::vector<p::byte> backing(2 * input.name_text.size());
+    const auto derived = c::DeriveCatalogIdentifierLookupKeysInto(key_request, backing);
+    if (!derived.ok()) {
+      out.error = E::lookup_key_derivation_refused;
+      return out;
+    }
+    e.normalized_lookup_key.assign(derived.normalized.begin(), derived.normalized.end());
+    e.exact_lookup_key.assign(derived.exact.begin(), derived.exact.end());
+    // The profile decides whether the displayed form is the user's text or the
+    // folded form; the verifier checks that choice, so follow it rather than
+    // assuming the text displays as supplied.
+    if (input.identifier_profile->storage_display_mode ==
+        c::IdentifierDisplayMode::preserve_user_text) {
+      e.display_name = input.name_text;
+    } else {
+      e.display_name.assign(derived.normalized.begin(), derived.normalized.end());
+    }
+  }
   e.catalog_generation_id = unit.entry_metadata.catalog_generation;
   e.created_transaction_uuid = unit.definition.creator_transaction_uuid;
   e.security_policy_uuid = policy;
@@ -542,6 +585,17 @@ inline BootstrapNamedCreationUnitResult BuildBootstrapNamedCreationUnit(
   e.default_for_language = true;
   e.default_for_object = true;
   e.lifecycle_state = c::CatalogNameLifecycle::active;
+
+  // Hand the finished entry back to the engine's verifier. It recomputes both
+  // lanes and the display form from the profile and compares. A unit that
+  // leaves here has been checked by the same code that will check it later,
+  // rather than by this builder's own opinion of what it wrote.
+  if (c::CheckCatalogIdentifierLookupKeys(*input.identifier_profile,
+                                          c::BorrowCatalogNameEntry(e)) !=
+      c::CatalogIdentifierKeyError::none) {
+    out.error = E::lookup_key_verification_failed;
+    return out;
+  }
 
   unit.Bind();
   out.error = E::none;

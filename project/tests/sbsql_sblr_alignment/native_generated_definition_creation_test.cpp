@@ -87,6 +87,32 @@ p::Uuid SchemaFor(const db::NativeInitialDefinitionIdentity& object) {
                                                      : Id(kSysConfigurationSchema);
 }
 
+// An admitted ASCII-lane identifier resolution profile. Lower-folding, so the
+// folded and exact lanes differ and the engine's derivation is observably doing
+// the work. Static: the request borrows it and its profile_name backing.
+const c::CatalogIdentifierResolutionProfile& IdentifierProfile() {
+  static const c::CatalogIdentifierResolutionProfile profile = [] {
+    c::CatalogIdentifierResolutionProfile value;
+    value.profile_uuid = Id(20057);
+    value.database_uuid = kDatabase;
+    value.generation = 1;
+    value.profile_name = "bootstrap_identifier_profile";
+    value.quote_styles = 1;
+    value.escape_rule = c::IdentifierEscapeRule::doubled_delimiter;
+    value.unquoted_fold_mode = c::IdentifierFoldMode::lower_ascii;
+    value.quoted_preserves_case = true;
+    value.comparison_mode = c::IdentifierComparisonMode::folded;
+    value.storage_display_mode = c::IdentifierDisplayMode::preserve_user_text;
+    value.reserved_word_behavior = c::IdentifierReservedWordMode::reserved_requires_quote;
+    value.maximum_identifier_length = 128;
+    value.length_unit = c::IdentifierLengthUnit::unicode_scalar_values;
+    value.origin_transaction_uuid = kTransaction;
+    value.origin_local_transaction_id = 1;
+    return value;
+  }();
+  return profile;
+}
+
 // Shared bootstrap identities. Schema placement is deliberately absent: it is
 // per object. Create issues the first three today; the three naming-profile
 // identities have no create-path source yet and are the caller's to issue
@@ -98,7 +124,7 @@ db::NativeInitialGeneratedDefinitions Seed() {
   seed.security_policy_uuid = SourceId(0x402);  // the enrolled service policy
   seed.name_collision_policy_uuid = Id(20055);
   seed.dialect_profile_uuid = Id(20056);
-  seed.identifier_profile_uuid = Id(20057);
+  seed.identifier_profile = &IdentifierProfile();
   seed.trace_search_key = "NATIVE-GENERATED-DEFINITION-CREATION";
   seed.retention_class = "catalog_history";
   return seed;
@@ -119,7 +145,6 @@ db::NativeInitialLocalServiceIdentity Service() {
 // Owning backing for the caller's half of the generated path.
 struct Names {
   std::vector<std::string> text;
-  std::vector<std::vector<p::byte>> keys;
   std::vector<db::NativeInitialDefinitionName> supplied;
   std::vector<p::Uuid> identities;
 };
@@ -132,18 +157,17 @@ Names NameEveryObject(const std::vector<db::NativeInitialDefinitionIdentity>& en
                       unsigned identity_base = 40000) {
   Names out;
   out.text.reserve(enumerated.size());
-  out.keys.reserve(enumerated.size());
   out.supplied.reserve(enumerated.size());
   out.identities.reserve(5 * enumerated.size());
   for (unsigned at = 0; at < enumerated.size(); ++at) {
-    out.text.push_back(enumerated[at].object_subtype + "_" + std::to_string(at));
-    out.keys.emplace_back(out.text.back().begin(), out.text.back().end());
+    // Mixed case on purpose: the folded lane must differ from the text.
+    out.text.push_back("Bootstrap_" + enumerated[at].object_subtype + "_" + std::to_string(at));
     for (unsigned slot = 0; slot < 5; ++slot)
       out.identities.push_back(Id(identity_base + 5 * at + slot));
   }
   for (unsigned at = 0; at < enumerated.size(); ++at)
     out.supplied.push_back({enumerated[at].object_uuid, SchemaFor(enumerated[at]),
-                            out.text[at], out.keys[at]});
+                            out.text[at]});
   return out;
 }
 
@@ -284,6 +308,22 @@ int main() {
       const auto& entry = std::get<c::CatalogNameEntry>(*found->name);
       Check(entry.raw_name_text == names.text[at],
             "the assembled entry carries the name text supplied for that object");
+      // The engine's own name-to-UUID key machinery, run against what the
+      // assembler returned. This recomputes both lanes and the display form
+      // from the profile and compares, so it is the authority on whether these
+      // labels would ever resolve -- not any assertion written here.
+      Check(c::CheckCatalogIdentifierLookupKeys(IdentifierProfile(),
+                                                c::BorrowCatalogNameEntry(entry)) ==
+            c::CatalogIdentifierKeyError::none,
+            "the engine's lookup-key verifier accepts every assembled name entry");
+      Check(!entry.normalized_lookup_key.empty() && !entry.exact_lookup_key.empty(),
+            "both lookup lanes are populated; the exact lane was previously left empty");
+      Check(entry.normalized_lookup_key != entry.exact_lookup_key,
+            "the folded and exact lanes differ under this profile, so neither lane is "
+            "incidentally correct");
+      Check(std::string(entry.exact_lookup_key.begin(), entry.exact_lookup_key.end()) ==
+            names.text[at],
+            "the exact lane is the supplied label; this profile preserves quoted case");
       Check(entry.parent_schema_uuid.has_value() &&
             entry.parent_schema_uuid->value == SchemaFor(enumerated.definitions[at]) &&
             entry.scope_uuid.value == SchemaFor(enumerated.definitions[at]),
@@ -369,12 +409,23 @@ int main() {
     }
     {
       auto value = request(names);
-      auto other = names;
-      other.supplied.front().normalized_lookup_key = {};
       auto seed = *value.policy.generated_definitions;
-      seed.names = other.supplied;
+      seed.identifier_profile = nullptr;
       value.policy.generated_definitions = seed;
-      refuse(value, {"an absent normalization refuses rather than being derived",
+      refuse(value, {"no identifier profile refuses: lookup keys cannot be derived without it",
+                     E::invalid_names});
+    }
+    {
+      // A profile whose own identity is not an engine identity cannot be the
+      // one the verifier matches the entry against.
+      static const auto unidentified = [] {
+        auto profile = IdentifierProfile(); profile.profile_uuid = kNil; return profile;
+      }();
+      auto value = request(names);
+      auto seed = *value.policy.generated_definitions;
+      seed.identifier_profile = &unidentified;
+      value.policy.generated_definitions = seed;
+      refuse(value, {"an identifier profile with no engine identity refuses",
                      E::invalid_names});
     }
     {
@@ -460,13 +511,7 @@ int main() {
       value.policy.generated_definitions = seed;
       refuse(value, {"a nil dialect profile refuses", E::invalid_names});
     }
-    {
-      auto value = request(names);
-      auto seed = *value.policy.generated_definitions;
-      seed.identifier_profile_uuid = kNil;
-      value.policy.generated_definitions = seed;
-      refuse(value, {"a nil identifier profile refuses", E::invalid_names});
-    }
+
     {
       // Both authorities at once is a merge, not a request.
       auto value = request(names);
@@ -602,9 +647,7 @@ int main() {
           "the two chosen objects really are placed under different parent schemas");
     for (const auto at : {security_at, configuration_at}) {
       twinned.text[at] = shared_label;
-      twinned.keys[at].assign(shared_label.begin(), shared_label.end());
       twinned.supplied[at].name_text = twinned.text[at];
-      twinned.supplied[at].normalized_lookup_key = twinned.keys[at];
     }
 
     const auto out = db::AssembleNativeInitialPolicySecurityRecords(request(twinned));

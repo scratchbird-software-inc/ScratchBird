@@ -7167,18 +7167,21 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
         input.object_class=std::string(c::CatalogRecordKindName(definition.kind));
         input.language_tag=std::string(request.database_default_language);
         input.name_text=std::string(name->name_text);
-        input.normalized_lookup_key.assign(name->normalized_lookup_key.begin(),name->normalized_lookup_key.end());
         input.name_collision_policy_uuid=seed.name_collision_policy_uuid;
         input.dialect_profile_uuid=seed.dialect_profile_uuid;
-        input.identifier_profile_uuid=seed.identifier_profile_uuid;
+        // The profile, not its identity: the unit derives both lookup lanes
+        // from it with the engine's own key derivation and then hands the
+        // finished entry back to the engine's verifier.
+        input.identifier_profile=seed.identifier_profile;
         auto built=BuildBootstrapNamedCreationUnit(input);
         if(!built.ok()) {
           using U=BootstrapNamedCreationUnitError;
           switch(built.error) {
             case U::object_class_empty:case U::language_tag_empty:case U::name_text_empty:
-            case U::normalized_lookup_key_empty:case U::collision_policy_identity_invalid:
-            case U::dialect_profile_identity_invalid:case U::identifier_profile_identity_invalid:
-            case U::name_resolution_epoch_invalid:return fail(E::invalid_names);
+            case U::collision_policy_identity_invalid:case U::dialect_profile_identity_invalid:
+            case U::identifier_profile_missing:case U::lookup_key_derivation_refused:
+            case U::lookup_key_verification_failed:case U::name_resolution_epoch_invalid:
+              return fail(E::invalid_names);
             default:return fail(E::invalid_definition);
           }
         }
