@@ -481,8 +481,10 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
 
     StartupCredentialProvisionRequest provision;
     provision.binding = bound.binding;
+    // Expected CURRENT generation of a freshly constructed source, which is
+    // zero. The generation being published is carried by the binding.
     provision.publish = {snapshot.database_uuid, bound.binding.principal,
-                         bound.binding.generation, {}, {}};
+                         0, {}, {}};
     if (config.startup_credential_source == "service_manager") {
       provision.source = StartupCredentialProvisionSource::service_manager;
       provision.name_or_path = config.startup_credential_name;

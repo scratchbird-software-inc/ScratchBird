@@ -81,6 +81,12 @@ struct StartupCredentialProvisionRequest {
   // credentials directory. operator_file: the absolute path.
   std::string name_or_path;
   StartupCredentialTransportBinding binding;
+  // Note the two generations mean different things, which is easy to get wrong
+  // and was: `binding.generation` is the generation being published, while
+  // `publish.generation` is the generation the source is expected to be at
+  // right now. Publish requires command.generation == current and
+  // next_binding.generation > current, so a first publish onto a fresh source
+  // sets publish.generation to 0, not to binding.generation.
   StartupCredentialSource::Request publish;
 };
 

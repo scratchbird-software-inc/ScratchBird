@@ -235,11 +235,28 @@ int main() {
     provision.source = StartupCredentialProvisionSource::operator_file;
     provision.name_or_path = secret_path.string();
     provision.binding = bound_binding;
+    // Expected current generation of a fresh source is zero; the generation
+    // being published is the binding's.
     provision.publish = {bound_binding.database, bound_binding.principal,
-                         bound_binding.generation, {}, {}};
+                         0, {}, {}};
 
     const auto provisioned =
         ProvisionStartupCredential(provision, source, manager, tag);
+    // Report the actual values rather than a boolean. A provisioning failure
+    // has five independent causes and collapsing them loses which one fired.
+    if (!provisioned.ok()) {
+      std::fprintf(stderr,
+          "  provision detail: error=%d code=%s adapter_error=%d native_error=%d "
+          "publish.error=%d publish.transport=%d publish.wait=%d publish.native=%d\n",
+          static_cast<int>(provisioned.error),
+          StartupCredentialProvisionDiagnosticCode(provisioned.error),
+          static_cast<int>(provisioned.adapter_error),
+          provisioned.native_error,
+          static_cast<int>(provisioned.publish.error),
+          static_cast<int>(provisioned.publish.transport),
+          static_cast<int>(provisioned.publish.wait),
+          provisioned.publish.native_error);
+    }
     Check(provisioned.ok(),
           "a credential framed to the committed binding publishes");
 
