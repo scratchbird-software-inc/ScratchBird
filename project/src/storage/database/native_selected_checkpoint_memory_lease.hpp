@@ -192,12 +192,17 @@ inline NativeSelectedCheckpointMemoryResult AcquireNativeSelectedCheckpointMemor
     out.checkpoint_error=directory.directory.error;out.directory_error=directory.directory.directory_error;
     out.inventory_error=directory.directory.checkpoint_inventory.inventory_error;
     if(!directory.ok()){out.error=E::directory_failure;return out;}
-    if(directory.directory.retained_image_bytes>limits.maximum_verification_image_bytes-consumed){
+    // Charge the selection once plus only the directory chain this stage
+    // retained. The directory result's own retained_image_bytes is not a stable
+    // increment: depending on the route it is chain-only or chain plus images
+    // the selection already charged, so adding it to `consumed` over-charges the
+    // shared selected images. See `MEM-LEASE-CHARGE-ONCE`.
+    if(directory.directory.directory.retained_image_bytes>limits.maximum_verification_image_bytes-consumed){
       out.error=E::resource_exhausted;return out;
     }
     lease.selection_=detail::ReadOnly(selected.selection,scratch);
     lease.directory_=detail::ReadOnly(directory.directory,scratch);
-    lease.retained_image_bytes_=consumed+directory.directory.retained_image_bytes;
+    lease.retained_image_bytes_=consumed+directory.directory.directory.retained_image_bytes;
     lease.backing_bytes_used_=resource.used();
     out.lease=std::move(handle);out.error=E::none;return out;
   }catch(const std::bad_alloc&){out.error=E::resource_exhausted;}
