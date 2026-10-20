@@ -7155,7 +7155,10 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
         input.definition.owner_principal_uuid=seed.owner_principal_uuid;
         input.definition.audit_object_uuid=seed.audit_object_uuid;
         input.definition.security_policy_uuid=seed.security_policy_uuid;
-        input.definition.owning_schema_uuid=seed.owning_schema_uuid;
+        // Per object, not shared: the system catalog is a recursive schema tree
+        // and the authoritative name index is scoped by the parent, so each
+        // object is placed where its own family belongs.
+        input.definition.owning_schema_uuid=name->owning_schema_uuid;
         input.definition.creator_transaction_uuid=request.construction_transaction;
         input.definition.trace_search_key=std::string(seed.trace_search_key);
         input.definition.retention_class=std::string(seed.retention_class);

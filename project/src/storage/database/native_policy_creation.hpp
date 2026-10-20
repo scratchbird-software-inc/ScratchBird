@@ -9,12 +9,29 @@ enum class NativeInitialPolicyError {
   none, invalid_request, source_invalid, invalid_definition, invalid_names,
   duplicate_identity, resource_exhausted
 };
-// One object's name authority, keyed by the object identity the assembler
-// enumerated. Name text is never derived from the source pack, and the
-// normalized lookup key is identifier-profile authority: a derived one would
-// resolve names wrongly while encoding cleanly, so both are required inputs.
+// One object's placement and human-facing label, keyed by the object identity
+// the assembler enumerated.
+//
+// A catalog object has no name of its own: it is identified by its UUID, and
+// the label a person sees is a row in the name registry, in language-specific
+// versions, pointing back at that UUID. This record is the caller's half of
+// that registry row for one object.
+//
+// `owning_schema_uuid` is PER OBJECT, not shared, because the system catalog is
+// a recursive schema tree (`core/catalog/bootstrap_schema_roots.hpp` declares
+// sys, sys.catalog, sys.security, sys.configuration and twenty more paths). The
+// authoritative name index is keyed on the scope, so the same label in the same
+// language resolves distinctly under two different parent schemas, and objects
+// of different families belong under different parents. One shared schema for
+// a whole cohort would flatten that tree and force labels to be disambiguated
+// that the tree already distinguishes.
+//
+// Label text is never derived from the source pack, and the normalized lookup
+// key is identifier-profile authority: a derived key would resolve wrongly
+// while encoding cleanly, so both are required inputs.
 struct NativeInitialDefinitionName {
   core::platform::Uuid object_uuid;
+  core::platform::Uuid owning_schema_uuid;
   std::string_view name_text;
   std::span<const core::platform::byte> normalized_lookup_key;
 };
@@ -33,16 +50,18 @@ struct NativeInitialDefinitionName {
 // required and not supported.
 //
 // DELIBERATE NARROWING, not a discovered constraint: all generated objects
-// share one owner, one audit object, one security policy and one owning schema.
-// The caller-supplied path admits a different owner or policy per object. The
+// share one owner, one audit object and one security policy. The
+// caller-supplied path admits a different owner or policy per object. The
 // shared security policy is load-bearing for the service runtime authority
 // binding, whose payload policy_uuid must equal its metadata security policy,
 // so this path refuses a security policy that is not the local service policy.
+//
+// Schema placement is NOT shared: it is per object, in `names`, because the
+// system catalog is a recursive schema tree and the name index is scoped by it.
 struct NativeInitialGeneratedDefinitions {
   core::platform::Uuid owner_principal_uuid;
   core::platform::Uuid audit_object_uuid;
   core::platform::Uuid security_policy_uuid;
-  core::platform::Uuid owning_schema_uuid;
   // Required by the two name schemas. No create-path source exists for these
   // yet; they are the caller's to issue.
   core::platform::Uuid name_collision_policy_uuid;
@@ -53,7 +72,8 @@ struct NativeInitialGeneratedDefinitions {
   // row. Exact rather than at-least, so an over-supplied pool cannot hide a
   // miscount. Identity issuance stays with the caller; nothing is minted here.
   std::span<const core::platform::Uuid> fresh_identities;
-  // Exactly one per enumerated object. A missing or extra name is a refusal.
+  // Exactly one per enumerated object, carrying that object's schema placement
+  // and label. A missing or extra entry is a refusal.
   std::span<const NativeInitialDefinitionName> names;
   // Carried by every generated metadata version. Non-empty printable keys: the
   // metadata codec refuses an envelope without them, so there is no usable

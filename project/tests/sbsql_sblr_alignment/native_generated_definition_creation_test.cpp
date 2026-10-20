@@ -71,15 +71,31 @@ const char* kVerifier =
     "verifier=7b622f17d15a5e6f2d5122c606937dfc"
     "76f5982782adb52b03f7b1ca024f72c9";
 
-// Shared bootstrap identities. Create issues the first four today; the three
-// naming-profile identities have no create-path source yet and are the
-// caller's to issue either way.
+// Schema roots, standing in for the identities create issues for the recursive
+// catalog schema tree (`core/catalog/bootstrap_schema_roots.hpp`). The offsets
+// mirror create's own: sys.security is +10024, sys.configuration +10025.
+constexpr unsigned kSysSecuritySchema = 10024;
+constexpr unsigned kSysConfigurationSchema = 10025;
+
+// Where each enumerated family sits in that tree. Security records under
+// sys.security; the pack, its providers and profiles, the memory configuration
+// and the runtime authority binding under sys.configuration. This is a fixture
+// placement decision, not an assertion about create's eventual choice -- the
+// point under test is that placement is per object and is carried through.
+p::Uuid SchemaFor(const db::NativeInitialDefinitionIdentity& object) {
+  return c::IsCatalogSecurityRecordKind(object.kind) ? Id(kSysSecuritySchema)
+                                                     : Id(kSysConfigurationSchema);
+}
+
+// Shared bootstrap identities. Schema placement is deliberately absent: it is
+// per object. Create issues the first three today; the three naming-profile
+// identities have no create-path source yet and are the caller's to issue
+// either way.
 db::NativeInitialGeneratedDefinitions Seed() {
   db::NativeInitialGeneratedDefinitions seed;
   seed.owner_principal_uuid = kBootstrapPrincipal;
   seed.audit_object_uuid = Id(10032);
   seed.security_policy_uuid = SourceId(0x402);  // the enrolled service policy
-  seed.owning_schema_uuid = Id(10024);          // the sys.security schema root
   seed.name_collision_policy_uuid = Id(20055);
   seed.dialect_profile_uuid = Id(20056);
   seed.identifier_profile_uuid = Id(20057);
@@ -109,7 +125,9 @@ struct Names {
 };
 
 // Built from the enumeration, which is the whole point: nothing here predicts
-// the object set, its kinds or its subtypes.
+// the object set, its kinds or its subtypes. Labels are unique per object here
+// only because a fixture needs something to assert against; the tree, not the
+// text, is what keeps two identical labels apart, which section 7 exercises.
 Names NameEveryObject(const std::vector<db::NativeInitialDefinitionIdentity>& enumerated,
                       unsigned identity_base = 40000) {
   Names out;
@@ -124,7 +142,8 @@ Names NameEveryObject(const std::vector<db::NativeInitialDefinitionIdentity>& en
       out.identities.push_back(Id(identity_base + 5 * at + slot));
   }
   for (unsigned at = 0; at < enumerated.size(); ++at)
-    out.supplied.push_back({enumerated[at].object_uuid, out.text[at], out.keys[at]});
+    out.supplied.push_back({enumerated[at].object_uuid, SchemaFor(enumerated[at]),
+                            out.text[at], out.keys[at]});
   return out;
 }
 
@@ -239,6 +258,14 @@ int main() {
       Check(row.metadata.owning_schema_uuid.kind == p::UuidKind::schema &&
             row.metadata.record.header.parent_uuid.value == row.metadata.owning_schema_uuid.value,
             "the owning schema is presented under schema kind and matches the parent");
+      // Placement is per object, and a security record does not sit where a
+      // configuration record sits.
+      const auto expected_schema =
+          c::IsCatalogSecurityRecordKind(row.metadata.record.header.kind)
+              ? Id(kSysSecuritySchema) : Id(kSysConfigurationSchema);
+      Check(row.metadata.owning_schema_uuid.value == expected_schema,
+            "each object is placed under the parent schema supplied for it, not under "
+            "one schema shared by the whole cohort");
       Check(row.metadata.definition_version == 1 && row.metadata.catalog_generation == 1 &&
             row.metadata.security_epoch == 1 && row.metadata.creator_local_transaction_id == 1,
             "generated definitions are first versions of an initial construction");
@@ -257,6 +284,11 @@ int main() {
       const auto& entry = std::get<c::CatalogNameEntry>(*found->name);
       Check(entry.raw_name_text == names.text[at],
             "the assembled entry carries the name text supplied for that object");
+      Check(entry.parent_schema_uuid.has_value() &&
+            entry.parent_schema_uuid->value == SchemaFor(enumerated.definitions[at]) &&
+            entry.scope_uuid.value == SchemaFor(enumerated.definitions[at]),
+            "the label resolves within the object's own parent schema: both the entry's "
+            "parent schema and its lookup scope are that schema");
       Check(entry.default_for_object && entry.default_for_language,
             "the single supplied name is the object's default in the default language");
       Check(entry.object_class == c::CatalogRecordKindName(enumerated.definitions[at].kind),
@@ -406,10 +438,13 @@ int main() {
     }
     {
       auto value = request(names);
+      auto other = names;
+      other.supplied.front().owning_schema_uuid = kNil;
       auto seed = *value.policy.generated_definitions;
-      seed.owning_schema_uuid = kNil;
+      seed.names = other.supplied;
       value.policy.generated_definitions = seed;
-      refuse(value, {"a nil owning schema refuses", E::invalid_definition});
+      refuse(value, {"a nil schema placement for one object refuses the whole cohort",
+                     E::invalid_definition});
     }
     {
       auto value = request(names);
@@ -536,6 +571,70 @@ int main() {
           "the security relation stays untouched without a security cohort");
     Check(policy_routed.plan->catalogs[4].size() == policy_enumeration.definitions.size(),
           "every policy definition is placed in the configuration relation");
+  }
+
+  // 7. The recursive tree, not the text, is what keeps labels apart. Two
+  //    objects in two different parent schemas carry the SAME label in the SAME
+  //    language, and both assemble with their scopes preserved distinctly.
+  //
+  //    Scope of this assertion: the authoritative name index is keyed on
+  //    (scope, object class, identifier profile, language, lookup key), so the
+  //    structure these rows carry is what distinguishes them. It does NOT
+  //    assert that this layer enforces collisions -- it explicitly does not,
+  //    and a duplicate label in the SAME scope would also assemble here. That
+  //    enforcement belongs to the naming collision policy, elsewhere.
+  {
+    const std::string shared_label = "bootstrap_shared_label";
+    auto twinned = NameEveryObject(enumerated.definitions, 70000);
+    // One security object and one configuration object, which SchemaFor put
+    // under different parents.
+    unsigned security_at = enumerated.definitions.size(), configuration_at = security_at;
+    for (unsigned at = 0; at < enumerated.definitions.size(); ++at) {
+      const bool security = c::IsCatalogSecurityRecordKind(enumerated.definitions[at].kind);
+      if (security && security_at == enumerated.definitions.size()) security_at = at;
+      if (!security && configuration_at == enumerated.definitions.size()) configuration_at = at;
+    }
+    Check(security_at != enumerated.definitions.size() &&
+          configuration_at != enumerated.definitions.size(),
+          "the enumeration offers an object in each of the two fixture schemas");
+    Check(SchemaFor(enumerated.definitions[security_at]) !=
+          SchemaFor(enumerated.definitions[configuration_at]),
+          "the two chosen objects really are placed under different parent schemas");
+    for (const auto at : {security_at, configuration_at}) {
+      twinned.text[at] = shared_label;
+      twinned.keys[at].assign(shared_label.begin(), shared_label.end());
+      twinned.supplied[at].name_text = twinned.text[at];
+      twinned.supplied[at].normalized_lookup_key = twinned.keys[at];
+    }
+
+    const auto out = db::AssembleNativeInitialPolicySecurityRecords(request(twinned));
+    if (!out.ok())
+      std::fprintf(stderr, "twinned-label assembly error=%d name_error=%d\n",
+                   static_cast<int>(out.error), static_cast<int>(out.name_error));
+    Check(out.ok(),
+          "the same label in the same language assembles for two objects under "
+          "different parent schemas");
+
+    std::vector<const c::CatalogNameEntry*> twins;
+    for (const auto& row : out.records->names)
+      if (row.name)
+        if (const auto* entry = std::get_if<c::CatalogNameEntry>(&*row.name);
+            entry && entry->raw_name_text == shared_label)
+          twins.push_back(entry);
+    Check(twins.size() == 2, "both labelled entries are present in the assembled set");
+    Check(twins[0]->object_uuid.value != twins[1]->object_uuid.value,
+          "they label two different objects");
+    Check(twins[0]->language_tag == twins[1]->language_tag,
+          "they are in the same language");
+    Check(twins[0]->object_class != twins[1]->object_class ||
+          twins[0]->scope_uuid.value != twins[1]->scope_uuid.value,
+          "and they are still distinguishable by the index key, which carries the scope");
+    Check(twins[0]->scope_uuid.value != twins[1]->scope_uuid.value,
+          "specifically, their lookup scopes differ: the parent schema is what separates "
+          "two identical labels in one language");
+    Check(twins[0]->normalized_lookup_key == twins[1]->normalized_lookup_key,
+          "their normalized lookup keys are identical, so nothing about the text "
+          "disambiguated them");
   }
 
   std::printf("PASS generated definition creation checks=%d\n", checks);

@@ -26,15 +26,23 @@ namespace scratchbird::storage::database {
 // its own map, so this factory must not supply one. The caller supplies
 // identity, kind, subtype and name authority; the assembler supplies content.
 //
-// The four shared identity fields come from create's existing bootstrap
-// identities rather than anything invented here:
+// The four identity fields come from create's existing bootstrap identities
+// rather than anything invented here:
 //   owner_uuid           the bootstrap principal          (kind principal)
 //   audit_uuid           sys_audit_object                 (kind object)
 //   security_policy_uuid the object's governing policy     (kind object)
-//   owning_schema_uuid   the owning schema root           (kind schema)
+//   owning_schema_uuid   THIS object's parent schema       (kind schema)
 // and record.header.parent_uuid carries the same value as owning_schema_uuid
 // under kind object, which CatalogRuntimeAuthorityBindingMatchesMetadata
 // requires.
+//
+// The owning schema is per object. A catalog object carries no name of its own:
+// its identity is its UUID, and the label a person sees is a name-registry row
+// in language-specific versions pointing back at that UUID. The authoritative
+// name index is scoped by the parent, and the system catalog is a recursive
+// schema tree, so where an object sits in that tree is what distinguishes its
+// label from an identical label elsewhere. Placement is therefore the caller's
+// decision for each object, never one value for a whole cohort.
 //
 // ASSUMPTION, recorded deliberately rather than left to read as fact.
 // `owning_schema` is presented with UuidKind::schema while create issues that
