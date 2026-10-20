@@ -179,6 +179,15 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     COMMAND startup_credential_source_adapter_gate)
   set_tests_properties(startup_credential_source_adapter_gate PROPERTIES
     TIMEOUT 60 LABELS "agents;startup;security")
+  # The server's own acquisition of the operator-provisioned secret.
+  add_executable(startup_credential_provisioning_gate
+    "${PROJECT_SOURCE_DIR}/tests/concurrency/startup_credential_provisioning_gate.cpp")
+  target_compile_features(startup_credential_provisioning_gate PRIVATE cxx_std_23)
+  target_link_libraries(startup_credential_provisioning_gate PRIVATE sb_core_memory sb_core_uuid)
+  add_test(NAME startup_credential_provisioning_gate
+    COMMAND startup_credential_provisioning_gate)
+  set_tests_properties(startup_credential_provisioning_gate PROPERTIES
+    TIMEOUT 60 LABELS "agents;startup;security;protected_memory")
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
