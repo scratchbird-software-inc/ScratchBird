@@ -370,6 +370,10 @@ class NativeOwnedCheckpointSource {
     out.io_status=disk::BoundedIoStatus(read);
     if(!read.ok())out.io_failure=read;
     if(!read.ok()||read.bytes_transferred!=bytes.size()){
+      // Retain the typed physical receipt, not only the status projection. The
+      // status says a read failed; the rendered diagnostic says which failure it
+      // was, and a caller that loses it cannot report the actual cause.
+      out.io_diagnostic=disk::RenderBoundedIoResult(read,file.path()).diagnostic;
       out.error=NativeOwnedSourceError::bootstrap_failure;
       out.bootstrap_error=disk::FilespaceBootstrapError::io_failure;return false;
     }

@@ -258,10 +258,30 @@ void Checks(std::span<const d::NativeFilespaceDevice> borrowed,u64 allowance,boo
     Check(remaining<0,"every indexed actual owner allocation fault is consumed");
     if(!result.ok())Check(resource_failure(result),"required owner allocation failure retains its typed resource classification");
    }
-   if(kind==1)Check(!result.ok()&&!result.owner&&counts.reads>=site&&!result.io_status.ok()&&
-     result.io_diagnostic.diagnostic_code=="SB-STORAGE-DISK-READ-SHORT"&&
-     ((result.error==E::bootstrap_failure&&result.bootstrap_error==d::FilespaceBootstrapError::io_failure)||
-      result.error==E::source_failure),"every bootstrap or selected read failure preserves its exact physical receipt");
+   // One Check per conjunct: a combined condition reported only the group's
+   // first line and could not say which part of the receipt was violated.
+   // Every conjunct is still required, in the same order.
+   if(kind==1){
+    Check(!result.ok(),"injected read fault refuses the owner admission");
+    Check(!result.owner,"refused read-fault admission exposes no owner");
+    Check(counts.reads>=site,
+      ("injected read fault is reached: reads="+std::to_string(counts.reads)
+       +" site="+std::to_string(site)).c_str());
+    Check(!result.io_status.ok(),"refused read-fault admission reports a failed io status");
+    Check(result.io_diagnostic.diagnostic_code=="SB-STORAGE-DISK-READ-SHORT",
+      ("read fault retains its exact physical receipt code, got=\""
+       +std::string(result.io_diagnostic.diagnostic_code)+"\" error="
+       +std::to_string(static_cast<int>(result.error))+" bootstrap="
+       +std::to_string(static_cast<int>(result.bootstrap_error))+" source="
+       +std::to_string(static_cast<int>(result.source_error))+" memory_source="
+       +std::to_string(static_cast<int>(result.memory_source_error))
+       +" phys="+std::to_string(result.physical_bytes_read)).c_str());
+    Check((result.error==E::bootstrap_failure&&result.bootstrap_error==d::FilespaceBootstrapError::io_failure)||
+       result.error==E::source_failure,
+      ("read fault classifies as bootstrap io_failure or source_failure, got error="
+       +std::to_string(static_cast<int>(result.error))
+       +" bootstrap="+std::to_string(static_cast<int>(result.bootstrap_error))).c_str());
+   }
    if(kind>=2&&kind<=6){
     Check(hash_consumed&&!result.ok()&&!result.owner,"every digest-provider phase is consumed without partial ownership");
     if(site<=original.size())

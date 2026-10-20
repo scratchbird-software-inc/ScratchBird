@@ -236,7 +236,14 @@ struct Reader {
     const auto read=[&](std::size_t i,u64 offset,void* data,std::size_t size){
       auto io=batches[i].ReadAtBounded(offset,data,size);out.physical_bytes_read+=io.bytes_transferred;
       out.io=io;out.io_filespace_uuid=files[i].source.filespace_uuid;
-      out.io_status=disk::BoundedIoStatus(io);return io.ok()&&io.bytes_transferred==size;};
+      out.io_status=disk::BoundedIoStatus(io);
+      const bool complete=io.ok()&&io.bytes_transferred==size;
+      // Populate the declared diagnostic field, not only the status and the raw
+      // receipt. A consumer reading io_diagnostic cannot be expected to
+      // re-render the cause from io. See `STORAGE-REFUSAL-RECEIPT-RETAINED`.
+      if(!complete&&files[i].source.device)
+        out.io_diagnostic=disk::RenderBoundedIoResult(io,files[i].source.device->path()).diagnostic;
+      return complete;};
     for(std::size_t i=0;i<files.size();++i){auto& f=files[i];
       const disk::FilespaceBootstrapBinding expected{database,f.source.filespace_uuid,f.source.page_size_profile_uuid};
       disk::SerializedFilespaceBootstrap prefix{};
