@@ -69,6 +69,34 @@ struct DatabaseCreateConfig {
   // Fixture-only escape hatch. Production create callers must provide a
   // credentialed bootstrap principal when require_bootstrap_principal is set.
   bool allow_uncredentialed_bootstrap = false;
+  // Internal service principal provisioned by create, per
+  // `SECURITY-INTERNAL-PRINCIPAL-PROVISIONING` and DR-INTERNAL-PRINCIPAL-001.
+  // The engine's own actors authenticate as this committed principal instead of
+  // synthesizing an identity. Both the name and a real credential fingerprint
+  // are caller inputs: create refuses rather than inventing either, and the
+  // fingerprint is validated by the same parser the bootstrap credential uses.
+  // Requires a bootstrap principal; the service principal is provisioned
+  // alongside it, never instead of it.
+  std::string internal_service_principal_name;
+  std::string internal_service_credential_fingerprint;
+  bool require_internal_service_principal = false;
+  // Additional internal principals provisioned by the same create transaction,
+  // one per engine-internal actor the caller declares. The caller supplies the
+  // list because the agent registry is not readable from the create path: the
+  // in-code registry is data-driven and the `agents` registry fragment is still
+  // an empty placeholder. Create therefore provisions exactly what it is told
+  // to and invents nothing.
+  //
+  // These are provisioned as committed principals so that rights can be granted
+  // to them later; only the principal named by internal_service_principal_name
+  // receives the fixed local-service right set at create. Grants for the rest
+  // are a separate obligation, per `SECURITY-INTERNAL-PRINCIPAL-PROVISIONING`
+  // requiring grants to mirror authority class.
+  struct InternalPrincipalSpec {
+    std::string principal_name;
+    std::string credential_fingerprint;
+  };
+  std::vector<InternalPrincipalSpec> internal_principals;
   std::string create_fault_injection_point;
   bool allow_overwrite = false;
 };
@@ -317,6 +345,10 @@ struct DatabaseLifecycleResult {
   TypedUuid bootstrap_sysarch_role_uuid;
   TypedUuid bootstrap_membership_uuid;
   u32 bootstrap_policy_generation = 0;
+  // Committed internal service principal, nil when not requested.
+  TypedUuid internal_service_principal_uuid;
+  // Committed internal actor principals, in declaration order.
+  std::vector<TypedUuid> internal_principal_uuids;
 
   bool creation_ready_for_handoff() const {
     return ok() && create_finality == DatabaseCreateFinalityClass::committed &&

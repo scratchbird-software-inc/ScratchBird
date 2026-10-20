@@ -1178,6 +1178,8 @@ struct CatalogRowsBuildResult {
   TypedUuid bootstrap_principal_uuid;
   TypedUuid bootstrap_sysarch_role_uuid;
   TypedUuid bootstrap_membership_uuid;
+  TypedUuid internal_service_principal_uuid;
+  std::vector<TypedUuid> internal_principal_uuids;
   DiagnosticRecord diagnostic;
 
   bool ok() const {
@@ -3194,6 +3196,125 @@ CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
 
   result.bootstrap_principal_uuid = principal.value;
   result.bootstrap_membership_uuid = membership.value;
+
+  // Internal service principal, per `SECURITY-INTERNAL-PRINCIPAL-PROVISIONING`
+  // and DR-INTERNAL-PRINCIPAL-001. Engine-internal actors authenticate as this
+  // committed principal rather than synthesizing one. Name and credential
+  // fingerprint are caller inputs: nothing is defaulted or derived here, and an
+  // unparseable or oversized fingerprint refuses create rather than provisioning
+  // a principal nothing can authenticate as. Provisioned only alongside the
+  // bootstrap principal, matching the record assembler's own precondition.
+  if (!config.internal_service_principal_name.empty()) {
+    if (!IsSafeBootstrapPrincipalName(config.internal_service_principal_name) ||
+        config.internal_service_credential_fingerprint.empty() ||
+        config.internal_service_credential_fingerprint.size() > 256 ||
+        !ParseBootstrapCredentialFingerprint(
+            config.internal_service_credential_fingerprint)) {
+      return CatalogRowsBuildError(DatabaseLifecycleErrorStatus(),
+          MakeDatabaseLifecycleDiagnostic(DatabaseLifecycleErrorStatus(),
+            "CATALOG.INVALID_INPUT",
+            "catalog.security_record.internal_service_credential_required",
+            {},"internal_service_principal_credential"));
+    }
+    // Ten distinct engine identities from the create seed, continuing the same
+    // even-offset scheme past the membership record's +8.
+    std::array<TypedUuid, 10> service_ids{};
+    static constexpr std::array<UuidKind, 10> kService{
+        UuidKind::principal, UuidKind::object, UuidKind::object,
+        UuidKind::object,    UuidKind::object, UuidKind::object,
+        UuidKind::object,    UuidKind::object, UuidKind::object,
+        UuidKind::object};
+    for (std::size_t i = 0; i < service_ids.size(); ++i) {
+      const auto generated = GenerateEngineIdentityV7(
+          kService[i], identity_seed + 10 + static_cast<u64>(i) * 2);
+      if (!generated.ok()) {
+        return CatalogRowsBuildError(generated.status, generated.diagnostic);
+      }
+      service_ids[i] = generated.value;
+    }
+    const NativeInitialLocalServiceIdentity service{
+        service_ids[0].value, service_ids[1].value, service_ids[2].value,
+        service_ids[3].value, service_ids[4].value,
+        {service_ids[5].value, service_ids[6].value, service_ids[7].value,
+         service_ids[8].value, service_ids[9].value},
+        config.internal_service_principal_name,
+        config.internal_service_credential_fingerprint};
+
+    auto service_record = NativeLocalServicePrincipalDefinition(
+        service, creator_transaction_uuid, policy_generation);
+    typed = AddSecurityCatalogRecord(rows, ordinal, identity_seed + 30,
+        std::move(service_record), security_parent_uuid,
+        creator_transaction_uuid);
+    if (!typed.ok()) {
+      return typed;
+    }
+    // One grant row per right. The rights are fixed by
+    // NativeLocalServiceGrantDefinition; create does not widen them.
+    for (unsigned slot = 0; slot < 5; ++slot) {
+      auto grant_record = NativeLocalServiceGrantDefinition(
+          service, slot, creator_transaction_uuid, policy_generation);
+      typed = AddSecurityCatalogRecord(rows, ordinal,
+          identity_seed + 32 + static_cast<u64>(slot) * 2,
+          std::move(grant_record), security_parent_uuid,
+          creator_transaction_uuid);
+      if (!typed.ok()) {
+        return typed;
+      }
+    }
+    result.internal_service_principal_uuid = service_ids[0];
+  }
+
+  // Remaining internal principals, one committed principal row each. These are
+  // provisioned so rights can be granted to them later; create issues no grants
+  // for them, because granting a right the actor's authority class does not
+  // carry would be worse than granting none. Every name and credential is a
+  // caller input and is validated exactly as above.
+  {
+    u64 extra_seed = identity_seed + 64;
+    for (const auto& spec : config.internal_principals) {
+      if (spec.principal_name.empty()) {
+        continue;
+      }
+      if (!IsSafeBootstrapPrincipalName(spec.principal_name) ||
+          spec.credential_fingerprint.empty() ||
+          spec.credential_fingerprint.size() > 256 ||
+          !ParseBootstrapCredentialFingerprint(spec.credential_fingerprint)) {
+        return CatalogRowsBuildError(DatabaseLifecycleErrorStatus(),
+            MakeDatabaseLifecycleDiagnostic(DatabaseLifecycleErrorStatus(),
+              "CATALOG.INVALID_INPUT",
+              "catalog.security_record.internal_principal_credential_required",
+              {},spec.principal_name));
+      }
+      std::array<TypedUuid, 10> ids{};
+      static constexpr std::array<UuidKind, 10> kKinds{
+          UuidKind::principal, UuidKind::object, UuidKind::object,
+          UuidKind::object,    UuidKind::object, UuidKind::object,
+          UuidKind::object,    UuidKind::object, UuidKind::object,
+          UuidKind::object};
+      for (std::size_t i = 0; i < ids.size(); ++i) {
+        const auto generated = GenerateEngineIdentityV7(
+            kKinds[i], extra_seed + static_cast<u64>(i) * 2);
+        if (!generated.ok()) {
+          return CatalogRowsBuildError(generated.status, generated.diagnostic);
+        }
+        ids[i] = generated.value;
+      }
+      const NativeInitialLocalServiceIdentity actor{
+          ids[0].value, ids[1].value, ids[2].value, ids[3].value, ids[4].value,
+          {ids[5].value, ids[6].value, ids[7].value, ids[8].value, ids[9].value},
+          spec.principal_name, spec.credential_fingerprint};
+      auto actor_record = NativeLocalServicePrincipalDefinition(
+          actor, creator_transaction_uuid, policy_generation);
+      typed = AddSecurityCatalogRecord(rows, ordinal, extra_seed + 20,
+          std::move(actor_record), security_parent_uuid,
+          creator_transaction_uuid);
+      if (!typed.ok()) {
+        return typed;
+      }
+      result.internal_principal_uuids.push_back(ids[0]);
+      extra_seed += 24;
+    }
+  }
   return result;
 }
 
@@ -3558,6 +3679,8 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
   }
   result.bootstrap_principal_uuid =
       bootstrap_security_rows.bootstrap_principal_uuid;
+  result.internal_service_principal_uuid =
+      bootstrap_security_rows.internal_service_principal_uuid;
   result.bootstrap_sysarch_role_uuid =
       bootstrap_security_rows.bootstrap_sysarch_role_uuid;
   result.bootstrap_membership_uuid =

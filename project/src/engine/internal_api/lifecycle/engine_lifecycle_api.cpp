@@ -416,6 +416,38 @@ EngineCreateLifecycleResult EngineCreateLifecycle(const EngineCreateLifecycleReq
   create.require_bootstrap_principal =
       !create.bootstrap_principal_name.empty();
   create.allow_uncredentialed_bootstrap = false;
+  // Internal principals, per `SECURITY-INTERNAL-PRINCIPAL-PROVISIONING`. The
+  // caller supplies the name and a real credential fingerprint for the internal
+  // service principal, and may declare additional internal actor principals as
+  // repeated option envelopes. Nothing is defaulted: an absent option
+  // provisions no principal, and a present name with an unparseable credential
+  // refuses create rather than provisioning a principal nothing can
+  // authenticate as.
+  create.internal_service_principal_name =
+      OptionValue(request, "internal_service_principal_name:");
+  create.internal_service_credential_fingerprint =
+      OptionValue(request, "internal_service_credential_fingerprint:");
+  create.require_internal_service_principal =
+      !create.internal_service_principal_name.empty();
+  for (const auto& envelope : request.option_envelopes) {
+    static constexpr std::string_view kInternalPrincipal = "internal_principal:";
+    if (envelope.size() <= kInternalPrincipal.size() ||
+        envelope.compare(0, kInternalPrincipal.size(), kInternalPrincipal) != 0) {
+      continue;
+    }
+    // name=<principal>;credential=<fingerprint>
+    const std::string body = envelope.substr(kInternalPrincipal.size());
+    static constexpr std::string_view kName = "name=";
+    static constexpr std::string_view kCredential = ";credential=";
+    const auto split = body.find(kCredential);
+    if (split == std::string::npos ||
+        body.compare(0, kName.size(), kName) != 0) {
+      continue;
+    }
+    create.internal_principals.push_back(
+        {body.substr(kName.size(), split - kName.size()),
+         body.substr(split + kCredential.size())});
+  }
   create.allow_overwrite = false;
 
   const auto created =
