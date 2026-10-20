@@ -209,6 +209,15 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
     COMMAND startup_credential_committed_binding_gate)
   set_tests_properties(startup_credential_committed_binding_gate PROPERTIES
     TIMEOUT 180 LABELS "agents;startup;security;protected_memory;actual_files")
+  # The repeated unit of the creation-workspace definitions vector.
+  add_executable(bootstrap_definition_metadata_gate
+    "${PROJECT_SOURCE_DIR}/tests/concurrency/bootstrap_definition_metadata_gate.cpp")
+  target_compile_features(bootstrap_definition_metadata_gate PRIVATE cxx_std_23)
+  target_link_libraries(bootstrap_definition_metadata_gate PRIVATE
+    sb_storage_database sb_core_uuid)
+  add_test(NAME bootstrap_definition_metadata_gate COMMAND bootstrap_definition_metadata_gate)
+  set_tests_properties(bootstrap_definition_metadata_gate PROPERTIES
+    TIMEOUT 60 LABELS "agents;startup;security")
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
