@@ -3261,6 +3261,53 @@ CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
         return typed;
       }
     }
+    // The runtime authority binding, naming the identities a startup credential
+    // is framed against. It is written here, beside the rows it describes,
+    // because the only other writer is unreachable:
+    // AssembleNativeInitialPolicyRecordsImpl guards it on `request.local_service`,
+    // which is declared `= std::nullopt` and assigned nowhere, and the sole
+    // reachable caller passes std::nullopt explicitly. Writing it from the
+    // policy path would mean reviving dead plumbing to carry an identity this
+    // function already holds.
+    //
+    // Every field is an identity this create already generated or was given.
+    // Nothing is derived from a name or a seed string.
+    {
+      namespace c = scratchbird::core::catalog;
+      c::CatalogRuntimeAuthorityBinding binding;
+      binding.binding_uuid = service.runtime_binding_uuid;
+      binding.database_uuid = config.database_uuid.value;
+      binding.service_principal_uuid = service.principal_uuid;
+      binding.security_authority_uuid = config.database_uuid.value;
+      binding.provider_uuid = service.provider_uuid;
+      binding.policy_uuid = service.policy_uuid;
+      binding.credential_reference_uuid = service.credential_reference_uuid;
+      binding.generation = 1;
+      binding.security_epoch = 1;
+      binding.catalog_generation = 1;
+      binding.policy_epoch = policy_generation;
+      binding.provider_generation = policy_generation;
+      binding.authority_mode = c::RuntimeAuthorityMode::database_local;
+      binding.origin_transaction_uuid = creator_transaction_uuid;
+      binding.origin_local_transaction_id = 1;
+
+      const auto encoded = c::EncodeCatalogRuntimeAuthorityBinding(binding);
+      if (!encoded.ok()) {
+        return CatalogRowsBuildError(DatabaseLifecycleErrorStatus(),
+            MakeDatabaseLifecycleDiagnostic(DatabaseLifecycleErrorStatus(),
+              "CATALOG.INVALID_INPUT",
+              "catalog.runtime_authority_binding.encode_failed",
+              {},"internal_service_runtime_authority_binding"));
+      }
+      typed = AddTypedCatalogRecord(rows, CatalogRecordKind::config_profile,
+          ordinal, identity_seed + 44,
+          std::string(encoded.bytes.begin(), encoded.bytes.end()),
+          security_parent_uuid,
+          TypedUuid{UuidKind::object, service.runtime_binding_uuid});
+      if (!typed.ok()) {
+        return typed;
+      }
+    }
     result.internal_service_principal_uuid = service_ids[0];
   }
 
@@ -7584,6 +7631,8 @@ DatabaseLifecycleResult CreateDatabaseFile(const DatabaseCreateConfig& config) {
   TypedUuid bootstrap_principal_uuid;
   TypedUuid bootstrap_sysarch_role_uuid;
   TypedUuid bootstrap_membership_uuid;
+  TypedUuid internal_service_principal_uuid;
+  std::vector<TypedUuid> internal_principal_uuids;
   {
     const auto bootstrap_transaction = scratchbird::transaction::mga::LookupLocalTransaction(
         bootstrap_evidence.inventory, MakeLocalTransactionId(kBootstrapCatalogTransactionId));
@@ -7612,6 +7661,8 @@ DatabaseLifecycleResult CreateDatabaseFile(const DatabaseCreateConfig& config) {
     bootstrap_principal_uuid = catalog_rows.bootstrap_principal_uuid;
     bootstrap_sysarch_role_uuid = catalog_rows.bootstrap_sysarch_role_uuid;
     bootstrap_membership_uuid = catalog_rows.bootstrap_membership_uuid;
+    internal_service_principal_uuid = catalog_rows.internal_service_principal_uuid;
+    internal_principal_uuids = catalog_rows.internal_principal_uuids;
     const auto write_catalog = WriteCatalogPageBodies(&device,
                                                       page_context,
                                                       catalog_rows.rows,
@@ -7684,6 +7735,11 @@ DatabaseLifecycleResult CreateDatabaseFile(const DatabaseCreateConfig& config) {
     result.bootstrap_principal_uuid = bootstrap_principal_uuid;
     result.bootstrap_sysarch_role_uuid = bootstrap_sysarch_role_uuid;
     result.bootstrap_membership_uuid = bootstrap_membership_uuid;
+    // Nil here is the documented value for "not requested", so a caller that
+    // did request a service principal must receive its identity or it cannot
+    // tell provisioning from a no-op.
+    result.internal_service_principal_uuid = internal_service_principal_uuid;
+    result.internal_principal_uuids = internal_principal_uuids;
     if (!warning_code.empty()) {
       result.diagnostic = MakeDatabaseLifecycleDiagnostic(
           result.status,
