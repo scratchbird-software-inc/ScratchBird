@@ -30,6 +30,7 @@ p::Uuid Id(std::uint8_t tail) {
 db::BootstrapDefinitionMetadataInput Good() {
   db::BootstrapDefinitionMetadataInput in;
   in.object_uuid = Id(0x51);
+  in.row_uuid = Id(0x57);
   in.kind = c::CatalogRecordKind::config_profile;
   in.object_subtype = "agent_runtime_authority";
   in.owner_principal_uuid = Id(0x52);
@@ -51,6 +52,12 @@ int main() {
     Check(m.record.header.kind == c::CatalogRecordKind::config_profile, "kind preserved");
     Check(m.record.header.object_uuid.value == Id(0x51) &&
           m.record.header.object_uuid.kind == p::UuidKind::object, "object identity and kind");
+    Check(m.record.header.row_uuid.kind == p::UuidKind::row &&
+          m.record.header.row_uuid.value == Id(0x57),
+          "row identity is present and distinct; the request refuses duplicates "
+          "across every definition, vector and entry identity");
+    Check(m.record.header.row_uuid.value != m.record.header.object_uuid.value,
+          "row identity differs from object identity");
     Check(m.record.payload.empty(),
           "payload stays empty; the assembler refuses a supplied payload");
     Check(m.object_subtype == "agent_runtime_authority", "subtype preserved verbatim");
@@ -80,6 +87,8 @@ int main() {
   {
     struct Case { const char* what; db::BootstrapDefinitionMetadataInput in; E expected; };
     auto nil_object = Good(); nil_object.object_uuid = {};
+    auto nil_row = Good(); nil_row.row_uuid = {};
+    auto same_row = Good(); same_row.row_uuid = same_row.object_uuid;
     auto no_subtype = Good(); no_subtype.object_subtype.clear();
     auto nil_owner = Good(); nil_owner.owner_principal_uuid = {};
     auto nil_audit = Good(); nil_audit.audit_object_uuid = {};
@@ -90,6 +99,8 @@ int main() {
 
     const Case cases[] = {
       {"a nil object identity refuses", nil_object, E::object_identity_invalid},
+      {"a nil row identity refuses", nil_row, E::row_identity_invalid},
+      {"a row identity equal to the object identity refuses", same_row, E::row_identity_invalid},
       {"an empty subtype refuses", no_subtype, E::subtype_empty},
       {"a nil owner refuses", nil_owner, E::owner_identity_invalid},
       {"a nil audit identity refuses", nil_audit, E::audit_identity_invalid},

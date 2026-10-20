@@ -42,6 +42,13 @@ namespace scratchbird::storage::database {
 
 struct BootstrapDefinitionMetadataInput {
   core::platform::Uuid object_uuid;
+  // Distinct from object_uuid and globally unique across the whole request.
+  // AssembleNativeInitialPolicyRecordsImpl collects object_uuid AND row_uuid
+  // from every definition, every name-vector metadata and every name-entry
+  // metadata, sorts them, and refuses on any duplicate (:7102-7112). A missing
+  // row_uuid is therefore not a cosmetic omission: every definition would carry
+  // nil and the request would be refused as duplicate_identity.
+  core::platform::Uuid row_uuid;
   core::catalog::CatalogRecordKind kind = core::catalog::CatalogRecordKind::config_profile;
   // Must equal the subtype the assembler registered for this object, or the
   // definition is refused. Security records use CatalogRecordKindName(kind).
@@ -73,6 +80,7 @@ struct BootstrapDefinitionMetadataInput {
 enum class BootstrapDefinitionMetadataError {
   none,
   object_identity_invalid,
+  row_identity_invalid,
   owner_identity_invalid,
   audit_identity_invalid,
   policy_identity_invalid,
@@ -97,6 +105,7 @@ inline const char* BootstrapDefinitionMetadataDiagnosticCode(
   switch (error) {
     case E::none: return "";
     case E::object_identity_invalid: return "CATALOG.DEFINITION_OBJECT_IDENTITY_INVALID";
+    case E::row_identity_invalid: return "CATALOG.DEFINITION_ROW_IDENTITY_INVALID";
     case E::owner_identity_invalid: return "CATALOG.DEFINITION_OWNER_IDENTITY_INVALID";
     case E::audit_identity_invalid: return "CATALOG.DEFINITION_AUDIT_IDENTITY_INVALID";
     case E::policy_identity_invalid: return "CATALOG.DEFINITION_POLICY_IDENTITY_INVALID";
@@ -121,6 +130,11 @@ inline BootstrapDefinitionMetadataResult BuildBootstrapDefinitionMetadata(
 
   BootstrapDefinitionMetadataResult out;
   if (!IsEngineIdentityUuid(input.object_uuid)) return out;
+  if (!IsEngineIdentityUuid(input.row_uuid) ||
+      input.row_uuid == input.object_uuid) {
+    out.error = E::row_identity_invalid;
+    return out;
+  }
   if (input.object_subtype.empty()) {
     out.error = E::subtype_empty;
     return out;
@@ -155,6 +169,7 @@ inline BootstrapDefinitionMetadataResult BuildBootstrapDefinitionMetadata(
   auto& m = out.metadata;
   m.record.header.kind = input.kind;
   m.record.header.object_uuid = {p::UuidKind::object, input.object_uuid};
+  m.record.header.row_uuid = {p::UuidKind::row, input.row_uuid};
   // Same value as the owning schema, under object kind. MatchesMetadata
   // requires both the kinds and the equality.
   m.record.header.parent_uuid = {p::UuidKind::object, input.owning_schema_uuid};
