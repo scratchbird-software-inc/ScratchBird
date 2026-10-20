@@ -177,8 +177,24 @@ void Checks(std::span<const d::NativeFilespaceDevice> borrowed,u64 allowance,boo
  open();
  c::Grant transient(source_bytes);
  const auto read=[&](const auto& owner){return Source::ReadWithMemory(owner,limits.source,transient.memory,transient.binding);};
+ // Report the typed refusal when admission fails. NativeOwnedSourceDiagnostics
+ // carries nine distinct error enums plus the lease presence; asserting only
+ // ok() discards every one of them and leaves the cause unidentifiable.
+ const auto why=[](const auto& r){
+  return "error="+std::to_string(static_cast<int>(r.error))
+   +" source="+std::to_string(static_cast<int>(r.source_error))
+   +" selection="+std::to_string(static_cast<int>(r.selection_error))
+   +" checkpoint="+std::to_string(static_cast<int>(r.checkpoint_error))
+   +" allocation="+std::to_string(static_cast<int>(r.allocation_error))
+   +" directory="+std::to_string(static_cast<int>(r.directory_error))
+   +" inventory="+std::to_string(static_cast<int>(r.inventory_error))
+   +" route="+std::to_string(static_cast<int>(r.route_error))
+   +" memory_source="+std::to_string(static_cast<int>(r.memory_source_error))
+   +" memory="+std::to_string(static_cast<int>(r.memory_error))
+   +" lease="+std::to_string(bool(r.lease));
+ };
  const auto parity=[&](const auto& result){
-  Check(result.ok(),"actual-memory retained owned source");
+  Check(result.ok(),("actual-memory retained owned source "+why(result)).c_str());
   selected_lease_memory::Same(expected_selection,expected_directory,root,images,result.lease.source());
   Check(result.lease.devices().size()==original.size(),"owned read retains exact complete member cohort");
   for(std::size_t i=0;i<original.size();++i)
