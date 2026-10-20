@@ -2427,6 +2427,12 @@ CatalogRowsBuildResult AddTypedCatalogRecord(std::vector<CatalogPageRow>* rows,
              !scratchbird::core::catalog::IsCatalogBootstrapPolicyPayload(payload) &&
              !scratchbird::core::catalog::IsCatalogAgentBootstrapPayload(payload) &&
              !scratchbird::core::catalog::IsCatalogMemoryConfigurationPayload(payload) &&
+             // Binary SBCV block. Prefixing it with creator_tx= text corrupts
+             // the payload: the magic no longer leads, so the row decodes as
+             // neither a binding nor anything else. Commitment for this record
+             // travels in its own origin_transaction_uuid field, not a text
+             // prefix, so it needs no creator_tx= line.
+             !scratchbird::core::catalog::IsCatalogRuntimeAuthorityBindingPayload(payload) &&
              !scratchbird::core::catalog::IsCatalogMetricRetentionPolicyPayload(payload) &&
              !scratchbird::core::catalog::IsCatalogMetricVisibilityPolicyPayload(payload) &&
              kind != CatalogRecordKind::metric_label_schema &&
