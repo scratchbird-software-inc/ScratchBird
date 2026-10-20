@@ -185,8 +185,16 @@ inline NativeSelectedCheckpointMemoryResult AcquireNativeSelectedCheckpointMemor
     lease.checkpoint_={9,0x300,r.filespace_uuid,r.page_number,r.page_generation,r.page_size_profile_uuid,s.checkpoint_object_uuid};
     // Every device guard acquired above is still held. Retain the complete
     // selected proof once instead of allocating a second identical history.
+    // Pass the FULL verification allowance, not the allowance net of the
+    // selection. When handed a retained selection this stage inherits that
+    // selection's charge into its own inventory accounting instead of re-reading
+    // it, so its budget model is cumulative. Subtracting `consumed` first charges
+    // the shared selected images against the budget twice and exhausts the stage
+    // prematurely -- the budget-side form of `MEM-LEASE-CHARGE-ONCE`. The
+    // unbacked variant re-reads instead of inheriting, which is why it is
+    // correctly given the reduced budget.
     auto directory=detail::VerifyRetainedNativeCheckpointDirectoryBacked(database,devices,lease.checkpoint_,
-        selected.selection,limits.maximum_verification_image_bytes-consumed,pointers,resource);
+        selected.selection,limits.maximum_verification_image_bytes,pointers,resource);
     out.io_status=directory.io_status;out.io_diagnostic=std::move(directory.io_diagnostic);
     out.physical_bytes_read+=directory.physical_bytes_read;
     out.checkpoint_error=directory.directory.error;out.directory_error=directory.directory.directory_error;
