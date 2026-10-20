@@ -3305,6 +3305,28 @@ CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
               "catalog.runtime_authority_binding.encode_failed",
               {},"internal_service_runtime_authority_binding"));
       }
+      // Known limitation, deliberately not papered over here. This writes a
+      // bare CatalogTypedRecord. The stricter recognizer
+      // CatalogRuntimeAuthorityBindingMatchesMetadata, and the engine-side
+      // SelectRuntimeAuthorityBinding that consumes NativeCatalogVisibleRow,
+      // both require a CatalogMetadataVersion: a typed record PLUS
+      // object_subtype "agent_runtime_authority", authority_scope local,
+      // visibility internal_only, owning_schema/owner/audit/security_policy/
+      // creator_transaction identities, and definition_version,
+      // catalog_generation and security_epoch that cross-check against the
+      // payload's own generation fields.
+      //
+      // The bootstrap row path cannot express that: AddTypedCatalogRecord emits
+      // bare typed records, object_subtype appears nowhere in this file outside
+      // the dead policy-definition validation, and no helper here emits a
+      // metadata-version row. Giving this one row metadata means giving the
+      // bootstrap path that capability, which is a change to how create writes
+      // catalog rows rather than an extra argument.
+      //
+      // Consequence to respect: the closed-database bootstrap read uses
+      // MatchesHeader and accepts this row. Anything adopting MatchesMetadata or
+      // the engine selector will reject it, and the rejection will look like a
+      // missing binding rather than a shape mismatch.
       typed = AddTypedCatalogRecord(rows, CatalogRecordKind::config_profile,
           ordinal, identity_seed + 44,
           std::string(encoded.bytes.begin(), encoded.bytes.end()),
