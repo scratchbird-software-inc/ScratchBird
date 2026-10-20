@@ -1131,10 +1131,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../src/server/diagnostic_rendering
                      ${CMAKE_CURRENT_BINARY_DIR}/server_legacy_diagnostic_rendering)
   endif()
-  add_executable(sbsql_sblr_alignment_legacy_rendering_probe
-    ../../tools/sb_sbsql_v3_diagnostic_rendering_probe/main.cpp)
-  target_link_libraries(sbsql_sblr_alignment_legacy_rendering_probe PRIVATE
-    sb_legacy_diagnostic_projection_bridge)
+  # sbsql_sblr_alignment_legacy_rendering_probe removed 2026-10-19: it was a
+  # second build of tools/sb_sbsql_v3_diagnostic_rendering_probe/main.cpp under a
+  # different target name, with the same link library, and no ctest registration
+  # or consumer anywhere in the tree. The tool itself still builds that source as
+  # sb_sbsql_v3_diagnostic_rendering_probe in its own directory.
   add_executable(sbsql_sblr_alignment_legacy_rendering_attestation
     legacy_rendering_attestation_test.cpp
     ../../src/server/diagnostic_rendering/diagnostic_rendering.cpp

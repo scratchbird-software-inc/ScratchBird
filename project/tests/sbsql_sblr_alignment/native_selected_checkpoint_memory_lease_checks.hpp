@@ -99,8 +99,16 @@ void SameDirectory(const page::NativeFilespaceDirectoryChainResult& a,const db::
 void Same(const db::NativeBoundCheckpointSelection& a,const db::NativeCheckpointDirectoryResult& b,
  const d::FilespaceRootReference& root,u64 images,const db::NativeSelectedCheckpointMemoryLease& lease){
  const auto& selected=lease.selection();const auto& directory=lease.directory();
- Check(selected.ok()&&directory.ok()&&lease.retained_image_bytes()==images&&lease.backing_bytes_used(),
-  "retained lease owns complete immutable selected source");
+ // Split into one Check per conjunct so the thrown line= and message name which
+ // invariant broke. Check captures std::source_location at the call site, so a
+ // combined condition reported only the first line of the group and left all
+ // four possibilities open. Every conjunct is still required, in the same order.
+ Check(selected.ok(),"retained lease selection is readable");
+ Check(directory.ok(),"retained lease directory is readable");
+ Check(lease.retained_image_bytes()==images,
+  (std::string("retained lease charges the complete selected image bytes charged=")
+   +std::to_string(lease.retained_image_bytes())+" expected="+std::to_string(images)).c_str());
+ Check(lease.backing_bytes_used(),"retained lease reports backing bytes in use");
  const auto& actual=lease.checkpoint();
  Check(actual.kind==root.kind&&actual.page_type==root.page_type&&actual.filespace_uuid==root.filespace_uuid&&
   actual.page_number==root.page_number&&actual.page_generation==root.page_generation&&

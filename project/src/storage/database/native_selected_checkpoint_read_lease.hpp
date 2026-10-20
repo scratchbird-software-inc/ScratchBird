@@ -106,10 +106,15 @@ inline NativeSelectedCheckpointReadResult AcquireNativeSelectedCheckpointReadLea
       out.directory_error=lease->directory_.directory_error;
       out.inventory_error=lease->directory_.checkpoint_inventory.inventory_error;return out;
     }
-    if(lease->directory_.retained_image_bytes>budget-consumed){
+    // The directory result's own retained_image_bytes already accounts for the
+    // shared selected images (it equals selection + directory chain), so adding
+    // `consumed` to it charges the selection twice. Charge the selection once
+    // plus the directory chain, which is what the memory-backed lease does and
+    // what the "shared selected images are charged once" invariant requires.
+    if(lease->directory_.directory.retained_image_bytes>budget-consumed){
       out.error=E::resource_exhausted;return out;
     }
-    lease->retained_image_bytes_=consumed+lease->directory_.retained_image_bytes;
+    lease->retained_image_bytes_=consumed+lease->directory_.directory.retained_image_bytes;
     out.lease=std::move(lease);out.error=E::none;return out;
   }catch(const std::bad_alloc&){out.error=E::resource_exhausted;}
    catch(const std::length_error&){out.error=E::resource_exhausted;}
