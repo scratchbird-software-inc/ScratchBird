@@ -201,6 +201,21 @@ struct DatabaseBootstrapSecurityCatalogState {
   u64 creator_tx = 0;
   u32 policy_generation = 0;
   u64 security_context_generation = 0;
+  // Committed runtime authority binding, read from the same bootstrap
+  // transaction as the rows above. These are the identities a startup
+  // credential is framed against. They are reported only when exactly one
+  // committed binding for this database was found; absence leaves
+  // runtime_authority_binding_present false rather than supplying a default,
+  // because a synthesized provider or credential reference would be an
+  // authority this database never committed.
+  bool runtime_authority_binding_present = false;
+  scratchbird::core::platform::Uuid runtime_binding_uuid{};
+  scratchbird::core::platform::Uuid service_principal_uuid{};
+  scratchbird::core::platform::Uuid provider_uuid{};
+  // Optional in the committed record. A startup credential cannot be framed
+  // without it, so the consumer refuses rather than inventing one.
+  std::optional<scratchbird::core::platform::Uuid> credential_reference_uuid;
+  u64 runtime_authority_generation = 0;
 };
 
 struct DatabaseBootstrapSecurityCatalogReadResult {

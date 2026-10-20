@@ -97,6 +97,18 @@ struct ServerBootstrapConfig {
   std::string security_provider_family = "local_password";
   std::uint64_t security_provider_generation = 1;
   std::string security_provider_state = "healthy";
+  // Where the server obtains its own startup credential. "none" is the
+  // shipped default and means the server presents none, which is the state
+  // every build was already in. "service_manager" takes it from
+  // $CREDENTIALS_DIRECTORY/<name> (systemd LoadCredential= and equivalents);
+  // "file" takes it from an operator-provisioned path owned by this effective
+  // user with no group or other bits. There is deliberately no
+  // environment-variable source. When a source is selected and the credential
+  // cannot be obtained, server mode refuses the database rather than starting
+  // uncredentialed.
+  std::string startup_credential_source = "none";
+  std::string startup_credential_name;
+  std::filesystem::path startup_credential_file;
   bool security_default_policy_installed = true;
   std::filesystem::path database_default_path;
   std::filesystem::path database_resource_seed_pack_root;

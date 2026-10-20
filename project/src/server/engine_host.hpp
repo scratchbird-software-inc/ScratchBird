@@ -11,6 +11,7 @@
 #pragma once
 
 #include "config.hpp"
+#include "startup_credential_source.hpp"
 #include "database_ownership.hpp"
 #include "diagnostics.hpp"
 #include "api_types.hpp"
@@ -86,6 +87,16 @@ struct HostedDatabaseRuntime {
   scratchbird::core::platform::Uuid database_uuid;
   std::shared_ptr<engine::internal_api::SblrBulkImportStreamRegistry>
       bulk_import_stream_registry;
+  // The server's own startup credential, published at open under the identities
+  // this database committed. Declared manager-first so the source, which holds
+  // protected material allocated from it, is destroyed first.
+  //
+  // Present only when a credential source was configured and the credential was
+  // actually obtained. Publishing it is transport custody, not authentication:
+  // the engine still verifies it against the committed catalog.
+  std::shared_ptr<scratchbird::core::memory::MemoryManager>
+      startup_credential_memory;
+  std::shared_ptr<StartupCredentialSource> startup_credential_source;
 };
 
 struct HostedEngineState {

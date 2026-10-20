@@ -21,6 +21,8 @@
 #include "sblr_prepared_coordination_registry.hpp"
 #include "sblr_startup_descriptor_recovery.hpp"
 #include "scratchbird/engine/engine.h"
+#include "startup_credential_binding.hpp"
+#include "startup_credential_provisioning.hpp"
 #include "uuid.hpp"
 
 #include <filesystem>
@@ -258,6 +260,11 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
     return result;
   }
 
+  // Retained for startup credential framing below. Only the committed read
+  // populates it, so a database that skipped the check never supplies a
+  // binding and cannot be credentialed by accident.
+  std::optional<scratchbird::storage::database::DatabaseBootstrapSecurityCatalogState>
+      committed_bootstrap_security;
   if (exists && config.security_provider_family == "local_password" &&
       !config.allow_uncredentialed_fixture_database) {
     const auto bootstrap_security =
@@ -283,6 +290,7 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
       result.state.databases.push_back(snapshot);
       return result;
     }
+    committed_bootstrap_security = bootstrap_security.state;
   }
 
   namespace db = scratchbird::storage::database;
@@ -433,6 +441,88 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
   auto database_runtime = std::make_shared<HostedDatabaseRuntime>();
   database_runtime->canonical_database_path = canonical_database_path.string();
   database_runtime->database_uuid = snapshot.database_uuid;
+
+  // Acquire the server's own startup credential when one is configured.
+  //
+  // Fail-closed by construction: a configured source that cannot produce a
+  // credential quarantines the database instead of continuing. Starting while
+  // reporting success is the outcome this whole path exists to prevent, so the
+  // refusal is here and not at first use.
+  //
+  // Embedded operation never reaches a configured source: it leaves the
+  // default "none", and in-process authorization is not a boundary there.
+  if (config.startup_credential_source != "none" &&
+      !config.allow_uncredentialed_fixture_database) {
+    const auto fail_credential = [&](const char* code, const char* key) {
+      database_runtime.reset();
+      snapshot.state = HostedDatabaseState::kQuarantined;
+      snapshot.database_open = false;
+      snapshot.diagnostic_code = code;
+      snapshot.diagnostic_message_key = key;
+      result.diagnostics.push_back(ServerDiagnostic{
+          snapshot.diagnostic_code, snapshot.diagnostic_message_key,
+          ServerDiagnosticSeverity::kError, snapshot.diagnostic_code, {}});
+      result.state.databases.push_back(snapshot);
+      return result;
+    };
+
+    if (!committed_bootstrap_security) {
+      return fail_credential("BOOTSTRAP.RUNTIME_AUTHORITY_BINDING_ABSENT",
+                             "bootstrap.runtime_authority_binding_absent");
+    }
+    // Identities come only from what this database committed. Nothing here
+    // derives, defaults or synthesizes an identity.
+    const auto bound = BuildStartupCredentialBinding(*committed_bootstrap_security,
+                                                     snapshot.database_uuid);
+    if (!bound.ok()) {
+      return fail_credential(StartupCredentialBindingDiagnosticCode(bound.error),
+                             "bootstrap.runtime_authority_binding_unusable");
+    }
+
+    StartupCredentialProvisionRequest provision;
+    provision.binding = bound.binding;
+    provision.publish = {snapshot.database_uuid, bound.binding.principal,
+                         bound.binding.generation, {}, {}};
+    if (config.startup_credential_source == "service_manager") {
+      provision.source = StartupCredentialProvisionSource::service_manager;
+      provision.name_or_path = config.startup_credential_name;
+    } else {
+      provision.source = StartupCredentialProvisionSource::operator_file;
+      provision.name_or_path = config.startup_credential_file.string();
+    }
+
+    auto credential_memory =
+        std::make_shared<scratchbird::core::memory::MemoryManager>(
+            scratchbird::core::memory::DefaultLocalEngineMemoryPolicy());
+    auto credential_source =
+        std::make_shared<StartupCredentialSource>(snapshot.database_uuid, 4);
+    scratchbird::core::memory::MemoryTag credential_tag;
+    credential_tag.category = scratchbird::core::memory::MemoryCategory::core_runtime;
+    credential_tag.purpose = "server startup credential custody";
+    credential_tag.callsite = "engine host startup credential acquisition";
+    credential_tag.binary_ownership
+        [scratchbird::core::memory::MemoryBinaryScopeKind::database] =
+            bound.binding.database.bytes;
+    credential_tag.binary_ownership
+        [scratchbird::core::memory::MemoryBinaryScopeKind::owner] =
+            bound.binding.principal.bytes;
+    credential_tag.binary_ownership
+        [scratchbird::core::memory::MemoryBinaryScopeKind::context] =
+            bound.binding.database.bytes;
+
+    const auto provisioned = ProvisionStartupCredential(
+        provision, *credential_source, *credential_memory, credential_tag);
+    if (!provisioned.ok()) {
+      credential_source->Close();
+      return fail_credential(
+          StartupCredentialProvisionDiagnosticCode(provisioned.error),
+          "bootstrap.startup_credential_unavailable");
+    }
+    // Manager assigned first so it is destroyed last.
+    database_runtime->startup_credential_memory = std::move(credential_memory);
+    database_runtime->startup_credential_source = std::move(credential_source);
+  }
+
   std::filesystem::path bulk_import_registry_root = canonical_database_path;
   bulk_import_registry_root += ".bulk_import_streams.v1";
   database_runtime->bulk_import_stream_registry =

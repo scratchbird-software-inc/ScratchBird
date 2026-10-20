@@ -1061,6 +1061,21 @@ bool ApplyParsedConfig(const ParsedConfig& parsed,
         return invalid("CONFIG.VALUE_INVALID_ENUM", key, value);
       }
       config->security_provider_family = std::move(provider_family);
+    } else if (key == "server.security.startup_credential_source") {
+      if (!EnumAllowed(lower, {"none","service_manager","file"})) {
+        return invalid("CONFIG.VALUE_INVALID_ENUM", key, value);
+      }
+      config->startup_credential_source = lower;
+    } else if (key == "server.security.startup_credential_name") {
+      // Resolved inside the service manager's directory, so a path separator
+      // would escape it. Refuse rather than normalize.
+      if (value.empty() || value.find('/') != std::string::npos) {
+        return invalid("CONFIG.VALUE_INVALID_STRING", key, value);
+      }
+      config->startup_credential_name = value;
+    } else if (key == "server.security.startup_credential_file") {
+      if (value.empty()) return invalid("CONFIG.VALUE_INVALID_STRING", key, value);
+      config->startup_credential_file = value;
     } else if (key == "server.security.provider_generation") {
       if (!ParseUint64(value, &config->security_provider_generation) ||
           config->security_provider_generation == 0) {

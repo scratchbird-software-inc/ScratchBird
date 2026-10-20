@@ -8311,6 +8311,13 @@ DatabaseBootstrapSecurityCatalogReadResult ReadBootstrapSecurityCatalogFromOwned
   const auto committed_origin=LookupLocalTransaction(inventory,
       MakeLocalTransactionId(kBootstrapCatalogTransactionId));
   std::vector<CatalogTypedRecord> records;
+  // The runtime authority binding travels in this same scan. It is a
+  // config_profile record rather than a security record, so it is recognized
+  // separately, but it is held to the same standard: recognized by its own
+  // self-consistent content, proven committed by the same bootstrap
+  // transaction, and unique. Recognition alone proves shape, not commitment.
+  std::optional<scratchbird::core::catalog::CatalogRuntimeAuthorityBinding>
+      runtime_authority_binding;
   for (const auto& row : catalog_rows) {
     if (row.kind != CatalogPageRowKind::typed_catalog_record) continue;
     auto decoded = DecodeCatalogTypedRecord(row);
@@ -8323,10 +8330,47 @@ DatabaseBootstrapSecurityCatalogReadResult ReadBootstrapSecurityCatalogFromOwned
         return fail("CATALOG.INVALID_INPUT","catalog.security_record.invalid",
             "security_origin_not_committed_bootstrap");
       records.push_back(std::move(decoded.record));
+      continue;
     }
+    if (!scratchbird::core::catalog::CatalogRuntimeAuthorityBindingMatchesHeader(
+            decoded.record))
+      continue;
+    const auto binding = scratchbird::core::catalog::
+        DecodeCatalogRuntimeAuthorityBinding(decoded.record.payload);
+    if (!binding.ok())
+      return fail("CATALOG.INVALID_INPUT","catalog.runtime_authority_binding.invalid",
+          "runtime_authority_binding_undecodable");
+    // Same commitment proof the security rows carry, through the fields this
+    // record type stores it in.
+    if (binding.record->origin_transaction_uuid.value !=
+            committed_origin.entry.identity.transaction_uuid.value ||
+        binding.record->origin_local_transaction_id !=
+            MakeLocalTransactionId(kBootstrapCatalogTransactionId).value)
+      return fail("CATALOG.INVALID_INPUT","catalog.runtime_authority_binding.invalid",
+          "runtime_authority_binding_origin_not_committed_bootstrap");
+    // A binding belonging to another database is never this database's
+    // authority, however well formed it is.
+    if (binding.record->database_uuid != database_uuid.value)
+      return fail("CATALOG.INVALID_INPUT","catalog.runtime_authority_binding.invalid",
+          "runtime_authority_binding_database_mismatch");
+    // Ambiguity is a refusal. Selecting one of several committed authority
+    // bindings would be choosing an authority rather than reading one.
+    if (runtime_authority_binding)
+      return fail("CATALOG.INVALID_INPUT","catalog.runtime_authority_binding.invalid",
+          "runtime_authority_binding_ambiguous");
+    runtime_authority_binding = binding.record;
   }
   auto validated = ValidateBootstrapSecurityRecords(records, path);
   if (!validated.ok()) return validated;
+  if (runtime_authority_binding) {
+    auto& state = validated.state;
+    state.runtime_authority_binding_present = true;
+    state.runtime_binding_uuid = runtime_authority_binding->binding_uuid;
+    state.service_principal_uuid = runtime_authority_binding->service_principal_uuid;
+    state.provider_uuid = runtime_authority_binding->provider_uuid;
+    state.credential_reference_uuid = runtime_authority_binding->credential_reference_uuid;
+    state.runtime_authority_generation = runtime_authority_binding->generation;
+  }
   // The shared validator cannot prove commitment. Only the actual source
   // reader above has verified the owning inventory and bootstrap transaction.
   validated.state.committed_by_inventory = true;
