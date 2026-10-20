@@ -3130,6 +3130,62 @@ scratchbird::core::catalog::CatalogSecurityRecord NativeLocalServiceGrantDefinit
   record.attributes.emplace("right",std::string(rights[slot]));return record;
 }
 
+// Single derivation of the internal service identity.
+//
+// Step 1 of wiring the creation-workspace chain needs these identities in two
+// places: the bootstrap security rows written here, and
+// NativeInitialPolicySecurityRequest::local_service, which feeds the MGA
+// catalog-version representation. Two independent derivations of the same ten
+// UUIDs would diverge silently, and a divergence means the two representations
+// describe different principals while both look well formed. There is one
+// derivation, and both callers use it.
+//
+// The offsets are load-bearing: ten identities on the same even-offset scheme
+// the surrounding bootstrap records use, continuing past the membership record
+// at +8. They set each identity's timestamp component and keep the ten from
+// colliding with each other or with the records around them. They do not make
+// the identities reproducible — GenerateEngineIdentityV7 fills the remainder of
+// a UUIDv7 from RandomBytes16 — so no caller may treat a seed plus an offset as
+// a way to recompute a committed identity. Read it from the catalog.
+struct InitialLocalServiceIdentityResult {
+  Status status;
+  DiagnosticRecord diagnostic;
+  std::array<TypedUuid, 10> ids{};
+  bool ok() const { return status.ok(); }
+};
+
+InitialLocalServiceIdentityResult MakeInitialLocalServiceIdentity(u64 identity_seed) {
+  InitialLocalServiceIdentityResult out;
+  out.status = DatabaseLifecycleOkStatus();
+  static constexpr std::array<UuidKind, 10> kService{
+      UuidKind::principal, UuidKind::object, UuidKind::object,
+      UuidKind::object,    UuidKind::object, UuidKind::object,
+      UuidKind::object,    UuidKind::object, UuidKind::object,
+      UuidKind::object};
+  for (std::size_t i = 0; i < out.ids.size(); ++i) {
+    const auto generated = GenerateEngineIdentityV7(
+        kService[i], identity_seed + 10 + static_cast<u64>(i) * 2);
+    if (!generated.ok()) {
+      out.status = generated.status;
+      out.diagnostic = generated.diagnostic;
+      return out;
+    }
+    out.ids[i] = generated.value;
+  }
+  return out;
+}
+
+// Binds the derived identities to the configured name and credential envelope.
+// Views reference the config, which outlives every use here.
+NativeInitialLocalServiceIdentity BindInitialLocalServiceIdentity(
+    const std::array<TypedUuid, 10>& ids, const DatabaseCreateConfig& config) {
+  return NativeInitialLocalServiceIdentity{
+      ids[0].value, ids[1].value, ids[2].value, ids[3].value, ids[4].value,
+      {ids[5].value, ids[6].value, ids[7].value, ids[8].value, ids[9].value},
+      config.internal_service_principal_name,
+      config.internal_service_credential_fingerprint};
+}
+
 CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
     std::vector<CatalogPageRow>* rows,
     u32* ordinal,
@@ -3222,29 +3278,15 @@ CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
             "catalog.security_record.internal_service_credential_required",
             {},"internal_service_principal_credential"));
     }
-    // Ten distinct engine identities from the create seed, continuing the same
-    // even-offset scheme past the membership record's +8.
-    std::array<TypedUuid, 10> service_ids{};
-    static constexpr std::array<UuidKind, 10> kService{
-        UuidKind::principal, UuidKind::object, UuidKind::object,
-        UuidKind::object,    UuidKind::object, UuidKind::object,
-        UuidKind::object,    UuidKind::object, UuidKind::object,
-        UuidKind::object};
-    for (std::size_t i = 0; i < service_ids.size(); ++i) {
-      const auto generated = GenerateEngineIdentityV7(
-          kService[i], identity_seed + 10 + static_cast<u64>(i) * 2);
-      if (!generated.ok()) {
-        return CatalogRowsBuildError(generated.status, generated.diagnostic);
-      }
-      service_ids[i] = generated.value;
+    // Shared derivation, so these rows and the MGA catalog-version
+    // representation cannot describe different principals.
+    const auto derived = MakeInitialLocalServiceIdentity(identity_seed);
+    if (!derived.ok()) {
+      return CatalogRowsBuildError(derived.status, derived.diagnostic);
     }
-    const NativeInitialLocalServiceIdentity service{
-        service_ids[0].value, service_ids[1].value, service_ids[2].value,
-        service_ids[3].value, service_ids[4].value,
-        {service_ids[5].value, service_ids[6].value, service_ids[7].value,
-         service_ids[8].value, service_ids[9].value},
-        config.internal_service_principal_name,
-        config.internal_service_credential_fingerprint};
+    const auto& service_ids = derived.ids;
+    const NativeInitialLocalServiceIdentity service =
+        BindInitialLocalServiceIdentity(service_ids, config);
 
     auto service_record = NativeLocalServicePrincipalDefinition(
         service, creator_transaction_uuid, policy_generation);

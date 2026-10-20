@@ -64,6 +64,7 @@ struct Created {
   bool ok = false;
   Uuid database_uuid;
   Uuid service_principal_uuid;
+  std::uint64_t identity_seed = 0;
   std::filesystem::path path;
 };
 
@@ -115,6 +116,8 @@ Created CreateDatabase(const std::filesystem::path& path, bool with_service) {
   out.ok = true;
   out.database_uuid = database_uuid.value.value;
   out.service_principal_uuid = created.internal_service_principal_uuid.value;
+  // The create path derives bootstrap identities from this seed.
+  out.identity_seed = now + 900000;
   return out;
 }
 
@@ -184,6 +187,17 @@ int main() {
           "the four committed identities are distinct from one another");
     Check(read.state.service_principal_uuid != read.state.principal_uuid.value,
           "the service principal is not the bootstrap owner principal");
+    // Note on what cannot be asserted here: these identities are UUIDv7 from
+    // GenerateEngineIdentityV7, which takes its timestamp component from the
+    // create seed but fills the remainder from RandomBytes16. They are not
+    // reproducible from the seed, so a test cannot recompute and compare them.
+    // What is checkable is what this gate already checks: that they are engine
+    // identities, that they are mutually distinct, that they are distinct from
+    // the bootstrap owner, and that the whole credential chain resolves through
+    // them. A reordering of the derivation would surface as a role mismatch in
+    // the end-to-end assertions below, not as a value mismatch here.
+    Check(created.service_principal_uuid == read.state.service_principal_uuid,
+          "the identity create reports is the one committed to the catalog");
     service_state = read.state;
   }
 
