@@ -9,6 +9,58 @@ enum class NativeInitialPolicyError {
   none, invalid_request, source_invalid, invalid_definition, invalid_names,
   duplicate_identity, resource_exhausted
 };
+// One object's name authority, keyed by the object identity the assembler
+// enumerated. Name text is never derived from the source pack, and the
+// normalized lookup key is identifier-profile authority: a derived one would
+// resolve names wrongly while encoding cleanly, so both are required inputs.
+struct NativeInitialDefinitionName {
+  core::platform::Uuid object_uuid;
+  std::string_view name_text;
+  std::span<const core::platform::byte> normalized_lookup_key;
+};
+// Supplying this inverts the definitions contract. Without it the caller must
+// reproduce the assembler's identity, kind and subtype assignment for every
+// object and hand back a complete metadata envelope per object, which means
+// duplicating roughly fifteen construction decisions and keeping them in
+// lockstep forever. With it the assembler generates every metadata envelope and
+// both name halves from the enumeration it already builds, and the caller
+// supplies only what is genuinely its own: these shared identities, one name per
+// object, and the fresh identities each object consumes.
+//
+// Obtain the object identities to key `names` from
+// EnumerateNativeInitialPolicyDefinitions / ...SecurityDefinitions, which
+// returns the same enumeration this path generates from. Predicting it is not
+// required and not supported.
+//
+// DELIBERATE NARROWING, not a discovered constraint: all generated objects
+// share one owner, one audit object, one security policy and one owning schema.
+// The caller-supplied path admits a different owner or policy per object. The
+// shared security policy is load-bearing for the service runtime authority
+// binding, whose payload policy_uuid must equal its metadata security policy,
+// so this path refuses a security policy that is not the local service policy.
+struct NativeInitialGeneratedDefinitions {
+  core::platform::Uuid owner_principal_uuid;
+  core::platform::Uuid audit_object_uuid;
+  core::platform::Uuid security_policy_uuid;
+  core::platform::Uuid owning_schema_uuid;
+  // Required by the two name schemas. No create-path source exists for these
+  // yet; they are the caller's to issue.
+  core::platform::Uuid name_collision_policy_uuid;
+  core::platform::Uuid dialect_profile_uuid;
+  core::platform::Uuid identifier_profile_uuid;
+  // Exactly five per enumerated object, consumed in enumeration order: the
+  // definition row, the name-vector object and row, the name-entry object and
+  // row. Exact rather than at-least, so an over-supplied pool cannot hide a
+  // miscount. Identity issuance stays with the caller; nothing is minted here.
+  std::span<const core::platform::Uuid> fresh_identities;
+  // Exactly one per enumerated object. A missing or extra name is a refusal.
+  std::span<const NativeInitialDefinitionName> names;
+  // Carried by every generated metadata version. Non-empty printable keys: the
+  // metadata codec refuses an envelope without them, so there is no usable
+  // default to fall back on and none is invented here.
+  std::string_view trace_search_key;
+  std::string_view retention_class;
+};
 struct NativeInitialPolicyRequest {
   std::string_view policy_seed_pack_root;
   core::platform::Uuid database_uuid;
@@ -20,6 +72,11 @@ struct NativeInitialPolicyRequest {
   // pack supplies identities/typed values, never owner/audit/name authority.
   std::span<const core::catalog::CatalogNamedCreationInput> definitions;
   core::catalog::CatalogNamedCreationLimits limits;
+  // When supplied, `definitions` must be empty and the assembler generates
+  // every definition envelope and name half itself. When absent, `definitions`
+  // must be complete, as above. Appended last: existing callers initialize this
+  // aggregate positionally.
+  std::optional<NativeInitialGeneratedDefinitions> generated_definitions=std::nullopt;
 };
 struct NativeInitialPolicyResult {
   NativeInitialPolicyError error=NativeInitialPolicyError::invalid_request;
@@ -82,5 +139,32 @@ struct NativeInitialPolicySecurityRequest {
 // Physical publication and native reference closure remain owned
 // by the enclosing actual node constructor.
 NativeInitialPolicyResult AssembleNativeInitialPolicySecurityRecords(
+    const NativeInitialPolicySecurityRequest&) noexcept;
+
+// One enumerated object: the identity, kind and subtype the assembler assigns
+// it from the admitted source snapshot plus the supplied bootstrap/service
+// identities. This is the same enumeration the generating path builds its
+// envelopes from, exposed so a caller can key its name authority and size its
+// identity supply without reproducing any of that assignment.
+struct NativeInitialDefinitionIdentity {
+  core::platform::Uuid object_uuid;
+  core::catalog::CatalogRecordKind kind=core::catalog::CatalogRecordKind::config_profile;
+  std::string object_subtype;
+};
+struct NativeInitialDefinitionEnumerationResult {
+  NativeInitialPolicyError error=NativeInitialPolicyError::invalid_request;
+  std::optional<core::platform::DiagnosticRecord> source_diagnostic;
+  // Empty on any refusal: no partial enumeration is reported.
+  std::vector<NativeInitialDefinitionIdentity> definitions;
+  bool ok() const noexcept {return error==NativeInitialPolicyError::none&&!definitions.empty();}
+};
+// Enumeration only. Reads the admitted source snapshot and runs the same
+// identity/alias/source admission as assembly, then stops: no metadata, no
+// names, no records and no placement. Neither `definitions` nor
+// `generated_definitions` is consulted, so this is callable before either
+// exists. Physical intake can allocate; never enter under a storage guard.
+NativeInitialDefinitionEnumerationResult EnumerateNativeInitialPolicyDefinitions(
+    const NativeInitialPolicyRequest&) noexcept;
+NativeInitialDefinitionEnumerationResult EnumerateNativeInitialPolicySecurityDefinitions(
     const NativeInitialPolicySecurityRequest&) noexcept;
 } // namespace scratchbird::storage::database

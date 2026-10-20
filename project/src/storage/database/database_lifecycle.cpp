@@ -8,6 +8,7 @@
 
 #include "database_lifecycle.hpp"
 #include "native_policy_creation.hpp"
+#include "native_bootstrap_definition_metadata.hpp"
 #include "catalog_bootstrap_policy.hpp"
 #include "catalog_memory_configuration.hpp"
 #include "catalog_runtime_authority_binding.hpp"
@@ -6884,16 +6885,30 @@ DatabaseLifecycleResult RecordStartupEvidence(const DatabaseLifecycleOperationCo
 
 }  // namespace
 
+// `enumeration`, when supplied, stops after the definition enumeration is
+// built and reports it instead of assembling anything: the returned result
+// carries the error and the source diagnostic but never records. Three input
+// shapes are therefore admitted, and exactly one applies per call:
+//   enumeration            - the caller is discovering the object set
+//   generated_definitions  - the caller supplied a metadata seed and names;
+//                            this function builds every envelope and name half
+//   neither                - the caller supplied complete definitions, which
+//                            must reproduce this function's own assignment
 static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
     const NativeInitialPolicyRequest& request,
     std::optional<std::span<const NativeInitialMembershipIdentity>> security_memberships,
     const std::optional<NativeInitialBootstrapIdentity>& bootstrap,
-    const std::optional<NativeInitialLocalServiceIdentity>& service) noexcept {
+    const std::optional<NativeInitialLocalServiceIdentity>& service,
+    NativeInitialDefinitionEnumerationResult* enumeration=nullptr) noexcept {
   namespace c=scratchbird::core::catalog;
   using E=NativeInitialPolicyError;
   const auto fail=[](E error,c::CatalogNamedCreationError names=c::CatalogNamedCreationError::none) {
     NativeInitialPolicyResult result;result.error=error;result.name_error=names;return result;
   };
+  // The caller's definitions are authority only on the third shape above. On
+  // the other two this function owns the enumeration, so every validator that
+  // measures the caller's list against it is skipped rather than relaxed.
+  const bool caller_definitions=!enumeration&&!request.generated_definitions;
   try {
     if(!IsEngineIdentityUuid(request.database_uuid)||!IsEngineIdentityUuid(request.memory_configuration_uuid)||
         request.construction_transaction.kind!=UuidKind::transaction||
@@ -6904,12 +6919,17 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
         request.policy_seed_pack_root.empty()||!request.policy_seed_pack_root.data()||
         request.policy_seed_pack_root.find('\0')!=std::string_view::npos||
         request.database_default_language.empty()||!request.database_default_language.data()||
-        request.definitions.empty()||!request.definitions.data()||
-        (security_memberships && (security_memberships->size()>request.definitions.size()||
+        // A supplied list and a generated one are mutually exclusive: one
+        // authority per request, never a merge of two. Enumeration consults
+        // neither, so it is not measured against either.
+        (caller_definitions&&(request.definitions.empty()||!request.definitions.data()))||
+        (request.generated_definitions&&!request.definitions.empty())||
+        (security_memberships && ((caller_definitions&&security_memberships->size()>request.definitions.size())||
           (!security_memberships->empty()&&!security_memberships->data()))))
       return fail(E::invalid_request);
     if(!request.limits.maximum_records||!request.limits.maximum_encoded_bytes||
-        request.definitions.size()>request.limits.maximum_records/3)return fail(E::resource_exhausted);
+        (caller_definitions&&request.definitions.size()>request.limits.maximum_records/3))
+      return fail(E::resource_exhausted);
     if(bootstrap) {
       const auto& b=*bootstrap;
       if(!security_memberships || !IsEngineIdentityUuid(b.principal_uuid)||!IsEngineIdentityUuid(b.membership_uuid)||
@@ -6948,7 +6968,7 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
         return fail(E::duplicate_identity);
     }
     u64 proposed_records=0;
-    for(const auto& input:request.definitions) {
+    if(caller_definitions)for(const auto& input:request.definitions) {
       if(!input.definition||!input.definition->record.payload.empty())return fail(E::invalid_definition);
       if(!input.vector_metadata||!input.vector||input.entries.empty()||!input.entries.data())return fail(E::invalid_names);
       if(request.limits.maximum_records-proposed_records<2||
@@ -6971,8 +6991,12 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
     const auto& pack=loaded.pack;
     const auto security_count=security_memberships ?
         pack.roles.size()+pack.groups.size()+pack.memberships.size()+pack.grants.size():0;
+    // The exact-count validator exists because a caller-supplied list can
+    // disagree with the enumeration. It cannot disagree when one side produces
+    // both, so it is unreachable on the generating and enumeration paths.
     if(!pack.image.active||!pack.memory_configuration||
-        request.definitions.size()!=2+pack.providers.size()+pack.profiles.size()+security_count+(bootstrap?3:0)+(service?7:0)||
+        (caller_definitions&&
+          request.definitions.size()!=2+pack.providers.size()+pack.profiles.size()+security_count+(bootstrap?3:0)+(service?7:0))||
         (security_memberships && security_memberships->size()!=pack.memberships.size()))return fail(E::invalid_definition);
     if(bootstrap)for(const auto& role:pack.roles)
       if(role.role_uuid==kCanonicalSysarchRoleIdentity||role.role_code=="ROLE_SYSARCH") {
@@ -7077,10 +7101,98 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
       }
     }
 
+    // The map above IS the enumeration: one entry per object, carrying the kind
+    // and subtype this function assigned it. Report it and stop when that is
+    // all the caller asked for.
+    if(enumeration) {
+      enumeration->definitions.clear();
+      enumeration->definitions.reserve(definitions.size());
+      for(const auto& [identity,definition]:definitions)
+        enumeration->definitions.push_back({identity,definition.kind,std::string(definition.subtype)});
+      NativeInitialPolicyResult enumerated;enumerated.error=E::none;return enumerated;
+    }
+
+    // Generated definitions: build one complete creation input per enumerated
+    // object instead of validating a caller list that had to predict it. The
+    // enclosing storage must outlive every borrowed pointer below, so it is
+    // reserved exactly and bound only after it stops moving.
+    std::vector<BootstrapNamedCreationUnit> units;
+    std::vector<c::CatalogNamedCreationInput> generated;
+    std::span<const c::CatalogNamedCreationInput> effective=request.definitions;
+    if(request.generated_definitions) {
+      const auto& seed=*request.generated_definitions;
+      if(seed.names.size()!=definitions.size()||(!seed.names.empty()&&!seed.names.data()))
+        return fail(E::invalid_names);
+      if(seed.fresh_identities.size()!=5*definitions.size()||
+          (!seed.fresh_identities.empty()&&!seed.fresh_identities.data()))return fail(E::invalid_request);
+      // The service runtime authority binding carries its governing policy in
+      // its own payload, and the strict matcher requires the metadata to agree.
+      // A different policy here produces rows that encode cleanly and read back
+      // as an absent binding, so refuse instead.
+      if(service&&seed.security_policy_uuid!=service->policy_uuid)return fail(E::invalid_definition);
+      // Every service-owned definition must be owned by the bootstrap principal.
+      // Deliberately redundant with the per-definition service-owner check
+      // below: this one refuses before sixty-odd units are built and names the
+      // seed rather than one definition. Mutation-verified as redundant, which
+      // is why it is documented rather than relied on as the only authority.
+      if(service&&seed.owner_principal_uuid!=bootstrap->principal_uuid)return fail(E::invalid_definition);
+      units.reserve(definitions.size());generated.reserve(definitions.size());
+      std::size_t issued=0;
+      for(const auto& [identity,definition]:definitions) {
+        const auto name=std::find_if(seed.names.begin(),seed.names.end(),
+            [&](const NativeInitialDefinitionName& supplied){return supplied.object_uuid==identity;});
+        if(name==seed.names.end())return fail(E::invalid_names);
+        BootstrapNamedCreationUnitInput input;
+        input.definition.object_uuid=identity;
+        input.definition.row_uuid=seed.fresh_identities[issued];
+        input.definition.name_vector_uuid=seed.fresh_identities[issued+1];
+        input.definition.default_name_entry_uuid=seed.fresh_identities[issued+2];
+        input.name_vector_row_uuid=seed.fresh_identities[issued+3];
+        input.name_entry_row_uuid=seed.fresh_identities[issued+4];
+        issued+=5;
+        input.definition.kind=definition.kind;
+        input.definition.object_subtype=std::string(definition.subtype);
+        input.definition.owner_principal_uuid=seed.owner_principal_uuid;
+        input.definition.audit_object_uuid=seed.audit_object_uuid;
+        input.definition.security_policy_uuid=seed.security_policy_uuid;
+        input.definition.owning_schema_uuid=seed.owning_schema_uuid;
+        input.definition.creator_transaction_uuid=request.construction_transaction;
+        input.definition.trace_search_key=std::string(seed.trace_search_key);
+        input.definition.retention_class=std::string(seed.retention_class);
+        // Derived from the kind this function registered, not from the caller:
+        // the name vector's object_class is cross-checked against it below.
+        input.object_class=std::string(c::CatalogRecordKindName(definition.kind));
+        input.language_tag=std::string(request.database_default_language);
+        input.name_text=std::string(name->name_text);
+        input.normalized_lookup_key.assign(name->normalized_lookup_key.begin(),name->normalized_lookup_key.end());
+        input.name_collision_policy_uuid=seed.name_collision_policy_uuid;
+        input.dialect_profile_uuid=seed.dialect_profile_uuid;
+        input.identifier_profile_uuid=seed.identifier_profile_uuid;
+        auto built=BuildBootstrapNamedCreationUnit(input);
+        if(!built.ok()) {
+          using U=BootstrapNamedCreationUnitError;
+          switch(built.error) {
+            case U::object_class_empty:case U::language_tag_empty:case U::name_text_empty:
+            case U::normalized_lookup_key_empty:case U::collision_policy_identity_invalid:
+            case U::dialect_profile_identity_invalid:case U::identifier_profile_identity_invalid:
+            case U::name_resolution_epoch_invalid:return fail(E::invalid_names);
+            default:return fail(E::invalid_definition);
+          }
+        }
+        units.push_back(std::move(built.unit));
+      }
+      for(auto& unit:units) {unit.Bind();generated.push_back(unit.Input());}
+      effective=generated;
+      if(effective.size()>request.limits.maximum_records/3)return fail(E::resource_exhausted);
+    }
+
     // All canonical payload/common/name validation and raw identity admission
     // precede owning metadata/name copies. No prototype row is decoded here.
+    // Generated inputs are validated here too: PreflightLocalNamedCreationRecord
+    // is reachable only from this loop, and it is the authority on whether the
+    // two halves of each object agree.
     u64 records=0,bytes=0;
-    for(const auto& input:request.definitions) {
+    for(const auto& input:effective) {
       if(!input.definition||!input.definition->record.payload.empty())return fail(E::invalid_definition);
       const auto found=definitions.find(input.definition->record.header.object_uuid.value);
       if(found==definitions.end()||input.definition->record.header.kind!=found->second.kind||
@@ -7105,14 +7217,14 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
     const auto identify=[&](const auto& m) {
       identities.push_back(m.record.header.object_uuid.value);identities.push_back(m.record.header.row_uuid.value);
     };
-    for(const auto& input:request.definitions) {
+    for(const auto& input:effective) {
       identify(*input.definition);identify(*input.vector_metadata);for(const auto& entry:input.entries)identify(*entry.metadata);
     }
     std::sort(identities.begin(),identities.end());
     if(std::adjacent_find(identities.begin(),identities.end())!=identities.end())return fail(E::duplicate_identity);
-    std::vector<c::CatalogMetadataVersion> completed;completed.reserve(request.definitions.size());
-    std::vector<c::CatalogNamedCreationInput> inputs;inputs.reserve(request.definitions.size());
-    for(const auto& input:request.definitions) {
+    std::vector<c::CatalogMetadataVersion> completed;completed.reserve(effective.size());
+    std::vector<c::CatalogNamedCreationInput> inputs;inputs.reserve(effective.size());
+    for(const auto& input:effective) {
       completed.push_back(*input.definition);
       completed.back().record.payload=definitions.at(completed.back().record.header.object_uuid.value).payload;
       inputs.push_back({&completed.back(),input.vector_metadata,input.vector,input.entries});
@@ -7133,6 +7245,27 @@ NativeInitialPolicyResult AssembleNativeInitialPolicyRecords(const NativeInitial
 NativeInitialPolicyResult AssembleNativeInitialPolicySecurityRecords(
     const NativeInitialPolicySecurityRequest& request) noexcept {
   return AssembleNativeInitialPolicyRecordsImpl(request.policy,request.group_memberships,request.bootstrap,request.local_service);
+}
+static NativeInitialDefinitionEnumerationResult EnumerateImpl(
+    const NativeInitialPolicyRequest& request,
+    std::optional<std::span<const NativeInitialMembershipIdentity>> security_memberships,
+    const std::optional<NativeInitialBootstrapIdentity>& bootstrap,
+    const std::optional<NativeInitialLocalServiceIdentity>& service) noexcept {
+  NativeInitialDefinitionEnumerationResult result;
+  const auto source=AssembleNativeInitialPolicyRecordsImpl(request,security_memberships,bootstrap,service,&result);
+  result.error=source.error;
+  result.source_diagnostic=source.source_diagnostic;
+  // No partial enumeration survives a refusal.
+  if(result.error!=NativeInitialPolicyError::none)result.definitions.clear();
+  return result;
+}
+NativeInitialDefinitionEnumerationResult EnumerateNativeInitialPolicyDefinitions(
+    const NativeInitialPolicyRequest& request) noexcept {
+  return EnumerateImpl(request,std::nullopt,std::nullopt,std::nullopt);
+}
+NativeInitialDefinitionEnumerationResult EnumerateNativeInitialPolicySecurityDefinitions(
+    const NativeInitialPolicySecurityRequest& request) noexcept {
+  return EnumerateImpl(request.policy,request.group_memberships,request.bootstrap,request.local_service);
 }
 
 DatabaseArtifactCompatibilityResult ClassifyDatabaseArtifactVersionCompatibility(
