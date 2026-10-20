@@ -3311,6 +3311,20 @@ CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
       if (!typed.ok()) {
         return typed;
       }
+      // Minimal CONNECT only, which is slot 0 of the existing local-service
+      // right set rather than a right invented here. Without it the principal
+      // exists but can do nothing, which is a dead end rather than a usable
+      // starting point. The remaining rights stay ungranted until the agent
+      // registry is enumerable and grants can mirror authority class, per
+      // `SECURITY-INTERNAL-PRINCIPAL-PROVISIONING`.
+      auto connect_record = NativeLocalServiceGrantDefinition(
+          actor, 0, creator_transaction_uuid, policy_generation);
+      typed = AddSecurityCatalogRecord(rows, ordinal, extra_seed + 22,
+          std::move(connect_record), security_parent_uuid,
+          creator_transaction_uuid);
+      if (!typed.ok()) {
+        return typed;
+      }
       result.internal_principal_uuids.push_back(ids[0]);
       extra_seed += 24;
     }
