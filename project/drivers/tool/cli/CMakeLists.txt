@@ -135,6 +135,8 @@ target_include_directories(sb_cli_first_principal_bootstrap
 target_link_libraries(sb_cli_first_principal_bootstrap
     PUBLIC
         sb_storage_database
+        # Shared single implementation of local-password verifier derivation.
+        sb_core_hash
         OpenSSL::Crypto
 )
 if(WIN32)
@@ -316,7 +318,9 @@ add_executable(sb_bootstrap_password_verifier_tests
     bootstrap_password_verifier_test.cpp
     bootstrap_password_verifier.cpp
 )
-target_link_libraries(sb_bootstrap_password_verifier_tests PRIVATE OpenSSL::Crypto)
+# sb_core_hash provides the single shared local-password derivation this tool
+# delegates to; OpenSSL alone no longer suffices.
+target_link_libraries(sb_bootstrap_password_verifier_tests PRIVATE sb_core_hash OpenSSL::Crypto)
 
 sb_public_brand_target(sb_isql "SBsql" "ScratchBird SQL" "cli")
 sb_public_brand_target(sb_admin "SBadm" "ScratchBird Administrator" "cli")

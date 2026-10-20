@@ -4,7 +4,6 @@
 
 #include <openssl/crypto.h>
 #include <openssl/evp.h>
-#include <openssl/rand.h>
 #include <array>
 #include <cstddef>
 #include <cstdint>
@@ -15,65 +14,15 @@
 
 namespace scratchbird::engine::internal_api {
 
-// Local-password verifier derivation, paired with the verification below.
+// Derivation is deliberately NOT declared here. This header is the
+// verification mechanism, and consumers that only verify must not acquire a
+// dependency on the derivation layer: the local-password credential test links
+// OpenSSL alone and wraps PKCS5_PBKDF2_HMAC to isolate verification, which a
+// forced core-crypto dependency would disturb.
 //
-// Derivation lives here rather than in a tool layer because engine-internal
-// callers need it: an internal principal provisioned at create requires a real
-// credential envelope, and the server that later authenticates as that
-// principal cannot depend on `drivers/tool/cli/`. Mechanism only, exactly as
-// for verification: producing an envelope admits no principal, provider,
-// session or transaction, and grants no right.
-//
-// The caller owns the secret. This function neither generates nor stores it,
-// and deliberately refuses a secret that is too short, oversized or contains a
-// NUL, so a caller cannot derive a verifier from an empty or placeholder
-// value and present it as a credential.
-// DUPLICATION NOTICE. `scratchbird::cli::DeriveBootstrapPasswordVerifier` in
-// `drivers/tool/cli/bootstrap_password_verifier.hpp` is the same derivation for
-// the bootstrap tool, which cannot depend on this layer. Both MUST produce the
-// identical envelope form and iteration count; change both or neither.
-inline constexpr int kLocalPasswordPbkdf2Iterations = 600000;
-
-inline bool LocalPasswordSecretValid(std::string_view secret) noexcept {
-  return secret.size() >= 12 && secret.size() <= 1024 &&
-         secret.find('\0') == std::string_view::npos;
-}
-
-// Writes `local-password-pbkdf2-sha256:v1:iterations=N:salt=...:verifier=...`,
-// the same envelope form the create path validates. Salt and verifier are
-// public encoded material; the secret is never copied into the output.
-inline bool DeriveLocalPasswordVerifier(std::string_view secret,
-                                        std::string* envelope) {
-  if (envelope == nullptr || !LocalPasswordSecretValid(secret)) {
-    return false;
-  }
-  static constexpr char kHex[] = "0123456789abcdef";
-  const auto hex = [](const unsigned char* bytes, std::size_t size) {
-    std::string out;
-    out.reserve(size * 2);
-    for (std::size_t i = 0; i < size; ++i) {
-      out.push_back(kHex[(bytes[i] >> 4) & 0x0f]);
-      out.push_back(kHex[bytes[i] & 0x0f]);
-    }
-    return out;
-  };
-  unsigned char salt[16]{};
-  unsigned char verifier[32]{};
-  const bool ok =
-      RAND_priv_bytes(salt, sizeof(salt)) == 1 &&
-      PKCS5_PBKDF2_HMAC(secret.data(), static_cast<int>(secret.size()), salt,
-                        sizeof(salt), kLocalPasswordPbkdf2Iterations,
-                        EVP_sha256(), sizeof(verifier), verifier) == 1;
-  if (ok) {
-    *envelope = "local-password-pbkdf2-sha256:v1:iterations=" +
-                std::to_string(kLocalPasswordPbkdf2Iterations) +
-                ":salt=" + hex(salt, sizeof(salt)) +
-                ":verifier=" + hex(verifier, sizeof(verifier));
-  }
-  OPENSSL_cleanse(salt, sizeof(salt));
-  OPENSSL_cleanse(verifier, sizeof(verifier));
-  return ok;
-}
+// Engine-internal callers that need to derive an envelope include
+// `local_password_verifier.hpp` from the core crypto layer directly. That is the
+// single implementation; there is no copy of it here or in any tool layer.
 
 // Mechanism only: neither these bytes nor a successful comparison admit a
 // principal, provider, configuration, memory grant, session or transaction.

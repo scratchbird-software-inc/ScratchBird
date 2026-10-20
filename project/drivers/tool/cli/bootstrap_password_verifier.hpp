@@ -8,17 +8,14 @@
 
 namespace scratchbird::cli {
 
-// DUPLICATION NOTICE. The same derivation exists engine-side as
-// `scratchbird::engine::internal_api::DeriveLocalPasswordVerifier` in
-// `src/engine/internal_api/security/local_password_credential.hpp`, added so the
-// server can derive a verifier without depending on this tool layer. This tool
-// keeps its own copy because `sb_cli_first_principal_bootstrap` links
-// sb_storage_database and OpenSSL, not sb_engine_internal_api, and adding that
-// dependency for deduplication alone would invert a layer boundary.
+// The derivation is implemented once in the core crypto layer
+// (`src/core/hash/local_password_verifier.hpp`); this interface is retained for
+// existing tool callers and delegates to it.
 //
-// Both copies MUST produce the identical envelope form and iteration count. A
-// change to either without the other makes credentials derived by one
-// unverifiable by the engine. Change both or neither.
+// This header stays self-contained so that including it does not impose a
+// core-crypto include path on every consumer. The value below is checked against
+// the core constant by a static_assert in the implementation, so a divergence is
+// a compile error rather than a silent credential incompatibility.
 inline constexpr int kBootstrapPasswordPbkdf2Iterations = 600000;
 
 bool BootstrapPasswordSecretValid(std::string_view password);

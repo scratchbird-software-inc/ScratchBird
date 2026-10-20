@@ -41,6 +41,7 @@ add_library(sb_core_hash
   openpgp_public_key_message.cpp
   openpgp_key_certificate.cpp
   argon2_kdf.cpp
+  local_password_verifier.cpp
 )
 
 target_compile_features(sb_core_hash PUBLIC cxx_std_17)
