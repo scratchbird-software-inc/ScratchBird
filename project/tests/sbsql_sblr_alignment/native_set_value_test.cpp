@@ -6,6 +6,7 @@
 #include "canonical_query_descriptor_support.hpp"
 #include "catalog/datatype_bootstrap_identity.hpp"
 #include "datatype_catalog_manifest.hpp"
+#include "datatype_type_codec_identity_v3.hpp"
 #include <map>
 #include <optional>
 #include <stdexcept>
@@ -147,12 +148,18 @@ void NativeSets(const char* type) {
       descriptor.descriptor_uuid = column.descriptor.descriptor_uuid;
       descriptor.type_uuid = column.descriptor.type_uuid;
       descriptor.nullability = api::RelationalNullability::kNullable;
-      const auto identity = scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+      // The bootstrap cohort create publishes is V11 (database_lifecycle.cpp: cohort
+      // V11, generation 11). Codec identity rows for V6 and later live in the V3
+      // registry; LookupDatatypeTypeCodecIdentityV1 only carries rows for cohorts
+      // V2-V5, so asking it for a V11 identity cannot match and this fixture aborted
+      // on the refusal. V3 is the current authority and its row carries the V1
+      // fields verbatim in `legacy_fields`.
+      const auto identity = scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV3(
           api::kBootstrapDatatypeCatalogUuid, api::kBootstrapDatatypeCatalogGeneration,
           api::kBootstrapDatatypeRegistryGeneration, column.descriptor.datatype_descriptor_uuid,
           column.descriptor.datatype_descriptor_generation);
       Check(identity.ok, "set fixture requires actual current datatype codec binding");
-      const auto& row = identity.row;
+      const auto& row = identity.row.legacy_fields;
       descriptor.descriptor_uuid = row.descriptor_uuid;
       descriptor.datatype_identity_authoritative = true;
       descriptor.descriptor_generation = row.descriptor_generation;
@@ -220,12 +227,12 @@ void NumericResultBindings() {
   namespace dt = scratchbird::core::datatypes;
   for (const char* name : {"int32", "int64", "int128"}) {
     const auto builtin = exec::MakeExecutorDescriptor(name);
-    const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+    const auto identity = dt::LookupDatatypeTypeCodecIdentityV3(
         api::kBootstrapDatatypeCatalogUuid, api::kBootstrapDatatypeCatalogGeneration,
         api::kBootstrapDatatypeRegistryGeneration, builtin.datatype_descriptor_uuid,
         builtin.datatype_descriptor_generation);
     Check(identity.ok, "numeric result binding has no current codec row");
-    const auto& row = identity.row;
+    const auto& row = identity.row.legacy_fields;
     api::RelationalTypeDescriptor source;
     source.descriptor_id = 1;
     source.descriptor_uuid = row.descriptor_uuid;
@@ -283,8 +290,28 @@ void NumericResultBindings() {
         case 17: invalid.descriptor_uuid.bytes[6] = 0x40; break;
       }
       output = good;
-      Check(!s::BuildExactCanonicalScalarRuntimeDescriptorV1(invalid, type, &output) &&
-            output == api::EngineDescriptor{}, "refused numeric binding retained prior output or acquired authority");
+      // Report which mutation regressed. A collapsed conjunct over eighteen
+      // cases names none of them, which is how a single admitted mutation
+      // hides behind seventeen refused ones.
+      const bool refused =
+          !s::BuildExactCanonicalScalarRuntimeDescriptorV1(invalid, type, &output);
+      // A refusal must publish nothing AND must not damage what the caller
+      // already had. The projection builds locally and publishes only after
+      // every check succeeds, precisely so a failed inference cannot erase a
+      // descriptor the caller already selected (`6128e4466`, "Preserve exact
+      // character projection descriptors"); the same no-erase-on-failure rule
+      // is asserted by the variable registry, capacity reservation and result
+      // cursor gates. This previously required the buffer to be ZEROED on
+      // refusal, which is the opposite contract, so a correct refusal that
+      // left the caller's descriptor intact read as a failure.
+      const bool untouched = output == good;
+      if (!refused || !untouched) {
+        std::fprintf(stderr,
+                     "numeric binding mutation %u: refused=%d caller_output_intact=%d\n",
+                     mutation, refused ? 1 : 0, untouched ? 1 : 0);
+      }
+      Check(refused && untouched,
+            "refused numeric binding published authority or overwrote the caller's descriptor");
     }
   }
 }

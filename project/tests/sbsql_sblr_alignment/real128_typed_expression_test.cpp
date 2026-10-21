@@ -3,6 +3,7 @@
 #include "query/expression_api.hpp"
 #include "catalog/datatype_bootstrap_identity.hpp"
 #include "datatype_catalog_manifest.hpp"
+#include "datatype_type_codec_identity_v3.hpp"
 #include "uuid.hpp"
 #include "sbl_numeric.hpp"
 #include <cstdlib>
@@ -57,14 +58,20 @@ api::EngineDescriptor Descriptor() {
     throw std::runtime_error("real128 fixture catalog identity unavailable");
   }
   const auto& datatype = row.manifest.descriptor_rows.front();
-  const auto type = dt::LookupDatatypeTypeCodecIdentityV1(
+// The bootstrap cohort create publishes is V11 (database_lifecycle.cpp: cohort
+// V11, generation 11). Codec identity rows for V6 and later live in the V3
+// registry; LookupDatatypeTypeCodecIdentityV1 only carries rows for cohorts
+// V2-V5, so asking it for a V11 identity cannot match and this fixture aborted
+// on the refusal. V3 is the current authority and its row carries the V1
+// fields verbatim in `legacy_fields`.
+  const auto type = dt::LookupDatatypeTypeCodecIdentityV3(
       api::kBootstrapDatatypeCatalogUuid,
       api::kBootstrapDatatypeCatalogGeneration,
       api::kBootstrapDatatypeRegistryGeneration,
       datatype.descriptor_uuid.value, datatype.descriptor_epoch);
   if (!type.ok) throw std::runtime_error("real128 fixture type identity unavailable");
   out.descriptor_uuid = identity.value;
-  out.type_uuid = type.row.type_uuid;
+  out.type_uuid = type.row.legacy_fields.type_uuid;
   out.datatype_descriptor_uuid = datatype.descriptor_uuid.value;
   out.datatype_descriptor_generation = datatype.descriptor_epoch;
   out.descriptor_kind = "scalar";

@@ -61,9 +61,24 @@ int main() {
       id.bytes[bit / 8] ^= static_cast<std::uint8_t>(1u << (bit % 8));
       std::vector<std::uint8_t> bytes{42};
       const bool accepted = codec::DmlUpdateDurableEncodeFrame(f, &bytes);
-      if ((id.bytes[8] & 0xc0u) != 0x80u) {
+      // The UPDATE system identity boundary admits engine identities only:
+      // non-nil, RFC variant, and version 7. Variant alone was the rule when
+      // this gate was written; `49444e8e2` ("Enforce UUIDv7 at native UPDATE
+      // system identity boundaries") added the version requirement and this
+      // expectation was not moved with it, so every version-nibble mutation
+      // was being demanded to encode.
+      //
+      // Computed here from the raw bytes rather than by calling the engine's
+      // own predicate, so this gate still fails if that predicate changes
+      // meaning underneath it.
+      const bool engine_identity =
+          (id.bytes[8] & 0xc0u) == 0x80u &&
+          static_cast<unsigned>(id.bytes[6] >> 4) == 7u &&
+          std::any_of(id.bytes.begin(), id.bytes.end(),
+                      [](std::uint8_t value) { return value != 0; });
+      if (!engine_identity) {
         Check(!accepted && bytes == std::vector<std::uint8_t>{42},
-              "invalid UUID variant accepted or changed output");
+              "UUID that is not an engine identity accepted or changed output");
         continue;
       }
       Check(accepted && bytes.size() == golden.size() &&
