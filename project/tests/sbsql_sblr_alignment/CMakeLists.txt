@@ -10198,6 +10198,33 @@ set_tests_properties(sbsql_sblr_alignment_ia07_table_truncate_bind_target
     LABELS "sbsql_sblr_alignment;IA-07;SBLR_TABLE_TRUNCATE;binary_uuid;not_runtime_acceptance"
     TIMEOUT 60)
 
+# Resolve-and-publish half of the truncate target bind, over a real
+# published table. Same link set as the COPY bind gate it mirrors.
+add_executable(sbsql_sblr_alignment_ia07_table_truncate_bind_publish
+  ia07_table_truncate_bind_publish_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia07_table_truncate_bind_publish PRIVATE cxx_std_23)
+target_include_directories(
+  sbsql_sblr_alignment_ia07_table_truncate_bind_publish PRIVATE
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(
+  sbsql_sblr_alignment_ia07_table_truncate_bind_publish PRIVATE
+  sb_server_core
+  sb_engine_internal_api
+  sb_storage_database
+  sb_transaction_mga
+  sb_core_platform
+  sb_core_uuid
+  sbl_parser_server_ipc_schema)
+add_test(NAME sbsql_sblr_alignment_ia07_table_truncate_bind_publish
+  COMMAND sbsql_sblr_alignment_ia07_table_truncate_bind_publish)
+set_tests_properties(
+  sbsql_sblr_alignment_ia07_table_truncate_bind_publish PROPERTIES
+  LABELS "sbsql_sblr_alignment;IA-07;SBLR_BULK_IMPORT_STREAM;CSC-TEST-005730;CSC-TEST-005731;CSC-TEST-005737;CSC-TEST-005739;CSC-TEST-005740;StatementBulkImportAuthorityV1;message_706;schema_7719;message_707;schema_7720;receipt_private;name_resolution;MGA;INSERT_authorization;replay;conflict;cluster_refusal;security_nondisclosure;cancellation"
+  TIMEOUT 120)
+
 add_executable(sbsql_sblr_alignment_ia07_bulk_import_stream_bind_authority
   ia07_bulk_import_stream_bind_authority_test.cpp)
 target_compile_features(
