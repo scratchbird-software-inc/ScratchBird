@@ -1040,7 +1040,19 @@ bool ApplyParsedConfig(const ParsedConfig& parsed,
         return invalid("CONFIG.VALUE_INVALID_UINT", key, value);
       }
     } else if (key == "server.security.authority_mode") {
-      if (!EnumAllowed(lower, {"database_local","security_database","external_provider","cluster"})) {
+      // SEARCH_KEY: SERVER_SECURITY_AUTHORITY_MODE_DURABLE_PARITY
+      // These are exactly the modes a database can commit:
+      // core::catalog::RuntimeAuthorityMode is {database_local, security_database,
+      // cluster}. "external_provider" was admitted here and had no durable
+      // representation, so it parsed clean and could never match the authority
+      // mode read back from a database's committed runtime binding -- it
+      // surfaced later as an authority-mode conflict rather than as the
+      // unsupported setting it is. external_provider is a real concept
+      // elsewhere (BootstrapProviderAuthority::external_provider_admission, for
+      // first-principal admission, and the cluster provider gate) but it is not
+      // a startup authority source. Refuse it here, where the diagnostic is
+      // accurate.
+      if (!EnumAllowed(lower, {"database_local","security_database","cluster"})) {
         return invalid("CONFIG.VALUE_INVALID_ENUM", key, value);
       }
       config->security_authority_mode = lower;
