@@ -147,6 +147,18 @@ extern "C" std::exception_ptr WrapCurrentException() noexcept {
 void Require(bool value, const char* label) {
   if (!value) throw std::runtime_error(label);
 }
+const char* gate_mode = "";
+// Every wait in this gate ended in a bare std::abort(), so a timed-out gate
+// reported "Subprocess aborted" and nothing else -- the failure path never
+// reaches any of the fixture's own prints. Naming the wait that expired is the
+// whole diagnostic: it says which handshake the endpoint never completed.
+// Behaviour is unchanged; the process still aborts.
+[[noreturn]] void AbortWait(const char* wait) {
+  std::cerr << "FAIL ipc_client_drain_gate mode=" << gate_mode
+            << " wait=" << wait << " expired; the endpoint never reached it\n";
+  std::cerr.flush();
+  std::abort();
+}
 int Connect(const std::filesystem::path& path) {
   const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
   sockaddr_un address{}; address.sun_family = AF_UNIX;
@@ -159,6 +171,7 @@ int Connect(const std::filesystem::path& path) {
 int main(int argc, char** argv) {
   if (argc != 2) return 2;
   const std::string mode = argv[1];
+  gate_mode = argv[1];
   launch_failure = mode == "launch-failure";
   delayed_failure_publication = mode == "delayed-failure-publication";
   allocation_failure = mode == "allocation-failure" || delayed_failure_publication;
@@ -213,6 +226,7 @@ int main(int argc, char** argv) {
       if (callback_failure) throw std::runtime_error("stop callback fault");
     };
     bool exception = false, bind_diagnostic = false; int exit = -1;
+    std::vector<srv::ServerDiagnostic> endpoint_diagnostics;
     const auto threads_before_endpoint = created_threads.load();
     srv::ServerIpcEndpointOwner endpoint_owner(engine);
     std::thread endpoint([&] {
@@ -222,6 +236,7 @@ int main(int argc, char** argv) {
         const auto endpoint_artifacts = artifacts;
         const auto result = srv::RunParserServerIpcEndpoint(endpoint_config, endpoint_artifacts, endpoint_owner, callbacks);
         exit = result.exit_code;
+        endpoint_diagnostics = result.diagnostics;
         for (const auto& diagnostic : result.diagnostics)
           if (diagnostic.code == "PARSER_SERVER_IPC.ENDPOINT_BIND_FAILED") bind_diagnostic = true;
       }
@@ -236,7 +251,7 @@ int main(int argc, char** argv) {
       done.release();
     });
     if (endpoint_allocation_failure || bind_failure) {
-      if (!done.try_acquire_for(5s)) std::abort();
+      if (!done.try_acquire_for(5s)) AbortWait("done/pre-cohort-endpoint-exit");
       endpoint.join();
       const int fd = attempted_bind_fd.load();
       errno = 0;
@@ -266,9 +281,26 @@ int main(int argc, char** argv) {
       std::filesystem::remove_all(root);
       return 0;
     }
-    if (!ready.try_acquire_for(10s)) std::abort();
+    if (!ready.try_acquire_for(10s)) {
+      // Readiness never arrived. The endpoint publishes readiness only after
+      // agent-coordinator start, listener start and daemon-lifecycle evaluation
+      // all succeed, and each of those returns `exit_code = 2` with its own
+      // diagnostics instead. Report that refusal rather than aborting mute --
+      // without this the gate's only output was "Subprocess aborted".
+      const bool exited = done.try_acquire_for(2s);
+      std::cerr << "ipc_client_drain_gate mode=" << mode
+                << " readiness never published; endpoint_exited=" << exited
+                << " exit_code=" << exit << " endpoint_diagnostics="
+                << endpoint_diagnostics.size() << '\n';
+      for (const auto& diagnostic : endpoint_diagnostics)
+        std::cerr << "  endpoint_diagnostic " << diagnostic.code << ':'
+                  << diagnostic.message_key << ':' << diagnostic.safe_message
+                  << '\n';
+      std::cerr.flush();
+      AbortWait("ready/on_ready-callback");
+    }
     if (ready_failure) {
-      if (!done.try_acquire_for(5s)) std::abort();
+      if (!done.try_acquire_for(5s)) AbortWait("done/readiness-failure-exit");
       endpoint.join();
       const int fd = listening_fd.load();
       errno = 0;
@@ -300,7 +332,7 @@ int main(int argc, char** argv) {
       input.resize(input.size()-31);
     }
     Require(::send(peer, input.data(), input.size(), MSG_NOSIGNAL) == static_cast<ssize_t>(input.size()), "actual partial frame");
-    if (!consumed.try_acquire_for(10s)) std::abort();
+    if (!consumed.try_acquire_for(10s)) AbortWait("consumed/first-client-recv");
     bool response_received = !complete_frame;
     if (complete_frame) {
       timeval timeout{5,0};
@@ -331,9 +363,9 @@ int main(int argc, char** argv) {
     int second = -1;
     bool delayed_join_observed = false;
     if (delayed_failure_publication) {
-      if (!failure_claimed.try_acquire_for(5s)) std::abort();
+      if (!failure_claimed.try_acquire_for(5s)) AbortWait("failure_claimed/current_exception");
       srv::RequestParserServerStop();
-      if (!joining_selected_writer.try_acquire_for(5s)) std::abort();
+      if (!joining_selected_writer.try_acquire_for(5s)) AbortWait("joining_selected_writer/pthread_join");
       delayed_join_observed = true;
       release_failure_capture.release();
     }
@@ -341,7 +373,7 @@ int main(int argc, char** argv) {
     else if (!allocation_failure) srv::RequestParserServerStop();
     const bool bounded = done.try_acquire_for(5s);
     if (native_join_failure) {
-      if (!bounded) std::abort();
+      if (!bounded) AbortWait("done/native-join-failure-exit");
       endpoint.join();
       Require(exception && !first_joined && native_join_failures == 1 &&
               endpoint_owner.first_failure && !endpoint_owner.endpoint_active,
@@ -378,7 +410,7 @@ int main(int argc, char** argv) {
     // Baseline can now unwind after its failed bounded-shutdown observation.
     ::close(peer); peer = -1;
     if (second >= 0) ::close(second);
-    if (!bounded && !done.try_acquire_for(10s)) std::abort();
+    if (!bounded && !done.try_acquire_for(10s)) AbortWait("done/endpoint-exit");
     endpoint.join();
     std::ifstream file(config.lifecycle_state_file);
     const std::string state{std::istreambuf_iterator<char>(file), {}};

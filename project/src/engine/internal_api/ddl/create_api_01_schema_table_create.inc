@@ -220,8 +220,11 @@ TResult PersistedCreateWithNameRegistry(const TRequest& request,
 
 EngineCreateDatabaseResult EngineCreateDatabase(const EngineCreateDatabaseRequest& request) {
   // Catalog namespace only: this has no storage-file or first-principal
-  // bootstrap authority.  Public physical creation is refused by
-  // EngineCreateLifecycle; local embedded bootstrap calls storage directly.
+  // bootstrap authority.  Physical creation is performed elsewhere, never
+  // here: EngineCreateLifecycle calls storage under an authenticated
+  // management transaction, and local embedded bootstrap calls storage
+  // directly.  Adding a primary-shadow filespace to an already open database
+  // is a third path, EngineFilespaceLifecycleOperation.
   return PersistedCreateWithNameRegistry<EngineCreateDatabaseResult>(request, "ddl.create_database", "database", false, "created");
 }
 

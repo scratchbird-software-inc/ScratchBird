@@ -8,6 +8,7 @@
 
 #include "index_fault_injection_matrix.hpp"
 #include "crud_support/crud_store.hpp"
+#include "nosql/document_api.hpp"
 #include "nosql/document_path_physical_provider.hpp"
 #include "nosql/nosql_provider_generation_store.hpp"
 
@@ -35,6 +36,14 @@ void Require(bool condition, const std::string& message) {
   if (!condition) {
     Fail(message);
   }
+}
+
+// The engine's own refusal reason lives in `detail`; `code` is the generic
+// `SB_ENGINE_API_INVALID_REQUEST` for every provider refusal, so printing the
+// code alone names none of the six refusal sites.
+std::string Diagnosed(const api::EngineApiDiagnostic& diagnostic) {
+  return diagnostic.code + ":" + diagnostic.message_key + ":" +
+         diagnostic.detail;
 }
 
 bool Contains(const std::vector<std::string>& values, std::string_view value) {
@@ -163,25 +172,36 @@ api::DocumentPathRowEvidence DocumentRow(std::uint64_t ordinal) {
 void DocumentProviderGenerationUsesCurrentHelpers() {
   const auto temp = std::filesystem::temp_directory_path() /
                     "scratchbird_irc181_document_provider.sbdb";
-  std::filesystem::remove(temp);
-  std::filesystem::remove(temp.string() + ".sb.nosql_provider_generations");
-  std::filesystem::remove(temp.string() + ".document_path_provider");
-
   const auto context = Context(temp);
+
+  // Provider sidecar paths are the engine's to name, not this fixture's to
+  // spell. The hand-built list removed `<db>.document_path_provider` while the
+  // artifact is `<db>.sb.document_path_provider`
+  // (`DocumentPathPhysicalProviderPath`), so the artifact survived every run.
+  // `DocumentPathProviderIdentityForContext` then reads that surviving
+  // artifact, finds a `database_uuid` from the earlier run, and returns a nil
+  // identity — which this gate saw as a build refusal. The gate therefore
+  // passed exactly once per clean temp directory and failed on every rerun.
+  // `EngineDocumentProviderCleanup` drops the paths the engine itself
+  // computes, so the fixture cannot drift from them again.
+  std::error_code cleanup_error;
+  std::filesystem::remove(temp, cleanup_error);
+  api::EngineDocumentProviderCleanup(context, true);
+
   const api::EngineUuid collection_uuid =
       api::GenerateCrudEngineUuid("collection");
   const auto metadata = api::MakeDocumentProviderGenerationMetadata(
       context, api::kDocumentPathPhysicalProviderId, collection_uuid, 1);
   const auto published = api::PublishNoSqlProviderGeneration(context, metadata);
   Require(published.ok, "document generation publish failed: " +
-                            published.diagnostic.code);
+                            Diagnosed(published.diagnostic));
   const auto loaded = api::LoadNoSqlProviderGeneration(
       context,
       api::EngineNoSqlProviderFamily::kDocument,
       api::kDocumentPathPhysicalProviderId,
       collection_uuid);
   Require(loaded.ok, "document generation load failed: " +
-                         loaded.diagnostic.code);
+                         Diagnosed(loaded.diagnostic));
   Require(!loaded.metadata.provider_claims_transaction_finality_authority,
           "document generation claimed finality authority");
   Require(!loaded.metadata.provider_claims_visibility_authority,
@@ -193,14 +213,16 @@ void DocumentProviderGenerationUsesCurrentHelpers() {
   build.identity = DocumentIdentity(context, 1);
   build.rows = {DocumentRow(1), DocumentRow(2)};
   const auto built = api::BuildDocumentPathPhysicalProvider(build);
-  Require(built.ok, "document provider build failed: " + built.diagnostic.code);
+  Require(built.ok, "document provider build failed: " +
+                        Diagnosed(built.diagnostic));
 
   api::DocumentPathProviderOpenRequest open;
   open.artifact_path = artifact_path;
   open.expected_identity = build.identity;
   open.require_expected_identity = true;
   const auto opened = api::OpenDocumentPathPhysicalProvider(open);
-  Require(opened.ok, "document provider open failed: " + opened.diagnostic.code);
+  Require(opened.ok, "document provider open failed: " +
+                         Diagnosed(opened.diagnostic));
   Require(Contains(opened.evidence, "document_path_provider_opened=true"),
           "document provider clean reopen evidence missing");
 
@@ -223,7 +245,13 @@ void DocumentProviderGenerationUsesCurrentHelpers() {
                   api::kDocumentPathPhysicalProviderBadChecksum) !=
                   std::string::npos,
           "document provider corrupt diagnostic mismatch: " +
-              corrupt_open.diagnostic.code);
+              Diagnosed(corrupt_open.diagnostic));
+
+  // The corruption above is deliberate and the artifact is left on disk by the
+  // probe. Drop it rather than leaving a corrupt sidecar in the temp directory
+  // for the next run or the next fixture to inherit.
+  std::filesystem::remove(temp, cleanup_error);
+  api::EngineDocumentProviderCleanup(context, true);
 }
 
 void MatrixRowsAreExecutableAndClosed() {

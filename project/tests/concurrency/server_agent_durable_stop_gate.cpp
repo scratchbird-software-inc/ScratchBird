@@ -413,8 +413,20 @@ int main(int argc, char** argv) {
     } else {
       server::ServerAgentRuntime runtime;
       std::vector<server::ServerDiagnostic> diagnostics;
-      if (!runtime.Start(config, engine, &diagnostics) || !runtime.Snapshot().started)
-        throw std::runtime_error("runtime startup failed");
+      if (!runtime.Start(config, engine, &diagnostics) || !runtime.Snapshot().started) {
+        // Start already reported why it refused. Carrying those diagnostics
+        // into the failure makes the gate name the engine's own contract
+        // instead of the mute "runtime startup failed".
+        std::string reason = "runtime startup failed";
+        for (const auto& d : diagnostics) {
+          reason += "; " + d.code + ':' + d.message_key + ':' + d.safe_message;
+          // The engine's own cause sits in the declared fields -- `detail` and
+          // `startup_phase` -- not in the safe message. Dropping them is what
+          // reduced this gate to one unattributable line.
+          for (const auto& f : d.fields) reason += " [" + f.key + '=' + f.value + ']';
+        }
+        throw std::runtime_error(reason);
+      }
       if (missing_file) std::filesystem::rename(path, held);
       fault_armed = sync_fault || exception_fault;
       StopObservation stopped;
