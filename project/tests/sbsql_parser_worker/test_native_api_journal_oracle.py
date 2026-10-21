@@ -19,6 +19,15 @@ def body(fields=(b"ddl.create_procedure", b"procedure", b"name", b"\0\xff\n\r\t"
             + b"".join(struct.pack("<I", len(field)) + field for field in fields) + b"\0")
 
 
+def sequenced_body(sequence=7,
+                   fields=(b"ddl.create_procedure", b"procedure", b"name",
+                           b"\0\xff\n\r\t", b"active")):
+    """SBAPI003: an engine-reserved metadata sequence after creator_tx."""
+    return (b"SBAPI003" + struct.pack("<Q", 42) + struct.pack("<Q", sequence)
+            + IDENTITY + bytes(48)
+            + b"".join(struct.pack("<I", len(field)) + field for field in fields) + b"\0")
+
+
 class NativeApiJournalOracleTest(unittest.TestCase):
     def test_exact_binary_rows_and_opaque_payload(self):
         encoded = framed(body())
@@ -31,6 +40,51 @@ class NativeApiJournalOracleTest(unittest.TestCase):
         self.assertEqual(rows[0].payload, b"\0\xff\n\r\t")
         self.assertFalse(rows[0].deleted)
         self.assertEqual(read_api_journal(b""), ())
+
+    def test_sequenced_frames_are_read_with_shifted_offsets(self):
+        # The sequence shifts the identity and field blocks by eight bytes.
+        # Reading a sequenced frame with the unsequenced offsets rejects it as
+        # a bad magic, which is what broke the process e2e proofs.
+        encoded = framed(sequenced_body())
+        rows = read_api_journal(encoded)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].object_uuid, IDENTITY)
+        self.assertEqual(rows[0].creator_transaction, 42)
+        self.assertEqual(rows[0].target_uuids, (bytes(16),) * 3)
+        self.assertEqual(rows[0].payload, b"\0\xff\n\r\t")
+        mixed = read_api_journal(framed(body()) + encoded)
+        self.assertEqual(len(mixed), 2)
+
+    def test_sequenced_frame_must_carry_a_nonzero_sequence(self):
+        # Zero denotes the unsequenced form, so it is malformed here. The
+        # engine's own decoder refuses it on the same ground.
+        with self.assertRaises(ValueError):
+            read_api_journal(framed(sequenced_body(sequence=0)))
+
+    def test_sequenced_identity_and_structure_are_still_checked(self):
+        for field in range(24, 88, 16):
+            payload = bytearray(sequenced_body())
+            payload[field + 6] = 0x40  # version 4, not the required 7
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                read_api_journal(framed(payload))
+        payload = bytearray(sequenced_body())
+        payload[24:40] = bytes(16)  # the owning object identity may not be nil
+        with self.assertRaises(ValueError):
+            read_api_journal(framed(payload))
+        for at in (0, 1, 4):
+            fields = [b"op", b"kind", b"name", b"payload", b"state"]
+            fields[at] = b""
+            with self.assertRaises(ValueError):
+                read_api_journal(framed(sequenced_body(fields=tuple(fields))))
+        truncated = framed(sequenced_body())
+        for length in (1, 20, 28, len(truncated) - 1):
+            with self.subTest(length=length), self.assertRaises(ValueError):
+                read_api_journal(truncated[:length])
+
+    def test_unknown_magic_is_still_refused(self):
+        for magic in (b"SBAPI001", b"SBAPI004", b"SBAPIXXX"):
+            with self.subTest(magic=magic), self.assertRaises(ValueError):
+                read_api_journal(framed(magic + body()[8:]))
 
     def test_every_truncation_and_invalid_suffix(self):
         encoded = framed(body())

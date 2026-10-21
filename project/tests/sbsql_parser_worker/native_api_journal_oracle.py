@@ -33,17 +33,40 @@ def read_api_journal(raw: bytes) -> tuple[ApiJournalRecord, ...]:
             raise ValueError("invalid API journal frame extent")
         frame = raw[offset:end]
         body = frame[4:-32]
-        if body[:8] != b"SBAPI002" or hashlib.sha256(body).digest() != frame[-32:]:
+        # Two frame forms. SBAPI003 carries an engine-reserved metadata
+        # sequence as a u64 directly after creator_tx, which shifts the
+        # identity block and the field block by 8 bytes; SBAPI002 is the
+        # unsequenced form. Accepting only 002 rejected every sequenced frame
+        # as a bad magic, which is what the "invalid native authority frame
+        # header or digest" cluster was.
+        magic = body[:8]
+        if magic not in (b"SBAPI002", b"SBAPI003"):
             raise ValueError("invalid API journal magic or digest")
+        if hashlib.sha256(body).digest() != frame[-32:]:
+            raise ValueError("invalid API journal magic or digest")
+        sequenced = magic == b"SBAPI003"
         creator = struct.unpack_from("<Q", body, 8)[0]
-        identities = tuple(body[at:at + 16] for at in range(16, 80, 16))
+        sequence = 0
+        if sequenced:
+            if len(body) < 24:
+                raise ValueError("truncated API journal event sequence")
+            sequence = struct.unpack_from("<Q", body, 16)[0]
+            # Zero denotes the unsequenced form, so a sequenced frame carrying
+            # zero is malformed; the engine's decoder refuses it too.
+            if sequence == 0:
+                raise ValueError("sequenced API journal frame carries no sequence")
+        identity_at = 24 if sequenced else 16
+        if len(body) < identity_at + 64:
+            raise ValueError("truncated API journal identity block")
+        identities = tuple(
+            body[at:at + 16] for at in range(identity_at, identity_at + 64, 16))
         for index, identity in enumerate(identities):
             if index and identity == bytes(16):
                 continue
             if identity[6] >> 4 != 7 or identity[8] >> 6 != 2:
                 raise ValueError("invalid binary system UUID in API journal")
         fields = []
-        cursor = 80
+        cursor = identity_at + 64
         for _ in range(5):
             if len(body) - cursor < 4:
                 raise ValueError("truncated API journal field length")

@@ -13,6 +13,7 @@ import os
 import subprocess
 import sys
 import time
+import traceback
 from pathlib import Path
 
 from ia01_package_process_e2e import (
@@ -21,6 +22,11 @@ from ia01_package_process_e2e import (
 )
 
 
+# Native clients speak a binary protocol and can emit non-UTF-8 bytes on
+# stderr. Every subprocess capture here therefore decodes with
+# errors="replace": a strict decode raised UnicodeDecodeError inside
+# subprocess.communicate, which aborted the proof before any assertion ran and
+# reported only the decode error, not the test result.
 def durable_api_authority_rows(name_journal: Path) -> tuple[tuple[str, bytes], ...]:
     """Validate and retain exact native API/name frames for restart comparison."""
     suffix = ".sb.name_events.v2"
@@ -43,15 +49,34 @@ def durable_api_authority_rows(name_journal: Path) -> tuple[tuple[str, bytes], .
                 raise ProofError("invalid native authority frame length")
             frame = raw[offset:end]
             body = frame[4:-32]
-            if body[:8] != b"SBAPI002" or hashlib.sha256(body).digest() != frame[-32:]:
+            # SBAPI003 carries an engine-reserved metadata sequence (u64) right
+            # after creator_tx, shifting the identity and field blocks by 8
+            # bytes; SBAPI002 is the unsequenced form. This accepted 002 only,
+            # so a journal containing any sequenced frame failed here before
+            # the proof began.
+            magic = body[:8]
+            if magic not in (b"SBAPI002", b"SBAPI003") or \
+                    hashlib.sha256(body).digest() != frame[-32:]:
                 raise ProofError("invalid native authority frame header or digest")
+            sequenced = magic == b"SBAPI003"
+            if sequenced:
+                if len(body) < 24:
+                    raise ProofError("truncated native authority event sequence")
+                # Zero denotes the unsequenced form; the engine refuses a
+                # sequenced frame that carries it.
+                if struct.unpack_from("<Q", body, 16)[0] == 0:
+                    raise ProofError("sequenced authority frame carries no sequence")
+            identity_at = 24 if sequenced else 16
+            if len(body) < identity_at + 64:
+                raise ProofError("truncated native authority identity block")
             for slot in range(4):
-                identity = body[16 + slot * 16:32 + slot * 16]
+                base = identity_at + slot * 16
+                identity = body[base:base + 16]
                 if identity == bytes(16) and slot != 0:
                     continue
                 if identity == bytes(16) or identity[6] >> 4 != 7 or identity[8] & 0xc0 != 0x80:
                     raise ProofError("invalid binary authority UUID")
-            cursor = 80
+            cursor = identity_at + 64
             for field in range(5):
                 if cursor + 4 > len(body):
                     raise ProofError("truncated native authority field")
@@ -413,7 +438,7 @@ def main() -> int:
                     args.expected_cluster_provider_diagnostic,
                 ],
                 capture_output=True,
-                text=True,
+                text=True, errors="replace",
                 timeout=30,
             )
             expected_support = (
@@ -533,7 +558,7 @@ def main() -> int:
                     "sbsql-sblr-static-refusal-bootstrap",
                 ],
                 capture_output=True,
-                text=True,
+                text=True, errors="replace",
                 timeout=30,
             )
             if bootstrap.returncode != 0 or bootstrap.stderr:
@@ -556,7 +581,7 @@ def main() -> int:
                     "sbsql-sblr-static-refusal-bootstrap-stable",
                 ],
                 capture_output=True,
-                text=True,
+                text=True, errors="replace",
                 timeout=30,
             )
             if bootstrap.returncode != 0 or bootstrap.stderr:
@@ -585,7 +610,7 @@ def main() -> int:
                     "sbsql-sblr-trigger-lifecycle-bootstrap",
                 ],
                 capture_output=True,
-                text=True,
+                text=True, errors="replace",
                 timeout=30,
                 env=env,
             )
@@ -622,7 +647,7 @@ def main() -> int:
                     "sbsql-sblr-procedure-invoke-bootstrap",
                 ],
                 capture_output=True,
-                text=True,
+                text=True, errors="replace",
                 timeout=30,
                 env=env,
             )
@@ -656,7 +681,7 @@ def main() -> int:
             "source-artifact-container", "source-artifact-external"
         ) else 30
         first = subprocess.run(
-            command, capture_output=True, text=True, timeout=client_timeout, env=env
+            command, capture_output=True, text=True, errors="replace", timeout=client_timeout, env=env
         )
         if first.returncode != 0:
             raise ProofError(f"explicit source-map operation failed: {first.stdout}{first.stderr}")
@@ -1743,7 +1768,7 @@ def main() -> int:
         elif args.operation == "security-alter-policy":
             second[5] = "security-alter-policy-observe"
         verified = subprocess.run(
-            second, capture_output=True, text=True, timeout=client_timeout, env=env
+            second, capture_output=True, text=True, errors="replace", timeout=client_timeout, env=env
         )
         if verified.returncode != 0:
             raise ProofError(
@@ -1784,7 +1809,7 @@ def main() -> int:
                 completed = subprocess.run(
                     auxiliary,
                     capture_output=True,
-                    text=True,
+                    text=True, errors="replace",
                     timeout=30,
                     env=env,
                 )
@@ -1942,7 +1967,7 @@ def main() -> int:
             restarted = subprocess.run(
                 restart_observer,
                 capture_output=True,
-                text=True,
+                text=True, errors="replace",
                 timeout=30,
                 env=env,
             )
@@ -2067,7 +2092,7 @@ def main() -> int:
             restarted = subprocess.run(
                 restart_observer,
                 capture_output=True,
-                text=True,
+                text=True, errors="replace",
                 timeout=30,
                 env=env,
             )
@@ -2145,7 +2170,7 @@ def main() -> int:
                 completed = subprocess.run(
                     auxiliary,
                     capture_output=True,
-                    text=True,
+                    text=True, errors="replace",
                     timeout=30,
                     env=env,
                 )
@@ -2243,7 +2268,7 @@ def main() -> int:
             restarted = subprocess.run(
                 restart_observer,
                 capture_output=True,
-                text=True,
+                text=True, errors="replace",
                 timeout=30,
                 env=env,
             )
@@ -2334,7 +2359,7 @@ def main() -> int:
                 completed = subprocess.run(
                     auxiliary,
                     capture_output=True,
-                    text=True,
+                    text=True, errors="replace",
                     timeout=30,
                     env=env,
                 )
@@ -2509,7 +2534,7 @@ def main() -> int:
                 completed = subprocess.run(
                     invalid,
                     capture_output=True,
-                    text=True,
+                    text=True, errors="replace",
                     timeout=30,
                     env=env,
                 )
@@ -2588,7 +2613,7 @@ def main() -> int:
             restarted = subprocess.run(
                 restart_invocation,
                 capture_output=True,
-                text=True,
+                text=True, errors="replace",
                 timeout=30,
                 env=env,
             )
@@ -2681,7 +2706,7 @@ def main() -> int:
             restarted = subprocess.run(
                 recovered,
                 capture_output=True,
-                text=True,
+                text=True, errors="replace",
                 timeout=30,
                 env=env,
             )
@@ -2947,6 +2972,12 @@ def main() -> int:
         failed = True
         print(f"sbsql_sblr_alignment_ia01_{args.operation.replace('-', '_')}_process_e2e=failed work={work}: {exc}",
               file=sys.stderr)
+        # A ProofError says which assertion failed, but any other exception --
+        # a decode error on engine output, an OS error -- says nothing about
+        # where it came from. Print the traceback so the failing line is named
+        # rather than inferred.
+        if not isinstance(exc, ProofError):
+            traceback.print_exc(file=sys.stderr)
     finally:
         cleaned = finish_fixture_work(work, fixture_servers, failed=failed)
     if failed:
