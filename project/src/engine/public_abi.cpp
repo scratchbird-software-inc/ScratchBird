@@ -9252,6 +9252,193 @@ sb_engine_status_t AttachStatementRelationOccurrenceMappingsV1(
   return SB_ENGINE_STATUS_OK;
 }
 
+// SBSQL-TRUNCATE-TABLE-V1 section 4 steps 1-3 for a single explicit target.
+// The parser supplies syntax; this resolves the name itself, loads the
+// engine-owned relation storage descriptor, and publishes the occurrence ->
+// descriptor mapping onto the receipt. It derives no closure and issues no
+// descriptor: FK/partition closure, generations and proofs belong to the
+// truncate coordinator, which resolves this mapping.
+sb_engine_status_t BindStatementTableTruncateTargetV1(
+    StatementContextReceiptHandle receipt_handle,
+    const StatementTableTruncateBindRequestV1* request,
+    StatementTableTruncateBindAckV1* out_ack,
+    sb_engine_result_t* out_result) {
+  clear_result(out_result);
+  if (out_ack != nullptr) *out_ack = {};
+  const auto refuse = [&](sb_engine_status_t status, std::string code,
+                          std::string key, std::string detail = {}) {
+    if (out_ack != nullptr) {
+      out_ack->failure_code = code;
+      out_ack->failure_message_key = key;
+      out_ack->failure_detail = detail;
+    }
+    return fail_result(status, out_result, 4052, std::move(code),
+                       std::move(key), std::move(detail));
+  };
+  if (!receipt_handle || request == nullptr || out_ack == nullptr) {
+    return refuse(SB_ENGINE_STATUS_INVALID_ARGUMENT, "SBLR.OPERAND_INVALID",
+                  "sblr.table_truncate.bind_request_invalid",
+                  "receipt_request_and_ack_required");
+  }
+  if (request->structural_occurrence == 0 ||
+      request->truncate_occurrence == 0 ||
+      request->target_name_atoms.empty()) {
+    return refuse(SB_ENGINE_STATUS_INVALID_ARGUMENT, "SBLR.OPERAND_INVALID",
+                  "sblr.table_truncate.bind_request_invalid",
+                  "nonzero_occurrences_and_one_target_required");
+  }
+  // Admitted by the grammar, not resolved by this version. Refusing is honest;
+  // resolving one target of a multi-target statement would publish a partial
+  // target set, which section 5 forbids.
+  if (request->identity_action != 1 || request->dependency_action != 1) {
+    return refuse(SB_ENGINE_STATUS_UNSUPPORTED, "SBSQL.IMPL.NOT_AVAILABLE",
+                  "sblr.table_truncate.bind_clause_not_available",
+                  "restart_identity_and_cascade_are_not_resolved_yet");
+  }
+  for (const auto& atom : request->target_name_atoms) {
+    if (atom.raw_text.empty() || atom.raw_text.size() > 1024) {
+      return refuse(SB_ENGINE_STATUS_INVALID_ARGUMENT, "SBLR.OPERAND_INVALID",
+                    "sblr.table_truncate.bind_request_invalid",
+                    "target_name_atom_invalid");
+    }
+  }
+
+  scratchbird::engine::internal_api::EngineRequestContext engine_context;
+  StatementContextReceiptView view;
+  {
+    std::lock_guard<std::mutex> registry_guard(
+        g_statement_context_receipt_registry_mutex);
+    const auto live =
+        g_live_statement_context_receipts.find(receipt_handle.opaque_id);
+    if (live == g_live_statement_context_receipts.end()) {
+      return refuse(SB_ENGINE_STATUS_SECURITY_DENIED, "SECURITY.ACCESS_DENIED",
+                    "sblr.table_truncate.bind_hidden");
+    }
+    std::lock_guard<std::mutex> receipt_guard(live->second->mutex);
+    const auto& receipt = *live->second;
+    if (receipt.released || receipt.magic != kStatementContextReceiptMagic ||
+        request->authenticated_receipt_uuid != receipt.view.receipt_uuid) {
+      return refuse(SB_ENGINE_STATUS_SECURITY_DENIED, "SECURITY.ACCESS_DENIED",
+                    "sblr.table_truncate.bind_hidden");
+    }
+    engine_context = receipt.engine_context;
+    view = receipt.view;
+  }
+
+  if (!engine_context.security_context_present ||
+      !engine_context.authorization_context.present ||
+      !valid_engine_identity(view.security_context_uuid) ||
+      view.security_epoch == 0 ||
+      engine_context.authorization_context.authority_uuid !=
+          view.security_context_uuid ||
+      engine_context.authorization_context.security_epoch !=
+          view.security_epoch) {
+    return refuse(SB_ENGINE_STATUS_SECURITY_DENIED, "SECURITY.ACCESS_DENIED",
+                  "sblr.table_truncate.bind_authorization_required");
+  }
+  if (engine_context.catalog_epoch_uuid != view.catalog_epoch_uuid ||
+      engine_context.catalog_generation_id != view.catalog_generation_id ||
+      engine_context.statement_snapshot_uuid != view.statement_snapshot_uuid ||
+      engine_context.local_transaction_id != view.owning_local_transaction_id) {
+    return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.AUTHORITY_MISMATCH",
+                  "sblr.table_truncate.bind_receipt_authority_mismatch");
+  }
+
+  // Step 2: resolve the explicit target to a visible table UUID. The engine
+  // resolves; a supplied identity is never accepted.
+  scratchbird::engine::internal_api::EngineResolveNameRequest resolve_request;
+  resolve_request.context = engine_context;
+  resolve_request.operation_id = "catalog.resolve_name";
+  resolve_request.sql_object_reference.expected_object_type = "table";
+  resolve_request.sql_object_reference.path_type =
+      request->target_name_atoms.size() == 1 ? "unqualified" : "qualified";
+  resolve_request.sql_object_reference.no_search_path =
+      request->target_name_atoms.size() != 1;
+  for (std::size_t index = 0; index < request->target_name_atoms.size(); ++index) {
+    const auto& source = request->target_name_atoms[index];
+    scratchbird::engine::internal_api::EngineIdentifierAtom atom;
+    atom.raw_text = source.raw_text;
+    atom.was_quoted = source.quoted;
+    atom.quote_style = source.quoted ? "double_quote" : "none";
+    atom.identifier_profile_uuid = engine_context.identifier_profile_uuid;
+    atom.requires_exact_match = source.quoted;
+    if (index + 1 == request->target_name_atoms.size())
+      resolve_request.sql_object_reference.object_name = std::move(atom);
+    else
+      resolve_request.sql_object_reference.path_components.push_back(
+          std::move(atom));
+  }
+  const auto resolved =
+      scratchbird::engine::internal_api::EngineResolveName(resolve_request);
+  if (!resolved.ok || !valid_engine_identity(resolved.primary_object.uuid)) {
+    const auto* diagnostic =
+        resolved.diagnostics.empty() ? nullptr : &resolved.diagnostics.front();
+    return refuse(SB_ENGINE_STATUS_CONFLICT,
+                  diagnostic == nullptr ? "CATALOG.NAME.NOT_FOUND"
+                                        : diagnostic->code,
+                  diagnostic == nullptr
+                      ? "message_vector.item_not_found_or_does_not_exist"
+                      : diagnostic->message_key,
+                  diagnostic == nullptr ? std::string{} : diagnostic->detail);
+  }
+  if (resolved.primary_object.object_kind != "table" ||
+      resolved.bound_object_identity.resolved_object_type != "table" ||
+      resolved.bound_object_identity.object_uuid !=
+          resolved.primary_object.uuid ||
+      resolved.bound_object_identity.catalog_generation_id == 0 ||
+      resolved.bound_object_identity.catalog_generation_id >
+          view.catalog_generation_id ||
+      resolved.bound_object_identity.security_epoch != view.security_epoch) {
+    return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.AUTHORITY_MISMATCH",
+                  "sblr.table_truncate.bind_resolution_authority_mismatch");
+  }
+
+  // Step 3: capture the engine-owned relation storage descriptor. Unlike COPY,
+  // truncate admits a table that carries indexes; generation replacement
+  // retires their roots with the content generation.
+  const auto loaded =
+      scratchbird::engine::internal_api::LoadMgaRelationStorageDescriptor(
+          engine_context, resolved.primary_object.uuid);
+  if (!loaded.ok) {
+    return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.TRANSACTION_INVALID",
+                  "sblr.table_truncate.bind_descriptor_unavailable",
+                  loaded.diagnostic.detail);
+  }
+  const auto& descriptor = loaded.descriptor;
+  if (descriptor.relation_kind != "table" ||
+      descriptor.database_uuid != engine_context.database_uuid ||
+      descriptor.schema_uuid !=
+          resolved.bound_object_identity.resolved_schema_uuid ||
+      descriptor.relation_uuid != resolved.primary_object.uuid ||
+      descriptor.relation_generation == 0 ||
+      descriptor.descriptor_generation == 0 ||
+      !valid_engine_identity(descriptor.descriptor_uuid)) {
+    return refuse(SB_ENGINE_STATUS_CONFLICT, "MGA.AUTHORITY_MISMATCH",
+                  "sblr.table_truncate.bind_descriptor_authority_mismatch");
+  }
+
+  // Publish the mapping through the existing once-only attach authority. It
+  // re-locks the receipt, so no receipt lock is held here.
+  std::vector<StatementRelationOccurrenceMappingV1> mappings;
+  mappings.push_back({request->structural_occurrence, descriptor.descriptor_uuid,
+                      descriptor.descriptor_generation});
+  sb_engine_result_t attach_result{};
+  const auto attached = AttachStatementRelationOccurrenceMappingsV1(
+      receipt_handle, mappings, &attach_result);
+  if (attached != SB_ENGINE_STATUS_OK) {
+    return refuse(attached, "DATATYPE.DESCRIPTOR.INVALID",
+                  "sblr.table_truncate.bind_mapping_rejected");
+  }
+
+  out_ack->authenticated_receipt_uuid = request->authenticated_receipt_uuid;
+  out_ack->structural_occurrence = request->structural_occurrence;
+  out_ack->truncate_occurrence = request->truncate_occurrence;
+  out_ack->resolved_table_uuid = resolved.primary_object.uuid;
+  out_ack->persisted_descriptor_uuid = descriptor.descriptor_uuid;
+  out_ack->persisted_descriptor_generation = descriptor.descriptor_generation;
+  return SB_ENGINE_STATUS_OK;
+}
+
 sb_engine_status_t BindStatementBulkImportAuthorityV1(
     StatementContextReceiptHandle receipt_handle,
     const StatementBulkImportBindRequestV1* request,

@@ -173,6 +173,46 @@ struct StatementBulkImportNameAtomV1 {
   bool quoted = false;
 };
 
+// Syntax-only TRUNCATE target selector admitted by the private statement
+// bridge. Per SBSQL-TRUNCATE-TABLE-V1 section 4, the binder resolves explicit
+// targets to visible table UUIDs (steps 1-2) and the engine derives every
+// authority fact (steps 3-11). These atoms are therefore statement syntax, not
+// authority: the engine resolves them itself and never trusts a supplied
+// identity. Multi-target, CASCADE and RESTART IDENTITY are admitted by the
+// grammar but are not resolved by this version; they refuse explicitly rather
+// than resolving a partial target set.
+struct StatementTableTruncateBindRequestV1 {
+  scratchbird::engine::internal_api::EngineUuid authenticated_receipt_uuid;
+  // Engine-owned occurrence that the issued descriptor and the later
+  // SBLR_TABLE_TRUNCATE carrier resolve against.
+  std::uint64_t structural_occurrence = 0;
+  std::uint32_t truncate_occurrence = 0;
+  // One target per statement in this version; see the note above.
+  // Reuses the bridge's syntax-atom type; it carries raw text and a quoted
+  // flag and is not COPY-specific.
+  std::vector<StatementBulkImportNameAtomV1> target_name_atoms;
+  // Section 2 defaults: 1 CONTINUE IDENTITY, 2 RESTART IDENTITY.
+  std::uint8_t identity_action = 1;
+  // Section 2 defaults: 1 RESTRICT, 2 CASCADE.
+  std::uint8_t dependency_action = 1;
+};
+
+struct StatementTableTruncateBindAckV1 {
+  scratchbird::engine::internal_api::EngineUuid authenticated_receipt_uuid;
+  std::uint64_t structural_occurrence = 0;
+  std::uint32_t truncate_occurrence = 0;
+  // The engine-resolved target. These are the values published onto the
+  // receipt as a relation occurrence mapping, repeated here so the private
+  // caller can compare without a second lookup.
+  scratchbird::engine::internal_api::EngineUuid resolved_table_uuid;
+  scratchbird::engine::internal_api::EngineUuid persisted_descriptor_uuid;
+  std::uint64_t persisted_descriptor_generation = 0;
+  std::string failure_code;
+  std::string failure_message_key;
+  std::string failure_detail;
+};
+
+
 struct StatementBulkImportBindRequestV1 {
   scratchbird::engine::internal_api::EngineUuid authenticated_receipt_uuid;
   std::string command_surface_id;
@@ -1837,6 +1877,19 @@ sb_engine_status_t CoordinateSessionValueDescriptorV1(
 sb_engine_status_t AttachStatementRelationOccurrenceMappingsV1(
     StatementContextReceiptHandle receipt,
     const std::vector<StatementRelationOccurrenceMappingV1>& mappings,
+    sb_engine_result_t* out_result);
+
+// Resolves one TRUNCATE target against the exact live receipt and publishes it
+// as a relation occurrence mapping, so the later truncate coordinator can
+// resolve receipt + structural occurrence to an engine-derived target instead
+// of trusting a carried identity (SBSQL-TRUNCATE-TABLE-V1 section 6.1: the
+// receipt "must resolve to the authenticated preliminary statement and its
+// admitted truncate occurrence; UUID shape alone is not that authority").
+// Callable only by the engine-side binder path; the parser supplies syntax.
+sb_engine_status_t BindStatementTableTruncateTargetV1(
+    StatementContextReceiptHandle receipt,
+    const StatementTableTruncateBindRequestV1* request,
+    StatementTableTruncateBindAckV1* out_ack,
     sb_engine_result_t* out_result);
 
 // Resolves and authorizes one canonical COPY bind demand against the exact live

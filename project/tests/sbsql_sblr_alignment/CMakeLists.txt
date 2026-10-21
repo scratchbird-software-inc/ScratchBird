@@ -10175,6 +10175,29 @@ set_tests_properties(sbsql_sblr_alignment_sbps_bulk_import_stream_codec PROPERTI
   LABELS "sbsql_sblr_alignment;IA-07;SBLR_BULK_IMPORT_STREAM;CSC-TEST-005722;CSC-TEST-005723;CSC-TEST-005724;CSC-TEST-005725;CSC-TEST-005738;SBPS;bulk_import;TLV1;7715;7716;7717;7718;7719;7720;boundary_sizes;malformed"
   TIMEOUT 30)
 
+# Refusal contract of the truncate target bind (SBSQL-TRUNCATE-TABLE-V1 6.1).
+# Every case refuses before catalog resolution, so this needs no database.
+add_executable(sbsql_sblr_alignment_ia07_table_truncate_bind_target
+  ia07_table_truncate_bind_target_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_ia07_table_truncate_bind_target PRIVATE cxx_std_23)
+target_include_directories(
+  sbsql_sblr_alignment_ia07_table_truncate_bind_target PRIVATE
+  ${CMAKE_SOURCE_DIR}/src
+  ${CMAKE_SOURCE_DIR}/include
+  ${CMAKE_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(
+  sbsql_sblr_alignment_ia07_table_truncate_bind_target PRIVATE
+  sb_engine
+  sb_engine_internal_api
+  sb_storage_database)
+add_test(NAME sbsql_sblr_alignment_ia07_table_truncate_bind_target
+  COMMAND sbsql_sblr_alignment_ia07_table_truncate_bind_target)
+set_tests_properties(sbsql_sblr_alignment_ia07_table_truncate_bind_target
+  PROPERTIES
+    LABELS "sbsql_sblr_alignment;IA-07;SBLR_TABLE_TRUNCATE;binary_uuid;not_runtime_acceptance"
+    TIMEOUT 60)
+
 add_executable(sbsql_sblr_alignment_ia07_bulk_import_stream_bind_authority
   ia07_bulk_import_stream_bind_authority_test.cpp)
 target_compile_features(
