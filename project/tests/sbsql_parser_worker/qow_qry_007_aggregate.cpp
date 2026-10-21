@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "descriptor_value_runtime.hpp"
+#include "sbl_numeric.hpp"
+#include "catalog/column_metadata_codec.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include "../support/native_int64_fixture.hpp"
 
@@ -16,6 +18,7 @@
 #include <iostream>
 #include <limits>
 #include <string>
+#include <stdexcept>
 #include <string_view>
 #include <type_traits>
 #include <utility>
@@ -272,16 +275,50 @@ api::EngineDescriptor Descriptor(const api::EngineUuid& descriptor_uuid,
       descriptor_uuid, "nullability=" + nullability);
 }
 
+// A DECIMAL column binding is only admitted with its full codec profile:
+// precision, scale, the exact decimal codec identity and its generation. The
+// payload is the native binary encoding, never text -- the executor refuses a
+// decimal value that carries `encoded_value`. This fixture previously supplied
+// `nullability` alone and the text "3.00", so every assertion below failed on
+// `DATATYPE.DESCRIPTOR.INVALID: DECIMAL column profile or nullability is
+// invalid` before COUNT(*) was ever exercised.
+constexpr unsigned kDecimalPrecision = 10;
+constexpr unsigned kDecimalScale = 2;
+
+api::EngineDescriptor BoundDecimalDescriptor(const api::EngineUuid& occurrence_uuid,
+                                            const std::string& nullability) {
+  auto descriptor = Descriptor(occurrence_uuid, "decimal", nullability);
+  api::CatalogColumnMetadata metadata;
+  metadata.text = {{"nullability", nullability},
+                   {"precision", std::to_string(kDecimalPrecision)},
+                   {"scale", std::to_string(kDecimalScale)},
+                   {"decimal_codec_generation", "1"}};
+  // The le24 codec identity, which is what the bound profile resolves to for
+  // precision <= 38.
+  metadata.identities["decimal_codec_uuid"] = api::EngineUuid{
+      {0x01,0xa1,0x18,0x6b,0xdf,0x04,0x76,0x0a,
+       0xa3,0xd5,0xd0,0x2d,0x2e,0xe3,0x01,0x54}};
+  if (!api::EncodeCatalogColumnMetadata(metadata, &descriptor.encoded_descriptor)) {
+    throw std::runtime_error("decimal column binding metadata is invalid");
+  }
+  return descriptor;
+}
+
 exec::CanonicalDescriptorCountRequest Request() {
-  const auto input_descriptor = Descriptor(
-      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000007301"), "decimal",
+  namespace numeric = scratchbird::libraries::sbl_numeric;
+  const auto input_descriptor = BoundDecimalDescriptor(
+      scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000007301"),
       "nullable");
   const auto count_descriptor = Descriptor(
       scratchbird::tests::FixtureUuidLiteral("019f0000-0000-7200-8000-000000007303"), "int64",
       "non_null");
+  const auto encoded = numeric::EncodeBoundExactDecimal(
+      "3.00", {numeric::ExactDecimalCodec::le24_v1, kDecimalPrecision, kDecimalScale});
+  if (!encoded.ok()) throw std::runtime_error("decimal fixture payload is invalid");
   api::EngineTypedValue value;
   value.descriptor = input_descriptor;
-  value.encoded_value = "3.00";
+  value.binary_value = encoded.bytes;
+  value.state = api::EngineValueState::value;
   api::EngineTypedValue null_value;
   null_value.descriptor = input_descriptor;
   null_value.is_null = true;
@@ -341,6 +378,22 @@ exec::CanonicalDescriptorCountRequest Request() {
 bool ValidatePhysicalCountStar() {
   bool passed = true;
   auto result = exec::ExecuteCanonicalDescriptorCountStar(Request());
+  // Report the refusal itself. Without this the fixture said only "not
+  // executable", which names the symptom and hides the engine's own cause.
+  if (!result.diagnostic.ok) {
+    std::cerr << "QOW-TEST-QRY-007-AGGREGATE-V1: refusal code="
+              << result.diagnostic.diagnostic_code
+              << " detail=" << result.diagnostic.detail
+              << " row=" << result.diagnostic.row_index
+              << " column=" << result.diagnostic.column_index << '\n';
+  }
+  if (!result.diagnostic.ok || result.output_batch.rows.size() != 1 ||
+      result.output_batch.columns.size() != 1) {
+    std::cerr << "QOW-TEST-QRY-007-AGGREGATE-V1: node=" << result.executed_physical_node_id
+              << " counter=" << result.causal_counter_id
+              << " rows=" << result.output_batch.rows.size()
+              << " columns=" << result.output_batch.columns.size() << '\n';
+  }
   passed &= Require(result.diagnostic.ok &&
                         result.executed_physical_node_id == 732 &&
                         result.causal_counter_id == 7302 &&
@@ -349,11 +402,17 @@ bool ValidatePhysicalCountStar() {
                             Request().physical_dag.mga_statement_context),
                     "typed physical aggregate node was not executable");
   passed &= Require(result.output_batch.rows.size() == 1 &&
+                        !result.output_batch.rows[0].values.empty() &&
                         scratchbird::tests::NativeInt64Equals(result.output_batch.rows[0].values[0], 3) &&
                         result.output_batch.rows[0].values[0].state ==
                             api::EngineValueState::value,
                     "COUNT(*) did not count physical rows including NULL");
-  passed &= Require(!result.output_batch.columns[0].nullable &&
+  // Guarded like the row check above. A refused execution returns an empty
+  // batch, so indexing columns[0] unconditionally turned every upstream
+  // failure in this fixture into a SIGSEGV -- which reported as a crash
+  // instead of reporting which assertion failed.
+  passed &= Require(result.output_batch.columns.size() == 1 &&
+                        !result.output_batch.columns[0].nullable &&
                         result.output_batch.columns[0].descriptor_id == 732,
                     "COUNT(*) lost its bound non-null result descriptor");
 
@@ -362,6 +421,7 @@ bool ValidatePhysicalCountStar() {
   result = exec::ExecuteCanonicalDescriptorCountStar(request);
   passed &= Require(result.diagnostic.ok &&
                         result.output_batch.rows.size() == 1 &&
+                        !result.output_batch.rows[0].values.empty() &&
                         scratchbird::tests::NativeInt64Equals(result.output_batch.rows[0].values[0], 0) &&
                         exec::PhysicalMgaStatementContextEqual(
                             result.mga_statement_context,
