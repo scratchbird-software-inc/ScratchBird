@@ -8635,6 +8635,8 @@ DatabaseBootstrapSecurityCatalogReadResult ReadBootstrapSecurityCatalogFromOwned
     state.provider_uuid = runtime_authority_binding->provider_uuid;
     state.credential_reference_uuid = runtime_authority_binding->credential_reference_uuid;
     state.runtime_authority_generation = runtime_authority_binding->generation;
+    // SEARCH_KEY: DATABASE_COMMITTED_STARTUP_AUTHORITY_MODE
+    state.authority_mode = runtime_authority_binding->authority_mode;
   }
   // The shared validator cannot prove commitment. Only the actual source
   // reader above has verified the owning inventory and bootstrap transaction.

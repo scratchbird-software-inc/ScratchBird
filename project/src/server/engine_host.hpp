@@ -69,6 +69,11 @@ struct HostedDatabaseSnapshot {
   std::uint64_t capability_policy_generation = 1;
   std::uint64_t policy_generation = 1;
   std::uint64_t security_epoch = 1;
+  // SEARCH_KEY: DATABASE_COMMITTED_STARTUP_AUTHORITY_MODE
+  // The authority source this database committed at creation, once the open has
+  // confirmed it matches the configured mode. Empty when the credentialed
+  // bootstrap read did not run for this database.
+  std::string security_authority_mode;
   std::string security_provider_family = "local_password";
   std::uint64_t security_provider_generation = 1;
   std::string security_provider_state = "healthy";

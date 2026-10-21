@@ -290,6 +290,48 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
       result.state.databases.push_back(snapshot);
       return result;
     }
+    // SEARCH_KEY: DATABASE_COMMITTED_STARTUP_AUTHORITY_MODE
+    // The database committed its own startup authority source at creation,
+    // under the bootstrap transaction. Honour it rather than letting a server
+    // configuration select an authority the database never agreed to: a
+    // configuration that disagrees is a misconfigured deployment, not an
+    // override. An unset mode means a committed binding that carried none, or
+    // no binding at all, which is tolerated -- see the refusal condition.
+    {
+      const auto committed_mode = bootstrap_security.state.authority_mode;
+      const char* committed_name =
+          !committed_mode ? ""
+          : *committed_mode == scratchbird::core::catalog::RuntimeAuthorityMode::database_local
+              ? "database_local"
+          : *committed_mode == scratchbird::core::catalog::RuntimeAuthorityMode::security_database
+              ? "security_database"
+          : *committed_mode == scratchbird::core::catalog::RuntimeAuthorityMode::cluster
+              ? "cluster" : "";
+      // Absence is not a conflict. An internal service principal is optional
+      // at create (`require_internal_service_principal` defaults false), so a
+      // credentialed database can legitimately carry no authority binding;
+      // refusing those would reject databases this server opens today. Only a
+      // committed mode that contradicts the configuration is a refusal.
+      if (committed_name[0] != '\0' &&
+          config.security_authority_mode != committed_name) {
+        snapshot.state = HostedDatabaseState::kFailed;
+        snapshot.diagnostic_code = "BOOTSTRAP.SECURITY_AUTHORITY_MODE_CONFLICT";
+        snapshot.diagnostic_message_key =
+            "bootstrap.security_authority_mode_conflict";
+        result.diagnostics.push_back(ServerDiagnostic{
+            snapshot.diagnostic_code,
+            snapshot.diagnostic_message_key,
+            ServerDiagnosticSeverity::kError,
+            snapshot.diagnostic_code,
+            {{"configured_authority_mode", config.security_authority_mode},
+             {"committed_authority_mode", committed_name}}});
+        result.state.databases.push_back(snapshot);
+        return result;
+      }
+      // Empty when the committed binding carried no mode, which keeps the
+      // snapshot honest about what the database actually committed.
+      snapshot.security_authority_mode = committed_name;
+    }
     committed_bootstrap_security = bootstrap_security.state;
   }
 

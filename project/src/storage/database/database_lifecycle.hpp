@@ -12,6 +12,7 @@
 // SEARCH_KEY: CONFIG_POLICY_MIGRATION
 #include "database_format.hpp"
 #include "catalog_database_record_codec.hpp"
+#include "catalog_runtime_authority_binding.hpp"
 #include "catalog_metric_config_materialization.hpp"
 #include "disk_device.hpp"
 #include "agent_engine_lifecycle.hpp"
@@ -215,6 +216,13 @@ struct DatabaseBootstrapSecurityCatalogState {
   // Optional in the committed record. A startup credential cannot be framed
   // without it, so the consumer refuses rather than inventing one.
   std::optional<scratchbird::core::platform::Uuid> credential_reference_uuid;
+  // SEARCH_KEY: DATABASE_COMMITTED_STARTUP_AUTHORITY_MODE
+  // The authority source this database committed for itself at creation, read
+  // back from the same bootstrap transaction as the identities above. It is
+  // reported only alongside a present binding; absence leaves it unset rather
+  // than defaulting, because selecting a startup authority the database never
+  // committed is the one thing this read must not do.
+  std::optional<scratchbird::core::catalog::RuntimeAuthorityMode> authority_mode;
   u64 runtime_authority_generation = 0;
 };
 
