@@ -9252,6 +9252,41 @@ sb_engine_status_t AttachStatementRelationOccurrenceMappingsV1(
   return SB_ENGINE_STATUS_OK;
 }
 
+sb_engine_status_t CopyStatementRelationOccurrenceMappingsV1(
+    StatementContextReceiptHandle receipt_handle,
+    std::vector<StatementRelationOccurrenceMappingV1>* out_mappings,
+    sb_engine_result_t* out_result) {
+  clear_result(out_result);
+  if (out_mappings == nullptr) {
+    return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4051,
+                       "SBLR.OPERAND_INVALID",
+                       "engine.statement_context.mapping_output_required");
+  }
+  out_mappings->clear();
+  if (!receipt_handle) {
+    return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 4051,
+                       "SBLR.OPERAND_INVALID",
+                       "engine.statement_context.mapping_receipt_required");
+  }
+  std::lock_guard<std::mutex> registry_guard(
+      g_statement_context_receipt_registry_mutex);
+  const auto live = g_live_statement_context_receipts.find(receipt_handle.opaque_id);
+  if (live == g_live_statement_context_receipts.end()) {
+    return fail_result(SB_ENGINE_STATUS_SECURITY_DENIED, out_result, 4051,
+                       "SECURITY.ACCESS_DENIED",
+                       "engine.statement_context.mapping_hidden");
+  }
+  std::lock_guard<std::mutex> receipt_guard(live->second->mutex);
+  const auto* receipt = live->second.get();
+  if (receipt->released || receipt->magic != kStatementContextReceiptMagic) {
+    return fail_result(SB_ENGINE_STATUS_SECURITY_DENIED, out_result, 4051,
+                       "SECURITY.ACCESS_DENIED",
+                       "engine.statement_context.mapping_hidden");
+  }
+  *out_mappings = receipt->view.relation_occurrence_mappings;
+  return SB_ENGINE_STATUS_OK;
+}
+
 // SBSQL-TRUNCATE-TABLE-V1 section 4 steps 1-3 for a single explicit target.
 // The parser supplies syntax; this resolves the name itself, loads the
 // engine-owned relation storage descriptor, and publishes the occurrence ->

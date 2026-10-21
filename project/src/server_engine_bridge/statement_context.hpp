@@ -1879,6 +1879,16 @@ sb_engine_status_t AttachStatementRelationOccurrenceMappingsV1(
     const std::vector<StatementRelationOccurrenceMappingV1>& mappings,
     sb_engine_result_t* out_result);
 
+// Copies the relation occurrence mappings a live receipt currently carries.
+// A private authenticated coordinator needs this because its own
+// StatementContextReceiptView is copied at acquisition and therefore never
+// shows a mapping published afterwards. The copy is immutable engine-derived
+// state; the caller may not add to it.
+sb_engine_status_t CopyStatementRelationOccurrenceMappingsV1(
+    StatementContextReceiptHandle receipt,
+    std::vector<StatementRelationOccurrenceMappingV1>* out_mappings,
+    sb_engine_result_t* out_result);
+
 // Resolves one TRUNCATE target against the exact live receipt and publishes it
 // as a relation occurrence mapping, so the later truncate coordinator can
 // resolve receipt + structural occurrence to an engine-derived target instead
