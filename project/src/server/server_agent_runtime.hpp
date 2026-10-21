@@ -13,6 +13,7 @@
 #include "config.hpp"
 #include "diagnostics.hpp"
 #include "engine_host.hpp"
+#include "listener_orchestrator.hpp"
 #include "agents/agent_runtime_service_store_api.hpp"
 #include "catalog/sys_information_projection.hpp"
 
@@ -82,6 +83,12 @@ struct ServerAgentRuntimeSnapshot {
   std::string database_uuid;
   std::string filespace_uuid;
   std::filesystem::path status_path;
+  // SEARCH_KEY: SERVER_COORDINATOR_OWNS_MANAGED_LISTENER_START
+  // The coordinator starts the node's listeners and retains their startup
+  // disposition, so a listener that failed to start is visible to the agent
+  // that supervises component startup rather than only to its launcher.
+  std::string managed_listener_state = "not_started";
+  std::size_t managed_listener_count = 0;
   std::uint32_t hardware_concurrency = 0;
   std::uint32_t effective_cpu_count = 0;
   std::uint32_t foreground_reserved_capacity = 0;
@@ -141,6 +148,17 @@ class ServerAgentRuntime {
                         const HostedEngineState& engine_state,
                         std::vector<ServerDiagnostic>* diagnostics,
                         void (*before_failure_cleanup)() noexcept = nullptr);
+  // SEARCH_KEY: SERVER_COORDINATOR_OWNS_MANAGED_LISTENER_START
+  // Build and start this node's listener profiles as a coordinator-supervised
+  // startup step, recording their disposition in the runtime snapshot. The
+  // orchestrator storage stays caller-owned: it is declared ahead of this
+  // runtime in the IPC owner so it outlives the coordinator, and the caller
+  // keeps the stop paths. Returns the listener operation result unchanged so
+  // callers retain their existing refusal handling.
+  ServerListenerOperationResult StartManagedListeners(
+      const ServerBootstrapConfig& config,
+      const ServerLifecycleArtifacts& artifacts,
+      ServerListenerOrchestrator* orchestrator);
   // Withdraw new scheduled work while the IPC owner drains its sessions and
   // components. Keep the coordinator and ownership until Stop completes joins.
   void BeginDrain();
@@ -239,6 +257,8 @@ class ServerAgentRuntime {
   std::string database_uuid_;
   std::string filespace_uuid_;
   std::filesystem::path status_path_;
+  std::string managed_listener_state_ = "not_started";
+  std::size_t managed_listener_count_ = 0;
   std::uint32_t hardware_concurrency_ = 0;
   std::uint32_t effective_cpu_count_ = 0;
   std::uint32_t foreground_reserved_capacity_ = 0;

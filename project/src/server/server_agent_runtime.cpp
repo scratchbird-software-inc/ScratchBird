@@ -632,6 +632,43 @@ bool ServerAgentRuntime::StartCoordinator(const ServerBootstrapConfig& config,
   return StartImpl(config, engine_state, diagnostics, before_failure_cleanup, true);
 }
 
+// SEARCH_KEY: SERVER_COORDINATOR_OWNS_MANAGED_LISTENER_START
+// Listener startup is a coordinator-supervised node lifecycle step, not work
+// the endpoint performs on its own. The coordinator builds the profiles,
+// starts the enabled ones, traces the phase beside its own startup phases and
+// retains the outcome for its snapshot. Stop stays with the caller's drain,
+// which already retires listeners after clients and before sessions.
+ServerListenerOperationResult ServerAgentRuntime::StartManagedListeners(
+    const ServerBootstrapConfig& config,
+    const ServerLifecycleArtifacts& artifacts,
+    ServerListenerOrchestrator* orchestrator) {
+  if (orchestrator == nullptr) {
+    ServerListenerOperationResult refused;
+    refused.ok = false;
+    refused.outcome = "refused";
+    refused.diagnostics.push_back(RuntimeDiagnostic(
+        "SERVER.AGENT_RUNTIME.LISTENER_ORCHESTRATOR_REQUIRED",
+        "The coordinator requires the node's retained listener orchestrator."));
+    {
+      std::lock_guard<std::mutex> guard(state_mutex_);
+      managed_listener_state_ = "refused";
+      managed_listener_count_ = 0;
+    }
+    TraceServerStartupPhase(config, "managed_listeners", "refused");
+    return refused;
+  }
+  *orchestrator = BuildListenerOrchestrator(config, artifacts);
+  auto started = StartEnabledServerListeners(orchestrator, config, artifacts);
+  {
+    std::lock_guard<std::mutex> guard(state_mutex_);
+    managed_listener_state_ = started.ok ? "started" : "refused";
+    managed_listener_count_ = orchestrator->profiles.size();
+  }
+  TraceServerStartupPhase(config, "managed_listeners",
+                          started.ok ? "accepted" : "refused");
+  return started;
+}
+
 bool ServerAgentRuntime::StartImpl(const ServerBootstrapConfig& config,
                                   const HostedEngineState& engine_state,
                                   std::vector<ServerDiagnostic>* diagnostics,
@@ -1519,6 +1556,8 @@ ServerAgentRuntimeSnapshot ServerAgentRuntime::Snapshot() const {
   snapshot.database_uuid = database_uuid_;
   snapshot.filespace_uuid = filespace_uuid_;
   snapshot.status_path = status_path_;
+  snapshot.managed_listener_state = managed_listener_state_;
+  snapshot.managed_listener_count = managed_listener_count_;
   snapshot.hardware_concurrency = hardware_concurrency_;
   snapshot.effective_cpu_count = effective_cpu_count_;
   snapshot.foreground_reserved_capacity = foreground_reserved_capacity_;

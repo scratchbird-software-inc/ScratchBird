@@ -4950,8 +4950,13 @@ static ServerIpcEndpointResult RunParserServerIpcEndpointImpl(const ServerBootst
   }
   TraceServerStartupPhase(config,"agent_runtime","accepted");
   auto& listener_orchestrator = owner.listeners;
-  listener_orchestrator = BuildListenerOrchestrator(config, artifacts);
-  const auto listener_start = StartEnabledServerListeners(&listener_orchestrator, config, artifacts);
+  // SEARCH_KEY: SERVER_COORDINATOR_OWNS_MANAGED_LISTENER_START
+  // The coordinator owns this startup step; the endpoint no longer builds and
+  // starts listeners itself. Refusal handling below is unchanged, and the stop
+  // paths stay here because the drain already retires listeners after clients
+  // and before sessions.
+  const auto listener_start =
+      agent_runtime.StartManagedListeners(config, artifacts, &listener_orchestrator);
   if (!listener_start.ok) {
     RequestParserServerStop();
     result.exit_code = 2;
