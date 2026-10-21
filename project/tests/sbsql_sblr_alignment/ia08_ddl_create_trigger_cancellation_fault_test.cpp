@@ -12,6 +12,7 @@
 #include "engine/internal_api/catalog/schema_tree_api.hpp"
 #include "engine/internal_api/security/security_principal_lifecycle.hpp"
 #include "datatype_catalog_manifest.hpp"
+#include "datatype_type_codec_identity_v3.hpp"
 #include "datatype_operations.hpp"
 #include "engine/internal_api/catalog/name_resolution_api.hpp"
 #include "catalog/name_registry.hpp"
@@ -143,7 +144,10 @@ TriggerTarget PrepareTriggerTarget(const Fixture& fixture, PublicSession& sessio
   const auto type = types::LookupDatatypeCatalogRow(catalog.manifest, types::CanonicalTypeId::int64);
   Require(type.ok() && type.manifest.descriptor_rows.size() == 1, "002624 int64 descriptor unavailable");
   const auto& datatype = type.manifest.descriptor_rows.front();
-  const auto codec = types::LookupDatatypeTypeCodecIdentityV1(context->datatype_catalog_snapshot_uuid,
+  // Codec identity rows for cohort V6 and later live in the V3 registry; the
+  // V1 table stops at V5, so asking it for the live receipt's cohort cannot
+  // match. The V3 row carries the V1 fields verbatim in legacy_fields.
+  const auto codec = types::LookupDatatypeTypeCodecIdentityV3(context->datatype_catalog_snapshot_uuid,
       context->datatype_catalog_generation, context->datatype_registry_generation,
       datatype.descriptor_uuid.value, datatype.descriptor_epoch);
   Require(codec.ok, "002624 exact int64 codec unavailable");
@@ -159,12 +163,20 @@ TriggerTarget PrepareTriggerTarget(const Fixture& fixture, PublicSession& sessio
     column.descriptor.encoded_descriptor = "type=int64;nullable=false";
     column.descriptor.datatype_descriptor_uuid = datatype.descriptor_uuid.value;
     column.descriptor.datatype_descriptor_generation = datatype.descriptor_epoch;
-    column.descriptor.type_uuid = codec.row.type_uuid;
+    column.descriptor.type_uuid = codec.row.legacy_fields.type_uuid;
+    // The bound column must name the cohort its datatype identity came from,
+    // or create_table refuses with bound_column_datatype_catalog_mismatch.
+    // This was latent: the V1 lookup above refused first, so the fixture never
+    // reached the publication that checks it.
+    column.descriptor.datatype_cohort = {context->datatype_catalog_snapshot_uuid,
+                                         context->datatype_catalog_generation,
+                                         context->datatype_registry_generation};
     relation.table_columns.push_back(std::move(column));
   }
   const auto created = api::EngineCreateTable(relation);
   if (!created.ok) for (const auto& diagnostic : created.diagnostics)
-    std::cerr << "002624 table seed: " << diagnostic.code << ':' << diagnostic.message_key << '\n';
+    std::cerr << "002624 table seed: " << diagnostic.code << ':'
+              << diagnostic.message_key << ':' << diagnostic.detail << '\n';
   Require(created.ok, "002624 target-table DDL publication failed");
   const auto loaded = api::LoadMgaRelationStoreState(*context);
   Require(loaded.ok, "002624 target-table metadata unavailable");
