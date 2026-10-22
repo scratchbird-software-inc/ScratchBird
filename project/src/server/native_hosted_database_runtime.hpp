@@ -7,6 +7,7 @@
 #include "native_local_service_agent_configuration.hpp"
 #include "process_crypto_owner.hpp"
 #include "hosted_process_admission.hpp"
+#include <optional>
 #include "native_owned_publication_watermark.hpp"
 #include "native_catalog_cohort_lease_reader.hpp"
 #include "engine/internal_api/security/native_local_service_authentication.hpp"
@@ -84,7 +85,28 @@ class NativeHostedDatabaseRuntime final {
   static NativeHostedRuntimeOpenResult Open(ServerProcessCryptoOwner&,
       const DatabaseOwnershipRequest&, NativeHostedRuntimeLimits,
       std::vector<std::unique_ptr<storage::disk::FileDevice>>&) noexcept;
+  // SEARCH_KEY: NATIVE_HOSTED_OPEN_UNDER_HELD_PROCESS_ADMISSION
+  // Same open for a caller that already holds the single process-to-database
+  // admission, which Open() cannot serve because it reserves internally and
+  // TryReserve is one-shot. The reservation is BORROWED, not taken: the
+  // reference is proof of custody only, and the caller keeps the right (and
+  // the duty) to commit or release it. Passing a reset reservation is refused
+  // rather than opening unadmitted.
+  static NativeHostedRuntimeOpenResult OpenUnderHeldAdmission(ServerProcessCryptoOwner&,
+      const DatabaseOwnershipRequest&, NativeHostedRuntimeLimits,
+      std::vector<std::unique_ptr<storage::disk::FileDevice>>&,
+      const HostedProcessAdmission::Reservation&,
+      std::shared_ptr<DatabaseOwnershipLock> held_ownership = nullptr) noexcept;
   static NativeHostedRuntimeCloseResult Close(std::shared_ptr<NativeHostedDatabaseRuntime>) noexcept;
+ private:
+  // Shared body. Owns the reservation when Open reserved it, borrows when the
+  // caller already holds one.
+  static NativeHostedRuntimeOpenResult OpenImpl(ServerProcessCryptoOwner&,
+      const DatabaseOwnershipRequest&, NativeHostedRuntimeLimits,
+      std::vector<std::unique_ptr<storage::disk::FileDevice>>&,
+      std::optional<HostedProcessAdmission::Reservation>&&,
+      std::shared_ptr<DatabaseOwnershipLock>) noexcept;
+ public:
 
   class CredentialRead final {
     static std::shared_ptr<NativeHostedDatabaseRuntime> TakeOwner(CredentialRead& other) noexcept {

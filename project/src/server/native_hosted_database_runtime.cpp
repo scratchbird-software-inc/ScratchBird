@@ -3,9 +3,59 @@
 #include "native_hosted_database_runtime.hpp"
 
 namespace scratchbird::server {
+// SEARCH_KEY: NATIVE_HOSTED_OPEN_UNDER_HELD_PROCESS_ADMISSION
+// Open reserves the single process-to-database admission itself, so a caller
+// that already holds it can never call Open -- TryReserve is a one-shot
+// compare-exchange from unbound. StartHostedEngine is exactly such a caller.
+//
+// It must not simply hand the reservation over, either: StartHostedEngine
+// commits its own reservation at the end of a successful open and
+// std::terminate()s if that commit fails, so transferring ownership would
+// abort the server rather than degrade. OpenUnderHeldAdmission therefore
+// BORROWS: it neither reserves nor stores, taking a const reference to the
+// caller's reservation purely as proof the caller holds one. process_admission_
+// stays empty, so CloseImpl's release is a no-op and the caller's commit
+// remains the single authority over the gate.
 NativeHostedRuntimeOpenResult NativeHostedDatabaseRuntime::Open(ServerProcessCryptoOwner& process,
     const DatabaseOwnershipRequest& request, NativeHostedRuntimeLimits limits,
     std::vector<std::unique_ptr<storage::disk::FileDevice>>& secondary) noexcept {
+  using E=NativeHostedRuntimeError;
+  auto admission=ServerHostedProcessAdmission().TryReserve();
+  if(!admission.ok()) {
+    NativeHostedRuntimeOpenResult out;
+    out.error=E::process_admission_failure;
+    out.process_admission_error=admission.error;
+    return out;
+  }
+  return OpenImpl(process,request,limits,secondary,
+                  std::optional<HostedProcessAdmission::Reservation>(
+                      std::move(admission.reservation)),
+                  nullptr);
+}
+
+NativeHostedRuntimeOpenResult NativeHostedDatabaseRuntime::OpenUnderHeldAdmission(
+    ServerProcessCryptoOwner& process,
+    const DatabaseOwnershipRequest& request, NativeHostedRuntimeLimits limits,
+    std::vector<std::unique_ptr<storage::disk::FileDevice>>& secondary,
+    const HostedProcessAdmission::Reservation& held,
+    std::shared_ptr<DatabaseOwnershipLock> held_ownership) noexcept {
+  using E=NativeHostedRuntimeError;
+  if (!held) {
+    NativeHostedRuntimeOpenResult out;
+    out.error=E::process_admission_failure;
+    out.process_admission_error=HostedProcessAdmissionError::opening;
+    return out;
+  }
+  return OpenImpl(process,request,limits,secondary,std::nullopt,
+                  std::move(held_ownership));
+}
+
+NativeHostedRuntimeOpenResult NativeHostedDatabaseRuntime::OpenImpl(
+    ServerProcessCryptoOwner& process,
+    const DatabaseOwnershipRequest& request, NativeHostedRuntimeLimits limits,
+    std::vector<std::unique_ptr<storage::disk::FileDevice>>& secondary,
+    std::optional<HostedProcessAdmission::Reservation>&& owned_admission,
+    std::shared_ptr<DatabaseOwnershipLock> held_ownership) noexcept {
   namespace db=storage::database;using E=NativeHostedRuntimeError;
   NativeHostedRuntimeOpenResult out;
   if (!process.installed()) { out.error=E::process_unavailable; return out; }
@@ -15,13 +65,12 @@ NativeHostedRuntimeOpenResult NativeHostedDatabaseRuntime::Open(ServerProcessCry
       !NativeRuntimePrincipalCredentialWorkspaceBytes(limits.catalog)||
       !engine::internal_api::NativeRuntimeAuthorizationWorkspaceBytes(limits.authorization)) return out;
   try {
-    auto admission=ServerHostedProcessAdmission().TryReserve();
-    if(!admission.ok()) {out.error=E::process_admission_failure;out.process_admission_error=admission.error;return out;}
     const DatabaseOwnershipRequest command=request;
     // Allocate result/close capacity before adopting any native device.
     out.runtime=std::shared_ptr<NativeHostedDatabaseRuntime>(new NativeHostedDatabaseRuntime(process));
     auto& self=*out.runtime;self.limits_=limits;self.entering_=true;
-    self.process_admission_.emplace(std::move(admission.reservation));
+    // Empty when borrowing: the caller's reservation governs the gate.
+    if (owned_admission) self.process_admission_.emplace(std::move(*owned_admission));
     struct Leave {bool& flag;~Leave(){flag=false;}} leave{self.entering_};
     // Identity of this actual native owner lifetime, issued before any device
     // guard. It neither reuses a memory-reservation UUID nor admits readiness.
@@ -29,13 +78,32 @@ NativeHostedRuntimeOpenResult NativeHostedDatabaseRuntime::Open(ServerProcessCry
     if(!instance){out.error=E::identity_failure;return out;}
     self.engine_instance_=*instance;
     self.close_receipts_.resize(secondary.size()+1);
-    out.ownership=AcquireDatabaseOwnership(command);
-    if (!out.ownership.acquired) {out.error=E::ownership_failure;return out;}
-    auto begun=NativeHostedDatabaseCustody::Begin(std::move(out.ownership.lock));
+    // SEARCH_KEY: NATIVE_HOSTED_OPEN_UNDER_HELD_DATABASE_OWNERSHIP
+    // Database ownership is the SECOND shared resource this open competes for.
+    // AcquireDatabaseOwnership takes the exclusive database lock, which a
+    // caller already serving this database necessarily holds -- that collision
+    // is ownership_failure, and it is what broke the live server when this
+    // path was first activated. When the caller supplies its lock, adopt it
+    // instead of acquiring a second one. Custody still drives the route
+    // transition from here, so the caller must not drive it concurrently.
+    // Production-lineage acceptance is opted into exactly when the caller
+    // supplied its own lock, i.e. the server borrow path. A standalone native
+    // Open keeps the native-only probe.
+    const bool production_lineage = static_cast<bool>(held_ownership);
+    std::shared_ptr<DatabaseOwnershipLock> route_lock;
+    if (held_ownership) {
+      route_lock=std::move(held_ownership);
+      out.ownership.acquired=true;
+    } else {
+      out.ownership=AcquireDatabaseOwnership(command);
+      if (!out.ownership.acquired) {out.error=E::ownership_failure;return out;}
+      route_lock=std::move(out.ownership.lock);
+    }
+    auto begun=NativeHostedDatabaseCustody::Begin(std::move(route_lock));
     out.custody_error=begun.error;out.route_error=begun.route_error;
     if (!begun.ok()) {out.error=E::custody_failure;return out;}
     self.custody_=std::move(begun.custody);
-    out.probe=NativeHostedDatabaseCustody::ProbeBootstrap(self.custody_);
+    out.probe=NativeHostedDatabaseCustody::ProbeBootstrap(self.custody_,production_lineage);
     if (!out.probe.ok()) {out.error=E::bootstrap_failure;return out;}
     // Probed identities select memory admission only. Adoption below validates
     // the complete actual native graph against this same retained inode.

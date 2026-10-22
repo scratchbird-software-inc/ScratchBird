@@ -93,7 +93,18 @@ int RunServerProduct(
   scratchbird::server::TraceServerStartupPhase(startup.effective_config,"database_open","requested");
   const auto engine_host =
       scratchbird::server::StartHostedEngine(startup.effective_config,
-                                            scratchbird::server::RequestParserServerStop);
+                                            scratchbird::server::RequestParserServerStop,
+#if !defined(_WIN32)
+                                            // SEARCH_KEY: SERVER_NATIVE_HOSTED_RUNTIME_INTEGRATION
+                                            // Decision 2b: only the server
+                                            // path supplies the owner. The
+                                            // embedded client passes none and
+                                            // so never acquires this runtime.
+                                            &crypto
+#else
+                                            nullptr
+#endif
+                                            );
   scratchbird::server::TraceServerStartupPhase(startup.effective_config,"database_open",
       engine_host.diagnostics.empty()?"accepted":"refused");
   struct ShutdownArm {

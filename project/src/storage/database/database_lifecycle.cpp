@@ -8583,6 +8583,9 @@ DatabaseBootstrapSecurityCatalogReadResult ReadBootstrapSecurityCatalogFromOwned
   // transaction, and unique. Recognition alone proves shape, not commitment.
   std::optional<scratchbird::core::catalog::CatalogRuntimeAuthorityBinding>
       runtime_authority_binding;
+  std::vector<DatabaseBootstrapSecurityCatalogState::CommittedAgentPolicy>
+      committed_agent_policies;
+  u32 committed_agent_registrations = 0;
   for (const auto& row : catalog_rows) {
     if (row.kind != CatalogPageRowKind::typed_catalog_record) continue;
     auto decoded = DecodeCatalogTypedRecord(row);
@@ -8595,6 +8598,57 @@ DatabaseBootstrapSecurityCatalogReadResult ReadBootstrapSecurityCatalogFromOwned
         return fail("CATALOG.INVALID_INPUT","catalog.security_record.invalid",
             "security_origin_not_committed_bootstrap");
       records.push_back(std::move(decoded.record));
+      continue;
+    }
+    // SEARCH_KEY: DATABASE_COMMITTED_AGENT_POLICY_READ
+    // Agent policy committed at creation, held to the same standard as the
+    // rows above: recognized by its own self-consistent content and proven
+    // committed by the same bootstrap transaction. Declarations only.
+    // The agent matcher only takes a view; the authority-binding header happens
+    // to carry both overloads. Borrow rather than widen the shared header.
+    if (scratchbird::core::catalog::CatalogAgentBootstrapMatchesHeader(
+            scratchbird::core::catalog::BorrowCatalogTypedRecord(decoded.record))) {
+      const auto agent = scratchbird::core::catalog::
+          DecodeCatalogAgentBootstrapDefinition(decoded.record.payload);
+      if (!agent.ok())
+        return fail("CATALOG.INVALID_INPUT","catalog.agent_bootstrap.invalid",
+            "agent_bootstrap_undecodable");
+      if (agent.record->origin_transaction_uuid.value !=
+              committed_origin.entry.identity.transaction_uuid.value ||
+          agent.record->origin_local_transaction_id !=
+              MakeLocalTransactionId(kBootstrapCatalogTransactionId).value)
+        return fail("CATALOG.INVALID_INPUT","catalog.agent_bootstrap.invalid",
+            "agent_bootstrap_origin_not_committed_bootstrap");
+      if (agent.record->database_uuid != database_uuid.value)
+        return fail("CATALOG.INVALID_INPUT","catalog.agent_bootstrap.invalid",
+            "agent_bootstrap_database_mismatch");
+      if (agent.record->kind ==
+          scratchbird::core::catalog::AgentBootstrapDefinitionKind::registration) {
+        ++committed_agent_registrations;
+        continue;
+      }
+      // `properties` is schema-defined `key=value` configuration text. Only the
+      // two fields needed to report what was committed are read here; the full
+      // text stays the owning policy reader's to interpret.
+      const auto property = [&](std::string_view key) -> std::string_view {
+        const std::string_view text = agent.record->properties;
+        for (std::size_t at = 0; at < text.size();) {
+          const auto end = text.find('\n', at);
+          const auto line = text.substr(at, end == std::string_view::npos
+              ? std::string_view::npos : end - at);
+          const auto split = line.find('=');
+          if (split != std::string_view::npos && line.substr(0, split) == key)
+            return line.substr(split + 1);
+          if (end == std::string_view::npos) break;
+          at = end + 1;
+        }
+        return {};
+      };
+      DatabaseBootstrapSecurityCatalogState::CommittedAgentPolicy policy;
+      policy.agent_type.assign(agent.record->agent_type);
+      policy.enabled = property("enabled") == "1";
+      policy.generation = agent.record->generation;
+      committed_agent_policies.push_back(std::move(policy));
       continue;
     }
     if (!scratchbird::core::catalog::CatalogRuntimeAuthorityBindingMatchesHeader(
@@ -8638,6 +8692,9 @@ DatabaseBootstrapSecurityCatalogReadResult ReadBootstrapSecurityCatalogFromOwned
     // SEARCH_KEY: DATABASE_COMMITTED_STARTUP_AUTHORITY_MODE
     state.authority_mode = runtime_authority_binding->authority_mode;
   }
+  // SEARCH_KEY: DATABASE_COMMITTED_AGENT_POLICY_READ
+  validated.state.committed_agent_policies = std::move(committed_agent_policies);
+  validated.state.committed_agent_registration_records = committed_agent_registrations;
   // The shared validator cannot prove commitment. Only the actual source
   // reader above has verified the owning inventory and bootstrap transaction.
   validated.state.committed_by_inventory = true;

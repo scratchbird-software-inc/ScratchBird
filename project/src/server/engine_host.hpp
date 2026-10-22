@@ -69,6 +69,24 @@ struct HostedDatabaseSnapshot {
   std::uint64_t capability_policy_generation = 1;
   std::uint64_t policy_generation = 1;
   std::uint64_t security_epoch = 1;
+  // SEARCH_KEY: SERVER_NATIVE_HOSTED_RUNTIME_INTEGRATION
+  // True when the native hosted runtime opened alongside this database, which
+  // is the precondition for engine-owned startup verification and an admitted
+  // local-service session. False is a served database without them, not a
+  // failure.
+  bool native_hosted_runtime_open = false;
+  // SEARCH_KEY: DATABASE_COMMITTED_AGENT_POLICY_READ
+  // Agent policy this database committed at creation, as read back at open.
+  // Reported, not yet authoritative for selection: `selected_agent_type_ids`
+  // above still comes from the opened database's agent health. These fields
+  // make the committed set observable and let a divergence from it be seen.
+  std::vector<std::string> committed_agent_policy_types;
+  std::vector<std::string> committed_enabled_agent_type_ids;
+  std::uint32_t committed_agent_registration_records = 0;
+  // Agent types the runtime would select that the database did not commit a
+  // policy for, and vice versa. Empty when the committed set covers the
+  // selection exactly.
+  std::vector<std::string> agent_policy_selected_without_committed_policy;
   // SEARCH_KEY: DATABASE_COMMITTED_STARTUP_AUTHORITY_MODE
   // The authority source this database committed at creation, once the open has
   // confirmed it matches the configured mode. Empty when the credentialed
@@ -125,8 +143,20 @@ struct HostedEngineResult {
 };
 
 const char* HostedDatabaseStateName(HostedDatabaseState state);
+class ServerProcessCryptoOwner;
+
+// SEARCH_KEY: SERVER_NATIVE_HOSTED_RUNTIME_INTEGRATION
+// `crypto` is optional (decision 1a): the process crypto owner lives in main()
+// and only on POSIX, and this entry point is platform-neutral with many
+// callers, so it cannot be required. Supplying it opts this open into the
+// native hosted runtime, which is what makes engine-owned startup verification
+// and an admitted service session reachable. Omitting it -- which every
+// existing caller does, and which the embedded client must keep doing -- opens
+// exactly as before. A native open that refuses is recorded and does not fail
+// the server: it degrades to this path's own result.
 HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
-                                    void (*before_failure_cleanup)() noexcept = nullptr);
+                                    void (*before_failure_cleanup)() noexcept = nullptr,
+                                    ServerProcessCryptoOwner* crypto = nullptr);
 std::string HostedEngineStatusJson(const HostedEngineState& state);
 std::shared_ptr<const HostedDatabaseRuntime> FindHostedDatabaseRuntime(
     const HostedEngineState& state,

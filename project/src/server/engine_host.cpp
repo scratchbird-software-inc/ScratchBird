@@ -13,6 +13,8 @@
 
 #include "engine_host.hpp"
 #include "hosted_process_admission.hpp"
+#include "native_hosted_database_runtime.hpp"
+#include "startup_trace.hpp"
 
 #include "config_policy_security_lifecycle.hpp"
 #include "database_ownership.hpp"
@@ -140,7 +142,8 @@ std::shared_ptr<const HostedDatabaseRuntime> FindHostedDatabaseRuntime(
 }
 
 HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
-                                    void (*before_failure_cleanup)() noexcept) {
+                                    void (*before_failure_cleanup)() noexcept,
+                                    ServerProcessCryptoOwner* crypto) {
   // A forked child must exec a fresh host. Refuse before constructing ordinary
   // diagnostics, which could enter an inherited crypto provider or its mutex.
   if (!hosted_process_admission.InOwningProcess()) std::terminate();
@@ -597,6 +600,35 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
         BinaryIdentity(lifecycle_open.state.engine_agent_health.engine_instance_uuid);
     snapshot.selected_agent_type_ids =
         lifecycle_open.state.engine_agent_health.selected_agent_type_ids;
+    // SEARCH_KEY: DATABASE_COMMITTED_AGENT_POLICY_READ
+    // The database committed its agent policy at creation
+    // (SB_AGENT_POLICY_BOOTSTRAP_BASELINE) and that policy is now read back at
+    // open. It is reported rather than made authoritative for selection: the
+    // canonical agent set is still being negotiated, so a database created
+    // against an earlier registry legitimately commits a different set than the
+    // running build would select. Refusing on that divergence would reject
+    // databases that are not defective. Surfacing it is what lets the
+    // difference be seen instead of silently ignored.
+    if (committed_bootstrap_security) {
+      const auto& committed = committed_bootstrap_security->committed_agent_policies;
+      snapshot.committed_agent_registration_records =
+          committed_bootstrap_security->committed_agent_registration_records;
+      snapshot.committed_agent_policy_types.reserve(committed.size());
+      for (const auto& policy : committed) {
+        snapshot.committed_agent_policy_types.push_back(policy.agent_type);
+        if (policy.enabled)
+          snapshot.committed_enabled_agent_type_ids.push_back(policy.agent_type);
+      }
+      for (const auto& selected : snapshot.selected_agent_type_ids) {
+        const bool committed_for_selected =
+            std::find_if(committed.begin(), committed.end(),
+                         [&](const auto& policy) {
+                           return policy.agent_type == selected;
+                         }) != committed.end();
+        if (!committed_for_selected)
+          snapshot.agent_policy_selected_without_committed_policy.push_back(selected);
+      }
+    }
     snapshot.database_engine_agent_state =
         scratchbird::core::agents::DatabaseEngineAgentLifecycleStateName(
             lifecycle_open.state.engine_agent_health.agent_state);
@@ -652,6 +684,154 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
     result.state.database_ownership_locks.push_back(std::move(database_ownership_lock));
   }
   result.state.database_runtimes.push_back(std::move(database_runtime));
+
+  // SEARCH_KEY: SERVER_NATIVE_HOSTED_RUNTIME_INTEGRATION
+  // Open the native hosted runtime under this path's already-held process
+  // admission, which is what makes engine-owned startup verification and an
+  // admitted local-service session reachable at all. Three gates, by design:
+  //
+  //  * a crypto owner must have been supplied (decision 1a) -- every existing
+  //    caller passes none and is unaffected;
+  //  * embedded direct mode is excluded (decision 2a; the call site also
+  //    supplies no owner, which is decision 2b). The embedded security model
+  //    starts no agent runtime and cannot host a server-mode boundary, so an
+  //    embedded caller must never acquire this;
+  //  * the owner must report installed().
+  //
+  // ADDITIVE: a refusal here is recorded as a warning and changes nothing.
+  // This open has already succeeded, and its reservation is committed below --
+  // the native runtime BORROWS that admission and must not take it, because
+  // the commit immediately after terminates the process if its reservation
+  // was moved away.
+  // SEARCH_KEY: SERVER_NATIVE_HOSTED_RUNTIME_INTEGRATION
+  // DISABLED 2026-10-21 after it broke a live server. Keeping the code, the
+  // decisions and the trace, and disabling activation, because the failure is
+  // informative and the next attempt needs it.
+  //
+  // What happened: the gate below is reached in a real server (SBsrv supplies a
+  // crypto owner), the native open ran, and it refused with
+  // ownership_failure (NativeHostedRuntimeError 4) -- the native runtime
+  // acquires DATABASE OWNERSHIP of its own, and StartHostedEngine already
+  // holds that lock. Same collision class as the process admission B1 solved,
+  // on a second shared resource I had not accounted for.
+  //
+  // Worse, the refusal was NOT additive in practice: the server reported
+  // serving=false and never published its socket, so
+  // live_server_agent_storage_benchmark_gate went PASS -> FAIL. A native open
+  // that touches shared ownership on its way to failing cannot degrade
+  // harmlessly, which invalidates the additive premise rather than the gating.
+  //
+  // The next attempt must give the native runtime a borrow-not-acquire path for
+  // database ownership, exactly as B1 did for process admission, and must be
+  // re-verified against a LIVE server test -- no unit suite produces this,
+  // because only the real SBsrv passes a crypto owner.
+  // DISABLED 2026-10-21, second time, on evidence. See FINDING-15.
+  //
+  // The ownership borrow worked: adopting the caller's lock moved the native
+  // open past AcquireDatabaseOwnership and past custody Begin, so the error
+  // went 4 (ownership_failure) -> 6 (bootstrap_failure). What did NOT change is
+  // the thing that matters: the server still reported serving=false and never
+  // published its socket, with the live gate failing either way.
+  //
+  // So coexistence is the defect, not the collisions. Both a clean early
+  // refusal and a later one leave this server unable to serve, which means an
+  // "additive" native open alongside the live open path is not achievable by
+  // borrowing more resources -- the native runtime is built to BE the open
+  // path, not to sit beside one. Finishing this needs the delegation
+  // restructure (FINDING-11 option A), not another borrow.
+  // DISABLED pending the delegation restructure. See FINDING-16.
+  //
+  // Option 2 worked: the production-lineage probe moved the native open from
+  // bootstrap_failure(6) to adoption_failure(10), past identity, memory and
+  // crypto. The format mismatch is genuinely solved.
+  //
+  // What remains is not a format or a resource-borrow problem. With the
+  // startup-fatal diagnostic bug fixed (a "warning" in result.diagnostics
+  // makes main() return 2 before serving), the live server now reports the
+  // actual conflict: SB-STORAGE-DISK-ROUTE-OWNER-LOCK-HELD, "The coordinator
+  // could not read its database configuration." The native custody holds the
+  // route owner lock exclusively, so the live coordinator cannot read through
+  // it. Two route owners for one database is the irreducible conflict.
+  //
+  // So option 2 is a necessary component but not sufficient: it unblocks the
+  // delegation restructure (there must be exactly ONE route owner, the native
+  // runtime, with the live path consuming its observation) rather than
+  // enabling coexistence.
+  constexpr bool kNativeHostedRuntimeActivationEnabled = false;
+  if (kNativeHostedRuntimeActivationEnabled &&
+      crypto != nullptr && !config.embedded_direct_mode && crypto->installed()) {
+    // Decision 3b: the limit shape and multipliers are taken from the one
+    // caller proven to open successfully
+    // (native_local_service_enrollment_test.cpp:1318,1361,1368), parameterised
+    // by this database's page size rather than its profile table. They are
+    // provisional production defaults, not a tuned policy; deriving them from
+    // [server.memory] is the intended follow-up (decision 3a).
+    const auto page_size_bytes = snapshot.page_size_bytes != 0
+        ? static_cast<std::uint32_t>(snapshot.page_size_bytes) : std::uint32_t{16384};
+    const auto page_size = static_cast<std::size_t>(page_size_bytes);
+    // `catalog.maximum_profile` is a canonical filespace PAGE PROFILE uuid, not
+    // a database identity: the workspace sizers resolve it through
+    // FindCanonicalFilespacePageProfile and dereference the result without a
+    // null check, so a non-profile uuid here is a crash rather than a refusal.
+    // Look the profile up from this database's page size and refuse the native
+    // open if the size is not a canonical one.
+    const auto* page_profile =
+        storage::disk::FindCanonicalFilespacePageProfileForSize(page_size_bytes);
+    if (page_profile == nullptr) {
+      // No duplicate commit/return path here: fall through to the single exit
+      // below, which commits and returns exactly once.
+      // NOT result.diagnostics: main() returns 2 on ANY non-empty
+      // engine_host.diagnostics before it ever serves, so a "warning" here
+      // aborts startup. That is what made every native-open refusal break the
+      // server regardless of how far the open got. Trace it instead.
+      TraceServerStartupPhase(config, "native_hosted_runtime",
+                              "refused_no_page_profile");
+    } else {
+    NativeHostedRuntimeLimits native_limits;
+    native_limits.writer.maximum_owner_backing_bytes = 64u * 1024u;
+    native_limits.writer.source.maximum_backing_bytes = 512u * page_size;
+    native_limits.writer.source.maximum_verification_image_bytes = 32u * 1024u * 1024u;
+    native_limits.database_crypto_bytes = 2u * 1024u * 1024u;
+    native_limits.catalog = {page_profile->uuid, 1, 32, 128, 128,
+                             {16, 32u * page_size}};
+    native_limits.authorization = {128, 128, 1000000};
+
+    DatabaseOwnershipRequest native_request;
+    native_request.database_path = snapshot.database_path;
+    native_request.owner_kind = "server";
+    native_request.storage_access = storage::disk::RouteStorageAccess::read_write;
+
+    std::vector<std::unique_ptr<storage::disk::FileDevice>> native_secondary;
+    // Both shared resources are adopted rather than re-acquired: the process
+    // admission reservation and this database's ownership lock. Acquiring
+    // either a second time is what refused before.
+    const auto native = NativeHostedDatabaseRuntime::OpenUnderHeldAdmission(
+        *crypto, native_request, native_limits, native_secondary,
+        process_admission.reservation,
+        // NOT `database_ownership_lock`: it was moved into
+        // result.state.database_ownership_locks above, so reading it here
+        // would pass a null pointer, silently fall back to acquiring a second
+        // lock, and reproduce the original ownership_failure. Take a shared
+        // reference to the retained one instead.
+        result.state.database_ownership_locks.empty()
+            ? nullptr
+            : result.state.database_ownership_locks.back());
+    if (native.error != NativeHostedRuntimeError::none || !native.runtime) {
+      // See above: a diagnostic here is fatal to startup, not advisory.
+      TraceServerStartupPhase(config, "native_hosted_runtime_error",
+          std::to_string(static_cast<unsigned>(native.error)));
+    } else {
+      snapshot.native_hosted_runtime_open = true;
+    }
+    }
+    // A silently-degrading path needs a success marker, or a clean run proves
+    // nothing about whether it ran. Traced beside the other startup phases.
+    TraceServerStartupPhase(config, "native_hosted_runtime",
+        snapshot.native_hosted_runtime_open ? "accepted" : "refused");
+  } else {
+    TraceServerStartupPhase(config, "native_hosted_runtime", "not_selected");
+  }
+
   result.state.databases.push_back(snapshot);
   if (!process_admission.reservation.Commit()) std::terminate();
   startup_completed = true;

@@ -4,6 +4,8 @@
 #include "native_selected_checkpoint_read_lease.hpp"
 #include "native_selected_checkpoint_memory_lease.hpp"
 #include "route_ownership_lease.hpp"
+#include "database_format.hpp"
+#include "startup_state.hpp"
 #include <atomic>
 
 namespace scratchbird::storage::database {
@@ -147,8 +149,16 @@ class NativeOwnedCheckpointSource {
   // consumes the transition nor permits legacy borrowing. No pathname reopen,
   // supplied identity/profile, mounted source, page-zero or readiness receipt.
   // Full adoption MUST freshly revalidate this observation and the entire graph.
+  // SEARCH_KEY: NATIVE_PROBE_ACCEPTS_PRODUCTION_LINEAGE
+  // `allow_production_lineage` opts into reading a database created by the
+  // production path (CreateDatabaseFile), which writes a DatabaseHeader at
+  // offset 0 rather than a FilespaceBootstrap preamble. Default false keeps
+  // native-lineage callers on exactly their previous behaviour: the native
+  // decode is always attempted first, and this only runs where it already
+  // failed.
   static NativeOwnedSourceBootstrapResult ProbeRouteBootstrap(
-      const std::shared_ptr<disk::RouteSourceTransition>&) noexcept;
+      const std::shared_ptr<disk::RouteSourceTransition>&,
+      bool allow_production_lineage = false) noexcept;
   static NativeOwnedSourceResult AdoptWithMemory(const Uuid&,const Uuid&,
       std::vector<std::unique_ptr<disk::FileDevice>>&,
       NativeOwnedCheckpointMemoryLimits,NativeStorageMemory&,const NativeStorageMemoryBinding&,
@@ -502,7 +512,8 @@ inline NativeOwnedSourceMemoryReadResult NativeOwnedCheckpointSource::ReadWithMe
   return out;
 }
 inline NativeOwnedSourceBootstrapResult NativeOwnedCheckpointSource::ProbeRouteBootstrap(
-    const std::shared_ptr<disk::RouteSourceTransition>& transition) noexcept {
+    const std::shared_ptr<disk::RouteSourceTransition>& transition,
+    bool allow_production_lineage) noexcept {
   using E=NativeOwnedSourceError;
   NativeOwnedSourceBootstrapResult out;
   try {
@@ -523,7 +534,44 @@ inline NativeOwnedSourceBootstrapResult NativeOwnedCheckpointSource::ProbeRouteB
     out.physical_bytes_read=observed.io.bytes_transferred;
     out.io_status=disk::BoundedIoStatus(observed.io);
     out.bootstrap_error=observed.error;
-    if(!observed.ok()){out.error=E::bootstrap_failure;return out;}
+    if(!observed.ok()){
+      // SEARCH_KEY: NATIVE_PROBE_ACCEPTS_PRODUCTION_LINEAGE
+      // The native preamble is absent. A production-lineage database carries a
+      // DatabaseHeader at offset 0 instead, with its first filespace identity
+      // in the fixed startup map. Assemble the equivalent preamble from those
+      // two, rather than requiring the file to have been created natively.
+      // Only the identities this probe actually supplies downstream are
+      // synthesized -- database_uuid and filespace_uuid -- plus the page-size
+      // profile they are validated against. Nothing here grants adoption: the
+      // caller still revalidates the whole graph.
+      if(!allow_production_lineage){out.error=E::bootstrap_failure;return out;}
+      disk::SerializedDatabaseHeader header_bytes{};
+      const auto header_io=primary->ReadAt(0,header_bytes.data(),header_bytes.size());
+      if(!header_io.ok()||header_io.bytes_transferred!=header_bytes.size()){
+        out.error=E::bootstrap_failure;return out;
+      }
+      const auto parsed=disk::ParseDatabaseHeader(header_bytes);
+      if(!parsed.ok()){out.error=E::bootstrap_failure;return out;}
+      const auto page_size=parsed.header.page_size;
+      const auto* profile=disk::FindCanonicalFilespacePageProfileForSize(page_size);
+      if(profile==nullptr){out.error=E::bootstrap_failure;return out;}
+      auto startup=ReadStartupStatePageBody(primary.get(),page_size);
+      if(!startup.status.ok()||startup.state.first_filespace_uuid.value.is_nil()){
+        out.error=E::bootstrap_failure;return out;
+      }
+      disk::FilespaceBootstrap synthesized;
+      synthesized.database_uuid=parsed.header.database_uuid;
+      synthesized.filespace_uuid=startup.state.first_filespace_uuid.value;
+      synthesized.page_size_profile_uuid=profile->uuid;
+      synthesized.page_size_bytes=page_size;
+      // role/lifecycle_state/checksum+encryption profiles are deliberately left
+      // at their defaults: this probe's consumers read only the two identities
+      // and the page-size profile, and inventing registry codes the production
+      // header does not carry would be fabricating durable facts.
+      out.bootstrap=synthesized;
+      out.error=E::none;
+      return out;
+    }
     out.bootstrap=observed.preamble;
     out.error=E::none;
   }catch(const std::bad_alloc&){out.error=E::resource_exhausted;}

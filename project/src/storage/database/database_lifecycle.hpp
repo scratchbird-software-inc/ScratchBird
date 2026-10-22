@@ -216,6 +216,20 @@ struct DatabaseBootstrapSecurityCatalogState {
   // Optional in the committed record. A startup credential cannot be framed
   // without it, so the consumer refuses rather than inventing one.
   std::optional<scratchbird::core::platform::Uuid> credential_reference_uuid;
+  // SEARCH_KEY: DATABASE_COMMITTED_AGENT_POLICY_READ
+  // Agent policy this database committed at creation, read back from the same
+  // bootstrap transaction as the identities above. These are creation
+  // declarations: surfacing them starts, schedules or admits no agent. Absence
+  // leaves the vector empty rather than substituting the compiled-in registry,
+  // because a synthesized policy set would be configuration this database
+  // never committed.
+  struct CommittedAgentPolicy {
+    std::string agent_type;
+    bool enabled = false;
+    u64 generation = 0;
+  };
+  std::vector<CommittedAgentPolicy> committed_agent_policies;
+  u32 committed_agent_registration_records = 0;
   // SEARCH_KEY: DATABASE_COMMITTED_STARTUP_AUTHORITY_MODE
   // The authority source this database committed for itself at creation, read
   // back from the same bootstrap transaction as the identities above. It is

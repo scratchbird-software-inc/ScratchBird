@@ -64,7 +64,8 @@ class NativeHostedDatabaseCustody final {
     storage::database::NativeOwnedSourceBootstrapResult source;
     bool ok() const noexcept { return error == Error::none && source.ok(); }
   };
-  static ProbeResult ProbeBootstrap(std::shared_ptr<NativeHostedDatabaseCustody>) noexcept;
+  static ProbeResult ProbeBootstrap(std::shared_ptr<NativeHostedDatabaseCustody>,
+      bool allow_production_lineage = false) noexcept;
   struct DrainResult {
     Error error = Error::invalid_owner;
     storage::disk::RouteSourceTransitionError route_error = storage::disk::RouteSourceTransitionError::none;
@@ -288,13 +289,15 @@ inline NativeHostedDatabaseCustody::Observation NativeHostedDatabaseCustody::Obs
   out.database_uuid = owner->database_; out.primary_filespace_uuid = owner->primary_;
   out.error = Error::none; return out;
 }
-inline NativeHostedDatabaseCustody::ProbeResult NativeHostedDatabaseCustody::ProbeBootstrap(std::shared_ptr<NativeHostedDatabaseCustody> owner) noexcept {
+inline NativeHostedDatabaseCustody::ProbeResult NativeHostedDatabaseCustody::ProbeBootstrap(
+    std::shared_ptr<NativeHostedDatabaseCustody> owner, bool allow_production_lineage) noexcept {
   ProbeResult out; if (!owner) return out;
   if (!owner->InOwningProcess()) { out.error = Error::wrong_process; return out; }
   if (owner->opening_thread_ != std::this_thread::get_id()) { out.error = Error::wrong_thread; return out; }
   Control control(*owner); if (!control.acquired) { out.error = Error::busy; return out; }
   if (owner->stage_ != NativeHostedCustodyStage::awaiting_transfer) { out.error = Error::already_mounted; return out; }
-  out.source = storage::database::NativeOwnedCheckpointSource::ProbeRouteBootstrap(owner->transition_);
+  out.source = storage::database::NativeOwnedCheckpointSource::ProbeRouteBootstrap(
+      owner->transition_, allow_production_lineage);
   out.error = out.source.ok() ? Error::none : Error::route_failure; return out;
 }
 inline NativeHostedDatabaseCustody::DrainResult NativeHostedDatabaseCustody::WaitForLegacyDrain(
