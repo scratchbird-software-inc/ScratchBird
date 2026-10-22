@@ -815,7 +815,15 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
         // reference to the retained one instead.
         result.state.database_ownership_locks.empty()
             ? nullptr
-            : result.state.database_ownership_locks.back());
+            : result.state.database_ownership_locks.back(),
+        // SEARCH_KEY: NATIVE_PROBE_ACCEPTS_PRODUCTION_LINEAGE
+        // Stated, not inferred. This caller opens a database written by the
+        // production create path, whose offset 0 is a DatabaseHeader
+        // (SBDBV001) rather than a native FilespaceBootstrap preamble. Before,
+        // the same acceptance was derived from the ownership lock passed
+        // above; the two are now independent, so changing who owns the route
+        // cannot silently change which lineages the probe will decode.
+        NativeBootstrapLineagePolicy::accept_production_lineage);
     if (native.error != NativeHostedRuntimeError::none || !native.runtime) {
       // See above: a diagnostic here is fatal to startup, not advisory.
       TraceServerStartupPhase(config, "native_hosted_runtime_error",

@@ -66,6 +66,23 @@ struct NativeHostedRuntimeCloseResult {
   bool ok() const noexcept { return error == NativeHostedRuntimeError::none && original_route_released; }
 };
 
+// SEARCH_KEY: NATIVE_PROBE_ACCEPTS_PRODUCTION_LINEAGE
+// Which bootstrap lineage the route probe may decode at offset 0. The native
+// lineage writes a FilespaceBootstrap preamble; the production create path
+// writes a DatabaseHeader (SBDBV001). Accepting the latter is a caller policy
+// and must be stated, never inferred: it was previously derived from whether
+// the caller supplied its own ownership lock, which silently coupled lineage
+// acceptance to resource provenance and turns a correct native-first open into
+// a bootstrap_failure.
+enum class NativeBootstrapLineagePolicy : std::uint8_t {
+  // Decode a native FilespaceBootstrap preamble only. The default, so a caller
+  // that says nothing cannot widen what the engine will mount.
+  native_only,
+  // Also accept a production DatabaseHeader lineage. Native decode is still
+  // attempted first, so native-lineage callers are unaffected.
+  accept_production_lineage
+};
+
 // Owning native host resource path. The original route, selected inode,
 // complete writer cohort, database crypto and read preparation use the actual
 // process budget. A successful Open establishes physical custody only; it does
@@ -84,7 +101,9 @@ class NativeHostedDatabaseRuntime final {
   }
   static NativeHostedRuntimeOpenResult Open(ServerProcessCryptoOwner&,
       const DatabaseOwnershipRequest&, NativeHostedRuntimeLimits,
-      std::vector<std::unique_ptr<storage::disk::FileDevice>>&) noexcept;
+      std::vector<std::unique_ptr<storage::disk::FileDevice>>&,
+      NativeBootstrapLineagePolicy =
+          NativeBootstrapLineagePolicy::native_only) noexcept;
   // SEARCH_KEY: NATIVE_HOSTED_OPEN_UNDER_HELD_PROCESS_ADMISSION
   // Same open for a caller that already holds the single process-to-database
   // admission, which Open() cannot serve because it reserves internally and
@@ -96,7 +115,9 @@ class NativeHostedDatabaseRuntime final {
       const DatabaseOwnershipRequest&, NativeHostedRuntimeLimits,
       std::vector<std::unique_ptr<storage::disk::FileDevice>>&,
       const HostedProcessAdmission::Reservation&,
-      std::shared_ptr<DatabaseOwnershipLock> held_ownership = nullptr) noexcept;
+      std::shared_ptr<DatabaseOwnershipLock> held_ownership = nullptr,
+      NativeBootstrapLineagePolicy =
+          NativeBootstrapLineagePolicy::native_only) noexcept;
   static NativeHostedRuntimeCloseResult Close(std::shared_ptr<NativeHostedDatabaseRuntime>) noexcept;
  private:
   // Shared body. Owns the reservation when Open reserved it, borrows when the
@@ -105,7 +126,8 @@ class NativeHostedDatabaseRuntime final {
       const DatabaseOwnershipRequest&, NativeHostedRuntimeLimits,
       std::vector<std::unique_ptr<storage::disk::FileDevice>>&,
       std::optional<HostedProcessAdmission::Reservation>&&,
-      std::shared_ptr<DatabaseOwnershipLock>) noexcept;
+      std::shared_ptr<DatabaseOwnershipLock>,
+      NativeBootstrapLineagePolicy) noexcept;
  public:
 
   class CredentialRead final {

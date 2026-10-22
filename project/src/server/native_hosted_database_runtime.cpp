@@ -18,7 +18,8 @@ namespace scratchbird::server {
 // remains the single authority over the gate.
 NativeHostedRuntimeOpenResult NativeHostedDatabaseRuntime::Open(ServerProcessCryptoOwner& process,
     const DatabaseOwnershipRequest& request, NativeHostedRuntimeLimits limits,
-    std::vector<std::unique_ptr<storage::disk::FileDevice>>& secondary) noexcept {
+    std::vector<std::unique_ptr<storage::disk::FileDevice>>& secondary,
+    NativeBootstrapLineagePolicy lineage) noexcept {
   using E=NativeHostedRuntimeError;
   auto admission=ServerHostedProcessAdmission().TryReserve();
   if(!admission.ok()) {
@@ -30,7 +31,7 @@ NativeHostedRuntimeOpenResult NativeHostedDatabaseRuntime::Open(ServerProcessCry
   return OpenImpl(process,request,limits,secondary,
                   std::optional<HostedProcessAdmission::Reservation>(
                       std::move(admission.reservation)),
-                  nullptr);
+                  nullptr,lineage);
 }
 
 NativeHostedRuntimeOpenResult NativeHostedDatabaseRuntime::OpenUnderHeldAdmission(
@@ -38,7 +39,8 @@ NativeHostedRuntimeOpenResult NativeHostedDatabaseRuntime::OpenUnderHeldAdmissio
     const DatabaseOwnershipRequest& request, NativeHostedRuntimeLimits limits,
     std::vector<std::unique_ptr<storage::disk::FileDevice>>& secondary,
     const HostedProcessAdmission::Reservation& held,
-    std::shared_ptr<DatabaseOwnershipLock> held_ownership) noexcept {
+    std::shared_ptr<DatabaseOwnershipLock> held_ownership,
+    NativeBootstrapLineagePolicy lineage) noexcept {
   using E=NativeHostedRuntimeError;
   if (!held) {
     NativeHostedRuntimeOpenResult out;
@@ -47,7 +49,7 @@ NativeHostedRuntimeOpenResult NativeHostedDatabaseRuntime::OpenUnderHeldAdmissio
     return out;
   }
   return OpenImpl(process,request,limits,secondary,std::nullopt,
-                  std::move(held_ownership));
+                  std::move(held_ownership),lineage);
 }
 
 NativeHostedRuntimeOpenResult NativeHostedDatabaseRuntime::OpenImpl(
@@ -55,7 +57,8 @@ NativeHostedRuntimeOpenResult NativeHostedDatabaseRuntime::OpenImpl(
     const DatabaseOwnershipRequest& request, NativeHostedRuntimeLimits limits,
     std::vector<std::unique_ptr<storage::disk::FileDevice>>& secondary,
     std::optional<HostedProcessAdmission::Reservation>&& owned_admission,
-    std::shared_ptr<DatabaseOwnershipLock> held_ownership) noexcept {
+    std::shared_ptr<DatabaseOwnershipLock> held_ownership,
+    NativeBootstrapLineagePolicy lineage) noexcept {
   namespace db=storage::database;using E=NativeHostedRuntimeError;
   NativeHostedRuntimeOpenResult out;
   if (!process.installed()) { out.error=E::process_unavailable; return out; }
@@ -86,10 +89,18 @@ NativeHostedRuntimeOpenResult NativeHostedDatabaseRuntime::OpenImpl(
     // path was first activated. When the caller supplies its lock, adopt it
     // instead of acquiring a second one. Custody still drives the route
     // transition from here, so the caller must not drive it concurrently.
-    // Production-lineage acceptance is opted into exactly when the caller
-    // supplied its own lock, i.e. the server borrow path. A standalone native
-    // Open keeps the native-only probe.
-    const bool production_lineage = static_cast<bool>(held_ownership);
+    // SEARCH_KEY: NATIVE_PROBE_ACCEPTS_PRODUCTION_LINEAGE
+    // Production-lineage acceptance is the caller's STATED policy. It was
+    // previously inferred from whether the caller supplied its own ownership
+    // lock, which coupled lineage acceptance to resource provenance: correct
+    // only while the sole production caller was the borrow path. A native-first
+    // open supplies no lock and so would have silently reverted to the
+    // native-only probe and refused every production database with
+    // bootstrap_failure -- the same symptom as the original format mismatch,
+    // with a different cause. The default is native_only, so a caller that
+    // states nothing cannot widen what the engine will mount.
+    const bool production_lineage =
+        lineage == NativeBootstrapLineagePolicy::accept_production_lineage;
     std::shared_ptr<DatabaseOwnershipLock> route_lock;
     if (held_ownership) {
       route_lock=std::move(held_ownership);
