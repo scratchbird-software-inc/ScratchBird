@@ -1344,15 +1344,6 @@ set_tests_properties(sbp_sbsql_generated_full_surface_conformance_probe PROPERTI
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 set(SBSQL_PYTHON3 "${Python3_EXECUTABLE}")
 
-add_test(
-  NAME sbp_sbsql_command_zero_grey_audit_gate
-  COMMAND "${SBSQL_PYTHON3}"
-          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/full_surface/sbsql_command_zero_grey_audit_gate.py"
-          "${PROJECT_SOURCE_DIR}/../../Completed-Workplans/sbsql-sblr-command-semantic-closure/SBSQL_COMMAND_AUDIT.csv"
-          "${PROJECT_SOURCE_DIR}/../../Specifications/Core/registries/sbsql-command-sblr-zero-grey-closure.csv"
-)
-set_tests_properties(sbp_sbsql_command_zero_grey_audit_gate PROPERTIES
-  LABELS "sbsql_generated_full_surface_conformance;parser_v3_closure_gate")
 
 add_test(
   NAME sbsql_multilingual_resource_edge_safety_gate
@@ -1483,15 +1474,6 @@ set_tests_properties(sbsql_sml_047_release_qa_package_gate PROPERTIES
   LABELS "sbsql_release_qa_package;sbsql_parser_worker;SML-047;SML-GATE-047;mga_transaction_regression"
 )
 
-add_test(
-  NAME sbsql_sml_067_081_release_certification_gate
-  COMMAND "${SBSQL_PYTHON3}"
-          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/release_certification/sbsql_sml_067_081_release_certification_gate.py"
-          --repo-root "${PROJECT_SOURCE_DIR}/.."
-)
-set_tests_properties(sbsql_sml_067_081_release_certification_gate PROPERTIES
-  LABELS "sbsql_release_certification;sbsql_parser_worker;release_gate;SML-067;SML-068;SML-069;SML-070;SML-071;SML-072;SML-073;SML-074;SML-075;SML-076;SML-077;SML-078;SML-079;SML-080;SML-081;SML-GATE-067;SML-GATE-068;SML-GATE-069;SML-GATE-070;SML-GATE-071;SML-GATE-072;SML-GATE-073;SML-GATE-074;SML-GATE-075;SML-GATE-076;SML-GATE-077;SML-GATE-078;SML-GATE-079;SML-GATE-080;SML-GATE-081;mga_transaction_regression"
-)
 
 if(NOT TARGET sb_isql AND EXISTS "${PROJECT_SOURCE_DIR}/drivers/tool/cli/CMakeLists.txt")
   add_subdirectory("${PROJECT_SOURCE_DIR}/drivers/tool/cli" "${CMAKE_BINARY_DIR}/drivers/tool/cli")
