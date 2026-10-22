@@ -11,7 +11,9 @@ target_link_libraries(sb_listener_control_plane_probe PRIVATE sbl_listener_runti
 add_test(NAME sb_listener_control_plane_probe COMMAND sb_listener_control_plane_probe)
 
 add_executable(sb_listener_no_spin_gate no_spin_gate.cpp)
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(NAME sb_listener_no_spin_gate COMMAND sb_listener_no_spin_gate ${PROJECT_SOURCE_DIR}/src/listener)
+endif()
 
 add_executable(sb_listener_diagnostic_registry_gate diagnostic_registry_gate.cpp)
 target_compile_features(sb_listener_diagnostic_registry_gate PRIVATE cxx_std_23)
@@ -20,12 +22,15 @@ add_test(NAME sb_listener_diagnostic_registry_gate
 
 add_executable(sb_listener_native_worker_storage_policy_gate native_worker_storage_policy_gate.cpp)
 target_compile_features(sb_listener_native_worker_storage_policy_gate PRIVATE cxx_std_23)
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(NAME sb_listener_native_worker_storage_policy_gate
   COMMAND sb_listener_native_worker_storage_policy_gate
           ${PROJECT_SOURCE_DIR}/src/parsers/native/v3/worker/main.cpp
           ${PROJECT_SOURCE_DIR}/src/parsers/native/v3/worker/CMakeLists.txt)
+endif()
 
 find_program(SB_POLICY_PYTHON3 python3 REQUIRED)
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(NAME sb_listener_parser_neutrality_gate_fixture_tests
   COMMAND ${SB_POLICY_PYTHON3}
           ${CMAKE_CURRENT_SOURCE_DIR}/listener_parser_neutrality_gate_test.py
@@ -33,7 +38,9 @@ add_test(NAME sb_listener_parser_neutrality_gate_fixture_tests
           ${CMAKE_CURRENT_SOURCE_DIR}/listener_parser_neutrality_gate.py)
 set_tests_properties(sb_listener_parser_neutrality_gate_fixture_tests PROPERTIES
   LABELS "listener;parser_neutrality;listener_single_executable")
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(NAME sb_listener_parser_neutrality_gate
   COMMAND ${SB_POLICY_PYTHON3}
           ${CMAKE_CURRENT_SOURCE_DIR}/listener_parser_neutrality_gate.py
@@ -42,17 +49,23 @@ add_test(NAME sb_listener_parser_neutrality_gate
 set_tests_properties(sb_listener_parser_neutrality_gate PROPERTIES
   DEPENDS sb_listener_parser_neutrality_gate_fixture_tests
   LABELS "listener;parser_neutrality;listener_single_executable")
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(NAME sb_listener_mga_transaction_authority_gate
   COMMAND ${SB_POLICY_PYTHON3}
           ${CMAKE_CURRENT_SOURCE_DIR}/mga_transaction_authority_gate.py
           ${PROJECT_SOURCE_DIR})
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(NAME sb_benchmark_runtime_storage_policy_gate
   COMMAND ${SB_POLICY_PYTHON3}
           ${CMAKE_CURRENT_SOURCE_DIR}/benchmark_runtime_storage_policy_gate.py
           ${PROJECT_SOURCE_DIR}/..)
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(NAME legacy_execution_plan10_scratchbird_benchmark_compat_gate
   COMMAND ${SB_POLICY_PYTHON3}
           ${CMAKE_CURRENT_SOURCE_DIR}/legacy_execution_plan10_scratchbird_benchmark_compat_gate.py
@@ -60,6 +73,7 @@ add_test(NAME legacy_execution_plan10_scratchbird_benchmark_compat_gate
 set_tests_properties(legacy_execution_plan10_scratchbird_benchmark_compat_gate PROPERTIES
   LABELS "benchmark;performance;legacy_execution_plan10;scratchbird_dialect"
 )
+endif()
 
 add_executable(sb_listener_explicit_config_probe protocol_profile_defaults_probe.cpp)
 target_compile_features(sb_listener_explicit_config_probe PRIVATE cxx_std_23)
@@ -338,16 +352,20 @@ if(TARGET sb_server)
     server_listener_orchestration parser_neutrality listener_explicit_configuration binary_uuid
   )
 
-  add_test(
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(
     NAME sb_server_listener_orchestration_neutrality_gate
     COMMAND ${SB_POLICY_PYTHON3}
             ${CMAKE_CURRENT_SOURCE_DIR}/server_listener_orchestration_neutrality_gate.py
             --project-root
             ${PROJECT_SOURCE_DIR}
   )
+endif()
+if(SB_BUILD_NON_ENGINE_GATES)
   set_property(TEST sb_server_listener_orchestration_neutrality_gate APPEND PROPERTY LABELS
     server_listener_orchestration parser_neutrality listener_single_executable
   )
+endif()
 
   add_executable(sb_server_managed_listener_smoke server_managed_listener_smoke.cpp)
   target_compile_features(sb_server_managed_listener_smoke PRIVATE cxx_std_23)
@@ -417,13 +435,17 @@ if(TARGET sb_server)
 endif()
 endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(NAME database_lifecycle_listener_conformance
   COMMAND ${SB_POLICY_PYTHON3}
           ${CMAKE_CURRENT_SOURCE_DIR}/database_lifecycle_listener_conformance.py
           ${PROJECT_SOURCE_DIR})
+endif()
+if(SB_BUILD_NON_ENGINE_GATES)
 set_property(TEST database_lifecycle_listener_conformance APPEND PROPERTY LABELS
   database_lifecycle_listener database_lifecycle listener_lifecycle listener_sbct_pool_gate
 )
+endif()
 
 set(SB_LISTENER_LIFECYCLE_TESTS
   sb_listener_control_plane_probe

@@ -7,6 +7,12 @@
 # SPDX-License-Identifier: MPL-2.0
 
 function(sb_add_database_lifecycle_release_provenance_sbom_license_gate)
+  # Non-engine: release provenance/SBOM/licence gate. Guarded in the function
+  # because it has two call sites (database_lifecycle and
+  # engine_listener_enterprise) depending on the selected profile.
+  if(NOT SB_BUILD_NON_ENGINE_GATES)
+    return()
+  endif()
   set(SB_RELEASE_PROVENANCE_REPO_ROOT "${PROJECT_SOURCE_DIR}/..")
   set(SB_RELEASE_PROVENANCE_GENERATOR
     "${PROJECT_SOURCE_DIR}/tools/release_provenance/generate_release_evidence.py"

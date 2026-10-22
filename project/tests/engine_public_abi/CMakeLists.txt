@@ -17,6 +17,7 @@ add_custom_target(sb_engine_public_headers_api_docs_freeze_gate
           --repo-root "${PROJECT_SOURCE_DIR}/.."
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sb_engine_public_headers_api_docs_freeze_gate
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/public_headers_api_docs_freeze_static.py"
@@ -25,6 +26,7 @@ add_test(
 set_tests_properties(sb_engine_public_headers_api_docs_freeze_gate PROPERTIES
   LABELS "sb_engine_public_headers_api_docs_freeze_gate;CBQ-041;CBQ_GATE_PUBLIC_HEADERS_API_DOCS_FREEZE;public_abi;api_docs;extension_boundary_manifest"
 )
+endif()
 
 add_executable(sb_engine_public_abi_c_fixture
   public_abi_c_fixture.c
@@ -94,11 +96,13 @@ target_include_directories(sb_engine_sbsql_behavior_conformance_fixture PRIVATE
   ${PROJECT_SOURCE_DIR}/src/engine/sblr
 )
 target_link_libraries(sb_engine_sbsql_behavior_conformance_fixture PRIVATE sb_engine_sblr sb_engine_internal_api)
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(NAME sb_engine_sbsql_behavior_conformance_fixture
   COMMAND sb_engine_sbsql_behavior_conformance_fixture
     ${PROJECT_SOURCE_DIR}/src/engine/internal_api/SBLR_API_OPERATION_MATRIX.yaml)
 set_tests_properties(sb_engine_sbsql_behavior_conformance_fixture PROPERTIES
   LABELS "sb_engine_sbsql_behavior_conformance;sbsql_parser_worker")
+endif()
 
 add_executable(sb_engine_public_diagnostic_shape_fixture
   public_diagnostic_shape_fixture.cpp
@@ -119,8 +123,10 @@ add_executable(sb_engine_public_source_boundary_fixture
   public_source_boundary_fixture.cpp
 )
 target_compile_features(sb_engine_public_source_boundary_fixture PRIVATE cxx_std_23)
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(NAME sb_engine_public_source_boundary_fixture
   COMMAND sb_engine_public_source_boundary_fixture ${PROJECT_SOURCE_DIR}/src/engine ${PROJECT_SOURCE_DIR}/src/server)
+endif()
 add_test(NAME sb_engine_public_source_boundary_selftest
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/public_source_boundary_selftest.py"
           $<TARGET_FILE:sb_engine_public_source_boundary_fixture>)

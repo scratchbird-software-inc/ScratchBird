@@ -20,6 +20,10 @@ set(SB_SBLR_FINAL_EXPANSION_FIXTURE_ROOT
 )
 
 function(sb_add_sblr_surface_guardrail_gate test_name gate_mode gate_labels)
+  # Non-engine: this gate verifies the repository, not the engine.
+  if(NOT SB_BUILD_NON_ENGINE_GATES)
+    return()
+  endif()
   add_test(
     NAME "${test_name}"
     COMMAND "${Python3_EXECUTABLE}" "${SB_SBLR_SURFACE_GUARDRAIL_GATE}"
@@ -78,7 +82,8 @@ if(TARGET sb_server_core)
   target_link_libraries(sblr_surface_server_authority_route_conformance PRIVATE
     sb_server_core
   )
-  add_test(
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(
     NAME sblr_surface_server_authority_route_conformance
     COMMAND sblr_surface_server_authority_route_conformance
             "${SB_SBLR_SURFACE_FIXTURE_ROOT}/SERVER_AUTHORITY_SURFACE_MATRIX.csv"
@@ -86,6 +91,7 @@ if(TARGET sb_server_core)
   set_tests_properties(sblr_surface_server_authority_route_conformance PROPERTIES
     LABELS "ELER-072;ELER-104;ELER-GATE-104;server_authority_exact_routing;non_sblr_authority_no_sblr_execution;sblr_surface;release_proof_substrate;sblr_parser_authority_property"
   )
+endif()
   add_executable(sblr_surface_migration_route_contract_conformance
     sblr_surface_migration_route_contract_conformance.cpp
   )
@@ -93,7 +99,8 @@ if(TARGET sb_server_core)
   target_link_libraries(sblr_surface_migration_route_contract_conformance PRIVATE
     sb_server_core
   )
-  add_test(
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(
     NAME sblr_surface_migration_route_contract_conformance
     COMMAND sblr_surface_migration_route_contract_conformance
             "${SB_SBLR_SURFACE_FIXTURE_ROOT}/SERVER_AUTHORITY_SURFACE_MATRIX.csv"
@@ -101,6 +108,7 @@ if(TARGET sb_server_core)
   set_tests_properties(sblr_surface_migration_route_contract_conformance PROPERTIES
     LABELS "ELER-073;migration_route_contract;live_replication_route_contract;no_reference_storage_authority;sblr_surface;release_proof_substrate"
   )
+endif()
   add_executable(sblr_surface_fse_p3_decoder_encoder_contract_gate
     sblr_surface_fse_p3_decoder_encoder_contract_gate.cpp
   )
@@ -109,7 +117,8 @@ if(TARGET sb_server_core)
     sb_engine_sblr
     sb_server_core
   )
-  add_test(
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(
     NAME sblr_surface_fse_p3_decoder_encoder_contract_gate
     COMMAND sblr_surface_fse_p3_decoder_encoder_contract_gate
             "${SB_SBLR_FINAL_EXPANSION_FIXTURE_ROOT}"
@@ -117,6 +126,7 @@ if(TARGET sb_server_core)
   set_tests_properties(sblr_surface_fse_p3_decoder_encoder_contract_gate PROPERTIES
     LABELS "FSE-P3;sblr_decoder_encoder_contract;parser_admission_revalidation;sblr_surface;release_proof_substrate"
   )
+endif()
   add_executable(sblr_surface_fse_p4_engine_route_matrix_gate
     sblr_surface_fse_p4_engine_route_matrix_gate.cpp
   )
@@ -125,7 +135,8 @@ if(TARGET sb_server_core)
     sb_engine_sblr
     sb_server_core
   )
-  add_test(
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(
     NAME sblr_surface_fse_p4_engine_route_matrix_gate
     COMMAND sblr_surface_fse_p4_engine_route_matrix_gate
             "${SB_SBLR_FINAL_EXPANSION_FIXTURE_ROOT}"
@@ -133,6 +144,7 @@ if(TARGET sb_server_core)
   set_tests_properties(sblr_surface_fse_p4_engine_route_matrix_gate PROPERTIES
     LABELS "FSE-P4;sblr_engine_internal_api_routes;parser_reference_execution_forbidden;sblr_surface;release_proof_substrate"
   )
+endif()
   if(TARGET sb_cluster_provider)
     add_executable(sblr_surface_fse_p5_cluster_external_authority_policy_gate
       sblr_surface_fse_p5_cluster_external_authority_policy_gate.cpp
@@ -143,7 +155,8 @@ if(TARGET sb_server_core)
       sb_server_core
       sb_cluster_provider
     )
-    add_test(
+    if(SB_BUILD_NON_ENGINE_GATES)
+add_test(
       NAME sblr_surface_fse_p5_cluster_external_authority_policy_gate
       COMMAND sblr_surface_fse_p5_cluster_external_authority_policy_gate
               "${SB_SBLR_FINAL_EXPANSION_FIXTURE_ROOT}"
@@ -152,6 +165,7 @@ if(TARGET sb_server_core)
     set_tests_properties(sblr_surface_fse_p5_cluster_external_authority_policy_gate PROPERTIES
       LABELS "FSE-P5;sblr_cluster_external_authority_policy;cluster_provider_boundary;external_authority_fail_closed;sblr_surface;release_proof_substrate"
     )
+endif()
     add_executable(sblr_surface_fse_p6_result_vector_diagnostic_gate
       sblr_surface_fse_p6_result_vector_diagnostic_gate.cpp
     )
@@ -161,7 +175,8 @@ if(TARGET sb_server_core)
       sb_server_core
       sb_cluster_provider
     )
-    add_test(
+    if(SB_BUILD_NON_ENGINE_GATES)
+add_test(
       NAME sblr_surface_fse_p6_result_vector_diagnostic_gate
       COMMAND sblr_surface_fse_p6_result_vector_diagnostic_gate
               "${SB_SBLR_FINAL_EXPANSION_FIXTURE_ROOT}"
@@ -169,6 +184,7 @@ if(TARGET sb_server_core)
     set_tests_properties(sblr_surface_fse_p6_result_vector_diagnostic_gate PROPERTIES
       LABELS "FSE-P6;sblr_result_vector_diagnostics;redaction_support_evidence;cluster_external_fail_closed;sblr_surface;release_proof_substrate"
     )
+endif()
     add_executable(sblr_surface_fse_p7_execution_proof_gate
       sblr_surface_fse_p7_execution_proof_gate.cpp
     )
@@ -178,7 +194,8 @@ if(TARGET sb_server_core)
       sb_server_core
       sb_cluster_provider
     )
-    add_test(
+    if(SB_BUILD_NON_ENGINE_GATES)
+add_test(
       NAME sblr_surface_fse_p7_execution_proof_gate
       COMMAND sblr_surface_fse_p7_execution_proof_gate
               "${SB_SBLR_FINAL_EXPANSION_FIXTURE_ROOT}"
@@ -186,6 +203,7 @@ if(TARGET sb_server_core)
     set_tests_properties(sblr_surface_fse_p7_execution_proof_gate PROPERTIES
       LABELS "FSE-P7;sblr_final_execution_proof;matrix_cross_check;authority_boundary_closure;sblr_surface;release_proof_substrate"
     )
+endif()
   endif()
 endif()
 if(TARGET sb_engine_functions)
@@ -196,7 +214,8 @@ if(TARGET sb_engine_functions)
   target_link_libraries(sblr_surface_catalog_projection_seed_conformance PRIVATE
     sb_engine_functions
   )
-  add_test(
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(
     NAME sblr_surface_catalog_projection_seed_conformance
     COMMAND sblr_surface_catalog_projection_seed_conformance
             "${SB_SBLR_SURFACE_FIXTURE_ROOT}/NON_DIRECT_FUNCTION_SURFACE_MATRIX.csv"
@@ -204,6 +223,7 @@ if(TARGET sb_engine_functions)
   set_tests_properties(sblr_surface_catalog_projection_seed_conformance PROPERTIES
     LABELS "ELER-076;reference_catalog_projection_seed_rowsets;system_catalog_projection_contract;visibility_redaction;sblr_surface;release_proof_substrate"
   )
+endif()
   add_executable(sblr_surface_non_direct_function_lane_conformance
     sblr_surface_non_direct_function_lane_conformance.cpp
   )
@@ -211,7 +231,8 @@ if(TARGET sb_engine_functions)
   target_link_libraries(sblr_surface_non_direct_function_lane_conformance PRIVATE
     sb_engine_functions
   )
-  add_test(
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(
     NAME sblr_surface_non_direct_function_lane_conformance
     COMMAND sblr_surface_non_direct_function_lane_conformance
             "${SB_SBLR_SURFACE_FIXTURE_ROOT}/NON_DIRECT_FUNCTION_SURFACE_MATRIX.csv"
@@ -220,6 +241,7 @@ if(TARGET sb_engine_functions)
   set_tests_properties(sblr_surface_non_direct_function_lane_conformance PROPERTIES
     LABELS "ELER-074;ELER-075;ELER-104;ELER-GATE-104;non_direct_function_lane_contract;explicit_unsupported_refusal;no_parser_or_reference_authority;sblr_surface;release_proof_substrate;sblr_parser_authority_property"
   )
+endif()
   add_executable(sblr_surface_function_registry_dispatch_conformance
     sblr_surface_function_registry_dispatch_conformance.cpp
   )
@@ -235,6 +257,7 @@ if(TARGET sb_engine_functions)
     LABELS "ELER-074;ELER-079;ELER-104;ELER-GATE-104;final_function_registry_dispatch;no_missing_function_handler;RCP-025-CANONICAL-AGGREGATE-REGISTRY;sblr_surface;release_proof_substrate;sblr_parser_authority_property"
   )
 endif()
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sblr_surface_catalog_seed_manifest_gate
   COMMAND "${Python3_EXECUTABLE}"
@@ -245,6 +268,7 @@ add_test(
 set_tests_properties(sblr_surface_catalog_seed_manifest_gate PROPERTIES
   LABELS "ELER-076;reference_catalog_seed_manifest_json_parse;visibility_redaction;sblr_surface;release_proof_substrate"
 )
+endif()
 sb_add_sblr_surface_guardrail_gate(
   sblr_surface_registry_cleanup_guardrail_gate
   registry-cleanup

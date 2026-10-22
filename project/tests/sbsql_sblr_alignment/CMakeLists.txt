@@ -157,10 +157,12 @@ foreach(component IN ITEMS x25519 public_key_message key_certificate)
   endif()
 endforeach()
 if(Python3_Interpreter_FOUND)
-  add_test(NAME sbsql_sblr_alignment_crypto_pgp_generator_metadata
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(NAME sbsql_sblr_alignment_crypto_pgp_generator_metadata
     COMMAND ${Python3_EXECUTABLE} -B ${PROJECT_SOURCE_DIR}/tools/sb_parser_gen/test_crypto_pgp_metadata.py)
   set_tests_properties(sbsql_sblr_alignment_crypto_pgp_generator_metadata PROPERTIES
     TIMEOUT 60 LABELS "sbsql_sblr_alignment;crypto;generator;metadata;not_runtime_acceptance")
+endif()
 endif()
 add_executable(sbsql_sblr_alignment_openpgp_password_message openpgp_password_message_test.cpp)
 target_compile_features(sbsql_sblr_alignment_openpgp_password_message PRIVATE cxx_std_17)
@@ -795,12 +797,14 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
       C_STANDARD 11 C_STANDARD_REQUIRED YES C_EXTENSIONS NO
       CXX_STANDARD 17 CXX_STANDARD_REQUIRED YES CXX_EXTENSIONS NO)
     add_dependencies(${abi_target} ${abi_target}_symbols)
-    add_test(NAME ${abi_target}_symbols
+        if(SB_BUILD_NON_ENGINE_GATES)
+add_test(NAME ${abi_target}_symbols
       COMMAND ${CMAKE_COMMAND} -DSB_NM=${CMAKE_NM}
         -DSB_OBJECT_FILE=$<TARGET_OBJECTS:${abi_target}_symbols>
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cluster_gateway_abi_symbols_test.cmake)
     set_tests_properties(${abi_target}_symbols PROPERTIES TIMEOUT 30
       LABELS "sbsql_sblr_alignment;cluster_gateway;canonical_abi_symbol_references;not_runtime_acceptance")
+    endif()
   endforeach()
 endif()
 
@@ -816,7 +820,8 @@ if(TARGET sb_cluster_provider AND NOT SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY)
   set_tests_properties(sbsql_sblr_alignment_cluster_provider_link_boundary PROPERTIES
     LABELS "sbsql_sblr_alignment;cluster_provider;production_linkage;not_SQL_E2E" TIMEOUT 60)
   if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    add_test(NAME sbsql_sblr_alignment_cluster_provider_process_containment
+    if(SB_BUILD_NON_ENGINE_GATES)
+add_test(NAME sbsql_sblr_alignment_cluster_provider_process_containment
       COMMAND ${CMAKE_COMMAND}
         -DSB_SOURCE_ROOT=${CMAKE_SOURCE_DIR}
         -DSB_TEST_BINARY_ROOT=${CMAKE_CURRENT_BINARY_DIR}
@@ -824,6 +829,7 @@ if(TARGET sb_cluster_provider AND NOT SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY)
         -P ${CMAKE_CURRENT_SOURCE_DIR}/cluster_provider_process_containment_test.cmake)
     set_tests_properties(sbsql_sblr_alignment_cluster_provider_process_containment PROPERTIES
       LABELS "sbsql_sblr_alignment;cluster_provider;actual_configure;process_containment;not_SQL_E2E" TIMEOUT 150)
+endif()
   endif()
 endif()
 
@@ -1121,12 +1127,14 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     diagnostic_json_roundtrip_producer.cpp)
   target_compile_features(sbsql_sblr_alignment_diagnostic_json_producer PRIVATE cxx_std_23)
   target_link_libraries(sbsql_sblr_alignment_diagnostic_json_producer PRIVATE sb_server_core)
-  add_test(NAME sbsql_sblr_alignment_diagnostic_json_roundtrip
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(NAME sbsql_sblr_alignment_diagnostic_json_roundtrip
     COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/diagnostic_json_roundtrip_test.py
       --producer $<TARGET_FILE:sbsql_sblr_alignment_diagnostic_json_producer>)
   set_tests_properties(sbsql_sblr_alignment_diagnostic_json_roundtrip PROPERTIES
     LABELS "sbsql_sblr_alignment;IA-01;component_regression;independent_json_oracle"
     TIMEOUT 90)
+endif()
   if(NOT TARGET sb_server_legacy_diagnostic_rendering)
     add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../src/server/diagnostic_rendering
                      ${CMAKE_CURRENT_BINARY_DIR}/server_legacy_diagnostic_rendering)
@@ -1160,7 +1168,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     sbsql_sblr_alignment_legacy_rendering_attestation PROPERTIES
     LABELS "sbsql_sblr_alignment;IA-01;binary_uuid;component_regression;not_runtime_acceptance"
     TIMEOUT 60)
-  add_test(NAME sbsql_sblr_alignment_legacy_renderer_placement
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(NAME sbsql_sblr_alignment_legacy_renderer_placement
     COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/legacy_renderer_placement_test.py
       --source-root ${CMAKE_SOURCE_DIR}
       --engine-archive $<TARGET_FILE:sb_engine_internal_api>
@@ -1168,6 +1177,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
       --nm ${CMAKE_NM})
   set_tests_properties(sbsql_sblr_alignment_legacy_renderer_placement PROPERTIES
     LABELS "sbsql_sblr_alignment;IA-01;binary_placement;not_runtime_acceptance")
+endif()
 endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -1471,12 +1481,14 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     "-Wl,--wrap=EVP_MD_CTX_new" "-Wl,--wrap=EVP_DigestInit_ex" "-Wl,--wrap=EVP_DigestUpdate"
     "-Wl,--wrap=EVP_DigestFinal_ex" "-Wl,--wrap=pread" "-Wl,--wrap=pwrite" "-Wl,--wrap=fsync")
   add_test(NAME sbsql_sblr_alignment_filespace_page_zero COMMAND sbsql_sblr_alignment_filespace_page_zero)
-  add_test(NAME sbsql_sblr_alignment_filespace_page_zero_unknown_mode
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(NAME sbsql_sblr_alignment_filespace_page_zero_unknown_mode
     COMMAND ${CMAKE_COMMAND}
       -DTEST_PROGRAM=$<TARGET_FILE:sbsql_sblr_alignment_filespace_page_zero>
       -P ${CMAKE_CURRENT_SOURCE_DIR}/filespace_unknown_mode_refusal.cmake)
   set_tests_properties(sbsql_sblr_alignment_filespace_page_zero_unknown_mode PROPERTIES
     TIMEOUT 5 LABELS "sbsql_sblr_alignment;test_harness;unknown_mode_rejection;not_SQL_E2E")
+endif()
   set_tests_properties(sbsql_sblr_alignment_filespace_page_zero PROPERTIES
     LABELS "sbsql_sblr_alignment;IA-00;component_regression;canonical_page_zero;canonical_catalog_root;binary_uuid;node_ownership"
     TIMEOUT 300)
@@ -1904,10 +1916,12 @@ add_test(NAME sbsql_sblr_alignment_statement_management_ack_codec
 set_tests_properties(sbsql_sblr_alignment_statement_management_ack_codec PROPERTIES
   LABELS "sbsql_sblr_alignment;IA-01;component_regression;binary_uuid;fault_injection;not_runtime_acceptance")
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(NAME sbsql_sblr_alignment_legacy_public_admission_guard
   COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/legacy_public_admission_guard_test.py)
 set_tests_properties(sbsql_sblr_alignment_legacy_public_admission_guard PROPERTIES
   LABELS "sbsql_sblr_alignment;IA-01;source_policy;not_runtime_acceptance")
+endif()
 
 add_executable(sbsql_sblr_alignment_diagnostic_identity_projection diagnostic_identity_projection_codec_test.cpp)
 target_compile_features(sbsql_sblr_alignment_diagnostic_identity_projection PRIVATE cxx_std_23)
@@ -2026,6 +2040,7 @@ target_compile_features(sbsql_sblr_alignment_secondary_index_merge_admission PRI
 target_link_libraries(sbsql_sblr_alignment_secondary_index_merge_admission PRIVATE
   sb_engine
   sb_core_index sb_core_uuid sb_core_memory sb_engine_internal_api sb_storage_database)
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(NAME sbsql_sblr_alignment_secondary_index_merge_admission
   COMMAND "${Python3_EXECUTABLE}" -B
     "${PROJECT_SOURCE_DIR}/tests/database_lifecycle/secondary_index_merge_isolated_gate.py"
@@ -2033,10 +2048,13 @@ add_test(NAME sbsql_sblr_alignment_secondary_index_merge_admission
 set_tests_properties(sbsql_sblr_alignment_secondary_index_merge_admission PROPERTIES
   LABELS "sbsql_sblr_alignment;IA-10;component_regression;real_storage;index_read_admission"
   TIMEOUT 120)
+endif()
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(NAME sbsql_sblr_alignment_secondary_index_merge_runner
   COMMAND "${Python3_EXECUTABLE}" -B
     "${PROJECT_SOURCE_DIR}/tests/database_lifecycle/secondary_index_merge_isolated_runner_test.py")
 set_tests_properties(sbsql_sblr_alignment_secondary_index_merge_runner PROPERTIES TIMEOUT 30)
+endif()
 add_executable(sbsql_sblr_alignment_secondary_index_ledger_read secondary_index_ledger_read_test.cpp)
 target_compile_features(sbsql_sblr_alignment_secondary_index_ledger_read PRIVATE cxx_std_23)
 target_link_libraries(sbsql_sblr_alignment_secondary_index_ledger_read PRIVATE sb_engine_internal_api sb_core_index sb_core_uuid)
@@ -2069,14 +2087,18 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set_tests_properties(sbsql_sblr_alignment_server_uuid_emission PROPERTIES
     LABELS "sbsql_sblr_alignment;IA-01;component_regression;binary_uuid;message_vector;concurrency;fork")
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
-  add_test(NAME sbsql_sblr_alignment_uuid_socket_workspace
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(NAME sbsql_sblr_alignment_uuid_socket_workspace
     COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/uuid_socket_workspace_test.py)
   set_tests_properties(sbsql_sblr_alignment_uuid_socket_workspace PROPERTIES
     TIMEOUT 30 LABELS "sbsql_sblr_alignment;IA-06;binary_uuid;linux;real_socket;test_fixture")
-  add_test(NAME sbsql_sblr_alignment_binary_observation_client
+endif()
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(NAME sbsql_sblr_alignment_binary_observation_client
     COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/binary_observation_client_test.py)
   set_tests_properties(sbsql_sblr_alignment_binary_observation_client PROPERTIES
     TIMEOUT 30 LABELS "sbsql_sblr_alignment;binary_uuid;server_observability;test_fixture")
+endif()
   add_test(NAME sbsql_sblr_alignment_server_hello_native_identity
     COMMAND ${Python3_EXECUTABLE}
       ${CMAKE_CURRENT_SOURCE_DIR}/server_hello_native_identity_test.py
@@ -6482,24 +6504,28 @@ add_executable(sbsql_sblr_alignment_ia08_ddl_create_schema_journal_lock_probe
 target_compile_features(sbsql_sblr_alignment_ia08_ddl_create_schema_journal_lock_probe PRIVATE cxx_std_17)
 target_include_directories(sbsql_sblr_alignment_ia08_ddl_create_schema_journal_lock_probe
   PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(NAME sbsql_sblr_alignment_ia08_ddl_create_schema_journal_lock
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia08_ddl_create_schema_journal_lock_test.py"
     $<TARGET_FILE:sbsql_sblr_alignment_ia08_ddl_create_schema_journal_lock_probe>)
 set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_schema_journal_lock PROPERTIES
   LABELS "sbsql_sblr_alignment;IA-08;SBLR_DDL_CREATE_SCHEMA;CSC-TEST-005780;CSC-TEST-005783;component_regression;native_journal_lock"
   TIMEOUT 90)
+endif()
 
 add_executable(sbsql_sblr_alignment_ia08_ddl_create_schema_journal_io_probe
   ia08_ddl_create_schema_journal_io_probe.cpp)
 target_compile_features(sbsql_sblr_alignment_ia08_ddl_create_schema_journal_io_probe PRIVATE cxx_std_17)
 target_include_directories(sbsql_sblr_alignment_ia08_ddl_create_schema_journal_io_probe
   PRIVATE ${CMAKE_SOURCE_DIR}/src)
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(NAME sbsql_sblr_alignment_ia08_ddl_create_schema_journal_io
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/ia08_ddl_create_schema_journal_io_test.py"
     $<TARGET_FILE:sbsql_sblr_alignment_ia08_ddl_create_schema_journal_io_probe>)
 set_tests_properties(sbsql_sblr_alignment_ia08_ddl_create_schema_journal_io PROPERTIES
   LABELS "sbsql_sblr_alignment;IA-08;SBLR_DDL_CREATE_SCHEMA;CSC-TEST-005780;CSC-TEST-005783;component_regression;native_journal_io"
   TIMEOUT 90)
+endif()
 
 add_executable(sbsql_sblr_alignment_ia08_ddl_create_schema_recovery ia08_ddl_create_schema_recovery_test.cpp)
 target_include_directories(sbsql_sblr_alignment_ia08_ddl_create_schema_recovery PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
@@ -6829,7 +6855,8 @@ if(TARGET sb_server_core)
   add_executable(sbsql_sblr_alignment_offline_bundle_ownership_probe offline_bundle_ownership_probe.cpp)
   target_compile_features(sbsql_sblr_alignment_offline_bundle_ownership_probe PRIVATE cxx_std_23)
   target_link_libraries(sbsql_sblr_alignment_offline_bundle_ownership_probe PRIVATE sb_storage_database sb_storage_filespace)
-  add_test(NAME sbsql_sblr_alignment_offline_bundle_ownership
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(NAME sbsql_sblr_alignment_offline_bundle_ownership
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/offline_bundle_ownership_test.py"
       $<TARGET_FILE:sbsql_sblr_alignment_offline_bundle_tool>
       $<TARGET_FILE:sbsql_sblr_alignment_offline_filespace_ownership_probe>
@@ -6837,26 +6864,31 @@ if(TARGET sb_server_core)
   set_tests_properties(sbsql_sblr_alignment_offline_bundle_ownership PROPERTIES
     LABELS "sbsql_sblr_alignment;IA-08;CSC-TEST-005849;component_regression;database_ownership;offline_bundle"
     TIMEOUT 90)
+endif()
   add_executable(sbsql_sblr_alignment_offline_filespace_ownership_probe offline_filespace_ownership_probe.cpp)
   target_compile_features(sbsql_sblr_alignment_offline_filespace_ownership_probe PRIVATE cxx_std_23)
   target_include_directories(sbsql_sblr_alignment_offline_filespace_ownership_probe PRIVATE ${CMAKE_SOURCE_DIR}/src)
   target_link_libraries(sbsql_sblr_alignment_offline_filespace_ownership_probe PRIVATE sb_server_core sb_storage_filespace)
-  add_test(NAME sbsql_sblr_alignment_offline_filespace_ownership
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(NAME sbsql_sblr_alignment_offline_filespace_ownership
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/offline_filespace_ownership_test.py"
       $<TARGET_FILE:sbsql_sblr_alignment_offline_filespace_ownership_probe>)
   set_tests_properties(sbsql_sblr_alignment_offline_filespace_ownership PROPERTIES
     LABELS "sbsql_sblr_alignment;IA-08;CSC-TEST-005849;component_regression;database_ownership;offline_filespace"
     TIMEOUT 90)
+endif()
   add_executable(sbsql_sblr_alignment_native_file_ownership_probe native_file_ownership_probe.cpp)
   target_compile_features(sbsql_sblr_alignment_native_file_ownership_probe PRIVATE cxx_std_23)
   target_include_directories(sbsql_sblr_alignment_native_file_ownership_probe PRIVATE ${CMAKE_SOURCE_DIR}/src)
   target_link_libraries(sbsql_sblr_alignment_native_file_ownership_probe PRIVATE sb_server_core sb_storage_disk)
-  add_test(NAME sbsql_sblr_alignment_native_file_ownership
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(NAME sbsql_sblr_alignment_native_file_ownership
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/native_file_ownership_test.py"
       $<TARGET_FILE:sbsql_sblr_alignment_native_file_ownership_probe>)
   set_tests_properties(sbsql_sblr_alignment_native_file_ownership PROPERTIES
     LABELS "sbsql_sblr_alignment;IA-08;CSC-TEST-005849;component_regression;database_ownership;native_file_alias"
     TIMEOUT 90)
+endif()
 endif()
 
 if(UNIX AND TARGET sb_server_core)
@@ -11785,15 +11817,19 @@ add_test(NAME sbsql_sblr_alignment_agent_selection_binary_identity
 set_tests_properties(sbsql_sblr_alignment_agent_selection_binary_identity PROPERTIES
   LABELS "sbsql_sblr_alignment;binary_uuid;agent_status;component_codec;not_e2e" TIMEOUT 60)
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(NAME sbsql_sblr_alignment_server_ready_fixture
   COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/server_ready_fixture_test.py)
 set_tests_properties(sbsql_sblr_alignment_server_ready_fixture PROPERTIES
   TIMEOUT 30 LABELS "sbsql_sblr_alignment;readiness;fixture_unit;not_runtime_acceptance")
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(NAME sbsql_sblr_alignment_binary_status_client
   COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/binary_status_client_test.py)
 set_tests_properties(sbsql_sblr_alignment_binary_status_client PROPERTIES
   LABELS "sbsql_sblr_alignment;binary_uuid;agent_status;client_display;not_e2e" TIMEOUT 60)
+endif()
 
 add_executable(sbsql_sblr_alignment_execute_result_cursor_identity_framing
   execute_result_cursor_identity_framing_test.cpp)

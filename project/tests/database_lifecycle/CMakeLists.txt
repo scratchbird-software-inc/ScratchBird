@@ -26,18 +26,24 @@ set_tests_properties(metric_api_native_projection_conformance PROPERTIES
   LABELS "metrics;binary_uuid;component_regression;not_runtime_acceptance")
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  add_test(NAME owned_test_runtime_cleanup
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(NAME owned_test_runtime_cleanup
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../support/owned_test_runtime_test.py")
   set_tests_properties(owned_test_runtime_cleanup PROPERTIES
     LABELS "database_lifecycle;test_infrastructure;artifact_cleanup;unit")
-  add_test(NAME benchmark_runtime_cleanup
+endif()
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(NAME benchmark_runtime_cleanup
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../support/benchmark_runtime_cleanup_test.py")
   set_tests_properties(benchmark_runtime_cleanup PROPERTIES
     LABELS "database_lifecycle;test_infrastructure;artifact_cleanup;unit")
-  add_test(NAME copy_runtime_cleanup
+endif()
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(NAME copy_runtime_cleanup
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/../support/copy_runtime_cleanup_test.py")
   set_tests_properties(copy_runtime_cleanup PROPERTIES
     LABELS "database_lifecycle;test_infrastructure;artifact_cleanup;unit")
+endif()
 endif()
 
 add_executable(public_name_resolution_native_cache_conformance public_name_resolution_native_cache_conformance.cpp)
@@ -165,6 +171,7 @@ file(WRITE "${SB_DATABASE_LIFECYCLE_PLATFORM_TOOLCHAIN_METADATA}"
   "SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY=${SB_CLUSTER_PROVIDER_EXTERNAL_LIBRARY}\n"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME database_lifecycle_platform_toolchain_matrix_conformance
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/platform_toolchain_matrix_static.py"
@@ -175,6 +182,7 @@ add_test(
 set_tests_properties(database_lifecycle_platform_toolchain_matrix_conformance PROPERTIES
   LABELS "database_lifecycle_platform_toolchain_matrix_conformance;CBQ-036;CBQ_GATE_PLATFORM_TOOLCHAIN_MATRIX;platform_toolchain_matrix;database_lifecycle"
 )
+endif()
 
 # DPC_CROSS_BUILD_MATRIX: standalone DPC-069 evidence for required build modes.
 set(SB_DPC_CROSS_BUILD_MATRIX_METADATA
@@ -204,6 +212,7 @@ add_custom_target(dpc_cross_build_matrix_gate_check
   COMMENT "Validating DPC-069 cross-build matrix source and CTest surfaces"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME dpc_cross_build_matrix_gate
   COMMAND "${Python3_EXECUTABLE}" "${SB_DPC_CROSS_BUILD_MATRIX_GATE}"
@@ -214,6 +223,7 @@ add_test(
 set_tests_properties(dpc_cross_build_matrix_gate PROPERTIES
   LABELS "dpc_cross_build_matrix_gate;DPC-069;DPC_P6_CROSS_BUILD_READY;DPC_AUDIT_CROSS_BUILD;DPC_DEP_CROSS_BUILD;cross_build_matrix;database_lifecycle;mga_transaction_regression"
 )
+endif()
 
 set(SB_DPC_OPERATOR_UI_DOCUMENTATION_GATE
   "${CMAKE_CURRENT_SOURCE_DIR}/dpc_operator_ui_documentation_gate.py"
@@ -225,6 +235,7 @@ add_custom_target(dpc_operator_ui_documentation_gate_check
   COMMENT "Validating DPC-071 operator and UI product documentation"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME dpc_operator_ui_documentation_gate
   COMMAND "${Python3_EXECUTABLE}" "${SB_DPC_OPERATOR_UI_DOCUMENTATION_GATE}"
@@ -233,6 +244,7 @@ add_test(
 set_tests_properties(dpc_operator_ui_documentation_gate PROPERTIES
   LABELS "dpc_operator_ui_documentation_gate;DPC-071;DPC_OPERATOR_UI_DOCUMENTATION_GATE;DPC_P6_OPERATOR_UI_DOC_READY;DPC_AUDIT_OPERATOR_UI_DOC;DPC_DEP_OPERATOR_UI_DOCS;operator_ui_docs;documentation;management_observability;support_bundle;message_vectors;database_lifecycle;mga_transaction_regression"
 )
+endif()
 
 set(SB_DATABASE_LIFECYCLE_EXAMPLES_SMOKE_GATE
   "${CMAKE_CURRENT_SOURCE_DIR}/examples_smoke_scripts_gate.py"
@@ -372,6 +384,7 @@ add_custom_target(database_lifecycle_examples_smoke_scripts_gate_check
   COMMENT "Validating core beta QA examples smoke scripts"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME database_lifecycle_examples_smoke_scripts_gate
   COMMAND "${Python3_EXECUTABLE}" "${SB_DATABASE_LIFECYCLE_EXAMPLES_SMOKE_GATE}"
@@ -381,6 +394,7 @@ add_test(
 set_tests_properties(database_lifecycle_examples_smoke_scripts_gate PROPERTIES
   LABELS "database_lifecycle_examples_smoke_scripts_gate;CBQ-034;CBQ_GATE_EXAMPLES_SMOKE_SCRIPTS;example;smoke;documentation;sample;cli;embedded;driver;database_lifecycle"
 )
+endif()
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/ReleaseProvenanceSbomLicenseGate.cmake")
 sb_add_database_lifecycle_release_provenance_sbom_license_gate()
@@ -409,6 +423,7 @@ add_custom_target(database_lifecycle_beta_package_smoke_gate_check
   COMMENT "Validating beta package smoke from staged install artifacts"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME database_lifecycle_beta_package_smoke_gate
   COMMAND "${Python3_EXECUTABLE}" "${SB_DATABASE_LIFECYCLE_BETA_PACKAGE_SMOKE_GATE}"
@@ -418,11 +433,13 @@ add_test(
 set_tests_properties(database_lifecycle_beta_package_smoke_gate PROPERTIES
   LABELS "database_lifecycle_beta_package_smoke_gate;CBQ-016;CBQ_GATE_BETA_PACKAGE_SMOKE;package;packaging;install;smoke;artifact;release;driver;database_lifecycle"
 )
+endif()
 
 set(SB_DPC_FAILURE_INJECTION_CRASH_MATRIX_FIXTURE
   "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/dpc_failure_injection_crash_matrix.json"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME dpc_failure_injection_crash_matrix_gate
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/dpc_failure_injection_crash_matrix_gate.py"
@@ -431,6 +448,7 @@ add_test(
 set_tests_properties(dpc_failure_injection_crash_matrix_gate PROPERTIES
   LABELS "dpc_failure_injection_crash_matrix_gate;DPC-008;DPC_TEST_FAILURE_INJECTION;failure_injection;crash_recovery;mga_transaction_regression;database_lifecycle;database_lifecycle_fault_injection"
 )
+endif()
 
 if(NOT TARGET sb_storage_filespace)
   add_subdirectory("${PROJECT_SOURCE_DIR}/src/storage/filespace" "${CMAKE_CURRENT_BINARY_DIR}/storage_filespace")
@@ -1123,6 +1141,7 @@ target_compile_definitions(
     SB_DBLC_PYTHON_EXECUTABLE="${Python3_EXECUTABLE}"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME database_lifecycle_traceability_conformance
   COMMAND database_lifecycle_traceability_conformance
@@ -1130,7 +1149,9 @@ add_test(
 set_tests_properties(database_lifecycle_traceability_conformance PROPERTIES
   LABELS "database_lifecycle_traceability;DBLC_P13R_TRACEABILITY_COMPLETE;database_lifecycle"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME database_lifecycle_traceability_static
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/traceability_static.py"
@@ -1140,6 +1161,7 @@ add_test(
 set_tests_properties(database_lifecycle_traceability_static PROPERTIES
   LABELS "database_lifecycle_traceability;DBLC_STATIC_TRACEABILITY_COVERAGE;DBLC_P13R_TRACEABILITY_COMPLETE;database_lifecycle"
 )
+endif()
 
 add_executable(database_lifecycle_exhaustive_regression_conformance
   exhaustive_lifecycle_regression_conformance.cpp
@@ -1163,6 +1185,7 @@ set_tests_properties(database_lifecycle_exhaustive_regression_conformance PROPER
   LABELS "database_lifecycle_exhaustive;database_lifecycle_fault_injection;database_lifecycle_release;DBLC_P16_REGRESSION_COMPLETE;database_lifecycle"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME database_lifecycle_exhaustive_static
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/exhaustive_lifecycle_static.py"
@@ -1171,6 +1194,7 @@ add_test(
 set_tests_properties(database_lifecycle_exhaustive_static PROPERTIES
   LABELS "database_lifecycle_exhaustive;database_lifecycle_fault_injection;database_lifecycle_release;DBLC_STATIC_REGRESSION_REPORT_ARTIFACT;DBLC_P16_REGRESSION_COMPLETE;database_lifecycle"
 )
+endif()
 
 if(TARGET sb_server_core AND TARGET sb_storage_database AND TARGET sb_storage_disk AND
    TARGET sb_storage_page AND TARGET sb_transaction_mga AND TARGET sb_engine_internal_api AND
@@ -1254,6 +1278,7 @@ if(TARGET sb_server_core AND TARGET sbl_firebird_parser_pipeline)
   )
 endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME database_lifecycle_authority_drift_static
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/authority_drift_static.py"
@@ -1262,7 +1287,9 @@ add_test(
 set_tests_properties(database_lifecycle_authority_drift_static PROPERTIES
   LABELS "database_lifecycle_fault_injection;DBLC_STATIC_AUTHORITY_DRIFT_GATES;DBLC_P17_HARDENED;database_lifecycle"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME database_lifecycle_no_lifecycle_placeholders_static
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/no_lifecycle_placeholders_static.py"
@@ -1271,7 +1298,9 @@ add_test(
 set_tests_properties(database_lifecycle_no_lifecycle_placeholders_static PROPERTIES
   LABELS "database_lifecycle_fault_injection;DBLC_STATIC_NO_LIFECYCLE_PLACEHOLDERS;DBLC_P17_HARDENED;database_lifecycle"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME database_lifecycle_release_zero_open_audit
   COMMAND "${Python3_EXECUTABLE}" "${SB_DATABASE_LIFECYCLE_FINAL_ZERO_OPEN_AUDIT}"
@@ -1280,7 +1309,9 @@ add_test(
 set_tests_properties(database_lifecycle_release_zero_open_audit PROPERTIES
   LABELS "database_lifecycle_release;DBLC_STATIC_FINAL_ZERO_OPEN_AUDIT;DBLC_P18_FINAL_CLEAN;database_lifecycle"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME database_lifecycle_default_policy_catalog
   COMMAND "${Python3_EXECUTABLE}" "${SB_DATABASE_LIFECYCLE_POLICY_GATE}"
@@ -1290,7 +1321,9 @@ add_test(
 set_tests_properties(database_lifecycle_default_policy_catalog PROPERTIES
   LABELS "database_lifecycle_default_policy_catalog;database_lifecycle"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME database_lifecycle_default_policy_registry
   COMMAND "${Python3_EXECUTABLE}" "${SB_DATABASE_LIFECYCLE_POLICY_GATE}"
@@ -1300,7 +1333,9 @@ add_test(
 set_tests_properties(database_lifecycle_default_policy_registry PROPERTIES
   LABELS "database_lifecycle_default_policy_registry;database_lifecycle"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME database_lifecycle_policy_diagnostic_registry
   COMMAND "${Python3_EXECUTABLE}" "${SB_DATABASE_LIFECYCLE_POLICY_GATE}"
@@ -1310,7 +1345,9 @@ add_test(
 set_tests_properties(database_lifecycle_policy_diagnostic_registry PROPERTIES
   LABELS "database_lifecycle_policy_diagnostic_registry;database_lifecycle"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME database_lifecycle_policy_override_fixtures
   COMMAND "${Python3_EXECUTABLE}" "${SB_DATABASE_LIFECYCLE_POLICY_GATE}"
@@ -1320,7 +1357,9 @@ add_test(
 set_tests_properties(database_lifecycle_policy_override_fixtures PROPERTIES
   LABELS "database_lifecycle_policy_override_fixtures;database_lifecycle"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME database_lifecycle_canonical_spec_closure
   COMMAND "${Python3_EXECUTABLE}" "${SB_DATABASE_LIFECYCLE_POLICY_GATE}"
@@ -1330,6 +1369,7 @@ add_test(
 set_tests_properties(database_lifecycle_canonical_spec_closure PROPERTIES
   LABELS "database_lifecycle_canonical_spec_closure;database_lifecycle"
 )
+endif()
 
 set(SB_DATABASE_LIFECYCLE_REGISTRY_GATE
   "${CMAKE_CURRENT_SOURCE_DIR}/lifecycle_registry_conformance.py"
@@ -1341,6 +1381,7 @@ if(TARGET sbl_firebird_parser_pipeline)
   list(APPEND SB_DATABASE_LIFECYCLE_REGISTRY_GATE_ARGS --compatibility-parsers)
 endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME database_lifecycle_engine_api
   COMMAND "${Python3_EXECUTABLE}" "${SB_DATABASE_LIFECYCLE_REGISTRY_GATE}"
@@ -1349,6 +1390,7 @@ add_test(
 set_tests_properties(database_lifecycle_engine_api PROPERTIES
   LABELS "database_lifecycle_engine_api;database_lifecycle"
 )
+endif()
 
 if(TARGET sb_storage_database)
   add_executable(database_lifecycle_durable_state_conformance
@@ -1765,7 +1807,8 @@ if(TARGET sb_storage_database)
     LABELS "memory_background_reclamation_gate;MMCH-019;memory;background_reclamation;page_cache;temp_workspace;database_lifecycle;mga_transaction_regression"
   )
 
-  add_test(
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(
     NAME page_buffer_source_audit_gate
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/page_buffer_source_audit_gate.py"
             --repo-root "${SB_PRIVATE_REPO_ROOT}"
@@ -1773,6 +1816,7 @@ if(TARGET sb_storage_database)
   set_tests_properties(page_buffer_source_audit_gate PROPERTIES
     LABELS "page_buffer_source_audit_gate;MMCH-051;memory;page_cache;source_audit;database_lifecycle;mga_transaction_regression"
   )
+endif()
 endif()
 
 if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
@@ -2184,13 +2228,15 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
         sb_server_core
     )
 
-    add_test(
+    if(SB_BUILD_NON_ENGINE_GATES)
+add_test(
       NAME dpc_sblr_api_abi_compatibility_gate
       COMMAND dpc_sblr_api_abi_compatibility_gate "${SB_PRIVATE_REPO_ROOT}"
     )
     set_tests_properties(dpc_sblr_api_abi_compatibility_gate PROPERTIES
       LABELS "binary_uuid;dpc_sblr_api_abi_compatibility_gate;DPC-074;DPC_SBLR_API_ABI_COMPATIBILITY_GATE;DPC_P6_SBLR_API_ABI_READY;DPC_AUDIT_SBLR_API_ABI;DPC_TEST_SBLR_API_ABI;sblr_api_abi;sblr_route;server_admission;public_abi;driver_capability;local_ipc_gate;sbwp_wire_gate;mga_transaction_regression;database_lifecycle"
     )
+endif()
   endif()
 
   add_executable(dpc_unique_index_deferral_policy_gate
@@ -2431,13 +2477,15 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
     LABELS "dpc_secondary_index_delta_merge_agent_gate;DPC-024;DPC_TEST_INDEX_DELTA_MERGE;secondary_index_delta_ledger;delta_merge;resource_governor;mga_transaction_regression;database_lifecycle"
   )
 
-  add_test(NAME dpc_secondary_index_empty_binary_restart_gate
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(NAME dpc_secondary_index_empty_binary_restart_gate
     COMMAND "${Python3_EXECUTABLE}"
             "${CMAKE_CURRENT_SOURCE_DIR}/secondary_index_empty_binary_restart_gate.py"
             --probe $<TARGET_FILE:dpc_secondary_index_delta_merge_agent_gate>)
   set_tests_properties(dpc_secondary_index_empty_binary_restart_gate PROPERTIES
     LABELS "dpc_secondary_index_empty_binary_restart_gate;DPC-024;secondary_index_delta_ledger;binary_uuid;empty_key;process_restart;mga_transaction_regression;database_lifecycle"
     TIMEOUT 1200)
+endif()
 
   add_executable(dpc_secondary_index_delta_recovery_repair_gate
     dpc_secondary_index_delta_recovery_repair_gate.cpp
@@ -2690,7 +2738,8 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
       sbl_manager_node_runtime
   )
 
-  add_test(
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(
     NAME agent_metrics_audit_support_bundle_gate
     COMMAND "${CMAKE_COMMAND}"
       "-DTEST_EXECUTABLE=$<TARGET_FILE:agent_metrics_audit_support_bundle_gate>"
@@ -2699,6 +2748,7 @@ if(TARGET sb_engine_internal_api AND TARGET sb_storage_database)
   set_tests_properties(agent_metrics_audit_support_bundle_gate PROPERTIES
     LABELS "PFAR-016;AEIC-042;agent_metrics_audit_support_bundle_gate;database_lifecycle_observability;database_lifecycle_supportability_evidence;support_bundle_redaction;security_negative;management_ui_docs;mga_transaction_regression"
   )
+endif()
 
   add_executable(agent_evidence_audit_redaction_retention_gate
     agent_evidence_audit_redaction_retention_gate.cpp
@@ -3115,6 +3165,7 @@ set_tests_properties(database_lifecycle_execution_terminology_conformance PROPER
   LABELS "EDR-013;EDR-GATE-013;execution_terminology;database_lifecycle;datatype_commercial_closure_gate"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME database_lifecycle_execution_data_gate_matrix_conformance
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/execution_data_gate_matrix_conformance.py"
@@ -3124,6 +3175,7 @@ add_test(
 set_tests_properties(database_lifecycle_execution_data_gate_matrix_conformance PROPERTIES
   LABELS "EDR-014;EDR-GATE-014;execution_data_gate_matrix;database_lifecycle;datatype_commercial_closure_gate"
 )
+endif()
 
 add_executable(database_lifecycle_execution_relation_descriptor_conformance
   execution_relation_descriptor_conformance.cpp
@@ -3827,13 +3879,15 @@ set_tests_properties(database_lifecycle_binary_uuid_operations PROPERTIES
       sb_core_platform
   )
 
-  add_test(
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(
     NAME database_lifecycle_current_core_datatype_conformance_manifest_gate
     COMMAND database_lifecycle_current_core_datatype_conformance_manifest_gate
   )
   set_tests_properties(database_lifecycle_current_core_datatype_conformance_manifest_gate PROPERTIES
     LABELS "database_lifecycle_current_core_datatype_conformance_manifest_gate;FINAL-DEFERRED-IMPLEMENTATION-TRACKER;MDF-015;MDF-015-CURRENT-CORE-DATATYPE-CONFORMANCE-MANIFEST;DEFER-DPE-EXAMPLE-CORPUS;DEFER-DTYPE-CONFORMANCE-MANIFESTS;database_lifecycle;datatype_commercial_closure_gate;mga_transaction_regression"
   )
+endif()
 endif()
 
 if(TARGET sb_engine_internal_api AND TARGET sb_core_datatypes AND TARGET sb_core_index AND TARGET sb_core_metrics)
@@ -4335,7 +4389,8 @@ if(TARGET sb_core_memory)
     LABELS "memory_temp_workspace_cross_platform_gate;MMCH-043;MMCH_TEMP_WORKSPACE_CROSS_PLATFORM;database_lifecycle_temp_workspace;database_lifecycle;database_lifecycle_unit;mga_transaction_regression"
   )
 
-  add_test(
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(
     NAME memory_temp_workspace_cross_platform_source_gate
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/memory_temp_workspace_cross_platform_source_gate.py"
             --repo-root "${SB_PRIVATE_REPO_ROOT}"
@@ -4343,6 +4398,7 @@ if(TARGET sb_core_memory)
   set_tests_properties(memory_temp_workspace_cross_platform_source_gate PROPERTIES
     LABELS "memory_temp_workspace_cross_platform_source_gate;MMCH-043;MMCH_TEMP_WORKSPACE_CROSS_PLATFORM;database_lifecycle_temp_workspace;database_lifecycle;database_lifecycle_unit;mga_transaction_regression"
   )
+endif()
 
   if(TARGET sb_storage_page)
     add_executable(memory_metadata_compatibility_gate
@@ -4400,7 +4456,8 @@ if(TARGET sb_core_memory)
     )
   endif()
 
-  add_test(
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(
     NAME memory_production_test_separation_gate
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/memory_production_test_separation_gate.py"
             --repo-root "${SB_PRIVATE_REPO_ROOT}"
@@ -4409,8 +4466,10 @@ if(TARGET sb_core_memory)
   set_tests_properties(memory_production_test_separation_gate PROPERTIES
     LABELS "memory_production_test_separation_gate;MMCH-081;MMCH_MEMORY_PRODUCTION_TEST_SEPARATION;database_lifecycle;memory;build_separation;mga_transaction_regression"
   )
+endif()
 
-  add_test(
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(
     NAME memory_cross_platform_behavior_gate
     COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/memory_cross_platform_behavior_gate.py"
             --repo-root "${SB_PRIVATE_REPO_ROOT}"
@@ -4418,6 +4477,7 @@ if(TARGET sb_core_memory)
   set_tests_properties(memory_cross_platform_behavior_gate PROPERTIES
     LABELS "memory_cross_platform_behavior_gate;MMCH-110;MMCH_CROSS_PLATFORM_MEMORY_BEHAVIOR;database_lifecycle;memory;cross_platform;mga_transaction_regression"
   )
+endif()
 endif()
 
 if(TARGET sb_core_catalog)
@@ -4439,6 +4499,7 @@ if(TARGET sb_core_catalog)
   )
 endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME database_lifecycle_catalog_identity_boundary_static
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/catalog_identity_boundary_static.py"
@@ -4447,7 +4508,9 @@ add_test(
 set_tests_properties(database_lifecycle_catalog_identity_boundary_static PROPERTIES
   LABELS "database_lifecycle_catalog_identity_boundary_static;DBLC_STATIC_CATALOG_IDENTITY_BOUNDARY;database_lifecycle_catalog_index_profile;database_lifecycle;database_lifecycle_catalog"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME database_lifecycle_catalog_index_profile_boundary_static
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/catalog_index_profile_boundary_static.py"
@@ -4456,7 +4519,9 @@ add_test(
 set_tests_properties(database_lifecycle_catalog_index_profile_boundary_static PROPERTIES
   LABELS "database_lifecycle_catalog_index_profile_boundary_static;DBLC_STATIC_CATALOG_INDEX_PROFILE_BOUNDARY;database_lifecycle_catalog_index_profile;database_lifecycle;database_lifecycle_catalog"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME database_lifecycle_protocol_versioning_static
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/protocol_versioning_static.py"
@@ -4465,7 +4530,9 @@ add_test(
 set_tests_properties(database_lifecycle_protocol_versioning_static PROPERTIES
   LABELS "database_lifecycle_protocol_versioning;DBLC_STATIC_PROTOCOL_VERSIONING;database_lifecycle"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME database_lifecycle_observability_static
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/observability_static.py"
@@ -4474,6 +4541,7 @@ add_test(
 set_tests_properties(database_lifecycle_observability_static PROPERTIES
   LABELS "database_lifecycle_observability;database_lifecycle_supportability_evidence;DBLC_STATIC_DIAGNOSTIC_MESSAGE_VECTOR_AUDIT;DBLC_P15_OBSERVABILITY_COMPLETE;database_lifecycle"
 )
+endif()
 
 if(TARGET sb_engine_internal_api)
   add_executable(cdp_performance_metric_schema_gate
@@ -4577,6 +4645,7 @@ add_custom_target(dpc_standalone_ctest_independence_gate_check
   COMMENT "Validating DPC standalone CTest independence and no-execution_plan runtime dependencies"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME dpc_standalone_ctest_independence_gate
   COMMAND "${Python3_EXECUTABLE}" "${SB_DPC_STANDALONE_CTEST_INDEPENDENCE_GATE}"
@@ -4586,6 +4655,7 @@ add_test(
 set_tests_properties(dpc_standalone_ctest_independence_gate PROPERTIES
   LABELS "dpc_standalone_ctest_independence_gate;DPC-062;DPC_P6_STANDALONE_CTEST_READY;DPC_AUDIT_STANDALONE_CTEST;DPC_TEST_NO_EXECUTION_PLAN_RUNTIME;DPC_DEP_STANDALONE_CTEST;standalone_ctest;no_execution_plan_runtime;database_lifecycle;mga_transaction_regression"
 )
+endif()
 
 set(SB_DPC_NEGATIVE_REJECTED_TECHNIQUE_DRIFT_GATE
   "${CMAKE_CURRENT_SOURCE_DIR}/dpc_negative_rejected_technique_drift_gate.py"
@@ -4598,6 +4668,7 @@ add_custom_target(dpc_negative_rejected_technique_drift_gate_check
   COMMENT "Validating DPC rejected-technique negative drift gate"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME dpc_negative_rejected_technique_drift_gate
   COMMAND "${Python3_EXECUTABLE}" "${SB_DPC_NEGATIVE_REJECTED_TECHNIQUE_DRIFT_GATE}"
@@ -4607,6 +4678,7 @@ add_test(
 set_tests_properties(dpc_negative_rejected_technique_drift_gate PROPERTIES
   LABELS "dpc_negative_rejected_technique_drift_gate;DPC-067;DPC_P6_NEGATIVE_DRIFT_READY;DPC_AUDIT_NEGATIVE_DRIFT;DPC_NEGATIVE_DRIFT;DPC_DEP_NEGATIVE_DRIFT;rejected_technique_drift;database_lifecycle;mga_transaction_regression"
 )
+endif()
 
 set(SB_DPC_EVIDENCE_PROVENANCE_RETENTION_GATE
   "${CMAKE_CURRENT_SOURCE_DIR}/dpc_evidence_provenance_retention_gate.py"
@@ -4627,6 +4699,7 @@ add_custom_target(migration_deferred_operations_closure_gate_check
   COMMENT "Validating migration deferred operations implementation closure"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME migration_deferred_operations_closure_gate
   COMMAND "${Python3_EXECUTABLE}" "${SB_MIGRATION_DEFERRED_OPERATIONS_CLOSURE_GATE}"
@@ -4636,6 +4709,7 @@ add_test(
 set_tests_properties(migration_deferred_operations_closure_gate PROPERTIES
   LABELS "migration_deferred_operations_closure_gate;MIGRATION-DEFERRED-OPERATIONS-CLOSURE;MIGRATION-DIRECTORY-IMPLEMENTATION-CLOSURE;DEFERRED-MIGRATION-IMPLEMENTATION-CLOSURE;TEMP-TABLE-GATE-017;database_lifecycle;mga_transaction_regression"
 )
+endif()
 
 add_custom_target(final_deferred_implementation_tracker_gate_check
   COMMAND "${Python3_EXECUTABLE}" "${SB_FINAL_DEFERRED_IMPLEMENTATION_TRACKER_GATE}"
@@ -4652,6 +4726,7 @@ add_custom_target(final_deferred_implementation_tracker_release_gate_check
   COMMENT "Validating final deferred implementation release closure"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME final_deferred_implementation_tracker_gate
   COMMAND "${Python3_EXECUTABLE}" "${SB_FINAL_DEFERRED_IMPLEMENTATION_TRACKER_GATE}"
@@ -4661,6 +4736,7 @@ add_test(
 set_tests_properties(final_deferred_implementation_tracker_gate PROPERTIES
   LABELS "final_deferred_implementation_tracker_gate;FINAL-DEFERRED-IMPLEMENTATION-TRACKER;MDF-000;DEFERRED-MIGRATION-IMPLEMENTATION-CLOSURE;migration_deferred_operations_closure;database_lifecycle;mga_transaction_regression"
 )
+endif()
 
 set(SB_DPC_EVIDENCE_PROVENANCE_RETENTION_MANIFEST
   "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/dpc_evidence_provenance_retention_manifest.json"
@@ -4674,6 +4750,7 @@ add_custom_target(dpc_evidence_provenance_retention_gate_check
   COMMENT "Validating DPC-072 retained evidence provenance and retention manifest"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME dpc_evidence_provenance_retention_gate
   COMMAND "${Python3_EXECUTABLE}" "${SB_DPC_EVIDENCE_PROVENANCE_RETENTION_GATE}"
@@ -4684,6 +4761,7 @@ add_test(
 set_tests_properties(dpc_evidence_provenance_retention_gate PROPERTIES
   LABELS "dpc_evidence_provenance_retention_gate;DPC-072;DPC_EVIDENCE_PROVENANCE_RETENTION_GATE;DPC_P6_EVIDENCE_RETENTION_READY;DPC_AUDIT_EVIDENCE_RETENTION;DPC_DEP_EVIDENCE_RETENTION;evidence_retention;database_lifecycle;mga_transaction_regression"
 )
+endif()
 
 set(SB_DPC_PROFILER_HOT_PATH_ATTRIBUTION_GATE
   "${CMAKE_CURRENT_SOURCE_DIR}/dpc_profiler_hot_path_attribution_gate.py"
@@ -4701,6 +4779,7 @@ add_custom_target(dpc_profiler_hot_path_attribution_gate_check
   COMMENT "Validating DPC-073 profiler and hot-path attribution fixture"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME dpc_profiler_hot_path_attribution_gate
   COMMAND "${Python3_EXECUTABLE}" "${SB_DPC_PROFILER_HOT_PATH_ATTRIBUTION_GATE}"
@@ -4711,7 +4790,9 @@ add_test(
 set_tests_properties(dpc_profiler_hot_path_attribution_gate PROPERTIES
   LABELS "dpc_profiler_hot_path_attribution_gate;DPC-073;DPC_PROFILER_HOT_PATH_ATTRIBUTION_GATE;DPC_P6_PROFILER_ATTRIBUTION_READY;DPC_AUDIT_PROFILER_ATTRIBUTION;DPC_DEP_PROFILER_ATTRIBUTION;profiler_attribution;database_lifecycle;mga_transaction_regression"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME database_lifecycle_admin_cli_static
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/admin_cli_static.py"
@@ -4720,7 +4801,9 @@ add_test(
 set_tests_properties(database_lifecycle_admin_cli_static PROPERTIES
   LABELS "database_lifecycle_admin_cli;DBLC_STATIC_ADMIN_AUTH_AUDIT_ROUTE;DBLC_P13P_ADMIN_CLI_COMPLETE;database_lifecycle"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME database_lifecycle_packaging_service_static
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/packaging_service_static.py"
@@ -4729,7 +4812,9 @@ add_test(
 set_tests_properties(database_lifecycle_packaging_service_static PROPERTIES
   LABELS "database_lifecycle_packaging_service;DBLC_STATIC_RUNTIME_CLEANUP;DBLC_P13Q_PACKAGING_SERVICE_COMPLETE;database_lifecycle"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME database_lifecycle_upgrade_migration_static
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/upgrade_migration_static.py"
@@ -4738,7 +4823,9 @@ add_test(
 set_tests_properties(database_lifecycle_upgrade_migration_static PROPERTIES
   LABELS "database_lifecycle_upgrade_migration;DBLC_STATIC_MIGRATION_NO_GUESSING;database_lifecycle"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME database_lifecycle_threat_model_static
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/threat_model_static.py"
@@ -4747,7 +4834,9 @@ add_test(
 set_tests_properties(database_lifecycle_threat_model_static PROPERTIES
   LABELS "database_lifecycle_threat_model;DBLC_STATIC_THREAT_MODEL_ABUSE_CASES;database_lifecycle"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME database_lifecycle_reference_mapping_static
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/reference_mapping_static.py"
@@ -4756,6 +4845,7 @@ add_test(
 set_tests_properties(database_lifecycle_reference_mapping_static PROPERTIES
   LABELS "database_lifecycle_reference_mapping;DBLC_STATIC_NO_REFERENCE_ENGINE_SQL;database_lifecycle"
 )
+endif()
 
 if(TARGET sb_storage_page)
   add_executable(database_lifecycle_storage_allocation_conformance

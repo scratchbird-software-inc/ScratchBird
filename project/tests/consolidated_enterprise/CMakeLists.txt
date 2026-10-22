@@ -96,6 +96,7 @@ add_custom_target(consolidated_enterprise_proof_control_gate_check
   COMMENT "Validating consolidated enterprise proof-control traceability"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME consolidated_enterprise_proof_control_gate
   COMMAND "${Python3_EXECUTABLE}" "${SB_CONSOLIDATED_ENTERPRISE_PROOF_GATE}"
@@ -104,6 +105,7 @@ add_test(
 set_tests_properties(consolidated_enterprise_proof_control_gate PROPERTIES
   LABELS "consolidated_enterprise_proof_control_gate;CEIC-001;CEIC-002;CEIC-GATE-001;CEIC-GATE-002;proof_control;traceability"
 )
+endif()
 
 set(SB_CEIC_003_MGA_AUTHORITY_BOUNDARY_GATE
   "${CMAKE_CURRENT_SOURCE_DIR}/ceic_003_mga_authority_boundary_gate.py"
@@ -115,6 +117,7 @@ add_custom_target(ceic_003_mga_authority_boundary_gate_check
   COMMENT "Validating CEIC-003 MGA authority boundaries"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME ceic_003_mga_authority_boundary_gate
   COMMAND "${Python3_EXECUTABLE}" "${SB_CEIC_003_MGA_AUTHORITY_BOUNDARY_GATE}"
@@ -123,6 +126,7 @@ add_test(
 set_tests_properties(ceic_003_mga_authority_boundary_gate PROPERTIES
   LABELS "ceic_003_mga_authority_boundary_gate;CEIC-003;CEIC-GATE-003;MGA;authority_boundary;no_wal_finality"
 )
+endif()
 
 set(SB_CEIC_004_PRODUCTION_TEST_SEPARATION_GATE
   "${PROJECT_SOURCE_DIR}/cmake/CommercialReadinessProductionBuildGateMatrix.cmake"
@@ -133,6 +137,7 @@ add_custom_target(ceic_004_production_test_separation_gate_check
   COMMENT "Validating CEIC-004 production/test separation with the production build gate matrix"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME ceic_004_production_test_separation_gate
   COMMAND "${CMAKE_COMMAND}" -P "${SB_CEIC_004_PRODUCTION_TEST_SEPARATION_GATE}"
@@ -140,6 +145,7 @@ add_test(
 set_tests_properties(ceic_004_production_test_separation_gate PROPERTIES
   LABELS "ceic_004_production_test_separation_gate;CEIC-004;CEIC-GATE-004;production_build;test_separation;cluster_boundary"
 )
+endif()
 
 add_executable(
   ceic_010_sharded_memory_accounting_ledger_gate
@@ -496,6 +502,7 @@ add_custom_target(ceic_021_memory_source_gate_check
   COMMENT "Validating CEIC-021 raw hot-path memory source gate"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME ceic_021_memory_source_gate
   COMMAND "${Python3_EXECUTABLE}" "${SB_CEIC_021_MEMORY_SOURCE_GATE_TEST}"
@@ -504,6 +511,7 @@ add_test(
 set_tests_properties(ceic_021_memory_source_gate PROPERTIES
   LABELS "ceic_021_memory_source_gate;CEIC-021;CEIC-GATE-010;memory;source_gate;raw_allocation;hot_path;allowlist;authority_boundary"
 )
+endif()
 
 set(SB_CEIC_022_MEMORY_INVARIANT_GATE_TEST
   "${CMAKE_CURRENT_SOURCE_DIR}/ceic_022_memory_invariant_gate_test.py"
@@ -515,6 +523,7 @@ add_custom_target(ceic_022_memory_invariant_static_gate_check
   COMMENT "Validating CEIC-022 formal memory invariant and verification-lane definitions"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME ceic_022_memory_invariant_static_gate
   COMMAND "${Python3_EXECUTABLE}" "${SB_CEIC_022_MEMORY_INVARIANT_GATE_TEST}"
@@ -523,6 +532,7 @@ add_test(
 set_tests_properties(ceic_022_memory_invariant_static_gate PROPERTIES
   LABELS "ceic_022_memory_invariant_static_gate;CEIC-022;CEIC-GATE-013;CEIC-GATE-051;CEIC-GATE-052;memory;invariants;static_analysis;sanitizer;soak_definition;authority_boundary"
 )
+endif()
 
 add_executable(
   ceic_022_memory_reservation_model_gate
@@ -591,6 +601,7 @@ add_custom_target(ceic_024_memory_readiness_manifest_gate_check
   COMMENT "Validating CEIC-024 generated memory readiness manifest"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME ceic_024_memory_readiness_manifest_gate
   COMMAND "${Python3_EXECUTABLE}" "${SB_CEIC_024_MEMORY_READINESS_MANIFEST_GATE_TEST}"
@@ -599,6 +610,7 @@ add_test(
 set_tests_properties(ceic_024_memory_readiness_manifest_gate PROPERTIES
   LABELS "ceic_024_memory_readiness_manifest_gate;CEIC-024;CEIC-GATE-012;memory;readiness_manifest;source_evidence;support_bundle;metrics;platform;production_gate;authority_boundary"
 )
+endif()
 
 add_executable(
   ceic_025_multi_tenant_memory_fairness_gate
@@ -754,6 +766,7 @@ add_custom_target(ceic_030_index_readiness_manifest_gate_check
   COMMENT "Validating CEIC-030 generated index readiness manifest"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME ceic_030_index_readiness_manifest_gate
   COMMAND "${Python3_EXECUTABLE}" "${SB_CEIC_030_INDEX_READINESS_MANIFEST_GATE}"
@@ -762,6 +775,7 @@ add_test(
 set_tests_properties(ceic_030_index_readiness_manifest_gate PROPERTIES
   LABELS "ceic_030_index_readiness_manifest_gate;CEIC-030;CEIC-GATE-020;indexes;readiness_manifest;provider_classification;route_capability;MGA;security;metrics;benchmark;crash;corruption;cleanup;authority_boundary"
 )
+endif()
 
 add_executable(
   ceic_031_index_access_method_provider_gate
@@ -975,6 +989,7 @@ target_link_libraries(
   PRIVATE
     sb_core_index
 )
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME ceic_040_index_operation_metrics_support_bundle_gate
   COMMAND ceic_040_index_operation_metrics_support_bundle_gate
@@ -982,6 +997,7 @@ add_test(
 set_tests_properties(ceic_040_index_operation_metrics_support_bundle_gate PROPERTIES
   LABELS "ceic_040_index_operation_metrics_support_bundle_gate;CEIC-040;CEIC-GATE-023;ELER-107;ELER-GATE-107;indexes;operation_metrics;support_bundle;redaction;runtime_producer;generation_freshness;operational_readiness;authority_boundary"
 )
+endif()
 
 add_executable(
   ceic_041_index_crash_concurrency_cleanup_corruption_matrix_gate
@@ -1015,6 +1031,7 @@ add_custom_target(ceic_042_index_readiness_manifest_drift_gate_check
   COMMENT "Validating CEIC-042 index readiness manifest drift/freshness closure"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME ceic_042_index_readiness_manifest_drift_gate
   COMMAND "${Python3_EXECUTABLE}" "${SB_CEIC_042_INDEX_READINESS_MANIFEST_DRIFT_GATE}"
@@ -1023,6 +1040,7 @@ add_test(
 set_tests_properties(ceic_042_index_readiness_manifest_drift_gate PROPERTIES
   LABELS "ceic_042_index_readiness_manifest_drift_gate;CEIC-042;CEIC-GATE-020;indexes;readiness_manifest;drift;freshness;route_capability;provider_evidence;metrics;crash;corruption;artifact_registration;authority_boundary"
 )
+endif()
 
 set(SB_CEIC_050_LIVE_ROUTE_BENCHMARK_ARTIFACT_GATE
   "${CMAKE_CURRENT_SOURCE_DIR}/ceic_050_live_route_benchmark_artifact_gate_test.py"
@@ -1035,6 +1053,7 @@ add_custom_target(ceic_050_live_route_benchmark_artifact_gate_check
   COMMENT "Validating CEIC-050 optimizer live-route benchmark artifact harness bridge"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME ceic_050_live_route_benchmark_artifact_gate
   COMMAND "${Python3_EXECUTABLE}" "${SB_CEIC_050_LIVE_ROUTE_BENCHMARK_ARTIFACT_GATE}"
@@ -1043,6 +1062,7 @@ add_test(
 set_tests_properties(ceic_050_live_route_benchmark_artifact_gate PROPERTIES
   LABELS "ceic_050_live_route_benchmark_artifact_gate;CEIC-050;CEIC-GATE-030;optimizer;benchmark_clean;live_route;route_artifact;artifact_registration;authority_boundary"
 )
+endif()
 
 add_executable(
   ceic_051_persisted_optimizer_benchmark_evidence_schema_gate
@@ -1257,6 +1277,7 @@ target_link_libraries(
     sb_core_index
     sb_engine_optimizer_contract_only
 )
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME ceic_060_index_readiness_plan_admission_gate
   COMMAND ceic_060_index_readiness_plan_admission_gate
@@ -1264,6 +1285,7 @@ add_test(
 set_tests_properties(ceic_060_index_readiness_plan_admission_gate PROPERTIES
   LABELS "ceic_060_index_readiness_plan_admission_gate;CEIC-060;CEIC-GATE-033;optimizer;indexes;readiness_manifest;plan_admission;route_runtime_proof;metrics;crash_cleanup;storage;cluster_external_provider_only;authority_boundary"
 )
+endif()
 
 set(SB_CEIC_062_OPTIMIZER_READINESS_MANIFEST_GATE
   "${CMAKE_CURRENT_SOURCE_DIR}/ceic_062_optimizer_readiness_manifest_gate_test.py"
@@ -1276,6 +1298,7 @@ add_custom_target(ceic_062_optimizer_readiness_manifest_gate_check
   COMMENT "Validating CEIC-062 optimizer readiness manifest closure"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME ceic_062_optimizer_readiness_manifest_gate
   COMMAND "${Python3_EXECUTABLE}" "${SB_CEIC_062_OPTIMIZER_READINESS_MANIFEST_GATE}"
@@ -1284,6 +1307,7 @@ add_test(
 set_tests_properties(ceic_062_optimizer_readiness_manifest_gate PROPERTIES
   LABELS "ceic_062_optimizer_readiness_manifest_gate;CEIC-062;CEIC-GATE-030;CEIC-GATE-033;optimizer;readiness_manifest;live_routes;correctness_oracle;crash_reopen;metrics_feedback;memory_feedback;index_readiness;driver_explain;reference_artifacts;llvm_memory;cluster_external_provider_only;authority_boundary"
 )
+endif()
 
 set(SB_CEIC_085_AGENT_READINESS_MANIFEST_GATE
   "${CMAKE_CURRENT_SOURCE_DIR}/ceic_085_agent_readiness_manifest_gate_test.py"
@@ -1296,6 +1320,7 @@ add_custom_target(ceic_085_agent_readiness_manifest_gate_check
   COMMENT "Validating CEIC-085 agent enterprise readiness manifest closure"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME ceic_085_agent_readiness_manifest_gate
   COMMAND "${Python3_EXECUTABLE}" "${SB_CEIC_085_AGENT_READINESS_MANIFEST_GATE}"
@@ -1304,6 +1329,7 @@ add_test(
 set_tests_properties(ceic_085_agent_readiness_manifest_gate PROPERTIES
   LABELS "ceic_085_agent_readiness_manifest_gate;CEIC-085;CEIC-GATE-040;CEIC-GATE-045;agents;readiness_manifest;profiles;policies;lanes;metrics;actions;approval;evidence;plugin_provenance;memory_coupling;index_optimizer_boundary;support_bundle;cluster_external_provider_only;authority_boundary"
 )
+endif()
 
 set(SB_CEIC_090_METRICS_PRODUCER_COVERAGE_GATE
   "${CMAKE_CURRENT_SOURCE_DIR}/ceic_090_metrics_producer_coverage_gate_test.py"
@@ -1316,6 +1342,7 @@ add_custom_target(ceic_090_metrics_producer_coverage_gate_check
   COMMENT "Validating CEIC-090 metrics producer coverage closure"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME ceic_090_metrics_producer_coverage_gate
   COMMAND "${Python3_EXECUTABLE}" "${SB_CEIC_090_METRICS_PRODUCER_COVERAGE_GATE}"
@@ -1324,6 +1351,7 @@ add_test(
 set_tests_properties(ceic_090_metrics_producer_coverage_gate PROPERTIES
   LABELS "ceic_090_metrics_producer_coverage_gate;CEIC-090;CEIC-GATE-049;metrics;producer_coverage;memory;indexes;optimizer;agents;support_bundle_inputs;production_gate_failures;authority_boundary"
 )
+endif()
 
 set(SB_CEIC_091_INTEGRATED_SUPPORT_BUNDLE_GATE
   "${CMAKE_CURRENT_SOURCE_DIR}/ceic_091_integrated_support_bundle_gate_test.py"
@@ -1336,6 +1364,7 @@ add_custom_target(ceic_091_integrated_support_bundle_gate_check
   COMMENT "Validating CEIC-091 integrated support-bundle closure"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME ceic_091_integrated_support_bundle_gate
   COMMAND "${Python3_EXECUTABLE}" "${SB_CEIC_091_INTEGRATED_SUPPORT_BUNDLE_GATE}"
@@ -1344,6 +1373,7 @@ add_test(
 set_tests_properties(ceic_091_integrated_support_bundle_gate PROPERTIES
   LABELS "ceic_091_integrated_support_bundle_gate;CEIC-091;CEIC-GATE-050;support_bundle;memory;indexes;optimizer;agents;redaction;low_memory;streaming;tamper_chain;authority_boundary"
 )
+endif()
 
 set(SB_CEIC_092_ROUTE_CHAIN_GATE
   "${CMAKE_CURRENT_SOURCE_DIR}/ceic_092_route_chain_gate_test.py"
@@ -1356,6 +1386,7 @@ add_custom_target(ceic_092_route_chain_gate_check
   COMMENT "Validating CEIC-092 end-to-end route-chain closure"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME ceic_092_route_chain_gate
   COMMAND "${Python3_EXECUTABLE}" "${SB_CEIC_092_ROUTE_CHAIN_GATE}"
@@ -1364,6 +1395,7 @@ add_test(
 set_tests_properties(ceic_092_route_chain_gate PROPERTIES
   LABELS "ceic_092_route_chain_gate;CEIC-092;CEIC-GATE-053;route_chain;memory;optimizer;indexes;agents;mga;security;result_equivalence;cluster_external_provider_only;authority_boundary"
 )
+endif()
 
 set(SB_CEIC_093_RELIABILITY_SECURITY_SUITE_GATE
   "${CMAKE_CURRENT_SOURCE_DIR}/ceic_093_reliability_security_suite_gate_test.py"
@@ -1376,6 +1408,7 @@ add_custom_target(ceic_093_reliability_security_suite_gate_check
   COMMENT "Validating CEIC-093 long-soak reliability and security-negative closure"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME ceic_093_reliability_security_suite_gate
   COMMAND "${Python3_EXECUTABLE}" "${SB_CEIC_093_RELIABILITY_SECURITY_SUITE_GATE}"
@@ -1384,6 +1417,7 @@ add_test(
 set_tests_properties(ceic_093_reliability_security_suite_gate PROPERTIES
   LABELS "ceic_093_reliability_security_suite_gate;CEIC-093;CEIC-GATE-051;ELER-102;ELER-GATE-102;soak_24h;soak_72h;soak_7d;high_concurrency;crash_fault;sanitizer_static;memory_pressure;security_negative;artifact_retention;cluster_external_provider_only;authority_boundary;linux_proof"
 )
+endif()
 
 set(SB_CEIC_094_CROSS_PLATFORM_RELEASE_GATE
   "${CMAKE_CURRENT_SOURCE_DIR}/ceic_094_cross_platform_release_gate_test.py"
@@ -1396,6 +1430,7 @@ add_custom_target(ceic_094_cross_platform_release_gate_check
   COMMENT "Validating CEIC-094 cross-platform release proof closure"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME ceic_094_cross_platform_release_gate
   COMMAND "${Python3_EXECUTABLE}" "${SB_CEIC_094_CROSS_PLATFORM_RELEASE_GATE}"
@@ -1404,6 +1439,7 @@ add_test(
 set_tests_properties(ceic_094_cross_platform_release_gate PROPERTIES
   LABELS "ceic_094_cross_platform_release_gate;CEIC-094;CEIC-GATE-052;cross_platform;linux;windows;macos;bsd;production_build;entropy;temp_spill;plugin_signing;sbom;llvm;cluster_external_provider_only;authority_boundary"
 )
+endif()
 
 set(SB_CEIC_095_FINAL_ENTERPRISE_MANIFEST_GATE
   "${CMAKE_CURRENT_SOURCE_DIR}/ceic_095_final_enterprise_manifest_gate_test.py"
@@ -1416,6 +1452,7 @@ add_custom_target(ceic_095_final_enterprise_manifest_gate_check
   COMMENT "Validating CEIC-095 final enterprise proof manifest and movement gate"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME ceic_095_final_enterprise_manifest_gate
   COMMAND "${Python3_EXECUTABLE}" "${SB_CEIC_095_FINAL_ENTERPRISE_MANIFEST_GATE}"
@@ -1424,3 +1461,4 @@ add_test(
 set_tests_properties(ceic_095_final_enterprise_manifest_gate PROPERTIES
   LABELS "ceic_095_final_enterprise_manifest_gate;CEIC-095;CEIC-GATE-900;final_manifest;movement_gate;all_gates_complete;residual_risk;static_claim_refusal;cluster_external_provider_only;authority_boundary"
 )
+endif()

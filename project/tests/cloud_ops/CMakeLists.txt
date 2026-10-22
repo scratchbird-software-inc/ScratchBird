@@ -51,6 +51,7 @@ sb_public_p1_cloud_conformance_executable(
   edge_cache_cdn_invalidation_gate
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME kubernetes_operator_lifecycle_runtime_gate
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/kubernetes_operator_lifecycle_gate.py"
@@ -59,7 +60,9 @@ add_test(
 set_tests_properties(kubernetes_operator_lifecycle_runtime_gate PROPERTIES
   LABELS "public_p1_cloud_foundation;kubernetes_operator_lifecycle_gate;release_gate"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME protected_material_catalog_gate
   COMMAND "${Python3_EXECUTABLE}" "${SB_PUBLIC_P1_CLOUD_GATE}"
@@ -69,7 +72,9 @@ add_test(
 set_tests_properties(protected_material_catalog_gate PROPERTIES
   LABELS "public_p1_cloud_foundation;protected_material_catalog_gate;release_gate;mga_transaction_regression"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME cloud_provider_capability_registry_gate
   COMMAND "${Python3_EXECUTABLE}" "${SB_PUBLIC_P1_CLOUD_GATE}"
@@ -79,7 +84,9 @@ add_test(
 set_tests_properties(cloud_provider_capability_registry_gate PROPERTIES
   LABELS "public_p1_cloud_foundation;cloud_provider_capability_registry_gate;release_gate"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME cloud_identity_kms_secretless_gate
   COMMAND "${Python3_EXECUTABLE}" "${SB_PUBLIC_P1_CLOUD_GATE}"
@@ -89,7 +96,9 @@ add_test(
 set_tests_properties(cloud_identity_kms_secretless_gate PROPERTIES
   LABELS "public_p1_cloud_foundation;cloud_identity_kms_secretless_gate;release_gate"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME kubernetes_operator_lifecycle_gate
   COMMAND "${Python3_EXECUTABLE}" "${SB_PUBLIC_P1_CLOUD_GATE}"
@@ -99,7 +108,9 @@ add_test(
 set_tests_properties(kubernetes_operator_lifecycle_gate PROPERTIES
   LABELS "public_p1_cloud_foundation;kubernetes_operator_lifecycle_gate;release_gate"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME edge_cache_cdn_invalidation_gate
   COMMAND "${Python3_EXECUTABLE}" "${SB_PUBLIC_P1_CLOUD_GATE}"
@@ -109,7 +120,9 @@ add_test(
 set_tests_properties(edge_cache_cdn_invalidation_gate PROPERTIES
   LABELS "public_p1_cloud_foundation;edge_cache_cdn_invalidation_gate;release_gate;mga_transaction_regression"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_p1_cloud_management_sblr_abi_gate
   COMMAND "${Python3_EXECUTABLE}" "${SB_PUBLIC_P1_CLOUD_GATE}"
@@ -119,7 +132,9 @@ add_test(
 set_tests_properties(public_p1_cloud_management_sblr_abi_gate PROPERTIES
   LABELS "public_p1_cloud_foundation;public_p1_cloud_management_sblr_abi_gate;release_gate"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_p1_cloud_operational_hardening_gate
   COMMAND "${Python3_EXECUTABLE}" "${SB_PUBLIC_P1_CLOUD_GATE}"
@@ -129,7 +144,9 @@ add_test(
 set_tests_properties(public_p1_cloud_operational_hardening_gate PROPERTIES
   LABELS "public_p1_cloud_foundation;public_p1_cloud_operational_hardening_gate;release_gate;mga_transaction_regression"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_p1_cloud_foundation_full_route_gate
   COMMAND "${Python3_EXECUTABLE}" "${SB_PUBLIC_P1_CLOUD_GATE}"
@@ -139,3 +156,4 @@ add_test(
 set_tests_properties(public_p1_cloud_foundation_full_route_gate PROPERTIES
   LABELS "public_p1_cloud_foundation;public_p1_cloud_foundation_full_route_gate;release_gate;mga_transaction_regression"
 )
+endif()

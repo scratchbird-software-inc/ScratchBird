@@ -591,6 +591,10 @@ set(SB_AGENT_RUNTIME_STATIC_GATES
 # SEARCH_KEY: AEIC_PER_AGENT_ROUTE_TESTS
 
 function(sb_agent_runtime_static_gate test_name gate_mode gate_labels)
+  # Non-engine: this gate verifies the repository, not the engine.
+  if(NOT SB_BUILD_NON_ENGINE_GATES)
+    return()
+  endif()
   add_test(
     NAME ${test_name}
     COMMAND "${Python3_EXECUTABLE}" "${SB_AGENT_RUNTIME_STATIC_GATES}"
@@ -728,6 +732,7 @@ add_custom_target(pfar_standalone_test_coverage_gate
           --repo-root "${SB_PRIVATE_REPO_ROOT}"
   COMMENT "Validating PFAR standalone CTest coverage registrations"
 )
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME pfar_standalone_test_coverage_gate
   COMMAND "${Python3_EXECUTABLE}"
@@ -737,6 +742,7 @@ add_test(
 set_tests_properties(pfar_standalone_test_coverage_gate PROPERTIES
   LABELS "pfar_standalone_test_coverage_gate;PFAR-018;agents;agent_runtime;standalone_test_coverage;mga_transaction_regression"
 )
+endif()
 
 if(NOT TARGET sb_core_platform)
   add_subdirectory("${PROJECT_SOURCE_DIR}/src/core/platform" "${CMAKE_CURRENT_BINARY_DIR}/core_platform")
@@ -790,11 +796,16 @@ function(sb_agent_runtime_cpp_gate test_name source_file gate_labels)
   )
 endfunction()
 
+# Non-engine: reads project/src to check manifest consistency. Guarded at the
+# call, not inside sb_agent_runtime_cpp_gate(), because that function also
+# registers engine tests.
+if(SB_BUILD_NON_ENGINE_GATES)
 sb_agent_runtime_cpp_gate(
   agent_runtime_manifest_consistency_gate
   agent_runtime_manifest_consistency_gate.cpp
   "ARHC-000;ARHC-001;ARHC-010;ARHC-011;manifest_consistency"
 )
+endif()
 
 sb_agent_runtime_cpp_gate(
   agent_runtime_layer_classification_gate
@@ -831,12 +842,14 @@ target_compile_features(agent_runtime_service_store_gate PRIVATE cxx_std_20)
 target_link_libraries(agent_runtime_service_store_gate PRIVATE
   sb_engine_internal_api
 )
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(NAME agent_runtime_service_store_gate
   COMMAND ${Python3_EXECUTABLE} "${CMAKE_CURRENT_SOURCE_DIR}/run_runtime_service_store_cases.py"
     $<TARGET_FILE:agent_runtime_service_store_gate>)
 set_tests_properties(agent_runtime_service_store_gate PROPERTIES
   LABELS "agent_runtime_service_store_gate;AEIC-011;AEIC-012;agents;agent_runtime;mga_catalog_store;runtime_service;leases;mga_transaction_regression"
 )
+endif()
 
 add_executable(agent_action_dispatch_store_gate
   agent_action_dispatch_store_gate.cpp)
@@ -1357,6 +1370,7 @@ target_link_libraries(agent_open_state_mode_runtime_part PRIVATE
 
 add_custom_target(agent_open_state_mode_gate
   DEPENDS agent_open_state_mode_api_part agent_open_state_mode_runtime_part)
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(NAME agent_open_state_mode_gate
   COMMAND "${CMAKE_COMMAND}"
           -DOPEN_STATE_API_PART=$<TARGET_FILE:agent_open_state_mode_api_part>
@@ -1365,6 +1379,7 @@ add_test(NAME agent_open_state_mode_gate
 set_tests_properties(agent_open_state_mode_gate PROPERTIES
   LABELS "agent_open_state_mode_gate;PFAR-017A;agents;agent_runtime;open_state_modes;management_authorization_policy;mga_transaction_regression"
 )
+endif()
 
 add_executable(embedded_no_background_agent_gate
   embedded_no_background_agent_gate.cpp)

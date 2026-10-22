@@ -488,12 +488,14 @@ if(SB_BUILD_QOW_CLOSURE_TESTS AND NOT SB_BUILD_TESTS)
   set_tests_properties(qow_ces05_document_production_route_v1 PROPERTIES
     LABELS "qow_closure;RCP-073;CES05;document;production_query_execute;typed_exchange;mga_transaction_regression;development_candidate"
   )
-  add_test(NAME qow_ces05_document_collection_exchange_v1
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(NAME qow_ces05_document_collection_exchange_v1
     COMMAND ${CMAKE_COMMAND} -E env SB_CES05_API_ONLY=1
             $<TARGET_FILE:qow_ces05_document_production_route_test_v1>)
   set_tests_properties(qow_ces05_document_collection_exchange_v1 PROPERTIES
     LABELS "qow_closure;RCP-073;CES05;document;collection_isolation;nullable_missing;typed_exchange;mga_transaction_regression;development_candidate"
   )
+endif()
   add_executable(qow_ces05_graph_production_route_test_v1
     qow_ces05_graph_execution.cpp)
   target_compile_features(qow_ces05_graph_production_route_test_v1 PRIVATE
@@ -1319,6 +1321,7 @@ set_tests_properties(optimizer_enterprise_llvm_boundary_gate PROPERTIES
 
 set(_sb_llvm_configure_dependency_args)
 sb_append_nested_dependency_configure_args(_sb_llvm_configure_dependency_args)
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME optimizer_enterprise_llvm_configure_gate
   COMMAND "${CMAKE_COMMAND}"
@@ -1339,6 +1342,7 @@ add_test(
 set_tests_properties(optimizer_enterprise_llvm_configure_gate PROPERTIES
   LABELS "optimizer_enterprise_llvm_configure_gate;OEIC-070;OEIC-071;optimizer;enterprise;llvm;cmake_config"
 )
+endif()
 
 add_executable(
   optimizer_enterprise_operator_actuals_gate
@@ -1742,6 +1746,7 @@ set_tests_properties(optimizer_enterprise_maintainability_gate PROPERTIES
 )
 
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME optimizer_enterprise_manifest_drift_gate
   COMMAND
@@ -1752,6 +1757,7 @@ add_test(
 set_tests_properties(optimizer_enterprise_manifest_drift_gate PROPERTIES
   LABELS "optimizer_enterprise_manifest_drift_gate;OEIC-091;optimizer;enterprise;manifest;drift"
 )
+endif()
 
 add_executable(
   optimizer_enterprise_specialized_fusion_gate

@@ -76,6 +76,10 @@ if(NOT SB_BUILD_DATABASE_LIFECYCLE_TESTS)
 endif()
 
 function(sb_add_engine_listener_enterprise_gate test_name gate_mode gate_labels)
+  # Non-engine: this gate verifies the repository, not the engine.
+  if(NOT SB_BUILD_NON_ENGINE_GATES)
+    return()
+  endif()
   add_test(
     NAME "${test_name}"
     COMMAND "${Python3_EXECUTABLE}" "${SB_ENGINE_LISTENER_ENTERPRISE_GATE}"
@@ -127,27 +131,33 @@ sb_add_engine_listener_enterprise_gate(
   platform-matrix
   "ELER-005;ELER-GATE-004;platform_matrix;linux;windows;freebsd;native_runner_pending;no_platform_overclaim;linux_proof"
 )
+if(SB_BUILD_NON_ENGINE_GATES)
 set_tests_properties(engine_listener_platform_matrix_gate PROPERTIES
   DEPENDS "public_platform_matrix_gate;engine_listener_storage_io_conformance;engine_listener_storage_io_platform_source_gate;engine_listener_management_envelope_conformance;engine_listener_ipv6_dual_stack_transport_conformance;engine_listener_parser_pool_lifecycle_conformance;engine_listener_tls_channel_binding_conformance;engine_listener_owner_lifecycle_artifact_conformance;engine_listener_windows_transport_source_gate;engine_listener_bsd_peer_owner_management_gate;engine_listener_owner_lifecycle_platform_source_gate;public_crypto_entropy_policy_gate;public_install_service_hardening_gate;engine_listener_no_skip_waiver_xfail_release_gate;public_no_skip_waiver_xfail_gate"
 )
+endif()
 
 sb_add_engine_listener_enterprise_gate(
   engine_listener_native_platform_handoff_gate
   native-platform-handoff
   "ELER-005;ELER-GATE-004;ELER-090;ELER-GATE-090;ELER-112;ELER-GATE-112;native_platform_handoff;windows;freebsd;native_runner_pending;cross_platform_pending;no_platform_overclaim;project_tests_only;linux_proof"
 )
+if(SB_BUILD_NON_ENGINE_GATES)
 set_tests_properties(engine_listener_native_platform_handoff_gate PROPERTIES
   DEPENDS "engine_listener_platform_matrix_gate;public_platform_matrix_gate;engine_listener_no_skip_waiver_xfail_release_gate;public_no_skip_waiver_xfail_gate"
 )
+endif()
 
 sb_add_engine_listener_enterprise_gate(
   engine_listener_native_platform_proof_package_import_gate
   native-platform-proof-package-import
   "ELER-005;ELER-GATE-004;ELER-090;ELER-GATE-090;ELER-112;ELER-GATE-112;native_platform_proof_package_import;windows;freebsd;native_runner_pending;cross_platform_pending;no_platform_overclaim;project_tests_only;linux_manager_import_contract;linux_proof"
 )
+if(SB_BUILD_NON_ENGINE_GATES)
 set_tests_properties(engine_listener_native_platform_proof_package_import_gate PROPERTIES
   DEPENDS "engine_listener_native_platform_handoff_gate;engine_listener_no_skip_waiver_xfail_release_gate;public_no_skip_waiver_xfail_gate"
 )
+endif()
 
 sb_add_engine_listener_enterprise_gate(
   engine_listener_no_skip_waiver_xfail_release_gate
@@ -196,9 +206,11 @@ sb_add_engine_listener_enterprise_gate(
   performance-scalability-baseline
   "ELER-105;ELER-GATE-105;performance_scalability_baseline;latency_percentiles;runtime_health_counters;resource_high_water;benchmark_clean;linux_proof"
 )
+if(SB_BUILD_NON_ENGINE_GATES)
 set_tests_properties(engine_listener_performance_scalability_baseline_gate PROPERTIES
   DEPENDS "scratchbird_beta_performance_baseline_conformance"
 )
+endif()
 
 sb_add_engine_listener_enterprise_gate(
   engine_listener_soak_certification_gate
@@ -216,9 +228,11 @@ if(TARGET dpc_soak_leak_resource_stability_gate)
     dpc_soak_leak_resource_stability_gate
   )
 endif()
+if(SB_BUILD_NON_ENGINE_GATES)
 set_tests_properties(engine_listener_soak_certification_gate PROPERTIES
   DEPENDS "${_engine_listener_soak_certification_depends}"
 )
+endif()
 unset(_engine_listener_soak_certification_depends)
 
 sb_add_engine_listener_enterprise_gate(
@@ -240,9 +254,11 @@ if(TARGET database_lifecycle_protocol_versioning_conformance)
     database_lifecycle_protocol_versioning_conformance
   )
 endif()
+if(SB_BUILD_NON_ENGINE_GATES)
 set_tests_properties(engine_listener_compatibility_upgrade_downgrade_gate PROPERTIES
   DEPENDS "${_engine_listener_compatibility_upgrade_downgrade_depends}"
 )
+endif()
 unset(_engine_listener_compatibility_upgrade_downgrade_depends)
 
 sb_add_engine_listener_enterprise_gate(
@@ -256,9 +272,11 @@ sb_add_engine_listener_enterprise_gate(
   generated-resource-determinism
   "ELER-086;ELER-GATE-086;generated_resource_determinism;fixture_hash_manifest;two_pass_generation;linux_proof"
 )
+if(SB_BUILD_NON_ENGINE_GATES)
 set_tests_properties(engine_listener_generated_resource_determinism_gate PROPERTIES
   RESOURCE_LOCK generated_resource_determinism_workdir
 )
+endif()
 
 sb_add_engine_listener_enterprise_gate(
   engine_listener_sbsql_parser_sync_gate
@@ -295,9 +313,11 @@ foreach(_database_lifecycle_operational_readiness_test IN ITEMS
   endif()
 endforeach()
 unset(_database_lifecycle_operational_readiness_test)
+if(SB_BUILD_NON_ENGINE_GATES)
 set_tests_properties(engine_listener_operational_readiness_gate PROPERTIES
   DEPENDS "${_engine_listener_operational_readiness_depends}"
 )
+endif()
 unset(_engine_listener_operational_readiness_depends)
 
 sb_add_engine_listener_enterprise_gate(
@@ -305,63 +325,77 @@ sb_add_engine_listener_enterprise_gate(
   release-artifact-trust
   "ELER-108;ELER-GATE-108;release_artifact_trust;provenance;sbom;vulnerability_scan;signature_ready;reproducible_build;debug_symbols;cluster_stub_boundary;linux_proof"
 )
+if(SB_BUILD_NON_ENGINE_GATES)
 set_tests_properties(engine_listener_release_artifact_trust_gate PROPERTIES
   DEPENDS "public_release_attestation_gate;public_artifact_reproducibility_gate;public_artifact_signature_gate;public_dependency_sbom_gate;public_platform_matrix_gate;public_sanitizer_static_analysis_gate;public_release_version_metadata_gate;public_crypto_entropy_policy_gate;public_generated_provenance_gate;public_install_service_hardening_gate;public_admin_runbook_gate;public_api_abi_compat_gate;public_cluster_provider_boundary_cleanup_gate;public_cluster_boundary_cleanup_audit_gate;database_lifecycle_release_provenance_sbom_license_gate"
 )
+endif()
 
 sb_add_engine_listener_enterprise_gate(
   engine_listener_enterprise_documentation_gate
   enterprise-documentation
   "ELER-109;ELER-GATE-109;enterprise_documentation;runbooks;trust_boundaries;architecture;operations;support_bundle;upgrade;backup_restore;limitations;support_states;linux_proof"
 )
+if(SB_BUILD_NON_ENGINE_GATES)
 set_tests_properties(engine_listener_enterprise_documentation_gate PROPERTIES
   DEPENDS "public_enterprise_documentation_gate;public_doc_consistency_gate;public_admin_runbook_gate;public_api_abi_compat_gate"
 )
+endif()
 
 sb_add_engine_listener_enterprise_gate(
   engine_listener_support_maintenance_policy_gate
   support-maintenance-policy
   "ELER-111;ELER-GATE-111;support_policy;maintenance_policy;security_update;cve;disclosure;patch_release;compatibility;data_loss_escalation;rollback;diagnostics;sla;linux_proof"
 )
+if(SB_BUILD_NON_ENGINE_GATES)
 set_tests_properties(engine_listener_support_maintenance_policy_gate PROPERTIES
   DEPENDS "public_support_policy_gate;public_support_bundle_incident_gate;public_disaster_recovery_gate;public_audit_privacy_gate;public_api_abi_compat_gate"
 )
+endif()
 
 sb_add_engine_listener_enterprise_gate(
   engine_listener_project_only_implementation_proof_gate
   project-only-implementation-proof
   "ELER-082;ELER-GATE-082;final_project_only_implementation_proof;project_tests_only;no_private_dependencies;reference_sblr_closure;sbsql_sync;parser_contract_freeze;deterministic_resources;linux_proof"
 )
+if(SB_BUILD_NON_ENGINE_GATES)
 set_tests_properties(engine_listener_project_only_implementation_proof_gate PROPERTIES
   DEPENDS "engine_listener_no_skip_waiver_xfail_release_gate;engine_listener_row_level_traceability_manifest_gate;engine_listener_parser_contract_freeze_gate;engine_listener_generated_resource_determinism_gate;engine_listener_sbsql_parser_sync_gate;engine_listener_release_profile_completeness_gate;engine_listener_support_bundle_redaction_gate;public_project_export_gate;sblr_surface_reference_interface_closure_gate;sblr_surface_sbsql_sync_guardrail_gate;sblr_surface_function_registry_dispatch_conformance"
 )
+endif()
 
 sb_add_engine_listener_enterprise_gate(
   engine_listener_external_review_closure_package_gate
   external-review-closure-package
   "ELER-110;ELER-GATE-110;external_review_closure_package;security_review;database_correctness_review;operational_reliability_review;reference_sblr_parser_boundary_review;cluster_boundary_review;external_validation_pending;linux_proof"
 )
+if(SB_BUILD_NON_ENGINE_GATES)
 set_tests_properties(engine_listener_external_review_closure_package_gate PROPERTIES
   DEPENDS "engine_listener_adversarial_security_validation_gate;engine_listener_fuzz_property_invariant_suite_gate;engine_listener_crash_recovery_certification_gate;engine_listener_operational_readiness_gate;engine_listener_release_artifact_trust_gate;engine_listener_enterprise_documentation_gate;engine_listener_support_maintenance_policy_gate;engine_listener_parser_contract_freeze_gate;engine_listener_sbsql_parser_sync_gate;sblr_surface_reference_interface_closure_gate;sblr_surface_sbsql_sync_guardrail_gate;public_cluster_provider_boundary_cleanup_gate;public_cluster_boundary_cleanup_audit_gate"
 )
+endif()
 
 sb_add_engine_listener_enterprise_gate(
   engine_listener_gold_enterprise_readiness_gate
   gold-enterprise-readiness
   "ELER-112;ELER-GATE-112;linux_gold_enterprise_release_candidate;enterprise_readiness_aggregation;cross_platform_pending;external_zero_issue_audit_pending;no_product_completion_claim;linux_proof"
 )
+if(SB_BUILD_NON_ENGINE_GATES)
 set_tests_properties(engine_listener_gold_enterprise_readiness_gate PROPERTIES
   DEPENDS "engine_listener_project_only_implementation_proof_gate;engine_listener_external_review_closure_package_gate;engine_listener_integrated_product_proof_gate;engine_listener_crash_recovery_certification_gate;engine_listener_soak_certification_gate;engine_listener_performance_scalability_baseline_gate;engine_listener_compatibility_upgrade_downgrade_gate;engine_listener_operational_readiness_gate;engine_listener_release_artifact_trust_gate;engine_listener_enterprise_documentation_gate;engine_listener_support_maintenance_policy_gate;engine_listener_native_platform_handoff_gate;engine_listener_native_platform_proof_package_import_gate;public_platform_matrix_gate"
 )
+endif()
 
 sb_add_engine_listener_enterprise_gate(
   engine_listener_third_audit_evidence_package_gate
   third-audit-evidence-package
   "ELER-090;ELER-GATE-090;third_audit_evidence_package;audit_ready;external_zero_issue_audit_pending;project_tests_only;cross_platform_pending;linux_proof"
 )
+if(SB_BUILD_NON_ENGINE_GATES)
 set_tests_properties(engine_listener_third_audit_evidence_package_gate PROPERTIES
   DEPENDS "engine_listener_gold_enterprise_readiness_gate;engine_listener_project_only_implementation_proof_gate;engine_listener_external_review_closure_package_gate;engine_listener_no_skip_waiver_xfail_release_gate;engine_listener_generated_resource_determinism_gate;public_project_export_gate"
 )
+endif()
 
 if(NOT WIN32)
   add_executable(engine_listener_dbbt_lpreface_binding_conformance
@@ -400,6 +434,7 @@ if(NOT WIN32)
   endif()
 endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME engine_listener_bsd_peer_owner_management_gate
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/engine_listener_bsd_peer_owner_management_gate.py"
@@ -408,7 +443,9 @@ add_test(
 set_tests_properties(engine_listener_bsd_peer_owner_management_gate PROPERTIES
   LABELS "ELER-061;ELER-GATE-061;ELER-065;ELER-GATE-065;ELER-103;ELER-GATE-103;ELER-107;ELER-GATE-107;engine_listener_enterprise;listener;management;peer_owner;bsd;freebsd;platform_transport;fail_closed;linux_source_proof"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME engine_listener_windows_transport_source_gate
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/engine_listener_windows_transport_source_gate.py"
@@ -417,7 +454,9 @@ add_test(
 set_tests_properties(engine_listener_windows_transport_source_gate PROPERTIES
   LABELS "ELER-061;ELER-GATE-061;ELER-062;ELER-GATE-062;ELER-065;ELER-GATE-065;ELER-103;ELER-GATE-103;ELER-107;ELER-GATE-107;engine_listener_enterprise;listener;management;windows;winsock;platform_transport;parser_handoff_duplicate_socket;mingw_cross_compile;linux_source_proof"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME engine_listener_owner_lifecycle_platform_source_gate
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/engine_listener_owner_lifecycle_platform_source_gate.py"
@@ -426,6 +465,7 @@ add_test(
 set_tests_properties(engine_listener_owner_lifecycle_platform_source_gate PROPERTIES
   LABELS "ELER-067;ELER-GATE-067;ELER-103;ELER-GATE-103;ELER-107;ELER-GATE-107;engine_listener_enterprise;listener;owner_lifecycle;windows;bsd;durable_artifacts;mingw_cross_compile;linux_source_proof"
 )
+endif()
 
 if(NOT WIN32)
   add_executable(engine_listener_parser_pool_lifecycle_conformance
@@ -600,6 +640,7 @@ set_tests_properties(engine_listener_storage_io_conformance PROPERTIES
   LABELS "ELER-010;ELER-011;ELER-GATE-010;ELER-GATE-011;ELER-080;ELER-GATE-080;ELER-101;ELER-GATE-101;engine_listener_enterprise;storage;disk;checked_offsets;durable_io;linux_proof"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME engine_listener_storage_io_platform_source_gate
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/engine_listener_storage_io_platform_source_gate.py"
@@ -608,6 +649,7 @@ add_test(
 set_tests_properties(engine_listener_storage_io_platform_source_gate PROPERTIES
   LABELS "ELER-005;ELER-GATE-004;ELER-010;ELER-011;ELER-GATE-010;ELER-GATE-011;ELER-080;ELER-GATE-080;ELER-101;ELER-GATE-101;engine_listener_enterprise;storage;disk;checked_offsets;durable_io;windows;bsd;native_platform_io;mingw_cross_compile;linux_source_proof"
 )
+endif()
 
 add_executable(engine_listener_filespace_growth_conformance
   engine_listener_filespace_growth_conformance.cpp
@@ -911,6 +953,10 @@ set_tests_properties(engine_listener_mga_integrated_physical_cleanup_conformance
 # forward public-release dependencies only when that profile is enabled; all
 # other edges must name a test already registered in the selected graph.
 function(sb_set_engine_listener_registered_dependencies test_name)
+    # The target itself may be a guarded non-engine gate.
+    if(NOT TEST "${test_name}")
+      return()
+    endif()
   set(_registered_dependencies)
   foreach(_dependency IN LISTS ARGN)
     if(TEST "${_dependency}")

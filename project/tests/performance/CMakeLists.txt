@@ -16,6 +16,7 @@ set(SB_OPTIMIZER_DEFICIENCY_BATCH_A_FIXTURE
   "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/optimizer_deficiency_batch_a/optimizer_deficiency_batch_a_fixture.json"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME optimizer_deficiency_batch_a_gate
   COMMAND "${Python3_EXECUTABLE}"
@@ -28,6 +29,7 @@ add_test(
 set_tests_properties(optimizer_deficiency_batch_a_gate PROPERTIES
   LABELS "optimizer_deficiency_batch_a_gate;ODF-000;ODF-001;ODF-002;ODF-003;ODF-004;ODF-005;ODF-006;ODF-007;ODF-008;ODF-009;optimizer_deficiency;performance;benchmark_clean;mga_transaction_regression"
 )
+endif()
 
 add_executable(
   optimizer_deficiency_odfr_001_gate
@@ -65,6 +67,7 @@ set_tests_properties(optimizer_deficiency_odfr_002_gate PROPERTIES
   LABELS "optimizer_deficiency_odfr_002_gate;ODFR-002;optimizer_deficiency;performance;contention_telemetry;support_bundle;mga_transaction_regression"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME optimizer_deficiency_odf_119_gate
   COMMAND "${Python3_EXECUTABLE}"
@@ -75,6 +78,7 @@ add_test(
 set_tests_properties(optimizer_deficiency_odf_119_gate PROPERTIES
   LABELS "optimizer_deficiency_odf_119_gate;ODF-119;optimizer_deficiency;performance;benchmark;benchmark_clean;variance;reproducibility;mga_transaction_regression"
 )
+endif()
 
 add_executable(
   memory_live_route_arena_gate
@@ -293,6 +297,7 @@ target_link_libraries(
   PRIVATE
     sb_core_index
 )
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME index_runtime_capability_truthfulness_gate
   COMMAND index_runtime_capability_truthfulness_gate
@@ -300,6 +305,7 @@ add_test(
 set_tests_properties(index_runtime_capability_truthfulness_gate PROPERTIES
   LABELS "index_runtime_capability_truthfulness_gate;IRC-000;IRC-001;IRC-002;IRC-003;ELER-105;ELER-GATE-105;index_runtime_correctness;index_lookup_runtime_truthfulness;performance_scalability_baseline;benchmark_clean;no_execution_plan_runtime;mga_transaction_regression"
 )
+endif()
 
 add_executable(
   index_route_capability_gate
@@ -311,6 +317,7 @@ target_link_libraries(
   PRIVATE
     sb_core_index
 )
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME index_route_capability_gate
   COMMAND index_route_capability_gate
@@ -318,6 +325,7 @@ add_test(
 set_tests_properties(index_route_capability_gate PROPERTIES
   LABELS "index_route_capability_gate;IRC-190;index_runtime_correctness;route_capability;benchmark_clean;no_execution_plan_runtime;mga_transaction_regression"
 )
+endif()
 
 add_executable(
   index_catalog_management_metrics_surface_gate
@@ -1137,6 +1145,7 @@ target_link_libraries(
     sb_core_index
     sb_engine_optimizer
 )
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME optimizer_runtime_hot_path_orh_004_gate
   COMMAND optimizer_runtime_hot_path_orh_004_gate
@@ -1144,6 +1153,7 @@ add_test(
 set_tests_properties(optimizer_runtime_hot_path_orh_004_gate PROPERTIES
   LABELS "optimizer_runtime_hot_path_orh_004_gate;ORH-004;ORH-GATE-004;optimizer_runtime_hot_path;performance;index_rebase;route_capability;benchmark_clean;no_execution_plan_runtime;mga_transaction_regression"
 )
+endif()
 
 add_executable(
   optimizer_runtime_hot_path_orh_010_011_gate
@@ -1740,6 +1750,7 @@ set_tests_properties(optimizer_runtime_hot_path_orh_250_gate PROPERTIES
   LABELS "optimizer_runtime_hot_path_orh_250_gate;ORH-250;ORH-GATE-250;foreground_parallel_execution;multi_worker;resource_governance;optimizer_runtime_hot_path;performance;benchmark_clean;no_execution_plan_runtime;mga_transaction_regression"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME optimizer_runtime_hot_path_orh_270_gate
   COMMAND "${Python3_EXECUTABLE}"
@@ -1749,6 +1760,7 @@ add_test(
 set_tests_properties(optimizer_runtime_hot_path_orh_270_gate PROPERTIES
   LABELS "optimizer_runtime_hot_path_orh_270_gate;ORH-270;ORH-GATE-270;reference_dominance_closure;deprecated;optimizer_runtime_hot_path;performance;mga_transaction_regression"
 )
+endif()
 
 add_executable(
   optimizer_runtime_hot_path_orh_287_gate
@@ -1807,6 +1819,7 @@ set_tests_properties(optimizer_runtime_hot_path_orh_289_gate PROPERTIES
   LABELS "optimizer_runtime_hot_path_orh_289_gate;ORH-289;ORH-GATE-289;cpu_cache_layout;layout_observability;optimizer_runtime_hot_path;performance;benchmark_clean;no_execution_plan_runtime;mga_transaction_regression"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME optimizer_runtime_hot_path_orh_900_gate
   COMMAND "${Python3_EXECUTABLE}"
@@ -1816,7 +1829,9 @@ add_test(
 set_tests_properties(optimizer_runtime_hot_path_orh_900_gate PROPERTIES
   LABELS "optimizer_runtime_hot_path_orh_900_gate;ORH-900;ORH-GATE-900;focused_live_route_closure;deprecated;optimizer_runtime_hot_path;performance;mga_transaction_regression"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME optimizer_runtime_hot_path_orh_901_gate
   COMMAND "${Python3_EXECUTABLE}"
@@ -1826,6 +1841,7 @@ add_test(
 set_tests_properties(optimizer_runtime_hot_path_orh_901_gate PROPERTIES
   LABELS "optimizer_runtime_hot_path_orh_901_gate;ORH-901;ORH-GATE-901;final_audit;movement_readiness;completed;optimizer_runtime_hot_path;performance;mga_transaction_regression"
 )
+endif()
 
 add_executable(
   optimizer_runtime_hot_path_orh_280_gate

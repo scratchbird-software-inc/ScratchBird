@@ -38,6 +38,7 @@ endforeach()
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME mga_transaction_regression_authority_policy_gate
   COMMAND
@@ -48,7 +49,9 @@ add_test(
 set_tests_properties(mga_transaction_regression_authority_policy_gate PROPERTIES
   LABELS "mga;transaction;regression;authority"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME mga_transaction_regression_benchmark_storage_policy_gate
   COMMAND
@@ -59,6 +62,7 @@ add_test(
 set_tests_properties(mga_transaction_regression_benchmark_storage_policy_gate PROPERTIES
   LABELS "mga;transaction;regression;authority"
 )
+endif()
 
 if(TARGET sb_engine_api_transaction_semantics_probe)
   add_test(

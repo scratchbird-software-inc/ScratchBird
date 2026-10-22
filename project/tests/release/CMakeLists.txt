@@ -6,12 +6,14 @@
 #
 # SPDX-License-Identifier: MPL-2.0
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(NAME public_runtime_stage_conformance
   COMMAND ${Python3_EXECUTABLE} -B
     "${CMAKE_CURRENT_SOURCE_DIR}/public_runtime_stage_conformance.py"
     --cmake "${CMAKE_COMMAND}"
     --module "${PROJECT_SOURCE_DIR}/cmake/PublicBranding.cmake")
 set_tests_properties(public_runtime_stage_conformance PROPERTIES TIMEOUT 60)
+endif()
 
 if(NOT TARGET sb_core_platform)
   add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/../../src/core/platform
@@ -292,6 +294,7 @@ set_tests_properties(public_memory_pmr_call_path_gate PROPERTIES
   LABELS "public_release_correctness;public_memory_pmr_call_path_gate;PCR-GATE-016;PCR-016;memory;pmr;call_path;reservation_backed;planner;executor"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_memory_call_path_matrix_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -302,6 +305,7 @@ add_test(
 set_tests_properties(public_memory_call_path_matrix_gate PROPERTIES
   LABELS "public_release_correctness;public_memory_call_path_matrix_gate;PCR-GATE-016;PCR-016;memory;pmr;call_path_matrix;reservation_backed;approved_exemption"
 )
+endif()
 
 add_executable(public_disk_file_device_gate
   public_disk_file_device_gate.cpp
@@ -1866,6 +1870,7 @@ target_link_libraries(public_example_database_seed PRIVATE
   sb_core_memory
   sb_core_uuid
 )
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_example_database_seed_gate
   COMMAND public_example_database_seed
@@ -1877,6 +1882,7 @@ add_test(
 set_tests_properties(public_example_database_seed_gate PROPERTIES
   LABELS "public_release_correctness;public_example_database_seed_gate;PCR-GATE-001;PCR-002;data;example_database;storage_database;public_fixture"
 )
+endif()
 
 if(NOT TARGET public_driver_test_database_seed)
   add_executable(public_driver_test_database_seed
@@ -1890,6 +1896,7 @@ if(NOT TARGET public_driver_test_database_seed)
     sb_core_uuid
   )
 endif()
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_driver_test_database_seed_gate
   COMMAND public_driver_test_database_seed
@@ -1901,7 +1908,9 @@ add_test(
 set_tests_properties(public_driver_test_database_seed_gate PROPERTIES
   LABELS "public_release_correctness;public_driver_test_database_seed_gate;BDRV-FIX-LIVE-001;driver_test_fixture;full_create_database;storage_database;mga;security"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_private_reference_scan_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -1911,14 +1920,18 @@ add_test(
 set_tests_properties(public_private_reference_scan_gate PROPERTIES
   LABELS "public_release_correctness;public_private_reference_scan_gate;PCR-GATE-002;PCR-003;release_hygiene"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(NAME public_private_reference_scan_semantics
   COMMAND ${Python3_EXECUTABLE}
           ${CMAKE_CURRENT_SOURCE_DIR}/public_private_reference_scan_semantics_test.py)
 set_tests_properties(public_private_reference_scan_semantics PROPERTIES
   LABELS "public_release_correctness;release_hygiene;unit;negative_controls")
+endif()
 
 # DBEAVER_MANAGEMENT_PLATFORM_GATE_TEST
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME dbeaver_management_platform_gate_test
   COMMAND ${Python3_EXECUTABLE}
@@ -1927,8 +1940,10 @@ add_test(
 set_tests_properties(dbeaver_management_platform_gate_test PROPERTIES
   LABELS "public_release_correctness;dbeaver_management_platform_gate;DBEAVER-MGMT-003;DBEAVER-MGMT-006;DBEAVER-MGMT-023;DBEAVER-MGMT-026;DBEAVER-MGMT-027;DBEAVER-MGMT-028;DBEAVER-MGMT-029;DBEAVER-MGMT-034;DBEAVER-MGMT-043;DBEAVER-MGMT-044;DBEAVER-MGMT-046;dbeaver;release_controller;api_drift;secure_properties;license_ip;network_egress"
 )
+endif()
 
 # PUBLIC_PROOF_MIGRATION_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_proof_migration_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -1941,8 +1956,10 @@ add_test(
 set_tests_properties(public_proof_migration_gate PROPERTIES
   LABELS "public_release_correctness;public_proof_migration_gate;PCR-GATE-003;PCR-004;release_hygiene;proof_migration;project_local_proof"
 )
+endif()
 
 # PUBLIC_UUID_IDENTITY_RESOLUTION_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_uuid_literal_classifier_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -1957,7 +1974,9 @@ add_test(
 set_tests_properties(public_uuid_literal_classifier_gate PROPERTIES
   LABELS "public_release_correctness;public_uuid_literal_classifier_gate;PCR-GATE-006;PCR-007;uuid;identity;literal_inventory;allowlist"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_generated_sql_object_uuid_binding_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -1974,6 +1993,7 @@ add_test(
 set_tests_properties(public_generated_sql_object_uuid_binding_gate PROPERTIES
   LABELS "public_release_correctness;public_generated_sql_object_uuid_binding_gate;PCR-GATE-006;PCR-008;PCR-009;uuid;identity;generated_sql_object;literal_binding;resolver_conversion"
 )
+endif()
 
 add_executable(public_external_git_versioning_gate
   public_external_git_versioning_gate.cpp
@@ -2180,6 +2200,7 @@ set_tests_properties(public_cluster_provider_boundary_cleanup_gate PROPERTIES
   LABELS "public_release_correctness;public_cluster_provider_boundary_cleanup_gate;PCR-GATE-097;PCR-097;ELER-108;ELER-GATE-108;cluster_boundary;external_provider;no_cluster;compile_link_stub;non_mutating;fail_closed;release_artifact_trust;linux_proof"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_cluster_boundary_cleanup_audit_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -2192,6 +2213,7 @@ add_test(
 set_tests_properties(public_cluster_boundary_cleanup_audit_gate PROPERTIES
   LABELS "public_release_correctness;public_cluster_boundary_cleanup_audit_gate;PCR-GATE-097;PCR-097;ELER-108;ELER-GATE-108;cluster_boundary;external_provider;static_audit;provider_modes;compile_link_stub;fail_closed;release_artifact_trust;linux_proof"
 )
+endif()
 
 add_executable(public_cluster_catalog_readiness_suite
   public_cluster_catalog_readiness_suite.cpp
@@ -2214,6 +2236,7 @@ set_tests_properties(public_cluster_catalog_readiness_suite PROPERTIES
   LABELS "public_release_correctness;public_cluster_catalog_readiness_suite;PCR-GATE-098;PCR-098;cluster_catalog;cluster_boundary;readiness;conformance;schema_gating;projection_only;codec;resolver;comment_resolver;descriptor;metrics;cleanup_audit;external_provider_required;no_local_execution"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_cluster_catalog_manifest_check_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -2226,7 +2249,9 @@ add_test(
 set_tests_properties(public_cluster_catalog_manifest_check_gate PROPERTIES
   LABELS "public_release_correctness;public_cluster_catalog_manifest_check_gate;PCR-GATE-098;PCR-098;cluster_catalog;cluster_boundary;readiness;static_audit;public_proof;cleanup_audit"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_cluster_manifest_source_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -2238,6 +2263,7 @@ add_test(
 set_tests_properties(public_cluster_manifest_source_gate PROPERTIES
   LABELS "public_release_correctness;public_cluster_manifest_source_gate;PCR-GATE-099;PCR-099;cluster_catalog;manifest_source;source_of_truth;generated_matrix;readable_proof;external_provider_required;no_local_execution"
 )
+endif()
 
 add_executable(public_cluster_access_profile_gate
   public_cluster_access_profile_gate.cpp
@@ -2288,6 +2314,7 @@ set_tests_properties(public_cluster_provider_handshake_gate PROPERTIES
   LABELS "public_release_correctness;public_cluster_provider_handshake_gate;PCR-GATE-102;PCR-102;ELER-103;ELER-GATE-103;cluster_boundary;provider_abi;catalog_manifest;operation_set;feature_flags;authority_domains;digest_compatibility;route_admission;external_provider_required;fail_closed;cluster_boundary_bypass"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_cluster_build_matrix_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -2299,6 +2326,7 @@ add_test(
 set_tests_properties(public_cluster_build_matrix_gate PROPERTIES
   LABELS "public_release_correctness;public_cluster_build_matrix_gate;PCR-GATE-103;PCR-103;cluster_boundary;build_matrix;no_cluster;compile_link_stub;external_provider_mode;non_mutating;fail_closed"
 )
+endif()
 
 add_executable(public_cluster_catalog_backup_export_gate
   public_cluster_catalog_backup_export_gate.cpp
@@ -2483,6 +2511,7 @@ set_tests_properties(public_codec_property_gate PROPERTIES
   LABELS "public_release_correctness;public_codec_property_gate;PCR-GATE-114;PCR-114;ELER-104;ELER-GATE-104;durable_codec;property;bounds;checksum;version;authority_refusal;fail_closed"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_durable_codec_fuzz_coverage_inventory
   COMMAND ${Python3_EXECUTABLE}
@@ -2493,7 +2522,9 @@ add_test(
 set_tests_properties(public_durable_codec_fuzz_coverage_inventory PROPERTIES
   LABELS "public_release_correctness;PCR-GATE-114;PCR-114;ELER-104;ELER-GATE-104;durable_codec;evidence_inventory;source_token_check;non_behavioral;property;bounds;checksum;version;authority_refusal;fail_closed"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_crash_fault_source_contract_matrix
   COMMAND ${Python3_EXECUTABLE}
@@ -2504,7 +2535,9 @@ add_test(
 set_tests_properties(public_crash_fault_source_contract_matrix PROPERTIES
   LABELS "public_release_correctness;public_crash_fault_source_contract_matrix;PCR-GATE-115;PCR-115;ELER-080;ELER-GATE-080;source_contract;source_token_check;non_behavioral;mga_authority;fail_closed"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_release_soak_coverage_inventory
   COMMAND ${Python3_EXECUTABLE}
@@ -2515,6 +2548,7 @@ add_test(
 set_tests_properties(public_release_soak_coverage_inventory PROPERTIES
   LABELS "public_release_correctness;PCR-GATE-116;PCR-116;ELER-081;ELER-GATE-081;ELER-102;ELER-GATE-102;evidence_inventory;source_token_check;non_behavioral;concurrency;diagnostics;fail_closed"
 )
+endif()
 
 add_executable(public_index_provider_evidence_split_gate
   public_index_provider_evidence_split_gate.cpp
@@ -2625,6 +2659,7 @@ set_tests_properties(public_optimizer_expression_plan_cache_validation_gate PROP
   LABELS "public_release_correctness;public_optimizer_expression_plan_cache_validation_gate;PCR-GATE-063;PCR-063;ELER-104;ELER-GATE-104;ELER-106;ELER-GATE-106;optimizer;expression_normalization;plan_cache;compatibility_epoch;validation_hardening;sblr_uuid_mga;optimizer_property;binary_uuid"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_dependency_sbom_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -2637,8 +2672,10 @@ add_test(
 set_tests_properties(public_dependency_sbom_gate PROPERTIES
   LABELS "public_release_correctness;public_dependency_sbom_gate;PCR-GATE-111;PCR-111;ELER-108;ELER-GATE-108;release_hygiene;dependency;license;sbom;vulnerability_scan;provenance;generated_artifacts;llvm_policy;release_artifact_trust;linux_proof"
 )
+endif()
 
 # PUBLIC_PLATFORM_MATRIX_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_platform_matrix_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -2660,7 +2697,9 @@ add_test(
 set_tests_properties(public_platform_matrix_gate PROPERTIES
   LABELS "public_release_correctness;public_platform_matrix_gate;PCR-GATE-109;PCR-109;ELER-005;ELER-GATE-004;ELER-108;ELER-GATE-108;release_hygiene;platform;linux;windows;freebsd;debug_symbols;cluster_boundary;fail_closed;release_artifact_trust;linux_proof"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_no_skip_waiver_xfail_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -2673,7 +2712,9 @@ add_test(
 set_tests_properties(public_no_skip_waiver_xfail_gate PROPERTIES
   LABELS "public_release_correctness;public_no_skip_waiver_xfail_gate;ELER-083;ELER-GATE-083;release_hygiene;declared_feature_result_classifier;no_skip_waiver_xfail_completion;linux_proof"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_row_level_traceability_manifest_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -2686,7 +2727,9 @@ add_test(
 set_tests_properties(public_row_level_traceability_manifest_gate PROPERTIES
   LABELS "public_release_correctness;public_row_level_traceability_manifest_gate;ELER-084;ELER-GATE-084;release_hygiene;row_level_traceability_manifest;declared_feature_traceability;reference_sblr_traceability;linux_proof"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_parser_contract_freeze_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -2699,7 +2742,9 @@ add_test(
 set_tests_properties(public_parser_contract_freeze_gate PROPERTIES
   LABELS "public_release_correctness;public_parser_contract_freeze_gate;ELER-085;ELER-GATE-085;ELER-106;ELER-GATE-106;release_hygiene;parser_facing_contract_freeze;versioned_parser_contract;compatibility_version_policy;linux_proof"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_generated_resource_determinism_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -2713,7 +2758,9 @@ set_tests_properties(public_generated_resource_determinism_gate PROPERTIES
   LABELS "public_release_correctness;public_generated_resource_determinism_gate;ELER-086;ELER-GATE-086;release_hygiene;generated_resource_determinism;fixture_hash_manifest;two_pass_generation;linux_proof"
   RESOURCE_LOCK generated_resource_determinism_workdir
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_sbsql_parser_sync_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -2726,7 +2773,9 @@ add_test(
 set_tests_properties(public_sbsql_parser_sync_gate PROPERTIES
   LABELS "public_release_correctness;public_sbsql_parser_sync_gate;ELER-089;ELER-GATE-089;release_hygiene;sbsql_parser_spec_execution_plan_sync;row_expanded_sync;compatibility_dialect_paste_through_rejection;linux_proof"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_sanitizer_result_contract_test
   COMMAND ${Python3_EXECUTABLE}
@@ -2735,6 +2784,7 @@ add_test(
 set_tests_properties(public_sanitizer_result_contract_test PROPERTIES
   LABELS "public_release_correctness;sanitizer;qualification_integrity;fail_closed;linux_proof"
 )
+endif()
 
 add_executable(public_sanitizer_warning_probe
   public_sanitizer_warning_probe.cpp
@@ -2742,7 +2792,8 @@ add_executable(public_sanitizer_warning_probe
 target_compile_features(public_sanitizer_warning_probe PRIVATE cxx_std_23)
 
 if(NOT SB_PUBLIC_RELEASE_HARDENING_NESTED)
-  add_test(
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(
     NAME public_sanitizer_static_analysis_gate
     COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/release/public_sanitizer_static_analysis_gate.py
@@ -2759,14 +2810,18 @@ if(NOT SB_PUBLIC_RELEASE_HARDENING_NESTED)
   set_tests_properties(public_sanitizer_static_analysis_gate PROPERTIES
     LABELS "public_release_correctness;public_sanitizer_static_analysis_gate;PCR-GATE-110;PCR-110;ELER-108;ELER-GATE-108;release_hygiene;sanitizer;static_analysis;warnings_as_errors;source_hygiene;compiler_hardening;release_artifact_trust;linux_proof"
   )
+endif()
   if(_sb_release_nested_configure_env)
+if(SB_BUILD_NON_ENGINE_GATES)
     set_tests_properties(public_sanitizer_static_analysis_gate PROPERTIES
       ENVIRONMENT "${_sb_release_nested_configure_env}"
     )
+endif()
   endif()
 endif()
 
 # PUBLIC_PRODUCTION_BUILD_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_production_feature_audit_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -2783,13 +2838,17 @@ add_test(
 set_tests_properties(public_production_feature_audit_gate PROPERTIES
   LABELS "public_release_correctness;public_production_feature_audit_gate;PCR-GATE-113;PCR-113;release_hygiene;production_build;fixture_refusal;cluster_boundary;fail_closed"
 )
+endif()
 if(_sb_release_nested_configure_env)
+if(SB_BUILD_NON_ENGINE_GATES)
   set_tests_properties(public_production_feature_audit_gate PROPERTIES
     ENVIRONMENT "${_sb_release_nested_configure_env}"
   )
 endif()
+endif()
 
 # PUBLIC_DOC_CONSISTENCY_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_doc_consistency_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -2801,8 +2860,10 @@ add_test(
 set_tests_properties(public_doc_consistency_gate PROPERTIES
   LABELS "public_release_correctness;public_doc_consistency_gate;PCR-GATE-117;PCR-117;ELER-109;ELER-GATE-109;release_hygiene;documentation;readiness_matrix;private_reference_scan;enterprise_documentation;linux_proof"
 )
+endif()
 
 # PUBLIC_ENTERPRISE_DOCUMENTATION_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_enterprise_documentation_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -2814,8 +2875,10 @@ add_test(
 set_tests_properties(public_enterprise_documentation_gate PROPERTIES
   LABELS "public_release_correctness;public_enterprise_documentation_gate;ELER-109;ELER-GATE-109;enterprise_documentation;architecture;trust_boundaries;lifecycle;file_format;mga;security;authorization;toast;optimizer;memory;runbooks;support_bundle;upgrade;backup_restore;limitations;support_states;linux_proof"
 )
+endif()
 
 # PUBLIC_API_BOUNDARY_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_api_boundary_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -2828,8 +2891,10 @@ add_test(
 set_tests_properties(public_api_boundary_gate PROPERTIES
   LABELS "public_release_correctness;public_api_boundary_gate;PCR-GATE-119;PCR-119;release_hygiene;public_api;include_boundary;engine_only;cluster_boundary"
 )
+endif()
 
 # PUBLIC_INSTALL_CONSUMER_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_install_consumer_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -2844,8 +2909,10 @@ add_test(
 set_tests_properties(public_install_consumer_gate PROPERTIES
   LABELS "public_release_correctness;public_install_consumer_gate;PCR-GATE-120;PCR-120;release_hygiene;install;external_consumer;engine_only;public_api"
 )
+endif()
 
 # PUBLIC_NON_ENGINE_INSTALL_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_non_engine_install_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -2860,10 +2927,13 @@ add_test(
 set_tests_properties(public_non_engine_install_gate PROPERTIES
   LABELS "public_release_correctness;public_non_engine_install_gate;PCR-GATE-140;PCR-140;release_hygiene;install;non_engine_install;manager;sbmn_manager;engine_only_export;linux_proof"
 )
+endif()
 if(_sb_release_nested_configure_env)
+if(SB_BUILD_NON_ENGINE_GATES)
   set_tests_properties(public_non_engine_install_gate PROPERTIES
     ENVIRONMENT "${_sb_release_nested_configure_env}"
   )
+endif()
 endif()
 
 add_executable(public_release_version_metadata_tool
@@ -2892,6 +2962,7 @@ set_tests_properties(public_release_version_metadata_gate PROPERTIES
 )
 
 # Nested configurations retain dependency locations, never cached probe results.
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_nested_dependency_config_test
   COMMAND ${Python3_EXECUTABLE}
@@ -2901,8 +2972,10 @@ set_tests_properties(public_nested_dependency_config_test PROPERTIES
   LABELS "public_release_correctness;release_hygiene;dependency_configuration;source_archive_safe;linux_proof"
   ENVIRONMENT "SB_TEST_CMAKE_COMMAND=${CMAKE_COMMAND}"
 )
+endif()
 
 # PUBLIC_PROJECT_EXPORT_COPY_FILTER_TEST
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_project_export_copy_filter_test
   COMMAND ${Python3_EXECUTABLE}
@@ -2912,8 +2985,10 @@ add_test(
 set_tests_properties(public_project_export_copy_filter_test PROPERTIES
   LABELS "public_release_correctness;public_project_export_copy_filter_test;PCR-GATE-001;release_hygiene;project_only_export;reference_acquisition_boundary;source_archive_safe;linux_proof"
 )
+endif()
 
 # PUBLIC_ARTIFACT_REPRODUCIBILITY_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_artifact_reproducibility_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -2939,8 +3014,10 @@ set_tests_properties(public_artifact_reproducibility_gate PROPERTIES
   DEPENDS public_release_version_metadata_gate
   LABELS "public_release_correctness;public_artifact_reproducibility_gate;PCR-GATE-118;PCR-118;ELER-108;ELER-GATE-108;release_hygiene;reproducibility;cleanup_manifest;generated_matrices;sbom;version_metadata;release_artifact_trust;linux_proof"
 )
+endif()
 
 # PUBLIC_ARTIFACT_SIGNATURE_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_artifact_signature_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -2954,8 +3031,10 @@ add_test(
 set_tests_properties(public_artifact_signature_gate PROPERTIES
   LABELS "public_release_correctness;public_artifact_signature_gate;PCR-GATE-127;PCR-127;ELER-108;ELER-GATE-108;release_hygiene;artifact_signing;checksum;signature_ready;sha256;hmac;fail_closed;public_export;release_artifact_trust;linux_proof"
 )
+endif()
 
 # PUBLIC_DIAGNOSTIC_STABILITY_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_diagnostic_stability_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -2967,8 +3046,10 @@ add_test(
 set_tests_properties(public_diagnostic_stability_gate PROPERTIES
   LABELS "public_release_correctness;public_diagnostic_stability_gate;PCR-GATE-121;PCR-121;diagnostics;stability_matrix;redaction;compatibility;unsupported_features"
 )
+endif()
 
 # CRUD_COMPATIBILITY_BOUNDARY_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME crud_compatibility_boundary_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -2978,8 +3059,10 @@ add_test(
 set_tests_properties(crud_compatibility_boundary_gate PROPERTIES
   LABELS "public_release_correctness;crud_compatibility_boundary_gate;dml;MGA;compatibility;source_policy"
 )
+endif()
 
 # DML_FULL_STATE_LOAD_BOUNDARY_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME dml_full_state_load_boundary_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -2989,8 +3072,10 @@ add_test(
 set_tests_properties(dml_full_state_load_boundary_gate PROPERTIES
   LABELS "public_release_correctness;dml_full_state_load_boundary_gate;dml;MGA;performance;source_policy"
 )
+endif()
 
 # PUBLIC_CRYPTO_ENTROPY_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_crypto_entropy_policy_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -3001,8 +3086,10 @@ add_test(
 set_tests_properties(public_crypto_entropy_policy_gate PROPERTIES
   LABELS "public_release_correctness;public_crypto_entropy_policy_gate;PCR-GATE-122;PCR-122;ELER-108;ELER-GATE-108;security;crypto;entropy;hmac;signature_ready;protected_material;fail_closed;release_artifact_trust;linux_proof"
 )
+endif()
 
 # PUBLIC_DEFAULT_CONFIG_CHECK
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_default_config_check
   COMMAND ${Python3_EXECUTABLE}
@@ -3014,6 +3101,7 @@ add_test(
 set_tests_properties(public_default_config_check PROPERTIES
   LABELS "public_release_correctness;public_default_config_check;PCR-GATE-123;PCR-123;ELER-108;ELER-GATE-108;release_hygiene;secure_defaults;startup;config;security;memory;cluster_boundary;release_artifact_trust;linux_proof"
 )
+endif()
 
 if(NOT TARGET sb_server_core)
   message(FATAL_ERROR "public_secure_defaults_gate requires sb_server_core")
@@ -3037,6 +3125,7 @@ set_tests_properties(public_secure_defaults_gate PROPERTIES
 )
 
 # PUBLIC_UNSUPPORTED_FEATURE_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(NAME public_release_contract_oracle_regression
   COMMAND ${Python3_EXECUTABLE}
           ${CMAKE_CURRENT_SOURCE_DIR}/release_contract_oracle_regression.py
@@ -3044,8 +3133,10 @@ add_test(NAME public_release_contract_oracle_regression
 set_tests_properties(public_release_contract_oracle_regression PROPERTIES
   LABELS "public_release_correctness;release_hygiene;source_oracle;negative_controls"
   TIMEOUT 60)
+endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  add_test(NAME public_short_socket_workspace_regression
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(NAME public_short_socket_workspace_regression
     COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/short_socket_workspace_regression.py
             --repo-root ${CMAKE_CURRENT_SOURCE_DIR}/../../..)
@@ -3053,7 +3144,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     LABELS "public_release_correctness;linux_proof;unix_socket;test_harness"
     TIMEOUT 60)
 endif()
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_unsupported_feature_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -3065,8 +3158,10 @@ add_test(
 set_tests_properties(public_unsupported_feature_gate PROPERTIES
   LABELS "public_release_correctness;public_unsupported_feature_gate;PCR-GATE-124;PCR-124;unsupported_features;release_hygiene;fail_closed;no_overclaim;cluster_boundary;external_provider_required;compile_time_disabled;policy_blocked"
 )
+endif()
 
 # PUBLIC_GENERATED_PROVENANCE_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_generated_provenance_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -3081,10 +3176,12 @@ add_test(
 set_tests_properties(public_generated_provenance_gate PROPERTIES
   LABELS "public_release_correctness;public_generated_provenance_gate;PCR-GATE-125;PCR-125;ELER-108;ELER-GATE-108;release_hygiene;generated_source;source_provenance;drift_detection;regeneration;checked_in_authority;release_artifact_trust;linux_proof"
 )
+endif()
 
 if(NOT SB_PUBLIC_RELEASE_EXPORT_NESTED)
   # PUBLIC_EXAMPLE_SMOKE_GATE
-  add_test(
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(
     NAME public_example_smoke_gate
     COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/release/public_example_smoke_gate.py
@@ -3102,7 +3199,9 @@ if(NOT SB_PUBLIC_RELEASE_EXPORT_NESTED)
     LABELS "public_release_correctness;public_example_smoke_gate;PCR-GATE-126;PCR-126;examples;smoke;public_export;create;open;schema;insert;select;transaction;rollback;backup;verify;diagnostics"
   )
 endif()
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_policy_pack_manifest_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -3112,7 +3211,9 @@ add_test(
 set_tests_properties(public_policy_pack_manifest_gate PROPERTIES
   LABELS "public_release_correctness;public_policy_pack_manifest_gate;PCR-GATE-128;PCR-128;policy;security;database_lifecycle;default_policy_pack;local_password_only;catalog_materialization;release_hygiene"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_policy_coverage_matrix_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -3123,6 +3224,7 @@ add_test(
 set_tests_properties(public_policy_coverage_matrix_gate PROPERTIES
   LABELS "public_release_correctness;public_policy_coverage_matrix_gate;PCR-GATE-130;PCR-130;policy;security;default_policy_pack;coverage_matrix;unsupported_fail_closed;cluster_boundary"
 )
+endif()
 
 add_executable(public_policy_pack_catalog_import_gate
   public_policy_pack_catalog_import_gate.cpp
@@ -3191,6 +3293,7 @@ set_tests_properties(public_custom_policy_pack_gate PROPERTIES
 )
 
 # PUBLIC_ENTERPRISE_THREAT_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_enterprise_threat_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -3203,6 +3306,7 @@ add_test(
 set_tests_properties(public_enterprise_threat_gate PROPERTIES
   LABELS "public_release_correctness;public_enterprise_threat_gate;PCR-GATE-134;PCR-134;ELER-103;ELER-GATE-103;security;enterprise;threat_model;abuse_case;fail_closed;stable_diagnostics"
 )
+endif()
 
 add_executable(public_upgrade_migration_gate
   public_upgrade_migration_gate.cpp
@@ -3245,6 +3349,7 @@ set_tests_properties(public_observability_schema_gate PROPERTIES
 )
 
 # PUBLIC_PERFORMANCE_BASELINE_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_performance_baseline_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -3257,8 +3362,10 @@ add_test(
 set_tests_properties(public_performance_baseline_gate PROPERTIES
   LABELS "public_release_correctness;public_performance_baseline_gate;PCR-GATE-138;PCR-138;performance;capacity;baseline;p50;p95;p99;benchmark_clean;no_reference_dominance;memory;transactions;backup;restore;archive;support_bundle"
 )
+endif()
 
 # PUBLIC_INSTALL_SERVICE_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_install_service_hardening_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -3270,8 +3377,10 @@ add_test(
 set_tests_properties(public_install_service_hardening_gate PROPERTIES
   LABELS "public_release_correctness;public_install_service_hardening_gate;PCR-GATE-139;PCR-139;ELER-108;ELER-GATE-108;install;uninstall;service;service_identity;permissions;startup;shutdown;secure_defaults;support_bundle;no_world_writable;fail_closed;release_artifact_trust;linux_proof"
 )
+endif()
 
 # PUBLIC_RUNBOOK_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_admin_runbook_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -3283,8 +3392,10 @@ add_test(
 set_tests_properties(public_admin_runbook_gate PROPERTIES
   LABELS "public_release_correctness;public_admin_runbook_gate;PCR-GATE-140;PCR-140;ELER-107;ELER-GATE-107;ELER-108;ELER-GATE-108;ELER-109;ELER-GATE-109;runbooks;admin_docs;operations;create;open;config;security;backup;restore;verify;repair;memory_pressure;sweep;archive;diagnostics;unsupported_features;upgrade;release_artifact_trust;enterprise_documentation;operational_readiness;linux_proof"
 )
+endif()
 
 # PUBLIC_API_ABI_COMPAT_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_api_abi_compat_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -3296,8 +3407,10 @@ add_test(
 set_tests_properties(public_api_abi_compat_gate PROPERTIES
   LABELS "public_release_correctness;public_api_abi_compat_gate;PCR-GATE-141;PCR-141;ELER-108;ELER-GATE-108;ELER-109;ELER-GATE-109;ELER-111;ELER-GATE-111;api;abi;compatibility;semantic_versioning;deprecation;removal;headers;c_api;provider_abi;file_format;diagnostics;config;policy_pack;extension_points;upgrade;fail_closed;release_artifact_trust;enterprise_documentation;support_policy;linux_proof"
 )
+endif()
 
 # PUBLIC_SUPPORT_POLICY_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_support_policy_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -3309,8 +3422,10 @@ add_test(
 set_tests_properties(public_support_policy_gate PROPERTIES
   LABELS "public_release_correctness;public_support_policy_gate;ELER-111;ELER-GATE-111;support_policy;support_lifecycle;security_update;cve;disclosure;patch_release;compatibility;data_loss_escalation;rollback;diagnostics;sla;community;commercial;linux_proof"
 )
+endif()
 
 # PUBLIC_SUPPORT_BUNDLE_INCIDENT_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_support_bundle_incident_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -3322,8 +3437,10 @@ add_test(
 set_tests_properties(public_support_bundle_incident_gate PROPERTIES
   LABELS "public_release_correctness;public_support_bundle_incident_gate;PCR-GATE-142;PCR-142;ELER-111;ELER-GATE-111;support_bundle;incident;redaction;triage;diagnostics;memory;storage;transactions;index;security;agents;repair;archive;backup;authority_boundary;fail_closed;support_policy;linux_proof"
 )
+endif()
 
 # PUBLIC_DISASTER_RECOVERY_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_disaster_recovery_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -3335,8 +3452,10 @@ add_test(
 set_tests_properties(public_disaster_recovery_gate PROPERTIES
   LABELS "public_release_correctness;public_disaster_recovery_gate;PCR-GATE-143;PCR-143;ELER-111;ELER-GATE-111;backup;restore;disaster_recovery;interrupted_restore;corrupt_backup;missing_segment;pitr;write_after_replay;identity;security;authority_boundary;fail_closed;support_policy;linux_proof"
 )
+endif()
 
 # PUBLIC_AUDIT_PRIVACY_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_audit_privacy_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -3348,8 +3467,10 @@ add_test(
 set_tests_properties(public_audit_privacy_gate PROPERTIES
   LABELS "public_release_correctness;public_audit_privacy_gate;PCR-GATE-144;PCR-144;ELER-111;ELER-GATE-111;audit;retention;integrity;privacy;legal_hold;redaction;tamper_evidence;export;deletion_blocker;protected_fields;mga;non_authority;fail_closed;support_policy;linux_proof"
 )
+endif()
 
 # PUBLIC_WORKLOAD_FAIRNESS_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_workload_fairness_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -3361,8 +3482,10 @@ add_test(
 set_tests_properties(public_workload_fairness_gate PROPERTIES
   LABELS "public_release_correctness;public_workload_fairness_gate;PCR-GATE-145;PCR-145;workload;governance;fairness;quota;admission;cancellation;spill;agent_throttling;noisy_neighbor;starvation;memory_pressure;fail_closed"
 )
+endif()
 
 # PUBLIC_RELEASE_ATTESTATION_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_release_attestation_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -3375,8 +3498,10 @@ add_test(
 set_tests_properties(public_release_attestation_gate PROPERTIES
   LABELS "public_release_correctness;public_release_attestation_gate;PCR-GATE-146;PCR-146;ELER-108;ELER-GATE-108;release_hygiene;provenance;attestation;source_provenance;generated_provenance;toolchain;reproducible_archive;signature_ready;public_inputs;fail_closed;release_artifact_trust;linux_proof"
 )
+endif()
 
 # PUBLIC_REFERENCE_MATERIAL_BOUNDARY_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_reference_material_boundary_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -3386,8 +3511,10 @@ add_test(
 set_tests_properties(public_reference_material_boundary_gate PROPERTIES
   LABELS "public_release_correctness;public_reference_material_boundary_gate;PCR-GATE-157;PCR-157;reference_material;source_boundary;documentation_boundary;reference_source_absent;external_payloads_untracked;fail_closed"
 )
+endif()
 
 # INVESTOR_READINESS_SURFACE_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME investor_readiness_surface_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -3399,8 +3526,10 @@ add_test(
 set_tests_properties(investor_readiness_surface_gate PROPERTIES
   LABELS "public_release_correctness;investor_readiness_surface_gate;PCR-GATE-158;PCR-158;investor_readiness;release_hygiene;claims_boundary;driver_release_bucket;benchmark_no_claim;reference_fixture_boundary;fail_closed"
 )
+endif()
 
 # SPDX_LICENSE_SURFACE_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME spdx_license_surface_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -3411,8 +3540,10 @@ add_test(
 set_tests_properties(spdx_license_surface_gate PROPERTIES
   LABELS "public_release_correctness;spdx_license_surface_gate;PCR-GATE-159;PCR-159;license;spdx;third_party_notices;sbom;release_hygiene;fail_closed"
 )
+endif()
 
 # PUBLIC_WEBSERVER_PACKAGE_EXPORT_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME web_distribution_bundle_test
   COMMAND ${Python3_EXECUTABLE}
@@ -3422,7 +3553,9 @@ add_test(
 set_tests_properties(web_distribution_bundle_test PROPERTIES
   LABELS "public_release_correctness;web_distribution_bundle_test;PCR-GATE-160;PCR-160;installers;webserver_export;artifact_manifest;checksums;native_server_only;no_client_payload;dbeaver_excluded;no_github_release;fail_closed"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME prerelease_bundle_client_boundary_test
   COMMAND ${Python3_EXECUTABLE}
@@ -3432,7 +3565,9 @@ add_test(
 set_tests_properties(prerelease_bundle_client_boundary_test PROPERTIES
   LABELS "public_release_correctness;prerelease_bundle;manual_route;native_server_only;no_client_payload;dbeaver_excluded;fail_closed"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME llvm_runtime_release_contract_test
   COMMAND ${Python3_EXECUTABLE}
@@ -3441,7 +3576,9 @@ add_test(
 set_tests_properties(llvm_runtime_release_contract_test PROPERTIES
   LABELS "public_release_correctness;llvm_runtime_library;installers;runtime_dependencies;fail_closed"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME macos_universal_llvm_profile_test
   COMMAND ${Python3_EXECUTABLE}
@@ -3450,9 +3587,11 @@ add_test(
 set_tests_properties(macos_universal_llvm_profile_test PROPERTIES
   LABELS "public_release_correctness;llvm_runtime_library;installers;macos;universal;archive_safety;fail_closed"
 )
+endif()
 
 if(NOT WIN32)
-  add_test(
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(
     NAME macos_system_installer_smoke
     COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/installers/smoke_install_macos_system.py
@@ -3462,7 +3601,9 @@ if(NOT WIN32)
     LABELS "public_release_correctness;installers;macos;identity;fail_closed"
   )
 endif()
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME windows_portable_release_workflow_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -3471,7 +3612,9 @@ add_test(
 set_tests_properties(windows_portable_release_workflow_gate PROPERTIES
   LABELS "public_release_correctness;installers;windows;portable_zip;manual_msi_tooling;workflow;fail_closed"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME nightly_release_bundle_test
   COMMAND ${Python3_EXECUTABLE}
@@ -3480,7 +3623,9 @@ add_test(
 set_tests_properties(nightly_release_bundle_test PROPERTIES
   LABELS "public_release_correctness;nightly_release;installers;native_sbsql;llvm_runtime_library;fail_closed"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME textual_failure_proof_test
   COMMAND ${Python3_EXECUTABLE}
@@ -3489,7 +3634,9 @@ add_test(
 set_tests_properties(textual_failure_proof_test PROPERTIES
   LABELS "public_release_correctness;installers;github_actions;failure_proof;no_binary_payload;fail_closed"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME native_release_bundle_test
   COMMAND ${Python3_EXECUTABLE}
@@ -3498,7 +3645,9 @@ add_test(
 set_tests_properties(native_release_bundle_test PROPERTIES
   LABELS "public_release_correctness;native_release_bundle;installers;native_sbsql;llvm_runtime_library;fail_closed"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME standalone_sbparser_graph_contract_test
   COMMAND ${Python3_EXECUTABLE}
@@ -3509,7 +3658,9 @@ add_test(
 set_tests_properties(standalone_sbparser_graph_contract_test PROPERTIES
   LABELS "public_release_correctness;native_sbsql;parser_boundary;standalone_parser;build_graph;fail_closed"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME rolling_nightly_publisher_test
   COMMAND ${Python3_EXECUTABLE}
@@ -3518,7 +3669,9 @@ add_test(
 set_tests_properties(rolling_nightly_publisher_test PROPERTIES
   LABELS "public_release_correctness;nightly_release;github_release;publication;fail_closed"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME stage_driver_beta_artifacts_test
   COMMAND ${Python3_EXECUTABLE}
@@ -3527,8 +3680,10 @@ add_test(
 set_tests_properties(stage_driver_beta_artifacts_test PROPERTIES
   LABELS "driver_release;metadata_snapshot;fail_closed"
 )
+endif()
 
 # PUBLIC_CONFIG_POLICY_MIGRATION_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME native_qa_bootstrap_test
   COMMAND ${Python3_EXECUTABLE}
@@ -3538,8 +3693,10 @@ add_test(
 set_tests_properties(native_qa_bootstrap_test PROPERTIES
   LABELS "public_release_correctness;native_qa_bootstrap_test;installers;operational_readiness;native_sbsql;tls;dbbt;secure_bootstrap;fail_closed"
 )
+endif()
 
 # PUBLIC_CONFIG_POLICY_MIGRATION_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_config_policy_migration_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -3551,8 +3708,10 @@ add_test(
 set_tests_properties(public_config_policy_migration_gate PROPERTIES
   LABELS "public_release_correctness;public_config_policy_migration_gate;PCR-GATE-147;PCR-147;ELER-107;ELER-GATE-107;config;policy;migration;policy_pack;versioning;diff;export;import;post_create_filesystem_refusal;admin_diagnostics;mga_catalog_commit;fail_closed;operational_readiness"
 )
+endif()
 
 # PUBLIC_LIFECYCLE_POLICY_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_lifecycle_policy_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -3564,8 +3723,10 @@ add_test(
 set_tests_properties(public_lifecycle_policy_gate PROPERTIES
   LABELS "public_release_correctness;public_lifecycle_policy_gate;PCR-GATE-152;PCR-152;support;release_lifecycle;supported_platforms;file_format;upgrade;security_patch_window;preview_status;unsupported_features;first_release_boundaries;fail_closed"
 )
+endif()
 
 # PUBLIC_SECRET_SCAN_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_secret_scan_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -3577,8 +3738,10 @@ add_test(
 set_tests_properties(public_secret_scan_gate PROPERTIES
   LABELS "public_release_correctness;public_secret_scan_gate;PCR-GATE-153;PCR-153;secrets;credentials;local_paths;private_endpoints;private_keys;tokens;passwords;signing_keys;cloud_credentials;public_package;fail_closed"
 )
+endif()
 
 # PUBLIC_PLATFORM_ENV_VERIFY_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_platform_env_verify_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -3591,8 +3754,10 @@ add_test(
 set_tests_properties(public_platform_env_verify_gate PROPERTIES
   LABELS "public_release_correctness;public_platform_env_verify_gate;PCR-GATE-156;PCR-156;platform;environment;compiler;cmake;ninja;python;llvm;openssl;icu;libxml2;zlib;lz4;zstd;geos;proj;gtest;odbc;fail_closed"
 )
+endif()
 
 # PUBLIC_PROVENANCE_POLICY_GATE
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME public_generated_ai_reference_provenance_gate
   COMMAND ${Python3_EXECUTABLE}
@@ -3604,9 +3769,11 @@ add_test(
 set_tests_properties(public_generated_ai_reference_provenance_gate PROPERTIES
   LABELS "public_release_correctness;public_generated_ai_reference_provenance_gate;PCR-GATE-154;PCR-154;provenance;generated_code;ai_assisted;reference_derived;copied_reference;public_inputs;human_review;authority_boundary;fail_closed"
 )
+endif()
 
 if(NOT SB_PUBLIC_RELEASE_EXPORT_NESTED)
-  add_test(
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(
     NAME public_project_export_gate
     COMMAND ${Python3_EXECUTABLE}
             ${CMAKE_CURRENT_SOURCE_DIR}/../../tools/release/public_project_export_gate.py
@@ -3626,10 +3793,13 @@ if(NOT SB_PUBLIC_RELEASE_EXPORT_NESTED)
     LABELS "public_release_correctness;public_project_export_gate;PCR-GATE-001;PCR-GATE-005;PCR-001;PCR-002;PCR-005;ELER-108;ELER-GATE-108;release_hygiene;project_only_export;cleanup_manifest;private_reference_scan;release_artifact_trust;linux_proof"
     TIMEOUT 7200
   )
+endif()
   if(_sb_release_nested_configure_env)
+if(SB_BUILD_NON_ENGINE_GATES)
     set_tests_properties(public_project_export_gate PROPERTIES
       ENVIRONMENT "${_sb_release_nested_configure_env}"
     )
+endif()
   endif()
 endif()
 
