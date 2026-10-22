@@ -106,13 +106,20 @@ find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
 file(MAKE_DIRECTORY "${SB_DRIVER_BUILD_ROOT}")
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(NAME driver_component_runner_interpreter_gate
   COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/scripts/driver_component_runner_test.py")
 set_tests_properties(driver_component_runner_interpreter_gate PROPERTIES
   TIMEOUT 30 LABELS "driver;test_infrastructure;component_regression"
   ENVIRONMENT "PYTHONDONTWRITEBYTECODE=1;PYTHONPYCACHEPREFIX=${SB_DRIVER_BUILD_ROOT}/pycache")
+endif()
 
 function(sb_add_driver_gate test_name mode)
+  # Non-engine: this gate verifies the repository/toolchain, not the
+  # engine. One early return covers every test this function registers.
+  if(NOT SB_BUILD_NON_ENGINE_GATES)
+    return()
+  endif()
   add_test(
     NAME "${test_name}"
     COMMAND
@@ -132,6 +139,11 @@ function(sb_add_driver_gate test_name mode)
 endfunction()
 
 function(sb_add_driver_component_gate test_name component)
+  # Non-engine: this gate verifies the repository/toolchain, not the
+  # engine. One early return covers every test this function registers.
+  if(NOT SB_BUILD_NON_ENGINE_GATES)
+    return()
+  endif()
   set(toolchain_waiver_args)
   if(SB_DRIVER_ALLOW_TOOLCHAIN_WAIVERS)
     list(APPEND toolchain_waiver_args "--allow-toolchain-waivers")
@@ -158,6 +170,11 @@ function(sb_add_driver_component_gate test_name component)
 endfunction()
 
 function(sb_add_driver_static_requirement_gate test_name mode)
+  # Non-engine: this gate verifies the repository/toolchain, not the
+  # engine. One early return covers every test this function registers.
+  if(NOT SB_BUILD_NON_ENGINE_GATES)
+    return()
+  endif()
   add_test(
     NAME "${test_name}"
     COMMAND
@@ -172,6 +189,11 @@ function(sb_add_driver_static_requirement_gate test_name mode)
 endfunction()
 
 function(sb_add_driver_dbeaver_management_gate test_name)
+  # Non-engine: this gate verifies the repository/toolchain, not the
+  # engine. One early return covers every test this function registers.
+  if(NOT SB_BUILD_NON_ENGINE_GATES)
+    return()
+  endif()
   add_test(
     NAME "${test_name}"
     COMMAND
@@ -185,6 +207,11 @@ function(sb_add_driver_dbeaver_management_gate test_name)
 endfunction()
 
 function(sb_add_driver_native_full_surface_gate test_name mode)
+  # Non-engine: this gate verifies the repository/toolchain, not the
+  # engine. One early return covers every test this function registers.
+  if(NOT SB_BUILD_NON_ENGINE_GATES)
+    return()
+  endif()
   add_test(
     NAME "${test_name}"
     COMMAND
@@ -200,6 +227,11 @@ function(sb_add_driver_native_full_surface_gate test_name mode)
 endfunction()
 
 function(sb_add_driver_native_full_surface_artifact_schema_gate test_name)
+  # Non-engine: this gate verifies the repository/toolchain, not the
+  # engine. One early return covers every test this function registers.
+  if(NOT SB_BUILD_NON_ENGINE_GATES)
+    return()
+  endif()
   add_test(
     NAME "${test_name}"
     COMMAND
@@ -218,6 +250,11 @@ function(sb_add_driver_native_full_surface_artifact_schema_gate test_name)
 endfunction()
 
 function(sb_add_driver_native_matrix_plan_gate test_name)
+  # Non-engine: this gate verifies the repository/toolchain, not the
+  # engine. One early return covers every test this function registers.
+  if(NOT SB_BUILD_NON_ENGINE_GATES)
+    return()
+  endif()
   add_test(
     NAME "${test_name}"
     COMMAND
@@ -232,6 +269,11 @@ function(sb_add_driver_native_matrix_plan_gate test_name)
 endfunction()
 
 function(sb_add_driver_native_workplan_coverage_gate test_name)
+  # Non-engine: this gate verifies the repository/toolchain, not the
+  # engine. One early return covers every test this function registers.
+  if(NOT SB_BUILD_NON_ENGINE_GATES)
+    return()
+  endif()
   add_test(
     NAME "${test_name}"
     COMMAND
@@ -246,6 +288,11 @@ function(sb_add_driver_native_workplan_coverage_gate test_name)
 endfunction()
 
 function(sb_add_driver_native_full_surface_matrix_runner_gate test_name)
+  # Non-engine: this gate verifies the repository/toolchain, not the
+  # engine. One early return covers every test this function registers.
+  if(NOT SB_BUILD_NON_ENGINE_GATES)
+    return()
+  endif()
   add_test(
     NAME "${test_name}"
     COMMAND
@@ -264,6 +311,11 @@ function(sb_add_driver_native_full_surface_matrix_runner_gate test_name)
 endfunction()
 
 function(sb_add_driver_native_full_surface_matrix_shard_runner_gate test_name)
+  # Non-engine: this gate verifies the repository/toolchain, not the
+  # engine. One early return covers every test this function registers.
+  if(NOT SB_BUILD_NON_ENGINE_GATES)
+    return()
+  endif()
   add_test(
     NAME "${test_name}"
     COMMAND
@@ -284,6 +336,11 @@ function(sb_add_driver_native_full_surface_matrix_shard_runner_gate test_name)
 endfunction()
 
 function(sb_add_driver_native_full_surface_matrix_finalizer_gate test_name)
+  # Non-engine: this gate verifies the repository/toolchain, not the
+  # engine. One early return covers every test this function registers.
+  if(NOT SB_BUILD_NON_ENGINE_GATES)
+    return()
+  endif()
   add_test(
     NAME "${test_name}"
     COMMAND
@@ -299,6 +356,11 @@ function(sb_add_driver_native_full_surface_matrix_finalizer_gate test_name)
 endfunction()
 
 function(sb_add_driver_native_matrix_lane_plan_gate test_name)
+  # Non-engine: this gate verifies the repository/toolchain, not the
+  # engine. One early return covers every test this function registers.
+  if(NOT SB_BUILD_NON_ENGINE_GATES)
+    return()
+  endif()
   add_test(
     NAME "${test_name}"
     COMMAND
@@ -316,6 +378,11 @@ function(sb_add_driver_native_matrix_lane_plan_gate test_name)
 endfunction()
 
 function(sb_add_driver_native_tool_stage_gate test_name)
+  # Non-engine: this gate verifies the repository/toolchain, not the
+  # engine. One early return covers every test this function registers.
+  if(NOT SB_BUILD_NON_ENGINE_GATES)
+    return()
+  endif()
   set(stage_args)
   if(SB_DRIVER_STAGE_COMPILED_TOOLS)
     list(APPEND stage_args "--build-compiled")
@@ -343,6 +410,11 @@ function(sb_add_driver_native_tool_stage_gate test_name)
 endfunction()
 
 function(sb_add_driver_script_diff_contract_gate test_name)
+  # Non-engine: this gate verifies the repository/toolchain, not the
+  # engine. One early return covers every test this function registers.
+  if(NOT SB_BUILD_NON_ENGINE_GATES)
+    return()
+  endif()
   add_test(
     NAME "${test_name}"
     COMMAND
@@ -360,6 +432,11 @@ function(sb_add_driver_script_diff_contract_gate test_name)
 endfunction()
 
 function(sb_add_driver_full_surface_script_suite_gate test_name)
+  # Non-engine: this gate verifies the repository/toolchain, not the
+  # engine. One early return covers every test this function registers.
+  if(NOT SB_BUILD_NON_ENGINE_GATES)
+    return()
+  endif()
   add_test(
     NAME "${test_name}"
     COMMAND
@@ -375,6 +452,11 @@ function(sb_add_driver_full_surface_script_suite_gate test_name)
 endfunction()
 
 function(sb_add_driver_ipar_performance_proof_gate test_name mode)
+  # Non-engine: this gate verifies the repository/toolchain, not the
+  # engine. One early return covers every test this function registers.
+  if(NOT SB_BUILD_NON_ENGINE_GATES)
+    return()
+  endif()
   add_test(
     NAME "${test_name}"
     COMMAND
@@ -391,6 +473,11 @@ function(sb_add_driver_ipar_performance_proof_gate test_name mode)
 endfunction()
 
 function(sb_add_driver_ipar_artifact_gate test_name)
+  # Non-engine: this gate verifies the repository/toolchain, not the
+  # engine. One early return covers every test this function registers.
+  if(NOT SB_BUILD_NON_ENGINE_GATES)
+    return()
+  endif()
   add_test(
     NAME "${test_name}"
     COMMAND
@@ -412,6 +499,11 @@ function(sb_add_driver_ipar_artifact_gate test_name)
 endfunction()
 
 function(sb_add_driver_status_package_gate test_name mode)
+  # Non-engine: this gate verifies the repository/toolchain, not the
+  # engine. One early return covers every test this function registers.
+  if(NOT SB_BUILD_NON_ENGINE_GATES)
+    return()
+  endif()
   add_test(
     NAME "${test_name}"
     COMMAND
@@ -432,6 +524,11 @@ function(sb_add_driver_status_package_gate test_name mode)
 endfunction()
 
 function(sb_add_driver_p4_route_gate test_name mode)
+  # Non-engine: this gate verifies the repository/toolchain, not the
+  # engine. One early return covers every test this function registers.
+  if(NOT SB_BUILD_NON_ENGINE_GATES)
+    return()
+  endif()
   add_test(
     NAME "${test_name}"
     COMMAND
@@ -452,6 +549,11 @@ function(sb_add_driver_p4_route_gate test_name mode)
 endfunction()
 
 function(sb_add_driver_p4_docs_reference_gate test_name mode)
+  # Non-engine: this gate verifies the repository/toolchain, not the
+  # engine. One early return covers every test this function registers.
+  if(NOT SB_BUILD_NON_ENGINE_GATES)
+    return()
+  endif()
   add_test(
     NAME "${test_name}"
     COMMAND
@@ -472,6 +574,11 @@ function(sb_add_driver_p4_docs_reference_gate test_name mode)
 endfunction()
 
 function(sb_add_driver_release_declaration_gate test_name mode)
+  # Non-engine: this gate verifies the repository/toolchain, not the
+  # engine. One early return covers every test this function registers.
+  if(NOT SB_BUILD_NON_ENGINE_GATES)
+    return()
+  endif()
   add_test(
     NAME "${test_name}"
     COMMAND
@@ -519,15 +626,19 @@ sb_add_driver_native_full_surface_artifact_schema_gate(driver_native_full_surfac
 sb_add_driver_native_matrix_plan_gate(driver_native_full_surface_matrix_plan)
 sb_add_driver_native_workplan_coverage_gate(driver_native_workplan_coverage_gate)
 sb_add_driver_native_tool_stage_gate(driver_native_core_tool_binaries)
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(NAME driver_native_build_lifetime_contract
   COMMAND "${Python3_EXECUTABLE}" -B "${CMAKE_CURRENT_SOURCE_DIR}/scripts/build_native_driver_tools_test.py")
 set_tests_properties(driver_native_build_lifetime_contract PROPERTIES
   LABELS "driver;driver_native_tool_binaries;process_lifetime" TIMEOUT 30)
+endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  add_test(NAME linux_owned_command_probe_contract
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(NAME linux_owned_command_probe_contract
     COMMAND "${Python3_EXECUTABLE}" -B "${PROJECT_SOURCE_DIR}/tests/support/linux_owned_command_probe_test.py")
   set_tests_properties(linux_owned_command_probe_contract PROPERTIES
     LABELS "test_support;process_lifetime;performance_capture" TIMEOUT 60)
+endif()
 endif()
 sb_add_driver_script_diff_contract_gate(driver_native_script_diff_contract)
 sb_add_driver_native_full_surface_matrix_runner_gate(driver_native_full_surface_matrix_runner_plan)
@@ -535,11 +646,13 @@ sb_add_driver_native_full_surface_matrix_shard_runner_gate(driver_native_full_su
 sb_add_driver_native_full_surface_matrix_finalizer_gate(driver_native_full_surface_matrix_finalizer_gate)
 sb_add_driver_native_matrix_lane_plan_gate(driver_native_matrix_lane_provisioner_plan)
 sb_add_driver_full_surface_script_suite_gate(driver_full_surface_script_suite_gate)
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(NAME driver_source_coverage_contract
   COMMAND "${Python3_EXECUTABLE}" -B
     "${PROJECT_SOURCE_DIR}/tests/conformance/drivers/full_surface_scripts/source_coverage_contract_test.py")
 set_tests_properties(driver_source_coverage_contract PROPERTIES
   LABELS "driver;test_support;source_inventory" TIMEOUT 60)
+endif()
 sb_add_driver_ipar_performance_proof_gate(driver_ipar_performance_schema_gate schema)
 sb_add_driver_ipar_performance_proof_gate(driver_ipar_performance_plan_gate plan)
 sb_add_driver_ipar_artifact_gate(driver_ipar_metrics_artifact_proof_gate)
@@ -629,6 +742,7 @@ endforeach()
 
 sb_add_driver_component_gate(tool_cli_gate "tool:cli")
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME drivers_all
   COMMAND
@@ -643,6 +757,7 @@ set_tests_properties(drivers_all PROPERTIES
   LABELS "driver;driver_lane_ctest_gate;driver_tool_adaptor_gate;drivers_all"
   SKIP_RETURN_CODE 77
 )
+endif()
 
 if(SB_BUILD_DRIVER_NATIVE_CMAKE_TARGETS)
   if(NOT TARGET scratchbird_client)

@@ -24,16 +24,20 @@ option(SB_BUILD_COMPATIBILITY_PARSERS
   OFF)
 
 find_package(Python3 COMPONENTS Interpreter REQUIRED)
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(NAME cmake_testing_bootstrap
   COMMAND "${Python3_EXECUTABLE}"
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/tools/test_cmake_testing_bootstrap.py")
 set_tests_properties(cmake_testing_bootstrap PROPERTIES
   TIMEOUT 180 LABELS "build_hygiene;cmake_config;fresh_configure")
+endif()
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(NAME cmake_test_assertions
   COMMAND "${Python3_EXECUTABLE}"
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/tools/test_cmake_test_assertions.py")
 set_tests_properties(cmake_test_assertions PROPERTIES
   TIMEOUT 180 LABELS "build_hygiene;cmake_config;assertion_integrity")
+endif()
 # The engine test process registers engine tests only. Source, specification,
 # manifest and build-hygiene gates verify the repository rather than the
 # engine, so they are not registered unless this is ON. Keeping them OFF by
@@ -82,7 +86,8 @@ unset(SB_PUBLIC_PRIVATE_MATERIAL_REFERENCE_GATE_SCRIPT)
 set(SB_PUBLIC_REPO_CLEANLINESS_GATE_SCRIPT
   "${CMAKE_CURRENT_SOURCE_DIR}/tools/release/public_repo_cleanliness_gate.py")
 if(EXISTS "${SB_PUBLIC_REPO_CLEANLINESS_GATE_SCRIPT}")
-  add_test(
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(
     NAME public_repo_cleanliness_gate
     COMMAND "${Python3_EXECUTABLE}"
             "${SB_PUBLIC_REPO_CLEANLINESS_GATE_SCRIPT}"
@@ -92,10 +97,12 @@ if(EXISTS "${SB_PUBLIC_REPO_CLEANLINESS_GATE_SCRIPT}")
     LABELS "public_release;repo_cleanliness;wip_boundary"
   )
 endif()
+endif()
 unset(SB_PUBLIC_REPO_CLEANLINESS_GATE_SCRIPT)
 
 set(SB_STORAGE_MODULE_AUTHORITY_GATE_SCRIPT
   "${CMAKE_CURRENT_SOURCE_DIR}/tools/ci/storage_module_authority_gate.py")
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME storage_module_authority_source_contract_gate
   COMMAND "${Python3_EXECUTABLE}"
@@ -104,10 +111,12 @@ add_test(
 set_tests_properties(storage_module_authority_source_contract_gate PROPERTIES
   LABELS "source_contract;not_runtime_correctness;storage_authority"
 )
+endif()
 unset(SB_STORAGE_MODULE_AUTHORITY_GATE_SCRIPT)
 
 set(SB_CANONICAL_QUERY_EXECUTION_AUTHORITY_GATE_SCRIPT
   "${CMAKE_CURRENT_SOURCE_DIR}/tools/ci/canonical_query_execution_authority_gate.py")
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME canonical_query_execution_authority_source_contract_gate
   COMMAND "${Python3_EXECUTABLE}"
@@ -117,6 +126,7 @@ set_tests_properties(
   canonical_query_execution_authority_source_contract_gate PROPERTIES
   LABELS "source_contract;not_runtime_correctness;canonical_query_authority"
 )
+endif()
 unset(SB_CANONICAL_QUERY_EXECUTION_AUTHORITY_GATE_SCRIPT)
 
 set(CMAKE_CXX_STANDARD 23)
@@ -151,6 +161,7 @@ foreach(_scratchbird_instrumentation_flag IN ITEMS
 endforeach()
 unset(_scratchbird_instrumentation_flag)
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME benchmark_clean_cmake_instrumentation_flags_gate
   COMMAND "${CMAKE_COMMAND}"
@@ -165,6 +176,7 @@ add_test(
 set_tests_properties(benchmark_clean_cmake_instrumentation_flags_gate PROPERTIES
   LABELS "benchmark_clean_cmake_instrumentation_flags_gate;DPC-001;benchmark_clean;cmake_config"
 )
+endif()
 
 # Implementation root scaffold only. Runtime targets are intentionally added by
 # bounded implementation packets after their controlling contracts are ready.
@@ -458,6 +470,7 @@ endif()
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/NestedDependencyConfigureArgs.cmake")
 set(_sb_production_configure_dependency_args)
 sb_append_nested_dependency_configure_args(_sb_production_configure_dependency_args)
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME agent_production_build_cmake_gate
   COMMAND "${CMAKE_COMMAND}"
@@ -466,6 +479,8 @@ add_test(
 set_tests_properties(agent_production_build_cmake_gate PROPERTIES
   LABELS "agent_production_build_cmake_gate;AEIC-017;agents;production_fixture_separation;cmake_config"
 )
+endif()
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME agent_production_build_configure_gate
   COMMAND "${CMAKE_COMMAND}"
@@ -495,6 +510,7 @@ add_test(
 set_tests_properties(agent_production_build_configure_gate PROPERTIES
   LABELS "agent_production_build_configure_gate;AEIC-017;agents;production_fixture_separation;cmake_config"
 )
+endif()
 
 set(SB_OPTIMIZER_PRODUCTION_BUILD OFF)
 if(SB_NONCLUSTER_ENGINE_RELEASE_COMPLETE AND NOT SB_OPTIMIZER_ENFORCE_PRODUCTION_BUILD_GATE)
@@ -509,6 +525,7 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/OptimizerProductionBuildGate.cmake")
 if(SB_OPTIMIZER_PRODUCTION_BUILD)
   add_compile_definitions(SCRATCHBIRD_OPTIMIZER_PRODUCTION_BUILD=1)
 endif()
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME optimizer_production_build_cmake_gate
   COMMAND "${CMAKE_COMMAND}"
@@ -517,6 +534,8 @@ add_test(
 set_tests_properties(optimizer_production_build_cmake_gate PROPERTIES
   LABELS "optimizer_production_build_cmake_gate;OEIC-080;optimizer;production_build_separation;cmake_config"
 )
+endif()
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME optimizer_production_build_configure_gate
   COMMAND "${CMAKE_COMMAND}"
@@ -546,6 +565,7 @@ add_test(
 set_tests_properties(optimizer_production_build_configure_gate PROPERTIES
   LABELS "optimizer_production_build_configure_gate;OEIC-080;optimizer;production_build_separation;cmake_config"
 )
+endif()
 
 set(SB_COMMERCIAL_READINESS_PRODUCTION_BUILD OFF)
 if(SB_NONCLUSTER_ENGINE_RELEASE_COMPLETE AND NOT SB_COMMERCIAL_ENFORCE_PRODUCTION_BUILD_GATE)
@@ -564,6 +584,7 @@ endif()
 # dispatcher directly, so new catalog families never need hand-registering in
 # each consumer. Included before any add_subdirectory(src/core/catalog).
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/CatalogDispatcherClosure.cmake")
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME commercial_readiness_production_build_cmake_gate
   COMMAND "${CMAKE_COMMAND}"
@@ -572,6 +593,7 @@ add_test(
 set_tests_properties(commercial_readiness_production_build_cmake_gate PROPERTIES
   LABELS "commercial_readiness_production_build_cmake_gate;CRP-GATE-010;commercial_readiness;production_build;cmake_config"
 )
+endif()
 
 if(SB_BUILD_REGISTRY_LINTER)
   add_subdirectory(tools/sb_registry_lint)
@@ -4203,13 +4225,15 @@ if(EXISTS "${SB_PUBLIC_BRANDING_GATE_SCRIPT}")
 endif()
 unset(SB_PUBLIC_BRANDING_GATE_SCRIPT)
 if(TARGET scratchbird_public_output_stage)
-  add_test(
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(
     NAME public_output_stage_gate
     COMMAND "${CMAKE_COMMAND}" --build "${CMAKE_BINARY_DIR}" --target scratchbird_public_output_stage
   )
   set_tests_properties(public_output_stage_gate PROPERTIES
     LABELS "public_release;standalone_output"
   )
+endif()
 endif()
 unset(SB_PUBLIC_STANDALONE_OUTPUT_TARGETS_READY)
 
@@ -4227,11 +4251,13 @@ include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/LinkPruning.cmake")
 # static ownership and linker wrapping used by native fault-injection gates.
 cmake_language(DEFER CALL sb_enable_link_pruning "${CMAKE_CURRENT_SOURCE_DIR}")
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-  add_test(NAME cmake_link_pruning
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(NAME cmake_link_pruning
     COMMAND "${Python3_EXECUTABLE}"
       "${CMAKE_CURRENT_SOURCE_DIR}/tests/tools/test_cmake_link_pruning.py")
   set_tests_properties(cmake_link_pruning PROPERTIES
     TIMEOUT 180 LABELS "build_hygiene;cmake_config;link_pruning;native_fault_injection")
+endif()
 endif()
 
 include("${CMAKE_CURRENT_SOURCE_DIR}/cmake/TestAssertions.cmake")

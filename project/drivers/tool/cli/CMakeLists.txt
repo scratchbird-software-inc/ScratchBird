@@ -434,17 +434,26 @@ if (BUILD_TESTING)
     add_test(NAME cli_bootstrap_os_authority_tests COMMAND sb_bootstrap_os_authority_tests)
     add_test(NAME cli_bootstrap_password_verifier_tests COMMAND sb_bootstrap_password_verifier_tests)
     add_test(NAME cli_first_principal_bootstrap_args_tests COMMAND sb_first_principal_bootstrap_args_tests)
-    add_test(
-        NAME cli_first_principal_bootstrap_cli_smoke
-        COMMAND "${Python3_EXECUTABLE}"
-                "${CMAKE_CURRENT_SOURCE_DIR}/first_principal_bootstrap_cli_smoke.py"
-                --sb-isql $<TARGET_FILE:sb_isql>
-                --sb-security $<TARGET_FILE:sb_security>
-                --work-dir "${CMAKE_BINARY_DIR}/first_principal_bootstrap_cli_smoke"
-    )
+    # The shared set_tests_properties below was split: the python smoke gate is
+    # non-engine and is guarded, while cli_first_principal_bootstrap_args_tests
+    # is a native test that stays, so its properties must be set unconditionally.
+    if(SB_BUILD_NON_ENGINE_GATES)
+        add_test(
+            NAME cli_first_principal_bootstrap_cli_smoke
+            COMMAND "${Python3_EXECUTABLE}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/first_principal_bootstrap_cli_smoke.py"
+                    --sb-isql $<TARGET_FILE:sb_isql>
+                    --sb-security $<TARGET_FILE:sb_security>
+                    --work-dir "${CMAKE_BINARY_DIR}/first_principal_bootstrap_cli_smoke"
+        )
+        set_tests_properties(
+            cli_first_principal_bootstrap_cli_smoke
+            PROPERTIES
+                LABELS "public_release_correctness;cli_tool_gate;security_auth_gate;embedded_bootstrap_gate"
+        )
+    endif()
     set_tests_properties(
         cli_first_principal_bootstrap_args_tests
-        cli_first_principal_bootstrap_cli_smoke
         PROPERTIES
             LABELS "public_release_correctness;cli_tool_gate;security_auth_gate;embedded_bootstrap_gate"
     )
@@ -452,8 +461,10 @@ if (BUILD_TESTING)
     add_test(NAME cli_metadata_shaping_tests COMMAND sbdriver_metadata_shaping_tests)
     add_test(NAME cli_res_lifecycle_tests COMMAND sbdriver_res_lifecycle_tests)
     add_test(NAME cli_conformance_assertion_tests COMMAND sbdriver_conformance_assertion_tests)
-    add_test(
-        NAME cli_package_contract_smoke
-        COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/package_contract_smoke.py"
-    )
+    if(SB_BUILD_NON_ENGINE_GATES)
+        add_test(
+            NAME cli_package_contract_smoke
+            COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/package_contract_smoke.py"
+        )
+    endif()
 endif()

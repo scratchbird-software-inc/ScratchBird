@@ -12,12 +12,14 @@ add_executable(sbmn_manager_no_spin_gate
 
 target_compile_features(sbmn_manager_no_spin_gate PRIVATE cxx_std_23)
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(NAME sbmn_manager_no_spin_gate
   COMMAND sbmn_manager_no_spin_gate "${PROJECT_SOURCE_DIR}/src/manager"
 )
 set_tests_properties(sbmn_manager_no_spin_gate PROPERTIES
   LABELS "database_lifecycle_manager;database_lifecycle;manager_no_spin;sbmn_manager"
 )
+endif()
 
 add_executable(sbmn_manager_protocol_unit_tests
   protocol_unit_tests.cpp
@@ -90,6 +92,7 @@ add_dependencies(sbmn_manager_protocol_unit_tests sbmn_manager_runtime_integrati
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME database_lifecycle_manager_conformance
   COMMAND "${Python3_EXECUTABLE}"
@@ -106,3 +109,4 @@ add_test(
 set_tests_properties(database_lifecycle_manager_conformance PROPERTIES
   LABELS "database_lifecycle_manager;database_lifecycle;database_lifecycle_ipc;manager_runtime;manager_protocol;sbmn_manager;sbmc_manager_private_boundary"
 )
+endif()

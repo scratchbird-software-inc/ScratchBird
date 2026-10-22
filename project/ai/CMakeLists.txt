@@ -27,6 +27,11 @@ function(sb_ai_add_gate gate_name)
     LABELS "ai;ai_current_repo_integration;ai_ctest_gate")
 endfunction()
 
+# Non-engine: every test registered below verifies the repository and its
+# AI tooling artifacts, not the engine. Guarded as a region rather than
+# inside sb_ai_add_gate() because several callers attach properties at file
+# scope afterwards, which cannot refer to a test the function skipped.
+if(SB_BUILD_NON_ENGINE_GATES)
 sb_ai_add_gate(ai_source_inventory_gate
   COMMAND "${Python3_EXECUTABLE}"
     -B
@@ -204,3 +209,4 @@ sb_ai_add_gate(ai_mcp_final_zero_drift_audit
     --output-json "${SB_AI_GATE_ROOT}/mcp_final/ai_mcp_final_zero_drift_audit.json")
 set_tests_properties(ai_mcp_final_zero_drift_audit PROPERTIES
   DEPENDS "ai_mcp_manifest_gate;ai_mcp_sblr_uuid_artifact_gate;ai_mcp_language_resource_gate;ai_mcp_release_integration_gate;ai_mcp_public_cleanliness_gate;ai_final_import_gate")
+endif()

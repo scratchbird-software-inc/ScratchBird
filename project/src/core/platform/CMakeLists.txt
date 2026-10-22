@@ -328,6 +328,7 @@ target_compile_definitions(sb_core_platform PUBLIC
   SCRATCHBIRD_LLVM_PROVIDER="${SB_LLVM_PROVIDER}"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME llvm_runtime_library_cmake_gate
   COMMAND "${CMAKE_COMMAND}"
@@ -337,6 +338,7 @@ add_test(
 set_tests_properties(llvm_runtime_library_cmake_gate PROPERTIES
   LABELS "public_release_correctness;llvm_runtime_library;cmake_config"
 )
+endif()
 
 if(SB_LLVM_LIBRARY AND SB_LLVM_VERSION_OK)
   target_compile_definitions(sb_core_platform PUBLIC
