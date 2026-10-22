@@ -1313,6 +1313,7 @@ set(SBSQL_SURFACE_TO_SBLR_FIXTURE_ROOT
 set(SBSQL_CANONICALIZATION_ROOT
   "${PROJECT_SOURCE_DIR}/../public_input_snapshot/SBSQL_SURFACE_REGISTRY.csv"
 )
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbp_sbsql_registry_generation_probe
   COMMAND sbp_sbsql_registry_generation_probe "${SBSQL_REGRESSION_ARTIFACT_ROOT}"
@@ -1320,6 +1321,7 @@ add_test(
 set_tests_properties(sbp_sbsql_registry_generation_probe PROPERTIES
   LABELS "registry_linter_tests;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbp_sbsql_generated_full_surface_conformance_probe
@@ -1331,6 +1333,7 @@ target_link_libraries(
   PRIVATE
     sbl_sbsql_parser_pipeline
 )
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbp_sbsql_generated_full_surface_conformance_probe
   COMMAND sbp_sbsql_generated_full_surface_conformance_probe
@@ -1340,11 +1343,13 @@ add_test(
 set_tests_properties(sbp_sbsql_generated_full_surface_conformance_probe PROPERTIES
   LABELS "sbsql_generated_full_surface_conformance;parser_v3_closure_gate;parser_conformance_oracle_gate;sbsql_parser_worker"
 )
+endif()
 
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 set(SBSQL_PYTHON3 "${Python3_EXECUTABLE}")
 
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_multilingual_resource_edge_safety_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1354,7 +1359,9 @@ add_test(
 set_tests_properties(sbsql_multilingual_resource_edge_safety_gate PROPERTIES
   LABELS "sbsql_multilingual_resource_edge_safety;sbsql_parser_worker;SML-094;SML-095;SML-096;SML-097;SML-098;SML-099;SML-100;SML-101"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_driver_language_surface_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1364,7 +1371,9 @@ add_test(
 set_tests_properties(sbsql_driver_language_surface_gate PROPERTIES
   LABELS "sbsql_driver_language_surface;sbsql_parser_worker;SML-018;SML-020;SML-083;SML-086;SML-090;SML-091;SML-093;SML-101"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_language_golden_trace_oracle_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1374,7 +1383,9 @@ add_test(
 set_tests_properties(sbsql_language_golden_trace_oracle_gate PROPERTIES
   LABELS "sbsql_language_golden_trace_oracle;sbsql_parser_worker;SML-089;SML-GATE-089"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sml_026_027_028_route_script_replay_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1383,7 +1394,9 @@ add_test(
 set_tests_properties(sbsql_sml_026_027_028_route_script_replay_gate PROPERTIES
   LABELS "sbsql_route_script_replay;sbsql_parser_worker;SML-026;SML-027;SML-028;SML-GATE-026;SML-GATE-027;SML-GATE-028;mga_transaction_regression"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sml_029_032_feature_closure_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1393,7 +1406,9 @@ add_test(
 set_tests_properties(sbsql_sml_029_032_feature_closure_gate PROPERTIES
   LABELS "sbsql_sql_feature_closure;sbsql_parser_worker;SML-029;SML-030;SML-031;SML-032;SML-GATE-029;SML-GATE-030;SML-GATE-031;SML-GATE-032;mga_transaction_regression"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_security_regression_matrix_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1403,7 +1418,9 @@ add_test(
 set_tests_properties(sbsql_security_regression_matrix_gate PROPERTIES
   LABELS "sbsql_security_regression_matrix;sbsql_parser_worker;SML-033;SML-034;SML-035;SML-036;SML-037;SML-038;SML-039;SML-040;SML-GATE-033;SML-GATE-034;SML-GATE-035;SML-GATE-036;SML-GATE-037;SML-GATE-038;SML-GATE-039;SML-GATE-040;mga_transaction_regression"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sml_041_046_product_qa_manifest_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1413,7 +1430,9 @@ add_test(
 set_tests_properties(sbsql_sml_041_046_product_qa_manifest_gate PROPERTIES
   LABELS "sbsql_product_qa_manifest;sbsql_parser_worker;SML-041;SML-042;SML-043;SML-044;SML-045;SML-046;SML-GATE-041;SML-GATE-042;SML-GATE-043;SML-GATE-044;SML-GATE-045;SML-GATE-046;mga_transaction_regression"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sml_044_046_hardening_oracle_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1423,7 +1442,9 @@ add_test(
 set_tests_properties(sbsql_sml_044_046_hardening_oracle_gate PROPERTIES
   LABELS "sbsql_hardening_oracle;sbsql_parser_worker;SML-044;SML-046;SML-GATE-044;SML-GATE-046;mga_transaction_regression"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sml_049_052_filespace_relocation_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1433,7 +1454,9 @@ add_test(
 set_tests_properties(sbsql_sml_049_052_filespace_relocation_gate PROPERTIES
   LABELS "sbsql_filespace_relocation;sbsql_parser_worker;SML-049;SML-050;SML-051;SML-052;SML-GATE-049;SML-GATE-050;SML-GATE-051;SML-GATE-052;mga_transaction_regression"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sml_054_057_062_multimodel_capability_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1443,7 +1466,9 @@ add_test(
 set_tests_properties(sbsql_sml_054_057_062_multimodel_capability_gate PROPERTIES
   LABELS "sbsql_multimodel_capability;sbsql_parser_worker;SML-054;SML-055;SML-056;SML-057;SML-062;SML-GATE-054;SML-GATE-055;SML-GATE-056;SML-GATE-057;SML-GATE-062;mga_transaction_regression"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sml_059_061_encrypted_database_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1453,7 +1478,9 @@ add_test(
 set_tests_properties(sbsql_sml_059_061_encrypted_database_gate PROPERTIES
   LABELS "sbsql_encrypted_database_matrix;sbsql_parser_worker;SML-059;SML-060;SML-061;SML-GATE-059;SML-GATE-060;SML-GATE-061;mga_transaction_regression"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sml_064_066_native_compile_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1463,7 +1490,9 @@ add_test(
 set_tests_properties(sbsql_sml_064_066_native_compile_gate PROPERTIES
   LABELS "sbsql_native_compile_jit_aot;sbsql_parser_worker;SML-064;SML-065;SML-066;SML-GATE-064;SML-GATE-065;SML-GATE-066;mga_transaction_regression"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sml_047_release_qa_package_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1473,6 +1502,7 @@ add_test(
 set_tests_properties(sbsql_sml_047_release_qa_package_gate PROPERTIES
   LABELS "sbsql_release_qa_package;sbsql_parser_worker;SML-047;SML-GATE-047;mga_transaction_regression"
 )
+endif()
 
 
 if(NOT TARGET sb_isql AND EXISTS "${PROJECT_SOURCE_DIR}/drivers/tool/cli/CMakeLists.txt")
@@ -1502,6 +1532,11 @@ set(SBSQL_SBLR_FINAL_CLEANUP_BOOTSTRAP_LABELS
 )
 
 function(add_sbsql_sblr_final_cleanup_bootstrap_label final_cleanup_label)
+  # Non-engine: this gate reads the repository, not the engine. One early
+  # return covers all 19 labels this function registers.
+  if(NOT SB_BUILD_NON_ENGINE_GATES)
+    return()
+  endif()
   set(test_name "sbsql_sblr_final_cleanup_label_${final_cleanup_label}")
   add_test(
     NAME "${test_name}"
@@ -1519,6 +1554,7 @@ foreach(final_cleanup_label IN LISTS SBSQL_SBLR_FINAL_CLEANUP_BOOTSTRAP_LABELS)
   add_sbsql_sblr_final_cleanup_bootstrap_label("${final_cleanup_label}")
 endforeach()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sblr_final_zero_unimplemented_audit_bootstrap
   COMMAND "${SBSQL_PYTHON3}"
@@ -1529,7 +1565,9 @@ add_test(
 set_tests_properties(sbsql_sblr_final_zero_unimplemented_audit_bootstrap PROPERTIES
   LABELS "sbsql_sblr_final_zero_unimplemented_audit;sbsql_sblr_final_cleanup_bootstrap;sbsql_parser_worker"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME ctest_no_execution_plan_runtime_dependency_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1540,8 +1578,10 @@ add_test(
 set_tests_properties(ctest_no_execution_plan_runtime_dependency_gate PROPERTIES
   LABELS "ctest_no_execution_plan_runtime_dependency_gate;sbsql_parser_worker;release_gate"
 )
+endif()
 
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_alignment_inventory_contract_regression
   COMMAND "${SBSQL_PYTHON3}"
@@ -1551,7 +1591,9 @@ add_test(
 set_tests_properties(sbsql_alignment_inventory_contract_regression PROPERTIES
   LABELS "sbsql_parser_worker;alignment_inventory_contract;release_gate"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME final_sblr_sbsql_master_closure_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1573,7 +1615,9 @@ set_tests_properties(final_sblr_sbsql_master_closure_gate PROPERTIES
   LABELS "FSM-P7;final_sblr_sbsql_master_closure;release_gate;sbsql_parser_worker;sblr_surface;reference_parser_release_evidence;mga_transaction_regression"
   DEPENDS "${SBSQL_FINAL_MASTER_CLOSURE_DEPENDS}"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_missing_functionality_scope_freeze_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1584,7 +1628,9 @@ add_test(
 set_tests_properties(sbsql_missing_functionality_scope_freeze_gate PROPERTIES
   LABELS "sbsql_missing_functionality_implementation_closure;SBSQL-MISS-GATE-000;sbsql_parser_worker"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_missing_functionality_registry_allocation_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1595,7 +1641,9 @@ add_test(
 set_tests_properties(sbsql_missing_functionality_registry_allocation_gate PROPERTIES
   LABELS "sbsql_missing_functionality_implementation_closure;SBSQL-MISS-GATE-001;sbsql_parser_worker"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_reference_route_backfill_conformance_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1605,7 +1653,9 @@ add_test(
 set_tests_properties(sbsql_reference_route_backfill_conformance_gate PROPERTIES
   LABELS "sbsql_missing_functionality_implementation_closure;SBSQL-MISS-GATE-014;sbsql_reference_route_backfill;sbsql_parser_worker"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_message_result_shape_diagnostic_closure_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1615,7 +1665,9 @@ add_test(
 set_tests_properties(sbsql_message_result_shape_diagnostic_closure_gate PROPERTIES
   LABELS "sbsql_missing_functionality_implementation_closure;SBSQL-MISS-GATE-015;sbsql_message_result_shape_diagnostic_closure;sbsql_parser_worker"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_integrated_crash_recovery_certification_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1625,15 +1677,19 @@ add_test(
 set_tests_properties(sbsql_integrated_crash_recovery_certification_gate PROPERTIES
   LABELS "sbsql_missing_functionality_implementation_closure;SBSQL-MISS-GATE-016;sbsql_integrated_crash_recovery_certification;sbsql_parser_worker;mga_transaction_regression"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_long_soak_security_packaging_support_audit_gate
   COMMAND "${SBSQL_PYTHON3}"
           "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/sbsql_long_soak_security_packaging_support_audit_gate.py"
           --repo-root "${PROJECT_SOURCE_DIR}/.."
 )
+# sbsql_sml_067_081_release_certification_gate was deleted (it read the private
+# workplans tree), so it is no longer listed: a DEPENDS entry naming a test
+# that does not exist is dead configuration.
 set(_sb_long_soak_security_packaging_dependencies
-  sbsql_sml_067_081_release_certification_gate
 )
 if(NOT WIN32
    AND TARGET sb_server
@@ -1656,8 +1712,10 @@ set_tests_properties(sbsql_long_soak_security_packaging_support_audit_gate PROPE
   LABELS "sbsql_missing_functionality_implementation_closure;SBSQL-MISS-GATE-017;sbsql_long_soak_security_packaging_support_audit;sbsql_parser_worker;release_gate;mga_transaction_regression"
   DEPENDS "${_sb_long_soak_security_packaging_dependencies}"
 )
+endif()
 unset(_sb_long_soak_security_packaging_dependencies)
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME dpc_workload_corpus_closure_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1667,7 +1725,9 @@ add_test(
 set_tests_properties(dpc_workload_corpus_closure_gate PROPERTIES
   LABELS "dpc_workload_corpus_closure_gate;DPC-007;DPC_TEST_WORKLOAD_CORPUS;benchmark_corpus;mga_transaction_regression;sbsql_parser_worker"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_surface_to_sblr_function_coverage_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1678,7 +1738,9 @@ add_test(
 set_tests_properties(sbsql_surface_to_sblr_function_coverage_gate PROPERTIES
   LABELS "sbsql_surface_to_sblr_function_coverage_gate;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_no_grey_row_coverage_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1689,7 +1751,9 @@ add_test(
 set_tests_properties(sbsql_no_grey_row_coverage_gate PROPERTIES
   LABELS "sbsql_no_grey_row_coverage_gate;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_no_stub_source_integrity_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1699,7 +1763,9 @@ add_test(
 set_tests_properties(sbsql_no_stub_source_integrity_gate PROPERTIES
   LABELS "sbsql_no_stub_source_integrity_gate;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_per_row_evidence_manifest_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1710,7 +1776,9 @@ add_test(
 set_tests_properties(sbsql_per_row_evidence_manifest_gate PROPERTIES
   LABELS "sbsql_per_row_evidence_manifest_gate;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_bridge_command_surface_tracking_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1722,7 +1790,9 @@ add_test(
 set_tests_properties(sbsql_bridge_command_surface_tracking_gate PROPERTIES
   LABELS "sbsql_bridge_command_surface_tracking_gate;sbsql_surface_to_sblr_full_implementation_closure;sbsql_sblr_api_routes;trusted_udr_bridge_gate;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_agent_heartbeat_recovery_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1733,7 +1803,9 @@ add_test(
 set_tests_properties(sbsql_agent_heartbeat_recovery_gate PROPERTIES
   LABELS "sbsql_agent_heartbeat_recovery_gate;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_authenticated_route_fixture_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1744,7 +1816,9 @@ add_test(
 set_tests_properties(sbsql_authenticated_route_fixture_gate PROPERTIES
   LABELS "sbsql_authenticated_route_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sblr_binary_round_trip_fixture_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1755,8 +1829,10 @@ add_test(
 set_tests_properties(sbsql_sblr_binary_round_trip_fixture_gate PROPERTIES
   LABELS "sbsql_sblr_binary_round_trip_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_route_round_trip_fixture_promotion_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1768,14 +1844,18 @@ add_test(
 set_tests_properties(sbsql_route_round_trip_fixture_promotion_gate PROPERTIES
   LABELS "sbsql_route_round_trip_fixture_promotion_gate;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_diagnostic_identity_authority_test
   COMMAND "${SBSQL_PYTHON3}" -B
           "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/full_surface/sbsql_diagnostic_identity_authority_test.py"
 )
+endif()
 
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_deterministic_generation_no_network_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1786,7 +1866,9 @@ add_test(
 set_tests_properties(sbsql_deterministic_generation_no_network_gate PROPERTIES
   LABELS "sbsql_deterministic_generation_no_network_gate;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_language_element_manifest_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1797,7 +1879,9 @@ add_test(
 set_tests_properties(sbsql_language_element_manifest_gate PROPERTIES
   LABELS "sbsql_language_element_manifest_gate;sbsql_language_resource_contract;sbsql_parser_worker;SML-010;SML-092"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_language_resource_pack_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1807,7 +1891,9 @@ add_test(
 set_tests_properties(sbsql_language_resource_pack_gate PROPERTIES
   LABELS "sbsql_language_resource_pack_gate;sbsql_language_resource_contract;sbsql_parser_worker;SML-010;SML-014;SML-087;SML-089;SML-092;SML-094;SML-098;SML-099;SML-101"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_language_beta_release_proof_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1817,7 +1903,9 @@ add_test(
 set_tests_properties(sbsql_language_beta_release_proof_gate PROPERTIES
   LABELS "sbsql_language_beta_release_proof_gate;sbsql_language_resource_contract;sbsql_parser_worker;SML-010;SML-014;SML-018;SML-020;SML-087;SML-089;SML-092;SML-094;SML-098;SML-099;SML-101"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sml_010_012_023_025_parser_closure_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1827,7 +1915,9 @@ add_test(
 set_tests_properties(sbsql_sml_010_012_023_025_parser_closure_gate PROPERTIES
   LABELS "sbsql_parser_closure;sbsql_parser_worker;SML-010;SML-011;SML-012;SML-023;SML-025;SML-GATE-010;SML-GATE-011;SML-GATE-012;SML-GATE-023;SML-GATE-025"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sbsfc_010_numeric_builtin_fixture_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1837,6 +1927,7 @@ add_test(
 set_tests_properties(sbsql_sbsfc_010_numeric_builtin_fixture_gate PROPERTIES
   LABELS "sbsql_sbsfc_010_numeric_builtin_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbsql_sbsfc_010_numeric_builtin_runtime_conformance
@@ -1852,6 +1943,7 @@ set_tests_properties(sbsql_sbsfc_010_numeric_builtin_runtime_conformance PROPERT
   LABELS "sbsql_sbsfc_010_numeric_builtin_runtime_conformance;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sbsfc_011_text_builtin_fixture_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1861,6 +1953,7 @@ add_test(
 set_tests_properties(sbsql_sbsfc_011_text_builtin_fixture_gate PROPERTIES
   LABELS "sbsql_sbsfc_011_text_builtin_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbsql_sbsfc_011_text_builtin_runtime_conformance
@@ -1876,6 +1969,7 @@ set_tests_properties(sbsql_sbsfc_011_text_builtin_runtime_conformance PROPERTIES
   LABELS "sbsql_sbsfc_011_text_builtin_runtime_conformance;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sbsfc_012_temporal_session_fixture_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -1885,6 +1979,7 @@ add_test(
 set_tests_properties(sbsql_sbsfc_012_temporal_session_fixture_gate PROPERTIES
   LABELS "sbsql_sbsfc_012_temporal_session_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbsql_sbsfc_012_temporal_session_runtime_conformance
@@ -2036,6 +2131,7 @@ set_tests_properties(sbsql_sbsfc_026_text_conversion_helper_runtime_conformance 
   LABELS "sbsql_sbsfc_026_text_conversion_helper_runtime_conformance;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-026R-K;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sbsfc_027_string_encoding_helper_fixture_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -2045,6 +2141,7 @@ add_test(
 set_tests_properties(sbsql_sbsfc_027_string_encoding_helper_fixture_gate PROPERTIES
   LABELS "sbsql_sbsfc_027_string_encoding_helper_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-027;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbsql_sbsfc_027_string_encoding_helper_runtime_conformance
@@ -2075,6 +2172,7 @@ set_tests_properties(sbsql_sbsfc_028_uuid_compat_helper_runtime_conformance PROP
   LABELS "sbsql_sbsfc_028_uuid_compat_helper_runtime_conformance;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-028;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sbsfc_029_sequence_generator_fixture_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -2084,6 +2182,7 @@ add_test(
 set_tests_properties(sbsql_sbsfc_029_sequence_generator_fixture_gate PROPERTIES
   LABELS "sbsql_sbsfc_029_sequence_generator_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-029;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbsql_sbsfc_029_sequence_generator_runtime_conformance
@@ -2099,6 +2198,7 @@ set_tests_properties(sbsql_sbsfc_029_sequence_generator_runtime_conformance PROP
   LABELS "sbsql_sbsfc_029_sequence_generator_runtime_conformance;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-029;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sbsfc_030_temporal_format_epoch_fixture_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -2108,6 +2208,7 @@ add_test(
 set_tests_properties(sbsql_sbsfc_030_temporal_format_epoch_fixture_gate PROPERTIES
   LABELS "sbsql_sbsfc_030_temporal_format_epoch_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-030;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbsql_sbsfc_030_temporal_format_epoch_runtime_conformance
@@ -2123,6 +2224,7 @@ set_tests_properties(sbsql_sbsfc_030_temporal_format_epoch_runtime_conformance P
   LABELS "sbsql_sbsfc_030_temporal_format_epoch_runtime_conformance;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-030;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sbsfc_031_txid_surface_fixture_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -2132,6 +2234,7 @@ add_test(
 set_tests_properties(sbsql_sbsfc_031_txid_surface_fixture_gate PROPERTIES
   LABELS "sbsql_sbsfc_031_txid_surface_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-031;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbsql_sbsfc_031_txid_surface_runtime_conformance
@@ -2147,6 +2250,7 @@ set_tests_properties(sbsql_sbsfc_031_txid_surface_runtime_conformance PROPERTIES
   LABELS "sbsql_sbsfc_031_txid_surface_runtime_conformance;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-031;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sbsfc_032_scalar_utility_conversion_fixture_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -2156,6 +2260,7 @@ add_test(
 set_tests_properties(sbsql_sbsfc_032_scalar_utility_conversion_fixture_gate PROPERTIES
   LABELS "sbsql_sbsfc_032_scalar_utility_conversion_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-032;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbsql_sbsfc_032_scalar_utility_conversion_runtime_conformance
@@ -2171,6 +2276,7 @@ set_tests_properties(sbsql_sbsfc_032_scalar_utility_conversion_runtime_conforman
   LABELS "sbsql_sbsfc_032_scalar_utility_conversion_runtime_conformance;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-032;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sbsfc_033_catalog_descriptor_diagnostic_fixture_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -2180,6 +2286,7 @@ add_test(
 set_tests_properties(sbsql_sbsfc_033_catalog_descriptor_diagnostic_fixture_gate PROPERTIES
   LABELS "sbsql_sbsfc_033_catalog_descriptor_diagnostic_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-033;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbsql_sbsfc_033_catalog_descriptor_diagnostic_runtime_conformance
@@ -2195,6 +2302,7 @@ set_tests_properties(sbsql_sbsfc_033_catalog_descriptor_diagnostic_runtime_confo
   LABELS "sbsql_sbsfc_033_catalog_descriptor_diagnostic_runtime_conformance;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-033;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sbsfc_034_text_trigram_bit_string_fixture_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -2204,6 +2312,7 @@ add_test(
 set_tests_properties(sbsql_sbsfc_034_text_trigram_bit_string_fixture_gate PROPERTIES
   LABELS "sbsql_sbsfc_034_text_trigram_bit_string_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-034;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbsql_sbsfc_034_text_trigram_bit_string_runtime_conformance
@@ -2219,6 +2328,7 @@ set_tests_properties(sbsql_sbsfc_034_text_trigram_bit_string_runtime_conformance
   LABELS "sbsql_sbsfc_034_text_trigram_bit_string_runtime_conformance;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-034;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sbsfc_035_range_scalar_helper_fixture_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -2228,6 +2338,7 @@ add_test(
 set_tests_properties(sbsql_sbsfc_035_range_scalar_helper_fixture_gate PROPERTIES
   LABELS "sbsql_sbsfc_035_range_scalar_helper_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-035;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbsql_sbsfc_035_range_scalar_helper_runtime_conformance
@@ -2243,6 +2354,7 @@ set_tests_properties(sbsql_sbsfc_035_range_scalar_helper_runtime_conformance PRO
   LABELS "sbsql_sbsfc_035_range_scalar_helper_runtime_conformance;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-035;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sbsfc_036_spatial_geometry_scalar_helper_fixture_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -2252,6 +2364,7 @@ add_test(
 set_tests_properties(sbsql_sbsfc_036_spatial_geometry_scalar_helper_fixture_gate PROPERTIES
   LABELS "sbsql_sbsfc_036_spatial_geometry_scalar_helper_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-036;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbsql_sbsfc_036_spatial_geometry_scalar_helper_runtime_conformance
@@ -2267,6 +2380,7 @@ set_tests_properties(sbsql_sbsfc_036_spatial_geometry_scalar_helper_runtime_conf
   LABELS "sbsql_sbsfc_036_spatial_geometry_scalar_helper_runtime_conformance;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-036;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sbsfc_037_xml_multimodel_scalar_helper_fixture_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -2276,6 +2390,7 @@ add_test(
 set_tests_properties(sbsql_sbsfc_037_xml_multimodel_scalar_helper_fixture_gate PROPERTIES
   LABELS "sbsql_sbsfc_037_xml_multimodel_scalar_helper_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-037;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbsql_sbsfc_037_xml_multimodel_scalar_helper_runtime_conformance
@@ -2291,6 +2406,7 @@ set_tests_properties(sbsql_sbsfc_037_xml_multimodel_scalar_helper_runtime_confor
   LABELS "sbsql_sbsfc_037_xml_multimodel_scalar_helper_runtime_conformance;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-037;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sbsfc_038_spatial_tail_scalar_helper_fixture_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -2300,6 +2416,7 @@ add_test(
 set_tests_properties(sbsql_sbsfc_038_spatial_tail_scalar_helper_fixture_gate PROPERTIES
   LABELS "sbsql_sbsfc_038_spatial_tail_scalar_helper_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-038;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbsql_sbsfc_038_spatial_tail_scalar_helper_runtime_conformance
@@ -2315,6 +2432,7 @@ set_tests_properties(sbsql_sbsfc_038_spatial_tail_scalar_helper_runtime_conforma
   LABELS "sbsql_sbsfc_038_spatial_tail_scalar_helper_runtime_conformance;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-038;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sbsfc_039_xml_document_query_scalar_helper_fixture_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -2324,6 +2442,7 @@ add_test(
 set_tests_properties(sbsql_sbsfc_039_xml_document_query_scalar_helper_fixture_gate PROPERTIES
   LABELS "sbsql_sbsfc_039_xml_document_query_scalar_helper_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-039;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbsql_sbsfc_039_xml_document_query_scalar_helper_runtime_conformance
@@ -2339,6 +2458,7 @@ set_tests_properties(sbsql_sbsfc_039_xml_document_query_scalar_helper_runtime_co
   LABELS "sbsql_sbsfc_039_xml_document_query_scalar_helper_runtime_conformance;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-039;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sbsfc_044_catalog_statistics_fixture_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -2348,6 +2468,7 @@ add_test(
 set_tests_properties(sbsql_sbsfc_044_catalog_statistics_fixture_gate PROPERTIES
   LABELS "sbsql_sbsfc_044_catalog_statistics_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-044;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbsql_sbsfc_044_catalog_statistics_runtime_conformance
@@ -2363,6 +2484,7 @@ set_tests_properties(sbsql_sbsfc_044_catalog_statistics_runtime_conformance PROP
   LABELS "sbsql_sbsfc_044_catalog_statistics_runtime_conformance;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-044;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sbsfc_045_privilege_predicate_fixture_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -2372,6 +2494,7 @@ add_test(
 set_tests_properties(sbsql_sbsfc_045_privilege_predicate_fixture_gate PROPERTIES
   LABELS "sbsql_sbsfc_045_privilege_predicate_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-045;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbsql_sbsfc_045_privilege_predicate_runtime_conformance
@@ -2387,6 +2510,7 @@ set_tests_properties(sbsql_sbsfc_045_privilege_predicate_runtime_conformance PRO
   LABELS "sbsql_sbsfc_045_privilege_predicate_runtime_conformance;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-045;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sbsfc_046_session_admin_fixture_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -2396,6 +2520,7 @@ add_test(
 set_tests_properties(sbsql_sbsfc_046_session_admin_fixture_gate PROPERTIES
   LABELS "sbsql_sbsfc_046_session_admin_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-046;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbsql_sbsfc_046_session_admin_runtime_conformance
@@ -2411,6 +2536,7 @@ set_tests_properties(sbsql_sbsfc_046_session_admin_runtime_conformance PROPERTIE
   LABELS "sbsql_sbsfc_046_session_admin_runtime_conformance;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-046;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sbsfc_047_advisory_lock_fixture_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -2420,6 +2546,7 @@ add_test(
 set_tests_properties(sbsql_sbsfc_047_advisory_lock_fixture_gate PROPERTIES
   LABELS "sbsql_sbsfc_047_advisory_lock_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-047;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbsql_sbsfc_047_advisory_lock_runtime_conformance
@@ -2435,6 +2562,7 @@ set_tests_properties(sbsql_sbsfc_047_advisory_lock_runtime_conformance PROPERTIE
   LABELS "sbsql_sbsfc_047_advisory_lock_runtime_conformance;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-047;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sbsfc_048_advisory_lock_release_fixture_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -2444,6 +2572,7 @@ add_test(
 set_tests_properties(sbsql_sbsfc_048_advisory_lock_release_fixture_gate PROPERTIES
   LABELS "sbsql_sbsfc_048_advisory_lock_release_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-048;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbsql_sbsfc_048_advisory_lock_release_runtime_conformance
@@ -2459,6 +2588,7 @@ set_tests_properties(sbsql_sbsfc_048_advisory_lock_release_runtime_conformance P
   LABELS "sbsql_sbsfc_048_advisory_lock_release_runtime_conformance;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-048;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sbsfc_049_unicode_text_fixture_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -2468,6 +2598,7 @@ add_test(
 set_tests_properties(sbsql_sbsfc_049_unicode_text_fixture_gate PROPERTIES
   LABELS "sbsql_sbsfc_049_unicode_text_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-049;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbsql_sbsfc_049_unicode_text_runtime_conformance
@@ -2483,6 +2614,7 @@ set_tests_properties(sbsql_sbsfc_049_unicode_text_runtime_conformance PROPERTIES
   LABELS "sbsql_sbsfc_049_unicode_text_runtime_conformance;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-049;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sbsfc_052_json_document_construction_table_aggregate_fixture_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -2492,6 +2624,7 @@ add_test(
 set_tests_properties(sbsql_sbsfc_052_json_document_construction_table_aggregate_fixture_gate PROPERTIES
   LABELS "sbsql_sbsfc_052_json_document_construction_table_aggregate_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-052;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbsql_sbsfc_052_json_document_construction_table_aggregate_runtime_conformance
@@ -2507,6 +2640,7 @@ set_tests_properties(sbsql_sbsfc_052_json_document_construction_table_aggregate_
   LABELS "sbsql_sbsfc_052_json_document_construction_table_aggregate_runtime_conformance;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-052;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sbsfc_053_rowset_table_value_fixture_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -2516,6 +2650,7 @@ add_test(
 set_tests_properties(sbsql_sbsfc_053_rowset_table_value_fixture_gate PROPERTIES
   LABELS "sbsql_sbsfc_053_rowset_table_value_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-053;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbsql_sbsfc_053_rowset_table_value_runtime_conformance
@@ -2531,6 +2666,7 @@ set_tests_properties(sbsql_sbsfc_053_rowset_table_value_runtime_conformance PROP
   LABELS "sbsql_sbsfc_053_rowset_table_value_runtime_conformance;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-053;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sbsfc_054_cursor_stream_handle_fixture_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -2540,6 +2676,7 @@ add_test(
 set_tests_properties(sbsql_sbsfc_054_cursor_stream_handle_fixture_gate PROPERTIES
   LABELS "sbsql_sbsfc_054_cursor_stream_handle_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-054;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbsql_sbsfc_054_cursor_stream_handle_runtime_conformance
@@ -2555,6 +2692,7 @@ set_tests_properties(sbsql_sbsfc_054_cursor_stream_handle_runtime_conformance PR
   LABELS "sbsql_sbsfc_054_cursor_stream_handle_runtime_conformance;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-054;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sbsfc_055_lob_locator_fixture_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -2564,6 +2702,7 @@ add_test(
 set_tests_properties(sbsql_sbsfc_055_lob_locator_fixture_gate PROPERTIES
   LABELS "sbsql_sbsfc_055_lob_locator_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-055;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbsql_sbsfc_055_lob_locator_runtime_conformance
@@ -2579,6 +2718,7 @@ set_tests_properties(sbsql_sbsfc_055_lob_locator_runtime_conformance PROPERTIES
   LABELS "sbsql_sbsfc_055_lob_locator_runtime_conformance;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-055;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sbsfc_056_native_surface_fixture_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -2588,6 +2728,7 @@ add_test(
 set_tests_properties(sbsql_sbsfc_056_native_surface_fixture_gate PROPERTIES
   LABELS "sbsql_sbsfc_056_native_surface_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-056;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbsql_sbsfc_056_native_surface_runtime_conformance
@@ -2603,6 +2744,7 @@ set_tests_properties(sbsql_sbsfc_056_native_surface_runtime_conformance PROPERTI
   LABELS "sbsql_sbsfc_056_native_surface_runtime_conformance;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-056;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sbsfc_057_crypto_hash_fixture_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -2612,6 +2754,7 @@ add_test(
 set_tests_properties(sbsql_sbsfc_057_crypto_hash_fixture_gate PROPERTIES
   LABELS "sbsql_sbsfc_057_crypto_hash_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-057;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbsql_sbsfc_057_crypto_hash_runtime_conformance
@@ -2627,6 +2770,7 @@ set_tests_properties(sbsql_sbsfc_057_crypto_hash_runtime_conformance PROPERTIES
   LABELS "sbsql_sbsfc_057_crypto_hash_runtime_conformance;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-057;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sbsfc_058_expression_runtime_function_fixture_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -2637,6 +2781,7 @@ add_test(
 set_tests_properties(sbsql_sbsfc_058_expression_runtime_function_fixture_gate PROPERTIES
   LABELS "sbsql_sbsfc_058_expression_runtime_function_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-058;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbsql_sbsfc_058_expression_runtime_function_conformance
@@ -2652,6 +2797,7 @@ set_tests_properties(sbsql_sbsfc_058_expression_runtime_function_conformance PRO
   LABELS "sbsql_sbsfc_058_expression_runtime_function_conformance;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-058;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sbsfc_059_expression_runtime_function_cleanup_fixture_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -2662,6 +2808,7 @@ add_test(
 set_tests_properties(sbsql_sbsfc_059_expression_runtime_function_cleanup_fixture_gate PROPERTIES
   LABELS "sbsql_sbsfc_059_expression_runtime_function_cleanup_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-059;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbsql_sbsfc_059_expression_runtime_function_cleanup_conformance
@@ -2685,6 +2832,7 @@ target_compile_features(sbp_sbsql_regression_test_bed_generation_gate PRIVATE cx
 set(SBSQL_REGRESSION_TEST_BED_MANIFEST
   "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/regression/REGRESSION_TEST_BED_MANIFEST.csv"
 )
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbp_sbsql_regression_test_bed_generation_gate
   COMMAND sbp_sbsql_regression_test_bed_generation_gate
@@ -2694,6 +2842,7 @@ add_test(
 set_tests_properties(sbp_sbsql_regression_test_bed_generation_gate PROPERTIES
   LABELS "sbsql_regression_test_bed_generation_gate;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbp_sbsql_reference_alias_rendering_conformance
@@ -2703,6 +2852,7 @@ target_compile_features(sbp_sbsql_reference_alias_rendering_conformance PRIVATE 
 set(SBSQL_REFERENCE_ALIAS_RENDERING_FIXTURES
   "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/reference_alias/REFERENCE_ALIAS_RENDERING_FIXTURES.csv"
 )
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbp_sbsql_reference_alias_rendering_conformance
   COMMAND sbp_sbsql_reference_alias_rendering_conformance
@@ -2713,12 +2863,14 @@ add_test(
 set_tests_properties(sbp_sbsql_reference_alias_rendering_conformance PROPERTIES
   LABELS "sbsql_reference_alias_mapping_conformance;sbsql_reference_alias_rendering_conformance;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbp_sbsql_semantic_oracle_authority_gate
   generated/oracle/sbsql_semantic_oracle_authority_gate.cpp
 )
 target_compile_features(sbp_sbsql_semantic_oracle_authority_gate PRIVATE cxx_std_23)
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbp_sbsql_semantic_oracle_authority_gate
   COMMAND sbp_sbsql_semantic_oracle_authority_gate
@@ -2729,6 +2881,7 @@ add_test(
 set_tests_properties(sbp_sbsql_semantic_oracle_authority_gate PROPERTIES
   LABELS "sbsql_semantic_oracle_authority_gate;parser_v3_closure_gate;parser_conformance_oracle_gate;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbp_sbsql_differential_replay_harness_gate
@@ -2738,6 +2891,7 @@ target_compile_features(sbp_sbsql_differential_replay_harness_gate PRIVATE cxx_s
 set(SBSQL_DIFFERENTIAL_REPLAY_ROOT
   "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/replay"
 )
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbp_sbsql_differential_replay_harness_gate
   COMMAND sbp_sbsql_differential_replay_harness_gate
@@ -2749,6 +2903,7 @@ add_test(
 set_tests_properties(sbp_sbsql_differential_replay_harness_gate PROPERTIES
   LABELS "sbsql_differential_replay_harness_gate;sbsql_replay_parser_only;sbsql_replay_parser_bind_lower;sbsql_replay_udr;sbsql_replay_server_admission;sbsql_replay_engine_behavior;sbsql_replay_full_route;sbsql_replay_reference_alias;sbsql_replay_diagnostic;parser_v3_closure_gate;parser_conformance_oracle_gate;sbsql_parser_worker"
 )
+endif()
 
 if(TARGET sbl_sbsql_parser_pipeline AND TARGET sbu_sbsql_parser_support AND TARGET sb_server_core AND TARGET sb_engine_sblr)
   add_executable(
@@ -2787,7 +2942,8 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sbu_sbsql_parser_support AND TARG
       sb_engine_sblr
       sb_core_memory
   )
-  add_test(
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(
     NAME sbsql_exhaustive_e2e_regression_gate
     COMMAND sbsql_exhaustive_e2e_regression_gate
             "${SBSQL_REGRESSION_ARTIFACT_ROOT}"
@@ -2799,6 +2955,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sbu_sbsql_parser_support AND TARG
   set_tests_properties(sbsql_exhaustive_e2e_regression_gate PROPERTIES
     LABELS "sbsql_exhaustive_e2e_regression;sbsql_emulation_parser_regression;sbsql_dynamic_udr_sblr_regression;sbsql_parser_worker"
   )
+endif()
 endif()
 
 add_executable(
@@ -2812,6 +2969,7 @@ target_link_libraries(sbp_sbsql_canary_vertical_slice_probe PRIVATE
   sb_storage_database
   sb_server_core
 )
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbp_sbsql_canary_vertical_slice_probe
   COMMAND sbp_sbsql_canary_vertical_slice_probe "${SBSQL_REGRESSION_ARTIFACT_ROOT}"
@@ -2819,6 +2977,7 @@ add_test(
 set_tests_properties(sbp_sbsql_canary_vertical_slice_probe PROPERTIES
   LABELS "sbsql_canary_vertical_slice_gate;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbp_sbsql_lexer_conformance_probe
@@ -2826,6 +2985,7 @@ add_executable(
 )
 target_compile_features(sbp_sbsql_lexer_conformance_probe PRIVATE cxx_std_23)
 target_link_libraries(sbp_sbsql_lexer_conformance_probe PRIVATE sbl_sbsql_parser_pipeline)
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbp_sbsql_lexer_conformance_probe
   COMMAND sbp_sbsql_lexer_conformance_probe "${SBSQL_REGRESSION_ARTIFACT_ROOT}"
@@ -2833,6 +2993,7 @@ add_test(
 set_tests_properties(sbp_sbsql_lexer_conformance_probe PROPERTIES
   LABELS "sbsql_lexer_conformance;sbsql_parser_worker"
 )
+endif()
 
 add_executable(
   sbp_sbsql_cst_ast_conformance_probe
@@ -4327,12 +4488,14 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core AND TARGET sb_engi
   set_tests_properties(sbsql_database_lifecycle_exact_route_conformance PROPERTIES
     LABELS "sbsql_database_lifecycle_exact_route_conformance;SBSFC-020R-QV;SBSFC-020R-QW;SBSFC-020R-QX;SBSFC-020R-QY;SBSFC-030;sblr_operation_matrix_gate;sbsql_parser_worker;sbsql_e2e_passed;database_lifecycle"
   )
-  add_test(NAME sbsql_lifecycle_lowered_json_conformance
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(NAME sbsql_lifecycle_lowered_json_conformance
     COMMAND ${Python3_EXECUTABLE}
       "${CMAKE_CURRENT_SOURCE_DIR}/lifecycle_lowered_json_conformance.py"
       $<TARGET_FILE:sbsql_database_lifecycle_exact_route_conformance>)
   set_tests_properties(sbsql_lifecycle_lowered_json_conformance PROPERTIES
     LABELS "sbsql_parser_worker;database_lifecycle;lowering_framing;component_not_live_admission")
+endif()
 
   add_executable(
     sbsql_create_executable_exact_route_conformance
@@ -5903,7 +6066,10 @@ endif()
 
 add_executable(sbp_sbsql_no_spin_gate parser_no_spin_gate.cpp)
 target_compile_features(sbp_sbsql_no_spin_gate PRIVATE cxx_std_23)
-add_test(NAME sbp_sbsql_no_spin_gate COMMAND sbp_sbsql_no_spin_gate ${PROJECT_SOURCE_DIR}/src/parsers/sbsql_worker)
+if(SB_BUILD_NON_ENGINE_GATES)
+  # Non-engine: scans project/src rather than exercising the engine.
+  add_test(NAME sbp_sbsql_no_spin_gate COMMAND sbp_sbsql_no_spin_gate ${PROJECT_SOURCE_DIR}/src/parsers/sbsql_worker)
+endif()
 
 if(UNIX AND TARGET sbl_sbsql_parser_worker_core)
   # The alignment directory is configured before the worker library exists.
@@ -5927,6 +6093,7 @@ add_executable(
 )
 target_compile_features(sbsql_no_spin_no_wal_no_direct_db_gate PRIVATE cxx_std_23)
 target_link_libraries(sbsql_no_spin_no_wal_no_direct_db_gate PRIVATE sbl_sbsql_parser_pipeline)
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_no_spin_no_wal_no_direct_db_gate
   COMMAND sbsql_no_spin_no_wal_no_direct_db_gate
@@ -5936,6 +6103,7 @@ add_test(
 set_tests_properties(sbsql_no_spin_no_wal_no_direct_db_gate PROPERTIES
   LABELS "sbsql_no_spin_no_wal_no_direct_db_gate;parser_diagnostics_security_gate;sbsql_parser_worker"
 )
+endif()
 
 add_executable(sbsql_cache_epoch_correctness_conformance sbsql_cache_epoch_correctness_conformance.cpp)
 target_compile_features(sbsql_cache_epoch_correctness_conformance PRIVATE cxx_std_23)
@@ -5991,6 +6159,7 @@ set_tests_properties(sbsql_parser_v3_profile_meta_conformance PROPERTIES
   LABELS "parser_v3_management_syntax_gate;parser_profile_authority_gate;parser_v3_closure_gate;parser_diagnostics_security_gate;sbsql_parser_worker"
 )
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_sblr_operation_matrix_static_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -6000,7 +6169,9 @@ add_test(
 set_tests_properties(sbsql_sblr_operation_matrix_static_gate PROPERTIES
   LABELS "sblr_operation_matrix_gate;sblr_lowering_runtime_gate;trusted_udr_bridge_gate;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sblr_operation_matrix_authority_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -6010,6 +6181,7 @@ add_test(
 set_tests_properties(sblr_operation_matrix_authority_gate PROPERTIES
   LABELS "sblr_operation_matrix_gate;sblr_operation_matrix_authority_gate;parser_v3_closure_gate;sbsql_parser_worker"
 )
+endif()
 
 if(TARGET sbl_sbsql_parser_pipeline AND TARGET sbu_sbsql_parser_support AND TARGET sb_server_core)
   add_executable(
@@ -6028,13 +6200,15 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sbu_sbsql_parser_support AND TARG
   set(SBSQL_MALICIOUS_INPUT_FIXTURES
     "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/hardening/MALICIOUS_INPUT_FIXTURES.csv"
   )
-  add_test(
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(
     NAME sbsql_fuzz_malicious_input_gate
     COMMAND sbsql_fuzz_malicious_input_gate "${SBSQL_MALICIOUS_INPUT_FIXTURES}"
   )
   set_tests_properties(sbsql_fuzz_malicious_input_gate PROPERTIES
     LABELS "sbsql_fuzz_malicious_input_gate;sbsql_fuzz_smoke;sbsql_malicious_input_smoke;parser_diagnostics_security_gate;sbsql_parser_worker"
   )
+endif()
 endif()
 
 if(NOT WIN32 AND TARGET sbl_sbsql_embedded_client_bridge AND TARGET sb_server_core)
@@ -6076,6 +6250,7 @@ add_custom_target(
     "${SBSQL_DETERMINISTIC_NO_NETWORK_GATE}"
     "${SBSQL_DETERMINISTIC_ARTIFACT_MANIFEST}"
 )
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_deterministic_no_network_gate
   COMMAND "${SBSQL_PYTHON3}" "${SBSQL_DETERMINISTIC_NO_NETWORK_GATE}"
@@ -6087,6 +6262,7 @@ add_test(
 set_tests_properties(sbsql_deterministic_no_network_gate PROPERTIES
   LABELS "sbsql_deterministic_no_network_gate;sbsql_reproducibility_gate;sbsql_no_network_gate;sbsql_parser_worker"
 )
+endif()
 
 if(TARGET sbl_listener_runtime AND TARGET sbl_sbsql_parser_worker_core AND TARGET sb_server_core)
   add_executable(
@@ -6172,7 +6348,8 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core)
       sbl_sbsql_parser_pipeline
       sb_server_core
   )
-  add_test(
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(
     NAME sbsql_security_redaction_side_channel_gate
     COMMAND sbsql_security_redaction_side_channel_gate
             "${PROJECT_SOURCE_DIR}/.."
@@ -6181,6 +6358,7 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sb_server_core)
   set_tests_properties(sbsql_security_redaction_side_channel_gate PROPERTIES
     LABELS "sbsql_security_redaction_side_channel_gate;sbsql_security_redaction_gate;sbsql_side_channel_gate;parser_diagnostics_security_gate;sbsql_parser_worker"
   )
+endif()
 endif()
 
 if(NOT TARGET sb_engine_functions AND TARGET sb_engine_sblr)
@@ -6202,13 +6380,15 @@ if(TARGET sb_engine_functions)
       sb_engine_functions
       sbl_sbsql_parser_pipeline
   )
-  add_test(
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(
     NAME sbsql_fixed_uuid_catalog_seed_gate
     COMMAND sbsql_fixed_uuid_catalog_seed_gate "${PROJECT_SOURCE_DIR}/.."
   )
   set_tests_properties(sbsql_fixed_uuid_catalog_seed_gate PROPERTIES
     LABELS "sbsql_fixed_uuid_catalog_seed_gate;sbsql_parser_worker"
   )
+endif()
 endif()
 
 add_executable(
@@ -6221,6 +6401,7 @@ target_link_libraries(
   PRIVATE
     sb_engine_functions
 )
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME sbsql_upgrade_migration_compatibility_gate
   COMMAND sbsql_upgrade_migration_compatibility_gate
@@ -6230,6 +6411,7 @@ add_test(
 set_tests_properties(sbsql_upgrade_migration_compatibility_gate PROPERTIES
   LABELS "sbsql_upgrade_migration_compatibility_gate;sbsql_parser_worker"
 )
+endif()
 
 if(TARGET sb_listener AND TARGET sbp_probe)
   add_test(NAME sbp_probe_product_exists COMMAND sbp_probe --help)
@@ -6458,7 +6640,8 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
     set_tests_properties(sbsql_sb_isql_local_ipc_route_smoke PROPERTIES
       LABELS "public_single_node_full_route_gate;sbsql_parser_worker;sb_isql;cli_tool_gate;database_lifecycle;database_lifecycle_server_route;database_lifecycle_parser_route;security_auth_gate;local_ipc_gate;sbwp_wire_gate;routing_reconnect_finality_gate;mga_transaction_regression"
     )
-    add_test(
+    if(SB_BUILD_NON_ENGINE_GATES)
+add_test(
       NAME sbsql_sb_isql_embedded_route_smoke
       COMMAND "${SBSQL_PYTHON3}"
               "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/sbsql_sb_isql_embedded_route_smoke.py"
@@ -6468,6 +6651,7 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
     set_tests_properties(sbsql_sb_isql_embedded_route_smoke PROPERTIES
       LABELS "public_single_node_full_route_gate;sbsql_parser_worker;sb_isql;cli_tool_gate;database_lifecycle;database_lifecycle_embedded_route;embedded_engine_gate;sbwp_wire_gate;mga_transaction_regression"
     )
+endif()
     add_test(
       NAME cdp_route_split_benchmark_gate
       COMMAND "${SBSQL_PYTHON3}"
@@ -6515,7 +6699,8 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
     set_tests_properties(sbsql_copy_persistence_full_route_gate PROPERTIES
       LABELS "sbsql_copy_persistence_full_route_gate;sbsql_sblr_alignment;IA-07;SBLR_BULK_IMPORT_STREAM;CSC-TEST-002449;CSC-TEST-005736;copy_persistence;opcode775_exact_route;public_single_node_full_route_gate;public_release_foundation_full_route_gate;sbsql_parser_worker;sb_isql;database_lifecycle;database_lifecycle_server_route;database_lifecycle_parser_route;security_auth_gate;sbwp_tls_server_listener_gate;tls_regression_gate;local_ipc_gate;sbwp_wire_gate;routing_reconnect_finality_gate;mga_transaction_regression"
     )
-    add_test(
+    if(SB_BUILD_NON_ENGINE_GATES)
+add_test(
       NAME sbsql_native_api_journal_oracle
       COMMAND "${SBSQL_PYTHON3}" -B
               "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/test_native_api_journal_oracle.py"
@@ -6524,6 +6709,7 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
       LABELS "sbsql_parser_worker;binary_uuid;independent_oracle;not_e2e"
       TIMEOUT 30
     )
+endif()
     add_test(
       NAME sbsql_procedure_lifecycle_full_route_gate
       COMMAND "${SBSQL_PYTHON3}"
@@ -6555,18 +6741,22 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
       LABELS "sbsql_match_recognize_full_route_gate;sbsql_sblr_alignment;IA-EXT-OPT;SBSQL-14EDC2636B45;SBLR_MATCH_RECOGNIZE;SBLR_QUERY_EXECUTE;CSC-TEST-005814;CSC-TEST-005815;CSC-TEST-005816;CSC-TEST-005817;CSC-TEST-005818;CSC-TEST-005819;CSC-TEST-005820;sbsql_surface_to_sblr_full_implementation_closure;sblr_operation_matrix_gate;sbsql_e2e_passed;authenticated_full_route;independent_post_state;restart_recovery;malformed_operand;security_auth_gate;public_single_node_full_route_gate;public_release_foundation_full_route_gate;sbsql_parser_worker;database_lifecycle;database_lifecycle_server_route;database_lifecycle_parser_route;sbwp_tls_server_listener_gate;tls_regression_gate;local_ipc_gate;sbwp_wire_gate;routing_reconnect_finality_gate;mga_transaction_regression"
       TIMEOUT 300
     )
-    add_test(NAME sbsql_acceleration_readiness_controls
+    if(SB_BUILD_NON_ENGINE_GATES)
+add_test(NAME sbsql_acceleration_readiness_controls
       COMMAND "${SBSQL_PYTHON3}" -B
         "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/sbsql_acceleration_readiness_test.py")
     set_tests_properties(sbsql_acceleration_readiness_controls PROPERTIES
       LABELS "sbsql_parser_worker;nonmutating_observability;startup_readiness;negative_controls"
       TIMEOUT 30)
-    add_test(NAME cdp_native_bulk_ingest_oracle_controls
+endif()
+    if(SB_BUILD_NON_ENGINE_GATES)
+add_test(NAME cdp_native_bulk_ingest_oracle_controls
       COMMAND "${SBSQL_PYTHON3}" -B
         "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/cdp_native_bulk_ingest_oracle_test.py")
     set_tests_properties(cdp_native_bulk_ingest_oracle_controls PROPERTIES
       LABELS "sbsql_parser_worker;native_bulk_ingest;negative_controls"
       TIMEOUT 30)
+endif()
     add_test(
       NAME sbsql_acceleration_full_route_gate
       COMMAND "${SBSQL_PYTHON3}"
@@ -6841,11 +7031,13 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
       # Keep every workload/assertion and per-command deadline unchanged.
       RUN_SERIAL TRUE TIMEOUT 3600
     )
-    add_test(NAME cdp_final_regression_oracle_controls
+    if(SB_BUILD_NON_ENGINE_GATES)
+add_test(NAME cdp_final_regression_oracle_controls
       COMMAND "${SBSQL_PYTHON3}" -B
         "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/cdp_final_regression_oracle_test.py")
     set_tests_properties(cdp_final_regression_oracle_controls PROPERTIES
       LABELS "test_harness;cdp050;negative_controls" TIMEOUT 30)
+endif()
     add_test(
       NAME cdp_security_api_abi_gate
       COMMAND "${SBSQL_PYTHON3}"
@@ -7309,13 +7501,15 @@ if(TARGET sbl_sbsql_parser_pipeline AND TARGET sbu_sbsql_parser_support AND TARG
       sb_server_core
       sb_engine
   )
-  add_test(
+  if(SB_BUILD_NON_ENGINE_GATES)
+add_test(
     NAME sb_message_vector_error_surface_conformance
     COMMAND sb_message_vector_error_surface_conformance "${SBSQL_REGRESSION_ARTIFACT_ROOT}"
   )
   set_tests_properties(sb_message_vector_error_surface_conformance PROPERTIES
     LABELS "sb_message_vector_error_surface_conformance;sbsql_no_raw_string_diagnostic_gate;parser_diagnostics_security_gate;sbsql_parser_worker"
   )
+endif()
 endif()
 
 if(TARGET sbu_sbsql_parser_support)
@@ -7369,6 +7563,7 @@ if(TARGET sb_engine_functions)
   )
 endif()
 
+if(SB_BUILD_NON_ENGINE_GATES)
 add_test(
   NAME udr_implementation_coverage_gate
   COMMAND "${SBSQL_PYTHON3}"
@@ -7378,6 +7573,7 @@ add_test(
 set_tests_properties(udr_implementation_coverage_gate PROPERTIES
   LABELS "udr_implementation_coverage;trusted_udr_bridge_gate;parser_v3_closure_gate;sbsql_parser_worker;release_gate"
 )
+endif()
 
 # Kept at the end of this file so adding the focused authority oracle does not
 # renumber the existing configured CTest sequence.
