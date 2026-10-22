@@ -34,7 +34,19 @@ add_test(NAME cmake_test_assertions
           "${CMAKE_CURRENT_SOURCE_DIR}/tests/tools/test_cmake_test_assertions.py")
 set_tests_properties(cmake_test_assertions PROPERTIES
   TIMEOUT 180 LABELS "build_hygiene;cmake_config;assertion_integrity")
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/parser_family_isolation/CMakeLists.txt")
+# The engine test process registers engine tests only. Source, specification,
+# manifest and build-hygiene gates verify the repository rather than the
+# engine, so they are not registered unless this is ON. Keeping them OFF by
+# default means `ctest` in a default build cannot report a repository-hygiene
+# or harness failure as an engine failure.
+#
+# Declared here, above its first use below: CMake evaluates top-down, so an
+# option defined later in this file would read as false at the guards.
+option(SB_BUILD_NON_ENGINE_GATES
+  "Register the non-engine source/specification/manifest/build gates" OFF)
+
+if(SB_BUILD_NON_ENGINE_GATES AND
+   EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/parser_family_isolation/CMakeLists.txt")
   add_subdirectory(tests/parser_family_isolation)
 endif()
 set(SB_PUBLIC_HEADER_GATE_SCRIPT
@@ -3870,7 +3882,7 @@ if((SB_BUILD_AGENT_RUNTIME_PROBES OR SB_BUILD_DATABASE_LIFECYCLE_TESTS OR SB_BUI
   add_subdirectory(tests/agents)
 endif()
 
-if((SB_BUILD_DATABASE_LIFECYCLE_TESTS OR SB_BUILD_TESTS)
+if(SB_BUILD_NON_ENGINE_GATES AND (SB_BUILD_DATABASE_LIFECYCLE_TESTS OR SB_BUILD_TESTS)
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/commercial_readiness/CMakeLists.txt")
   add_subdirectory(tests/commercial_readiness)
 endif()
@@ -3935,7 +3947,7 @@ if(SB_BUILD_TESTS OR SB_BUILD_DRIVER_GATES OR SB_BUILD_PUBLIC_RELEASE_CORRECTNES
   set(SB_BUILD_GUI_PROOF_GATES ON CACHE BOOL
     "Build GUI proof CTest gates" FORCE)
 endif()
-if(SB_BUILD_GUI_PROOF_GATES AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/gui/CMakeLists.txt")
+if(SB_BUILD_NON_ENGINE_GATES AND SB_BUILD_GUI_PROOF_GATES AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/gui/CMakeLists.txt")
   add_subdirectory(tests/gui)
 endif()
 
@@ -3946,7 +3958,7 @@ if(SB_BUILD_TESTS OR SB_BUILD_DRIVER_GATES OR SB_BUILD_PUBLIC_RELEASE_CORRECTNES
   set(SB_BUILD_SECURITY_STATIC_GATES ON CACHE BOOL
     "Build security static CTest gates" FORCE)
 endif()
-if(SB_BUILD_SECURITY_STATIC_GATES AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/security/CMakeLists.txt")
+if(SB_BUILD_NON_ENGINE_GATES AND SB_BUILD_SECURITY_STATIC_GATES AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/security/CMakeLists.txt")
   add_subdirectory(tests/security)
 endif()
 
@@ -3968,7 +3980,7 @@ if(SB_BUILD_TESTS)
   set(SB_BUILD_COMPAT_REGRESSION_GATES ON CACHE BOOL
     "Build compatibility compatibility profile and regression-import CTest gates" FORCE)
 endif()
-if(SB_BUILD_COMPAT_REGRESSION_GATES AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/reference_regression/CMakeLists.txt")
+if(SB_BUILD_NON_ENGINE_GATES AND SB_BUILD_COMPAT_REGRESSION_GATES AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/reference_regression/CMakeLists.txt")
   add_subdirectory(tests/reference_regression)
 endif()
 
@@ -3999,7 +4011,9 @@ if(SB_BUILD_SBMN_MANAGER_ENTERPRISE_TESTS
    AND TARGET sbmn_manager
    AND TARGET sbmn_manager_protocol_unit_tests
    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/manager_enterprise/CMakeLists.txt")
-  add_subdirectory(tests/manager_enterprise)
+  if(SB_BUILD_NON_ENGINE_GATES)
+    add_subdirectory(tests/manager_enterprise)
+  endif()
 endif()
 
 if(SB_BUILD_ENGINE_LISTENER_ENTERPRISE_GATES AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/fault_injection/CMakeLists.txt")
