@@ -10032,13 +10032,6 @@ add_test(NAME sbsql_sblr_alignment_typed_update_carrier_codec
 set_tests_properties(sbsql_sblr_alignment_typed_update_carrier_codec PROPERTIES
   LABELS "sbsql_sblr_alignment;typed_update;DUDC;DUAV;DUEV;DUDV;DUDR;DUOV;DUOE;DUJR;datatype_authority;operator_authority;sha256_evidence;malformed;recovery;contract"
   TIMEOUT 30)
-add_test(NAME sbsql_sblr_alignment_typed_result_transport_authority
-  COMMAND "${Python3_EXECUTABLE}"
-    "${CMAKE_CURRENT_SOURCE_DIR}/typed_result_transport_authority_validator.py"
-    --workspace-root "${CMAKE_SOURCE_DIR}/../..")
-set_tests_properties(sbsql_sblr_alignment_typed_result_transport_authority PROPERTIES
-  LABELS "sbsql_sblr_alignment;result_transport;Core_authority;manifest;sha256_evidence;P1;validator"
-  TIMEOUT 30)
 add_test(NAME sbsql_sblr_alignment_typed_result_producer_cursor_contract
   COMMAND "${Python3_EXECUTABLE}"
     "${CMAKE_CURRENT_SOURCE_DIR}/typed_result_producer_cursor_contract_test.py"

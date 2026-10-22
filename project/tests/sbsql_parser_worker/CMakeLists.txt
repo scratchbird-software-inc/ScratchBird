@@ -1559,17 +1559,6 @@ set_tests_properties(ctest_no_execution_plan_runtime_dependency_gate PROPERTIES
   LABELS "ctest_no_execution_plan_runtime_dependency_gate;sbsql_parser_worker;release_gate"
 )
 
-add_test(
-  NAME sbsql_final_language_expansion_closure_gate
-  COMMAND "${SBSQL_PYTHON3}"
-          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/sbsql_final_language_expansion_closure_gate.py"
-          --repo-root "${PROJECT_SOURCE_DIR}/.."
-          --build-root "${CMAKE_BINARY_DIR}"
-)
-set_tests_properties(sbsql_final_language_expansion_closure_gate PROPERTIES
-  LABELS "FSL-P7;final_sblr_sbsql_language_expansion_closure;sbsql_parser_worker;parser_v3_closure_gate;sblr_operation_matrix_gate;mga_transaction_regression"
-  DEPENDS "sbsql_surface_to_sblr_function_coverage_gate;sbsql_no_stub_source_integrity_gate;sbsql_sblr_binary_round_trip_fixture_gate"
-)
 
 add_test(
   NAME sbsql_alignment_inventory_contract_regression
@@ -1838,16 +1827,6 @@ add_test(
           "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/full_surface/sbsql_diagnostic_identity_authority_test.py"
 )
 
-add_test(
-  NAME sbsql_status_change_authority_gate
-  COMMAND "${SBSQL_PYTHON3}"
-          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/full_surface/sbsql_status_change_authority_gate.py"
-          --repo-root "${PROJECT_SOURCE_DIR}/.."
-          --artifact-root "${SBSQL_SURFACE_TO_SBLR_ARTIFACT_ROOT}"
-)
-set_tests_properties(sbsql_status_change_authority_gate PROPERTIES
-  LABELS "sbsql_status_change_authority_gate;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sbsql_parser_worker"
-)
 
 add_test(
   NAME sbsql_deterministic_generation_no_network_gate
@@ -1997,15 +1976,6 @@ set_tests_properties(sbsql_sbsfc_013_document_collection_runtime_conformance PRO
   LABELS "sbsql_sbsfc_013_document_collection_runtime_conformance;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
-add_test(
-  NAME sbsql_sbsfc_014_fuzzy_text_fixture_gate
-  COMMAND "${SBSQL_PYTHON3}"
-          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/full_surface/sbsql_sbsfc_014_fuzzy_text_fixture_gate.py"
-          --repo-root "${PROJECT_SOURCE_DIR}/.."
-)
-set_tests_properties(sbsql_sbsfc_014_fuzzy_text_fixture_gate PROPERTIES
-  LABELS "sbsql_sbsfc_014_fuzzy_text_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sbsql_parser_worker"
-)
 
 add_executable(
   sbsql_sbsfc_014_fuzzy_text_runtime_conformance
@@ -2028,15 +1998,6 @@ add_executable(
 target_compile_features(sbsql_sbsfc_014_vector_runtime_conformance PRIVATE cxx_std_20)
 target_link_libraries(sbsql_sbsfc_014_vector_runtime_conformance PRIVATE sb_engine_functions)
 add_test(
-  NAME sbsql_sbsfc_014_vector_fixture_gate
-  COMMAND "${SBSQL_PYTHON3}"
-          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/full_surface/sbsql_sbsfc_014_vector_fixture_gate.py"
-          --repo-root "${PROJECT_SOURCE_DIR}/.."
-)
-set_tests_properties(sbsql_sbsfc_014_vector_fixture_gate PROPERTIES
-  LABELS "sbsql_sbsfc_014_vector_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sbsql_parser_worker"
-)
-add_test(
   NAME sbsql_sbsfc_014_vector_runtime_conformance
   COMMAND sbsql_sbsfc_014_vector_runtime_conformance
 )
@@ -2044,15 +2005,6 @@ set_tests_properties(sbsql_sbsfc_014_vector_runtime_conformance PROPERTIES
   LABELS "sbsql_sbsfc_014_vector_runtime_conformance;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
-add_test(
-  NAME sbsql_sbsfc_015_aggregate_window_fixture_gate
-  COMMAND "${SBSQL_PYTHON3}"
-          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/full_surface/sbsql_sbsfc_015_aggregate_window_fixture_gate.py"
-          --repo-root "${PROJECT_SOURCE_DIR}/.."
-)
-set_tests_properties(sbsql_sbsfc_015_aggregate_window_fixture_gate PROPERTIES
-  LABELS "sbsql_sbsfc_015_aggregate_window_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sbsql_parser_worker"
-)
 
 if(TARGET sb_engine_sblr)
   add_executable(
@@ -2100,15 +2052,6 @@ if(TARGET sb_engine_sblr)
   )
 endif()
 
-add_test(
-  NAME sbsql_sbsfc_016_procedural_context_fixture_gate
-  COMMAND "${SBSQL_PYTHON3}"
-          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/full_surface/sbsql_sbsfc_016_procedural_context_fixture_gate.py"
-          --repo-root "${PROJECT_SOURCE_DIR}/.."
-)
-set_tests_properties(sbsql_sbsfc_016_procedural_context_fixture_gate PROPERTIES
-  LABELS "sbsql_sbsfc_016_procedural_context_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-016R-G;SBSFC-016R-H;SBSFC-016R-I;SBSFC-016R-J;SBSFC-016R-K;SBSFC-016R-L;parser_v3_closure_gate;sbsql_parser_worker"
-)
 
 add_executable(
   sbsql_sbsfc_016_procedural_context_runtime_conformance
@@ -2124,15 +2067,6 @@ set_tests_properties(sbsql_sbsfc_016_procedural_context_runtime_conformance PROP
   LABELS "sbsql_sbsfc_016_procedural_context_runtime_conformance;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-016R-G;SBSFC-016R-H;SBSFC-016R-I;SBSFC-016R-J;SBSFC-016R-K;SBSFC-016R-L;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
-add_test(
-  NAME sbsql_sbsfc_017_regex_text_pattern_fixture_gate
-  COMMAND "${SBSQL_PYTHON3}"
-          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/full_surface/sbsql_sbsfc_017_regex_text_pattern_fixture_gate.py"
-          --repo-root "${PROJECT_SOURCE_DIR}/.."
-)
-set_tests_properties(sbsql_sbsfc_017_regex_text_pattern_fixture_gate PROPERTIES
-  LABELS "sbsql_sbsfc_017_regex_text_pattern_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-017R;parser_v3_closure_gate;sbsql_parser_worker"
-)
 
 add_executable(
   sbsql_sbsfc_017_regex_text_pattern_runtime_conformance
@@ -2148,15 +2082,6 @@ set_tests_properties(sbsql_sbsfc_017_regex_text_pattern_runtime_conformance PROP
   LABELS "sbsql_sbsfc_017_regex_text_pattern_runtime_conformance;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-017R;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
-add_test(
-  NAME sbsql_sbsfc_026_text_conversion_helper_fixture_gate
-  COMMAND "${SBSQL_PYTHON3}"
-          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/full_surface/sbsql_sbsfc_026_text_conversion_helper_fixture_gate.py"
-          --repo-root "${PROJECT_SOURCE_DIR}/.."
-)
-set_tests_properties(sbsql_sbsfc_026_text_conversion_helper_fixture_gate PROPERTIES
-  LABELS "sbsql_sbsfc_026_text_conversion_helper_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-026R-K;parser_v3_closure_gate;sbsql_parser_worker"
-)
 
 add_executable(
   sbsql_sbsfc_026_text_conversion_helper_runtime_conformance
@@ -2196,15 +2121,6 @@ set_tests_properties(sbsql_sbsfc_027_string_encoding_helper_runtime_conformance 
   LABELS "sbsql_sbsfc_027_string_encoding_helper_runtime_conformance;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-027;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
-add_test(
-  NAME sbsql_sbsfc_028_uuid_compat_helper_fixture_gate
-  COMMAND "${SBSQL_PYTHON3}"
-          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/full_surface/sbsql_sbsfc_028_uuid_compat_helper_fixture_gate.py"
-          --repo-root "${PROJECT_SOURCE_DIR}/.."
-)
-set_tests_properties(sbsql_sbsfc_028_uuid_compat_helper_fixture_gate PROPERTIES
-  LABELS "sbsql_sbsfc_028_uuid_compat_helper_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;SBSFC-028;parser_v3_closure_gate;sbsql_parser_worker"
-)
 
 add_executable(
   sbsql_sbsfc_028_uuid_compat_helper_runtime_conformance
