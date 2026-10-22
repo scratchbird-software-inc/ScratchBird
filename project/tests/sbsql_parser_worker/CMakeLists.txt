@@ -1553,40 +1553,16 @@ set_tests_properties(sbsql_alignment_inventory_contract_regression PROPERTIES
 )
 
 add_test(
-  NAME final_sblr_sbsql_enterprise_proof_closure_gate
-  COMMAND "${SBSQL_PYTHON3}"
-          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/final_sblr_sbsql_enterprise_proof_closure_gate.py"
-          --repo-root "${PROJECT_SOURCE_DIR}/.."
-          --build-root "${CMAKE_BINARY_DIR}"
-)
-set(SBSQL_FINAL_ENTERPRISE_PROOF_DEPENDS
-  sbsql_final_language_expansion_closure_gate
-  ctest_no_execution_plan_runtime_dependency_gate
-)
-if(TARGET sb_server_core AND TARGET sb_cluster_provider)
-  list(APPEND SBSQL_FINAL_ENTERPRISE_PROOF_DEPENDS
-    sblr_surface_fse_p7_execution_proof_gate
-  )
-endif()
-if(SB_BUILD_COMPATIBILITY_PARSERS)
-  list(APPEND SBSQL_FINAL_ENTERPRISE_PROOF_DEPENDS
-    parser_dialect_isolation_audit_gate
-  )
-endif()
-set_tests_properties(final_sblr_sbsql_enterprise_proof_closure_gate PROPERTIES
-  LABELS "FEP-P7;final_sblr_sbsql_enterprise_proof_closure;release_gate;sbsql_parser_worker;sblr_surface;reference_parser_release_evidence;mga_transaction_regression"
-  DEPENDS "${SBSQL_FINAL_ENTERPRISE_PROOF_DEPENDS}"
-)
-
-add_test(
   NAME final_sblr_sbsql_master_closure_gate
   COMMAND "${SBSQL_PYTHON3}"
           "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/final_sblr_sbsql_master_closure_gate.py"
           --repo-root "${PROJECT_SOURCE_DIR}/.."
 )
+# final_sblr_sbsql_enterprise_proof_closure_gate and
+# sbsql_final_language_expansion_closure_gate were deleted (they read the
+# private specification corpus), so they are no longer listed here. A DEPENDS
+# entry naming a test that does not exist is dead configuration.
 set(SBSQL_FINAL_MASTER_CLOSURE_DEPENDS
-  final_sblr_sbsql_enterprise_proof_closure_gate
-  sbsql_final_language_expansion_closure_gate
 )
 if(SB_BUILD_COMPATIBILITY_PARSERS)
   list(APPEND SBSQL_FINAL_MASTER_CLOSURE_DEPENDS
@@ -1780,16 +1756,6 @@ set_tests_properties(sbsql_sblr_binary_round_trip_fixture_gate PROPERTIES
   LABELS "sbsql_sblr_binary_round_trip_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
-add_test(
-  NAME sbsql_plan_import_rows_generated_evidence_gate
-  COMMAND "${SBSQL_PYTHON3}"
-          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/full_surface/sbsql_plan_import_rows_generated_evidence_gate.py"
-          --repo-root "${PROJECT_SOURCE_DIR}/.."
-          --artifact-root "${SBSQL_SURFACE_TO_SBLR_ARTIFACT_ROOT}"
-)
-set_tests_properties(sbsql_plan_import_rows_generated_evidence_gate PROPERTIES
-  LABELS "sbsql_plan_import_rows_generated_evidence_gate;SBLR-DML-PLAN-IMPORT-ROWS-ZERO-GREY-V1;PID-007;sbsql_parser_worker"
-)
 
 add_test(
   NAME sbsql_route_round_trip_fixture_promotion_gate
@@ -1934,15 +1900,6 @@ set_tests_properties(sbsql_sbsfc_012_temporal_session_runtime_conformance PROPER
   LABELS "sbsql_sbsfc_012_temporal_session_runtime_conformance;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sbsql_parser_worker"
 )
 
-add_test(
-  NAME sbsql_sbsfc_013_document_collection_fixture_gate
-  COMMAND "${SBSQL_PYTHON3}"
-          "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/generated/full_surface/sbsql_sbsfc_013_document_collection_fixture_gate.py"
-          --repo-root "${PROJECT_SOURCE_DIR}/.."
-)
-set_tests_properties(sbsql_sbsfc_013_document_collection_fixture_gate PROPERTIES
-  LABELS "sbsql_sbsfc_013_document_collection_fixture_gate;sbsql_surface_to_sblr_full_implementation_closure;parser_v3_closure_gate;sbsql_parser_worker"
-)
 
 add_executable(
   sbsql_sbsfc_013_document_collection_runtime_conformance
