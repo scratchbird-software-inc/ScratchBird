@@ -954,6 +954,116 @@ void TestNativeSecurityGenerationRepair(Cleanup* cleanup) {
   }
 }
 
+// SEARCH_KEY: SECURITY-INTERNAL-PRINCIPAL-PROVISIONING
+// The internal service principal is the committed identity the engine's own
+// actors authenticate as instead of synthesizing one, so the whole internal
+// actor path rests on these rows existing with exactly this right set. Nothing
+// covered it: no test and no production caller set
+// internal_service_principal_name, so the mechanism was reachable only through
+// an option envelope nobody sent.
+//
+// This asserts the durable result of a create, not an authentication: it
+// starts no session, admits no transaction and proves no actor can use the
+// principal. The reader deliberately does not surface grants, so the five
+// rights are read from the committed catalog rows directly.
+void TestInternalServicePrincipalProvisioned(Cleanup* cleanup) {
+  // A name with no credential must refuse rather than commit a principal that
+  // nothing can ever authenticate as.
+  {
+    const auto path = TestPath("internal_service_principal_uncredentialed");
+    cleanup->paths.push_back(path);
+    auto config = MakeConfig(path);
+    config.internal_service_principal_name = "sb_internal_service";
+    config.require_internal_service_principal = true;
+    const auto refused = db::CreateDatabaseFile(config);
+    Require(!refused.ok(), "create provisioned a service principal with no credential");
+    Require(refused.diagnostic.diagnostic_code == "CATALOG.INVALID_INPUT",
+            "uncredentialed service principal refusal lost its diagnostic");
+  }
+
+  // Absent fields must leave create exactly as it was for every existing
+  // caller: no service principal, no runtime authority binding, no refusal.
+  {
+    std::filesystem::path path;
+    (void)CreateCommitted(cleanup, "internal_service_principal_absent", &path);
+    const auto read = db::ReadDatabaseBootstrapSecurityCatalog(path.string());
+    Require(read.ok() && read.state.present && read.state.committed_by_inventory,
+            "create without the service principal fields stopped committing bootstrap security");
+    Require(!read.state.runtime_authority_binding_present &&
+                read.state.service_principal_uuid.is_nil(),
+            "create invented a service principal that was never requested");
+  }
+
+  // Provisioned: the principal, its distinct identity, and the committed
+  // runtime authority binding a startup credential is framed against.
+  std::filesystem::path path = TestPath("internal_service_principal_committed");
+  cleanup->paths.push_back(path);
+  auto config = MakeConfig(path);
+  config.internal_service_principal_name = "sb_internal_service";
+  config.internal_service_credential_fingerprint = kCredentialFingerprint;
+  config.require_internal_service_principal = true;
+  const auto created = db::CreateDatabaseFile(config);
+  if (!created.ok()) std::cerr << created.diagnostic.diagnostic_code << '\n';
+  Require(created.ok(), "service principal create failed");
+  Require(created.create_finality == db::DatabaseCreateFinalityClass::committed,
+          "service principal create was not classified committed");
+
+  const auto read = db::ReadDatabaseBootstrapSecurityCatalog(path.string());
+  Require(read.ok() && read.state.present && read.state.committed_by_inventory,
+          "service principal create did not commit readable bootstrap security");
+  Require(read.state.runtime_authority_binding_present,
+          "service principal committed without its runtime authority binding");
+  Require(!read.state.service_principal_uuid.is_nil() &&
+              !read.state.provider_uuid.is_nil() &&
+              read.state.credential_reference_uuid.has_value(),
+          "committed binding is missing the identities a startup credential is framed against");
+  Require(read.state.service_principal_uuid != read.state.principal_uuid.value,
+          "the service principal was aliased to the bootstrap owner");
+
+  // The five node-scoped rights, read from the committed rows. These are an
+  // exact set: an extra right would be authority this database never intended
+  // and a missing one would strand the actor that needs it. CATALOG_MUTATE is
+  // the one the agent catalog-seed transaction requires.
+  std::set<std::string> granted;
+  bool service_account_committed = false;
+  for (const auto& row : ReadCatalogRows(path, created.state.header.page_size)) {
+    if (row.kind != page::CatalogPageRowKind::typed_catalog_record) continue;
+    const auto outer = catalog::DecodeCatalogTypedRecord(row);
+    Require(outer.ok(), "service principal row decode failed");
+    if (!catalog::IsCatalogSecurityRecordKind(outer.record.header.kind)) continue;
+    const auto security = catalog::DecodeCatalogSecurityRecord(outer.record.header.kind,
+                                                               outer.record.payload);
+    Require(security.ok(), "service principal security record decode failed");
+    if (outer.record.header.kind == catalog::CatalogRecordKind::user_account &&
+        security.record->Attribute("principal_name") == std::string_view("sb_internal_service")) {
+      service_account_committed = true;
+      Require(security.record->Attribute("principal_kind") == std::string_view("service"),
+              "the service principal was not committed as a service principal");
+      Require(security.record->Boolean("bootstrap_principal") == false,
+              "the service principal was committed as a bootstrap principal");
+    }
+    if (outer.record.header.kind != catalog::CatalogRecordKind::grant_record) continue;
+    if (security.record->Identity("subject_uuid") != read.state.service_principal_uuid) continue;
+    const auto right = security.record->Attribute("right");
+    Require(right.has_value(), "service principal grant carries no right name");
+    Require(security.record->Attribute("effect") == std::string_view("allow"),
+            "service principal grant is not an allow");
+    Require(granted.insert(std::string(*right)).second,
+            "service principal grant is duplicated");
+  }
+  Require(service_account_committed,
+          "no committed service principal account row carries the requested name");
+  const std::set<std::string> expected{"CONNECT", "CATALOG_MUTATE", "OBS_AGENT_STATE_READ",
+                                       "OBS_AGENT_EVIDENCE_READ", "OBS_AGENT_CONTROL"};
+  if (granted != expected) {
+    std::cerr << "service principal rights:";
+    for (const auto& right : granted) std::cerr << ' ' << right;
+    std::cerr << '\n';
+  }
+  Require(granted == expected,
+          "the internal service principal's committed right set is not the fixed five");
+}
+
 void TestCommittedSecurityOrigin(Cleanup* cleanup) {
   std::filesystem::path path;
   const auto created=CreateCommitted(cleanup,"committed_security_origin",&path);
@@ -1038,6 +1148,7 @@ int main() try {
   Cleanup cleanup;
   TestCompleteAgentConfiguration(&cleanup);
   TestCommittedSecurityOrigin(&cleanup);
+  TestInternalServicePrincipalProvisioned(&cleanup);
   TestBootstrapRecordOrder();
   TestPrepublicationFaults(&cleanup);
   TestPostpublicationFaults(&cleanup);
