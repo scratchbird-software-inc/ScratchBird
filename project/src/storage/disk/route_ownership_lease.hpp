@@ -124,6 +124,10 @@ class RouteOwnershipLease final {
   // Includes admitted opens waiting for their path mutex. Copies share one
   // admission, which retires only after the last copy. Never an authority grant.
   std::optional<std::uint64_t> ObserveLegacyBorrowers() const noexcept;
+  // Read-only consumers admitted through the fenced native owner. Counted
+  // apart from legacy borrowers so the source drain precondition is unchanged.
+  // An observation only, never an authority grant.
+  std::optional<std::uint64_t> ObserveDelegatedReaders() const noexcept;
   RouteWriteCustodyState ObserveWriteCustody() const noexcept;
 
  private:
@@ -136,6 +140,12 @@ class RouteOwnershipLease final {
   struct BorrowPin;
   static std::shared_ptr<RouteOwnershipLease> PinBorrowLocked(
       const std::shared_ptr<RouteOwnershipLease>& owner);
+  // Delegated read admission: the single owner serves an in-process read-only
+  // consumer instead of that consumer locking the route a second time.
+  static std::shared_ptr<RouteOwnershipLease> PinDelegatedReadLocked(
+      const std::shared_ptr<RouteOwnershipLease>& owner);
+  static std::shared_ptr<RouteOwnershipLease> BorrowDelegatedRead(const std::string& route_path);
+  static std::shared_ptr<RouteOwnershipLease> BorrowDelegatedReadAlias(const std::string& path);
   static RouteSourceTransitionResult BeginNativeSourceTransition(
       const std::shared_ptr<RouteOwnershipLease>& owner) noexcept;
   static std::shared_ptr<RouteOwnershipLease> BorrowAlias(const std::string& path);
@@ -189,6 +199,7 @@ class RouteOwnershipLease final {
   RouteSourceAdmissionKind source_admission_kind_=RouteSourceAdmissionKind::read_only;
   bool source_transferred_as_writer_=false;
   std::uint64_t legacy_borrowers_ = 0;
+  std::uint64_t delegated_readers_ = 0;
   std::weak_ptr<RouteSourceTransition> transition_;
 };
 

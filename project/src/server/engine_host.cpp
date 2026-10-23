@@ -757,6 +757,31 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
   // delegation restructure (there must be exactly ONE route owner, the native
   // runtime, with the live path consuming its observation) rather than
   // enabling coexistence.
+  //
+  // Attempt 5, 2026-10-23, and the earlier conclusion above is WRONG on its
+  // central claim. "Two route owners for one database" was inferred from
+  // SB-STORAGE-DISK-ROUTE-OWNER-LOCK-HELD, but that diagnostic cannot mean what
+  // it says: ProbeRouteOwnerLock reports kHeldByOtherProcess whenever flock on
+  // a freshly opened descriptor fails, and flock is per open-file-description,
+  // so a lock this very process holds on another descriptor is indistinguishable
+  // from a foreign one.
+  //
+  // Measured instead of inferred. With the activation flag on, a probe inside
+  // the lease registry during the failing coordinator read reports
+  // `leases=0` -- the process-local RouteOwnershipLease registry is EMPTY. The
+  // route owner lock is held on disk while no borrowable lease was ever
+  // published, so Borrow, BorrowAlias and delegated read all miss for the same
+  // reason, and the probe then misreports our own lock as another process's.
+  //
+  // So there are not two leases competing; there is one unpublished lock, and
+  // in-process delegation is structurally impossible rather than fenced off.
+  // The restructure needs the single owner to PUBLISH its lease
+  // (DatabaseOwnershipLock::PublishStorageLease, called only after the checked
+  // durable descriptor write) before any consumer can read through it.
+  // Relaxing the transition fence -- which is what BorrowDelegatedRead below
+  // does, and which is still required once publication happens -- is necessary
+  // and not sufficient.
+  // DISABLED pending lease publication by the single route owner. See FINDING-17.
   constexpr bool kNativeHostedRuntimeActivationEnabled = false;
   if (kNativeHostedRuntimeActivationEnabled &&
       crypto != nullptr && !config.embedded_direct_mode && crypto->installed()) {
