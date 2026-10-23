@@ -284,7 +284,7 @@ int main() {
                 ProjectionEnvelope(
                     "sb.scalar.pg_try_advisory_lock_key",
                     {api::EngineProjectionFunctionArgument{
-                        "key", "int64", std::to_string(kProjectionLockKey), false}}),
+                        "key", "bigint", std::to_string(kProjectionLockKey), false}}),
                 api::EngineApiRequest{}}),
            true) && ok;
 
