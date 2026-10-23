@@ -990,15 +990,11 @@ struct RouteOwnershipLease::BorrowPin {
     if (!counted || owner->owner_pid_ != OwnershipProcessId() ||
         registry.process_id != OwnershipProcessId()) return;
     std::lock_guard<std::mutex> guard(registry.mutex);
-    // A delegated reader is never a legacy admission, so it must not be
-    // subtracted from the counter the source drain waits on.
-    if (delegated) --owner->delegated_readers_;
-    else --owner->legacy_borrowers_;
+    --owner->legacy_borrowers_;
     if (owner->drain_signal_ && !owner->drain_signal_->changed.NotifyAll()) std::terminate();
   }
   std::shared_ptr<RouteOwnershipLease> owner;
   bool counted = false;
-  bool delegated = false;
 };
 
 std::shared_ptr<RouteOwnershipLease> RouteOwnershipLease::PinBorrowLocked(
@@ -1010,31 +1006,6 @@ std::shared_ptr<RouteOwnershipLease> RouteOwnershipLease::PinBorrowLocked(
   return std::shared_ptr<RouteOwnershipLease>(std::move(pin), owner.get());
 }
 
-// Delegation, not coexistence. The native runtime is the single route owner;
-// this admits an in-process READ-ONLY consumer through that one owner instead
-// of letting it acquire a second independent lock on the same route.
-//
-// It is deliberately counted apart from legacy_borrowers_. The fence
-// BeginNativeSourceTransition raises exists so the legacy count can reach zero
-// and stay there: BeginSourceAdmission refuses with not_drained while any
-// legacy borrower remains. Counting delegated readers there would make the
-// drain unreachable whenever a reader is live, which is always on a serving
-// node. Counting them separately keeps the transfer precondition exactly as
-// strict as it was.
-//
-// This grants no write capability and no authority: storage access stays
-// whatever the owner acquired, BindDataFile only revalidates the already-bound
-// inode for a second opener, and source transfer duplicates the owner's own
-// descriptor rather than rebinding or invalidating a reader's.
-std::shared_ptr<RouteOwnershipLease> RouteOwnershipLease::PinDelegatedReadLocked(
-    const std::shared_ptr<RouteOwnershipLease>& owner) {
-  if (owner->delegated_readers_ == std::numeric_limits<std::uint64_t>::max()) return {};
-  auto pin = std::make_shared<BorrowPin>(owner);
-  pin->delegated = true;
-  ++owner->delegated_readers_;
-  pin->counted = true;
-  return std::shared_ptr<RouteOwnershipLease>(std::move(pin), owner.get());
-}
 
 std::optional<std::uint64_t> RouteOwnershipLease::ObserveLegacyBorrowers() const noexcept {
   try {
@@ -1045,14 +1016,6 @@ std::optional<std::uint64_t> RouteOwnershipLease::ObserveLegacyBorrowers() const
   } catch (...) { return {}; }
 }
 
-std::optional<std::uint64_t> RouteOwnershipLease::ObserveDelegatedReaders() const noexcept {
-  try {
-    auto& registry = LeaseRegistry();
-    if (owner_pid_ != OwnershipProcessId() || registry.process_id != OwnershipProcessId()) return {};
-    std::lock_guard<std::mutex> guard(registry.mutex);
-    return delegated_readers_;
-  } catch (...) { return {}; }
-}
 
 RouteSourceTransitionResult RouteOwnershipLease::BeginNativeSourceTransition(
     const std::shared_ptr<RouteOwnershipLease>& owner) noexcept {
@@ -1402,20 +1365,6 @@ std::shared_ptr<RouteOwnershipLease> RouteOwnershipLease::Borrow(
   return PinBorrowLocked(lease);
 }
 
-// `issuing_` without `accepting_` is exactly the fenced native owner: live and
-// publishing, no longer taking legacy admissions. That is the state a
-// delegated read must be served in, and a withdrawn owner still must not be.
-std::shared_ptr<RouteOwnershipLease> RouteOwnershipLease::BorrowDelegatedRead(
-    const std::string& route_path) {
-  auto& registry = LeaseRegistry();
-  if (registry.process_id != OwnershipProcessId()) return {};
-  std::lock_guard<std::mutex> guard(registry.mutex);
-  const auto entry = registry.leases.find(route_path);
-  if (entry == registry.leases.end()) return {};
-  auto lease = entry->second.lock();
-  if (!lease || !lease->issuing_ || !lease->valid()) return {};
-  return PinDelegatedReadLocked(lease);
-}
 
 void RouteOwnershipLease::Withdraw() {
   auto& registry = LeaseRegistry();
@@ -1450,29 +1399,6 @@ std::shared_ptr<RouteOwnershipLease> RouteOwnershipLease::BorrowAlias(
     FILE_ID_INFO held{};
     if (detail::WindowsDataFileIdentity(static_cast<HANDLE>(lease->data_handle_), &held) ==
             ERROR_SUCCESS && detail::WindowsSameDataFile(requested, held)) return PinBorrowLocked(lease);
-  }
-  return {};
-}
-std::shared_ptr<RouteOwnershipLease> RouteOwnershipLease::BorrowDelegatedReadAlias(
-    const std::string& path) {
-  auto& registry = LeaseRegistry();
-  if (registry.process_id != OwnershipProcessId()) return {};
-  HANDLE requested_file = ::CreateFileA(path.c_str(), FILE_READ_ATTRIBUTES,
-      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr,
-      OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
-  if (requested_file == INVALID_HANDLE_VALUE) return {};
-  FILE_ID_INFO requested{};
-  const DWORD error = detail::WindowsDataFileIdentity(requested_file, &requested);
-  (void)::CloseHandle(requested_file);
-  if (error != ERROR_SUCCESS) return {};
-  std::lock_guard<std::mutex> guard(registry.mutex);
-  for (const auto& entry : registry.leases) {
-    auto lease = entry.second.lock();
-    if (!lease || !lease->issuing_ || !lease->valid() || !lease->data_handle_) continue;
-    FILE_ID_INFO held{};
-    if (detail::WindowsDataFileIdentity(static_cast<HANDLE>(lease->data_handle_), &held) ==
-            ERROR_SUCCESS && detail::WindowsSameDataFile(requested, held))
-      return PinDelegatedReadLocked(lease);
   }
   return {};
 }
@@ -1540,23 +1466,6 @@ std::shared_ptr<RouteOwnershipLease> RouteOwnershipLease::BorrowAlias(
     if (::fstat(lease->data_fd_, &held) == 0 &&
         requested.st_dev == held.st_dev && requested.st_ino == held.st_ino)
       return PinBorrowLocked(lease);
-  }
-  return {};
-}
-std::shared_ptr<RouteOwnershipLease> RouteOwnershipLease::BorrowDelegatedReadAlias(
-    const std::string& path) {
-  auto& registry = LeaseRegistry();
-  if (registry.process_id != OwnershipProcessId()) return {};
-  struct stat requested{};
-  if (::stat(path.c_str(), &requested) != 0 || !S_ISREG(requested.st_mode)) return {};
-  std::lock_guard<std::mutex> guard(registry.mutex);
-  for (const auto& entry : registry.leases) {
-    auto lease = entry.second.lock();
-    if (!lease || !lease->issuing_ || !lease->valid() || lease->data_fd_ < 0) continue;
-    struct stat held{};
-    if (::fstat(lease->data_fd_, &held) == 0 &&
-        requested.st_dev == held.st_dev && requested.st_ino == held.st_ino)
-      return PinDelegatedReadLocked(lease);
   }
   return {};
 }
@@ -1917,18 +1826,6 @@ IoResult FileDevice::Open(std::string path, FileOpenMode mode) {
   auto route_owner_lease =
       RouteOwnershipLease::Borrow(path + ".sb.route.owner.lock");
   if (!route_owner_lease) route_owner_lease = RouteOwnershipLease::BorrowAlias(path);
-  // Delegation: once the native runtime fences legacy admission it is the
-  // single route owner, and an in-process READ-ONLY consumer must be served
-  // through it rather than refused. Without this, every path-addressed engine
-  // read in the serving process fails the moment native custody is taken --
-  // the coordinator cannot even read its own database configuration. Writers
-  // are deliberately not delegated: the owner keeps sole write custody.
-  if (!route_owner_lease && read_only_open) {
-    route_owner_lease =
-        RouteOwnershipLease::BorrowDelegatedRead(path + ".sb.route.owner.lock");
-    if (!route_owner_lease)
-      route_owner_lease = RouteOwnershipLease::BorrowDelegatedReadAlias(path);
-  }
   const bool route_owned_by_current_process = static_cast<bool>(route_owner_lease);
   // OWNER_LOCK: only a live process-local pin on actual OS handles may bypass
   // independent locking. Sidecar PID/endpoint text is discovery data only.
