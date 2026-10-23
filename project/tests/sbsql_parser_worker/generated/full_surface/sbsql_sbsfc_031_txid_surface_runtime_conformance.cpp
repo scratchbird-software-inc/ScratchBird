@@ -1,4 +1,7 @@
 #include "../../../support/binary_uuid_fixture.hpp"
+#include "../../../support/engine_statement_fixture.hpp"
+#include "../../../support/database_fixture_cleanup.hpp"
+#include "../../../database_lifecycle/database_lifecycle_test_memory.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -7,15 +10,19 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "database_lifecycle.hpp"
 #include "dispatch/function_dispatch.hpp"
 #include "query/projection_api.hpp"
 #include "registry/function_seed_registry.hpp"
 #include "sblr/sblr_dispatch.hpp"
 #include "transaction/savepoint_api.hpp"
+#include "transaction/transaction_api.hpp"
+#include "uuid.hpp"
 #include "canonical_projection_test_envelope.hpp"
 
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>
 #include <iostream>
 #include <string>
@@ -26,7 +33,10 @@
 namespace {
 
 namespace api = scratchbird::engine::internal_api;
+namespace db = scratchbird::storage::database;
 namespace sblr = scratchbird::engine::sblr;
+namespace uuid = scratchbird::core::uuid;
+using scratchbird::core::platform::UuidKind;
 
 using scratchbird::engine::functions::BuildStandardFunctionSeedPackage;
 using scratchbird::engine::functions::DispatchFunctionCall;
@@ -37,6 +47,10 @@ using sblr::SblrResult;
 using sblr::SblrValue;
 using sblr::SblrValuePayloadKind;
 
+// Context-echo cases below supply these through the function dispatch context
+// directly; they read back what the caller stated and touch no database. The
+// projection and savepoint cases use a real created database and a real begun
+// transaction instead, so they must not reuse these constants.
 constexpr std::uint64_t kCurrentTxid = 31031;
 constexpr std::uint64_t kSnapshotVisibleThrough = 31030;
 
@@ -142,30 +156,70 @@ bool ExpectNull(std::string_view case_id, const SblrResult& result, std::string_
   return true;
 }
 
-api::EngineRequestContext EngineContext(const std::string& database_path) {
-  api::EngineRequestContext context;
-  context.database_path = database_path;
-  context.security_context_present = true;
-  context.local_transaction_id = kCurrentTxid;
-  context.snapshot_visible_through_local_transaction_id = kSnapshotVisibleThrough;
-  context.transaction_uuid = scratchbird::tests::FixtureUuid(1156, 26);
-  context.transaction_isolation_level = "read_committed";
-  return context;
+void Require(bool condition, std::string_view message) {
+  if (!condition) {
+    std::cerr << message << '\n';
+    std::exit(EXIT_FAILURE);
+  }
 }
 
-std::string TempDatabasePath() {
+std::filesystem::path TempDatabasePath() {
   const auto stamp = std::chrono::steady_clock::now().time_since_epoch().count();
-  return (std::filesystem::temp_directory_path() /
-          ("sbsfc031_txid_surface_runtime_" + std::to_string(stamp) + ".sbdb")).string();
+  return std::filesystem::temp_directory_path() /
+         ("sbsfc031_txid_surface_runtime_" + std::to_string(stamp) + ".sbdb");
 }
 
-void CleanupMgaSidecars(const std::string& database_path) {
-  std::filesystem::remove(database_path + ".sb.mga_savepoints");
-  std::filesystem::remove(database_path + ".sb.mga_row_versions");
-  std::filesystem::remove(database_path + ".sb.mga_relation_metadata");
-  std::filesystem::remove(database_path + ".sb.mga_index_entries");
-  std::filesystem::remove(database_path + ".sb.mga_relation_descriptors");
-  std::filesystem::remove(database_path + ".sb.mga_large_values");
+void CleanupDatabase(const std::filesystem::path& path) {
+  scratchbird::tests::RemoveDatabaseFixtureArtifacts(path);
+}
+
+// The savepoint API admits a mutation only against the database's own current
+// transaction inventory, so the savepoint cases need a real created database
+// and a real EngineBeginTransaction. A fabricated path with a guessed
+// transaction UUID owns no native transaction and is refused -- correctly.
+db::DatabaseCreateConfig CreateFixtureDatabase(const std::filesystem::path& path) {
+  db::DatabaseCreateConfig create;
+  create.path = path.string();
+  create.database_uuid =
+      uuid::GenerateEngineIdentityV7(UuidKind::database, 1789810431000).value;
+  create.filespace_uuid =
+      uuid::GenerateEngineIdentityV7(UuidKind::filespace, 1789810431001).value;
+  create.page_size = 16384;
+  create.creation_unix_epoch_millis = 1789810431002;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+  create.allow_overwrite = true;
+  const auto created = db::CreateDatabaseFile(create);
+  if (!created.ok()) {
+    std::cerr << created.diagnostic.diagnostic_code << ':'
+              << created.diagnostic.message_key << '\n';
+  }
+  Require(created.ok(), "SBSFC031 database create failed");
+  return create;
+}
+
+api::EngineRequestContext BeginTransaction(const db::DatabaseCreateConfig& create) {
+  api::EngineBeginTransactionRequest begin;
+  begin.context = scratchbird::tests::BootstrapFixtureOwnerContext(create);
+  begin.context.request_id = "sbsfc031-txid-surface";
+  begin.context.session_uuid = scratchbird::tests::FixtureUuid(1156, 24);
+  begin.context.security_context_present = true;
+  begin.context.catalog_generation_id = 1;
+  begin.context.security_epoch = 1;
+  begin.context.resource_epoch = 1;
+  begin.context.name_resolution_epoch = 1;
+  const auto begun = api::EngineBeginTransaction(begin);
+  for (const auto& diagnostic : begun.diagnostics) {
+    std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  }
+  Require(begun.ok, "SBSFC031 transaction.begin failed");
+  Require(begun.local_transaction_id != 0, "SBSFC031 transaction.begin returned no local id");
+  auto context = begin.context;
+  context.local_transaction_id = begun.local_transaction_id;
+  context.transaction_uuid = begun.transaction_uuid;
+  context.snapshot_visible_through_local_transaction_id =
+      begun.snapshot_visible_through_local_transaction_id;
+  context.transaction_isolation_level = begun.isolation_level;
+  return context;
 }
 
 sblr::SblrOperationEnvelope ProjectionEnvelope(std::string function_id,
@@ -364,16 +418,21 @@ int main() {
                   Run(registry, "sb.session.savepoint_active", {NullValue("character")}),
                   "boolean") && ok;
 
+  scratchbird::tests::database_lifecycle::ConfigureLifecycleMemoryFixture(
+      "sbsfc031-txid-surface");
   const auto database_path = TempDatabasePath();
-  CleanupMgaSidecars(database_path);
-  const auto context = EngineContext(database_path);
+  CleanupDatabase(database_path);
+  const auto database = CreateFixtureDatabase(database_path);
+  const auto context = BeginTransaction(database);
 
+  // The snapshot watermark belongs to the transaction the engine actually
+  // began, so expect the value it reported rather than a fixture constant.
   ok = ExpectProjectionUint64(
            "SBSFC031-mga-snapshot-id-projection-context",
            sblr::DispatchSblrOperation({context,
                                         ProjectionEnvelope("sb.scalar.mga_snapshot_id", {}),
                                         api::EngineApiRequest{}}),
-           kSnapshotVisibleThrough) && ok;
+           context.snapshot_visible_through_local_transaction_id) && ok;
   ok = ExpectProjectionText(
            "SBSFC031-pg-xact-status-projection-context",
            sblr::DispatchSblrOperation({context,
@@ -436,7 +495,7 @@ int main() {
                                         ProjectionEnvelope("sb.session.savepoint_active", {}),
                                         api::EngineApiRequest{}}),
            false) && ok;
-  CleanupMgaSidecars(database_path);
+  CleanupDatabase(database_path);
 
   if (!ok) return 1;
   std::cout << "sbsql_sbsfc_031_txid_surface_runtime_conformance=passed\n";
