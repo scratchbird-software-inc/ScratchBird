@@ -9067,25 +9067,41 @@ api::EngineProjectionFunctionResult EvaluateProjectionFunction(
     const auto declared_type = projection_value_detail::LowerAscii(argument.type_name);
     if (declared_type == "boolean" || declared_type == "bool" ||
         references_boolean(argument.descriptor)) {
+      // Label agreement is checked on the label, so a renamed descriptor cannot
+      // conceal a Boolean identity in either direction.
       if ((declared_type != "boolean" && declared_type != "bool") ||
           argument.descriptor.canonical_type_name != "boolean")
         return UserFunctionFailure("DATATYPE.DESCRIPTOR.INVALID",
             "function Boolean argument has conflicting type labels", request.function_id);
-      scratchbird::engine::ExecutionTypeDescriptor bound;
-      std::string detail;
-      if (!executor::BuildBoundExecutionTypeDescriptor(argument.descriptor,
-            scratchbird::core::datatypes::CanonicalTypeId::boolean, &bound, &detail))
-        return UserFunctionFailure("DATATYPE.DESCRIPTOR.INVALID", detail, request.function_id);
-      api::EngineTypedValue value;
-      value.descriptor = argument.descriptor; value.state = argument.state;
-      value.is_null = argument.is_null; value.binary_value = argument.binary_value;
-      value.encoded_value = argument.encoded_value;
-      executor::DescriptorBatch input;
-      input.columns = {{"function_argument", value.descriptor, bound.nullable_allowed, 1}};
-      input.rows = {{{std::move(value)}}};
-      const auto admitted = executor::ValidateDescriptorBatch(input);
-      if (!admitted.ok)
-        return UserFunctionFailure(admitted.diagnostic_code, admitted.detail, request.function_id);
+      // Complete bound-identity admission applies to an argument that actually
+      // carries a registered descriptor identity. A projection literal never
+      // does: the expression tree synthesizes a label-only scalar descriptor
+      // for it and no envelope operand could supply one, so demanding a bound
+      // identity refused every BOOLEAN literal argument instead of validating
+      // it. Any argument offering ANY part of an identity must still offer all
+      // of it, so a partial or forged binding is refused exactly as before.
+      // The native one-byte carrier stays required and is enforced below.
+      const auto& supplied = argument.descriptor;
+      if (scratchbird::core::uuid::IsEngineIdentityUuid(supplied.descriptor_uuid) ||
+          !supplied.datatype_descriptor_uuid.is_nil() || !supplied.type_uuid.is_nil() ||
+          supplied.datatype_descriptor_generation != 0 ||
+          !supplied.datatype_cohort.catalog_snapshot_uuid.is_nil()) {
+        scratchbird::engine::ExecutionTypeDescriptor bound;
+        std::string detail;
+        if (!executor::BuildBoundExecutionTypeDescriptor(argument.descriptor,
+              scratchbird::core::datatypes::CanonicalTypeId::boolean, &bound, &detail))
+          return UserFunctionFailure("DATATYPE.DESCRIPTOR.INVALID", detail, request.function_id);
+        api::EngineTypedValue value;
+        value.descriptor = argument.descriptor; value.state = argument.state;
+        value.is_null = argument.is_null; value.binary_value = argument.binary_value;
+        value.encoded_value = argument.encoded_value;
+        executor::DescriptorBatch input;
+        input.columns = {{"function_argument", value.descriptor, bound.nullable_allowed, 1}};
+        input.rows = {{{std::move(value)}}};
+        const auto admitted = executor::ValidateDescriptorBatch(input);
+        if (!admitted.ok)
+          return UserFunctionFailure(admitted.diagnostic_code, admitted.detail, request.function_id);
+      }
     }
     const bool valid_encoding = ProjectionArgumentEncodingValid(argument);
     // This existing scalar function projection profile admits finite numeric

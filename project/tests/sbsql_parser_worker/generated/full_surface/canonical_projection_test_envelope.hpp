@@ -30,6 +30,42 @@ inline engine::internal_api::EngineProjectionFunctionArgument UuidProjectionArgu
   value.binary_value.assign(uuid.bytes.begin(), uuid.bytes.end());
   return value;
 }
+// A canonical BOOLEAN has no encoded text alternative either: the engine
+// carries it as one native byte and refuses a literal that arrives as text
+// ("BOOLEAN scalar literal requires one native byte"). Mirror the UUID
+// argument shape so the value rides binary_value and never a text mirror.
+inline engine::internal_api::EngineProjectionFunctionArgument BooleanProjectionArgumentForTest(
+    std::string name, bool truth) {
+  engine::internal_api::EngineProjectionFunctionArgument value;
+  value.name = std::move(name);
+  value.type_name = "boolean";
+  value.binary_value = {static_cast<std::uint8_t>(truth ? 1 : 0)};
+  return value;
+}
+// Equivalent to tests/support/native_boolean_projection_fixture.hpp, repeated
+// here because the full-surface targets reach the SBLR headers through the
+// engine's own include root and cannot resolve that support path.
+inline engine::sblr::SblrOperand BooleanProjectionOperandForTest(
+    std::string name, const std::vector<std::uint8_t>& bytes) {
+  if (bytes.size() != 1 || bytes.front() > 1)
+    throw std::logic_error("BOOLEAN literal requires one native byte of 0 or 1");
+  namespace dt = core::datatypes;
+  const auto catalog = dt::LoadCurrentCoreDatatypeCatalogManifest();
+  if (!catalog.ok()) throw std::logic_error("Core datatype catalog unavailable");
+  const auto row = dt::LookupDatatypeCatalogRow(catalog.manifest, dt::CanonicalTypeId::boolean);
+  if (!row.ok() || row.manifest.descriptor_rows.size() != 1)
+    throw std::logic_error("Core BOOLEAN descriptor unavailable");
+  engine::sblr::SblrOperand operand;
+  operand.name = std::move(name);
+  operand.type = "boolean";
+  operand.value_kind = engine::sblr::SblrValueKind::literal_typed;
+  const auto& descriptor = row.manifest.descriptor_rows.front().descriptor_uuid.value;
+  operand.value_body.assign(descriptor.bytes.begin(), descriptor.bytes.end());
+  operand.value_body.resize(24, 0);
+  operand.value_body[16] = 1;
+  operand.value_body.push_back(bytes.front());
+  return operand;
+}
 inline engine::sblr::SblrOperand UuidProjectionOperandForTest(
     std::string name, const std::vector<std::uint8_t>& bytes) {
   if (bytes.size() != 16) throw std::logic_error("UUID literal requires binary16");
@@ -133,9 +169,13 @@ inline engine::sblr::SblrOperationEnvelope CanonicalizeProjectionEnvelopeForTest
 
   for (std::size_t index = 0; index < envelope.operands.size(); ++index) {
     auto& operand = envelope.operands[index];
-    if (operand.type == "uuid" && !operand.value_body.empty()) {
+    // UUID and BOOLEAN literals arrive already encoded as a canonical typed
+    // payload. Re-encoding them as UTF-8 below would destroy the native bytes
+    // the engine requires, so preserve the body and only fix the ordinal.
+    if ((operand.type == "uuid" || operand.type == "boolean") && !operand.value_body.empty()) {
       operand.ordinal = static_cast<std::uint32_t>(index + 1);
-      if (!operand.value.empty()) throw std::logic_error("UUID fixture has a text mirror");
+      if (!operand.value.empty())
+        throw std::logic_error("native " + operand.type + " fixture has a text mirror");
       continue;
     }
     const auto value = std::move(operand.value);

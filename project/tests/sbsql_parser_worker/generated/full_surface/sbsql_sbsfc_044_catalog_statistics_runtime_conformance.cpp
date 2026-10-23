@@ -307,6 +307,12 @@ sblr::SblrOperationEnvelope ProjectionEnvelope(
       Require(arguments[index].encoded_value.empty(), "UUID projection fixture has a text mirror");
       envelope.operands.push_back(scratchbird::tests::sbsql::UuidProjectionOperandForTest(
           prefix + "value", arguments[index].binary_value));
+    } else if (arguments[index].type_name == "boolean" && !arguments[index].is_null) {
+      // One native byte, and no text `_value` operand at all: the engine
+      // refuses a BOOLEAN literal that also carries a text value carrier.
+      Require(arguments[index].encoded_value.empty(), "BOOLEAN projection fixture has a text mirror");
+      envelope.operands.push_back(scratchbird::tests::sbsql::BooleanProjectionOperandForTest(
+          prefix + "value", arguments[index].binary_value));
     } else {
       envelope.operands.push_back({"text", prefix + "value", arguments[index].encoded_value});
     }
@@ -438,8 +444,8 @@ int main() {
            sblr::DispatchSblrOperation({context,
                                         ProjectionEnvelope("sb.scalar.table_size",
                                                            {scratchbird::tests::sbsql::UuidProjectionArgumentForTest("table_uuid", scratchbird::tests::FixtureUuidLiteral("019f4400-0000-7000-8000-000000000101")),
-                                                            api::EngineProjectionFunctionArgument{
-                                                                "include_indexes", "boolean", "false", false}}),
+                                                            scratchbird::tests::sbsql::BooleanProjectionArgumentForTest(
+                                                                "include_indexes", false)}),
                                         api::EngineApiRequest{}}),
            kExpectedRowStoreBytes) && ok;
 
