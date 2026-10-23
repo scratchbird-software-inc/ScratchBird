@@ -293,8 +293,9 @@ void RequireEngineDispatch() {
   Require(field.second.descriptor.canonical_type_name == "boolean",
           "BETWEEN result descriptor mismatch");
   Require(!field.second.is_null, "BETWEEN result unexpectedly null");
-  Require(field.second.encoded_value == "true" || field.second.encoded_value == "TRUE" ||
-              field.second.encoded_value == "1",
+  // A canonical BOOLEAN is carried as one native byte; encoded_value has no
+  // text alternative for it, so asserting against text read an empty field.
+  Require(field.second.binary_value.size() == 1 && field.second.binary_value[0] == 1u,
           "BETWEEN result value mismatch");
   Require(HasEvidence(result.api_result, "special_form_runtime", "special_between"),
           "BETWEEN result missing special form runtime evidence");

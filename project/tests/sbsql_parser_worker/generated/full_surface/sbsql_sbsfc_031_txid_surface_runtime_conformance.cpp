@@ -214,10 +214,17 @@ bool ExpectProjectionUint64(std::string_view case_id,
                             std::uint64_t expected) {
   const auto* value = ProjectionField(result, case_id);
   if (value == nullptr) return false;
+  // Canonical scalars are carried as native bytes; encoded_value has no text
+  // alternative for them, so asserting against it always read an empty field.
+  std::uint64_t carried = 0;
+  if (value->binary_value.size() == 8)
+    for (unsigned i = 0; i < 8; ++i)
+      carried |= static_cast<std::uint64_t>(value->binary_value[i]) << (8 * i);
   if (value->is_null || value->descriptor.canonical_type_name != "uint64" ||
-      value->encoded_value != std::to_string(expected)) {
+      value->binary_value.size() != 8 || carried != expected) {
     std::cerr << case_id << ": expected projected uint64 " << expected << ", got "
-              << value->descriptor.canonical_type_name << " " << value->encoded_value << "\n";
+              << value->descriptor.canonical_type_name << " carrier["
+              << value->binary_value.size() << "]=" << carried << "\n";
     return false;
   }
   return true;
@@ -256,10 +263,15 @@ bool ExpectProjectionBoolean(std::string_view case_id,
   const auto* value = ProjectionField(result, case_id);
   if (value == nullptr) return false;
   const std::string expected_text = expected ? "1" : "0";
+  // Canonical scalars are carried as native bytes; encoded_value has no text
+  // alternative for them, so asserting against it always read an empty field.
+  const unsigned expected_byte = expected ? 1u : 0u;
   if (value->is_null || value->descriptor.canonical_type_name != "boolean" ||
-      value->encoded_value != expected_text) {
+      value->binary_value.size() != 1 || value->binary_value[0] != expected_byte) {
     std::cerr << case_id << ": expected projected boolean " << expected_text << ", got "
-              << value->descriptor.canonical_type_name << " " << value->encoded_value << "\n";
+              << value->descriptor.canonical_type_name << " carrier["
+              << value->binary_value.size() << "]="
+              << (value->binary_value.empty() ? -1 : int(value->binary_value[0])) << "\n";
     return false;
   }
   return true;

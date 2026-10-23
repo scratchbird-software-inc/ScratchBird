@@ -212,11 +212,21 @@ bool ExpectProjectionBoolean(std::string_view case_id,
     return false;
   }
   const auto& value = result.api_result.result_shape.rows.front().fields.front().second;
-  const auto expected_text = expected ? "1" : "0";
+  // A canonical BOOLEAN is carried as one native byte with no encoded text
+  // alternative. The engine enforces exactly that shape on the argument side
+  // too -- SblrValueFromProjectionArgument's boolean branch requires an empty
+  // encoded_value and a single binary byte, and the "BOOLEAN scalar literal
+  // requires one native byte" refusal states it. Asserting against
+  // encoded_value read an always-empty field and reported every projected
+  // boolean as blank.
+  const unsigned expected_byte = expected ? 1u : 0u;
   if (value.is_null || value.descriptor.canonical_type_name != "boolean" ||
-      value.encoded_value != expected_text) {
-    std::cerr << case_id << ": expected projected boolean " << expected_text << ", got "
-              << value.descriptor.canonical_type_name << " " << value.encoded_value << '\n';
+      value.binary_value.size() != 1 || value.binary_value[0] != expected_byte) {
+    std::cerr << case_id << ": expected projected boolean " << expected_byte << ", got "
+              << value.descriptor.canonical_type_name << " carrier["
+              << value.binary_value.size() << "]="
+              << (value.binary_value.empty() ? -1 : int(value.binary_value[0]))
+              << " text='" << value.encoded_value << "'\n";
     return false;
   }
   return true;

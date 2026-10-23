@@ -332,10 +332,17 @@ bool ExpectProjectionUint64(std::string_view case_id,
     return false;
   }
   const auto& value = result.api_result.result_shape.rows.front().fields.front().second;
+  // Canonical scalars are carried as native bytes; encoded_value has no text
+  // alternative for them, so asserting against it always read an empty field.
+  std::uint64_t carried = 0;
+  if (value.binary_value.size() == 8)
+    for (unsigned i = 0; i < 8; ++i)
+      carried |= static_cast<std::uint64_t>(value.binary_value[i]) << (8 * i);
   if (value.is_null || value.descriptor.canonical_type_name != "uint64" ||
-      value.encoded_value != std::to_string(expected)) {
+      value.binary_value.size() != 8 || carried != expected) {
     std::cerr << case_id << ": expected projected uint64 " << expected << ", got "
-              << value.descriptor.canonical_type_name << " " << value.encoded_value << '\n';
+              << value.descriptor.canonical_type_name << " carrier["
+              << value.binary_value.size() << "]=" << carried << '\n';
     return false;
   }
   return true;
