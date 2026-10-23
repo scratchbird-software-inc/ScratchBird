@@ -78,6 +78,15 @@ QowProjectionCanonicalTypeIdV1(const std::string& type_name) {
     return CanonicalTypeId::character;
   }
   if (type_name == "blob.binary") return CanonicalTypeId::blob;
+  // Time-zone-aware temporal profiles. CanonicalTypeId carries one `timestamp`
+  // and one `time`; zone awareness is a descriptor attribute, not a separate
+  // canonical id, so these spellings resolve to the base temporal descriptor.
+  // They are not hypothetical: the engine's own native-surface family emits
+  // values descriptored `timestamp_tz` (native_surface_functions.cpp), and
+  // without these entries the projection path refused every one of them as an
+  // unsupported type descriptor.
+  if (type_name == "timestamp_tz") return CanonicalTypeId::timestamp;
+  if (type_name == "time_tz") return CanonicalTypeId::time;
   return CanonicalTypeId::unknown;
 }
 
