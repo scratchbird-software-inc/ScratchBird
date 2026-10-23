@@ -311,9 +311,26 @@ bool QowReadProjectionExpressionV1(
   }
   expression->encoded_value = QowProjectionOptionValueV1(request, prefix + "value:");
   const auto is_null = QowProjectionOptionValueV1(request, prefix + "is_null:");
-  if (expression->type_name == "boolean") {
+  // A BOOLEAN whose value the CALLER supplies must state its canonical NULL
+  // state explicitly: three-valued logic has no safe default, and a missing
+  // state would silently become FALSE below.
+  //
+  // A BOOLEAN the ENGINE computes must not be required to carry one. The null
+  // state of `a BETWEEN b AND c`, an IN list, a CASE result or a predicate
+  // function is derived during evaluation from its operands, so no caller can
+  // know it when the envelope is built. Requiring it of a computed expression
+  // is not merely redundant, it is unsatisfiable: over column references there
+  // is no lowering-time answer to supply, and demanding one refused every such
+  // projection with SBLR.PLAN_TREE.INVALID_HANDLE.
+  const bool caller_supplied_value = expression->expression_kind == "literal" ||
+                                     expression->expression_kind == "parameter";
+  if (expression->type_name == "boolean" && caller_supplied_value) {
     if (is_null != "true" && is_null != "false")
       return refuse("boolean_state", "BOOLEAN expression requires an explicit canonical NULL state");
+  }
+  if (expression->type_name == "boolean") {
+    // Ambiguity is a defect for any boolean expression, computed or not: a
+    // duplicated carrier leaves which value wins undefined.
     for (const auto field : {"expr_kind:", "type:", "is_null:", "value:"}) {
       const auto key = prefix + field;
       if (std::count_if(request.option_envelopes.begin(), request.option_envelopes.end(),
