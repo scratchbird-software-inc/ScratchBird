@@ -1033,7 +1033,7 @@ ROWS = (
                     "sb_datatype_physical_encoding_total",
                     "sb_datatype_chunk_event_total",
                     "sb_datatype_comparison_total",
-                    "sys.metrics.datatypes.redaction",
+                    "sys.metrics.datatype.redaction",
                 ),
             ),
             SourceEvidence(
@@ -1727,7 +1727,7 @@ ROWS = (
                 "project/src/core/datatypes/reference_compatibility_metadata.cpp",
                 (
                     "SB-REFERENCE-COMPAT-UNSUPPORTED-BY-VERSION",
-                    "sys.metrics.datatypes.reference.fallback_refusal_count",
+                    "sys.metrics.datatype.reference.fallback_refusal_count",
                     "ResolveReferenceTypeLabelPlaceholder",
                 ),
             ),
@@ -1736,7 +1736,7 @@ ROWS = (
                 (
                     "MDF-026",
                     "SB-REFERENCE-COMPAT-PARSER-AUTHORITY-REFUSED",
-                    "sys.metrics.datatypes.reference.runtime_mapping_count",
+                    "sys.metrics.datatype.reference.runtime_mapping_count",
                 ),
             ),
         ),

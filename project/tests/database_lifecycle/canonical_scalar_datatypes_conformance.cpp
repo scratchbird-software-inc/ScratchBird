@@ -121,24 +121,24 @@ std::vector<std::string> RequiredDiagnostics() {
 
 std::vector<std::string> RequiredMetrics() {
   return {
-      "sys.metrics.datatypes.scalar.descriptor.admissions_total",
-      "sys.metrics.datatypes.scalar.literal.invalid_total",
-      "sys.metrics.datatypes.scalar.literal.ambiguous_total",
-      "sys.metrics.datatypes.scalar.cast.attempts_total",
-      "sys.metrics.datatypes.scalar.cast.failures_total",
-      "sys.metrics.datatypes.scalar.operation.overflow_total",
-      "sys.metrics.datatypes.scalar.operation.underflow_total",
-      "sys.metrics.datatypes.scalar.operation.divide_by_zero_total",
-      "sys.metrics.datatypes.scalar.operation.precision_loss_refusals_total",
-      "sys.metrics.datatypes.scalar.operation.scale_loss_refusals_total",
-      "sys.metrics.datatypes.scalar.numeric_context.special_value_refusals_total",
-      "sys.metrics.datatypes.scalar.float128.backend_fallbacks_total",
-      "sys.metrics.datatypes.scalar.float128.backend_unavailable_total",
-      "sys.metrics.datatypes.scalar.float128.raw_host_encoding_refusals_total",
-      "sys.metrics.datatypes.scalar.money.currency_mismatches_total",
-      "sys.metrics.datatypes.scalar.transport.refusals_total",
-      "sys.metrics.datatypes.scalar.reference.mapping_misses_total",
-      "sys.metrics.datatypes.scalar.merge.manual_review_required_total"};
+      "sys.metrics.datatype.scalar.descriptor.admissions_total",
+      "sys.metrics.datatype.scalar.literal.invalid_total",
+      "sys.metrics.datatype.scalar.literal.ambiguous_total",
+      "sys.metrics.datatype.scalar.cast.attempts_total",
+      "sys.metrics.datatype.scalar.cast.failures_total",
+      "sys.metrics.datatype.scalar.operation.overflow_total",
+      "sys.metrics.datatype.scalar.operation.underflow_total",
+      "sys.metrics.datatype.scalar.operation.divide_by_zero_total",
+      "sys.metrics.datatype.scalar.operation.precision_loss_refusals_total",
+      "sys.metrics.datatype.scalar.operation.scale_loss_refusals_total",
+      "sys.metrics.datatype.scalar.numeric_context.special_value_refusals_total",
+      "sys.metrics.datatype.scalar.float128.backend_fallbacks_total",
+      "sys.metrics.datatype.scalar.float128.backend_unavailable_total",
+      "sys.metrics.datatype.scalar.float128.raw_host_encoding_refusals_total",
+      "sys.metrics.datatype.scalar.money.currency_mismatches_total",
+      "sys.metrics.datatype.scalar.transport.refusals_total",
+      "sys.metrics.datatype.scalar.reference.mapping_misses_total",
+      "sys.metrics.datatype.scalar.merge.manual_review_required_total"};
 }
 
 std::vector<std::string> RequiredGates() {

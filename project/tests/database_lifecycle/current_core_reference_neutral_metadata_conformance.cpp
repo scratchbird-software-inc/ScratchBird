@@ -63,7 +63,7 @@ void TestCurrentCoreRuntimeMappingRecord() {
   Require(!result.record.reference_parser_required,
           "MDF-026 required a reference/reference parser for current-core metadata");
   Require(HasMetric(result,
-                    "sys.metrics.datatypes.reference.runtime_mapping_count",
+                    "sys.metrics.datatype.reference.runtime_mapping_count",
                     "canonical_descriptor"),
           "MDF-026 did not emit reference runtime mapping metric event");
 }
@@ -82,7 +82,7 @@ void TestUnsupportedByVersionRefusal() {
   Require(result.record.fallback_behavior == "refuse_unsupported_by_version",
           "MDF-026 unsupported version did not fail closed");
   Require(HasMetric(result,
-                    "sys.metrics.datatypes.reference.fallback_refusal_count",
+                    "sys.metrics.datatype.reference.fallback_refusal_count",
                     "unsupported_by_version"),
           "MDF-026 unsupported version metric event missing");
 }

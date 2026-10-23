@@ -15,9 +15,9 @@ namespace scratchbird::core::datatypes {
 namespace {
 
 constexpr const char* kMappingMetric =
-    "sys.metrics.datatypes.reference.runtime_mapping_count";
+    "sys.metrics.datatype.reference.runtime_mapping_count";
 constexpr const char* kRefusalMetric =
-    "sys.metrics.datatypes.reference.fallback_refusal_count";
+    "sys.metrics.datatype.reference.fallback_refusal_count";
 
 int ParseVersionNumber(const std::string& value) {
   if (value.empty()) {

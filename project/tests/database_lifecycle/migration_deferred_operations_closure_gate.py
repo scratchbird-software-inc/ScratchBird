@@ -190,7 +190,7 @@ GROUPS = (
                     "CanonicalDatatypeFamilyRegistry",
                     "TypeOperationRegistry",
                     "TypeMetadataDiagnosticsDriverContract",
-                    "sys.metrics.datatypes.scalar",
+                    "sys.metrics.datatype.scalar",
                     "ReferenceTypeMappingDescriptor",
                 ),
             ),
@@ -201,7 +201,7 @@ GROUPS = (
             SourceEvidence(
                 "project/tests/database_lifecycle/canonical_datatype_families_conformance.cpp",
                 (
-                    "sys.metrics.datatypes.vector.dimension_mismatches_total",
+                    "sys.metrics.datatype.vector.dimension_mismatches_total",
                     "transport_recovery_authority_violation",
                 ),
             ),
