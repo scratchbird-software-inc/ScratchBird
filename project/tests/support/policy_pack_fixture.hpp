@@ -31,7 +31,18 @@ template<class Edit> void RewriteAndResealPolicyPack(const std::filesystem::path
     const auto digest=sha(value);replace(manifest,(*it)[2].str(),digest);
     aggregate+=relative;aggregate.push_back('\0');aggregate+=digest;aggregate.push_back('\n');++files;
   }
-  require(files==9,"policy fixture retains complete manifest");
+  // The protective intent here is "every entry the manifest declares was read,
+  // re-hashed and folded into the aggregate" -- an entry skipped because its
+  // sha field is malformed would otherwise produce a quietly wrong aggregate.
+  // Expressing that as a frozen count (it was `files==9`) made the assertion
+  // rot the moment a tenth file joined the pack, and it then failed as though
+  // the pack were defective. Count the declared paths independently and
+  // require that every one of them was processed.
+  const std::regex declared(R"re("path"\s*:\s*"([^"]+)")re");
+  const auto declared_paths=static_cast<unsigned>(std::distance(
+      std::sregex_iterator(original.begin(),original.end(),declared),
+      std::sregex_iterator()));
+  require(files!=0&&files==declared_paths,"policy fixture retains complete manifest");
   const std::regex field(R"re("content_sha256"\s*:\s*"([0-9a-f]{64})")re");std::smatch match;
   require(std::regex_search(manifest,match,field),"policy fixture aggregate field missing");
   manifest.replace(match.position(1),match.length(1),sha(aggregate));write(root/"POLICY_PACK_MANIFEST.json",manifest);

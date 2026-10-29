@@ -139,19 +139,36 @@ void ReplaceManifestContentSha(std::string* manifest, const std::string& digest)
   manifest->replace(value_begin, value_end - value_begin, digest);
 }
 
+// The paths come from the manifest's own content_manifest, in manifest order,
+// because the loader's aggregate is computed over exactly those entries in
+// exactly that order. An enumerated copy of the list here silently rots the
+// moment a file is added to the pack: this helper would then re-seal an
+// aggregate over a subset while the loader hashes the full set, and the gate
+// fails with a confusing "unexpected diagnostic" that looks like a pack defect
+// rather than a stale list. That is what happened when
+// policies/agent_authority.json was added.
+std::vector<std::string> ManifestContentPaths(const std::string& manifest) {
+  std::vector<std::string> paths;
+  const std::string array_marker = "\"content_manifest\"";
+  auto cursor = manifest.find(array_marker);
+  Require(cursor != std::string::npos, "manifest content_manifest missing");
+  const std::string path_marker = "\"path\": \"";
+  for (;;) {
+    const auto path_pos = manifest.find(path_marker, cursor);
+    if (path_pos == std::string::npos) break;
+    const auto value_begin = path_pos + path_marker.size();
+    const auto value_end = manifest.find('"', value_begin);
+    Require(value_end != std::string::npos, "manifest content path unterminated");
+    paths.push_back(manifest.substr(value_begin, value_end - value_begin));
+    cursor = value_end;
+  }
+  Require(!paths.empty(), "manifest declared no content paths");
+  return paths;
+}
+
 void RehashPolicyPackManifest(const std::filesystem::path& pack_root) {
-  const std::vector<std::string> rel_paths = {
-      "policies/security_providers.json",
-      "policies/roles.json",
-      "policies/groups.json",
-      "policies/grants.json",
-      "policies/policy_profiles.json",
-      "policies/server_memory_cache_policy.json",
-      "policies/default_policy_catalog.json",
-      "policies/policy_defaults.json",
-      "catalog_materialization.json",
-  };
   std::string manifest = ReadText(pack_root / "POLICY_PACK_MANIFEST.json");
+  const std::vector<std::string> rel_paths = ManifestContentPaths(manifest);
   std::string aggregate_payload;
   for (const auto& rel_path : rel_paths) {
     const std::string digest = Sha256File(pack_root / rel_path);

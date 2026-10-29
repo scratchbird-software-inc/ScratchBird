@@ -546,7 +546,16 @@ void RunNativeReservedRoleIdentityCases() {
       aggregate += relative; aggregate.push_back('\0'); aggregate += digest; aggregate.push_back('\n');
       ++files;
     }
-    Require(files == 9, "reserved role fixture content manifest coverage changed");
+    // Every declared entry must have been processed, counted against the
+    // manifest itself rather than a frozen 9: the loop already iterates the
+    // manifest, so a literal count only rots when the pack gains a file and
+    // then fails as though the pack were defective.
+    const std::regex declared_path(R"re("path"\s*:\s*"([^"]+)")re");
+    const auto declared_count = static_cast<unsigned>(std::distance(
+        std::sregex_iterator(original_manifest.begin(), original_manifest.end(), declared_path),
+        std::sregex_iterator()));
+    Require(files != 0 && files == declared_count,
+            "reserved role fixture content manifest coverage changed");
     const std::regex aggregate_field(R"re("content_sha256"\s*:\s*"([0-9a-f]{64})")re");
     std::smatch aggregate_match;
     Require(std::regex_search(manifest, aggregate_match, aggregate_field), "aggregate digest field missing");

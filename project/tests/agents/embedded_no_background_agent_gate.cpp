@@ -52,10 +52,23 @@ std::filesystem::path TempDatabasePath(std::string_view suffix) {
 void RemoveDatabaseArtifacts(const std::filesystem::path& path) {
   std::error_code ignored;
   std::filesystem::remove(path, ignored);
-  std::filesystem::remove(path.string() + ".dirty.manifest", ignored);
-  std::filesystem::remove(path.string() + ".recovery.evidence", ignored);
-  std::filesystem::remove(path.string() + ".sb.owner.lock", ignored);
-  std::filesystem::remove(path.string() + ".sb.local_password_auth", ignored);
+  // Every sidecar, not an enumerated list of them. The engine writes sidecars
+  // as `<database path>.<name>` -- `.sb.txn_publish`, `.bulk_import_streams.v1`,
+  // `.sb.api_events.v2` and others -- and an enumerated list silently rots as
+  // new ones are added. A missed sidecar does not fail loudly: creation refuses
+  // with STORAGE.CREATE_ARTIFACT_CONFLICT even under allow_overwrite, so this
+  // gate passed on a clean scratch directory and failed on every subsequent
+  // run in the same one. It was `.sb.txn_publish` that was missing here.
+  const auto parent = path.parent_path();
+  const auto prefix = path.filename().string() + ".";
+  if (parent.empty()) return;
+  for (std::filesystem::directory_iterator it(parent, ignored), end; it != end;
+       it.increment(ignored)) {
+    const auto name = it->path().filename().string();
+    if (name.size() > prefix.size() && name.compare(0, prefix.size(), prefix) == 0) {
+      std::filesystem::remove_all(it->path(), ignored);
+    }
+  }
 }
 
 void CreateLifecycleDatabase(const std::filesystem::path& path, platform::u64 seed) {
