@@ -102,6 +102,46 @@ struct HostedDatabaseSnapshot {
   std::string diagnostic_message_key;
 };
 
+// The authenticated internal startup session the engine retains at open.
+//
+// Every field is read from what this database COMMITTED. Nothing here is
+// derived, defaulted or synthesized from configuration: an absent committed
+// identity leaves `present` false, which fails the coordinator closed rather
+// than inventing an identity -- required by
+// `chapters/agents/appendix-node-agent-coordinator.md:144`.
+//
+// Authority comes from `sysarch_role_uuid`. Owner direction 2026-10-24: the
+// master agent is sysarch, i.e. full rights, and that is already implemented --
+// `agent_authorization_context.hpp:144-148` grants every KnownSecurityRights()
+// when the engine-owned bootstrap role is present. So no new principal and no
+// new grants are needed; the session only has to carry the role.
+struct InternalStartupSession {
+  bool present = false;
+  scratchbird::core::platform::Uuid principal_uuid{};
+  scratchbird::core::platform::Uuid session_uuid{};
+  scratchbird::core::platform::Uuid sysarch_role_uuid{};
+  scratchbird::core::platform::Uuid database_uuid{};
+  // Authority generations. `security_epoch` is the only one with a real
+  // supplier today (the committed config-policy security lifecycle).
+  //
+  // KNOWN DEVIATION from `DR-LOCAL-SERVICE-ADMISSION-001`'s `Real epochs`
+  // condition, recorded here rather than hidden: catalog generation, resource
+  // epoch and name-resolution epoch have NO database supplier anywhere in the
+  // serving path. They are declared `= 1` on ServerSessionRecord and either
+  // copied onward or self-incremented, so ordinary CLIENT sessions already run
+  // on constants and ValidateBeginTransactionAdmission's
+  // `authority_generation_required` check passes on initializers rather than on
+  // authority. This session is no worse than a client session, but it is NOT
+  // conforming, and must not be described as satisfying `Real epochs` until
+  // those three gain a real supplier. Tracked as C17 in the corrections
+  // register.
+  std::uint64_t catalog_generation_id = 0;
+  std::uint64_t security_epoch = 0;
+  std::uint64_t resource_epoch = 0;
+  std::uint64_t name_resolution_epoch = 0;
+  bool epochs_are_conforming = false;
+};
+
 // Process-lifetime resources for one opened database.  This object is kept
 // separate from the copyable public/server snapshot so session records and
 // copied snapshots cannot acquire ownership of durable engine registries.
@@ -120,6 +160,24 @@ struct HostedDatabaseRuntime {
   std::shared_ptr<scratchbird::core::memory::MemoryManager>
       startup_credential_memory;
   std::shared_ptr<StartupCredentialSource> startup_credential_source;
+  // The authenticated internal startup session, minted at open.
+  //
+  // SEARCH_KEY: SECURITY-INTERNAL-SESSION-ADMISSION
+  // `chapters/agents/appendix-node-agent-coordinator.md:117-118` requires the
+  // ENGINE to retain "the authenticated internal startup session" before
+  // constructing its database UUID issuer, so it is minted here at open rather
+  // than by whoever later starts the coordinator. The coordinator consumes it;
+  // it never authenticates.
+  //
+  // It lives on the RUNTIME, deliberately, not on HostedDatabaseSnapshot.
+  // The snapshot is a copyable status record, and
+  // server_agent_authority_admission_gate asserts across four modes that a
+  // copied status with healthy-looking fields and arbitrary epochs cannot
+  // supply authority. Reaching this requires FindHostedDatabaseRuntime plus a
+  // live ownership lock, which a copied status does not carry -- so putting the
+  // session here keeps that refusal intact. Putting it on the snapshot would
+  // silently hand authority to any copy.
+  InternalStartupSession internal_startup_session;
 };
 
 struct HostedEngineState {

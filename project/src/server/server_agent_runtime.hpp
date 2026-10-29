@@ -255,6 +255,15 @@ class ServerAgentRuntime {
   std::atomic_bool stopping_{false};
   std::string database_path_;
   std::string database_uuid_;
+  // The authenticated internal startup session this coordinator consumes.
+  //
+  // SEARCH_KEY: SECURITY-INTERNAL-SESSION-ADMISSION
+  // Copied from HostedDatabaseRuntime only after the ownership check succeeds,
+  // so it can never be populated from a copied status record -- which is what
+  // server_agent_authority_admission_* asserts across its four fabricated
+  // modes. Absent means the database committed no internal authority, and the
+  // engine must still refuse BEGIN; the coordinator does not synthesize one.
+  InternalStartupSession internal_startup_session_;
   std::string filespace_uuid_;
   std::filesystem::path status_path_;
   std::string managed_listener_state_ = "not_started";

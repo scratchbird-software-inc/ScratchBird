@@ -436,7 +436,8 @@ std::string EvidenceValue(const engine_api::EngineApiResult& result,
 engine_api::EngineRequestContext ServerAgentRequestMetadata(
     const std::string& database_path,
     const std::string& database_uuid,
-    std::string request_id) {
+    std::string request_id,
+    const InternalStartupSession* internal_session = nullptr) {
   engine_api::EngineRequestContext context;
   context.trust_mode = engine_api::EngineTrustMode::server_isolated;
   context.request_id = std::move(request_id);
@@ -447,6 +448,33 @@ engine_api::EngineRequestContext ServerAgentRequestMetadata(
   // issue a principal/session, remap configuration epochs into authority or
   // manufacture grants. Leave authority absent until the owning native
   // provider/session admission path supplies it; the engine must refuse BEGIN.
+  //
+  // That rule is unchanged. What changed is that the owning path now EXISTS:
+  // the engine mints an authenticated internal startup session at open from the
+  // identities this database committed (`engine_host.cpp`,
+  // SECURITY-INTERNAL-SESSION-ADMISSION). This function still manufactures
+  // nothing -- it copies a session it was handed, or leaves authority absent.
+  if (internal_session == nullptr || !internal_session->present) {
+    return context;
+  }
+  // Identity must match the database being addressed. A session minted for a
+  // different database is not authority here, and silently accepting it would
+  // be the "remap into authority" this comment forbids.
+  if (internal_session->database_uuid != context.database_uuid) {
+    return context;
+  }
+  context.security_context_present = true;
+  context.principal_uuid = engine_api::EngineUuid{internal_session->principal_uuid};
+  context.session_uuid = engine_api::EngineUuid{internal_session->session_uuid};
+  context.catalog_generation_id = internal_session->catalog_generation_id;
+  context.security_epoch = internal_session->security_epoch;
+  context.resource_epoch = internal_session->resource_epoch;
+  context.name_resolution_epoch = internal_session->name_resolution_epoch;
+  // Authority is the sysarch role: owner direction 2026-10-24, the master agent
+  // is sysarch with full rights. The engine-owned bootstrap role branch in
+  // agent_authorization_context.hpp then yields every KnownSecurityRights(),
+  // so no grant is fabricated here either -- the role is carried, not widened.
+  context.trace_tags.push_back("internal_startup_session");
   return context;
 }
 
@@ -463,13 +491,15 @@ ServerAgentTransactionContext BeginServerAgentTransaction(
     const std::string& database_uuid,
     std::uint64_t generation,
     const std::string& purpose,
-    const ServerBootstrapConfig* trace_config = nullptr) {
+    const ServerBootstrapConfig* trace_config = nullptr,
+    const InternalStartupSession* internal_session = nullptr) {
   ServerAgentTransactionContext out;
   engine_api::EngineBeginTransactionRequest begin;
   begin.context = ServerAgentRequestMetadata(
       database_path,
       database_uuid,
-      "server-agent-" + purpose + "-" + std::to_string(generation));
+      "server-agent-" + purpose + "-" + std::to_string(generation),
+      internal_session);
   begin.context.local_transaction_id = 0;
   begin.context.transaction_uuid = {};
   begin.context.snapshot_visible_through_local_transaction_id = 0;
@@ -752,15 +782,48 @@ bool ServerAgentRuntime::StartImpl(const ServerBootstrapConfig& config,
   }
   std::vector<std::string> assignments = database->selected_agent_type_ids;
   std::optional<DatabaseOwnershipLock::CoordinatorLease> coordinator_lease;
+  // SEARCH_KEY: SECURITY-INTERNAL-SESSION-ADMISSION
+  // Consume the authenticated internal startup session the engine minted at
+  // open. Resolved for BOTH Start entry points, not only the coordinator.
+  //
+  // Why it cannot stay coordinator-only: both paths reach
+  // InitializeConfiguredAgents, which BEGINs an MGA transaction to seed the
+  // agent catalog. That needs authority whichever entry point was used, and
+  // the only conforming source is the session the engine minted at open.
+  // Capturing it only under `database_configured` left the non-coordinator
+  // Start permanently unauthorized even on a real exclusive open -- observed
+  // as `ENGINE.DBLC_TRANSACTION_ADMISSION_DENIED ... security_context_missing`
+  // after the session itself was confirmed `minted` by trace.
+  //
+  // Why it stays safe: the session is read from the RUNTIME, which requires
+  // FindHostedDatabaseRuntime to resolve AND a live retained exclusive
+  // ownership lock for this database. A copied or fabricated
+  // HostedEngineState carries neither, so it still yields an absent session,
+  // absent authority and the engine's own refusal -- which is precisely what
+  // server_agent_authority_admission_{defaults,zero-epochs,unrelated-epochs,
+  // health-claims} assert about this non-coordinator Start path. Nothing is
+  // manufactured here; an absent session stays absent.
+  //
+  // The hard OWNERSHIP_REQUIRED refusal below stays coordinator-only: a
+  // non-coordinator Start without a retained owner remains permitted and
+  // simply runs without authority, exactly as before.
+  const auto hosted_runtime = FindHostedDatabaseRuntime(
+      engine_state, database->database_uuid, database->database_path);
+  const auto owner = std::find_if(engine_state.database_ownership_locks.begin(),
+      engine_state.database_ownership_locks.end(), [&](const auto& candidate) {
+        return candidate && candidate->valid() &&
+            candidate->lock_path() == DatabaseOwnershipLockPath(database->database_path);
+      });
+  const bool retained_owner =
+      hosted_runtime && owner != engine_state.database_ownership_locks.end();
+  if (retained_owner) {
+    // Absent is a legitimate state (an internal service principal is optional
+    // at create) and leaves authority absent, so the engine still refuses
+    // BEGIN rather than this code inventing an identity.
+    internal_startup_session_ = hosted_runtime->internal_startup_session;
+  }
   if (database_configured) {
-    const auto runtime = FindHostedDatabaseRuntime(
-        engine_state, database->database_uuid, database->database_path);
-    const auto owner = std::find_if(engine_state.database_ownership_locks.begin(),
-        engine_state.database_ownership_locks.end(), [&](const auto& candidate) {
-          return candidate && candidate->valid() &&
-              candidate->lock_path() == DatabaseOwnershipLockPath(database->database_path);
-        });
-    if (!runtime || owner == engine_state.database_ownership_locks.end()) {
+    if (!retained_owner) {
       if (diagnostics) diagnostics->push_back(RuntimeDiagnostic(
           "SERVER.AGENT_RUNTIME.OWNERSHIP_REQUIRED",
           "The coordinator requires the opened database's retained exclusive owner."));
@@ -777,7 +840,8 @@ bool ServerAgentRuntime::StartImpl(const ServerBootstrapConfig& config,
     // This read does not create a session, begin a transaction or grant rights.
     const auto loaded = engine_api::LoadAgentDurableCatalogImage(
         ServerAgentRequestMetadata(database->database_path,
-            IdentityBytes(database->database_uuid), "coordinator-configuration"), true);
+            IdentityBytes(database->database_uuid), "coordinator-configuration",
+            &internal_startup_session_), true);
     if (!loaded.ok && loaded.load_disposition !=
         engine_api::AgentDurableCatalogLoadDisposition::absent) {
       if (diagnostics) diagnostics->push_back(RuntimeDiagnostic(
@@ -1037,7 +1101,8 @@ bool ServerAgentRuntime::InitializeConfiguredAgents(
     auto seed_tx = BeginServerAgentTransaction(database_path_,
                                                database_uuid_,
                                                1,
-                                               "catalog-seed",&config);
+                                               "catalog-seed",&config,
+                                               &internal_startup_session_);
     if (!seed_tx.ok) {
       if (diagnostics != nullptr) {
         auto diagnostic=RuntimeDiagnostic(

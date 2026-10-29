@@ -27,6 +27,7 @@
 #include "startup_credential_provisioning.hpp"
 #include "uuid.hpp"
 
+#include <chrono>
 #include <filesystem>
 #include <sstream>
 
@@ -570,6 +571,83 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
     database_runtime->startup_credential_source = std::move(credential_source);
   }
 
+  // SEARCH_KEY: SECURITY-INTERNAL-SESSION-ADMISSION
+  // Mint the authenticated internal startup session the coordinator consumes.
+  //
+  // Placed here because the spec requires the engine to retain it
+  // (`appendix-node-agent-coordinator.md:117-118`) and because this is the
+  // point where the committed identities are already in hand: the credential
+  // above is transport custody only, as its own declaration says, so this is
+  // the authentication step that was missing -- nothing previously read
+  // `startup_credential_source` at all.
+  //
+  // Identities come only from what the database COMMITTED. An absent committed
+  // service principal or sysarch role leaves the session absent, which fails
+  // the coordinator closed (`:144`) instead of synthesizing authority. That is
+  // the same rule `ServerAgentRequestMetadata` states: request metadata may not
+  // issue a principal or manufacture grants.
+  if (committed_bootstrap_security &&
+      committed_bootstrap_security->runtime_authority_binding_present &&
+      !committed_bootstrap_security->service_principal_uuid.is_nil() &&
+      !committed_bootstrap_security->sysarch_role_uuid.value.is_nil()) {
+    // A session is a RUNTIME identity, not a durable one, and the two have
+    // different issuers.
+    //
+    // `UuidKindAllowsDurableIdentity()` deliberately EXCLUDES
+    // `UuidKind::session` (`uuid.cpp:339-341`) while `IsEngineIdentityKind()`
+    // includes it -- that pair is the distinction, not an oversight. And
+    // `GenerateEngineIdentityV7` is an unconditional alias of the durable
+    // variant (`uuid.cpp:655-657`), so calling it for `session` is refused
+    // categorically with `SB-UUID-DURABLE-IDENTITY-KIND`. That is what made
+    // this block take its `refused_no_session_identity` branch on EVERY open,
+    // observed by trace -- the session had never once minted.
+    //
+    // `IssueRuntimeIdentityV7` is the issuer for a fresh runtime object: it
+    // applies the local clock checks and strict regression rejection that a
+    // caller-supplied timestamp does not establish (and whose header says so).
+    // It is also not a hand-stamped v7: `06-sblr-...-contract.md:999` states
+    // that a value "with UUID version bits added is not valid runtime identity
+    // issuance", which rules out building one from
+    // `GenerateCompatibilityUnixTimeV7` + `MakeTypedUuid`.
+    const auto session_identity = scratchbird::core::uuid::IssueRuntimeIdentityV7();
+    if (session_identity.has_value()) {
+      auto& session = database_runtime->internal_startup_session;
+      session.principal_uuid = committed_bootstrap_security->service_principal_uuid;
+      session.sysarch_role_uuid = committed_bootstrap_security->sysarch_role_uuid.value;
+      session.session_uuid = *session_identity;
+      session.database_uuid = snapshot.database_uuid;
+      // KNOWN DEVIATION, measured 2026-10-24: this reads `security_epoch`
+      // BEFORE the committed config-policy lifecycle assigns it (that happens
+      // further down this same function), so the value taken here is the
+      // struct's initializer, not the committed epoch. All four generations on
+      // this session are therefore defaulted today, not just the three C17
+      // names -- `epochs_are_conforming` stays false and now covers all four.
+      // Do not describe `security_epoch` as the one real supplier at this
+      // point in the open; it is not one yet here.
+      session.security_epoch = snapshot.security_epoch;
+      // The other three have no database supplier anywhere -- see the KNOWN
+      // DEVIATION note on InternalStartupSession. Carry the same values an
+      // ordinary client session carries so admission behaves identically, and
+      // record that they are NOT conforming rather than implying they are.
+      session.catalog_generation_id = 1;
+      session.resource_epoch = 1;
+      session.name_resolution_epoch = 1;
+      session.epochs_are_conforming = false;
+      session.present = session.security_epoch != 0;
+      TraceServerStartupPhase(config, "internal_startup_session",
+                              session.present ? "minted" : "refused_no_security_epoch");
+    } else {
+      TraceServerStartupPhase(config, "internal_startup_session",
+                              "refused_no_session_identity");
+    }
+  } else {
+    // Not an error: an internal service principal is optional at create, so a
+    // database that committed none simply has no internal session. The
+    // coordinator then refuses rather than running unauthenticated.
+    TraceServerStartupPhase(config, "internal_startup_session",
+                            "absent_no_committed_authority");
+  }
+
   std::filesystem::path bulk_import_registry_root = canonical_database_path;
   bulk_import_registry_root += ".bulk_import_streams.v1";
   database_runtime->bulk_import_stream_registry =
@@ -782,6 +860,52 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
   // does, and which is still required once publication happens -- is necessary
   // and not sufficient.
   // DISABLED pending lease publication by the single route owner. See FINDING-17.
+  //
+  // ATTEMPT 6, 2026-10-24: the owner directed "enable the producer, remove the
+  // compile time constant". It was removed and MEASURED, and the result
+  // reinstates the flag rather than the direction being declined -- see the
+  // register, section N.
+  //
+  // What was checked first: FINDING-17's named remedy was for the single owner
+  // to call `DatabaseOwnershipLock::PublishStorageLease` after the checked
+  // durable descriptor write. That call IS now present on both platform paths
+  // of ownership acquisition, in exactly that position
+  // (`database_ownership.cpp:414` after `FlushFileBuffers`, `:509` after
+  // `fsync`), refusing acquisition outright on failure. So publication is no
+  // longer the missing piece.
+  //
+  // What happened anyway, with the constant removed and build rc=0:
+  // `live_server_agent_storage_benchmark_gate` (**#2663**) FAILED, and the
+  // server never reached serving at all -- `"serving":false`, stuck at
+  // `config_lifecycle_ready`, so the sbps socket never appeared and the gate
+  // timed out. SBsvr's stderr carried exactly attempt 5's symptom:
+  //   SB-STORAGE-DISK-ROUTE-OWNER-LOCK-HELD
+  //   "The coordinator could not read its database configuration."
+  // Evidence: `2663-native-enabled-failure.log` in the baseline directory.
+  //
+  // So publication alone is NOT sufficient, which the analysis above already
+  // stated about the transition fence ("necessary and not sufficient"). The
+  // remaining work is the delegated-read path, not the publish call. Do not
+  // re-remove this constant without first making a consumer able to borrow the
+  // published lease in-process; removing it again unchanged will reproduce the
+  // same non-serving engine.
+  //
+  // SUPERSEDED, owner direction 2026-10-29: "drop BorrowDelegatedRead, agents
+  // are threads not openers". This restates the correction in 82753f2b6.
+  // Wherever the notes above name BorrowDelegatedRead, a delegated-read path,
+  // fence relaxation or an in-process borrow as the remaining work, that
+  // direction is WITHDRAWN. BorrowDelegatedRead does not exist and must not be
+  // re-created: it was removed in 82753f2b6, re-created on 2026-10-25 from the
+  // stale reference above, and removed again on 2026-10-29. The coordinator
+  // and the other agents are threads inside the process that already holds the
+  // database open, so the question is why a thread opens the file at all --
+  // not how to admit a second opener. The defect is the read surface:
+  // EngineRequestContext carries a database_path and no device, so each read
+  // re-opens the path (register C9). The intended shape is that the single
+  // route owner serves its open device in-process (the owner-served-descriptor
+  // pattern in RouteSourceTransition::BeginSourceAdmission) and readers take
+  // that device instead of opening the path. Activation stays off until that
+  // holds.
   constexpr bool kNativeHostedRuntimeActivationEnabled = false;
   if (kNativeHostedRuntimeActivationEnabled &&
       crypto != nullptr && !config.embedded_direct_mode && crypto->installed()) {
