@@ -63,14 +63,14 @@ agents::AgentRuntimeContext Context() {
       "SEC_IDENTITY_ADMIN",
       "SEC_AUTH_METRICS_READ",
       "FILESPACE_LIFECYCLE_CONTROL",
-      "FILESPACE_LIFECYCLE_TRUNCATE",
-      "JOB_ADMIN",
+      "OBS_FILESPACE_TRUNCATE",
+      "OBS_JOB_ADMIN",
       "BACKUP_CONTROL",
-      "RESTORE_DRILL_CONTROL",
-      "RESTORE_PLAN_CONTROL",
-      "SESSION_KILL",
-      "SESSION_CONTROL",
-      "EXPORT_CONTROL"};
+      "OBS_RESTORE_DRILL_CONTROL",
+      "OBS_RESTORE_PLANNING",
+      "SEC_SESSION_KILL",
+      "SEC_SESSION_CONTROL",
+      "OBS_EXPORT_CONTROL"};
   context.wall_now_microseconds = 1700000000000060ull;
   context.monotonic_now_microseconds = 1000000;
   return context;

@@ -2193,35 +2193,48 @@ std::vector<AgentSecurityGrantRequirement> RequiredAgentSecurityRightsForActionC
   if (contract.permission.find("redaction rights") != std::string::npos) {
     requirements.push_back(Req(AgentSecurityRight::sec_redaction_policy_edit));
   }
+  // Right tokens below are the accepted Finding 4 names from the consolidated
+  // right registry (2026-10-23). The previous unprefixed spellings existed only
+  // here -- zero occurrences anywhere in the specification corpus -- and were
+  // absent from KnownRights(), which made every one of them unsatisfiable: no
+  // grant could be created for them and the bootstrap role could not enumerate
+  // them. The code was the drifted side, so the code was renamed to the spec's
+  // vocabulary rather than the registry being widened to match the code.
   if (contract.permission.find("export control right") != std::string::npos) {
-    requirements.push_back(NamedReq("EXPORT_CONTROL"));
+    requirements.push_back(NamedReq("OBS_EXPORT_CONTROL"));
   }
   if (job_execute_or_admin) {
+    // JOB_EXECUTE is deliberately NOT renamed: the registry classifies "JOB
+    // EXECUTE" as an ordinary SQL object privilege on the job rather than an
+    // operational right, so it needs no OBS_ token. It remains unregistered,
+    // which leaves this alternative branch unsatisfiable while the OBS_JOB_ADMIN
+    // branch below is satisfiable. Mapping it onto the object-privilege surface
+    // is a separate decision, not a rename.
     requirements.push_back(NamedReq("JOB_EXECUTE", 1));
-    requirements.push_back(NamedReq("JOB_ADMIN", 1));
+    requirements.push_back(NamedReq("OBS_JOB_ADMIN", 1));
   }
   if (contract.permission.find("backup control right") != std::string::npos) {
     requirements.push_back(NamedReq("BACKUP_CONTROL"));
   }
   if (contract.permission.find("restore drill control right") != std::string::npos) {
-    requirements.push_back(NamedReq("RESTORE_DRILL_CONTROL"));
+    requirements.push_back(NamedReq("OBS_RESTORE_DRILL_CONTROL"));
   }
   if (contract.permission.find("restore planning right") != std::string::npos) {
-    requirements.push_back(NamedReq("RESTORE_PLAN_CONTROL"));
+    requirements.push_back(NamedReq("OBS_RESTORE_PLANNING"));
   }
   if (contract.permission.find("filespace lifecycle right") != std::string::npos) {
     requirements.push_back(NamedReq("FILESPACE_LIFECYCLE_CONTROL"));
   }
   if (contract.permission.find("lifecycle truncate right") != std::string::npos) {
-    requirements.push_back(NamedReq("FILESPACE_LIFECYCLE_TRUNCATE"));
+    requirements.push_back(NamedReq("OBS_FILESPACE_TRUNCATE"));
   }
   if (contract.permission.find("session kill right") != std::string::npos) {
-    requirements.push_back(NamedReq("SESSION_KILL"));
+    requirements.push_back(NamedReq("SEC_SESSION_KILL"));
   }
   if (identity_or_session) {
-    requirements.push_back(NamedReq("SESSION_CONTROL", 1));
+    requirements.push_back(NamedReq("SEC_SESSION_CONTROL", 1));
   } else if (contract.permission.find("session control right") != std::string::npos) {
-    requirements.push_back(NamedReq("SESSION_CONTROL"));
+    requirements.push_back(NamedReq("SEC_SESSION_CONTROL"));
   }
   if (contract.permission.find("cluster") != std::string::npos ||
       contract.risk_class.find("cluster") != std::string::npos ||

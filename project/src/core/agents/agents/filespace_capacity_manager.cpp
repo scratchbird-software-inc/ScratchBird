@@ -1155,7 +1155,7 @@ FilespaceCapacityManagerActionResult EvaluateFilespaceCapacityManagerAction(
       }
       if (!PermissionForLifecycleAction(request, true)) {
         return missing_permission(request.has_obs_agent_action_approve
-                                      ? "FILESPACE_LIFECYCLE_TRUNCATE"
+                                      ? "OBS_FILESPACE_TRUNCATE"
                                       : "OBS_AGENT_ACTION_APPROVE");
       }
       return AuthorizeAction(request,

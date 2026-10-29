@@ -180,7 +180,46 @@ const std::set<std::string>& KnownRights() {
       "BACKUP_CREATE", "BACKUP_RESTORE", "BACKUP_CONTROL", "BACKUP_INSPECT", "SYS_BACKUP",
       "EVENT_ADMIN", "EVENT_CREATE", "EVENT_ALTER", "EVENT_DROP", "EVENT_SUBSCRIBE", "EVENT_PUBLISH",
       "EVENT_DELIVERY_READ", "EVENT_DELIVERY_ACK",
-      "MANAGER_ADMISSION_ADMIN"};
+      "MANAGER_ADMISSION_ADMIN",
+      // Agent operational rights, accepted 2026-10-23 from the consolidated
+      // right registry's Finding 4 ("permissions named only in prose: NEW token
+      // proposals"). AGH_018 named these permissions in prose with no token;
+      // these are the tokens, following the registry's own conventions
+      // (OBS_<domain>_<verb> operational, SEC_<domain>_<verb> security).
+      //
+      // Registering them is load-bearing, not cosmetic: an unregistered right
+      // is unsatisfiable by construction, because GrantRight refuses to create
+      // a grant naming it (grant_api.cpp) and the engine-owned bootstrap role
+      // enumerates only KnownSecurityRights (agent_authorization_context.hpp).
+      // Both of an agent's two routes to a right therefore failed, so the
+      // requirements the agent runtime declares could never be met.
+      // Ten of the twelve are registered. Owner direction 2026-10-23 declined
+      // the other two -- OBS_BACKUP_CONTROL and OBS_FILESPACE_LIFECYCLE -- in
+      // favour of the BACKUP_CONTROL and FILESPACE_LIFECYCLE_CONTROL rights
+      // above, which already exist here and are already enforced at the
+      // operation sites (backup_archive_api.cpp, public_abi.cpp,
+      // storage_management_api.cpp). Agents therefore hold the same right the
+      // operation checks. Minting OBS_ twins would have given one concept two
+      // tokens and let an agent hold a right the operation does not accept.
+      "OBS_AGENT_CONTROL_INTERNAL", "OBS_ALERT_INTERNAL",
+      "OBS_AGENT_EVIDENCE_APPEND",
+      "OBS_RESTORE_DRILL_CONTROL", "OBS_RESTORE_PLANNING",
+      "OBS_EXPORT_CONTROL",
+      // Truncate stays a separate token: the registry separates it because
+      // truncate is destructive and should be grantable independently of
+      // filespace lifecycle control, it is spec-grounded, and nothing else
+      // enforces a competing name for it.
+      "OBS_FILESPACE_TRUNCATE", "SEC_SESSION_KILL", "SEC_SESSION_CONTROL",
+      "OBS_JOB_ADMIN",
+      // Registry Finding 3: specified for archive_manager /
+      // request_external_range_materialization_build, absent from the code.
+      "EXTERNAL_RANGE_MATERIALIZATION_ADMIN",
+      // Registry Finding 2: present in the implementation
+      // (agent_runtime.cpp maps it to AgentSecurityRight::internal_agent_trace)
+      // and absent from this registry, so it was unsatisfiable too. It keeps
+      // its TRACE meaning and is deliberately distinct from
+      // OBS_AGENT_CONTROL_INTERNAL, which is self-actuation authority.
+      "OBS_AGENT_INTERNAL"};
   return rights;
 }
 

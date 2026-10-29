@@ -234,7 +234,7 @@ void TestActionContractPermissionEnforcement() {
   Require(cancel_job_denied.detail == "JOB_EXECUTE",
           "job cancel missing right mismatch: " + cancel_job_denied.detail);
 
-  cancel_job_request.context = Context({"OBS_AGENT_ACTION_APPROVE", "JOB_ADMIN"});
+  cancel_job_request.context = Context({"OBS_AGENT_ACTION_APPROVE", "OBS_JOB_ADMIN"});
   const auto cancel_job_authorized =
       agents::EvaluateAgentActionContract(cancel_job_contract, cancel_job_request);
   Require(cancel_job_authorized.diagnostic_code != "ACTION.PERMISSION_DENIED",
