@@ -7,6 +7,8 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "database_lifecycle.hpp"
+#include "engine_host.hpp"
+#include "../support/owned_bootstrap_database_fixture.hpp"
 #include "server_agent_runtime.hpp"
 #include "time.hpp"
 #include "uuid.hpp"
@@ -1516,6 +1518,30 @@ int main(int argc, char** argv) {
   }
   create.allow_minimal_resource_bootstrap = true;
   create.require_resource_seed_pack = false;
+  // The credentialed create path allocates through the default memory manager,
+  // which a fixture must configure first; without it create refuses with
+  // SB-MEMORY-ALLOC-DEFAULT-MANAGER-UNCONFIGURED.
+  Require(scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+              scratchbird::core::memory::DefaultLocalEngineMemoryPolicy(),
+              "server_agent_shutdown_wakeup_gate").ok(),
+          "fixture default memory manager configuration failed");
+  // Commit the internal service principal and sysarch role the engine mints
+  // the authenticated internal startup session from at open. Without them the
+  // database legitimately has no internal authority and the coordinator is
+  // refused -- which is what this gate used to hit before reaching its subject.
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+  // ConfigureCredentialedFixtureBootstrap commits the bootstrap owner but NOT
+  // the internal service principal, and it is that principal plus its runtime
+  // authority binding the internal startup session is minted from. Without
+  // these three fields the open commits no internal authority, the session is
+  // legitimately absent, and the coordinator is refused.
+  create.internal_service_principal_name = "sb_internal_service";
+  create.internal_service_credential_fingerprint =
+      "local-password-pbkdf2-sha256:v1:iterations=600000:"
+      "salt=89abcdef0123456789abcdef01234567:"
+      "verifier=abcdef0123456789abcdef0123456789"
+      "abcdef0123456789abcdef0123456789";
+  create.require_internal_service_principal = true;
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
     std::cerr << created.diagnostic.diagnostic_code << ':'
@@ -1523,21 +1549,42 @@ int main(int argc, char** argv) {
     Fail("real database fixture creation failed");
   }
 
-  server::HostedDatabaseSnapshot database;
-  database.state = server::HostedDatabaseState::kOpen;
-  database.database_path = create.path;
-  database.database_uuid = create.database_uuid.value;
-  database.filespace_uuid = create.filespace_uuid.value;
-  database.database_created = true;
-  database.database_open = true;
-  database.write_admission_fenced = false;
-  database.config_policy_security_lifecycle_present = true;
-  database.selected_agent_type_ids = {"page_allocation_manager", "filespace_capacity_manager"};
-  server::HostedEngineState engine;
-  engine.engine_context_active = true;
-  engine.databases.push_back(std::move(database));
+  // A real exclusive open, not a hand-built status record.
+  //
+  // server_agent_authority_admission_* asserts across four modes that a
+  // fabricated or copied HostedDatabaseSnapshot must NOT be able to start the
+  // agent runtime -- "a copyable status record is deliberately not an admitted
+  // service owner". This gate previously built exactly such a record and then
+  // expected admitted behaviour, so it never reached its real subject
+  // (scheduler wake, shutdown completion, thread restart): it died on
+  // ENGINE.DBLC_TRANSACTION_ADMISSION_DENIED during catalog seeding.
+  //
+  // Going through StartHostedEngine gives the runtime a real ownership lock and
+  // the authenticated internal startup session the engine mints at open, which
+  // is the only conforming way to be admitted. Exactly one open per process is
+  // permitted (a completed open permanently binds the process), and each ctest
+  // mode of this gate is its own process, so one open here is correct.
   server::ServerBootstrapConfig config;
   config.control_dir = directory / "control";
+  config.database_default_path = create.path;
+  config.sbps_endpoint = config.control_dir / "ipc.sock";
+  // Setting `config.log_level = "trace"` here makes the open emit
+  // `internal_startup_session: minted | absent_no_committed_authority |
+  // refused_no_session_identity` on stderr. That trace is the only direct
+  // observation of whether the engine minted the session, and it is how the
+  // 2026-10-24 session-identity defect was found. Left off deliberately so
+  // the 40 modes stay quiet; turn it on when diagnosing admission here.
+  auto opened = server::StartHostedEngine(config);
+  if (!opened.diagnostics.empty())
+    for (const auto& diagnostic : opened.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
+  Require(opened.state.engine_context_active && !opened.state.databases.empty(),
+          "real exclusive server database open failed");
+  // Component configuration is this gate's to set; an old lifecycle
+  // observation must not become it.
+  opened.state.databases.front().selected_agent_type_ids = {
+      "page_allocation_manager", "filespace_capacity_manager"};
+  server::HostedEngineState& engine = opened.state;
   server::ServerAgentRuntime runtime;
   std::vector<server::ServerDiagnostic> diagnostics;
 
