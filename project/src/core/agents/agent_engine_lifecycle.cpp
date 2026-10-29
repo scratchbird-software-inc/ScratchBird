@@ -20,6 +20,44 @@
 
 namespace scratchbird::core::agents {
 
+// DEPRECATED 2026-10-25 -- SKELETON, pending the agent implementation.
+// Owner direction: "stub or skeleton code was put in place instead of a full
+// implementation ... any instructions that are blocking [the agent
+// implementation] from happening in a secure and auditable way, now need to be
+// marked as deprecated". Register section O, items O-1 and O-2.
+//
+// PROOF that this is a placeholder and not a specification: the coordinator
+// below is declared `l5_coordinator` with scope "database/runtime_lifecycle",
+// and the registry validator in this same build REFUSES any L5 descriptor
+// whose scope does not begin with "node"
+// (`agent_runtime.cpp:1377-1381`, SB_AGENT_REGISTRY.L5_NODE_SCOPE_REQUIRED).
+// This descriptor cannot pass its own validator.
+//
+// Two values here are deprecated and must change with that implementation:
+//
+//   O-1  `authority = request_action` for `agent_coordinator`. The target is
+//        "the master agent starts with full rights", and full rights means
+//        holding the engine-owned sysarch role, whose branch in
+//        `agent_authorization_context.hpp:143-147` yields every
+//        KnownSecurityRights(). request_action is a bounded class and cannot
+//        express it.
+//
+//   O-2  `scope = "database/runtime_lifecycle"` for the L5 coordinator. Must
+//        become node-scoped, per the validator above and "exactly one L5
+//        coordinator" in `agent-management-and-operational-framework.md:125`.
+//
+// Measured constraint that makes O-1 load-bearing rather than cosmetic: the
+// agent catalog work is authorized through SQL object privileges (`SELECT`,
+// `INSERT`) which live in the SAME `KnownRights()` vocabulary as the OBS_*
+// rights (`security_model.cpp:155`). An enumerated per-agent right list of the
+// kind create writes today (`database_lifecycle.cpp:3593`, grants only, no
+// membership -- O-4) therefore CANNOT reach them, while the sysarch bundle
+// does. Provisioning the master agent like the other 29 would silently
+// substitute "the rights someone enumerated" for "full rights".
+//
+// Behaviour is intentionally UNCHANGED here: this marks the deprecation so the
+// implementation can proceed, and the replacement spans the create path, the
+// policy pack, the open path and the authorization materializer.
 std::vector<AgentTypeDescriptor> RuntimeLifecycleAgentDescriptors() {
   std::vector<AgentTypeDescriptor> result;
   for (const auto* name : {"agent_coordinator", "startup_agent", "shutdown_agent"}) {
@@ -27,7 +65,9 @@ std::vector<AgentTypeDescriptor> RuntimeLifecycleAgentDescriptors() {
     descriptor.type_id = name;
     descriptor.layer = descriptor.type_id == "agent_coordinator"
         ? AgentRuntimeLayer::l5_coordinator : AgentRuntimeLayer::l3_dispatcher;
+    // DEPRECATED (O-2): rejected by this descriptor's own L5 validator.
     descriptor.scope = "database/runtime_lifecycle";
+    // DEPRECATED (O-1): cannot express the master agent's full rights.
     descriptor.authority = AgentAuthorityClass::request_action;
     descriptor.default_activation = AgentActivationProfile::live_action;
     result.push_back(std::move(descriptor));
