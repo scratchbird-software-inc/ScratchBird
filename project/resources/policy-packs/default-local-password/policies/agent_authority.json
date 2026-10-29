@@ -1,0 +1,469 @@
+{
+  "schema_version": 1,
+  "identity_authority": "uuid",
+  "grant_epoch": 1,
+  "subject_resolution": "agent_type_id",
+  "subject_kind": "principal",
+  "effect": "allow",
+  "create_time_only": true,
+  "agent_authority": [
+    {
+      "agent_type_id": "node_resource_agent",
+      "authority_class": "observe_only",
+      "deployment": "local",
+      "runtime_layer": "l1_observation",
+      "rights": [
+        "CONNECT",
+        "OBS_AGENT_CONTROL_INTERNAL",
+        "OBS_METRICS_READ_NODE"
+      ],
+      "metric_families": [
+        "sb_cluster_node_cpu_feature_available"
+      ]
+    },
+    {
+      "agent_type_id": "metrics_registry_manager",
+      "authority_class": "direct_bounded_action",
+      "deployment": "both",
+      "runtime_layer": "l2_recorder",
+      "rights": [
+        "CONNECT",
+        "OBS_AGENT_CONTROL_INTERNAL",
+        "OBS_AGENT_STATE_READ"
+      ],
+      "metric_families": [
+        "sb_metric_samples_rejected_total"
+      ]
+    },
+    {
+      "agent_type_id": "storage_health_manager",
+      "authority_class": "recommend_only",
+      "deployment": "local",
+      "runtime_layer": "l3_dispatcher",
+      "rights": [
+        "CONNECT",
+        "OBS_AGENT_ACTION_APPROVE",
+        "OBS_AGENT_CONTROL",
+        "OBS_METRICS_READ_DATABASE",
+        "OBS_METRICS_READ_FAMILY",
+        "OBS_METRICS_READ_NODE"
+      ],
+      "metric_families": [
+        "sb_filespace_device_error_total",
+        "sb_filespace_health_state",
+        "sb_page_allocation_failures_total",
+        "sb_storage_fsync_latency_microseconds",
+        "sb_storage_unknown_pages_total"
+      ]
+    },
+    {
+      "agent_type_id": "filespace_capacity_manager",
+      "authority_class": "request_action",
+      "deployment": "local",
+      "runtime_layer": "l3_dispatcher",
+      "rights": [
+        "CONNECT",
+        "OBS_AGENT_ACTION_APPROVE",
+        "FILESPACE_LIFECYCLE_CONTROL",
+        "OBS_FILESPACE_TRUNCATE",
+        "OBS_METRICS_READ_FAMILY"
+      ],
+      "metric_families": [
+        "sb_filespace_free_bytes",
+        "sb_filespace_health_state",
+        "sb_filespace_reserved_bytes",
+        "sb_filespace_role_state",
+        "sb_filespace_shrink_blocker_count",
+        "sb_filespace_total_bytes",
+        "sb_filespace_truncate_ready_bytes",
+        "sb_filespace_used_bytes"
+      ]
+    },
+    {
+      "agent_type_id": "page_allocation_manager",
+      "authority_class": "request_action",
+      "deployment": "local",
+      "runtime_layer": "l3_dispatcher",
+      "rights": [
+        "CONNECT",
+        "OBS_AGENT_CONTROL_INTERNAL",
+        "OBS_AGENT_ACTION_APPROVE",
+        "OBS_AGENT_EVIDENCE_APPEND",
+        "OBS_METRICS_READ_FAMILY"
+      ],
+      "metric_families": [
+        "sb_page_allocated_count",
+        "sb_page_allocation_failures_total",
+        "sb_page_allocation_latency_microseconds",
+        "sb_page_fragmentation_ratio",
+        "sb_page_free_count",
+        "sb_page_relocation_backlog_count",
+        "sb_page_relocation_ready_for_filespace_shrink",
+        "sb_page_reserved_count"
+      ]
+    },
+    {
+      "agent_type_id": "memory_governor",
+      "authority_class": "direct_bounded_action",
+      "deployment": "local",
+      "runtime_layer": "l3_dispatcher",
+      "rights": [
+        "CONNECT",
+        "OBS_AGENT_CONTROL_INTERNAL",
+        "OBS_METRICS_READ_NODE"
+      ],
+      "metric_families": [
+        "sb_memory_allocation_failures_total",
+        "sb_memory_emergency_reserve_bytes"
+      ]
+    },
+    {
+      "agent_type_id": "index_health_manager",
+      "authority_class": "recommend_only",
+      "deployment": "local",
+      "runtime_layer": "l3_dispatcher",
+      "rights": [
+        "CONNECT",
+        "OBS_AGENT_RECOMMENDATION_READ",
+        "OBS_METRICS_READ_DATABASE"
+      ],
+      "metric_families": [
+        "sb_index_read_amplification_ratio",
+        "sb_index_splits_total"
+      ]
+    },
+    {
+      "agent_type_id": "cluster_autoscale_manager",
+      "authority_class": "request_action",
+      "deployment": "cluster",
+      "runtime_layer": "l3_dispatcher",
+      "rights": [
+        "CONNECT",
+        "OBS_CLUSTER_CONTROL",
+        "OBS_METRICS_READ_CLUSTER"
+      ],
+      "metric_families": [
+        "sb_cluster_node_saturation_ratio",
+        "sb_idle_capacity_ratio"
+      ]
+    },
+    {
+      "agent_type_id": "admission_control_manager",
+      "authority_class": "direct_bounded_action",
+      "deployment": "both",
+      "runtime_layer": "l3_dispatcher",
+      "rights": [
+        "CONNECT",
+        "OBS_AGENT_CONTROL",
+        "OBS_AGENT_CONTROL_INTERNAL",
+        "OBS_METRICS_READ_DATABASE"
+      ],
+      "metric_families": [
+        "sb_listener_queue_depth",
+        "sb_scheduler_queue_depth"
+      ]
+    },
+    {
+      "agent_type_id": "parser_interface_manager",
+      "authority_class": "request_action",
+      "deployment": "local",
+      "runtime_layer": "l3_dispatcher",
+      "rights": [
+        "CONNECT",
+        "OBS_AGENT_CONTROL",
+        "SEC_REDACTION_POLICY_EDIT",
+        "OBS_AGENT_STATE_READ",
+        "OBS_METRICS_READ_DATABASE"
+      ],
+      "metric_families": [
+        "sb_agent_policy_attach_latency_microseconds",
+        "sb_parser_crashes_total"
+      ]
+    },
+    {
+      "agent_type_id": "transaction_pressure_manager",
+      "authority_class": "request_action",
+      "deployment": "both",
+      "runtime_layer": "l3_dispatcher",
+      "rights": [
+        "CONNECT",
+        "OBS_AGENT_RECOMMENDATION_READ",
+        "OBS_AGENT_ACTION_APPROVE",
+        "OBS_METRICS_READ_CLUSTER",
+        "OBS_METRICS_READ_DATABASE"
+      ],
+      "metric_families": [
+        "sb_cluster_limbo_transactions",
+        "sb_tx_oldest_snapshot_age_microseconds"
+      ]
+    },
+    {
+      "agent_type_id": "storage_version_cleanup_agent",
+      "authority_class": "direct_bounded_action",
+      "deployment": "local",
+      "runtime_layer": "l3_dispatcher",
+      "rights": [
+        "CONNECT",
+        "OBS_AGENT_CONTROL"
+      ],
+      "metric_families": []
+    },
+    {
+      "agent_type_id": "cleanup_archive_manager",
+      "authority_class": "direct_bounded_action",
+      "deployment": "both",
+      "runtime_layer": "l3_dispatcher",
+      "rights": [
+        "CONNECT",
+        "OBS_AGENT_CONTROL",
+        "OBS_METRICS_READ_DATABASE"
+      ],
+      "metric_families": [
+        "sb_archive_slice_age_microseconds",
+        "sb_mga_cleanup_blocked_total"
+      ]
+    },
+    {
+      "agent_type_id": "policy_recommendation_manager",
+      "authority_class": "recommend_only",
+      "deployment": "both",
+      "runtime_layer": "l3_dispatcher",
+      "rights": [
+        "CONNECT",
+        "OBS_AGENT_RECOMMENDATION_READ",
+        "OBS_METRICS_READ_DATABASE"
+      ],
+      "metric_families": [
+        "sb_workload_slo_burn_rate"
+      ]
+    },
+    {
+      "agent_type_id": "distributed_query_metrics_agent",
+      "authority_class": "observe_only",
+      "deployment": "cluster",
+      "runtime_layer": "l1_observation",
+      "rights": [
+        "CONNECT",
+        "OBS_AGENT_CONTROL_INTERNAL",
+        "OBS_METRICS_READ_CLUSTER"
+      ],
+      "metric_families": [
+        "sb_query_fragment_queue_delay_microseconds"
+      ]
+    },
+    {
+      "agent_type_id": "remote_query_routing_agent",
+      "authority_class": "request_action",
+      "deployment": "cluster",
+      "runtime_layer": "l3_dispatcher",
+      "rights": [
+        "CONNECT",
+        "OBS_AGENT_RECOMMENDATION_READ",
+        "OBS_METRICS_READ_CLUSTER"
+      ],
+      "metric_families": [
+        "sb_optimizer_remote_fragment_latency_microseconds"
+      ]
+    },
+    {
+      "agent_type_id": "runtime_learning_agent",
+      "authority_class": "recommend_only",
+      "deployment": "local",
+      "runtime_layer": "l3_dispatcher",
+      "rights": [
+        "CONNECT",
+        "OBS_AGENT_RECOMMENDATION_READ",
+        "OBS_METRICS_READ_DATABASE"
+      ],
+      "metric_families": [
+        "sb_optimizer_plan_estimate_error_ratio"
+      ]
+    },
+    {
+      "agent_type_id": "support_bundle_triage_agent",
+      "authority_class": "request_action",
+      "deployment": "both",
+      "runtime_layer": "l3_dispatcher",
+      "rights": [
+        "CONNECT",
+        "OBS_SUPPORT_BUNDLE_READ",
+        "SEC_REDACTION_POLICY_EDIT",
+        "OBS_METRICS_READ_DATABASE"
+      ],
+      "metric_families": [
+        "sb_support_bundle_completeness_ratio"
+      ]
+    },
+    {
+      "agent_type_id": "cluster_scheduler_manager",
+      "authority_class": "request_action",
+      "deployment": "cluster",
+      "runtime_layer": "l3_dispatcher",
+      "rights": [
+        "CONNECT",
+        "OBS_AGENT_RECOMMENDATION_READ",
+        "OBS_CLUSTER_CONTROL",
+        "OBS_METRICS_READ_CLUSTER"
+      ],
+      "metric_families": [
+        "sb_cluster_scheduler_queue_depth"
+      ]
+    },
+    {
+      "agent_type_id": "job_control_manager",
+      "authority_class": "request_action",
+      "deployment": "both",
+      "runtime_layer": "l3_dispatcher",
+      "rights": [
+        "CONNECT",
+        "OBS_JOB_ADMIN",
+        "OBS_AGENT_ACTION_APPROVE",
+        "OBS_AGENT_OVERRIDE",
+        "OBS_METRICS_READ_DATABASE"
+      ],
+      "metric_families": [
+        "sb_job_control_actions_total"
+      ]
+    },
+    {
+      "agent_type_id": "backup_manager",
+      "authority_class": "request_action",
+      "deployment": "both",
+      "runtime_layer": "l3_dispatcher",
+      "rights": [
+        "CONNECT",
+        "BACKUP_CONTROL",
+        "OBS_AGENT_ACTION_APPROVE",
+        "OBS_AGENT_ACTION_CANCEL",
+        "OBS_AGENT_CONTROL",
+        "OBS_METRICS_READ_DATABASE"
+      ],
+      "metric_families": [
+        "sb_backup_progress_percent"
+      ]
+    },
+    {
+      "agent_type_id": "archive_manager",
+      "authority_class": "direct_bounded_action",
+      "deployment": "both",
+      "runtime_layer": "l3_dispatcher",
+      "rights": [
+        "CONNECT",
+        "OBS_AGENT_CONTROL",
+        "OBS_AGENT_ACTION_APPROVE",
+        "EXTERNAL_RANGE_MATERIALIZATION_ADMIN",
+        "OBS_METRICS_READ_DATABASE"
+      ],
+      "metric_families": [
+        "sb_archive_queue_depth"
+      ]
+    },
+    {
+      "agent_type_id": "restore_drill_manager",
+      "authority_class": "request_action",
+      "deployment": "both",
+      "runtime_layer": "l3_dispatcher",
+      "rights": [
+        "CONNECT",
+        "OBS_RESTORE_DRILL_CONTROL",
+        "OBS_AGENT_ACTION_APPROVE",
+        "OBS_METRICS_READ_DATABASE"
+      ],
+      "metric_families": [
+        "sb_restore_drill_duration_microseconds"
+      ]
+    },
+    {
+      "agent_type_id": "pitr_manager",
+      "authority_class": "request_action",
+      "deployment": "both",
+      "runtime_layer": "l3_dispatcher",
+      "rights": [
+        "CONNECT",
+        "OBS_AGENT_STATE_READ",
+        "OBS_RESTORE_PLANNING",
+        "OBS_AGENT_ACTION_APPROVE",
+        "OBS_METRICS_READ_DATABASE"
+      ],
+      "metric_families": [
+        "sb_pitr_window_available_seconds"
+      ]
+    },
+    {
+      "agent_type_id": "identity_manager",
+      "authority_class": "request_action",
+      "deployment": "both",
+      "runtime_layer": "l3_dispatcher",
+      "rights": [
+        "CONNECT",
+        "SEC_IDENTITY_ADMIN",
+        "SEC_AUTH_METRICS_READ",
+        "SEC_SESSION_CONTROL"
+      ],
+      "metric_families": [
+        "sb_identity_auth_attempts_total"
+      ]
+    },
+    {
+      "agent_type_id": "session_control_manager",
+      "authority_class": "request_action",
+      "deployment": "both",
+      "runtime_layer": "l3_dispatcher",
+      "rights": [
+        "CONNECT",
+        "SEC_SESSION_KILL",
+        "SEC_SESSION_CONTROL",
+        "SEC_IDENTITY_ADMIN",
+        "OBS_AGENT_ACTION_APPROVE",
+        "SEC_AUTH_METRICS_READ"
+      ],
+      "metric_families": [
+        "sb_identity_sessions_active"
+      ]
+    },
+    {
+      "agent_type_id": "alert_manager",
+      "authority_class": "direct_bounded_action",
+      "deployment": "both",
+      "runtime_layer": "l3_dispatcher",
+      "rights": [
+        "CONNECT",
+        "OBS_ALERT_INTERNAL",
+        "OBS_AGENT_OVERRIDE",
+        "OBS_AGENT_EVIDENCE_READ"
+      ],
+      "metric_families": [
+        "sb_alerts_fired_total"
+      ]
+    },
+    {
+      "agent_type_id": "export_adapter_manager",
+      "authority_class": "request_action",
+      "deployment": "both",
+      "runtime_layer": "l3_dispatcher",
+      "rights": [
+        "CONNECT",
+        "OBS_EXPORT_CONTROL",
+        "OBS_AGENT_CONTROL",
+        "OBS_METRICS_EXPORT_READ"
+      ],
+      "metric_families": [
+        "sb_export_adapter_queue_depth"
+      ]
+    },
+    {
+      "agent_type_id": "cluster_upgrade_manager",
+      "authority_class": "request_action",
+      "deployment": "cluster",
+      "runtime_layer": "l3_dispatcher",
+      "rights": [
+        "CONNECT",
+        "OBS_CLUSTER_CONTROL",
+        "OBS_METRICS_READ_CLUSTER"
+      ],
+      "metric_families": [
+        "sb_cluster_rolling_upgrade_readiness_state"
+      ]
+    }
+  ]
+}

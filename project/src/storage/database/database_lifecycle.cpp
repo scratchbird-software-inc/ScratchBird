@@ -1253,6 +1253,18 @@ struct PolicyGrantSeed {
   std::string effect;
 };
 
+// Agent authority declared by the configuration policy files.
+//
+// Keyed by agent TYPE ID, not by a pre-declared uuid: an agent principal's uuid
+// is generated during create (GenerateEngineIdentityV7), so the pack cannot
+// reference it in advance the way grants.json references fixed role uuids.
+// Create resolves type id -> the principal it just provisioned.
+struct PolicyAgentAuthoritySeed {
+  std::string agent_type_id;
+  std::string authority_class;
+  std::vector<std::string> rights;
+};
+
 struct PolicyProfileSeed {
   Uuid profile_uuid;
   std::string area;
@@ -1289,6 +1301,11 @@ struct LoadedPolicySeedPack {
   std::vector<PolicyProfileSeed> profiles;
   std::vector<PolicyDefaultSeed> default_policies;
   std::optional<PolicyMemoryConfigurationSeed> memory_configuration;
+  // Optional: packs created before agent authority was declared carry none, and
+  // such a pack must still load. Empty means "no agent authority declared",
+  // which leaves agent principals at the minimal grant they get today rather
+  // than failing the create.
+  std::vector<PolicyAgentAuthoritySeed> agent_authority;
 };
 
 struct PolicyPackLoadResult {
@@ -2375,6 +2392,74 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
     return policy_defaults_valid;
   }
 
+  // Agent authority is OPTIONAL by design. It is not in the required-path list
+  // above, so a pack predating it still loads and simply declares no agent
+  // authority. When present it is validated strictly: a declared-but-malformed
+  // file is a refusal, because silently dropping agent rights would provision
+  // agents that cannot act and report success.
+  const auto admitted_agent_authority =
+      admitted_content.find("policies/agent_authority.json");
+  if (admitted_agent_authority != admitted_content.end()) {
+    const auto& agent_authority_json = admitted_agent_authority->second;
+    std::string subject_resolution;
+    std::string subject_kind;
+    std::string effect;
+    if (!ExtractStringField(agent_authority_json, "subject_resolution", &subject_resolution) ||
+        !ExtractStringField(agent_authority_json, "subject_kind", &subject_kind) ||
+        !ExtractStringField(agent_authority_json, "effect", &effect) ||
+        subject_resolution != "agent_type_id" || subject_kind != "principal" ||
+        effect != "allow") {
+      return PolicyPackLoadError("SB-POLICY-PACK-AGENT-AUTHORITY-INVALID",
+                                 "subject_resolution/subject_kind/effect");
+    }
+    std::string agent_array_body;
+    if (!ExtractArrayBody(agent_authority_json, "agent_authority", &agent_array_body)) {
+      return PolicyPackLoadError("SB-POLICY-PACK-AGENT-AUTHORITY-INVALID",
+                                 "agent_authority");
+    }
+    std::set<std::string> seen_agent_types;
+    for (const std::string& object : SplitTopLevelObjects(agent_array_body)) {
+      PolicyAgentAuthoritySeed seed;
+      if (!ExtractStringField(object, "agent_type_id", &seed.agent_type_id) ||
+          !ExtractStringField(object, "authority_class", &seed.authority_class) ||
+          seed.agent_type_id.empty() || seed.authority_class.empty() ||
+          !IsSafeBootstrapPrincipalName(seed.agent_type_id) ||
+          !seen_agent_types.insert(seed.agent_type_id).second) {
+        return PolicyPackLoadError("SB-POLICY-PACK-AGENT-AUTHORITY-INVALID",
+                                   seed.agent_type_id);
+      }
+      seed.rights = ExtractStringArrayField(object, "rights");
+      // An agent with no rights could not even authenticate, so an empty list
+      // is a malformed declaration rather than a meaningful "no authority".
+      if (seed.rights.empty()) {
+        return PolicyPackLoadError("SB-POLICY-PACK-AGENT-AUTHORITY-INVALID",
+                                   seed.agent_type_id + "/rights");
+      }
+      std::set<std::string> seen_rights;
+      for (const auto& right : seed.rights) {
+        // Shape only, deliberately: whether a right EXISTS is the engine's
+        // authorization registry to answer, and this is the storage layer,
+        // which carries no dependency on engine/internal_api and must not
+        // acquire one for a validation. A right token is upper-case ASCII,
+        // digits and underscores; anything else is a malformed pack.
+        const bool well_formed =
+            !right.empty() && right.size() <= 64 &&
+            std::all_of(right.begin(), right.end(), [](unsigned char c) {
+              return (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_';
+            });
+        if (!well_formed || !seen_rights.insert(right).second) {
+          return PolicyPackLoadError("SB-POLICY-PACK-AGENT-AUTHORITY-INVALID",
+                                     seed.agent_type_id + "/" + right);
+        }
+      }
+      loaded.agent_authority.push_back(std::move(seed));
+    }
+    if (loaded.agent_authority.empty()) {
+      return PolicyPackLoadError("SB-POLICY-PACK-AGENT-AUTHORITY-INVALID",
+                                 "agent_authority declared no agents");
+    }
+  }
+
   return PolicyPackLoadOk(std::move(loaded));
 }
 
@@ -3131,6 +3216,61 @@ scratchbird::core::catalog::CatalogSecurityRecord NativeLocalServiceGrantDefinit
   record.attributes.emplace("right",std::string(rights[slot]));return record;
 }
 
+// A grant row for a provisioned AGENT principal.
+//
+// DEPRECATED AS INSUFFICIENT 2026-10-25 -- register section O, item O-4.
+// Owner direction: the master agent starts with FULL RIGHTS, then starts the
+// other agents per policy, each following its own policy rights.
+//
+// This writes GRANT ROWS ONLY. No agent principal receives a role membership:
+// `NativeBootstrapMembershipDefinition` is called exactly once in this file
+// (`:3368`), for the bootstrap administrator. But full rights comes from
+// `engine_owned_bootstrap_role_uuid` being non-nil in the materialized
+// authorization context, and that comes from MEMBERSHIP in the engine-owned
+// sysarch role -- never from enumerated grants
+// (`agent_authorization_context.hpp:143-147`).
+//
+// Measured consequence: the agent catalog work is authorized through SQL object
+// privileges (`SELECT`, `INSERT`), which share the single `KnownRights()`
+// vocabulary with the OBS_* rights (`security_model.cpp:155`). So a master
+// agent provisioned the way the other 29 are would get an enumerated right
+// list that cannot reach them, silently substituting "whatever was enumerated"
+// for "full rights". The sysarch bundle does reach them.
+//
+// What is owed: the create path must be able to write a role MEMBERSHIP for an
+// agent principal, not only grants, so the master agent can be provisioned
+// with sysarch. The per-agent grant sets written here stay correct for the
+// other agents and are NOT deprecated -- only their sufficiency for the master
+// agent is.
+//
+// Separate from NativeLocalServiceGrantDefinition above rather than a widening
+// of it, for a measured reason: that template's five rights and five grant
+// identities are pinned by test (native_local_service_enrollment_test.cpp
+// asserts "five direct grants"), and the MGA catalog-version path writes one
+// grant per slot in NativeInitialLocalServiceIdentity::grant_uuids. Widening
+// that fixed array would therefore change the local-service principal's
+// committed row set as a side effect of adding agent support.
+//
+// An agent's rights come from the configuration policy files, so they are
+// neither a fixed length nor a fixed order; this takes the right by name and
+// the grant identity directly.
+scratchbird::core::catalog::CatalogSecurityRecord NativeAgentPrincipalGrantDefinition(
+    const core::platform::Uuid& principal_uuid,
+    const core::platform::Uuid& grant_uuid,
+    std::string_view right,
+    const TypedUuid& origin,
+    u64 policy_generation) {
+  auto record=NativeBootstrapDefinition(CatalogRecordKind::grant_record,grant_uuid,origin,policy_generation);
+  record.attributes["create_time_only"]=false;
+  record.identities.emplace("subject_uuid",principal_uuid);
+  record.attributes.emplace("security_generation",u64{1});
+  record.attributes.emplace("grant_class","privilege");
+  record.attributes.emplace("subject_kind","principal");
+  record.attributes.emplace("effect","allow");
+  record.attributes.emplace("right",std::string(right));
+  return record;
+}
+
 // Single derivation of the internal service identity.
 //
 // Step 1 of wiring the creation-workspace chain needs these identities in two
@@ -3429,22 +3569,67 @@ CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
       if (!typed.ok()) {
         return typed;
       }
-      // Minimal CONNECT only, which is slot 0 of the existing local-service
-      // right set rather than a right invented here. Without it the principal
-      // exists but can do nothing, which is a dead end rather than a usable
-      // starting point. The remaining rights stay ungranted until the agent
-      // registry is enumerable and grants can mirror authority class, per
-      // `SECURITY-INTERNAL-PRINCIPAL-PROVISIONING`.
-      auto connect_record = NativeLocalServiceGrantDefinition(
-          actor, 0, creator_transaction_uuid, policy_generation);
-      typed = AddSecurityCatalogRecord(rows, ordinal, extra_seed + 22,
-          std::move(connect_record), security_parent_uuid,
-          creator_transaction_uuid);
-      if (!typed.ok()) {
-        return typed;
+      // Grants now mirror authority class when the configuration policy files
+      // declare this principal as an agent type, which is what
+      // `SECURITY-INTERNAL-PRINCIPAL-PROVISIONING` asks for and what the
+      // CONNECT-only note here previously deferred.
+      //
+      // Resolution is by agent TYPE ID against the principal name, because the
+      // principal uuid is generated just above and so cannot be referenced by
+      // the pack. A principal that is not a declared agent type keeps the
+      // previous minimal behaviour exactly: CONNECT alone.
+      const PolicyAgentAuthoritySeed* agent_authority = nullptr;
+      for (const auto& candidate : policy_seed_pack.agent_authority) {
+        if (candidate.agent_type_id == spec.principal_name) {
+          agent_authority = &candidate;
+          break;
+        }
+      }
+      if (agent_authority == nullptr) {
+        // Minimal CONNECT only, which is slot 0 of the existing local-service
+        // right set rather than a right invented here. Without it the principal
+        // exists but can do nothing, which is a dead end rather than a usable
+        // starting point.
+        auto connect_record = NativeLocalServiceGrantDefinition(
+            actor, 0, creator_transaction_uuid, policy_generation);
+        typed = AddSecurityCatalogRecord(rows, ordinal, extra_seed + 22,
+            std::move(connect_record), security_parent_uuid,
+            creator_transaction_uuid);
+        if (!typed.ok()) {
+          return typed;
+        }
+        result.internal_principal_uuids.push_back(ids[0]);
+        extra_seed += 24;
+        continue;
+      }
+      // One grant row per declared right, each with its own generated
+      // identity. The identities are NOT taken from actor.grant_uuids: that
+      // array is five wide and its contents are consumed by the local-service
+      // representation, so reusing it would both cap an agent at five rights
+      // and collide with those rows.
+      u64 agent_grant_seed = extra_seed + 22;
+      for (const auto& right : agent_authority->rights) {
+        const auto grant_identity =
+            GenerateEngineIdentityV7(UuidKind::object, agent_grant_seed);
+        if (!grant_identity.ok()) {
+          return CatalogRowsBuildError(grant_identity.status,
+                                       grant_identity.diagnostic);
+        }
+        auto grant_record = NativeAgentPrincipalGrantDefinition(
+            ids[0].value, grant_identity.value.value, right,
+            creator_transaction_uuid, policy_generation);
+        typed = AddSecurityCatalogRecord(rows, ordinal, agent_grant_seed,
+            std::move(grant_record), security_parent_uuid,
+            creator_transaction_uuid);
+        if (!typed.ok()) {
+          return typed;
+        }
+        agent_grant_seed += 2;
       }
       result.internal_principal_uuids.push_back(ids[0]);
-      extra_seed += 24;
+      // Advance past every identity this principal consumed, so the next
+      // principal's seeds cannot overlap and produce a duplicate identity.
+      extra_seed = agent_grant_seed + 2;
     }
   }
   return result;
@@ -7508,8 +7693,16 @@ PolicySeedPackDescriptor DefaultPolicyPackDescriptor() {
   descriptor.policy_pack_version = "1.0.0";
   descriptor.manifest_relative_path =
       "resources/policy-packs/default-local-password/POLICY_PACK_MANIFEST.json";
+  // Pinned aggregate identity of the public default pack. This is a
+  // supply-chain control, not a cache: it must be updated deliberately
+  // whenever the pack's content changes, and the loader independently
+  // recomputes the aggregate from content_manifest (see :2048), so a stale
+  // value here refuses the pack rather than accepting the wrong one.
+  // Updated 2026-10-23 when policies/agent_authority.json joined the pack,
+  // taking content_manifest from nine entries to ten.
+  // Previous: 4aeaf3bbda57d933f94a083ad792287e13cddfae88a0c7a02ee5e39b802a26f5
   descriptor.content_sha256 =
-      "4aeaf3bbda57d933f94a083ad792287e13cddfae88a0c7a02ee5e39b802a26f5";
+      "bf7ca367edbf43b2b0d55fdf72db82e2bf5d9fad11fb3b168b09cf99be4d3b42";
   descriptor.create_time_only = true;
   descriptor.post_create_filesystem_authority = false;
   descriptor.local_password_only = true;

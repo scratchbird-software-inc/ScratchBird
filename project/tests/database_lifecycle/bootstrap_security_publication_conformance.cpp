@@ -1064,6 +1064,125 @@ void TestInternalServicePrincipalProvisioned(Cleanup* cleanup) {
           "the internal service principal's committed right set is not the fixed five");
 }
 
+// SEARCH_KEY: SECURITY-INTERNAL-PRINCIPAL-PROVISIONING
+// Agent authority written at create from the configuration policy files.
+//
+// Distinct from the service principal above: that one comes from
+// internal_service_principal_name and carries the fixed five rights, while an
+// agent principal comes from the internal_principals vector and carries the
+// right set the policy pack declares for its agent type. Before this, every
+// internal_principals entry received CONNECT alone regardless of what it was
+// for, so an agent could authenticate and then do nothing.
+//
+// This asserts the durable result of a create, not an authentication: no
+// session is started and no transaction admitted.
+void TestAgentAuthorityProvisionedFromPolicyPack(Cleanup* cleanup) {
+  // memory_governor is a direct_bounded_action agent whose declared set is
+  // small and stable: CONNECT to authenticate, OBS_AGENT_CONTROL_INTERNAL to
+  // actuate its own bounded action, and the node-scoped metric gate its
+  // declared families resolve to.
+  const std::set<std::string> expected{"CONNECT", "OBS_AGENT_CONTROL_INTERNAL",
+                                       "OBS_METRICS_READ_NODE"};
+  const std::filesystem::path path = TestPath("agent_authority_from_policy_pack");
+  cleanup->paths.push_back(path);
+  auto config = MakeConfig(path);
+  config.internal_principals.push_back({"memory_governor", kCredentialFingerprint});
+  const auto created = db::CreateDatabaseFile(config);
+  if (!created.ok()) std::cerr << created.diagnostic.diagnostic_code << '\n';
+  Require(created.ok(), "agent principal create failed");
+  Require(created.create_finality == db::DatabaseCreateFinalityClass::committed,
+          "agent principal create was not classified committed");
+
+  scratchbird::core::platform::Uuid agent_principal_uuid{};
+  bool agent_account_committed = false;
+  std::set<std::string> granted;
+  for (const auto& row : ReadCatalogRows(path, created.state.header.page_size)) {
+    if (row.kind != page::CatalogPageRowKind::typed_catalog_record) continue;
+    const auto outer = catalog::DecodeCatalogTypedRecord(row);
+    Require(outer.ok(), "agent principal row decode failed");
+    if (!catalog::IsCatalogSecurityRecordKind(outer.record.header.kind)) continue;
+    const auto security = catalog::DecodeCatalogSecurityRecord(outer.record.header.kind,
+                                                               outer.record.payload);
+    Require(security.ok(), "agent principal security record decode failed");
+    if (outer.record.header.kind == catalog::CatalogRecordKind::user_account &&
+        security.record->Attribute("principal_name") == std::string_view("memory_governor")) {
+      agent_account_committed = true;
+      agent_principal_uuid = outer.record.header.object_uuid.value;
+    }
+  }
+  Require(agent_account_committed,
+          "no committed account row carries the requested agent type name");
+  Require(!agent_principal_uuid.is_nil(), "agent principal committed a nil identity");
+
+  std::set<scratchbird::core::platform::Uuid> grant_identities;
+  for (const auto& row : ReadCatalogRows(path, created.state.header.page_size)) {
+    if (row.kind != page::CatalogPageRowKind::typed_catalog_record) continue;
+    const auto outer = catalog::DecodeCatalogTypedRecord(row);
+    Require(outer.ok(), "agent grant row decode failed");
+    if (outer.record.header.kind != catalog::CatalogRecordKind::grant_record) continue;
+    const auto security = catalog::DecodeCatalogSecurityRecord(outer.record.header.kind,
+                                                               outer.record.payload);
+    Require(security.ok(), "agent grant security record decode failed");
+    if (security.record->Identity("subject_uuid") != agent_principal_uuid) continue;
+    const auto right = security.record->Attribute("right");
+    Require(right.has_value(), "agent grant carries no right name");
+    Require(security.record->Attribute("effect") == std::string_view("allow"),
+            "agent grant is not an allow");
+    Require(security.record->Attribute("subject_kind") == std::string_view("principal"),
+            "agent grant was not committed against a principal subject");
+    Require(granted.insert(std::string(*right)).second, "agent grant is duplicated");
+    // Each grant needs its own identity: reusing one would collapse two rows.
+    Require(grant_identities.insert(outer.record.header.object_uuid.value).second,
+            "two agent grants share one identity");
+  }
+  if (granted != expected) {
+    std::cerr << "agent rights:";
+    for (const auto& right : granted) std::cerr << ' ' << right;
+    std::cerr << '\n';
+  }
+  Require(granted == expected,
+          "the agent principal's committed rights are not the policy pack's declared set");
+
+  // A principal that is NOT a declared agent type must keep the previous
+  // minimal behaviour exactly, so adding agent support cannot have widened
+  // authority for anything else that uses this vector.
+  const std::filesystem::path other = TestPath("agent_authority_non_agent_principal");
+  cleanup->paths.push_back(other);
+  auto other_config = MakeConfig(other);
+  other_config.internal_principals.push_back({"sb_not_an_agent_type", kCredentialFingerprint});
+  const auto other_created = db::CreateDatabaseFile(other_config);
+  Require(other_created.ok(), "non-agent internal principal create failed");
+  scratchbird::core::platform::Uuid other_uuid{};
+  for (const auto& row : ReadCatalogRows(other, other_created.state.header.page_size)) {
+    if (row.kind != page::CatalogPageRowKind::typed_catalog_record) continue;
+    const auto outer = catalog::DecodeCatalogTypedRecord(row);
+    Require(outer.ok(), "non-agent row decode failed");
+    if (outer.record.header.kind != catalog::CatalogRecordKind::user_account) continue;
+    const auto security = catalog::DecodeCatalogSecurityRecord(outer.record.header.kind,
+                                                               outer.record.payload);
+    Require(security.ok(), "non-agent security record decode failed");
+    if (security.record->Attribute("principal_name") == std::string_view("sb_not_an_agent_type"))
+      other_uuid = outer.record.header.object_uuid.value;
+  }
+  Require(!other_uuid.is_nil(), "non-agent internal principal was not committed");
+  std::set<std::string> other_granted;
+  for (const auto& row : ReadCatalogRows(other, other_created.state.header.page_size)) {
+    if (row.kind != page::CatalogPageRowKind::typed_catalog_record) continue;
+    const auto outer = catalog::DecodeCatalogTypedRecord(row);
+    Require(outer.ok(), "non-agent grant row decode failed");
+    if (outer.record.header.kind != catalog::CatalogRecordKind::grant_record) continue;
+    const auto security = catalog::DecodeCatalogSecurityRecord(outer.record.header.kind,
+                                                               outer.record.payload);
+    Require(security.ok(), "non-agent grant decode failed");
+    if (security.record->Identity("subject_uuid") != other_uuid) continue;
+    const auto right = security.record->Attribute("right");
+    Require(right.has_value(), "non-agent grant carries no right name");
+    other_granted.insert(std::string(*right));
+  }
+  Require(other_granted == std::set<std::string>{"CONNECT"},
+          "a non-agent internal principal no longer receives exactly CONNECT");
+}
+
 void TestCommittedSecurityOrigin(Cleanup* cleanup) {
   std::filesystem::path path;
   const auto created=CreateCommitted(cleanup,"committed_security_origin",&path);
@@ -1149,6 +1268,7 @@ int main() try {
   TestCompleteAgentConfiguration(&cleanup);
   TestCommittedSecurityOrigin(&cleanup);
   TestInternalServicePrincipalProvisioned(&cleanup);
+  TestAgentAuthorityProvisionedFromPolicyPack(&cleanup);
   TestBootstrapRecordOrder();
   TestPrepublicationFaults(&cleanup);
   TestPostpublicationFaults(&cleanup);
