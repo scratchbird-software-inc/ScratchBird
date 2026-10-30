@@ -82,6 +82,1590 @@
       "target_uuid": "",
       "right": "OBS_MANAGEMENT_INSPECT",
       "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001000",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000600",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001001",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000600",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001002",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000601",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001003",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000601",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_STATE_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001004",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000601",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001005",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000601",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_RECOMMENDATION_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001006",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000601",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_EVIDENCE_APPEND",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001007",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000601",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "INSERT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001008",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000601",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_CONTROL_INTERNAL",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001009",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000602",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000100a",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000602",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_STATE_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000100b",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000602",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000100c",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000602",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_RECOMMENDATION_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000100d",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000602",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_EVIDENCE_APPEND",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000100e",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000603",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000100f",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000603",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001010",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000604",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001011",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000604",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_STATE_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001012",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000604",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001013",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000604",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_RECOMMENDATION_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001014",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000604",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_EVIDENCE_APPEND",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001015",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000604",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "FILESPACE_LIFECYCLE_CONTROL",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001016",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000604",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_FILESPACE_TRUNCATE",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001017",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000604",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_CONTROL_INTERNAL",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001018",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000605",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001019",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000605",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000101a",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000606",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000101b",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000606",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_STATE_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000101c",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000606",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000101d",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000606",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_RECOMMENDATION_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000101e",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000606",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_EVIDENCE_APPEND",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000101f",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000606",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_CONTROL_INTERNAL",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001020",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000607",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001021",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000607",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001022",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000608",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001023",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000608",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_STATE_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001024",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000608",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001025",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000608",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_RECOMMENDATION_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001026",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000608",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_EVIDENCE_APPEND",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001027",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000608",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_CONTROL_INTERNAL",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001028",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000609",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001029",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000609",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000102a",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000060a",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000102b",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000060a",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_STATE_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000102c",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000060a",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000102d",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000060a",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_RECOMMENDATION_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000102e",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000060a",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_EVIDENCE_APPEND",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000102f",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000060b",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001030",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000060b",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001031",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000060c",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001032",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000060c",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_STATE_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001033",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000060c",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001034",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000060c",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_RECOMMENDATION_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001035",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000060c",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_EVIDENCE_APPEND",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001036",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000060c",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_CONTROL_INTERNAL",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001037",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000060d",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001038",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000060d",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001039",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000060e",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000103a",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000060e",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_STATE_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000103b",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000060e",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000103c",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000060e",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_RECOMMENDATION_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000103d",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000060e",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_EVIDENCE_APPEND",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000103e",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000060e",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_PARSER_CONTROL",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000103f",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000060e",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "SEC_REDACTION_POLICY_EDIT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001040",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000060f",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001041",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000060f",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_STATE_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001042",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000060f",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001043",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000060f",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_RECOMMENDATION_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001044",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000060f",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_EVIDENCE_APPEND",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001045",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000060f",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_LISTENER_CONTROL",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001046",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000610",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001047",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000610",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001048",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000611",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001049",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000611",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_STATE_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000104a",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000611",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000104b",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000611",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_RECOMMENDATION_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000104c",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000611",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_EVIDENCE_APPEND",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000104d",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000611",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "SEC_SESSION_CONTROL",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000104e",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000611",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "SEC_SESSION_KILL",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000104f",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000612",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001050",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000612",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001051",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000613",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001052",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000613",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_STATE_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001053",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000613",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001054",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000613",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_RECOMMENDATION_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001055",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000613",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_EVIDENCE_APPEND",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001056",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000614",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001057",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000614",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_STATE_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001058",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000614",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001059",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000614",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_RECOMMENDATION_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000105a",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000614",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_EVIDENCE_APPEND",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000105b",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000614",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "MGA_CLEANUP_CONTROL",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000105c",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000615",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000105d",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000615",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_STATE_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000105e",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000615",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000105f",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000615",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_RECOMMENDATION_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001060",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000615",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_EVIDENCE_APPEND",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001061",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000615",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "MGA_CLEANUP_CONTROL",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001062",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000616",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001063",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000616",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001064",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000617",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001065",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000617",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_STATE_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001066",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000617",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001067",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000617",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_RECOMMENDATION_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001068",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000617",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_EVIDENCE_APPEND",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001069",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000617",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "MGA_CLEANUP_CONTROL",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000106a",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000617",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "ARCHIVE_CONTROL",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000106b",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000618",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000106c",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000618",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000106d",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000619",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000106e",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000619",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_STATE_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000106f",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000619",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001070",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000619",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_RECOMMENDATION_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001071",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000619",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_EVIDENCE_APPEND",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001072",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000619",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "EXTERNAL_RANGE_MATERIALIZATION_ADMIN",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001073",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000619",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "ARCHIVE_CONTROL",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001074",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000619",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "ARCHIVE_EXPIRY_REMOVE",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001075",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000061a",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001076",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000061a",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001077",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000061b",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001078",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000061b",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_STATE_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001079",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000061b",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000107a",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000061b",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_RECOMMENDATION_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000107b",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000061b",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_EVIDENCE_APPEND",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000107c",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000061b",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "BACKUP_CONTROL",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000107d",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000061c",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000107e",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000061c",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000107f",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000061d",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001080",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000061d",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_STATE_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001081",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000061d",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001082",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000061d",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_RECOMMENDATION_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001083",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000061d",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_EVIDENCE_APPEND",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001084",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000061d",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_RESTORE_DRILL_CONTROL",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001085",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000061e",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001086",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000061e",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001087",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000061f",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001088",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000061f",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_STATE_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001089",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000061f",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000108a",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000061f",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_RECOMMENDATION_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000108b",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000061f",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_EVIDENCE_APPEND",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000108c",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000061f",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_RESTORE_PLANNING",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000108d",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000620",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000108e",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000620",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000108f",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000621",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001090",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000621",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_STATE_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001091",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000621",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001092",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000621",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_RECOMMENDATION_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001093",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000621",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_EVIDENCE_APPEND",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001094",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000621",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "INDEX_MAINTENANCE_CONTROL",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001095",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000622",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001096",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000622",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_STATE_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001097",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000622",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001098",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000622",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_RECOMMENDATION_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-000000001099",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000622",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_EVIDENCE_APPEND",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000109a",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000623",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000109b",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000623",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000109c",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000624",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000109d",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000624",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_STATE_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000109e",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000624",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000109f",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000624",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_RECOMMENDATION_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010a0",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000624",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_EVIDENCE_APPEND",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010a1",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000625",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010a2",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000625",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_STATE_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010a3",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000625",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010a4",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000625",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_RECOMMENDATION_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010a5",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000625",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_EVIDENCE_APPEND",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010a6",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000625",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_ALERT_INTERNAL",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010a7",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000626",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010a8",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000626",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010a9",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000627",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010aa",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000627",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_STATE_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010ab",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000627",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010ac",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000627",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_RECOMMENDATION_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010ad",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000627",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_EVIDENCE_APPEND",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010ae",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000627",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_SUPPORT_BUNDLE_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010af",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000627",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "SUPPORT_EXPORT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010b0",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000628",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010b1",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000628",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010b2",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000629",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010b3",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000629",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_STATE_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010b4",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000629",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010b5",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000629",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_RECOMMENDATION_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010b6",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000629",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_EVIDENCE_APPEND",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010b7",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000629",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "SEC_IDENTITY_ADMIN",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010b8",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000629",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "SEC_AUTH_METRICS_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010b9",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000062a",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010ba",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000062a",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_STATE_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010bb",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000062a",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010bc",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000062a",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_RECOMMENDATION_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010bd",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000062a",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_EVIDENCE_APPEND",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010be",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000062a",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_JOB_ADMIN",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010bf",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000062b",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010c0",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000062b",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_STATE_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010c1",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000062b",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_POLICY_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010c2",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000062b",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_RECOMMENDATION_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010c3",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000062b",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_EVIDENCE_APPEND",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010c4",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000062b",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_EXPORT_CONTROL",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010c5",
+      "subject_uuid": "018f7a10-1280-7000-8000-00000000062b",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_METRICS_EXPORT_READ",
+      "effect": "allow"
     }
   ]
 }

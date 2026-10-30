@@ -606,7 +606,7 @@ AgentError AddAgentConfigurationFixture(db::NativeCreationCatalogSeed& seed,
   Check(result.ok(),"complete named agent definitions assemble atomically before native persistence");
   for(auto& row:result.records->definitions)seed[4].push_back(std::move(row));
   for(auto& row:result.records->names)seed[1].push_back(std::move(row));
-  if(!variant)Check(seed[4].size()==95&&seed[1].size()==260,"all 66 agent definitions and 132 names join native creation");
+  if(!variant)Check(seed[4].size()==95&&seed[1].size()==744,"all 66 agent definitions and 132 names join native creation");
   Check(!variant||expected!=AgentError::none,"known agent configuration refusal fixture");
   return expected;
 }
@@ -1164,7 +1164,11 @@ void AddCollisionPolicyFixture(db::NativeCreationCatalogSeed& seed,
   std::string duplicate;
   for(const auto& row:seed[1])if(row.name)if(const auto* entry=std::get_if<CatalogNameEntry>(&*row.name);
       entry&&entry->object_uuid.value==enrollment::SourceId(1))duplicate=entry->raw_name_text;
-  Check(!duplicate.empty(),"collision case uses the actual persisted pack alias");
+  // Only the duplicate-alias variants consume the pack alias. Other cases run
+  // this fixture too, including the name fault that deliberately repoints the
+  // pack's entry, so requiring the alias there failed a case it does not test.
+  const bool uses_duplicate=(variant>=11&&variant<=17)||variant==19||variant==20;
+  if(uses_duplicate)Check(!duplicate.empty(),"collision case uses the actual persisted pack alias");
   const auto target=variant==16||variant==17?security_fixture::Id(12000):enrollment::SourceId(0x10);
   for(auto& row:seed[1])if(row.name){
     if(auto* vector=std::get_if<CatalogNameVector>(&*row.name);vector&&vector->object_uuid.value==target){
@@ -1213,8 +1217,8 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
   enrollment::NativeLocalServiceCreationFixture inputs(Id(1),security_tx,verifier);
   auto catalogs=db::AssembleNativeInitialPolicySecurityCatalogs(inputs.ServiceRequest(SB_DEFAULT_POLICY_PACK_ROOT));
   Check(catalogs.ok(),"production assembler admits complete native service policy/security/name enrollment");
-  Check(catalogs.plan->catalogs[1].size()==128&&catalogs.plan->catalogs[3].size()==35&&
-      catalogs.plan->catalogs[4].size()==29,"complete 64 definitions and 128 names, including bootstrap and service");
+  Check(catalogs.plan->catalogs[1].size()==612&&catalogs.plan->catalogs[3].size()==277&&
+      catalogs.plan->catalogs[4].size()==29,"complete 306 definitions and 612 names, including bootstrap and service");
   if(reference_variant){
     auto& definitions=catalogs.plan->catalogs[4];
     const auto target=std::find_if(definitions.begin(),definitions.end(),[](const auto& row){
@@ -1271,9 +1275,10 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
   construction.bootstrap={Id(1),Id(2),Profile(profile),disk::kNativeBootstrapIntegrityProfile,{},sizes[profile],1,0,1,7};
   construction.operation_uuid=Id(3);construction.writer_uuid=Id(4);construction.policy_snapshot_uuid=Id(10);
   construction.creator.transaction_uuid=security_tx;construction.creator.local_id=mga::MakeLocalTransactionId(1);
-  construction.creator.scope=mga::TransactionScope::local_node;construction.total_pages=256;
+  construction.creator.scope=mga::TransactionScope::local_node;construction.total_pages=512;
   // This case retains the additional verification phase history. Provision its
-  // explicit physical capacity up front; ordinary fixtures retain 256 pages.
+  // explicit physical capacity up front; ordinary fixtures retain 512 pages
+  // (256 before the agent task-group roles enlarged the catalog, 2026-10-29).
   // No allocator may reuse immutable history or bypass a full filespace.
   if(profile==0&&indexed&&!configuration_variant&&!graph_variant&&!death&&!agent_variant&&!memory_variant&&
       !policy_variant&&!authentication_variant&&!name_variant&&!namespace_variant&&!filespace_variant&&!audit_variant&&
@@ -1358,9 +1363,16 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
   EnrolledCredentialCustodian provisioner;
   platform::Uuid previous_engine_instance;
   for(unsigned reopen=0;reopen<(configuration_variant||graph_variant||agent_variant||policy_variant||name_variant||namespace_variant||filespace_variant||reference_variant||naming_profile_variant||collision_variant?1u:2u);++reopen){
-    const db::NativeCatalogRelationMemoryLimits limits{Profile(profile),1,32,128,128,{16,32*static_cast<std::size_t>(sizes[profile])}};
+    // Credential-only bounds: room for the 277-row security relation, still
+    // smaller than the complete catalog scan (about 744 name rows). Base pages
+    // are bounded in bytes so small pages get enough leaves (mirrors
+    // engine_host.cpp).
+    const std::size_t credential_base_pages=std::max<std::size_t>(32,512*1024/static_cast<std::size_t>(sizes[profile]));
+    const db::NativeCatalogRelationMemoryLimits limits{Profile(profile),1,credential_base_pages,512,512,{16,32*static_cast<std::size_t>(sizes[profile])}};
+    // 277 security records with the agent task-group roles (2026-10-29); variant
+    // 1 stays exactly one record short so the bound still refuses.
     const runtime_security::NativeRuntimeAuthorizationLimits graph_limits{
-        graph_variant==1?34u:128u,graph_variant==1?34u:128u,graph_variant==2?1u:1000000u};
+        graph_variant==1?276u:512u,graph_variant==1?276u:128u,graph_variant==2?1u:1000000u};
     const auto manager_baseline=mem::DefaultMemoryManager().Snapshot();
     server::DatabaseOwnershipRequest ownership;ownership.database_path=path;ownership.storage_access=disk::RouteStorageAccess::read_write;
     using Host=server::NativeHostedDatabaseRuntime;
@@ -1996,12 +2008,14 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
               Check(Host::ReadStartupControl(read,{1,control_limits.maximum_backing_bytes})==server::NativeHostedRuntimeError::invalid_request&&
                   Host::ReadStartupControl(read,{budget,1})==server::NativeHostedRuntimeError::invalid_request&&read.control().ok(),
                   "retained control verification respects tighter work and backing limits");
-              const db::NativeSelectedCheckpointMemoryLimits catalog_limits{budget,32*1024*1024};
+              const db::NativeSelectedCheckpointMemoryLimits catalog_limits{budget,12*1024*1024};
               // Bound the page working set in bytes across all page profiles;
               // larger pages need fewer leaf and navigation slots. The row
               // index still covers the complete submitted name catalog.
-              const auto catalog_page_slots=512*1024/static_cast<std::size_t>(sizes[profile]);
-              const db::NativeCatalogRelationMemoryLimits catalog_scan_limits{Profile(profile),1,catalog_page_slots,512,512,{catalog_page_slots,1024*1024}};
+              // 2 MiB page working set (was 512 KiB) for the larger catalog with the
+              // agent task-group roles (2026-10-29).
+              const auto catalog_page_slots=2*1024*1024/static_cast<std::size_t>(sizes[profile]);
+              const db::NativeCatalogRelationMemoryLimits catalog_scan_limits{Profile(profile),1,catalog_page_slots,1024,1024,{catalog_page_slots,1024*1024}};
               Check(Host::ReadStartupCatalogs(read,catalog_limits,catalog_scan_limits)==server::NativeHostedRuntimeError::verification_history_failure,
                   "catalog scan requires retained verification-family phase validation");
               allocation_budget=0;
@@ -2078,7 +2092,9 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
                   "catalog scan cache cannot bypass requested work or backing limits");
               Check(Host::ReadStartupCatalogs(read,catalog_limits,limits)==server::NativeHostedRuntimeError::invalid_request,
                   "cached complete catalog scan cannot bypass the smaller credential-only relation bounds");
-              const db::NativeCatalogCaptureLimits capture_limits{1024,2*1024*1024,1,4,512,128};
+              // 1225 captured rows with the agent task-group roles (2026-10-29); text
+              // (0.7 MB) and physical pages (at most 238) fit the original bounds.
+              const db::NativeCatalogCaptureLimits capture_limits{1280,2*1024*1024,1,4,512,128};
               Check(!read.catalog_capture().ok()&&read.catalog_capture().rows().empty(),
                   "count-only inspection grants no retained catalog row view");
               Check(Host::VerifyStartupCatalogMetadata(read)==server::NativeHostedRuntimeError::catalog_failure&&
@@ -2176,7 +2192,8 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
                 Check(found!=expected_catalog_bytes.end()&&found->second==CatalogVariableBytes(row.row.metadata,row.row.name_payload),
                     "every captured payload, metadata label and name byte survives relation workspace reuse");
               }
-              std::array<std::size_t,1024> name_workspace;
+              // Sized for the default pack with agent task-group roles (2026-10-29).
+              std::array<std::size_t,4096> name_workspace;
               allocation_budget=0;
               const auto names=runtime_security::VerifyNativeCatalogNameBindings(read.catalog_capture(),name_workspace);
               const auto name_heap=allocation_budget;allocation_budget=-1;
@@ -2208,8 +2225,8 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
               }
               Check(read.catalog_capture().DisjointWorkspace(std::as_bytes(std::span{name_workspace})),
                   "independent caller scratch remains admissible after alias refusals");
-              std::array<std::size_t,1024> namespace_parents;
-              std::array<platform::byte,1024> namespace_colors;
+              std::array<std::size_t,4096> namespace_parents;
+              std::array<platform::byte,4096> namespace_colors;
               allocation_budget=0;
               const auto namespaces=runtime_security::VerifyNativeCatalogNamespaces(read.catalog_capture(),
                   {name_workspace,namespace_parents,namespace_colors});

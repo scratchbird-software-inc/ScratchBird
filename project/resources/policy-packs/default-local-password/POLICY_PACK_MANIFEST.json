@@ -7,7 +7,7 @@
   "policy_pack_version": "1.0.0",
   "description": "First public release default policy pack: local password provider only.",
   "content_hash_algorithm": "sha256",
-  "content_sha256": "9986ce1990b5ab56667525bb6d5acd78349edc89e04c9fb0a7c31b45ae2f70c6",
+  "content_sha256": "20645e55e0a45dff2bf69fa9d2988a75b6064324fb7986afc2d3e6e722ae7056",
   "signature_status": "signature-ready-unsigned",
   "provenance": {
     "source": "public-project-tree",
@@ -44,7 +44,7 @@
     },
     {
       "path": "policies/roles.json",
-      "sha256": "df4ff37e43f46b8fb8fb938fab76ce553d254f00630d75ae39ce68f00c3f3ca9"
+      "sha256": "d729e24ebd0647c4f251addee249a1d9fd4eef86b712be1ab11dd1b301d2ff53"
     },
     {
       "path": "policies/groups.json",
@@ -52,7 +52,7 @@
     },
     {
       "path": "policies/grants.json",
-      "sha256": "ef30fad54b8339f4419c3b1b508e292416b4bdb9e721bd86aea0087f693a78a8"
+      "sha256": "0056681bbbfbd27df9bee745e5da70fa881664b0f3223cb3d9ed42b0cdaa7b43"
     },
     {
       "path": "policies/policy_profiles.json",
@@ -76,7 +76,7 @@
     },
     {
       "path": "policies/agent_authority.json",
-      "sha256": "56c9eb2d9922f438aef36ca7df4b1eda598b0da1c59b595a2ae58dfab46cfdaa"
+      "sha256": "32f333fba56ae47fd285cd84043c973093442b5876c9878d95aef422be2f46cc"
     }
   ]
 }

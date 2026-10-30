@@ -1143,6 +1143,60 @@ void TestAgentAuthorityProvisionedFromPolicyPack(Cleanup* cleanup) {
   Require(granted == expected,
           "the agent principal's committed rights are not the policy pack's declared set");
 
+  // Task-group role (appendix-agent-security-roles.md, accepted 2026-10-29):
+  // memory_governor is L3 in the memory_governor task group, so create must
+  // commit exactly one membership of its principal in AGENT_MEMORY_GOVERNOR_WRITE,
+  // and that role must carry the common write set plus its task right.
+  scratchbird::core::platform::Uuid write_role_uuid{};
+  std::map<scratchbird::core::platform::Uuid, std::set<std::string>> role_rights;
+  std::vector<scratchbird::core::platform::Uuid> agent_memberships;
+  for (const auto& row : ReadCatalogRows(path, created.state.header.page_size)) {
+    if (row.kind != page::CatalogPageRowKind::typed_catalog_record) continue;
+    const auto outer = catalog::DecodeCatalogTypedRecord(row);
+    Require(outer.ok(), "agent role row decode failed");
+    if (!catalog::IsCatalogSecurityRecordKind(outer.record.header.kind)) continue;
+    const auto security = catalog::DecodeCatalogSecurityRecord(outer.record.header.kind,
+                                                               outer.record.payload);
+    Require(security.ok(), "agent role security record decode failed");
+    if (outer.record.header.kind == catalog::CatalogRecordKind::role_account &&
+        security.record->Attribute("role_code") ==
+            std::string_view("AGENT_MEMORY_GOVERNOR_WRITE")) {
+      write_role_uuid = outer.record.header.object_uuid.value;
+    }
+    if (outer.record.header.kind != catalog::CatalogRecordKind::grant_record) continue;
+    if (security.record->Attribute("grant_class") == std::string_view("role_membership") &&
+        security.record->Identity("member_uuid") == agent_principal_uuid) {
+      Require(security.record->Attribute("member_kind") == std::string_view("principal") &&
+                  security.record->Attribute("parent_kind") == std::string_view("role"),
+              "agent membership is not principal -> role");
+      agent_memberships.push_back(security.record->Identity("role_uuid"));
+    }
+    if (security.record->Attribute("subject_kind") == std::string_view("role")) {
+      const auto subject = security.record->Identity("subject_uuid");
+      const auto right = security.record->Attribute("right");
+      if (!subject.is_nil() && right.has_value())
+        role_rights[subject].insert(std::string(*right));
+    }
+  }
+  Require(!write_role_uuid.is_nil(), "AGENT_MEMORY_GOVERNOR_WRITE role was not committed");
+  Require(agent_memberships.size() == 1 && agent_memberships.front() == write_role_uuid,
+          "the agent principal is not exactly one member of its task-group WRITE role");
+  Require(role_rights[write_role_uuid] ==
+              std::set<std::string>{"CONNECT", "OBS_AGENT_STATE_READ", "OBS_POLICY_READ",
+                                    "OBS_AGENT_RECOMMENDATION_READ",
+                                    "OBS_AGENT_EVIDENCE_APPEND",
+                                    "OBS_AGENT_CONTROL_INTERNAL"},
+          "the task-group WRITE role does not carry the common write set and its task right");
+  {
+    db::DatabaseOpenConfig open;
+    open.path = path.string();
+    open.read_only = true;
+    Require(db::ReadDatabaseBootstrapSecurityCatalog(path.string()).ok(),
+            "the security catalog reader refused the agent role membership");
+    Require(db::OpenDatabaseFile(open).ok(),
+            "a database with an agent role membership did not reopen");
+  }
+
   // A principal that is NOT a declared agent type must keep the previous
   // minimal behaviour exactly, so adding agent support cannot have widened
   // authority for anything else that uses this vector.
@@ -1181,6 +1235,18 @@ void TestAgentAuthorityProvisionedFromPolicyPack(Cleanup* cleanup) {
   }
   Require(other_granted == std::set<std::string>{"CONNECT"},
           "a non-agent internal principal no longer receives exactly CONNECT");
+  for (const auto& row : ReadCatalogRows(other, other_created.state.header.page_size)) {
+    if (row.kind != page::CatalogPageRowKind::typed_catalog_record) continue;
+    const auto outer = catalog::DecodeCatalogTypedRecord(row);
+    Require(outer.ok(), "non-agent membership row decode failed");
+    if (outer.record.header.kind != catalog::CatalogRecordKind::grant_record) continue;
+    const auto security = catalog::DecodeCatalogSecurityRecord(outer.record.header.kind,
+                                                               outer.record.payload);
+    Require(security.ok(), "non-agent membership decode failed");
+    Require(!(security.record->Attribute("grant_class") == std::string_view("role_membership") &&
+              security.record->Identity("member_uuid") == other_uuid),
+            "a non-agent internal principal received a role membership");
+  }
 }
 
 void TestCommittedSecurityOrigin(Cleanup* cleanup) {

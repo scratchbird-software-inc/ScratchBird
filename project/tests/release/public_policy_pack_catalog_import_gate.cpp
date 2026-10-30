@@ -364,11 +364,11 @@ void RequirePolicyCatalogImport(const std::filesystem::path& database_path,
           "policy profile rows were not imported");
   Require(CountDefaultPoliciesFromPack(records) == 58,
           "default policy rows were not imported from the policy pack");
-  Require(CountKindFromPack(records, catalog::CatalogRecordKind::role_account) == 5,
+  Require(CountKindFromPack(records, catalog::CatalogRecordKind::role_account) == 49,
           "standard policy roles were not imported");
   Require(CountKindFromPack(records, catalog::CatalogRecordKind::group_account) == 6,
           "standard policy groups were not imported");
-  Require(CountKindFromPack(records, catalog::CatalogRecordKind::grant_record, "privilege") == 10,
+  Require(CountKindFromPack(records, catalog::CatalogRecordKind::grant_record, "privilege") == 208,
           "standard policy grants were not imported");
   Require(CountKindFromPack(records, catalog::CatalogRecordKind::grant_record, "group_membership") == 5,
           "standard policy group memberships were not imported");
@@ -617,7 +617,7 @@ void RunBinaryIdentityBindingCases() {
       const auto reopened=db::OpenDatabaseFile(open);Require(reopened.ok(),"binary alias relationship did not reopen");
       const auto records=DecodeTypedRecords(ReadCatalogRows(path,reopened.state.header.page_size));
       Require(CountKindFromPack(records,catalog::CatalogRecordKind::grant_record,"group_membership")==5&&
-          CountKindFromPack(records,catalog::CatalogRecordKind::grant_record,"privilege")==10,
+          CountKindFromPack(records,catalog::CatalogRecordKind::grant_record,"privilege")==208,
           "binary alias binding lost actual membership/grant rows");
       const auto expected=uuid::ParseTypedUuid(UuidKind::object,"018f7a10-1280-7000-8000-000000000100");
       Require(expected.ok(),"binary oracle identity invalid");unsigned memberships=0,grants=0;

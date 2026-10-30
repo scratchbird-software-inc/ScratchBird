@@ -1262,7 +1262,19 @@ struct PolicyGrantSeed {
 struct PolicyAgentAuthoritySeed {
   std::string agent_type_id;
   std::string authority_class;
+  std::string deployment;
   std::vector<std::string> rights;
+};
+
+// One agent type and the task-group role its principal is a member of
+// (appendix-agent-security-roles.md, accepted 2026-10-29). L1 readers map to
+// the group's READ role, which carries no write of any kind; L2-L4 map to its
+// WRITE role. The role is a pack role, so its uuid is fixed in the pack.
+struct PolicyAgentTypeSeed {
+  std::string agent_type_id;
+  std::string runtime_layer;
+  std::string task_group;
+  Uuid role_uuid;
 };
 
 struct PolicyProfileSeed {
@@ -1306,6 +1318,9 @@ struct LoadedPolicySeedPack {
   // which leaves agent principals at the minimal grant they get today rather
   // than failing the create.
   std::vector<PolicyAgentAuthoritySeed> agent_authority;
+  // Present whenever agent_authority is: every non-cluster agent type and its
+  // task-group role.
+  std::vector<PolicyAgentTypeSeed> agent_types;
 };
 
 struct PolicyPackLoadResult {
@@ -2428,6 +2443,7 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
         return PolicyPackLoadError("SB-POLICY-PACK-AGENT-AUTHORITY-INVALID",
                                    seed.agent_type_id);
       }
+      ExtractStringField(object, "deployment", &seed.deployment);
       seed.rights = ExtractStringArrayField(object, "rights");
       // An agent with no rights could not even authenticate, so an empty list
       // is a malformed declaration rather than a meaningful "no authority".
@@ -2457,6 +2473,59 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
     if (loaded.agent_authority.empty()) {
       return PolicyPackLoadError("SB-POLICY-PACK-AGENT-AUTHORITY-INVALID",
                                  "agent_authority declared no agents");
+    }
+
+    // Agent types and their task-group roles. Required alongside agent
+    // authority: create provisions an agent's role membership from here, and
+    // an agent with no role is a failed create, not a quieter one.
+    std::string agent_types_body;
+    if (!ExtractArrayBody(agent_authority_json, "agent_types", &agent_types_body)) {
+      return PolicyPackLoadError("SB-POLICY-PACK-AGENT-AUTHORITY-INVALID",
+                                 "agent_types");
+    }
+    std::map<Uuid, std::string> role_codes;
+    for (const auto& role : loaded.roles) role_codes.emplace(role.role_uuid, role.role_code);
+    std::set<std::string> seen_type_ids;
+    for (const std::string& object : SplitTopLevelObjects(agent_types_body)) {
+      PolicyAgentTypeSeed type;
+      if (!ExtractStringField(object, "agent_type_id", &type.agent_type_id) ||
+          !ExtractStringField(object, "runtime_layer", &type.runtime_layer) ||
+          !ExtractStringField(object, "task_group", &type.task_group) ||
+          !ExtractPolicyIdentity(object, "role_uuid", &type.role_uuid) ||
+          type.task_group.empty() ||
+          !IsSafeBootstrapPrincipalName(type.agent_type_id) ||
+          !seen_type_ids.insert(type.agent_type_id).second) {
+        return PolicyPackLoadError("SB-POLICY-PACK-AGENT-AUTHORITY-INVALID",
+                                   "agent_types/" + type.agent_type_id);
+      }
+      const auto role = role_codes.find(type.role_uuid);
+      if (role == role_codes.end()) {
+        return PolicyPackLoadError("SB-POLICY-PACK-AGENT-AUTHORITY-INVALID",
+                                   type.agent_type_id + "/role_uuid");
+      }
+      // A below-transaction reader never writes (owner direction 2026-10-29),
+      // so an L1 type may only hold a READ role and nothing else may.
+      auto ends_with = [](const std::string& v, std::string_view suffix) {
+        return v.size() >= suffix.size() &&
+               v.compare(v.size() - suffix.size(), suffix.size(), suffix) == 0;
+      };
+      const bool reader = type.runtime_layer == "L1";
+      const bool layer_known = reader || type.runtime_layer == "L2" ||
+                               type.runtime_layer == "L3" || type.runtime_layer == "L4";
+      if (!layer_known || (reader ? !ends_with(role->second, "_READ")
+                                  : !ends_with(role->second, "_WRITE"))) {
+        return PolicyPackLoadError("SB-POLICY-PACK-AGENT-AUTHORITY-INVALID",
+                                   type.agent_type_id + "/layer_role");
+      }
+      loaded.agent_types.push_back(std::move(type));
+    }
+    // Every non-cluster agent with declared authority must have a role.
+    for (const auto& agent : loaded.agent_authority) {
+      if (agent.deployment == "cluster") continue;
+      if (seen_type_ids.count(agent.agent_type_id) == 0) {
+        return PolicyPackLoadError("SB-POLICY-PACK-AGENT-AUTHORITY-INVALID",
+                                   agent.agent_type_id + "/no_task_group_role");
+      }
     }
   }
 
@@ -3271,6 +3340,24 @@ scratchbird::core::catalog::CatalogSecurityRecord NativeAgentPrincipalGrantDefin
   return record;
 }
 
+// A role membership for a provisioned AGENT principal in its task-group role
+// (appendix-agent-security-roles.md §4b, accepted 2026-10-29). The bootstrap
+// membership above is fixed to sysarch; this one names the pack role the agent
+// type maps to. Authorization follows the edge principal -> role and applies
+// the role's grants (security_model.cpp, effective subjects).
+scratchbird::core::catalog::CatalogSecurityRecord NativeAgentRoleMembershipDefinition(
+    const Uuid& identity,const Uuid& principal,const Uuid& role,const TypedUuid& origin,
+    u64 policy_generation) {
+  auto record=NativeBootstrapDefinition(CatalogRecordKind::grant_record,identity,origin,policy_generation);
+  record.attributes["create_time_only"]=false;
+  record.identities.emplace("membership_uuid",identity);record.identities.emplace("member_uuid",principal);
+  record.identities.emplace("principal_uuid",principal);record.identities.emplace("parent_uuid",role);
+  record.identities.emplace("role_uuid",role);
+  record.attributes.emplace("grant_class","role_membership");record.attributes.emplace("member_kind","principal");
+  record.attributes.emplace("parent_kind","role");record.attributes.emplace("security_generation",u64{1});
+  return record;
+}
+
 // Single derivation of the internal service identity.
 //
 // Step 1 of wiring the creation-workspace chain needs these identities in two
@@ -3620,6 +3707,41 @@ CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
             creator_transaction_uuid, policy_generation);
         typed = AddSecurityCatalogRecord(rows, ordinal, agent_grant_seed,
             std::move(grant_record), security_parent_uuid,
+            creator_transaction_uuid);
+        if (!typed.ok()) {
+          return typed;
+        }
+        agent_grant_seed += 2;
+      }
+      // Task-group role membership. The pack loader guarantees every
+      // non-cluster agent with declared authority has a type entry, so a
+      // missing one here is a cluster agent, which has no task-group role.
+      const PolicyAgentTypeSeed* agent_type = nullptr;
+      for (const auto& candidate : policy_seed_pack.agent_types) {
+        if (candidate.agent_type_id == spec.principal_name) {
+          agent_type = &candidate;
+          break;
+        }
+      }
+      if (agent_type == nullptr && agent_authority->deployment != "cluster") {
+        return CatalogRowsBuildError(DatabaseLifecycleErrorStatus(),
+            MakeDatabaseLifecycleDiagnostic(DatabaseLifecycleErrorStatus(),
+              "CATALOG.INVALID_INPUT",
+              "catalog.security_record.agent_task_group_role_required",
+              {},spec.principal_name));
+      }
+      if (agent_type != nullptr) {
+        const auto membership_identity =
+            GenerateEngineIdentityV7(UuidKind::object, agent_grant_seed);
+        if (!membership_identity.ok()) {
+          return CatalogRowsBuildError(membership_identity.status,
+                                       membership_identity.diagnostic);
+        }
+        auto membership_record = NativeAgentRoleMembershipDefinition(
+            membership_identity.value.value, ids[0].value, agent_type->role_uuid,
+            creator_transaction_uuid, policy_generation);
+        typed = AddSecurityCatalogRecord(rows, ordinal, agent_grant_seed,
+            std::move(membership_record), security_parent_uuid,
             creator_transaction_uuid);
         if (!typed.ok()) {
           return typed;
@@ -7704,8 +7826,11 @@ PolicySeedPackDescriptor DefaultPolicyPackDescriptor() {
   // Updated 2026-10-29 when ARCHIVE_CONTROL was granted to archive_manager
   // and cleanup_archive_manager in policies/agent_authority.json.
   // Previous: bf7ca367edbf43b2b0d55fdf72db82e2bf5d9fad11fb3b168b09cf99be4d3b42
+  // Updated 2026-10-29: 44 agent task-group roles, 198 role grants and the
+  // agent_types map added (appendix-agent-security-roles.md).
+  // Previous: 9986ce1990b5ab56667525bb6d5acd78349edc89e04c9fb0a7c31b45ae2f70c6
   descriptor.content_sha256 =
-      "9986ce1990b5ab56667525bb6d5acd78349edc89e04c9fb0a7c31b45ae2f70c6";
+      "20645e55e0a45dff2bf69fa9d2988a75b6064324fb7986afc2d3e6e722ae7056";
   descriptor.create_time_only = true;
   descriptor.post_create_filesystem_authority = false;
   descriptor.local_password_only = true;

@@ -10,6 +10,7 @@
 #include "memory_configuration_fixture.hpp"
 #include "catalog_security_record_codec.hpp"
 #include "catalog_runtime_authority_binding.hpp"
+#include "default_pack_agent_roles.inc"
 #include "../support/owned_temp_directory.hpp"
 #include "../support/policy_pack_fixture.hpp"
 #include <algorithm>
@@ -57,20 +58,29 @@ struct Item {
 struct Package {
   std::vector<Item> items;std::vector<c::CatalogNamedCreationInput> inputs;
   std::array<db::NativeInitialMembershipIdentity,5> memberships;
-  explicit Package(bool security=false,bool bootstrap=false,bool service=false):items(service?64:bootstrap?57:security?54:28) {
+  // Default pack: 5 standard + 44 agent roles, 10 standard + 198 agent grants.
+  static constexpr unsigned kRoles=49,kGrants=208,kSecurity=28+kRoles+6+5+kGrants;
+  explicit Package(bool security=false,bool bootstrap=false,bool service=false)
+      :items(service?kSecurity+10:bootstrap?kSecurity+3:security?kSecurity:28) {
     for(unsigned i=0;i<memberships.size();++i)memberships[i]={f::Id(13000+i),SourceId(0x201+i),SourceId(0x100+i)};
     for(unsigned n=0;n<items.size();++n) {
-      auto& x=items[n];const auto object=n==0?SourceId(1):n<=12?SourceId(0x10+n-1):n<=26?SourceId(0x400+n-13):n==27?f::Id(12000):
-          n<=32?SourceId(0x100+n-28):n<=38?SourceId(0x200+n-33):n<=43?f::Id(13000+n-39):n<=53?SourceId(0x300+n-44):
-          n==54?SourceId(0x105):n<=56?f::Id(14000+n-55):n<=58?f::Id(15000+n-57):f::Id(15100+n-59);
+      auto& x=items[n];
+      const unsigned roles_end=28+kRoles,groups_end=roles_end+6,members_end=groups_end+5,grants_end=members_end+kGrants;
+      const unsigned t=n-grants_end;  // tail position, valid once n>=grants_end
+      const auto object=n==0?SourceId(1):n<=12?SourceId(0x10+n-1):n<=26?SourceId(0x400+n-13):n==27?f::Id(12000):
+          n<roles_end?(n-28<5?SourceId(0x100+n-28):SourceId(0x600+n-28-5)):
+          n<groups_end?SourceId(0x200+n-roles_end):n<members_end?f::Id(13000+n-groups_end):
+          n<grants_end?(n-members_end<10?SourceId(0x300+n-members_end):SourceId(0x1000+n-members_end-10)):
+          t==0?SourceId(0x105):t<=2?f::Id(14000+t-1):t<=4?f::Id(15000+t-3):f::Id(15100+t-5);
+      const bool role=n>=28&&(n<roles_end||t==0);
       const auto subtype=n==0?"bootstrap_policy_pack":n<=12?"bootstrap_security_provider":n<=26?"bootstrap_policy_profile":n==27?"memory_configuration":
-          n<=32?"role_account":n<=38?"group_account":n<=53?"grant_record":n==54?"role_account":n==55||n==57?"user_account":n==58?"agent_runtime_authority":"grant_record";
+          role?"role_account":n<groups_end?"group_account":n<grants_end?"grant_record":t==1||t==3?"user_account":t==4?"agent_runtime_authority":"grant_record";
       auto& meta=x.definition;meta=f::Metadata(0,tx,f::Id(60),{});
       if(bootstrap)meta.owner_uuid=Typed(p::UuidKind::principal,14000);
       meta.record.header.object_uuid={p::UuidKind::object,object};meta.record.header.row_uuid=Typed(p::UuidKind::row,200000+3*n);
       meta.object_subtype=subtype;if(n==27)meta.record.header.kind=c::CatalogRecordKind::config_profile;
-      if(n>=28)meta.record.header.kind=n<=32||n==54?c::CatalogRecordKind::role_account:n<=38?c::CatalogRecordKind::group_account:n==55||n==57?c::CatalogRecordKind::user_account:n==58?c::CatalogRecordKind::config_profile:c::CatalogRecordKind::grant_record;
-      if(n==58)meta.security_policy_uuid={p::UuidKind::object,SourceId(0x402)};
+      if(n>=28)meta.record.header.kind=role?c::CatalogRecordKind::role_account:n<groups_end?c::CatalogRecordKind::group_account:n>=grants_end&&(t==1||t==3)?c::CatalogRecordKind::user_account:n>=grants_end&&t==4?c::CatalogRecordKind::config_profile:c::CatalogRecordKind::grant_record;
+      if(n>=grants_end&&t==4)meta.security_policy_uuid={p::UuidKind::object,SourceId(0x402)};
       meta.default_name_uuid=Typed(p::UuidKind::object,300000+2*n);meta.name_vector_uuid=Typed(p::UuidKind::object,300001+2*n);
       x.vector_metadata=meta;x.vector_metadata.record.header.kind=c::CatalogRecordKind::localized_name;
       x.vector_metadata.record.header.object_uuid=meta.name_vector_uuid;x.vector_metadata.record.header.row_uuid=Typed(p::UuidKind::row,200001+3*n);
@@ -114,17 +124,25 @@ std::pair<p::Uuid,std::string> SecurityGolden(unsigned n) {
   static constexpr std::array<unsigned,10> subjects{0,1,1,1,1,2,2,2,3,4};
   static constexpr std::array<const char*,10> rights{"CONNECT","SELECT","INSERT","UPDATE","DELETE",
       "SEC_IDENTITY_ADMIN","SEC_MEMBERSHIP_ADMIN","SEC_GRANT_ADMIN","AUDIT_READ","OBS_MANAGEMENT_INSPECT"};
-  const unsigned kind=n<5?62:n<11?61:63;
-  const auto id=n<5?SourceId(0x100+n):n<11?SourceId(0x200+n-5):n<16?f::Id(13000+n-11):SourceId(0x300+n-16);
+  constexpr unsigned kAgentRoles=std::size(kDefaultPackAgentRoles);
+  const bool agent_role=n>=26&&n<26+kAgentRoles,agent_grant=n>=26+kAgentRoles;
+  const auto* ar=agent_role?&kDefaultPackAgentRoles[n-26]:nullptr;
+  const auto* ag=agent_grant?&kDefaultPackAgentGrants[n-26-kAgentRoles]:nullptr;
+  const unsigned kind=n<5||agent_role?62:n<11?61:63;
+  const auto id=agent_role?SourceId(ar->suffix):agent_grant?SourceId(ag->suffix):
+      n<5?SourceId(0x100+n):n<11?SourceId(0x200+n-5):n<16?f::Id(13000+n-11):SourceId(0x300+n-16);
   f::Golden g(65536+kind);f::Put(g.bytes,20,2,2);
   g.Identity(kind==62?3:kind==61?2:4,id);
   if(n>=11&&n<16){g.Identity(5,SourceId(0x201+n-11));g.Identity(6,SourceId(0x100+n-11));}
-  if(n>=16)g.Identity(7,SourceId(0x100+subjects[n-16]));
+  if(agent_grant)g.Identity(7,SourceId(ag->subject));
+  else if(n>=16&&!agent_role)g.Identity(7,SourceId(0x100+subjects[n-16]));
   g.Identity(9,SourceId(1));
   if(n>=11&&n<16)g.Identity(10,id);
   g.Identity(11,tx.value);
   g.Integer(32,1);g.Integer(33,1);g.Integer(34,1);g.Boolean(35,true);g.Field(36,3,"uuid");g.Boolean(37,true);
-  if(n<5){g.Field(44,3,roles[n]);g.Field(46,3,role_descriptions[n]);g.Field(47,3,std::string("group:")+groups[n+1]);}
+  if(agent_role){g.Field(44,3,ar->code);g.Field(46,3,ar->description);g.Field(47,3,ar->assignment);}
+  else if(agent_grant){g.Field(54,3,"privilege");g.Field(57,3,"role");g.Field(58,3,"allow");g.Field(59,3,ag->right);}
+  else if(n<5){g.Field(44,3,roles[n]);g.Field(46,3,role_descriptions[n]);g.Field(47,3,std::string("group:")+groups[n+1]);}
   else if(n<11){g.Field(46,3,group_descriptions[n-5]);g.Field(48,3,groups[n-5]);}
   else if(n<16){g.Field(54,3,"group_membership");g.Field(55,3,"group");g.Field(56,3,"role");g.Field(58,3,"allow");}
   else {g.Field(54,3,"privilege");g.Field(57,3,"role");g.Field(58,3,"allow");g.Field(59,3,rights[n-16]);}
@@ -165,10 +183,11 @@ std::pair<p::Uuid,std::string> ServiceGolden(unsigned n) {
   return {id,g.Finish()};
 }
 void Verify(const c::CatalogNamedCreationSet& out,bool security=false,bool bootstrap=false,bool service=false) {
-  const unsigned count=service?64:bootstrap?57:security?54:28;
+  const unsigned count=service?Package::kSecurity+10:bootstrap?Package::kSecurity+3:security?Package::kSecurity:28;
   Check(out.definitions.size()==count&&out.names.size()==2*count&&out.encoded_bytes>0,"all admitted policy/security definitions and every supplied name returned");
   unsigned packs=0,providers=0,profiles=0,memories=0,bindings=0;
-  std::array<bool,26> security_seen{};
+  constexpr unsigned kSecurityRecords=26+std::size(kDefaultPackAgentRoles)+std::size(kDefaultPackAgentGrants);
+  std::array<bool,kSecurityRecords> security_seen{};
   std::array<bool,3> bootstrap_seen{};
   std::array<bool,7> service_seen{};
   for(const auto& record:out.definitions) {
@@ -205,7 +224,7 @@ void Verify(const c::CatalogNamedCreationSet& out,bool security=false,bool boots
     const auto provider=c::DecodeCatalogBootstrapSecurityProvider(meta.record.payload);
     const auto profile=c::DecodeCatalogBootstrapPolicyProfile(meta.record.payload);
     const auto memory=c::DecodeCatalogMemoryConfiguration(meta.record.payload);
-    if(pack.ok()){++packs;Check(pack.record->policy_pack_uuid==SourceId(1)&&pack.record->declared_counts==std::array<p::u64,9>{12,1,11,5,6,5,10,14,58},"actual admitted pack counts and identity");}
+    if(pack.ok()){++packs;Check(pack.record->policy_pack_uuid==SourceId(1)&&pack.record->declared_counts==std::array<p::u64,9>{12,1,11,49,6,5,208,14,58},"actual admitted pack counts and identity");}
     else if(provider.ok()){++providers;Check(provider.record->provider_uuid==SourceId(0x10+static_cast<unsigned>(provider.record->family)-1)&&provider.record->policy_pack_uuid==SourceId(1),"every real imported provider keeps exact binary source identity and family");}
     else if(profile.ok()){++profiles;if(profile.record->area=="memory_resource_governance") {
       ++bindings;Check(profile.record->resource_definition_uuid==f::Id(12000)&&profile.record->resource_definition_generation==1,"real materialized resource binding, no inferred identity/generation");}}
@@ -217,7 +236,7 @@ void Verify(const c::CatalogNamedCreationSet& out,bool security=false,bool boots
         "supplied actual creation origin retained without manufactured transaction");
   }
   Check(packs==1&&providers==12&&profiles==14&&memories==1&&bindings==1,"complete source family coverage");
-  Check(std::count(security_seen.begin(),security_seen.end(),true)==(security?26:0),"complete security coverage, no bootstrap or service principal invented");
+  Check(std::count(security_seen.begin(),security_seen.end(),true)==(security?kSecurityRecords:0),"complete security coverage, no bootstrap or service principal invented");
   Check(std::count(bootstrap_seen.begin(),bootstrap_seen.end(),true)==(bootstrap?3:0),"bootstrap supplied explicitly or wholly absent");
   Check(std::count(service_seen.begin(),service_seen.end(),true)==(service?7:0),"service enrollment is complete or wholly absent, never inferred");
 }
@@ -247,9 +266,9 @@ void BootstrapLogical() {
     if(scenario==12){credential=fingerprint;const auto at=credential.find("89abcdef0123456789abcdef01234567");credential.replace(at,32,std::string(32,'0'));b.credential_fingerprint=credential;}
     if(scenario==13){credential=fingerprint;credential.replace(credential.find("600000"),6,"599999");b.credential_fingerprint=credential;}
     if(scenario==14){credential=fingerprint;credential.replace(credential.find("verifier=")+9,64,std::string(64,'0'));b.credential_fingerprint=credential;}
-    if(scenario==15)changed.policy.definitions=changed.policy.definitions.first(56);
-    if(scenario==16)bad.items[55].definition.record.header.kind=c::CatalogRecordKind::role_account;
-    if(scenario==17)changed.policy.limits.maximum_records=170;
+    if(scenario==15)changed.policy.definitions=changed.policy.definitions.first(Package::kSecurity+2);
+    if(scenario==16)bad.items[Package::kSecurity+1].definition.record.header.kind=c::CatalogRecordKind::role_account;
+    if(scenario==17)changed.policy.limits.maximum_records=3*(Package::kSecurity+3)-1;
     if(scenario==18)changed.policy.limits.maximum_encoded_bytes=made.records->encoded_bytes-1;
     if(scenario==19)changed.bootstrap.reset();
     if(scenario==20)b.credential_fingerprint={static_cast<const char*>(nullptr),1};
@@ -259,7 +278,7 @@ void BootstrapLogical() {
     const auto refused=db::AssembleNativeInitialPolicySecurityRecords(changed);
     Check(!refused.ok()&&!refused.records,"invalid credential, identity, bootstrap coverage and budget refuse atomically");
   }
-  request.policy.limits={171,made.records->encoded_bytes};Check(db::AssembleNativeInitialPolicySecurityRecords(request).ok(),"exact enrolled bootstrap limits");
+  request.policy.limits={3*(Package::kSecurity+3),made.records->encoded_bytes};Check(db::AssembleNativeInitialPolicySecurityRecords(request).ok(),"exact enrolled bootstrap limits");
   std::string maximum(fingerprint);maximum.replace(maximum.find("600000"),6,"10000000");
   auto bounded=request;bounded.policy.limits.maximum_encoded_bytes+=2;bounded.bootstrap->credential_fingerprint=maximum;
   const auto admitted_maximum=db::AssembleNativeInitialPolicySecurityRecords(bounded);
@@ -306,26 +325,26 @@ void ServiceLogical() {
     if(scenario==25)s.credential_fingerprint={static_cast<const char*>(nullptr),1};
     if(scenario==26){invalid=fingerprint;invalid.push_back('\0');s.credential_fingerprint=invalid;}
     if(scenario==27){invalid=fingerprint;invalid.replace(invalid.find("600000"),6,"0600000");s.credential_fingerprint=invalid;}
-    if(scenario==28)changed.policy.definitions=changed.policy.definitions.first(63);
+    if(scenario==28)changed.policy.definitions=changed.policy.definitions.first(Package::kSecurity+9);
     if(scenario==29)changed.local_service.reset();
-    if(scenario==30)changed.policy.limits.maximum_records=191;
+    if(scenario==30)changed.policy.limits.maximum_records=3*(Package::kSecurity+10)-1;
     if(scenario==31)changed.policy.limits.maximum_encoded_bytes=made.records->encoded_bytes-1;
-    if(scenario==32)bad.items[57].definition.owner_uuid=Typed(p::UuidKind::principal,16002);
-    if(scenario==33)bad.items[58].definition.security_policy_uuid=Typed(p::UuidKind::object,55);
-    if(scenario==34)bad.items[58].definition.object_subtype="memory_configuration";
-    if(scenario==35)bad.items[63].definition.owner_uuid=Typed(p::UuidKind::principal,16002);
-    if(scenario==36)s.credential_reference_uuid=bad.items[63].definition.record.header.row_uuid.value;
-    if(scenario==37)s.credential_reference_uuid=bad.items[63].entry.name_entry_uuid.value;
+    if(scenario==32)bad.items[Package::kSecurity+3].definition.owner_uuid=Typed(p::UuidKind::principal,16002);
+    if(scenario==33)bad.items[Package::kSecurity+4].definition.security_policy_uuid=Typed(p::UuidKind::object,55);
+    if(scenario==34)bad.items[Package::kSecurity+4].definition.object_subtype="memory_configuration";
+    if(scenario==35)bad.items[Package::kSecurity+9].definition.owner_uuid=Typed(p::UuidKind::principal,16002);
+    if(scenario==36)s.credential_reference_uuid=bad.items[Package::kSecurity+9].definition.record.header.row_uuid.value;
+    if(scenario==37)s.credential_reference_uuid=bad.items[Package::kSecurity+9].entry.name_entry_uuid.value;
     if(scenario==38)s.credential_reference_uuid=SourceId(0x300);
     if(scenario==39)s.grant_uuids[4]=SourceId(0x300);
-    if(scenario==40)bad.items[63].entry.default_for_object=false;
-    if(scenario==41)bad.items[58].definition.security_epoch=2;
-    if(scenario==42)bad.items[58].definition.visibility=c::CatalogVisibilityClass::public_metadata;
+    if(scenario==40)bad.items[Package::kSecurity+9].entry.default_for_object=false;
+    if(scenario==41)bad.items[Package::kSecurity+4].definition.security_epoch=2;
+    if(scenario==42)bad.items[Package::kSecurity+4].definition.visibility=c::CatalogVisibilityClass::public_metadata;
     const auto refused=db::AssembleNativeInitialPolicySecurityRecords(changed);
     if(refused.ok()||refused.records)std::cerr<<"service refusal scenario "<<scenario<<" unexpectedly admitted\n";
     Check(!refused.ok()&&!refused.records,"bad service identity, selection, ownership, alias, credentials or limits refuses the whole cohort");
   }
-  request.policy.limits={192,made.records->encoded_bytes};
+  request.policy.limits={3*(Package::kSecurity+10),made.records->encoded_bytes};
   Check(db::AssembleNativeInitialPolicySecurityRecords(request).ok(),"exact service cohort record/byte admission");
   for(long budget:{0,1,5,31,97,257,1024}){allocation_failed=false;allocation_budget=budget;
     const auto refused=db::AssembleNativeInitialPolicySecurityRecords(request);allocation_budget=-1;
@@ -355,9 +374,9 @@ void SecurityLogical() {
     if(scenario==15)bad.items[28].definition.record.header.object_uuid.value=SourceId(0x999);
     if(scenario==16)bad.items[28].definition.security_policy_uuid={};
     if(scenario==17)bad.items[28].definition.record.header.row_uuid.value=bad.items[29].definition.record.header.row_uuid.value;
-    if(scenario==18)changed.policy.definitions=changed.policy.definitions.first(53);
+    if(scenario==18)changed.policy.definitions=changed.policy.definitions.first(Package::kSecurity-1);
     if(scenario==19)bad.inputs[28]=bad.inputs[29];
-    if(scenario==20)changed.policy.limits.maximum_records=161;
+    if(scenario==20)changed.policy.limits.maximum_records=3*Package::kSecurity-1;
     if(scenario==21)changed.policy.limits.maximum_encoded_bytes=made.records->encoded_bytes-1;
     if(scenario==22)bad.items[28].entries[0].entry=nullptr;
     if(scenario==23)bad.memberships[0].member_uuid=bad.memberships[0].parent_uuid;
@@ -366,7 +385,7 @@ void SecurityLogical() {
     if(scenario==2||scenario==7||scenario==8||scenario==9)
       Check(refused.error==db::NativeInitialPolicyError::duplicate_identity,"membership collision has exact duplicate classification");
   }
-  request.policy.limits={162,made.records->encoded_bytes};
+  request.policy.limits={3*Package::kSecurity,made.records->encoded_bytes};
   Check(db::AssembleNativeInitialPolicySecurityRecords(request).ok(),"exact combined cohort count and byte bounds");
   for(long budget:{0,1,5,31,97,257}) {
     allocation_failed=false;allocation_budget=budget;
@@ -466,7 +485,7 @@ void ServiceSourceMutations() {
         x.definition.record.header.object_uuid.value=id;x.vector_metadata.record.header.parent_uuid.value=id;
         x.vector.object_uuid.value=id;x.entry.object_uuid.value=id;
       }
-      auto& binding=package.items[58];
+      auto& binding=package.items[Package::kSecurity+4];
       binding.definition.security_policy_uuid.value=binding.vector_metadata.security_policy_uuid.value=
           binding.vector.security_policy_uuid.value=binding.entry_metadata.security_policy_uuid.value=binding.entry.security_policy_uuid.value=SourceId(0x450);
     }
@@ -539,7 +558,7 @@ void SecuritySourceMutations() {
               "actual nonempty target and explicit deny retained, not text/unscoped/default-allow fallback");++targets;
         }
       }
-      Check(changed==3&&targets==10,"every changed value and actual targeted grant retained");
+      Check(changed==3&&targets==10+std::size(kDefaultPackAgentGrants),"every changed value and actual targeted grant retained");
     }else if(scenario==1){
       Check(!made.ok()&&!made.records&&made.error==db::NativeInitialPolicyError::source_invalid&&made.source_diagnostic&&
           made.source_diagnostic->diagnostic_code=="SB-POLICY-PACK-GROUPS-INVALID",
@@ -578,8 +597,8 @@ void PlacementLogical() {
     const auto made=assemble();Check(made.ok()&&made.source_error==db::NativeInitialPolicyError::none,
         "production initial policy placement consumes the complete actual admitted source");
     const auto& catalogs=made.plan->catalogs;
-    const unsigned definitions=service?64:bootstrap?57:security?54:28;
-    const unsigned security_count=security?26+(bootstrap?3:0)+(service?6:0):0;
+    const unsigned definitions=service?Package::kSecurity+10:bootstrap?Package::kSecurity+3:security?Package::kSecurity:28;
+    const unsigned security_count=security?(Package::kSecurity-28)+(bootstrap?3:0)+(service?6:0):0;
     Check(catalogs[0].empty()&&catalogs[2].empty()&&catalogs[5].empty()&&
         catalogs[1].size()==2*definitions&&catalogs[3].size()==security_count&&catalogs[4].size()==28+(service?1:0),
         "exact names/security/configuration roles, no default object-head placement");

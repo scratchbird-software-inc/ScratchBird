@@ -15,7 +15,8 @@ inline p::Uuid SourceId(unsigned suffix) {
   if(!id.ok())throw std::runtime_error("invalid native service fixture source identity");
   id.value.value.bytes[14]=suffix>>8;id.value.value.bytes[15]=suffix;return id.value.value;
 }
-// Complete production-assembled 64-definition/128-name initial enrollment.
+// Complete production-assembled initial enrollment: one definition and two
+// name rows per object of the default pack, plus bootstrap and service.
 // These inputs grant no provider activation, runtime session or node readiness.
 // All borrowed request views require this immovable owner and verifier backing.
 struct NativeLocalServiceCreationItem {
@@ -25,22 +26,36 @@ struct NativeLocalServiceCreationItem {
 };
 class NativeLocalServiceCreationFixture {
  public:
+  // Default pack: 5 standard + 44 agent task-group roles; 10 standard + 198
+  // agent role grants (appendix-agent-security-roles.md, 2026-10-29).
+  static constexpr unsigned kRoles=49,kGrants=208;
+  static constexpr unsigned kDefinitions=28+kRoles+6+5+kGrants+10;
   std::vector<NativeLocalServiceCreationItem> items;std::vector<c::CatalogNamedCreationInput> inputs;
   std::array<db::NativeInitialMembershipIdentity,5> memberships;
   NativeLocalServiceCreationFixture(p::Uuid database,p::TypedUuid construction,std::string_view verifier)
-      :items(64),database_(database),construction_(construction),verifier_(verifier) {
+      :items(kDefinitions),database_(database),construction_(construction),verifier_(verifier) {
     for(unsigned i=0;i<memberships.size();++i)memberships[i]={f::Id(13000+i),SourceId(0x201+i),SourceId(0x100+i)};
     for(unsigned n=0;n<items.size();++n) {
-      auto& x=items[n];const auto object=n==0?SourceId(1):n<=12?SourceId(0x10+n-1):n<=26?SourceId(0x400+n-13):n==27?f::Id(12000):
-          n<=32?SourceId(0x100+n-28):n<=38?SourceId(0x200+n-33):n<=43?f::Id(13000+n-39):n<=53?SourceId(0x300+n-44):
-          n==54?SourceId(0x105):n<=56?f::Id(14000+n-55):n<=58?f::Id(15000+n-57):f::Id(15100+n-59);
+      auto& x=items[n];
+      // Pack order: 5 standard roles (0x100..) then the agent task-group roles
+      // (0x600..); 10 standard grants (0x300..) then the agent role grants
+      // (0x1000..). The tail is sysarch, bootstrap principal and membership,
+      // service principal, runtime authority binding and five service grants.
+      const unsigned roles_end=28+kRoles,groups_end=roles_end+6,members_end=groups_end+5,grants_end=members_end+kGrants;
+      const unsigned t=n-grants_end;  // tail position, valid once n>=grants_end
+      const auto object=n==0?SourceId(1):n<=12?SourceId(0x10+n-1):n<=26?SourceId(0x400+n-13):n==27?f::Id(12000):
+          n<roles_end?(n-28<5?SourceId(0x100+n-28):SourceId(0x600+n-28-5)):
+          n<groups_end?SourceId(0x200+n-roles_end):n<members_end?f::Id(13000+n-groups_end):
+          n<grants_end?(n-members_end<10?SourceId(0x300+n-members_end):SourceId(0x1000+n-members_end-10)):
+          t==0?SourceId(0x105):t<=2?f::Id(14000+t-1):t<=4?f::Id(15000+t-3):f::Id(15100+t-5);
+      const bool role=n>=28&&(n<roles_end||t==0);
       const auto subtype=n==0?"bootstrap_policy_pack":n<=12?"bootstrap_security_provider":n<=26?"bootstrap_policy_profile":n==27?"memory_configuration":
-          n<=32?"role_account":n<=38?"group_account":n<=53?"grant_record":n==54?"role_account":n==55||n==57?"user_account":n==58?"agent_runtime_authority":"grant_record";
+          role?"role_account":n<groups_end?"group_account":n<grants_end?"grant_record":t==1||t==3?"user_account":t==4?"agent_runtime_authority":"grant_record";
       auto& meta=x.definition;meta=f::Metadata(0,construction_,f::Id(60),{});
       meta.owner_uuid=Typed(p::UuidKind::principal,14000);
       meta.record.header.object_uuid={p::UuidKind::object,object};meta.record.header.row_uuid=Typed(p::UuidKind::row,200000+3*n);
       meta.object_subtype=subtype;if(n==27)meta.record.header.kind=c::CatalogRecordKind::config_profile;
-      if(n>=28)meta.record.header.kind=n<=32||n==54?c::CatalogRecordKind::role_account:n<=38?c::CatalogRecordKind::group_account:n==55||n==57?c::CatalogRecordKind::user_account:n==58?c::CatalogRecordKind::config_profile:c::CatalogRecordKind::grant_record;
+      if(n>=28)meta.record.header.kind=role?c::CatalogRecordKind::role_account:n<groups_end?c::CatalogRecordKind::group_account:n>=grants_end&&(t==1||t==3)?c::CatalogRecordKind::user_account:n>=grants_end&&t==4?c::CatalogRecordKind::config_profile:c::CatalogRecordKind::grant_record;
       meta.security_policy_uuid={p::UuidKind::object,SourceId(0x402)};
       meta.default_name_uuid=Typed(p::UuidKind::object,300000+2*n);meta.name_vector_uuid=Typed(p::UuidKind::object,300001+2*n);
       x.vector_metadata=meta;x.vector_metadata.record.header.kind=c::CatalogRecordKind::localized_name;

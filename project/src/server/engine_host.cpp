@@ -941,9 +941,16 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
     native_limits.writer.source.maximum_backing_bytes = 512u * page_size;
     native_limits.writer.source.maximum_verification_image_bytes = 32u * 1024u * 1024u;
     native_limits.database_crypto_bytes = 2u * 1024u * 1024u;
-    native_limits.catalog = {page_profile->uuid, 1, 32, 128, 128,
+    // Sized for the default pack with the agent task-group roles
+    // (appendix-agent-security-roles.md, 2026-10-29): 277 security records.
+    // The previous 128-row and 128-record bounds fit the 35 records before it
+    // and would refuse this catalog.
+    // Leaf pages are bounded in bytes: small pages need more of them.
+    const std::size_t catalog_base_pages =
+        std::max<std::size_t>(32, (512u * 1024u) / page_size);
+    native_limits.catalog = {page_profile->uuid, 1, catalog_base_pages, 512, 512,
                              {16, 32u * page_size}};
-    native_limits.authorization = {128, 128, 1000000};
+    native_limits.authorization = {512, 128, 1000000};
 
     DatabaseOwnershipRequest native_request;
     native_request.database_path = snapshot.database_path;

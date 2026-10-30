@@ -31,6 +31,270 @@
       "role_code": "ROLE_OPERATOR",
       "description": "Operational management and observability role.",
       "default_assignment": "group:OPS"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000600",
+      "role_code": "AGENT_METRICS_READ",
+      "description": "Agent task group metrics: L1 readers, no write of any kind.",
+      "default_assignment": "agent_task_group:metrics"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000601",
+      "role_code": "AGENT_METRICS_WRITE",
+      "description": "Agent task group metrics: L2-L4 members.",
+      "default_assignment": "agent_task_group:metrics"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000602",
+      "role_code": "AGENT_NODE_VALIDATION_WRITE",
+      "description": "Agent task group node_validation: L2-L4 members.",
+      "default_assignment": "agent_task_group:node_validation"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000603",
+      "role_code": "AGENT_FILESPACE_CAPACITY_READ",
+      "description": "Agent task group filespace_capacity: L1 readers, no write of any kind.",
+      "default_assignment": "agent_task_group:filespace_capacity"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000604",
+      "role_code": "AGENT_FILESPACE_CAPACITY_WRITE",
+      "description": "Agent task group filespace_capacity: L2-L4 members.",
+      "default_assignment": "agent_task_group:filespace_capacity"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000605",
+      "role_code": "AGENT_PAGE_ALLOCATION_READ",
+      "description": "Agent task group page_allocation: L1 readers, no write of any kind.",
+      "default_assignment": "agent_task_group:page_allocation"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000606",
+      "role_code": "AGENT_PAGE_ALLOCATION_WRITE",
+      "description": "Agent task group page_allocation: L2-L4 members.",
+      "default_assignment": "agent_task_group:page_allocation"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000607",
+      "role_code": "AGENT_MEMORY_GOVERNOR_READ",
+      "description": "Agent task group memory_governor: L1 readers, no write of any kind.",
+      "default_assignment": "agent_task_group:memory_governor"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000608",
+      "role_code": "AGENT_MEMORY_GOVERNOR_WRITE",
+      "description": "Agent task group memory_governor: L2-L4 members.",
+      "default_assignment": "agent_task_group:memory_governor"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000609",
+      "role_code": "AGENT_STORAGE_HEALTH_READ",
+      "description": "Agent task group storage_health: L1 readers, no write of any kind.",
+      "default_assignment": "agent_task_group:storage_health"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-00000000060a",
+      "role_code": "AGENT_STORAGE_HEALTH_WRITE",
+      "description": "Agent task group storage_health: L2-L4 members.",
+      "default_assignment": "agent_task_group:storage_health"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-00000000060b",
+      "role_code": "AGENT_ADMISSION_CONTROL_READ",
+      "description": "Agent task group admission_control: L1 readers, no write of any kind.",
+      "default_assignment": "agent_task_group:admission_control"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-00000000060c",
+      "role_code": "AGENT_ADMISSION_CONTROL_WRITE",
+      "description": "Agent task group admission_control: L2-L4 members.",
+      "default_assignment": "agent_task_group:admission_control"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-00000000060d",
+      "role_code": "AGENT_PARSER_INTERFACE_READ",
+      "description": "Agent task group parser_interface: L1 readers, no write of any kind.",
+      "default_assignment": "agent_task_group:parser_interface"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-00000000060e",
+      "role_code": "AGENT_PARSER_INTERFACE_WRITE",
+      "description": "Agent task group parser_interface: L2-L4 members.",
+      "default_assignment": "agent_task_group:parser_interface"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-00000000060f",
+      "role_code": "AGENT_LISTENER_WRITE",
+      "description": "Agent task group listener: L2-L4 members.",
+      "default_assignment": "agent_task_group:listener"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000610",
+      "role_code": "AGENT_SESSION_CONTROL_READ",
+      "description": "Agent task group session_control: L1 readers, no write of any kind.",
+      "default_assignment": "agent_task_group:session_control"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000611",
+      "role_code": "AGENT_SESSION_CONTROL_WRITE",
+      "description": "Agent task group session_control: L2-L4 members.",
+      "default_assignment": "agent_task_group:session_control"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000612",
+      "role_code": "AGENT_TRANSACTION_PRESSURE_READ",
+      "description": "Agent task group transaction_pressure: L1 readers, no write of any kind.",
+      "default_assignment": "agent_task_group:transaction_pressure"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000613",
+      "role_code": "AGENT_TRANSACTION_PRESSURE_WRITE",
+      "description": "Agent task group transaction_pressure: L2-L4 members.",
+      "default_assignment": "agent_task_group:transaction_pressure"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000614",
+      "role_code": "AGENT_STORAGE_VERSION_CLEANUP_WRITE",
+      "description": "Agent task group storage_version_cleanup: L2-L4 members.",
+      "default_assignment": "agent_task_group:storage_version_cleanup"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000615",
+      "role_code": "AGENT_GARBAGE_COLLECTION_WRITE",
+      "description": "Agent task group garbage_collection: L2-L4 members.",
+      "default_assignment": "agent_task_group:garbage_collection"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000616",
+      "role_code": "AGENT_CLEANUP_ARCHIVE_READ",
+      "description": "Agent task group cleanup_archive: L1 readers, no write of any kind.",
+      "default_assignment": "agent_task_group:cleanup_archive"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000617",
+      "role_code": "AGENT_CLEANUP_ARCHIVE_WRITE",
+      "description": "Agent task group cleanup_archive: L2-L4 members.",
+      "default_assignment": "agent_task_group:cleanup_archive"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000618",
+      "role_code": "AGENT_ARCHIVE_READ",
+      "description": "Agent task group archive: L1 readers, no write of any kind.",
+      "default_assignment": "agent_task_group:archive"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000619",
+      "role_code": "AGENT_ARCHIVE_WRITE",
+      "description": "Agent task group archive: L2-L4 members.",
+      "default_assignment": "agent_task_group:archive"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-00000000061a",
+      "role_code": "AGENT_BACKUP_READ",
+      "description": "Agent task group backup: L1 readers, no write of any kind.",
+      "default_assignment": "agent_task_group:backup"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-00000000061b",
+      "role_code": "AGENT_BACKUP_WRITE",
+      "description": "Agent task group backup: L2-L4 members.",
+      "default_assignment": "agent_task_group:backup"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-00000000061c",
+      "role_code": "AGENT_RESTORE_DRILL_READ",
+      "description": "Agent task group restore_drill: L1 readers, no write of any kind.",
+      "default_assignment": "agent_task_group:restore_drill"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-00000000061d",
+      "role_code": "AGENT_RESTORE_DRILL_WRITE",
+      "description": "Agent task group restore_drill: L2-L4 members.",
+      "default_assignment": "agent_task_group:restore_drill"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-00000000061e",
+      "role_code": "AGENT_PITR_READ",
+      "description": "Agent task group pitr: L1 readers, no write of any kind.",
+      "default_assignment": "agent_task_group:pitr"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-00000000061f",
+      "role_code": "AGENT_PITR_WRITE",
+      "description": "Agent task group pitr: L2-L4 members.",
+      "default_assignment": "agent_task_group:pitr"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000620",
+      "role_code": "AGENT_INDEX_HEALTH_READ",
+      "description": "Agent task group index_health: L1 readers, no write of any kind.",
+      "default_assignment": "agent_task_group:index_health"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000621",
+      "role_code": "AGENT_INDEX_HEALTH_WRITE",
+      "description": "Agent task group index_health: L2-L4 members.",
+      "default_assignment": "agent_task_group:index_health"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000622",
+      "role_code": "AGENT_RUNTIME_LEARNING_WRITE",
+      "description": "Agent task group runtime_learning: L2-L4 members.",
+      "default_assignment": "agent_task_group:runtime_learning"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000623",
+      "role_code": "AGENT_POLICY_RECOMMENDATION_READ",
+      "description": "Agent task group policy_recommendation: L1 readers, no write of any kind.",
+      "default_assignment": "agent_task_group:policy_recommendation"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000624",
+      "role_code": "AGENT_POLICY_RECOMMENDATION_WRITE",
+      "description": "Agent task group policy_recommendation: L2-L4 members.",
+      "default_assignment": "agent_task_group:policy_recommendation"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000625",
+      "role_code": "AGENT_ALERT_WRITE",
+      "description": "Agent task group alert: L2-L4 members.",
+      "default_assignment": "agent_task_group:alert"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000626",
+      "role_code": "AGENT_SUPPORT_BUNDLE_TRIAGE_READ",
+      "description": "Agent task group support_bundle_triage: L1 readers, no write of any kind.",
+      "default_assignment": "agent_task_group:support_bundle_triage"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000627",
+      "role_code": "AGENT_SUPPORT_BUNDLE_TRIAGE_WRITE",
+      "description": "Agent task group support_bundle_triage: L2-L4 members.",
+      "default_assignment": "agent_task_group:support_bundle_triage"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000628",
+      "role_code": "AGENT_IDENTITY_READ",
+      "description": "Agent task group identity: L1 readers, no write of any kind.",
+      "default_assignment": "agent_task_group:identity"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-000000000629",
+      "role_code": "AGENT_IDENTITY_WRITE",
+      "description": "Agent task group identity: L2-L4 members.",
+      "default_assignment": "agent_task_group:identity"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-00000000062a",
+      "role_code": "AGENT_JOB_CONTROL_WRITE",
+      "description": "Agent task group job_control: L2-L4 members.",
+      "default_assignment": "agent_task_group:job_control"
+    },
+    {
+      "role_uuid": "018f7a10-1280-7000-8000-00000000062b",
+      "role_code": "AGENT_EXPORT_ADAPTER_WRITE",
+      "description": "Agent task group export_adapter: L2-L4 members.",
+      "default_assignment": "agent_task_group:export_adapter"
     }
   ]
 }
