@@ -131,12 +131,12 @@ std::string RequiredRightForOperation(const std::string& operation_key) {
   }
   if (operation_key == "start_parser_pool" || operation_key == "stop_parser_pool" ||
       operation_key == "quarantine_parser_package" || operation_key == "unquarantine_parser_package") {
-    return "PARSER_CONTROL";
+    return "OBS_PARSER_CONTROL";
   }
   if (operation_key == "start_listener" || operation_key == "stop_listener" ||
       operation_key == "restart_listener" || operation_key == "drain_listener" ||
       operation_key == "listener_proxy_execute") {
-    return "LISTENER_CONTROL";
+    return "OBS_LISTENER_CONTROL";
   }
   if (operation_key == "reload_server_config") {
     return "OBS_CONFIG_CONTROL";
@@ -181,9 +181,6 @@ std::string RequiredRightForOperation(const std::string& operation_key) {
 
 std::string EngineRightForManagementRight(const std::string& required_right) {
   if (required_right == "PARSER_INSPECT") return "OBS_MANAGEMENT_INSPECT";
-  if (required_right == "PARSER_CONTROL" || required_right == "LISTENER_CONTROL") {
-    return "OBS_MANAGEMENT_CONTROL";
-  }
   if (required_right == "METRICS_INSPECT") return "OBS_METRICS_READ_ALL";
   if (required_right == "OBS_SESSION_ALL") return "OBS_RUNTIME_ALL";
   return required_right;

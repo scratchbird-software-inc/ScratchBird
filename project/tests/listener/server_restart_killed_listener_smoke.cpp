@@ -296,6 +296,17 @@ bool CreateDatabaseWithDurablePrincipals(const std::filesystem::path& database_p
       "OBS_MANAGEMENT_CONTROL",
       tx_id,
       "server_restart_killed_listener_smoke:sysdba-management", tx_uuid);
+  // restart_listener requires the narrow listener right, not
+  // OBS_MANAGEMENT_CONTROL (owner direction 2026-10-29).
+  scratchbird::tests::database_lifecycle::GrantDurablePrincipalPrivilege(
+      database_path,
+      database_identity,
+      kSysdbaPrincipalUuid,
+      scratchbird::core::platform::Uuid{},
+      "server_management",
+      "OBS_LISTENER_CONTROL",
+      tx_id,
+      "server_restart_killed_listener_smoke:sysdba-listener-control", tx_uuid);
   scratchbird::tests::database_lifecycle::CommitDurableBootstrapTransaction(
       bootstrap);
   return true;

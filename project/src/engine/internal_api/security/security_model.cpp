@@ -219,7 +219,12 @@ const std::set<std::string>& KnownRights() {
       // and absent from this registry, so it was unsatisfiable too. It keeps
       // its TRACE meaning and is deliberately distinct from
       // OBS_AGENT_CONTROL_INTERNAL, which is self-actuation authority.
-      "OBS_AGENT_INTERNAL"};
+      "OBS_AGENT_INTERNAL",
+      // Owner direction 2026-10-29: listener and parser-pool control are
+      // narrow rights, replacing OBS_MANAGEMENT_CONTROL at the manager
+      // (manager_control.cpp). OBS_MANAGEMENT_CONTROL also creates, opens and
+      // stops databases, which an agent that drains a listener must not hold.
+      "OBS_LISTENER_CONTROL", "OBS_PARSER_CONTROL"};
   return rights;
 }
 
