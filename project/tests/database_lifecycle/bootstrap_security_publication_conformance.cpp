@@ -429,6 +429,23 @@ void TestPrepublicationFaults(Cleanup* cleanup) {
     Require(!std::filesystem::exists(path),
             "prepublication fault left an admitted database file");
   }
+  // SEARCH_KEY: SB_CREATE_VERIFIES_EVERYTHING_WRITTEN. A file whose written
+  // catalog differs from what create built is corrupt: create must fail before
+  // its commit point and leave neither the file nor its lock file behind.
+  {
+    const auto path = TestPath("corrupt_catalog_before_verify");
+    cleanup->paths.push_back(path);
+    const auto created =
+        db::CreateDatabaseFile(MakeConfig(path, "corrupt_catalog_before_verify"));
+    Require(!created.ok(), "create reported success over a corrupted catalog");
+    Require(created.diagnostic.diagnostic_code == "SB-DB-LIFECYCLE-CREATE-VERIFY-FAILED",
+            "corrupted catalog was not refused by create verification");
+    Require(created.create_finality == db::DatabaseCreateFinalityClass::not_published,
+            "corrupted catalog was published");
+    Require(!std::filesystem::exists(path), "corrupted create left its database file");
+    Require(!std::filesystem::exists(path.string() + ".sb.owner.lock"),
+            "corrupted create left its owner lock file");
+  }
 }
 
 void TestPostpublicationFaults(Cleanup* cleanup) {
@@ -937,7 +954,10 @@ void TestNativeSecurityGenerationRepair(Cleanup* cleanup) {
       row = framed.row;
       ++stripped;
     }
-    Require(stripped == 3, "generation fixture did not select all three bootstrap owners");
+    // The SYSARCH role, the owner, and BOTH SYSARCH memberships: the owner's
+    // and L5's (SB_L5_PRINCIPAL_ALWAYS_PROVISIONED). Repair selects every
+    // SYSARCH membership, so a legacy image lacks the generation on all four.
+    Require(stripped == 4, "generation fixture did not select all four SYSARCH authority rows");
     WriteCatalogRows(path, created.state.header.page_size, rows);
     db::DatabaseOpenConfig open;
     open.path = path.string(); open.read_only = true;
@@ -982,31 +1002,62 @@ void TestNativeSecurityGenerationRepair(Cleanup* cleanup) {
 // principal. The reader deliberately does not surface grants, so the five
 // rights are read from the committed catalog rows directly.
 void TestInternalServicePrincipalProvisioned(Cleanup* cleanup) {
-  // A name with no credential must refuse rather than commit a principal that
-  // nothing can ever authenticate as.
+  // SEARCH_KEY: SB_L5_PRINCIPAL_ALWAYS_PROVISIONED (owner direction
+  // 2026-10-30). These two cases used to assert the old opt-in rule: a name
+  // without a credential was refused, and no name meant no service principal.
+  // Every create now writes L5 and its SYSARCH membership; L5 carries a
+  // credential only when the caller supplies one (as for agents, D18 option 3).
+  const auto l5_is_sysarch_member = [&](const std::filesystem::path& file,
+                                        std::uint32_t page_size,
+                                        const scratchbird::core::platform::Uuid& l5) {
+    const auto sysarch = uuid::ParseTypedUuid(UuidKind::object, db::kCanonicalSysarchRoleObjectUuid);
+    Require(sysarch.ok(), "SYSARCH UUID did not parse");
+    unsigned found = 0;
+    for (const auto& row : ReadCatalogRows(file, page_size)) {
+      if (row.kind != page::CatalogPageRowKind::typed_catalog_record) continue;
+      const auto outer = catalog::DecodeCatalogTypedRecord(row);
+      Require(outer.ok(), "L5 membership row decode failed");
+      if (outer.record.header.kind != catalog::CatalogRecordKind::grant_record) continue;
+      const auto security = catalog::DecodeCatalogSecurityRecord(outer.record.header.kind,
+                                                                 outer.record.payload);
+      Require(security.ok(), "L5 membership security decode failed");
+      if (security.record->Attribute("grant_class") == std::string_view("role_membership") &&
+          security.record->Identity("role_uuid") == sysarch.value.value &&
+          security.record->Identity("member_uuid") == l5) ++found;
+    }
+    return found == 1;
+  };
   {
     const auto path = TestPath("internal_service_principal_uncredentialed");
     cleanup->paths.push_back(path);
     auto config = MakeConfig(path);
     config.internal_service_principal_name = "sb_internal_service";
-    config.require_internal_service_principal = true;
-    const auto refused = db::CreateDatabaseFile(config);
-    Require(!refused.ok(), "create provisioned a service principal with no credential");
-    Require(refused.diagnostic.diagnostic_code == "CATALOG.INVALID_INPUT",
-            "uncredentialed service principal refusal lost its diagnostic");
+    const auto created = db::CreateDatabaseFile(config);
+    if (!created.ok()) std::cerr << created.diagnostic.diagnostic_code << '\n';
+    Require(created.ok(), "create refused L5 without a credential");
+    const auto read = db::ReadDatabaseBootstrapSecurityCatalog(path.string());
+    Require(read.ok() && read.state.runtime_authority_binding_present &&
+                !read.state.service_principal_uuid.is_nil(),
+            "uncredentialed L5 was not committed with its binding");
+    Require(!read.state.credential_reference_uuid.has_value(),
+            "a binding names a credential for an L5 that has none");
+    Require(l5_is_sysarch_member(path, created.state.header.page_size,
+                                 read.state.service_principal_uuid),
+            "uncredentialed L5 is not exactly once a member of SYSARCH");
   }
-
-  // Absent fields must leave create exactly as it was for every existing
-  // caller: no service principal, no runtime authority binding, no refusal.
   {
     std::filesystem::path path;
-    (void)CreateCommitted(cleanup, "internal_service_principal_absent", &path);
+    const auto created = CreateCommitted(cleanup, "internal_service_principal_absent", &path);
     const auto read = db::ReadDatabaseBootstrapSecurityCatalog(path.string());
     Require(read.ok() && read.state.present && read.state.committed_by_inventory,
             "create without the service principal fields stopped committing bootstrap security");
-    Require(!read.state.runtime_authority_binding_present &&
-                read.state.service_principal_uuid.is_nil(),
-            "create invented a service principal that was never requested");
+    Require(read.state.runtime_authority_binding_present &&
+                !read.state.service_principal_uuid.is_nil() &&
+                read.state.service_principal_uuid != read.state.principal_uuid.value,
+            "create without the service principal fields did not provision L5");
+    Require(l5_is_sysarch_member(path, created.state.header.page_size,
+                                 read.state.service_principal_uuid),
+            "default L5 is not exactly once a member of SYSARCH");
   }
 
   // Provisioned: the principal, its distinct identity, and the committed
@@ -1077,6 +1128,9 @@ void TestInternalServicePrincipalProvisioned(Cleanup* cleanup) {
   }
   Require(granted == expected,
           "the internal service principal's committed right set is not the fixed five");
+  Require(l5_is_sysarch_member(path, created.state.header.page_size,
+                               read.state.service_principal_uuid),
+          "credentialed L5 is not exactly once a member of SYSARCH");
 }
 
 // SEARCH_KEY: SECURITY-INTERNAL-PRINCIPAL-PROVISIONING
@@ -1144,6 +1198,16 @@ void TestAgentAuthorityProvisionedFromPolicyPack(Cleanup* cleanup) {
                                                                outer.record.payload);
     Require(security.ok(), "agent grant security record decode failed");
     if (security.record->Identity("subject_uuid") != agent_principal_uuid) continue;
+    // SB_AGENT_PRINCIPAL_BINDING_BY_UUID: the link from the agent's committed
+    // policy to this principal is not a grant and confers nothing.
+    if (security.record->Attribute("grant_class") ==
+        std::string_view("agent_principal_binding")) {
+      Require(!security.record->Identity("target_uuid").is_nil(),
+              "an agent principal link names no policy");
+      Require(!security.record->Attribute("right").has_value(),
+              "an agent principal link carries a right");
+      continue;
+    }
     const auto right = security.record->Attribute("right");
     Require(right.has_value(), "agent grant carries no right name");
     Require(security.record->Attribute("effect") == std::string_view("allow"),
@@ -1232,7 +1296,10 @@ void TestAgentAuthorityProvisionedFromPolicyPack(Cleanup* cleanup) {
       Require(security.ok(), "agent census security record decode failed");
       if (outer.record.header.kind == catalog::CatalogRecordKind::user_account &&
           security.record->Attribute("kind") == std::string_view("service") &&
-          !security.record->Attribute("credential_fingerprint").has_value()) {
+          !security.record->Attribute("credential_fingerprint").has_value() &&
+          // L5 is a password-less service principal too, but not an agent type
+          // (SB_L5_PRINCIPAL_ALWAYS_PROVISIONED).
+          security.record->Attribute("authority_class") != std::string_view("l5_database")) {
         agent_principals.emplace(outer.record.header.object_uuid.value,
                                  std::string(*security.record->Attribute("principal_name")));
       }

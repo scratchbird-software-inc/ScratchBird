@@ -26,9 +26,10 @@ struct NativeLocalServiceCreationItem {
 };
 class NativeLocalServiceCreationFixture {
  public:
-  // Default pack: 5 standard + 44 agent task-group roles; 10 standard + 198
-  // agent role grants (appendix-agent-security-roles.md, 2026-10-29).
-  static constexpr unsigned kRoles=49,kGrants=208;
+  // Default pack: 5 standard + 44 agent task-group roles; 11 standard + 199
+  // agent role grants (appendix-agent-security-roles.md, 2026-10-29; 2026-10-30
+  // adds CONNECT to PUBLIC and OBS_AGENT_CONTROL_INTERNAL to transaction_pressure).
+  static constexpr unsigned kRoles=49,kGrants=210;
   static constexpr unsigned kDefinitions=28+kRoles+6+5+kGrants+10;
   std::vector<NativeLocalServiceCreationItem> items;std::vector<c::CatalogNamedCreationInput> inputs;
   std::array<db::NativeInitialMembershipIdentity,5> memberships;
@@ -38,7 +39,8 @@ class NativeLocalServiceCreationFixture {
     for(unsigned n=0;n<items.size();++n) {
       auto& x=items[n];
       // Pack order: 5 standard roles (0x100..) then the agent task-group roles
-      // (0x600..); 10 standard grants (0x300..) then the agent role grants
+      // (0x600..); 11 standard grants (0x300..0x30a; the 11th, 2026-10-30,
+      // grants CONNECT to the PUBLIC group) then the agent role grants
       // (0x1000..). The tail is sysarch, bootstrap principal and membership,
       // service principal, runtime authority binding and five service grants.
       const unsigned roles_end=28+kRoles,groups_end=roles_end+6,members_end=groups_end+5,grants_end=members_end+kGrants;
@@ -46,7 +48,7 @@ class NativeLocalServiceCreationFixture {
       const auto object=n==0?SourceId(1):n<=12?SourceId(0x10+n-1):n<=26?SourceId(0x400+n-13):n==27?f::Id(12000):
           n<roles_end?(n-28<5?SourceId(0x100+n-28):SourceId(0x600+n-28-5)):
           n<groups_end?SourceId(0x200+n-roles_end):n<members_end?f::Id(13000+n-groups_end):
-          n<grants_end?(n-members_end<10?SourceId(0x300+n-members_end):SourceId(0x1000+n-members_end-10)):
+          n<grants_end?(n-members_end<11?SourceId(0x300+n-members_end):SourceId(0x1000+n-members_end-11)):
           t==0?SourceId(0x105):t<=2?f::Id(14000+t-1):t<=4?f::Id(15000+t-3):f::Id(15100+t-5);
       const bool role=n>=28&&(n<roles_end||t==0);
       const auto subtype=n==0?"bootstrap_policy_pack":n<=12?"bootstrap_security_provider":n<=26?"bootstrap_policy_profile":n==27?"memory_configuration":

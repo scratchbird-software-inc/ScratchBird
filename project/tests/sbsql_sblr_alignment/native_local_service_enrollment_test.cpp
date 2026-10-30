@@ -606,7 +606,7 @@ AgentError AddAgentConfigurationFixture(db::NativeCreationCatalogSeed& seed,
   Check(result.ok(),"complete named agent definitions assemble atomically before native persistence");
   for(auto& row:result.records->definitions)seed[4].push_back(std::move(row));
   for(auto& row:result.records->names)seed[1].push_back(std::move(row));
-  if(!variant)Check(seed[4].size()==95&&seed[1].size()==744,"all 66 agent definitions and 132 names join native creation");
+  if(!variant)Check(seed[4].size()==95&&seed[1].size()==748,"all 66 agent definitions and 132 names join native creation");  // 616 pack names + 132
   Check(!variant||expected!=AgentError::none,"known agent configuration refusal fixture");
   return expected;
 }
@@ -1217,8 +1217,10 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
   enrollment::NativeLocalServiceCreationFixture inputs(Id(1),security_tx,verifier);
   auto catalogs=db::AssembleNativeInitialPolicySecurityCatalogs(inputs.ServiceRequest(SB_DEFAULT_POLICY_PACK_ROOT));
   Check(catalogs.ok(),"production assembler admits complete native service policy/security/name enrollment");
-  Check(catalogs.plan->catalogs[1].size()==612&&catalogs.plan->catalogs[3].size()==277&&
-      catalogs.plan->catalogs[4].size()==29,"complete 306 definitions and 612 names, including bootstrap and service");
+  // +2 definitions, +4 names: the pack's CONNECT grant to PUBLIC and
+  // OBS_AGENT_CONTROL_INTERNAL for transaction_pressure (2026-10-30).
+  Check(catalogs.plan->catalogs[1].size()==616&&catalogs.plan->catalogs[3].size()==279&&
+      catalogs.plan->catalogs[4].size()==29,"complete 308 definitions and 616 names, including bootstrap and service");
   if(reference_variant){
     auto& definitions=catalogs.plan->catalogs[4];
     const auto target=std::find_if(definitions.begin(),definitions.end(),[](const auto& row){

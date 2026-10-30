@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 // GENERATED from resources/policy-packs/default-local-password/policies/{roles,grants}.json
 // (agent task-group roles, appendix-agent-security-roles.md, 2026-10-29). Expected
-// golden values for the 44 agent roles and their 198 grants. Generated from the
+// golden values for the 44 agent roles and their 199 grants (the 199th, 2026-10-30,
+// grants OBS_AGENT_CONTROL_INTERNAL to transaction_pressure). Generated from the
 // pack, so it pins the pack content rather than independently deriving it.
 struct DefaultPackAgentRole{unsigned suffix;const char* code;const char* description;const char* assignment;};
 struct DefaultPackAgentGrant{unsigned suffix;unsigned subject;const char* right;};
@@ -251,4 +252,5 @@ inline constexpr DefaultPackAgentGrant kDefaultPackAgentGrants[]{
   {0x10c3,0x62b,"OBS_AGENT_EVIDENCE_APPEND"},
   {0x10c4,0x62b,"OBS_EXPORT_CONTROL"},
   {0x10c5,0x62b,"OBS_METRICS_EXPORT_READ"},
+  {0x10c6,0x613,"OBS_AGENT_CONTROL_INTERNAL"},
 };

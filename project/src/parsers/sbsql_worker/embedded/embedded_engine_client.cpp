@@ -617,6 +617,10 @@ struct EmbeddedEngineClient::Impl {
     server_config.embedded_direct_mode = true;
     server_config.database_open_mode = "normal";
     server_config.sbps_enabled = false;
+    // SEARCH_KEY: SB_EMBEDDED_L5_NOT_AUTOSTARTED (owner direction 2026-10-30).
+    // Embedded opening never starts L5 or any agent. The program embedding
+    // the engine may start the agent runtime itself if it wants agents to do
+    // the work; otherwise it performs those tasks itself.
     auto hosted = scratchbird::server::StartHostedEngine(server_config);
     if (!hosted.ok()) {
       AddServerDiagnostics(hosted.diagnostics, messages);

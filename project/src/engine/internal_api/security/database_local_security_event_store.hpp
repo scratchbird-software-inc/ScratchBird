@@ -61,6 +61,17 @@ struct DatabaseLocalSecurityBootstrapAuthorityV1 {
   std::uint64_t creator_tx = 0;
   std::uint64_t policy_generation = 0;
   std::uint64_t security_context_generation = 0;
+  // SEARCH_KEY: SB_LOADER_READS_CREATE_SECURITY_ROWS. Every other committed
+  // create-time security row (L5, agent principals, pack roles and grants).
+  struct Principal { EngineUuid uuid; std::string name, kind, credential_fingerprint; };
+  struct NamedObject { EngineUuid uuid; std::string name; };
+  struct Membership { EngineUuid membership_uuid, member_uuid, container_uuid; std::string container_kind; };
+  struct Grant { EngineUuid grant_uuid, subject_uuid, target_uuid; std::string subject_kind, right, effect; };
+  std::vector<Principal> principals;
+  std::vector<NamedObject> roles;
+  std::vector<NamedObject> groups;
+  std::vector<Membership> memberships;
+  std::vector<Grant> grants;
 };
 
 struct DatabaseLocalSecurityEventStoreStateV1 {

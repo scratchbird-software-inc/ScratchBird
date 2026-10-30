@@ -1090,6 +1090,13 @@ const char* AgentFaultInjectionRecoveryResponseName(
     AgentFaultInjectionRecoveryResponse value);
 
 std::vector<AgentTypeDescriptor> CanonicalAgentRegistry();
+// SEARCH_KEY: SB_DRIFT_AGENT_TYPE_TEXT_KEYS. Owner direction 2026-10-30: the
+// engine identifies everything by binary(16) UUIDv7 only; names exist for
+// humans and AI and are resolved by lookup. Agent types are still keyed by a
+// text type id here and in the runtime's dispatch. Agent identity at runtime
+// is the committed policy UUID and the principal linked to it
+// (SB_AGENT_PRINCIPAL_BINDING_BY_UUID); converting this registry to UUIDs is
+// outstanding work, not done.
 std::optional<AgentTypeDescriptor> FindAgentType(const std::string& type_id);
 AgentRuntimeStatus ValidateCanonicalAgentRegistry();
 AgentRuntimeStatus ValidateAgentType(const AgentTypeDescriptor& descriptor);
@@ -1180,6 +1187,14 @@ const char* AgentSecurityRightName(AgentSecurityRight value);
 std::optional<AgentSecurityRight> ParseAgentSecurityRight(const std::string& right);
 const char* AgentSecurityCommandFamilyName(AgentSecurityCommandFamily value);
 const char* AgentSecurityDenialKindName(AgentSecurityDenialKind value);
+// SEARCH_KEY: SB_AGENT_SELF_ACTION_RIGHTS. The rights an agent must hold to act
+// for itself (operation class "self_action"), from the accepted dispositions in
+// appendix-agent-security-roles.md section 4c. OBS_AGENT_CONTROL is what an
+// operator or L5 needs to control an agent; per section 5 no agent holds it, so
+// it is the requirement only for agent types section 4c does not settle, which
+// therefore cannot act until the owner decides their right. L5 checks this same
+// list before starting an agent, so start and execution cannot disagree.
+std::vector<std::string> RequiredAgentSelfActionRights(const AgentTypeDescriptor& descriptor);
 std::vector<AgentSecurityGrantRequirement> RequiredAgentSecurityRightsForCommand(
     AgentSecurityCommandFamily command_family);
 std::vector<AgentSecurityGrantRequirement> RequiredAgentSecurityRightsForActionContract(

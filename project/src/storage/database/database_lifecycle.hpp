@@ -194,6 +194,41 @@ enum class DatabaseCreateHandoffState : u16 {
 struct DatabaseBootstrapSecurityCatalogState {
   bool present = false;
   bool committed_by_inventory = false;
+  // SEARCH_KEY: SB_L5_PRINCIPAL_ALWAYS_PROVISIONED. The L5 principal (the
+  // database identity, a SYSARCH member). Nil only for files that predate it.
+  TypedUuid l5_principal_uuid;
+  // SEARCH_KEY: SB_LOADER_READS_CREATE_SECURITY_ROWS. Every security row the
+  // bootstrap transaction committed, in neutral form, so authorization reads
+  // what create wrote instead of only the owner and SYSARCH. Rows whose
+  // subject is absent (a PUBLIC baseline grant) are counted, not carried.
+  struct CommittedPrincipal {
+    scratchbird::core::platform::Uuid uuid{};
+    std::string name, kind, credential_fingerprint;
+  };
+  struct CommittedNamedObject {
+    scratchbird::core::platform::Uuid uuid{};
+    std::string name;
+  };
+  struct CommittedMembership {
+    scratchbird::core::platform::Uuid membership_uuid{}, member_uuid{}, container_uuid{};
+    std::string container_kind;
+  };
+  struct CommittedGrant {
+    scratchbird::core::platform::Uuid grant_uuid{}, subject_uuid{}, target_uuid{};
+    std::string subject_kind, right, effect;
+  };
+  std::vector<CommittedPrincipal> committed_principals;
+  std::vector<CommittedNamedObject> committed_roles;
+  std::vector<CommittedNamedObject> committed_groups;
+  std::vector<CommittedMembership> committed_memberships;
+  std::vector<CommittedGrant> committed_grants;
+  u32 committed_subjectless_grants = 0;
+  // SEARCH_KEY: SB_AGENT_PRINCIPAL_BINDING_BY_UUID. Agent primary policy UUID
+  // to the principal create made for that agent type.
+  struct CommittedAgentPrincipalBinding {
+    scratchbird::core::platform::Uuid policy_uuid{}, principal_uuid{};
+  };
+  std::vector<CommittedAgentPrincipalBinding> committed_agent_principal_bindings;
   TypedUuid principal_uuid;
   std::string principal_name;
   std::string credential_fingerprint;
@@ -227,6 +262,12 @@ struct DatabaseBootstrapSecurityCatalogState {
     std::string agent_type;
     bool enabled = false;
     u64 generation = 0;
+    // SEARCH_KEY: SB_AGENT_PRINCIPAL_BINDING_BY_UUID. The policy definition's
+    // own binary identity, and whether it is the agent type's primary policy.
+    // `agent_type` is the registry key the code dispatches on; identification
+    // uses the UUID.
+    scratchbird::core::platform::Uuid policy_uuid{};
+    bool primary = false;
   };
   std::vector<CommittedAgentPolicy> committed_agent_policies;
   u32 committed_agent_registration_records = 0;

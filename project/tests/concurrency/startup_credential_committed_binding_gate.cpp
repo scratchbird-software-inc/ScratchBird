@@ -38,6 +38,15 @@ namespace {
 
 int checks = 0;
 
+// Removed at exit, including after a failed Check (tests clean up after
+// themselves).
+std::filesystem::path g_scratch;
+void RemoveScratch() {
+  if (g_scratch.empty()) return;
+  std::error_code ignored;
+  std::filesystem::remove_all(g_scratch, ignored);
+}
+
 void Check(bool pass, const char* what) {
   ++checks;
   if (!pass) {
@@ -142,6 +151,8 @@ int main() {
     Check(configured.ok(), "fixture default memory manager configured");
   }
   const auto scratch = ScratchDir();
+  g_scratch = scratch;
+  std::atexit(RemoveScratch);
 
   // 1. A database created with an internal service principal commits a runtime
   //    authority binding, and the closed-file bootstrap read returns it.
@@ -287,27 +298,29 @@ int main() {
     source.Close();
   }
 
-  // 4. The inverse, which is every existing database: no service principal
-  //    means no committed binding, no reported binding, and a refusal. This is
-  //    why the new read is inert for databases that predate it.
+  // 4. No caller-supplied service credential. This used to mean no service
+  //    principal and no binding at all. Owner direction 2026-10-30
+  //    (SB_L5_PRINCIPAL_ALWAYS_PROVISIONED): every create now writes L5 and its
+  //    binding; with no credential the binding names none, so a startup
+  //    credential still cannot be framed and the refusal stays.
   {
     const auto created = CreateDatabase(scratch / "no-service.sbdb", false);
-    Check(created.ok, "database without an internal service principal is created");
+    Check(created.ok, "database without a caller-supplied service credential is created");
 
     const auto read = db::ReadDatabaseBootstrapSecurityCatalog(created.path.string());
     Check(read.ok() && read.state.present && read.state.committed_by_inventory,
           "its bootstrap rows still read back normally");
-    Check(!read.state.runtime_authority_binding_present,
-          "no runtime authority binding is reported");
+    Check(read.state.runtime_authority_binding_present &&
+              !read.state.service_principal_uuid.is_nil(),
+          "L5's runtime authority binding is committed regardless");
     Check(!read.state.credential_reference_uuid.has_value(),
           "no credential reference is invented");
-    Check(read.state.runtime_authority_generation == 0,
-          "no generation is invented");
 
     const auto bound =
         BuildStartupCredentialBinding(read.state, created.database_uuid);
-    Check(!bound.ok() && bound.error == StartupCredentialBindingError::binding_absent,
-          "a database with no committed binding refuses to produce one");
+    Check(!bound.ok() &&
+              bound.error == StartupCredentialBindingError::credential_reference_absent,
+          "a binding with no credential refuses to produce a startup credential binding");
     Check(!ValidStartupCredentialFrameBinding(bound.binding),
           "and leaves no frameable binding behind");
   }

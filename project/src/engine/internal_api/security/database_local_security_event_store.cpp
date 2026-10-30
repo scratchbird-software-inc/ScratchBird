@@ -856,6 +856,22 @@ DatabaseLocalSecurityEventStoreLoadResultV1 LoadUnlocked(
         bootstrap.state.membership_uuid.value;
   }
   result.state.bootstrap_authority.creator_tx = bootstrap.state.creator_tx;
+  {
+    // SEARCH_KEY: SB_LOADER_READS_CREATE_SECURITY_ROWS
+    auto& out = result.state.bootstrap_authority;
+    for (const auto& p : bootstrap.state.committed_principals)
+      out.principals.push_back({EngineUuid{p.uuid}, p.name, p.kind, p.credential_fingerprint});
+    for (const auto& r : bootstrap.state.committed_roles)
+      out.roles.push_back({EngineUuid{r.uuid}, r.name});
+    for (const auto& g : bootstrap.state.committed_groups)
+      out.groups.push_back({EngineUuid{g.uuid}, g.name});
+    for (const auto& m : bootstrap.state.committed_memberships)
+      out.memberships.push_back({EngineUuid{m.membership_uuid}, EngineUuid{m.member_uuid},
+                                 EngineUuid{m.container_uuid}, m.container_kind});
+    for (const auto& g : bootstrap.state.committed_grants)
+      out.grants.push_back({EngineUuid{g.grant_uuid}, EngineUuid{g.subject_uuid},
+                            EngineUuid{g.target_uuid}, g.subject_kind, g.right, g.effect});
+  }
   result.state.bootstrap_authority.policy_generation =
       bootstrap.state.policy_generation;
   result.state.bootstrap_authority.security_context_generation =

@@ -285,12 +285,16 @@ bool StorageOwnerBlocksServer(const char* self_path, bool read_only) {
   const auto path = TempRoot() /
       (read_only ? "reader-blocks-server.sbdb" : "writer-blocks-server.sbdb");
   CreateRealDatabase(path);
-  // Use a genuine prior descriptor to detect premature ownership publication.
+  // A genuine prior owner. Owner direction 2026-10-30
+  // (SB_OWNER_LOCK_FILE_REMOVED_ON_CLOSE): its release removes the route
+  // descriptor, so premature publication by a refused server now shows as a
+  // descriptor appearing where none exists.
   auto previous = server::AcquireDatabaseOwnership(OwnershipRequest(path, "server"));
   if (!Expect(previous.acquired, "prior route descriptor setup failed")) return false;
   previous.lock.reset();
   const auto route_path = server::DatabaseOwnershipLockPath(path);
-  const auto descriptor_before = ReadBytes(route_path);
+  if (!Expect(!std::filesystem::exists(route_path),
+              "released server left its route descriptor")) return false;
   const auto database_before = ReadBytes(path);
   disk::FileDevice owner;
   if (!Expect(owner.Open(path.string(), read_only
@@ -298,8 +302,8 @@ bool StorageOwnerBlocksServer(const char* self_path, bool read_only) {
                              : disk::FileOpenMode::open_existing).ok(),
               "incumbent storage owner setup failed")) return false;
   bool ok = RunServerProbe(self_path, path, false);
-  ok = Expect(ReadBytes(route_path) == descriptor_before,
-              "refused server changed incumbent route descriptor") && ok;
+  ok = Expect(!std::filesystem::exists(route_path),
+              "refused server published a route descriptor") && ok;
   ok = Expect(ReadBytes(path) == database_before,
               "refused server changed database bytes") && ok;
   ok = Expect(owner.Close().ok(), "storage owner close failed") && ok;
@@ -311,6 +315,8 @@ bool StorageOwnerBlocksServer(const char* self_path, bool read_only) {
 bool StorageLockHeld(const std::filesystem::path& path, bool expected) {
   const auto lock_path = path.string() + ".sb.owner.lock";
   const int fd = ::open(lock_path.c_str(), O_RDWR | O_CLOEXEC);
+  // Released ownership removes the file (SB_OWNER_LOCK_FILE_REMOVED_ON_CLOSE).
+  if (fd < 0 && errno == ENOENT && !expected) return true;
   if (!Expect(fd >= 0, "storage lock inspection open failed")) return false;
   const bool acquired = ::flock(fd, LOCK_EX | LOCK_NB) == 0;
   const int error = errno;
@@ -373,21 +379,21 @@ bool StorageOpenFailureDoesNotPublish() {
   if (!Expect(previous.acquired, "failure fixture route setup failed")) return false;
   previous.lock.reset();
   const auto before = ReadBytes(path);
-  const auto route_before = ReadBytes(server::DatabaseOwnershipLockPath(path));
   const auto lock_path = path.string() + ".sb.owner.lock";
-  const auto saved_path = lock_path + ".saved";
-  // Preserve this fixture's original inode; restore it after the negative case.
-  std::filesystem::rename(lock_path, saved_path);
+  // Released ownership removed both lock files (SB_OWNER_LOCK_FILE_REMOVED_ON_CLOSE);
+  // a directory in the storage lock's place forces the open failure.
+  if (!Expect(!std::filesystem::exists(lock_path) &&
+                  !std::filesystem::exists(server::DatabaseOwnershipLockPath(path)),
+              "released ownership left a lock file")) return false;
   std::filesystem::create_directory(lock_path);
   const auto failed = server::AcquireDatabaseOwnership(OwnershipRequest(path, "server"));
   bool ok = Expect(!failed.acquired && !failed.lock &&
                        failed.diagnostic_code == "ARCH.DATABASE_OWNERSHIP_LOCK_FAILED" &&
                        failed.diagnostic_detail.find("storage_owner_open_failed:") == 0,
                    "storage-lock open failure was falsely published as ownership");
-  ok = Expect(ReadBytes(server::DatabaseOwnershipLockPath(path)) == route_before,
-              "storage-lock open failure changed route descriptor") && ok;
+  ok = Expect(!std::filesystem::exists(server::DatabaseOwnershipLockPath(path)),
+              "storage-lock open failure left a route descriptor") && ok;
   std::filesystem::remove(lock_path);  // Only the empty directory created above.
-  std::filesystem::rename(saved_path, lock_path);
   auto retried = server::AcquireDatabaseOwnership(OwnershipRequest(path, "server"));
   ok = Expect(retried.acquired, "storage-lock failure leaked route ownership") && ok;
   retried.lock.reset();
@@ -627,16 +633,22 @@ bool StableLockInodeAfterRelease(const char* self_path, bool use_destructor) {
       return Expect(false, "stable-inode explicit close failed");
     }
   }
+  // Owner direction 2026-10-30 (SB_OWNER_LOCK_FILE_REMOVED_ON_CLOSE): this
+  // used to require that release kept the lock inode, so a contender holding
+  // it would own the database next. Release now removes the file. A contender
+  // that locks the old, unlinked inode gains nothing: every opener re-checks
+  // that the path still names the inode it locked, so separate processes can
+  // still open the database while that stale lock is held.
   struct stat named{};
-  bool ok = Expect(::stat(lock_path.c_str(), &named) == 0 &&
-                       named.st_dev == held.st_dev && named.st_ino == held.st_ino,
-                   "owner release removed or replaced the lock inode");
+  bool ok = Expect(::stat(lock_path.c_str(), &named) != 0 && errno == ENOENT,
+                   "owner release did not remove the lock file");
   if (::flock(contender, LOCK_EX | LOCK_NB) != 0) {
     ::close(contender);
-    return Expect(false, "contender could not acquire released inode");
+    return Expect(false, "contender could not lock the released inode");
   }
-  ok = RunProbe(self_path, path, true, false) && ok;
-  ok = RunProbe(self_path, path, false, false) && ok;
+  // Read-only: a mutable open that is admitted legitimately updates the file,
+  // which the byte comparison below is not about.
+  ok = RunProbe(self_path, path, true, true) && ok;
   ::flock(contender, LOCK_UN);
   ::close(contender);
   ok = RunProbe(self_path, path, true, true) && ok;

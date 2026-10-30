@@ -58,8 +58,10 @@ struct Item {
 struct Package {
   std::vector<Item> items;std::vector<c::CatalogNamedCreationInput> inputs;
   std::array<db::NativeInitialMembershipIdentity,5> memberships;
-  // Default pack: 5 standard + 44 agent roles, 10 standard + 198 agent grants.
-  static constexpr unsigned kRoles=49,kGrants=208,kSecurity=28+kRoles+6+5+kGrants;
+  // Default pack: 5 standard + 44 agent roles, 11 standard + 198 agent grants
+  // (the 11th, 2026-10-30, grants CONNECT to the PUBLIC group), 199 agent
+  // grants (the 199th grants OBS_AGENT_CONTROL_INTERNAL to transaction_pressure).
+  static constexpr unsigned kRoles=49,kGrants=210,kSecurity=28+kRoles+6+5+kGrants;
   explicit Package(bool security=false,bool bootstrap=false,bool service=false)
       :items(service?kSecurity+10:bootstrap?kSecurity+3:security?kSecurity:28) {
     for(unsigned i=0;i<memberships.size();++i)memberships[i]={f::Id(13000+i),SourceId(0x201+i),SourceId(0x100+i)};
@@ -70,7 +72,7 @@ struct Package {
       const auto object=n==0?SourceId(1):n<=12?SourceId(0x10+n-1):n<=26?SourceId(0x400+n-13):n==27?f::Id(12000):
           n<roles_end?(n-28<5?SourceId(0x100+n-28):SourceId(0x600+n-28-5)):
           n<groups_end?SourceId(0x200+n-roles_end):n<members_end?f::Id(13000+n-groups_end):
-          n<grants_end?(n-members_end<10?SourceId(0x300+n-members_end):SourceId(0x1000+n-members_end-10)):
+          n<grants_end?(n-members_end<11?SourceId(0x300+n-members_end):SourceId(0x1000+n-members_end-11)):
           t==0?SourceId(0x105):t<=2?f::Id(14000+t-1):t<=4?f::Id(15000+t-3):f::Id(15100+t-5);
       const bool role=n>=28&&(n<roles_end||t==0);
       const auto subtype=n==0?"bootstrap_policy_pack":n<=12?"bootstrap_security_provider":n<=26?"bootstrap_policy_profile":n==27?"memory_configuration":
@@ -125,9 +127,11 @@ std::pair<p::Uuid,std::string> SecurityGolden(unsigned n) {
   static constexpr std::array<const char*,10> rights{"CONNECT","SELECT","INSERT","UPDATE","DELETE",
       "SEC_IDENTITY_ADMIN","SEC_MEMBERSHIP_ADMIN","SEC_GRANT_ADMIN","AUDIT_READ","OBS_MANAGEMENT_INSPECT"};
   constexpr unsigned kAgentRoles=std::size(kDefaultPackAgentRoles);
-  const bool agent_role=n>=26&&n<26+kAgentRoles,agent_grant=n>=26+kAgentRoles;
-  const auto* ar=agent_role?&kDefaultPackAgentRoles[n-26]:nullptr;
-  const auto* ag=agent_grant?&kDefaultPackAgentGrants[n-26-kAgentRoles]:nullptr;
+  // 5 roles, 6 groups, 5 memberships, 11 standard grants (16..26), then agents.
+  const bool agent_role=n>=27&&n<27+kAgentRoles,agent_grant=n>=27+kAgentRoles;
+  const auto* ar=agent_role?&kDefaultPackAgentRoles[n-27]:nullptr;
+  const auto* ag=agent_grant?&kDefaultPackAgentGrants[n-27-kAgentRoles]:nullptr;
+  const bool public_connect=n==26;  // CONNECT to the PUBLIC group
   const unsigned kind=n<5||agent_role?62:n<11?61:63;
   const auto id=agent_role?SourceId(ar->suffix):agent_grant?SourceId(ag->suffix):
       n<5?SourceId(0x100+n):n<11?SourceId(0x200+n-5):n<16?f::Id(13000+n-11):SourceId(0x300+n-16);
@@ -135,6 +139,7 @@ std::pair<p::Uuid,std::string> SecurityGolden(unsigned n) {
   g.Identity(kind==62?3:kind==61?2:4,id);
   if(n>=11&&n<16){g.Identity(5,SourceId(0x201+n-11));g.Identity(6,SourceId(0x100+n-11));}
   if(agent_grant)g.Identity(7,SourceId(ag->subject));
+  else if(public_connect)g.Identity(7,SourceId(0x200));
   else if(n>=16&&!agent_role)g.Identity(7,SourceId(0x100+subjects[n-16]));
   g.Identity(9,SourceId(1));
   if(n>=11&&n<16)g.Identity(10,id);
@@ -145,6 +150,7 @@ std::pair<p::Uuid,std::string> SecurityGolden(unsigned n) {
   else if(n<5){g.Field(44,3,roles[n]);g.Field(46,3,role_descriptions[n]);g.Field(47,3,std::string("group:")+groups[n+1]);}
   else if(n<11){g.Field(46,3,group_descriptions[n-5]);g.Field(48,3,groups[n-5]);}
   else if(n<16){g.Field(54,3,"group_membership");g.Field(55,3,"group");g.Field(56,3,"role");g.Field(58,3,"allow");}
+  else if(public_connect){g.Field(54,3,"privilege");g.Field(57,3,"group");g.Field(58,3,"allow");g.Field(59,3,"CONNECT");}
   else {g.Field(54,3,"privilege");g.Field(57,3,"role");g.Field(58,3,"allow");g.Field(59,3,rights[n-16]);}
   return {id,g.Finish()};
 }
@@ -186,7 +192,7 @@ void Verify(const c::CatalogNamedCreationSet& out,bool security=false,bool boots
   const unsigned count=service?Package::kSecurity+10:bootstrap?Package::kSecurity+3:security?Package::kSecurity:28;
   Check(out.definitions.size()==count&&out.names.size()==2*count&&out.encoded_bytes>0,"all admitted policy/security definitions and every supplied name returned");
   unsigned packs=0,providers=0,profiles=0,memories=0,bindings=0;
-  constexpr unsigned kSecurityRecords=26+std::size(kDefaultPackAgentRoles)+std::size(kDefaultPackAgentGrants);
+  constexpr unsigned kSecurityRecords=27+std::size(kDefaultPackAgentRoles)+std::size(kDefaultPackAgentGrants);  // 5+6+5+11 standard
   std::array<bool,kSecurityRecords> security_seen{};
   std::array<bool,3> bootstrap_seen{};
   std::array<bool,7> service_seen{};
@@ -224,7 +230,7 @@ void Verify(const c::CatalogNamedCreationSet& out,bool security=false,bool boots
     const auto provider=c::DecodeCatalogBootstrapSecurityProvider(meta.record.payload);
     const auto profile=c::DecodeCatalogBootstrapPolicyProfile(meta.record.payload);
     const auto memory=c::DecodeCatalogMemoryConfiguration(meta.record.payload);
-    if(pack.ok()){++packs;Check(pack.record->policy_pack_uuid==SourceId(1)&&pack.record->declared_counts==std::array<p::u64,9>{12,1,11,49,6,5,208,14,58},"actual admitted pack counts and identity");}
+    if(pack.ok()){++packs;Check(pack.record->policy_pack_uuid==SourceId(1)&&pack.record->declared_counts==std::array<p::u64,9>{12,1,11,49,6,5,210,14,58},"actual admitted pack counts and identity");}
     else if(provider.ok()){++providers;Check(provider.record->provider_uuid==SourceId(0x10+static_cast<unsigned>(provider.record->family)-1)&&provider.record->policy_pack_uuid==SourceId(1),"every real imported provider keeps exact binary source identity and family");}
     else if(profile.ok()){++profiles;if(profile.record->area=="memory_resource_governance") {
       ++bindings;Check(profile.record->resource_definition_uuid==f::Id(12000)&&profile.record->resource_definition_generation==1,"real materialized resource binding, no inferred identity/generation");}}
@@ -558,7 +564,7 @@ void SecuritySourceMutations() {
               "actual nonempty target and explicit deny retained, not text/unscoped/default-allow fallback");++targets;
         }
       }
-      Check(changed==3&&targets==10+std::size(kDefaultPackAgentGrants),"every changed value and actual targeted grant retained");
+      Check(changed==3&&targets==11+std::size(kDefaultPackAgentGrants),"every changed value and actual targeted grant retained");  // 11 standard grants
     }else if(scenario==1){
       Check(!made.ok()&&!made.records&&made.error==db::NativeInitialPolicyError::source_invalid&&made.source_diagnostic&&
           made.source_diagnostic->diagnostic_code=="SB-POLICY-PACK-GROUPS-INVALID",

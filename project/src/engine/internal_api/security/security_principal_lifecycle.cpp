@@ -1093,6 +1093,69 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
                         membership.container_kind),
           std::move(membership));
     }
+    // SEARCH_KEY: SB_LOADER_READS_CREATE_SECURITY_ROWS (owner direction
+    // 2026-10-30): authorization reads what create wrote. The owner, SYSARCH
+    // and the owner's membership above stay as they were; emplace leaves them.
+    for (const auto& p : state.principals) {
+      EngineSecurityPrincipalRecord principal;
+      principal.creator_tx = state.creator_tx;
+      principal.event_sequence = 1;
+      principal.principal_uuid = p.uuid;
+      principal.principal_name = p.name;
+      principal.principal_kind = p.kind.empty() ? "user" : p.kind;
+      principal.lifecycle_state = "active";
+      principal.credential_fingerprint = p.credential_fingerprint;
+      principal.security_generation = state.policy_generation;
+      principals.emplace(principal.principal_uuid, std::move(principal));
+    }
+    for (const auto& r : state.roles) {
+      EngineSecurityRoleRecord role;
+      role.creator_tx = state.creator_tx;
+      role.event_sequence = 1;
+      role.role_uuid = r.uuid;
+      role.role_name = r.name;
+      role.lifecycle_state = "active";
+      role.security_generation = state.policy_generation;
+      roles.emplace(role.role_uuid, std::move(role));
+    }
+    for (const auto& g : state.groups) {
+      EngineSecurityGroupRecord group;
+      group.creator_tx = state.creator_tx;
+      group.event_sequence = 1;
+      group.group_uuid = g.uuid;
+      group.group_name = g.name;
+      group.lifecycle_state = "active";
+      group.security_generation = state.policy_generation;
+      groups.emplace(group.group_uuid, std::move(group));
+    }
+    for (const auto& m : state.memberships) {
+      EngineSecurityMembershipRecord membership;
+      membership.creator_tx = state.creator_tx;
+      membership.event_sequence = 1;
+      membership.membership_uuid = m.membership_uuid;
+      membership.member_principal_uuid = m.member_uuid;
+      membership.container_uuid = m.container_uuid;
+      membership.container_kind = m.container_kind;
+      membership.security_generation = state.policy_generation;
+      memberships.emplace(MembershipKey(membership.member_principal_uuid,
+                                        membership.container_uuid,
+                                        membership.container_kind),
+                          std::move(membership));
+    }
+    for (const auto& g : state.grants) {
+      EngineSecurityPrivilegeGrantRecord grant;
+      grant.creator_tx = state.creator_tx;
+      grant.event_sequence = 1;
+      grant.grant_uuid = g.grant_uuid;
+      grant.grantee_uuid = g.subject_uuid;
+      grant.grantee_kind = g.subject_kind.empty() ? "principal" : g.subject_kind;
+      grant.target_object_uuid = g.target_uuid;
+      grant.privilege = NormalizePrivilege(g.right);
+      grant.grant_effect = g.effect.empty() ? "allow" : g.effect;
+      grant.security_generation = state.policy_generation;
+      const auto key = GrantKey(grant.grantee_uuid, grant.target_object_uuid, grant.privilege);
+      grants.emplace(key, std::move(grant));
+    }
     result.state.security_generation =
         std::max<std::uint64_t>(1, state.policy_generation);
     result.state.policy_generation =

@@ -81,7 +81,14 @@ extern "C" int __wrap_pthread_create(pthread_t* thread, const pthread_attr_t* at
 }
 extern "C" int __real_pthread_join(pthread_t, void**);
 extern "C" int __wrap_pthread_join(pthread_t thread, void** value) {
-  if (fail_coordinator_join.exchange(false)) {
+  // The coordinator now runs its committed agents (SB_COORDINATOR_STARTS_COMMITTED_AGENTS),
+  // so Stop also joins worker threads. Those joins pass through; the injection
+  // targets the coordinator's own thread (glibc renders std::thread::id as the
+  // numeric pthread_t, which is what the snapshot records).
+  if (fail_coordinator_join.load() && join_failure_runtime != nullptr &&
+      std::to_string(static_cast<unsigned long>(thread)) ==
+          join_failure_runtime->Snapshot().coordinator_thread_id &&
+      fail_coordinator_join.exchange(false)) {
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
     while (join_failure_runtime->Snapshot().shutdown_agent_state != "completed" &&
            std::chrono::steady_clock::now() < deadline)
@@ -186,17 +193,24 @@ int main(int argc,char** argv)try{
               "another runtime cannot start before the coordinator is fully joined");
       };
       duplicate_refused();
-      // Exceed the former 750 ms + 5 s timer once. An idle coordinator must
-      // remain event-driven rather than periodically rewriting its status file.
-      const auto status_before_idle = Read(config.control_dir / "sb_server.agent_runtime.json");
+      // Owner direction 2026-10-30 (SB_COORDINATOR_STARTS_COMMITTED_AGENTS):
+      // a server-opened database runs the agents create committed. This used to
+      // assert an idle coordinator (no workers, no leases, no status rewrite
+      // past the former 750 ms + 5 s timer); every create now commits enabled
+      // agent policies, so there is no idle state to observe here. What it
+      // asserts instead: L5 runs only agents it admitted, each bound by UUID to
+      // its own principal, never as L5, and none it refused.
       if (mode == "coordinator") std::this_thread::sleep_for(std::chrono::seconds(6));
       const auto running = coordinator.Snapshot();
-      Check(running.started && running.scheduler_ticks == 0 &&
-            running.worker_thread_count == 0 && running.workers.empty() &&
-            running.background_worker_slots == 0 && running.durable_lease_count == 0,
-            "only the coordinator runs; no idle ticks, unconfigured worker or lease");
-      Check(Read(config.control_dir / "sb_server.agent_runtime.json") == status_before_idle,
-            "idle coordinator does not rewrite status");
+      Check(running.started && running.worker_thread_count > 0 && !running.workers.empty(),
+            "the coordinator runs the committed agents");
+      for (const auto& worker : running.workers) {
+        Check(!worker.policy_uuid.is_nil() && !worker.principal_uuid.is_nil(),
+              "every agent the coordinator runs is bound to its own principal");
+        for (const auto& refused : running.refused_agents)
+          Check(refused.agent_type_id != worker.agent_type_id && !refused.reason.empty(),
+                "no refused agent runs, and every refusal carries its reason");
+      }
       Check(running.startup_agent_state == "completed" &&
             running.shutdown_agent_state == "not_started" &&
             !running.coordinator_thread_id.empty() &&
@@ -238,12 +252,15 @@ int main(int argc,char** argv)try{
             "same coordinator executes shutdown agent before terminating");
       Check(contender.StartCoordinator(config, opened.state, &diagnostics) && contender.Stop().ok(),
             "successful native join permits the next coordinator");
+      // The committed agents' work now changes the file, and every change
+      // goes through an MGA transaction (SB_COORDINATOR_STARTS_COMMITTED_AGENTS).
+      // This used to require an unchanged file and no transaction at all.
       const auto after = db::LoadLocalTransactionInventoryFromDatabase(create.path);
-      Check(after.ok() && after.inventory.next_local_transaction_id ==
-            inventory.inventory.next_local_transaction_id && Read(create.path) == bytes,
-            "coordinator start, idle and stop do not mutate the database");
-      Check(begins == before_begins && commits == 0 && rollbacks == 0 && persists == 0,
-            "unconfigured coordinator does no background transaction or catalog seed");
+      Check(after.ok() && after.inventory.next_local_transaction_id >
+            inventory.inventory.next_local_transaction_id && Read(create.path) != bytes,
+            "the committed agents' work is recorded in the database");
+      Check(begins > before_begins && commits > 0,
+            "the committed agents' work runs inside MGA transactions");
       std::cout << "server_configured_coordinator=PASS\n";
       return 0;
     }

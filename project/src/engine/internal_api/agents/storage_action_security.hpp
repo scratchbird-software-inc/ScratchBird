@@ -103,7 +103,12 @@ inline StorageActionSecurityResult AcquireStorageActionSecurityLease(
           "SECURITY.AUTHORIZATION.DENIED",std::string("storage_action_unresolved_right:")+right));
       return false;
     };
-    if(!check("OBS_AGENT_CONTROL",authenticated.database_uuid))return fail(E::permission_denied);
+    // Preallocation takes OBS_AGENT_CONTROL_INTERNAL: the accepted section 4c
+    // disposition for preallocate_page_family (SB_AGENT_SELF_ACTION_RIGHTS).
+    // Growth (owner, 2026-10-30) takes the filespace lifecycle right and the
+    // action approval on the filespace below, no longer OBS_AGENT_CONTROL.
+    if(action==StorageActionSecurityKind::preallocation&&
+       !check("OBS_AGENT_CONTROL_INTERNAL",authenticated.database_uuid))return fail(E::permission_denied);
     if(action==StorageActionSecurityKind::growth&&
         (!check("FILESPACE_LIFECYCLE_CONTROL",filespace)||!check("OBS_AGENT_ACTION_APPROVE",filespace)))
       return fail(E::permission_denied);

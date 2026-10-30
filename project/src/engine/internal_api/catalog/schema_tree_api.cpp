@@ -12,6 +12,7 @@
 #include "bootstrap_schema_roots.hpp"
 #include "catalog_record_codec.hpp"
 #include "catalog_schema_record_codec.hpp"
+#include "catalog_localized_record_codec.hpp"
 #include "catalog_records.hpp"
 #include "catalog_page.hpp"
 #include "catalog/name_registry.hpp"
@@ -154,6 +155,61 @@ std::vector<EngineSchemaTreeRecord> BootstrapSchemaTreeRecords(
 }
 
 }  // namespace
+
+std::vector<BootstrapNamedObject> BootstrapCatalogNamedObjects(const EngineRequestContext& context,
+                                                               EngineApiDiagnostic& diagnostic) {
+  namespace c = scratchbird::core::catalog;
+  const auto rows = ReadBootstrapCatalogRows(context, diagnostic);
+  if (diagnostic.error) return {};
+  std::map<EngineUuid, std::pair<c::CatalogRecordKind, EngineUuid>> objects;
+  std::vector<c::CatalogLocalizedNameRecord> names;
+  for (const auto& row : rows) {
+    if (row.kind != scratchbird::storage::page::CatalogPageRowKind::typed_catalog_record) continue;
+    const auto decoded = c::DecodeCatalogTypedRecord(row);
+    if (!decoded.ok()) { diagnostic = SchemaReadError("catalog_record_invalid"); return {}; }
+    if (decoded.record.header.kind == c::CatalogRecordKind::localized_name) {
+      const auto name = c::DecodeCatalogLocalizedName(decoded.record.payload);
+      if (!name.ok()) { diagnostic = SchemaReadError("localized_name_invalid"); return {}; }
+      names.push_back(*name.record);
+      continue;
+    }
+    if (!decoded.record.header.object_uuid.value.is_nil())
+      objects[EngineUuid{decoded.record.header.object_uuid.value}] =
+          {decoded.record.header.kind, EngineUuid{decoded.record.header.parent_uuid.value}};
+  }
+  const auto class_of = [](c::CatalogRecordKind kind) -> std::string {
+    switch (kind) {
+      case c::CatalogRecordKind::database: return "database";
+      case c::CatalogRecordKind::filespace: return "filespace";
+      case c::CatalogRecordKind::synonym_descriptor: return "synonym";
+      case c::CatalogRecordKind::user_account: return "user";
+      case c::CatalogRecordKind::role_account: return "role";
+      case c::CatalogRecordKind::group_account: return "group";
+      case c::CatalogRecordKind::table_descriptor: return "table";
+      case c::CatalogRecordKind::index_descriptor: return "index";
+      case c::CatalogRecordKind::domain: return "domain";
+      case c::CatalogRecordKind::datatype_descriptor: return "datatype";
+      case c::CatalogRecordKind::masking_policy: return "masking_policy";
+      case c::CatalogRecordKind::rls_policy: return "rls_policy";
+      case c::CatalogRecordKind::udr_package: return "udr_package";
+      case c::CatalogRecordKind::parser_package: return "parser_package";
+      case c::CatalogRecordKind::sblr_module: return "sblr_module";
+      default: return {};
+    }
+  };
+  std::vector<BootstrapNamedObject> out;
+  for (const auto& name : names) {
+    const auto object = objects.find(EngineUuid{name.target_object_uuid.value});
+    if (object == objects.end()) continue;
+    const auto object_class = class_of(object->second.first);
+    if (object_class.empty()) continue;  // schemas come from the schema tree
+    // Security principals, roles and groups, and the database, are unscoped.
+    const bool scoped = object_class == "table" || object_class == "index";
+    out.push_back({object->first, object_class, scoped ? object->second.second : EngineUuid{},
+                   name.language.empty() ? std::string("en") : name.language, name.name});
+  }
+  return out;
+}
 
 std::string SchemaTreeDefaultName(const std::vector<EngineLocalizedName>& names, const std::string& fallback) {
   for (const auto& name : names) {

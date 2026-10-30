@@ -662,6 +662,19 @@ NameRegistryLoadResult LoadNameRegistryState(const EngineRequestContext& context
                       MakeNameRegistryEntry(context, schema.schema_uuid, "schema", schema.parent_schema_uuid, localized, schema.default_name));
     }
   }
+  // SEARCH_KEY: SB_CREATE_REGISTERS_ALL_OBJECT_NAMES: every object name create
+  // registered in the catalog, not only schema names.
+  {
+    EngineApiDiagnostic named_diagnostic;
+    const auto named = BootstrapCatalogNamedObjects(context, named_diagnostic);
+    if (named_diagnostic.error) { result.state = {}; result.diagnostic = named_diagnostic; return result; }
+    for (const auto& object : named) {
+      if (suppress_legacy_objects.count(object.object_uuid) != 0) { continue; }
+      AddIfNoExplicit(&result.state, &added_entries,
+                      EntryFromSimpleName(context, object.object_uuid, object.object_class,
+                                          object.scope_uuid, object.name, object.language_tag));
+    }
+  }
   for (const auto& table : catalog_state.tables) {
     if (suppress_legacy_objects.count(table.table_uuid) != 0) { continue; }
     if (CrudCreatorVisible(catalog_state, table.creator_tx, table.event_sequence, observer_tx)) {

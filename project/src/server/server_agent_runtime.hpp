@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <exception>
+#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -40,6 +41,10 @@ struct ServerAgentRuntimeWorkerSnapshot {
   std::string name;
   std::string role;
   std::string agent_type_id;
+  // SB_AGENT_PRINCIPAL_BINDING_BY_UUID: the committed policy this worker runs
+  // and the principal L5 bound its session to. Nil when unbound.
+  scratchbird::core::platform::Uuid policy_uuid{};
+  scratchbird::core::platform::Uuid principal_uuid{};
   std::string instance_uuid;
   std::string native_thread_id;
   std::uint64_t ticks = 0;
@@ -122,6 +127,22 @@ struct ServerAgentRuntimeSnapshot {
   std::uint64_t process_vsize_kb = 0;
   bool process_memory_sample_available = false;
   std::vector<ServerAgentRuntimeWorkerSnapshot> workers;
+  // SB_AGENT_SELF_ACTION_RIGHTS: agents L5 declined to start, and why.
+  struct RefusedAgent {
+    std::string agent_type_id;
+    scratchbird::core::platform::Uuid policy_uuid{};
+    std::string reason;
+  };
+  std::vector<RefusedAgent> refused_agents;
+};
+
+// SEARCH_KEY: SB_AGENT_PRINCIPAL_BINDING_BY_UUID. What L5 bound at start.
+struct ServerAgentBinding {
+  // Agent type -> committed primary policy UUID, from the policy record itself.
+  std::map<std::string, scratchbird::core::platform::Uuid> policy_by_type;
+  std::vector<std::string> enabled_types;
+  std::map<scratchbird::core::platform::Uuid, InternalStartupSession> sessions;
+  std::map<scratchbird::core::platform::Uuid, std::string> refused;
 };
 
 class ServerAgentRuntime {
@@ -193,6 +214,8 @@ class ServerAgentRuntime {
     std::string name;
     std::string role;
     std::string agent_type_id;
+    scratchbird::core::platform::Uuid policy_uuid{};
+    scratchbird::core::platform::Uuid principal_uuid{};
     std::string instance_uuid;
     std::string lease_uuid;
     std::string lease_owner_uuid;
@@ -264,6 +287,20 @@ class ServerAgentRuntime {
   // modes. Absent means the database committed no internal authority, and the
   // engine must still refuse BEGIN; the coordinator does not synthesize one.
   InternalStartupSession internal_startup_session_;
+  // One session per agent type, bound by L5 to that type's committed principal.
+  //
+  // SEARCH_KEY: SECURITY-AGENT-SESSION-BINDING
+  // Owner decision D18 (option 3, 2026-10-30): agent principals carry no
+  // credential; L5 binding a session to the committed principal UUID is the
+  // only way to act as an agent. Bound in Start from the same retained-owner
+  // branch as internal_startup_session_, so a copied status record still yields
+  // nothing. A type without exactly one committed principal has no entry, and
+  // its worker refuses rather than falling back to the internal session.
+  // Written before workers launch; read under state_mutex_.
+  // Keyed by committed policy UUID (SB_AGENT_PRINCIPAL_BINDING_BY_UUID).
+  std::map<scratchbird::core::platform::Uuid, InternalStartupSession> agent_sessions_;
+  std::map<std::string, scratchbird::core::platform::Uuid> agent_policy_by_type_;
+  std::vector<ServerAgentRuntimeSnapshot::RefusedAgent> refused_agents_;
   std::string filespace_uuid_;
   std::filesystem::path status_path_;
   std::string managed_listener_state_ = "not_started";

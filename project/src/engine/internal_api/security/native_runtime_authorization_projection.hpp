@@ -439,6 +439,9 @@ inline NativeRuntimeAuthorizationResult ProjectNativeRuntimeAuthorization(
       if(registered==w.rights_.end())return fail(E::unknown_right,n);
       if(active)w.grants_[grants++]={{r.object_uuid,subject,target,r.version_uuid,sk,*registered,*effect=="deny",r.definition_generation,
           binding.security_epoch,r.security_epoch,r.catalog_generation}};
+    }else if(cls=="agent_principal_binding"){
+      // SB_AGENT_PRINCIPAL_BINDING_BY_UUID: links an agent policy to its
+      // principal. It confers no authority, so it adds no edge or grant.
     }else return fail(E::malformed_grant,n);
   }
   if(selected==absent)return fail(E::principal_invalid);

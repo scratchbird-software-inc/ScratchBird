@@ -35,6 +35,10 @@ unsigned inspections=0,inspection_fault=0,inject_on_inspection=0,removals=0;
 bool inject_on_write=false,late_created=false,remove_fault=false,removal_owned=true;
 bool trace_handoff=false,readback_fault=false,close_fault=false;
 bool readback_observed=false,close_observed=false,read_after_close=false;
+// SB_CREATE_VERIFIES_EVERYTHING_WRITTEN: create now reads its header back
+// before its commit point as well as after it. The fault targets one offset-0
+// read by its position; 0 means none.
+unsigned header_reads=0,readback_fault_at=0;
 bool contender_checked=false,contender_refused=false;
 dev_t creator_device=0;
 ino_t creator_inode=0;
@@ -71,6 +75,7 @@ db::DatabaseCreateConfig Config(const fs::path& path,std::string fault={}){
 void Track(const fs::path& path){tracked_main=path.string();late_artifact.clear();inspections=inspection_fault=inject_on_inspection=removals=0;
   inject_on_write=late_created=remove_fault=false;removal_owned=true;
   trace_handoff=readback_fault=close_fault=readback_observed=close_observed=read_after_close=false;
+  header_reads=readback_fault_at=0;
   contender_checked=contender_refused=false;creator_device=0;creator_inode=0;}
 void Unpublished(const db::DatabaseLifecycleResult& result){Check(!result.ok()&&result.create_finality==db::DatabaseCreateFinalityClass::not_published,"refusal has no creation publication");}
 bool CreatorDescriptor(int fd){struct stat value{};return creator_inode&&::fstat(fd,&value)==0&&value.st_dev==creator_device&&value.st_ino==creator_inode;}
@@ -114,9 +119,9 @@ extern "C" ssize_t __real_pread(int,void*,size_t,off_t);
 extern "C" ssize_t __wrap_pread(int fd,void* data,size_t count,off_t offset){
   if(trace_handoff&&CreatorDescriptor(fd)){
     read_after_close|=close_observed;
-    if(offset==0){readback_observed=true;
+    if(offset==0){readback_observed=true;++header_reads;
       if(!contender_checked){contender_checked=true;contender_refused=ProbeInNewProcess(true);}
-      if(readback_fault){readback_fault=false;errno=EIO;return -1;}
+      if(readback_fault&&header_reads==readback_fault_at){readback_fault=false;errno=EIO;return -1;}
     }
   }
   return __real_pread(fd,data,count,offset);
@@ -181,9 +186,15 @@ int main(int argc,char** argv){try{
     const auto actual=db::ReadDatabaseBootstrapSecurityCatalog(path.string());Check(actual.ok()&&actual.state.present&&actual.state.committed_by_inventory,"independent bootstrap reader sees actual committed catalog");
     const auto bytes=Get(path);config.allow_overwrite=true;const auto replay=db::CreateDatabaseFile(config);Unpublished(replay);
     Check(Get(path)==bytes&&removals==0,"replay cannot erase or overwrite committed storage");}
+  // Header reads in an unfaulted create: the last one is the post-commit
+  // readback, the first the pre-commit verification.
+  unsigned unfaulted_header_reads=0;
   for(unsigned fault=0;fault<3;++fault){const auto path=next();const auto config=Config(path);
     trace_handoff=true;readback_fault=fault==1;close_fault=fault==2;
+    readback_fault_at=fault==1?unfaulted_header_reads:0;
     const auto created=db::CreateDatabaseFile(config);trace_handoff=false;
+    if(!fault){unfaulted_header_reads=header_reads;
+      Check(unfaulted_header_reads>=2,"create reads its header back both before and after its commit point");}
     Check(readback_observed&&close_observed&&!read_after_close,"final catalog verification uses original still-owned device before close");
     Check(contender_checked&&contender_refused,"fresh competing process cannot open during creator verification");
     Check(created.ok()&&fs::exists(path)&&removals==0,"committed creation survives readback or close failure");
@@ -195,5 +206,15 @@ int main(int argc,char** argv){try{
     const auto read=db::ReadDatabaseBootstrapSecurityCatalog(path.string());
     Check(read.ok()&&read.state.committed_by_inventory,"fresh read preserves original committed creation after handoff");
   }
+  // A read failure during the PRE-commit verification is a failed create:
+  // nothing is published and the creator's file is removed.
+  {const auto path=next();const auto config=Config(path);
+    trace_handoff=true;readback_fault=true;readback_fault_at=1;
+    const auto created=db::CreateDatabaseFile(config);trace_handoff=false;
+    Unpublished(created);
+    Check(created.diagnostic.diagnostic_code=="SB-DB-LIFECYCLE-CREATE-VERIFY-FAILED"&&!readback_fault,
+          "pre-commit verification read failure fails the create");
+    Check(!fs::exists(path)&&!fs::exists(path.string()+".sb.owner.lock"),
+          "failed verification leaves neither the file nor its lock file");}
   std::cout<<"creation artifact ownership checks="<<checks<<" failures=0\n";return 0;
 }catch(const std::exception& error){std::cerr<<"FAIL "<<error.what()<<" checks="<<checks<<'\n';return 1;}}

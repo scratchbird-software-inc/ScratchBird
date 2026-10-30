@@ -140,8 +140,16 @@ sem_t startup_launch_paused;
 sem_t release_startup_launch;
 sem_t lifecycle_contended;
 
+// The fixture directory. _Exit (deliberate: the wrapped pthread primitives
+// make ordinary exit unsafe here) skips atexit, so Fail removes it itself.
+std::filesystem::path g_fixture_directory;
+
 [[noreturn]] void Fail(const char* message) {
   std::cerr << message << '\n';
+  if (!g_fixture_directory.empty()) {
+    std::error_code ignored;
+    std::filesystem::remove_all(g_fixture_directory, ignored);
+  }
   std::_Exit(EXIT_FAILURE);
 }
 
@@ -1487,6 +1495,7 @@ int main(int argc, char** argv) {
                          "sb-runtime-shutdown-XXXXXX").string();
   Require(mkdtemp(pattern.data()) != nullptr, "fixture directory create failed");
   const std::filesystem::path directory(pattern);
+  g_fixture_directory = directory;
   const auto clock = scratchbird::core::time::ReadLocalNodeClockSnapshot();
   Require(clock.ok(), "node clock unavailable");
   const auto millis = scratchbird::core::time::WallClockToUuidV7Millis(clock.value.wall_clock);
@@ -1582,8 +1591,12 @@ int main(int argc, char** argv) {
           "real exclusive server database open failed");
   // Component configuration is this gate's to set; an old lifecycle
   // observation must not become it.
+  // Two agents that hold their own-action rights. L5 now refuses to start an
+  // agent that lacks them (SB_AGENT_SELF_ACTION_RIGHTS), and this gate is about
+  // thread lifecycle, not rights: filespace_capacity_manager is refused until
+  // the owner decides its growth rights, so it is not the second worker here.
   opened.state.databases.front().selected_agent_type_ids = {
-      "page_allocation_manager", "filespace_capacity_manager"};
+      "page_allocation_manager", "metrics_registry_manager"};
   server::HostedEngineState& engine = opened.state;
   server::ServerAgentRuntime runtime;
   std::vector<server::ServerDiagnostic> diagnostics;

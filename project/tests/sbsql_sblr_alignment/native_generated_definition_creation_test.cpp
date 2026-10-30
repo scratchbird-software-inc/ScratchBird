@@ -202,8 +202,10 @@ int main() {
   // + 5 roles + 6 groups + 5 memberships + 10 grants
   // + 44 agent task-group roles + 198 agent role grants (2026-10-29)
   // + bootstrap role/principal/membership
-  // + service principal, 5 grants and the runtime authority binding.
-  Check(enumerated.definitions.size() == 306,
+  // + service principal, 5 grants and the runtime authority binding
+  // + the pack's CONNECT grant to its PUBLIC group (2026-10-30)
+  // + OBS_AGENT_CONTROL_INTERNAL for transaction_pressure (2026-10-30).
+  Check(enumerated.definitions.size() == 308,
         "the enumeration covers every object of the default local-password pack");
   {
     unsigned subtypes[6]{};
@@ -221,8 +223,8 @@ int main() {
     Check(subtypes[2] == 14, "every policy profile is enumerated");
     Check(subtypes[3] == 1, "the memory configuration is enumerated");
     Check(subtypes[4] == 1, "the service runtime authority binding is enumerated");
-    Check(subtypes[5] == 277, "every security record is enumerated under its own kind name");
-    Check(subtypes[0] + subtypes[1] + subtypes[2] + subtypes[3] + subtypes[4] + subtypes[5] == 306,
+    Check(subtypes[5] == 279, "every security record is enumerated under its own kind name");
+    Check(subtypes[0] + subtypes[1] + subtypes[2] + subtypes[3] + subtypes[4] + subtypes[5] == 308,
           "every enumerated object falls in one of those families and none is unaccounted for");
   }
   {
@@ -256,9 +258,9 @@ int main() {
     Check(records.ok(), "the generated path assembles a complete record set");
     Check(records.error == E::none && records.name_error == c::CatalogNamedCreationError::none,
           "no name or definition cause is reported alongside success");
-    Check(records.records->definitions.size() == 306,
+    Check(records.records->definitions.size() == 308,
           "one definition record per enumerated object reaches the record set");
-    Check(records.records->names.size() == 612,
+    Check(records.records->names.size() == 616,
           "each object carries exactly one name vector and one name entry");
     Check(records.records->encoded_bytes != 0, "the assembled set reports an encoded extent");
 
@@ -271,8 +273,8 @@ int main() {
       vectors += row.metadata.object_subtype == "name_vector";
       entries += row.metadata.object_subtype == "name_entry";
     }
-    Check(vectors == 306, "one name vector per object");
-    Check(entries == 306, "one name entry per object");
+    Check(vectors == 308, "one name vector per object");
+    Check(entries == 308, "one name entry per object");
     for (const auto& row : records.records->definitions) {
       Check(!row.metadata.record.payload.empty(),
             "every generated definition is completed with the assembler's own payload");
@@ -354,8 +356,8 @@ int main() {
   {
     const auto routed = db::AssembleNativeInitialPolicySecurityCatalogs(request(names));
     Check(routed.ok(), "the generated record set routes to catalog placement");
-    Check(routed.plan->catalogs[1].size() == 612, "all names are placed in the name relation");
-    Check(routed.plan->catalogs[3].size() == 277, "every security definition is placed");
+    Check(routed.plan->catalogs[1].size() == 616, "all names are placed in the name relation");
+    Check(routed.plan->catalogs[3].size() == 279, "every security definition is placed");
     Check(routed.plan->catalogs[4].size() == 29,
           "pack, provider, profile, memory and runtime configuration definitions are placed");
     Check(routed.plan->catalogs[0].empty() && routed.plan->catalogs[2].empty() &&

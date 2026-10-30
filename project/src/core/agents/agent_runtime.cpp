@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <chrono>
 #include <iomanip>
+#include <map>
 #include <set>
 #include <sstream>
 #include <thread>
@@ -2378,6 +2379,46 @@ bool AgentContextHasRight(const AgentRuntimeContext& context, const std::string&
   return EvaluateAgentSecurityGrant(context, {NamedReq(right)}, right).allowed;
 }
 
+std::vector<std::string> RequiredAgentSelfActionRights(const AgentTypeDescriptor& descriptor) {
+  // Accepted section 4c dispositions, by agent type. The agent type id is the
+  // registry's code-dispatch key, not an identity (SB_DRIFT_AGENT_TYPE_TEXT_KEYS).
+  static const std::map<std::string, std::string> kSelfActionRight{
+      {"metrics_registry_manager", "OBS_AGENT_CONTROL_INTERNAL"},
+      {"storage_health_manager", "OBS_AGENT_CONTROL_INTERNAL"},
+      {"memory_governor", "OBS_AGENT_CONTROL_INTERNAL"},
+      {"admission_control_manager", "OBS_AGENT_CONTROL_INTERNAL"},
+      {"page_allocation_manager", "OBS_AGENT_CONTROL_INTERNAL"},
+      {"parser_interface_manager", "OBS_PARSER_CONTROL"},
+      {"storage_version_cleanup_agent", "MGA_CLEANUP_CONTROL"},
+      {"cleanup_archive_manager", "MGA_CLEANUP_CONTROL"},
+      {"backup_manager", "BACKUP_CONTROL"},
+      {"archive_manager", "ARCHIVE_CONTROL"},
+      {"export_adapter_manager", "OBS_EXPORT_CONTROL"},
+      // Owner, 2026-10-30: each agent's own operating right.
+      {"alert_manager", "OBS_ALERT_INTERNAL"},
+      {"filespace_capacity_manager", "FILESPACE_LIFECYCLE_CONTROL"},
+      {"identity_manager", "SEC_IDENTITY_ADMIN"},
+      {"job_control_manager", "OBS_JOB_ADMIN"},
+      {"pitr_manager", "OBS_RESTORE_PLANNING"},
+      {"restore_drill_manager", "OBS_RESTORE_DRILL_CONTROL"},
+      {"session_control_manager", "SEC_SESSION_CONTROL"},
+      {"support_bundle_triage_agent", "OBS_SUPPORT_BUNDLE_READ"},
+      {"transaction_pressure_manager", "OBS_AGENT_CONTROL_INTERNAL"}};
+  // L1 agents only observe into a lossy in-memory stack and never write
+  // (D6); they need no right to run (owner, 2026-10-30).
+  if (descriptor.layer == AgentRuntimeLayer::l1_observation) return {};
+  std::vector<std::string> rights;
+  for (const auto& right : descriptor.required_rights) {
+    if (right != "OBS_AGENT_CONTROL") {
+      rights.push_back(right);
+      continue;
+    }
+    const auto settled = kSelfActionRight.find(descriptor.type_id);
+    rights.push_back(settled == kSelfActionRight.end() ? right : settled->second);
+  }
+  return rights;
+}
+
 AgentRuntimeStatus ValidateAgentSecurity(const AgentRuntimeContext& context,
                                          const AgentTypeDescriptor& descriptor,
                                          const std::string& operation_class) {
@@ -2400,6 +2441,10 @@ AgentRuntimeStatus ValidateAgentSecurity(const AgentRuntimeContext& context,
   } else if (operation_class == "recommendation") {
     requirements = RequiredAgentSecurityRightsForCommand(
         AgentSecurityCommandFamily::recommendation_read);
+  } else if (operation_class == "self_action") {
+    for (const auto& right : RequiredAgentSelfActionRights(descriptor)) {
+      requirements.push_back(NamedReq(right));
+    }
   } else {
     for (const auto& right : descriptor.required_rights) {
       requirements.push_back(NamedReq(right));
@@ -2938,13 +2983,16 @@ AgentActionRedactionDecision RedactAgentActionForSecurity(
 }
 
 std::vector<AgentActuatorCapability> DefaultActuatorCapabilities() {
-  return {{"metrics_registry", true, false, false, {"repair_descriptor_cache", "reload_retention"}, {"OBS_AGENT_CONTROL"}},
-          {"memory_governor", true, false, false, {"tighten_budget", "release_idle"}, {"OBS_AGENT_CONTROL"}},
-          {"filespace_capacity_manager", true, false, false, {"filespace_growth_request"}, {"OBS_AGENT_CONTROL"}},
-          {"page_allocation_manager", true, false, false, {"page_preallocation_request", "page_relocation_request", "filespace_shrink_readiness_notification"}, {"OBS_AGENT_CONTROL"}},
+  // SB_AGENT_SELF_ACTION_RIGHTS: actuators owned by agents that section 4c
+  // settles as OBS_AGENT_CONTROL_INTERNAL require that right; the rest still
+  // name OBS_AGENT_CONTROL pending owner decision.
+  return {{"metrics_registry", true, false, false, {"repair_descriptor_cache", "reload_retention"}, {"OBS_AGENT_CONTROL_INTERNAL"}},
+          {"memory_governor", true, false, false, {"tighten_budget", "release_idle"}, {"OBS_AGENT_CONTROL_INTERNAL"}},
+          {"filespace_capacity_manager", true, false, false, {"filespace_growth_request"}, {"FILESPACE_LIFECYCLE_CONTROL"}},
+          {"page_allocation_manager", true, false, false, {"page_preallocation_request", "page_relocation_request", "filespace_shrink_readiness_notification"}, {"OBS_AGENT_CONTROL_INTERNAL"}},
           {"index_health_manager", true, false, false, {"index_delta_merge_request", "index_rebuild_request", "index_shadow_build_request"}, {"OBS_AGENT_CONTROL"}},
           {"archive_runtime", true, false, false, {"advance_archive", "throttle_archive"}, {"OBS_AGENT_CONTROL"}},
-          {"alert_runtime", true, false, false, {"fire_alert", "suppress_alert"}, {"OBS_AGENT_CONTROL"}},
+          {"alert_runtime", true, false, false, {"fire_alert", "suppress_alert"}, {"OBS_ALERT_INTERNAL"}},
           {"cluster_autoscale", false, true, true, {"request_scale_out", "request_scale_in"}, {"OBS_CLUSTER_CONTROL"}},
           {"remote_query_router", false, true, true, {"adjust_route_weight"}, {"OBS_CLUSTER_CONTROL"}}};
 }
@@ -3360,7 +3408,8 @@ AgentActionDecision EvaluateAgentAction(const AgentRuntimeContext& context,
   if (action.dry_run || policy.activation == AgentActivationProfile::dry_run || !policy.allow_live_action) {
     return BuildDryRunDecision(descriptor, action);
   }
-  const auto security = ValidateAgentSecurity(context, descriptor, "control");
+  // An agent's own action: the section 4c rights (SB_AGENT_SELF_ACTION_RIGHTS).
+  const auto security = ValidateAgentSecurity(context, descriptor, "self_action");
   if (!security.ok) {
     return {AgentActionResultClass::failed_closed, security.diagnostic_code, security.detail,
             DurableObjectUuidFromKey("agent_action_security|" + action.action_uuid), false};

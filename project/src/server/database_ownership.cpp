@@ -11,6 +11,7 @@
 
 #include "database_ownership.hpp"
 #include "../storage/disk/route_ownership_lease.hpp"
+#include "../storage/disk/disk_device.hpp"
 
 #include <chrono>
 #include <cerrno>
@@ -20,6 +21,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include <string_view>
 #include <utility>
 
 #ifdef _WIN32
@@ -261,6 +263,9 @@ void DatabaseOwnershipLock::release() {
     lease_.reset();  // admitted FileDevices retain the OS locks until final close
   }
 #ifdef _WIN32
+  // SEARCH_KEY: SB_WINDOWS_OWNER_LOCK_FILE_RETAINED. Windows still keeps the
+  // owner lock file on close; only POSIX removes it (SB_OWNER_LOCK_FILE_REMOVED_ON_CLOSE).
+  // Owner direction 2026-10-30: the Windows team owns the Windows equivalent.
   if (handle_ != nullptr && handle_ != INVALID_HANDLE_VALUE) {
     ::CloseHandle(static_cast<HANDLE>(handle_));
     handle_ = nullptr;
@@ -273,6 +278,31 @@ void DatabaseOwnershipLock::release() {
   // A forked child must not unlock the parent's shared open-file description.
   // Closing the inherited fd is safe; flock(LOCK_UN) would release its lock.
   const bool owning_process = owner_pid_ == CurrentProcessId();
+  // SEARCH_KEY: SB_OWNER_LOCK_FILE_REMOVED_ON_CLOSE -- before a lease is
+  // published (failed acquisition), the handles are still here; remove the
+  // files while still holding them. After publication the lease removes them.
+  if (owning_process && !lock_path_.empty()) {
+    static constexpr std::string_view kRouteSuffix = ".sb.route.owner.lock";
+    const auto route_path = lock_path_.string();
+    if (storage_handle_ >= 0 && route_path.size() > kRouteSuffix.size() &&
+        std::string_view(route_path).substr(route_path.size() - kRouteSuffix.size()) ==
+            kRouteSuffix) {
+      const auto storage_path =
+          route_path.substr(0, route_path.size() - kRouteSuffix.size()) + ".sb.owner.lock";
+      struct stat held{};
+      struct stat named{};
+      if (::fstat(storage_handle_, &held) == 0 && ::stat(storage_path.c_str(), &named) == 0 &&
+          held.st_dev == named.st_dev && held.st_ino == named.st_ino)
+        (void)::unlink(storage_path.c_str());
+    }
+    if (handle_ >= 0) {
+      struct stat held{};
+      struct stat named{};
+      if (::fstat(handle_, &held) == 0 && ::stat(route_path.c_str(), &named) == 0 &&
+          held.st_dev == named.st_dev && held.st_ino == named.st_ino)
+        (void)::unlink(route_path.c_str());
+    }
+  }
   if (handle_ >= 0) {
     if (owning_process) (void)::flock(handle_, LOCK_UN);
     (void)::close(handle_);
@@ -420,50 +450,37 @@ DatabaseOwnershipResult AcquireDatabaseOwnership(const DatabaseOwnershipRequest&
   result.acquired = true;
   return result;
 #else
-  const int fd = ::open(result.lock_path.c_str(),
-                        O_RDWR | O_CREAT | FileOpenCloexecFlag(),
-                        S_IRUSR | S_IWUSR);
-  if (fd < 0) {
-    result.diagnostic_code = "ARCH.DATABASE_OWNERSHIP_LOCK_FAILED";
-    result.diagnostic_detail = std::string("open_failed:") + std::strerror(errno);
+  // SEARCH_KEY: SB_OWNER_LOCK_FILE_REMOVED_ON_CLOSE
+  // Both lock files are removed by their owner on release, so both are taken
+  // through the shared protocol that re-checks the locked inode. A failed
+  // acquisition releases (and removes) whatever it already holds.
+  const auto route = storage::disk::AcquireRemovableOwnerLockFile(
+      result.lock_path.string(), FileOpenCloexecFlag());
+  if (!route.ok()) {
+    if (route.held_by_other) {
+      result.incumbent = ReadDatabaseOwnershipDescriptor(result.lock_path);
+      result.diagnostic_code = "ARCH.DATABASE_MULTI_OWNER";
+      result.diagnostic_detail = "database_owned_by_running_engine";
+    } else {
+      result.diagnostic_code = "ARCH.DATABASE_OWNERSHIP_LOCK_FAILED";
+      result.diagnostic_detail = std::string("open_failed:") + std::strerror(route.error);
+    }
     return result;
   }
+  const int fd = route.fd;
 
-  if (::flock(fd, LOCK_EX | LOCK_NB) != 0) {
-    const int saved_errno = errno;
-    (void)::close(fd);
-    result.incumbent = ReadDatabaseOwnershipDescriptor(result.lock_path);
-    result.diagnostic_code = "ARCH.DATABASE_MULTI_OWNER";
-    result.diagnostic_detail =
-        (saved_errno == EWOULDBLOCK || saved_errno == EAGAIN)
-            ? "database_owned_by_running_engine"
-            : std::string("lock_failed:") + std::strerror(saved_errno);
-    return result;
-  }
-
-  const int storage_fd = ::open(storage_lock_path.c_str(),
-                                O_RDWR | O_CREAT | FileOpenCloexecFlag(),
-                                S_IRUSR | S_IWUSR);
-  if (storage_fd < 0) {
-    const int saved_errno = errno;
-    (void)::flock(fd, LOCK_UN);
-    (void)::close(fd);
-    result.diagnostic_code = "ARCH.DATABASE_OWNERSHIP_LOCK_FAILED";
-    result.diagnostic_detail = std::string("storage_owner_open_failed:") +
-                               std::strerror(saved_errno);
-    return result;
-  }
-  if (::flock(storage_fd, LOCK_EX | LOCK_NB) != 0) {
-    const int saved_errno = errno;
-    (void)::close(storage_fd);
-    (void)::flock(fd, LOCK_UN);
-    (void)::close(fd);
-    result.diagnostic_code = (saved_errno == EWOULDBLOCK || saved_errno == EAGAIN)
+  const auto storage = storage::disk::AcquireRemovableOwnerLockFile(
+      storage_lock_path, FileOpenCloexecFlag());
+  if (!storage.ok()) {
+    storage::disk::ReleaseRemovableOwnerLockFile(fd, result.lock_path.string());
+    result.diagnostic_code = storage.held_by_other
         ? "ARCH.DATABASE_MULTI_OWNER" : "ARCH.DATABASE_OWNERSHIP_LOCK_FAILED";
-    result.diagnostic_detail = std::string("storage_owner_lock_failed:") +
-                               std::strerror(saved_errno);
+    result.diagnostic_detail = std::string(storage.held_by_other
+        ? "storage_owner_lock_failed:" : "storage_owner_open_failed:") +
+        std::strerror(storage.error);
     return result;
   }
+  const int storage_fd = storage.fd;
   DatabaseOwnershipLock ownership(fd, storage_fd, std::move(retained_lock_path));
   const int data_owner_error = ownership.PrepareStorageLease(request.database_path.string(),request.storage_access);
   if (data_owner_error != 0) {

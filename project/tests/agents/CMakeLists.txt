@@ -424,6 +424,30 @@ set_tests_properties(memory_safe_retirement_gate PROPERTIES
 # libstdc++ keeps its condition-variable and thread calls visible to GNU --wrap.
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux" AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU"
    AND TARGET sb_server_core)
+  # SEARCH_KEY: SB_L5_PRINCIPAL_ALWAYS_PROVISIONED. L5 startup on the server
+  # path; one ctest per mode because a completed open binds the process.
+  add_executable(server_agent_l5_startup_gate
+    "${PROJECT_SOURCE_DIR}/tests/concurrency/server_agent_l5_startup_gate.cpp")
+  target_compile_features(server_agent_l5_startup_gate PRIVATE cxx_std_23)
+  target_link_libraries(server_agent_l5_startup_gate PRIVATE sb_server_core)
+  target_link_options(server_agent_l5_startup_gate PRIVATE -static-libstdc++)
+  # SEARCH_KEY: SB_CREATE_REGISTERS_ALL_OBJECT_NAMES. Create's identities and
+  # name registrations, checked through the engine's name registry.
+  add_executable(create_object_name_registration_gate
+    "${PROJECT_SOURCE_DIR}/tests/database_lifecycle/create_object_name_registration_gate.cpp")
+  target_compile_features(create_object_name_registration_gate PRIVATE cxx_std_23)
+  target_link_libraries(create_object_name_registration_gate PRIVATE sb_server_core)
+  target_link_options(create_object_name_registration_gate PRIVATE -static-libstdc++)
+  add_test(NAME create_object_name_registration_gate
+    COMMAND create_object_name_registration_gate)
+  set_tests_properties(create_object_name_registration_gate PROPERTIES
+    TIMEOUT 600 LABELS "database_lifecycle;database_lifecycle_security;catalog;linux_proof")
+  foreach(l5_mode committed-agents no-l5 unbound-agent rights-missing)
+    add_test(NAME server_agent_l5_startup_${l5_mode}_gate
+      COMMAND server_agent_l5_startup_gate --${l5_mode})
+    set_tests_properties(server_agent_l5_startup_${l5_mode}_gate PROPERTIES
+      TIMEOUT 300 LABELS "agents;concurrency;startup;security;linux_proof")
+  endforeach()
   add_executable(server_agent_shutdown_wakeup_gate
     "${PROJECT_SOURCE_DIR}/tests/concurrency/server_agent_shutdown_wakeup_gate.cpp")
   target_compile_features(server_agent_shutdown_wakeup_gate PRIVATE cxx_std_23)

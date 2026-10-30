@@ -16,6 +16,9 @@
 #include "agent_runtime.hpp"
 #include "agents/agent_action_hooks_api.hpp"
 #include "agents/agent_durable_catalog_store_api.hpp"
+#include "security/durable_authorization_projection.hpp"
+#include "agents/agent_authorization_context.hpp"
+#include "database_lifecycle.hpp"
 #include "uuid.hpp"
 #include "transaction/transaction_api.hpp"
 
@@ -230,7 +233,8 @@ std::string ServerAgentInstanceUuid(const std::string& database_uuid,
 agents::DurableAgentCatalogImage BuildServerAgentRuntimeCatalog(
     const std::string& database_uuid,
     const std::string& filespace_uuid,
-    const std::vector<std::string>& assignments) {
+    const std::vector<std::string>& assignments,
+    const std::map<std::string, platform::Uuid>& committed_policy_by_type) {
   agents::DurableAgentCatalogImage image;
   image.schema_version = 1;
 
@@ -240,8 +244,14 @@ agents::DurableAgentCatalogImage BuildServerAgentRuntimeCatalog(
     agents::AgentInstanceRecord instance;
     instance.instance_uuid = ServerAgentInstanceUuid(database_uuid, agent_type_id);
     instance.agent_type_id = agent_type_id;
-    instance.policy_uuid =
-        ServerAgentRuntimeUuid(database_uuid, "policy|" + agent_type_id, 1400);
+    // SB_AGENT_PRINCIPAL_BINDING_BY_UUID: an instance names the policy create
+    // committed for its agent type, so a later open can find it again. A
+    // policy identity derived from text names nothing that exists; it is kept
+    // only where no committed policy is known (no retained owner).
+    const auto committed = committed_policy_by_type.find(agent_type_id);
+    instance.policy_uuid = committed != committed_policy_by_type.end()
+        ? IdentityBytes(committed->second)
+        : ServerAgentRuntimeUuid(database_uuid, "policy|" + agent_type_id, 1400);
     instance.scope = "database/" + database_uuid + "/filespace/" + filespace_uuid;
     instance.state = agents::AgentLifecycleState::registered;
     instance.run_generation = 1;
@@ -478,6 +488,177 @@ engine_api::EngineRequestContext ServerAgentRequestMetadata(
   return context;
 }
 
+// SEARCH_KEY: SECURITY-AGENT-SESSION-BINDING
+// Attach the authorization the committed catalog gives this context's
+// principal. Without it every right check refuses with
+// SECURITY.AUTHORIZATION.CONTEXT_REQUIRED, which is what stopped L5 seeding its
+// own agent catalog. Same chain as AcquireStorageActionSecurityLease: the
+// owning lifecycle loader, the shared projection, the catalog's own sysarch
+// role identity. Nothing is granted here; a missing generation refuses.
+//
+// The committed security state, loaded once and projected per principal. A
+// load costs two full catalog reads (about 60 ms each, uncontended), so L5
+// loads it once for all start checks and a worker once per tick, instead of
+// once per transaction. Freshness: a worker sees grants and revocations from
+// its next tick (owner to confirm; the storage action lease still re-reads
+// current authority itself).
+struct ServerAgentAuthoritySource {
+  bool ok = false;
+  std::string failure;
+  engine_api::EngineSecurityPrincipalLifecycleState state;
+  engine_api::EngineUuid sysarch_role_uuid;
+};
+
+ServerAgentAuthoritySource LoadServerAgentAuthoritySource(const std::string& database_path,
+                                                          const engine_api::EngineUuid& database_uuid) {
+  ServerAgentAuthoritySource out;
+  engine_api::EngineRequestContext source;
+  source.database_path = database_path;
+  source.database_uuid = database_uuid;
+  auto loaded = engine_api::LoadSecurityPrincipalLifecycleState(source);
+  if (!loaded.ok) {
+    out.failure = "agent_authority_source_unavailable";
+    return out;
+  }
+  if (loaded.state.policy_generation == 0 || loaded.state.security_context_generation == 0) {
+    out.failure = "agent_authority_generation_missing";
+    return out;
+  }
+  const auto bootstrap = engine_api::ResolveEngineOwnedSysarchRoleIdentity(source);
+  if (!bootstrap.ok) {
+    out.failure = "agent_authority_sysarch_identity_unavailable";
+    return out;
+  }
+  out.state = std::move(loaded.state);
+  out.sysarch_role_uuid = bootstrap.role_uuid;
+  out.ok = true;
+  return out;
+}
+
+bool MaterializeServerAgentAuthority(engine_api::EngineRequestContext* context,
+                                     std::string* failure,
+                                     const ServerAgentAuthoritySource* preloaded = nullptr) {
+  ServerAgentAuthoritySource fresh;
+  if (preloaded == nullptr) {
+    fresh = LoadServerAgentAuthoritySource(context->database_path, context->database_uuid);
+    preloaded = &fresh;
+  }
+  if (!preloaded->ok) {
+    *failure = preloaded->failure;
+    return false;
+  }
+  const auto policy_epoch = preloaded->state.policy_generation;
+  auto durable = engine_api::ProjectDurableAuthorizationState(preloaded->state,
+      {context->database_uuid, context->principal_uuid, context->security_epoch,
+       policy_epoch, context->catalog_generation_id});
+  durable.engine_owned_sysarch_role_uuid = preloaded->sysarch_role_uuid;
+  auto materialized = engine_api::MaterializeDurableAuthorizationContext(durable,
+      {context->principal_uuid, context->security_epoch, policy_epoch,
+       context->catalog_generation_id});
+  if (!materialized.ok) {
+    *failure = materialized.diagnostics.empty()
+        ? "agent_authority_materialization_failed"
+        : materialized.diagnostics.front().detail;
+    return false;
+  }
+  context->authorization_context = std::move(materialized.context);
+  return true;
+}
+
+// SEARCH_KEY: SECURITY-AGENT-SESSION-BINDING, SB_AGENT_PRINCIPAL_BINDING_BY_UUID
+// L5 binds one session per committed agent policy to the principal create
+// linked to it (D18 option 3). Identification is binary UUID only (owner
+// direction 2026-10-30): the agent's committed primary policy UUID, then the
+// link row create wrote, then the principal UUID. The agent type id is read
+// from the same committed policy record only so the code can dispatch on it.
+// A principal must be active, a service principal, password-less, not L5, and
+// a member of exactly one role; otherwise the agent is refused, never given
+// L5's session. Epochs are copied from L5's session.
+ServerAgentBinding BindServerAgentSessions(
+    const std::string& database_path, const InternalStartupSession& l5,
+    const ServerAgentAuthoritySource& authority) {
+  ServerAgentBinding bound;
+  if (!l5.present || !authority.ok) return bound;
+  const auto committed = scratchbird::storage::database::ReadDatabaseBootstrapSecurityCatalog(
+      database_path);
+  if (!committed.ok()) return bound;
+  const auto& state = authority.state;
+  std::map<platform::Uuid, std::vector<platform::Uuid>> principals_by_policy;
+  for (const auto& link : committed.state.committed_agent_principal_bindings)
+    principals_by_policy[link.policy_uuid].push_back(link.principal_uuid);
+  for (const auto& policy : committed.state.committed_agent_policies) {
+    if (!policy.primary) continue;
+    // A type can commit more than one primary policy (canonical and
+    // runtime-lifecycle); both link to its one principal. The worker runs the
+    // enabled one, or the first if none is enabled.
+    const auto existing = bound.policy_by_type.find(policy.agent_type);
+    if (existing == bound.policy_by_type.end() || policy.enabled)
+      bound.policy_by_type[policy.agent_type] = policy.policy_uuid;
+    if (policy.enabled &&
+        std::find(bound.enabled_types.begin(), bound.enabled_types.end(), policy.agent_type) ==
+            bound.enabled_types.end())
+      bound.enabled_types.push_back(policy.agent_type);
+    const auto linked = principals_by_policy.find(policy.policy_uuid);
+    if (linked == principals_by_policy.end() || linked->second.size() != 1) {
+      bound.refused[policy.policy_uuid] = linked == principals_by_policy.end()
+          ? "agent_principal_binding_absent" : "agent_principal_binding_ambiguous";
+      continue;
+    }
+    const auto& principal_uuid = linked->second.front();
+    const auto principal = std::find_if(state.principals.begin(), state.principals.end(),
+        [&](const auto& candidate) { return candidate.principal_uuid.bytes == principal_uuid.bytes; });
+    std::size_t roles = 0;
+    for (const auto& membership : state.memberships)
+      if (!membership.revoked && membership.container_kind == "role" &&
+          membership.member_principal_uuid.bytes == principal_uuid.bytes) ++roles;
+    if (principal == state.principals.end() || principal->deleted ||
+        principal->lifecycle_state != "active" || principal->principal_kind != "service" ||
+        !principal->credential_fingerprint.empty() ||
+        principal_uuid.bytes == l5.principal_uuid.bytes || roles != 1) {
+      bound.refused[policy.policy_uuid] = "agent_principal_invalid";
+      continue;
+    }
+    const auto session_identity = scratchbird::core::uuid::IssueRuntimeIdentityV7();
+    if (!session_identity.has_value()) {
+      bound.refused[policy.policy_uuid] = "agent_session_identity_unavailable";
+      continue;
+    }
+    InternalStartupSession session = l5;
+    session.principal_uuid = principal_uuid;
+    session.session_uuid = *session_identity;
+    session.sysarch_role_uuid = {};
+    bound.sessions.emplace(policy.policy_uuid, std::move(session));
+  }
+  return bound;
+}
+
+// SEARCH_KEY: SB_AGENT_SELF_ACTION_RIGHTS (owner direction 2026-10-30: "if the
+// file manager agent is started, it must have appropriate permissions before
+// it starts to execute"). Returns why L5 must not start this agent, or empty.
+// The rights come from the agent's own committed principal, materialized from
+// the file exactly as its actions will be, and are checked with the same
+// list the action hooks use.
+std::string AgentStartRefusal(const std::string& database_path,
+                              const std::string& database_uuid,
+                              const std::string& agent_type,
+                              const InternalStartupSession& session,
+                              const ServerAgentAuthoritySource& authority) {
+  const auto descriptor = agents::FindAgentType(agent_type);
+  if (!descriptor) return "agent_type_unknown";
+  auto context = ServerAgentRequestMetadata(database_path, database_uuid,
+                                            "agent-start-rights-" + agent_type, &session);
+  if (!context.security_context_present) return "agent_session_absent";
+  std::string failure;
+  if (!MaterializeServerAgentAuthority(&context, &failure, &authority))
+    return "agent_authority_unavailable:" + failure;
+  agents::AgentRuntimeContext runtime;
+  engine_api::agent_authorization::PopulateAgentRuntimeSecurityContext(
+      context, &runtime, engine_api::agent_authorization::Scope::local_node);
+  const auto checked = agents::ValidateAgentSecurity(runtime, *descriptor, "self_action");
+  if (!checked.ok) return "agent_rights_missing:" + checked.detail;
+  return {};
+}
+
 struct ServerAgentTransactionContext {
   bool ok = false;
   engine_api::EngineRequestContext context;
@@ -492,7 +673,8 @@ ServerAgentTransactionContext BeginServerAgentTransaction(
     std::uint64_t generation,
     const std::string& purpose,
     const ServerBootstrapConfig* trace_config = nullptr,
-    const InternalStartupSession* internal_session = nullptr) {
+    const InternalStartupSession* internal_session = nullptr,
+    const ServerAgentAuthoritySource* authority = nullptr) {
   ServerAgentTransactionContext out;
   engine_api::EngineBeginTransactionRequest begin;
   begin.context = ServerAgentRequestMetadata(
@@ -500,6 +682,14 @@ ServerAgentTransactionContext BeginServerAgentTransaction(
       database_uuid,
       "server-agent-" + purpose + "-" + std::to_string(generation),
       internal_session);
+  if (begin.context.security_context_present) {
+    std::string failure;
+    if (!MaterializeServerAgentAuthority(&begin.context, &failure, authority)) {
+      out.diagnostic_code = "SERVER.AGENT_RUNTIME.AUTHORITY_UNAVAILABLE";
+      out.diagnostic_detail = failure;
+      return out;
+    }
+  }
   begin.context.local_transaction_id = 0;
   begin.context.transaction_uuid = {};
   begin.context.snapshot_visible_through_local_transaction_id = 0;
@@ -822,11 +1012,31 @@ bool ServerAgentRuntime::StartImpl(const ServerBootstrapConfig& config,
     // BEGIN rather than this code inventing an identity.
     internal_startup_session_ = hosted_runtime->internal_startup_session;
   }
+  // Bound only from the retained owner's session; otherwise nothing.
+  // One security load serves the binding and every start check.
+  const auto start_authority = retained_owner && internal_startup_session_.present
+      ? LoadServerAgentAuthoritySource(database->database_path,
+                                       engine_api::EngineUuid{internal_startup_session_.database_uuid})
+      : ServerAgentAuthoritySource{};
+  auto agent_binding = retained_owner
+      ? BindServerAgentSessions(database->database_path, internal_startup_session_, start_authority)
+      : ServerAgentBinding{};
   if (database_configured) {
     if (!retained_owner) {
       if (diagnostics) diagnostics->push_back(RuntimeDiagnostic(
           "SERVER.AGENT_RUNTIME.OWNERSHIP_REQUIRED",
           "The coordinator requires the opened database's retained exclusive owner."));
+      return false;
+    }
+    // SEARCH_KEY: SB_L5_PRINCIPAL_ALWAYS_PROVISIONED (owner direction
+    // 2026-10-30). The coordinator IS L5. Without the session the engine
+    // minted from L5's committed identity it used to report success, load no
+    // configuration and start no agents. Every create now writes L5, so an
+    // absent identity means a file created before that, or a corrupt one.
+    if (!internal_startup_session_.present) {
+      if (diagnostics) diagnostics->push_back(RuntimeDiagnostic(
+          "SERVER.AGENT_RUNTIME.L5_IDENTITY_ABSENT",
+          "The coordinator requires the L5 identity this database committed at create."));
       return false;
     }
     coordinator_lease = DatabaseOwnershipLock::AcquireCoordinatorLease(*owner);
@@ -836,7 +1046,11 @@ bool ServerAgentRuntime::StartImpl(const ServerBootstrapConfig& config,
           "This database owner already has a coordinator awaiting complete shutdown."));
       return false;
     }
-    // Absence means no configured background agents, never install defaults.
+    // ~~Absence means no configured background agents, never install defaults.~~
+    // Owner direction 2026-10-30 (SB_COORDINATOR_STARTS_COMMITTED_AGENTS): a
+    // server-opened database runs its agents, so when the durable agent catalog
+    // is absent (a fresh database) the coordinator starts the enabled agent
+    // policies create committed. Nothing compiled in is installed.
     // This read does not create a session, begin a transaction or grant rights.
     const auto loaded = engine_api::LoadAgentDurableCatalogImage(
         ServerAgentRequestMetadata(database->database_path,
@@ -856,16 +1070,69 @@ bool ServerAgentRuntime::StartImpl(const ServerBootstrapConfig& config,
             loaded.image.policies.end(), [&](const auto& candidate) {
               return candidate.policy_uuid == instance.policy_uuid;
             });
-        if (policy != loaded.image.policies.end() && policy->enabled &&
+        // A clean server shutdown drains every instance to `stopped`; the next
+        // server open starts them again (SB_COORDINATOR_STARTS_COMMITTED_AGENTS).
+        // An agent meant to stay off across restarts is disabled, which is not
+        // restarted. Quarantined, failed, retired and paused instances are not.
+        // The policy that decides is the one create committed, which the
+        // seeded instance names; the durable image carries no policy rows.
+        const bool committed_enabled = std::any_of(
+            agent_binding.enabled_types.begin(), agent_binding.enabled_types.end(),
+            [&](const std::string& type) {
+              const auto committed = agent_binding.policy_by_type.find(type);
+              return committed != agent_binding.policy_by_type.end() &&
+                     IdentityBytes(committed->second) == instance.policy_uuid;
+            });
+        if (((policy != loaded.image.policies.end() && policy->enabled) || committed_enabled) &&
             (instance.state == agents::AgentLifecycleState::registered ||
-             instance.state == agents::AgentLifecycleState::running))
+             instance.state == agents::AgentLifecycleState::running ||
+             instance.state == agents::AgentLifecycleState::stopped))
           assignments.push_back(instance.agent_type_id);
       }
+    } else {
+      assignments = agent_binding.enabled_types;
     }
   } else if (assignments.empty()) {
     assignments = DefaultAgentAssignments();
   }
   assignments = PrioritizeDmlPreworkAssignments(std::move(assignments));
+  // SB_AGENT_SELF_ACTION_RIGHTS: L5 starts only agents that are bound to their
+  // committed principal and already hold the rights their own actions need.
+  // Applied with a retained owner only: without one there is no authority at
+  // all, and the engine's own refusal stays observable.
+  std::vector<ServerAgentRuntimeSnapshot::RefusedAgent> refused_agents;
+  if (retained_owner && internal_startup_session_.present) {
+    std::vector<std::string> admitted;
+    std::map<std::string, bool> decided;  // agent type -> admitted
+    for (const auto& agent_type : assignments) {
+      if (const auto prior = decided.find(agent_type); prior != decided.end()) {
+        if (prior->second) admitted.push_back(agent_type);
+        continue;
+      }
+      ServerAgentRuntimeSnapshot::RefusedAgent refusal;
+      refusal.agent_type_id = agent_type;
+      const auto policy = agent_binding.policy_by_type.find(agent_type);
+      if (policy == agent_binding.policy_by_type.end()) {
+        refusal.reason = "agent_policy_not_committed";
+      } else {
+        refusal.policy_uuid = policy->second;
+        const auto session = agent_binding.sessions.find(policy->second);
+        if (session == agent_binding.sessions.end()) {
+          const auto why = agent_binding.refused.find(policy->second);
+          refusal.reason = why == agent_binding.refused.end()
+              ? "agent_principal_unbound" : why->second;
+        } else {
+          refusal.reason = AgentStartRefusal(database->database_path,
+              IdentityBytes(database->database_uuid), agent_type, session->second,
+              start_authority);
+        }
+      }
+      decided[agent_type] = refusal.reason.empty();
+      if (refusal.reason.empty()) admitted.push_back(agent_type);
+      else refused_agents.push_back(std::move(refusal));
+    }
+    assignments = std::move(admitted);
+  }
 
   const auto hardware = std::thread::hardware_concurrency();
   const std::uint32_t observed_cpu_count = hardware == 0 ? 4 : hardware;
@@ -912,6 +1179,9 @@ bool ServerAgentRuntime::StartImpl(const ServerBootstrapConfig& config,
     database_path_ = database->database_path;
     database_uuid_ = IdentityBytes(database->database_uuid);
     filespace_uuid_ = IdentityBytes(database->filespace_uuid);
+    agent_sessions_ = std::move(agent_binding.sessions);
+    agent_policy_by_type_ = std::move(agent_binding.policy_by_type);
+    refused_agents_ = std::move(refused_agents);
     status_path_ = config.control_dir / "sb_server.agent_runtime.json";
     hardware_concurrency_ = hardware;
     effective_cpu_count_ = static_cast<std::uint32_t>(capacity.effective_cpu_count);
@@ -937,6 +1207,15 @@ bool ServerAgentRuntime::StartImpl(const ServerBootstrapConfig& config,
       evidence.name = name.str();
       evidence.role = "database_local_agent_worker";
       evidence.agent_type_id = selected_agents_[i % selected_agents_.size()];
+      // SB_AGENT_PRINCIPAL_BINDING_BY_UUID: the worker is identified by its
+      // committed policy UUID and runs as the principal bound to it.
+      if (const auto policy = agent_policy_by_type_.find(evidence.agent_type_id);
+          policy != agent_policy_by_type_.end()) {
+        evidence.policy_uuid = policy->second;
+        if (const auto session = agent_sessions_.find(policy->second);
+            session != agent_sessions_.end())
+          evidence.principal_uuid = session->second.principal_uuid;
+      }
       evidence.instance_uuid =
           ServerAgentInstanceUuid(IdentityBytes(database->database_uuid), evidence.agent_type_id);
       evidence.lease_uuid = ServerAgentRuntimeUuid(
@@ -1158,7 +1437,8 @@ bool ServerAgentRuntime::InitializeConfiguredAgents(
       seed_request.context = seed_tx.context;
       seed_request.image = BuildServerAgentRuntimeCatalog(database_uuid_,
                                                           filespace_uuid_,
-                                                          selected_agents_);
+                                                          selected_agents_,
+                                                          agent_policy_by_type_);
       seed_request.evidence_uuid =
           ServerAgentRuntimeUuid(database_uuid_, "catalog_seed", 1750);
       seed_request.production_live_path = true;
@@ -1194,7 +1474,9 @@ bool ServerAgentRuntime::InitializeConfiguredAgents(
     auto open_tx = BeginServerAgentTransaction(database_path_,
                                                database_uuid_,
                                                2,
-                                               "service-open");
+                                               "service-open", nullptr,
+        // L5 startup duty (D14): runs as L5.
+        &internal_startup_session_);
     if (!open_tx.ok) {
       if (diagnostics != nullptr) {
         diagnostics->push_back(RuntimeDiagnostic(
@@ -1243,7 +1525,9 @@ bool ServerAgentRuntime::InitializeConfiguredAgents(
     auto recover_tx = BeginServerAgentTransaction(database_path_,
                                                   database_uuid_,
                                                   4,
-                                                  "service-recover");
+                                                  "service-recover", nullptr,
+        // L5 startup duty (D14): runs as L5.
+        &internal_startup_session_);
     if (!recover_tx.ok) {
       if (diagnostics != nullptr) {
         diagnostics->push_back(RuntimeDiagnostic(
@@ -1295,7 +1579,9 @@ bool ServerAgentRuntime::InitializeConfiguredAgents(
     auto start_tx = BeginServerAgentTransaction(database_path_,
                                                 database_uuid_,
                                                 5,
-                                                "service-start");
+                                                "service-start", nullptr,
+        // L5 startup duty (D14): runs as L5.
+        &internal_startup_session_);
     if (!start_tx.ok) {
       if (diagnostics != nullptr) {
         diagnostics->push_back(RuntimeDiagnostic(
@@ -1333,7 +1619,9 @@ bool ServerAgentRuntime::InitializeConfiguredAgents(
     auto lease_batch_tx = BeginServerAgentTransaction(database_path_,
                                                        database_uuid_,
                                                        6,
-                                                       "initial-worker-leases");
+                                                       "initial-worker-leases", nullptr,
+        // L5 startup duty (D14): runs as L5.
+        &internal_startup_session_);
     if (!lease_batch_tx.ok) {
       if (diagnostics != nullptr) {
         diagnostics->push_back(RuntimeDiagnostic(
@@ -1525,8 +1813,10 @@ ServerAgentRuntimeStopResult ServerAgentRuntime::CompleteDurableShutdown() {
       std::string operation = phase + ":begin";
       try {
         const auto timestamp = shutdown ? now + 1 : now;
+        // Drain and shutdown are L5 duties (D14), so they run as L5.
         auto tx = BeginServerAgentTransaction(database_path_, database_uuid_,
-                                              timestamp, phase);
+                                              timestamp, phase, nullptr,
+                                              &internal_startup_session_);
         if (!tx.ok) {
           record_failure(phase + ":begin", tx.diagnostic_code, tx.diagnostic_detail);
           return false;
@@ -1632,6 +1922,7 @@ ServerAgentRuntimeSnapshot ServerAgentRuntime::Snapshot() const {
   snapshot.worker_thread_count = started_ ? static_cast<std::uint32_t>(worker_evidence_.size()) : 0;
   snapshot.worker_wake_policy = worker_wake_policy_;
   snapshot.scheduler_ticks = scheduler_ticks_;
+  snapshot.refused_agents = refused_agents_;
   snapshot.workers.reserve(worker_evidence_.size());
   bool saw_worker = false;
   std::uint64_t latest_fail_closed_generation = 0;
@@ -1670,6 +1961,8 @@ ServerAgentRuntimeSnapshot ServerAgentRuntime::Snapshot() const {
     worker_snapshot.name = worker.name;
     worker_snapshot.role = worker.role;
     worker_snapshot.agent_type_id = worker.agent_type_id;
+    worker_snapshot.policy_uuid = worker.policy_uuid;
+    worker_snapshot.principal_uuid = worker.principal_uuid;
     worker_snapshot.instance_uuid = worker.instance_uuid;
     worker_snapshot.native_thread_id = worker.native_thread_id;
     worker_snapshot.ticks = worker.ticks;
@@ -1811,6 +2104,9 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
   bool durable_lease_acquired = false;
   std::uint64_t last_lease_heartbeat_generation = 0;
   std::uint64_t worker_ticks_so_far = 0;
+  // The session L5 bound to this worker's agent principal. Absent stays
+  // absent: the worker never borrows L5's own session (D18 option 3).
+  InternalStartupSession agent_session;
   {
     std::lock_guard<std::mutex> guard(state_mutex_);
     if (worker_index >= worker_evidence_.size()) {
@@ -1827,7 +2123,15 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
     last_lease_heartbeat_generation =
         worker_evidence_[worker_index].last_lease_heartbeat_generation;
     worker_ticks_so_far = worker_evidence_[worker_index].ticks;
+    const auto bound = agent_sessions_.find(worker_evidence_[worker_index].policy_uuid);
+    if (bound != agent_sessions_.end()) agent_session = bound->second;
   }
+  // One security load for this tick's transactions (lease, action, heartbeat)
+  // rather than one per transaction; see ServerAgentAuthoritySource.
+  const auto tick_authority = agent_session.present
+      ? LoadServerAgentAuthoritySource(database_path,
+                                       engine_api::EngineUuid{agent_session.database_uuid})
+      : ServerAgentAuthoritySource{};
 
   ServerAgentActionOutcome action_outcome = ServerAgentActionOutcome::kNone;
   std::string last_action = "tick_health";
@@ -1851,7 +2155,8 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
         database_path,
         database_uuid,
         generation,
-        "worker-lease-" + std::to_string(worker_index));
+        "worker-lease-" + std::to_string(worker_index),
+        nullptr, &agent_session, &tick_authority);
     if (!lease_tx.ok) {
       RecordWorkerTick(worker_index,
                        generation,
@@ -1935,7 +2240,7 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
         database_path,
         database_uuid,
         generation,
-        "page-preallocation");
+        "page-preallocation", nullptr, &agent_session, &tick_authority);
     if (!action_tx.ok) {
       diagnostic = action_tx.diagnostic_code;
       diagnostic_detail = action_tx.diagnostic_detail;
@@ -2004,7 +2309,7 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
         database_path,
         database_uuid,
         generation,
-        "filespace-growth");
+        "filespace-growth", nullptr, &agent_session, &tick_authority);
     if (!action_tx.ok) {
       diagnostic = action_tx.diagnostic_code;
       diagnostic_detail = action_tx.diagnostic_detail;
@@ -2078,7 +2383,8 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
         database_path,
         database_uuid,
         generation,
-        "worker-heartbeat-" + std::to_string(worker_index));
+        "worker-heartbeat-" + std::to_string(worker_index),
+        nullptr, &agent_session, &tick_authority);
     if (!heartbeat_tx.ok) {
       if (diagnostic == "SB_AGENT_THREAD_TICK_OK") {
         diagnostic = heartbeat_tx.diagnostic_code;

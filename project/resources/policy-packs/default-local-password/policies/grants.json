@@ -84,6 +84,14 @@
       "effect": "allow"
     },
     {
+      "grant_uuid": "018f7a10-1280-7000-8000-00000000030a",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000200",
+      "subject_kind": "group",
+      "target_uuid": "",
+      "right": "CONNECT",
+      "effect": "allow"
+    },
+    {
       "grant_uuid": "018f7a10-1280-7000-8000-000000001000",
       "subject_uuid": "018f7a10-1280-7000-8000-000000000600",
       "subject_kind": "role",
@@ -1665,6 +1673,14 @@
       "subject_kind": "role",
       "target_uuid": "",
       "right": "OBS_METRICS_EXPORT_READ",
+      "effect": "allow"
+    },
+    {
+      "grant_uuid": "018f7a10-1280-7000-8000-0000000010c6",
+      "subject_uuid": "018f7a10-1280-7000-8000-000000000613",
+      "subject_kind": "role",
+      "target_uuid": "",
+      "right": "OBS_AGENT_CONTROL_INTERNAL",
       "effect": "allow"
     }
   ]

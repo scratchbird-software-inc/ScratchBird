@@ -1181,6 +1181,9 @@ struct CatalogRowsBuildResult {
   TypedUuid bootstrap_membership_uuid;
   TypedUuid internal_service_principal_uuid;
   std::vector<TypedUuid> internal_principal_uuids;
+  // Create-time only: each pack agent type's principal, so the agent policy
+  // records written later in the same create can be linked to it by UUID.
+  std::vector<std::pair<std::string, TypedUuid>> agent_principals;
   DiagnosticRecord diagnostic;
 
   bool ok() const {
@@ -2848,6 +2851,33 @@ CatalogRowsBuildResult AddLocalizedRecordPair(std::vector<CatalogPageRow>* rows,
       target_object_uuid);
 }
 
+// SB_CREATE_REGISTERS_ALL_OBJECT_NAMES: a name entry alone, for objects create
+// registers by lookup. No comment row is invented for them.
+CatalogRowsBuildResult AddLocalizedName(std::vector<CatalogPageRow>* rows,
+                                        u32* ordinal,
+                                        u64 identity_seed,
+                                        TypedUuid target_object_uuid,
+                                        std::string language_tag,
+                                        std::string path,
+                                        std::string name) {
+  scratchbird::core::catalog::CatalogLocalizedNameRecord name_record;
+  name_record.target_object_uuid = target_object_uuid;
+  name_record.language = std::move(language_tag);
+  name_record.path = std::move(path);
+  name_record.name = std::move(name);
+  name_record.name_class = 1;
+  name_record.creator_transaction_number = kBootstrapCatalogTransactionId;
+  const auto name_binary = scratchbird::core::catalog::EncodeCatalogLocalizedName(name_record);
+  if (!name_binary.ok()) {
+    const auto refused = LifecycleError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
+        "catalog.record_codec.fields_missing", {}, "localized_binary_payload_invalid");
+    return CatalogRowsBuildError(refused.status, refused.diagnostic);
+  }
+  return AddTypedCatalogRecord(rows, CatalogRecordKind::localized_name,
+      ordinal, identity_seed, std::string(name_binary.bytes.begin(), name_binary.bytes.end()),
+      target_object_uuid);
+}
+
 std::optional<scratchbird::core::catalog::CatalogBootstrapPolicyPack> NativePolicyPackDefinition(
     const LoadedPolicySeedPack& pack,const TypedUuid& creator_transaction_uuid) {
   scratchbird::core::catalog::CatalogBootstrapPolicyPack native;
@@ -3263,12 +3293,22 @@ scratchbird::core::catalog::CatalogSecurityRecord NativeBootstrapMembershipDefin
   record.attributes.emplace("parent_kind","role");record.attributes.emplace("security_generation",u64{1});
   return record;
 }
+// The L5 principal: the database identity, a member of SYSARCH
+// (appendix-agent-security-roles.md, D5/D14). Marked by this authority class so
+// the bootstrap validator can tell its SYSARCH membership from the owner's.
+constexpr std::string_view kL5AuthorityClass = "l5_database";
+// Used when the caller names no internal service principal. Owner may rename.
+constexpr std::string_view kDefaultL5PrincipalName = "sb_internal_service";
 scratchbird::core::catalog::CatalogSecurityRecord NativeLocalServicePrincipalDefinition(
     const NativeInitialLocalServiceIdentity& service,const TypedUuid& origin,u64 policy_generation) {
   auto record=NativeBootstrapDefinition(CatalogRecordKind::user_account,service.principal_uuid,origin,policy_generation);
   record.attributes["create_time_only"]=false;
   record.attributes.emplace("principal_name",std::string(service.principal_name));
-  record.attributes.emplace("credential_fingerprint",std::string(service.credential_fingerprint));
+  // SEARCH_KEY: SB_L5_PRINCIPAL_ALWAYS_PROVISIONED. A credential is kept only
+  // when the caller supplied one; otherwise L5 has none, like the agents (D18
+  // option 3): it is admitted only by the engine binding its session at open.
+  if(!service.credential_fingerprint.empty())
+    record.attributes.emplace("credential_fingerprint",std::string(service.credential_fingerprint));
   record.attributes.emplace("kind","service");record.attributes.emplace("principal_kind","service");
   record.attributes.emplace("security_generation",u64{1});record.attributes.emplace("bootstrap_principal",false);
   return record;
@@ -3337,6 +3377,27 @@ scratchbird::core::catalog::CatalogSecurityRecord NativeAgentPrincipalGrantDefin
   record.attributes.emplace("subject_kind","principal");
   record.attributes.emplace("effect","allow");
   record.attributes.emplace("right",std::string(right));
+  return record;
+}
+
+// SEARCH_KEY: SB_AGENT_PRINCIPAL_BINDING_BY_UUID (owner direction 2026-10-30:
+// "the engine ONLY uses UUID's ... for all identification"). Links an agent
+// type's committed primary policy definition to the principal create made for
+// it. Not a grant: it confers nothing. L5 reads it to bind a session to the
+// principal by UUID, so no name is ever matched after create. A grant record
+// carries it because that record already admits subject and target UUIDs, so
+// the durable format does not change.
+constexpr std::string_view kAgentPrincipalBindingClass = "agent_principal_binding";
+scratchbird::core::catalog::CatalogSecurityRecord NativeAgentPrincipalBindingDefinition(
+    const core::platform::Uuid& link_uuid, const core::platform::Uuid& principal_uuid,
+    const core::platform::Uuid& policy_uuid, const TypedUuid& origin, u64 policy_generation) {
+  auto record=NativeBootstrapDefinition(CatalogRecordKind::grant_record,link_uuid,origin,policy_generation);
+  record.attributes["create_time_only"]=false;
+  record.identities.emplace("subject_uuid",principal_uuid);
+  record.identities.emplace("target_uuid",policy_uuid);
+  record.attributes.emplace("security_generation",u64{1});
+  record.attributes.emplace("grant_class",std::string(kAgentPrincipalBindingClass));
+  record.attributes.emplace("subject_kind","principal");
   return record;
 }
 
@@ -3427,7 +3488,9 @@ NativeInitialLocalServiceIdentity BindInitialLocalServiceIdentity(
   return NativeInitialLocalServiceIdentity{
       ids[0].value, ids[1].value, ids[2].value, ids[3].value, ids[4].value,
       {ids[5].value, ids[6].value, ids[7].value, ids[8].value, ids[9].value},
-      config.internal_service_principal_name,
+      config.internal_service_principal_name.empty()
+          ? kDefaultL5PrincipalName
+          : std::string_view(config.internal_service_principal_name),
       config.internal_service_credential_fingerprint};
 }
 
@@ -3511,12 +3574,16 @@ CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
   // unparseable or oversized fingerprint refuses create rather than provisioning
   // a principal nothing can authenticate as. Provisioned only alongside the
   // bootstrap principal, matching the record assembler's own precondition.
-  if (!config.internal_service_principal_name.empty()) {
-    if (!IsSafeBootstrapPrincipalName(config.internal_service_principal_name) ||
-        config.internal_service_credential_fingerprint.empty() ||
-        config.internal_service_credential_fingerprint.size() > 256 ||
-        !ParseBootstrapCredentialFingerprint(
-            config.internal_service_credential_fingerprint)) {
+  // SEARCH_KEY: SB_L5_PRINCIPAL_ALWAYS_PROVISIONED (owner direction
+  // 2026-10-30): every create writes L5 and its SYSARCH membership; a database
+  // without them is corrupt. It is no longer opt-in by the caller.
+  {
+    if ((!config.internal_service_principal_name.empty() &&
+         !IsSafeBootstrapPrincipalName(config.internal_service_principal_name)) ||
+        (!config.internal_service_credential_fingerprint.empty() &&
+         (config.internal_service_credential_fingerprint.size() > 256 ||
+          !ParseBootstrapCredentialFingerprint(
+              config.internal_service_credential_fingerprint)))) {
       return CatalogRowsBuildError(DatabaseLifecycleErrorStatus(),
           MakeDatabaseLifecycleDiagnostic(DatabaseLifecycleErrorStatus(),
             "CATALOG.INVALID_INPUT",
@@ -3535,6 +3602,7 @@ CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
 
     auto service_record = NativeLocalServicePrincipalDefinition(
         service, creator_transaction_uuid, policy_generation);
+    service_record.attributes.emplace("authority_class", std::string(kL5AuthorityClass));
     typed = AddSecurityCatalogRecord(rows, ordinal, identity_seed + 30,
         std::move(service_record), security_parent_uuid,
         creator_transaction_uuid);
@@ -3549,6 +3617,24 @@ CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
       typed = AddSecurityCatalogRecord(rows, ordinal,
           identity_seed + 32 + static_cast<u64>(slot) * 2,
           std::move(grant_record), security_parent_uuid,
+          creator_transaction_uuid);
+      if (!typed.ok()) {
+        return typed;
+      }
+    }
+    // L5 is a member of SYSARCH (D5). Same record shape as the owner's
+    // bootstrap membership, with its own generated identity.
+    {
+      const auto l5_membership = GenerateEngineIdentityV7(
+          UuidKind::object, identity_seed + 46);
+      if (!l5_membership.ok()) {
+        return CatalogRowsBuildError(l5_membership.status, l5_membership.diagnostic);
+      }
+      auto l5_membership_record = NativeBootstrapMembershipDefinition(
+          l5_membership.value.value, service.principal_uuid,
+          creator_transaction_uuid, policy_generation);
+      typed = AddSecurityCatalogRecord(rows, ordinal, identity_seed + 48,
+          std::move(l5_membership_record), security_parent_uuid,
           creator_transaction_uuid);
       if (!typed.ok()) {
         return typed;
@@ -3574,7 +3660,10 @@ CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
       binding.security_authority_uuid = config.database_uuid.value;
       binding.provider_uuid = service.provider_uuid;
       binding.policy_uuid = service.policy_uuid;
-      binding.credential_reference_uuid = service.credential_reference_uuid;
+      // No credential, no reference: a startup credential cannot be framed
+      // against a principal that has none, and the binding says so.
+      if (!service.credential_fingerprint.empty())
+        binding.credential_reference_uuid = service.credential_reference_uuid;
       binding.generation = 1;
       binding.security_epoch = 1;
       binding.catalog_generation = 1;
@@ -3814,10 +3903,76 @@ CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
         return typed;
       }
       result.internal_principal_uuids.push_back(principal.value);
+      result.agent_principals.push_back({agent_type.agent_type_id, principal.value});
       extra_seed = agent_seed + 4;
     }
   }
   return result;
+}
+
+// SEARCH_KEY: SB_CREATE_REGISTERS_ALL_OBJECT_NAMES (owner direction 2026-10-30:
+// create must update the lookup structures for every SQL object it makes).
+// Names are resolved through the name registry, not read from descriptors, so
+// each named object gets a localized_name entry: English, primary, path and
+// simple name. Returns
+// the object's name source, or nothing for a kind that is not a named SQL
+// object (configuration records, resources resolved through their own alias
+// rows, sub-records). Filespaces are named by enumeration, filespace_<n> in
+// creation order (owner direction 2026-10-30): the name says nothing about
+// what the filespace does (shadow, shard, ...). Their name is assigned by the
+// caller, so this returns the class with an empty name.
+struct CreateObjectName {
+  std::string path;
+  std::string name;
+  std::string object_class;
+};
+std::optional<CreateObjectName> CreateObjectNameFor(const CatalogTypedRecord& record) {
+  const auto simple = [](const std::string& path) {
+    const auto dot = path.rfind('.');
+    return dot == std::string::npos ? path : path.substr(dot + 1);
+  };
+  const auto from_payload = [&](const char* key, const char* object_class)
+      -> std::optional<CreateObjectName> {
+    const auto fields = ParseKeyValuePayload(record.payload);
+    const auto found = fields.find(key);
+    if (found == fields.end() || found->second.empty()) return std::nullopt;
+    std::string path = found->second;
+    const auto schema = fields.find("schema_path");
+    if (schema != fields.end() && !schema->second.empty() &&
+        path.find('.') == std::string::npos)
+      path = schema->second + "." + path;
+    return CreateObjectName{path, simple(path), object_class};
+  };
+  // A security object's name, or its code when it carries no separate name
+  // (the canonical SYSARCH role has role_code ROLE_SYSARCH and no role_name).
+  const auto from_security = [&](const char* key, const char* object_class,
+                                 const char* fallback_key = nullptr)
+      -> std::optional<CreateObjectName> {
+    const auto security = scratchbird::core::catalog::DecodeCatalogSecurityRecord(
+        record.header.kind, record.payload);
+    if (!security.ok()) return std::nullopt;
+    auto value = security.record->Attribute(key);
+    if ((!value || value->empty()) && fallback_key != nullptr)
+      value = security.record->Attribute(fallback_key);
+    if (!value || value->empty()) return std::nullopt;
+    return CreateObjectName{std::string(*value), std::string(*value), object_class};
+  };
+  switch (record.header.kind) {
+    case CatalogRecordKind::filespace: return CreateObjectName{{}, {}, "filespace"};
+    case CatalogRecordKind::user_account: return from_security("principal_name", "user");
+    case CatalogRecordKind::role_account: return from_security("role_name", "role", "role_code");
+    case CatalogRecordKind::group_account: return from_security("group_name", "group", "group_code");
+    case CatalogRecordKind::table_descriptor: return from_payload("table_name", "table");
+    case CatalogRecordKind::index_descriptor: return from_payload("index_name", "index");
+    case CatalogRecordKind::domain: return from_payload("domain_name", "domain");
+    case CatalogRecordKind::datatype_descriptor: return from_payload("canonical_name", "datatype");
+    case CatalogRecordKind::masking_policy: return from_payload("policy_name", "masking_policy");
+    case CatalogRecordKind::rls_policy: return from_payload("policy_name", "rls_policy");
+    case CatalogRecordKind::udr_package: return from_payload("package_name", "udr_package");
+    case CatalogRecordKind::parser_package: return from_payload("package_name", "parser_package");
+    case CatalogRecordKind::sblr_module: return from_payload("module_name", "sblr_module");
+    default: return std::nullopt;
+  }
 }
 
 CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config,
@@ -4131,21 +4286,12 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
 
   const auto bootstrap_records = DefaultBootstrapCatalogRecords(policy_seed_pack);
   u64 bootstrap_seed = config.creation_unix_epoch_millis + 14000;
-  scratchbird::core::platform::Uuid public_group_uuid{};
-  std::array<scratchbird::core::catalog::CatalogSecurityRecord,3> base_security;
-  base_security[0].kind=CatalogRecordKind::group_account;
-  base_security[0].attributes={{"group_name","PUBLIC"},{"ambient_rights","minimal"},{"connect_only",true}};
-  base_security[1].kind=CatalogRecordKind::group_account;
-  base_security[1].attributes={{"group_name","DBA"},{"operational_role","database_administration"},{"created_disabled",true}};
-  base_security[2].kind=CatalogRecordKind::grant_record;
-  base_security[2].attributes={{"grant_name","PUBLIC_CONNECT_BASELINE"},{"right","CONNECT"},{"ambient",false}};
-  for (std::size_t i=0;i<base_security.size();++i) {
-    if(i==2)base_security[i].identities.emplace("target_uuid",public_group_uuid);
-    typed=AddSecurityCatalogRecord(&result.rows,&ordinal,bootstrap_seed,std::move(base_security[i]),
-        database_object.value,bootstrap_transaction_uuid,i==0?&public_group_uuid:nullptr);
-    if(!typed.ok())return typed;
-    bootstrap_seed+=4;
-  }
+  // SEARCH_KEY: SB_PUBLIC_DBA_GROUPS_FROM_POLICY_PACK (owner direction
+  // 2026-10-30): the policy pack's groups are the authority, and CONNECT is
+  // granted to the pack's PUBLIC group, to which OS users and groups are
+  // mapped. Create used to also write its own PUBLIC and DBA groups and a
+  // subject-less PUBLIC_CONNECT_BASELINE grant targeting that PUBLIC group,
+  // which gave the database two groups named PUBLIC and two named DBA.
   for (const auto& bootstrap_record : bootstrap_records) {
       typed = AddTypedCatalogRecord(&result.rows,
                                   bootstrap_record.kind,
@@ -4330,6 +4476,34 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
         declaration.properties);
     if (!typed.ok()) return typed;
     bootstrap_seed += 4;
+  }
+
+  // SEARCH_KEY: SB_AGENT_PRINCIPAL_BINDING_BY_UUID. One link per agent type
+  // that has both a committed primary policy and a provisioned principal. The
+  // agent type id is matched here because create is where names arrive as
+  // data; from here on only the two UUIDs are used.
+  {
+    const u32 link_policy_generation = policy_seed_pack.image.active
+        ? policy_seed_pack.image.policy_generation : 1;
+    for (std::size_t index = 0; index < declarations.size(); ++index) {
+      const auto& declaration = declarations[index];
+      if (declaration.kind != agent_catalog::AgentBootstrapDefinitionKind::policy ||
+          declaration.primary_policy_index != index) continue;
+      const auto principal = std::find_if(
+          bootstrap_security_rows.agent_principals.begin(),
+          bootstrap_security_rows.agent_principals.end(),
+          [&](const auto& entry) { return entry.first == declaration.agent_type; });
+      if (principal == bootstrap_security_rows.agent_principals.end()) continue;
+      const auto link = GenerateEngineIdentityV7(UuidKind::object, bootstrap_seed);
+      if (!link.ok()) return CatalogRowsBuildError(link.status, link.diagnostic);
+      auto link_record = NativeAgentPrincipalBindingDefinition(
+          link.value.value, principal->second.value, definition_identities.at(index).value,
+          bootstrap_transaction_uuid, link_policy_generation);
+      typed = AddSecurityCatalogRecord(&result.rows, &ordinal, bootstrap_seed + 2,
+          std::move(link_record), sys_security_object.value, bootstrap_transaction_uuid);
+      if (!typed.ok()) return typed;
+      bootstrap_seed += 4;
+    }
   }
 
   for (const auto& layout : AgentCatalogRecordLayouts()) {
@@ -4775,6 +4949,38 @@ CatalogRowsBuildResult BuildCreateCatalogRows(const DatabaseCreateConfig& config
     const auto refused=LifecycleError("SB-CATALOG-RECORD-CODEC-FIELDS-MISSING",
         "catalog.record_codec.fields_missing",config.path,"resource_binary_payload_or_graph_invalid");
     return CatalogRowsBuildError(refused.status,refused.diagnostic);
+  }
+  // SEARCH_KEY: SB_CREATE_REGISTERS_ALL_OBJECT_NAMES. Every named SQL object
+  // create wrote gets its lookup entry, unless it already has one.
+  {
+    std::set<scratchbird::core::platform::Uuid> named;
+    std::vector<std::pair<TypedUuid, CreateObjectName>> pending;
+    for (const auto& row : result.rows) {
+      if (row.kind != CatalogPageRowKind::typed_catalog_record) continue;
+      const auto decoded = DecodeCatalogTypedRecord(row);
+      if (!decoded.ok()) return CatalogRowsBuildError(decoded.status, decoded.diagnostic);
+      if (decoded.record.header.kind == CatalogRecordKind::localized_name) {
+        const auto name = scratchbird::core::catalog::DecodeCatalogLocalizedName(
+            decoded.record.payload);
+        if (name.ok()) named.insert(name.record->target_object_uuid.value);
+        continue;
+      }
+      if (auto object_name = CreateObjectNameFor(decoded.record))
+        pending.push_back({decoded.record.header.object_uuid, std::move(*object_name)});
+    }
+    u64 name_seed = config.creation_unix_epoch_millis + 15000;
+    u64 filespace_ordinal = 0;
+    for (auto& [object, object_name] : pending) {
+      if (object_name.object_class == "filespace") {
+        object_name.path = object_name.name = "filespace_" + std::to_string(filespace_ordinal++);
+      }
+      if (named.contains(object.value)) continue;
+      const auto added = AddLocalizedName(&result.rows, &ordinal, name_seed, object, "en",
+          object_name.path, object_name.name);
+      if (!added.ok()) return added;
+      named.insert(object.value);
+      name_seed += 4;
+    }
   }
   return result;
 }
@@ -6913,6 +7119,7 @@ DatabaseLifecycleResult ValidateCreateConfig(const DatabaseCreateConfig& config)
       "",
       "before_catalog",
       "after_catalog_before_prepublish_sync",
+      "corrupt_catalog_before_verify",
       "after_prepublish_sync_before_inventory_publish",
       "inventory_publish_write",
       "inventory_publish_sync",
@@ -7892,8 +8099,12 @@ PolicySeedPackDescriptor DefaultPolicyPackDescriptor() {
   // Updated 2026-10-29: 44 agent task-group roles, 198 role grants and the
   // agent_types map added (appendix-agent-security-roles.md).
   // Previous: 9986ce1990b5ab56667525bb6d5acd78349edc89e04c9fb0a7c31b45ae2f70c6
+  // Owner direction 2026-10-30: the pack grants CONNECT to its PUBLIC group (OS users and groups map to pack groups).
+  // Previous: 20645e55e0a45dff2bf69fa9d2988a75b6064324fb7986afc2d3e6e722ae7056
+  // Owner direction 2026-10-30: transaction_pressure_manager's role is granted OBS_AGENT_CONTROL_INTERNAL, its own-action right.
+  // Previous: 460cb8cda9e4964dfc0365fcfd3d7fd4691d0e65207480a83a9786233e6e1f93
   descriptor.content_sha256 =
-      "20645e55e0a45dff2bf69fa9d2988a75b6064324fb7986afc2d3e6e722ae7056";
+      "37b4752368cca6385632fde2faa22f685041cc6710fcf87396aa2c8758f15f5f";
   descriptor.create_time_only = true;
   descriptor.post_create_filesystem_authority = false;
   descriptor.local_password_only = true;
@@ -8226,6 +8437,8 @@ DatabaseLifecycleResult CreateDatabaseFile(const DatabaseCreateConfig& config) {
   TypedUuid bootstrap_membership_uuid;
   TypedUuid internal_service_principal_uuid;
   std::vector<TypedUuid> internal_principal_uuids;
+  // What create built, kept so the written file can be verified against it.
+  std::vector<CatalogPageRow> expected_catalog_rows;
   {
     const auto bootstrap_transaction = scratchbird::transaction::mga::LookupLocalTransaction(
         bootstrap_evidence.inventory, MakeLocalTransactionId(kBootstrapCatalogTransactionId));
@@ -8256,6 +8469,7 @@ DatabaseLifecycleResult CreateDatabaseFile(const DatabaseCreateConfig& config) {
     bootstrap_membership_uuid = catalog_rows.bootstrap_membership_uuid;
     internal_service_principal_uuid = catalog_rows.internal_service_principal_uuid;
     internal_principal_uuids = catalog_rows.internal_principal_uuids;
+    expected_catalog_rows = catalog_rows.rows;
     const auto write_catalog = WriteCatalogPageBodies(&device,
                                                       page_context,
                                                       catalog_rows.rows,
@@ -8269,6 +8483,25 @@ DatabaseLifecycleResult CreateDatabaseFile(const DatabaseCreateConfig& config) {
   const auto write_startup_state = WriteStartupStatePageBody(&device, initial_startup_state);
   if (!write_startup_state.ok()) {
     return PropagateDiagnostic(write_startup_state.status, write_startup_state.diagnostic);
+  }
+
+  if (config.create_fault_injection_point == "corrupt_catalog_before_verify") {
+    // Test only: damage the written catalog so verification must catch it.
+    const auto offset = CheckedPageOffset(config.page_size, kCatalogPageNumber);
+    if (!offset.ok()) return PropagateDiagnostic(offset.status, offset.diagnostic);
+    const u64 at = offset.offset + kPageHeaderSerializedBytes + 64;
+    scratchbird::core::platform::byte value{};
+    if (!device.ReadAt(at, &value, 1).ok()) {
+      return LifecycleError("SB-DB-LIFECYCLE-CREATE-FAULT-SETUP-FAILED",
+                            "storage.database_lifecycle.create_fault_setup_failed",
+                            config.path, "corrupt_catalog_read");
+    }
+    value = static_cast<scratchbird::core::platform::byte>(value ^ 0x5a);
+    if (!device.WriteAt(at, &value, 1).ok()) {
+      return LifecycleError("SB-DB-LIFECYCLE-CREATE-FAULT-SETUP-FAILED",
+                            "storage.database_lifecycle.create_fault_setup_failed",
+                            config.path, "corrupt_catalog_write");
+    }
   }
 
   if (config.create_fault_injection_point ==
@@ -8289,6 +8522,187 @@ DatabaseLifecycleResult CreateDatabaseFile(const DatabaseCreateConfig& config) {
                                    config.path,
                                    "create.prepublication_sync",
                                    true);
+  }
+
+  // SEARCH_KEY: SB_CREATE_VERIFIES_EVERYTHING_WRITTEN (owner direction
+  // 2026-10-30): during create the file is an output file, not a database, and
+  // a file whose contents differ from what create built -- or that lacks any
+  // permission, L5's included -- is corrupt. Everything is read back from the
+  // owned device and checked BEFORE the inventory publish, which is the commit
+  // point; any failure returns uncommitted and the create guard removes the
+  // file.
+  {
+    const auto verify_failed = [&](std::string detail) {
+      return LifecycleError("SB-DB-LIFECYCLE-CREATE-VERIFY-FAILED",
+                            "storage.database_lifecycle.create_verify_failed",
+                            config.path, std::move(detail));
+    };
+    // The header as last written: sealed with the private locator marker.
+    std::vector<scratchbird::core::platform::byte> header_readback(
+        sealed_header.serialized.size());
+    if (!device.ReadAt(0, header_readback.data(), header_readback.size()).ok() ||
+        !std::equal(header_readback.begin(), header_readback.end(),
+                    sealed_header.serialized.begin())) {
+      return verify_failed("database_header");
+    }
+    std::vector<CatalogPageRow> written_rows;
+    const auto read_rows = ReadCatalogPageRows(&device, config.page_size, &written_rows,
+                                               config.database_uuid.value,
+                                               config.filespace_uuid.value);
+    if (!read_rows.ok()) {
+      return verify_failed("catalog_unreadable:" + read_rows.diagnostic.diagnostic_code);
+    }
+    if (written_rows.size() != expected_catalog_rows.size()) {
+      return verify_failed("catalog_row_count:" + std::to_string(written_rows.size()) +
+                           "!=" + std::to_string(expected_catalog_rows.size()));
+    }
+    for (std::size_t i = 0; i < written_rows.size(); ++i) {
+      const auto& got = written_rows[i];
+      const auto& want = expected_catalog_rows[i];
+      if (got.kind != want.kind || got.ordinal != want.ordinal || got.payload != want.payload) {
+        return verify_failed("catalog_row_mismatch:" + std::to_string(want.ordinal));
+      }
+    }
+    if (!ReadStartupStatePageBody(&device, config.page_size).ok()) {
+      return verify_failed("startup_state_unreadable");
+    }
+    // Permissions, read from the written rows: the bootstrap validator, then
+    // the owner, L5 and every agent type the policy pack declares.
+    std::vector<CatalogTypedRecord> security_records;
+    std::optional<scratchbird::core::catalog::CatalogRuntimeAuthorityBinding> binding;
+    // Agent type -> its committed primary policy UUIDs, read from the written
+    // rows. A type can have more than one (canonical and runtime-lifecycle).
+    std::multimap<std::string, scratchbird::core::platform::Uuid> primary_policy_by_type;
+    for (const auto& row : written_rows) {
+      if (row.kind != CatalogPageRowKind::typed_catalog_record) continue;
+      auto decoded = DecodeCatalogTypedRecord(row);
+      if (!decoded.ok()) return verify_failed("catalog_record_undecodable");
+      if (scratchbird::core::catalog::CatalogAgentBootstrapMatchesHeader(
+              scratchbird::core::catalog::BorrowCatalogTypedRecord(decoded.record))) {
+        const auto agent = scratchbird::core::catalog::DecodeCatalogAgentBootstrapDefinition(
+            decoded.record.payload);
+        if (!agent.ok()) return verify_failed("agent_policy_undecodable");
+        if (agent.record->kind == scratchbird::core::catalog::AgentBootstrapDefinitionKind::policy &&
+            agent.record->definition_uuid == agent.record->policy_uuid)
+          primary_policy_by_type.emplace(std::string(agent.record->agent_type),
+                                         agent.record->definition_uuid);
+        continue;
+      }
+      if (scratchbird::core::catalog::CatalogRuntimeAuthorityBindingMatchesHeader(decoded.record)) {
+        const auto parsed = scratchbird::core::catalog::DecodeCatalogRuntimeAuthorityBinding(
+            decoded.record.payload);
+        if (!parsed.ok() || binding) return verify_failed("runtime_authority_binding");
+        binding = parsed.record;
+        continue;
+      }
+      if (scratchbird::core::catalog::IsCatalogSecurityRecordKind(decoded.record.header.kind))
+        security_records.push_back(std::move(decoded.record));
+    }
+    const auto validated = ValidateBootstrapSecurityRecords(security_records, config.path);
+    if (!validated.ok()) {
+      return verify_failed("security:" + validated.diagnostic.diagnostic_code);
+    }
+    if (!config.bootstrap_principal_name.empty()) {
+      if (!validated.state.present ||
+          validated.state.principal_uuid.value != bootstrap_principal_uuid.value) {
+        return verify_failed("bootstrap_owner");
+      }
+      if (validated.state.l5_principal_uuid.value.is_nil() ||
+          validated.state.l5_principal_uuid.value != internal_service_principal_uuid.value) {
+        return verify_failed("l5_principal_or_sysarch_membership");
+      }
+      if (!binding || binding->service_principal_uuid != internal_service_principal_uuid.value ||
+          binding->database_uuid != config.database_uuid.value) {
+        return verify_failed("l5_runtime_authority_binding");
+      }
+    }
+    // Every grant and role the pack declares, and every agent type's
+    // principal with exactly one membership in its pack role.
+    std::set<scratchbird::core::platform::Uuid> object_uuids;
+    std::map<std::string, scratchbird::core::platform::Uuid> principal_by_name;
+    std::map<scratchbird::core::platform::Uuid,
+             std::vector<scratchbird::core::platform::Uuid>> roles_of_member;
+    // SB_AGENT_PRINCIPAL_BINDING_BY_UUID: policy UUID -> linked principals.
+    std::map<scratchbird::core::platform::Uuid,
+             std::vector<scratchbird::core::platform::Uuid>> links_by_policy;
+    for (const auto& record : security_records) {
+      object_uuids.insert(record.header.object_uuid.value);
+      const auto security = scratchbird::core::catalog::DecodeCatalogSecurityRecord(
+          record.header.kind, record.payload);
+      if (!security.ok()) return verify_failed("security_record_undecodable");
+      if (record.header.kind == CatalogRecordKind::user_account) {
+        const auto name = security.record->Attribute("principal_name");
+        if (name) principal_by_name.emplace(std::string(*name), record.header.object_uuid.value);
+      } else if (record.header.kind == CatalogRecordKind::grant_record &&
+                 security.record->Attribute("grant_class") ==
+                     std::optional<std::string_view>("role_membership")) {
+        roles_of_member[security.record->Identity("member_uuid")].push_back(
+            security.record->Identity("role_uuid"));
+      } else if (record.header.kind == CatalogRecordKind::grant_record &&
+                 security.record->Attribute("grant_class") ==
+                     std::optional<std::string_view>(kAgentPrincipalBindingClass)) {
+        links_by_policy[security.record->Identity("target_uuid")].push_back(
+            security.record->Identity("subject_uuid"));
+      }
+    }
+    // SB_CREATE_REGISTERS_ALL_OBJECT_NAMES: every named SQL object has a name.
+    {
+      std::set<scratchbird::core::platform::Uuid> name_targets;
+      for (const auto& row : written_rows) {
+        if (row.kind != CatalogPageRowKind::typed_catalog_record) continue;
+        const auto decoded = DecodeCatalogTypedRecord(row);
+        if (!decoded.ok()) return verify_failed("catalog_record_undecodable");
+        if (decoded.record.header.kind != CatalogRecordKind::localized_name) continue;
+        const auto name = scratchbird::core::catalog::DecodeCatalogLocalizedName(
+            decoded.record.payload);
+        if (!name.ok()) return verify_failed("localized_name_undecodable");
+        name_targets.insert(name.record->target_object_uuid.value);
+      }
+      for (const auto& row : written_rows) {
+        if (row.kind != CatalogPageRowKind::typed_catalog_record) continue;
+        const auto decoded = DecodeCatalogTypedRecord(row);
+        if (!decoded.ok()) return verify_failed("catalog_record_undecodable");
+        if (CreateObjectNameFor(decoded.record) &&
+            !name_targets.contains(decoded.record.header.object_uuid.value))
+          return verify_failed("object_name_missing");
+      }
+    }
+    for (const auto& role : policy_seed_pack.roles)
+      if (!object_uuids.contains(role.role_uuid)) return verify_failed("pack_role_missing");
+    for (const auto& grant : policy_seed_pack.grants)
+      if (!object_uuids.contains(grant.grant_uuid)) return verify_failed("pack_grant_missing");
+    if (!config.bootstrap_principal_name.empty()) {
+      for (const auto& agent : policy_seed_pack.agent_types) {
+        const auto principal = principal_by_name.find(agent.agent_type_id);
+        if (principal == principal_by_name.end())
+          return verify_failed("agent_principal_missing:" + agent.agent_type_id);
+        const auto roles = roles_of_member.find(principal->second);
+        if (roles == roles_of_member.end() || roles->second.size() != 1 ||
+            roles->second.front() != agent.role_uuid)
+          return verify_failed("agent_role_membership:" + agent.agent_type_id);
+        // Every committed primary policy of this type links to exactly this
+        // principal.
+        const auto [first, last] = primary_policy_by_type.equal_range(agent.agent_type_id);
+        for (auto policy = first; policy != last; ++policy) {
+          const auto links = links_by_policy.find(policy->second);
+          if (links == links_by_policy.end() || links->second.size() != 1 ||
+              links->second.front() != principal->second)
+            return verify_failed("agent_principal_binding:" + agent.agent_type_id);
+        }
+      }
+      // And no link names anything else: every link targets a committed
+      // primary policy and an agent principal, never the owner or L5.
+      std::set<scratchbird::core::platform::Uuid> primary_policies;
+      for (const auto& [type, uuid] : primary_policy_by_type) primary_policies.insert(uuid);
+      for (const auto& [policy, principals] : links_by_policy) {
+        if (!primary_policies.contains(policy)) return verify_failed("agent_binding_unknown_policy");
+        for (const auto& linked : principals)
+          if (linked == bootstrap_principal_uuid.value ||
+              linked == internal_service_principal_uuid.value ||
+              !object_uuids.contains(linked))
+            return verify_failed("agent_binding_principal_invalid");
+      }
+    }
   }
 
   if (config.create_fault_injection_point ==
@@ -9032,6 +9446,8 @@ DatabaseBootstrapSecurityCatalogReadResult ReadBootstrapSecurityCatalogFromOwned
       policy.agent_type.assign(agent.record->agent_type);
       policy.enabled = property("enabled") == "1";
       policy.generation = agent.record->generation;
+      policy.policy_uuid = agent.record->definition_uuid;
+      policy.primary = agent.record->definition_uuid == agent.record->policy_uuid;
       committed_agent_policies.push_back(std::move(policy));
       continue;
     }
@@ -9075,6 +9491,67 @@ DatabaseBootstrapSecurityCatalogReadResult ReadBootstrapSecurityCatalogFromOwned
     state.runtime_authority_generation = runtime_authority_binding->generation;
     // SEARCH_KEY: DATABASE_COMMITTED_STARTUP_AUTHORITY_MODE
     state.authority_mode = runtime_authority_binding->authority_mode;
+  }
+  // SEARCH_KEY: SB_LOADER_READS_CREATE_SECURITY_ROWS
+  for (const auto& record : records) {
+    const auto security = scratchbird::core::catalog::DecodeCatalogSecurityRecord(
+        record.header.kind, record.payload);
+    if (!security.ok())
+      return fail("CATALOG.INVALID_INPUT", "catalog.security_record.invalid",
+                  "security_binary_payload_invalid");
+    const auto& r = *security.record;
+    const auto text = [&](std::string_view key) {
+      const auto value = r.Attribute(key);
+      return value ? std::string(*value) : std::string{};
+    };
+    auto& state = validated.state;
+    const auto object = record.header.object_uuid.value;
+    switch (record.header.kind) {
+      case CatalogRecordKind::user_account:
+        state.committed_principals.push_back(
+            {object, text("principal_name"), text("principal_kind"),
+             text("credential_fingerprint")});
+        break;
+      case CatalogRecordKind::role_account:
+        state.committed_roles.push_back({object, text("role_name")});
+        break;
+      case CatalogRecordKind::group_account:
+        state.committed_groups.push_back({object, text("group_name")});
+        break;
+      case CatalogRecordKind::grant_record: {
+        const auto grant_class = text("grant_class");
+        if (grant_class == kAgentPrincipalBindingClass) {
+          // A link, not authority: never loaded as a grant.
+          state.committed_agent_principal_bindings.push_back(
+              {r.Identity("target_uuid"), r.Identity("subject_uuid")});
+          break;
+        }
+        if (grant_class == "role_membership" || grant_class == "group_membership") {
+          const bool role = grant_class == "role_membership";
+          state.committed_memberships.push_back(
+              {object, r.Identity("member_uuid"),
+               role ? r.Identity("role_uuid") : r.Identity("parent_uuid"),
+               role ? std::string("role") : text("parent_kind")});
+        } else {
+          const auto subject = r.Identity("subject_uuid");
+          if (subject.is_nil()) {
+            // SEARCH_KEY: SB_SUBJECTLESS_GRANT_NOT_LOADED (owner direction
+            // 2026-10-30). A grant with no subject confers nothing and is not
+            // loaded. CONNECT is granted to the policy pack's PUBLIC group,
+            // to which OS users and groups are mapped; without that mapping
+            // every attempt is refused (SB_PUBLIC_DBA_GROUPS_FROM_POLICY_PACK).
+            ++state.committed_subjectless_grants;
+            break;
+          }
+          state.committed_grants.push_back(
+              {object, subject, r.Identity("target_uuid"), text("subject_kind"),
+               text("right"), text("effect")});
+        }
+        break;
+      }
+      default:
+        break;
+    }
   }
   // SEARCH_KEY: DATABASE_COMMITTED_AGENT_POLICY_READ
   validated.state.committed_agent_policies = std::move(committed_agent_policies);
@@ -9140,6 +9617,16 @@ DatabaseBootstrapSecurityCatalogReadResult ValidateBootstrapSecurityRecords(
   u32 membership_policy_generation = 0;
   u64 membership_context_generation = 0;
   std::optional<scratchbird::core::platform::Uuid> cohort_origin;
+  // SEARCH_KEY: SB_L5_PRINCIPAL_ALWAYS_PROVISIONED. SYSARCH memberships are
+  // classified after the loop, once both the owner and L5 are known.
+  struct SysarchMembership {
+    scratchbird::core::platform::Uuid membership_uuid, member_uuid;
+    u32 policy_generation = 0;
+    u64 context_generation = 0;
+  };
+  std::vector<SysarchMembership> sysarch_memberships;
+  u32 l5_count = 0;
+  scratchbird::core::platform::Uuid l5_principal_uuid{};
 
   // V2 native integer values must not narrow into a valid authority generation.
   using SecurityAttributes = decltype(scratchbird::core::catalog::CatalogSecurityRecord::attributes);
@@ -9258,6 +9745,17 @@ DatabaseBootstrapSecurityCatalogReadResult ValidateBootstrapSecurityRecords(
             principal_name);
       }
       if (!bootstrap) {
+        if (exact_field(fields, "authority_class", std::string(kL5AuthorityClass))) {
+          ++l5_count;
+          if (!exact_field(fields, "principal_kind", "service") ||
+              !exact_field(fields, "kind", "service")) {
+            return fail(
+                "SB-DB-BOOTSTRAP-SECURITY-L5-PRINCIPAL-INVALID",
+                "storage.database_lifecycle.bootstrap_security_l5_principal_invalid",
+                principal_name);
+          }
+          l5_principal_uuid = decoded.record.header.object_uuid.value;
+        }
         continue;
       }
       ++bootstrap_principal_count;
@@ -9329,13 +9827,50 @@ DatabaseBootstrapSecurityCatalogReadResult ValidateBootstrapSecurityRecords(
             "storage.database_lifecycle.bootstrap_security_membership_invalid",
             "bootstrap_membership");
       }
-      state.membership_uuid.kind = UuidKind::object;
-      state.membership_uuid.value = membership_uuid;
-      membership_principal_uuid.kind = UuidKind::principal;
-      membership_principal_uuid.value = member_uuid;
-      membership_policy_generation = read_u32(fields, "policy_generation");
-      membership_context_generation = read_u64(fields, "security_context_generation");
+      sysarch_memberships.push_back({membership_uuid, member_uuid,
+                                     read_u32(fields, "policy_generation"),
+                                     read_u64(fields, "security_context_generation")});
     }
+  }
+
+  // The owner's membership is the bootstrap membership; L5's is the only other
+  // SYSARCH membership permitted. Any other member of SYSARCH is corruption.
+  if (l5_count > 1) {
+    return fail("SB-DB-BOOTSTRAP-SECURITY-L5-CARDINALITY-INVALID",
+                "storage.database_lifecycle.bootstrap_security_l5_cardinality_invalid",
+                std::to_string(l5_count));
+  }
+  bootstrap_membership_count = 0;
+  u32 l5_membership_count = 0;
+  for (const auto& membership : sysarch_memberships) {
+    if (bootstrap_principal_count == 1 &&
+        membership.member_uuid == state.principal_uuid.value) {
+      ++bootstrap_membership_count;
+      state.membership_uuid.kind = UuidKind::object;
+      state.membership_uuid.value = membership.membership_uuid;
+      membership_principal_uuid.kind = UuidKind::principal;
+      membership_principal_uuid.value = membership.member_uuid;
+      membership_policy_generation = membership.policy_generation;
+      membership_context_generation = membership.context_generation;
+    } else if (l5_count == 1 && membership.member_uuid == l5_principal_uuid) {
+      ++l5_membership_count;
+    } else if (bootstrap_principal_count == 0 && l5_count == 0) {
+      // Legacy shape with no principal row: keep the cardinality check below.
+      ++bootstrap_membership_count;
+    } else {
+      return fail("SB-DB-BOOTSTRAP-SECURITY-MEMBERSHIP-INVALID",
+                  "storage.database_lifecycle.bootstrap_security_membership_invalid",
+                  "sysarch_membership_member_unknown");
+    }
+  }
+  if (l5_count == 1 && l5_membership_count != 1) {
+    return fail("SB-DB-BOOTSTRAP-SECURITY-L5-MEMBERSHIP-INVALID",
+                "storage.database_lifecycle.bootstrap_security_l5_membership_invalid",
+                "l5_sysarch_memberships=" + std::to_string(l5_membership_count));
+  }
+  if (l5_count == 1) {
+    state.l5_principal_uuid.kind = UuidKind::principal;
+    state.l5_principal_uuid.value = l5_principal_uuid;
   }
 
   if (sysarch_count != 1) {

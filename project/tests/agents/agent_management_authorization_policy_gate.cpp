@@ -254,7 +254,9 @@ void SeedVisibleFilespaceDescriptor(const Fixture& fixture) {
 
 api::EngineRequestPagePreallocationRequest PageHookRequest(const Fixture& fixture) {
   api::EngineRequestPagePreallocationRequest request;
-  request.context = Context(fixture, {"OBS_AGENT_STATE_READ", "OBS_AGENT_CONTROL"});
+  // page_allocation_manager acting for itself holds the accepted section 4c
+  // right, OBS_AGENT_CONTROL_INTERNAL (SB_AGENT_SELF_ACTION_RIGHTS).
+  request.context = Context(fixture, {"OBS_AGENT_STATE_READ", "OBS_AGENT_CONTROL_INTERNAL"});
   request.agent_type = "page_allocation_manager";
   request.action_class = "page_preallocation_request";
   request.agent_uuid = fixture.agent_uuid;

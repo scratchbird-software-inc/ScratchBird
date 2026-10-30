@@ -7,8 +7,16 @@
 #include <source_location>
 #include <unistd.h>
 namespace a = scratchbird::engine::internal_api;
+// Removed at exit, including after a failed Check (tests clean up after
+// themselves); exit, not abort, so the removal runs.
+std::string g_directory;
+void RemoveDirectory() {
+  if (g_directory.empty()) return;
+  std::error_code ignored;
+  std::filesystem::remove_all(g_directory, ignored);
+}
 void Check(bool ok, std::source_location at = std::source_location::current()) {
-  if (!ok) { std::cerr << "failure at " << at.line() << '\n'; std::abort(); }
+  if (!ok) { std::cerr << "failure at " << at.line() << '\n'; std::exit(EXIT_FAILURE); }
 }
 void CheckPublication(const a::EngineNoSqlProviderPublicationEffects& effects) {
   Check(effects.attempted_phase==a::EngineNoSqlProviderPublicationPhase::complete&&
@@ -24,6 +32,7 @@ int main() {
   context.database_uuid = identity;
   auto path = (std::filesystem::temp_directory_path() / "sb_provider_native_XXXXXX").string();
   const auto directory = ::mkdtemp(path.data()); Check(directory != nullptr);
+  g_directory = directory; std::atexit(RemoveDirectory);
   context.database_path = std::string(directory) + "/database";
   a::EngineNoSqlProviderGenerationMetadata metadata;
   metadata.family = a::EngineNoSqlProviderFamily::kTimeSeries;
@@ -112,10 +121,11 @@ int main() {
     out << "SBNOSQLPG1\tGENERATION\tlegacy\n"; }
   loaded = a::LoadLocked(context);
   Check(loaded.size() == 1 && !loaded[0].persistence_valid);
-  // Publication devices have closed. Their persistent ownership sidecar is
-  // part of this private fixture, not unresolved staging data or a live lease.
+  // Publication devices have closed. Owner direction 2026-10-30
+  // (SB_OWNER_LOCK_FILE_REMOVED_ON_CLOSE): a closed device removes its
+  // ownership lock file, so none may remain for the staging file.
   Check(!std::filesystem::exists(filename + ".pending"));
   Check(std::filesystem::remove(filename));
-  Check(std::filesystem::remove(filename + ".pending.sb.owner.lock"));
+  Check(!std::filesystem::exists(filename + ".pending.sb.owner.lock"));
   Check(std::filesystem::remove(directory));
 }

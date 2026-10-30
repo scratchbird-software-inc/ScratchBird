@@ -422,7 +422,9 @@ api::EngineObjectReference FilespaceTarget() {
 void RequirePagePreallocationExample() {
   const auto temp_dir = MakeTempDir("sb_pfar020a_page", 450);
   api::EngineRequestPagePreallocationRequest request;
-  request.context = EngineContext("OBS_AGENT_CONTROL");
+  // page_allocation_manager acting for itself holds the accepted section 4c
+  // right (SB_AGENT_SELF_ACTION_RIGHTS).
+  request.context = EngineContext("OBS_AGENT_CONTROL_INTERNAL");
   request.context.database_path = (temp_dir.path / "pfar020a.sbdb").string();
   request.context.trace_tags.push_back("right:FILESPACE_LIFECYCLE_CONTROL");
   request.agent_type = "page_allocation_manager";

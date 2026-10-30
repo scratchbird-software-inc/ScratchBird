@@ -559,8 +559,9 @@ void TestArhc081CrashRestartAndRaceCoverage() {
   approval_action.operation_id = "page_preallocation_request";
   approval_action.idempotency_key = "idem-approval-race";
   approval_action.dry_run = false;
+  // The agent's own action: the section 4c right (SB_AGENT_SELF_ACTION_RIGHTS).
   const auto approval_required = agents::EvaluateAgentAction(
-      Context({"OBS_AGENT_STATE_READ", "OBS_AGENT_CONTROL"}), *descriptor,
+      Context({"OBS_AGENT_STATE_READ", "OBS_AGENT_CONTROL_INTERNAL"}), *descriptor,
       approval_policy, approval_action);
   Require(approval_required.result_class ==
               agents::AgentActionResultClass::approval_required &&
@@ -570,7 +571,7 @@ void TestArhc081CrashRestartAndRaceCoverage() {
               approval_required.detail);
   approval_action.manual_approval_present = true;
   const auto approval_accepted = agents::EvaluateAgentAction(
-      Context({"OBS_AGENT_STATE_READ", "OBS_AGENT_CONTROL"}), *descriptor,
+      Context({"OBS_AGENT_STATE_READ", "OBS_AGENT_CONTROL_INTERNAL"}), *descriptor,
       approval_policy, approval_action);
   Require(approval_accepted.result_class == agents::AgentActionResultClass::accepted,
           "ARHC-081 manual approval did not produce deterministic accepted state");

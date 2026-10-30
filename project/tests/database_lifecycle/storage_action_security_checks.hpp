@@ -103,13 +103,20 @@ inline void Run() {
       r.target_object_kind=target==fixture.database_uuid?"database":"filespace";r.privilege=right;r.grant_effect=effect;
       Require(api::EngineSecurityGrantPrivilege(r).ok,"publish actual storage grant");return r;
     };
-    auto control=grant("OBS_AGENT_CONTROL",fixture.database_uuid);
+    // Preallocation takes OBS_AGENT_CONTROL_INTERNAL, the accepted section 4c
+    // right for preallocate_page_family (SB_AGENT_SELF_ACTION_RIGHTS).
+    auto control=grant("OBS_AGENT_CONTROL_INTERNAL",fixture.database_uuid);
     // Even supplying the actual uncommitted transaction cannot expose its grant.
     auto uncommitted=current;uncommitted.transaction_uuid=control.context.transaction_uuid;
     uncommitted.local_transaction_id=control.context.local_transaction_id;
     denied(acquire(uncommitted,K::preallocation),E::permission_denied);
     Finish(control.context,true);denied(acquire(current),E::stale_context);current=fresh();
     {auto allowed=acquire(current,K::preallocation);Require(allowed.ok(),"committed control permits preallocation security");}
+    denied(acquire(current),E::permission_denied);
+    // Growth still names OBS_AGENT_CONTROL (owner decision pending); the
+    // internal right alone must not authorize it.
+    auto agent_control=grant("OBS_AGENT_CONTROL",fixture.database_uuid);
+    Finish(agent_control.context,true);current=fresh();
     denied(acquire(current),E::permission_denied);
     auto lifecycle=grant("FILESPACE_LIFECYCLE_CONTROL",fixture.filespace_uuid);Finish(lifecycle.context,true);current=fresh();
     denied(acquire(current),E::permission_denied);
@@ -168,13 +175,15 @@ inline void Run() {
     Require(bytes()==before,"source failure leaves all other bytes unchanged");
     {auto allowed=acquire(current);Require(allowed.ok(),"no stale failure or success cache after source repair");}
     // Actual denial, rollback and revocation, not modified materialized fixtures.
-    auto deny=grant("OBS_AGENT_CONTROL",fixture.database_uuid,"deny");
+    // Growth now rests on the filespace lifecycle right (owner, 2026-10-30), so
+    // the deny and revocation are of that right on this filespace.
+    auto deny=grant("FILESPACE_LIFECYCLE_CONTROL",fixture.filespace_uuid,"deny");
     {auto allowed=acquire(current);Require(allowed.ok(),"uncommitted deny cannot change committed authority");}
     Finish(deny.context,false);current=fresh();{auto allowed=acquire(current);Require(allowed.ok(),"rolled-back deny preserves allow");}
-    deny=grant("OBS_AGENT_CONTROL",fixture.database_uuid,"deny");Finish(deny.context,true);
+    deny=grant("FILESPACE_LIFECYCLE_CONTROL",fixture.filespace_uuid,"deny");Finish(deny.context,true);
     denied(acquire(current),E::stale_context);current=fresh();denied(acquire(current),E::permission_denied);
     api::EngineSecurityRevokePrivilegeRequest revoke;revoke.context=Begin(admin);revoke.grantee_uuid=fixture.principal_uuid;
-    revoke.target_object_uuid=fixture.database_uuid;revoke.privilege="OBS_AGENT_CONTROL";
+    revoke.target_object_uuid=fixture.filespace_uuid;revoke.privilege="FILESPACE_LIFECYCLE_CONTROL";
     Require(api::EngineSecurityRevokePrivilege(revoke).ok,"actual control revocation");Finish(revoke.context,true);
     current=fresh();denied(acquire(current),E::permission_denied);
   }

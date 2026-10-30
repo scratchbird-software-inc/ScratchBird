@@ -404,6 +404,33 @@ IoResult SyncFileDeviceWithPolicy(FileDevice* device,
                                   const DiskDevicePolicy& policy);
 IoResult SyncFilesystemPath(const std::string& path, bool writable);
 IoResult SyncParentDirectoryPath(const std::string& path);
+
+// SEARCH_KEY: SB_WINDOWS_OWNER_LOCK_FILE_RETAINED -- POSIX only. Windows still
+// keeps the owner lock files on close; the Windows team owns that path.
+#ifndef _WIN32
+// SEARCH_KEY: SB_OWNER_LOCK_FILE_REMOVED_ON_CLOSE
+// Owner direction 2026-10-30: the `<database>.sb.owner.lock` file is removed
+// when its owner closes. Removal is safe only if EVERY opener of that path uses
+// this pair, because an opener can hold a descriptor on a file that has since
+// been unlinked:
+//  - acquire locks the file, then requires that the path still names the
+//    locked inode; otherwise it releases it and retries;
+//  - release unlinks the path while still holding the lock, and only if the
+//    path still names the held inode, then closes.
+// A crash still leaves the file behind. That is harmless: the next owner
+// locks and reuses it, and removes it on its own close.
+struct OwnerLockFileAcquireResult {
+  int fd = -1;
+  bool held_by_other = false;
+  int error = 0;
+  bool ok() const noexcept { return fd >= 0; }
+};
+OwnerLockFileAcquireResult AcquireRemovableOwnerLockFile(const std::string& path,
+                                                         int extra_open_flags);
+// Unlinks `path` if it still names `fd`'s inode, then closes `fd`. Close-only:
+// it does not LOCK_UN, so a forked copy of the description is not unlocked.
+void ReleaseRemovableOwnerLockFile(int fd, const std::string& path) noexcept;
+#endif
 DiskPageHeaderResult ReadDevicePageHeader(FileDevice* device,
                                           u32 page_size,
                                           u64 page_number,

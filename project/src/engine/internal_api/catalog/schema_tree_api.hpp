@@ -37,6 +37,19 @@ struct EngineListCatalogChildrenRequest : EngineApiRequest {};
 struct EngineListCatalogChildrenResult : EngineApiResult {};
 EngineListCatalogChildrenResult EngineListCatalogChildren(const EngineListCatalogChildrenRequest& request);
 
+// SEARCH_KEY: SB_CREATE_REGISTERS_ALL_OBJECT_NAMES. Every non-schema object
+// name create wrote into the catalog (localized_name rows), with the object's
+// class and scope. Schemas are read through the schema tree.
+struct BootstrapNamedObject {
+  EngineUuid object_uuid;
+  std::string object_class;
+  EngineUuid scope_uuid;
+  std::string language_tag;
+  std::string name;
+};
+std::vector<BootstrapNamedObject> BootstrapCatalogNamedObjects(const EngineRequestContext& context,
+                                                               EngineApiDiagnostic& diagnostic);
+
 std::vector<EngineSchemaTreeRecord> VisibleSchemaTreeRecords(const EngineRequestContext& context,
                                                              std::uint64_t observer_tx,
                                                              EngineApiDiagnostic& diagnostic);

@@ -670,7 +670,9 @@ std::string ValidateRuntimeDecision(const EngineAgentActionHookRequest& request,
   if (feature != scratchbird::core::agents::AgentFeatureAvailability::available) {
     return "agent_feature_unavailable:" + std::string(scratchbird::core::agents::AgentFeatureAvailabilityName(feature));
   }
-  const auto security = ValidateAgentSecurity(context, *descriptor, request.dry_run ? "inspect" : "control");
+  // SB_AGENT_SELF_ACTION_RIGHTS: an agent acting for itself is held to the
+  // section 4c rights, the same list L5 checks before starting it.
+  const auto security = ValidateAgentSecurity(context, *descriptor, request.dry_run ? "inspect" : "self_action");
   if (!security.ok) { return security.diagnostic_code + ":" + security.detail; }
   if (!request.dry_run) {
     if (!StrictObservedMetricSnapshotEvidencePresent(request)) {
@@ -1489,8 +1491,12 @@ EngineRequestFilespaceGrowthResult EngineRequestFilespaceGrowth(const EngineRequ
       EngineUuid target;
       bool filespace::FilespacePhysicalGrowthAuthorizationContext::* field;
     };
+    // SB_AGENT_SELF_ACTION_RIGHTS (owner, 2026-10-30): filespace_capacity_manager
+    // acts on its own operating right, FILESPACE_LIFECYCLE_CONTROL, not
+    // OBS_AGENT_CONTROL (which no agent holds). It establishes the agent
+    // authority the growth route records in obs_agent_control_right.
     const std::array required{
-        RequiredRight{"OBS_AGENT_CONTROL", request.context.database_uuid,
+        RequiredRight{"FILESPACE_LIFECYCLE_CONTROL", request.context.database_uuid,
             &filespace::FilespacePhysicalGrowthAuthorizationContext::obs_agent_control_right},
         RequiredRight{"FILESPACE_LIFECYCLE_CONTROL", request.target_filespace.uuid,
             &filespace::FilespacePhysicalGrowthAuthorizationContext::filespace_lifecycle_right},

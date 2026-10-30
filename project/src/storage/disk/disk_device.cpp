@@ -26,6 +26,7 @@
 #include <memory>
 #include <mutex>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -930,6 +931,9 @@ RouteOwnerProbeResult ProbeRouteOwnerLock(const std::string& path,
   }
   const int fd = ::open(route_lock_path.c_str(), O_RDWR | FileOpenCloexecFlag());
   if (fd < 0) {
+    // The owner removed it on close after the existence check above
+    // (SB_OWNER_LOCK_FILE_REMOVED_ON_CLOSE): nobody holds it.
+    if (errno == ENOENT) return RouteOwnerProbeResult::kAvailable;
     if (detail != nullptr) {
       *detail = route_lock_path + ":" + std::strerror(errno);
     }
@@ -1183,6 +1187,12 @@ RouteSourceDrainWaitObservation RouteSourceDrainWait::Wait() noexcept {
   return out;
 }
 
+#ifndef _WIN32
+namespace {
+void UnlinkOwnerLockPathIfHeld(int fd, const std::string& path) noexcept;
+}  // namespace
+#endif
+
 RouteOwnershipLease::~RouteOwnershipLease() {
   // fork inherits the condition's waiter bits, not the threads which clear
   // them. Do not destroy or inspect that inherited synchronization object.
@@ -1201,6 +1211,19 @@ RouteOwnershipLease::~RouteOwnershipLease() {
 #else
   // Close, never LOCK_UN: a fork may share these open-file descriptions.
   // The last process-local reader pin retains both native handles.
+  // SEARCH_KEY: SB_OWNER_LOCK_FILE_REMOVED_ON_CLOSE -- this is the final
+  // release of server ownership, so the owning process removes both lock
+  // files while still holding them. An inherited copy removes nothing.
+  if (owner_pid_ == OwnershipProcessId()) {
+    static constexpr std::string_view kRouteSuffix = ".sb.route.owner.lock";
+    if (route_path_.size() > kRouteSuffix.size() &&
+        std::string_view(route_path_).substr(route_path_.size() - kRouteSuffix.size()) ==
+            kRouteSuffix) {
+      UnlinkOwnerLockPathIfHeld(storage_handle_,
+          route_path_.substr(0, route_path_.size() - kRouteSuffix.size()) + ".sb.owner.lock");
+      UnlinkOwnerLockPathIfHeld(handle_, route_path_);
+    }
+  }
   if (handle_ >= 0) (void)::close(handle_);
   if (storage_handle_ >= 0) (void)::close(storage_handle_);
   if (data_fd_ >= 0) (void)::close(data_fd_);
@@ -1752,6 +1775,9 @@ FileDevice::~FileDevice() {
   if (open_process_id_ && open_process_id_ != OwnershipProcessId())
     (void)route_owner_storage_guard_.release();
 #ifdef _WIN32
+  // SEARCH_KEY: SB_WINDOWS_OWNER_LOCK_FILE_RETAINED. Windows still keeps the
+  // owner lock file on close; only POSIX removes it (SB_OWNER_LOCK_FILE_REMOVED_ON_CLOSE).
+  // Owner direction 2026-10-30: the Windows team owns the Windows equivalent.
   if (file_handle_ != nullptr) {
     ::CloseHandle(static_cast<HANDLE>(file_handle_));
     file_handle_ = nullptr;
@@ -1767,12 +1793,21 @@ FileDevice::~FileDevice() {
   }
   if (owner_lock_fd_ >= 0) {
     // close-only: fork/dup can retain the same locked open-file description.
-    (void)::close(owner_lock_fd_);
+    // Only the process that acquired the lock removes its file; an inherited
+    // copy must not unlink the parent's live lock.
+    if (open_process_id_ == OwnershipProcessId())
+      ReleaseRemovableOwnerLockFile(owner_lock_fd_, owner_lock_path_);
+    else
+      (void)::close(owner_lock_fd_);
     owner_lock_fd_ = -1;
   }
 #endif
-  // Retain the lock file: a contender may already have its inode open.
-  // Unlinking after release would let later opens lock a different inode.
+  // SEARCH_KEY: SB_OWNER_LOCK_FILE_REMOVED_ON_CLOSE
+  // This used to retain the lock file, because a contender may already hold
+  // the old inode open and unlinking would let later opens lock a different
+  // inode. Owner direction 2026-10-30 is to remove it on close; that is safe
+  // because every opener now verifies, after locking, that the path still
+  // names the inode it locked (AcquireRemovableOwnerLockFile).
 }
 
 u64 FileDevice::SourceOwnershipProcessId() noexcept { return OwnershipProcessId(); }
@@ -1876,32 +1911,30 @@ IoResult FileDevice::Open(std::string path, FileOpenMode mode) {
 #else
   int prospective_owner_lock_fd = -1;
   if (!route_owned_by_current_process) {
-    prospective_owner_lock_fd =
-        ::open(prospective_owner_lock_path.c_str(),
-               O_RDWR | O_CREAT |
-                   (read_only_open ? 0 : ForcedOrderedWriteOpenFlag()) |
-                   FileOpenCloexecFlag(),
-               0600);
-    if (prospective_owner_lock_fd < 0) {
-      return MakeIoError("SB-STORAGE-DISK-OWNER-LOCK-OPEN-FAILED",
-                         "storage.disk.owner_lock_open_failed",
-                         prospective_owner_lock_path + ":" + std::strerror(errno));
-    }
     // Every independent open requires exclusive process ownership, even when
     // data access is read-only. Owner-internal opens use the route guard above.
-    const int lock_mode = LOCK_EX | LOCK_NB;
-    if (::flock(prospective_owner_lock_fd, lock_mode) != 0) {
-      (void)::close(prospective_owner_lock_fd);
-      prospective_owner_lock_fd = -1;
-      return MakeIoError("SB-STORAGE-DISK-OWNER-LOCK-HELD",
-                         "storage.disk.owner_lock_held",
-                         prospective_owner_lock_path);
+    // SEARCH_KEY: SB_OWNER_LOCK_FILE_REMOVED_ON_CLOSE -- acquire through the
+    // shared protocol so removal on close cannot split ownership.
+    const auto acquired = AcquireRemovableOwnerLockFile(
+        prospective_owner_lock_path,
+        (read_only_open ? 0 : ForcedOrderedWriteOpenFlag()) | FileOpenCloexecFlag());
+    if (!acquired.ok()) {
+      if (acquired.held_by_other) {
+        return MakeIoError("SB-STORAGE-DISK-OWNER-LOCK-HELD",
+                           "storage.disk.owner_lock_held",
+                           prospective_owner_lock_path);
+      }
+      return MakeIoError("SB-STORAGE-DISK-OWNER-LOCK-OPEN-FAILED",
+                         "storage.disk.owner_lock_open_failed",
+                         prospective_owner_lock_path + ":" + std::strerror(acquired.error));
     }
+    prospective_owner_lock_fd = acquired.fd;
   }
   auto release_owner_lock = [&]() {
     if (prospective_owner_lock_fd >= 0) {
-      (void)::flock(prospective_owner_lock_fd, LOCK_UN);
-      (void)::close(prospective_owner_lock_fd);
+      // A failed open leaves no lock file behind either.
+      ReleaseRemovableOwnerLockFile(prospective_owner_lock_fd,
+                                    prospective_owner_lock_path);
       prospective_owner_lock_fd = -1;
     }
   };
@@ -2151,6 +2184,9 @@ IoResult FileDevice::Close() {
     }
   }
 #ifdef _WIN32
+  // SEARCH_KEY: SB_WINDOWS_OWNER_LOCK_FILE_RETAINED. Windows still keeps the
+  // owner lock file on close; only POSIX removes it (SB_OWNER_LOCK_FILE_REMOVED_ON_CLOSE).
+  // Owner direction 2026-10-30: the Windows team owns the Windows equivalent.
   std::string close_detail;
   if (!CloseDataFileHandle(file_handle_, &close_detail)) {
     return MakeIoError("SB-STORAGE-DISK-CLOSE-FAILED",
@@ -2172,12 +2208,18 @@ IoResult FileDevice::Close() {
   file_fd_ = -1;
   if (owner_lock_fd_ >= 0) {
     // Release our handle, not another retained description's ownership.
-    (void)::close(owner_lock_fd_);
+    // SEARCH_KEY: SB_OWNER_LOCK_FILE_REMOVED_ON_CLOSE -- the acquiring
+    // process removes the file while still holding the lock, then closes.
+    if (open_process_id_ == OwnershipProcessId())
+      ReleaseRemovableOwnerLockFile(owner_lock_fd_, owner_lock_path_);
+    else
+      (void)::close(owner_lock_fd_);
     owner_lock_fd_ = -1;
   }
 #endif
-  // Keep the stable lock inode across orderly close, just as after a crash.
-  // Lock ownership is represented by the OS lock, not file existence.
+  // Lock ownership is represented by the OS lock, not file existence. Orderly
+  // close removes the file (owner direction 2026-10-30); a crash leaves it, and
+  // the next owner reuses and then removes it.
   path_.clear();
   owner_lock_path_.clear();
   read_only_ = false;
@@ -2234,6 +2276,9 @@ FileDevice::NativeWriterDeviceClose FileDevice::CloseNativeWriterWithoutSync() {
     all_retired=file_handle_==nullptr&&owner_lock_handle_==nullptr;
 #else
     out.data=close(file_fd_);
+    // SB_OWNER_LOCK_FILE_REMOVED_ON_CLOSE: unlink while still holding it.
+    if(file_fd_<0&&open_process_id_==OwnershipProcessId())
+      UnlinkOwnerLockPathIfHeld(owner_lock_fd_,owner_lock_path_);
     if(file_fd_<0)out.ownership=close(owner_lock_fd_);
     else if(owner_lock_fd_>=0)out.ownership.disposition=NativeWriterCloseDisposition::retained;
     all_retired=file_fd_<0&&owner_lock_fd_<0;
@@ -2889,6 +2934,67 @@ IoResult SyncParentDirectoryPath(const std::string& path) {
                            path,
                            detail);
 }
+
+#ifndef _WIN32
+// SEARCH_KEY: SB_OWNER_LOCK_FILE_REMOVED_ON_CLOSE
+OwnerLockFileAcquireResult AcquireRemovableOwnerLockFile(const std::string& path,
+                                                         int extra_open_flags) {
+  OwnerLockFileAcquireResult result;
+  // Each retry means a previous owner removed the file between our open and
+  // our lock. That cannot repeat indefinitely without a live owner churning
+  // the path, so the bound only stops a pathological loop.
+  for (int attempt = 0; attempt < 64; ++attempt) {
+    const int fd = ::open(path.c_str(), O_RDWR | O_CREAT | extra_open_flags, 0600);
+    if (fd < 0) {
+      result.error = errno;
+      return result;
+    }
+    if (::flock(fd, LOCK_EX | LOCK_NB) != 0) {
+      const int error = errno;
+      (void)::close(fd);
+      result.held_by_other = error == EWOULDBLOCK || error == EAGAIN;
+      result.error = error;
+      return result;
+    }
+    struct stat held{};
+    struct stat named{};
+    if (::fstat(fd, &held) != 0) {
+      result.error = errno;
+      (void)::close(fd);
+      return result;
+    }
+    if (::stat(path.c_str(), &named) == 0 && named.st_dev == held.st_dev &&
+        named.st_ino == held.st_ino) {
+      result.fd = fd;
+      return result;
+    }
+    // The inode we locked was unlinked by its previous owner: it no longer
+    // excludes anyone. Drop it and lock whatever the path names now.
+    (void)::close(fd);
+  }
+  result.error = EAGAIN;
+  return result;
+}
+
+namespace {
+// Unlink only while `fd` still holds the inode the path names.
+void UnlinkOwnerLockPathIfHeld(int fd, const std::string& path) noexcept {
+  if (fd < 0 || path.empty()) return;
+  struct stat held{};
+  struct stat named{};
+  if (::fstat(fd, &held) == 0 && ::stat(path.c_str(), &named) == 0 &&
+      named.st_dev == held.st_dev && named.st_ino == held.st_ino) {
+    (void)::unlink(path.c_str());
+  }
+}
+}  // namespace
+
+void ReleaseRemovableOwnerLockFile(int fd, const std::string& path) noexcept {
+  if (fd < 0) return;
+  UnlinkOwnerLockPathIfHeld(fd, path);
+  (void)::close(fd);
+}
+#endif
 
 DiskPageHeaderResult ReadDevicePageHeader(FileDevice* device,
                                           u32 page_size,
