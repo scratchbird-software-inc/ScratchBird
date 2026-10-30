@@ -7701,8 +7701,11 @@ PolicySeedPackDescriptor DefaultPolicyPackDescriptor() {
   // Updated 2026-10-23 when policies/agent_authority.json joined the pack,
   // taking content_manifest from nine entries to ten.
   // Previous: 4aeaf3bbda57d933f94a083ad792287e13cddfae88a0c7a02ee5e39b802a26f5
+  // Updated 2026-10-29 when ARCHIVE_CONTROL was granted to archive_manager
+  // and cleanup_archive_manager in policies/agent_authority.json.
+  // Previous: bf7ca367edbf43b2b0d55fdf72db82e2bf5d9fad11fb3b168b09cf99be4d3b42
   descriptor.content_sha256 =
-      "bf7ca367edbf43b2b0d55fdf72db82e2bf5d9fad11fb3b168b09cf99be4d3b42";
+      "9986ce1990b5ab56667525bb6d5acd78349edc89e04c9fb0a7c31b45ae2f70c6";
   descriptor.create_time_only = true;
   descriptor.post_create_filesystem_authority = false;
   descriptor.local_password_only = true;

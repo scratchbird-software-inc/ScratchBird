@@ -197,7 +197,11 @@ IndexAuthorizationPolicy AuthorizationPolicyFor(std::string_view operation_id) {
       operation_id == "index.rebuild" ||
       operation_id == "index.discard_unpublished" ||
       operation_id == "index.rebalance") {
-    return {{"OBS_MANAGEMENT_CONTROL"}, "index_management_control", true};
+    // INDEX_MAINTENANCE_CONTROL is the narrow right (owner direction
+    // 2026-10-29); OBS_MANAGEMENT_CONTROL remains accepted beside it.
+    return {{"INDEX_MAINTENANCE_CONTROL", "OBS_MANAGEMENT_CONTROL"},
+            "index_management_control",
+            true};
   }
   if (operation_id == "index.optimization_control" ||
       operation_id == "index.set_optimization_flag" ||

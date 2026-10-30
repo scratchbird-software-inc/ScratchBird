@@ -224,7 +224,13 @@ const std::set<std::string>& KnownRights() {
       // narrow rights, replacing OBS_MANAGEMENT_CONTROL at the manager
       // (manager_control.cpp). OBS_MANAGEMENT_CONTROL also creates, opens and
       // stops databases, which an agent that drains a listener must not hold.
-      "OBS_LISTENER_CONTROL", "OBS_PARSER_CONTROL"};
+      "OBS_LISTENER_CONTROL", "OBS_PARSER_CONTROL",
+      // Owner direction 2026-10-29 (appendix-agent-security-roles.md §4c).
+      // INDEX_MAINTENANCE_CONTROL: index rebuild/repair/rebalance without the
+      // database-management breadth of OBS_MANAGEMENT_CONTROL. ARCHIVE_CONTROL:
+      // archive slice seal and verify. ARCHIVE_EXPIRY_REMOVE is split from it
+      // because removal is destructive; no operation enforces it yet.
+      "INDEX_MAINTENANCE_CONTROL", "ARCHIVE_CONTROL", "ARCHIVE_EXPIRY_REMOVE"};
   return rights;
 }
 

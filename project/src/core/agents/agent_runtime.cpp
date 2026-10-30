@@ -2174,7 +2174,14 @@ std::vector<AgentSecurityGrantRequirement> RequiredAgentSecurityRightsForActionC
   const bool internal_alert_or_override =
       contract.permission.find("internal alert authority or OBS_AGENT_OVERRIDE") !=
       std::string::npos;
+  // Archive slice seal and verify take ARCHIVE_CONTROL in place of the
+  // OBS_AGENT_CONTROL the action matrix names (owner direction 2026-10-29,
+  // SB_DRIFT_AGENT_PERMISSIONS_REPLACED_BY_ROLES).
+  const bool archive_control = contract.action_id == "seal_archive_slice" ||
+                               contract.action_id == "request_verify_slice" ||
+                               contract.action_id == "request_archive_verify";
   for (const auto& token : tokens) {
+    if (archive_control && token == "OBS_AGENT_CONTROL") continue;
     int token_alternative_group = 0;
     if (internal_permission && token == "OBS_AGENT_CONTROL") {
       token_alternative_group = 1;
@@ -2212,6 +2219,9 @@ std::vector<AgentSecurityGrantRequirement> RequiredAgentSecurityRightsForActionC
     // is a separate decision, not a rename.
     requirements.push_back(NamedReq("JOB_EXECUTE", 1));
     requirements.push_back(NamedReq("OBS_JOB_ADMIN", 1));
+  }
+  if (archive_control) {
+    requirements.push_back(NamedReq("ARCHIVE_CONTROL"));
   }
   if (contract.permission.find("backup control right") != std::string::npos) {
     requirements.push_back(NamedReq("BACKUP_CONTROL"));

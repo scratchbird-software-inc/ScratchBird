@@ -215,6 +215,7 @@
       "runtime_layer": "l3_dispatcher",
       "rights": [
         "CONNECT",
+        "ARCHIVE_CONTROL",
         "OBS_AGENT_CONTROL",
         "OBS_METRICS_READ_DATABASE"
       ],
@@ -349,6 +350,7 @@
       "runtime_layer": "l3_dispatcher",
       "rights": [
         "CONNECT",
+        "ARCHIVE_CONTROL",
         "OBS_AGENT_CONTROL",
         "OBS_AGENT_ACTION_APPROVE",
         "EXTERNAL_RANGE_MATERIALIZATION_ADMIN",
