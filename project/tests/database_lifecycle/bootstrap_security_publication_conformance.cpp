@@ -912,6 +912,21 @@ void TestNativeSecurityGenerationRepair(Cleanup* cleanup) {
       auto security = catalog::DecodeCatalogSecurityRecord(outer.record.header.kind, outer.record.payload);
       Require(security.ok(), "generation fixture native decode failed");
       if (!security.record->attributes.contains("security_context_authority_version")) continue;
+      // Select the three bootstrap owners by the rule repair uses, not by the
+      // attribute: create-provisioned agent principals also carry it, because
+      // a session bound to a service principal requires it.
+      const auto sysarch = uuid::ParseTypedUuid(UuidKind::object, db::kCanonicalSysarchRoleObjectUuid);
+      Require(sysarch.ok(), "generation fixture SYSARCH UUID did not parse");
+      const auto kind = outer.record.header.kind;
+      const bool owner =
+          (kind == catalog::CatalogRecordKind::role_account &&
+           security.record->Identity("role_uuid") == sysarch.value.value) ||
+          (kind == catalog::CatalogRecordKind::user_account &&
+           security.record->Boolean("bootstrap_principal") == true) ||
+          (kind == catalog::CatalogRecordKind::grant_record &&
+           security.record->Attribute("grant_class") == std::string_view("role_membership") &&
+           security.record->Identity("role_uuid") == sysarch.value.value);
+      if (!owner) continue;
       security.record->attributes.erase("security_context_authority_version");
       security.record->attributes.erase("security_context_generation");
       const auto encoded = catalog::EncodeCatalogSecurityRecord(*security.record);
@@ -1085,8 +1100,9 @@ void TestAgentAuthorityProvisionedFromPolicyPack(Cleanup* cleanup) {
                                        "OBS_METRICS_READ_NODE"};
   const std::filesystem::path path = TestPath("agent_authority_from_policy_pack");
   cleanup->paths.push_back(path);
+  // Create provisions every non-cluster agent type itself (D18): the caller
+  // names none, and naming one is refused (checked at the end of this test).
   auto config = MakeConfig(path);
-  config.internal_principals.push_back({"memory_governor", kCredentialFingerprint});
   const auto created = db::CreateDatabaseFile(config);
   if (!created.ok()) std::cerr << created.diagnostic.diagnostic_code << '\n';
   Require(created.ok(), "agent principal create failed");
@@ -1108,6 +1124,10 @@ void TestAgentAuthorityProvisionedFromPolicyPack(Cleanup* cleanup) {
         security.record->Attribute("principal_name") == std::string_view("memory_governor")) {
       agent_account_committed = true;
       agent_principal_uuid = outer.record.header.object_uuid.value;
+      // An agent is a thread the database starts, not an opener: no password
+      // verifier, so password authentication cannot select it.
+      Require(!security.record->Attribute("credential_fingerprint").has_value(),
+              "a create-provisioned agent principal carries a password verifier");
     }
   }
   Require(agent_account_committed,
@@ -1195,6 +1215,49 @@ void TestAgentAuthorityProvisionedFromPolicyPack(Cleanup* cleanup) {
             "the security catalog reader refused the agent role membership");
     Require(db::OpenDatabaseFile(open).ok(),
             "a database with an agent role membership did not reopen");
+  }
+
+  // Every non-cluster agent type is provisioned, each a member of exactly one
+  // role, none with a password verifier.
+  {
+    std::map<scratchbird::core::platform::Uuid, std::string> agent_principals;
+    std::map<scratchbird::core::platform::Uuid, unsigned> memberships;
+    for (const auto& row : ReadCatalogRows(path, created.state.header.page_size)) {
+      if (row.kind != page::CatalogPageRowKind::typed_catalog_record) continue;
+      const auto outer = catalog::DecodeCatalogTypedRecord(row);
+      Require(outer.ok(), "agent census row decode failed");
+      if (!catalog::IsCatalogSecurityRecordKind(outer.record.header.kind)) continue;
+      const auto security = catalog::DecodeCatalogSecurityRecord(outer.record.header.kind,
+                                                                 outer.record.payload);
+      Require(security.ok(), "agent census security record decode failed");
+      if (outer.record.header.kind == catalog::CatalogRecordKind::user_account &&
+          security.record->Attribute("kind") == std::string_view("service") &&
+          !security.record->Attribute("credential_fingerprint").has_value()) {
+        agent_principals.emplace(outer.record.header.object_uuid.value,
+                                 std::string(*security.record->Attribute("principal_name")));
+      }
+      if (outer.record.header.kind == catalog::CatalogRecordKind::grant_record &&
+          security.record->Attribute("grant_class") == std::string_view("role_membership") &&
+          security.record->Attribute("member_kind") == std::string_view("principal")) {
+        ++memberships[security.record->Identity("member_uuid")];
+      }
+    }
+    Require(agent_principals.size() == 160,
+            "create did not provision exactly the 160 declared non-cluster agent types");
+    for (const auto& [uuid, name] : agent_principals) {
+      Require(memberships[uuid] == 1, "an agent principal is not a member of exactly one role");
+    }
+  }
+
+  // A caller naming a non-cluster agent type is refused: create is the only
+  // origin of agent principals.
+  {
+    const std::filesystem::path named = TestPath("agent_authority_caller_named_agent");
+    cleanup->paths.push_back(named);
+    auto named_config = MakeConfig(named);
+    named_config.internal_principals.push_back({"memory_governor", kCredentialFingerprint});
+    const auto refused = db::CreateDatabaseFile(named_config);
+    Require(!refused.ok(), "a caller-named agent principal was accepted");
   }
 
   // A principal that is NOT a declared agent type must keep the previous

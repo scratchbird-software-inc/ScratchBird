@@ -3358,6 +3358,23 @@ scratchbird::core::catalog::CatalogSecurityRecord NativeAgentRoleMembershipDefin
   return record;
 }
 
+// The principal row for a create-provisioned AGENT type (owner direction
+// 2026-10-29, appendix-agent-security-roles.md D18 option 3). An agent is a
+// thread the database starts, not an opener: it carries no password verifier,
+// so password authentication refuses it (durable_credential_fingerprint_required)
+// and the only way to act as it is L5 binding a session to this principal UUID.
+scratchbird::core::catalog::CatalogSecurityRecord NativeAgentPrincipalDefinition(
+    const Uuid& principal,std::string_view agent_type_id,std::string_view authority_class,
+    const TypedUuid& origin,u64 policy_generation) {
+  auto record=NativeBootstrapDefinition(CatalogRecordKind::user_account,principal,origin,policy_generation);
+  record.attributes["create_time_only"]=false;
+  record.attributes.emplace("principal_name",std::string(agent_type_id));
+  record.attributes.emplace("kind","service");record.attributes.emplace("principal_kind","service");
+  record.attributes.emplace("security_generation",u64{1});record.attributes.emplace("bootstrap_principal",false);
+  if(!authority_class.empty())record.attributes.emplace("authority_class",std::string(authority_class));
+  return record;
+}
+
 // Single derivation of the internal service identity.
 //
 // Step 1 of wiring the creation-workspace chain needs these identities in two
@@ -3620,6 +3637,18 @@ CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
       if (spec.principal_name.empty()) {
         continue;
       }
+      // Create provisions every non-cluster agent type itself, with no
+      // caller credential (D18). A caller naming one is refused rather than
+      // silently giving that agent a second origin for its credential.
+      for (const auto& agent_type : policy_seed_pack.agent_types) {
+        if (agent_type.agent_type_id == spec.principal_name) {
+          return CatalogRowsBuildError(DatabaseLifecycleErrorStatus(),
+              MakeDatabaseLifecycleDiagnostic(DatabaseLifecycleErrorStatus(),
+                "CATALOG.INVALID_INPUT",
+                "catalog.security_record.agent_principal_caller_supplied_refused",
+                {},spec.principal_name));
+        }
+      }
       if (!IsSafeBootstrapPrincipalName(spec.principal_name) ||
           spec.credential_fingerprint.empty() ||
           spec.credential_fingerprint.size() > 256 ||
@@ -3713,45 +3742,79 @@ CatalogRowsBuildResult MaterializeBootstrapSecurityRows(
         }
         agent_grant_seed += 2;
       }
-      // Task-group role membership. The pack loader guarantees every
-      // non-cluster agent with declared authority has a type entry, so a
-      // missing one here is a cluster agent, which has no task-group role.
-      const PolicyAgentTypeSeed* agent_type = nullptr;
-      for (const auto& candidate : policy_seed_pack.agent_types) {
-        if (candidate.agent_type_id == spec.principal_name) {
-          agent_type = &candidate;
-          break;
-        }
-      }
-      if (agent_type == nullptr && agent_authority->deployment != "cluster") {
-        return CatalogRowsBuildError(DatabaseLifecycleErrorStatus(),
-            MakeDatabaseLifecycleDiagnostic(DatabaseLifecycleErrorStatus(),
-              "CATALOG.INVALID_INPUT",
-              "catalog.security_record.agent_task_group_role_required",
-              {},spec.principal_name));
-      }
-      if (agent_type != nullptr) {
-        const auto membership_identity =
-            GenerateEngineIdentityV7(UuidKind::object, agent_grant_seed);
-        if (!membership_identity.ok()) {
-          return CatalogRowsBuildError(membership_identity.status,
-                                       membership_identity.diagnostic);
-        }
-        auto membership_record = NativeAgentRoleMembershipDefinition(
-            membership_identity.value.value, ids[0].value, agent_type->role_uuid,
-            creator_transaction_uuid, policy_generation);
-        typed = AddSecurityCatalogRecord(rows, ordinal, agent_grant_seed,
-            std::move(membership_record), security_parent_uuid,
-            creator_transaction_uuid);
-        if (!typed.ok()) {
-          return typed;
-        }
-        agent_grant_seed += 2;
-      }
+      // Only cluster agents reach here: non-cluster agent types were refused
+      // above and are provisioned by create below, with their role membership.
       result.internal_principal_uuids.push_back(ids[0]);
       // Advance past every identity this principal consumed, so the next
       // principal's seeds cannot overlap and produce a duplicate identity.
       extra_seed = agent_grant_seed + 2;
+    }
+
+    // Every non-cluster agent type declared by the configuration policy files
+    // is provisioned here: a principal with no password credential, its
+    // declared per-agent grants, and its task-group role membership.
+    for (const auto& agent_type : policy_seed_pack.agent_types) {
+      const PolicyAgentAuthoritySeed* agent_authority = nullptr;
+      for (const auto& candidate : policy_seed_pack.agent_authority) {
+        if (candidate.agent_type_id == agent_type.agent_type_id) {
+          agent_authority = &candidate;
+          break;
+        }
+      }
+      const auto principal =
+          GenerateEngineIdentityV7(UuidKind::principal, extra_seed);
+      if (!principal.ok()) {
+        return CatalogRowsBuildError(principal.status, principal.diagnostic);
+      }
+      auto principal_record = NativeAgentPrincipalDefinition(
+          principal.value.value, agent_type.agent_type_id,
+          agent_authority == nullptr ? std::string_view{}
+                                     : std::string_view(agent_authority->authority_class),
+          creator_transaction_uuid, policy_generation);
+      typed = AddSecurityCatalogRecord(rows, ordinal, extra_seed + 20,
+          std::move(principal_record), security_parent_uuid,
+          creator_transaction_uuid);
+      if (!typed.ok()) {
+        return typed;
+      }
+      u64 agent_seed = extra_seed + 22;
+      if (agent_authority != nullptr) {
+        for (const auto& right : agent_authority->rights) {
+          const auto grant_identity =
+              GenerateEngineIdentityV7(UuidKind::object, agent_seed);
+          if (!grant_identity.ok()) {
+            return CatalogRowsBuildError(grant_identity.status,
+                                         grant_identity.diagnostic);
+          }
+          auto grant_record = NativeAgentPrincipalGrantDefinition(
+              principal.value.value, grant_identity.value.value, right,
+              creator_transaction_uuid, policy_generation);
+          typed = AddSecurityCatalogRecord(rows, ordinal, agent_seed,
+              std::move(grant_record), security_parent_uuid,
+              creator_transaction_uuid);
+          if (!typed.ok()) {
+            return typed;
+          }
+          agent_seed += 2;
+        }
+      }
+      const auto membership_identity =
+          GenerateEngineIdentityV7(UuidKind::object, agent_seed);
+      if (!membership_identity.ok()) {
+        return CatalogRowsBuildError(membership_identity.status,
+                                     membership_identity.diagnostic);
+      }
+      auto membership_record = NativeAgentRoleMembershipDefinition(
+          membership_identity.value.value, principal.value.value,
+          agent_type.role_uuid, creator_transaction_uuid, policy_generation);
+      typed = AddSecurityCatalogRecord(rows, ordinal, agent_seed,
+          std::move(membership_record), security_parent_uuid,
+          creator_transaction_uuid);
+      if (!typed.ok()) {
+        return typed;
+      }
+      result.internal_principal_uuids.push_back(principal.value);
+      extra_seed = agent_seed + 4;
     }
   }
   return result;

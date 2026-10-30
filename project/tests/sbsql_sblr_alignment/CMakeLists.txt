@@ -3807,7 +3807,9 @@ add_test(NAME sbsql_sblr_alignment_native_local_service_enrollment
   COMMAND sbsql_sblr_alignment_native_local_service_enrollment)
 set_tests_properties(sbsql_sblr_alignment_native_local_service_enrollment PROPERTIES
   LABELS "sbsql_sblr_alignment;native_storage;native_service_enrollment;protected_memory;selected_catalog_discovery;component_not_live_admission"
-  TIMEOUT 300)
+  # 900: the default pack's catalog grew from 64 to 306 definitions with the
+  # agent task-group roles (2026-10-29); a full run measured 350-470 s.
+  TIMEOUT 900)
 add_executable(sbsql_sblr_alignment_native_runtime_authorization_projection
   native_runtime_authorization_projection_test.cpp)
 target_compile_features(sbsql_sblr_alignment_native_runtime_authorization_projection PRIVATE cxx_std_23)
