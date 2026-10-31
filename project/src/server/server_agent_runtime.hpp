@@ -24,11 +24,14 @@
 #include <exception>
 #include <map>
 #include <mutex>
+#include <memory>
 #include <string>
 #include <thread>
 #include <vector>
 
 namespace scratchbird::server {
+
+struct ServerAgentAuthoritySource;
 
 enum class ServerAgentActionOutcome {
   kNone,
@@ -287,6 +290,9 @@ class ServerAgentRuntime {
   // modes. Absent means the database committed no internal authority, and the
   // engine must still refuse BEGIN; the coordinator does not synthesize one.
   InternalStartupSession internal_startup_session_;
+  // The committed security state loaded once at start (binding, start checks
+  // and L5's startup transactions). Held only while Start runs.
+  std::shared_ptr<const ServerAgentAuthoritySource> start_authority_;
   // One session per agent type, bound by L5 to that type's committed principal.
   //
   // SEARCH_KEY: SECURITY-AGENT-SESSION-BINDING

@@ -197,6 +197,28 @@ int main() {
       "sys.configuration","sys.management","sys.fn","sys.udr","sys.parser","sys.storage","sys.mga",
       "sys.audit","sys.compatibility","sys.information","sys.catalog_readable","sys.diagnostics",
       "cluster","users","users.public","emulated","remote","app","sys.information_schema","database"};
+    // Create also registers a name (no comment) for every other named object it
+    // makes (SB_CREATE_REGISTERS_ALL_OBJECT_NAMES). The bootstrap schema pairs
+    // are the named rows that carry a comment; they must still be exactly 25.
+    std::vector<RowFixture> object_names;
+    {
+      std::set<std::array<p::byte,16>> commented;
+      for(const auto& row:comments)commented.insert(row.record.header.parent_uuid.value.bytes);
+      std::vector<RowFixture> paired;
+      for(auto& row:names)(commented.contains(row.record.header.parent_uuid.value.bytes)?paired:object_names).push_back(row);
+      names=std::move(paired);
+    }
+    std::set<std::array<p::byte,16>> object_targets;
+    for(const auto& row:object_names) {
+      const auto d=c::DecodeCatalogLocalizedName(row.record.payload);Setup(d.ok(),"decode persisted object name");
+      const auto& n=*d.record;
+      Check(!expected_paths.contains(n.path),"object name reuses a bootstrap schema path");
+      const auto dot=n.path.rfind('.');const auto display=dot==std::string::npos?n.path:n.path.substr(dot+1);
+      c::CatalogLocalizedNameRecord expected{row.record.header.parent_uuid,"en",n.path,display,1,1};
+      Check(row.record.payload==Golden(expected),"persisted object name differs from complete oracle");
+      Check(object_targets.insert(row.record.header.parent_uuid.value.bytes).second,"duplicate object name target");
+    }
+    Check(!object_names.empty(),"create registered no object names");
     Check(names.size()==25&&comments.size()==25,"complete25 localized record pairs persisted");
     std::map<std::array<p::byte,16>,std::string> paths;
     std::set<std::string> seen;

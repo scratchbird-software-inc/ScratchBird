@@ -459,7 +459,16 @@ int RunProbe(const Args& args) {
   const auto setup_tx = Begin(base);
   auto setup_context = TxContext(base, setup_tx);
   const auto schema_result = CreateProbeSchema(setup_context);
-  if (!setup_tx.ok || !schema_result.ok) return 1;
+  if (!setup_tx.ok || !schema_result.ok) {
+    // Say why: a bare exit 1 left the failing stage invisible.
+    std::cerr << "transaction probe setup failed begin_ok=" << setup_tx.ok
+              << " schema_ok=" << schema_result.ok << '\n';
+    for (const auto& d : setup_tx.diagnostics)
+      std::cerr << "  begin " << d.code << ':' << d.message_key << ':' << d.detail << '\n';
+    for (const auto& d : schema_result.diagnostics)
+      std::cerr << "  schema " << d.code << ':' << d.message_key << ':' << d.detail << '\n';
+    return 1;
+  }
   base.current_schema_uuid = schema_result.primary_object.uuid;
   setup_context.current_schema_uuid = base.current_schema_uuid;
   const auto table_result = CreatePersonTable(setup_context);

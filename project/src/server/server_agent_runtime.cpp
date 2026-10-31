@@ -502,12 +502,16 @@ engine_api::EngineRequestContext ServerAgentRequestMetadata(
 // once per transaction. Freshness: a worker sees grants and revocations from
 // its next tick (owner to confirm; the storage action lease still re-reads
 // current authority itself).
+}  // namespace
+// Declared in the header so the runtime can hold the start-time load for L5's
+// startup transactions.
 struct ServerAgentAuthoritySource {
   bool ok = false;
   std::string failure;
-  engine_api::EngineSecurityPrincipalLifecycleState state;
-  engine_api::EngineUuid sysarch_role_uuid;
+  scratchbird::engine::internal_api::EngineSecurityPrincipalLifecycleState state;
+  scratchbird::engine::internal_api::EngineUuid sysarch_role_uuid;
 };
+namespace {
 
 ServerAgentAuthoritySource LoadServerAgentAuthoritySource(const std::string& database_path,
                                                           const engine_api::EngineUuid& database_uuid) {
@@ -524,13 +528,14 @@ ServerAgentAuthoritySource LoadServerAgentAuthoritySource(const std::string& dat
     out.failure = "agent_authority_generation_missing";
     return out;
   }
-  const auto bootstrap = engine_api::ResolveEngineOwnedSysarchRoleIdentity(source);
-  if (!bootstrap.ok) {
+  // The loader returns the SYSARCH role from its own bootstrap read, so no
+  // second full catalog read (ResolveEngineOwnedSysarchRoleIdentity) is needed.
+  if (loaded.engine_owned_sysarch_role_uuid.is_nil()) {
     out.failure = "agent_authority_sysarch_identity_unavailable";
     return out;
   }
   out.state = std::move(loaded.state);
-  out.sysarch_role_uuid = bootstrap.role_uuid;
+  out.sysarch_role_uuid = loaded.engine_owned_sysarch_role_uuid;
   out.ok = true;
   return out;
 }
@@ -1014,10 +1019,19 @@ bool ServerAgentRuntime::StartImpl(const ServerBootstrapConfig& config,
   }
   // Bound only from the retained owner's session; otherwise nothing.
   // One security load serves the binding and every start check.
-  const auto start_authority = retained_owner && internal_startup_session_.present
-      ? LoadServerAgentAuthoritySource(database->database_path,
-                                       engine_api::EngineUuid{internal_startup_session_.database_uuid})
-      : ServerAgentAuthoritySource{};
+  // L5's startup transactions (catalog seed, service open, recover, start,
+  // initial leases) run in this same start and reuse it; it is dropped once
+  // start completes, so drain and shutdown load current authority again.
+  start_authority_ = std::make_shared<const ServerAgentAuthoritySource>(
+      retained_owner && internal_startup_session_.present
+          ? LoadServerAgentAuthoritySource(database->database_path,
+                                           engine_api::EngineUuid{internal_startup_session_.database_uuid})
+          : ServerAgentAuthoritySource{});
+  const auto& start_authority = *start_authority_;
+  struct DropStartAuthority {
+    std::shared_ptr<const ServerAgentAuthoritySource>& held;
+    ~DropStartAuthority() { held.reset(); }
+  } drop_start_authority{start_authority_};
   auto agent_binding = retained_owner
       ? BindServerAgentSessions(database->database_path, internal_startup_session_, start_authority)
       : ServerAgentBinding{};
@@ -1381,7 +1395,8 @@ bool ServerAgentRuntime::InitializeConfiguredAgents(
                                                database_uuid_,
                                                1,
                                                "catalog-seed",&config,
-                                               &internal_startup_session_);
+                                               &internal_startup_session_,
+                                               start_authority_.get());
     if (!seed_tx.ok) {
       if (diagnostics != nullptr) {
         auto diagnostic=RuntimeDiagnostic(
@@ -1475,8 +1490,8 @@ bool ServerAgentRuntime::InitializeConfiguredAgents(
                                                database_uuid_,
                                                2,
                                                "service-open", nullptr,
-        // L5 startup duty (D14): runs as L5.
-        &internal_startup_session_);
+        // L5 startup duty (D14): runs as L5, on start's authority load.
+        &internal_startup_session_, start_authority_.get());
     if (!open_tx.ok) {
       if (diagnostics != nullptr) {
         diagnostics->push_back(RuntimeDiagnostic(
@@ -1526,8 +1541,8 @@ bool ServerAgentRuntime::InitializeConfiguredAgents(
                                                   database_uuid_,
                                                   4,
                                                   "service-recover", nullptr,
-        // L5 startup duty (D14): runs as L5.
-        &internal_startup_session_);
+        // L5 startup duty (D14): runs as L5, on start's authority load.
+        &internal_startup_session_, start_authority_.get());
     if (!recover_tx.ok) {
       if (diagnostics != nullptr) {
         diagnostics->push_back(RuntimeDiagnostic(
@@ -1580,8 +1595,8 @@ bool ServerAgentRuntime::InitializeConfiguredAgents(
                                                 database_uuid_,
                                                 5,
                                                 "service-start", nullptr,
-        // L5 startup duty (D14): runs as L5.
-        &internal_startup_session_);
+        // L5 startup duty (D14): runs as L5, on start's authority load.
+        &internal_startup_session_, start_authority_.get());
     if (!start_tx.ok) {
       if (diagnostics != nullptr) {
         diagnostics->push_back(RuntimeDiagnostic(
@@ -1620,8 +1635,8 @@ bool ServerAgentRuntime::InitializeConfiguredAgents(
                                                        database_uuid_,
                                                        6,
                                                        "initial-worker-leases", nullptr,
-        // L5 startup duty (D14): runs as L5.
-        &internal_startup_session_);
+        // L5 startup duty (D14): runs as L5, on start's authority load.
+        &internal_startup_session_, start_authority_.get());
     if (!lease_batch_tx.ok) {
       if (diagnostics != nullptr) {
         diagnostics->push_back(RuntimeDiagnostic(

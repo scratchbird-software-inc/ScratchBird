@@ -5,6 +5,9 @@
 #include "time.hpp"
 #include "uuid.hpp"
 #include "sbps.hpp"
+#include "engine_host.hpp"
+#include "memory.hpp"
+#include "../support/engine_statement_fixture.hpp"
 #include <atomic>
 #include <chrono>
 #include <filesystem>
@@ -198,20 +201,28 @@ int main(int argc, char** argv) {
     scratchbird::storage::database::DatabaseCreateConfig create;
     create.path = (root/"runtime.sbdb").string(); create.database_uuid = database_id.value;
     create.filespace_uuid = filespace_id.value; create.creation_unix_epoch_millis = millis.unix_epoch_millis;
-    create.allow_minimal_resource_bootstrap = true; create.require_resource_seed_pack = false;
+    // Created as the production bootstrap tool creates (owner, L5), then opened
+    // through StartHostedEngine. A hand-built HostedDatabaseSnapshot holds no
+    // ownership lock and no internal startup session, so the coordinator
+    // refuses it (SERVER.AGENT_RUNTIME.OWNERSHIP_REQUIRED) before the endpoint
+    // this gate is about ever listens. One open per process; each mode is its
+    // own process.
+    Require(core::memory::ConfigureDefaultMemoryManagerForFixture(
+                core::memory::DefaultLocalEngineMemoryPolicy(), "ipc_client_drain_gate").ok(),
+            "fixture memory manager");
+    scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
     Require(scratchbird::storage::database::CreateDatabaseFile(create).ok(), "actual database");
-    srv::HostedDatabaseSnapshot database;
-    database.state = srv::HostedDatabaseState::kOpen; database.database_path = create.path;
-    database.database_uuid = database_id.value.value; database.filespace_uuid = filespace_id.value.value;
-    database.database_created = database.database_open = database.config_policy_security_lifecycle_present = true;
-    database.write_admission_fenced = false;
-    database.selected_agent_type_ids = {"page_allocation_manager", "filespace_capacity_manager"};
-    srv::HostedEngineState engine; engine.engine_context_active = true; engine.databases.push_back(database);
     srv::ServerBootstrapConfig config;
     config.control_dir = root/"control"; config.data_dir = root; config.database_default_path = create.path;
     config.sbps_endpoint = root/"ipc.sock"; config.lifecycle_state_file = root/"state";
     config.lifecycle_journal_file = root/"journal"; config.log_file = (root/"server.log").string();
     std::filesystem::create_directories(config.control_dir);
+    auto opened = srv::StartHostedEngine(config);
+    for (const auto& diagnostic : opened.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
+    Require(opened.state.engine_context_active && !opened.state.databases.empty(), "real exclusive open");
+    opened.state.databases.front().selected_agent_type_ids = {"page_allocation_manager", "filespace_capacity_manager"};
+    srv::HostedEngineState& engine = opened.state;
     srv::ServerLifecycleArtifacts artifacts; artifacts.server_uuid = server_id.value.value; artifacts.generation = 1;
     srv::ResetParserServerStopRequest();
     bool stopping_called = false;

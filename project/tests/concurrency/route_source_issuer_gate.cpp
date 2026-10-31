@@ -85,8 +85,17 @@ auto Own(const std::string& path) {
 }
 void Locks(const std::string& path, bool held) {
   // Probe each actual OS owner lock; a data lock must not mask lost route ownership.
+  // POSIX owners remove both lock files when they release
+  // (SB_CLARIFY_OWNER_LOCK_FILE_REMOVED_ON_CLOSE): held means present and
+  // locked; released means absent.
   for (const auto* suffix : {".sb.route.owner.lock", ".sb.owner.lock"}) {
     const int fd = ::open((path + suffix).c_str(), O_RDWR | O_CLOEXEC);
+    if (!held) {
+      const int open_error = errno;
+      if (fd >= 0) ::close(fd);
+      Check(fd < 0 && open_error == ENOENT, "released owner lock file removed");
+      continue;
+    }
     Check(fd >= 0, "open owner lock probe");
     const int result = ::flock(fd, LOCK_EX | LOCK_NB), error = errno;
     ::close(fd);

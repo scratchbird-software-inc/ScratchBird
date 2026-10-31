@@ -99,8 +99,13 @@ inline NativeSelectedCheckpointReadResult AcquireNativeSelectedCheckpointReadLea
     const auto& r=s.checkpoint;
     lease->checkpoint_={9,0x300,r.filespace_uuid,r.page_number,r.page_generation,
         r.page_size_profile_uuid,s.checkpoint_object_uuid};
+    // The directory stage re-reads the selected images and counts them in its
+    // own total (selection + chain), so it is bounded by the whole budget, not
+    // budget - consumed: that subtracted the shared selection a second time and
+    // refused a ceiling equal to the lease's real charge. The exact
+    // once-charged bound (consumed + chain <= budget) is enforced below.
     lease->directory_=VerifyCurrentNativeCheckpointDirectoryFromOpenDevices(
-        database,devices,lease->checkpoint_,budget-consumed);
+        database,devices,lease->checkpoint_,budget);
     if(!lease->directory_.ok()){
       out.error=E::directory_failure;out.checkpoint_error=lease->directory_.error;
       out.directory_error=lease->directory_.directory_error;

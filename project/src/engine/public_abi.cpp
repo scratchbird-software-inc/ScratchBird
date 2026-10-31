@@ -30416,6 +30416,11 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
       if (!a.ok || !a.snapshot.installed || a.snapshot.generation != ddl_create_publication_descriptor.body[3])
         return fail_result(SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4125, "SBLR.OPCODE.EXECUTOR_EVIDENCE_MISSING", "sblr.ddl_create_publication.executor_unavailable");
       ddl_create_publication_availability_generation = a.snapshot.generation;
+      dispatched.accepted = true;
+      dispatched.dispatched_to_api = true;
+      dispatched.api_result.ok = true;
+      dispatched.api_result.operation_id = "engine.op.ddl_create_publication";
+      dispatched.api_result.result_shape.result_kind = "ddl_result";
     }
     if (ddl_alter_publication_root) {
       const auto& publication_member = opcode_stream && stream.ok && stream.stream.operations.size() > 1 ? stream.stream.operations[1] : operation.envelope;

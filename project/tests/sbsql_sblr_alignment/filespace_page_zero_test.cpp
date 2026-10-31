@@ -7280,12 +7280,25 @@ void CanonicalBoundCheckpointSelection(bool inventory_staging=false,bool mixed_i
       auto admitted=acquire(32*u64{sizes[p]}+4*u64{sizes[q]});
       Check(admitted.ok(),"selected read fence binds actual current directory");
       const auto retained=admitted.lease->retained_image_bytes();
-      Check(retained==admitted.lease->selection().retained_image_bytes+admitted.lease->directory().retained_image_bytes&&
-          admitted.lease->checkpoint().page_number==current.header.page_number&&
-          admitted.lease->checkpoint().page_number!=initial.header.page_number&&
-          admitted.lease->checkpoint().object_uuid==current.object_uuid&&
-          admitted.lease->directory().checkpoint_inventory.checkpoint_sha256==admitted.lease->selection().selection->checkpoint_sha256,
-          "lease selects newer on-disk checkpoint without a caller reference and counts both retained sources");
+      // One Check per conjunct, with the byte counts, so the failing invariant
+      // names itself. All five are still required, in the same order.
+      // Shared selected images are charged once (1c33e3c1e): the directory
+      // result's total already includes the selection, so the lease charges the
+      // selection plus only the directory's own chain, which equals that total.
+      Check(retained==admitted.lease->selection().retained_image_bytes+admitted.lease->directory().directory.retained_image_bytes&&
+            retained==admitted.lease->directory().retained_image_bytes,
+          (std::string("lease counts both retained sources retained=")+std::to_string(retained)+
+           " selection="+std::to_string(admitted.lease->selection().retained_image_bytes)+
+           " directory="+std::to_string(admitted.lease->directory().retained_image_bytes)+
+           " directory_chain="+std::to_string(admitted.lease->directory().directory.retained_image_bytes)).c_str());
+      Check(admitted.lease->checkpoint().page_number==current.header.page_number,
+          "lease selects the newer on-disk checkpoint page");
+      Check(admitted.lease->checkpoint().page_number!=initial.header.page_number,
+          "lease does not select the initial checkpoint page");
+      Check(admitted.lease->checkpoint().object_uuid==current.object_uuid,
+          "lease checkpoint object is the current checkpoint");
+      Check(admitted.lease->directory().checkpoint_inventory.checkpoint_sha256==admitted.lease->selection().selection->checkpoint_sha256,
+          "lease directory inventory is bound to the selected checkpoint");
       std::vector<std::recursive_mutex*> mutexes;
       for(const auto& f:devices){auto guard=f.device->AcquireOperationGuard();mutexes.push_back(guard.mutex());}
       const auto availability=[&]{unsigned available=0;std::thread contender([&]{for(auto* mutex:mutexes){

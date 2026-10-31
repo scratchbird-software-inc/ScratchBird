@@ -1004,6 +1004,18 @@ NameRegistryNameResult MapNameRegistryUuidToName(const EngineApiRequest& request
   return MapNameRegistryUuidToNamePublic(request, object_uuid, requested_object_class);
 }
 
+// SB_CREATE_REGISTERS_ALL_OBJECT_NAMES: names collide only inside one
+// namespace. Security principals (users, roles, groups) and filespaces are not
+// members of the schema tree, so a schema `public` and the policy pack's PUBLIC
+// group are different names, as SQL keeps role and schema names apart.
+static std::string_view NameRegistryNamespaceForClass(std::string_view object_class) {
+  if (object_class == "user" || object_class == "principal" || object_class == "role" ||
+      object_class == "group")
+    return "security";
+  if (object_class == "filespace") return "filespace";
+  return "schema_tree";
+}
+
 bool NameRegistryWouldConflict(const EngineRequestContext& context,
                                const EngineUuid& object_uuid,
                                const std::string& object_class,
@@ -1021,6 +1033,8 @@ bool NameRegistryWouldConflict(const EngineRequestContext& context,
     for (const auto& entry : loaded.state.entries) {
       if (entry.object_uuid == object_uuid) { continue; }
       if (entry.scope_uuid != scope_uuid) { continue; }
+      if (NameRegistryNamespaceForClass(entry.object_class) !=
+          NameRegistryNamespaceForClass(object_class)) { continue; }
       if (ProfileName(entry.identifier_profile_uuid) != ProfileName(wanted.identifier_profile_uuid)) { continue; }
       if (!NameRegistryCollisionScopeMatches(entry, wanted, default_language)) { continue; }
       if (NameRegistryLookupKeysCollide(wanted, entry)) {

@@ -1055,6 +1055,7 @@ EngineLoadSecurityPrincipalLifecycleStateResult LoadState(const EngineRequestCon
           "bootstrap_security_authority_missing");
       return result;
     }
+    result.engine_owned_sysarch_role_uuid = state.sysarch_role_uuid;
     if (!state.sysarch_role_uuid.is_nil()) {
       EngineSecurityRoleRecord role;
       role.creator_tx = state.creator_tx;

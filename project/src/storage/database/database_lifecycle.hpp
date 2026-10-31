@@ -82,11 +82,10 @@ struct DatabaseCreateConfig {
   std::string internal_service_credential_fingerprint;
   bool require_internal_service_principal = false;
   // Additional internal principals provisioned by the same create transaction,
-  // one per engine-internal actor the caller declares. The caller supplies the
-  // list because the agent registry is not readable from the create path: the
-  // in-code registry is data-driven and the `agents` registry fragment is still
-  // an empty placeholder. Create therefore provisions exactly what it is told
-  // to and invents nothing.
+  // one per extra engine-internal actor the caller declares. Agent principals
+  // are not declared here: create provisions one per agent type from the policy
+  // pack's agent declarations (SB_AGENT_PRINCIPAL_BINDING_BY_UUID). Create
+  // provisions exactly what it is told to and invents nothing.
   //
   // These are provisioned as committed principals so that rights can be granted
   // to them later; only the principal named by internal_service_principal_name

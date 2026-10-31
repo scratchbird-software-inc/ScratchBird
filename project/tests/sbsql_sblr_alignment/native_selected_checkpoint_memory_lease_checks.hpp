@@ -137,7 +137,12 @@ void Checks(std::span<const d::NativeFilespaceDevice> files,u64 allowance,bool d
   auto original=db::AcquireNativeSelectedCheckpointReadLease(database,supplied,primary,allowance);
   Check(original.ok(),"actual full selected lease independently verified before memory admission");
   expected_selection=original.lease->selection();expected_directory=original.lease->directory();
-  root=original.lease->checkpoint();images=original.lease->retained_image_bytes()-expected_selection.retained_image_bytes;
+  root=original.lease->checkpoint();
+  // Since 1c33e3c1e the read lease charges the shared selected images once
+  // (selection + directory chain), exactly as the memory-backed lease does.
+  // Subtracting the selection here compensated for the old double charge; kept,
+  // it expected only the directory chain and failed every route.
+  images=original.lease->retained_image_bytes();
  } // Release every legacy guard before admitting the actual grant.
  // Measure actual decoded work, not four times a repeated proof-image charge.
  // The temporary measurement is test-only and is gone before real admission.

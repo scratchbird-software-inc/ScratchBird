@@ -1753,7 +1753,10 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
             operand.value_body.data(), operand.value_body.size(),
             &plan_import_rows_reference, &plan_import_rows_diagnostic);
     const bool alter_publication_descriptor =
-        ((envelope.operation_id == "engine.op.ddl_alter_publication" &&
+        ((envelope.operation_id == "engine.op.ddl_create_publication" &&
+        envelope.opcode == "SBLR_DDL_CREATE_PUBLICATION" && envelope.opcode_code == 1582 &&
+        operand.type == "create_publication_descriptor") ||
+        (envelope.operation_id == "engine.op.ddl_alter_publication" &&
         envelope.opcode == "SBLR_DDL_ALTER_PUBLICATION" && envelope.opcode_code == 1583 &&
         operand.type == "alter_publication_descriptor") ||
         (envelope.operation_id == "engine.op.ddl_drop_publication" &&

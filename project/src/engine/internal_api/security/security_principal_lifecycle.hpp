@@ -263,6 +263,10 @@ struct EngineLoadSecurityPrincipalLifecycleStateResult {
   bool ok = false;
   EngineApiDiagnostic diagnostic;
   EngineSecurityPrincipalLifecycleState state;
+  // The engine-owned SYSARCH role from the same bootstrap read (the reader
+  // refuses any other identity). Saves callers the second full catalog read
+  // ResolveEngineOwnedSysarchRoleIdentity costs. Nil if no bootstrap authority.
+  EngineUuid engine_owned_sysarch_role_uuid;
 };
 
 // Receipt-scoped immutable view of the durable row-policy catalog.  The

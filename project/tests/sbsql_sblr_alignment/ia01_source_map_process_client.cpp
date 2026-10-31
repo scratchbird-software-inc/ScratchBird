@@ -3152,7 +3152,7 @@ END;)SBSQL";
                     : operation == "ddl-drop-rule"
                           ? session.RunDdlDropRuleForWire()
                     : operation == "ddl-create-publication"
-                          ? session.RunDdlCreatePublicationForWire()
+                          ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlCreatePublicationForWire():begun; }()
                     : operation == "ddl-alter-publication"
                           ? [&session] { auto begun=session.RunPipeline("BEGIN TRANSACTION",true); return begun.accepted?session.RunDdlAlterPublicationForWire():begun; }()
                     : operation == "ddl-drop-publication"
