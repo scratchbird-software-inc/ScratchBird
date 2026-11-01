@@ -330,6 +330,50 @@ STATIC_EXECUTOR_EVIDENCE_AUDIT_KEYS = {
 
 PRE_CONTEXT_COMMAND_REFUSALS = {}
 
+# Canonical executors with no engine effect connected yet: each must refuse
+# with exactly one EXECUTOR_NOT_CONNECTED diagnostic and publish no result.
+EXECUTOR_NOT_CONNECTED_REFUSALS = frozenset({
+    "project", "aggregate", "group", "sort", "limit", "window",
+    "return-result-set", "advanced-datatype-family", "udr-invoke",
+    "kv-structured-read", "kv-structured-mutate", "kv-structured-scan",
+    "kv-structured-stream-read", "kv-structured-stream-append",
+    "system-config-set", "ddl-create-domain", "ddl-alter-domain",
+    "ddl-alter-view", "ddl-drop-view", "ddl-create-function",
+    "ddl-alter-function", "ddl-drop-function", "ddl-alter-procedure",
+    "ddl-drop-procedure", "ddl-create-package", "ddl-alter-package",
+    "ddl-create-sequence", "ddl-alter-sequence", "ddl-drop-sequence",
+    "ddl-create-table", "ddl-drop-table", "ddl-drop-index",
+    "ddl-create-materialized-view", "ddl-rename-object",
+    "ddl-rename-object-vector",
+    "access-cursor-close", "access-cursor-fetch", "access-cursor-open",
+    "advisory-lock", "advisory-lock-release", "aggregate-invoke",
+    "atomic-cas", "atomic-rmw", "bulk-export-stream", "cast", "compare",
+    "context-get", "context-set", "context-unset", "ddl-alter-publication",
+    "ddl-create-operator", "ddl-create-table-as-query-with-data",
+    "ddl-create-table-as-query-with-no-data", "ddl-drop-materialized-view",
+    "ddl-drop-operator", "ddl-drop-publication",
+    "ddl-drop-timeseries-value-cache", "ddl-refresh-materialized-view",
+    "delete", "dml-counter-add", "domain-operation", "function-call",
+    "function-invoke", "insert", "merge", "operator-call", "query-numeric",
+    "read-by-key", "read-range", "read-stream", "result-set-pass",
+    "security-alter-role", "security-alter-user", "security-authenticate",
+    "security-create-group-mapping", "security-create-policy",
+    "security-create-role", "security-deauthenticate",
+    "security-drop-group-mapping", "security-drop-policy",
+    "security-drop-role", "security-drop-user", "security-grant",
+    "security-revoke", "sequence-currval", "sequence-nextval",
+    "sequence-setval", "session-default-qualifier-set", "session-discard",
+    "session-role-switch", "session-setting-set", "statement-batch",
+    "table-analyze", "update",
+    "session-setting-get", "session-setting-reset", "session-snapshot-handle",
+})
+# Fetch and close open an access cursor first; that open is refused, so the
+# refusal is recorded under the open executor's audit key.
+EXECUTOR_NOT_CONNECTED_REFUSING_OPERATION = {
+    "access-cursor-fetch": "access-cursor-open",
+    "access-cursor-close": "access-cursor-open",
+}
+
 
 def main() -> int:
     parser = argparse.ArgumentParser()
@@ -890,6 +934,18 @@ def main() -> int:
                 raise ProofError(
                     "subscription cluster refusal did not return its exact "
                     "single-diagnostic/no-result proof"
+                )
+        elif args.operation in EXECUTOR_NOT_CONNECTED_REFUSALS:
+            expected_refusal = (
+                f"{args.operation} deterministic_refusal="
+                "SBLR.OPCODE.EXECUTOR_NOT_CONNECTED "
+                "no_result_publication=true\n"
+            )
+            if first.stdout != expected_refusal or first.stderr:
+                raise ProofError(
+                    "unconnected executor did not return the exact "
+                    "single-diagnostic/no-result refusal: "
+                    f"stdout={first.stdout!r} stderr={first.stderr!r}"
                 )
         elif args.operation in STATIC_EXECUTOR_EVIDENCE_REFUSALS:
             test_id, operation_label, _, _, _ = (
@@ -1728,6 +1784,32 @@ def main() -> int:
             required_markers = ()
         if args.operation in PRE_CONTEXT_COMMAND_REFUSALS:
             required_markers = ()
+        if args.operation in EXECUTOR_NOT_CONNECTED_REFUSALS:
+            # The executor must reach dispatch and refuse there, before any
+            # result is encoded: require the dispatch-failure record and
+            # forbid any executor result digest.
+            required_markers = ()
+            refusal_lines = tuple(
+                line for line in audit.splitlines()
+                if line.startswith(
+                    "layer=statement_context_dispatch_failure\t"
+                    "code=SBLR.OPCODE.EXECUTOR_NOT_CONNECTED\t"
+                ) and line.endswith(
+                    "\taudit=sblr."
+                    + EXECUTOR_NOT_CONNECTED_REFUSING_OPERATION.get(
+                        args.operation, args.operation
+                    ).replace("-", "_")
+                    + ".executor_not_connected"
+                )
+            )
+            if not refusal_lines:
+                raise ProofError(
+                    "unconnected executor refusal left no dispatch-failure record"
+                )
+            if "_result_sha256=" in audit:
+                raise ProofError(
+                    "unconnected executor refusal published an executor result"
+                )
         if args.operation in ("filespace-create", "ddl-create-subscription", "ddl-alter-subscription", "ddl-drop-subscription", "ddl-create-operator-class", "ddl-drop-operator-class", "ddl-create-operator-family", "ddl-alter-operator-family", "ddl-drop-operator-family", "ddl-drop-cast", "ddl-create-extension", "ddl-alter-extension", "ddl-drop-extension", "cluster-create-placement-policy", "cluster-alter-placement-policy", "cluster-drop-placement-policy", "versioned-branch-create", "versioned-branch-delete", "versioned-diff", "versioned-tag", "versioned-revert", "versioned-reset", "bitemporal-as-of", "verifiable-history-prove", "verify-proof-descriptor", "versioned-merge", "versioned-hash-read", "versioned-status-read", "accel-llvm-policy-set", "accel-llvm-compile", "accel-gpu-compile", "accel-llvm-inspect", "accel-llvm-invalidate", "accel-gpu-policy-set", "accel-gpu-inspect", "accel-gpu-invalidate", "bridge-describe-capabilities", "bridge-open-channel", "bridge-authenticate", "bridge-open-session", "bridge-close-session", "bridge-health", "bridge-begin-transaction", "bridge-commit-transaction", "bridge-rollback-transaction"):
             # This is a standalone cluster-gated refusal proof.  No local
             # executor receipt exists, so the transaction success barrier is

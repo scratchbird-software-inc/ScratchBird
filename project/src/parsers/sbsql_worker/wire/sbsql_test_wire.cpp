@@ -32881,15 +32881,6 @@ PipelineResult SbsqlTestWireSession::RunKvStructuredTimeseriesForWire() {
   g_kv_structured_timeseries_operand = nullptr; if (!submission) { result.messages.diagnostics.push_back(MakeDiagnostic("SBLR.OPERAND.INVALID", "ERROR", "KV structured stream append canonical submission failed.", "sbp_sbsql.wire")); return result; }
   auto executed = server_client_->ExecuteCanonicalSblrWithDataPacket(session_, acquired.context, *submission, {}, false);
   result.accepted = executed.accepted; result.messages = std::move(executed.messages);
-  if (!result.accepted) {
-    for (const auto& diagnostic : result.messages.diagnostics) {
-      if (diagnostic.message.find("package_root_gateway_refused") != std::string::npos ||
-          diagnostic.message.find("Cluster SBLR Gateway refused") != std::string::npos) {
-        result.accepted = true;
-        break;
-      }
-    }
-  }
   if (result.accepted && !executed.row_packet.empty()) { c::SblrKvStructuredTimeseriesResultV1 rr; if (!c::DecodeSblrKvStructuredTimeseriesResultV1(reinterpret_cast<const uint8_t*>(executed.row_packet.data()), executed.row_packet.size(), &rr, &detail)) result.accepted = false; }
   return result;
 }
@@ -38120,87 +38111,100 @@ PipelineResult SbsqlTestWireSession::RunDatabaseAttachForWire(
   return result;
 }
 
-PipelineResult SbsqlTestWireSession::RunDatabaseDetachForWire(){return RunShowObjectDetailForWire();}
+namespace {
+// This wire method has no route to its operation yet. Refuse it so the test
+// fails honestly instead of running an unrelated statement.
+PipelineResult TestWireRouteNotConnected(const char* method) {
+  PipelineResult result;
+  result.messages.diagnostics.push_back(MakeDiagnostic(
+      "SBSQL.TEST_WIRE.ROUTE_NOT_CONNECTED", "ERROR",
+      "The test wire has no route to this operation.", "sbp_sbsql.wire",
+      {{"method", method}}));
+  return result;
+}
+}  // namespace
 
-PipelineResult SbsqlTestWireSession::RunDatabaseCheckpointForWire(){return RunShowObjectDetailForWire();}
+PipelineResult SbsqlTestWireSession::RunDatabaseDetachForWire(){return TestWireRouteNotConnected("RunDatabaseDetachForWire");}
 
-PipelineResult SbsqlTestWireSession::RunDatabaseVacuumForWire(){return RunShowObjectDetailForWire();}
+PipelineResult SbsqlTestWireSession::RunDatabaseCheckpointForWire(){return TestWireRouteNotConnected("RunDatabaseCheckpointForWire");}
 
-PipelineResult SbsqlTestWireSession::RunDatabaseAlterForWire(){return RunShowObjectDetailForWire();}
+PipelineResult SbsqlTestWireSession::RunDatabaseVacuumForWire(){return TestWireRouteNotConnected("RunDatabaseVacuumForWire");}
 
-PipelineResult SbsqlTestWireSession::RunLifecycleCreateDatabaseForWire(){return RunShowObjectDetailForWire();}
+PipelineResult SbsqlTestWireSession::RunDatabaseAlterForWire(){return TestWireRouteNotConnected("RunDatabaseAlterForWire");}
 
-PipelineResult SbsqlTestWireSession::RunLifecycleOpenDatabaseForWire(){return RunShowObjectDetailForWire();}
+PipelineResult SbsqlTestWireSession::RunLifecycleCreateDatabaseForWire(){return TestWireRouteNotConnected("RunLifecycleCreateDatabaseForWire");}
 
-PipelineResult SbsqlTestWireSession::RunLifecycleAttachDatabaseForWire(){return RunShowObjectDetailForWire();}
+PipelineResult SbsqlTestWireSession::RunLifecycleOpenDatabaseForWire(){return TestWireRouteNotConnected("RunLifecycleOpenDatabaseForWire");}
 
-PipelineResult SbsqlTestWireSession::RunLifecycleDetachDatabaseForWire(){return RunShowObjectDetailForWire();}
+PipelineResult SbsqlTestWireSession::RunLifecycleAttachDatabaseForWire(){return TestWireRouteNotConnected("RunLifecycleAttachDatabaseForWire");}
 
-PipelineResult SbsqlTestWireSession::RunLifecycleEnterMaintenanceForWire(){return RunShowObjectDetailForWire();}
+PipelineResult SbsqlTestWireSession::RunLifecycleDetachDatabaseForWire(){return TestWireRouteNotConnected("RunLifecycleDetachDatabaseForWire");}
 
-PipelineResult SbsqlTestWireSession::RunLifecycleExitMaintenanceForWire(){return RunShowObjectDetailForWire();}
+PipelineResult SbsqlTestWireSession::RunLifecycleEnterMaintenanceForWire(){return TestWireRouteNotConnected("RunLifecycleEnterMaintenanceForWire");}
 
-PipelineResult SbsqlTestWireSession::RunLifecycleEnterRestrictedOpenForWire(){return RunShowObjectDetailForWire();}
+PipelineResult SbsqlTestWireSession::RunLifecycleExitMaintenanceForWire(){return TestWireRouteNotConnected("RunLifecycleExitMaintenanceForWire");}
 
-PipelineResult SbsqlTestWireSession::RunLifecycleExitRestrictedOpenForWire(){return RunShowObjectDetailForWire();}
+PipelineResult SbsqlTestWireSession::RunLifecycleEnterRestrictedOpenForWire(){return TestWireRouteNotConnected("RunLifecycleEnterRestrictedOpenForWire");}
 
-PipelineResult SbsqlTestWireSession::RunLifecycleInspectDatabaseForWire(){return RunShowObjectDetailForWire();}
+PipelineResult SbsqlTestWireSession::RunLifecycleExitRestrictedOpenForWire(){return TestWireRouteNotConnected("RunLifecycleExitRestrictedOpenForWire");}
 
-PipelineResult SbsqlTestWireSession::RunLifecycleVerifyDatabaseForWire(){return RunShowObjectDetailForWire();}
+PipelineResult SbsqlTestWireSession::RunLifecycleInspectDatabaseForWire(){return TestWireRouteNotConnected("RunLifecycleInspectDatabaseForWire");}
 
-PipelineResult SbsqlTestWireSession::RunLifecycleRepairDatabaseForWire(){return RunShowObjectDetailForWire();}
+PipelineResult SbsqlTestWireSession::RunLifecycleVerifyDatabaseForWire(){return TestWireRouteNotConnected("RunLifecycleVerifyDatabaseForWire");}
 
-PipelineResult SbsqlTestWireSession::RunLifecycleShutdownDatabaseForWire(){return RunShowObjectDetailForWire();}
+PipelineResult SbsqlTestWireSession::RunLifecycleRepairDatabaseForWire(){return TestWireRouteNotConnected("RunLifecycleRepairDatabaseForWire");}
 
-PipelineResult SbsqlTestWireSession::RunLifecycleShutdownForceForWire(){return RunShowObjectDetailForWire();}
+PipelineResult SbsqlTestWireSession::RunLifecycleShutdownDatabaseForWire(){return TestWireRouteNotConnected("RunLifecycleShutdownDatabaseForWire");}
 
-PipelineResult SbsqlTestWireSession::RunLifecycleShutdownAcknowledgeForWire(){return RunShowObjectDetailForWire();}
+PipelineResult SbsqlTestWireSession::RunLifecycleShutdownForceForWire(){return TestWireRouteNotConnected("RunLifecycleShutdownForceForWire");}
 
-PipelineResult SbsqlTestWireSession::RunLifecycleDropDatabaseForWire(){return RunShowObjectDetailForWire();}
+PipelineResult SbsqlTestWireSession::RunLifecycleShutdownAcknowledgeForWire(){return TestWireRouteNotConnected("RunLifecycleShutdownAcknowledgeForWire");}
 
-PipelineResult SbsqlTestWireSession::RunReplConsumerSubscribeForWire(){return RunShowObjectDetailForWire();}
+PipelineResult SbsqlTestWireSession::RunLifecycleDropDatabaseForWire(){return TestWireRouteNotConnected("RunLifecycleDropDatabaseForWire");}
 
-PipelineResult SbsqlTestWireSession::RunReplConsumerResumeForWire(){return RunShowObjectDetailForWire();}
+PipelineResult SbsqlTestWireSession::RunReplConsumerSubscribeForWire(){return TestWireRouteNotConnected("RunReplConsumerSubscribeForWire");}
 
-PipelineResult SbsqlTestWireSession::RunReplConsumerPauseForWire(){return RunShowObjectDetailForWire();}
+PipelineResult SbsqlTestWireSession::RunReplConsumerResumeForWire(){return TestWireRouteNotConnected("RunReplConsumerResumeForWire");}
 
-PipelineResult SbsqlTestWireSession::RunReplConsumerCancelForWire(){return RunShowObjectDetailForWire();}
+PipelineResult SbsqlTestWireSession::RunReplConsumerPauseForWire(){return TestWireRouteNotConnected("RunReplConsumerPauseForWire");}
 
-PipelineResult SbsqlTestWireSession::RunReplCdcReceiveForWire(){return RunShowObjectDetailForWire();}
+PipelineResult SbsqlTestWireSession::RunReplConsumerCancelForWire(){return TestWireRouteNotConnected("RunReplConsumerCancelForWire");}
 
-PipelineResult SbsqlTestWireSession::RunReplCdcAckForWire(){return RunShowObjectDetailForWire();}
+PipelineResult SbsqlTestWireSession::RunReplCdcReceiveForWire(){return TestWireRouteNotConnected("RunReplCdcReceiveForWire");}
 
-PipelineResult SbsqlTestWireSession::RunRepl2pcPrewriteForWire(){return RunShowObjectDetailForWire();}
+PipelineResult SbsqlTestWireSession::RunReplCdcAckForWire(){return TestWireRouteNotConnected("RunReplCdcAckForWire");}
 
-PipelineResult SbsqlTestWireSession::RunRepl2pcCommitForWire(){return RunShowObjectDetailForWire();}
+PipelineResult SbsqlTestWireSession::RunRepl2pcPrewriteForWire(){return TestWireRouteNotConnected("RunRepl2pcPrewriteForWire");}
 
-PipelineResult SbsqlTestWireSession::RunRepl2pcCleanupForWire(){return RunShowObjectDetailForWire();}
+PipelineResult SbsqlTestWireSession::RunRepl2pcCommitForWire(){return TestWireRouteNotConnected("RunRepl2pcCommitForWire");}
 
-PipelineResult SbsqlTestWireSession::RunRepl2pcResolveLockForWire(){return RunShowObjectDetailForWire();}
+PipelineResult SbsqlTestWireSession::RunRepl2pcCleanupForWire(){return TestWireRouteNotConnected("RunRepl2pcCleanupForWire");}
 
-PipelineResult SbsqlTestWireSession::RunRepl2pcPessimisticLockForWire(){return RunShowObjectDetailForWire();}
+PipelineResult SbsqlTestWireSession::RunRepl2pcResolveLockForWire(){return TestWireRouteNotConnected("RunRepl2pcResolveLockForWire");}
 
-PipelineResult SbsqlTestWireSession::RunRepl2pcPessimisticRollbackForWire(){return RunShowObjectDetailForWire();}
+PipelineResult SbsqlTestWireSession::RunRepl2pcPessimisticLockForWire(){return TestWireRouteNotConnected("RunRepl2pcPessimisticLockForWire");}
 
-PipelineResult SbsqlTestWireSession::RunRepl2pcHeartbeatForWire(){return RunShowObjectDetailForWire();}
+PipelineResult SbsqlTestWireSession::RunRepl2pcPessimisticRollbackForWire(){return TestWireRouteNotConnected("RunRepl2pcPessimisticRollbackForWire");}
 
-PipelineResult SbsqlTestWireSession::RunRepl2pcCheckStatusForWire(){return RunShowObjectDetailForWire();}
+PipelineResult SbsqlTestWireSession::RunRepl2pcHeartbeatForWire(){return TestWireRouteNotConnected("RunRepl2pcHeartbeatForWire");}
 
-PipelineResult SbsqlTestWireSession::RunGraphTraverseForWire(){return RunShowObjectDetailForWire();}
-PipelineResult SbsqlTestWireSession::RunGraphOptionalMatchForWire(){return RunShowObjectDetailForWire();}
-PipelineResult SbsqlTestWireSession::RunGraphCreateForWire(){return RunShowObjectDetailForWire();}
-PipelineResult SbsqlTestWireSession::RunGraphMergeForWire(){return RunShowObjectDetailForWire();}
-PipelineResult SbsqlTestWireSession::RunGraphSetForWire(){return RunShowObjectDetailForWire();}
-PipelineResult SbsqlTestWireSession::RunGraphRemoveForWire(){return RunShowObjectDetailForWire();}
-PipelineResult SbsqlTestWireSession::RunGraphDeleteForWire(){return RunShowObjectDetailForWire();}
-PipelineResult SbsqlTestWireSession::RunGraphDetachDeleteForWire(){return RunShowObjectDetailForWire();}
-PipelineResult SbsqlTestWireSession::RunFulltextScoreForWire(){return RunShowObjectDetailForWire();}
-PipelineResult SbsqlTestWireSession::RunFulltextPhraseScoreForWire(){return RunShowObjectDetailForWire();}
-PipelineResult SbsqlTestWireSession::RunFulltextMultiFieldScoreForWire(){return RunShowObjectDetailForWire();}
-PipelineResult SbsqlTestWireSession::RunFulltextRegexMatchForWire(){return RunShowObjectDetailForWire();}
-PipelineResult SbsqlTestWireSession::RunFulltextWildcardMatchForWire(){return RunShowObjectDetailForWire();}
-PipelineResult SbsqlTestWireSession::RunFulltextPrefixMatchForWire(){return RunShowObjectDetailForWire();}
-PipelineResult SbsqlTestWireSession::RunFulltextAnalyzerApplyForWire(){return RunShowObjectDetailForWire();}
+PipelineResult SbsqlTestWireSession::RunRepl2pcCheckStatusForWire(){return TestWireRouteNotConnected("RunRepl2pcCheckStatusForWire");}
+
+PipelineResult SbsqlTestWireSession::RunGraphTraverseForWire(){return TestWireRouteNotConnected("RunGraphTraverseForWire");}
+PipelineResult SbsqlTestWireSession::RunGraphOptionalMatchForWire(){return TestWireRouteNotConnected("RunGraphOptionalMatchForWire");}
+PipelineResult SbsqlTestWireSession::RunGraphCreateForWire(){return TestWireRouteNotConnected("RunGraphCreateForWire");}
+PipelineResult SbsqlTestWireSession::RunGraphMergeForWire(){return TestWireRouteNotConnected("RunGraphMergeForWire");}
+PipelineResult SbsqlTestWireSession::RunGraphSetForWire(){return TestWireRouteNotConnected("RunGraphSetForWire");}
+PipelineResult SbsqlTestWireSession::RunGraphRemoveForWire(){return TestWireRouteNotConnected("RunGraphRemoveForWire");}
+PipelineResult SbsqlTestWireSession::RunGraphDeleteForWire(){return TestWireRouteNotConnected("RunGraphDeleteForWire");}
+PipelineResult SbsqlTestWireSession::RunGraphDetachDeleteForWire(){return TestWireRouteNotConnected("RunGraphDetachDeleteForWire");}
+PipelineResult SbsqlTestWireSession::RunFulltextScoreForWire(){return TestWireRouteNotConnected("RunFulltextScoreForWire");}
+PipelineResult SbsqlTestWireSession::RunFulltextPhraseScoreForWire(){return TestWireRouteNotConnected("RunFulltextPhraseScoreForWire");}
+PipelineResult SbsqlTestWireSession::RunFulltextMultiFieldScoreForWire(){return TestWireRouteNotConnected("RunFulltextMultiFieldScoreForWire");}
+PipelineResult SbsqlTestWireSession::RunFulltextRegexMatchForWire(){return TestWireRouteNotConnected("RunFulltextRegexMatchForWire");}
+PipelineResult SbsqlTestWireSession::RunFulltextWildcardMatchForWire(){return TestWireRouteNotConnected("RunFulltextWildcardMatchForWire");}
+PipelineResult SbsqlTestWireSession::RunFulltextPrefixMatchForWire(){return TestWireRouteNotConnected("RunFulltextPrefixMatchForWire");}
+PipelineResult SbsqlTestWireSession::RunFulltextAnalyzerApplyForWire(){return TestWireRouteNotConnected("RunFulltextAnalyzerApplyForWire");}
 PipelineResult SbsqlTestWireSession::RunDdlAlterDictionaryForWire(){PipelineResult result;if(!server_client_||!session_.authenticated)return result;ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt)return result;c::SblrDdlAlterDictionaryRequestV1 q;q.receipt=*receipt;q.occurrence=1;q.dictionary_occurrence=1;auto coordinated=server_client_->CoordinateDdlAlterDictionary(session_,c::EncodeSblrDdlAlterDictionaryRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted)return result;c::SblrDdlAlterDictionaryDescriptorV1 d;std::string detail;if(!c::DecodeSblrDdlAlterDictionaryDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false))return result;auto operand=c::EncodeSblrDdlAlterDictionaryDescriptorV1(d,true);if(operand.empty())return result;BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.ddl_alter_dictionary";g_ddl_alter_dictionary_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_ddl_alter_dictionary_operand=nullptr;if(!submission)return result;auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);return result;}
 PipelineResult SbsqlTestWireSession::RunDdlCreateContinuousViewForWire(){PipelineResult result;if(!server_client_||!session_.authenticated){result.messages.diagnostics.push_back({"SBLR.DDL_CREATE_CONTINUOUS_VIEW.CLIENT_UNAVAILABLE","ERROR","authenticated parser IPC client unavailable","sbsql_sblr_alignment"});return result;}ParserTransactionSelector selector{session_.local_transaction_id,session_.transaction_uuid};auto acquired=server_client_->AcquireNativeStatementContext(session_,selector);if(!acquired.accepted){result.messages=std::move(acquired.messages);return result;}namespace c=scratchbird::engine::sblr;auto receipt=CanonicalUuidBytes(acquired.context.preliminary_receipt_uuid);if(!receipt){result.messages.diagnostics.push_back({"SBLR.DDL_CREATE_CONTINUOUS_VIEW.RECEIPT_INVALID","ERROR","statement context receipt was not canonical UUID bytes","sbsql_sblr_alignment"});return result;}c::SblrDdlCreateContinuousViewRequestV1 q;q.receipt=*receipt;q.occurrence=1;q.view_occurrence=1;auto coordinated=server_client_->CoordinateDdlCreateContinuousView(session_,c::EncodeSblrDdlCreateContinuousViewRequestV1(q));result.messages=coordinated.messages;if(!coordinated.accepted){result.messages.diagnostics.push_back({"SBLR.DDL_CREATE_CONTINUOUS_VIEW.COORDINATION_FAILED","ERROR","continuous-view coordination request failed","sbsql_sblr_alignment"});return result;}c::SblrDdlCreateContinuousViewDescriptorV1 d;std::string detail;if(!c::DecodeSblrDdlCreateContinuousViewDescriptorV1(coordinated.canonical_payload.data(),coordinated.canonical_payload.size(),&d,&detail,false)){result.messages.diagnostics.push_back({"SBLR.DDL_CREATE_CONTINUOUS_VIEW.DESCRIPTOR_INVALID","ERROR",detail,"sbsql_sblr_alignment"});return result;}auto operand=c::EncodeSblrDdlCreateContinuousViewDescriptorV1(d,true);if(operand.empty()){result.messages.diagnostics.push_back({"SBLR.DDL_CREATE_CONTINUOUS_VIEW.OPERAND_ENCODE_FAILED","ERROR","continuous-view operand encoding failed","sbsql_sblr_alignment"});return result;}BoundStatement bound;SblrEnvelope lowered;lowered.operation_id="engine.op.ddl_create_continuous_view";g_ddl_create_continuous_view_operand=&operand;auto submission=BuildCanonicalNativeSubmission(bound,lowered,acquired.context,session_,nullptr,nullptr,nullptr,nullptr,nullptr,nullptr);g_ddl_create_continuous_view_operand=nullptr;if(!submission){result.messages.diagnostics.push_back({"SBLR.DDL_CREATE_CONTINUOUS_VIEW.SUBMISSION_FAILED","ERROR","canonical continuous-view submission construction failed","sbsql_sblr_alignment"});return result;}auto executed=server_client_->ExecuteCanonicalSblrWithDataPacket(session_,acquired.context,*submission,{},false);result.accepted=executed.accepted;result.messages=std::move(executed.messages);return result;}
 PipelineResult SbsqlTestWireSession::RunDdlAlterContinuousViewForWire() {

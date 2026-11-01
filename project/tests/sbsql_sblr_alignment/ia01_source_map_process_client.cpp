@@ -4837,6 +4837,78 @@ END;)SBSQL";
                  " no_engine_dispatch=true no_result_publication=true\n";
     return 0;
   }
+  // These canonical executors have no engine effect connected yet. They must
+  // refuse with exactly one EXECUTOR_NOT_CONNECTED diagnostic and publish no
+  // result, rather than return a fabricated success.
+  static constexpr const char* executor_not_connected_operations[] = {
+      "project", "aggregate", "group", "sort", "limit", "window",
+      "return-result-set", "advanced-datatype-family", "udr-invoke",
+      "kv-structured-read", "kv-structured-mutate", "kv-structured-scan",
+      "kv-structured-stream-read", "kv-structured-stream-append",
+      "system-config-set", "ddl-create-domain", "ddl-alter-domain",
+      "ddl-alter-view", "ddl-drop-view", "ddl-create-function",
+      "ddl-alter-function", "ddl-drop-function", "ddl-alter-procedure",
+      "ddl-drop-procedure", "ddl-create-package", "ddl-alter-package",
+      "ddl-create-sequence", "ddl-alter-sequence", "ddl-drop-sequence",
+      "ddl-create-table", "ddl-drop-table", "ddl-drop-index",
+      "ddl-create-materialized-view", "ddl-rename-object",
+      "ddl-rename-object-vector",
+      "access-cursor-close", "access-cursor-fetch", "access-cursor-open",
+      "advisory-lock", "advisory-lock-release", "aggregate-invoke", "atomic-cas",
+      "atomic-rmw", "bulk-export-stream", "cast", "compare", "context-get",
+      "context-set", "context-unset", "ddl-alter-publication",
+      "ddl-create-operator", "ddl-create-table-as-query-with-data",
+      "ddl-create-table-as-query-with-no-data", "ddl-drop-materialized-view",
+      "ddl-drop-operator", "ddl-drop-publication",
+      "ddl-drop-timeseries-value-cache", "ddl-refresh-materialized-view",
+      "delete", "dml-counter-add", "domain-operation", "function-call",
+      "function-invoke", "insert", "merge", "operator-call", "query-numeric",
+      "read-by-key", "read-range", "read-stream", "result-set-pass",
+      "security-alter-role", "security-alter-user", "security-authenticate",
+      "security-create-group-mapping", "security-create-policy",
+      "security-create-role", "security-deauthenticate",
+      "security-drop-group-mapping", "security-drop-policy", "security-drop-role",
+      "security-drop-user", "security-grant", "security-revoke",
+      "sequence-currval", "sequence-nextval", "sequence-setval",
+      "session-default-qualifier-set", "session-discard", "session-role-switch",
+      "session-setting-set", "statement-batch", "table-analyze", "update",
+      "session-setting-get", "session-setting-reset", "session-snapshot-handle"};
+  bool executor_not_connected_operation = false;
+  for (const char* candidate : executor_not_connected_operations) {
+    executor_not_connected_operation =
+        executor_not_connected_operation || operation == candidate;
+  }
+  if (executor_not_connected_operation) {
+    const bool exact_refusal =
+        !result.accepted && result.messages.diagnostics.size() == 1 &&
+        result.messages.diagnostics.front().code ==
+            "SBLR.OPCODE.EXECUTOR_NOT_CONNECTED";
+    const bool no_result_publication =
+        result.server_operation_id.empty() && result.server_cursor_uuid.is_nil() &&
+        result.server_row_count == 0 && result.server_affected_rows == 0 &&
+        !result.server_affected_rows_present &&
+        result.server_result_payload.empty();
+    if (!exact_refusal || !no_result_publication) {
+      std::cerr << operation << " executor_not_connected_contract_failed"
+                << " accepted=" << result.accepted
+                << " diagnostic_count="
+                << result.messages.diagnostics.size()
+                << " server_operation_id=" << result.server_operation_id
+                << " server_row_count=" << result.server_row_count
+                << " server_affected_rows=" << result.server_affected_rows
+                << " server_result_payload_bytes="
+                << result.server_result_payload.size() << '\n';
+      for (const auto& diagnostic : result.messages.diagnostics) {
+        std::cerr << "diagnostic=" << diagnostic.code << ':'
+                  << diagnostic.message << '\n';
+      }
+      return 4;
+    }
+    std::cout << operation
+              << " deterministic_refusal=SBLR.OPCODE.EXECUTOR_NOT_CONNECTED"
+                 " no_result_publication=true\n";
+    return 0;
+  }
   if (operation == "ddl-create-operator-class" && !result.accepted && !result.messages.diagnostics.empty() && result.messages.diagnostics.front().code == "CLUSTER.GATEWAY_CLUSTER_FALLTHROUGH_FORBIDDEN") {
     std::cout << "CSC-TEST-004009 DDL_CREATE_OPERATOR_CLASS deterministic_cluster_refusal\n";
     return 0;
