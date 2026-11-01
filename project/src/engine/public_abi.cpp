@@ -32683,9 +32683,9 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
       result->result_kind = "native_bulk_ingest_summary";
     }
     result->row_values = {public_record({
-        {"accepted_rows", public_result::Kind::text, std::to_string(result->rows_produced)},
-        {"inserted_rows", public_result::Kind::text, std::to_string(result->rows_produced)},
-        {"rejected_rows", public_result::Kind::text, "0"}})};
+        {"accepted_rows", public_result::Kind::unsigned_integer, public_result::Unsigned(result->rows_produced)},
+        {"inserted_rows", public_result::Kind::unsigned_integer, public_result::Unsigned(result->rows_produced)},
+        {"rejected_rows", public_result::Kind::unsigned_integer, public_result::Unsigned(0)}})};
     result->row_metadata_values = {
         "accepted_rows:uint64:not_null;inserted_rows:uint64:not_null;"
         "rejected_rows:uint64:not_null"};

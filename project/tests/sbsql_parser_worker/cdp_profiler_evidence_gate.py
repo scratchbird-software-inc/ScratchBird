@@ -32,7 +32,12 @@ from pathlib import Path
 from typing import Any, Callable
 
 import cdp_benchmark_fixture_support as support
-from cdp_database_lifecycle_support import PUBLIC_TEST_PASSWORD, seed_database
+from cdp_database_lifecycle_support import (
+    PUBLIC_TEST_PASSWORD,
+    release_work_dir,
+    released_evidence_path,
+    seed_database,
+)
 
 
 SCHEMA_VERSION = "cdp.profiler_evidence_gate.v1"
@@ -1007,10 +1012,11 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--build-mode", default="unknown")
     args = parser.parse_args(argv[1:])
 
-    work = make_work_dir(Path(args.work_dir))
+    preferred = Path(args.work_dir)
+    work = make_work_dir(preferred)
     try:
         payload = build_payload(args, work)
-        print(f"{GATE_NAME}=passed output={payload['profiler_evidence_json_path']}")
+        print(f"{GATE_NAME}=passed output={released_evidence_path(Path(payload['profiler_evidence_json_path']), work, preferred)}")
         print("cdp046_routes=embedded,local-ipc,inet")
         print("cdp046_policy=diagnostic_run_no_benchmark_clean_speed_claim")
         return 0
@@ -1018,6 +1024,8 @@ def main(argv: list[str]) -> int:
         print(f"{GATE_NAME}=failed work={work}: {exc}", file=sys.stderr)
         dump_logs(work)
         return 1
+    finally:
+        release_work_dir(work, preferred)
 
 
 if __name__ == "__main__":

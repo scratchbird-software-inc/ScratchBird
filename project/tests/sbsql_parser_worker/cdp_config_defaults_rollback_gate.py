@@ -26,7 +26,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from cdp_database_lifecycle_support import PUBLIC_TEST_PASSWORD, seed_database
+from cdp_database_lifecycle_support import (
+    PUBLIC_TEST_PASSWORD,
+    release_work_dir,
+    released_evidence_path,
+    seed_database,
+)
 
 
 SCHEMA_VERSION = "cdp.config_defaults_rollback_gate.v1"
@@ -816,16 +821,19 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--work-dir", required=True)
     args = parser.parse_args(argv[1:])
 
-    work = make_work_dir(Path(args.work_dir))
+    preferred = Path(args.work_dir)
+    work = make_work_dir(preferred)
     try:
         payload = run_gate(args, work)
-        print(f"cdp_config_defaults_rollback_gate=passed output={payload['output_json']}")
+        print(f"cdp_config_defaults_rollback_gate=passed output={released_evidence_path(Path(payload['output_json']), work, preferred)}")
         print("cdp_config_defaults_rollback_vectors=" + ",".join(payload["exact_refusal_vectors"]))
         return 0
     except Exception as exc:  # noqa: BLE001 - CTest should receive the concrete failure.
         print(f"cdp_config_defaults_rollback_gate=failed work={work}: {exc}", file=sys.stderr)
         dump_logs(work)
         return 1
+    finally:
+        release_work_dir(work, preferred)
 
 
 if __name__ == "__main__":

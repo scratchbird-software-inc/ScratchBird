@@ -1323,8 +1323,11 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     TIMEOUT 180 LABELS "actual_files;native_catalog;cluster_authority;not_SQL_E2E")
   add_test(NAME sbsql_sblr_alignment_native_metric_config
     COMMAND sbsql_sblr_alignment_native_creation_workspace --metric-config ${CMAKE_SOURCE_DIR}/config/templates)
+  # Builds the full metric selection through the indexed native construction
+  # on real files (~75 s alone); 180 s was exceeded under -j6 I/O load. It stays
+  # parallel so collisions still surface.
   set_tests_properties(sbsql_sblr_alignment_native_metric_config PROPERTIES
-    TIMEOUT 180 LABELS "actual_files;native_creation;metric_catalog;not_SQL_E2E")
+    TIMEOUT 600 LABELS "actual_files;native_creation;metric_catalog;not_SQL_E2E")
   foreach(shard RANGE 0 3)
     add_test(NAME sbsql_sblr_alignment_native_indexed_creation_faults_${shard}
       COMMAND sbsql_sblr_alignment_native_creation_workspace --indexed-faults ${shard})

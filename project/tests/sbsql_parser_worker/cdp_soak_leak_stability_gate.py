@@ -33,7 +33,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from cdp_database_lifecycle_support import PUBLIC_TEST_PASSWORD, seed_database
+from cdp_database_lifecycle_support import (
+    PUBLIC_TEST_PASSWORD,
+    release_work_dir,
+    released_evidence_path,
+    seed_database,
+)
 
 
 SCHEMA_VERSION = "cdp.soak_leak_stability_gate.v1"
@@ -1144,16 +1149,19 @@ def main(argv: list[str]) -> int:
     args = parser.parse_args(argv[1:])
     if args.cycles < 3:
         raise SoakGateError("--cycles must be at least 3 for CDP-047")
-    work = make_work_dir(Path(args.work_dir))
+    preferred = Path(args.work_dir)
+    work = make_work_dir(preferred)
     try:
         payload = build_payload(args, work)
-        print(f"{GATE_NAME}=passed output={payload['output_json']}")
+        print(f"{GATE_NAME}=passed output={released_evidence_path(Path(payload['output_json']), work, preferred)}")
         print("cdp047_policy=diagnostic_run_no_benchmark_clean_speed_claim")
         return 0
     except Exception as exc:  # noqa: BLE001 - CTest should receive the concrete failure.
         print(f"{GATE_NAME}=failed work={work}: {exc}", file=sys.stderr)
         dump_logs(work)
         return 1
+    finally:
+        release_work_dir(work, preferred)
 
 
 if __name__ == "__main__":

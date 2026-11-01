@@ -16,6 +16,7 @@ import json
 import os
 import platform
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -130,6 +131,25 @@ def make_work_root() -> Path:
     base = Path(tempfile.gettempdir()) / "cdp050"
     base.mkdir(parents=True, exist_ok=True)
     return Path(tempfile.mkdtemp(prefix="final_", dir=base))
+
+
+def retain_work_root(work_root: Path, keep_dir: str | None) -> Path:
+    """Move the run's evidence and component logs out of the temporary root.
+
+    Component gates remove their own runtime workspaces, so what remains under
+    work_root is evidence JSON and captured logs.
+    """
+    kept = Path(keep_dir) / "last-run" if keep_dir else work_root
+    if kept != work_root:
+        shutil.rmtree(kept, ignore_errors=True)
+        kept.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copytree(work_root, kept)
+        shutil.rmtree(work_root, ignore_errors=True)
+        try:
+            work_root.parent.rmdir()
+        except OSError:
+            pass
+    return kept
 
 
 def extract_output_json(stdout: str) -> Path | None:
@@ -463,7 +483,8 @@ def main(argv: list[str]) -> int:
         status = "passed"
         payload = build_payload(args, work_root, records, status)
         write_json(evidence_path, payload)
-        print(f"{GATE_NAME}=passed output={evidence_path}")
+        kept = retain_work_root(work_root, args.work_dir)
+        print(f"{GATE_NAME}=passed output={kept / evidence_path.relative_to(work_root)}")
         print("cdp050_components=" + ",".join(record["component"] for record in records))
         print("cdp050_policy=" + payload["build_config_runtime_summary"]["diagnostic_vs_benchmark_clean_policy"]["policy"])
         return 0
@@ -471,7 +492,8 @@ def main(argv: list[str]) -> int:
         payload = build_payload(args, work_root, records, status)
         payload["failure"] = str(exc)
         write_json(evidence_path, payload)
-        print(f"{GATE_NAME}=failed output={evidence_path}: {exc}", file=sys.stderr)
+        kept = retain_work_root(work_root, args.work_dir)
+        print(f"{GATE_NAME}=failed output={kept / evidence_path.relative_to(work_root)}: {exc}", file=sys.stderr)
         return 1
 
 

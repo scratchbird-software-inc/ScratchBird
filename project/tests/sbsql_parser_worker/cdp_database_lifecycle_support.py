@@ -11,6 +11,7 @@
 
 from __future__ import annotations
 
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -75,3 +76,29 @@ def seed_database(
             + ", ".join(present_sidecars)
         )
     return manifest
+
+
+def released_evidence_path(path: Path, work: Path, preferred_root: Path) -> Path:
+    """Where an evidence file under work/evidence lives after release_work_dir."""
+
+    return preferred_root / "evidence" / Path(path).relative_to(work / "evidence")
+
+
+def release_work_dir(work: Path, preferred_root: Path) -> None:
+    """Remove a gate workspace, keeping only its evidence under preferred_root.
+
+    The workspace holds databases, sockets and route logs (dumped to stderr on
+    failure); leaving it behind fills the temporary filesystem.
+    """
+
+    source = work / "evidence"
+    if source.is_dir() and work != preferred_root:
+        kept = preferred_root / "evidence"
+        shutil.rmtree(kept, ignore_errors=True)
+        shutil.copytree(source, kept)
+    shutil.rmtree(work, ignore_errors=True)
+    if work.parent != preferred_root:
+        try:
+            work.parent.rmdir()
+        except OSError:
+            pass

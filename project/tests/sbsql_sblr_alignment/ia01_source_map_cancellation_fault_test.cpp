@@ -288,10 +288,15 @@ int main(){auto fixture=CreateFixture();PublicSession session(fixture);std::atom
   api::EngineBeginTransactionRequest second_begin;second_begin.context=context;
   second_begin.context.session_uuid=Identity(other_session_uuid);
   second_begin.context.local_transaction_id=0;second_begin.context.transaction_uuid={};
+  // Begin as the first session did (BeginTransaction): the authorization
+  // context is attached after the engine begins the transaction.
+  second_begin.context.authorization_context={};
   second_begin.isolation_level="read_committed";
   const auto second_begun=api::EngineBeginTransaction(second_begin);
+  for(const auto& d:second_begun.diagnostics){std::cerr<<"second begin: "<<d.code<<':'<<d.detail;for(const auto& f:d.fields)std::cerr<<' '<<f.key<<'='<<f.value;std::cerr<<'\n';}
   Require(second_begun.ok,"second session MGA begin");
   auto second_context=second_begin.context;
+  second_context.authorization_context=context.authorization_context;
   second_context.local_transaction_id=second_begun.local_transaction_id;
   second_context.transaction_uuid=second_begun.transaction_uuid;
   second_context.snapshot_visible_through_local_transaction_id=second_begun.snapshot_visible_through_local_transaction_id;

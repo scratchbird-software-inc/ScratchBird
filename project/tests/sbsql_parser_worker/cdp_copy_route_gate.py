@@ -29,7 +29,11 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from cdp_database_lifecycle_support import PUBLIC_TEST_PASSWORD, seed_database
+from cdp_database_lifecycle_support import (
+    PUBLIC_TEST_PASSWORD,
+    release_work_dir,
+    seed_database,
+)
 
 
 COPY_TARGET = "cdp_copy_target"
@@ -404,7 +408,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--work-dir", required=True)
     args = parser.parse_args(argv[1:])
 
-    work = make_work_dir(Path(args.work_dir))
+    preferred = Path(args.work_dir)
+    work = make_work_dir(preferred)
     try:
         status = run_gate(args, work)
         print(f"cdp_copy_route_gate=passed status={status} work={work}")
@@ -415,6 +420,8 @@ def main(argv: list[str]) -> int:
         print(f"cdp_copy_route_gate=failed work={work}: {exc}", file=sys.stderr)
         dump_logs(work)
         return 1
+    finally:
+        release_work_dir(work, preferred)
 
 
 if __name__ == "__main__":

@@ -7,6 +7,8 @@
 #include "datatype_type_codec_identity_current_projection.hpp"
 #include "ia05_query_explain_cancellation_fault_test.cpp"
 
+#include "../support/durable_authorization_fixture.hpp"
+#include "../support/owned_bootstrap_database_fixture.hpp"
 #include "engine/internal_api/ddl/create_api.hpp"
 #include "engine/internal_api/security/security_principal_lifecycle.hpp"
 #include "engine/internal_api/crud_support/crud_store.hpp"
@@ -66,6 +68,48 @@ api::EngineColumnDefinition CatalogColumn(const api::EngineRequestContext& conte
       "type=" + column.descriptor.canonical_type_name;
   column.nullable = ordinal != 0;
   return column;
+}
+
+// This fixture seeds a schema and table, so its principal must be the durable
+// bootstrap owner of a credentialed create, not an invented UUID; catalog DDL
+// authorizes CATALOG_MUTATE against the materialized durable grants.
+Fixture CreateOwnerFixture() {
+  Fixture fixture;
+  const auto salt = static_cast<std::uint64_t>(
+      std::chrono::steady_clock::now().time_since_epoch().count());
+  fixture.directory = std::filesystem::temp_directory_path() /
+      ("sbsql_sblr_ia05_introspect_" + std::to_string(salt));
+  std::filesystem::create_directories(fixture.directory);
+  fixture.database_path = fixture.directory / "fault.sbdb";
+  fixture.database_uuid = NewUuid(platform::UuidKind::database, salt + 1);
+  fixture.filespace_uuid = NewUuid(platform::UuidKind::filespace, salt + 2);
+  fixture.session_uuid = NewUuid(platform::UuidKind::session, salt + 4);
+  db::DatabaseCreateConfig create;
+  create.path = fixture.database_path.string();
+  create.database_uuid = fixture.database_uuid;
+  create.filespace_uuid = fixture.filespace_uuid;
+  create.creation_unix_epoch_millis = 1950000000000ull + salt % 1'000'000ull;
+  create.page_size = 16384;
+  create.allow_overwrite = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+  scratchbird::tests::ConfigureOwnedBootstrapFixtureMemory("ia05_catalog_introspect_cancellation_fault");
+  const auto created = db::CreateDatabaseFile(create);
+  if (!created.ok()) {
+    std::cerr << "003612 owner create: " << created.diagnostic.diagnostic_code << ' '
+              << created.diagnostic.message_key;
+    for (const auto& argument : created.diagnostic.arguments) std::cerr << ' ' << argument.key;
+    std::cerr << '\n';
+    std::error_code ignored;
+    std::filesystem::remove_all(fixture.directory, ignored);
+  }
+  Require(created.ok(), "003612 owner fixture database creation failed");
+  fixture.resource_epoch = created.state.resource_seed_catalog.resource_epoch == 0
+      ? 1 : created.state.resource_seed_catalog.resource_epoch;
+  const auto bootstrap = db::ReadDatabaseBootstrapSecurityCatalog(create.path);
+  Require(bootstrap.ok() && bootstrap.state.present && bootstrap.state.committed_by_inventory,
+          "003612 owner fixture bootstrap principal missing");
+  fixture.principal_uuid = bootstrap.state.principal_uuid;
+  return fixture;
 }
 
 void SeedCatalogObject(api::EngineRequestContext context, const Fixture& fixture) {
@@ -129,11 +173,12 @@ sblr::SblrOperationEnvelope CatalogIntrospectMember(
 }  // namespace
 
 void VerifyCatalogSnapshot(bool retire_owner) {
-  auto fixture = CreateFixture();
+  auto fixture = CreateOwnerFixture();
   PublicSession session(fixture);
   std::atomic<bool> cancel{false};
   std::atomic<unsigned> probes{0};
   auto context = BeginTransaction(fixture, &probes);
+  scratchbird::tests::MaterializeBootstrapFixtureAuthorization(context);
   context.trace_tags.push_back("right:SBLR_EXECUTOR_AVAILABILITY_ADMIN");
   const auto parser_uuid = Identity(NewUuid(platform::UuidKind::object, 36120));
   context.current_package_uuid = parser_uuid;
@@ -148,14 +193,6 @@ void VerifyCatalogSnapshot(bool retire_owner) {
           "catalog fixture durable security cohort unavailable");
   context.authorization_context.security_context_generation =
       security.state.security_context_generation;
-  api::EngineMaterializedAuthorizationGrant select_grant;
-  select_grant.grant_uuid =
-      Identity(NewUuid(platform::UuidKind::object, 36123));
-  select_grant.subject_uuid = context.principal_uuid;
-  select_grant.subject_kind = "principal";
-  select_grant.right = "SELECT";
-  select_grant.security_epoch = context.security_epoch;
-  context.authorization_context.grants.push_back(std::move(select_grant));
 
   // This fixture enters DDL through the private engine API. Obtain the exact
   // datatype registry cohort from the same receipt producer used by public

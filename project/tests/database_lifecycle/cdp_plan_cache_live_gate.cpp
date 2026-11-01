@@ -1,4 +1,5 @@
 #include "hash_digest.hpp"
+#include "../support/database_fixture_cleanup.hpp"
 #include "../support/engine_evidence_fixture.hpp"
 #include "../support/native_result_cell_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
@@ -30,8 +31,14 @@ namespace db = scratchbird::storage::database;
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
+// std::exit skips destructors, so a failing gate removes its database here.
+std::filesystem::path g_database_path;
+
 [[noreturn]] void Fail(std::string_view message) {
   std::cerr << message << '\n';
+  if (!g_database_path.empty()) {
+    try { scratchbird::tests::RemoveDatabaseFixtureArtifacts(g_database_path); } catch (...) {}
+  }
   std::exit(EXIT_FAILURE);
 }
 
@@ -263,6 +270,7 @@ void RequireSameResult(const api::EnginePlanOperationResult& lhs,
 int main() {
   const auto path = std::filesystem::temp_directory_path() /
                     ("sb_cdp_plan_cache_live_" + std::to_string(NowMillis()) + ".sbdb");
+  g_database_path = path;
   const api::EngineUuid database_uuid = CreateDatabase(path);
   const api::EngineUuid owner_uuid = GeneratedUuid(UuidKind::object, 310);
   const api::EngineUuid schema_uuid = GeneratedUuid(UuidKind::object, 311);
@@ -349,6 +357,6 @@ int main() {
   RequireSameResult(first, after_ddl, "DDL catalog epoch change was not result-preserving");
   Rollback(after_ddl_context);
 
-  std::filesystem::remove(path);
+  scratchbird::tests::RemoveDatabaseFixtureArtifacts(path);
   return EXIT_SUCCESS;
 }

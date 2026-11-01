@@ -361,6 +361,9 @@ void RequireDirectRuntimeValues() {
       Require(scratchbird::tests::NativeInt64Equals(
                   result.value, std::stoll(std::string(item.expected_value))),
               "direct EngineCastValue native integer value mismatch");
+    } else if (item.target_type == "boolean") {
+      Require(scratchbird::tests::NativeBooleanEquals(result.value, item.expected_value == "true"),
+              "direct EngineCastValue native boolean value mismatch");
     } else {
       Require(result.value.encoded_value == item.expected_value &&
                   result.value.binary_value.empty(),
