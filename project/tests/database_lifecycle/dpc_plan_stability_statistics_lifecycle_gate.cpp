@@ -1,5 +1,6 @@
 #include "../support/binary_uuid_fixture.hpp"
 #include "../support/engine_evidence_fixture.hpp"
+#include "../support/native_result_cell_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -148,12 +149,12 @@ api::EngineLocalizedName Name(std::string value) {
 }
 
 api::EngineTypedValue Int64Value(std::int64_t value) {
-  api::EngineTypedValue typed;
-  typed.descriptor.descriptor_kind = "scalar";
-  typed.descriptor.canonical_type_name = "int64";
-  typed.descriptor.encoded_descriptor = "canonical=int64";
-  typed.encoded_value = std::to_string(value);
-  return typed;
+  api::EngineDescriptor descriptor;
+  descriptor.descriptor_kind = "scalar";
+  descriptor.canonical_type_name = "int64";
+  descriptor.encoded_descriptor = "canonical=int64";
+  // int64 input rides the native binary carrier only, never encoded_value text.
+  return scratchbird::tests::NativeInt64CellFixture(std::move(descriptor), value);
 }
 
 api::EngineTypedValue TextValue(std::string value) {
@@ -278,7 +279,12 @@ std::string CountValue(const api::EnginePlanOperationResult& result) {
   Require(!result.result_shape.rows.empty(), "DPC-010 count result had no row");
   Require(!result.result_shape.rows.front().fields.empty(),
           "DPC-010 count result had no field");
-  return result.result_shape.rows.front().fields.front().second.encoded_value;
+  // The engine publishes COUNT natively (int64 binary carrier), never text;
+  // render the decoded value here only so the existing comparisons stay exact.
+  const auto decoded = scratchbird::tests::NativeInt64CellValue(
+      result.result_shape.rows.front().fields.front().second);
+  Require(decoded.has_value(), "DPC-010 count result was not a native int64 carrier");
+  return std::to_string(*decoded);
 }
 
 void RequireSameCountResult(const api::EnginePlanOperationResult& lhs,

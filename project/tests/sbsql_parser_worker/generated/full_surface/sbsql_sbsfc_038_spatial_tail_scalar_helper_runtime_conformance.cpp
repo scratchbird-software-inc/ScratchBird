@@ -49,8 +49,8 @@ SblrValue Int64Value(std::int64_t input) {
   value.payload_kind = SblrValuePayloadKind::signed_integer;
   value.has_int64_value = true;
   value.int64_value = input;
-  value.encoded_value = std::to_string(input);
-  value.text_value = value.encoded_value;
+  // Native carrier only: the engine refuses a text mirror beside INT64/REAL64/BOOLEAN
+  // (src/engine/sblr/sblr_binary_value_carrier.hpp, function_result_helpers.cpp).
   value.is_null = false;
   return value;
 }
@@ -58,6 +58,9 @@ SblrValue Int64Value(std::int64_t input) {
 SblrValue BoolValue(bool input) {
   SblrValue value = Int64Value(input ? 1 : 0);
   value.descriptor_id = "boolean";
+  // Canonical native BOOLEAN: boolean payload over int64 0/1, no text
+  // (MakeInt64Value("boolean") in src/engine/functions/common/function_result_helpers.cpp).
+  value.payload_kind = SblrValuePayloadKind::boolean;
   return value;
 }
 
@@ -67,8 +70,8 @@ SblrValue Real64Value(double input) {
   value.payload_kind = SblrValuePayloadKind::real64;
   value.has_real64_value = true;
   value.real64_value = input;
-  value.encoded_value = std::to_string(input);
-  value.text_value = value.encoded_value;
+  // Native carrier only: the engine refuses a text mirror beside INT64/REAL64/BOOLEAN
+  // (src/engine/sblr/sblr_binary_value_carrier.hpp, function_result_helpers.cpp).
   value.is_null = false;
   return value;
 }

@@ -654,9 +654,13 @@ void OrderedKeyAuthorityAndValueStates() {
                 row->descriptor_uuid, row->descriptor_generation, &binding.datatype),
             "ODF-044 native datatype fixture authority missing");
     binding.descriptor = {platform::UuidKind::object, row->descriptor_uuid};
+    // Same cohort as the storage identity above; the execution descriptor
+    // binding refuses a source from another (or no) cohort.
     auto source = scratchbird::engine::executor::MakeExecutorDescriptor(
         dt::CanonicalTypeName(type), type == dt::CanonicalTypeId::decimal
-            ? "nullability=nullable;precision=38;scale=1" : "nullability=nullable");
+            ? "nullability=nullable;precision=38;scale=1" : "nullability=nullable",
+        api::EngineDatatypeCohort{cohort.catalog_snapshot_uuid, cohort.catalog_generation,
+                                  cohort.registry_generation});
     std::string binding_detail;
     Require(api::bound_index_key::BuildOrderedColumnExecutionDescriptor(
                 source, binding.datatype, true, &binding.execution_descriptor, &binding_detail),

@@ -243,6 +243,9 @@ api::EngineColumnDefinition Column(std::uint32_t ordinal,
   column.descriptor.datatype_descriptor_uuid = binding.row.descriptor_uuid;
   column.descriptor.datatype_descriptor_generation = binding.row.descriptor_generation;
   column.descriptor.type_uuid = binding.row.type_uuid;
+  // The cohort of the identity row; bound scalars and create table require it.
+  column.descriptor.datatype_cohort = {binding.row.catalog_snapshot_uuid, binding.row.catalog_generation,
+                               binding.row.registry_generation};
   column.descriptor.encoded_descriptor = scratchbird::tests::NativeCatalogColumnFixture(
       {{{"type", column.descriptor.canonical_type_name}, {"nullable", "true"}},
        {{"datatype_descriptor_uuid", binding.row.descriptor_uuid}, {"type_uuid", binding.row.type_uuid}}});

@@ -505,12 +505,17 @@ def main(argv: list[str]) -> int:
     except Exception as exc:  # noqa: BLE001 - retain baseline diagnostics.
         failures.append(f"baseline: {exc}")
     finally:
+        # The result matrix is kept with the build's work directory; the
+        # temporary database work tree is removed (tests clean up after
+        # themselves).
+        matrix_path = Path(args.work_dir) / "whole_store_recovery_matrix.tsv"
         matrix_path.parent.mkdir(parents=True, exist_ok=True)
         matrix_path.write_text(
             "boundary\texpected_inventory_classification\tresult\n"
             + "".join("\t".join(row) + "\n" for row in rows),
             encoding="utf-8",
         )
+        shutil.rmtree(work, ignore_errors=True)
 
     covered = {row[0] for row in rows if row[2] == "passed"}
     required_cases = {"no_fault_baseline"} if args.baseline_only else set(REGISTERED_BOUNDARIES)

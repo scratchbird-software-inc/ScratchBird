@@ -145,7 +145,9 @@ bool ExpectInt64(std::string_view case_id,
   if (value.is_null || value.descriptor_id != "int64" ||
       value.payload_kind != SblrValuePayloadKind::signed_integer ||
       !value.has_int64_value || value.int64_value != expected ||
-      value.encoded_value != std::to_string(expected)) {
+      // INT64 is carried natively only (MakeInt64Value in
+      // src/engine/functions/common/function_result_helpers.cpp); no text mirror.
+      !value.encoded_value.empty() || !value.text_value.empty()) {
     std::cerr << case_id << ": expected int64 value " << expected << "\n";
     return false;
   }

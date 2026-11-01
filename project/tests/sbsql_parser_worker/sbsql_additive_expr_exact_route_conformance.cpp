@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/native_int64_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -269,7 +270,8 @@ void RequireEngineDispatch() {
   Require(field.second.descriptor.canonical_type_name == "int64",
           "additive_expr result descriptor mismatch");
   Require(!field.second.is_null, "additive_expr result unexpectedly null");
-  Require(field.second.encoded_value == "15", "additive_expr result value mismatch");
+  // The engine carries int64 results natively (binary carrier), never text.
+  Require(scratchbird::tests::NativeInt64Equals(field.second, 15), "additive_expr result value mismatch");
   Require(HasEvidence(result.api_result, "operator_runtime", "op_add"),
           "additive_expr result missing op_add runtime evidence");
 }

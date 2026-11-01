@@ -247,7 +247,7 @@ bool ValidateQuantifiedSubquery() {
       result.diagnostic.ok && result.truth_value == Truth::true_value &&
           result.comparison_count == 3 &&
           result.output_batch.rows.size() == 1 &&
-          result.output_batch.rows[0].values[0].encoded_value == "true" &&
+          scratchbird::tests::NativeBooleanEquals(result.output_batch.rows[0].values[0], true) &&
           result.selected_plan_uuid ==
               BinaryUuid("019f0000-0000-7200-8000-000000002907") &&
           result.executed_physical_node_id == 2902 &&
@@ -274,8 +274,8 @@ bool ValidateQuantifiedSubquery() {
   passed &= Require(result.diagnostic.ok &&
                         result.truth_value == Truth::false_value &&
                         result.comparison_count == 2 &&
-                        result.output_batch.rows[0].values[0].encoded_value ==
-                            "false",
+                        scratchbird::tests::NativeBooleanEquals(
+                            result.output_batch.rows[0].values[0], false),
                     "ANY all-FALSE result was not FALSE");
 
   request = Request();
@@ -342,7 +342,7 @@ bool ValidateQuantifiedSubquery() {
   passed &= Require(
       result.diagnostic.ok && result.truth_value == Truth::true_value &&
           result.comparison_count == 3 &&
-          result.output_batch.rows[0].values[0].encoded_value == "true",
+          scratchbird::tests::NativeBooleanEquals(result.output_batch.rows[0].values[0], true),
       "descriptor-compatible real64 ANY comparison was refused: " +
           result.diagnostic.diagnostic_code + ":" + result.diagnostic.detail);
 

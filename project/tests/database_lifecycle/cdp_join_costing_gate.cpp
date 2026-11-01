@@ -1,4 +1,5 @@
 #include "../support/engine_evidence_fixture.hpp"
+#include "../support/native_result_cell_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -60,12 +61,19 @@ api::EngineUuid NewIdentity(platform::UuidKind kind, platform::u64 salt) {
 }
 
 api::EngineTypedValue IntValue(std::int64_t value) {
-  api::EngineTypedValue typed;
-  typed.descriptor.descriptor_kind = "scalar";
-  typed.descriptor.canonical_type_name = "int64";
-  typed.descriptor.encoded_descriptor = "canonical=int64";
-  typed.encoded_value = std::to_string(value);
-  return typed;
+  api::EngineDescriptor descriptor;
+  descriptor.descriptor_kind = "scalar";
+  descriptor.canonical_type_name = "int64";
+  descriptor.encoded_descriptor = "canonical=int64";
+  // int64 input rides the native binary carrier only, never encoded_value text.
+  return scratchbird::tests::NativeInt64CellFixture(std::move(descriptor), value);
+}
+
+std::string NativeInt64Signature(const api::EngineTypedValue& value) {
+  // Joined int64 cells are decoded from the native binary carrier, never text.
+  const auto decoded = scratchbird::tests::NativeInt64CellValue(value);
+  Require(decoded.has_value(), "CDP-023 joined int64 cell was not a native int64 carrier");
+  return std::to_string(*decoded);
 }
 
 api::EngineRowValue Row(std::int64_t key, std::int64_t payload) {
@@ -151,8 +159,8 @@ std::vector<std::string> ResultSignature(const api::EnginePlanOperationResult& r
   std::vector<std::string> values;
   for (const auto& row : result.result_shape.rows) {
     Require(row.fields.size() >= 4, "CDP-023 joined row width mismatch");
-    values.push_back(row.fields[0].second.encoded_value + ":" +
-                     row.fields[2].second.encoded_value);
+    values.push_back(NativeInt64Signature(row.fields[0].second) + ":" +
+                     NativeInt64Signature(row.fields[2].second));
   }
   std::sort(values.begin(), values.end());
   return values;

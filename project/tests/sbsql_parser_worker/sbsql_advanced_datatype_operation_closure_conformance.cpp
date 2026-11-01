@@ -9,6 +9,7 @@
 #include "../support/binary_uuid_fixture.hpp"
 #include "../support/catalog_column_binding_fixture.hpp"
 #include "../support/engine_statement_fixture.hpp"
+#include "../support/native_int64_fixture.hpp"
 #include "../support/owned_temp_directory.hpp"
 #include "sbl_numeric.hpp"
 #include "crud_support/crud_store.hpp"
@@ -314,10 +315,15 @@ void RequireNumericOperations(const api::EngineRequestContext& context) {
       const auto result = api::EngineApplyNumericOperation(request);
       if (!result.ok) { std::cerr << operation << '/' << rounding << ':' << FirstDetail(result) << '\n'; }
       Require(result.ok, "supported numeric operation or rounding mode refused");
-      const auto expected = operation == "cmp" ? std::string("false") :
+      // DECIMAL results keep their exact native codec bytes in encoded_value;
+      // the BOOLEAN compare result is the native 1-byte binary carrier
+      // (PublishScalarCastValue, src/engine/internal_api/query/expression_api.cpp).
+      const auto expected = operation == "cmp" ? std::string() :
           TypedValue("decimal", operation == "add" ? "12" : operation == "sub" ? "8" :
               operation == "mul" ? "20" : operation == "div" ? "5" : "10").encoded_value;
-      Require(result.value.encoded_value == expected && !result.value.isSqlNull() &&
+      Require((operation == "cmp" ? scratchbird::tests::NativeBooleanEquals(result.value, false)
+                                  : result.value.encoded_value == expected) &&
+                  !result.value.isSqlNull() &&
                   !result.numeric_facts.inexact && (operation != "cmp" || result.comparison == 1),
               "native decimal operation did not publish its exact result");
       Require(HasEvidence(result, "datatype_numeric_operation",
@@ -586,7 +592,7 @@ void RequireNullConsumerContracts(const api::EngineRequestContext& context) {
   const auto binary_membership_result =
       api::EngineSetOperation(binary_membership);
   Require(binary_membership_result.ok &&
-              binary_membership_result.value.encoded_value == "true",
+              scratchbird::tests::NativeBooleanEquals(binary_membership_result.value, true),
           "engine set membership did not preserve native binary payload bytes");
 
   api::EngineSetOperationRequest cardinality_request;
@@ -758,6 +764,17 @@ sblr::SblrValue SblrInt(std::int64_t input) {
   return value;
 }
 
+// SBLR BOOLEAN results are native: descriptor boolean, payload_kind boolean,
+// int64_value 0/1 and no text carrier (BoolValue in
+// src/engine/sblr/sblr_operator_runtime_00_common_helpers.inc).
+bool SblrNativeBooleanEquals(const sblr::SblrValue& value, bool expected) {
+  return !value.is_null && value.descriptor_id == "boolean" &&
+      value.payload_kind == sblr::SblrValuePayloadKind::boolean &&
+      value.has_int64_value && !value.has_uint64_value && !value.has_real64_value &&
+      value.int64_value == (expected ? 1 : 0) &&
+      value.encoded_value.empty() && value.text_value.empty() && value.binary_value.empty();
+}
+
 void RequireOkScalar(const sblr::SblrResult& result, std::string_view message) {
   if (!result.ok()) {
     for (const auto& diagnostic : result.diagnostics) {
@@ -804,7 +821,7 @@ void RequireSblrCollectionVectorSpecializedOperators() {
       SblrText("character", "<NULL>"), context);
   RequireOkScalar(present_null_membership,
                   "canonical SBSET2 present <NULL> membership refused");
-  Require(present_null_membership.scalar_values.front().encoded_value == "TRUE",
+  Require(SblrNativeBooleanEquals(present_null_membership.scalar_values.front(), true),
           "canonical SBSET2 present <NULL> membership was not preserved");
 
   const auto empty_character_set = SblrSet(
@@ -815,8 +832,7 @@ void RequireSblrCollectionVectorSpecializedOperators() {
           SblrText("character", ""), context);
   RequireOkScalar(empty_character_membership,
                   "canonical empty character set element was refused");
-  Require(empty_character_membership.scalar_values.front().encoded_value ==
-              "TRUE",
+  Require(SblrNativeBooleanEquals(empty_character_membership.scalar_values.front(), true),
           "canonical V token did not preserve an empty character value");
 
   const auto escaped_character_membership =
@@ -826,8 +842,7 @@ void RequireSblrCollectionVectorSpecializedOperators() {
           SblrText("character", R"json("\u0061")json"), context);
   RequireOkScalar(escaped_character_membership,
                   "SBSET2 escaped character membership refused");
-  Require(escaped_character_membership.scalar_values.front().encoded_value ==
-              "TRUE",
+  Require(SblrNativeBooleanEquals(escaped_character_membership.scalar_values.front(), true),
           "SBSET2 membership normalized character bytes through JSON");
 
   sblr::SblrValue null_candidate;

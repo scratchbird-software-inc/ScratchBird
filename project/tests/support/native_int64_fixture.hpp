@@ -43,4 +43,33 @@ inline engine::internal_api::EngineTypedValue NativeReal64Fixture(
     value.binary_value.push_back(static_cast<std::uint8_t>(bits >> (8 * byte)));
   return value;
 }
+// Result-side decoders. They mirror EngineTypedValueFromSblrValue in
+// src/engine/sblr/sblr_projection_value_runtime.hpp: UINT64 and REAL64 results
+// carry exactly 8 little-endian bytes in binary_value and no text carrier.
+inline bool NativeUInt64Equals(const engine::internal_api::EngineTypedValue& value, std::uint64_t expected) {
+  if (value.is_null || value.state != engine::internal_api::EngineValueState::value ||
+      value.descriptor.canonical_type_name != "uint64" || !value.encoded_value.empty() ||
+      value.binary_value.size() != 8) return false;
+  std::uint64_t bits = 0;
+  for (unsigned byte = 0; byte < 8; ++byte) bits |= std::uint64_t(value.binary_value[byte]) << (8 * byte);
+  return bits == expected;
+}
+// Returns false (and leaves *out untouched) unless the value is a non-NULL native REAL64.
+inline bool NativeReal64Value(const engine::internal_api::EngineTypedValue& value, double* out) {
+  if (value.is_null || value.state != engine::internal_api::EngineValueState::value ||
+      value.descriptor.canonical_type_name != "real64" || !value.encoded_value.empty() ||
+      value.binary_value.size() != 8) return false;
+  std::uint64_t bits = 0;
+  for (unsigned byte = 0; byte < 8; ++byte) bits |= std::uint64_t(value.binary_value[byte]) << (8 * byte);
+  *out = std::bit_cast<double>(bits);
+  return true;
+}
+// BOOLEAN results carry exactly one byte (0 or 1) in binary_value and no text:
+// QowMaterializeCanonicalTruthValueV1 (src/engine/internal_api/query/expression_api.cpp)
+// and EngineTypedValueFromSblrValue (src/engine/sblr/sblr_projection_value_runtime.hpp).
+inline bool NativeBooleanEquals(const engine::internal_api::EngineTypedValue& value, bool expected) {
+  return !value.is_null && value.state == engine::internal_api::EngineValueState::value &&
+      value.descriptor.canonical_type_name == "boolean" && value.encoded_value.empty() &&
+      value.binary_value.size() == 1 && value.binary_value[0] == (expected ? 1 : 0);
+}
 }  // namespace scratchbird::tests

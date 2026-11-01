@@ -16,6 +16,7 @@ import shutil
 import stat
 import sys
 import tempfile
+import time
 
 
 class CleanupRefused(RuntimeError):
@@ -54,7 +55,27 @@ def _process_exit_confirmed(process):
         os.close(descriptor)
 
 
-def _active_references(root):
+def _started_before(process, created_wall_seconds):
+    """True when the process started before the runtime directory existed.
+
+    Such a process cannot hold a reference to the runtime's random path unless
+    the test handed it over, and the test hands it only to processes it starts
+    afterwards. Start time comes from /proc/<pid>/stat (world-readable)."""
+    if created_wall_seconds is None:
+        return False
+    try:
+        fields = (process / "stat").read_text().rpartition(") ")[2].split()
+        start_ticks = int(fields[19])
+        boot = next(int(line.split()[1]) for line in
+                    Path("/proc/stat").read_text().splitlines() if line.startswith("btime "))
+        started = boot + start_ticks / os.sysconf("SC_CLK_TCK")
+    except (OSError, ValueError, IndexError, StopIteration):
+        return False
+    # One second of slack for the boot-time granularity, in the refusing direction.
+    return started + 1.0 < created_wall_seconds
+
+
+def _active_references(root, created_wall_seconds=None):
     if not sys.platform.startswith("linux"):
         raise CleanupRefused("live-process inspection requires the Linux runner")
     needle = os.fsencode(root)
@@ -92,12 +113,18 @@ def _active_references(root):
                 continue
             if _process_exit_confirmed(process):
                 continue
+            # A live process this user cannot inspect (another sandbox or VM
+            # running under the same uid) that predates the runtime cannot
+            # reference it; skipping it does not weaken the check.
+            if _started_before(process, created_wall_seconds):
+                continue
             raise CleanupRefused("cannot inspect an owned process: " + process.name) from error
     return active
 
 
 class OwnedTestRuntime:
     def __init__(self, parent=None):
+        self._created_wall_seconds = time.time()
         self.path = Path(tempfile.mkdtemp(prefix="sbuidreg", dir=parent))
         info = self.path.lstat()
         self._identity = (info.st_dev, info.st_ino, info.st_uid)
@@ -131,7 +158,7 @@ class OwnedTestRuntime:
         if not controller_finished:
             raise CleanupRefused("test controller has not terminated")
         files = self._inventory()
-        active = _active_references(self.path)
+        active = _active_references(self.path, self._created_wall_seconds)
         if active:
             raise CleanupRefused("runtime still referenced by PIDs " + repr(active))
         evidence = Path(evidence).resolve()
@@ -167,7 +194,7 @@ class OwnedTestRuntime:
                     shutil.copyfileobj(source, output)
             retained += metadata.st_size
         self._inventory()
-        active = _active_references(self.path)
+        active = _active_references(self.path, self._created_wall_seconds)
         if active:
             raise CleanupRefused("runtime became active: " + repr(active))
         receipt = {"runtime": str(self.path), "diagnostic_bytes_retained": retained,

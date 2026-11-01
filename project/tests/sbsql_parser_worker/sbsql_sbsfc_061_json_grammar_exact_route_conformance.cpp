@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/native_int64_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -349,8 +350,16 @@ void RequireEngineDispatch(const JsonCase& test_case) {
   Require(field.second.descriptor.canonical_type_name == test_case.expected_type,
           "SBSFC-061 result descriptor mismatch");
   Require(!field.second.is_null, "SBSFC-061 result unexpectedly null");
-  Require(field.second.encoded_value == test_case.expected_value,
-          "SBSFC-061 result value mismatch");
+  if (test_case.expected_type == "boolean") {
+    // BOOLEAN results ride one native byte (0/1), never a text carrier.
+    Require(test_case.expected_value == "0" || test_case.expected_value == "1",
+            "SBSFC-061 boolean expectation must be 0 or 1");
+    Require(scratchbird::tests::NativeBooleanEquals(field.second, test_case.expected_value == "1"),
+            "SBSFC-061 result value mismatch");
+  } else {
+    Require(field.second.encoded_value == test_case.expected_value,
+            "SBSFC-061 result value mismatch");
+  }
   if (!test_case.function_id.empty()) {
     Require(scratchbird::tests::FixtureCallableEvidence(result.api_result, test_case.function_id),
             "SBSFC-061 result missing function runtime evidence");

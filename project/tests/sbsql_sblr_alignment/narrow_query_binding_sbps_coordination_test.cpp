@@ -148,6 +148,9 @@ api::EngineColumnDefinition Int32Column() {
   column.descriptor.datatype_descriptor_uuid = lookup.row.descriptor_uuid;
   column.descriptor.datatype_descriptor_generation = lookup.row.descriptor_generation;
   column.descriptor.type_uuid = lookup.row.type_uuid;
+  // The cohort of the identity row; bound scalars and create table require it.
+  column.descriptor.datatype_cohort = {lookup.row.catalog_snapshot_uuid, lookup.row.catalog_generation,
+                               lookup.row.registry_generation};
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = lookup.row.canonical_name;
   column.descriptor.encoded_descriptor = Int32Descriptor();

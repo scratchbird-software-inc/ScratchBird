@@ -389,6 +389,11 @@ api::EngineColumnDefinition Column(const api::EngineRequestContext& context,
   column.descriptor.datatype_descriptor_uuid = binding.row.descriptor_uuid;
   column.descriptor.datatype_descriptor_generation = binding.row.descriptor_generation;
   column.descriptor.type_uuid = binding.row.type_uuid;
+  // The cohort the binding was looked up in; create table requires it to be
+  // the context's (bound_column_datatype_catalog_mismatch otherwise).
+  column.descriptor.datatype_cohort = {context.datatype_catalog_snapshot_uuid,
+                                       context.datatype_catalog_generation,
+                                       context.datatype_registry_generation};
   api::CatalogColumnMetadata metadata;
   metadata.text = {{"canonical", column.descriptor.canonical_type_name},
                    {"nullable", "false"}};

@@ -56,6 +56,9 @@ api::EngineColumnDefinition CatalogColumn(const api::EngineRequestContext& conte
   column.descriptor.datatype_descriptor_uuid = descriptor.descriptor_uuid.value;
   column.descriptor.datatype_descriptor_generation = descriptor.descriptor_epoch;
   column.descriptor.type_uuid = codec.row.type_uuid;
+  // The cohort of the identity row; bound scalars and create table require it.
+  column.descriptor.datatype_cohort = {codec.row.catalog_snapshot_uuid, codec.row.catalog_generation,
+                               codec.row.registry_generation};
   column.names.push_back(CatalogName(std::move(value)));
   column.descriptor.descriptor_kind = "scalar";
   column.descriptor.canonical_type_name = std::move(type);

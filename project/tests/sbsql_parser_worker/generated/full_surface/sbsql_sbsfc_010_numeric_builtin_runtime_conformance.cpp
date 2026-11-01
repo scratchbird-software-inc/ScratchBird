@@ -37,8 +37,8 @@ SblrValue Real64Value(double input) {
   value.is_null = false;
   value.has_real64_value = true;
   value.real64_value = input;
-  value.encoded_value = std::to_string(input);
-  value.text_value = value.encoded_value;
+  // REAL64/INT64 carry only their native payload; the dispatcher refuses a
+  // text carrier beside it (src/engine/sblr/sblr_binary_value_carrier.hpp).
   return value;
 }
 
@@ -49,8 +49,6 @@ SblrValue Int64Value(std::int64_t input) {
   value.is_null = false;
   value.has_int64_value = true;
   value.int64_value = input;
-  value.encoded_value = std::to_string(input);
-  value.text_value = value.encoded_value;
   return value;
 }
 
@@ -116,7 +114,7 @@ bool ExpectReal64(std::string_view case_id,
   if (value.is_null || !value.has_real64_value || value.descriptor_id != "real64" ||
       std::fabs(value.real64_value - expected) > epsilon) {
     std::cerr << case_id << ": expected real64 " << expected << ", got "
-              << value.descriptor_id << " " << value.encoded_value << "\n";
+              << value.descriptor_id << " " << value.real64_value << "\n";
     return false;
   }
   return true;
@@ -130,7 +128,7 @@ bool ExpectInt64(std::string_view case_id,
   if (value.is_null || !value.has_int64_value || value.descriptor_id != "int64" ||
       value.int64_value != expected) {
     std::cerr << case_id << ": expected int64 " << expected << ", got "
-              << value.descriptor_id << " " << value.encoded_value << "\n";
+              << value.descriptor_id << " " << value.int64_value << "\n";
     return false;
   }
   return true;

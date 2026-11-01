@@ -1,4 +1,5 @@
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/native_int64_fixture.hpp"
 #include "uuid.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
@@ -55,15 +56,20 @@ int main() {
   const auto second = scratchbird::core::uuid::IssueRuntimeIdentityV7();
   expect(first && second && *first != *second, "issued execution identities collided");
 
-  api::EngineTypedValue integer;
-  integer.descriptor = Descriptor(uuid, "int64");
-  integer.encoded_value = "-42";
+  // INT64 is admitted only with its bound datatype identity and exclusive
+  // native 8-byte carrier (DecodeBoundSignedIntegerValue,
+  // src/engine/executor/descriptor_value_runtime.cpp); text is never admitted.
+  auto integer = scratchbird::tests::NativeInt64Fixture(
+      scratchbird::tests::ExactScalarDescriptorFixture(
+          scratchbird::core::datatypes::CanonicalTypeId::int64, "int64", uuid,
+          "nullability=non_null"),
+      "-42");
+  integer.state = api::EngineValueState::value;
   std::int64_t decoded = 0;
   std::string detail;
   expect(query::DecodeCanonicalInt64Scalar(integer, &decoded, &detail) &&
              decoded == -42,
-         "text int64 decode failed");
-  integer.encoded_value.clear();
+         "native int64 fixture decode failed");
   integer.binary_value = {0xd6, 0xff, 0xff, 0xff,
                           0xff, 0xff, 0xff, 0xff};
   expect(query::DecodeCanonicalInt64Scalar(integer, &decoded, &detail) &&

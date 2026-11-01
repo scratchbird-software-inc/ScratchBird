@@ -1125,8 +1125,8 @@ executor::PhysicalUuid ProductionCoreTypeUuidV1(const std::string_view stable_na
   const auto found = std::ranges::find_if(manifest.manifest.descriptor_rows,
       [&](const auto& row) { return row.stable_name == stable_name; });
   if (found == manifest.manifest.descriptor_rows.end()) return {};
-  dt::DatatypeStorageIdentityV1 identity;
-  if (!dt::LookupDatatypeStorageIdentityV1(api::kBootstrapDatatypeCatalogUuid,
+  dt::DatatypeStorageIdentityV3 identity;  // V1 refuses current cohorts by design
+  if (!dt::LookupDatatypeStorageIdentityV3(api::kBootstrapDatatypeCatalogUuid,
           api::kBootstrapDatatypeCatalogGeneration, api::kBootstrapDatatypeRegistryGeneration,
           found->descriptor_uuid.value, found->descriptor_epoch, &identity)) return {};
   return identity.type_uuid;
@@ -1136,8 +1136,14 @@ api::EngineDescriptor BoundProductionColumnDescriptorV1(
     const api::EngineRequestContext& context,
     std::string canonical_type, const executor::PhysicalUuid& type_uuid,
     std::string attributes) {
+  // The context's cohort, named explicitly: create table requires the column
+  // cohort to be the context's.
+  const api::EngineDatatypeCohort cohort{context.datatype_catalog_snapshot_uuid,
+                                         context.datatype_catalog_generation,
+                                         context.datatype_registry_generation};
   auto descriptor = executor::MakeExecutorDescriptor(canonical_type,
-      "canonical=" + canonical_type + ";" + attributes);
+      "canonical=" + canonical_type + ";" + attributes, cohort);
+  descriptor.datatype_cohort = cohort;
   descriptor.type_uuid = type_uuid;
   descriptor.datatype_descriptor_uuid = type_uuid;
   const auto catalog = dt::LoadCurrentCoreDatatypeCatalogManifest();
@@ -1147,8 +1153,8 @@ api::EngineDescriptor BoundProductionColumnDescriptorV1(
   if (row == catalog.manifest.descriptor_rows.end())
     throw std::runtime_error("datatype_fixture_binding_missing");
   descriptor.datatype_descriptor_generation = row->descriptor_epoch;
-  dt::DatatypeStorageIdentityV1 identity;
-  if (!dt::LookupDatatypeStorageIdentityV1(
+  dt::DatatypeStorageIdentityV3 identity;  // V1 refuses current cohorts by design
+  if (!dt::LookupDatatypeStorageIdentityV3(
           context.datatype_catalog_snapshot_uuid,
           context.datatype_catalog_generation, context.datatype_registry_generation,
           descriptor.datatype_descriptor_uuid,
@@ -1163,7 +1169,7 @@ api::EngineDescriptor BoundProductionColumnDescriptorV1(
     throw std::runtime_error("datatype_fixture_metadata_invalid");
   fields.identities["type_uuid"] = identity.type_uuid;
   if (identity.codec) {
-    const auto& codec = *identity.codec;
+    const auto& codec = identity.codec->legacy_fields;
     fields.identities["type_uuid"] = codec.type_uuid;
     fields.identities["datatype_descriptor_uuid"] = codec.descriptor_uuid;
     fields.identities["codec_uuid"] = codec.codec_uuid;

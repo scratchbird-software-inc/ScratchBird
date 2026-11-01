@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/native_value_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
 #include "binder/binder.hpp"
@@ -98,27 +99,16 @@ void ConfigureMemoryFixture() {
   Require(configured.fixture_mode, "Gate 012 memory fixture mode was not active");
 }
 
-sblr::SblrValue TextValue(std::string descriptor, std::string input) {
-  sblr::SblrValue value;
-  value.descriptor_id = std::move(descriptor);
-  value.payload_kind = sblr::SblrValuePayloadKind::text;
-  value.is_null = false;
-  value.encoded_value = std::move(input);
-  value.text_value = value.encoded_value;
-  return value;
-}
-
-sblr::SblrValue NullValue(std::string descriptor) {
-  sblr::SblrValue value;
-  value.descriptor_id = std::move(descriptor);
-  value.is_null = true;
-  return value;
-}
-
 sblr::SblrResult RunFunction(const fn::FunctionRegistry& registry,
                              std::string function_id,
-                             std::vector<sblr::SblrValue> values = {}) {
+                             std::vector<sblr::SblrValue> values = {},
+                             std::string result_type = {}) {
   fn::FunctionCallRequest request;
+  // Native DATE month routines require an exact bound result descriptor in the
+  // same datatype cohort as their bound operand (EvaluateSblrDateMonth,
+  // src/engine/sblr/sblr_temporal_cast.cpp).
+  if (!result_type.empty())
+    request.result_descriptor = scratchbird::tests::NativeBoundDescriptor(result_type);
   if (const auto* entry = registry.Lookup(function_id))
     request.context.function_uuid = entry->function_uuid;
   request.context.function_id = std::move(function_id);
@@ -144,28 +134,33 @@ void RequireLastDayRuntime() {
   Require(entry->package_state == fn::FunctionPackageState::core,
           "Gate 012 last_day is not a core package function");
 
+  using namespace std::chrono_literals;
+  // DATE is the native four-byte day carrier in and out, never ISO text.
   const auto normal = RunFunction(package.registry,
                                   "sb.temporal.last_day",
-                                  {TextValue("date", "2026-05-11")});
+                                  {scratchbird::tests::NativeDateSblrValue(2026y / 5 / 11)},
+                                  "date");
   Require(normal.ok(), "Gate 012 last_day normal date failed");
   Require(normal.scalar_values.size() == 1, "Gate 012 last_day normal arity drifted");
   Require(!normal.scalar_values.front().is_null, "Gate 012 last_day normal returned null");
   Require(normal.scalar_values.front().descriptor_id == "date",
           "Gate 012 last_day normal descriptor drifted");
-  Require(normal.scalar_values.front().text_value == "2026-05-31",
+  Require(scratchbird::tests::NativeDateSblrEquals(normal.scalar_values.front(), 2026y / 5 / 31),
           "Gate 012 last_day normal value drifted");
 
   const auto leap = RunFunction(package.registry,
                                 "sb.temporal.last_day",
-                                {TextValue("date", "2024-02-15")});
+                                {scratchbird::tests::NativeDateSblrValue(2024y / 2 / 15)},
+                                "date");
   Require(leap.ok(), "Gate 012 last_day leap date failed");
   Require(leap.scalar_values.size() == 1, "Gate 012 last_day leap arity drifted");
-  Require(leap.scalar_values.front().text_value == "2024-02-29",
+  Require(scratchbird::tests::NativeDateSblrEquals(leap.scalar_values.front(), 2024y / 2 / 29),
           "Gate 012 last_day leap value drifted");
 
   const auto null_value = RunFunction(package.registry,
                                       "sb.temporal.last_day",
-                                      {NullValue("date")});
+                                      {scratchbird::tests::NativeNullSblrValue("date")},
+                                      "date");
   Require(null_value.ok(), "Gate 012 last_day null input failed");
   Require(null_value.scalar_values.size() == 1, "Gate 012 last_day null arity drifted");
   Require(null_value.scalar_values.front().is_null,

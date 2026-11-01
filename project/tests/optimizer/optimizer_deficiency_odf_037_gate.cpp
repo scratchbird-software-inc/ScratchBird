@@ -8,6 +8,7 @@
 
 #include "../support/engine_evidence_fixture.hpp"
 #include "../support/engine_statement_fixture.hpp"
+#include "../support/native_int64_fixture.hpp"
 #include "catalog/column_metadata_codec.hpp"
 #include "memory.hpp"
 #include "database_lifecycle.hpp"
@@ -139,6 +140,16 @@ api::EngineApiU64 EvidenceU64(const std::vector<api::EngineEvidenceReference>& e
     parsed = parsed * 10 + static_cast<api::EngineApiU64>(ch - '0');
   }
   return parsed;
+}
+
+const api::EngineTypedValue* FieldTyped(const api::EngineResultShape& result,
+                                        std::size_t row_index,
+                                        std::string_view field_name) {
+  Require(row_index < result.rows.size(), "ODF-037 result row index out of range");
+  for (const auto& [name, value] : result.rows[row_index].fields) {
+    if (name == field_name) return &value;
+  }
+  return nullptr;
 }
 
 std::string FieldValue(const api::EngineResultShape& result,
@@ -354,7 +365,11 @@ void TestRejectFallbackUsesBisection() {
           "ODF-037 first accepted result row moved");
   Require(FieldValue(result.result_shape, 3, "id") == "new-id-4",
           "ODF-037 left accepted result ordering changed");
-  Require(FieldValue(result.result_shape, 4, "source_row_number") == "5",
+  // source_row_number is a native uint64 (binary carrier,
+  // src/engine/internal_api/dml/import_execution_api.cpp RejectU64Value), never text.
+  const auto* source_row_number = FieldTyped(result.result_shape, 4, "source_row_number");
+  Require(source_row_number != nullptr &&
+              scratchbird::tests::NativeUInt64Equals(*source_row_number, 5),
           "ODF-037 reject diagnostic source row changed");
   Require(FieldValue(result.result_shape, 5, "id") == "new-id-6",
           "ODF-037 right accepted result ordering changed");

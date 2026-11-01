@@ -420,6 +420,9 @@ api::EngineDescriptor BoundDescriptor(std::string_view type) {
   descriptor.descriptor_uuid = scratchbird::tests::FixtureUuid(
       2053, static_cast<unsigned>(dt::CanonicalTypeIdFromStableName(std::string(type))));
   descriptor.type_uuid = identity.row.type_uuid;
+  // The cohort of the identity row; bound scalars and create table require it.
+  descriptor.datatype_cohort = {identity.row.catalog_snapshot_uuid, identity.row.catalog_generation,
+                               identity.row.registry_generation};
   descriptor.datatype_descriptor_uuid = datatype.descriptor_uuid.value;
   descriptor.datatype_descriptor_generation = datatype.descriptor_epoch;
   descriptor.encoded_descriptor = "nullability=nullable";

@@ -8,6 +8,7 @@
 
 #include "../support/binary_uuid_fixture.hpp"
 #include "../support/native_boolean_projection_fixture.hpp"
+#include "../support/native_int64_fixture.hpp"
 #include "ast/ast.hpp"
 #include "binder/binder.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
@@ -33,6 +34,7 @@
 #include <stdexcept>
 #include <initializer_list>
 #include <iostream>
+#include <limits>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -84,11 +86,52 @@ bool ScalarFixtureValueEquals(const api::EngineTypedValue& value, std::string_vi
          ((expected == "false" || expected == "0") && value.binary_value[0] == 0));
   if (value.descriptor.canonical_type_name == "binary")
     return value.encoded_value.empty() && value.binary_value == FixtureHexBytes(expected);
+  // INT64 / UINT64 / REAL64 results carry only their native 8-byte binary
+  // carrier (EngineTypedValueFromSblrValue, sblr_projection_value_runtime.hpp).
+  // The expected text is test-oracle presentation, parsed here, never compared
+  // against an engine text carrier.
+  if (value.descriptor.canonical_type_name == "int64") {
+    std::int64_t number = 0;
+    const auto parsed = std::from_chars(expected.data(), expected.data() + expected.size(), number);
+    return parsed.ec == std::errc{} && parsed.ptr == expected.data() + expected.size() &&
+        scratchbird::tests::NativeInt64Equals(value, number);
+  }
+  if (value.descriptor.canonical_type_name == "uint64") {
+    std::uint64_t number = 0;
+    const auto parsed = std::from_chars(expected.data(), expected.data() + expected.size(), number);
+    return parsed.ec == std::errc{} && parsed.ptr == expected.data() + expected.size() &&
+        scratchbird::tests::NativeUInt64Equals(value, number);
+  }
+  if (value.descriptor.canonical_type_name == "real64") {
+    double number = 0, actual = 0;
+    const auto parsed = std::from_chars(expected.data(), expected.data() + expected.size(), number);
+    return parsed.ec == std::errc{} && parsed.ptr == expected.data() + expected.size() &&
+        scratchbird::tests::NativeReal64Value(value, &actual) && actual == number;
+  }
   if (value.descriptor.canonical_type_name != "uuid") return value.encoded_value == expected;
   // Test oracle presentation only; the actual engine value must remain raw16.
   const auto identity = scratchbird::core::uuid::ParseUuid(std::string(expected));
   return identity.ok() && value.encoded_value.empty() && value.binary_value.size() == 16 &&
       std::equal(identity.value.bytes.begin(), identity.value.bytes.end(), value.binary_value.begin());
+}
+
+// Test oracle only: decodes a native INT64 / UINT64 / REAL64 result carrier
+// (EngineTypedValueFromSblrValue, src/engine/sblr/sblr_projection_value_runtime.hpp)
+// to a double for tolerance checks. Any other type, a NULL, or a value that
+// carries text returns NaN, so the caller's tolerance comparison fails.
+double FixtureNumber(const api::EngineTypedValue& value) {
+  double real = 0;
+  if (scratchbird::tests::NativeReal64Value(value, &real)) return real;
+  if (!value.is_null && value.state == api::EngineValueState::value &&
+      value.encoded_value.empty() && value.binary_value.size() == 8 &&
+      (value.descriptor.canonical_type_name == "int64" ||
+       value.descriptor.canonical_type_name == "uint64")) {
+    std::uint64_t bits = 0;
+    for (unsigned byte = 0; byte < 8; ++byte) bits |= std::uint64_t(value.binary_value[byte]) << (8 * byte);
+    return value.descriptor.canonical_type_name == "int64"
+        ? static_cast<double>(static_cast<std::int64_t>(bits)) : static_cast<double>(bits);
+  }
+  return std::numeric_limits<double>::quiet_NaN();
 }
 
 struct ScalarLiteralGrammarRowEvidence {
@@ -6847,7 +6890,7 @@ void RequireSbsfc016ReferenceAliasFunctionProjectionLowering() {
   };
   Require(row.fields[0].first == "ceiling_value" &&
               row.fields[0].second.descriptor.canonical_type_name == "real64" &&
-              std::fabs(std::stod(row.fields[0].second.encoded_value) - 2.0) < 1e-6,
+              std::fabs(FixtureNumber(row.fields[0].second) - 2.0) < 1e-6,
           "engine reference alias function scalar projection mismatch: ceiling_value");
   expect_text(1, "nvl_value", "text", "fallback");
   expect_text(2, "iif_value", "text", "yes");
@@ -8836,11 +8879,11 @@ void RequireEngineDispatch() {
   Require(row.fields.size() == 4, "engine scalar projection column count mismatch");
   Require(row.fields[0].first == "one" &&
               row.fields[0].second.descriptor.canonical_type_name == "bigint" &&
-              row.fields[0].second.encoded_value == "1",
+              ScalarFixtureValueEquals(row.fields[0].second, "1"),
           "engine scalar projection first field mismatch");
   Require(row.fields[1].first == "two" &&
               row.fields[1].second.descriptor.canonical_type_name == "text" &&
-              row.fields[1].second.encoded_value == "two",
+              ScalarFixtureValueEquals(row.fields[1].second, "two"),
           "engine scalar projection second field mismatch");
   Require(row.fields[2].first == "empty_value" &&
               row.fields[2].second.descriptor.canonical_type_name == "text" &&
@@ -8904,7 +8947,7 @@ void RequireEngineDispatch() {
           "engine decimal scalar projection column count mismatch");
   Require(decimal_row.fields[0].first == "decimal_value" &&
               decimal_row.fields[0].second.descriptor.canonical_type_name == "numeric" &&
-              decimal_row.fields[0].second.encoded_value == "12.34" &&
+              ScalarFixtureValueEquals(decimal_row.fields[0].second, "12.34") &&
               !decimal_row.fields[0].second.is_null,
           "engine decimal scalar projection field mismatch");
 
@@ -8936,7 +8979,7 @@ void RequireEngineDispatch() {
           "engine uint literal scalar projection column count mismatch");
   Require(uint_literal_row.fields[0].first == "uint_value" &&
               uint_literal_row.fields[0].second.descriptor.canonical_type_name == "uint64" &&
-              uint_literal_row.fields[0].second.encoded_value == "42" &&
+              ScalarFixtureValueEquals(uint_literal_row.fields[0].second, "42") &&
               !uint_literal_row.fields[0].second.is_null,
           "engine uint literal scalar projection field mismatch");
 
@@ -8970,7 +9013,7 @@ void RequireEngineDispatch() {
   Require(int128_literal_row.fields[0].first == "int128_value" &&
               int128_literal_row.fields[0].second.descriptor.canonical_type_name ==
                   "int128" &&
-              int128_literal_row.fields[0].second.encoded_value == "123" &&
+              ScalarFixtureValueEquals(int128_literal_row.fields[0].second, "123") &&
               !int128_literal_row.fields[0].second.is_null,
           "engine int128 literal scalar projection field mismatch");
 
@@ -9004,7 +9047,7 @@ void RequireEngineDispatch() {
   Require(uint128_literal_row.fields[0].first == "uint128_value" &&
               uint128_literal_row.fields[0].second.descriptor.canonical_type_name ==
                   "uint128" &&
-              uint128_literal_row.fields[0].second.encoded_value == "123" &&
+              ScalarFixtureValueEquals(uint128_literal_row.fields[0].second, "123") &&
               !uint128_literal_row.fields[0].second.is_null,
           "engine uint128 literal scalar projection field mismatch");
 
@@ -9038,7 +9081,7 @@ void RequireEngineDispatch() {
   Require(real128_literal_row.fields[0].first == "real128_value" &&
               real128_literal_row.fields[0].second.descriptor.canonical_type_name ==
                   "real128" &&
-              real128_literal_row.fields[0].second.encoded_value == "1.25" &&
+              ScalarFixtureValueEquals(real128_literal_row.fields[0].second, "1.25") &&
               !real128_literal_row.fields[0].second.is_null,
           "engine real128 literal scalar projection field mismatch");
 
@@ -9169,7 +9212,7 @@ void RequireEngineDispatch() {
           "engine DATE literal scalar projection column count mismatch");
   Require(date_literal_row.fields[0].first == "date_value" &&
               date_literal_row.fields[0].second.descriptor.canonical_type_name == "date" &&
-              date_literal_row.fields[0].second.encoded_value == "2026-05-14" &&
+              ScalarFixtureValueEquals(date_literal_row.fields[0].second, "2026-05-14") &&
               !date_literal_row.fields[0].second.is_null,
           "engine DATE literal scalar projection field mismatch");
 
@@ -9201,7 +9244,7 @@ void RequireEngineDispatch() {
           "engine TIME literal scalar projection column count mismatch");
   Require(time_literal_row.fields[0].first == "time_value" &&
               time_literal_row.fields[0].second.descriptor.canonical_type_name == "time" &&
-              time_literal_row.fields[0].second.encoded_value == "14:23:45" &&
+              ScalarFixtureValueEquals(time_literal_row.fields[0].second, "14:23:45") &&
               !time_literal_row.fields[0].second.is_null,
           "engine TIME literal scalar projection field mismatch");
 
@@ -9270,7 +9313,7 @@ void RequireEngineDispatch() {
   Require(interval_literal_row.fields[0].first == "interval_value" &&
               interval_literal_row.fields[0].second.descriptor.canonical_type_name ==
                   "interval" &&
-              interval_literal_row.fields[0].second.encoded_value == "1 day" &&
+              ScalarFixtureValueEquals(interval_literal_row.fields[0].second, "1 day") &&
               !interval_literal_row.fields[0].second.is_null,
           "engine INTERVAL literal scalar projection field mismatch");
 
@@ -9306,7 +9349,7 @@ void RequireEngineDispatch() {
   Require(document_literal_row.fields[0].first == "document_value" &&
               document_literal_row.fields[0].second.descriptor.canonical_type_name ==
                   "document" &&
-              document_literal_row.fields[0].second.encoded_value == "{\"a\":1}" &&
+              ScalarFixtureValueEquals(document_literal_row.fields[0].second, "{\"a\":1}") &&
               !document_literal_row.fields[0].second.is_null,
           "engine DOCUMENT literal scalar projection field mismatch");
 
@@ -9342,7 +9385,7 @@ void RequireEngineDispatch() {
   Require(json_literal_row.fields[0].first == "json_value" &&
               json_literal_row.fields[0].second.descriptor.canonical_type_name ==
                   "json_document" &&
-              json_literal_row.fields[0].second.encoded_value == "{\"a\":1}" &&
+              ScalarFixtureValueEquals(json_literal_row.fields[0].second, "{\"a\":1}") &&
               !json_literal_row.fields[0].second.is_null,
           "engine JSON literal scalar projection field mismatch");
 
@@ -9378,7 +9421,7 @@ void RequireEngineDispatch() {
   Require(vector_literal_row.fields[0].first == "vector_value" &&
               vector_literal_row.fields[0].second.descriptor.canonical_type_name ==
                   "dense_vector" &&
-              vector_literal_row.fields[0].second.encoded_value == "[1,2,3]" &&
+              ScalarFixtureValueEquals(vector_literal_row.fields[0].second, "[1,2,3]") &&
               !vector_literal_row.fields[0].second.is_null,
           "engine VECTOR literal scalar projection field mismatch");
 
@@ -9535,7 +9578,7 @@ void RequireEngineSbsfc013DocumentCollectionProjectionDispatch() {
     Require(actual.second.is_null == wanted.is_null,
             label + " SBSFC-013 projection nullability mismatch");
     if (!wanted.is_null) {
-      Require(actual.second.encoded_value == wanted.encoded_value,
+      Require(ScalarFixtureValueEquals(actual.second, wanted.encoded_value),
               label + " SBSFC-013 projection value mismatch");
     }
   }
@@ -9585,7 +9628,7 @@ void RequireEngineFunctionDispatch() {
   Require(value.descriptor.canonical_type_name == "real64",
           "engine function scalar projection descriptor mismatch");
   Require(!value.is_null, "engine function scalar projection unexpectedly returned NULL");
-  Require(std::fabs(std::stod(value.encoded_value) - 1.0) < 1e-6,
+  Require(std::fabs(FixtureNumber(value) - 1.0) < 1e-6,
           "engine function scalar projection value mismatch");
 
   const sblr::SblrDispatchRequest invalid_request{
@@ -9621,47 +9664,47 @@ void RequireEngineNumericFunctionDispatch() {
   Require(row.fields.size() == 11, "engine numeric function scalar projection column count mismatch");
   Require(row.fields[0].first == "pi_value" &&
               row.fields[0].second.descriptor.canonical_type_name == "real64" &&
-              std::fabs(std::stod(row.fields[0].second.encoded_value) - std::acos(-1.0)) < 1e-6,
+              std::fabs(FixtureNumber(row.fields[0].second) - std::acos(-1.0)) < 1e-6,
           "engine pi function scalar projection mismatch");
   Require(row.fields[1].first == "cbrt_value" &&
               row.fields[1].second.descriptor.canonical_type_name == "real64" &&
-              std::fabs(std::stod(row.fields[1].second.encoded_value) - 3.0) < 1e-6,
+              std::fabs(FixtureNumber(row.fields[1].second) - 3.0) < 1e-6,
           "engine cbrt function scalar projection mismatch");
   Require(row.fields[2].first == "deg_value" &&
               row.fields[2].second.descriptor.canonical_type_name == "real64" &&
-              std::fabs(std::stod(row.fields[2].second.encoded_value) - 180.0) < 1e-6,
+              std::fabs(FixtureNumber(row.fields[2].second) - 180.0) < 1e-6,
           "engine degrees function scalar projection mismatch");
   Require(row.fields[3].first == "rad_value" &&
               row.fields[3].second.descriptor.canonical_type_name == "real64" &&
-              std::fabs(std::stod(row.fields[3].second.encoded_value) - std::acos(-1.0)) < 1e-6,
+              std::fabs(FixtureNumber(row.fields[3].second) - std::acos(-1.0)) < 1e-6,
           "engine radians function scalar projection mismatch");
   Require(row.fields[4].first == "cotd_value" &&
               row.fields[4].second.descriptor.canonical_type_name == "real64" &&
-              std::fabs(std::stod(row.fields[4].second.encoded_value) - 1.0) < 1e-6,
+              std::fabs(FixtureNumber(row.fields[4].second) - 1.0) < 1e-6,
           "engine cotd function scalar projection mismatch");
   Require(row.fields[5].first == "div_value" &&
               row.fields[5].second.descriptor.canonical_type_name == "int64" &&
-              row.fields[5].second.encoded_value == "2",
+              ScalarFixtureValueEquals(row.fields[5].second, "2"),
           "engine div function scalar projection mismatch");
   Require(row.fields[6].first == "fact_value" &&
               row.fields[6].second.descriptor.canonical_type_name == "int64" &&
-              row.fields[6].second.encoded_value == "120",
+              ScalarFixtureValueEquals(row.fields[6].second, "120"),
           "engine factorial function scalar projection mismatch");
   Require(row.fields[7].first == "gcd_value" &&
               row.fields[7].second.descriptor.canonical_type_name == "int64" &&
-              row.fields[7].second.encoded_value == "6",
+              ScalarFixtureValueEquals(row.fields[7].second, "6"),
           "engine gcd function scalar projection mismatch");
   Require(row.fields[8].first == "lcm_value" &&
               row.fields[8].second.descriptor.canonical_type_name == "int64" &&
-              row.fields[8].second.encoded_value == "24",
+              ScalarFixtureValueEquals(row.fields[8].second, "24"),
           "engine lcm function scalar projection mismatch");
   Require(row.fields[9].first == "bucket_value" &&
               row.fields[9].second.descriptor.canonical_type_name == "int64" &&
-              row.fields[9].second.encoded_value == "3",
+              ScalarFixtureValueEquals(row.fields[9].second, "3"),
           "engine width_bucket function scalar projection mismatch");
   Require(row.fields[10].first == "bit_count_value" &&
               row.fields[10].second.descriptor.canonical_type_name == "int64" &&
-              row.fields[10].second.encoded_value == "3",
+              ScalarFixtureValueEquals(row.fields[10].second, "3"),
           "engine bit_count function scalar projection mismatch");
 }
 
@@ -9690,71 +9733,71 @@ void RequireEngineAdditionalNumericFunctionDispatch() {
               std::to_string(row.fields.size()));
   Require(row.fields[0].first == "abs_value" &&
               row.fields[0].second.descriptor.canonical_type_name == "int64" &&
-              row.fields[0].second.encoded_value == "5",
+              ScalarFixtureValueEquals(row.fields[0].second, "5"),
           "engine abs function scalar projection mismatch");
   Require(row.fields[1].first == "ceil_value" &&
-              std::fabs(std::stod(row.fields[1].second.encoded_value) - 2.0) < 1e-6,
+              std::fabs(FixtureNumber(row.fields[1].second) - 2.0) < 1e-6,
           "engine ceil function scalar projection mismatch");
   Require(row.fields[2].first == "floor_value" &&
-              std::fabs(std::stod(row.fields[2].second.encoded_value) - 1.0) < 1e-6,
+              std::fabs(FixtureNumber(row.fields[2].second) - 1.0) < 1e-6,
           "engine floor function scalar projection mismatch");
   Require(row.fields[3].first == "round_value" &&
-              std::fabs(std::stod(row.fields[3].second.encoded_value) - 2.0) < 1e-6,
+              std::fabs(FixtureNumber(row.fields[3].second) - 2.0) < 1e-6,
           "engine round function scalar projection mismatch");
   Require(row.fields[4].first == "sqrt_value" &&
-              std::fabs(std::stod(row.fields[4].second.encoded_value) - 2.0) < 1e-6,
+              std::fabs(FixtureNumber(row.fields[4].second) - 2.0) < 1e-6,
           "engine sqrt function scalar projection mismatch");
   Require(row.fields[5].first == "power_value" &&
-              std::fabs(std::stod(row.fields[5].second.encoded_value) - 1024.0) < 1e-6,
+              std::fabs(FixtureNumber(row.fields[5].second) - 1024.0) < 1e-6,
           "engine power function scalar projection mismatch");
   Require(row.fields[6].first == "sin_value" &&
-              std::fabs(std::stod(row.fields[6].second.encoded_value) - 0.0) < 1e-6,
+              std::fabs(FixtureNumber(row.fields[6].second) - 0.0) < 1e-6,
           "engine sin function scalar projection mismatch");
   Require(row.fields[7].first == "cos_value" &&
-              std::fabs(std::stod(row.fields[7].second.encoded_value) - 1.0) < 1e-6,
+              std::fabs(FixtureNumber(row.fields[7].second) - 1.0) < 1e-6,
           "engine cos function scalar projection mismatch");
   Require(row.fields[8].first == "tan_value" &&
-              std::fabs(std::stod(row.fields[8].second.encoded_value) - 0.0) < 1e-6,
+              std::fabs(FixtureNumber(row.fields[8].second) - 0.0) < 1e-6,
           "engine tan function scalar projection mismatch");
   Require(row.fields[9].first == "exp_value" &&
-              std::fabs(std::stod(row.fields[9].second.encoded_value) - 1.0) < 1e-6,
+              std::fabs(FixtureNumber(row.fields[9].second) - 1.0) < 1e-6,
           "engine exp function scalar projection mismatch");
   Require(row.fields[10].first == "ln_value" &&
-              std::fabs(std::stod(row.fields[10].second.encoded_value) - 0.0) < 1e-6,
+              std::fabs(FixtureNumber(row.fields[10].second) - 0.0) < 1e-6,
           "engine ln function scalar projection mismatch");
   Require(row.fields[11].first == "log10_value" &&
-              std::fabs(std::stod(row.fields[11].second.encoded_value) - 2.0) < 1e-6,
+              std::fabs(FixtureNumber(row.fields[11].second) - 2.0) < 1e-6,
           "engine log10 function scalar projection mismatch");
   Require(row.fields[12].first == "log_value" &&
-              std::fabs(std::stod(row.fields[12].second.encoded_value) - 3.0) < 1e-6,
+              std::fabs(FixtureNumber(row.fields[12].second) - 3.0) < 1e-6,
           "engine log function scalar projection mismatch");
   Require(row.fields[13].first == "trunc_value" &&
-              std::fabs(std::stod(row.fields[13].second.encoded_value) - 1.0) < 1e-6,
+              std::fabs(FixtureNumber(row.fields[13].second) - 1.0) < 1e-6,
           "engine trunc function scalar projection mismatch");
   Require(row.fields[14].first == "truncate_value" &&
-              std::fabs(std::stod(row.fields[14].second.encoded_value) - 1.0) < 1e-6,
+              std::fabs(FixtureNumber(row.fields[14].second) - 1.0) < 1e-6,
           "engine truncate function scalar projection mismatch");
   Require(row.fields[15].first == "mod_value" &&
-              std::fabs(std::stod(row.fields[15].second.encoded_value) - 1.0) < 1e-6,
+              std::fabs(FixtureNumber(row.fields[15].second) - 1.0) < 1e-6,
           "engine mod function scalar projection mismatch");
   Require(row.fields[16].first == "sign_value" &&
               row.fields[16].second.descriptor.canonical_type_name == "int64" &&
-              row.fields[16].second.encoded_value == "1",
+              ScalarFixtureValueEquals(row.fields[16].second, "1"),
           "engine sign function scalar projection mismatch");
   Require(row.fields[17].first == "bit_and_value" &&
-              row.fields[17].second.encoded_value == "0",
+              ScalarFixtureValueEquals(row.fields[17].second, "0"),
           "engine bit_and function scalar projection mismatch");
   Require(row.fields[18].first == "bit_or_value" &&
-              row.fields[18].second.encoded_value == "255",
+              ScalarFixtureValueEquals(row.fields[18].second, "255"),
           "engine bit_or function scalar projection mismatch");
   Require(row.fields[19].first == "bit_xor_value" &&
-              row.fields[19].second.encoded_value == "0",
+              ScalarFixtureValueEquals(row.fields[19].second, "0"),
           "engine bit_xor function scalar projection mismatch");
   Require(row.fields[20].first == "bit_shift_left_value" &&
-              row.fields[20].second.encoded_value == "256",
+              ScalarFixtureValueEquals(row.fields[20].second, "256"),
           "engine bit_shift_left function scalar projection mismatch");
   Require(row.fields[21].first == "bit_shift_right_value" &&
-              row.fields[21].second.encoded_value == "1",
+              ScalarFixtureValueEquals(row.fields[21].second, "1"),
           "engine bit_shift_right function scalar projection mismatch");
 }
 
@@ -9786,7 +9829,7 @@ void RequireEngineExtendedNumericFunctionDispatch() {
                                double epsilon = 1e-6) {
     Require(row.fields[index].first == name &&
                 row.fields[index].second.descriptor.canonical_type_name == "real64" &&
-                std::fabs(std::stod(row.fields[index].second.encoded_value) - expected) < epsilon,
+                std::fabs(FixtureNumber(row.fields[index].second) - expected) < epsilon,
             std::string("engine extended numeric function scalar projection mismatch: ") +
                 std::string(name));
   };
@@ -9831,97 +9874,97 @@ void RequireEngineTextJsonFuzzyFunctionDispatch() {
   const auto& row = result.api_result.result_shape.rows.front();
   Require(row.fields.size() == 33,
           "engine text/json/fuzzy function scalar projection column count mismatch");
-  Require(row.fields[0].first == "char_len" && row.fields[0].second.encoded_value == "7",
+  Require(row.fields[0].first == "char_len" && ScalarFixtureValueEquals(row.fields[0].second, "7"),
           "engine char_length function scalar projection mismatch");
-  Require(row.fields[1].first == "left_value" && row.fields[1].second.encoded_value == "ab",
+  Require(row.fields[1].first == "left_value" && ScalarFixtureValueEquals(row.fields[1].second, "ab"),
           "engine left function scalar projection mismatch");
-  Require(row.fields[2].first == "right_value" && row.fields[2].second.encoded_value == "ef",
+  Require(row.fields[2].first == "right_value" && ScalarFixtureValueEquals(row.fields[2].second, "ef"),
           "engine right function scalar projection mismatch");
   Require(row.fields[3].first == "uuid_value" &&
               row.fields[3].second.descriptor.canonical_type_name == "uuid" &&
               ScalarFixtureValueEquals(row.fields[3].second, "550e8400-e29b-41d4-a716-446655440000"),
           "engine uuid_from_string function scalar projection mismatch");
   Require(row.fields[4].first == "uuid_text" &&
-              row.fields[4].second.encoded_value == "550e8400-e29b-41d4-a716-446655440000",
+              ScalarFixtureValueEquals(row.fields[4].second, "550e8400-e29b-41d4-a716-446655440000"),
           "engine uuid_to_string function scalar projection mismatch");
   Require(row.fields[5].first == "digest_value" &&
               row.fields[5].second.descriptor.canonical_type_name == "uint64" &&
-              row.fields[5].second.encoded_value == "25347132070217633",
+              ScalarFixtureValueEquals(row.fields[5].second, "25347132070217633"),
           "engine digest function scalar projection mismatch");
-  Require(row.fields[6].first == "jsonb_len" && row.fields[6].second.encoded_value == "3",
+  Require(row.fields[6].first == "jsonb_len" && ScalarFixtureValueEquals(row.fields[6].second, "3"),
           "engine jsonb_array_length function scalar projection mismatch");
   Require(row.fields[7].first == "json_set_value" &&
-              row.fields[7].second.encoded_value == R"({"a":1,"b":2})",
+              ScalarFixtureValueEquals(row.fields[7].second, R"({"a":1,"b":2})"),
           "engine json_set function scalar projection mismatch");
   Require(row.fields[8].first == "json_removed" &&
-              row.fields[8].second.encoded_value == R"({"b":2})",
+              ScalarFixtureValueEquals(row.fields[8].second, R"({"b":2})"),
           "engine json_remove function scalar projection mismatch");
   Require(row.fields[9].first == "json_replaced" &&
-              row.fields[9].second.encoded_value == R"({"a":4})",
+              ScalarFixtureValueEquals(row.fields[9].second, R"({"a":4})"),
           "engine json_replace function scalar projection mismatch");
   Require(row.fields[10].first == "json_inserted" &&
-              row.fields[10].second.encoded_value == R"({"a":1,"b":2})",
+              ScalarFixtureValueEquals(row.fields[10].second, R"({"a":1,"b":2})"),
           "engine json_insert function scalar projection mismatch");
   Require(row.fields[11].first == "json_array" &&
-              row.fields[11].second.encoded_value == R"([1,"bird",null])",
+              ScalarFixtureValueEquals(row.fields[11].second, R"([1,"bird",null])"),
           "engine json_build_array function scalar projection mismatch");
   Require(row.fields[12].first == "json_object" &&
-              row.fields[12].second.encoded_value == R"({"a":1,"b":"bird"})",
+              ScalarFixtureValueEquals(row.fields[12].second, R"({"a":1,"b":"bird"})"),
           "engine json_build_object function scalar projection mismatch");
   Require(row.fields[13].first == "json_text" &&
-              row.fields[13].second.encoded_value == R"("bird")",
+              ScalarFixtureValueEquals(row.fields[13].second, R"("bird")"),
           "engine to_json function scalar projection mismatch");
-  Require(row.fields[14].first == "jsonb_text" && row.fields[14].second.encoded_value == "7",
+  Require(row.fields[14].first == "jsonb_text" && ScalarFixtureValueEquals(row.fields[14].second, "7"),
           "engine to_jsonb function scalar projection mismatch");
-  Require(row.fields[15].first == "jsonb_type" && row.fields[15].second.encoded_value == "object",
+  Require(row.fields[15].first == "jsonb_type" && ScalarFixtureValueEquals(row.fields[15].second, "object"),
           "engine jsonb_typeof function scalar projection mismatch");
-  Require(row.fields[16].first == "json_type" && row.fields[16].second.encoded_value == "array",
+  Require(row.fields[16].first == "json_type" && ScalarFixtureValueEquals(row.fields[16].second, "array"),
           "engine json_typeof function scalar projection mismatch");
   Require(row.fields[17].first == "json_extracted" &&
-              row.fields[17].second.encoded_value == "42",
+              ScalarFixtureValueEquals(row.fields[17].second, "42"),
           "engine json_extract function scalar projection mismatch");
   Require(row.fields[18].first == "json_exists_value" &&
               row.fields[18].second.descriptor.canonical_type_name == "boolean" &&
-              row.fields[18].second.encoded_value == "1",
+              ScalarFixtureValueEquals(row.fields[18].second, "1"),
           "engine json_exists function scalar projection mismatch");
   Require(row.fields[19].first == "json_value_value" &&
-              row.fields[19].second.encoded_value == R"("bird")",
+              ScalarFixtureValueEquals(row.fields[19].second, R"("bird")"),
           "engine json_value function scalar projection mismatch");
   Require(row.fields[20].first == "json_query_value" &&
-              row.fields[20].second.encoded_value == "[1,2]",
+              ScalarFixtureValueEquals(row.fields[20].second, "[1,2]"),
           "engine json_query function scalar projection mismatch");
   Require(row.fields[21].first == "jsonb_set_value" &&
-              row.fields[21].second.encoded_value == R"({"a":5})",
+              ScalarFixtureValueEquals(row.fields[21].second, R"({"a":5})"),
           "engine jsonb_set function scalar projection mismatch");
   Require(row.fields[22].first == "jsonb_array" &&
-              row.fields[22].second.encoded_value == R"([1,"bird",null])",
+              ScalarFixtureValueEquals(row.fields[22].second, R"([1,"bird",null])"),
           "engine jsonb_build_array function scalar projection mismatch");
   Require(row.fields[23].first == "jsonb_object" &&
-              row.fields[23].second.encoded_value == R"({"a":1})",
+              ScalarFixtureValueEquals(row.fields[23].second, R"({"a":1})"),
           "engine jsonb_build_object function scalar projection mismatch");
-  Require(row.fields[24].first == "metaphone_value" && row.fields[24].second.encoded_value == "SM0",
+  Require(row.fields[24].first == "metaphone_value" && ScalarFixtureValueEquals(row.fields[24].second, "SM0"),
           "engine metaphone function scalar projection mismatch");
-  Require(row.fields[25].first == "dmetaphone_value" && row.fields[25].second.encoded_value == "KMP",
+  Require(row.fields[25].first == "dmetaphone_value" && ScalarFixtureValueEquals(row.fields[25].second, "KMP"),
           "engine dmetaphone function scalar projection mismatch");
   Require(row.fields[26].first == "dmetaphone_alt_value" &&
-              row.fields[26].second.encoded_value == "SMT",
+              ScalarFixtureValueEquals(row.fields[26].second, "SMT"),
           "engine dmetaphone_alt function scalar projection mismatch");
   Require(row.fields[27].first == "levenshtein_le_value" &&
-              row.fields[27].second.encoded_value == "1",
+              ScalarFixtureValueEquals(row.fields[27].second, "1"),
           "engine levenshtein_le function scalar projection mismatch");
-  Require(row.fields[28].first == "damerau_value" && row.fields[28].second.encoded_value == "1",
+  Require(row.fields[28].first == "damerau_value" && ScalarFixtureValueEquals(row.fields[28].second, "1"),
           "engine damerau_levenshtein function scalar projection mismatch");
   Require(row.fields[29].first == "jaro_value" &&
-              std::fabs(std::stod(row.fields[29].second.encoded_value) - 0.9444444444444445) < 1e-6,
+              std::fabs(FixtureNumber(row.fields[29].second) - 0.9444444444444445) < 1e-6,
           "engine jaro_similarity function scalar projection mismatch");
   Require(row.fields[30].first == "jaro_winkler_value" &&
-              std::fabs(std::stod(row.fields[30].second.encoded_value) - 0.9611111111111111) < 1e-6,
+              std::fabs(FixtureNumber(row.fields[30].second) - 0.9611111111111111) < 1e-6,
           "engine jaro_winkler_similarity function scalar projection mismatch");
   Require(row.fields[31].first == "similarity_value" &&
-              std::fabs(std::stod(row.fields[31].second.encoded_value) - 1.0) < 1e-6,
+              std::fabs(FixtureNumber(row.fields[31].second) - 1.0) < 1e-6,
           "engine similarity function scalar projection mismatch");
   Require(row.fields[32].first == "word_similarity_value" &&
-              std::fabs(std::stod(row.fields[32].second.encoded_value) - 1.0) < 1e-6,
+              std::fabs(FixtureNumber(row.fields[32].second) - 1.0) < 1e-6,
           "engine word_similarity function scalar projection mismatch");
 }
 
@@ -9963,7 +10006,7 @@ void RequireEngineVectorFunctionDispatch() {
                                double epsilon = 1e-12) {
     Require(row.fields[index].first == name &&
                 row.fields[index].second.descriptor.canonical_type_name == "real64" &&
-                std::fabs(std::stod(row.fields[index].second.encoded_value) - expected) < epsilon,
+                std::fabs(FixtureNumber(row.fields[index].second) - expected) < epsilon,
             std::string("engine vector scalar projection mismatch: ") +
                 std::string(name));
   };
@@ -10020,7 +10063,7 @@ void RequireEngineBinaryCryptoFunctionDispatch() {
   expect_text(2, "oracle_decode_value", "text", "two");
   Require(row.fields[3].first == "random_value" &&
               row.fields[3].second.descriptor.canonical_type_name == "real64" &&
-              std::fabs(std::stod(row.fields[3].second.encoded_value) - 0.5) < 1e-12,
+              std::fabs(FixtureNumber(row.fields[3].second) - 0.5) < 1e-12,
           "engine deterministic random function scalar projection mismatch");
   expect_text(4, "timezone_value", "character", "UTC");
 
@@ -10070,40 +10113,40 @@ void RequireEngineTemporalSessionProviderFunctionDispatch() {
           "engine temporal/session provider scalar projection column count mismatch");
   Require(row.fields[0].first == "stmt_ts" &&
               row.fields[0].second.descriptor.canonical_type_name == "timestamp_tz" &&
-              row.fields[0].second.encoded_value == "2026-05-12T14:23:45Z",
+              ScalarFixtureValueEquals(row.fields[0].second, "2026-05-12T14:23:45Z"),
           "engine statement_timestamp provider scalar projection mismatch");
   Require(row.fields[1].first == "tx_ts" &&
               row.fields[1].second.descriptor.canonical_type_name == "timestamp_tz" &&
-              row.fields[1].second.encoded_value == "2026-05-12T13:00:00Z",
+              ScalarFixtureValueEquals(row.fields[1].second, "2026-05-12T13:00:00Z"),
           "engine transaction_timestamp provider scalar projection mismatch");
   Require(row.fields[2].first == "clock_ts" &&
-              row.fields[2].second.encoded_value == "2026-05-12T14:23:46Z",
+              ScalarFixtureValueEquals(row.fields[2].second, "2026-05-12T14:23:46Z"),
           "engine clock_timestamp provider scalar projection mismatch");
   Require(row.fields[3].first == "timeofday_value" &&
               row.fields[3].second.descriptor.canonical_type_name == "character" &&
-              row.fields[3].second.encoded_value == "2026-05-12T14:23:46Z",
+              ScalarFixtureValueEquals(row.fields[3].second, "2026-05-12T14:23:46Z"),
           "engine timeofday provider scalar projection mismatch");
   Require(row.fields[4].first == "localtime_value" &&
               row.fields[4].second.descriptor.canonical_type_name == "time" &&
-              row.fields[4].second.encoded_value == "14:23:46",
+              ScalarFixtureValueEquals(row.fields[4].second, "14:23:46"),
           "engine localtime provider scalar projection mismatch");
   Require(row.fields[5].first == "localtimestamp_value" &&
               row.fields[5].second.descriptor.canonical_type_name == "timestamp" &&
-              row.fields[5].second.encoded_value == "2026-05-12T14:23:46",
+              ScalarFixtureValueEquals(row.fields[5].second, "2026-05-12T14:23:46"),
           "engine localtimestamp provider scalar projection mismatch");
   Require(row.fields[6].first == "current_ts" &&
-              row.fields[6].second.encoded_value == "2026-05-12T14:23:46Z",
+              ScalarFixtureValueEquals(row.fields[6].second, "2026-05-12T14:23:46Z"),
           "engine current_timestamp provider scalar projection mismatch");
   Require(row.fields[7].first == "current_date_value" &&
               row.fields[7].second.descriptor.canonical_type_name == "date" &&
-              row.fields[7].second.encoded_value == "2026-05-12",
+              ScalarFixtureValueEquals(row.fields[7].second, "2026-05-12"),
           "engine current_date provider scalar projection mismatch");
   Require(row.fields[8].first == "current_time_value" &&
               row.fields[8].second.descriptor.canonical_type_name == "time" &&
-              row.fields[8].second.encoded_value == "14:23:46",
+              ScalarFixtureValueEquals(row.fields[8].second, "14:23:46"),
           "engine current_time provider scalar projection mismatch");
   Require(row.fields[9].first == "now_value" &&
-              row.fields[9].second.encoded_value == "2026-05-12T14:23:46Z",
+              ScalarFixtureValueEquals(row.fields[9].second, "2026-05-12T14:23:46Z"),
           "engine now provider scalar projection mismatch");
   for (std::size_t index = 10; index < 16; ++index) {
     Require(row.fields[index].second.descriptor.canonical_type_name == "uuid" &&
@@ -10137,7 +10180,7 @@ void RequireEngineSpecialCurrentTimestampKeywordDispatch() {
           "engine special current timestamp keyword projection column count mismatch");
   Require(row.fields[0].first == "current_ts" &&
               row.fields[0].second.descriptor.canonical_type_name == "timestamp_tz" &&
-              row.fields[0].second.encoded_value == "2026-05-12T14:23:46Z" &&
+              ScalarFixtureValueEquals(row.fields[0].second, "2026-05-12T14:23:46Z") &&
               !row.fields[0].second.is_null,
           "engine special current timestamp keyword provider scalar projection mismatch");
 }
@@ -10167,7 +10210,7 @@ void RequireEngineCurrentValueFormDispatch() {
           "engine current_value_form projection column count mismatch");
   Require(row.fields[0].first == "current_ts" &&
               row.fields[0].second.descriptor.canonical_type_name == "timestamp_tz" &&
-              row.fields[0].second.encoded_value == "2026-05-12T14:23:46Z" &&
+              ScalarFixtureValueEquals(row.fields[0].second, "2026-05-12T14:23:46Z") &&
               !row.fields[0].second.is_null,
           "engine current_value_form provider scalar projection mismatch");
 }
@@ -10431,7 +10474,7 @@ void RequireEngineSbsfc016FixedPolicyLimitDispatch() {
             label + " SBSFC-016 fixed policy limit descriptor mismatch");
     Require(!actual.second.is_null,
             label + " SBSFC-016 fixed policy limit unexpectedly returned null");
-    Require(actual.second.encoded_value == wanted.encoded_value,
+    Require(ScalarFixtureValueEquals(actual.second, wanted.encoded_value),
             label + " SBSFC-016 fixed policy limit value mismatch");
   }
 }
@@ -10584,15 +10627,15 @@ void RequireEngineTextFunctionDispatch() {
   Require(row.fields.size() == 3, "engine text function scalar projection column count mismatch");
   Require(row.fields[0].first == "lowered" &&
               row.fields[0].second.descriptor.canonical_type_name == "text" &&
-              row.fields[0].second.encoded_value == "alpha",
+              ScalarFixtureValueEquals(row.fields[0].second, "alpha"),
           "engine lower function scalar projection mismatch");
   Require(row.fields[1].first == "uppered" &&
               row.fields[1].second.descriptor.canonical_type_name == "text" &&
-              row.fields[1].second.encoded_value == "BETA",
+              ScalarFixtureValueEquals(row.fields[1].second, "BETA"),
           "engine upper function scalar projection mismatch");
   Require(row.fields[2].first == "len_value" &&
               row.fields[2].second.descriptor.canonical_type_name == "int64" &&
-              row.fields[2].second.encoded_value == "7",
+              ScalarFixtureValueEquals(row.fields[2].second, "7"),
           "engine length function scalar projection mismatch");
 
   const sblr::SblrDispatchRequest more_request{
@@ -10619,23 +10662,23 @@ void RequireEngineTextFunctionDispatch() {
           "engine additional text function scalar projection column count mismatch");
   Require(more_row.fields[0].first == "octets" &&
               more_row.fields[0].second.descriptor.canonical_type_name == "int64" &&
-              more_row.fields[0].second.encoded_value == "5",
+              ScalarFixtureValueEquals(more_row.fields[0].second, "5"),
           "engine octet_length function scalar projection mismatch");
   Require(more_row.fields[1].first == "bits" &&
               more_row.fields[1].second.descriptor.canonical_type_name == "int64" &&
-              more_row.fields[1].second.encoded_value == "40",
+              ScalarFixtureValueEquals(more_row.fields[1].second, "40"),
           "engine bit_length function scalar projection mismatch");
   Require(more_row.fields[2].first == "reversed" &&
               more_row.fields[2].second.descriptor.canonical_type_name == "text" &&
-              more_row.fields[2].second.encoded_value == "cba",
+              ScalarFixtureValueEquals(more_row.fields[2].second, "cba"),
           "engine reverse function scalar projection mismatch");
   Require(more_row.fields[3].first == "code_value" &&
               more_row.fields[3].second.descriptor.canonical_type_name == "int64" &&
-              more_row.fields[3].second.encoded_value == "90",
+              ScalarFixtureValueEquals(more_row.fields[3].second, "90"),
           "engine ascii function scalar projection mismatch");
   Require(more_row.fields[4].first == "char_value" &&
               more_row.fields[4].second.descriptor.canonical_type_name == "character" &&
-              more_row.fields[4].second.encoded_value == "Z",
+              ScalarFixtureValueEquals(more_row.fields[4].second, "Z"),
           "engine chr function scalar projection mismatch");
 
   const sblr::SblrDispatchRequest trim_request{
@@ -10666,7 +10709,7 @@ void RequireEngineTextFunctionDispatch() {
                                std::string_view expected) {
     Require(trim_row.fields[index].first == name &&
                 trim_row.fields[index].second.descriptor.canonical_type_name == descriptor &&
-                trim_row.fields[index].second.encoded_value == expected,
+                ScalarFixtureValueEquals(trim_row.fields[index].second, expected),
             std::string("engine trim/encoding scalar projection mismatch: ") +
                 std::string(name));
   };
@@ -10709,7 +10752,7 @@ void RequireEngineTextFunctionDispatch() {
     Require(text_conditional_row.fields[index].first == name &&
                 text_conditional_row.fields[index].second.descriptor.canonical_type_name ==
                     descriptor &&
-                text_conditional_row.fields[index].second.encoded_value == expected,
+                ScalarFixtureValueEquals(text_conditional_row.fields[index].second, expected),
             std::string("engine text/conditional scalar projection mismatch: ") +
                 std::string(name));
   };
@@ -10786,7 +10829,7 @@ void RequireEngineTextFunctionDispatch() {
     Require(keyword_text_row.fields[index].first == name &&
                 keyword_text_row.fields[index].second.descriptor.canonical_type_name ==
                     descriptor &&
-                keyword_text_row.fields[index].second.encoded_value == expected,
+                ScalarFixtureValueEquals(keyword_text_row.fields[index].second, expected),
             std::string("engine SQL keyword text scalar projection mismatch: ") +
                 std::string(name));
   };
@@ -10826,103 +10869,103 @@ void RequireEngineMultiArgumentFunctionDispatch() {
           "engine multi-argument function scalar projection column count mismatch");
   Require(row.fields[0].first == "joined" &&
               row.fields[0].second.descriptor.canonical_type_name == "character" &&
-              row.fields[0].second.encoded_value == "alpha-beta",
+              ScalarFixtureValueEquals(row.fields[0].second, "alpha-beta"),
           "engine concat function scalar projection mismatch");
   Require(row.fields[1].first == "replaced" &&
               row.fields[1].second.descriptor.canonical_type_name == "character" &&
-              row.fields[1].second.encoded_value == "alpha B B",
+              ScalarFixtureValueEquals(row.fields[1].second, "alpha B B"),
           "engine replace function scalar projection mismatch");
   Require(row.fields[2].first == "regex_ok" &&
               row.fields[2].second.descriptor.canonical_type_name == "boolean" &&
-              row.fields[2].second.encoded_value == "1",
+              ScalarFixtureValueEquals(row.fields[2].second, "1"),
           "engine regexp_like function scalar projection mismatch");
   Require(row.fields[3].first == "year_part" &&
               row.fields[3].second.descriptor.canonical_type_name == "int64" &&
-              row.fields[3].second.encoded_value == "2026",
+              ScalarFixtureValueEquals(row.fields[3].second, "2026"),
           "engine date_part function scalar projection mismatch");
   Require(row.fields[4].first == "day_trunc" &&
               row.fields[4].second.descriptor.canonical_type_name == "timestamp" &&
-              row.fields[4].second.encoded_value == "2026-05-11T00:00:00",
+              ScalarFixtureValueEquals(row.fields[4].second, "2026-05-11T00:00:00"),
           "engine date_trunc function scalar projection mismatch");
   Require(row.fields[5].first == "json_len" &&
               row.fields[5].second.descriptor.canonical_type_name == "uint64" &&
-              row.fields[5].second.encoded_value == "3",
+              ScalarFixtureValueEquals(row.fields[5].second, "3"),
           "engine json_array_length function scalar projection mismatch");
   Require(row.fields[6].first == "sound_code" &&
               row.fields[6].second.descriptor.canonical_type_name == "character" &&
-              row.fields[6].second.encoded_value == "R163",
+              ScalarFixtureValueEquals(row.fields[6].second, "R163"),
           "engine soundex function scalar projection mismatch");
   Require(row.fields[7].first == "edit_distance" &&
               row.fields[7].second.descriptor.canonical_type_name == "int64" &&
-              row.fields[7].second.encoded_value == "3",
+              ScalarFixtureValueEquals(row.fields[7].second, "3"),
           "engine levenshtein function scalar projection mismatch");
   Require(row.fields[8].first == "cardinality_value" &&
               row.fields[8].second.descriptor.canonical_type_name == "int64" &&
-              row.fields[8].second.encoded_value == "3",
+              ScalarFixtureValueEquals(row.fields[8].second, "3"),
           "engine cardinality function scalar projection mismatch");
   Require(row.fields[9].first == "stuff_value" &&
               row.fields[9].second.descriptor.canonical_type_name == "character" &&
-              row.fields[9].second.encoded_value == "aXYef",
+              ScalarFixtureValueEquals(row.fields[9].second, "aXYef"),
           "engine stuff function scalar projection mismatch");
   Require(row.fields[10].first == "regex_count" &&
               row.fields[10].second.descriptor.canonical_type_name == "int64" &&
-              row.fields[10].second.encoded_value == "2",
+              ScalarFixtureValueEquals(row.fields[10].second, "2"),
           "engine regexp_count function scalar projection mismatch");
   Require(row.fields[11].first == "regex_capture" &&
               row.fields[11].second.descriptor.canonical_type_name == "array" &&
-              row.fields[11].second.encoded_value == "[\"abc\",\"123\"]",
+              ScalarFixtureValueEquals(row.fields[11].second, "[\"abc\",\"123\"]"),
           "engine regexp_match function scalar projection mismatch");
   Require(row.fields[12].first == "regex_replaced" &&
               row.fields[12].second.descriptor.canonical_type_name == "character" &&
-              row.fields[12].second.encoded_value == "X123X",
+              ScalarFixtureValueEquals(row.fields[12].second, "X123X"),
           "engine regexp_replace function scalar projection mismatch");
   Require(row.fields[13].first == "regex_parts" &&
               row.fields[13].second.descriptor.canonical_type_name == "array" &&
-              row.fields[13].second.encoded_value == "[\"a\",\"b\",\"c\"]",
+              ScalarFixtureValueEquals(row.fields[13].second, "[\"a\",\"b\",\"c\"]"),
           "engine regexp_split_to_array function scalar projection mismatch");
   Require(row.fields[14].first == "regex_substr" &&
               row.fields[14].second.descriptor.canonical_type_name == "character" &&
-              row.fields[14].second.encoded_value == "123",
+              ScalarFixtureValueEquals(row.fields[14].second, "123"),
           "engine regexp_substr function scalar projection mismatch");
   Require(row.fields[15].first == "occurrences_regex_count" &&
               row.fields[15].second.descriptor.canonical_type_name == "int64" &&
-              row.fields[15].second.encoded_value == "2",
+              ScalarFixtureValueEquals(row.fields[15].second, "2"),
           "engine occurrences_regex function scalar projection mismatch");
   Require(row.fields[16].first == "position_regex_after" &&
               row.fields[16].second.descriptor.canonical_type_name == "int64" &&
-              row.fields[16].second.encoded_value == "4",
+              ScalarFixtureValueEquals(row.fields[16].second, "4"),
           "engine position_regex function scalar projection mismatch");
   Require(row.fields[17].first == "substring_regex_group" &&
               row.fields[17].second.descriptor.canonical_type_name == "character" &&
-              row.fields[17].second.encoded_value == "22",
+              ScalarFixtureValueEquals(row.fields[17].second, "22"),
           "engine substring_regex function scalar projection mismatch");
   Require(row.fields[18].first == "translate_regex_all" &&
               row.fields[18].second.descriptor.canonical_type_name == "character" &&
-              row.fields[18].second.encoded_value == "X123X",
+              ScalarFixtureValueEquals(row.fields[18].second, "X123X"),
           "engine translate_regex function scalar projection mismatch");
   Require(row.fields[19].first == "regex_matches" &&
               row.fields[19].second.descriptor.canonical_type_name == "array" &&
-              row.fields[19].second.encoded_value == "[\"abc\",\"123\"]",
+              ScalarFixtureValueEquals(row.fields[19].second, "[\"abc\",\"123\"]"),
           "engine regexp_matches same array payload scalar projection mismatch");
   Require(row.fields[20].first == "regex_split_rows" &&
               row.fields[20].second.descriptor.canonical_type_name == "array" &&
-              row.fields[20].second.encoded_value == "[\"a\",\"b\",\"c\"]",
+              ScalarFixtureValueEquals(row.fields[20].second, "[\"a\",\"b\",\"c\"]"),
           "engine regexp_split_to_table scalar array payload projection mismatch");
   Require(row.fields[21].first == "converted" &&
               row.fields[21].second.descriptor.canonical_type_name == "character" &&
-              row.fields[21].second.encoded_value == "deja vu",
+              ScalarFixtureValueEquals(row.fields[21].second, "deja vu"),
           "engine convert function scalar projection mismatch");
   Require(row.fields[22].first == "array_joined" &&
               row.fields[22].second.descriptor.canonical_type_name == "character" &&
-              row.fields[22].second.encoded_value == "a|c",
+              ScalarFixtureValueEquals(row.fields[22].second, "a|c"),
           "engine array_to_string function scalar projection mismatch");
   Require(row.fields[23].first == "ascii_text" &&
               row.fields[23].second.descriptor.canonical_type_name == "character" &&
-              row.fields[23].second.encoded_value == "deja vu",
+              ScalarFixtureValueEquals(row.fields[23].second, "deja vu"),
           "engine to_ascii function scalar projection mismatch");
   Require(row.fields[24].first == "formatted" &&
               row.fields[24].second.descriptor.canonical_type_name == "character" &&
-              row.fields[24].second.encoded_value == "SELECT \"col name\" = 'O''Reilly' %",
+              ScalarFixtureValueEquals(row.fields[24].second, "SELECT \"col name\" = 'O''Reilly' %"),
           "engine format function scalar projection mismatch");
 }
 
@@ -10951,7 +10994,7 @@ void RequireEngineConcatExpressionDispatch() {
           "engine concat_expr scalar projection column count mismatch");
   Require(row.fields[0].first == "joined" &&
               row.fields[0].second.descriptor.canonical_type_name == "character" &&
-              row.fields[0].second.encoded_value == "alpha-beta",
+              ScalarFixtureValueEquals(row.fields[0].second, "alpha-beta"),
           "engine concat_expr scalar projection mismatch");
 }
 
@@ -10980,11 +11023,11 @@ void RequireEngineOperatorProjectionDispatch() {
           "engine operator scalar projection column count mismatch");
   Require(row.fields[0].first == "like_true" &&
               row.fields[0].second.descriptor.canonical_type_name == "boolean" &&
-              row.fields[0].second.encoded_value == "1",
+              ScalarFixtureValueEquals(row.fields[0].second, "1"),
           "engine LIKE true projection mismatch");
   Require(row.fields[1].first == "like_false" &&
               row.fields[1].second.descriptor.canonical_type_name == "boolean" &&
-              row.fields[1].second.encoded_value == "0",
+              ScalarFixtureValueEquals(row.fields[1].second, "0"),
           "engine LIKE false projection mismatch");
   Require(row.fields[2].first == "like_unknown" &&
               row.fields[2].second.descriptor.canonical_type_name == "boolean" &&
@@ -10992,19 +11035,19 @@ void RequireEngineOperatorProjectionDispatch() {
           "engine LIKE UNKNOWN projection mismatch");
   Require(row.fields[3].first == "not_like_true" &&
               row.fields[3].second.descriptor.canonical_type_name == "boolean" &&
-              row.fields[3].second.encoded_value == "1",
+              ScalarFixtureValueEquals(row.fields[3].second, "1"),
           "engine NOT(LIKE) projection mismatch");
   Require(row.fields[4].first == "not_true" &&
               row.fields[4].second.descriptor.canonical_type_name == "boolean" &&
-              row.fields[4].second.encoded_value == "0",
+              ScalarFixtureValueEquals(row.fields[4].second, "0"),
           "engine NOT TRUE projection mismatch");
   Require(row.fields[5].first == "ilike_true" &&
               row.fields[5].second.descriptor.canonical_type_name == "boolean" &&
-              row.fields[5].second.encoded_value == "1",
+              ScalarFixtureValueEquals(row.fields[5].second, "1"),
           "engine ILIKE true projection mismatch");
   Require(row.fields[6].first == "like_escape_true" &&
               row.fields[6].second.descriptor.canonical_type_name == "boolean" &&
-              row.fields[6].second.encoded_value == "1",
+              ScalarFixtureValueEquals(row.fields[6].second, "1"),
           "engine LIKE escaped pattern projection mismatch");
 
   const sblr::SblrDispatchRequest invalid_escape{
@@ -11061,39 +11104,39 @@ void RequireEngineExtendedOperatorProjectionDispatch() {
           "engine extended operator scalar projection column count mismatch");
   Require(row.fields[0].first == "and_false" &&
               row.fields[0].second.descriptor.canonical_type_name == "boolean" &&
-              row.fields[0].second.encoded_value == "0",
+              ScalarFixtureValueEquals(row.fields[0].second, "0"),
           "engine AND projection mismatch");
   Require(row.fields[1].first == "or_true" &&
               row.fields[1].second.descriptor.canonical_type_name == "boolean" &&
-              row.fields[1].second.encoded_value == "1",
+              ScalarFixtureValueEquals(row.fields[1].second, "1"),
           "engine OR projection mismatch");
   Require(row.fields[2].first == "negated" &&
               row.fields[2].second.descriptor.canonical_type_name == "int64" &&
-              row.fields[2].second.encoded_value == "-7",
+              ScalarFixtureValueEquals(row.fields[2].second, "-7"),
           "engine unary minus projection mismatch");
   Require(row.fields[3].first == "distinct_null" &&
               row.fields[3].second.descriptor.canonical_type_name == "boolean" &&
-              row.fields[3].second.encoded_value == "1",
+              ScalarFixtureValueEquals(row.fields[3].second, "1"),
           "engine IS DISTINCT FROM projection mismatch");
   Require(row.fields[4].first == "regex_true" &&
               row.fields[4].second.descriptor.canonical_type_name == "boolean" &&
-              row.fields[4].second.encoded_value == "1",
+              ScalarFixtureValueEquals(row.fields[4].second, "1"),
           "engine regex operator projection mismatch");
   Require(row.fields[5].first == "json_value" &&
               row.fields[5].second.descriptor.canonical_type_name == "json_document" &&
-              row.fields[5].second.encoded_value == "1",
+              ScalarFixtureValueEquals(row.fields[5].second, "1"),
           "engine JSON get projection mismatch");
   Require(row.fields[6].first == "json_text" &&
               row.fields[6].second.descriptor.canonical_type_name == "text" &&
-              row.fields[6].second.encoded_value == "bird",
+              ScalarFixtureValueEquals(row.fields[6].second, "bird"),
           "engine JSON get text projection mismatch");
   Require(row.fields[7].first == "array_contains" &&
               row.fields[7].second.descriptor.canonical_type_name == "boolean" &&
-              row.fields[7].second.encoded_value == "1",
+              ScalarFixtureValueEquals(row.fields[7].second, "1"),
           "engine array contains projection mismatch");
   Require(row.fields[8].first == "xor_true" &&
               row.fields[8].second.descriptor.canonical_type_name == "boolean" &&
-              row.fields[8].second.encoded_value == "1",
+              ScalarFixtureValueEquals(row.fields[8].second, "1"),
           "engine XOR projection mismatch");
 }
 

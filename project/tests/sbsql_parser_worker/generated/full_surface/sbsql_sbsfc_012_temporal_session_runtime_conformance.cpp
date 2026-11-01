@@ -7,9 +7,11 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../../../support/binary_uuid_fixture.hpp"
+#include "../../../support/native_value_fixture.hpp"
 #include "dispatch/function_dispatch.hpp"
 #include "registry/function_seed_registry.hpp"
 
+#include <chrono>
 #include <iostream>
 #include <string>
 #include <string_view>
@@ -44,8 +46,8 @@ SblrValue Int64Value(std::int64_t input) {
   value.is_null = false;
   value.has_int64_value = true;
   value.int64_value = input;
-  value.encoded_value = std::to_string(input);
-  value.text_value = value.encoded_value;
+  // Native carrier only: the engine refuses a text mirror beside INT64/REAL64/BOOLEAN
+  // (src/engine/sblr/sblr_binary_value_carrier.hpp, function_result_helpers.cpp).
   return value;
 }
 
@@ -58,8 +60,13 @@ SblrValue NullValue(std::string descriptor) {
 
 scratchbird::engine::sblr::SblrResult Run(const FunctionRegistry& registry,
                                           std::string function_id,
-                                          std::vector<SblrValue> values = {}) {
+                                          std::vector<SblrValue> values = {},
+                                          std::string result_type = {}) {
   FunctionCallRequest request;
+  // Native DATE calendar/month routines require an exact bound result
+  // descriptor in the same datatype cohort as their bound operands.
+  if (!result_type.empty())
+    request.result_descriptor = scratchbird::tests::NativeBoundDescriptor(result_type);
   // The fixture resolves its symbolic test case through the published seed
   // registry; executable dispatch receives the registry's binary identity.
   if (const auto* entry = registry.Lookup(function_id))
@@ -163,6 +170,19 @@ bool ExpectNull(std::string_view case_id,
   return true;
 }
 
+bool ExpectDate(std::string_view case_id,
+                const scratchbird::engine::sblr::SblrResult& result,
+                std::chrono::year_month_day expected) {
+  if (!ExpectOkScalar(result, case_id)) return false;
+  // DATE results are the native four-byte day carrier, never ISO text.
+  if (!scratchbird::tests::NativeDateSblrEquals(result.scalar_values.front(), expected)) {
+    std::cerr << case_id << ": expected native date " << int(expected.year()) << '-'
+              << unsigned(expected.month()) << '-' << unsigned(expected.day()) << "\n";
+    return false;
+  }
+  return true;
+}
+
 bool ExpectInvalidArity(std::string_view case_id, const scratchbird::engine::sblr::SblrResult& result) {
   if (result.status == SblrStatusCode::ok || !HasDiagnostic(result, "SB_DIAG_FUNCTION_INVALID_INPUT")) {
     std::cerr << case_id << ": expected SB_DIAG_FUNCTION_INVALID_INPUT\n";
@@ -185,6 +205,7 @@ bool ExpectFailureDetail(std::string_view case_id,
 }  // namespace
 
 int main() {
+  using namespace std::chrono_literals;
   const auto package = BuildStandardFunctionSeedPackage();
   const auto& registry = package.registry;
   bool ok = true;
@@ -246,68 +267,67 @@ int main() {
                   Run(registry, "sb.uuid.v7"), scratchbird::tests::FixtureUuidLiteral("550e8400-e29b-41d4-a716-446655440000")) && ok;
 
   ok = ExpectInt64("dow_date_signature",
-                   Run(registry, "sb.temporal.dow", {TextValue("date", "2026-05-11")}),
+                   Run(registry, "sb.temporal.dow", {scratchbird::tests::NativeDateSblrValue(2026y / 5 / 11)}, "int64"),
                    1) && ok;
   ok = ExpectInt64("dow_bare_alias",
-                   Run(registry, "sb.temporal.dow", {TextValue("date", "2026-05-11")}),
+                   Run(registry, "sb.temporal.dow", {scratchbird::tests::NativeDateSblrValue(2026y / 5 / 11)}, "int64"),
                    1) && ok;
   ok = ExpectInt64("doy_date_signature",
-                   Run(registry, "sb.temporal.doy", {TextValue("date", "2026-05-11")}),
+                   Run(registry, "sb.temporal.doy", {scratchbird::tests::NativeDateSblrValue(2026y / 5 / 11)}, "int64"),
                    131) && ok;
   ok = ExpectInt64("doy_bare_alias",
-                   Run(registry, "sb.temporal.doy", {TextValue("date", "2026-05-11")}),
+                   Run(registry, "sb.temporal.doy", {scratchbird::tests::NativeDateSblrValue(2026y / 5 / 11)}, "int64"),
                    131) && ok;
   ok = ExpectInt64("quarter_date_signature",
-                   Run(registry, "sb.temporal.quarter", {TextValue("date", "2026-05-11")}),
+                   Run(registry, "sb.temporal.quarter", {scratchbird::tests::NativeDateSblrValue(2026y / 5 / 11)}, "int64"),
                    2) && ok;
   ok = ExpectInt64("quarter_bare_alias",
-                   Run(registry, "sb.temporal.quarter", {TextValue("date", "2026-05-11")}),
+                   Run(registry, "sb.temporal.quarter", {scratchbird::tests::NativeDateSblrValue(2026y / 5 / 11)}, "int64"),
                    2) && ok;
   ok = ExpectInt64("isodow_date_signature",
-                   Run(registry, "sb.temporal.isodow", {TextValue("date", "2026-05-11")}),
+                   Run(registry, "sb.temporal.isodow", {scratchbird::tests::NativeDateSblrValue(2026y / 5 / 11)}, "int64"),
                    1) && ok;
   ok = ExpectInt64("isodow_bare_alias",
-                   Run(registry, "sb.temporal.isodow", {TextValue("date", "2026-05-11")}),
+                   Run(registry, "sb.temporal.isodow", {scratchbird::tests::NativeDateSblrValue(2026y / 5 / 11)}, "int64"),
                    1) && ok;
   ok = ExpectInt64("week_date_signature",
-                   Run(registry, "sb.temporal.week", {TextValue("date", "2026-05-11")}),
+                   Run(registry, "sb.temporal.week", {scratchbird::tests::NativeDateSblrValue(2026y / 5 / 11)}, "int64"),
                    20) && ok;
   ok = ExpectInt64("week_bare_alias",
-                   Run(registry, "sb.temporal.week", {TextValue("date", "2026-05-11")}),
+                   Run(registry, "sb.temporal.week", {scratchbird::tests::NativeDateSblrValue(2026y / 5 / 11)}, "int64"),
                    20) && ok;
   ok = ExpectNull("week_null",
-                  Run(registry, "sb.temporal.week", {NullValue("date")}),
+                  Run(registry, "sb.temporal.week", {scratchbird::tests::NativeNullSblrValue("date")}, "int64"),
                   "int64") && ok;
-  ok = ExpectText("add_months_bare_alias",
+  ok = ExpectDate("add_months_bare_alias",
                   Run(registry, "sb.temporal.add_months", {
-                      TextValue("date", "2026-05-11"),
-                      Int64Value(3),
-                  }),
-                  "2026-08-11",
-                  "date") && ok;
-  ok = ExpectText("add_months_signature_clamp",
+                      scratchbird::tests::NativeDateSblrValue(2026y / 5 / 11),
+                      scratchbird::tests::NativeBoundInt64SblrValue(3),
+                  }, "date"),
+                  2026y / 8 / 11) && ok;
+  ok = ExpectDate("add_months_signature_clamp",
                   Run(registry, "sb.temporal.add_months", {
-                      TextValue("date", "2026-01-31"),
-                      Int64Value(1),
-                  }),
-                  "2026-02-28",
-                  "date") && ok;
+                      scratchbird::tests::NativeDateSblrValue(2026y / 1 / 31),
+                      scratchbird::tests::NativeBoundInt64SblrValue(1),
+                  }, "date"),
+                  2026y / 2 / 28) && ok;
   ok = ExpectNull("add_months_null",
                   Run(registry, "sb.temporal.add_months", {
-                      NullValue("date"),
-                      Int64Value(1),
-                  }),
+                      scratchbird::tests::NativeNullSblrValue("date"),
+                      scratchbird::tests::NativeBoundInt64SblrValue(1),
+                  }, "date"),
                   "date") && ok;
-  ok = ExpectText("last_day_bare_alias",
-                  Run(registry, "sb.temporal.last_day", {TextValue("date", "2026-05-11")}),
-                  "2026-05-31",
-                  "date") && ok;
-  ok = ExpectText("last_day_signature_leap",
-                  Run(registry, "sb.temporal.last_day", {TextValue("date", "2024-02-15")}),
-                  "2024-02-29",
-                  "date") && ok;
+  ok = ExpectDate("last_day_bare_alias",
+                  Run(registry, "sb.temporal.last_day",
+                      {scratchbird::tests::NativeDateSblrValue(2026y / 5 / 11)}, "date"),
+                  2026y / 5 / 31) && ok;
+  ok = ExpectDate("last_day_signature_leap",
+                  Run(registry, "sb.temporal.last_day",
+                      {scratchbird::tests::NativeDateSblrValue(2024y / 2 / 15)}, "date"),
+                  2024y / 2 / 29) && ok;
   ok = ExpectNull("last_day_null",
-                  Run(registry, "sb.temporal.last_day", {NullValue("date")}),
+                  Run(registry, "sb.temporal.last_day",
+                      {scratchbird::tests::NativeNullSblrValue("date")}, "date"),
                   "date") && ok;
 
   ok = ExpectInt64("date_part_timestamp_year",

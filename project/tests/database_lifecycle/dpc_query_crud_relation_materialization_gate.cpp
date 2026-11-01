@@ -1,5 +1,6 @@
 #include "../support/engine_evidence_fixture.hpp"
 #include "../support/engine_statement_fixture.hpp"
+#include "../support/native_result_cell_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -82,12 +83,13 @@ api::EngineUuid NewIdentity(platform::UuidKind kind, platform::u64 salt) {
 }
 
 api::EngineTypedValue Int64Value(std::int64_t value) {
-  api::EngineTypedValue typed;
-  typed.descriptor.descriptor_kind = "scalar";
-  typed.descriptor.canonical_type_name = "int64";
-  typed.descriptor.encoded_descriptor = "canonical=int64";
-  typed.encoded_value = std::to_string(value);
-  return typed;
+  api::EngineDescriptor descriptor;
+  descriptor.descriptor_kind = "scalar";
+  descriptor.canonical_type_name = "int64";
+  descriptor.encoded_descriptor = "canonical=int64";
+  // int64 input rides the native binary carrier only, never encoded_value text
+  // (src/engine/internal_api/dml/direct_bulk_typed_row_codec.cpp refuses text int64).
+  return scratchbird::tests::NativeInt64CellFixture(std::move(descriptor), value);
 }
 
 api::EngineRowValue Row(std::int64_t id, std::int64_t payload) {
@@ -109,12 +111,19 @@ bool HasEvidence(const api::EngineApiResult& result,
 
 std::int64_t FieldI64(const api::EngineRowValue& row, std::size_t index) {
   Require(index < row.fields.size(), "DPC-065 field index out of range");
-  return std::stoll(row.fields[index].second.encoded_value);
+  // int64 results are decoded from the native binary carrier, never text.
+  const auto decoded = scratchbird::tests::NativeInt64CellValue(row.fields[index].second);
+  Require(decoded.has_value(), "DPC-065 int64 field was not a native int64 carrier");
+  return *decoded;
 }
 
 std::int64_t FieldI64ByName(const api::EngineRowValue& row, std::string_view name) {
   for (const auto& [field_name, typed] : row.fields) {
-    if (field_name == name) { return std::stoll(typed.encoded_value); }
+    if (field_name == name) {
+      const auto decoded = scratchbird::tests::NativeInt64CellValue(typed);
+      Require(decoded.has_value(), "DPC-065 named int64 field was not a native int64 carrier");
+      return *decoded;
+    }
   }
   Fail("DPC-065 named field missing");
 }
@@ -430,7 +439,8 @@ int main() {
   RequireOk(counted, "DPC-065 descriptor-cached CRUD count failed");
   Require(counted.output_row_count == 1,
           "DPC-065 descriptor-cached CRUD count output shape mismatch");
-  Require(counted.result_shape.rows.front().fields.front().second.encoded_value == "128",
+  Require(scratchbird::tests::NativeInt64CellValue(
+              counted.result_shape.rows.front().fields.front().second) == std::int64_t{128},
           "DPC-065 descriptor-cached CRUD count value mismatch");
 
   scratchbird::tests::FixtureEngineRequest<api::EngineSelectRowsRequest> projected_count(

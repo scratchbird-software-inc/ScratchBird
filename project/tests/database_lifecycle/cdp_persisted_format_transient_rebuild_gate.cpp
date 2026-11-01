@@ -1,5 +1,6 @@
 #include "hash_digest.hpp"
 #include "../support/engine_evidence_fixture.hpp"
+#include "../support/native_result_cell_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -219,12 +220,12 @@ api::EngineGetDescriptorRequest DescriptorRequest(
 }
 
 api::EngineTypedValue Int64Value(std::int64_t value) {
-  api::EngineTypedValue typed;
-  typed.descriptor.descriptor_kind = "scalar";
-  typed.descriptor.canonical_type_name = "int64";
-  typed.descriptor.encoded_descriptor = "canonical=int64";
-  typed.encoded_value = std::to_string(value);
-  return typed;
+  api::EngineDescriptor descriptor;
+  descriptor.descriptor_kind = "scalar";
+  descriptor.canonical_type_name = "int64";
+  descriptor.encoded_descriptor = "canonical=int64";
+  // int64 input rides the native binary carrier only, never encoded_value text.
+  return scratchbird::tests::NativeInt64CellFixture(std::move(descriptor), value);
 }
 
 std::string FixtureDescriptorDigest(const api::EngineUuid& identity) {
@@ -281,7 +282,12 @@ std::string CountValue(const api::EnginePlanOperationResult& result) {
   Require(!result.result_shape.rows.empty(), "CDP-024 plan result had no rows");
   Require(!result.result_shape.rows.front().fields.empty(),
           "CDP-024 plan result had no fields");
-  return result.result_shape.rows.front().fields.front().second.encoded_value;
+  // The engine publishes COUNT natively (int64 binary carrier), never text;
+  // render the decoded value here only so the existing comparisons stay exact.
+  const auto decoded = scratchbird::tests::NativeInt64CellValue(
+      result.result_shape.rows.front().fields.front().second);
+  Require(decoded.has_value(), "CDP-024 plan result was not a native int64 carrier");
+  return std::to_string(*decoded);
 }
 
 void RequirePlanCacheEvidence(const api::EnginePlanOperationResult& result,

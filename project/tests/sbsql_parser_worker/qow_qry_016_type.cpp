@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "catalog/datatype_bootstrap_identity.hpp"
 #include "descriptor_value_runtime.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 using scratchbird::tests::FixtureUuidLiteral;
@@ -116,10 +117,16 @@ api::EngineDescriptor Descriptor(const api::EngineUuid& descriptor_uuid,
   descriptor.descriptor_uuid = descriptor_uuid;
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = std::string(type_name);
-  const auto builtin = exec::MakeExecutorDescriptor(std::string(type_name));
+  // The current bootstrap cohort, named explicitly: a bound scalar must carry
+  // its cohort (expression_api.cpp refuses one without).
+  const api::EngineDatatypeCohort cohort{api::kBootstrapDatatypeCatalogUuid,
+                                         api::kBootstrapDatatypeCatalogGeneration,
+                                         api::kBootstrapDatatypeRegistryGeneration};
+  const auto builtin = exec::MakeExecutorDescriptor(std::string(type_name), {}, cohort);
   descriptor.type_uuid = builtin.type_uuid.is_nil() ? type_uuid : builtin.type_uuid;
   descriptor.datatype_descriptor_uuid = builtin.datatype_descriptor_uuid;
   descriptor.datatype_descriptor_generation = builtin.datatype_descriptor_generation;
+  descriptor.datatype_cohort = builtin.datatype_cohort;
   descriptor.encoded_descriptor = "nullability=nullable";
   return descriptor;
 }

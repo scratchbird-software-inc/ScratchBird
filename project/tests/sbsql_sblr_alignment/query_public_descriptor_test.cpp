@@ -141,8 +141,10 @@ void VerifyBatchBudget(sb_engine_result_t result, bool faults_only) {
     std::vector<packet::Field> cells;
     CheckDescriptor(rows[i].name == "row[" + std::to_string(i) + "]" &&
                         packet::Decode(rows[i].value, &cells) && cells.size() == 1 &&
-                        cells[0].name == "value" && cells[0].kind == packet::Kind::text &&
-                        cells[0].value == "1",
+                        // int64 cells are published as the native 8-byte little-endian
+                        // signed carrier (src/engine/public_abi.cpp api_row_value), never text.
+                        cells[0].name == "value" && cells[0].kind == packet::Kind::signed_integer &&
+                        cells[0].value == std::string("\x01\0\0\0\0\0\0\0", 8),
                     "actual bounded VALUES query returned a false row");
     CheckDescriptor(metadata[i].name == "row_meta[" + std::to_string(i) + "]" &&
                         metadata[i].kind == packet::Kind::text && metadata[i].value == "value:int64:not_null",

@@ -105,6 +105,9 @@ api::EngineDescriptor Descriptor(std::string type) {
       descriptor.datatype_descriptor_generation);
   Require(identity.ok, "numeric fixture current codec binding failed");
   descriptor.type_uuid = identity.row.type_uuid;
+  // The cohort of the identity row; a bound scalar must carry it.
+  descriptor.datatype_cohort = {identity.row.catalog_snapshot_uuid, identity.row.catalog_generation,
+                                identity.row.registry_generation};
   descriptor.descriptor_kind = "scalar";
   descriptor.canonical_type_name = std::move(type);
   descriptor.encoded_descriptor = "nullability=non_null;width=128";

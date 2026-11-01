@@ -74,6 +74,11 @@ api::EngineDescriptor Descriptor() {
   out.type_uuid = type.row.legacy_fields.type_uuid;
   out.datatype_descriptor_uuid = datatype.descriptor_uuid.value;
   out.datatype_descriptor_generation = datatype.descriptor_epoch;
+  // The cohort the identity was looked up in. Bound scalars must name it; the
+  // engine refuses a descriptor with no cohort (expression_api.cpp).
+  out.datatype_cohort = {api::kBootstrapDatatypeCatalogUuid,
+                         api::kBootstrapDatatypeCatalogGeneration,
+                         api::kBootstrapDatatypeRegistryGeneration};
   out.descriptor_kind = "scalar";
   out.canonical_type_name = "real128";
   out.encoded_descriptor = "width=128;nullability=nullable;fixture=typed-binary128";

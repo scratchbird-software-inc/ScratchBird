@@ -57,8 +57,8 @@ SblrValue Int64Value(std::int64_t input) {
   value.is_null = false;
   value.has_int64_value = true;
   value.int64_value = input;
-  value.encoded_value = std::to_string(input);
-  value.text_value = value.encoded_value;
+  // Native carrier only: the engine refuses a text mirror beside INT64/REAL64/BOOLEAN
+  // (src/engine/sblr/sblr_binary_value_carrier.hpp, function_result_helpers.cpp).
   return value;
 }
 
@@ -69,8 +69,8 @@ SblrValue Real64Value(double input) {
   value.is_null = false;
   value.has_real64_value = true;
   value.real64_value = input;
-  value.encoded_value = std::to_string(input);
-  value.text_value = value.encoded_value;
+  // Native carrier only: the engine refuses a text mirror beside INT64/REAL64/BOOLEAN
+  // (src/engine/sblr/sblr_binary_value_carrier.hpp, function_result_helpers.cpp).
   return value;
 }
 

@@ -1,4 +1,5 @@
 #include "../../../support/binary_uuid_fixture.hpp"
+#include "../../../support/native_int64_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -55,8 +56,8 @@ SblrValue BooleanValue(bool input) {
   value.is_null = false;
   value.has_int64_value = true;
   value.int64_value = input ? 1 : 0;
-  value.encoded_value = input ? "1" : "0";
-  value.text_value = value.encoded_value;
+  // Native carrier only: the engine refuses a text mirror beside INT64/REAL64/BOOLEAN
+  // (src/engine/sblr/sblr_binary_value_carrier.hpp, function_result_helpers.cpp).
   return value;
 }
 
@@ -67,8 +68,8 @@ SblrValue Int64Value(std::int64_t input) {
   value.is_null = false;
   value.has_int64_value = true;
   value.int64_value = input;
-  value.encoded_value = std::to_string(input);
-  value.text_value = value.encoded_value;
+  // Native carrier only: the engine refuses a text mirror beside INT64/REAL64/BOOLEAN
+  // (src/engine/sblr/sblr_binary_value_carrier.hpp, function_result_helpers.cpp).
   return value;
 }
 
@@ -225,8 +226,8 @@ bool ExpectProjectionUint64(std::string_view case_id,
     return false;
   }
   const auto& value = result.api_result.result_shape.rows.front().fields.front().second;
-  if (value.is_null || value.descriptor.canonical_type_name != "uint64" ||
-      value.encoded_value != std::to_string(expected)) {
+  // Projected UINT64 results ride the native 8-byte carrier, never text.
+  if (!scratchbird::tests::NativeUInt64Equals(value, expected)) {
     std::cerr << case_id << ": expected projected uint64 " << expected << ", got "
               << value.descriptor.canonical_type_name << " " << value.encoded_value << '\n';
     return false;
