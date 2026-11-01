@@ -1,3 +1,4 @@
+#include "../support/database_fixture_cleanup.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
@@ -407,11 +408,7 @@ int main() {
   struct Cleanup {
     std::filesystem::path path;
     ~Cleanup() {
-      if (!path.empty()) {
-        std::error_code ignored;
-        std::filesystem::remove(path, ignored);
-        std::filesystem::remove(path.string() + ".sb.local_password_auth", ignored);
-      }
+      if (!path.empty()) { try { scratchbird::tests::RemoveDatabaseFixtureArtifacts(path); } catch (...) {} }
     }
   } cleanup{database_path};
   TestHostedEngineAndSessionHealthPublication(database_path);

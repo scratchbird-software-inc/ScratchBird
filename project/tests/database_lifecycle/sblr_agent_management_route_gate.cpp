@@ -231,7 +231,8 @@ api::EngineRequestContext Context(const Fixture& fixture, std::string request_id
   context.security_epoch = 13;
   context.resource_epoch = fixture.resource_epoch;
   scratchbird::tests::MaterializeComponentAuthorization(context,
-      {"OBS_AGENT_STATE_READ", "OBS_AGENT_CONTROL", "FILESPACE_LIFECYCLE_CONTROL", "OBS_AGENT_ACTION_APPROVE"});
+      {"OBS_AGENT_STATE_READ", "OBS_AGENT_CONTROL", "OBS_AGENT_CONTROL_INTERNAL",
+       "FILESPACE_LIFECYCLE_CONTROL", "OBS_AGENT_ACTION_APPROVE"});
   return context;
 }
 
@@ -247,6 +248,11 @@ void SeedFilespaceCatalogDescriptor(Fixture& fixture) {
       "resources/seed-packs/initial-resource-pack").string();
   create.allow_minimal_resource_bootstrap=false;
   create.require_resource_seed_pack=true;
+  // The shipped metric policy files, as production create passes them: agent
+  // hooks resolve their metric dependencies from this committed catalog.
+  const auto templates=std::filesystem::path(__FILE__).parent_path().parent_path().parent_path()/"config/templates";
+  create.metric_policy_defaults_path=(templates/"metric-policy-defaults.conf").string();
+  create.metric_policy_families_path=(templates/"metric-policy-families.conf").string();
   const auto created=db::CreateDatabaseFile(create);
   Require(created.ok(),"real filespace catalog fixture creation failed: "+created.diagnostic.diagnostic_code+
       ":"+created.diagnostic.message_key);
@@ -559,7 +565,8 @@ api::EngineApiRequest FilespacePreallocateSblrApiRequest(const Fixture& fixture)
 }
 
 void TestApiPagePreallocationStorageMutation() {
-  const auto fixture = MakeFixture("api_page", 1000);
+  auto fixture = MakeFixture("api_page", 1000);
+  SeedFilespaceCatalogDescriptor(fixture);
   const auto result = api::EngineRequestPagePreallocation(PageRequest(fixture, "api-page-live"));
   if (!result.ok) {
     DumpDiagnostics(result);
@@ -580,7 +587,8 @@ void TestApiPagePreallocationStorageMutation() {
 }
 
 void TestSblrPagePreallocationStorageMutation() {
-  const auto fixture = MakeFixture("sblr_page", 2000);
+  auto fixture = MakeFixture("sblr_page", 2000);
+  SeedFilespaceCatalogDescriptor(fixture);
   const auto result = Dispatch(fixture,
                                "agents.request_page_preallocation",
                                "SBLR_AGENT_REQUEST_PAGE_PREALLOCATION",
@@ -596,14 +604,22 @@ void TestSblrPagePreallocationStorageMutation() {
 }
 
 void TestFilespaceGrowthAuthorizationBeforeEffects() {
-  const std::array<std::string,3> rights{
-      "OBS_AGENT_CONTROL","FILESPACE_LIFECYCLE_CONTROL","OBS_AGENT_ACTION_APPROVE"};
+  // SB_AGENT_SELF_ACTION_RIGHTS (owner, 2026-10-30): growth applies on
+  // FILESPACE_LIFECYCLE_CONTROL (database and filespace) and
+  // OBS_AGENT_ACTION_APPROVE; OBS_AGENT_CONTROL is held by no agent.
+  const std::array<std::string,2> rights{
+      "FILESPACE_LIFECYCLE_CONTROL","OBS_AGENT_ACTION_APPROVE"};
   unsigned profiles=0,refusals=0;
   for(const auto& profile:scratchbird::storage::disk::kCanonicalFilespacePageProfiles){
-    const auto fixture=MakeFixture("growth_authorization",30000+profiles++);
+    auto fixture=MakeFixture("growth_authorization",30000+profiles++);
+    SeedFilespaceCatalogDescriptor(fixture);
+    // Members, evidence and reservations are compared; the database's own
+    // files are the precondition, not a growth effect.
+    const auto database_name=fixture.database_path.filename().string();
     const auto snapshot=[&]{
       std::map<std::string,std::string> files;
       for(const auto& entry:std::filesystem::recursive_directory_iterator(fixture.dir)){
+        if(entry.path().filename().string().starts_with(database_name))continue;
         if(entry.is_regular_file()){
           std::ifstream in(entry.path(),std::ios::binary);Require(in.good(),"open authorization fixture image");
           files.emplace(entry.path().lexically_relative(fixture.dir).string(),
@@ -620,8 +636,11 @@ void TestFilespaceGrowthAuthorizationBeforeEffects() {
     };
     const auto denied=[&](const auto& result,const auto& before){
       watch(false);
-      Require(!result.ok&&!result.diagnostics.empty()&&result.diagnostics.front().error&&
-          result.diagnostics.front().code.rfind("SECURITY.",0)==0,
+      const bool security_denial=!result.ok&&!result.diagnostics.empty()&&result.diagnostics.front().error&&
+          result.diagnostics.front().code.rfind("SECURITY.",0)==0;
+      if(!security_denial&&!result.diagnostics.empty())
+        std::cerr<<"growth denial diagnostic: "<<result.diagnostics.front().code<<':'<<result.diagnostics.front().detail<<'\n';
+      Require(security_denial,
           "growth denial must preserve a registered security diagnostic");
       Require(snapshot()==before,"authorization refusal changed a member, evidence file or durable reservation");
 #if defined(__linux__)
@@ -674,11 +693,18 @@ void TestFilespaceGrowthAuthorizationBeforeEffects() {
         const auto observed=api::EngineRequestFilespaceGrowth(dry);
         Require(observed.ok&&!observed.storage_result&&snapshot()==before,"dry-run inspection must not require live apply grants or mutate files");
         auto live=FilespaceRequest(fixture,"explicitly-authorized-growth",profile.page_size_bytes);
-        for(auto& grant:live.context.authorization_context.grants){
-          if(grant.right=="OBS_AGENT_CONTROL")grant.target_uuid=fixture.database_uuid;
+        auto& live_grants=live.context.authorization_context.grants;
+        for(auto& grant:live_grants){
           if(grant.right=="FILESPACE_LIFECYCLE_CONTROL"||grant.right=="OBS_AGENT_ACTION_APPROVE")
             grant.target_uuid=fixture.filespace_uuid;
         }
+        const auto lifecycle=std::find_if(live_grants.begin(),live_grants.end(),
+            [](const auto& g){return g.right=="FILESPACE_LIFECYCLE_CONTROL";});
+        Require(lifecycle!=live_grants.end(),"live growth fixture holds FILESPACE_LIFECYCLE_CONTROL");
+        auto database_scope=*lifecycle;
+        database_scope.grant_uuid=scratchbird::tests::FixtureUuid(9912,5);
+        database_scope.target_uuid=fixture.database_uuid;
+        live_grants.push_back(database_scope);
         const auto applied=api::EngineRequestFilespaceGrowth(live);
         if(!applied.ok)DumpDiagnostics(applied);
         Require(applied.ok&&applied.storage_result&&applied.storage_result->ok()&&
@@ -692,7 +718,8 @@ void TestFilespaceGrowthAuthorizationBeforeEffects() {
 }
 
 void TestApiFilespaceGrowthStorageMutation() {
-  const auto fixture = MakeFixture("api_filespace", 3000);
+  auto fixture = MakeFixture("api_filespace", 3000);
+  SeedFilespaceCatalogDescriptor(fixture);
   const auto result = api::EngineRequestFilespaceGrowth(FilespaceRequest(fixture, "api-filespace-live"));
   if (!result.ok) {
     DumpDiagnostics(result);
@@ -732,7 +759,8 @@ void TestApiFilespaceGrowthStorageMutation() {
 }
 
 void TestApiFilespaceGrowthRetainsEvidenceFailure() {
-  const auto fixture=MakeFixture("growth_evidence_failure",12000);
+  auto fixture = MakeFixture("growth_evidence_failure",12000);
+  SeedFilespaceCatalogDescriptor(fixture);
   const auto request=FilespaceRequest(fixture,"growth-evidence-failure");
   // A directory at the event-file path produces a real append error, after
   // successful member extension. Do not replace this with a fake result.
@@ -748,7 +776,8 @@ void TestApiFilespaceGrowthRetainsEvidenceFailure() {
               std::filesystem::file_size(operation.admitted_request->member_capacity.physical_path)==80*16384,
           "evidence failure did not retain real member extension");
 
-  const auto denied_fixture=MakeFixture("growth_trace_not_authority",12001);
+  // Refused before any I/O: this fixture holds no database at all.
+  const auto denied_fixture = MakeFixture("growth_trace_not_authority",12001);
   auto denied=FilespaceRequest(denied_fixture,"trace-not-authority");
   denied.context.authorization_context={};
   denied.context.trace_tags={"security.fixture_trace_authority","right:OBS_AGENT_CONTROL",
@@ -766,6 +795,10 @@ void TestApiFilespaceGrowthRetainsReleaseFailure() {
   SeedFilespaceCatalogDescriptor(fixture);
   api::AgentDurableCatalogStoreRequest seed;
   seed.context=Context(fixture,"seed-resource-catalog");
+  // Publishing the agent durable catalog image is a catalog write.
+  scratchbird::tests::MaterializeComponentAuthorization(seed.context,
+      {"OBS_AGENT_STATE_READ","OBS_AGENT_CONTROL","OBS_AGENT_CONTROL_INTERNAL",
+       "FILESPACE_LIFECYCLE_CONTROL","OBS_AGENT_ACTION_APPROVE","CATALOG_MUTATE"});
   seed.evidence_uuid=IdentityBytes(fixture.agent_uuid);
   seed.production_live_path=true;
   seed.fsync_or_checkpoint_evidence=true;
@@ -828,7 +861,8 @@ void TestApiFilespaceGrowthRetainsFailure() {
   namespace fs=scratchbird::storage::filespace;
   for(const auto& profile:scratchbird::storage::disk::kCanonicalFilespacePageProfiles)
   for(unsigned fault=1;fault<=4;++fault) {
-    const auto fixture=MakeFixture("growth_retained_failure",10000+fault);
+    auto fixture = MakeFixture("growth_retained_failure",10000+fault);
+    SeedFilespaceCatalogDescriptor(fixture);
     auto request=FilespaceRequest(fixture,"growth-before-failure",profile.page_size_bytes);
     // A real successful action establishes the member. Injection then targets
     // extension, not fixture creation or an unrelated catalog write.
@@ -901,7 +935,8 @@ void TestApiFilespaceGrowthRetainsFailure() {
 }
 
 void TestSblrFilespaceGrowthStorageMutation() {
-  const auto fixture = MakeFixture("sblr_filespace", 4000);
+  auto fixture = MakeFixture("sblr_filespace", 4000);
+  SeedFilespaceCatalogDescriptor(fixture);
   const auto result = Dispatch(fixture,
                                "agents.request_filespace_growth",
                                "SBLR_AGENT_REQUEST_FILESPACE_GROWTH",
@@ -920,7 +955,8 @@ void TestSblrFilespaceGrowthStorageMutation() {
 }
 
 void TestSblrFilespaceGrowthAcceptsRequestedPages() {
-  const auto fixture = MakeFixture("sblr_filespace_pages", 4500);
+  auto fixture = MakeFixture("sblr_filespace_pages", 4500);
+  SeedFilespaceCatalogDescriptor(fixture);
   const auto result = Dispatch(fixture,
                                "agents.request_filespace_growth",
                                "SBLR_AGENT_REQUEST_FILESPACE_GROWTH",
@@ -1050,6 +1086,7 @@ void TestSblrFilespacePreallocateNegativeCasesDoNotMutate() {
 
 void TestDryRunAndValidationFailuresDoNotMutateBeforeLiveRoute() {
   auto fixture = MakeFixture("negative_page", 5000);
+  SeedFilespaceCatalogDescriptor(fixture);
   auto dry_run = PageRequest(fixture, "page-dry-run");
   dry_run.dry_run = true;
   const auto dry = api::EngineRequestPagePreallocation(dry_run);
@@ -1091,7 +1128,8 @@ void TestDryRunAndValidationFailuresDoNotMutateBeforeLiveRoute() {
   Require(live.ok, "live page route after negative cases failed");
   RequireField(live, "page_preallocation_evidence_sequence", "1");
 
-  const auto filespace_fixture = MakeFixture("negative_filespace", 6000);
+  auto filespace_fixture = MakeFixture("negative_filespace", 6000);
+  SeedFilespaceCatalogDescriptor(filespace_fixture);
   auto missing_policy = FilespaceRequest(filespace_fixture, "filespace-missing-policy");
   missing_policy.policy_authorized = false;
   const auto denied = api::EngineRequestFilespaceGrowth(missing_policy);

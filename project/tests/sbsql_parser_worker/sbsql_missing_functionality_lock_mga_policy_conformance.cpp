@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/database_fixture_cleanup.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include "../support/durable_authorization_fixture.hpp"
 #include "ast/ast.hpp"
@@ -185,14 +186,7 @@ std::filesystem::path TestDatabasePath() {
 }
 
 void RemoveDatabaseArtifacts(const std::filesystem::path& path) {
-  std::error_code ignored;
-  std::filesystem::remove(path, ignored);
-  for (const auto suffix : {".sb.api_events", ".sb.crud_events", ".sb.name_events",
-                            ".sb.transaction_inventory", ".dirty.manifest",
-                            ".recovery.evidence", ".sb.owner.lock",
-                            ".sb.txn_publish"}) {
-    std::filesystem::remove(path.string() + suffix, ignored);
-  }
+  try { scratchbird::tests::RemoveDatabaseFixtureArtifacts(path); } catch (...) {}
 }
 
 api::EngineUuid CreateMinimalDatabase(const std::filesystem::path& path) {

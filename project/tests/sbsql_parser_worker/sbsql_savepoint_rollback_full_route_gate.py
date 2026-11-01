@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import os
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 
@@ -414,6 +415,13 @@ def main() -> int:
             failures.append(name)
             print(f"{name}=failed {error}", flush=True)
     print(f"savepoint_full_route cases={len(selected)} failures={len(failures)} artifacts={work}")
+    if failures:
+        # CTest keeps stderr; the workspace is removed either way.
+        for log in sorted(work.rglob("*.err")) + sorted(work.rglob("*.out")):
+            if log.is_file() and log.stat().st_size:
+                print(f"--- {log.relative_to(work)} ---", file=sys.stderr)
+                print(log.read_text(encoding="utf-8", errors="replace")[-12000:], file=sys.stderr)
+    shutil.rmtree(work, ignore_errors=True)
     return bool(failures)
 
 

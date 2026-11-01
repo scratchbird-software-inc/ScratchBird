@@ -1,3 +1,4 @@
+#include "../support/database_fixture_cleanup.hpp"
 #include "../agents/agent_binary_identity_fixture.hpp"
 using scratchbird::tests::BinaryFixtureIdentity;
 using scratchbird::tests::NativeFixtureIdentity;
@@ -154,6 +155,7 @@ TestDatabase CreateDatabase(const char* basename, std::uint64_t timestamp_base) 
   const std::filesystem::path path =
       std::filesystem::temp_directory_path() / basename;
   CleanupDatabase(path);
+  scratchbird::tests::RemoveDatabaseFixtureArtifactsAtExit(path);
 
   const auto database_uuid =
       uuid::GenerateEngineIdentityV7(platform::UuidKind::database,

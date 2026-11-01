@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/database_fixture_cleanup.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include "database_lifecycle_test_memory.hpp"
 #include "management/memory_management_api.hpp"
@@ -553,6 +554,7 @@ void TestAutomationDurableReportCatalogPersistence() {
   const auto database_path =
       std::filesystem::temp_directory_path() /
       "scratchbird_memory_report_catalog_gate.sbdb";
+  const scratchbird::tests::DatabaseFixtureArtifactsGuard database_cleanup{database_path};
   const auto catalog_path =
       std::filesystem::path(database_path.string() +
                             ".sb.sys.memory_report_catalog");
@@ -678,6 +680,7 @@ void TestObjectResidencyDurableCatalogPersistence() {
   const auto database_path =
       std::filesystem::temp_directory_path() /
       "scratchbird_memory_object_residency_catalog_gate.sbdb";
+  const scratchbird::tests::DatabaseFixtureArtifactsGuard database_cleanup{database_path};
   const auto catalog_path =
       std::filesystem::path(database_path.string() +
                             ".sb.sys.memory_object_residency_policy");
@@ -758,6 +761,7 @@ void TestRateLimitDurableCatalogPersistence() {
   const auto database_path =
       std::filesystem::temp_directory_path() /
       "scratchbird_memory_rate_limit_catalog_gate.sbdb";
+  const scratchbird::tests::DatabaseFixtureArtifactsGuard database_cleanup{database_path};
   const auto catalog_path =
       std::filesystem::path(database_path.string() +
                             ".sb.sys.memory_rate_limit_policy");
@@ -925,6 +929,7 @@ void TestPolicyMigrationDurableCatalogPersistence() {
   const auto database_path =
       std::filesystem::temp_directory_path() /
       "scratchbird_memory_policy_migration_catalog_gate.sbdb";
+  const scratchbird::tests::DatabaseFixtureArtifactsGuard database_cleanup{database_path};
   const auto catalog_path =
       std::filesystem::path(database_path.string() +
                             ".sb.sys.memory_policy_migration_catalog");

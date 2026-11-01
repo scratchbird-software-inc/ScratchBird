@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/database_fixture_cleanup.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include "crud_support/crud_store.hpp"
 #include "database_lifecycle.hpp"
@@ -73,9 +74,11 @@ std::uint64_t CurrentUnixMillis() {
 }
 
 std::filesystem::path TestDatabasePath(std::string_view suffix) {
-  return std::filesystem::temp_directory_path() /
+  auto path = std::filesystem::temp_directory_path() /
          ("sbsql_transaction_policy_closure_" + std::string(suffix) + "_" +
           std::to_string(CurrentUnixMillis()) + ".sbdb");
+  scratchbird::tests::RemoveDatabaseFixtureArtifactsAtExit(path);
+  return path;
 }
 
 void RemoveDatabaseArtifacts(const std::filesystem::path& path) {

@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/database_fixture_cleanup.hpp"
 #include "database_dirty_manifest.hpp"
 #include "database_format.hpp"
 #include "database_lifecycle.hpp"
@@ -45,13 +46,7 @@ struct Cleanup {
   std::vector<std::filesystem::path> database_paths;
 
   ~Cleanup() {
-    for (const auto& path : database_paths) {
-      std::error_code ignored;
-      std::filesystem::remove(path, ignored);
-      std::filesystem::remove(path.string() + ".sb.owner.lock", ignored);
-      std::filesystem::remove(path.string() + ".dirty.manifest", ignored);
-      std::filesystem::remove(path.string() + ".recovery.evidence", ignored);
-    }
+    for (const auto& path : database_paths) { try { scratchbird::tests::RemoveDatabaseFixtureArtifacts(path); } catch (...) {} }
   }
 };
 

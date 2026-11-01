@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/database_fixture_cleanup.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include "ast/ast.hpp"
 #include "canonical_sblr_admission_test_helper.hpp"
@@ -163,8 +164,10 @@ std::uint64_t CurrentUnixMillis() {
 }
 
 std::filesystem::path TestDatabasePath() {
-  return std::filesystem::temp_directory_path() /
+  auto path = std::filesystem::temp_directory_path() /
          ("sbsql_missing_gate_004_" + std::to_string(CurrentUnixMillis()) + ".sbdb");
+  scratchbird::tests::RemoveDatabaseFixtureArtifactsAtExit(path);
+  return path;
 }
 
 void RemoveDatabaseArtifacts(const std::filesystem::path& path) {

@@ -125,8 +125,13 @@ def main():
         return 1
     finally:
         stop(server)
-        if passed:
-            shutil.rmtree(work)
+        if not passed:
+            # CTest keeps stderr; the database is a reproducible input, not evidence.
+            for log in sorted(work.rglob("*.err")) + sorted(work.rglob("*.out")):
+                if log.is_file() and log.stat().st_size:
+                    print(f"--- {log.relative_to(work)} ---", file=sys.stderr)
+                    print(log.read_text(encoding="utf-8", errors="replace")[-12000:], file=sys.stderr)
+        shutil.rmtree(work, ignore_errors=True)
 
 
 if __name__ == "__main__":

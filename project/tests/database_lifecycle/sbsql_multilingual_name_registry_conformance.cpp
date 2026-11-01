@@ -1,3 +1,4 @@
+#include "../support/database_fixture_cleanup.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
@@ -318,12 +319,7 @@ void TestDeterministicFallbackDisplay(const std::filesystem::path& path,
 }
 
 void Cleanup(const std::filesystem::path& path) {
-  std::error_code ignored;
-  std::filesystem::remove(path, ignored);
-  std::filesystem::remove(path.string() + ".sb.api_events", ignored);
-  std::filesystem::remove(path.string() + ".sb.catalog_object_events", ignored);
-  std::filesystem::remove(path.string() + ".sb.crud_events", ignored);
-  std::filesystem::remove(path.string() + ".sb.name_events", ignored);
+  try { scratchbird::tests::RemoveDatabaseFixtureArtifacts(path); } catch (...) {}
 }
 
 }  // namespace

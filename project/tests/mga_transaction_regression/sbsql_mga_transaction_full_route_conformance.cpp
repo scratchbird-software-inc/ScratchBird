@@ -74,6 +74,10 @@ void DumpFile(const std::filesystem::path& path, std::string_view label) {
   }
   StopProcess(g_listener_pid);
   StopProcess(g_server_pid);
+  if (!g_work_dir.empty()) {
+    std::error_code ignored;
+    std::filesystem::remove_all(g_work_dir, ignored);
+  }
   std::exit(EXIT_FAILURE);
 }
 
@@ -1010,5 +1014,7 @@ int main(int argc, char** argv) {
   g_server_pid = 0;
   RequireInventoryFinality(database_path);
   std::cout << "sbsql_mga_transaction_full_route_conformance=passed work=" << work << '\n';
+  std::error_code ignored;
+  std::filesystem::remove_all(work, ignored);
   return EXIT_SUCCESS;
 }

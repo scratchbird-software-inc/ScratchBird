@@ -1,3 +1,4 @@
+#include "../../support/database_fixture_cleanup.hpp"
 #include "../../support/binary_uuid_fixture.hpp"
 #include "../../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
@@ -220,6 +221,7 @@ bool HasEvidence(const catalog_api::EngineApiResult& result,
 
 void TestFirstClassSynonymResolutionDepthCycleAndParentRemap() {
   const auto path = TestPath("primary");
+  const scratchbird::tests::DatabaseFixtureArtifactsGuard cleanup{path};
   const auto database_uuid = CreateDatabase(path, 1779820001000);
   auto initial = Begin(path, database_uuid);
   Commit(initial);
@@ -304,6 +306,7 @@ void TestFirstClassSynonymResolutionDepthCycleAndParentRemap() {
 
 void TestSynonymRollbackAndDependencyEdges() {
   const auto path = TestPath("rollback");
+  const scratchbird::tests::DatabaseFixtureArtifactsGuard cleanup{path};
   const auto database_uuid = CreateDatabase(path, 1779830001000);
   CommitCreate(path, database_uuid, CreateRequest(BaseContext(path, database_uuid), scratchbird::tests::FixtureUuid(1330, 2), "schema", {}, "app"));
   CommitCreate(path, database_uuid, CreateRequest(BaseContext(path, database_uuid), scratchbird::tests::FixtureUuid(1330, 15), "table", scratchbird::tests::FixtureUuid(1330, 2), "orders"));

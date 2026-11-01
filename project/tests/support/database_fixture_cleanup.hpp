@@ -18,10 +18,34 @@ inline void RemoveDatabaseFixtureArtifacts(const std::filesystem::path& path) {
   std::vector<std::filesystem::path> owned;
   for (const auto& entry : std::filesystem::directory_iterator(parent)) {
     const auto candidate = entry.path().filename().string();
-    if (candidate == name || candidate.starts_with(name + ".sb.") ||
-        candidate == name + ".dirty.manifest" || candidate == name + ".recovery.evidence")
+    // X.sbdb.sb.*, X.sbdb.dirty.manifest, X.sbdb.bulk_import_streams.v1, ...
+    if (candidate == name || candidate.starts_with(name + "."))
       owned.push_back(entry.path());
   }
   for (const auto& entry : owned) std::filesystem::remove_all(entry);
 }
+// Removes the database's fixture namespace at process exit. Static
+// destructors run on return from main and on std::exit, so a failing check
+// that exits still cleans up (not on abort or a fatal signal).
+inline void RemoveDatabaseFixtureArtifactsAtExit(std::filesystem::path path) {
+  struct Registry {
+    std::vector<std::filesystem::path> paths;
+    ~Registry() {
+      for (const auto& registered : paths) {
+        try { RemoveDatabaseFixtureArtifacts(registered); } catch (...) {}
+      }
+    }
+  };
+  static Registry registry;
+  registry.paths.push_back(std::move(path));
+}
+
+// Removes the database's fixture namespace when the scope ends. A failing
+// check that calls std::exit skips this, as it skips every destructor.
+struct DatabaseFixtureArtifactsGuard {
+  std::filesystem::path path;
+  ~DatabaseFixtureArtifactsGuard() {
+    try { RemoveDatabaseFixtureArtifacts(path); } catch (...) {}
+  }
+};
 }  // namespace scratchbird::tests

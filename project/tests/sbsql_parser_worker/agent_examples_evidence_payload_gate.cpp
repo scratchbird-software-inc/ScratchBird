@@ -8,6 +8,7 @@
 
 #include "agents/agent_action_hooks_api.hpp"
 #include "../support/component_authorization_fixture.hpp"
+#include "../support/owned_bootstrap_database_fixture.hpp"
 #include "../support/owned_temp_directory.hpp"
 #include "agents/agent_management_api.hpp"
 #include "ast/ast.hpp"
@@ -420,12 +421,23 @@ api::EngineObjectReference FilespaceTarget() {
 }
 
 void RequirePagePreallocationExample() {
-  const auto temp_dir = MakeTempDir("sb_pfar020a_page", 450);
+  // The hook resolves the agent's metric dependencies from the database's
+  // committed metric catalog, so the example runs against a real created
+  // database (credentialed create with the shipped metric policy files).
+  scratchbird::tests::ConfigureOwnedBootstrapFixtureMemory("agent_examples_evidence_payload_gate");
+  scratchbird::tests::OwnedBootstrapDatabaseFixture database(
+      GeneratedUuid(platform::UuidKind::database, 450));
+  const auto owner = database.Context(true);
   api::EngineRequestPagePreallocationRequest request;
   // page_allocation_manager acting for itself holds the accepted section 4c
   // right (SB_AGENT_SELF_ACTION_RIGHTS).
   request.context = EngineContext("OBS_AGENT_CONTROL_INTERNAL");
-  request.context.database_path = (temp_dir.path / "pfar020a.sbdb").string();
+  request.context.database_path = owner.database_path;
+  request.context.database_uuid = owner.database_uuid;
+  request.context.transaction_uuid = owner.transaction_uuid;
+  request.context.local_transaction_id = owner.local_transaction_id;
+  request.context.snapshot_visible_through_local_transaction_id =
+      owner.snapshot_visible_through_local_transaction_id;
   request.context.trace_tags.push_back("right:FILESPACE_LIFECYCLE_CONTROL");
   request.agent_type = "page_allocation_manager";
   request.action_class = "page_preallocation_request";

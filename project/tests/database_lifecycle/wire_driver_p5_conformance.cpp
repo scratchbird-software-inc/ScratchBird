@@ -130,6 +130,10 @@ void PutU64At(std::vector<std::uint8_t>* bytes, std::size_t offset, std::uint64_
 void CheckServerLifecycle() {
   const auto root = MakeTempDir();
   Require(!root.empty(), "temporary directory was not created");
+  struct RootCleanup {
+    std::filesystem::path root;
+    ~RootCleanup() { std::error_code ignored; std::filesystem::remove_all(root, ignored); }
+  } root_cleanup{root};
   auto config = ConfigFor(root);
   auto startup = WriteStartupLifecycleArtifacts(config, "serving");
   Require(startup.ok(), "startup lifecycle artifacts failed");

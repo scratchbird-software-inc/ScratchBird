@@ -14,6 +14,7 @@
 #include "observability/agent_observability_api.hpp"
 #include "uuid.hpp"
 #include "../support/component_authorization_fixture.hpp"
+#include "../support/owned_bootstrap_database_fixture.hpp"
 #include "../support/owned_temp_directory.hpp"
 #include "metric_observation_queue.hpp"
 
@@ -381,7 +382,16 @@ void TestObservabilityZeroGreyValidation() {
   scratchbird::tests::OwnedTempDirectory audit_directory;
   api::EngineCollectAgentRuntimeObservabilityRequest request;
   request.context = Context({"OBS_METRICS_READ_FAMILY", "OBS_AGENT_EVIDENCE_READ"});
-  request.context.database_path = (audit_directory.path() / "observation").string();
+  // The collector reads the database's committed metric catalog: observe
+  // a real created database carrying this context's database identity.
+  scratchbird::tests::ConfigureOwnedBootstrapFixtureMemory("agent_zero_grey_output_contract_gate");
+  scratchbird::tests::OwnedBootstrapDatabaseFixture database(request.context.database_uuid);
+  const auto owner = database.Context(true);
+  request.context.database_path = owner.database_path;
+  request.context.transaction_uuid = owner.transaction_uuid;
+  request.context.local_transaction_id = owner.local_transaction_id;
+  request.context.snapshot_visible_through_local_transaction_id =
+      owner.snapshot_visible_through_local_transaction_id;
   request.records.push_back(RuntimeEvidence("success"));
   auto& registry = metrics::DefaultMetricRegistry();
   const auto unbound = api::EngineCollectAgentRuntimeObservability(request);

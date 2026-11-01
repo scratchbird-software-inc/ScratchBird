@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/database_fixture_cleanup.hpp"
 #include "database_lifecycle.hpp"
 #include "disk_device.hpp"
 #include "page_cache.hpp"
@@ -257,8 +258,7 @@ void TestDatabaseLifecycleIntegration() {
   struct Cleanup {
     std::filesystem::path path;
     ~Cleanup() {
-      std::error_code ignored;
-      std::filesystem::remove(path, ignored);
+      try { scratchbird::tests::RemoveDatabaseFixtureArtifacts(path); } catch (...) {}
     }
   } cleanup{path};
 

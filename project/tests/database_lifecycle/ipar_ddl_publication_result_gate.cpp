@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/database_fixture_cleanup.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include "database_lifecycle.hpp"
 #include "ddl/alter_api.hpp"
@@ -290,6 +291,7 @@ int main() {
                     ("sb_ipar_ddl_publication_" +
                      std::to_string(NowMillis()) + "_" +
                      std::to_string(static_cast<long long>(getpid())) + ".sbdb");
+  scratchbird::tests::RemoveDatabaseFixtureArtifactsAtExit(path);
   const api::EngineUuid database_uuid = CreateDatabase(path);
   const api::EngineUuid owner_uuid = GeneratedUuid(UuidKind::object, 10);
   const api::EngineUuid schema_uuid = GeneratedUuid(UuidKind::schema, 11);
@@ -399,7 +401,6 @@ int main() {
                     false);
 
   Commit(context);
-  std::filesystem::remove(path);
   std::cout << "ipar_ddl_publication_result_gate=passed\n";
   return EXIT_SUCCESS;
 }
