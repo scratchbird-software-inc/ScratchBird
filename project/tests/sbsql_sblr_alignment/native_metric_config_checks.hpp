@@ -93,49 +93,70 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     const auto n=db::NativeCreationCatalogRowBytes(row);Check(n.has_value(),"complete batch structural size");
     batch_bytes+=*n;
   }
+  // A catalog relation is either one direct leaf or an index head over several
+  // complete base leaves (NATIVE-CATALOG-RELATION-IMAGE-BINDING-001); there is
+  // no unindexed multi-leaf form. The one-leaf construction refuses a set that
+  // does not fit, before any I/O; the complete set is then built through the
+  // indexed construction with the catalog's own index binding. Either way the
+  // whole configured set must reopen and resolve exactly.
+  const auto verify=[&](const db::NativeCreationWorkspaceResult& made,disk::FileDevice& device,
+                        const std::filesystem::path& path,const auto& r,u64 budget,
+                        const db::NativeCatalogRelationBinding& relation) {
+      Check(device.Close().ok()&&device.Open(path.string(),disk::FileOpenMode::open_existing).ok(),"complete batch reopens");
+      const std::vector<disk::NativeFilespaceDevice> devices{{r.bootstrap.filespace_uuid,r.bootstrap.page_size_profile_uuid,&device}};
+      const auto read=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(r.bootstrap.database_uuid,devices,
+          made.receipt->checkpoint,2,1,relation,budget);
+      Check(read.ok()&&read.rows.size()==4*loaded.config->families.size(),"all selected families and their dependencies survive reopen together");
+      std::vector<c::CatalogMetricRowView> views;
+      for(const auto& row:read.rows)views.push_back({&row.metadata,row.provisional});
+      for(const auto& expected:*batch.definitions) {
+        const auto resolved=c::ResolveLocalCatalogMetricBindings(views,expected.descriptor.binding.metric_uuid,1);
+        Check(resolved.ok(),"complete batch resolves each actual retained family");
+        const auto actual_descriptor=c::EncodeCatalogMetricDescriptor(resolved.binding->metric.descriptor);
+        const auto expected_descriptor=c::EncodeCatalogMetricDescriptor(expected.descriptor);
+        Check(actual_descriptor.ok()&&expected_descriptor.ok()&&actual_descriptor.bytes==expected_descriptor.bytes,
+            "complete batch exact descriptor custody");
+        const auto actual_retention=c::EncodeCatalogMetricRetentionPolicy(resolved.binding->metric.retention);
+        const auto expected_retention=c::EncodeCatalogMetricRetentionPolicy(expected.retention);
+        Check(actual_retention.ok()&&expected_retention.ok()&&actual_retention.bytes==expected_retention.bytes,
+            "complete batch exact retained policy");
+        const auto visibility=c::DecodeCatalogMetricVisibilityPolicy(resolved.binding->metric.visibility_policy.record.payload);
+        Check(visibility.ok(),"complete batch retained visibility codec");
+        const auto actual_visibility=c::EncodeCatalogMetricVisibilityPolicy(*visibility.record);
+        const auto expected_visibility=c::EncodeCatalogMetricVisibilityPolicy(expected.visibility);
+        Check(actual_visibility.ok()&&expected_visibility.ok()&&actual_visibility.bytes==expected_visibility.bytes,
+            "complete batch exact visibility policy");
+      }
+  };
   unsigned whole_persisted=0;
   for(unsigned profile=0;profile<5;++profile) {
     const auto r=Request(profile);page_bytes=r.bootstrap.page_size_bytes;total_pages=r.total_pages;selector_page=17;
     const auto budget=256*page_bytes;disk::FileDevice device;const auto path=fixture.Next();
     Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"complete batch actual owned device");
     Arm();const auto made=db::InitializePopulatedNativeCreationWorkspaceOnOpenDevice(device,r,complete,budget,*fixture.issuer);Disarm();
-    if(batch_bytes>page_bytes-128-32-96) {
-      // Existing one-leaf construction is a known bound, not permission to
-      // truncate families or claim ordinary database bootstrap completion.
-      Check(!made.ok()&&made.error==db::NativeCreationWorkspaceError::catalog_capacity_exceeded&&
-          device.Size().ok()&&device.Size().size_bytes==0&&calls[write_call]==0,
-          "complete batch overcapacity refuses before any physical effects");
+    if(batch_bytes<=page_bytes-128-32-96) {
+      Check(made.ok(),"all selected metric dependencies publish in one actual construction");
+      verify(made,device,path,r,budget,{made.receipt->relations[0].object_uuid,{}});
+      ++whole_persisted;
       continue;
     }
-    Check(made.ok(),"all selected metric dependencies publish in one actual construction");
-    Check(device.Close().ok()&&device.Open(path.string(),disk::FileOpenMode::open_existing).ok(),"complete batch reopens");
-    const std::vector<disk::NativeFilespaceDevice> devices{{r.bootstrap.filespace_uuid,r.bootstrap.page_size_profile_uuid,&device}};
-    const auto read=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(r.bootstrap.database_uuid,devices,
-        made.receipt->checkpoint,2,1,{made.receipt->relations[0].object_uuid,{}},budget);
-    Check(read.ok()&&read.rows.size()==4*loaded.config->families.size(),"all selected families and their dependencies survive reopen together");
-    std::vector<c::CatalogMetricRowView> views;
-    for(const auto& row:read.rows)views.push_back({&row.metadata,row.provisional});
-    for(const auto& expected:*batch.definitions) {
-      const auto resolved=c::ResolveLocalCatalogMetricBindings(views,expected.descriptor.binding.metric_uuid,1);
-      Check(resolved.ok(),"complete batch resolves each actual retained family");
-      const auto actual_descriptor=c::EncodeCatalogMetricDescriptor(resolved.binding->metric.descriptor);
-      const auto expected_descriptor=c::EncodeCatalogMetricDescriptor(expected.descriptor);
-      Check(actual_descriptor.ok()&&expected_descriptor.ok()&&actual_descriptor.bytes==expected_descriptor.bytes,
-          "complete batch exact descriptor custody");
-      const auto actual_retention=c::EncodeCatalogMetricRetentionPolicy(resolved.binding->metric.retention);
-      const auto expected_retention=c::EncodeCatalogMetricRetentionPolicy(expected.retention);
-      Check(actual_retention.ok()&&expected_retention.ok()&&actual_retention.bytes==expected_retention.bytes,
-          "complete batch exact retained policy");
-      const auto visibility=c::DecodeCatalogMetricVisibilityPolicy(resolved.binding->metric.visibility_policy.record.payload);
-      Check(visibility.ok(),"complete batch retained visibility codec");
-      const auto actual_visibility=c::EncodeCatalogMetricVisibilityPolicy(*visibility.record);
-      const auto expected_visibility=c::EncodeCatalogMetricVisibilityPolicy(expected.visibility);
-      Check(actual_visibility.ok()&&expected_visibility.ok()&&actual_visibility.bytes==expected_visibility.bytes,
-          "complete batch exact visibility policy");
-    }
+    Check(!made.ok()&&made.error==db::NativeCreationWorkspaceError::catalog_capacity_exceeded&&
+        device.Size().ok()&&device.Size().size_bytes==0&&calls[write_call]==0,
+        "complete batch overcapacity refuses one-leaf construction before any physical effects");
+    const auto indexed_request=Request(profile,1024);const auto indexed_budget=256*page_bytes;
+    total_pages=indexed_request.total_pages;
+    const auto indexes=IndexedConstructionBindings();
+    disk::FileDevice indexed_device;const auto indexed_path=fixture.Next();
+    Check(indexed_device.Open(indexed_path.string(),disk::FileOpenMode::create_new).ok(),"complete indexed batch actual owned device");
+    const auto indexed=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(
+        indexed_device,indexed_request,complete,indexes,indexed_budget,*fixture.issuer);
+    Check(indexed.ok(),"complete selected set publishes through multi-leaf indexed construction");
+    if(!indexed.ok())continue;
+    verify(indexed,indexed_device,indexed_path,indexed_request,indexed_budget,
+           {indexes[0]->relation_uuid,indexes[0]->dependencies});
     ++whole_persisted;
   }
-  Check(whole_persisted>0,"at least one actual supported profile persists the whole configured set");
+  Check(whole_persisted==5,"every actual supported profile persists the whole configured set");
   for(unsigned profile=0;profile<5;++profile) {
     const auto r=Request(profile,96);page_bytes=r.bootstrap.page_size_bytes;total_pages=r.total_pages;
     u64 coverage=(page_bytes-384)/128;
@@ -367,18 +388,40 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     for(const auto& row:seed[0]){const auto n=db::NativeCreationCatalogRowBytes(row);Check(n.has_value(),"configured seed structural size");required+=*n;}
     for(unsigned profile=0;profile<5;++profile) {
       const auto r=Request(profile);page_bytes=r.bootstrap.page_size_bytes;total_pages=r.total_pages;selector_page=17;
-      const auto budget=256*page_bytes;const auto path=fixture.Next();disk::FileDevice device;
-      Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"configured owned file");
-      Check(required<=page_bytes-128-32-96,"one complete configured family must fit every supported profile");
-      Arm();const auto created=db::InitializePopulatedNativeCreationWorkspaceOnOpenDevice(device,r,seed,budget,*fixture.issuer);Disarm();
-      Check(created.ok(),"loaded policy definitions durably populate native construction");
+      const auto budget=256*page_bytes;auto path=fixture.Next();disk::FileDevice one_leaf_device;
+      Check(one_leaf_device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"configured owned file");
+      // A family that does not fit one leaf on this profile is refused by the
+      // one-leaf construction before any I/O and built through the indexed
+      // construction instead (NATIVE-CATALOG-RELATION-IMAGE-BINDING-001).
+      const bool one_leaf=required<=page_bytes-128-32-96;
+      Arm();auto created=db::InitializePopulatedNativeCreationWorkspaceOnOpenDevice(one_leaf_device,r,seed,budget,*fixture.issuer);Disarm();
+      disk::FileDevice indexed_device;disk::FileDevice* owner=&one_leaf_device;
+      const auto indexes=IndexedConstructionBindings();
+      db::NativeCatalogRelationBinding relation{};
+      if(one_leaf) {
+        Check(created.ok(),"loaded policy definitions durably populate native construction");
+        relation={created.receipt->relations[0].object_uuid,{}};
+      } else {
+        Check(!created.ok()&&created.error==db::NativeCreationWorkspaceError::catalog_capacity_exceeded&&
+            one_leaf_device.Size().ok()&&one_leaf_device.Size().size_bytes==0,
+            "a family over one leaf refuses one-leaf construction before any physical effects");
+        path=fixture.Next();owner=&indexed_device;
+        Check(indexed_device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"configured indexed owned file");
+        const auto indexed_request=Request(profile,128);
+        created=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(indexed_device,indexed_request,seed,indexes,budget,*fixture.issuer);
+        if(!created.ok())std::cerr<<"indexed family error="<<static_cast<int>(created.error)<<'\n';
+        Check(created.ok(),"a family over one leaf publishes through indexed construction");
+        relation={indexes[0]->relation_uuid,indexes[0]->dependencies};
+      }
+      if(!created.ok())continue;
+      auto& device=*owner;
       Check(device.Close().ok()&&device.Open(path.string(),disk::FileOpenMode::open_existing).ok(),"close and reopen configured native owner");
       const std::vector<disk::NativeFilespaceDevice> devices{{r.bootstrap.filespace_uuid,r.bootstrap.page_size_profile_uuid,&device}};
       const auto selected=db::ReadNativeBoundCheckpointSelectionFromOpenDevices(r.bootstrap.database_uuid,devices,r.bootstrap.filespace_uuid,budget);
       Check(selected.ok(),"configured native selection after reopen");
       const auto& cp=*selected.checkpoint_inventory.checkpoint;
       const disk::FilespaceRootReference checkpoint{9,0x300,cp.header.filespace_uuid,cp.header.page_number,cp.header.page_generation,cp.header.page_size_profile_uuid,cp.object_uuid};
-      const auto read=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(r.bootstrap.database_uuid,devices,checkpoint,2,1,{created.receipt->relations[0].object_uuid,{}},budget);
+      const auto read=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(r.bootstrap.database_uuid,devices,checkpoint,2,1,relation,budget);
       Check(read.ok()&&read.rows.size()==4,"actual native configured rows after reopen");
       std::vector<c::CatalogMetricRowView> views;
       for(const auto& row:read.rows)views.push_back({&row.metadata,row.provisional});
