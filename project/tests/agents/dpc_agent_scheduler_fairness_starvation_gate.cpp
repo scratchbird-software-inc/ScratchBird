@@ -19,6 +19,9 @@ using scratchbird::tests::FixtureIdentityForLabel;
 #include "database_lifecycle.hpp"
 #include "server_agent_runtime.hpp"
 #include "uuid.hpp"
+#include "engine_host.hpp"
+#include "memory.hpp"
+#include "../support/engine_statement_fixture.hpp"
 
 #include <chrono>
 #include <cstdlib>
@@ -597,28 +600,27 @@ void TestLiveServerRuntimeStatusEvidence(std::vector<EvidenceRow>* rows) {
   create.allow_minimal_resource_bootstrap = true;
   create.require_resource_seed_pack = false;
   create.allow_overwrite = true;
+  // Created as production creates (owner, L5) and opened through
+  // StartHostedEngine: a hand-built HostedDatabaseSnapshot has no ownership
+  // lock or internal startup session, so every agent transaction was refused
+  // (ENGINE.DBLC_TRANSACTION_ADMISSION_DENIED). This is the gate's only open.
+  Require(scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+              scratchbird::core::memory::DefaultLocalEngineMemoryPolicy(),
+              "dpc_agent_scheduler_fairness_starvation_gate").ok(),
+          "DPC-036 fixture memory manager configuration failed");
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   Require(db::CreateDatabaseFile(create).ok(),
           "DPC-036 database creation failed");
-
-  server::HostedDatabaseSnapshot database;
-  database.state = server::HostedDatabaseState::kOpen;
-  database.database_open = true;
-  database.database_path = create.path;
-  database.database_uuid = database_uuid_value.value.value;
-  database.filespace_uuid = filespace_uuid_value.value.value;
-  database.write_admission_fenced = false;
-  database.config_policy_security_lifecycle_present = true;
-  database.policy_generation = 1;
-  database.security_epoch = 1;
-  database.cache_invalidation_epoch = 1;
-  database.selected_agent_type_ids = {
+  config.database_default_path = create.path;
+  config.sbps_endpoint = config.control_dir / "ipc.sock";
+  auto opened = server::StartHostedEngine(config);
+  Require(opened.state.engine_context_active && !opened.state.databases.empty(),
+          "DPC-036 real exclusive server database open failed");
+  opened.state.databases.front().selected_agent_type_ids = {
       "page_allocation_manager",
       "filespace_capacity_manager",
   };
-
-  server::HostedEngineState engine_state;
-  engine_state.engine_context_active = true;
-  engine_state.databases.push_back(database);
+  server::HostedEngineState& engine_state = opened.state;
 
   std::vector<server::ServerDiagnostic> diagnostics;
   server::ServerAgentRuntime runtime;

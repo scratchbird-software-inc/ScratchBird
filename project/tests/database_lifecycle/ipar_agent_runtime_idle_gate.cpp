@@ -11,6 +11,8 @@
 #include "server_agent_runtime.hpp"
 #include "uuid.hpp"
 #include "time.hpp"
+#include "memory.hpp"
+#include "../support/engine_statement_fixture.hpp"
 #include "../../drivers/tool/cli/binary_status_display.hpp"
 
 #include <algorithm>
@@ -24,6 +26,8 @@
 #include <string_view>
 #include <thread>
 #include <vector>
+#include <sys/wait.h>
+#include <unistd.h>
 
 namespace {
 
@@ -95,6 +99,7 @@ Fixture MakeFixture() {
   create.allow_minimal_resource_bootstrap = true;
   create.require_resource_seed_pack = false;
   create.allow_overwrite = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
     std::cerr << created.diagnostic.diagnostic_code << ':'
@@ -104,25 +109,25 @@ Fixture MakeFixture() {
   return fixture;
 }
 
-server::HostedEngineState HostedState(const Fixture& fixture) {
-  server::HostedDatabaseSnapshot database;
-  database.state = server::HostedDatabaseState::kOpen;
-  database.database_path = fixture.database_path.string();
-  database.database_uuid = fixture.database_uuid.value;
-  database.filespace_uuid = fixture.filespace_uuid.value;
-  database.database_created = true;
-  database.database_open = true;
-  database.write_admission_fenced = false;
-  database.config_policy_security_lifecycle_present = true;
-  database.selected_agent_type_ids = {
+// A real exclusive open through StartHostedEngine. A hand-built
+// HostedDatabaseSnapshot has no ownership lock or internal startup session, so
+// every agent transaction was refused (ENGINE.DBLC_TRANSACTION_ADMISSION_DENIED).
+// One open per process: main runs each sub-test in its own child process.
+server::HostedEngineResult OpenHosted(const Fixture& fixture,
+                                     server::ServerBootstrapConfig& config) {
+  config.database_default_path = fixture.database_path;
+  config.sbps_endpoint = config.control_dir / "ipc.sock";
+  std::filesystem::create_directories(config.control_dir);
+  auto opened = server::StartHostedEngine(config);
+  for (const auto& diagnostic : opened.diagnostics)
+    std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
+  Require(opened.state.engine_context_active && !opened.state.databases.empty(),
+          "IPAR real exclusive server database open failed");
+  opened.state.databases.front().selected_agent_type_ids = {
       "page_allocation_manager",
       "filespace_capacity_manager",
   };
-
-  server::HostedEngineState state;
-  state.engine_context_active = true;
-  state.databases.push_back(std::move(database));
-  return state;
+  return opened;
 }
 
 std::string ReadFile(const std::filesystem::path& path) {
@@ -206,7 +211,8 @@ void TestLiveRuntimeIdleAndStop() {
 
   server::ServerAgentRuntime runtime;
   std::vector<server::ServerDiagnostic> diagnostics;
-  const bool started = runtime.Start(config, HostedState(fixture), &diagnostics);
+  const auto hosted = OpenHosted(fixture, config);
+  const bool started = runtime.Start(config, hosted.state, &diagnostics);
   if (!started) { DumpDiagnostics(diagnostics); }
   Require(started, "IPAR agent runtime failed to start");
 
@@ -293,7 +299,8 @@ void TestFailureDiagnosticsAndFairness() {
 
   server::ServerAgentRuntime runtime;
   std::vector<server::ServerDiagnostic> diagnostics;
-  const bool started = runtime.Start(config, HostedState(fixture), &diagnostics);
+  const auto hosted = OpenHosted(fixture, config);
+  const bool started = runtime.Start(config, hosted.state, &diagnostics);
   if (!started) { DumpDiagnostics(diagnostics); }
   Require(started, "IPAR failure/fairness runtime failed to start");
 
@@ -383,8 +390,33 @@ void TestFailureDiagnosticsAndFairness() {
 
 }  // namespace
 
-int main() {
-  TestLiveRuntimeIdleAndStop();
-  TestFailureDiagnosticsAndFairness();
+int main(int argc, char** argv) {
+  // Each sub-test opens its own database. A process may complete only one
+  // hosted open, and a forked child must exec a fresh host before opening, so
+  // each sub-test runs in its own exec'd process: `<gate> idle` / `<gate> failure`.
+  if (argc == 2) {
+    Require(scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+                scratchbird::core::memory::DefaultLocalEngineMemoryPolicy(),
+                "ipar_agent_runtime_idle_gate").ok(),
+            "IPAR fixture memory manager configuration failed");
+    const std::string_view which = argv[1];
+    if (which == "idle") TestLiveRuntimeIdleAndStop();
+    else if (which == "failure") TestFailureDiagnosticsAndFairness();
+    else Fail("IPAR unknown sub-test");
+    return EXIT_SUCCESS;
+  }
+  for (const char* which : {"idle", "failure"}) {
+    const pid_t child = ::fork();
+    Require(child >= 0, "IPAR sub-test fork failed");
+    if (child == 0) {
+      char* const child_argv[] = {argv[0], const_cast<char*>(which), nullptr};
+      ::execv("/proc/self/exe", child_argv);
+      std::_Exit(127);
+    }
+    int status = 0;
+    Require(::waitpid(child, &status, 0) == child && WIFEXITED(status) &&
+                WEXITSTATUS(status) == EXIT_SUCCESS,
+            std::string("IPAR sub-test failed: ") + which);
+  }
   return EXIT_SUCCESS;
 }

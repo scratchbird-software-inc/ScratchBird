@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "datatype_type_codec_identity_current_projection.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include "../support/native_catalog_column_fixture.hpp"
@@ -232,7 +233,7 @@ api::EngineColumnDefinition Column(std::uint32_t ordinal,
   Require(row.ok() && row.manifest.descriptor_rows.size() == 1,
           "SHOW CREATE datatype row unavailable");
   const auto& datatype = row.manifest.descriptor_rows.front();
-  const auto binding = dt::LookupDatatypeTypeCodecIdentityV1(
+  const auto binding = dt::LookupCurrentDatatypeTypeCodecIdentityAsV1(
       api::kBootstrapDatatypeCatalogUuid, api::kBootstrapDatatypeCatalogGeneration,
       api::kBootstrapDatatypeRegistryGeneration, datatype.descriptor_uuid.value,
       datatype.descriptor_epoch);

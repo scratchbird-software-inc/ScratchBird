@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "datatype_type_codec_identity_current_projection.hpp"
 #include "typed_result_transport_codec.hpp"
 #include "typed_result_resource_buffer.hpp"
 #include "typed_result_packet_view.hpp"
@@ -301,7 +302,7 @@ const datatypes::DatatypeTypeCodecIdentityRowV1* HistoricalTimestampIdentity(
     const TypedResultRowDescriptor& descriptor,
     const TypedResultColumnDescriptor& column) {
   const datatypes::DatatypeTypeCodecIdentityRowV1* matched = nullptr;
-  for (const auto& identity : datatypes::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+  for (const auto& identity : datatypes::CurrentDatatypeTypeCodecIdentityRowsAsV1()) {
     if (identity.catalog_snapshot_uuid.bytes != descriptor.datatype_catalog_snapshot_uuid ||
         identity.catalog_generation != descriptor.datatype_catalog_generation ||
         identity.registry_generation != descriptor.datatype_registry_generation ||

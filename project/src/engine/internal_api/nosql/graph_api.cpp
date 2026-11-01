@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "datatype_type_codec_identity_current_projection.hpp"
 #include "nosql/graph_api.hpp"
 
 #include "api_diagnostics.hpp"
@@ -160,7 +161,7 @@ bool ExactGraphDescriptorCohort(
         !type_row.manifest.descriptor_rows.front().descriptor_uuid.valid()) return false;
     const auto& descriptor_row = type_row.manifest.descriptor_rows.front();
     const auto codec_identity =
-        scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+        scratchbird::core::datatypes::LookupCurrentDatatypeTypeCodecIdentityAsV1(
             context.datatype_catalog_snapshot_uuid,
             context.datatype_catalog_generation, context.datatype_registry_generation,
             descriptor_row.descriptor_uuid.value, descriptor_row.descriptor_epoch);

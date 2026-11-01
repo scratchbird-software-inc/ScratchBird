@@ -1,3 +1,4 @@
+#include "datatype_type_codec_identity_current_projection.hpp"
 #include "wire/parameter_slot_table.hpp"
 #include "engine/sblr/relational_descriptor_codec.hpp"
 #include "cache/binary_cache_key.hpp"
@@ -22843,7 +22844,7 @@ ResolvedObjectReferenceSeed Rcp079ProofSeed(
 
 void BindProofColumnDatatype(ipc::PublicRelationColumnDescriptor* column,
     const core::platform::Uuid& snapshot, std::uint64_t generation) {
-  const auto rows = core::datatypes::CurrentDatatypeTypeCodecIdentityRowsV1();
+  const auto rows = core::datatypes::CurrentDatatypeTypeCodecIdentityRowsAsV1();
   const auto found = std::ranges::find_if(rows, [&](const auto& row) {
     return row.catalog_snapshot_uuid == snapshot &&
         row.catalog_generation == generation && row.registry_generation == generation &&
@@ -22928,7 +22929,7 @@ bool Rcp079BuildAndBind(const std::string_view sql,
           return candidate.canonical_name_key == "payload";
         });
     const auto identity = scratchbird::core::datatypes::
-        LookupDatatypeTypeCodecIdentityV1(
+        LookupCurrentDatatypeTypeCodecIdentityAsV1(
             kCatalogSnapshotUuid, 4, 4,
             kTextDescriptorUuid, 1);
     if (column == projection.columns.end() || !identity.ok ||
@@ -24818,7 +24819,7 @@ std::uint64_t AuthoritativeMultiSourceProjectionProofMaskImpl() {
   const auto apply_text_identity = [&](ipc::PublicRelationColumnDescriptor* text) {
     if (text == nullptr) return;
     const auto identity = scratchbird::core::datatypes::
-        LookupDatatypeTypeCodecIdentityV1(
+        LookupCurrentDatatypeTypeCodecIdentityAsV1(
             kCatalogSnapshotUuid, 1, 1,
             kTextDescriptorUuid, 1);
     if (!identity.ok) return;

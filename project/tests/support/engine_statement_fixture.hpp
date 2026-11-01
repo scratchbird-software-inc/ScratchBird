@@ -4,6 +4,7 @@
 #include "durable_authorization_fixture.hpp"
 #include "published_mga_table_fixture.hpp"
 #include "server_engine_bridge/statement_context.hpp"
+#include "transaction/transaction_api.hpp"
 #include <algorithm>
 #include <filesystem>
 #include <iostream>
@@ -211,6 +212,35 @@ inline api::EngineRequestContext BootstrapFixtureOwnerContext(
     throw std::runtime_error("fixture durable bootstrap owner is missing");
   context.principal_uuid = bootstrap.state.principal_uuid.value;
   MaterializeBootstrapFixtureAuthorization(context);
+  return context;
+}
+
+// The bootstrap owner's materialized context with a transaction the engine
+// began itself. Fixtures that wrote a transaction straight into the inventory
+// and invented a principal were refused at every catalog write
+// (SECURITY.AUTHORIZATION.CONTEXT_REQUIRED). Needs a credentialed create
+// (ConfigureCredentialedFixtureBootstrap).
+inline api::EngineRequestContext BeginFixtureOwnerTransaction(
+    const storage::database::DatabaseCreateConfig& create, std::string request_id) {
+  api::EngineBeginTransactionRequest begin;
+  begin.context = BootstrapFixtureOwnerContext(create);
+  begin.context.request_id = std::move(request_id);
+  begin.isolation_level = "read_committed";
+  begin.transaction_policy_profile.encoded_profiles.push_back("fail_closed:true");
+  begin.transaction_policy_profile.encoded_profiles.push_back("transaction_read_only:false");
+  begin.transaction_policy_profile.encoded_profiles.push_back("transaction_read_mode:read_write");
+  const auto begun = api::EngineBeginTransaction(begin);
+  if (!begun.ok || begun.local_transaction_id == 0) {
+    std::string detail;
+    for (const auto& d : begun.diagnostics) detail += d.code + ":" + d.detail + ";";
+    throw std::runtime_error("fixture owner transaction begin failed: " + detail);
+  }
+  auto context = begin.context;
+  context.transaction_uuid = begun.transaction_uuid;
+  context.local_transaction_id = begun.local_transaction_id;
+  context.snapshot_visible_through_local_transaction_id =
+      begun.snapshot_visible_through_local_transaction_id;
+  context.transaction_isolation_level = "read_committed";
   return context;
 }
 } // namespace scratchbird::tests

@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
+#include "datatype_type_codec_identity_current_projection.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include "../database_lifecycle/database_lifecycle_test_memory.hpp"
 #include "../support/native_catalog_column_fixture.hpp"
@@ -929,7 +930,7 @@ api::EngineUuid ProductionCoreTypeUuid(const std::string_view stable_name) {
       manifest.manifest.descriptor_rows,
       [&](const auto& row) { return row.stable_name == stable_name; });
   if (found == manifest.manifest.descriptor_rows.end()) return {};
-  const auto binding = dt::LookupDatatypeTypeCodecIdentityV1(
+  const auto binding = dt::LookupCurrentDatatypeTypeCodecIdentityAsV1(
       api::kBootstrapDatatypeCatalogUuid, api::kBootstrapDatatypeCatalogGeneration,
       api::kBootstrapDatatypeRegistryGeneration, found->descriptor_uuid.value,
       found->descriptor_epoch);
@@ -1001,7 +1002,7 @@ api::TypedRelationalDag ProductionVectorDag(
     // operand and metadata descriptors are separately bound to persisted columns.
     if (descriptor.descriptor_id > 103) continue;
     const dt::DatatypeTypeCodecIdentityRowV1* binding = nullptr;
-    for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+    for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsAsV1()) {
       if (row.type_uuid != descriptor.type_uuid ||
           row.catalog_snapshot_uuid != context.datatype_catalog_snapshot_uuid ||
           row.catalog_generation != context.datatype_catalog_generation ||

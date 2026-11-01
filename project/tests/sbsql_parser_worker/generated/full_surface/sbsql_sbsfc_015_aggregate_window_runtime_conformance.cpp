@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "datatype_type_codec_identity_current_projection.hpp"
 #include "../../../support/binary_uuid_fixture.hpp"
 #include "../../../support/exact_datatype_descriptor_fixture.hpp"
 #include "datatype_catalog_manifest.hpp"
@@ -249,7 +250,7 @@ api::EngineUuid CoreTypeUuid(const std::string_view stable_name) {
     std::abort();
   }
   const auto descriptor_uuid = found->descriptor_uuid.value;
-  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+  const auto identity = dt::LookupCurrentDatatypeTypeCodecIdentityAsV1(
       api::kBootstrapDatatypeCatalogUuid,
       api::kBootstrapDatatypeCatalogGeneration, api::kBootstrapDatatypeRegistryGeneration, descriptor_uuid,
       found->descriptor_epoch);
@@ -268,7 +269,7 @@ api::EngineUuid CoreAggregateTypeUuid(const std::string_view stable_name) {
     std::abort();
   }
   const auto descriptor_uuid = found->descriptor_uuid.value;
-  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+  const auto identity = dt::LookupCurrentDatatypeTypeCodecIdentityAsV1(
       api::kBootstrapDatatypeCatalogUuid,
       api::kBootstrapDatatypeCatalogGeneration, api::kBootstrapDatatypeRegistryGeneration, descriptor_uuid,
       found->descriptor_epoch);

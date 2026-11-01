@@ -18,6 +18,7 @@
 #include <limits>
 #include <string>
 #include <string_view>
+#include <functional>
 #include <vector>
 
 namespace {
@@ -177,23 +178,56 @@ void DispatchCancelled(
   (void)sb_engine_result_release(result);
 }
 
+// Cancellation is one-way and latches on the receipt's channel: a true probe
+// sample latches a real request whose positive state is never cleared
+// (SBLR engine contract, receipt cancellation). So the cancelled receipt stays
+// cancelled, and success and exact replay are proven on a fresh receipt with
+// its own submission. make_submission binds a submission to a receipt.
 void ProveCancellationAndReplay(
     const FaultProfile& profile, const Fixture& fixture,
-    PublicSession& session, const LiveReceipt& receipt,
-    const platform::Uuid& parser_uuid, const Submission& submission,
+    PublicSession& session, const api::EngineRequestContext& context,
+    const platform::Uuid& parser_uuid,
+    const std::function<Submission(const LiveReceipt&)>& make_submission,
+    std::vector<LiveReceipt>* receipts,
     std::atomic<unsigned>* probes, std::atomic<unsigned>* cancel_on_probe) {
-  DispatchCancelled(profile, fixture, session, receipt, parser_uuid,
-                    submission, probes, cancel_on_probe);
+  receipts->push_back(AcquireReceipt(profile, session, context));
+  const auto cancelled_index = receipts->size() - 1;
+  const auto cancelled_submission = make_submission(receipts->back());
+  DispatchCancelled(profile, fixture, session, (*receipts)[cancelled_index],
+                    parser_uuid, cancelled_submission, probes, cancel_on_probe);
 
+  // The latch: redispatch on the cancelled receipt, with no new request,
+  // still refuses as cancelled and publishes nothing.
   probes->store(0, std::memory_order_relaxed);
   cancel_on_probe->store(0, std::memory_order_relaxed);
-  const auto published = DispatchSuccess(profile, fixture, session, receipt,
-                                         parser_uuid, submission);
+  {
+    bridge::StatementPackageAdmissionReservationHandle reservation;
+    const auto& cancelled = (*receipts)[cancelled_index];
+    auto dispatch = Admit(fixture, session, cancelled.view, cancelled.handle,
+                          parser_uuid, cancelled_submission, &reservation);
+    sb_engine_result_t result = nullptr;
+    const auto status = bridge::DispatchStatementContextReceipt(&dispatch, &result);
+    FaultRequire(profile,
+                 status != SB_ENGINE_STATUS_OK && result != nullptr &&
+                     DiagnosticCode(result) == "PROCESS.CANCELLED",
+                 "cancelled receipt did not stay cancelled");
+    if (result != nullptr) (void)sb_engine_result_release(result);
+  }
+
+  receipts->push_back(AcquireReceipt(profile, session, context));
+  const auto fresh_index = receipts->size() - 1;
+  const auto submission = make_submission(receipts->back());
+  probes->store(0, std::memory_order_relaxed);
+  cancel_on_probe->store(0, std::memory_order_relaxed);
+  const auto published = DispatchSuccess(profile, fixture, session,
+                                         (*receipts)[fresh_index], parser_uuid,
+                                         submission);
 
   probes->store(0, std::memory_order_relaxed);
   cancel_on_probe->store(1, std::memory_order_relaxed);
-  const auto replay = DispatchSuccess(profile, fixture, session, receipt,
-                                      parser_uuid, submission);
+  const auto replay = DispatchSuccess(profile, fixture, session,
+                                      (*receipts)[fresh_index], parser_uuid,
+                                      submission);
   FaultRequire(profile,
                replay == published &&
                    probes->load(std::memory_order_relaxed) == 0,
@@ -519,27 +553,24 @@ int main(int argc, char** argv) {
 
   std::vector<LiveReceipt> receipts;
   if (mode == "stmt-prepare") {
-    receipts.push_back(AcquireReceipt(*profile, session, context));
-    const auto query = SourceQuerySubmission(
-        *profile, fixture, receipts.back(), parser_uuid);
-    const auto descriptor = BindPrepare(
-        *profile, receipts.back(), "fault_prepare", query);
-    const auto submission = StatementSubmission(
-        fixture, receipts.back(), parser_uuid, *profile, descriptor);
-    ProveCancellationAndReplay(*profile, fixture, session, receipts.back(),
-                               parser_uuid, submission, &probes,
-                               &cancel_on_probe);
+    ProveCancellationAndReplay(*profile, fixture, session, context, parser_uuid,
+        [&](const LiveReceipt& receipt) {
+          const auto query = SourceQuerySubmission(*profile, fixture, receipt, parser_uuid);
+          // One statement name per receipt: a name bound in this session is
+          // not rebindable, and the cancelled attempt already bound its own.
+          const std::string name = "fault_prepare_" + std::to_string(receipts.size());
+          const auto descriptor = BindPrepare(*profile, receipt, name, query);
+          return StatementSubmission(fixture, receipt, parser_uuid, *profile, descriptor);
+        },
+        &receipts, &probes, &cancel_on_probe);
   } else if (mode == "stmt-execute-direct") {
-    receipts.push_back(AcquireReceipt(*profile, session, context));
-    const auto query = SourceQuerySubmission(
-        *profile, fixture, receipts.back(), parser_uuid);
-    const auto descriptor =
-        BindExecuteDirect(*profile, receipts.back(), query);
-    const auto submission = StatementSubmission(
-        fixture, receipts.back(), parser_uuid, *profile, descriptor);
-    ProveCancellationAndReplay(*profile, fixture, session, receipts.back(),
-                               parser_uuid, submission, &probes,
-                               &cancel_on_probe);
+    ProveCancellationAndReplay(*profile, fixture, session, context, parser_uuid,
+        [&](const LiveReceipt& receipt) {
+          const auto query = SourceQuerySubmission(*profile, fixture, receipt, parser_uuid);
+          const auto descriptor = BindExecuteDirect(*profile, receipt, query);
+          return StatementSubmission(fixture, receipt, parser_uuid, *profile, descriptor);
+        },
+        &receipts, &probes, &cancel_on_probe);
   } else {
     const std::string statement_name =
         mode == "stmt-execute" ? "fault_execute"
@@ -550,23 +581,19 @@ int main(int argc, char** argv) {
                              parser_uuid, statement_name);
 
     if (mode == "stmt-execute") {
-      receipts.push_back(AcquireReceipt(*profile, session, context));
-      const auto descriptor =
-          BindExecute(*profile, receipts.back(), statement_name);
-      const auto submission = StatementSubmission(
-          fixture, receipts.back(), parser_uuid, *profile, descriptor);
-      ProveCancellationAndReplay(*profile, fixture, session, receipts.back(),
-                                 parser_uuid, submission, &probes,
-                                 &cancel_on_probe);
+      ProveCancellationAndReplay(*profile, fixture, session, context, parser_uuid,
+          [&](const LiveReceipt& receipt) {
+            const auto descriptor = BindExecute(*profile, receipt, statement_name);
+            return StatementSubmission(fixture, receipt, parser_uuid, *profile, descriptor);
+          },
+          &receipts, &probes, &cancel_on_probe);
     } else if (mode == "stmt-free") {
-      receipts.push_back(AcquireReceipt(*profile, session, context));
-      const auto descriptor =
-          BindFree(*profile, receipts.back(), statement_name);
-      const auto submission = StatementSubmission(
-          fixture, receipts.back(), parser_uuid, *profile, descriptor);
-      ProveCancellationAndReplay(*profile, fixture, session, receipts.back(),
-                                 parser_uuid, submission, &probes,
-                                 &cancel_on_probe);
+      ProveCancellationAndReplay(*profile, fixture, session, context, parser_uuid,
+          [&](const LiveReceipt& receipt) {
+            const auto descriptor = BindFree(*profile, receipt, statement_name);
+            return StatementSubmission(fixture, receipt, parser_uuid, *profile, descriptor);
+          },
+          &receipts, &probes, &cancel_on_probe);
     } else {
       receipts.push_back(AcquireReceipt(*profile, session, context));
       const auto execute_descriptor =
@@ -579,15 +606,13 @@ int main(int argc, char** argv) {
       (void)DispatchSuccess(*profile, fixture, session, receipts.back(),
                             parser_uuid, execute_submission);
 
-      receipts.push_back(AcquireReceipt(*profile, session, context));
-      const auto cancel_descriptor =
-          BindCancel(*profile, receipts.back(), statement_name);
-      const auto cancel_submission = StatementSubmission(
-          fixture, receipts.back(), parser_uuid, *profile,
-          cancel_descriptor);
-      ProveCancellationAndReplay(*profile, fixture, session, receipts.back(),
-                                 parser_uuid, cancel_submission, &probes,
-                                 &cancel_on_probe);
+      ProveCancellationAndReplay(*profile, fixture, session, context, parser_uuid,
+          [&](const LiveReceipt& receipt) {
+            const auto cancel_descriptor = BindCancel(*profile, receipt, statement_name);
+            return StatementSubmission(fixture, receipt, parser_uuid, *profile,
+                                       cancel_descriptor);
+          },
+          &receipts, &probes, &cancel_on_probe);
     }
   }
 

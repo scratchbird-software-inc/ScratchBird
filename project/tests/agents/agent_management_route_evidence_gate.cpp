@@ -6,6 +6,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "memory.hpp"
+#include "../support/engine_statement_fixture.hpp"
 #include "agent_binary_identity_fixture.hpp"
 #include "../database_lifecycle/database_lifecycle_test_memory.hpp"
 #include "../support/database_fixture_cleanup.hpp"
@@ -39,6 +41,8 @@ void Require(bool condition, const std::string& message) {
 }
 
 struct TestDatabase {
+  // The durable bootstrap owner with an engine-begun transaction.
+  api::EngineRequestContext owner;
   std::filesystem::path path;
   api::EngineUuid database_uuid;
   api::EngineUuid transaction_uuid;
@@ -73,30 +77,17 @@ TestDatabase CreateActiveDatabase(const char* basename,
   create.allow_minimal_resource_bootstrap = true;
   create.require_resource_seed_pack = false;
   create.allow_overwrite = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   Require(db::CreateDatabaseFile(create).ok(), "database creation failed");
 
-  auto initial_inventory = db::LoadLocalTransactionInventoryFromDatabase(path.string());
-  Require(initial_inventory.ok() && initial_inventory.inventory.publication_base.has_value(),
-          "lifecycle-published transaction inventory unavailable");
-  auto inventory = std::move(initial_inventory.inventory);
-  const auto transaction_uuid = uuid::GenerateEngineIdentityV7(
-      scratchbird::core::platform::UuidKind::transaction,
-      timestamp_base + 4);
-  Require(transaction_uuid.ok(), "transaction UUID generation failed");
-  auto begun = mga::BeginLocalTransaction(std::move(inventory),
-                                          transaction_uuid.value,
-                                          timestamp_base + 5);
-  Require(begun.ok(), "local transaction begin failed");
-  Require(db::PersistLocalTransactionInventoryToDatabase(path.string(),
-                                                         begun.inventory)
-              .ok(),
-          "local transaction inventory persist failed");
+  const auto owner = scratchbird::tests::BeginFixtureOwnerTransaction(create, "arhc-092-agent-management-route-evidence-setup");
 
   TestDatabase result;
   result.path = path;
   result.database_uuid = database_uuid.value.value;
-  result.transaction_uuid = transaction_uuid.value.value;
-  result.local_transaction_id = begun.entry.identity.local_id.value;
+  result.transaction_uuid = owner.transaction_uuid;
+  result.local_transaction_id = owner.local_transaction_id;
+  result.owner = owner;
   return result;
 }
 
@@ -257,7 +248,14 @@ void TestDurableSysAgentRouteEvidenceAndRedaction() {
       "scratchbird_aeic_agent_management_route_sys.sbdb",
       1800000005000ull);
   const auto context = StoreContext(database, {"OBS_AGENT_STATE_READ"});
-  SeedCatalog(context);
+  // Seeding writes the durable agent catalog and needs durable authority:
+  // the bootstrap owner. The evaluation context keeps its fixture rights,
+  // including a deliberately missing evidence right.
+  {
+    auto seed = database.owner;
+    seed.request_id = context.request_id;
+    SeedCatalog(seed);
+  }
   api::EngineSysAgentsRequest request;
   request.context = context;
   request.option_envelopes.push_back("agent_management_production_live:true");
@@ -303,7 +301,14 @@ void TestDurableShowAgentDiagnosticWithEvidenceRight() {
   const auto context = StoreContext(
       database,
       {"OBS_AGENT_STATE_READ", "OBS_AGENT_EVIDENCE_READ"});
-  SeedCatalog(context);
+  // Seeding writes the durable agent catalog and needs durable authority:
+  // the bootstrap owner. The evaluation context keeps its fixture rights,
+  // including a deliberately missing evidence right.
+  {
+    auto seed = database.owner;
+    seed.request_id = context.request_id;
+    SeedCatalog(seed);
+  }
   api::EngineShowAgentRequest request;
   request.context = context;
   request.target_object.object_kind = "storage_health_manager";
@@ -326,6 +331,11 @@ void TestDurableShowAgentDiagnosticWithEvidenceRight() {
 
 int main() {
   try {
+    // The credentialed create allocates through the default memory manager.
+    if (!scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+            scratchbird::core::memory::DefaultLocalEngineMemoryPolicy(),
+            "agent_management_gate").ok())
+      throw std::runtime_error("fixture memory manager configuration failed");
     TestDurableSysAgentRouteEvidenceAndRedaction();
     TestDurableShowAgentDiagnosticWithEvidenceRight();
   } catch (const std::exception& e) {

@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "datatype_type_codec_identity_current_projection.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include "../support/native_int64_fixture.hpp"
 #include "ast/ast.hpp"
@@ -410,7 +411,7 @@ api::EngineDescriptor BoundDescriptor(std::string_view type) {
           "cast fixture datatype absent from catalog");
   auto descriptor = Descriptor(type);
   const auto& datatype = row.manifest.descriptor_rows.front();
-  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+  const auto identity = dt::LookupCurrentDatatypeTypeCodecIdentityAsV1(
       api::kBootstrapDatatypeCatalogUuid,
       api::kBootstrapDatatypeCatalogGeneration,
       api::kBootstrapDatatypeRegistryGeneration,

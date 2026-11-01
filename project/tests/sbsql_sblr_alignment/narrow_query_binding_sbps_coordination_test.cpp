@@ -1,3 +1,4 @@
+#include "datatype_type_codec_identity_current_projection.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
@@ -135,7 +136,7 @@ std::string Int32Descriptor() {
 }
 
 api::EngineColumnDefinition Int32Column() {
-  const auto lookup = scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+  const auto lookup = scratchbird::core::datatypes::LookupCurrentDatatypeTypeCodecIdentityAsV1(
       scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701"), 1, 1, kInt32DescriptorUuid, 1);
   Require(lookup.ok && lookup.row.type_uuid == kInt32TypeUuid,
           "exact fixture datatype catalog binding is unavailable");

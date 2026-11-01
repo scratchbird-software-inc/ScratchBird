@@ -6,6 +6,8 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "memory.hpp"
+#include "../support/engine_statement_fixture.hpp"
 #include "agent_binary_identity_fixture.hpp"
 #include "../database_lifecycle/database_lifecycle_test_memory.hpp"
 #include "../support/database_fixture_cleanup.hpp"
@@ -86,6 +88,8 @@ api::EngineRequestContext Context(std::initializer_list<std::string_view> rights
 }
 
 struct TestDatabase {
+  // The durable bootstrap owner with an engine-begun transaction.
+  api::EngineRequestContext owner;
   std::filesystem::path path;
   api::EngineUuid database_uuid;
   api::EngineUuid transaction_uuid;
@@ -118,30 +122,18 @@ TestDatabase CreateActiveDatabase() {
   create.allow_minimal_resource_bootstrap = true;
   create.require_resource_seed_pack = false;
   create.allow_overwrite = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(), "database creation failed");
 
-  auto initial_inventory = db::LoadLocalTransactionInventoryFromDatabase(path.string());
-  Require(initial_inventory.ok() && initial_inventory.inventory.publication_base.has_value(),
-          "lifecycle-published transaction inventory unavailable");
-  auto inventory = std::move(initial_inventory.inventory);
-  const auto transaction_uuid = uuid::GenerateEngineIdentityV7(UuidKind::transaction,
-                                                              1790000000104);
-  Require(transaction_uuid.ok(), "transaction UUID generation failed");
-  auto begun = mga::BeginLocalTransaction(std::move(inventory),
-                                          transaction_uuid.value,
-                                          1790000000105);
-  Require(begun.ok(), "local transaction begin failed");
-  const auto persisted =
-      db::PersistLocalTransactionInventoryToDatabase(path.string(),
-                                                     begun.inventory);
-  Require(persisted.ok(), "local transaction inventory persist failed");
+  const auto owner = scratchbird::tests::BeginFixtureOwnerTransaction(create, "arhc-042-agent-management-durable-mutation-setup");
 
   TestDatabase result;
   result.path = path;
   result.database_uuid = database_uuid.value.value;
-  result.transaction_uuid = transaction_uuid.value.value;
-  result.local_transaction_id = begun.entry.identity.local_id.value;
+  result.transaction_uuid = owner.transaction_uuid;
+  result.local_transaction_id = owner.local_transaction_id;
+  result.owner = owner;
   return result;
 }
 
@@ -149,6 +141,11 @@ api::EngineRequestContext StoreContext(
     const TestDatabase& database,
     std::initializer_list<std::string_view> rights) {
   auto context = Context(rights);
+  // Store operations write the durable agent catalog and need durable
+  // authority: the bootstrap owner, who holds every right these success paths
+  // request. The rights list stays as documentation of what each path needs.
+  (void)rights;
+  context = database.owner;
   context.database_path = database.path.string();
   context.database_uuid = database.database_uuid;
   context.transaction_uuid = database.transaction_uuid;
@@ -553,6 +550,11 @@ void TestNonProductionLegacyCompatibility() {
 
 int main() {
   try {
+    // The credentialed create allocates through the default memory manager.
+    if (!scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+            scratchbird::core::memory::DefaultLocalEngineMemoryPolicy(),
+            "agent_management_gate").ok())
+      throw std::runtime_error("fixture memory manager configuration failed");
     RegisterStorageHealthContractDefinitions();
     TestDurableReadProjection();
     TestProductionMutationRequiresDurableCatalog();

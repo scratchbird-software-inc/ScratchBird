@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "datatype_type_codec_identity_current_projection.hpp"
 #include "../support/diagnostic_value_fixture.hpp"
 
 #include "../support/binary_uuid_fixture.hpp"
@@ -98,7 +99,7 @@ api::EngineDescriptor Descriptor(std::string type) {
   descriptor.datatype_descriptor_generation = bound.descriptor_epoch;
   descriptor.descriptor_uuid = scratchbird::tests::FixtureUuid(1700,
       static_cast<std::uint64_t>(dt::CanonicalTypeIdFromStableName(type)));
-  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+  const auto identity = dt::LookupCurrentDatatypeTypeCodecIdentityAsV1(
       api::kBootstrapDatatypeCatalogUuid, api::kBootstrapDatatypeCatalogGeneration,
       api::kBootstrapDatatypeRegistryGeneration, descriptor.datatype_descriptor_uuid,
       descriptor.datatype_descriptor_generation);

@@ -1,3 +1,4 @@
+#include "datatype_type_codec_identity_current_projection.hpp"
 #include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
@@ -1547,7 +1548,7 @@ api::EngineUuid ProductionExactCoreTypeUuid(const std::string_view stable_name) 
     return {};
   }
   const auto descriptor_uuid = found->descriptor_uuid.value;
-  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+  const auto identity = dt::LookupCurrentDatatypeTypeCodecIdentityAsV1(
       api::kBootstrapDatatypeCatalogUuid,
       api::kBootstrapDatatypeCatalogGeneration, api::kBootstrapDatatypeRegistryGeneration, descriptor_uuid,
       found->descriptor_epoch);
@@ -1836,7 +1837,7 @@ api::RelationalTypeDescriptor BindProductionDescriptor(
                              api::RelationalTypeDescriptor descriptor,
                              api::EngineUuid bound_datatype_uuid = {}) {
   const dt::DatatypeTypeCodecIdentityRowV1* identity = nullptr;
-  for (const auto& candidate : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+  for (const auto& candidate : dt::CurrentDatatypeTypeCodecIdentityRowsAsV1()) {
     if (candidate.catalog_snapshot_uuid != context.datatype_catalog_snapshot_uuid ||
         candidate.catalog_generation != context.datatype_catalog_generation ||
         candidate.registry_generation != context.datatype_registry_generation ||

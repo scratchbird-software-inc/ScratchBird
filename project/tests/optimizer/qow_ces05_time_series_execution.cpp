@@ -1,3 +1,4 @@
+#include "datatype_type_codec_identity_current_projection.hpp"
 #include "../support/engine_evidence_fixture.hpp"
 #include "../support/engine_statement_fixture.hpp"
 #include "../support/historical_timestamp_fixture.hpp"
@@ -380,7 +381,7 @@ api::EngineColumnDefinition Column(const api::EngineRequestContext& context,
   if (!datatype.ok() || datatype.manifest.descriptor_rows.size() != 1)
     throw std::runtime_error("time-series datatype catalog row unavailable");
   const auto& catalog_row = datatype.manifest.descriptor_rows.front();
-  const auto binding = dt::LookupDatatypeTypeCodecIdentityV1(
+  const auto binding = dt::LookupCurrentDatatypeTypeCodecIdentityAsV1(
       context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
       context.datatype_registry_generation, catalog_row.descriptor_uuid.value,
       catalog_row.descriptor_epoch);
@@ -1093,7 +1094,7 @@ api::EngineUuid CoreTypeUuid(const std::string_view stable_name) {
   }
   const auto descriptor_uuid =
       descriptor->descriptor_uuid.value;
-  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+  const auto identity = dt::LookupCurrentDatatypeTypeCodecIdentityAsV1(
       scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-00000000d701"),
       manifest.manifest.catalog_epoch, 1, descriptor_uuid,
       descriptor->descriptor_epoch);
@@ -1149,7 +1150,7 @@ api::EngineDescriptor DerivedDescriptor(const api::EngineRequestContext& context
     descriptor.descriptor_uuid = instance_uuid;
     return descriptor;
   }
-  for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+  for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsAsV1()) {
     if (row.catalog_snapshot_uuid != context.datatype_catalog_snapshot_uuid ||
         row.catalog_generation != context.datatype_catalog_generation ||
         row.registry_generation != context.datatype_registry_generation ||
@@ -2302,7 +2303,7 @@ api::RelationalTypeDescriptor DagDescriptor(
   descriptor.nullability = api::RelationalNullability::kNonNull;
   const auto type = dt::CanonicalTypeIdFromStableName(std::string(core_type));
   const dt::DatatypeTypeCodecIdentityRowV1* identity = nullptr;
-  for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+  for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsAsV1()) {
     if (row.catalog_snapshot_uuid != context.datatype_catalog_snapshot_uuid ||
         row.catalog_generation != context.datatype_catalog_generation ||
         row.registry_generation != context.datatype_registry_generation ||

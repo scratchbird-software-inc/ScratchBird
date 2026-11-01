@@ -4,6 +4,7 @@
 // Reuse the real database/session/receipt/admission fixture. No public ABI,
 // package gateway, executor registry, or statement receipt is mocked.
 #define SCRATCHBIRD_IA05_QUERY_EXPLAIN_FIXTURE_ONLY
+#include "datatype_type_codec_identity_current_projection.hpp"
 #include "ia05_query_explain_cancellation_fault_test.cpp"
 
 #include "engine/internal_api/ddl/create_api.hpp"
@@ -43,7 +44,7 @@ api::EngineColumnDefinition CatalogColumn(const api::EngineRequestContext& conte
   Require(row.ok() && row.manifest.descriptor_rows.size() == 1,
           "catalog fixture datatype missing from catalog");
   const auto& descriptor = row.manifest.descriptor_rows.front();
-  const auto codec = datatypes::LookupDatatypeTypeCodecIdentityV1(
+  const auto codec = datatypes::LookupCurrentDatatypeTypeCodecIdentityAsV1(
       context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
       context.datatype_registry_generation, descriptor.descriptor_uuid.value,
       descriptor.descriptor_epoch);

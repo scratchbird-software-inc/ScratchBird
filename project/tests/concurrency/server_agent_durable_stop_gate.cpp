@@ -10,6 +10,9 @@
 #include "transaction/startup_transaction_inventory.hpp"
 #include "agents/agent_durable_catalog_store_api.hpp"
 #include "wire/binary_status_packet.hpp"
+#include "engine_host.hpp"
+#include "memory.hpp"
+#include "../support/engine_statement_fixture.hpp"
 
 #include <cerrno>
 #include <atomic>
@@ -307,23 +310,19 @@ int main(int argc, char** argv) {
     create.database_uuid = database_id.value;
     create.filespace_uuid = filespace_id.value;
     create.creation_unix_epoch_millis = millis.unix_epoch_millis;
-    create.allow_minimal_resource_bootstrap = true;
-    create.require_resource_seed_pack = false;
+    // Created as the production bootstrap tool creates (owner, L5) and opened
+    // through StartHostedEngine. A hand-built HostedDatabaseSnapshot holds no
+    // ownership lock and no internal startup session, so every agent
+    // transaction was refused (ENGINE.DBLC_TRANSACTION_ADMISSION_DENIED
+    // security_context_missing) before this gate reached its subject. One open
+    // per process; each mode is its own process.
+    if (!scratchbird::core::memory::ConfigureDefaultMemoryManagerForFixture(
+            scratchbird::core::memory::DefaultLocalEngineMemoryPolicy(),
+            "server_agent_durable_stop_gate").ok())
+      throw std::runtime_error("fixture memory manager");
+    scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
     const auto created = db::CreateDatabaseFile(create);
     if (!created.ok()) throw std::runtime_error(created.diagnostic.diagnostic_code);
-    server::HostedDatabaseSnapshot database;
-    database.state = server::HostedDatabaseState::kOpen;
-    database.database_path = path.string();
-    database.database_uuid = database_id.value.value;
-    database.filespace_uuid = filespace_id.value.value;
-    database.database_created = true;
-    database.database_open = true;
-    database.write_admission_fenced = false;
-    database.config_policy_security_lifecycle_present = true;
-    database.selected_agent_type_ids = {"page_allocation_manager", "filespace_capacity_manager"};
-    server::HostedEngineState engine;
-    engine.engine_context_active = true;
-    engine.databases.push_back(database);
     server::ServerBootstrapConfig config;
     config.control_dir = root / "control";
     config.data_dir = root;
@@ -333,6 +332,15 @@ int main(int argc, char** argv) {
     config.lifecycle_journal_file = root / "journal";
     config.log_file = (root / "server.log").string();
     std::filesystem::create_directories(config.control_dir);
+    auto opened = server::StartHostedEngine(config);
+    for (const auto& diagnostic : opened.diagnostics)
+      std::cerr << diagnostic.code << ':' << diagnostic.safe_message << '\n';
+    if (!opened.state.engine_context_active || opened.state.databases.empty())
+      throw std::runtime_error("real exclusive server database open failed");
+    opened.state.databases.front().selected_agent_type_ids = {
+        "page_allocation_manager", "filespace_capacity_manager"};
+    server::HostedEngineState& engine = opened.state;
+    const auto& database = engine.databases.front();
 
     if (catalog_failure) {
       server::ServerAgentRuntime runtime;
@@ -548,8 +556,11 @@ int main(int argc, char** argv) {
     std::cerr << "non-standard cleanup exception escaped runtime; original committed attempt retained\n";
   }
   // Fixtures are disposable and all actual runtime/IPC objects have left scope.
-  if (passed) std::filesystem::remove_all(root);
-  else std::cerr << "retained_failed_fixture=" << root << '\n';
+  // Tests clean up after themselves (owner direction): the failure is reported
+  // above, so the fixture is removed either way.
+  std::error_code cleanup_error;
+  std::filesystem::remove_all(root, cleanup_error);
+  if (cleanup_error) std::cerr << "fixture cleanup failed: " << root << '\n';
   if (inflight) {
     sem_destroy(&worker_entered);
     sem_destroy(&release_worker);

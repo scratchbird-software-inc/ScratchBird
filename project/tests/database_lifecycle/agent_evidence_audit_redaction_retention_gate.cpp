@@ -1,3 +1,4 @@
+#include "../support/engine_statement_fixture.hpp"
 #include "database_lifecycle_test_memory.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
@@ -40,6 +41,8 @@ namespace platform = scratchbird::core::platform;
 namespace uuid = scratchbird::core::uuid;
 
 struct TestDatabase {
+  // The durable bootstrap owner with an engine-begun transaction.
+  api::EngineRequestContext owner;
   std::filesystem::path path;
   std::string database_uuid;
   std::string transaction_uuid;
@@ -116,34 +119,22 @@ TestDatabase CreateActiveDatabase(const char* basename,
   // authority. Minimal bootstrap intentionally has no resource catalog epoch.
   create.resource_seed_pack_root = SB_BOOTSTRAP_SEED_PACK_ROOT;
   create.require_resource_seed_pack = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   const auto created = db::CreateDatabaseFile(create);
   Require(created.ok(),
           "retention durable catalog database creation failed: " +
               created.diagnostic.diagnostic_code + ":" + created.diagnostic.message_key);
 
-  auto initial_inventory = db::LoadLocalTransactionInventoryFromDatabase(path.string());
-  Require(initial_inventory.ok() && initial_inventory.inventory.publication_base.has_value(),
-          "lifecycle-published transaction inventory unavailable");
-  auto inventory = std::move(initial_inventory.inventory);
-  const auto transaction_uuid = uuid::GenerateEngineIdentityV7(
-      platform::UuidKind::transaction, timestamp_base + 4);
-  Require(transaction_uuid.ok(), "transaction UUID generation failed");
-  auto begun = mga::BeginLocalTransaction(std::move(inventory),
-                                          transaction_uuid.value,
-                                          timestamp_base + 5);
-  Require(begun.ok(), "local transaction begin failed");
-  Require(db::PersistLocalTransactionInventoryToDatabase(path.string(),
-                                                         begun.inventory)
-              .ok(),
-          "local transaction inventory persist failed");
+  const auto owner = scratchbird::tests::BeginFixtureOwnerTransaction(create, "pfar016a-evidence-retention-durable-agent-catalog-setup");
 
   TestDatabase database;
   database.path = path;
   database.resource_epoch = created.state.resource_seed_catalog.resource_epoch;
   Require(database.resource_epoch != 0, "created database has no resource catalog epoch");
   database.database_uuid = IdentityBytes(database_uuid.value.value);
-  database.transaction_uuid = IdentityBytes(transaction_uuid.value.value);
-  database.local_transaction_id = begun.entry.identity.local_id.value;
+  database.transaction_uuid = IdentityBytes(owner.transaction_uuid);
+  database.local_transaction_id = owner.local_transaction_id;
+  database.owner = owner;
   return database;
 }
 
@@ -259,6 +250,17 @@ api::EngineRequestContext DurableContext(const TestDatabase& database,
       return grant.right == "OBS_AGENT_EVIDENCE_READ";
     });
   }
+  return context;
+}
+
+// Seeding writes the durable agent catalog, which needs durable authority:
+// the bootstrap owner's materialized context with its engine-begun
+// transaction. The evaluations keep their fixture rights, including the
+// deliberately missing evidence right.
+api::EngineRequestContext SeedContext(const TestDatabase& database) {
+  auto context = database.owner;
+  context.request_id = "pfar016a-evidence-retention-durable-agent-catalog-seed";
+  context.resource_epoch = database.resource_epoch;
   return context;
 }
 
@@ -577,7 +579,7 @@ void TestProductionRetentionReadsDurableCatalog() {
       "scratchbird_pfar016a_retention_durable_catalog.sbdb",
       1916017000300ull);
   const auto context = DurableContext(database, true);
-  SeedDurableEvidenceCatalog(context);
+  SeedDurableEvidenceCatalog(SeedContext(database));
 
   api::EngineEvaluateAgentEvidenceRetentionRequest request;
   request.context = context;
@@ -620,7 +622,7 @@ void TestProductionRetentionRedactsWithoutEvidenceRight() {
       "scratchbird_pfar016a_retention_redaction.sbdb",
       1916017000400ull);
   const auto seed_context = DurableContext(database, true);
-  SeedDurableEvidenceCatalog(seed_context);
+  SeedDurableEvidenceCatalog(SeedContext(database));
 
   api::EngineEvaluateAgentEvidenceRetentionRequest request;
   request.context = DurableContext(database, false);
@@ -644,7 +646,7 @@ void TestProductionRetentionRejectsTamperMismatch() {
       "scratchbird_pfar016a_retention_tamper.sbdb",
       1916017000500ull);
   const auto context = DurableContext(database, true);
-  SeedDurableEvidenceCatalog(context, true);
+  SeedDurableEvidenceCatalog(SeedContext(database), true);
 
   api::EngineEvaluateAgentEvidenceRetentionRequest request;
   request.context = context;

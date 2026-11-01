@@ -1,3 +1,4 @@
+#include "datatype_type_codec_identity_current_projection.hpp"
 #include "catalog/column_metadata_codec.hpp"
 #include "../support/engine_evidence_fixture.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
@@ -1056,7 +1057,7 @@ api::EngineUuid DescriptorIdentity(const api::EngineDescriptor& descriptor) {
 void BindProductionGraphDescriptor(const api::EngineRequestContext& context,
                                    api::RelationalTypeDescriptor* descriptor) {
   const dt::DatatypeTypeCodecIdentityRowV1* identity = nullptr;
-  for (const auto& candidate : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+  for (const auto& candidate : dt::CurrentDatatypeTypeCodecIdentityRowsAsV1()) {
     if (candidate.catalog_snapshot_uuid != context.datatype_catalog_snapshot_uuid ||
         candidate.catalog_generation != context.datatype_catalog_generation ||
         candidate.registry_generation != context.datatype_registry_generation ||
@@ -1246,7 +1247,7 @@ api::EngineUuid ProductionCoreTypeUuid(const std::string_view stable_name) {
   }
   const auto descriptor_uuid =
       descriptor->descriptor_uuid.value;
-  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+  const auto identity = dt::LookupCurrentDatatypeTypeCodecIdentityAsV1(
       api::kBootstrapDatatypeCatalogUuid,
       api::kBootstrapDatatypeCatalogGeneration,
       api::kBootstrapDatatypeRegistryGeneration, descriptor_uuid,

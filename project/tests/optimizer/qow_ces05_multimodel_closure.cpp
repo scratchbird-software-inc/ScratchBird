@@ -1,3 +1,4 @@
+#include "datatype_type_codec_identity_current_projection.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include <charconv>
 #include "../support/engine_evidence_fixture.hpp"
@@ -1769,7 +1770,7 @@ sbsql::NativeRelationalBindingContext ProductionBindingContextV1(
   }
   for (auto& descriptor : context.descriptors) {
     const dt::DatatypeTypeCodecIdentityRowV1* identity = nullptr;
-    for (const auto& candidate : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+    for (const auto& candidate : dt::CurrentDatatypeTypeCodecIdentityRowsAsV1()) {
       if (candidate.catalog_snapshot_uuid != reader.datatype_catalog_snapshot_uuid ||
           candidate.catalog_generation != reader.datatype_catalog_generation ||
           candidate.registry_generation != reader.datatype_registry_generation ||

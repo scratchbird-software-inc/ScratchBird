@@ -1,5 +1,6 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
+#include "datatype_type_codec_identity_current_projection.hpp"
 #include "nosql/key_value_api.hpp"
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
@@ -871,7 +872,7 @@ bool ExactKeyValueStorageDescriptorImpl(
         type_row.manifest.descriptor_rows.front();
     const auto descriptor_uuid = descriptor_row.descriptor_uuid.value;
     const auto codec_identity =
-        scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+        scratchbird::core::datatypes::LookupCurrentDatatypeTypeCodecIdentityAsV1(
             context.datatype_catalog_snapshot_uuid,
             context.datatype_catalog_generation, context.datatype_registry_generation, descriptor_uuid,
             descriptor_row.descriptor_epoch);

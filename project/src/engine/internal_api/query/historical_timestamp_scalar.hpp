@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 
+#include "datatype_type_codec_identity_current_projection.hpp"
 #include "api_types.hpp"
 #include "relational_type_descriptor.hpp"
 #include "catalog/column_metadata_codec.hpp"
@@ -38,7 +39,7 @@ inline bool BuildHistoricalTimestampScalarDescriptorV1(
       (source.timezone_profile_id && *source.timezone_profile_id != "timestamp_timezone_profile"))
     return refuse();
   const dt::DatatypeTypeCodecIdentityRowV1* matched = nullptr;
-  for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+  for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsAsV1()) {
     if (row.catalog_snapshot_uuid != source.datatype_catalog_snapshot_uuid ||
         row.catalog_generation != source.datatype_catalog_generation ||
         row.registry_generation != source.datatype_registry_generation ||
@@ -113,7 +114,7 @@ ResolveHistoricalTimestampScalarIdentityV1(const EngineDescriptor& descriptor,
   if (!core::uuid::IsEngineIdentityUuid(receipt) ||
       (!text("nullability", "nullable") && !text("nullability", "non_null"))) return nullptr;
   const dt::DatatypeTypeCodecIdentityRowV1* matched = nullptr;
-  for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+  for (const auto& row : dt::CurrentDatatypeTypeCodecIdentityRowsAsV1()) {
     if (row.catalog_snapshot_uuid != snapshot ||
         row.descriptor_uuid != descriptor.datatype_descriptor_uuid ||
         row.descriptor_generation != descriptor.datatype_descriptor_generation ||

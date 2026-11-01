@@ -415,7 +415,7 @@ target_compile_features(sbsql_sblr_alignment_variable_frame_binary_identity PRIV
 target_include_directories(sbsql_sblr_alignment_variable_frame_binary_identity PRIVATE
   ../../src/engine/internal_api ../../src/core/datatypes ../../include)
 target_link_libraries(sbsql_sblr_alignment_variable_frame_binary_identity PRIVATE
-  sb_core_uuid sb_core_hash sb_engine_api_diagnostics)
+  sb_core_uuid sb_core_hash sb_engine_api_diagnostics sb_core_datatypes)
 add_test(NAME sbsql_sblr_alignment_variable_frame_binary_identity
   COMMAND sbsql_sblr_alignment_variable_frame_binary_identity)
 set_tests_properties(sbsql_sblr_alignment_variable_frame_binary_identity PROPERTIES

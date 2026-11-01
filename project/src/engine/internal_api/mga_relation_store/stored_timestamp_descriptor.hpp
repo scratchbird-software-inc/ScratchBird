@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
+#include "datatype_type_codec_identity_current_projection.hpp"
 #include "query/historical_timestamp_scalar.hpp"
 
 namespace scratchbird::engine::internal_api {
@@ -15,7 +16,7 @@ inline bool ProjectStoredHistoricalTimestampDescriptorV1(
       source.canonical_type_name != "timestamp" ||
       !core::uuid::IsEngineIdentityUuid(source.descriptor_uuid) ||
       !source.charset_uuid.is_nil() || !source.collation_uuid.is_nil()) return refuse();
-  const auto binding = core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+  const auto binding = core::datatypes::LookupCurrentDatatypeTypeCodecIdentityAsV1(
       context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
       context.datatype_registry_generation, source.datatype_descriptor_uuid,
       source.datatype_descriptor_generation);

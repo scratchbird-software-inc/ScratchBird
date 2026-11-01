@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "datatype_type_codec_identity_current_projection.hpp"
 #include "nosql/vector_api.hpp"
 #include "nosql/bound_text_resource_fields.hpp"
 #include "datatype_storage_identity.hpp"
@@ -585,7 +586,7 @@ bool ExactBoundVectorOutputDescriptors(
   for (std::size_t index = 0; index < descriptors.size(); ++index) {
     const auto& descriptor = descriptors[index];
     namespace dt = scratchbird::core::datatypes;
-    const auto binding = dt::LookupDatatypeTypeCodecIdentityV1(
+    const auto binding = dt::LookupCurrentDatatypeTypeCodecIdentityAsV1(
         context.datatype_catalog_snapshot_uuid, context.datatype_catalog_generation,
         context.datatype_registry_generation, descriptor.datatype_descriptor_uuid,
         descriptor.datatype_descriptor_generation);

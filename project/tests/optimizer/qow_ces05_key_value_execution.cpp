@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
+#include "datatype_type_codec_identity_current_projection.hpp"
 #include "../support/binary_uuid_fixture.hpp"
 #include "../support/catalog_column_binding_fixture.hpp"
 #include "../support/engine_statement_fixture.hpp"
@@ -1521,7 +1522,7 @@ platform::Uuid CoreTypeUuid(const std::string_view stable_name) {
   }
   const auto descriptor_uuid =
       descriptor->descriptor_uuid.value;
-  const auto identity = dt::LookupDatatypeTypeCodecIdentityV1(
+  const auto identity = dt::LookupCurrentDatatypeTypeCodecIdentityAsV1(
       api::kBootstrapDatatypeCatalogUuid,
       api::kBootstrapDatatypeCatalogGeneration, api::kBootstrapDatatypeRegistryGeneration, descriptor_uuid,
       descriptor->descriptor_epoch);
@@ -1532,7 +1533,7 @@ api::RelationalTypeDescriptor BindProductionDescriptor(
     const api::EngineRequestContext& context,
     api::RelationalTypeDescriptor descriptor) {
   const dt::DatatypeTypeCodecIdentityRowV1* identity = nullptr;
-  for (const auto& candidate : dt::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+  for (const auto& candidate : dt::CurrentDatatypeTypeCodecIdentityRowsAsV1()) {
     if (candidate.catalog_snapshot_uuid != context.datatype_catalog_snapshot_uuid ||
         candidate.catalog_generation != context.datatype_catalog_generation ||
         candidate.registry_generation != context.datatype_registry_generation ||
@@ -1992,7 +1993,7 @@ api::TypedRelationalDag KeyValueMixedJoinDag(
     type.descriptor_uuid = column.value_descriptor.descriptor_uuid;
     type.type_uuid =
         column.value_descriptor.type_uuid;
-    const auto codec = scratchbird::core::datatypes::LookupDatatypeTypeCodecIdentityV1(
+    const auto codec = scratchbird::core::datatypes::LookupCurrentDatatypeTypeCodecIdentityAsV1(
         context.datatype_catalog_snapshot_uuid,
         context.datatype_catalog_generation,
         context.datatype_registry_generation,

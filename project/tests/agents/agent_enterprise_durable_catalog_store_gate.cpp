@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/engine_statement_fixture.hpp"
 #include "../database_lifecycle/database_lifecycle_test_memory.hpp"
 #include "../support/database_fixture_cleanup.hpp"
 #include "../support/owned_temp_directory.hpp"
@@ -73,6 +74,8 @@ void Require(bool condition, const std::string& message) {
 }
 
 struct TestDatabase {
+  // The durable bootstrap owner with an engine-begun transaction.
+  api::EngineRequestContext owner;
   std::shared_ptr<scratchbird::tests::OwnedTempDirectory> owned;
   std::filesystem::path path;
   api::EngineUuid database_uuid;
@@ -107,6 +110,7 @@ TestDatabase CreateActiveDatabase() {
   create.allow_minimal_resource_bootstrap = false;
   create.require_resource_seed_pack = true;
   create.allow_overwrite = true;
+  scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
   const auto created = db::CreateDatabaseFile(create);
   if (!created.ok()) {
     std::cerr << created.diagnostic.diagnostic_code << ':'
@@ -114,48 +118,26 @@ TestDatabase CreateActiveDatabase() {
   }
   Require(created.ok(), "database creation failed");
 
-  auto initial_inventory = db::LoadLocalTransactionInventoryFromDatabase(path.string());
-  Require(initial_inventory.ok() && initial_inventory.inventory.publication_base.has_value(),
-          "lifecycle-published transaction inventory unavailable");
-  auto inventory = std::move(initial_inventory.inventory);
-  const auto transaction_uuid = uuid::GenerateEngineIdentityV7(UuidKind::transaction,
-                                                              1790000000004);
-  Require(transaction_uuid.ok(), "transaction UUID generation failed");
-  auto begun = mga::BeginLocalTransaction(std::move(inventory),
-                                          transaction_uuid.value,
-                                          1790000000005);
-  Require(begun.ok(), "local transaction begin failed");
-  const auto persisted =
-      db::PersistLocalTransactionInventoryToDatabase(path.string(),
-                                                     begun.inventory);
-  if (!persisted.ok()) {
-    std::cerr << persisted.diagnostic.diagnostic_code << ':'
-              << persisted.diagnostic.message_key << '\n';
-  }
-  Require(persisted.ok(), "local transaction inventory persist failed");
+  const auto owner = scratchbird::tests::BeginFixtureOwnerTransaction(create, "aeic-agent-catalog-store-setup");
 
   TestDatabase result;
   result.owned = owned;
   result.path = path;
   result.resource_epoch = created.state.resource_seed_catalog.resource_epoch;
   result.database_uuid = database_uuid.value.value;
-  result.transaction_uuid = transaction_uuid.value.value;
-  result.local_transaction_id = begun.entry.identity.local_id.value;
+  result.transaction_uuid = owner.transaction_uuid;
+  result.local_transaction_id = owner.local_transaction_id;
+  result.owner = owner;
   return result;
 }
 
 api::EngineRequestContext Context(const TestDatabase& database) {
-  api::EngineRequestContext context;
+  api::EngineRequestContext context = database.owner;
   context.request_id = "aeic-agent-catalog-store";
-  context.database_path = database.path.string();
   context.resource_epoch = database.resource_epoch;
-  context.database_uuid = database.database_uuid;
   context.transaction_uuid = database.transaction_uuid;
   context.local_transaction_id = database.local_transaction_id;
-  context.snapshot_visible_through_local_transaction_id =
-      database.local_transaction_id;
-  context.security_context_present = true;
-  context.principal_uuid = scratchbird::tests::FixtureUuidLiteral("018f0000-0000-7000-8000-00000000ae10");
+  context.snapshot_visible_through_local_transaction_id = database.local_transaction_id;
   return context;
 }
 

@@ -6,6 +6,7 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
+#include "datatype_type_codec_identity_current_projection.hpp"
 #include "nosql/time_series_api.hpp"
 
 #include "api_diagnostics.hpp"
@@ -1779,7 +1780,7 @@ static EngineBoundTimeSeriesReadResultV1 EngineBoundTimeSeriesReadV1Impl(
   selected.reserve(selected_capacity);
   const core::datatypes::DatatypeTypeCodecIdentityRowV1* timestamp_identity = nullptr;
   const auto& timestamp_column = read.descriptor.columns[1].value_descriptor;
-  for (const auto& identity : core::datatypes::CurrentDatatypeTypeCodecIdentityRowsV1()) {
+  for (const auto& identity : core::datatypes::CurrentDatatypeTypeCodecIdentityRowsAsV1()) {
     if (identity.catalog_snapshot_uuid != request.context.datatype_catalog_snapshot_uuid ||
         identity.catalog_generation != request.context.datatype_catalog_generation ||
         identity.registry_generation != request.context.datatype_registry_generation ||
