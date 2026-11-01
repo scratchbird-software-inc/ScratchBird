@@ -12,6 +12,7 @@
 #include "agents/agent_authorization_context.hpp"
 #include "agents/agent_durable_catalog_store_api.hpp"
 #include "agent_metric_runtime.hpp"
+#include "database_lifecycle.hpp"
 #include "agent_runtime.hpp"
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
@@ -660,6 +661,44 @@ TResult HookFailure(const EngineAgentActionHookRequest& request,
   return result;
 }
 
+// METRIC-BOOTSTRAP-CONFIG-DEFAULTS-001: metric definitions resolve from the
+// definitions this database published at create, not from the volatile
+// in-process registry or the compiled definition list. A family the database
+// did not publish is missing, which is the truthful answer. Same rules as
+// ResolveAgentMetricDependencies; a committed definition is not a registered
+// runtime producer, so it is checked here rather than registered.
+std::string ResolveCommittedAgentMetricDependencies(
+    const scratchbird::engine::internal_api::EngineRequestContext& request_context,
+    const scratchbird::core::agents::AgentTypeDescriptor& descriptor,
+    const scratchbird::core::agents::AgentRuntimeContext& context) {
+  const auto catalog = scratchbird::storage::database::ReadDatabaseBootstrapMetricCatalog(
+      request_context.database_path, request_context.database_uuid);
+  if (!catalog.ok())
+    return "SB_AGENT_METRICS.CATALOG_UNAVAILABLE:" + catalog.diagnostic.diagnostic_code;
+  const auto find = [&](const std::string& family)
+      -> const scratchbird::core::metrics::MetricDescriptorDefinition* {
+    for (const auto& bundle : catalog.definitions) {
+      const auto& definition = bundle.descriptor.definition;
+      if (definition.family == family ||
+          std::find(definition.aliases.begin(), definition.aliases.end(), family) !=
+              definition.aliases.end())
+        return &definition;
+    }
+    return nullptr;
+  };
+  for (const auto& dep : descriptor.metric_dependencies) {
+    const auto* metric = find(dep.metric_family);
+    if (dep.required && metric == nullptr)
+      return "SB_AGENT_METRICS.REQUIRED_METRIC_MISSING:" + dep.metric_family;
+    if (metric != nullptr && dep.cluster_only && !context.cluster_authority_available)
+      return "SB_AGENT_METRICS.CLUSTER_AUTHORITY_REQUIRED:" + dep.metric_family;
+    if (metric != nullptr && !dep.namespace_prefix.empty() &&
+        metric->namespace_path.rfind(dep.namespace_prefix, 0) != 0)
+      return "SB_AGENT_METRICS.NAMESPACE_MISMATCH:" + dep.metric_family;
+  }
+  return {};
+}
+
 std::string ValidateRuntimeDecision(const EngineAgentActionHookRequest& request,
                                     const std::string& normalized_action,
                                     std::vector<std::pair<std::string, std::string>>* runtime_rows) {
@@ -692,8 +731,9 @@ std::string ValidateRuntimeDecision(const EngineAgentActionHookRequest& request,
              metric_evaluation.status.detail;
     }
   }
-  const auto metrics = ResolveAgentMetricDependencies(*descriptor, context);
-  if (!metrics.ok) { return metrics.diagnostic_code + ":" + metrics.detail; }
+  if (const auto metrics = ResolveCommittedAgentMetricDependencies(request.context, *descriptor, context);
+      !metrics.empty())
+    return metrics;
   auto policy = BaselinePolicyForAgent(*descriptor);
   policy.policy_uuid = IdentityBytes(request.policy_snapshot_uuid);
   policy.activation = request.dry_run ? AgentActivationProfile::dry_run : descriptor->default_activation;

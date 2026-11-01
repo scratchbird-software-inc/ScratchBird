@@ -70,76 +70,104 @@ int main() {
     return target != 0 && ordinal == target;
   };
 
-  bridge::StatementContextAcquireRequest acquire;
-  acquire.engine_context = &context;
-  acquire.exact_transaction_uuid = context.transaction_uuid;
-  bridge::StatementContextReceiptHandle receipt;
-  bridge::StatementContextReceiptView view;
-  sb_engine_result_t result = nullptr;
-  Require(bridge::AcquireStatementContextReceipt(
-              session.session, &acquire, &receipt, &view, &result) ==
-              SB_ENGINE_STATUS_OK,
-          "003624 live statement receipt acquisition failed");
-  if (result != nullptr) (void)sb_engine_result_release(result);
-  Require(view.optimizer_stats_drop_executor_availability_generation != 0,
-          "003624 receipt omitted optimizer-stats DROP availability");
-
-  bridge::StatementOptimizerStatsDropAuthorityV1 authority;
-  result = nullptr;
-  const auto bind_status = bridge::BindStatementOptimizerStatsDropAuthorityV1(
-      receipt, 1, &authority, &result);
-  if (bind_status != SB_ENGINE_STATUS_OK && result != nullptr) {
-    std::cerr << "003624 bind observation: status="
-              << sb_engine_status_name(bind_status)
-              << ";code=" << DiagnosticCode(result)
-              << ";key=" << DiagnosticKey(result) << '\n';
-  }
-  Require(bind_status == SB_ENGINE_STATUS_OK &&
-              authority.occurrence == 1 && !authority.effect_uuid.is_nil() &&
-              !authority.canonical_descriptor_bytes.empty(),
-          "003624 engine optimizer-stats DROP binding failed");
-  if (result != nullptr) (void)sb_engine_result_release(result);
-
-  sblr::SblrOptimizerStatsDropDescriptorV1 descriptor;
+  // Cancellation latches on the receipt (one-way; never cleared), so each
+  // phase gets its own receipt: everything the operation binds lives on it.
+  // Cancelled phases leave no durable state, so every fresh receipt binds the
+  // same initial durable epoch.
+  struct Attempt {
+    bridge::StatementContextReceiptHandle receipt{};
+    bridge::StatementContextReceiptView view{};
+    sblr::SblrOptimizerStatsDropDescriptorV1 descriptor;
+    api::EngineRequestContext receipt_context;
+    Submission submission;
+  };
   std::string detail;
-  Require(sblr::DecodeSblrOptimizerStatsDropDescriptorV1(
-              authority.canonical_descriptor_bytes.data(),
-              authority.canonical_descriptor_bytes.size(), &descriptor,
-              &detail) &&
-              descriptor.executor_availability_generation ==
-                  view.optimizer_stats_drop_executor_availability_generation &&
-              descriptor.expected_statistics_epoch == 1 &&
-              descriptor.expected_journal_generation == 0 &&
-              descriptor.next_statistics_epoch == 2 &&
-              descriptor.proposed_effect_generation == 1,
-          "003624 engine OSDD did not bind the initial durable epoch");
 
-  api::EngineRequestContext receipt_context;
-  Require(bridge::CopyStatementContextEngineContextV1(
-              receipt, &receipt_context, nullptr) == SB_ENGINE_STATUS_OK,
-          "003624 private statement context copy failed");
-  const auto initial_epoch =
-      api::InspectSblrOptimizerStatsEpochV1(receipt_context);
-  Require(initial_epoch.ok && initial_epoch.statistics_epoch == 1 &&
-              initial_epoch.journal_generation == 0,
-          "003624 fresh database statistics epoch was not canonical");
+  const auto prepare = [&](Attempt* out) {
+    bridge::StatementContextAcquireRequest acquire;
+    acquire.engine_context = &context;
+    acquire.exact_transaction_uuid = context.transaction_uuid;
+    sb_engine_result_t result = nullptr;
+    Require(bridge::AcquireStatementContextReceipt(
+                session.session, &acquire, &out->receipt, &out->view, &result) ==
+                SB_ENGINE_STATUS_OK,
+            "003624 live statement receipt acquisition failed");
+    if (result != nullptr) (void)sb_engine_result_release(result);
+    Require(out->view.optimizer_stats_drop_executor_availability_generation != 0,
+            "003624 receipt omitted optimizer-stats DROP availability");
 
-  const auto submission = PackageWithMember(
-      fixture, view, parser_uuid,
-      OptimizerStatsDropMember(view, parser_uuid,
-                               authority.canonical_descriptor_bytes));
+    bridge::StatementOptimizerStatsDropAuthorityV1 authority;
+    result = nullptr;
+    const auto bind_status = bridge::BindStatementOptimizerStatsDropAuthorityV1(
+        out->receipt, 1, &authority, &result);
+    if (bind_status != SB_ENGINE_STATUS_OK && result != nullptr) {
+      std::cerr << "003624 bind observation: status="
+                << sb_engine_status_name(bind_status)
+                << ";code=" << DiagnosticCode(result)
+                << ";key=" << DiagnosticKey(result) << '\n';
+    }
+    Require(bind_status == SB_ENGINE_STATUS_OK &&
+                authority.occurrence == 1 && !authority.effect_uuid.is_nil() &&
+                !authority.canonical_descriptor_bytes.empty(),
+            "003624 engine optimizer-stats DROP binding failed");
+    if (result != nullptr) (void)sb_engine_result_release(result);
+
+    const auto& descriptor = out->descriptor;
+    Require(sblr::DecodeSblrOptimizerStatsDropDescriptorV1(
+                authority.canonical_descriptor_bytes.data(),
+                authority.canonical_descriptor_bytes.size(), &out->descriptor,
+                &detail) &&
+                descriptor.executor_availability_generation ==
+                    out->view.optimizer_stats_drop_executor_availability_generation &&
+                descriptor.expected_statistics_epoch == 1 &&
+                descriptor.expected_journal_generation == 0 &&
+                descriptor.next_statistics_epoch == 2 &&
+                descriptor.proposed_effect_generation == 1,
+            "003624 engine OSDD did not bind the initial durable epoch");
+
+    Require(bridge::CopyStatementContextEngineContextV1(
+                out->receipt, &out->receipt_context, nullptr) ==
+                SB_ENGINE_STATUS_OK,
+            "003624 private statement context copy failed");
+    const auto initial_epoch =
+        api::InspectSblrOptimizerStatsEpochV1(out->receipt_context);
+    Require(initial_epoch.ok && initial_epoch.statistics_epoch == 1 &&
+                initial_epoch.journal_generation == 0,
+            "003624 fresh database statistics epoch was not canonical");
+
+    out->submission = PackageWithMember(
+        fixture, out->view, parser_uuid,
+        OptimizerStatsDropMember(out->view, parser_uuid,
+                                 authority.canonical_descriptor_bytes));
+  };
+  const auto dispatch = [&](Attempt& attempt, sb_engine_result_t* result) {
+    bridge::StatementPackageAdmissionReservationHandle reservation;
+    auto admitted = Admit(fixture, session, attempt.view, attempt.receipt,
+                          parser_uuid, attempt.submission, &reservation);
+    *result = nullptr;
+    return bridge::DispatchStatementContextReceipt(&admitted, result);
+  };
+  const auto no_terminal_result = [&](Attempt& attempt, const char* failure) {
+    bridge::StatementOptimizerStatsDropAuthorityV1 authority;
+    sb_engine_result_t result = nullptr;
+    Require(bridge::CopyStatementOptimizerStatsDropAuthorityV1(
+                attempt.receipt, 1, &authority, &result) == SB_ENGINE_STATUS_OK &&
+                !authority.terminal_result_published &&
+                authority.canonical_terminal_result_bytes.empty(),
+            failure);
+    if (result != nullptr) (void)sb_engine_result_release(result);
+  };
   const auto journal_path =
       fixture.database_path.string() + ".sb.sblr_optimizer_stats_epoch.v1";
 
+  // Phase 1: cancellation before revalidation changes no durable state.
+  cancel_on_probe.store(0, std::memory_order_relaxed);
+  Attempt revalidate;
+  prepare(&revalidate);
   probes.store(0, std::memory_order_relaxed);
   cancel_on_probe.store(1, std::memory_order_relaxed);
-  bridge::StatementPackageAdmissionReservationHandle revalidate_reservation;
-  auto revalidate_dispatch = Admit(fixture, session, view, receipt, parser_uuid,
-                                   submission, &revalidate_reservation);
-  result = nullptr;
-  Require(bridge::DispatchStatementContextReceipt(&revalidate_dispatch,
-                                                  &result) ==
-                  SB_ENGINE_STATUS_TIMEOUT &&
+  sb_engine_result_t result = nullptr;
+  Require(dispatch(revalidate, &result) == SB_ENGINE_STATUS_TIMEOUT &&
               result != nullptr && DiagnosticCode(result) ==
                                        "PROCESS.CANCELLED" &&
               DiagnosticKey(result) ==
@@ -149,16 +177,26 @@ int main() {
           "003624 pre-revalidation cancellation changed durable state");
   (void)sb_engine_result_release(result);
 
+  // The latch: the cancelled receipt stays cancelled with no new request, and
+  // still publishes nothing, durable or not.
+  probes.store(0, std::memory_order_relaxed);
+  cancel_on_probe.store(0, std::memory_order_relaxed);
+  Require(dispatch(revalidate, &result) != SB_ENGINE_STATUS_OK &&
+              result != nullptr &&
+              DiagnosticCode(result) == "PROCESS.CANCELLED" &&
+              !std::filesystem::exists(journal_path),
+          "003624 cancelled receipt did not stay cancelled");
+  (void)sb_engine_result_release(result);
+  no_terminal_result(revalidate,
+                     "003624 latched receipt published a terminal result");
+
+  // Phase 2: cancellation before publication changes no durable state.
+  cancel_on_probe.store(0, std::memory_order_relaxed);
+  Attempt publication;
+  prepare(&publication);
   probes.store(0, std::memory_order_relaxed);
   cancel_on_probe.store(2, std::memory_order_relaxed);
-  bridge::StatementPackageAdmissionReservationHandle publication_reservation;
-  auto publication_dispatch = Admit(fixture, session, view, receipt,
-                                    parser_uuid, submission,
-                                    &publication_reservation);
-  result = nullptr;
-  Require(bridge::DispatchStatementContextReceipt(&publication_dispatch,
-                                                  &result) ==
-                  SB_ENGINE_STATUS_TIMEOUT &&
+  Require(dispatch(publication, &result) == SB_ENGINE_STATUS_TIMEOUT &&
               result != nullptr && DiagnosticCode(result) ==
                                        "PROCESS.CANCELLED" &&
               DiagnosticKey(result) ==
@@ -167,14 +205,16 @@ int main() {
               !std::filesystem::exists(journal_path),
           "003624 pre-publication cancellation changed durable state");
   (void)sb_engine_result_release(result);
-  result = nullptr;
-  authority = {};
-  Require(bridge::CopyStatementOptimizerStatsDropAuthorityV1(
-              receipt, 1, &authority, &result) == SB_ENGINE_STATUS_OK &&
-              !authority.terminal_result_published &&
-              authority.canonical_terminal_result_bytes.empty(),
-          "003624 cancellation published a terminal result");
-  if (result != nullptr) (void)sb_engine_result_release(result);
+  no_terminal_result(publication,
+                     "003624 cancellation published a terminal result");
+
+  // Phase 3: a fresh receipt publishes the DROP. Its strong snapshot is
+  // issued here, before the unrelated publication below.
+  cancel_on_probe.store(0, std::memory_order_relaxed);
+  Attempt success;
+  prepare(&success);
+  const auto& descriptor = success.descriptor;
+  auto& receipt_context = success.receipt_context;
 
   // Advance the database-wide transaction inventory after this statement's
   // strong snapshot was issued.  That global fence change must force one
@@ -196,14 +236,9 @@ int main() {
 
   probes.store(0, std::memory_order_relaxed);
   cancel_on_probe.store(0, std::memory_order_relaxed);
-  bridge::StatementPackageAdmissionReservationHandle success_reservation;
-  auto success_dispatch = Admit(fixture, session, view, receipt, parser_uuid,
-                                submission, &success_reservation);
-  result = nullptr;
-  Require(bridge::DispatchStatementContextReceipt(&success_dispatch, &result) ==
-                  SB_ENGINE_STATUS_OK &&
+  Require(dispatch(success, &result) == SB_ENGINE_STATUS_OK &&
               result != nullptr,
-          "003624 retry did not publish optimizer-stats DROP");
+          "003624 fresh receipt did not publish optimizer-stats DROP");
   const auto first_result = ResultPayload(result);
   sblr::SblrOptimizerStatsDropResultV1 decoded_result;
   Require(first_result.size() == sblr::kSblrOptimizerStatsDropResultBytes &&
@@ -220,7 +255,7 @@ int main() {
               decoded_result.publication_barrier_generation == 1 &&
               probes.load(std::memory_order_relaxed) == 2 &&
               std::filesystem::file_size(journal_path) == 472,
-          "003624 successful retry omitted durable OSDR authority");
+          "003624 successful dispatch omitted durable OSDR authority");
   (void)sb_engine_result_release(result);
 
   // Exercise restart-style recovery below the receipt cache: the journal is
@@ -232,23 +267,21 @@ int main() {
               std::filesystem::file_size(journal_path) == 472,
           "003624 durable journal did not replay byte-identically");
 
+  // Postpublication cancellation does not change the exact replay.
   probes.store(0, std::memory_order_relaxed);
   cancel_on_probe.store(1, std::memory_order_relaxed);
-  bridge::StatementPackageAdmissionReservationHandle replay_reservation;
-  auto replay_dispatch = Admit(fixture, session, view, receipt, parser_uuid,
-                               submission, &replay_reservation);
-  result = nullptr;
-  Require(bridge::DispatchStatementContextReceipt(&replay_dispatch, &result) ==
-                  SB_ENGINE_STATUS_OK &&
+  Require(dispatch(success, &result) == SB_ENGINE_STATUS_OK &&
               result != nullptr && ResultPayload(result) == first_result &&
               probes.load(std::memory_order_relaxed) == 0 &&
               std::filesystem::file_size(journal_path) == 472,
           "003624 terminal replay was not cancellation-stable and idempotent");
   (void)sb_engine_result_release(result);
+  cancel_on_probe.store(0, std::memory_order_relaxed);
 
-  Require(bridge::ReleaseStatementContextReceipt(receipt) ==
-              SB_ENGINE_STATUS_OK,
-          "003624 statement receipt cleanup failed");
+  for (auto* attempt : {&revalidate, &publication, &success})
+    Require(bridge::ReleaseStatementContextReceipt(attempt->receipt) ==
+                SB_ENGINE_STATUS_OK,
+            "003624 statement receipt cleanup failed");
   api::EngineRollbackTransactionRequest rollback;
   rollback.context = context;
   Require(api::EngineRollbackTransaction(rollback).ok,

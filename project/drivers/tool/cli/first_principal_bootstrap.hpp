@@ -35,6 +35,10 @@ struct FirstPrincipalBootstrapRequest {
     std::string platform_profile_path;
     std::string resource_seed_pack_root;
     std::string policy_seed_pack_root;
+    // METRIC-BOOTSTRAP-CONFIG-DEFAULTS-001: both installed metric policy files,
+    // always explicit. Create publishes every selected family.
+    std::string metric_policy_defaults_path;
+    std::string metric_policy_families_path;
     FirstPrincipalBootstrapPasswordSource password_source =
         FirstPrincipalBootstrapPasswordSource::kProtectedPrompt;
 };

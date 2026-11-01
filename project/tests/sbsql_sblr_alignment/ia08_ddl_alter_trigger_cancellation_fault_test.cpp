@@ -159,27 +159,71 @@ int main() {
   context.current_package_uuid = parser_uuid;
   PublishBaselineTrigger(fixture, session, &context, parser_uuid);
 
-  bridge::StatementContextAcquireRequest acquire;
-  acquire.engine_context = &context;
-  acquire.exact_transaction_uuid = context.transaction_uuid;
-  bridge::StatementContextReceiptHandle receipt;
-  bridge::StatementContextReceiptView view;
-  sb_engine_result_t result = nullptr;
-  Require(bridge::AcquireStatementContextReceipt(
-              session.session, &acquire, &receipt, &view, &result) ==
-              SB_ENGINE_STATUS_OK,
-          "002628 ALTER TRIGGER receipt acquisition failed");
-  if (result != nullptr) (void)sb_engine_result_release(result);
-  Require(view.ddl_alter_trigger_executor_availability_generation != 0,
-          "002628 receipt omitted ALTER TRIGGER availability");
+  // Cancellation latches on the receipt (one-way; never cleared), so each
+  // phase gets its own receipt: everything the operation binds lives on it.
+  struct Attempt {
+    bridge::StatementContextReceiptHandle receipt{};
+    bridge::StatementContextReceiptView view{};
+    bridge::StatementDdlAlterTriggerBindRequestV1 demand;
+    bridge::StatementDdlAlterTriggerAuthorityV1 authority;
+    Submission submission;
+  };
+  const auto acquire_receipt = [&](Attempt* out) {
+    bridge::StatementContextAcquireRequest acquire;
+    acquire.engine_context = &context;
+    acquire.exact_transaction_uuid = context.transaction_uuid;
+    sb_engine_result_t result = nullptr;
+    Require(bridge::AcquireStatementContextReceipt(
+                session.session, &acquire, &out->receipt, &out->view,
+                &result) == SB_ENGINE_STATUS_OK,
+            "002628 ALTER TRIGGER receipt acquisition failed");
+    if (result != nullptr) (void)sb_engine_result_release(result);
+    Require(out->view.ddl_alter_trigger_executor_availability_generation != 0,
+            "002628 receipt omitted ALTER TRIGGER availability");
+    out->demand = AlterTriggerDemand(out->view);
+  };
+  const auto prepare = [&](Attempt* out) {
+    acquire_receipt(out);
+    sb_engine_result_t result = nullptr;
+    Require(bridge::BindStatementDdlAlterTriggerAuthorityV1(
+                out->receipt, &out->demand, &out->authority, &result) ==
+                    SB_ENGINE_STATUS_OK &&
+                result == nullptr &&
+                !out->authority.canonical_descriptor_bytes.empty(),
+            "002628 fresh receipt bind did not publish exact ALTER TRIGGER authority");
+    out->submission = PackageWithMember(
+        fixture, out->view, parser_uuid,
+        AlterTriggerMember(out->view, parser_uuid, out->authority));
+  };
+  const auto dispatch = [&](Attempt& attempt, sb_engine_result_t* result) {
+    bridge::StatementPackageAdmissionReservationHandle reservation;
+    auto admitted = Admit(fixture, session, attempt.view, attempt.receipt,
+                          parser_uuid, attempt.submission, &reservation);
+    *result = nullptr;
+    return bridge::DispatchStatementContextReceipt(&admitted, result);
+  };
+  const auto no_terminal_result = [&](Attempt& attempt, const char* failure) {
+    bridge::StatementDdlAlterTriggerAuthorityV1 authority;
+    sb_engine_result_t result = nullptr;
+    Require(bridge::CopyStatementDdlAlterTriggerAuthorityV1(
+                attempt.receipt, 1, 1, &authority, &result) ==
+                    SB_ENGINE_STATUS_OK &&
+                !authority.terminal_result_published &&
+                authority.canonical_terminal_result_bytes.empty(),
+            failure);
+    if (result != nullptr) (void)sb_engine_result_release(result);
+  };
 
-  const auto demand = AlterTriggerDemand(view);
-  bridge::StatementDdlAlterTriggerAuthorityV1 authority;
+  // Phase 1: cancellation during bind publishes no authority.
+  Attempt bind_cancel;
+  cancel_on_probe.store(0, std::memory_order_relaxed);
+  acquire_receipt(&bind_cancel);
   probes.store(0, std::memory_order_relaxed);
   cancel_on_probe.store(1, std::memory_order_relaxed);
-  result = nullptr;
+  sb_engine_result_t result = nullptr;
   Require(bridge::BindStatementDdlAlterTriggerAuthorityV1(
-              receipt, &demand, &authority, &result) ==
+              bind_cancel.receipt, &bind_cancel.demand,
+              &bind_cancel.authority, &result) ==
                   SB_ENGINE_STATUS_TIMEOUT &&
               result != nullptr && DiagnosticCode(result) == "PROCESS.CANCELLED" &&
               DiagnosticKey(result) ==
@@ -188,48 +232,63 @@ int main() {
   (void)sb_engine_result_release(result);
   result = nullptr;
   Require(bridge::CopyStatementDdlAlterTriggerAuthorityV1(
-              receipt, 1, 1, &authority, &result) ==
+              bind_cancel.receipt, 1, 1, &bind_cancel.authority, &result) ==
               SB_ENGINE_STATUS_SECURITY_DENIED,
           "002628 cancelled bind published receipt-private authority");
   if (result != nullptr) (void)sb_engine_result_release(result);
 
-  probes.store(0, std::memory_order_relaxed);
+  // Phase 2: cancellation before catalog mutation, on its own receipt.
+  Attempt mutation;
   cancel_on_probe.store(0, std::memory_order_relaxed);
-  result = nullptr;
-  Require(bridge::BindStatementDdlAlterTriggerAuthorityV1(
-              receipt, &demand, &authority, &result) == SB_ENGINE_STATUS_OK &&
-              result == nullptr &&
-              !authority.canonical_descriptor_bytes.empty(),
-          "002628 retry did not publish exact ALTER TRIGGER authority");
-  const auto submission = PackageWithMember(
-      fixture, view, parser_uuid,
-      AlterTriggerMember(view, parser_uuid, authority));
+  prepare(&mutation);
   RequireAlterCancellation(
-      fixture, session, view, receipt, parser_uuid, submission, &probes,
-      &cancel_on_probe, 1,
+      fixture, session, mutation.view, mutation.receipt, parser_uuid,
+      mutation.submission, &probes, &cancel_on_probe, 1,
       "sblr.ddl_alter_trigger.cancelled_before_catalog_mutation");
-  RequireAlterCancellation(
-      fixture, session, view, receipt, parser_uuid, submission, &probes,
-      &cancel_on_probe, 2,
-      "sblr.ddl_alter_trigger.cancelled_before_publication");
-  result = nullptr;
-  Require(bridge::CopyStatementDdlAlterTriggerAuthorityV1(
-              receipt, 1, 1, &authority, &result) == SB_ENGINE_STATUS_OK &&
-              !authority.terminal_result_published &&
-              authority.canonical_terminal_result_bytes.empty(),
-          "002628 cancellation changed ALTER terminal authority");
-  if (result != nullptr) (void)sb_engine_result_release(result);
 
+  // The latch: the cancelled receipt stays cancelled with no new request, and
+  // still publishes nothing.
   probes.store(0, std::memory_order_relaxed);
   cancel_on_probe.store(0, std::memory_order_relaxed);
-  bridge::StatementPackageAdmissionReservationHandle success_reservation;
-  auto success_dispatch = Admit(fixture, session, view, receipt, parser_uuid,
-                                submission, &success_reservation);
-  result = nullptr;
-  Require(bridge::DispatchStatementContextReceipt(&success_dispatch, &result) ==
-                  SB_ENGINE_STATUS_OK &&
+  {
+    const auto before = SnapshotFixture(fixture);
+    Require(dispatch(mutation, &result) != SB_ENGINE_STATUS_OK &&
+                result != nullptr &&
+                DiagnosticCode(result) == "PROCESS.CANCELLED",
+            "002628 cancelled receipt did not stay cancelled");
+    sb_engine_command_completion_view_v1_t completion{};
+    Require(sb_engine_result_completion(result, &completion) !=
+                    SB_ENGINE_STATUS_OK ||
+                (completion.operation_id.size_bytes == 0 &&
+                 completion.affected_rows == 0),
+            "002628 latched receipt published completion");
+    (void)sb_engine_result_release(result);
+    Require(SnapshotFixture(fixture) == before,
+            "002628 latched receipt changed durable state");
+    no_terminal_result(mutation,
+                       "002628 latched receipt published a terminal result");
+  }
+
+  // Phase 3: cancellation before publication, on its own receipt.
+  Attempt publication;
+  cancel_on_probe.store(0, std::memory_order_relaxed);
+  prepare(&publication);
+  RequireAlterCancellation(
+      fixture, session, publication.view, publication.receipt, parser_uuid,
+      publication.submission, &probes, &cancel_on_probe, 2,
+      "sblr.ddl_alter_trigger.cancelled_before_publication");
+  no_terminal_result(publication,
+                     "002628 cancellation changed ALTER terminal authority");
+
+  // Phase 4: a fresh receipt alters the trigger.
+  Attempt success;
+  cancel_on_probe.store(0, std::memory_order_relaxed);
+  prepare(&success);
+  probes.store(0, std::memory_order_relaxed);
+  cancel_on_probe.store(0, std::memory_order_relaxed);
+  Require(dispatch(success, &result) == SB_ENGINE_STATUS_OK &&
               result != nullptr,
-          "002628 cancellation retry did not alter the trigger");
+          "002628 fresh receipt after cancellation did not alter the trigger");
   const auto first_result = ResultPayload(result);
   sblr::SblrDdlAlterTriggerResultV1 terminal;
   std::string detail;
@@ -237,28 +296,27 @@ int main() {
               sblr::DecodeSblrDdlAlterTriggerResultV1(
                   first_result.data(), first_result.size(), &terminal,
                   &detail) &&
-              terminal.receipt == RawUuid(view.receipt_uuid) &&
-              terminal.trigger_uuid == RawUuid(authority.trigger_uuid) &&
-              terminal.trigger_generation == authority.trigger_generation + 1,
-          "002628 successful retry omitted exact TARS");
+              terminal.receipt == RawUuid(success.view.receipt_uuid) &&
+              terminal.trigger_uuid == RawUuid(success.authority.trigger_uuid) &&
+              terminal.trigger_generation ==
+                  success.authority.trigger_generation + 1,
+          "002628 successful dispatch omitted exact TARS");
   (void)sb_engine_result_release(result);
 
+  // Postpublication cancellation does not change the exact replay.
   probes.store(0, std::memory_order_relaxed);
   cancel_on_probe.store(1, std::memory_order_relaxed);
-  bridge::StatementPackageAdmissionReservationHandle replay_reservation;
-  auto replay_dispatch = Admit(fixture, session, view, receipt, parser_uuid,
-                               submission, &replay_reservation);
-  result = nullptr;
-  Require(bridge::DispatchStatementContextReceipt(&replay_dispatch, &result) ==
-                  SB_ENGINE_STATUS_OK &&
+  Require(dispatch(success, &result) == SB_ENGINE_STATUS_OK &&
               result != nullptr && ResultPayload(result) == first_result &&
               probes.load(std::memory_order_relaxed) == 0,
           "002628 postpublication cancellation retracted exact TARS replay");
   (void)sb_engine_result_release(result);
+  cancel_on_probe.store(0, std::memory_order_relaxed);
 
-  Require(bridge::ReleaseStatementContextReceipt(receipt) ==
-              SB_ENGINE_STATUS_OK,
-          "002628 statement receipt cleanup failed");
+  for (auto* attempt : {&bind_cancel, &mutation, &publication, &success})
+    Require(bridge::ReleaseStatementContextReceipt(attempt->receipt) ==
+                SB_ENGINE_STATUS_OK,
+            "002628 statement receipt cleanup failed");
   api::EngineRollbackTransactionRequest rollback;
   rollback.context = context;
   Require(api::EngineRollbackTransaction(rollback).ok,

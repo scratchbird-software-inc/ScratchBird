@@ -61,7 +61,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
         request.bootstrap.database_uuid,request.creator.transaction_uuid,1);
   };
   const auto batch=materialize_batch(batch_inputs);
-  Check(batch.ok()&&batch.definitions->size()==7,"complete selected set materializes atomically");
+  Check(batch.ok()&&batch.definitions->size()==loaded.config->families.size(),"complete selected set materializes atomically");
   db::NativeCreationCatalogSeed complete;
   for(unsigned i=0;i<batch.definitions->size();++i) {
     const auto& bundle=(*batch.definitions)[i];
@@ -112,7 +112,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     const std::vector<disk::NativeFilespaceDevice> devices{{r.bootstrap.filespace_uuid,r.bootstrap.page_size_profile_uuid,&device}};
     const auto read=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(r.bootstrap.database_uuid,devices,
         made.receipt->checkpoint,2,1,{made.receipt->relations[0].object_uuid,{}},budget);
-    Check(read.ok()&&read.rows.size()==28,"all seven families and their dependencies survive reopen together");
+    Check(read.ok()&&read.rows.size()==4*loaded.config->families.size(),"all selected families and their dependencies survive reopen together");
     std::vector<c::CatalogMetricRowView> views;
     for(const auto& row:read.rows)views.push_back({&row.metadata,row.provisional});
     for(const auto& expected:*batch.definitions) {
@@ -166,7 +166,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     const std::vector<disk::NativeFilespaceDevice> devices{{r.bootstrap.filespace_uuid,r.bootstrap.page_size_profile_uuid,&device}};
     const auto read=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(r.bootstrap.database_uuid,devices,
         made.receipt->checkpoint,2,1,{Id(20000),deps},budget);
-    Check(read.ok()&&read.rows.size()==28,"all selected dependencies resolve from actual indexed selected graph");
+    Check(read.ok()&&read.rows.size()==4*loaded.config->families.size(),"all selected dependencies resolve from actual indexed selected graph");
     std::vector<c::CatalogMetricRowView> views;
     for(const auto& row:read.rows)views.push_back({&row.metadata,row.provisional});
     for(const auto& expected:*batch.definitions) {
@@ -193,7 +193,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
       Check(recovered.ok()&&recovered.repaired_slots==(1u<<lost)&&calls[write_call]==1,
           "complete original indexed graph repairs exactly the lost selector without physical-page allocation or identity reissuance");
       Check(recovered.receipt->relation_uuids[0]==Id(20000)&&recovered.receipt->index_dependencies[0]==deps&&
-          recovered.receipt->catalog_rows[0]==28&&recovered.receipt->checkpoint_sha256==made.receipt->checkpoint_sha256&&
+          recovered.receipt->catalog_rows[0]==4*loaded.config->families.size()&&recovered.receipt->checkpoint_sha256==made.receipt->checkpoint_sha256&&
           Read(device,selector_page,page_bytes)==first&&Read(device,selector_page+1,page_bytes)==second,
           "indexed recovery preserves all original bindings, root digest and exact selector bytes");
       Arm();const auto retry=db::RecoverIndexedNativeCreationWorkspaceSelectionOnOpenDevice(device,
@@ -402,7 +402,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
       ++persisted;
     }
   }
-  Check(persisted==35,"all seven real families persist across all five native profiles");
+  Check(persisted==5*loaded.config->families.size(),"every selected real family persists across all five native profiles");
   auto definition=fixture_descriptor.record->definition;definition.family="sb_tx_begin_total";
   const auto materialize=[&](const auto& d,const auto& b,const config::MetricPolicyDefinition* governing=nullptr){
     return c::MaterializeConfiguredLocalMetricDefinitions(*loaded.config,d,b,

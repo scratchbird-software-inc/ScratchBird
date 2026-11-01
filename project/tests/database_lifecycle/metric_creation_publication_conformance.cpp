@@ -62,6 +62,17 @@ static void WriteBodies(const std::string& path, unsigned size,
   }
   file.flush(); Require(file.good(), "fault body flush failed");
 }
+
+// The distributed selection: one family per section. Counted, not frozen.
+std::size_t SelectedFamilyCount() {
+  std::ifstream families(std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() /
+                         "config/templates/metric-policy-families.conf");
+  std::size_t count = 0;
+  for (std::string line; std::getline(families, line);)
+    if (line.rfind("[sb_", 0) == 0) ++count;
+  return count;
+}
+
 static void CheckFault(const db::DatabaseCreateConfig& create, const CatalogImage& original,
                        const std::function<void(std::vector<page::CatalogPageRow>&)>& change,
                        bool expect_refusal = true) {
@@ -76,7 +87,7 @@ static void CheckFault(const db::DatabaseCreateConfig& create, const CatalogImag
   const auto refused = db::ReadDatabaseBootstrapMetricCatalog(create.path, create.database_uuid.value);
   if (expect_refusal)
     Require(!refused.ok() && refused.definitions.empty(), "semantic catalog corruption exposed partial definitions");
-  else Require(refused.ok() && refused.definitions.size() == 7, "valid exact rate-source dependency refused");
+  else Require(refused.ok() && refused.definitions.size() == SelectedFamilyCount(), "valid exact rate-source dependency refused");
   WriteBodies(create.path, create.page_size, original.pages);
   Require(db::ReadDatabaseBootstrapMetricCatalog(create.path, create.database_uuid.value).ok(),
           "original catalog not restored");
@@ -118,6 +129,9 @@ int main(int argc, char** argv) {
     create.filespace_uuid = filespace.value;
     create.creation_unix_epoch_millis = 1792000000002ULL;
     scratchbird::tests::ConfigureCredentialedFixtureBootstrap(create);
+    // The fixture selects the installed templates; this case supplies exactly
+    // one file, so the other is cleared explicitly.
+    create.metric_policy_families_path.clear();
     create.metric_policy_defaults_path = defaults.string();
     Require(!db::CreateDatabaseFile(create).ok() && !std::filesystem::exists(create.path),
             "one-file configuration must refuse before creation");
@@ -148,7 +162,7 @@ int main(int argc, char** argv) {
     if (!created.ok()) std::cerr << created.diagnostic.diagnostic_code << ':' << created.diagnostic.message_key << '\n';
     Require(created.ok(), "configured creation failed");
     const auto read = db::ReadDatabaseBootstrapMetricCatalog(create.path, create.database_uuid.value);
-    Require(read.ok() && read.definitions.size() == 7, "seven complete native bundles not persisted");
+    Require(read.ok() && read.definitions.size() == SelectedFamilyCount(), "every selected native bundle persisted");
     std::set<scratchbird::core::platform::Uuid> identities;
     std::set<std::string> names;
     for (const auto& bundle : read.definitions) {
@@ -200,7 +214,7 @@ int main(int argc, char** argv) {
       api::EngineSysMetricsRegistryRequest request;
       request.context = statement.context;
       const auto visible = api::EngineSysMetricsRegistry(request);
-      Require(visible.ok && visible.result_shape.rows.size() == 7, "live registry omitted native definitions");
+      Require(visible.ok && visible.result_shape.rows.size() == SelectedFamilyCount(), "live registry omitted native definitions");
       for (const auto& row : visible.result_shape.rows) {
         bool unvalidated = false;
         for (const auto& field : row.fields)

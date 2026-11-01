@@ -1,5 +1,6 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
+#include "agent_runtime.hpp"
 #include "metric_policy_config.hpp"
 #include <fstream>
 #include <iostream>
@@ -43,7 +44,18 @@ int main(int argc, char** argv) {
   const auto loaded = c::LoadMetricPolicyConfig(dp, fp);
   Check(loaded.ok(), "distributed config did not load");
   if (!loaded.ok()) { std::cerr << loaded.validation.detail << '\n'; return 1; }
-  Check(loaded.config->families.size() == 7, "bootstrap family inventory changed");
+  // The distributed selection is every family a canonical agent requires
+  // locally (owner direction 2026-10-31), plus the transaction, MGA and
+  // storage families selected before; derived, not a frozen count.
+  for (const auto& agent : scratchbird::core::agents::CanonicalAgentRegistry())
+    for (const auto& dependency : agent.metric_dependencies)
+      if (dependency.required && !dependency.cluster_only)
+        Check(c::SelectMetricPolicyDefinition(*loaded.config, dependency.metric_family).ok(),
+              "agent-required family not selected");
+  for (const auto* family : {"sb_tx_begin_total", "sb_tx_commit_total", "sb_tx_active_transactions",
+                             "sb_mga_row_versions_reclaimed_total"})
+    Check(c::SelectMetricPolicyDefinition(*loaded.config, family).ok(),
+          "bootstrap family inventory changed");
   for (const auto* family : {"sb_tx_begin_total", "sb_tx_commit_total",
                             "sb_mga_cleanup_horizon_local_transaction_id", "sb_mga_row_versions_reclaimed_total",
                             "sb_metric_samples_rejected_total"}) {

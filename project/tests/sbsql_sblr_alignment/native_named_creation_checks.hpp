@@ -54,8 +54,8 @@ void NativeNamedCreationChecks(const db::NativeCreationCatalogSeed& supplied) {
         request.creator.transaction_uuid,"en-US",values,bound);
   };
   const auto made=assemble(inputs,limits);
-  Check(made.ok()&&made.records->definitions.size()==28&&made.records->names.size()==84,
-      "all seven metric families have complete supplied default and localized alias names");
+  Check(made.ok()&&inputs.size()%4==0&&made.records->definitions.size()==inputs.size()&&made.records->names.size()==3*inputs.size(),
+      "every selected metric family has complete supplied default and localized alias names");
   const auto exact=c::CatalogNamedCreationLimits{limits.maximum_records,made.records->encoded_bytes};
   Check(assemble(inputs,exact).ok(),"exact complete encoded extent accepts the whole named package");
   const auto bytes_short=assemble(inputs,{limits.maximum_records,exact.maximum_encoded_bytes-1});
@@ -79,7 +79,12 @@ void NativeNamedCreationChecks(const db::NativeCreationCatalogSeed& supplied) {
     constexpr std::array expected{E::invalid_request,E::invalid_request,E::invalid_names,E::invalid_names,
       E::invalid_names,E::invalid_names,E::invalid_names,E::duplicate_identity,E::duplicate_identity,
       E::invalid_metadata,E::invalid_metadata,E::duplicate_identity};
-    auto bad=inputs;auto altered=names.back();auto definition=*bad.back().definition;
+    // The allocation-free guarantee is the small cohort's (catalog_named_creation:
+    // up to 256 identities use no heap scratch; larger cohorts use bounded
+    // scratch by design). Prove it on a seven-family cohort; the complete
+    // selection is covered by the success and ceiling checks above.
+    auto bad=std::vector(inputs.begin(),inputs.begin()+std::min<std::size_t>(inputs.size(),28));
+    auto altered=names[bad.size()-1];auto definition=*bad.back().definition;
     for(unsigned i=0;i<2;++i)altered.input_entries[i]={&altered.metadata[i],&altered.entries[i]};
     bad.back()={&definition,&altered.vector_metadata,&altered.vector,altered.input_entries};
     if(fault==0)bad.back().definition=nullptr;
@@ -139,7 +144,7 @@ void NativeNamedCreationChecks(const db::NativeCreationCatalogSeed& supplied) {
   }
   const c::CatalogNamedCreationLimits large_limits{5*inputs.size(),limits.maximum_encoded_bytes};
   const auto large=assemble(large_inputs,large_limits);
-  Check(large.ok()&&large.records->names.size()==112,"large native identity scratch preserves every language alias");
+  Check(large.ok()&&large.records->names.size()==4*inputs.size(),"large native identity scratch preserves every language alias");
   auto duplicate=large_inputs;duplicate.back()=duplicate.front();
   const auto duplicate_result=assemble(duplicate,large_limits);
   Check(duplicate_result.error==E::duplicate_identity&&!duplicate_result.records,
@@ -156,14 +161,14 @@ void NativeNamedCreationChecks(const db::NativeCreationCatalogSeed& supplied) {
   db::NativeCreationCatalogSeed seed;seed[0]=made.records->definitions;seed[1]=made.records->names;
   Fixture fixture;
   for(unsigned profile=0;profile<5;++profile) {
-    const auto r=Request(profile,128);const auto size=r.bootstrap.page_size_bytes,budget=256*size;
+    const auto r=Request(profile,1024);const auto size=r.bootstrap.page_size_bytes,budget=256*size;
     auto indexes=IndexedConstructionBindings();auto name_index=*indexes[0];
     name_index.relation_uuid=Id(21000);name_index.dependencies.index_uuid=Id(21001);
     indexes[1]=name_index;
     disk::FileDevice d;const auto path=fixture.Next();
     Check(d.Open(path.string(),disk::FileOpenMode::create_new).ok(),"named package actual owned file");
     const auto created=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(d,r,seed,indexes,budget,*fixture.issuer);
-    Check(created.ok()&&created.receipt->catalog_rows[0]==28&&created.receipt->catalog_rows[1]==84,
+    Check(created.ok()&&created.receipt->catalog_rows[0]==inputs.size()&&created.receipt->catalog_rows[1]==3*inputs.size(),
         "complete definitions and all supplied names actually publish on every page profile");
     Check(d.Close().ok()&&d.Open(path.string(),disk::FileOpenMode::open_existing).ok(),"named package actual fresh reopen");
     const std::vector<disk::NativeFilespaceDevice> devices{{r.bootstrap.filespace_uuid,r.bootstrap.page_size_profile_uuid,&d}};
@@ -171,7 +176,7 @@ void NativeNamedCreationChecks(const db::NativeCreationCatalogSeed& supplied) {
         created.receipt->checkpoint,2,1,{indexes[0]->relation_uuid,indexes[0]->dependencies},budget);
     const auto localized=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(r.bootstrap.database_uuid,devices,
         created.receipt->checkpoint,2,2,{indexes[1]->relation_uuid,indexes[1]->dependencies},budget);
-    Check(definitions.ok()&&definitions.rows.size()==28&&localized.ok()&&localized.rows.size()==84,
+    Check(definitions.ok()&&definitions.rows.size()==inputs.size()&&localized.ok()&&localized.rows.size()==3*inputs.size(),
         "real indexed catalog read retains the entire named definition set");
     for(const auto& row:localized.rows) {
       const auto original=std::find_if(seed[1].begin(),seed[1].end(),[&](const auto& value) {
@@ -198,7 +203,7 @@ void NativeNamedCreationChecks(const db::NativeCreationCatalogSeed& supplied) {
     const auto recovered=db::RecoverIndexedNativeCreationWorkspaceSelectionOnOpenDevice(d,
         {r.bootstrap.database_uuid,r.bootstrap.filespace_uuid,r.bootstrap.page_size_profile_uuid},
         r.operation_uuid,seed,indexes,budget);
-    Check(recovered.ok()&&recovered.repaired_slots==2&&recovered.receipt->catalog_rows[1]==84,
+    Check(recovered.ok()&&recovered.repaired_slots==2&&recovered.receipt->catalog_rows[1]==3*inputs.size(),
         "original named package recovers with both actual indexed catalog relations");
     Check(d.Close().ok(),"release named package actual owner");
   }

@@ -295,13 +295,23 @@ void RequireBootstrapCatalogRowsPersisted(const std::filesystem::path& database_
           "sys.information_schema synonym descriptor was not persisted at database create");
   Require(TypedKindCount(opened.state.typed_catalog_record_kinds, "table_descriptor") >= 15,
           "metrics structure table descriptors were not persisted at database create");
-  Require(TypedKindCount(opened.state.typed_catalog_record_kinds, "metric_descriptor") == 7,
+  // Exactly the families the distributed selection names: one section each.
+  std::size_t selected_families = 0;
+  {
+    std::ifstream families(std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() /
+                           "config/templates/metric-policy-families.conf");
+    for (std::string line; std::getline(families, line);)
+      if (line.rfind("[sb_", 0) == 0) ++selected_families;
+  }
+  Require(selected_families > 0 &&
+              TypedKindCount(opened.state.typed_catalog_record_kinds, "metric_descriptor") ==
+                  selected_families,
           "exact explicitly selected native metric descriptor rows were not persisted");
   Require(TypedKindCount(opened.state.typed_catalog_record_kinds, "metric_current_value") == 0,
           "creation must not fabricate producer observations");
   const auto metrics = db::ReadDatabaseBootstrapMetricCatalog(database_path.string(),
                                                             opened.state.header.database_uuid);
-  Require(metrics.ok() && metrics.definitions.size() == 7,
+  Require(metrics.ok() && metrics.definitions.size() == selected_families,
           "native owning read must validate all selected descriptor/dependency bundles");
 
   std::ifstream input(database_path, std::ios::binary);

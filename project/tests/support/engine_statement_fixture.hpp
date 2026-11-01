@@ -181,6 +181,15 @@ inline void ConfigureCredentialedFixtureBootstrap(storage::database::DatabaseCre
   create.resource_seed_pack_root =
       (std::filesystem::path(__FILE__).lexically_normal().parent_path().parent_path().parent_path() /
        "resources/seed-packs/initial-resource-pack").string();
+  // The installed metric policy files, as production create passes them
+  // (METRIC-BOOTSTRAP-CONFIG-DEFAULTS-001): every family a default agent needs.
+  {
+    const auto templates =
+        std::filesystem::path(__FILE__).lexically_normal().parent_path().parent_path().parent_path() /
+        "config/templates";
+    create.metric_policy_defaults_path = (templates / "metric-policy-defaults.conf").string();
+    create.metric_policy_families_path = (templates / "metric-policy-families.conf").string();
+  }
   create.bootstrap_principal_name = "fixture_owner";
   create.require_bootstrap_principal = true;
   create.allow_uncredentialed_bootstrap = false;

@@ -192,7 +192,8 @@ void PrintFirstPrincipalBootstrapUsage(const char* program, std::ostream& output
     output << "Usage:\n  " << program
            << " bootstrap <first-principal> <database-path> --mode=embedded"
               " --platform-profile <file> --resource-seed-pack-root <dir>"
-              " --policy-seed-pack-root <dir> [--password-stdin]\n\n";
+              " --policy-seed-pack-root <dir> --metric-policy-defaults <file>"
+              " --metric-policy-families <file> [--password-stdin]\n\n";
     output << "This is an explicit embedded, root/Administrator-authorized "
               "bootstrap operation. It does not connect to a listener, manager, "
               "or parser and it never auto-creates a database during an ordinary "
@@ -216,6 +217,8 @@ FirstPrincipalBootstrapParseResult ParseCreationArgs(
     bool platform_profile_seen = false;
     bool resource_seed_pack_seen = false;
     bool policy_seed_pack_seen = false;
+    bool metric_defaults_seen = false;
+    bool metric_families_seen = false;
     bool password_stdin_seen = false;
     bool option_seen = false;
 
@@ -267,6 +270,28 @@ FirstPrincipalBootstrapParseResult ParseCreationArgs(
                 return parseFailure(kBootstrapInputInvalid);
             }
             resource_seed_pack_seen = true;
+            option_seen = true;
+            continue;
+        }
+        if (isExactOption(token, "--metric-policy-defaults")) {
+            if (metric_defaults_seen ||
+                !readRequiredOptionValue(index, argc, argv, token,
+                                         "--metric-policy-defaults",
+                                         &result.request.metric_policy_defaults_path)) {
+                return parseFailure(kBootstrapInputInvalid);
+            }
+            metric_defaults_seen = true;
+            option_seen = true;
+            continue;
+        }
+        if (isExactOption(token, "--metric-policy-families")) {
+            if (metric_families_seen ||
+                !readRequiredOptionValue(index, argc, argv, token,
+                                         "--metric-policy-families",
+                                         &result.request.metric_policy_families_path)) {
+                return parseFailure(kBootstrapInputInvalid);
+            }
+            metric_families_seen = true;
             option_seen = true;
             continue;
         }
@@ -347,7 +372,9 @@ FirstPrincipalBootstrapResult RunFirstPrincipalBootstrap(
         (current_process && !request.platform_profile_path.empty()) ||
         !validBootstrapPrincipalName(request.principal_name) ||
         request.database_path.empty() ||
-        request.resource_seed_pack_root.empty() || request.policy_seed_pack_root.empty()) {
+        request.resource_seed_pack_root.empty() || request.policy_seed_pack_root.empty() ||
+        request.metric_policy_defaults_path.empty() ||
+        request.metric_policy_families_path.empty()) {
         return bootstrapFailure(kBootstrapInputInvalid);
     }
     if (std::filesystem::exists(request.database_path)) {
@@ -433,6 +460,8 @@ FirstPrincipalBootstrapResult RunFirstPrincipalBootstrap(
     create_request.resource_seed_pack_root = request.resource_seed_pack_root;
     create_request.require_resource_seed_pack = true;
     create_request.policy_seed_pack_root = request.policy_seed_pack_root;
+    create_request.metric_policy_defaults_path = request.metric_policy_defaults_path;
+    create_request.metric_policy_families_path = request.metric_policy_families_path;
     create_request.require_policy_seed_pack = true;
     create_request.bootstrap_principal_name = request.principal_name;
     create_request.bootstrap_credential_fingerprint = credential_fingerprint;

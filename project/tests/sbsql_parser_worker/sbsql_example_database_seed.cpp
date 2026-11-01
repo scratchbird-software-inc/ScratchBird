@@ -53,6 +53,9 @@ namespace db = scratchbird::storage::database;
 namespace uuid = scratchbird::core::uuid;
 using scratchbird::core::platform::UuidKind;
 
+#ifndef SB_EXAMPLE_METRIC_TEMPLATES
+#error "SB_EXAMPLE_METRIC_TEMPLATES must name the installed metric policy templates"
+#endif
 #ifndef SB_EXAMPLE_SEED_PACK_ROOT
 #define SB_EXAMPLE_SEED_PACK_ROOT \
   "project/resources/seed-packs/initial-resource-pack"
@@ -294,6 +297,10 @@ api::EngineUuid CreateDatabase(const std::filesystem::path& database_path,
   create.page_size = 16384;
   create.creation_unix_epoch_millis = now;
   create.resource_seed_pack_root = SB_EXAMPLE_SEED_PACK_ROOT;
+  // The installed metric policy files, as production create passes them
+  // (METRIC-BOOTSTRAP-CONFIG-DEFAULTS-001).
+  create.metric_policy_defaults_path = SB_EXAMPLE_METRIC_TEMPLATES "/metric-policy-defaults.conf";
+  create.metric_policy_families_path = SB_EXAMPLE_METRIC_TEMPLATES "/metric-policy-families.conf";
   create.allow_minimal_resource_bootstrap = false;
   create.require_resource_seed_pack = true;
   create.bootstrap_principal_name = bootstrap_principal;

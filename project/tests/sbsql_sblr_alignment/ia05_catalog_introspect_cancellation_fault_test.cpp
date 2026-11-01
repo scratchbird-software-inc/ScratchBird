@@ -194,103 +194,136 @@ void VerifyCatalogSnapshot(bool retire_owner) {
       seed_context.datatype_registry_generation;
   SeedCatalogObject(context, fixture);
 
-  bridge::StatementContextAcquireRequest acquire;
-  acquire.engine_context = &context;
-  acquire.exact_transaction_uuid = context.transaction_uuid;
-  bridge::StatementContextReceiptHandle receipt;
-  bridge::StatementContextReceiptView view;
-  result = nullptr;
-  Require(bridge::AcquireStatementContextReceipt(
-              session.session, &acquire, &receipt, &view, &result) ==
-              SB_ENGINE_STATUS_OK,
-          "003612 live statement receipt acquisition failed");
-  if (result != nullptr) (void)sb_engine_result_release(result);
-  Require(view.catalog_introspect_executor_availability_generation != 0,
-          "003612 receipt omitted catalog-introspect availability");
-
-  bind::NameResolveBindRequestV1 public_bind;
-  public_bind.authenticated_receipt_uuid = RawUuid(view.receipt_uuid);
-  public_bind.occurrence = 1;
-  public_bind.resolution_mode = 2;
-  public_bind.object_class = 2;
-  public_bind.target_name_atoms = {{"catalog_probe_schema", false},
-                                   {"catalog_probe_table", false}};
-  std::vector<std::uint8_t> exact_bind;
   std::string detail;
-  Require(bind::EncodeNameResolveBindRequestV1(
-              public_bind, &exact_bind, &detail),
-          "003612 canonical target-name bind encoding failed");
-  bind::NameResolveBindRequestV1 decoded_bind;
-  Require(bind::DecodeNameResolveBindRequestV1(
-              exact_bind.data(), exact_bind.size(), &decoded_bind, &detail),
-          "003612 canonical target-name bind decoding failed");
+  // Cancellation latches on the receipt (one-way; never cleared), so each
+  // phase gets its own receipt: everything the operation binds lives on it.
+  struct Attempt {
+    bridge::StatementContextReceiptHandle receipt{};
+    bridge::StatementContextReceiptView view{};
+    std::vector<std::uint8_t> exact_bind;
+    std::vector<std::uint8_t> descriptor_bytes;
+    Submission submission;
+  };
 
-  bridge::StatementNameResolveBindRequestV1 bind_request;
-  bind_request.authenticated_receipt_uuid = view.receipt_uuid;
-  bind_request.occurrence = decoded_bind.occurrence;
-  bind_request.resolution_mode = decoded_bind.resolution_mode;
-  bind_request.object_class = decoded_bind.object_class;
-  for (const auto& atom : decoded_bind.target_name_atoms) {
-    bind_request.target_name_atoms.push_back({atom.raw_utf8, atom.quoted});
-  }
-  for (const auto& atom : decoded_bind.namespace_name_atoms) {
-    bind_request.namespace_name_atoms.push_back(
-        {atom.raw_utf8, atom.quoted});
-  }
-  bind_request.target_name_atoms_sha256 =
-      decoded_bind.target_name_atoms_sha256;
-  bind_request.namespace_name_atoms_sha256 =
-      decoded_bind.namespace_name_atoms_sha256;
-  bind_request.request_evidence_sha256 = decoded_bind.request_evidence_sha256;
-  bind_request.exact_bind_request_bytes = exact_bind;
-  bridge::StatementNameResolveBindAckV1 bind_ack;
-  result = nullptr;
-  Require(bridge::BindStatementNameResolveAuthorityV1(
-              receipt, &bind_request, &bind_ack, &result) ==
-              SB_ENGINE_STATUS_OK,
-          "003612 engine target-name binding failed");
-  if (result != nullptr) (void)sb_engine_result_release(result);
+  const auto prepare = [&](Attempt* out) {
+    bridge::StatementContextAcquireRequest acquire;
+    acquire.engine_context = &context;
+    acquire.exact_transaction_uuid = context.transaction_uuid;
+    sb_engine_result_t result = nullptr;
+    Require(bridge::AcquireStatementContextReceipt(
+                session.session, &acquire, &out->receipt, &out->view,
+                &result) == SB_ENGINE_STATUS_OK,
+            "003612 live statement receipt acquisition failed");
+    if (result != nullptr) (void)sb_engine_result_release(result);
+    const auto& view = out->view;
+    Require(view.catalog_introspect_executor_availability_generation != 0,
+            "003612 receipt omitted catalog-introspect availability");
 
-  bridge::StatementCatalogIntrospectAuthorityV1 authority;
-  result = nullptr;
-  const auto catalog_bind_status =
-      bridge::BindStatementCatalogIntrospectAuthorityV1(
-          receipt, 1, 1, &authority, &result);
-  if (catalog_bind_status != SB_ENGINE_STATUS_OK && result != nullptr) {
-    std::cerr << "003612 catalog bind: " << DiagnosticCode(result) << ':'
-              << DiagnosticKey(result) << '\n';
-  }
-  if (catalog_bind_status == SB_ENGINE_STATUS_OK &&
-      (authority.canonical_path_utf8 !=
-           "CATALOG_PROBE_SCHEMA.CATALOG_PROBE_TABLE" ||
-       authority.result_shape.result_kind !=
-           "rs.sbsql.show_object_detail.v1")) {
-    std::cerr << "003612 catalog authority: path="
-              << authority.canonical_path_utf8 << ";result_kind="
-              << authority.result_shape.result_kind << ";rows="
-              << authority.result_shape.rows.size() << '\n';
-  }
-  Require(catalog_bind_status == SB_ENGINE_STATUS_OK &&
-              authority.canonical_descriptor_bytes.size() == 488 &&
-              authority.canonical_path_utf8 ==
-                  "CATALOG_PROBE_SCHEMA.CATALOG_PROBE_TABLE" &&
-              authority.result_shape.result_kind ==
-                  "rs.sbsql.show_object_detail.v1" &&
-              !authority.result_shape.rows.empty(),
-          "003612 receipt-private catalog authority was not published");
-  if (result != nullptr) (void)sb_engine_result_release(result);
-  auto descriptor_bytes = authority.canonical_descriptor_bytes;
-  std::copy_n("CIDO", 4, descriptor_bytes.begin());
-  sblr::SblrCatalogIntrospectDescriptorV1 decoded_descriptor;
-  Require(sblr::DecodeSblrCatalogIntrospectDescriptorV1(
-              descriptor_bytes.data(), descriptor_bytes.size(),
-              &decoded_descriptor, &detail, true) &&
-              decoded_descriptor.evidence ==
-                  authority.descriptor_evidence_sha256,
-          "003612 literal receipt CIDD-to-CIDO projection failed");
-  const auto submission = PackageWithMember(
-      fixture, view, parser_uuid,
-      CatalogIntrospectMember(view, parser_uuid, descriptor_bytes));
+    bind::NameResolveBindRequestV1 public_bind;
+    public_bind.authenticated_receipt_uuid = RawUuid(view.receipt_uuid);
+    public_bind.occurrence = 1;
+    public_bind.resolution_mode = 2;
+    public_bind.object_class = 2;
+    public_bind.target_name_atoms = {{"catalog_probe_schema", false},
+                                     {"catalog_probe_table", false}};
+    Require(bind::EncodeNameResolveBindRequestV1(
+                public_bind, &out->exact_bind, &detail),
+            "003612 canonical target-name bind encoding failed");
+    bind::NameResolveBindRequestV1 decoded_bind;
+    Require(bind::DecodeNameResolveBindRequestV1(
+                out->exact_bind.data(), out->exact_bind.size(), &decoded_bind,
+                &detail),
+            "003612 canonical target-name bind decoding failed");
+
+    bridge::StatementNameResolveBindRequestV1 bind_request;
+    bind_request.authenticated_receipt_uuid = view.receipt_uuid;
+    bind_request.occurrence = decoded_bind.occurrence;
+    bind_request.resolution_mode = decoded_bind.resolution_mode;
+    bind_request.object_class = decoded_bind.object_class;
+    for (const auto& atom : decoded_bind.target_name_atoms) {
+      bind_request.target_name_atoms.push_back({atom.raw_utf8, atom.quoted});
+    }
+    for (const auto& atom : decoded_bind.namespace_name_atoms) {
+      bind_request.namespace_name_atoms.push_back(
+          {atom.raw_utf8, atom.quoted});
+    }
+    bind_request.target_name_atoms_sha256 =
+        decoded_bind.target_name_atoms_sha256;
+    bind_request.namespace_name_atoms_sha256 =
+        decoded_bind.namespace_name_atoms_sha256;
+    bind_request.request_evidence_sha256 =
+        decoded_bind.request_evidence_sha256;
+    bind_request.exact_bind_request_bytes = out->exact_bind;
+    bridge::StatementNameResolveBindAckV1 bind_ack;
+    result = nullptr;
+    Require(bridge::BindStatementNameResolveAuthorityV1(
+                out->receipt, &bind_request, &bind_ack, &result) ==
+                SB_ENGINE_STATUS_OK,
+            "003612 engine target-name binding failed");
+    if (result != nullptr) (void)sb_engine_result_release(result);
+
+    bridge::StatementCatalogIntrospectAuthorityV1 authority;
+    result = nullptr;
+    const auto catalog_bind_status =
+        bridge::BindStatementCatalogIntrospectAuthorityV1(
+            out->receipt, 1, 1, &authority, &result);
+    if (catalog_bind_status != SB_ENGINE_STATUS_OK && result != nullptr) {
+      std::cerr << "003612 catalog bind: " << DiagnosticCode(result) << ':'
+                << DiagnosticKey(result) << '\n';
+    }
+    if (catalog_bind_status == SB_ENGINE_STATUS_OK &&
+        (authority.canonical_path_utf8 !=
+             "CATALOG_PROBE_SCHEMA.CATALOG_PROBE_TABLE" ||
+         authority.result_shape.result_kind !=
+             "rs.sbsql.show_object_detail.v1")) {
+      std::cerr << "003612 catalog authority: path="
+                << authority.canonical_path_utf8 << ";result_kind="
+                << authority.result_shape.result_kind << ";rows="
+                << authority.result_shape.rows.size() << '\n';
+    }
+    Require(catalog_bind_status == SB_ENGINE_STATUS_OK &&
+                authority.canonical_descriptor_bytes.size() == 488 &&
+                authority.canonical_path_utf8 ==
+                    "CATALOG_PROBE_SCHEMA.CATALOG_PROBE_TABLE" &&
+                authority.result_shape.result_kind ==
+                    "rs.sbsql.show_object_detail.v1" &&
+                !authority.result_shape.rows.empty(),
+            "003612 receipt-private catalog authority was not published");
+    if (result != nullptr) (void)sb_engine_result_release(result);
+    auto& descriptor_bytes = out->descriptor_bytes;
+    descriptor_bytes = authority.canonical_descriptor_bytes;
+    std::copy_n("CIDO", 4, descriptor_bytes.begin());
+    sblr::SblrCatalogIntrospectDescriptorV1 decoded_descriptor;
+    Require(sblr::DecodeSblrCatalogIntrospectDescriptorV1(
+                descriptor_bytes.data(), descriptor_bytes.size(),
+                &decoded_descriptor, &detail, true) &&
+                decoded_descriptor.evidence ==
+                    authority.descriptor_evidence_sha256,
+            "003612 literal receipt CIDD-to-CIDO projection failed");
+    out->submission = PackageWithMember(
+        fixture, view, parser_uuid,
+        CatalogIntrospectMember(view, parser_uuid, descriptor_bytes));
+  };
+  const auto admit = [&](Attempt& attempt,
+                         bridge::StatementPackageAdmissionReservationHandle*
+                             reservation) {
+    return Admit(fixture, session, attempt.view, attempt.receipt, parser_uuid,
+                 attempt.submission, reservation);
+  };
+  const auto dispatch = [&](Attempt& attempt, sb_engine_result_t* result) {
+    bridge::StatementPackageAdmissionReservationHandle reservation;
+    auto admitted = admit(attempt, &reservation);
+    *result = nullptr;
+    return bridge::DispatchStatementContextReceipt(&admitted, result);
+  };
+
+  // Every receipt is captured before the sibling publication below, so each
+  // one exercises the same frozen visibility the single receipt used to.
+  Attempt cancelled;
+  Attempt success;
+  cancel.store(false, std::memory_order_relaxed);
+  prepare(&cancelled);
+  if (!retire_owner) prepare(&success);
 
   // A later transaction publication must not replace or invalidate this
   // statement's frozen visibility. Exercise real inventory publication, not
@@ -302,34 +335,31 @@ void VerifyCatalogSnapshot(bool retire_owner) {
   Require(api::EngineCommitTransaction(sibling_commit).ok,
           "003612 independent transaction did not commit");
 
+  result = nullptr;
   if (retire_owner) {
     bridge::StatementPackageAdmissionReservationHandle reservation;
-    auto dispatch = Admit(fixture, session, view, receipt, parser_uuid,
-                          submission, &reservation);
+    auto retired_owner_dispatch = admit(cancelled, &reservation);
     api::EngineRollbackTransactionRequest rollback;
     rollback.context = context;
     Require(api::EngineRollbackTransaction(rollback).ok,
             "003612 owning transaction did not roll back before dispatch");
     result = nullptr;
-    const auto status = bridge::DispatchStatementContextReceipt(&dispatch, &result);
+    const auto status = bridge::DispatchStatementContextReceipt(&retired_owner_dispatch, &result);
     Require(status == SB_ENGINE_STATUS_CONFLICT && result != nullptr &&
                 DiagnosticCode(result) == "ENGINE.STATEMENT_CONTEXT.SNAPSHOT_STALE" &&
                 ResultPayload(result).empty(),
             "003612 terminal owning transaction published catalog rows");
     (void)sb_engine_result_release(result);
-    Require(bridge::ReleaseStatementContextReceipt(receipt) == SB_ENGINE_STATUS_OK,
+    Require(bridge::ReleaseStatementContextReceipt(cancelled.receipt) ==
+                SB_ENGINE_STATUS_OK,
             "003612 retired-owner receipt cleanup failed");
     return;
   }
 
+  // Phase 1: cancellation stops catalog access on its own receipt.
   probes.store(0, std::memory_order_relaxed);
   cancel.store(true, std::memory_order_relaxed);
-  bridge::StatementPackageAdmissionReservationHandle cancel_reservation;
-  auto cancel_dispatch = Admit(fixture, session, view, receipt, parser_uuid,
-                               submission, &cancel_reservation);
-  result = nullptr;
-  Require(bridge::DispatchStatementContextReceipt(&cancel_dispatch, &result) ==
-                  SB_ENGINE_STATUS_TIMEOUT &&
+  Require(dispatch(cancelled, &result) == SB_ENGINE_STATUS_TIMEOUT &&
               result != nullptr,
           "003612 cancellation did not stop catalog access");
   const auto cancellation_code = DiagnosticCode(result);
@@ -350,16 +380,23 @@ void VerifyCatalogSnapshot(bool retire_owner) {
           "003612 cancellation precedence or checkpoint drifted");
   (void)sb_engine_result_release(result);
 
+  // The latch: the cancelled receipt stays cancelled with no new request, and
+  // still publishes no catalog rows.
   probes.store(0, std::memory_order_relaxed);
   cancel.store(false, std::memory_order_relaxed);
-  bridge::StatementPackageAdmissionReservationHandle success_reservation;
-  auto success_dispatch = Admit(fixture, session, view, receipt, parser_uuid,
-                                submission, &success_reservation);
-  result = nullptr;
-  Require(bridge::DispatchStatementContextReceipt(&success_dispatch, &result) ==
-                  SB_ENGINE_STATUS_OK &&
+  Require(dispatch(cancelled, &result) != SB_ENGINE_STATUS_OK &&
+              result != nullptr &&
+              DiagnosticCode(result) == "PROCESS.CANCELLED" &&
+              ResultPayload(result).empty(),
+          "003612 cancelled receipt did not stay cancelled");
+  (void)sb_engine_result_release(result);
+
+  // Phase 2: a fresh receipt publishes the catalog-introspect result.
+  probes.store(0, std::memory_order_relaxed);
+  cancel.store(false, std::memory_order_relaxed);
+  Require(dispatch(success, &result) == SB_ENGINE_STATUS_OK &&
               result != nullptr,
-          "003612 retry did not publish catalog-introspect result");
+          "003612 fresh receipt did not publish catalog-introspect result");
   const auto result_bytes = ResultPayload(result);
   sblr::SblrCatalogIntrospectResultV1 decoded_result;
   Require(result_bytes.size() == 320 &&
@@ -367,8 +404,8 @@ void VerifyCatalogSnapshot(bool retire_owner) {
                   result_bytes.data(), result_bytes.size(), &decoded_result,
                   &detail) &&
               decoded_result.availability ==
-                  view.catalog_introspect_executor_availability_generation,
-          "003612 successful retry omitted canonical CIRS");
+                  success.view.catalog_introspect_executor_availability_generation,
+          "003612 successful dispatch omitted canonical CIRS");
   (void)sb_engine_result_release(result);
 
   const api::SblrExecutorAvailabilityRowIdentity availability_identity{
@@ -400,13 +437,10 @@ void VerifyCatalogSnapshot(bool retire_owner) {
                   api::SblrExecutorAvailabilityState::revoked,
           "003612 postpublication availability revocation was not durable");
 
+  // Postpublication cancellation does not change the exact replay.
   probes.store(0, std::memory_order_relaxed);
   cancel.store(true, std::memory_order_relaxed);
-  bridge::StatementPackageAdmissionReservationHandle replay_reservation;
-  auto replay_dispatch = Admit(fixture, session, view, receipt, parser_uuid,
-                               submission, &replay_reservation);
-  result = nullptr;
-  const auto replay_status = bridge::DispatchStatementContextReceipt(&replay_dispatch, &result);
+  const auto replay_status = dispatch(success, &result);
   if (replay_status != SB_ENGINE_STATUS_OK && result != nullptr) {
     std::cerr << "003612 terminal replay: " << DiagnosticCode(result) << ':'
               << DiagnosticKey(result) << '\n';
@@ -424,20 +458,18 @@ void VerifyCatalogSnapshot(bool retire_owner) {
   rollback.context = context;
   Require(api::EngineRollbackTransaction(rollback).ok,
           "003612 owning transaction rollback after publication failed");
-  bridge::StatementPackageAdmissionReservationHandle retired_reservation;
-  auto retired_dispatch = Admit(fixture, session, view, receipt, parser_uuid,
-                                submission, &retired_reservation);
-  result = nullptr;
-  Require(bridge::DispatchStatementContextReceipt(&retired_dispatch, &result) ==
-                  SB_ENGINE_STATUS_CONFLICT && result != nullptr &&
+  Require(dispatch(success, &result) == SB_ENGINE_STATUS_CONFLICT &&
+              result != nullptr &&
               DiagnosticCode(result) == "ENGINE.STATEMENT_CONTEXT.SNAPSHOT_STALE" &&
               ResultPayload(result).empty(),
           "003612 terminal result bypassed retired transaction snapshot authority");
   (void)sb_engine_result_release(result);
+  cancel.store(false, std::memory_order_relaxed);
 
-  Require(bridge::ReleaseStatementContextReceipt(receipt) ==
-              SB_ENGINE_STATUS_OK,
-          "003612 statement receipt cleanup failed");
+  for (auto* attempt : {&cancelled, &success})
+    Require(bridge::ReleaseStatementContextReceipt(attempt->receipt) ==
+                SB_ENGINE_STATUS_OK,
+            "003612 statement receipt cleanup failed");
 }
 
 int main() {

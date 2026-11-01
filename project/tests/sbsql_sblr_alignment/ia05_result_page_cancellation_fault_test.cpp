@@ -400,87 +400,104 @@ int main() {
     return target != 0 && ordinal == target;
   };
 
-  bridge::StatementContextAcquireRequest acquire;
-  acquire.engine_context = &context;
-  acquire.exact_transaction_uuid = context.transaction_uuid;
-  bridge::StatementContextReceiptHandle receipt;
-  bridge::StatementContextReceiptView view;
-  sb_engine_result_t result = nullptr;
-  Require(bridge::AcquireStatementContextReceipt(
-              session.session, &acquire, &receipt, &view, &result) ==
-              SB_ENGINE_STATUS_OK,
-          "003600 live statement receipt acquisition failed");
-  if (result != nullptr) (void)sb_engine_result_release(result);
-
+  // Cancellation latches on the receipt (one-way; never cleared), so each
+  // phase gets its own receipt: the source query result and the RESULT_PAGE
+  // submission over it both live on that receipt.
+  struct Attempt {
+    bridge::StatementContextReceiptHandle receipt{};
+    bridge::StatementContextReceiptView view{};
+    sb_engine_result_t source_result = nullptr;
+    Submission page_submission;
+  };
   const auto parser_uuid =
       Identity(NewUuid(platform::UuidKind::object, 36003));
-  auto literal_binding = literal_fixture::FinalizeLiteral(receipt, view);
-  api::EngineRequestContext admitted_context;
-  Require(bridge::CopyStatementContextEngineContextV1(receipt, &admitted_context, nullptr) ==
-              SB_ENGINE_STATUS_OK, "003600 current datatype cohort unavailable");
-  const auto query_submission = PackageWithMember(
-      fixture, view, parser_uuid,
-      ValuesQueryMember(view, parser_uuid, literal_binding, admitted_context));
-  const auto query_stream_sha =
-      scratchbird::core::hash::ComputeSha256Digest(query_submission.stream);
-  Require(query_stream_sha.ok() && literal_binding.sbel.size() == 176,
-          "003600 source query binding evidence is malformed");
-  std::copy(query_stream_sha.digest.begin(), query_stream_sha.digest.end(),
-            literal_binding.sbel.begin() + 144);
-  bridge::StatementPackageAdmissionReservationHandle query_reservation;
-  auto query_dispatch = Admit(fixture, session, view, receipt, parser_uuid,
-                              query_submission, &query_reservation);
-  query_dispatch.literal_execution_binding = literal_binding.sbel;
-  result = nullptr;
-  const auto query_status =
-      bridge::DispatchStatementContextReceipt(&query_dispatch, &result);
-  if (query_status != SB_ENGINE_STATUS_OK && result != nullptr) {
-    sb_engine_diagnostic_set_view_t diagnostics{};
-    if (sb_engine_result_diagnostics(result, &diagnostics) ==
-        SB_ENGINE_STATUS_OK) {
-      for (std::uint64_t index = 0; index != diagnostics.diagnostic_count;
-           ++index) {
-        std::cerr.write(diagnostics.diagnostics[index].symbolic_code.data,
-                        diagnostics.diagnostics[index]
-                            .symbolic_code.size_bytes);
-        std::cerr << ':';
-        std::cerr.write(diagnostics.diagnostics[index].message_key.data,
-                        diagnostics.diagnostics[index]
-                            .message_key.size_bytes);
-        std::cerr << ':';
-        std::cerr.write(diagnostics.diagnostics[index].safe_detail.data,
-                        diagnostics.diagnostics[index]
-                            .safe_detail.size_bytes);
-        std::cerr << '\n';
+
+  const auto prepare = [&](Attempt* out) {
+    bridge::StatementContextAcquireRequest acquire;
+    acquire.engine_context = &context;
+    acquire.exact_transaction_uuid = context.transaction_uuid;
+    sb_engine_result_t result = nullptr;
+    Require(bridge::AcquireStatementContextReceipt(
+                session.session, &acquire, &out->receipt, &out->view, &result) ==
+                SB_ENGINE_STATUS_OK,
+            "003600 live statement receipt acquisition failed");
+    if (result != nullptr) (void)sb_engine_result_release(result);
+    const auto& view = out->view;
+
+    auto literal_binding = literal_fixture::FinalizeLiteral(out->receipt, view);
+    api::EngineRequestContext admitted_context;
+    Require(bridge::CopyStatementContextEngineContextV1(out->receipt, &admitted_context, nullptr) ==
+                SB_ENGINE_STATUS_OK, "003600 current datatype cohort unavailable");
+    const auto query_submission = PackageWithMember(
+        fixture, view, parser_uuid,
+        ValuesQueryMember(view, parser_uuid, literal_binding, admitted_context));
+    const auto query_stream_sha =
+        scratchbird::core::hash::ComputeSha256Digest(query_submission.stream);
+    Require(query_stream_sha.ok() && literal_binding.sbel.size() == 176,
+            "003600 source query binding evidence is malformed");
+    std::copy(query_stream_sha.digest.begin(), query_stream_sha.digest.end(),
+              literal_binding.sbel.begin() + 144);
+    bridge::StatementPackageAdmissionReservationHandle query_reservation;
+    auto query_dispatch = Admit(fixture, session, view, out->receipt, parser_uuid,
+                                query_submission, &query_reservation);
+    query_dispatch.literal_execution_binding = literal_binding.sbel;
+    result = nullptr;
+    const auto query_status =
+        bridge::DispatchStatementContextReceipt(&query_dispatch, &result);
+    if (query_status != SB_ENGINE_STATUS_OK && result != nullptr) {
+      sb_engine_diagnostic_set_view_t diagnostics{};
+      if (sb_engine_result_diagnostics(result, &diagnostics) ==
+          SB_ENGINE_STATUS_OK) {
+        for (std::uint64_t index = 0; index != diagnostics.diagnostic_count;
+             ++index) {
+          std::cerr.write(diagnostics.diagnostics[index].symbolic_code.data,
+                          diagnostics.diagnostics[index]
+                              .symbolic_code.size_bytes);
+          std::cerr << ':';
+          std::cerr.write(diagnostics.diagnostics[index].message_key.data,
+                          diagnostics.diagnostics[index]
+                              .message_key.size_bytes);
+          std::cerr << ':';
+          std::cerr.write(diagnostics.diagnostics[index].safe_detail.data,
+                          diagnostics.diagnostics[index]
+                              .safe_detail.size_bytes);
+          std::cerr << '\n';
+        }
       }
     }
-  }
-  Require(query_status == SB_ENGINE_STATUS_OK && result != nullptr,
-          "003600 source VALUES query did not execute");
-  sb_engine_result_t source_result = result;
-  bridge::StatementQueryExecuteResultHandleView source_handle;
-  Require(bridge::ReadStatementQueryExecuteResultHandle(
-              source_result, &source_handle) == SB_ENGINE_STATUS_OK,
-          "003600 source query did not publish an engine result handle");
+    Require(query_status == SB_ENGINE_STATUS_OK && result != nullptr,
+            "003600 source VALUES query did not execute");
+    out->source_result = result;
+    bridge::StatementQueryExecuteResultHandleView source_handle;
+    Require(bridge::ReadStatementQueryExecuteResultHandle(
+                out->source_result, &source_handle) == SB_ENGINE_STATUS_OK,
+            "003600 source query did not publish an engine result handle");
 
-  const auto cursor_uuid = RawUuid(
-      Identity(NewUuid(platform::UuidKind::object, 36004)));
-  const auto page_submission = PackageWithMember(
-      fixture, view, parser_uuid,
-      ResultPageMember(view, parser_uuid, source_handle, cursor_uuid));
+    const auto cursor_uuid = RawUuid(
+        Identity(NewUuid(platform::UuidKind::object, 36004)));
+    out->page_submission = PackageWithMember(
+        fixture, view, parser_uuid,
+        ResultPageMember(view, parser_uuid, source_handle, cursor_uuid));
+  };
+  const auto dispatch = [&](Attempt& attempt, sb_engine_result_t* result) {
+    bridge::StatementPackageAdmissionReservationHandle reservation;
+    auto admitted = Admit(fixture, session, attempt.view, attempt.receipt,
+                          parser_uuid, attempt.page_submission, &reservation);
+    admitted.result_page_source_result = attempt.source_result;
+    *result = nullptr;
+    return bridge::DispatchStatementContextReceipt(&admitted, result);
+  };
 
   // RESULT_PAGE validates the complete canonical request before observing
   // cancellation.  Its sole prepublication checkpoint is immediately before
   // source-row access or replay publication.
+  cancel_on_probe.store(0, std::memory_order_relaxed);
+  Attempt cancel;
+  prepare(&cancel);
   probes.store(0, std::memory_order_relaxed);
   cancel_on_probe.store(1, std::memory_order_relaxed);
-  bridge::StatementPackageAdmissionReservationHandle cancel_reservation;
-  auto cancel_dispatch = Admit(fixture, session, view, receipt, parser_uuid,
-                               page_submission, &cancel_reservation);
-  cancel_dispatch.result_page_source_result = source_result;
-  result = nullptr;
-  Require(bridge::DispatchStatementContextReceipt(&cancel_dispatch, &result) ==
-                  SB_ENGINE_STATUS_TIMEOUT &&
+  sb_engine_result_t result = nullptr;
+  Require(dispatch(cancel, &result) == SB_ENGINE_STATUS_TIMEOUT &&
               result != nullptr,
           "003600 prepublication cancellation did not stop RESULT_PAGE");
   const auto cancelled_code = DiagnosticCode(result);
@@ -506,19 +523,31 @@ int main() {
           "003600 cancelled RESULT_PAGE published row material");
   (void)sb_engine_result_release(result);
 
-  // Retrying with a fresh one-shot admission token must return the first row.
-  // That result proves the cancelled attempt did not advance the source.
+  // The latch: the cancelled receipt stays cancelled with no new request, and
+  // still publishes no row material.
   probes.store(0, std::memory_order_relaxed);
   cancel_on_probe.store(0, std::memory_order_relaxed);
-  bridge::StatementPackageAdmissionReservationHandle success_reservation;
-  auto success_dispatch = Admit(fixture, session, view, receipt, parser_uuid,
-                                page_submission, &success_reservation);
-  success_dispatch.result_page_source_result = source_result;
-  result = nullptr;
-  Require(bridge::DispatchStatementContextReceipt(&success_dispatch, &result) ==
-                  SB_ENGINE_STATUS_OK &&
+  Require(dispatch(cancel, &result) != SB_ENGINE_STATUS_OK && result != nullptr &&
+              DiagnosticCode(result) == "PROCESS.CANCELLED",
+          "003600 cancelled receipt did not stay cancelled");
+  cancelled_material.clear();
+  Require(bridge::ReadStatementResultPageMaterial(
+              result, &cancelled_material) != SB_ENGINE_STATUS_OK &&
+              cancelled_material.empty(),
+          "003600 latched RESULT_PAGE receipt published row material");
+  (void)sb_engine_result_release(result);
+
+  // A fresh receipt over its own source must return the first row.  (The
+  // cancelled receipt's source can no longer be paged, because that receipt
+  // stays cancelled, so this no longer observes that receipt's source.)
+  cancel_on_probe.store(0, std::memory_order_relaxed);
+  Attempt success;
+  prepare(&success);
+  probes.store(0, std::memory_order_relaxed);
+  cancel_on_probe.store(0, std::memory_order_relaxed);
+  Require(dispatch(success, &result) == SB_ENGINE_STATUS_OK &&
               result != nullptr,
-          "003600 RESULT_PAGE retry did not publish the first page");
+          "003600 RESULT_PAGE fresh receipt did not publish the first page");
   const auto first_result = ResultPayload(result);
   sblr::SblrResultPageResultV1 decoded_page;
   std::string detail;
@@ -529,7 +558,7 @@ int main() {
               decoded_page.returned_row_count == 1 &&
               decoded_page.next_row_offset == 1 &&
               decoded_page.terminal_state == 1,
-          "003600 successful retry did not return the unconsumed source row");
+          "003600 successful dispatch did not return the unconsumed source row");
   std::vector<std::uint8_t> first_material;
   Require(bridge::ReadStatementResultPageMaterial(result, &first_material) ==
                   SB_ENGINE_STATUS_OK &&
@@ -541,13 +570,7 @@ int main() {
   // a newly observed cancellation and return the byte-identical publication.
   probes.store(0, std::memory_order_relaxed);
   cancel_on_probe.store(1, std::memory_order_relaxed);
-  bridge::StatementPackageAdmissionReservationHandle replay_reservation;
-  auto replay_dispatch = Admit(fixture, session, view, receipt, parser_uuid,
-                               page_submission, &replay_reservation);
-  replay_dispatch.result_page_source_result = source_result;
-  result = nullptr;
-  Require(bridge::DispatchStatementContextReceipt(&replay_dispatch, &result) ==
-                  SB_ENGINE_STATUS_OK &&
+  Require(dispatch(success, &result) == SB_ENGINE_STATUS_OK &&
               result != nullptr,
           "003600 postpublication cancellation retracted exact replay");
   const auto replay_result = ResultPayload(result);
@@ -559,11 +582,14 @@ int main() {
               probes.load(std::memory_order_relaxed) == 0,
           "003600 exact replay was not byte-identical and cancellation-stable");
   (void)sb_engine_result_release(result);
-  (void)sb_engine_result_release(source_result);
+  cancel_on_probe.store(0, std::memory_order_relaxed);
 
-  Require(bridge::ReleaseStatementContextReceipt(receipt) ==
-              SB_ENGINE_STATUS_OK,
-          "003600 statement receipt cleanup failed");
+  for (auto* attempt : {&cancel, &success}) {
+    (void)sb_engine_result_release(attempt->source_result);
+    Require(bridge::ReleaseStatementContextReceipt(attempt->receipt) ==
+                SB_ENGINE_STATUS_OK,
+            "003600 statement receipt cleanup failed");
+  }
   api::EngineRollbackTransactionRequest rollback;
   rollback.context = context;
   Require(api::EngineRollbackTransaction(rollback).ok,

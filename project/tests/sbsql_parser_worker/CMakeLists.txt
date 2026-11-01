@@ -6455,6 +6455,7 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
       sbsql_example_database_seed
       PRIVATE
         SB_EXAMPLE_SEED_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/seed-packs/initial-resource-pack"
+        SB_EXAMPLE_METRIC_TEMPLATES="${CMAKE_SOURCE_DIR}/config/templates"
     )
     target_link_libraries(sbsql_example_database_seed PRIVATE sb_engine sb_engine_sblr sb_storage_database sb_core_uuid)
   endif()

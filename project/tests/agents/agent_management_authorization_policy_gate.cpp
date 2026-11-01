@@ -101,6 +101,15 @@ void InitializeFixture(Fixture& fixture) {
   create.allow_minimal_resource_bootstrap = true;
   create.require_resource_seed_pack = false;
   create.creation_unix_epoch_millis = NowMillis();
+  // The agent hook resolves metric definitions from what this database
+  // published at create (METRIC-BOOTSTRAP-CONFIG-DEFAULTS-001), so publish the
+  // installed selection, as production create does.
+  {
+    const auto templates = std::filesystem::path(__FILE__).parent_path().parent_path().parent_path() /
+                           "config/templates";
+    create.metric_policy_defaults_path = (templates / "metric-policy-defaults.conf").string();
+    create.metric_policy_families_path = (templates / "metric-policy-families.conf").string();
+  }
   const auto created = scratchbird::storage::database::CreateDatabaseFile(create);
   Require(created.ok(), "fixture database creation failed: " +
       created.diagnostic.diagnostic_code + ":" + created.diagnostic.message_key);

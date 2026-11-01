@@ -144,35 +144,61 @@ int main() {
     return target != 0 && ordinal == target;
   };
 
-  bridge::StatementContextAcquireRequest acquire;
-  acquire.engine_context = &context;
-  acquire.exact_transaction_uuid = context.transaction_uuid;
-  bridge::StatementContextReceiptHandle receipt;
-  bridge::StatementContextReceiptView view;
+  // Cancellation latches on the receipt (one-way; never cleared), so each
+  // phase gets its own receipt: everything the operation binds lives on it.
+  struct Attempt {
+    bridge::StatementContextReceiptHandle receipt{};
+    bridge::StatementContextReceiptView view{};
+    Submission submission;
+  };
+
+  const auto prepare = [&](Attempt* out) {
+    bridge::StatementContextAcquireRequest acquire;
+    acquire.engine_context = &context;
+    acquire.exact_transaction_uuid = context.transaction_uuid;
+    sb_engine_result_t result = nullptr;
+    Require(bridge::AcquireStatementContextReceipt(
+                session.session, &acquire, &out->receipt, &out->view,
+                &result) == SB_ENGINE_STATUS_OK,
+            "002164 live statement receipt acquisition failed");
+    if (result != nullptr) (void)sb_engine_result_release(result);
+    Require(out->view.security_policy_show_executor_availability_generation != 0,
+            "002164 receipt omitted SHOW POLICY executor evidence");
+
+    out->submission = PackageWithMember(
+        fixture, out->view, parser_uuid,
+        SecurityPolicyShowMember(out->view, parser_uuid,
+                                 RawUuid(Identity(policy_identity))));
+  };
+  const auto dispatch = [&](Attempt& attempt, sb_engine_result_t* result) {
+    bridge::StatementPackageAdmissionReservationHandle reservation;
+    auto admitted = Admit(fixture, session, attempt.view, attempt.receipt,
+                          parser_uuid, attempt.submission, &reservation);
+    *result = nullptr;
+    return bridge::DispatchStatementContextReceipt(&admitted, result);
+  };
+  const auto require_unmutated = [&](const char* failure) {
+    const auto current_security =
+        api::LoadDatabaseLocalSecurityEventStoreV1(
+            context,
+            api::DatabaseLocalSecurityEventVisibilityV1::
+                include_reader_own_uncommitted);
+    Require(current_security.ok &&
+                current_security.state.security_context_generation ==
+                    seeded_security.state.security_context_generation &&
+                current_security.state.events == seeded_security.state.events,
+            failure);
+  };
+
   sb_engine_result_t result = nullptr;
-  Require(bridge::AcquireStatementContextReceipt(
-              session.session, &acquire, &receipt, &view, &result) ==
-              SB_ENGINE_STATUS_OK,
-          "002164 live statement receipt acquisition failed");
-  if (result != nullptr) (void)sb_engine_result_release(result);
-  Require(view.security_policy_show_executor_availability_generation != 0,
-          "002164 receipt omitted SHOW POLICY executor evidence");
-
-  const auto submission = PackageWithMember(
-      fixture, view, parser_uuid,
-      SecurityPolicyShowMember(view, parser_uuid,
-                               RawUuid(Identity(policy_identity))));
-
-  const auto require_cancelled = [&](unsigned target,
+  const auto require_cancelled = [&](Attempt* attempt, unsigned target,
                                      std::string_view expected_key) {
+    cancel_on_probe.store(0, std::memory_order_relaxed);
+    prepare(attempt);
     probes.store(0, std::memory_order_relaxed);
     cancel_on_probe.store(target, std::memory_order_relaxed);
-    bridge::StatementPackageAdmissionReservationHandle reservation;
-    auto dispatch = Admit(fixture, session, view, receipt, parser_uuid,
-                          submission, &reservation);
     result = nullptr;
-    const auto status =
-        bridge::DispatchStatementContextReceipt(&dispatch, &result);
+    const auto status = dispatch(*attempt, &result);
     const auto code =
         result == nullptr ? std::string{} : DiagnosticCode(result);
     const auto key =
@@ -192,47 +218,59 @@ int main() {
             "002164 SHOW POLICY cancellation precedence drifted");
     (void)sb_engine_result_release(result);
     result = nullptr;
-    const auto current_security =
-        api::LoadDatabaseLocalSecurityEventStoreV1(
-            context,
-            api::DatabaseLocalSecurityEventVisibilityV1::
-                include_reader_own_uncommitted);
-    Require(current_security.ok &&
-                current_security.state.security_context_generation ==
-                    seeded_security.state.security_context_generation &&
-                current_security.state.events == seeded_security.state.events,
-            "002164 cancelled SHOW POLICY mutated MGA-visible policy state");
+    require_unmutated(
+        "002164 cancelled SHOW POLICY mutated MGA-visible policy state");
   };
 
+  // Each cancellation checkpoint is exercised on its own receipt.
+  Attempt executor_evidence;
+  Attempt snapshot;
+  Attempt publication;
   require_cancelled(
-      1, "sblr.security_policy_show.cancelled_before_executor_evidence");
-  require_cancelled(2, "security.policy.show.cancelled_before_snapshot");
-  require_cancelled(3, "security.policy.show.cancelled_before_publication");
+      &executor_evidence, 1,
+      "sblr.security_policy_show.cancelled_before_executor_evidence");
 
+  // The latch: the cancelled receipt stays cancelled with no new request, and
+  // still publishes no policy row or MGA-visible change.
   probes.store(0, std::memory_order_relaxed);
   cancel_on_probe.store(0, std::memory_order_relaxed);
-  bridge::StatementPackageAdmissionReservationHandle success_reservation;
-  auto success_dispatch = Admit(fixture, session, view, receipt, parser_uuid,
-                                submission, &success_reservation);
+  Require(dispatch(executor_evidence, &result) != SB_ENGINE_STATUS_OK &&
+              result != nullptr &&
+              DiagnosticCode(result) == "PROCESS.CANCELLED" &&
+              ResultPayload(result).empty(),
+          "002164 cancelled receipt did not stay cancelled");
+  (void)sb_engine_result_release(result);
   result = nullptr;
-  Require(bridge::DispatchStatementContextReceipt(&success_dispatch,
-                                                  &result) ==
-                  SB_ENGINE_STATUS_OK &&
+  require_unmutated(
+      "002164 latched SHOW POLICY mutated MGA-visible policy state");
+
+  require_cancelled(&snapshot, 2,
+                    "security.policy.show.cancelled_before_snapshot");
+  require_cancelled(&publication, 3,
+                    "security.policy.show.cancelled_before_publication");
+
+  // A fresh receipt crosses every checkpoint and publishes the row.
+  Attempt success;
+  cancel_on_probe.store(0, std::memory_order_relaxed);
+  prepare(&success);
+  probes.store(0, std::memory_order_relaxed);
+  cancel_on_probe.store(0, std::memory_order_relaxed);
+  Require(dispatch(success, &result) == SB_ENGINE_STATUS_OK &&
               result != nullptr &&
               probes.load(std::memory_order_relaxed) == 3,
-          "002164 SHOW POLICY retry did not cross every checkpoint");
+          "002164 SHOW POLICY fresh receipt did not cross every checkpoint");
   const auto payload = ResultPayload(result);
   const std::string payload_text(payload.begin(), payload.end());
   namespace packet = scratchbird::wire::public_result;
   const auto row = packet::Find(payload_text, "row[0]");
   Require(row && row->kind == packet::Kind::row,
-          "002164 SHOW POLICY retry omitted the typed policy row");
+          "002164 SHOW POLICY fresh receipt omitted the typed policy row");
   const auto actual_policy = packet::Find(row->value, "policy_uuid");
   const auto expected_policy = Identity(policy_identity);
   Require(actual_policy && actual_policy->kind == packet::Kind::uuid &&
               actual_policy->value == std::string(reinterpret_cast<const char*>(expected_policy.bytes.data()), 16) &&
               packet::Value(row->value, "policy_generation") == std::to_string(created.policy_generation),
-          "002164 SHOW POLICY retry omitted the exact binary policy identity");
+          "002164 SHOW POLICY fresh receipt omitted the exact binary policy identity");
   (void)sb_engine_result_release(result);
 
   auto verify_context = context;
@@ -254,11 +292,12 @@ int main() {
               final_security.state.security_context_generation ==
                   seeded_security.state.security_context_generation &&
               final_security.state.events == seeded_security.state.events,
-          "002164 SHOW POLICY retry mutated MGA-visible policy state");
+          "002164 SHOW POLICY fresh receipt mutated MGA-visible policy state");
 
-  Require(bridge::ReleaseStatementContextReceipt(receipt) ==
-              SB_ENGINE_STATUS_OK,
-          "002164 statement receipt cleanup failed");
+  for (auto* attempt : {&executor_evidence, &snapshot, &publication, &success})
+    Require(bridge::ReleaseStatementContextReceipt(attempt->receipt) ==
+                SB_ENGINE_STATUS_OK,
+            "002164 statement receipt cleanup failed");
   api::EngineRollbackTransactionRequest rollback;
   rollback.context = context;
   rollback.context.query_cancellation_requested = {};

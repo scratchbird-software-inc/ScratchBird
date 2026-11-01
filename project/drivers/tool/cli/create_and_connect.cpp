@@ -65,6 +65,7 @@ struct StartingProcess {
 void PrintCreateAndConnectUsage(const char* program,std::ostream& out){
     out<<"Usage: "<<program<<" create <first-principal> <database-path> --mode=embedded\n"
        <<"  --resource-seed-pack-root DIR --policy-seed-pack-root DIR [--platform-profile FILE]\n"
+       <<"  --metric-policy-defaults FILE --metric-policy-families FILE\n"
        <<"  --start-server PROGRAM --server-config FILE --ipc-path PATH\n"
        <<"  [--password-stdin] [--connect-password-stdin] [--startup-timeout-ms N]\n"
        <<"  [-- [-c SQL | -f FILE] [--quiet] [--verbose]]\n\n"

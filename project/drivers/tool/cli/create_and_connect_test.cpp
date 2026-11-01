@@ -68,6 +68,9 @@ int main(int argc,char** argv)try{
     create.explicit_embedded_mode=true;create.ownership=cli::EmbeddedCreationOwnership::kCurrentProcess;
     create.database_path=(fixture.root/"node.sbdb").string();create.principal_name="architect";
     create.resource_seed_pack_root=SB_BOOTSTRAP_SEED_PACK_ROOT;create.policy_seed_pack_root=SB_BOOTSTRAP_POLICY_PACK_ROOT;
+    {const auto templates=std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path()/"config"/"templates";
+     create.metric_policy_defaults_path=(templates/"metric-policy-defaults.conf").string();
+     create.metric_policy_families_path=(templates/"metric-policy-families.conf").string();}
     create.password_source=cli::FirstPrincipalBootstrapPasswordSource::kProtectedStdin;
     const auto user_before=::geteuid();const auto group_before=::getegid();
     const int group_count=::getgroups(0,nullptr);Check(group_count>=0,"read caller groups");

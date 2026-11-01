@@ -56,53 +56,78 @@ int main() {
     return target != 0 && ordinal == target;
   };
 
-  bridge::StatementContextAcquireRequest acquire;
-  acquire.engine_context = &context;
-  acquire.exact_transaction_uuid = context.transaction_uuid;
-  bridge::StatementContextReceiptHandle receipt;
-  bridge::StatementContextReceiptView view;
-  sb_engine_result_t result = nullptr;
-  Require(bridge::AcquireStatementContextReceipt(
-              session.session, &acquire, &receipt, &view, &result) ==
-              SB_ENGINE_STATUS_OK,
-          "003620 live statement receipt acquisition failed");
-  if (result != nullptr) (void)sb_engine_result_release(result);
-  Require(view.optimizer_stats_read_executor_availability_generation != 0,
-          "003620 receipt omitted optimizer-stats availability");
-
-  bridge::StatementOptimizerStatsReadAuthorityV1 authority;
-  result = nullptr;
-  Require(bridge::BindStatementOptimizerStatsReadAuthorityV1(
-              receipt, 1, &authority, &result) == SB_ENGINE_STATUS_OK &&
-              authority.occurrence == 1 &&
-              !authority.statistics_snapshot_uuid.is_nil() &&
-              !authority.canonical_descriptor_bytes.empty(),
-          "003620 engine optimizer-stats descriptor binding failed");
-  if (result != nullptr) (void)sb_engine_result_release(result);
-
-  sblr::SblrOptimizerStatsReadDescriptorV1 descriptor;
+  // Cancellation latches on the receipt (one-way; never cleared), so each
+  // phase gets its own receipt: everything the operation binds lives on it.
+  struct Attempt {
+    bridge::StatementContextReceiptHandle receipt{};
+    bridge::StatementContextReceiptView view{};
+    sblr::SblrOptimizerStatsReadDescriptorV1 descriptor;
+    Submission submission;
+  };
   std::string detail;
-  Require(sblr::DecodeSblrOptimizerStatsReadDescriptorV1(
-              authority.canonical_descriptor_bytes.data(),
-              authority.canonical_descriptor_bytes.size(), &descriptor,
-              &detail) &&
-              descriptor.executor_availability_generation ==
-                  view.optimizer_stats_read_executor_availability_generation,
-          "003620 engine OSRD did not decode against the receipt cohort");
 
-  const auto submission = PackageWithMember(
-      fixture, view, parser_uuid,
-      OptimizerStatsReadMember(view, parser_uuid,
-                               authority.canonical_descriptor_bytes));
+  const auto prepare = [&](Attempt* out) {
+    bridge::StatementContextAcquireRequest acquire;
+    acquire.engine_context = &context;
+    acquire.exact_transaction_uuid = context.transaction_uuid;
+    sb_engine_result_t result = nullptr;
+    Require(bridge::AcquireStatementContextReceipt(
+                session.session, &acquire, &out->receipt, &out->view, &result) ==
+                SB_ENGINE_STATUS_OK,
+            "003620 live statement receipt acquisition failed");
+    if (result != nullptr) (void)sb_engine_result_release(result);
+    Require(out->view.optimizer_stats_read_executor_availability_generation != 0,
+            "003620 receipt omitted optimizer-stats availability");
 
+    bridge::StatementOptimizerStatsReadAuthorityV1 authority;
+    result = nullptr;
+    Require(bridge::BindStatementOptimizerStatsReadAuthorityV1(
+                out->receipt, 1, &authority, &result) == SB_ENGINE_STATUS_OK &&
+                authority.occurrence == 1 &&
+                !authority.statistics_snapshot_uuid.is_nil() &&
+                !authority.canonical_descriptor_bytes.empty(),
+            "003620 engine optimizer-stats descriptor binding failed");
+    if (result != nullptr) (void)sb_engine_result_release(result);
+
+    Require(sblr::DecodeSblrOptimizerStatsReadDescriptorV1(
+                authority.canonical_descriptor_bytes.data(),
+                authority.canonical_descriptor_bytes.size(), &out->descriptor,
+                &detail) &&
+                out->descriptor.executor_availability_generation ==
+                    out->view.optimizer_stats_read_executor_availability_generation,
+            "003620 engine OSRD did not decode against the receipt cohort");
+
+    out->submission = PackageWithMember(
+        fixture, out->view, parser_uuid,
+        OptimizerStatsReadMember(out->view, parser_uuid,
+                                 authority.canonical_descriptor_bytes));
+  };
+  const auto dispatch = [&](Attempt& attempt, sb_engine_result_t* result) {
+    bridge::StatementPackageAdmissionReservationHandle reservation;
+    auto admitted = Admit(fixture, session, attempt.view, attempt.receipt,
+                          parser_uuid, attempt.submission, &reservation);
+    *result = nullptr;
+    return bridge::DispatchStatementContextReceipt(&admitted, result);
+  };
+  const auto no_terminal_result = [&](Attempt& attempt, const char* failure) {
+    bridge::StatementOptimizerStatsReadAuthorityV1 authority;
+    sb_engine_result_t result = nullptr;
+    Require(bridge::CopyStatementOptimizerStatsReadAuthorityV1(
+                attempt.receipt, 1, &authority, &result) == SB_ENGINE_STATUS_OK &&
+                !authority.terminal_result_published &&
+                authority.canonical_terminal_result_bytes.empty(),
+            failure);
+    if (result != nullptr) (void)sb_engine_result_release(result);
+  };
+
+  // Phase 1: cancellation before the read publishes nothing.
+  cancel_on_probe.store(0, std::memory_order_relaxed);
+  Attempt read;
+  prepare(&read);
   probes.store(0, std::memory_order_relaxed);
   cancel_on_probe.store(1, std::memory_order_relaxed);
-  bridge::StatementPackageAdmissionReservationHandle read_reservation;
-  auto read_dispatch = Admit(fixture, session, view, receipt, parser_uuid,
-                             submission, &read_reservation);
-  result = nullptr;
-  const auto read_status =
-      bridge::DispatchStatementContextReceipt(&read_dispatch, &result);
+  sb_engine_result_t result = nullptr;
+  const auto read_status = dispatch(read, &result);
   const auto read_code =
       result == nullptr ? std::string{} : DiagnosticCode(result);
   const auto read_key =
@@ -123,24 +148,25 @@ int main() {
               read_probes == 1,
           "003620 preread cancellation precedence drifted");
   (void)sb_engine_result_release(result);
-  result = nullptr;
-  authority = {};
-  Require(bridge::CopyStatementOptimizerStatsReadAuthorityV1(
-              receipt, 1, &authority, &result) == SB_ENGINE_STATUS_OK &&
-              !authority.terminal_result_published &&
-              authority.canonical_terminal_result_bytes.empty(),
-          "003620 preread cancellation published a terminal result");
-  if (result != nullptr) (void)sb_engine_result_release(result);
+  no_terminal_result(read, "003620 preread cancellation published a terminal result");
 
+  // The latch: the cancelled receipt stays cancelled with no new request, and
+  // still publishes nothing.
+  probes.store(0, std::memory_order_relaxed);
+  cancel_on_probe.store(0, std::memory_order_relaxed);
+  Require(dispatch(read, &result) != SB_ENGINE_STATUS_OK && result != nullptr &&
+              DiagnosticCode(result) == "PROCESS.CANCELLED",
+          "003620 cancelled receipt did not stay cancelled");
+  (void)sb_engine_result_release(result);
+  no_terminal_result(read, "003620 latched receipt published a terminal result");
+
+  // Phase 2: cancellation before publication publishes nothing.
+  cancel_on_probe.store(0, std::memory_order_relaxed);
+  Attempt publication;
+  prepare(&publication);
   probes.store(0, std::memory_order_relaxed);
   cancel_on_probe.store(2, std::memory_order_relaxed);
-  bridge::StatementPackageAdmissionReservationHandle publication_reservation;
-  auto publication_dispatch = Admit(
-      fixture, session, view, receipt, parser_uuid, submission,
-      &publication_reservation);
-  result = nullptr;
-  Require(bridge::DispatchStatementContextReceipt(
-              &publication_dispatch, &result) == SB_ENGINE_STATUS_TIMEOUT &&
+  Require(dispatch(publication, &result) == SB_ENGINE_STATUS_TIMEOUT &&
               result != nullptr &&
               DiagnosticCode(result) == "PROCESS.CANCELLED" &&
               DiagnosticKey(result) ==
@@ -148,26 +174,19 @@ int main() {
               probes.load(std::memory_order_relaxed) == 2,
           "003620 prepublication cancellation precedence drifted");
   (void)sb_engine_result_release(result);
-  result = nullptr;
-  authority = {};
-  Require(bridge::CopyStatementOptimizerStatsReadAuthorityV1(
-              receipt, 1, &authority, &result) == SB_ENGINE_STATUS_OK &&
-              !authority.terminal_result_published &&
-              authority.canonical_terminal_result_bytes.empty(),
-          "003620 prepublication cancellation published a terminal result");
-  if (result != nullptr) (void)sb_engine_result_release(result);
+  no_terminal_result(publication,
+                     "003620 prepublication cancellation published a terminal result");
 
+  // Phase 3: a fresh receipt publishes the canonical result.
+  cancel_on_probe.store(0, std::memory_order_relaxed);
+  Attempt success;
+  prepare(&success);
   probes.store(0, std::memory_order_relaxed);
   cancel_on_probe.store(0, std::memory_order_relaxed);
-  bridge::StatementPackageAdmissionReservationHandle success_reservation;
-  auto success_dispatch = Admit(fixture, session, view, receipt, parser_uuid,
-                                submission, &success_reservation);
-  result = nullptr;
-  Require(bridge::DispatchStatementContextReceipt(&success_dispatch,
-                                                  &result) ==
-                  SB_ENGINE_STATUS_OK &&
+  Require(dispatch(success, &result) == SB_ENGINE_STATUS_OK &&
               result != nullptr,
-          "003620 retry did not publish optimizer-stats result");
+          "003620 fresh receipt did not publish optimizer-stats result");
+  const auto& descriptor = success.descriptor;
   const auto first_result = ResultPayload(result);
   sblr::SblrOptimizerStatsReadResultV1 decoded_result;
   Require(first_result.size() == sblr::kSblrOptimizerStatsReadResultBytes &&
@@ -191,33 +210,33 @@ int main() {
               decoded_result.flags ==
                   sblr::kSblrOptimizerStatsReadCatalogFlags &&
               probes.load(std::memory_order_relaxed) == 2,
-          "003620 successful retry omitted canonical OSRR authority");
+          "003620 successful dispatch omitted canonical OSRR authority");
   (void)sb_engine_result_release(result);
-  result = nullptr;
-  authority = {};
-  Require(bridge::CopyStatementOptimizerStatsReadAuthorityV1(
-              receipt, 1, &authority, &result) == SB_ENGINE_STATUS_OK &&
-              authority.terminal_result_published &&
-              authority.canonical_terminal_result_bytes == first_result,
-          "003620 terminal result was not retained for exact replay");
-  if (result != nullptr) (void)sb_engine_result_release(result);
+  {
+    bridge::StatementOptimizerStatsReadAuthorityV1 authority;
+    result = nullptr;
+    Require(bridge::CopyStatementOptimizerStatsReadAuthorityV1(
+                success.receipt, 1, &authority, &result) == SB_ENGINE_STATUS_OK &&
+                authority.terminal_result_published &&
+                authority.canonical_terminal_result_bytes == first_result,
+            "003620 terminal result was not retained for exact replay");
+    if (result != nullptr) (void)sb_engine_result_release(result);
+  }
 
+  // Postpublication cancellation does not change the exact replay.
   probes.store(0, std::memory_order_relaxed);
   cancel_on_probe.store(1, std::memory_order_relaxed);
-  bridge::StatementPackageAdmissionReservationHandle replay_reservation;
-  auto replay_dispatch = Admit(fixture, session, view, receipt, parser_uuid,
-                               submission, &replay_reservation);
-  result = nullptr;
-  Require(bridge::DispatchStatementContextReceipt(&replay_dispatch, &result) ==
-                  SB_ENGINE_STATUS_OK &&
+  Require(dispatch(success, &result) == SB_ENGINE_STATUS_OK &&
               result != nullptr && ResultPayload(result) == first_result &&
               probes.load(std::memory_order_relaxed) == 0,
           "003620 replay was not byte-identical and cancellation-stable");
   (void)sb_engine_result_release(result);
+  cancel_on_probe.store(0, std::memory_order_relaxed);
 
-  Require(bridge::ReleaseStatementContextReceipt(receipt) ==
-              SB_ENGINE_STATUS_OK,
-          "003620 statement receipt cleanup failed");
+  for (auto* attempt : {&read, &publication, &success})
+    Require(bridge::ReleaseStatementContextReceipt(attempt->receipt) ==
+                SB_ENGINE_STATUS_OK,
+            "003620 statement receipt cleanup failed");
   api::EngineRollbackTransactionRequest rollback;
   rollback.context = context;
   Require(api::EngineRollbackTransaction(rollback).ok,

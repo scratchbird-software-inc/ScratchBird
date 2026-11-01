@@ -360,85 +360,103 @@ int main() {
     const auto target = cancel_on_probe.load(std::memory_order_relaxed);
     return target != 0 && ordinal == target;
   };
-
-  bridge::StatementContextAcquireRequest acquire;
-  acquire.engine_context = &context;
-  acquire.exact_transaction_uuid = context.transaction_uuid;
-  bridge::StatementContextReceiptHandle receipt;
-  bridge::StatementContextReceiptView view;
-  sb_engine_result_t result = nullptr;
-  Require(bridge::AcquireStatementContextReceipt(
-              session.session, &acquire, &receipt, &view, &result) ==
-              SB_ENGINE_STATUS_OK,
-          "003608 live statement receipt acquisition failed");
-  if (result != nullptr) (void)sb_engine_result_release(result);
-
-  auto literal_binding = literal_fixture::FinalizeLiteral(receipt, view);
-  const auto query_submission = PackageWithMember(
-      fixture, view, parser_uuid,
-      SourceFreeValuesQueryMember(view, parser_uuid, literal_binding, receipt));
-
-  bind::QueryExplainBindRequestV1 public_bind;
-  public_bind.authenticated_receipt_uuid = RawUuid(view.receipt_uuid);
-  public_bind.occurrence = 1;
-  public_bind.verbose = true;
-  public_bind.format = 2;
-  public_bind.canonical_container_bytes.assign(query_submission.container.begin(),
-                                               query_submission.container.end());
-  public_bind.canonical_execution_envelope_bytes.assign(
-      query_submission.ingress.begin(), query_submission.ingress.end());
-  std::vector<std::uint8_t> exact_bind;
   std::string detail;
-  Require(bind::EncodeQueryExplainBindRequestV1(
-              public_bind, &exact_bind, &detail),
-          "003608 canonical private bind request encoding failed");
-  bind::QueryExplainBindRequestV1 decoded_bind;
-  Require(bind::DecodeQueryExplainBindRequestV1(
-              exact_bind.data(), exact_bind.size(), &decoded_bind, &detail),
-          "003608 canonical private bind request decoding failed");
 
-  bridge::StatementQueryExplainBindRequestV1 bind_request;
-  bind_request.authenticated_receipt_uuid = view.receipt_uuid;
-  bind_request.occurrence = decoded_bind.occurrence;
-  bind_request.verbose = decoded_bind.verbose;
-  bind_request.format = decoded_bind.format;
-  bind_request.canonical_container_bytes =
-      decoded_bind.canonical_container_bytes;
-  bind_request.canonical_execution_envelope_bytes =
-      decoded_bind.canonical_execution_envelope_bytes;
-  bind_request.request_evidence_sha256 = decoded_bind.request_evidence_sha256;
-  bind_request.exact_bind_request_bytes = exact_bind;
-  bridge::StatementQueryExplainBindAckV1 bind_ack;
-  result = nullptr;
-  const auto bind_status = bridge::BindStatementQueryExplainAuthorityV1(
-      receipt, &bind_request, &bind_ack, &result);
-  if (bind_status != SB_ENGINE_STATUS_OK && result != nullptr) {
-    std::cerr << DiagnosticCode(result) << ':' << DiagnosticKey(result) << ':'
-              << bind_ack.failure_detail << '\n';
-  }
-  Require(bind_status == SB_ENGINE_STATUS_OK,
-          "003608 engine query-explain binding failed");
-  if (result != nullptr) (void)sb_engine_result_release(result);
+  // Cancellation latches on the receipt (one-way; never cleared), so each
+  // phase gets its own receipt: everything the operation binds lives on it.
+  struct Attempt {
+    bridge::StatementContextReceiptHandle receipt{};
+    bridge::StatementContextReceiptView view{};
+    literal_fixture::Binding literal_binding;
+    std::vector<std::uint8_t> exact_bind;
+    Submission explain_submission;
+  };
 
-  bridge::StatementQueryExplainAuthorityV1 authority;
-  Require(bridge::CopyStatementQueryExplainAuthorityV1(
-              receipt, 1, &authority, &result) == SB_ENGINE_STATUS_OK &&
-              !authority.canonical_descriptor_bytes.empty(),
-          "003608 engine query-explain descriptor was not published");
-  if (result != nullptr) (void)sb_engine_result_release(result);
-  const auto explain_submission = PackageWithMember(
-      fixture, view, parser_uuid,
-      QueryExplainMember(view, parser_uuid,
-                         authority.canonical_descriptor_bytes));
+  const auto prepare = [&](Attempt* out) {
+    bridge::StatementContextAcquireRequest acquire;
+    acquire.engine_context = &context;
+    acquire.exact_transaction_uuid = context.transaction_uuid;
+    sb_engine_result_t result = nullptr;
+    Require(bridge::AcquireStatementContextReceipt(
+                session.session, &acquire, &out->receipt, &out->view, &result) ==
+                SB_ENGINE_STATUS_OK,
+            "003608 live statement receipt acquisition failed");
+    if (result != nullptr) (void)sb_engine_result_release(result);
 
+    out->literal_binding = literal_fixture::FinalizeLiteral(out->receipt, out->view);
+    const auto query_submission = PackageWithMember(
+        fixture, out->view, parser_uuid,
+        SourceFreeValuesQueryMember(out->view, parser_uuid, out->literal_binding,
+                                    out->receipt));
+
+    bind::QueryExplainBindRequestV1 public_bind;
+    public_bind.authenticated_receipt_uuid = RawUuid(out->view.receipt_uuid);
+    public_bind.occurrence = 1;
+    public_bind.verbose = true;
+    public_bind.format = 2;
+    public_bind.canonical_container_bytes.assign(query_submission.container.begin(),
+                                                 query_submission.container.end());
+    public_bind.canonical_execution_envelope_bytes.assign(
+        query_submission.ingress.begin(), query_submission.ingress.end());
+    Require(bind::EncodeQueryExplainBindRequestV1(
+                public_bind, &out->exact_bind, &detail),
+            "003608 canonical private bind request encoding failed");
+    bind::QueryExplainBindRequestV1 decoded_bind;
+    Require(bind::DecodeQueryExplainBindRequestV1(
+                out->exact_bind.data(), out->exact_bind.size(), &decoded_bind, &detail),
+            "003608 canonical private bind request decoding failed");
+
+    bridge::StatementQueryExplainBindRequestV1 bind_request;
+    bind_request.authenticated_receipt_uuid = out->view.receipt_uuid;
+    bind_request.occurrence = decoded_bind.occurrence;
+    bind_request.verbose = decoded_bind.verbose;
+    bind_request.format = decoded_bind.format;
+    bind_request.canonical_container_bytes =
+        decoded_bind.canonical_container_bytes;
+    bind_request.canonical_execution_envelope_bytes =
+        decoded_bind.canonical_execution_envelope_bytes;
+    bind_request.request_evidence_sha256 = decoded_bind.request_evidence_sha256;
+    bind_request.exact_bind_request_bytes = out->exact_bind;
+    bridge::StatementQueryExplainBindAckV1 bind_ack;
+    result = nullptr;
+    const auto bind_status = bridge::BindStatementQueryExplainAuthorityV1(
+        out->receipt, &bind_request, &bind_ack, &result);
+    if (bind_status != SB_ENGINE_STATUS_OK && result != nullptr) {
+      std::cerr << DiagnosticCode(result) << ':' << DiagnosticKey(result) << ':'
+                << bind_ack.failure_detail << '\n';
+    }
+    Require(bind_status == SB_ENGINE_STATUS_OK,
+            "003608 engine query-explain binding failed");
+    if (result != nullptr) (void)sb_engine_result_release(result);
+
+    bridge::StatementQueryExplainAuthorityV1 authority;
+    result = nullptr;
+    Require(bridge::CopyStatementQueryExplainAuthorityV1(
+                out->receipt, 1, &authority, &result) == SB_ENGINE_STATUS_OK &&
+                !authority.canonical_descriptor_bytes.empty(),
+            "003608 engine query-explain descriptor was not published");
+    if (result != nullptr) (void)sb_engine_result_release(result);
+    out->explain_submission = PackageWithMember(
+        fixture, out->view, parser_uuid,
+        QueryExplainMember(out->view, parser_uuid,
+                           authority.canonical_descriptor_bytes));
+  };
+  const auto dispatch = [&](Attempt& attempt, sb_engine_result_t* result) {
+    bridge::StatementPackageAdmissionReservationHandle reservation;
+    auto admitted = Admit(fixture, session, attempt.view, attempt.receipt,
+                          parser_uuid, attempt.explain_submission, &reservation);
+    *result = nullptr;
+    return bridge::DispatchStatementContextReceipt(&admitted, result);
+  };
+
+  // Phase 1: cancellation before planning publishes no plan material.
+  cancel_on_probe.store(0, std::memory_order_relaxed);
+  Attempt planning;
+  prepare(&planning);
   probes.store(0, std::memory_order_relaxed);
   cancel_on_probe.store(1, std::memory_order_relaxed);
-  bridge::StatementPackageAdmissionReservationHandle cancel_reservation;
-  auto cancel_dispatch = Admit(fixture, session, view, receipt, parser_uuid,
-                               explain_submission, &cancel_reservation);
-  result = nullptr;
-  Require(bridge::DispatchStatementContextReceipt(&cancel_dispatch, &result) ==
-                  SB_ENGINE_STATUS_TIMEOUT &&
+  sb_engine_result_t result = nullptr;
+  Require(dispatch(planning, &result) == SB_ENGINE_STATUS_TIMEOUT &&
               result != nullptr,
           "003608 prepublication cancellation did not stop QUERY_EXPLAIN");
   const auto cancellation_code = DiagnosticCode(result);
@@ -463,15 +481,28 @@ int main() {
           "003608 cancelled QUERY_EXPLAIN published plan material");
   (void)sb_engine_result_release(result);
 
+  // The latch: the cancelled receipt stays cancelled with no new request, and
+  // still publishes no plan material.
+  probes.store(0, std::memory_order_relaxed);
+  cancel_on_probe.store(0, std::memory_order_relaxed);
+  Require(dispatch(planning, &result) != SB_ENGINE_STATUS_OK &&
+              result != nullptr &&
+              DiagnosticCode(result) == "PROCESS.CANCELLED",
+          "003608 cancelled receipt did not stay cancelled");
+  cancelled_material.clear();
+  Require(bridge::ReadStatementQueryExplainMaterial(
+              result, &cancelled_material) != SB_ENGINE_STATUS_OK &&
+              cancelled_material.empty(),
+          "003608 latched receipt published plan material");
+  (void)sb_engine_result_release(result);
+
+  // Phase 2: cancellation before publication, on its own receipt.
+  cancel_on_probe.store(0, std::memory_order_relaxed);
+  Attempt publication;
+  prepare(&publication);
   probes.store(0, std::memory_order_relaxed);
   cancel_on_probe.store(4, std::memory_order_relaxed);
-  bridge::StatementPackageAdmissionReservationHandle publication_reservation;
-  auto publication_dispatch = Admit(
-      fixture, session, view, receipt, parser_uuid, explain_submission,
-      &publication_reservation);
-  result = nullptr;
-  const auto publication_status =
-      bridge::DispatchStatementContextReceipt(&publication_dispatch, &result);
+  const auto publication_status = dispatch(publication, &result);
   if (publication_status != SB_ENGINE_STATUS_TIMEOUT || result == nullptr) {
     std::cerr << "003608 prepublication observation: status="
               << sb_engine_status_name(publication_status)
@@ -497,38 +528,33 @@ int main() {
           "003608 prepublication cancellation published plan material");
   (void)sb_engine_result_release(result);
 
-  probes.store(0, std::memory_order_relaxed);
+  // Phase 3: a fresh receipt publishes the plan.
   cancel_on_probe.store(0, std::memory_order_relaxed);
-  bridge::StatementPackageAdmissionReservationHandle success_reservation;
-  auto success_dispatch = Admit(fixture, session, view, receipt, parser_uuid,
-                                explain_submission, &success_reservation);
-  result = nullptr;
-  Require(bridge::DispatchStatementContextReceipt(&success_dispatch, &result) ==
-                  SB_ENGINE_STATUS_OK &&
+  Attempt success;
+  prepare(&success);
+  probes.store(0, std::memory_order_relaxed);
+  Require(dispatch(success, &result) == SB_ENGINE_STATUS_OK &&
               result != nullptr,
-          "003608 QUERY_EXPLAIN retry did not publish a plan");
+          "003608 QUERY_EXPLAIN fresh receipt did not publish a plan");
   const auto first_result = ResultPayload(result);
   sblr::SblrQueryExplainResultV1 decoded_result;
   Require(first_result.size() == 256 &&
               sblr::DecodeSblrQueryExplainResultV1(
                   first_result.data(), first_result.size(), &decoded_result,
                   &detail),
-          "003608 successful retry omitted canonical SBXR");
+          "003608 successful dispatch omitted canonical SBXR");
   std::vector<std::uint8_t> first_material;
   Require(bridge::ReadStatementQueryExplainMaterial(
               result, &first_material) == SB_ENGINE_STATUS_OK &&
               !first_material.empty(),
-          "003608 successful retry omitted redacted plan material");
+          "003608 successful dispatch omitted redacted plan material");
   (void)sb_engine_result_release(result);
 
+  // Postpublication cancellation does not change the exact replay on the
+  // published receipt.
   probes.store(0, std::memory_order_relaxed);
   cancel_on_probe.store(1, std::memory_order_relaxed);
-  bridge::StatementPackageAdmissionReservationHandle replay_reservation;
-  auto replay_dispatch = Admit(fixture, session, view, receipt, parser_uuid,
-                               explain_submission, &replay_reservation);
-  result = nullptr;
-  Require(bridge::DispatchStatementContextReceipt(&replay_dispatch, &result) ==
-                  SB_ENGINE_STATUS_OK &&
+  Require(dispatch(success, &result) == SB_ENGINE_STATUS_OK &&
               result != nullptr,
           "003608 postpublication cancellation retracted exact replay");
   const auto replay_result = ResultPayload(result);
@@ -540,10 +566,12 @@ int main() {
               probes.load(std::memory_order_relaxed) == 0,
           "003608 exact replay was not byte-identical and cancellation-stable");
   (void)sb_engine_result_release(result);
+  cancel_on_probe.store(0, std::memory_order_relaxed);
 
-  Require(bridge::ReleaseStatementContextReceipt(receipt) ==
-              SB_ENGINE_STATUS_OK,
-          "003608 statement receipt cleanup failed");
+  for (auto* attempt : {&planning, &publication, &success})
+    Require(bridge::ReleaseStatementContextReceipt(attempt->receipt) ==
+                SB_ENGINE_STATUS_OK,
+            "003608 statement receipt cleanup failed");
   api::EngineRollbackTransactionRequest rollback;
   rollback.context = context;
   Require(api::EngineRollbackTransaction(rollback).ok,
