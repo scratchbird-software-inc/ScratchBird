@@ -276,6 +276,11 @@ const char* ResourceSeedFamilyName(ResourceSeedFamily family);
 const char* ResourceSeedArtifactStatusName(ResourceSeedArtifactStatus status);
 ResourceSeedCatalogImageResult LoadResourceSeedPack(const ResourceSeedLoadConfig& config);
 bool ValidateResourceSeedArtifactContent(const ResourceSeedArtifact& artifact);
+// Heap bytes an image retains (strings, vectors, artifact contents and the
+// compiled Unicode tables, each shared object counted once), for accounting.
+// An estimate of payload, not of allocator overhead.
+std::size_t ResourceSeedCatalogImageRetainedBytes(const ResourceSeedCatalogImage& image) noexcept;
+
 ResourceSeedCatalogImageResult ValidateResourceSeedCatalogImage(const ResourceSeedCatalogImage& image,
                                                                bool allow_minimal_bootstrap = false);
 const ResourceSeedFamilyVersion* FindResourceSeedFamilyVersion(const ResourceSeedCatalogImage& image,

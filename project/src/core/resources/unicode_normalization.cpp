@@ -38,6 +38,11 @@ template<class String> void Append(std::uint32_t scalar, String& out) {
 }
 } // namespace
 
+std::size_t UnicodeNormalizationData::RetainedBytes() const noexcept {
+  return sizeof(*this) + entries_.capacity() * sizeof(Entry) +
+         assigned_ranges_.capacity() * sizeof(assigned_ranges_[0]);
+}
+
 UnicodeNormalizationStatus UnicodeNormalizationData::Load17(
     std::string_view data, std::shared_ptr<const UnicodeNormalizationData>* output) noexcept {
   if (!output) return Status::invalid_argument;

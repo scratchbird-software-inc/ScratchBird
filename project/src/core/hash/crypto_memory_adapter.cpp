@@ -29,7 +29,10 @@ void Increment(u64& value){if(value!=std::numeric_limits<u64>::max())++value;}
 bool Same(const CryptoMemoryBinding& a,const CryptoMemoryBinding& b){
   return a==b;
 }
-void Wipe(void* p,std::size_t n){volatile auto* bytes=static_cast<volatile unsigned char*>(p);while(n--)*bytes++=0;}
+// OPENSSL_cleanse is OpenSSL's zeroing that the compiler may not elide; it
+// does not allocate, so it is safe inside these provider callbacks. A byte
+// loop through volatile cost about a quarter of every hooked PBKDF2 round.
+void Wipe(void* p,std::size_t n){if(n)OPENSSL_cleanse(p,n);}
 struct BusyRelease{std::atomic_flag& flag;~BusyRelease(){flag.clear(std::memory_order_release);}};
 }
 struct alignas(std::max_align_t) CryptoMemoryPool::Block {

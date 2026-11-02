@@ -27,6 +27,9 @@ class UnicodeCollationData final {
       UnicodeCollationStrength strength, UnicodeCollationLimits limits, std::pmr::string* output) const noexcept;
   UnicodeNormalizationStatus Compare(std::string_view left, std::string_view right,
       UnicodeCollationStrength strength, UnicodeCollationLimits limits, int* output) const noexcept;
+  // Bytes this table holds itself, for memory accounting; excludes the shared
+  // normalization table, which reports its own.
+  std::size_t RetainedBytes() const noexcept;
 
  private:
   struct Element { std::array<std::uint16_t, 3> weights; };

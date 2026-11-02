@@ -1421,6 +1421,57 @@ bool ValidateResourceSeedArtifactContent(const ResourceSeedArtifact& artifact) {
   return Fnv1a64Hex(*artifact.content) == artifact.content_hash;
 }
 
+std::size_t ResourceSeedCatalogImageRetainedBytes(const ResourceSeedCatalogImage& image) noexcept {
+  std::size_t total = sizeof(image);
+  const auto text = [&](const std::string& value) { total += value.capacity(); };
+  const auto texts = [&](const std::vector<std::string>& values) {
+    total += values.capacity() * sizeof(std::string);
+    for (const auto& value : values) text(value);
+  };
+  for (const auto* value : {&image.seed_pack_name, &image.seed_pack_version, &image.seed_pack_root,
+                            &image.manifest_path, &image.content_hash, &image.i18n_version,
+                            &image.timezone_version, &image.charset_version, &image.collation_version,
+                            &image.locale_version, &image.charset_content_hash,
+                            &image.collation_content_hash, &image.locale_content_hash,
+                            &image.timezone_content_hash})
+    text(*value);
+  total += image.family_versions.capacity() * sizeof(ResourceSeedFamilyVersion);
+  for (const auto& entry : image.family_versions) { text(entry.version); text(entry.content_hash); }
+  total += image.index_dependencies.capacity() * sizeof(ResourceSeedIndexDependencyEvidence);
+  for (const auto& entry : image.index_dependencies) {
+    text(entry.dependent_artifact_name); text(entry.dependent_artifact_class);
+    text(entry.required_version); text(entry.required_content_hash); text(entry.compatibility_evidence);
+  }
+  std::vector<const std::string*> contents;
+  total += image.artifacts.capacity() * sizeof(ResourceSeedArtifact);
+  for (const auto& entry : image.artifacts) {
+    text(entry.source_pattern); text(entry.canonical_path); text(entry.required_catalog_rows);
+    text(entry.create_time_action); text(entry.content_hash);
+    if (entry.content && std::find(contents.begin(), contents.end(), entry.content.get()) == contents.end()) {
+      contents.push_back(entry.content.get());
+      total += sizeof(std::string) + entry.content->capacity();
+    }
+  }
+  total += image.aliases.capacity() * sizeof(ResourceSeedAlias);
+  for (const auto& entry : image.aliases) { text(entry.alias); text(entry.canonical_name); text(entry.source_path); }
+  total += image.charsets.capacity() * sizeof(ResourceSeedCharsetDescriptor);
+  for (const auto& entry : image.charsets) {
+    text(entry.canonical_name); text(entry.description); texts(entry.aliases); text(entry.encoding_type);
+    text(entry.iana_name); texts(entry.supported_by); text(entry.default_collation_name);
+    text(entry.source_path); text(entry.family_version);
+  }
+  total += image.collations.capacity() * sizeof(ResourceSeedCollationDescriptor);
+  for (const auto& entry : image.collations) {
+    text(entry.canonical_name); text(entry.charset_name); text(entry.default_authority); text(entry.language);
+    text(entry.description); texts(entry.supported_by); text(entry.source_path); text(entry.family_version);
+  }
+  total += image.timezones.capacity() * sizeof(ResourceSeedTimezoneDescriptor);
+  for (const auto& entry : image.timezones) { text(entry.canonical_name); text(entry.source_path); text(entry.family_version); }
+  if (image.unicode_normalization) total += image.unicode_normalization->RetainedBytes();
+  if (image.unicode_collation) total += image.unicode_collation->RetainedBytes();
+  return total;
+}
+
 ResourceSeedCatalogImageResult ValidateResourceSeedCatalogImage(const ResourceSeedCatalogImage& image,
                                                                bool allow_minimal_bootstrap) {
   std::shared_ptr<const UnicodeNormalizationData> normalization;

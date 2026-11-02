@@ -6509,6 +6509,10 @@ struct CatalogChainImage {
   std::shared_ptr<scratchbird::core::memory::MemoryManager> manager;
   u32 page_size = 0;
   bool complete = false;
+  // The identities every page of this walk was checked against: the caller's
+  // expectations, or page 1's own when the caller passed none.
+  scratchbird::core::platform::Uuid database_uuid{};
+  scratchbird::core::platform::Uuid filespace_uuid{};
   std::vector<u64> pages;
   std::vector<scratchbird::core::memory::ScopedAllocation> chunks;
 
@@ -6535,7 +6539,10 @@ struct CatalogChainImage {
   }
 
   // Shrinks the last chunk to the pages it holds, so the charge is exact.
-  void Finish() {
+  void Finish(const scratchbird::core::platform::Uuid& walked_database,
+              const scratchbird::core::platform::Uuid& walked_filespace) {
+    database_uuid = walked_database;
+    filespace_uuid = walked_filespace;
     if (!complete) return;
     const std::size_t used = pages.size() % kChunkPages;
     if (pages.empty()) return Abandon();
@@ -6556,6 +6563,19 @@ struct CatalogChainImage {
     std::size_t total = 0;
     for (const auto& chunk : chunks) total += chunk.size();
     return total;
+  }
+
+  // Same walk: same pages, same checked identities, byte-identical images.
+  bool SameAs(const CatalogChainImage& other) const {
+    if (!complete || !other.complete || page_size != other.page_size ||
+        database_uuid != other.database_uuid || filespace_uuid != other.filespace_uuid ||
+        pages != other.pages || chunks.size() != other.chunks.size())
+      return false;
+    for (std::size_t i = 0; i < chunks.size(); ++i)
+      if (chunks[i].size() != other.chunks[i].size() ||
+          std::memcmp(chunks[i].data(), other.chunks[i].data(), chunks[i].size()) != 0)
+        return false;
+    return true;
   }
 
  private:
@@ -6655,7 +6675,7 @@ DatabaseLifecycleResult ReadCatalogPageRows(FileDevice* device,
     page_number = parsed.body.next_page_number;
   }
 
-  if (image) image->Finish();
+  if (image) image->Finish(expected_database, expected_filespace);
   DatabaseLifecycleResult result;
   result.status = DatabaseLifecycleOkStatus();
   rows->swap(staged);
@@ -6703,64 +6723,122 @@ bool CatalogChainImageMatches(FileDevice* device, const CatalogChainImage& image
   return true;
 }
 
-// SEARCH_KEY: BOOTSTRAP_SECURITY_RESULT_MEMO
-// The bootstrap security read runs on every statement-context acquisition,
-// and nearly all of its cost is walking and checksumming the whole catalog
-// chain. A successful result is a pure function of the chain's page bytes,
-// the page size, the database UUID and the committed bootstrap transaction's
-// origin, so it is reused only when all four are identical: the chain is
-// re-read and compared byte for byte on every call, never by digest, and
-// every other check (header, health, locator, core pages, startup page,
-// inventory, tx1 commitment) still runs first. Only successes are kept.
-// Runtime security state lives in the security event store and is not here.
-// The remembered page images are the walk's own chunks, already admitted
-// and charged by the process memory manager, and each entry keeps that
-// manager alive until the entry is dropped. An entry made under a different
-// manager is never used; an image whose capture was refused is not kept.
-class BootstrapSecurityResultMemo {
+// SEARCH_KEY: BOOTSTRAP_SECURITY_RESULT_MEMO / CATALOG_CHAIN_MEMO
+// Three readers walk and checksum the whole catalog chain on hot paths: the
+// bootstrap security read and the datatype catalog identity read on every
+// statement-context acquisition, and the read-only open behind every resource
+// catalog lookup. What each derives from the chain is a pure function of the
+// chain's page bytes plus that reader's own key (page size, identities, the
+// committed bootstrap transaction's origin, a migration plan), so a result is
+// reused only when all of them are identical: the chain is re-read through
+// the reader's own opened device and compared byte for byte on every call,
+// never by digest or version, and every check that does not come from the
+// chain (header, health, locator, core and startup pages, inventory and
+// commitment) still runs fresh. Only successes are kept.
+// One page image per path is shared by all three, each with its own result.
+// The images are the walks' own chunks, admitted and charged by the process
+// memory manager, and each entry keeps that manager alive. The open's derived
+// result (the admitted resource image with its compiled Unicode tables) is
+// charged as a capacity reservation sized by its retained bytes; the small
+// security and identity results are not charged. Runtime security state lives
+// in the security event store and is not here.
+struct SecurityChainResult {
+  scratchbird::core::platform::Uuid database_uuid{};
+  scratchbird::core::platform::Uuid origin_transaction_uuid{};
+  DatabaseBootstrapSecurityCatalogReadResult result;
+};
+
+// The one live version-1 database record, found after every typed row decoded.
+struct IdentityChainResult {
+  scratchbird::core::catalog::CatalogDatabaseRecord record;
+};
+
+struct OpenChainResult {
+  // Declared first so it is destroyed last, after the reservation below.
+  std::shared_ptr<scratchbird::core::memory::MemoryManager> manager;
+  std::unique_ptr<scratchbird::core::memory::MemoryCapacityReservation> charge;
+  std::size_t charged_bytes = 0;
+  scratchbird::core::platform::Uuid database_uuid{};
+  scratchbird::core::platform::Uuid filespace_uuid{};
+  scratchbird::core::platform::Uuid origin_transaction_uuid{};
+  std::string migration_plan_id;
+  bool seed_catalog_present = false;
+  ResourceSeedCatalogImage resource_seed_catalog;
+  PolicySeedPackCatalogImage policy_seed_catalog;
+  DatabaseCatalogSummaryResult catalog_summary;
+};
+
+class CatalogChainMemo {
  public:
   struct Entry {
-    u32 page_size = 0;
-    scratchbird::core::platform::Uuid database_uuid{};
-    scratchbird::core::platform::Uuid origin_transaction_uuid{};
     CatalogChainImage chain;
-    DatabaseBootstrapSecurityCatalogReadResult result;
+    mutable std::mutex results_mutex;
+    mutable std::shared_ptr<const SecurityChainResult> security;
+    mutable std::shared_ptr<const IdentityChainResult> identity;
+    mutable std::shared_ptr<const OpenChainResult> open;
 
-    bool ChainMatches(FileDevice* device) const {
-      return CatalogChainImageMatches(device, chain);
+    template <class T>
+    std::shared_ptr<const T> Get(std::shared_ptr<const T> Entry::*slot) const {
+      std::lock_guard lock(results_mutex);
+      return this->*slot;
     }
   };
 
-  std::shared_ptr<const Entry> Find(const std::string& path) const {
+  // The entry for path, only if its walk was checked against the same
+  // identities the caller requires (nil: none required) and every page is
+  // still byte-identical on the caller's device. A changed chain is dropped.
+  std::shared_ptr<const Entry> FindCurrent(const std::string& path,
+                                           FileDevice* device,
+                                           u32 page_size,
+                                           const scratchbird::core::platform::Uuid& expected_database,
+                                           const scratchbird::core::platform::Uuid& expected_filespace) {
     const auto manager = scratchbird::core::memory::RetainDefaultMemoryManagerV1();
-    if (!manager) return nullptr;
-    std::shared_lock lock(mutex_);
-    const auto found = entries_.find(path);
-    if (found == entries_.end() || found->second.entry->chain.manager != manager)
+    if (!manager || path.empty()) return nullptr;
+    std::shared_ptr<const Entry> entry;
+    {
+      std::shared_lock lock(mutex_);
+      const auto found = entries_.find(path);
+      if (found == entries_.end() || found->second.entry->chain.manager != manager)
+        return nullptr;
+      entry = found->second.entry;
+    }
+    const auto& chain = entry->chain;
+    if (chain.page_size != page_size ||
+        (!expected_database.is_nil() && chain.database_uuid != expected_database) ||
+        (!expected_filespace.is_nil() && chain.filespace_uuid != expected_filespace))
       return nullptr;
-    return found->second.entry;
+    if (!CatalogChainImageMatches(device, chain)) {
+      // Stale: release its memory now rather than when a later read succeeds.
+      Forget(path, entry.get());
+      return nullptr;
+    }
+    return entry;
   }
 
+  // Keeps value for the chain just walked. An identical existing image takes
+  // the value beside its other results; otherwise the new image replaces it.
+  template <class T>
   void Remember(const std::string& path,
-                u32 page_size,
-                const scratchbird::core::platform::Uuid& database_uuid,
-                const scratchbird::core::platform::Uuid& origin_transaction_uuid,
                 CatalogChainImage chain,
-                const DatabaseBootstrapSecurityCatalogReadResult& result) {
+                std::shared_ptr<const T> Entry::*slot,
+                std::shared_ptr<const T> value) {
     const std::size_t cost = chain.ChargedBytes();
-    if (!chain.complete || chain.pages.empty() || chain.page_size != page_size ||
-        cost > kBudgetBytes) {
-      Forget(path);
+    if (path.empty() || !chain.complete || chain.pages.empty() || cost > kBudgetBytes ||
+        chain.ChargedBytes() != chain.pages.size() * chain.page_size)
+      return;
+    std::unique_lock lock(mutex_);
+    if (const auto found = entries_.find(path);
+        found != entries_.end() && found->second.entry->chain.SameAs(chain)) {
+      // Pointer-to-member ignores mutable; this memo owns the entry and the
+      // result slots are guarded by results_mutex.
+      std::lock_guard results(found->second.entry->results_mutex);
+      const_cast<Entry*>(found->second.entry.get())->*slot = std::move(value);
       return;
     }
     auto entry = std::make_shared<Entry>();
-    entry->page_size = page_size;
-    entry->database_uuid = database_uuid;
-    entry->origin_transaction_uuid = origin_transaction_uuid;
     entry->chain = std::move(chain);
-    entry->result = result;
+    entry.get()->*slot = std::move(value);
     const auto& manager = entry->chain.manager;
-    std::unique_lock lock(mutex_);
     DropUnlocked(path);
     // Entries bound to a replaced manager can never be used again.
     for (auto it = entries_.begin(); it != entries_.end();) {
@@ -6785,12 +6863,16 @@ class BootstrapSecurityResultMemo {
     entries_.emplace(path, Slot{++sequence_, cost, std::move(entry)});
   }
 
-  void Forget(const std::string& path) {
+ private:
+  void Forget(const std::string& path, const Entry* stale) {
     std::unique_lock lock(mutex_);
-    DropUnlocked(path);
+    if (const auto found = entries_.find(path);
+        found != entries_.end() && found->second.entry.get() == stale) {
+      bytes_ -= found->second.cost;
+      entries_.erase(found);
+    }
   }
 
- private:
   void DropUnlocked(const std::string& path) {
     if (const auto found = entries_.find(path); found != entries_.end()) {
       bytes_ -= found->second.cost;
@@ -6811,8 +6893,8 @@ class BootstrapSecurityResultMemo {
   u64 sequence_ = 0;
 };
 
-BootstrapSecurityResultMemo& SharedBootstrapSecurityResultMemo() {
-  static BootstrapSecurityResultMemo memo;
+CatalogChainMemo& SharedCatalogChainMemo() {
+  static CatalogChainMemo memo;
   return memo;
 }
 
@@ -9212,6 +9294,12 @@ DatabaseCatalogIdentityReadResult ReadDatabaseCatalogIdentity(
   // FileDevice retains the path serialization/ownership guard until Close.
   // Read the immutable bootstrap record and its owning committed inventory
   // through that one device, not a path-based cache or an unowned header hint.
+  // SB_CLARIFY_CATALOG_CHAIN_MEMO (owner-approved 2026-11-02): the record may
+  // come from CATALOG_CHAIN_MEMO, but only after every catalog chain page has
+  // been re-read through this same device and found byte-identical to the
+  // remembered walk, which was checked against these same database and
+  // filespace identities. The header, pages, startup state, inventory and
+  // commitment are still read fresh here; no header hint is trusted.
   FileDevice device;
   const auto opened = device.Open(path, FileOpenMode::open_existing_read_only);
   if (!opened.ok()) return propagate(opened.status, opened.diagnostic);
@@ -9245,11 +9333,32 @@ DatabaseCatalogIdentityReadResult ReadDatabaseCatalogIdentity(
       &device, header.header.page_size, policy, startup.state.database_uuid,
       startup.state.first_filespace_uuid);
   if (!identities.ok()) return propagate(identities.status, identities.diagnostic);
-  std::vector<CatalogPageRow> rows;
-  const auto read_rows = ReadCatalogPageRows(&device, header.header.page_size, &rows,
+  // The candidate check is the same for a remembered record and a fresh one.
+  const auto owner_mismatch = [&](const scratchbird::core::catalog::CatalogDatabaseRecord& candidate) {
+    return candidate.database_uuid.value != expected_database_uuid ||
+           candidate.database_header_format_major != header.header.format_major ||
+           candidate.database_header_format_minor != header.header.format_minor ||
+           candidate.page_size != header.header.page_size ||
+           candidate.creation_unix_epoch_millis != header.header.creation_unix_epoch_millis ||
+           candidate.feature_flags != header.header.feature_flags ||
+           candidate.compatibility_flags != header.header.compatibility_flags ||
+           candidate.catalog_manifest_format_version != kDatabaseCatalogManifestFormatCurrent ||
+           candidate.creator_transaction_number != kBootstrapCatalogTransactionId;
+  };
+  auto& memo = SharedCatalogChainMemo();
+  const auto current = memo.FindCurrent(path, &device, header.header.page_size,
       expected_database_uuid, startup.state.first_filespace_uuid.value);
-  if (!read_rows.ok()) return propagate(read_rows.status, read_rows.diagnostic);
+  const auto remembered = current ? current->Get(&CatalogChainMemo::Entry::identity) : nullptr;
+  std::vector<CatalogPageRow> rows;
+  CatalogChainImage chain;
   std::optional<scratchbird::core::catalog::CatalogDatabaseRecord> record;
+  if (remembered) {
+    if (owner_mismatch(remembered->record)) return refuse("database_catalog_owner_mismatch");
+    record = remembered->record;
+  } else {
+  const auto read_rows = ReadCatalogPageRows(&device, header.header.page_size, &rows,
+      expected_database_uuid, startup.state.first_filespace_uuid.value, &chain);
+  if (!read_rows.ok()) return propagate(read_rows.status, read_rows.diagnostic);
   for (const auto& row : rows) {
     if (row.kind != CatalogPageRowKind::typed_catalog_record) continue;
     const auto typed = scratchbird::core::catalog::DecodeCatalogTypedRecordView(row.kind, row.payload);
@@ -9262,19 +9371,11 @@ DatabaseCatalogIdentityReadResult ReadDatabaseCatalogIdentity(
         typed.record->payload);
     if (!decoded.ok()) return refuse("database_catalog_payload_invalid");
     const auto& candidate = *decoded.record;
-    if (candidate.database_uuid.value != expected_database_uuid ||
-        candidate.database_header_format_major != header.header.format_major ||
-        candidate.database_header_format_minor != header.header.format_minor ||
-        candidate.page_size != header.header.page_size ||
-        candidate.creation_unix_epoch_millis != header.header.creation_unix_epoch_millis ||
-        candidate.feature_flags != header.header.feature_flags ||
-        candidate.compatibility_flags != header.header.compatibility_flags ||
-        candidate.catalog_manifest_format_version != kDatabaseCatalogManifestFormatCurrent ||
-        candidate.creator_transaction_number != kBootstrapCatalogTransactionId)
-      return refuse("database_catalog_owner_mismatch");
+    if (owner_mismatch(candidate)) return refuse("database_catalog_owner_mismatch");
     record = candidate;
   }
   if (!record) return refuse("database_catalog_record_missing");
+  }
   LocalTransactionInventory inventory;
   LocalTransactionHorizons horizons;
   const auto read_inventory = ReadTransactionInventoryPageWithoutJournal(
@@ -9287,6 +9388,10 @@ DatabaseCatalogIdentityReadResult ReadDatabaseCatalogIdentity(
   if (!committed.ok()) return propagate(committed.status, committed.diagnostic);
   const auto closed = device.Close();
   if (!closed.ok()) return propagate(closed.status, closed.diagnostic);
+  if (!remembered)
+    memo.Remember(path, std::move(chain), &CatalogChainMemo::Entry::identity,
+                  std::shared_ptr<const IdentityChainResult>(
+                      std::make_shared<IdentityChainResult>(IdentityChainResult{*record})));
   DatabaseCatalogIdentityReadResult result;
   result.status = DatabaseLifecycleOkStatus();
   result.record = std::move(record);
@@ -9586,16 +9691,10 @@ DatabaseBootstrapSecurityCatalogReadResult ReadBootstrapSecurityCatalogFromOwned
 
   // SEARCH_KEY: BOOTSTRAP_SECURITY_RESULT_MEMO. A remembered result is used
   // only if the chain is byte-identical now; otherwise the full read runs.
-  auto& memo = SharedBootstrapSecurityResultMemo();
-  auto remembered = memo.Find(path);
-  if (remembered &&
-      (remembered->page_size != parsed_header.header.page_size ||
-       remembered->database_uuid != database_uuid.value ||
-       !remembered->ChainMatches(&device))) {
-    // Stale: release its memory now rather than when a later read succeeds.
-    memo.Forget(path);
-    remembered.reset();
-  }
+  auto& memo = SharedCatalogChainMemo();
+  const auto current = memo.FindCurrent(path, &device, parsed_header.header.page_size, {}, {});
+  auto remembered = current ? current->Get(&CatalogChainMemo::Entry::security) : nullptr;
+  if (remembered && remembered->database_uuid != database_uuid.value) remembered.reset();
   std::vector<CatalogPageRow> catalog_rows;
   CatalogChainImage chain;
   const auto read_catalog = [&] {
@@ -9828,10 +9927,9 @@ DatabaseBootstrapSecurityCatalogReadResult ReadBootstrapSecurityCatalogFromOwned
   // The shared validator cannot prove commitment. Only the actual source
   // reader above has verified the owning inventory and bootstrap transaction.
   validated.state.committed_by_inventory = true;
-  if (!path.empty()) {
-    memo.Remember(path, parsed_header.header.page_size, database_uuid.value,
-                  origin_uuid, std::move(chain), validated);
-  }
+  memo.Remember(path, std::move(chain), &CatalogChainMemo::Entry::security,
+                std::shared_ptr<const SecurityChainResult>(std::make_shared<SecurityChainResult>(
+                    SecurityChainResult{database_uuid.value, origin_uuid, validated})));
   return validated;
 }
 
@@ -10390,7 +10488,43 @@ DatabaseLifecycleResult OpenDatabaseFile(const DatabaseOpenConfig& config) {
   if (!policy_origin.ok() || !scratchbird::transaction::mga::HasCommittedInventoryOutcome(policy_origin.entry))
     return LifecycleError("SB-POLICY-PACK-CATALOG-INVALID",
         "storage.database_lifecycle.policy_pack_catalog_invalid", config.path, "creation_transaction_not_committed");
-  const auto read_catalog_rows = ReadCatalogPageRows(&device, parsed.header.page_size, &catalog_rows);
+  // SEARCH_KEY: CATALOG_CHAIN_MEMO. Only a read-only open reuses or keeps
+  // what it derives from the chain; a writable open always walks it.
+  auto& chain_memo = SharedCatalogChainMemo();
+  CatalogChainImage chain;
+  std::shared_ptr<const OpenChainResult> remembered;
+  if (config.read_only) {
+    const auto current = chain_memo.FindCurrent(config.path, &device, parsed.header.page_size, {}, {});
+    remembered = current ? current->Get(&CatalogChainMemo::Entry::open) : nullptr;
+    if (remembered &&
+        (remembered->database_uuid != database_uuid.value ||
+         remembered->filespace_uuid != startup_state.state.first_filespace_uuid.value ||
+         remembered->origin_transaction_uuid != policy_origin.entry.identity.transaction_uuid.value ||
+         remembered->migration_plan_id != config.migration_plan_id))
+      remembered.reset();
+  }
+  const auto seed_expectation_unmet = [&](bool seed_catalog_present) {
+    const bool seed_expectation_present =
+        !config.expected_resource_seed_pack_name.empty() ||
+        !config.expected_resource_seed_pack_version.empty() ||
+        !config.expected_resource_seed_pack_content_hash.empty();
+    return seed_expectation_present && !seed_catalog_present;
+  };
+  bool seed_catalog_present = false;
+  DatabaseCatalogSummaryResult catalog_summary;
+  if (remembered) {
+    seed_catalog_present = remembered->seed_catalog_present;
+    if (seed_expectation_unmet(seed_catalog_present)) {
+      return LifecycleError("SB_RESOURCE_SEED_MISSING",
+                            "storage.database_lifecycle.resource_seed_pack_required",
+                            config.path);
+    }
+    resource_seed_catalog = remembered->resource_seed_catalog;
+    policy_seed_catalog = remembered->policy_seed_catalog;
+    catalog_summary = remembered->catalog_summary;
+  } else {
+  const auto read_catalog_rows = ReadCatalogPageRows(&device, parsed.header.page_size, &catalog_rows,
+      {}, {}, config.read_only ? &chain : nullptr);
   if (read_catalog_rows.ok()) {
     const auto catalog_migration =
         ValidateCatalogMigrationEvidence(catalog_rows,
@@ -10486,17 +10620,13 @@ DatabaseLifecycleResult OpenDatabaseFile(const DatabaseOpenConfig& config) {
   if (!filespace_manifest.ok()) {
     return filespace_manifest;
   }
-  const bool seed_catalog_present =
+  seed_catalog_present =
       resource_seed_catalog.active ||
       resource_seed_catalog.minimal_bootstrap ||
       !resource_seed_catalog.artifacts.empty() ||
       !resource_seed_catalog.seed_pack_name.empty() ||
       !resource_seed_catalog.content_hash.empty();
-  const bool seed_expectation_present =
-      !config.expected_resource_seed_pack_name.empty() ||
-      !config.expected_resource_seed_pack_version.empty() ||
-      !config.expected_resource_seed_pack_content_hash.empty();
-  if (seed_expectation_present && !seed_catalog_present) {
+  if (seed_expectation_unmet(seed_catalog_present)) {
     return LifecycleError("SB_RESOURCE_SEED_MISSING",
                           "storage.database_lifecycle.resource_seed_pack_required",
                           config.path);
@@ -10517,9 +10647,10 @@ DatabaseLifecycleResult OpenDatabaseFile(const DatabaseOpenConfig& config) {
   if (!policy_seed_validation.ok()) {
     return policy_seed_validation;
   }
-  auto catalog_summary = BuildTypedCatalogSummary(catalog_rows);
+  catalog_summary = BuildTypedCatalogSummary(catalog_rows);
   if (!catalog_summary.ok()) {
     return PropagateDiagnostic(catalog_summary.status, catalog_summary.diagnostic);
+  }
   }
   std::string seed_pack_mismatch_detail;
   if (ResourceSeedPackMismatch(resource_seed_catalog, config, &seed_pack_mismatch_detail)) {
@@ -10713,6 +10844,36 @@ DatabaseLifecycleResult OpenDatabaseFile(const DatabaseOpenConfig& config) {
   const auto close = device.Close();
   if (!close.ok()) {
     return PropagateDiagnostic(close.status, close.diagnostic);
+  }
+
+  if (config.read_only && !remembered && chain.complete) {
+    auto derived = std::make_shared<OpenChainResult>();
+    derived->manager = chain.manager;
+    derived->database_uuid = database_uuid.value;
+    derived->filespace_uuid = startup_state.state.first_filespace_uuid.value;
+    derived->origin_transaction_uuid = policy_origin.entry.identity.transaction_uuid.value;
+    derived->migration_plan_id = config.migration_plan_id;
+    derived->seed_catalog_present = seed_catalog_present;
+    derived->resource_seed_catalog = resource_seed_catalog;
+    derived->policy_seed_catalog = policy_seed_catalog;
+    derived->catalog_summary = catalog_summary;
+    // Charged before it is kept; a refused admission leaves it unremembered.
+    derived->charged_bytes = sizeof(OpenChainResult) +
+        scratchbird::core::resources::ResourceSeedCatalogImageRetainedBytes(
+            derived->resource_seed_catalog);
+    auto charge = derived->manager->allocator()->ReserveCapacity(
+        derived->charged_bytes,
+        MemoryTag{Subsystem::storage_disk,
+                  "catalog_chain_memo_open_result",
+                  MemoryCategory::catalog_bootstrap,
+                  MemoryLifetime::database,
+                  "storage.database.lifecycle",
+                  "open"});
+    if (charge.ok()) {
+      derived->charge = std::move(charge.reservation);
+      chain_memo.Remember(config.path, std::move(chain), &CatalogChainMemo::Entry::open,
+                          std::shared_ptr<const OpenChainResult>(std::move(derived)));
+    }
   }
 
   DatabaseLifecycleResult result;

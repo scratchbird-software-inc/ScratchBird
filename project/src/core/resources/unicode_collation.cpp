@@ -57,6 +57,13 @@ bool UnicodeCollationData::Key::operator<(const Key& other) const noexcept {
       other.scalars.begin(), other.scalars.begin() + other.size);
 }
 
+std::size_t UnicodeCollationData::RetainedBytes() const noexcept {
+  return sizeof(*this) + mappings_.capacity() * sizeof(Mapping) +
+         elements_.capacity() * sizeof(Element) +
+         implicit_ranges_.capacity() * sizeof(ImplicitRange) +
+         unified_ideographs_.capacity() * sizeof(unified_ideographs_[0]);
+}
+
 UnicodeNormalizationStatus UnicodeCollationData::Load17(std::string_view allkeys,
     std::string_view properties, std::shared_ptr<const UnicodeNormalizationData> normalization,
     std::shared_ptr<const UnicodeCollationData>* output) noexcept {

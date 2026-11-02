@@ -1459,6 +1459,15 @@ u64 CatalogBootstrapBytes() {
   return 0;
 }
 
+// Admission credit held for remembered derived results (not page images).
+u64 CatalogBootstrapReservedBytes() {
+  const auto snapshot = memory::DefaultMemoryManager().Snapshot();
+  for (const auto& category : snapshot.categories)
+    if (category.category == memory::MemoryCategory::catalog_bootstrap)
+      return category.reserved_capacity_bytes;
+  return 0;
+}
+
 void FlipByte(const std::filesystem::path& path, u64 offset) {
   std::fstream file(path, std::ios::binary | std::ios::in | std::ios::out);
   Require(file.good(), "memo fixture open failed");
@@ -1497,15 +1506,85 @@ void TestResultMemoMemoryIsGoverned(Cleanup* cleanup) {
           "remembered result differs from the full read");
   Require(CatalogBootstrapBytes() == remembered, "repeat read grew the memo charge");
 
+  // The identity reader requires explicit identities; the image above was
+  // captured by the security reader's walk, which takes them from page 1.
+  // Its first read walks in full and joins the same image; the second is a
+  // hit. Neither may add a second image.
+  const auto database_uuid = created.state.database_uuid.value;
+  const auto identity_full = db::ReadDatabaseCatalogIdentity(path.string(), database_uuid);
+  Require(identity_full.ok() && identity_full.record.has_value(), "catalog identity full read failed");
+  const auto identity_hit = db::ReadDatabaseCatalogIdentity(path.string(), database_uuid);
+  Require(identity_hit.ok() && identity_hit.record.has_value(), "catalog identity remembered read failed");
+  Require(identity_hit.record->database_uuid.value == identity_full.record->database_uuid.value &&
+              identity_hit.record->page_size == identity_full.record->page_size &&
+              identity_hit.record->creation_unix_epoch_millis ==
+                  identity_full.record->creation_unix_epoch_millis &&
+              identity_hit.record->creator_transaction_number ==
+                  identity_full.record->creator_transaction_number &&
+              identity_hit.record->datatype_cohort.has_value() ==
+                  identity_full.record->datatype_cohort.has_value(),
+          "remembered catalog identity differs from the full read");
+  Require(CatalogBootstrapBytes() == remembered, "identity read added a second chain image");
+  auto other_database = database_uuid;
+  other_database.bytes[15] ^= 0x01;
+  Require(!db::ReadDatabaseCatalogIdentity(path.string(), other_database).ok(),
+          "catalog identity accepted another database identity");
+
+  // Same for the read-only open behind resource catalog lookups.
+  const auto open_read_only = [&] {
+    db::DatabaseOpenConfig config;
+    config.path = path.string();
+    config.read_only = true;
+    config.suppress_background_agents = true;
+    return db::OpenDatabaseFile(config);
+  };
+  const auto open_full = open_read_only();
+  Require(open_full.ok(), "read-only open full read failed");
+  const auto open_hit = open_read_only();
+  Require(open_hit.ok(), "read-only open remembered read failed");
+  const auto& full_resources = open_full.state.resource_seed_catalog;
+  const auto& hit_resources = open_hit.state.resource_seed_catalog;
+  Require(open_hit.state.resource_seed_catalog_present == open_full.state.resource_seed_catalog_present &&
+              hit_resources.active == full_resources.active &&
+              hit_resources.resource_epoch == full_resources.resource_epoch &&
+              hit_resources.seed_pack_name == full_resources.seed_pack_name &&
+              hit_resources.content_hash == full_resources.content_hash &&
+              hit_resources.charsets.size() == full_resources.charsets.size() &&
+              hit_resources.collations.size() == full_resources.collations.size() &&
+              open_hit.state.policy_seed_catalog.policy_pack_uuid ==
+                  open_full.state.policy_seed_catalog.policy_pack_uuid &&
+              open_hit.state.policy_seed_catalog.content_sha256 ==
+                  open_full.state.policy_seed_catalog.content_sha256 &&
+              open_hit.state.local_transaction_inventory.entries.size() ==
+                  open_full.state.local_transaction_inventory.entries.size(),
+          "remembered read-only open differs from the full read");
+  Require(CatalogBootstrapBytes() == remembered, "read-only open added a second chain image");
+  // The remembered open result (resource image and compiled tables) is
+  // charged too, as admission credit, and only once.
+  const u64 open_charge = CatalogBootstrapReservedBytes();
+  Require(open_charge > 1024 * 1024, "remembered read-only open result is not charged");
+  Require(open_read_only().ok() && CatalogBootstrapReservedBytes() == open_charge,
+          "repeat read-only open changed the remembered result charge");
+
   const u64 offset = db::kCatalogPageNumber * page_size + page_size - 1;
   FlipByte(path, offset);
   const auto tampered = db::ReadDatabaseBootstrapSecurityCatalog(path.string());
   Require(!tampered.ok(), "tampered catalog chain was served from the memo");
   Require(CatalogBootstrapBytes() == before, "stale chain image was not released");
+  Require(!db::ReadDatabaseCatalogIdentity(path.string(), database_uuid).ok(),
+          "tampered catalog chain was served to the identity reader");
+  Require(!open_read_only().ok(), "tampered catalog chain was served to the read-only open");
+  Require(CatalogBootstrapBytes() == before, "a refused read kept a chain image");
+  Require(CatalogBootstrapReservedBytes() == 0, "a stale open result kept its charge");
   FlipByte(path, offset);
   const auto restored = db::ReadDatabaseBootstrapSecurityCatalog(path.string());
   Require(restored.ok(), "restored catalog chain read failed");
   Require(CatalogBootstrapBytes() == remembered, "restored chain was not remembered again");
+  Require(db::ReadDatabaseCatalogIdentity(path.string(), database_uuid).ok() &&
+              open_read_only().ok(),
+          "restored catalog chain was refused by the identity reader or the open");
+  Require(CatalogBootstrapBytes() == remembered, "restored chain kept more than one image");
+  Require(CatalogBootstrapReservedBytes() == open_charge, "restored open result was not charged again");
 }
 
 int main(int argc, char** argv) try {

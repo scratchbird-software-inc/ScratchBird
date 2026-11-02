@@ -39,6 +39,8 @@ class UnicodeNormalizationData final {
   UnicodeNormalizationStatus NormalizeNfdWithMemory(std::string_view input,
       std::size_t byte_limit, std::pmr::string* output) const noexcept;
   std::uint8_t CombiningClass(std::uint32_t scalar) const noexcept;
+  // Bytes this table holds, for memory accounting.
+  std::size_t RetainedBytes() const noexcept;
   bool IsAssigned(std::uint32_t scalar) const noexcept;
 
  private:
