@@ -337,7 +337,7 @@ EXECUTOR_NOT_CONNECTED_REFUSALS = frozenset({
     "return-result-set", "advanced-datatype-family", "udr-invoke",
     "kv-structured-read", "kv-structured-mutate", "kv-structured-scan",
     "kv-structured-stream-read", "kv-structured-stream-append",
-    "system-config-set", "ddl-create-domain", "ddl-alter-domain",
+    "kv-structured-timeseries", "system-config-set", "ddl-create-domain", "ddl-alter-domain",
     "ddl-alter-view", "ddl-drop-view", "ddl-create-function",
     "ddl-alter-function", "ddl-drop-function", "ddl-alter-procedure",
     "ddl-drop-procedure", "ddl-create-package", "ddl-alter-package",

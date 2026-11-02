@@ -24,7 +24,8 @@ import sys
 from pathlib import Path
 
 from ia01_package_process_e2e import (
-    ProofError, allocate_work, seed_database, stop, wait_unix,
+    ProofError, allocate_work, finish_fixture_work, seed_database, stop,
+    wait_unix,
 )
 
 
@@ -63,6 +64,10 @@ def main() -> int:
     database = work / "privilege.sbdb"
     server = None
     held = None
+    # Every server generation and held client, including SIGKILLed ones, so
+    # teardown proves no process group survives before deleting the workspace.
+    launched: list[subprocess.Popen] = []
+    failed = True
     phases: list[str] = []
     try:
         evidence = seed_database(Path(args.server), database)
@@ -83,7 +88,9 @@ def main() -> int:
                      str(work / f"r{generation}"), "--database", str(database),
                      "--sbps-endpoint", str(endpoint)],
                     stdout=out, stderr=err, env=env,
+                    start_new_session=os.name == "posix",
                 )
+            launched.append(process)
             try:
                 wait_unix(endpoint, timeout=30)
             except BaseException:
@@ -116,7 +123,9 @@ def main() -> int:
                 command(suffix, phase), stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, env=env,
+                start_new_session=os.name == "posix",
             )
+            launched.append(process)
             try:
                 with selectors.DefaultSelector() as selector:
                     selector.register(process.stdout, selectors.EVENT_READ)
@@ -196,16 +205,19 @@ def main() -> int:
             "CSC-TEST-005830 PASS rollback disconnect "
             "committed_restart orphan_recovery independent_sessions"
         )
-        print(f"evidence={work}")
-        return 0
+        failed = False
     except (ProofError, OSError, subprocess.TimeoutExpired) as error:
         print(f"CSC-TEST-005830 FAIL: {error}; evidence={work}", file=sys.stderr)
-        return 1
     finally:
         stop(held)
         if held is not None:
             held.communicate(timeout=5)
-        stop(server)
+        cleaned = finish_fixture_work(work, launched, failed=failed)
+    if failed:
+        print(f"fixture_failed_cleanup=complete cleaned={cleaned} work={work}", file=sys.stderr)
+        return 1
+    print(f"cleaned={cleaned} work={work}")
+    return 0
 
 
 if __name__ == "__main__":

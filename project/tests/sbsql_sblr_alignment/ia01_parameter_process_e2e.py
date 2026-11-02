@@ -8,15 +8,14 @@ from __future__ import annotations
 
 import argparse
 import os
-import shutil
 import subprocess
 import sys
 from pathlib import Path
 from binary_observation_client import read_trace_evidence
 
 from ia01_package_process_e2e import (
-    PASSWORD, ProofError, allocate_work, free_port, seed_database, stop,
-    wait_path, wait_tcp, require_stopped_fixture_group,
+    PASSWORD, ProofError, allocate_work, finish_fixture_work, free_port,
+    seed_database, wait_path, wait_tcp,
 )
 
 
@@ -59,6 +58,7 @@ def main() -> int:
     args = parser.parse_args()
     work = allocate_work(Path(args.work_dir))
     server = listener = None
+    failed = False
     try:
         database = work / "parameter.sbdb"
         endpoint = work / "sc" / "s.sock"
@@ -119,25 +119,18 @@ def main() -> int:
         )
         if verifier.returncode != 0 or verifier.stdout.strip() != "1":
             raise ProofError("independent verifier did not observe exact row")
-        stop(listener)
-        stop(server)
-        cleaned = False
-        if os.name == "posix":
-            require_stopped_fixture_group(listener)
-            require_stopped_fixture_group(server)
-            shutil.rmtree(work)
-            cleaned = True
-        print(f"sbsql_sblr_alignment_ia01_parameter_process_e2e=passed work={work} cleaned={cleaned}")
-        return 0
     except Exception as exc:  # noqa: BLE001
+        failed = True
         print(f"sbsql_sblr_alignment_ia01_parameter_process_e2e=failed work={work}: {exc}",
               file=sys.stderr)
-        for path in sorted(work.glob("*.err")):
-            print(f"--- {path.name} ---\n{path.read_text(errors='replace')}", file=sys.stderr)
-        return 1
     finally:
-        stop(listener)
-        stop(server)
+        cleaned = finish_fixture_work(
+            work, [p for p in (server, listener) if p is not None], failed=failed)
+    if failed:
+        print(f"fixture_failed_cleanup=complete cleaned={cleaned} work={work}", file=sys.stderr)
+        return 1
+    print(f"sbsql_sblr_alignment_ia01_parameter_process_e2e=passed work={work} cleaned={cleaned}")
+    return 0
 
 
 if __name__ == "__main__":

@@ -13,8 +13,8 @@ import sys
 from pathlib import Path
 
 from ia01_package_process_e2e import (
-    PASSWORD, ProofError, allocate_work, free_port, seed_database, stop,
-    wait_path, wait_tcp,
+    PASSWORD, ProofError, allocate_work, finish_fixture_work, free_port,
+    seed_database, wait_path, wait_tcp,
 )
 
 
@@ -28,6 +28,7 @@ def main() -> int:
     args = parser.parse_args()
     work = allocate_work(Path(args.work_dir))
     server = listener = None
+    failed = False
     try:
         database = work / "variable.sbdb"
         endpoint = work / "sc" / "s.sock"
@@ -54,6 +55,7 @@ def main() -> int:
              "--database", str(database), "--sbps-endpoint", str(endpoint)],
             stdout=(work / "server.out").open("wb"),
             stderr=(work / "server.err").open("wb"), env=env,
+            start_new_session=os.name == "posix",
         )
         wait_path(endpoint)
         listener = subprocess.Popen(
@@ -67,6 +69,7 @@ def main() -> int:
              "--warm-pool-min=1", "--warm-pool-max=2"],
             stdout=(work / "listener.out").open("wb"),
             stderr=(work / "listener.err").open("wb"),
+            start_new_session=os.name == "posix",
         )
         wait_tcp(port)
         refused = subprocess.run(
@@ -108,17 +111,18 @@ def main() -> int:
                 f"exit={verifier.returncode} stdout={verifier.stdout!r} "
                 f"stderr={verifier.stderr!r}"
             )
-        print(f"sbsql_sblr_alignment_ia01_variable_process_e2e=passed work={work}")
-        return 0
     except Exception as exc:  # noqa: BLE001
+        failed = True
         print(f"sbsql_sblr_alignment_ia01_variable_process_e2e=failed work={work}: {exc}",
               file=sys.stderr)
-        for path in sorted(work.glob("*.err")):
-            print(f"--- {path.name} ---\n{path.read_text(errors='replace')}", file=sys.stderr)
-        return 1
     finally:
-        stop(listener)
-        stop(server)
+        cleaned = finish_fixture_work(
+            work, [p for p in (server, listener) if p is not None], failed=failed)
+    if failed:
+        print(f"fixture_failed_cleanup=complete cleaned={cleaned} work={work}", file=sys.stderr)
+        return 1
+    print(f"sbsql_sblr_alignment_ia01_variable_process_e2e=passed work={work} cleaned={cleaned}")
+    return 0
 
 
 if __name__ == "__main__":
