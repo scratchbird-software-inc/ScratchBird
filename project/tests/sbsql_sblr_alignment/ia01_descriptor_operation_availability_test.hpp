@@ -143,4 +143,31 @@ inline void RequireMissingExecutorEvidence(
       "read-only current lookup did not retain the revoked authority row");
 }
 
+// An administrator's first load bootstraps exact executor evidence: the row
+// is installed at generation 1 for this tuple and published to the store.
+// Checked with RequireAvailabilityTest, never assert(), so NDEBUG builds
+// still test it; the fixture's unique path and destructor leave no store.
+inline void RequireAdminBootstrapInstalls(
+    std::string_view tag,
+    const api::EngineUuid& database_uuid,
+    std::string_view store_suffix,
+    const api::SblrExecutorAvailabilityRowIdentity& identity) {
+  RequireAvailabilityTest(
+      api::IsAdmittedExecutorAvailabilityIdentity(identity),
+      "exact executor availability tuple is not admitted");
+  AvailabilityFixture fixture(tag, database_uuid, store_suffix);
+  RequireAvailabilityTest(!std::filesystem::exists(fixture.StorePath()),
+                          "fixture store exists before bootstrap");
+  const auto loaded =
+      api::LoadSblrExecutorAvailabilitySnapshot(fixture.Context(true), identity);
+  RequireAvailabilityTest(
+      loaded.ok && loaded.snapshot.installed &&
+          loaded.snapshot.generation == 1 &&
+          loaded.snapshot.database_uuid == database_uuid &&
+          loaded.snapshot.row_identity_sha256 ==
+              api::ComputeSblrExecutorAvailabilityRowIdentitySha256(identity) &&
+          std::filesystem::exists(fixture.StorePath()),
+      "explicit executor evidence bootstrap failed");
+}
+
 }  // namespace scratchbird::tests::ia01

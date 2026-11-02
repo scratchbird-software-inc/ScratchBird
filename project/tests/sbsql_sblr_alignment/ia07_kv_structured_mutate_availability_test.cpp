@@ -1,4 +1,8 @@
-#include "../support/binary_uuid_fixture.hpp"
-#include "engine/internal_api/sblr_executor_availability_registry.hpp"
-#include <cassert>
-int main(){namespace a=scratchbird::engine::internal_api;a::EngineRequestContext c;c.database_path="/tmp/sb_kv_2567";c.database_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000002567");c.security_context_present=true;c.trace_tags={"right:SBLR_EXECUTOR_AVAILABILITY_ADMIN"};a::SblrExecutorAvailabilityRowIdentity r{a::kSblrKvStructuredMutateExecutorId,8193,"1.0",a::kSblrKvStructuredMutateOperandDescriptorId,a::kSblrKvStructuredMutateResultDescriptorId,1};auto s=a::LoadSblrExecutorAvailabilitySnapshot(c,r);assert(s.ok&&s.snapshot.installed);}
+#include "ia01_descriptor_operation_availability_test.hpp"
+
+int main() {
+  namespace a = scratchbird::engine::internal_api;
+  scratchbird::tests::ia01::RequireAdminBootstrapInstalls(
+      "kv_structured_mutate", scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000002567"), ".kv_structured_mutate",
+      {a::kSblrKvStructuredMutateExecutorId,8193,"1.0",a::kSblrKvStructuredMutateOperandDescriptorId,a::kSblrKvStructuredMutateResultDescriptorId,1});
+}
