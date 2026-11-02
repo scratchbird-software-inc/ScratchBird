@@ -27840,7 +27840,13 @@ sb_engine_status_t DispatchStatementContextReceipt(
         const auto inventory_fence = scratchbird::storage::database::
             RevalidateLocalTransactionInventorySnapshot(
                 *journal_context.statement_transaction_inventory_snapshot);
-        if (!inventory_fence.ok()) current = false;
+        // MGA: a statement observes the state at the start of its transaction.
+        // The fence is database-wide, so another transaction publishing (an
+        // agent, another session's cleanup) changes it without changing what
+        // this statement sees. As in name_resolve and procedure_invoke, only
+        // the exact statement-snapshot authority decides staleness (owner
+        // direction 2026-11-02; see SB_DRIFT_CATALOG_EPOCH_STALE_ON_FENCE).
+        if (!inventory_fence.ok() && !statement_snapshot_matches()) current = false;
 
         if (catalog_epoch_check_descriptor.object_scoped) {
           scratchbird::engine::internal_api::EngineResolveNameRequest

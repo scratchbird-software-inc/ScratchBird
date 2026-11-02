@@ -286,7 +286,10 @@ void RunCleanupOrderingCase(bool cleanup_after_capture) {
               first_result.data(), first_result.size(), &decoded_result,
               &detail) &&
               decoded_result.check_uuid == descriptor.check_uuid &&
-              decoded_result.status == (cleanup_after_capture ? 2 : 1) &&
+              // MGA snapshot: another transaction's rollback after capture
+              // changes the database-wide fence (checked above) but not what
+              // this statement's transaction sees, so it stays current.
+              decoded_result.status == 1 &&
               decoded_result.visibility == 1 &&
               decoded_result.observed_catalog_epoch_uuid ==
                   descriptor.requested_catalog_epoch_uuid &&
@@ -361,7 +364,7 @@ void RunCleanupOrderingCase(bool cleanup_after_capture) {
           "003632 fixture transaction rollback failed");
   std::cout << "catalog_epoch_cleanup_order="
             << (cleanup_after_capture ? "after_capture" : "before_capture")
-            << " status=" << (cleanup_after_capture ? 2 : 1)
+            << " status=1"
             << " cancellation_and_exact_replay=PASS\n";
 }
 
