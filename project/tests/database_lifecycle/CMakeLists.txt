@@ -1471,6 +1471,14 @@ if(TARGET sb_storage_database)
     LABELS "database_lifecycle_bootstrap_security_publication_conformance;database_lifecycle;database_lifecycle_storage;database_lifecycle_security;mga_transaction_regression"
   )
 
+  add_test(
+    NAME database_lifecycle_bootstrap_security_result_memo_conformance
+    COMMAND database_lifecycle_bootstrap_security_publication_conformance result_memo
+  )
+  set_tests_properties(database_lifecycle_bootstrap_security_result_memo_conformance PROPERTIES
+    LABELS "database_lifecycle_bootstrap_security_result_memo_conformance;database_lifecycle;database_lifecycle_storage;database_lifecycle_security"
+  )
+
   add_executable(database_lifecycle_first_open_activation_conformance
     first_open_activation_conformance.cpp
   )

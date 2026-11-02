@@ -1451,7 +1451,64 @@ void TestCommittedSecurityOrigin(Cleanup* cleanup) {
 
 }  // namespace
 
-int main() try {
+u64 CatalogBootstrapBytes() {
+  const auto snapshot = memory::DefaultMemoryManager().Snapshot();
+  for (const auto& category : snapshot.categories)
+    if (category.category == memory::MemoryCategory::catalog_bootstrap)
+      return category.current_bytes;
+  return 0;
+}
+
+void FlipByte(const std::filesystem::path& path, u64 offset) {
+  std::fstream file(path, std::ios::binary | std::ios::in | std::ios::out);
+  Require(file.good(), "memo fixture open failed");
+  file.seekg(static_cast<std::streamoff>(offset));
+  char byte = 0;
+  file.read(&byte, 1);
+  byte = static_cast<char>(byte ^ 0x5a);
+  file.seekp(static_cast<std::streamoff>(offset));
+  file.write(&byte, 1);
+  Require(file.good(), "memo fixture byte flip failed");
+}
+
+// SEARCH_KEY: BOOTSTRAP_SECURITY_RESULT_MEMO. The remembered catalog chain is
+// charged to the process memory manager, not held outside it; a repeat read
+// adds nothing, and a changed chain releases the stale image even when the
+// read then refuses.
+// Runs in its own process (ctest ..._result_memo_conformance) so no other
+// database's remembered chain is in the accounting it measures.
+void TestResultMemoMemoryIsGoverned(Cleanup* cleanup) {
+  const u64 before = CatalogBootstrapBytes();
+  std::filesystem::path path;
+  const auto created = CreateCommitted(cleanup, "memo_memory_governed", &path);
+  const u64 page_size = created.state.header.page_size;
+  const u64 file_bytes = std::filesystem::file_size(path);
+  const auto first = db::ReadDatabaseBootstrapSecurityCatalog(path.string());
+  Require(first.ok(), "memo fixture first read failed");
+  const u64 remembered = CatalogBootstrapBytes();
+  Require(remembered > before, "remembered chain is not charged to the memory manager");
+  const u64 charged = remembered - before;
+  Require(charged % page_size == 0 && charged <= file_bytes,
+          "remembered chain charge is not a whole number of file pages");
+  const auto second = db::ReadDatabaseBootstrapSecurityCatalog(path.string());
+  Require(second.ok(), "memo fixture repeat read failed");
+  Require(second.state.committed_principals.size() == first.state.committed_principals.size() &&
+              second.state.committed_grants.size() == first.state.committed_grants.size(),
+          "remembered result differs from the full read");
+  Require(CatalogBootstrapBytes() == remembered, "repeat read grew the memo charge");
+
+  const u64 offset = db::kCatalogPageNumber * page_size + page_size - 1;
+  FlipByte(path, offset);
+  const auto tampered = db::ReadDatabaseBootstrapSecurityCatalog(path.string());
+  Require(!tampered.ok(), "tampered catalog chain was served from the memo");
+  Require(CatalogBootstrapBytes() == before, "stale chain image was not released");
+  FlipByte(path, offset);
+  const auto restored = db::ReadDatabaseBootstrapSecurityCatalog(path.string());
+  Require(restored.ok(), "restored catalog chain read failed");
+  Require(CatalogBootstrapBytes() == remembered, "restored chain was not remembered again");
+}
+
+int main(int argc, char** argv) try {
   auto policy = memory::DefaultLocalEngineMemoryPolicy();
   policy.policy_name =
       "database_lifecycle_bootstrap_security_publication_conformance";
@@ -1461,6 +1518,10 @@ int main() try {
   Require(configured.ok(), "bootstrap security memory fixture failed");
 
   Cleanup cleanup;
+  if (argc > 1 && std::string_view(argv[1]) == "result_memo") {
+    TestResultMemoMemoryIsGoverned(&cleanup);
+    return EXIT_SUCCESS;
+  }
   TestCompleteAgentConfiguration(&cleanup);
   TestCommittedSecurityOrigin(&cleanup);
   TestInternalServicePrincipalProvisioned(&cleanup);

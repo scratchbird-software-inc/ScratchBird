@@ -64,10 +64,14 @@
 #include <iomanip>
 #include <iterator>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <regex>
 #include <set>
+#include <shared_mutex>
 #include <sstream>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
@@ -6492,11 +6496,93 @@ DatabaseLifecycleResult EnsureFirstOpenActivationTransaction(FileDevice* device,
   return DatabaseLifecycleResult{DatabaseLifecycleOkStatus(), {}, {}};
 }
 
+// The exact page images of one catalog chain walk, in walk order. Identical
+// images walk identically and decode to identical rows. The bytes are held
+// in fixed-size chunks admitted and charged by the process memory manager
+// (catalog_bootstrap), which the image keeps alive; if the manager is absent
+// or refuses a chunk, the capture is abandoned and the walk itself is
+// unaffected.
+struct CatalogChainImage {
+  static constexpr std::size_t kChunkPages = 64;
+
+  // Declared first so it is destroyed last, after the chunks below.
+  std::shared_ptr<scratchbird::core::memory::MemoryManager> manager;
+  u32 page_size = 0;
+  bool complete = false;
+  std::vector<u64> pages;
+  std::vector<scratchbird::core::memory::ScopedAllocation> chunks;
+
+  void Begin(u32 size) {
+    page_size = size;
+    pages.clear();
+    chunks.clear();
+    manager = scratchbird::core::memory::RetainDefaultMemoryManagerV1();
+    complete = manager != nullptr;
+  }
+
+  void Append(u64 page_number, const scratchbird::core::platform::byte* page) {
+    if (!complete) return;
+    const std::size_t slot = pages.size() % kChunkPages;
+    if (slot == 0) {
+      auto chunk = Allocate(kChunkPages);
+      if (!chunk.ok()) return Abandon();
+      chunks.push_back(std::move(chunk.allocation));
+    }
+    std::memcpy(static_cast<scratchbird::core::platform::byte*>(chunks.back().data()) +
+                    slot * page_size,
+                page, page_size);
+    pages.push_back(page_number);
+  }
+
+  // Shrinks the last chunk to the pages it holds, so the charge is exact.
+  void Finish() {
+    if (!complete) return;
+    const std::size_t used = pages.size() % kChunkPages;
+    if (pages.empty()) return Abandon();
+    if (used == 0) return;
+    auto exact = Allocate(used);
+    if (!exact.ok()) return Abandon();
+    std::memcpy(exact.allocation.data(), chunks.back().data(), used * page_size);
+    chunks.back() = std::move(exact.allocation);
+  }
+
+  const scratchbird::core::platform::byte* PageBytes(std::size_t index) const {
+    return static_cast<const scratchbird::core::platform::byte*>(
+               chunks[index / kChunkPages].data()) +
+           (index % kChunkPages) * page_size;
+  }
+
+  std::size_t ChargedBytes() const {
+    std::size_t total = 0;
+    for (const auto& chunk : chunks) total += chunk.size();
+    return total;
+  }
+
+ private:
+  scratchbird::core::memory::ScopedAllocationResult Allocate(std::size_t page_count) {
+    return manager->AllocateScoped(
+        page_count * page_size, alignof(std::max_align_t),
+        MemoryTag{Subsystem::storage_disk,
+                  "bootstrap_security_catalog_chain_image",
+                  MemoryCategory::catalog_bootstrap,
+                  MemoryLifetime::database,
+                  "storage.database.lifecycle",
+                  "open"});
+  }
+
+  void Abandon() {
+    complete = false;
+    pages.clear();
+    chunks.clear();
+  }
+};
+
 DatabaseLifecycleResult ReadCatalogPageRows(FileDevice* device,
                                             u32 page_size,
                                             std::vector<CatalogPageRow>* rows,
                                             scratchbird::core::platform::Uuid expected_database = {},
-                                            scratchbird::core::platform::Uuid expected_filespace = {}) {
+                                            scratchbird::core::platform::Uuid expected_filespace = {},
+                                            CatalogChainImage* image = nullptr) {
   const auto size = device->Size();
   if (!size.ok()) return PropagateDiagnostic(size.status, size.diagnostic);
   if (page_size <= kPageHeaderSerializedBytes || size.size_bytes % page_size != 0)
@@ -6518,6 +6604,7 @@ DatabaseLifecycleResult ReadCatalogPageRows(FileDevice* device,
   // Reuse one admitted full-page buffer and one parser-owned body throughout
   // the chain. No per-page reallocation or second I/O just to validate headers.
   std::vector<scratchbird::core::platform::byte> body(page_size - kPageHeaderSerializedBytes);
+  if (image) image->Begin(page_size);
   while (page_number != 0) {
     if (page_number >= page_count || !visited.insert(page_number).second) {
       return LifecycleError("SB-CATALOG-PAGE-BODY-NEXT-CHAIN-TOO-LONG",
@@ -6531,6 +6618,7 @@ DatabaseLifecycleResult ReadCatalogPageRows(FileDevice* device,
     if (!read.ok()) {
       return PropagateDiagnostic(read.status, read.diagnostic);
     }
+    if (image) image->Append(page_number, buffer_bytes);
     scratchbird::storage::disk::SerializedPageHeader header_bytes{};
     std::copy_n(buffer_bytes, header_bytes.size(), header_bytes.begin());
     const auto header = ParsePageHeader(header_bytes);
@@ -6567,10 +6655,165 @@ DatabaseLifecycleResult ReadCatalogPageRows(FileDevice* device,
     page_number = parsed.body.next_page_number;
   }
 
+  if (image) image->Finish();
   DatabaseLifecycleResult result;
   result.status = DatabaseLifecycleOkStatus();
   rows->swap(staged);
   return result;
+}
+
+// True only when every page of a previously walked chain is still on the
+// device with byte-identical contents. Any read problem answers false so the
+// caller takes the full read, which reports it.
+bool CatalogChainImageMatches(FileDevice* device, const CatalogChainImage& image) {
+  const auto& pages = image.pages;
+  const u32 page_size = image.page_size;
+  if (!image.complete || pages.empty() ||
+      image.ChargedBytes() != pages.size() * page_size)
+    return false;
+  const auto size = device->Size();
+  if (!size.ok() || page_size == 0 || size.size_bytes % page_size != 0) return false;
+  const u64 page_count = size.size_bytes / page_size;
+  constexpr std::size_t kRunPages = CatalogChainImage::kChunkPages;
+  scratchbird::core::memory::PageBufferRequest request;
+  request.page_size = page_size;
+  request.page_count = kRunPages;
+  request.tag = MemoryTag{Subsystem::storage_disk,
+      "catalog_chain_image_compare", MemoryCategory::page_buffer,
+      MemoryLifetime::page_buffer, "storage.database.lifecycle", "open"};
+  auto buffer = DefaultMemoryManager().AllocateScopedPageBuffer(request);
+  if (!buffer.ok()) return false;
+  auto* bytes = static_cast<scratchbird::core::platform::byte*>(buffer.buffer.data());
+  // Chain pages are usually consecutive; compare each consecutive run with
+  // one read per kRunPages pages instead of one read per page. A run never
+  // crosses a chunk, so its remembered bytes are contiguous.
+  for (std::size_t at = 0; at < pages.size();) {
+    std::size_t run = 1;
+    while (run < kRunPages && at + run < pages.size() &&
+           (at + run) % kRunPages != 0 &&
+           pages[at + run] == pages[at] + run) ++run;
+    if (pages[at] + run > page_count) return false;
+    const auto offset = CheckedPageOffset(page_size, pages[at]);
+    if (!offset.ok()) return false;
+    if (!device->ReadAt(offset.offset, bytes, run * page_size).ok()) return false;
+    if (std::memcmp(bytes, image.PageBytes(at), run * page_size) != 0)
+      return false;
+    at += run;
+  }
+  return true;
+}
+
+// SEARCH_KEY: BOOTSTRAP_SECURITY_RESULT_MEMO
+// The bootstrap security read runs on every statement-context acquisition,
+// and nearly all of its cost is walking and checksumming the whole catalog
+// chain. A successful result is a pure function of the chain's page bytes,
+// the page size, the database UUID and the committed bootstrap transaction's
+// origin, so it is reused only when all four are identical: the chain is
+// re-read and compared byte for byte on every call, never by digest, and
+// every other check (header, health, locator, core pages, startup page,
+// inventory, tx1 commitment) still runs first. Only successes are kept.
+// Runtime security state lives in the security event store and is not here.
+// The remembered page images are the walk's own chunks, already admitted
+// and charged by the process memory manager, and each entry keeps that
+// manager alive until the entry is dropped. An entry made under a different
+// manager is never used; an image whose capture was refused is not kept.
+class BootstrapSecurityResultMemo {
+ public:
+  struct Entry {
+    u32 page_size = 0;
+    scratchbird::core::platform::Uuid database_uuid{};
+    scratchbird::core::platform::Uuid origin_transaction_uuid{};
+    CatalogChainImage chain;
+    DatabaseBootstrapSecurityCatalogReadResult result;
+
+    bool ChainMatches(FileDevice* device) const {
+      return CatalogChainImageMatches(device, chain);
+    }
+  };
+
+  std::shared_ptr<const Entry> Find(const std::string& path) const {
+    const auto manager = scratchbird::core::memory::RetainDefaultMemoryManagerV1();
+    if (!manager) return nullptr;
+    std::shared_lock lock(mutex_);
+    const auto found = entries_.find(path);
+    if (found == entries_.end() || found->second.entry->chain.manager != manager)
+      return nullptr;
+    return found->second.entry;
+  }
+
+  void Remember(const std::string& path,
+                u32 page_size,
+                const scratchbird::core::platform::Uuid& database_uuid,
+                const scratchbird::core::platform::Uuid& origin_transaction_uuid,
+                CatalogChainImage chain,
+                const DatabaseBootstrapSecurityCatalogReadResult& result) {
+    const std::size_t cost = chain.ChargedBytes();
+    if (!chain.complete || chain.pages.empty() || chain.page_size != page_size ||
+        cost > kBudgetBytes) {
+      Forget(path);
+      return;
+    }
+    auto entry = std::make_shared<Entry>();
+    entry->page_size = page_size;
+    entry->database_uuid = database_uuid;
+    entry->origin_transaction_uuid = origin_transaction_uuid;
+    entry->chain = std::move(chain);
+    entry->result = result;
+    const auto& manager = entry->chain.manager;
+    std::unique_lock lock(mutex_);
+    DropUnlocked(path);
+    // Entries bound to a replaced manager can never be used again.
+    for (auto it = entries_.begin(); it != entries_.end();) {
+      if (it->second.entry->chain.manager != manager) {
+        bytes_ -= it->second.cost;
+        it = entries_.erase(it);
+      } else {
+        ++it;
+      }
+    }
+    // Bounded: evict the oldest remembered databases until this one fits.
+    // Entries for files that are gone or replaced are never consulted again,
+    // so keeping old entries instead would stop the memo for good.
+    while (bytes_ + cost > kBudgetBytes && !entries_.empty()) {
+      auto oldest = entries_.begin();
+      for (auto it = entries_.begin(); it != entries_.end(); ++it)
+        if (it->second.sequence < oldest->second.sequence) oldest = it;
+      bytes_ -= oldest->second.cost;
+      entries_.erase(oldest);
+    }
+    bytes_ += cost;
+    entries_.emplace(path, Slot{++sequence_, cost, std::move(entry)});
+  }
+
+  void Forget(const std::string& path) {
+    std::unique_lock lock(mutex_);
+    DropUnlocked(path);
+  }
+
+ private:
+  void DropUnlocked(const std::string& path) {
+    if (const auto found = entries_.find(path); found != entries_.end()) {
+      bytes_ -= found->second.cost;
+      entries_.erase(found);
+    }
+  }
+
+  struct Slot {
+    u64 sequence = 0;
+    std::size_t cost = 0;
+    std::shared_ptr<const Entry> entry;
+  };
+
+  static constexpr std::size_t kBudgetBytes = std::size_t{256} << 20;
+  mutable std::shared_mutex mutex_;
+  std::unordered_map<std::string, Slot> entries_;
+  std::size_t bytes_ = 0;
+  u64 sequence_ = 0;
+};
+
+BootstrapSecurityResultMemo& SharedBootstrapSecurityResultMemo() {
+  static BootstrapSecurityResultMemo memo;
+  return memo;
 }
 
 StartupRecoveryClassification ClassifyStartupStateForOpen(const StartupStateRecord& state) {
@@ -9341,12 +9584,29 @@ DatabaseBootstrapSecurityCatalogReadResult ReadBootstrapSecurityCatalogFromOwned
                      startup_identities.diagnostic);
   }
 
+  // SEARCH_KEY: BOOTSTRAP_SECURITY_RESULT_MEMO. A remembered result is used
+  // only if the chain is byte-identical now; otherwise the full read runs.
+  auto& memo = SharedBootstrapSecurityResultMemo();
+  auto remembered = memo.Find(path);
+  if (remembered &&
+      (remembered->page_size != parsed_header.header.page_size ||
+       remembered->database_uuid != database_uuid.value ||
+       !remembered->ChainMatches(&device))) {
+    // Stale: release its memory now rather than when a later read succeeds.
+    memo.Forget(path);
+    remembered.reset();
+  }
   std::vector<CatalogPageRow> catalog_rows;
-  const auto catalog_read = ReadCatalogPageRows(&device,
-                                                parsed_header.header.page_size,
-                                                &catalog_rows);
-  if (!catalog_read.ok()) {
-    return propagate(catalog_read.status, catalog_read.diagnostic);
+  CatalogChainImage chain;
+  const auto read_catalog = [&] {
+    return ReadCatalogPageRows(&device, parsed_header.header.page_size,
+                               &catalog_rows, {}, {}, &chain);
+  };
+  if (!remembered) {
+    const auto catalog_read = read_catalog();
+    if (!catalog_read.ok()) {
+      return propagate(catalog_read.status, catalog_read.diagnostic);
+    }
   }
 
   LocalTransactionInventory inventory;
@@ -9373,6 +9633,15 @@ DatabaseBootstrapSecurityCatalogReadResult ReadBootstrapSecurityCatalogFromOwned
 
   const auto committed_origin=LookupLocalTransaction(inventory,
       MakeLocalTransactionId(kBootstrapCatalogTransactionId));
+  const auto origin_uuid = committed_origin.entry.identity.transaction_uuid.value;
+  if (remembered) {
+    if (remembered->origin_transaction_uuid == origin_uuid) return remembered->result;
+    // The chain is unchanged but the committed origin is not: read it in full.
+    const auto catalog_read = read_catalog();
+    if (!catalog_read.ok()) {
+      return propagate(catalog_read.status, catalog_read.diagnostic);
+    }
+  }
   std::vector<CatalogTypedRecord> records;
   // The runtime authority binding travels in this same scan. It is a
   // config_profile record rather than a security record, so it is recognized
@@ -9559,6 +9828,10 @@ DatabaseBootstrapSecurityCatalogReadResult ReadBootstrapSecurityCatalogFromOwned
   // The shared validator cannot prove commitment. Only the actual source
   // reader above has verified the owning inventory and bootstrap transaction.
   validated.state.committed_by_inventory = true;
+  if (!path.empty()) {
+    memo.Remember(path, parsed_header.header.page_size, database_uuid.value,
+                  origin_uuid, std::move(chain), validated);
+  }
   return validated;
 }
 
