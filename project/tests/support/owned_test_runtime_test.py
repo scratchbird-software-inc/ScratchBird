@@ -2,13 +2,17 @@
 # SPDX-License-Identifier: MPL-2.0
 import os
 from pathlib import Path
+import shutil
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from types import SimpleNamespace
 from unittest import mock
-from owned_test_runtime import CleanupRefused, OwnedTestRuntime, _active_references, _process_exit_confirmed
+from owned_test_runtime import (CleanupRefused, OwnedTestRuntime, _active_references,
+                                _all_threads_terminal, _process_exit_confirmed)
 
 
 class RuntimeCleanupTest(unittest.TestCase):
@@ -58,12 +62,51 @@ class RuntimeCleanupTest(unittest.TestCase):
                 reader = process.__truediv__.return_value.read_text
                 reader.side_effect = contents if isinstance(contents, BaseException) else None
                 reader.return_value = contents
-                with mock.patch("owned_test_runtime.os.pidfd_open", return_value=91), \
+                with mock.patch("owned_test_runtime.os.pidfd_open", return_value=91, create=True), \
                      mock.patch("owned_test_runtime.os.close") as close, \
                      mock.patch("owned_test_runtime.select.poll") as poll:
                     poll.return_value.poll.return_value = [(91, 1)]
                     self.assertEqual(_process_exit_confirmed(process), expected)
                     close.assert_called_once_with(91)
+
+    def test_exit_confirmed_without_pidfd_open(self):
+        # Interpreters without os.pidfd_open must still confirm a real zombie
+        # and must still refuse a live process.
+        child = subprocess.Popen([sys.executable, "-c",
+                                  "import sys; print('ready', flush=True); sys.stdin.read()"],
+                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        try:
+            self.assertEqual(child.stdout.readline().strip(), "ready")
+            process = Path("/proc") / str(child.pid)
+            with mock.patch("owned_test_runtime.os.pidfd_open", side_effect=AttributeError,
+                            create=True):
+                self.assertFalse(_process_exit_confirmed(process))
+                child.stdin.close()
+                self.assertEqual(child.stdout.read(), "")
+                deadline = time.monotonic() + 5
+                while not _process_exit_confirmed(process) and time.monotonic() < deadline:
+                    pass
+                self.assertTrue((process / "stat").read_text().split(") ")[1].startswith("Z"))
+                self.assertTrue(_process_exit_confirmed(process))
+        finally:
+            if not child.stdin.closed:
+                child.stdin.close()
+            child.wait(timeout=5)
+            child.stdout.close()
+
+    def test_zombie_leader_with_live_thread_is_not_terminal(self):
+        process = mock.MagicMock()
+        process.name = "42"
+        leader, worker = mock.MagicMock(), mock.MagicMock()
+        process.__truediv__.side_effect = lambda name: {
+            "stat": mock.MagicMock(read_text=mock.MagicMock(return_value="42 (w) Z 1 2")),
+            "task": mock.MagicMock(iterdir=mock.MagicMock(return_value=[leader, worker])),
+        }[name]
+        leader.__truediv__.return_value.read_text.return_value = "42 (w) Z 1 2"
+        worker.__truediv__.return_value.read_text.return_value = "43 (w) S 1 2"
+        self.assertFalse(_all_threads_terminal(process, wait_seconds=0))
+        worker.__truediv__.return_value.read_text.return_value = "43 (w) X 1 2"
+        self.assertTrue(_all_threads_terminal(process, wait_seconds=0))
 
     def test_success_and_failure_keep_evidence_not_database(self):
         for exit_code in (0, 1):
@@ -124,6 +167,94 @@ class RuntimeCleanupTest(unittest.TestCase):
                         handle.close()
                 runtime.cleanup(Path(parent) / "evidence", controller_finished=True)
                 self.assertFalse(runtime.path.exists())
+
+    # The runtime creator runs in its own process so "descendant of the
+    # creator" and "unrelated" are real process-tree facts, not mocks.
+    CREATOR = """
+import ctypes, os, sys, time
+sys.path.insert(0, {support!r})
+from owned_test_runtime import CleanupRefused, OwnedTestRuntime
+runtime = OwnedTestRuntime({parent!r})
+daemon = 0
+if {daemon!r}:
+    read_end, write_end = os.pipe()
+    if os.fork() == 0:
+        grandchild = os.fork()
+        if grandchild == 0:
+            ctypes.CDLL(None).prctl(4, 0, 0, 0, 0)  # PR_SET_DUMPABLE 0
+            time.sleep(60)
+            os._exit(0)
+        os.write(write_end, str(grandchild).encode())
+        os._exit(0)
+    os.wait()
+    daemon = int(os.read(read_end, 32))
+print(daemon, runtime.path, flush=True)
+sys.stdin.readline()
+try:
+    runtime.cleanup({evidence!r}, controller_finished=True)
+    print("removed", flush=True)
+except CleanupRefused as error:
+    print("refused", error, flush=True)
+"""
+
+    def _run_creator(self, parent, daemon, unrelated):
+        support = str(Path(__file__).resolve().parent)
+        creator = subprocess.Popen(
+            [sys.executable, "-I", "-c", self.CREATOR.format(
+                support=support, parent=parent, daemon=daemon,
+                evidence=str(Path(parent) / "evidence"))],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True)
+        stranger = None
+        try:
+            daemon, _, runtime_path = creator.stdout.readline().strip().partition(" ")
+            runtime_path = Path(runtime_path)
+            self.assertTrue(runtime_path.is_dir())
+            if unrelated:
+                # Started after the runtime by a process outside the creator's
+                # tree, never told the path, and not inspectable via procfs.
+                stranger = subprocess.Popen(
+                    [sys.executable, "-I", "-c",
+                     "import ctypes,sys,time; ctypes.CDLL(None).prctl(4,0,0,0,0); "
+                     "print('ready', flush=True); time.sleep(60)"],
+                    stdout=subprocess.PIPE, text=True)
+                self.assertEqual(stranger.stdout.readline().strip(), "ready")
+                with self.assertRaises(PermissionError):
+                    Path("/proc", str(stranger.pid), "environ").read_bytes()
+            creator.stdin.write("go\n")
+            creator.stdin.flush()
+            outcome = creator.stdout.readline().strip()
+            return runtime_path, outcome, int(daemon)
+        finally:
+            if stranger:
+                stranger.kill()
+                stranger.wait()
+                stranger.stdout.close()
+            creator.stdin.close()
+            creator.wait(timeout=30)
+            creator.stdout.close()
+
+    def test_uninspectable_unrelated_process_does_not_block_cleanup(self):
+        with tempfile.TemporaryDirectory() as parent:
+            runtime_path, outcome, _ = self._run_creator(parent, daemon=False, unrelated=True)
+            self.assertEqual(outcome, "removed")
+            self.assertFalse(runtime_path.exists())
+
+    def test_uninspectable_daemonized_descendant_still_refuses(self):
+        with tempfile.TemporaryDirectory() as parent:
+            runtime_path, outcome, daemon = self._run_creator(parent, daemon=True, unrelated=False)
+            try:
+                self.assertTrue(outcome.startswith("refused cannot inspect an owned process"),
+                                outcome)
+                self.assertTrue(runtime_path.exists())
+            finally:
+                # The double-forked daemon outlives its creator; end it here,
+                # then remove the runtime the refusal correctly left behind.
+                if daemon:
+                    try:
+                        os.kill(daemon, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                shutil.rmtree(runtime_path, ignore_errors=True)
 
     def test_root_substitution_and_inside_destination_refused(self):
         with tempfile.TemporaryDirectory() as parent:

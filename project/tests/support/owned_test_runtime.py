@@ -8,6 +8,7 @@ The caller must first wait for its test controller to terminate. This does not
 collect fixtures that ignore TMPDIR; those need explicit fixture-level cleanup.
 """
 
+import ctypes
 import json
 import os
 from pathlib import Path
@@ -31,7 +32,11 @@ def _process_exit_confirmed(process):
         descriptor = os.pidfd_open(int(process.name))
     except ProcessLookupError:
         return True
-    except (AttributeError, OSError):
+    except AttributeError:
+        # Interpreter built without pidfd_open (seen with a portable CPython
+        # 3.11): judge the PID's current occupant by its threads instead.
+        return _all_threads_terminal(process)
+    except OSError:
         return False
     try:
         poller = select.poll()
@@ -55,6 +60,41 @@ def _process_exit_confirmed(process):
         os.close(descriptor)
 
 
+def _all_threads_terminal(process, wait_seconds=0.05):
+    """True when every thread of the PID's current occupant is Z or X.
+
+    Such a process holds no address space, files or cwd, whoever it is, so a
+    reused PID cannot borrow this answer. A zombie leader whose other threads
+    still run is not terminal. Waits as long as the pidfd path does."""
+    deadline = time.monotonic() + wait_seconds
+    while True:
+        try:
+            status = (process / "stat").read_text()
+            tasks = list((process / "task").iterdir())
+        except (FileNotFoundError, ProcessLookupError):
+            return True
+        except (OSError, UnicodeError):
+            return False
+        if not status.startswith(process.name + " ("):
+            return False
+        terminal = True
+        for task in tasks:
+            try:
+                fields = (task / "stat").read_text().rpartition(") ")[2].split()
+            except (FileNotFoundError, ProcessLookupError):
+                continue
+            except (OSError, UnicodeError):
+                return False
+            if not fields or fields[0] not in {"Z", "X"}:
+                terminal = False
+                break
+        if terminal:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(0.005)
+
+
 def _started_before(process, created_wall_seconds):
     """True when the process started before the runtime directory existed.
 
@@ -75,7 +115,65 @@ def _started_before(process, created_wall_seconds):
     return started + 1.0 < created_wall_seconds
 
 
-def _active_references(root, created_wall_seconds=None):
+_PR_SET_CHILD_SUBREAPER = 36
+
+
+def _become_child_subreaper():
+    """Keep every process this one starts inside its own process tree.
+
+    Without this a double-forked daemon is reparented to init and its ancestry
+    no longer shows who started it. Orphans are deliberately not reaped here:
+    waiting on any child could take an exit status a caller's Popen expects."""
+    if not sys.platform.startswith("linux"):
+        return False
+    try:
+        libc = ctypes.CDLL(None, use_errno=True)
+        return libc.prctl(_PR_SET_CHILD_SUBREAPER, 1, 0, 0, 0) == 0
+    except (OSError, AttributeError):
+        return False
+
+
+def _status_fields(process):
+    """Identity fields that stay world-readable for non-dumpable processes."""
+    fields = {}
+    try:
+        stat_fields = (process / "stat").read_text().rpartition(") ")[2].split()
+        fields["ppid"] = stat_fields[1]
+        fields["start_ticks"] = stat_fields[19]
+    except (OSError, IndexError, UnicodeError):
+        pass
+    try:
+        for line in (process / "status").read_text().splitlines():
+            key, _, value = line.partition(":")
+            if key in ("Name", "Uid", "NSpid"):
+                fields[key] = " ".join(value.split())
+    except (OSError, UnicodeError):
+        pass
+    return fields
+
+
+def _descends_from(process, ancestor):
+    """True unless the ppid chain provably ends without passing ancestor.
+
+    Any unreadable link counts as a descendant, so doubt still refuses."""
+    pid = int(process.name)
+    for _ in range(4096):
+        if pid == ancestor:
+            return True
+        if pid <= 1:
+            return False
+        try:
+            parent = int(Path("/proc", str(pid), "stat").read_text()
+                         .rpartition(") ")[2].split()[1])
+        except (OSError, ValueError, IndexError, UnicodeError):
+            return True
+        if parent == pid:
+            return True
+        pid = parent
+    return True
+
+
+def _active_references(root, created_wall_seconds=None, tree_root=None):
     if not sys.platform.startswith("linux"):
         raise CleanupRefused("live-process inspection requires the Linux runner")
     needle = os.fsencode(root)
@@ -118,13 +216,24 @@ def _active_references(root, created_wall_seconds=None):
             # reference it; skipping it does not weaken the check.
             if _started_before(process, created_wall_seconds):
                 continue
-            raise CleanupRefused("cannot inspect an owned process: " + process.name) from error
+            # Nor can one outside the creator's process tree: the random path
+            # is only handed to processes the test starts, and as a child
+            # subreaper the creator keeps even daemonized ones in its tree.
+            # A non-dumpable process from a parallel test lands here.
+            if tree_root is not None and not _descends_from(process, tree_root):
+                continue
+            details = " ".join(f"{key}={value}" for key, value in
+                               sorted(_status_fields(process).items()))
+            raise CleanupRefused("cannot inspect an owned process: " + process.name +
+                                 (" (" + details + ")" if details else "")) from error
     return active
 
 
 class OwnedTestRuntime:
     def __init__(self, parent=None):
         self._created_wall_seconds = time.time()
+        # Set before the test starts anything that is handed the path.
+        self._tree_root = os.getpid() if _become_child_subreaper() else None
         self.path = Path(tempfile.mkdtemp(prefix="sbuidreg", dir=parent))
         info = self.path.lstat()
         self._identity = (info.st_dev, info.st_ino, info.st_uid)
@@ -152,13 +261,17 @@ class OwnedTestRuntime:
                     raise CleanupRefused("unexpected runtime object: " + str(child))
         return found
 
+    def _tree_root_here(self):
+        # The tree rule only holds in the creating, subreaping process.
+        return self._tree_root if self._tree_root == os.getpid() else None
+
     def cleanup(self, evidence, *, controller_finished):
         if self._removed:
             raise CleanupRefused("runtime already removed")
         if not controller_finished:
             raise CleanupRefused("test controller has not terminated")
         files = self._inventory()
-        active = _active_references(self.path, self._created_wall_seconds)
+        active = _active_references(self.path, self._created_wall_seconds, self._tree_root_here())
         if active:
             raise CleanupRefused("runtime still referenced by PIDs " + repr(active))
         evidence = Path(evidence).resolve()
@@ -194,7 +307,7 @@ class OwnedTestRuntime:
                     shutil.copyfileobj(source, output)
             retained += metadata.st_size
         self._inventory()
-        active = _active_references(self.path, self._created_wall_seconds)
+        active = _active_references(self.path, self._created_wall_seconds, self._tree_root_here())
         if active:
             raise CleanupRefused("runtime became active: " + repr(active))
         receipt = {"runtime": str(self.path), "diagnostic_bytes_retained": retained,
