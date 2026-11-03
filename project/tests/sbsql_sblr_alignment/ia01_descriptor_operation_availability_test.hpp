@@ -145,8 +145,7 @@ inline void RequireMissingExecutorEvidence(
 
 // An administrator's first load bootstraps exact executor evidence: the row
 // is installed at generation 1 for this tuple and published to the store.
-// Checked with RequireAvailabilityTest, never assert(), so NDEBUG builds
-// still test it; the fixture's unique path and destructor leave no store.
+// The fixture's unique path and destructor leave no store behind.
 inline void RequireAdminBootstrapInstalls(
     std::string_view tag,
     const api::EngineUuid& database_uuid,

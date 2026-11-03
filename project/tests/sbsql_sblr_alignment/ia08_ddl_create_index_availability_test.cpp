@@ -1,4 +1,5 @@
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/scratch_database_path.hpp"
 #include "engine/internal_api/sblr_executor_availability_registry.hpp"
 
 #include <cassert>
@@ -16,14 +17,9 @@
 int main() {
   namespace api = scratchbird::engine::internal_api;
 
-  const auto nonce = std::chrono::steady_clock::now()
-                         .time_since_epoch()
-                         .count();
   api::EngineRequestContext context;
-  context.database_path =
-      (std::filesystem::temp_directory_path() /
-       ("sb_create_index_fail_closed_2603_" + std::to_string(nonce)))
-          .string();
+  context.database_path = scratchbird::tests::ScratchAvailabilityDatabasePath(
+      "sb_create_index_fail_closed_2603");
   context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000002571");
   context.security_context_present = true;
   context.trace_tags = {"right:SBLR_EXECUTOR_AVAILABILITY_ADMIN"};

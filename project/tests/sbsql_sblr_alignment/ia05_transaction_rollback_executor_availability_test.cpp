@@ -7,6 +7,7 @@
 #include <cassert>
 #include <chrono>
 #include <filesystem>
+#include "../support/scratch_database_path.hpp"
 
 namespace a = scratchbird::engine::internal_api;
 
@@ -18,9 +19,7 @@ int main() {
   a::EngineRequestContext context;
   context.database_uuid = database.value.value;
   context.database_path =
-      (std::filesystem::temp_directory_path() /
-       std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()))
-          .string();
+      scratchbird::tests::ScratchAvailabilityDatabasePath("sb_ia05_transaction_rollback_executor");
   context.security_context_present = true;
   context.trace_tags = {"right:SBLR_EXECUTOR_AVAILABILITY_ADMIN"};
 

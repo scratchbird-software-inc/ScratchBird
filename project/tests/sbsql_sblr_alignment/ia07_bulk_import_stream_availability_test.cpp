@@ -4,11 +4,12 @@
 #include <cassert>
 #include <filesystem>
 #include <fstream>
+#include "../support/scratch_database_path.hpp"
 
 int main() {
   namespace api = scratchbird::engine::internal_api;
   api::EngineRequestContext context;
-  context.database_path = "/tmp/sb_bis_2451";
+  context.database_path=scratchbird::tests::ScratchAvailabilityDatabasePath("sb_bis_2451");
   context.database_uuid = scratchbird::tests::FixtureUuidLiteral("019d0000-0000-7000-8000-000000002451");
   context.security_context_present = true;
   context.trace_tags = {"right:SBLR_EXECUTOR_AVAILABILITY_ADMIN"};
