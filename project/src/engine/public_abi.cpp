@@ -27903,12 +27903,20 @@ sb_engine_status_t DispatchStatementContextReceipt(
                       : resolved.diagnostics.front().detail);
             }
           } else {
+            // Same schema-tree identity rule as the bind: a schema target has
+            // no enclosing schema, so its own UUID is its schema tree.
+            auto observed_schema_tree_uuid =
+                resolved.bound_object_identity.resolved_schema_uuid;
+            if (observed_schema_tree_uuid.is_nil() &&
+                resolved.primary_object.object_kind == "schema") {
+              observed_schema_tree_uuid = resolved.primary_object.uuid;
+            }
             current = current &&
                 resolved.primary_object.uuid ==
                     catalog_epoch_check_authority->object_uuid &&
                 resolved.bound_object_identity.catalog_generation_id ==
                     catalog_epoch_check_authority->object_generation &&
-                resolved.bound_object_identity.resolved_schema_uuid ==
+                observed_schema_tree_uuid ==
                     catalog_epoch_check_authority->schema_tree_uuid &&
                 resolved.bound_object_identity.security_epoch ==
                     catalog_epoch_check_descriptor.security_epoch &&

@@ -7,10 +7,12 @@
 #define SCRATCHBIRD_IA05_QUERY_EXPLAIN_FIXTURE_ONLY
 #include "ia05_query_explain_cancellation_fault_test.cpp"
 
+#include "engine/internal_api/catalog/catalog_object_lifecycle.hpp"
 #include "engine/internal_api/sblr_catalog_epoch_check_journal.hpp"
 #include "engine/sblr/sblr_catalog_epoch_check_runtime.hpp"
 
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <string_view>
 
@@ -43,7 +45,13 @@ sblr::SblrOperationEnvelope CatalogEpochCheckMember(
 
 }  // namespace
 
-void RunCleanupOrderingCase(bool cleanup_after_capture) {
+// own_transaction_ended: the statement's OWN transaction ends after receipt
+// capture. That is the genuinely stale case: its snapshot no longer exists.
+// object_replaced: an object-scoped check whose target the statement's own
+// transaction replaces after binding; the observation is stale (status 2).
+void RunCleanupOrderingCase(bool cleanup_after_capture,
+                            bool own_transaction_ended = false,
+                            bool object_replaced = false) {
   auto fixture = CreateFixture();
   PublicSession session(fixture);
   std::atomic<unsigned> probes{0};
@@ -57,6 +65,38 @@ void RunCleanupOrderingCase(bool cleanup_after_capture) {
             "catalog epoch competing transaction cleanup failed");
   };
   if (!cleanup_after_capture) finish_other_transaction();
+  // Object-scoped target: a schema committed before the statement's
+  // transaction begins, so that transaction's snapshot sees it.
+  std::string scoped_name;
+  api::EngineUuid original_schema_uuid;
+  const auto schema_name = [](const std::string& value) {
+    api::EngineLocalizedName name;
+    name.language_tag = "en";
+    name.name_class = "primary";
+    name.name = value;
+    name.raw_name_text = value;
+    name.display_name = value;
+    name.default_name = true;
+    return name;
+  };
+  if (object_replaced) {
+    scoped_name = "epoch_probe_" + std::to_string(
+        std::chrono::steady_clock::now().time_since_epoch().count());
+    auto setup = BeginTransaction(fixture, &probes);
+    setup.query_cancellation_requested = {};
+    api::EngineCatalogCreateObjectRequest create;
+    create.context = setup;
+    create.target_object.uuid = Identity(NewUuid(platform::UuidKind::object, 36330));
+    create.target_object.object_kind = "schema";
+    create.localized_names.push_back(schema_name(scoped_name));
+    Require(api::EngineCatalogCreateObject(create).ok,
+            "003632 object-scoped target schema creation failed");
+    original_schema_uuid = create.target_object.uuid;
+    api::EngineCommitTransactionRequest commit;
+    commit.context = setup;
+    Require(api::EngineCommitTransaction(commit).ok,
+            "003632 object-scoped target schema commit failed");
+  }
   auto context = BeginTransaction(fixture, &probes);
   const auto parser_uuid = Identity(NewUuid(platform::UuidKind::object, 36320));
   context.current_package_uuid = parser_uuid;
@@ -103,7 +143,9 @@ void RunCleanupOrderingCase(bool cleanup_after_capture) {
     bind::CatalogEpochCheckBindRequestV1 public_bind;
     public_bind.authenticated_receipt_uuid = RawUuid(view.receipt_uuid);
     public_bind.occurrence = 1;
-    public_bind.object_scoped = false;
+    public_bind.object_scoped = !scoped_name.empty();
+    if (!scoped_name.empty())
+      public_bind.target_name_atoms.push_back({scoped_name, false});
     Require(bind::EncodeCatalogEpochCheckBindRequestV1(
                 public_bind, &out->exact_bind, &detail),
             "003632 canonical private bind request encoding failed");
@@ -149,7 +191,7 @@ void RunCleanupOrderingCase(bool cleanup_after_capture) {
                 authority.canonical_descriptor_bytes.data(),
                 authority.canonical_descriptor_bytes.size(), &descriptor,
                 &detail) &&
-                !descriptor.object_scoped &&
+                descriptor.object_scoped == !scoped_name.empty() &&
                 descriptor.statement_receipt_uuid == RawUuid(view.receipt_uuid),
             "003632 engine SECD did not decode");
 
@@ -192,6 +234,66 @@ void RunCleanupOrderingCase(bool cleanup_after_capture) {
             failure);
     if (result != nullptr) (void)sb_engine_result_release(result);
   };
+
+  if (object_replaced) {
+    const auto observe = [&](Attempt& attempt, std::uint8_t expected_status,
+                             const char* failure) {
+      sb_engine_result_t observed = nullptr;
+      const auto status = dispatch(attempt, &observed);
+      if (status != SB_ENGINE_STATUS_OK || observed == nullptr) {
+        std::cerr << "dispatch status=" << static_cast<int>(status) << " code="
+                  << (observed ? DiagnosticCode(observed) : std::string()) << " key="
+                  << (observed ? DiagnosticKey(observed) : std::string()) << '\n';
+        Fail(failure);
+      }
+      const auto payload = ResultPayload(observed);
+      sblr::SblrCatalogEpochCheckResultV1 decoded;
+      const bool decoded_ok = sblr::DecodeSblrCatalogEpochCheckResultV1(
+          payload.data(), payload.size(), &decoded, &detail);
+      if (!decoded_ok || !decoded.object_scoped || decoded.status != expected_status ||
+          decoded.visibility != 1 || decoded.check_uuid != attempt.descriptor.check_uuid) {
+        std::cerr << "decoded=" << decoded_ok << " object_scoped=" << decoded.object_scoped
+                  << " status=" << static_cast<int>(decoded.status)
+                  << " visibility=" << static_cast<int>(decoded.visibility) << '\n';
+        Fail(failure);
+      }
+      (void)sb_engine_result_release(observed);
+    };
+    // Control: the same object-scoped check with the target unchanged.
+    Attempt unchanged;
+    prepare(&unchanged);
+    observe(unchanged, 1, "003632 unchanged object-scoped target was not current");
+    // Bind, then replace the target within the statement's own transaction:
+    // the same name now resolves to a different object, so the observation
+    // made for the bound object is stale. The statement snapshot is unchanged,
+    // so this reaches observation rather than the snapshot refusal.
+    Attempt replaced;
+    prepare(&replaced);
+    api::EngineCatalogDropObjectRequest drop;
+    drop.context = context;
+    drop.target_object.uuid = original_schema_uuid;
+    drop.target_object.object_kind = "schema";
+    Require(api::EngineCatalogDropObject(drop).ok,
+            "003632 own-transaction target drop failed");
+    api::EngineCatalogCreateObjectRequest recreate;
+    recreate.context = context;
+    recreate.target_object.uuid = Identity(NewUuid(platform::UuidKind::object, 36331));
+    recreate.target_object.object_kind = "schema";
+    recreate.localized_names.push_back(schema_name(scoped_name));
+    Require(api::EngineCatalogCreateObject(recreate).ok,
+            "003632 own-transaction target recreation failed");
+    observe(replaced, 2, "003632 replaced object-scoped target was not stale");
+    for (auto* attempt : {&unchanged, &replaced})
+      Require(bridge::ReleaseStatementContextReceipt(attempt->receipt) ==
+                  SB_ENGINE_STATUS_OK,
+              "003632 statement receipt cleanup failed");
+    api::EngineRollbackTransactionRequest rollback;
+    rollback.context = context;
+    Require(api::EngineRollbackTransaction(rollback).ok,
+            "003632 fixture transaction rollback failed");
+    std::cout << "catalog_epoch_object_scoped unchanged=1 replaced_in_own_transaction=2 PASS\n";
+    return;
+  }
 
   // Phase 1: cancellation before observation keeps only the begun identity.
   Attempt first;
@@ -266,6 +368,44 @@ void RunCleanupOrderingCase(bool cleanup_after_capture) {
   const auto before_cleanup = db::AcquireStrongLocalTransactionInventorySnapshot(
       fixture.database_path.string());
   Require(before_cleanup.ok(), "catalog epoch pre-cleanup inventory snapshot");
+  if (own_transaction_ended) {
+    // Every dispatch first requires the statement snapshot to still match, so
+    // a database-scoped check whose own transaction has ended is refused as
+    // stale before observation: no journal entry, no result, no SECR.
+    api::EngineRollbackTransactionRequest own_rollback;
+    own_rollback.context = context;
+    Require(api::EngineRollbackTransaction(own_rollback).ok,
+            "003632 statement transaction rollback failed");
+    probes.store(0, std::memory_order_relaxed);
+    Require(dispatch(success, &result) == SB_ENGINE_STATUS_CONFLICT &&
+                result != nullptr &&
+                DiagnosticCode(result) == "ENGINE.STATEMENT_CONTEXT.SNAPSHOT_STALE" &&
+                DiagnosticKey(result) == "engine.statement_context.snapshot_stale",
+            "003632 an ended statement transaction was not refused as stale");
+    (void)sb_engine_result_release(result);
+    no_terminal_result(success, "003632 a stale statement published a terminal result");
+    const auto never_begun = api::LookupSblrCatalogEpochCheckJournalV1(
+        journal_context, success.journal_key);
+    Require(never_begun.ok && !never_begun.found,
+            "003632 a stale statement began a durable journal entry");
+    for (const auto* cancelled : {&first, &second}) {
+      const auto left = api::LookupSblrCatalogEpochCheckJournalV1(
+          journal_context, cancelled->journal_key);
+      Require(left.ok && left.found &&
+                  left.snapshot.state ==
+                      api::SblrCatalogEpochCheckJournalStateV1::begun &&
+                  left.snapshot.journal_generation == 1 &&
+                  left.snapshot.canonical_result_bytes.empty(),
+              "003632 a stale refusal changed a cancelled receipt's journal");
+    }
+    for (auto* attempt : {&first, &second, &success})
+      Require(bridge::ReleaseStatementContextReceipt(attempt->receipt) ==
+                  SB_ENGINE_STATUS_OK,
+              "003632 statement receipt cleanup failed");
+    std::cout << "catalog_epoch_cleanup_order=own_transaction_ended"
+              << " refused=snapshot_stale no_result=PASS\n";
+    return;
+  }
   if (cleanup_after_capture) finish_other_transaction();
   const auto cleanup_fence = db::RevalidateLocalTransactionInventorySnapshot(
       *before_cleanup.snapshot);
@@ -371,5 +511,7 @@ void RunCleanupOrderingCase(bool cleanup_after_capture) {
 int main() {
   RunCleanupOrderingCase(false);
   RunCleanupOrderingCase(true);
+  RunCleanupOrderingCase(false, true);
+  RunCleanupOrderingCase(false, false, true);
   return EXIT_SUCCESS;
 }
