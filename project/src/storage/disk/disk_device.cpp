@@ -211,6 +211,16 @@ enum class RouteOwnerProbeResult {
   kHeldByOtherProcess,
 };
 
+std::atomic<u64>& PathOpensWithoutRouteOwner() {
+  static std::atomic<u64> count{0};
+  return count;
+}
+
+std::atomic<u64>& PathOpensWithRouteOwner() {
+  static std::atomic<u64> count{0};
+  return count;
+}
+
 std::mutex& RouteOwnedStorageRegistryMutex() {
   static std::mutex mutex;
   return mutex;
@@ -2156,9 +2166,18 @@ IoResult FileDevice::Open(std::string path, FileOpenMode mode) {
   if (metric_device_class_.empty()) {
     metric_device_class_ = "file";
   }
+  (route_owned_by_current_process ? PathOpensWithRouteOwner() : PathOpensWithoutRouteOwner())
+      .fetch_add(1, std::memory_order_relaxed);
   IoResult result;
   result.status = DiskOkStatus();
   return result;
+}
+
+FileDevicePathOpenObservation ObserveFileDevicePathOpens() noexcept {
+  FileDevicePathOpenObservation observation;
+  observation.opens_without_route_owner = PathOpensWithoutRouteOwner().load(std::memory_order_relaxed);
+  observation.opens_with_route_owner = PathOpensWithRouteOwner().load(std::memory_order_relaxed);
+  return observation;
 }
 
 IoResult FileDevice::Close() {

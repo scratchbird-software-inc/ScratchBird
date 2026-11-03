@@ -8214,6 +8214,23 @@ set_tests_properties(
   sbsql_sblr_alignment_ia05_catalog_epoch_check_cancellation_fault PROPERTIES
   LABELS "sbsql_sblr_alignment;sbsql_sblr_alignment_fault;IA-03;SBLR_CATALOG_EPOCH_CHECK;CSC-TEST-003632;cancellation_atomicity;durable_replay;publication_barrier;fault"
   TIMEOUT 120)
+add_executable(sbsql_sblr_alignment_c9_serving_path_open_instrument
+  c9_serving_path_open_instrument_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_c9_serving_path_open_instrument PRIVATE cxx_std_20)
+target_include_directories(
+  sbsql_sblr_alignment_c9_serving_path_open_instrument PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include)
+target_link_libraries(
+  sbsql_sblr_alignment_c9_serving_path_open_instrument PRIVATE
+  sb_server_core sb_engine_sblr sb_wire_statement_management_bind_codec)
+add_test(
+  NAME sbsql_sblr_alignment_c9_serving_path_open_instrument
+  COMMAND sbsql_sblr_alignment_c9_serving_path_open_instrument)
+set_tests_properties(
+  sbsql_sblr_alignment_c9_serving_path_open_instrument PROPERTIES
+  LABELS "sbsql_sblr_alignment;c9_path_open_instrument;storage_disk;embedded_phase"
+  TIMEOUT 120)
 add_executable(sbsql_sblr_alignment_ia08_database_attach_codec
   ia08_database_attach_codec_test.cpp)
 target_compile_features(

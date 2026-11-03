@@ -212,6 +212,19 @@ struct DiskPageHeaderResult {
   }
 };
 
+// SEARCH_KEY: SB_FILE_DEVICE_PATH_OPEN_OBSERVATION (register C9/C15)
+// Successful FileDevice::Open calls in this process, split by whether this
+// process already holds the route for that path. Under the single-owner model
+// the owning process's threads should use its open device, so opens counted
+// with a route owner are the path re-opens the C9 conversion removes; opens
+// without one (CREATE DATABASE, pre-owner verification, other tools) are
+// legitimate. Monotonic, process-wide, read-only; an instrument, not authority.
+struct FileDevicePathOpenObservation {
+  u64 opens_without_route_owner = 0;
+  u64 opens_with_route_owner = 0;
+};
+FileDevicePathOpenObservation ObserveFileDevicePathOpens() noexcept;
+
 class FileDevice {
   struct MetricContext;
  public:
