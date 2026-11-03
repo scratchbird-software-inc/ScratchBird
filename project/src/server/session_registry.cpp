@@ -924,6 +924,7 @@ engine_api::EngineRequestContext EngineContextBase(const HostedEngineState& engi
       reinterpret_cast<const char*>(request.header.request_uuid.data()),
       request.header.request_uuid.size());
   context.database_path = FirstOpenDatabasePath(engine_state);
+  context.served_route_owner = ServedRouteOwnerFor(engine_state, context.database_path);
   context.database_uuid = FirstOpenDatabaseUuid(engine_state);
   context.database_page_size_bytes = FirstOpenDatabasePageSizeBytes(engine_state);
   if (const auto* database = FirstOpenDatabase(engine_state)) {
@@ -1284,6 +1285,8 @@ engine_api::EngineRequestContext EngineContextForSessionProjection(
   auto context = EngineContextBase(engine_state, request);
   context.trust_mode = TrustModeForSession(session);
   context.database_path = session.database_path.empty() ? context.database_path : session.database_path;
+  // Resolved for the final path: the session's path replaces Base's.
+  context.served_route_owner = ServedRouteOwnerFor(engine_state, context.database_path);
   context.database_uuid =
       scratchbird::core::uuid::IsNilUuid(session.database_uuid) ? context.database_uuid : session.database_uuid;
   context.database_page_size_bytes = DatabasePageSizeBytesForSession(session, engine_state);

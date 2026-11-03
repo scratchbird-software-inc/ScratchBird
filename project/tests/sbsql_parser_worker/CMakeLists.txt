@@ -6546,6 +6546,31 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
     set_tests_properties(live_server_agent_storage_benchmark_gate PROPERTIES
       LABELS "live_server_agent_storage_benchmark_gate;PFAR-019;live_server;fresh_database;database_lifecycle;database_lifecycle_server_route;database_lifecycle_parser_route;agent_runtime;storage_agents;supportability;listener_sbct_pool_gate;local_ipc_gate;sbwp_wire_gate;mga_transaction_regression"
     )
+    # SEARCH_KEY: SB_FILE_DEVICE_PATH_OPEN_OBSERVATION (register C9). Opens of
+    # the database file and its sidecars made by the live server, counted by
+    # an LD_PRELOAD interposer. Exact counts: each C9 conversion lowers them.
+    add_library(c9_path_open_counter_preload SHARED
+      "${PROJECT_SOURCE_DIR}/tests/support/c9_path_open_counter_preload.cpp")
+    target_link_libraries(c9_path_open_counter_preload PRIVATE ${CMAKE_DL_LIBS})
+    add_test(
+      NAME c9_live_server_path_open_instrument
+      COMMAND "${SBSQL_PYTHON3}"
+              "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/c9_live_server_path_open_instrument.py"
+              --server $<TARGET_FILE:sb_server>
+              --listener $<TARGET_FILE:sb_listener>
+              --parser-worker $<TARGET_FILE:sbp_sbsql>
+              --sb-isql $<TARGET_FILE:sb_isql>
+              --ipc-tester $<TARGET_FILE:sb_ipc_tester>
+              --database-seeder $<TARGET_FILE:sbsql_example_database_seed>
+              --preload $<TARGET_FILE:c9_path_open_counter_preload>
+              --work-dir "${CMAKE_BINARY_DIR}/c9_live_server_path_opens"
+              # measured 2026-11-03 after C9 step 4: <statements>:<db-file opens>,<sidecar opens>
+              --expect "0:82,2671;1:108,2709;4:129,2738"
+    )
+    set_tests_properties(c9_live_server_path_open_instrument PROPERTIES
+      ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker"
+      LABELS "c9_live_server_path_opens;live_server;storage;database_ownership;c9_route_served_device"
+    )
     add_custom_target(all_noncluster_agents_live_gate
       DEPENDS
         sb_server

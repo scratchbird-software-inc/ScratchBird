@@ -8,7 +8,8 @@
 // and fopen/fopen64 interpose libc's and forward to the real functions.
 // libstdc++'s std::ifstream opens through fopen, whose own internal open is
 // not interposable, so fopen must be counted separately. SB_C9_TRACE_OPENS=1 prints each path opened
-// while a file is watched.
+// while a file is watched; SB_C9_TRACE_OPENS=stack also prints the call stack
+// of each open of the database file itself (resolve with addr2line).
 #include <atomic>
 #include <cstdarg>
 #include <cstdint>
@@ -20,6 +21,8 @@
 #include <string>
 
 #include <dlfcn.h>
+#include <execinfo.h>
+#include <unistd.h>
 #include <fcntl.h>
 
 namespace scratchbird::tests::path_open_counter {
@@ -28,6 +31,7 @@ struct State {
   std::mutex mutex;
   std::string watched;
   bool tracing = false;
+  bool stacks = false;
   std::atomic<std::uint64_t> file_opens{0};
   std::atomic<std::uint64_t> sidecar_opens{0};
 };
@@ -41,7 +45,9 @@ inline void Watch(const std::string& path) {
   auto& state = Get();
   std::lock_guard<std::mutex> guard(state.mutex);
   state.watched = path;
-  state.tracing = std::getenv("SB_C9_TRACE_OPENS") != nullptr;
+  const char* trace = std::getenv("SB_C9_TRACE_OPENS");
+  state.tracing = trace != nullptr;
+  state.stacks = trace != nullptr && std::strcmp(trace, "stack") == 0;
 }
 
 inline std::uint64_t FileOpens() { return Get().file_opens.load(); }
@@ -55,6 +61,12 @@ inline void Observe(const char* path) {
   if (state.tracing) std::cerr << "c9_open " << path << '\n';
   if (state.watched == path) {
     state.file_opens.fetch_add(1);
+    if (state.stacks) {
+      void* frames[48];
+      const int depth = ::backtrace(frames, 48);
+      ::backtrace_symbols_fd(frames, depth, STDERR_FILENO);
+      std::cerr << "c9_stack_end\n";
+    }
   } else if (std::strncmp(path, state.watched.c_str(), state.watched.size()) == 0 &&
              std::strncmp(path + state.watched.size(), ".sb.", 4) == 0) {
     state.sidecar_opens.fetch_add(1);

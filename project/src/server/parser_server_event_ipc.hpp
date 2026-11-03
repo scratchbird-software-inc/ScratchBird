@@ -17,6 +17,10 @@
 #include <vector>
 #include <variant>
 
+namespace scratchbird::storage::disk {
+class RouteOwnershipLease;
+}
+
 namespace scratchbird::engine::internal_api { struct EngineMaterializedAuthorizationContext; }
 
 namespace scratchbird::server {
@@ -71,6 +75,8 @@ struct ParserServerEventEngineContext {
   ParserServerEventTrustMode trust_mode = ParserServerEventTrustMode::server_isolated;
   std::string request_id;
   std::string database_path;
+  // Register C9: carried into EngineRequestContext::served_route_owner.
+  std::shared_ptr<storage::disk::RouteOwnershipLease> served_route_owner;
   ParserServerEventUuidRef database_uuid;
   std::uint64_t database_page_size_bytes = 0;
   ParserServerEventUuidRef principal_uuid;

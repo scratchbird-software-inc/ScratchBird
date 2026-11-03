@@ -1143,7 +1143,9 @@ AcquireStrongLocalTransactionInventorySnapshot(
 
   FileDevice device;
   const auto open = served_owner != nullptr
-      ? device.OpenServed(served_owner, path, FileOpenMode::open_existing)
+      // The snapshot only reads, so a served device is read-only and works
+      // under read-only and read-write ownership alike.
+      ? device.OpenServed(served_owner, path, FileOpenMode::open_existing_read_only)
       : device.Open(path, FileOpenMode::open_existing);
   if (!open.ok()) {
     result.status = open.status;

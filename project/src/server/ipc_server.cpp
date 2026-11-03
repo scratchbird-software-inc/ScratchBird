@@ -697,8 +697,10 @@ ParserServerEventEngineContext EventEngineContextFromSession(
   context.language_context.resource_version_identity =
       language.resource_version_identity;
   context.trace_tags.push_back("sb_server.event_notification");
+  context.served_route_owner = ServedRouteOwnerFor(engine_state, context.database_path);
   engine_api::EngineRequestContext authority;
   authority.database_path = context.database_path;
+  authority.served_route_owner = context.served_route_owner;
   authority.database_uuid = context.database_uuid;
   authority.principal_uuid = context.principal_uuid;
   authority.session_uuid = context.session_uuid;
@@ -1156,6 +1158,7 @@ engine_api::EngineRequestContext PsNameEngineContextFromSession(
   PopulateEngineLanguageContextFromSession(language_session,
                                            &context.language_context);
   context.trace_tags = session.engine_authorization_trace_tags;
+  context.served_route_owner = ServedRouteOwnerFor(engine_state, context.database_path);
   return context;
 }
 

@@ -1050,4 +1050,14 @@ std::string HostedEngineStatusJson(const HostedEngineState& state) {
   return out.str();
 }
 
+std::shared_ptr<storage::disk::RouteOwnershipLease> ServedRouteOwnerFor(
+    const HostedEngineState& engine_state, const std::string& database_path) {
+  if (database_path.empty()) return {};
+  const auto lock_path = DatabaseOwnershipLockPath(database_path);
+  for (const auto& lock : engine_state.database_ownership_locks) {
+    if (lock && lock->valid() && lock->lock_path() == lock_path) return lock->ServedStorageLease();
+  }
+  return {};
+}
+
 }  // namespace scratchbird::server

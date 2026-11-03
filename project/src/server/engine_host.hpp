@@ -189,6 +189,13 @@ struct HostedEngineState {
   std::vector<std::shared_ptr<HostedDatabaseRuntime>> database_runtimes;
 };
 
+// SEARCH_KEY: SB_ROUTE_OWNER_SERVED_DEVICE (register C9). The storage lease
+// of this process's valid ownership lock for database_path, or empty. Context
+// builders put it on EngineRequestContext::served_route_owner so converted
+// reads use the owner's open device instead of re-opening the path.
+std::shared_ptr<storage::disk::RouteOwnershipLease> ServedRouteOwnerFor(
+    const HostedEngineState& engine_state, const std::string& database_path);
+
 struct HostedEngineResult {
   HostedEngineState state;
   std::vector<ServerDiagnostic> diagnostics;

@@ -174,12 +174,14 @@ bool SameInventory(const db::LocalTransactionInventorySnapshotResult& a,
 // First converted site: the statement-attachment inventory snapshot reads the
 // inventory and its root-body hash through the served device, cold (full
 // load) and warm (cache revalidation), with no open of the database file.
-bool ServedInventorySnapshot() {
+bool ServedInventorySnapshot(disk::RouteStorageAccess access, const char* tag) {
   namespace opens = scratchbird::tests::path_open_counter;
   bool ok = true;
+  const std::string cold_name = std::string("served-inventory-cold-") + tag + ".sbdb";
+  const std::string warm_name = std::string("served-inventory-warm-") + tag + ".sbdb";
   {
-    const auto path = CreateRealDatabase("served-inventory-cold.sbdb");
-    auto owned = Own(path, disk::RouteStorageAccess::read_write);
+    const auto path = CreateRealDatabase(cold_name.c_str());
+    auto owned = Own(path, access);
     ok = Expect(owned.acquired && owned.lock, "ownership for cold snapshot not acquired") && ok;
     if (!ok) return false;
     const auto lease = owned.lock->ServedStorageLease();
@@ -194,8 +196,8 @@ bool ServedInventorySnapshot() {
     owned.lock->release();
   }
   {
-    const auto path = CreateRealDatabase("served-inventory-warm.sbdb");
-    auto owned = Own(path, disk::RouteStorageAccess::read_write);
+    const auto path = CreateRealDatabase(warm_name.c_str());
+    auto owned = Own(path, access);
     ok = Expect(owned.acquired && owned.lock, "ownership for warm snapshot not acquired") && ok;
     if (!ok) return false;
     const auto lease = owned.lock->ServedStorageLease();
@@ -210,6 +212,22 @@ bool ServedInventorySnapshot() {
                 "served warm inventory snapshot differs from the path-opened one") && ok;
     owned.lock->release();
   }
+  // After release the owner serves nothing: the snapshot fails closed instead
+  // of falling back to a path open.
+  {
+    const auto path = CreateRealDatabase((std::string("served-inventory-released-") + tag + ".sbdb").c_str());
+    auto owned = Own(path, access);
+    ok = Expect(owned.acquired && owned.lock, "ownership for released snapshot not acquired") && ok;
+    if (!ok) return false;
+    const auto lease = owned.lock->ServedStorageLease();
+    owned.lock->release();
+    opens::Watch(path.string());
+    const auto before = opens::FileOpens();
+    const auto refused = db::AcquireStrongLocalTransactionInventorySnapshot(path.string(), lease);
+    ok = Expect(!refused.ok(), "a released owner still served an inventory snapshot") && ok;
+    ok = Expect(opens::FileOpens() == before,
+                "a refused served snapshot fell back to opening the database file") && ok;
+  }
   opens::Watch({});
   return ok;
 }
@@ -222,7 +240,8 @@ int main() {
   if (!Expect(memory.ok(), "fixture memory setup failed")) return EXIT_FAILURE;
   bool ok = ReadOnlyServedDevice();
   ok = WritableServedDeviceAndSerialization() && ok;
-  ok = ServedInventorySnapshot() && ok;
+  ok = ServedInventorySnapshot(disk::RouteStorageAccess::read_write, "rw") && ok;
+  ok = ServedInventorySnapshot(disk::RouteStorageAccess::read_only, "ro") && ok;
   std::cout << (ok ? "c9_route_served_device_gate PASS" : "c9_route_served_device_gate FAIL") << '\n';
   return ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }

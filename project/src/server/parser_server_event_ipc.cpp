@@ -46,6 +46,7 @@ api::EngineRequestContext EngineContextFrom(const ParserServerEventEngineContext
   out.trust_mode = EngineTrustModeFrom(context.trust_mode);
   out.request_id = context.request_id;
   out.database_path = context.database_path;
+  out.served_route_owner = context.served_route_owner;
   out.database_uuid = context.database_uuid;
   out.database_page_size_bytes = context.database_page_size_bytes;
   out.principal_uuid = context.principal_uuid;
