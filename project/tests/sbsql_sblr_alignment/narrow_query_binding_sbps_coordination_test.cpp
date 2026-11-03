@@ -1,5 +1,6 @@
 #include "datatype_type_codec_identity_current_projection.hpp"
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/database_fixture_cleanup.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
 // This Source Code Form is subject to the terms of the Mozilla Public
@@ -254,6 +255,8 @@ Fixture MakeFixture() {
                       ("scratchbird_narrow_sbps_" +
                        std::to_string(NowMillis()));
   std::filesystem::create_directories(fixture.directory);
+  // Fail() exits without unwinding, so ~Fixture alone misses failed runs.
+  scratchbird::tests::RemoveDatabaseFixtureArtifactsAtExit(fixture.directory);
   fixture.database_path = fixture.directory / "coordination.sbdb";
 
   db::DatabaseCreateConfig create;

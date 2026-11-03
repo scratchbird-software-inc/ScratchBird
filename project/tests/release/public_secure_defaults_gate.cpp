@@ -8,6 +8,7 @@
 
 // PUBLIC_SECURE_DEFAULTS_GATE
 
+#include "../support/database_fixture_cleanup.hpp"
 #include "config.hpp"
 #include "lifecycle.hpp"
 #include "memory.hpp"
@@ -54,11 +55,14 @@ bool HasDiagnostic(const std::vector<server::ServerDiagnostic>& diagnostics,
 
 std::filesystem::path MakeTempRoot() {
 #ifndef _WIN32
-  std::string tmpl = "/tmp/sb_pcr123_secure_defaults.XXXXXX";
+  // Honour TMPDIR, and remove the root at exit (including a failed run's).
+  std::string tmpl =
+      (std::filesystem::temp_directory_path() / "sb_pcr123_secure_defaults.XXXXXX").string();
   std::vector<char> writable(tmpl.begin(), tmpl.end());
   writable.push_back('\0');
   char* made = ::mkdtemp(writable.data());
   Require(made != nullptr, "PCR-123 mkdtemp failed");
+  scratchbird::tests::RemoveDatabaseFixtureArtifactsAtExit(made);
   return std::filesystem::path(made);
 #else
   const auto root = std::filesystem::temp_directory_path() /

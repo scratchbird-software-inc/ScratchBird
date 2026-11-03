@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 
+#include "../support/database_fixture_cleanup.hpp"
 #include "../support/native_catalog_column_fixture.hpp"
 #include "../support/published_mga_table_fixture.hpp"
 #include "../support/catalog_column_binding_fixture.hpp"
@@ -371,6 +372,9 @@ Fixture MakeFixture() {
                           .time_since_epoch()
                           .count()));
   std::filesystem::create_directories(fixture.root);
+  // Fail() exits without unwinding, so the fixture destructor alone misses
+  // failed runs.
+  scratchbird::tests::RemoveDatabaseFixtureArtifactsAtExit(fixture.root);
   fixture.database_path = fixture.root / "execution.sbdb";
   fixture.stream_root = fixture.root / "streams";
   db::DatabaseCreateConfig create;
