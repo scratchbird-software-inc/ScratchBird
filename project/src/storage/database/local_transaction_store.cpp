@@ -1259,6 +1259,12 @@ LocalTransactionInventoryFenceResult RevalidateLocalTransactionInventorySnapshot
 }
 
 LocalTransactionStoreResult LoadLocalTransactionInventoryFromDatabase(std::string path) {
+  return LoadLocalTransactionInventoryFromDatabase(std::move(path), {});
+}
+
+LocalTransactionStoreResult LoadLocalTransactionInventoryFromDatabase(
+    std::string path,
+    const std::shared_ptr<scratchbird::storage::disk::RouteOwnershipLease>& served_owner) {
   if (auto cached = TryLoadCachedTransactionInventory(path)) {
     LocalTransactionStoreResult result;
     result.status = StoreOkStatus();
@@ -1266,7 +1272,7 @@ LocalTransactionStoreResult LoadLocalTransactionInventoryFromDatabase(std::strin
     result.horizons = cached->horizons;
     return result;
   }
-  const auto acquired = AcquireLocalTransactionInventorySnapshot(std::move(path));
+  const auto acquired = AcquireLocalTransactionInventorySnapshot(std::move(path), served_owner);
   if (!acquired.ok()) {
     return StoreError(acquired.status, acquired.diagnostic);
   }

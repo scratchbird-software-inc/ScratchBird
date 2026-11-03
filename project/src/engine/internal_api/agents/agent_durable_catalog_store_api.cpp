@@ -171,7 +171,7 @@ AgentDurableCatalogStoreResult EnsureCatalogTable(const EngineRequestContext& co
     const auto manifest = types::LoadCurrentCoreDatatypeCatalogManifest();
     if (!manifest.ok()) return ErrorResult("datatype_catalog_unavailable");
     const auto catalog = scratchbird::storage::database::ReadDatabaseCatalogIdentity(
-        context.database_path, context.database_uuid);
+        context.database_path, context.database_uuid, context.served_route_owner);
     if (!catalog.ok() || !catalog.record->datatype_cohort)
       return ErrorResult("datatype_catalog_owner_unavailable");
     const auto& cohort = *catalog.record->datatype_cohort;

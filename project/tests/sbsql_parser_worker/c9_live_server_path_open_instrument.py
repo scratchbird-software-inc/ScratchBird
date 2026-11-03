@@ -30,10 +30,12 @@ import live_server_agent_storage_benchmark_gate as live
 STATEMENT_COUNTS = (1, 4)
 
 
-def read_counts(path: Path) -> tuple[int, int]:
+def read_counts(path: Path) -> tuple[tuple[int, int], tuple[int, int]]:
+    """(serving file, serving sidecar), (agent-thread file, agent-thread sidecar)."""
     live.require(path.is_file(), f"count_file_missing:{path}")
     fields = dict(item.split("=", 1) for item in path.read_text().split())
-    return int(fields["file_opens"]), int(fields["sidecar_opens"])
+    return ((int(fields["file_opens"]), int(fields["sidecar_opens"])),
+            (int(fields["agent_file_opens"]), int(fields["agent_sidecar_opens"])))
 
 
 def run_statements(args: argparse.Namespace, database: Path, endpoint: Path, count: int, tag: str) -> None:
@@ -48,8 +50,8 @@ def run_statements(args: argparse.Namespace, database: Path, endpoint: Path, cou
             f"--database-selector=dev_bootstrap_path:{database}",
             f"--server-endpoint=unix:{endpoint}",
             f"--parser-executable={args.parser_worker}",
-            f"--control-dir={args.work / ('lc' + tag)}",
-            f"--runtime-dir={args.work / ('lr' + tag)}",
+            f"--control-dir={args.work / ('l' + str(count))}",
+            f"--runtime-dir={args.work / ('m' + str(count))}",
             "--bind-address=127.0.0.1",
             f"--port={port}",
             "--warm-pool-min=1",
@@ -76,7 +78,7 @@ def run_statements(args: argparse.Namespace, database: Path, endpoint: Path, cou
         live.stop_process(listener)
 
 
-def measure(args: argparse.Namespace, database: Path, statements: int) -> tuple[int, int]:
+def measure(args: argparse.Namespace, database: Path, statements: int):
     tag = f"run{statements}"
     counts = args.work / f"{tag}.counts"
     endpoint = args.work / f"c{statements}" / "s.sock"
@@ -85,7 +87,7 @@ def measure(args: argparse.Namespace, database: Path, statements: int) -> tuple[
     env["SB_C9_WATCH_PATH"] = str(database)
     env["SB_C9_COUNT_FILE"] = str(counts)
     command = [args.server, "--foreground", "--no-listeners",
-               "--control-dir", str(args.work / f"c{statements}"),
+               "--control-dir", str(endpoint.parent),
                "--runtime-dir", str(args.work / f"r{statements}"),
                "--database", str(database), "--sbps-endpoint", str(endpoint)]
     proc = subprocess.Popen(command, env=env,
@@ -118,8 +120,14 @@ def main() -> int:
                                 stderr=(args.work / "seed.err").open("wb"), check=False)
         live.require(seeded.returncode == 0 and database.is_file(), f"seed_failed:{seeded.returncode}")
         observed = {n: measure(args, database, n) for n in (0, *STATEMENT_COUNTS)}
-        report = ";".join(f"{n}:{f},{s}" for n, (f, s) in observed.items())
-        print(f"c9_live_server_path_opens {report}")
+        # Exact: opens made on non-agent server threads. Agent threads
+        # ("sb-agent-*") run timed cycles whose opens vary with how long a run
+        # takes (one landing inside a run adds about 8 database-file and 170
+        # sidecar opens), so they are reported and not compared until the
+        # agent contexts are converted.
+        report = ";".join(f"{n}:{s[0]},{s[1]}" for n, (s, _a) in observed.items())
+        agents = ";".join(f"{n}:{a[0]},{a[1]}" for n, (_s, a) in observed.items())
+        print(f"c9_live_server_path_opens {report} agent_threads {agents}")
         if args.expect:
             live.require(report == args.expect,
                          f"live_open_counts_changed observed={report} expected={args.expect}; "

@@ -499,6 +499,15 @@ DatabaseBootstrapSecurityCatalogReadResult ReadDatabaseBootstrapSecurityCatalog(
     const std::string& path);
 DatabaseCatalogIdentityReadResult ReadDatabaseCatalogIdentity(
     const std::string& path, const scratchbird::core::platform::Uuid& expected_database_uuid);
+// Register C9: with served_owner the same reads go through a device served
+// from the route owner's descriptor instead of re-opening path; an empty owner
+// is the path-open form above.
+DatabaseBootstrapSecurityCatalogReadResult ReadDatabaseBootstrapSecurityCatalog(
+    const std::string& path,
+    const std::shared_ptr<disk::RouteOwnershipLease>& served_owner);
+DatabaseCatalogIdentityReadResult ReadDatabaseCatalogIdentity(
+    const std::string& path, const scratchbird::core::platform::Uuid& expected_database_uuid,
+    const std::shared_ptr<disk::RouteOwnershipLease>& served_owner);
 struct DatabaseBootstrapMetricCatalogReadResult {
   Status status;
   DiagnosticRecord diagnostic;

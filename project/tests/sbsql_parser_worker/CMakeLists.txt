@@ -6564,8 +6564,13 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
               --database-seeder $<TARGET_FILE:sbsql_example_database_seed>
               --preload $<TARGET_FILE:c9_path_open_counter_preload>
               --work-dir "${CMAKE_BINARY_DIR}/c9_live_server_path_opens"
-              # measured 2026-11-03 after C9 step 4: <statements>:<db-file opens>,<sidecar opens>
-              --expect "0:82,2671;1:108,2709;4:129,2738"
+              # <statements>:<db-file opens>,<sidecar opens> on non-agent server
+              # threads (agent-thread opens are reported, not compared). History,
+              # all threads: before C9 step 4 0:82,2671;1:109,2709;4:133,2738;
+              # step 4 0:82,2671;1:108,2709;4:129,2738; step 5 0:78,2671;1:90,2709;
+              # 4:90,2738. Step 5, non-agent threads (measured 2026-11-03) below:
+              # no database-file opens per additional statement.
+              --expect "0:31,238;1:51,533;4:51,557"
     )
     set_tests_properties(c9_live_server_path_open_instrument PROPERTIES
       ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker"

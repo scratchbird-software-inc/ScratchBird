@@ -21,6 +21,7 @@
 #include <fstream>
 #include <iostream>
 #include <iterator>
+#include <map>
 #include <thread>
 #include <vector>
 
@@ -39,6 +40,11 @@ bool Expect(bool condition, const char* message) {
 scratchbird::tests::OwnedTempDirectory& TempOwner() {
   static scratchbird::tests::OwnedTempDirectory owner;
   return owner;
+}
+
+std::map<std::string, scratchbird::core::platform::Uuid>& CreatedDatabaseUuids() {
+  static std::map<std::string, scratchbird::core::platform::Uuid> uuids;
+  return uuids;
 }
 
 std::filesystem::path CreateRealDatabase(const char* name) {
@@ -62,6 +68,7 @@ std::filesystem::path CreateRealDatabase(const char* name) {
     std::cerr << created.diagnostic.diagnostic_code << '\n';
     std::exit(EXIT_FAILURE);
   }
+  CreatedDatabaseUuids()[path.string()] = config.database_uuid.value;
   return path;
 }
 
@@ -232,6 +239,40 @@ bool ServedInventorySnapshot(disk::RouteStorageAccess access, const char* tag) {
   return ok;
 }
 
+// Step 5 sites: the bootstrap security catalog and the catalog identity
+// record read through the served device, with no open of the database file
+// and the same result as the path-opened read.
+bool ServedCatalogReads(disk::RouteStorageAccess access, const char* tag) {
+  namespace opens = scratchbird::tests::path_open_counter;
+  const auto path = CreateRealDatabase((std::string("served-catalog-") + tag + ".sbdb").c_str());
+  const auto database_uuid = CreatedDatabaseUuids().at(path.string());
+  auto owned = Own(path, access);
+  bool ok = Expect(owned.acquired && owned.lock, "ownership for catalog reads not acquired");
+  if (!ok) return false;
+  const auto lease = owned.lock->ServedStorageLease();
+  const auto security_unserved = db::ReadDatabaseBootstrapSecurityCatalog(path.string());
+  const auto identity_unserved = db::ReadDatabaseCatalogIdentity(path.string(), database_uuid);
+  opens::Watch(path.string());
+  const auto before = opens::FileOpens();
+  const auto security = db::ReadDatabaseBootstrapSecurityCatalog(path.string(), lease);
+  const auto identity = db::ReadDatabaseCatalogIdentity(path.string(), database_uuid, lease);
+  ok = Expect(opens::FileOpens() == before, "served catalog reads re-opened the database file") && ok;
+  ok = Expect(security.ok() == security_unserved.ok() &&
+                  security.state.present == security_unserved.state.present &&
+                  security.state.committed_by_inventory == security_unserved.state.committed_by_inventory &&
+                  security.state.l5_principal_uuid.value == security_unserved.state.l5_principal_uuid.value,
+              "served bootstrap security catalog differs from the path-opened read") && ok;
+  ok = Expect(identity.ok() && identity_unserved.ok() &&
+                  identity.record->database_uuid.value == identity_unserved.record->database_uuid.value,
+              "served catalog identity differs from the path-opened read") && ok;
+  owned.lock->release();
+  const auto refused = db::ReadDatabaseCatalogIdentity(path.string(), database_uuid, lease);
+  ok = Expect(!refused.ok(), "a released owner still served the catalog identity") && ok;
+  ok = Expect(opens::FileOpens() == before, "a refused served read fell back to a path open") && ok;
+  opens::Watch({});
+  return ok;
+}
+
 }  // namespace
 
 int main() {
@@ -242,6 +283,8 @@ int main() {
   ok = WritableServedDeviceAndSerialization() && ok;
   ok = ServedInventorySnapshot(disk::RouteStorageAccess::read_write, "rw") && ok;
   ok = ServedInventorySnapshot(disk::RouteStorageAccess::read_only, "ro") && ok;
+  ok = ServedCatalogReads(disk::RouteStorageAccess::read_write, "rw") && ok;
+  ok = ServedCatalogReads(disk::RouteStorageAccess::read_only, "ro") && ok;
   std::cout << (ok ? "c9_route_served_device_gate PASS" : "c9_route_served_device_gate FAIL") << '\n';
   return ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }

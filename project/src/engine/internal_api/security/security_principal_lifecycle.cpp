@@ -2173,7 +2173,7 @@ EngineOwnedSysarchRoleIdentityResult ResolveEngineOwnedSysarchRoleIdentity(
   }
   const auto catalog =
       scratchbird::storage::database::ReadDatabaseBootstrapSecurityCatalog(
-          context.database_path);
+          context.database_path, context.served_route_owner);
   if (!catalog.ok()) {
     result.diagnostic = PrincipalDiagnostic(
         kSecurityPrincipalDiagnosticCatalogAuthorityRequired,

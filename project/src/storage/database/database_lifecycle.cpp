@@ -9277,6 +9277,13 @@ DatabaseLifecycleResult CreateDatabaseFile(const DatabaseCreateConfig& config) {
 DatabaseCatalogIdentityReadResult ReadDatabaseCatalogIdentity(
     const std::string& path,
     const scratchbird::core::platform::Uuid& expected_database_uuid) {
+  return ReadDatabaseCatalogIdentity(path, expected_database_uuid, {});
+}
+
+DatabaseCatalogIdentityReadResult ReadDatabaseCatalogIdentity(
+    const std::string& path,
+    const scratchbird::core::platform::Uuid& expected_database_uuid,
+    const std::shared_ptr<disk::RouteOwnershipLease>& served_owner) {
   const auto propagate = [](Status status, DiagnosticRecord diagnostic) {
     DatabaseCatalogIdentityReadResult result;
     result.status = status;
@@ -9301,7 +9308,9 @@ DatabaseCatalogIdentityReadResult ReadDatabaseCatalogIdentity(
   // filespace identities. The header, pages, startup state, inventory and
   // commitment are still read fresh here; no header hint is trusted.
   FileDevice device;
-  const auto opened = device.Open(path, FileOpenMode::open_existing_read_only);
+  const auto opened = served_owner != nullptr
+      ? device.OpenServed(served_owner, path, FileOpenMode::open_existing_read_only)
+      : device.Open(path, FileOpenMode::open_existing_read_only);
   if (!opened.ok()) return propagate(opened.status, opened.diagnostic);
   SerializedDatabaseHeader bytes{};
   const auto read_header = device.ReadAt(0, bytes.data(), bytes.size());
@@ -9937,9 +9946,18 @@ DatabaseBootstrapSecurityCatalogReadResult ReadBootstrapSecurityCatalogFromOwned
 
 DatabaseBootstrapSecurityCatalogReadResult
 ReadDatabaseBootstrapSecurityCatalog(const std::string& path) {
+  return ReadDatabaseBootstrapSecurityCatalog(path, {});
+}
+
+DatabaseBootstrapSecurityCatalogReadResult
+ReadDatabaseBootstrapSecurityCatalog(
+    const std::string& path,
+    const std::shared_ptr<disk::RouteOwnershipLease>& served_owner) {
   FileDevice device;
   if (path.empty()) return ReadBootstrapSecurityCatalogFromOwnedDevice(device, path);
-  const auto opened = device.Open(path, FileOpenMode::open_existing_read_only);
+  const auto opened = served_owner != nullptr
+      ? device.OpenServed(served_owner, path, FileOpenMode::open_existing_read_only)
+      : device.Open(path, FileOpenMode::open_existing_read_only);
   if (!opened.ok()) {
     DatabaseBootstrapSecurityCatalogReadResult result;
     result.status = opened.status;

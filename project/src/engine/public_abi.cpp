@@ -7155,7 +7155,8 @@ sb_engine_status_t AcquireStatementContextReceipt(
   // cohort. Resolve the actual owned, committed record before coordination
   // effects. A frozen V1 record needs explicit migration, never relabelling.
   const auto datatype_catalog = scratchbird::storage::database::ReadDatabaseCatalogIdentity(
-      engine_context.database_path, engine_context.database_uuid);
+      engine_context.database_path, engine_context.database_uuid,
+      engine_context.served_route_owner);
   if (!datatype_catalog.ok() || !datatype_catalog.record->datatype_cohort)
     return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 4044,
         "DATATYPE.DESCRIPTOR.INVALID", "engine.statement_context.datatype_catalog_unavailable",

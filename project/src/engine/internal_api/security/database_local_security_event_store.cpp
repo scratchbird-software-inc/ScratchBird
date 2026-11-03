@@ -384,7 +384,7 @@ DatabaseLocalSecurityEventStoreLoadResultV1 LoadUnlocked(
     }
   }
   const auto bootstrap = storage::ReadDatabaseBootstrapSecurityCatalog(
-      context.database_path);
+      context.database_path, context.served_route_owner);
   if (!bootstrap.ok() || bootstrap.state.security_context_generation == 0) {
     result.diagnostic = bootstrap.ok()
                             ? ErrorDiagnostic(
@@ -405,7 +405,8 @@ DatabaseLocalSecurityEventStoreLoadResultV1 LoadUnlocked(
     return result;
   }
   const auto loaded_inventory =
-      storage::LoadLocalTransactionInventoryFromDatabase(context.database_path);
+      storage::LoadLocalTransactionInventoryFromDatabase(context.database_path,
+                                                         context.served_route_owner);
   if (!loaded_inventory.ok()) {
     result.diagnostic = StorageDiagnostic(
         loaded_inventory.diagnostic, kDatabaseLocalSecurityDiagnosticCorrupt,
@@ -459,8 +460,10 @@ DatabaseLocalSecurityEventStoreLoadResultV1 LoadUnlocked(
   }
 
   disk::FileDevice device;
-  const auto opened = device.Open(
-      context.database_path, disk::FileOpenMode::open_existing_read_only);
+  const auto opened = context.served_route_owner != nullptr
+      ? device.OpenServed(context.served_route_owner, context.database_path,
+                          disk::FileOpenMode::open_existing_read_only)
+      : device.Open(context.database_path, disk::FileOpenMode::open_existing_read_only);
   if (!opened.ok()) {
     result.diagnostic = StorageDiagnostic(
         opened.diagnostic, kDatabaseLocalSecurityDiagnosticCorrupt,
@@ -991,7 +994,8 @@ AppendDatabaseLocalSecurityEventBatchV1(
   const auto inventory_guard =
       AcquireTransactionInventoryGuard(context.database_path);
   const auto loaded_inventory =
-      storage::LoadLocalTransactionInventoryFromDatabase(context.database_path);
+      storage::LoadLocalTransactionInventoryFromDatabase(context.database_path,
+                                                         context.served_route_owner);
   if (!loaded_inventory.ok()) {
     result.diagnostic = StorageDiagnostic(
         loaded_inventory.diagnostic, kDatabaseLocalSecurityDiagnosticCorrupt,

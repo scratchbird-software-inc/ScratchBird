@@ -10,6 +10,8 @@
 // not interposable, so fopen must be counted separately. SB_C9_TRACE_OPENS=1 prints each path opened
 // while a file is watched; SB_C9_TRACE_OPENS=stack also prints the call stack
 // of each open of the database file itself (resolve with addr2line).
+// Opens made on server agent threads (named "sb-agent-*") are counted apart:
+// agent cycles run on timers, so their opens vary with timing.
 #include <atomic>
 #include <cstdarg>
 #include <cstdint>
@@ -22,6 +24,7 @@
 
 #include <dlfcn.h>
 #include <execinfo.h>
+#include <pthread.h>
 #include <unistd.h>
 #include <fcntl.h>
 
@@ -34,6 +37,8 @@ struct State {
   bool stacks = false;
   std::atomic<std::uint64_t> file_opens{0};
   std::atomic<std::uint64_t> sidecar_opens{0};
+  std::atomic<std::uint64_t> agent_file_opens{0};
+  std::atomic<std::uint64_t> agent_sidecar_opens{0};
 };
 
 inline State& Get() {
@@ -52,6 +57,14 @@ inline void Watch(const std::string& path) {
 
 inline std::uint64_t FileOpens() { return Get().file_opens.load(); }
 inline std::uint64_t SidecarOpens() { return Get().sidecar_opens.load(); }
+inline std::uint64_t AgentFileOpens() { return Get().agent_file_opens.load(); }
+inline std::uint64_t AgentSidecarOpens() { return Get().agent_sidecar_opens.load(); }
+
+inline bool OnAgentThread() {
+  char name[16] = {};
+  return ::pthread_getname_np(::pthread_self(), name, sizeof(name)) == 0 &&
+         std::strncmp(name, "sb-agent", 8) == 0;
+}
 
 inline void Observe(const char* path) {
   if (path == nullptr) return;
@@ -59,8 +72,9 @@ inline void Observe(const char* path) {
   std::lock_guard<std::mutex> guard(state.mutex);
   if (state.watched.empty()) return;
   if (state.tracing) std::cerr << "c9_open " << path << '\n';
+  const bool agent = OnAgentThread();
   if (state.watched == path) {
-    state.file_opens.fetch_add(1);
+    (agent ? state.agent_file_opens : state.file_opens).fetch_add(1);
     if (state.stacks) {
       void* frames[48];
       const int depth = ::backtrace(frames, 48);
@@ -69,7 +83,7 @@ inline void Observe(const char* path) {
     }
   } else if (std::strncmp(path, state.watched.c_str(), state.watched.size()) == 0 &&
              std::strncmp(path + state.watched.size(), ".sb.", 4) == 0) {
-    state.sidecar_opens.fetch_add(1);
+    (agent ? state.agent_sidecar_opens : state.sidecar_opens).fetch_add(1);
   }
 }
 

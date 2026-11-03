@@ -108,6 +108,10 @@ LocalTransactionInventoryFenceResult RevalidateLocalTransactionInventorySnapshot
     const LocalTransactionInventorySnapshot& snapshot);
 
 LocalTransactionStoreResult LoadLocalTransactionInventoryFromDatabase(std::string path);
+// Register C9: a cold load reads through the route owner's served device.
+LocalTransactionStoreResult LoadLocalTransactionInventoryFromDatabase(
+    std::string path,
+    const std::shared_ptr<scratchbird::storage::disk::RouteOwnershipLease>& served_owner);
 LocalTransactionStoreResult LoadLocalTransactionInventoryFromOpenDevice(
     scratchbird::storage::disk::FileDevice* device,
     u32 page_size);
