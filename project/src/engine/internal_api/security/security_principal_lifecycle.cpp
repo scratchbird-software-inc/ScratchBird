@@ -1858,7 +1858,8 @@ EngineApiDiagnostic ResolveSecurityPolicySnapshotSource(
                                  "durable_materialized_policy_mismatch");
     }
     const auto transaction_inventory =
-        LoadLocalTransactionInventoryFromDatabase(context.database_path);
+        LoadLocalTransactionInventoryFromDatabase(context.database_path,
+                                                  context.served_route_owner);
     if (!transaction_inventory.ok()) {
       return PrincipalDiagnostic(
           kSecurityPrincipalDiagnosticPolicyStale,

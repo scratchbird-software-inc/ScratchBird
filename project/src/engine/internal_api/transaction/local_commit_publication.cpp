@@ -67,6 +67,74 @@ std::string ArtifactPostcondition(const std::filesystem::path& path,
   return digest.ok() ? core_hash::HexLower(digest.digest) : std::string{};
 }
 
+// SEARCH_KEY: SB_ROUTE_OWNER_SERVED_DEVICE (C9 step 6). Streams a served
+// device's bytes into the same SHA-256 the path read computes, in bounded
+// chunks, so the database file is hashed without reopening it by path.
+class ServedDeviceStreamBuffer final : public std::streambuf {
+ public:
+  ServedDeviceStreamBuffer(scratchbird::storage::disk::FileDevice* device,
+                           std::uint64_t size)
+      : device_(device), size_(size) {}
+
+ protected:
+  int_type underflow() override {
+    if (gptr() < egptr()) return traits_type::to_int_type(*gptr());
+    if (offset_ >= size_) return traits_type::eof();
+    const auto want = static_cast<std::size_t>(
+        std::min<std::uint64_t>(sizeof(buffer_), size_ - offset_));
+    const auto read = device_->ReadAt(offset_, buffer_, want);
+    if (!read.ok() || read.bytes_transferred == 0) return traits_type::eof();
+    offset_ += read.bytes_transferred;
+    setg(buffer_, buffer_, buffer_ + read.bytes_transferred);
+    return traits_type::to_int_type(*gptr());
+  }
+
+ private:
+  scratchbird::storage::disk::FileDevice* device_;
+  std::uint64_t size_;
+  std::uint64_t offset_ = 0;
+  char buffer_[64 * 1024];
+};
+
+// Sync and hash the database file through the route owner's open file. Only a
+// writable duplicate is accepted, so the pre-visibility sync is always real; a
+// read-only device's sync is a no-op and would break durable-before-visible.
+// A refused owner fails the barrier: there is no fallback to a path open.
+bool ServedDatabaseArtifact(const EngineRequestContext& context,
+                            std::uint64_t* size, std::string* sha256,
+                            std::string* refusal) {
+  using scratchbird::storage::disk::FileDevice;
+  using scratchbird::storage::disk::FileOpenMode;
+  FileDevice device;
+  const auto open = device.OpenServed(context.served_route_owner, context.database_path,
+                                      FileOpenMode::open_existing);
+  if (!open.ok()) {
+    *refusal = "artifact_served_device_refused:" + open.diagnostic.diagnostic_code;
+    return false;
+  }
+  const auto synced = device.Sync();
+  if (!synced.ok()) {
+    *refusal = "artifact_sync_failed:" + context.database_path + ":" +
+               synced.diagnostic.diagnostic_code;
+    return false;
+  }
+  const auto measured = device.Size();
+  if (!measured.ok()) {
+    *refusal = "artifact_size_unavailable:" + context.database_path;
+    return false;
+  }
+  ServedDeviceStreamBuffer buffer(&device, measured.size_bytes);
+  std::istream input(&buffer);
+  const auto digest = core_hash::ComputeSha256Stream(input, measured.size_bytes);
+  if (!digest.ok()) {
+    *refusal = "artifact_postcondition_hash_failed:" + context.database_path;
+    return false;
+  }
+  *size = measured.size_bytes;
+  *sha256 = core_hash::HexLower(digest.digest);
+  return true;
+}
+
 std::string ManifestPath(const EngineRequestContext& context) {
   return local_publication_store::Path(context);
 }
@@ -375,6 +443,17 @@ LocalCommitPublicationResult RunLocalCommitPageBarrier(
     LocalCommitPublicationArtifact artifact;
     artifact.artifact_identity = ArtifactIdentity(context, path);
     artifact.mutation_domain = DomainForArtifact(artifact.artifact_identity);
+    if (context.served_route_owner &&
+        path == std::filesystem::path(context.database_path)) {
+      std::string refusal;
+      if (!ServedDatabaseArtifact(context, &artifact.durable_size_bytes,
+                                  &artifact.postcondition_sha256, &refusal)) {
+        result.diagnostic = Refuse(refusal);
+        return result;
+      }
+      result.artifacts.push_back(std::move(artifact));
+      continue;
+    }
     const auto synced = SyncFilesystemPath(path.string(), true);
     if (!synced.ok()) {
       result.diagnostic = Refuse("artifact_sync_failed:" + path.string() + ":" +

@@ -119,6 +119,13 @@ LocalTransactionStoreResult PersistLocalTransactionInventoryToDatabase(
     std::string path,
     scratchbird::transaction::mga::LocalTransactionInventory inventory,
     InventoryPageSyncPolicy sync_policy = InventoryPageSyncPolicy::batched);
+// Register C9: the replacement writes through the route owner's served device.
+// A set owner that refuses fails closed; it never falls back to a path open.
+LocalTransactionStoreResult PersistLocalTransactionInventoryToDatabase(
+    std::string path,
+    scratchbird::transaction::mga::LocalTransactionInventory inventory,
+    const std::shared_ptr<scratchbird::storage::disk::RouteOwnershipLease>& served_owner,
+    InventoryPageSyncPolicy sync_policy = InventoryPageSyncPolicy::batched);
 // Replacement must retain the database-bound publication_base issued by native
 // loading (or the preceding successful publication). Missing/stale bases refuse
 // before writes. Initial creation uses its dedicated lifecycle publisher, never

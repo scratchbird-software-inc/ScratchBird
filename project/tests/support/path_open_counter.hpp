@@ -79,7 +79,7 @@ inline void Observe(const char* path) {
       void* frames[48];
       const int depth = ::backtrace(frames, 48);
       ::backtrace_symbols_fd(frames, depth, STDERR_FILENO);
-      std::cerr << "c9_stack_end\n";
+      std::cerr << (agent ? "c9_stack_agent\n" : "c9_stack_server\n") << "c9_stack_end\n";
     }
   } else if (std::strncmp(path, state.watched.c_str(), state.watched.size()) == 0 &&
              std::strncmp(path + state.watched.size(), ".sb.", 4) == 0) {

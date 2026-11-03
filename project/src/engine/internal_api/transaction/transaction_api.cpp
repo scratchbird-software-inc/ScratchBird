@@ -1374,7 +1374,8 @@ EngineBeginTransactionResult EngineBeginTransaction(const EngineBeginTransaction
   }
   // An uncertain native publication retains the empty participant until
   // recovery/session teardown; it is not evidence of an active transaction.
-  const auto persisted = PersistLocalTransactionInventoryToDatabase(request.context.database_path, begun.inventory);
+  const auto persisted = PersistLocalTransactionInventoryToDatabase(request.context.database_path, begun.inventory,
+                                                                   request.context.served_route_owner);
   if (!persisted.ok()) {
     auto failure = MakeTxnError<EngineBeginTransactionResult>(
         request.context,
@@ -1863,6 +1864,7 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
                                   !publication_barrier.mutations.empty(),
                               request.context.local_transaction_id);
   const auto persisted = PersistLocalTransactionInventoryToDatabase(request.context.database_path, committed.inventory,
+                                                                   request.context.served_route_owner,
                                                                    request.inventory_page_sync_policy);
   // This no-allocation state transition must precede even optional tracing:
   // result/telemetry allocation failure cannot retain a committed override.
@@ -2243,7 +2245,8 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
                               request.context.local_transaction_id);
   const auto persisted =
       PersistLocalTransactionInventoryToDatabase(request.context.database_path,
-                                                begun.inventory, request.inventory_page_sync_policy);
+                                                begun.inventory, request.context.served_route_owner,
+                                                request.inventory_page_sync_policy);
   mark_phase("persist_transaction_inventory");
   if (!persisted.ok()) {
     trace_phases["total"] = TransactionApiElapsedMicros(trace_start);
@@ -2467,7 +2470,8 @@ EngineRollbackTransactionResult EngineRollbackTransaction(const EngineRollbackTr
         &result, &*rollback_entry);
     return result;
   }
-  const auto persisted = PersistLocalTransactionInventoryToDatabase(request.context.database_path, rolled_back.inventory);
+  const auto persisted = PersistLocalTransactionInventoryToDatabase(request.context.database_path, rolled_back.inventory,
+                                                                   request.context.served_route_owner);
   if (!persisted.ok()) {
     auto result = MakeTxnError<EngineRollbackTransactionResult>(
         request.context,
@@ -2788,7 +2792,8 @@ EnginePrepareTransactionResult EnginePrepareTransaction(const EnginePrepareTrans
     return MakeTxnError<EnginePrepareTransactionResult>(request.context, operation_id,
         DiagnosticFromMGA(prepared.diagnostic, "SB-MGA-TXN-LIFE-PREPARE-FAILED", "mga.transaction_lifecycle.prepare_failed"));
   }
-  const auto persisted = PersistLocalTransactionInventoryToDatabase(request.context.database_path, prepared.inventory);
+  const auto persisted = PersistLocalTransactionInventoryToDatabase(request.context.database_path, prepared.inventory,
+                                                                   request.context.served_route_owner);
   if (!persisted.ok()) {
     return MakeTxnError<EnginePrepareTransactionResult>(request.context, operation_id,
         DiagnosticFromMGA(persisted.diagnostic, "SB-MGA-TXN-INV-PERSIST-FAILED", "mga.transaction_inventory.persist_failed"));

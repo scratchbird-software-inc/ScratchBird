@@ -287,7 +287,7 @@ class CatalogJournalBatchPublisher final {
   if (!marked.ok()) return MakeEngineApiDiagnosticFromNative(marked.diagnostic,
       "SB_ENGINE_API_INVALID_REQUEST", "engine.api.invalid_request", std::string(operation) + ":catalog_batch_mark_failed");
   auto fenced = storage::database::PersistLocalTransactionInventoryToDatabase(
-      context.database_path, std::move(marked.inventory));
+      context.database_path, std::move(marked.inventory), context.served_route_owner);
   const auto unresolved = [&](std::string phase, const core::platform::DiagnosticRecord* cause = nullptr) {
     auto result = cause ? MakeEngineApiDiagnosticFromNative(*cause,
         "SB_ENGINE_API_INVALID_REQUEST", "engine.api.invalid_request", std::string(operation) + ":" + phase)
@@ -348,7 +348,8 @@ class CatalogJournalBatchPublisher final {
       entry->state != transaction::mga::TransactionState::active || !entry->rollback_only)
     return unresolved("catalog_batch_release_identity_mismatch");
   entry->rollback_only = false;
-  const auto released = storage::database::PersistLocalTransactionInventoryToDatabase(context.database_path, std::move(completed));
+  const auto released = storage::database::PersistLocalTransactionInventoryToDatabase(context.database_path, std::move(completed),
+                                                                                    context.served_route_owner);
   if (!released.ok()) return unresolved("catalog_batch_release_publication_failed", &released.diagnostic);
   return success;
 }

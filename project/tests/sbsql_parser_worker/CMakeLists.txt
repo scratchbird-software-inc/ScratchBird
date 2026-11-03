@@ -6568,9 +6568,13 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
               # threads (agent-thread opens are reported, not compared). History,
               # all threads: before C9 step 4 0:82,2671;1:109,2709;4:133,2738;
               # step 4 0:82,2671;1:108,2709;4:129,2738; step 5 0:78,2671;1:90,2709;
-              # 4:90,2738. Step 5, non-agent threads (measured 2026-11-03) below:
-              # no database-file opens per additional statement.
-              --expect "0:31,238;1:51,533;4:51,557"
+              # 4:90,2738. Step 5, non-agent threads (measured 2026-11-03):
+              # 0:31,238;1:51,533;4:51,557, no database-file opens per additional
+              # statement; agent threads 0:47,2433;1:39,2176;4:39,2181. Step 6
+              # (agent sessions carry the owner; inventory persist and the commit
+              # barrier use the served device), measured 2026-11-03 below; agent
+              # threads 0:3,2433;1:0,2176;4:0,2181.
+              --expect "0:24,238;1:42,533;4:42,557"
     )
     set_tests_properties(c9_live_server_path_open_instrument PROPERTIES
       ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker"

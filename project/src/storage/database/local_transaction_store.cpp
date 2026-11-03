@@ -304,8 +304,9 @@ void InvalidateTransactionInventoryCache(const std::string& path) {
 void RefreshTransactionInventoryCache(
     const std::string& path,
     const LocalTransactionInventory& inventory,
-    const scratchbird::transaction::mga::LocalTransactionHorizons& horizons) {
-  const auto signature = ReadTransactionInventoryCacheSignature(path);
+    const scratchbird::transaction::mga::LocalTransactionHorizons& horizons,
+    FileDevice* served_device = nullptr) {
+  const auto signature = ReadTransactionInventoryCacheSignature(path, served_device);
   if (!signature.has_value()) {
     InvalidateTransactionInventoryCache(path);
     return;
@@ -1318,9 +1319,20 @@ LocalTransactionStoreResult PersistLocalTransactionInventoryToDatabase(
     std::string path,
     scratchbird::transaction::mga::LocalTransactionInventory inventory,
     InventoryPageSyncPolicy sync_policy) {
+  return PersistLocalTransactionInventoryToDatabase(std::move(path), std::move(inventory),
+                                                    nullptr, sync_policy);
+}
+
+LocalTransactionStoreResult PersistLocalTransactionInventoryToDatabase(
+    std::string path,
+    scratchbird::transaction::mga::LocalTransactionInventory inventory,
+    const std::shared_ptr<scratchbird::storage::disk::RouteOwnershipLease>& served_owner,
+    InventoryPageSyncPolicy sync_policy) {
   InvalidateTransactionInventoryCache(path);
   FileDevice device;
-  const auto open = device.Open(path, FileOpenMode::open_existing);
+  const auto open = served_owner
+      ? device.OpenServed(served_owner, path, FileOpenMode::open_existing)
+      : device.Open(path, FileOpenMode::open_existing);
   if (!open.ok()) { return StoreError(open.status, open.diagnostic); }
   SerializedDatabaseHeader header_bytes{};
   const auto read_header = device.ReadAt(0, header_bytes.data(), header_bytes.size());
@@ -1332,7 +1344,8 @@ LocalTransactionStoreResult PersistLocalTransactionInventoryToDatabase(
                                                             std::move(inventory), sync_policy);
   if (result.ok()) {
     try {
-      RefreshTransactionInventoryCache(path, result.inventory, result.horizons);
+      RefreshTransactionInventoryCache(path, result.inventory, result.horizons,
+                                       served_owner ? &device : nullptr);
     } catch (const std::bad_alloc&) {
       // This optimization cache was invalidated before publication. Retain a
       // cold authoritative reader rather than turning durable success into

@@ -8231,6 +8231,23 @@ set_tests_properties(
   sbsql_sblr_alignment_c9_serving_path_open_instrument PROPERTIES
   LABELS "sbsql_sblr_alignment;c9_path_open_instrument;storage_disk;embedded_phase"
   TIMEOUT 120)
+add_executable(sbsql_sblr_alignment_c9_served_transaction_write
+  c9_served_transaction_write_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_c9_served_transaction_write PRIVATE cxx_std_20)
+target_include_directories(
+  sbsql_sblr_alignment_c9_served_transaction_write PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src/server)
+target_link_libraries(
+  sbsql_sblr_alignment_c9_served_transaction_write PRIVATE
+  sb_server_core sb_engine_sblr sb_wire_statement_management_bind_codec)
+add_test(
+  NAME sbsql_sblr_alignment_c9_served_transaction_write
+  COMMAND sbsql_sblr_alignment_c9_served_transaction_write)
+set_tests_properties(
+  sbsql_sblr_alignment_c9_served_transaction_write PROPERTIES
+  LABELS "sbsql_sblr_alignment;c9_route_served_device;storage_disk;database_ownership;fail_closed"
+  TIMEOUT 120)
 add_executable(sbsql_sblr_alignment_ia08_database_attach_codec
   ia08_database_attach_codec_test.cpp)
 target_compile_features(

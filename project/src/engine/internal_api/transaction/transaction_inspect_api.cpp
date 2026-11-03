@@ -634,7 +634,8 @@ EngineBeginAuditReadTransactionResult EngineBeginAuditReadTransaction(
 
   const auto persisted = PersistLocalTransactionInventoryToDatabase(
       request.context.database_path,
-      begun.inventory);
+      begun.inventory,
+      request.context.served_route_owner);
   if (!persisted.ok()) {
     return TransactionInspectFailure<EngineBeginAuditReadTransactionResult>(
         request,

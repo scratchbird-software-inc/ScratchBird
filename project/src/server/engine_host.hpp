@@ -140,6 +140,12 @@ struct InternalStartupSession {
   std::uint64_t resource_epoch = 0;
   std::uint64_t name_resolution_epoch = 0;
   bool epochs_are_conforming = false;
+  // SEARCH_KEY: SB_ROUTE_OWNER_SERVED_DEVICE (C9 step 6). The open file of the
+  // route owner that holds this database, so the agent threads L5 starts read
+  // through it instead of reopening the database by path. Set by the
+  // coordinator only from the retained owner; it is storage, not authority,
+  // and empty means a path open. Agent sessions are copies, so they carry it.
+  std::shared_ptr<scratchbird::storage::disk::RouteOwnershipLease> served_route_owner;
 };
 
 // Process-lifetime resources for one opened database.  This object is kept

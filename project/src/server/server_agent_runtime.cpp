@@ -480,6 +480,8 @@ engine_api::EngineRequestContext ServerAgentRequestMetadata(
   context.security_epoch = internal_session->security_epoch;
   context.resource_epoch = internal_session->resource_epoch;
   context.name_resolution_epoch = internal_session->name_resolution_epoch;
+  // Same database, so the same owner's open file (SB_ROUTE_OWNER_SERVED_DEVICE).
+  context.served_route_owner = internal_session->served_route_owner;
   // Authority is the sysarch role: owner direction 2026-10-24, the master agent
   // is sysarch with full rights. The engine-owned bootstrap role branch in
   // agent_authorization_context.hpp then yields every KnownSecurityRights(),
@@ -513,12 +515,14 @@ struct ServerAgentAuthoritySource {
 };
 namespace {
 
-ServerAgentAuthoritySource LoadServerAgentAuthoritySource(const std::string& database_path,
-                                                          const engine_api::EngineUuid& database_uuid) {
+ServerAgentAuthoritySource LoadServerAgentAuthoritySource(
+    const std::string& database_path, const engine_api::EngineUuid& database_uuid,
+    std::shared_ptr<scratchbird::storage::disk::RouteOwnershipLease> served_route_owner) {
   ServerAgentAuthoritySource out;
   engine_api::EngineRequestContext source;
   source.database_path = database_path;
   source.database_uuid = database_uuid;
+  source.served_route_owner = std::move(served_route_owner);
   auto loaded = engine_api::LoadSecurityPrincipalLifecycleState(source);
   if (!loaded.ok) {
     out.failure = "agent_authority_source_unavailable";
@@ -545,7 +549,8 @@ bool MaterializeServerAgentAuthority(engine_api::EngineRequestContext* context,
                                      const ServerAgentAuthoritySource* preloaded = nullptr) {
   ServerAgentAuthoritySource fresh;
   if (preloaded == nullptr) {
-    fresh = LoadServerAgentAuthoritySource(context->database_path, context->database_uuid);
+    fresh = LoadServerAgentAuthoritySource(context->database_path, context->database_uuid,
+                                           context->served_route_owner);
     preloaded = &fresh;
   }
   if (!preloaded->ok) {
@@ -585,7 +590,7 @@ ServerAgentBinding BindServerAgentSessions(
   ServerAgentBinding bound;
   if (!l5.present || !authority.ok) return bound;
   const auto committed = scratchbird::storage::database::ReadDatabaseBootstrapSecurityCatalog(
-      database_path);
+      database_path, l5.served_route_owner);
   if (!committed.ok()) return bound;
   const auto& state = authority.state;
   std::map<platform::Uuid, std::vector<platform::Uuid>> principals_by_policy;
@@ -1016,6 +1021,7 @@ bool ServerAgentRuntime::StartImpl(const ServerBootstrapConfig& config,
     // at create) and leaves authority absent, so the engine still refuses
     // BEGIN rather than this code inventing an identity.
     internal_startup_session_ = hosted_runtime->internal_startup_session;
+    internal_startup_session_.served_route_owner = (*owner)->ServedStorageLease();
   }
   // Bound only from the retained owner's session; otherwise nothing.
   // One security load serves the binding and every start check.
@@ -1025,7 +1031,8 @@ bool ServerAgentRuntime::StartImpl(const ServerBootstrapConfig& config,
   start_authority_ = std::make_shared<const ServerAgentAuthoritySource>(
       retained_owner && internal_startup_session_.present
           ? LoadServerAgentAuthoritySource(database->database_path,
-                                           engine_api::EngineUuid{internal_startup_session_.database_uuid})
+                                           engine_api::EngineUuid{internal_startup_session_.database_uuid},
+                                           internal_startup_session_.served_route_owner)
           : ServerAgentAuthoritySource{});
   const auto& start_authority = *start_authority_;
   struct DropStartAuthority {
@@ -2145,7 +2152,8 @@ void ServerAgentRuntime::RunWorkerTick(std::size_t worker_index,
   // rather than one per transaction; see ServerAgentAuthoritySource.
   const auto tick_authority = agent_session.present
       ? LoadServerAgentAuthoritySource(database_path,
-                                       engine_api::EngineUuid{agent_session.database_uuid})
+                                       engine_api::EngineUuid{agent_session.database_uuid},
+                                       agent_session.served_route_owner)
       : ServerAgentAuthoritySource{};
 
   ServerAgentActionOutcome action_outcome = ServerAgentActionOutcome::kNone;
