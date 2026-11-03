@@ -222,6 +222,9 @@ struct DiskPageHeaderResult {
 struct FileDevicePathOpenObservation {
   u64 opens_without_route_owner = 0;
   u64 opens_with_route_owner = 0;
+  // Devices served from the route owner's open descriptor (OpenServed); these
+  // are not path opens.
+  u64 served_opens = 0;
 };
 FileDevicePathOpenObservation ObserveFileDevicePathOpens() noexcept;
 
@@ -234,6 +237,18 @@ class FileDevice {
   ~FileDevice();
 
   IoResult Open(std::string path, FileOpenMode mode);
+  // SEARCH_KEY: SB_ROUTE_OWNER_SERVED_DEVICE (register C9)
+  // A device for one of the route owner's own threads: duplicates the owner's
+  // open descriptor instead of opening the path. It holds a counted borrow of
+  // the lease (so withdrawal and the native source transition drain it, as for
+  // a path-opened borrower) and the same per-path storage guard a path open
+  // takes, for the device lifetime, so in-process serialization is unchanged.
+  // Only open_existing (needs a writable owner) and open_existing_read_only.
+  // database_path must name the owner's data file; it is checked by identity
+  // and used as the serialization key and diagnostic, never reopened.
+  IoResult OpenServed(const std::shared_ptr<RouteOwnershipLease>& owner,
+                      std::string database_path,
+                      FileOpenMode mode);
   IoResult Close();
   IoResult ReadAt(u64 offset, void* buffer, usize bytes);
   // Declare before ALL enclosing device/source guards; device outlives batch.

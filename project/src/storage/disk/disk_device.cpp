@@ -221,6 +221,11 @@ std::atomic<u64>& PathOpensWithRouteOwner() {
   return count;
 }
 
+std::atomic<u64>& ServedDeviceOpens() {
+  static std::atomic<u64> count{0};
+  return count;
+}
+
 std::mutex& RouteOwnedStorageRegistryMutex() {
   static std::mutex mutex;
   return mutex;
@@ -2177,7 +2182,109 @@ FileDevicePathOpenObservation ObserveFileDevicePathOpens() noexcept {
   FileDevicePathOpenObservation observation;
   observation.opens_without_route_owner = PathOpensWithoutRouteOwner().load(std::memory_order_relaxed);
   observation.opens_with_route_owner = PathOpensWithRouteOwner().load(std::memory_order_relaxed);
+  observation.served_opens = ServedDeviceOpens().load(std::memory_order_relaxed);
   return observation;
+}
+
+IoResult FileDevice::OpenServed(const std::shared_ptr<RouteOwnershipLease>& owner,
+                                std::string database_path,
+                                FileOpenMode mode) {
+  const auto operation_guard = AcquireOperationGuard();
+  if (is_open()) {
+    return MakeIoError("SB-STORAGE-DISK-ALREADY-OPEN", "storage.disk.already_open", path_);
+  }
+  const bool writing = mode == FileOpenMode::open_existing;
+  if (!writing && mode != FileOpenMode::open_existing_read_only) {
+    return MakeIoError("SB-STORAGE-DISK-SERVED-MODE-UNSUPPORTED",
+                       "storage.disk.served_mode_unsupported", database_path);
+  }
+  if (!owner || database_path.empty()) {
+    return MakeIoError("SB-STORAGE-DISK-SERVED-OWNER-REQUIRED",
+                       "storage.disk.served_owner_required", database_path);
+  }
+#ifdef _WIN32
+  // The Windows equivalent (DuplicateHandle + file-id identity) belongs to the
+  // Windows storage owner; refuse rather than fall back to a path open.
+  return MakeIoError("SB-STORAGE-DISK-SERVED-UNSUPPORTED-PLATFORM",
+                     "storage.disk.served_unsupported_platform", database_path);
+#else
+  auto& registry = LeaseRegistry();
+  if (owner->owner_pid_ != OwnershipProcessId() || registry.process_id != OwnershipProcessId()) {
+    return MakeIoError("SB-STORAGE-DISK-SERVED-WRONG-PROCESS",
+                       "storage.disk.served_wrong_process", database_path);
+  }
+  std::shared_ptr<RouteOwnershipLease> pin;
+  int duplicate = -1;
+  const char* refusal = nullptr;
+  {
+    std::lock_guard<std::mutex> guard(registry.mutex);
+    // BorrowPin's destructor takes this mutex: duplicate before pinning and
+    // let every failure drop the pin only after the guard is released.
+    if (!owner->accepting_ || !owner->issuing_ || !owner->valid()) {
+      refusal = "withdrawn";
+    } else if (writing && owner->storage_access_ != RouteStorageAccess::read_write) {
+      refusal = "writable_not_requested";
+    } else {
+      const int original = writing ? owner->write_data_fd_ : owner->data_fd_;
+      if (original < 0) {
+        refusal = "primary_not_bound";
+      } else {
+#ifdef F_DUPFD_CLOEXEC
+        duplicate = ::fcntl(original, F_DUPFD_CLOEXEC, 0);
+#else
+        duplicate = ::dup(original);
+        if (duplicate >= 0 && ::fcntl(duplicate, F_SETFD, FD_CLOEXEC) != 0) {
+          (void)::close(duplicate);
+          duplicate = -1;
+        }
+#endif
+        if (duplicate < 0) {
+          refusal = "descriptor_duplicate_failed";
+        } else {
+          pin = RouteOwnershipLease::PinBorrowLocked(owner);
+          if (!pin) {
+            (void)::close(duplicate);
+            duplicate = -1;
+            refusal = "borrow_limit";
+          }
+        }
+      }
+    }
+  }
+  if (refusal != nullptr) {
+    return MakeIoError("SB-STORAGE-DISK-SERVED-REFUSED", "storage.disk.served_refused",
+                       database_path + ":" + refusal);
+  }
+  // The path is the serialization key; it must name the owner's actual file.
+  struct stat named{};
+  struct stat held{};
+  if (::stat(database_path.c_str(), &named) != 0 || ::fstat(duplicate, &held) != 0 ||
+      named.st_dev != held.st_dev || named.st_ino != held.st_ino) {
+    (void)::close(duplicate);
+    return MakeIoError("SB-STORAGE-DISK-SERVED-PATH-MISMATCH",
+                       "storage.disk.served_path_mismatch", database_path);
+  }
+  std::unique_lock<std::recursive_mutex> storage_guard =
+      AcquireRouteOwnedStorageGuard(database_path);
+  path_ = std::move(database_path);
+  owner_lock_path_.clear();
+  route_owner_lease_ = std::move(pin);
+  route_owner_storage_guard_ = std::move(storage_guard);
+  open_process_id_ = OwnershipProcessId();
+  open_thread_id_ = std::this_thread::get_id();
+  file_fd_ = duplicate;
+  owner_lock_fd_ = -1;
+  read_only_ = !writing;
+  owner_lock_held_ = false;
+  owner_lock_exclusive_ = false;
+  capabilities_.write_at = writing;
+  capabilities_.extent_preallocation = writing;
+  if (metric_device_class_.empty()) metric_device_class_ = "file";
+  ServedDeviceOpens().fetch_add(1, std::memory_order_relaxed);
+  IoResult result;
+  result.status = DiskOkStatus();
+  return result;
+#endif
 }
 
 IoResult FileDevice::Close() {

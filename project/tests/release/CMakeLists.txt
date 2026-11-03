@@ -1252,6 +1252,23 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     TIMEOUT 60 LABELS "storage;disk;preallocation;native_fault_injection;not_SQL_E2E")
 endif()
 
+add_executable(c9_route_served_device_gate
+  c9_route_served_device_gate.cpp
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/server/database_ownership.cpp
+)
+target_compile_features(c9_route_served_device_gate PRIVATE cxx_std_23)
+target_include_directories(c9_route_served_device_gate PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../../src/server
+)
+target_link_libraries(c9_route_served_device_gate PRIVATE
+  sb_storage_disk
+  sb_storage_database
+  sb_core_uuid
+)
+add_test(NAME c9_route_served_device_gate COMMAND c9_route_served_device_gate)
+set_tests_properties(c9_route_served_device_gate PROPERTIES
+  TIMEOUT 120 LABELS "storage;server;database_ownership;c9_route_served_device;fail_closed")
+
 add_executable(public_database_ownership_gate
   public_database_ownership_gate.cpp
   ${CMAKE_CURRENT_SOURCE_DIR}/../../src/server/database_ownership.cpp

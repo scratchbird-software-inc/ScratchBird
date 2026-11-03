@@ -67,6 +67,10 @@ class DatabaseOwnershipLock {
   [[nodiscard]] int fd() const { return native_handle(); }
 #endif
   [[nodiscard]] const std::filesystem::path& lock_path() const { return lock_path_; }
+  // SEARCH_KEY: SB_ROUTE_OWNER_SERVED_DEVICE (register C9). The owner's
+  // published storage lease, for FileDevice::OpenServed by this process's own
+  // threads. Empty in any other process or once released.
+  [[nodiscard]] std::shared_ptr<storage::disk::RouteOwnershipLease> ServedStorageLease() const;
   void release();
 
  private:

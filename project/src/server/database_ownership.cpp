@@ -222,6 +222,11 @@ int DatabaseOwnershipLock::PrepareStorageLease(const std::string& database_path,
   return lease_->AcquireDataFile(database_path);
 }
 
+std::shared_ptr<storage::disk::RouteOwnershipLease> DatabaseOwnershipLock::ServedStorageLease() const {
+  if (owner_pid_ != CurrentProcessId()) return {};
+  return lease_;
+}
+
 bool DatabaseOwnershipLock::PublishStorageLease() {
   // Publication still happens only after the checked durable descriptor write.
   return lease_ && lease_->Publish(lease_);
