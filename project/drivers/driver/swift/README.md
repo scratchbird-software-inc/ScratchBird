@@ -61,6 +61,15 @@ See `../../../../public_audit_summary`.
 | Windows | Not supported | Swift target/toolchain path is not configured for this repo. |
 | macOS | Expected | SwiftPM workflow should work; not currently covered in CI. |
 
+### Toolchain minimum
+
+Building the driver requires **Swift 6.1 or later**. `Package.swift` still
+declares `swift-tools-version: 5.10.1` and the sources compile in the Swift 5
+language mode, but the resolved `swift-nio` (2.104.0, needed for the fixes to
+the 2.99.0-and-earlier advisories on HTTP/1 header limits, `ByteBuffer` index
+overflow and request-URI CRLF validation) itself requires the 6.1 tools. A
+Swift 5.10 toolchain cannot resolve it.
+
 ## Build (local dev)
 
 ```bash
