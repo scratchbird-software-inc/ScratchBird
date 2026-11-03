@@ -855,7 +855,7 @@ EngineLoadCatalogObjectLifecycleStateResult LoadState(const EngineRequestContext
     return result;
   }
   const CrudState* transaction_state = crud_state.ok ? &crud_state.state : nullptr;
-  const auto native_inventory = storage::database::AcquireLocalTransactionInventorySnapshot(context.database_path);
+  const auto native_inventory = storage::database::AcquireLocalTransactionInventorySnapshot(context.database_path, context.served_route_owner);
   if ((options.enforce_visibility || options.creation_admission) && !native_inventory.ok()) {
     result.diagnostic = CatalogDiagnostic(kCatalogObjectDiagnosticMgaVisibilityRefused,
                                          "catalog_transaction_inventory_unavailable");
@@ -1383,7 +1383,7 @@ EngineLoadCatalogObjectLifecycleStateResult LoadCatalogObjectLifecycleEpochState
 
   const auto inventory =
       scratchbird::storage::database::AcquireLocalTransactionInventorySnapshot(
-          context.database_path);
+          context.database_path, context.served_route_owner);
   if (!inventory.ok()) {
     result.diagnostic = CatalogDiagnostic(
         kCatalogObjectDiagnosticMgaVisibilityRefused,
@@ -2024,7 +2024,7 @@ EngineApiDiagnostic CaptureCatalogTableCreationSources(
   };
   if (!output) return refused("table_creation_source_output_required");
   const auto owner = AcquireTransactionInventoryGuard(context.database_path);
-  const auto inventory = storage::database::AcquireLocalTransactionInventorySnapshot(context.database_path);
+  const auto inventory = storage::database::AcquireLocalTransactionInventorySnapshot(context.database_path, context.served_route_owner);
   if (!inventory.ok() || !inventory.snapshot->inventory.publication_base ||
       inventory.snapshot->inventory.publication_base->database_uuid != context.database_uuid)
     return refused("table_creation_inventory_source_invalid");
@@ -2106,7 +2106,7 @@ EngineCatalogCreateObjectResult EngineCatalogCreateObject(const EngineCatalogCre
 static EngineApiDiagnostic ValidateCurrentViewResolverOccupancy(
     const EngineCatalogCreateObjectRequest& request) {
   constexpr const char* operation = "ddl.create_view";
-  const auto inventory = storage::database::AcquireLocalTransactionInventorySnapshot(request.context.database_path);
+  const auto inventory = storage::database::AcquireLocalTransactionInventorySnapshot(request.context.database_path, request.context.served_route_owner);
   if (!inventory.ok()) return MakeInvalidRequestDiagnostic(operation, "view_resolver_inventory_unavailable");
   std::ifstream input;
   const auto path = request.context.database_path + ".sb.name_events.v2";
@@ -2211,7 +2211,7 @@ EngineApiDiagnostic ValidateCatalogViewCreationAdmission(
   if (!expected_schema_frames)
     return MakeInvalidRequestDiagnostic(operation, "view_schema_observation_required");
   std::vector<std::string> schema_frames;
-  const auto schema_inventory = storage::database::AcquireLocalTransactionInventorySnapshot(request.context.database_path);
+  const auto schema_inventory = storage::database::AcquireLocalTransactionInventorySnapshot(request.context.database_path, request.context.served_route_owner);
   if (!schema_inventory.ok()) return MakeInvalidRequestDiagnostic(operation, "view_schema_inventory_unavailable");
   const auto schema_savepoints = ParseSavepoints(request.context);
   if (schema_savepoints.diagnostic.error) return schema_savepoints.diagnostic;
@@ -2498,7 +2498,7 @@ EngineCommentOnObjectResult EngineCatalogPublishComment(const EngineCommentOnObj
       return current_authorization.diagnostics.empty()
           ? MakeInvalidRequestDiagnostic(operation, "comment_authorization_denied")
           : current_authorization.diagnostics.front();
-    const auto current = storage::database::AcquireLocalTransactionInventorySnapshot(request.context.database_path);
+    const auto current = storage::database::AcquireLocalTransactionInventorySnapshot(request.context.database_path, request.context.served_route_owner);
     if (!current.ok()) return MakeInvalidRequestDiagnostic(operation, "comment_inventory_unavailable");
     const auto native_reader = transaction::mga::LookupLocalTransaction(current.snapshot->inventory,
         transaction::mga::MakeLocalTransactionId(request.context.local_transaction_id));

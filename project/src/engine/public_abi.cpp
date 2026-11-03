@@ -7360,7 +7360,7 @@ sb_engine_status_t AcquireStatementContextReceipt(
           engine_context.database_path);
   const auto inventory_snapshot = scratchbird::storage::database::
       AcquireStrongLocalTransactionInventorySnapshot(
-          engine_context.database_path);
+          engine_context.database_path, engine_context.served_route_owner);
   if (!inventory_snapshot.ok()) {
     return fail_result(
         SB_ENGINE_STATUS_INTERNAL_ERROR,
@@ -30633,7 +30633,8 @@ if(ddl_drop_timeseries_value_cache_root){std::string detail;if(member.operands.s
             AcquireTransactionInventoryGuard(retained_inventory.database_path);
         const auto current_inventory = scratchbird::storage::database::
             AcquireStrongLocalTransactionInventorySnapshot(
-                retained_inventory.database_path);
+                retained_inventory.database_path,
+                receipt->engine_context.served_route_owner);
         if (!current_inventory.ok()) {
           return fail_result(
               SB_ENGINE_STATUS_INTERNAL_ERROR, out_result, 4100,

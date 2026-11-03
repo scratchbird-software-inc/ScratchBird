@@ -138,7 +138,7 @@ EngineApiDiagnostic ValidateContext(const EngineRequestContext& c) {
       c.authorization_context.catalog_generation_id != c.catalog_generation_id ||
       c.authorization_context.security_epoch != c.security_epoch)
     return Refuse("authenticated receipt resource context is incomplete", "SECURITY.ACCESS_DENIED");
-  const auto loaded = scratchbird::storage::database::AcquireLocalTransactionInventorySnapshot(c.database_path);
+  const auto loaded = scratchbird::storage::database::AcquireLocalTransactionInventorySnapshot(c.database_path, c.served_route_owner);
   if (!loaded.ok()) return Refuse("MGA inventory unavailable", "DML.UPDATE_FAILED");
   const auto txn = mga::LookupLocalTransaction(loaded.snapshot->inventory,
                                               mga::MakeLocalTransactionId(c.local_transaction_id));

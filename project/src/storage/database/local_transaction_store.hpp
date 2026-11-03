@@ -80,12 +80,23 @@ struct LocalTransactionInventoryFenceResult {
 // instead of calling the legacy copy-returning loader again.
 LocalTransactionInventorySnapshotResult
 AcquireLocalTransactionInventorySnapshot(std::string path);
+// With served_owner (register C9), the inventory and its root-body hash are
+// read through a device served from the route owner's descriptor, never by
+// re-opening path. An empty owner is the path-open form above.
+LocalTransactionInventorySnapshotResult
+AcquireLocalTransactionInventorySnapshot(
+    std::string path,
+    const std::shared_ptr<scratchbird::storage::disk::RouteOwnershipLease>& served_owner);
 
 // Statement-attachment boundary. This performs the expensive journal/root
 // integrity signature even when a process snapshot is warm, then returns the
 // exact immutable snapshot that every consumer of that statement must retain.
 LocalTransactionInventorySnapshotResult
 AcquireStrongLocalTransactionInventorySnapshot(std::string path);
+LocalTransactionInventorySnapshotResult
+AcquireStrongLocalTransactionInventorySnapshot(
+    std::string path,
+    const std::shared_ptr<scratchbird::storage::disk::RouteOwnershipLease>& served_owner);
 
 // Compares only the retained database-wide inventory publication identity. It
 // is deliberately a cheap execution boundary signal; a changed result does

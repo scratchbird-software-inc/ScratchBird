@@ -53,7 +53,7 @@ EngineDmlDeleteRecoveryObservationV1 ObserveDmlDeleteRecoveryAuthorityV1(
       context.datatype_registry_generation != d.datatype_registry_generation)
     return refuse("durable_owner_context_mismatch", "MGA.TRANSACTION.STALE");
   // Load authoritative inventory, not a caller projection of transaction state.
-  const auto inventory = scratchbird::storage::database::AcquireStrongLocalTransactionInventorySnapshot(context.database_path);
+  const auto inventory = scratchbird::storage::database::AcquireStrongLocalTransactionInventorySnapshot(context.database_path, context.served_route_owner);
   if (!inventory.ok()) return refuse("inventory_unavailable");
   const auto marker_generation = CurrentMgaSavepointAuthorityGeneration(context);
   const auto transaction = mga::LookupLocalTransaction(inventory.snapshot->inventory,

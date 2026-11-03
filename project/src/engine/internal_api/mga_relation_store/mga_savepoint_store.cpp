@@ -66,7 +66,7 @@ EngineApiDiagnostic ValidateCurrentSavepointMutationOwner(
     const EngineRequestContext& context, const char* operation) {
   if (context.database_path.empty())
     return MakeInvalidRequestDiagnostic(operation, "database_path_required");
-  const auto current = storage::database::AcquireLocalTransactionInventorySnapshot(context.database_path);
+  const auto current = storage::database::AcquireLocalTransactionInventorySnapshot(context.database_path, context.served_route_owner);
   if (!current.ok())
     return MakeEngineApiDiagnosticFromNative(current.diagnostic,
         "SB_ENGINE_API_INVALID_REQUEST", "engine.api.invalid_request", "savepoint_current_inventory_unavailable");
@@ -102,7 +102,7 @@ EngineApiDiagnostic ValidateCurrentSavepointMutationOwner(
 EngineApiDiagnostic ValidateCurrentSavepointRecoveryOwner(const EngineRequestContext& context) {
   constexpr const char* operation = "transaction.reconcile_savepoint_append";
   if (context.database_path.empty()) return MakeInvalidRequestDiagnostic(operation, "database_path_required");
-  const auto current = storage::database::AcquireStrongLocalTransactionInventorySnapshot(context.database_path);
+  const auto current = storage::database::AcquireStrongLocalTransactionInventorySnapshot(context.database_path, context.served_route_owner);
   if (!current.ok()) return MakeEngineApiDiagnosticFromNative(current.diagnostic,
       "SB_ENGINE_API_INVALID_REQUEST", "engine.api.invalid_request", "savepoint_current_inventory_unavailable");
   if (!current.snapshot || !current.snapshot->inventory.publication_base)

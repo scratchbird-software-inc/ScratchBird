@@ -628,7 +628,7 @@ StatementTransactionInventoryAuthority ResolveStatementTransactionInventory(
     return result;
   }
   const auto acquired =
-      AcquireLocalTransactionInventorySnapshot(context.database_path);
+      AcquireLocalTransactionInventorySnapshot(context.database_path, context.served_route_owner);
   if (!acquired.ok()) {
     result.diagnostic = MakeEngineApiDiagnostic(
         acquired.diagnostic.diagnostic_code.empty()
@@ -977,7 +977,7 @@ MgaStatementMetadataViewLoadResult LoadMgaStatementMetadataView(
   EngineRequestContext statement_context = context;
   if (statement_context.statement_transaction_inventory_snapshot == nullptr) {
     auto acquired = AcquireLocalTransactionInventorySnapshot(
-        statement_context.database_path);
+        statement_context.database_path, statement_context.served_route_owner);
     if (!acquired.ok()) {
       result.diagnostic = MakeEngineApiDiagnostic(
           acquired.diagnostic.diagnostic_code.empty()
@@ -2645,7 +2645,7 @@ PrepareMgaHeapReadAuthoritiesForStoreModule(
   EngineRequestContext statement_context = context;
   if (statement_context.statement_transaction_inventory_snapshot == nullptr) {
     auto acquired = scratchbird::storage::database::
-        AcquireLocalTransactionInventorySnapshot(context.database_path);
+        AcquireLocalTransactionInventorySnapshot(context.database_path, context.served_route_owner);
     if (!acquired.ok()) {
       return refuse(MakeEngineApiDiagnostic(
           acquired.diagnostic.diagnostic_code.empty()

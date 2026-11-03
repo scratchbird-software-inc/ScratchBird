@@ -8,9 +8,11 @@
 #include "database_ownership.hpp"
 #include "database_lifecycle.hpp"
 #include "disk_device.hpp"
+#include "local_transaction_store.hpp"
 #include "memory.hpp"
 #include "uuid.hpp"
 #include "../support/owned_temp_directory.hpp"
+#include "../support/path_open_counter.hpp"
 
 #include <atomic>
 #include <chrono>
@@ -160,6 +162,58 @@ bool WritableServedDeviceAndSerialization() {
   return ok;
 }
 
+bool SameInventory(const db::LocalTransactionInventorySnapshotResult& a,
+                   const db::LocalTransactionInventorySnapshotResult& b) {
+  return a.ok() && b.ok() && a.snapshot && b.snapshot &&
+         a.snapshot->inventory.entries.size() == b.snapshot->inventory.entries.size() &&
+         a.snapshot->inventory.next_local_transaction_id ==
+             b.snapshot->inventory.next_local_transaction_id &&
+         a.snapshot->inventory_root_body_sha256 == b.snapshot->inventory_root_body_sha256;
+}
+
+// First converted site: the statement-attachment inventory snapshot reads the
+// inventory and its root-body hash through the served device, cold (full
+// load) and warm (cache revalidation), with no open of the database file.
+bool ServedInventorySnapshot() {
+  namespace opens = scratchbird::tests::path_open_counter;
+  bool ok = true;
+  {
+    const auto path = CreateRealDatabase("served-inventory-cold.sbdb");
+    auto owned = Own(path, disk::RouteStorageAccess::read_write);
+    ok = Expect(owned.acquired && owned.lock, "ownership for cold snapshot not acquired") && ok;
+    if (!ok) return false;
+    const auto lease = owned.lock->ServedStorageLease();
+    opens::Watch(path.string());
+    const auto before = opens::FileOpens();
+    const auto served = db::AcquireStrongLocalTransactionInventorySnapshot(path.string(), lease);
+    ok = Expect(opens::FileOpens() == before,
+                "served cold inventory snapshot re-opened the database file") && ok;
+    const auto unserved = db::AcquireStrongLocalTransactionInventorySnapshot(path.string());
+    ok = Expect(SameInventory(served, unserved),
+                "served cold inventory snapshot differs from the path-opened one") && ok;
+    owned.lock->release();
+  }
+  {
+    const auto path = CreateRealDatabase("served-inventory-warm.sbdb");
+    auto owned = Own(path, disk::RouteStorageAccess::read_write);
+    ok = Expect(owned.acquired && owned.lock, "ownership for warm snapshot not acquired") && ok;
+    if (!ok) return false;
+    const auto lease = owned.lock->ServedStorageLease();
+    const auto unserved = db::AcquireStrongLocalTransactionInventorySnapshot(path.string());
+    opens::Watch(path.string());
+    const auto before = opens::FileOpens();
+    const auto served = db::AcquireStrongLocalTransactionInventorySnapshot(path.string(), lease);
+    const auto weak = db::AcquireLocalTransactionInventorySnapshot(path.string(), lease);
+    ok = Expect(opens::FileOpens() == before,
+                "served warm inventory snapshot re-opened the database file") && ok;
+    ok = Expect(SameInventory(served, unserved) && SameInventory(weak, unserved),
+                "served warm inventory snapshot differs from the path-opened one") && ok;
+    owned.lock->release();
+  }
+  opens::Watch({});
+  return ok;
+}
+
 }  // namespace
 
 int main() {
@@ -168,6 +222,7 @@ int main() {
   if (!Expect(memory.ok(), "fixture memory setup failed")) return EXIT_FAILURE;
   bool ok = ReadOnlyServedDevice();
   ok = WritableServedDeviceAndSerialization() && ok;
+  ok = ServedInventorySnapshot() && ok;
   std::cout << (ok ? "c9_route_served_device_gate PASS" : "c9_route_served_device_gate FAIL") << '\n';
   return ok ? EXIT_SUCCESS : EXIT_FAILURE;
 }

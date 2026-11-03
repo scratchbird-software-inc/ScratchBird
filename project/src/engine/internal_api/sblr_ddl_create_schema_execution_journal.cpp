@@ -1042,7 +1042,8 @@ RecoverSblrDdlCreateSchemaExecutionJournalV1(
   const auto inventory =
       scratchbird::storage::database::
           AcquireStrongLocalTransactionInventorySnapshot(
-              authenticated_context.database_path);
+              authenticated_context.database_path,
+              authenticated_context.served_route_owner);
   if (!inventory.ok()) {
     return Refused(
         "MGA.AUTHORITY_MISMATCH",

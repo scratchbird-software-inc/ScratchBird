@@ -25,6 +25,9 @@ namespace scratchbird::storage::database {
 struct LocalTransactionInventorySnapshot;
 class IdentityPublicationFence;
 }
+namespace scratchbird::storage::disk {
+class RouteOwnershipLease;
+}
 
 namespace scratchbird::engine::internal_api {
 
@@ -459,6 +462,13 @@ struct EngineRequestContext {
   EngineTrustMode trust_mode = EngineTrustMode::server_isolated;
   std::string request_id;
   std::string database_path;
+  // SEARCH_KEY: SB_ROUTE_OWNER_SERVED_DEVICE (register C9). Set only inside
+  // the process that owns this database's route (sbsrv), from its ownership
+  // lock. Converted storage reads then take a device served from the owner's
+  // open descriptor (FileDevice::OpenServed) instead of re-opening
+  // database_path. Empty means the legacy path open. Never serialized and
+  // never supplied by a parser; copies of the context share it.
+  std::shared_ptr<scratchbird::storage::disk::RouteOwnershipLease> served_route_owner;
   EngineUuid database_uuid;
   EngineApiU64 database_page_size_bytes = 0;
   EngineUuid cluster_uuid;

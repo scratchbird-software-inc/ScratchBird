@@ -237,7 +237,7 @@ EngineCreateIdentityResult EngineCreateIdentity(const EngineCreateIdentityReques
     diagnostic.identity_fields.emplace_back("database_uuid", request.context.database_uuid);
     diagnostic.identity_fields.emplace_back("transaction_uuid", request.context.transaction_uuid);
     diagnostic.fields.emplace_back("publication_phase", std::move(phase));
-    const auto observed = storage::database::AcquireStrongLocalTransactionInventorySnapshot(request.context.database_path);
+    const auto observed = storage::database::AcquireStrongLocalTransactionInventorySnapshot(request.context.database_path, request.context.served_route_owner);
     std::string exclusion = "unknown";
     if (observed.ok() && observed.snapshot->inventory.publication_base &&
         observed.snapshot->inventory.publication_base->database_uuid == request.context.database_uuid) {

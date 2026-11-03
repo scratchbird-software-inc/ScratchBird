@@ -165,7 +165,7 @@ struct MgaDmlDeleteDurableStoreV1::Impl {
         value.authenticated_statement_receipt_uuid == context.statement_receipt_uuid.bytes;
   }
   bool ActiveInventory() const {
-    const auto inventory = scratchbird::storage::database::AcquireStrongLocalTransactionInventorySnapshot(context.database_path);
+    const auto inventory = scratchbird::storage::database::AcquireStrongLocalTransactionInventorySnapshot(context.database_path, context.served_route_owner);
     if (!inventory.ok()) return false;
     const auto transaction = mga::LookupLocalTransaction(inventory.snapshot->inventory,
         mga::MakeLocalTransactionId(context.local_transaction_id));
@@ -207,7 +207,7 @@ std::unique_ptr<MgaDmlDeleteDurableStoreV1> MgaDmlDeleteDurableStoreV1::Open(
   }
   if (!context.catalog_generation_id || !context.datatype_registry_generation)
     return refuse("owner_generations_required");
-  const auto inventory = scratchbird::storage::database::AcquireStrongLocalTransactionInventorySnapshot(context.database_path);
+  const auto inventory = scratchbird::storage::database::AcquireStrongLocalTransactionInventorySnapshot(context.database_path, context.served_route_owner);
   if (!inventory.ok()) return refuse("owning_database_inventory_required");
   const auto owner = mga::LookupLocalTransaction(inventory.snapshot->inventory,
       mga::MakeLocalTransactionId(context.local_transaction_id));

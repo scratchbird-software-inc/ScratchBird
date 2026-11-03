@@ -174,7 +174,7 @@ class DeferredIndexProofs {
           "index.transactional_provider.delta_proof_invalid", "delta_ledger_recovery_refused");
       return false;
     }
-    inventory_ = storage::database::AcquireLocalTransactionInventorySnapshot(context_.database_path);
+    inventory_ = storage::database::AcquireLocalTransactionInventorySnapshot(context_.database_path, context_.served_route_owner);
     if (!inventory_.ok()) {
       diagnostic_ = Refuse("INDEX.TRANSACTIONAL_PROVIDER.DELTA_PROOF_INVALID",
           "index.transactional_provider.delta_proof_invalid", "delta_inventory_unavailable");

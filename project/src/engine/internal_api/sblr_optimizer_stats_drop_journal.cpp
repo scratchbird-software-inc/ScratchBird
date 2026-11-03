@@ -553,7 +553,7 @@ SblrOptimizerStatsDropPublicationV1 PublishSblrOptimizerStatsDropV1(
   if (!fence.ok()) {
     const auto current =
         storage_db::AcquireStrongLocalTransactionInventorySnapshot(
-            context.database_path);
+            context.database_path, context.served_route_owner);
     if (!current.ok()) {
       result.diagnostic = Diagnostic(
           "MGA.AUTHORITY_MISMATCH",

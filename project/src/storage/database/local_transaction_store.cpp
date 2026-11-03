@@ -154,6 +154,25 @@ std::string ReadTransactionInventoryRootBodyHash(const std::string& path) {
   return Sha256BytesHex(body.data(), body.size());
 }
 
+// Same bytes as ReadTransactionInventoryRootBodyHash, read through an open
+// (route-owner-served) device instead of re-opening the path (register C9).
+std::string ReadTransactionInventoryRootBodyHashFromDevice(FileDevice& device) {
+  SerializedDatabaseHeader header_bytes{};
+  if (!device.ReadAt(0, header_bytes.data(), header_bytes.size()).ok()) return {};
+  const auto parsed_header = ParseDatabaseHeader(header_bytes);
+  if (!parsed_header.ok() ||
+      parsed_header.header.page_size <= kPageHeaderSerializedBytes) {
+    return {};
+  }
+  const auto body_offset = CheckedPageBodyOffset(parsed_header.header.page_size,
+                                                 kTransactionInventoryPageNumber,
+                                                 kPageHeaderSerializedBytes);
+  if (!body_offset.ok()) return {};
+  std::vector<byte> body(parsed_header.header.page_size - kPageHeaderSerializedBytes, 0);
+  if (!device.ReadAt(body_offset.offset, body.data(), body.size()).ok()) return {};
+  return Sha256BytesHex(body.data(), body.size());
+}
+
 std::optional<TransactionInventoryCacheSignature>
 ReadTransactionInventoryQuickSignature(
     const std::string& path) {
@@ -189,7 +208,7 @@ ReadTransactionInventoryQuickSignature(
 }
 
 std::optional<TransactionInventoryCacheSignature>
-ReadTransactionInventoryCacheSignature(const std::string& path) {
+ReadTransactionInventoryCacheSignature(const std::string& path, FileDevice* served_device = nullptr) {
   auto signature = ReadTransactionInventoryQuickSignature(path);
   if (!signature.has_value()) return std::nullopt;
   if (signature->publish_journal_present) {
@@ -197,7 +216,8 @@ ReadTransactionInventoryCacheSignature(const std::string& path) {
         ReadWholeFileHash(std::filesystem::path(path + ".sb.txn_publish"));
   }
   signature->inventory_root_body_hash =
-      ReadTransactionInventoryRootBodyHash(path);
+      served_device != nullptr ? ReadTransactionInventoryRootBodyHashFromDevice(*served_device)
+                               : ReadTransactionInventoryRootBodyHash(path);
   return signature;
 }
 
@@ -1076,6 +1096,13 @@ u64 NextAppendPageNumber(FileDevice* device, u32 page_size) {
 
 LocalTransactionInventorySnapshotResult
 AcquireStrongLocalTransactionInventorySnapshot(std::string path) {
+  return AcquireStrongLocalTransactionInventorySnapshot(std::move(path), {});
+}
+
+LocalTransactionInventorySnapshotResult
+AcquireStrongLocalTransactionInventorySnapshot(
+    std::string path,
+    const std::shared_ptr<scratchbird::storage::disk::RouteOwnershipLease>& served_owner) {
   LocalTransactionInventorySnapshotResult result;
   std::shared_ptr<const LocalTransactionInventorySnapshot> cached;
   {
@@ -1090,7 +1117,21 @@ AcquireStrongLocalTransactionInventorySnapshot(std::string path) {
   // cheap execution fence; the process cache does not weaken the attachment
   // boundary into a size/mtime-only admission.
   if (cached != nullptr) {
-    const auto signature = ReadTransactionInventoryCacheSignature(path);
+    // A served device revalidates without re-opening the path (register C9).
+    FileDevice served_device;
+    const bool served = served_owner != nullptr &&
+        served_device.OpenServed(served_owner, path, FileOpenMode::open_existing_read_only).ok();
+    if (served_owner != nullptr && !served) {
+      InvalidateTransactionInventoryCache(path);
+      result.status = StorePageErrorStatus();
+      result.diagnostic =
+          scratchbird::storage::page::MakeTransactionInventoryPageDiagnostic(
+              result.status, "SB-TXN-INVENTORY-SNAPSHOT-SERVED-DEVICE-REFUSED",
+              "transaction_inventory_snapshot.served_device_refused", path);
+      return result;
+    }
+    const auto signature =
+        ReadTransactionInventoryCacheSignature(path, served ? &served_device : nullptr);
     if (signature.has_value() && SameTransactionInventoryCacheSignature(
                                      SnapshotSignature(*cached), *signature)) {
       result.status = StoreOkStatus();
@@ -1101,7 +1142,9 @@ AcquireStrongLocalTransactionInventorySnapshot(std::string path) {
   }
 
   FileDevice device;
-  const auto open = device.Open(path, FileOpenMode::open_existing);
+  const auto open = served_owner != nullptr
+      ? device.OpenServed(served_owner, path, FileOpenMode::open_existing)
+      : device.Open(path, FileOpenMode::open_existing);
   if (!open.ok()) {
     result.status = open.status;
     result.diagnostic = open.diagnostic;
@@ -1129,7 +1172,8 @@ AcquireStrongLocalTransactionInventorySnapshot(std::string path) {
     result.diagnostic = std::move(loaded.diagnostic);
     return result;
   }
-  const auto signature = ReadTransactionInventoryCacheSignature(path);
+  const auto signature = ReadTransactionInventoryCacheSignature(
+      path, served_owner != nullptr ? &device : nullptr);
   if (!signature.has_value() ||
       signature->inventory_root_body_hash.empty() ||
       (signature->publish_journal_present &&
@@ -1168,13 +1212,20 @@ AcquireStrongLocalTransactionInventorySnapshot(std::string path) {
 
 LocalTransactionInventorySnapshotResult
 AcquireLocalTransactionInventorySnapshot(std::string path) {
+  return AcquireLocalTransactionInventorySnapshot(std::move(path), {});
+}
+
+LocalTransactionInventorySnapshotResult
+AcquireLocalTransactionInventorySnapshot(
+    std::string path,
+    const std::shared_ptr<scratchbird::storage::disk::RouteOwnershipLease>& served_owner) {
   LocalTransactionInventorySnapshotResult result;
   if (auto cached = TryLoadCachedTransactionInventory(path)) {
     result.status = StoreOkStatus();
     result.snapshot = std::move(cached);
     return result;
   }
-  return AcquireStrongLocalTransactionInventorySnapshot(std::move(path));
+  return AcquireStrongLocalTransactionInventorySnapshot(std::move(path), served_owner);
 }
 
 LocalTransactionInventoryFenceResult RevalidateLocalTransactionInventorySnapshot(
