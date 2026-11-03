@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "../support/binary_uuid_fixture.hpp"
+#include "../support/database_fixture_cleanup.hpp"
 #include "database_lifecycle.hpp"
 #include "database_lifecycle_test_memory.hpp"
 #include "transaction/transaction_api.hpp"
@@ -66,11 +67,14 @@ bool Contains(std::string_view haystack, std::string_view needle) {
 }
 
 std::filesystem::path MakeTempDir() {
-  std::string tmpl = "/tmp/sb_dblc013f_ipc.XXXXXX";
+  // Honour TMPDIR, and remove the directory at exit (including a failed run's).
+  std::string tmpl =
+      (std::filesystem::temp_directory_path() / "sb_dblc013f_ipc.XXXXXX").string();
   std::vector<char> writable(tmpl.begin(), tmpl.end());
   writable.push_back('\0');
   char* made = ::mkdtemp(writable.data());
   Require(made != nullptr, "mkdtemp failed for DBLC-013F IPC lifecycle test");
+  scratchbird::tests::RemoveDatabaseFixtureArtifactsAtExit(made);
   return std::filesystem::path(made);
 }
 

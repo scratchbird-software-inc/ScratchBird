@@ -27,6 +27,7 @@
 #include <string_view>
 #include <utility>
 #include <vector>
+#include "../support/database_fixture_cleanup.hpp"
 
 namespace {
 
@@ -565,6 +566,8 @@ api::EngineKeyValuePutResult Put(const std::string& database_path,
 
 void NoSqlKeyValueRoutesThroughPrimitive() {
   const std::string database_path = "/tmp/sb_odf_092_gate_api.sbdb";
+  // Fail() exits without reaching the removals below.
+  scratchbird::tests::RemoveDatabaseFixtureArtifactsAtExit(database_path);
   SeedCrudTransaction(database_path);
   Put(database_path, "acct:1", "alpha");
   Put(database_path, "acct:2", "beta");
@@ -623,6 +626,8 @@ void NoSqlKeyValueRoutesThroughPrimitive() {
 
 void NoSqlPhysicalFamiliesRouteThroughPrimitive() {
   const std::string database_path = "/tmp/sb_odf_092_gate_families.sbdb";
+  // Fail() exits without reaching the removals below.
+  scratchbird::tests::RemoveDatabaseFixtureArtifactsAtExit(database_path);
   const auto row_uuid =
       V7(platform::UuidKind::row, 1710000092000ull, 0x60).value;
 

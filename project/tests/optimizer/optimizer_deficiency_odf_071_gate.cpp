@@ -19,6 +19,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include "../support/database_fixture_cleanup.hpp"
 
 namespace {
 
@@ -161,6 +162,8 @@ void RequireEvidenceHygiene(const api::EngineApiResult& result) {
 
 void ExactPrefixTtlAndMultiGetUsePhysicalProofs() {
   const std::string database_path = "/tmp/sb_odf_071_gate_api.sbdb";
+  // Fail() exits without reaching the removals below.
+  scratchbird::tests::RemoveDatabaseFixtureArtifactsAtExit(database_path);
   SeedCrudTransaction(database_path);
   Put(database_path, scratchbird::tests::FixtureUuid(1286, 1), "acct:1", "alpha");
   Put(database_path, scratchbird::tests::FixtureUuid(1286, 2), "acct:2", "beta");
@@ -227,6 +230,8 @@ void ExactPrefixTtlAndMultiGetUsePhysicalProofs() {
 
 void PipelineAdmissionAndAtomicProgramsAreDeterministic() {
   const std::string database_path = "/tmp/sb_odf_071_pipeline.sbdb";
+  // Fail() exits without reaching the removals below.
+  scratchbird::tests::RemoveDatabaseFixtureArtifactsAtExit(database_path);
   SeedCrudTransaction(database_path);
 
   api::EngineKeyValuePipelineRequest pipeline;
@@ -277,6 +282,8 @@ void PipelineAdmissionAndAtomicProgramsAreDeterministic() {
 
 void MissingProofsBehaviorScansAndClusterOptionsFailClosed() {
   const std::string database_path = "/tmp/sb_odf_071_fail_closed.sbdb";
+  // Fail() exits without reaching the removals below.
+  scratchbird::tests::RemoveDatabaseFixtureArtifactsAtExit(database_path);
   SeedCrudTransaction(database_path);
   Put(database_path, scratchbird::tests::FixtureUuid(1286, 4), "closed:1", "value");
 
