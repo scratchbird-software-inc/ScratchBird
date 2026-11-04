@@ -853,14 +853,17 @@ api::NativeStartupTransactionResult NativeHostedDatabaseRuntime::ActivateStartup
   // at owner allocation. No queue, graph, escalation or hidden fallback is
   // required for the private uncontended no-wait maintenance profile.
   for(const auto& selected:policies.locks){const auto& p=selected.body;
-    if(p.wait_behavior!=core::catalog::LockWaitBehavior::no_wait||!p.maximum_locks||
-        p.maximum_lock_memory_bytes<sizeof(api::NativeStartupLockRegistration)||
+    // A zero lock count or memory bound is no limit (SB_DRIFT_LOCK_POLICY_ZERO_IS_NO_LIMIT).
+    if(p.wait_behavior!=core::catalog::LockWaitBehavior::no_wait||
+        (p.maximum_lock_memory_bytes&&p.maximum_lock_memory_bytes<sizeof(api::NativeStartupLockRegistration))||
         p.flags!=core::catalog::kLockPolicyMandatoryFlags)return result(E::policy_refused);
   }
   std::size_t active=0;
   for(const auto& entry:owner.candidate_.entries)
     if(entry.state==transaction::mga::TransactionState::active||entry.state==transaction::mga::TransactionState::read_only_active)++active;
-  if(active>=policies.body.maximum_active_transactions)return result(E::resource_exhausted);
+  // Zero is no limit (SB_DRIFT_TRANSACTION_POLICY_ZERO_IS_NO_LIMIT).
+  if(policies.body.maximum_active_transactions&&active>=policies.body.maximum_active_transactions)
+    return result(E::resource_exhausted);
   if(self.startup_locks_.registration_&&!owns_lock())return result(E::busy);
   if(!owns_lock()&&self.startup_locks_.generation_==UINT64_MAX)return result(E::resource_exhausted);
   auto& credential=*read.credentials_->comparison->lease;

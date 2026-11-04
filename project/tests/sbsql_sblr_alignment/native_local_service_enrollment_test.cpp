@@ -897,7 +897,7 @@ void AddTransactionPolicies(db::NativeCreationCatalogSeed& seed,
     const enrollment::NativeLocalServiceCreationItem& prototype,unsigned variant){
   using namespace catalog;
   std::array<enrollment::NativeLocalServiceCreationItem,7> items;
-  const unsigned item_count=variant>=31?7:6;
+  const unsigned item_count=variant>=31&&variant<=40?7:6;
   std::vector<CatalogNamedCreationInput> named;
   std::array<byte,kCatalogTransactionPolicyMaxBytes> backing;
   for(unsigned n=0;n<item_count;++n){
@@ -944,18 +944,25 @@ void AddTransactionPolicies(db::NativeCreationCatalogSeed& seed,
     }else if(n==2){CatalogTransactionPolicyBody b;b.body_uuid=id;b.database_uuid=Id(1);b.generation=1;
       b.default_isolation_profile_uuid=security_fixture::Id(variant==9?92013:98020);b.startup_isolation_profile_uuid=security_fixture::Id(98021);
       b.allowed_isolation_profiles[0]=b.default_isolation_profile_uuid;b.allowed_isolation_profiles[1]=b.startup_isolation_profile_uuid;
-      b.allowed_isolation_profile_count=2;b.read_mode_mask=3;b.maximum_transaction_microseconds=60000000;
-      b.maximum_snapshot_microseconds=60000000;b.maximum_active_transactions=64;b.lock_policy_uuid=security_fixture::Id(98001);
+      // Transaction lifetime, snapshot age and active count: 0, no limit, the
+      // pack default (owner 2026-11-04, SB_DRIFT_TRANSACTION_POLICY_ZERO_IS_NO_LIMIT);
+      // they were 60 s, 60 s and 64. Variants 30 and 41 set finite bounds.
+      b.allowed_isolation_profile_count=2;b.read_mode_mask=3;b.maximum_transaction_microseconds=0;
+      b.maximum_snapshot_microseconds=0;b.maximum_active_transactions=0;b.lock_policy_uuid=security_fixture::Id(98001);
       b.evidence_policy_uuid=security_fixture::Id(variant==8?92004:92003);
       if(variant==20)b.read_mode_mask=1;
       if(variant==22)b.cluster_eligibility=TransactionClusterEligibility::require_cluster_admission;
       if(variant==29)b.autocommit_mode=TransactionAutocommitMode::statement_transaction;
-      if(variant==30)b.maximum_transaction_microseconds=180000000;
+      if(variant==30){b.maximum_transaction_microseconds=180000000;b.maximum_snapshot_microseconds=60000000;}
+      if(variant==41)b.maximum_transaction_microseconds=b.maximum_snapshot_microseconds=60000000;
       b.origin_transaction_uuid=b.creating_transaction_uuid=security_tx;b.origin_local_transaction_id=b.creating_local_transaction_id=1;
       encoded=EncodeCatalogTransactionPolicyInto(b,backing);m.object_subtype="transaction_policy_body";
     }else if(n==3){CatalogLockPolicyBody b;b.body_uuid=id;b.database_uuid=Id(1);b.generation=1;
-      b.fairness_threshold_microseconds=1000000;b.maximum_locks=256;b.maximum_lock_memory_bytes=65536;
-      b.maximum_graph_nodes=128;b.maximum_graph_edges=256;b.maximum_deadlock_work=4096;b.deadlock_detection_interval_microseconds=100000;
+      // Lock count, memory, wait graph and deadlock work: 0, no limit (owner
+      // 2026-11-04, SB_DRIFT_LOCK_POLICY_ZERO_IS_NO_LIMIT); they were 256,
+      // 64 KiB, 128, 256 and 4096.
+      b.fairness_threshold_microseconds=1000000;b.maximum_locks=0;b.maximum_lock_memory_bytes=0;
+      b.maximum_graph_nodes=0;b.maximum_graph_edges=0;b.maximum_deadlock_work=0;b.deadlock_detection_interval_microseconds=100000;
       b.evidence_policy_uuid=security_fixture::Id(92003);
       b.origin_transaction_uuid=b.creating_transaction_uuid=security_tx;b.origin_local_transaction_id=b.creating_local_transaction_id=1;
       encoded=EncodeCatalogLockPolicyInto(b,backing);m.object_subtype="lock_policy_body";
@@ -2901,7 +2908,8 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
       Check(data.policy_snapshot_uuid==boundary.policy_snapshot_uuid&&data.security_snapshot_uuid==session.authentication_decision_uuid&&
           data.isolation_profile_uuid==moved.transaction_policies().startup_isolation.profile_uuid&&
           data.isolation_version_uuid==moved.transaction_policies().startup_isolation_version_uuid&&data.isolation_generation==1&&
-          data.limbo_policy==catalog::IsolationLimbo::ordinary_hidden&&data.created_at_micros>0&&data.maximum_snapshot_microseconds==60000000,
+          data.limbo_policy==catalog::IsolationLimbo::ordinary_hidden&&data.created_at_micros>0&&
+          data.maximum_snapshot_microseconds==(transaction_policy_variant==30||transaction_policy_variant==41?60000000u:0u),
           "actual frozen isolation security policy and configured snapshot lifetime");
       Check(data.visible_committed_high_watermark==2&&data.visible_commit_sequence==1&&data.next_transaction_number==3&&
           data.oldest_interesting==2&&data.oldest_active==3&&data.oldest_snapshot==2&&data.retention_horizon==2&&
@@ -2966,7 +2974,8 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
           "private policy evaluation requires the actual live elapsed clock");
       const auto evaluated=Host::EvaluateStartupTransactionPolicies(moved);
       if(!evaluated.evaluated())std::cerr<<"startup policy evaluation="<<int(evaluated.error)<<" source="<<int(evaluated.evaluation_error)<<'\n';
-      const bool policy_refusal=(transaction_policy_variant>=31&&transaction_policy_variant<=33)||transaction_policy_variant>=39;
+      const bool policy_refusal=(transaction_policy_variant>=31&&transaction_policy_variant<=33)||
+          (transaction_policy_variant>=39&&transaction_policy_variant<=40);
       Check(evaluated.evaluated()&&evaluated.observation->outcome==(policy_refusal?runtime_security::NativeStartupPolicyOutcome::deny:
           runtime_security::NativeStartupPolicyOutcome::allow)&&evaluated.observation->policy_count==(policy_refusal?3:2)&&
           evaluated.observation->subject_count==moved.authorization().projection.subjects().size()&&
@@ -3170,13 +3179,26 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
           "an actual registered snapshot still requires a readable elapsed clock before executable use");
       native_clock_advance_seconds=120;const auto expired_snapshot=Host::EstablishStartupDataSnapshot(moved);
       const auto expired_again=Host::EstablishStartupDataSnapshot(moved);native_clock_advance_seconds=0;
-      const auto expected_expiry=transaction_policy_variant==30?SnapshotError::snapshot_expired:SnapshotError::transaction_expired;
-      Check(expired_snapshot.error==expected_expiry&&expired_again.error==expected_expiry&&
-          !expired_snapshot.observation&&!expired_again.observation&&
-          moved.startup_snapshot()->snapshot_uuid==data.snapshot_uuid&&
-          moved.startup_transaction().current_publication_uuid==before_expiry.current_publication_uuid&&
-          stage_writes==expiry_writes&&stage_syncs==expiry_syncs,
-          "actual selected transaction and snapshot bounds refuse reuse without refreshing snapshots, inventing rollback or releasing custody");
+      if(transaction_policy_variant==30||transaction_policy_variant==41){
+        // Finite bounds: variant 30 (180 s transaction, 60 s snapshot) and 41
+        // (60 s each) expire at 120 s; the transaction bound is checked first.
+        const auto expected_expiry=transaction_policy_variant==30?SnapshotError::snapshot_expired:SnapshotError::transaction_expired;
+        Check(expired_snapshot.error==expected_expiry&&expired_again.error==expected_expiry&&
+            !expired_snapshot.observation&&!expired_again.observation&&
+            moved.startup_snapshot()->snapshot_uuid==data.snapshot_uuid&&
+            moved.startup_transaction().current_publication_uuid==before_expiry.current_publication_uuid&&
+            stage_writes==expiry_writes&&stage_syncs==expiry_syncs,
+            "actual selected transaction and snapshot bounds refuse reuse without refreshing snapshots, inventing rollback or releasing custody");
+      }else{
+        // No limit, the default: the same snapshot stays usable after any
+        // elapsed time, again without a refresh, a write or released custody.
+        Check(expired_snapshot.ok()&&expired_again.ok()&&expired_snapshot.observation&&expired_again.observation&&
+            expired_snapshot.observation->snapshot_uuid==data.snapshot_uuid&&
+            moved.startup_snapshot()->snapshot_uuid==data.snapshot_uuid&&
+            moved.startup_transaction().current_publication_uuid==before_expiry.current_publication_uuid&&
+            stage_writes==expiry_writes&&stage_syncs==expiry_syncs,
+            "with no transaction or snapshot limit the same snapshot stays usable after elapsed time, without refresh or writes");
+      }
     }
     if(had_verification_policies)Check(moved.verification_policies().evidence.required_search_keys.entries[0]=="SB-MGA-VERIFY",
         "evidence text still borrows retained immutable catalog after host move");
@@ -3468,7 +3490,7 @@ int main(int argc,char** argv) {
       for(unsigned variant=1;variant<=4;++variant)run(0,true,process,0,0,0,0,0,0,0,0,0,0,variant);
       for(unsigned variant=1;variant<=24;++variant)run(0,true,process,0,0,0,0,0,0,0,0,0,0,0,variant);
       for(const unsigned variant:{1u,2u,3u,4u,6u,7u,8u,9u})run(0,true,process,0,0,0,0,0,0,0,0,0,0,0,0,variant);
-      for(unsigned variant=1;variant<=40;++variant)run(0,true,process,0,0,0,0,0,0,0,0,0,0,0,0,0,variant);
+      for(unsigned variant=1;variant<=41;++variant)run(0,true,process,0,0,0,0,0,0,0,0,0,0,0,0,0,variant);
       for(unsigned variant=1;variant<=5;++variant)run(0,true,process,0,0,0,0,0,0,0,0,0,0,0,0,0,0,variant);
       for(unsigned variant=1;variant<=16;++variant)run(0,true,process,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,variant);
       for(unsigned variant=1;variant<=22;++variant)run(0,true,process,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,variant);

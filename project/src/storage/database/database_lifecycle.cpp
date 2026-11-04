@@ -9164,8 +9164,11 @@ PolicySeedPackDescriptor DefaultPolicyPackDescriptor() {
   // (policies/native_*.json, SB_NATIVE_POLICY_FAMILY_SEEDS) join the pack,
   // taking content_manifest from ten entries to fourteen.
   // Previous: 37b4752368cca6385632fde2faa22f685041cc6710fcf87396aa2c8758f15f5f
+  // Owner direction 2026-11-04: transaction and lock limits default to 0, no
+  // limit (SB_DRIFT_TRANSACTION_POLICY_ZERO_IS_NO_LIMIT, ..._LOCK_...).
+  // Previous: 990b8bd8991e0d5666e5ba1242f5ce00f53c3568a105adb990e49ab5866d32af
   descriptor.content_sha256 =
-      "990b8bd8991e0d5666e5ba1242f5ce00f53c3568a105adb990e49ab5866d32af";
+      "3c96d65ed3847aa45652a9ed1f168738161bbedf9b6ced4c4bf4960013f5e110";
   descriptor.create_time_only = true;
   descriptor.post_create_filesystem_authority = false;
   descriptor.local_password_only = true;

@@ -27,6 +27,10 @@ auto Controls(const CatalogLockPolicyBody& r){
       r.donor_mapping_uuid.value_or(Uuid{}),r.maintenance_window_policy_uuid.value_or(Uuid{}),
       r.origin_transaction_uuid.value,r.creating_transaction_uuid.value,r.cluster_uuid.value_or(Uuid{})};
 }
+// SB_DRIFT_LOCK_POLICY_ZERO_IS_NO_LIMIT (owner 2026-11-04): zero means no
+// limit for the lock count, lock memory, wait-graph size and deadlock work,
+// and is their default; an escalation threshold is capped only by a nonzero
+// maximum. The fairness threshold and detection interval are not limits.
 bool Valid(const CatalogLockPolicyBody& r) noexcept {
   if(!r.generation||!Transaction(r.origin_transaction_uuid)||!Transaction(r.creating_transaction_uuid)||
       !r.origin_local_transaction_id||r.creating_local_transaction_id<r.origin_local_transaction_id||
@@ -34,12 +38,12 @@ bool Valid(const CatalogLockPolicyBody& r) noexcept {
           (r.origin_local_transaction_id==r.creating_local_transaction_id))||
       (r.generation==1&&r.creating_local_transaction_id!=r.origin_local_transaction_id)||
       !Range(r.wait_behavior,9)||!Range(r.fairness,2)||!r.fairness_threshold_microseconds||
-      !r.maximum_locks||!r.maximum_lock_memory_bytes||!r.maximum_graph_nodes||!r.maximum_graph_edges||
-      !r.maximum_deadlock_work||!r.deadlock_detection_interval_microseconds||
+      !r.deadlock_detection_interval_microseconds||
       r.victim_policy!=LockVictimPolicy::core_deterministic_logical_lock_order||
       !Range(r.victim_outcome,7)||!Range(r.timeout_outcome,5)||!Range(r.predicate_guard,2)||
       (r.conversion_priority&&r.fairness!=LockQueueFairness::priority_with_starvation_prevention)||
-      r.escalation_lock_threshold>r.maximum_locks||r.escalation_memory_threshold>r.maximum_lock_memory_bytes||
+      (r.maximum_locks&&r.escalation_lock_threshold>r.maximum_locks)||
+      (r.maximum_lock_memory_bytes&&r.escalation_memory_threshold>r.maximum_lock_memory_bytes)||
       r.flags!=kLockPolicyMandatoryFlags)return false;
   const bool no_wait=r.wait_behavior==LockWaitBehavior::no_wait;
   const bool forever=r.wait_behavior==LockWaitBehavior::wait_forever;

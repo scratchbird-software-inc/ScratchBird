@@ -25,6 +25,10 @@ auto Controls(const CatalogTransactionPolicyBody& r){
   return std::array{r.body_uuid,r.database_uuid,r.lock_policy_uuid,r.evidence_policy_uuid,
       r.origin_transaction_uuid.value,r.creating_transaction_uuid.value,r.cluster_uuid.value_or(Uuid{})};
 }
+// SB_DRIFT_TRANSACTION_POLICY_ZERO_IS_NO_LIMIT (owner 2026-11-04): zero means
+// no limit for the transaction lifetime, snapshot age and active-transaction
+// bounds, and is their default. Every attached user is always in a snapshot
+// transaction, so a mandatory finite bound would cap users and end live work.
 bool Valid(const CatalogTransactionPolicyBody& r) noexcept {
   if(!r.generation||!Transaction(r.origin_transaction_uuid)||!Transaction(r.creating_transaction_uuid)||
       !r.origin_local_transaction_id||r.creating_local_transaction_id<r.origin_local_transaction_id||
@@ -32,8 +36,7 @@ bool Valid(const CatalogTransactionPolicyBody& r) noexcept {
           (r.origin_local_transaction_id==r.creating_local_transaction_id))||
       (r.generation==1&&r.creating_local_transaction_id!=r.origin_local_transaction_id)||
       !r.allowed_isolation_profile_count||r.allowed_isolation_profile_count>r.allowed_isolation_profiles.size()||
-      !r.read_mode_mask||(r.read_mode_mask&~u64{3})||!r.maximum_transaction_microseconds||
-      !r.maximum_snapshot_microseconds||!r.maximum_active_transactions||r.deadlock_priority>255||
+      !r.read_mode_mask||(r.read_mode_mask&~u64{3})||r.deadlock_priority>255||
       u64(r.savepoint_mode)<1||u64(r.savepoint_mode)>2||
       (r.savepoint_mode==TransactionSavepointMode::disabled)!=(r.maximum_savepoints==0)||
       u64(r.autocommit_mode)<1||u64(r.autocommit_mode)>2||

@@ -15,13 +15,14 @@ inline NativeStartupLifetimeError CheckNativeStartupLifetime(
     std::optional<core::platform::u64> snapshot,core::platform::u64 now,
     core::platform::u64 transaction_microseconds,core::platform::u64 snapshot_microseconds) noexcept {
   using E=NativeStartupLifetimeError;
-  if(!transaction_microseconds||!snapshot_microseconds||last<started||
+  // A zero bound is no limit (SB_DRIFT_TRANSACTION_POLICY_ZERO_IS_NO_LIMIT).
+  if(last<started||
       (snapshot&&(*snapshot<started||*snapshot>last)))return E::invalid_request;
   if(now<last)return E::clock_regressed;
   // Divide elapsed nanoseconds, rather than multiplying the policy limit:
   // every finite uint64 microsecond limit remains safe without saturation.
-  if((now-started)/1000>=transaction_microseconds)return E::transaction_expired;
-  if(snapshot&&(now-*snapshot)/1000>=snapshot_microseconds)return E::snapshot_expired;
+  if(transaction_microseconds&&(now-started)/1000>=transaction_microseconds)return E::transaction_expired;
+  if(snapshot&&snapshot_microseconds&&(now-*snapshot)/1000>=snapshot_microseconds)return E::snapshot_expired;
   return E::none;
 }
 } // namespace scratchbird::engine::internal_api

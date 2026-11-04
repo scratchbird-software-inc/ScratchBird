@@ -118,8 +118,20 @@ void LifetimeBounds(){
   check(1000,999,{},1000,10,10,L::invalid_request);
   check(1000,2000,999,3000,10,10,L::invalid_request);
   check(1000,2000,2001,3000,10,10,L::invalid_request);
-  check(1000,1000,{},1000,0,1,L::invalid_request);
-  check(1000,1000,{},1000,1,0,L::invalid_request);
+  // Zero is no limit (owner 2026-11-04, SB_DRIFT_TRANSACTION_POLICY_ZERO_IS_NO_LIMIT);
+  // these two zero bounds were refused as invalid_request before.
+  check(1000,1000,{},1000,0,1,L::none);
+  check(1000,1000,{},1000,1,0,L::none);
+  check(0,0,{},UINT64_MAX,0,0,L::none);
+  check(0,0,0,UINT64_MAX,0,0,L::none);
+  check(1000,2000,2000,UINT64_MAX,0,0,L::none);
+  // The other bound still applies when one of them is unlimited.
+  check(1000,2000,2000,3000,0,1,L::snapshot_expired);
+  check(1000,2000,2000,3000,1,0,L::transaction_expired);
+  // Unlimited bounds do not excuse a regressed clock or malformed input.
+  check(1000,1000,{},999,0,0,L::clock_regressed);
+  check(1000,999,{},1000,0,0,L::invalid_request);
+  check(1000,2000,2001,3000,0,0,L::invalid_request);
   check(0,0,0,UINT64_MAX,UINT64_MAX,UINT64_MAX,L::none);
   check(0,0,{},UINT64_MAX,UINT64_MAX/1000,UINT64_MAX,L::transaction_expired);
   check(0,0,{},UINT64_MAX,UINT64_MAX/1000+1,UINT64_MAX,L::none);

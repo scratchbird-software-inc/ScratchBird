@@ -85,9 +85,13 @@ void Values(){const auto base=Value();Roundtrip(base);Check(Golden(base).size()=
    case 3:b.wait_behavior=c::LockWaitBehavior(0);break;case 4:b.wait_behavior=c::LockWaitBehavior(10);break;
    case 5:b.wait_timeout_microseconds=1;break;case 6:b.maximum_waiters=1;break;
    case 7:b.fairness=c::LockQueueFairness(0);break;case 8:b.fairness=c::LockQueueFairness(3);break;
-   case 9:b.fairness_threshold_microseconds=0;break;case 10:b.maximum_locks=0;break;
-   case 11:b.maximum_lock_memory_bytes=0;break;case 12:b.maximum_graph_nodes=0;break;case 13:b.maximum_graph_edges=0;break;
-   case 14:b.maximum_deadlock_work=0;break;case 15:b.deadlock_detection_interval_microseconds=0;break;
+   case 9:b.fairness_threshold_microseconds=0;break;
+   // SB_DRIFT_LOCK_POLICY_ZERO_IS_NO_LIMIT (owner 2026-11-04): zero was refused
+   // here; it now means no limit and must round-trip.
+   case 10:b.maximum_locks=0;Roundtrip(b);continue;
+   case 11:b.maximum_lock_memory_bytes=0;Roundtrip(b);continue;case 12:b.maximum_graph_nodes=0;Roundtrip(b);continue;
+   case 13:b.maximum_graph_edges=0;Roundtrip(b);continue;
+   case 14:b.maximum_deadlock_work=0;Roundtrip(b);continue;case 15:b.deadlock_detection_interval_microseconds=0;break;
    case 16:b.victim_policy=c::LockVictimPolicy(2);break;case 17:b.victim_outcome=c::LockVictimOutcome(0);break;
    case 18:b.victim_outcome=c::LockVictimOutcome(8);break;case 19:b.timeout_outcome=c::LockTimeoutOutcome(0);break;
    case 20:b.timeout_outcome=c::LockTimeoutOutcome(6);break;case 21:b.conversion_priority=true;break;
@@ -98,6 +102,9 @@ void Values(){const auto base=Value();Roundtrip(base);Check(Golden(base).size()=
    case 30:b.origin_local_transaction_id=0;break;case 31:b.creating_local_transaction_id=2;break;
    case 32:b.creating_transaction_uuid.value=f::Id(8);break;case 33:b.evidence_policy_uuid=b.body_uuid;break;
  }Refuse(b);}
+ // With no lock-count or lock-memory limit an escalation threshold has no cap.
+ {auto b=base;b.maximum_locks=b.maximum_lock_memory_bytes=0;
+  b.escalation_lock_threshold=b.escalation_memory_threshold=UINT64_MAX;Roundtrip(b);}
  for(unsigned mode=2;mode<=9;++mode){auto b=Wait(mode);b.maximum_waiters=0;Refuse(b);
    b=Wait(mode);b.wait_timeout_microseconds=(mode==2?1:0);Refuse(b);}
  for(unsigned n=0;n<5;++n){auto b=maximum;

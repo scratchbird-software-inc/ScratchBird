@@ -1,16 +1,16 @@
 {
   "schema_version": 1,
   "review_status": "draft_requires_owner_review",
-  "review_note": "Drafted 2026-11-04 from the native enrollment test fixture (AddTransactionPolicies). Every value is the fixture's choice and is marked for owner review; several are operational limits that would restrict a production server if adopted unchanged (see review_flags).",
+  "review_note": "Drafted 2026-11-04 from the native enrollment test fixture (AddTransactionPolicies) and marked for owner review. Owner direction 2026-11-04: zero means no limit and no limit is the proper default for the transaction lifetime, snapshot age, active-transaction count, lock count, lock memory, wait-graph size and deadlock work (Firebird design; every attached user is always in a snapshot transaction). The remaining values are still the fixture's choice; these policies are to be monitored in live operation.",
   "descriptors": [
     {"key": "transaction", "policy_class": "transaction", "body": "transaction_body", "evidence_profile": "verification_evidence", "scope": "database", "precedence_rank": 1, "enforcement_points": [0, 7], "default_decision": "allow"},
     {"key": "lock_admission", "policy_class": "lock_admission", "body": "lock_body", "evidence_profile": "verification_evidence", "scope": "database", "precedence_rank": 1, "enforcement_points": [0, 7], "default_decision": "allow"}
   ],
   "transaction_bodies": [
-    {"key": "transaction_body", "default_isolation_profile": "read_committed_statement", "startup_isolation_profile": "maintenance_operation", "allowed_isolation_profiles": ["read_committed_statement", "maintenance_operation"], "read_mode_mask": 3, "maximum_transaction_microseconds": 60000000, "maximum_snapshot_microseconds": 60000000, "maximum_active_transactions": 64, "lock_policy": "lock_admission", "evidence_policy": "verification_evidence"}
+    {"key": "transaction_body", "default_isolation_profile": "read_committed_statement", "startup_isolation_profile": "maintenance_operation", "allowed_isolation_profiles": ["read_committed_statement", "maintenance_operation"], "read_mode_mask": 3, "maximum_transaction_microseconds": 0, "maximum_snapshot_microseconds": 0, "maximum_active_transactions": 0, "lock_policy": "lock_admission", "evidence_policy": "verification_evidence"}
   ],
   "lock_bodies": [
-    {"key": "lock_body", "fairness_threshold_microseconds": 1000000, "maximum_locks": 256, "maximum_lock_memory_bytes": 65536, "maximum_graph_nodes": 128, "maximum_graph_edges": 256, "maximum_deadlock_work": 4096, "deadlock_detection_interval_microseconds": 100000, "evidence_policy": "verification_evidence"}
+    {"key": "lock_body", "fairness_threshold_microseconds": 1000000, "maximum_locks": 0, "maximum_lock_memory_bytes": 0, "maximum_graph_nodes": 0, "maximum_graph_edges": 0, "maximum_deadlock_work": 0, "deadlock_detection_interval_microseconds": 100000, "evidence_policy": "verification_evidence"}
   ],
   "isolation_profiles": [
     {"key": "read_committed_statement", "profile_kind": "read_committed_statement", "snapshot_construction_point": "statement_start", "snapshot_refresh_mask": 2, "write_conflict_detection_mask": 3, "metadata_visibility": "statement_epoch", "wait_policy": "lock_admission", "deadlock_policy": "lock_admission"},
@@ -20,9 +20,8 @@
     {"policy_profile_area": "transaction_mga_cleanup_archive_backup_forward", "resource_definition": "transaction"}
   ],
   "review_flags": [
-    "maximum_active_transactions 64 limits the whole database to 64 concurrent transactions.",
-    "maximum_transaction_microseconds and maximum_snapshot_microseconds 60000000 end every transaction and snapshot after 60 seconds.",
-    "lock body maximum_locks 256 and maximum_lock_memory_bytes 65536 are far below a production lock table.",
+    "Superseded 2026-11-04: the drafts were 64 concurrent transactions, 60-second transaction and snapshot lifetimes, and a 256-lock / 64 KiB lock table with a 128-node, 256-edge, 4096-work deadlock graph. All are now 0 (no limit).",
+    "deadlock_detection_interval_microseconds 100000 and fairness_threshold_microseconds 1000000 are not limits and remain the fixture's choice; the detection interval default is an open owner question (Firebird detects deadlocks on conflict; its 10 s DeadlockTimeout only drives the dead-owner purge).",
     "Only two isolation profiles are declared (read_committed_statement and maintenance_operation); SBsql surfaces more isolation levels than this."
   ]
 }

@@ -82,8 +82,12 @@ void Values(){const auto base=Value();Roundtrip(base);Check(Golden(base).size()=
   case 3:b.default_isolation_profile_uuid=f::Id(302);break;case 4:b.startup_isolation_profile_uuid={};break;
   case 5:b.allowed_isolation_profile_count=0;break;case 6:std::swap(b.allowed_isolation_profiles[0],b.allowed_isolation_profiles[1]);break;
   case 7:b.allowed_isolation_profiles[1]=b.allowed_isolation_profiles[0];break;case 8:b.allowed_isolation_profiles[0].bytes[6]=0x40;break;
-  case 9:b.read_mode_mask=0;break;case 10:b.read_mode_mask=4;break;case 11:b.maximum_transaction_microseconds=0;break;
-  case 12:b.maximum_snapshot_microseconds=0;break;case 13:b.maximum_active_transactions=0;break;
+  case 9:b.read_mode_mask=0;break;case 10:b.read_mode_mask=4;break;
+  // SB_DRIFT_TRANSACTION_POLICY_ZERO_IS_NO_LIMIT (owner 2026-11-04): zero was
+  // refused here; it now means no limit and must round-trip.
+  case 11:b.maximum_transaction_microseconds=0;Roundtrip(b);continue;
+  case 12:b.maximum_snapshot_microseconds=0;Roundtrip(b);continue;
+  case 13:b.maximum_active_transactions=0;Roundtrip(b);continue;
   case 14:b.lock_policy_uuid={};break;case 15:b.lock_policy_uuid=b.body_uuid;break;case 16:b.evidence_policy_uuid=b.lock_policy_uuid;break;
   case 17:b.deadlock_priority=256;break;case 18:b.savepoint_mode=c::TransactionSavepointMode(3);break;
   case 19:b.maximum_savepoints=0;break;case 20:b.savepoint_mode=c::TransactionSavepointMode::disabled;break;

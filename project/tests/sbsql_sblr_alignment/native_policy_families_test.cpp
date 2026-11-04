@@ -120,16 +120,20 @@ int main() try {
   Check(s.authorization_bodies[0].maximum_records == 1024 && s.authorization_bodies[0].maximum_work == 262144,
         "authorization body values");
   const auto& tx = s.transaction_bodies[0];
-  Check(tx.maximum_active_transactions == 64 && tx.maximum_transaction_microseconds == 60000000 &&
-            tx.read_mode_mask == 3 && tx.allowed_isolation_profiles.size() == 2, "transaction body values");
+  // Zero is no limit, the default (owner 2026-11-04).
+  Check(tx.maximum_active_transactions == 0 && tx.maximum_transaction_microseconds == 0 &&
+            tx.maximum_snapshot_microseconds == 0 && tx.read_mode_mask == 3 &&
+            tx.allowed_isolation_profiles.size() == 2, "transaction body values: no limits");
   Check(s.transaction_descriptors[0].enforcement_points == (1ull | (1ull << 7)) &&
             s.transaction_descriptors[0].default_decision == c::CatalogPolicyDefault::allow &&
             s.transaction_descriptors[1].policy_class == c::CatalogPolicyClass::lock_admission &&
             s.transaction_descriptors[1].enforcement_points == (1ull | (1ull << 7)) &&
             s.transaction_descriptors[1].default_decision == c::CatalogPolicyDefault::allow,
         "transaction descriptors: the fixture's default case has no database-scope deny");
-  Check(s.lock_bodies[0].maximum_locks == 256 && s.lock_bodies[0].deadlock_detection_interval_microseconds == 100000,
-        "lock body values");
+  const auto& lock = s.lock_bodies[0];
+  Check(lock.maximum_locks == 0 && lock.maximum_lock_memory_bytes == 0 && lock.maximum_graph_nodes == 0 &&
+            lock.maximum_graph_edges == 0 && lock.maximum_deadlock_work == 0 &&
+            lock.deadlock_detection_interval_microseconds == 100000, "lock body values: no limits");
   Check(s.isolation_profiles[0].profile_kind == c::IsolationProfileKind::read_committed_statement &&
             s.isolation_profiles[1].profile_kind == c::IsolationProfileKind::maintenance_operation_isolation &&
             s.isolation_profiles[0].snapshot_refresh_mask == 2, "isolation profiles");
