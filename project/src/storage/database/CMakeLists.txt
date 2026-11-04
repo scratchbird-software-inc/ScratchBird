@@ -52,6 +52,7 @@ add_library(sb_storage_database
   native_inventory_publication_delta.cpp
   native_filespace_initialization.cpp
   native_creation_workspace.cpp
+  native_catalog_index_rows.cpp
   native_database_creation.cpp
   native_construction_audit.cpp
   native_policy_descriptor_creation.cpp

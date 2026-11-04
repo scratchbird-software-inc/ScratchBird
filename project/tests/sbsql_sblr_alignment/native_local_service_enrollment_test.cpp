@@ -15,6 +15,7 @@
 #include "engine/internal_api/verification/native_startup_catalog_allocation.hpp"
 #include "engine/internal_api/verification/native_startup_initial_control_allocation.hpp"
 #include "native_database_creation.hpp"
+#include "native_catalog_index_rows.hpp"
 #include "native_construction_audit.hpp"
 #include "catalog_schema_creation.hpp"
 #include "admitted_datatype_cohort.hpp"
@@ -617,6 +618,60 @@ AgentError AddAgentConfigurationFixture(db::NativeCreationCatalogSeed& seed,
   if(!variant)Check(seed[4].size()==95&&seed[1].size()==1594,"all 66 agent definitions and 132 names join native creation");  // 1462 pack names (616 before agent principals, 2026-11-03) + 132
   Check(!variant||expected!=AgentError::none,"known agent configuration refusal fixture");
   return expected;
+}
+
+// SB_CLARIFY_NATIVE_CATALOG_INDEX_PROFILE_ROWS (owner decision 2026-11-04,
+// option a): the production builder's key profile, visibility profile and one
+// dependency map per indexed relation, and the index bindings that reference
+// them. They replace constant fixture tuples (a digest filled with 1+role and
+// profile identities that named no row). The names relation takes the shared
+// constant identity. None of these rows is addressed by name, so each carries
+// its UUID text as its reference name (owner 2026-11-04).
+db::NativeCreationCatalogIndexes AddCatalogIndexRowsFixture(db::NativeCreationCatalogSeed& seed,
+    const enrollment::NativeLocalServiceCreationItem& prototype) {
+  db::NativeCatalogIndexRowsRequest request{Id(1),security_tx,1,{}};
+  for(unsigned i:{1u,3u,4u,5u})request.roles[i]=db::NativeCatalogIndexRoleIdentities{
+      i==1?platform::Uuid{}:security_fixture::Id(8000+i),security_fixture::Id(8010+i),security_fixture::Id(8040+i)};
+  const auto built=db::BuildNativeCatalogIndexRows(request);
+  Check(built.ok()&&built.rows.size()==6,"production builder issues both profiles and one map per indexed relation");
+  Check(built.indexes[1]&&built.indexes[1]->relation_uuid==catalog::kNativeNameCatalogRelationUuid,
+      "the names relation carries the shared constant identity");
+  std::vector<enrollment::NativeLocalServiceCreationItem> items;items.reserve(built.rows.size());
+  for(unsigned n=0;n<built.rows.size();++n){
+    const auto& row=built.rows[n];
+    auto& item=items.emplace_back(prototype);auto& m=item.definition;
+    m.record.header.kind=catalog::CatalogRecordKind::config_profile;
+    m.record.header.object_uuid={platform::UuidKind::object,row.object_uuid};
+    m.record.header.row_uuid=enrollment::Typed(platform::UuidKind::row,700000+3*n);
+    m.record.payload=row.payload;m.object_subtype=std::string(row.object_subtype);
+    m.default_name_uuid=enrollment::Typed(platform::UuidKind::object,800000+2*n);
+    m.name_vector_uuid=enrollment::Typed(platform::UuidKind::object,800001+2*n);
+    item.vector_metadata=m;item.vector_metadata.record.payload.clear();
+    item.vector_metadata.record.header.kind=catalog::CatalogRecordKind::localized_name;
+    item.vector_metadata.record.header.object_uuid=m.name_vector_uuid;
+    item.vector_metadata.record.header.row_uuid=enrollment::Typed(platform::UuidKind::row,700001+3*n);
+    item.vector_metadata.record.header.parent_uuid=m.record.header.object_uuid;
+    item.vector_metadata.object_subtype="name_vector";
+    item.vector.name_vector_uuid=m.name_vector_uuid;item.vector.object_uuid=m.record.header.object_uuid;
+    item.vector.object_class=catalog::CatalogRecordKindName(m.record.header.kind);
+    item.vector.default_name_entry_uuid=m.default_name_uuid;
+    item.entry_metadata=item.vector_metadata;item.entry_metadata.record.header.object_uuid=m.default_name_uuid;
+    item.entry_metadata.record.header.row_uuid=enrollment::Typed(platform::UuidKind::row,700002+3*n);
+    item.entry_metadata.record.header.parent_uuid=m.name_vector_uuid;item.entry_metadata.object_subtype="name_entry";
+    item.entry_metadata.resource_epoch=1;
+    item.entry.name_entry_uuid=m.default_name_uuid;item.entry.name_vector_uuid=m.name_vector_uuid;
+    item.entry.object_uuid=m.record.header.object_uuid;item.entry.object_class=item.vector.object_class;
+    item.entry.raw_name_text=item.entry.display_name=scratchbird::core::uuid::UuidToString(row.object_uuid);
+    item.entry.normalized_lookup_key.assign(item.entry.raw_name_text.begin(),item.entry.raw_name_text.end());
+  }
+  std::vector<catalog::CatalogNamedCreationInput> named;
+  for(auto& item:items){item.entries[0]={&item.entry_metadata,&item.entry};
+    named.push_back({&item.definition,&item.vector_metadata,&item.vector,item.entries});}
+  auto result=catalog::AssembleLocalNamedCreationRecords(Id(1),security_tx,"en-US",named,{100,1024*1024});
+  Check(result.ok(),"catalog index rows assemble as complete named definitions");
+  for(auto& row:result.records->definitions)seed[4].push_back(std::move(row));
+  for(auto& row:result.records->names)seed[1].push_back(std::move(row));
+  return built.indexes;
 }
 
 ConfigurationError ChangeConfigurationFixture(db::NativeCreationCatalogSeed& seed,unsigned variant) {
@@ -1389,14 +1444,7 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
     Check(changed,"semantic name fault targets an actual submitted catalog row");
   }
   db::NativeCreationCatalogIndexes indexes;
-  if(indexed)for(unsigned role:{1u,3u,4u,5u}){
-    page::NativeBtreeDependencies dependencies;dependencies.index_uuid=security_fixture::Id(8010+role);
-    dependencies.descriptor_generation=dependencies.storage_generation=1;
-    dependencies.key_profile_uuid=security_fixture::Id(8020+role);
-    dependencies.visibility_profile_uuid=security_fixture::Id(8030+role);
-    dependencies.dependency_map_uuid=security_fixture::Id(8040+role);dependencies.dependency_map_sha256.fill(1+role);
-    indexes[role]=db::NativeCreationCatalogIndexBinding{security_fixture::Id(8000+role),dependencies};
-  }
+  if(indexed)indexes=AddCatalogIndexRowsFixture(catalogs.plan->catalogs,inputs.items[0]);
   db::NativeFilespaceInitializationRequest construction;
   construction.bootstrap={Id(1),Id(2),Profile(profile),disk::kNativeBootstrapIntegrityProfile,{},sizes[profile],1,0,1,7};
   construction.operation_uuid=Id(3);construction.writer_uuid=Id(4);construction.policy_snapshot_uuid=Id(10);

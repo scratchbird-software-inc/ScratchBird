@@ -8,6 +8,8 @@
 #include "catalog_native_catalog_index.hpp"
 #include "catalog_named_creation.hpp"
 #include "native_creation_workspace.hpp"
+#include "native_catalog_index_rows.hpp"
+#include "hash_digest.hpp"
 #include "native_creation_catalog_input.hpp"
 #include "physical_mga_cow_store.hpp"
 #include "bootstrap_policy_fixture.hpp"
@@ -227,5 +229,56 @@ void Physical(){scratchbird::tests::OwnedTempDirectory artifacts;
   Check(device.Close().ok(),"owned file closed");
  }}
 }
-int main(){try{Values();Bindings();Physical();std::cout<<checks<<" native catalog index profile checks passed (declarations only)\n";return 0;}
+// The shared builder: rows and bindings that cannot disagree.
+void Builder(){
+ db::NativeCatalogIndexRowsRequest request{f::Id(1),tx,1,{}};
+ for(unsigned i:{1u,3u,4u,5u})request.roles[i]=db::NativeCatalogIndexRoleIdentities{i==1?p::Uuid{}:f::Id(400+i),f::Id(410+i),f::Id(420+i)};
+ const auto built=db::BuildNativeCatalogIndexRows(request);
+ Check(built.ok()&&built.rows.size()==6,"two profiles and one map per indexed role");
+ Check(built.rows[0].object_uuid==c::kNativeCatalogIndexKeyProfileUuid&&built.rows[0].payload==Golden(KeyValue())&&
+   built.rows[1].object_uuid==c::kNativeCatalogIndexVisibilityProfileUuid&&built.rows[1].payload==Golden(VisibilityValue()),
+   "constant profiles with the exact registered payloads");
+ unsigned at=2;
+ for(unsigned i=0;i<6;++i){
+   if(!request.roles[i]){Check(!built.indexes[i],"an unindexed role gets no binding");continue;}
+   Check(built.indexes[i].has_value(),"every indexed role gets a binding");
+   const auto& binding=*built.indexes[i];const auto& row=built.rows[at++];
+   const auto map=c::DecodeCatalogNativeCatalogIndexDependencyMap(row.payload);
+   Check(map.ok()&&row.object_uuid==map.record->map_uuid&&row.object_subtype=="native_catalog_index_dependency_map","map row decodes");
+   const auto& m=*map.record;const auto& d=binding.dependencies;
+   Check(m.relation_role==i+1&&m.relation_uuid==binding.relation_uuid&&m.index_uuid==d.index_uuid&&
+     m.key_profile_uuid==d.key_profile_uuid&&m.visibility_profile_uuid==d.visibility_profile_uuid&&m.map_uuid==d.dependency_map_uuid&&
+     m.descriptor_generation==d.descriptor_generation&&m.storage_generation==d.storage_generation&&
+     m.index_family_uuid==c::kNativeBtreeIndexFamilyUuid,"binding and map name the same identities and generations");
+   const std::vector<p::byte> bytes(reinterpret_cast<const p::byte*>(row.payload.data()),reinterpret_cast<const p::byte*>(row.payload.data())+row.payload.size());
+   const auto digest=scratchbird::core::hash::ComputeSha256Digest(bytes);
+   Check(digest.ok()&&digest.digest==d.dependency_map_sha256,"binding digest is SHA-256 over the encoded map");
+   Check(i==1?binding.relation_uuid==c::kNativeNameCatalogRelationUuid:binding.relation_uuid==f::Id(400+i),
+     "the names relation takes the shared constant; others keep the caller's identity");
+ }
+ Check(at==built.rows.size(),"no extra rows");
+ // The same request twice yields the same bytes and digests.
+ const auto again=db::BuildNativeCatalogIndexRows(request);
+ Check(again.ok()&&again.rows.size()==built.rows.size()&&std::equal(again.rows.begin(),again.rows.end(),built.rows.begin(),
+   [](const auto& a,const auto& b){return a.object_uuid==b.object_uuid&&a.payload==b.payload;})&&
+   std::equal(again.indexes.begin(),again.indexes.end(),built.indexes.begin(),[](const auto& a,const auto& b){
+     return a.has_value()==b.has_value()&&(!a||(a->relation_uuid==b->relation_uuid&&a->dependencies==b->dependencies));}),"deterministic");
+ const auto none=db::BuildNativeCatalogIndexRows({f::Id(1),tx,1,{}});
+ Check(none.ok()&&none.rows.empty()&&std::all_of(none.indexes.begin(),none.indexes.end(),[](const auto& b){return !b;}),"no indexed role, no rows");
+ for(unsigned n=0;n<10;++n){auto bad=request;auto expected=db::NativeCatalogIndexRowsError::invalid_request;switch(n){
+   case 0:bad.roles[1]->relation_uuid=f::Id(401);break;
+   case 1:bad.roles[3]->relation_uuid={};break;
+   case 2:bad.roles[3]->index_uuid.bytes[6]=0x40;break;
+   case 3:bad.roles[4]->map_uuid={};break;
+   case 4:bad.database_uuid={};break;
+   case 5:bad.construction_transaction.kind=p::UuidKind::object;break;
+   case 6:bad.construction_local_transaction_id=0;break;
+   case 7:bad.roles[4]->index_uuid=bad.roles[3]->index_uuid;expected=db::NativeCatalogIndexRowsError::duplicate_identity;break;
+   case 8:bad.roles[5]->relation_uuid=c::kNativeNameCatalogRelationUuid;expected=db::NativeCatalogIndexRowsError::duplicate_identity;break;
+   case 9:bad.roles[3]->map_uuid=c::kNativeCatalogIndexKeyProfileUuid;expected=db::NativeCatalogIndexRowsError::duplicate_identity;break;}
+   const auto refused=db::BuildNativeCatalogIndexRows(bad);
+   Check(refused.error==expected&&refused.rows.empty()&&std::all_of(refused.indexes.begin(),refused.indexes.end(),[](const auto& b){return !b;}),
+     "invalid or colliding identities refused with no partial output");}
+}
+int main(){try{Values();Bindings();Builder();Physical();std::cout<<checks<<" native catalog index profile checks passed (declarations only)\n";return 0;}
  catch(const std::exception& e){allocation_budget=-1;std::cerr<<e.what()<<'\n';return 1;}}
