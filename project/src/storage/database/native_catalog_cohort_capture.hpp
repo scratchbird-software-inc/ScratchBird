@@ -25,6 +25,15 @@ struct NativeCapturedCatalogRow {
   u16 selector=0,role=0;
   NativeCatalogVisibleRow row;
 };
+// SB_CLARIFY_NATIVE_CATALOG_INDEX_PROFILE_ROWS: each captured relation's
+// actual identity and, when indexed, the dependency tuple its index pages
+// carry. Storage records them; the engine compares them with the catalog's
+// profile and dependency-map rows.
+struct NativeCapturedCatalogRelation {
+  u16 selector=0,role=0;
+  Uuid relation_uuid;
+  std::optional<page::NativeBtreeDependencies> index_dependencies;
+};
 struct NativeCapturedCatalogPage {
   disk::NativeCommonPageHeader header;
   Uuid owner_uuid;
@@ -86,6 +95,9 @@ class NativeCatalogCapture {
   std::optional<NativeCapturedTransactionInventory> inventory() const noexcept {
     return ok()?inventory_:std::nullopt;
   }
+  std::span<const NativeCapturedCatalogRelation> relations() const noexcept {
+    return ok()?std::span<const NativeCapturedCatalogRelation>{relations_}.first(relation_count_):std::span<const NativeCapturedCatalogRelation>{};
+  }
   // Consumers may supply scratch storage, but it must not overwrite either
   // the fixed rows or their retained variable fields (including unused backing).
   bool DisjointWorkspace(std::span<const std::byte> workspace) const noexcept {
@@ -102,9 +114,14 @@ class NativeCatalogCapture {
     swap(initial_control_pages_,other.initial_control_pages_);swap(initial_control_page_count_,other.initial_control_page_count_);
     swap(initial_control_roots_,other.initial_control_roots_);swap(initial_control_root_count_,other.initial_control_root_count_);
     swap(initial_controls_complete_,other.initial_controls_complete_);
+    swap(relations_,other.relations_);swap(relation_count_,other.relation_count_);
   }
   void Begin() noexcept {selection_.reset();inventory_.reset();count_=used_=filespace_count_=physical_page_count_=0;
-    initial_control_page_count_=initial_control_root_count_=0;initial_controls_complete_=false;}
+    initial_control_page_count_=initial_control_root_count_=0;initial_controls_complete_=false;relation_count_=0;}
+  bool AppendRelation(const NativeCapturedCatalogRelation& relation) noexcept {
+    if(relation_count_==relations_.size())return false;
+    relations_[relation_count_++]=relation;return true;
+  }
   bool AppendPhysical(const disk::NativeCommonPageHeader& h,const Uuid& owner) noexcept {
     if(physical_pages_.empty())return true;
     return AppendPhysicalTo(physical_pages_,physical_page_count_,h,owner);
@@ -164,6 +181,8 @@ class NativeCatalogCapture {
   usize filespace_count_=0,physical_page_count_=0;
   usize count_=0,used_=0;
   std::optional<NativeCheckpointSelection> selection_;
+  std::array<NativeCapturedCatalogRelation,12> relations_{};
+  usize relation_count_=0;
   friend class NativeCatalogCohortLeaseReader;
   friend NativeCatalogCapturePreparedResult PrepareNativeCatalogCapture(
       NativeCatalogCaptureLimits,NativeStorageMemory&,const NativeStorageMemoryBinding&) noexcept;

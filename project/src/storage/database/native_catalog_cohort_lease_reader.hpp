@@ -138,6 +138,8 @@ class NativeCatalogCohortLeaseReader {
         for(const auto& page:read.source.tree.pages)inspection.maximum_page_bytes=std::max<usize>(inspection.maximum_page_bytes,page.page->header.page_size_bytes);
         if(capture)for(const auto& row:read.rows)
           if(!capture->Append(selector,relation.role,row))return fail(E::resource_exhausted);
+        if(capture&&!capture->AppendRelation({selector,relation.role,read.source.relation.relation_uuid,
+            read.source.relation.index_dependencies}))return fail(E::resource_exhausted);
       }
     }
     out.failing_selector=out.failing_role=0;out.selection=source.selection().selection;

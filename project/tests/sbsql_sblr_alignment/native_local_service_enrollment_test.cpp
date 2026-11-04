@@ -12,6 +12,7 @@
 #include "../../src/core/agents/agent_bootstrap_configuration.hpp"
 #include "engine/internal_api/catalog/native_catalog_name_verification.hpp"
 #include "engine/internal_api/catalog/native_catalog_namespace_verification.hpp"
+#include "engine/internal_api/catalog/native_catalog_index_verification.hpp"
 #include "engine/internal_api/verification/native_startup_catalog_allocation.hpp"
 #include "engine/internal_api/verification/native_startup_initial_control_allocation.hpp"
 #include "native_database_creation.hpp"
@@ -152,6 +153,21 @@ using ConfigurationError=server::NativeLocalServiceStartupConfigurationError;
 using AgentError=server::NativeLocalServiceAgentConfigurationError;
 using EnvelopeError=server::NativeDatabaseMemoryEnvelopeError;
 using PolicyError=server::NativeAgentPolicyError;
+
+// SB_CLARIFY_NATIVE_CATALOG_INDEX_PROFILE_ROWS: the open-time refusal each
+// catalog index fault variant must produce.
+runtime_security::NativeCatalogIndexVerificationError ExpectedIndexError(unsigned variant) {
+  using I=runtime_security::NativeCatalogIndexVerificationError;
+  switch(variant){
+    case 1:return I::dependency_map_digest;
+    case 2:return I::missing_dependency_map;
+    case 3:return I::dependency_map_binding;
+    case 4:return I::missing_key_profile;
+    case 5:return I::name_relation_identity;
+    case 6:return I::missing_visibility_profile;
+    default:return I::none;
+  }
+}
 
 PolicyError ExpectedPolicyError(unsigned variant) {
   switch(variant){
@@ -1387,7 +1403,7 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
     unsigned memory_variant=0,unsigned policy_variant=0,unsigned authentication_variant=0,unsigned name_variant=0,
     unsigned namespace_variant=0,unsigned filespace_variant=0,unsigned audit_variant=0,unsigned verification_policy_variant=0,
     unsigned management_variant=0,unsigned transaction_policy_variant=0,unsigned reference_variant=0,unsigned naming_profile_variant=0,
-    unsigned collision_variant=0) {
+    unsigned collision_variant=0,unsigned index_variant=0) {
   scratchbird::tests::OwnedTempDirectory artifacts;
   enrollment::NativeLocalServiceCreationFixture inputs(Id(1),security_tx,verifier);
   auto catalogs=db::AssembleNativeInitialPolicySecurityCatalogs(inputs.ServiceRequest(SB_DEFAULT_POLICY_PACK_ROOT));
@@ -1445,6 +1461,39 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
   }
   db::NativeCreationCatalogIndexes indexes;
   if(indexed)indexes=AddCatalogIndexRowsFixture(catalogs.plan->catalogs,inputs.items[0]);
+  // Individually valid rows and bindings whose cross-references only the
+  // open-time check can refuse: storage admits structure, not these references.
+  if(index_variant){
+    Check(indexed,"catalog index refusals need indexed relations");
+    auto& rows=catalogs.plan->catalogs[4];auto& names=catalogs.plan->catalogs[1];
+    const auto drop=[&](const platform::Uuid& id){
+      const auto before=rows.size();
+      std::erase_if(rows,[&](const auto& row){return row.metadata.record.header.object_uuid.value==id;});
+      std::erase_if(names,[&](const auto& row){
+        return row.name&&std::visit([&](const auto& name){return name.object_uuid.value==id;},*row.name);});
+      Check(rows.size()+1==before,"refusal fixture drops one actual catalog index row and its names");
+    };
+    auto& names_relation=*indexes[1];auto& security=*indexes[3];
+    if(index_variant==1)security.dependencies.dependency_map_sha256[0]^=1;
+    if(index_variant==2)drop(security.dependencies.dependency_map_uuid);
+    if(index_variant==3){
+      // A different storage generation with a matching digest: only the
+      // field comparison can refuse it.
+      const auto row=std::find_if(rows.begin(),rows.end(),[&](const auto& r){
+        return r.metadata.record.header.object_uuid.value==security.dependencies.dependency_map_uuid;});
+      Check(row!=rows.end(),"actual security relation dependency map");
+      auto map=catalog::DecodeCatalogNativeCatalogIndexDependencyMap(row->metadata.record.payload);
+      Check(map.ok(),"actual dependency map decodes");map.record->storage_generation=2;
+      const auto encoded=catalog::EncodeCatalogNativeCatalogIndexDependencyMap(*map.record);
+      Check(encoded.ok(),"valid map with a different storage generation");
+      row->metadata.record.payload.assign(encoded.bytes.begin(),encoded.bytes.end());
+      const auto digest=scratchbird::core::hash::ComputeSha256Digest(encoded.bytes);
+      Check(digest.ok(),"replacement map digest");security.dependencies.dependency_map_sha256=digest.digest;
+    }
+    if(index_variant==4)drop(catalog::kNativeCatalogIndexKeyProfileUuid);
+    if(index_variant==5)names_relation.relation_uuid=security_fixture::Id(8001);
+    if(index_variant==6)drop(catalog::kNativeCatalogIndexVisibilityProfileUuid);
+  }
   db::NativeFilespaceInitializationRequest construction;
   construction.bootstrap={Id(1),Id(2),Profile(profile),disk::kNativeBootstrapIntegrityProfile,{},sizes[profile],1,0,1,7};
   construction.operation_uuid=Id(3);construction.writer_uuid=Id(4);construction.policy_snapshot_uuid=Id(10);
@@ -1461,7 +1510,7 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
   // history or bypass a full filespace.
   if(profile==0&&indexed&&!configuration_variant&&!graph_variant&&!death&&!agent_variant&&!memory_variant&&
       !policy_variant&&!authentication_variant&&!name_variant&&!namespace_variant&&!filespace_variant&&!audit_variant&&
-      !verification_policy_variant&&!management_variant&&!transaction_policy_variant&&!reference_variant&&!naming_profile_variant&&!collision_variant)construction.total_pages=2048;
+      !verification_policy_variant&&!management_variant&&!transaction_policy_variant&&!reference_variant&&!naming_profile_variant&&!collision_variant&&!index_variant)construction.total_pages=2048;
   construction.creation_utc_millis=1789357072000ULL;
   AddDatabaseDefinitionFixture(catalogs.plan->catalogs,inputs.items[0],construction,name_variant,namespace_variant,filespace_variant);
   AddVerificationPolicies(catalogs.plan->catalogs,inputs.items[0],verification_policy_variant);
@@ -1542,7 +1591,7 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
   initialized.receipt.reset();catalogs.plan.reset();
   EnrolledCredentialCustodian provisioner;
   platform::Uuid previous_engine_instance;
-  for(unsigned reopen=0;reopen<(configuration_variant||graph_variant||agent_variant||policy_variant||name_variant||namespace_variant||filespace_variant||reference_variant||naming_profile_variant||collision_variant?1u:2u);++reopen){
+  for(unsigned reopen=0;reopen<(configuration_variant||graph_variant||agent_variant||policy_variant||name_variant||namespace_variant||filespace_variant||reference_variant||naming_profile_variant||collision_variant||index_variant?1u:2u);++reopen){
     // Credential-only bounds, the host's own (engine_host.cpp): room for the
     // 702-row, ~710 KiB security relation of a complete database (277 rows
     // before agent principals, 2026-11-03). Base pages are bounded in bytes so
@@ -2416,6 +2465,17 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
               Check(runtime_security::VerifyNativeCatalogNameBindings(read.catalog_capture(),{}).error==
                   runtime_security::NativeCatalogNameVerificationError::workspace_required,
                   "engine name verification refuses missing bounded index workspace");
+              {
+                allocation_budget=0;
+                const auto index_check=runtime_security::VerifyNativeCatalogIndexBindings(read.catalog_capture());
+                const auto index_heap=allocation_budget;allocation_budget=-1;
+                using I=runtime_security::NativeCatalogIndexVerificationError;
+                const auto expected=ExpectedIndexError(index_variant);
+                Check(index_check.error==expected&&index_heap==0&&(expected==I::none?
+                    index_check.indexed_relations==4&&index_check.referenced_uuid.is_nil():
+                    !index_check.indexed_relations&&index_check.role==(index_variant>=4?2:4)&&!index_check.referenced_uuid.is_nil()),
+                    "engine resolves every catalog index tuple against its actual profile and map rows without allocation");
+              }
               const auto fixed_rows=read.catalog_capture().rows();
               auto* aliased_index=reinterpret_cast<std::size_t*>(
                   const_cast<db::NativeCapturedCatalogRow*>(fixed_rows.data()));
@@ -2548,7 +2608,7 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
               reads=0;track_reads=true;
               const auto metadata=Host::VerifyStartupCatalogMetadata(read);
               track_reads=false;
-              if(!name_variant&&!namespace_variant&&!filespace_variant&&!audit_variant&&!reference_variant&&!naming_profile_variant&&ExpectedCollisionError(collision_variant)==CE::none){
+              if(!name_variant&&!index_variant&&!namespace_variant&&!filespace_variant&&!audit_variant&&!reference_variant&&!naming_profile_variant&&ExpectedCollisionError(collision_variant)==CE::none){
                 Check(metadata==server::NativeHostedRuntimeError::none&&read.catalog_metadata().ok()&&!reads&&
                     read.catalog_metadata().selection->checkpoint_sha256==read.catalog_capture().selection()->checkpoint_sha256,
                     "native host invokes the engine verifier under its installed memory policy on the retained exact source");
@@ -2704,6 +2764,7 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
               }else Check(metadata==server::NativeHostedRuntimeError::catalog_verification_failure&&!read.catalog_metadata().ok()&&
                   !read.catalog_metadata().selection&&!reads&&
                   (name_variant?read.catalog_metadata().names.error==names.error:
+                    index_variant?read.catalog_metadata().indexes.error==ExpectedIndexError(index_variant):
                     namespace_variant?read.catalog_metadata().namespaces.error==namespaces.error:
                     filespace_variant?read.catalog_metadata().filespaces.error==filespaces.error:
                     audit_variant?read.catalog_metadata().audit.error==audit_check.error:
@@ -2729,7 +2790,7 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
     observe_mutexes=false;
     const bool publish_starting=reopen==1&&!configuration_variant&&!graph_variant&&!death&&!agent_variant&&!memory_variant&&
         !policy_variant&&!authentication_variant&&!name_variant&&!namespace_variant&&!filespace_variant&&!audit_variant&&
-        !verification_policy_variant&&!management_variant&&!reference_variant&&!naming_profile_variant&&!collision_variant&&(transaction_policy_variant==0||transaction_policy_variant>=29);
+        !verification_policy_variant&&!management_variant&&!reference_variant&&!naming_profile_variant&&!collision_variant&&!index_variant&&(transaction_policy_variant==0||transaction_policy_variant>=29);
     // Successor reads validate the retained starting, boundary and detail
     // history, including the selected inventory and directory proof together.
     // Reserve the actual larger selected-read backing for this three-stage
@@ -3542,6 +3603,7 @@ int main(int argc,char** argv) {
       for(unsigned variant=1;variant<=5;++variant)run(0,true,process,0,0,0,0,0,0,0,0,0,0,0,0,0,0,variant);
       for(unsigned variant=1;variant<=16;++variant)run(0,true,process,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,variant);
       for(unsigned variant=1;variant<=22;++variant)run(0,true,process,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,variant);
+      for(unsigned variant=1;variant<=6;++variant)run(0,true,process,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,variant);
     }).ok(),"actual production provider scope for construction and native hosting");
   }catch(const std::exception& error){allocation_budget=-1;read_fault=0;track_reads=false;
     native_clock_failure=native_clock_regression=false;native_clock_advance_seconds=0;

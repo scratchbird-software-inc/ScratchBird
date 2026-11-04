@@ -8,6 +8,7 @@
 #include "native_catalog_security_reference_verification.hpp"
 #include "native_catalog_naming_profile_verification.hpp"
 #include "native_catalog_collision_verification.hpp"
+#include "native_catalog_index_verification.hpp"
 
 namespace scratchbird::engine::internal_api {
 // A source-bound component observation, never a complete startup receipt.
@@ -15,6 +16,9 @@ namespace scratchbird::engine::internal_api {
 // lifecycle verification remain obligations of the owning operation.
 struct NativeCatalogMetadataVerification {
   NativeCatalogNameVerification names;
+  // SB_CLARIFY_NATIVE_CATALOG_INDEX_PROFILE_ROWS: catalog index tuples against
+  // their profile and dependency-map rows, and the shared names-relation identity.
+  NativeCatalogIndexVerification indexes;
   NativeCatalogNamespaceVerification namespaces;
   NativeCatalogFilespaceVerification filespaces;
   NativeCatalogAuditVerification audit;
@@ -22,13 +26,15 @@ struct NativeCatalogMetadataVerification {
   NativeCatalogNamingProfileVerification naming_profiles;
   NativeCatalogCollisionVerification collisions;
   std::optional<storage::database::NativeCheckpointSelection> selection;
-  bool ok() const noexcept{return selection.has_value()&&names.ok()&&namespaces.ok()&&filespaces.ok()&&audit.ok()&&security.ok()&&naming_profiles.ok()&&collisions.ok();}
+  bool ok() const noexcept{return selection.has_value()&&names.ok()&&indexes.ok()&&namespaces.ok()&&filespaces.ok()&&audit.ok()&&security.ok()&&naming_profiles.ok()&&collisions.ok();}
 };
 inline NativeCatalogMetadataVerification VerifyNativeCatalogMetadata(
     const storage::database::NativeCatalogCapture& capture,NativeCatalogNamespaceWorkspace workspace) noexcept {
   NativeCatalogMetadataVerification out;
   out.names=VerifyNativeCatalogNameBindings(capture,workspace.order);
   if(!out.names.ok())return out;
+  out.indexes=VerifyNativeCatalogIndexBindings(capture);
+  if(!out.indexes.ok())return out;
   out.namespaces=VerifyNativeCatalogNamespaces(capture,workspace);
   if(!out.namespaces.ok())return out;
   out.filespaces=VerifyNativeCatalogFilespaces(capture,out.namespaces.database_object_uuid,workspace.colors);
