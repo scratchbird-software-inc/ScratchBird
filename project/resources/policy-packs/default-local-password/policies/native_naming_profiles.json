@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "review_status": "draft_requires_owner_review",
+  "review_note": "Drafted 2026-11-04 from the native enrollment test fixtures (AddNamingProfileFixture, AddCollisionPolicyFixture). Marked for owner review.",
+  "identifier_profiles": [
+    {
+      "key": "default_identifier",
+      "profile_name": "explicit_internal_aliases",
+      "escape_rule": "not_applicable",
+      "comparison_mode": "exact",
+      "storage_display_mode": "preserve_user_text",
+      "reserved_word_behavior": "parser_profile_specific",
+      "length_unit": "encoded_octets",
+      "dialect_mode_flags": 0
+    }
+  ],
+  "dialect_profiles": [
+    {
+      "key": "default_dialect",
+      "identifier_profile": "default_identifier"
+    }
+  ],
+  "collision_groups": [
+    {
+      "key": "default_group",
+      "language_lane": "exact_tag",
+      "key_lane": "separate"
+    }
+  ],
+  "collision_policies": [
+    {
+      "key": "default_collision",
+      "scope": "database",
+      "precedence_rank": 1,
+      "enforcement_points": [
+        13
+      ],
+      "record_kinds": "all_built_in",
+      "record_kind_group": "default_group"
+    }
+  ],
+  "review_flags": [
+    "comparison_mode exact makes every catalog name case-sensitive and unfolded in the default identifier profile.",
+    "One collision group binds every built-in record kind with exact language tags and separate key lanes."
+  ]
+}

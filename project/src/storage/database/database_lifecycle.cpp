@@ -8,6 +8,7 @@
 
 #include "database_lifecycle.hpp"
 #include "native_policy_creation.hpp"
+#include "native_policy_families.hpp"
 #include "native_bootstrap_definition_metadata.hpp"
 #include "catalog_bootstrap_policy.hpp"
 #include "catalog_memory_configuration.hpp"
@@ -1328,6 +1329,9 @@ struct LoadedPolicySeedPack {
   // Present whenever agent_authority is: every non-cluster agent type and its
   // task-group role.
   std::vector<PolicyAgentTypeSeed> agent_types;
+  // SB_NATIVE_POLICY_FAMILY_SEEDS: present when the pack declares the four
+  // native policy family files; absent for a pack that declares none.
+  std::optional<NativePolicyFamilySeeds> native_families;
 };
 
 struct PolicyPackLoadResult {
@@ -1456,6 +1460,45 @@ bool ExtractBoolField(const std::string& object, const std::string& key, bool* v
     return false;
   }
   *value = match[1].str() == "true";
+  return true;
+}
+
+bool ExtractU64Field(const std::string& object, const std::string& key, u64* value) {
+  const std::regex pattern("\"" + key + "\"\\s*:\\s*([0-9]+)");
+  std::smatch match;
+  if (!std::regex_search(object, match, pattern) || match[1].length() > 20) return false;
+  try {
+    std::size_t used = 0;
+    const auto parsed = std::stoull(match[1].str(), &used, 10);
+    if (used != static_cast<std::size_t>(match[1].length())) return false;
+    *value = parsed;
+    return true;
+  } catch (...) {
+    return false;
+  }
+}
+
+bool ExtractArrayBody(const std::string& text, const std::string& key, std::string* body);
+
+// A JSON array of bit positions 0..63, folded into a mask. An empty array is a
+// zero mask; a repeated or out-of-range position refuses.
+bool ExtractBitListField(const std::string& object, const std::string& key, u64* mask) {
+  std::string body;
+  if (!ExtractArrayBody(object, key, &body)) return false;
+  u64 out = 0;
+  std::size_t at = 0;
+  while (at < body.size()) {
+    while (at < body.size() && (body[at] == ' ' || body[at] == '\n' || body[at] == '\t' || body[at] == ',')) ++at;
+    if (at == body.size()) break;
+    std::size_t end = at;
+    while (end < body.size() && body[end] >= '0' && body[end] <= '9') ++end;
+    if (end == at || end - at > 2) return false;
+    const auto bit = std::stoul(body.substr(at, end - at));
+    if (bit > 63 || (out & (u64{1} << bit))) return false;
+    out |= u64{1} << bit;
+    at = end;
+  }
+  *mask = out;
   return true;
 }
 
@@ -1967,6 +2010,239 @@ PolicyPackLoadResult ValidatePolicyDefaultsResource(
                                "default policy key coverage");
   }
   return PolicyPackLoadOk({});
+}
+
+// SEARCH_KEY: SB_NATIVE_POLICY_FAMILY_SEEDS (owner direction 2026-11-04). The
+// five native policy families, read from the pack's native_*.json files. Every
+// enum is spelled by its enumerator name (generated tables) and every cross
+// reference must name a declared key of the right family; keys are one
+// namespace across the four files.
+template<class E> struct NativePolicyEnumName {const char* name;E value;};
+#include "native_policy_family_names.inc"
+template<class E,std::size_t N>
+bool NativePolicyEnum(const NativePolicyEnumName<E> (&table)[N],const std::string& name,E* out) {
+  for(const auto& entry:table)if(name==entry.name){*out=entry.value;return true;}
+  return false;
+}
+constexpr std::array<const char*,4> kNativePolicyFamilyFiles{
+    "policies/native_verification_policies.json","policies/native_transaction_policies.json",
+    "policies/native_management_definitions.json","policies/native_naming_profiles.json"};
+
+std::optional<PolicyPackLoadResult> ParseNativePolicyFamilies(
+    const std::map<std::string,std::string>& admitted,LoadedPolicySeedPack* loaded) {
+  namespace c=scratchbird::core::catalog;
+  std::size_t present=0;
+  for(const auto* path:kNativePolicyFamilyFiles)present+=admitted.count(path);
+  if(present==0)return std::nullopt;
+  const auto fail=[](std::string detail){
+    return std::optional<PolicyPackLoadResult>(
+        PolicyPackLoadError("SB-POLICY-PACK-NATIVE-FAMILIES-INVALID",std::move(detail)));};
+  if(present!=kNativePolicyFamilyFiles.size())return fail("partial native policy family set");
+  NativePolicyFamilySeeds seeds;
+  std::set<std::string> keys;
+  const auto key=[&](const std::string& object,std::string* out){
+    return ExtractStringField(object,"key",out)&&!out->empty()&&keys.insert(*out).second;};
+  const auto u64_field=[](const std::string& object,const char* name,u64* out){return ExtractU64Field(object,name,out);};
+  const auto descriptors=[&](const std::string& file,std::vector<NativePolicyDescriptorSeed>* out)->bool{
+    std::string body;if(!ExtractArrayBody(file,"descriptors",&body))return false;
+    for(const auto& object:SplitTopLevelObjects(body)){
+      NativePolicyDescriptorSeed d;std::string name;
+      if(!key(object,&d.key)||!ExtractStringField(object,"body",&d.body)||
+          !ExtractStringField(object,"policy_class",&name)||!NativePolicyEnum(kCatalogPolicyClassNames,name,&d.policy_class)||
+          !ExtractStringField(object,"scope",&name)||!NativePolicyEnum(kCatalogPolicyScopeNames,name,&d.scope)||
+          !u64_field(object,"precedence_rank",&d.precedence_rank)||!ExtractBitListField(object,"enforcement_points",&d.enforcement_points)||
+          !ExtractOptionalStringField(object,"evidence_profile",&d.evidence_profile))return false;
+      std::string decision;if(!ExtractOptionalStringField(object,"default_decision",&decision))return false;
+      if(!decision.empty()){c::CatalogPolicyDefault value{};if(!NativePolicyEnum(kCatalogPolicyDefaultNames,decision,&value))return false;d.default_decision=value;}
+      if(object.find("\"cache_invalidation_mask\"")!=std::string::npos&&!u64_field(object,"cache_invalidation_mask",&d.cache_invalidation_mask))return false;
+      out->push_back(std::move(d));
+    }
+    return !out->empty();
+  };
+  // Verification family.
+  {const auto& file=admitted.at(kNativePolicyFamilyFiles[0]);
+    if(!descriptors(file,&seeds.verification_descriptors))return fail("verification descriptors");
+    std::string body;
+    if(!ExtractArrayBody(file,"verification_bodies",&body))return fail("verification bodies");
+    for(const auto& object:SplitTopLevelObjects(body)){
+      NativeVerificationBodySeed b;std::string role;
+      if(!key(object,&b.key)||!ExtractStringField(object,"role",&role)||!NativePolicyEnum(kVerificationPolicyRoleNames,role,&b.role)||
+          !u64_field(object,"verification_class_mask",&b.verification_class_mask)||!u64_field(object,"authority_class_mask",&b.authority_class_mask)||
+          !u64_field(object,"verification_level_mask",&b.verification_level_mask)||!u64_field(object,"maximum_scan_pages",&b.maximum_scan_pages)||
+          !u64_field(object,"maximum_work_bytes",&b.maximum_work_bytes)||!u64_field(object,"maximum_findings",&b.maximum_findings)||
+          !ExtractStringField(object,"evidence_policy",&b.evidence_policy)||!ExtractOptionalStringField(object,"access_policy",&b.access_policy))
+        return fail("verification body "+b.key);
+      for(const auto& flag:ExtractStringArrayField(object,"flags")){
+        if(flag!="mark_salvaged_output")return fail("verification body flag "+flag);
+        b.mark_salvaged_output=true;}
+      seeds.verification_bodies.push_back(std::move(b));
+    }
+    if(!ExtractArrayBody(file,"evidence_bodies",&body))return fail("evidence bodies");
+    for(const auto& object:SplitTopLevelObjects(body)){
+      NativeEvidenceBodySeed b;
+      if(!key(object,&b.key)||!ExtractStringField(object,"storage_filespace",&b.storage_filespace)||b.storage_filespace!="primary"||
+          !u64_field(object,"maximum_record_bytes",&b.maximum_record_bytes)||!u64_field(object,"maximum_batch_bytes",&b.maximum_batch_bytes))
+        return fail("evidence body "+b.key);
+      b.required_evidence_classes=ExtractStringArrayField(object,"required_evidence_classes");
+      b.required_search_keys=ExtractStringArrayField(object,"required_search_keys");
+      seeds.evidence_bodies.push_back(std::move(b));
+    }
+    if(!ExtractArrayBody(file,"authorization_bodies",&body))return fail("authorization bodies");
+    for(const auto& object:SplitTopLevelObjects(body)){
+      NativeAuthorizationBodySeed b;
+      if(!key(object,&b.key)||!ExtractStringField(object,"schema",&b.schema)||b.schema.empty()||
+          !u64_field(object,"maximum_records",&b.maximum_records)||!u64_field(object,"maximum_membership_depth",&b.maximum_membership_depth)||
+          !u64_field(object,"maximum_work",&b.maximum_work))return fail("authorization body "+b.key);
+      seeds.authorization_bodies.push_back(std::move(b));
+    }
+  }
+  // Transaction, lock and isolation family.
+  {const auto& file=admitted.at(kNativePolicyFamilyFiles[1]);
+    if(!descriptors(file,&seeds.transaction_descriptors))return fail("transaction descriptors");
+    std::string body;
+    if(!ExtractArrayBody(file,"transaction_bodies",&body))return fail("transaction bodies");
+    for(const auto& object:SplitTopLevelObjects(body)){
+      NativeTransactionBodySeed b;
+      if(!key(object,&b.key)||!ExtractStringField(object,"default_isolation_profile",&b.default_isolation_profile)||
+          !ExtractStringField(object,"startup_isolation_profile",&b.startup_isolation_profile)||
+          !ExtractStringField(object,"lock_policy",&b.lock_policy)||!ExtractStringField(object,"evidence_policy",&b.evidence_policy)||
+          !u64_field(object,"read_mode_mask",&b.read_mode_mask)||!u64_field(object,"maximum_transaction_microseconds",&b.maximum_transaction_microseconds)||
+          !u64_field(object,"maximum_snapshot_microseconds",&b.maximum_snapshot_microseconds)||
+          !u64_field(object,"maximum_active_transactions",&b.maximum_active_transactions))return fail("transaction body "+b.key);
+      b.allowed_isolation_profiles=ExtractStringArrayField(object,"allowed_isolation_profiles");
+      if(b.allowed_isolation_profiles.empty())return fail("transaction body "+b.key+" allowed isolation");
+      seeds.transaction_bodies.push_back(std::move(b));
+    }
+    if(!ExtractArrayBody(file,"lock_bodies",&body))return fail("lock bodies");
+    for(const auto& object:SplitTopLevelObjects(body)){
+      NativeLockBodySeed b;
+      if(!key(object,&b.key)||!ExtractStringField(object,"evidence_policy",&b.evidence_policy)||
+          !u64_field(object,"fairness_threshold_microseconds",&b.fairness_threshold_microseconds)||
+          !u64_field(object,"maximum_locks",&b.maximum_locks)||!u64_field(object,"maximum_lock_memory_bytes",&b.maximum_lock_memory_bytes)||
+          !u64_field(object,"maximum_graph_nodes",&b.maximum_graph_nodes)||!u64_field(object,"maximum_graph_edges",&b.maximum_graph_edges)||
+          !u64_field(object,"maximum_deadlock_work",&b.maximum_deadlock_work)||
+          !u64_field(object,"deadlock_detection_interval_microseconds",&b.deadlock_detection_interval_microseconds))return fail("lock body "+b.key);
+      seeds.lock_bodies.push_back(std::move(b));
+    }
+    if(!ExtractArrayBody(file,"isolation_profiles",&body))return fail("isolation profiles");
+    for(const auto& object:SplitTopLevelObjects(body)){
+      NativeIsolationProfileSeed b;std::string name;
+      if(!key(object,&b.key)||!ExtractStringField(object,"profile_kind",&name)||!NativePolicyEnum(kIsolationProfileKindNames,name,&b.profile_kind)||
+          !ExtractStringField(object,"snapshot_construction_point",&name)||!NativePolicyEnum(kIsolationSnapshotPointNames,name,&b.snapshot_construction_point)||
+          !ExtractStringField(object,"metadata_visibility",&name)||!NativePolicyEnum(kIsolationMetadataVisibilityNames,name,&b.metadata_visibility)||
+          !u64_field(object,"snapshot_refresh_mask",&b.snapshot_refresh_mask)||!u64_field(object,"write_conflict_detection_mask",&b.write_conflict_detection_mask)||
+          !ExtractStringField(object,"wait_policy",&b.wait_policy)||!ExtractStringField(object,"deadlock_policy",&b.deadlock_policy))
+        return fail("isolation profile "+b.key);
+      seeds.isolation_profiles.push_back(std::move(b));
+    }
+    if(!ExtractArrayBody(file,"profile_bindings",&body))return fail("profile bindings");
+    for(const auto& object:SplitTopLevelObjects(body)){
+      NativeProfileBindingSeed b;
+      if(!ExtractStringField(object,"policy_profile_area",&b.policy_profile_area)||
+          !ExtractStringField(object,"resource_definition",&b.resource_definition))return fail("profile binding");
+      seeds.profile_bindings.push_back(std::move(b));
+    }
+  }
+  // Management family.
+  {const auto& file=admitted.at(kNativePolicyFamilyFiles[2]);
+    std::set<c::CatalogManagementProfileCode> declared;
+    // The file's own profile list, not a descriptor's: read it with the
+    // descriptor array cut out, whatever order the keys come in.
+    std::string descriptors_body,top=file;
+    if(!ExtractArrayBody(file,"operation_descriptors",&descriptors_body))return fail("management definitions");
+    top.erase(top.find(descriptors_body),descriptors_body.size());
+    for(const auto& name:ExtractStringArrayField(top,"profiles")){
+      c::CatalogManagementProfileCode code{};
+      if(!NativePolicyEnum(kCatalogManagementProfileCodeNames,name,&code)||!declared.insert(code).second)return fail("management profile "+name);
+      seeds.management_profiles.push_back(code);
+    }
+    std::string body;
+    if(seeds.management_profiles.empty()||!ExtractArrayBody(file,"operation_descriptors",&body))return fail("management definitions");
+    for(const auto& object:SplitTopLevelObjects(body)){
+      NativeManagementDescriptorSeed d;std::string name;
+      if(!key(object,&d.key)||!ExtractStringField(object,"code",&name)||!NativePolicyEnum(kCatalogManagementOperationCodeNames,name,&d.code)||
+          !u64_field(object,"flags",&d.flags))return fail("management descriptor "+d.key);
+      for(const auto& profile:ExtractStringArrayField(object,"profiles")){
+        c::CatalogManagementProfileCode code{};
+        if(!NativePolicyEnum(kCatalogManagementProfileCodeNames,profile,&code)||!declared.count(code))return fail("management descriptor profile "+profile);
+        d.profiles.push_back(code);
+      }
+      seeds.management_descriptors.push_back(std::move(d));
+    }
+  }
+  // Naming and collision family.
+  {const auto& file=admitted.at(kNativePolicyFamilyFiles[3]);
+    std::string body;
+    if(!ExtractArrayBody(file,"identifier_profiles",&body))return fail("identifier profiles");
+    for(const auto& object:SplitTopLevelObjects(body)){
+      NativeIdentifierProfileSeed p;std::string name;
+      if(!key(object,&p.key)||!ExtractStringField(object,"profile_name",&p.profile_name)||p.profile_name.empty()||
+          !ExtractStringField(object,"escape_rule",&name)||!NativePolicyEnum(kIdentifierEscapeRuleNames,name,&p.escape_rule)||
+          !ExtractStringField(object,"comparison_mode",&name)||!NativePolicyEnum(kIdentifierComparisonModeNames,name,&p.comparison_mode)||
+          !ExtractStringField(object,"storage_display_mode",&name)||!NativePolicyEnum(kIdentifierDisplayModeNames,name,&p.storage_display_mode)||
+          !ExtractStringField(object,"reserved_word_behavior",&name)||!NativePolicyEnum(kIdentifierReservedWordModeNames,name,&p.reserved_word_behavior)||
+          !ExtractStringField(object,"length_unit",&name)||!NativePolicyEnum(kIdentifierLengthUnitNames,name,&p.length_unit)||
+          !u64_field(object,"dialect_mode_flags",&p.dialect_mode_flags))return fail("identifier profile "+p.key);
+      seeds.identifier_profiles.push_back(std::move(p));
+    }
+    if(!ExtractArrayBody(file,"dialect_profiles",&body))return fail("dialect profiles");
+    for(const auto& object:SplitTopLevelObjects(body)){
+      NativeDialectProfileSeed p;
+      if(!key(object,&p.key)||!ExtractStringField(object,"identifier_profile",&p.identifier_profile))return fail("dialect profile "+p.key);
+      seeds.dialect_profiles.push_back(std::move(p));
+    }
+    if(!ExtractArrayBody(file,"collision_groups",&body))return fail("collision groups");
+    for(const auto& object:SplitTopLevelObjects(body)){
+      NativeCollisionGroupSeed g;std::string name;
+      if(!key(object,&g.key)||!ExtractStringField(object,"language_lane",&name)||!NativePolicyEnum(kCatalogCollisionLanguageLaneNames,name,&g.language_lane)||
+          !ExtractStringField(object,"key_lane",&name)||!NativePolicyEnum(kCatalogCollisionKeyLaneNames,name,&g.key_lane))return fail("collision group "+g.key);
+      seeds.collision_groups.push_back(std::move(g));
+    }
+    if(!ExtractArrayBody(file,"collision_policies",&body))return fail("collision policies");
+    for(const auto& object:SplitTopLevelObjects(body)){
+      NativeCollisionPolicySeed p;std::string name,kinds;
+      if(!key(object,&p.key)||!ExtractStringField(object,"scope",&name)||!NativePolicyEnum(kCatalogPolicyScopeNames,name,&p.scope)||
+          !u64_field(object,"precedence_rank",&p.precedence_rank)||!ExtractBitListField(object,"enforcement_points",&p.enforcement_points)||
+          !ExtractStringField(object,"record_kinds",&kinds)||kinds!="all_built_in"||
+          !ExtractStringField(object,"record_kind_group",&p.record_kind_group))return fail("collision policy "+p.key);
+      p.all_built_in_record_kinds=true;
+      seeds.collision_policies.push_back(std::move(p));
+    }
+  }
+  // Cross references: each must name a declared key of the right family.
+  const auto in=[](const auto& items,const std::string& want){
+    return std::any_of(items.begin(),items.end(),[&](const auto& item){return item.key==want;});};
+  const auto evidence_descriptor=[&](const std::string& want){
+    return std::any_of(seeds.verification_descriptors.begin(),seeds.verification_descriptors.end(),
+        [&](const auto& d){return d.key==want&&d.policy_class==c::CatalogPolicyClass::evidence;});};
+  for(const auto& d:seeds.verification_descriptors)
+    if(!(in(seeds.verification_bodies,d.body)||in(seeds.evidence_bodies,d.body)||in(seeds.authorization_bodies,d.body))||
+        (!d.evidence_profile.empty()&&!evidence_descriptor(d.evidence_profile)))return fail("verification descriptor reference "+d.key);
+  for(const auto& b:seeds.verification_bodies)
+    if(!evidence_descriptor(b.evidence_policy)||(!b.access_policy.empty()&&!in(seeds.verification_descriptors,b.access_policy)))
+      return fail("verification body reference "+b.key);
+  for(const auto& d:seeds.transaction_descriptors)
+    if(!(in(seeds.transaction_bodies,d.body)||in(seeds.lock_bodies,d.body))||
+        (!d.evidence_profile.empty()&&!evidence_descriptor(d.evidence_profile)))return fail("transaction descriptor reference "+d.key);
+  for(const auto& b:seeds.transaction_bodies){
+    if(!in(seeds.isolation_profiles,b.default_isolation_profile)||!in(seeds.isolation_profiles,b.startup_isolation_profile)||
+        !in(seeds.transaction_descriptors,b.lock_policy)||!evidence_descriptor(b.evidence_policy))return fail("transaction body reference "+b.key);
+    for(const auto& allowed:b.allowed_isolation_profiles)if(!in(seeds.isolation_profiles,allowed))return fail("transaction body isolation "+allowed);
+  }
+  for(const auto& b:seeds.lock_bodies)if(!evidence_descriptor(b.evidence_policy))return fail("lock body reference "+b.key);
+  for(const auto& p:seeds.isolation_profiles)
+    if(!in(seeds.transaction_descriptors,p.wait_policy)||!in(seeds.transaction_descriptors,p.deadlock_policy))
+      return fail("isolation profile reference "+p.key);
+  for(const auto& b:seeds.profile_bindings)
+    if(!in(seeds.transaction_descriptors,b.resource_definition)||
+        std::none_of(loaded->profiles.begin(),loaded->profiles.end(),[&](const auto& p){return p.area==b.policy_profile_area;}))
+      return fail("profile binding "+b.policy_profile_area);
+  for(const auto& p:seeds.dialect_profiles)if(!in(seeds.identifier_profiles,p.identifier_profile))return fail("dialect profile reference "+p.key);
+  for(const auto& p:seeds.collision_policies)if(!in(seeds.collision_groups,p.record_kind_group))return fail("collision policy reference "+p.key);
+  if(seeds.identifier_profiles.empty()||seeds.dialect_profiles.empty()||seeds.collision_policies.empty()||
+      seeds.management_descriptors.empty()||seeds.transaction_bodies.empty())return fail("required native policy family missing");
+  loaded->native_families=std::move(seeds);
+  return std::nullopt;
 }
 
 PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_text) {
@@ -2534,6 +2810,9 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
                                    agent.agent_type_id + "/no_task_group_role");
       }
     }
+  }
+  if (auto refused = ParseNativePolicyFamilies(admitted_content, &loaded)) {
+    return std::move(*refused);
   }
 
   return PolicyPackLoadOk(std::move(loaded));
@@ -8522,8 +8801,12 @@ PolicySeedPackDescriptor DefaultPolicyPackDescriptor() {
   // Previous: 20645e55e0a45dff2bf69fa9d2988a75b6064324fb7986afc2d3e6e722ae7056
   // Owner direction 2026-10-30: transaction_pressure_manager's role is granted OBS_AGENT_CONTROL_INTERNAL, its own-action right.
   // Previous: 460cb8cda9e4964dfc0365fcfd3d7fd4691d0e65207480a83a9786233e6e1f93
+  // Owner direction 2026-11-04: the four native policy family files
+  // (policies/native_*.json, SB_NATIVE_POLICY_FAMILY_SEEDS) join the pack,
+  // taking content_manifest from ten entries to fourteen.
+  // Previous: 37b4752368cca6385632fde2faa22f685041cc6710fcf87396aa2c8758f15f5f
   descriptor.content_sha256 =
-      "37b4752368cca6385632fde2faa22f685041cc6710fcf87396aa2c8758f15f5f";
+      "990b8bd8991e0d5666e5ba1242f5ce00f53c3568a105adb990e49ab5866d32af";
   descriptor.create_time_only = true;
   descriptor.post_create_filesystem_authority = false;
   descriptor.local_password_only = true;
@@ -11640,6 +11923,20 @@ DiagnosticRecord MakeDatabaseLifecycleDiagnostic(Status status,
                         std::move(arguments),
                         {},
                         "storage.database.lifecycle");
+}
+
+NativePolicyFamiliesLoadResult LoadNativePolicyFamilies(std::string_view policy_seed_pack_root) noexcept {
+  NativePolicyFamiliesLoadResult out;
+  try {
+    auto loaded = LoadSelectedPolicySeedPack(std::string(policy_seed_pack_root));
+    out.status = loaded.status;
+    out.diagnostic = std::move(loaded.diagnostic);
+    if (loaded.ok()) out.seeds = std::move(loaded.pack.native_families);
+  } catch (...) {
+    out.status = LifecycleError("SB-POLICY-PACK-NATIVE-FAMILIES-INVALID",
+                                "storage.database_lifecycle.native_policy_families_load_failed").status;
+  }
+  return out;
 }
 
 }  // namespace scratchbird::storage::database

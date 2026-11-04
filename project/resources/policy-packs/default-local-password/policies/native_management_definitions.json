@@ -1,0 +1,12 @@
+{
+  "schema_version": 1,
+  "review_status": "draft_requires_owner_review",
+  "review_note": "Drafted 2026-11-04 from the native enrollment test fixture (AddManagementDefinitions): one management profile per profile code and one verify_start operation descriptor naming all ten. Marked for owner review.",
+  "profiles": ["verification_family", "verify_start_procedure", "database_target", "target_dryrun_parameters", "operation_state_result", "maintenance_authorization", "verification_policy", "verification_evidence", "verification_metrics", "verify_start_conformance"],
+  "operation_descriptors": [
+    {"key": "verify_start", "code": "verify_start", "flags": 31, "profiles": ["verification_family", "verify_start_procedure", "database_target", "target_dryrun_parameters", "operation_state_result", "maintenance_authorization", "verification_policy", "verification_evidence", "verification_metrics", "verify_start_conformance"]}
+  ],
+  "review_flags": [
+    "verify_start is the only management operation declared; other management operations have no native descriptor yet."
+  ]
+}

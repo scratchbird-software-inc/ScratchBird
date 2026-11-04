@@ -2433,6 +2433,17 @@ add_test(NAME sbsql_sblr_alignment_native_policy_creation COMMAND sbsql_sblr_ali
 set_tests_properties(sbsql_sblr_alignment_native_policy_creation PROPERTIES
   LABELS "sbsql_sblr_alignment;catalog;binary_uuid;native_creation;not_runtime_acceptance" TIMEOUT 120)
 
+# SB_NATIVE_POLICY_FAMILY_SEEDS: the five native policy families load from the
+# default pack's native_*.json files; malformed packs refuse.
+add_executable(sbsql_sblr_alignment_native_policy_families native_policy_families_test.cpp)
+target_compile_features(sbsql_sblr_alignment_native_policy_families PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_native_policy_families PRIVATE sb_storage_database)
+target_compile_definitions(sbsql_sblr_alignment_native_policy_families PRIVATE
+  SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password")
+add_test(NAME sbsql_sblr_alignment_native_policy_families COMMAND sbsql_sblr_alignment_native_policy_families)
+set_tests_properties(sbsql_sblr_alignment_native_policy_families PROPERTIES
+  LABELS "sbsql_sblr_alignment;catalog;native_creation;policy_pack;not_runtime_acceptance" TIMEOUT 120)
+
 # The generated-definitions path of the creation-workspace chain, end to end
 # against the real default policy pack. The consumers it has to satisfy are
 # reachable only through the assembler, so this gate calls the assembler.

@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "review_status": "draft_requires_owner_review",
+  "review_note": "Drafted 2026-11-04 from the native enrollment test fixture (AddVerificationPolicies in tests/sbsql_sblr_alignment/native_local_service_enrollment_test.cpp). Owner direction 2026-11-04: the native verification, transaction, management, naming and collision policy families take their values from the policy pack, each value marked for review. No value here was independently derived; every number below is the fixture's choice.",
+  "descriptors": [
+    {"key": "verification_repair", "policy_class": "verification_repair", "body": "verification_repair_body", "evidence_profile": "verification_evidence", "scope": "database", "precedence_rank": 1, "enforcement_points": [0]},
+    {"key": "verification_quarantine", "policy_class": "verification_repair", "body": "verification_quarantine_body", "evidence_profile": "verification_evidence", "scope": "database", "precedence_rank": 1, "enforcement_points": [0]},
+    {"key": "verification_salvage", "policy_class": "verification_repair", "body": "verification_salvage_body", "evidence_profile": "verification_evidence", "scope": "database", "precedence_rank": 1, "enforcement_points": [0]},
+    {"key": "verification_evidence", "policy_class": "evidence", "body": "verification_evidence_body", "scope": "database", "precedence_rank": 1, "enforcement_points": [0]},
+    {"key": "verification_access", "policy_class": "authorization", "body": "verification_access_body", "scope": "database", "precedence_rank": 1, "enforcement_points": [0]}
+  ],
+  "verification_bodies": [
+    {"key": "verification_repair_body", "role": "repair", "verification_class_mask": 511, "authority_class_mask": 63, "verification_level_mask": 1023, "maximum_scan_pages": 4096, "maximum_work_bytes": 134217728, "maximum_findings": 64, "evidence_policy": "verification_evidence"},
+    {"key": "verification_quarantine_body", "role": "quarantine", "verification_class_mask": 511, "authority_class_mask": 63, "verification_level_mask": 1023, "maximum_scan_pages": 4096, "maximum_work_bytes": 134217728, "maximum_findings": 64, "evidence_policy": "verification_evidence", "access_policy": "verification_access"},
+    {"key": "verification_salvage_body", "role": "salvage", "verification_class_mask": 511, "authority_class_mask": 63, "verification_level_mask": 1023, "maximum_scan_pages": 4096, "maximum_work_bytes": 134217728, "maximum_findings": 64, "evidence_policy": "verification_evidence", "flags": ["mark_salvaged_output"]}
+  ],
+  "evidence_bodies": [
+    {"key": "verification_evidence_body", "required_evidence_classes": ["verification"], "required_search_keys": ["SB-MGA-VERIFY"], "storage_filespace": "primary", "maximum_record_bytes": 4096, "maximum_batch_bytes": 65536}
+  ],
+  "authorization_bodies": [
+    {"key": "verification_access_body", "schema": "sys.security", "maximum_records": 1024, "maximum_membership_depth": 32, "maximum_work": 262144}
+  ],
+  "review_flags": [
+    "maximum_scan_pages 4096 caps a verification pass at 4096 pages (32 MiB at 8 KiB); a larger database cannot be verified in one pass.",
+    "authorization maximum_records 1024 / maximum_work 262144 were raised on 2026-11-03 to fit the complete security relation (702 records, 103107 work); they bound startup authorization and must grow with the catalog."
+  ]
+}
