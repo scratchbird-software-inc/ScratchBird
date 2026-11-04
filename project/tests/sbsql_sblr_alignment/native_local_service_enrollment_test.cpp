@@ -1033,7 +1033,9 @@ void AddTransactionPolicies(db::NativeCreationCatalogSeed& seed,
       // 2026-11-04, SB_DRIFT_LOCK_POLICY_ZERO_IS_NO_LIMIT); they were 256,
       // 64 KiB, 128, 256 and 4096.
       b.fairness_threshold_microseconds=1000000;b.maximum_locks=0;b.maximum_lock_memory_bytes=0;
-      b.maximum_graph_nodes=0;b.maximum_graph_edges=0;b.maximum_deadlock_work=0;b.deadlock_detection_interval_microseconds=100000;
+      b.maximum_graph_nodes=0;b.maximum_graph_edges=0;b.maximum_deadlock_work=0;
+      // Owner 2026-11-04: Firebird's 10 s DeadlockTimeout is the default (was 100 ms).
+      b.deadlock_detection_interval_microseconds=10000000;
       b.evidence_policy_uuid=security_fixture::Id(92003);
       b.origin_transaction_uuid=b.creating_transaction_uuid=security_tx;b.origin_local_transaction_id=b.creating_local_transaction_id=1;
       encoded=EncodeCatalogLockPolicyInto(b,backing);m.object_subtype="lock_policy_body";

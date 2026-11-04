@@ -10,7 +10,7 @@
     {"key": "transaction_body", "default_isolation_profile": "read_committed_statement", "startup_isolation_profile": "maintenance_operation", "allowed_isolation_profiles": ["read_committed_statement", "maintenance_operation"], "read_mode_mask": 3, "maximum_transaction_microseconds": 0, "maximum_snapshot_microseconds": 0, "maximum_active_transactions": 0, "lock_policy": "lock_admission", "evidence_policy": "verification_evidence"}
   ],
   "lock_bodies": [
-    {"key": "lock_body", "fairness_threshold_microseconds": 1000000, "maximum_locks": 0, "maximum_lock_memory_bytes": 0, "maximum_graph_nodes": 0, "maximum_graph_edges": 0, "maximum_deadlock_work": 0, "deadlock_detection_interval_microseconds": 100000, "evidence_policy": "verification_evidence"}
+    {"key": "lock_body", "fairness_threshold_microseconds": 1000000, "maximum_locks": 0, "maximum_lock_memory_bytes": 0, "maximum_graph_nodes": 0, "maximum_graph_edges": 0, "maximum_deadlock_work": 0, "deadlock_detection_interval_microseconds": 10000000, "evidence_policy": "verification_evidence"}
   ],
   "isolation_profiles": [
     {"key": "read_committed_statement", "profile_kind": "read_committed_statement", "snapshot_construction_point": "statement_start", "snapshot_refresh_mask": 2, "write_conflict_detection_mask": 3, "metadata_visibility": "statement_epoch", "wait_policy": "lock_admission", "deadlock_policy": "lock_admission"},
@@ -21,7 +21,7 @@
   ],
   "review_flags": [
     "Superseded 2026-11-04: the drafts were 64 concurrent transactions, 60-second transaction and snapshot lifetimes, and a 256-lock / 64 KiB lock table with a 128-node, 256-edge, 4096-work deadlock graph. All are now 0 (no limit).",
-    "deadlock_detection_interval_microseconds 100000 and fairness_threshold_microseconds 1000000 are not limits and remain the fixture's choice; the detection interval default is an open owner question (Firebird detects deadlocks on conflict; its 10 s DeadlockTimeout only drives the dead-owner purge).",
+    "Owner 2026-11-04: deadlock_detection_interval_microseconds defaults to 10000000 (10 s, Firebird's DeadlockTimeout); the draft was the fixture's 100000. fairness_threshold_microseconds 1000000 is not a limit and remains the fixture's choice. No runtime component consumes the detection interval yet.",
     "Only two isolation profiles are declared (read_committed_statement and maintenance_operation); SBsql surfaces more isolation levels than this."
   ]
 }

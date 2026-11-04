@@ -133,7 +133,7 @@ int main() try {
   const auto& lock = s.lock_bodies[0];
   Check(lock.maximum_locks == 0 && lock.maximum_lock_memory_bytes == 0 && lock.maximum_graph_nodes == 0 &&
             lock.maximum_graph_edges == 0 && lock.maximum_deadlock_work == 0 &&
-            lock.deadlock_detection_interval_microseconds == 100000, "lock body values: no limits");
+            lock.deadlock_detection_interval_microseconds == 10000000, "lock body values: no limits");
   Check(s.isolation_profiles[0].profile_kind == c::IsolationProfileKind::read_committed_statement &&
             s.isolation_profiles[1].profile_kind == c::IsolationProfileKind::maintenance_operation_isolation &&
             s.isolation_profiles[0].snapshot_refresh_mask == 2, "isolation profiles");

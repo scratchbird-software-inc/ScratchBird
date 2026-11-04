@@ -7,7 +7,7 @@
   "policy_pack_version": "1.0.0",
   "description": "First public release default policy pack: local password provider only.",
   "content_hash_algorithm": "sha256",
-  "content_sha256": "3c96d65ed3847aa45652a9ed1f168738161bbedf9b6ced4c4bf4960013f5e110",
+  "content_sha256": "3efd36aba950983c93d8dae9a6571e59be31729c552a3e7f5f4b4f65ecdce52a",
   "signature_status": "signature-ready-unsigned",
   "provenance": {
     "source": "public-project-tree",
@@ -84,7 +84,7 @@
     },
     {
       "path": "policies/native_transaction_policies.json",
-      "sha256": "b00e7e59149a511e96420dcef9de28811e6b73e410df784e2cde3f4ae26b7e0a"
+      "sha256": "37625856082d7d17d7176c3160bae85237892d5ba6fbe7f8733721aba8c43fb4"
     },
     {
       "path": "policies/native_management_definitions.json",

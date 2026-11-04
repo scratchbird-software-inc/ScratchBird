@@ -9167,8 +9167,11 @@ PolicySeedPackDescriptor DefaultPolicyPackDescriptor() {
   // Owner direction 2026-11-04: transaction and lock limits default to 0, no
   // limit (SB_DRIFT_TRANSACTION_POLICY_ZERO_IS_NO_LIMIT, ..._LOCK_...).
   // Previous: 990b8bd8991e0d5666e5ba1242f5ce00f53c3568a105adb990e49ab5866d32af
+  // Owner direction 2026-11-04: the deadlock-detection interval defaults to
+  // Firebird's 10 s DeadlockTimeout (native_transaction_policies.json).
+  // Previous: 3c96d65ed3847aa45652a9ed1f168738161bbedf9b6ced4c4bf4960013f5e110
   descriptor.content_sha256 =
-      "3c96d65ed3847aa45652a9ed1f168738161bbedf9b6ced4c4bf4960013f5e110";
+      "3efd36aba950983c93d8dae9a6571e59be31729c552a3e7f5f4b4f65ecdce52a";
   descriptor.create_time_only = true;
   descriptor.post_create_filesystem_authority = false;
   descriptor.local_password_only = true;
