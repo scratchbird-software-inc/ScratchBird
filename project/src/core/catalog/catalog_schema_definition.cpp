@@ -137,8 +137,11 @@ bool CatalogSchemaDefinitionMatchesMetadata(const CatalogMetadataVersionView& m)
       !Identity(m.default_name_uuid,UuidKind::object) || !Identity(m.name_vector_uuid,UuidKind::object) ||
       !Same(d.permissions_policy_uuid,m.security_policy_uuid) ||
       m.object_subtype != CatalogSchemaTypeName(d.schema_type) ||
-      d.origin_local_transaction_id > m.creator_local_transaction_id ||
-      (d.schema_type == CatalogSchemaType::cluster && m.authority_scope != CatalogAuthorityScope::cluster)) return false;
+      // SB_DRIFT_CLUSTER_SCHEMA_IN_EVERY_DATABASE (owner direction 2026-11-04):
+      // the cluster schema exists in every database, standalone included, so a
+      // cluster-type schema may be a local catalog object; the cluster library
+      // brings the authority that uses it. It required cluster authority scope.
+      d.origin_local_transaction_id > m.creator_local_transaction_id) return false;
   if (Absent(d.parent_schema_uuid)) {
     if (!Absent(m.owning_schema_uuid)) return false;
   } else if (!Identity(m.owning_schema_uuid,UuidKind::schema) || m.owning_schema_uuid.value != d.parent_schema_uuid.value) return false;

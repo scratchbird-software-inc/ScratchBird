@@ -635,7 +635,9 @@ void LogicalChecks() {
   std::reverse(package.inputs.begin(),package.inputs.end());
   Check(package.Assemble().ok(),"child-before-parent input order is not authority or topology");
   std::reverse(package.inputs.begin(),package.inputs.end());
-  for(unsigned options=0;options<32;++options)for(unsigned type=1;type<=6;++type) {
+  // Type 7 (cluster) included since 2026-11-04: the cluster schema is a local
+  // object in every database (SB_DRIFT_CLUSTER_SCHEMA_IN_EVERY_DATABASE).
+  for(unsigned options=0;options<32;++options)for(unsigned type=1;type<=7;++type) {
     Package variation;auto& x=variation.items.back();
     x.definition.schema_type=static_cast<c::CatalogSchemaType>(type);
     x.metadata.object_subtype=c::CatalogSchemaTypeName(x.definition.schema_type);
@@ -660,7 +662,9 @@ void LogicalChecks() {
       case 0:x.definition.database_catalog_object_uuid=Typed(p::UuidKind::object,99);break;
       case 1:x.definition.origin_transaction_uuid=Typed(p::UuidKind::transaction,99);break;
       case 2:x.definition.origin_local_transaction_id=2;break;
-      case 3:x.definition.schema_type=c::CatalogSchemaType::cluster;break;
+      // Was a refusal until 2026-11-04 (SB_DRIFT_CLUSTER_SCHEMA_IN_EVERY_DATABASE):
+      // a cluster-type schema now assembles in a local package.
+      case 3:x.definition.schema_type=c::CatalogSchemaType::cluster;x.metadata.object_subtype="cluster";expected=E::none;break;
       case 4:bad.Parent(5,Typed(p::UuidKind::object,99));expected=E::missing_parent;break;
       case 5:bad.Parent(0,x.definition.schema_object_uuid);expected=E::cyclic_parent;break;
       case 6:x.definition.schema_object_uuid=bad.items.front().definition.schema_object_uuid;
@@ -677,6 +681,7 @@ void LogicalChecks() {
     }
     bad.Rebind();const auto failed=bad.Assemble();
     if(failed.error!=expected)std::cerr<<"fault="<<fault<<" observed="<<static_cast<unsigned>(failed.error)<<'\n';
+    if(expected==E::none){Check(failed.ok(),"a local cluster-type schema assembles");continue;}
     Check(failed.error==expected&&!failed.records,"malformed final schema has exact refusal/no package");
   }
   Package deep(4096);Check(deep.Assemble().ok(),"deep forest uses bounded iterative traversal, not call-stack recursion");

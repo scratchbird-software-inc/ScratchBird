@@ -83,7 +83,10 @@ inline NativeCatalogNamespaceVerification VerifyNativeCatalogNamespaces(
     const auto decoded=c::DecodeCatalogSchemaDefinition(m.record.payload);
     if(!decoded.ok())return fail(E::invalid_schema,identity(i));
     const auto& schema=*decoded.definition;
-    if(m.authority_scope!=c::CatalogAuthorityScope::local||schema.schema_type==c::CatalogSchemaType::cluster)
+    // The cluster schema is a local object in every database
+    // (SB_DRIFT_CLUSTER_SCHEMA_IN_EVERY_DATABASE, owner 2026-11-04); cluster
+    // authority itself is the cluster library's and never local.
+    if(m.authority_scope!=c::CatalogAuthorityScope::local)
       return fail(E::unsupported_scope,identity(i));
     if(schema.database_catalog_object_uuid.value!=identity(database))
       return fail(E::database_reference,identity(i),schema.database_catalog_object_uuid.value);

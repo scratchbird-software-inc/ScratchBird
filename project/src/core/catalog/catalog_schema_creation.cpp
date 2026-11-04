@@ -66,8 +66,9 @@ CatalogInitialSchemaResult AssembleLocalInitialSchemaRecords(
       if(!m.record.payload.empty()||m.record.header.kind!=CatalogRecordKind::schema||!First(m,tx))
         return Fail(E::invalid_metadata);
       if(!Same(d.database_catalog_object_uuid,db.record.header.object_uuid)||
-          !Same(d.origin_transaction_uuid,tx)||d.origin_local_transaction_id!=1||
-          d.schema_type==CatalogSchemaType::cluster)return Fail(E::invalid_definition);
+          // A cluster-type schema is admitted locally
+          // (SB_DRIFT_CLUSTER_SCHEMA_IN_EVERY_DATABASE, owner 2026-11-04).
+          !Same(d.origin_transaction_uuid,tx)||d.origin_local_transaction_id!=1)return Fail(E::invalid_definition);
       std::array<byte,248> payload;
       const auto encoded=EncodeCatalogSchemaDefinitionInto(d,payload);
       if(!encoded.ok())return Fail(E::invalid_definition);

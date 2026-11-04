@@ -154,8 +154,10 @@ int main() {
     Check(!c::CatalogSchemaDefinitionMatchesMetadata(bad),"mismatched family/common fields refused");
     const auto encoded=c::EncodeCatalogMetadataVersion(bad);Check(!encoded.ok()&&encoded.bytes.empty(),"invalid schema cannot enter native envelope");
   }
+  // Flipped 2026-11-04 (SB_DRIFT_CLUSTER_SCHEMA_IN_EVERY_DATABASE): the cluster
+  // schema exists in every database, so it is a valid local catalog object.
   {auto cluster=Metadata(Definition(31,7));cluster.authority_scope=c::CatalogAuthorityScope::local;
-    Check(!c::EncodeCatalogMetadataVersion(cluster).ok(),"cluster schema cannot claim local authority");}
+    Check(c::EncodeCatalogMetadataVersion(cluster).ok(),"a cluster schema is a valid local catalog object");}
   for(unsigned bits=0;bits<16;++bits){auto m=metadata;
     if(bits&1)m.record.header.deleted=true;
     if(bits&2)m.status=c::CatalogObjectStatus::retired;
