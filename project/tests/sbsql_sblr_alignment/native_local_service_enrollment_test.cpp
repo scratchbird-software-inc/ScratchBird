@@ -24,6 +24,10 @@
 #include <time.h>
 
 namespace {
+// Authorization records the native L5 projection reads from a complete
+// enrollment (2026-11-03): pack security, bootstrap, L5 with its SYSARCH
+// membership, and per agent type a principal, its grants and its membership.
+constexpr std::size_t kEnrolledAuthorizationRecords=702;
 static_assert(!std::is_default_constructible_v<runtime_security::NativeLocalServiceAuthentication>);
 static_assert(!std::is_copy_constructible_v<runtime_security::NativeLocalServiceAuthentication>);
 static_assert(!std::is_default_constructible_v<runtime_security::NativeLocalServiceSession>);
@@ -173,7 +177,11 @@ void ChangeMemoryEnvelopeFixture(db::NativeCreationCatalogSeed& seed,unsigned va
   auto decoded=catalog::DecodeCatalogMemoryConfiguration(found->metadata.record.payload);
   Check(decoded.ok(),"actual typed source memory body");
   auto& memory=*decoded.record;
-  memory.hard_limit_bytes=variant==2?64*1024:64*1024*1024;
+  // Variant 12 needs its context limit above the base credit and below base
+  // credit plus its 16 MiB loan, under the database ceiling. Measured
+  // 2026-11-03 with every agent type's principal enrolled: base context credit
+  // 58.5 MB, above the 48 MiB it had under a 64 MiB ceiling. So 96 MiB / 64 MiB.
+  memory.hard_limit_bytes=variant==2?64*1024:variant==12?96*1024*1024:64*1024*1024;
   memory.soft_limit_bytes=memory.per_context_limit_bytes=memory.hard_limit_bytes/2;
   memory.page_buffer_pool_limit_bytes=memory.hard_limit_bytes;
   memory.openssl_budget_bytes=variant==2?16*1024:4*1024*1024;
@@ -188,7 +196,7 @@ void ChangeMemoryEnvelopeFixture(db::NativeCreationCatalogSeed& seed,unsigned va
   if(variant==9||variant==12)memory.openssl_budget_bytes=32*1024*1024;
   if(variant==10)memory.per_context_limit_bytes=1;
   if(variant==11||variant==12) {
-    memory.per_context_limit_bytes=variant==11?64*1024*1024:48*1024*1024;
+    memory.per_context_limit_bytes=64*1024*1024;  // variant 12: 48 MiB until 2026-11-03
     memory.failure_mode=catalog::MemoryConfigurationFailureMode::fatal_status;
     memory.zero_memory_on_allocate=memory.zero_memory_on_release=true;
   }
@@ -606,7 +614,7 @@ AgentError AddAgentConfigurationFixture(db::NativeCreationCatalogSeed& seed,
   Check(result.ok(),"complete named agent definitions assemble atomically before native persistence");
   for(auto& row:result.records->definitions)seed[4].push_back(std::move(row));
   for(auto& row:result.records->names)seed[1].push_back(std::move(row));
-  if(!variant)Check(seed[4].size()==95&&seed[1].size()==748,"all 66 agent definitions and 132 names join native creation");  // 616 pack names + 132
+  if(!variant)Check(seed[4].size()==95&&seed[1].size()==1594,"all 66 agent definitions and 132 names join native creation");  // 1462 pack names (616 before agent principals, 2026-11-03) + 132
   Check(!variant||expected!=AgentError::none,"known agent configuration refusal fixture");
   return expected;
 }
@@ -746,7 +754,9 @@ void AddVerificationPolicies(db::NativeCreationCatalogSeed& seed,
     }else if(n<8){
       CatalogVerificationPolicyBody b;b.body_uuid=id;b.database_uuid=Id(1);b.generation=1;
       b.role=VerificationPolicyRole(n-4);b.verification_class_mask=511;b.authority_class_mask=63;b.verification_level_mask=1023;
-      b.maximum_scan_pages=512;b.maximum_work_bytes=128*1024*1024;b.maximum_findings=64;
+      // Scan pages 512 until 2026-11-03; the file is now 1024 pages (2048 for
+      // the history case) because the complete catalog needs about 469.
+      b.maximum_scan_pages=4096;b.maximum_work_bytes=128*1024*1024;b.maximum_findings=64;
       b.evidence_policy_uuid=security_fixture::Id(92003);
       b.origin_transaction_uuid=b.creating_transaction_uuid=security_tx;b.origin_local_transaction_id=b.creating_local_transaction_id=1;
       if(n==6)b.access_policy_uuid=security_fixture::Id(92004);
@@ -768,7 +778,9 @@ void AddVerificationPolicies(db::NativeCreationCatalogSeed& seed,
       CatalogAuthorizationPolicyBody b;b.body_uuid=id;b.database_uuid=Id(1);b.generation=1;
       b.user_schema_uuid=b.role_schema_uuid=b.group_schema_uuid=b.grant_schema_uuid=
           b.row_policy_schema_uuid=b.column_policy_schema_uuid=security_fixture::Id(60);
-      b.maximum_records=1024;b.maximum_membership_depth=32;b.maximum_work=65536;
+      // Work 65536 until 2026-11-03; the complete security relation (702
+      // records with every agent type's principal) measured 103107.
+      b.maximum_records=1024;b.maximum_membership_depth=32;b.maximum_work=262144;
       if(variant==23){b.maximum_records=1;b.maximum_membership_depth=1;}
       if(variant==24)b.maximum_work=1;
       b.origin_transaction_uuid=b.creating_transaction_uuid=security_tx;b.origin_local_transaction_id=b.creating_local_transaction_id=1;
@@ -1218,9 +1230,13 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
   auto catalogs=db::AssembleNativeInitialPolicySecurityCatalogs(inputs.ServiceRequest(SB_DEFAULT_POLICY_PACK_ROOT));
   Check(catalogs.ok(),"production assembler admits complete native service policy/security/name enrollment");
   // +2 definitions, +4 names: the pack's CONNECT grant to PUBLIC and
-  // OBS_AGENT_CONTROL_INTERNAL for transaction_pressure (2026-10-30).
-  Check(catalogs.plan->catalogs[1].size()==616&&catalogs.plan->catalogs[3].size()==279&&
-      catalogs.plan->catalogs[4].size()==29,"complete 308 definitions and 616 names, including bootstrap and service");
+  // OBS_AGENT_CONTROL_INTERNAL for transaction_pressure (2026-10-30): 308
+  // definitions, 616 names, 279 security rows. 2026-11-03
+  // (SB_NATIVE_CREATE_AGENT_PRINCIPALS): + L5's SYSARCH membership (D5) and per
+  // pack agent type a principal, its grants and its membership (160+102+160),
+  // all security rows: 731 definitions, 1462 names, 702 security rows.
+  Check(catalogs.plan->catalogs[1].size()==1462&&catalogs.plan->catalogs[3].size()==702&&
+      catalogs.plan->catalogs[4].size()==29,"complete 731 definitions and 1462 names, including bootstrap, service and agents");
   if(reference_variant){
     auto& definitions=catalogs.plan->catalogs[4];
     const auto target=std::find_if(definitions.begin(),definitions.end(),[](const auto& row){
@@ -1277,14 +1293,19 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
   construction.bootstrap={Id(1),Id(2),Profile(profile),disk::kNativeBootstrapIntegrityProfile,{},sizes[profile],1,0,1,7};
   construction.operation_uuid=Id(3);construction.writer_uuid=Id(4);construction.policy_snapshot_uuid=Id(10);
   construction.creator.transaction_uuid=security_tx;construction.creator.local_id=mga::MakeLocalTransactionId(1);
-  construction.creator.scope=mga::TransactionScope::local_node;construction.total_pages=512;
+  // Ordinary fixtures: 512 pages (256 before the agent task-group roles
+  // enlarged the catalog, 2026-10-29). Since every agent type's principal
+  // (2026-11-03) the catalog alone is about 469 pages at 8 KiB, leaving no free
+  // page to publish TX2, so 8 KiB gets 1024; at 16 KiB it is about 240 pages
+  // and larger profiles keep 512 (their selections hold whole page images).
+  construction.creator.scope=mga::TransactionScope::local_node;
+  construction.total_pages=sizes[profile]==8192?1024:512;
   // This case retains the additional verification phase history. Provision its
-  // explicit physical capacity up front; ordinary fixtures retain 512 pages
-  // (256 before the agent task-group roles enlarged the catalog, 2026-10-29).
-  // No allocator may reuse immutable history or bypass a full filespace.
+  // explicit physical capacity up front. No allocator may reuse immutable
+  // history or bypass a full filespace.
   if(profile==0&&indexed&&!configuration_variant&&!graph_variant&&!death&&!agent_variant&&!memory_variant&&
       !policy_variant&&!authentication_variant&&!name_variant&&!namespace_variant&&!filespace_variant&&!audit_variant&&
-      !verification_policy_variant&&!management_variant&&!transaction_policy_variant&&!reference_variant&&!naming_profile_variant&&!collision_variant)construction.total_pages=1024;
+      !verification_policy_variant&&!management_variant&&!transaction_policy_variant&&!reference_variant&&!naming_profile_variant&&!collision_variant)construction.total_pages=2048;
   construction.creation_utc_millis=1789357072000ULL;
   AddDatabaseDefinitionFixture(catalogs.plan->catalogs,inputs.items[0],construction,name_variant,namespace_variant,filespace_variant);
   AddVerificationPolicies(catalogs.plan->catalogs,inputs.items[0],verification_policy_variant);
@@ -1322,7 +1343,8 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
   }
   const auto path=(artifacts.path()/"enrolled-native-node").string();disk::FileDevice created;
   Check(created.Open(path,disk::FileOpenMode::create_new).ok(),"real native enrolled node construction");
-  const u64 budget=512*u64{sizes[profile]};
+  // The host's own source backing (512 pages, at least 8 MiB since 2026-11-03).
+  const u64 budget=db::NativeHostedSourceBackingBytes(sizes[profile]);
   const auto construction_writes=stage_writes,construction_syncs=stage_syncs;
   auto initialized=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(created,construction,
       catalogs.plan->catalogs,indexes,budget,issuer);
@@ -1365,16 +1387,22 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
   EnrolledCredentialCustodian provisioner;
   platform::Uuid previous_engine_instance;
   for(unsigned reopen=0;reopen<(configuration_variant||graph_variant||agent_variant||policy_variant||name_variant||namespace_variant||filespace_variant||reference_variant||naming_profile_variant||collision_variant?1u:2u);++reopen){
-    // Credential-only bounds: room for the 277-row security relation, still
-    // smaller than the complete catalog scan (about 744 name rows). Base pages
-    // are bounded in bytes so small pages get enough leaves (mirrors
-    // engine_host.cpp).
-    const std::size_t credential_base_pages=std::max<std::size_t>(32,512*1024/static_cast<std::size_t>(sizes[profile]));
-    const db::NativeCatalogRelationMemoryLimits limits{Profile(profile),1,credential_base_pages,512,512,{16,32*static_cast<std::size_t>(sizes[profile])}};
-    // 277 security records with the agent task-group roles (2026-10-29); variant
-    // 1 stays exactly one record short so the bound still refuses.
+    // Credential-only bounds, the host's own (engine_host.cpp): room for the
+    // 702-row, ~710 KiB security relation of a complete database (277 rows
+    // before agent principals, 2026-11-03). Base pages are bounded in bytes so
+    // small pages get enough leaves.
+    const std::size_t credential_base_pages=db::NativeHostedCatalogBasePages(sizes[profile]);
+    // The host's own bound (SB_NATIVE_HOSTED_CATALOG_ROW_BOUND), not a copy of it.
+    constexpr auto bound=db::kNativeHostedCatalogRelationMaximumRows;
+    const db::NativeCatalogRelationMemoryLimits limits{Profile(profile),1,credential_base_pages,bound,bound,
+        db::NativeHostedCatalogNavigationLimits(sizes[profile])};
+    // Variant 1 stays exactly one record short so the bound still refuses.
+    // History: 277 records with the agent task-group roles (2026-10-29), bound
+    // 276. kEnrolledAuthorizationRecords adds L5's SYSARCH membership and every
+    // agent type's principal, grants and membership (2026-11-03).
     const runtime_security::NativeRuntimeAuthorizationLimits graph_limits{
-        graph_variant==1?276u:512u,graph_variant==1?276u:128u,graph_variant==2?1u:1000000u};
+        graph_variant==1?kEnrolledAuthorizationRecords-1:bound,graph_variant==1?kEnrolledAuthorizationRecords-1:128u,
+        graph_variant==2?1u:1000000u};
     const auto manager_baseline=mem::DefaultMemoryManager().Snapshot();
     server::DatabaseOwnershipRequest ownership;ownership.database_path=path;ownership.storage_access=disk::RouteStorageAccess::read_write;
     using Host=server::NativeHostedDatabaseRuntime;
@@ -1535,7 +1563,7 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
     Check(configuration.memory.configuration_uuid==security_fixture::Id(12000)&&
         configuration.memory.profile_uuid==enrollment::SourceId(0x403)&&configuration.memory.generation==1&&
         configuration.memory.hard_limit_bytes==(memory_variant==8?2147483648ULL:
-            memory_variant?(memory_variant==2?64*1024:64*1024*1024):1073741824)&&
+            memory_variant?(memory_variant==2?64*1024:memory_variant==12?96*1024*1024:64*1024*1024):1073741824)&&
         configuration.memory.openssl_budget_bytes==(memory_variant==2?16*1024:memory_variant==7?1024*1024:
             (memory_variant==9||memory_variant==12)?32*1024*1024:4194304)&&
         configuration.provider_selection.mode=="local_password_only"&&actual_catalog.catalog_generation==1&&
@@ -1559,8 +1587,14 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
         admitted.comparison->lease->principal().principal_uuid!=security_fixture::Id(14000),"service proof retains distinct provisioned bootstrap owner");
     allocation_budget=0;const auto rights=read.authorization();
     const auto remaining=allocation_budget;allocation_budget=-1;
-    if(!rights.ok()||remaining!=0||rights.projection.subjects().size()!=1||rights.projection.grants().size()!=(memory_variant==3?4:5)||
-        !rights.projection.engine_owned_bootstrap_role_uuid().is_nil()){
+    // D5 (appendix-agent-security-roles, owner 2026-10-29): the database is
+    // the L5 agent and a member of SYSARCH. Before 2026-11-03 native create
+    // omitted that membership and this asserted one subject, no engine-owned
+    // role and exactly the five direct rights.
+    if(!rights.ok()||remaining!=0||rights.projection.subjects().size()!=2||rights.projection.grants().size()!=(memory_variant==3?4:5)||
+        rights.projection.engine_owned_bootstrap_role_uuid()!=db::kCanonicalSysarchRoleIdentity||
+        // Variant 3 removes one service grant row.
+        rights.projection.source_record_count()!=kEnrolledAuthorizationRecords-(memory_variant==3?1:0)){
       platform::Uuid failing;int kind=-1;
       if(rights.failing_record<admitted.comparison->lease->security_records().size()){
         const auto& row=admitted.comparison->lease->security_records()[rights.failing_record];
@@ -1571,14 +1605,14 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
       std::cerr<<"enrolled rights error="<<int(rights.error)<<" record="<<rights.failing_record<<" record_error="
           <<int(rights.record_error)<<" kind="<<kind<<" object_tail="
           <<((unsigned(failing.bytes[12])<<24)|(unsigned(failing.bytes[13])<<16)|(unsigned(failing.bytes[14])<<8)|failing.bytes[15])
-          <<" subjects="<<rights.projection.subjects().size()<<" grants="<<rights.projection.grants().size()<<'\n';
-      Check(false,"actual service has five direct grants and no bootstrap membership");
+          <<" subjects="<<rights.projection.subjects().size()<<" grants="<<rights.projection.grants().size()
+          <<" records="<<rights.projection.source_record_count()<<'\n';
+      Check(false,"actual service has its five direct grants and its SYSARCH membership");
     }
-    const std::array<std::string_view,5> required{"CONNECT","CATALOG_MUTATE","OBS_AGENT_STATE_READ","OBS_AGENT_EVIDENCE_READ","OBS_AGENT_CONTROL"};
+    // As SYSARCH, L5 holds every right database-wide, a removed direct grant
+    // included (memory variant 3). Only an explicit deny narrows it (variant 13).
     for(const auto& right:runtime_security::KnownSecurityRights())
-      Check(rights.projection.Allows(right)==(std::find(required.begin(),required.end(),right)!=required.end()&&
-          !(memory_variant==3&&right=="CONNECT")&&!(memory_variant==13&&right=="OBS_AGENT_STATE_READ")),
-          "full native enrollment authorizes exactly the specified service rights");
+      Check(rights.projection.Allows(right),"L5 as a SYSARCH member holds every known right database-wide");
     if(memory_variant==13)Check(rights.projection.Allows("CONNECT")&&!rights.projection.Allows("CONNECT",Id(1)),
         "a global CONNECT allow cannot override the persisted denial for this actual database");
     Check(stage_writes==writes&&stage_syncs==syncs,"credential/rights prerequisites publish no activation or transaction");
@@ -1723,7 +1757,8 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
           admitted.comparison->lease->credential_binding().generation==7&&
           read.configuration().ok()&&read.agents().ok()&&read.agents().entries().size()==66&&
           AgentPayloadFingerprint(read.agents())==agent_payload_fingerprint&&
-          read.authorization().projection.Allows("CONNECT")!=(memory_variant==3),
+          // D5: SYSARCH keeps CONNECT even without the direct grant (variant 3).
+          read.authorization().projection.Allows("CONNECT"),
           "original writer reservation, protected credential generation and governed observations survive guard retirement");
       Check(Host::RetainStartupObservation(read)==server::NativeHostedRuntimeError::none&&
           !server::SelectNativeLocalServiceStartupDeclarations(*admitted.comparison->lease).ok()&&
@@ -1741,11 +1776,15 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
       auto allocated=std::make_unique<std::array<byte,8192>>();allocated.reset();
       Check(!SelectedGuardDepth()&&stage_writes==writes&&stage_syncs==syncs,
           "allocation after guard retirement changes no physical publication or admission state");
-      Check(Host::InstallStartupAllocationBehavior(read).error==((memory_variant==3||memory_variant==13)?
+      // D5: L5 is a SYSARCH member, so removing its direct CONNECT grant
+      // (variant 3) no longer refuses; only an explicit database deny does
+      // (variant 13). Before 2026-11-03 native create omitted the membership and
+      // variant 3 refused here and at authentication and memory admission.
+      Check(Host::InstallStartupAllocationBehavior(read).error==(memory_variant==13?
           EnvelopeError::authorization_refused:EnvelopeError::not_ready),
           "allocator behavior requires actual CONNECT and prior reservation constraints");
       const auto before_authentication=password_calls;
-      Check(Host::AuthenticateStartupService(read,provisioner.derived).error==((memory_variant==3||memory_variant==13)?
+      Check(Host::AuthenticateStartupService(read,provisioner.derived).error==(memory_variant==13?
           AuthenticationError::authorization_refused:AuthenticationError::resource_policy_required)&&
           password_calls==before_authentication&&!read.authentication(),
           "engine service authentication requires real CONNECT and actual installed physical policy before verifier invocation");
@@ -1759,7 +1798,7 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
         Check(extra.ok(),"actual provisional crypto credit before selected memory installation");
         excess_bootstrap_credit=std::move(extra.admission.resource);
       }
-      if(memory_variant!=3&&memory_variant!=13){
+      if(memory_variant!=13){
         allocation_budget=0;const auto exhausted=Host::ConstrainStartupMemory(read);allocation_budget=-1;
         Check(exhausted.error==EnvelopeError::allocation_failure||exhausted.error==EnvelopeError::budget_refused,
             "memory admission allocation failure leaves the old budget and retained owner available for retry");
@@ -1777,9 +1816,9 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
         envelope=Host::ConstrainStartupMemory(read);
         Check(envelope.ok(),"the same selected policy installs after excess credit retires without reopening or replacing credentials");
       }
-      if(memory_variant==2||memory_variant==3||memory_variant==13||memory_variant==6||memory_variant==7||memory_variant==8){
+      if(memory_variant==2||memory_variant==13||memory_variant==6||memory_variant==7||memory_variant==8){
         const auto expected=memory_variant==2?EnvelopeError::policy_refused:
-            (memory_variant==3||memory_variant==13)?EnvelopeError::authorization_refused:
+            memory_variant==13?EnvelopeError::authorization_refused:
             memory_variant==6?EnvelopeError::page_budget_refused:
             memory_variant==7?EnvelopeError::crypto_budget_refused:EnvelopeError::startup_floor_unavailable;
         if(envelope.error!=expected)std::cerr<<"memory variant="<<memory_variant<<" error="<<int(envelope.error)
@@ -1866,7 +1905,9 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
               "failed allocator installation preserves exact credential and writer operation");
           extra_context.reset();behavior=Host::InstallStartupAllocationBehavior(read);
         }
-        if(memory_variant==1||memory_variant==4||memory_variant==5||memory_variant==9||memory_variant==10) {
+        // Variant 3 carries variant 1's memory body (ChangeMemoryEnvelopeFixture)
+        // and reaches here since D5 (it was refused at CONNECT before).
+        if(memory_variant==1||memory_variant==3||memory_variant==4||memory_variant==5||memory_variant==9||memory_variant==10) {
           Check(!behavior.ok()&&behavior.allocation.status==BehaviorStatus::existing_credit_exceeds_limit&&
               behavior.allocation.existing_bytes>configuration.memory.per_context_limit_bytes&&
               behavior.allocation.limit_bytes==configuration.memory.per_context_limit_bytes,
@@ -2015,9 +2056,13 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
               // larger pages need fewer leaf and navigation slots. The row
               // index still covers the complete submitted name catalog.
               // 2 MiB page working set (was 512 KiB) for the larger catalog with the
-              // agent task-group roles (2026-10-29).
-              const auto catalog_page_slots=2*1024*1024/static_cast<std::size_t>(sizes[profile]);
-              const db::NativeCatalogRelationMemoryLimits catalog_scan_limits{Profile(profile),1,catalog_page_slots,1024,1024,{catalog_page_slots,1024*1024}};
+              // agent task-group roles (2026-10-29). Since 2026-11-03 the shared
+              // complete-scan tier: the name relation (1666 rows, 2.07 MiB)
+              // exceeded 1024 rows and 2 MiB.
+              const auto catalog_page_slots=db::NativeCatalogScanBasePages(sizes[profile]);
+              const db::NativeCatalogRelationMemoryLimits catalog_scan_limits{Profile(profile),1,catalog_page_slots,
+                  db::kNativeCatalogScanRelationMaximumRows,db::kNativeCatalogScanRelationMaximumRows,
+                  db::NativeCatalogScanNavigationLimits(sizes[profile])};
               Check(Host::ReadStartupCatalogs(read,catalog_limits,catalog_scan_limits)==server::NativeHostedRuntimeError::verification_history_failure,
                   "catalog scan requires retained verification-family phase validation");
               allocation_budget=0;
@@ -2095,8 +2140,11 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
               Check(Host::ReadStartupCatalogs(read,catalog_limits,limits)==server::NativeHostedRuntimeError::invalid_request,
                   "cached complete catalog scan cannot bypass the smaller credential-only relation bounds");
               // 1225 captured rows with the agent task-group roles (2026-10-29); text
-              // (0.7 MB) and physical pages (at most 238) fit the original bounds.
-              const db::NativeCatalogCaptureLimits capture_limits{1280,2*1024*1024,1,4,512,128};
+              // (0.7 MB) and physical pages (at most 238) fit the original bounds
+              // {1280, 2 MiB, 512 pages}. Measured 2026-11-03 with every agent
+              // type's principal, grants and membership: 2500 rows, 1.41 MB of
+              // text, 469 physical pages at 8 KiB.
+              const db::NativeCatalogCaptureLimits capture_limits{4096,4*1024*1024,1,4,1024,128};
               Check(!read.catalog_capture().ok()&&read.catalog_capture().rows().empty(),
                   "count-only inspection grants no retained catalog row view");
               Check(Host::VerifyStartupCatalogMetadata(read)==server::NativeHostedRuntimeError::catalog_failure&&
@@ -2390,10 +2438,10 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
                     "failed policy reference closure exposes no partially selected body or source");
                 else {
                   Check(selected_policies.ok()&&selected_policies.evidence.required_evidence_classes.entries[0]=="verification"&&
-                      selected_policies.bodies[0].maximum_scan_pages==512&&selected_policies.bodies[1].role==catalog::VerificationPolicyRole::quarantine&&
+                      selected_policies.bodies[0].maximum_scan_pages==4096&&selected_policies.bodies[1].role==catalog::VerificationPolicyRole::quarantine&&
                       selected_policies.bodies[2].role==catalog::VerificationPolicyRole::salvage&&
                       selected_policies.access_descriptor.policy_class==catalog::CatalogPolicyClass::authorization&&
-                      selected_policies.access_body.body_uuid==security_fixture::Id(92014)&&selected_policies.access_body.maximum_work==(verification_policy_variant==24?1u:65536u),
+                      selected_policies.access_body.body_uuid==security_fixture::Id(92014)&&selected_policies.access_body.maximum_work==(verification_policy_variant==24?1u:262144u),
                       "source-bound declarations preserve exact persisted rules and borrowed evidence text after native guards retire");
                   auto invalid=policy_request;invalid.repair_policy_uuid=invalid.quarantine_policy_uuid;
                   Check(runtime_security::ResolveNativeVerificationPolicyDeclarations(read.catalog_capture(),invalid,name_workspace).error==VerificationPolicyError::invalid_request,
@@ -2533,7 +2581,12 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
     // Image accounting includes every validation pass over retained history,
     // independently of peak live backing. The extended 1024-page case needs
     // a larger explicit scan allowance; its 64 MiB source backing is unchanged.
-    const auto startup_image_budget=(construction.total_pages==1024?32:8)*budget;
+    // Its own 512-page unit, not the source backing (which became at least
+    // 8 MiB on 2026-11-03). The selected-source scratch grows with the file:
+    // 8 units served 512-page files and 32 the history case. Measured
+    // 2026-11-03: 1024-page files need more than 8 (the 8 KiB startup identity
+    // probe refused) and the 2048-page history case more than 16; 32 passes.
+    const auto startup_image_budget=(construction.total_pages==2048?32:8*construction.total_pages/512)*512*u64{sizes[profile]};
     const runtime_security::NativeStartupTransactionLimits startup_limits{
         {{startup_image_budget,64*1024*1024},{startup_image_budget,16*1024*1024},{startup_image_budget,32*1024*1024},8*1024*1024,4*1024*1024,16*1024*1024,startup_image_budget},
         192*1024*1024};

@@ -139,7 +139,21 @@ std::array<db::NativeInitialMembershipIdentity, 5> Memberships() {
 
 db::NativeInitialLocalServiceIdentity Service() {
   return {Id(15000), Id(15001), Id(15002), SourceId(0x10), SourceId(0x402),
-          {Id(15100), Id(15101), Id(15102), Id(15103), Id(15104)}, "NodeService", kVerifier};
+          {Id(15100), Id(15101), Id(15102), Id(15103), Id(15104)}, "NodeService", kVerifier,
+          Id(15003)};
+}
+
+// SB_NATIVE_CREATE_AGENT_PRINCIPALS: every pack agent type's principal, grants
+// and membership, issued once by the production helper from a fixed range.
+const std::vector<db::NativeInitialAgentIdentity>& Agents() {
+  static const auto agents = [] {
+    unsigned issued = 0;
+    auto out = db::IssueNativeInitialAgentIdentities(
+        SB_DEFAULT_POLICY_PACK_ROOT, [&]() -> std::optional<p::Uuid> { return Id(60000 + issued++); });
+    Check(out.ok(), "the production helper issues every pack agent identity");
+    return out.agents;
+  }();
+  return agents;
 }
 
 // Owning backing for the caller's half of the generated path.
@@ -179,11 +193,13 @@ db::NativeInitialPolicySecurityRequest ServiceRequest(
   request.policy.construction_transaction = kTransaction;
   request.policy.memory_configuration_uuid = kMemoryConfiguration;
   request.policy.database_default_language = "en-US";
-  request.policy.limits = {1000, 4 * 1024 * 1024};
+  // Three records per object; a complete database is about 731 objects.
+  request.policy.limits = {3000, 16 * 1024 * 1024};
   request.group_memberships = memberships;
   request.bootstrap = db::NativeInitialBootstrapIdentity{
       kBootstrapPrincipal, kBootstrapMembership, "BootstrapAdmin", kVerifier};
   request.local_service = Service();
+  request.agents = Agents();
   return request;
 }
 }  // namespace
@@ -204,8 +220,11 @@ int main() {
   // + bootstrap role/principal/membership
   // + service principal, 5 grants and the runtime authority binding
   // + the pack's CONNECT grant to its PUBLIC group (2026-10-30)
-  // + OBS_AGENT_CONTROL_INTERNAL for transaction_pressure (2026-10-30).
-  Check(enumerated.definitions.size() == 308,
+  // + OBS_AGENT_CONTROL_INTERNAL for transaction_pressure (2026-10-30)
+  // = 308; + L5's SYSARCH membership (D5) and, per pack agent type, a
+  // principal, its grants and its task-group membership: 160 + 102 + 160
+  // (SB_NATIVE_CREATE_AGENT_PRINCIPALS, 2026-11-03) = 731.
+  Check(enumerated.definitions.size() == 731,
         "the enumeration covers every object of the default local-password pack");
   {
     unsigned subtypes[6]{};
@@ -223,8 +242,9 @@ int main() {
     Check(subtypes[2] == 14, "every policy profile is enumerated");
     Check(subtypes[3] == 1, "the memory configuration is enumerated");
     Check(subtypes[4] == 1, "the service runtime authority binding is enumerated");
-    Check(subtypes[5] == 279, "every security record is enumerated under its own kind name");
-    Check(subtypes[0] + subtypes[1] + subtypes[2] + subtypes[3] + subtypes[4] + subtypes[5] == 308,
+    // 279 before 2026-11-03; + 1 L5 membership + 422 agent rows.
+    Check(subtypes[5] == 702, "every security record is enumerated under its own kind name");
+    Check(subtypes[0] + subtypes[1] + subtypes[2] + subtypes[3] + subtypes[4] + subtypes[5] == 731,
           "every enumerated object falls in one of those families and none is unaccounted for");
   }
   {
@@ -258,9 +278,10 @@ int main() {
     Check(records.ok(), "the generated path assembles a complete record set");
     Check(records.error == E::none && records.name_error == c::CatalogNamedCreationError::none,
           "no name or definition cause is reported alongside success");
-    Check(records.records->definitions.size() == 308,
+    // 308 before agent principals (2026-11-03); see section 1.
+    Check(records.records->definitions.size() == 731,
           "one definition record per enumerated object reaches the record set");
-    Check(records.records->names.size() == 616,
+    Check(records.records->names.size() == 1462,
           "each object carries exactly one name vector and one name entry");
     Check(records.records->encoded_bytes != 0, "the assembled set reports an encoded extent");
 
@@ -273,8 +294,8 @@ int main() {
       vectors += row.metadata.object_subtype == "name_vector";
       entries += row.metadata.object_subtype == "name_entry";
     }
-    Check(vectors == 308, "one name vector per object");
-    Check(entries == 308, "one name entry per object");
+    Check(vectors == 731, "one name vector per object");
+    Check(entries == 731, "one name entry per object");
     for (const auto& row : records.records->definitions) {
       Check(!row.metadata.record.payload.empty(),
             "every generated definition is completed with the assembler's own payload");
@@ -356,8 +377,9 @@ int main() {
   {
     const auto routed = db::AssembleNativeInitialPolicySecurityCatalogs(request(names));
     Check(routed.ok(), "the generated record set routes to catalog placement");
-    Check(routed.plan->catalogs[1].size() == 616, "all names are placed in the name relation");
-    Check(routed.plan->catalogs[3].size() == 279, "every security definition is placed");
+    // 616 and 279 before agent principals (2026-11-03).
+    Check(routed.plan->catalogs[1].size() == 1462, "all names are placed in the name relation");
+    Check(routed.plan->catalogs[3].size() == 702, "every security definition is placed");
     Check(routed.plan->catalogs[4].size() == 29,
           "pack, provider, profile, memory and runtime configuration definitions are placed");
     Check(routed.plan->catalogs[0].empty() && routed.plan->catalogs[2].empty() &&

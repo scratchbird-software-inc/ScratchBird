@@ -6,6 +6,61 @@
 #include "native_btree_tree_lease_reader.hpp"
 
 namespace scratchbird::storage::database {
+// SEARCH_KEY: SB_NATIVE_HOSTED_CATALOG_ROW_BOUND. Two tiers of relation bounds,
+// shared by native create (which checks a database against them before writing
+// it) and every native read, so create and open cannot disagree.
+//  - Credential-only reads (the hosted open: security and configuration
+//    relations). Must stay smaller than the complete scan, which a cached
+//    complete scan is not allowed to bypass.
+//  - The complete catalog scan (every relation, names included).
+// Measured 2026-11-03 with the default pack at 8 KiB, after native create gained
+// L5's SYSARCH membership and every agent type's principal, grants and
+// membership (SB_NATIVE_CREATE_AGENT_PRINCIPALS): security 702 rows / 710 KiB,
+// names 1666 rows / 2.07 MiB, the rest under 170 KiB. History: one 512-row,
+// 512 KiB bound until then; it refused the security relation.
+// Leaf pages are bounded in bytes, so small pages need more of them. Each base
+// page costs about 70 KiB of reader workspace at 8 KiB pages (measured: 17.9 MB
+// for 256 pages), so the credential tier stays tight: 1 MiB covers the 710 KiB
+// security relation; 2 MiB pushed a 64 MiB database ceiling over its live use.
+inline constexpr usize kNativeHostedCatalogRelationMaximumRows=1024;
+inline constexpr usize kNativeHostedCatalogRelationMaximumBytes=1u*1024u*1024u;
+inline constexpr usize kNativeCatalogScanRelationMaximumRows=4096;
+inline constexpr usize kNativeCatalogScanRelationMaximumBytes=4u*1024u*1024u;
+// Selected-checkpoint source backing for a native create and hosted open: it
+// holds the reachable page images. At 8 KiB a complete database is about 509
+// images (catalog ~469 + maps + control, 2026-11-03), past the 510 a 512-page
+// backing allows. A byte floor gives small pages enough images; larger pages
+// keep 512 pages.
+inline constexpr usize kNativeHostedSourceMinimumBackingBytes=8u*1024u*1024u;
+inline usize NativeHostedSourceBackingBytes(usize page_size) noexcept {
+  return std::max<usize>(512*page_size,kNativeHostedSourceMinimumBackingBytes);
+}
+inline usize NativeCatalogBasePagesFor(usize page_size,usize bytes) noexcept {
+  if(!page_size)return 0;
+  return std::max<usize>(32,(bytes+page_size-1)/page_size);
+}
+// The B-tree a relation of `rows` rows can need: one leaf per
+// NativeCatalogBtreeLeafCells rows plus the root, each a full page image.
+// Derived, not chosen: a fixed 16 pages refused the 702-row security relation
+// at 8 KiB pages (16 leaves + root).
+inline NativeBtreeTreeMemoryLimits NativeCatalogNavigationLimitsFor(usize page_size,usize rows) noexcept {
+  const auto leaf_cells=NativeCatalogBtreeLeafCells(page_size);
+  if(!leaf_cells)return {};
+  const auto pages=(rows+leaf_cells-1)/leaf_cells+1;
+  return {pages,pages*page_size};
+}
+inline usize NativeHostedCatalogBasePages(usize page_size) noexcept {
+  return NativeCatalogBasePagesFor(page_size,kNativeHostedCatalogRelationMaximumBytes);
+}
+inline NativeBtreeTreeMemoryLimits NativeHostedCatalogNavigationLimits(usize page_size) noexcept {
+  return NativeCatalogNavigationLimitsFor(page_size,kNativeHostedCatalogRelationMaximumRows);
+}
+inline usize NativeCatalogScanBasePages(usize page_size) noexcept {
+  return NativeCatalogBasePagesFor(page_size,kNativeCatalogScanRelationMaximumBytes);
+}
+inline NativeBtreeTreeMemoryLimits NativeCatalogScanNavigationLimits(usize page_size) noexcept {
+  return NativeCatalogNavigationLimitsFor(page_size,kNativeCatalogScanRelationMaximumRows);
+}
 struct NativeCatalogRelationMemoryLimits {
   Uuid maximum_profile;
   usize maximum_devices=0,maximum_base_pages=0,maximum_rows=0,maximum_bindings=0;

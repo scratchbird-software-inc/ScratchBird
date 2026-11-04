@@ -4,6 +4,11 @@
 #include "catalog_identifier_lookup_key.hpp"
 #include "catalog_named_creation.hpp"
 #include <array>
+#include <functional>
+#include <optional>
+#include <span>
+#include <string>
+#include <vector>
 
 namespace scratchbird::storage::database {
 enum class NativeInitialPolicyError {
@@ -144,7 +149,36 @@ struct NativeInitialLocalServiceIdentity {
   core::platform::Uuid provider_uuid,policy_uuid;
   std::array<core::platform::Uuid,5> grant_uuids;
   std::string_view principal_name,credential_fingerprint;
+  // L5 is a member of SYSARCH (D5, as legacy create writes it). Appended last:
+  // callers initialize this aggregate positionally. Required with a service.
+  core::platform::Uuid l5_membership_uuid{};
 };
+// SEARCH_KEY: SB_NATIVE_CREATE_AGENT_PRINCIPALS (owner 2026-10-29/30: create lays
+// down every agent role and right from the policy files; rights not granted =
+// CREATE FAILED). One per agent type the pack declares, in pack order: the
+// principal (no credential; L5 binds sessions to it by UUID), one grant per
+// right the pack's authority entry declares, in that order, and its task-group
+// role membership. policy_uuid/link_uuid name the agent type's committed
+// primary policy and the link record; both nil when the caller has no agent
+// policy for the type. Identities are the caller's to issue.
+struct NativeInitialAgentIdentity {
+  std::string agent_type_id;
+  core::platform::Uuid principal_uuid,membership_uuid;
+  std::vector<core::platform::Uuid> grant_uuids;
+  core::platform::Uuid policy_uuid{},link_uuid{};
+};
+struct NativeInitialAgentIdentitiesResult {
+  NativeInitialPolicyError error=NativeInitialPolicyError::invalid_request;
+  std::optional<core::platform::DiagnosticRecord> source_diagnostic;
+  std::vector<NativeInitialAgentIdentity> agents;
+  bool ok() const noexcept {return error==NativeInitialPolicyError::none;}
+};
+// Reads the pack's agent types and authority and issues every identity from
+// `issue` (principal, membership, then one per right), so a caller cannot
+// predict the shape wrongly. Policy and link stay nil for the caller to set.
+NativeInitialAgentIdentitiesResult IssueNativeInitialAgentIdentities(
+    std::string_view policy_seed_pack_root,
+    const std::function<std::optional<core::platform::Uuid>()>& issue) noexcept;
 struct NativeInitialPolicySecurityRequest {
   NativeInitialPolicyRequest policy;
   std::span<const NativeInitialMembershipIdentity> group_memberships;
@@ -156,6 +190,9 @@ struct NativeInitialPolicySecurityRequest {
   // complete metadata/name inputs. No protected secret is accepted or stored;
   // actual credential-source custody and release admission remain separate.
   std::optional<NativeInitialLocalServiceIdentity> local_service=std::nullopt;
+  // Required, complete, with a local service whenever the pack declares agent
+  // types (SB_NATIVE_CREATE_AGENT_PRINCIPALS); refused without one.
+  std::span<const NativeInitialAgentIdentity> agents{};
 };
 // Complete imported policy AND security declaration cohort from one admitted
 // source snapshot, with all complete caller metadata/names. Bootstrap is

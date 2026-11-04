@@ -3,6 +3,7 @@
 #pragma once
 #include "native_creation_catalog_input.hpp"
 #include "row_data_page.hpp"
+#include "native_btree_tree_backing.hpp"
 #include <algorithm>
 #include <limits>
 #include <new>
@@ -38,7 +39,7 @@ inline NativeCreationLayoutResult PlanNativeCreationCatalogLayout(
       return fail(E::invalid_input);
     if(budget/size<2||maps+20>budget/size-2)return fail(E::resource_exhausted);
     NativeCreationCatalogLayout plan;plan.image_count=maps+20;
-    plan.root_cells=(size-640)/164;plan.leaf_cells=(size-640-112)/164;
+    plan.root_cells=NativeCatalogBtreeRootCells(size);plan.leaf_cells=NativeCatalogBtreeLeafCells(size);
     const u64 capacity=size-128-32-page::kRowDataPageBodyHeaderBytes;
     for(unsigned role=0;role<seed.size();++role) {
       const auto& rows=seed[role];auto& p=plan.relations[role];

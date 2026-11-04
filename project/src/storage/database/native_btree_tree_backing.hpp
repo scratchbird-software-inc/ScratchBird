@@ -15,6 +15,15 @@ namespace scratchbird::storage::database {
 struct NativeBtreeTreeMemoryLimits {
   std::size_t maximum_pages=0,maximum_retained_image_bytes=0;
 };
+// Index cells per page of the two-level native catalog B-tree, by page size:
+// one definition for the creation layout that builds the tree and for the
+// bounds that read it back (SB_NATIVE_HOSTED_CATALOG_ROW_BOUND).
+inline constexpr std::size_t NativeCatalogBtreeRootCells(std::size_t page_size) noexcept {
+  return page_size>640?(page_size-640)/164:0;
+}
+inline constexpr std::size_t NativeCatalogBtreeLeafCells(std::size_t page_size) noexcept {
+  return page_size>640+112?(page_size-640-112)/164:0;
+}
 enum class NativeBtreeTreeMemoryError {
   none, invalid_request, memory_binding_failure, memory_allocation_failure,
   tree_failure, resource_exhausted, lock_failure

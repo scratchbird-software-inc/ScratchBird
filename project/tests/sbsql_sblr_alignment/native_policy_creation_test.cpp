@@ -1,16 +1,20 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "native_policy_creation.hpp"
+#include <map>
+#include <set>
 #include "native_initial_policy_catalogs.hpp"
 #include "database_lifecycle.hpp"
 #include "bootstrap_security_validation.hpp"
 #include "native_creation_workspace.hpp"
+#include "native_catalog_relation_lease_reader.hpp"
 #include "physical_mga_cow_store.hpp"
 #include "bootstrap_policy_fixture.hpp"
 #include "memory_configuration_fixture.hpp"
 #include "catalog_security_record_codec.hpp"
 #include "catalog_runtime_authority_binding.hpp"
 #include "default_pack_agent_roles.inc"
+#include "default_pack_agent_principals.inc"
 #include "../support/owned_temp_directory.hpp"
 #include "../support/policy_pack_fixture.hpp"
 #include <algorithm>
@@ -58,15 +62,21 @@ struct Item {
 struct Package {
   std::vector<Item> items;std::vector<c::CatalogNamedCreationInput> inputs;
   std::array<db::NativeInitialMembershipIdentity,5> memberships;
+  // SB_NATIVE_CREATE_AGENT_PRINCIPALS: with a service, L5's SYSARCH membership
+  // and every pack agent type's principal, grants and membership, issued by the
+  // production helper from this fixed range and appended after the items below.
+  static constexpr unsigned kL5Membership=15003,kAgentIdentityBase=70000;
+  std::vector<db::NativeInitialAgentIdentity> agents;
+  bool bootstrap_owned=false;
   // Default pack: 5 standard + 44 agent roles, 11 standard + 198 agent grants
   // (the 11th, 2026-10-30, grants CONNECT to the PUBLIC group), 199 agent
   // grants (the 199th grants OBS_AGENT_CONTROL_INTERNAL to transaction_pressure).
   static constexpr unsigned kRoles=49,kGrants=210,kSecurity=28+kRoles+6+5+kGrants;
   explicit Package(bool security=false,bool bootstrap=false,bool service=false)
-      :items(service?kSecurity+10:bootstrap?kSecurity+3:security?kSecurity:28) {
+      :items(service?kSecurity+10:bootstrap?kSecurity+3:security?kSecurity:28),bootstrap_owned(bootstrap) {
     for(unsigned i=0;i<memberships.size();++i)memberships[i]={f::Id(13000+i),SourceId(0x201+i),SourceId(0x100+i)};
-    for(unsigned n=0;n<items.size();++n) {
-      auto& x=items[n];
+    const unsigned base=static_cast<unsigned>(items.size());
+    for(unsigned n=0;n<base;++n) {
       const unsigned roles_end=28+kRoles,groups_end=roles_end+6,members_end=groups_end+5,grants_end=members_end+kGrants;
       const unsigned t=n-grants_end;  // tail position, valid once n>=grants_end
       const auto object=n==0?SourceId(1):n<=12?SourceId(0x10+n-1):n<=26?SourceId(0x400+n-13):n==27?f::Id(12000):
@@ -77,12 +87,34 @@ struct Package {
       const bool role=n>=28&&(n<roles_end||t==0);
       const auto subtype=n==0?"bootstrap_policy_pack":n<=12?"bootstrap_security_provider":n<=26?"bootstrap_policy_profile":n==27?"memory_configuration":
           role?"role_account":n<groups_end?"group_account":n<grants_end?"grant_record":t==1||t==3?"user_account":t==4?"agent_runtime_authority":"grant_record";
+      std::optional<c::CatalogRecordKind> kind;
+      if(n==27)kind=c::CatalogRecordKind::config_profile;
+      if(n>=28)kind=role?c::CatalogRecordKind::role_account:n<groups_end?c::CatalogRecordKind::group_account:n>=grants_end&&(t==1||t==3)?c::CatalogRecordKind::user_account:n>=grants_end&&t==4?c::CatalogRecordKind::config_profile:c::CatalogRecordKind::grant_record;
+      Fill(n,object,kind,subtype,n>=grants_end&&t==4);
+    }
+    if(service) {
+      unsigned issued=0;
+      auto agent_ids=db::IssueNativeInitialAgentIdentities(SB_DEFAULT_POLICY_PACK_ROOT,
+          [&]()->std::optional<p::Uuid>{return f::Id(kAgentIdentityBase+issued++);});
+      Check(agent_ids.ok(),"production helper issues every pack agent identity");
+      agents=std::move(agent_ids.agents);
+      unsigned n=base;
+      Append(n,f::Id(kL5Membership),c::CatalogRecordKind::grant_record);
+      for(const auto& agent:agents) {
+        Append(n,agent.principal_uuid,c::CatalogRecordKind::user_account);
+        for(const auto& grant:agent.grant_uuids)Append(n,grant,c::CatalogRecordKind::grant_record);
+        Append(n,agent.membership_uuid,c::CatalogRecordKind::grant_record);
+      }
+    }
+    Rebind();
+  }
+  void Fill(unsigned n,const p::Uuid& object,std::optional<c::CatalogRecordKind> kind,std::string_view subtype,bool service_policy) {
+      auto& x=items[n];
       auto& meta=x.definition;meta=f::Metadata(0,tx,f::Id(60),{});
-      if(bootstrap)meta.owner_uuid=Typed(p::UuidKind::principal,14000);
+      if(bootstrap_owned)meta.owner_uuid=Typed(p::UuidKind::principal,14000);
       meta.record.header.object_uuid={p::UuidKind::object,object};meta.record.header.row_uuid=Typed(p::UuidKind::row,200000+3*n);
-      meta.object_subtype=subtype;if(n==27)meta.record.header.kind=c::CatalogRecordKind::config_profile;
-      if(n>=28)meta.record.header.kind=role?c::CatalogRecordKind::role_account:n<groups_end?c::CatalogRecordKind::group_account:n>=grants_end&&(t==1||t==3)?c::CatalogRecordKind::user_account:n>=grants_end&&t==4?c::CatalogRecordKind::config_profile:c::CatalogRecordKind::grant_record;
-      if(n>=grants_end&&t==4)meta.security_policy_uuid={p::UuidKind::object,SourceId(0x402)};
+      meta.object_subtype=std::string(subtype);if(kind)meta.record.header.kind=*kind;
+      if(service_policy)meta.security_policy_uuid={p::UuidKind::object,SourceId(0x402)};
       meta.default_name_uuid=Typed(p::UuidKind::object,300000+2*n);meta.name_vector_uuid=Typed(p::UuidKind::object,300001+2*n);
       x.vector_metadata=meta;x.vector_metadata.record.header.kind=c::CatalogRecordKind::localized_name;
       x.vector_metadata.record.header.object_uuid=meta.name_vector_uuid;x.vector_metadata.record.header.row_uuid=Typed(p::UuidKind::row,200001+3*n);
@@ -102,17 +134,19 @@ struct Package {
       e.normalized_lookup_key.assign(e.raw_name_text.begin(),e.raw_name_text.end());e.catalog_generation_id=1;
       e.created_transaction_uuid=tx;e.security_policy_uuid=meta.security_policy_uuid;
       e.resource_epoch=e.name_resolution_epoch=1;e.default_for_language=e.default_for_object=true;e.lifecycle_state=c::CatalogNameLifecycle::active;
-    }
-    Rebind();
+  }
+  void Append(unsigned& n,const p::Uuid& object,c::CatalogRecordKind kind) {
+    items.emplace_back();Fill(n++,object,kind,c::CatalogRecordKindName(kind),false);
   }
   void Rebind(){inputs.clear();for(auto& x:items){x.entries[0]={&x.entry_metadata,&x.entry};inputs.push_back({&x.definition,&x.vector_metadata,&x.vector,x.entries});}}
-  auto Request()const{return db::NativeInitialPolicyRequest{SB_DEFAULT_POLICY_PACK_ROOT,f::Id(1),tx,f::Id(12000),"en-US",inputs,{1000,4*1024*1024}};}
+  auto Request()const{return db::NativeInitialPolicyRequest{SB_DEFAULT_POLICY_PACK_ROOT,f::Id(1),tx,f::Id(12000),"en-US",inputs,{3000,16*1024*1024}};}
   auto SecurityRequest()const{return db::NativeInitialPolicySecurityRequest{Request(),memberships};}
   auto BootstrapRequest()const{return db::NativeInitialPolicySecurityRequest{Request(),memberships,
       db::NativeInitialBootstrapIdentity{f::Id(14000),f::Id(14001),"BootstrapAdmin",fingerprint}};}
   auto ServiceRequest()const{auto request=BootstrapRequest();request.local_service=db::NativeInitialLocalServiceIdentity{
       f::Id(15000),f::Id(15001),f::Id(15002),SourceId(0x10),SourceId(0x402),
-      {f::Id(15100),f::Id(15101),f::Id(15102),f::Id(15103),f::Id(15104)},"NodeService",fingerprint};return request;}
+      {f::Id(15100),f::Id(15101),f::Id(15102),f::Id(15103),f::Id(15104)},"NodeService",fingerprint,f::Id(kL5Membership)};
+    request.agents=agents;return request;}
 };
 std::pair<p::Uuid,std::string> SecurityGolden(unsigned n) {
   static constexpr std::array<const char*,5> roles{"ROLE_APP_RUNTIME","ROLE_DBA","ROLE_SECURITY_ADMIN","ROLE_AUDIT_READER","ROLE_OPERATOR"};
@@ -183,13 +217,51 @@ std::pair<p::Uuid,std::string> ServiceGolden(unsigned n) {
   g.Identity(n==0?1:4,id);if(n!=0)g.Identity(7,f::Id(15000));g.Identity(11,tx.value);
   g.Integer(32,1);g.Integer(34,1);g.Field(36,3,"uuid");g.Integer(38,1);g.Integer(39,1);g.Integer(40,1);
   g.Boolean(41,true);g.Boolean(43,false);
-  if(n==0){g.Field(49,3,"NodeService");g.Field(50,3,fingerprint);g.Field(51,3,"service");g.Field(52,3,"service");g.Boolean(53,false);}
+  // Field 63 (authority_class) since 2026-11-03, as legacy create writes it.
+  if(n==0){g.Field(49,3,"NodeService");g.Field(50,3,fingerprint);g.Field(51,3,"service");g.Field(52,3,"service");g.Boolean(53,false);
+    g.Field(63,3,"l5_database");}
   else {static constexpr std::array<const char*,5> rights{"CONNECT","CATALOG_MUTATE","OBS_AGENT_STATE_READ","OBS_AGENT_EVIDENCE_READ","OBS_AGENT_CONTROL"};
     g.Field(54,3,"privilege");g.Field(57,3,"principal");g.Field(58,3,"allow");g.Field(59,3,rights[n-2]);}
   return {id,g.Finish()};
 }
-void Verify(const c::CatalogNamedCreationSet& out,bool security=false,bool bootstrap=false,bool service=false) {
-  const unsigned count=service?Package::kSecurity+10:bootstrap?Package::kSecurity+3:security?Package::kSecurity:28;
+// SB_NATIVE_CREATE_AGENT_PRINCIPALS (2026-11-03): L5's SYSARCH membership (D5)
+// and every pack agent type's principal, grants and task-group membership,
+// encoded independently like the goldens above, keyed by object identity. The
+// rights, roles and authority classes come from the generated pack table.
+std::map<p::Uuid,std::string> AgentGoldens(const std::vector<db::NativeInitialAgentIdentity>& agents) {
+  Check(agents.size()==std::size(kDefaultPackAgentPrincipals),"one issued identity set per pack agent type");
+  std::map<p::Uuid,std::string> out;
+  const auto common=[](f::Golden& g,bool create_time_only){
+    g.Identity(11,tx.value);g.Integer(32,1);g.Integer(34,1);g.Field(36,3,"uuid");g.Integer(38,1);g.Integer(39,1);g.Integer(40,1);
+    g.Boolean(41,true);g.Boolean(43,create_time_only);};
+  const auto membership=[&](const p::Uuid& id,const p::Uuid& principal,const p::Uuid& role,bool create_time_only){
+    f::Golden g(65599);f::Put(g.bytes,20,2,2);
+    g.Identity(1,principal);g.Identity(3,role);g.Identity(4,id);g.Identity(5,principal);g.Identity(6,role);g.Identity(10,id);
+    common(g,create_time_only);g.Field(54,3,"role_membership");g.Field(55,3,"principal");g.Field(56,3,"role");
+    Check(out.emplace(id,g.Finish()).second,"distinct golden membership identity");};
+  membership(f::Id(Package::kL5Membership),f::Id(15000),SourceId(0x105),true);
+  for(std::size_t i=0;i<agents.size();++i){
+    const auto& expected=kDefaultPackAgentPrincipals[i];const auto& agent=agents[i];
+    Check(agent.agent_type_id==expected.type&&agent.grant_uuids.size()==expected.right_count,"issued identities follow pack order");
+    {f::Golden g(65596);f::Put(g.bytes,20,2,2);g.Identity(1,agent.principal_uuid);common(g,false);
+      g.Field(49,3,expected.type);g.Field(51,3,"service");g.Field(52,3,"service");g.Boolean(53,false);
+      if(*expected.authority_class)g.Field(63,3,expected.authority_class);
+      Check(out.emplace(agent.principal_uuid,g.Finish()).second,"distinct golden agent principal");}
+    for(unsigned r=0;r<expected.right_count;++r){
+      f::Golden g(65599);f::Put(g.bytes,20,2,2);g.Identity(4,agent.grant_uuids[r]);g.Identity(7,agent.principal_uuid);common(g,false);
+      g.Field(54,3,"privilege");g.Field(57,3,"principal");g.Field(58,3,"allow");g.Field(59,3,kDefaultPackAgentRights[expected.first_right+r]);
+      Check(out.emplace(agent.grant_uuids[r],g.Finish()).second,"distinct golden agent grant");}
+    membership(agent.membership_uuid,agent.principal_uuid,SourceId(expected.role_suffix),false);
+  }
+  return out;
+}
+void Verify(const c::CatalogNamedCreationSet& out,bool security=false,bool bootstrap=false,bool service=false,
+            const std::vector<db::NativeInitialAgentIdentity>* agents=nullptr) {
+  Check(!service||agents,"a service package verifies its agent records");
+  const auto agent_goldens=service?AgentGoldens(*agents):std::map<p::Uuid,std::string>{};
+  std::set<p::Uuid> agent_seen;
+  const unsigned count=service?Package::kSecurity+10+static_cast<unsigned>(agent_goldens.size()):
+      bootstrap?Package::kSecurity+3:security?Package::kSecurity:28;
   Check(out.definitions.size()==count&&out.names.size()==2*count&&out.encoded_bytes>0,"all admitted policy/security definitions and every supplied name returned");
   unsigned packs=0,providers=0,profiles=0,memories=0,bindings=0;
   constexpr unsigned kSecurityRecords=27+std::size(kDefaultPackAgentRoles)+std::size(kDefaultPackAgentGrants);  // 5+6+5+11 standard
@@ -209,6 +281,15 @@ void Verify(const c::CatalogNamedCreationSet& out,bool security=false,bool boots
         service_seen[i]=true;matched=true;
       }
       if(matched)continue;
+      const auto agent=agent_goldens.find(meta.record.header.object_uuid.value);
+      if(agent!=agent_goldens.end()){
+        Check(agent_seen.insert(agent->first).second&&meta.record.payload==agent->second,
+            "independent complete native L5 membership and agent principal, grant and membership bytes");
+        Check(meta.owner_uuid.kind==p::UuidKind::principal&&meta.owner_uuid.value==f::Id(14000)&&
+            meta.creator_transaction_uuid.value==tx.value&&meta.creator_local_transaction_id==1,
+            "agent records retain explicit bootstrap ownership and actual construction origin");
+        continue;
+      }
     }
     if(c::IsCatalogSecurityRecordKind(meta.record.header.kind)) {
       bool matched=false;
@@ -245,6 +326,7 @@ void Verify(const c::CatalogNamedCreationSet& out,bool security=false,bool boots
   Check(std::count(security_seen.begin(),security_seen.end(),true)==(security?kSecurityRecords:0),"complete security coverage, no bootstrap or service principal invented");
   Check(std::count(bootstrap_seen.begin(),bootstrap_seen.end(),true)==(bootstrap?3:0),"bootstrap supplied explicitly or wholly absent");
   Check(std::count(service_seen.begin(),service_seen.end(),true)==(service?7:0),"service enrollment is complete or wholly absent, never inferred");
+  Check(agent_seen.size()==agent_goldens.size(),"L5 membership and every agent principal, grant and membership are present");
 }
 void BootstrapLogical() {
   Package package(true,true);auto request=package.BootstrapRequest();
@@ -302,7 +384,7 @@ void ServiceLogical() {
   request.local_service->principal_name=name;request.local_service->credential_fingerprint=credential;
   const auto made=db::AssembleNativeInitialPolicySecurityRecords(request);
   Check(made.ok(),"explicit local service provisioning from actual admitted provider and security policy");
-  name.assign("destroyed caller name");credential.assign("destroyed caller verifier");Verify(*made.records,true,true,true);
+  name.assign("destroyed caller name");credential.assign("destroyed caller verifier");Verify(*made.records,true,true,true,&package.agents);
   request.local_service->principal_name="NodeService";request.local_service->credential_fingerprint=fingerprint;
   const auto binding=std::find_if(made.records->definitions.begin(),made.records->definitions.end(),[](const auto& r){return r.metadata.record.header.object_uuid.value==f::Id(15001);});
   Check(binding!=made.records->definitions.end()&&c::CatalogRuntimeAuthorityBindingMatchesMetadata(binding->metadata),
@@ -333,7 +415,8 @@ void ServiceLogical() {
     if(scenario==27){invalid=fingerprint;invalid.replace(invalid.find("600000"),6,"0600000");s.credential_fingerprint=invalid;}
     if(scenario==28)changed.policy.definitions=changed.policy.definitions.first(Package::kSecurity+9);
     if(scenario==29)changed.local_service.reset();
-    if(scenario==30)changed.policy.limits.maximum_records=3*(Package::kSecurity+10)-1;
+    // One record short of the complete service package, agents included.
+    if(scenario==30)changed.policy.limits.maximum_records=3*static_cast<unsigned>(bad.items.size())-1;
     if(scenario==31)changed.policy.limits.maximum_encoded_bytes=made.records->encoded_bytes-1;
     if(scenario==32)bad.items[Package::kSecurity+3].definition.owner_uuid=Typed(p::UuidKind::principal,16002);
     if(scenario==33)bad.items[Package::kSecurity+4].definition.security_policy_uuid=Typed(p::UuidKind::object,55);
@@ -350,7 +433,8 @@ void ServiceLogical() {
     if(refused.ok()||refused.records)std::cerr<<"service refusal scenario "<<scenario<<" unexpectedly admitted\n";
     Check(!refused.ok()&&!refused.records,"bad service identity, selection, ownership, alias, credentials or limits refuses the whole cohort");
   }
-  request.policy.limits={3*(Package::kSecurity+10),made.records->encoded_bytes};
+  // Exactly the complete service cohort, agent records included (2026-11-03).
+  request.policy.limits={3*static_cast<unsigned>(package.items.size()),made.records->encoded_bytes};
   Check(db::AssembleNativeInitialPolicySecurityRecords(request).ok(),"exact service cohort record/byte admission");
   for(long budget:{0,1,5,31,97,257,1024}){allocation_failed=false;allocation_budget=budget;
     const auto refused=db::AssembleNativeInitialPolicySecurityRecords(request);allocation_budget=-1;
@@ -603,8 +687,11 @@ void PlacementLogical() {
     const auto made=assemble();Check(made.ok()&&made.source_error==db::NativeInitialPolicyError::none,
         "production initial policy placement consumes the complete actual admitted source");
     const auto& catalogs=made.plan->catalogs;
-    const unsigned definitions=service?Package::kSecurity+10:bootstrap?Package::kSecurity+3:security?Package::kSecurity:28;
-    const unsigned security_count=security?(Package::kSecurity-28)+(bootstrap?3:0)+(service?6:0):0;
+    // With a service: plus L5's SYSARCH membership and every agent type's
+    // principal, grants and membership, all security records (2026-11-03).
+    const unsigned agent_records=service?static_cast<unsigned>(package.items.size())-(Package::kSecurity+10):0;
+    const unsigned definitions=service?Package::kSecurity+10+agent_records:bootstrap?Package::kSecurity+3:security?Package::kSecurity:28;
+    const unsigned security_count=security?(Package::kSecurity-28)+(bootstrap?3:0)+(service?6:0)+agent_records:0;
     Check(catalogs[0].empty()&&catalogs[2].empty()&&catalogs[5].empty()&&
         catalogs[1].size()==2*definitions&&catalogs[3].size()==security_count&&catalogs[4].size()==28+(service?1:0),
         "exact names/security/configuration roles, no default object-head placement");
@@ -614,7 +701,7 @@ void PlacementLogical() {
           "security and configuration family classification is not supplied placement authority");
       joined.definitions.push_back(row);
     }
-    Verify(joined,security,bootstrap,service);
+    Verify(joined,security,bootstrap,service,&package.agents);
     for(const auto& row:catalogs[1])Check(row.name&&row.metadata.record.header.kind==c::CatalogRecordKind::localized_name,
         "all supplied localized names and vectors reside only in name registry");
     package.items[0].entry.display_name="caller data changed after production placement";
@@ -678,9 +765,11 @@ void Physical(bool security=false,bool bootstrap=false,bool service=false) {
     request.bootstrap={f::Id(1),f::Id(2),profile.uuid,d::kNativeBootstrapIntegrityProfile,{},profile.page_size_bytes,1,0,1,7};
     request.operation_uuid=f::Id(3);request.writer_uuid=f::Id(4);request.policy_snapshot_uuid=f::Id(10);
     request.creator.transaction_uuid=tx;request.creator.local_id=mga::MakeLocalTransactionId(1);request.creator.scope=mga::TransactionScope::local_node;
-    request.total_pages=256;request.creation_utc_millis=1789357072000ULL;
+    // 256 pages and a 512-page image budget until 2026-11-03; the service
+    // cohort with every agent type's principal needs more at 8 KiB pages.
+    request.total_pages=1024;request.creation_utc_millis=1789357072000ULL;
     u::StandaloneUuidV7Issuer issuer({f::Id(1),f::Id(10)},{{},0,1000});const auto path=(artifacts.path()/std::to_string(profile.page_size_bytes)).string();d::FileDevice device;
-    Check(device.Open(path,d::FileOpenMode::create_new).ok(),"actual private native construction file");const auto budget=512*p::u64{profile.page_size_bytes};
+    Check(device.Open(path,d::FileOpenMode::create_new).ok(),"actual private native construction file");const auto budget=p::u64{db::NativeHostedSourceBackingBytes(profile.page_size_bytes)};
     const auto created=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,request,seed,indexes,budget,issuer);
     Check(created.ok(),"actual imported native policy/name cohort persists through indexed construction");
     Check(device.Close().ok()&&device.Open(path,d::FileOpenMode::open_existing).ok(),"independent native policy reopen");

@@ -942,19 +942,25 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
     } else {
     NativeHostedRuntimeLimits native_limits;
     native_limits.writer.maximum_owner_backing_bytes = 64u * 1024u;
-    native_limits.writer.source.maximum_backing_bytes = 512u * page_size;
+    native_limits.writer.source.maximum_backing_bytes =
+        storage::database::NativeHostedSourceBackingBytes(page_size);
     native_limits.writer.source.maximum_verification_image_bytes = 32u * 1024u * 1024u;
     native_limits.database_crypto_bytes = 2u * 1024u * 1024u;
     // Sized for the default pack with the agent task-group roles
     // (appendix-agent-security-roles.md, 2026-10-29): 277 security records.
     // The previous 128-row and 128-record bounds fit the 35 records before it
     // and would refuse this catalog.
-    // Leaf pages are bounded in bytes: small pages need more of them.
+    // 2026-11-03: plus L5's SYSARCH membership and every agent type's
+    // principal, grants and membership, 702 security records. Leaf pages are
+    // bounded in bytes: small pages need more of them.
     const std::size_t catalog_base_pages =
-        std::max<std::size_t>(32, (512u * 1024u) / page_size);
-    native_limits.catalog = {page_profile->uuid, 1, catalog_base_pages, 512, 512,
-                             {16, 32u * page_size}};
-    native_limits.authorization = {512, 128, 1000000};
+        storage::database::NativeHostedCatalogBasePages(page_size);
+    // One shared bound (SB_NATIVE_HOSTED_CATALOG_ROW_BOUND), so create's
+    // pre-check and this open cannot disagree about what fits.
+    constexpr auto rows = storage::database::kNativeHostedCatalogRelationMaximumRows;
+    native_limits.catalog = {page_profile->uuid, 1, catalog_base_pages, rows, rows,
+                             storage::database::NativeHostedCatalogNavigationLimits(page_size)};
+    native_limits.authorization = {rows, 128, 1000000};
 
     DatabaseOwnershipRequest native_request;
     native_request.database_path = snapshot.database_path;

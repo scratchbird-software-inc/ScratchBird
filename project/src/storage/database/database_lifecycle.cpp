@@ -7801,6 +7801,7 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
     std::optional<std::span<const NativeInitialMembershipIdentity>> security_memberships,
     const std::optional<NativeInitialBootstrapIdentity>& bootstrap,
     const std::optional<NativeInitialLocalServiceIdentity>& service,
+    std::span<const NativeInitialAgentIdentity> agents,
     NativeInitialDefinitionEnumerationResult* enumeration=nullptr) noexcept {
   namespace c=scratchbird::core::catalog;
   using E=NativeInitialPolicyError;
@@ -7849,8 +7850,9 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
       if(!bootstrap||!security_memberships||!s.principal_name.data()||!s.credential_fingerprint.data()||
           s.credential_fingerprint.size()>256||!IsSafeBootstrapPrincipalName(s.principal_name)||
           !ParseBootstrapCredentialFingerprint(s.credential_fingerprint))return fail(E::invalid_request);
-      const std::array<Uuid,10> ids{s.principal_uuid,s.runtime_binding_uuid,s.credential_reference_uuid,
-          s.provider_uuid,s.policy_uuid,s.grant_uuids[0],s.grant_uuids[1],s.grant_uuids[2],s.grant_uuids[3],s.grant_uuids[4]};
+      const std::array<Uuid,11> ids{s.principal_uuid,s.runtime_binding_uuid,s.credential_reference_uuid,
+          s.provider_uuid,s.policy_uuid,s.grant_uuids[0],s.grant_uuids[1],s.grant_uuids[2],s.grant_uuids[3],s.grant_uuids[4],
+          s.l5_membership_uuid};
       for(std::size_t i=0;i<ids.size();++i) {
         if(!IsEngineIdentityUuid(ids[i]))return fail(E::invalid_request);
         for(std::size_t j=0;j<i;++j)if(ids[i]==ids[j])return fail(E::duplicate_identity);
@@ -7893,12 +7895,44 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
     const auto& pack=loaded.pack;
     const auto security_count=security_memberships ?
         pack.roles.size()+pack.groups.size()+pack.memberships.size()+pack.grants.size():0;
+    // SEARCH_KEY: SB_NATIVE_CREATE_AGENT_PRINCIPALS. A database with L5 must
+    // carry every agent type's principal and rights; a partial set refuses.
+    const auto agent_authority_for=[&](std::string_view type)->const PolicyAgentAuthoritySeed* {
+      for(const auto& candidate:pack.agent_authority)if(candidate.agent_type_id==type)return &candidate;
+      return nullptr;
+    };
+    std::size_t agent_rows=0;
+    if(service&&!pack.agent_types.empty()&&agents.empty())return fail(E::invalid_request);
+    if(!agents.empty()) {
+      if(!service||!bootstrap||!security_memberships||agents.size()!=pack.agent_types.size()||!agents.data())
+        return fail(E::invalid_request);
+      std::set<Uuid> seen{request.database_uuid,request.memory_configuration_uuid,request.construction_transaction.value,
+          bootstrap->principal_uuid,bootstrap->membership_uuid,kCanonicalSysarchRoleIdentity,
+          service->principal_uuid,service->runtime_binding_uuid,service->credential_reference_uuid,
+          service->provider_uuid,service->policy_uuid,service->l5_membership_uuid};
+      for(const auto& id:service->grant_uuids)seen.insert(id);
+      const auto fresh=[&](const Uuid& id){return IsEngineIdentityUuid(id)&&seen.insert(id).second;};
+      for(std::size_t i=0;i<agents.size();++i) {
+        const auto& agent=agents[i];
+        const auto* authority=agent_authority_for(pack.agent_types[i].agent_type_id);
+        const std::size_t rights=authority?authority->rights.size():0;
+        const bool linked=!agent.policy_uuid.is_nil()||!agent.link_uuid.is_nil();
+        if(agent.agent_type_id!=pack.agent_types[i].agent_type_id||agent.grant_uuids.size()!=rights||
+            (linked&&(!IsEngineIdentityUuid(agent.policy_uuid)||!IsEngineIdentityUuid(agent.link_uuid))))
+          return fail(E::invalid_request);
+        if(!fresh(agent.principal_uuid)||!fresh(agent.membership_uuid)||(linked&&!fresh(agent.link_uuid)))
+          return fail(E::duplicate_identity);
+        for(const auto& grant:agent.grant_uuids)if(!fresh(grant))return fail(E::duplicate_identity);
+        agent_rows+=2+rights+(linked?1:0);
+      }
+    }
     // The exact-count validator exists because a caller-supplied list can
     // disagree with the enumeration. It cannot disagree when one side produces
     // both, so it is unreachable on the generating and enumeration paths.
     if(!pack.image.active||!pack.memory_configuration||
         (caller_definitions&&
-          request.definitions.size()!=2+pack.providers.size()+pack.profiles.size()+security_count+(bootstrap?3:0)+(service?7:0))||
+          request.definitions.size()!=2+pack.providers.size()+pack.profiles.size()+security_count+(bootstrap?3:0)+(service?8:0)+
+              agent_rows)||
         (security_memberships && security_memberships->size()!=pack.memberships.size()))return fail(E::invalid_definition);
     if(bootstrap)for(const auto& role:pack.roles)
       if(role.role_uuid==kCanonicalSysarchRoleIdentity||role.role_code=="ROLE_SYSARCH") {
@@ -7982,7 +8016,13 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
               request.construction_transaction,pack.image.policy_generation)))return fail(E::duplicate_identity);
       }
       if(service) {
-        if(!append_security(NativeLocalServicePrincipalDefinition(*service,request.construction_transaction,pack.image.policy_generation)))
+        // As legacy create writes it: L5's principal names its authority class
+        // and L5 is a member of SYSARCH (D5).
+        auto service_principal=NativeLocalServicePrincipalDefinition(*service,request.construction_transaction,pack.image.policy_generation);
+        service_principal.attributes.emplace("authority_class",std::string(kL5AuthorityClass));
+        if(!append_security(service_principal)||
+            !append_security(NativeBootstrapMembershipDefinition(service->l5_membership_uuid,service->principal_uuid,
+              request.construction_transaction,pack.image.policy_generation)))
           return fail(E::duplicate_identity);
         for(unsigned slot=0;slot<service->grant_uuids.size();++slot)
           if(!append_security(NativeLocalServiceGrantDefinition(*service,slot,request.construction_transaction,pack.image.policy_generation)))
@@ -7999,6 +8039,25 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
         const auto encoded=c::EncodeCatalogRuntimeAuthorityBinding(binding);
         if(!encoded.ok()||!definitions.emplace(binding.binding_uuid,Definition{CatalogRecordKind::config_profile,
             "agent_runtime_authority",std::string(encoded.bytes.begin(),encoded.bytes.end())}).second)
+          return fail(E::duplicate_identity);
+      }
+      // SEARCH_KEY: SB_NATIVE_CREATE_AGENT_PRINCIPALS. Same records legacy create
+      // writes (BuildBootstrapSecurityCatalogRows, policy links in
+      // BuildCreateCatalogRows), from the same pack, with caller-issued identities.
+      for(std::size_t i=0;i<agents.size();++i) {
+        const auto& agent=agents[i];const auto& type=pack.agent_types[i];
+        const auto* authority=agent_authority_for(type.agent_type_id);
+        if(!append_security(NativeAgentPrincipalDefinition(agent.principal_uuid,type.agent_type_id,
+              authority?std::string_view(authority->authority_class):std::string_view{},
+              request.construction_transaction,pack.image.policy_generation)))return fail(E::duplicate_identity);
+        if(authority)for(std::size_t r=0;r<authority->rights.size();++r)
+          if(!append_security(NativeAgentPrincipalGrantDefinition(agent.principal_uuid,agent.grant_uuids[r],
+                authority->rights[r],request.construction_transaction,pack.image.policy_generation)))
+            return fail(E::duplicate_identity);
+        if(!append_security(NativeAgentRoleMembershipDefinition(agent.membership_uuid,agent.principal_uuid,type.role_uuid,
+              request.construction_transaction,pack.image.policy_generation)))return fail(E::duplicate_identity);
+        if(!agent.link_uuid.is_nil()&&!append_security(NativeAgentPrincipalBindingDefinition(agent.link_uuid,
+              agent.principal_uuid,agent.policy_uuid,request.construction_transaction,pack.image.policy_generation)))
           return fail(E::duplicate_identity);
       }
     }
@@ -8148,19 +8207,21 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
 }
 
 NativeInitialPolicyResult AssembleNativeInitialPolicyRecords(const NativeInitialPolicyRequest& request) noexcept {
-  return AssembleNativeInitialPolicyRecordsImpl(request,std::nullopt,std::nullopt,std::nullopt);
+  return AssembleNativeInitialPolicyRecordsImpl(request,std::nullopt,std::nullopt,std::nullopt,{});
 }
 NativeInitialPolicyResult AssembleNativeInitialPolicySecurityRecords(
     const NativeInitialPolicySecurityRequest& request) noexcept {
-  return AssembleNativeInitialPolicyRecordsImpl(request.policy,request.group_memberships,request.bootstrap,request.local_service);
+  return AssembleNativeInitialPolicyRecordsImpl(request.policy,request.group_memberships,request.bootstrap,request.local_service,
+      request.agents);
 }
 static NativeInitialDefinitionEnumerationResult EnumerateImpl(
     const NativeInitialPolicyRequest& request,
     std::optional<std::span<const NativeInitialMembershipIdentity>> security_memberships,
     const std::optional<NativeInitialBootstrapIdentity>& bootstrap,
-    const std::optional<NativeInitialLocalServiceIdentity>& service) noexcept {
+    const std::optional<NativeInitialLocalServiceIdentity>& service,
+    std::span<const NativeInitialAgentIdentity> agents) noexcept {
   NativeInitialDefinitionEnumerationResult result;
-  const auto source=AssembleNativeInitialPolicyRecordsImpl(request,security_memberships,bootstrap,service,&result);
+  const auto source=AssembleNativeInitialPolicyRecordsImpl(request,security_memberships,bootstrap,service,agents,&result);
   result.error=source.error;
   result.source_diagnostic=source.source_diagnostic;
   // No partial enumeration survives a refusal.
@@ -8169,11 +8230,44 @@ static NativeInitialDefinitionEnumerationResult EnumerateImpl(
 }
 NativeInitialDefinitionEnumerationResult EnumerateNativeInitialPolicyDefinitions(
     const NativeInitialPolicyRequest& request) noexcept {
-  return EnumerateImpl(request,std::nullopt,std::nullopt,std::nullopt);
+  return EnumerateImpl(request,std::nullopt,std::nullopt,std::nullopt,{});
 }
 NativeInitialDefinitionEnumerationResult EnumerateNativeInitialPolicySecurityDefinitions(
     const NativeInitialPolicySecurityRequest& request) noexcept {
-  return EnumerateImpl(request.policy,request.group_memberships,request.bootstrap,request.local_service);
+  return EnumerateImpl(request.policy,request.group_memberships,request.bootstrap,request.local_service,request.agents);
+}
+
+NativeInitialAgentIdentitiesResult IssueNativeInitialAgentIdentities(
+    std::string_view policy_seed_pack_root,
+    const std::function<std::optional<core::platform::Uuid>()>& issue) noexcept {
+  NativeInitialAgentIdentitiesResult out;
+  try {
+    if(policy_seed_pack_root.empty()||!issue)return out;
+    const auto loaded=LoadSelectedPolicySeedPack(std::string(policy_seed_pack_root));
+    if(!loaded.ok()){out.error=NativeInitialPolicyError::source_invalid;out.source_diagnostic=loaded.diagnostic;return out;}
+    const auto next=[&]()->std::optional<Uuid> {
+      auto id=issue();
+      if(!id||!IsEngineIdentityUuid(*id))return std::nullopt;
+      return id;
+    };
+    out.agents.reserve(loaded.pack.agent_types.size());
+    for(const auto& type:loaded.pack.agent_types) {
+      NativeInitialAgentIdentity agent;agent.agent_type_id=type.agent_type_id;
+      const auto principal=next(),membership=next();
+      if(!principal||!membership)return out;
+      agent.principal_uuid=*principal;agent.membership_uuid=*membership;
+      for(const auto& candidate:loaded.pack.agent_authority)if(candidate.agent_type_id==type.agent_type_id) {
+        for(std::size_t r=0;r<candidate.rights.size();++r) {
+          const auto grant=next();if(!grant)return out;agent.grant_uuids.push_back(*grant);
+        }
+        break;
+      }
+      out.agents.push_back(std::move(agent));
+    }
+    out.error=NativeInitialPolicyError::none;
+  }catch(const std::bad_alloc&){out.error=NativeInitialPolicyError::resource_exhausted;out.agents.clear();}
+   catch(...){out.error=NativeInitialPolicyError::invalid_request;out.agents.clear();}
+  return out;
 }
 
 DatabaseArtifactCompatibilityResult ClassifyDatabaseArtifactVersionCompatibility(
