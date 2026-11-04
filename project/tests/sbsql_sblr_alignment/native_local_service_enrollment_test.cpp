@@ -1219,6 +1219,107 @@ void AddCollisionPolicyFixture(db::NativeCreationCatalogSeed& seed,
   }
 }
 
+// SB_NATIVE_POLICY_FAMILY_SEEDS (owner direction 2026-11-04). The pack's native
+// policy families, assembled by production code with the identities the
+// builders above use, equal those builders' default records byte for byte,
+// placed in the same roles, and select the same transaction policy. The
+// builders stay the source of the fault variants; this ties the variants'
+// starting point to the pack's values.
+void PackPolicyFamiliesMatchFixture() {
+  namespace sf=security_fixture;
+  db::NativeInitialPolicyFamilyIdentities ids;
+  for(unsigned n=0;n<5;++n)ids.verification_descriptors.push_back({sf::Id(92000+n),sf::Id(92020+n)});
+  ids.verification_bodies={sf::Id(92010),sf::Id(92011),sf::Id(92012)};
+  ids.evidence_bodies={sf::Id(92013)};ids.authorization_bodies={sf::Id(92014)};
+  ids.transaction_descriptors={{sf::Id(98000),sf::Id(98030)},{sf::Id(98001),sf::Id(98031)}};
+  ids.transaction_bodies={sf::Id(98010)};ids.lock_bodies={sf::Id(98011)};
+  ids.isolation_profiles={sf::Id(98020),sf::Id(98021)};
+  for(unsigned n=0;n<10;++n)ids.management_profiles.push_back(sf::Id(95000+n));
+  ids.management_descriptors={sf::Id(95020)};
+  ids.identifier_profiles={sf::Id(57)};ids.dialect_profiles={sf::Id(56)};
+  ids.collision_descriptors={{sf::Id(55),sf::Id(102001)}};ids.collision_groups={sf::Id(102100)};
+  ids.collision_bodies={sf::Id(102000)};
+  ids.primary_filespace_uuid=Id(2);ids.security_schema_uuid=sf::Id(60);
+  enrollment::NativeLocalServiceCreationFixture reference(Id(1),security_tx,verifier);
+  auto expected=db::AssembleNativeInitialPolicySecurityCatalogs(reference.ServiceRequest(SB_DEFAULT_POLICY_PACK_ROOT));
+  Check(expected.ok(),"pack enrollment without native policy families assembles");
+  AddVerificationPolicies(expected.plan->catalogs,reference.items[0],0);
+  AddManagementDefinitions(expected.plan->catalogs,reference.items[0],0);
+  AddTransactionPolicies(expected.plan->catalogs,reference.items[0],0);
+  AddNamingProfileFixture(expected.plan->catalogs,reference.items[0],0);
+  AddCollisionPolicyFixture(expected.plan->catalogs,reference.items[0],0);
+  // Descriptors 5+2+1, bodies 3+1+1+1+1, isolation 2, management 10+1,
+  // identifier and dialect profiles, the collision body.
+  constexpr std::size_t kFamilyObjects=5+3+1+1+2+1+1+2+10+1+1+1+1+1;
+  enrollment::NativeLocalServiceCreationFixture inputs(Id(1),security_tx,verifier);
+  inputs.AddPolicyFamilies(ids);
+  auto request=inputs.ServiceRequest(SB_DEFAULT_POLICY_PACK_ROOT);request.policy_families=ids;
+  const auto without=db::EnumerateNativeInitialPolicySecurityDefinitions(reference.ServiceRequest(SB_DEFAULT_POLICY_PACK_ROOT));
+  const auto with=db::EnumerateNativeInitialPolicySecurityDefinitions(request);
+  if(!with.ok())std::cerr<<"pack policy families: enumeration error="<<int(with.error)<<'\n';
+  Check(without.ok()&&with.ok()&&with.definitions.size()==without.definitions.size()+kFamilyObjects,
+      "the enumeration carries exactly one definition per family object");
+  bool supplied_match=with.definitions.size()==inputs.inputs.size();
+  for(const auto& input:inputs.inputs){
+    const auto& header=input.definition->record.header;
+    const auto found=std::find_if(with.definitions.begin(),with.definitions.end(),
+        [&](const auto& d){return d.object_uuid==header.object_uuid.value;});
+    if(found==with.definitions.end()||found->kind!=header.kind||found->object_subtype!=input.definition->object_subtype){
+      std::cerr<<"supplied definition "<<scratchbird::core::uuid::UuidToString(header.object_uuid.value)<<" "
+          <<input.definition->object_subtype<<" kind="<<int(header.kind)<<" enumerated="
+          <<(found==with.definitions.end()?std::string("absent"):found->object_subtype+" kind="+std::to_string(int(found->kind)))<<'\n';
+      supplied_match=false;
+    }
+  }
+  Check(supplied_match,"the fixture supplies exactly the enumerated definitions, by identity, kind and subtype");
+  const auto made=db::AssembleNativeInitialPolicySecurityCatalogs(request);
+  if(!made.ok())std::cerr<<"pack policy families: catalog error="<<int(made.error)<<" source="<<int(made.source_error)<<'\n';
+  Check(made.ok(),"production assembler admits the pack's native policy families");
+  Check(made.plan->catalogs[1].size()==expected.plan->catalogs[1].size()&&
+      made.plan->catalogs[1].size()==1462+2*kFamilyObjects,"one name vector and one default name per family object");
+  for(const std::size_t role:{3u,4u,5u}){
+    std::map<platform::Uuid,std::string> want,have;
+    for(const auto& row:expected.plan->catalogs[role])
+      want.emplace(row.metadata.record.header.object_uuid.value,row.metadata.record.payload);
+    for(const auto& row:made.plan->catalogs[role])
+      have.emplace(row.metadata.record.header.object_uuid.value,row.metadata.record.payload);
+    Check(want.size()==expected.plan->catalogs[role].size()&&have.size()==made.plan->catalogs[role].size(),
+        "family comparison identities are unique per role");
+    if(want!=have)for(const auto& [id,payload]:want){
+      const auto found=have.find(id);
+      if(found==have.end())std::cerr<<"role "<<role<<" missing "<<scratchbird::core::uuid::UuidToString(id)<<'\n';
+      else if(found->second!=payload)std::cerr<<"role "<<role<<" payload differs "<<scratchbird::core::uuid::UuidToString(id)<<'\n';
+    }
+    Check(want==have,"pack-driven native policy family records equal the fixture's byte for byte, in the same role");
+  }
+  Check(made.plan->catalogs[5].size()==11&&made.plan->catalogs[0].empty()&&made.plan->catalogs[2].empty(),
+      "management definitions take role6; roles1/3 untouched");
+  // The production path refuses a family that cannot be placed honestly.
+  auto unresolved=ids;unresolved.security_schema_uuid={};
+  request.policy_families=unresolved;
+  Check(db::AssembleNativeInitialPolicySecurityCatalogs(request).source_error==db::NativeInitialPolicyError::invalid_request,
+      "a family without its sys.security schema identity refuses");
+  auto reused=ids;reused.collision_groups[0]=sf::Id(92000);
+  request.policy_families=reused;
+  Check(db::AssembleNativeInitialPolicySecurityCatalogs(request).source_error==db::NativeInitialPolicyError::duplicate_identity,
+      "a family identity reused within the families refuses");
+  auto aliased=ids;aliased.verification_descriptors[0].version_uuid=enrollment::SourceId(1);
+  request.policy_families=aliased;
+  Check(db::AssembleNativeInitialPolicySecurityCatalogs(request).source_error==db::NativeInitialPolicyError::duplicate_identity,
+      "a descriptor version identity aliasing a pack definition refuses");
+  auto short_ids=ids;short_ids.lock_bodies.clear();
+  request.policy_families=short_ids;
+  Check(db::AssembleNativeInitialPolicySecurityCatalogs(request).source_error==db::NativeInitialPolicyError::invalid_request,
+      "a family identity set that does not match the pack's shape refuses");
+  // Issued identities have exactly the pack's shape.
+  unsigned issued=0;
+  const auto fresh=db::IssueNativeInitialPolicyFamilyIdentities(SB_DEFAULT_POLICY_PACK_ROOT,
+      [&]()->std::optional<platform::Uuid>{return sf::Id(110000+issued++);});
+  Check(fresh.ok()&&issued==2*(5+2+1)+3+1+1+1+1+2+10+1+1+1+1+1&&fresh.identities->collision_bodies.size()==1&&
+      fresh.identities->primary_filespace_uuid.is_nil()&&fresh.identities->security_schema_uuid.is_nil(),
+      "issued family identities follow the pack's shape and leave the references to the caller");
+}
+
 void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCryptoOwner& process,
     unsigned configuration_variant=0,unsigned graph_variant=0,unsigned death=0,unsigned agent_variant=0,
     unsigned memory_variant=0,unsigned policy_variant=0,unsigned authentication_variant=0,unsigned name_variant=0,
@@ -3353,6 +3454,7 @@ int main(int argc,char** argv) {
     };
     Check(process.WithProviderScope([&]{
       if(death){run(0,true,process,0,0,death);return;}
+      PackPolicyFamiliesMatchFixture();
       for(unsigned profile=0;profile<5;++profile)for(bool indexed:{false,true})run(profile,indexed,process);
       for(unsigned variant=1;variant<=10;++variant)run(0,true,process,variant);
       for(unsigned variant=1;variant<=2;++variant)run(0,true,process,0,variant);

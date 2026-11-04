@@ -31,7 +31,10 @@ struct NativeInitialPolicyCatalogResult {
 // These use the same complete admitted-source producers as ordinary assembly;
 // no public mutable record collection can bypass their validation here.
 // Names go to native role2, security definitions to role4, bootstrap provider/
-// policy/memory/runtime configuration to role5. Roles1/3/6 remain untouched.
+// policy/memory/runtime configuration to role5. Roles1/3 remain untouched.
+// With policy families (SB_NATIVE_POLICY_FAMILY_SEEDS) their policies and
+// naming profiles go to role5 and their management definitions to role6;
+// without them role6 is untouched too.
 // Unknown future families refuse atomically, never default to the object head.
 // Owning payloads transfer without copies; all source/placement errors retain
 // their typed causes and return no partial plan or credential diagnostics.

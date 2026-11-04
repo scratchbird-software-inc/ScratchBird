@@ -21,6 +21,18 @@ std::optional<std::size_t> DefinitionSlot(const c::CatalogCreationRecord& row) n
        subtype == "bootstrap_policy_profile")) return 4;
   if (kind == c::CatalogRecordKind::config_profile &&
       (subtype == "memory_configuration" || subtype == "agent_runtime_authority")) return 4;
+  // SB_NATIVE_POLICY_FAMILY_SEEDS: the native policy families. Policies and
+  // naming profiles share role5 with the bootstrap profiles; management
+  // definitions take role6.
+  if (kind == c::CatalogRecordKind::policy &&
+      (subtype == "policy_descriptor" || subtype == "verification_policy_body" ||
+       subtype == "evidence_policy_body" || subtype == "authorization_policy_body" ||
+       subtype == "transaction_policy_body" || subtype == "lock_policy_body" ||
+       subtype == "isolation_profile" || subtype == "naming_collision_policy_body")) return 4;
+  if (kind == c::CatalogRecordKind::config_profile &&
+      (subtype == "identifier_resolution_profile" || subtype == "naming_dialect_profile")) return 4;
+  if (kind == c::CatalogRecordKind::management_operation &&
+      (subtype == "management_profile" || subtype == "management_descriptor")) return 5;
   return std::nullopt;
 }
 NativeInitialPolicyCatalogResult Route(NativeInitialPolicyResult source) noexcept {

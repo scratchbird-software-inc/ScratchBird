@@ -109,6 +109,29 @@ class NativeLocalServiceCreationFixture {
   void Append(unsigned& n,const p::Uuid& object,c::CatalogRecordKind kind) {
     items.emplace_back();Fill(n++,object,kind,c::CatalogRecordKindName(kind));
   }
+  // SB_NATIVE_POLICY_FAMILY_SEEDS: one definition per native policy family
+  // object, with the kind and subtype the assembler assigns it, for a request
+  // that carries these identities as policy_families.
+  void AddPolicyFamilies(const db::NativeInitialPolicyFamilyIdentities& ids) {
+    unsigned n=static_cast<unsigned>(items.size());
+    const auto add=[&](const p::Uuid& object,c::CatalogRecordKind kind,std::string_view subtype){
+      items.emplace_back();Fill(n++,object,kind,subtype);};
+    using K=c::CatalogRecordKind;
+    for(const auto* list:{&ids.verification_descriptors,&ids.transaction_descriptors,&ids.collision_descriptors})
+      for(const auto& d:*list)add(d.policy_uuid,K::policy,"policy_descriptor");
+    for(const auto& id:ids.verification_bodies)add(id,K::policy,"verification_policy_body");
+    for(const auto& id:ids.evidence_bodies)add(id,K::policy,"evidence_policy_body");
+    for(const auto& id:ids.authorization_bodies)add(id,K::policy,"authorization_policy_body");
+    for(const auto& id:ids.transaction_bodies)add(id,K::policy,"transaction_policy_body");
+    for(const auto& id:ids.lock_bodies)add(id,K::policy,"lock_policy_body");
+    for(const auto& id:ids.isolation_profiles)add(id,K::policy,"isolation_profile");
+    for(const auto& id:ids.management_profiles)add(id,K::management_operation,"management_profile");
+    for(const auto& id:ids.management_descriptors)add(id,K::management_operation,"management_descriptor");
+    for(const auto& id:ids.identifier_profiles)add(id,K::config_profile,"identifier_resolution_profile");
+    for(const auto& id:ids.dialect_profiles)add(id,K::config_profile,"naming_dialect_profile");
+    for(const auto& id:ids.collision_bodies)add(id,K::policy,"naming_collision_policy_body");
+    Rebind();
+  }
   void Rebind(){inputs.clear();for(auto& x:items){x.entries[0]={&x.entry_metadata,&x.entry};inputs.push_back({&x.definition,&x.vector_metadata,&x.vector,x.entries});}}
   NativeLocalServiceCreationFixture(const NativeLocalServiceCreationFixture&)=delete;
   NativeLocalServiceCreationFixture& operator=(const NativeLocalServiceCreationFixture&)=delete;

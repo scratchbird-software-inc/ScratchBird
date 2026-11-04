@@ -9,6 +9,12 @@
 #include "database_lifecycle.hpp"
 #include "native_policy_creation.hpp"
 #include "native_policy_families.hpp"
+#include "catalog_authorization_policy.hpp"
+#include "catalog_evidence_policy.hpp"
+#include "catalog_lock_policy.hpp"
+#include "catalog_naming_dialect_profile.hpp"
+#include "catalog_records.hpp"
+#include "catalog_transaction_policy.hpp"
 #include "native_bootstrap_definition_metadata.hpp"
 #include "catalog_bootstrap_policy.hpp"
 #include "catalog_memory_configuration.hpp"
@@ -8075,12 +8081,259 @@ DatabaseLifecycleResult RecordStartupEvidence(const DatabaseLifecycleOperationCo
 //                            this function builds every envelope and name half
 //   neither                - the caller supplied complete definitions, which
 //                            must reproduce this function's own assignment
+// SEARCH_KEY: SB_NATIVE_POLICY_FAMILY_SEEDS (owner direction 2026-11-04). Every
+// native policy family record, built from the pack's seeds and the caller's
+// identities with the values the native enrollment fixture uses, encoded and
+// keyed by its own identity. `seen` holds every identity already taken; the
+// family's own are added. Only database scope is supported, the evidence
+// store is the primary filespace and the authorization schemas are
+// sys.security: anything else refuses rather than guessing a placement.
+struct NativePolicyFamilyDefinition {
+  Uuid identity;
+  CatalogRecordKind kind;
+  std::string_view subtype;
+  std::string payload;
+};
+struct NativePolicyFamilyBuild {
+  std::vector<NativePolicyFamilyDefinition> definitions;
+  // Identities that are not definitions: descriptor versions, collision groups.
+  std::vector<Uuid> other_identities;
+  std::vector<std::pair<std::string_view,Uuid>> bindings;
+};
+NativeInitialPolicyError BuildNativePolicyFamilyDefinitions(
+    const NativePolicyFamilySeeds& s,const NativeInitialPolicyFamilyIdentities& ids,const Uuid& database_uuid,
+    const TypedUuid& tx,const Uuid& authority_owner_uuid,std::set<Uuid>& seen,NativePolicyFamilyBuild* out) {
+  namespace c=scratchbird::core::catalog;
+  using E=NativeInitialPolicyError;
+  if(ids.verification_descriptors.size()!=s.verification_descriptors.size()||
+      ids.transaction_descriptors.size()!=s.transaction_descriptors.size()||
+      ids.collision_descriptors.size()!=s.collision_policies.size()||
+      ids.verification_bodies.size()!=s.verification_bodies.size()||ids.evidence_bodies.size()!=s.evidence_bodies.size()||
+      ids.authorization_bodies.size()!=s.authorization_bodies.size()||ids.transaction_bodies.size()!=s.transaction_bodies.size()||
+      ids.lock_bodies.size()!=s.lock_bodies.size()||ids.isolation_profiles.size()!=s.isolation_profiles.size()||
+      ids.management_profiles.size()!=s.management_profiles.size()||
+      ids.management_descriptors.size()!=s.management_descriptors.size()||
+      ids.identifier_profiles.size()!=s.identifier_profiles.size()||ids.dialect_profiles.size()!=s.dialect_profiles.size()||
+      ids.collision_groups.size()!=s.collision_groups.size()||ids.collision_bodies.size()!=s.collision_policies.size()||
+      // One collision policy: the generated names carry exactly one.
+      s.collision_policies.size()!=1||s.collision_groups.size()>c::kCatalogNamingCollisionMaximumBindings||
+      !IsEngineIdentityUuid(ids.primary_filespace_uuid)||!IsEngineIdentityUuid(ids.security_schema_uuid))
+    return E::invalid_request;
+  std::vector<Uuid> issued;
+  for(const auto* list:{&ids.verification_descriptors,&ids.transaction_descriptors,&ids.collision_descriptors})
+    for(const auto& d:*list){issued.push_back(d.policy_uuid);issued.push_back(d.version_uuid);out->other_identities.push_back(d.version_uuid);}
+  for(const auto* list:{&ids.verification_bodies,&ids.evidence_bodies,&ids.authorization_bodies,&ids.transaction_bodies,
+      &ids.lock_bodies,&ids.isolation_profiles,&ids.management_profiles,&ids.management_descriptors,
+      &ids.identifier_profiles,&ids.dialect_profiles,&ids.collision_groups,&ids.collision_bodies})
+    issued.insert(issued.end(),list->begin(),list->end());
+  out->other_identities.insert(out->other_identities.end(),ids.collision_groups.begin(),ids.collision_groups.end());
+  for(const auto& id:issued) {
+    if(!IsEngineIdentityUuid(id))return E::invalid_request;
+    if(id==ids.primary_filespace_uuid||id==ids.security_schema_uuid||!seen.insert(id).second)return E::duplicate_identity;
+  }
+  // Keys are one namespace across the four files (the loader refuses a reuse).
+  std::map<std::string_view,Uuid> uuid_of;
+  const auto key=[&](const auto& seeds,const auto& identities,auto identity) {
+    for(std::size_t i=0;i<seeds.size();++i)uuid_of.emplace(seeds[i].key,identity(identities[i]));
+  };
+  const auto self=[](const Uuid& id){return id;};
+  const auto policy=[](const NativePolicyFamilyDescriptorIdentity& id){return id.policy_uuid;};
+  key(s.verification_descriptors,ids.verification_descriptors,policy);
+  key(s.transaction_descriptors,ids.transaction_descriptors,policy);
+  key(s.collision_policies,ids.collision_descriptors,policy);
+  key(s.verification_bodies,ids.verification_bodies,self);key(s.evidence_bodies,ids.evidence_bodies,self);
+  key(s.authorization_bodies,ids.authorization_bodies,self);key(s.transaction_bodies,ids.transaction_bodies,self);
+  key(s.lock_bodies,ids.lock_bodies,self);key(s.isolation_profiles,ids.isolation_profiles,self);
+  key(s.management_descriptors,ids.management_descriptors,self);key(s.identifier_profiles,ids.identifier_profiles,self);
+  key(s.dialect_profiles,ids.dialect_profiles,self);key(s.collision_groups,ids.collision_groups,self);
+  bool resolved=true;
+  const auto ref=[&](std::string_view name)->Uuid {
+    const auto found=uuid_of.find(name);
+    if(found==uuid_of.end()){resolved=false;return {};}
+    return found->second;
+  };
+  std::vector<scratchbird::core::platform::byte> backing(c::kCatalogEvidencePolicyMaxBytes);
+  const auto emit=[&](const Uuid& id,CatalogRecordKind kind,std::string_view subtype,const c::CatalogValueEncodeIntoResult& encoded) {
+    if(!resolved||!encoded.ok())return false;
+    out->definitions.push_back({id,kind,subtype,std::string(encoded.bytes.begin(),encoded.bytes.end())});
+    return true;
+  };
+  const auto origin=[&](auto& record) {
+    record.origin_transaction_uuid=record.creating_transaction_uuid=tx;
+    record.origin_local_transaction_id=record.creating_local_transaction_id=kBootstrapCatalogTransactionId;
+  };
+  const auto descriptor=[&](const Uuid& id,const Uuid& version,c::CatalogPolicyClass policy_class,c::CatalogPolicyScope scope,
+      const Uuid& body,u64 precedence,u64 enforcement,std::optional<c::CatalogPolicyDefault> decision,
+      std::string_view evidence,u64 invalidation) {
+    if(scope!=c::CatalogPolicyScope::database||precedence>0xffff||(enforcement&~c::kCatalogPolicyEnforcementMask)||
+        invalidation>c::kCatalogPolicyInvalidationMask)return false;
+    c::CatalogPolicyDescriptor d;
+    d.policy_uuid=id;d.policy_version_uuid=version;d.database_uuid=database_uuid;
+    d.body_uuid=body;d.body_generation=d.generation=1;d.policy_class=policy_class;
+    d.origin_transaction_uuid=d.creating_transaction_uuid=tx;
+    d.origin_local_transaction_id=d.creating_transaction_number=kBootstrapCatalogTransactionId;
+    d.scope=scope;d.scope_uuid=database_uuid;d.authority_owner_uuid=authority_owner_uuid;
+    d.precedence_rank=static_cast<scratchbird::core::platform::u16>(precedence);d.enforcement_points=enforcement;
+    if(decision)d.default_decision=*decision;
+    if(!evidence.empty())d.evidence_profile_uuid=ref(evidence);
+    d.cache_invalidation_mask=invalidation;
+    return emit(id,CatalogRecordKind::policy,"policy_descriptor",c::EncodeCatalogPolicyDescriptorInto(d,backing));
+  };
+  for(const auto* family:{&s.verification_descriptors,&s.transaction_descriptors}) {
+    const auto& identities=family==&s.verification_descriptors?ids.verification_descriptors:ids.transaction_descriptors;
+    for(std::size_t i=0;i<family->size();++i) {
+      const auto& seed=(*family)[i];
+      if(!descriptor(identities[i].policy_uuid,identities[i].version_uuid,seed.policy_class,seed.scope,ref(seed.body),
+            seed.precedence_rank,seed.enforcement_points,seed.default_decision,seed.evidence_profile,seed.cache_invalidation_mask))
+        return E::invalid_definition;
+    }
+  }
+  for(std::size_t i=0;i<s.verification_bodies.size();++i) {
+    const auto& seed=s.verification_bodies[i];
+    c::CatalogVerificationPolicyBody b;b.body_uuid=ids.verification_bodies[i];b.database_uuid=database_uuid;b.generation=1;
+    b.role=seed.role;b.verification_class_mask=seed.verification_class_mask;b.authority_class_mask=seed.authority_class_mask;
+    b.verification_level_mask=seed.verification_level_mask;b.maximum_scan_pages=seed.maximum_scan_pages;
+    b.maximum_work_bytes=seed.maximum_work_bytes;b.maximum_findings=seed.maximum_findings;
+    b.evidence_policy_uuid=ref(seed.evidence_policy);
+    if(!seed.access_policy.empty())b.access_policy_uuid=ref(seed.access_policy);
+    if(seed.mark_salvaged_output)b.flags|=c::kVerificationPolicyMarkSalvagedOutput;
+    origin(b);
+    if(!emit(b.body_uuid,CatalogRecordKind::policy,"verification_policy_body",c::EncodeCatalogVerificationPolicyInto(b,backing)))
+      return E::invalid_definition;
+  }
+  for(std::size_t i=0;i<s.evidence_bodies.size();++i) {
+    const auto& seed=s.evidence_bodies[i];
+    c::CatalogEvidencePolicyBody b;b.body_uuid=ids.evidence_bodies[i];b.database_uuid=database_uuid;b.generation=1;
+    if(seed.storage_filespace!="primary"||seed.required_evidence_classes.size()>b.required_evidence_classes.entries.size()||
+        seed.required_search_keys.size()>b.required_search_keys.entries.size())return E::invalid_definition;
+    for(const auto& value:seed.required_evidence_classes)
+      b.required_evidence_classes.entries[b.required_evidence_classes.count++]=value;
+    for(const auto& value:seed.required_search_keys)b.required_search_keys.entries[b.required_search_keys.count++]=value;
+    b.storage_filespace_uuid=ids.primary_filespace_uuid;
+    b.maximum_record_bytes=seed.maximum_record_bytes;b.maximum_batch_bytes=seed.maximum_batch_bytes;
+    origin(b);
+    if(!emit(b.body_uuid,CatalogRecordKind::policy,"evidence_policy_body",c::EncodeCatalogEvidencePolicyInto(b,backing)))
+      return E::invalid_definition;
+  }
+  for(std::size_t i=0;i<s.authorization_bodies.size();++i) {
+    const auto& seed=s.authorization_bodies[i];
+    if(seed.schema!=kLocalSysSecuritySchemaPath)return E::invalid_definition;
+    c::CatalogAuthorizationPolicyBody b;b.body_uuid=ids.authorization_bodies[i];b.database_uuid=database_uuid;b.generation=1;
+    b.user_schema_uuid=b.role_schema_uuid=b.group_schema_uuid=b.grant_schema_uuid=
+        b.row_policy_schema_uuid=b.column_policy_schema_uuid=ids.security_schema_uuid;
+    b.maximum_records=seed.maximum_records;b.maximum_membership_depth=seed.maximum_membership_depth;
+    b.maximum_work=seed.maximum_work;
+    origin(b);
+    if(!emit(b.body_uuid,CatalogRecordKind::policy,"authorization_policy_body",c::EncodeCatalogAuthorizationPolicyInto(b,backing)))
+      return E::invalid_definition;
+  }
+  for(std::size_t i=0;i<s.transaction_bodies.size();++i) {
+    const auto& seed=s.transaction_bodies[i];
+    c::CatalogTransactionPolicyBody b;b.body_uuid=ids.transaction_bodies[i];b.database_uuid=database_uuid;b.generation=1;
+    if(seed.allowed_isolation_profiles.size()>b.allowed_isolation_profiles.size())return E::invalid_definition;
+    b.default_isolation_profile_uuid=ref(seed.default_isolation_profile);
+    b.startup_isolation_profile_uuid=ref(seed.startup_isolation_profile);
+    for(const auto& allowed:seed.allowed_isolation_profiles)
+      b.allowed_isolation_profiles[b.allowed_isolation_profile_count++]=ref(allowed);
+    b.read_mode_mask=seed.read_mode_mask;b.maximum_transaction_microseconds=seed.maximum_transaction_microseconds;
+    b.maximum_snapshot_microseconds=seed.maximum_snapshot_microseconds;
+    b.maximum_active_transactions=seed.maximum_active_transactions;
+    b.lock_policy_uuid=ref(seed.lock_policy);b.evidence_policy_uuid=ref(seed.evidence_policy);
+    origin(b);
+    if(!emit(b.body_uuid,CatalogRecordKind::policy,"transaction_policy_body",c::EncodeCatalogTransactionPolicyInto(b,backing)))
+      return E::invalid_definition;
+  }
+  for(std::size_t i=0;i<s.lock_bodies.size();++i) {
+    const auto& seed=s.lock_bodies[i];
+    c::CatalogLockPolicyBody b;b.body_uuid=ids.lock_bodies[i];b.database_uuid=database_uuid;b.generation=1;
+    b.fairness_threshold_microseconds=seed.fairness_threshold_microseconds;b.maximum_locks=seed.maximum_locks;
+    b.maximum_lock_memory_bytes=seed.maximum_lock_memory_bytes;b.maximum_graph_nodes=seed.maximum_graph_nodes;
+    b.maximum_graph_edges=seed.maximum_graph_edges;b.maximum_deadlock_work=seed.maximum_deadlock_work;
+    b.deadlock_detection_interval_microseconds=seed.deadlock_detection_interval_microseconds;
+    b.evidence_policy_uuid=ref(seed.evidence_policy);
+    origin(b);
+    if(!emit(b.body_uuid,CatalogRecordKind::policy,"lock_policy_body",c::EncodeCatalogLockPolicyInto(b,backing)))
+      return E::invalid_definition;
+  }
+  for(std::size_t i=0;i<s.isolation_profiles.size();++i) {
+    const auto& seed=s.isolation_profiles[i];
+    c::CatalogIsolationProfile b;b.profile_uuid=ids.isolation_profiles[i];b.database_uuid=database_uuid;b.generation=1;
+    b.profile_kind=seed.profile_kind;b.snapshot_construction_point=seed.snapshot_construction_point;
+    b.snapshot_refresh_mask=seed.snapshot_refresh_mask;b.write_conflict_detection_mask=seed.write_conflict_detection_mask;
+    b.metadata_visibility=seed.metadata_visibility;
+    b.wait_policy_uuid=ref(seed.wait_policy);b.deadlock_policy_uuid=ref(seed.deadlock_policy);
+    origin(b);
+    if(!emit(b.profile_uuid,CatalogRecordKind::policy,"isolation_profile",c::EncodeCatalogIsolationProfileInto(b,backing)))
+      return E::invalid_definition;
+  }
+  for(std::size_t i=0;i<s.management_profiles.size();++i) {
+    c::CatalogManagementProfile p;p.profile_uuid=ids.management_profiles[i];p.database_uuid=database_uuid;p.generation=1;
+    p.code=s.management_profiles[i];origin(p);
+    if(!emit(p.profile_uuid,CatalogRecordKind::management_operation,"management_profile",
+          c::EncodeCatalogManagementProfileInto(p,backing)))return E::invalid_definition;
+  }
+  for(std::size_t i=0;i<s.management_descriptors.size();++i) {
+    const auto& seed=s.management_descriptors[i];
+    c::CatalogManagementOperationDescriptor d;d.descriptor_uuid=ids.management_descriptors[i];d.database_uuid=database_uuid;
+    d.generation=1;d.code=seed.code;d.flags=seed.flags;
+    // Every cataloged profile, in profile-code order (the descriptor's contract).
+    if(seed.profiles.size()!=d.profiles.size())return E::invalid_definition;
+    for(std::size_t n=0;n<seed.profiles.size();++n) {
+      const auto found=std::find(s.management_profiles.begin(),s.management_profiles.end(),seed.profiles[n]);
+      if(found==s.management_profiles.end())return E::invalid_definition;
+      d.profiles[n]=ids.management_profiles[static_cast<std::size_t>(found-s.management_profiles.begin())];
+    }
+    origin(d);
+    if(!emit(d.descriptor_uuid,CatalogRecordKind::management_operation,"management_descriptor",
+          c::EncodeCatalogManagementDescriptorInto(d,backing)))return E::invalid_definition;
+  }
+  for(std::size_t i=0;i<s.identifier_profiles.size();++i) {
+    const auto& seed=s.identifier_profiles[i];
+    c::CatalogIdentifierResolutionProfile p;p.profile_uuid=ids.identifier_profiles[i];p.database_uuid=database_uuid;
+    p.generation=1;p.profile_name=seed.profile_name;p.escape_rule=seed.escape_rule;p.comparison_mode=seed.comparison_mode;
+    p.storage_display_mode=seed.storage_display_mode;p.reserved_word_behavior=seed.reserved_word_behavior;
+    p.length_unit=seed.length_unit;p.dialect_mode_flags=seed.dialect_mode_flags;
+    p.origin_transaction_uuid=tx;p.origin_local_transaction_id=kBootstrapCatalogTransactionId;
+    if(!emit(p.profile_uuid,CatalogRecordKind::config_profile,"identifier_resolution_profile",
+          c::EncodeCatalogIdentifierProfileInto(p,backing)))return E::invalid_definition;
+  }
+  for(std::size_t i=0;i<s.dialect_profiles.size();++i) {
+    c::CatalogNamingDialectProfile p;p.profile_uuid=ids.dialect_profiles[i];p.database_uuid=database_uuid;
+    p.identifier_profile_uuid=ref(s.dialect_profiles[i].identifier_profile);
+    p.generation=p.identifier_profile_generation=1;origin(p);
+    if(!emit(p.profile_uuid,CatalogRecordKind::config_profile,"naming_dialect_profile",
+          c::EncodeCatalogNamingDialectProfileInto(p,backing)))return E::invalid_definition;
+  }
+  {
+    const auto& seed=s.collision_policies[0];
+    c::CatalogNamingCollisionPolicyBody b;b.body_uuid=ids.collision_bodies[0];b.database_uuid=database_uuid;b.generation=1;
+    origin(b);
+    for(std::size_t i=0;i<s.collision_groups.size();++i)
+      b.groups[b.group_count++]={ids.collision_groups[i],s.collision_groups[i].language_lane,s.collision_groups[i].key_lane};
+    const auto group=ref(seed.record_kind_group);
+    const auto kinds=c::BuiltinCatalogRecordDescriptorViews();
+    if(!seed.all_built_in_record_kinds||kinds.size()>b.classes.size())return E::invalid_definition;
+    for(const auto& kind:kinds)b.classes[b.class_count++]={kind.kind,group};
+    std::sort(b.classes.begin(),b.classes.begin()+static_cast<std::ptrdiff_t>(b.class_count),[](const auto& x,const auto& y){
+      return static_cast<scratchbird::core::platform::u16>(x.kind)<static_cast<scratchbird::core::platform::u16>(y.kind);});
+    if(!emit(b.body_uuid,CatalogRecordKind::policy,"naming_collision_policy_body",
+          c::EncodeCatalogNamingCollisionPolicyInto(b,backing)))return E::invalid_definition;
+    // A collision descriptor governs catalog metadata: its class is fixed.
+    if(!descriptor(ids.collision_descriptors[0].policy_uuid,ids.collision_descriptors[0].version_uuid,
+          c::CatalogPolicyClass::metadata,seed.scope,b.body_uuid,seed.precedence_rank,seed.enforcement_points,
+          std::nullopt,{},0))return E::invalid_definition;
+  }
+  for(const auto& binding:s.profile_bindings)out->bindings.emplace_back(binding.policy_profile_area,ref(binding.resource_definition));
+  return resolved?E::none:E::invalid_definition;
+}
+
 static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
     const NativeInitialPolicyRequest& request,
     std::optional<std::span<const NativeInitialMembershipIdentity>> security_memberships,
     const std::optional<NativeInitialBootstrapIdentity>& bootstrap,
     const std::optional<NativeInitialLocalServiceIdentity>& service,
     std::span<const NativeInitialAgentIdentity> agents,
+    const std::optional<NativeInitialPolicyFamilyIdentities>& policy_families,
     NativeInitialDefinitionEnumerationResult* enumeration=nullptr) noexcept {
   namespace c=scratchbird::core::catalog;
   using E=NativeInitialPolicyError;
@@ -8208,10 +8461,19 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
     // The exact-count validator exists because a caller-supplied list can
     // disagree with the enumeration. It cannot disagree when one side produces
     // both, so it is unreachable on the generating and enumeration paths.
+    // SB_NATIVE_POLICY_FAMILY_SEEDS: one definition per family object.
+    std::size_t family_rows=0;
+    if(policy_families&&pack.native_families) {
+      const auto& f=*pack.native_families;
+      family_rows=f.verification_descriptors.size()+f.transaction_descriptors.size()+2*f.collision_policies.size()+
+          f.verification_bodies.size()+f.evidence_bodies.size()+f.authorization_bodies.size()+f.transaction_bodies.size()+
+          f.lock_bodies.size()+f.isolation_profiles.size()+f.management_profiles.size()+f.management_descriptors.size()+
+          f.identifier_profiles.size()+f.dialect_profiles.size();
+    }
     if(!pack.image.active||!pack.memory_configuration||
         (caller_definitions&&
           request.definitions.size()!=2+pack.providers.size()+pack.profiles.size()+security_count+(bootstrap?3:0)+(service?8:0)+
-              agent_rows)||
+              agent_rows+family_rows)||
         (security_memberships && security_memberships->size()!=pack.memberships.size()))return fail(E::invalid_definition);
     if(bootstrap)for(const auto& role:pack.roles)
       if(role.role_uuid==kCanonicalSysarchRoleIdentity||role.role_code=="ROLE_SYSARCH") {
@@ -8241,6 +8503,26 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
     for(const auto& role:pack.roles)if(aliases_enclosing(role.role_uuid))return fail(E::duplicate_identity);
     for(const auto& group:pack.groups)if(aliases_enclosing(group.group_uuid))return fail(E::duplicate_identity);
     for(const auto& grant:pack.grants)if(aliases_enclosing(grant.grant_uuid))return fail(E::duplicate_identity);
+    // SB_NATIVE_POLICY_FAMILY_SEEDS: the five native policy families, built
+    // before any definition so the transaction profile can bind to them.
+    std::optional<NativePolicyFamilyBuild> family_build;
+    if(policy_families) {
+      if(!service||!bootstrap||!security_memberships||!pack.native_families)return fail(E::invalid_request);
+      std::set<Uuid> seen{request.database_uuid,request.memory_configuration_uuid,request.construction_transaction.value,
+          bootstrap->principal_uuid,bootstrap->membership_uuid,kCanonicalSysarchRoleIdentity,
+          service->principal_uuid,service->runtime_binding_uuid,service->credential_reference_uuid,
+          service->provider_uuid,service->policy_uuid,service->l5_membership_uuid};
+      for(const auto& id:service->grant_uuids)seen.insert(id);
+      for(const auto& agent:agents) {
+        seen.insert(agent.principal_uuid);seen.insert(agent.membership_uuid);
+        seen.insert(agent.grant_uuids.begin(),agent.grant_uuids.end());
+        if(!agent.link_uuid.is_nil()){seen.insert(agent.policy_uuid);seen.insert(agent.link_uuid);}
+      }
+      family_build.emplace();
+      const auto built=BuildNativePolicyFamilyDefinitions(*pack.native_families,*policy_families,request.database_uuid,
+          request.construction_transaction,bootstrap->principal_uuid,seen,&*family_build);
+      if(built!=E::none)return fail(built);
+    }
     struct Definition {CatalogRecordKind kind;std::string_view subtype;std::string payload;};
     std::map<Uuid,Definition> definitions;
     const auto append=[&]<class Record>(const Uuid& identity,CatalogRecordKind kind,std::string_view subtype,const Record& record) {
@@ -8260,13 +8542,23 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
     for(const auto& provider:pack.providers)
       if(!append(provider.provider_uuid,CatalogRecordKind::policy,"bootstrap_security_provider",
           NativePolicyProviderDefinition(pack,provider,request.construction_transaction)))return fail(E::invalid_definition);
-    for(const auto& profile:pack.profiles)
-      if(!append(profile.profile_uuid,CatalogRecordKind::policy,"bootstrap_policy_profile",
-          NativePolicyProfileDefinition(pack,profile,request.construction_transaction,request.memory_configuration_uuid)))
+    for(const auto& profile:pack.profiles) {
+      auto native=NativePolicyProfileDefinition(pack,profile,request.construction_transaction,request.memory_configuration_uuid);
+      // A profile the pack binds to a native policy family descriptor selects
+      // it, the way the memory profile selects the memory configuration.
+      if(family_build)for(const auto& [area,resource]:family_build->bindings)if(area==profile.area) {
+        if(native.resource_definition_uuid)return fail(E::invalid_definition);
+        native.resource_definition_uuid=resource;native.resource_definition_generation=1;
+      }
+      if(!append(profile.profile_uuid,CatalogRecordKind::policy,"bootstrap_policy_profile",native))
         return fail(E::invalid_definition);
+    }
     if(!append(request.memory_configuration_uuid,CatalogRecordKind::config_profile,"memory_configuration",
         NativeMemoryConfigurationDefinition(pack,request.memory_configuration_uuid,request.construction_transaction)))
       return fail(E::invalid_definition);
+    if(family_build)for(auto& family:family_build->definitions)
+      if(!definitions.emplace(family.identity,Definition{family.kind,family.subtype,std::move(family.payload)}).second)
+        return fail(E::duplicate_identity);
 
     if(security_memberships) {
       const auto append_security=[&](const c::CatalogSecurityRecord& record) {
@@ -8341,6 +8633,11 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
       }
     }
 
+    // Family identities that are not definitions (descriptor versions,
+    // collision groups) may not alias any definition either.
+    if(family_build)for(const auto& id:family_build->other_identities)
+      if(definitions.count(id))return fail(E::duplicate_identity);
+
     // The map above IS the enumeration: one entry per object, carrying the kind
     // and subtype this function assigned it. Report it and stop when that is
     // all the caller asked for.
@@ -8376,6 +8673,27 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
       // seed rather than one definition. Mutation-verified as redundant, which
       // is why it is documented rather than relied on as the only authority.
       if(service&&seed.owner_principal_uuid!=bootstrap->principal_uuid)return fail(E::invalid_definition);
+      // With the native policy families present, every generated name uses the
+      // pack's own naming family: its collision policy, a dialect profile and
+      // that dialect's identifier profile, byte for byte.
+      if(family_build) {
+        const auto& ids=*policy_families;const auto& seeds=*pack.native_families;
+        const auto dialect=std::find(ids.dialect_profiles.begin(),ids.dialect_profiles.end(),seed.dialect_profile_uuid);
+        if(seed.name_collision_policy_uuid!=ids.collision_descriptors[0].policy_uuid||
+            dialect==ids.dialect_profiles.end()||!seed.identifier_profile)return fail(E::invalid_definition);
+        const auto& dialect_seed=seeds.dialect_profiles[static_cast<std::size_t>(dialect-ids.dialect_profiles.begin())];
+        std::optional<Uuid> identifier;
+        for(std::size_t i=0;i<seeds.identifier_profiles.size();++i)
+          if(seeds.identifier_profiles[i].key==dialect_seed.identifier_profile)identifier=ids.identifier_profiles[i];
+        if(!identifier||seed.identifier_profile->profile_uuid!=*identifier)return fail(E::invalid_definition);
+        std::array<scratchbird::core::platform::byte,1024> profile_backing;
+        const auto encoded=c::EncodeCatalogIdentifierProfileInto(*seed.identifier_profile,profile_backing);
+        const auto& family=definitions.at(*identifier).payload;
+        if(!encoded.ok()||encoded.bytes.size()!=family.size()||
+            !std::equal(encoded.bytes.begin(),encoded.bytes.end(),family.begin(),
+                [](auto a,char b){return a==static_cast<scratchbird::core::platform::byte>(b);}))
+          return fail(E::invalid_definition);
+      }
       units.reserve(definitions.size());generated.reserve(definitions.size());
       std::size_t issued=0;
       for(const auto& [identity,definition]:definitions) {
@@ -8486,21 +8804,23 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
 }
 
 NativeInitialPolicyResult AssembleNativeInitialPolicyRecords(const NativeInitialPolicyRequest& request) noexcept {
-  return AssembleNativeInitialPolicyRecordsImpl(request,std::nullopt,std::nullopt,std::nullopt,{});
+  return AssembleNativeInitialPolicyRecordsImpl(request,std::nullopt,std::nullopt,std::nullopt,{},std::nullopt);
 }
 NativeInitialPolicyResult AssembleNativeInitialPolicySecurityRecords(
     const NativeInitialPolicySecurityRequest& request) noexcept {
   return AssembleNativeInitialPolicyRecordsImpl(request.policy,request.group_memberships,request.bootstrap,request.local_service,
-      request.agents);
+      request.agents,request.policy_families);
 }
 static NativeInitialDefinitionEnumerationResult EnumerateImpl(
     const NativeInitialPolicyRequest& request,
     std::optional<std::span<const NativeInitialMembershipIdentity>> security_memberships,
     const std::optional<NativeInitialBootstrapIdentity>& bootstrap,
     const std::optional<NativeInitialLocalServiceIdentity>& service,
-    std::span<const NativeInitialAgentIdentity> agents) noexcept {
+    std::span<const NativeInitialAgentIdentity> agents,
+    const std::optional<NativeInitialPolicyFamilyIdentities>& policy_families) noexcept {
   NativeInitialDefinitionEnumerationResult result;
-  const auto source=AssembleNativeInitialPolicyRecordsImpl(request,security_memberships,bootstrap,service,agents,&result);
+  const auto source=AssembleNativeInitialPolicyRecordsImpl(request,security_memberships,bootstrap,service,agents,
+      policy_families,&result);
   result.error=source.error;
   result.source_diagnostic=source.source_diagnostic;
   // No partial enumeration survives a refusal.
@@ -8509,11 +8829,12 @@ static NativeInitialDefinitionEnumerationResult EnumerateImpl(
 }
 NativeInitialDefinitionEnumerationResult EnumerateNativeInitialPolicyDefinitions(
     const NativeInitialPolicyRequest& request) noexcept {
-  return EnumerateImpl(request,std::nullopt,std::nullopt,std::nullopt,{});
+  return EnumerateImpl(request,std::nullopt,std::nullopt,std::nullopt,{},std::nullopt);
 }
 NativeInitialDefinitionEnumerationResult EnumerateNativeInitialPolicySecurityDefinitions(
     const NativeInitialPolicySecurityRequest& request) noexcept {
-  return EnumerateImpl(request.policy,request.group_memberships,request.bootstrap,request.local_service,request.agents);
+  return EnumerateImpl(request.policy,request.group_memberships,request.bootstrap,request.local_service,request.agents,
+      request.policy_families);
 }
 
 NativeInitialAgentIdentitiesResult IssueNativeInitialAgentIdentities(
@@ -8546,6 +8867,44 @@ NativeInitialAgentIdentitiesResult IssueNativeInitialAgentIdentities(
     out.error=NativeInitialPolicyError::none;
   }catch(const std::bad_alloc&){out.error=NativeInitialPolicyError::resource_exhausted;out.agents.clear();}
    catch(...){out.error=NativeInitialPolicyError::invalid_request;out.agents.clear();}
+  return out;
+}
+
+NativeInitialPolicyFamilyIdentitiesResult IssueNativeInitialPolicyFamilyIdentities(
+    std::string_view policy_seed_pack_root,
+    const std::function<std::optional<core::platform::Uuid>()>& issue) noexcept {
+  NativeInitialPolicyFamilyIdentitiesResult out;
+  try {
+    if(policy_seed_pack_root.empty()||!issue)return out;
+    const auto loaded=LoadSelectedPolicySeedPack(std::string(policy_seed_pack_root));
+    if(!loaded.ok()){out.error=NativeInitialPolicyError::source_invalid;out.source_diagnostic=loaded.diagnostic;return out;}
+    if(!loaded.pack.native_families){out.error=NativeInitialPolicyError::source_invalid;return out;}
+    const auto& s=*loaded.pack.native_families;
+    NativeInitialPolicyFamilyIdentities ids;
+    bool issued=true;
+    const auto next=[&]()->Uuid {
+      const auto id=issue();
+      if(!id||!IsEngineIdentityUuid(*id)){issued=false;return {};}
+      return *id;
+    };
+    const auto descriptors=[&](std::size_t count,std::vector<NativePolicyFamilyDescriptorIdentity>& into) {
+      for(std::size_t i=0;i<count;++i){const auto policy=next();into.push_back({policy,next()});}
+    };
+    const auto fill=[&](std::size_t count,std::vector<Uuid>& into){for(std::size_t i=0;i<count;++i)into.push_back(next());};
+    descriptors(s.verification_descriptors.size(),ids.verification_descriptors);
+    descriptors(s.transaction_descriptors.size(),ids.transaction_descriptors);
+    descriptors(s.collision_policies.size(),ids.collision_descriptors);
+    fill(s.verification_bodies.size(),ids.verification_bodies);fill(s.evidence_bodies.size(),ids.evidence_bodies);
+    fill(s.authorization_bodies.size(),ids.authorization_bodies);fill(s.transaction_bodies.size(),ids.transaction_bodies);
+    fill(s.lock_bodies.size(),ids.lock_bodies);fill(s.isolation_profiles.size(),ids.isolation_profiles);
+    fill(s.management_profiles.size(),ids.management_profiles);fill(s.management_descriptors.size(),ids.management_descriptors);
+    fill(s.identifier_profiles.size(),ids.identifier_profiles);fill(s.dialect_profiles.size(),ids.dialect_profiles);
+    fill(s.collision_groups.size(),ids.collision_groups);fill(s.collision_policies.size(),ids.collision_bodies);
+    if(!issued)return out;
+    out.identities=std::move(ids);
+    out.error=NativeInitialPolicyError::none;
+  }catch(const std::bad_alloc&){out.error=NativeInitialPolicyError::resource_exhausted;out.identities.reset();}
+   catch(...){out.error=NativeInitialPolicyError::invalid_request;out.identities.reset();}
   return out;
 }
 

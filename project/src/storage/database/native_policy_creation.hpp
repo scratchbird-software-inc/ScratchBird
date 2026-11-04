@@ -179,6 +179,36 @@ struct NativeInitialAgentIdentitiesResult {
 NativeInitialAgentIdentitiesResult IssueNativeInitialAgentIdentities(
     std::string_view policy_seed_pack_root,
     const std::function<std::optional<core::platform::Uuid>()>& issue) noexcept;
+// SEARCH_KEY: SB_NATIVE_POLICY_FAMILY_SEEDS (owner direction 2026-11-04). The
+// identities of the five native policy families the pack declares
+// (native_policy_families.hpp), one per seed in seed order. A descriptor has
+// its policy and policy-version identities; a collision policy has a
+// descriptor and a body. The two references name objects that already exist:
+// the primary filespace (evidence storage "primary") and the sys.security
+// schema (authorization schemas). Identities are the caller's to issue.
+struct NativePolicyFamilyDescriptorIdentity {
+  core::platform::Uuid policy_uuid,version_uuid;
+};
+struct NativeInitialPolicyFamilyIdentities {
+  std::vector<NativePolicyFamilyDescriptorIdentity> verification_descriptors,transaction_descriptors,collision_descriptors;
+  std::vector<core::platform::Uuid> verification_bodies,evidence_bodies,authorization_bodies;
+  std::vector<core::platform::Uuid> transaction_bodies,lock_bodies,isolation_profiles;
+  std::vector<core::platform::Uuid> management_profiles,management_descriptors;
+  std::vector<core::platform::Uuid> identifier_profiles,dialect_profiles,collision_groups,collision_bodies;
+  core::platform::Uuid primary_filespace_uuid{},security_schema_uuid{};
+};
+struct NativeInitialPolicyFamilyIdentitiesResult {
+  NativeInitialPolicyError error=NativeInitialPolicyError::invalid_request;
+  std::optional<core::platform::DiagnosticRecord> source_diagnostic;
+  std::optional<NativeInitialPolicyFamilyIdentities> identities;
+  bool ok() const noexcept {return error==NativeInitialPolicyError::none&&identities.has_value();}
+};
+// Reads the pack's native policy families and issues every identity from
+// `issue` in the order the fields above are declared. Refuses a pack that
+// declares none. The two references stay nil for the caller to set.
+NativeInitialPolicyFamilyIdentitiesResult IssueNativeInitialPolicyFamilyIdentities(
+    std::string_view policy_seed_pack_root,
+    const std::function<std::optional<core::platform::Uuid>()>& issue) noexcept;
 struct NativeInitialPolicySecurityRequest {
   NativeInitialPolicyRequest policy;
   std::span<const NativeInitialMembershipIdentity> group_memberships;
@@ -193,6 +223,14 @@ struct NativeInitialPolicySecurityRequest {
   // Required, complete, with a local service whenever the pack declares agent
   // types (SB_NATIVE_CREATE_AGENT_PRINCIPALS); refused without one.
   std::span<const NativeInitialAgentIdentity> agents{};
+  // SB_NATIVE_POLICY_FAMILY_SEEDS. When supplied, the pack's five native
+  // policy families are assembled from it: their records, the transaction
+  // profile's binding to its descriptor, and agreement with any generated
+  // definitions' naming identities. Optional here so a caller that builds
+  // these families itself (the enrollment fixture's fault variants) still
+  // can. The production native create producer (not yet written, M1 step 2c)
+  // is to require it. Requires a service.
+  std::optional<NativeInitialPolicyFamilyIdentities> policy_families=std::nullopt;
 };
 // Complete imported policy AND security declaration cohort from one admitted
 // source snapshot, with all complete caller metadata/names. Bootstrap is
