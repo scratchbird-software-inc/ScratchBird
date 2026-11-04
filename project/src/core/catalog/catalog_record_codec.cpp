@@ -30,6 +30,7 @@
 #include "catalog_transaction_policy.hpp"
 #include "catalog_lock_policy.hpp"
 #include "catalog_isolation_profile.hpp"
+#include "catalog_native_catalog_index.hpp"
 #include "catalog_management_descriptor.hpp"
 #include "catalog_crypto_inline_private_key_policy.hpp"
 #include "catalog_scheduler_policy.hpp"
@@ -197,6 +198,9 @@ CatalogTypedRecordViewResult ValidateCatalogTypedRecordView(CatalogTypedRecordVi
   if (IsCatalogIsolationProfilePayload(record.payload) && !CatalogIsolationProfileMatchesHeader(record))
     return RecordViewError("CATALOG.INVALID_INPUT", "catalog.isolation_profile.invalid",
                           "isolation_profile_binary_payload_or_header_invalid");
+  if (IsCatalogNativeCatalogIndexPayload(record.payload) && !CatalogNativeCatalogIndexMatchesHeader(record))
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.native_catalog_index.invalid",
+                          "native_catalog_index_binary_payload_or_header_invalid");
   if (IsCatalogVerificationPolicyPayload(record.payload) && !CatalogVerificationPolicyMatchesHeader(record))
     return RecordViewError("CATALOG.INVALID_INPUT", "catalog.verification_policy.invalid",
                           "verification_policy_binary_payload_or_header_invalid");
@@ -518,6 +522,12 @@ std::optional<CatalogRecordDiagnosticView> ValidateCatalogMetadataVersionView(co
   if ((value.object_subtype == "isolation_profile" || IsCatalogIsolationProfilePayload(value.record.payload)) &&
       !CatalogIsolationProfileMatchesMetadata(value))
     return MetadataViewError("isolation_profile_definition_binding_invalid");
+  if ((value.object_subtype == "native_catalog_index_key_profile" ||
+       value.object_subtype == "native_catalog_index_visibility_profile" ||
+       value.object_subtype == "native_catalog_index_dependency_map" ||
+       IsCatalogNativeCatalogIndexPayload(value.record.payload)) &&
+      !CatalogNativeCatalogIndexMatchesMetadata(value))
+    return MetadataViewError("native_catalog_index_definition_binding_invalid");
   if ((value.object_subtype == "verification_policy_body" || IsCatalogVerificationPolicyPayload(value.record.payload)) &&
       !CatalogVerificationPolicyMatchesMetadata(value))
     return MetadataViewError("verification_policy_definition_binding_invalid");
@@ -772,6 +782,7 @@ bool CatalogMetadataPreservesFamilyOrigin(
       CatalogTransactionPolicyPreservesOrigin(previous,successor) &&
       CatalogLockPolicyPreservesOrigin(previous,successor) &&
       CatalogIsolationProfilePreservesOrigin(previous,successor) &&
+      CatalogNativeCatalogIndexPreservesOrigin(previous,successor) &&
       CatalogManagementDefinitionPreservesOrigin(previous,successor) &&
       CatalogCryptoInlinePrivateKeyPolicyPreservesOrigin(previous,successor) &&
       CatalogRuntimeAuthorityBindingPreservesOrigin(previous,successor) &&

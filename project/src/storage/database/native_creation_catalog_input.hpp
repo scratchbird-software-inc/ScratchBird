@@ -14,6 +14,7 @@
 #include "catalog_transaction_policy.hpp"
 #include "catalog_lock_policy.hpp"
 #include "catalog_isolation_profile.hpp"
+#include "catalog_native_catalog_index.hpp"
 #include "catalog_management_descriptor.hpp"
 #include "catalog_agent_bootstrap.hpp"
 #include "catalog_crypto_inline_private_key_policy.hpp"
@@ -108,6 +109,9 @@ template<class Reserve> void ReserveNativeCreationCatalogReferences(
       for(const auto& id:{p.descriptor_uuid,p.database_uuid,p.origin_transaction_uuid.value,p.creating_transaction_uuid.value})reserve(id);
       for(const auto& id:p.profiles)reserve(id);}
   }
+  // SB_CLARIFY_NATIVE_CATALOG_INDEX_PROFILE_ROWS: catalog index profiles and dependency maps.
+  if(core::catalog::IsCatalogNativeCatalogIndexPayload(m.record.payload))
+    core::catalog::ForEachCatalogNativeCatalogIndexReference(m.record.payload,reserve);
   if(core::catalog::IsCatalogIsolationProfilePayload(m.record.payload)){
     const auto decoded=core::catalog::DecodeCatalogIsolationProfile(m.record.payload);
     if(decoded.ok()){const auto& p=*decoded.record;

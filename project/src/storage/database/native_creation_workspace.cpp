@@ -156,6 +156,7 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
            !core::catalog::CatalogTransactionPolicyMatchesDatabase(core::catalog::BorrowCatalogMetadataVersion(m),b.database_uuid)||
            !core::catalog::CatalogLockPolicyMatchesDatabase(core::catalog::BorrowCatalogMetadataVersion(m),b.database_uuid)||
            !core::catalog::CatalogIsolationProfileMatchesDatabase(core::catalog::BorrowCatalogMetadataVersion(m),b.database_uuid)||
+           !core::catalog::CatalogNativeCatalogIndexMatchesDatabase(core::catalog::BorrowCatalogMetadataVersion(m),b.database_uuid)||
            !core::catalog::CatalogManagementDefinitionMatchesDatabase(core::catalog::BorrowCatalogMetadataVersion(m),b.database_uuid)||
            !core::catalog::CatalogCryptoInlinePrivateKeyPolicyMatchesDatabase(core::catalog::BorrowCatalogMetadataVersion(m),b.database_uuid)||
            ((m.object_subtype=="crypto_inline_private_key"||core::catalog::IsCatalogCryptoInlinePrivateKeyPolicyPayload(m.record.payload))&&role!=3)||

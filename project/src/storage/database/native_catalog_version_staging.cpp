@@ -13,6 +13,7 @@
 #include "catalog_transaction_policy.hpp"
 #include "catalog_lock_policy.hpp"
 #include "catalog_isolation_profile.hpp"
+#include "catalog_native_catalog_index.hpp"
 #include "catalog_management_descriptor.hpp"
 #include "catalog_crypto_inline_private_key_policy.hpp"
 #include "native_catalog_definition_generation.hpp"
@@ -114,6 +115,8 @@ NativeCatalogVersionStageResult detail::NativeCatalogVersionStager::Run(
        !catalog::CatalogLockPolicyMatchesDatabase(
         catalog::BorrowCatalogMetadataVersion(desired),h.database_uuid)||
        !catalog::CatalogIsolationProfileMatchesDatabase(
+        catalog::BorrowCatalogMetadataVersion(desired),h.database_uuid)||
+       !catalog::CatalogNativeCatalogIndexMatchesDatabase(
         catalog::BorrowCatalogMetadataVersion(desired),h.database_uuid)||
        !catalog::CatalogManagementDefinitionMatchesDatabase(
         catalog::BorrowCatalogMetadataVersion(desired),h.database_uuid)||

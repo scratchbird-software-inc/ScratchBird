@@ -43,6 +43,7 @@ add_library(sb_core_catalog_dispatcher_objects OBJECT
   catalog_metric_visibility_policy.cpp
   catalog_naming_collision_policy.cpp
   catalog_naming_dialect_profile.cpp
+  catalog_native_catalog_index.cpp
   catalog_policy_descriptor.cpp
   catalog_table_definition.cpp
   catalog_transaction_policy.cpp
