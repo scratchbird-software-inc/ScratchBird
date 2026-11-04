@@ -212,6 +212,99 @@ int main() {
           "a refused served begin fell back to opening the database file");
     opens::Watch({});
   }
+  // Step 7: the server's public-ABI engine open reads the header through the
+  // owner's open file; a released owner fails the open, no path fallback.
+  {
+    auto fixture = CreateFixture();
+    auto owned = Own(fixture, disk::RouteStorageAccess::read_write);
+    Require(owned.acquired && owned.lock, "ownership for served engine open not acquired");
+    const auto lease = owned.lock->ServedStorageLease();
+    const auto path = fixture.database_path.string();
+    sb_engine_open_params_v1_t params{};
+    params.struct_size = sizeof(params);
+    params.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
+    params.database_path_utf8 = path.data();
+    params.database_path_size = path.size();
+    params.mode = SB_ENGINE_OPEN_VALIDATION_ONLY;
+    opens::Watch(path);
+    const auto before = opens::FileOpens();
+    sb_engine_handle_t engine = nullptr;
+    const auto opened = bridge::OpenServedEngine(&params, lease, &engine, nullptr);
+    check(opened == SB_ENGINE_STATUS_OK && engine != nullptr, "served engine open failed");
+    check(opens::FileOpens() == before, "served engine open re-opened the database file");
+    sb_engine_session_params_v1_t begin{};
+    begin.struct_size = sizeof(begin);
+    begin.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
+    begin.effective_user_uuid = PublicUuid(fixture.principal_uuid);
+    begin.session_uuid = PublicUuid(fixture.session_uuid);
+    begin.default_language_utf8 = "en";
+    begin.default_language_size = 2;
+    begin.trust_mode = SB_ENGINE_TRUST_SERVER_ISOLATED;
+    sb_engine_session_t session = nullptr;
+    check(engine != nullptr &&
+              sb_engine_session_begin(engine, &begin, &session, nullptr) == SB_ENGINE_STATUS_OK,
+          "served engine handle refused a session");
+    if (session != nullptr) {
+      sb_engine_session_end_params_v1_t end{};
+      end.struct_size = sizeof(end);
+      end.abi_version = SB_ENGINE_ABI_VERSION_PACKED;
+      end.rollback_active_transactions = 1;
+      end.cancel_open_results = 1;
+      (void)sb_engine_session_end(session, &end, nullptr);
+    }
+    if (engine != nullptr) (void)sb_engine_close(engine, nullptr);
+    owned.lock->release();
+    sb_engine_handle_t refused = nullptr;
+    const auto refused_status = bridge::OpenServedEngine(&params, lease, &refused, nullptr);
+    check(refused_status != SB_ENGINE_STATUS_OK && refused == nullptr,
+          "a released owner still served an engine open");
+    check(opens::FileOpens() == before,
+          "a refused served engine open fell back to opening the database file");
+    opens::Watch({});
+  }
+  // Step 7: sbsrv's startup verification (OpenDatabaseFile) reads through the
+  // owner it acquired; a released owner fails the open, no path fallback.
+  {
+    auto fixture = CreateFixture();
+    auto owned = Own(fixture, disk::RouteStorageAccess::read_write);
+    Require(owned.acquired && owned.lock, "ownership for served verification not acquired");
+    db::DatabaseOpenConfig config;
+    config.path = fixture.database_path.string();
+    config.served_owner = owned.lock->ServedStorageLease();
+    opens::Watch(config.path);
+    const auto before = opens::FileOpens();
+    const auto verified = db::OpenDatabaseFile(config);
+    check(verified.ok(), "served OpenDatabaseFile failed");
+    check(opens::FileOpens() == before, "served OpenDatabaseFile re-opened the database file");
+    owned.lock->release();
+    const auto refused = db::OpenDatabaseFile(config);
+    check(!refused.ok(), "a released owner still served OpenDatabaseFile");
+    check(opens::FileOpens() == before,
+          "a refused served OpenDatabaseFile fell back to opening the database file");
+    opens::Watch({});
+  }
+  // SB_TEST_DEVICE_WRITE_FAULT reaches a served device: armed, the served
+  // inventory write fails as an I/O error; disarmed, the next begin succeeds.
+  {
+    auto fixture = CreateFixture();
+    auto owned = Own(fixture, disk::RouteStorageAccess::read_write);
+    Require(owned.acquired && owned.lock, "ownership for served write fault not acquired");
+    const auto lease = owned.lock->ServedStorageLease();
+    const auto path = fixture.database_path.string();
+    check(disk::ArmTestDeviceWriteFault(path), "test device write fault unavailable");
+    auto faulted = RequestContext(fixture, lease);
+    const auto failed = Begin(&faulted);
+    disk::DisarmTestDeviceWriteFault();
+    check(!failed.ok && std::any_of(failed.diagnostics.begin(), failed.diagnostics.end(),
+                                     [](const auto& d) {
+                                       return d.detail.find("test_device_write_fault") != std::string::npos ||
+                                              d.code.find("WRITE-FAILED") != std::string::npos;
+                                     }),
+          "an armed device write fault did not fail the served begin");
+    auto healthy = RequestContext(fixture, lease);
+    check(Begin(&healthy).ok, "a disarmed device still failed the served begin");
+    owned.lock->release();
+  }
   std::cout << (ok ? "c9_served_transaction_write PASS" : "c9_served_transaction_write FAIL") << '\n';
   return ok ? 0 : 1;
 }

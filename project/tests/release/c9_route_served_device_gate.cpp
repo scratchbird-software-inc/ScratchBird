@@ -252,11 +252,16 @@ bool ServedCatalogReads(disk::RouteStorageAccess access, const char* tag) {
   const auto lease = owned.lock->ServedStorageLease();
   const auto security_unserved = db::ReadDatabaseBootstrapSecurityCatalog(path.string());
   const auto identity_unserved = db::ReadDatabaseCatalogIdentity(path.string(), database_uuid);
+  const auto metrics_unserved = db::ReadDatabaseBootstrapMetricCatalog(path.string(), database_uuid);
   opens::Watch(path.string());
   const auto before = opens::FileOpens();
   const auto security = db::ReadDatabaseBootstrapSecurityCatalog(path.string(), lease);
   const auto identity = db::ReadDatabaseCatalogIdentity(path.string(), database_uuid, lease);
+  const auto metrics = db::ReadDatabaseBootstrapMetricCatalog(path.string(), database_uuid, lease);
   ok = Expect(opens::FileOpens() == before, "served catalog reads re-opened the database file") && ok;
+  ok = Expect(metrics.ok() == metrics_unserved.ok() &&
+                  metrics.definitions.size() == metrics_unserved.definitions.size(),
+              "served bootstrap metric catalog differs from the path-opened read") && ok;
   ok = Expect(security.ok() == security_unserved.ok() &&
                   security.state.present == security_unserved.state.present &&
                   security.state.committed_by_inventory == security_unserved.state.committed_by_inventory &&
@@ -268,6 +273,8 @@ bool ServedCatalogReads(disk::RouteStorageAccess access, const char* tag) {
   owned.lock->release();
   const auto refused = db::ReadDatabaseCatalogIdentity(path.string(), database_uuid, lease);
   ok = Expect(!refused.ok(), "a released owner still served the catalog identity") && ok;
+  const auto refused_metrics = db::ReadDatabaseBootstrapMetricCatalog(path.string(), database_uuid, lease);
+  ok = Expect(!refused_metrics.ok(), "a released owner still served the metric catalog") && ok;
   ok = Expect(opens::FileOpens() == before, "a refused served read fell back to a path open") && ok;
   opens::Watch({});
   return ok;

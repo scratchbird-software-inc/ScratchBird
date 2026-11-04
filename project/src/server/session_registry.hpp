@@ -150,6 +150,12 @@ struct ServerSessionRecord {
   std::string provider_family;
   std::string requested_role_name;
   std::string database_path;
+  // SEARCH_KEY: SB_ROUTE_OWNER_SERVED_DEVICE (C9 step 7). The owner of the
+  // database this session attached to, resolved once at attach from the hosted
+  // engine state. Contexts built from the session alone (authorization
+  // projection, disconnect cleanup) copy it, so they read through the owner's
+  // open file. Storage, not authority; empty means a path open.
+  std::shared_ptr<scratchbird::storage::disk::RouteOwnershipLease> served_route_owner;
   scratchbird::core::platform::Uuid database_uuid;
   std::string resource_seed_pack_root;
   std::string policy_seed_pack_root;

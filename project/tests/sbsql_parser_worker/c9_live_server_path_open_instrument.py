@@ -110,6 +110,8 @@ def main() -> int:
                  "--database-seeder", "--preload", "--work-dir"):
         parser.add_argument(name, required=True)
     parser.add_argument("--expect", default="", help="exact counts, e.g. 0:F,S;1:F,S;4:F,S")
+    parser.add_argument("--expect-agent-file-opens", type=int, default=None,
+                        help="exact database-file opens on agent threads in every run")
     parser.add_argument("--keep-work", action="store_true", help="keep logs (with SB_C9_TRACE_OPENS)")
     args = parser.parse_args()
     args.work = live.make_work_dir(Path(args.work_dir))
@@ -121,10 +123,10 @@ def main() -> int:
         live.require(seeded.returncode == 0 and database.is_file(), f"seed_failed:{seeded.returncode}")
         observed = {n: measure(args, database, n) for n in (0, *STATEMENT_COUNTS)}
         # Exact: opens made on non-agent server threads. Agent threads
-        # ("sb-agent-*") run timed cycles whose opens vary with how long a run
-        # takes (one landing inside a run adds about 8 database-file and 170
-        # sidecar opens), so they are reported and not compared until the
-        # agent contexts are converted.
+        # ("sb-agent-*") run timed cycles whose sidecar opens vary with how
+        # long a run takes (one landing inside a run adds about 170), so agent
+        # sidecar opens are reported only. Since C9 step 7 agent threads make
+        # no database-file opens, timed or not, so that count is exact.
         report = ";".join(f"{n}:{s[0]},{s[1]}" for n, (s, _a) in observed.items())
         agents = ";".join(f"{n}:{a[0]},{a[1]}" for n, (_s, a) in observed.items())
         print(f"c9_live_server_path_opens {report} agent_threads {agents}")
@@ -132,6 +134,11 @@ def main() -> int:
             live.require(report == args.expect,
                          f"live_open_counts_changed observed={report} expected={args.expect}; "
                          "if a C9 conversion removed opens, lower the expectation with it")
+        if args.expect_agent_file_opens is not None:
+            agent_files = [a[0] for (_s, a) in observed.values()]
+            live.require(all(n == args.expect_agent_file_opens for n in agent_files),
+                         f"agent_thread_file_opens_changed observed={agents} "
+                         f"expected={args.expect_agent_file_opens} per run")
         if args.keep_work:
             print(f"work={args.work}")
         else:

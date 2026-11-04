@@ -364,7 +364,8 @@ TResult RegistrySurface(const EngineApiRequest& request, const std::string& oper
     if (request.context.authorization_context.authority_uuid != request.context.database_uuid)
       return MetricsSecurityFailure<TResult>(request, operation_id);
     const auto catalog = storage::database::ReadDatabaseBootstrapMetricCatalog(
-        request.context.database_path, request.context.database_uuid);
+        request.context.database_path, request.context.database_uuid,
+        request.context.served_route_owner);
     if (!catalog.ok()) return MakeApiBehaviorDiagnostic<TResult>(request.context, operation_id,
         MakeEngineApiDiagnosticFromNative(catalog.diagnostic, "CATALOG.INVALID_INPUT",
                                          "catalog.metric_catalog.invalid", "native_metric_catalog_read_failed"));

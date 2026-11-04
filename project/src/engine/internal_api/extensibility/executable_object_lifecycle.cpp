@@ -641,7 +641,7 @@ EngineApiDiagnostic ValidateExactMgaSelector(const EngineRequestContext& context
   }
   const auto loaded =
       scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(
-          context.database_path);
+          context.database_path, context.served_route_owner);
   if (!loaded.ok()) {
     return ExecDiagnostic(kExecutableObjectDiagnosticExactMgaSelectorRequired,
                           "durable_transaction_inventory_unavailable");
@@ -867,7 +867,7 @@ EngineLoadExecutableObjectLifecycleStateResult LoadState(const EngineRequestCont
   std::map<EngineUuid, EngineExecutableInvocationRecord> active_invocations;
   const auto transaction_inventory =
       scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(
-          context.database_path);
+          context.database_path, context.served_route_owner);
   if (options.enforce_visibility && !transaction_inventory.ok()) {
     result.diagnostic = ExecDiagnostic(
         kExecutableObjectDiagnosticMgaVisibilityRefused,
@@ -1839,7 +1839,7 @@ EngineApiDiagnostic PreflightCreateExecutableObjectImpl(
 EngineApiDiagnostic ValidateExecutableObjectCurrentAdmission(
     const EngineRequestContext& context, const EngineExecutableObjectRecord& admitted) {
   const auto owner = AcquireTransactionInventoryGuard(context.database_path);
-  const auto inventory = scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(context.database_path);
+  const auto inventory = scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(context.database_path, context.served_route_owner);
   if (!inventory.ok()) return ExecDiagnostic(kExecutableObjectDiagnosticMgaVisibilityRefused,
       "executable_admission_inventory_unavailable");
   std::ifstream in(EventPath(context), std::ios::binary);

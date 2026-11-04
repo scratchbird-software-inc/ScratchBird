@@ -10,6 +10,7 @@
 
 #if defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
 #include "database_lifecycle.hpp"
+#include "disk_device.hpp"
 #include "../database_lifecycle/database_lifecycle_test_memory.hpp"
 #include "local_transaction_store.hpp"
 #include "transaction_state.hpp"
@@ -111,12 +112,16 @@ void VerifyEnabled() {
                 HasDiagnostic(messages, "PARSER_SERVER_IPC.SESSION_MISMATCH"),
             "non-v7 system session identity was admitted to embedded cleanup");
     RequireState(path, first.local_transaction_id, tx::TransactionState::active);
-    Require(::geteuid() != 0, "embedded permission fault requires unprivileged Linux");
-    const auto permissions = std::filesystem::status(path).permissions();
-    std::filesystem::permissions(path, std::filesystem::perms::owner_read);
+    // Fault: the cleanup's durable write fails. This used to be a read-only
+    // permission on the path, which only faulted while cleanup reopened the
+    // path. Since C9 step 7 the owner writes through its own open descriptor,
+    // which a permission change cannot reach, so the device write itself is
+    // failed (SB_TEST_DEVICE_WRITE_FAULT), like a real I/O error.
+    Require(scratchbird::storage::disk::ArmTestDeviceWriteFault(path),
+            "embedded device write fault unavailable (SB_ENABLE_TEST_DEVICE_WRITE_FAULTS off)");
     messages = {};
     const bool refused = client.DisconnectSession(first, &messages);
-    std::filesystem::permissions(path, permissions);
+    scratchbird::storage::disk::DisarmTestDeviceWriteFault();
     Require(!refused && HasDiagnostic(messages, "PARSER_SERVER_IPC.DISCONNECT_OUTCOME_UNKNOWN"),
             "embedded quarantine was reported as complete cleanup");
     RequireState(path, first.local_transaction_id, tx::TransactionState::active);
@@ -126,8 +131,9 @@ void VerifyEnabled() {
     messages = {};
     const bool retry = client.DisconnectSession(first, &messages);
     // The Core ordinary ACID outcome rule forbids automatic retry
-    // while prior transaction finality is unknown. Restored file permission
-    // is not engine recovery authority and cannot authorize a new cleanup.
+    // while prior transaction finality is unknown. A recovered device (the
+    // fault disarmed; formerly a restored file permission) is not engine
+    // recovery authority and cannot authorize a new cleanup.
     Require(!retry && HasDiagnostic(messages, "PARSER_SERVER_IPC.DISCONNECT_OUTCOME_UNKNOWN"),
             "repeat embedded disconnect invented known transaction finality");
     const auto after_retry = db::LoadLocalTransactionInventoryFromDatabase(path);

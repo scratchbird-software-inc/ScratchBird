@@ -433,6 +433,18 @@ IoResult SyncFileDeviceWithPolicy(FileDevice* device,
 IoResult SyncFilesystemPath(const std::string& path, bool writable);
 IoResult SyncParentDirectoryPath(const std::string& path);
 
+// SEARCH_KEY: SB_TEST_DEVICE_WRITE_FAULT
+// Test-only. While armed, every write and sync through a FileDevice open on
+// the armed file fails as a native I/O error, whether the device opened the
+// path or was served from the route owner's descriptor. A permission change on
+// the path cannot fault a descriptor that is already open, so this is how a
+// test makes the owner's own write fail. Compiled in only with
+// SCRATCHBIRD_ENABLE_TEST_DEVICE_WRITE_FAULTS (SB_ENABLE_TEST_DEVICE_WRITE_FAULTS,
+// on by default in test builds); otherwise Arm returns false and no I/O is
+// checked. One file at a time; Disarm clears it.
+bool ArmTestDeviceWriteFault(const std::string& path);
+void DisarmTestDeviceWriteFault();
+
 // SEARCH_KEY: SB_WINDOWS_OWNER_LOCK_FILE_RETAINED -- POSIX only. Windows still
 // keeps the owner lock files on close; the Windows team owns that path.
 #ifndef _WIN32

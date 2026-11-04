@@ -935,7 +935,7 @@ EngineApiDiagnostic CommitMgaSecondaryIndexDeltaLedgerTransaction(
   // Compatibility cleanup only.  This marker is derived from durable MGA
   // inventory finality and can never lead it or participate in commit success.
   const auto inventory = LoadLocalTransactionInventoryFromDatabase(
-      context.database_path);
+      context.database_path, context.served_route_owner);
   if (!inventory.ok()) {
     return MakeInvalidRequestDiagnostic(
         "mga.secondary_index_delta_ledger",
@@ -1423,7 +1423,7 @@ MgaSecondaryIndexDeltaRecoveryRepairResult ValidateAndRepairMgaSecondaryIndexDel
   }
 
   const auto loaded_inventory =
-      LoadLocalTransactionInventoryFromDatabase(context.database_path);
+      LoadLocalTransactionInventoryFromDatabase(context.database_path, context.served_route_owner);
   if (!loaded_inventory.ok()) {
     return refuse(loaded_inventory.diagnostic.diagnostic_code.empty()
                       ? "secondary_index_delta_recovery_inventory_load_refused"
@@ -1659,7 +1659,7 @@ MgaSecondaryIndexGarbageCleanupResult CleanupMgaSecondaryIndexGarbageForIndex(
   }
 
   const auto loaded_inventory =
-      LoadLocalTransactionInventoryFromDatabase(context.database_path);
+      LoadLocalTransactionInventoryFromDatabase(context.database_path, context.served_route_owner);
   if (!loaded_inventory.ok()) {
     return refuse(loaded_inventory.diagnostic.diagnostic_code.empty()
                       ? "INDEX_GARBAGE_CLEANUP.NON_AUTHORITATIVE_REFUSAL"

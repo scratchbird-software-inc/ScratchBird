@@ -585,6 +585,10 @@ struct sb_engine_handle_s {
   std::atomic<std::uint64_t> next_session_id{1};
   std::shared_ptr<scratchbird::engine::internal_api::EngineDmlUpdateResourceGovernorV1>
       dml_update_resource_governor;
+  // SEARCH_KEY: SB_ROUTE_OWNER_SERVED_DEVICE (C9 step 7). Set only by the
+  // server bridge open, from the route owner in the same process; contexts this
+  // handle builds copy it. Empty for every sb_engine_open caller.
+  std::shared_ptr<scratchbird::storage::disk::RouteOwnershipLease> served_route_owner;
 };
 
 struct EnginePreparedStatementRecordV1 {
@@ -3250,6 +3254,7 @@ prepared_statement_registry_context(sb_engine_session_t session,
   scratchbird::engine::internal_api::EngineRequestContext context;
   if (session == nullptr || session->engine == nullptr) return context;
   context.database_path = session->engine->database_path;
+  context.served_route_owner = session->engine->served_route_owner;
   context.database_uuid = session->engine->database_uuid;
   context.principal_uuid =
       engine_uuid(session->effective_user_uuid);
@@ -3711,13 +3716,19 @@ struct DatabaseHeaderSnapshot {
   std::optional<std::error_code> source_exception;
 };
 
-DatabaseHeaderSnapshot database_header_snapshot(std::string_view database_path) try {
+DatabaseHeaderSnapshot database_header_snapshot(
+    std::string_view database_path,
+    const std::shared_ptr<scratchbird::storage::disk::RouteOwnershipLease>& served_owner = {}) try {
   DatabaseHeaderSnapshot snapshot;
   if (database_path.empty()) return snapshot;
   scratchbird::storage::disk::SerializedDatabaseHeader serialized{};
   namespace disk = scratchbird::storage::disk;
   disk::FileDevice device;
-  const auto opened = device.Open(std::string(database_path), disk::FileOpenMode::open_existing_read_only);
+  // A served owner reads its own open file; a refusal fails the open.
+  const auto opened = served_owner
+      ? device.OpenServed(served_owner, std::string(database_path),
+                          disk::FileOpenMode::open_existing_read_only)
+      : device.Open(std::string(database_path), disk::FileOpenMode::open_existing_read_only);
   if (!opened.ok()) { snapshot.source_failure = opened.diagnostic; return snapshot; }
   // Keep the opening-thread source/operation guard through identity and extent
   // observation. This is header admission, not retained node ownership.
@@ -3794,7 +3805,7 @@ scratchbird::engine::internal_api::EngineRequestContext make_metadata_inventory_
     internal.transaction_timestamp = internal.statement_timestamp;
     const auto loaded =
         scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(
-            internal.database_path);
+            internal.database_path, internal.served_route_owner);
     if (loaded.ok()) {
       const auto lookup = scratchbird::transaction::mga::LookupLocalTransaction(
           loaded.inventory,
@@ -3867,7 +3878,7 @@ revalidate_prepared_metadata_binding_current_version(
 
   const auto inventory =
       scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(
-          session->engine->database_path);
+          session->engine->database_path, session->engine->served_route_owner);
   if (!inventory.ok()) {
     *detail = "current_transaction_inventory_unavailable:" +
               inventory.diagnostic.diagnostic_code;
@@ -5077,9 +5088,11 @@ const char* sb_engine_status_name(sb_engine_status_t status) {
   return "UNKNOWN";
 }
 
-sb_engine_status_t sb_engine_open(const sb_engine_open_params_v1_t* params,
-                                  sb_engine_handle_t* out_engine,
-                                  sb_engine_result_t* out_result) try {
+static sb_engine_status_t open_engine_impl(
+    const sb_engine_open_params_v1_t* params,
+    sb_engine_handle_t* out_engine,
+    sb_engine_result_t* out_result,
+    const std::shared_ptr<scratchbird::storage::disk::RouteOwnershipLease>& served_owner) try {
   clear_result(out_result);
   if (out_engine == nullptr) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 1003, "ENGINE.ABI.OUTPUT_POINTER_INVALID",
@@ -5124,7 +5137,7 @@ sb_engine_status_t sb_engine_open(const sb_engine_open_params_v1_t* params,
     if (handle->database_path.find('\0') != std::string::npos)
       return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 1005,
                          "ENGINE.OPEN.PATH_INVALID", "engine.open.path_invalid", "database_path_contains_nul");
-    const auto snapshot = database_header_snapshot(handle->database_path);
+    const auto snapshot = database_header_snapshot(handle->database_path, served_owner);
     if (!snapshot.failure_detail.empty()) {
       namespace api = scratchbird::engine::internal_api;
       auto diagnostic = snapshot.source_failure
@@ -5165,9 +5178,11 @@ sb_engine_status_t sb_engine_open(const sb_engine_open_params_v1_t* params,
     }
     handle->database_uuid = snapshot.database_uuid;
     handle->database_page_size_bytes = snapshot.page_size_bytes;
+    handle->served_route_owner = served_owner;
     if (!handle->database_uuid.is_nil() && params->mode == SB_ENGINE_OPEN_NORMAL) {
       scratchbird::engine::internal_api::EngineRequestContext recovery_context;
       recovery_context.database_path = handle->database_path;
+      recovery_context.served_route_owner = handle->served_route_owner;
       recovery_context.database_uuid = handle->database_uuid;
       recovery_context.security_context_present = true;
       recovery_context.statement_metadata_snapshot_engine_owned = true;
@@ -5191,6 +5206,12 @@ sb_engine_status_t sb_engine_open(const sb_engine_open_params_v1_t* params,
 } catch (const std::length_error&) {
   if (out_engine) *out_engine = nullptr;
   return SB_ENGINE_STATUS_RESOURCE_EXHAUSTED;
+}
+
+sb_engine_status_t sb_engine_open(const sb_engine_open_params_v1_t* params,
+                                  sb_engine_handle_t* out_engine,
+                                  sb_engine_result_t* out_result) {
+  return open_engine_impl(params, out_engine, out_result, {});
 }
 
 sb_engine_status_t sb_engine_close(sb_engine_handle_t engine, sb_engine_result_t* out_result) {
@@ -6425,6 +6446,18 @@ sb_engine_status_t AdoptTypedResultPublicAbiV1(
 }  // namespace scratchbird::engine::internal_api
 
 namespace scratchbird::server_engine_bridge {
+
+// SEARCH_KEY: SB_ROUTE_OWNER_SERVED_DEVICE (C9 step 7). sb_engine_open for the
+// server's own threads: the header snapshot reads the route owner's open file,
+// and contexts the handle builds carry the owner. Not part of the C ABI.
+sb_engine_status_t OpenServedEngine(
+    const sb_engine_open_params_v1_t* params,
+    const std::shared_ptr<scratchbird::storage::disk::RouteOwnershipLease>& served_owner,
+    sb_engine_handle_t* out_engine,
+    sb_engine_result_t* out_result) {
+  return open_engine_impl(params, out_engine, out_result, served_owner);
+}
+
 
 namespace {
 
@@ -9583,7 +9616,7 @@ sb_engine_status_t BindStatementBulkImportAuthorityV1(
   }
   const auto transaction_inventory =
       scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(
-          engine_context.database_path);
+          engine_context.database_path, engine_context.served_route_owner);
   if (!transaction_inventory.ok()) {
     return refuse(SB_ENGINE_STATUS_INTERNAL_ERROR,
                   "ENGINE.STATEMENT_CONTEXT.INVENTORY_UNAVAILABLE",
@@ -35690,7 +35723,7 @@ sb_engine_status_t CreatePreparedMetadataBinding(
 
   const auto inventory =
       scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(
-          session->engine->database_path);
+          session->engine->database_path, session->engine->served_route_owner);
   if (!inventory.ok()) {
     return fail_result(
         SB_ENGINE_STATUS_INTERNAL_ERROR,

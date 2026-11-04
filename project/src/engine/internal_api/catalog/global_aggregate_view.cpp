@@ -185,7 +185,7 @@ EngineApiDiagnostic ValidateExactActiveTransaction(
   }
   const auto inventory =
       scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(
-          context.database_path);
+          context.database_path, context.served_route_owner);
   if (!inventory.ok()) {
     return MakeEngineApiDiagnostic(
         inventory.diagnostic.diagnostic_code.empty()

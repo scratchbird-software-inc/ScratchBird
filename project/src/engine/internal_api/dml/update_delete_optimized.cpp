@@ -7244,7 +7244,7 @@ EngineUpdateRowsResult ExecuteOptimizedUpdateRows(const EngineUpdateRowsRequest&
   const bool hot_update_shape_enabled = HotUpdateShapeEnabled(effective_request);
   HotUpdateIndexDisciplineCounters hot_update_counters;
   const auto hot_plus_inventory =
-      storage_db::LoadLocalTransactionInventoryFromDatabase(request.context.database_path);
+      storage_db::LoadLocalTransactionInventoryFromDatabase(request.context.database_path, request.context.served_route_owner);
   if (!hot_plus_inventory.ok()) {
     return MakeCrudDiagnosticResult<EngineUpdateRowsResult>(
         request.context,

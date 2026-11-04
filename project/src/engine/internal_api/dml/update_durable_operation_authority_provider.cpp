@@ -87,7 +87,7 @@ EngineApiDiagnostic ValidateContext(const EngineRequestContext& context,
                       "transaction_uuid_invalid");
   }
   const auto loaded =
-      LoadLocalTransactionInventoryFromDatabase(context.database_path);
+      LoadLocalTransactionInventoryFromDatabase(context.database_path, context.served_route_owner);
   if (!loaded.ok()) {
     return Diagnostic(
         kDmlUpdateDurableOperationDiagnosticStorage,

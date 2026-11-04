@@ -1665,6 +1665,50 @@ IoResult RenderBoundedIoResult(const BoundedIoResult& receipt, const std::string
 BoundedIoResult FileDevice::BoundedIoBatch::ReadAt(u64 offset, void* buffer, usize bytes) {
   return Run(BoundedIoOperation::read, offset, buffer, nullptr, bytes);
 }
+// SEARCH_KEY: SB_TEST_DEVICE_WRITE_FAULT (declared in disk_device.hpp).
+namespace {
+#if defined(SCRATCHBIRD_ENABLE_TEST_DEVICE_WRITE_FAULTS)
+std::atomic<bool> g_test_write_fault_armed{false};
+std::mutex g_test_write_fault_mutex;
+std::filesystem::path g_test_write_fault_path;
+#endif
+
+// Identity, not spelling: stat-based, so it opens nothing.
+bool TestWriteFaultArmedFor(const std::string& path) {
+#if defined(SCRATCHBIRD_ENABLE_TEST_DEVICE_WRITE_FAULTS)
+  if (!g_test_write_fault_armed.load(std::memory_order_acquire) || path.empty()) return false;
+  std::lock_guard<std::mutex> guard(g_test_write_fault_mutex);
+  std::error_code ec;
+  return std::filesystem::equivalent(path, g_test_write_fault_path, ec) && !ec;
+#else
+  (void)path;
+  return false;
+#endif
+}
+}  // namespace
+
+bool ArmTestDeviceWriteFault(const std::string& path) {
+#if defined(SCRATCHBIRD_ENABLE_TEST_DEVICE_WRITE_FAULTS)
+  std::error_code ec;
+  if (path.empty() || !std::filesystem::exists(path, ec) || ec) return false;
+  std::lock_guard<std::mutex> guard(g_test_write_fault_mutex);
+  g_test_write_fault_path = path;
+  g_test_write_fault_armed.store(true, std::memory_order_release);
+  return true;
+#else
+  (void)path;
+  return false;
+#endif
+}
+
+void DisarmTestDeviceWriteFault() {
+#if defined(SCRATCHBIRD_ENABLE_TEST_DEVICE_WRITE_FAULTS)
+  std::lock_guard<std::mutex> guard(g_test_write_fault_mutex);
+  g_test_write_fault_armed.store(false, std::memory_order_release);
+  g_test_write_fault_path.clear();
+#endif
+}
+
 BoundedIoResult FileDevice::BoundedIoBatch::WriteAt(u64 offset, const void* buffer, usize bytes) {
   return Run(BoundedIoOperation::write, offset, nullptr, buffer, bytes);
 }
@@ -1697,7 +1741,11 @@ BoundedIoResult FileDevice::BoundedIoBatch::Run(BoundedIoOperation operation,
   else if (writing && device_.read_only_) r.error = BoundedIoError::read_only;
   else if (reading || writing) {
     r.error = BoundedExtentError(offset, bytes);
-    if (r.ok() && bytes) {
+    if (r.ok() && bytes && writing && TestWriteFaultArmedFor(device_.path_)) {
+      r.native_attempted = true;
+      r.native_error = EIO;
+      r.error = BoundedIoError::native_failure;
+    } else if (r.ok() && bytes) {
       r.native_attempted = true;
       const bool success = reading
         ? NativeReadAt(handle, offset, read_buffer, bytes, &r.bytes_transferred, nullptr, &r.native_error)
@@ -1709,7 +1757,11 @@ BoundedIoResult FileDevice::BoundedIoBatch::Run(BoundedIoOperation operation,
     if (!NativeFileSize(handle, &r.size_bytes, nullptr, &r.native_error))
       r.error = r.native_error ? BoundedIoError::native_failure : BoundedIoError::invalid_size;
   } else if (device_.read_only_) r.read_only_noop = true;
-  else {
+  else if (TestWriteFaultArmedFor(device_.path_)) {
+    r.native_attempted = true;
+    r.native_error = EIO;
+    r.error = BoundedIoError::native_failure;
+  } else {
     r.native_attempted = true;
 #ifdef _WIN32
     r.synchronized = DurableSyncHandle(static_cast<HANDLE>(handle), nullptr, &r.native_error);
@@ -2544,6 +2596,10 @@ IoResult FileDevice::WriteAtImpl(u64 offset, const void* buffer, usize bytes,Wri
     result.status = DiskOkStatus();
     return result;
   }
+  if (TestWriteFaultArmedFor(path_)) {
+    return MakeIoError("SB-STORAGE-DISK-WRITE-FAILED", "storage.disk.write_failed",
+                       "test_device_write_fault:" + std::to_string(offset), 0);
+  }
 
   usize transferred = 0;
   std::string write_detail;
@@ -2726,6 +2782,10 @@ IoResult FileDevice::SyncImpl(WriteLatencyBatch* batch) {
     result.status = DiskOkStatus();
     CaptureWriteLatency(batch,true,ElapsedMicros(metric_start),"read_only_noop");
     return result;
+  }
+  if (TestWriteFaultArmedFor(path_)) {
+    return MakeIoError("SB-STORAGE-DISK-SYNC-FAILED", "storage.disk.sync_failed",
+                       "test_device_write_fault");
   }
 
   std::string sync_detail;

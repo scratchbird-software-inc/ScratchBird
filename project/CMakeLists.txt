@@ -388,6 +388,12 @@ option(SB_ENABLE_TEST_CRASH_INJECTION
 if(SB_ENABLE_TEST_CRASH_INJECTION)
   add_compile_definitions(SCRATCHBIRD_ENABLE_TEST_CRASH_INJECTION=1)
 endif()
+option(SB_ENABLE_TEST_DEVICE_WRITE_FAULTS
+  "Test-only: compile the armed device write/sync fault (SB_TEST_DEVICE_WRITE_FAULT) into sb_storage_disk"
+  ${SB_BUILD_TESTS})
+if(SB_ENABLE_TEST_DEVICE_WRITE_FAULTS AND NOT SB_BUILD_TESTS)
+  message(FATAL_ERROR "SB_ENABLE_TEST_DEVICE_WRITE_FAULTS requires SB_BUILD_TESTS")
+endif()
 option(SB_BUILD_QOW_CLOSURE_TESTS
        "Build the query-optimizer/window closure targets"
        OFF)

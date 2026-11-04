@@ -273,7 +273,8 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
       !config.allow_uncredentialed_fixture_database) {
     const auto bootstrap_security =
         scratchbird::storage::database::ReadDatabaseBootstrapSecurityCatalog(
-            snapshot.database_path);
+            snapshot.database_path,
+            database_ownership_lock ? database_ownership_lock->ServedStorageLease() : nullptr);
     constexpr scratchbird::core::platform::Uuid canonical_sysarch_role{{
         0x01,0x8f,0x7a,0x10,0x12,0x80,0x70,0x00,0x80,0,0,0,0,0,0x01,0x05}};
     const auto sysarch_role_uuid = bootstrap_security.state.sysarch_role_uuid.value;
@@ -342,6 +343,9 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
   namespace db = scratchbird::storage::database;
   db::DatabaseOpenConfig lifecycle_open_config;
   lifecycle_open_config.path = snapshot.database_path;
+  // C9 step 7: sbsrv verifies the file through the owner it just acquired.
+  if (database_ownership_lock)
+    lifecycle_open_config.served_owner = database_ownership_lock->ServedStorageLease();
   lifecycle_open_config.cluster_authority_available = false;
   lifecycle_open_config.decryption_available = false;
   lifecycle_open_config.read_only = OpenModeForConfig(config) != SB_ENGINE_OPEN_NORMAL;

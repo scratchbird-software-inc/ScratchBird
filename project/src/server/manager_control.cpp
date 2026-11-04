@@ -281,6 +281,7 @@ engine_api::EngineRequestContext EngineContextForManagement(
                                   : engine_api::EngineTrustMode::server_isolated;
   engine_context.request_id = IdentityBytes(frame.header.request_uuid);
   engine_context.database_path = session.database_path;
+  engine_context.served_route_owner = session.served_route_owner;
   engine_context.database_uuid = session.database_uuid;
   engine_context.principal_uuid = NativeUuid{session.effective_user_uuid};
   engine_context.session_uuid = NativeUuid{session.session_uuid};

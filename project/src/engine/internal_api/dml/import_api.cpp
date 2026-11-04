@@ -242,7 +242,7 @@ bool ActiveTransactionIdentity(const EngineRequestContext& context) {
       UuidKind::transaction, context.transaction_uuid);
   if (!transaction_uuid.ok()) return false;
   const auto loaded = scratchbird::storage::database::
-      LoadLocalTransactionInventoryFromDatabase(context.database_path);
+      LoadLocalTransactionInventoryFromDatabase(context.database_path, context.served_route_owner);
   if (!loaded.ok()) return false;
   const auto found = LookupLocalTransaction(
       loaded.inventory, MakeLocalTransactionId(context.local_transaction_id));

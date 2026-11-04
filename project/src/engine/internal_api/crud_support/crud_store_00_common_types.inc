@@ -273,7 +273,7 @@ EngineApiDiagnostic OverlayCrudTransactionAuthority(const EngineRequestContext& 
     return MakeInvalidRequestDiagnostic("crud.transaction_authority", "database_path_required");
   }
 
-  const auto loaded = LoadLocalTransactionInventoryFromDatabase(context.database_path);
+  const auto loaded = LoadLocalTransactionInventoryFromDatabase(context.database_path, context.served_route_owner);
   if (!loaded.ok()) {
     return DiagnosticFromTransactionAuthority(loaded.diagnostic,
                                               "SB-MGA-TXN-INV-LOAD-FAILED",

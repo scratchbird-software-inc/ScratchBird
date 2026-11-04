@@ -415,7 +415,7 @@ EngineInspectTransactionLineageResult EngineInspectTransactionLineage(
           "MGA_LINEAGE_INSPECT")) {
     return *denied;
   }
-  const auto loaded = LoadLocalTransactionInventoryFromDatabase(request.context.database_path);
+  const auto loaded = LoadLocalTransactionInventoryFromDatabase(request.context.database_path, request.context.served_route_owner);
   if (!loaded.ok()) {
     return TransactionInspectFailure<EngineInspectTransactionLineageResult>(
         request,
@@ -447,7 +447,7 @@ EngineClassifyTransactionRestoreResult EngineClassifyTransactionRestore(
           "MGA_RECOVERY_INSPECT")) {
     return *denied;
   }
-  const auto loaded = LoadLocalTransactionInventoryFromDatabase(request.context.database_path);
+  const auto loaded = LoadLocalTransactionInventoryFromDatabase(request.context.database_path, request.context.served_route_owner);
   if (!loaded.ok()) {
     return TransactionInspectFailure<EngineClassifyTransactionRestoreResult>(
         request,
@@ -483,7 +483,7 @@ EngineInspectTransactionForensicsResult EngineInspectTransactionForensics(
           "MGA_FORENSIC_INSPECT")) {
     return *denied;
   }
-  const auto loaded = LoadLocalTransactionInventoryFromDatabase(request.context.database_path);
+  const auto loaded = LoadLocalTransactionInventoryFromDatabase(request.context.database_path, request.context.served_route_owner);
   if (!loaded.ok()) {
     return TransactionInspectFailure<EngineInspectTransactionForensicsResult>(
         request,
@@ -538,7 +538,7 @@ EngineLocateTransactionResult EngineLocateTransaction(
           "MGA_TRANSACTION_INSPECT")) {
     return *denied;
   }
-  const auto loaded = LoadLocalTransactionInventoryFromDatabase(request.context.database_path);
+  const auto loaded = LoadLocalTransactionInventoryFromDatabase(request.context.database_path, request.context.served_route_owner);
   if (!loaded.ok()) {
     return TransactionInspectFailure<EngineLocateTransactionResult>(
         request,
@@ -573,7 +573,7 @@ EngineBeginAuditReadTransactionResult EngineBeginAuditReadTransaction(
         admission);
   }
 
-  const auto loaded = LoadLocalTransactionInventoryFromDatabase(request.context.database_path);
+  const auto loaded = LoadLocalTransactionInventoryFromDatabase(request.context.database_path, request.context.served_route_owner);
   if (!loaded.ok()) {
     return TransactionInspectFailure<EngineBeginAuditReadTransactionResult>(
         request,

@@ -166,7 +166,7 @@ ApiBehaviorStoreResult LoadApiBehaviorState(const EngineRequestContext& context)
   const auto path_status = ValidateApiBehaviorContext(context, "api_behavior.load_state", false, true);
   if (path_status.error) { result.diagnostic = path_status; return result; }
   const auto transaction_inventory =
-      scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(context.database_path);
+      scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(context.database_path, context.served_route_owner);
   if (!transaction_inventory.ok()) {
     result.diagnostic = MakeEngineApiDiagnosticFromNative(
         transaction_inventory.diagnostic, "CATALOG.INVALID_INPUT",

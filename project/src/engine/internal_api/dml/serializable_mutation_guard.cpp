@@ -404,7 +404,7 @@ SerializableDmlAdmissionResult LoadInventory(
                   "database_path_required_for_durable_inventory");
   }
   *loaded = storage_db::LoadLocalTransactionInventoryFromDatabase(
-      context.database_path);
+      context.database_path, context.served_route_owner);
   if (!loaded->ok()) {
     return Refuse(std::move(operation_id),
                   loaded->diagnostic.diagnostic_code.empty()

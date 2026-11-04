@@ -1737,7 +1737,7 @@ bool ApplyDmlUpdateBinarySavepointRecords(
     }
     return false;
   }
-  const auto inventory = LoadLocalTransactionInventoryFromDatabase(context.database_path);
+  const auto inventory = LoadLocalTransactionInventoryFromDatabase(context.database_path, context.served_route_owner);
   if (!inventory.ok() || !inventory.inventory.publication_base ||
       inventory.inventory.publication_base->database_uuid != context.database_uuid) {
     if (refusal_detail) *refusal_detail = "update_savepoint_inventory_authority_invalid";
@@ -2152,7 +2152,7 @@ bool DmlUpdateDurableTransactionState(
     std::string* detail) {
   if (state == nullptr) return false;
   const auto inventory =
-      LoadLocalTransactionInventoryFromDatabase(context.database_path);
+      LoadLocalTransactionInventoryFromDatabase(context.database_path, context.served_route_owner);
   if (!inventory.ok()) {
     if (detail != nullptr) *detail = "transaction_inventory_load_failed";
     return false;

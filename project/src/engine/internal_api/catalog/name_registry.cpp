@@ -619,7 +619,7 @@ NameRegistryLoadResult LoadNameRegistryState(const EngineRequestContext& context
         BuildCrudCompatibilityStateFromMga(mga_relations.state), observer_tx);
   }
   const auto transaction_inventory =
-      scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(context.database_path);
+      scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(context.database_path, context.served_route_owner);
 
   std::set<NameEntryKey> added_entries;
   std::set<EngineUuid> suppress_legacy_objects;

@@ -672,7 +672,8 @@ std::string ResolveCommittedAgentMetricDependencies(
     const scratchbird::core::agents::AgentTypeDescriptor& descriptor,
     const scratchbird::core::agents::AgentRuntimeContext& context) {
   const auto catalog = scratchbird::storage::database::ReadDatabaseBootstrapMetricCatalog(
-      request_context.database_path, request_context.database_uuid);
+      request_context.database_path, request_context.database_uuid,
+      request_context.served_route_owner);
   if (!catalog.ok())
     return "SB_AGENT_METRICS.CATALOG_UNAVAILABLE:" + catalog.diagnostic.diagnostic_code;
   const auto find = [&](const std::string& family)

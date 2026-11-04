@@ -6573,8 +6573,13 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
               # statement; agent threads 0:47,2433;1:39,2176;4:39,2181. Step 6
               # (agent sessions carry the owner; inventory persist and the commit
               # barrier use the served device), measured 2026-11-03 below; agent
-              # threads 0:3,2433;1:0,2176;4:0,2181.
-              --expect "0:24,238;1:42,533;4:42,557"
+              # threads 0:3,2433;1:0,2176;4:0,2181. Step 6 non-agent was
+              # 0:24,238;1:42,533;4:42,557. Step 7 (sessions carry the owner;
+              # served engine open, startup verify, bootstrap/metric reads),
+              # measured 2026-11-03 below: the 2 left are the owner's own
+              # acquisition of the file. Agent threads now open it 0 times.
+              --expect "0:2,238;1:2,533;4:2,557"
+              --expect-agent-file-opens 0
     )
     set_tests_properties(c9_live_server_path_open_instrument PROPERTIES
       ENVIRONMENT "PYTHONPATH=${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker"

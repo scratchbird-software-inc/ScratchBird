@@ -15,6 +15,7 @@
 #include "wire/parser_server_ipc/builtin_function_identity_projection.hpp"
 
 #include <cstdint>
+#include <memory>
 #include <array>
 #include <cstddef>
 #include <string>
@@ -91,6 +92,15 @@ struct StatementParameterCoordinationViewV1 {
   scratchbird::engine::internal_api::EngineUuid dynamic_package_uuid;
   std::uint64_t dynamic_generation = 0;
 };
+
+// SEARCH_KEY: SB_ROUTE_OWNER_SERVED_DEVICE (C9 step 7). sb_engine_open whose
+// header read and handle-built contexts go through the route owner's open file.
+// An empty owner behaves exactly as sb_engine_open.
+sb_engine_status_t OpenServedEngine(
+    const sb_engine_open_params_v1_t* params,
+    const std::shared_ptr<scratchbird::storage::disk::RouteOwnershipLease>& served_owner,
+    sb_engine_handle_t* out_engine,
+    sb_engine_result_t* out_result);
 
 sb_engine_status_t BeginStatementParameterExecutionCoordinationV1(
     const StatementParameterCoordinationBeginRequestV1* request,

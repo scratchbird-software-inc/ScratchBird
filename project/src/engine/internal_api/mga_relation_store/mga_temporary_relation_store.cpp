@@ -292,7 +292,7 @@ MgaTemporaryRecoveryClassificationResult ClassifyMgaTemporaryRecoveryState(
   }
   const auto loaded = scratchbird::storage::database::
       LoadLocalTransactionInventoryFromDatabase(
-      context.database_path);
+      context.database_path, context.served_route_owner);
   if (!loaded.ok()) {
     result.diagnostic = MakeEngineApiDiagnostic(
         loaded.diagnostic.diagnostic_code.empty()

@@ -75,7 +75,11 @@ std::vector<scratchbird::storage::page::CatalogPageRow> ReadBootstrapCatalogRows
   const auto status = std::filesystem::status(context.database_path, ec);
   if (ec || !std::filesystem::is_regular_file(status)) return fail("database_not_readable_regular_file");
   scratchbird::storage::disk::FileDevice device;
-  const auto opened = device.Open(context.database_path, scratchbird::storage::disk::FileOpenMode::open_existing_read_only);
+  // C9: the route owner's own threads read its open file (no path fallback).
+  const auto opened = context.served_route_owner
+      ? device.OpenServed(context.served_route_owner, context.database_path,
+                          scratchbird::storage::disk::FileOpenMode::open_existing_read_only)
+      : device.Open(context.database_path, scratchbird::storage::disk::FileOpenMode::open_existing_read_only);
   if (!opened.ok()) return fail("database_open_failed");
   scratchbird::storage::disk::SerializedDatabaseHeader serialized{};
   if (!device.ReadAt(0, serialized.data(), serialized.size()).ok()) return fail("database_header_read_failed");

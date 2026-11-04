@@ -1068,6 +1068,7 @@ engine_api::EngineRequestContext DurableProjectionContextForSession(
   engine_api::EngineRequestContext context;
   context.trust_mode = TrustModeForSession(session);
   context.database_path = session.database_path;
+  context.served_route_owner = session.served_route_owner;
   context.database_uuid = session.database_uuid;
   context.principal_uuid = engine_api::EngineUuid{session.effective_user_uuid};
   context.session_uuid = engine_api::EngineUuid{session.session_uuid};
@@ -1285,8 +1286,11 @@ engine_api::EngineRequestContext EngineContextForSessionProjection(
   auto context = EngineContextBase(engine_state, request);
   context.trust_mode = TrustModeForSession(session);
   context.database_path = session.database_path.empty() ? context.database_path : session.database_path;
-  // Resolved for the final path: the session's path replaces Base's.
+  // Resolved for the final path: the session's path replaces Base's. Callers
+  // without the hosted state (disconnect cleanup) use the session's own owner.
   context.served_route_owner = ServedRouteOwnerFor(engine_state, context.database_path);
+  if (!context.served_route_owner && context.database_path == session.database_path)
+    context.served_route_owner = session.served_route_owner;
   context.database_uuid =
       scratchbird::core::uuid::IsNilUuid(session.database_uuid) ? context.database_uuid : session.database_uuid;
   context.database_page_size_bytes = DatabasePageSizeBytesForSession(session, engine_state);
@@ -3181,7 +3185,8 @@ ServerPublicAbiSessionContext* EnsureServerPublicAbiSessionForContext(
     open_params.database_path_size =
         static_cast<std::uint64_t>(session.database_path.size());
     open_params.mode = SB_ENGINE_OPEN_VALIDATION_ONLY;
-    if (sb_engine_open(&open_params, &owned.engine, nullptr) !=
+    if (scratchbird::server_engine_bridge::OpenServedEngine(
+            &open_params, session.served_route_owner, &owned.engine, nullptr) !=
             SB_ENGINE_STATUS_OK ||
         owned.engine == nullptr) {
       (void)CloseServerPublicAbiSessionForSession(registry, session.session_uuid);
@@ -5993,6 +5998,7 @@ SessionOperationResult HandleAuthHandoff(ServerSessionRegistry* registry,
   session.requested_role_name = decoded->requested_role;
   session.provider_family = auth_request.provider_family;
   session.database_path = FirstOpenDatabasePath(engine_state);
+  session.served_route_owner = ServedRouteOwnerFor(engine_state, session.database_path);
   session.database_uuid = FirstOpenDatabaseUuid(engine_state);
   ApplyRequestedLanguageProfile(&session, decoded->requested_language);
   ApplyDatabaseHealthToSession(&session, *database);
@@ -6316,6 +6322,7 @@ SessionOperationResult HandleAttachDatabase(ServerSessionRegistry* registry,
   }
   session.attach_mode = attach_mode;
   session.database_path = database->database_path;
+  session.served_route_owner = ServedRouteOwnerFor(engine_state, session.database_path);
   session.database_uuid = database->database_uuid;
   ApplyDatabaseHealthToSession(&session, *database);
   // Attach needs one fresh, durable security snapshot. Reuse that same immutable
@@ -6513,6 +6520,7 @@ SessionOperationResult HandleEmbeddedSysarchAttach(ServerSessionRegistry* regist
   session.provider_family = "embedded_sysarch";
   session.application_name = application_name.empty() ? "sb_isql" : std::move(application_name);
   session.database_path = database->database_path;
+  session.served_route_owner = ServedRouteOwnerFor(engine_state, session.database_path);
   session.database_uuid = database->database_uuid;
   session.attach_mode = "read_write";
   session.embedded_in_process = true;

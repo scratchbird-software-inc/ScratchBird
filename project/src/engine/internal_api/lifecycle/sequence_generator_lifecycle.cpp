@@ -304,7 +304,7 @@ bool ValidateMutatingContext(const EngineRequestContext& context, EngineApiDiagn
     *diagnostic = SequenceDiagnostic(kSequenceDiagnosticMgaTransactionRequired, "local_transaction_id");
     return false;
   }
-  const auto inventory = scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(context.database_path);
+  const auto inventory = scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(context.database_path, context.served_route_owner);
   if (inventory.ok()) {
     for (const auto& entry : inventory.inventory.entries) {
       if (entry.identity.local_id.value == context.local_transaction_id &&
@@ -591,7 +591,7 @@ WindowPlan PlanWindow(const EngineSequenceGeneratorRecord& generator) {
 bool BuildOutcomeMap(const EngineRequestContext& context,
                      const std::vector<RawSequenceEvent>& events,
                      std::map<std::uint64_t, TransactionOutcome>* outcomes) {
-  const auto loaded = scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(context.database_path);
+  const auto loaded = scratchbird::storage::database::LoadLocalTransactionInventoryFromDatabase(context.database_path, context.served_route_owner);
   if (!loaded.ok()) return false;
   using scratchbird::transaction::mga::TransactionState;
   for (const auto& entry : loaded.inventory.entries) {

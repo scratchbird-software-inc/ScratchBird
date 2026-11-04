@@ -150,8 +150,11 @@ AgentDurableCatalogStoreResult EnsureCatalogTable(const EngineRequestContext& co
     // while this catalog transaction is active.
     namespace disk = scratchbird::storage::disk;
     disk::FileDevice device;
-    if (!device.Open(context.database_path, disk::FileOpenMode::open_existing_read_only).ok())
-      return ErrorResult("database_identity_read_failed");
+    const auto opened = context.served_route_owner
+        ? device.OpenServed(context.served_route_owner, context.database_path,
+                            disk::FileOpenMode::open_existing_read_only)
+        : device.Open(context.database_path, disk::FileOpenMode::open_existing_read_only);
+    if (!opened.ok()) return ErrorResult("database_identity_read_failed");
     disk::SerializedDatabaseHeader header_bytes{};
     if (!device.ReadAt(0, header_bytes.data(), header_bytes.size()).ok())
       return ErrorResult("database_header_read_failed");

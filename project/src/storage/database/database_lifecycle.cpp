@@ -9409,6 +9409,12 @@ DatabaseCatalogIdentityReadResult ReadDatabaseCatalogIdentity(
 
 DatabaseBootstrapMetricCatalogReadResult ReadDatabaseBootstrapMetricCatalog(
     const std::string& path, const scratchbird::core::platform::Uuid& expected_database_uuid) {
+  return ReadDatabaseBootstrapMetricCatalog(path, expected_database_uuid, {});
+}
+
+DatabaseBootstrapMetricCatalogReadResult ReadDatabaseBootstrapMetricCatalog(
+    const std::string& path, const scratchbird::core::platform::Uuid& expected_database_uuid,
+    const std::shared_ptr<disk::RouteOwnershipLease>& served_owner) {
   namespace catalog = scratchbird::core::catalog;
   const auto fail = [&](const char* detail) {
     const auto error = LifecycleError("CATALOG.INVALID_INPUT", "catalog.metric_catalog.invalid", path, detail);
@@ -9421,7 +9427,9 @@ DatabaseBootstrapMetricCatalogReadResult ReadDatabaseBootstrapMetricCatalog(
       !scratchbird::core::uuid::IsEngineIdentityUuid(expected_database_uuid))
     return fail("node_identity_required");
   FileDevice device;
-  const auto opened = device.Open(path, FileOpenMode::open_existing_read_only);
+  const auto opened = served_owner != nullptr
+      ? device.OpenServed(served_owner, path, FileOpenMode::open_existing_read_only)
+      : device.Open(path, FileOpenMode::open_existing_read_only);
   if (!opened.ok()) return propagate(opened);
   SerializedDatabaseHeader bytes{};
   const auto io = device.ReadAt(0, bytes.data(), bytes.size());
@@ -10331,7 +10339,11 @@ DatabaseLifecycleResult OpenDatabaseFile(const DatabaseOpenConfig& config) {
   }
 
   FileDevice device;
-  const auto open = device.Open(config.path, config.read_only ? FileOpenMode::open_existing_read_only : FileOpenMode::open_existing);
+  const auto open_mode =
+      config.read_only ? FileOpenMode::open_existing_read_only : FileOpenMode::open_existing;
+  const auto open = config.served_owner
+      ? device.OpenServed(config.served_owner, config.path, open_mode)
+      : device.Open(config.path, open_mode);
   if (!open.ok()) {
     return PropagateDiagnostic(open.status, open.diagnostic);
   }

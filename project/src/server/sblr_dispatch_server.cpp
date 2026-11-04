@@ -1575,6 +1575,7 @@ engine_api::EngineRequestContext ArchiveReplicationEngineContext(
                            : engine_api::EngineTrustMode::server_isolated;
   context.request_id = IdentityBytes(request_uuid);
   context.database_path = session.database_path;
+  context.served_route_owner = session.served_route_owner;
   context.database_uuid = session.database_uuid;
   context.principal_uuid.bytes = session.effective_user_uuid;
   context.session_uuid.bytes = session.session_uuid;
@@ -4771,6 +4772,9 @@ engine_api::EngineRequestContext ReplacementTransactionContext(
                            : engine_api::EngineTrustMode::server_isolated;
   context.request_id = IdentityBytes(request_uuid);
   context.database_path = session.database_path.empty() ? database.database_path : session.database_path;
+  // The session's owner holds only the session's own database path.
+  if (context.database_path == session.database_path)
+    context.served_route_owner = session.served_route_owner;
   context.database_uuid =
       session.database_uuid.is_nil() ? database.database_uuid : session.database_uuid;
   context.database_page_size_bytes = database.page_size_bytes;

@@ -158,6 +158,10 @@ struct DatabaseOpenConfig {
   // Test-only cut point for the sealed database-local private-relation
   // locator migration. Production callers leave this empty.
   std::string private_relation_locator_migration_fault_injection_point;
+  // Register C9 step 7: when set, the open and verification read the route
+  // owner's open file instead of opening the path. A refusal fails the open.
+  // Last, so positional initializers of the fields above are unaffected.
+  std::shared_ptr<scratchbird::storage::disk::RouteOwnershipLease> served_owner;
 };
 
 enum class DatabaseLifecyclePhase : u16 {
@@ -518,6 +522,10 @@ struct DatabaseBootstrapMetricCatalogReadResult {
 // dependencies. This does not activate producers or authorize metric access.
 DatabaseBootstrapMetricCatalogReadResult ReadDatabaseBootstrapMetricCatalog(
     const std::string& path, const scratchbird::core::platform::Uuid& expected_database_uuid);
+// Register C9 step 7: the same read through the route owner's served device.
+DatabaseBootstrapMetricCatalogReadResult ReadDatabaseBootstrapMetricCatalog(
+    const std::string& path, const scratchbird::core::platform::Uuid& expected_database_uuid,
+    const std::shared_ptr<disk::RouteOwnershipLease>& served_owner);
 DatabaseLifecycleResult OpenDatabaseFile(const DatabaseOpenConfig& config);
 DatabaseLifecycleResult EnterDatabaseMaintenanceMode(const DatabaseLifecycleOperationConfig& config);
 DatabaseLifecycleResult ExitDatabaseMaintenanceMode(const DatabaseLifecycleOperationConfig& config);

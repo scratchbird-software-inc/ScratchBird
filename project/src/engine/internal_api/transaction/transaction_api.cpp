@@ -1243,7 +1243,7 @@ EngineBeginTransactionResult EngineBeginTransaction(const EngineBeginTransaction
 
   const auto inventory_guard =
       AcquireTransactionInventoryGuard(request.context.database_path);
-  const auto loaded = LoadLocalTransactionInventoryFromDatabase(request.context.database_path);
+  const auto loaded = LoadLocalTransactionInventoryFromDatabase(request.context.database_path, request.context.served_route_owner);
   if (!loaded.ok()) {
     return MakeTxnError<EngineBeginTransactionResult>(
         request.context,
@@ -1422,7 +1422,7 @@ EnginePublishStatementSnapshotResult EnginePublishStatementSnapshot(
   const auto inventory_guard =
       AcquireTransactionInventoryGuard(request.context.database_path);
   const auto loaded = LoadLocalTransactionInventoryFromDatabase(
-      request.context.database_path);
+      request.context.database_path, request.context.served_route_owner);
   if (!loaded.ok()) {
     return MakeTxnError<EnginePublishStatementSnapshotResult>(
         request.context,
@@ -1579,7 +1579,7 @@ EngineResolveStatementSnapshotResult EngineResolveStatementSnapshot(
       // statement is stale. The slow reload occurs only on that generation
       // change; the normal execution fence remains metadata-only.
       loaded = LoadLocalTransactionInventoryFromDatabase(
-          request.context.database_path);
+          request.context.database_path, request.context.served_route_owner);
       if (!loaded.ok()) {
         return MakeTxnError<EngineResolveStatementSnapshotResult>(
             request.context,
@@ -1593,7 +1593,7 @@ EngineResolveStatementSnapshotResult EngineResolveStatementSnapshot(
     }
   } else {
     loaded = LoadLocalTransactionInventoryFromDatabase(
-        request.context.database_path);
+        request.context.database_path, request.context.served_route_owner);
     if (!loaded.ok()) {
       return MakeTxnError<EngineResolveStatementSnapshotResult>(
           request.context,
@@ -1682,7 +1682,7 @@ EngineCommitTransactionResult EngineCommitTransaction(const EngineCommitTransact
   const auto inventory_guard =
       AcquireTransactionInventoryGuard(request.context.database_path);
   mark_phase("acquire_inventory_guard");
-  const auto loaded = LoadLocalTransactionInventoryFromDatabase(request.context.database_path);
+  const auto loaded = LoadLocalTransactionInventoryFromDatabase(request.context.database_path, request.context.served_route_owner);
   mark_phase("load_transaction_inventory");
   if (!loaded.ok()) {
     auto result = MakeTxnError<EngineCommitTransactionResult>(
@@ -2015,7 +2015,7 @@ EngineAutocommitBoundaryResult EngineAutocommitBoundary(
   const auto inventory_guard =
       AcquireTransactionInventoryGuard(request.context.database_path);
   mark_phase("acquire_inventory_guard");
-  const auto loaded = LoadLocalTransactionInventoryFromDatabase(request.context.database_path);
+  const auto loaded = LoadLocalTransactionInventoryFromDatabase(request.context.database_path, request.context.served_route_owner);
   mark_phase("load_transaction_inventory");
   if (!loaded.ok()) {
     trace_phases["total"] = TransactionApiElapsedMicros(trace_start);
@@ -2383,7 +2383,7 @@ EngineRollbackTransactionResult EngineRollbackTransaction(const EngineRollbackTr
   }
   const auto inventory_guard =
       AcquireTransactionInventoryGuard(request.context.database_path);
-  const auto loaded = LoadLocalTransactionInventoryFromDatabase(request.context.database_path);
+  const auto loaded = LoadLocalTransactionInventoryFromDatabase(request.context.database_path, request.context.served_route_owner);
   if (!loaded.ok()) {
     auto result = MakeTxnError<EngineRollbackTransactionResult>(
         request.context,
@@ -2734,7 +2734,7 @@ EnginePrepareTransactionResult EnginePrepareTransaction(const EnginePrepareTrans
   }
   const auto inventory_guard =
       AcquireTransactionInventoryGuard(request.context.database_path);
-  const auto loaded = LoadLocalTransactionInventoryFromDatabase(request.context.database_path);
+  const auto loaded = LoadLocalTransactionInventoryFromDatabase(request.context.database_path, request.context.served_route_owner);
   if (!loaded.ok()) {
     return MakeTxnError<EnginePrepareTransactionResult>(request.context, operation_id,
         DiagnosticFromMGA(loaded.diagnostic, "SB-MGA-TXN-INV-LOAD-FAILED", "mga.transaction_inventory.load_failed"));
@@ -2834,7 +2834,7 @@ EngineExecuteTransactionBlockResult EngineExecuteTransactionBlock(
         operation_id,
         MakeInvalidRequestDiagnostic(operation_id, "local_transaction_id_required"));
   }
-  const auto loaded = LoadLocalTransactionInventoryFromDatabase(request.context.database_path);
+  const auto loaded = LoadLocalTransactionInventoryFromDatabase(request.context.database_path, request.context.served_route_owner);
   if (!loaded.ok()) {
     return MakeTxnError<EngineExecuteTransactionBlockResult>(
         request.context,
