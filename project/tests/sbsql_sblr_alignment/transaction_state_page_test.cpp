@@ -761,6 +761,26 @@ void TestRestart() {
   }
 }
 
+// A stored OAT that is too high (e.g. raised past a number whose slot was
+// never written) must not hide that slot: the scan starts at min(OIT, OAT).
+void TestRestartScanStart() {
+  auto c = Counters(20);
+  c.horizons.oldest_interesting = 3;  // OIT 3, OAT 20 (= Next)
+  auto first = Format(1, 0, c);
+  page::TipStateWord committed{TipStateCode::committed, page::kTipFlagHasDetailRecord};
+  for (u32 n : {1u, 2u, 3u, 4u}) Check(page::SetTransactionStateWord(first, n, committed).ok(), "fixture");
+  // 5 unused below Next; 6 active.
+  Check(page::SetTransactionStateWord(first, 6, {TipStateCode::active, page::kTipFlagHasDetailRecord}).ok(), "fixture");
+  bool built = true;
+  for (u32 n = 7; n < 20; ++n) built = built && page::SetTransactionStateWord(first, n, committed).ok();
+  Check(built, "fixture words 7..19");
+  std::vector<page::TipChainPage> chain{{1, first}};
+  const auto plan = page::PlanTransactionStateRestart(chain);
+  Check(plan.ok() && plan.scanned_from == 3, "scan starts at OIT when OAT is higher");
+  Check(StateOf(first, 5) == TipStateCode::dead && StateOf(first, 6) == TipStateCode::dead,
+        "slots below a stale OAT are marked dead");
+}
+
 void TestRestartRefusals() {
   {
     RestartFixture f;
@@ -809,6 +829,7 @@ int main() {
     TestHeaderRecord();
     TestStateCodeMap();
     TestRestart();
+    TestRestartScanStart();
     TestRestartRefusals();
   } catch (const std::exception& e) {
     std::cerr << "FAIL: " << e.what() << " after " << checks << " checks\n";

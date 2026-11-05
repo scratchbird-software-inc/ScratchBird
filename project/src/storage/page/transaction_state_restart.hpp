@@ -19,7 +19,7 @@ namespace scratchbird::storage::page {
 // record versions are simply not visible and are later removed by sweep.
 //
 // This plans that write on in-memory page images. It scans slots from the
-// stored OAT up to Next and, in place:
+// lower of the stored OIT and OAT up to Next and, in place:
 //  - marks dead every slot whose code means "in progress and never finished":
 //    unused below Next (a crash between allocating the number and writing
 //    its slot), starting, active, read_only_active, rolling_back;
@@ -27,6 +27,8 @@ namespace scratchbird::storage::page {
 //  - leaves committing and recovering alone and reports them as unresolved:
 //    no current writer stores them, and deciding their outcome needs the
 //    transaction header, which this TIP-only pass does not read.
+// Writer rule this depends on: the counters written when BEGIN allocates
+// transaction n keep OIT <= n and OAT <= n.
 // It does not change the counters: like Firebird, the horizons are
 // recomputed when the next transaction starts. Each changed 512-byte unit is
 // reported once with its preimage; the units are independent of each other.

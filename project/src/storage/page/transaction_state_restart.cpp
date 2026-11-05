@@ -54,7 +54,11 @@ TipRestartPlan PlanTransactionStateRestart(std::span<const TipChainPage> chain) 
     }
   }
   const u64 next = counters.next_transaction;
-  const u64 from = std::max<u64>(1, counters.horizons.oldest_active);
+  // Scan from the lower of the stored OIT and OAT. Writer rule: the counters
+  // written when BEGIN allocates transaction n keep OIT <= n and OAT <= n, so
+  // n is never below the scan start while it can still be in progress.
+  const u64 from = std::max<u64>(
+      1, std::min(counters.horizons.oldest_interesting, counters.horizons.oldest_active));
   plan.next_transaction = next;
   plan.scanned_from = from;
   // Pages must cover every number below Next.
