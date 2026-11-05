@@ -2458,6 +2458,15 @@ add_test(NAME sbsql_sblr_alignment_native_generated_definition_creation
 set_tests_properties(sbsql_sblr_alignment_native_generated_definition_creation PROPERTIES
   LABELS "sbsql_sblr_alignment;catalog;binary_uuid;native_creation;not_runtime_acceptance" TIMEOUT 120)
 
+add_executable(sbsql_sblr_alignment_native_database_create native_database_create_test.cpp)
+target_compile_features(sbsql_sblr_alignment_native_database_create PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_native_database_create PRIVATE sb_storage_database)
+target_compile_definitions(sbsql_sblr_alignment_native_database_create PRIVATE
+  SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password")
+add_test(NAME sbsql_sblr_alignment_native_database_create COMMAND sbsql_sblr_alignment_native_database_create)
+set_tests_properties(sbsql_sblr_alignment_native_database_create PROPERTIES
+  LABELS "sbsql_sblr_alignment;catalog;binary_uuid;native_creation;not_runtime_acceptance" TIMEOUT 600)
+
 add_executable(sbsql_sblr_alignment_catalog_bootstrap_policy catalog_bootstrap_policy_test.cpp)
 target_compile_features(sbsql_sblr_alignment_catalog_bootstrap_policy PRIVATE cxx_std_23)
 target_link_libraries(sbsql_sblr_alignment_catalog_bootstrap_policy PRIVATE sb_core_catalog)
@@ -3831,6 +3840,13 @@ set_tests_properties(sbsql_sblr_alignment_native_local_service_enrollment PROPER
   LABELS "sbsql_sblr_alignment;native_storage;native_service_enrollment;protected_memory;selected_catalog_discovery;component_not_live_admission"
   # 900: the default pack's catalog grew from 64 to 306 definitions with the
   # agent task-group roles (2026-10-29); a full run measured 350-470 s.
+  TIMEOUT 900)
+# The same binary, only the stage that opens a file the production producer
+# (CreateNativeDatabaseOnOpenDevice) wrote, at every page-size profile.
+add_test(NAME sbsql_sblr_alignment_native_local_service_enrollment_producer
+  COMMAND sbsql_sblr_alignment_native_local_service_enrollment producer)
+set_tests_properties(sbsql_sblr_alignment_native_local_service_enrollment_producer PROPERTIES
+  LABELS "sbsql_sblr_alignment;native_storage;native_service_enrollment;native_database_create"
   TIMEOUT 900)
 add_executable(sbsql_sblr_alignment_native_runtime_authorization_projection
   native_runtime_authorization_projection_test.cpp)

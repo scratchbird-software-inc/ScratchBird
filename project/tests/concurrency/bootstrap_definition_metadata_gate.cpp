@@ -165,7 +165,6 @@ int main() {
     auto nil_schema = Good(); nil_schema.owning_schema_uuid = {};
     auto wrong_tx_kind = Good(); wrong_tx_kind.creator_transaction_uuid = {p::UuidKind::object, Id(0x56)};
     auto zero_gen = Good(); zero_gen.definition_version = 0;
-    auto zero_resource = Good(); zero_resource.resource_epoch = 0;
 
     const Case cases[] = {
       {"a nil object identity refuses", nil_object, E::object_identity_invalid},
@@ -191,8 +190,11 @@ int main() {
       {"a nil owning schema refuses", nil_schema, E::schema_identity_invalid},
       {"a creator transaction of the wrong kind refuses", wrong_tx_kind, E::transaction_identity_invalid},
       {"a zero definition version refuses", zero_gen, E::generation_invalid},
-      {"a zero resource epoch refuses, because the name entry must agree with it",
-       zero_resource, E::generation_invalid},
+      // Was "a zero resource epoch refuses, because the name entry must agree
+      // with it" until 2026-11-04 (SB_DRIFT_DEFINITION_RESOURCE_EPOCH): the
+      // entry agrees with its own metadata version, not the definition's, and
+      // zero is the no-resource-dependency value. The non-zero refusal moved to
+      // the unit's name_resource_epoch (section 4).
     };
     for (const auto& k : cases) {
       const auto out = db::BuildBootstrapDefinitionMetadata(k.in);
@@ -201,6 +203,12 @@ int main() {
       Check(db::BootstrapDefinitionMetadataDiagnosticCode(out.error)[0] != '\0',
             "a refusal carries a diagnostic code");
     }
+    auto no_resource = Good(); no_resource.resource_epoch = 0;
+    const auto independent = db::BuildBootstrapDefinitionMetadata(no_resource);
+    Check(independent.ok() && independent.metadata.resource_epoch == 0,
+          "a definition with no resource dependency builds with a zero resource epoch");
+    Check(db::BootstrapDefinitionMetadataInput{}.resource_epoch == 0,
+          "the default definition declares no resource dependency");
   }
 
   // 3. The named-creation unit. These assertions cover the structure the
@@ -293,6 +301,9 @@ int main() {
           "the entry records the creating transaction the metadata version names");
     Check(e.resource_epoch == em.resource_epoch,
           "the entry resource epoch is taken from its metadata version");
+    Check(em.resource_epoch == GoodUnit().name_resource_epoch && em.resource_epoch != 0 &&
+          d.resource_epoch == GoodUnit().definition.resource_epoch && vm.resource_epoch == d.resource_epoch,
+          "the entry carries the name key's resource epoch; the definition and vector keep the definition's");
     Check(e.catalog_generation_id == em.catalog_generation,
           "the entry generation is taken from its metadata version");
     Check(e.name_resolution_epoch != 0, "the entry carries a non-zero name resolution epoch");
@@ -331,6 +342,7 @@ int main() {
     auto nil_collision = GoodUnit(); nil_collision.name_collision_policy_uuid = {};
     auto nil_dialect = GoodUnit(); nil_dialect.dialect_profile_uuid = {};
     auto zero_resolution = GoodUnit(); zero_resolution.name_resolution_epoch = 0;
+    auto zero_name_resource = GoodUnit(); zero_name_resource.name_resource_epoch = 0;
 
     const Case cases[] = {
       {"an invalid definition refuses the whole unit", bad_definition, U::definition_invalid},
@@ -352,6 +364,8 @@ int main() {
       {"a nil name collision policy refuses", nil_collision, U::collision_policy_identity_invalid},
       {"a nil dialect profile refuses", nil_dialect, U::dialect_profile_identity_invalid},
       {"a zero name resolution epoch refuses", zero_resolution, U::name_resolution_epoch_invalid},
+      {"a zero name resource epoch refuses: the name entry schema requires the key's resource epoch",
+       zero_name_resource, U::name_resource_epoch_invalid},
     };
     for (const auto& k : cases) {
       const auto out = db::BuildBootstrapNamedCreationUnit(k.in);

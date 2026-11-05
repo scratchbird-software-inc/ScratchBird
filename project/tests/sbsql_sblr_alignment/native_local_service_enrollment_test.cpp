@@ -17,6 +17,7 @@
 #include "engine/internal_api/verification/native_startup_initial_control_allocation.hpp"
 #include "native_database_creation.hpp"
 #include "native_catalog_index_rows.hpp"
+#include "native_database_create.hpp"
 #include "native_construction_audit.hpp"
 #include "catalog_schema_creation.hpp"
 #include "admitted_datatype_cohort.hpp"
@@ -740,13 +741,16 @@ struct EnrolledCredentialCustodian {
   mem::MemoryTag tag;
   std::shared_ptr<server::StartupCredentialSource> source=std::make_shared<server::StartupCredentialSource>(Id(231),4);
   mem::ScopedProtectedBuffer derived;
-  EnrolledCredentialCustodian() {
-    const server::StartupCredentialTransportBinding binding{Id(1),security_fixture::Id(15000),
-        enrollment::SourceId(0x10),security_fixture::Id(15002),7,static_cast<std::uint32_t>(::geteuid())};
+  // Defaults are the enrollment fixture's identities; a database written by the
+  // production producer supplies its receipt's (SB_NATIVE_DATABASE_CREATE_PRODUCER).
+  explicit EnrolledCredentialCustodian(platform::Uuid database=Id(1),platform::Uuid principal=security_fixture::Id(15000),
+      platform::Uuid provider=enrollment::SourceId(0x10),platform::Uuid credential_reference=security_fixture::Id(15002)) {
+    const server::StartupCredentialTransportBinding binding{database,principal,
+        provider,credential_reference,7,static_cast<std::uint32_t>(::geteuid())};
     tag.category=mem::MemoryCategory::core_runtime;
     tag.purpose="native service credential custody with heap-backed immutable purpose metadata";
     tag.callsite="native enrollment lifetime qualification with retained heap-backed callsite metadata";
-    tag.binary_ownership[mem::MemoryBinaryScopeKind::database]=Id(1).bytes;
+    tag.binary_ownership[mem::MemoryBinaryScopeKind::database]=database.bytes;
     tag.binary_ownership[mem::MemoryBinaryScopeKind::owner]=binding.principal.bytes;
     tag.binary_ownership[mem::MemoryBinaryScopeKind::context]=Id(222).bytes;
     mem::ProtectedMemoryRequest request;request.bytes=server::kStartupCredentialHeaderBytes+password.size();request.tag=tag;
@@ -3552,12 +3556,128 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
   Check(provisioner.source->Revoke({Id(231),Id(236),7,{},{}}).ok(),"actual custodian can revoke after both host lifetimes drain");
 }
 }
+// SB_NATIVE_DATABASE_CREATE_PRODUCER (M1 step 2c), host acceptance stage 1:
+// a database written by the production producer, opened cold by the
+// production host. Its service authenticates, its management history,
+// control authority and verification-family history verify, and the engine
+// verifies its complete captured catalog, component by component. The calls
+// and limits are the variant-0 sequence of EnrolledNativeSource. Management
+// definition, policy resolution and the startup transaction are later stages,
+// not claimed here.
+void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& process) {
+  scratchbird::tests::OwnedTempDirectory artifacts;
+  const auto path=(artifacts.path()/"producer-native-node").string();
+  const u64 budget=db::NativeHostedSourceBackingBytes(sizes[profile]);
+  db::NativeDatabaseCreateRequest create;
+  create.policy_seed_pack_root=SB_DEFAULT_POLICY_PACK_ROOT;create.database_name="enrolled_native_node";
+  create.database_default_language="en";create.page_size_profile_uuid=Profile(profile);create.page_size_bytes=sizes[profile];
+  // As the variant-0 fixture provisions them, history-retaining 8 KiB included.
+  create.total_pages=sizes[profile]==8192?2048:512;create.creation_utc_millis=1789357072000ULL;create.engine_uuid=Id(4);
+  create.datatype_cohort={{platform::UuidKind::object,scratchbird::core::datatypes::kDatatypeCohortV11},11,11};
+  create.bootstrap_principal_name="BootstrapAdmin";create.bootstrap_credential_fingerprint=verifier;
+  create.service_principal_name="NodeService";create.service_credential_fingerprint=verifier;
+  create.maximum_retained_image_bytes=budget;
+  // Bound to the database being created: Id(1), as the fixture's.
+  scratchbird::core::uuid::StandaloneUuidV7Issuer issuer({Id(1),Id(10)},{{},0,1000});
+  disk::FileDevice created;
+  Check(created.Open(path,disk::FileOpenMode::create_new).ok(),"owned empty primary for the producer");
+  const auto made=db::CreateNativeDatabaseOnOpenDevice(created,create,issuer);
+  if(!made.ok())std::cerr<<"producer error="<<int(made.error)<<" policy="<<int(made.policy_error)<<" workspace="
+      <<int(made.workspace_error)<<" profile="<<profile<<'\n';
+  Check(made.ok()&&created.Close().ok(),"the production producer writes the database and its descriptor retires");
+  const auto& receipt=*made.receipt;
+  Check(receipt.database_uuid==Id(1)&&receipt.workspace.free_pages>0,"the producer leaves free pages for later publication");
+
+  EnrolledCredentialCustodian provisioner(receipt.database_uuid,receipt.service_principal_uuid,
+      receipt.service_provider_uuid,receipt.service_credential_reference_uuid);
+  const std::size_t credential_base_pages=db::NativeHostedCatalogBasePages(sizes[profile]);
+  constexpr auto bound=db::kNativeHostedCatalogRelationMaximumRows;
+  const db::NativeCatalogRelationMemoryLimits limits{Profile(profile),1,credential_base_pages,bound,bound,
+      db::NativeHostedCatalogNavigationLimits(sizes[profile])};
+  const runtime_security::NativeRuntimeAuthorizationLimits graph_limits{bound,128u,1000000u};
+  server::DatabaseOwnershipRequest ownership;ownership.database_path=path;ownership.storage_access=disk::RouteStorageAccess::read_write;
+  using Host=server::NativeHostedDatabaseRuntime;
+  std::vector<std::unique_ptr<disk::FileDevice>> secondary;
+  const server::NativeHostedRuntimeLimits host_limits{{64*1024,{budget,32*1024*1024}},limits,2*1024*1024,graph_limits};
+  auto host=Host::Open(process,ownership,host_limits,secondary);
+  if(!host.ok())std::cerr<<"producer host open error="<<int(host.error)<<'\n';
+  Check(host.ok()&&host.runtime->database_uuid()==receipt.database_uuid&&host.runtime->primary_filespace_uuid()==receipt.filespace_uuid,
+      "the production host opens the producer's database cold");
+  server::NativeLocalServiceStartupCredentialsRequest request;
+  request.credential.security.database_uuid=receipt.database_uuid;
+  request.credential.security.runtime_binding_uuid=receipt.service_runtime_binding_uuid;
+  request.credential.security.runtime_binding_generation=1;request.credential.security.maximum_retained_image_bytes=budget;
+  request.credential.security.catalog_selection=runtime_security::NativeRuntimeCatalogSelection::discover_selected;
+  request.source={Id(231),Id(235),7,server::StartupCredentialSource::Mutex::Clock::now()+std::chrono::seconds(10),{}};
+  request.checkpoint_limits={budget,32*1024*1024};
+  auto read=Host::ReadStartupCredentials(host.runtime,request,provisioner.source,provisioner.tag,provisioner.derived);
+  if(!read.ok())std::cerr<<"producer credentials error="<<int(read.error)<<" credential="<<int(read.credentials().error)
+      <<" configuration="<<int(read.configuration().error)<<" binding="<<int(read.configuration().failing_binding)
+      <<" expected="<<read.configuration().expected_generation<<" observed="<<read.configuration().observed_generation
+      <<" object="<<scratchbird::core::uuid::UuidToString(read.configuration().failing_object_uuid)
+      <<" agents="<<int(read.agents().error)<<" authorization="<<int(read.authorization().error)<<'\n';
+  Check(read.ok()&&read.credentials().ok(),"the producer's L5 service credential verifies through selected-root discovery");
+  Check(read.agents().ok()&&read.agents().definition_count==66&&read.agents().registration_count==32&&
+      read.agents().policy_count==34,"cold startup selects the producer's complete agent configuration");
+  const auto retained=Host::RetainStartupObservation(read);
+  if(retained!=server::NativeHostedRuntimeError::none)std::cerr<<"producer retain error="<<int(retained)
+      <<" policies="<<int(read.agent_policies().error)<<'\n';
+  Check(retained==server::NativeHostedRuntimeError::none,"the startup observation and agent policies are retained");
+  auto envelope=Host::ConstrainStartupMemory(read);
+  if(!envelope.ok())std::cerr<<"producer memory envelope error="<<int(envelope.error)<<" "<<envelope.diagnostic.diagnostic_code<<'\n';
+  Check(envelope.ok(),"the producer's memory configuration installs its database envelope");
+  const auto behavior=Host::InstallStartupAllocationBehavior(read);
+  Check(behavior.ok(),"the selected allocation behavior installs");
+  const auto authenticated=Host::AuthenticateStartupService(read,provisioner.derived);
+  if(!authenticated.ok())std::cerr<<"producer authentication error="<<int(authenticated.error)<<'\n';
+  Check(authenticated.ok()&&authenticated.observation.principal_uuid==receipt.service_principal_uuid,
+      "the L5 service authenticates as the producer's principal");
+  const db::NativeManagementHistoryMemoryLimits history_limits{budget,1024*1024};
+  const auto history=Host::ReadStartupHistory(read,history_limits);
+  Check(history==server::NativeHostedRuntimeError::none,"management history verifies");
+  const db::NativeManagementControlAuthorityMemoryLimits control_limits{budget,32*1024*1024};
+  const auto control=Host::ReadStartupControl(read,control_limits);
+  Check(control==server::NativeHostedRuntimeError::none,"control authority verifies");
+  const auto verification=Host::VerifyStartupVerificationHistory(read,1024*1024);
+  if(verification!=server::NativeHostedRuntimeError::none)std::cerr<<"producer verification history error="<<int(verification)<<'\n';
+  Check(verification==server::NativeHostedRuntimeError::none,"verification-family history verifies");
+  const auto policy_history=Host::VerifyStartupPolicyActivationHistory(read,1024*1024);
+  Check(policy_history==server::NativeHostedRuntimeError::none,"policy activation history verifies");
+  const db::NativeSelectedCheckpointMemoryLimits catalog_limits{budget,12*1024*1024};
+  const db::NativeCatalogRelationMemoryLimits catalog_scan_limits{Profile(profile),1,db::NativeCatalogScanBasePages(sizes[profile]),
+      db::kNativeCatalogScanRelationMaximumRows,db::kNativeCatalogScanRelationMaximumRows,
+      db::NativeCatalogScanNavigationLimits(sizes[profile])};
+  const auto counted=Host::ReadStartupCatalogs(read,catalog_limits,catalog_scan_limits);
+  if(counted!=server::NativeHostedRuntimeError::none)std::cerr<<"producer catalog scan error="<<int(counted)<<'\n';
+  Check(counted==server::NativeHostedRuntimeError::none,"the complete catalog scans within the shared tiers");
+  const db::NativeCatalogCaptureLimits capture_limits{4096,4*1024*1024,1,4,1024,128};
+  const auto captured=Host::ReadStartupCatalogs(read,catalog_limits,catalog_scan_limits,capture_limits);
+  if(captured!=server::NativeHostedRuntimeError::none)std::cerr<<"producer catalog capture error="<<int(captured)<<'\n';
+  Check(captured==server::NativeHostedRuntimeError::none,"the complete catalog is captured");
+  const auto metadata=Host::VerifyStartupCatalogMetadata(read);
+  const auto& m=read.catalog_metadata();
+  if(metadata!=server::NativeHostedRuntimeError::none)std::cerr<<"producer catalog metadata error="<<int(metadata)
+      <<" names="<<int(m.names.error)<<" indexes="<<int(m.indexes.error)<<" role="<<m.indexes.role
+      <<" namespaces="<<int(m.namespaces.error)<<" filespaces="<<int(m.filespaces.error)<<" audit="<<int(m.audit.error)
+      <<" security="<<int(m.security.error)<<" naming_profiles="<<int(m.naming_profiles.error)
+      <<" collisions="<<int(m.collisions.error)<<'\n';
+  Check(metadata==server::NativeHostedRuntimeError::none&&m.ok()&&m.names.ok()&&m.indexes.ok()&&m.indexes.indexed_relations==5&&
+      m.namespaces.ok()&&m.filespaces.ok()&&m.audit.ok()&&m.security.ok()&&m.naming_profiles.ok()&&m.collisions.ok(),
+      "the engine verifies every component of the producer's catalog: names, indexes, namespaces, filespaces, audit, "
+      "security references, naming profiles and collisions");
+  read.Reset();
+  Check(Host::Close(host.runtime).ok(),"the producer's database closes");
+}
+
 int main(int argc,char** argv) {
   server::ServerProcessCryptoOwner process;
   ParentOwnedArtifacts artifacts;int outcome=0;
-  const int death=argc==2?std::atoi(argv[1]):0;
+  // "producer": only the production-producer acceptance stage, run as its own
+  // ctest entry so it neither lengthens nor depends on the fixture cases.
+  const bool producer=argc==2&&std::string_view(argv[1])=="producer";
+  const int death=argc==2&&!producer?std::atoi(argv[1]):0;
   try {
-  if(!death)for(int mode=1;mode<=14;++mode){const auto child=::fork();Check(child>=0,"owned native host affinity fixture child");
+  if(!death&&!producer)for(int mode=1;mode<=14;++mode){const auto child=::fork();Check(child>=0,"owned native host affinity fixture child");
     if(!child){const auto option=std::to_string(mode);::execl(argv[0],argv[0],option.c_str(),nullptr);::_exit(72);}
     int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==73,
         "foreign thread host prerequisite access/move/reset refuses before governed custody");
@@ -3587,6 +3707,7 @@ int main(int argc,char** argv) {
     };
     Check(process.WithProviderScope([&]{
       if(death){run(0,true,process,0,0,death);return;}
+      if(producer){for(unsigned profile=0;profile<5;++profile)ProducerNativeSource(profile,process);return;}
       PackPolicyFamiliesMatchFixture();
       for(unsigned profile=0;profile<5;++profile)for(bool indexed:{false,true})run(profile,indexed,process);
       for(unsigned variant=1;variant<=10;++variant)run(0,true,process,variant);

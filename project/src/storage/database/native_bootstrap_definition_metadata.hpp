@@ -106,9 +106,24 @@ struct BootstrapDefinitionMetadataInput {
   core::platform::u64 catalog_generation = 1;
   core::platform::u64 security_epoch = 1;
   core::platform::u64 schema_epoch = 1;
-  core::platform::u64 resource_epoch = 1;
+  // The object's resource dependency epoch, zero when it depends on no
+  // charset/collation/timezone resource (base catalog common column rule; the
+  // metadata codec exempts only this counter from its non-zero rule). It is
+  // not the name entry's: that epoch is the unit's name_resource_epoch.
+  // SB_DRIFT_DEFINITION_RESOURCE_EPOCH (2026-11-04): this helper required it
+  // non-zero and copied it to the name entry, so every definition claimed a
+  // resource epoch newer than an initial catalog's (0), which hosted startup
+  // provenance refuses.
+  core::platform::u64 resource_epoch = 0;
   core::platform::u64 dependency_generation = 1;
   core::platform::u64 invalidation_generation = 1;
+  // SB_NATIVE_DATABASE_CREATE_PRODUCER: root placement, for the database
+  // object itself (root_parent_uuid nil) and a root schema directly under it
+  // (root_parent_uuid the database object). Such an object has no owning
+  // schema, so owning_schema_uuid must be nil; its name resolves within the
+  // database object. Appended last; off by default.
+  bool root_placement = false;
+  core::platform::Uuid root_parent_uuid{};
 };
 
 enum class BootstrapDefinitionMetadataError {
@@ -233,7 +248,11 @@ inline BootstrapDefinitionMetadataResult BuildBootstrapDefinitionMetadata(
     out.error = E::policy_identity_invalid;
     return out;
   }
-  if (!IsEngineIdentityUuid(input.owning_schema_uuid)) {
+  if (input.root_placement
+          ? (!input.owning_schema_uuid.is_nil() ||
+             (input.root_parent_uuid.is_nil() != (input.kind == c::CatalogRecordKind::database)) ||
+             (!input.root_parent_uuid.is_nil() && !IsEngineIdentityUuid(input.root_parent_uuid)))
+          : !IsEngineIdentityUuid(input.owning_schema_uuid)) {
     out.error = E::schema_identity_invalid;
     return out;
   }
@@ -242,12 +261,11 @@ inline BootstrapDefinitionMetadataResult BuildBootstrapDefinitionMetadata(
     out.error = E::transaction_identity_invalid;
     return out;
   }
-  // resource_epoch is load-bearing for the name half: the name entry's own
-  // resource_epoch must equal this one and must be non-zero, so a zero here
-  // produces a name row that cannot validate.
+  // resource_epoch may be zero (no resource dependency). The name entry's own
+  // resource epoch is checked against the entry's metadata version, not this
+  // one (catalog_name_envelope.cpp), and comes from name_resource_epoch.
   if (!input.definition_version || !input.catalog_generation ||
-      !input.security_epoch || !input.resource_epoch ||
-      !input.creator_local_transaction_id) {
+      !input.security_epoch || !input.creator_local_transaction_id) {
     out.error = E::generation_invalid;
     return out;
   }
@@ -258,7 +276,9 @@ inline BootstrapDefinitionMetadataResult BuildBootstrapDefinitionMetadata(
   m.record.header.row_uuid = {p::UuidKind::row, input.row_uuid};
   // Same value as the owning schema, under object kind. MatchesMetadata
   // requires both the kinds and the equality.
-  m.record.header.parent_uuid = {p::UuidKind::object, input.owning_schema_uuid};
+  m.record.header.parent_uuid = input.root_placement
+      ? (input.root_parent_uuid.is_nil() ? p::TypedUuid{} : p::TypedUuid{p::UuidKind::object, input.root_parent_uuid})
+      : p::TypedUuid{p::UuidKind::object, input.owning_schema_uuid};
   m.record.payload.clear();  // By contract: the assembler fills this.
   // Read by PreflightLocalNamedCreationRecord against the supplied name vector.
   m.name_vector_uuid = {p::UuidKind::object, input.name_vector_uuid};
@@ -281,7 +301,8 @@ inline BootstrapDefinitionMetadataResult BuildBootstrapDefinitionMetadata(
   m.owner_uuid = {p::UuidKind::principal, input.owner_principal_uuid};
   m.audit_uuid = {p::UuidKind::object, input.audit_object_uuid};
   m.security_policy_uuid = {p::UuidKind::object, input.security_policy_uuid};
-  m.owning_schema_uuid = {p::UuidKind::schema, input.owning_schema_uuid};
+  m.owning_schema_uuid = input.root_placement ? p::TypedUuid{}
+                                              : p::TypedUuid{p::UuidKind::schema, input.owning_schema_uuid};
   m.creator_transaction_uuid = input.creator_transaction_uuid;
 
   m.object_subtype = input.object_subtype;
@@ -349,6 +370,11 @@ struct BootstrapNamedCreationUnitInput {
   // Non-zero by schema. Distinct from resource_epoch, which the metadata
   // version owns and the name entry must agree with.
   core::platform::u64 name_resolution_epoch = 1;
+  // The charset/collation resource epoch the entry's lookup keys are generated
+  // under: non-zero by the name entry schema, and carried by the entry's own
+  // metadata version, which the entry must agree with. The definition and the
+  // name vector keep the definition's resource_epoch.
+  core::platform::u64 name_resource_epoch = 1;
 };
 
 enum class BootstrapNamedCreationUnitError {
@@ -371,6 +397,7 @@ enum class BootstrapNamedCreationUnitError {
   // entry this builder assembled is not the entry the verifier reads.
   lookup_key_verification_failed,
   name_resolution_epoch_invalid,
+  name_resource_epoch_invalid,
 };
 
 inline const char* BootstrapNamedCreationUnitDiagnosticCode(
@@ -390,6 +417,7 @@ inline const char* BootstrapNamedCreationUnitDiagnosticCode(
     case E::lookup_key_derivation_refused: return "CATALOG.NAMED_UNIT_LOOKUP_KEY_DERIVATION_REFUSED";
     case E::lookup_key_verification_failed: return "CATALOG.NAMED_UNIT_LOOKUP_KEY_VERIFICATION_FAILED";
     case E::name_resolution_epoch_invalid: return "CATALOG.NAMED_UNIT_NAME_RESOLUTION_EPOCH_INVALID";
+    case E::name_resource_epoch_invalid: return "CATALOG.NAMED_UNIT_NAME_RESOURCE_EPOCH_INVALID";
   }
   return "CATALOG.NAMED_UNIT_DEFINITION_INVALID";
 }
@@ -487,6 +515,10 @@ inline BootstrapNamedCreationUnitResult BuildBootstrapNamedCreationUnit(
     out.error = E::name_resolution_epoch_invalid;
     return out;
   }
+  if (!input.name_resource_epoch) {
+    out.error = E::name_resource_epoch_invalid;
+    return out;
+  }
 
   auto& unit = out.unit;
   unit.definition = built.metadata;
@@ -501,7 +533,8 @@ inline BootstrapNamedCreationUnitResult BuildBootstrapNamedCreationUnit(
 
   // Both name versions inherit the definition's authority scope, visibility,
   // lifecycle, status, generations, owner, audit, policy and owning schema.
-  // Only identity, kind, parentage and subtype differ.
+  // Only identity, kind, parentage and subtype differ, and the entry's resource
+  // epoch, which is the name key's (name_resource_epoch).
   unit.vector_metadata = unit.definition;
   unit.vector_metadata.record.header.kind = c::CatalogRecordKind::localized_name;
   unit.vector_metadata.record.header.object_uuid = name_vector;
@@ -515,12 +548,15 @@ inline BootstrapNamedCreationUnitResult BuildBootstrapNamedCreationUnit(
   unit.entry_metadata.record.header.row_uuid = {p::UuidKind::row, input.name_entry_row_uuid};
   unit.entry_metadata.record.header.parent_uuid = name_vector;
   unit.entry_metadata.object_subtype = "name_entry";
+  unit.entry_metadata.resource_epoch = input.name_resource_epoch;
 
   auto& v = unit.vector;
   v.name_vector_uuid = name_vector;
   v.object_uuid = object;
   v.object_class = input.object_class;
-  v.owning_schema_uuid = owning_schema;
+  // A root object has no owning schema: the optional is omitted, not a nil.
+  if (owning_schema.value.is_nil()) v.owning_schema_uuid.reset();
+  else v.owning_schema_uuid = owning_schema;
   v.default_language_tag = input.language_tag;
   v.default_name_entry_uuid = name_entry;
   v.name_collision_policy_uuid = {p::UuidKind::object, input.name_collision_policy_uuid};
@@ -536,8 +572,10 @@ inline BootstrapNamedCreationUnitResult BuildBootstrapNamedCreationUnit(
   e.object_uuid = object;
   e.object_class = input.object_class;
   // The schema the name resolves within, under the kind each field requires.
-  e.scope_uuid = schema_as_object;
-  e.parent_schema_uuid = owning_schema;
+  // The database object's own names resolve within itself.
+  e.scope_uuid = unit.definition.record.header.kind == c::CatalogRecordKind::database ? object : schema_as_object;
+  if (owning_schema.value.is_nil()) e.parent_schema_uuid.reset();
+  else e.parent_schema_uuid = owning_schema;
   e.language_tag = input.language_tag;
   e.name_class = c::CatalogNameClass::primary;
   e.dialect_profile_uuid = {p::UuidKind::object, input.dialect_profile_uuid};

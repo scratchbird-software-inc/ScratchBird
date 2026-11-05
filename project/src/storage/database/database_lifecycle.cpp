@@ -16,6 +16,14 @@
 #include "catalog_records.hpp"
 #include "catalog_transaction_policy.hpp"
 #include "native_bootstrap_definition_metadata.hpp"
+#include "native_database_create.hpp"
+#include "native_initial_policy_catalogs.hpp"
+#include "native_catalog_index_rows.hpp"
+#include "native_construction_audit.hpp"
+#include "native_creation_catalog_layout.hpp"
+#include "native_catalog_relation_lease_reader.hpp"
+#include "catalog_construction_intent.hpp"
+#include <deque>
 #include "catalog_bootstrap_policy.hpp"
 #include "catalog_memory_configuration.hpp"
 #include "catalog_runtime_authority_binding.hpp"
@@ -8088,6 +8096,30 @@ DatabaseLifecycleResult RecordStartupEvidence(const DatabaseLifecycleOperationCo
 // family's own are added. Only database scope is supported, the evidence
 // store is the primary filespace and the authorization schemas are
 // sys.security: anything else refuses rather than guessing a placement.
+// SB_DRIFT_NAME_CATALOG_TABLE_UNIVERSAL_UUID (owner direction 2026-11-04): "a
+// UUID is the identifier, if a name is not needed, then use the uuid as text as
+// a reference name, but only do that if the system needs a name for the
+// object". A principal, role or group is addressed by name, and its name is the
+// one its own record carries, by the same rule legacy create applies
+// (CreateObjectNameFor): principal_name; role_name else role_code; group_name
+// else group_code. Every other definition gets its UUID text, because the
+// native name verification requires a name on every definition.
+std::string NativeDefinitionReferenceName(const Uuid& identity,CatalogRecordKind kind,std::string_view payload) {
+  const auto attribute=[&](const char* key,const char* fallback)->std::optional<std::string> {
+    const auto security=scratchbird::core::catalog::DecodeCatalogSecurityRecord(kind,payload);
+    if(!security.ok())return std::nullopt;
+    auto value=security.record->Attribute(key);
+    if((!value||value->empty())&&fallback)value=security.record->Attribute(fallback);
+    if(!value||value->empty())return std::nullopt;
+    return std::string(*value);
+  };
+  std::optional<std::string> name;
+  if(kind==CatalogRecordKind::user_account)name=attribute("principal_name",nullptr);
+  if(kind==CatalogRecordKind::role_account)name=attribute("role_name","role_code");
+  if(kind==CatalogRecordKind::group_account)name=attribute("group_name","group_code");
+  return name?std::move(*name):scratchbird::core::uuid::UuidToString(identity);
+}
+
 struct NativePolicyFamilyDefinition {
   Uuid identity;
   CatalogRecordKind kind;
@@ -8675,25 +8707,37 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
       if(service&&seed.owner_principal_uuid!=bootstrap->principal_uuid)return fail(E::invalid_definition);
       // With the native policy families present, every generated name uses the
       // pack's own naming family: its collision policy, a dialect profile and
-      // that dialect's identifier profile, byte for byte.
+      // that dialect's identifier profile, byte for byte. A seed that supplies
+      // no identifier profile takes the family's own, decoded from the record
+      // this call built (its profile_name borrows that record's payload, which
+      // outlives the units).
+      const c::CatalogIdentifierResolutionProfile* identifier_profile=seed.identifier_profile;
+      std::optional<c::CatalogIdentifierResolutionProfile> family_identifier_profile;
       if(family_build) {
         const auto& ids=*policy_families;const auto& seeds=*pack.native_families;
         const auto dialect=std::find(ids.dialect_profiles.begin(),ids.dialect_profiles.end(),seed.dialect_profile_uuid);
         if(seed.name_collision_policy_uuid!=ids.collision_descriptors[0].policy_uuid||
-            dialect==ids.dialect_profiles.end()||!seed.identifier_profile)return fail(E::invalid_definition);
+            dialect==ids.dialect_profiles.end())return fail(E::invalid_definition);
         const auto& dialect_seed=seeds.dialect_profiles[static_cast<std::size_t>(dialect-ids.dialect_profiles.begin())];
         std::optional<Uuid> identifier;
         for(std::size_t i=0;i<seeds.identifier_profiles.size();++i)
           if(seeds.identifier_profiles[i].key==dialect_seed.identifier_profile)identifier=ids.identifier_profiles[i];
-        if(!identifier||seed.identifier_profile->profile_uuid!=*identifier)return fail(E::invalid_definition);
-        std::array<scratchbird::core::platform::byte,1024> profile_backing;
-        const auto encoded=c::EncodeCatalogIdentifierProfileInto(*seed.identifier_profile,profile_backing);
+        if(!identifier)return fail(E::invalid_definition);
         const auto& family=definitions.at(*identifier).payload;
+        if(!identifier_profile) {
+          auto decoded=c::DecodeCatalogIdentifierProfile(family);
+          if(!decoded.ok())return fail(E::invalid_definition);
+          family_identifier_profile=std::move(*decoded.record);identifier_profile=&*family_identifier_profile;
+        }
+        if(identifier_profile->profile_uuid!=*identifier)return fail(E::invalid_definition);
+        std::array<scratchbird::core::platform::byte,1024> profile_backing;
+        const auto encoded=c::EncodeCatalogIdentifierProfileInto(*identifier_profile,profile_backing);
         if(!encoded.ok()||encoded.bytes.size()!=family.size()||
             !std::equal(encoded.bytes.begin(),encoded.bytes.end(),family.begin(),
                 [](auto a,char b){return a==static_cast<scratchbird::core::platform::byte>(b);}))
           return fail(E::invalid_definition);
       }
+      if(!identifier_profile)return fail(E::invalid_names);
       units.reserve(definitions.size());generated.reserve(definitions.size());
       std::size_t issued=0;
       for(const auto& [identity,definition]:definitions) {
@@ -8724,13 +8768,15 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
         // the name vector's object_class is cross-checked against it below.
         input.object_class=std::string(c::CatalogRecordKindName(definition.kind));
         input.language_tag=std::string(request.database_default_language);
-        input.name_text=std::string(name->name_text);
+        // An empty name asks for the object's own reference name.
+        input.name_text=name->name_text.empty()?NativeDefinitionReferenceName(identity,definition.kind,definition.payload):
+            std::string(name->name_text);
         input.name_collision_policy_uuid=seed.name_collision_policy_uuid;
         input.dialect_profile_uuid=seed.dialect_profile_uuid;
         // The profile, not its identity: the unit derives both lookup lanes
         // from it with the engine's own key derivation and then hands the
         // finished entry back to the engine's verifier.
-        input.identifier_profile=seed.identifier_profile;
+        input.identifier_profile=identifier_profile;
         auto built=BuildBootstrapNamedCreationUnit(input);
         if(!built.ok()) {
           using U=BootstrapNamedCreationUnitError;
@@ -8906,6 +8952,380 @@ NativeInitialPolicyFamilyIdentitiesResult IssueNativeInitialPolicyFamilyIdentiti
   }catch(const std::bad_alloc&){out.error=NativeInitialPolicyError::resource_exhausted;out.identities.reset();}
    catch(...){out.error=NativeInitialPolicyError::invalid_request;out.identities.reset();}
   return out;
+}
+
+NativeInitialMembershipIdentitiesResult IssueNativeInitialMembershipIdentities(
+    std::string_view policy_seed_pack_root,
+    const std::function<std::optional<core::platform::Uuid>()>& issue) noexcept {
+  NativeInitialMembershipIdentitiesResult out;
+  try {
+    if(policy_seed_pack_root.empty()||!issue)return out;
+    const auto loaded=LoadSelectedPolicySeedPack(std::string(policy_seed_pack_root));
+    if(!loaded.ok()){out.error=NativeInitialPolicyError::source_invalid;out.source_diagnostic=loaded.diagnostic;return out;}
+    out.memberships.reserve(loaded.pack.memberships.size());
+    for(const auto& membership:loaded.pack.memberships) {
+      const auto id=issue();
+      if(!id||!IsEngineIdentityUuid(*id)){out.memberships.clear();return out;}
+      out.memberships.push_back({*id,membership.member_uuid,membership.parent_uuid});
+    }
+    out.error=NativeInitialPolicyError::none;
+  }catch(const std::bad_alloc&){out.error=NativeInitialPolicyError::resource_exhausted;out.memberships.clear();}
+   catch(...){out.error=NativeInitialPolicyError::invalid_request;out.memberships.clear();}
+  return out;
+}
+
+NativeInitialLocalServiceIdentityResult IssueNativeInitialLocalServiceIdentity(
+    std::string_view policy_seed_pack_root,std::string_view principal_name,std::string_view credential_fingerprint,
+    const std::function<std::optional<core::platform::Uuid>()>& issue) noexcept {
+  namespace c=scratchbird::core::catalog;
+  NativeInitialLocalServiceIdentityResult out;
+  try {
+    if(policy_seed_pack_root.empty()||!issue)return out;
+    const auto loaded=LoadSelectedPolicySeedPack(std::string(policy_seed_pack_root));
+    if(!loaded.ok()){out.error=NativeInitialPolicyError::source_invalid;out.source_diagnostic=loaded.diagnostic;return out;}
+    const auto& pack=loaded.pack;
+    // The same admission the assembler applies to a supplied service.
+    const auto provider=std::find_if(pack.providers.begin(),pack.providers.end(),[](const auto& p){
+      return p.family==c::BootstrapProviderFamily::local_password&&p.enabled_by_default&&!p.external_provider&&
+          p.authority==c::BootstrapProviderAuthority::durable_catalog&&
+          p.verifier_policy==c::BootstrapVerifierPolicy::local_password_verifier_required;});
+    const auto policy=std::find_if(pack.profiles.begin(),pack.profiles.end(),[](const auto& p){
+      return p.area=="default_security_posture"&&p.mode=="deny_by_default";});
+    if(provider==pack.providers.end()||policy==pack.profiles.end()){out.error=NativeInitialPolicyError::source_invalid;return out;}
+    std::array<Uuid,9> ids{};
+    for(auto& id:ids){const auto issued=issue();if(!issued||!IsEngineIdentityUuid(*issued))return out;id=*issued;}
+    out.service=NativeInitialLocalServiceIdentity{ids[0],ids[1],ids[2],provider->provider_uuid,policy->profile_uuid,
+        {ids[3],ids[4],ids[5],ids[6],ids[7]},principal_name,credential_fingerprint,ids[8]};
+    out.error=NativeInitialPolicyError::none;
+  }catch(const std::bad_alloc&){out.error=NativeInitialPolicyError::resource_exhausted;out.service.reset();}
+   catch(...){out.error=NativeInitialPolicyError::invalid_request;out.service.reset();}
+  return out;
+}
+
+// SEARCH_KEY: SB_NATIVE_DATABASE_CREATE_PRODUCER (native_database_create.hpp).
+NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& device,
+    const NativeDatabaseCreateRequest& request,core::uuid::StandaloneUuidV7Issuer& issuer) noexcept {
+  namespace c=scratchbird::core::catalog;namespace agent_catalog=scratchbird::core::catalog;
+  using E=NativeDatabaseCreateError;
+  NativeDatabaseCreateResult result;
+  const auto fail=[&](E error){result.error=error;result.receipt.reset();return result;};
+  try {
+    if(request.policy_seed_pack_root.empty()||request.database_name.empty()||request.database_default_language.empty()||
+        !request.page_size_bytes||!request.total_pages||!request.creation_utc_millis||
+        !IsEngineIdentityUuid(request.engine_uuid)||!request.maximum_retained_image_bytes)return fail(E::invalid_request);
+    // The L5 service credential is required (owner 2026-11-04), as is the
+    // credentialed bootstrap principal. The assembler re-checks both.
+    if(!IsSafeBootstrapPrincipalName(request.bootstrap_principal_name)||!IsSafeBootstrapPrincipalName(request.service_principal_name)||
+        request.bootstrap_credential_fingerprint.size()>256||!ParseBootstrapCredentialFingerprint(request.bootstrap_credential_fingerprint)||
+        request.service_credential_fingerprint.size()>256||!ParseBootstrapCredentialFingerprint(request.service_credential_fingerprint))
+      return fail(E::invalid_principal);
+
+    // Every identity below comes from the caller's issuer.
+    bool identities_ok=true;
+    const auto issue_kind=[&](UuidKind kind)->Uuid {
+      const auto id=issuer.Issue(kind);
+      if(!id.ok()||!id.value){identities_ok=false;return {};}
+      return id.value->value;
+    };
+    const std::function<std::optional<Uuid>()> issue=[&]()->std::optional<Uuid> {
+      const auto id=issue_kind(UuidKind::object);if(!identities_ok)return std::nullopt;return id;};
+    // The issuer is bound to the database being created: its binding is the
+    // database and policy-snapshot identity, which the construction intent
+    // requires to match (AcquireNativeConstructionIntent).
+    const Uuid database=issuer.binding().database_uuid;
+    if(!IsEngineIdentityUuid(database)||!IsEngineIdentityUuid(issuer.binding().policy_snapshot_uuid))
+      return fail(E::invalid_request);
+    const Uuid filespace=issue_kind(UuidKind::filespace);
+    NativeFilespaceInitializationRequest construction;
+    construction.bootstrap={database,filespace,request.page_size_profile_uuid,disk::kNativeBootstrapIntegrityProfile,{},
+        request.page_size_bytes,1,0,1,7};
+    construction.operation_uuid=issue_kind(UuidKind::object);construction.writer_uuid=issue_kind(UuidKind::object);
+    construction.policy_snapshot_uuid=issuer.binding().policy_snapshot_uuid;
+    construction.creator.transaction_uuid={UuidKind::transaction,issue_kind(UuidKind::transaction)};
+    construction.creator.local_id=transaction::mga::MakeLocalTransactionId(1);
+    construction.creator.scope=transaction::mga::TransactionScope::local_node;
+    construction.total_pages=request.total_pages;construction.creation_utc_millis=request.creation_utc_millis;
+    if(!identities_ok)return fail(E::identity_failure);
+    const auto tx=construction.creator.transaction_uuid;
+
+    // The construction intent is the audit object every catalog row cites.
+    const auto audit=AcquireNativeConstructionIntent(construction,request.engine_uuid,issuer);
+    if(!audit.ok())return fail(E::audit_failure);
+    const Uuid audit_object=audit.event->event_uuid;
+
+    // The system schema tree (bootstrap_schema_roots.hpp), as legacy create
+    // lays it down, with two owner corrections (2026-11-04):
+    //  - the MGA catalog schema is sys.catalog.mga (legacy writes sys.mga,
+    //    superseded by SB_SPEC_MGA_CATALOG_NAMESPACE_NORMALIZATION);
+    //  - the cluster schema and its canonical children (cluster.sys,
+    //    cluster.sys.security, cluster.sys.metrics, cluster.application,
+    //    cluster.user) exist in every database, standalone included, as local
+    //    objects; the cluster library brings the code that uses them
+    //    (SB_DRIFT_CLUSTER_SCHEMA_IN_EVERY_DATABASE). All are cluster-type.
+    // sys.information_schema is a synonym, not a schema.
+    using T=c::CatalogSchemaType;
+    struct SchemaPlan {std::string_view label;int parent;T type;};
+    // Labels repeat across scopes (sys.security, cluster.sys.security): the
+    // name index is scoped by the parent schema. schema_at finds the sys ones.
+    const std::array<SchemaPlan,28> tree{{
+        {"sys",-1,T::system},{"catalog",0,T::system},{"mga",1,T::system},{"metrics",0,T::system},
+        {"agents",0,T::system},{"security",0,T::system},{"configuration",0,T::system},{"management",0,T::system},
+        {"fn",0,T::system},{"udr",0,T::system},{"parser",0,T::system},{"storage",0,T::system},{"audit",0,T::system},
+        {"compatibility",0,T::system},{"information",0,T::system},{"catalog_readable",0,T::system},
+        {"diagnostics",0,T::system},{"cluster",-1,T::cluster},{"sys",17,T::cluster},{"security",18,T::cluster},
+        {"metrics",18,T::cluster},{"application",17,T::cluster},{"user",17,T::cluster},
+        {"users",-1,T::user_home},{"public",23,T::public_compat},
+        {"remote",-1,T::remote_native},{"emulated",-1,T::remote_emulated},{"app",-1,T::application}}};
+    std::array<Uuid,28> schema_objects{};
+    for(auto& id:schema_objects)id=issue_kind(UuidKind::object);
+    const auto schema_at=[&](std::string_view label){
+      for(std::size_t i=0;i<tree.size();++i)if(tree[i].label==label)return schema_objects[i];return Uuid{};};
+    const Uuid sys_catalog=schema_at("catalog"),sys_agents=schema_at("agents"),sys_security=schema_at("security"),
+        sys_configuration=schema_at("configuration"),sys_management=schema_at("management"),sys_audit=schema_at("audit");
+    const Uuid database_object=issue_kind(UuidKind::object),filespace_object=issue_kind(UuidKind::object);
+    const Uuid memory_configuration=issue_kind(UuidKind::object);
+    if(!identities_ok)return fail(E::identity_failure);
+
+    // The pack's security cohort and its policy families.
+    auto memberships=IssueNativeInitialMembershipIdentities(request.policy_seed_pack_root,issue);
+    auto service=IssueNativeInitialLocalServiceIdentity(request.policy_seed_pack_root,request.service_principal_name,
+        request.service_credential_fingerprint,issue);
+    auto agents=IssueNativeInitialAgentIdentities(request.policy_seed_pack_root,issue);
+    auto families=IssueNativeInitialPolicyFamilyIdentities(request.policy_seed_pack_root,issue);
+    for(const auto* error:{&memberships.error,&service.error,&agents.error,&families.error})
+      if(*error!=NativeInitialPolicyError::none){result.policy_error=*error;return fail(E::policy_assembly);}
+    if(!service.ok()||!families.ok())return fail(E::policy_assembly);
+    families.identities->primary_filespace_uuid=filespace;families.identities->security_schema_uuid=sys_security;
+    const NativeInitialBootstrapIdentity bootstrap{issue_kind(UuidKind::object),issue_kind(UuidKind::object),
+        request.bootstrap_principal_name,request.bootstrap_credential_fingerprint};
+    const auto& service_identity=*service.service;
+
+    // The default agent bootstrap declarations, and each agent type's link to
+    // its primary policy (SB_AGENT_PRINCIPAL_BINDING_BY_UUID, as legacy).
+    const auto declarations=scratchbird::core::agents::DefaultAgentBootstrapDeclarations();
+    std::vector<Uuid> declaration_ids(declarations.size());
+    for(auto& id:declaration_ids)id=issue_kind(UuidKind::object);
+    for(auto& agent:agents.agents)
+      for(std::size_t i=0;i<declarations.size();++i)
+        if(declarations[i].kind==agent_catalog::AgentBootstrapDefinitionKind::policy&&declarations[i].primary_policy_index==i&&
+            declarations[i].agent_type==agent.agent_type_id){agent.policy_uuid=declaration_ids[i];agent.link_uuid=issue_kind(UuidKind::object);break;}
+    if(!identities_ok)return fail(E::identity_failure);
+
+    NativeInitialPolicySecurityRequest policy;
+    policy.policy={request.policy_seed_pack_root,database,tx,memory_configuration,request.database_default_language,{},
+        {8192,64ull*1024*1024}};
+    policy.group_memberships=memberships.memberships;policy.bootstrap=bootstrap;policy.local_service=service_identity;
+    policy.agents=agents.agents;policy.policy_families=*families.identities;
+    const auto listed=EnumerateNativeInitialPolicySecurityDefinitions(policy);
+    if(!listed.ok()){result.policy_error=listed.error;result.source_diagnostic=listed.source_diagnostic;return fail(E::policy_assembly);}
+    // Placement: security records and providers under sys.security, as legacy
+    // create places them; management definitions under sys.management; the
+    // pack's configuration and policy objects under sys.configuration.
+    std::vector<NativeInitialDefinitionName> names;names.reserve(listed.definitions.size());
+    std::vector<Uuid> fresh;fresh.reserve(5*listed.definitions.size());
+    for(const auto& definition:listed.definitions) {
+      const bool security=c::IsCatalogSecurityRecordKind(definition.kind)||definition.object_subtype=="agent_runtime_authority"||
+          definition.object_subtype=="bootstrap_security_provider";
+      const auto schema=security?sys_security:definition.kind==c::CatalogRecordKind::management_operation?sys_management:sys_configuration;
+      names.push_back({definition.object_uuid,schema,{}});
+      for(unsigned n=0;n<5;++n)fresh.push_back(issue_kind(UuidKind::object));
+    }
+    if(!identities_ok)return fail(E::identity_failure);
+    NativeInitialGeneratedDefinitions generated;
+    generated.owner_principal_uuid=bootstrap.principal_uuid;generated.audit_object_uuid=audit_object;
+    generated.security_policy_uuid=service_identity.policy_uuid;
+    generated.name_collision_policy_uuid=families.identities->collision_descriptors.front().policy_uuid;
+    generated.dialect_profile_uuid=families.identities->dialect_profiles.front();
+    generated.fresh_identities=fresh;generated.names=names;
+    generated.trace_search_key="SB_NATIVE_DATABASE_CREATE_PRODUCER";generated.retention_class="catalog_history";
+    policy.policy.generated_definitions=generated;
+    auto catalogs=AssembleNativeInitialPolicySecurityCatalogs(policy);
+    if(!catalogs.ok()){result.policy_error=catalogs.source_error;result.name_error=catalogs.name_error;
+      result.source_diagnostic=catalogs.source_diagnostic;return fail(E::policy_assembly);}
+    auto& seed=catalogs.plan->catalogs;
+
+    // The pack's own identifier profile names everything else, too.
+    std::optional<c::CatalogIdentifierResolutionProfile> profile;
+    for(const auto& row:seed[4])
+      if(row.metadata.record.header.object_uuid.value==families.identities->identifier_profiles.front()) {
+        auto decoded=c::DecodeCatalogIdentifierProfile(row.metadata.record.payload);
+        if(decoded.ok())profile=std::move(*decoded.record);break;
+      }
+    if(!profile)return fail(E::policy_assembly);
+
+    // One named unit per object, built by the same builder the assembler uses.
+    std::deque<BootstrapNamedCreationUnit> units;
+    bool units_ok=true;
+    const auto unit=[&](const Uuid& object,CatalogRecordKind kind,std::string_view subtype,const Uuid& owning_schema,
+        std::optional<Uuid> root_parent,std::string name)->BootstrapNamedCreationUnit* {
+      BootstrapNamedCreationUnitInput input;
+      auto& d=input.definition;
+      d.object_uuid=object;d.row_uuid=issue_kind(UuidKind::row);
+      d.name_vector_uuid=issue_kind(UuidKind::object);d.default_name_entry_uuid=issue_kind(UuidKind::object);
+      input.name_vector_row_uuid=issue_kind(UuidKind::row);input.name_entry_row_uuid=issue_kind(UuidKind::row);
+      d.kind=kind;d.object_subtype=std::string(subtype);
+      d.trace_search_key="SB_NATIVE_DATABASE_CREATE_PRODUCER";d.retention_class="catalog_history";
+      d.owner_principal_uuid=bootstrap.principal_uuid;d.audit_object_uuid=audit_object;
+      d.security_policy_uuid=service_identity.policy_uuid;d.owning_schema_uuid=owning_schema;d.creator_transaction_uuid=tx;
+      if(root_parent){d.root_placement=true;d.root_parent_uuid=*root_parent;}
+      input.object_class=std::string(c::CatalogRecordKindName(kind));
+      input.language_tag=std::string(request.database_default_language);
+      input.name_text=std::move(name);
+      input.name_collision_policy_uuid=generated.name_collision_policy_uuid;input.dialect_profile_uuid=generated.dialect_profile_uuid;
+      input.identifier_profile=&*profile;
+      if(!identities_ok){units_ok=false;return nullptr;}
+      auto built=BuildBootstrapNamedCreationUnit(input);
+      if(!built.ok()){units_ok=false;return nullptr;}
+      units.push_back(std::move(built.unit));return &units.back();
+    };
+    const auto uuid_text=[](const Uuid& id){return scratchbird::core::uuid::UuidToString(id);};
+
+    // Database and primary filespace (filespace_0, owner 2026-10-30).
+    auto* database_unit=unit(database_object,CatalogRecordKind::database,"database",{},Uuid{},std::string(request.database_name));
+    auto* filespace_unit=unit(filespace_object,CatalogRecordKind::filespace,"filespace",{},database_object,"filespace_0");
+    if(!units_ok)return fail(E::database_assembly);
+    database_unit->Bind();filespace_unit->Bind();
+    NativeInitialDatabaseRequest database_request{&construction,request.datatype_cohort,request.database_default_language,
+        database_unit->Input(),{6,1024*1024}};
+    const auto database_records=AssembleNativeInitialDatabaseFilespaceRecords({database_request,filespace_unit->Input()});
+    if(!database_records.ok()){result.database_error=database_records.error;result.name_error=database_records.name_error;
+      return fail(E::database_assembly);}
+    for(const auto& row:database_records.records->definitions)seed[0].push_back(row);
+    for(const auto& row:database_records.records->names)seed[1].push_back(row);
+    const auto database_definition=std::find_if(database_records.records->definitions.begin(),database_records.records->definitions.end(),
+        [](const auto& row){return row.metadata.record.header.kind==CatalogRecordKind::database;});
+    if(database_definition==database_records.records->definitions.end())return fail(E::database_assembly);
+
+    // The schema tree.
+    std::array<c::CatalogSchemaDefinition,28> schema_definitions{};
+    std::array<BootstrapNamedCreationUnit*,28> schema_units{};
+    for(std::size_t i=0;i<tree.size();++i) {
+      const auto& node=tree[i];
+      const bool root=node.parent<0;
+      schema_units[i]=unit(schema_objects[i],CatalogRecordKind::schema,c::CatalogSchemaTypeName(node.type),
+          root?Uuid{}:schema_objects[node.parent],root?std::optional<Uuid>{database_object}:std::nullopt,std::string(node.label));
+      if(!units_ok)return fail(E::schema_assembly);
+      auto& s=schema_definitions[i];
+      s.schema_object_uuid={UuidKind::object,schema_objects[i]};
+      s.database_catalog_object_uuid={UuidKind::object,database_object};
+      if(!root)s.parent_schema_uuid={UuidKind::object,schema_objects[node.parent]};
+      s.schema_type=node.type;s.permissions_policy_uuid={UuidKind::object,service_identity.policy_uuid};
+      s.origin_transaction_uuid=tx;s.origin_local_transaction_id=1;
+    }
+    std::array<c::CatalogInitialSchemaInput,28> schema_inputs{};
+    for(std::size_t i=0;i<tree.size();++i){
+      auto& u=*schema_units[i];u.Bind();const auto in=u.Input();
+      schema_inputs[i]={&schema_definitions[i],in.definition,in.vector_metadata,in.vector,in.entries};
+    }
+    const auto schema_records=c::AssembleLocalInitialSchemaRecords(database,database_definition->metadata,tx,
+        request.database_default_language,schema_inputs,{3*28,1024*1024});
+    if(!schema_records.ok()){result.schema_error=schema_records.error;result.name_error=schema_records.name_error;
+      return fail(E::schema_assembly);}
+    for(const auto& row:schema_records.records->definitions)seed[0].push_back(row);
+    for(const auto& row:schema_records.records->names)seed[1].push_back(row);
+
+    // The agent bootstrap declarations under sys.agents, named by UUID text.
+    std::vector<c::CatalogNamedCreationInput> named;
+    {
+      std::vector<BootstrapNamedCreationUnit*> agent_units;agent_units.reserve(declarations.size());
+      const auto& verification=families.identities->verification_descriptors;
+      if(verification.size()<4)return fail(E::agent_assembly);
+      for(std::size_t i=0;i<declarations.size();++i) {
+        const auto& declaration=declarations[i];
+        agent_catalog::CatalogAgentBootstrapDefinition definition{declaration_ids[i],database,
+            declaration_ids.at(declaration.primary_policy_index),declaration.kind,declaration.agent_type,declaration.properties,tx,1,1};
+        // The coordinator's startup verification: the pack's repair,
+        // quarantine and salvage policies and its evidence policy, in that
+        // declared order (native_verification_policies.json), all three levels.
+        if(declaration.kind==agent_catalog::AgentBootstrapDefinitionKind::policy&&declaration.agent_type=="agent_coordinator")
+          definition.startup_verification=agent_catalog::CatalogAgentStartupVerificationSelection{
+              verification[0].policy_uuid,verification[1].policy_uuid,verification[2].policy_uuid,verification[3].policy_uuid,3};
+        const auto encoded=agent_catalog::EncodeCatalogAgentBootstrapDefinition(definition);
+        if(!encoded.ok())return fail(E::agent_assembly);
+        const bool is_policy=declaration.kind==agent_catalog::AgentBootstrapDefinitionKind::policy;
+        auto* u=unit(declaration_ids[i],is_policy?CatalogRecordKind::policy:CatalogRecordKind::config_profile,
+            is_policy?"agent_policy":"agent_registration",sys_agents,std::nullopt,uuid_text(declaration_ids[i]));
+        if(!units_ok)return fail(E::agent_assembly);
+        u->definition.record.payload.assign(encoded.bytes.begin(),encoded.bytes.end());
+        agent_units.push_back(u);
+      }
+      for(auto* u:agent_units){u->Bind();named.push_back(u->Input());}
+      auto agent_records=c::AssembleLocalNamedCreationRecords(database,tx,request.database_default_language,named,
+          {3*declarations.size(),8*1024*1024});
+      if(!agent_records.ok()){result.name_error=agent_records.error;return fail(E::agent_assembly);}
+      for(auto& row:agent_records.records->definitions)seed[4].push_back(std::move(row));
+      for(auto& row:agent_records.records->names)seed[1].push_back(std::move(row));
+    }
+
+    // The construction intent record (role 6, unnamed by its family's rule).
+    {
+      std::array<scratchbird::core::platform::byte,c::kCatalogConstructionIntentMaxBytes> bytes;
+      const auto encoded=c::EncodeCatalogConstructionIntentInto(*audit.event,bytes);
+      if(!encoded.ok())return fail(E::audit_failure);
+      c::CatalogMetadataVersion m=database_definition->metadata;
+      m.record.header.kind=CatalogRecordKind::audit_evidence;
+      m.record.header.object_uuid={UuidKind::object,audit_object};m.record.header.row_uuid=audit.row_uuid;
+      m.record.header.parent_uuid={UuidKind::object,sys_audit};m.owning_schema_uuid={UuidKind::schema,sys_audit};
+      m.object_subtype="node_construction_intent";m.default_name_uuid={};m.name_vector_uuid={};
+      m.audit_uuid=m.record.header.object_uuid;
+      m.record.payload.assign(reinterpret_cast<const char*>(encoded.bytes.data()),encoded.bytes.size());
+      seed[5].push_back({std::move(m),{}});
+    }
+
+    // The catalog index profile and dependency-map rows (owner decision
+    // 2026-11-04, option a), for every non-empty relation, under sys.catalog.
+    NativeCatalogIndexRowsRequest index_request{database,tx,1,{}};
+    for(unsigned i=0;i<6;++i)if(!seed[i].empty()||i==4)
+      index_request.roles[i]=NativeCatalogIndexRoleIdentities{i==1?Uuid{}:issue_kind(UuidKind::object),
+          issue_kind(UuidKind::object),issue_kind(UuidKind::object)};
+    if(!identities_ok)return fail(E::identity_failure);
+    auto index_rows=BuildNativeCatalogIndexRows(index_request);
+    if(!index_rows.ok())return fail(E::index_failure);
+    {
+      named.clear();std::vector<BootstrapNamedCreationUnit*> index_units;
+      for(const auto& row:index_rows.rows) {
+        auto* u=unit(row.object_uuid,CatalogRecordKind::config_profile,row.object_subtype,sys_catalog,std::nullopt,uuid_text(row.object_uuid));
+        if(!units_ok)return fail(E::index_failure);
+        u->definition.record.payload=row.payload;index_units.push_back(u);
+      }
+      for(auto* u:index_units){u->Bind();named.push_back(u->Input());}
+      auto index_records=c::AssembleLocalNamedCreationRecords(database,tx,request.database_default_language,named,{64,1024*1024});
+      if(!index_records.ok()){result.name_error=index_records.error;return fail(E::index_failure);}
+      for(auto& row:index_records.records->definitions)seed[4].push_back(std::move(row));
+      for(auto& row:index_records.records->names)seed[1].push_back(std::move(row));
+    }
+    for(auto& relation:seed)for(auto& row:relation)row.metadata.audit_uuid={UuidKind::object,audit_object};
+
+    // Refuse before any write unless the hosted reader can open what this
+    // writes: the credential tier for the security and configuration
+    // relations, the complete-scan tier for all (SB_NATIVE_HOSTED_CATALOG_ROW_BOUND).
+    {
+      const auto plan=detail::PlanNativeCreationCatalogLayout(request.page_size_bytes,0,request.total_pages,
+          request.maximum_retained_image_bytes,seed,index_rows.indexes);
+      if(!plan.ok())return fail(plan.error==detail::NativeCreationLayoutError::resource_exhausted?E::resource_exhausted:E::capacity_exceeded);
+      for(unsigned i=0;i<6;++i) {
+        const auto pages=plan.layout->relations[i].starts.size();
+        const bool credential=i==3||i==4;
+        if(seed[i].size()>(credential?kNativeHostedCatalogRelationMaximumRows:kNativeCatalogScanRelationMaximumRows)||
+            pages>(credential?NativeHostedCatalogBasePages(request.page_size_bytes):NativeCatalogScanBasePages(request.page_size_bytes)))
+          return fail(E::capacity_exceeded);
+      }
+    }
+
+    const auto written=InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,construction,seed,index_rows.indexes,
+        request.maximum_retained_image_bytes,issuer);
+    if(!written.ok()){result.workspace_error=written.error;return fail(E::workspace_failure);}
+    NativeDatabaseCreateReceipt receipt;
+    receipt.database_uuid=database;receipt.filespace_uuid=filespace;receipt.database_object_uuid=database_object;
+    receipt.construction_transaction=construction.creator;
+    receipt.bootstrap_principal_uuid=bootstrap.principal_uuid;receipt.service_principal_uuid=service_identity.principal_uuid;
+    receipt.service_credential_reference_uuid=service_identity.credential_reference_uuid;
+    receipt.service_provider_uuid=service_identity.provider_uuid;receipt.service_policy_uuid=service_identity.policy_uuid;
+    receipt.service_runtime_binding_uuid=service_identity.runtime_binding_uuid;
+    receipt.workspace=*written.receipt;
+    result.receipt=std::move(receipt);result.error=E::none;return result;
+  }catch(const std::bad_alloc&){return fail(E::resource_exhausted);}
+   catch(const std::length_error&){return fail(E::resource_exhausted);}
 }
 
 DatabaseArtifactCompatibilityResult ClassifyDatabaseArtifactVersionCompatibility(

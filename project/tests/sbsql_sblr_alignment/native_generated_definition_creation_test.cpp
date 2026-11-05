@@ -424,13 +424,38 @@ int main() {
       refuse(value, {"a name keyed to an unenumerated object refuses", E::invalid_names});
     }
     {
+      // Owner direction 2026-11-04 (SB_DRIFT_NAME_CATALOG_TABLE_UNIVERSAL_UUID):
+      // an empty name text asks for the object's own reference name. A
+      // principal, role or group keeps the name its record carries; any other
+      // object's reference name is its UUID text. Until then this case
+      // expected invalid_names.
       auto value = request(names);
       auto other = names;
-      other.supplied.front().name_text = {};
+      const auto blank = [&](const p::Uuid& id) {
+        for (auto& supplied : other.supplied)
+          if (supplied.object_uuid == id) { supplied.name_text = {}; return true; }
+        return false;
+      };
+      const auto role = SourceId(0x100), group = SourceId(0x200), pack = SourceId(1);
+      Check(blank(role) && blank(group) && blank(kBootstrapPrincipal) && blank(pack),
+            "the blanked objects are enumerated");
       auto seed = *value.policy.generated_definitions;
       seed.names = other.supplied;
       value.policy.generated_definitions = seed;
-      refuse(value, {"an empty name text refuses", E::invalid_names});
+      const auto out = db::AssembleNativeInitialPolicySecurityRecords(value);
+      Check(out.ok(), "empty name texts take the objects' own reference names");
+      const auto text = [&](const p::Uuid& id) -> std::string {
+        for (const auto& row : out.records->names)
+          if (row.name)
+            if (const auto* entry = std::get_if<c::CatalogNameEntry>(&*row.name); entry && entry->object_uuid.value == id)
+              return entry->raw_name_text;
+        return {};
+      };
+      // Independent values: roles.json and groups.json, and the request's principal name.
+      Check(text(role) == "ROLE_APP_RUNTIME" && text(group) == "PUBLIC" && text(kBootstrapPrincipal) == "BootstrapAdmin",
+            "addressed objects keep the names their own records carry");
+      Check(text(pack) == scratchbird::core::uuid::UuidToString(pack),
+            "any other object's reference name is its UUID text");
     }
     {
       auto value = request(names);
@@ -703,6 +728,80 @@ int main() {
     Check(twins[0]->normalized_lookup_key == twins[1]->normalized_lookup_key,
           "their normalized lookup keys are identical, so nothing about the text "
           "disambiguated them");
+  }
+
+  // The path the production native create producer uses: the pack's native
+  // policy families supplied, no identifier profile (the family's own is
+  // used) and every name left to the assembler (owner 2026-11-04: an object
+  // addressed by name keeps its record's name, any other gets its UUID text).
+  {
+    unsigned issued = 0;
+    auto families = db::IssueNativeInitialPolicyFamilyIdentities(
+        SB_DEFAULT_POLICY_PACK_ROOT, [&]() -> std::optional<p::Uuid> { return Id(70000 + issued++); });
+    Check(families.ok(), "the production helper issues every policy family identity");
+    families.identities->primary_filespace_uuid = Id(70900);
+    families.identities->security_schema_uuid = Id(70901);
+    const auto with_families = [&] {
+      auto value = ServiceRequest(memberships);
+      value.policy_families = *families.identities;
+      return value;
+    };
+    const auto listed = db::EnumerateNativeInitialPolicySecurityDefinitions(with_families());
+    Check(listed.ok() && listed.definitions.size() == 731 + 31,
+          "the enumeration adds the 31 policy family objects");
+    auto derived = NameEveryObject(listed.definitions, 80000);
+    for (auto& supplied : derived.supplied) supplied.name_text = {};
+    const auto family_seed = [&](const Names& supplied) {
+      auto seed = Seed();
+      seed.identifier_profile = nullptr;
+      seed.dialect_profile_uuid = families.identities->dialect_profiles.front();
+      seed.name_collision_policy_uuid = families.identities->collision_descriptors.front().policy_uuid;
+      seed.names = supplied.supplied;
+      seed.fresh_identities = supplied.identities;
+      return seed;
+    };
+    auto value = with_families();
+    value.policy.generated_definitions = family_seed(derived);
+    const auto out = db::AssembleNativeInitialPolicySecurityRecords(value);
+    if (!out.ok())
+      std::fprintf(stderr, "family generated assembly error=%d name_error=%d\n",
+                   static_cast<int>(out.error), static_cast<int>(out.name_error));
+    Check(out.ok() && out.records->definitions.size() == 762 && out.records->names.size() == 2 * 762,
+          "the family path assembles every object with derived names");
+    std::size_t addressed = 0, by_uuid = 0;
+    for (const auto& row : out.records->names) {
+      if (!row.name) continue;
+      const auto* entry = std::get_if<c::CatalogNameEntry>(&*row.name);
+      if (!entry) continue;
+      Check(entry->identifier_profile_uuid.value == families.identities->identifier_profiles.front() &&
+                entry->dialect_profile_uuid.value == families.identities->dialect_profiles.front(),
+            "every name uses the pack's own naming family");
+      const auto as_text = scratchbird::core::uuid::UuidToString(entry->object_uuid.value);
+      const bool security = entry->object_class == "user_account" || entry->object_class == "role_account" ||
+                            entry->object_class == "group_account";
+      if (security) {
+        ++addressed;
+        Check(!entry->raw_name_text.empty() && entry->raw_name_text != as_text,
+              "a principal, role or group keeps its own name");
+      } else {
+        ++by_uuid;
+        Check(entry->raw_name_text == as_text, "any other object is named by its UUID text");
+      }
+    }
+    // 162 principals (bootstrap, service and 160 agents), 50 roles and 6 groups.
+    Check(addressed == 162 + 50 + 6 && addressed + by_uuid == 762, "every object is named exactly once");
+    auto foreign_dialect = with_families();
+    auto seed = family_seed(derived);
+    seed.dialect_profile_uuid = Id(70950);
+    foreign_dialect.policy.generated_definitions = seed;
+    Check(db::AssembleNativeInitialPolicySecurityRecords(foreign_dialect).error == E::invalid_definition,
+          "a dialect outside the pack's naming family refuses");
+    auto foreign_profile = with_families();
+    seed = family_seed(derived);
+    seed.identifier_profile = &IdentifierProfile();
+    foreign_profile.policy.generated_definitions = seed;
+    Check(db::AssembleNativeInitialPolicySecurityRecords(foreign_profile).error == E::invalid_definition,
+          "a supplied identifier profile that is not the family's refuses");
   }
 
   std::printf("PASS generated definition creation checks=%d\n", checks);

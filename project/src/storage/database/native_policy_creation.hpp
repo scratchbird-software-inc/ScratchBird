@@ -35,6 +35,13 @@ enum class NativeInitialPolicyError {
 // Label text is never derived from the source pack. Lookup keys are not asked
 // for: the engine's own name-to-UUID process derives both lanes from the
 // identifier resolution profile supplied below, and verifies them.
+//
+// SB_DRIFT_NAME_CATALOG_TABLE_UNIVERSAL_UUID (owner direction 2026-11-04)
+// qualifies the first sentence: an object addressed by name keeps the name its
+// own record carries (a principal's principal_name, a role's role_name or
+// role_code, a group's group_name or group_code, as legacy create names them),
+// and any other object's reference name is its UUID text. An empty name_text
+// asks the assembler for exactly that; a non-empty one is used as given.
 struct NativeInitialDefinitionName {
   core::platform::Uuid object_uuid;
   core::platform::Uuid owning_schema_uuid;
@@ -208,6 +215,31 @@ struct NativeInitialPolicyFamilyIdentitiesResult {
 // declares none. The two references stay nil for the caller to set.
 NativeInitialPolicyFamilyIdentitiesResult IssueNativeInitialPolicyFamilyIdentities(
     std::string_view policy_seed_pack_root,
+    const std::function<std::optional<core::platform::Uuid>()>& issue) noexcept;
+// SB_NATIVE_DATABASE_CREATE_PRODUCER. The pack's group-to-role memberships,
+// one issued membership identity per declared pair, in pack order.
+struct NativeInitialMembershipIdentitiesResult {
+  NativeInitialPolicyError error=NativeInitialPolicyError::invalid_request;
+  std::optional<core::platform::DiagnosticRecord> source_diagnostic;
+  std::vector<NativeInitialMembershipIdentity> memberships;
+  bool ok() const noexcept {return error==NativeInitialPolicyError::none;}
+};
+NativeInitialMembershipIdentitiesResult IssueNativeInitialMembershipIdentities(
+    std::string_view policy_seed_pack_root,
+    const std::function<std::optional<core::platform::Uuid>()>& issue) noexcept;
+// The default local service (L5) enrollment: the pack's enabled local-password
+// provider and its deny-by-default security posture, which the assembler
+// requires, and issued identities in field order (principal, runtime binding,
+// credential reference, the five grants, the SYSARCH membership). Name and
+// fingerprint are borrowed and must outlive the result.
+struct NativeInitialLocalServiceIdentityResult {
+  NativeInitialPolicyError error=NativeInitialPolicyError::invalid_request;
+  std::optional<core::platform::DiagnosticRecord> source_diagnostic;
+  std::optional<NativeInitialLocalServiceIdentity> service;
+  bool ok() const noexcept {return error==NativeInitialPolicyError::none&&service.has_value();}
+};
+NativeInitialLocalServiceIdentityResult IssueNativeInitialLocalServiceIdentity(
+    std::string_view policy_seed_pack_root,std::string_view principal_name,std::string_view credential_fingerprint,
     const std::function<std::optional<core::platform::Uuid>()>& issue) noexcept;
 struct NativeInitialPolicySecurityRequest {
   NativeInitialPolicyRequest policy;
