@@ -41,6 +41,9 @@ namespace scratchbird::storage::database {
 // activation are separate. Not yet content parity with legacy create (no
 // resource seed, datatype descriptors, domains, metric catalog or system
 // tables). Never call under a device guard.
+// Update 2026-11-05 (SB_NATIVE_BUILTIN_DATATYPE_DOMAIN_ROWS): the 85 built-in
+// datatype descriptors and 85 system domains are now written. Still missing:
+// the resource seed, metric catalog and system tables.
 struct NativeDatabaseCreateRequest {
   std::string_view policy_seed_pack_root;
   std::string_view database_name;
@@ -61,7 +64,7 @@ struct NativeDatabaseCreateRequest {
 enum class NativeDatabaseCreateError {
   none,invalid_request,invalid_principal,identity_failure,policy_assembly,database_assembly,
   schema_assembly,agent_assembly,audit_failure,index_failure,capacity_exceeded,workspace_failure,
-  resource_exhausted
+  resource_exhausted,datatype_assembly
 };
 struct NativeDatabaseCreateReceipt {
   core::platform::Uuid database_uuid,filespace_uuid,database_object_uuid;

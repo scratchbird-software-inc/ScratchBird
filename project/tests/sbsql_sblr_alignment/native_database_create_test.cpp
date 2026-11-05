@@ -6,6 +6,9 @@
 // through the production committed-catalog reader. Hosted open, credential
 // authentication and the startup transaction are exercised by the native
 // enrollment test; this test does not claim them.
+#include "catalog_builtin_type_domain.hpp"
+#include "datatype_catalog_manifest.hpp"
+#include "datatype_descriptor.hpp"
 #include "native_database_create.hpp"
 #include "catalog_native_catalog_index.hpp"
 #include "catalog_name_record_codec.hpp"
@@ -141,7 +144,8 @@ int main() {
       Check(found!=names.end(),"every other definition is named");
       const bool by_name=kind==c::CatalogRecordKind::user_account||kind==c::CatalogRecordKind::role_account||
           kind==c::CatalogRecordKind::group_account||kind==c::CatalogRecordKind::schema||
-          kind==c::CatalogRecordKind::database||kind==c::CatalogRecordKind::filespace;
+          kind==c::CatalogRecordKind::database||kind==c::CatalogRecordKind::filespace||
+          kind==c::CatalogRecordKind::datatype_descriptor||kind==c::CatalogRecordKind::domain;
       if(by_name){++addressed;Check(found->second!=u::UuidToString(id),"an object addressed by name keeps its name");}
       else{++by_uuid;Check(found->second==u::UuidToString(id),"any other object is named by its UUID text");}
     }
@@ -178,6 +182,46 @@ int main() {
             decoded.record->index_uuid==deps->index_uuid,"the map names its relation and index");
       Check(definitions.contains(deps->key_profile_uuid)&&definitions.contains(deps->visibility_profile_uuid),
             "both profiles are catalog rows");
+    }
+    // SB_NATIVE_BUILTIN_DATATYPE_DOMAIN_ROWS: one row per built-in datatype and
+    // one per system domain, in the database's relation under sys.catalog, with
+    // constant identities and legacy create's names.
+    {
+      namespace dt=scratchbird::core::datatypes;
+      const auto manifest=dt::LoadCurrentCoreDatatypeCatalogManifest();
+      const auto& builtins=dt::BuiltinDatatypeDescriptors();
+      Check(manifest.ok()&&builtins.size()==85&&manifest.manifest.descriptor_rows.size()==85,"85 built-in datatypes");
+      p::Uuid sys_catalog{};
+      for(const auto& [id,row]:definitions)
+        if(row->metadata.record.header.kind==c::CatalogRecordKind::schema&&names[id]=="catalog")sys_catalog=id;
+      std::size_t datatypes=0,domains=0;
+      for(const auto& row:relations[0]){if(row.name_payload)continue;const auto kind=row.metadata.record.header.kind;
+        datatypes+=kind==c::CatalogRecordKind::datatype_descriptor;domains+=kind==c::CatalogRecordKind::domain;}
+      Check(datatypes==85&&domains==85,"85 datatype rows and 85 domain rows, in the database's relation");
+      for(std::size_t i=0;i<builtins.size();++i){
+        const auto& b=builtins[i];const auto& m=manifest.manifest.descriptor_rows[i];
+        const auto t=definitions.find(m.descriptor_uuid.value);
+        Check(t!=definitions.end()&&t->second->metadata.record.header.kind==c::CatalogRecordKind::datatype_descriptor&&
+              t->second->metadata.owning_schema_uuid.value==sys_catalog,"each datatype row has its constant identity, under sys.catalog");
+        const auto d=c::DecodeCatalogBuiltinDatatypeDescriptor(t->second->metadata.record.payload);
+        const p::u64 flags=(b.nullable_allowed?1:0)|(b.descriptor_authoritative?2:0)|(b.reference_name_is_alias_only?4:0)|
+            (b.requires_mandatory_library?8:0);
+        Check(d.ok()&&d.record->database_uuid==r.database_uuid&&d.record->generation==m.descriptor_epoch&&
+              d.record->type_code==p::u64(b.type_id)&&d.record->family_code==p::u64(b.family)&&
+              d.record->width_class_code==p::u64(b.width_class)&&d.record->bit_width==b.bit_width&&
+              d.record->default_precision==b.default_precision&&d.record->default_scale==b.default_scale&&d.record->flags==flags,
+              "the datatype row's fields are the built-in descriptor's");
+        Check(names[m.descriptor_uuid.value]==b.stable_name,"a datatype is named by its stable name");
+        const auto domain_id=c::SystemDomainUuid(static_cast<p::u32>(b.type_id));
+        const auto s=definitions.find(domain_id);
+        Check(s!=definitions.end()&&s->second->metadata.record.header.kind==c::CatalogRecordKind::domain&&
+              s->second->metadata.owning_schema_uuid.value==sys_catalog,"each system domain has its constant identity, under sys.catalog");
+        const auto o=c::DecodeCatalogSystemDomain(s->second->metadata.record.payload);
+        Check(o.ok()&&o.record->database_uuid==r.database_uuid&&o.record->kind==c::SystemDomainKind::system_domain&&
+              o.record->base_descriptor_uuid==m.descriptor_uuid.value&&o.record->base_descriptor_generation==m.descriptor_epoch,
+              "each system domain's base is its datatype");
+        Check(names[domain_id]==std::string("SYS_DOMAIN_")+dt::CanonicalTypeName(b.type_id),"a system domain keeps legacy create's name");
+      }
     }
     // The principals: bootstrap, L5 and one per agent type, all in the security relation.
     Check(names[r.bootstrap_principal_uuid]=="BootstrapAdmin"&&names[r.service_principal_uuid]=="NodeService",

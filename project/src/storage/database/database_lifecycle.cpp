@@ -19,6 +19,8 @@
 #include "native_database_create.hpp"
 #include "native_initial_policy_catalogs.hpp"
 #include "native_catalog_index_rows.hpp"
+#include "catalog_builtin_type_domain.hpp"
+#include "datatype_catalog_manifest.hpp"
 #include "native_construction_audit.hpp"
 #include "native_creation_catalog_layout.hpp"
 #include "native_catalog_relation_lease_reader.hpp"
@@ -9255,6 +9257,61 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
       if(!agent_records.ok()){result.name_error=agent_records.error;return fail(E::agent_assembly);}
       for(auto& row:agent_records.records->definitions)seed[4].push_back(std::move(row));
       for(auto& row:agent_records.records->names)seed[1].push_back(std::move(row));
+    }
+
+    // SB_NATIVE_BUILTIN_DATATYPE_DOMAIN_ROWS (content parity, 2026-11-05): one
+    // row per built-in datatype and one per system domain, under sys.catalog,
+    // in the relation that holds the database, filespace and schemas. Fixed
+    // values: the object identities are constants (the manifest's descriptor
+    // UUID; SystemDomainUuid of the type code); only the row, name-vector and
+    // name-entry identities are issued. Addressed by name, so each carries its
+    // real name (legacy create's spellings), in the default language.
+    {
+      namespace dt=scratchbird::core::datatypes;
+      const auto manifest=dt::LoadCurrentCoreDatatypeCatalogManifest();
+      const auto& builtins=dt::BuiltinDatatypeDescriptors();
+      if(!manifest.ok()||manifest.manifest.descriptor_rows.size()!=builtins.size())return fail(E::datatype_assembly);
+      named.clear();std::vector<BootstrapNamedCreationUnit*> type_units;type_units.reserve(2*builtins.size());
+      using Flag=c::BuiltinDatatypeFlag;
+      for(std::size_t i=0;i<builtins.size();++i) {
+        const auto& b=builtins[i];const auto& row=manifest.manifest.descriptor_rows[i];
+        if(row.type_id!=b.type_id||row.descriptor_uuid.kind!=UuidKind::object)return fail(E::datatype_assembly);
+        c::CatalogBuiltinDatatypeDescriptor d;
+        d.descriptor_uuid=row.descriptor_uuid.value;d.database_uuid=database;d.generation=row.descriptor_epoch;
+        d.catalog_epoch=manifest.manifest.catalog_epoch;d.type_code=static_cast<scratchbird::core::platform::u64>(b.type_id);
+        d.family_code=static_cast<scratchbird::core::platform::u64>(b.family);
+        d.width_class_code=static_cast<scratchbird::core::platform::u64>(b.width_class);
+        d.bit_width=b.bit_width;d.default_precision=b.default_precision;d.default_scale=b.default_scale;
+        d.flags=(b.nullable_allowed?static_cast<scratchbird::core::platform::u64>(Flag::nullable_allowed):0)|
+            (b.descriptor_authoritative?static_cast<scratchbird::core::platform::u64>(Flag::descriptor_authoritative):0)|
+            (b.reference_name_is_alias_only?static_cast<scratchbird::core::platform::u64>(Flag::reference_name_is_alias_only):0)|
+            (b.requires_mandatory_library?static_cast<scratchbird::core::platform::u64>(Flag::requires_mandatory_library):0);
+        d.origin_transaction_uuid=d.creating_transaction_uuid=tx;d.origin_local_transaction_id=d.creating_local_transaction_id=1;
+        c::CatalogSystemDomain s;
+        s.domain_uuid=c::SystemDomainUuid(static_cast<scratchbird::core::platform::u32>(b.type_id));s.database_uuid=database;
+        s.generation=1;s.kind=c::SystemDomainKind::system_domain;s.base_descriptor_uuid=d.descriptor_uuid;
+        s.base_descriptor_generation=d.generation;
+        s.flags=static_cast<scratchbird::core::platform::u64>(c::SystemDomainFlag::descriptor_authoritative);
+        s.origin_transaction_uuid=s.creating_transaction_uuid=tx;s.origin_local_transaction_id=s.creating_local_transaction_id=1;
+        const auto datatype_payload=c::EncodeCatalogBuiltinDatatypeDescriptor(d);
+        const auto domain_payload=c::EncodeCatalogSystemDomain(s);
+        if(!datatype_payload.ok()||!domain_payload.ok())return fail(E::datatype_assembly);
+        auto* du=unit(d.descriptor_uuid,CatalogRecordKind::datatype_descriptor,c::kBuiltinDatatypeDescriptorSubtype,
+            sys_catalog,std::nullopt,b.stable_name);
+        if(!units_ok)return fail(E::datatype_assembly);
+        du->definition.record.payload.assign(datatype_payload.bytes.begin(),datatype_payload.bytes.end());
+        auto* su=unit(s.domain_uuid,CatalogRecordKind::domain,c::kSystemDomainSubtype,sys_catalog,std::nullopt,
+            std::string("SYS_DOMAIN_")+dt::CanonicalTypeName(b.type_id));
+        if(!units_ok)return fail(E::datatype_assembly);
+        su->definition.record.payload.assign(domain_payload.bytes.begin(),domain_payload.bytes.end());
+        type_units.push_back(du);type_units.push_back(su);
+      }
+      for(auto* u:type_units){u->Bind();named.push_back(u->Input());}
+      auto type_records=c::AssembleLocalNamedCreationRecords(database,tx,request.database_default_language,named,
+          {3*type_units.size(),2*1024*1024});
+      if(!type_records.ok()){result.name_error=type_records.error;return fail(E::datatype_assembly);}
+      for(auto& row:type_records.records->definitions)seed[0].push_back(std::move(row));
+      for(auto& row:type_records.records->names)seed[1].push_back(std::move(row));
     }
 
     // The construction intent record (role 6, unnamed by its family's rule).
