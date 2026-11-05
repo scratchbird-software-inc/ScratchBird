@@ -351,6 +351,15 @@ class FileDevice {
 
   bool is_open() const;
   bool read_only() const;
+  // SEARCH_KEY: SB_CAREFUL_WRITE_PRECEDENCE
+  // True only while the open writable descriptor carries a forced-write flag
+  // (POSIX O_DSYNC or O_SYNC, read back from the descriptor itself; Windows
+  // FILE_FLAG_WRITE_THROUGH as requested at open), so each WriteAt is durable
+  // on return and issue order is durable order. Recorded wherever a descriptor
+  // is bound and cleared when it is released. Read-only devices report false.
+  bool forced_ordered_writes() const noexcept {
+    return forced_ordered_writes_.load(std::memory_order_acquire);
+  }
   // Borrowed metadata: retain AcquireOperationGuard while using this reference
   // if another thread may open/close the device. It is not a resource identity.
   const std::string& path() const;
@@ -405,6 +414,7 @@ class FileDevice {
   std::string metric_device_class_;
   DeviceCapabilities capabilities_;
   bool read_only_ = false;
+  std::atomic<bool> forced_ordered_writes_{false};
   bool owner_lock_held_ = false;
   bool owner_lock_exclusive_ = false;
   std::shared_ptr<RouteOwnershipLease> route_owner_lease_;

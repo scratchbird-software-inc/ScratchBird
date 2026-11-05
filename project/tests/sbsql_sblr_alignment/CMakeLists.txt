@@ -1504,6 +1504,23 @@ endif()
   set_tests_properties(sbsql_sblr_alignment_filespace_bootstrap PROPERTIES
     LABELS "sbsql_sblr_alignment;IA-00;component_regression;canonical_bootstrap;binary_uuid;node_ownership"
     TIMEOUT 60)
+  # SEARCH_KEY: SB_CAREFUL_WRITE_PRECEDENCE (owner ruling 2026-11-05: careful
+  # write, no intent records). Generic ordering primitive and its process-loss
+  # coverage; per-page-type in-place admission is a later step.
+  add_executable(sbsql_sblr_alignment_careful_write careful_write_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_careful_write PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_careful_write PRIVATE sb_storage_disk)
+  add_test(NAME sbsql_sblr_alignment_careful_write COMMAND sbsql_sblr_alignment_careful_write)
+  set_tests_properties(sbsql_sblr_alignment_careful_write PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;careful_write"
+    TIMEOUT 120)
+  add_executable(sbsql_sblr_alignment_careful_write_crash careful_write_crash_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_careful_write_crash PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_careful_write_crash PRIVATE sb_storage_disk)
+  add_test(NAME sbsql_sblr_alignment_careful_write_crash COMMAND sbsql_sblr_alignment_careful_write_crash)
+  set_tests_properties(sbsql_sblr_alignment_careful_write_crash PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;careful_write"
+    TIMEOUT 120)
 endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(sbsql_sblr_alignment_physical_mga_owned_device physical_mga_owned_device_test.cpp)

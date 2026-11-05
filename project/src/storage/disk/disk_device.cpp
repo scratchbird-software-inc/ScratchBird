@@ -296,6 +296,12 @@ DWORD ForcedOrderedWriteFileFlags(bool writable) {
   return writable ? FILE_FLAG_WRITE_THROUGH : 0;
 }
 
+// SEARCH_KEY: SB_CAREFUL_WRITE_PRECEDENCE -- the write-through flag a data
+// handle opened (or duplicated from one opened) with this writability carries.
+bool HandleHasForcedOrderedWrites(bool writable) noexcept {
+  return (ForcedOrderedWriteFileFlags(writable) & FILE_FLAG_WRITE_THROUGH) != 0;
+}
+
 bool DurableSyncPath(const std::string& path, bool writable, std::string* detail) {
   const DWORD access = GENERIC_READ | (writable ? GENERIC_WRITE : 0);
   HANDLE handle = ::CreateFileA(path.c_str(),
@@ -659,6 +665,23 @@ int ForcedOrderedWriteOpenFlag() {
 #else
   return 0;
 #endif
+}
+
+// SEARCH_KEY: SB_CAREFUL_WRITE_PRECEDENCE -- read the flag back from the
+// descriptor actually held. A served or source-transferred device duplicates
+// the owner's descriptor and inherits its status flags, not requested ones.
+bool DescriptorHasForcedOrderedWrites(int fd) noexcept {
+  if (fd < 0) return false;
+  const int flags = ::fcntl(fd, F_GETFL);
+  if (flags < 0 || (flags & O_ACCMODE) == O_RDONLY) return false;
+  bool forced = false;
+#ifdef O_DSYNC
+  forced = forced || (flags & O_DSYNC) == O_DSYNC;
+#endif
+#ifdef O_SYNC
+  forced = forced || (flags & O_SYNC) == O_SYNC;
+#endif
+  return forced;
 }
 
 bool DurableSyncFd(int fd, std::string* detail, u32* native_error = nullptr) {
@@ -1319,6 +1342,12 @@ RouteSourceTransitionError RouteSourceTransition::BeginSourceAdmission(
     device->open_process_id_ = OwnershipProcessId();
     device->open_thread_id_ = std::this_thread::get_id();
     device->read_only_ = !writing;
+#ifdef _WIN32
+    device->forced_ordered_writes_.store(HandleHasForcedOrderedWrites(writing), std::memory_order_release);
+#else
+    device->forced_ordered_writes_.store(writing && DescriptorHasForcedOrderedWrites(duplicate),
+                                         std::memory_order_release);
+#endif
     device->capabilities_.write_at = writing;
     device->capabilities_.extent_preallocation = writing;
     owner_->source_admission_kind_=kind;
@@ -1892,6 +1921,7 @@ bool FileDevice::AbandonInheritedSource() noexcept {
   if(file_fd_>=0){(void)::close(file_fd_);file_fd_=-1;}
   if(owner_lock_fd_>=0){(void)::close(owner_lock_fd_);owner_lock_fd_=-1;}
 #endif
+  forced_ordered_writes_.store(false, std::memory_order_release);
   // Qualified route teardown is itself process-aware and close-only. Drop the
   // private route pin rather than retaining its duplicate OS handles to exit.
   route_owner_lease_.reset();
@@ -2212,6 +2242,12 @@ IoResult FileDevice::Open(std::string path, FileOpenMode mode) {
   prospective_owner_lock_fd = -1;
 #endif
   read_only_ = read_only_open;
+#ifdef _WIN32
+  forced_ordered_writes_.store(HandleHasForcedOrderedWrites(!read_only_open), std::memory_order_release);
+#else
+  forced_ordered_writes_.store(!read_only_open && DescriptorHasForcedOrderedWrites(file_fd_),
+                               std::memory_order_release);
+#endif
   owner_lock_held_ = !route_owned_by_current_process;
   owner_lock_exclusive_ = !route_owned_by_current_process;
   capabilities_.write_at = !read_only_;
@@ -2327,6 +2363,8 @@ IoResult FileDevice::OpenServed(const std::shared_ptr<RouteOwnershipLease>& owne
   file_fd_ = duplicate;
   owner_lock_fd_ = -1;
   read_only_ = !writing;
+  forced_ordered_writes_.store(writing && DescriptorHasForcedOrderedWrites(file_fd_),
+                               std::memory_order_release);
   owner_lock_held_ = false;
   owner_lock_exclusive_ = false;
   capabilities_.write_at = writing;
@@ -2401,6 +2439,7 @@ IoResult FileDevice::Close() {
   path_.clear();
   owner_lock_path_.clear();
   read_only_ = false;
+  forced_ordered_writes_.store(false, std::memory_order_release);
   owner_lock_held_ = false;
   owner_lock_exclusive_ = false;
   route_owner_storage_guard_ = std::unique_lock<std::recursive_mutex>{};
@@ -2449,11 +2488,13 @@ FileDevice::NativeWriterDeviceClose FileDevice::CloseNativeWriterWithoutSync() {
       return result;};
 #ifdef _WIN32
     out.data=close(file_handle_);
+    if(file_handle_==nullptr)forced_ordered_writes_.store(false,std::memory_order_release);
     if(file_handle_==nullptr)out.ownership=close(owner_lock_handle_);
     else if(owner_lock_handle_!=nullptr)out.ownership.disposition=NativeWriterCloseDisposition::retained;
     all_retired=file_handle_==nullptr&&owner_lock_handle_==nullptr;
 #else
     out.data=close(file_fd_);
+    if(file_fd_<0)forced_ordered_writes_.store(false,std::memory_order_release);
     // SB_OWNER_LOCK_FILE_REMOVED_ON_CLOSE: unlink while still holding it.
     if(file_fd_<0&&open_process_id_==OwnershipProcessId())
       UnlinkOwnerLockPathIfHeld(owner_lock_fd_,owner_lock_path_);

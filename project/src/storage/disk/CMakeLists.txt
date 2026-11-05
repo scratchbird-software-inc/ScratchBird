@@ -17,6 +17,7 @@ add_library(sb_storage_disk
   native_common_page_header.cpp
   filespace_bootstrap.cpp
   filespace_page_zero.cpp
+  careful_write.cpp
 )
 
 target_compile_features(sb_storage_disk PUBLIC cxx_std_20)
