@@ -23,7 +23,8 @@ constexpr std::size_t kWordBytes = kTransactionStateFamilyOffset + 10; // u16
 constexpr std::size_t kSlots = kTransactionStateFamilyOffset + 12;     // u32
 constexpr std::size_t kSequence = kTransactionStateFamilyOffset + 16;  // u64
 constexpr std::size_t kFirstNumber = kTransactionStateFamilyOffset + 24; // u64
-constexpr std::size_t kFamilyEnd = kTransactionStateFamilyOffset + 32;
+constexpr std::size_t kHeaderChain = kTransactionStateFamilyOffset + 32; // u64, first page only
+constexpr std::size_t kFamilyEnd = kTransactionStateFamilyOffset + 40;
 // Counters.
 constexpr std::size_t kNextPage = kTransactionStateCountersOffset;            // every page
 constexpr std::size_t kNext = kTransactionStateCountersOffset + 8;            // first page only
@@ -198,6 +199,9 @@ TipPageError FormatTransactionStatePage(const TipPageFormat& f, std::span<byte> 
   if ((f.tip_sequence == 0) != f.counters.has_value()) return E::invalid_counters;
   if (f.counters && !HorizonsValid(*f.counters)) return E::invalid_counters;
   if (f.next_tip_page == f.header.page_number) return E::invalid_link;
+  if ((f.tip_sequence == 0) != (f.header_chain_page != 0) || f.header_chain_page == f.header.page_number ||
+      (f.header_chain_page != 0 && f.header_chain_page == f.next_tip_page))
+    return E::invalid_link;
   if (output.size() < page_size) return E::short_buffer;
   auto page = output.first(page_size);
   std::fill(page.begin(), page.end(), byte{0});
@@ -209,6 +213,7 @@ TipPageError FormatTransactionStatePage(const TipPageFormat& f, std::span<byte> 
   StoreLittle32(p + kSlots, slots);
   StoreLittle64(p + kSequence, f.tip_sequence);
   StoreLittle64(p + kFirstNumber, f.tip_sequence * slots);
+  StoreLittle64(p + kHeaderChain, f.header_chain_page);
   StoreLittle64(p + kNextPage, f.next_tip_page);
   if (f.counters) PutCounters(p, *f.counters);
   return E::none;
@@ -236,12 +241,15 @@ TipPageDecodeResult DecodeTransactionStatePage(std::span<const byte> image,
   v.first_number = family->first_number;
   v.slots = family->slots;
   v.next_tip_page = LoadLittle64(p + kNextPage);
+  v.header_chain_page = LoadLittle64(p + kHeaderChain);
   v.image = image;
-  if (v.next_tip_page == v.header.page_number) {
+  const bool first = v.tip_sequence == 0;
+  if (v.next_tip_page == v.header.page_number || first != (v.header_chain_page != 0) ||
+      v.header_chain_page == v.header.page_number ||
+      (v.header_chain_page != 0 && v.header_chain_page == v.next_tip_page)) {
     r.error = E::invalid_link;
     return r;
   }
-  const bool first = v.tip_sequence == 0;
   if (!Zero(p + kCountersEnd, kTransactionStateWordsOffset - kCountersEnd) ||
       (!first && !Zero(p + kNext, kCountersEnd - kNext))) {
     r.error = E::invalid_counters;
@@ -350,7 +358,8 @@ TipPageEdit SetTransactionStateNextPage(std::span<byte> image, u64 next_tip_page
   if (!family) return Refuse(E::invalid_family);
   const u64 self = LoadLittle64(image.data() + 72);  // common header page_number
   const u64 current = LoadLittle64(image.data() + kNextPage);
-  if (next_tip_page == 0 || next_tip_page == self) return Refuse(E::invalid_link);
+  if (next_tip_page == 0 || next_tip_page == self || next_tip_page == LoadLittle64(image.data() + kHeaderChain))
+    return Refuse(E::invalid_link);
   if (current != 0 && current != next_tip_page) return Refuse(E::invalid_link);
   auto edit = Begin(image, kNextPage);
   if (current == next_tip_page) return edit;

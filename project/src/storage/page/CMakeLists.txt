@@ -83,6 +83,7 @@ add_library(sb_storage_page
   transaction_header_record.cpp
   transaction_state_code_map.cpp
   transaction_state_restart.cpp
+  transaction_header_page.cpp
 )
 
 target_compile_features(sb_storage_page PUBLIC cxx_std_17)

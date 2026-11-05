@@ -31,7 +31,10 @@ using scratchbird::core::platform::u64;
 //   0..127    common page header; its generation is fixed when the page is
 //             formatted and never rewritten
 //   128..255  family header, fixed after format: magic, version, word size,
-//             slots per page, page sequence in the chain, first number
+//             slots per page, page sequence in the chain, first number; on
+//             the first page only, the first page of the transaction header
+//             chain (owner 2026-11-05, Q3: header slot pages under 0x0301;
+//             see transaction_header_page.hpp)
 //   256..511  mutable counters, each an aligned u64: the next page in the
 //             chain (every page); on the first page only, Next and the six
 //             horizons OIT, OAT, OST, OCT, OAR, OLR
@@ -140,6 +143,9 @@ struct TipPageFormat {
   scratchbird::storage::disk::NativeCommonPageHeader header;
   u64 tip_sequence = 0;       // 0 = the first page of the chain
   u64 next_tip_page = 0;      // page number in the same filespace; 0 = none
+  // First page of the transaction header chain: required on the first page,
+  // refused (must be 0) on any other.
+  u64 header_chain_page = 0;
   // Required on the first page, refused on any other.
   std::optional<TipCounters> counters;
 };
@@ -155,6 +161,7 @@ struct TipPageView {
   u64 first_number = 0;
   u32 slots = 0;
   u64 next_tip_page = 0;
+  u64 header_chain_page = 0;  // first page only
   std::optional<TipCounters> counters;
   std::span<const byte> image;  // borrowed from the decoded bytes
 };

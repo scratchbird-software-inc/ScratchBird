@@ -5,6 +5,7 @@
 // Codec coverage for the in-place transaction-state page and the transaction
 // header record (owner rulings 2026-11-05). No caller uses either yet.
 #include "careful_write.hpp"
+#include "transaction_header_page.hpp"
 #include "transaction_header_record.hpp"
 #include "transaction_state_code_map.hpp"
 #include "transaction_state_restart.hpp"
@@ -87,6 +88,7 @@ std::vector<byte> Format(u64 page_number, u64 sequence, std::optional<page::TipC
   f.header = Header(page_number, page_size);
   f.tip_sequence = sequence;
   f.next_tip_page = next_page;
+  f.header_chain_page = sequence == 0 ? page_number + 100 : 0;
   f.counters = counters;
   std::vector<byte> image(page_size, 0xEE);
   CheckTip(page::FormatTransactionStatePage(f, image), TipPageError::none, "format");
@@ -153,6 +155,7 @@ void TestFormatRefusals() {
   page::TipPageFormat f;
   f.header = Header(5);
   f.counters = Counters(1);
+  f.header_chain_page = 6;
   std::vector<byte> out(kPage, 0xAB);
   auto refused = [&](page::TipPageFormat g, TipPageError e, std::string_view why) {
     std::fill(out.begin(), out.end(), 0xAB);
@@ -171,6 +174,19 @@ void TestFormatRefusals() {
   g = f;
   g.tip_sequence = 1;
   refused(g, TipPageError::invalid_counters, "later page with counters");
+  g = f;
+  g.header_chain_page = 0;
+  refused(g, TipPageError::invalid_link, "first page without a header chain");
+  g = f;
+  g.header_chain_page = 5;
+  refused(g, TipPageError::invalid_link, "header chain is the page itself");
+  g = f;
+  g.next_tip_page = 6;
+  refused(g, TipPageError::invalid_link, "header chain is the next state page");
+  g = f;
+  g.tip_sequence = 1;
+  g.counters.reset();
+  refused(g, TipPageError::invalid_link, "later page with a header chain");
   g = f;
   g.counters->next_transaction = 0;
   g.counters->horizons = {0, 0, 0, 0, 0, 0};
@@ -213,6 +229,7 @@ void TestDecodeRefusals() {
   mutate([](auto& i) { i[264] = 0; }, TipPageError::invalid_counters, "Next 0");
   mutate([](auto& i) { i[272] = 11; }, TipPageError::invalid_counters, "OIT beyond Next");
   mutate([](auto& i) { i[256] = 5; }, TipPageError::invalid_link, "self link");
+  mutate([](auto& i) { i[160] = 0; i[161] = 0; }, TipPageError::invalid_link, "first page lost its header chain");
   // Words: state 13, reserved flag bit, authority 3, unused with residue.
   mutate([](auto& i) { i[512 + 4 * 3] = 13; }, TipPageError::invalid_word, "state 13", 3);
   mutate([](auto& i) { i[512 + 4 * 3] = 6; i[512 + 4 * 3 + 1] = 0x20; }, TipPageError::invalid_word,
@@ -781,6 +798,145 @@ void TestRestartScanStart() {
         "slots below a stale OAT are marked dead");
 }
 
+std::vector<byte> FormatHeaderPage(u64 page_number, u64 sequence, u64 next_page = 0) {
+  page::TransactionHeaderPageFormat f;
+  f.header = Header(page_number);
+  f.sequence = sequence;
+  f.next_page = next_page;
+  std::vector<byte> image(kPage, 0xEE);
+  CheckTip(page::FormatTransactionHeaderPage(f, image), TipPageError::none, "format header page");
+  return image;
+}
+page::TransactionHeaderRecord HeaderFor(u64 order) {
+  auto r = SampleHeader();
+  r.transaction_order = order;
+  r.transaction_uuid = V7(static_cast<std::uint8_t>(order));
+  return r;
+}
+
+void TestHeaderPage() {
+  Check(page::TransactionHeaderSlotsPerPage(8192) == 30 && page::TransactionHeaderSlotsPerPage(16384) == 62,
+        "header slots per page");
+  Check(page::TransactionHeaderSlotsPerPage(512) == 0 && page::TransactionHeaderSlotsPerPage(8000) == 0,
+        "unusable sizes");
+  const auto l1 = page::LocateTransactionHeaderSlot(kPage, 1), l29 = page::LocateTransactionHeaderSlot(kPage, 29),
+             l30 = page::LocateTransactionHeaderSlot(kPage, 30);
+  Check(l1 && l1->sequence == 0 && l1->slot == 1 && l29 && l29->slot == 29 && l30 && l30->sequence == 1 &&
+            l30->slot == 0 && !page::LocateTransactionHeaderSlot(kPage, 0),
+        "header slot location");
+
+  auto image = FormatHeaderPage(20, 0);
+  auto d = page::DecodeTransactionHeaderPage(image);
+  Check(d.ok() && d.view->slots == 30 && d.view->first_number == 0 && d.view->next_page == 0, "fresh header page");
+  Check(!page::TransactionHeaderAt(*d.view, 1), "fresh slots empty");
+  Check(page::IsTransactionHeaderPageImage(image), "header magic recognised");
+  // The two families under 0x0301 are told apart by magic.
+  CheckTip(Decode(image).error, TipPageError::invalid_family, "state decoder refuses a header page");
+  const auto state = Format(5, 0, Counters(1));
+  Check(!page::IsTransactionHeaderPageImage(state), "state page is not a header page");
+  CheckTip(page::DecodeTransactionHeaderPage(state).error, TipPageError::invalid_family,
+           "header decoder refuses a state page");
+
+  // BEGIN writes a record once.
+  auto before = image;
+  auto edit = page::WriteTransactionHeader(image, HeaderFor(1));
+  Check(edit.ok() && edit.changed && edit.unit_offset == 512, "record 1 written in unit 512");
+  Check(std::equal(edit.preimage.begin(), edit.preimage.end(), before.begin() + 512), "preimage is the empty unit");
+  d = page::DecodeTransactionHeaderPage(image);
+  Check(d.ok() && page::TransactionHeaderAt(*d.view, 1) == HeaderFor(1), "record read back");
+  Check(page::WriteTransactionHeader(image, HeaderFor(1)).ok() &&
+            !page::WriteTransactionHeader(image, HeaderFor(1)).changed,
+        "identical rewrite is a no-op");
+  auto other = HeaderFor(1);
+  other.session_uuid = V7(99);
+  CheckTip(page::WriteTransactionHeader(image, other).error, TipPageError::invalid_slot, "written once");
+  CheckTip(page::WriteTransactionHeader(image, HeaderFor(30)).error, TipPageError::invalid_slot, "order off page");
+  auto foreign = HeaderFor(2);
+  foreign.database_uuid = V7(98);
+  CheckTip(page::WriteTransactionHeader(image, foreign).error, TipPageError::invalid_slot, "other database");
+  auto zero = HeaderFor(2);
+  zero.transaction_order = 0;
+  Check(!page::WriteTransactionHeader(image, zero).ok(), "order 0 never written");
+
+  // Commit: forward-only update of the mutable fields.
+  auto done = HeaderFor(1);
+  CheckHdr(page::CompleteTransactionHeader(done, TipStateCode::committed, 1'800'000'000'000'000'000ull),
+           TransactionHeaderError::none, "complete");
+  before = image;
+  edit = page::UpdateTransactionHeader(image, done);
+  Check(edit.ok() && edit.changed && edit.unit_offset == 512, "completion in unit 512");
+  d = page::DecodeTransactionHeaderPage(image);
+  Check(d.ok() && page::TransactionHeaderAt(*d.view, 1) == done, "completed record read back");
+  Check(page::UpdateTransactionHeader(image, done).ok() && !page::UpdateTransactionHeader(image, done).changed,
+        "same update is a no-op");
+  auto rewrite = done;
+  rewrite.completed_at_utc_ns += 1;
+  rewrite.commit_time_utc_ns += 1;
+  CheckTip(page::UpdateTransactionHeader(image, rewrite).error, TipPageError::invalid_word, "completion once");
+  auto fixed = done;
+  fixed.session_uuid = V7(97);
+  CheckTip(page::UpdateTransactionHeader(image, fixed).error, TipPageError::invalid_word, "fixed field changed");
+  auto late = done;
+  late.intent = 7;
+  late.intent_generation = 1;
+  CheckTip(page::UpdateTransactionHeader(image, late).error, TipPageError::invalid_word, "intent after completion");
+  CheckTip(page::UpdateTransactionHeader(image, HeaderFor(4)).error, TipPageError::invalid_slot, "update empty slot");
+
+  // Intent changes before completion.
+  Check(page::WriteTransactionHeader(image, HeaderFor(2)).ok(), "record 2");
+  auto up = HeaderFor(2);
+  CheckHdr(page::UpgradeTransactionHeaderIntent(up, 9), TransactionHeaderError::none, "upgrade");
+  Check(page::UpdateTransactionHeader(image, up).ok(), "intent upgrade stored");
+  auto same_gen = up;
+  same_gen.intent = 10;
+  CheckTip(page::UpdateTransactionHeader(image, same_gen).error, TipPageError::invalid_word,
+           "intent change without a new generation");
+  CheckTip(page::UpdateTransactionHeader(image, HeaderFor(2)).error, TipPageError::invalid_word,
+           "generation never decreases");
+
+  // Two records per write unit: a torn unit write leaves each record old or new.
+  Check(page::WriteTransactionHeader(image, HeaderFor(3)).ok(), "record 3");  // slot 3 shares unit 1024 with slot 2
+  auto three = HeaderFor(3);
+  CheckHdr(page::CompleteTransactionHeader(three, TipStateCode::rolled_back, 5), TransactionHeaderError::none, "rb");
+  before = image;
+  edit = page::UpdateTransactionHeader(image, three);
+  Check(edit.ok() && edit.unit_offset == 1024, "slot 3 is in unit 1024");
+  for (std::size_t split : {std::size_t{0}, std::size_t{256}, std::size_t{512}}) {
+    auto torn = before;
+    for (std::size_t b = 1024 + split; b < 1536; ++b) torn[b] = image[b];
+    const auto t = page::DecodeTransactionHeaderPage(torn);
+    Check(t.ok(), "torn at a record boundary decodes");
+    const auto r3 = page::TransactionHeaderAt(*t.view, 3);
+    Check(r3 && (*r3 == HeaderFor(3) || *r3 == three), "record 3 old or new");
+    Check(page::TransactionHeaderAt(*t.view, 2) == up, "record 2 unaffected");
+  }
+
+  // Decode refusals.
+  auto refuse = [&](auto change, TipPageError e, std::string_view why, std::optional<u32> slot = std::nullopt) {
+    auto x = image;
+    change(x);
+    const auto r = page::DecodeTransactionHeaderPage(x);
+    CheckTip(r.error, e, why);
+    if (slot) Check(r.slot == slot, std::string(why) + ": slot");
+  };
+  refuse([](auto& x) { std::copy_n(x.begin() + 1024, 256, x.begin() + 1536); }, TipPageError::invalid_slot,
+         "record in the wrong slot", 4);
+  refuse([](auto& x) { x[768] = 9; }, TipPageError::invalid_word, "unreadable record", 1);
+  refuse([](auto& x) { x[300] = 1; }, TipPageError::invalid_counters, "link reserved byte");
+  refuse([](auto& x) { x[170] = 1; }, TipPageError::invalid_family, "family reserved byte");
+  refuse([](auto& x) { x[256] = 20; }, TipPageError::invalid_link, "self link");
+
+  // Link once.
+  Check(page::SetTransactionHeaderNextPage(image, 21).ok(), "link");
+  CheckTip(page::SetTransactionHeaderNextPage(image, 22).error, TipPageError::invalid_link, "link once");
+  Check(page::DecodeTransactionHeaderPage(image).view->next_page == 21, "link read back");
+  // Edits refuse a state page.
+  auto state_copy = state;
+  CheckTip(page::WriteTransactionHeader(state_copy, HeaderFor(1)).error, TipPageError::invalid_family,
+           "header write refuses a state page");
+  Check(state_copy == state, "state page untouched");
+}
+
 void TestRestartRefusals() {
   {
     RestartFixture f;
@@ -831,6 +987,7 @@ int main() {
     TestRestart();
     TestRestartScanStart();
     TestRestartRefusals();
+    TestHeaderPage();
   } catch (const std::exception& e) {
     std::cerr << "FAIL: " << e.what() << " after " << checks << " checks\n";
     return 1;
