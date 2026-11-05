@@ -84,6 +84,7 @@ add_library(sb_storage_page
   transaction_state_code_map.cpp
   transaction_state_restart.cpp
   transaction_header_page.cpp
+  transaction_inventory_reader.cpp
 )
 
 target_compile_features(sb_storage_page PUBLIC cxx_std_17)
