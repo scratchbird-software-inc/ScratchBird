@@ -7,6 +7,7 @@
 #include "careful_write.hpp"
 #include "transaction_header_record.hpp"
 #include "transaction_state_code_map.hpp"
+#include "transaction_state_restart.hpp"
 #include "transaction_state_page.hpp"
 
 #include <algorithm>
@@ -659,6 +660,141 @@ void TestStateCodeMap() {
     Check(*back == (state == TransactionState::preparing ? TransactionState::active : state), "state round trip");
   }
 }
+
+// Restart dead-marking over a two-page chain: page 1 (orders 0..1919) and
+// page 2 (orders 1920..3839), Next = 1930, OAT = 5.
+struct RestartFixture {
+  std::vector<byte> first, second;
+  RestartFixture() {
+    auto c = Counters(1930);
+    c.horizons.oldest_active = 5;
+    c.horizons.oldest_interesting = 5;
+    c.horizons.oldest_snapshot = 5;
+    c.horizons.oldest_cleanup = 5;
+    first = Format(1, 0, c, 2);
+    second = Format(2, 1, std::nullopt);
+    bool built = true;
+    auto set = [&built](std::vector<byte>& image, u32 slot, TipStateCode code) {
+      page::TipStateWord w{code, page::kTipFlagHasDetailRecord};
+      built = built && page::SetTransactionStateWord(image, slot, w).ok();
+    };
+    for (u32 n = 1; n <= 4; ++n) set(first, n, TipStateCode::committed);
+    set(first, 5, TipStateCode::active);
+    // 6 stays unused: a crash between allocation and the slot write.
+    set(first, 7, TipStateCode::committed);
+    set(first, 8, TipStateCode::starting);
+    set(first, 9, TipStateCode::prepared);
+    set(first, 10, TipStateCode::limbo);
+    set(first, 11, TipStateCode::committing);
+    set(first, 12, TipStateCode::recovering);
+    set(first, 13, TipStateCode::rolling_back);
+    set(first, 14, TipStateCode::read_only_active);
+    set(first, 15, TipStateCode::rolled_back);
+    set(first, 16, TipStateCode::dead);
+    set(first, 17, TipStateCode::archived);
+    for (u32 n = 18; n < 1920; ++n) set(first, n, TipStateCode::committed);
+    set(second, 5, TipStateCode::active);  // order 1925; 1920..1929 others unused
+    Check(built, "fixture words");
+  }
+  std::vector<page::TipChainPage> Chain() { return {{1, first}, {2, second}}; }
+};
+
+TipStateCode StateOf(const std::vector<byte>& image, u32 slot) {
+  const auto d = Decode(image);
+  Check(d.ok(), "page decodes");
+  return page::TipWordAt(*d.view, slot)->state;
+}
+
+void TestRestart() {
+  RestartFixture f;
+  const auto original_first = f.first, original_second = f.second;
+  auto chain = f.Chain();
+  const auto plan = page::PlanTransactionStateRestart(chain);
+  CheckTip(plan.error, TipPageError::none, "restart plan");
+  Check(plan.next_transaction == 1930 && plan.scanned_from == 5, "scan range");
+  // Page 1: 5, 6, 8, 13, 14 -> dead. Page 2: 1920..1929 all dead (1925 active, the rest unused).
+  Check(plan.marked_dead == 5 + 10, "marked count");
+  Check(plan.unresolved == std::vector<u64>({11, 12}), "committing and recovering reported");
+  for (u32 n : {5u, 6u, 8u, 13u, 14u}) Check(StateOf(f.first, n) == TipStateCode::dead, "marked dead");
+  const std::pair<u32, TipStateCode> kept[] = {
+      {1, TipStateCode::committed},    {4, TipStateCode::committed},  {7, TipStateCode::committed},
+      {9, TipStateCode::prepared},     {10, TipStateCode::limbo},     {11, TipStateCode::committing},
+      {12, TipStateCode::recovering},  {15, TipStateCode::rolled_back}, {16, TipStateCode::dead},
+      {17, TipStateCode::archived},    {1919, TipStateCode::committed}};
+  for (const auto& [n, code] : kept) Check(StateOf(f.first, n) == code, "left alone");
+  for (u32 slot = 0; slot < 10; ++slot) Check(StateOf(f.second, slot) == TipStateCode::dead, "page 2 below Next dead");
+  Check(StateOf(f.second, 10) == TipStateCode::unused, "page 2 at Next untouched");
+  Check(Decode(f.first).view->counters == Decode(original_first).view->counters, "counters untouched");
+  // Units: page 1 unit 512 (slots 0..127), page 2 unit 512 (slots 0..127).
+  Check(plan.units.size() == 2, "two changed units");
+  Check(plan.units[0].page_number == 1 && plan.units[0].unit_offset == 512, "page 1 unit");
+  Check(plan.units[1].page_number == 2 && plan.units[1].unit_offset == 512, "page 2 unit");
+  const std::vector<byte>* originals[] = {&original_first, &original_second};
+  const std::vector<byte>* results[] = {&f.first, &f.second};
+  for (std::size_t i = 0; i < 2; ++i) {
+    const auto& u = plan.units[i];
+    Check(std::equal(u.preimage.begin(), u.preimage.end(), originals[i]->begin() + u.unit_offset),
+          "unit preimage is the original");
+    bool outside_same = true;
+    for (std::size_t b = 0; b < kPage; ++b)
+      if (b < u.unit_offset || b >= u.unit_offset + 512) outside_same = outside_same && (*originals[i])[b] == (*results[i])[b];
+    Check(outside_same, "only the reported unit changed");
+  }
+  // Idempotent.
+  auto again = f.Chain();
+  const auto second_plan = page::PlanTransactionStateRestart(again);
+  Check(second_plan.ok() && second_plan.marked_dead == 0 && second_plan.units.empty() &&
+            second_plan.unresolved == std::vector<u64>({11, 12}),
+        "second pass changes nothing");
+  // Crash after k of the unit writes, then restart again: the same final pages.
+  for (std::size_t k = 0; k <= plan.units.size(); ++k) {
+    auto a = original_first, b = original_second;
+    for (std::size_t i = 0; i < k; ++i) {
+      auto& target = plan.units[i].page_number == 1 ? a : b;
+      const auto& source = plan.units[i].page_number == 1 ? f.first : f.second;
+      std::copy_n(source.begin() + plan.units[i].unit_offset, 512, target.begin() + plan.units[i].unit_offset);
+      Check(Decode(target).ok(), "partially written page decodes");
+    }
+    std::vector<page::TipChainPage> partial{{1, a}, {2, b}};
+    Check(page::PlanTransactionStateRestart(partial).ok(), "restart after a partial pass");
+    Check(a == f.first && b == f.second, "partial pass converges");
+  }
+}
+
+void TestRestartRefusals() {
+  {
+    RestartFixture f;
+    const auto a = f.first, b = f.second;
+    std::vector<page::TipChainPage> reversed{{2, f.second}, {1, f.first}};
+    Check(!page::PlanTransactionStateRestart(reversed).ok(), "wrong chain order refused");
+    Check(f.first == a && f.second == b, "refusal leaves pages unchanged");
+  }
+  {
+    RestartFixture f;
+    const auto a = f.first;
+    std::vector<page::TipChainPage> short_chain{{1, f.first}};
+    CheckTip(page::PlanTransactionStateRestart(short_chain).error, TipPageError::invalid_counters,
+             "chain shorter than Next");
+    Check(f.first == a, "short chain leaves page unchanged");
+  }
+  {
+    RestartFixture f;
+    // A used slot at Next on page 2 (order 1930).
+    f.second[512 + 4 * 10] = static_cast<byte>(TipStateCode::active);
+    f.second[512 + 4 * 10 + 1] = page::kTipFlagHasDetailRecord;
+    const auto a = f.first, b = f.second;
+    auto chain = f.Chain();
+    CheckTip(page::PlanTransactionStateRestart(chain).error, TipPageError::invalid_slot, "slot at Next on page 2");
+    Check(f.first == a && f.second == b, "invalid chain leaves pages unchanged");
+  }
+  {
+    RestartFixture f;
+    std::vector<page::TipChainPage> wrong_number{{1, f.first}, {3, f.second}};
+    CheckTip(page::PlanTransactionStateRestart(wrong_number).error, TipPageError::invalid_link, "page number mismatch");
+    std::vector<page::TipChainPage> none;
+    Check(!page::PlanTransactionStateRestart(none).ok(), "empty chain refused");
+  }
+}
 }  // namespace
 
 int main() {
@@ -672,6 +808,8 @@ int main() {
     TestCrashPrefixes();
     TestHeaderRecord();
     TestStateCodeMap();
+    TestRestart();
+    TestRestartRefusals();
   } catch (const std::exception& e) {
     std::cerr << "FAIL: " << e.what() << " after " << checks << " checks\n";
     return 1;
