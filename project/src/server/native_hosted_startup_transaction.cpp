@@ -140,6 +140,14 @@ api::NativeStartupTransactionResult NativeHostedDatabaseRuntime::PrepareStartupT
   constexpr auto fixed=sizeof(api::NativeStartupTransactionOwner)+320+2*state_prefix+padding;
   if(files.empty()||files.size()>(SIZE_MAX-fixed)/(4*sizeof(Uuid)))return {E::invalid_limits};
   const auto bytes=fixed+4*sizeof(Uuid)*files.size();
+  // SB_OPEN_VERIFICATION_READ_ONLY (owner direction 2026-11-05): nothing is
+  // written before a clean read-only verification of this same selected file
+  // (VerifyStartupDatabaseFile). Checked after every earlier refusal, so each
+  // keeps its own error, and before the first allocation or effect.
+  if(!read.open_verification_||!SameSelection(read.open_verification_->identity.selection,source)){
+    api::NativeStartupTransactionResult refused;refused.error=E::verification_failure;
+    refused.detail="open_verification_required";return refused;
+  }
   auto& self=*read.owner_;const auto& config=*read.configuration_.configuration;
   if(!self.process_->HasNativeDatabaseAllocationBehavior(self.database_,config.memory,config.memory_version_uuid))return {E::policy_required};
   read.mutating_=true;self.entering_=true;

@@ -32,25 +32,58 @@ bool UncertainState(mga::TransactionState s) noexcept {
   using S=mga::TransactionState;
   return s==S::created||s==S::preparing||s==S::prepared||s==S::committing||s==S::rolling_back||s==S::limbo||s==S::recovering;
 }
-// A selected read that cannot decode the file's own structures is a finding;
-// memory, I/O and custody refusals are operational, not evidence of damage.
+// A read that cannot decode the file's own structures is a finding. I/O,
+// memory, hash-provider, custody and authority refusals are operational, not
+// evidence of damage, so their cause is looked for first, in every
+// diagnostic the read carries.
 VE SourceRefusal(const db::NativeOwnedSourceDiagnostics& d,db::NativeWriterError writer) noexcept {
   using S=db::NativeOwnedSourceError;using M=db::NativeSelectedCheckpointMemoryError;
+  using B=disk::FilespaceBootstrapError;using R=db::NativeSelectedCheckpointReadError;
+  using C=db::NativeCheckpointSelectionError;using K=db::NativeCheckpointError;using A=page::NativeAllocationError;
+  using D=page::NativeDirectoryError;using I=page::NativeInventoryError;using T=disk::RouteSourceTransitionError;
   switch(d.error){
     case S::none:return writer==db::NativeWriterError::none?VE::none:VE::source_failure;
-    case S::bootstrap_failure:case S::incomplete_cohort:return VE::finding;
-    case S::source_failure:
-      switch(d.memory_source_error){
-        case M::memory_binding_failure:case M::memory_allocation_failure:case M::resource_exhausted:return VE::memory_failure;
-        case M::io_failure:return VE::io_failure;
-        case M::lock_failure:case M::invalid_request:return VE::source_failure;
-        default:return VE::finding;
-      }
     case S::resource_exhausted:case S::memory_failure:case S::memory_required:return VE::memory_failure;
     case S::io_failure:return VE::io_failure;
     case S::invalid_request:return VE::invalid_request;
-    default:return VE::source_failure;
+    case S::device_ownership:case S::lock_failure:case S::withdrawn:case S::wrong_process:case S::route_admission:
+      return VE::source_failure;
+    default:break; // bootstrap_failure, source_failure, incomplete_cohort: classify by cause
   }
+  if(d.bootstrap_error==B::io_failure||d.source_error==R::io_failure||d.selection_error==C::io_failure||
+      d.checkpoint_error==K::io_failure||d.allocation_error==A::io_failure||d.directory_error==D::io_failure||
+      d.inventory_error==I::io_failure||d.route_error==T::io_failure||d.memory_source_error==M::io_failure)return VE::io_failure;
+  if(d.bootstrap_error==B::resource_exhausted||d.source_error==R::resource_exhausted||d.selection_error==C::resource_exhausted||
+      d.checkpoint_error==K::resource_exhausted||d.allocation_error==A::resource_exhausted||d.directory_error==D::resource_exhausted||
+      d.inventory_error==I::resource_exhausted||d.route_error==T::resource_exhausted||d.memory_source_error==M::resource_exhausted||
+      d.memory_source_error==M::memory_binding_failure||d.memory_source_error==M::memory_allocation_failure)return VE::memory_failure;
+  if(d.bootstrap_error==B::hash_provider_failure||d.selection_error==C::hash_failure||d.checkpoint_error==K::hash_failure||
+      d.allocation_error==A::hash_failure||d.directory_error==D::hash_failure||d.inventory_error==I::hash_failure)return VE::crypto_failure;
+  if(d.source_error==R::lock_failure||d.source_error==R::invalid_device||d.source_error==R::invalid_request||
+      d.memory_source_error==M::lock_failure||d.memory_source_error==M::invalid_device||d.memory_source_error==M::invalid_request||
+      d.bootstrap_error==B::device_not_open||d.route_error!=T::none||
+      d.selection_error==C::encrypted_requires_authority||d.selection_error==C::cluster_requires_authority||
+      d.selection_error==C::invalid_backing||d.checkpoint_error==K::encrypted_requires_crypto_authority||
+      d.allocation_error==A::cluster_requires_authority||d.allocation_error==A::invalid_workspace||
+      d.directory_error==D::invalid_backing||d.inventory_error==I::encrypted_requires_crypto_authority||
+      d.inventory_error==I::invalid_backing)return VE::source_failure;
+  return VE::finding;
+}
+// The same rule for one filespace's allocation-chain read.
+VE ChainRefusal(const db::NativeAllocationLeaseReadResult& r) noexcept {
+  using L=db::NativeAllocationLeaseError;using A=page::NativeAllocationError;
+  if(r.chain_error==A::io_failure||!r.io_status.ok())return VE::io_failure;
+  switch(r.error){
+    case L::memory_failure:case L::resource_exhausted:return VE::memory_failure;
+    case L::hash_failure:return VE::crypto_failure;
+    case L::lock_failure:return VE::source_failure;
+    case L::invalid_request:return VE::invalid_request;
+    default:break;
+  }
+  if(r.chain_error==A::resource_exhausted||r.chain_error==A::invalid_workspace)return VE::memory_failure;
+  if(r.chain_error==A::hash_failure)return VE::crypto_failure;
+  if(r.chain_error==A::cluster_requires_authority)return VE::source_failure;
+  return VE::finding;
 }
 } // namespace
 
@@ -216,7 +249,7 @@ NativeOpenVerificationResult NativeHostedDatabaseRuntime::VerifyStartupDatabaseF
         ++scan.filespaces;
         const auto chain=db::NativeAllocationLeaseReader::Read(lease,member.bootstrap.filespace_uuid,
             limits.selected.maximum_verification_image_bytes,maps.workspace);
-        if(!chain.ok()){error=VE::finding;return;}
+        if(!chain.ok()){error=ChainRefusal(chain);return;}
         const auto coverage=api::CheckNativeStartupCatalogAllocation(read.catalog_capture_,chain.chain);
         if(!coverage.ok()){error=VE::finding;return;}
         const auto initial=api::CheckNativeStartupInitialControlAllocation(read.catalog_capture_,observed.identity,chain.chain);

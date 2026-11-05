@@ -2693,6 +2693,17 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
                 const auto configured=Host::ResolveConfiguredStartupVerificationPolicies(read);
                 Check(configured==(policy_variant==26?server::NativeHostedRuntimeError::verification_policy_failure:policy_selected),
                     "coordinator uses persisted binary references; an earlier manual resolution cannot invent a missing configured selection");
+                // SB_OPEN_VERIFICATION_READ_ONLY (owner 2026-11-05): L5's first
+                // startup duty, read-only, before any startup transaction.
+                if(configured==server::NativeHostedRuntimeError::none){
+                  const auto open_budget=(construction.total_pages==2048?32:8*construction.total_pages/512)*512*u64{sizes[profile]};
+                  const auto writes=stage_writes,syncs=stage_syncs;
+                  const auto opened=Host::VerifyStartupDatabaseFile(read,{{open_budget,64*1024*1024},8*1024*1024});
+                  if(!opened.ok())std::cerr<<"fixture open verification="<<int(opened.error)<<" stage="<<int(opened.stage)
+                      <<" source="<<int(opened.source_error)<<" profile="<<profile<<'\n';
+                  Check(opened.ok()&&read.open_verification()&&stage_writes==writes&&stage_syncs==syncs,
+                      "the fixture's database verifies read-only before any startup transaction, with no write or sync");
+                }
                 const auto attached=Host::AttachStartupServiceSession(read);
                 if(ExpectedVerificationPolicyError(verification_policy_variant)!=VerificationPolicyError::none||policy_variant==26){
                   Check(attached.error==SessionError::policy_required&&!read.session(),
@@ -3688,46 +3699,6 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
       <<int(verification_policies)<<" selection="<<int(read.verification_policies().error)<<'\n';
   Check(verification_policies==server::NativeHostedRuntimeError::none&&read.verification_policies().ok(),
       "the coordinator's persisted startup verification references resolve to complete policy bodies");
-  // Open verification (owner direction 2026-11-05): L5's first startup duty,
-  // read-only, before any startup transaction. Same selected-read budget as
-  // the startup transaction's own reads below.
-  using OpenError=server::NativeOpenVerificationError;using OpenStage=server::NativeOpenVerificationStage;
-  const u64 open_image_budget=(create.total_pages==2048?32:8*create.total_pages/512)*512*u64{sizes[profile]};
-  const server::NativeOpenVerificationLimits open_limits{{open_image_budget,64*1024*1024},8*1024*1024};
-  {const auto short_map=Host::VerifyStartupDatabaseFile(read,{{open_image_budget,64*1024*1024},0});
-   const auto over_policy=Host::VerifyStartupDatabaseFile(read,{{open_image_budget,SIZE_MAX/4},8*1024*1024});
-   Check(short_map.error==OpenError::invalid_request&&over_policy.error==OpenError::policy_refused&&
-       !read.open_verification()&&read_file()==created_bytes,
-       "open verification refuses unusable limits before reading, retains nothing and writes nothing");}
-  if(profile==0){
-    // Damage one byte of the primary's page zero on disk. Verification must
-    // report a finding, retain nothing and write nothing; restoring the byte
-    // restores a clean verification.
-    const int fd=::open(path.c_str(),O_RDWR|O_CLOEXEC);
-    Check(fd>=0,"independent descriptor for the page-zero damage probe");
-    char original=0;Check(::pread(fd,&original,1,200)==1,"read the page-zero byte to damage");
-    const char damaged=char(original^0x5a);
-    Check(::pwrite(fd,&damaged,1,200)==1&&::fsync(fd)==0,"damage one page-zero byte");
-    auto expected=created_bytes;expected[200]=damaged;
-    const auto refused=Host::VerifyStartupDatabaseFile(read,open_limits);
-    if(refused.error!=OpenError::finding)std::cerr<<"producer damaged verify="<<int(refused.error)<<" stage="<<int(refused.stage)<<" source="<<int(refused.source_error)<<'\n';
-    Check(refused.error==OpenError::finding&&refused.stage==OpenStage::identity&&!refused.observation&&
-        !read.open_verification()&&read_file()==expected,
-        "a damaged page zero is a finding at the identity stage; verification retains nothing and writes nothing");
-    Check(::pwrite(fd,&original,1,200)==1&&::fsync(fd)==0&&::close(fd)==0&&read_file()==created_bytes,
-        "restore the damaged page-zero byte");
-  }
-  const auto opened=Host::VerifyStartupDatabaseFile(read,open_limits);
-  if(!opened.ok())std::cerr<<"producer open verification="<<int(opened.error)<<" stage="<<int(opened.stage)<<'\n';
-  Check(opened.ok()&&opened.stage==OpenStage::complete&&read.open_verification()&&
-      opened.observation->identity.selection.checkpoint_generation==1&&opened.observation->identity.filespaces==1&&
-      opened.observation->identity.system_state.lifecycle==db::NativeSystemLifecycle::creating&&
-      opened.observation->allocation.filespaces==1&&opened.observation->allocation.catalog_pages>0&&
-      opened.observation->inventory.transactions==1&&opened.observation->inventory.active_transactions==0&&
-      opened.observation->inventory.in_doubt_transactions==0&&opened.observation->inventory.horizon_records==3&&
-      opened.observation->routes.routes==2,
-      "the opened file verifies read-only before any startup transaction: identity, allocation, inventory, catalog routes");
-  Check(read_file()==created_bytes,"open verification writes nothing: every byte of the producer's file is unchanged");
   const auto attached=Host::AttachStartupServiceSession(read);
   if(!attached.ok())std::cerr<<"producer session error="<<int(attached.error)<<'\n';
   Check(attached.ok()&&read.session()&&read.session()->database_uuid==receipt.database_uuid&&
@@ -3759,6 +3730,76 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
       {{startup_image_budget,64*1024*1024},{startup_image_budget,16*1024*1024},{startup_image_budget,control_backing},
        8*1024*1024,4*1024*1024,16*1024*1024,startup_image_budget},
       192*1024*1024};
+  // Open verification (owner direction 2026-11-05): L5's first startup duty,
+  // read-only, before any startup transaction. It runs here, after the
+  // read-only session attach and policy resolution, so the startup
+  // transaction's gate can be observed refusing first. Same selected-read
+  // budget as the startup transaction's own reads.
+  using StartupError=runtime_security::NativeStartupTransactionError;
+  const auto gate_refuses=[&](const char* label){
+    const auto refused=Host::PrepareStartupTransaction(read,startup_limits);
+    Check(refused.error==StartupError::verification_failure&&refused.detail&&
+        std::string_view(refused.detail)=="open_verification_required"&&
+        read.startup_transaction().phase==StartupPhase::absent,label);
+  };
+  gate_refuses("no startup transaction before a clean open verification");
+  Check(read_file()==created_bytes,"the refused startup transaction wrote nothing");
+  using OpenError=server::NativeOpenVerificationError;using OpenStage=server::NativeOpenVerificationStage;
+  const u64 open_image_budget=(create.total_pages==2048?32:8*create.total_pages/512)*512*u64{sizes[profile]};
+  const server::NativeOpenVerificationLimits open_limits{{open_image_budget,64*1024*1024},8*1024*1024};
+  {const auto short_map=Host::VerifyStartupDatabaseFile(read,{{open_image_budget,64*1024*1024},0});
+   const auto over_policy=Host::VerifyStartupDatabaseFile(read,{{open_image_budget,SIZE_MAX/4},8*1024*1024});
+   Check(short_map.error==OpenError::invalid_request&&over_policy.error==OpenError::policy_refused&&
+       !read.open_verification()&&read_file()==created_bytes,
+       "open verification refuses unusable limits before reading, retains nothing and writes nothing");}
+  if(profile==0){
+    // Damage one byte of the primary's page zero on disk. Verification must
+    // report a finding, retain nothing and write nothing; restoring the byte
+    // restores a clean verification.
+    const int fd=::open(path.c_str(),O_RDWR|O_CLOEXEC);
+    Check(fd>=0,"independent descriptor for the page-zero damage probe");
+    char original=0;Check(::pread(fd,&original,1,200)==1,"read the page-zero byte to damage");
+    const char damaged=char(original^0x5a);
+    Check(::pwrite(fd,&damaged,1,200)==1&&::fsync(fd)==0,"damage one page-zero byte");
+    auto expected=created_bytes;expected[200]=damaged;
+    const auto refused=Host::VerifyStartupDatabaseFile(read,open_limits);
+    if(refused.error!=OpenError::finding)std::cerr<<"producer damaged verify="<<int(refused.error)<<" stage="<<int(refused.stage)<<" source="<<int(refused.source_error)<<'\n';
+    Check(refused.error==OpenError::finding&&refused.stage==OpenStage::identity&&!refused.observation&&
+        !read.open_verification()&&read_file()==expected,
+        "a damaged page zero is a finding at the identity stage; verification retains nothing and writes nothing");
+    gate_refuses("a verification finding admits no startup transaction");
+    Check(read_file()==expected,"the refused startup transaction wrote nothing to the damaged file");
+    Check(::pwrite(fd,&original,1,200)==1&&::fsync(fd)==0&&::close(fd)==0&&read_file()==created_bytes,
+        "restore the damaged page-zero byte");
+    // Every read position: an injected I/O error is reported as io_failure,
+    // never as a finding, and retains and writes nothing. The sweep ends at
+    // the first position past the verification's last read.
+    unsigned positions=0,misreported=0;
+    for(unsigned fault=1;fault<100000;++fault){
+      reads=0;track_reads=true;read_fault=fault;
+      const auto faulted=Host::VerifyStartupDatabaseFile(read,open_limits);
+      track_reads=false;
+      if(read_fault){read_fault=0;Check(faulted.ok(),"the verification completes once no read is faulted");break;}
+      ++positions;
+      if(faulted.error!=OpenError::io_failure||read.open_verification()){
+        if(!misreported++)std::cerr<<"producer read fault "<<fault<<" reported="<<int(faulted.error)<<" stage="<<int(faulted.stage)
+            <<" source="<<int(faulted.source_error)<<'\n';
+      }
+    }
+    Check(positions>0&&!misreported&&read_file()==created_bytes,
+        "an I/O error at every verification read is reported as io_failure, never a finding, and writes nothing");
+  }
+  const auto opened=Host::VerifyStartupDatabaseFile(read,open_limits);
+  if(!opened.ok())std::cerr<<"producer open verification="<<int(opened.error)<<" stage="<<int(opened.stage)<<'\n';
+  Check(opened.ok()&&opened.stage==OpenStage::complete&&read.open_verification()&&
+      opened.observation->identity.selection.checkpoint_generation==1&&opened.observation->identity.filespaces==1&&
+      opened.observation->identity.system_state.lifecycle==db::NativeSystemLifecycle::creating&&
+      opened.observation->allocation.filespaces==1&&opened.observation->allocation.catalog_pages>0&&
+      opened.observation->inventory.transactions==1&&opened.observation->inventory.active_transactions==0&&
+      opened.observation->inventory.in_doubt_transactions==0&&opened.observation->inventory.horizon_records==3&&
+      opened.observation->routes.routes==2,
+      "the opened file verifies read-only before any startup transaction: identity, allocation, inventory, catalog routes");
+  Check(read_file()==created_bytes,"open verification writes nothing: every byte of the producer's file is unchanged");
   Check(read_file()==created_bytes,
       "opening, verifying and resolving startup policies leave every byte of the producer's file unchanged");
   const auto prepared=Host::PrepareStartupTransaction(read,startup_limits);
