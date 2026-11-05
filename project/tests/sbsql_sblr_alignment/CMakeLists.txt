@@ -3834,13 +3834,32 @@ get_target_property(native_credential_fixture_link_options
 target_link_options(sbsql_sblr_alignment_native_local_service_enrollment PRIVATE
   ${native_credential_fixture_link_options}
   "-Wl,--wrap=free" "-Wl,--wrap=pthread_mutex_lock" "-Wl,--wrap=pthread_mutex_unlock" "-Wl,--wrap=clock_gettime")
-add_test(NAME sbsql_sblr_alignment_native_local_service_enrollment
-  COMMAND sbsql_sblr_alignment_native_local_service_enrollment)
-set_tests_properties(sbsql_sblr_alignment_native_local_service_enrollment PROPERTIES
-  LABELS "sbsql_sblr_alignment;native_storage;native_service_enrollment;protected_memory;selected_catalog_discovery;component_not_live_admission"
-  # 900: the default pack's catalog grew from 64 to 306 definitions with the
-  # agent task-group roles (2026-10-29); a full run measured 350-470 s.
-  TIMEOUT 900)
+# The fixture cases run as separate shards (owner 2026-11-05), so -j runs them
+# side by side instead of as one long entry. Each entry is the first case
+# number of a shard; the last shard is open-ended, so a case added later still
+# runs. The test compiles this list in and refuses a shard count that differs
+# from it. The boundaries balance the standalone per-case times measured
+# 2026-11-05 with SB_NATIVE_ENROLLMENT_TIMING: 228 cases, 453 s wall, of
+# which 38 s precede case 1 (the affinity children and pack comparison, shard
+# 0 only); about 76 s per shard.
+set(native_enrollment_shard_first_cases 1 15 88 141 170 186)
+list(LENGTH native_enrollment_shard_first_cases native_enrollment_shard_count)
+math(EXPR native_enrollment_last_shard "${native_enrollment_shard_count}-1")
+string(REPLACE ";" "," native_enrollment_shard_define "${native_enrollment_shard_first_cases}")
+target_compile_definitions(sbsql_sblr_alignment_native_local_service_enrollment PRIVATE
+  SB_ENROLLMENT_SHARD_FIRST_CASES=${native_enrollment_shard_define})
+foreach(native_enrollment_shard RANGE 0 ${native_enrollment_last_shard})
+  add_test(NAME sbsql_sblr_alignment_native_local_service_enrollment_shard_${native_enrollment_shard}
+    COMMAND sbsql_sblr_alignment_native_local_service_enrollment shard
+      ${native_enrollment_shard} ${native_enrollment_shard_count})
+  set_tests_properties(sbsql_sblr_alignment_native_local_service_enrollment_shard_${native_enrollment_shard} PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;native_service_enrollment;protected_memory;selected_catalog_discovery;component_not_live_admission"
+    # 900 was the single entry's budget (the default pack's catalog grew from
+    # 64 to 306 definitions with the agent task-group roles, 2026-10-29; a full
+    # run measured 350-470 s). Each shard keeps it. Measured 2026-11-05: 62-140 s
+    # per shard standalone; 109-198 s with all seven enrollment entries at -j8.
+    TIMEOUT 900)
+endforeach()
 # The same binary, only the stage that opens a file the production producer
 # (CreateNativeDatabaseOnOpenDevice) wrote, at every page-size profile.
 add_test(NAME sbsql_sblr_alignment_native_local_service_enrollment_producer

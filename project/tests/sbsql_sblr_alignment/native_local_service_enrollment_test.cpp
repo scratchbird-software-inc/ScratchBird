@@ -23,7 +23,9 @@
 #include "admitted_datatype_cohort.hpp"
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <charconv>
 #include <chrono>
+#include <climits>
 #include <time.h>
 
 namespace {
@@ -3774,15 +3776,51 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
   Check(Host::Close(host.runtime).ok(),"the producer's database closes");
 }
 
+// Fixture shards (owner 2026-11-05: split the fixture into several ctest
+// entries so -j runs them side by side). Shard k runs the cases numbered from
+// kShardFirstCase[k] up to the next shard's first case; the last shard is
+// open-ended, so a case added later still runs. Case numbers stay global, so a
+// case keeps its number whichever shard runs it. The one-time checks (the
+// affinity children and the pack family comparison) run in shard 0 only.
+// Boundaries balance the measured standalone case times; see CMakeLists.txt.
+constexpr unsigned kShardFirstCase[]={SB_ENROLLMENT_SHARD_FIRST_CASES};
+constexpr unsigned kShardCount=sizeof(kShardFirstCase)/sizeof(kShardFirstCase[0]);
+// Affinity children: each is re-executed with its mode number as the argument.
+constexpr unsigned kAffinityModes=14;
+
+bool ParseShardNumber(const char* text,unsigned& value){
+  const std::string_view view(text);
+  const auto parsed=std::from_chars(view.data(),view.data()+view.size(),value);
+  return parsed.ec==std::errc{}&&parsed.ptr==view.data()+view.size();
+}
+
 int main(int argc,char** argv) {
+  // Arguments: none (every case), "producer" (only the production-producer
+  // acceptance stage, its own ctest entry so it neither lengthens nor depends
+  // on the fixture cases), "shard <k> <count>" (one fixture shard), or an
+  // affinity child's positive mode number. Anything else is refused, so a
+  // mistyped argument cannot silently run the whole fixture instead.
+  const bool producer=argc==2&&std::string_view(argv[1])=="producer";
+  const bool sharded=argc==4&&std::string_view(argv[1])=="shard";
+  unsigned shard=0,shard_count=0;
+  if(sharded&&(!ParseShardNumber(argv[2],shard)||!ParseShardNumber(argv[3],shard_count)||
+      shard_count!=kShardCount||shard>=kShardCount)){
+    std::cerr<<"native enrolled source FAIL shard arguments must be <k> "<<kShardCount<<" with k below "<<kShardCount<<'\n';
+    return 2;
+  }
+  unsigned death_mode=0;
+  if(argc==2&&!producer&&(!ParseShardNumber(argv[1],death_mode)||death_mode==0||death_mode>kAffinityModes)){
+    std::cerr<<"native enrolled source FAIL unknown argument "<<argv[1]<<'\n';return 2;
+  }
+  if(argc!=1&&argc!=2&&!sharded){std::cerr<<"native enrolled source FAIL unknown arguments\n";return 2;}
+  const int death=int(death_mode);
+  const unsigned first_case=sharded?kShardFirstCase[shard]:1;
+  const unsigned end_case=sharded&&shard+1<kShardCount?kShardFirstCase[shard+1]:UINT_MAX;
+  const bool once=!sharded||shard==0;
   server::ServerProcessCryptoOwner process;
   ParentOwnedArtifacts artifacts;int outcome=0;
-  // "producer": only the production-producer acceptance stage, run as its own
-  // ctest entry so it neither lengthens nor depends on the fixture cases.
-  const bool producer=argc==2&&std::string_view(argv[1])=="producer";
-  const int death=argc==2&&!producer?std::atoi(argv[1]):0;
   try {
-  if(!death&&!producer)for(int mode=1;mode<=14;++mode){const auto child=::fork();Check(child>=0,"owned native host affinity fixture child");
+  if(!death&&!producer&&once)for(unsigned mode=1;mode<=kAffinityModes;++mode){const auto child=::fork();Check(child>=0,"owned native host affinity fixture child");
     if(!child){const auto option=std::to_string(mode);::execl(argv[0],argv[0],option.c_str(),nullptr);::_exit(72);}
     int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==73,
         "foreign thread host prerequisite access/move/reset refuses before governed custody");
@@ -3801,9 +3839,11 @@ int main(int argc,char** argv) {
         db::NativeCatalogCaptureWorkspaceBytes({1,1,SIZE_MAX,1})==0,
         "capture transaction/row/text/directory size arithmetic refuses overflow before allocation");
     const bool timing=std::getenv("SB_NATIVE_ENROLLMENT_TIMING")!=nullptr;
-    unsigned case_number=0;
+    unsigned case_number=0,cases_run=0;
     const auto run=[&](unsigned profile,bool indexed,server::ServerProcessCryptoOwner& owner,auto... variants){
       const auto number=++case_number;
+      if(number<first_case||number>=end_case)return;
+      ++cases_run;
       const auto started=std::chrono::steady_clock::now();
       if(timing)std::cerr<<"native_enrollment_case_start="<<number<<" death="<<death<<" profile="<<profile<<" indexed="<<indexed<<'\n';
       EnrolledNativeSource(profile,indexed,owner,variants...);
@@ -3813,7 +3853,7 @@ int main(int argc,char** argv) {
     Check(process.WithProviderScope([&]{
       if(death){run(0,true,process,0,0,death);return;}
       if(producer){for(unsigned profile=0;profile<5;++profile)ProducerNativeSource(profile,process);return;}
-      PackPolicyFamiliesMatchFixture();
+      if(once)PackPolicyFamiliesMatchFixture();
       for(unsigned profile=0;profile<5;++profile)for(bool indexed:{false,true})run(profile,indexed,process);
       for(unsigned variant=1;variant<=10;++variant)run(0,true,process,variant);
       for(unsigned variant=1;variant<=2;++variant)run(0,true,process,0,variant);
@@ -3833,6 +3873,11 @@ int main(int argc,char** argv) {
       for(unsigned variant=1;variant<=22;++variant)run(0,true,process,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,variant);
       for(unsigned variant=1;variant<=6;++variant)run(0,true,process,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,variant);
     }).ok(),"actual production provider scope for construction and native hosting");
+    if(sharded){
+      Check(cases_run>0,"every fixture shard runs at least one case");
+      std::cout<<"native enrolled source shard "<<shard<<" of "<<kShardCount<<" ran cases "<<first_case<<'-'
+          <<(first_case+cases_run-1)<<" of "<<case_number<<'\n';
+    }
   }catch(const std::exception& error){allocation_budget=-1;read_fault=0;track_reads=false;
     native_clock_failure=native_clock_regression=false;native_clock_advance_seconds=0;
     std::cerr<<"native enrolled source FAIL "<<error.what()<<" checks="<<checks<<'\n';outcome=1;}
