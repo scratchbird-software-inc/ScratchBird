@@ -1521,6 +1521,16 @@ endif()
   set_tests_properties(sbsql_sblr_alignment_careful_write_crash PROPERTIES
     LABELS "sbsql_sblr_alignment;native_storage;careful_write"
     TIMEOUT 120)
+  # SEARCH_KEY: SB_COMPACT_TRANSACTION_STATE_PAGE, SB_TRANSACTION_HEADER_RECORD
+  # (owner rulings 2026-11-05). In-place transaction-state page and transaction
+  # header record codecs, unwired; includes careful-write crash prefixes.
+  add_executable(sbsql_sblr_alignment_transaction_state_page transaction_state_page_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_transaction_state_page PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_transaction_state_page PRIVATE sb_storage_page sb_storage_disk)
+  add_test(NAME sbsql_sblr_alignment_transaction_state_page COMMAND sbsql_sblr_alignment_transaction_state_page)
+  set_tests_properties(sbsql_sblr_alignment_transaction_state_page PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;careful_write;transaction_inventory"
+    TIMEOUT 120)
 endif()
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(sbsql_sblr_alignment_physical_mga_owned_device physical_mga_owned_device_test.cpp)

@@ -79,6 +79,8 @@ add_library(sb_storage_page
   toast_page.cpp
   structured_page_body.cpp
   transaction_inventory_page.cpp
+  transaction_state_page.cpp
+  transaction_header_record.cpp
 )
 
 target_compile_features(sb_storage_page PUBLIC cxx_std_17)
