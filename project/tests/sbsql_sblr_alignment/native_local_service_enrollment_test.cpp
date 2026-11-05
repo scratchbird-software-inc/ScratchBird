@@ -38,11 +38,6 @@ static_assert(!std::is_default_constructible_v<runtime_security::NativeLocalServ
 static_assert(!std::is_copy_constructible_v<runtime_security::NativeLocalServiceAuthentication>);
 static_assert(!std::is_default_constructible_v<runtime_security::NativeLocalServiceSession>);
 static_assert(!std::is_copy_constructible_v<runtime_security::NativeLocalServiceSession>);
-static_assert(!std::is_default_constructible_v<runtime_security::NativeStartupTransactionOwner>);
-static_assert(!std::is_copy_constructible_v<runtime_security::NativeStartupTransactionOwner>);
-static_assert(!std::is_default_constructible_v<runtime_security::NativeStartupLockRegistration>);
-static_assert(!std::is_copy_constructible_v<runtime_security::NativeStartupLockRegistration>);
-static_assert(!std::is_default_constructible_v<runtime_security::NativeStartupLockTable>);
 bool corrupt_startup_system_read=false;
 unsigned corrupted_startup_system_reads=0;
 std::uint32_t corrupt_startup_control_type=0;
@@ -1788,8 +1783,6 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
     using SessionError=runtime_security::NativeLocalServiceSessionError;
     Check(!read.session()&&Host::AttachStartupServiceSession(read).error==SessionError::not_ready,
         "selected source and credential comparison alone cannot attach a native service session");
-    Check(Host::PrepareStartupTransaction(read,{}).error==runtime_security::NativeStartupTransactionError::not_ready,
-        "credential comparison is not permission to reserve a startup transaction");
     Check(Host::AuthenticateStartupService(read,provisioner.derived).error==AuthenticationError::selected_guards_held&&
         !read.authentication(),"service authentication cannot invoke a provider under selected native device guards");
     auto competing=Host::ReadStartupCredentials(host.runtime,request,provisioner.source,provisioner.tag,provisioner.derived);
@@ -2758,8 +2751,6 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
                     Check(runtime_security::ResolveNativeTransactionPolicyDeclarations(read.catalog_capture(),stale,name_workspace).error==TPE::invalid_pack,
                         "actual pack generation cannot be guessed or substituted");
                   }else Check(!transaction.ok()&&!transaction.selection,"a failed declaration closure exposes no selected receipt");
-                  if(read.session())Check(Host::PrepareStartupTransaction(read,{}).error==runtime_security::NativeStartupTransactionError::policy_required,
-                      "verification declarations alone cannot reserve a native transaction before actual transaction policy closure");
                   allocation_budget=0;const auto no_transaction_memory=Host::ResolveStartupTransactionPolicies(read);allocation_budget=-1;
                   Check(no_transaction_memory==server::NativeHostedRuntimeError::memory_failure&&!read.transaction_policies().ok(),
                       "transaction selection uses actual installed database allocator backing");
@@ -2771,8 +2762,7 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
                     const auto cached_heap=allocation_budget;allocation_budget=-1;
                     Check(cached_transaction==server::NativeHostedRuntimeError::none&&cached_heap==0,
                         "immutable transaction policy replay retains the original closure without allocation");
-                  }else if(read.session())Check(Host::PrepareStartupTransaction(read,{}).error==runtime_security::NativeStartupTransactionError::policy_required,
-                      "invalid transaction policy closure cannot publish a starting transaction");
+                  }
                   allocation_budget=0;const auto policy_cached=Host::ResolveStartupVerificationPolicies(read,policy_request);
                   const auto policy_heap=allocation_budget;allocation_budget=-1;
                   Check(policy_cached==server::NativeHostedRuntimeError::none&&policy_heap==0,
@@ -2808,93 +2798,6 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
           "resource admission and internal service authentication publish no transaction or durable readiness");
     }
     observe_mutexes=false;
-    const bool publish_starting=reopen==1&&!configuration_variant&&!graph_variant&&!death&&!agent_variant&&!memory_variant&&
-        !policy_variant&&!authentication_variant&&!name_variant&&!namespace_variant&&!filespace_variant&&!audit_variant&&
-        !verification_policy_variant&&!management_variant&&!reference_variant&&!naming_profile_variant&&!collision_variant&&!index_variant&&(transaction_policy_variant==0||transaction_policy_variant>=29);
-    // Successor reads validate the retained starting, boundary and detail
-    // history, including the selected inventory and directory proof together.
-    // Reserve the actual larger selected-read backing for this three-stage
-    // fixture; the whole publication remains below its explicit 192 MiB cap.
-    // Image accounting includes every validation pass over retained history,
-    // independently of peak live backing. The extended 1024-page case needs
-    // a larger explicit scan allowance; its 64 MiB source backing is unchanged.
-    // Its own 512-page unit, not the source backing (which became at least
-    // 8 MiB on 2026-11-03). The selected-source scratch grows with the file:
-    // 8 units served 512-page files and 32 the history case. Measured
-    // 2026-11-03: 1024-page files need more than 8 (the 8 KiB startup identity
-    // probe refused) and the 2048-page history case more than 16; 32 passes.
-    const auto startup_image_budget=(construction.total_pages==2048?32:8*construction.total_pages/512)*512*u64{sizes[profile]};
-    const runtime_security::NativeStartupTransactionLimits startup_limits{
-        {{startup_image_budget,64*1024*1024},{startup_image_budget,16*1024*1024},{startup_image_budget,32*1024*1024},8*1024*1024,4*1024*1024,16*1024*1024,startup_image_budget},
-        192*1024*1024};
-    std::optional<runtime_security::NativeStartupPolicyObservation> audit_policy_observation;
-    bool startup_activated=false;
-    bool storage_verified=false;
-    using StartupError=runtime_security::NativeStartupTransactionError;
-    using StartupPhase=runtime_security::NativeStartupTransactionPhase;
-    using SnapshotError=runtime_security::NativeStartupSnapshotError;
-    Check(!read.startup_snapshot()&&Host::EstablishStartupDataSnapshot(read).error==SnapshotError::not_ready,
-        "a loaded or authenticated catalog cannot fabricate a native startup data snapshot");
-    Check(Host::VerifyStartupStorageStructures(read).error==StartupError::not_ready,
-        "stored catalogs alone cannot advance live verification phases");
-    Check(Host::PersistStartupTransactionDetail(read).error==StartupError::not_ready,
-        "transaction detail needs its actual original startup boundary and registered snapshot");
-    Check(Host::PersistStartupAdmissionEvidence(read).error==StartupError::not_ready,"loaded source cannot synthesize durable admission evidence");
-    Check(Host::ActivateStartupTransaction(read).error==StartupError::not_ready&&!Host::ObserveStartupLock(read),
-        "loaded metadata cannot register a logical lock or activate a transaction");
-    Check(Host::VerifyStartupStorageIdentity(read).error==runtime_security::NativeStartupIdentityError::not_ready,
-        "unadmitted metadata cannot run the owning startup verifier");
-    Check(Host::EvaluateStartupTransactionPolicies(read).error==runtime_security::NativeStartupPolicyReadError::not_ready,
-        "declarations alone cannot issue a private startup policy evaluation");
-    if(reopen==1&&transaction_policy_variant>=19&&transaction_policy_variant<=28){
-      const auto writes=stage_writes,syncs=stage_syncs;
-      const auto refused=Host::PrepareStartupTransaction(read,startup_limits);
-      const std::array<const char*,10> reasons{"policy_decision_refused","startup_read_write_required","startup_isolation_unsupported",
-        "startup_cluster_authority_required","policy_decision_refused","policy_decision_refused",
-        "transaction_start_not_configured","transaction_start_not_configured","policy_not_effective","policy_superseded"};
-      Check(refused.error==StartupError::policy_refused&&std::string_view(refused.detail)==reasons[transaction_policy_variant-19]&&
-          read.startup_transaction().phase==StartupPhase::absent&&stage_writes==writes&&stage_syncs==syncs,
-          "persisted actual transaction/lock decisions, boundaries and startup isolation govern reservation before any effects");
-    }
-    if(reopen==1&&verification_policy_variant>=23){
-      const auto writes=stage_writes,syncs=stage_syncs;
-      Check(Host::PrepareStartupTransaction(read,startup_limits).error==StartupError::authorization_refused&&
-          read.startup_transaction().phase==StartupPhase::absent&&stage_writes==writes&&stage_syncs==syncs,
-          "persisted authorization policy bounds govern actual startup admission before transaction allocation");
-    }
-    if(publish_starting){
-      Check(Host::PrepareStartupTransaction(read,{}).error==StartupError::invalid_limits,
-          "first-startup operation requires explicit bounded publication resources");
-      auto insufficient=startup_limits;insufficient.maximum_publication_memory_bytes=1;
-      Check(Host::PrepareStartupTransaction(read,insufficient).error==StartupError::invalid_limits&&
-          read.startup_transaction().phase==StartupPhase::absent,
-          "a ceiling below the concurrent publication working set refuses before ownership or effects");
-      auto overflow=startup_limits;overflow.publication.graph_backing_bytes=SIZE_MAX;
-      Check(Host::PrepareStartupTransaction(read,overflow).error==StartupError::invalid_limits&&
-          read.startup_transaction().phase==StartupPhase::absent,
-          "publication working-set addition cannot wrap into an undersized reservation");
-      const auto prior_writes=stage_writes,prior_syncs=stage_syncs;
-      allocation_budget=0;const auto no_memory=Host::PrepareStartupTransaction(read,startup_limits);allocation_budget=-1;
-      Check(no_memory.error==StartupError::resource_exhausted&&read.startup_transaction().phase==StartupPhase::absent,
-          "failed startup allocation issues no transaction owner and retains the original source");
-      const auto prepared=Host::PrepareStartupTransaction(read,startup_limits);
-      if(!prepared.ok())std::cerr<<"startup transaction prepare="<<int(prepared.error)<<" detail="<<prepared.detail
-          <<" allocation="<<int(prepared.allocation_status.code)<<'\n';
-      Check(prepared.ok()&&prepared.phase==StartupPhase::prepared&&prepared.binding.local_transaction_id==2&&
-          prepared.publication_reserved_bytes>0&&prepared.publication_reserved_bytes<startup_limits.maximum_publication_memory_bytes&&
-          prepared.binding.fence_generation==1&&prepared.binding.session_uuid==read.session()->session_uuid&&
-          prepared.original_publication_uuid==read.session()->original_operation_uuid&&
-          prepared.policy_snapshot_uuid!=read.session()->clock_policy_version_uuid&&
-          prepared.binding.transaction_uuid!=security_tx.value&&stage_writes==prior_writes&&stage_syncs==prior_syncs,
-          "private native startup reserves real TX2 identities under its frozen policy owner before any physical effects");
-      allocation_budget=0;const auto replay=Host::PrepareStartupTransaction(read,startup_limits);
-      const auto heap=allocation_budget;allocation_budget=-1;
-      Check(replay.ok()&&replay.binding==prepared.binding&&replay.policy_snapshot_uuid==prepared.policy_snapshot_uuid&&heap==0,
-          "startup preparation retry preserves actual issuer, snapshot and transaction ownership without allocation");
-      Check(Host::VerifyStartupCatalogMetadata(read)==server::NativeHostedRuntimeError::busy&&
-          Host::AttachStartupServiceSession(read).error==SessionError::busy,
-          "a frozen startup owner prevents stale source/session replacement during publication");
-    }
     const auto memory_version=configuration.memory_version_uuid;
     const auto memory_configuration_generation=configuration.memory.generation;
     const auto policies_validated=read.agent_policies().ok();
@@ -2952,383 +2855,6 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
         "management descriptor selection moves with authenticated native source and invalidates the prior owner");
     Check(!read.transaction_policies().ok()&&!read.transaction_policies().selection&&moved.transaction_policies().ok()==had_transaction_policies,
         "transaction policy closure transfers with authenticated native ownership and clears borrowed source views");
-    if(publish_starting){
-      Check(Host::ResolveStartupTransactionPolicies(moved)==server::NativeHostedRuntimeError::busy,
-          "a frozen startup transaction refuses policy replacement");
-      Check(read.startup_transaction().phase==StartupPhase::absent&&moved.startup_transaction().phase==StartupPhase::prepared,
-          "the real startup transaction and allocator backing move with their sole credential owner");
-      const auto original=moved.startup_transaction();
-      const auto before_clock_writes=stage_writes,before_clock_syncs=stage_syncs;
-      native_clock_failure=true;const auto missing_clock=Host::PublishStartupTransaction(moved);native_clock_failure=false;
-      native_clock_regression=true;const auto regressed_clock=Host::PublishStartupTransaction(moved);native_clock_regression=false;
-      Check(missing_clock.error==StartupError::clock_failure&&regressed_clock.error==StartupError::clock_failure&&
-          moved.startup_transaction().phase==StartupPhase::prepared&&
-          moved.startup_transaction().binding==original.binding&&stage_writes==before_clock_writes&&stage_syncs==before_clock_syncs,
-          "unavailable or regressed actual native clock cannot start publication or replace its retained identity");
-      allocation_budget=0;const auto denied=Host::PublishStartupTransaction(moved);allocation_budget=-1;
-      Check(!denied.ok()&&denied.binding==original.binding&&denied.policy_snapshot_uuid==original.policy_snapshot_uuid,
-          "publication memory failure retains the original private startup tuple and policy snapshot");
-      stage_sync_fault=1;const auto interrupted=Host::PublishStartupTransaction(moved);
-      Check(!interrupted.ok()&&interrupted.phase==StartupPhase::reserving&&interrupted.binding==original.binding,
-          "a real reservation sync failure preserves the exact owning startup attempt");
-      stage_write_fault=3;const auto torn=Host::PublishStartupTransaction(moved);
-      Check(!torn.ok()&&torn.phase==StartupPhase::reserving&&torn.effects.uncertain_write&&torn.binding==original.binding,
-          "a real partial watermark write retains the same original transaction and retry owner");
-      const auto published=Host::PublishStartupTransaction(moved);
-      if(!published.ok())std::cerr<<"startup transaction publish="<<int(published.error)<<" phase="<<int(published.phase)
-        <<" reserve="<<int(published.reservation_error)<<" publication="<<int(published.publication_error)
-        <<" publication_phase="<<int(published.publication_phase)<<'\n';
-      Check(published.ok()&&published.phase==StartupPhase::starting_selected&&published.selected&&
-          published.selected->selection.checkpoint_generation==2&&published.binding==original.binding&&
-          published.selected->watermark.intent->startup_binding==original.binding,
-          "the actual authenticated native host publishes and independently verifies durable TX2 starting with the original binding");
-      const auto writes=stage_writes,syncs=stage_syncs;
-      allocation_budget=0;const auto replay=Host::PublishStartupTransaction(moved);const auto heap=allocation_budget;allocation_budget=-1;
-      Check(replay.ok()&&replay.binding==published.binding&&heap==0&&writes==stage_writes&&syncs==stage_syncs,
-          "selected startup reservation replays without another identity, generation, write or allocation");
-      Check(Host::EstablishStartupDataSnapshot(moved).error==SnapshotError::not_ready&&!moved.startup_snapshot(),
-          "durable starting alone cannot establish the maintenance snapshot");
-      allocation_budget=0;const auto boundary_denied=Host::EstablishStartupVerificationBoundary(moved);allocation_budget=-1;
-      Check(!boundary_denied.ok()&&boundary_denied.binding==published.binding&&
-          boundary_denied.current_publication_uuid==published.current_publication_uuid&&stage_writes==writes&&stage_syncs==syncs,
-          "failed boundary preparation retains the completed starting publisher and its exclusive registration");
-      stage_sync_fault=1;const auto boundary_interrupted=Host::EstablishStartupVerificationBoundary(moved);
-      stage_sync_fault=0;
-      if(boundary_interrupted.phase!=StartupPhase::reserving)std::cerr<<"boundary handoff="<<int(boundary_interrupted.handoff_error)
-          <<" error="<<int(boundary_interrupted.error)<<" phase="<<int(boundary_interrupted.phase)
-          <<" reserve="<<int(boundary_interrupted.reservation_error)<<" writer="<<int(boundary_interrupted.read_writer_error)
-          <<" memory="<<int(boundary_interrupted.read_memory_error)<<" selection="<<int(boundary_interrupted.read_selection_error)
-          <<" checkpoint="<<int(boundary_interrupted.read_checkpoint_error)<<" inventory="<<int(boundary_interrupted.read_inventory_error)
-          <<" allocation="<<int(boundary_interrupted.read_allocation_error)<<" status="<<int(boundary_interrupted.allocation_status.code)<<'\n';
-      Check(!boundary_interrupted.ok()&&boundary_interrupted.phase==StartupPhase::reserving&&
-          boundary_interrupted.binding==published.binding&&
-          boundary_interrupted.current_publication_uuid!=published.current_publication_uuid&&
-          boundary_interrupted.original_publication_uuid==published.original_publication_uuid,
-          "the boundary successor keeps TX2 and source provenance while retrying its own exact physical attempt");
-      const auto boundary=Host::EstablishStartupVerificationBoundary(moved);
-      if(!boundary.ok())std::cerr<<"startup boundary publish="<<int(boundary.error)<<" phase="<<int(boundary.phase)
-          <<" reserve="<<int(boundary.reservation_error)<<" publication="<<int(boundary.publication_error)
-          <<" publication_phase="<<int(boundary.publication_phase)<<'\n';
-      Check(boundary.ok()&&boundary.phase==StartupPhase::boundary_selected&&boundary.selected&&
-          boundary.selected->selection.checkpoint_generation==3&&boundary.binding==published.binding&&
-          boundary.maintenance_boundary_uuid==boundary_interrupted.maintenance_boundary_uuid&&
-          !boundary.maintenance_boundary_uuid.is_nil(),
-          "actual startup custody publishes an authorized maintenance boundary without activating or committing TX2");
-      const auto boundary_writes=stage_writes,boundary_syncs=stage_syncs;
-      allocation_budget=0;const auto boundary_replay=Host::EstablishStartupVerificationBoundary(moved);
-      const auto boundary_heap=allocation_budget;allocation_budget=-1;
-      Check(boundary_replay.ok()&&boundary_replay.current_publication_uuid==boundary.current_publication_uuid&&
-          boundary_replay.maintenance_boundary_uuid==boundary.maintenance_boundary_uuid&&boundary_heap==0&&
-          stage_writes==boundary_writes&&stage_syncs==boundary_syncs&&
-          Host::PublishStartupTransaction(moved).error==StartupError::busy,
-          "boundary replay preserves the same publication without reopening the superseded starting phase");
-      const auto snapshot=Host::EstablishStartupDataSnapshot(moved);
-      Check(snapshot.ok()&&moved.startup_snapshot(),"actual native boundary registers its complete owned maintenance snapshot");
-      const auto& data=*snapshot.observation;const auto session=*moved.session();
-      Check(data.database_uuid==Id(1)&&data.engine_instance_uuid==host.runtime->engine_instance_uuid()&&
-          data.attachment_uuid==session.attachment_uuid&&data.session_uuid==session.session_uuid&&
-          data.owning_transaction_uuid==boundary.binding.transaction_uuid&&data.operation_uuid==boundary.binding.operation_uuid&&
-          data.owning_transaction_number==2&&data.created_at_transaction_number==2,
-          "snapshot retains the actual host attachment session operation and same first-startup TX2");
-      const std::array<platform::Uuid,7> distinct{data.snapshot_uuid,data.active_set_uuid,data.catalog_visibility_epoch_uuid,
-          data.policy_snapshot_uuid,data.security_snapshot_uuid,data.owning_transaction_uuid,data.isolation_profile_uuid};
-      for(std::size_t i=0;i<distinct.size();++i){Check(scratchbird::core::uuid::IsEngineIdentityUuid(distinct[i]),"complete snapshot identities");
-        for(std::size_t j=0;j<i;++j)Check(distinct[i]!=distinct[j],"different visibility lifetimes retain distinct identities");}
-      Check(data.policy_snapshot_uuid==boundary.policy_snapshot_uuid&&data.security_snapshot_uuid==session.authentication_decision_uuid&&
-          data.isolation_profile_uuid==moved.transaction_policies().startup_isolation.profile_uuid&&
-          data.isolation_version_uuid==moved.transaction_policies().startup_isolation_version_uuid&&data.isolation_generation==1&&
-          data.limbo_policy==catalog::IsolationLimbo::ordinary_hidden&&data.created_at_micros>0&&
-          data.maximum_snapshot_microseconds==(transaction_policy_variant==30||transaction_policy_variant==41?60000000u:0u),
-          "actual frozen isolation security policy and configured snapshot lifetime");
-      Check(data.visible_committed_high_watermark==2&&data.visible_commit_sequence==1&&data.next_transaction_number==3&&
-          data.oldest_interesting==2&&data.oldest_active==3&&data.oldest_snapshot==2&&data.retention_horizon==2&&
-          data.active_count==0&&data.in_doubt_count==1&&data.in_doubt[0]==2,
-          "starting TX2 remains in doubt with complete next-minus-one high watermark and retained OST");
-      Check(runtime_security::native_startup_transaction_history_detail::SameSelection(data.inventory_source,boundary.selected->selection)&&
-          data.catalog_source==actual_catalog&&data.catalog_source.catalog_generation==1&&
-          data.catalog_visibility_epoch_uuid!=data.catalog_source.root_object_uuid&&
-          data.catalog_visibility_epoch_uuid!=data.catalog_source.root_page_uuid,
-          "actual inventory selection and original frozen catalog epoch remain independently bound");
-      allocation_budget=0;const auto snapshot_replay=Host::EstablishStartupDataSnapshot(moved);
-      const auto snapshot_heap=allocation_budget;allocation_budget=-1;
-      Check(snapshot_replay.ok()&&snapshot_replay.observation->snapshot_uuid==data.snapshot_uuid&&
-          snapshot_replay.observation->created_at_micros==data.created_at_micros&&snapshot_heap==0&&
-          stage_writes==boundary_writes&&stage_syncs==boundary_syncs&&moved.startup_transaction().phase==StartupPhase::boundary_selected,
-          "registered snapshot retries neither refresh nor write nor activate TX2");
-      auto snapshot_moved=std::move(moved);
-      Check(!moved.startup_snapshot()&&snapshot_moved.startup_snapshot()->snapshot_uuid==data.snapshot_uuid&&
-          Host::EstablishStartupDataSnapshot(moved).error==SnapshotError::not_ready,
-          "snapshot registration follows the actual governed owner and cannot be replayed from its moved-from shell");
-      std::destroy_at(&moved);std::construct_at(&moved,std::move(snapshot_moved));
-      Check(moved.startup_snapshot()->catalog_visibility_epoch_uuid==data.catalog_visibility_epoch_uuid&&
-          !snapshot_moved.startup_snapshot(),"returning the actual owner preserves its original catalog retention lifetime");
-      allocation_budget=0;const auto detail_denied=Host::PersistStartupTransactionDetail(moved);allocation_budget=-1;
-      Check(!detail_denied.ok()&&detail_denied.current_publication_uuid==boundary.current_publication_uuid&&
-          stage_writes==boundary_writes&&stage_syncs==boundary_syncs,
-          "detail resource failure preserves the actual completed publisher without releasing exclusive ownership");
-      stage_sync_fault=1;const auto detail_interrupted=Host::PersistStartupTransactionDetail(moved);stage_sync_fault=0;
-      if(detail_interrupted.phase!=StartupPhase::reserving)std::cerr<<"detail handoff="<<int(detail_interrupted.handoff_error)
-          <<" error="<<int(detail_interrupted.error)<<" phase="<<int(detail_interrupted.phase)
-          <<" reserve="<<int(detail_interrupted.reservation_error)<<" writer="<<int(detail_interrupted.read_writer_error)
-          <<" memory="<<int(detail_interrupted.read_memory_error)<<" selection="<<int(detail_interrupted.read_selection_error)
-          <<" checkpoint="<<int(detail_interrupted.read_checkpoint_error)<<" inventory="<<int(detail_interrupted.read_inventory_error)
-          <<" allocation="<<int(detail_interrupted.read_allocation_error)<<" status="<<int(detail_interrupted.allocation_status.code)<<'\n';
-      Check(!detail_interrupted.ok()&&detail_interrupted.phase==StartupPhase::reserving&&
-          detail_interrupted.binding==boundary.binding&&detail_interrupted.current_publication_uuid!=boundary.current_publication_uuid,
-          "detail successor retains same TX2 and registered snapshot through actual reservation sync failure");
-      stage_write_fault=3;const auto detail_torn=Host::PersistStartupTransactionDetail(moved);
-      Check(!detail_torn.ok()&&detail_torn.current_publication_uuid==detail_interrupted.current_publication_uuid&&
-          detail_torn.effects.uncertain_write&&moved.startup_snapshot()->snapshot_uuid==data.snapshot_uuid,
-          "partial detail publication retains its original exact attempt and complete snapshot");
-      const auto detailed=Host::PersistStartupTransactionDetail(moved);
-      if(!detailed.ok())std::cerr<<"startup detail publish="<<int(detailed.error)<<" phase="<<int(detailed.phase)
-          <<" reserve="<<int(detailed.reservation_error)<<" publication="<<int(detailed.publication_error)
-          <<" read_inventory="<<int(detailed.read_inventory_error)<<" read_memory="<<int(detailed.read_memory_error)<<'\n';
-      Check(detailed.ok()&&detailed.phase==StartupPhase::detail_selected&&detailed.selected&&
-          detailed.selected->selection.checkpoint_generation==4&&detailed.binding==boundary.binding&&
-          detailed.current_publication_uuid==detail_interrupted.current_publication_uuid&&
-          detailed.maintenance_boundary_uuid==boundary.maintenance_boundary_uuid,
-          "actual native owner durably retains complete startup detail under continuous same-TX2 custody");
-      const auto detail_writes=stage_writes,detail_syncs=stage_syncs;
-      allocation_budget=0;const auto detail_replay=Host::PersistStartupTransactionDetail(moved);
-      const auto snapshot_after_detail=Host::EstablishStartupDataSnapshot(moved);
-      const auto detail_heap=allocation_budget;allocation_budget=-1;
-      Check(detail_replay.ok()&&detail_replay.current_publication_uuid==detailed.current_publication_uuid&&detail_heap==0&&
-          snapshot_after_detail.ok()&&snapshot_after_detail.observation->snapshot_uuid==data.snapshot_uuid&&
-          snapshot_after_detail.observation->inventory_source.checkpoint_generation==3&&
-          stage_writes==detail_writes&&stage_syncs==detail_syncs,
-          "detail replay retains original stable inventory/catalog snapshot without another publication or refresh");
-      native_clock_failure=true;const auto policy_clock_refused=Host::EvaluateStartupTransactionPolicies(moved);native_clock_failure=false;
-      Check(policy_clock_refused.error==runtime_security::NativeStartupPolicyReadError::lifetime_refused&&!policy_clock_refused.observation,
-          "private policy evaluation requires the actual live elapsed clock");
-      const auto evaluated=Host::EvaluateStartupTransactionPolicies(moved);
-      if(!evaluated.evaluated())std::cerr<<"startup policy evaluation="<<int(evaluated.error)<<" source="<<int(evaluated.evaluation_error)<<'\n';
-      const bool policy_refusal=(transaction_policy_variant>=31&&transaction_policy_variant<=33)||
-          (transaction_policy_variant>=39&&transaction_policy_variant<=40);
-      Check(evaluated.evaluated()&&evaluated.observation->outcome==(policy_refusal?runtime_security::NativeStartupPolicyOutcome::deny:
-          runtime_security::NativeStartupPolicyOutcome::allow)&&evaluated.observation->policy_count==(policy_refusal?3:2)&&
-          evaluated.observation->subject_count==moved.authorization().projection.subjects().size()&&
-          evaluated.observation->target_count==moved.catalog_capture().filespaces().size()+1&&
-          evaluated.observation->transaction_uuid==detailed.binding.transaction_uuid&&evaluated.observation->transaction_number==2&&
-          evaluated.observation->session_uuid==detailed.binding.session_uuid&&evaluated.observation->policy_snapshot_uuid==detailed.policy_snapshot_uuid&&
-          evaluated.observation->effective_generation==1&&evaluated.observation->audit_required&&evaluated.observation->evidence_required&&
-          scratchbird::core::uuid::IsEngineIdentityUuid(evaluated.observation->evaluation_uuid)&&
-          scratchbird::core::uuid::IsEngineIdentityUuid(evaluated.observation->decision_uuid)&&
-          evaluated.observation->evaluation_uuid!=evaluated.observation->decision_uuid,
-          "actual complete applicable-policy evaluation retains original subjects, scope, identities, generations and mandatory obligations");
-      Check(!policy_refusal||evaluated.observation->decisive_policy_uuid==security_fixture::Id(98022),
-          "an additional database/user/object/filespace denial or unresolved allow cannot disappear behind the selected startup allow");
-      const auto& caches=evaluated.observation->cache_revalidation_required;
-      Check(caches.parser==policy_refusal&&caches.sblr==policy_refusal&&caches.plan==policy_refusal&&
-          caches.session==policy_refusal&&caches.udr==policy_refusal&&caches.management==policy_refusal&&
-          caches.metric==policy_refusal&&caches.route==policy_refusal,
-          "only applicable policies contribute their exact named cache obligations; subject kinds cannot be reinterpreted");
-      allocation_budget=0;const auto policy_replay=Host::EvaluateStartupTransactionPolicies(moved);
-      const auto policy_heap=allocation_budget;allocation_budget=-1;
-      Check(policy_replay.evaluated()&&policy_replay.observation->evaluation_uuid==evaluated.observation->evaluation_uuid&&
-          policy_replay.observation->decision_uuid==evaluated.observation->decision_uuid&&policy_heap==0&&
-          moved.startup_transaction().phase==StartupPhase::detail_selected&&stage_writes==detail_writes&&stage_syncs==detail_syncs,
-          "live policy decisions replay without reevaluation, I/O, active admission or fabricated durable audit");
-      audit_policy_observation=evaluated.observation;
-      native_clock_failure=true;const auto audit_clock_refused=Host::PersistStartupAdmissionEvidence(moved);native_clock_failure=false;
-      Check(audit_clock_refused.error==StartupError::clock_failure&&stage_writes==detail_writes&&stage_syncs==detail_syncs,
-          "mandatory audit requires the original live clock before any physical admission effects");
-      allocation_budget=0;const auto audit_memory_refused=Host::PersistStartupAdmissionEvidence(moved);allocation_budget=-1;
-      Check(!audit_memory_refused.ok()&&audit_memory_refused.current_publication_uuid==detailed.current_publication_uuid&&
-          stage_writes==detail_writes&&stage_syncs==detail_syncs,"audit resource refusal retains the completed original publisher and no new writes");
-      stage_sync_fault=1;const auto audit_interrupted=Host::PersistStartupAdmissionEvidence(moved);stage_sync_fault=0;
-      if(audit_interrupted.phase!=StartupPhase::reserving)std::cerr<<"audit error="<<int(audit_interrupted.error)<<" phase="<<int(audit_interrupted.phase)
-          <<" handoff="<<int(audit_interrupted.handoff_error)<<" reserve="<<int(audit_interrupted.reservation_error)
-          <<" memory="<<int(audit_interrupted.read_memory_error)<<" checkpoint="<<int(audit_interrupted.read_checkpoint_error)<<'\n';
-      Check(!audit_interrupted.ok()&&audit_interrupted.phase==StartupPhase::reserving&&audit_interrupted.binding==detailed.binding&&
-          audit_interrupted.current_publication_uuid!=detailed.current_publication_uuid,
-          "mandatory audit publication keeps original TX2 through real reservation sync failure");
-      stage_write_fault=3;const auto audit_torn=Host::PersistStartupAdmissionEvidence(moved);
-      Check(!audit_torn.ok()&&audit_torn.effects.uncertain_write&&audit_torn.current_publication_uuid==audit_interrupted.current_publication_uuid,
-          "partial audit publication cannot discard its actual attempt");
-      const auto audited=Host::PersistStartupAdmissionEvidence(moved);
-      if(!audited.ok())std::cerr<<"audit publish="<<int(audited.error)<<" phase="<<int(audited.phase)
-          <<" reserve="<<int(audited.reservation_error)<<" publication="<<int(audited.publication_error)<<'\n';
-      Check(audited.ok()&&audited.phase==StartupPhase::admission_evidence_selected&&audited.selected&&
-          audited.selected->selection.checkpoint_generation==5&&audited.binding==detailed.binding&&
-          audited.current_publication_uuid==audit_interrupted.current_publication_uuid,
-          "actual durable audit/evidence retains both allow and denial decisions without activating the transaction");
-      const auto audit_writes=stage_writes,audit_syncs=stage_syncs;
-      allocation_budget=0;const auto audit_replay=Host::PersistStartupAdmissionEvidence(moved);
-      const auto policy_after_audit=Host::EvaluateStartupTransactionPolicies(moved);const auto audit_heap=allocation_budget;allocation_budget=-1;
-      Check(audit_replay.ok()&&audit_replay.current_publication_uuid==audited.current_publication_uuid&&audit_heap==0&&
-          policy_after_audit.evaluated()&&policy_after_audit.observation->decision_uuid==evaluated.observation->decision_uuid&&
-          stage_writes==audit_writes&&stage_syncs==audit_syncs,"audit retry preserves the actual decision without another effect or identity");
-      Check(!Host::ObserveStartupLock(moved),"durable admission data alone owns no logical lock");
-      native_clock_failure=true;const auto activation_clock_refused=Host::ActivateStartupTransaction(moved);native_clock_failure=false;
-      Check(activation_clock_refused.error==StartupError::clock_failure&&!Host::ObserveStartupLock(moved)&&
-          stage_writes==audit_writes&&stage_syncs==audit_syncs,"activation needs the actual live clock before registering a lock");
-      if(policy_refusal){
-        const auto refused=Host::ActivateStartupTransaction(moved);
-        Check(refused.error==StartupError::policy_refused&&!Host::ObserveStartupLock(moved)&&
-            stage_writes==audit_writes&&stage_syncs==audit_syncs,"a persisted denial cannot acquire ownership or activate TX2");
-      }else{
-        allocation_budget=0;const auto denied=Host::ActivateStartupTransaction(moved);allocation_budget=-1;
-        Check(!denied.ok()&&stage_writes==audit_writes&&stage_syncs==audit_syncs,
-            "activation resource denial preserves the original selected source");
-        stage_sync_fault=1;const auto interrupted=Host::ActivateStartupTransaction(moved);stage_sync_fault=0;
-        if(interrupted.phase!=StartupPhase::reserving)std::cerr<<"activate error="<<int(interrupted.error)<<" phase="<<int(interrupted.phase)
-            <<" reserve="<<int(interrupted.reservation_error)<<" memory="<<int(interrupted.read_memory_error)
-            <<" checkpoint="<<int(interrupted.read_checkpoint_error)<<'\n';
-        const auto grant=Host::ObserveStartupLock(moved);
-        Check(!interrupted.ok()&&interrupted.phase==StartupPhase::reserving&&grant&&
-            grant->transaction_uuid==audited.binding.transaction_uuid&&grant->owner_uuid==grant->transaction_uuid&&
-            grant->database_uuid==Id(1)&&grant->scope_uuid==Id(1)&&grant->operation_id==audited.binding.operation_uuid&&
-            grant->grant_generation==1&&grant->policy_epoch==moved.authorization().projection.binding().policy_epoch&&
-            grant->mode==mga::MGALockMode::maintenance_exclusive&&grant->granted_mode==grant->mode&&
-            grant->owner_kind==mga::MGALockOwnerKind::transaction&&grant->scope_kind==mga::MGALockScopeKind::database&&
-            grant->release_condition==mga::MGALockReleaseCondition::transaction_end&&
-            grant->durable_recovery_source==mga::MGADurableRecoverySource::transaction_inventory&&
-            grant->wait_policy==mga::MGAWaitPolicy::no_wait&&grant->priority_class==mga::MGAPriorityClass::maintenance&&
-            grant->statement_uuid.is_nil()&&grant->cluster_uuid.is_nil()&&!grant->route_generation&&grant->route_owner_token.empty()&&
-            grant->donor_profile.empty()&&grant->deadline_uuidv7.is_nil()&&grant->record_uuid.is_nil()&&grant->table_uuid.is_nil(),
-            "actual exclusive startup registry retains a complete same-transaction grant across reservation sync failure");
-        std::array<platform::Uuid,4> lock_ids{grant->request_id,grant->requested_at_uuidv7,grant->grant_id,grant->granted_at_uuidv7};
-        std::sort(lock_ids.begin(),lock_ids.end());
-        Check(std::ranges::all_of(lock_ids,[](const auto& id){return scratchbird::core::uuid::IsEngineIdentityUuid(id);})&&
-            std::adjacent_find(lock_ids.begin(),lock_ids.end())==lock_ids.end(),"request, grant and time identities come from the actual bound issuer");
-        stage_write_fault=3;const auto torn=Host::ActivateStartupTransaction(moved);
-        Check(!torn.ok()&&torn.effects.uncertain_write&&torn.current_publication_uuid==interrupted.current_publication_uuid&&
-            Host::ObserveStartupLock(moved)==grant,"partial active publication retains exact lock and original physical attempt");
-        const auto activated=Host::ActivateStartupTransaction(moved);
-        if(!activated.ok())std::cerr<<"active publish="<<int(activated.error)<<" phase="<<int(activated.phase)
-            <<" reserve="<<int(activated.reservation_error)<<" publication="<<int(activated.publication_error)<<'\n';
-        Check(activated.ok()&&activated.phase==StartupPhase::active_selected&&activated.selected&&
-            activated.selected->selection.checkpoint_generation==6&&activated.binding==audited.binding&&
-            activated.current_publication_uuid==interrupted.current_publication_uuid&&Host::ObserveStartupLock(moved)==grant,
-            "actual same TX2 becomes active only after durable authorization, policy decision, snapshot, resources and logical lock");
-        const auto writes=stage_writes,syncs=stage_syncs;
-        allocation_budget=0;const auto replay=Host::ActivateStartupTransaction(moved);const auto heap=allocation_budget;allocation_budget=-1;
-        Check(replay.ok()&&heap==0&&Host::ObserveStartupLock(moved)==grant&&stage_writes==writes&&stage_syncs==syncs,
-            "active retry uses the same live registration without allocation or publication");
-        startup_activated=true;
-        using IdentityError=runtime_security::NativeStartupIdentityError;
-        native_clock_failure=true;const auto clock_refused=Host::VerifyStartupStorageIdentity(moved);native_clock_failure=false;
-        Check(clock_refused.error==IdentityError::lifetime_refused&&clock_refused.lifetime_error==runtime_security::NativeStartupLifetimeError::clock_failure,
-            "startup verification requires the actual transaction and snapshot clock");
-        allocation_budget=0;const auto memory_refused=Host::VerifyStartupStorageIdentity(moved);allocation_budget=-1;
-        Check(!memory_refused.ok()&&!memory_refused.observation,"verification cannot claim progress without governed scan memory");
-        reads=0;track_reads=true;read_fault=1;const auto read_refused=Host::VerifyStartupStorageIdentity(moved);read_fault=0;track_reads=false;
-        Check(!read_refused.ok()&&!read_refused.observation&&reads>0,"verification cannot skip a failed physical source read");
-        corrupted_startup_system_reads=0;corrupt_startup_system_read=true;
-        const auto corrupt=Host::VerifyStartupStorageIdentity(moved);corrupt_startup_system_read=false;
-        if(corrupt.ok()||!corrupted_startup_system_reads)std::cerr<<"identity corruption probe error="<<int(corrupt.error)
-            <<" reads="<<corrupted_startup_system_reads<<'\n';
-        Check(!corrupt.ok()&&!corrupt.observation&&corrupted_startup_system_reads>0,
-            "actual selected system-state corruption cannot become a successful verification result");
-        const auto verified=Host::VerifyStartupStorageIdentity(moved);
-        if(!verified.ok())std::cerr<<"identity verify="<<int(verified.error)<<" lifetime="<<int(verified.lifetime_error)<<'\n';
-        Check(verified.ok()&&verified.observation->selection.checkpoint_sha256==activated.selected->selection.checkpoint_sha256&&
-            verified.observation->transaction_uuid==activated.binding.transaction_uuid&&verified.observation->snapshot_uuid==data.snapshot_uuid&&
-            verified.observation->filespaces==1&&verified.observation->identity_pages==2&&verified.observation->physical_bytes_read>0&&
-            verified.observation->system_state.lifecycle==db::NativeSystemLifecycle::creating&&
-            verified.observation->system_state.checkpoint_generation==1&&Host::ObserveStartupLock(moved)==grant&&stage_writes==writes&&stage_syncs==syncs,
-            "actual active owner rereads selected identities and constructor system state without fabricating full verification, readiness or writes");
-        reads=0;track_reads=true;allocation_budget=0;const auto verified_again=Host::VerifyStartupStorageIdentity(moved);
-        const auto verification_heap=allocation_budget;allocation_budget=-1;track_reads=false;
-        Check(verified_again.ok()&&!reads&&verification_heap==0&&verified_again.observation->selection.checkpoint_sha256==verified.observation->selection.checkpoint_sha256,
-            "retained actual verification stage replays under the same exclusive owner without allocation or I/O");
-        if(profile==0&&indexed&&transaction_policy_variant==0){
-          using Phase=runtime_security::NativeVerificationPhase;
-          {
-            const auto& control=moved.catalog_capture().initial_control_pages().front();
-            const auto original_inventory=moved.catalog_capture().inventory();
-            const auto creator=original_inventory->inventory.entries.front().identity;
-            std::array<scratchbird::storage::page::NativeAllocationState,1> states{scratchbird::storage::page::NativeAllocationState::allocated};
-            std::array<scratchbird::storage::page::NativeAllocationRecord,1> records{};auto& record=records.front();
-            record.page_number=control.header.page_number;record.page_uuid=control.header.page_uuid;record.owner_uuid=control.owner_uuid;
-            record.page_type=control.header.page_type;record.page_generation=control.header.page_generation;
-            record.creator_transaction_uuid=creator.transaction_uuid.value;record.creator_local_transaction_id=creator.local_id.value;
-            std::array<db::NativeReadAllocationPage,1> pages{};auto& map=pages.front().map;
-            map.header=control.header;map.first_page=record.page_number;map.states=states;map.records=records;
-            db::NativeReadAllocationChain prefix;prefix.error=scratchbird::storage::page::NativeAllocationError::none;prefix.pages=pages;
-            using C=runtime_security::NativeStartupInitialControlError;
-            const auto check=[&]{return runtime_security::CheckNativeStartupInitialControlAllocation(
-                moved.catalog_capture(),*verified.observation,prefix);};
-            Check(check().error==C::missing_page,
-                "one valid actual initial-control identity cannot stand in for the complete original allocation graph");
-            record.owner_uuid=Id(223);
-            Check(check().error==C::invalid_record,"an initial control page must retain its actual graph owner");
-            record.owner_uuid=control.owner_uuid;record.page_number=map.first_page=1000000;
-            Check(check().error==C::orphan_page,
-                "an extra control page is refused even with a real committed construction creator and recognized page type");
-          }
-          native_clock_failure=true;const auto clock=Host::VerifyStartupStorageStructures(moved);native_clock_failure=false;
-          Check(clock.error==StartupError::clock_failure&&stage_writes==writes,"phase execution requires the actual live elapsed clock");
-          stage_sync_fault=1;const auto interrupted_scan=Host::VerifyStartupStorageStructures(moved);stage_sync_fault=0;
-          Check(!interrupted_scan.ok()&&interrupted_scan.phase==StartupPhase::reserving&&
-              interrupted_scan.verification_phase==Phase::boundary_established&&Host::ObserveStartupLock(moved)==grant,
-              "identity phase reservation failure retains prior durable boundary and actual lock");
-          stage_write_fault=3;const auto torn_scan=Host::VerifyStartupStorageStructures(moved);
-          Check(!torn_scan.ok()&&torn_scan.effects.uncertain_write&&
-              torn_scan.current_publication_uuid==interrupted_scan.current_publication_uuid&&
-              torn_scan.verification_phase==Phase::boundary_established,
-              "torn identity publication retains original attempt and cannot claim a durable phase");
-          for(const auto type:{0x303u,0x302u}){
-            corrupted_startup_control_reads=0;corrupt_startup_control_type=type;
-            const auto damaged=Host::VerifyStartupStorageStructures(moved);corrupt_startup_control_type=0;
-            Check(damaged.error==StartupError::verification_failure&&corrupted_startup_control_reads>0&&
-                damaged.verification_phase==Phase::transaction_inventory_verifying&&damaged.selected&&
-                damaged.selected->selection.checkpoint_generation==9&&Host::ObserveStartupLock(moved)==grant,
-                "actual damaged retention or horizon image prevents the durable inventory-success boundary and retains ownership");
-          }
-          for(const auto type:{10u,11u}){
-            corrupted_startup_control_reads=0;corrupt_startup_control_type=type;
-            const auto damaged=Host::VerifyStartupStorageStructures(moved);corrupt_startup_control_type=0;
-            Check(damaged.error==StartupError::verification_failure&&corrupted_startup_control_reads>0&&
-                damaged.verification_phase==Phase::catalog_verifying&&damaged.selected&&
-                damaged.selected->selection.checkpoint_generation==10&&Host::ObserveStartupLock(moved)==grant,
-                "actual damaged configuration/security route prevents catalog completion without changing TX2 or the selected phase");
-          }
-          const auto scanned=Host::VerifyStartupStorageStructures(moved);
-          if(!scanned.ok())std::cerr<<"storage scan error="<<int(scanned.error)<<" phase="<<int(scanned.phase)
-              <<" verification="<<(scanned.verification_phase?int(*scanned.verification_phase):0)
-              <<" reservation="<<int(scanned.reservation_error)<<" publication="<<int(scanned.publication_error)
-              <<" memory="<<int(scanned.read_memory_error)<<'\n';
-          Check(scanned.ok()&&scanned.verification_phase==Phase::catalog_verifying&&scanned.selected&&
-              scanned.selected->selection.checkpoint_generation==10&&scanned.binding==activated.binding&&Host::ObserveStartupLock(moved)==grant,
-              "actual selected identity, allocation and inventory scans persist every ordered boundary without changing TX2 or declaring readiness");
-          const auto completed_writes=stage_writes,completed_syncs=stage_syncs;
-          reads=0;track_reads=true;allocation_budget=0;const auto replayed=Host::VerifyStartupStorageStructures(moved);
-          const auto scan_heap=allocation_budget;allocation_budget=-1;track_reads=false;
-          Check(replayed.ok()&&scan_heap==0&&!reads&&stage_writes==completed_writes&&stage_syncs==completed_syncs&&
-              replayed.current_publication_uuid==scanned.current_publication_uuid,
-              "completed storage stages replay under the same owner without scans, writes or allocation");
-          storage_verified=true;
-        }
-      }
-      const auto before_expiry=moved.startup_transaction();const auto expiry_writes=stage_writes,expiry_syncs=stage_syncs;
-      native_clock_failure=true;const auto unavailable_snapshot=Host::EstablishStartupDataSnapshot(moved);native_clock_failure=false;
-      Check(unavailable_snapshot.error==SnapshotError::clock_failure&&!unavailable_snapshot.observation,
-          "an actual registered snapshot still requires a readable elapsed clock before executable use");
-      native_clock_advance_seconds=120;const auto expired_snapshot=Host::EstablishStartupDataSnapshot(moved);
-      const auto expired_again=Host::EstablishStartupDataSnapshot(moved);native_clock_advance_seconds=0;
-      if(transaction_policy_variant==30||transaction_policy_variant==41){
-        // Finite bounds: variant 30 (180 s transaction, 60 s snapshot) and 41
-        // (60 s each) expire at 120 s; the transaction bound is checked first.
-        const auto expected_expiry=transaction_policy_variant==30?SnapshotError::snapshot_expired:SnapshotError::transaction_expired;
-        Check(expired_snapshot.error==expected_expiry&&expired_again.error==expected_expiry&&
-            !expired_snapshot.observation&&!expired_again.observation&&
-            moved.startup_snapshot()->snapshot_uuid==data.snapshot_uuid&&
-            moved.startup_transaction().current_publication_uuid==before_expiry.current_publication_uuid&&
-            stage_writes==expiry_writes&&stage_syncs==expiry_syncs,
-            "actual selected transaction and snapshot bounds refuse reuse without refreshing snapshots, inventing rollback or releasing custody");
-      }else{
-        // No limit, the default: the same snapshot stays usable after any
-        // elapsed time, again without a refresh, a write or released custody.
-        Check(expired_snapshot.ok()&&expired_again.ok()&&expired_snapshot.observation&&expired_again.observation&&
-            expired_snapshot.observation->snapshot_uuid==data.snapshot_uuid&&
-            moved.startup_snapshot()->snapshot_uuid==data.snapshot_uuid&&
-            moved.startup_transaction().current_publication_uuid==before_expiry.current_publication_uuid&&
-            stage_writes==expiry_writes&&stage_syncs==expiry_syncs,
-            "with no transaction or snapshot limit the same snapshot stays usable after elapsed time, without refresh or writes");
-      }
-    }
     if(had_verification_policies)Check(moved.verification_policies().evidence.required_search_keys.entries[0]=="SB-MGA-VERIFY",
         "evidence text still borrows retained immutable catalog after host move");
     if(profile==0&&indexed&&!death)InheritedCredentialRefusals([&](unsigned mode){
@@ -3356,7 +2882,7 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
         "moved-from owner cannot manufacture or replay a service authentication decision");
     Check(Host::AttachStartupServiceSession(read).error==SessionError::not_ready,
         "moved-from owner cannot attach a native service session");
-    if(session_before_move&&!publish_starting){
+    if(session_before_move){
       session_stop.request_stop();
       Check(Host::AttachStartupServiceSession(moved).error==SessionError::cancelled&&!moved.session()&&moved.authentication(),
           "cancelled source retires live native session while preserving original authenticated cleanup custody");
@@ -3369,16 +2895,8 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
         "moved-from owner cannot retire or reacquire selected source custody");
     Check(Host::Close(host.runtime).custody.writer.error==db::NativeWriterError::busy,
         "selected credential and actual operation custody block premature writer retirement");
-    const auto startup_before_close=moved.startup_transaction();
-    const auto snapshot_before_close=moved.startup_snapshot();
     cleanup_read=&moved;cleanup_host=&host.runtime;cleanup_hook=ProbeCleanupCallback;
     moved.Reset();
-    Check(!moved.startup_snapshot()&&Host::EstablishStartupDataSnapshot(moved).error==SnapshotError::not_ready,
-        "retirement revokes the private snapshot before original source and device custody retire");
-    Check(!Host::ObserveStartupLock(moved)&&Host::ActivateStartupTransaction(moved).error==StartupError::not_ready&&
-        Host::VerifyStartupStorageIdentity(moved).error==runtime_security::NativeStartupIdentityError::not_ready&&
-        Host::VerifyStartupStorageStructures(moved).error==StartupError::not_ready,
-        "retirement revokes logical ownership and scan reuse without inventing an MGA outcome");
     Check(!moved.control().ok(),"reset retires full control verification before original custody");
     Check(!moved.history().ok(),"reset retires actual history backing before original source custody");
     Check(!moved.authentication(),"reset retires engine authentication before borrowed grant or protected-source backing");
@@ -3441,117 +2959,6 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
     Check(closed.ok()&&host.runtime->engine_instance_uuid().is_nil(),"real native instance, writer, database provider and original route all retire after selected owners drain");
     Check(Host::Close(host.runtime).ok(),"production native close is idempotent after actual retirement");
     host.runtime.reset();
-    if(publish_starting){
-      disk::FileDevice cold;
-      Check(cold.Open(path,disk::FileOpenMode::open_existing_read_only).ok(),"independent descriptor opens after complete host/custody retirement");
-      const std::vector<disk::NativeFilespaceDevice> files{{Id(2),Profile(profile),&cold}};
-      const auto selected=db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),files,Id(2),startup_image_budget);
-      Check(selected.ok()&&selected.checkpoint_inventory.inventory.entries.size()==2,
-          "cold native inventory reconstructs both creation and startup transaction entries");
-      const auto& inventory=selected.checkpoint_inventory.inventory;const auto& tx=inventory.entries.back();
-      Check(inventory.next_local_transaction_id==3&&inventory.next_commit_sequence==2&&tx.identity.local_id.value==2&&
-          tx.identity.transaction_uuid.value==startup_before_close.binding.transaction_uuid&&
-          tx.state==(startup_activated?mga::TransactionState::active:mga::TransactionState::created)&&!tx.evidence_record_written&&!tx.commit_sequence,
-          "cold startup inventory reconstructs actual admitted active state or denied created state without inventing final evidence or commit");
-      const auto history=db::ReadNativeManagementHistoryFromOpenDevices(Id(1),files,Id(2),startup_image_budget);
-      const auto expected_revisions=storage_verified?9u:startup_activated?5u:4u;
-      Check(history.ok()&&history.entries.size()==expected_revisions&&std::ranges::all_of(history.entries,[&](const auto& e){
-            return e.plan.intent.startup_binding==startup_before_close.binding;}),
-          "cold native history reconstructs the exact startup tuple persisted before inventory selection");
-      const auto& record=history.entries[0].record;std::array<platform::Uuid,1> targets;
-      const auto request=runtime_security::DecodeNativeStartupVerificationRequestInto(record.normalized_request_bytes,budget,{targets,{},{}});
-      Check(request.ok()&&request.request->binding==startup_before_close.binding&&
-          request.request->initial.operation_uuid==record.uuid&&request.request->initial.acting_subject_uuid==record.initiator_uuid&&
-          record.descriptor_uuid==security_fixture::Id(95020)&&record.family_uuid==security_fixture::Id(95000)&&
-          record.policy_snapshot_uuid==startup_before_close.policy_snapshot_uuid&&record.state==db::NativeManagementState::created,
-          "cold retained request binds the real catalog descriptor, private snapshot, acting subject and original transaction");
-      const auto& authorized=history.entries[1].record;
-      std::array<platform::Uuid,1> boundary_targets;
-      const auto boundary=runtime_security::DecodeNativeVerificationOperationStateInto(
-          authorized.operation_state_bytes,budget,{boundary_targets,{},{}});
-      Check(boundary.ok()&&boundary.record->phase==runtime_security::NativeVerificationPhase::boundary_established&&
-          boundary.record->maintenance_boundary_uuid==startup_before_close.maintenance_boundary_uuid&&
-          authorized.boundary_uuid==startup_before_close.maintenance_boundary_uuid&&
-          authorized.state==db::NativeManagementState::authorized&&authorized.revision==2&&
-          authorized.policy_snapshot_uuid==record.policy_snapshot_uuid&&
-          authorized.security_snapshot_uuid==record.security_snapshot_uuid&&
-          authorized.generation_guards[1]==memory_configuration_generation&&
-          authorized.normalized_request_bytes==record.normalized_request_bytes,
-          "cold authorized revision retains exact initial request, actual configuration guard and private maintenance boundary");
-      std::array<platform::Uuid,1> detail_targets;const auto& detailed=history.entries[2].record;
-      const auto retained_detail=runtime_security::DecodeNativeVerificationOperationStateInto(
-          detailed.operation_state_bytes,budget,{detail_targets,{},{}});
-      Check(retained_detail.ok()&&retained_detail.record->transaction_detail&&snapshot_before_close&&
-          detailed.revision==3&&detailed.state==db::NativeManagementState::authorized&&
-          detailed.normalized_request_bytes==record.normalized_request_bytes&&
-          retained_detail.record->snapshot_boundary_uuid==snapshot_before_close->snapshot_uuid,
-          "cold detail revision preserves exact v1 original request and the actual registered complete data snapshot");
-      const auto& detail=*retained_detail.record->transaction_detail;const auto& snapshot=*snapshot_before_close;
-      Check(detail.transaction_uuid==tx.identity.transaction_uuid.value&&detail.local_transaction_id==tx.identity.local_id.value&&
-          detail.database_uuid==Id(1)&&detail.engine_instance_uuid==snapshot.engine_instance_uuid&&
-          detail.principal_uuid==record.initiator_uuid&&detail.attachment_uuid==snapshot.attachment_uuid&&
-          detail.session_uuid==startup_before_close.binding.session_uuid&&detail.operation_uuid==record.uuid&&
-          detail.policy_snapshot_uuid==record.policy_snapshot_uuid&&detail.security_snapshot_uuid==record.security_snapshot_uuid&&
-          detail.visibility_epoch_uuid==snapshot.catalog_visibility_epoch_uuid&&detail.data_snapshot_uuid==snapshot.snapshot_uuid&&
-          detail.isolation_profile_uuid==snapshot.isolation_profile_uuid&&detail.isolation_version_uuid==snapshot.isolation_version_uuid&&
-          detail.isolation_generation==snapshot.isolation_generation&&detail.transaction_policy_uuid==security_fixture::Id(98000)&&
-          detail.transaction_policy_generation==1&&detail.started_at_micros==request.request->initial.created_at_micros&&
-          detail.started_at_micros/1000==tx.begin_unix_epoch_millis&&detail.final_state==mga::TransactionState::none&&
-          !detail.completed_at_micros&&detail.evidence_root_uuid.is_nil()&&detail.admission_side_effect_started==true,
-          "independent cold native detail reconstructs every actual owner and snapshot without inventing finality or evidence");
-      const auto& audited=history.entries[3].record;std::array<platform::Uuid,1> audit_targets;
-      const auto retained_audit=runtime_security::DecodeNativeVerificationOperationStateInto(
-          audited.operation_state_bytes,budget,{audit_targets,{},{}});
-      Check(retained_audit.ok()&&audited.revision==4&&audited.state==db::NativeManagementState::authorized&&
-          audited.normalized_request_bytes==record.normalized_request_bytes&&retained_audit.record->transaction_detail==detail&&
-          !retained_audit.record->startup_admission_evidence.empty(),"cold fourth revision retains exact request and unchanged transaction detail with complete audit content");
-      const auto audit=runtime_security::DecodeNativeStartupAdmissionEvidence(retained_audit.record->startup_admission_evidence,4096);
-      using AI=runtime_security::NativeAdmissionIdentity;using AN=runtime_security::NativeAdmissionNumber;
-      Check(audit.ok()&&audit_policy_observation&&audit.record->Identity(AI::transaction)==tx.identity.transaction_uuid.value&&
-          audit.record->Number(AN::transaction_number)==2&&audit.record->Identity(AI::actor)==record.initiator_uuid&&
-          audit.record->Identity(AI::session)==record.request_context_uuid&&audit.record->Identity(AI::database)==Id(1)&&
-          audit.record->Identity(AI::storage_filespace)==Id(2)&&audit.record->Identity(AI::data_snapshot)==snapshot.snapshot_uuid&&
-          audit.record->Identity(AI::evaluation)==audit_policy_observation->evaluation_uuid&&
-          audit.record->Identity(AI::decision)==audit_policy_observation->decision_uuid&&audit.record->outcome()==audit_policy_observation->outcome&&
-          audit.record->count(3)==audit_policy_observation->policy_count&&audit.record->Number(AN::catalog_generation)==1&&
-          audit.record->Number(AN::authorization_time_utc_us)>=detail.started_at_micros,
-          "independent cold audit validates real content digest and exact authenticated request/decision for allow or deny");
-      if(storage_verified){
-        using Phase=runtime_security::NativeVerificationPhase;
-        const std::array phases{Phase::identity_verified,Phase::allocation_verifying,Phase::transaction_inventory_verifying,Phase::catalog_verifying};
-        const std::array<std::string_view,4> labels{"identity verified","allocation scan begins","allocation verified","inventory verified"};
-        for(unsigned n=0;n<phases.size();++n){
-          std::array<platform::Uuid,1> targets;const auto& stored=history.entries[5+n].record;
-          const auto decoded=runtime_security::DecodeNativeVerificationOperationStateInto(stored.operation_state_bytes,budget,{targets,{},{}});
-          const auto& base=history.entries[5+n].plan;std::string expected_hash="sha256=";
-          for(const auto value:base.base_checkpoint_sha256){constexpr char hex[]="0123456789abcdef";
-            expected_hash+=hex[value>>4];expected_hash+=hex[value&15];}
-          Check(decoded.ok()&&decoded.record->phase==phases[n]&&decoded.record->completion==runtime_security::NativeVerificationCompletion::running&&
-              decoded.record->last_verified_boundary.starts_with(labels[n])&&
-              decoded.record->last_verified_boundary.find("checkpoint="+std::to_string(6+n))!=std::string_view::npos&&
-              decoded.record->last_verified_boundary.find(expected_hash)!=std::string_view::npos&&base.base_checkpoint_generation==6+n&&
-              stored.revision==6+n&&stored.normalized_request_bytes==record.normalized_request_bytes&&
-              decoded.record->transaction_detail==detail&&
-              std::ranges::equal(decoded.record->startup_admission_evidence,retained_audit.record->startup_admission_evidence),
-              "cold ordered phase revisions preserve the exact source boundary, request, snapshot and actual admission evidence");
-          if(n==3)Check(decoded.record->last_verified_boundary.find("transactions=2 active=1 in_doubt=0 OIT=2 OAT=2 OST=2 horizon_records=3 retention_pins=0 findings=0")!=std::string_view::npos,
-              "cold inventory findings retain actual active startup, stored horizon agreement and inspected empty retention");
-        }
-      }
-      std::vector<byte> history_backing(64*1024*1024);std::array<byte,16384> family_backing;
-      {
-        disk::FileDevice::ReadLatencyBatch batch(cold);std::array<disk::FileDevice::ReadLatencyBatch*,1> observations{&batch};
-        const auto retained=db::ReadNativeManagementHistoryInto(Id(1),files,Id(2),startup_image_budget,
-            db::NativeManagementHistoryReadContext::selected,nullptr,{},observations,history_backing);
-        Check(retained.ok(),"complete bounded cold detail history from actual native files");
-        allocation_budget=0;const auto verified=runtime_security::VerifyNativeVerificationHistory(retained.history,startup_image_budget,family_backing);
-        const auto history_heap=allocation_budget;allocation_budget=-1;
-        Check(verified.ok()&&verified.verified_operations==1&&verified.verified_revisions==expected_revisions&&history_heap==0&&
-            verified.selection->checkpoint_sha256==selected.selection->checkpoint_sha256,
-            "actual cold v1/v2 history validates exact source, complete original request and transaction detail bindings without heap fallback");
-      }
-      Check(cold.Close().ok(),"cold independent inspection retires its own descriptor");
-    }
     if(memory_variant==1||memory_variant==11){
       const int probe=::open(path.c_str(),O_RDWR|O_CLOEXEC);
       Check(probe>=0,"independent file descriptor opens after final native close");
@@ -3710,40 +3117,9 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
   Check(transaction_policies==server::NativeHostedRuntimeError::none&&read.transaction_policies().ok(),
       "transaction, isolation, lock and evidence policies resolve from the producer's pack rows");
 
-  // Stage 3: first startup transaction (TX2) through storage verification.
-  // Interim until the startup redesign's next step: TX2 still re-verifies
-  // storage and persists each phase (generations 7-10), and starts before
-  // verification. Owner ruling 2026-11-05 makes both drift
-  // (SB_DRIFT_STARTUP_VERIFICATION_NON_ALTERING).
-  using StartupPhase=runtime_security::NativeStartupTransactionPhase;
-  const u64 startup_image_budget=(create.total_pages==2048?32:8*create.total_pages/512)*512*u64{sizes[profile]};
-  // The fixture's limits (its storage scan runs at 8 KiB pages only), except
-  // the control backing. Each management-history read replays every entry, so
-  // its need grows with each startup publication and with page size. Measured
-  // 2026-11-04 at 128 KiB, through catalog_verifying (generation 10): 32 MiB
-  // is refused at the inventory-to-catalog boundary's verify_installed
-  // reread, 36 MiB passes. A 384-page floor (48 MiB at 128 KiB, the fixture's
-  // 32 MiB below 128 KiB) leaves about three publications of headroom; any
-  // fixed value runs out as history grows.
-  const std::size_t control_backing=std::max<std::size_t>(32*1024*1024,std::size_t{384}*sizes[profile]);
-  const runtime_security::NativeStartupTransactionLimits startup_limits{
-      {{startup_image_budget,64*1024*1024},{startup_image_budget,16*1024*1024},{startup_image_budget,control_backing},
-       8*1024*1024,4*1024*1024,16*1024*1024,startup_image_budget},
-      192*1024*1024};
-  // Open verification (owner direction 2026-11-05): L5's first startup duty,
-  // read-only, before any startup transaction. It runs here, after the
-  // read-only session attach and policy resolution, so the startup
-  // transaction's gate can be observed refusing first. Same selected-read
-  // budget as the startup transaction's own reads.
-  using StartupError=runtime_security::NativeStartupTransactionError;
-  const auto gate_refuses=[&](const char* label){
-    const auto refused=Host::PrepareStartupTransaction(read,startup_limits);
-    Check(refused.error==StartupError::verification_failure&&refused.detail&&
-        std::string_view(refused.detail)=="open_verification_required"&&
-        read.startup_transaction().phase==StartupPhase::absent,label);
-  };
-  gate_refuses("no startup transaction before a clean open verification");
-  Check(read_file()==created_bytes,"the refused startup transaction wrote nothing");
+  // Stage 3: open verification (owner direction 2026-11-05), read-only,
+  // before any transaction. Startup records nothing (Q6/Q7): there is no
+  // startup transaction (SB_DRIFT_NATIVE_STARTUP_TRANSACTION_CEREMONY).
   using OpenError=server::NativeOpenVerificationError;using OpenStage=server::NativeOpenVerificationStage;
   const u64 open_image_budget=(create.total_pages==2048?32:8*create.total_pages/512)*512*u64{sizes[profile]};
   const server::NativeOpenVerificationLimits open_limits{{open_image_budget,64*1024*1024},8*1024*1024};
@@ -3767,8 +3143,6 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
     Check(refused.error==OpenError::finding&&refused.stage==OpenStage::identity&&!refused.observation&&
         !read.open_verification()&&read_file()==expected,
         "a damaged page zero is a finding at the identity stage; verification retains nothing and writes nothing");
-    gate_refuses("a verification finding admits no startup transaction");
-    Check(read_file()==expected,"the refused startup transaction wrote nothing to the damaged file");
     Check(::pwrite(fd,&original,1,200)==1&&::fsync(fd)==0&&::close(fd)==0&&read_file()==created_bytes,
         "restore the damaged page-zero byte");
     // Every read position: an injected I/O error is reported as io_failure,
@@ -3802,69 +3176,6 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
   Check(read_file()==created_bytes,"open verification writes nothing: every byte of the producer's file is unchanged");
   Check(read_file()==created_bytes,
       "opening, verifying and resolving startup policies leave every byte of the producer's file unchanged");
-  const auto prepared=Host::PrepareStartupTransaction(read,startup_limits);
-  if(!prepared.ok())std::cerr<<"producer prepare="<<int(prepared.error)<<" detail="<<prepared.detail<<'\n';
-  Check(prepared.ok()&&prepared.phase==StartupPhase::prepared&&prepared.binding.local_transaction_id==2,
-      "startup reserves TX2 on the producer's file");
-  const auto published=Host::PublishStartupTransaction(read);
-  if(!published.ok())std::cerr<<"producer publish="<<int(published.error)<<" phase="<<int(published.phase)
-      <<" reserve="<<int(published.reservation_error)<<" publication="<<int(published.publication_error)
-      <<" publication_phase="<<int(published.publication_phase)<<'\n';
-  Check(published.ok()&&published.phase==StartupPhase::starting_selected&&published.selected&&
-      published.selected->selection.checkpoint_generation==2&&published.binding==prepared.binding,
-      "TX2 starting is published durably in the producer's file");
-  const auto boundary=Host::EstablishStartupVerificationBoundary(read);
-  if(!boundary.ok())std::cerr<<"producer boundary="<<int(boundary.error)<<" phase="<<int(boundary.phase)
-      <<" reserve="<<int(boundary.reservation_error)<<" publication="<<int(boundary.publication_error)<<'\n';
-  Check(boundary.ok()&&boundary.phase==StartupPhase::boundary_selected&&boundary.binding==published.binding,
-      "the maintenance boundary is published");
-  const auto snapshot=Host::EstablishStartupDataSnapshot(read);
-  if(!snapshot.ok())std::cerr<<"producer snapshot="<<int(snapshot.error)<<'\n';
-  Check(snapshot.ok()&&read.startup_snapshot()&&snapshot.observation->owning_transaction_number==2&&
-      snapshot.observation->database_uuid==receipt.database_uuid,"the startup snapshot registers under TX2");
-  const auto detailed=Host::PersistStartupTransactionDetail(read);
-  if(!detailed.ok())std::cerr<<"producer detail="<<int(detailed.error)<<" phase="<<int(detailed.phase)
-      <<" reserve="<<int(detailed.reservation_error)<<" publication="<<int(detailed.publication_error)<<'\n';
-  Check(detailed.ok()&&detailed.phase==StartupPhase::detail_selected&&detailed.binding==boundary.binding,
-      "the startup transaction detail is persisted");
-  const auto evaluated=Host::EvaluateStartupTransactionPolicies(read);
-  if(!evaluated.evaluated())std::cerr<<"producer policy evaluation="<<int(evaluated.error)<<" source="<<int(evaluated.evaluation_error)<<'\n';
-  Check(evaluated.evaluated()&&evaluated.observation->outcome==runtime_security::NativeStartupPolicyOutcome::allow,
-      "the producer's transaction policies allow first startup");
-  const auto audited=Host::PersistStartupAdmissionEvidence(read);
-  if(!audited.ok())std::cerr<<"producer evidence="<<int(audited.error)<<" phase="<<int(audited.phase)
-      <<" reserve="<<int(audited.reservation_error)<<" publication="<<int(audited.publication_error)<<'\n';
-  Check(audited.ok()&&audited.phase==StartupPhase::admission_evidence_selected&&audited.binding==detailed.binding,
-      "the admission evidence is persisted");
-  const auto activated=Host::ActivateStartupTransaction(read);
-  if(!activated.ok())std::cerr<<"producer activate="<<int(activated.error)<<" phase="<<int(activated.phase)
-      <<" reserve="<<int(activated.reservation_error)<<" publication="<<int(activated.publication_error)<<'\n';
-  const auto grant=Host::ObserveStartupLock(read);
-  Check(activated.ok()&&activated.phase==StartupPhase::active_selected&&activated.binding==audited.binding&&grant&&
-      grant->transaction_uuid==audited.binding.transaction_uuid&&grant->database_uuid==receipt.database_uuid,
-      "TX2 becomes active holding the startup lock");
-  const auto verified=Host::VerifyStartupStorageIdentity(read);
-  if(!verified.ok())std::cerr<<"producer identity verify="<<int(verified.error)<<" lifetime="<<int(verified.lifetime_error)<<'\n';
-  Check(verified.ok()&&verified.observation->transaction_uuid==activated.binding.transaction_uuid&&
-      verified.observation->filespaces==1&&verified.observation->system_state.lifecycle==db::NativeSystemLifecycle::creating,
-      "the active owner rereads the producer's identities and constructor system state");
-  const auto scanned=Host::VerifyStartupStorageStructures(read);
-  if(!scanned.ok())std::cerr<<"producer storage scan="<<int(scanned.error)<<" phase="<<int(scanned.phase)
-      <<" verification="<<(scanned.verification_phase?int(*scanned.verification_phase):0)
-      <<" reservation="<<int(scanned.reservation_error)<<" publication="<<int(scanned.publication_error)
-      <<" memory="<<int(scanned.read_memory_error)<<" selection="<<int(scanned.read_selection_error)
-      <<" checkpoint="<<int(scanned.read_checkpoint_error)<<" inventory="<<int(scanned.read_inventory_error)
-      <<" allocation="<<int(scanned.read_allocation_error)<<" reservation_phase="<<int(scanned.reservation_phase)
-      <<" detail="<<scanned.detail<<" publication_phase="<<int(scanned.publication_phase)
-      <<" handoff="<<int(scanned.handoff_error)<<" writer="<<int(scanned.read_writer_error)
-      <<" free_pages_at_create="<<receipt.workspace.free_pages<<" profile="<<profile<<'\n';
-  // SB_GAP_NATIVE_128K_STARTUP_SCAN_MEMORY (pinned in 63fd9fc9a) is closed:
-  // the selection reads its control authority once
-  // (MEM-CONTROL-AUTHORITY-READ-ONCE), and the control backing above has a
-  // page floor. 128 KiB now completes the scan like every other profile.
-  Check(scanned.ok()&&scanned.verification_phase==runtime_security::NativeVerificationPhase::catalog_verifying&&
-      scanned.binding==activated.binding&&Host::ObserveStartupLock(read)==grant,
-      "identity, allocation and inventory scans of the producer's file persist every ordered boundary under TX2");
   read.Reset();
   Check(Host::Close(host.runtime).ok(),"the producer's database closes");
 }

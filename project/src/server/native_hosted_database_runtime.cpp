@@ -256,7 +256,6 @@ NativeHostedRuntimeError NativeHostedDatabaseRuntime::RetainStartupObservation(
     CredentialRead& read) noexcept {
   using E=NativeHostedRuntimeError;
   read.CheckOwner();
-  if(read.startup_transaction_.state_)return E::busy;
   if (read.mutating_) return E::busy;
   if (!read.ok()) return read.error==E::none?E::invalid_request:read.error;
   if (read.owner_->entering_) return E::busy;
@@ -302,7 +301,6 @@ NativeHostedRuntimeError NativeHostedDatabaseRuntime::ReadStartupHistory(Credent
     storage::database::NativeManagementHistoryMemoryLimits limits) noexcept {
   namespace db=storage::database;using E=NativeHostedRuntimeError;
   read.CheckOwner();
-  if(read.startup_transaction_.state_)return E::busy;
   if(read.mutating_||(read.owner_&&read.owner_->entering_))return E::busy;
   if(!read.ok()||!read.owner_)return E::closed;
   auto& credential=*read.credentials_->comparison->lease;
@@ -372,7 +370,6 @@ NativeHostedRuntimeError NativeHostedDatabaseRuntime::ReadStartupControl(Credent
     storage::database::NativeManagementControlAuthorityMemoryLimits limits) noexcept {
   namespace db=storage::database;using E=NativeHostedRuntimeError;
   read.CheckOwner();
-  if(read.startup_transaction_.state_)return E::busy;
   if(read.mutating_||(read.owner_&&read.owner_->entering_))return E::busy;
   if(!read.ok()||!read.owner_)return E::closed;
   auto& credential=*read.credentials_->comparison->lease;
@@ -441,7 +438,6 @@ NativeHostedRuntimeError NativeHostedDatabaseRuntime::VerifyStartupVerificationH
     CredentialRead& read,std::size_t maximum_backing_bytes) noexcept {
   namespace db=storage::database;using E=NativeHostedRuntimeError;
   read.CheckOwner();
-  if(read.startup_transaction_.state_)return E::busy;
   if(read.mutating_||(read.owner_&&read.owner_->entering_))return E::busy;
   if(!read.ok()||!read.owner_)return E::closed;
   auto& credential=*read.credentials_->comparison->lease;
@@ -482,7 +478,6 @@ NativeHostedRuntimeError NativeHostedDatabaseRuntime::VerifyStartupPolicyActivat
     CredentialRead& read,std::size_t maximum_backing_bytes) noexcept {
   namespace db=storage::database;using E=NativeHostedRuntimeError;
   read.CheckOwner();
-  if(read.startup_transaction_.state_)return E::busy;
   if(read.mutating_||(read.owner_&&read.owner_->entering_))return E::busy;
   if(!read.ok()||!read.owner_)return E::closed;
   auto& credential=*read.credentials_->comparison->lease;
@@ -526,7 +521,6 @@ NativeHostedRuntimeError NativeHostedDatabaseRuntime::ReadStartupCatalogs(Creden
   namespace db=storage::database;using E=NativeHostedRuntimeError;
   const auto catalog_limits=requested_catalog_limits;
   read.CheckOwner();
-  if(read.startup_transaction_.state_)return E::busy;
   if(read.mutating_||(read.owner_&&read.owner_->entering_))return E::busy;
   if(!read.ok()||!read.owner_)return E::closed;
   auto& credential=*read.credentials_->comparison->lease;
@@ -627,7 +621,6 @@ NativeHostedRuntimeError NativeHostedDatabaseRuntime::InspectStartupTransactions
     CredentialRead& read,std::size_t maximum_backing_bytes) noexcept {
   namespace db=storage::database;using E=NativeHostedRuntimeError;
   read.CheckOwner();
-  if(read.startup_transaction_.state_)return E::busy;
   if(read.mutating_||(read.owner_&&read.owner_->entering_))return E::busy;
   if(!read.ok()||!read.owner_)return E::closed;
   const auto& credential=*read.credentials_->comparison->lease;
@@ -669,7 +662,6 @@ NativeHostedRuntimeError NativeHostedDatabaseRuntime::InspectStartupTransactions
 NativeHostedRuntimeError NativeHostedDatabaseRuntime::VerifyStartupCatalogMetadata(CredentialRead& read) noexcept {
   namespace db=storage::database;using E=NativeHostedRuntimeError;
   read.CheckOwner();
-  if(read.startup_transaction_.state_)return E::busy;
   if(read.mutating_||(read.owner_&&read.owner_->entering_))return E::busy;
   if(!read.ok()||!read.owner_)return E::closed;
   auto& credential=*read.credentials_->comparison->lease;
@@ -719,7 +711,6 @@ NativeHostedRuntimeError NativeHostedDatabaseRuntime::VerifyStartupCatalogMetada
 NativeHostedRuntimeError NativeHostedDatabaseRuntime::ResolveStartupManagementDefinition(CredentialRead& read) noexcept {
   namespace db=storage::database;using E=NativeHostedRuntimeError;
   read.CheckOwner();
-  if(read.startup_transaction_.state_)return E::busy;
   if(read.mutating_||(read.owner_&&read.owner_->entering_))return E::busy;
   if(!read.ok()||!read.owner_)return E::closed;
   const auto& credential=*read.credentials_->comparison->lease;
@@ -754,7 +745,6 @@ NativeHostedRuntimeError NativeHostedDatabaseRuntime::ResolveStartupManagementDe
 NativeHostedRuntimeError NativeHostedDatabaseRuntime::ResolveStartupTransactionPolicies(CredentialRead& read) noexcept {
   namespace db=storage::database;using E=NativeHostedRuntimeError;
   read.CheckOwner();
-  if(read.startup_transaction_.state_)return E::busy;
   if(read.mutating_||(read.owner_&&read.owner_->entering_))return E::busy;
   if(!read.ok()||!read.owner_)return E::closed;
   const auto& credential=*read.credentials_->comparison->lease;
@@ -790,7 +780,6 @@ NativeHostedRuntimeError NativeHostedDatabaseRuntime::ResolveStartupTransactionP
 NativeHostedRuntimeError NativeHostedDatabaseRuntime::ResolveConfiguredStartupVerificationPolicies(CredentialRead& read) noexcept {
   using E=NativeHostedRuntimeError;namespace c=core::catalog;namespace ia=engine::internal_api;
   read.CheckOwner();
-  if(read.startup_transaction_.state_)return E::busy;
   if(read.mutating_||(read.owner_&&read.owner_->entering_))return E::busy;
   if(!read.ok()||!read.owner_)return E::closed;
   if(!read.agent_policies_.ok())return E::agent_policy_failure;
@@ -817,7 +806,6 @@ NativeHostedRuntimeError NativeHostedDatabaseRuntime::ResolveStartupVerification
     CredentialRead& read,const engine::internal_api::NativeVerificationPolicyRequest& requested) noexcept {
   namespace db=storage::database;using E=NativeHostedRuntimeError;
   read.CheckOwner();
-  if(read.startup_transaction_.state_)return E::busy;
   if(read.mutating_||(read.owner_&&read.owner_->entering_))return E::busy;
   if(!read.ok()||!read.owner_)return E::closed;
   const auto& credential=*read.credentials_->comparison->lease;
@@ -854,7 +842,6 @@ NativeDatabaseMemoryEnvelopeResult NativeHostedDatabaseRuntime::ConstrainStartup
     CredentialRead& read) noexcept {
   using E=NativeDatabaseMemoryEnvelopeError;
   read.CheckOwner();
-  if(read.startup_transaction_.state_)return {E::busy};
   if(read.mutating_||(read.owner_&&read.owner_->entering_))return {E::busy};
   if(!read.ok()||!read.owner_)return {E::not_ready};
   const auto& credential=*read.credentials_->comparison->lease;
@@ -872,7 +859,6 @@ NativeDatabaseAllocationBehaviorResult NativeHostedDatabaseRuntime::InstallStart
     CredentialRead& read) noexcept {
   using E=NativeDatabaseMemoryEnvelopeError;
   read.CheckOwner();
-  if(read.startup_transaction_.state_)return {E::busy};
   if(read.mutating_||(read.owner_&&read.owner_->entering_))return {E::busy};
   if(!read.ok()||!read.owner_)return {E::not_ready};
   const auto& credential=*read.credentials_->comparison->lease;
@@ -891,7 +877,6 @@ engine::internal_api::NativeLocalServiceSessionResult NativeHostedDatabaseRuntim
     CredentialRead& read) noexcept {
   namespace api=engine::internal_api;using E=api::NativeLocalServiceSessionError;
   read.CheckOwner();
-  if(read.startup_transaction_.state_)return {E::busy};
   if(read.mutating_||(read.owner_&&read.owner_->entering_))return {E::busy};
   if(!read.ok()||!read.owner_||!read.authentication_)return {E::not_ready};
   const auto& credential=*read.credentials_->comparison->lease;
@@ -939,7 +924,6 @@ NativeHostedDatabaseRuntime::AuthenticateStartupService(
   namespace api=engine::internal_api;
   using E=api::NativeLocalServiceAuthenticationError;
   read.CheckOwner();
-  if(read.startup_transaction_.state_)return {E::busy};
   if(read.mutating_||(read.owner_&&read.owner_->entering_))return {E::busy};
   if(!read.ok()||!read.owner_)return {E::not_ready};
   auto& credential=*read.credentials_->comparison->lease;

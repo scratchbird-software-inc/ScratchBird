@@ -18,7 +18,6 @@
 #include "engine/internal_api/security/native_policy_activation_history.hpp"
 #include "engine/internal_api/transaction/native_startup_transaction_history.hpp"
 #include "engine/internal_api/verification/native_startup_management_definition.hpp"
-#include "engine/internal_api/transaction/native_startup_transaction_owner.hpp"
 #include "engine/internal_api/transaction/native_transaction_policy_selection.hpp"
 #include "engine/internal_api/verification/native_startup_storage_identity.hpp"
 #include "engine/internal_api/verification/native_startup_storage_scan.hpp"
@@ -213,8 +212,7 @@ class NativeHostedDatabaseRuntime final {
           startup_transaction_backing_(std::move(other.startup_transaction_backing_)),
           startup_transactions_(std::exchange(other.startup_transactions_,{})),
           open_verification_(std::exchange(other.open_verification_,{})),
-          authentication_(std::move(other.authentication_)),session_(std::move(other.session_)),
-          startup_transaction_(std::move(other.startup_transaction_)) {
+          authentication_(std::move(other.authentication_)),session_(std::move(other.session_)) {
       other.authorization_={};other.configuration_={};other.agents_={};other.agent_policies_={};
       other.session_.reset();other.authentication_.reset();
       other.history_.history={};other.history_.writer_error=storage::database::NativeWriterError::invalid_operation;
@@ -257,12 +255,6 @@ class NativeHostedDatabaseRuntime final {
     }
     std::optional<engine::internal_api::NativeLocalServiceSessionObservation> session() const noexcept {
       CheckOwner();return NativeHostedDatabaseRuntime::ObserveSession(*this);
-    }
-    engine::internal_api::NativeStartupTransactionResult startup_transaction() const noexcept {
-      CheckOwner();return NativeHostedDatabaseRuntime::ObserveStartupTransaction(*this);
-    }
-    std::optional<engine::internal_api::NativeStartupSnapshotObservation> startup_snapshot() const noexcept {
-      CheckOwner();return NativeHostedDatabaseRuntime::ObserveStartupSnapshot(*this);
     }
     // Exact native management history, including retained canonical request
     // bytes. This observation does not classify recovery or activate MGA.
@@ -312,7 +304,6 @@ class NativeHostedDatabaseRuntime final {
       // Callback observers see a retired read before any resource can invoke
       // them. Keep the original host pinned and busy through the last cleanup.
       error=NativeHostedRuntimeError::closed;authorization_={};configuration_={};agents_={};agent_policies_={};
-      startup_transaction_.Reset();
       session_.reset();authentication_.reset();
       startup_transactions_={};startup_transaction_backing_={};
       open_verification_.reset();
@@ -383,7 +374,6 @@ class NativeHostedDatabaseRuntime final {
     // operation and governed grant views it borrows. No capability escapes.
     std::optional<engine::internal_api::NativeLocalServiceAuthentication> authentication_;
     std::optional<engine::internal_api::NativeLocalServiceSession> session_;
-    engine::internal_api::NativeStartupTransactionHandle startup_transaction_;
   };
   static CredentialRead ReadStartupCredentials(std::shared_ptr<NativeHostedDatabaseRuntime>,
       NativeLocalServiceStartupCredentialsRequest, std::shared_ptr<StartupCredentialSource>,
@@ -477,51 +467,11 @@ class NativeHostedDatabaseRuntime final {
   // original native owner. The returned observation is not a client context.
   static engine::internal_api::NativeLocalServiceSessionResult AttachStartupServiceSession(CredentialRead&) noexcept;
 
-  // Freeze the actual private bootstrap session/policy source and retain its
-  // single UUID issuer. Only an uncontested native genesis can reserve TX2;
-  // existing/pending startup work requires owning recovery. Preparation has no
-  // physical effects. Publication selects created, never active or committed.
-  static engine::internal_api::NativeStartupTransactionResult PrepareStartupTransaction(
-      CredentialRead&,engine::internal_api::NativeStartupTransactionLimits) noexcept;
-  static engine::internal_api::NativeStartupTransactionResult PublishStartupTransaction(CredentialRead&) noexcept;
-  // Establish the private startup verifier's maintenance boundary under the
-  // same exclusive custody. This authorizes only startup verification; TX2
-  // remains created until its separate complete transaction admission.
-  static engine::internal_api::NativeStartupTransactionResult EstablishStartupVerificationBoundary(CredentialRead&) noexcept;
-  // Register a complete maintenance snapshot with this actual private owner.
-  // Its frozen catalog and exclusion sets survive moves and publication retries.
-  // This alone does not admit active TX2 or execute any verification scan.
-  static engine::internal_api::NativeStartupSnapshotResult EstablishStartupDataSnapshot(CredentialRead&) noexcept;
-  // Durably retain the complete private transaction detail before active
-  // admission, under the same startup binding and continuous original custody.
-  static engine::internal_api::NativeStartupTransactionResult PersistStartupTransactionDetail(CredentialRead&) noexcept;
-  static engine::internal_api::NativeStartupTransactionResult PersistStartupAdmissionEvidence(CredentialRead&) noexcept;
-  // Registers the actual local maintenance lock, then publishes the same TX2
-  // as active. Selected audit, private snapshot, authorization and all resource
-  // policies are prerequisites. No ordinary client admission is implied.
-  static engine::internal_api::NativeStartupTransactionResult ActivateStartupTransaction(CredentialRead&) noexcept;
   // SB_OPEN_VERIFICATION_READ_ONLY: verify the opened primary file before any
   // startup transaction exists. Call after the startup verification policies
   // resolve. Reads through the retained custody operation with its own memory
   // grant; writes nothing. A clean result is retained in the read.
   static NativeOpenVerificationResult VerifyStartupDatabaseFile(CredentialRead&,const NativeOpenVerificationLimits&) noexcept;
-  static engine::internal_api::NativeStartupStorageIdentityResult VerifyStartupStorageIdentity(CredentialRead&) noexcept;
-  // Execute and retain the ordered identity/allocation/inventory boundaries
-  // under the original active startup owner. Returns at catalog_verifying;
-  // catalog/content checks and final evidence still precede readiness.
-  static engine::internal_api::NativeStartupTransactionResult VerifyStartupStorageStructures(CredentialRead&) noexcept;
-  static std::optional<engine::internal_api::NativeStartupLockObservation> ObserveStartupLock(const CredentialRead& read) noexcept {
-    read.CheckOwner();
-    if(!read.ok()||read.mutating_||!read.owner_||!read.startup_transaction_.state_)return {};
-    const auto& lock=read.startup_transaction_.state_->maintenance_lock_;
-    if(lock.table_!=&read.owner_->startup_locks_||lock.table_->registration_!=&lock||
-        lock.table_->generation_!=lock.observation_.grant_generation)return {};
-    return lock.observation_;
-  }
-  // Evaluate the complete applicable policy set under the retained private
-  // owner. Required audit/evidence and lock/active admission remain separate.
-  static engine::internal_api::NativeStartupPolicyResult EvaluateStartupTransactionPolicies(CredentialRead&) noexcept;
-
   Uuid database_uuid() const noexcept { return SameOwner() ? database_ : Uuid{}; }
   Uuid primary_filespace_uuid() const noexcept { return SameOwner() ? primary_ : Uuid{}; }
   Uuid engine_instance_uuid() const noexcept {
@@ -533,20 +483,6 @@ class NativeHostedDatabaseRuntime final {
         std::span<const storage::database::NativeWriterMemberCloseReceipt>{};
   }
  private:
-  static engine::internal_api::NativeStartupTransactionResult AdvanceStartupVerification(
-      CredentialRead&,engine::internal_api::NativeVerificationPhase,std::string_view) noexcept;
-  static engine::internal_api::NativeStartupTransactionError ScanStartupStorageStructures(CredentialRead&,bool inventory) noexcept;
-  static engine::internal_api::NativeStartupTransactionError ScanStartupCatalogRoutes(CredentialRead&) noexcept;
-  static engine::internal_api::NativeStartupTransactionResult PublishStartupOwned(CredentialRead&,engine::internal_api::NativeStartupTransactionPhase selected_phase) noexcept;
-  static std::optional<engine::internal_api::NativeStartupSnapshotObservation> ObserveStartupSnapshot(const CredentialRead& read) noexcept {
-    if(!read.ok()||read.mutating_||!read.startup_transaction_.state_||
-        read.inputs_->request.credential.stop.stop_requested()||read.inputs_->request.source.stop.stop_requested())return {};
-    return read.startup_transaction_.state_->snapshot_;
-  }
-  static engine::internal_api::NativeStartupTransactionResult ObserveStartupTransaction(const CredentialRead& read) noexcept {
-    return read.startup_transaction_.state_?read.startup_transaction_.state_->result_:
-        engine::internal_api::NativeStartupTransactionResult{};
-  }
   static std::optional<engine::internal_api::NativeLocalServiceSessionObservation>
       ObserveSession(const CredentialRead& read) noexcept {
     if(!read.session_)return std::nullopt;
@@ -594,7 +530,6 @@ class NativeHostedDatabaseRuntime final {
   Uuid database_,primary_,engine_instance_;
   bool entering_ = false, read_active_ = false, writer_adopted_ = false, writer_retired_ = false, closed_ = false;
   std::vector<storage::database::NativeWriterMemberCloseReceipt> close_receipts_;
-  engine::internal_api::NativeStartupLockTable startup_locks_;
   core::runtime::RuntimeCryptoPoolOwner database_crypto_;
   core::hash::CryptoMemoryBinding crypto_binding_;
   storage::database::NativeStorageMemory reading_,catalog_,authorization_;

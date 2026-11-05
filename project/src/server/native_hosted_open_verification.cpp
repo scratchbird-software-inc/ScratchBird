@@ -95,7 +95,6 @@ NativeOpenVerificationResult NativeHostedDatabaseRuntime::VerifyStartupDatabaseF
   read.CheckOwner();
   // Verification precedes the startup transaction. Once one exists, this
   // read-only verification is no longer the first duty and cannot run.
-  if(read.startup_transaction_.state_)return fail(VE::busy,VS::none);
   if(read.mutating_||(read.owner_&&read.owner_->entering_))return fail(VE::busy,VS::none);
   if(!read.ok()||!read.owner_)return fail(VE::not_ready,VS::none);
   if(read.open_verification_){result.error=VE::none;result.stage=VS::complete;result.observation=read.open_verification_;return result;}
