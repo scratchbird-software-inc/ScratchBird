@@ -85,6 +85,7 @@ NativeCreationRecoveryResult RecoverIndexedNativeCreationWorkspaceSelectionOnOpe
       for(const auto& p:layouts) {
         if(p.root&&p.root==n)return 0x200;
         if(std::find(p.navigation.begin(),p.navigation.end(),n)!=p.navigation.end())return 0x202;
+        for(const auto& level:p.branches)if(std::find(level.begin(),level.end(),n)!=level.end())return 0x201;
       }
       return n<maps+20?types[n-maps]:6;
     };
@@ -200,31 +201,16 @@ NativeCreationRecoveryResult RecoverIndexedNativeCreationWorkspaceSelectionOnOpe
       }
       const auto& deps=indexes[i]->dependencies;
       std::sort(cells.begin(),cells.end(),[](const auto& a,const auto& b){return page::CompareNativeBtreeKeys(a.key,b.key)<0;});
-      const auto node=[&](u64 n,u16 level) {
+      // The header (and so the page type) was bound on read by expected_type.
+      const auto node=[&](u64 n,u32,u16 level) {
         images[n].owner=deps.index_uuid;
         page::NativeBtreePage p;p.header=images[n].header;p.dependencies=deps;
         p.creator_transaction_uuid=creator;p.creator_local_transaction_id=1;p.maintenance_state=1;p.tree_level=level;
         return p;
       };
-      auto head=node(layout.root,layout.navigation.empty()?0:1);
-      if(layout.navigation.empty())head.cells=std::move(cells);
-      else {
-        head.first_child=ref(layout.navigation.front());
-        for(std::size_t nav=0;nav<layout.navigation.size();++nav) {
-          const auto begin=nav*plan.leaf_cells,end=std::min<u64>(begin+plan.leaf_cells,cells.size());
-          auto leaf=node(layout.navigation[nav],0);leaf.parent=ref(layout.root);
-          if(nav) {
-            leaf.left=ref(layout.navigation[nav-1]);leaf.low_fence=cells[begin].key;
-            head.cells.push_back({cells[begin].key,false,ref(layout.navigation[nav]),{}});
-          }
-          if(nav+1<layout.navigation.size()) {
-            leaf.right=ref(layout.navigation[nav+1]);leaf.high_fence=cells[end].key;
-          }
-          leaf.cells.assign(cells.begin()+begin,cells.begin()+end);
-          same(layout.navigation[nav],page::EncodeNativeBtreePage(leaf));
-        }
-      }
-      same(layout.root,page::EncodeNativeBtreePage(head));
+      // The same bottom-up construction create used (SB_CATALOG_BTREE_N_LEVEL).
+      Require(detail::BuildNativeCreationCatalogBtree(layout,plan.leaf_cells,std::move(cells),ref,node,
+          [&](u64 n,const page::NativeBtreePage& p){same(n,page::EncodeNativeBtreePage(p));return true;}));
       receipt.relations[i]={static_cast<u16>(i+1),0x200,ref(layout.root),deps.index_uuid};
     }
     for(const auto& relation:seed)for(const auto& record:relation)

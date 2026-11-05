@@ -6,6 +6,7 @@
 #include "disk_device.hpp"
 #include "uuid.hpp"
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <memory>
 #include <system_error>
@@ -15,14 +16,54 @@ namespace scratchbird::storage::database {
 struct NativeBtreeTreeMemoryLimits {
   std::size_t maximum_pages=0,maximum_retained_image_bytes=0;
 };
-// Index cells per page of the two-level native catalog B-tree, by page size:
-// one definition for the creation layout that builds the tree and for the
-// bounds that read it back (SB_NATIVE_HOSTED_CATALOG_ROW_BOUND).
+// Index cells per page of the native catalog B-tree, by page size: one
+// definition for the creation layout that builds the tree and for the bounds
+// that read it back (SB_NATIVE_HOSTED_CATALOG_ROW_BOUND). Construction builds
+// as many levels as the rows need (SB_CATALOG_BTREE_N_LEVEL). A cell is 164
+// bytes (4-byte slot, 144-byte record, 16-byte row-UUID key) after the 640-byte
+// prefix; a leaf or branch also carries two 56-byte fences, the root none.
 inline constexpr std::size_t NativeCatalogBtreeRootCells(std::size_t page_size) noexcept {
   return page_size>640?(page_size-640)/164:0;
 }
 inline constexpr std::size_t NativeCatalogBtreeLeafCells(std::size_t page_size) noexcept {
   return page_size>640+112?(page_size-640-112)/164:0;
+}
+// SEARCH_KEY: SB_CATALOG_BTREE_N_LEVEL. The shape of the native catalog B-tree
+// that native create builds for `rows` index cells, and that the read bounds
+// size against. Leaves hold NativeCatalogBtreeLeafCells cells each. While a
+// level has more pages than the root can point to (root cells + 1 children),
+// a branch level is added above it, each branch pointing to up to leaf cells
+// + 1 children. Rows that fit the root alone make a one-page tree whose root is
+// its leaf. level_pages[l] counts the pages at tree level l; the root is
+// level depth-1. depth 0 means no shape: a page size with no cell room, or a
+// tree deeper than kMaximumDepth (not reachable from a canonical page size).
+struct NativeCatalogBtreeShape {
+  static constexpr std::size_t kMaximumDepth=16;
+  std::size_t depth=0;
+  std::array<std::size_t,kMaximumDepth> level_pages{};
+  constexpr bool ok() const noexcept {return depth!=0;}
+  // Leaf pages under the root; zero when the root is the only page.
+  constexpr std::size_t leaves() const noexcept {return depth>1?level_pages[0]:0;}
+  // Branch pages between the leaves and the root.
+  constexpr std::size_t branches() const noexcept {
+    std::size_t n=0;for(std::size_t l=1;l+1<depth;++l)n+=level_pages[l];return n;
+  }
+  constexpr std::size_t pages() const noexcept {return depth?leaves()+branches()+1:0;}
+};
+inline constexpr NativeCatalogBtreeShape NativeCatalogBtreeShapeFor(std::size_t page_size,std::size_t rows) noexcept {
+  NativeCatalogBtreeShape shape;
+  const auto root=NativeCatalogBtreeRootCells(page_size),cells=NativeCatalogBtreeLeafCells(page_size);
+  if(!root||!cells)return shape;
+  if(rows<=root){shape.depth=1;shape.level_pages[0]=1;return shape;}
+  std::size_t level=0,count=rows/cells+(rows%cells!=0);
+  shape.level_pages[level++]=count;
+  while(count>root+1) {
+    if(level+1>=NativeCatalogBtreeShape::kMaximumDepth)return {};
+    count=count/(cells+1)+(count%(cells+1)!=0);
+    shape.level_pages[level++]=count;
+  }
+  shape.level_pages[level++]=1;shape.depth=level;
+  return shape;
 }
 enum class NativeBtreeTreeMemoryError {
   none, invalid_request, memory_binding_failure, memory_allocation_failure,

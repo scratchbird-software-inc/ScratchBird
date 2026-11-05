@@ -3,19 +3,26 @@
 // Uses the real-file construction fixture, not a serving/SQL bootstrap claim.
 #include "catalog_metric_config_materialization.hpp"
 #include "metric_builtin_definitions.hpp"
+#include "native_creation_catalog_layout.hpp"
+#include "native_catalog_relation_lease_reader.hpp"
 namespace {
-db::NativeCreationCatalogSeed DenseIndexedCatalogSeed(const db::NativeFilespaceInitializationRequest& request,unsigned count) {
+// Four identity ranges of `stride` ids from `base`: object, row, default name,
+// name vector. The defaults hold up to 1000 rows; a three-level tree needs a
+// wider stride (Id() carries 16 bits).
+db::NativeCreationCatalogSeed DenseIndexedCatalogSeed(const db::NativeFilespaceInitializationRequest& request,unsigned count,
+    unsigned base=30000,unsigned stride=1000) {
   namespace c=scratchbird::core::catalog;
+  Check(count<=stride&&base+4*stride<=65536,"dense fixture identity ranges stay distinct");
   const auto fixture=MetricSeed(request);
   const auto descriptor=c::DecodeCatalogMetricDescriptor(fixture[0][0].metadata.record.payload);
   Check(descriptor.ok(),"dense fixture retains exact typed labels");
   db::NativeCreationCatalogSeed seed;
   for(unsigned i=0;i<count;++i) {
-    auto row=fixture[0][1];row.metadata.record.header.object_uuid={UuidKind::object,Id(30000+i)};
-    row.metadata.record.header.row_uuid={UuidKind::row,Id(31000+i)};
-    row.metadata.default_name_uuid={UuidKind::object,Id(32000+i)};
-    row.metadata.name_vector_uuid={UuidKind::object,Id(33000+i)};
-    c::CatalogMetricLabelSchema labels{Id(30000+i),1,descriptor.record->definition.labels,false,request.creator.transaction_uuid,1};
+    auto row=fixture[0][1];row.metadata.record.header.object_uuid={UuidKind::object,Id(base+i)};
+    row.metadata.record.header.row_uuid={UuidKind::row,Id(base+stride+i)};
+    row.metadata.default_name_uuid={UuidKind::object,Id(base+2*stride+i)};
+    row.metadata.name_vector_uuid={UuidKind::object,Id(base+3*stride+i)};
+    c::CatalogMetricLabelSchema labels{Id(base+i),1,descriptor.record->definition.labels,false,request.creator.transaction_uuid,1};
     const auto encoded=c::EncodeCatalogMetricLabelSchema(labels);Check(encoded.ok(),"independent native label definition");
     row.metadata.record.payload.assign(encoded.bytes.begin(),encoded.bytes.end());seed[0].push_back(std::move(row));
   }
@@ -275,36 +282,84 @@ void NativeMetricConfigChecks(const fs::path& directory) {
   while(((384+(coverage+1)/2+7)&~u64{7})+128*coverage>page_bytes)--coverage;
   selector_page=(total_pages+coverage-1)/coverage+16;
   const unsigned root_capacity=(page_bytes-640)/164,child_capacity=(page_bytes-640-112)/164;
-  for(unsigned count:{0u,1u,root_capacity,root_capacity+1,child_capacity*3+1}) {
-    const auto seed=dense_seed(count);disk::FileDevice device;const auto path=fixture.Next();
+  // (R+1)*L rows fill a root over full leaves; one more row needs a branch
+  // level (SB_CATALOG_BTREE_N_LEVEL). Those two cases need more pages and image
+  // budget than the dense request, and identities past the dense seed's ranges.
+  const unsigned two_level_maximum=(root_capacity+1)*child_capacity;
+  const auto deep_request=Request(0,512);u64 deep_non_map_pages=0;
+  // (R+1)*L+L+1 rows give an odd leaf count over two branches: an uneven split.
+  for(unsigned count:{0u,1u,root_capacity,root_capacity+1,child_capacity*3+1,two_level_maximum,two_level_maximum+1,
+      two_level_maximum+child_capacity+1}) {
+    const bool deep=count>=two_level_maximum;
+    const auto& boundary_request=deep?deep_request:dense_request;const unsigned row_base=deep?42500:31000;
+    const u64 budget=(deep?512:256)*page_bytes;
+    total_pages=boundary_request.total_pages;selector_page=(total_pages+coverage-1)/coverage+16;
+    const auto seed=deep?DenseIndexedCatalogSeed(request,count,40000,2500):dense_seed(count);
+    disk::FileDevice device;const auto path=fixture.Next();
     Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"actual boundary construction owner");
-    Arm();const auto made=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,dense_request,seed,
-        construction_indexes,256*page_bytes,*fixture.issuer);Disarm();
-    Check(made.ok(),"exact empty/root-full/split/multiple-child indexed construction");
+    Arm();const auto made=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,boundary_request,seed,
+        construction_indexes,budget,*fixture.issuer);Disarm();
+    Check(made.ok(),"exact empty/root-full/split/multiple-child/branch-level indexed construction");
+    if(count==two_level_maximum+1)deep_non_map_pages=made.receipt->total_pages-made.receipt->free_pages-made.receipt->map_pages;
     Check(device.Close().ok()&&device.Open(path.string(),disk::FileOpenMode::open_existing).ok(),"actual indexed boundary reopen");
-    const std::vector<disk::NativeFilespaceDevice> devices{{dense_request.bootstrap.filespace_uuid,dense_request.bootstrap.page_size_profile_uuid,&device}};
-    const auto tree=page::ReadNativeBtreeTreeFromOpenDevices(dense_request.bootstrap.database_uuid,devices,
-        made.receipt->relations[0].page,construction_deps,256*page_bytes);
-    Check(tree.ok()&&tree.pages.front().page->tree_level==(count>root_capacity?1:0),
+    const std::vector<disk::NativeFilespaceDevice> devices{{boundary_request.bootstrap.filespace_uuid,boundary_request.bootstrap.page_size_profile_uuid,&device}};
+    const auto tree=page::ReadNativeBtreeTreeFromOpenDevices(boundary_request.bootstrap.database_uuid,devices,
+        made.receipt->relations[0].page,construction_deps,budget);
+    // Expected depth from the cell counts alone, not from the shape function:
+    // the root alone, a root over leaves, or a root over branches over leaves.
+    const unsigned leaves=count>root_capacity?(count+child_capacity-1)/child_capacity:0;
+    const unsigned root_level=count<=root_capacity?0:leaves<=root_capacity+1?1:2;
+    Check(tree.ok()&&tree.pages.front().page->tree_level==root_level,
         "independent whole-tree traversal proves actual split levels/fences/sibling reciprocity");
+    unsigned branch_pages=0;std::size_t fewest_children=~std::size_t{0},most_children=0;
+    for(const auto& node:tree.pages)if(node.page->header.page_type==0x201) {
+      ++branch_pages;const auto children=node.page->cells.size()+1;
+      fewest_children=std::min(fewest_children,children);most_children=std::max(most_children,children);
+    }
+    Check(tree.leaves.size()==std::max(leaves,1u)&&
+        branch_pages==(root_level==2?(leaves+child_capacity)/(child_capacity+1):0),
+        "actual leaf and 0x201 branch page counts for the tree depth");
+    Check(!branch_pages||(fewest_children>=2&&most_children-fewest_children<=1&&
+        most_children==(leaves+branch_pages-1)/branch_pages),
+        "children spread evenly over branches: none empty, counts differ by at most one");
     unsigned seen=0;
     for(auto at:tree.leaves)for(const auto& cell:tree.pages[at].page->cells) {
-      const auto id=Id(31000+seen++);
+      const auto id=Id(row_base+seen++);
       Check(cell.key.row_uuid==id&&cell.key.encoded_key==std::vector<byte>(id.bytes.begin(),id.bytes.end()),
           "binary ascending canonical row UUID keys despite reversed physical input");
     }
     Check(seen==count,"no indexed row is dropped or duplicated at a split boundary");
-    const auto read=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(dense_request.bootstrap.database_uuid,devices,
-        made.receipt->checkpoint,2,1,{Id(20000),construction_deps},256*page_bytes);
+    const auto read=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(boundary_request.bootstrap.database_uuid,devices,
+        made.receipt->checkpoint,2,1,{Id(20000),construction_deps},budget);
     Check(read.ok()&&read.rows.size()==count,"every split base row has actual committed native custody");
     const auto original_selector=Read(device,selector_page+1,page_bytes);
     const std::vector<byte> blank(page_bytes,0);
     Check(device.WriteAt((selector_page+1)*page_bytes,blank.data(),blank.size()).ok()&&device.Sync().ok(),"interrupt actual split-tree publication");
     const auto recovered=db::RecoverIndexedNativeCreationWorkspaceSelectionOnOpenDevice(device,
-        {dense_request.bootstrap.database_uuid,dense_request.bootstrap.filespace_uuid,dense_request.bootstrap.page_size_profile_uuid},
-        dense_request.operation_uuid,seed,construction_indexes,256*page_bytes);
+        {boundary_request.bootstrap.database_uuid,boundary_request.bootstrap.filespace_uuid,boundary_request.bootstrap.page_size_profile_uuid},
+        boundary_request.operation_uuid,seed,construction_indexes,budget);
     Check(recovered.ok()&&recovered.repaired_slots==2&&Read(device,selector_page+1,page_bytes)==original_selector,
         "original split/fence/sibling graph must fully reconstruct before selector repair");
+  }
+  total_pages=dense_request.total_pages;selector_page=(total_pages+coverage-1)/coverage+16;
+  // Case 4 was the two-level cap, (R+1)*L+1 rows. Construction now builds that
+  // as a three-level tree, so the case keeps that tree and refuses it for
+  // pages instead: the smallest file it fits, less one page. Its last branch
+  // allocation is the one refused.
+  Check(deep_non_map_pages>0,"three-level boundary construction measured its pages");
+  u64 exhausted_total=deep_non_map_pages;
+  while(exhausted_total<(exhausted_total+coverage-1)/coverage+deep_non_map_pages)++exhausted_total;
+  const auto exhausted_request=Request(0,exhausted_total-1);
+  {
+    // The planner fills that smallest file exactly and is one page short of
+    // the next smaller one, whose last allocation is the last branch page.
+    const auto deep_seed=DenseIndexedCatalogSeed(request,two_level_maximum+1,40000,2500);
+    const auto plan_for=[&](u64 total){return db::detail::PlanNativeCreationCatalogLayout(page_bytes,
+        (total+coverage-1)/coverage,total,512*page_bytes,deep_seed,construction_indexes);};
+    const auto fits=plan_for(exhausted_total),short_one=plan_for(exhausted_total-1);
+    Check(fits.ok()&&fits.layout->image_count==exhausted_total&&fits.layout->relations[0].branches.size()==1&&
+        short_one.error==db::detail::NativeCreationLayoutError::capacity_exceeded,
+        "page exhaustion case is exactly one page short of its three-level tree");
   }
   for(unsigned fault=0;fault<6;++fault) {
     auto indices=construction_indexes;auto seed=dense_seed(root_capacity+1);const auto path=fixture.Next();disk::FileDevice device;
@@ -314,13 +369,33 @@ void NativeMetricConfigChecks(const fs::path& directory) {
       case 1:indices[0]->dependencies.descriptor_generation=2;break;
       case 2:indices[0]->dependencies.dependency_map_sha256.fill(0);break;
       case 3:indices[0]->dependencies.key_profile_uuid={};break;
-      case 4:seed=dense_seed((root_capacity+1)*child_capacity+1);break;
+      case 4:seed=DenseIndexedCatalogSeed(request,two_level_maximum+1,40000,2500);break;
       case 5:indices[0]->relation_uuid=dense_request.bootstrap.database_uuid;break;
     }
-    Arm();const auto refused=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,dense_request,seed,
-        indices,256*page_bytes,*fixture.issuer);Disarm();
+    // Case 4 gets the image budget of a file it would fit, so pages run out first.
+    Arm();const auto refused=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,fault==4?exhausted_request:dense_request,seed,
+        indices,(fault==4?512:256)*page_bytes,*fixture.issuer);Disarm();
     Check(!refused.ok()&&!refused.receipt&&!calls[write_call]&&device.Size().ok()&&!device.Size().size_bytes,
-        "invalid identity/generation/map or tree capacity leaves owned file untouched");
+        "invalid identity/generation/map or page exhaustion leaves owned file untouched");
+    if(fault==4)Check(refused.error==db::NativeCreationWorkspaceError::catalog_capacity_exceeded,
+        "a three-level tree one page short of the file is refused for capacity");
+  }
+  // The read bounds size exactly the tree create builds, at every page size
+  // and for both tiers' row bounds. The planner sizes rows; it does not admit
+  // identities, so one repeated row stands for each.
+  for(unsigned profile=0;profile<5;++profile) {
+    const u64 size=disk::kCanonicalFilespacePageProfiles[profile].page_size_bytes;
+    for(const auto rows:{db::kNativeHostedCatalogRelationMaximumRows,db::kNativeCatalogScanRelationMaximumRows}) {
+      db::NativeCreationCatalogSeed tier;tier[0].assign(rows,fixture_seed[0][1]);
+      const auto plan=db::detail::PlanNativeCreationCatalogLayout(size,1,u64{1}<<20,(u64{1}<<20)*size,tier,construction_indexes);
+      Check(plan.ok(),"tier row bound plans at every page size");
+      const auto& layout=plan.layout->relations[0];
+      u64 planned=1+layout.navigation.size();
+      for(const auto& level:layout.branches)planned+=level.size();
+      const auto limits=db::NativeCatalogNavigationLimitsFor(size,rows);
+      Check(planned==limits.maximum_pages&&limits.maximum_retained_image_bytes==planned*size,
+          "planned navigation pages equal the reader's navigation bound");
+    }
   }
   {
     const auto seed=dense_seed(root_capacity+1);

@@ -300,37 +300,21 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
         p.creator_transaction_uuid=creator;p.creator_local_transaction_id=1;
         p.maintenance_state=1;p.tree_level=level;return p;
       };
-      auto head=node(layout.root,0x200,layout.navigation.empty()?0:1);
-      if(layout.navigation.empty())head.cells=std::move(navigation_cells);
-      else {
-        head.first_child=ref(layout.navigation.front());
-        for(std::size_t nav=0;nav<layout.navigation.size();++nav) {
-          const auto begin=nav*leaf_cells,end=std::min<u64>(begin+leaf_cells,navigation_cells.size());
-          auto leaf=node(layout.navigation[nav],0x202,0);leaf.parent=ref(layout.root);
-          if(nav) {
-            leaf.left=ref(layout.navigation[nav-1]);leaf.low_fence=navigation_cells[begin].key;
-            head.cells.push_back({navigation_cells[begin].key,false,ref(layout.navigation[nav]),{}});
-          }
-          if(nav+1<layout.navigation.size()) {
-            leaf.right=ref(layout.navigation[nav+1]);leaf.high_fence=navigation_cells[end].key;
-          }
-          leaf.cells.assign(navigation_cells.begin()+begin,navigation_cells.begin()+end);
-          auto encoded=page::EncodeNativeBtreePage(leaf);
-          if(!encoded.ok()) {
-            auto failed=Fail(encoded.error==page::NativeBtreeError::resource_exhausted?E::resource_exhausted:
-                encoded.error==page::NativeBtreeError::hash_failure?E::hash_failure:E::encoding_failure);
-            failed.btree_error=encoded.error;failed.failed_page_number=layout.navigation[nav];return failed;
-          }
-          save(layout.navigation[nav],std::move(encoded));
+      // Every level, bottom-up, through the builder recovery shares
+      // (SB_CATALOG_BTREE_N_LEVEL): leaves, branches, then the root.
+      std::optional<NativeCreationWorkspaceResult> tree_failure;
+      const bool built=detail::BuildNativeCreationCatalogBtree(layout,leaf_cells,std::move(navigation_cells),ref,node,
+          [&](u64 n,const page::NativeBtreePage& p) {
+        auto encoded=page::EncodeNativeBtreePage(p);
+        if(!encoded.ok()) {
+          tree_failure=Fail(encoded.error==page::NativeBtreeError::resource_exhausted?E::resource_exhausted:
+              encoded.error==page::NativeBtreeError::hash_failure?E::hash_failure:E::encoding_failure);
+          tree_failure->btree_error=encoded.error;tree_failure->failed_page_number=n;return false;
         }
-      }
-      auto encoded=page::EncodeNativeBtreePage(head);
-      if(!encoded.ok()) {
-        auto failed=Fail(encoded.error==page::NativeBtreeError::resource_exhausted?E::resource_exhausted:
-            encoded.error==page::NativeBtreeError::hash_failure?E::hash_failure:E::encoding_failure);
-        failed.btree_error=encoded.error;failed.failed_page_number=layout.root;return failed;
-      }
-      save(layout.root,std::move(encoded));
+        save(n,std::move(encoded));return true;
+      });
+      if(tree_failure)return *tree_failure;
+      if(!built)return Fail(E::encoding_failure);
       receipt.relations[i]={static_cast<u16>(i+1),0x200,ref(layout.root),deps.index_uuid};
     }
     for(const auto control:{catalog,configuration,security}) {
@@ -498,6 +482,8 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
           if(const auto error=allocated(ref(n),6,receipt.relation_uuids[i]);error!=E::none){auto failed=Fail(error);failed.failed_page_number=n;return failed;}
         for(const auto n:layouts[i].navigation)
           if(const auto error=allocated(ref(n),0x202,receipt.index_dependencies[i]->index_uuid);error!=E::none){auto failed=Fail(error);failed.failed_page_number=n;return failed;}
+        for(const auto& level:layouts[i].branches)for(const auto n:level)
+          if(const auto error=allocated(ref(n),0x201,receipt.index_dependencies[i]->index_uuid);error!=E::none){auto failed=Fail(error);failed.failed_page_number=n;return failed;}
       }
       for(const auto control:{watermark_first,watermark_second}) {
         const auto n=maps+control;std::vector<byte> bytes(size);

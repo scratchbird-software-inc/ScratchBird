@@ -39,14 +39,18 @@ inline usize NativeCatalogBasePagesFor(usize page_size,usize bytes) noexcept {
   if(!page_size)return 0;
   return std::max<usize>(32,(bytes+page_size-1)/page_size);
 }
-// The B-tree a relation of `rows` rows can need: one leaf per
-// NativeCatalogBtreeLeafCells rows plus the root, each a full page image.
+// The B-tree a relation of `rows` rows can need, page for page as native
+// create builds it (NativeCatalogBtreeShapeFor, SB_CATALOG_BTREE_N_LEVEL): its
+// leaves, every branch level and the root, each a full page image.
 // Derived, not chosen: a fixed 16 pages refused the 702-row security relation
-// at 8 KiB pages (16 leaves + root).
+// at 8 KiB pages (16 leaves + root). Since construction builds N levels the
+// 4096-row scan tier at 8 KiB is 92 leaves + 2 branches + root = 95 pages
+// (93 when the count stopped at two levels); the other tiers and larger pages
+// stay at two levels.
 inline NativeBtreeTreeMemoryLimits NativeCatalogNavigationLimitsFor(usize page_size,usize rows) noexcept {
-  const auto leaf_cells=NativeCatalogBtreeLeafCells(page_size);
-  if(!leaf_cells)return {};
-  const auto pages=(rows+leaf_cells-1)/leaf_cells+1;
+  const auto shape=NativeCatalogBtreeShapeFor(page_size,rows);
+  if(!shape.ok())return {};
+  const auto pages=shape.leaves()+shape.branches()+1;
   return {pages,pages*page_size};
 }
 inline usize NativeHostedCatalogBasePages(usize page_size) noexcept {

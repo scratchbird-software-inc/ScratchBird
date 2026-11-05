@@ -73,9 +73,10 @@ struct NativeCreationCatalogIndexBinding {
 };
 using NativeCreationCatalogIndexes = std::array<std::optional<NativeCreationCatalogIndexBinding>,6>;
 // A missing index retains the original single-leaf bound. A supplied index
-// packs complete base leaves and a real one/two-level native navigation tree.
-// Overcapacity is refused before I/O, never truncated. This is construction,
-// not serving activation or a general index admission/publication API.
+// packs complete base leaves and a real native navigation tree, built bottom-up
+// with as many levels as the rows need (SB_CATALOG_BTREE_N_LEVEL). Overcapacity
+// (pages or image budget) is refused before I/O, never truncated. This is
+// construction, not serving activation or a general index admission/publication API.
 NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevice(
     disk::FileDevice&,const NativeFilespaceInitializationRequest&,
     const NativeCreationCatalogSeed&,const NativeCreationCatalogIndexes&,
