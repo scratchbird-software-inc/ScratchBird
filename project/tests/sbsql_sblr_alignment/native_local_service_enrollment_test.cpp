@@ -3665,6 +3665,114 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
       m.namespaces.ok()&&m.filespaces.ok()&&m.audit.ok()&&m.security.ok()&&m.naming_profiles.ok()&&m.collisions.ok(),
       "the engine verifies every component of the producer's catalog: names, indexes, namespaces, filespaces, audit, "
       "security references, naming profiles and collisions");
+  // Stage 2: the coordinator's configuration from the producer's own rows.
+  const auto inspected=Host::InspectStartupTransactions(read,1024*1024);
+  Check(inspected==server::NativeHostedRuntimeError::none&&read.startup_transactions().ok()&&
+      read.startup_transactions().transactions.empty()&&!read.startup_transactions().pending_binding,
+      "the producer's file holds only its construction history: no startup work is pending");
+  const auto management=Host::ResolveStartupManagementDefinition(read);
+  if(management!=server::NativeHostedRuntimeError::none)std::cerr<<"producer management error="<<int(management)
+      <<" definition="<<int(read.management_definition().error)<<'\n';
+  Check(management==server::NativeHostedRuntimeError::none&&read.management_definition().ok(),
+      "the management descriptor and every registered profile resolve from the producer's sys.management rows");
+  const auto verification_policies=Host::ResolveConfiguredStartupVerificationPolicies(read);
+  if(verification_policies!=server::NativeHostedRuntimeError::none)std::cerr<<"producer verification policies error="
+      <<int(verification_policies)<<" selection="<<int(read.verification_policies().error)<<'\n';
+  Check(verification_policies==server::NativeHostedRuntimeError::none&&read.verification_policies().ok(),
+      "the coordinator's persisted startup verification references resolve to complete policy bodies");
+  const auto attached=Host::AttachStartupServiceSession(read);
+  if(!attached.ok())std::cerr<<"producer session error="<<int(attached.error)<<'\n';
+  Check(attached.ok()&&read.session()&&read.session()->database_uuid==receipt.database_uuid&&
+      read.session()->principal_uuid==receipt.service_principal_uuid,
+      "the L5 service attaches its startup session as the producer's principal");
+  const auto transaction_policies=Host::ResolveStartupTransactionPolicies(read);
+  if(transaction_policies!=server::NativeHostedRuntimeError::none)std::cerr<<"producer transaction policies error="
+      <<int(transaction_policies)<<" selection="<<int(read.transaction_policies().error)<<'\n';
+  Check(transaction_policies==server::NativeHostedRuntimeError::none&&read.transaction_policies().ok(),
+      "transaction, isolation, lock and evidence policies resolve from the producer's pack rows");
+
+  // Stage 3: first startup transaction (TX2) through storage verification.
+  using StartupPhase=runtime_security::NativeStartupTransactionPhase;
+  const u64 startup_image_budget=(create.total_pages==2048?32:8*create.total_pages/512)*512*u64{sizes[profile]};
+  // The fixture's limits; its storage scan runs at 8 KiB pages only.
+  const runtime_security::NativeStartupTransactionLimits startup_limits{
+      {{startup_image_budget,64*1024*1024},{startup_image_budget,16*1024*1024},{startup_image_budget,32*1024*1024},
+       8*1024*1024,4*1024*1024,16*1024*1024,startup_image_budget},
+      192*1024*1024};
+  const auto prepared=Host::PrepareStartupTransaction(read,startup_limits);
+  if(!prepared.ok())std::cerr<<"producer prepare="<<int(prepared.error)<<" detail="<<prepared.detail<<'\n';
+  Check(prepared.ok()&&prepared.phase==StartupPhase::prepared&&prepared.binding.local_transaction_id==2,
+      "startup reserves TX2 on the producer's file");
+  const auto published=Host::PublishStartupTransaction(read);
+  if(!published.ok())std::cerr<<"producer publish="<<int(published.error)<<" phase="<<int(published.phase)
+      <<" reserve="<<int(published.reservation_error)<<" publication="<<int(published.publication_error)
+      <<" publication_phase="<<int(published.publication_phase)<<'\n';
+  Check(published.ok()&&published.phase==StartupPhase::starting_selected&&published.selected&&
+      published.selected->selection.checkpoint_generation==2&&published.binding==prepared.binding,
+      "TX2 starting is published durably in the producer's file");
+  const auto boundary=Host::EstablishStartupVerificationBoundary(read);
+  if(!boundary.ok())std::cerr<<"producer boundary="<<int(boundary.error)<<" phase="<<int(boundary.phase)
+      <<" reserve="<<int(boundary.reservation_error)<<" publication="<<int(boundary.publication_error)<<'\n';
+  Check(boundary.ok()&&boundary.phase==StartupPhase::boundary_selected&&boundary.binding==published.binding,
+      "the maintenance boundary is published");
+  const auto snapshot=Host::EstablishStartupDataSnapshot(read);
+  if(!snapshot.ok())std::cerr<<"producer snapshot="<<int(snapshot.error)<<'\n';
+  Check(snapshot.ok()&&read.startup_snapshot()&&snapshot.observation->owning_transaction_number==2&&
+      snapshot.observation->database_uuid==receipt.database_uuid,"the startup snapshot registers under TX2");
+  const auto detailed=Host::PersistStartupTransactionDetail(read);
+  if(!detailed.ok())std::cerr<<"producer detail="<<int(detailed.error)<<" phase="<<int(detailed.phase)
+      <<" reserve="<<int(detailed.reservation_error)<<" publication="<<int(detailed.publication_error)<<'\n';
+  Check(detailed.ok()&&detailed.phase==StartupPhase::detail_selected&&detailed.binding==boundary.binding,
+      "the startup transaction detail is persisted");
+  const auto evaluated=Host::EvaluateStartupTransactionPolicies(read);
+  if(!evaluated.evaluated())std::cerr<<"producer policy evaluation="<<int(evaluated.error)<<" source="<<int(evaluated.evaluation_error)<<'\n';
+  Check(evaluated.evaluated()&&evaluated.observation->outcome==runtime_security::NativeStartupPolicyOutcome::allow,
+      "the producer's transaction policies allow first startup");
+  const auto audited=Host::PersistStartupAdmissionEvidence(read);
+  if(!audited.ok())std::cerr<<"producer evidence="<<int(audited.error)<<" phase="<<int(audited.phase)
+      <<" reserve="<<int(audited.reservation_error)<<" publication="<<int(audited.publication_error)<<'\n';
+  Check(audited.ok()&&audited.phase==StartupPhase::admission_evidence_selected&&audited.binding==detailed.binding,
+      "the admission evidence is persisted");
+  const auto activated=Host::ActivateStartupTransaction(read);
+  if(!activated.ok())std::cerr<<"producer activate="<<int(activated.error)<<" phase="<<int(activated.phase)
+      <<" reserve="<<int(activated.reservation_error)<<" publication="<<int(activated.publication_error)<<'\n';
+  const auto grant=Host::ObserveStartupLock(read);
+  Check(activated.ok()&&activated.phase==StartupPhase::active_selected&&activated.binding==audited.binding&&grant&&
+      grant->transaction_uuid==audited.binding.transaction_uuid&&grant->database_uuid==receipt.database_uuid,
+      "TX2 becomes active holding the startup lock");
+  const auto verified=Host::VerifyStartupStorageIdentity(read);
+  if(!verified.ok())std::cerr<<"producer identity verify="<<int(verified.error)<<" lifetime="<<int(verified.lifetime_error)<<'\n';
+  Check(verified.ok()&&verified.observation->transaction_uuid==activated.binding.transaction_uuid&&
+      verified.observation->filespaces==1&&verified.observation->system_state.lifecycle==db::NativeSystemLifecycle::creating,
+      "the active owner rereads the producer's identities and constructor system state");
+  const auto scanned=Host::VerifyStartupStorageStructures(read);
+  if(!scanned.ok())std::cerr<<"producer storage scan="<<int(scanned.error)<<" phase="<<int(scanned.phase)
+      <<" verification="<<(scanned.verification_phase?int(*scanned.verification_phase):0)
+      <<" reservation="<<int(scanned.reservation_error)<<" publication="<<int(scanned.publication_error)
+      <<" memory="<<int(scanned.read_memory_error)<<" selection="<<int(scanned.read_selection_error)
+      <<" checkpoint="<<int(scanned.read_checkpoint_error)<<" inventory="<<int(scanned.read_inventory_error)
+      <<" allocation="<<int(scanned.read_allocation_error)<<" reservation_phase="<<int(scanned.reservation_phase)
+      <<" detail="<<scanned.detail<<" profile="<<profile<<'\n';
+  // SEARCH_KEY: SB_GAP_NATIVE_128K_STARTUP_SCAN_MEMORY (2026-11-04). Known
+  // gap, not accepted behavior: at 128 KiB pages the scan's own selected
+  // reread needs more than the 64 MiB selected backing, and no backing fits
+  // the default pack's 256 MiB per-context limit (72-80 MiB: the reread is
+  // refused; 84-92 MiB: identity verification is starved; 96 MiB and up: the
+  // publication grant is refused). The fixture runs this scan at 8 KiB only.
+  // This branch pins today's exact refusal; it flips to the success check
+  // when hosted startup fits 128 KiB within the defaults.
+  if(sizes[profile]==131072){
+    std::cerr<<"KNOWN GAP SB_GAP_NATIVE_128K_STARTUP_SCAN_MEMORY: 128 KiB storage scan refused at identity_verified\n";
+    Check(!scanned.ok()&&scanned.error==runtime_security::NativeStartupTransactionError::publication_failure&&
+        scanned.verification_phase==runtime_security::NativeVerificationPhase::identity_verified&&
+        scanned.reservation_error==db::NativePublicationError::checkpoint_failure&&
+        scanned.read_memory_error==db::NativeSelectedCheckpointMemoryError::selection_failure&&
+        scanned.read_selection_error==db::NativeCheckpointSelectionError::resource_exhausted&&
+        scanned.binding==activated.binding&&Host::ObserveStartupLock(read)==grant,
+        "known gap: at 128 KiB the scan's selected reread exhausts its backing after identity verifies, TX2 unchanged");
+  }else Check(scanned.ok()&&scanned.verification_phase==runtime_security::NativeVerificationPhase::catalog_verifying&&
+      scanned.binding==activated.binding&&Host::ObserveStartupLock(read)==grant,
+      "identity, allocation and inventory scans of the producer's file persist every ordered boundary under TX2");
   read.Reset();
   Check(Host::Close(host.runtime).ok(),"the producer's database closes");
 }
