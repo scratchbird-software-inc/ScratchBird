@@ -24,6 +24,7 @@
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <charconv>
+#include <fstream>
 #include <chrono>
 #include <climits>
 #include <time.h>
@@ -3587,6 +3588,11 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
   if(!made.ok())std::cerr<<"producer error="<<int(made.error)<<" policy="<<int(made.policy_error)<<" workspace="
       <<int(made.workspace_error)<<" profile="<<profile<<'\n';
   Check(made.ok()&&created.Close().ok(),"the production producer writes the database and its descriptor retires");
+  // SB_OPEN_VERIFICATION_READ_ONLY: nothing between create and the first
+  // startup transaction may write the file. Compare every byte.
+  const auto read_file=[&]{std::ifstream in(path,std::ios::binary);return std::vector<char>(std::istreambuf_iterator<char>(in),{});};
+  const auto created_bytes=read_file();
+  Check(!created_bytes.empty(),"the producer's file reads back after create");
   const auto& receipt=*made.receipt;
   Check(receipt.database_uuid==Id(1)&&receipt.workspace.free_pages>0,"the producer leaves free pages for later publication");
 
@@ -3682,6 +3688,46 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
       <<int(verification_policies)<<" selection="<<int(read.verification_policies().error)<<'\n';
   Check(verification_policies==server::NativeHostedRuntimeError::none&&read.verification_policies().ok(),
       "the coordinator's persisted startup verification references resolve to complete policy bodies");
+  // Open verification (owner direction 2026-11-05): L5's first startup duty,
+  // read-only, before any startup transaction. Same selected-read budget as
+  // the startup transaction's own reads below.
+  using OpenError=server::NativeOpenVerificationError;using OpenStage=server::NativeOpenVerificationStage;
+  const u64 open_image_budget=(create.total_pages==2048?32:8*create.total_pages/512)*512*u64{sizes[profile]};
+  const server::NativeOpenVerificationLimits open_limits{{open_image_budget,64*1024*1024},8*1024*1024};
+  {const auto short_map=Host::VerifyStartupDatabaseFile(read,{{open_image_budget,64*1024*1024},0});
+   const auto over_policy=Host::VerifyStartupDatabaseFile(read,{{open_image_budget,SIZE_MAX/4},8*1024*1024});
+   Check(short_map.error==OpenError::invalid_request&&over_policy.error==OpenError::policy_refused&&
+       !read.open_verification()&&read_file()==created_bytes,
+       "open verification refuses unusable limits before reading, retains nothing and writes nothing");}
+  if(profile==0){
+    // Damage one byte of the primary's page zero on disk. Verification must
+    // report a finding, retain nothing and write nothing; restoring the byte
+    // restores a clean verification.
+    const int fd=::open(path.c_str(),O_RDWR|O_CLOEXEC);
+    Check(fd>=0,"independent descriptor for the page-zero damage probe");
+    char original=0;Check(::pread(fd,&original,1,200)==1,"read the page-zero byte to damage");
+    const char damaged=char(original^0x5a);
+    Check(::pwrite(fd,&damaged,1,200)==1&&::fsync(fd)==0,"damage one page-zero byte");
+    auto expected=created_bytes;expected[200]=damaged;
+    const auto refused=Host::VerifyStartupDatabaseFile(read,open_limits);
+    if(refused.error!=OpenError::finding)std::cerr<<"producer damaged verify="<<int(refused.error)<<" stage="<<int(refused.stage)<<" source="<<int(refused.source_error)<<'\n';
+    Check(refused.error==OpenError::finding&&refused.stage==OpenStage::identity&&!refused.observation&&
+        !read.open_verification()&&read_file()==expected,
+        "a damaged page zero is a finding at the identity stage; verification retains nothing and writes nothing");
+    Check(::pwrite(fd,&original,1,200)==1&&::fsync(fd)==0&&::close(fd)==0&&read_file()==created_bytes,
+        "restore the damaged page-zero byte");
+  }
+  const auto opened=Host::VerifyStartupDatabaseFile(read,open_limits);
+  if(!opened.ok())std::cerr<<"producer open verification="<<int(opened.error)<<" stage="<<int(opened.stage)<<'\n';
+  Check(opened.ok()&&opened.stage==OpenStage::complete&&read.open_verification()&&
+      opened.observation->identity.selection.checkpoint_generation==1&&opened.observation->identity.filespaces==1&&
+      opened.observation->identity.system_state.lifecycle==db::NativeSystemLifecycle::creating&&
+      opened.observation->allocation.filespaces==1&&opened.observation->allocation.catalog_pages>0&&
+      opened.observation->inventory.transactions==1&&opened.observation->inventory.active_transactions==0&&
+      opened.observation->inventory.in_doubt_transactions==0&&opened.observation->inventory.horizon_records==3&&
+      opened.observation->routes.routes==2,
+      "the opened file verifies read-only before any startup transaction: identity, allocation, inventory, catalog routes");
+  Check(read_file()==created_bytes,"open verification writes nothing: every byte of the producer's file is unchanged");
   const auto attached=Host::AttachStartupServiceSession(read);
   if(!attached.ok())std::cerr<<"producer session error="<<int(attached.error)<<'\n';
   Check(attached.ok()&&read.session()&&read.session()->database_uuid==receipt.database_uuid&&
@@ -3694,6 +3740,10 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
       "transaction, isolation, lock and evidence policies resolve from the producer's pack rows");
 
   // Stage 3: first startup transaction (TX2) through storage verification.
+  // Interim until the startup redesign's next step: TX2 still re-verifies
+  // storage and persists each phase (generations 7-10), and starts before
+  // verification. Owner ruling 2026-11-05 makes both drift
+  // (SB_DRIFT_STARTUP_VERIFICATION_NON_ALTERING).
   using StartupPhase=runtime_security::NativeStartupTransactionPhase;
   const u64 startup_image_budget=(create.total_pages==2048?32:8*create.total_pages/512)*512*u64{sizes[profile]};
   // The fixture's limits (its storage scan runs at 8 KiB pages only), except
@@ -3709,6 +3759,8 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
       {{startup_image_budget,64*1024*1024},{startup_image_budget,16*1024*1024},{startup_image_budget,control_backing},
        8*1024*1024,4*1024*1024,16*1024*1024,startup_image_budget},
       192*1024*1024};
+  Check(read_file()==created_bytes,
+      "opening, verifying and resolving startup policies leave every byte of the producer's file unchanged");
   const auto prepared=Host::PrepareStartupTransaction(read,startup_limits);
   if(!prepared.ok())std::cerr<<"producer prepare="<<int(prepared.error)<<" detail="<<prepared.detail<<'\n';
   Check(prepared.ok()&&prepared.phase==StartupPhase::prepared&&prepared.binding.local_transaction_id==2,

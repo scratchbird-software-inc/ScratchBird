@@ -20,6 +20,8 @@
 #include "engine/internal_api/verification/native_startup_management_definition.hpp"
 #include "engine/internal_api/transaction/native_startup_transaction_owner.hpp"
 #include "engine/internal_api/transaction/native_transaction_policy_selection.hpp"
+#include "engine/internal_api/verification/native_startup_storage_identity.hpp"
+#include "engine/internal_api/verification/native_startup_storage_scan.hpp"
 
 namespace scratchbird::server {
 
@@ -54,6 +56,42 @@ struct NativeAgentPolicyValidation {
   std::array<char,128> field{};
   std::size_t policy_count=0,registration_count=0;
   bool ok() const noexcept {return error==NativeAgentPolicyError::none;}
+};
+// SEARCH_KEY: SB_OPEN_VERIFICATION_READ_ONLY (owner direction 2026-11-05).
+// Verification of the primary database file on open is L5's first startup
+// duty. It only reads: no transaction, publication, phase record or
+// allocation is written, because writing to a corrupt database may corrupt it
+// further. A refusal is returned to the caller, which reports it (the report
+// channel is not yet specified); policy then closes the database or enters
+// restricted repair. "finding" is an integrity problem in the file;
+// source_mismatch means the file disagrees with what this open already
+// captured. Both mean the file is not in a known good state.
+enum class NativeOpenVerificationError {
+  none, not_ready, busy, cancelled, invalid_request, policy_refused, memory_failure,
+  crypto_failure, io_failure, source_failure, source_mismatch, finding
+};
+enum class NativeOpenVerificationStage { none, identity, allocation, inventory, catalog_routes, complete };
+struct NativeOpenVerificationLimits {
+  // One selected-checkpoint read at a time; each stage releases its read.
+  storage::database::NativeSelectedCheckpointMemoryLimits selected;
+  // Secondary allocation-chain read workspace; at least one page.
+  std::size_t map_backing_bytes = 0;
+};
+// Copied values only. No custody, phase, readiness or repair authority.
+struct NativeOpenVerificationObservation {
+  engine::internal_api::NativeStartupStorageIdentityObservation identity;
+  engine::internal_api::NativeStartupStorageScanObservation allocation, inventory;
+  engine::internal_api::NativeStartupCatalogRouteObservation routes;
+  std::size_t workspace_bytes = 0;
+};
+struct NativeOpenVerificationResult {
+  NativeOpenVerificationError error = NativeOpenVerificationError::not_ready;
+  // The stage that refused, or complete.
+  NativeOpenVerificationStage stage = NativeOpenVerificationStage::none;
+  // The selected-source refusal behind a stage's error, for the report.
+  storage::database::NativeOwnedSourceError source_error = storage::database::NativeOwnedSourceError::none;
+  std::optional<NativeOpenVerificationObservation> observation;
+  bool ok() const noexcept {return error==NativeOpenVerificationError::none&&observation.has_value();}
 };
 class NativeHostedDatabaseRuntime;
 struct NativeHostedRuntimeOpenResult;
@@ -174,6 +212,7 @@ class NativeHostedDatabaseRuntime final {
           transaction_policies_(std::exchange(other.transaction_policies_,{})),
           startup_transaction_backing_(std::move(other.startup_transaction_backing_)),
           startup_transactions_(std::exchange(other.startup_transactions_,{})),
+          open_verification_(std::exchange(other.open_verification_,{})),
           authentication_(std::move(other.authentication_)),session_(std::move(other.session_)),
           startup_transaction_(std::move(other.startup_transaction_)) {
       other.authorization_={};other.configuration_={};other.agents_={};other.agent_policies_={};
@@ -254,6 +293,10 @@ class NativeHostedDatabaseRuntime final {
     const engine::internal_api::NativeStartupTransactionHistoryObservation& startup_transactions() const noexcept {
       CheckOwner();return startup_transactions_;
     }
+    // The retained clean result of the read-only open verification, if any.
+    const std::optional<NativeOpenVerificationObservation>& open_verification() const noexcept {
+      CheckOwner();return open_verification_;
+    }
     const engine::internal_api::NativeStartupManagementDefinition& management_definition() const noexcept {
       CheckOwner();return management_definition_;
     }
@@ -272,6 +315,7 @@ class NativeHostedDatabaseRuntime final {
       startup_transaction_.Reset();
       session_.reset();authentication_.reset();
       startup_transactions_={};startup_transaction_backing_={};
+      open_verification_.reset();
       catalogs_={};catalog_backing_bytes_=0;
       catalog_metadata_={};
       verification_policies_={};
@@ -334,6 +378,7 @@ class NativeHostedDatabaseRuntime final {
     engine::internal_api::NativeTransactionPolicyDeclarations transaction_policies_;
     storage::database::NativeStorageArena startup_transaction_backing_;
     engine::internal_api::NativeStartupTransactionHistoryObservation startup_transactions_;
+    std::optional<NativeOpenVerificationObservation> open_verification_;
     // Retire the engine decision before the credential generation, original
     // operation and governed grant views it borrows. No capability escapes.
     std::optional<engine::internal_api::NativeLocalServiceAuthentication> authentication_;
@@ -455,6 +500,11 @@ class NativeHostedDatabaseRuntime final {
   // as active. Selected audit, private snapshot, authorization and all resource
   // policies are prerequisites. No ordinary client admission is implied.
   static engine::internal_api::NativeStartupTransactionResult ActivateStartupTransaction(CredentialRead&) noexcept;
+  // SB_OPEN_VERIFICATION_READ_ONLY: verify the opened primary file before any
+  // startup transaction exists. Call after the startup verification policies
+  // resolve. Reads through the retained custody operation with its own memory
+  // grant; writes nothing. A clean result is retained in the read.
+  static NativeOpenVerificationResult VerifyStartupDatabaseFile(CredentialRead&,const NativeOpenVerificationLimits&) noexcept;
   static engine::internal_api::NativeStartupStorageIdentityResult VerifyStartupStorageIdentity(CredentialRead&) noexcept;
   // Execute and retain the ordered identity/allocation/inventory boundaries
   // under the original active startup owner. Returns at catalog_verifying;
