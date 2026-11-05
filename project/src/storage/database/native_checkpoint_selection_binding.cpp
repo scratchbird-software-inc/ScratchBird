@@ -72,8 +72,8 @@ struct BoundContext {
    [&](u64 offset,void* bytes,std::size_t size){return Read(file,offset,bytes,size);},
    [&]{auto io=file.device->Size();receipt.io_status=io.status;receipt.io_diagnostic=std::move(io.diagnostic);return io;},raw);
  }
- auto Inventory(const disk::FilespaceRootReference& root,u64 budget){
-  auto read=detail::VerifyNativeCheckpointInventoryBacked(database,files,root,budget,batches,*scratch.resource);
+ auto Inventory(const disk::FilespaceRootReference& root,u64 budget,detail::NativeSharedControlAuthority* shared){
+  auto read=detail::VerifyNativeCheckpointInventoryBacked(database,files,root,budget,batches,*scratch.resource,shared);
   Merge(read);return read.inventory;
  }
  auto Proof(const Uuid& primary,u64 budget){
@@ -145,7 +145,10 @@ NativeBoundCheckpointSelectionView ReadBoundView(
     const auto& ref=selection.checkpoint;
     const disk::FilespaceRootReference checkpoint{9,0x300,ref.filespace_uuid,ref.page_number,ref.page_generation,ref.page_size_profile_uuid,selection.checkpoint_object_uuid};
     result.retained_image_bytes=2*size;
-    result.checkpoint_inventory=context.Inventory(checkpoint,budget-result.retained_image_bytes);
+    // MEM-CONTROL-AUTHORITY-READ-ONCE: one selected control authority of the
+    // primary for this selection's creator, predecessor and role-16 checks.
+    detail::NativeSharedControlAuthority shared{primary_uuid,{}};
+    result.checkpoint_inventory=context.Inventory(checkpoint,budget-result.retained_image_bytes,&shared);
     if(!result.checkpoint_inventory.ok())return CheckpointFailure(result.checkpoint_inventory);
     const auto& pair=result.checkpoint_inventory;const auto& cp=*pair.checkpoint;
     if(pair.checkpoint_sha256!=selection.checkpoint_sha256||cp.checkpoint_generation!=selection.checkpoint_generation||
@@ -157,7 +160,7 @@ NativeBoundCheckpointSelectionView ReadBoundView(
         cp.object_uuid!=selection.previous_checkpoint_object_uuid)return Fail(E::checkpoint_binding_mismatch);
       const auto& p=*selection.previous_checkpoint;
       const disk::FilespaceRootReference previous{9,0x300,p.filespace_uuid,p.page_number,p.page_generation,p.page_size_profile_uuid,selection.previous_checkpoint_object_uuid};
-      result.predecessor=context.Inventory(previous,budget-result.retained_image_bytes);
+      result.predecessor=context.Inventory(previous,budget-result.retained_image_bytes,&shared);
       if(!result.predecessor.ok())return CheckpointFailure(result.predecessor);
       const auto& before=result.predecessor;const auto& old=*before.checkpoint;
       if(before.checkpoint_sha256!=selection.previous_checkpoint_sha256||old.checkpoint_generation>=cp.checkpoint_generation||old.root_set_generation>=cp.root_set_generation||
@@ -177,10 +180,16 @@ NativeBoundCheckpointSelectionView ReadBoundView(
     if(target==cp.roots.end()||target->page.filespace_uuid!=primary_uuid||target->page.page_size_profile_uuid!=primary->page_size_profile_uuid)return Fail(E::allocation_binding_mismatch);
     std::optional<NativeManagementControlAuthorityView> operation_proof;
     if(std::any_of(cp.roots.begin(),cp.roots.end(),[](const auto& r){return r.role==16;})){
-      auto proof=context.Proof(primary_uuid,budget-result.retained_image_bytes);
-      if(!proof.ok()){using P=NativeManagementControlAuthorityError;return Fail(proof.error==P::hash_failure?E::hash_failure:proof.error==P::resource_exhausted?E::resource_exhausted:proof.error==P::io_failure?E::io_failure:proof.error==P::encrypted_requires_authority?E::encrypted_requires_authority:proof.error==P::cluster_requires_authority?E::cluster_requires_authority:E::creator_mismatch);}
+      const u64 remaining=budget-result.retained_image_bytes;
+      if(shared.view){if(shared.view->verified_image_bytes>remaining)return Fail(E::resource_exhausted);}
+      else{
+        auto read=context.Proof(primary_uuid,remaining);
+        if(!read.ok()){using P=NativeManagementControlAuthorityError;return Fail(read.error==P::hash_failure?E::hash_failure:read.error==P::resource_exhausted?E::resource_exhausted:read.error==P::io_failure?E::io_failure:read.error==P::encrypted_requires_authority?E::encrypted_requires_authority:read.error==P::cluster_requires_authority?E::cluster_requires_authority:E::creator_mismatch);}
+        shared.view=read;
+      }
+      const auto& proof=*shared.view;
       if(proof.selection->checkpoint!=selection.checkpoint||proof.selection->checkpoint_sha256!=selection.checkpoint_sha256)return Fail(E::checkpoint_binding_mismatch);
-      result.retained_image_bytes+=proof.verified_image_bytes;operation_proof=std::move(proof);
+      result.retained_image_bytes+=proof.verified_image_bytes;operation_proof=proof;
     }
     const auto transaction_creator=[&](const Uuid& id,u64 number,bool committed){
       const auto owner=std::find_if(pair.inventory.entries.begin(),pair.inventory.entries.end(),[&](const auto& e){return e.identity.local_id.value==number;});

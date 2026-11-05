@@ -845,7 +845,8 @@ NativeCheckpointRootResult ReadNativeCheckpointRootFromOpenDevice(
 NativeCheckpointInventoryDeviceRead detail::VerifyNativeCheckpointInventoryBacked(
     const core::platform::Uuid& database_uuid,std::span<const disk::NativeFilespaceDevice> devices,
     const disk::FilespaceRootReference& checkpoint,u64 maximum_retained_image_bytes,
-    std::span<CheckpointBatch* const> observations,std::pmr::memory_resource& resource) noexcept {
+    std::span<CheckpointBatch* const> observations,std::pmr::memory_resource& resource,
+    NativeSharedControlAuthority* shared) noexcept {
   using namespace native_checkpoint;namespace mga=transaction::mga;
   NativeCheckpointInventoryDeviceRead out;
   const auto fail=[&](Error e,page::NativeInventoryError nested=page::NativeInventoryError::none){
@@ -896,15 +897,26 @@ NativeCheckpointInventoryDeviceRead detail::VerifyNativeCheckpointInventoryBacke
         (!(root.flags&4)&&creator->identity.scope!=mga::TransactionScope::local_node))return fail(Error::inventory_mismatch);
       if(!mga::HasCommittedInventoryOutcome(*creator))return fail(Error::creator_not_committed);
     }else{
-      auto proof=detail::ReadNativeManagementControlAuthorityBacked(database_uuid,ordered,root.header.filespace_uuid,
-        maximum_retained_image_bytes-loaded.bytes.size()-chain.retained_image_bytes,
-        NativeManagementHistoryReadContext::selected,nullptr,{},batches,resource);MergeCheckpointIo(out,proof);
-      if(!proof.ok()){using P=NativeManagementControlAuthorityError;return fail(proof.authority.error==P::hash_failure?Error::hash_failure:
-        proof.authority.error==P::resource_exhausted?Error::resource_exhausted:proof.authority.error==P::io_failure?Error::io_failure:
-        proof.authority.error==P::encrypted_requires_authority?Error::encrypted_requires_crypto_authority:
-        proof.authority.error==P::cluster_requires_authority?Error::cluster_requires_authority:Error::creator_not_committed);}
-      if(!MatchesNativeManagementPublishedCheckpoint(proof.authority,root,checkpoint_digest.digest))return fail(Error::creator_not_committed);
-      operation_work=proof.authority.verified_image_bytes;
+      const u64 remaining=maximum_retained_image_bytes-loaded.bytes.size()-chain.retained_image_bytes;
+      // MEM-CONTROL-AUTHORITY-READ-ONCE: reuse the selection's authority of
+      // this filespace, still charged and budget-checked here.
+      const bool share=shared&&shared->filespace==root.header.filespace_uuid;
+      NativeManagementControlAuthorityView authority;
+      if(share&&shared->view){
+        if(shared->view->verified_image_bytes>remaining)return fail(Error::resource_exhausted);
+        authority=*shared->view;
+      }else{
+        auto proof=detail::ReadNativeManagementControlAuthorityBacked(database_uuid,ordered,root.header.filespace_uuid,remaining,
+          NativeManagementHistoryReadContext::selected,nullptr,{},batches,resource);MergeCheckpointIo(out,proof);
+        if(!proof.ok()){using P=NativeManagementControlAuthorityError;return fail(proof.authority.error==P::hash_failure?Error::hash_failure:
+          proof.authority.error==P::resource_exhausted?Error::resource_exhausted:proof.authority.error==P::io_failure?Error::io_failure:
+          proof.authority.error==P::encrypted_requires_authority?Error::encrypted_requires_crypto_authority:
+          proof.authority.error==P::cluster_requires_authority?Error::cluster_requires_authority:Error::creator_not_committed);}
+        authority=proof.authority;
+        if(share)shared->view=authority;
+      }
+      if(!MatchesNativeManagementPublishedCheckpoint(authority,root,checkpoint_digest.digest))return fail(Error::creator_not_committed);
+      operation_work=authority.verified_image_bytes;
     }
     NativeCheckpointInventoryView result;result.error=Error::none;result.checkpoint_sha256=checkpoint_digest.digest;
     result.inventory_generation=chain.pages.front().page.inventory_generation;

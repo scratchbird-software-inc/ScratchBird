@@ -3694,9 +3694,17 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
   // Stage 3: first startup transaction (TX2) through storage verification.
   using StartupPhase=runtime_security::NativeStartupTransactionPhase;
   const u64 startup_image_budget=(create.total_pages==2048?32:8*create.total_pages/512)*512*u64{sizes[profile]};
-  // The fixture's limits; its storage scan runs at 8 KiB pages only.
+  // The fixture's limits (its storage scan runs at 8 KiB pages only), except
+  // the control backing. Each management-history read replays every entry, so
+  // its need grows with each startup publication and with page size. Measured
+  // 2026-11-04 at 128 KiB, through catalog_verifying (generation 10): 32 MiB
+  // is refused at the inventory-to-catalog boundary's verify_installed
+  // reread, 36 MiB passes. A 384-page floor (48 MiB at 128 KiB, the fixture's
+  // 32 MiB below 128 KiB) leaves about three publications of headroom; any
+  // fixed value runs out as history grows.
+  const std::size_t control_backing=std::max<std::size_t>(32*1024*1024,std::size_t{384}*sizes[profile]);
   const runtime_security::NativeStartupTransactionLimits startup_limits{
-      {{startup_image_budget,64*1024*1024},{startup_image_budget,16*1024*1024},{startup_image_budget,32*1024*1024},
+      {{startup_image_budget,64*1024*1024},{startup_image_budget,16*1024*1024},{startup_image_budget,control_backing},
        8*1024*1024,4*1024*1024,16*1024*1024,startup_image_budget},
       192*1024*1024};
   const auto prepared=Host::PrepareStartupTransaction(read,startup_limits);
@@ -3752,25 +3760,14 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
       <<" memory="<<int(scanned.read_memory_error)<<" selection="<<int(scanned.read_selection_error)
       <<" checkpoint="<<int(scanned.read_checkpoint_error)<<" inventory="<<int(scanned.read_inventory_error)
       <<" allocation="<<int(scanned.read_allocation_error)<<" reservation_phase="<<int(scanned.reservation_phase)
-      <<" detail="<<scanned.detail<<" profile="<<profile<<'\n';
-  // SEARCH_KEY: SB_GAP_NATIVE_128K_STARTUP_SCAN_MEMORY (2026-11-04). Known
-  // gap, not accepted behavior: at 128 KiB pages the scan's own selected
-  // reread needs more than the 64 MiB selected backing, and no backing fits
-  // the default pack's 256 MiB per-context limit (72-80 MiB: the reread is
-  // refused; 84-92 MiB: identity verification is starved; 96 MiB and up: the
-  // publication grant is refused). The fixture runs this scan at 8 KiB only.
-  // This branch pins today's exact refusal; it flips to the success check
-  // when hosted startup fits 128 KiB within the defaults.
-  if(sizes[profile]==131072){
-    std::cerr<<"KNOWN GAP SB_GAP_NATIVE_128K_STARTUP_SCAN_MEMORY: 128 KiB storage scan refused at identity_verified\n";
-    Check(!scanned.ok()&&scanned.error==runtime_security::NativeStartupTransactionError::publication_failure&&
-        scanned.verification_phase==runtime_security::NativeVerificationPhase::identity_verified&&
-        scanned.reservation_error==db::NativePublicationError::checkpoint_failure&&
-        scanned.read_memory_error==db::NativeSelectedCheckpointMemoryError::selection_failure&&
-        scanned.read_selection_error==db::NativeCheckpointSelectionError::resource_exhausted&&
-        scanned.binding==activated.binding&&Host::ObserveStartupLock(read)==grant,
-        "known gap: at 128 KiB the scan's selected reread exhausts its backing after identity verifies, TX2 unchanged");
-  }else Check(scanned.ok()&&scanned.verification_phase==runtime_security::NativeVerificationPhase::catalog_verifying&&
+      <<" detail="<<scanned.detail<<" publication_phase="<<int(scanned.publication_phase)
+      <<" handoff="<<int(scanned.handoff_error)<<" writer="<<int(scanned.read_writer_error)
+      <<" free_pages_at_create="<<receipt.workspace.free_pages<<" profile="<<profile<<'\n';
+  // SB_GAP_NATIVE_128K_STARTUP_SCAN_MEMORY (pinned in 63fd9fc9a) is closed:
+  // the selection reads its control authority once
+  // (MEM-CONTROL-AUTHORITY-READ-ONCE), and the control backing above has a
+  // page floor. 128 KiB now completes the scan like every other profile.
+  Check(scanned.ok()&&scanned.verification_phase==runtime_security::NativeVerificationPhase::catalog_verifying&&
       scanned.binding==activated.binding&&Host::ObserveStartupLock(read)==grant,
       "identity, allocation and inventory scans of the producer's file persist every ordered boundary under TX2");
   read.Reset();
