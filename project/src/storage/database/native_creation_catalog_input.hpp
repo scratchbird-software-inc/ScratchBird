@@ -15,6 +15,7 @@
 #include "catalog_lock_policy.hpp"
 #include "catalog_isolation_profile.hpp"
 #include "catalog_native_catalog_index.hpp"
+#include "catalog_builtin_type_domain.hpp"
 #include "catalog_management_descriptor.hpp"
 #include "catalog_agent_bootstrap.hpp"
 #include "catalog_crypto_inline_private_key_policy.hpp"
@@ -112,6 +113,9 @@ template<class Reserve> void ReserveNativeCreationCatalogReferences(
   // SB_CLARIFY_NATIVE_CATALOG_INDEX_PROFILE_ROWS: catalog index profiles and dependency maps.
   if(core::catalog::IsCatalogNativeCatalogIndexPayload(m.record.payload))
     core::catalog::ForEachCatalogNativeCatalogIndexReference(m.record.payload,reserve);
+  // SB_NATIVE_BUILTIN_DATATYPE_DOMAIN_ROWS: built-in datatype and system domain rows.
+  if(core::catalog::IsCatalogBuiltinTypeDomainPayload(m.record.payload))
+    core::catalog::ForEachCatalogBuiltinTypeDomainReference(m.record.payload,reserve);
   if(core::catalog::IsCatalogIsolationProfilePayload(m.record.payload)){
     const auto decoded=core::catalog::DecodeCatalogIsolationProfile(m.record.payload);
     if(decoded.ok()){const auto& p=*decoded.record;

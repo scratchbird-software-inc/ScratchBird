@@ -31,6 +31,7 @@
 #include "catalog_lock_policy.hpp"
 #include "catalog_isolation_profile.hpp"
 #include "catalog_native_catalog_index.hpp"
+#include "catalog_builtin_type_domain.hpp"
 #include "catalog_management_descriptor.hpp"
 #include "catalog_crypto_inline_private_key_policy.hpp"
 #include "catalog_scheduler_policy.hpp"
@@ -201,6 +202,9 @@ CatalogTypedRecordViewResult ValidateCatalogTypedRecordView(CatalogTypedRecordVi
   if (IsCatalogNativeCatalogIndexPayload(record.payload) && !CatalogNativeCatalogIndexMatchesHeader(record))
     return RecordViewError("CATALOG.INVALID_INPUT", "catalog.native_catalog_index.invalid",
                           "native_catalog_index_binary_payload_or_header_invalid");
+  if (IsCatalogBuiltinTypeDomainPayload(record.payload) && !CatalogBuiltinTypeDomainMatchesHeader(record))
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.builtin_type_domain.invalid",
+                          "builtin_type_domain_binary_payload_or_header_invalid");
   if (IsCatalogVerificationPolicyPayload(record.payload) && !CatalogVerificationPolicyMatchesHeader(record))
     return RecordViewError("CATALOG.INVALID_INPUT", "catalog.verification_policy.invalid",
                           "verification_policy_binary_payload_or_header_invalid");
@@ -528,6 +532,10 @@ std::optional<CatalogRecordDiagnosticView> ValidateCatalogMetadataVersionView(co
        IsCatalogNativeCatalogIndexPayload(value.record.payload)) &&
       !CatalogNativeCatalogIndexMatchesMetadata(value))
     return MetadataViewError("native_catalog_index_definition_binding_invalid");
+  if ((value.object_subtype == kBuiltinDatatypeDescriptorSubtype || value.object_subtype == kSystemDomainSubtype ||
+       IsCatalogBuiltinTypeDomainPayload(value.record.payload)) &&
+      !CatalogBuiltinTypeDomainMatchesMetadata(value))
+    return MetadataViewError("builtin_type_domain_definition_binding_invalid");
   if ((value.object_subtype == "verification_policy_body" || IsCatalogVerificationPolicyPayload(value.record.payload)) &&
       !CatalogVerificationPolicyMatchesMetadata(value))
     return MetadataViewError("verification_policy_definition_binding_invalid");
@@ -783,6 +791,7 @@ bool CatalogMetadataPreservesFamilyOrigin(
       CatalogLockPolicyPreservesOrigin(previous,successor) &&
       CatalogIsolationProfilePreservesOrigin(previous,successor) &&
       CatalogNativeCatalogIndexPreservesOrigin(previous,successor) &&
+      CatalogBuiltinTypeDomainPreservesOrigin(previous,successor) &&
       CatalogManagementDefinitionPreservesOrigin(previous,successor) &&
       CatalogCryptoInlinePrivateKeyPolicyPreservesOrigin(previous,successor) &&
       CatalogRuntimeAuthorityBindingPreservesOrigin(previous,successor) &&
