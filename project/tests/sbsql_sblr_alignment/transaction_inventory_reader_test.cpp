@@ -5,6 +5,7 @@
 // Read-only load and verification of the in-place transaction inventory (the
 // transaction-state chain and the header chain). Not wired into open yet.
 #include "transaction_inventory_reader.hpp"
+#include "transaction_inventory_validation.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -161,6 +162,11 @@ void TestCrossCheckFindings() {
     CheckFinding(inv.Run(), TipPageError::invalid_slot, Stage::cross_check, "flagged header missing", 9);
   }
   {
+    Inventory inv;  // an in-progress slot with neither flag nor header
+    SetWord(inv.state, 9, TipStateCode::active, false);
+    CheckFinding(inv.Run(), TipPageError::invalid_slot, Stage::cross_check, "active slot without header", 9);
+  }
+  {
     Inventory inv;  // rolled_back slot, committed header
     SetWord(inv.state, 9, TipStateCode::rolled_back);
     PutHeader(inv.headers, HeaderFor(9, TipStateCode::committed));
@@ -253,6 +259,52 @@ void TestChainFindings() {
     CheckFinding(page::CheckTransactionInventoryImages(kPage, inv.state, {}), TipPageError::invalid_page_size,
                  Stage::request, "no header chain");
   }
+}
+
+void TestBuildInventory() {
+  namespace mga = scratchbird::transaction::mga;
+  Inventory inv;
+  const auto built = page::BuildLocalTransactionInventoryFromImages(kPage, inv.state, inv.headers);
+  Check(built.ok(), "inventory built");
+  const auto& i = built.inventory;
+  Check(i.next_local_transaction_id == 10, "next local id is Next");
+  // Entries: 1 committed, 2 rolled_back, 3 active, 4 prepared, 7 active, 8 archived.
+  // Skipped: 5 (header, slot unused), 6 (dead, no header), 9 (unused).
+  std::vector<u64> ids;
+  for (const auto& e : i.entries) ids.push_back(e.identity.local_id.value);
+  Check(ids == std::vector<u64>({1, 2, 3, 4, 7, 8}), "entries in transaction_order");
+  auto at = [&](u64 n) -> const mga::TransactionInventoryEntry& {
+    return *std::find_if(i.entries.begin(), i.entries.end(), [&](const auto& e) { return e.identity.local_id.value == n; });
+  };
+  Check(at(1).state == mga::TransactionState::committed && at(1).commit_sequence == 1, "1 committed first");
+  Check(at(8).state == mga::TransactionState::archived && at(8).archived_from_state == mga::TransactionState::committed &&
+            at(8).commit_sequence == 2,
+        "8 archived from committed, second commit");
+  Check(at(2).state == mga::TransactionState::rolled_back && at(2).commit_sequence == 0, "2 rolled back");
+  Check(at(3).state == mga::TransactionState::active && at(4).state == mga::TransactionState::prepared, "3 active, 4 prepared");
+  Check(at(7).state == mga::TransactionState::active && at(7).commit_sequence == 0,
+        "7: the state word decides, not the header");
+  Check(i.next_commit_sequence == 3, "next commit sequence");
+  Check(at(1).identity.transaction_uuid.value == HeaderFor(1).transaction_uuid &&
+            at(1).identity.scope == mga::TransactionScope::local_node,
+        "identity from the header");
+  Check(*mga::ValidateLocalTransactionInventoryStructure(i) == '\0', "valid in-memory inventory");
+  // Commit order follows commit time, not transaction_order.
+  Inventory later;
+  SetWord(later.state, 9, TipStateCode::committed);
+  auto early = HeaderFor(9);
+  Check(page::CompleteTransactionHeader(early, TipStateCode::committed, 500) == page::TransactionHeaderError::none, "early");
+  PutHeader(later.headers, early);
+  const auto ordered = page::BuildLocalTransactionInventoryFromImages(kPage, later.state, later.headers);
+  Check(ordered.ok(), "built with an early commit");
+  const auto nine = std::find_if(ordered.inventory.entries.begin(), ordered.inventory.entries.end(),
+                                 [](const auto& e) { return e.identity.local_id.value == 9; });
+  Check(nine->commit_sequence == 1, "transaction 9 committed first by time");
+  // A finding stops the build.
+  Inventory bad;
+  SetWord(bad.state, 9, TipStateCode::committed, false);
+  const auto refused = page::BuildLocalTransactionInventoryFromImages(kPage, bad.state, bad.headers);
+  Check(!refused.ok() && refused.transaction_order == 9, "build refuses a failing check");
 }
 
 // --- device reader -------------------------------------------------------
@@ -372,6 +424,7 @@ int main() {
     TestCheckValid();
     TestCrossCheckFindings();
     TestChainFindings();
+    TestBuildInventory();
     TestDeviceReader();
   } catch (const std::exception& e) {
     std::cerr << "FAIL: " << e.what() << " after " << checks << " checks\n";

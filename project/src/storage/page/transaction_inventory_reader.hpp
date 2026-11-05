@@ -5,6 +5,7 @@
 #include "disk_device.hpp"
 #include "filespace_page_zero.hpp"
 #include "transaction_header_page.hpp"
+#include "transaction_inventory.hpp"
 #include "transaction_state_page.hpp"
 
 #include <optional>
@@ -27,7 +28,10 @@ namespace scratchbird::storage::page {
 //    slot is at or beyond Next;
 //  - no header exists at or beyond Next (BEGIN allocates Next before writing
 //    the header);
-//  - a used slot whose word says it has a header has one;
+//  - a used slot whose word says it has a header has one, and every used
+//    slot other than dead has one (BEGIN writes the header before the slot;
+//    only restart dead-marking of a never-written slot leaves a used slot
+//    without a header);
 //  - committed or rolled_back slots have a header completed the same way
 //    (the header is written before the state byte); archived slots have a
 //    completed header; prepared and limbo slots have an incomplete header.
@@ -51,6 +55,27 @@ struct TransactionInventoryCheck {
 // the header chain. Sizes must be whole multiples of page_size.
 TransactionInventoryCheck CheckTransactionInventoryImages(u32 page_size, std::span<const byte> state_images,
                                                           std::span<const byte> header_images) noexcept;
+
+// The in-memory inventory the existing transaction layer works with, built
+// from checked images (call CheckTransactionInventoryImages first). One entry
+// per used slot below Next that has a header, in transaction_order:
+//  - identity: local id = transaction_order, the header's UUID, cluster
+//    scope for cluster authority, local otherwise;
+//  - state through the explicit durable -> in-memory map; archived takes its
+//    origin from the header's final state;
+//  - begin time from the UUIDv7 time prefix; final time from the header's
+//    completion time;
+//  - commit sequences 1..k assigned to committed transactions in commit-time
+//    order (ties by transaction_order); the durable order is the commit time.
+// A dead slot without a header is skipped: no transaction ever ran under it.
+struct TransactionInventoryBuild {
+  TipPageError error = TipPageError::invalid_header;
+  std::optional<u64> transaction_order;  // the entry that could not be built
+  scratchbird::transaction::mga::LocalTransactionInventory inventory;
+  bool ok() const noexcept { return error == TipPageError::none; }
+};
+TransactionInventoryBuild BuildLocalTransactionInventoryFromImages(u32 page_size, std::span<const byte> state_images,
+                                                                   std::span<const byte> header_images);
 
 struct TransactionInventoryReadRequest {
   scratchbird::core::platform::Uuid database_uuid;

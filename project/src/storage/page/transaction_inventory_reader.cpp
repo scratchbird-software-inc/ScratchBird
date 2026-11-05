@@ -1,6 +1,9 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "transaction_inventory_reader.hpp"
+#include "transaction_state_code_map.hpp"
+#include "transaction_inventory_validation.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <limits>
@@ -105,7 +108,7 @@ TransactionInventoryCheck CheckTransactionInventoryImages(u32 page_size, std::sp
       const auto header = HeaderOf(header_images, page_size, header_slots, n);
       const auto final_state = header ? header->final_state : TipStateCode::unused;
       bool ok = true;
-      if ((word->flags & kTipFlagHasDetailRecord) && !header) ok = false;
+      if (!header && ((word->flags & kTipFlagHasDetailRecord) || word->state != TipStateCode::dead)) ok = false;
       switch (word->state) {
         case TipStateCode::committed:
         case TipStateCode::rolled_back: ok = ok && header && final_state == word->state; break;
@@ -122,6 +125,72 @@ TransactionInventoryCheck CheckTransactionInventoryImages(u32 page_size, std::sp
   c.stage = Stage::none;
   c.counters = *head.counters;
   return c;
+}
+
+TransactionInventoryBuild BuildLocalTransactionInventoryFromImages(u32 page_size, std::span<const byte> state_images,
+                                                                   std::span<const byte> header_images) {
+  namespace mga = scratchbird::transaction::mga;
+  TransactionInventoryBuild out;
+  const auto check = CheckTransactionInventoryImages(page_size, state_images, header_images);
+  if (!check.ok()) {
+    out.error = check.error;
+    out.transaction_order = check.transaction_order;
+    return out;
+  }
+  const u64 next = check.counters.next_transaction;
+  const u32 header_slots = TransactionHeaderSlotsPerPage(page_size);
+  struct Commit {
+    u64 time = 0, order = 0;
+    std::size_t entry = 0;
+  };
+  std::vector<Commit> commits;
+  auto& inv = out.inventory;
+  inv = mga::MakeEmptyLocalTransactionInventory();
+  inv.next_local_transaction_id = next;
+  for (std::size_t i = 0; i < state_images.size() / page_size; ++i) {
+    const auto d = DecodeTransactionStatePage(state_images.subspan(i * page_size, page_size));
+    const auto& v = *d.view;
+    const u32 limit = static_cast<u32>(std::min<u64>(v.slots, next > v.first_number ? next - v.first_number : 0));
+    for (u32 slot = 0; slot < limit; ++slot) {
+      const auto word = TipWordAt(v, slot);
+      if (!word || word->state == TipStateCode::unused) continue;
+      const u64 n = v.first_number + slot;
+      const auto header = HeaderOf(header_images, page_size, header_slots, n);
+      if (!header) continue;  // dead without a header (checked above)
+      const auto state = InMemoryTransactionState(word->state);
+      if (!state) {
+        out.error = E::invalid_word;
+        out.transaction_order = n;
+        return out;
+      }
+      mga::TransactionInventoryEntry e;
+      e.identity.local_id = mga::MakeLocalTransactionId(n);
+      e.identity.transaction_uuid = {scratchbird::core::platform::UuidKind::transaction, header->transaction_uuid};
+      e.identity.scope = header->authority == TipAuthorityClass::cluster ? mga::TransactionScope::cluster_global
+                                                                          : mga::TransactionScope::local_node;
+      e.state = *state;
+      if (*state == mga::TransactionState::archived) {
+        const auto origin = InMemoryTransactionState(header->final_state);
+        e.archived_from_state = origin ? *origin : mga::TransactionState::none;
+      }
+      const auto begun = scratchbird::core::uuid::ExtractUuidV7TimePrefix(header->transaction_uuid);
+      e.begin_unix_epoch_millis = begun.ok ? begun.unix_epoch_millis : 0;
+      e.final_unix_epoch_millis = header->completed_at_utc_ns / 1'000'000;
+      e.evidence_record_written = header->final_state != TipStateCode::unused;
+      if (mga::HasCommittedInventoryOutcome(e)) commits.push_back({header->commit_time_utc_ns, n, inv.entries.size()});
+      inv.entries.push_back(e);
+    }
+  }
+  std::sort(commits.begin(), commits.end(),
+            [](const Commit& a, const Commit& b) { return a.time < b.time || (a.time == b.time && a.order < b.order); });
+  for (std::size_t k = 0; k < commits.size(); ++k) inv.entries[commits[k].entry].commit_sequence = k + 1;
+  inv.next_commit_sequence = commits.size() + 1;
+  if (const auto* why = mga::ValidateLocalTransactionInventoryStructure(inv); *why) {
+    out.error = E::invalid_word;
+    return out;
+  }
+  out.error = E::none;
+  return out;
 }
 
 TransactionInventoryRead ReadTransactionInventory(const TransactionInventoryReadRequest& r) noexcept {
