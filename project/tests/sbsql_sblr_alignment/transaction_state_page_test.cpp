@@ -6,6 +6,7 @@
 // header record (owner rulings 2026-11-05). No caller uses either yet.
 #include "careful_write.hpp"
 #include "transaction_header_record.hpp"
+#include "transaction_state_code_map.hpp"
 #include "transaction_state_page.hpp"
 
 #include <algorithm>
@@ -634,6 +635,30 @@ void TestHeaderRecord() {
   CheckHdr(page::EncodeTransactionHeaderRecord(SampleHeader(), small), TransactionHeaderError::short_buffer,
            "short output");
 }
+
+void TestStateCodeMap() {
+  using scratchbird::transaction::mga::TransactionState;
+  // Durable -> in-memory -> durable is the identity for every code.
+  for (int c = 0; c <= page::kTipStateCodeMax; ++c) {
+    const auto code = static_cast<TipStateCode>(c);
+    const auto state = page::InMemoryTransactionState(code);
+    Check(state.has_value(), "every durable code maps");
+    Check(page::DurableTipStateCode(*state) == code, "durable round trip");
+  }
+  Check(!page::InMemoryTransactionState(static_cast<TipStateCode>(13)), "code 13 has no state");
+  // The named differences.
+  Check(page::DurableTipStateCode(TransactionState::created) == TipStateCode::starting, "created is starting");
+  Check(page::DurableTipStateCode(TransactionState::failed_terminal) == TipStateCode::dead, "failed_terminal is dead");
+  Check(page::DurableTipStateCode(TransactionState::preparing) == TipStateCode::active, "preparing stores as active");
+  Check(page::DurableTipStateCode(TransactionState::none) == TipStateCode::unused, "none is unused");
+  // In-memory -> durable -> in-memory is the identity except preparing.
+  for (int s = 0; s <= static_cast<int>(TransactionState::read_only_active); ++s) {
+    const auto state = static_cast<TransactionState>(s);
+    const auto back = page::InMemoryTransactionState(page::DurableTipStateCode(state));
+    Check(back.has_value(), "every state maps back");
+    Check(*back == (state == TransactionState::preparing ? TransactionState::active : state), "state round trip");
+  }
+}
 }  // namespace
 
 int main() {
@@ -646,6 +671,7 @@ int main() {
     TestEdits();
     TestCrashPrefixes();
     TestHeaderRecord();
+    TestStateCodeMap();
   } catch (const std::exception& e) {
     std::cerr << "FAIL: " << e.what() << " after " << checks << " checks\n";
     return 1;
