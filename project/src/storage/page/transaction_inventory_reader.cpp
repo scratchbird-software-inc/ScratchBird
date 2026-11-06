@@ -428,6 +428,7 @@ detail::NativeInPlaceInventoryRead detail::ReadNativeInPlaceInventoryBacked(
     chain.retained_image_bytes = u64{count} * page_size;
     chain.error = NE::none;
     receipt.chain = chain;
+    out.counters = read.check.counters;
     return out;
   } catch (const std::bad_alloc&) {
     return fail(NE::resource_exhausted);

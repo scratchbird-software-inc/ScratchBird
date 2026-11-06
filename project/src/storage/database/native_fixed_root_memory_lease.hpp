@@ -99,6 +99,8 @@ class NativeFixedRootMemoryLease {
     return at == roots_.end() ? nullptr : &*at;
   }
   const NativeReadTransactionInventory& inventory() const noexcept { CheckThread(); return inventory_; }
+  // The counters and horizons (OIT, OAT, OST, ...) the first state page stores.
+  const page::TipCounters& counters() const noexcept { CheckThread(); return counters_; }
   // State pages, then header pages.
   std::span<const NativeInventoryPageBinding> inventory_pages() const noexcept { CheckThread(); return inventory_pages_; }
   const NativeReadAllocationChain& allocation() const noexcept { CheckThread(); return allocation_; }
@@ -125,6 +127,7 @@ class NativeFixedRootMemoryLease {
   NativeFixedRootIdentity identity_;
   std::span<const disk::FilespaceRootReference> roots_;
   NativeReadTransactionInventory inventory_;
+  page::TipCounters counters_;
   std::span<const NativeInventoryPageBinding> inventory_pages_;
   NativeReadAllocationChain allocation_;
   NativeReadDirectoryChain directory_;
@@ -387,6 +390,11 @@ inline NativeFixedRootMemoryResult AcquireNativeFixedRootMemoryLease(
       charge(chain.retained_image_bytes);
       lease.inventory_ = {chain.inventory.next_local_transaction_id, chain.inventory.next_commit_sequence,
                           chain.inventory.entries};
+      if (!read.counters) {
+        out.error = E::inventory_failure;
+        return out;
+      }
+      lease.counters_ = *read.counters;
       auto pages = scratch.Array<NativeInventoryPageBinding>(chain.pages.size());
       for (std::size_t n = 0; n < pages.size(); ++n) pages[n] = {chain.pages[n].page.header, chain.pages[n].page.object_uuid};
       lease.inventory_pages_ = pages;

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 #include "transaction_inventory_page.hpp"
+#include "transaction_state_page.hpp"
 #include <memory_resource>
 namespace scratchbird::storage::page::detail {
 // Internal complete-source composition. All backing is already admitted and
@@ -34,6 +35,9 @@ NativeInventoryChainDeviceRead ReadNativeInventoryChainBacked(
 struct NativeInPlaceInventoryRead {
   bool handled=false;
   NativeInventoryChainDeviceRead read;
+  // The counters and horizons the first state page stores, present when the
+  // read succeeds. read.chain.horizons are those projected from the entries.
+  std::optional<TipCounters> counters;
 };
 NativeInPlaceInventoryRead ReadNativeInPlaceInventoryBacked(
     const core::platform::Uuid&,std::span<const disk::NativeFilespaceDevice>,
