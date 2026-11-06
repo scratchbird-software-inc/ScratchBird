@@ -101,7 +101,7 @@ VE ChainRefusal(const db::NativeAllocationLeaseReadResult& r) noexcept {
 
 NativeOpenVerificationResult NativeHostedDatabaseRuntime::VerifyStartupDatabaseFile(
     CredentialRead& read,const NativeOpenVerificationLimits& limits) noexcept {
-  using db::SameReadSource;using db::NativeReadSourceIdentityFromSelection;
+  using db::SameReadSource;
   NativeOpenVerificationResult result;
   const auto fail=[&](VE error,VS stage){result.error=error;result.stage=stage;result.observation.reset();return result;};
   read.CheckOwner();
@@ -127,7 +127,7 @@ NativeOpenVerificationResult NativeHostedDatabaseRuntime::VerifyStartupDatabaseF
     maximum_page=std::max<std::size_t>(maximum_page,profile->page_size_bytes);
   }
   if(files.empty()||!maximum_page)return fail(VE::source_mismatch,VS::none);
-  // One selected read plus the largest per-stage scratch: the allocation-chain
+  // One source read plus the largest per-stage scratch: the allocation-chain
   // workspace, or one page image with the page-zero root array.
   constexpr std::size_t root_slots=32;
   const std::size_t roots_bytes=root_slots*sizeof(disk::FilespaceRootReference);
@@ -156,12 +156,12 @@ NativeOpenVerificationResult NativeHostedDatabaseRuntime::VerifyStartupDatabaseF
   VE error=VE::memory_failure;VS stage=VS::identity;
   db::NativeOwnedSourceError source_error=db::NativeOwnedSourceError::none;
   const auto refuse=[&](const auto& source){source_error=source.error;error=SourceRefusal(source,source.writer_error);};
-  // SB_TRANSITIONAL_HOSTED_SOURCE: the same stages on page zero's fixed
-  // roots. Page zero carries no digest: each content page read here is
-  // checked by its own seal when decoded, and bound to its allocation record
-  // and common header. No checkpoint, selector, watermark or horizon page is
-  // read; the horizons are checked against the counters the first
-  // transaction-state page stores. C3c makes this the only path.
+  // SB_NATIVE_FIXED_ROOT_READ: every stage reads page zero's fixed roots.
+  // Page zero carries no digest: each content page read here is checked by
+  // its own seal when decoded, and bound to its allocation record and common
+  // header. No checkpoint, selector, watermark or horizon page is read; the
+  // horizons are checked against the counters the first transaction-state
+  // page stores.
   const db::NativeFixedRootMemoryLimits fixed_limits{limits.selected.maximum_verification_image_bytes,
       limits.selected.maximum_backing_bytes};
   const auto same_source=[&](const db::NativeFixedRootIdentity& id){
@@ -431,310 +431,7 @@ NativeOpenVerificationResult NativeHostedDatabaseRuntime::VerifyStartupDatabaseF
     if(cancelled()){error=VE::cancelled;return;}
     stage=VS::complete;error=VE::none;
   };
-  const auto crypto=self.database_crypto_.WithMemoryScope(self.crypto_binding_,[&]{
-    if(read.read_source_==NativeHostedReadSource::fixed_root){verify_fixed_root();return;}
-    // Identity: every filespace's page zero against the selected directory,
-    // and the system-state page against its checkpoint root and creator.
-    {
-      stage=VS::identity;
-      auto arena=memory.CreateArena(memory.binding(),maximum_page+roots_bytes+slack,maximum_page);
-      if(!arena.ok())return;
-      const auto image_block=arena.arena.Allocate(maximum_page,maximum_page);
-      const auto roots_block=arena.arena.Allocate(roots_bytes,alignof(disk::FilespaceRootReference));
-      if(!image_block.ok()||!roots_block.ok())return;
-      auto* roots=static_cast<disk::FilespaceRootReference*>(roots_block.pointer);std::uninitialized_value_construct_n(roots,root_slots);
-      auto source=operation.ObserveWithMemory(limits.selected,memory,memory.binding());
-      if(!source.ok()){refuse(source);return;}
-      const auto& selection=source.observation.selection();const auto& directory=source.observation.directory();
-      if(!SameReadSource(NativeReadSourceIdentityFromSelection(*selection.selection),genesis)){error=VE::source_mismatch;return;}
-      const auto& inventory=selection.checkpoint_inventory.inventory;
-      if(inventory.next_local_transaction_id!=captured->inventory.next_local_transaction_id||
-          inventory.next_commit_sequence!=captured->inventory.next_commit_sequence||
-          inventory.entries.size()!=captured->inventory.entries.size()){error=VE::source_mismatch;return;}
-      api::NativeStartupStorageIdentityObservation identity;
-      identity.source=genesis;identity.workspace_bytes=workspace;
-      identity.physical_bytes_read=source.physical_bytes_read;
-      core::platform::Uuid creation_operation;
-      for(const auto& directory_page:directory.directory.pages)for(const auto& file:directory_page.directory.records){
-        if(cancelled()){error=VE::cancelled;return;}
-        const auto& b=file.bootstrap;
-        const auto expected=std::find_if(files.begin(),files.end(),[&](const auto& f){return f.bootstrap.filespace_uuid==b.filespace_uuid;});
-        if(expected==files.end()||expected->bootstrap.page_size_profile_uuid!=b.page_size_profile_uuid||b.page_size_bytes>maximum_page||
-            b.database_uuid!=self.database_||b.flags){error=VE::source_mismatch;return;}
-        std::span<byte> image{static_cast<byte*>(image_block.pointer),b.page_size_bytes};
-        const auto io=operation.ReadAtBounded(b.filespace_uuid,b.page_size_profile_uuid,0,image);
-        if(!io.ok()){error=VE::io_failure;return;}
-        identity.physical_bytes_read+=image.size();
-        const disk::FilespaceBootstrapBinding binding{self.database_,b.filespace_uuid,b.page_size_profile_uuid};
-        const auto zero=disk::DecodeFilespacePageZeroInto(image,{roots,root_slots},&binding);
-        if(!zero.ok()){error=VE::finding;return;}
-        const auto& z=*zero.record;
-        if(z.page_uuid!=file.page_zero_uuid||z.page_generation!=file.page_zero_generation||z.root_set_generation!=file.root_set_generation||
-            z.total_pages!=file.total_pages||z.bootstrap.flags!=b.flags||z.bootstrap.checksum_profile_uuid!=b.checksum_profile_uuid||
-            z.bootstrap.encryption_profile_uuid!=b.encryption_profile_uuid||z.bootstrap.durable_format_generation!=b.durable_format_generation||
-            z.bootstrap.filespace_role!=b.filespace_role||z.bootstrap.lifecycle_state!=b.lifecycle_state){error=VE::finding;return;}
-        if(b.filespace_uuid==self.primary_){
-          creation_operation=z.creation_operation_uuid;
-          identity.primary_filespace_uuid=b.filespace_uuid;identity.primary_page_uuid=z.page_uuid;
-          identity.primary_profile_uuid=b.page_size_profile_uuid;identity.primary_page_generation=z.page_generation;
-          if(z.roots.size()>identity.primary_roots.size()){error=VE::invalid_request;return;}
-          std::copy(z.roots.begin(),z.roots.end(),identity.primary_roots.begin());identity.primary_root_count=z.roots.size();
-        }
-        ++identity.filespaces;++identity.identity_pages;
-      }
-      if(identity.filespaces!=files.size()){error=VE::source_mismatch;return;}
-      if(cancelled()){error=VE::cancelled;return;}
-      const auto& checkpoint=*selection.checkpoint_inventory.checkpoint;
-      const auto target=std::find_if(checkpoint.roots.begin(),checkpoint.roots.end(),[](const auto& root){return root.role==8;});
-      if(target==checkpoint.roots.end()||target->page_type!=8){error=VE::finding;return;}
-      const auto allocated=api::FindNativeStartupRootAllocation(selection.allocation,*target);
-      if(!allocated||!allocated->creator_operation_uuid.is_nil()){error=VE::finding;return;}
-      const auto& ref=target->page;const auto* profile=disk::FindCanonicalFilespacePageProfile(ref.page_size_profile_uuid);
-      if(!profile||profile->page_size_bytes>maximum_page||ref.page_number>UINT64_MAX/profile->page_size_bytes){error=VE::source_mismatch;return;}
-      std::span<byte> image{static_cast<byte*>(image_block.pointer),profile->page_size_bytes};
-      const auto io=operation.ReadAtBounded(ref.filespace_uuid,ref.page_size_profile_uuid,ref.page_number*u64{profile->page_size_bytes},image);
-      if(!io.ok()){error=VE::io_failure;return;}
-      identity.physical_bytes_read+=image.size();
-      const auto digest=core::hash::ComputeSha256DigestNative(image.data(),image.size());
-      if(!digest.ok()){error=VE::crypto_failure;return;}
-      if(digest.digest!=target->sha256){error=VE::finding;return;}
-      const disk::NativeCommonPageHeaderBinding header_binding{{self.database_,ref.filespace_uuid,ref.page_size_profile_uuid},
-          ref.page_number,ref.page_generation,8,allocated->page_uuid};
-      const auto header=disk::DecodeNativeCommonPageHeader(image.data(),128,&header_binding);
-      const auto decoded=db::DecodeNativeSystemStateValue(image);
-      if(!header.ok()||!decoded.ok()){error=VE::finding;return;}
-      const auto& state=*decoded.state;
-      // The current first-open profile: the constructor's fenced state, never
-      // rewritten or inferred clean by verification.
-      if(state.object_uuid!=target->object_uuid||state.creator_transaction_uuid!=allocated->creator_transaction_uuid||
-          state.creator_local_transaction_id!=allocated->creator_local_transaction_id||state.lifecycle!=db::NativeSystemLifecycle::creating||
-          state.flags!=(db::NativeSystemFlag::dirty|db::NativeSystemFlag::write_fenced)||
-          !state.checkpoint||*state.checkpoint!=selection.selection->checkpoint||state.checkpoint_generation!=selection.selection->checkpoint_generation||
-          state.checkpoint_object_uuid!=selection.selection->checkpoint_object_uuid||state.transition_operation_uuid!=creation_operation||
-          state.clean_local_transaction_id||!state.clean_transaction_uuid.is_nil()){error=VE::finding;return;}
-      const auto creator=std::find_if(inventory.entries.begin(),inventory.entries.end(),[&](const auto& e){
-        return e.identity.local_id.value==state.creator_local_transaction_id;});
-      if(creator==inventory.entries.end()||creator->identity.transaction_uuid.value!=state.creator_transaction_uuid||
-          creator->identity.scope!=mga::TransactionScope::local_node||!mga::HasCommittedInventoryOutcome(*creator)){error=VE::finding;return;}
-      identity.system_state=state;++identity.identity_pages;
-      observed.identity=identity;
-    }
-    // Allocation: every filespace's selected allocation chain covers the
-    // captured catalog pages and the constructor's initial control pages.
-    {
-      stage=VS::allocation;
-      auto maps=db::PrepareNativeAllocationRead(limits.map_backing_bytes,memory,memory.binding());
-      if(!maps.ok()){error=VE::memory_failure;return;}
-      auto source=operation.ReadWithMemory(limits.selected,memory,memory.binding());
-      if(!source.ok()){refuse(source);return;}
-      const auto& lease=source.lease.source();const auto& selected=lease.selection();
-      if(!SameReadSource(NativeReadSourceIdentityFromSelection(*selected.selection),genesis)){error=VE::source_mismatch;return;}
-      api::NativeStartupStorageScanObservation scan;scan.source=genesis;
-      scan.physical_bytes_read=source.physical_bytes_read;
-      for(const auto& directory_page:lease.directory().directory.pages)for(const auto& member:directory_page.directory.records){
-        if(cancelled()){error=VE::cancelled;return;}
-        ++scan.filespaces;
-        const auto chain=db::NativeAllocationLeaseReader::Read(lease,member.bootstrap.filespace_uuid,
-            limits.selected.maximum_verification_image_bytes,maps.workspace);
-        if(!chain.ok()){error=ChainRefusal(chain);return;}
-        const auto coverage=api::CheckNativeStartupCatalogAllocation(read.catalog_capture_,chain.chain);
-        if(!coverage.ok()){error=VE::finding;return;}
-        const auto initial=api::CheckNativeStartupInitialControlAllocation(read.catalog_capture_,observed.identity,chain.chain);
-        if(!initial.ok()){error=VE::finding;return;}
-        scan.initial_control_pages+=initial.control_pages;scan.wasted_pages+=initial.wasted_pages;
-        scan.catalog_pages+=coverage.matched_pages;
-        scan.physical_bytes_read+=chain.physical_bytes_read;
-        if(chain.chain.pages.size()>UINT64_MAX-scan.allocation_pages||member.total_pages>UINT64_MAX-scan.capacity_pages){error=VE::finding;return;}
-        scan.allocation_pages+=chain.chain.pages.size();scan.capacity_pages+=member.total_pages;
-        for(std::size_t n=0;n<scan.allocation_states.size();++n){
-          if(chain.chain.state_counts[n]>UINT64_MAX-scan.allocation_states[n]){error=VE::finding;return;}
-          scan.allocation_states[n]+=chain.chain.state_counts[n];
-        }
-        for(const auto& policy:read.verification_policies_.bodies)
-          if(scan.allocation_pages>policy.maximum_scan_pages){error=VE::policy_refused;return;}
-      }
-      if(scan.filespaces!=files.size()){error=VE::source_mismatch;return;}
-      if(scan.catalog_pages!=read.catalog_capture_.physical_pages().size()){error=VE::finding;return;}
-      observed.allocation=scan;
-    }
-    // Inventory: structure and horizons without an owning transaction (none
-    // exists yet), then the horizon and retention roots the constructor wrote.
-    {
-      stage=VS::inventory;
-      auto source=operation.ReadWithMemory(limits.selected,memory,memory.binding());
-      if(!source.ok()){refuse(source);return;}
-      const auto& selected=source.lease.source().selection();
-      if(!SameReadSource(NativeReadSourceIdentityFromSelection(*selected.selection),genesis)){error=VE::source_mismatch;return;}
-      const auto& inventory=selected.checkpoint_inventory.inventory;
-      const auto count=inventory.entries.size();
-      if(!count||count>(SIZE_MAX-slack-maximum_page)/(sizeof(std::size_t)+1)){error=VE::finding;return;}
-      auto arena=memory.CreateArena(memory.binding(),maximum_page+count*(sizeof(std::size_t)+1)+slack,maximum_page);
-      if(!arena.ok())return;
-      const auto image_block=arena.arena.Allocate(maximum_page,maximum_page);
-      const auto index_block=arena.arena.Allocate(count*sizeof(std::size_t),alignof(std::size_t));
-      const auto marker_block=arena.arena.Allocate(count,1);
-      if(!image_block.ok()||!index_block.ok()||!marker_block.ok())return;
-      std::span<byte> image{static_cast<byte*>(image_block.pointer),maximum_page};
-      const page::NativeTransactionInventoryConstView view{inventory.next_local_transaction_id,inventory.next_commit_sequence,inventory.entries};
-      const auto valid=page::ValidateNativeTransactionInventoryConstView(view,
-          {static_cast<std::size_t*>(index_block.pointer),count},{static_cast<byte*>(marker_block.pointer),count});
-      if(!valid.ok()){error=VE::finding;return;}
-      api::NativeStartupStorageScanObservation scan;scan.source=genesis;
-      scan.physical_bytes_read=source.physical_bytes_read;
-      if(mga::detail::ProjectValidatedLocalHorizons(view,{},scan.horizons)){error=VE::finding;return;}
-      for(const auto& entry:inventory.entries){
-        if(ActiveState(entry.state))++scan.active_transactions;
-        if(UncertainState(entry.state))++scan.in_doubt_transactions;
-      }
-      scan.transactions=count;scan.inventory_pages=selected.checkpoint_inventory.inventory_pages.size();
-      for(const auto& directory_page:source.lease.source().directory().directory.pages)scan.filespaces+=directory_page.directory.records.size();
-      for(const auto& policy:read.verification_policies_.bodies)
-        if(scan.inventory_pages+2>policy.maximum_scan_pages){error=VE::policy_refused;return;}
-      const auto& creator=inventory.entries.front();
-      if(!mga::HasCommittedInventoryOutcome(creator)||creator.identity.scope!=mga::TransactionScope::local_node){error=VE::finding;return;}
-      const auto& roots=selected.checkpoint_inventory.checkpoint->roots;
-      const auto h=std::find_if(roots.begin(),roots.end(),[](const auto& root){return root.role==2;});
-      const auto r=std::find_if(roots.begin(),roots.end(),[](const auto& root){return root.role==10;});
-      if(h==roots.end()||r==roots.end()||h->page_type!=0x302||r->page_type!=0x303){error=VE::finding;return;}
-      const auto horizon=*h,retention=*r;const auto origin=creator.identity;
-      const auto horizon_allocation=api::FindNativeStartupRootAllocation(selected.allocation,horizon);
-      const auto retention_allocation=api::FindNativeStartupRootAllocation(selected.allocation,retention);
-      if(!horizon_allocation||!retention_allocation){error=VE::finding;return;}
-      for(const auto* record:{&*horizon_allocation,&*retention_allocation})
-        if(!record->creator_operation_uuid.is_nil()||record->creator_transaction_uuid!=origin.transaction_uuid.value||
-            record->creator_local_transaction_id!=origin.local_id.value){error=VE::finding;return;}
-      // Copy the selected references before retiring the read backing. The
-      // retained operation still owns every bounded physical read.
-      const auto selection_copy=*selected.selection;
-      source.lease.Reset();
-      const auto load=[&](const db::NativeCheckpointRootReference& target,const page::NativeAllocationRecord& owner)->std::span<const byte>{
-        if(cancelled()){error=VE::cancelled;return {};}
-        const auto& ref=target.page;const auto* profile=disk::FindCanonicalFilespacePageProfile(ref.page_size_profile_uuid);
-        if(!profile||profile->page_size_bytes>image.size()||ref.page_number>UINT64_MAX/profile->page_size_bytes){error=VE::source_mismatch;return {};}
-        auto bytes=image.first(profile->page_size_bytes);
-        const auto io=operation.ReadAtBounded(ref.filespace_uuid,ref.page_size_profile_uuid,ref.page_number*u64{profile->page_size_bytes},bytes);
-        if(!io.ok()){error=VE::io_failure;return {};}
-        scan.physical_bytes_read+=bytes.size();
-        const auto digest=core::hash::ComputeSha256DigestNative(bytes.data(),bytes.size());
-        if(!digest.ok()){error=VE::crypto_failure;return {};}
-        const disk::NativeCommonPageHeaderBinding binding{{self.database_,ref.filespace_uuid,ref.page_size_profile_uuid},
-            ref.page_number,ref.page_generation,target.page_type,owner.page_uuid};
-        if(digest.digest!=target.sha256||!disk::DecodeNativeCommonPageHeader(bytes.data(),128,&binding).ok()){error=VE::finding;return {};}
-        return bytes;
-      };
-      const auto retained_image=load(retention,*retention_allocation);if(retained_image.empty())return;
-      const auto pins=page::DecodeNativeRetentionPageInto(retained_image,{});
-      if(!pins.ok()||pins.page->object_uuid!=retention.object_uuid||pins.page->creator_transaction_uuid!=origin.transaction_uuid.value||
-          pins.page->creator_local_transaction_id!=origin.local_id.value||pins.page->flags||pins.page->total_pins||
-          pins.page->first_record||pins.page->next||!pins.page->records.empty()){error=VE::finding;return;}
-      const auto retention_epoch=pins.page->epoch;const auto total_pins=pins.page->total_pins;
-      const auto horizon_image=load(horizon,*horizon_allocation);if(horizon_image.empty())return;
-      std::array<page::NativeHorizonRecord,3> records;
-      std::array<page::NativeHorizonIdentityScratch,8> ids;
-      std::array<page::NativeHorizonReferenceScratch,6> references;
-      const auto decoded=page::DecodeNativeHorizonRootInto(horizon_image,records,ids,references);
-      if(!decoded.ok()){error=VE::finding;return;}
-      const auto& root=*decoded.root;
-      if(root.object_uuid!=horizon.object_uuid||root.creator_transaction_uuid!=origin.transaction_uuid.value||
-          root.creator_local_transaction_id!=origin.local_id.value||root.flags||root.total_records!=3||root.first_record||root.next||
-          root.epoch!=retention_epoch||root.records.size()!=3||root.retention!=retention.page||
-          root.retention_object_uuid!=retention.object_uuid||root.retention_sha256!=retention.sha256){error=VE::finding;return;}
-      // The recorded boundaries are the horizons of the inventory as written:
-      // the same projection the constructor recorded, with no owner.
-      const std::array boundaries{scan.horizons.oldest_interesting_transaction.value,
-          scan.horizons.oldest_active_transaction.value,scan.horizons.oldest_snapshot_transaction.value};
-      unsigned seen=0;
-      for(const auto& record:root.records){const auto kind=static_cast<unsigned>(record.kind);
-        if(kind<1||kind>3||(seen&(1u<<kind))||record.owner_kind!=page::NativeHorizonOwner::engine||record.flags||
-            record.local_boundary!=boundaries[kind-1]||record.timeline_uuid!=selection_copy.timeline_uuid||
-            !record.pin_uuid.is_nil()||record.checkpoint||record.checkpoint_generation||!record.checkpoint_object_uuid.is_nil()){
-          error=VE::finding;return;
-        }
-        seen|=1u<<kind;
-      }
-      if(seen!=14){error=VE::finding;return;}
-      scan.horizon_records=root.records.size();scan.retention_pins=total_pins;
-      observed.inventory=scan;
-    }
-    // Catalog routes: the configuration and security roots resolve to the
-    // catalog relations this open already traversed.
-    {
-      stage=VS::catalog_routes;
-      auto arena=memory.CreateArena(memory.binding(),maximum_page+slack,maximum_page);
-      if(!arena.ok())return;
-      const auto block=arena.arena.Allocate(maximum_page,maximum_page);if(!block.ok())return;
-      auto source=operation.ReadWithMemory(limits.selected,memory,memory.binding());
-      if(!source.ok()){refuse(source);return;}
-      const auto& selected=source.lease.source().selection();
-      if(!SameReadSource(NativeReadSourceIdentityFromSelection(*selected.selection),genesis)){error=VE::source_mismatch;return;}
-      api::NativeStartupCatalogRouteObservation routes{genesis,0,source.physical_bytes_read};
-      std::array<db::NativeCheckpointRootReference,2> targets;
-      std::array<page::NativeAllocationRecord,2> allocations;
-      std::array<page::NativeCatalogRootReference,6> references;
-      const auto& roots=selected.checkpoint_inventory.checkpoint->roots;
-      const auto& inventory=selected.checkpoint_inventory.inventory;
-      if(inventory.entries.empty()||!mga::HasCommittedInventoryOutcome(inventory.entries.front())){error=VE::finding;return;}
-      const auto creator=inventory.entries.front().identity;
-      u64 additional_bytes=0;
-      for(std::size_t i=0;i<targets.size();++i){
-        const auto at=std::find_if(roots.begin(),roots.end(),[&](const auto& root){return root.role==6+i;});
-        if(at==roots.end()||at->page_type!=10+i||at->page.filespace_uuid!=self.primary_){error=VE::finding;return;}
-        targets[i]=*at;
-        const auto* profile=disk::FindCanonicalFilespacePageProfile(at->page.page_size_profile_uuid);
-        if(!profile||profile->page_size_bytes>maximum_page||at->page.page_number>UINT64_MAX/profile->page_size_bytes){error=VE::source_mismatch;return;}
-        additional_bytes+=profile->page_size_bytes;
-        const auto allocated=api::FindNativeStartupRootAllocation(selected.allocation,*at);
-        if(!allocated||!allocated->creator_operation_uuid.is_nil()||allocated->creator_transaction_uuid!=creator.transaction_uuid.value||
-            allocated->creator_local_transaction_id!=creator.local_id.value){error=VE::finding;return;}
-        allocations[i]=*allocated;
-      }
-      const auto image_limit=limits.selected.maximum_verification_image_bytes;
-      const auto retained=source.lease.source().retained_image_bytes();
-      if(retained>image_limit||additional_bytes>image_limit-retained){error=VE::invalid_request;return;}
-      // Only copied, verified references survive the source fence.
-      source.lease.Reset();
-      const auto physical=read.catalog_capture_.physical_pages();
-      for(std::size_t i=0;i<targets.size();++i){
-        if(cancelled()){error=VE::cancelled;return;}
-        const auto& target=targets[i];const auto& ref=target.page;
-        const auto* profile=disk::FindCanonicalFilespacePageProfile(ref.page_size_profile_uuid);
-        std::span<byte> bytes{static_cast<byte*>(block.pointer),profile->page_size_bytes};
-        const auto io=operation.ReadAtBounded(ref.filespace_uuid,ref.page_size_profile_uuid,ref.page_number*u64{profile->page_size_bytes},bytes);
-        if(!io.ok()){error=VE::io_failure;return;}
-        routes.physical_bytes_read+=bytes.size();
-        const auto digest=core::hash::ComputeSha256DigestNative(bytes.data(),bytes.size());
-        if(!digest.ok()){error=VE::crypto_failure;return;}
-        const auto decoded=page::DecodeNativeCatalogRootInto(bytes,references);
-        if(digest.digest!=target.sha256||!decoded.ok()){error=VE::finding;return;}
-        const auto& root=*decoded.root;const auto& h=root.header;
-        if(h.database_uuid!=self.database_||h.filespace_uuid!=ref.filespace_uuid||h.page_size_profile_uuid!=ref.page_size_profile_uuid||
-            h.page_number!=ref.page_number||h.page_generation!=ref.page_generation||h.page_type!=target.page_type||h.flags||
-            h.page_uuid!=allocations[i].page_uuid||root.root_kind!=6+i||root.object_uuid!=target.object_uuid||
-            root.creator_transaction_uuid!=creator.transaction_uuid.value||root.creator_local_transaction_id!=creator.local_id.value||
-            root.predecessor||root.roots.size()!=1){error=VE::finding;return;}
-        const auto& route=root.roots.front();const auto expected_role=i==0?5u:4u;
-        if(route.role!=expected_role){error=VE::finding;return;}
-        const db::NativeCatalogRelationInspection* relation=nullptr;
-        for(std::size_t n=0;n<read.catalogs_.relation_count;++n){const auto& candidate=read.catalogs_.relations[n];
-          if(candidate.selector==2&&candidate.role==expected_role){
-            if(relation){error=VE::finding;return;}relation=&candidate;
-          }
-        }
-        if(!relation||route.page!=relation->root||root.catalog_generation!=relation->catalog_generation||
-            root.schema_epoch!=relation->schema_epoch||root.security_epoch!=relation->security_epoch||
-            root.resource_epoch!=relation->resource_epoch){error=VE::finding;return;}
-        const auto found=std::find_if(physical.begin(),physical.end(),[&](const auto& p){
-          return p.header.filespace_uuid==route.page.filespace_uuid&&p.header.page_number==route.page.page_number;});
-        if(found==physical.end()||found->header.page_generation!=route.page.page_generation||
-            found->header.page_size_profile_uuid!=route.page.page_size_profile_uuid||found->header.page_type!=route.page_type||
-            found->owner_uuid!=route.object_uuid){error=VE::finding;return;}
-        ++routes.routes;
-      }
-      observed.routes=routes;
-    }
-    if(cancelled()){error=VE::cancelled;return;}
-    stage=VS::complete;error=VE::none;
-  });
+  const auto crypto=self.database_crypto_.WithMemoryScope(self.crypto_binding_,[&]{verify_fixed_root();});
   if(!crypto.ok())return fail(VE::crypto_failure,stage);
   if(error!=VE::none){result.source_error=source_error;return fail(error,stage);}
   read.open_verification_=observed;

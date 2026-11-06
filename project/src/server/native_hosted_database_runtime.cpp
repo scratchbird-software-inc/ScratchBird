@@ -205,8 +205,6 @@ NativeHostedDatabaseRuntime::CredentialRead NativeHostedDatabaseRuntime::ReadSta
       request.checkpoint_limits.maximum_verification_image_bytes>owner->limits_.writer.source.maximum_verification_image_bytes)
     return out;
   out.owner_=std::move(owner);out.source_=std::move(source);auto& self=*out.owner_;
-  // SB_TRANSITIONAL_HOSTED_SOURCE: the runtime's source, never the caller's.
-  request.read_source=self.limits_.read_source;out.read_source_=self.limits_.read_source;
   self.read_active_=true;self.entering_=true;
   struct Leave {bool& flag;~Leave(){flag=false;}} leave{self.entering_};
   try {out.inputs_=std::make_unique<CredentialRead::Inputs>(std::move(request),tag);}
@@ -275,46 +273,23 @@ NativeHostedRuntimeError NativeHostedDatabaseRuntime::RetainStartupObservation(
   if(read.anchored())return E::none;
   auto& self=*read.owner_;
   namespace db=storage::database;
-  if(read.read_source_==NativeHostedReadSource::fixed_root){
-    // SB_TRANSITIONAL_HOSTED_SOURCE: no watermark. Page zero's identity, read
-    // again under the retained operation, must be the one the credential
-    // comparison read; it then anchors every later read of this runtime.
-    const auto& limits=read.inputs_->request.checkpoint_limits;
-    auto& lease=*credentials.comparison->lease;
-    const auto crypto=self.database_crypto_.WithMemoryScope(self.crypto_binding_,[&]{
-      auto source=lease.retained_operation_.ReadFixedRootWithMemory(
-          {limits.maximum_verification_image_bytes,limits.maximum_backing_bytes},self.reading_,self.reading_.binding());
-      if(!source.ok())return;
-      const auto identity=source.lease.source().identity();
-      source.lease.Reset();
-      if(identity.database_uuid!=self.database_||identity.filespace_uuid!=self.primary_||
-          !db::SameReadSource(db::NativeReadSourceIdentityFromFixedRoot(identity),lease.source_identity()))return;
-      read.page_zero_anchor_=identity;
-    });
-    return !crypto.ok()?E::crypto_failure:read.page_zero_anchor_?E::none:E::custody_failure;
-  }
-  // Device guards are now retired, while the same original operation,
-  // protected generation and full route/cohort custody remain privately held.
-  // Admit all counter scratch BEFORE acquiring another native selected source.
-  const auto bytes=db::NativeOwnedPublicationWatermarkWorkspaceBytes(
-      self.limits_.catalog.maximum_profile,self.close_receipts_.size());
-  if(!bytes)return E::invalid_request;
-  auto allocation=self.Acquire(bytes,NativeBootstrapMemoryKind::storage);
-  if(!allocation.ok())return E::memory_failure;
-  auto adopted=db::AdoptNativeStorageMemory(StorageBinding(*allocation.admission.resource),allocation.admission.resource);
-  if(!adopted.ok())return E::memory_failure;
-  read.publication_preparation_.workspace={};read.publication_memory_=std::move(adopted.memory);
-  read.publication_preparation_=db::PrepareNativeOwnedPublicationWatermark(self.limits_.catalog.maximum_profile,
-      self.close_receipts_.size(),read.publication_memory_,read.publication_memory_.binding());
-  if(!read.publication_preparation_.ok())return E::preparation_failure;
+  // Page zero's identity, read again under the retained operation, must be
+  // the one the credential comparison read; it then anchors every later read
+  // of this runtime. A read only: no watermark, repair, provider activation,
+  // session or agent BEGIN.
+  const auto& limits=read.inputs_->request.checkpoint_limits;
+  auto& lease=*credentials.comparison->lease;
   const auto crypto=self.database_crypto_.WithMemoryScope(self.crypto_binding_,[&]{
-    read.publication_=read.publication_preparation_.workspace.Inspect(
-        credentials.comparison->lease->retained_operation_,read.inputs_->request.checkpoint_limits,
-        self.reading_,self.reading_.binding());
+    auto source=lease.retained_operation_.ReadFixedRootWithMemory(
+        {limits.maximum_verification_image_bytes,limits.maximum_backing_bytes},self.reading_,self.reading_.binding());
+    if(!source.ok())return;
+    const auto identity=source.lease.source().identity();
+    source.lease.Reset();
+    if(identity.database_uuid!=self.database_||identity.filespace_uuid!=self.primary_||
+        !db::SameReadSource(db::NativeReadSourceIdentityFromFixedRoot(identity),lease.source_identity()))return;
+    read.page_zero_anchor_=identity;
   });
-  // This is a read of actual durable counter state, never implicit repair,
-  // provider activation, authenticated session creation or agent BEGIN.
-  return !crypto.ok()?E::crypto_failure:read.publication_.ok()?E::none:E::custody_failure;
+  return !crypto.ok()?E::crypto_failure:read.page_zero_anchor_?E::none:E::custody_failure;
 }
 
 NativeHostedRuntimeError NativeHostedDatabaseRuntime::ReadStartupCatalogs(CredentialRead& read,
@@ -387,35 +362,12 @@ NativeHostedRuntimeError NativeHostedDatabaseRuntime::ReadStartupCatalogs(Creden
   if(!prepared.ok())return E::memory_failure;
   E result=E::catalog_failure;db::NativeCatalogCohortInspection inspection;
   const auto crypto=self.database_crypto_.WithMemoryScope(self.crypto_binding_,[&]{
-    if(read.read_source_==NativeHostedReadSource::fixed_root){
-      // SB_TRANSITIONAL_HOSTED_SOURCE: the same page zero the observation retained.
-      auto source=credential.retained_operation_.ReadFixedRootWithMemory(
-          {limits.maximum_verification_image_bytes,limits.maximum_backing_bytes},adopted.memory,adopted.memory.binding());
-      if(!source.ok())return;
-      if(source.lease.operation_uuid()!=read.authentication_->observation_.operation_uuid||
-          source.lease.source().identity()!=*read.page_zero_anchor_){
-        inspection.error=db::NativeCatalogCohortError::binding_mismatch;return;}
-      inspection=db::NativeCatalogCohortLeaseReader::Read(source.lease.source(),limits.maximum_verification_image_bytes,
-          prepared.workspace,capture_requested?&capture:nullptr);
-      inspection.physical_bytes_read+=source.physical_bytes_read;
-      if(inspection.ok())result=E::none;
-      source.lease.Reset();
-      return;
-    }
-    auto source=credential.retained_operation_.ReadWithMemory(limits,adopted.memory,adopted.memory.binding());
+    // The same page zero the startup observation retained.
+    auto source=credential.retained_operation_.ReadFixedRootWithMemory(
+        {limits.maximum_verification_image_bytes,limits.maximum_backing_bytes},adopted.memory,adopted.memory.binding());
     if(!source.ok())return;
-    const auto& actual=*source.lease.source().selection().selection;
-    const auto& expected=read.publication_.snapshot->selection;
     if(source.lease.operation_uuid()!=read.authentication_->observation_.operation_uuid||
-        actual.header.database_uuid!=self.database_||actual.header.filespace_uuid!=self.primary_||
-        actual.object_uuid!=expected.object_uuid||actual.checkpoint!=expected.checkpoint||
-        actual.checkpoint_sha256!=expected.checkpoint_sha256||actual.selection_generation!=expected.selection_generation||
-        actual.publication_uuid!=expected.publication_uuid||actual.checkpoint_object_uuid!=expected.checkpoint_object_uuid||
-        actual.timeline_uuid!=expected.timeline_uuid||actual.bootstrap_uuid!=expected.bootstrap_uuid||
-        actual.checkpoint_generation!=expected.checkpoint_generation||actual.root_set_generation!=expected.root_set_generation||
-        actual.previous_selection_generation!=expected.previous_selection_generation||
-        actual.previous_checkpoint!=expected.previous_checkpoint||actual.previous_checkpoint_object_uuid!=expected.previous_checkpoint_object_uuid||
-        actual.previous_checkpoint_sha256!=expected.previous_checkpoint_sha256){
+        source.lease.source().identity()!=*read.page_zero_anchor_){
       inspection.error=db::NativeCatalogCohortError::binding_mismatch;return;}
     inspection=db::NativeCatalogCohortLeaseReader::Read(source.lease.source(),limits.maximum_verification_image_bytes,
         prepared.workspace,capture_requested?&capture:nullptr);
@@ -656,10 +608,8 @@ engine::internal_api::NativeLocalServiceSessionResult NativeHostedDatabaseRuntim
     if(policies==NativeHostedRuntimeError::cancelled){read.session_.reset();return {E::cancelled};}
     return {E::policy_required};
   }
-  const auto anchored_source=read.read_source_==NativeHostedReadSource::fixed_root
-      ?storage::database::NativeReadSourceIdentityFromFixedRoot(*read.page_zero_anchor_)
-      :storage::database::NativeReadSourceIdentityFromSelection(read.publication_.snapshot->selection);
-  if(!storage::database::SameReadSource(*read.catalog_capture_.source(),anchored_source))
+  if(!storage::database::SameReadSource(*read.catalog_capture_.source(),
+      storage::database::NativeReadSourceIdentityFromFixedRoot(*read.page_zero_anchor_)))
     return {E::source_mismatch};
   auto& self=*read.owner_;const auto& config=*read.configuration_.configuration;
   if(!self.process_->HasNativeDatabaseAllocationBehavior(self.database_,config.memory,config.memory_version_uuid))return {E::resource_policy_required};

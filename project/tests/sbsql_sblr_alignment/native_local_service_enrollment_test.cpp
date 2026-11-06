@@ -1609,9 +1609,10 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
     expected_catalog_bytes.emplace(row.metadata.record.header.object_uuid.value,
         CatalogVariableBytes(catalog::BorrowCatalogMetadataVersion(row.metadata),name));
   }
-  // Maps, checkpoint, directory, and the in-place transaction inventory: its
-  // state page and its header page (SB_TRANSACTION_HEADER_PAGE).
-  const auto expected_initial_control_pages=initialized.receipt->map_pages+4;
+  // Maps, directory, and the in-place transaction inventory: its state page
+  // and its header page (SB_TRANSACTION_HEADER_PAGE). Read through page zero,
+  // the checkpoint page is one of page zero's roots, not a control page.
+  const auto expected_initial_control_pages=initialized.receipt->map_pages+3;
   initialized.receipt.reset();catalogs.plan.reset();
   EnrolledCredentialCustodian provisioner;
   platform::Uuid previous_engine_instance;
@@ -1872,7 +1873,7 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
             read.agent_policies().error==ExpectedPolicyError(policy_variant)&&
             !read.agent_policies().failing_object_uuid.is_nil()&&!read.agent_policies().policy_count&&
             !read.agent_policies().registration_count&&read.ok()&&!guard_depth&&
-            admitted.comparison->lease->has_retained_operation()&&!read.publication().ok(),
+            admitted.comparison->lease->has_retained_operation()&&!read.page_zero_anchor(),
             "invalid persisted policy cohort refuses as a whole after guard retirement and before publication/resource setup");
         if(policy_variant==1){
           allocation_budget=0;const auto exhausted=Host::RetainStartupObservation(read);allocation_budget=-1;
@@ -1910,10 +1911,12 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
       Check(callback_invoked&&callback_close==server::NativeHostedRuntimeError::busy&&
           callback_retain==server::NativeHostedRuntimeError::busy&&callback_read_ok,
           "guard retirement callback cannot reenter retirement or close the original host");
-      Check(read.publication().ok()&&read.publication().snapshot->watermark.watermark==1&&
-          read.publication().snapshot->selection.checkpoint_generation==1&&
-          read.publication().effects.write_attempts==0&&read.publication().effects.sync_attempts==0,
-          "native host observes actual publication state through original retained operation with no startup mutation");
+      Check(read.page_zero_anchor()&&read.page_zero_anchor()->database_uuid==Id(1)&&
+          read.page_zero_anchor()->page_generation==1&&read.page_zero_anchor()->root_set_generation==1&&
+          db::SameReadSource(db::NativeReadSourceIdentityFromFixedRoot(*read.page_zero_anchor()),admitted.comparison->lease->source_identity())&&
+          stage_writes==writes&&stage_syncs==syncs,
+          "native host anchors page zero's identity, the one the credential read, through the original retained operation "
+          "with no startup mutation");
       Check(read.agent_policies().ok()&&read.agent_policies().policy_count==34&&read.agent_policies().registration_count==32,
           "every actual persisted policy and registration passes canonical descriptor, schema and static dependency validation");
       const auto clock_entry=std::find_if(read.agents().entries().begin(),read.agents().entries().end(),[](const auto& entry){
@@ -2049,7 +2052,7 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
         if(envelope.error!=expected)std::cerr<<"memory variant="<<memory_variant<<" error="<<int(envelope.error)
             <<" diagnostic="<<envelope.diagnostic.diagnostic_code<<'\n';
         Check(envelope.error==expected&&
-            read.ok()&&read.publication().ok(),
+            read.ok()&&read.page_zero_anchor().has_value(),
             "actual invalid memory policy, child budget, startup floor or missing CONNECT refuses with startup custody retained");
         if(memory_variant==2)Check(envelope.diagnostic.diagnostic_code=="MEMORY.POLICY_HARD_LIMIT_TOO_SMALL",
             "real platform policy resolver preserves the original minimum-capacity diagnostic");
@@ -2243,7 +2246,7 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
                   <<" visibility="<<int(read.catalogs().visibility_error)<<" relation="<<int(read.catalogs().relation_error)
                   <<" role="<<read.catalogs().failing_role<<" profile="<<profile<<'\n';
               Check(catalog_read==server::NativeHostedRuntimeError::none&&read.catalogs().ok()&&reads>0&&
-                  read.catalogs().relation_count==6&&read.catalogs().source->transitional_selection_key.checkpoint_sha256==read.publication().snapshot->selection.checkpoint_sha256,
+                  read.catalogs().relation_count==6&&db::SameReadSource(*read.catalogs().source,db::NativeReadSourceIdentityFromFixedRoot(*read.page_zero_anchor())),
                   "actual startup scan covers every catalog role, metadata chain and committed visibility on original custody");
               for(std::size_t i=0;i<expected_catalog_rows.size();++i){
                 const auto& relation=read.catalogs().relations[i];
@@ -2292,7 +2295,7 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
               const auto captured=Host::ReadStartupCatalogs(read,catalog_limits,catalog_scan_limits,capture_limits);
               Check(captured==server::NativeHostedRuntimeError::none&&read.catalog_capture().ok()&&
                   read.catalog_capture().rows().size()==expected_catalog_bytes.size()&&
-                  read.catalog_capture().source()->transitional_selection_key.checkpoint_sha256==read.publication().snapshot->selection.checkpoint_sha256,
+                  db::SameReadSource(*read.catalog_capture().source(),db::NativeReadSourceIdentityFromFixedRoot(*read.page_zero_anchor())),
                   "actual source-fenced catalog rows retain independent admitted backing after reader retirement");
               const auto captured_inventory=read.catalog_capture().inventory();
               std::size_t physical_count=1; // Master/feature root is one actual shared page here.
@@ -2303,9 +2306,10 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
                   "complete actual root/navigation/base identities are retained and a smaller physical budget cannot reuse them");
               Check(read.catalog_capture().has_initial_controls()&&
                   read.catalog_capture().initial_control_pages().size()==expected_initial_control_pages&&
-                  !read.catalog_capture().initial_control_roots().empty()&&
+                  read.catalog_capture().initial_control_roots().empty()&&
                   Host::ReadStartupCatalogs(read,catalog_limits,catalog_scan_limits,{1024,2*1024*1024,1,4,512,1})==server::NativeHostedRuntimeError::invalid_request,
-                  "complete actual initial checkpoint/map/inventory/directory identities survive reader retirement and cannot bypass a tighter control-page bound");
+                  "complete actual initial map/inventory/directory identities survive reader retirement and cannot bypass a tighter "
+                  "control-page bound; page zero, not a checkpoint, roots the rest");
               if(profile==0&&!configuration_variant&&!graph_variant&&!death&&!agent_variant&&!memory_variant&&!policy_variant&&
                   !authentication_variant&&!name_variant&&!namespace_variant&&!filespace_variant&&!audit_variant&&!verification_policy_variant&&
                   !management_variant&&!transaction_policy_variant){
@@ -2509,7 +2513,8 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
               track_reads=false;
               if(!name_variant&&!index_variant&&!namespace_variant&&!filespace_variant&&!audit_variant&&!reference_variant&&!naming_profile_variant&&ExpectedCollisionError(collision_variant)==CE::none){
                 Check(metadata==server::NativeHostedRuntimeError::none&&read.catalog_metadata().ok()&&!reads&&
-                    read.catalog_metadata().source->transitional_selection_key.checkpoint_sha256==read.catalog_capture().source()->transitional_selection_key.checkpoint_sha256,
+                    db::SameReadSource(*read.catalog_metadata().source,*read.catalog_capture().source())&&
+                    db::SameReadSource(*read.catalog_capture().source(),db::NativeReadSourceIdentityFromFixedRoot(*read.page_zero_anchor())),
                     "native host invokes the engine verifier under its installed memory policy on the retained exact source");
                 allocation_budget=0;
                 const auto cached_metadata=Host::VerifyStartupCatalogMetadata(read);
@@ -3032,15 +3037,15 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
       opened.observation->identity.system_state.lifecycle==db::NativeSystemLifecycle::creating&&
       opened.observation->allocation.filespaces==1&&opened.observation->allocation.catalog_pages>0&&
       opened.observation->inventory.transactions==1&&opened.observation->inventory.active_transactions==0&&
-      opened.observation->inventory.in_doubt_transactions==0&&opened.observation->inventory.horizon_records==3&&
+      opened.observation->inventory.in_doubt_transactions==0&&opened.observation->inventory.horizon_records==0&&
       opened.observation->routes.routes==2,
       "the opened file verifies read-only before any startup transaction: identity, allocation, inventory, catalog routes");
   // Owner ruling 2026-11-06 (Q17): a creator page that no root, catalog page
   // or control page reaches is wasted space, reported and never refused. The
   // creator's original allocation is rebuilt from what the verification and
   // the capture retained; one extra creator page is then added.
-  Check(opened.observation->allocation.wasted_pages==0,
-      "a production create read through its selected checkpoint leaves no creator page unreachable");
+  Check(opened.observation->allocation.wasted_pages==1,
+      "read through page zero, the horizon root page, which only the checkpoint points to, is the one wasted page");
   {
     namespace pg=scratchbird::storage::page;
     const auto& capture=read.catalog_capture();const auto& identity=opened.observation->identity;
@@ -3095,31 +3100,24 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
   read.Reset();
   Check(Host::Close(host.runtime).ok(),"the producer's database closes");
 
-  // SB_TRANSITIONAL_HOSTED_SOURCE (drift removal C3b): the same startup chain
-  // on the same file, through the selected checkpoint and through page zero's
-  // fixed roots. Everything it observes must be the same, except what only the
-  // checkpoint layer supplies: the source identity and the checkpoint page
-  // among the creation control pages.
+  // The startup chain reads page zero's fixed roots, never the checkpoint
+  // layer: with every read of the checkpoint, selector, watermark and horizon
+  // pages failing, the chain and its open verification still complete. Every
+  // read of the open verification is then corrupted in turn and, at the
+  // largest page size, failed in turn (the smallest is failed in turn above).
   if(profile==0||profile==4){
     struct ChainSummary {
-      std::size_t definitions=0,registrations=0,policies=0,indexed=0,filespaces=0;
-      std::vector<std::array<u64,6>> relations;
       std::vector<std::pair<platform::Uuid,std::string>> rows;
-      std::vector<u64> catalog_pages;
       std::vector<std::pair<u64,platform::u32>> control_pages;
-      std::vector<std::pair<platform::Uuid,u64>> transactions;
-      u64 next_local=0,next_commit=0,horizon_page=0;
       db::NativeReadSourceIdentity source;
-      platform::Uuid session_principal;
       std::optional<server::NativeOpenVerificationObservation> opened;
     };
     // The whole chain through open verification; empty when a stage refuses.
     // sweep 1 fails, sweep 2 corrupts, every open-verification read in turn
     // first (a clean verification is retained, so each sweep needs its own run).
-    const auto run=[&](server::NativeHostedReadSource mode,bool deny_drift,int sweep=0)->std::optional<ChainSummary>{
-      auto mode_limits=host_limits;mode_limits.read_source=mode;
+    const auto run=[&](bool deny_drift,int sweep=0)->std::optional<ChainSummary>{
       std::vector<std::unique_ptr<disk::FileDevice>> none;
-      auto reopened=Host::Open(process,ownership,mode_limits,none);
+      auto reopened=Host::Open(process,ownership,host_limits,none);
       Check(reopened.ok(),"the host reopens the producer's database");
       // Adoption still reads the selected checkpoint (until C3d): deny the
       // checkpoint layer's pages only from the first startup read on.
@@ -3154,35 +3152,26 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
             ++positions;
             const auto expected=sweep==2?OpenError::finding:OpenError::io_failure;
             if(attempt.error!=expected||r.open_verification()){
-              if(!misreported++)std::cerr<<"fixed-root open verification "<<(sweep==2?"corrupted":"failed")<<" read "<<at
+              if(!misreported++)std::cerr<<"open verification "<<(sweep==2?"corrupted":"failed")<<" read "<<at
                   <<" reported="<<int(attempt.error)<<" stage="<<int(attempt.stage)<<" source="<<int(attempt.source_error)<<'\n';
             }
           }
-          std::cout<<"fixed-root open verification profile "<<profile<<": "<<positions<<" reads "<<(sweep==2?"corrupted":"failed")<<'\n';
+          std::cout<<"open verification profile "<<profile<<": "<<positions<<" reads "<<(sweep==2?"corrupted":"failed")<<'\n';
           Check(positions>0&&!misreported,sweep==2
-              ?"every corrupted read of the fixed-root open verification is a finding, and nothing is retained"
-              :"every failed read of the fixed-root open verification is an I/O failure, and nothing is retained");
+              ?"every corrupted read of open verification is a finding, and nothing is retained"
+              :"every failed read of open verification is an I/O failure, and nothing is retained");
         }
         const auto verified=chained?Host::VerifyStartupDatabaseFile(r,open_limits):server::NativeOpenVerificationResult{};
-        if(chained&&!verified.ok())std::cerr<<"open verification on source "<<int(mode)<<" error="<<int(verified.error)
+        if(chained&&!verified.ok())std::cerr<<"open verification error="<<int(verified.error)
             <<" stage="<<int(verified.stage)<<" source="<<int(verified.source_error)<<'\n';
         if(verified.ok()){
           ChainSummary sum;sum.opened=*verified.observation;
-          sum.definitions=r.agents().definition_count;sum.registrations=r.agents().registration_count;
-          sum.policies=r.agents().policy_count;sum.indexed=r.catalog_metadata().indexes.indexed_relations;
-          for(std::size_t i=0;i<r.catalogs().relation_count;++i){const auto& x=r.catalogs().relations[i];
-            sum.relations.push_back({x.selector,x.role,x.versions,x.visible_rows,x.base_pages,x.navigation_pages});}
           const auto& c=r.catalog_capture();
           for(const auto& row:c.rows())
             sum.rows.push_back({row.row.metadata.record.header.object_uuid.value,std::string(row.row.metadata.record.payload)});
-          for(const auto& page:c.physical_pages())sum.catalog_pages.push_back(page.header.page_number);
           for(const auto& page:c.initial_control_pages())sum.control_pages.push_back({page.header.page_number,page.header.page_type});
-          for(const auto& root:c.initial_control_roots())if(root.role==2)sum.horizon_page=root.page.page_number;
-          const auto inventory=c.inventory();
-          Check(inventory.has_value()&&c.source().has_value()&&r.session().has_value(),"the chain retains its capture and session");
-          for(const auto& e:inventory->inventory.entries)sum.transactions.push_back({e.identity.transaction_uuid.value,e.identity.local_id.value});
-          sum.next_local=inventory->inventory.next_local_transaction_id;sum.next_commit=inventory->inventory.next_commit_sequence;
-          sum.filespaces=c.filespaces().size();sum.source=*c.source();sum.session_principal=r.session()->principal_uuid;
+          Check(c.source().has_value(),"the chain retains its capture");
+          sum.source=*c.source();
           out=std::move(sum);
         }
         r.Reset();
@@ -3190,75 +3179,56 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
       Check(Host::Close(reopened.runtime).ok(),"the reopened database closes");
       return out;
     };
-    // The checkpoint layer's pages: page-zero kinds 9 and 18-21.
+    // The checkpoint layer's pages: page-zero kinds 9 and 18-21, and the
+    // horizon root only the checkpoint points to. SB_DRIFT_REMOVAL_R3: create
+    // stops writing these pages, and this denial then has nothing to deny.
     const auto zero=disk::DecodeFilespacePageZero(reinterpret_cast<const platform::byte*>(created_bytes.data()),sizes[profile]);
     Check(zero.ok(),"the producer's page zero decodes");
-    std::vector<u64> drift_pages;
-    for(const auto& root:zero.record->roots)if(root.kind==9||(root.kind>=18&&root.kind<=21))drift_pages.push_back(root.page_number);
-    Check(drift_pages.size()==5,"page zero roots the checkpoint, both selectors and both watermarks");
-    const auto selected=run(server::NativeHostedReadSource::selected_checkpoint,false);
-    const auto fixed=run(server::NativeHostedReadSource::fixed_root,false);
-    Check(selected.has_value()&&fixed.has_value(),"the startup chain, through open verification, completes on both sources");
-    Check(selected->source.kind==db::NativeReadSourceKind::selected_checkpoint&&fixed->source.kind==db::NativeReadSourceKind::fixed_root&&
-        selected->source.database_uuid==fixed->source.database_uuid&&selected->source.filespace_uuid==fixed->source.filespace_uuid&&
-        selected->source.page_size_bytes==fixed->source.page_size_bytes&&!db::SameReadSource(selected->source,fixed->source),
-        "both sources are the producer's file, under different source identities");
-    Check(selected->definitions==fixed->definitions&&selected->registrations==fixed->registrations&&
-        selected->policies==fixed->policies&&selected->indexed==fixed->indexed&&selected->filespaces==fixed->filespaces&&
-        selected->relations==fixed->relations&&selected->rows==fixed->rows&&selected->catalog_pages==fixed->catalog_pages&&
-        selected->transactions==fixed->transactions&&selected->next_local==fixed->next_local&&
-        selected->next_commit==fixed->next_commit&&selected->session_principal==fixed->session_principal,
-        "agents, catalog relations, every captured row, catalog pages, inventory and session are the same on both sources");
-    // Open verification: the same, except what only the checkpoint reaches.
-    const auto& so=*selected->opened;const auto& fo=*fixed->opened;
-    Check(so.identity.filespaces==fo.identity.filespaces&&so.identity.identity_pages==fo.identity.identity_pages&&
-        so.identity.primary_page_uuid==fo.identity.primary_page_uuid&&so.identity.primary_root_count==fo.identity.primary_root_count&&
-        so.identity.system_state.lifecycle==fo.identity.system_state.lifecycle&&
-        so.identity.system_state.object_uuid==fo.identity.system_state.object_uuid,
-        "open verification sees the same page zero and system state on both sources");
-    Check(so.allocation.filespaces==fo.allocation.filespaces&&so.allocation.allocation_pages==fo.allocation.allocation_pages&&
-        so.allocation.capacity_pages==fo.allocation.capacity_pages&&so.allocation.catalog_pages==fo.allocation.catalog_pages&&
-        so.allocation.allocation_states==fo.allocation.allocation_states,
-        "open verification scans the same allocation on both sources");
-    Check(so.allocation.wasted_pages==0&&fo.allocation.wasted_pages==1&&
-        fo.allocation.initial_control_pages+1==so.allocation.initial_control_pages,
-        "on page zero the horizon root page is the one wasted page: only the checkpoint reaches it");
-    Check(so.inventory.transactions==fo.inventory.transactions&&so.inventory.active_transactions==fo.inventory.active_transactions&&
-        so.inventory.in_doubt_transactions==fo.inventory.in_doubt_transactions&&so.inventory.inventory_pages==fo.inventory.inventory_pages&&
-        so.inventory.retention_pins==fo.inventory.retention_pins&&
-        so.inventory.horizons.oldest_interesting_transaction.value==fo.inventory.horizons.oldest_interesting_transaction.value&&
-        so.inventory.horizons.oldest_active_transaction.value==fo.inventory.horizons.oldest_active_transaction.value&&
-        so.inventory.horizons.oldest_snapshot_transaction.value==fo.inventory.horizons.oldest_snapshot_transaction.value&&
-        so.inventory.horizon_records==3&&fo.inventory.horizon_records==0,
-        "the same inventory and horizons; on page zero they are checked against the stored counters, not a horizon root");
-    Check(so.routes.routes==2&&fo.routes.routes==2,"both catalog routes resolve on both sources");
-    auto without_checkpoint=selected->control_pages;
-    std::erase_if(without_checkpoint,[](const auto& page){return page.second==0x300;});
-    Check(selected->control_pages.size()==without_checkpoint.size()+1&&fixed->control_pages==without_checkpoint,
-        "the creation control pages are the same except the checkpoint page, which page zero roots instead");
-    // Deny every read of the checkpoint layer's pages and the horizon root.
-    Check(selected->horizon_page&&std::find(drift_pages.begin(),drift_pages.end(),selected->horizon_page)==drift_pages.end(),
+    std::vector<u64> drift_pages;u64 checkpoint_page=0;
+    for(const auto& root:zero.record->roots){
+      if(root.kind==9||(root.kind>=18&&root.kind<=21))drift_pages.push_back(root.page_number);
+      if(root.kind==9)checkpoint_page=root.page_number;
+    }
+    Check(drift_pages.size()==5&&checkpoint_page,"page zero roots the checkpoint, both selectors and both watermarks");
+    std::vector<platform::byte> checkpoint_image(sizes[profile]);
+    std::memcpy(checkpoint_image.data(),created_bytes.data()+checkpoint_page*sizes[profile],checkpoint_image.size());
+    const auto checkpoint=db::DecodeNativeCheckpointRoot(checkpoint_image);
+    Check(checkpoint.ok(),"the producer's checkpoint page decodes");
+    u64 horizon_page=0;
+    for(const auto& root:checkpoint.root->roots)if(root.role==2)horizon_page=root.page.page_number;
+    Check(horizon_page&&std::find(drift_pages.begin(),drift_pages.end(),horizon_page)==drift_pages.end(),
         "the checkpoint roots the horizon page, which page zero does not");
-    drift_pages.push_back(selected->horizon_page);
+    drift_pages.push_back(horizon_page);
+    const auto plain=run(false);
+    Check(plain.has_value()&&plain->source.kind==db::NativeReadSourceKind::fixed_root&&plain->opened.has_value()&&
+        plain->opened->allocation.wasted_pages==1&&plain->opened->inventory.horizon_records==0,
+        "the startup chain reads page zero, where the horizon root page is the one wasted page");
     struct stat identity{};Check(::stat(path.c_str(),&identity)==0,"the producer's file identity");
     denied_device=identity.st_dev;denied_inode=identity.st_ino;denied_page_total=drift_pages.size();
     for(std::size_t i=0;i<drift_pages.size();++i){
       const auto first=static_cast<off_t>(drift_pages[i]*sizes[profile]);
       denied_pages[i]={first,first+static_cast<off_t>(sizes[profile])};
     }
+    {
+      // The denial engages: a direct read of each denied page fails.
+      const int fd=::open(path.c_str(),O_RDONLY|O_CLOEXEC);Check(fd>=0,"independent descriptor for the denial probe");
+      std::vector<char> page(sizes[profile]);denied_page_reads=0;denied_page_count=denied_page_total;
+      unsigned refused=0;
+      for(const auto& range:std::span{denied_pages}.first(denied_page_total))
+        if(::pread(fd,page.data(),page.size(),range.first)<0)++refused;
+      denied_page_count=0;Check(::close(fd)==0,"release the denial probe");
+      Check(refused==denied_page_total&&denied_page_reads==denied_page_total,"a direct read of each denied page fails");
+    }
     denied_page_reads=0;
-    const auto fixed_denied=run(server::NativeHostedReadSource::fixed_root,true);
-    Check(fixed_denied.has_value()&&denied_page_reads==0&&fixed_denied->rows==fixed->rows&&
-        fixed_denied->control_pages==fixed->control_pages&&fixed_denied->opened.has_value(),
-        "the fixed-root startup chain and open verification complete without reading any checkpoint, selector, "
+    const auto denied=run(true);
+    Check(denied.has_value()&&denied_page_reads==0&&denied->rows==plain->rows&&
+        denied->control_pages==plain->control_pages&&denied->opened.has_value(),
+        "the startup chain and open verification complete without reading any checkpoint, selector, "
         "watermark or horizon page");
-    const auto selected_denied=run(server::NativeHostedReadSource::selected_checkpoint,true);
-    Check(!selected_denied.has_value()&&denied_page_reads>0,
-        "the selected-checkpoint chain does read them, so the denial is real");
     denied_page_total=0;
-    Check(run(server::NativeHostedReadSource::fixed_root,false,1).has_value()&&
-        run(server::NativeHostedReadSource::fixed_root,false,2).has_value(),"both fixed-root sweeps end in a clean verification");
-    Check(read_file()==created_bytes,"neither source's startup chain writes the producer's file");
+    if(profile==4)Check(run(false,1).has_value(),"the failed-read sweep ends in a clean verification");
+    Check(run(false,2).has_value(),"the corrupted-read sweep ends in a clean verification");
+    Check(read_file()==created_bytes,"the startup chain writes nothing to the producer's file");
   }
 }
 

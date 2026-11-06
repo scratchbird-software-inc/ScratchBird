@@ -14,8 +14,9 @@ enum class NativeLocalServiceStartupCredentialsError {
 struct NativeLocalServiceStartupCredentialsRequest {
   NativeRuntimePrincipalCredentialRequest credential;
   StartupCredentialSource::Request source;
+  // Bounds of the read through page zero's fixed roots (named for the
+  // checkpoint layer it replaced; renamed when that layer is deleted).
   storage::database::NativeSelectedCheckpointMemoryLimits checkpoint_limits;
-  NativeHostedReadSource read_source = NativeHostedReadSource::selected_checkpoint;
 };
 
 struct NativeLocalServiceStartupCredentialsResult {
@@ -97,12 +98,10 @@ inline NativeLocalServiceStartupCredentialsResult ReadNativeLocalServiceStartupC
     if (!out.selection.ok()) { out.error = E::declaration_selection; return; }
     out.error = E::none;
   };
-  if (request.read_source == NativeHostedReadSource::fixed_root)
-    compare(out.operation.ReadFixedRootWithMemory(
-        {request.checkpoint_limits.maximum_verification_image_bytes, request.checkpoint_limits.maximum_backing_bytes},
-        checkpoint_memory, checkpoint_binding));
-  else
-    compare(out.operation.ReadWithMemory(request.checkpoint_limits, checkpoint_memory, checkpoint_binding));
+  // SB_NATIVE_FIXED_ROOT_READ: page zero's fixed roots (drift removal C3c).
+  compare(out.operation.ReadFixedRootWithMemory(
+      {request.checkpoint_limits.maximum_verification_image_bytes, request.checkpoint_limits.maximum_backing_bytes},
+      checkpoint_memory, checkpoint_binding));
   return out;
 }
 

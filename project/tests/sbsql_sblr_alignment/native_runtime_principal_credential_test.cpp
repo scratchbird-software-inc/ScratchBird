@@ -377,8 +377,8 @@ void WriterCredentials(unsigned profile,bool indexed,int death_mode=0) {
       Check(next.ok()&&next.operation.identity()==Id(235),"only final reader retirement releases a reset external reservation");
     });}
 }
-// fixed: read through page zero's fixed roots instead of the selected
-// checkpoint (SB_TRANSITIONAL_HOSTED_SOURCE, drift removal C3b).
+// fixed: the direct read goes through page zero's fixed roots instead of the
+// selected checkpoint. The composed startup read always uses page zero.
 void HostedCredentials(unsigned profile,bool indexed,bool compose=false,bool fixed=false) {
   using Host=server::NativeHostedDatabaseCustody;
   CredentialNativeFixture fixture(profile,indexed);
@@ -422,7 +422,6 @@ void HostedCredentials(unsigned profile,bool indexed,bool compose=false,bool fix
     request.source={Id(231),Id(235),7,
         server::StartupCredentialSource::Mutex::Clock::now()+std::chrono::seconds(10),{}};
     request.checkpoint_limits={fixture.budget,32*1024*1024};
-    if(fixed)request.read_source=server::NativeHostedReadSource::fixed_root;
     const auto call=[&](const auto& input){
       return server::ReadNativeLocalServiceStartupCredentials(input,std::move(operation.operation),
           prepared.workspace,reading.memory,reading.binding,custody.source,custody.manager,custody.tag,custody.derived);
@@ -460,7 +459,7 @@ void HostedCredentials(unsigned profile,bool indexed,bool compose=false,bool fix
       "private native comparison consumes hosted reader without fabricating activation or rights");
   // The catalog is reached through page zero's catalog root (kind 2) on the
   // fixed-root source, through the selected checkpoint (kind 9) otherwise.
-  Check(result.lease->selected_catalog().checkpoint.kind==(fixed?2:9)&&result.lease->selected_catalog().catalog_generation>0,
+  Check(result.lease->selected_catalog().checkpoint.kind==(fixed||compose?2:9)&&result.lease->selected_catalog().catalog_generation>0,
       "the catalog observation names the root it was reached through");
   const auto original_owner=std::weak_ptr(route.lock);const auto host_owner=std::weak_ptr(hosted.custody);
   operation.operation.Reset();hosted.custody.reset();route.lock.reset();
@@ -719,8 +718,8 @@ int CredentialMain(int argc,char** argv){
     for(unsigned profile=0;profile<5;++profile)for(bool indexed:{false,true})WriterCredentials(profile,indexed);
     for(unsigned profile=0;profile<5;++profile)for(bool indexed:{false,true})HostedCredentials(profile,indexed);
     for(unsigned profile=0;profile<5;++profile)for(bool indexed:{false,true})HostedCredentials(profile,indexed,true);
-    for(unsigned profile:{0u,4u})for(bool indexed:{false,true})for(bool compose:{false,true})
-      HostedCredentials(profile,indexed,compose,true);
+    // The composed read above always uses page zero; the direct read also on page zero:
+    for(unsigned profile:{0u,4u})for(bool indexed:{false,true})HostedCredentials(profile,indexed,false,true);
     Refusals(*foreign);SelectionRefusals();PreparationFaults();});
   // No implicit process fallback: construct/read selected source under a real
   // database scope, then explicitly execute the gate without an active scope.

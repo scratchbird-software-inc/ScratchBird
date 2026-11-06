@@ -27,9 +27,6 @@ struct NativeHostedRuntimeLimits {
   storage::database::NativeCatalogRelationMemoryLimits catalog;
   std::size_t database_crypto_bytes = 0;
   engine::internal_api::NativeRuntimeAuthorizationLimits authorization;
-  // SB_TRANSITIONAL_HOSTED_SOURCE: every stage of this runtime reads this
-  // source. Deleted in C3c, when page zero's fixed roots are the only source.
-  NativeHostedReadSource read_source = NativeHostedReadSource::selected_checkpoint;
 };
 enum class NativeHostedRuntimeError {
   none, invalid_request, wrong_owner, process_unavailable, ownership_failure,
@@ -197,9 +194,6 @@ class NativeHostedDatabaseRuntime final {
           authorization_preparation_(std::move(other.authorization_preparation_)),
           authorization_(other.authorization_),configuration_(other.configuration_),agents_(other.agents_),
           agent_policies_(other.agent_policies_),
-          publication_memory_(std::move(other.publication_memory_)),
-          publication_preparation_(std::move(other.publication_preparation_)),
-          publication_(std::move(other.publication_)),read_source_(other.read_source_),
           page_zero_anchor_(std::exchange(other.page_zero_anchor_,{})),credentials_(std::move(other.credentials_)),
           catalogs_(std::exchange(other.catalogs_,{})),catalog_backing_bytes_(other.catalog_backing_bytes_),
           catalog_capture_(std::move(other.catalog_capture_)),
@@ -239,14 +233,9 @@ class NativeHostedDatabaseRuntime final {
     const NativeAgentPolicyValidation& agent_policies() const noexcept {
       CheckOwner();return agent_policies_;
     }
-    // Actual native publication-state observation after device-guard handoff.
-    // No generation, authenticated session or transaction has been published.
-    const storage::database::NativeOwnedWatermarkResult& publication() const noexcept {
-      CheckOwner();return publication_;
-    }
-    // SB_TRANSITIONAL_HOSTED_SOURCE: on the fixed-root source, page zero's
-    // identity as the startup observation retained it. Every later read of
-    // this runtime must find exactly this identity.
+    // Page zero's identity as the startup observation retained it, after the
+    // device guards were handed off. Every later read of this runtime must
+    // find exactly this identity. Nothing is written or published.
     const std::optional<storage::database::NativeFixedRootIdentity>& page_zero_anchor() const noexcept {
       CheckOwner();return page_zero_anchor_;
     }
@@ -296,7 +285,6 @@ class NativeHostedDatabaseRuntime final {
       transaction_policies_={};
       catalog_capture_={};
       credentials_->selection={};
-      publication_={};publication_preparation_.workspace={};publication_memory_={};
       page_zero_anchor_.reset();
       credentials_->comparison.reset();
       authorization_preparation_.workspace={};
@@ -312,11 +300,8 @@ class NativeHostedDatabaseRuntime final {
     }
    private:
     friend class NativeHostedDatabaseRuntime;
-    // The startup observation is retained: the watermark on the selected
-    // checkpoint, page zero's identity on the fixed-root source.
-    bool anchored() const noexcept {
-      return read_source_==NativeHostedReadSource::fixed_root?page_zero_anchor_.has_value():publication_.ok();
-    }
+    // The startup observation is retained: page zero's identity.
+    bool anchored() const noexcept {return page_zero_anchor_.has_value();}
     struct Inputs {
       const NativeLocalServiceStartupCredentialsRequest request;
       const core::memory::MemoryTag tag;
@@ -334,10 +319,6 @@ class NativeHostedDatabaseRuntime final {
     NativeLocalServiceStartupConfigurationResult configuration_;
     NativeLocalServiceAgentConfigurationResult agents_;
     NativeAgentPolicyValidation agent_policies_;
-    storage::database::NativeStorageMemory publication_memory_;
-    storage::database::NativeOwnedWatermarkPreparedResult publication_preparation_;
-    storage::database::NativeOwnedWatermarkResult publication_;
-    NativeHostedReadSource read_source_=NativeHostedReadSource::selected_checkpoint;
     std::optional<storage::database::NativeFixedRootIdentity> page_zero_anchor_;
     std::optional<NativeLocalServiceStartupCredentialsResult> credentials_{std::in_place};
     storage::database::NativeCatalogCohortInspection catalogs_;
