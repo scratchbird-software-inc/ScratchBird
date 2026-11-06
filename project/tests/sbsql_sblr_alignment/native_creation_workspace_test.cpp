@@ -107,7 +107,9 @@ void Inspect(disk::FileDevice& device,const db::NativeFilespaceInitializationReq
   Check(entry.identity.transaction_uuid.value==Id(5)&&entry.identity.scope==mga::TransactionScope::local_node&&
     entry.identity.local_id.value==1&&entry.state==mga::TransactionState::committed&&entry.commit_sequence==1&&
     entry.evidence_record_required&&entry.evidence_record_written&&!entry.rollback_only&&
-    entry.begin_unix_epoch_millis==creator_begin&&entry.final_unix_epoch_millis==request.creation_utc_millis,
+    entry.begin_unix_epoch_millis==creator_begin&&
+    entry.final_unix_epoch_millis==std::max<u64>(request.creation_utc_millis,creator_begin)&&
+    entry.begin_unix_epoch_millis<=entry.final_unix_epoch_millis,
     "real single construction inventory outcome");
   const std::array<u64,5> coverage{60,124,252,507,1017};
   unsigned profile=0;while(disk::kCanonicalFilespacePageProfiles[profile].page_size_bytes!=size)++profile;
@@ -450,6 +452,22 @@ int main(int argc,char** argv){try{
     const auto replay=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,24*page_bytes,*fixture.issuer);
     Check(!replay.ok()&&!replay.receipt&&replay.error==db::NativeCreationWorkspaceError::device_not_empty&&
       Read(device,17,page_bytes)==first&&Read(device,18,page_bytes)==second,"restart preserves interrupted pair without creation replay");}
+  {// Owner Q9 = 1 (2026-11-05): a creator UUID stamped after the admitted
+    // creation time completes at its own begin time, never before it begins;
+    // the page-zero creation time stays the admitted one.
+    const u64 later=Request().creation_utc_millis+60000;
+    Uuid creator=Id(5);for(unsigned n=0;n<6;++n)creator.bytes[n]=static_cast<byte>(later>>(8*(5-n)));
+    auto request=Request();request.creator.transaction_uuid={UuidKind::transaction,creator};
+    disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"later creator fixture");
+    Check(db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,24*page_bytes,*fixture.issuer).ok(),"later creator construction");
+    const std::vector<disk::NativeFilespaceDevice> devices{{Id(2),request.bootstrap.page_size_profile_uuid,&device}};
+    const auto bound=db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),devices,Id(2),256*page_bytes);
+    Check(bound.ok()&&bound.checkpoint_inventory.inventory.entries.size()==1,"later creator admission");
+    const auto& entry=bound.checkpoint_inventory.inventory.entries.front();
+    const auto zero=disk::ReadFilespacePageZeroFromOpenDevice(device);
+    Check(zero.ok()&&zero.record->creation_utc_millis==request.creation_utc_millis&&
+        entry.identity.transaction_uuid.value==creator&&entry.begin_unix_epoch_millis==later&&
+        entry.final_unix_epoch_millis==later,"construction completes at the later of creation and begin");}
   {const auto large=Request(0,3601);disk::FileDevice device;
     Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"cross-map control fixture");
     // The final admission's exact image budget: the maps twice, four controls,

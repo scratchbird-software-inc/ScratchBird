@@ -5,6 +5,7 @@
 #include "transaction_header_page.hpp"
 #include "transaction_horizon.hpp"
 #include "transaction_state_page.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <optional>
@@ -17,7 +18,12 @@ namespace scratchbird::storage::database::detail {
 // writes and that create-recovery rebuilds byte for byte: one transaction-state
 // page and one transaction header page.
 //  - Transaction 1, the construction transaction, is committed, with its
-//    header completed at the creation time (UTC milliseconds -> nanoseconds).
+//    header completed at the later of the creation time and the transaction's
+//    begin time (UTC milliseconds -> nanoseconds). Begin time is the
+//    transaction UUID's v7 time prefix; the issuer stamps that UUID from its
+//    own clock, which can read later than the caller's admitted creation
+//    time, and a transaction never completes before it begins (owner Q9 = 1,
+//    2026-11-05). A creator that is not a UUIDv7 is refused.
 //  - Next is the next transaction number (2).
 //  - The stored horizons are OIT, OAT and OST as derived from the in-memory
 //    inventory; OAR and OLR are Next (nothing to archive, nothing in limbo);
@@ -36,7 +42,10 @@ inline std::optional<NativeCreationTransactionInventoryImages> EncodeNativeCreat
     scratchbird::core::platform::u64 creation_utc_millis) {
   namespace page = scratchbird::storage::page;
   using scratchbird::core::platform::u64;
-  if (creation_utc_millis == 0 || creation_utc_millis > UINT64_MAX / 1'000'000) return std::nullopt;
+  const auto begun = scratchbird::core::uuid::ExtractUuidV7TimePrefix(creator);
+  if (!begun.ok) return std::nullopt;
+  const u64 completed_millis = std::max<u64>(creation_utc_millis, begun.unix_epoch_millis);
+  if (creation_utc_millis == 0 || completed_millis > UINT64_MAX / 1'000'000) return std::nullopt;
   NativeCreationTransactionInventoryImages out;
   page::TipPageFormat f;
   f.header = state_header;
@@ -67,7 +76,7 @@ inline std::optional<NativeCreationTransactionInventoryImages> EncodeNativeCreat
   r.transaction_order = 1;
   r.database_uuid = state_header.database_uuid;
   r.transaction_uuid = creator;
-  if (page::CompleteTransactionHeader(r, page::TipStateCode::committed, creation_utc_millis * 1'000'000) !=
+  if (page::CompleteTransactionHeader(r, page::TipStateCode::committed, completed_millis * 1'000'000) !=
       page::TransactionHeaderError::none)
     return std::nullopt;
   if (!page::WriteTransactionHeader(out.headers, r).ok()) return std::nullopt;
