@@ -23,6 +23,7 @@ add_library(sb_storage_database
   database_local_private_relation_locator.cpp
   database_lifecycle.cpp
   database_dirty_manifest.cpp
+  native_checkpoint_root.cpp
   local_transaction_store.cpp
   physical_mga_cow_store.cpp
   native_catalog_leaf_staging.cpp

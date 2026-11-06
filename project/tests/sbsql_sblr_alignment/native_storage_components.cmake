@@ -10,6 +10,7 @@ add_executable(sbsql_sblr_alignment_native_storage_components
   filespace_page_zero_test.cpp
   ../../src/server/database_ownership.cpp
   ../../src/storage/database/database_dirty_manifest.cpp
+  ../../src/storage/database/native_checkpoint_root.cpp
   ../../src/storage/database/physical_mga_cow_store.cpp
   ../../src/storage/database/native_catalog_leaf_staging.cpp
   ../../src/storage/database/native_row_data_staging.cpp
