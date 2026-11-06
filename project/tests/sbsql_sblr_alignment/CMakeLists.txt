@@ -1533,6 +1533,15 @@ endif()
     TIMEOUT 120)
   # SEARCH_KEY: SB_TRANSACTION_INVENTORY_READER. Read-only load and check of
   # the in-place transaction inventory (state chain + header chain).
+  # SB_NATIVE_FIXED_ROOT_READ: the fixed-root read source (drift removal R1).
+  add_executable(sbsql_sblr_alignment_native_fixed_root_lease native_fixed_root_lease_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_native_fixed_root_lease PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_native_fixed_root_lease PRIVATE sb_storage_database)
+  target_link_options(sbsql_sblr_alignment_native_fixed_root_lease PRIVATE "-Wl,--wrap=pread")
+  add_test(NAME sbsql_sblr_alignment_native_fixed_root_lease COMMAND sbsql_sblr_alignment_native_fixed_root_lease)
+  set_tests_properties(sbsql_sblr_alignment_native_fixed_root_lease PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;fixed_root;fault_injection"
+    TIMEOUT 300)
   add_executable(sbsql_sblr_alignment_transaction_inventory_reader transaction_inventory_reader_test.cpp)
   target_compile_features(sbsql_sblr_alignment_transaction_inventory_reader PRIVATE cxx_std_23)
   target_link_libraries(sbsql_sblr_alignment_transaction_inventory_reader PRIVATE sb_storage_page sb_storage_disk)
