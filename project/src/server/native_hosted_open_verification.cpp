@@ -100,7 +100,7 @@ NativeOpenVerificationResult NativeHostedDatabaseRuntime::VerifyStartupDatabaseF
   if(read.open_verification_){result.error=VE::none;result.stage=VS::complete;result.observation=read.open_verification_;return result;}
   auto& credential=*read.credentials_->comparison->lease;
   if(credential.has_selected_source()||!credential.has_retained_operation()||!read.publication_.ok()||!read.authentication_||
-      !read.catalog_metadata_.ok()||!read.startup_transactions_.ok()||!read.verification_policies_.ok()||
+      !read.catalog_metadata_.ok()||!read.verification_policies_.ok()||
       !read.catalogs_.ok()||!read.catalog_capture_.has_physical_pages())return fail(VE::not_ready,VS::none);
   const auto& genesis_selection=read.catalog_capture_.selection();
   const auto captured=read.catalog_capture_.inventory();

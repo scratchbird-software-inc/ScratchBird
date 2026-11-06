@@ -1826,8 +1826,6 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
         "a global CONNECT allow cannot override the persisted denial for this actual database");
     Check(stage_writes==writes&&stage_syncs==syncs,"credential/rights prerequisites publish no activation or transaction");
     allocation_budget=0;
-    Check(Host::ReadStartupHistory(read,{budget,1024*1024})==server::NativeHostedRuntimeError::custody_failure&&
-        !read.history().ok(),"management history cannot run under the credential's retained device guards");
     Check(Host::InstallStartupAllocationBehavior(read).error==EnvelopeError::selected_guards_held,
         "selected allocator behavior cannot bypass original device-guard retirement");
     const auto premature_envelope=Host::ConstrainStartupMemory(read);
@@ -2150,8 +2148,6 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
             held_memory=std::move(loan.admission.resource);
           }
           const auto calls_before=password_calls;
-          Check(Host::ReadStartupHistory(read,{budget,1024*1024})==server::NativeHostedRuntimeError::credential_failure&&
-              !read.history().ok(),"actual service authentication precedes hosted management-history acquisition");
           if(authentication_variant==1){
             const auto disabled=Host::AuthenticateStartupService(read,provisioner.derived);
             Check(disabled.error==AuthenticationError::provider_disabled&&!read.authentication()&&
@@ -2199,67 +2195,6 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
             Check(!held_source.ok()&&held_source.error==server::StartupCredentialSource::Error::wait,
                 "authenticated decision retains its actual protected-source generation fence after plaintext erasure");
             if(!memory_variant&&!policy_variant){
-              const db::NativeManagementHistoryMemoryLimits history_limits{budget,1024*1024};
-              Check(Host::ReadStartupHistory(read,{})==server::NativeHostedRuntimeError::invalid_request,
-                  "history cannot request unbounded or absent scratch");
-              allocation_budget=0;const auto no_memory=Host::ReadStartupHistory(read,history_limits);allocation_budget=-1;
-              Check(no_memory==server::NativeHostedRuntimeError::memory_failure&&!read.history().ok()&&read.authentication(),
-                  "history allocation failure preserves actual authenticated custody and issues no observation");
-              reads=0;track_reads=true;read_fault=1;
-              const auto failed_history=Host::ReadStartupHistory(read,history_limits);
-              read_fault=0;track_reads=false;
-              Check(failed_history==server::NativeHostedRuntimeError::history_failure&&!read.history().ok()&&
-                  read.history().writer_error==db::NativeWriterError::source_failure&&reads>0&&
-                  read.history().operation_uuid==operation_uuid&&read.authentication(),
-                  "actual history read fault preserves native diagnostics and original operation for retry");
-              reads=0;track_reads=true;
-              const auto history=Host::ReadStartupHistory(read,history_limits);track_reads=false;
-              if(history!=server::NativeHostedRuntimeError::none)std::cerr<<"history error="<<int(history)
-                  <<" writer="<<int(read.history().writer_error)<<" native="<<int(read.history().history_error)<<'\n';
-              Check(history==server::NativeHostedRuntimeError::none&&read.history().ok()&&reads>0&&
-                  read.history().operation_uuid==operation_uuid&&read.history().history.selection&&
-                  read.history().history.anchor->checkpoint_generation==1&&read.history().history.entries.empty()&&
-                  read.history().history.latest.empty()&&read.history().history.idempotency.empty()&&
-                  read.history().history.selection->checkpoint_sha256==read.publication().snapshot->selection.checkpoint_sha256,
-                  "startup history is read from original native custody and bound to its selected creation checkpoint");
-              reads=0;track_reads=true;allocation_budget=0;
-              const auto repeated=Host::ReadStartupHistory(read,history_limits);
-              const auto history_budget=allocation_budget;allocation_budget=-1;track_reads=false;
-              Check(repeated==server::NativeHostedRuntimeError::none&&!reads&&history_budget==0,
-                  "retained immutable history replays without reopening, rereading or allocating");
-              Check(Host::ReadStartupHistory(read,{1,history_limits.maximum_backing_bytes})==
-                  server::NativeHostedRuntimeError::invalid_request&&read.history().ok(),
-                  "cached history cannot evade a tighter verification allowance");
-              Check(Host::ReadStartupHistory(read,{budget,1})==server::NativeHostedRuntimeError::invalid_request&&
-                  read.history().ok(),"cached history cannot evade a tighter backing allowance");
-              const db::NativeManagementControlAuthorityMemoryLimits control_limits{budget,32*1024*1024};
-              allocation_budget=0;const auto control_no_memory=Host::ReadStartupControl(read,control_limits);allocation_budget=-1;
-              Check(control_no_memory==server::NativeHostedRuntimeError::memory_failure&&!read.control().ok()&&read.history().ok(),
-                  "full control acquisition cannot bypass resource admission or discard retained history");
-              reads=0;track_reads=true;read_fault=1;
-              const auto failed_control=Host::ReadStartupControl(read,control_limits);
-              read_fault=0;track_reads=false;
-              Check(failed_control==server::NativeHostedRuntimeError::control_failure&&!read.control().ok()&&
-                  read.control().writer_error==db::NativeWriterError::source_failure&&reads>0&&
-                  read.control().operation_uuid==operation_uuid&&read.authentication(),
-                  "full control verification preserves native I/O failure and original authenticated operation");
-              reads=0;track_reads=true;
-              const auto verified_control=Host::ReadStartupControl(read,control_limits);track_reads=false;
-              if(verified_control!=server::NativeHostedRuntimeError::none)std::cerr<<"startup control error="<<int(verified_control)
-                  <<" authority="<<int(read.control().authority_error)<<'\n';
-              Check(verified_control==server::NativeHostedRuntimeError::none&&read.control().ok()&&reads>0&&
-                  read.control().operation_uuid==operation_uuid&&read.control().authority.selection&&
-                  read.control().authority.anchor==read.history().history.anchor&&
-                  read.control().authority.selection->checkpoint_sha256==read.publication().snapshot->selection.checkpoint_sha256,
-                  "full control graph verification retains exact original source and creation inventory ancestry");
-              reads=0;track_reads=true;allocation_budget=0;
-              const auto repeated_control=Host::ReadStartupControl(read,control_limits);
-              const auto control_budget=allocation_budget;allocation_budget=-1;track_reads=false;
-              Check(repeated_control==server::NativeHostedRuntimeError::none&&!reads&&control_budget==0,
-                  "verified control backing replays without allocation or native I/O");
-              Check(Host::ReadStartupControl(read,{1,control_limits.maximum_backing_bytes})==server::NativeHostedRuntimeError::invalid_request&&
-                  Host::ReadStartupControl(read,{budget,1})==server::NativeHostedRuntimeError::invalid_request&&read.control().ok(),
-                  "retained control verification respects tighter work and backing limits");
               const db::NativeSelectedCheckpointMemoryLimits catalog_limits{budget,12*1024*1024};
               // Bound the page working set in bytes across all page profiles;
               // larger pages need fewer leaf and navigation slots. The row
@@ -2272,46 +2207,6 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
               const db::NativeCatalogRelationMemoryLimits catalog_scan_limits{Profile(profile),1,catalog_page_slots,
                   db::kNativeCatalogScanRelationMaximumRows,db::kNativeCatalogScanRelationMaximumRows,
                   db::NativeCatalogScanNavigationLimits(sizes[profile])};
-              Check(Host::ReadStartupCatalogs(read,catalog_limits,catalog_scan_limits)==server::NativeHostedRuntimeError::verification_history_failure,
-                  "catalog scan requires retained verification-family phase validation");
-              allocation_budget=0;
-              const auto verification_no_memory=Host::VerifyStartupVerificationHistory(read,1024*1024);
-              allocation_budget=-1;
-              Check(verification_no_memory==server::NativeHostedRuntimeError::memory_failure&&read.history().ok()&&read.control().ok()&&!read.verification_history().ok(),
-                  "family-history memory refusal preserves original authenticated history and control");
-              reads=0;track_reads=true;
-              const auto verification=Host::VerifyStartupVerificationHistory(read,1024*1024);
-              track_reads=false;
-              Check(verification==server::NativeHostedRuntimeError::none&&read.verification_history().ok()&&!reads&&
-                  read.verification_history().verified_operations==0&&read.verification_history().verified_revisions==0&&
-                  read.verification_history().selection->checkpoint_sha256==read.history().history.selection->checkpoint_sha256,
-                  "empty genesis verification history is checked without inventing a verification operation or reopening files");
-              allocation_budget=0;
-              const auto verification_replay=Host::VerifyStartupVerificationHistory(read,1024*1024);
-              const auto verification_budget=allocation_budget;allocation_budget=-1;
-              Check(verification_replay==server::NativeHostedRuntimeError::none&&verification_budget==0&&
-                  Host::VerifyStartupVerificationHistory(read,1)==server::NativeHostedRuntimeError::invalid_request,
-                  "retained family validation is allocation-free and respects tighter workspace bounds");
-              Check(Host::ReadStartupCatalogs(read,catalog_limits,catalog_scan_limits)==server::NativeHostedRuntimeError::policy_activation_history_failure,
-                  "catalog scan also requires retained policy activation intent history validation");
-              allocation_budget=0;
-              const auto policy_no_memory=Host::VerifyStartupPolicyActivationHistory(read,1024*1024);
-              allocation_budget=-1;
-              Check(policy_no_memory==server::NativeHostedRuntimeError::memory_failure&&read.history().ok()&&read.control().ok()&&!read.policy_activation_history().ok(),
-                  "policy history memory refusal preserves original authenticated custody");
-              reads=0;track_reads=true;
-              const auto policy_history=Host::VerifyStartupPolicyActivationHistory(read,1024*1024);
-              track_reads=false;
-              Check(policy_history==server::NativeHostedRuntimeError::none&&read.policy_activation_history().ok()&&!reads&&
-                  !read.policy_activation_history().verified_operations&&!read.policy_activation_history().verified_revisions&&
-                  read.policy_activation_history().selection->checkpoint_sha256==read.history().history.selection->checkpoint_sha256,
-                  "genesis policy history is validated from retained bytes without inventing activation or reopening files");
-              allocation_budget=0;
-              const auto policy_replay=Host::VerifyStartupPolicyActivationHistory(read,1024*1024);
-              const auto policy_budget=allocation_budget;allocation_budget=-1;
-              Check(policy_replay==server::NativeHostedRuntimeError::none&&policy_budget==0&&
-                  Host::VerifyStartupPolicyActivationHistory(read,1)==server::NativeHostedRuntimeError::invalid_request,
-                  "policy history replay preserves exact source and bounded allocation-free result");
               allocation_budget=0;const auto catalog_no_memory=Host::ReadStartupCatalogs(read,catalog_limits,catalog_scan_limits);allocation_budget=-1;
               Check(catalog_no_memory==server::NativeHostedRuntimeError::memory_failure&&!read.catalogs().ok(),
                   "complete native catalog scan requires actual shared memory admission");
@@ -2416,24 +2311,6 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
                 Check(runtime_security::CheckNativeStartupCatalogAllocation(read.catalog_capture(),comparison).error==runtime_security::NativeStartupCatalogAllocationError::orphan_page,
                     "unvisited user content cannot become an empty first-create graph");
               }
-              allocation_budget=0;
-              const auto transaction_no_memory=Host::InspectStartupTransactions(read,1024*1024);
-              allocation_budget=-1;
-              Check(transaction_no_memory==server::NativeHostedRuntimeError::memory_failure&&!read.startup_transactions().ok(),
-                  "startup inventory-history join requires the actual installed allocator");
-              reads=0;track_reads=true;
-              const auto startup_transactions=Host::InspectStartupTransactions(read,1024*1024);
-              track_reads=false;
-              Check(startup_transactions==server::NativeHostedRuntimeError::none&&read.startup_transactions().ok()&&!reads&&
-                  read.startup_transactions().transactions.empty()&&!read.startup_transactions().pending_binding&&
-                  read.startup_transactions().selection->checkpoint_sha256==read.catalog_capture().selection()->checkpoint_sha256,
-                  "native host joins actual creation history and retained inventory without inventing startup work or reopening files");
-              allocation_budget=0;
-              const auto startup_replayed=Host::InspectStartupTransactions(read,1024*1024);
-              const auto startup_heap=allocation_budget;allocation_budget=-1;
-              Check(startup_replayed==server::NativeHostedRuntimeError::none&&startup_heap==0&&
-                  Host::InspectStartupTransactions(read,1)==server::NativeHostedRuntimeError::invalid_request,
-                  "retained startup inventory join uses no allocation and honors tighter workspace bounds");
               Check(captured_inventory&&captured_inventory->generation==1&&
                   captured_inventory->inventory.next_local_transaction_id==2&&captured_inventory->inventory.next_commit_sequence==2&&
                   captured_inventory->inventory.entries.size()==1&&
@@ -2805,15 +2682,10 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
     const auto policies_validated=read.agent_policies().ok();
     const auto authenticated_before_move=read.authentication();
     const auto session_before_move=read.session();
-    const auto had_history=read.history().ok();
-    const auto had_control=read.control().ok();
-    const auto had_verification_history=read.verification_history().ok();
-    const auto had_policy_history=read.policy_activation_history().ok();
     const auto had_catalogs=read.catalogs().ok();
     const auto had_capture=read.catalog_capture().ok();
     const auto had_metadata=read.catalog_metadata().ok();
     const auto had_inventory=read.catalog_capture().inventory().has_value();
-    const auto had_startup_transactions=read.startup_transactions().ok();
     const auto had_verification_policies=read.verification_policies().ok();
     const auto had_management_definition=read.management_definition().ok();
     const auto had_transaction_policies=read.transaction_policies().ok();
@@ -2829,14 +2701,6 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
         (!session_before_move||(moved.session()->session_uuid==session_before_move->session_uuid&&
           moved.session()->attachment_uuid==session_before_move->attachment_uuid&&moved.session()->engine_instance_uuid==engine_instance)),
         "native session ownership moves with retained authentication and invalidates moved-from access");
-    Check(!read.history().ok()&&moved.history().ok()==had_history,
-        "history backing moves with original custody and invalidates its moved-from view");
-    Check(!read.verification_history().ok()&&!read.verification_history().selection&&moved.verification_history().ok()==had_verification_history,
-        "family-history observation transfers with original custody and clears the moved-from selection");
-    Check(!read.policy_activation_history().ok()&&!read.policy_activation_history().selection&&moved.policy_activation_history().ok()==had_policy_history,
-        "policy history selection transfers with custody and invalidates the old observation");
-    Check(!read.control().ok()&&moved.control().ok()==had_control,
-        "control backing and complete ancestry views move with the original owner");
     Check(!read.catalogs().ok()&&moved.catalogs().ok()==had_catalogs,
         "catalog observation moves with the original authenticated owner");
     Check(!read.catalog_capture().ok()&&read.catalog_capture().rows().empty()&&moved.catalog_capture().ok()==had_capture,
@@ -2845,9 +2709,6 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
         "engine metadata result moves with authenticated custody and clears the prior owner's view");
     Check(!read.catalog_capture().inventory()&&moved.catalog_capture().inventory().has_value()==had_inventory,
         "complete selected transaction inventory moves with catalog backing and clears the old owner");
-    Check(!read.startup_transactions().ok()&&read.startup_transactions().transactions.empty()&&
-        moved.startup_transactions().ok()==had_startup_transactions,
-        "actual startup transaction observations move with original custody and clear the old owner");
     if(had_inventory)Check(moved.catalog_capture().inventory()->inventory.entries[0].identity.transaction_uuid.value==security_tx.value,
         "actual retained transaction identity survives host move without rereading or allocation");
     Check(!read.verification_policies().ok()&&!read.verification_policies().selection&&moved.verification_policies().ok()==had_verification_policies,
@@ -2870,8 +2731,6 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
       std::thread other([&]{
         if(death==11)(void)moved.authentication();
         if(death==12)(void)Host::AuthenticateStartupService(moved,provisioner.derived);
-        if(death==13)(void)moved.history();
-        if(death==14)(void)Host::ReadStartupHistory(moved,{budget,1024*1024});
         if(mode==1)(void)moved.authorization();
         if(mode==2)(void)read.configuration();
         if(mode==3){auto foreign=std::move(moved);(void)foreign;}
@@ -2899,8 +2758,6 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
         "selected credential and actual operation custody block premature writer retirement");
     cleanup_read=&moved;cleanup_host=&host.runtime;cleanup_hook=ProbeCleanupCallback;
     moved.Reset();
-    Check(!moved.control().ok(),"reset retires full control verification before original custody");
-    Check(!moved.history().ok(),"reset retires actual history backing before original source custody");
     Check(!moved.authentication(),"reset retires engine authentication before borrowed grant or protected-source backing");
     Check(!moved.session(),"reset retires native session before borrowed authorization backing");
     const auto reset_callback_invoked=!cleanup_hook;cleanup_hook=nullptr;
@@ -3060,17 +2917,6 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
   if(!authenticated.ok())std::cerr<<"producer authentication error="<<int(authenticated.error)<<'\n';
   Check(authenticated.ok()&&authenticated.observation.principal_uuid==receipt.service_principal_uuid,
       "the L5 service authenticates as the producer's principal");
-  const db::NativeManagementHistoryMemoryLimits history_limits{budget,1024*1024};
-  const auto history=Host::ReadStartupHistory(read,history_limits);
-  Check(history==server::NativeHostedRuntimeError::none,"management history verifies");
-  const db::NativeManagementControlAuthorityMemoryLimits control_limits{budget,32*1024*1024};
-  const auto control=Host::ReadStartupControl(read,control_limits);
-  Check(control==server::NativeHostedRuntimeError::none,"control authority verifies");
-  const auto verification=Host::VerifyStartupVerificationHistory(read,1024*1024);
-  if(verification!=server::NativeHostedRuntimeError::none)std::cerr<<"producer verification history error="<<int(verification)<<'\n';
-  Check(verification==server::NativeHostedRuntimeError::none,"verification-family history verifies");
-  const auto policy_history=Host::VerifyStartupPolicyActivationHistory(read,1024*1024);
-  Check(policy_history==server::NativeHostedRuntimeError::none,"policy activation history verifies");
   const db::NativeSelectedCheckpointMemoryLimits catalog_limits{budget,12*1024*1024};
   const db::NativeCatalogRelationMemoryLimits catalog_scan_limits{Profile(profile),1,db::NativeCatalogScanBasePages(sizes[profile]),
       db::kNativeCatalogScanRelationMaximumRows,db::kNativeCatalogScanRelationMaximumRows,
@@ -3094,10 +2940,6 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
       "the engine verifies every component of the producer's catalog: names, indexes, namespaces, filespaces, audit, "
       "security references, naming profiles and collisions");
   // Stage 2: the coordinator's configuration from the producer's own rows.
-  const auto inspected=Host::InspectStartupTransactions(read,1024*1024);
-  Check(inspected==server::NativeHostedRuntimeError::none&&read.startup_transactions().ok()&&
-      read.startup_transactions().transactions.empty()&&!read.startup_transactions().pending_binding,
-      "the producer's file holds only its construction history: no startup work is pending");
   const auto management=Host::ResolveStartupManagementDefinition(read);
   if(management!=server::NativeHostedRuntimeError::none)std::cerr<<"producer management error="<<int(management)
       <<" definition="<<int(read.management_definition().error)<<'\n';

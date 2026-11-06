@@ -297,223 +297,6 @@ NativeHostedRuntimeError NativeHostedDatabaseRuntime::RetainStartupObservation(
   return !crypto.ok()?E::crypto_failure:read.publication_.ok()?E::none:E::custody_failure;
 }
 
-NativeHostedRuntimeError NativeHostedDatabaseRuntime::ReadStartupHistory(CredentialRead& read,
-    storage::database::NativeManagementHistoryMemoryLimits limits) noexcept {
-  namespace db=storage::database;using E=NativeHostedRuntimeError;
-  read.CheckOwner();
-  if(read.mutating_||(read.owner_&&read.owner_->entering_))return E::busy;
-  if(!read.ok()||!read.owner_)return E::closed;
-  auto& credential=*read.credentials_->comparison->lease;
-  if(credential.has_selected_source()||!credential.has_retained_operation()||!read.publication_.ok())
-    return E::custody_failure;
-  if(!read.authentication_)return E::credential_failure;
-  const auto& request=read.inputs_->request;
-  if(!limits.maximum_backing_bytes||!limits.maximum_verification_image_bytes||
-      limits.maximum_backing_bytes>request.checkpoint_limits.maximum_backing_bytes||
-      limits.maximum_verification_image_bytes>request.checkpoint_limits.maximum_verification_image_bytes)
-    return E::invalid_request;
-  auto& self=*read.owner_;
-  read.mutating_=true;self.entering_=true;
-  struct Leave {bool& reading;bool& hosting;~Leave(){reading=false;hosting=false;}}
-      leave{read.mutating_,self.entering_};
-  const auto cancelled=[&]{return request.credential.stop.stop_requested()||request.source.stop.stop_requested();};
-  if(cancelled())return E::cancelled;
-  if(read.history_.ok())return read.history_.arena.Snapshot().retained_bytes<=limits.maximum_backing_bytes&&
-      read.history_.history.verified_image_bytes<=limits.maximum_verification_image_bytes?E::none:E::invalid_request;
-  const auto& configuration=*read.configuration_.configuration;
-  if(!self.process_->HasNativeDatabaseAllocationBehavior(self.database_,configuration.memory,
-      configuration.memory_version_uuid))return E::memory_failure;
-  // Separate governed backing permits later checkpoint verification to use
-  // its own bounded scratch while the actual history remains immutable.
-  read.verification_history_={};
-  read.history_.history={};read.history_={};read.history_memory_={};
-  auto allocation=self.Acquire(limits.maximum_backing_bytes,NativeBootstrapMemoryKind::storage);
-  if(!allocation.ok())return E::memory_failure;
-  auto adopted=db::AdoptNativeStorageMemory(StorageBinding(*allocation.admission.resource),allocation.admission.resource);
-  if(!adopted.ok())return E::memory_failure;
-  read.history_memory_=std::move(adopted.memory);
-  db::NativeOwnedHistoryReadResult observed;
-  const auto crypto=self.database_crypto_.WithMemoryScope(self.crypto_binding_,[&]{
-    observed=credential.retained_operation_.ReadHistoryWithMemory(
-        limits,read.history_memory_,read.history_memory_.binding());
-  });
-  if(!crypto.ok())return E::crypto_failure;
-  if(cancelled())return E::cancelled;
-  if(!observed.ok()){
-    read.history_=std::move(observed);return E::history_failure;
-  }
-  const auto& expected=read.publication_.snapshot->selection;
-  const auto same=[&](const db::NativeCheckpointSelection& actual){
-    return actual.header.database_uuid==self.database_&&actual.header.filespace_uuid==self.primary_&&
-        actual.object_uuid==expected.object_uuid&&actual.bootstrap_uuid==expected.bootstrap_uuid&&
-        actual.publication_uuid==expected.publication_uuid&&actual.selection_generation==expected.selection_generation&&
-        actual.checkpoint==expected.checkpoint&&actual.checkpoint_object_uuid==expected.checkpoint_object_uuid&&
-        actual.checkpoint_sha256==expected.checkpoint_sha256&&actual.checkpoint_generation==expected.checkpoint_generation&&
-        actual.root_set_generation==expected.root_set_generation&&actual.timeline_uuid==expected.timeline_uuid&&
-        actual.previous_selection_generation==expected.previous_selection_generation&&
-        actual.previous_checkpoint==expected.previous_checkpoint&&
-        actual.previous_checkpoint_object_uuid==expected.previous_checkpoint_object_uuid&&
-        actual.previous_checkpoint_sha256==expected.previous_checkpoint_sha256;
-  };
-  if(observed.operation_uuid!=read.authentication_->observation_.operation_uuid||
-      !observed.history.selection||!same(*observed.history.selection)){
-    observed.history={};observed.arena={};
-    observed.error=db::NativeManagementHistoryMemoryError::history_failure;
-    observed.history_error=db::NativeManagementHistoryError::history_mismatch;
-    observed.writer_error=db::NativeWriterError::source_failure;
-    read.history_=std::move(observed);return E::history_failure;
-  }
-  read.history_=std::move(observed);return E::none;
-}
-
-NativeHostedRuntimeError NativeHostedDatabaseRuntime::ReadStartupControl(CredentialRead& read,
-    storage::database::NativeManagementControlAuthorityMemoryLimits limits) noexcept {
-  namespace db=storage::database;using E=NativeHostedRuntimeError;
-  read.CheckOwner();
-  if(read.mutating_||(read.owner_&&read.owner_->entering_))return E::busy;
-  if(!read.ok()||!read.owner_)return E::closed;
-  auto& credential=*read.credentials_->comparison->lease;
-  if(credential.has_selected_source()||!credential.has_retained_operation()||!read.publication_.ok())
-    return E::custody_failure;
-  if(!read.authentication_)return E::credential_failure;
-  const auto& request=read.inputs_->request;
-  if(!limits.maximum_backing_bytes||!limits.maximum_verification_image_bytes||
-      limits.maximum_backing_bytes>request.checkpoint_limits.maximum_backing_bytes||
-      limits.maximum_verification_image_bytes>request.checkpoint_limits.maximum_verification_image_bytes)
-    return E::invalid_request;
-  auto& self=*read.owner_;
-  read.mutating_=true;self.entering_=true;
-  struct Leave {bool& reading;bool& hosting;~Leave(){reading=false;hosting=false;}}
-      leave{read.mutating_,self.entering_};
-  const auto cancelled=[&]{return request.credential.stop.stop_requested()||request.source.stop.stop_requested();};
-  if(cancelled())return E::cancelled;
-  if(read.control_.ok())return read.control_.arena.Snapshot().retained_bytes<=limits.maximum_backing_bytes&&
-      read.control_.authority.verified_image_bytes<=limits.maximum_verification_image_bytes?E::none:E::invalid_request;
-  const auto& configuration=*read.configuration_.configuration;
-  if(!self.process_->HasNativeDatabaseAllocationBehavior(self.database_,configuration.memory,
-      configuration.memory_version_uuid))return E::memory_failure;
-  // Separate governed backing permits later checkpoint verification to use
-  // its own bounded scratch while the actual control graph remains immutable.
-  read.control_.authority={};read.control_={};read.control_memory_={};
-  auto allocation=self.Acquire(limits.maximum_backing_bytes,NativeBootstrapMemoryKind::storage);
-  if(!allocation.ok())return E::memory_failure;
-  auto adopted=db::AdoptNativeStorageMemory(StorageBinding(*allocation.admission.resource),allocation.admission.resource);
-  if(!adopted.ok())return E::memory_failure;
-  read.control_memory_=std::move(adopted.memory);
-  db::NativeOwnedControlReadResult observed;
-  const auto crypto=self.database_crypto_.WithMemoryScope(self.crypto_binding_,[&]{
-    observed=credential.retained_operation_.ReadControlWithMemory(
-        limits,read.control_memory_,read.control_memory_.binding());
-  });
-  if(!crypto.ok())return E::crypto_failure;
-  if(cancelled())return E::cancelled;
-  if(!observed.ok()){
-    read.control_=std::move(observed);return E::control_failure;
-  }
-  const auto& expected=read.publication_.snapshot->selection;
-  const auto same=[&](const db::NativeCheckpointSelection& actual){
-    return actual.header.database_uuid==self.database_&&actual.header.filespace_uuid==self.primary_&&
-        actual.object_uuid==expected.object_uuid&&actual.bootstrap_uuid==expected.bootstrap_uuid&&
-        actual.publication_uuid==expected.publication_uuid&&actual.selection_generation==expected.selection_generation&&
-        actual.checkpoint==expected.checkpoint&&actual.checkpoint_object_uuid==expected.checkpoint_object_uuid&&
-        actual.checkpoint_sha256==expected.checkpoint_sha256&&actual.checkpoint_generation==expected.checkpoint_generation&&
-        actual.root_set_generation==expected.root_set_generation&&actual.timeline_uuid==expected.timeline_uuid&&
-        actual.previous_selection_generation==expected.previous_selection_generation&&
-        actual.previous_checkpoint==expected.previous_checkpoint&&
-        actual.previous_checkpoint_object_uuid==expected.previous_checkpoint_object_uuid&&
-        actual.previous_checkpoint_sha256==expected.previous_checkpoint_sha256;
-  };
-  if(observed.operation_uuid!=read.authentication_->observation_.operation_uuid||
-      !observed.authority.selection||!same(*observed.authority.selection)){
-    observed.authority={};observed.arena={};
-    observed.error=db::NativeManagementControlAuthorityMemoryError::authority_failure;
-    observed.authority_error=db::NativeManagementControlAuthorityError::binding_mismatch;
-    observed.writer_error=db::NativeWriterError::source_failure;
-    read.control_=std::move(observed);return E::control_failure;
-  }
-  read.control_=std::move(observed);return E::none;
-}
-
-NativeHostedRuntimeError NativeHostedDatabaseRuntime::VerifyStartupVerificationHistory(
-    CredentialRead& read,std::size_t maximum_backing_bytes) noexcept {
-  namespace db=storage::database;using E=NativeHostedRuntimeError;
-  read.CheckOwner();
-  if(read.mutating_||(read.owner_&&read.owner_->entering_))return E::busy;
-  if(!read.ok()||!read.owner_)return E::closed;
-  auto& credential=*read.credentials_->comparison->lease;
-  if(credential.has_selected_source()||!credential.has_retained_operation()||!read.publication_.ok())return E::custody_failure;
-  if(!read.authentication_)return E::credential_failure;
-  if(!read.history_.ok())return E::history_failure;
-  if(!read.control_.ok())return E::control_failure;
-  const auto& request=read.inputs_->request;
-  if(!maximum_backing_bytes||maximum_backing_bytes>request.checkpoint_limits.maximum_backing_bytes)return E::invalid_request;
-  auto& self=*read.owner_;read.mutating_=true;self.entering_=true;
-  struct Leave {bool& reading;bool& hosting;~Leave(){reading=false;hosting=false;}} leave{read.mutating_,self.entering_};
-  const auto cancelled=[&]{return request.credential.stop.stop_requested()||request.source.stop.stop_requested();};
-  if(cancelled())return E::cancelled;
-  if(read.verification_history_.ok())return read.verification_history_.workspace_bytes<=maximum_backing_bytes?E::none:E::invalid_request;
-  const auto& config=*read.configuration_.configuration;
-  if(!self.process_->HasNativeDatabaseAllocationBehavior(self.database_,config.memory,config.memory_version_uuid))return E::memory_failure;
-  auto allocation=self.Acquire(maximum_backing_bytes,NativeBootstrapMemoryKind::storage);
-  if(!allocation.ok())return E::memory_failure;
-  auto adopted=db::AdoptNativeStorageMemory(StorageBinding(*allocation.admission.resource),allocation.admission.resource);
-  if(!adopted.ok())return E::memory_failure;
-  auto workspace=adopted.memory.CreateArena(adopted.memory.binding(),maximum_backing_bytes,alignof(std::max_align_t));
-  if(!workspace.ok())return E::memory_failure;
-  const auto backing=workspace.arena.Allocate(maximum_backing_bytes,alignof(std::max_align_t));
-  if(!backing.ok())return E::memory_failure;
-  engine::internal_api::NativeVerificationHistoryObservation result;
-  const auto crypto=self.database_crypto_.WithMemoryScope(self.crypto_binding_,[&]{
-    result=engine::internal_api::VerifyNativeVerificationHistory(read.history_.history,
-        request.checkpoint_limits.maximum_verification_image_bytes,
-        {static_cast<core::platform::byte*>(backing.pointer),maximum_backing_bytes});
-  });
-  if(!crypto.ok())return E::crypto_failure;
-  if(cancelled())return E::cancelled;
-  read.verification_history_=result;
-  return result.ok()?E::none:E::verification_history_failure;
-}
-
-NativeHostedRuntimeError NativeHostedDatabaseRuntime::VerifyStartupPolicyActivationHistory(
-    CredentialRead& read,std::size_t maximum_backing_bytes) noexcept {
-  namespace db=storage::database;using E=NativeHostedRuntimeError;
-  read.CheckOwner();
-  if(read.mutating_||(read.owner_&&read.owner_->entering_))return E::busy;
-  if(!read.ok()||!read.owner_)return E::closed;
-  auto& credential=*read.credentials_->comparison->lease;
-  if(credential.has_selected_source()||!credential.has_retained_operation()||!read.publication_.ok())return E::custody_failure;
-  if(!read.authentication_)return E::credential_failure;
-  if(!read.history_.ok())return E::history_failure;
-  if(!read.control_.ok())return E::control_failure;
-  const auto& request=read.inputs_->request;
-  if(!maximum_backing_bytes||maximum_backing_bytes>request.checkpoint_limits.maximum_backing_bytes)return E::invalid_request;
-  auto& self=*read.owner_;read.mutating_=true;self.entering_=true;
-  struct Leave {bool& reading;bool& hosting;~Leave(){reading=false;hosting=false;}} leave{read.mutating_,self.entering_};
-  const auto cancelled=[&]{return request.credential.stop.stop_requested()||request.source.stop.stop_requested();};
-  if(cancelled())return E::cancelled;
-  if(read.policy_activation_history_.ok())return read.policy_activation_history_.workspace_bytes<=maximum_backing_bytes?E::none:E::invalid_request;
-  const auto& config=*read.configuration_.configuration;
-  if(!self.process_->HasNativeDatabaseAllocationBehavior(self.database_,config.memory,config.memory_version_uuid))return E::memory_failure;
-  auto allocation=self.Acquire(maximum_backing_bytes,NativeBootstrapMemoryKind::storage);
-  if(!allocation.ok())return E::memory_failure;
-  auto adopted=db::AdoptNativeStorageMemory(StorageBinding(*allocation.admission.resource),allocation.admission.resource);
-  if(!adopted.ok())return E::memory_failure;
-  auto workspace=adopted.memory.CreateArena(adopted.memory.binding(),maximum_backing_bytes,alignof(std::max_align_t));
-  if(!workspace.ok())return E::memory_failure;
-  const auto backing=workspace.arena.Allocate(maximum_backing_bytes,alignof(std::max_align_t));
-  if(!backing.ok())return E::memory_failure;
-  engine::internal_api::NativePolicyActivationHistoryObservation result;
-  const auto crypto=self.database_crypto_.WithMemoryScope(self.crypto_binding_,[&]{
-    result=engine::internal_api::VerifyNativePolicyActivationHistory(read.history_.history,
-        request.checkpoint_limits.maximum_verification_image_bytes,
-        {static_cast<core::platform::byte*>(backing.pointer),maximum_backing_bytes});
-  });
-  if(!crypto.ok())return E::crypto_failure;
-  if(cancelled())return E::cancelled;
-  read.policy_activation_history_=result;
-  return result.ok()?E::none:E::policy_activation_history_failure;
-}
-
 NativeHostedRuntimeError NativeHostedDatabaseRuntime::ReadStartupCatalogs(CredentialRead& read,
     storage::database::NativeSelectedCheckpointMemoryLimits limits,
     const storage::database::NativeCatalogRelationMemoryLimits& requested_catalog_limits,
@@ -526,8 +309,6 @@ NativeHostedRuntimeError NativeHostedDatabaseRuntime::ReadStartupCatalogs(Creden
   auto& credential=*read.credentials_->comparison->lease;
   if(credential.has_selected_source()||!credential.has_retained_operation()||!read.publication_.ok())return E::custody_failure;
   if(!read.authentication_)return E::credential_failure;
-  if(!read.verification_history_.ok())return E::verification_history_failure;
-  if(!read.policy_activation_history_.ok())return E::policy_activation_history_failure;
   const auto& request=read.inputs_->request;
   if(!limits.maximum_backing_bytes||!limits.maximum_verification_image_bytes||
       limits.maximum_backing_bytes>request.checkpoint_limits.maximum_backing_bytes||
@@ -611,52 +392,9 @@ NativeHostedRuntimeError NativeHostedDatabaseRuntime::ReadStartupCatalogs(Creden
   if(cancelled())return E::cancelled;
   if(result==E::none&&capture_requested){
     read.session_.reset();
-    read.startup_transactions_={};read.startup_transaction_backing_={};
     read.verification_policies_={};read.management_definition_={};read.transaction_policies_={};read.catalog_metadata_={};read.catalog_capture_=std::move(capture);
   }
   read.catalogs_=inspection;read.catalog_backing_bytes_=limits.maximum_backing_bytes;return result;
-}
-
-NativeHostedRuntimeError NativeHostedDatabaseRuntime::InspectStartupTransactions(
-    CredentialRead& read,std::size_t maximum_backing_bytes) noexcept {
-  namespace db=storage::database;using E=NativeHostedRuntimeError;
-  read.CheckOwner();
-  if(read.mutating_||(read.owner_&&read.owner_->entering_))return E::busy;
-  if(!read.ok()||!read.owner_)return E::closed;
-  const auto& credential=*read.credentials_->comparison->lease;
-  if(credential.has_selected_source()||!credential.has_retained_operation()||!read.publication_.ok())return E::custody_failure;
-  if(!read.authentication_)return E::credential_failure;
-  if(!read.history_.ok())return E::history_failure;
-  if(!read.control_.ok())return E::control_failure;
-  if(!read.verification_history_.ok())return E::verification_history_failure;
-  if(!read.policy_activation_history_.ok())return E::policy_activation_history_failure;
-  const auto inventory=read.catalog_capture_.inventory();
-  if(!inventory)return E::catalog_failure;
-  const auto& request=read.inputs_->request;
-  if(!maximum_backing_bytes||maximum_backing_bytes>request.checkpoint_limits.maximum_backing_bytes)return E::invalid_request;
-  auto& self=*read.owner_;read.mutating_=true;self.entering_=true;
-  struct Leave {bool& reading;bool& hosting;~Leave(){reading=false;hosting=false;}} leave{read.mutating_,self.entering_};
-  const auto cancelled=[&]{return request.credential.stop.stop_requested()||request.source.stop.stop_requested();};
-  if(cancelled())return E::cancelled;
-  if(read.startup_transactions_.ok())return read.startup_transactions_.workspace_bytes<=maximum_backing_bytes?E::none:E::invalid_request;
-  const auto& config=*read.configuration_.configuration;
-  if(!self.process_->HasNativeDatabaseAllocationBehavior(self.database_,config.memory,config.memory_version_uuid))return E::memory_failure;
-  auto allocation=self.Acquire(maximum_backing_bytes,NativeBootstrapMemoryKind::storage);
-  if(!allocation.ok())return E::memory_failure;
-  auto adopted=db::AdoptNativeStorageMemory(StorageBinding(*allocation.admission.resource),allocation.admission.resource);
-  if(!adopted.ok())return E::memory_failure;
-  auto workspace=adopted.memory.CreateArena(adopted.memory.binding(),maximum_backing_bytes,alignof(std::max_align_t));
-  if(!workspace.ok())return E::memory_failure;
-  const auto backing=workspace.arena.Allocate(maximum_backing_bytes,alignof(std::max_align_t));
-  if(!backing.ok())return E::memory_failure;
-  auto result=engine::internal_api::InspectNativeStartupTransactionHistory(read.history_.history,
-      *read.catalog_capture_.selection(),inventory->inventory,*read.publication_.snapshot,
-      {static_cast<core::platform::byte*>(backing.pointer),maximum_backing_bytes});
-  if(cancelled())return E::cancelled;
-  read.startup_transactions_={};read.startup_transaction_backing_={};
-  if(result.ok())read.startup_transaction_backing_=std::move(workspace.arena);
-  read.startup_transactions_=result;
-  return result.ok()?E::none:E::startup_transaction_history_failure;
 }
 
 NativeHostedRuntimeError NativeHostedDatabaseRuntime::VerifyStartupCatalogMetadata(CredentialRead& read) noexcept {
@@ -667,10 +405,6 @@ NativeHostedRuntimeError NativeHostedDatabaseRuntime::VerifyStartupCatalogMetada
   auto& credential=*read.credentials_->comparison->lease;
   if(credential.has_selected_source()||!credential.has_retained_operation()||!read.publication_.ok())return E::custody_failure;
   if(!read.authentication_)return E::credential_failure;
-  if(!read.verification_history_.ok())return E::verification_history_failure;
-  if(!read.policy_activation_history_.ok())return E::policy_activation_history_failure;
-  if(!read.history_.ok())return E::history_failure;
-  if(!read.control_.ok())return E::control_failure;
   if(!read.catalogs_.ok()||!read.catalog_capture_.ok())return E::catalog_failure;
   auto& self=*read.owner_;const auto& request=read.inputs_->request;
   read.mutating_=true;self.entering_=true;
@@ -882,7 +616,6 @@ engine::internal_api::NativeLocalServiceSessionResult NativeHostedDatabaseRuntim
   const auto& credential=*read.credentials_->comparison->lease;
   if(credential.has_selected_source()||!credential.has_retained_operation()||!read.publication_.ok()||
       !read.catalog_capture_.ok()||!read.catalog_metadata_.ok())return {E::not_ready};
-  if(!read.startup_transactions_.ok())return {E::history_required};
   const auto policies=ResolveConfiguredStartupVerificationPolicies(read);
   if(policies!=NativeHostedRuntimeError::none){
     if(policies==NativeHostedRuntimeError::cancelled){read.session_.reset();return {E::cancelled};}

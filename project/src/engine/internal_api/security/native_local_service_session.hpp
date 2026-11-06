@@ -8,8 +8,7 @@
 namespace scratchbird::engine::internal_api {
 enum class NativeLocalServiceSessionError {
   none, not_ready, busy, source_mismatch, authorization_refused, identity_failure,
-  crypto_scope_unavailable, cancelled, resource_policy_required, policy_required,
-  history_required
+  crypto_scope_unavailable, cancelled, resource_policy_required, policy_required
 };
 // Reporting only. An identity cannot attach to this private service or be
 // submitted to an ordinary client/agent/SQL route as a security context.

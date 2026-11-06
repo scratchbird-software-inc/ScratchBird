@@ -13,9 +13,7 @@
 #include "engine/internal_api/security/native_local_service_authentication.hpp"
 #include "engine/internal_api/security/native_local_service_session.hpp"
 #include "engine/internal_api/catalog/native_catalog_metadata_verification.hpp"
-#include "engine/internal_api/verification/native_verification_history.hpp"
 #include "engine/internal_api/verification/native_verification_policy_selection.hpp"
-#include "engine/internal_api/security/native_policy_activation_history.hpp"
 #include "engine/internal_api/transaction/native_startup_transaction_history.hpp"
 #include "engine/internal_api/verification/native_startup_management_definition.hpp"
 #include "engine/internal_api/transaction/native_transaction_policy_selection.hpp"
@@ -36,9 +34,9 @@ enum class NativeHostedRuntimeError {
   crypto_failure, adoption_failure, preparation_failure, busy, closed,
   credential_failure, resource_exhausted, process_admission_failure, synchronization_failure,
   authorization_preparation_failure, authorization_failure, configuration_failure, agent_configuration_failure,
-  memory_envelope_failure, agent_policy_failure, history_failure, control_failure, cancelled, catalog_failure,
-  catalog_verification_failure, verification_history_failure, policy_activation_history_failure, verification_policy_failure,
-  startup_transaction_history_failure, management_definition_failure, transaction_policy_failure
+  memory_envelope_failure, agent_policy_failure, cancelled, catalog_failure,
+  catalog_verification_failure, verification_policy_failure,
+  management_definition_failure, transaction_policy_failure
 };
 enum class NativeAgentPolicyError {
   none, unavailable, registry_invalid, unknown_agent, invalid_property,
@@ -199,24 +197,16 @@ class NativeHostedDatabaseRuntime final {
           publication_memory_(std::move(other.publication_memory_)),
           publication_preparation_(std::move(other.publication_preparation_)),
           publication_(std::move(other.publication_)),credentials_(std::move(other.credentials_)),
-          history_memory_(std::move(other.history_memory_)),history_(std::move(other.history_)),
-          verification_history_(std::exchange(other.verification_history_,{})),
-          policy_activation_history_(std::exchange(other.policy_activation_history_,{})),
-          control_memory_(std::move(other.control_memory_)),control_(std::move(other.control_)),
           catalogs_(std::exchange(other.catalogs_,{})),catalog_backing_bytes_(other.catalog_backing_bytes_),
           catalog_capture_(std::move(other.catalog_capture_)),
           catalog_metadata_(std::exchange(other.catalog_metadata_,{})),
           verification_policies_(std::exchange(other.verification_policies_,{})),
           management_definition_(std::exchange(other.management_definition_,{})),
           transaction_policies_(std::exchange(other.transaction_policies_,{})),
-          startup_transaction_backing_(std::move(other.startup_transaction_backing_)),
-          startup_transactions_(std::exchange(other.startup_transactions_,{})),
           open_verification_(std::exchange(other.open_verification_,{})),
           authentication_(std::move(other.authentication_)),session_(std::move(other.session_)) {
       other.authorization_={};other.configuration_={};other.agents_={};other.agent_policies_={};
       other.session_.reset();other.authentication_.reset();
-      other.history_.history={};other.history_.writer_error=storage::database::NativeWriterError::invalid_operation;
-      other.control_.authority={};other.control_.writer_error=storage::database::NativeWriterError::invalid_operation;
       other.credentials_->selection={};other.error=NativeHostedRuntimeError::closed;
     }
     CredentialRead& operator=(CredentialRead&&) = delete;
@@ -256,20 +246,6 @@ class NativeHostedDatabaseRuntime final {
     std::optional<engine::internal_api::NativeLocalServiceSessionObservation> session() const noexcept {
       CheckOwner();return NativeHostedDatabaseRuntime::ObserveSession(*this);
     }
-    // Exact native management history, including retained canonical request
-    // bytes. This observation does not classify recovery or activate MGA.
-    const storage::database::NativeOwnedHistoryReadResult& history() const noexcept {
-      CheckOwner();return history_;
-    }
-    const engine::internal_api::NativeVerificationHistoryObservation& verification_history() const noexcept {
-      CheckOwner();return verification_history_;
-    }
-    const engine::internal_api::NativePolicyActivationHistoryObservation& policy_activation_history() const noexcept {
-      CheckOwner();return policy_activation_history_;
-    }
-    const storage::database::NativeOwnedControlReadResult& control() const noexcept {
-      CheckOwner();return control_;
-    }
     const storage::database::NativeCatalogCohortInspection& catalogs() const noexcept {
       CheckOwner();return catalogs_;
     }
@@ -281,9 +257,6 @@ class NativeHostedDatabaseRuntime final {
     }
     const engine::internal_api::NativeVerificationPolicyDeclarations& verification_policies() const noexcept {
       CheckOwner();return verification_policies_;
-    }
-    const engine::internal_api::NativeStartupTransactionHistoryObservation& startup_transactions() const noexcept {
-      CheckOwner();return startup_transactions_;
     }
     // The retained clean result of the read-only open verification, if any.
     const std::optional<NativeOpenVerificationObservation>& open_verification() const noexcept {
@@ -305,7 +278,6 @@ class NativeHostedDatabaseRuntime final {
       // them. Keep the original host pinned and busy through the last cleanup.
       error=NativeHostedRuntimeError::closed;authorization_={};configuration_={};agents_={};agent_policies_={};
       session_.reset();authentication_.reset();
-      startup_transactions_={};startup_transaction_backing_={};
       open_verification_.reset();
       catalogs_={};catalog_backing_bytes_=0;
       catalog_metadata_={};
@@ -313,10 +285,6 @@ class NativeHostedDatabaseRuntime final {
       management_definition_={};
       transaction_policies_={};
       catalog_capture_={};
-      control_.authority={};control_={};control_memory_={};
-      verification_history_={};
-      policy_activation_history_={};
-      history_.history={};history_={};history_memory_={};
       credentials_->selection={};
       publication_={};publication_preparation_.workspace={};publication_memory_={};
       credentials_->comparison.reset();
@@ -354,12 +322,6 @@ class NativeHostedDatabaseRuntime final {
     storage::database::NativeOwnedWatermarkPreparedResult publication_preparation_;
     storage::database::NativeOwnedWatermarkResult publication_;
     std::optional<NativeLocalServiceStartupCredentialsResult> credentials_{std::in_place};
-    storage::database::NativeStorageMemory history_memory_;
-    storage::database::NativeOwnedHistoryReadResult history_;
-    engine::internal_api::NativeVerificationHistoryObservation verification_history_;
-    engine::internal_api::NativePolicyActivationHistoryObservation policy_activation_history_;
-    storage::database::NativeStorageMemory control_memory_;
-    storage::database::NativeOwnedControlReadResult control_;
     storage::database::NativeCatalogCohortInspection catalogs_;
     std::size_t catalog_backing_bytes_=0;
     storage::database::NativeCatalogCapture catalog_capture_;
@@ -367,8 +329,6 @@ class NativeHostedDatabaseRuntime final {
     engine::internal_api::NativeVerificationPolicyDeclarations verification_policies_;
     engine::internal_api::NativeStartupManagementDefinition management_definition_;
     engine::internal_api::NativeTransactionPolicyDeclarations transaction_policies_;
-    storage::database::NativeStorageArena startup_transaction_backing_;
-    engine::internal_api::NativeStartupTransactionHistoryObservation startup_transactions_;
     std::optional<NativeOpenVerificationObservation> open_verification_;
     // Retire the engine decision before the credential generation, original
     // operation and governed grant views it borrows. No capability escapes.
@@ -390,29 +350,6 @@ class NativeHostedDatabaseRuntime final {
   // during retirement terminates before any custody transfer.
   static NativeHostedRuntimeError RetainStartupObservation(CredentialRead&) noexcept;
 
-  // Acquire the actual selected management history through the original
-  // writer after service authentication and resource-policy installation.
-  // It remains bound to the previously observed checkpoint and owning read.
-  // No raw file reopening, implicit repair, session attach or readiness.
-  static NativeHostedRuntimeError ReadStartupHistory(CredentialRead&,
-      storage::database::NativeManagementHistoryMemoryLimits) noexcept;
-
-  // Verify original control allocations, creator inventory outcomes and every
-  // selected publication against the authenticated, retained startup source.
-  static NativeHostedRuntimeError ReadStartupControl(CredentialRead&,
-      storage::database::NativeManagementControlAuthorityMemoryLimits) noexcept;
-
-  // Check retained verification-family revisions against their owning phase
-  // graph using installed database memory and original authenticated history.
-  // This observation neither resumes an operation nor declares a scan complete.
-  static NativeHostedRuntimeError VerifyStartupVerificationHistory(CredentialRead&,
-      std::size_t maximum_backing_bytes) noexcept;
-
-  // Check every persisted activation intent revision before interpreting policy
-  // catalogs. Completed management history alone cannot activate a policy.
-  static NativeHostedRuntimeError VerifyStartupPolicyActivationHistory(CredentialRead&,
-      std::size_t maximum_backing_bytes) noexcept;
-
   // Scan every declared native catalog role, its full navigation/base-leaf
   // coverage, metadata chains and committed row visibility. No full engine
   // startup-verification receipt or service admission is issued by this scan.
@@ -422,7 +359,7 @@ class NativeHostedDatabaseRuntime final {
       storage::database::NativeCatalogCaptureLimits={}) noexcept;
 
   // Engine-owned name and local namespace verification over the retained
-  // capture, after authenticated history/control inspection. Scratch uses the
+  // capture, after service authentication. Scratch uses the
   // installed database allocator; no physical guard or heap fallback is used
   // by the verifier. This component cannot admit agents or normal service.
   static NativeHostedRuntimeError VerifyStartupCatalogMetadata(CredentialRead&) noexcept;
@@ -439,10 +376,6 @@ class NativeHostedDatabaseRuntime final {
   static NativeHostedRuntimeError ResolveStartupManagementDefinition(CredentialRead&) noexcept;
   static NativeHostedRuntimeError ResolveStartupTransactionPolicies(CredentialRead&) noexcept;
 
-  // Match retained startup bindings to the actual selected inventory, including
-  // unresolved history and pending unselected reservations. This inspection
-  // cannot reconcile them or clear the owning startup fence.
-  static NativeHostedRuntimeError InspectStartupTransactions(CredentialRead&,std::size_t maximum_backing_bytes) noexcept;
 
   // Apply the selected database hard ceiling to the actual process ledger,
   // including already admitted bootstrap credit. Requires the original writer
