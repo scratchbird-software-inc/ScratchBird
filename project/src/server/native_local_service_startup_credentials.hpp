@@ -15,6 +15,7 @@ struct NativeLocalServiceStartupCredentialsRequest {
   NativeRuntimePrincipalCredentialRequest credential;
   StartupCredentialSource::Request source;
   storage::database::NativeSelectedCheckpointMemoryLimits checkpoint_limits;
+  NativeHostedReadSource read_source = NativeHostedReadSource::selected_checkpoint;
 };
 
 struct NativeLocalServiceStartupCredentialsResult {
@@ -83,20 +84,25 @@ inline NativeLocalServiceStartupCredentialsResult ReadNativeLocalServiceStartupC
   }
   if (cancelled()) { out.error = E::cancelled; return out; }
 
-  auto source = out.operation.ReadWithMemory(
-      request.checkpoint_limits, checkpoint_memory, checkpoint_binding);
-  out.writer_error = source.writer_error;
-  static_cast<storage::database::NativeOwnedSourceDiagnostics&>(out.checkpoint_source) =
-      std::move(static_cast<storage::database::NativeOwnedSourceDiagnostics&>(source));
-  if (!source.ok()) { out.error = E::checkpoint_source; return out; }
-  if (cancelled()) { out.error = E::cancelled; return out; }
-
-  out.comparison.emplace(VerifyNativeRuntimePrincipalCredential(
-      request.credential, source.lease, catalog_workspace, *material.lease, derived));
-  if (!out.comparison->ok()) { out.error = E::credential_verification; return out; }
-  out.selection = SelectNativeLocalServiceStartupDeclarations(*out.comparison->lease);
-  if (!out.selection.ok()) { out.error = E::declaration_selection; return out; }
-  out.error = E::none;
+  const auto compare = [&](auto source) {
+    out.writer_error = source.writer_error;
+    static_cast<storage::database::NativeOwnedSourceDiagnostics&>(out.checkpoint_source) =
+        std::move(static_cast<storage::database::NativeOwnedSourceDiagnostics&>(source));
+    if (!source.ok()) { out.error = E::checkpoint_source; return; }
+    if (cancelled()) { out.error = E::cancelled; return; }
+    out.comparison.emplace(VerifyNativeRuntimePrincipalCredential(
+        request.credential, source.lease, catalog_workspace, *material.lease, derived));
+    if (!out.comparison->ok()) { out.error = E::credential_verification; return; }
+    out.selection = SelectNativeLocalServiceStartupDeclarations(*out.comparison->lease);
+    if (!out.selection.ok()) { out.error = E::declaration_selection; return; }
+    out.error = E::none;
+  };
+  if (request.read_source == NativeHostedReadSource::fixed_root)
+    compare(out.operation.ReadFixedRootWithMemory(
+        {request.checkpoint_limits.maximum_verification_image_bytes, request.checkpoint_limits.maximum_backing_bytes},
+        checkpoint_memory, checkpoint_binding));
+  else
+    compare(out.operation.ReadWithMemory(request.checkpoint_limits, checkpoint_memory, checkpoint_binding));
   return out;
 }
 

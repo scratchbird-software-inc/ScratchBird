@@ -106,7 +106,7 @@ inline NativeLocalServiceStartupSelectionResult SelectNativeLocalServiceStartupD
     return fail(E::pack_binding_mismatch,provider.policy_pack_uuid);
   // Verify the actual native origin decisions; metadata visibility alone
   // does not prove that the family's separately retained origin committed.
-  const auto entries=credential.SelectedSource().selection().checkpoint_inventory.inventory.entries;
+  const auto entries=credential.SourceInventory();
   const auto committed=[&](const auto& record){
     const auto found=std::lower_bound(entries.begin(),entries.end(),record.origin_local_transaction_id,
         [](const auto& entry,auto number){return entry.identity.local_id.value<number;});

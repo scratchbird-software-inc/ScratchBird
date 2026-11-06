@@ -3,6 +3,9 @@
 #pragma once
 #include "api_types.hpp"
 #include "management/runtime_authority_binding.hpp"
+#include "native_fixed_root_memory_lease.hpp"
+#include "native_lease_read_source.hpp"
+#include <concepts>
 #include "catalog_security_record_codec.hpp"
 #include <limits>
 
@@ -93,9 +96,15 @@ struct NativeRuntimeSecurityObservationResult {
 };
 class NativeRuntimeSecurityPreparedMemory;
 struct NativeRuntimeSecurityPreparedResult;
-inline NativeRuntimeSecurityObservationResult ReadCommittedNativeRuntimeSecurityOnLease(
-    const storage::database::NativeSelectedCheckpointMemoryLease&,
-    const NativeRuntimeSecurityReadRequest&,NativeRuntimeSecurityPreparedMemory&) noexcept;
+// SB_NATIVE_FIXED_ROOT_READ: the security records read through either the
+// selected checkpoint or page zero's fixed roots (the catalog is kind 2).
+template<class Lease>
+concept NativeRuntimeSecurityLease =
+    std::same_as<Lease,storage::database::NativeSelectedCheckpointMemoryLease>||
+    std::same_as<Lease,storage::database::NativeFixedRootMemoryLease>;
+template<NativeRuntimeSecurityLease Lease>
+NativeRuntimeSecurityObservationResult ReadCommittedNativeRuntimeSecurityOnLease(
+    const Lease&,const NativeRuntimeSecurityReadRequest&,NativeRuntimeSecurityPreparedMemory&) noexcept;
 
 // Preparation allocates only from the real binary-bound retained storage grant,
 // before any device/source guard. No grant, epoch or security authority is issued.
@@ -115,9 +124,9 @@ class NativeRuntimeSecurityPreparedMemory {
       const storage::database::NativeCatalogRelationMemoryLimits&,
       storage::database::NativeStorageMemory&,
       const storage::database::NativeStorageMemoryBinding&) noexcept;
+  template<NativeRuntimeSecurityLease Lease>
   friend NativeRuntimeSecurityObservationResult ReadCommittedNativeRuntimeSecurityOnLease(
-      const storage::database::NativeSelectedCheckpointMemoryLease&,
-      const NativeRuntimeSecurityReadRequest&,NativeRuntimeSecurityPreparedMemory&) noexcept;
+      const Lease&,const NativeRuntimeSecurityReadRequest&,NativeRuntimeSecurityPreparedMemory&) noexcept;
 };
 inline core::platform::usize NativeRuntimeSecurityWorkspaceBytes(
     const storage::database::NativeCatalogRelationMemoryLimits& limits) noexcept {
@@ -168,19 +177,21 @@ inline NativeRuntimeSecurityPreparedResult PrepareNativeRuntimeSecurityRead(
   return out;
 }
 
+template<NativeRuntimeSecurityLease Lease>
 inline NativeRuntimeSecurityObservationResult ReadCommittedNativeRuntimeSecurityOnLease(
-    const storage::database::NativeSelectedCheckpointMemoryLease& source,
+    const Lease& source,
     const NativeRuntimeSecurityReadRequest& request,NativeRuntimeSecurityPreparedMemory& w) noexcept {
   namespace db=storage::database;namespace c=core::catalog;namespace mga=transaction::mga;
   using E=NativeRuntimeSecurityReadError;NativeRuntimeSecurityObservationResult out;
+  // Database, catalog root (kind 2) and inventory, the same for either source.
+  const auto view=db::detail::NativeLeaseSourceAccess::From(source);
   const auto fail=[&](E error){out.error=error;out.binding.reset();out.binding_version_uuid={};out.principal.reset();out.selected_catalog.reset();out.records={};};
   try {
     if((request.catalog_selection!=NativeRuntimeCatalogSelection::compare_expected&&
         request.catalog_selection!=NativeRuntimeCatalogSelection::discover_selected)||
         !core::uuid::IsEngineIdentityUuid(request.database_uuid)||
         !core::uuid::IsEngineIdentityUuid(request.runtime_binding_uuid)||!request.runtime_binding_generation||
-        !request.maximum_retained_image_bytes||!source.selection().checkpoint_inventory.checkpoint||
-        source.selection().checkpoint_inventory.checkpoint->header.database_uuid!=request.database_uuid)return out;
+        !request.maximum_retained_image_bytes||view.database_uuid!=request.database_uuid)return out;
     if(!w||w.arena_.binding().database_uuid!=request.database_uuid){fail(E::backing_unavailable);return out;}
     // Layout authority: kind2 role5 configuration; kind2 role4 security. The
     // lower reader derives both heads from the ACTUAL privately selected root
@@ -205,9 +216,8 @@ inline NativeRuntimeSecurityObservationResult ReadCommittedNativeRuntimeSecurity
     // for security. Do not infer any epoch from row birth/version numbers.
     const auto catalog_observation=[&](const auto& rows)
         ->std::optional<NativeRuntimeSelectedCatalogObservation>{
-      const auto targets=source.selection().checkpoint_inventory.checkpoint->roots;
-      const auto target=std::find_if(targets.begin(),targets.end(),[](const auto& r){return r.role==5;});
-      if(target==targets.end())return std::nullopt;
+      const auto* target=view.Root(2);
+      if(!target)return std::nullopt;
       const db::NativeReadCatalogRoot* found=nullptr;
       for(const auto& image:rows.source.roots.catalogs){
         const auto& r=image.root;const auto& h=r.header;const auto& p=target->page;
@@ -216,7 +226,13 @@ inline NativeRuntimeSecurityObservationResult ReadCommittedNativeRuntimeSecurity
         if(found)return std::nullopt;found=&r;
       }
       if(!found||!found->catalog_generation||!found->schema_epoch||!found->security_epoch)return std::nullopt;
-      return NativeRuntimeSelectedCatalogObservation{source.checkpoint(),found->object_uuid,
+      // The root the catalog was reached through: the selected checkpoint, or
+      // page zero's catalog root.
+      const auto anchor=[&]()->storage::disk::FilespaceRootReference{
+        if constexpr(std::same_as<Lease,db::NativeFixedRootMemoryLease>)return *source.Root(2);
+        else return source.checkpoint();
+      }();
+      return NativeRuntimeSelectedCatalogObservation{anchor,found->object_uuid,
           found->header.page_uuid,found->catalog_generation,found->schema_epoch,
           found->security_epoch,found->resource_epoch};
     };
@@ -260,7 +276,7 @@ inline NativeRuntimeSecurityObservationResult ReadCommittedNativeRuntimeSecurity
       out.expected_generation=selected_catalog->security_epoch;out.observed_generation=binding.security_epoch;
       fail(E::binding_security_epoch_mismatch);return out;
     }
-    const auto& inventory=source.selection().checkpoint_inventory.inventory.entries;
+    const auto& inventory=view.inventory->entries;
     const auto committed_origin=[&](core::platform::u64 local,const EngineUuid& identity){
       const auto entry=std::lower_bound(inventory.begin(),inventory.end(),local,
           [](const auto& e,core::platform::u64 n){return e.identity.local_id.value<n;});

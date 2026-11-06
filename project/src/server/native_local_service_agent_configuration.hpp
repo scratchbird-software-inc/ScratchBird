@@ -100,7 +100,7 @@ inline NativeLocalServiceAgentConfigurationResult SelectNativeLocalServiceAgentC
   };
   if (!credential.valid() || !credential.has_selected_source()) return out;
   const auto& selected = credential.selected_catalog();
-  const auto inventory = credential.SelectedSource().selection().checkpoint_inventory.inventory.entries;
+  const auto inventory = credential.SourceInventory();
   for (const auto& row : credential.configuration_) {
     const auto& m = row.metadata;
     if (!c::IsCatalogAgentBootstrapPayload(m.record.payload)) continue;

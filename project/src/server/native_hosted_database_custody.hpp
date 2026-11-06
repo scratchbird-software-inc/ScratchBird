@@ -19,6 +19,12 @@ enum class NativeHostedCustodyError {
 enum class NativeHostedCustodyStage { awaiting_transfer, writer_retained, writer_retired };
 class NativeHostedDatabaseCustody;
 struct NativeHostedCustodyBeginResult;
+// SB_TRANSITIONAL_HOSTED_SOURCE: the source the hosted startup chain reads
+// while the checkpoint layer is removed (drift removal C3b). One choice holds
+// for every stage of a runtime: an identity from one source never equals one
+// from the other. C3c makes page zero's fixed roots the only source and
+// deletes this choice. Not reachable from production configuration.
+enum class NativeHostedReadSource : std::uint8_t { selected_checkpoint, fixed_root };
 
 // Physical custody only, not an activated node, service session or BEGIN
 // permit. In particular writer close does NOT release the original route/OS

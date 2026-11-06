@@ -66,7 +66,7 @@ inline NativeLocalServiceStartupConfigurationResult SelectNativeLocalServiceStar
   const auto& declarations=*out.selection.declarations;
   const auto rows=credential.configuration_;
   const auto& catalog=credential.selected_catalog();
-  const auto entries=credential.SelectedSource().selection().checkpoint_inventory.inventory.entries;
+  const auto entries=credential.SourceInventory();
   const auto committed=[&](const auto& definition){
     const auto found=std::lower_bound(entries.begin(),entries.end(),definition.origin_local_transaction_id,
         [](const auto& e,auto n){return e.identity.local_id.value<n;});

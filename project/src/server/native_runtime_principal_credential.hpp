@@ -88,11 +88,25 @@ class NativeHostedDatabaseRuntime;
 // additionally retains its outer operation reservation; it exposes no mutable
 // devices and cannot be converted to the independent read-source alternative.
 // Hosted readers also pin the original server route owner for their lifetime.
+// SB_NATIVE_FIXED_ROOT_READ: or the same three over page zero's fixed roots.
 template<class Source>
 concept NativeRuntimeCredentialSource =
     std::same_as<Source, storage::database::NativeSelectedCheckpointMemoryHandle> ||
     std::same_as<Source, storage::database::NativeOwnedCheckpointWriter::ReadLease> ||
-    std::same_as<Source, NativeHostedDatabaseCustody::ReadLease>;
+    std::same_as<Source, NativeHostedDatabaseCustody::ReadLease> ||
+    std::same_as<Source, storage::database::NativeFixedRootMemoryHandle> ||
+    std::same_as<Source, storage::database::NativeOwnedCheckpointWriter::FixedRootReadLease> ||
+    std::same_as<Source, NativeHostedDatabaseCustody::FixedRootReadLease>;
+namespace native_credential_detail {
+// The lease a credential source holds, whichever kind it is.
+template<NativeRuntimeCredentialSource Source>
+const auto& Lease(const Source& source) noexcept {
+  if constexpr (std::same_as<Source, storage::database::NativeSelectedCheckpointMemoryHandle> ||
+                std::same_as<Source, storage::database::NativeFixedRootMemoryHandle>)
+    return *source;
+  else return source.source();
+}
+}  // namespace native_credential_detail
 inline NativeLocalServiceStartupSelectionResult SelectNativeLocalServiceStartupDeclarations(
     const NativeRuntimePrincipalCredentialLease&) noexcept;
 inline NativeLocalServiceStartupConfigurationResult SelectNativeLocalServiceStartupConfiguration(
@@ -149,7 +163,9 @@ class NativeRuntimePrincipalCredentialLease final {
     CheckAccess();
     if (retained_operation_) return retained_operation_.identity();
     return std::visit([](const auto& source) -> std::optional<core::platform::Uuid> {
-      if constexpr (std::same_as<std::decay_t<decltype(source)>, storage::database::NativeSelectedCheckpointMemoryHandle>)
+      using S = std::decay_t<decltype(source)>;
+      if constexpr (std::same_as<S, storage::database::NativeSelectedCheckpointMemoryHandle> ||
+                    std::same_as<S, storage::database::NativeFixedRootMemoryHandle>)
         return std::nullopt;
       else return source.operation_uuid();
     }, source_);
@@ -194,12 +210,15 @@ class NativeRuntimePrincipalCredentialLease final {
       NativeHostedDatabaseCustody::Operation& operation) noexcept {
     CheckAccess();
     if (retained_operation_) return !operation;
-    auto* hosted = std::get_if<NativeHostedDatabaseCustody::ReadLease>(&source_);
-    if (!hosted || !*hosted || !operation ||
-        hosted->operation_uuid() != operation.identity()) return false;
-    retained_operation_ = std::move(operation);
-    hosted->Reset();
-    return true;
+    if (!operation) return false;
+    const auto retain = [&](auto* hosted) {
+      if (!hosted || !*hosted || hosted->operation_uuid() != operation.identity()) return false;
+      retained_operation_ = std::move(operation);
+      hosted->Reset();
+      return true;
+    };
+    if (auto* hosted = std::get_if<NativeHostedDatabaseCustody::ReadLease>(&source_)) return retain(hosted);
+    return retain(std::get_if<NativeHostedDatabaseCustody::FixedRootReadLease>(&source_));
   }
   template<NativeRuntimeCredentialSource Source>
   friend NativeRuntimePrincipalCredentialResult VerifyNativeRuntimePrincipalCredential(
@@ -238,13 +257,12 @@ class NativeRuntimePrincipalCredentialLease final {
     if (process_ != CurrentProcess() || thread_ != std::this_thread::get_id()) std::terminate();
   }
   void CheckAccess() const noexcept { if (!valid()) std::terminate(); }
-  const storage::database::NativeSelectedCheckpointMemoryLease& SelectedSource() const noexcept {
+  // The committed transaction inventory of the retained source.
+  std::span<const transaction::mga::TransactionInventoryEntry> SourceInventory() const noexcept {
     CheckAccess();
     if (!has_selected_source()) std::terminate();
-    return std::visit([](const auto& source) -> const storage::database::NativeSelectedCheckpointMemoryLease& {
-      if constexpr (std::same_as<std::decay_t<decltype(source)>, storage::database::NativeSelectedCheckpointMemoryHandle>)
-        return *source;
-      else return source.source();
+    return std::visit([](const auto& source) -> std::span<const transaction::mga::TransactionInventoryEntry> {
+      return storage::database::detail::NativeLeaseSourceAccess::From(native_credential_detail::Lease(source)).inventory->entries;
     }, source_);
   }
   static NativeRuntimePrincipalCredentialPreparedMemory TakeWorkspace(NativeRuntimePrincipalCredentialLease& other) noexcept {
@@ -255,7 +273,10 @@ class NativeRuntimePrincipalCredentialLease final {
   NativeRuntimePrincipalCredentialPreparedMemory workspace_;
   std::variant<storage::database::NativeSelectedCheckpointMemoryHandle,
       storage::database::NativeOwnedCheckpointWriter::ReadLease,
-      NativeHostedDatabaseCustody::ReadLease> source_;
+      NativeHostedDatabaseCustody::ReadLease,
+      storage::database::NativeFixedRootMemoryHandle,
+      storage::database::NativeOwnedCheckpointWriter::FixedRootReadLease,
+      NativeHostedDatabaseCustody::FixedRootReadLease> source_;
   NativeHostedDatabaseCustody::Operation retained_operation_;
   StartupCredentialSource::Lease credential_;
   engine::internal_api::NativeRuntimeSecurityObservationResult observation_;
@@ -308,10 +329,7 @@ inline NativeRuntimePrincipalCredentialResult VerifyNativeRuntimePrincipalCreden
   const auto fail = [&](E error) { out.error = error; return std::move(out); };
   if (request.stop.stop_requested()) return fail(E::cancelled);
   if (!source || !workspace || !core::uuid::IsEngineIdentityUuid(request.security.database_uuid)) return out;
-  const auto& selected_source = [&]() -> const db::NativeSelectedCheckpointMemoryLease& {
-    if constexpr (std::same_as<Source, db::NativeSelectedCheckpointMemoryHandle>) return *source;
-    else return source.source();
-  }();
+  const auto& selected_source = native_credential_detail::Lease(source);
   const auto custody = credential.binding();
   if (!custody) return fail(E::credential_source_unavailable);
   if (!derived.valid() || derived.size() != 32 ||
@@ -381,7 +399,7 @@ inline NativeRuntimePrincipalCredentialResult VerifyNativeRuntimePrincipalCreden
     return fail(E::local_provider_required);
   // An imported default is not current provider activation. Preserve its exact
   // value in the comparison proof; actual admission decides activation later.
-  const auto& inventory = selected_source.selection().checkpoint_inventory.inventory.entries;
+  const auto inventory = db::detail::NativeLeaseSourceAccess::From(selected_source).inventory->entries;
   const auto origin = std::lower_bound(inventory.begin(), inventory.end(), provider.record->origin_local_transaction_id,
       [](const auto& e, auto id) { return e.identity.local_id.value < id; });
   if (origin == inventory.end() || origin->identity.local_id.value != provider.record->origin_local_transaction_id ||

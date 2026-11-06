@@ -377,7 +377,9 @@ void WriterCredentials(unsigned profile,bool indexed,int death_mode=0) {
       Check(next.ok()&&next.operation.identity()==Id(235),"only final reader retirement releases a reset external reservation");
     });}
 }
-void HostedCredentials(unsigned profile,bool indexed,bool compose=false) {
+// fixed: read through page zero's fixed roots instead of the selected
+// checkpoint (SB_TRANSITIONAL_HOSTED_SOURCE, drift removal C3b).
+void HostedCredentials(unsigned profile,bool indexed,bool compose=false,bool fixed=false) {
   using Host=server::NativeHostedDatabaseCustody;
   CredentialNativeFixture fixture(profile,indexed);
   const db::NativeCatalogRelationMemoryLimits limits{Profile(profile),1,16,64,64,{4,16*static_cast<std::size_t>(sizes[profile])}};
@@ -397,8 +399,13 @@ void HostedCredentials(unsigned profile,bool indexed,bool compose=false) {
       persistent.memory,persistent.binding,transient.memory,transient.binding).ok(),"host adopts full actual native checkpoint and original writer capability");
   auto operation=Host::TryBeginOperation(hosted.custody,Id(234));Check(operation.ok(),"hosted operation before credential inspection");
   CredentialCustody custody;
-  Host::ReadResult selected;
+  Host::ReadResult selected;Host::FixedRootReadResult fixed_root;
   auto result=[&]() -> CredentialResult {
+    if(!compose&&fixed){
+      fixed_root=operation.operation.ReadFixedRootWithMemory({fixture.budget,32*1024*1024},reading.memory,reading.binding);
+      Check(fixed_root.ok(),"actual hosted native fixed-root reader");
+      return Verify(fixture.Request(),fixed_root.lease,prepared.workspace,*custody.lease,custody.derived);
+    }
     if(!compose){
       selected=operation.operation.ReadWithMemory({fixture.budget,32*1024*1024},reading.memory,reading.binding);
       Check(selected.ok(),"actual hosted native selected reader");
@@ -415,6 +422,7 @@ void HostedCredentials(unsigned profile,bool indexed,bool compose=false) {
     request.source={Id(231),Id(235),7,
         server::StartupCredentialSource::Mutex::Clock::now()+std::chrono::seconds(10),{}};
     request.checkpoint_limits={fixture.budget,32*1024*1024};
+    if(fixed)request.read_source=server::NativeHostedReadSource::fixed_root;
     const auto call=[&](const auto& input){
       return server::ReadNativeLocalServiceStartupCredentials(input,std::move(operation.operation),
           prepared.workspace,reading.memory,reading.binding,custody.source,custody.manager,custody.tag,custody.derived);
@@ -448,8 +456,12 @@ void HostedCredentials(unsigned profile,bool indexed,bool compose=false) {
         "composed protected-source acquisition and native verification retain the same original hosted operation");
     return std::move(*composed.comparison);
   }();
-  Check(result.ok()&&!selected.lease&&!prepared.workspace&&!custody.lease->binding()&&Zero(custody.derived),
+  Check(result.ok()&&!selected.lease&&!fixed_root.lease&&!prepared.workspace&&!custody.lease->binding()&&Zero(custody.derived),
       "private native comparison consumes hosted reader without fabricating activation or rights");
+  // The catalog is reached through page zero's catalog root (kind 2) on the
+  // fixed-root source, through the selected checkpoint (kind 9) otherwise.
+  Check(result.lease->selected_catalog().checkpoint.kind==(fixed?2:9)&&result.lease->selected_catalog().catalog_generation>0,
+      "the catalog observation names the root it was reached through");
   const auto original_owner=std::weak_ptr(route.lock);const auto host_owner=std::weak_ptr(hosted.custody);
   operation.operation.Reset();hosted.custody.reset();route.lock.reset();
   Check(!original_owner.expired()&&!host_owner.expired()&&result.lease->writer_operation_uuid()==Id(234),
@@ -707,6 +719,8 @@ int CredentialMain(int argc,char** argv){
     for(unsigned profile=0;profile<5;++profile)for(bool indexed:{false,true})WriterCredentials(profile,indexed);
     for(unsigned profile=0;profile<5;++profile)for(bool indexed:{false,true})HostedCredentials(profile,indexed);
     for(unsigned profile=0;profile<5;++profile)for(bool indexed:{false,true})HostedCredentials(profile,indexed,true);
+    for(unsigned profile:{0u,4u})for(bool indexed:{false,true})for(bool compose:{false,true})
+      HostedCredentials(profile,indexed,compose,true);
     Refusals(*foreign);SelectionRefusals();PreparationFaults();});
   // No implicit process fallback: construct/read selected source under a real
   // database scope, then explicitly execute the gate without an active scope.
