@@ -44,8 +44,8 @@ struct NativeTransactionPolicyDeclarations {
   core::catalog::CatalogPolicyDescriptor evidence_descriptor;
   core::catalog::CatalogEvidencePolicyBody evidence;
   core::platform::Uuid evidence_descriptor_version_uuid,evidence_body_version_uuid;
-  std::optional<storage::database::NativeCheckpointSelection> selection;
-  bool ok()const noexcept{return error==NativeTransactionPolicyError::none&&selection.has_value();}
+  std::optional<storage::database::NativeReadSourceIdentity> source;
+  bool ok()const noexcept{return error==NativeTransactionPolicyError::none&&source.has_value();}
 };
 // Complete declaration closure from real selected rows. The host retains the
 // source, including borrowed profile/evidence text, until this observation ends.
@@ -72,7 +72,7 @@ inline NativeTransactionPolicyDeclarations ResolveNativeTransactionPolicyDeclara
     const auto at=std::lower_bound(order.begin(),order.end(),id,[&](auto i,const auto& value){return identity(i)<value;});
     return at==order.end()||identity(*at)!=id||rows[*at].row.metadata.record.header.deleted?nullptr:&rows[*at];
   };
-  const auto database=capture.selection()->header.database_uuid;
+  const auto database=capture.source()->database_uuid;
   const auto inventory=capture.inventory()->inventory;
   const auto active=[](const Row& r){return r.role==5&&!r.row.provisional&&!r.row.name_payload&&
       core::uuid::IsEngineIdentityUuid(r.row.version_uuid)&&!r.row.metadata.record.header.deleted&&
@@ -172,6 +172,6 @@ inline NativeTransactionPolicyDeclarations ResolveNativeTransactionPolicyDeclara
     return member.bootstrap.filespace_uuid==evidence.record->storage_filespace_uuid&&member.bootstrap.database_uuid==database;});
   if(storage==capture.filespaces().end())return fail(E::missing_filespace,evidence_id,evidence.record->storage_filespace_uuid);
   out.evidence=*evidence.record;out.evidence_body_version_uuid=evidence_row->row.version_uuid;
-  out.request=request;out.selection=capture.selection();out.error=E::none;return out;
+  out.request=request;out.source=capture.source();out.error=E::none;return out;
 }
 } // namespace scratchbird::engine::internal_api

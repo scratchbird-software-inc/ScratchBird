@@ -22,7 +22,7 @@ inline NativeStartupInitialControlCheck CheckNativeStartupInitialControlAllocati
   namespace db=storage::database;namespace disk=storage::disk;namespace page=storage::page;
   using E=NativeStartupInitialControlError;using Uuid=core::platform::Uuid;using u64=core::platform::u64;
   if(!capture.has_initial_controls()||!capture.has_physical_pages()||!chain.ok()||
-      capture.selection()->selection_generation!=1||capture.filespaces().size()!=1||identity.filespaces!=1||
+      capture.source()->source_generation!=1||capture.filespaces().size()!=1||identity.filespaces!=1||
       !identity.primary_root_count||identity.primary_root_count>identity.primary_roots.size())return {};
   const auto inventory=capture.inventory();
   if(!inventory||inventory->inventory.entries.size()!=1||
@@ -57,7 +57,7 @@ inline NativeStartupInitialControlCheck CheckNativeStartupInitialControlAllocati
   std::size_t count=0;
   for(const auto& image:chain.pages){const auto& map=image.map;
     if(map.header.filespace_uuid!=identity.primary_filespace_uuid||map.header.page_size_profile_uuid!=identity.primary_profile_uuid||
-        map.header.database_uuid!=capture.selection()->header.database_uuid)return {E::invalid_record};
+        map.header.database_uuid!=capture.source()->database_uuid)return {E::invalid_record};
     for(const auto& record:map.records){
       if(!record.creator_operation_uuid.is_nil())continue;
       if(record.creator_transaction_uuid!=creator.transaction_uuid.value||record.creator_local_transaction_id!=creator.local_id.value||

@@ -22,13 +22,13 @@ struct NativeCatalogCohortInspection {
   NativeCatalogRootsLeaseError root_error=NativeCatalogRootsLeaseError::none;
   NativePinnedCatalogReadError visibility_error=NativePinnedCatalogReadError::none;
   NativeCatalogRelationLeaseError relation_error=NativeCatalogRelationLeaseError::none;
-  std::optional<NativeCheckpointSelection> selection;
+  std::optional<NativeReadSourceIdentity> source;
   std::array<NativeCatalogRelationInspection,12> relations{};
   usize relation_count=0;
   u16 failing_selector=0,failing_role=0;
   Uuid unresolved_transaction_uuid;
   u64 unresolved_local_transaction_id=0,physical_bytes_read=0,verified_image_bytes=0;
-  bool ok() const noexcept{return error==NativeCatalogCohortError::none&&selection.has_value();}
+  bool ok() const noexcept{return error==NativeCatalogCohortError::none&&source.has_value();}
 };
 struct NativeCatalogCohortPreparedMemory {
   NativeCatalogRootsPreparedMemory roots;
@@ -77,7 +77,7 @@ class NativeCatalogCohortLeaseReader {
       u64 maximum_image_bytes,NativeCatalogCohortPreparedMemory& workspace,NativeCatalogCapture* capture=nullptr) noexcept {
     using E=NativeCatalogCohortError;NativeCatalogCohortInspection out;
     if(capture)capture->Begin();
-    const auto fail=[&](E error){out.error=error;out.selection.reset();out.relations={};out.relation_count=0;
+    const auto fail=[&](E error){out.error=error;out.source.reset();out.relations={};out.relation_count=0;
       if(capture)capture->Begin();return out;};
     if(!workspace||source.retained_image_bytes()>=maximum_image_bytes)return fail(E::invalid_request);
     if(capture&&(!*capture||capture->arena_.binding().database_uuid!=source.selection().selection->header.database_uuid))
@@ -142,7 +142,8 @@ class NativeCatalogCohortLeaseReader {
             read.source.relation.index_dependencies}))return fail(E::resource_exhausted);
       }
     }
-    out.failing_selector=out.failing_role=0;out.selection=source.selection().selection;
+    out.failing_selector=out.failing_role=0;out.source.reset();
+    if(source.selection().selection)out.source=NativeReadSourceIdentityFromSelection(*source.selection().selection);
     if(capture){
       // Preserve the actual selected directory with the same immutable source
       // as the catalog rows. No current device or caller-supplied manifest is
@@ -181,7 +182,7 @@ class NativeCatalogCohortLeaseReader {
             (a.header.filespace_uuid==b.header.filespace_uuid&&a.header.page_number<b.header.page_number);});
         capture->initial_controls_complete_=true;
       }
-      capture->selection_=out.selection;
+      capture->source_=out.source;
     }
     out.error=E::none;return out;
   }

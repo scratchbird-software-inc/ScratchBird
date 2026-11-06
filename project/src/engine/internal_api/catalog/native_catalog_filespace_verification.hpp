@@ -39,14 +39,14 @@ inline NativeCatalogFilespaceVerification VerifyNativeCatalogFilespaces(
         h.parent_uuid.value!=database_object||!m.owning_schema_uuid.value.is_nil())
       return fail(E::invalid_manifest,h.object_uuid.value);
     const auto& manifest=*decoded.record;const auto id=manifest.filespace_uuid.value;
-    if(manifest.database_uuid.value!=capture.selection()->header.database_uuid)
+    if(manifest.database_uuid.value!=capture.source()->database_uuid)
       return fail(E::database_binding,h.object_uuid.value,id);
     const auto at=std::lower_bound(members.begin(),members.end(),id,
         [](const auto& member,const auto& value){return member.bootstrap.filespace_uuid<value;});
     if(at==members.end()||at->bootstrap.filespace_uuid!=id)return fail(E::unknown_filespace,h.object_uuid.value,id);
     const auto index=static_cast<std::size_t>(at-members.begin());
     if(workspace[index])return fail(E::duplicate_filespace,h.object_uuid.value,id);
-    const bool primary=id==capture.selection()->header.filespace_uuid;
+    const bool primary=id==capture.source()->filespace_uuid;
     if(manifest.filespace_role!=at->bootstrap.filespace_role||manifest.state!=at->bootstrap.lifecycle_state||
         manifest.first_filespace!=primary||(primary&&(!manifest.startup_authority||
           !manifest.catalog_persistence_owner||!manifest.filespace_manifest_owner||!manifest.recovery_evidence_owner)))

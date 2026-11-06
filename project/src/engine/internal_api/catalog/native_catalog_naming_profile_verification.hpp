@@ -52,7 +52,7 @@ inline NativeCatalogNamingProfileVerification VerifyNativeCatalogNamingProfileRe
     const auto& m=row.row.metadata;
     return m.status==c::CatalogObjectStatus::active&&m.lifecycle==c::CatalogObjectLifecycle::active;
   };
-  const auto db=capture.selection()->header.database_uuid;
+  const auto db=capture.source()->database_uuid;
   const auto identifier=[&](const storage::database::NativeCapturedCatalogRow& row){
     return row.role==5&&!row.row.provisional&&row.row.metadata.record.header.kind==K::config_profile&&
         row.row.metadata.object_subtype=="identifier_resolution_profile"&&

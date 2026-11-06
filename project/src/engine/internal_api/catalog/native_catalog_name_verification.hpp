@@ -60,7 +60,7 @@ inline NativeCatalogNameVerification VerifyNativeCatalogNameBindings(
       // This registered immutable evidence family has no aliases. Nullable
       // names alone never exempt an ordinary catalog definition from lookup.
       if(m.object_subtype=="node_construction_intent"||c::IsCatalogConstructionIntentPayload(m.record.payload)){
-        if(captured.role!=6||!c::CatalogConstructionIntentMatchesDatabase(m,capture.selection()->header.database_uuid))
+        if(captured.role!=6||!c::CatalogConstructionIntentMatchesDatabase(m,capture.source()->database_uuid))
           return fail(E::invalid_unnamed_event,id);
         continue;
       }

@@ -48,7 +48,7 @@ inline NativeCatalogAuditVerification VerifyNativeCatalogAuditReferences(
     if(m.record.header.kind==c::CatalogRecordKind::audit_evidence){
       if(m.object_subtype!="node_construction_intent"||!c::IsCatalogConstructionIntentPayload(m.record.payload))
         return fail(E::unsupported_event,id);
-      if(captured.role!=6||row.name_payload||!c::CatalogConstructionIntentMatchesDatabase(m,capture.selection()->header.database_uuid))
+      if(captured.role!=6||row.name_payload||!c::CatalogConstructionIntentMatchesDatabase(m,capture.source()->database_uuid))
         return fail(E::invalid_event,id);
       const auto event=c::DecodeCatalogConstructionIntent(m.record.payload);
       const auto member=std::find_if(capture.filespaces().begin(),capture.filespaces().end(),[&](const auto& file){
@@ -66,7 +66,7 @@ inline NativeCatalogAuditVerification VerifyNativeCatalogAuditReferences(
       return fail(E::invalid_event,id,m.audit_uuid.value);
     if(evidence.object_subtype!="node_construction_intent"||!c::IsCatalogConstructionIntentPayload(evidence.record.payload))
       return fail(E::unsupported_event,id,m.audit_uuid.value);
-    if(!c::CatalogConstructionIntentMatchesDatabase(evidence,capture.selection()->header.database_uuid))
+    if(!c::CatalogConstructionIntentMatchesDatabase(evidence,capture.source()->database_uuid))
       return fail(E::invalid_event,id,m.audit_uuid.value);
     const auto event=c::DecodeCatalogConstructionIntent(evidence.record.payload);
     // The event can be preserved under subsequent admitted metadata versions.

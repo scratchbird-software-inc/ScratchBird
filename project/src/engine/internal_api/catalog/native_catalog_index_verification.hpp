@@ -32,8 +32,8 @@ inline NativeCatalogIndexVerification VerifyNativeCatalogIndexBindings(
   NativeCatalogIndexVerification out;
   const auto fail=[&](E error,core::platform::u16 role,const Uuid& reference){
     out.error=error;out.role=role;out.referenced_uuid=reference;out.indexed_relations=0;return out;};
-  if(!capture.ok()||!capture.selection())return out;
-  const auto database=capture.selection()->header.database_uuid;
+  if(!capture.ok()||!capture.source())return out;
+  const auto database=capture.source()->database_uuid;
   const auto rows=capture.rows();
   // A live definition with this identity. Name rows never carry these families.
   const auto find=[&](const Uuid& id)->const storage::database::NativeCatalogVisibleRow*{

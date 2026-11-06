@@ -3,6 +3,7 @@
 #pragma once
 #include "native_common_page_header.hpp"
 #include "database_dirty_manifest.hpp"
+#include "native_read_source_identity.hpp"
 #include <array>
 #include <optional>
 #include <span>
@@ -116,4 +117,23 @@ struct NativeBoundCheckpointSelectionDeviceRead {
 NativeBoundCheckpointSelectionDeviceRead ReadNativeBoundCheckpointSelectionInto(
     const Uuid&,std::span<const disk::NativeFilespaceDevice>,const Uuid&,u64,
     std::span<disk::FileDevice::ReadLatencyBatch* const>,std::span<byte>) noexcept;
+// SB_TRANSITIONAL_SELECTION_KEY: the selected-checkpoint fill of the neutral
+// source identity. Every field the selections' own comparison covered is
+// carried, so two identities are equal exactly when their selections are
+// (plus page size and kind, which are fixed for one filespace). Deleted with
+// this layer.
+inline NativeReadSourceIdentity NativeReadSourceIdentityFromSelection(const NativeCheckpointSelection& s) noexcept {
+  NativeReadSourceIdentity out;
+  out.kind=NativeReadSourceKind::selected_checkpoint;
+  out.database_uuid=s.header.database_uuid;out.filespace_uuid=s.header.filespace_uuid;
+  out.page_size_bytes=s.header.page_size_bytes;out.root_set_uuid=s.checkpoint_object_uuid;
+  out.source_generation=s.selection_generation;out.root_set_generation=s.checkpoint_generation;
+  auto& k=out.transitional_selection_key;
+  k.selector_object_uuid=s.object_uuid;k.bootstrap_uuid=s.bootstrap_uuid;k.publication_uuid=s.publication_uuid;
+  k.checkpoint=s.checkpoint;k.checkpoint_sha256=s.checkpoint_sha256;
+  k.selected_root_set_generation=s.root_set_generation;k.timeline_uuid=s.timeline_uuid;
+  k.previous_selection_generation=s.previous_selection_generation;k.previous_checkpoint=s.previous_checkpoint;
+  k.previous_checkpoint_object_uuid=s.previous_checkpoint_object_uuid;k.previous_checkpoint_sha256=s.previous_checkpoint_sha256;
+  return out;
+}
 }  // namespace scratchbird::storage::database

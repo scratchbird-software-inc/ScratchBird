@@ -60,7 +60,7 @@ inline NativeCatalogCollisionVerification VerifyNativeCatalogNamingCollisions(
     return m.object_subtype=="naming_collision_policy_body"||c::IsCatalogNamingCollisionPolicyPayload(m.record.payload);
   };
   const auto active=[](const c::CatalogMetadataVersionView& m){return m.status==c::CatalogObjectStatus::active&&m.lifecycle==c::CatalogObjectLifecycle::active;};
-  const auto database=capture.selection()->header.database_uuid;
+  const auto database=capture.source()->database_uuid;
   for(std::size_t i=0;i<count;++i){
     const auto& m=rows[i].row.metadata;if(rows[i].row.provisional)return fail(E::provisional_row,identity(i));
     if(m.record.header.deleted||!body_family(m))continue;

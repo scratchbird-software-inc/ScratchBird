@@ -397,7 +397,32 @@ void Test(){
   std::cout<<"pair allocations="<<count<<" checks="<<checks<<" image_only=true\n";
 }
 }
-int main(){try{Test();
+// The neutral source identity filled from a selection carries every field the
+// selections' own comparison covered: changing any one gives an unequal identity.
+void SourceIdentityTest(){
+  const auto base=Next(Example());const auto id=db::NativeReadSourceIdentityFromSelection(base);
+  Check(id.kind==db::NativeReadSourceKind::selected_checkpoint&&id.database_uuid==base.header.database_uuid&&
+      id.filespace_uuid==base.header.filespace_uuid&&id.page_size_bytes==base.header.page_size_bytes&&
+      id.root_set_uuid==base.checkpoint_object_uuid&&id.source_generation==base.selection_generation&&
+      id.root_set_generation==base.checkpoint_generation,"selected identity maps the neutral fields");
+  Check(db::SameReadSource(id,db::NativeReadSourceIdentityFromSelection(base)),"equal selections give equal identities");
+  Check(db::SameReadSource(id,db::NativeReadSourceIdentityFromSelection(Other(base))),
+      "the other selector slot holding the same selection is the same source");
+  Check(!db::SameReadSource(id,db::NativeReadSourceIdentity{}),"an empty identity is never the selected source");
+  for(unsigned field=0;field<18;++field){auto s=base;
+    switch(field){
+      case 0:s.header.database_uuid=Id(200);break;case 1:s.header.filespace_uuid=Id(200);break;
+      case 2:s.object_uuid=Id(200);break;case 3:s.bootstrap_uuid=Id(200);break;case 4:s.publication_uuid=Id(200);break;
+      case 5:++s.selection_generation;break;case 6:++s.checkpoint.page_number;break;
+      case 7:s.checkpoint_object_uuid=Id(200);break;case 8:++s.checkpoint_sha256[0];break;
+      case 9:++s.checkpoint_generation;break;case 10:++s.root_set_generation;break;case 11:s.timeline_uuid=Id(200);break;
+      case 12:++s.previous_selection_generation;break;case 13:s.previous_checkpoint.reset();break;
+      case 14:s.previous_checkpoint_object_uuid=Id(200);break;case 15:++s.previous_checkpoint_sha256[0];break;
+      case 16:s.checkpoint.page_size_profile_uuid=Id(200);break;case 17:++s.previous_checkpoint->page_generation;break;}
+    Check(!db::SameReadSource(id,db::NativeReadSourceIdentityFromSelection(s)),"every compared selection field reaches the identity");
+  }
+}
+int main(){try{Test();SourceIdentityTest();
 #if defined(SB_NATIVE_SELECTOR_MEMORY_TESTS)
 MemoryTest();std::cout<<"governed selector checks="<<checks<<'\n';
 #endif

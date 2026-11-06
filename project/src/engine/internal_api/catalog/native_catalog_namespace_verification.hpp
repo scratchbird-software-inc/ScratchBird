@@ -61,8 +61,8 @@ inline NativeCatalogNamespaceVerification VerifyNativeCatalogNamespaces(
     if(database!=SIZE_MAX)return fail(E::duplicate_database,identity(i),identity(database));
     const auto decoded=c::DecodeCatalogDatabaseRecord(m.record.payload);
     if(rows[i].role!=1||!decoded.ok()||
-        decoded.record->database_uuid.value!=capture.selection()->header.database_uuid||
-        decoded.record->page_size!=capture.selection()->header.page_size_bytes||
+        decoded.record->database_uuid.value!=capture.source()->database_uuid||
+        decoded.record->page_size!=capture.source()->page_size_bytes||
         !m.record.header.parent_uuid.value.is_nil()||!m.owning_schema_uuid.value.is_nil())
       return fail(E::database_binding,identity(i));
     database=i;

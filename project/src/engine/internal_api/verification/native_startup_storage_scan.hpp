@@ -1,7 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
-#include "native_checkpoint_selection.hpp"
+#include "native_read_source_identity.hpp"
 #include "transaction/mga/transaction_horizon.hpp"
 
 namespace scratchbird::engine::internal_api {
@@ -9,7 +9,7 @@ namespace scratchbird::engine::internal_api {
 // allocation chains and inventory. These observations cannot grant custody,
 // advance a phase, release a retention boundary or confer readiness.
 struct NativeStartupStorageScanObservation {
-  storage::database::NativeCheckpointSelection selection;
+  storage::database::NativeReadSourceIdentity source;
   core::platform::u64 filespaces=0,allocation_pages=0,capacity_pages=0;
   core::platform::u64 catalog_pages=0;
   core::platform::u64 initial_control_pages=0;
@@ -23,7 +23,7 @@ struct NativeStartupStorageScanObservation {
 // same actual catalog relations already traversed under the retained snapshot.
 // This observation is one catalog component, not complete reference closure.
 struct NativeStartupCatalogRouteObservation {
-  storage::database::NativeCheckpointSelection selection;
+  storage::database::NativeReadSourceIdentity source;
   core::platform::u64 routes=0,physical_bytes_read=0;
 };
 } // namespace scratchbird::engine::internal_api

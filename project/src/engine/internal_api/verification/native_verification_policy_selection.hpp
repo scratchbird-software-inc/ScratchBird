@@ -34,8 +34,8 @@ struct NativeVerificationPolicyDeclarations {
   core::catalog::CatalogPolicyDescriptor evidence_descriptor,access_descriptor;
   core::catalog::CatalogEvidencePolicyBody evidence;
   core::catalog::CatalogAuthorizationPolicyBody access_body;
-  std::optional<storage::database::NativeCheckpointSelection> selection;
-  bool ok() const noexcept{return error==NativeVerificationPolicyError::none&&selection.has_value();}
+  std::optional<storage::database::NativeReadSourceIdentity> source;
+  bool ok() const noexcept{return error==NativeVerificationPolicyError::none&&source.has_value();}
 };
 // Resolve declarations from the actual captured, MGA-visible catalog. Evidence
 // text borrows the capture. The owner must retain it and the original source.
@@ -75,7 +75,7 @@ inline NativeVerificationPolicyDeclarations ResolveNativeVerificationPolicyDecla
     const auto at=std::lower_bound(order.begin(),order.end(),id,[&](auto i,const auto& value){return identity(i)<value;});
     return at==order.end()||identity(*at)!=id||rows[*at].row.metadata.record.header.deleted?nullptr:&rows[*at];
   };
-  const auto database=capture.selection()->header.database_uuid;
+  const auto database=capture.source()->database_uuid;
   const auto active=[](const storage::database::NativeCapturedCatalogRow& row){
     return row.row.effective_lifecycle==c::CatalogObjectLifecycle::active&&
         row.row.effective_status==c::CatalogObjectStatus::active;
@@ -162,6 +162,6 @@ inline NativeVerificationPolicyDeclarations ResolveNativeVerificationPolicyDecla
     if(!declared.ok()||declared.record->database_uuid.value!=database)
       return fail(E::access_schema_binding,access_body_id,schemas[i]);
   }
-  out.request=request;out.selection=capture.selection();out.error=E::none;return out;
+  out.request=request;out.source=capture.source();out.error=E::none;return out;
 }
 } // namespace scratchbird::engine::internal_api

@@ -25,8 +25,8 @@ struct NativeCatalogMetadataVerification {
   NativeCatalogSecurityReferenceVerification security;
   NativeCatalogNamingProfileVerification naming_profiles;
   NativeCatalogCollisionVerification collisions;
-  std::optional<storage::database::NativeCheckpointSelection> selection;
-  bool ok() const noexcept{return selection.has_value()&&names.ok()&&indexes.ok()&&namespaces.ok()&&filespaces.ok()&&audit.ok()&&security.ok()&&naming_profiles.ok()&&collisions.ok();}
+  std::optional<storage::database::NativeReadSourceIdentity> source;
+  bool ok() const noexcept{return source.has_value()&&names.ok()&&indexes.ok()&&namespaces.ok()&&filespaces.ok()&&audit.ok()&&security.ok()&&naming_profiles.ok()&&collisions.ok();}
 };
 inline NativeCatalogMetadataVerification VerifyNativeCatalogMetadata(
     const storage::database::NativeCatalogCapture& capture,NativeCatalogNamespaceWorkspace workspace) noexcept {
@@ -46,7 +46,7 @@ inline NativeCatalogMetadataVerification VerifyNativeCatalogMetadata(
   out.naming_profiles=VerifyNativeCatalogNamingProfileReferences(capture,workspace.order);
   if(!out.naming_profiles.ok())return out;
   out.collisions=VerifyNativeCatalogNamingCollisions(capture,workspace);
-  if(out.collisions.ok())out.selection=capture.selection();
+  if(out.collisions.ok())out.source=capture.source();
   return out;
 }
 } // namespace scratchbird::engine::internal_api

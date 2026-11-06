@@ -1,7 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
-#include "native_checkpoint_selection.hpp"
+#include "native_read_source_identity.hpp"
 #include "native_system_state.hpp"
 #include "engine/internal_api/transaction/native_startup_lifetime.hpp"
 
@@ -13,7 +13,7 @@ enum class NativeStartupIdentityError {
 // Actual first-stage scan observation. This is neither full verification nor
 // admission: only the private startup owner can retain and consume the proof.
 struct NativeStartupStorageIdentityObservation {
-  storage::database::NativeCheckpointSelection selection;
+  storage::database::NativeReadSourceIdentity source;
   storage::database::NativeSystemState system_state;
   core::platform::Uuid transaction_uuid,snapshot_uuid;
   core::platform::Uuid primary_filespace_uuid,primary_page_uuid,primary_profile_uuid;

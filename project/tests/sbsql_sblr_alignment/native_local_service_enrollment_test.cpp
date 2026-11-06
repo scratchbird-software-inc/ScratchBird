@@ -2225,7 +2225,7 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
                   <<" visibility="<<int(read.catalogs().visibility_error)<<" relation="<<int(read.catalogs().relation_error)
                   <<" role="<<read.catalogs().failing_role<<" profile="<<profile<<'\n';
               Check(catalog_read==server::NativeHostedRuntimeError::none&&read.catalogs().ok()&&reads>0&&
-                  read.catalogs().relation_count==6&&read.catalogs().selection->checkpoint_sha256==read.publication().snapshot->selection.checkpoint_sha256,
+                  read.catalogs().relation_count==6&&read.catalogs().source->transitional_selection_key.checkpoint_sha256==read.publication().snapshot->selection.checkpoint_sha256,
                   "actual startup scan covers every catalog role, metadata chain and committed visibility on original custody");
               for(std::size_t i=0;i<expected_catalog_rows.size();++i){
                 const auto& relation=read.catalogs().relations[i];
@@ -2274,7 +2274,7 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
               const auto captured=Host::ReadStartupCatalogs(read,catalog_limits,catalog_scan_limits,capture_limits);
               Check(captured==server::NativeHostedRuntimeError::none&&read.catalog_capture().ok()&&
                   read.catalog_capture().rows().size()==expected_catalog_bytes.size()&&
-                  read.catalog_capture().selection()->checkpoint_sha256==read.publication().snapshot->selection.checkpoint_sha256,
+                  read.catalog_capture().source()->transitional_selection_key.checkpoint_sha256==read.publication().snapshot->selection.checkpoint_sha256,
                   "actual source-fenced catalog rows retain independent admitted backing after reader retirement");
               const auto captured_inventory=read.catalog_capture().inventory();
               std::size_t physical_count=1; // Master/feature root is one actual shared page here.
@@ -2491,7 +2491,7 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
               track_reads=false;
               if(!name_variant&&!index_variant&&!namespace_variant&&!filespace_variant&&!audit_variant&&!reference_variant&&!naming_profile_variant&&ExpectedCollisionError(collision_variant)==CE::none){
                 Check(metadata==server::NativeHostedRuntimeError::none&&read.catalog_metadata().ok()&&!reads&&
-                    read.catalog_metadata().selection->checkpoint_sha256==read.catalog_capture().selection()->checkpoint_sha256,
+                    read.catalog_metadata().source->transitional_selection_key.checkpoint_sha256==read.catalog_capture().source()->transitional_selection_key.checkpoint_sha256,
                     "native host invokes the engine verifier under its installed memory policy on the retained exact source");
                 allocation_budget=0;
                 const auto cached_metadata=Host::VerifyStartupCatalogMetadata(read);
@@ -2503,7 +2503,7 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
                 const auto management_heap=allocation_budget;allocation_budget=-1;
                 Check(management_heap==0&&management.error==ExpectedManagementError(management_variant),
                     "engine resolves real native management descriptor and every exact registered profile without allocation");
-                if(management_variant)Check(!management.selection&&management.descriptor_version_uuid.is_nil(),
+                if(management_variant)Check(!management.source&&management.descriptor_version_uuid.is_nil(),
                     "failed management closure exposes no partial selected descriptor");
                 else Check(management.descriptor.descriptor_uuid==security_fixture::Id(95020)&&
                     management.profiles[9].code==catalog::CatalogManagementProfileCode::verify_start_conformance&&
@@ -2530,7 +2530,7 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
                 const auto selection_heap=allocation_budget;allocation_budget=-1;
                 Check(selection_heap==0&&selected_policies.error==ExpectedVerificationPolicyError(verification_policy_variant),
                     "engine resolves exact native policy bodies and all selected verification/evidence references without allocation");
-                if(ExpectedVerificationPolicyError(verification_policy_variant)!=VerificationPolicyError::none)Check(!selected_policies.ok()&&!selected_policies.selection&&
+                if(ExpectedVerificationPolicyError(verification_policy_variant)!=VerificationPolicyError::none)Check(!selected_policies.ok()&&!selected_policies.source&&
                     selected_policies.evidence.body_uuid.is_nil()&&selected_policies.bodies[0].body_uuid.is_nil(),
                     "failed policy reference closure exposes no partially selected body or source");
                 else {
@@ -2591,8 +2591,8 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
                       session->database_uuid==Id(1)&&session->principal_uuid==authenticated.observation.principal_uuid&&
                       session->original_operation_uuid==operation_uuid&&
                       session->clock_policy_uuid==clock.policy_uuid&&session->clock_policy_version_uuid==clock.version_uuid&&
-                      runtime_security::native_startup_transaction_history_detail::SameSelection(
-                        session->source,*read.catalog_capture().selection()),
+                      scratchbird::storage::database::SameReadSource(
+                        session->source,*read.catalog_capture().source()),
                       "private native service session binds actual authentication and complete selected source");
                   allocation_budget=0;const auto cached=Host::AttachStartupServiceSession(read);
                   const auto session_heap=allocation_budget;allocation_budget=-1;
@@ -2629,7 +2629,7 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
                     auto stale=transaction_request;++stale.policy_pack_generation;
                     Check(runtime_security::ResolveNativeTransactionPolicyDeclarations(read.catalog_capture(),stale,name_workspace).error==TPE::invalid_pack,
                         "actual pack generation cannot be guessed or substituted");
-                  }else Check(!transaction.ok()&&!transaction.selection,"a failed declaration closure exposes no selected receipt");
+                  }else Check(!transaction.ok()&&!transaction.source,"a failed declaration closure exposes no selected receipt");
                   allocation_budget=0;const auto no_transaction_memory=Host::ResolveStartupTransactionPolicies(read);allocation_budget=-1;
                   Check(no_transaction_memory==server::NativeHostedRuntimeError::memory_failure&&!read.transaction_policies().ok(),
                       "transaction selection uses actual installed database allocator backing");
@@ -2651,7 +2651,7 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
                       read.verification_policies().request==policy_request,"cached selection cannot silently change requested verification levels");
                 }
               }else Check(metadata==server::NativeHostedRuntimeError::catalog_verification_failure&&!read.catalog_metadata().ok()&&
-                  !read.catalog_metadata().selection&&!reads&&
+                  !read.catalog_metadata().source&&!reads&&
                   (name_variant?read.catalog_metadata().names.error==names.error:
                     index_variant?read.catalog_metadata().indexes.error==ExpectedIndexError(index_variant):
                     namespace_variant?read.catalog_metadata().namespaces.error==namespaces.error:
@@ -2705,18 +2705,18 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
         "catalog observation moves with the original authenticated owner");
     Check(!read.catalog_capture().ok()&&read.catalog_capture().rows().empty()&&moved.catalog_capture().ok()==had_capture,
         "complete row capture moves with original custody and clears every moved-from view");
-    Check(!read.catalog_metadata().ok()&&!read.catalog_metadata().selection&&moved.catalog_metadata().ok()==had_metadata,
+    Check(!read.catalog_metadata().ok()&&!read.catalog_metadata().source&&moved.catalog_metadata().ok()==had_metadata,
         "engine metadata result moves with authenticated custody and clears the prior owner's view");
     Check(!read.catalog_capture().inventory()&&moved.catalog_capture().inventory().has_value()==had_inventory,
         "complete selected transaction inventory moves with catalog backing and clears the old owner");
     if(had_inventory)Check(moved.catalog_capture().inventory()->inventory.entries[0].identity.transaction_uuid.value==security_tx.value,
         "actual retained transaction identity survives host move without rereading or allocation");
-    Check(!read.verification_policies().ok()&&!read.verification_policies().selection&&moved.verification_policies().ok()==had_verification_policies,
+    Check(!read.verification_policies().ok()&&!read.verification_policies().source&&moved.verification_policies().ok()==had_verification_policies,
         "verification policy declarations move with their capture owner and clear prior borrowed text views");
-    Check(!read.management_definition().ok()&&!read.management_definition().selection&&
+    Check(!read.management_definition().ok()&&!read.management_definition().source&&
         moved.management_definition().ok()==had_management_definition,
         "management descriptor selection moves with authenticated native source and invalidates the prior owner");
-    Check(!read.transaction_policies().ok()&&!read.transaction_policies().selection&&moved.transaction_policies().ok()==had_transaction_policies,
+    Check(!read.transaction_policies().ok()&&!read.transaction_policies().source&&moved.transaction_policies().ok()==had_transaction_policies,
         "transaction policy closure transfers with authenticated native ownership and clears borrowed source views");
     if(had_verification_policies)Check(moved.verification_policies().evidence.required_search_keys.entries[0]=="SB-MGA-VERIFY",
         "evidence text still borrows retained immutable catalog after host move");
@@ -3010,7 +3010,7 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
   const auto opened=Host::VerifyStartupDatabaseFile(read,open_limits);
   if(!opened.ok())std::cerr<<"producer open verification="<<int(opened.error)<<" stage="<<int(opened.stage)<<'\n';
   Check(opened.ok()&&opened.stage==OpenStage::complete&&read.open_verification()&&
-      opened.observation->identity.selection.checkpoint_generation==1&&opened.observation->identity.filespaces==1&&
+      opened.observation->identity.source.root_set_generation==1&&opened.observation->identity.filespaces==1&&
       opened.observation->identity.system_state.lifecycle==db::NativeSystemLifecycle::creating&&
       opened.observation->allocation.filespaces==1&&opened.observation->allocation.catalog_pages>0&&
       opened.observation->inventory.transactions==1&&opened.observation->inventory.active_transactions==0&&

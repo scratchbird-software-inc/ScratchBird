@@ -19,8 +19,8 @@ struct NativeStartupManagementDefinition {
   core::platform::Uuid descriptor_version_uuid;
   std::array<core::catalog::CatalogManagementProfile,10> profiles;
   std::array<core::platform::Uuid,10> profile_versions;
-  std::optional<storage::database::NativeCheckpointSelection> selection;
-  bool ok()const noexcept{return error==NativeStartupManagementDefinitionError::none&&selection.has_value();}
+  std::optional<storage::database::NativeReadSourceIdentity> source;
+  bool ok()const noexcept{return error==NativeStartupManagementDefinitionError::none&&source.has_value();}
 };
 // Resolves actual source-backed declarations, not an invocation capability.
 // Implementation registration, parameter validation, maintenance authorization,
@@ -44,7 +44,7 @@ inline NativeStartupManagementDefinition ResolveNativeStartupManagementDefinitio
     const auto at=std::lower_bound(order.begin(),order.end(),id,[&](auto n,const auto& value){return identity(n)<value;});
     return at==order.end()||identity(*at)!=id||rows[*at].row.metadata.record.header.deleted?nullptr:&rows[*at];
   };
-  const auto database=capture.selection()->header.database_uuid;
+  const auto database=capture.source()->database_uuid;
   const auto active=[&](const storage::database::NativeCapturedCatalogRow& r){const auto& m=r.row.metadata;
     return r.role==6&&!r.row.provisional&&!r.row.name_payload&&core::uuid::IsEngineIdentityUuid(r.row.version_uuid)&&
       !m.record.header.deleted&&m.lifecycle==c::CatalogObjectLifecycle::active&&m.status==c::CatalogObjectStatus::active&&
@@ -69,6 +69,6 @@ inline NativeStartupManagementDefinition ResolveNativeStartupManagementDefinitio
     if(core::platform::u64(value.record->code)!=i+1)return fail(E::profile_code_mismatch,out.descriptor.descriptor_uuid,id);
     out.profiles[i]=*value.record;out.profile_versions[i]=row->row.version_uuid;
   }
-  out.selection=capture.selection();out.error=E::none;return out;
+  out.source=capture.source();out.error=E::none;return out;
 }
 } // namespace scratchbird::engine::internal_api

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 #include "native_local_service_authentication.hpp"
-#include "native_checkpoint_selection.hpp"
+#include "native_read_source_identity.hpp"
 #include "core/agents/agent_startup_clock_policy.hpp"
 
 namespace scratchbird::engine::internal_api {
@@ -14,7 +14,7 @@ enum class NativeLocalServiceSessionError {
 // submitted to an ordinary client/agent/SQL route as a security context.
 struct NativeLocalServiceSessionObservation {
   core::platform::Uuid session_uuid,authentication_decision_uuid,database_uuid,principal_uuid,original_operation_uuid;
-  storage::database::NativeCheckpointSelection source;
+  storage::database::NativeReadSourceIdentity source;
   core::platform::Uuid clock_policy_uuid,clock_policy_version_uuid;
   core::platform::Uuid engine_instance_uuid,attachment_uuid;
 };
@@ -38,7 +38,7 @@ class NativeLocalServiceSession final {
   friend class scratchbird::server::NativeHostedDatabaseRuntime;
   NativeLocalServiceSession()=default;
   static NativeLocalServiceSessionResult Attach(const NativeLocalServiceAuthentication& authentication,
-      const storage::database::NativeCheckpointSelection& source,
+      const storage::database::NativeReadSourceIdentity& source,
       const core::agents::AgentStartupClockPolicySelection& clock,const core::platform::Uuid& engine_instance,
       std::optional<NativeLocalServiceSession>& issued) noexcept {
     using E=NativeLocalServiceSessionError;
@@ -47,8 +47,8 @@ class NativeLocalServiceSession final {
     if(!clock.ok()||clock.database_uuid!=identity.database_uuid)return {E::policy_required};
     if(!core::uuid::IsEngineIdentityUuid(engine_instance)||engine_instance==identity.database_uuid||
         engine_instance==identity.operation_uuid||engine_instance==identity.decision_uuid||
-        source.header.database_uuid!=identity.database_uuid||!source.checkpoint_generation||!source.selection_generation||
-        !core::uuid::IsEngineIdentityUuid(source.checkpoint_object_uuid)||!core::uuid::IsEngineIdentityUuid(identity.decision_uuid))
+        source.database_uuid!=identity.database_uuid||!source.root_set_generation||!source.source_generation||
+        !core::uuid::IsEngineIdentityUuid(source.root_set_uuid)||!core::uuid::IsEngineIdentityUuid(identity.decision_uuid))
       return {E::source_mismatch};
     if(!authentication.authorization_.Allows("CONNECT",identity.database_uuid))return {E::authorization_refused};
     if(core::hash::CheckExplicitCryptoMemoryScope(identity.database_uuid)!=core::hash::CryptoMemoryError::none)

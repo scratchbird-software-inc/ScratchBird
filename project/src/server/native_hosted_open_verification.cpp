@@ -89,7 +89,7 @@ VE ChainRefusal(const db::NativeAllocationLeaseReadResult& r) noexcept {
 
 NativeOpenVerificationResult NativeHostedDatabaseRuntime::VerifyStartupDatabaseFile(
     CredentialRead& read,const NativeOpenVerificationLimits& limits) noexcept {
-  using api::native_startup_transaction_history_detail::SameSelection;
+  using db::SameReadSource;using db::NativeReadSourceIdentityFromSelection;
   NativeOpenVerificationResult result;
   const auto fail=[&](VE error,VS stage){result.error=error;result.stage=stage;result.observation.reset();return result;};
   read.CheckOwner();
@@ -102,11 +102,11 @@ NativeOpenVerificationResult NativeHostedDatabaseRuntime::VerifyStartupDatabaseF
   if(credential.has_selected_source()||!credential.has_retained_operation()||!read.publication_.ok()||!read.authentication_||
       !read.catalog_metadata_.ok()||!read.verification_policies_.ok()||
       !read.catalogs_.ok()||!read.catalog_capture_.has_physical_pages())return fail(VE::not_ready,VS::none);
-  const auto& genesis_selection=read.catalog_capture_.selection();
+  const auto& genesis_source=read.catalog_capture_.source();
   const auto captured=read.catalog_capture_.inventory();
-  if(!genesis_selection||!captured||!SameSelection(*genesis_selection,*read.verification_policies_.selection))
+  if(!genesis_source||!captured||!SameReadSource(*genesis_source,*read.verification_policies_.source))
     return fail(VE::source_mismatch,VS::none);
-  const auto& genesis=*genesis_selection;
+  const auto& genesis=*genesis_source;
   auto& self=*read.owner_;
   const auto files=read.catalog_capture_.filespaces();
   std::size_t maximum_page=0;
@@ -158,13 +158,13 @@ NativeOpenVerificationResult NativeHostedDatabaseRuntime::VerifyStartupDatabaseF
       auto source=operation.ObserveWithMemory(limits.selected,memory,memory.binding());
       if(!source.ok()){refuse(source);return;}
       const auto& selection=source.observation.selection();const auto& directory=source.observation.directory();
-      if(!SameSelection(*selection.selection,genesis)){error=VE::source_mismatch;return;}
+      if(!SameReadSource(NativeReadSourceIdentityFromSelection(*selection.selection),genesis)){error=VE::source_mismatch;return;}
       const auto& inventory=selection.checkpoint_inventory.inventory;
       if(inventory.next_local_transaction_id!=captured->inventory.next_local_transaction_id||
           inventory.next_commit_sequence!=captured->inventory.next_commit_sequence||
           inventory.entries.size()!=captured->inventory.entries.size()){error=VE::source_mismatch;return;}
       api::NativeStartupStorageIdentityObservation identity;
-      identity.selection=*selection.selection;identity.workspace_bytes=workspace;
+      identity.source=genesis;identity.workspace_bytes=workspace;
       identity.physical_bytes_read=source.physical_bytes_read;
       core::platform::Uuid creation_operation;
       for(const auto& directory_page:directory.directory.pages)for(const auto& file:directory_page.directory.records){
@@ -221,8 +221,8 @@ NativeOpenVerificationResult NativeHostedDatabaseRuntime::VerifyStartupDatabaseF
       if(state.object_uuid!=target->object_uuid||state.creator_transaction_uuid!=allocated->creator_transaction_uuid||
           state.creator_local_transaction_id!=allocated->creator_local_transaction_id||state.lifecycle!=db::NativeSystemLifecycle::creating||
           state.flags!=(db::NativeSystemFlag::dirty|db::NativeSystemFlag::write_fenced)||
-          !state.checkpoint||*state.checkpoint!=genesis.checkpoint||state.checkpoint_generation!=genesis.checkpoint_generation||
-          state.checkpoint_object_uuid!=genesis.checkpoint_object_uuid||state.transition_operation_uuid!=creation_operation||
+          !state.checkpoint||*state.checkpoint!=selection.selection->checkpoint||state.checkpoint_generation!=selection.selection->checkpoint_generation||
+          state.checkpoint_object_uuid!=selection.selection->checkpoint_object_uuid||state.transition_operation_uuid!=creation_operation||
           state.clean_local_transaction_id||!state.clean_transaction_uuid.is_nil()){error=VE::finding;return;}
       const auto creator=std::find_if(inventory.entries.begin(),inventory.entries.end(),[&](const auto& e){
         return e.identity.local_id.value==state.creator_local_transaction_id;});
@@ -240,8 +240,8 @@ NativeOpenVerificationResult NativeHostedDatabaseRuntime::VerifyStartupDatabaseF
       auto source=operation.ReadWithMemory(limits.selected,memory,memory.binding());
       if(!source.ok()){refuse(source);return;}
       const auto& lease=source.lease.source();const auto& selected=lease.selection();
-      if(!SameSelection(*selected.selection,genesis)){error=VE::source_mismatch;return;}
-      api::NativeStartupStorageScanObservation scan;scan.selection=*selected.selection;
+      if(!SameReadSource(NativeReadSourceIdentityFromSelection(*selected.selection),genesis)){error=VE::source_mismatch;return;}
+      api::NativeStartupStorageScanObservation scan;scan.source=genesis;
       scan.physical_bytes_read=source.physical_bytes_read;
       for(const auto& directory_page:lease.directory().directory.pages)for(const auto& member:directory_page.directory.records){
         if(cancelled()){error=VE::cancelled;return;}
@@ -275,7 +275,7 @@ NativeOpenVerificationResult NativeHostedDatabaseRuntime::VerifyStartupDatabaseF
       auto source=operation.ReadWithMemory(limits.selected,memory,memory.binding());
       if(!source.ok()){refuse(source);return;}
       const auto& selected=source.lease.source().selection();
-      if(!SameSelection(*selected.selection,genesis)){error=VE::source_mismatch;return;}
+      if(!SameReadSource(NativeReadSourceIdentityFromSelection(*selected.selection),genesis)){error=VE::source_mismatch;return;}
       const auto& inventory=selected.checkpoint_inventory.inventory;
       const auto count=inventory.entries.size();
       if(!count||count>(SIZE_MAX-slack-maximum_page)/(sizeof(std::size_t)+1)){error=VE::finding;return;}
@@ -290,7 +290,7 @@ NativeOpenVerificationResult NativeHostedDatabaseRuntime::VerifyStartupDatabaseF
       const auto valid=page::ValidateNativeTransactionInventoryConstView(view,
           {static_cast<std::size_t*>(index_block.pointer),count},{static_cast<byte*>(marker_block.pointer),count});
       if(!valid.ok()){error=VE::finding;return;}
-      api::NativeStartupStorageScanObservation scan;scan.selection=*selected.selection;
+      api::NativeStartupStorageScanObservation scan;scan.source=genesis;
       scan.physical_bytes_read=source.physical_bytes_read;
       if(mga::detail::ProjectValidatedLocalHorizons(view,{},scan.horizons)){error=VE::finding;return;}
       for(const auto& entry:inventory.entries){
@@ -377,8 +377,8 @@ NativeOpenVerificationResult NativeHostedDatabaseRuntime::VerifyStartupDatabaseF
       auto source=operation.ReadWithMemory(limits.selected,memory,memory.binding());
       if(!source.ok()){refuse(source);return;}
       const auto& selected=source.lease.source().selection();
-      if(!SameSelection(*selected.selection,genesis)){error=VE::source_mismatch;return;}
-      api::NativeStartupCatalogRouteObservation routes{*selected.selection,0,source.physical_bytes_read};
+      if(!SameReadSource(NativeReadSourceIdentityFromSelection(*selected.selection),genesis)){error=VE::source_mismatch;return;}
+      api::NativeStartupCatalogRouteObservation routes{genesis,0,source.physical_bytes_read};
       std::array<db::NativeCheckpointRootReference,2> targets;
       std::array<page::NativeAllocationRecord,2> allocations;
       std::array<page::NativeCatalogRootReference,6> references;

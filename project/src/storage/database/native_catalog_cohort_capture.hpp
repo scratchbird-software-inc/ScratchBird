@@ -3,6 +3,7 @@
 #pragma once
 #include "native_catalog_visibility_lease_reader.hpp"
 #include "native_decoded_storage_ranges.hpp"
+#include "native_read_source_identity.hpp"
 
 namespace scratchbird::storage::database {
 struct NativeCatalogCaptureLimits {
@@ -71,12 +72,12 @@ class NativeCatalogCapture {
   NativeCatalogCapture& operator=(NativeCatalogCapture&& other) noexcept {
     if(this!=&other){NativeCatalogCapture incoming(std::move(other));Swap(incoming);}return *this;
   }
-  bool ok() const noexcept{return selection_.has_value();}
+  bool ok() const noexcept{return source_.has_value();}
   explicit operator bool() const noexcept{return bool(arena_);}
   std::span<const NativeCapturedCatalogRow> rows() const noexcept {
     return ok()?rows_.first(count_):std::span<const NativeCapturedCatalogRow>{};
   }
-  const std::optional<NativeCheckpointSelection>& selection() const noexcept{return selection_;}
+  const std::optional<NativeReadSourceIdentity>& source() const noexcept{return source_;}
   std::span<const page::NativeFilespaceDirectoryRecord> filespaces() const noexcept {
     return ok()?filespaces_.first(filespace_count_):std::span<const page::NativeFilespaceDirectoryRecord>{};
   }
@@ -107,7 +108,7 @@ class NativeCatalogCapture {
  private:
   void Swap(NativeCatalogCapture& other) noexcept {
     using std::swap;swap(arena_,other.arena_);swap(rows_,other.rows_);swap(text_,other.text_);
-    swap(count_,other.count_);swap(used_,other.used_);swap(selection_,other.selection_);
+    swap(count_,other.count_);swap(used_,other.used_);swap(source_,other.source_);
     swap(filespaces_,other.filespaces_);swap(filespace_count_,other.filespace_count_);
     swap(transactions_,other.transactions_);swap(inventory_,other.inventory_);
     swap(physical_pages_,other.physical_pages_);swap(physical_page_count_,other.physical_page_count_);
@@ -116,7 +117,7 @@ class NativeCatalogCapture {
     swap(initial_controls_complete_,other.initial_controls_complete_);
     swap(relations_,other.relations_);swap(relation_count_,other.relation_count_);
   }
-  void Begin() noexcept {selection_.reset();inventory_.reset();count_=used_=filespace_count_=physical_page_count_=0;
+  void Begin() noexcept {source_.reset();inventory_.reset();count_=used_=filespace_count_=physical_page_count_=0;
     initial_control_page_count_=initial_control_root_count_=0;initial_controls_complete_=false;relation_count_=0;}
   bool AppendRelation(const NativeCapturedCatalogRelation& relation) noexcept {
     if(relation_count_==relations_.size())return false;
@@ -180,7 +181,7 @@ class NativeCatalogCapture {
   std::optional<NativeCapturedTransactionInventory> inventory_;
   usize filespace_count_=0,physical_page_count_=0;
   usize count_=0,used_=0;
-  std::optional<NativeCheckpointSelection> selection_;
+  std::optional<NativeReadSourceIdentity> source_;
   std::array<NativeCapturedCatalogRelation,12> relations_{};
   usize relation_count_=0;
   friend class NativeCatalogCohortLeaseReader;

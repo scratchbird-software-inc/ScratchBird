@@ -621,7 +621,8 @@ engine::internal_api::NativeLocalServiceSessionResult NativeHostedDatabaseRuntim
     if(policies==NativeHostedRuntimeError::cancelled){read.session_.reset();return {E::cancelled};}
     return {E::policy_required};
   }
-  if(!api::native_startup_transaction_history_detail::SameSelection(*read.catalog_capture_.selection(),read.publication_.snapshot->selection))
+  if(!storage::database::SameReadSource(*read.catalog_capture_.source(),
+      storage::database::NativeReadSourceIdentityFromSelection(read.publication_.snapshot->selection)))
     return {E::source_mismatch};
   auto& self=*read.owner_;const auto& config=*read.configuration_.configuration;
   if(!self.process_->HasNativeDatabaseAllocationBehavior(self.database_,config.memory,config.memory_version_uuid))return {E::resource_policy_required};
@@ -631,7 +632,7 @@ engine::internal_api::NativeLocalServiceSessionResult NativeHostedDatabaseRuntim
   if(cancelled()){read.session_.reset();return {E::cancelled};}
   if(read.session_){
     if(read.session_->observation_.authentication_decision_uuid!=read.authentication_->observation_.decision_uuid||
-        !api::native_startup_transaction_history_detail::SameSelection(read.session_->observation_.source,*read.catalog_capture_.selection()))
+        !storage::database::SameReadSource(read.session_->observation_.source,*read.catalog_capture_.source()))
       return {E::source_mismatch};
     return {E::none,read.session_->observation_};
   }
@@ -642,7 +643,7 @@ engine::internal_api::NativeLocalServiceSessionResult NativeHostedDatabaseRuntim
       entry.definition.agent_type=="agent_coordinator")clock=core::agents::SelectAgentStartupClockPolicy(entry.definition,entry.version_uuid);
   if(!clock.ok())return {E::policy_required};
   const auto crypto=self.database_crypto_.WithMemoryScope(self.crypto_binding_,[&]{
-    result=api::NativeLocalServiceSession::Attach(*read.authentication_,*read.catalog_capture_.selection(),clock,
+    result=api::NativeLocalServiceSession::Attach(*read.authentication_,*read.catalog_capture_.source(),clock,
         self.engine_instance_,issued);
   });
   if(!crypto.ok())return {E::crypto_scope_unavailable};
