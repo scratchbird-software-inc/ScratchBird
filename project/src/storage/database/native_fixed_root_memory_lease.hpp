@@ -33,6 +33,7 @@
 #include "native_directory_chain_backing.hpp"
 #include "native_inventory_chain_backing.hpp"
 #include "native_storage_memory.hpp"
+#include "native_read_source_identity.hpp"
 #include "uuid.hpp"
 #include <algorithm>
 #include <limits>
@@ -60,13 +61,26 @@ struct NativeFixedRootIdentity {
   Uuid database_uuid, filespace_uuid, page_size_profile_uuid;
   Uuid page_zero_uuid, creation_operation_uuid;
   u64 page_generation = 0, root_set_generation = 0, total_pages = 0, creation_utc_millis = 0;
-  u32 bootstrap_flags = 0;
+  u32 page_size_bytes = 0, bootstrap_flags = 0;
   u16 lifecycle_state = 0;
   bool cluster_authority_required() const noexcept {
     return (bootstrap_flags & disk::FilespaceBootstrapFlag::cluster_authority_required) != 0;
   }
   bool operator==(const NativeFixedRootIdentity&) const = default;
 };
+
+// The neutral identity of a fixed-root source (see native_read_source_identity.hpp).
+inline NativeReadSourceIdentity NativeReadSourceIdentityFromFixedRoot(const NativeFixedRootIdentity& id) noexcept {
+  NativeReadSourceIdentity out;
+  out.kind = NativeReadSourceKind::fixed_root;
+  out.database_uuid = id.database_uuid;
+  out.filespace_uuid = id.filespace_uuid;
+  out.page_size_bytes = id.page_size_bytes;
+  out.root_set_uuid = id.page_zero_uuid;
+  out.source_generation = id.page_generation;
+  out.root_set_generation = id.root_set_generation;
+  return out;
+}
 
 struct NativeFixedRootMemoryResult;
 class NativeFixedRootMemoryHandle;
@@ -148,6 +162,12 @@ class NativeFixedRootMemoryHandle {
   explicit operator bool() const noexcept { CheckThread(); return lease_ != nullptr; }
   const NativeFixedRootMemoryLease* operator->() const noexcept { CheckThread(); return lease_; }
   const NativeFixedRootMemoryLease& operator*() const noexcept { CheckThread(); return *lease_; }
+  // Ends the device guards early; the retained images stay readable, but no
+  // reader may be run on the lease afterwards.
+  void ReleaseDeviceGuards() noexcept {
+    CheckThread();
+    if (lease_) lease_->ReleaseDeviceGuards();
+  }
   void Reset() noexcept {
     CheckThread();
     if (lease_) {
@@ -325,6 +345,7 @@ inline NativeFixedRootMemoryResult AcquireNativeFixedRootMemoryLease(
     id.database_uuid = z.bootstrap.database_uuid;
     id.filespace_uuid = z.bootstrap.filespace_uuid;
     id.page_size_profile_uuid = z.bootstrap.page_size_profile_uuid;
+    id.page_size_bytes = z.bootstrap.page_size_bytes;
     id.page_zero_uuid = z.page_uuid;
     id.creation_operation_uuid = z.creation_operation_uuid;
     id.page_generation = z.page_generation;

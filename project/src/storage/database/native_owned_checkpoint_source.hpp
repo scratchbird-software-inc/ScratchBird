@@ -3,6 +3,7 @@
 #pragma once
 #include "native_selected_checkpoint_read_lease.hpp"
 #include "native_selected_checkpoint_memory_lease.hpp"
+#include "native_fixed_root_memory_lease.hpp"
 #include "route_ownership_lease.hpp"
 #include "database_format.hpp"
 #include "startup_state.hpp"
@@ -41,6 +42,10 @@ struct NativeOwnedSourceDiagnostics {
   disk::RouteSourceTransitionError route_error=disk::RouteSourceTransitionError::none;
   NativeSelectedCheckpointMemoryError memory_source_error=NativeSelectedCheckpointMemoryError::none;
   NativeStorageMemoryError memory_error=NativeStorageMemoryError::none;
+  // SB_NATIVE_FIXED_ROOT_READ: findings of a read through page zero's roots.
+  NativeFixedRootMemoryError fixed_root_error=NativeFixedRootMemoryError::none;
+  disk::FilespacePageZeroError page_zero_error=disk::FilespacePageZeroError::none;
+  std::optional<u16> fixed_root_kind;
   core::platform::Status allocation_status,io_status;
   core::platform::DiagnosticRecord allocation_diagnostic,io_diagnostic;
   u64 physical_bytes_read=0;
@@ -49,6 +54,13 @@ struct NativeOwnedSourceDiagnostics {
     error=NativeOwnedSourceError::source_failure;memory_source_error=r.error;memory_error=r.memory_error;
     selection_error=r.selection_error;checkpoint_error=r.checkpoint_error;allocation_error=r.allocation_error;
     directory_error=r.directory_error;inventory_error=r.inventory_error;
+    allocation_status=r.allocation_status;allocation_diagnostic=std::move(r.allocation_diagnostic);
+    io_status=r.io_status;io_diagnostic=std::move(r.io_diagnostic);physical_bytes_read+=r.physical_bytes_read;
+  }
+  void FromFixedRootSource(NativeFixedRootMemoryResult& r) noexcept {
+    error=NativeOwnedSourceError::source_failure;fixed_root_error=r.error;memory_error=r.memory_error;
+    page_zero_error=r.page_zero_error;inventory_error=r.inventory_error;allocation_error=r.allocation_error;
+    directory_error=r.directory_error;fixed_root_kind=r.root_kind;
     allocation_status=r.allocation_status;allocation_diagnostic=std::move(r.allocation_diagnostic);
     io_status=r.io_status;io_diagnostic=std::move(r.io_diagnostic);physical_bytes_read+=r.physical_bytes_read;
   }
@@ -397,6 +409,10 @@ class NativeOwnedCheckpointSource {
   }
   static bool CompleteMemoryCohort(const NativeSelectedCheckpointMemoryLease& source,std::size_t count) noexcept {
     return source.directory().directory.pages.front().directory.total_records==count;
+  }
+  // Every filespace the directory records is one this source owns.
+  static bool CompleteFixedRootCohort(const NativeFixedRootMemoryLease& source,std::size_t count) noexcept {
+    return source.directory().pages.front().directory.total_records==count;
   }
   std::unique_ptr<NativeOwnedCheckpointMemoryState> memory_state_;
 

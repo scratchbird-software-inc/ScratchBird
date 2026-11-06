@@ -39,8 +39,10 @@ class NativeHostedDatabaseCustody final {
   using Error = NativeHostedCustodyError;
   class Operation;
   class ReadLease;
+  class FixedRootReadLease;
   struct OperationResult;
   struct ReadResult;
+  struct FixedRootReadResult;
   NativeHostedDatabaseCustody(const NativeHostedDatabaseCustody&) = delete;
   NativeHostedDatabaseCustody& operator=(const NativeHostedDatabaseCustody&) = delete;
   ~NativeHostedDatabaseCustody() {
@@ -138,6 +140,47 @@ class NativeHostedDatabaseCustody final {
           error == storage::database::NativeOwnedSourceError::none && bool(lease);
     }
   };
+  // SB_NATIVE_FIXED_ROOT_READ: a read through page zero's fixed roots under
+  // the same full-custody pin as ReadLease.
+  class FixedRootReadLease final {
+   public:
+    FixedRootReadLease() noexcept = default;
+    FixedRootReadLease(const FixedRootReadLease&) = delete;
+    FixedRootReadLease& operator=(const FixedRootReadLease&) = delete;
+    FixedRootReadLease(FixedRootReadLease&& other) noexcept
+        : owner_(TakeOwner(other)), reader_(std::move(other.reader_)) {}
+    FixedRootReadLease& operator=(FixedRootReadLease&& other) noexcept {
+      if (this != &other) { other.CheckOwner(); Reset(); owner_ = std::move(other.owner_); reader_ = std::move(other.reader_); }
+      return *this;
+    }
+    ~FixedRootReadLease() { Reset(); }
+    explicit operator bool() const noexcept { CheckOwner(); return bool(reader_); }
+    const storage::database::NativeFixedRootMemoryLease& source() const noexcept { CheckOwner(); return reader_.source(); }
+    const Uuid& operation_uuid() const noexcept { CheckOwner(); return reader_.operation_uuid(); }
+    void Reset() noexcept { CheckOwner(); reader_.Reset(); owner_.reset(); }
+   private:
+    friend class Operation;
+    FixedRootReadLease(std::shared_ptr<NativeHostedDatabaseCustody> owner, Writer::FixedRootReadLease&& reader) noexcept
+        : owner_(std::move(owner)), reader_(std::move(reader)) {}
+    void CheckOwner() const noexcept {
+      if (process_ != CurrentProcess() || thread_ != std::this_thread::get_id()) std::terminate();
+    }
+    static std::shared_ptr<NativeHostedDatabaseCustody> TakeOwner(FixedRootReadLease& other) noexcept {
+      other.CheckOwner(); return std::move(other.owner_);
+    }
+    const std::uint64_t process_ = CurrentProcess();
+    const std::thread::id thread_ = std::this_thread::get_id();
+    std::shared_ptr<NativeHostedDatabaseCustody> owner_;
+    Writer::FixedRootReadLease reader_; // Release device guards BEFORE the full host pin.
+  };
+  struct FixedRootReadResult : storage::database::NativeOwnedSourceDiagnostics {
+    storage::database::NativeWriterError writer_error = storage::database::NativeWriterError::invalid_operation;
+    FixedRootReadLease lease;
+    bool ok() const noexcept {
+      return writer_error == storage::database::NativeWriterError::none &&
+          error == storage::database::NativeOwnedSourceError::none && bool(lease);
+    }
+  };
   class Operation final {
    public:
     Operation() noexcept = default;
@@ -174,6 +217,21 @@ class NativeHostedDatabaseCustody final {
         storage::database::NativeStorageMemory& memory,const storage::database::NativeStorageMemoryBinding& binding) noexcept {
       CheckOwner();auto retained=owner_;
       return operation_.ObserveWithMemory(limits,memory,binding,std::move(retained));
+    }
+    FixedRootReadResult ReadFixedRootWithMemory(storage::database::NativeFixedRootMemoryLimits limits,
+        storage::database::NativeStorageMemory& memory, const storage::database::NativeStorageMemoryBinding& binding) noexcept {
+      CheckOwner(); auto retained = owner_; // Before any callback can Reset this handle.
+      auto raw = operation_.ReadFixedRootWithMemory(limits, memory, binding);
+      FixedRootReadResult out; static_cast<storage::database::NativeOwnedSourceDiagnostics&>(out) =
+          std::move(static_cast<storage::database::NativeOwnedSourceDiagnostics&>(raw));
+      out.writer_error = raw.writer_error;
+      if (raw.ok()) out.lease = FixedRootReadLease(std::move(retained), std::move(raw.lease));
+      return out;
+    }
+    Writer::FixedRootObservationResult ObserveFixedRootWithMemory(storage::database::NativeFixedRootMemoryLimits limits,
+        storage::database::NativeStorageMemory& memory,const storage::database::NativeStorageMemoryBinding& binding) noexcept {
+      CheckOwner();auto retained=owner_;
+      return operation_.ObserveFixedRootWithMemory(limits,memory,binding,std::move(retained));
     }
     storage::database::NativeWriterIoResult ReadAtBounded(const Uuid& member, const Uuid& profile,
         std::uint64_t offset, std::span<core::platform::byte> bytes) noexcept {

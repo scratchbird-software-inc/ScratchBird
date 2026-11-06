@@ -154,7 +154,8 @@ void TestProfile(unsigned profile) {
   Check(id.database_uuid == Id(1) && id.filespace_uuid == Id(2) && id.page_zero_uuid == z.page_uuid &&
             id.page_generation == z.page_generation && id.root_set_generation == z.root_set_generation &&
             id.total_pages == z.total_pages && id.creation_utc_millis == z.creation_utc_millis &&
-            id.creation_operation_uuid == z.creation_operation_uuid && !id.cluster_authority_required(),
+            id.creation_operation_uuid == z.creation_operation_uuid &&
+            id.page_size_bytes == z.bootstrap.page_size_bytes && !id.cluster_authority_required(),
         "the identity is page zero's own");
   const auto same = [](const d::FilespaceRootReference& a, const d::FilespaceRootReference& b) {
     return a.kind == b.kind && a.page_type == b.page_type && a.filespace_uuid == b.filespace_uuid &&

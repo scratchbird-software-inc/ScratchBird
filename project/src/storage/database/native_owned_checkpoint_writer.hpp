@@ -77,8 +77,11 @@ struct NativeWriterCloseResult {
 class NativeOwnedCheckpointWriter final {
   struct OperationState;
   struct ReaderState;
+  struct FixedRootReaderState;
  public:
   class ReadLease;
+  class FixedRootReadLease;
+  class FixedRootObservation;
   class OperationContinuity;
   struct ReadResult;
   class Operation;
@@ -174,6 +177,70 @@ class NativeOwnedCheckpointWriter final {
       return writer_error==NativeWriterError::none&&error==NativeOwnedSourceError::none&&bool(observation);
     }
   };
+  // SB_NATIVE_FIXED_ROOT_READ: the same operation reservation, read through
+  // page zero's fixed roots instead of a selected checkpoint. One reader of
+  // either kind may be live per operation; I/O waits for it to retire.
+  class FixedRootReadLease final {
+   public:
+    FixedRootReadLease()noexcept=default;
+    FixedRootReadLease(const FixedRootReadLease&)=delete;FixedRootReadLease& operator=(const FixedRootReadLease&)=delete;
+    FixedRootReadLease(FixedRootReadLease&& other)noexcept{other.CheckAccess();state_=std::move(other.state_);}
+    FixedRootReadLease& operator=(FixedRootReadLease&& other)noexcept{if(this!=&other){other.CheckAccess();Reset();state_=std::move(other.state_);}return *this;}
+    ~FixedRootReadLease(){Reset();}
+    explicit operator bool()const noexcept{CheckAccess();return bool(state_);}
+    const NativeFixedRootMemoryLease& source()const noexcept;
+    const Uuid& operation_uuid()const noexcept;
+    void Reset()noexcept;
+   private:
+    friend class NativeOwnedCheckpointWriter;friend class Operation;
+    void CheckAccess()const noexcept;
+    std::unique_ptr<FixedRootReaderState> state_;
+  };
+  struct FixedRootReadResult:NativeOwnedSourceDiagnostics {
+    NativeWriterError writer_error=NativeWriterError::invalid_operation;
+    FixedRootReadLease lease;
+    bool ok()const noexcept{return writer_error==NativeWriterError::none&&error==NativeOwnedSourceError::none&&bool(lease);}
+  };
+  // The fixed-root images after the device guards retire, so the same
+  // operation can perform bounded I/O while they are consulted. No reader can
+  // be run on it: only the retained images are exposed.
+  class FixedRootObservation final {
+   public:
+    FixedRootObservation() noexcept=default;
+    FixedRootObservation(const FixedRootObservation&)=delete;
+    FixedRootObservation& operator=(const FixedRootObservation&)=delete;
+    FixedRootObservation(FixedRootObservation&& other) noexcept {
+      other.CheckAccess();custody_=std::move(other.custody_);state_=std::move(other.state_);
+    }
+    FixedRootObservation& operator=(FixedRootObservation&& other) noexcept {
+      if(this!=&other){other.CheckAccess();Reset();custody_=std::move(other.custody_);state_=std::move(other.state_);}return *this;
+    }
+    ~FixedRootObservation(){Reset();}
+    explicit operator bool() const noexcept {CheckAccess();return bool(state_);}
+    const NativeFixedRootIdentity& identity() const noexcept {return Lease().identity();}
+    std::span<const disk::FilespaceRootReference> roots() const noexcept {return Lease().roots();}
+    const disk::FilespaceRootReference* Root(u16 kind) const noexcept {return Lease().Root(kind);}
+    const NativeReadTransactionInventory& inventory() const noexcept {return Lease().inventory();}
+    std::span<const NativeInventoryPageBinding> inventory_pages() const noexcept {return Lease().inventory_pages();}
+    const NativeReadAllocationChain& allocation() const noexcept {return Lease().allocation();}
+    const NativeReadDirectoryChain& directory() const noexcept {return Lease().directory();}
+    const Uuid& operation_uuid() const noexcept;
+    void Reset() noexcept;
+   private:
+    friend class NativeOwnedCheckpointWriter;
+    friend class Operation;
+    void CheckAccess() const noexcept;
+    const NativeFixedRootMemoryLease& Lease() const noexcept;
+    std::shared_ptr<void> custody_;
+    std::unique_ptr<FixedRootReaderState> state_;
+  };
+  struct FixedRootObservationResult:NativeOwnedSourceDiagnostics {
+    NativeWriterError writer_error=NativeWriterError::invalid_operation;
+    FixedRootObservation observation;
+    bool ok() const noexcept {
+      return writer_error==NativeWriterError::none&&error==NativeOwnedSourceError::none&&bool(observation);
+    }
+  };
   // Exact reservation lifetime, not a copy of its descriptive UUID. A retained
   // pin prevents Reset/reacquire (even using the same UUID) from replacing the
   // operation between an inspected preimage and its physical publication.
@@ -223,6 +290,10 @@ class NativeOwnedCheckpointWriter final {
     ReadResult ReadWithMemory(NativeSelectedCheckpointMemoryLimits,NativeStorageMemory&,
         const NativeStorageMemoryBinding&) noexcept;
     ObservationResult ObserveWithMemory(NativeSelectedCheckpointMemoryLimits,NativeStorageMemory&,
+        const NativeStorageMemoryBinding&,std::shared_ptr<void> custody={}) noexcept;
+    FixedRootReadResult ReadFixedRootWithMemory(NativeFixedRootMemoryLimits,NativeStorageMemory&,
+        const NativeStorageMemoryBinding&) noexcept;
+    FixedRootObservationResult ObserveFixedRootWithMemory(NativeFixedRootMemoryLimits,NativeStorageMemory&,
         const NativeStorageMemoryBinding&,std::shared_ptr<void> custody={}) noexcept;
     NativeOwnedHistoryReadResult ReadHistoryWithMemory(NativeManagementHistoryMemoryLimits,
         NativeStorageMemory&,const NativeStorageMemoryBinding&,
@@ -275,6 +346,17 @@ class NativeOwnedCheckpointWriter final {
     // Keep the reservation closed during every latency callback. Only after
     // all physical guards retire may this same operation perform bounded I/O.
     state.selected.ReleaseDeviceGuards();
+    state.owns_read_reservation=false;state.operation->reader_live=false;
+  }
+  struct FixedRootReaderState {
+    std::shared_ptr<OperationState> operation;
+    NativeFixedRootMemoryHandle fixed;
+    bool owns_read_reservation=true;
+    ~FixedRootReaderState(){fixed.Reset();if(operation&&owns_read_reservation)operation->reader_live=false;}
+  };
+  static void RetireObservationGuards(FixedRootObservation& observation) noexcept {
+    auto& state=*observation.state_;
+    state.fixed.ReleaseDeviceGuards();
     state.owns_read_reservation=false;state.operation->reader_live=false;
   }
   static NativeWriterIoResult Io(Operation&,disk::BoundedIoOperation,const Uuid&,const Uuid&,u64,
@@ -567,6 +649,78 @@ inline NativeOwnedCheckpointWriter::ReadResult NativeOwnedCheckpointWriter::Oper
     if(!NativeOwnedCheckpointSource::CompleteMemoryCohort(*selected.lease,cohort.memory_state_->devices.size())){
       out.error=NativeOwnedSourceError::incomplete_cohort;out.writer_error=NativeWriterError::source_failure;return out;}
     reader->selected=std::move(selected.lease);out.lease.state_=std::move(reader);
+    out.error=NativeOwnedSourceError::none;out.writer_error=NativeWriterError::none;
+  }catch(const std::bad_alloc&){out.error=NativeOwnedSourceError::resource_exhausted;out.writer_error=NativeWriterError::resource_exhausted;}
+   catch(const std::system_error&){out.error=NativeOwnedSourceError::lock_failure;out.writer_error=NativeWriterError::synchronization_failure;}
+  return out;
+}
+inline void NativeOwnedCheckpointWriter::FixedRootReadLease::CheckAccess()const noexcept {
+  if(state_&&(!state_->operation->owner->InOwningProcess()||state_->operation->thread!=std::this_thread::get_id()))std::terminate();
+}
+inline const NativeFixedRootMemoryLease& NativeOwnedCheckpointWriter::FixedRootReadLease::source()const noexcept {
+  CheckAccess();if(!state_)std::terminate();return *state_->fixed;
+}
+inline const Uuid& NativeOwnedCheckpointWriter::FixedRootReadLease::operation_uuid()const noexcept {
+  CheckAccess();if(!state_)std::terminate();return state_->operation->identity;
+}
+inline void NativeOwnedCheckpointWriter::FixedRootReadLease::Reset()noexcept {
+  if(!state_)return;
+  if(!state_->operation->owner->InOwningProcess()){
+    // Same child-only close/abandon rule as the selected reader.
+    state_->operation.reset();(void)state_.release();return;
+  }
+  CheckAccess();state_.reset();
+}
+inline void NativeOwnedCheckpointWriter::FixedRootObservation::CheckAccess() const noexcept {
+  if(state_&&(!state_->operation->owner->InOwningProcess()||state_->operation->thread!=std::this_thread::get_id()))std::terminate();
+}
+inline const NativeFixedRootMemoryLease& NativeOwnedCheckpointWriter::FixedRootObservation::Lease() const noexcept {
+  CheckAccess();if(!state_)std::terminate();return *state_->fixed;
+}
+inline const Uuid& NativeOwnedCheckpointWriter::FixedRootObservation::operation_uuid() const noexcept {
+  CheckAccess();if(!state_)std::terminate();return state_->operation->identity;
+}
+inline void NativeOwnedCheckpointWriter::FixedRootObservation::Reset() noexcept {
+  CheckAccess();state_.reset();custody_.reset();
+}
+inline NativeOwnedCheckpointWriter::FixedRootObservationResult NativeOwnedCheckpointWriter::Operation::ObserveFixedRootWithMemory(
+    NativeFixedRootMemoryLimits limits,NativeStorageMemory& memory,
+    const NativeStorageMemoryBinding& binding,std::shared_ptr<void> custody) noexcept {
+  FixedRootObservationResult out;
+  auto read=ReadFixedRootWithMemory(limits,memory,binding);
+  static_cast<NativeOwnedSourceDiagnostics&>(out)=std::move(static_cast<NativeOwnedSourceDiagnostics&>(read));
+  out.writer_error=read.writer_error;
+  if(!read.ok())return out;
+  out.observation.custody_=std::move(custody);
+  out.observation.state_=std::move(read.lease.state_);
+  RetireObservationGuards(out.observation);
+  return out;
+}
+inline NativeOwnedCheckpointWriter::FixedRootReadResult NativeOwnedCheckpointWriter::Operation::ReadFixedRootWithMemory(
+    NativeFixedRootMemoryLimits limits,NativeStorageMemory& memory,const NativeStorageMemoryBinding& binding)noexcept {
+  FixedRootReadResult out;out.writer_error=Check();if(out.writer_error!=NativeWriterError::none)return out;
+  // As for the selected reader: retain the operation before any allocation or
+  // callback, and hand the live flag to the reader state before any fallible
+  // work, so it is cleared exactly once.
+  const auto retained=state_;
+  if(retained->reader_live){out.writer_error=NativeWriterError::read_handle_live;return out;}
+  if(retained->io_active){out.writer_error=NativeWriterError::busy;return out;}
+  try{
+    const auto& cohort=*retained->owner->cohort_;
+    if(!limits.maximum_backing_bytes||!limits.maximum_verification_image_bytes){out.writer_error=NativeWriterError::invalid_request;return out;}
+    retained->reader_live=true;
+    struct ReadReservation {OperationState& state;bool transferred=false;
+      ~ReadReservation(){if(!transferred)state.reader_live=false;}} reservation{*retained};
+    auto reader=std::make_unique<FixedRootReaderState>();reader->operation=retained;
+    reservation.transferred=true;
+    out.memory_error=cohort.memory_state_->memory.CheckBinding(cohort.memory_state_->memory.binding());
+    if(out.memory_error!=NativeStorageMemoryError::none){out.error=NativeOwnedSourceError::memory_failure;out.writer_error=NativeWriterError::source_failure;return out;}
+    auto fixed=AcquireNativeFixedRootMemoryLease(cohort.database_,cohort.memory_state_->devices,cohort.primary_,limits,memory,binding);
+    out.FromFixedRootSource(fixed);
+    if(!fixed.ok()){out.writer_error=NativeWriterError::source_failure;return out;}
+    if(!NativeOwnedCheckpointSource::CompleteFixedRootCohort(*fixed.lease,cohort.memory_state_->devices.size())){
+      out.error=NativeOwnedSourceError::incomplete_cohort;out.writer_error=NativeWriterError::source_failure;return out;}
+    reader->fixed=std::move(fixed.lease);out.lease.state_=std::move(reader);
     out.error=NativeOwnedSourceError::none;out.writer_error=NativeWriterError::none;
   }catch(const std::bad_alloc&){out.error=NativeOwnedSourceError::resource_exhausted;out.writer_error=NativeWriterError::resource_exhausted;}
    catch(const std::system_error&){out.error=NativeOwnedSourceError::lock_failure;out.writer_error=NativeWriterError::synchronization_failure;}
