@@ -27,6 +27,9 @@ struct NativeHostedRuntimeLimits {
   storage::database::NativeCatalogRelationMemoryLimits catalog;
   std::size_t database_crypto_bytes = 0;
   engine::internal_api::NativeRuntimeAuthorizationLimits authorization;
+  // SB_TRANSITIONAL_HOSTED_SOURCE: every stage of this runtime reads this
+  // source. Deleted in C3c, when page zero's fixed roots are the only source.
+  NativeHostedReadSource read_source = NativeHostedReadSource::selected_checkpoint;
 };
 enum class NativeHostedRuntimeError {
   none, invalid_request, wrong_owner, process_unavailable, ownership_failure,
@@ -196,7 +199,8 @@ class NativeHostedDatabaseRuntime final {
           agent_policies_(other.agent_policies_),
           publication_memory_(std::move(other.publication_memory_)),
           publication_preparation_(std::move(other.publication_preparation_)),
-          publication_(std::move(other.publication_)),credentials_(std::move(other.credentials_)),
+          publication_(std::move(other.publication_)),read_source_(other.read_source_),
+          page_zero_anchor_(std::exchange(other.page_zero_anchor_,{})),credentials_(std::move(other.credentials_)),
           catalogs_(std::exchange(other.catalogs_,{})),catalog_backing_bytes_(other.catalog_backing_bytes_),
           catalog_capture_(std::move(other.catalog_capture_)),
           catalog_metadata_(std::exchange(other.catalog_metadata_,{})),
@@ -239,6 +243,12 @@ class NativeHostedDatabaseRuntime final {
     // No generation, authenticated session or transaction has been published.
     const storage::database::NativeOwnedWatermarkResult& publication() const noexcept {
       CheckOwner();return publication_;
+    }
+    // SB_TRANSITIONAL_HOSTED_SOURCE: on the fixed-root source, page zero's
+    // identity as the startup observation retained it. Every later read of
+    // this runtime must find exactly this identity.
+    const std::optional<storage::database::NativeFixedRootIdentity>& page_zero_anchor() const noexcept {
+      CheckOwner();return page_zero_anchor_;
     }
     std::optional<engine::internal_api::NativeLocalServiceAuthenticationObservation> authentication() const noexcept {
       CheckOwner();return NativeHostedDatabaseRuntime::ObserveAuthentication(*this);
@@ -287,6 +297,7 @@ class NativeHostedDatabaseRuntime final {
       catalog_capture_={};
       credentials_->selection={};
       publication_={};publication_preparation_.workspace={};publication_memory_={};
+      page_zero_anchor_.reset();
       credentials_->comparison.reset();
       authorization_preparation_.workspace={};
       preparation_.workspace = {};
@@ -301,6 +312,11 @@ class NativeHostedDatabaseRuntime final {
     }
    private:
     friend class NativeHostedDatabaseRuntime;
+    // The startup observation is retained: the watermark on the selected
+    // checkpoint, page zero's identity on the fixed-root source.
+    bool anchored() const noexcept {
+      return read_source_==NativeHostedReadSource::fixed_root?page_zero_anchor_.has_value():publication_.ok();
+    }
     struct Inputs {
       const NativeLocalServiceStartupCredentialsRequest request;
       const core::memory::MemoryTag tag;
@@ -321,6 +337,8 @@ class NativeHostedDatabaseRuntime final {
     storage::database::NativeStorageMemory publication_memory_;
     storage::database::NativeOwnedWatermarkPreparedResult publication_preparation_;
     storage::database::NativeOwnedWatermarkResult publication_;
+    NativeHostedReadSource read_source_=NativeHostedReadSource::selected_checkpoint;
+    std::optional<storage::database::NativeFixedRootIdentity> page_zero_anchor_;
     std::optional<NativeLocalServiceStartupCredentialsResult> credentials_{std::in_place};
     storage::database::NativeCatalogCohortInspection catalogs_;
     std::size_t catalog_backing_bytes_=0;

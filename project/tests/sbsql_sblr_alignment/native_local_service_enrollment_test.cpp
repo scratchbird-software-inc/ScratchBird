@@ -42,6 +42,13 @@ bool corrupt_startup_system_read=false;
 unsigned corrupted_startup_system_reads=0;
 std::uint32_t corrupt_startup_control_type=0;
 unsigned corrupted_startup_control_reads=0;
+// SB_TRANSITIONAL_HOSTED_SOURCE: byte ranges of the checkpoint layer's pages
+// in one database file. Any read touching them fails, to show the fixed-root
+// startup chain never reads them.
+std::array<std::pair<off_t,off_t>,8> denied_pages{};
+std::size_t denied_page_count=0,denied_page_total=0;
+unsigned denied_page_reads=0;
+dev_t denied_device=0;ino_t denied_inode=0;
 bool deny_heap_on_native_file=false;
 bool native_clock_failure=false,native_clock_regression=false;
 unsigned native_clock_advance_seconds=0;
@@ -128,6 +135,13 @@ extern "C" ssize_t __wrap_pread(int fd,void* bytes,size_t count,off_t offset) {
       // and must remain held after the device guard retires.
       for(auto& item:observed_mutexes)if(item.mutex==last_observed_mutex&&item.depth>1)item.selected=true;
     }
+  }
+  if(denied_page_count){
+    struct stat identity{};
+    if(::fstat(fd,&identity)==0&&identity.st_dev==denied_device&&identity.st_ino==denied_inode)
+      for(std::size_t i=0;i<denied_page_count;++i)
+        if(offset<denied_pages[i].second&&offset+static_cast<off_t>(count)>denied_pages[i].first){
+          ++denied_page_reads;errno=EIO;return -1;}
   }
   const auto result=NativeEnrollmentFixturePread(fd,bytes,count,offset);
   if(corrupt_startup_control_type&&result>=8192&&platform::LoadLittle32(static_cast<const byte*>(bytes)+16)==corrupt_startup_control_type){
@@ -3076,6 +3090,118 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
       "opening, verifying and resolving startup policies leave every byte of the producer's file unchanged");
   read.Reset();
   Check(Host::Close(host.runtime).ok(),"the producer's database closes");
+
+  // SB_TRANSITIONAL_HOSTED_SOURCE (drift removal C3b): the same startup chain
+  // on the same file, through the selected checkpoint and through page zero's
+  // fixed roots. Everything it observes must be the same, except what only the
+  // checkpoint layer supplies: the source identity and the checkpoint page
+  // among the creation control pages.
+  if(profile==0||profile==4){
+    struct ChainSummary {
+      std::size_t definitions=0,registrations=0,policies=0,indexed=0,filespaces=0;
+      std::vector<std::array<u64,6>> relations;
+      std::vector<std::pair<platform::Uuid,std::string>> rows;
+      std::vector<u64> catalog_pages;
+      std::vector<std::pair<u64,platform::u32>> control_pages;
+      std::vector<std::pair<platform::Uuid,u64>> transactions;
+      u64 next_local=0,next_commit=0,horizon_page=0;
+      db::NativeReadSourceIdentity source;
+      platform::Uuid session_principal;
+    };
+    // The whole chain to the startup transaction policies; empty when a stage refuses.
+    const auto run=[&](server::NativeHostedReadSource mode,bool deny_drift)->std::optional<ChainSummary>{
+      auto mode_limits=host_limits;mode_limits.read_source=mode;
+      std::vector<std::unique_ptr<disk::FileDevice>> none;
+      auto reopened=Host::Open(process,ownership,mode_limits,none);
+      Check(reopened.ok(),"the host reopens the producer's database");
+      // Adoption still reads the selected checkpoint (until C3d): deny the
+      // checkpoint layer's pages only from the first startup read on.
+      struct Disarm {~Disarm(){denied_page_count=0;}} disarm;
+      if(deny_drift)denied_page_count=denied_page_total;
+      std::optional<ChainSummary> out;
+      {
+        auto mode_request=request;
+        mode_request.source.deadline=server::StartupCredentialSource::Mutex::Clock::now()+std::chrono::seconds(30);
+        auto r=Host::ReadStartupCredentials(reopened.runtime,mode_request,provisioner.source,provisioner.tag,provisioner.derived);
+        const auto chain=[&]{
+          return r.ok()&&Host::RetainStartupObservation(r)==server::NativeHostedRuntimeError::none&&
+              Host::ConstrainStartupMemory(r).ok()&&Host::InstallStartupAllocationBehavior(r).ok()&&
+              Host::AuthenticateStartupService(r,provisioner.derived).ok()&&
+              Host::ReadStartupCatalogs(r,catalog_limits,catalog_scan_limits,capture_limits)==server::NativeHostedRuntimeError::none&&
+              Host::VerifyStartupCatalogMetadata(r)==server::NativeHostedRuntimeError::none&&
+              Host::ResolveStartupManagementDefinition(r)==server::NativeHostedRuntimeError::none&&
+              Host::ResolveConfiguredStartupVerificationPolicies(r)==server::NativeHostedRuntimeError::none&&
+              Host::AttachStartupServiceSession(r).ok()&&
+              Host::ResolveStartupTransactionPolicies(r)==server::NativeHostedRuntimeError::none;
+        };
+        if(chain()){
+          ChainSummary sum;
+          sum.definitions=r.agents().definition_count;sum.registrations=r.agents().registration_count;
+          sum.policies=r.agents().policy_count;sum.indexed=r.catalog_metadata().indexes.indexed_relations;
+          for(std::size_t i=0;i<r.catalogs().relation_count;++i){const auto& x=r.catalogs().relations[i];
+            sum.relations.push_back({x.selector,x.role,x.versions,x.visible_rows,x.base_pages,x.navigation_pages});}
+          const auto& c=r.catalog_capture();
+          for(const auto& row:c.rows())
+            sum.rows.push_back({row.row.metadata.record.header.object_uuid.value,std::string(row.row.metadata.record.payload)});
+          for(const auto& page:c.physical_pages())sum.catalog_pages.push_back(page.header.page_number);
+          for(const auto& page:c.initial_control_pages())sum.control_pages.push_back({page.header.page_number,page.header.page_type});
+          for(const auto& root:c.initial_control_roots())if(root.role==2)sum.horizon_page=root.page.page_number;
+          const auto inventory=c.inventory();
+          Check(inventory.has_value()&&c.source().has_value()&&r.session().has_value(),"the chain retains its capture and session");
+          for(const auto& e:inventory->inventory.entries)sum.transactions.push_back({e.identity.transaction_uuid.value,e.identity.local_id.value});
+          sum.next_local=inventory->inventory.next_local_transaction_id;sum.next_commit=inventory->inventory.next_commit_sequence;
+          sum.filespaces=c.filespaces().size();sum.source=*c.source();sum.session_principal=r.session()->principal_uuid;
+          out=std::move(sum);
+        }
+        r.Reset();
+      }
+      Check(Host::Close(reopened.runtime).ok(),"the reopened database closes");
+      return out;
+    };
+    // The checkpoint layer's pages: page-zero kinds 9 and 18-21.
+    const auto zero=disk::DecodeFilespacePageZero(reinterpret_cast<const platform::byte*>(created_bytes.data()),sizes[profile]);
+    Check(zero.ok(),"the producer's page zero decodes");
+    std::vector<u64> drift_pages;
+    for(const auto& root:zero.record->roots)if(root.kind==9||(root.kind>=18&&root.kind<=21))drift_pages.push_back(root.page_number);
+    Check(drift_pages.size()==5,"page zero roots the checkpoint, both selectors and both watermarks");
+    const auto selected=run(server::NativeHostedReadSource::selected_checkpoint,false);
+    const auto fixed=run(server::NativeHostedReadSource::fixed_root,false);
+    Check(selected.has_value()&&fixed.has_value(),"the startup chain completes on both sources");
+    Check(selected->source.kind==db::NativeReadSourceKind::selected_checkpoint&&fixed->source.kind==db::NativeReadSourceKind::fixed_root&&
+        selected->source.database_uuid==fixed->source.database_uuid&&selected->source.filespace_uuid==fixed->source.filespace_uuid&&
+        selected->source.page_size_bytes==fixed->source.page_size_bytes&&!db::SameReadSource(selected->source,fixed->source),
+        "both sources are the producer's file, under different source identities");
+    Check(selected->definitions==fixed->definitions&&selected->registrations==fixed->registrations&&
+        selected->policies==fixed->policies&&selected->indexed==fixed->indexed&&selected->filespaces==fixed->filespaces&&
+        selected->relations==fixed->relations&&selected->rows==fixed->rows&&selected->catalog_pages==fixed->catalog_pages&&
+        selected->transactions==fixed->transactions&&selected->next_local==fixed->next_local&&
+        selected->next_commit==fixed->next_commit&&selected->session_principal==fixed->session_principal,
+        "agents, catalog relations, every captured row, catalog pages, inventory and session are the same on both sources");
+    auto without_checkpoint=selected->control_pages;
+    std::erase_if(without_checkpoint,[](const auto& page){return page.second==0x300;});
+    Check(selected->control_pages.size()==without_checkpoint.size()+1&&fixed->control_pages==without_checkpoint,
+        "the creation control pages are the same except the checkpoint page, which page zero roots instead");
+    // Deny every read of the checkpoint layer's pages and the horizon root.
+    Check(selected->horizon_page&&std::find(drift_pages.begin(),drift_pages.end(),selected->horizon_page)==drift_pages.end(),
+        "the checkpoint roots the horizon page, which page zero does not");
+    drift_pages.push_back(selected->horizon_page);
+    struct stat identity{};Check(::stat(path.c_str(),&identity)==0,"the producer's file identity");
+    denied_device=identity.st_dev;denied_inode=identity.st_ino;denied_page_total=drift_pages.size();
+    for(std::size_t i=0;i<drift_pages.size();++i){
+      const auto first=static_cast<off_t>(drift_pages[i]*sizes[profile]);
+      denied_pages[i]={first,first+static_cast<off_t>(sizes[profile])};
+    }
+    denied_page_reads=0;
+    const auto fixed_denied=run(server::NativeHostedReadSource::fixed_root,true);
+    Check(fixed_denied.has_value()&&denied_page_reads==0&&fixed_denied->rows==fixed->rows&&
+        fixed_denied->control_pages==fixed->control_pages,
+        "the fixed-root startup chain completes without reading any checkpoint, selector, watermark or horizon page");
+    const auto selected_denied=run(server::NativeHostedReadSource::selected_checkpoint,true);
+    Check(!selected_denied.has_value()&&denied_page_reads>0,
+        "the selected-checkpoint chain does read them, so the denial is real");
+    denied_page_total=0;
+    Check(read_file()==created_bytes,"neither source's startup chain writes the producer's file");
+  }
 }
 
 // Fixture shards (owner 2026-11-05: split the fixture into several ctest

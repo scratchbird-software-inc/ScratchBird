@@ -205,6 +205,8 @@ NativeHostedDatabaseRuntime::CredentialRead NativeHostedDatabaseRuntime::ReadSta
       request.checkpoint_limits.maximum_verification_image_bytes>owner->limits_.writer.source.maximum_verification_image_bytes)
     return out;
   out.owner_=std::move(owner);out.source_=std::move(source);auto& self=*out.owner_;
+  // SB_TRANSITIONAL_HOSTED_SOURCE: the runtime's source, never the caller's.
+  request.read_source=self.limits_.read_source;out.read_source_=self.limits_.read_source;
   self.read_active_=true;self.entering_=true;
   struct Leave {bool& flag;~Leave(){flag=false;}} leave{self.entering_};
   try {out.inputs_=std::make_unique<CredentialRead::Inputs>(std::move(request),tag);}
@@ -270,9 +272,27 @@ NativeHostedRuntimeError NativeHostedDatabaseRuntime::RetainStartupObservation(
   // guards retire. Refusal preserves the exact source and operation for retry.
   if(!read.agent_policies_.ok())read.agent_policies_=ValidateAgentPolicies(read.agents_);
   if(!read.agent_policies_.ok())return E::agent_policy_failure;
-  if(read.publication_.ok())return E::none;
+  if(read.anchored())return E::none;
   auto& self=*read.owner_;
   namespace db=storage::database;
+  if(read.read_source_==NativeHostedReadSource::fixed_root){
+    // SB_TRANSITIONAL_HOSTED_SOURCE: no watermark. Page zero's identity, read
+    // again under the retained operation, must be the one the credential
+    // comparison read; it then anchors every later read of this runtime.
+    const auto& limits=read.inputs_->request.checkpoint_limits;
+    auto& lease=*credentials.comparison->lease;
+    const auto crypto=self.database_crypto_.WithMemoryScope(self.crypto_binding_,[&]{
+      auto source=lease.retained_operation_.ReadFixedRootWithMemory(
+          {limits.maximum_verification_image_bytes,limits.maximum_backing_bytes},self.reading_,self.reading_.binding());
+      if(!source.ok())return;
+      const auto identity=source.lease.source().identity();
+      source.lease.Reset();
+      if(identity.database_uuid!=self.database_||identity.filespace_uuid!=self.primary_||
+          !db::SameReadSource(db::NativeReadSourceIdentityFromFixedRoot(identity),lease.source_identity()))return;
+      read.page_zero_anchor_=identity;
+    });
+    return !crypto.ok()?E::crypto_failure:read.page_zero_anchor_?E::none:E::custody_failure;
+  }
   // Device guards are now retired, while the same original operation,
   // protected generation and full route/cohort custody remain privately held.
   // Admit all counter scratch BEFORE acquiring another native selected source.
@@ -307,7 +327,7 @@ NativeHostedRuntimeError NativeHostedDatabaseRuntime::ReadStartupCatalogs(Creden
   if(read.mutating_||(read.owner_&&read.owner_->entering_))return E::busy;
   if(!read.ok()||!read.owner_)return E::closed;
   auto& credential=*read.credentials_->comparison->lease;
-  if(credential.has_selected_source()||!credential.has_retained_operation()||!read.publication_.ok())return E::custody_failure;
+  if(credential.has_selected_source()||!credential.has_retained_operation()||!read.anchored())return E::custody_failure;
   if(!read.authentication_)return E::credential_failure;
   const auto& request=read.inputs_->request;
   if(!limits.maximum_backing_bytes||!limits.maximum_verification_image_bytes||
@@ -367,6 +387,21 @@ NativeHostedRuntimeError NativeHostedDatabaseRuntime::ReadStartupCatalogs(Creden
   if(!prepared.ok())return E::memory_failure;
   E result=E::catalog_failure;db::NativeCatalogCohortInspection inspection;
   const auto crypto=self.database_crypto_.WithMemoryScope(self.crypto_binding_,[&]{
+    if(read.read_source_==NativeHostedReadSource::fixed_root){
+      // SB_TRANSITIONAL_HOSTED_SOURCE: the same page zero the observation retained.
+      auto source=credential.retained_operation_.ReadFixedRootWithMemory(
+          {limits.maximum_verification_image_bytes,limits.maximum_backing_bytes},adopted.memory,adopted.memory.binding());
+      if(!source.ok())return;
+      if(source.lease.operation_uuid()!=read.authentication_->observation_.operation_uuid||
+          source.lease.source().identity()!=*read.page_zero_anchor_){
+        inspection.error=db::NativeCatalogCohortError::binding_mismatch;return;}
+      inspection=db::NativeCatalogCohortLeaseReader::Read(source.lease.source(),limits.maximum_verification_image_bytes,
+          prepared.workspace,capture_requested?&capture:nullptr);
+      inspection.physical_bytes_read+=source.physical_bytes_read;
+      if(inspection.ok())result=E::none;
+      source.lease.Reset();
+      return;
+    }
     auto source=credential.retained_operation_.ReadWithMemory(limits,adopted.memory,adopted.memory.binding());
     if(!source.ok())return;
     const auto& actual=*source.lease.source().selection().selection;
@@ -403,7 +438,7 @@ NativeHostedRuntimeError NativeHostedDatabaseRuntime::VerifyStartupCatalogMetada
   if(read.mutating_||(read.owner_&&read.owner_->entering_))return E::busy;
   if(!read.ok()||!read.owner_)return E::closed;
   auto& credential=*read.credentials_->comparison->lease;
-  if(credential.has_selected_source()||!credential.has_retained_operation()||!read.publication_.ok())return E::custody_failure;
+  if(credential.has_selected_source()||!credential.has_retained_operation()||!read.anchored())return E::custody_failure;
   if(!read.authentication_)return E::credential_failure;
   if(!read.catalogs_.ok()||!read.catalog_capture_.ok())return E::catalog_failure;
   auto& self=*read.owner_;const auto& request=read.inputs_->request;
@@ -448,7 +483,7 @@ NativeHostedRuntimeError NativeHostedDatabaseRuntime::ResolveStartupManagementDe
   if(read.mutating_||(read.owner_&&read.owner_->entering_))return E::busy;
   if(!read.ok()||!read.owner_)return E::closed;
   const auto& credential=*read.credentials_->comparison->lease;
-  if(credential.has_selected_source()||!credential.has_retained_operation()||!read.publication_.ok())return E::custody_failure;
+  if(credential.has_selected_source()||!credential.has_retained_operation()||!read.anchored())return E::custody_failure;
   if(!read.authentication_)return E::credential_failure;
   if(!read.catalog_metadata_.ok())return E::catalog_verification_failure;
   auto& self=*read.owner_;read.mutating_=true;self.entering_=true;
@@ -482,7 +517,7 @@ NativeHostedRuntimeError NativeHostedDatabaseRuntime::ResolveStartupTransactionP
   if(read.mutating_||(read.owner_&&read.owner_->entering_))return E::busy;
   if(!read.ok()||!read.owner_)return E::closed;
   const auto& credential=*read.credentials_->comparison->lease;
-  if(credential.has_selected_source()||!credential.has_retained_operation()||!read.publication_.ok())return E::custody_failure;
+  if(credential.has_selected_source()||!credential.has_retained_operation()||!read.anchored())return E::custody_failure;
   if(!read.authentication_)return E::credential_failure;
   if(!read.catalog_metadata_.ok())return E::catalog_verification_failure;
   auto& self=*read.owner_;read.mutating_=true;self.entering_=true;
@@ -543,7 +578,7 @@ NativeHostedRuntimeError NativeHostedDatabaseRuntime::ResolveStartupVerification
   if(read.mutating_||(read.owner_&&read.owner_->entering_))return E::busy;
   if(!read.ok()||!read.owner_)return E::closed;
   const auto& credential=*read.credentials_->comparison->lease;
-  if(credential.has_selected_source()||!credential.has_retained_operation()||!read.publication_.ok())return E::custody_failure;
+  if(credential.has_selected_source()||!credential.has_retained_operation()||!read.anchored())return E::custody_failure;
   if(!read.authentication_)return E::credential_failure;
   if(!read.catalog_metadata_.ok())return E::catalog_verification_failure;
   const auto request=requested;
@@ -580,7 +615,7 @@ NativeDatabaseMemoryEnvelopeResult NativeHostedDatabaseRuntime::ConstrainStartup
   if(!read.ok()||!read.owner_)return {E::not_ready};
   const auto& credential=*read.credentials_->comparison->lease;
   if(credential.has_selected_source())return {E::selected_guards_held};
-  if(!credential.has_retained_operation()||!read.publication_.ok()||!read.agent_policies_.ok())return {E::not_ready};
+  if(!credential.has_retained_operation()||!read.anchored()||!read.agent_policies_.ok())return {E::not_ready};
   if(!read.authorization_.projection.Allows("CONNECT",read.owner_->database_))return {E::authorization_refused};
   read.mutating_=true;read.owner_->entering_=true;
   struct Leave {bool& reading;bool& hosting;~Leave(){reading=false;hosting=false;}}
@@ -597,7 +632,7 @@ NativeDatabaseAllocationBehaviorResult NativeHostedDatabaseRuntime::InstallStart
   if(!read.ok()||!read.owner_)return {E::not_ready};
   const auto& credential=*read.credentials_->comparison->lease;
   if(credential.has_selected_source())return {E::selected_guards_held};
-  if(!credential.has_retained_operation()||!read.publication_.ok()||!read.agent_policies_.ok())return {E::not_ready};
+  if(!credential.has_retained_operation()||!read.anchored()||!read.agent_policies_.ok())return {E::not_ready};
   if(!read.authorization_.projection.Allows("CONNECT",read.owner_->database_))return {E::authorization_refused};
   read.mutating_=true;read.owner_->entering_=true;
   struct Leave {bool& reading;bool& hosting;~Leave(){reading=false;hosting=false;}}
@@ -614,15 +649,17 @@ engine::internal_api::NativeLocalServiceSessionResult NativeHostedDatabaseRuntim
   if(read.mutating_||(read.owner_&&read.owner_->entering_))return {E::busy};
   if(!read.ok()||!read.owner_||!read.authentication_)return {E::not_ready};
   const auto& credential=*read.credentials_->comparison->lease;
-  if(credential.has_selected_source()||!credential.has_retained_operation()||!read.publication_.ok()||
+  if(credential.has_selected_source()||!credential.has_retained_operation()||!read.anchored()||
       !read.catalog_capture_.ok()||!read.catalog_metadata_.ok())return {E::not_ready};
   const auto policies=ResolveConfiguredStartupVerificationPolicies(read);
   if(policies!=NativeHostedRuntimeError::none){
     if(policies==NativeHostedRuntimeError::cancelled){read.session_.reset();return {E::cancelled};}
     return {E::policy_required};
   }
-  if(!storage::database::SameReadSource(*read.catalog_capture_.source(),
-      storage::database::NativeReadSourceIdentityFromSelection(read.publication_.snapshot->selection)))
+  const auto anchored_source=read.read_source_==NativeHostedReadSource::fixed_root
+      ?storage::database::NativeReadSourceIdentityFromFixedRoot(*read.page_zero_anchor_)
+      :storage::database::NativeReadSourceIdentityFromSelection(read.publication_.snapshot->selection);
+  if(!storage::database::SameReadSource(*read.catalog_capture_.source(),anchored_source))
     return {E::source_mismatch};
   auto& self=*read.owner_;const auto& config=*read.configuration_.configuration;
   if(!self.process_->HasNativeDatabaseAllocationBehavior(self.database_,config.memory,config.memory_version_uuid))return {E::resource_policy_required};
@@ -662,7 +699,7 @@ NativeHostedDatabaseRuntime::AuthenticateStartupService(
   if(!read.ok()||!read.owner_)return {E::not_ready};
   auto& credential=*read.credentials_->comparison->lease;
   if(credential.has_selected_source())return {E::selected_guards_held};
-  if(!credential.has_retained_operation()||!read.publication_.ok()||!read.agent_policies_.ok())return {E::not_ready};
+  if(!credential.has_retained_operation()||!read.anchored()||!read.agent_policies_.ok())return {E::not_ready};
   if(!read.authorization_.projection.Allows("CONNECT",read.owner_->database_))return {E::authorization_refused};
   const auto& selected=*read.configuration_.configuration;
   auto& owner=*read.owner_;

@@ -135,7 +135,7 @@ class NativeRuntimePrincipalCredentialLease final {
         credential_(std::move(other.credential_)), observation_(other.observation_),
         provider_(other.provider_), provider_version_(other.provider_version_),
         credential_binding_(other.credential_binding_), configuration_(other.configuration_),
-        process_(other.process_), thread_(other.thread_) {}
+        source_identity_(other.source_identity_), process_(other.process_), thread_(other.thread_) {}
   NativeRuntimePrincipalCredentialLease& operator=(NativeRuntimePrincipalCredentialLease&&) = delete;
   ~NativeRuntimePrincipalCredentialLease() {
     CheckThread();
@@ -190,6 +190,11 @@ class NativeRuntimePrincipalCredentialLease final {
   std::span<const engine::internal_api::NativeRuntimeSecurityRecordObservation> security_records() const noexcept {
     CheckAccess(); return observation_.records;
   }
+  // The identity of the source this comparison read. It stays valid after the
+  // hosted runtime retains the operation and releases the reader.
+  const storage::database::NativeReadSourceIdentity& source_identity() const noexcept {
+    CheckAccess(); return source_identity_;
+  }
   // Project the exact source retained by this private credential comparison,
   // never caller-supplied security observations. Prepare graph backing before
   // source acquisition; its result borrows that backing and this source owner.
@@ -237,10 +242,11 @@ class NativeRuntimePrincipalCredentialLease final {
       engine::internal_api::NativeRuntimeSecurityObservationResult observation,
       core::catalog::CatalogBootstrapSecurityProvider provider, core::platform::Uuid provider_version,
       StartupCredentialTransportBinding credential_binding,
-      std::span<const storage::database::NativeCatalogVisibleRow> configuration) noexcept
+      std::span<const storage::database::NativeCatalogVisibleRow> configuration,
+      storage::database::NativeReadSourceIdentity source_identity) noexcept
       : workspace_(std::move(workspace)), source_(std::in_place_type<Source>, std::move(source)), credential_(std::move(credential)),
         observation_(std::move(observation)), provider_(provider), provider_version_(provider_version),
-        credential_binding_(credential_binding), configuration_(configuration),
+        credential_binding_(credential_binding), configuration_(configuration), source_identity_(source_identity),
         process_(CurrentProcess()), thread_(std::this_thread::get_id()) {}
   static std::uint64_t CurrentProcess() noexcept {
 #if defined(_WIN32)
@@ -287,6 +293,7 @@ class NativeRuntimePrincipalCredentialLease final {
   // Accessible only to the native declaration selector, not a mutable catalog
   // or an independently constructible configuration/activation authority.
   std::span<const storage::database::NativeCatalogVisibleRow> configuration_;
+  storage::database::NativeReadSourceIdentity source_identity_;
   std::uint64_t process_;
   std::thread::id thread_;
 };
@@ -423,8 +430,13 @@ inline NativeRuntimePrincipalCredentialResult VerifyNativeRuntimePrincipalCreden
   if (request.stop.stop_requested()) return fail(E::cancelled);
   out.crypto_error = core::hash::CheckExplicitCryptoMemoryScope(request.security.database_uuid);
   if (out.crypto_error != core::hash::CryptoMemoryError::none) return fail(E::crypto_scope_unavailable);
+  const auto source_identity = [&] {
+    if constexpr (std::same_as<std::decay_t<decltype(selected_source)>, db::NativeFixedRootMemoryLease>)
+      return db::NativeReadSourceIdentityFromFixedRoot(selected_source.identity());
+    else return db::NativeReadSourceIdentityFromSelection(*selected_source.selection().selection);
+  }();
   NativeRuntimePrincipalCredentialLease proof(std::move(workspace), std::move(source), std::move(credential),
-      std::move(observed), *provider.record, selected->version_uuid, *custody, rows.rows);
+      std::move(observed), *provider.record, selected->version_uuid, *custody, rows.rows, source_identity);
   out.lease.emplace(std::move(proof)); out.error = E::none; return out;
 }
 } // namespace scratchbird::server
