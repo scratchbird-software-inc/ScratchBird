@@ -9,6 +9,7 @@
 #include "transaction_state_page.hpp"
 
 #include <optional>
+#include <utility>
 #include <span>
 
 namespace scratchbird::storage::page {
@@ -76,6 +77,27 @@ struct TransactionInventoryBuild {
 };
 TransactionInventoryBuild BuildLocalTransactionInventoryFromImages(u32 page_size, std::span<const byte> state_images,
                                                                    std::span<const byte> header_images);
+
+// The same build into caller-owned scratch, with no heap allocation (for the
+// bounded selected read). Every span needs at least Next - 1 elements (one per
+// possible transaction below Next). The entries are written in place; the
+// result's view borrows them.
+struct TransactionInventoryBuildScratch {
+  std::span<scratchbird::transaction::mga::TransactionInventoryEntry> entries;
+  std::span<std::pair<u64, std::size_t>> commits;  // (commit time, entry index)
+  std::span<std::size_t> indices;                  // validator scratch
+  std::span<byte> markers;                         // validator scratch
+};
+struct TransactionInventoryBuildView {
+  TipPageError error = TipPageError::invalid_header;
+  std::optional<u64> transaction_order;
+  u64 next_local_transaction_id = 0, next_commit_sequence = 0;
+  std::span<scratchbird::transaction::mga::TransactionInventoryEntry> entries;
+  bool ok() const noexcept { return error == TipPageError::none; }
+};
+TransactionInventoryBuildView BuildLocalTransactionInventoryInto(u32 page_size, std::span<const byte> state_images,
+                                                                 std::span<const byte> header_images,
+                                                                 const TransactionInventoryBuildScratch& scratch) noexcept;
 
 struct TransactionInventoryReadRequest {
   scratchbird::core::platform::Uuid database_uuid;

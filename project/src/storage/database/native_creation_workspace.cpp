@@ -8,6 +8,7 @@
 #include "disk_device.hpp"
 #include "hash_digest.hpp"
 #include "physical_mga_cow_store.hpp"
+#include "native_creation_transaction_inventory.hpp"
 #include "uuid.hpp"
 #include <algorithm>
 #include <limits>
@@ -109,7 +110,12 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
        maps>(budget/size-4)/2||
        maps>std::numeric_limits<std::size_t>::max()-count) return Fail(E::resource_exhausted);
 
-    auto planned=detail::PlanNativeCreationCatalogLayout(size,maps,total,budget,seed,indexes);
+    // SB_TRANSITIONAL_LEGACY_INVENTORY: only the two named formats exist.
+    using Format=NativeCreationInventoryFormat;
+    if(request.inventory_format!=Format::in_place&&request.inventory_format!=Format::transitional_legacy)
+      return Fail(E::invalid_request);
+    const bool in_place=request.inventory_format==Format::in_place;
+    auto planned=detail::PlanNativeCreationCatalogLayout(size,maps,total,budget,seed,indexes,in_place);
     if(!planned.ok())return Fail(planned.error==detail::NativeCreationLayoutError::resource_exhausted?E::resource_exhausted:
         planned.error==detail::NativeCreationLayoutError::capacity_exceeded?E::catalog_capacity_exceeded:E::invalid_catalog_input);
     auto plan=std::move(*planned.layout);const auto& layouts=plan.relations;
@@ -200,6 +206,10 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
         (n==maps+watermark_first||n==maps+watermark_second)?watermark:
         (n==maps+selector_first||n==maps+selector_second)?selector:issue(UuidKind::object);
     }
+    // SB_TRANSACTION_HEADER_PAGE: the header page belongs to the inventory
+    // object, with the inventory page type (a second family under 0x0301).
+    const u64 header_page=plan.transaction_header_page;
+    if(in_place){images[header_page].header.page_type=0x301;images[header_page].owner=images[maps+inventory].owner;}
     const auto ref=[&](u64 n){return disk::NativePageReference{b.filespace_uuid,n,1,b.page_size_profile_uuid};};
     const auto root=[&](u16 kind,u64 n){return disk::FilespaceRootReference{
       kind,images[n].header.page_type,b.filespace_uuid,n,1,b.page_size_profile_uuid,images[n].owner};};
@@ -223,10 +233,32 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
     if(!begun.ok()) return Fail(E::encoding_failure);
     auto committed=mga::CommitLocalTransaction(std::move(begun.inventory),request.creator.local_id,request.creation_utc_millis);
     if(!committed.ok()) return Fail(E::encoding_failure);
-    page::NativeTransactionInventoryPage inv;
-    inv.header=images[maps+inventory].header;inv.object_uuid=images[maps+inventory].owner;
-    inv.inventory_generation=1;inv.inventory=std::move(committed.inventory);
-    save(maps+inventory,page::EncodeNativeTransactionInventoryPage(inv));
+    const auto creator_inventory=std::move(committed.inventory);
+    if(!in_place){
+      // SB_TRANSITIONAL_LEGACY_INVENTORY: the SBTINV01 page, unchanged.
+      page::NativeTransactionInventoryPage inv;
+      inv.header=images[maps+inventory].header;inv.object_uuid=images[maps+inventory].owner;
+      inv.inventory_generation=1;inv.inventory=creator_inventory;
+      save(maps+inventory,page::EncodeNativeTransactionInventoryPage(inv));
+    }else{
+    // SB_COMPACT_TRANSACTION_STATE_PAGE / SB_TRANSACTION_HEADER_PAGE (owner
+    // 2026-11-05): the in-place transaction inventory. Transaction 1, the
+    // construction transaction, is committed; Next is 2.
+      const auto derived=mga::ComputeLocalTransactionHorizons(creator_inventory);
+      if(!derived.ok()||request.creation_utc_millis>std::numeric_limits<u64>::max()/1'000'000)
+        return Fail(E::encoding_failure);
+      const auto encoded=detail::EncodeNativeCreationTransactionInventory(images[maps+inventory].header,
+          images[header_page].header,creator,creator_inventory.next_local_transaction_id,derived.horizons,
+          request.creation_utc_millis);
+      if(!encoded)return Fail(E::encoding_failure);
+      const auto keep=[&](u64 n,std::vector<byte> bytes){
+        images[n].bytes=std::move(bytes);
+        const auto hash=core::hash::ComputeSha256Digest(images[n].bytes);
+        if(!hash.ok()) throw E::hash_failure;
+        images[n].sha256=hash.digest;
+      };
+      keep(maps+inventory,std::move(encoded->state));keep(header_page,std::move(encoded->headers));
+    }
 
     NativeCreationWorkspaceReceipt receipt;
     receipt.database_uuid=b.database_uuid;receipt.filespace_uuid=b.filespace_uuid;
@@ -341,7 +373,7 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
     page::NativeRetentionPage pins;pins.header=images[maps+retention].header;pins.object_uuid=images[maps+retention].owner;
     pins.epoch=1;pins.creator_transaction_uuid=creator;pins.creator_local_transaction_id=1;
     save(maps+retention,page::EncodeNativeRetentionPage(pins));
-    const auto derived=mga::ComputeLocalTransactionHorizons(inv.inventory);
+    const auto derived=mga::ComputeLocalTransactionHorizons(creator_inventory);
     if(!derived.ok()) return Fail(E::encoding_failure);
     page::NativeHorizonRoot h;h.header=images[maps+horizon].header;h.object_uuid=images[maps+horizon].owner;
     h.epoch=1;h.creator_transaction_uuid=creator;h.creator_local_transaction_id=1;h.total_records=3;

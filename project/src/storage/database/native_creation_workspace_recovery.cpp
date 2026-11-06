@@ -7,7 +7,9 @@
 #include "disk_device.hpp"
 #include "hash_digest.hpp"
 #include "physical_mga_cow_store.hpp"
+#include "native_creation_transaction_inventory.hpp"
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <new>
 #include <set>
@@ -74,7 +76,20 @@ NativeCreationRecoveryResult RecoverIndexedNativeCreationWorkspaceSelectionOnOpe
       disk::CheckFileDeviceExtent(total*size,0).ok());
     Require(budget/size>=26&&maps<=budget/size-26&&maps<=std::numeric_limits<std::size_t>::max()-20,E::resource_exhausted);
     const auto extent=device.Size();Require(extent.ok(),E::io_failure);Require(extent.size_bytes==total*size);
-    const auto planned=detail::PlanNativeCreationCatalogLayout(size,maps,total,budget,seed,indexes);
+    // SB_TRANSITIONAL_LEGACY_INVENTORY: the inventory format decides the
+    // layout (an in-place inventory adds its header page), so it is read from
+    // page zero's inventory root before planning.
+    // Every probe byte is compared with the full image read below, so a
+    // corrupted probe cannot select a layout unnoticed.
+    bool in_place=false;
+    std::array<byte,page::kTransactionStateFamilyOffset+page::kTransactionStatePageMagic.size()> head{};
+    {const auto at=std::find_if(z.roots.begin(),z.roots.end(),[](const auto& r){return r.kind==4;});
+      Require(at!=z.roots.end()&&at->page_number==maps+2);
+      const auto io=device.ReadAt(at->page_number*size,head.data(),head.size());
+      Require(io.ok()&&io.bytes_transferred==head.size(),E::io_failure);
+      in_place=std::equal(page::kTransactionStatePageMagic.begin(),page::kTransactionStatePageMagic.end(),
+          head.begin()+page::kTransactionStateFamilyOffset);}
+    const auto planned=detail::PlanNativeCreationCatalogLayout(size,maps,total,budget,seed,indexes,in_place);
     Require(planned.ok(),planned.error==detail::NativeCreationLayoutError::resource_exhausted?E::resource_exhausted:E::graph_failure);
     const auto& plan=*planned.layout;const auto& layouts=plan.relations;
     Require(plan.image_count<=budget/size-6,E::resource_exhausted);
@@ -87,6 +102,7 @@ NativeCreationRecoveryResult RecoverIndexedNativeCreationWorkspaceSelectionOnOpe
         if(std::find(p.navigation.begin(),p.navigation.end(),n)!=p.navigation.end())return 0x202;
         for(const auto& level:p.branches)if(std::find(level.begin(),level.end(),n)!=level.end())return 0x201;
       }
+      if(in_place&&n==plan.transaction_header_page)return 0x301;
       return n<maps+20?types[n-maps]:6;
     };
     const auto read=[&](u64 n,std::vector<byte>& bytes){
@@ -100,6 +116,7 @@ NativeCreationRecoveryResult RecoverIndexedNativeCreationWorkspaceSelectionOnOpe
       const auto header=disk::DecodeNativeCommonPageHeader(image.bytes.data()+(n==0?4096:0),128,&expected);
       Require(header.ok()&&!header.header->flags);image.header=*header.header;
     }
+    Require(std::equal(head.begin(),head.end(),images[maps+2].bytes.begin()));
     {std::vector<byte> bytes;for(u64 n=images.size();n<total;++n){read(n,bytes);
       Require(std::all_of(bytes.begin(),bytes.end(),[](byte v){return !v;}));}}
     const auto ref=[&](u64 n){return disk::NativePageReference{b.filespace_uuid,n,1,b.page_size_profile_uuid};};
@@ -117,13 +134,29 @@ NativeCreationRecoveryResult RecoverIndexedNativeCreationWorkspaceSelectionOnOpe
 
     // Every expected image is derived from genesis rules and actual original
     // identities. Complete byte comparison rejects extra fields and padding.
-    {const auto decoded=page::DecodeNativeTransactionInventoryPage(images[maps+2].bytes);Valid(decoded);
+    // The in-place transaction inventory (SB_COMPACT_TRANSACTION_STATE_PAGE,
+    // SB_TRANSACTION_HEADER_PAGE): its pages carry no object identity, so the
+    // inventory object is page zero's inventory root (kind 4); the header page
+    // belongs to the same object.
+    if(!in_place){
+      // SB_TRANSITIONAL_LEGACY_INVENTORY: the SBTINV01 page, unchanged.
+      const auto decoded=page::DecodeNativeTransactionInventoryPage(images[maps+2].bytes);Valid(decoded);
       auto begun=mga::BeginLocalTransaction(mga::MakeEmptyLocalTransactionInventory(),{UuidKind::transaction,creator},z.creation_utc_millis);
       Require(begun.ok());auto committed=mga::CommitLocalTransaction(std::move(begun.inventory),mga::MakeLocalTransactionId(1),z.creation_utc_millis);
       Require(committed.ok());page::NativeTransactionInventoryPage inv;
       inv.header=images[maps+2].header;inv.object_uuid=images[maps+2].owner=decoded.page->object_uuid;
       inv.inventory_generation=1;inv.inventory=std::move(committed.inventory);
-      same(maps+2,page::EncodeNativeTransactionInventoryPage(inv));}
+      same(maps+2,page::EncodeNativeTransactionInventoryPage(inv));
+    }else{const auto at=std::find_if(z.roots.begin(),z.roots.end(),[](const auto& r){return r.kind==4;});
+      Require(at!=z.roots.end()&&at->page_number==maps+2);
+      const u64 hp=plan.transaction_header_page;
+      images[maps+2].owner=images[hp].owner=at->object_uuid;
+      auto begun=mga::BeginLocalTransaction(mga::MakeEmptyLocalTransactionInventory(),{UuidKind::transaction,creator},z.creation_utc_millis);
+      Require(begun.ok());auto committed=mga::CommitLocalTransaction(std::move(begun.inventory),mga::MakeLocalTransactionId(1),z.creation_utc_millis);
+      Require(committed.ok());const auto derived=mga::ComputeLocalTransactionHorizons(committed.inventory);Require(derived.ok());
+      const auto encoded=detail::EncodeNativeCreationTransactionInventory(images[maps+2].header,images[hp].header,creator,
+          committed.inventory.next_local_transaction_id,derived.horizons,z.creation_utc_millis);
+      Require(encoded&&encoded->state==images[maps+2].bytes&&encoded->headers==images[hp].bytes);}
     NativeCreationWorkspaceReceipt receipt;
     receipt.database_uuid=b.database_uuid;receipt.filespace_uuid=b.filespace_uuid;receipt.operation_uuid=operation;
     receipt.page_zero_uuid=z.page_uuid;receipt.timeline_uuid=timeline;

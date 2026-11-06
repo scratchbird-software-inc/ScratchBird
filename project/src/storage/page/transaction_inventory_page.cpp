@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "transaction_inventory_page.hpp"
+#include "transaction_state_page.hpp"
 #include "native_inventory_chain_backing.hpp"
 #include "native_metadata_memory.hpp"
 #include "transaction_inventory_validation.hpp"
@@ -870,6 +871,10 @@ NativeInventoryChainView ReadInventoryChainView(
       const auto header=disk::DecodeNativeCommonPageHeader(bytes.data(),128);
       if (!header.ok()) return fail(Error::invalid_header);
       if (header.header->flags&1u) return fail(Error::encrypted_requires_crypto_authority);
+      if (pages.empty() && bytes.size()>=kTransactionStateFamilyOffset+kTransactionStatePageMagic.size() &&
+          std::equal(kTransactionStatePageMagic.begin(),kTransactionStatePageMagic.end(),bytes.begin()+kTransactionStateFamilyOffset)) {
+        receipt.in_place_head=true; return fail(Error::invalid_family);
+      }
       const auto count=std::min<std::size_t>(LoadLittle32(bytes.data()+184),(bytes.size()-384)/72);
       auto decoded=DecodeNativeTransactionInventoryPageInto(bytes,scratch.Array<TransactionInventoryEntry>(count),
         scratch.Array<std::size_t>(count),scratch.Array<byte>(count));

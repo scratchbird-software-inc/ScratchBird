@@ -876,17 +876,32 @@ NativeCheckpointInventoryDeviceRead detail::VerifyNativeCheckpointInventoryBacke
       target.page.page_number,target.page.page_generation,target.page.page_size_profile_uuid,target.object_uuid};
     auto read=page::detail::ReadNativeInventoryChainBacked(database_uuid,ordered,inventory_ref,
       maximum_retained_image_bytes-loaded.bytes.size(),page::NativeInventoryChainReadContext::current,nullptr,{},batches,resource);
+    // SB_COMPACT_TRANSACTION_STATE_PAGE (owner rulings 2026-11-05): an
+    // in-place inventory (family SBTIPW01 and its header chain) is updated in
+    // place and carries no digest, so it is not bound to the checkpoint's
+    // role-1 digest, and Next is not tied to the checkpoint's selected
+    // transaction. Only the constructor's checkpoint binds one today. The same
+    // reader serves the control authority (SB_TRANSITIONAL_LEGACY_INVENTORY).
+    const bool in_place=read.in_place_head;
+    if(in_place){MergeCheckpointIo(out,read);
+      auto again=page::detail::ReadNativeInPlaceInventoryBacked(database_uuid,ordered,inventory_ref,
+        maximum_retained_image_bytes-loaded.bytes.size(),batches,resource);
+      if(!again.handled)return fail(Error::inventory_failure,page::NativeInventoryError::invalid_family);
+      read=std::move(again.read);}
     MergeCheckpointIo(out,read);const auto& chain=read.chain;
     if(!chain.ok()){using I=page::NativeInventoryError;const auto error=chain.error==I::resource_exhausted?Error::resource_exhausted:
       chain.error==I::hash_failure?Error::hash_failure:chain.error==I::io_failure?Error::io_failure:
       chain.error==I::encrypted_requires_crypto_authority?Error::encrypted_requires_crypto_authority:Error::inventory_failure;
       return fail(error,chain.error);}
+    const auto& root=*loaded.root;
+    if(in_place){if(!root.creator_operation_uuid.is_nil())return fail(Error::inventory_mismatch);}
+    else{
     const auto head=chain.pages.front().image;const auto digest=hash::ComputeSha256DigestNative(head.data(),head.size());
     if(!digest.ok())return fail(Error::hash_failure);
     if(digest.digest!=target.sha256)return fail(Error::invalid_integrity);
-    const auto& root=*loaded.root;
     if(chain.inventory.next_local_transaction_id<=root.selected_local_transaction_id||
       chain.inventory.next_local_transaction_id-1!=root.selected_local_transaction_id)return fail(Error::inventory_mismatch);
+    }
     const auto checkpoint_digest=hash::ComputeSha256DigestNative(loaded.bytes.data(),loaded.bytes.size());
     if(!checkpoint_digest.ok())return fail(Error::hash_failure);
     u64 operation_work=0;

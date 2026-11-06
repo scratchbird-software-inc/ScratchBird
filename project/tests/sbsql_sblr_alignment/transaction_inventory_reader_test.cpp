@@ -6,11 +6,13 @@
 // transaction-state chain and the header chain). Not wired into open yet.
 #include "transaction_inventory_reader.hpp"
 #include "transaction_inventory_validation.hpp"
+#include "native_inventory_chain_backing.hpp"
 
 #include <algorithm>
 #include <cstdio>
 #include <filesystem>
 #include <iostream>
+#include <memory_resource>
 #include <source_location>
 #include <stdexcept>
 #include <string>
@@ -417,6 +419,99 @@ void TestDeviceReader() {
   }
   Check(before == after, "reader leaves the file unchanged");
 }
+
+// --- the chain-view reader the checkpoint-bound readers share ---------------
+// SB_TRANSITIONAL_LEGACY_INVENTORY: the selected read and the control
+// authority read an in-place inventory through this one reader.
+
+page::detail::NativeInPlaceInventoryRead ReadChainView(const std::string& path, disk::FilespaceRootReference root,
+                                                       u64 budget, std::vector<byte>* file_bytes = nullptr) {
+  disk::FileDevice device;
+  Check(device.Open(path, disk::FileOpenMode::open_existing_read_only).ok(), "open read-only");
+  disk::FileDevice::ReadLatencyBatch batch(device);
+  const disk::NativeFilespaceDevice files[] = {{kFilespace, kProfile, &device}};
+  disk::FileDevice::ReadLatencyBatch* const batches[] = {&batch};
+  static std::pmr::monotonic_buffer_resource resource;
+  auto out = page::detail::ReadNativeInPlaceInventoryBacked(kDatabase, files, root, budget, batches, resource);
+  if (file_bytes) {
+    // Copy the borrowed images while the backing is alive (the resource is).
+    file_bytes->clear();
+    for (const auto& view : out.read.chain.pages) file_bytes->insert(file_bytes->end(), view.image.begin(), view.image.end());
+  }
+  return out;
+}
+
+void TestChainViewReader() {
+  TempFile tmp;
+  Inventory inv;
+  WritePages(tmp.path, {{1, inv.state}, {3, inv.headers}}, 6);
+  std::vector<byte> images;
+  auto r = ReadChainView(tmp.path, Root(), 64 * kPage, &images);
+  Check(r.handled && r.read.ok(), "in-place inventory read as a chain view");
+  const auto& chain = r.read.chain;
+  Check(chain.pages.size() == 2 && chain.pages[0].page.header.page_number == 1 &&
+            chain.pages[1].page.header.page_number == 3,
+        "one page view per state page, then per header page");
+  Check(chain.pages[0].page.header.page_type == page::kTransactionStatePageType &&
+            chain.pages[1].page.header.page_type == page::kTransactionStatePageType,
+        "both families carry the inventory page type");
+  Check(chain.pages[0].page.object_uuid == Root().object_uuid && chain.pages[1].page.object_uuid == Root().object_uuid,
+        "each page carries the inventory object");
+  Check(chain.pages[0].page.inventory_generation == 1 && chain.pages[1].page.inventory_generation == 1,
+        "generation 1, the constructor's");
+  std::vector<byte> expected = inv.state;
+  expected.insert(expected.end(), inv.headers.begin(), inv.headers.end());
+  Check(images == expected, "page views borrow the exact images read");
+  std::vector<u64> ids;
+  for (const auto& e : chain.inventory.entries) ids.push_back(e.identity.local_id.value);
+  Check(chain.inventory.next_local_transaction_id == 10 && chain.inventory.next_commit_sequence == 3 &&
+            ids == std::vector<u64>({1, 2, 3, 4, 7, 8}),
+        "the same in-memory inventory the image build produces");
+  // Interesting: 3 active, 4 prepared, 7 active; committed, rolled back and
+  // archived are not.
+  Check(chain.horizons.valid && chain.horizons.oldest_interesting_transaction.value == 3 &&
+            chain.horizons.oldest_active_transaction.value == 3 &&
+            chain.horizons.oldest_snapshot_transaction.value == 3 && chain.horizons.next_transaction_id.value == 10,
+        "horizons projected from the built inventory");
+  Check(chain.retained_image_bytes == 2 * kPage, "retained bytes are the pages read");
+  Check(r.read.physical_bytes_read == page::kTransactionStateWordsOffset + 2 * kPage, "probe plus both pages");
+  Check(!r.read.in_place_head, "no fallback flag on the in-place reader's own result");
+
+  // Not an in-place head: left to the SBTINV01 reader.
+  WritePages(tmp.path, {{3, inv.headers}}, 6);
+  r = ReadChainView(tmp.path, Root(), 64 * kPage);
+  Check(!r.handled, "a head page without the SBTIPW01 family is not handled");
+  WritePages(tmp.path, {{1, inv.state}, {3, inv.headers}}, 6);
+  auto root = Root();
+  root.kind = 5;
+  Check(!ReadChainView(tmp.path, root, 64 * kPage).handled, "a root of another kind is not handled");
+  root = Root();
+  root.filespace_uuid = V7(55);
+  Check(!ReadChainView(tmp.path, root, 64 * kPage).handled, "a root in an unknown filespace is not handled");
+
+  // Handled refusals.
+  r = ReadChainView(tmp.path, Root(), kPage);
+  Check(r.handled && r.read.chain.error == page::NativeInventoryError::resource_exhausted && !r.read.ok(),
+        "a budget below the bounded chain length is refused before reading the chains");
+  WritePages(tmp.path, {{1, inv.state}}, 3);
+  r = ReadChainView(tmp.path, Root(), 64 * kPage);
+  Check(r.handled && r.read.chain.error == page::NativeInventoryError::io_failure && !r.read.io_status.ok(),
+        "a header chain beyond the end of the file is an I/O failure");
+  r = ReadChainView(tmp.path, Root(5), 64 * kPage);
+  Check(r.handled && r.read.chain.error == page::NativeInventoryError::io_failure,
+        "a head beyond the end of the file is an I/O failure of the probe");
+  Inventory bad;
+  SetWord(bad.state, 9, TipStateCode::committed, false);
+  WritePages(tmp.path, {{1, bad.state}, {3, bad.headers}}, 6);
+  r = ReadChainView(tmp.path, Root(), 64 * kPage);
+  Check(r.handled && r.read.chain.error == page::NativeInventoryError::invalid_inventory,
+        "a failing cross check is an invalid inventory");
+  auto foreign = Inventory();
+  foreign.headers = HeaderPage(3, 0, 0, V7(77));
+  WritePages(tmp.path, {{1, foreign.state}, {3, foreign.headers}}, 6);
+  r = ReadChainView(tmp.path, Root(), 64 * kPage);
+  Check(r.handled && !r.read.ok(), "a header page of another database is refused");
+}
 }  // namespace
 
 int main() {
@@ -426,6 +521,7 @@ int main() {
     TestChainFindings();
     TestBuildInventory();
     TestDeviceReader();
+    TestChainViewReader();
   } catch (const std::exception& e) {
     std::cerr << "FAIL: " << e.what() << " after " << checks << " checks\n";
     return 1;

@@ -200,6 +200,19 @@ struct Context {
     using C=page::NativeInventoryChainReadContext;
     auto read=page::detail::ReadNativeInventoryChainBacked(database,files,r,budget-used,
       zero_images.empty()?C::current:C::historical,zero_images.empty()?nullptr:&root.sha256,contexts,batches,*scratch.resource);
+    if(read.in_place_head){
+      // SB_TRANSITIONAL_LEGACY_INVENTORY: an in-place inventory, through the
+      // reader the selected read uses and with the same rules: no role-1
+      // digest, Next not tied to the selected transaction, the constructor's
+      // checkpoint only. In-place pages have no historical image, so a
+      // historical read of one is refused.
+      Receipt(read);Require(zero_images.empty()&&cp.creator_operation_uuid.is_nil(),E::binding_mismatch);
+      auto again=page::detail::ReadNativeInPlaceInventoryBacked(database,files,r,budget-used,batches,*scratch.resource);
+      Require(again.handled,E::inventory_failure);read=std::move(again.read);
+      Receipt(read);auto out=read.chain;
+      if(!out.ok())throw out.error==page::NativeInventoryError::resource_exhausted?E::resource_exhausted:out.error==page::NativeInventoryError::io_failure?E::io_failure:out.error==page::NativeInventoryError::encrypted_requires_crypto_authority?E::encrypted_requires_authority:E::inventory_failure;
+      Charge(out.retained_image_bytes);return out;
+    }
     Receipt(read);auto out=read.chain;
     if(!out.ok())throw out.error==page::NativeInventoryError::hash_failure?E::hash_failure:out.error==page::NativeInventoryError::resource_exhausted?E::resource_exhausted:out.error==page::NativeInventoryError::io_failure?E::io_failure:out.error==page::NativeInventoryError::encrypted_requires_crypto_authority?E::encrypted_requires_authority:E::inventory_failure;
     Charge(out.retained_image_bytes);Require(Hash(out.pages.front().image)==root.sha256&&out.inventory.next_local_transaction_id&&out.inventory.next_local_transaction_id-1==cp.selected_local_transaction_id,E::binding_mismatch);return out;

@@ -355,7 +355,8 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     // the next smaller one, whose last allocation is the last branch page.
     const auto deep_seed=DenseIndexedCatalogSeed(request,two_level_maximum+1,40000,2500);
     const auto plan_for=[&](u64 total){return db::detail::PlanNativeCreationCatalogLayout(page_bytes,
-        (total+coverage-1)/coverage,total,512*page_bytes,deep_seed,construction_indexes);};
+        (total+coverage-1)/coverage,total,512*page_bytes,deep_seed,construction_indexes,
+        exhausted_request.inventory_format==db::NativeCreationInventoryFormat::in_place);};
     const auto fits=plan_for(exhausted_total),short_one=plan_for(exhausted_total-1);
     Check(fits.ok()&&fits.layout->image_count==exhausted_total&&fits.layout->relations[0].branches.size()==1&&
         short_one.error==db::detail::NativeCreationLayoutError::capacity_exceeded,
@@ -387,7 +388,8 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     const u64 size=disk::kCanonicalFilespacePageProfiles[profile].page_size_bytes;
     for(const auto rows:{db::kNativeHostedCatalogRelationMaximumRows,db::kNativeCatalogScanRelationMaximumRows}) {
       db::NativeCreationCatalogSeed tier;tier[0].assign(rows,fixture_seed[0][1]);
-      const auto plan=db::detail::PlanNativeCreationCatalogLayout(size,1,u64{1}<<20,(u64{1}<<20)*size,tier,construction_indexes);
+      const auto plan=db::detail::PlanNativeCreationCatalogLayout(size,1,u64{1}<<20,(u64{1}<<20)*size,tier,construction_indexes,
+          request.inventory_format==db::NativeCreationInventoryFormat::in_place);
       Check(plan.ok(),"tier row bound plans at every page size");
       const auto& layout=plan.layout->relations[0];
       u64 planned=1+layout.navigation.size();

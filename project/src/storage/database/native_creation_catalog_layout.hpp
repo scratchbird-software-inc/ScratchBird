@@ -21,6 +21,9 @@ struct NativeCreationRelationLayout {
 struct NativeCreationCatalogLayout {
   std::array<NativeCreationRelationLayout,6> relations;
   u64 image_count=0,root_cells=0,leaf_cells=0;
+  // SB_TRANSACTION_HEADER_PAGE: the first transaction header page, the last
+  // page allocated, so no catalog page number moves; 0 when none is planned.
+  u64 transaction_header_page=0;
 };
 enum class NativeCreationLayoutError {none,invalid_input,capacity_exceeded,resource_exhausted};
 struct NativeCreationLayoutResult {
@@ -29,10 +32,13 @@ struct NativeCreationLayoutResult {
   bool ok() const noexcept{return error==NativeCreationLayoutError::none&&layout.has_value();}
 };
 // Shared exact physical layout for construction and original-operation recovery.
+// transaction_header_page: the create writes the in-place inventory, so its
+// header page is planned (SB_TRANSITIONAL_LEGACY_INVENTORY; no default, so every
+// caller plans the format it writes).
 // No identities, authorization, memory grants, writes or configuration defaults.
 inline NativeCreationLayoutResult PlanNativeCreationCatalogLayout(
     u64 size,u64 maps,u64 total,u64 budget,const NativeCreationCatalogSeed& seed,
-    const NativeCreationCatalogIndexes& indexes) noexcept {
+    const NativeCreationCatalogIndexes& indexes,bool transaction_header_page) noexcept {
   using E=NativeCreationLayoutError;
   const auto fail=[](E e){return NativeCreationLayoutResult{e,{}};};
   try {
@@ -77,6 +83,14 @@ inline NativeCreationLayoutResult PlanNativeCreationCatalogLayout(
           for(u64 i=0;i<shape.level_pages[level];++i)pages.push_back(allocate());
         }
       }
+    }
+    if(transaction_header_page){
+      // The transaction header page (owner 2026-11-05, Q3 = 1), after every
+      // catalog page. A transitional legacy inventory (SBTINV01) has none
+      // (SB_TRANSITIONAL_LEGACY_INVENTORY).
+      if(plan.image_count>=total)return fail(E::capacity_exceeded);
+      if(plan.image_count>=budget/size-2)return fail(E::resource_exhausted);
+      plan.transaction_header_page=plan.image_count++;
     }
     return {E::none,std::move(plan)};
   }catch(E e){return fail(e);}

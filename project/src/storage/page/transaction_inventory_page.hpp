@@ -176,6 +176,12 @@ struct NativeInventoryChainDeviceRead {
   Status io_status;
   DiagnosticRecord io_diagnostic;
   u64 physical_bytes_read=0;
+  // SB_TRANSITIONAL_LEGACY_INVENTORY: the head page is an in-place
+  // transaction-state page (family SBTIPW01), refused here as invalid_family
+  // without decoding; the caller may read it with the in-place reader
+  // (native_inventory_chain_backing.hpp). Seen on bytes already read, so an
+  // SBTINV01 read does no extra I/O.
+  bool in_place_head=false;
   bool ok() const noexcept{return chain.ok();}
 };
 // Complete current/historical actual inventory with caller-owned input-disjoint

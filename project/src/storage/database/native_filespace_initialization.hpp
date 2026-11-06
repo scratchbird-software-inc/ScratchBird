@@ -7,11 +7,21 @@
 #include "node_uuid_issuer.hpp"
 
 namespace scratchbird::storage::database {
+// SB_TRANSITIONAL_LEGACY_INVENTORY (owner 2026-11-05, Q8 = 2): the
+// transaction inventory a native create writes. in_place is the design: the
+// compact state page plus its header page (SB_COMPACT_TRANSACTION_STATE_PAGE,
+// SB_TRANSACTION_HEADER_PAGE). transitional_legacy writes the SBTINV01 page and
+// no header page; it exists only so the drift-layer tests (checkpoint,
+// selector and management publication) keep the starting database they decode
+// until that layer is removed, and it is deleted with that layer. Production
+// create never selects it. Ignored by the bootstrap-only initializer.
+enum class NativeCreationInventoryFormat : core::platform::u8 { in_place, transitional_legacy };
 struct NativeFilespaceInitializationRequest {
   disk::FilespaceBootstrap bootstrap;
   core::platform::Uuid operation_uuid,writer_uuid,policy_snapshot_uuid;
   transaction::mga::TransactionIdentity creator;
   core::platform::u64 total_pages=0,creation_utc_millis=0;
+  NativeCreationInventoryFormat inventory_format=NativeCreationInventoryFormat::transitional_legacy;
 };
 enum class NativeFilespaceInitializationError {
   none, invalid_request, invalid_device, device_not_empty, invalid_capacity,
