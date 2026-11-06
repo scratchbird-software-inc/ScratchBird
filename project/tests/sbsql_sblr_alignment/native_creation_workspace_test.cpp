@@ -44,13 +44,16 @@ unsigned selector_phase=0;
 unsigned watermark_written=0,watermark_synced=0,watermark_compared=0;
 unsigned zero_writes=0,zero_partial_at=0;
 u64 zero_bytes=0,largest_zero_write=0;
-u64 page_bytes=8192,total_pages=21,selector_page=17;
+// The smallest file: maps + 20 controls + the transaction header page
+// (SB_TRANSACTION_HEADER_PAGE, allocated last). The smallest image budget adds
+// one in-flight encoder image and one readback image.
+u64 page_bytes=8192,total_pages=22,selector_page=17;
 bool ordered=true;
 bool Hit(Call kind){if(!armed)return false;return ++calls[kind]==fault_at&&kind==fault_kind;}
 void Arm(unsigned kind=call_count,unsigned at=0){calls={};fault_kind=kind;fault_at=at;corrupt_at=0;selector_phase=0;watermark_written=watermark_synced=watermark_compared=0;zero_writes=0;zero_bytes=largest_zero_write=0;ordered=true;armed=true;}
 void Disarm(){armed=false;}
 Uuid Id(unsigned n){Uuid id;id.bytes[0]=1;id.bytes[6]=0x70;id.bytes[8]=0x80;id.bytes[14]=n>>8;id.bytes[15]=n;return id;}
-db::NativeFilespaceInitializationRequest Request(unsigned profile=0,u64 total=21){
+db::NativeFilespaceInitializationRequest Request(unsigned profile=0,u64 total=22){
   const auto& p=disk::kCanonicalFilespacePageProfiles[profile];
   db::NativeFilespaceInitializationRequest r;
   r.bootstrap={Id(1),Id(2),p.uuid,disk::kNativeBootstrapIntegrityProfile,{},p.page_size_bytes,1,0,1,7};
@@ -97,18 +100,24 @@ void Inspect(disk::FileDevice& device,const db::NativeFilespaceInitializationReq
   Check(inv.entries.size()==1&&inv.next_local_transaction_id==2&&inv.next_commit_sequence==2&&!inv.publication_base,
     "no invented active transaction or publication base");
   const auto& entry=inv.entries.front();
+  // In the in-place inventory a transaction's begin time is its UUIDv7 time
+  // prefix (the UUID is issued at BEGIN; SB_TRANSACTION_INVENTORY_READER); the
+  // header records only the completion time.
+  u64 creator_begin=0;for(unsigned n=0;n<6;++n)creator_begin=(creator_begin<<8)|request.creator.transaction_uuid.value.bytes[n];
   Check(entry.identity.transaction_uuid.value==Id(5)&&entry.identity.scope==mga::TransactionScope::local_node&&
     entry.identity.local_id.value==1&&entry.state==mga::TransactionState::committed&&entry.commit_sequence==1&&
     entry.evidence_record_required&&entry.evidence_record_written&&!entry.rollback_only&&
-    entry.begin_unix_epoch_millis==request.creation_utc_millis&&entry.final_unix_epoch_millis==request.creation_utc_millis,
+    entry.begin_unix_epoch_millis==creator_begin&&entry.final_unix_epoch_millis==request.creation_utc_millis,
     "real single construction inventory outcome");
   const std::array<u64,5> coverage{60,124,252,507,1017};
   unsigned profile=0;while(disk::kCanonicalFilespacePageProfiles[profile].page_size_bytes!=size)++profile;
-  const u64 maps=(request.total_pages+coverage[profile]-1)/coverage[profile],used=maps+20;
+  const u64 maps=(request.total_pages+coverage[profile]-1)/coverage[profile],used=maps+21;
   Check(z.total_pages==request.total_pages&&z.free_pages==request.total_pages-used&&!z.preallocated_pages&&
     bound.allocation.pages.size()==maps&&bound.allocation.state_counts[2]==used&&bound.allocation.state_counts[0]==z.free_pages,
     "independent exact coverage and capacity counts");
-  const std::array<u32,20> control_types{0,0x300,0x301,9,8,0x303,0x302,5,10,11,6,6,6,6,6,6,0x30e,0x30e,0x500,0x500};
+  // The 21st control is the transaction header page, a second family under the
+  // inventory page type.
+  const std::array<u32,21> control_types{0,0x300,0x301,9,8,0x303,0x302,5,10,11,6,6,6,6,6,6,0x30e,0x30e,0x500,0x500,0x301};
   const auto catalog_image=page::DecodeNativeCatalogRoot(Read(device,maps+7,size));
   Check(catalog_image.ok(),"actual catalog reference owner identities");
   std::map<u64,Uuid> expected_owners{{0,b.filespace_uuid},{maps+1,cp.object_uuid},
@@ -136,6 +145,8 @@ void Inspect(disk::FileDevice& device,const db::NativeFilespaceInitializationReq
   expected_owners.emplace(maps+19,watermark_second.state->object_uuid);
   for(u64 n=1;n<=maps;++n)expected_owners.emplace(n,bound.allocation.pages.front().map->object_uuid);
   for(const auto& r:cp.roots)expected_owners.emplace(r.page.page_number,r.object_uuid);
+  // The header page belongs to the inventory object (checkpoint role 1).
+  expected_owners.emplace(maps+20,cp.roots.front().object_uuid);
   for(const auto& r:catalog_image.root->roots)expected_owners.emplace(r.page.page_number,r.object_uuid);
   std::set<Uuid> identities{b.database_uuid,b.filespace_uuid,b.page_size_profile_uuid,b.checksum_profile_uuid,
     request.operation_uuid,request.writer_uuid,request.creator.transaction_uuid.value,request.policy_snapshot_uuid};
@@ -318,7 +329,7 @@ int main(int argc,char** argv){try{
       const u64 maps=profile?1:2;selector_page=maps+16;
       for(const u64 extra:{u64{0},u64{4},u64{64}}){
         disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"zero batch device");
-        Arm();const auto result=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,(maps+22+extra)*page_bytes,*fixture.issuer);Disarm();
+        Arm();const auto result=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,(maps+23+extra)*page_bytes,*fixture.issuer);Disarm();
         const u64 batch=std::min<u64>(16,extra+1);
         Check(result.ok()&&ordered&&selector_phase==6&&zero_writes==(total_pages+batch-1)/batch&&
           zero_bytes==total_pages*page_bytes&&largest_zero_write==batch*page_bytes,
@@ -363,12 +374,12 @@ int main(int argc,char** argv){try{
     // allocations that cannot be injected again in later attempts.
     {disk::FileDevice device;const auto path=fixture.Next();
       Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"registry warm-up device");
-      Check(db::InitializeNativeCreationWorkspaceOnOpenDevice(device,Request(),23*8192,*fixture.issuer).ok(),"actual constructor registry warm-up");
+      Check(db::InitializeNativeCreationWorkspaceOnOpenDevice(device,Request(),24*8192,*fixture.issuer).ok(),"actual constructor registry warm-up");
       Check(device.Close().ok()&&fs::remove(path),"clean closed warm-up construction");}
     {disk::FileDevice device;const auto path=fixture.Next();const auto request=Request();
       Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"failure registry warm-up device");
       allocations=0;allocation_fault=1;count_allocations=true;
-      const auto failure=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,23*8192,*fixture.issuer);count_allocations=false;
+      const auto failure=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,24*8192,*fixture.issuer);count_allocations=false;
       Check(!failure.ok()&&!failure.receipt,"actual failure registry warm-up");
       Check(device.Close().ok()&&fs::remove(path),"clean closed failure warm-up");}
     unsigned sites=0;
@@ -381,14 +392,14 @@ int main(int argc,char** argv){try{
       disk::FileDevice device;const auto path=fixture.Next();
       Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"allocation fault device");
       const auto request=Request();const auto lost=device.failed_io_latency_observations();allocations=0;allocation_fault=at;count_allocations=true;
-      const auto r=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,23*8192,*fixture.issuer);count_allocations=false;
+      const auto r=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,24*8192,*fixture.issuer);count_allocations=false;
       if(at==0){Check(r.ok(),"allocation baseline");sites=allocations;
         Check(!single||(wanted>0&&wanted<=sites),"requested allocation site actually exists");
         std::cout<<"allocation_sites="<<sites<<std::endl;}
       else {const bool isolated_observation=r.ok()&&device.failed_io_latency_observations()==lost+1;
         Check(allocations>=at&&(isolated_observation||(!r.ok()&&!r.receipt)),"required allocation failure cannot certify a partial graph");
         if(isolated_observation)Inspect(device,request);
-        if(device.Size().size_bytes)Check(db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,23*8192,*fixture.issuer).error==
+        if(device.Size().size_bytes)Check(db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,24*8192,*fixture.issuer).error==
           db::NativeCreationWorkspaceError::device_not_empty,"allocation failure preserves nonempty attempt");}
       Check(device.Close().ok()&&fs::remove(path),"remove only the closed disposable attempt after its preservation checks");
       if(at)_exit(0);
@@ -410,10 +421,10 @@ int main(int argc,char** argv){try{
     if(child==0){const auto p=std::to_string(profile);execl(argv[0],argv[0],"--inspect",path.c_str(),p.c_str(),nullptr);_exit(127);}
     int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh executable reads actual construction graph");
   }
-  const auto request=Request();page_bytes=8192;total_pages=21;selector_page=17;
+  const auto request=Request();page_bytes=8192;total_pages=22;selector_page=17;
   {disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"post-publication mutation fixture");
     Arm();tamper_watermark_after_publication=true;tamper_done=false;
-    const auto result=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,23*page_bytes,*fixture.issuer);
+    const auto result=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,24*page_bytes,*fixture.issuer);
     tamper_watermark_after_publication=false;Disarm();
     Check(tamper_done&&!result.ok()&&!result.receipt,"actual watermark re-admission must precede the creation receipt");
   }
@@ -421,7 +432,7 @@ int main(int argc,char** argv){try{
     if(child==0){disk::FileDevice device;
       if(!device.Open(path.string(),disk::FileOpenMode::create_new).ok())_exit(88);
       fixture.ResetIssuer();Arm();stop_before_second_selector=true;
-      (void)db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,23*page_bytes,*fixture.issuer);_exit(89);}
+      (void)db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,24*page_bytes,*fixture.issuer);_exit(89);}
     int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==86,
       "process loss before second selector follows first selector durability and verification");
     disk::FileDevice device;Check(device.Open(path.string(),disk::FileOpenMode::open_existing).ok(),"new process owns interrupted construction");
@@ -432,33 +443,35 @@ int main(int argc,char** argv){try{
     const auto classified=db::ClassifyNativeCheckpointSelectionPair(first,second);
     Check(!classified.ok()&&!classified.selection&&classified.error==db::NativeCheckpointSelectionError::repair_required,
       "image pair requires repair after loss between selectors");
-    const auto selected=db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),devices,Id(2),23*page_bytes);
+    const auto selected=db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),devices,Id(2),24*page_bytes);
     Check(!selected.ok()&&!selected.selection&&selected.slots[0].empty()&&selected.slots[1].empty()&&
       !selected.checkpoint_inventory.ok()&&selected.error==db::NativeCheckpointSelectionError::slot_binding_mismatch,
       "bound reader rejects the missing second common header without granting partial current-root authority");
-    const auto replay=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,23*page_bytes,*fixture.issuer);
+    const auto replay=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,24*page_bytes,*fixture.issuer);
     Check(!replay.ok()&&!replay.receipt&&replay.error==db::NativeCreationWorkspaceError::device_not_empty&&
       Read(device,17,page_bytes)==first&&Read(device,18,page_bytes)==second,"restart preserves interrupted pair without creation replay");}
   {const auto large=Request(0,3601);disk::FileDevice device;
     Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"cross-map control fixture");
-    const auto required=(2*61+4)*u64{8192};
+    // The final admission's exact image budget: the maps twice, four controls,
+    // and the in-place inventory's header page (SB_TRANSACTION_HEADER_PAGE).
+    const auto required=(2*61+5)*u64{8192};
     const auto insufficient=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,large,required-1,*fixture.issuer);
     Check(!insufficient.ok()&&!insufficient.receipt&&insufficient.error==db::NativeCreationWorkspaceError::resource_exhausted&&!device.Size().size_bytes,"final selected admission budget deficit refuses before writes");
     const auto r=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,large,required,*fixture.issuer);
     if(!r.ok())std::cerr<<"large creation error="<<static_cast<int>(r.error)<<" checkpoint="<<static_cast<int>(r.checkpoint_error)<<" selector="<<static_cast<int>(r.selection_error)<<'\n';
     Check(r.ok()&&r.receipt->map_pages==61,"control allocations span multiple coverage ranges");Inspect(device,large);}
   {disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"duplicate entropy fixture");
-    Arm();repeat_entropy=true;const auto r=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,23*page_bytes,*fixture.issuer);repeat_entropy=false;Disarm();
+    Arm();repeat_entropy=true;const auto r=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,24*page_bytes,*fixture.issuer);repeat_entropy=false;Disarm();
     Check(!r.ok()&&r.error==db::NativeCreationWorkspaceError::identity_failure&&calls[write_call]==0&&device.Size().size_bytes==0,
       "duplicate generated identities refuse before all writes");}
   for(unsigned mode=1;mode<=5;++mode){disk::FileDevice device;
     Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"multipart provider fixture");
-    Arm();context_fault=mode;const auto r=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,23*page_bytes,*fixture.issuer);context_fault=0;Disarm();
+    Arm();context_fault=mode;const auto r=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,24*page_bytes,*fixture.issuer);context_fault=0;Disarm();
     Check(!r.ok()&&!r.receipt&&calls[write_call]==0&&device.Size().size_bytes==0,"multipart hash failures cannot create unsigned roots");}
   {disk::FileDevice device;const auto path=fixture.Next();Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"guard retention fixture");
     pause_write=true;write_paused=false;resume_write=false;std::atomic<bool> entered=false,acquired=false;
     db::NativeCreationWorkspaceResult result;
-    std::thread writer([&]{result=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,23*page_bytes,*fixture.issuer);});
+    std::thread writer([&]{result=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,24*page_bytes,*fixture.issuer);});
     while(!write_paused.load())std::this_thread::yield();
     std::thread observer([&]{entered=true;const auto guard=device.AcquireOperationGuard();acquired=true;});
     while(!entered.load())std::this_thread::yield();
@@ -468,17 +481,17 @@ int main(int argc,char** argv){try{
     Check(held&&acquired&&result.ok()&&!competing.ok(),"device and node ownership remain held through real initialization");}
   for(bool allocation:{false,true}){disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"issuer source failure fixture");
     clock_failure=!allocation;clock_allocation_failure=allocation;Arm();
-    const auto refused=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,23*page_bytes,*fixture.issuer);
+    const auto refused=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,24*page_bytes,*fixture.issuer);
     Disarm();clock_failure=clock_allocation_failure=false;
     Check(!refused.ok()&&!refused.receipt&&refused.error==(allocation?db::NativeCreationWorkspaceError::resource_exhausted:db::NativeCreationWorkspaceError::identity_failure)&&!calls[write_call]&&!device.Size().size_bytes,"issuer failure remains exact and precedes writes");
   }
   std::array<unsigned,call_count> baseline{};
   {disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"minimum capacity device");
-    Arm();const auto r=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,23*page_bytes,*fixture.issuer);baseline=calls;Disarm();
+    Arm();const auto r=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,24*page_bytes,*fixture.issuer);baseline=calls;Disarm();
     Check(r.ok()&&r.receipt->free_pages==0&&ordered&&selector_phase==6,"exact minimum capacity and image budget");Inspect(device,request);}
   for(unsigned kind=0;kind<call_count;++kind)for(unsigned at=1;at<=baseline[kind];++at){
     disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"fault fixture");
-    Arm(kind,at);const auto r=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,23*page_bytes,*fixture.issuer);const auto observed=calls;Disarm();
+    Arm(kind,at);const auto r=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,24*page_bytes,*fixture.issuer);const auto observed=calls;Disarm();
     Check(!r.ok()&&!r.receipt&&observed[kind]>=at,"every injected physical/provider failure returns no receipt");
     const auto size=device.Size();Check(size.ok()&&device.is_open(),"failure preserves open owner");
     if((kind==sync_call&&at==2)||(kind==read_call&&at==total_pages+1)){
@@ -486,18 +499,18 @@ int main(int argc,char** argv){try{
       Check(db::DecodeNativeCheckpointSelection(first).ok()&&std::all_of(second.begin(),second.end(),[](byte v){return !v;}),
         "first selector sync/read failure leaves second selector untouched");}
     if(kind==random_call||(kind==hash_call&&at<=19))Check(observed[write_call]==0&&size.size_bytes==0,"preparation failure precedes all writes");
-    if(size.size_bytes){const auto replay=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,23*page_bytes,*fixture.issuer);
+    if(size.size_bytes){const auto replay=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,24*page_bytes,*fixture.issuer);
       Check(!replay.ok()&&replay.error==db::NativeCreationWorkspaceError::device_not_empty&&device.Size().size_bytes==size.size_bytes,
         "partial and unacknowledged construction is never truncated or retried");}
   }
   for(unsigned at=1;at<=23;++at){disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"readback corruption fixture");
-    Arm();corrupt_at=at;const auto r=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,23*page_bytes,*fixture.issuer);Disarm();
+    Arm();corrupt_at=at;const auto r=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,24*page_bytes,*fixture.issuer);Disarm();
     Check(!r.ok()&&!r.receipt&&r.error==db::NativeCreationWorkspaceError::readback_mismatch,"every dependency and selector readback byte mismatch refuses");
     if(at==total_pages+1){const auto second=Read(device,selector_page+1,page_bytes);
       Check(std::all_of(second.begin(),second.end(),[](byte v){return !v;}),"first selector comparison failure prevents second publication");}}
-  for(unsigned variant=0;variant<15;++variant){auto bad=request;u64 budget=23*page_bytes;
+  for(unsigned variant=0;variant<15;++variant){auto bad=request;u64 budget=24*page_bytes;
     if(variant==0)bad.creator.local_id.value=2;if(variant==1)bad.bootstrap.lifecycle_state=1;
-    if(variant==2)bad.total_pages=20;if(variant==3)--budget;if(variant==4)bad.operation_uuid=bad.writer_uuid;
+    if(variant==2)bad.total_pages=21;if(variant==3)--budget;if(variant==4)bad.operation_uuid=bad.writer_uuid;
     if(variant==5)bad.creation_utc_millis=0;if(variant==6)bad.bootstrap.filespace_role=5;
     if(variant==7)bad.creator.scope=mga::TransactionScope::cluster_global;
     if(variant==8)bad.bootstrap.flags=disk::FilespaceBootstrapFlag::cluster_authority_required;

@@ -425,14 +425,15 @@ void TestDeviceReader() {
 // authority read an in-place inventory through this one reader.
 
 page::detail::NativeInPlaceInventoryRead ReadChainView(const std::string& path, disk::FilespaceRootReference root,
-                                                       u64 budget, std::vector<byte>* file_bytes = nullptr) {
+                                                       u64 budget, std::vector<byte>* file_bytes = nullptr,
+                                                       std::span<const byte> head_image = {}) {
   disk::FileDevice device;
   Check(device.Open(path, disk::FileOpenMode::open_existing_read_only).ok(), "open read-only");
   disk::FileDevice::ReadLatencyBatch batch(device);
   const disk::NativeFilespaceDevice files[] = {{kFilespace, kProfile, &device}};
   disk::FileDevice::ReadLatencyBatch* const batches[] = {&batch};
   static std::pmr::monotonic_buffer_resource resource;
-  auto out = page::detail::ReadNativeInPlaceInventoryBacked(kDatabase, files, root, budget, batches, resource);
+  auto out = page::detail::ReadNativeInPlaceInventoryBacked(kDatabase, files, root, budget, batches, resource, head_image);
   if (file_bytes) {
     // Copy the borrowed images while the backing is alive (the resource is).
     file_bytes->clear();
@@ -477,6 +478,25 @@ void TestChainViewReader() {
   Check(r.read.physical_bytes_read == page::kTransactionStateWordsOffset + 2 * kPage, "probe plus both pages");
   Check(!r.read.in_place_head, "no fallback flag on the in-place reader's own result");
 
+  // A head page the caller already read (the SBTINV01 reader's attempt) stands
+  // in for the probe, and must equal the chain's own read byte for byte.
+  r = ReadChainView(tmp.path, Root(), 64 * kPage, nullptr, inv.state);
+  Check(r.handled && r.read.ok() && r.read.physical_bytes_read == 2 * kPage,
+        "a supplied head image replaces the probe read");
+  auto changed = inv.state;
+  changed.back() ^= 1;
+  r = ReadChainView(tmp.path, Root(), 64 * kPage, nullptr, changed);
+  Check(r.handled && r.read.chain.error == page::NativeInventoryError::binding_mismatch,
+        "a supplied head image that differs in its last byte from the re-read is refused");
+  changed = inv.state;
+  changed[page::kTransactionStateWordsOffset - 1] ^= 1;
+  r = ReadChainView(tmp.path, Root(), 64 * kPage, nullptr, changed);
+  Check(r.handled && r.read.chain.error == page::NativeInventoryError::binding_mismatch,
+        "a supplied head image that differs in an undecoded probe byte is refused");
+  const std::vector<byte> half(inv.state.begin(), inv.state.begin() + kPage / 2);
+  Check(!ReadChainView(tmp.path, Root(), 64 * kPage, nullptr, half).handled,
+        "a head image that is not one whole page is left to the SBTINV01 reader");
+
   // Not an in-place head: left to the SBTINV01 reader.
   WritePages(tmp.path, {{3, inv.headers}}, 6);
   r = ReadChainView(tmp.path, Root(), 64 * kPage);
@@ -492,7 +512,10 @@ void TestChainViewReader() {
   // Handled refusals.
   r = ReadChainView(tmp.path, Root(), kPage);
   Check(r.handled && r.read.chain.error == page::NativeInventoryError::resource_exhausted && !r.read.ok(),
-        "a budget below the bounded chain length is refused before reading the chains");
+        "a budget below the fewest chain pages is refused before reading the chains");
+  r = ReadChainView(tmp.path, Root(), 2 * kPage);
+  Check(r.handled && r.read.ok() && r.read.chain.retained_image_bytes == 2 * kPage,
+        "a budget of exactly the fewest chain pages reads the inventory");
   WritePages(tmp.path, {{1, inv.state}}, 3);
   r = ReadChainView(tmp.path, Root(), 64 * kPage);
   Check(r.handled && r.read.chain.error == page::NativeInventoryError::io_failure && !r.read.io_status.ok(),

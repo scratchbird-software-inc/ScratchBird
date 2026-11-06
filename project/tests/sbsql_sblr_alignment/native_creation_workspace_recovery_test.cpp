@@ -42,7 +42,9 @@ bool Hit(Call kind,u64 offset=0){if(!armed)return false;
 void Arm(unsigned kind=call_count,unsigned at=0){calls={};event_count=0;corrupt_read=0;fault_kind=kind;fault_at=at;armed=true;}
 void Disarm(){armed=false;}
 Uuid Id(unsigned n){Uuid id;id.bytes[0]=1;id.bytes[6]=0x70;id.bytes[8]=0x80;id.bytes[14]=n>>8;id.bytes[15]=n;return id;}
-db::NativeFilespaceInitializationRequest Request(unsigned profile=0,u64 total=21){
+// The smallest file: maps + 20 controls + the transaction header page
+// (SB_TRANSACTION_HEADER_PAGE); recovery's smallest budget adds six images.
+db::NativeFilespaceInitializationRequest Request(unsigned profile=0,u64 total=22){
   const auto& p=disk::kCanonicalFilespacePageProfiles[profile];db::NativeFilespaceInitializationRequest r;
   r.bootstrap={Id(1),Id(2),p.uuid,disk::kNativeBootstrapIntegrityProfile,{},p.page_size_bytes,1,0,1,7};
   r.operation_uuid=Id(3);r.writer_uuid=Id(4);r.policy_snapshot_uuid=Id(10);r.creator.transaction_uuid={UuidKind::transaction,Id(5)};
@@ -135,8 +137,8 @@ int main(int argc,char** argv){try{
   const auto request=Request();const u64 size=8192;
   disk::FileDevice device;const auto path=f.Next();Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"fixture owns actual file");
   scratchbird::core::uuid::StandaloneUuidV7Issuer issuer({request.bootstrap.database_uuid,request.policy_snapshot_uuid},{{},0,1000});
-  Check(db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,27*size,issuer).ok(),"actual initial workspace");
-  const auto original=Read(device,0,21*size);auto damaged=original;std::fill(damaged.begin()+18*size,damaged.begin()+19*size,0);
+  Check(db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,28*size,issuer).ok(),"actual initial workspace");
+  const auto original=Read(device,0,22*size);auto damaged=original;std::fill(damaged.begin()+18*size,damaged.begin()+19*size,0);
   Restore(device,damaged);Check(Recover(device,request).ok(),"warm actual recovery");
   if(argc>=2&&std::string_view(argv[1])=="--allocations"){
     const unsigned shard=argc>=3?std::stoul(argv[2]):0;Check(shard<4,"allocation shard");
@@ -196,13 +198,13 @@ int main(int argc,char** argv){try{
   {const auto filename=f.Next();const auto child=fork();Check(child>=0,"actual creation loss fork");
     if(child==0){disk::FileDevice d;if(!d.Open(filename.string(),disk::FileOpenMode::create_new).ok())_exit(87);
       scratchbird::core::uuid::StandaloneUuidV7Issuer child_issuer({request.bootstrap.database_uuid,request.policy_snapshot_uuid},{{},0,1000});
-      stop_creation=true;(void)db::InitializeNativeCreationWorkspaceOnOpenDevice(d,request,27*size,child_issuer);_exit(88);}
+      stop_creation=true;(void)db::InitializeNativeCreationWorkspaceOnOpenDevice(d,request,28*size,child_issuer);_exit(88);}
     int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==86,"actual process loss before second selector");
     disk::FileDevice d;Check(d.Open(filename.string(),disk::FileOpenMode::open_existing).ok(),"new owner after process loss");
-    const auto before=Read(d,0,21*size);const auto first=db::DecodeNativeCheckpointSelection(Page(before,17,size));Check(first.ok(),"surviving original publication");
+    const auto before=Read(d,0,22*size);const auto first=db::DecodeNativeCheckpointSelection(Page(before,17,size));Check(first.ok(),"surviving original publication");
     const auto recovered=Recover(d,request);Check(recovered.ok()&&recovered.repaired_slots==2&&recovered.receipt->publication_uuid==first.selection->publication_uuid,
       "real interrupted constructor repaired from graph without new publication");
-    const auto after=Read(d,0,21*size);Check(std::equal(before.begin(),before.begin()+18*size,after.begin()),"process-loss repair changes only missing slot");}
+    const auto after=Read(d,0,22*size);Check(std::equal(before.begin(),before.begin()+18*size,after.begin()),"process-loss repair changes only missing slot");}
   const auto refuse=[&](const std::vector<byte>& bytes){Restore(device,bytes);Arm();const auto r=Recover(device,request);Disarm();
     Check(!r.ok()&&!r.receipt&&!r.repaired_slots&&!calls[write_call]&&Read(device,0,bytes.size())==bytes,"invalid graph refuses without mutation or receipt");};
   // Initial selector recovery has no authority to repair or roll back a watermark.
@@ -227,9 +229,10 @@ int main(int argc,char** argv){try{
   }
   {const auto large=Request(0,3601);disk::FileDevice d;Check(d.Open(f.Next().string(),disk::FileOpenMode::create_new).ok(),"multi-map recovery fixture");
     scratchbird::core::uuid::StandaloneUuidV7Issuer large_issuer({large.bootstrap.database_uuid,large.policy_snapshot_uuid},{{},0,1000});
-    const auto created=db::InitializeNativeCreationWorkspaceOnOpenDevice(d,large,(2*61+4)*size,large_issuer);Check(created.ok()&&created.receipt->map_pages==61,"controls span allocation coverage ranges");
+    // +1 over the SBTINV01 graph: the in-place inventory's header page.
+    const auto created=db::InitializeNativeCreationWorkspaceOnOpenDevice(d,large,(2*61+5)*size,large_issuer);Check(created.ok()&&created.receipt->map_pages==61,"controls span allocation coverage ranges");
     const auto before=Read(d,0,large.total_pages*size);Write(d,78*size,std::vector<byte>(size,0));
-    const auto recovered=Recover(d,large,87*size);Check(recovered.ok()&&recovered.repaired_slots==2&&Read(d,0,before.size())==before,
+    const auto recovered=Recover(d,large,88*size);Check(recovered.ok()&&recovered.repaired_slots==2&&Read(d,0,before.size())==before,
       "multi-map graph and original cross-range selector allocation recovered");}
   {disk::FileDevice d;Check(d.Open(f.Next().string(),disk::FileOpenMode::create_new).ok(),"extent mismatch fixture");
     auto extra=damaged;extra.push_back(0);Restore(d,extra);Arm();const auto r=Recover(d,request);Disarm();
@@ -244,6 +247,9 @@ int main(int argc,char** argv){try{
     if(mode==5)s.selection->checkpoint_generation=2;
     auto encoded=db::EncodeNativeCheckpointSelection(*s.selection);Check(encoded.ok(),"valid contradictory selector encoding");SetPage(bytes,18,encoded.bytes);refuse(bytes);}
   for(u64 n=0;n<17;++n){auto bytes=damaged;bytes[n*size+size-1]^=1;refuse(bytes);}
+  // The transaction header page (the last control, page 21) is rebuilt and
+  // compared byte for byte too.
+  {auto bytes=damaged;bytes[21*size+size-1]^=1;refuse(bytes);}
   // Resealed graphs must still satisfy genesis, not merely their checksums.
   for(unsigned mode=0;mode<7;++mode){auto bytes=original;unsigned role=0;u64 n=0;std::vector<byte> replacement;
     if(mode==0){n=5;role=8;auto x=db::DecodeNativeSystemState(Page(bytes,n,size));Check(x.ok(),"system mutation");
@@ -264,7 +270,7 @@ int main(int argc,char** argv){try{
   Restore(device,damaged);auto wrong=request;wrong.operation_uuid=Id(40);Arm();const auto rejected=Recover(device,wrong);Disarm();
   Check(!rejected.ok()&&!rejected.receipt&&!calls[write_call],"wrong operation cannot repair");
   wrong=request;wrong.bootstrap.database_uuid=Id(41);Check(!Recover(device,wrong).ok(),"wrong database binding");
-  Check(!Recover(device,request,27*size-1).ok()&&Recover(device,request,27*size).ok(),"exact retained-image budget boundary");
+  Check(!Recover(device,request,28*size-1).ok()&&Recover(device,request,28*size).ok(),"exact retained-image budget boundary");
   for(unsigned slot=0;slot<3;++slot){auto broken=original;
     if(slot<2)std::fill(broken.begin()+(17+slot)*size,broken.begin()+(18+slot)*size,0);
     Restore(device,broken);Arm();Check(Recover(device,request).ok(),"fault baseline");Disarm();const auto sites=calls;

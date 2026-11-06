@@ -21,7 +21,7 @@ struct NativeFilespaceInitializationRequest {
   core::platform::Uuid operation_uuid,writer_uuid,policy_snapshot_uuid;
   transaction::mga::TransactionIdentity creator;
   core::platform::u64 total_pages=0,creation_utc_millis=0;
-  NativeCreationInventoryFormat inventory_format=NativeCreationInventoryFormat::transitional_legacy;
+  NativeCreationInventoryFormat inventory_format=NativeCreationInventoryFormat::in_place;
 };
 enum class NativeFilespaceInitializationError {
   none, invalid_request, invalid_device, device_not_empty, invalid_capacity,

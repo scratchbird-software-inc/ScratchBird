@@ -141,6 +141,9 @@ void NativeImages(){
     db::NativeFilespaceInitializationRequest init;init.bootstrap={Id(1),Id(2),profile.uuid,disk::kNativeBootstrapIntegrityProfile,{},profile.page_size_bytes,1,0,1,7};
     init.operation_uuid=Id(3);init.writer_uuid=Id(4);init.creator.transaction_uuid={UuidKind::transaction,Id(5)};
     init.creator.local_id=mga::MakeLocalTransactionId(1);init.creator.scope=mga::TransactionScope::local_node;init.creation_utc_millis=1789357072000ULL;init.total_pages=64;
+    // SB_TRANSITIONAL_LEGACY_INVENTORY: this fixture takes the SBTINV01 genesis
+    // page as the base of its typed page-chain cases; delete with that format.
+    init.inventory_format=db::NativeCreationInventoryFormat::transitional_legacy;
     init.policy_snapshot_uuid=Id(10);scratchbird::core::uuid::StandaloneUuidV7Issuer issuer({init.bootstrap.database_uuid,init.policy_snapshot_uuid},{{},0,1000});
     Check(db::InitializeNativeCreationWorkspaceOnOpenDevice(device,init,budget,issuer).ok(),"actual native creation dependencies");
     const auto zero=disk::ReadFilespacePageZeroFromOpenDevice(device);Check(zero.ok(),"actual native bootstrap");

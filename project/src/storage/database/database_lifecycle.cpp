@@ -9047,6 +9047,9 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
     construction.creator.local_id=transaction::mga::MakeLocalTransactionId(1);
     construction.creator.scope=transaction::mga::TransactionScope::local_node;
     construction.total_pages=request.total_pages;construction.creation_utc_millis=request.creation_utc_millis;
+    // SB_TRANSITIONAL_LEGACY_INVENTORY: production create always writes the
+    // in-place inventory; the legacy format is for drift-layer tests only.
+    construction.inventory_format=NativeCreationInventoryFormat::in_place;
     if(!identities_ok)return fail(E::identity_failure);
     const auto tx=construction.creator.transaction_uuid;
 

@@ -409,7 +409,8 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     }
     const u64 maps=(total_pages+coverage-1)/coverage;
     const u64 navigation=(seed[0].size()+child_capacity-1)/child_capacity;
-    const u64 exact=(maps+20+base_pages+navigation+2)*page_bytes;
+    // maps + 20 controls + the transaction header page + catalog pages + two images.
+    const u64 exact=(maps+21+base_pages+navigation+2)*page_bytes;
     const auto path=fixture.Next();disk::FileDevice device;
     Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"exact indexed image budget owner");
     Arm();auto refused=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,dense_request,seed,

@@ -207,7 +207,8 @@ struct Context {
       // checkpoint only. In-place pages have no historical image, so a
       // historical read of one is refused.
       Receipt(read);Require(zero_images.empty()&&cp.creator_operation_uuid.is_nil(),E::binding_mismatch);
-      auto again=page::detail::ReadNativeInPlaceInventoryBacked(database,files,r,budget-used,batches,*scratch.resource);
+      auto again=page::detail::ReadNativeInPlaceInventoryBacked(database,files,r,budget-used,batches,*scratch.resource,
+          read.in_place_head_image);
       Require(again.handled,E::inventory_failure);read=std::move(again.read);
       Receipt(read);auto out=read.chain;
       if(!out.ok())throw out.error==page::NativeInventoryError::resource_exhausted?E::resource_exhausted:out.error==page::NativeInventoryError::io_failure?E::io_failure:out.error==page::NativeInventoryError::encrypted_requires_crypto_authority?E::encrypted_requires_authority:E::inventory_failure;

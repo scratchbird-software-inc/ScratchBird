@@ -252,6 +252,9 @@ struct Fixture {
   r.creator.transaction_uuid={UuidKind::transaction,Id(5)};r.creator.local_id=mga::MakeLocalTransactionId(1);r.creator.scope=mga::TransactionScope::local_node;r.creation_utc_millis=1789357072000ULL;r.total_pages=total_pages;
   Check(device.Open(path.string(),d::FileOpenMode::create_new).ok(),"owned device");devices={{Id(2),page.uuid,&device}};
   r.policy_snapshot_uuid=Id(10);ResetIssuer();
+  // SB_TRANSITIONAL_LEGACY_INVENTORY: a drift-layer fixture (checkpoint/selector/management
+  // publication) that decodes the SBTINV01 genesis inventory; delete with that layer.
+  r.inventory_format=db::NativeCreationInventoryFormat::transitional_legacy;
   Check(db::InitializeNativeCreationWorkspaceOnOpenDevice(device,r,budget,*issuer).ok(),"actual genesis");
  }
  ~Fixture(){device.Close();secondary.Close();std::error_code ec;std::filesystem::remove_all(path.parent_path(),ec);}

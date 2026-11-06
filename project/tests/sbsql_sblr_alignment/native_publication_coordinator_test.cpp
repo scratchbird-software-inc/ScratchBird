@@ -52,6 +52,9 @@ db::NativeFilespaceInitializationRequest Request(unsigned profile){
   r.bootstrap={Id(1),Id(2),p.uuid,disk::kNativeBootstrapIntegrityProfile,{},p.page_size_bytes,1,0,1,7};
   r.operation_uuid=Id(3);r.writer_uuid=Id(4);r.policy_snapshot_uuid=Id(10);r.creator.transaction_uuid={UuidKind::transaction,Id(5)};
   r.creator.local_id=mga::MakeLocalTransactionId(1);r.creator.scope=mga::TransactionScope::local_node;
+  // SB_TRANSITIONAL_LEGACY_INVENTORY: a drift-layer fixture (checkpoint/selector/management
+  // publication) that decodes the SBTINV01 genesis inventory; delete with that layer.
+  r.inventory_format=db::NativeCreationInventoryFormat::transitional_legacy;
   r.creation_utc_millis=1789357072000ULL;r.total_pages=64;return r;
 }
 struct Node {

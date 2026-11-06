@@ -105,16 +105,19 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
        !disk::CheckFileDeviceExtent(total*size,0).ok()) return Fail(E::invalid_capacity);
     const u64 maps=total/coverage+(total%coverage!=0);
     if(maps>total||total-maps<count) return Fail(E::invalid_capacity);
-    // Full graph + one in-flight encoder image + one physical readback image.
-    if(budget/size<count+2||maps>budget/size-count-2||
-       maps>(budget/size-4)/2||
-       maps>std::numeric_limits<std::size_t>::max()-count) return Fail(E::resource_exhausted);
-
     // SB_TRANSITIONAL_LEGACY_INVENTORY: only the two named formats exist.
     using Format=NativeCreationInventoryFormat;
     if(request.inventory_format!=Format::in_place&&request.inventory_format!=Format::transitional_legacy)
       return Fail(E::invalid_request);
     const bool in_place=request.inventory_format==Format::in_place;
+    // Full graph + one in-flight encoder image + one physical readback image.
+    // The final selected admission retains the maps twice plus four controls,
+    // and an in-place inventory's header page as a fifth.
+    const u64 admitted=in_place?5:4;
+    if(budget/size<count+2||maps>budget/size-count-2||
+       budget/size<admitted||maps>(budget/size-admitted)/2||
+       maps>std::numeric_limits<std::size_t>::max()-count) return Fail(E::resource_exhausted);
+
     auto planned=detail::PlanNativeCreationCatalogLayout(size,maps,total,budget,seed,indexes,in_place);
     if(!planned.ok())return Fail(planned.error==detail::NativeCreationLayoutError::resource_exhausted?E::resource_exhausted:
         planned.error==detail::NativeCreationLayoutError::capacity_exceeded?E::catalog_capacity_exceeded:E::invalid_catalog_input);

@@ -180,8 +180,11 @@ struct NativeInventoryChainDeviceRead {
   // transaction-state page (family SBTIPW01), refused here as invalid_family
   // without decoding; the caller may read it with the in-place reader
   // (native_inventory_chain_backing.hpp). Seen on bytes already read, so an
-  // SBTINV01 read does no extra I/O.
+  // SBTINV01 read does no extra I/O. in_place_head_image is that read (in the
+  // caller's resource); the in-place reader requires its own read of the page
+  // to equal it, so no byte read here goes unchecked.
   bool in_place_head=false;
+  std::span<const byte> in_place_head_image;
   bool ok() const noexcept{return chain.ok();}
 };
 // Complete current/historical actual inventory with caller-owned input-disjoint

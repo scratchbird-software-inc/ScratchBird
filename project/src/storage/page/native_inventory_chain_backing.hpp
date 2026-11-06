@@ -25,7 +25,12 @@ NativeInventoryChainDeviceRead ReadNativeInventoryChainBacked(
 // An in-place inventory has no per-page generation or digest; each page
 // reports generation 1, the constructor's. A current read only: in-place pages
 // have no historical image. Backing comes from `resource`; nothing is written
-// and no lock is taken. Deleted with the SBTINV01 chain.
+// and no lock is taken. `head_image`, when given, is a whole-page read of the
+// head made by the caller (the SBTINV01 reader's in_place_head_image); it
+// stands in for the probe, and the chain's own read of the head must equal
+// it byte for byte. A probe is likewise checked against that read, so every
+// byte this reader is handed or reads is verified. Deleted with the SBTINV01
+// chain.
 struct NativeInPlaceInventoryRead {
   bool handled=false;
   NativeInventoryChainDeviceRead read;
@@ -33,5 +38,6 @@ struct NativeInPlaceInventoryRead {
 NativeInPlaceInventoryRead ReadNativeInPlaceInventoryBacked(
     const core::platform::Uuid&,std::span<const disk::NativeFilespaceDevice>,
     const disk::FilespaceRootReference&,u64 maximum_retained_image_bytes,
-    std::span<disk::FileDevice::ReadLatencyBatch* const>,std::pmr::memory_resource&) noexcept;
+    std::span<disk::FileDevice::ReadLatencyBatch* const>,std::pmr::memory_resource&,
+    std::span<const byte> head_image={}) noexcept;
 } // namespace scratchbird::storage::page::detail

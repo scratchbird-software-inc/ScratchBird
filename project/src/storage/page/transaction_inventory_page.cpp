@@ -873,7 +873,7 @@ NativeInventoryChainView ReadInventoryChainView(
       if (header.header->flags&1u) return fail(Error::encrypted_requires_crypto_authority);
       if (pages.empty() && bytes.size()>=kTransactionStateFamilyOffset+kTransactionStatePageMagic.size() &&
           std::equal(kTransactionStatePageMagic.begin(),kTransactionStatePageMagic.end(),bytes.begin()+kTransactionStateFamilyOffset)) {
-        receipt.in_place_head=true; return fail(Error::invalid_family);
+        receipt.in_place_head=true; receipt.in_place_head_image=bytes; return fail(Error::invalid_family);
       }
       const auto count=std::min<std::size_t>(LoadLittle32(bytes.data()+184),(bytes.size()-384)/72);
       auto decoded=DecodeNativeTransactionInventoryPageInto(bytes,scratch.Array<TransactionInventoryEntry>(count),

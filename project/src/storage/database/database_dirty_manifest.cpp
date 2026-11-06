@@ -885,7 +885,7 @@ NativeCheckpointInventoryDeviceRead detail::VerifyNativeCheckpointInventoryBacke
     const bool in_place=read.in_place_head;
     if(in_place){MergeCheckpointIo(out,read);
       auto again=page::detail::ReadNativeInPlaceInventoryBacked(database_uuid,ordered,inventory_ref,
-        maximum_retained_image_bytes-loaded.bytes.size(),batches,resource);
+        maximum_retained_image_bytes-loaded.bytes.size(),batches,resource,read.in_place_head_image);
       if(!again.handled)return fail(Error::inventory_failure,page::NativeInventoryError::invalid_family);
       read=std::move(again.read);}
     MergeCheckpointIo(out,read);const auto& chain=read.chain;

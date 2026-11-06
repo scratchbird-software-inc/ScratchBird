@@ -324,7 +324,8 @@ TransactionInventoryRead ReadTransactionInventory(const TransactionInventoryRead
 detail::NativeInPlaceInventoryRead detail::ReadNativeInPlaceInventoryBacked(
     const scratchbird::core::platform::Uuid& database, std::span<const disk::NativeFilespaceDevice> files,
     const disk::FilespaceRootReference& head, u64 maximum_retained_image_bytes,
-    std::span<disk::FileDevice::ReadLatencyBatch* const> batches, std::pmr::memory_resource& resource) noexcept {
+    std::span<disk::FileDevice::ReadLatencyBatch* const> batches, std::pmr::memory_resource& resource,
+    std::span<const byte> head_image) noexcept {
   namespace mga = scratchbird::transaction::mga;
   using NE = NativeInventoryError;
   NativeInPlaceInventoryRead out;
@@ -352,11 +353,16 @@ detail::NativeInPlaceInventoryRead detail::ReadNativeInPlaceInventoryBacked(
     return fail(NE::io_failure);
   };
   std::array<byte, kTransactionStateWordsOffset> probe{};
-  const auto probed = batches[file]->ReadAtBounded(head.page_number * page_size, probe.data(), probe.size());
-  receipt.physical_bytes_read += probed.bytes_transferred;
-  if (!probed.ok() || probed.bytes_transferred != probe.size()) {
-    out.handled = true;
-    return failed_io(probed);
+  if (!head_image.empty()) {
+    if (head_image.size() != page_size) return out;
+    std::copy_n(head_image.begin(), probe.size(), probe.begin());
+  } else {
+    const auto probed = batches[file]->ReadAtBounded(head.page_number * page_size, probe.data(), probe.size());
+    receipt.physical_bytes_read += probed.bytes_transferred;
+    if (!probed.ok() || probed.bytes_transferred != probe.size()) {
+      out.handled = true;
+      return failed_io(probed);
+    }
   }
   if (!std::equal(kTransactionStatePageMagic.begin(), kTransactionStatePageMagic.end(),
                   probe.begin() + kTransactionStateFamilyOffset))
@@ -369,10 +375,14 @@ detail::NativeInPlaceInventoryRead detail::ReadNativeInPlaceInventoryBacked(
     const u64 next = scratchbird::core::platform::LoadLittle64(probe.data() + kTransactionStateCountersOffset + 8);
     const u32 state_slots = TipSlotsPerPage(page_size), header_slots = TransactionHeaderSlotsPerPage(page_size);
     if (!next || !state_slots || !header_slots) return fail(NE::invalid_inventory);
-    // Both chains cover every number below Next; one spare page each may be linked.
-    const u64 pages = (next / state_slots + 2) + (next / header_slots + 2);
-    if (pages > maximum_retained_image_bytes / page_size || pages > std::numeric_limits<std::size_t>::max() / page_size)
-      return fail(NE::resource_exhausted);
+    // Both chains cover every number below Next (the fewest pages they can
+    // have), and each may link one spare page. Refuse only when the fewest do
+    // not fit; read spares only as far as the allowance reaches.
+    const u64 fewest = ((next - 1) / state_slots + 1) + ((next - 1) / header_slots + 1);
+    const u64 allowed = maximum_retained_image_bytes / page_size;
+    if (fewest > allowed) return fail(NE::resource_exhausted);
+    const u64 pages = std::min<u64>(fewest + 2, allowed);
+    if (pages > std::numeric_limits<std::size_t>::max() / page_size) return fail(NE::resource_exhausted);
     disk::detail::NativeMetadataScratch scratch{&resource};
     auto backing = scratch.Array<byte>(static_cast<std::size_t>(pages * page_size));
     const TransactionInventoryReadRequest request{database, head, files, batches, backing};
@@ -384,6 +394,11 @@ detail::NativeInPlaceInventoryRead detail::ReadNativeInPlaceInventoryBacked(
     const std::size_t count = read.state_pages + read.header_pages;
     receipt.physical_bytes_read += u64{count} * page_size;
     if (!read.ok()) return fail(read.check.error == TipPageError::short_buffer ? NE::resource_exhausted : NE::invalid_inventory);
+    // The head was read before (the probe, or the caller's whole page): the
+    // chain's read of it must be the same bytes.
+    if (!std::equal(probe.begin(), probe.end(), backing.begin()) ||
+        (!head_image.empty() && !std::equal(head_image.begin(), head_image.end(), backing.begin())))
+      return fail(NE::binding_mismatch);
     const std::span<const byte> state_images(backing.data(), read.state_pages * page_size);
     const std::span<const byte> header_images(backing.data() + read.state_pages * page_size,
                                               read.header_pages * page_size);

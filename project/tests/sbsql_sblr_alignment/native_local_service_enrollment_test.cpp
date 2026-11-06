@@ -1591,7 +1591,9 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
     expected_catalog_bytes.emplace(row.metadata.record.header.object_uuid.value,
         CatalogVariableBytes(catalog::BorrowCatalogMetadataVersion(row.metadata),name));
   }
-  const auto expected_initial_control_pages=initialized.receipt->map_pages+3;
+  // Maps, checkpoint, directory, and the in-place transaction inventory: its
+  // state page and its header page (SB_TRANSACTION_HEADER_PAGE).
+  const auto expected_initial_control_pages=initialized.receipt->map_pages+4;
   initialized.receipt.reset();catalogs.plan.reset();
   EnrolledCredentialCustodian provisioner;
   platform::Uuid previous_engine_instance;
