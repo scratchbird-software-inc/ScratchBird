@@ -5,10 +5,14 @@
 #include "native_startup_storage_identity.hpp"
 
 namespace scratchbird::engine::internal_api {
-enum class NativeStartupInitialControlError {none,source_required,invalid_record,orphan_page,missing_page};
+enum class NativeStartupInitialControlError {none,source_required,invalid_record,missing_page};
 struct NativeStartupInitialControlCheck {
   NativeStartupInitialControlError error=NativeStartupInitialControlError::source_required;
   std::size_t control_pages=0;
+  // Creator pages that no root, catalog page or control page reaches. Owner
+  // ruling 2026-11-06 (Q17): unreachable pages are wasted space, reported
+  // here and never refused.
+  std::size_t wasted_pages=0;
   bool ok()const noexcept{return error==NativeStartupInitialControlError::none;}
 };
 // Complete first-create original-allocation membership. The selected source
@@ -54,7 +58,7 @@ inline NativeStartupInitialControlCheck CheckNativeStartupInitialControlAllocati
   for(const auto& root:capture.initial_control_roots())if(!add(root.page,root.page_type,root.object_uuid))return {E::invalid_record};
   for(const auto& root:std::span{identity.primary_roots}.first(identity.primary_root_count))
     if(!add({root.filespace_uuid,root.page_number,root.page_generation,root.page_size_profile_uuid},root.page_type,root.object_uuid))return {E::invalid_record};
-  std::size_t count=0;
+  std::size_t count=0,wasted=0;
   for(const auto& image:chain.pages){const auto& map=image.map;
     if(map.header.filespace_uuid!=identity.primary_filespace_uuid||map.header.page_size_profile_uuid!=identity.primary_profile_uuid||
         map.header.database_uuid!=capture.source()->database_uuid)return {E::invalid_record};
@@ -80,12 +84,12 @@ inline NativeStartupInitialControlCheck CheckNativeStartupInitialControlAllocati
       }
       const auto roots=std::span{additional}.first(additional_count);
       const auto at=std::find_if(roots.begin(),roots.end(),[&](const auto& r){return r.page.page_number==record.page_number;});
-      if(at==roots.end())return {E::orphan_page};
+      if(at==roots.end()){++wasted;continue;}
       if(at->type!=record.page_type||at->owner!=record.owner_uuid||at->page.page_generation!=record.page_generation)return {E::invalid_record};
       ++count;
     }
   }
   if(count!=controls.size()+additional_count+1)return {E::missing_page};
-  return {E::none,count};
+  return {E::none,count,wasted};
 }
 } // namespace scratchbird::engine::internal_api

@@ -3017,6 +3017,60 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
       opened.observation->inventory.in_doubt_transactions==0&&opened.observation->inventory.horizon_records==3&&
       opened.observation->routes.routes==2,
       "the opened file verifies read-only before any startup transaction: identity, allocation, inventory, catalog routes");
+  // Owner ruling 2026-11-06 (Q17): a creator page that no root, catalog page
+  // or control page reaches is wasted space, reported and never refused. The
+  // creator's original allocation is rebuilt from what the verification and
+  // the capture retained; one extra creator page is then added.
+  Check(opened.observation->allocation.wasted_pages==0,
+      "a production create read through its selected checkpoint leaves no creator page unreachable");
+  {
+    namespace pg=scratchbird::storage::page;
+    const auto& capture=read.catalog_capture();const auto& identity=opened.observation->identity;
+    const auto captured=capture.inventory();
+    Check(captured&&captured->inventory.entries.size()==1&&!capture.physical_pages().empty(),"the creator and its pages are retained");
+    const auto creator=captured->inventory.entries.front().identity;
+    std::vector<pg::NativeAllocationRecord> records;
+    const auto put=[&](u64 page,const platform::Uuid& page_uuid,u64 generation,platform::u32 type,const platform::Uuid& owner){
+      if(std::any_of(records.begin(),records.end(),[&](const auto& r){return r.page_number==page;}))return;
+      pg::NativeAllocationRecord r;r.page_number=page;r.allocation_uuid=Id(226);r.page_uuid=page_uuid;r.owner_uuid=owner;
+      r.creator_transaction_uuid=creator.transaction_uuid.value;r.creator_local_transaction_id=creator.local_id.value;
+      r.page_generation=generation;r.page_type=type;records.push_back(r);};
+    put(0,identity.primary_page_uuid,identity.primary_page_generation,1,identity.primary_filespace_uuid);
+    for(const auto& p:capture.physical_pages())put(p.header.page_number,p.header.page_uuid,p.header.page_generation,p.header.page_type,p.owner_uuid);
+    for(const auto& p:capture.initial_control_pages())put(p.header.page_number,p.header.page_uuid,p.header.page_generation,p.header.page_type,p.owner_uuid);
+    for(const auto& r:capture.initial_control_roots())put(r.page.page_number,Id(227),r.page.page_generation,r.page_type,r.object_uuid);
+    for(const auto& r:std::span{identity.primary_roots}.first(identity.primary_root_count))
+      put(r.page_number,Id(227),r.page_generation,r.page_type,r.object_uuid);
+    u64 last=0;for(const auto& r:records)last=std::max(last,r.page_number);
+    std::sort(records.begin(),records.end(),[](const auto& a,const auto& b){return a.page_number<b.page_number;});
+    std::vector<pg::NativeAllocationState> states(last+2,pg::NativeAllocationState::free);
+    for(const auto& r:records)states[r.page_number]=pg::NativeAllocationState::allocated;
+    std::array<db::NativeReadAllocationPage,1> pages{};auto& map=pages[0].map;
+    map.header=capture.physical_pages().front().header;map.first_page=0;map.states=states;map.records=records;
+    db::NativeReadAllocationChain chain;chain.error=pg::NativeAllocationError::none;chain.pages=pages;
+    const auto base=runtime_security::CheckNativeStartupInitialControlAllocation(capture,identity,chain);
+    Check(base.ok()&&base.wasted_pages==0&&base.control_pages==opened.observation->allocation.initial_control_pages,
+        "the rebuilt original allocation verifies exactly as the file's own did");
+    auto with_extra=records;
+    pg::NativeAllocationRecord extra=records.back();extra.page_number=last+1;extra.page_uuid=Id(228);extra.owner_uuid=Id(229);extra.page_type=0x302;
+    with_extra.push_back(extra);states[last+1]=pg::NativeAllocationState::allocated;map.records=with_extra;
+    const auto wasted=runtime_security::CheckNativeStartupInitialControlAllocation(capture,identity,chain);
+    Check(wasted.ok()&&wasted.wasted_pages==1&&wasted.control_pages==base.control_pages,
+        "a creator page nothing reaches is reported as wasted space, not refused");
+    auto moved=with_extra;
+    const auto control=capture.initial_control_pages().front().header.page_number;
+    for(auto& r:moved)if(r.page_number==control)r.owner_uuid=Id(229);
+    map.records=moved;
+    Check(runtime_security::CheckNativeStartupInitialControlAllocation(capture,identity,chain).error==
+        runtime_security::NativeStartupInitialControlError::invalid_record,
+        "a control page with the wrong owner is still refused");
+    std::vector<pg::NativeAllocationRecord> missing;
+    for(const auto& r:with_extra)if(r.page_number!=control)missing.push_back(r);
+    states[control]=pg::NativeAllocationState::free;map.records=missing;
+    Check(runtime_security::CheckNativeStartupInitialControlAllocation(capture,identity,chain).error==
+        runtime_security::NativeStartupInitialControlError::missing_page,
+        "a control page the creator did not allocate is still refused");
+  }
   Check(read_file()==created_bytes,"open verification writes nothing: every byte of the producer's file is unchanged");
   Check(read_file()==created_bytes,
       "opening, verifying and resolving startup policies leave every byte of the producer's file unchanged");

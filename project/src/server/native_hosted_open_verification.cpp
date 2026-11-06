@@ -253,7 +253,8 @@ NativeOpenVerificationResult NativeHostedDatabaseRuntime::VerifyStartupDatabaseF
         if(!coverage.ok()){error=VE::finding;return;}
         const auto initial=api::CheckNativeStartupInitialControlAllocation(read.catalog_capture_,observed.identity,chain.chain);
         if(!initial.ok()){error=VE::finding;return;}
-        scan.initial_control_pages+=initial.control_pages;scan.catalog_pages+=coverage.matched_pages;
+        scan.initial_control_pages+=initial.control_pages;scan.wasted_pages+=initial.wasted_pages;
+        scan.catalog_pages+=coverage.matched_pages;
         scan.physical_bytes_read+=chain.physical_bytes_read;
         if(chain.chain.pages.size()>UINT64_MAX-scan.allocation_pages||member.total_pages>UINT64_MAX-scan.capacity_pages){error=VE::finding;return;}
         scan.allocation_pages+=chain.chain.pages.size();scan.capacity_pages+=member.total_pages;

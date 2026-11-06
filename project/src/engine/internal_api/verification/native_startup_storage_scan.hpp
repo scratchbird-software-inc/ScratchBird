@@ -13,6 +13,8 @@ struct NativeStartupStorageScanObservation {
   core::platform::u64 filespaces=0,allocation_pages=0,capacity_pages=0;
   core::platform::u64 catalog_pages=0;
   core::platform::u64 initial_control_pages=0;
+  // Creator pages nothing reaches: wasted space, reported (owner 2026-11-06).
+  core::platform::u64 wasted_pages=0;
   std::array<core::platform::u64,8> allocation_states{};
   core::platform::u64 inventory_pages=0,transactions=0,active_transactions=0,in_doubt_transactions=0;
   core::platform::u64 horizon_records=0,retention_pins=0;
