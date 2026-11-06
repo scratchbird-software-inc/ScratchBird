@@ -96,23 +96,25 @@ struct NativeCatalogVisibilityLeaseResult {
 // never grant authority. Retain source/pin/backing throughout borrowed use.
 class NativeCatalogVisibilityLeaseReader {
  public:
-  static NativeCatalogVisibilityLeaseResult ReadCommitted(const NativeSelectedCheckpointMemoryLease& source,
+  // SB_NATIVE_FIXED_ROOT_READ: every entry takes either lease; the fixed-root
+  // lease reads page zero's roots directly.
+  template<class Lease> static NativeCatalogVisibilityLeaseResult ReadCommitted(const Lease& source,
       u16 selector,u16 role,const NativeCatalogRelationBinding& binding,u64 image_budget,
       NativeCatalogVisibilityPreparedMemory& w) noexcept {
-    return Read(source,selector,role,&binding,nullptr,nullptr,image_budget,w);
+    return Read(detail::NativeLeaseSourceAccess::From(source),selector,role,&binding,nullptr,nullptr,image_budget,w);
   }
-  static NativeCatalogVisibilityLeaseResult ReadCommittedSelected(const NativeSelectedCheckpointMemoryLease& source,
+  template<class Lease> static NativeCatalogVisibilityLeaseResult ReadCommittedSelected(const Lease& source,
       u16 selector,u16 role,u64 image_budget,NativeCatalogVisibilityPreparedMemory& w) noexcept {
-    return Read(source,selector,role,nullptr,nullptr,nullptr,image_budget,w);
+    return Read(detail::NativeLeaseSourceAccess::From(source),selector,role,nullptr,nullptr,nullptr,image_budget,w);
   }
-  static NativeCatalogVisibilityLeaseResult ReadPinned(const NativeSelectedCheckpointMemoryLease& source,
+  template<class Lease> static NativeCatalogVisibilityLeaseResult ReadPinned(const Lease& source,
       u16 selector,u16 role,const NativeCatalogRelationBinding& binding,
       const transaction::mga::TransactionIdentity& reader,const transaction::mga::PublishedSnapshotPin& pin,
       u64 image_budget,NativeCatalogVisibilityPreparedMemory& w) noexcept {
-    return Read(source,selector,role,&binding,&reader,&pin,image_budget,w);
+    return Read(detail::NativeLeaseSourceAccess::From(source),selector,role,&binding,&reader,&pin,image_budget,w);
   }
  private:
-  static NativeCatalogVisibilityLeaseResult Read(const NativeSelectedCheckpointMemoryLease& source,
+  static NativeCatalogVisibilityLeaseResult Read(const detail::NativeLeaseReadSource& source,
       u16 selector,u16 role,const NativeCatalogRelationBinding* binding,
       const transaction::mga::TransactionIdentity* reader,const transaction::mga::PublishedSnapshotPin* pin,
       u64 image_budget,NativeCatalogVisibilityPreparedMemory& w) noexcept {
@@ -131,10 +133,9 @@ class NativeCatalogVisibilityLeaseReader {
         if(captured.descriptor->owning_transaction_uuid.value!=reader->transaction_uuid.value||
             captured.descriptor->owning_transaction.value!=reader->local_id.value){fail(E::reader_mismatch);return out;}
       }
-      out.source=binding?NativeCatalogRelationLeaseReader::Read(source,selector,role,*binding,image_budget,w.relation_):
-          NativeCatalogRelationLeaseReader::ReadSelected(source,selector,role,image_budget,w.relation_);
+      out.source=NativeCatalogRelationLeaseReader::ReadImpl(source,selector,role,binding,image_budget,w.relation_);
       if(!out.source.ok()){fail(E::source_failure);return out;}
-      const auto& inventory=source.selection().checkpoint_inventory.inventory;
+      const auto& inventory=*source.inventory;
       mga::VisibilitySnapshotView snapshot;
       if(pin){const auto& s=*captured.descriptor;
         const auto owner=std::lower_bound(inventory.entries.begin(),inventory.entries.end(),reader->local_id.value,
@@ -148,7 +149,7 @@ class NativeCatalogVisibilityLeaseReader {
         snapshot.active_excluded_local_transaction_ids=s.active_excluded_local_transaction_ids;
         snapshot.in_doubt_excluded_local_transaction_ids=s.in_doubt_excluded_local_transaction_ids;
       }else{
-        if(source.selection().checkpoint_inventory.checkpoint->flags&4){out.source.error=NativeCatalogRelationLeaseError::cluster_requires_authority;fail(E::source_failure);return out;}
+        if(source.cluster_authority_required){out.source.error=NativeCatalogRelationLeaseError::cluster_requires_authority;fail(E::source_failure);return out;}
         for(const auto n:out.source.navigation_creators)if(!mga::HasCommittedInventoryOutcome(inventory.entries[n])){fail(E::navigation_not_committed);return out;}
         snapshot.allow_reader_own_uncommitted=false;snapshot.visible_through_local_transaction_id=inventory.next_local_transaction_id-1;
         snapshot.visible_through_local_transaction_id_is_boundary=true;snapshot.visible_through_commit_sequence=inventory.next_commit_sequence-1;

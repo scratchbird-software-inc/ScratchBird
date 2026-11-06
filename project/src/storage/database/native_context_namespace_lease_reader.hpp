@@ -33,14 +33,15 @@ struct NativeContextNamespaceReadResult {
 // CONTEXT_READ/WRITE. No session keys or values live in this record.
 class NativeContextNamespaceLeaseReader {
  public:
-  static NativeContextNamespaceReadResult ReadCommitted(
-      const NativeSelectedCheckpointMemoryLease& source,u16 selector,u16 role,
+  // SB_NATIVE_FIXED_ROOT_READ: every entry takes either lease.
+  template<class Lease> static NativeContextNamespaceReadResult ReadCommitted(
+      const Lease& source,u16 selector,u16 role,
       const NativeCatalogRelationBinding& relation,const NativeContextNamespaceBinding& binding,
       u64 budget,NativeCatalogVisibilityPreparedMemory& workspace) noexcept {
     return Read(source,selector,role,relation,nullptr,nullptr,binding,budget,workspace);
   }
-  static NativeContextNamespaceReadResult ReadPinned(
-      const NativeSelectedCheckpointMemoryLease& source,u16 selector,u16 role,
+  template<class Lease> static NativeContextNamespaceReadResult ReadPinned(
+      const Lease& source,u16 selector,u16 role,
       const NativeCatalogRelationBinding& relation,
       const transaction::mga::TransactionIdentity& reader,const transaction::mga::PublishedSnapshotPin& pin,
       const NativeContextNamespaceBinding& binding,u64 budget,
@@ -48,8 +49,8 @@ class NativeContextNamespaceLeaseReader {
     return Read(source,selector,role,relation,&reader,&pin,binding,budget,workspace);
   }
  private:
-  static NativeContextNamespaceReadResult Read(
-      const NativeSelectedCheckpointMemoryLease& source,u16 selector,u16 role,
+  template<class Lease> static NativeContextNamespaceReadResult Read(
+      const Lease& source,u16 selector,u16 role,
       const NativeCatalogRelationBinding& relation,const transaction::mga::TransactionIdentity* reader,
       const transaction::mga::PublishedSnapshotPin* pin,const NativeContextNamespaceBinding& binding,
       u64 budget,NativeCatalogVisibilityPreparedMemory& workspace) noexcept {
@@ -57,7 +58,7 @@ class NativeContextNamespaceLeaseReader {
     NativeContextNamespaceReadResult out;
     if(!core::uuid::IsEngineIdentityUuid(binding.database_uuid)||
        !core::uuid::IsEngineIdentityUuid(binding.namespace_uuid)||!binding.definition_generation||!budget)return out;
-    if(source.selection().checkpoint_inventory.checkpoint->header.database_uuid!=binding.database_uuid){
+    if(detail::NativeLeaseSourceAccess::From(source).database_uuid!=binding.database_uuid){
       out.error=E::node_mismatch;return out;
     }
     out.source=pin?NativeCatalogVisibilityLeaseReader::ReadPinned(source,selector,role,relation,*reader,*pin,budget,workspace):

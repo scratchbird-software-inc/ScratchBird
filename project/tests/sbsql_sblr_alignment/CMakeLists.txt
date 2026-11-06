@@ -1533,6 +1533,17 @@ endif()
     TIMEOUT 120)
   # SEARCH_KEY: SB_TRANSACTION_INVENTORY_READER. Read-only load and check of
   # the in-place transaction inventory (state chain + header chain).
+  # SB_NATIVE_FIXED_ROOT_READ: the lease readers on the fixed-root source (R2a).
+  add_executable(sbsql_sblr_alignment_native_fixed_root_readers native_fixed_root_readers_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_native_fixed_root_readers PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_native_fixed_root_readers PRIVATE sb_storage_database)
+  target_compile_definitions(sbsql_sblr_alignment_native_fixed_root_readers PRIVATE
+    SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password")
+  target_link_options(sbsql_sblr_alignment_native_fixed_root_readers PRIVATE "-Wl,--wrap=pread")
+  add_test(NAME sbsql_sblr_alignment_native_fixed_root_readers COMMAND sbsql_sblr_alignment_native_fixed_root_readers)
+  set_tests_properties(sbsql_sblr_alignment_native_fixed_root_readers PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;fixed_root;fault_injection"
+    TIMEOUT 900)
   # SB_NATIVE_FIXED_ROOT_READ: the fixed-root read source (drift removal R1).
   add_executable(sbsql_sblr_alignment_native_fixed_root_lease native_fixed_root_lease_test.cpp)
   target_compile_features(sbsql_sblr_alignment_native_fixed_root_lease PRIVATE cxx_std_23)

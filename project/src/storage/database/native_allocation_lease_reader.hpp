@@ -1,7 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
-#include "native_selected_checkpoint_memory_lease.hpp"
+#include "native_lease_read_source.hpp"
 #include "native_allocation_chain_backing.hpp"
 #include "hash_digest.hpp"
 
@@ -74,28 +74,44 @@ class NativeAllocationLeaseReader {
  public:
  static NativeAllocationLeaseReadResult Read(const NativeSelectedCheckpointMemoryLease& lease,
      const Uuid& filespace,u64 maximum_total_image_bytes,NativeAllocationPreparedMemory& backing) noexcept {
+  return ReadWith(detail::NativeLeaseSourceAccess::From(lease),filespace,maximum_total_image_bytes,backing);
+ }
+ // SB_NATIVE_FIXED_ROOT_READ: the same read from page zero's fixed roots. The
+ // primary map head carries no checkpoint digest; its digest is computed from
+ // the image read and bound by the directory's allocation root when present.
+ static NativeAllocationLeaseReadResult Read(const NativeFixedRootMemoryLease& lease,
+     const Uuid& filespace,u64 maximum_total_image_bytes,NativeAllocationPreparedMemory& backing) noexcept {
+  return ReadWith(detail::NativeLeaseSourceAccess::From(lease),filespace,maximum_total_image_bytes,backing);
+ }
+ private:
+ static NativeAllocationLeaseReadResult ReadWith(const detail::NativeLeaseReadSource& source,
+     const Uuid& filespace,u64 maximum_total_image_bytes,NativeAllocationPreparedMemory& backing) noexcept {
   using E=NativeAllocationLeaseError;NativeAllocationLeaseReadResult out;
   const auto fail=[&](E e){out.error=e;out.root.reset();out.chain={};out.retained_image_bytes=0;return std::move(out);};
   try{
-   lease.CheckThread();
-   if(!backing||!core::uuid::IsEngineIdentityUuid(filespace))return out;
-   const auto& cp=*lease.selection_.checkpoint_inventory.checkpoint;
-   if(backing.arena_.binding().database_uuid!=cp.header.database_uuid)return out;
-   if(lease.retained_image_bytes_>maximum_total_image_bytes)return fail(E::resource_exhausted);
+   if(!backing||!core::uuid::IsEngineIdentityUuid(filespace)||source.database_uuid.is_nil())return out;
+   if(backing.arena_.binding().database_uuid!=source.database_uuid)return out;
+   if(source.retained_image_bytes>maximum_total_image_bytes)return fail(E::resource_exhausted);
    const page::NativeFilespaceDirectoryRecord* member=nullptr;
-   for(const auto& p:lease.directory_.directory.pages)for(const auto& r:p.directory.records)
+   for(const auto& p:source.directory->pages)for(const auto& r:p.directory.records)
     if(r.bootstrap.filespace_uuid==filespace)member=&r;
    if(!member)return fail(E::member_not_found);
-   const auto file=std::find_if(lease.devices_.begin(),lease.devices_.end(),[&](const auto& f){return f.filespace_uuid==filespace;});
-   if(file==lease.devices_.end()||file->page_size_profile_uuid!=member->bootstrap.page_size_profile_uuid)return fail(E::binding_mismatch);
-   const bool primary=filespace==cp.header.filespace_uuid;
+   const auto file=std::find_if(source.devices.begin(),source.devices.end(),[&](const auto& f){return f.filespace_uuid==filespace;});
+   if(file==source.devices.end()||file->page_size_profile_uuid!=member->bootstrap.page_size_profile_uuid)return fail(E::binding_mismatch);
+   const bool primary=filespace==source.primary_filespace_uuid;
    NativeReadAllocationChain chain;
    std::array<byte,32> digest{};
    if(primary){
-    chain=lease.selection_.allocation;
-    const auto target=std::find_if(cp.roots.begin(),cp.roots.end(),[](const auto& r){return r.role==4;});
-    if(target==cp.roots.end())return fail(E::binding_mismatch);
-    digest=target->sha256;
+    chain=*source.allocation;
+    const auto* target=source.Root(3);
+    if(!target||chain.pages.empty())return fail(E::binding_mismatch);
+    if(target->sha256)digest=*target->sha256;
+    else{
+     const auto& head=chain.pages.front().image;
+     const auto hash=core::hash::ComputeSha256DigestNative(head.data(),head.size());
+     if(!hash.ok())return fail(E::hash_failure);
+     digest=hash.digest;
+    }
    }else{
     disk::FilespaceRootReference selected;
     const auto* explicit_root=member->allocation_root?&*member->allocation_root:nullptr;
@@ -103,9 +119,9 @@ class NativeAllocationLeaseReader {
      selected={3,3,r.page.filespace_uuid,r.page.page_number,r.page.page_generation,r.page.page_size_profile_uuid,r.object_uuid};}
     detail::NativeMetadataMemory resource(backing.bytes_);
     auto read=page::detail::ReadNativeAllocationChainBacked(*file->device,
-      {cp.header.database_uuid,filespace,file->page_size_profile_uuid},maximum_total_image_bytes-lease.retained_image_bytes_,
+      {source.database_uuid,filespace,file->page_size_profile_uuid},maximum_total_image_bytes-source.retained_image_bytes,
       explicit_root?page::NativeAllocationChainReadContext::selected:page::NativeAllocationChainReadContext::bootstrap,
-      explicit_root?&selected:nullptr,nullptr,{},lease.batches_[file-lease.devices_.begin()],resource);
+      explicit_root?&selected:nullptr,nullptr,{},source.batches[file-source.devices.begin()],resource);
     out.chain_error=read.chain.error;out.io_status=read.io_status;out.io_diagnostic=std::move(read.io_diagnostic);
     out.physical_bytes_read=read.physical_bytes_read;out.backing_bytes_used=resource.used();
     if(!read.ok())return fail(E::chain_failure);
@@ -124,7 +140,7 @@ class NativeAllocationLeaseReader {
     if(*member->allocation_root!=resolved)return fail(E::binding_mismatch);
    }
    out.root=resolved;out.chain=chain;
-   out.retained_image_bytes=lease.retained_image_bytes_+(primary?0:chain.retained_image_bytes);
+   out.retained_image_bytes=source.retained_image_bytes+(primary?0:chain.retained_image_bytes);
    out.error=E::none;return out;
   }catch(const std::bad_alloc&){return fail(E::resource_exhausted);}
    catch(const std::length_error&){return fail(E::resource_exhausted);}

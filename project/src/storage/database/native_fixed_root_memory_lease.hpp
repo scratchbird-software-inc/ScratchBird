@@ -70,6 +70,7 @@ struct NativeFixedRootIdentity {
 
 struct NativeFixedRootMemoryResult;
 class NativeFixedRootMemoryHandle;
+namespace detail { struct NativeLeaseSourceAccess; }
 
 class NativeFixedRootMemoryLease {
  public:
@@ -116,6 +117,7 @@ class NativeFixedRootMemoryLease {
   u64 retained_image_bytes_ = 0;
   std::size_t backing_bytes_used_ = 0;
   friend class NativeFixedRootMemoryHandle;
+  friend struct detail::NativeLeaseSourceAccess;
   friend NativeFixedRootMemoryResult AcquireNativeFixedRootMemoryLease(
       const Uuid&, std::span<const disk::NativeFilespaceDevice>, const Uuid&, NativeFixedRootMemoryLimits,
       NativeStorageMemory&, const NativeStorageMemoryBinding&) noexcept;

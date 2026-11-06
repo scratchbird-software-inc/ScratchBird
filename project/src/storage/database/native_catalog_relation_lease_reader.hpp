@@ -207,7 +207,18 @@ class NativeCatalogRelationLeaseReader {
   static NativeCatalogRelationLeaseResult Read(const NativeSelectedCheckpointMemoryLease& source,
       u16 selector,u16 role,const NativeCatalogRelationBinding& binding,u64 maximum_total_image_bytes,
       NativeCatalogRelationPreparedMemory& w) noexcept {
-    return ReadImpl(source,selector,role,&binding,maximum_total_image_bytes,w);
+    return ReadImpl(detail::NativeLeaseSourceAccess::From(source),selector,role,&binding,maximum_total_image_bytes,w);
+  }
+  // SB_NATIVE_FIXED_ROOT_READ: the same reads from page zero's fixed roots.
+  static NativeCatalogRelationLeaseResult Read(const NativeFixedRootMemoryLease& source,
+      u16 selector,u16 role,const NativeCatalogRelationBinding& binding,u64 maximum_total_image_bytes,
+      NativeCatalogRelationPreparedMemory& w) noexcept {
+    return ReadImpl(detail::NativeLeaseSourceAccess::From(source),selector,role,&binding,maximum_total_image_bytes,w);
+  }
+  static NativeCatalogRelationLeaseResult ReadSelected(const NativeFixedRootMemoryLease& source,
+      u16 selector,u16 role,u64 maximum_total_image_bytes,
+      NativeCatalogRelationPreparedMemory& w) noexcept {
+    return ReadImpl(detail::NativeLeaseSourceAccess::From(source),selector,role,nullptr,maximum_total_image_bytes,w);
   }
   // Discover layout exclusively through the privately selected root and its
   // complete native navigation/base-leaf graph. No supplied dependency tuple
@@ -215,10 +226,11 @@ class NativeCatalogRelationLeaseReader {
   static NativeCatalogRelationLeaseResult ReadSelected(const NativeSelectedCheckpointMemoryLease& source,
       u16 selector,u16 role,u64 maximum_total_image_bytes,
       NativeCatalogRelationPreparedMemory& w) noexcept {
-    return ReadImpl(source,selector,role,nullptr,maximum_total_image_bytes,w);
+    return ReadImpl(detail::NativeLeaseSourceAccess::From(source),selector,role,nullptr,maximum_total_image_bytes,w);
   }
  private:
-  static NativeCatalogRelationLeaseResult ReadImpl(const NativeSelectedCheckpointMemoryLease& source,
+  friend class NativeCatalogVisibilityLeaseReader;
+  static NativeCatalogRelationLeaseResult ReadImpl(const detail::NativeLeaseReadSource& source,
       u16 selector,u16 role,const NativeCatalogRelationBinding* expected,u64 maximum_total_image_bytes,
       NativeCatalogRelationPreparedMemory& w) noexcept {
     NativeCatalogRelationBinding binding=expected?*expected:NativeCatalogRelationBinding{};
@@ -230,10 +242,10 @@ class NativeCatalogRelationLeaseReader {
     try {
       if(!w||(selector!=2&&selector!=8)||role<1||role>6||
           (expected&&!core::uuid::IsEngineIdentityUuid(binding.relation_uuid)))return out;
-      if(w.arena_.binding().database_uuid!=source.selection().checkpoint_inventory.checkpoint->header.database_uuid)return out;
-      u64 retained=source.retained_image_bytes();
+      if(source.database_uuid.is_nil()||w.arena_.binding().database_uuid!=source.database_uuid)return out;
+      u64 retained=source.retained_image_bytes;
       if(retained>=maximum_total_image_bytes){fail(E::resource_exhausted);return out;}
-      out.roots=NativeCatalogRootsLeaseReader::Read(source,maximum_total_image_bytes-retained,w.roots_);
+      out.roots=NativeCatalogRootsLeaseReader::ReadWith(source,maximum_total_image_bytes-retained,w.roots_);
       out.physical_bytes_read+=out.roots.physical_bytes_read;
       if(!out.roots.ok()){fail(E::root_failure);return out;}
       retained+=out.roots.retained_image_bytes;
@@ -247,13 +259,13 @@ class NativeCatalogRelationLeaseReader {
       if(!indexed&&!expected)binding.relation_uuid=head->object_uuid;
       if(indexed){
         const auto limit=static_cast<usize>(std::min<u64>(maximum_total_image_bytes-retained,std::numeric_limits<usize>::max()));
-        out.tree=expected?NativeBtreeTreeLeaseReader::Read(source,head->page,*binding.index_dependencies,w.tree_,limit):
+        out.tree=expected?NativeBtreeTreeLeaseReader::ReadWith(source,head->page,*binding.index_dependencies,w.tree_,limit):
             NativeBtreeTreeLeaseReader::ReadSelected(source,head->page,head->object_uuid,w.tree_,limit);
         out.physical_bytes_read+=out.tree.physical_bytes_read;
         if(!out.tree.ok()){fail(E::tree_failure);return out;}retained+=out.tree.retained_image_bytes;
         if(!expected)binding.index_dependencies=out.tree.pages.front().page->dependencies;
       }
-      const auto& inventory=source.selection().checkpoint_inventory.inventory.entries;
+      const auto& inventory=source.inventory->entries;
       E failure=E::none;usize page_count=0,row_count=0,binding_count=0;
       constexpr auto missing=std::numeric_limits<usize>::max();
       std::fill(w.versions_.begin(),w.versions_.end(),missing);

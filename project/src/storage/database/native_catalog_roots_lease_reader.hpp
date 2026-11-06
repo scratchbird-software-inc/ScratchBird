@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 #include "native_catalog_root_memory.hpp"
-#include "native_selected_checkpoint_memory_lease.hpp"
+#include "native_lease_read_source.hpp"
 #include "hash_digest.hpp"
 
 namespace scratchbird::storage::database {
@@ -112,36 +112,47 @@ class NativeCatalogRootsLeaseReader {
  public:
  static NativeCatalogRootsLeaseReadResult Read(const NativeSelectedCheckpointMemoryLease& lease,
      u64 maximum_additional_image_bytes,NativeCatalogRootsPreparedMemory& backing) noexcept {
+  return ReadWith(detail::NativeLeaseSourceAccess::From(lease),maximum_additional_image_bytes,backing);
+ }
+ // SB_NATIVE_FIXED_ROOT_READ: the same read from page zero's catalog (kind 2)
+ // and feature catalog (kind 8) roots. They carry no digest; the root page's
+ // own seal is its integrity check.
+ static NativeCatalogRootsLeaseReadResult Read(const NativeFixedRootMemoryLease& lease,
+     u64 maximum_additional_image_bytes,NativeCatalogRootsPreparedMemory& backing) noexcept {
+  return ReadWith(detail::NativeLeaseSourceAccess::From(lease),maximum_additional_image_bytes,backing);
+ }
+ private:
+ friend class NativeCatalogRelationLeaseReader;
+ static NativeCatalogRootsLeaseReadResult ReadWith(const detail::NativeLeaseReadSource& source,
+     u64 maximum_additional_image_bytes,NativeCatalogRootsPreparedMemory& backing) noexcept {
   using E=NativeCatalogRootsLeaseError;NativeCatalogRootsLeaseReadResult out;
   try {
-   lease.CheckThread();
-   if(!backing||!maximum_additional_image_bytes||!lease.selection_.checkpoint_inventory.checkpoint)return out;
-   const auto& pair=lease.selection_.checkpoint_inventory;const auto& cp=*pair.checkpoint;
-   if(backing.arena_.binding().database_uuid!=cp.header.database_uuid)return out;
-   if(cp.flags&4u){out.error=E::cluster_requires_authority;return out;}
-   const auto catalog=std::find_if(cp.roots.begin(),cp.roots.end(),[](const auto& r){return r.role==5;});
-   const auto feature=std::find_if(cp.roots.begin(),cp.roots.end(),[](const auto& r){return r.role==9;});
-   if(catalog==cp.roots.end()||feature==cp.roots.end()){out.error=E::binding_mismatch;return out;}
+   if(!backing||!maximum_additional_image_bytes||source.database_uuid.is_nil())return out;
+   if(backing.arena_.binding().database_uuid!=source.database_uuid)return out;
+   if(source.cluster_authority_required){out.error=E::cluster_requires_authority;return out;}
+   const auto* catalog=source.Root(2);
+   const auto* feature=source.Root(8);
+   if(!catalog||!feature){out.error=E::binding_mismatch;return out;}
    usize count=0,feature_index=0;u64 retained=0;
-   for(const auto* target:{&*catalog,&*feature}){
-    if(target==&*feature&&target->page==catalog->page&&target->object_uuid==catalog->object_uuid&&
+   for(const auto* target:{catalog,feature}){
+    if(target==feature&&target->page==catalog->page&&target->object_uuid==catalog->object_uuid&&
         target->page_type==catalog->page_type&&target->sha256==catalog->sha256)continue;
     const auto& ref=target->page;const auto* p=disk::FindCanonicalFilespacePageProfile(ref.page_size_profile_uuid);
     if(!p||target->page_type!=5||!ref.page_number||!ref.page_generation){out.error=E::binding_mismatch;return out;}
     const auto size=p->page_size_bytes;
     if(size>backing.maximum_page_bytes_||size>maximum_additional_image_bytes-retained){out.error=E::resource_exhausted;return out;}
-    const auto file=std::find_if(lease.devices_.begin(),lease.devices_.end(),[&](const auto& f){
+    const auto file=std::find_if(source.devices.begin(),source.devices.end(),[&](const auto& f){
       return f.filespace_uuid==ref.filespace_uuid&&f.page_size_profile_uuid==ref.page_size_profile_uuid;});
-    if(file==lease.devices_.end()){out.error=E::binding_mismatch;return out;}
+    if(file==source.devices.end()){out.error=E::binding_mismatch;return out;}
     if(ref.page_number>std::numeric_limits<u64>::max()/size||
         disk::CheckFileDeviceExtentNative(ref.page_number*size,size)!=disk::BoundedIoError::none){out.error=E::binding_mismatch;return out;}
-    auto& device=*file->device;auto& batch=lease.batches_[file-lease.devices_.begin()];
+    auto& device=*file->device;auto& batch=source.batches[file-source.devices.begin()];
     auto image=backing.images_.subspan(count*backing.maximum_page_bytes_,size);
     const auto read=[&](u64 at,void* bytes,usize n){
       auto r=batch.ReadAtBounded(at,bytes,n);out.physical_bytes_read+=r.bytes_transferred;
       out.io=r;out.io_filespace_uuid=file->filespace_uuid;
       out.io_status=disk::BoundedIoStatus(r);return r.ok()&&r.bytes_transferred==n;};
-    const disk::FilespaceBootstrapBinding binding{cp.header.database_uuid,ref.filespace_uuid,ref.page_size_profile_uuid};
+    const disk::FilespaceBootstrapBinding binding{source.database_uuid,ref.filespace_uuid,ref.page_size_profile_uuid};
     disk::SerializedFilespaceBootstrap prefix{};
     if(!read(0,prefix.data(),prefix.size())){out.error=E::io_failure;return out;}
     const auto bootstrap=disk::DecodeFilespaceBootstrap(prefix.data(),prefix.size(),&binding);
@@ -172,14 +183,16 @@ class NativeCatalogRootsLeaseReader {
     auto decoded=page::DecodeNativeCatalogRootInto(image,backing.references_.subspan(count*6,6));
     if(!decoded.ok()){out.error=E::catalog_failure;out.catalog_error=decoded.error;return out;}
     const auto& r=*decoded.root;
-    if(r.object_uuid!=target->object_uuid||(target==&*catalog?r.root_kind!=2:(r.root_kind!=2&&r.root_kind!=8))){out.error=E::binding_mismatch;return out;}
+    if(r.object_uuid!=target->object_uuid||(target==catalog?r.root_kind!=2:(r.root_kind!=2&&r.root_kind!=8))){out.error=E::binding_mismatch;return out;}
     const auto outside=[&](const auto& child){return child.filespace_uuid==ref.filespace_uuid&&child.page_number>=total_pages;};
     if((r.predecessor&&outside(*r.predecessor))||std::any_of(r.roots.begin(),r.roots.end(),[&](const auto& child){return outside(child.page);})){
       out.error=E::binding_mismatch;return out;}
-    const auto digest=core::hash::ComputeSha256DigestNative(image.data(),image.size());
-    if(!digest.ok()){out.error=E::hash_failure;return out;}
-    if(digest.digest!=target->sha256){out.error=E::integrity_failure;return out;}
-    const auto& entries=pair.inventory.entries;
+    if(target->sha256){
+     const auto digest=core::hash::ComputeSha256DigestNative(image.data(),image.size());
+     if(!digest.ok()){out.error=E::hash_failure;return out;}
+     if(digest.digest!=*target->sha256){out.error=E::integrity_failure;return out;}
+    }
+    const auto& entries=source.inventory->entries;
     const auto creator=std::lower_bound(entries.begin(),entries.end(),r.creator_local_transaction_id,
       [](const auto& e,u64 n){return e.identity.local_id.value<n;});
     if(creator==entries.end()||creator->identity.local_id.value!=r.creator_local_transaction_id||
@@ -189,7 +202,7 @@ class NativeCatalogRootsLeaseReader {
     backing.decoded_[count]={{r.header,r.root_kind,r.object_uuid,r.creator_transaction_uuid,
       r.creator_local_transaction_id,r.catalog_generation,r.schema_epoch,r.security_epoch,r.resource_epoch,
       r.predecessor,r.predecessor_sha256,r.roots},image,static_cast<usize>(creator-entries.begin())};
-    if(target==&*feature)feature_index=count;
+    if(target==feature)feature_index=count;
     ++count;retained+=size;
    }
    out.catalogs=backing.decoded_.first(count);out.feature_root_index=feature_index;

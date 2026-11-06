@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 #include "native_catalog_leaf_memory.hpp"
-#include "native_selected_checkpoint_memory_lease.hpp"
+#include "native_lease_read_source.hpp"
 
 namespace scratchbird::storage::database {
 class NativeCatalogLeafLeaseReader;
@@ -105,28 +105,40 @@ class NativeCatalogLeafLeaseReader {
       const NativeSelectedCheckpointMemoryLease& lease,
       const page::NativeCatalogRootReference& ref,
       NativeCatalogLeafPreparedMemory& backing) noexcept {
-    return ReadImpl(lease,ref,backing,false);
+    return ReadImpl(detail::NativeLeaseSourceAccess::From(lease),ref,backing,false);
+  }
+  // SB_NATIVE_FIXED_ROOT_READ: the same read from page zero's fixed roots.
+  static NativeCatalogLeafLeaseReadResult Read(
+      const NativeFixedRootMemoryLease& lease,
+      const page::NativeCatalogRootReference& ref,
+      NativeCatalogLeafPreparedMemory& backing) noexcept {
+    return ReadImpl(detail::NativeLeaseSourceAccess::From(lease),ref,backing,false);
   }
  private:
   friend class NativeCatalogRelationLeaseReader;
   // A selected index may locate the first base leaf before its relation UUID
   // is known. Only its enclosing selected-root traversal may discover it.
   static NativeCatalogLeafLeaseReadResult ReadSelected(
-      const NativeSelectedCheckpointMemoryLease& lease,
+      const detail::NativeLeaseReadSource& source,
       const page::NativeCatalogRootReference& ref,
       NativeCatalogLeafPreparedMemory& backing) noexcept {
-    return ReadImpl(lease,ref,backing,true);
+    return ReadImpl(source,ref,backing,true);
+  }
+  static NativeCatalogLeafLeaseReadResult Read(
+      const detail::NativeLeaseReadSource& source,
+      const page::NativeCatalogRootReference& ref,
+      NativeCatalogLeafPreparedMemory& backing) noexcept {
+    return ReadImpl(source,ref,backing,false);
   }
   static NativeCatalogLeafLeaseReadResult ReadImpl(
-      const NativeSelectedCheckpointMemoryLease& lease,
+      const detail::NativeLeaseReadSource& source,
       const page::NativeCatalogRootReference& ref,
       NativeCatalogLeafPreparedMemory& backing,bool discover_relation) noexcept {
     using E=NativeCatalogLeafMemoryError;
     NativeCatalogLeafLeaseReadResult out;
     try {
-      lease.CheckThread();
-      if(!backing||!lease.selection_.checkpoint_inventory.checkpoint)return out;
-      const auto database=lease.selection_.checkpoint_inventory.checkpoint->header.database_uuid;
+      if(!backing||source.database_uuid.is_nil())return out;
+      const auto database=source.database_uuid;
       const auto& target=ref.page;
       const auto* profile=disk::FindCanonicalFilespacePageProfile(target.page_size_profile_uuid);
       if(!profile||backing.arena_.binding().database_uuid!=database||
@@ -136,11 +148,11 @@ class NativeCatalogLeafLeaseReader {
           !target.page_number||!target.page_generation)return out;
       if(profile->page_size_bytes>backing.image_.size()){out.error=E::resource_exhausted;return out;}
       const auto image=backing.image_.first(profile->page_size_bytes);
-      const auto found=std::find_if(lease.devices_.begin(),lease.devices_.end(),
+      const auto found=std::find_if(source.devices.begin(),source.devices.end(),
           [&](const auto& f){return f.filespace_uuid==target.filespace_uuid&&f.page_size_profile_uuid==target.page_size_profile_uuid;});
-      if(found==lease.devices_.end()){out.error=E::binding_mismatch;return out;}
-      const auto ordinal=static_cast<std::size_t>(found-lease.devices_.begin());
-      auto& device=*found->device;auto& observations=lease.batches_[ordinal];
+      if(found==source.devices.end()){out.error=E::binding_mismatch;return out;}
+      const auto ordinal=static_cast<std::size_t>(found-source.devices.begin());
+      auto& device=*found->device;auto& observations=source.batches[ordinal];
       const auto size=image.size();
       if(target.page_number>std::numeric_limits<u64>::max()/size)return out;
       const auto offset=target.page_number*size;

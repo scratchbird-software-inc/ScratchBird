@@ -21,6 +21,7 @@ enum class NativeSelectedCheckpointMemoryError {
 };
 struct NativeSelectedCheckpointMemoryResult;
 class NativeSelectedCheckpointMemoryHandle;
+namespace detail { struct NativeLeaseSourceAccess; }
 // Thread-affine, borrowed-device inspection fence. No mutable nested spans and
 // no operation/serving/security authority. The issuing manager and devices must
 // outlive the handle. Do not recursively publish, close or rebind those devices.
@@ -55,6 +56,7 @@ class NativeSelectedCheckpointMemoryLease {
   u64 retained_image_bytes_=0;
   std::size_t backing_bytes_used_=0;
   friend class NativeSelectedCheckpointMemoryHandle;
+  friend struct detail::NativeLeaseSourceAccess;  // SB_NATIVE_FIXED_ROOT_READ
   friend class NativeCatalogLeafLeaseReader;
   friend class NativeCatalogRootsLeaseReader;
   friend class NativeBtreeTreeLeaseReader;
