@@ -117,6 +117,9 @@ struct TransactionInventoryRead {
   u32 page_size = 0;
   std::size_t state_pages = 0;   // images at backing[0 .. state_pages * page_size)
   std::size_t header_pages = 0;  // images after the state pages
+  // Every byte actually transferred, including pages read before a refusal
+  // and a failing read's partial transfer.
+  u64 physical_bytes_read = 0;
   bool ok() const noexcept { return !io_failure && check.ok(); }
 };
 // Reads both chains from the open devices and runs the check. On success the

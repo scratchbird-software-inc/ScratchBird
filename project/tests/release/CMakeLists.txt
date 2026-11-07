@@ -473,52 +473,10 @@ if(TARGET sbsql_sblr_alignment_native_management_control_bundle)
         TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;catalog_metadata;fault_injection;not_runtime_acceptance")
     endforeach()
   endforeach()
-  foreach(via_route RANGE 0 1)
-    foreach(primary RANGE 0 4)
-      foreach(secondary RANGE 0 4)
-        add_test(NAME native_catalog_distinct_roots_memory_${via_route}_${primary}_${secondary}_gate
-          COMMAND sbsql_sblr_alignment_native_management_control_bundle --catalog-distinct-roots-memory ${via_route} ${primary} ${secondary})
-        set_tests_properties(native_catalog_distinct_roots_memory_${via_route}_${primary}_${secondary}_gate PROPERTIES
-          TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;catalog_metadata;owned_device_lifetime;not_runtime_acceptance")
-      endforeach()
-    endforeach()
-  endforeach()
-  foreach(via_route RANGE 0 1)
-    foreach(profile RANGE 0 4)
-      add_test(NAME native_catalog_populated_owned_memory_${via_route}_${profile}_gate
-        COMMAND sbsql_sblr_alignment_native_management_control_bundle --catalog-populated-owned-source-memory ${via_route} ${profile})
-      set_tests_properties(native_catalog_populated_owned_memory_${via_route}_${profile}_gate PROPERTIES
-        TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;catalog_metadata;owned_device_lifetime;not_runtime_acceptance")
-    endforeach()
-  endforeach()
-  foreach(via_route RANGE 0 1)
-    foreach(initial RANGE 0 1)
-      foreach(profile RANGE 2 4)
-        foreach(primary RANGE 0 4)
-          foreach(secondary RANGE 0 4)
-            add_test(NAME native_owned_source_memory_${via_route}_${initial}_${profile}_${primary}_${secondary}_gate
-              COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-owned-source-memory
-                ${via_route} ${initial} ${profile} ${primary} ${secondary})
-            set_tests_properties(native_owned_source_memory_${via_route}_${initial}_${profile}_${primary}_${secondary}_gate
-              PROPERTIES TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;owned_device_lifetime;not_runtime_acceptance")
-          endforeach()
-        endforeach()
-        foreach(route RANGE 0 8)
-          set(last_shard 0)
-          if(route LESS_EQUAL 6)
-            set(last_shard 15)
-          endif()
-          foreach(shard RANGE 0 ${last_shard})
-            add_test(NAME native_owned_source_memory_fault_${via_route}_${initial}_${profile}_${route}_${shard}_gate
-              COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-owned-source-faults
-                ${via_route} ${initial} ${profile} ${route} ${shard})
-            set_tests_properties(native_owned_source_memory_fault_${via_route}_${initial}_${profile}_${route}_${shard}_gate
-              PROPERTIES TIMEOUT 600 LABELS "storage;memory;binary_uuid;real_files;fault_injection;owned_device_lifetime;not_runtime_acceptance")
-          endforeach()
-        endforeach()
-      endforeach()
-    endforeach()
-  endforeach()
+  # SB_NATIVE_FIXED_ROOT_READ (drift removal C3d): the owned-source memory gates
+  # (native_owned_source_memory*, native_catalog_distinct_roots_memory*,
+  # native_catalog_populated_owned_memory*) ran on hand-built multi-file graphs and
+  # were replaced by sbsql_sblr_alignment_native_owned_adoption over the production create.
   foreach(route RANGE 0 2)
     if(route EQUAL 2)
       set(owned_directory_last 31)

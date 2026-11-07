@@ -264,6 +264,7 @@ TransactionInventoryRead ReadTransactionInventory(const TransactionInventoryRead
     }
     auto target = r.backing.subspan(used * page_size, page_size);
     const auto io = batch.ReadAtBounded(number * page_size, target.data(), page_size);
+    out.physical_bytes_read += u64{io.bytes_transferred};
     if (!io.ok() || io.bytes_transferred != page_size) {
       out.io_failure = true;
       out.io = io;
@@ -387,12 +388,11 @@ detail::NativeInPlaceInventoryRead detail::ReadNativeInPlaceInventoryBacked(
     auto backing = scratch.Array<byte>(static_cast<std::size_t>(pages * page_size));
     const TransactionInventoryReadRequest request{database, head, files, batches, backing};
     const auto read = ReadTransactionInventory(request);
-    if (read.io_failure) {
-      receipt.physical_bytes_read += u64{read.io.bytes_transferred};
-      return failed_io(read.io);
-    }
+    // Every byte read, on every exit: pages read before a failed read or a
+    // refused page count as much as the pages of a complete chain.
+    receipt.physical_bytes_read += read.physical_bytes_read;
+    if (read.io_failure) return failed_io(read.io);
     const std::size_t count = read.state_pages + read.header_pages;
-    receipt.physical_bytes_read += u64{count} * page_size;
     if (!read.ok()) return fail(read.check.error == TipPageError::short_buffer ? NE::resource_exhausted : NE::invalid_inventory);
     // The head was read before (the probe, or the caller's whole page): the
     // chain's read of it must be the same bytes.

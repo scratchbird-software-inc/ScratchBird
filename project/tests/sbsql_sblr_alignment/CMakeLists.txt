@@ -3962,37 +3962,37 @@ add_test(NAME sbsql_sblr_alignment_native_runtime_authorization_projection
 set_tests_properties(sbsql_sblr_alignment_native_runtime_authorization_projection PROPERTIES
   LABELS "sbsql_sblr_alignment;native_storage;binary_uuid;security_source;bounded_authorization;component_not_live_admission"
   TIMEOUT 120)
-add_executable(sbsql_sblr_alignment_native_owned_checkpoint_writer
-  native_owned_checkpoint_writer_test.cpp
+# SB_NATIVE_FIXED_ROOT_READ (drift removal C3d): owned-source adoption and the
+# native writer over a production create, with real OS/provider fault sweeps.
+add_executable(sbsql_sblr_alignment_native_owned_adoption
+  native_owned_adoption_test.cpp
   ${PROJECT_SOURCE_DIR}/src/server/database_ownership.cpp)
-target_compile_features(sbsql_sblr_alignment_native_owned_checkpoint_writer PRIVATE cxx_std_23)
-target_link_libraries(sbsql_sblr_alignment_native_owned_checkpoint_writer PRIVATE
+target_compile_features(sbsql_sblr_alignment_native_owned_adoption PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_owned_adoption PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(sbsql_sblr_alignment_native_owned_adoption PRIVATE
   sb_storage_database OpenSSL::Crypto Threads::Threads)
-target_link_options(sbsql_sblr_alignment_native_owned_checkpoint_writer PRIVATE
-  -Wl,--wrap=_ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv
-  "-Wl,--wrap=RAND_bytes" "-Wl,--wrap=EVP_Digest" "-Wl,--wrap=posix_fallocate"
+target_compile_definitions(sbsql_sblr_alignment_native_owned_adoption PRIVATE
+  SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password")
+target_link_options(sbsql_sblr_alignment_native_owned_adoption PRIVATE
+  "-Wl,--wrap=pread" "-Wl,--wrap=pwrite" "-Wl,--wrap=fsync" "-Wl,--wrap=close" "-Wl,--wrap=malloc"
   "-Wl,--wrap=EVP_MD_CTX_new" "-Wl,--wrap=EVP_DigestInit_ex" "-Wl,--wrap=EVP_DigestUpdate"
-  "-Wl,--wrap=EVP_DigestFinal_ex" "-Wl,--wrap=pread" "-Wl,--wrap=pwrite" "-Wl,--wrap=fsync"
-  "-Wl,--wrap=close" "-Wl,--wrap=malloc")
-add_test(NAME sbsql_sblr_alignment_native_owned_checkpoint_writer
-  COMMAND sbsql_sblr_alignment_native_owned_checkpoint_writer)
-set_tests_properties(sbsql_sblr_alignment_native_owned_checkpoint_writer PROPERTIES
-  LABELS "sbsql_sblr_alignment;native_storage;binary_uuid;writer_custody;close_receipt;component_not_live_admission"
-  TIMEOUT 120)
-foreach(fault_shard RANGE 0 7)
-  add_test(NAME sbsql_sblr_alignment_native_owned_checkpoint_writer_read_fault_${fault_shard}
-    COMMAND sbsql_sblr_alignment_native_owned_checkpoint_writer --faults 0 ${fault_shard} 8)
-  set_tests_properties(sbsql_sblr_alignment_native_owned_checkpoint_writer_read_fault_${fault_shard} PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_storage;binary_uuid;writer_custody;fault_injection;component_not_live_admission"
-    TIMEOUT 120)
+  "-Wl,--wrap=EVP_DigestFinal_ex" "-Wl,--wrap=EVP_Digest")
+add_test(NAME sbsql_sblr_alignment_native_owned_adoption COMMAND sbsql_sblr_alignment_native_owned_adoption)
+set_tests_properties(sbsql_sblr_alignment_native_owned_adoption PROPERTIES
+  LABELS "sbsql_sblr_alignment;native_storage;fixed_root;writer_custody;close_receipt;component_not_live_admission"
+  TIMEOUT 600)
+# Fault sweeps over every adoption site, per entry point (0 direct, 1 route):
+# kind 0 heap, 1 read failure, 2 read corruption, 3..7 digest-provider phases.
+foreach(route RANGE 0 1)
+  foreach(kind RANGE 0 7)
+    add_test(NAME sbsql_sblr_alignment_native_owned_adoption_faults_${route}_${kind}
+      COMMAND sbsql_sblr_alignment_native_owned_adoption --faults ${route} ${kind} 0 1)
+    set_tests_properties(sbsql_sblr_alignment_native_owned_adoption_faults_${route}_${kind} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_storage;fixed_root;writer_custody;fault_injection;component_not_live_admission"
+      TIMEOUT 600)
+  endforeach()
 endforeach()
-foreach(fault_shard RANGE 0 15)
-  add_test(NAME sbsql_sblr_alignment_native_owned_checkpoint_writer_heap_fault_${fault_shard}
-    COMMAND sbsql_sblr_alignment_native_owned_checkpoint_writer --faults 1 ${fault_shard} 16)
-  set_tests_properties(sbsql_sblr_alignment_native_owned_checkpoint_writer_heap_fault_${fault_shard} PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_storage;binary_uuid;writer_custody;fault_injection;component_not_live_admission"
-    TIMEOUT 120)
-endforeach()
+
 add_executable(sbsql_sblr_alignment_native_hosted_database_custody
   native_hosted_database_custody_test.cpp
   ${PROJECT_SOURCE_DIR}/src/server/database_ownership.cpp)
@@ -4000,15 +4000,14 @@ target_compile_features(sbsql_sblr_alignment_native_hosted_database_custody PRIV
 target_include_directories(sbsql_sblr_alignment_native_hosted_database_custody PRIVATE ${PROJECT_SOURCE_DIR}/src)
 target_link_libraries(sbsql_sblr_alignment_native_hosted_database_custody PRIVATE
   sb_storage_database OpenSSL::Crypto Threads::Threads)
+# SB_NATIVE_FIXED_ROOT_READ (drift removal C3d): custody over a production create.
+target_compile_definitions(sbsql_sblr_alignment_native_hosted_database_custody PRIVATE
+  SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password")
 target_link_options(sbsql_sblr_alignment_native_hosted_database_custody PRIVATE
-  -Wl,--wrap=_ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv
-  "-Wl,--wrap=RAND_bytes" "-Wl,--wrap=EVP_Digest" "-Wl,--wrap=posix_fallocate"
-  "-Wl,--wrap=EVP_MD_CTX_new" "-Wl,--wrap=EVP_DigestInit_ex" "-Wl,--wrap=EVP_DigestUpdate"
-  "-Wl,--wrap=EVP_DigestFinal_ex" "-Wl,--wrap=pread" "-Wl,--wrap=pwrite" "-Wl,--wrap=fsync" "-Wl,--wrap=malloc"
-  "-Wl,--wrap=free" "-Wl,--wrap=aligned_alloc" "-Wl,--wrap=pthread_mutex_lock" "-Wl,--wrap=pthread_mutex_unlock")
+  "-Wl,--wrap=fsync" "-Wl,--wrap=malloc")
 add_test(NAME sbsql_sblr_alignment_native_hosted_database_custody COMMAND sbsql_sblr_alignment_native_hosted_database_custody)
 set_tests_properties(sbsql_sblr_alignment_native_hosted_database_custody PROPERTIES
-  LABELS "sbsql_sblr_alignment;native_storage;host_custody;component_not_live_admission" TIMEOUT 300)
+  LABELS "sbsql_sblr_alignment;native_storage;host_custody;fixed_root;component_not_live_admission" TIMEOUT 300)
 endif()
 
 add_executable(sbsql_sblr_alignment_native_key_value_collection

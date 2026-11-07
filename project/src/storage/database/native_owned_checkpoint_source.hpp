@@ -484,11 +484,13 @@ inline NativeOwnedSourceResult NativeOwnedCheckpointSource::AdoptWithMemory(
     auto& state=*owner->memory_state_;
     for(std::size_t i=0;i<supplied.size();++i)
       if(!InspectMemoryBootstrap(*supplied[i],database,state.devices[i],out))return out;
-    auto selected=AcquireNativeSelectedCheckpointMemoryLease(database,state.devices,primary,
-        limits.source,transient,transient_binding);
-    out.FromMemorySource(selected);
-    if(!selected.ok())return out;
-    if(!CompleteMemoryCohort(*selected.lease,state.devices.size())){out.error=E::incomplete_cohort;return out;}
+    // SB_NATIVE_FIXED_ROOT_READ (drift removal C3d): the owned files are
+    // validated through page zero's fixed roots, not a selected checkpoint.
+    auto fixed=AcquireNativeFixedRootMemoryLease(database,state.devices,primary,
+        {limits.source.maximum_verification_image_bytes,limits.source.maximum_backing_bytes},transient,transient_binding);
+    out.FromFixedRootSource(fixed);
+    if(!fixed.ok())return out;
+    if(!CompleteFixedRootCohort(*fixed.lease,state.devices.size())){out.error=E::incomplete_cohort;return out;}
     // No fallible work after this point. Keep every actual independent OS lock.
     for(std::size_t i=0;i<supplied.size();++i){
       supplied[i]->route_owner_storage_guard_.unlock();state.owned[i]=std::move(supplied[i]);
@@ -639,11 +641,13 @@ inline NativeOwnedSourceResult NativeOwnedCheckpointSource::AdoptRouteWithMemory
       if(!InspectMemoryBootstrap(i?*secondary[i-1]:*state.owned[0],database,state.devices[i],out))return out;
     if(state.devices[0].filespace_uuid!=primary){out.error=E::bootstrap_failure;
       out.bootstrap_error=disk::FilespaceBootstrapError::binding_mismatch;return out;}
-    auto selected=AcquireNativeSelectedCheckpointMemoryLease(database,state.devices,primary,
-        limits.source,transient,transient_binding);
-    out.FromMemorySource(selected);
-    if(!selected.ok())return out;
-    if(!CompleteMemoryCohort(*selected.lease,state.devices.size())){out.error=E::incomplete_cohort;return out;}
+    // SB_NATIVE_FIXED_ROOT_READ (drift removal C3d): the owned files are
+    // validated through page zero's fixed roots, not a selected checkpoint.
+    auto fixed=AcquireNativeFixedRootMemoryLease(database,state.devices,primary,
+        {limits.source.maximum_verification_image_bytes,limits.source.maximum_backing_bytes},transient,transient_binding);
+    out.FromFixedRootSource(fixed);
+    if(!fixed.ok())return out;
+    if(!CompleteFixedRootCohort(*fixed.lease,state.devices.size())){out.error=E::incomplete_cohort;return out;}
     out.route_error=retained->CommitSourceAdmission();
     if(out.route_error!=disk::RouteSourceTransitionError::none){out.error=E::route_admission;return out;}
     (void)rollback.release();

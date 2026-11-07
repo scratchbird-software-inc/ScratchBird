@@ -1801,6 +1801,10 @@ void DirectoryGuardedBtree(unsigned primary,unsigned secondary){
  Check(reopened.ok()&&reopened.pages.size()==3,"independent read-only reopen preserves actual tree");
 }
 void DirectoryDistinctCatalogRoots(unsigned primary,unsigned secondary,bool via_route,unsigned creator_fault=0){
+ // SB_NATIVE_FIXED_ROOT_READ (drift removal C3d): only the creator-refusal path
+ // remains; it reads a selected lease directly (R4). The owned-source path on this
+ // hand-built graph was removed with the owned-source checks.
+ Check(creator_fault>0&&!via_route,"distinct catalog roots run only as a creator refusal");
  // Build a complete non-serving physical fixture before source admission. This
  // is not an allocation/publication API: map, directory, zero, checkpoint and
  // both selector/watermark replicas are all rebound as fixture construction.
@@ -1897,37 +1901,6 @@ void DirectoryDistinctCatalogRoots(unsigned primary,unsigned secondary,bool via_
      "late mismatched missing unresolved or rollback creator has an exact failure and no verified first-root prefix");
   }
   prepared={};root_grant.memory={};source_grant.memory={};root_grant.Empty();source_grant.Empty();return;
- }
- owned_source_memory::Checks(storage.devices,allowance,false,via_route);
- f.Reopen();
- const d::FilespaceRootReference checkpoint_ref{9,0x300,cp.header.filespace_uuid,cp.header.page_number,
-   cp.header.page_generation,cp.header.page_size_profile_uuid,cp.object_uuid};
- const auto reopened=db::VerifyNativeCheckpointCatalogRootsFromOpenDevices(Id(1),storage.devices,checkpoint_ref,allowance);
- Check(reopened.ok()&&reopened.catalogs.size()==2&&reopened.feature_root_index==1&&
-   reopened.catalogs[1].bytes==image.bytes,"actual distinct cross-profile feature survives independent read-only reopen");
-}
-void DirectoryOwnedSourceMemory(unsigned primary,unsigned secondary,bool reverse,unsigned profile,
- bool target,bool reserve,bool initial,bool via_route,int fault_route=9,unsigned shard=0,unsigned shards=1,bool populated=false){
- DirectoryHistoryFixture f(primary,secondary,reverse,profile,target,reserve,profile==2,!initial);
- const auto allowance=16*1024*std::max<u64>(f.t.fixture.size,d::kCanonicalFilespacePageProfiles[secondary].page_size_bytes);
- owned_source_memory::Checks(f.t.fixture.devices,allowance,
-   primary==secondary&&!reverse&&!target&&reserve==(profile!=2),via_route,fault_route,shard,shards,populated);
- f.Reopen();
- if(populated){
-  const auto selected=db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),f.t.fixture.devices,Id(2),allowance);
-  Check(selected.ok(),"reopened populated fixture selected source");
-  const auto& roots=selected.checkpoint_inventory.checkpoint->roots;
-  const auto root=std::find_if(roots.begin(),roots.end(),[](const auto& r){return r.role==5;});
-  Check(root!=roots.end(),"reopened populated fixture catalog binding");
-  auto* device=f.File(root->page.filespace_uuid);
-  const d::FilespaceRootReference ref{2,root->page_type,root->page.filespace_uuid,root->page.page_number,
-    root->page.page_generation,root->page.page_size_profile_uuid,root->object_uuid};
-  const auto catalog=page::ReadNativeCatalogRootFromOpenDevice(*device,Id(1),ref);
-  Check(catalog.ok(),"reopened populated fixture catalog root");
-  const auto object=std::find_if(catalog.root->roots.begin(),catalog.root->roots.end(),[](const auto& r){return r.role==1;});
-  Check(object!=catalog.root->roots.end(),"reopened populated fixture object head");
-  const auto leaf=db::ReadNativeCatalogLeafFromOpenDevice(*f.File(object->page.filespace_uuid),Id(1),*object);
-  Check(leaf.ok()&&leaf.metadata.size()==2,"populated records survive independent read-only device reopen");
  }
 }
 void DirectorySelectedLeaseMemory(unsigned primary,unsigned secondary,bool reverse,unsigned profile,
@@ -4337,39 +4310,12 @@ int main(int argc,char** argv){
   Check(primary>=0&&primary<5&&secondary>=0&&secondary<5,"guarded tree profiles");
   DirectoryGuardedBtree(primary,secondary);std::cout<<"PASS guarded tree checks="<<checks<<'\n';return 0;
  }
- if((argc==5||argc==6)&&std::string_view(argv[1])=="--catalog-distinct-roots-memory"){
+ if(argc==6&&std::string_view(argv[1])=="--catalog-distinct-roots-memory"){
   const auto route=std::stoi(argv[2]),primary=std::stoi(argv[3]),secondary=std::stoi(argv[4]);
-  const auto fault=argc==6?std::stoi(argv[5]):0;
+  const auto fault=std::stoi(argv[5]);
   Check(route>=0&&route<=1&&primary>=0&&primary<5&&secondary>=0&&secondary<5&&fault>=0&&fault<=4,"distinct catalog root arguments");
   DirectoryDistinctCatalogRoots(primary,secondary,route,fault);
   std::cout<<"PASS distinct guarded catalog roots checks="<<checks<<'\n';return 0;
- }
- if(argc==4&&std::string_view(argv[1])=="--catalog-populated-owned-source-memory"){
-  const auto via_route=std::stoi(argv[2]),profile=std::stoi(argv[3]);
-  Check(via_route>=0&&via_route<=1&&profile>=0&&profile<5,"populated guarded catalog arguments");
-  for(bool reverse:{false,true})
-   DirectoryOwnedSourceMemory(profile,(profile+1)%5,reverse,2,false,false,true,via_route,9,0,1,true);
-  std::cout<<"PASS populated guarded catalog checks="<<checks<<'\n';return 0;
- }
- if(argc==7&&std::string_view(argv[1])=="--directory-owned-source-memory"){
-  const auto via_route=std::stoi(argv[2]),initial=std::stoi(argv[3]),profile=std::stoi(argv[4]),
-    primary=std::stoi(argv[5]),secondary=std::stoi(argv[6]);
-  Check(via_route>=0&&via_route<=1&&initial>=0&&initial<=1&&profile>=2&&profile<=4&&
-    primary>=0&&primary<5&&secondary>=0&&secondary<5,"owned source pair arguments");
-  for(bool reverse:{false,true})for(bool target:{false,true})for(bool reserve:{false,true}){
-   if(profile==2&&(target||reserve))continue;if(profile==3&&!reserve)continue;
-   DirectoryOwnedSourceMemory(primary,secondary,reverse,profile,target,reserve,initial,via_route);
-  }
-  std::cout<<"PASS owned source pair checks="<<checks<<'\n';return 0;
- }
- if(argc==7&&std::string_view(argv[1])=="--directory-owned-source-faults"){
-  const auto via_route=std::stoi(argv[2]),initial=std::stoi(argv[3]),profile=std::stoi(argv[4]),
-    route=std::stoi(argv[5]),shard=std::stoi(argv[6]);
-  const unsigned shards=route<=6?16:1;
-  Check(via_route>=0&&via_route<=1&&initial>=0&&initial<=1&&profile>=2&&profile<=4&&
-    route>=0&&route<=8&&shard>=0&&unsigned(shard)<shards,"owned source fault arguments");
-  DirectoryOwnedSourceMemory(0,0,false,profile,false,profile!=2,initial,via_route,route,shard,shards);
-  std::cout<<"PASS owned source fault checks="<<checks<<'\n';return 0;
  }
  if(argc==6&&std::string_view(argv[1])=="--directory-selected-lease-memory"){
   const auto initial=std::stoi(argv[2]),profile=std::stoi(argv[3]),primary=std::stoi(argv[4]),secondary=std::stoi(argv[5]);
