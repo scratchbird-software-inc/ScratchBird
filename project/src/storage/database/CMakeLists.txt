@@ -59,7 +59,6 @@ add_library(sb_storage_database
   native_policy_descriptor_creation.cpp
   native_verification_policy_creation.cpp
   native_initial_policy_catalogs.cpp
-  native_creation_workspace_recovery.cpp
   repair_event_ledger.cpp
   repair_history_inspection.cpp
   startup_state.cpp

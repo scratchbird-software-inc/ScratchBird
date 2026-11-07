@@ -1,7 +1,6 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "native_creation_workspace.hpp"
-#include "native_publication_watermark.hpp"
 #include "disk_device.hpp"
 #include "physical_mga_cow_store.hpp"
 #include "hash_digest.hpp"
@@ -37,30 +36,27 @@ unsigned checks=0;
 void Check(bool value,const char* what){++checks;if(!value)throw std::runtime_error(what);}
 enum Call {write_call,read_call,sync_call,random_call,hash_call,call_count};
 std::array<unsigned,call_count> calls{};
-bool armed=false,stop_before_second_selector=false;
-bool tamper_watermark_after_publication=false,tamper_done=false;
+bool armed=false;
+bool tamper_done=false;
 // SB_NATIVE_FIXED_ROOT_READ (drift removal R3b3): the fixed-root commit
 // protocol. zero_phase 1 = page zero written after every other page was written,
 // synchronized and read back; 2 = page zero synchronized; 3 = page zero read
-// back. Selector tracking is only for the drift-era graph's recovery fixtures
-// (removed in R3c), which arm it through stop_before_second_selector.
+// back.
 bool stop_before_page_zero=false,tamper_after_page_zero=false;
 unsigned zero_phase=0;u64 tamper_page=0;
-bool TrackSelectors(){return stop_before_second_selector;}
 unsigned fault_kind=call_count,fault_at=0,corrupt_at=0;
-unsigned selector_phase=0;
-unsigned watermark_written=0,watermark_synced=0,watermark_compared=0;
 unsigned zero_writes=0,zero_partial_at=0;
 u64 zero_bytes=0,largest_zero_write=0;
 // The smallest file: maps + 14 controls of the fixed-root graph (13 control
 // pages) + the transaction header page (SB_TRANSACTION_HEADER_PAGE, allocated
 // last). The smallest image budget adds one in-flight encoder image and one
 // readback image. (The drift-era graph had 20 controls.)
-u64 page_bytes=8192,total_pages=16,selector_page=17;
+u64 page_bytes=8192,total_pages=16;
 unsigned first_write_hashes=~0u;  // digest calls before the first physical write
+unsigned torn_at=0;  // the write torn in half (then failed), counted as calls[write_call]
 bool ordered=true;
 bool Hit(Call kind){if(!armed)return false;return ++calls[kind]==fault_at&&kind==fault_kind;}
-void Arm(unsigned kind=call_count,unsigned at=0){calls={};fault_kind=kind;fault_at=at;corrupt_at=0;selector_phase=0;zero_phase=0;first_write_hashes=~0u;watermark_written=watermark_synced=watermark_compared=0;zero_writes=0;zero_bytes=largest_zero_write=0;ordered=true;armed=true;}
+void Arm(unsigned kind=call_count,unsigned at=0){calls={};fault_kind=kind;fault_at=at;corrupt_at=0;zero_phase=0;first_write_hashes=~0u;zero_writes=0;zero_bytes=largest_zero_write=0;ordered=true;armed=true;}
 void Disarm(){armed=false;}
 Uuid Id(unsigned n){Uuid id;id.bytes[0]=1;id.bytes[6]=0x70;id.bytes[8]=0x80;id.bytes[14]=n>>8;id.bytes[15]=n;return id;}
 db::NativeFilespaceInitializationRequest Request(unsigned profile=0,u64 total=16){
@@ -241,25 +237,18 @@ extern "C" ssize_t __wrap_pwrite(int fd,const void* bytes,size_t count,off_t off
   }
   if(armed&&first_write_hashes==~0u)first_write_hashes=calls[hash_call];
   if(Hit(write_call)){errno=EIO;return -1;}
-  const bool page_zero_image=armed&&!TrackSelectors()&&offset==0&&count==page_bytes&&static_cast<const byte*>(bytes)[0];
+  if(armed&&torn_at&&calls[write_call]==torn_at&&count){
+    const auto half=__real_pwrite(fd,bytes,count/2,offset);
+    if(half!=static_cast<ssize_t>(count/2))std::abort();
+    errno=EIO;return -1;
+  }
+  const bool page_zero_image=armed&&offset==0&&count==page_bytes&&static_cast<const byte*>(bytes)[0];
   if(page_zero_image){
     ordered&=zero_phase==0&&calls[sync_call]>=1&&calls[read_call]>=total_pages;
     if(stop_before_page_zero)_exit(ordered?86:87);
-  }else if(armed&&!TrackSelectors()&&zero_phase&&count)ordered=false;  // nothing is written after the commit point
-  const bool selector=armed&&TrackSelectors()&&offset>=static_cast<off_t>(selector_page*page_bytes)&&
-    offset<=static_cast<off_t>((selector_page+1)*page_bytes)&&
-    count>=128&&static_cast<const byte*>(bytes)[0];
-  if(selector){
-    const bool second=offset==static_cast<off_t>((selector_page+1)*page_bytes);
-    ordered&=calls[sync_call]>=1+unsigned(second)&&calls[read_call]>=total_pages+unsigned(second)&&watermark_compared==3;
-    if(second)ordered&=selector_phase==3;
-    if(second&&stop_before_second_selector)_exit(ordered?86:87);
-  }
+  }else if(armed&&zero_phase&&count)ordered=false;  // nothing is written after the commit point
   const auto n=__real_pwrite(fd,bytes,count,offset);
   if(page_zero_image&&n==static_cast<ssize_t>(count))zero_phase=1;
-  if(armed&&TrackSelectors()&&n==static_cast<ssize_t>(page_bytes)&&count==page_bytes&&static_cast<const byte*>(bytes)[0])
-    for(unsigned i=0;i<2;++i)if(offset==static_cast<off_t>((selector_page+2+i)*page_bytes))watermark_written|=1u<<i;
-  if(selector&&n==static_cast<ssize_t>(count))selector_phase=offset==static_cast<off_t>(selector_page*page_bytes)?1:4;
   return n;
 }
 extern "C" ssize_t __real_pread(int,void*,size_t,off_t);
@@ -267,29 +256,17 @@ extern "C" int __real_fsync(int);
 extern "C" ssize_t __wrap_pread(int fd,void* bytes,size_t count,off_t offset){
   if(Hit(read_call)){errno=EIO;return -1;}
   const auto n=__real_pread(fd,bytes,count,offset);
-  if(armed&&!TrackSelectors()&&zero_phase==2&&offset==0&&n==static_cast<ssize_t>(page_bytes)){
+  if(armed&&zero_phase==2&&offset==0&&n==static_cast<ssize_t>(page_bytes)){
     zero_phase=3;
     if(tamper_after_page_zero){const byte damaged='X';
       tamper_done=__real_pwrite(fd,&damaged,1,static_cast<off_t>(tamper_page*page_bytes+page_bytes/2))==1&&__real_fsync(fd)==0;}
-  }
-  if(armed&&TrackSelectors()&&n==static_cast<ssize_t>(page_bytes)&&count==page_bytes){
-    for(unsigned i=0;i<2;++i)if(offset==static_cast<off_t>((selector_page+2+i)*page_bytes)&&
-      (watermark_synced&(1u<<i)))watermark_compared|=1u<<i;
-    if(selector_phase==2&&offset==static_cast<off_t>(selector_page*page_bytes))selector_phase=3;
-    if(selector_phase==5&&offset==static_cast<off_t>((selector_page+1)*page_bytes)){
-      selector_phase=6;
-      if(tamper_watermark_after_publication){const byte damaged='X';
-        tamper_done=__real_pwrite(fd,&damaged,1,static_cast<off_t>((selector_page+2)*page_bytes))==1&&__real_fsync(fd)==0;
-      }
-    }
   }
   if(armed&&corrupt_at&&calls[read_call]==corrupt_at&&n>0)static_cast<byte*>(bytes)[n-1]^=1;
   return n;
 }
 extern "C" int __real_fsync(int);
 extern "C" int __wrap_fsync(int fd){if(Hit(sync_call)){errno=EIO;return -1;}const auto r=__real_fsync(fd);
-  if(armed&&r==0){watermark_synced|=watermark_written;if(selector_phase==1)selector_phase=2;if(selector_phase==4)selector_phase=5;
-    if(zero_phase==1)zero_phase=2;}return r;}
+  if(armed&&r==0&&zero_phase==1)zero_phase=2;return r;}
 extern "C" int __real_RAND_bytes(unsigned char*,int);
 extern "C" int __wrap_RAND_bytes(unsigned char* bytes,int count){
   if(Hit(random_call))return 0;if(zero_entropy){std::fill_n(bytes,count,0);return 1;}if(repeat_entropy){if(count!=16)return 0;const auto collision=Id(3);std::copy(collision.bytes.begin(),collision.bytes.end(),bytes);return 1;}return __real_RAND_bytes(bytes,count);}
@@ -319,9 +296,6 @@ extern "C" scratchbird::core::time::ClockSnapshotResult __wrap__ZN11scratchbird4
 #include "native_indexed_creation_failure_checks.hpp"
 #include "native_catalog_authority_checks.hpp"
 int main(int argc,char** argv){try{
-  if(argc==2&&std::string_view(argv[1])=="--indexed-negatives") {
-    NativeIndexedRecoveryNegativeChecks();std::cout<<"PASS indexed_negative_checks="<<checks<<'\n';return 0;
-  }
   if((argc==3||argc==4)&&std::string_view(argv[1])=="--indexed-faults") {
     NativeIndexedCreationFailureChecks(std::stoul(argv[2]),argc==4?std::stoul(argv[3]):1);
     std::cout<<"PASS indexed_fault_checks="<<checks<<'\n';return 0;
@@ -330,7 +304,7 @@ int main(int argc,char** argv){try{
     Fixture fixture;
     for(unsigned profile=0;profile<5;++profile){
       const auto request=Request(profile,65);page_bytes=request.bootstrap.page_size_bytes;total_pages=request.total_pages;
-      const u64 maps=profile?1:2;selector_page=maps+16;
+      const u64 maps=profile?1:2;
       for(const u64 extra:{u64{0},u64{4},u64{64}}){
         disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"zero batch device");
         Arm();const auto result=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,(maps+17+extra)*page_bytes,*fixture.issuer);Disarm();
@@ -412,7 +386,7 @@ int main(int argc,char** argv){try{
   }
   for(unsigned profile=0;profile<5;++profile){auto request=Request(profile,64);disk::FileDevice device;const auto path=fixture.Next();
     Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"exclusive new device");
-    page_bytes=request.bootstrap.page_size_bytes;total_pages=request.total_pages;selector_page=(profile?1:2)+16;
+    page_bytes=request.bootstrap.page_size_bytes;total_pages=request.total_pages;
     Arm();const auto result=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,128*page_bytes,*fixture.issuer);Disarm();
     if(!result.ok())std::cerr<<"creation error="<<static_cast<int>(result.error)<<" checkpoint="<<static_cast<int>(result.checkpoint_error)<<" selector="<<static_cast<int>(result.selection_error)<<'\n';
     Check(result.ok()&&ordered&&zero_phase==3,
@@ -429,7 +403,7 @@ int main(int argc,char** argv){try{
   }
   // The smallest fixed-root file: page zero, one map, 13 controls and the
   // header page; the smallest image budget adds an encoder and a readback image.
-  const auto request=Request();page_bytes=8192;total_pages=16;selector_page=17;
+  const auto request=Request();page_bytes=8192;total_pages=16;
   const u64 minimum_budget=18*page_bytes;
   // SB_NATIVE_FIXED_ROOT_READ (drift removal R3b3): a fixed root changed
   // after page zero is written and read back is caught by the create's own
@@ -519,15 +493,24 @@ int main(int argc,char** argv){try{
     Check(r.ok()&&r.receipt->free_pages==0&&ordered&&zero_phase==3,"exact minimum capacity and image budget");Inspect(device,request);}
   const unsigned preparation_hashes=first_write_hashes;
   Check(preparation_hashes!=~0u&&preparation_hashes>0,"the baseline digests every image before its first write");
+  // Owner Q12 = 1 (drift removal R3c): there is no create recovery. A file
+  // left by an interrupted create is not a database: the fixed-root read the
+  // server's open verification starts from refuses it.
+  const auto refused_by_fixed_root=[&](disk::FileDevice& device){
+    std::vector<byte> backing(2*minimum_budget+(u64{1}<<20));
+    const std::vector<disk::NativeFilespaceDevice> devices{{Id(2),request.bootstrap.page_size_profile_uuid,&device}};
+    return !db::AcquireNativeFixedRootBackedLease(Id(1),devices,Id(2),{minimum_budget,backing.size()},backing).ok();
+  };
   for(unsigned kind=0;kind<call_count;++kind)for(unsigned at=1;at<=baseline[kind];++at){
     disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"fault fixture");
     Arm(kind,at);const auto r=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,minimum_budget,*fixture.issuer);const auto observed=calls;Disarm();
     Check(!r.ok()&&!r.receipt&&observed[kind]>=at,"every injected physical/provider failure returns no receipt");
     const auto size=device.Size();Check(size.ok()&&device.is_open(),"failure preserves open owner");
-    if((kind==sync_call&&at==1)||(kind==read_call&&at<=total_pages)||(kind==write_call&&at<=baseline[write_call]-1)){
+    if((kind==sync_call&&at==1)||(kind==read_call&&at<=total_pages)||(kind==write_call&&at<=baseline[write_call])){
       const auto zero_page=size.size_bytes>=page_bytes?Read(device,0,page_bytes):std::vector<byte>{};
       Check(std::all_of(zero_page.begin(),zero_page.end(),[](byte v){return !v;}),
-        "a failure before the commit point leaves page zero unwritten: the file is not a database");}
+        "a failure before the commit point leaves page zero unwritten");
+      Check(refused_by_fixed_root(device),"a file interrupted before the commit point is not a database");}
     if(kind==random_call||(kind==hash_call&&at<=preparation_hashes))Check(observed[write_call]==0&&size.size_bytes==0,"preparation failure precedes all writes");
     if(size.size_bytes){const auto replay=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,minimum_budget,*fixture.issuer);
       Check(!replay.ok()&&replay.error==db::NativeCreationWorkspaceError::device_not_empty&&device.Size().size_bytes==size.size_bytes,
@@ -538,6 +521,13 @@ int main(int argc,char** argv){try{
     Check(!r.ok()&&!r.receipt&&r.error==db::NativeCreationWorkspaceError::readback_mismatch,"every page and page-zero readback byte mismatch refuses");
     if(at<=total_pages){const auto zero_page=Read(device,0,page_bytes);
       Check(std::all_of(zero_page.begin(),zero_page.end(),[](byte v){return !v;}),"a readback mismatch before the commit point leaves page zero unwritten");}}
+  // Every write torn in half, page zero's included: the create refuses and the
+  // file it leaves is not a database.
+  for(unsigned at=1;at<=baseline[write_call];++at){disk::FileDevice device;
+    Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"torn write fixture");
+    Arm();torn_at=at;const auto r=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,minimum_budget,*fixture.issuer);torn_at=0;Disarm();
+    Check(!r.ok()&&!r.receipt&&r.error==db::NativeCreationWorkspaceError::io_failure,"a torn write refuses the create");
+    Check(refused_by_fixed_root(device),"a file left by a torn write, page zero's included, is not a database");}
   for(unsigned variant=0;variant<15;++variant){auto bad=request;u64 budget=minimum_budget;
     if(variant==0)bad.creator.local_id.value=2;if(variant==1)bad.bootstrap.lifecycle_state=1;
     if(variant==2)bad.total_pages=15;if(variant==3)--budget;if(variant==4)bad.operation_uuid=bad.writer_uuid;

@@ -1285,27 +1285,9 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set_tests_properties(sbsql_sblr_alignment_catalog_metric_retention_staging PROPERTIES
     LABELS "sbsql_sblr_alignment;IA-12;native_policy;actual_staging;binary_UUID;not_SQL_E2E" TIMEOUT 120)
   add_executable(sbsql_sblr_alignment_native_creation_workspace native_creation_workspace_test.cpp)
-  add_executable(sbsql_sblr_alignment_native_creation_workspace_recovery native_creation_workspace_recovery_test.cpp)
-  target_compile_features(sbsql_sblr_alignment_native_creation_workspace_recovery PRIVATE cxx_std_23)
-  target_link_libraries(sbsql_sblr_alignment_native_creation_workspace_recovery PRIVATE sb_storage_database OpenSSL::Crypto)
-  target_link_options(sbsql_sblr_alignment_native_creation_workspace_recovery PRIVATE
-    -Wl,--wrap=pwrite -Wl,--wrap=pread -Wl,--wrap=fsync -Wl,--wrap=RAND_bytes -Wl,--wrap=EVP_Digest
-    -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex)
-  add_test(NAME sbsql_sblr_alignment_native_creation_workspace_recovery COMMAND sbsql_sblr_alignment_native_creation_workspace_recovery)
-  set_tests_properties(sbsql_sblr_alignment_native_creation_workspace_recovery PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_creation_recovery;actual_files;not_SQL_E2E" TIMEOUT 180)
-  foreach(shard RANGE 0 3)
-    add_test(NAME sbsql_sblr_alignment_native_creation_recovery_allocations_${shard}
-      COMMAND sbsql_sblr_alignment_native_creation_workspace_recovery --allocations ${shard})
-    set_tests_properties(sbsql_sblr_alignment_native_creation_recovery_allocations_${shard} PROPERTIES
-      LABELS "sbsql_sblr_alignment;native_creation_recovery;allocation_faults;not_SQL_E2E" TIMEOUT 300)
-    foreach(mode first stable)
-      add_test(NAME sbsql_sblr_alignment_native_creation_recovery_allocations_${shard}_${mode}
-        COMMAND sbsql_sblr_alignment_native_creation_workspace_recovery --allocations ${shard} ${mode})
-      set_tests_properties(sbsql_sblr_alignment_native_creation_recovery_allocations_${shard}_${mode} PROPERTIES
-        LABELS "sbsql_sblr_alignment;native_creation_recovery;allocation_faults;not_SQL_E2E" TIMEOUT 300)
-    endforeach()
-  endforeach()
+  # Owner Q12 = 1 (drift removal R3c): create recovery and its test
+  # (native_creation_workspace_recovery, 13 names) are removed; an interrupted
+  # create is not a database (checked in native_creation_workspace_test).
   target_compile_features(sbsql_sblr_alignment_native_creation_workspace PRIVATE cxx_std_23)
   target_link_libraries(sbsql_sblr_alignment_native_creation_workspace PRIVATE sb_storage_database OpenSSL::Crypto)
   target_link_options(sbsql_sblr_alignment_native_creation_workspace PRIVATE
@@ -1334,10 +1316,6 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     set_tests_properties(sbsql_sblr_alignment_native_indexed_creation_faults_${shard} PROPERTIES
       TIMEOUT 1200 RUN_SERIAL TRUE LABELS "actual_files;native_creation;indexed_recovery;allocation_faults;not_SQL_E2E")
   endforeach()
-  add_test(NAME sbsql_sblr_alignment_native_indexed_recovery_negatives
-    COMMAND sbsql_sblr_alignment_native_creation_workspace --indexed-negatives)
-  set_tests_properties(sbsql_sblr_alignment_native_indexed_recovery_negatives PROPERTIES
-    TIMEOUT 180 RUN_SERIAL TRUE LABELS "actual_files;native_creation;indexed_recovery;resealed_negatives;not_SQL_E2E")
   add_test(NAME sbsql_sblr_alignment_native_creation_catalog
     COMMAND sbsql_sblr_alignment_native_creation_workspace --populated)
   set_tests_properties(sbsql_sblr_alignment_native_creation_catalog PROPERTIES

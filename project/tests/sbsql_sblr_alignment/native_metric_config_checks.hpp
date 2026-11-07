@@ -137,7 +137,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
   };
   unsigned whole_persisted=0;
   for(unsigned profile=0;profile<5;++profile) {
-    const auto r=Request(profile);page_bytes=r.bootstrap.page_size_bytes;total_pages=r.total_pages;selector_page=17;
+    const auto r=Request(profile);page_bytes=r.bootstrap.page_size_bytes;total_pages=r.total_pages;
     const auto budget=256*page_bytes;disk::FileDevice device;const auto path=fixture.Next();
     Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"complete batch actual owned device");
     Arm();const auto made=db::InitializePopulatedNativeCreationWorkspaceOnOpenDevice(device,r,complete,budget,*fixture.issuer);Disarm();
@@ -168,7 +168,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     const auto r=Request(profile,96);page_bytes=r.bootstrap.page_size_bytes;total_pages=r.total_pages;
     u64 coverage=(page_bytes-384)/128;
     while(((384+(coverage+1)/2+7)&~u64{7})+128*coverage>page_bytes)--coverage;
-    selector_page=(total_pages+coverage-1)/coverage+16;
+    
     db::NativeCreationCatalogIndexes indexes;
     // Component-owned fixture references, not catalog admission or permission.
     // The map digest is computed from retained fixture material, not a readiness
@@ -208,57 +208,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     const auto refused=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(r.bootstrap.database_uuid,devices,
         db::NativeCatalogSource::PageZero(made.receipt->filespace_uuid),2,1,{Id(20000),stale},budget);
     Check(!refused.ok(),"stale navigation binding cannot read indexed catalog");
-    {
-    // SB_TRANSITIONAL_CHECKPOINT_GRAPH: create recovery repairs the drift-era
-    // selector pair and is removed in R3c (owner Q12 = 1); until then these
-    // checks run on a checkpoint-graph create of the same request and seed.
-    // The fixed-root create above writes no selector.
     Check(!made.receipt->checkpoint,"a fixed-root create carries no checkpoint");
-    auto rt=r;rt.genesis_graph=db::NativeCreationGenesisGraph::transitional_checkpoint;
-    const auto tpath=fixture.Next();disk::FileDevice tdev;
-    Check(tdev.Open(tpath.string(),disk::FileOpenMode::create_new).ok(),"recovery fixture device");
-    const auto made_t=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(tdev,rt,complete,indexes,budget,*fixture.issuer);
-    Check(made_t.ok()&&made_t.receipt->checkpoint,"checkpoint-graph create for the recovery checks");
-    const auto first=Read(tdev,selector_page,page_bytes),second=Read(tdev,selector_page+1,page_bytes);
-    for(unsigned lost=0;lost<2;++lost) {
-      const std::vector<byte> blank(page_bytes,0);
-      Check(tdev.WriteAt((selector_page+lost)*page_bytes,blank.data(),blank.size()).ok()&&tdev.Sync().ok(),
-          "persist interrupted indexed publication with one actual surviving selector");
-      Check(tdev.Close().ok()&&tdev.Open(tpath.string(),disk::FileOpenMode::open_existing).ok(),"reopen interrupted indexed owner");
-      Arm();const auto recovered=db::RecoverIndexedNativeCreationWorkspaceSelectionOnOpenDevice(tdev,
-          {r.bootstrap.database_uuid,r.bootstrap.filespace_uuid,r.bootstrap.page_size_profile_uuid},r.operation_uuid,
-          complete,indexes,budget);Disarm();
-      if(!recovered.ok())std::cerr<<"indexed recovery profile="<<profile<<" error="<<static_cast<unsigned>(recovered.error)<<'\n';
-      Check(recovered.ok()&&recovered.repaired_slots==(1u<<lost)&&calls[write_call]==1,
-          "complete original indexed graph repairs exactly the lost selector without physical-page allocation or identity reissuance");
-      Check(recovered.receipt->relation_uuids[0]==Id(20000)&&recovered.receipt->index_dependencies[0]==deps&&
-          recovered.receipt->catalog_rows[0]==4*loaded.config->families.size()&&recovered.receipt->checkpoint_sha256==made_t.receipt->checkpoint_sha256&&
-          Read(tdev,selector_page,page_bytes)==first&&Read(tdev,selector_page+1,page_bytes)==second,
-          "indexed recovery preserves all original bindings, root digest and exact selector bytes");
-      Arm();const auto retry=db::RecoverIndexedNativeCreationWorkspaceSelectionOnOpenDevice(tdev,
-          {r.bootstrap.database_uuid,r.bootstrap.filespace_uuid,r.bootstrap.page_size_profile_uuid},r.operation_uuid,
-          complete,indexes,budget);Disarm();
-      Check(retry.ok()&&!retry.repaired_slots&&!calls[write_call],"indexed recovery retry is verified and physically idempotent");
-    }
-    const auto crash_path=fixture.Next();const auto child=fork();Check(child>=0,"fork actual indexed creation interruption");
-    if(child==0) {
-      fixture.ResetIssuer();disk::FileDevice interrupted;
-      if(!interrupted.Open(crash_path.string(),disk::FileOpenMode::create_new).ok())_exit(88);
-      Arm();stop_before_second_selector=true;
-      (void)db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(interrupted,rt,complete,indexes,budget,*fixture.issuer);
-      _exit(89);
-    }
-    int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==86,
-        "indexed constructor process dies only after first selector durability/readback");
-    disk::FileDevice interrupted;
-    Check(interrupted.Open(crash_path.string(),disk::FileOpenMode::open_existing).ok(),"new process owns actual interrupted indexed file");
-    const auto surviving=Read(interrupted,selector_page,page_bytes);
-    const auto recovery=db::RecoverIndexedNativeCreationWorkspaceSelectionOnOpenDevice(interrupted,
-        {r.bootstrap.database_uuid,r.bootstrap.filespace_uuid,r.bootstrap.page_size_profile_uuid},r.operation_uuid,
-        complete,indexes,budget);
-    Check(recovery.ok()&&recovery.repaired_slots==2&&Read(interrupted,selector_page,page_bytes)==surviving,
-        "actual indexed process-loss recovery preserves original surviving publication");
-    }
   }
   for(unsigned which=0;which<8;++which) {
     auto inputs=batch_inputs;auto invalid_definition=*inputs.back().definition;
@@ -292,7 +242,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
   const auto dense_request=Request(0,128);page_bytes=dense_request.bootstrap.page_size_bytes;total_pages=dense_request.total_pages;
   u64 coverage=(page_bytes-384)/128;
   while(((384+(coverage+1)/2+7)&~u64{7})+128*coverage>page_bytes)--coverage;
-  selector_page=(total_pages+coverage-1)/coverage+16;
+  
   const unsigned root_capacity=(page_bytes-640)/164,child_capacity=(page_bytes-640-112)/164;
   // (R+1)*L rows fill a root over full leaves; one more row needs a branch
   // level (SB_CATALOG_BTREE_N_LEVEL). Those two cases need more pages and image
@@ -305,7 +255,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     const bool deep=count>=two_level_maximum;
     const auto& boundary_request=deep?deep_request:dense_request;const unsigned row_base=deep?42500:31000;
     const u64 budget=(deep?512:256)*page_bytes;
-    total_pages=boundary_request.total_pages;selector_page=(total_pages+coverage-1)/coverage+16;
+    total_pages=boundary_request.total_pages;
     const auto seed=deep?DenseIndexedCatalogSeed(request,count,40000,2500):dense_seed(count);
     disk::FileDevice device;const auto path=fixture.Next();
     Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"actual boundary construction owner");
@@ -344,25 +294,8 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     const auto read=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(boundary_request.bootstrap.database_uuid,devices,
         db::NativeCatalogSource::PageZero(made.receipt->filespace_uuid),2,1,{Id(20000),construction_deps},budget);
     Check(read.ok()&&read.rows.size()==count,"every split base row has actual committed native custody");
-    {
-      // SB_TRANSITIONAL_CHECKPOINT_GRAPH: selector repair (create recovery,
-      // removed in R3c) on a checkpoint-graph create of the same boundary.
-      auto rt=boundary_request;rt.genesis_graph=db::NativeCreationGenesisGraph::transitional_checkpoint;
-      disk::FileDevice tdev;const auto tpath=fixture.Next();
-      Check(tdev.Open(tpath.string(),disk::FileOpenMode::create_new).ok(),"boundary recovery fixture owner");
-      Check(db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(tdev,rt,seed,construction_indexes,budget,*fixture.issuer).ok(),
-          "checkpoint-graph boundary create for the recovery check");
-      const auto original_selector=Read(tdev,selector_page+1,page_bytes);
-      const std::vector<byte> blank(page_bytes,0);
-      Check(tdev.WriteAt((selector_page+1)*page_bytes,blank.data(),blank.size()).ok()&&tdev.Sync().ok(),"interrupt actual split-tree publication");
-      const auto recovered=db::RecoverIndexedNativeCreationWorkspaceSelectionOnOpenDevice(tdev,
-          {boundary_request.bootstrap.database_uuid,boundary_request.bootstrap.filespace_uuid,boundary_request.bootstrap.page_size_profile_uuid},
-          boundary_request.operation_uuid,seed,construction_indexes,budget);
-      Check(recovered.ok()&&recovered.repaired_slots==2&&Read(tdev,selector_page+1,page_bytes)==original_selector,
-          "original split/fence/sibling graph must fully reconstruct before selector repair");
-    }
   }
-  total_pages=dense_request.total_pages;selector_page=(total_pages+coverage-1)/coverage+16;
+  total_pages=dense_request.total_pages;
   // Case 4 was the two-level cap, (R+1)*L+1 rows. Construction now builds that
   // as a three-level tree, so the case keeps that tree and refuses it for
   // pages instead: the smallest file it fits, less one page. Its last branch
@@ -490,7 +423,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     std::size_t required=0;
     for(const auto& row:seed[0]){const auto n=db::NativeCreationCatalogRowBytes(row);Check(n.has_value(),"configured seed structural size");required+=*n;}
     for(unsigned profile=0;profile<5;++profile) {
-      const auto r=Request(profile);page_bytes=r.bootstrap.page_size_bytes;total_pages=r.total_pages;selector_page=17;
+      const auto r=Request(profile);page_bytes=r.bootstrap.page_size_bytes;total_pages=r.total_pages;
       const auto budget=256*page_bytes;auto path=fixture.Next();disk::FileDevice one_leaf_device;
       Check(one_leaf_device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"configured owned file");
       // A family that does not fit one leaf on this profile is refused by the

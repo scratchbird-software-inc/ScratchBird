@@ -4,7 +4,6 @@
 // component inputs, not proof of catalog owner/name/security admission.
 #include "catalog_metric_binding.hpp"
 #include "catalog_metric_visibility_policy.hpp"
-#include "native_creation_workspace_recovery.hpp"
 #include "native_creation_catalog_input.hpp"
 namespace {
 db::NativeCreationCatalogSeed MetricSeed(const db::NativeFilespaceInitializationRequest& request) {
@@ -93,7 +92,7 @@ void PopulatedWorkspaceChecks() {
   Fixture fixture;
   for(unsigned profile=0;profile<5;++profile) {
     const auto request=Request(profile);const auto seed=MetricSeed(request);
-    page_bytes=request.bootstrap.page_size_bytes;total_pages=request.total_pages;selector_page=17;
+    page_bytes=request.bootstrap.page_size_bytes;total_pages=request.total_pages;
     const auto budget=256*page_bytes;const auto path=fixture.Next();disk::FileDevice device;
     Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"populated workspace owned open");
     const auto created=db::InitializePopulatedNativeCreationWorkspaceOnOpenDevice(device,request,seed,budget,*fixture.issuer);
@@ -125,49 +124,6 @@ void PopulatedWorkspaceChecks() {
     const auto names=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(request.bootstrap.database_uuid,devices,checkpoint,2,2,{created.receipt->relations[1].object_uuid,{}},budget);
     Check(names.ok()&&names.rows.size()==2&&created.receipt->catalog_rows[1]==2,"native resident names survive reopen");
     for(const auto& row:names.rows)Check(row.name_payload.has_value()&&!row.provisional,"physical name envelope bound to actual version and location");
-    {
-    // SB_TRANSITIONAL_CHECKPOINT_GRAPH: create recovery repairs the selector
-    // pair of the drift-era graph and is removed in R3c (owner Q12 = 1). Until
-    // then its checks run on a checkpoint-graph create of the same request and
-    // seed.
-    auto recovery_request=request;recovery_request.genesis_graph=db::NativeCreationGenesisGraph::transitional_checkpoint;
-    recovery_request.total_pages=std::max<u64>(recovery_request.total_pages,22);  // the checkpoint graph's smallest file
-    const auto recovery_path=fixture.Next();disk::FileDevice recovery_device;
-    Check(recovery_device.Open(recovery_path.string(),disk::FileOpenMode::create_new).ok(),"recovery fixture owned open");
-    Check(db::InitializePopulatedNativeCreationWorkspaceOnOpenDevice(recovery_device,recovery_request,seed,budget,*fixture.issuer).ok(),
-        "checkpoint-graph create for the recovery checks");
-    const disk::FilespaceBootstrapBinding bootstrap_binding{request.bootstrap.database_uuid,request.bootstrap.filespace_uuid,request.bootstrap.page_size_profile_uuid};
-    const auto unchanged=db::RecoverPopulatedNativeCreationWorkspaceSelectionOnOpenDevice(recovery_device,bootstrap_binding,request.operation_uuid,seed,budget);
-    Check(unchanged.ok()&&!unchanged.repaired_slots&&unchanged.receipt->catalog_rows[0]==4,"populated recovery validates unchanged selected graph");
-    std::vector<byte> zero_selector(page_bytes,0);
-    Check(recovery_device.WriteAt(18*page_bytes,zero_selector.data(),zero_selector.size()).ok()&&recovery_device.Sync().ok(),"simulate interrupted second selector");
-    auto changed_seed=seed;changed_seed[0][0].metadata.trace_search_key="different_creation_input";
-    Arm();const auto mismatch=db::RecoverPopulatedNativeCreationWorkspaceSelectionOnOpenDevice(recovery_device,bootstrap_binding,request.operation_uuid,changed_seed,budget);Disarm();
-    Check(!mismatch.ok()&&!calls[write_call],"changed seed cannot repair or overwrite original operation");
-    Arm();const auto empty_refused=db::RecoverNativeCreationWorkspaceSelectionOnOpenDevice(recovery_device,bootstrap_binding,request.operation_uuid,budget);Disarm();
-    Check(!empty_refused.ok()&&!calls[write_call],"empty-workspace recovery never accepts populated input");
-    const auto recovered=db::RecoverPopulatedNativeCreationWorkspaceSelectionOnOpenDevice(recovery_device,bootstrap_binding,request.operation_uuid,seed,budget);
-    Check(recovered.ok()&&recovered.repaired_slots==2&&recovered.receipt->catalog_rows[1]==2,"exact populated construction recovers second selector bit only");
-    {
-      const auto crash_path=fixture.Next();const auto child=fork();Check(child>=0,"populated selector-cut fork");
-      if(child==0) {
-        fixture.ResetIssuer();disk::FileDevice crashed;
-        if(!crashed.Open(crash_path.string(),disk::FileOpenMode::create_new).ok())_exit(88);
-        Arm();stop_before_second_selector=true;
-        db::InitializePopulatedNativeCreationWorkspaceOnOpenDevice(crashed,recovery_request,seed,budget,*fixture.issuer);
-        _exit(89);
-      }
-      int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==86,
-        "actual process exited only after first durable selector and before second write");
-      disk::FileDevice crashed;Check(crashed.Open(crash_path.string(),disk::FileOpenMode::open_existing).ok(),"crash recovery reacquires physical ownership");
-      const auto recovery=db::RecoverPopulatedNativeCreationWorkspaceSelectionOnOpenDevice(crashed,bootstrap_binding,request.operation_uuid,seed,budget);
-      Check(recovery.ok()&&recovery.repaired_slots==2&&recovery.receipt->catalog_rows[0]==4,"populated process-crash recovery preserves metric definitions");
-      const std::vector<disk::NativeFilespaceDevice> recovered_devices{{request.bootstrap.filespace_uuid,request.bootstrap.page_size_profile_uuid,&crashed}};
-      const auto read=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(request.bootstrap.database_uuid,recovered_devices,
-        db::NativeCatalogSource::PageZero(recovery.receipt->filespace_uuid),2,1,{recovery.receipt->relations[0].object_uuid,{}},budget);
-      Check(read.ok()&&read.rows.size()==4,"actual recovered committed metric catalog read");
-    }
-    }
     for(const auto& relation:seed)for(const auto& record:relation) {
       count_allocations=true;allocations=0;allocation_fault=1;
       const auto measured=db::NativeCreationCatalogRowBytes(record);

@@ -6,7 +6,7 @@ void NativeCatalogAuthorityChecks() {
   Fixture fixture;
   for(unsigned profile=0;profile<5;++profile) {
     const auto request=Request(profile);page_bytes=request.bootstrap.page_size_bytes;
-    total_pages=request.total_pages;selector_page=17;
+    total_pages=request.total_pages;
     for(bool index:{false,true}) {
       auto r=request;if(index)r.bootstrap.filespace_role=5;
       const auto path=fixture.Next();disk::FileDevice device;

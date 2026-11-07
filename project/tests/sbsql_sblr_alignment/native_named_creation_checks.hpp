@@ -201,28 +201,6 @@ void NativeNamedCreationChecks(const db::NativeCreationCatalogSeed& supplied) {
         [](const auto& root){return root.kind==9||(root.kind>=18&&root.kind<=21);}),
         "a fixed-root create declares no checkpoint, selector or watermark root");
     Check(d.Close().ok(),"release named package actual owner");
-    {
-      // SB_TRANSITIONAL_CHECKPOINT_GRAPH: create recovery repairs the drift-era
-      // selector pair and is removed in R3c (owner Q12 = 1); until then it runs
-      // on a checkpoint-graph create of the same request.
-      auto rr=r;rr.genesis_graph=db::NativeCreationGenesisGraph::transitional_checkpoint;
-      disk::FileDevice t;const auto tpath=fixture.Next();
-      Check(t.Open(tpath.string(),disk::FileOpenMode::create_new).ok(),"recovery fixture owned file");
-      Check(db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(t,rr,seed,indexes,budget,*fixture.issuer).ok(),
-          "checkpoint-graph create for the recovery checks");
-      const auto zero=disk::ReadFilespacePageZeroFromOpenDevice(t);Check(zero.ok(),"actual named checkpoint slots");
-      const auto second=std::find_if(zero.record->roots.begin(),zero.record->roots.end(),[](const auto& root){return root.kind==19;});
-      Check(second!=zero.record->roots.end(),"actual second selector declaration");
-      const std::vector<byte> blank(size,0);
-      Check(t.WriteAt(second->page_number*size,blank.data(),blank.size()).ok()&&t.Sync().ok(),"durable named package selector interruption");
-      Check(t.Close().ok()&&t.Open(tpath.string(),disk::FileOpenMode::open_existing).ok(),"named recovery fresh owner");
-      const auto recovered=db::RecoverIndexedNativeCreationWorkspaceSelectionOnOpenDevice(t,
-          {rr.bootstrap.database_uuid,rr.bootstrap.filespace_uuid,rr.bootstrap.page_size_profile_uuid},
-          rr.operation_uuid,seed,indexes,budget);
-      Check(recovered.ok()&&recovered.repaired_slots==2&&recovered.receipt->catalog_rows[1]==3*inputs.size(),
-          "original named package recovers with both actual indexed catalog relations");
-      Check(t.Close().ok(),"release recovery fixture owner");
-    }
   }
   std::cout<<"named creation allocation sites="<<sites<<" large_sites="<<large_sites<<'\n';
 }
