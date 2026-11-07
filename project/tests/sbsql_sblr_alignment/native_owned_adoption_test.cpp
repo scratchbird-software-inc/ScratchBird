@@ -81,6 +81,7 @@ unsigned reads = 0, writes = 0, syncs = 0, read_fault = 0, corrupt_read = 0, wri
 std::size_t torn_bytes = 0;
 std::uint64_t observed_read_bytes = 0;
 std::atomic<unsigned> read_pause{0};  // 1 armed, 2 paused in a pread at offset 0, 3 released
+void (*read_callback)() = nullptr;    // runs once, on the reading thread, in the next pread at offset 0
 // Digest provider: fail one phase at the Nth digest site.
 unsigned hash_fault = 0, hash_target = 1, hash_seen = 0;
 bool hash_active = false, hash_counting = false;
@@ -129,6 +130,11 @@ extern "C" void* __wrap_malloc(std::size_t bytes) {
 }
 extern "C" ssize_t __real_pread(int, void*, size_t, off_t);
 extern "C" ssize_t __wrap_pread(int fd, void* data, size_t n, off_t at) {
+  if (at == 0)
+    if (auto callback = read_callback) {
+      read_callback = nullptr;
+      callback();
+    }
   if (at == 0) {
     unsigned expected = 1;
     if (read_pause.compare_exchange_strong(expected, 2))
@@ -650,9 +656,38 @@ void CompleteAdoption(unsigned profile, bool via_route) {
     withdrawer.join();
     read_pause = 0;
     Preserved(a, persistent, withdrawn, "withdrawal");
-    Check(entered && competing == d::RouteSourceTransitionError::admission_busy && withdrawn.error == E::route_admission &&
+    Check(entered && competing == d::RouteSourceTransitionError::wrong_thread && withdrawn.error == E::route_admission &&
               withdrawn.route_error == d::RouteSourceTransitionError::withdrawn,
-          "issuer withdrawal during I/O and competing admission cannot publish a stale native owner" + Why(withdrawn));
+          "issuer withdrawal during I/O, and an admission from another thread, cannot publish a stale native owner" +
+              Why(withdrawn));
+    a.Open();
+    // A second admission on the admitting thread itself, while the first is
+    // reading, finds the admission busy.
+    static Adoption* reentrant = nullptr;
+    static d::RouteSourceTransitionError reentrant_error = d::RouteSourceTransitionError::none;
+    static std::size_t reentrant_owner = 0;
+    reentrant = &a;
+    reentrant_owner = exact_owner;
+    reentrant_error = d::RouteSourceTransitionError::none;
+    read_callback = [] {
+      std::vector<std::unique_ptr<d::FileDevice>> none;
+      Grant other(reentrant->made.receipt.database_uuid, reentrant_owner);
+      Grant scratch(reentrant->made.receipt.database_uuid, 128u << 20);
+      reentrant_error = Source::AdoptRouteWithMemory(reentrant->transition.transition, reentrant->made.receipt.database_uuid,
+                                                     reentrant->made.receipt.filespace_uuid, none,
+                                                     reentrant->Limits(reentrant_owner), other.memory, other.binding,
+                                                     scratch.memory, scratch.binding)
+                            .route_error;
+    };
+    {
+      Grant first_grant(a.made.receipt.database_uuid, exact_owner);
+      auto first = a.Adopt(a.Limits(exact_owner), first_grant, transient);
+      read_callback = nullptr;
+      Check(reentrant_error == d::RouteSourceTransitionError::admission_busy && first.ok(),
+            "a reentrant admission on the admitting thread finds the admission busy; the first completes" + Why(first));
+      first.owner.reset();
+    }
+    reentrant = nullptr;
     a.Open();
   }
   {
@@ -883,11 +918,23 @@ void InitialRefusals() {
     Check(result.error == E::memory_failure && !reads, "every actual binary grant dimension checked before native I/O");
   }
   FailedAdoption(f, f.Adopt(Fixed(1000)));
-  // Thread affinity of adoption: with caller-opened members it is enforced
-  // here (CompleteAdoption, direct entry). A one-file route adoption has no
-  // caller-opened member, and the writer layer does not itself refuse a
-  // foreign thread (observed 2026-11-07); production custody refuses it one
-  // level up, checked in native_hosted_database_custody_test (InitialCustody).
+  // Owner ruling 2026-11-07: the writer refuses a route handover from any
+  // thread but the one that began the transition, before any read or grant
+  // use, even when the cohort is one route-held file.
+  {
+    std::optional<db::NativeOwnedWriterResult> foreign;
+    reads = 0;
+    io_counting = true;
+    std::thread other([&] { foreign = f.Adopt(); });
+    other.join();
+    io_counting = false;
+    Check(foreign.has_value(), "the foreign-thread attempt returned");
+    FailedAdoption(f, *foreign);
+    Check(foreign->error == E::route_admission && foreign->route_error == d::RouteSourceTransitionError::wrong_thread &&
+              !reads,
+          "a foreign thread cannot adopt the writer through the route transition");
+    f.Start();
+  }
   read_pause = 1;
   bool paused = false;
   std::thread withdrawer([&] {

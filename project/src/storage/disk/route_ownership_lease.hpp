@@ -11,6 +11,7 @@
 #include <cstdint>
 #include <chrono>
 #include <memory>
+#include <thread>
 #include <optional>
 #include <string>
 #include <utility>
@@ -32,7 +33,10 @@ enum class RouteWriteCustodyState : std::uint8_t {
 enum class RouteSourceTransitionError {
   none, invalid_owner, wrong_process, withdrawn, resource_exhausted, lock_failure,
   invalid_deadline, not_drained, admission_busy, already_transferred,
-  primary_not_bound, io_failure, writable_not_requested
+  primary_not_bound, io_failure, writable_not_requested,
+  // Source admission is attempted from a thread other than the one that began
+  // the transition (owner ruling 2026-11-07: the route owner's thread adopts).
+  wrong_thread
 };
 // Private factory selector only; constructing this enum grants no capability.
 enum class RouteSourceAdmissionKind : std::uint8_t { read_only, initial_writer };
@@ -110,6 +114,10 @@ class RouteSourceTransition final {
   explicit RouteSourceTransition(std::shared_ptr<RouteOwnershipLease> owner)
       : owner_(std::move(owner)) {}
   std::shared_ptr<RouteOwnershipLease> owner_;
+  // The thread that began the transition; only it may admit the source. A
+  // one-file route has no caller-opened member whose own thread affinity would
+  // otherwise refuse a foreign adopter.
+  const std::thread::id opening_thread_ = std::this_thread::get_id();
 };
 
 // A pin on real route AND storage OS locks, never on discovery metadata.

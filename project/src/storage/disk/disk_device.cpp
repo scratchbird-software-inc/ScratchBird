@@ -1292,6 +1292,7 @@ RouteSourceTransitionError RouteSourceTransition::BeginSourceAdmission(
     auto& registry = LeaseRegistry();
     if (owner_->owner_pid_ != OwnershipProcessId() || registry.process_id != OwnershipProcessId())
       return E::wrong_process;
+    if (std::this_thread::get_id() != opening_thread_) return E::wrong_thread;
     if (primary) return E::invalid_owner;
     std::lock_guard<std::mutex> guard(registry.mutex);
     if (!owner_->issuing_ || !owner_->valid()) return E::withdrawn;
