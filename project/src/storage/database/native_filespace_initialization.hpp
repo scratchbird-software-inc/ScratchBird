@@ -16,12 +16,24 @@ namespace scratchbird::storage::database {
 // until that layer is removed, and it is deleted with that layer. Production
 // create never selects it. Ignored by the bootstrap-only initializer.
 enum class NativeCreationInventoryFormat : core::platform::u8 { in_place, transitional_legacy };
+// SB_TRANSITIONAL_CHECKPOINT_GRAPH (drift removal R3; extends owner Q8 = 2):
+// the genesis graph a native create writes. fixed_roots is the design: page
+// zero's fixed roots name every control page and page zero, written last, is
+// the commit point; there is no checkpoint, horizon-root, selector or
+// watermark page. transitional_checkpoint writes the drift-era graph (genesis
+// checkpoint 0x300, horizon root 0x302, selector pair 0x30E, watermark pair
+// 0x500, system-state checkpoint fields). It exists only for the drift-layer
+// tests until that layer is removed (R4), and is deleted with it. Production
+// create never selects it. Ignored by the bootstrap-only initializer.
+enum class NativeCreationGenesisGraph : core::platform::u8 { fixed_roots, transitional_checkpoint };
 struct NativeFilespaceInitializationRequest {
   disk::FilespaceBootstrap bootstrap;
   core::platform::Uuid operation_uuid,writer_uuid,policy_snapshot_uuid;
   transaction::mga::TransactionIdentity creator;
   core::platform::u64 total_pages=0,creation_utc_millis=0;
   NativeCreationInventoryFormat inventory_format=NativeCreationInventoryFormat::in_place;
+  // R3a names the graph and still writes only the transitional one.
+  NativeCreationGenesisGraph genesis_graph=NativeCreationGenesisGraph::transitional_checkpoint;
 };
 enum class NativeFilespaceInitializationError {
   none, invalid_request, invalid_device, device_not_empty, invalid_capacity,

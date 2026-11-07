@@ -255,6 +255,8 @@ struct Fixture {
   // SB_TRANSITIONAL_LEGACY_INVENTORY: a drift-layer fixture (checkpoint/selector/management
   // publication) that decodes the SBTINV01 genesis inventory; delete with that layer.
   r.inventory_format=db::NativeCreationInventoryFormat::transitional_legacy;
+  // SB_TRANSITIONAL_CHECKPOINT_GRAPH: a drift-layer fixture; delete with that layer (R4).
+  r.genesis_graph=db::NativeCreationGenesisGraph::transitional_checkpoint;
   Check(db::InitializeNativeCreationWorkspaceOnOpenDevice(device,r,budget,*issuer).ok(),"actual genesis");
  }
  ~Fixture(){device.Close();secondary.Close();std::error_code ec;std::filesystem::remove_all(path.parent_path(),ec);}

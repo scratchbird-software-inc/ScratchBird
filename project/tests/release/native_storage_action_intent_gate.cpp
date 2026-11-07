@@ -527,6 +527,8 @@ void Physical(const I& i){
   request.creation_utc_millis=1789357072000ULL;request.total_pages=128;
   request.policy_snapshot_uuid=i.policy_snapshot_uuid;
   scratchbird::core::uuid::StandaloneUuidV7Issuer issuer({i.database_uuid,i.policy_snapshot_uuid},{{},0,1000});
+  // SB_TRANSITIONAL_CHECKPOINT_GRAPH: a drift-layer fixture; delete with that layer (R4).
+  request.genesis_graph=db::NativeCreationGenesisGraph::transitional_checkpoint;
   Check(db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,1<<26,issuer).ok(),"actual native fixture bootstrap");
   const auto zero=disk::ReadFilespacePageZeroFromOpenDevice(device);Check(zero.ok(),"read actual fixture bootstrap");
   CurrentCapacity(i,device,*zero.record);

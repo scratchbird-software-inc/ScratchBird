@@ -104,6 +104,8 @@ void ReservationPhysical(const RI& i,unsigned target){
   init.creator.scope=scratchbird::transaction::mga::TransactionScope::local_node;
   init.creation_utc_millis=1789357072000ULL;init.total_pages=128;init.policy_snapshot_uuid=i.policy_snapshot_uuid;
   scratchbird::core::uuid::StandaloneUuidV7Issuer issuer({i.database_uuid,i.policy_snapshot_uuid},{{},0,1000});
+  // SB_TRANSITIONAL_CHECKPOINT_GRAPH: a drift-layer fixture; delete with that layer (R4).
+  init.genesis_graph=db::NativeCreationGenesisGraph::transitional_checkpoint;
   Check(db::InitializeNativeCreationWorkspaceOnOpenDevice(device,init,1<<26,issuer).ok(),"initialize actual native reservation fixture");
   const auto zero=disk::ReadFilespacePageZeroFromOpenDevice(device);Check(zero.ok(),"actual page-zero identity");
   auto operation=ReservationOperation(i,target);operation.bootstrap_uuid=zero.record->page_uuid;

@@ -110,6 +110,9 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
     if(request.inventory_format!=Format::in_place&&request.inventory_format!=Format::transitional_legacy)
       return Fail(E::invalid_request);
     const bool in_place=request.inventory_format==Format::in_place;
+    // SB_TRANSITIONAL_CHECKPOINT_GRAPH: R3a names the genesis graph; the
+    // fixed-root graph is written from R3b on.
+    if(request.genesis_graph!=NativeCreationGenesisGraph::transitional_checkpoint)return Fail(E::invalid_request);
     // Full graph + one in-flight encoder image + one physical readback image.
     // The final selected admission retains the maps twice plus four controls,
     // and an in-place inventory's header page as a fifth.

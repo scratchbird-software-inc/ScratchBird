@@ -144,6 +144,8 @@ void NativeImages(){
     // SB_TRANSITIONAL_LEGACY_INVENTORY: this fixture takes the SBTINV01 genesis
     // page as the base of its typed page-chain cases; delete with that format.
     init.inventory_format=db::NativeCreationInventoryFormat::transitional_legacy;
+    // SB_TRANSITIONAL_CHECKPOINT_GRAPH: a drift-layer fixture; delete with that layer (R4).
+    init.genesis_graph=db::NativeCreationGenesisGraph::transitional_checkpoint;
     init.policy_snapshot_uuid=Id(10);scratchbird::core::uuid::StandaloneUuidV7Issuer issuer({init.bootstrap.database_uuid,init.policy_snapshot_uuid},{{},0,1000});
     Check(db::InitializeNativeCreationWorkspaceOnOpenDevice(device,init,budget,issuer).ok(),"actual native creation dependencies");
     const auto zero=disk::ReadFilespacePageZeroFromOpenDevice(device);Check(zero.ok(),"actual native bootstrap");
