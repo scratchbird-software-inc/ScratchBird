@@ -89,7 +89,7 @@ NativeCreationRecoveryResult RecoverIndexedNativeCreationWorkspaceSelectionOnOpe
       Require(io.ok()&&io.bytes_transferred==head.size(),E::io_failure);
       in_place=std::equal(page::kTransactionStatePageMagic.begin(),page::kTransactionStatePageMagic.end(),
           head.begin()+page::kTransactionStateFamilyOffset);}
-    const auto planned=detail::PlanNativeCreationCatalogLayout(size,maps,total,budget,seed,indexes,in_place);
+    const auto planned=detail::PlanNativeCreationCatalogLayout(size,maps,total,budget,seed,indexes,in_place,true);
     Require(planned.ok(),planned.error==detail::NativeCreationLayoutError::resource_exhausted?E::resource_exhausted:E::graph_failure);
     const auto& plan=*planned.layout;const auto& layouts=plan.relations;
     Require(plan.image_count<=budget/size-6,E::resource_exhausted);
@@ -358,7 +358,7 @@ NativeCreationRecoveryResult RecoverIndexedNativeCreationWorkspaceSelectionOnOpe
     for(unsigned i=0;i<2;++i){const auto& image=images[maps+16+i];NativeCheckpointSelection s;
       s.header=image.header;s.object_uuid=image.owner;s.bootstrap_uuid=z.page_uuid;s.publication_uuid=receipt.publication_uuid;
       s.selection_generation=s.checkpoint_generation=s.root_set_generation=1;s.checkpoint=ref(maps+1);
-      s.checkpoint_object_uuid=receipt.checkpoint.object_uuid;s.checkpoint_sha256=receipt.checkpoint_sha256;s.timeline_uuid=timeline;
+      s.checkpoint_object_uuid=receipt.checkpoint->object_uuid;s.checkpoint_sha256=receipt.checkpoint_sha256;s.timeline_uuid=timeline;
       auto encoded=EncodeNativeCheckpointSelection(s);Valid(encoded);expected[i]=std::move(encoded.bytes);
       Require(!valid[i]||image.bytes==expected[i],E::selector_ambiguity);
       if(image.bytes!=expected[i])repaired|=1u<<i;

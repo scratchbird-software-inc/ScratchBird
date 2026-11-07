@@ -186,6 +186,11 @@ struct CredentialNativeFixture {
       if(invalid)std::cerr<<"credential metadata role="<<role+1<<" variant="<<int(variant)<<" detail="<<invalid->detail<<'\n';
       Check(!invalid,"complete native credential family/common metadata before physical construction");}
     const auto path=(artifacts.path()/"native-credential").string();Check(device.Open(path,disk::FileOpenMode::create_new).ok(),"create real native credential fixture");
+    // SB_TRANSITIONAL_CHECKPOINT_GRAPH: this fixture's scenarios publish
+    // successor catalog states through the checkpoint and selectors (drift
+    // layer); delete with that layer (R4). The production path (runtime
+    // security over the fixed-root lease) is covered by the enrollment chain.
+    request.genesis_graph=db::NativeCreationGenesisGraph::transitional_checkpoint;
     const auto made=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,request,seed,indexes,budget,issuer);
     if(!made.ok())std::cerr<<"credential fixture creation="<<int(made.error)<<" variant="<<int(variant)<<" profile="<<p
       <<" checkpoint="<<int(made.checkpoint_error)<<" selection="<<int(made.selection_error)

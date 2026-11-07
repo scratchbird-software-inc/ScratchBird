@@ -159,6 +159,9 @@ void Physical(){
     request.operation_uuid=f::Id(3);request.writer_uuid=f::Id(4);request.policy_snapshot_uuid=f::Id(10);
     request.creator.transaction_uuid=origin;request.creator.local_id=mga::MakeLocalTransactionId(1);request.creator.scope=mga::TransactionScope::local_node;
     request.total_pages=64;request.creation_utc_millis=1789357072000ULL;
+    // SB_TRANSITIONAL_CHECKPOINT_GRAPH: this test persists its policy rows
+    // through checkpoint staging (the drift layer); delete with that layer (R4).
+    request.genesis_graph=db::NativeCreationGenesisGraph::transitional_checkpoint;
     const auto budget=128*p::u64{profile.page_size_bytes};u::StandaloneUuidV7Issuer issuer({f::Id(1),f::Id(10)},{{},0,1000});
     const auto path=(artifacts.path()/(std::to_string(profile.page_size_bytes)+"-"+std::to_string(mode))).string();
     d::FileDevice device;Check(device.Open(path,d::FileOpenMode::create_new).ok(),"real private native security-policy file");
@@ -188,20 +191,20 @@ void Physical(){
       mga::PublishedSnapshotPin absent_pin;
       for(unsigned role:{1u,2u,3u,5u,6u}){
         reads=0;track_reads=true;
-        const auto rejected=db::StageNativeCatalogVersionFromOpenDevices(devices,created.receipt->checkpoint,2,role,relation,absent_pin,
+        const auto rejected=db::StageNativeCatalogVersionFromOpenDevices(devices,*created.receipt->checkpoint,2,role,relation,absent_pin,
             mutation,destination,budget,f::Id(10),issuer);track_reads=false;
         Check(rejected.error==db::NativeCatalogVersionStageError::invalid_metadata&&!rejected.retry&&rejected.issued_version_uuid.is_nil()&&!reads,
             "ordinary typed staging rejects non-security placement before reads or identity issuance");
       }
       auto foreign=body;foreign.database_uuid=f::Id(9);mutation.metadata=BodyMetadata(foreign);reads=0;track_reads=true;
-      const auto rejected=db::StageNativeCatalogVersionFromOpenDevices(devices,created.receipt->checkpoint,2,4,relation,absent_pin,
+      const auto rejected=db::StageNativeCatalogVersionFromOpenDevices(devices,*created.receipt->checkpoint,2,4,relation,absent_pin,
           mutation,destination,budget,f::Id(10),issuer);track_reads=false;
       Check(rejected.error==db::NativeCatalogVersionStageError::invalid_metadata&&!rejected.retry&&rejected.issued_version_uuid.is_nil()&&!reads,
           "ordinary typed staging rejects foreign database before reads or identity issuance");
     }
     const db::NativeCryptoInlinePrivateKeyPolicyLookupBinding binding{descriptor.policy_uuid,descriptor.policy_version_uuid,descriptor.generation};
     const auto read=[&](const auto& guard,p::u64 allowance=0){
-      return db::ReadNativeCommittedCryptoInlinePrivateKeyPolicyFromOpenDevices(f::Id(1),devices,created.receipt->checkpoint,relation,guard,allowance?allowance:budget);
+      return db::ReadNativeCommittedCryptoInlinePrivateKeyPolicyFromOpenDevices(f::Id(1),devices,*created.receipt->checkpoint,relation,guard,allowance?allowance:budget);
     };
     reads=0;track_reads=true;auto observed=read(binding);track_reads=false;const auto count=reads;
     if(!mode){Empty(observed);continue;}

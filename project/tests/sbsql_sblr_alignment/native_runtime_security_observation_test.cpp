@@ -112,6 +112,11 @@ struct SecurityFixture {
       Check(!invalid,"complete actual family/common metadata before native security fixture construction");
     }
     const auto path=(artifacts.path()/"native-security").string();Check(device.Open(path,disk::FileOpenMode::create_new).ok(),"actual new native security filespace");
+    // SB_TRANSITIONAL_CHECKPOINT_GRAPH: this fixture's scenarios publish
+    // successor catalog states through the checkpoint and selectors (drift
+    // layer); delete with that layer (R4). The production path (runtime
+    // security over the fixed-root lease) is covered by the enrollment chain.
+    request.genesis_graph=db::NativeCreationGenesisGraph::transitional_checkpoint;
     const auto made=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,request,seed,indexes,budget,issuer);
     if(!made.ok())std::cerr<<"native security fixture creation="<<int(made.error)<<" profile="<<p<<" variant="<<variant<<'\n';
     Check(made.ok(),"actual native security/configuration creation in their declared roles");receipt=*made.receipt;

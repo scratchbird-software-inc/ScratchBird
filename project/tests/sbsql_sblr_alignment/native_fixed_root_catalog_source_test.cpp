@@ -5,9 +5,9 @@
 // A native catalog read that starts from page zero's fixed roots (drift
 // removal R3b1). On a database written by the production create, which still
 // carries its genesis checkpoint until R3b3, a committed catalog read from page
-// zero must return exactly what the same read from the checkpoint returns:
-// every relation of the catalog and of the feature catalog, at every page
-// size. Then every read the page-zero read makes is failed in turn and
+// zero returned exactly what the same read from the checkpoint returned (R3b1);
+// since R3b3 the create writes no checkpoint and the read is checked against
+// independent reads of the same file. Then every read the page-zero read makes is failed in turn and
 // corrupted in turn, the image allowance is held to the byte, and page zero or
 // catalog roots that do not bind are refused.
 #include "native_database_create.hpp"
@@ -25,6 +25,7 @@
 #include <filesystem>
 #include <iostream>
 #include <map>
+#include <set>
 #include <source_location>
 #include <stdexcept>
 #include <string>
@@ -135,65 +136,55 @@ db::NativeCommittedCatalogReadResult Read(const Created& made, Open& o, const db
 }
 db::NativeCatalogSource PageZero(const Created& made) { return db::NativeCatalogSource::PageZero(made.receipt.filespace_uuid); }
 
-void Differential(unsigned profile) {
+// Drift removal R3b3: the production create writes no checkpoint, so the
+// page-zero read is checked against independent reads of the same file. Every
+// relation of both catalogs reads exactly the receipt's committed rows; the
+// feature catalog (the catalog root at create) reads what the catalog reads;
+// every retained leaf image is byte-identical to that page read straight from
+// the file; and every row was created by the construction transaction, the
+// only one in the inventory. (Until R3b3 this compared against the genesis
+// checkpoint; all 12 relations agreed byte for byte at every page size.)
+void PageZeroReads(unsigned profile) {
   const auto& made = Production(profile);
+  Check(!made.receipt.workspace.checkpoint, "a production create carries no checkpoint");
   Open o(made, made.path);
   unsigned compared = 0;
-  for (const u16 selector : {u16{2}, u16{8}})
-    for (unsigned role = 1; role <= 6; ++role) {
-      const auto by_checkpoint = Read(made, o, made.receipt.workspace.checkpoint, selector, role, Budget(made));
-      const auto by_page_zero = Read(made, o, PageZero(made), selector, role, Budget(made));
-      Check(by_checkpoint.ok() == by_page_zero.ok() && by_checkpoint.error == by_page_zero.error &&
-                by_checkpoint.source.error == by_page_zero.source.error,
-            "both sources reach the same outcome for every relation");
-      if (!by_checkpoint.ok()) {
-        std::cerr << "profile " << profile << " selector " << selector << " role " << role
-                  << " not read: error=" << int(by_checkpoint.error) << " source=" << int(by_checkpoint.source.error)
-                  << " relation=" << int(by_checkpoint.source.relation.error)
-                  << " rows=" << made.receipt.workspace.catalog_rows[role - 1] << '\n';
-        continue;
-      }
-      ++compared;
-      Check(by_page_zero.source.page_zero_source && !by_checkpoint.source.page_zero_source,
-            "each read reports the source it used");
-      const auto& a = by_checkpoint;
-      const auto& b = by_page_zero;
-      Check(a.rows.size() == b.rows.size() && a.rows.size() == made.receipt.workspace.catalog_rows[role - 1] &&
-                a.observations.size() == b.observations.size(),
-            "both sources read every committed row of the relation");
-      for (std::size_t i = 0; i < a.rows.size(); ++i)
-        Check(a.rows[i].version_uuid == b.rows[i].version_uuid &&
-                  a.rows[i].previous_version_uuid == b.rows[i].previous_version_uuid &&
-                  a.rows[i].metadata.record.header.row_uuid.value == b.rows[i].metadata.record.header.row_uuid.value &&
-                  a.rows[i].metadata.record.header.object_uuid.value == b.rows[i].metadata.record.header.object_uuid.value &&
-                  a.rows[i].metadata.record.payload == b.rows[i].metadata.record.payload &&
-                  a.rows[i].provisional == b.rows[i].provisional &&
-                  a.rows[i].effective_lifecycle == b.rows[i].effective_lifecycle &&
-                  a.rows[i].effective_status == b.rows[i].effective_status,
-              "row for row, the same committed versions");
-      for (std::size_t i = 0; i < a.observations.size(); ++i)
-        Check(a.observations[i].retained_row_index == b.observations[i].retained_row_index &&
-                  a.observations[i].decision == b.observations[i].decision,
-              "the same visibility decisions");
-      Check(a.source.navigation_creator_entries == b.source.navigation_creator_entries &&
-                a.source.row_creators.size() == b.source.row_creators.size(),
-            "the same creator bindings");
-      for (std::size_t i = 0; i < a.source.row_creators.size(); ++i)
-        Check(a.source.row_creators[i].catalog_page_index == b.source.row_creators[i].catalog_page_index &&
-                  a.source.row_creators[i].catalog_row_index == b.source.row_creators[i].catalog_row_index &&
-                  a.source.row_creators[i].inventory_entry_index == b.source.row_creators[i].inventory_entry_index,
-              "the same row creators");
-      Check(a.source.relation.catalogs.size() == b.source.relation.catalogs.size() &&
-                a.source.relation.retained_image_bytes == b.source.relation.retained_image_bytes,
-            "the same relation images");
-      for (std::size_t i = 0; i < a.source.relation.catalogs.size(); ++i)
-        Check(a.source.relation.catalogs[i].bytes == b.source.relation.catalogs[i].bytes, "byte-identical leaf images");
-      Check(a.source.inventory().next_local_transaction_id == b.source.inventory().next_local_transaction_id &&
-                a.source.inventory().entries.size() == b.source.inventory().entries.size() &&
-                !b.source.cluster_authority_required(),
-            "the same transaction inventory, no cluster authority");
+  for (unsigned role = 1; role <= 6; ++role) {
+    const auto catalog = Read(made, o, PageZero(made), 2, role, Budget(made));
+    const auto feature = Read(made, o, PageZero(made), 8, role, Budget(made));
+    if (!catalog.ok())
+      std::cerr << "profile " << profile << " role " << role << " not read: error=" << int(catalog.error)
+                << " source=" << int(catalog.source.error) << " relation=" << int(catalog.source.relation.error) << '\n';
+    Check(catalog.ok() && feature.ok() && catalog.source.page_zero_source && feature.source.page_zero_source,
+          "every relation of both catalogs reads from page zero");
+    compared += 2;
+    Check(catalog.rows.size() == made.receipt.workspace.catalog_rows[role - 1] && feature.rows.size() == catalog.rows.size(),
+          "exactly the receipt's committed rows, through either catalog root");
+    std::set<Uuid> versions;
+    for (std::size_t i = 0; i < catalog.rows.size(); ++i) {
+      Check(versions.insert(catalog.rows[i].version_uuid).second, "every committed version is distinct");
+      Check(catalog.rows[i].version_uuid == feature.rows[i].version_uuid &&
+                catalog.rows[i].metadata.record.payload == feature.rows[i].metadata.record.payload &&
+                !catalog.rows[i].provisional,
+            "the feature catalog reads the catalog's committed rows");
     }
-  Check(compared == 12, "every relation of both catalogs was read and compared, none skipped");
+    Check(catalog.source.relation.catalogs.size() == feature.source.relation.catalogs.size(), "the same relation images");
+    for (const auto& image : catalog.source.relation.catalogs) {
+      std::vector<byte> page(made.size);
+      const auto io = o.device.ReadAt(image.page->header.page_number * made.size, page.data(), page.size());
+      Check(io.ok() && io.bytes_transferred == page.size() && page == image.bytes,
+            "every retained leaf image is the page as stored");
+    }
+    const auto& inventory = catalog.source.inventory();
+    Check(inventory.next_local_transaction_id == 2 && inventory.entries.size() == 1 &&
+              inventory.entries[0].identity.local_id.value == 1 &&
+              inventory.entries[0].identity.transaction_uuid.value == made.receipt.construction_transaction.transaction_uuid.value &&
+              !catalog.source.cluster_authority_required(),
+          "the inventory holds only the construction transaction; no cluster authority");
+    for (const auto& creator : catalog.source.row_creators)
+      Check(creator.inventory_entry_index == 0, "every row was created by the construction transaction");
+  }
+  Check(compared == 12, "every relation of both catalogs was read, none skipped");
 }
 
 // Every read of a page-zero committed read, failed then corrupted.
@@ -324,17 +315,6 @@ void Negatives(unsigned profile) {
     Check(r.source.error == RE::fixed_root_failure && r.source.fixed_root_kind && *r.source.fixed_root_kind == 2,
           "the page identity finding names the catalog root");
   }
-  {
-    // The checkpoint source on the same changed file still reads (it does not
-    // consult page zero's catalog roots) — the two sources are independent.
-    auto zero = ReadZero(made.path);
-    std::erase_if(zero.roots, [](const auto& r) { return r.kind == 8; });
-    const auto path = Copy(made, "independent");
-    WriteZero(path, zero);
-    Open o(made, path);
-    Check(Read(made, o, made.receipt.workspace.checkpoint, 2, 1, Budget(made)).ok(),
-          "the checkpoint source does not depend on page zero's catalog roots");
-  }
 }
 }  // namespace
 
@@ -343,7 +323,7 @@ int main() {
     scratchbird::tests::OwnedTempDirectory owned;
     artifacts = &owned;
     for (unsigned p = 0; p < 5; ++p) {
-      Differential(p);
+      PageZeroReads(p);
       Sweeps(p);
       AllowanceToTheByte(p);
       Negatives(p);

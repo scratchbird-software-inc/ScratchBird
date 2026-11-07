@@ -32,8 +32,7 @@ struct NativeFilespaceInitializationRequest {
   transaction::mga::TransactionIdentity creator;
   core::platform::u64 total_pages=0,creation_utc_millis=0;
   NativeCreationInventoryFormat inventory_format=NativeCreationInventoryFormat::in_place;
-  // R3a names the graph and still writes only the transitional one.
-  NativeCreationGenesisGraph genesis_graph=NativeCreationGenesisGraph::transitional_checkpoint;
+  NativeCreationGenesisGraph genesis_graph=NativeCreationGenesisGraph::fixed_roots;
 };
 enum class NativeFilespaceInitializationError {
   none, invalid_request, invalid_device, device_not_empty, invalid_capacity,

@@ -389,6 +389,10 @@ struct NativeCheckpointCatalogRelationResult {
   NativeFixedRootMemoryError fixed_root_error = NativeFixedRootMemoryError::none;
   scratchbird::storage::disk::FilespacePageZeroError page_zero_error = scratchbird::storage::disk::FilespacePageZeroError::none;
   std::optional<u16> fixed_root_kind;
+  scratchbird::storage::page::NativeInventoryError inventory_error = scratchbird::storage::page::NativeInventoryError::none;
+  scratchbird::storage::page::NativeAllocationError allocation_error = scratchbird::storage::page::NativeAllocationError::none;
+  scratchbird::storage::page::NativeDirectoryError directory_error = scratchbird::storage::page::NativeDirectoryError::none;
+  scratchbird::storage::page::NativeCatalogRootError catalog_root_error = scratchbird::storage::page::NativeCatalogRootError::none;
   // The source-neutral view the relation and version reads use.
   const scratchbird::transaction::mga::LocalTransactionInventory& inventory() const noexcept {
     return page_zero_source ? page_zero_inventory : checkpoint.checkpoint_inventory.inventory;

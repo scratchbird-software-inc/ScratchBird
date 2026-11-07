@@ -20,7 +20,9 @@ struct NativeCreationWorkspaceReceipt {
   core::platform::Uuid database_uuid, filespace_uuid, operation_uuid;
   core::platform::Uuid page_zero_uuid, timeline_uuid, publication_uuid;
   transaction::mga::TransactionIdentity construction_transaction;
-  disk::FilespaceRootReference checkpoint;
+  // SB_TRANSITIONAL_CHECKPOINT_GRAPH: the genesis checkpoint, written only by
+  // the drift-era graph; a fixed-root create has none.
+  std::optional<disk::FilespaceRootReference> checkpoint;
   std::array<core::platform::byte,32> checkpoint_sha256{};
   std::array<page::NativeCatalogRootReference,6> relations;
   std::array<core::platform::Uuid,6> relation_uuids;

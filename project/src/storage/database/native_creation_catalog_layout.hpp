@@ -35,19 +35,25 @@ struct NativeCreationLayoutResult {
 // transaction_header_page: the create writes the in-place inventory, so its
 // header page is planned (SB_TRANSITIONAL_LEGACY_INVENTORY; no default, so every
 // caller plans the format it writes).
+// checkpoint_graph (SB_TRANSITIONAL_CHECKPOINT_GRAPH): the drift-era genesis
+// graph keeps its 19 control pages (first catalog leaf at control 10); the
+// fixed-root graph has 13 (no checkpoint, horizon-root, selector or watermark
+// page; first catalog leaf at control 8). No default: every caller plans the
+// graph it writes.
 // No identities, authorization, memory grants, writes or configuration defaults.
 inline NativeCreationLayoutResult PlanNativeCreationCatalogLayout(
     u64 size,u64 maps,u64 total,u64 budget,const NativeCreationCatalogSeed& seed,
-    const NativeCreationCatalogIndexes& indexes,bool transaction_header_page) noexcept {
+    const NativeCreationCatalogIndexes& indexes,bool transaction_header_page,bool checkpoint_graph) noexcept {
   using E=NativeCreationLayoutError;
   const auto fail=[](E e){return NativeCreationLayoutResult{e,{}};};
+  const u64 controls=checkpoint_graph?20:14,first_leaf=checkpoint_graph?10:8;
   try {
     if(!std::any_of(disk::kCanonicalFilespacePageProfiles.begin(),disk::kCanonicalFilespacePageProfiles.end(),
         [size](const auto& p){return p.page_size_bytes==size;})||
-        maps>std::numeric_limits<u64>::max()-20||total<maps+20)
+        maps>std::numeric_limits<u64>::max()-20||total<maps+controls)
       return fail(E::invalid_input);
-    if(budget/size<2||maps+20>budget/size-2)return fail(E::resource_exhausted);
-    NativeCreationCatalogLayout plan;plan.image_count=maps+20;
+    if(budget/size<2||maps+controls>budget/size-2)return fail(E::resource_exhausted);
+    NativeCreationCatalogLayout plan;plan.image_count=maps+controls;
     plan.root_cells=NativeCatalogBtreeRootCells(size);plan.leaf_cells=NativeCatalogBtreeLeafCells(size);
     const u64 capacity=size-128-32-page::kRowDataPageBodyHeaderBytes;
     for(unsigned role=0;role<seed.size();++role) {
@@ -71,7 +77,7 @@ inline NativeCreationLayoutResult PlanNativeCreationCatalogLayout(
         if(plan.image_count>=budget/size-2)throw E::resource_exhausted;
         return plan.image_count++;
       };
-      p.bases.push_back(maps+10+role);
+      p.bases.push_back(maps+first_leaf+role);
       for(std::size_t i=1;i<p.starts.size();++i)p.bases.push_back(allocate());
       if(indexes[role]) {
         // Root, then leaves, then branches level by level: a tree of depth

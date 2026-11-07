@@ -186,47 +186,71 @@ std::vector<std::vector<std::pair<Uuid, std::string>>> Relations(const Lease& le
   return out;
 }
 
-void Differential(unsigned profile) {
+// Drift removal R3b3: the production create writes no checkpoint, so every
+// reader on the fixed-root lease is checked against the file read
+// independently: the catalog root and allocation map images against the pages
+// read straight from the file, and every relation against the open-device
+// committed read from page zero (itself compared byte for byte with the
+// checkpoint read before R3b3, native_fixed_root_catalog_source). Until R3b3
+// this compared each reader on a selected-checkpoint lease and on the
+// fixed-root lease; every output agreed.
+void Independent(unsigned profile) {
   Database n(profile);
   const auto devices = n.Devices();
   const Uuid database = n.receipt.database_uuid, primary = n.receipt.filespace_uuid;
-  Grant gs(database, 512u << 20), gf(database, 512u << 20);
-  auto selected = db::AcquireNativeSelectedCheckpointMemoryLease(database, devices, primary, {256 * n.size, 64u << 20},
-                                                                 gs.memory, gs.binding);
-  Check(selected.ok(), "selected-checkpoint lease on an in-place database");
+  Grant gf(database, 512u << 20);
   auto fixed = db::AcquireNativeFixedRootMemoryLease(database, devices, primary, {256 * n.size, 64u << 20}, gf.memory,
                                                      gf.binding);
   Check(fixed.ok(), "fixed-root lease");
+  const auto zero = d::ReadFilespacePageZeroFromOpenDevice(n.device);
+  Check(zero.ok(), "page zero read straight from the file");
+  const auto stored_page = [&](u64 number) {
+    std::vector<byte> bytes(n.size);
+    const auto io = n.device.ReadAt(number * n.size, bytes.data(), bytes.size());
+    Check(io.ok() && io.bytes_transferred == bytes.size(), "a page read straight from the file");
+    return bytes;
+  };
+  const auto root_page = [&](u16 kind) {
+    const auto r = std::find_if(zero.record->roots.begin(), zero.record->roots.end(),
+                                [&](const auto& x) { return x.kind == kind; });
+    Check(r != zero.record->roots.end(), "page zero names the root");
+    return r->page_number;
+  };
   // Catalog roots.
   {
-    auto ws = db::PrepareNativeCatalogRootsRead(n.profile, gs.memory, gs.binding);
     auto wf = db::PrepareNativeCatalogRootsRead(n.profile, gf.memory, gf.binding);
-    Check(ws.ok() && wf.ok(), "roots workspaces");
-    const auto a = db::NativeCatalogRootsLeaseReader::Read(*selected.lease, 64 * n.size, ws.workspace);
+    Check(wf.ok(), "roots workspace");
     const auto b = db::NativeCatalogRootsLeaseReader::Read(*fixed.lease, 64 * n.size, wf.workspace);
-    Check(a.ok() && b.ok() && a.catalogs.size() == b.catalogs.size() && a.feature_root_index == b.feature_root_index,
-          "catalog roots through both sources");
-    for (std::size_t i = 0; i < a.catalogs.size(); ++i)
-      Check(SameBytes(a.catalogs[i].image, b.catalogs[i].image) && a.catalogs[i].inventory_entry_index == b.catalogs[i].inventory_entry_index,
-            "the same root images and creators");
+    Check(b.ok() && !b.catalogs.empty() && b.feature_root_index < b.catalogs.size(), "catalog roots through the fixed root");
+    const bool same_page = root_page(2) == root_page(8);
+    Check(b.feature_root_index == (same_page ? 0u : 1u), "the feature catalog is the catalog root at create");
+    Check(SameBytes(b.catalogs[0].image, stored_page(root_page(2))) && b.catalogs[0].inventory_entry_index == 0,
+          "the catalog root image is the page as stored, created by the construction transaction");
   }
   // Allocation of the primary file.
   {
-    auto ws = db::PrepareNativeAllocationRead(16u << 20, gs.memory, gs.binding);
     auto wf = db::PrepareNativeAllocationRead(16u << 20, gf.memory, gf.binding);
-    Check(ws.ok() && wf.ok(), "allocation workspaces");
-    const auto a = db::NativeAllocationLeaseReader::Read(*selected.lease, primary, 512 * n.size, ws.workspace);
+    Check(wf.ok(), "allocation workspace");
     const auto b = db::NativeAllocationLeaseReader::Read(*fixed.lease, primary, 512 * n.size, wf.workspace);
-    Check(a.ok() && b.ok() && *a.root == *b.root && a.chain.pages.size() == b.chain.pages.size(),
-          "primary allocation through both sources, the same map head digest");
-    for (std::size_t i = 0; i < a.chain.pages.size(); ++i)
-      Check(SameBytes(a.chain.pages[i].image, b.chain.pages[i].image), "the same map images");
+    Check(b.ok() && b.chain.pages.size() == n.receipt.workspace.map_pages && b.root && b.root->page.page_number == root_page(3),
+          "the allocation chain is the created maps, from page zero's head");
+    for (std::size_t i = 0; i < b.chain.pages.size(); ++i)
+      Check(SameBytes(b.chain.pages[i].image, stored_page(1 + i)), "every map image is the page as stored");
   }
-  // Every relation, bound and discovered.
+  // Every relation, bound and discovered, against the open-device read.
+  std::vector<std::vector<std::pair<Uuid, std::string>>> expected(6);
+  for (unsigned i = 0; i < 6; ++i) {
+    const auto read = db::ReadNativeCommittedCatalogVersionsFromOpenDevices(
+        database, devices, db::NativeCatalogSource::PageZero(primary), 2, static_cast<u16>(i + 1),
+        {n.receipt.workspace.relation_uuids[i], n.receipt.workspace.index_dependencies[i]},
+        (n.size == 8192 ? 1024 : 512) * n.size);
+    Check(read.ok(), "every relation reads committed through the open-device page-zero source");
+    for (const auto& row : read.rows)
+      expected[i].push_back({row.metadata.record.header.object_uuid.value, std::string(row.metadata.record.payload)});
+  }
   for (const bool bound : {true, false}) {
-    const auto a = Relations(*selected.lease, n, gs, bound);
     const auto b = Relations(*fixed.lease, n, gf, bound);
-    Check(a == b, "every relation yields the same rows through both sources");
+    Check(b == expected, "every relation yields, through the fixed-root lease, the rows the open-device read returns");
     std::size_t rows = 0;
     for (const auto& r : b) rows += r.size();
     Check(rows > 100, "a populated production catalog");
@@ -317,7 +341,7 @@ void Sweeps() {
 
 int main() {
   try {
-    for (unsigned profile = 0; profile < 5; ++profile) Differential(profile);
+    for (unsigned profile = 0; profile < 5; ++profile) Independent(profile);
     Sweeps();
   } catch (const std::exception& e) {
     std::cerr << "native fixed root readers FAIL " << e.what() << " after " << checks << " checks\n";

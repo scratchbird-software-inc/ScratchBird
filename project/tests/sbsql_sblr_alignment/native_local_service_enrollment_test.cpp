@@ -3044,8 +3044,8 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
   // or control page reaches is wasted space, reported and never refused. The
   // creator's original allocation is rebuilt from what the verification and
   // the capture retained; one extra creator page is then added.
-  Check(opened.observation->allocation.wasted_pages==1,
-      "read through page zero, the horizon root page, which only the checkpoint points to, is the one wasted page");
+  Check(opened.observation->allocation.wasted_pages==0,
+      "drift removal R3b3: the create writes no page that page zero, a catalog page or a control page does not reach");
   {
     namespace pg=scratchbird::storage::page;
     const auto& capture=read.catalog_capture();const auto& identity=opened.observation->identity;
@@ -3179,53 +3179,32 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
       Check(Host::Close(reopened.runtime).ok(),"the reopened database closes");
       return out;
     };
-    // The checkpoint layer's pages: page-zero kinds 9 and 18-21, and the
-    // horizon root only the checkpoint points to. SB_DRIFT_REMOVAL_R3: create
-    // stops writing these pages, and this denial then has nothing to deny.
+    // SB_NATIVE_FIXED_ROOT_READ (drift removal R3b3): the create writes no
+    // checkpoint layer. Page zero names no checkpoint (kind 9), selector or
+    // watermark (18-21) root, and no page of the file is a checkpoint (0x300),
+    // horizon root (0x302), selector (0x30E) or watermark (0x500) page. (Until
+    // R3b3 those pages existed and a run that denied every read of them showed
+    // the startup chain never touched them.)
     const auto zero=disk::DecodeFilespacePageZero(reinterpret_cast<const platform::byte*>(created_bytes.data()),sizes[profile]);
     Check(zero.ok(),"the producer's page zero decodes");
-    std::vector<u64> drift_pages;u64 checkpoint_page=0;
-    for(const auto& root:zero.record->roots){
-      if(root.kind==9||(root.kind>=18&&root.kind<=21))drift_pages.push_back(root.page_number);
-      if(root.kind==9)checkpoint_page=root.page_number;
+    Check(std::none_of(zero.record->roots.begin(),zero.record->roots.end(),
+        [](const auto& root){return root.kind==9||(root.kind>=18&&root.kind<=21);}),
+        "page zero names no checkpoint, selector or watermark root");
+    unsigned headed=0;
+    for(u64 n=1;n*sizes[profile]<created_bytes.size();++n){
+      const auto* page=reinterpret_cast<const platform::byte*>(created_bytes.data())+n*sizes[profile];
+      if(std::all_of(page,page+disk::kNativeCommonPageHeaderBytes,[](platform::byte b){return !b;}))continue;
+      const auto header=disk::DecodeNativeCommonPageHeader(page,disk::kNativeCommonPageHeaderBytes);
+      Check(header.ok(),"every written page has a native header");++headed;
+      const auto type=header.header->page_type;
+      Check(type!=0x300&&type!=0x302&&type!=0x30e&&type!=0x500,
+          "no checkpoint, horizon-root, selector or watermark page exists in the file");
     }
-    Check(drift_pages.size()==5&&checkpoint_page,"page zero roots the checkpoint, both selectors and both watermarks");
-    std::vector<platform::byte> checkpoint_image(sizes[profile]);
-    std::memcpy(checkpoint_image.data(),created_bytes.data()+checkpoint_page*sizes[profile],checkpoint_image.size());
-    const auto checkpoint=db::DecodeNativeCheckpointRoot(checkpoint_image);
-    Check(checkpoint.ok(),"the producer's checkpoint page decodes");
-    u64 horizon_page=0;
-    for(const auto& root:checkpoint.root->roots)if(root.role==2)horizon_page=root.page.page_number;
-    Check(horizon_page&&std::find(drift_pages.begin(),drift_pages.end(),horizon_page)==drift_pages.end(),
-        "the checkpoint roots the horizon page, which page zero does not");
-    drift_pages.push_back(horizon_page);
+    Check(headed>0,"the scan saw the created pages");
     const auto plain=run(false);
     Check(plain.has_value()&&plain->source.kind==db::NativeReadSourceKind::fixed_root&&plain->opened.has_value()&&
-        plain->opened->allocation.wasted_pages==1&&plain->opened->inventory.horizon_records==0,
-        "the startup chain reads page zero, where the horizon root page is the one wasted page");
-    struct stat identity{};Check(::stat(path.c_str(),&identity)==0,"the producer's file identity");
-    denied_device=identity.st_dev;denied_inode=identity.st_ino;denied_page_total=drift_pages.size();
-    for(std::size_t i=0;i<drift_pages.size();++i){
-      const auto first=static_cast<off_t>(drift_pages[i]*sizes[profile]);
-      denied_pages[i]={first,first+static_cast<off_t>(sizes[profile])};
-    }
-    {
-      // The denial engages: a direct read of each denied page fails.
-      const int fd=::open(path.c_str(),O_RDONLY|O_CLOEXEC);Check(fd>=0,"independent descriptor for the denial probe");
-      std::vector<char> page(sizes[profile]);denied_page_reads=0;denied_page_count=denied_page_total;
-      unsigned refused=0;
-      for(const auto& range:std::span{denied_pages}.first(denied_page_total))
-        if(::pread(fd,page.data(),page.size(),range.first)<0)++refused;
-      denied_page_count=0;Check(::close(fd)==0,"release the denial probe");
-      Check(refused==denied_page_total&&denied_page_reads==denied_page_total,"a direct read of each denied page fails");
-    }
-    denied_page_reads=0;
-    const auto denied=run(true);
-    Check(denied.has_value()&&denied_page_reads==0&&denied->rows==plain->rows&&
-        denied->control_pages==plain->control_pages&&denied->opened.has_value(),
-        "the startup chain and open verification complete without reading any checkpoint, selector, "
-        "watermark or horizon page");
-    denied_page_total=0;
+        plain->opened->allocation.wasted_pages==0&&plain->opened->inventory.horizon_records==0,
+        "the startup chain reads page zero; no page is wasted");
     if(profile==4)Check(run(false,1).has_value(),"the failed-read sweep ends in a clean verification");
     Check(run(false,2).has_value(),"the corrupted-read sweep ends in a clean verification");
     Check(read_file()==created_bytes,"the startup chain writes nothing to the producer's file");

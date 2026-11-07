@@ -9050,6 +9050,9 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
     // SB_TRANSITIONAL_LEGACY_INVENTORY: production create always writes the
     // in-place inventory; the legacy format is for drift-layer tests only.
     construction.inventory_format=NativeCreationInventoryFormat::in_place;
+    // SB_TRANSITIONAL_CHECKPOINT_GRAPH: production create writes the fixed-root
+    // genesis graph and can never choose the drift-era checkpoint graph.
+    construction.genesis_graph=NativeCreationGenesisGraph::fixed_roots;
     if(!identities_ok)return fail(E::identity_failure);
     const auto tx=construction.creator.transaction_uuid;
 
@@ -9362,7 +9365,8 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
     {
       const auto plan=detail::PlanNativeCreationCatalogLayout(request.page_size_bytes,0,request.total_pages,
           request.maximum_retained_image_bytes,seed,index_rows.indexes,
-          construction.inventory_format==NativeCreationInventoryFormat::in_place);
+          construction.inventory_format==NativeCreationInventoryFormat::in_place,
+          construction.genesis_graph==NativeCreationGenesisGraph::transitional_checkpoint);
       if(!plan.ok())return fail(plan.error==detail::NativeCreationLayoutError::resource_exhausted?E::resource_exhausted:E::capacity_exceeded);
       for(unsigned i=0;i<6;++i) {
         const auto pages=plan.layout->relations[i].starts.size();

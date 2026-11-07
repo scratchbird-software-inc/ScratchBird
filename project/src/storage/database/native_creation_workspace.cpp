@@ -12,6 +12,7 @@
 #include "uuid.hpp"
 #include <algorithm>
 #include <limits>
+#include <memory>
 #include <new>
 #include <set>
 #include <stdexcept>
@@ -44,6 +45,24 @@ template<class Result> E GraphCause(const Result& result) {
     nested(result.checkpoint_inventory.error);nested(result.checkpoint_inventory.inventory_error);
   }
   return cause;
+}
+
+// SB_NATIVE_FIXED_ROOT_READ: the typed cause of a refused fixed-root read, or
+// of a refused page-zero catalog source: a digest-provider failure stays a
+// hash failure, an I/O failure an I/O failure, whatever stage it was found in.
+template<class Source> E FixedRootCause(const Source& r) {
+  using F=NativeFixedRootMemoryError;
+  if(r.page_zero_error==disk::FilespacePageZeroError::hash_provider_failure)return E::hash_failure;
+  if(r.page_zero_error==disk::FilespacePageZeroError::io_failure)return E::io_failure;
+  if(r.page_zero_error==disk::FilespacePageZeroError::resource_exhausted)return E::resource_exhausted;
+  if constexpr(requires{r.inventory_error;r.allocation_error;r.directory_error;}) {
+    for(const E cause:{Cause(r.inventory_error),Cause(r.allocation_error),Cause(r.directory_error)})
+      if(cause!=E::graph_failure)return cause;
+  }
+  if constexpr(requires{r.catalog_root_error;})
+    if(const E cause=Cause(r.catalog_root_error);cause!=E::graph_failure)return cause;
+  return r.fixed_root_error==F::resource_exhausted||r.fixed_root_error==F::memory_allocation_failure?E::resource_exhausted:
+      r.fixed_root_error==F::io_failure?E::io_failure:E::graph_failure;
 }
 
 // Control offsets after the last allocation-map page. Page zero is separate.
@@ -100,28 +119,49 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
     const auto existing=device.Size();
     if(!existing.ok()) return Fail(E::io_failure);
     if(existing.size_bytes) return Fail(E::device_not_empty);
+    // SB_TRANSITIONAL_CHECKPOINT_GRAPH: the genesis graph. The fixed-root graph
+    // is the design; the checkpoint graph exists only for drift-layer tests.
+    using Graph=NativeCreationGenesisGraph;
+    if(request.genesis_graph!=Graph::fixed_roots&&request.genesis_graph!=Graph::transitional_checkpoint)
+      return Fail(E::invalid_request);
+    const bool checkpoint_graph=request.genesis_graph==Graph::transitional_checkpoint;
+    // The control block after the maps. The checkpoint graph keeps its control
+    // numbers; the fixed-root graph has no checkpoint, horizon-root, selector
+    // or watermark page and packs the rest in the same order.
+    std::array<u64,count> offset{};
+    std::array<unsigned,count> control_at{};
+    {
+      u64 next=1;
+      for(unsigned c=1;c<count;++c) {
+        const bool drift=c==checkpoint||c==horizon||c>=selector_first;
+        if(checkpoint_graph)offset[c]=c;else if(!drift)offset[c]=next++;
+        if(offset[c])control_at[offset[c]]=c;
+      }
+    }
+    const u64 controls=checkpoint_graph?u64{count}:u64{14};
     const u64 size=b.page_size_bytes,total=request.total_pages,coverage=Coverage(size);
     if(!total||total>std::numeric_limits<u64>::max()/size||
        !disk::CheckFileDeviceExtent(total*size,0).ok()) return Fail(E::invalid_capacity);
     const u64 maps=total/coverage+(total%coverage!=0);
-    if(maps>total||total-maps<count) return Fail(E::invalid_capacity);
+    if(maps>total||total-maps<controls) return Fail(E::invalid_capacity);
+    const auto at=[&](unsigned control){return maps+offset[control];};
     // SB_TRANSITIONAL_LEGACY_INVENTORY: only the two named formats exist.
     using Format=NativeCreationInventoryFormat;
     if(request.inventory_format!=Format::in_place&&request.inventory_format!=Format::transitional_legacy)
       return Fail(E::invalid_request);
     const bool in_place=request.inventory_format==Format::in_place;
-    // SB_TRANSITIONAL_CHECKPOINT_GRAPH: R3a names the genesis graph; the
-    // fixed-root graph is written from R3b on.
-    if(request.genesis_graph!=NativeCreationGenesisGraph::transitional_checkpoint)return Fail(E::invalid_request);
+    // The legacy inventory belongs to the drift-era graph: page zero's fixed
+    // roots name an in-place inventory only.
+    if(!in_place&&!checkpoint_graph)return Fail(E::invalid_request);
     // Full graph + one in-flight encoder image + one physical readback image.
     // The final selected admission retains the maps twice plus four controls,
     // and an in-place inventory's header page as a fifth.
     const u64 admitted=in_place?5:4;
-    if(budget/size<count+2||maps>budget/size-count-2||
+    if(budget/size<controls+2||maps>budget/size-controls-2||
        budget/size<admitted||maps>(budget/size-admitted)/2||
-       maps>std::numeric_limits<std::size_t>::max()-count) return Fail(E::resource_exhausted);
+       maps>std::numeric_limits<std::size_t>::max()-controls) return Fail(E::resource_exhausted);
 
-    auto planned=detail::PlanNativeCreationCatalogLayout(size,maps,total,budget,seed,indexes,in_place);
+    auto planned=detail::PlanNativeCreationCatalogLayout(size,maps,total,budget,seed,indexes,in_place,checkpoint_graph);
     if(!planned.ok())return Fail(planned.error==detail::NativeCreationLayoutError::resource_exhausted?E::resource_exhausted:
         planned.error==detail::NativeCreationLayoutError::capacity_exceeded?E::catalog_capacity_exceeded:E::invalid_catalog_input);
     auto plan=std::move(*planned.layout);const auto& layouts=plan.relations;
@@ -198,24 +238,29 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
       if(!id.ok()||!ids.insert(id.value->value).second) throw E::identity_failure;
       return id.value->value;
     };
-    const Uuid map_object=issue(UuidKind::object), timeline=issue(UuidKind::object),
-      locator=issue(UuidKind::object), publication=issue(UuidKind::object), selector=issue(UuidKind::object),
-      watermark=issue(UuidKind::object);
+    // The checkpoint graph's timeline, publication, selector and watermark
+    // objects exist only in that graph; the issue order is unchanged for it.
+    const Uuid map_object=issue(UuidKind::object);
+    const Uuid timeline=checkpoint_graph?issue(UuidKind::object):Uuid{};
+    const Uuid locator=issue(UuidKind::object);
+    const Uuid publication=checkpoint_graph?issue(UuidKind::object):Uuid{};
+    const Uuid selector=checkpoint_graph?issue(UuidKind::object):Uuid{};
+    const Uuid watermark=checkpoint_graph?issue(UuidKind::object):Uuid{};
     std::vector<Image> images(image_count);
     for(u64 n=0;n<images.size();++n) {
       auto& image=images[n];
-      const u32 type=n==0?1:n<=maps?3:n<maps+count?types[n-maps]:6;
+      const u32 type=n==0?1:n<=maps?3:n<maps+controls?types[control_at[n-maps]]:6;
       image.header={b.page_size_bytes,type,b.database_uuid,b.filespace_uuid,
         issue(UuidKind::page),n,1,0,b.page_size_profile_uuid};
       image.allocation=issue(UuidKind::object);
       image.owner=n==0?b.filespace_uuid:n<=maps?map_object:
-        (n==maps+watermark_first||n==maps+watermark_second)?watermark:
-        (n==maps+selector_first||n==maps+selector_second)?selector:issue(UuidKind::object);
+        (checkpoint_graph&&(n==at(watermark_first)||n==at(watermark_second)))?watermark:
+        (checkpoint_graph&&(n==at(selector_first)||n==at(selector_second)))?selector:issue(UuidKind::object);
     }
     // SB_TRANSACTION_HEADER_PAGE: the header page belongs to the inventory
     // object, with the inventory page type (a second family under 0x0301).
     const u64 header_page=plan.transaction_header_page;
-    if(in_place){images[header_page].header.page_type=0x301;images[header_page].owner=images[maps+inventory].owner;}
+    if(in_place){images[header_page].header.page_type=0x301;images[header_page].owner=images[at(inventory)].owner;}
     const auto ref=[&](u64 n){return disk::NativePageReference{b.filespace_uuid,n,1,b.page_size_profile_uuid};};
     const auto root=[&](u16 kind,u64 n){return disk::FilespaceRootReference{
       kind,images[n].header.page_type,b.filespace_uuid,n,1,b.page_size_profile_uuid,images[n].owner};};
@@ -243,9 +288,9 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
     if(!in_place){
       // SB_TRANSITIONAL_LEGACY_INVENTORY: the SBTINV01 page, unchanged.
       page::NativeTransactionInventoryPage inv;
-      inv.header=images[maps+inventory].header;inv.object_uuid=images[maps+inventory].owner;
+      inv.header=images[at(inventory)].header;inv.object_uuid=images[at(inventory)].owner;
       inv.inventory_generation=1;inv.inventory=creator_inventory;
-      save(maps+inventory,page::EncodeNativeTransactionInventoryPage(inv));
+      save(at(inventory),page::EncodeNativeTransactionInventoryPage(inv));
     }else{
     // SB_COMPACT_TRANSACTION_STATE_PAGE / SB_TRANSACTION_HEADER_PAGE (owner
     // 2026-11-05): the in-place transaction inventory. Transaction 1, the
@@ -253,7 +298,7 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
       const auto derived=mga::ComputeLocalTransactionHorizons(creator_inventory);
       if(!derived.ok()||request.creation_utc_millis>std::numeric_limits<u64>::max()/1'000'000)
         return Fail(E::encoding_failure);
-      const auto encoded=detail::EncodeNativeCreationTransactionInventory(images[maps+inventory].header,
+      const auto encoded=detail::EncodeNativeCreationTransactionInventory(images[at(inventory)].header,
           images[header_page].header,creator,creator_inventory.next_local_transaction_id,derived.horizons,
           request.creation_utc_millis);
       if(!encoded)return Fail(E::encoding_failure);
@@ -263,7 +308,7 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
         if(!hash.ok()) throw E::hash_failure;
         images[n].sha256=hash.digest;
       };
-      keep(maps+inventory,std::move(encoded->state));keep(header_page,std::move(encoded->headers));
+      keep(at(inventory),std::move(encoded->state));keep(header_page,std::move(encoded->headers));
     }
 
     NativeCreationWorkspaceReceipt receipt;
@@ -271,7 +316,7 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
     receipt.operation_uuid=request.operation_uuid;receipt.page_zero_uuid=images[0].header.page_uuid;
     receipt.timeline_uuid=timeline;receipt.publication_uuid=publication;receipt.construction_transaction=request.creator;
     receipt.total_pages=total;receipt.free_pages=total-images.size();receipt.map_pages=maps;
-    receipt.checkpoint=root(9,maps+checkpoint);
+    if(checkpoint_graph)receipt.checkpoint=root(9,at(checkpoint));
     for(unsigned i=0;i<6;++i) {
       const auto& layout=layouts[i];
       const Uuid relation_uuid=indexes[i]?indexes[i]->relation_uuid:images[layout.bases.front()].owner;
@@ -356,7 +401,7 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
       receipt.relations[i]={static_cast<u16>(i+1),0x200,ref(layout.root),deps.index_uuid};
     }
     for(const auto control:{catalog,configuration,security}) {
-      const u64 n=maps+control;
+      const u64 n=at(control);
       page::NativeCatalogRoot c;c.header=images[n].header;c.object_uuid=images[n].owner;
       c.root_kind=control==catalog?2:control==configuration?6:7;
       c.creator_transaction_uuid=creator;c.creator_local_transaction_id=1;
@@ -365,25 +410,30 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
       else c.roots.push_back(receipt.relations[control==configuration?4:3]);
       save(n,page::EncodeNativeCatalogRoot(c));
     }
-    page::NativeFilespaceDirectory d;d.header=images[maps+directory].header;
-    d.object_uuid=images[maps+directory].owner;d.directory_generation=1;
+    page::NativeFilespaceDirectory d;d.header=images[at(directory)].header;
+    d.object_uuid=images[at(directory)].owner;d.directory_generation=1;
     d.creator_transaction_uuid=creator;d.creator_local_transaction_id=1;d.total_records=1;
     d.records.push_back({b,locator,receipt.page_zero_uuid,1,1,total,1,{}});
-    save(maps+directory,page::EncodeNativeFilespaceDirectory(d));
-    NativeSystemState state;state.header=images[maps+system].header;state.object_uuid=images[maps+system].owner;
+    save(at(directory),page::EncodeNativeFilespaceDirectory(d));
+    NativeSystemState state;state.header=images[at(system)].header;state.object_uuid=images[at(system)].owner;
     state.state_generation=state.restart_generation=state.startup_counter=1;
     state.creator_transaction_uuid=creator;state.creator_local_transaction_id=1;
-    state.checkpoint_generation=1;state.checkpoint=ref(maps+checkpoint);
-    state.checkpoint_object_uuid=images[maps+checkpoint].owner;state.transition_operation_uuid=request.operation_uuid;
-    save(maps+system,EncodeNativeSystemState(state));
-    page::NativeRetentionPage pins;pins.header=images[maps+retention].header;pins.object_uuid=images[maps+retention].owner;
+    // The fixed-root graph has no checkpoint: generation 0, no reference.
+    if(checkpoint_graph){state.checkpoint_generation=1;state.checkpoint=ref(at(checkpoint));
+      state.checkpoint_object_uuid=images[at(checkpoint)].owner;}
+    state.transition_operation_uuid=request.operation_uuid;
+    save(at(system),EncodeNativeSystemState(state));
+    page::NativeRetentionPage pins;pins.header=images[at(retention)].header;pins.object_uuid=images[at(retention)].owner;
     pins.epoch=1;pins.creator_transaction_uuid=creator;pins.creator_local_transaction_id=1;
-    save(maps+retention,page::EncodeNativeRetentionPage(pins));
+    save(at(retention),page::EncodeNativeRetentionPage(pins));
     const auto derived=mga::ComputeLocalTransactionHorizons(creator_inventory);
     if(!derived.ok()) return Fail(E::encoding_failure);
-    page::NativeHorizonRoot h;h.header=images[maps+horizon].header;h.object_uuid=images[maps+horizon].owner;
+    // The horizon root exists only in the checkpoint graph; the fixed-root
+    // graph's horizons are the in-place inventory's counters.
+    if(checkpoint_graph){
+    page::NativeHorizonRoot h;h.header=images[at(horizon)].header;h.object_uuid=images[at(horizon)].owner;
     h.epoch=1;h.creator_transaction_uuid=creator;h.creator_local_transaction_id=1;h.total_records=3;
-    h.retention=ref(maps+retention);h.retention_object_uuid=pins.object_uuid;h.retention_sha256=images[maps+retention].sha256;
+    h.retention=ref(at(retention));h.retention_object_uuid=pins.object_uuid;h.retention_sha256=images[at(retention)].sha256;
     const std::array<u64,3> boundaries{derived.horizons.oldest_interesting_transaction.value,
       derived.horizons.oldest_active_transaction.value,derived.horizons.oldest_snapshot_transaction.value};
     for(unsigned i=0;i<3;++i) {
@@ -391,7 +441,8 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
       r.local_boundary=boundaries[i];r.owner_uuid=request.writer_uuid;r.horizon_uuid=issue(UuidKind::object);r.timeline_uuid=timeline;
       h.records.push_back(r);
     }
-    save(maps+horizon,page::EncodeNativeHorizonRoot(h));
+    save(at(horizon),page::EncodeNativeHorizonRoot(h));
+    }
     for(u64 i=maps;i>0;--i) {
       page::NativeAllocationMap map;map.header=images[i].header;map.object_uuid=map_object;
       map.map_generation=map.capacity_generation=1;map.total_pages=total;map.first_page=(i-1)*coverage;
@@ -406,41 +457,49 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
       if(i<maps){map.next=ref(i+1);map.next_sha256=images[i+1].sha256;}
       save(i,page::EncodeNativeAllocationMap(map));
     }
-    NativeCheckpointRoot cp;cp.header=images[maps+checkpoint].header;cp.object_uuid=images[maps+checkpoint].owner;
+    NativeCheckpointRoot cp;
+    if(checkpoint_graph){
+    cp.header=images[at(checkpoint)].header;cp.object_uuid=images[at(checkpoint)].owner;
     cp.checkpoint_generation=cp.root_set_generation=cp.selected_local_transaction_id=1;
     cp.stable_local_transaction_id=cp.local_durable_transaction_id=cp.creator_local_transaction_id=1;
     cp.timeline_uuid=timeline;cp.creator_transaction_uuid=creator;cp.completed=true;
-    const std::array<u64,10> roots{maps+inventory,maps+horizon,maps+directory,1,maps+catalog,
-      maps+configuration,maps+security,maps+system,maps+catalog,maps+retention};
+    const std::array<u64,10> roots{at(inventory),at(horizon),at(directory),1,at(catalog),
+      at(configuration),at(security),at(system),at(catalog),at(retention)};
     for(unsigned i=0;i<roots.size();++i) {
       const auto n=roots[i];const auto& image=images[n];
       cp.roots.push_back({static_cast<u16>(i+1),image.header.page_type,ref(n),image.owner,image.sha256});
     }
-    save(maps+checkpoint,EncodeNativeCheckpointRoot(cp));receipt.checkpoint_sha256=images[maps+checkpoint].sha256;
+    save(at(checkpoint),EncodeNativeCheckpointRoot(cp));receipt.checkpoint_sha256=images[at(checkpoint)].sha256;
     for(const auto control:{watermark_first,watermark_second}) {
-      const auto n=maps+control;NativePublicationWatermark w;w.header=images[n].header;
+      const auto n=at(control);NativePublicationWatermark w;w.header=images[n].header;
       w.object_uuid=watermark;w.bootstrap_uuid=receipt.page_zero_uuid;w.timeline_uuid=timeline;
       w.operation_uuid=request.operation_uuid;w.watermark=w.base_checkpoint_generation=w.base_root_set_generation=1;
-      w.base_checkpoint=ref(maps+checkpoint);w.base_checkpoint_object_uuid=cp.object_uuid;
+      w.base_checkpoint=ref(at(checkpoint));w.base_checkpoint_object_uuid=cp.object_uuid;
       w.base_checkpoint_sha256=receipt.checkpoint_sha256;
       save(n,EncodeNativePublicationWatermark(w));
     }
     for(const auto control:{selector_first,selector_second}) {
-      const auto n=maps+control;NativeCheckpointSelection s;s.header=images[n].header;
+      const auto n=at(control);NativeCheckpointSelection s;s.header=images[n].header;
       s.object_uuid=selector;s.bootstrap_uuid=receipt.page_zero_uuid;s.publication_uuid=publication;
-      s.selection_generation=s.checkpoint_generation=s.root_set_generation=1;s.checkpoint=ref(maps+checkpoint);
+      s.selection_generation=s.checkpoint_generation=s.root_set_generation=1;s.checkpoint=ref(at(checkpoint));
       s.checkpoint_object_uuid=cp.object_uuid;s.checkpoint_sha256=receipt.checkpoint_sha256;s.timeline_uuid=timeline;
       save(n,EncodeNativeCheckpointSelection(s));
+    }
     }
     disk::FilespacePageZero zero;zero.bootstrap=b;zero.page_uuid=receipt.page_zero_uuid;
     zero.creation_operation_uuid=request.operation_uuid;zero.writer_identity_uuid=request.writer_uuid;
     zero.page_generation=zero.root_set_generation=1;zero.total_pages=total;zero.free_pages=receipt.free_pages;
     zero.creation_utc_millis=request.creation_utc_millis;
-    const std::array<u64,10> zero_roots{maps+system,maps+catalog,1,maps+inventory,maps+directory,
-      maps+configuration,maps+security,maps+catalog,maps+checkpoint,maps+retention};
-    for(unsigned i=0;i<zero_roots.size();++i)zero.roots.push_back(root(i+1,zero_roots[i]));
-    zero.roots.push_back(root(18,maps+selector_first));zero.roots.push_back(root(19,maps+selector_second));
-    zero.roots.push_back(root(20,maps+watermark_first));zero.roots.push_back(root(21,maps+watermark_second));
+    const std::array<u64,10> zero_roots{at(system),at(catalog),1,at(inventory),at(directory),
+      at(configuration),at(security),at(catalog),at(checkpoint),at(retention)};
+    // The fixed-root graph names kinds 1-8 and 10; kind 9 (checkpoint) and the
+    // selector and watermark pairs (18-21) exist only in the checkpoint graph.
+    for(unsigned i=0;i<zero_roots.size();++i)
+      if(checkpoint_graph||i+1!=9)zero.roots.push_back(root(i+1,zero_roots[i]));
+    if(checkpoint_graph){
+      zero.roots.push_back(root(18,at(selector_first)));zero.roots.push_back(root(19,at(selector_second)));
+      zero.roots.push_back(root(20,at(watermark_first)));zero.roots.push_back(root(21,at(watermark_second)));
+    }
     auto encoded_zero=disk::EncodeFilespacePageZero(zero);
     if(!encoded_zero.ok()) return Fail(
         encoded_zero.error==disk::FilespacePageZeroError::resource_exhausted?E::resource_exhausted:
@@ -471,30 +530,130 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
       n+=pages;
     }
     scratch.resize(size);
-    for(u64 n=1;n<images.size();++n)
-      if(n!=maps+selector_first&&n!=maps+selector_second&&!write(n,images[n].bytes))return Fail(E::io_failure);
-    if(!write(0,images[0].bytes)||!device.Sync().ok())return Fail(E::io_failure);
-    for(u64 n=0;n<total;++n) {
-      const bool dependency=n<images.size()&&(n<maps+selector_first||n>maps+selector_second);
-      const auto error=compare(n,dependency?&images[n].bytes:nullptr);
-      if(error!=E::none){auto failed=Fail(error);failed.failed_page_number=n;return failed;}
-    }
-    for(u64 n=maps+selector_first;n<=maps+selector_second;++n) {
-      if(!write(n,images[n].bytes)||!device.Sync().ok())return Fail(E::io_failure);
-      const auto error=compare(n,&images[n].bytes);
-      if(error!=E::none){auto failed=Fail(error);failed.failed_page_number=n;return failed;}
+    if(checkpoint_graph){
+      for(u64 n=1;n<images.size();++n)
+        if(n!=at(selector_first)&&n!=at(selector_second)&&!write(n,images[n].bytes))return Fail(E::io_failure);
+      if(!write(0,images[0].bytes)||!device.Sync().ok())return Fail(E::io_failure);
+      for(u64 n=0;n<total;++n) {
+        const bool dependency=n<images.size()&&(n<at(selector_first)||n>at(selector_second));
+        const auto error=compare(n,dependency?&images[n].bytes:nullptr);
+        if(error!=E::none){auto failed=Fail(error);failed.failed_page_number=n;return failed;}
+      }
+      for(u64 n=at(selector_first);n<=at(selector_second);++n) {
+        if(!write(n,images[n].bytes)||!device.Sync().ok())return Fail(E::io_failure);
+        const auto error=compare(n,&images[n].bytes);
+        if(error!=E::none){auto failed=Fail(error);failed.failed_page_number=n;return failed;}
+      }
+    }else{
+      // SB_NATIVE_FIXED_ROOT_READ: careful write. Every page but page zero,
+      // a barrier and a full readback (page zero still zero); then page zero,
+      // a barrier and its readback. Page zero is the commit point: a file
+      // whose page zero is not complete is not a database.
+      for(u64 n=1;n<images.size();++n)if(!write(n,images[n].bytes))return Fail(E::io_failure);
+      if(!device.Sync().ok())return Fail(E::io_failure);
+      for(u64 n=0;n<total;++n) {
+        const auto error=compare(n,n>0&&n<images.size()?&images[n].bytes:nullptr);
+        if(error!=E::none){auto failed=Fail(error);failed.failed_page_number=n;return failed;}
+      }
+      if(!write(0,images[0].bytes)||!device.Sync().ok())return Fail(E::io_failure);
+      if(const auto error=compare(0,&images[0].bytes);error!=E::none){
+        auto failed=Fail(error);failed.failed_page_number=0;return failed;
+      }
     }
     images.clear();std::vector<byte>().swap(scratch);
     const std::vector<disk::NativeFilespaceDevice> devices{{b.filespace_uuid,b.page_size_profile_uuid,&device}};
-    {const auto selected=ReadNativeBoundCheckpointSelectionFromOpenDevices(b.database_uuid,devices,b.filespace_uuid,budget);
-      if(!selected.ok()) {
-        auto r=Fail(selected.error==NativeCheckpointSelectionError::resource_exhausted?E::resource_exhausted:
-            selected.error==NativeCheckpointSelectionError::hash_failure?E::hash_failure:
-            selected.error==NativeCheckpointSelectionError::io_failure?E::io_failure:E::graph_failure);
-        r.selection_error=selected.error;r.checkpoint_error=selected.checkpoint_error;return r;
+    if(checkpoint_graph){
+      {const auto selected=ReadNativeBoundCheckpointSelectionFromOpenDevices(b.database_uuid,devices,b.filespace_uuid,budget);
+        if(!selected.ok()) {
+          auto r=Fail(selected.error==NativeCheckpointSelectionError::resource_exhausted?E::resource_exhausted:
+              selected.error==NativeCheckpointSelectionError::hash_failure?E::hash_failure:
+              selected.error==NativeCheckpointSelectionError::io_failure?E::io_failure:E::graph_failure);
+          r.selection_error=selected.error;r.checkpoint_error=selected.checkpoint_error;return r;
+        }
+        // Selector admission owns checkpoint/inventory/slot allocations. Bind
+        // every other root and leaf to its actual physical allocation as well.
+        const auto allocated=[&](const auto& target,u32 type,const Uuid& owner)->E {
+          if(target.filespace_uuid!=b.filespace_uuid||target.page_size_profile_uuid!=b.page_size_profile_uuid)return E::graph_failure;
+          std::vector<byte> bytes(size);
+          const auto io=device.ReadAt(target.page_number*size,bytes.data(),bytes.size());
+          if(!io.ok()||io.bytes_transferred!=bytes.size())return E::io_failure;
+          const disk::NativeCommonPageHeaderBinding binding{{b.database_uuid,b.filespace_uuid,b.page_size_profile_uuid},
+            target.page_number,target.page_generation,type,{}};
+          const auto header=disk::DecodeNativeCommonPageHeader(bytes.data(),128,&binding);
+          if(!header.ok())return Cause(header.error);
+          for(const auto& image:selected.allocation.pages)for(const auto& record:image.map->records)
+            if(record.page_number==target.page_number)return
+              image.map->states[record.page_number-image.map->first_page]==page::NativeAllocationState::allocated&&
+              record.owner_uuid==owner&&record.page_uuid==header.header->page_uuid&&record.page_type==type&&
+              record.page_generation==target.page_generation&&record.creator_transaction_uuid==creator&&record.creator_local_transaction_id==1?E::none:E::graph_failure;
+          return E::graph_failure;
+        };
+        for(const auto& r:selected.checkpoint_inventory.checkpoint->roots)
+          if(const auto error=allocated(r.page,r.page_type,r.object_uuid);error!=E::none){auto failed=Fail(error);failed.failed_page_number=r.page.page_number;return failed;}
+        for(const auto& r:receipt.relations)
+          if(const auto error=allocated(r.page,r.page_type,r.object_uuid);error!=E::none){auto failed=Fail(error);failed.failed_page_number=r.page.page_number;return failed;}
+        for(unsigned i=0;i<layouts.size();++i) {
+          for(const auto n:layouts[i].bases)
+            if(const auto error=allocated(ref(n),6,receipt.relation_uuids[i]);error!=E::none){auto failed=Fail(error);failed.failed_page_number=n;return failed;}
+          for(const auto n:layouts[i].navigation)
+            if(const auto error=allocated(ref(n),0x202,receipt.index_dependencies[i]->index_uuid);error!=E::none){auto failed=Fail(error);failed.failed_page_number=n;return failed;}
+          for(const auto& level:layouts[i].branches)for(const auto n:level)
+            if(const auto error=allocated(ref(n),0x201,receipt.index_dependencies[i]->index_uuid);error!=E::none){auto failed=Fail(error);failed.failed_page_number=n;return failed;}
+        }
+        for(const auto control:{watermark_first,watermark_second}) {
+          const auto n=at(control);std::vector<byte> bytes(size);
+          const auto io=device.ReadAt(n*size,bytes.data(),bytes.size());
+          if(!io.ok()||io.bytes_transferred!=bytes.size())return Fail(E::io_failure);
+          const auto actual=DecodeNativePublicationWatermark(bytes);
+          if(!actual.ok())return Fail(actual.error==NativePublicationWatermarkError::hash_failure?E::hash_failure:
+            actual.error==NativePublicationWatermarkError::resource_exhausted?E::resource_exhausted:E::graph_failure);
+          NativePublicationWatermark expected;expected.header=actual.state->header;
+          expected.object_uuid=watermark;expected.bootstrap_uuid=receipt.page_zero_uuid;expected.timeline_uuid=timeline;
+          expected.operation_uuid=request.operation_uuid;expected.watermark=expected.base_checkpoint_generation=expected.base_root_set_generation=1;
+          expected.base_checkpoint=ref(at(checkpoint));expected.base_checkpoint_object_uuid=cp.object_uuid;
+          expected.base_checkpoint_sha256=receipt.checkpoint_sha256;
+          const auto encoded=EncodeNativePublicationWatermark(expected);
+          if(!encoded.ok())return Fail(encoded.error==NativePublicationWatermarkError::hash_failure?E::hash_failure:
+            encoded.error==NativePublicationWatermarkError::resource_exhausted?E::resource_exhausted:E::graph_failure);
+          if(encoded.bytes!=bytes)return Fail(E::graph_failure);
+          if(const auto error=allocated(ref(n),0x500,watermark);error!=E::none)return Fail(error);
+        }
       }
-      // Selector admission owns checkpoint/inventory/slot allocations. Bind
-      // every other root and leaf to its actual physical allocation as well.
+      // Each owning reader obtains evidence from the actual selected graph;
+      // results are released between families instead of multiplying the budget.
+      const auto graph_error=[&](const auto& result)->std::optional<NativeCreationWorkspaceResult> {
+        if(result.ok())return {};
+        auto r=Fail(GraphCause(result));
+        r.checkpoint_error=result.error;return r;
+      };
+      if(auto r=graph_error(VerifyCurrentNativeCheckpointAllocationFromOpenDevices(b.database_uuid,devices,*receipt.checkpoint,budget)))return *r;
+      if(auto r=graph_error(VerifyNativeCheckpointPolicyRootsFromOpenDevices(b.database_uuid,devices,*receipt.checkpoint,budget)))return *r;
+      if(auto r=graph_error(VerifyCurrentNativeCheckpointDirectoryFromOpenDevices(b.database_uuid,devices,*receipt.checkpoint,budget)))return *r;
+      if(auto r=graph_error(VerifyCurrentNativeCheckpointSystemStateFromOpenDevices(b.database_uuid,devices,*receipt.checkpoint,budget)))return *r;
+      if(auto r=graph_error(VerifyCurrentNativeCheckpointHorizonFromOpenDevices(b.database_uuid,devices,*receipt.checkpoint,budget)))return *r;
+    }else{
+      // SB_NATIVE_FIXED_ROOT_READ: read the file back the way the server does.
+      // The backed fixed-root lease verifies page zero, the in-place inventory,
+      // the allocation chain and the directory, and binds every fixed root to
+      // an allocated page of its type and object created by a committed
+      // transaction. Every catalog relation page is then bound to its own
+      // allocation record, and every relation is read through page zero below.
+      if(budget>(std::numeric_limits<std::size_t>::max()-(std::size_t{1}<<20))/2)return Fail(E::resource_exhausted);
+      const std::size_t backing_bytes=static_cast<std::size_t>(budget)*2+(std::size_t{1}<<20);
+      std::unique_ptr<byte[]> backing(new byte[backing_bytes]);
+      auto fixed=AcquireNativeFixedRootBackedLease(b.database_uuid,devices,b.filespace_uuid,
+          {budget,backing_bytes},{backing.get(),backing_bytes});
+      if(!fixed.ok()) {
+        struct {NativeFixedRootMemoryError fixed_root_error;disk::FilespacePageZeroError page_zero_error;
+          page::NativeInventoryError inventory_error;page::NativeAllocationError allocation_error;
+          page::NativeDirectoryError directory_error;} findings{fixed.error,fixed.page_zero_error,fixed.inventory_error,
+          fixed.allocation_error,fixed.directory_error};
+        return Fail(FixedRootCause(findings));
+      }
+      const auto& lease=*fixed.lease;
+      if(lease.identity().page_zero_uuid!=receipt.page_zero_uuid||lease.identity().filespace_uuid!=b.filespace_uuid||
+          lease.identity().database_uuid!=b.database_uuid)return Fail(E::graph_failure);
+      for(const auto& r:lease.roots())if(r.kind==9||r.kind>10)return Fail(E::graph_failure);
       const auto allocated=[&](const auto& target,u32 type,const Uuid& owner)->E {
         if(target.filespace_uuid!=b.filespace_uuid||target.page_size_profile_uuid!=b.page_size_profile_uuid)return E::graph_failure;
         std::vector<byte> bytes(size);
@@ -504,15 +663,11 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
           target.page_number,target.page_generation,type,{}};
         const auto header=disk::DecodeNativeCommonPageHeader(bytes.data(),128,&binding);
         if(!header.ok())return Cause(header.error);
-        for(const auto& image:selected.allocation.pages)for(const auto& record:image.map->records)
-          if(record.page_number==target.page_number)return
-            image.map->states[record.page_number-image.map->first_page]==page::NativeAllocationState::allocated&&
-            record.owner_uuid==owner&&record.page_uuid==header.header->page_uuid&&record.page_type==type&&
-            record.page_generation==target.page_generation&&record.creator_transaction_uuid==creator&&record.creator_local_transaction_id==1?E::none:E::graph_failure;
-        return E::graph_failure;
+        const auto* record=detail::NativeFixedRootRecord(lease.allocation(),target.page_number);
+        return record&&record->owner_uuid==owner&&record->page_uuid==header.header->page_uuid&&record->page_type==type&&
+            record->page_generation==target.page_generation&&record->creator_transaction_uuid==creator&&
+            record->creator_local_transaction_id==1&&record->creator_operation_uuid.is_nil()?E::none:E::graph_failure;
       };
-      for(const auto& r:selected.checkpoint_inventory.checkpoint->roots)
-        if(const auto error=allocated(r.page,r.page_type,r.object_uuid);error!=E::none){auto failed=Fail(error);failed.failed_page_number=r.page.page_number;return failed;}
       for(const auto& r:receipt.relations)
         if(const auto error=allocated(r.page,r.page_type,r.object_uuid);error!=E::none){auto failed=Fail(error);failed.failed_page_number=r.page.page_number;return failed;}
       for(unsigned i=0;i<layouts.size();++i) {
@@ -523,37 +678,9 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
         for(const auto& level:layouts[i].branches)for(const auto n:level)
           if(const auto error=allocated(ref(n),0x201,receipt.index_dependencies[i]->index_uuid);error!=E::none){auto failed=Fail(error);failed.failed_page_number=n;return failed;}
       }
-      for(const auto control:{watermark_first,watermark_second}) {
-        const auto n=maps+control;std::vector<byte> bytes(size);
-        const auto io=device.ReadAt(n*size,bytes.data(),bytes.size());
-        if(!io.ok()||io.bytes_transferred!=bytes.size())return Fail(E::io_failure);
-        const auto actual=DecodeNativePublicationWatermark(bytes);
-        if(!actual.ok())return Fail(actual.error==NativePublicationWatermarkError::hash_failure?E::hash_failure:
-          actual.error==NativePublicationWatermarkError::resource_exhausted?E::resource_exhausted:E::graph_failure);
-        NativePublicationWatermark expected;expected.header=actual.state->header;
-        expected.object_uuid=watermark;expected.bootstrap_uuid=receipt.page_zero_uuid;expected.timeline_uuid=timeline;
-        expected.operation_uuid=request.operation_uuid;expected.watermark=expected.base_checkpoint_generation=expected.base_root_set_generation=1;
-        expected.base_checkpoint=ref(maps+checkpoint);expected.base_checkpoint_object_uuid=cp.object_uuid;
-        expected.base_checkpoint_sha256=receipt.checkpoint_sha256;
-        const auto encoded=EncodeNativePublicationWatermark(expected);
-        if(!encoded.ok())return Fail(encoded.error==NativePublicationWatermarkError::hash_failure?E::hash_failure:
-          encoded.error==NativePublicationWatermarkError::resource_exhausted?E::resource_exhausted:E::graph_failure);
-        if(encoded.bytes!=bytes)return Fail(E::graph_failure);
-        if(const auto error=allocated(ref(n),0x500,watermark);error!=E::none)return Fail(error);
-      }
     }
-    // Each owning reader obtains evidence from the actual selected graph;
-    // results are released between families instead of multiplying the budget.
-    const auto graph_error=[&](const auto& result)->std::optional<NativeCreationWorkspaceResult> {
-      if(result.ok())return {};
-      auto r=Fail(GraphCause(result));
-      r.checkpoint_error=result.error;return r;
-    };
-    if(auto r=graph_error(VerifyCurrentNativeCheckpointAllocationFromOpenDevices(b.database_uuid,devices,receipt.checkpoint,budget)))return *r;
-    if(auto r=graph_error(VerifyNativeCheckpointPolicyRootsFromOpenDevices(b.database_uuid,devices,receipt.checkpoint,budget)))return *r;
-    if(auto r=graph_error(VerifyCurrentNativeCheckpointDirectoryFromOpenDevices(b.database_uuid,devices,receipt.checkpoint,budget)))return *r;
-    if(auto r=graph_error(VerifyCurrentNativeCheckpointSystemStateFromOpenDevices(b.database_uuid,devices,receipt.checkpoint,budget)))return *r;
-    if(auto r=graph_error(VerifyCurrentNativeCheckpointHorizonFromOpenDevices(b.database_uuid,devices,receipt.checkpoint,budget)))return *r;
+    const NativeCatalogSource catalog_source=checkpoint_graph?NativeCatalogSource(*receipt.checkpoint):
+        NativeCatalogSource::PageZero(b.filespace_uuid);
     for(std::size_t i=0;i<receipt.relations.size();++i) {
       const auto& relation=receipt.relations[i];
       if(!receipt.index_dependencies[i]) {
@@ -565,7 +692,7 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
       }
       if(receipt.catalog_rows[i]||receipt.index_dependencies[i]) {
         const auto committed=ReadNativeCommittedCatalogVersionsFromOpenDevices(b.database_uuid,
-          devices,receipt.checkpoint,2,static_cast<u16>(i+1),
+          devices,catalog_source,2,static_cast<u16>(i+1),
           {receipt.relation_uuids[i],receipt.index_dependencies[i]},budget);
         if(!committed.ok()||committed.rows.size()!=receipt.catalog_rows[i]) {
           auto failed=Fail(committed.error==NativePinnedCatalogReadError::resource_exhausted?E::resource_exhausted:
@@ -583,6 +710,7 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
           if(failed.error==E::graph_failure)failed.error=Cause(committed.source.relation.error);
           if(failed.error==E::graph_failure)failed.error=Cause(committed.source.relation.tree_error);
           if(failed.error==E::graph_failure)failed.error=Cause(committed.source.relation.leaf_error);
+          if(failed.error==E::graph_failure&&committed.source.page_zero_source)failed.error=FixedRootCause(committed.source);
           return failed;
         }
       }

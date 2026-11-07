@@ -2360,6 +2360,10 @@ NativeCheckpointCatalogRelationResult ReadNativeCheckpointCatalogRelationFromOpe
         r.fixed_root_error = result.fixed_root_error;
         r.page_zero_error = result.page_zero_error;
         r.fixed_root_kind = result.fixed_root_kind;
+        r.inventory_error = result.inventory_error;
+        r.allocation_error = result.allocation_error;
+        r.directory_error = result.directory_error;
+        r.catalog_root_error = result.catalog_root_error;
         return r;
       };
       const auto on = [&](const scratchbird::core::platform::Uuid& filespace) -> const disk::NativeFilespaceDevice* {
@@ -2379,6 +2383,9 @@ NativeCheckpointCatalogRelationResult ReadNativeCheckpointCatalogRelationFromOpe
       result.fixed_root_error = fixed.error;
       result.page_zero_error = fixed.page_zero_error;
       result.fixed_root_kind = fixed.root_kind;
+      result.inventory_error = fixed.inventory_error;
+      result.allocation_error = fixed.allocation_error;
+      result.directory_error = fixed.directory_error;
       if (!fixed.ok()) {
         using F = NativeFixedRootMemoryError;
         return refused(fixed.error == F::resource_exhausted || fixed.error == F::memory_allocation_failure
@@ -2401,6 +2408,7 @@ NativeCheckpointCatalogRelationResult ReadNativeCheckpointCatalogRelationFromOpe
         auto image = scratchbird::storage::page::ReadNativeCatalogRootFromOpenDevice(*device->device, database_uuid, *ref);
         if (!image.ok()) {
           result.fixed_root_kind = kind;
+          result.catalog_root_error = image.error;
           return image.error == scratchbird::storage::page::NativeCatalogRootError::io_failure ? E::io_failure
                : image.error == scratchbird::storage::page::NativeCatalogRootError::resource_exhausted
                    ? E::resource_exhausted

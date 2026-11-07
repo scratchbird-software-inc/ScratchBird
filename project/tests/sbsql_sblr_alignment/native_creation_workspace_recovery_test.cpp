@@ -49,7 +49,10 @@ db::NativeFilespaceInitializationRequest Request(unsigned profile=0,u64 total=22
   r.bootstrap={Id(1),Id(2),p.uuid,disk::kNativeBootstrapIntegrityProfile,{},p.page_size_bytes,1,0,1,7};
   r.operation_uuid=Id(3);r.writer_uuid=Id(4);r.policy_snapshot_uuid=Id(10);r.creator.transaction_uuid={UuidKind::transaction,Id(5)};
   r.creator.local_id=mga::MakeLocalTransactionId(1);r.creator.scope=mga::TransactionScope::local_node;
-  r.total_pages=total;r.creation_utc_millis=1789357072000ULL;return r;
+  r.total_pages=total;r.creation_utc_millis=1789357072000ULL;
+  // SB_TRANSITIONAL_CHECKPOINT_GRAPH: create recovery repairs the drift-era
+  // selector pair; it and this test are removed in R3c (owner Q12 = 1).
+  r.genesis_graph=db::NativeCreationGenesisGraph::transitional_checkpoint;return r;
 }
 struct Fixture {
   fs::path directory;unsigned serial=0;

@@ -3,7 +3,9 @@
 // Included after the real-file fixture and indexed seed builders.
 namespace {
 void NativeIndexedRecoveryNegativeChecks() {
-  const auto request=Request(0,128);const auto seed=DenseIndexedCatalogSeed(request,136);
+  // SB_TRANSITIONAL_CHECKPOINT_GRAPH: negatives of create recovery (selector
+  // repair of the drift-era graph), removed in R3c (owner Q12 = 1).
+  auto request=Request(0,128);request.genesis_graph=db::NativeCreationGenesisGraph::transitional_checkpoint;const auto seed=DenseIndexedCatalogSeed(request,136);
   const auto indexes=IndexedConstructionBindings();const u64 size=request.bootstrap.page_size_bytes,budget=256*size;
   Fixture fixture;disk::FileDevice d;const auto path=fixture.Next();
   Check(d.Open(path.string(),disk::FileOpenMode::create_new).ok(),"indexed negative actual owner");
@@ -136,35 +138,45 @@ void NativeIndexedCreationFailureChecks(unsigned shard,unsigned first_allocation
           "required construction allocation failure is a typed refusal, never a partial receipt");
     }
   }
+  // SB_TRANSITIONAL_CHECKPOINT_GRAPH: the create sweeps above run on the
+  // fixed-root graph. Create recovery (selector repair) and its sweeps below
+  // exist only for the drift-era graph and are removed in R3c (owner Q12 = 1);
+  // until then they run on a checkpoint-graph create of the same request.
+  auto rt=request;rt.genesis_graph=db::NativeCreationGenesisGraph::transitional_checkpoint;
+  disk::FileDevice rd;const auto rpath=measured.Next();
+  Check(rd.Open(rpath.string(),disk::FileOpenMode::create_new).ok(),"recovery fixture owner");
+  Check(db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(rd,rt,seed,indexes,budget,*measured.issuer).ok(),
+      "checkpoint-graph create for the recovery sweeps");
+  const auto recovery_original=Read(rd,0,total_pages*size);
   const std::vector<byte> blank(size,0);
   const auto damage=[&] {
-    Check(d.WriteAt((selector_page+1)*size,blank.data(),blank.size()).ok()&&d.Sync().ok(),"restore exact interrupted selector preimage");
+    Check(rd.WriteAt((selector_page+1)*size,blank.data(),blank.size()).ok()&&rd.Sync().ok(),"restore exact interrupted selector preimage");
   };
   const auto recover=[&] {
-    return db::RecoverIndexedNativeCreationWorkspaceSelectionOnOpenDevice(d,
+    return db::RecoverIndexedNativeCreationWorkspaceSelectionOnOpenDevice(rd,
         {request.bootstrap.database_uuid,request.bootstrap.filespace_uuid,request.bootstrap.page_size_profile_uuid},
         request.operation_uuid,seed,indexes,budget);
   };
   damage();Check(recover().ok(),"warm original indexed recovery");damage();
   Arm();allocations=0;allocation_fault=0;count_allocations=true;
   const auto repaired=recover();count_allocations=false;Disarm();
-  Check(repaired.ok()&&Read(d,0,original.size())==original,"indexed recovery fault baseline restores exact original graph");
+  Check(repaired.ok()&&Read(rd,0,recovery_original.size())==recovery_original,"indexed recovery fault baseline restores exact original graph");
   const auto recover_counts=calls;const unsigned recover_allocations=allocations;
   for(unsigned mode=1;mode<=5;++mode) {
     if(mode%4!=shard)continue;
-    damage();const auto before=Read(d,0,original.size());Arm();context_fault=mode;
+    damage();const auto before=Read(rd,0,recovery_original.size());Arm();context_fault=mode;
     const auto refused=recover();context_fault=0;Disarm();
     Check(!refused.ok()&&!refused.receipt&&refused.error==db::NativeCreationRecoveryError::hash_failure&&
-        !calls[write_call]&&Read(d,0,original.size())==before,"multipart hash refusal preserves original indexed recovery preimage");
+        !calls[write_call]&&Read(rd,0,recovery_original.size())==before,"multipart hash refusal preserves original indexed recovery preimage");
   }
   for(unsigned at=1;at<=recover_counts[read_call];++at) {
     if(at%4!=shard)continue;
     damage();Arm();corrupt_at=at;const auto refused=recover();Disarm();corrupt_at=0;
     Check(!refused.ok()&&!refused.receipt,"every corrupted read or readback prevents a recovery completion receipt");
-    const auto after=Read(d,0,original.size());const auto begin=(selector_page+1)*size,end=begin+size;
-    Check(std::equal(after.begin(),after.begin()+begin,original.begin())&&
-        std::equal(after.begin()+end,after.end(),original.begin()+end),"read corruption never alters original non-selector graph");
-    Check(recover().ok()&&Read(d,0,original.size())==original,"corruption retry reconciles actual selector effects");
+    const auto after=Read(rd,0,recovery_original.size());const auto begin=(selector_page+1)*size,end=begin+size;
+    Check(std::equal(after.begin(),after.begin()+begin,recovery_original.begin())&&
+        std::equal(after.begin()+end,after.end(),recovery_original.begin()+end),"read corruption never alters original non-selector graph");
+    Check(recover().ok()&&Read(rd,0,recovery_original.size())==recovery_original,"corruption retry reconciles actual selector effects");
   }
   for(unsigned kind=0;kind<call_count;++kind)for(unsigned at=1;at<=recover_counts[kind];++at) {
     if(at%4!=shard)continue;
@@ -181,19 +193,19 @@ void NativeIndexedCreationFailureChecks(unsigned shard,unsigned first_allocation
     if(kind==hash_call)
       Check(refused.error==db::NativeCreationRecoveryError::hash_failure,
           "recovery hash backend failure retains its exact typed cause");
-    const auto after=Read(d,0,original.size());
+    const auto after=Read(rd,0,recovery_original.size());
     const auto begin=(selector_page+1)*size,end=begin+size;
-    Check(std::equal(after.begin(),after.begin()+begin,original.begin())&&
-        std::equal(after.begin()+end,after.end(),original.begin()+end),"failed recovery never changes non-selector dependencies");
-    Check(recover().ok()&&Read(d,0,original.size())==original,"retry reconciles retained selector effects without fresh identities or pages");
+    Check(std::equal(after.begin(),after.begin()+begin,recovery_original.begin())&&
+        std::equal(after.begin()+end,after.end(),recovery_original.begin()+end),"failed recovery never changes non-selector dependencies");
+    Check(recover().ok()&&Read(rd,0,recovery_original.size())==recovery_original,"retry reconciles retained selector effects without fresh identities or pages");
   }
   for(unsigned at=1;at<=recover_allocations;++at) {
     if(at%4!=shard)continue;
-    damage();const auto lost=d.failed_io_latency_observations();
+    damage();const auto lost=rd.failed_io_latency_observations();
     allocations=0;allocation_fault=at;count_allocations=true;
     const auto result=recover();count_allocations=false;allocation_fault=0;
     Check(allocations>=at,"indexed recovery allocation site is actually exercised");
-    if(result.ok())Check(d.failed_io_latency_observations()==lost+1&&Read(d,0,original.size())==original,
+    if(result.ok())Check(rd.failed_io_latency_observations()==lost+1&&Read(rd,0,recovery_original.size())==recovery_original,
         "only recorded observation loss permits a fully reconciled recovery success");
     else {
       if(result.error!=db::NativeCreationRecoveryError::resource_exhausted)
@@ -201,12 +213,12 @@ void NativeIndexedCreationFailureChecks(unsigned shard,unsigned first_allocation
       Check(!result.receipt&&result.error==db::NativeCreationRecoveryError::resource_exhausted,
           "every required recovery allocation failure returns no completion receipt");
     }
-    const auto after=Read(d,0,original.size());const auto begin=(selector_page+1)*size,end=begin+size;
-    Check(std::equal(after.begin(),after.begin()+begin,original.begin())&&
-        std::equal(after.begin()+end,after.end(),original.begin()+end),"allocation refusal preserves every dependency image");
-    Check(recover().ok()&&Read(d,0,original.size())==original,"allocation-fault recovery retry is exact and idempotent");
+    const auto after=Read(rd,0,recovery_original.size());const auto begin=(selector_page+1)*size,end=begin+size;
+    Check(std::equal(after.begin(),after.begin()+begin,recovery_original.begin())&&
+        std::equal(after.begin()+end,after.end(),recovery_original.begin()+end),"allocation refusal preserves every dependency image");
+    Check(recover().ok()&&Read(rd,0,recovery_original.size())==recovery_original,"allocation-fault recovery retry is exact and idempotent");
   }
-  Check(d.Close().ok(),"close indexed fault owner");
+  Check(rd.Close().ok(),"close indexed fault owner");
   std::cout<<"indexed faults shard="<<shard<<" create_allocations="<<create_allocations
       <<" recovery_allocations="<<recover_allocations<<" first_allocation="<<first_allocation<<'\n';
 }

@@ -208,23 +208,34 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     const auto refused=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(r.bootstrap.database_uuid,devices,
         db::NativeCatalogSource::PageZero(made.receipt->filespace_uuid),2,1,{Id(20000),stale},budget);
     Check(!refused.ok(),"stale navigation binding cannot read indexed catalog");
-    const auto first=Read(device,selector_page,page_bytes),second=Read(device,selector_page+1,page_bytes);
+    {
+    // SB_TRANSITIONAL_CHECKPOINT_GRAPH: create recovery repairs the drift-era
+    // selector pair and is removed in R3c (owner Q12 = 1); until then these
+    // checks run on a checkpoint-graph create of the same request and seed.
+    // The fixed-root create above writes no selector.
+    Check(!made.receipt->checkpoint,"a fixed-root create carries no checkpoint");
+    auto rt=r;rt.genesis_graph=db::NativeCreationGenesisGraph::transitional_checkpoint;
+    const auto tpath=fixture.Next();disk::FileDevice tdev;
+    Check(tdev.Open(tpath.string(),disk::FileOpenMode::create_new).ok(),"recovery fixture device");
+    const auto made_t=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(tdev,rt,complete,indexes,budget,*fixture.issuer);
+    Check(made_t.ok()&&made_t.receipt->checkpoint,"checkpoint-graph create for the recovery checks");
+    const auto first=Read(tdev,selector_page,page_bytes),second=Read(tdev,selector_page+1,page_bytes);
     for(unsigned lost=0;lost<2;++lost) {
       const std::vector<byte> blank(page_bytes,0);
-      Check(device.WriteAt((selector_page+lost)*page_bytes,blank.data(),blank.size()).ok()&&device.Sync().ok(),
+      Check(tdev.WriteAt((selector_page+lost)*page_bytes,blank.data(),blank.size()).ok()&&tdev.Sync().ok(),
           "persist interrupted indexed publication with one actual surviving selector");
-      Check(device.Close().ok()&&device.Open(path.string(),disk::FileOpenMode::open_existing).ok(),"reopen interrupted indexed owner");
-      Arm();const auto recovered=db::RecoverIndexedNativeCreationWorkspaceSelectionOnOpenDevice(device,
+      Check(tdev.Close().ok()&&tdev.Open(tpath.string(),disk::FileOpenMode::open_existing).ok(),"reopen interrupted indexed owner");
+      Arm();const auto recovered=db::RecoverIndexedNativeCreationWorkspaceSelectionOnOpenDevice(tdev,
           {r.bootstrap.database_uuid,r.bootstrap.filespace_uuid,r.bootstrap.page_size_profile_uuid},r.operation_uuid,
           complete,indexes,budget);Disarm();
       if(!recovered.ok())std::cerr<<"indexed recovery profile="<<profile<<" error="<<static_cast<unsigned>(recovered.error)<<'\n';
       Check(recovered.ok()&&recovered.repaired_slots==(1u<<lost)&&calls[write_call]==1,
           "complete original indexed graph repairs exactly the lost selector without physical-page allocation or identity reissuance");
       Check(recovered.receipt->relation_uuids[0]==Id(20000)&&recovered.receipt->index_dependencies[0]==deps&&
-          recovered.receipt->catalog_rows[0]==4*loaded.config->families.size()&&recovered.receipt->checkpoint_sha256==made.receipt->checkpoint_sha256&&
-          Read(device,selector_page,page_bytes)==first&&Read(device,selector_page+1,page_bytes)==second,
+          recovered.receipt->catalog_rows[0]==4*loaded.config->families.size()&&recovered.receipt->checkpoint_sha256==made_t.receipt->checkpoint_sha256&&
+          Read(tdev,selector_page,page_bytes)==first&&Read(tdev,selector_page+1,page_bytes)==second,
           "indexed recovery preserves all original bindings, root digest and exact selector bytes");
-      Arm();const auto retry=db::RecoverIndexedNativeCreationWorkspaceSelectionOnOpenDevice(device,
+      Arm();const auto retry=db::RecoverIndexedNativeCreationWorkspaceSelectionOnOpenDevice(tdev,
           {r.bootstrap.database_uuid,r.bootstrap.filespace_uuid,r.bootstrap.page_size_profile_uuid},r.operation_uuid,
           complete,indexes,budget);Disarm();
       Check(retry.ok()&&!retry.repaired_slots&&!calls[write_call],"indexed recovery retry is verified and physically idempotent");
@@ -234,7 +245,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
       fixture.ResetIssuer();disk::FileDevice interrupted;
       if(!interrupted.Open(crash_path.string(),disk::FileOpenMode::create_new).ok())_exit(88);
       Arm();stop_before_second_selector=true;
-      (void)db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(interrupted,r,complete,indexes,budget,*fixture.issuer);
+      (void)db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(interrupted,rt,complete,indexes,budget,*fixture.issuer);
       _exit(89);
     }
     int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==86,
@@ -247,6 +258,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
         complete,indexes,budget);
     Check(recovery.ok()&&recovery.repaired_slots==2&&Read(interrupted,selector_page,page_bytes)==surviving,
         "actual indexed process-loss recovery preserves original surviving publication");
+    }
   }
   for(unsigned which=0;which<8;++which) {
     auto inputs=batch_inputs;auto invalid_definition=*inputs.back().definition;
@@ -332,14 +344,23 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     const auto read=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(boundary_request.bootstrap.database_uuid,devices,
         db::NativeCatalogSource::PageZero(made.receipt->filespace_uuid),2,1,{Id(20000),construction_deps},budget);
     Check(read.ok()&&read.rows.size()==count,"every split base row has actual committed native custody");
-    const auto original_selector=Read(device,selector_page+1,page_bytes);
-    const std::vector<byte> blank(page_bytes,0);
-    Check(device.WriteAt((selector_page+1)*page_bytes,blank.data(),blank.size()).ok()&&device.Sync().ok(),"interrupt actual split-tree publication");
-    const auto recovered=db::RecoverIndexedNativeCreationWorkspaceSelectionOnOpenDevice(device,
-        {boundary_request.bootstrap.database_uuid,boundary_request.bootstrap.filespace_uuid,boundary_request.bootstrap.page_size_profile_uuid},
-        boundary_request.operation_uuid,seed,construction_indexes,budget);
-    Check(recovered.ok()&&recovered.repaired_slots==2&&Read(device,selector_page+1,page_bytes)==original_selector,
-        "original split/fence/sibling graph must fully reconstruct before selector repair");
+    {
+      // SB_TRANSITIONAL_CHECKPOINT_GRAPH: selector repair (create recovery,
+      // removed in R3c) on a checkpoint-graph create of the same boundary.
+      auto rt=boundary_request;rt.genesis_graph=db::NativeCreationGenesisGraph::transitional_checkpoint;
+      disk::FileDevice tdev;const auto tpath=fixture.Next();
+      Check(tdev.Open(tpath.string(),disk::FileOpenMode::create_new).ok(),"boundary recovery fixture owner");
+      Check(db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(tdev,rt,seed,construction_indexes,budget,*fixture.issuer).ok(),
+          "checkpoint-graph boundary create for the recovery check");
+      const auto original_selector=Read(tdev,selector_page+1,page_bytes);
+      const std::vector<byte> blank(page_bytes,0);
+      Check(tdev.WriteAt((selector_page+1)*page_bytes,blank.data(),blank.size()).ok()&&tdev.Sync().ok(),"interrupt actual split-tree publication");
+      const auto recovered=db::RecoverIndexedNativeCreationWorkspaceSelectionOnOpenDevice(tdev,
+          {boundary_request.bootstrap.database_uuid,boundary_request.bootstrap.filespace_uuid,boundary_request.bootstrap.page_size_profile_uuid},
+          boundary_request.operation_uuid,seed,construction_indexes,budget);
+      Check(recovered.ok()&&recovered.repaired_slots==2&&Read(tdev,selector_page+1,page_bytes)==original_selector,
+          "original split/fence/sibling graph must fully reconstruct before selector repair");
+    }
   }
   total_pages=dense_request.total_pages;selector_page=(total_pages+coverage-1)/coverage+16;
   // Case 4 was the two-level cap, (R+1)*L+1 rows. Construction now builds that
@@ -356,7 +377,8 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     const auto deep_seed=DenseIndexedCatalogSeed(request,two_level_maximum+1,40000,2500);
     const auto plan_for=[&](u64 total){return db::detail::PlanNativeCreationCatalogLayout(page_bytes,
         (total+coverage-1)/coverage,total,512*page_bytes,deep_seed,construction_indexes,
-        exhausted_request.inventory_format==db::NativeCreationInventoryFormat::in_place);};
+        exhausted_request.inventory_format==db::NativeCreationInventoryFormat::in_place,
+        exhausted_request.genesis_graph==db::NativeCreationGenesisGraph::transitional_checkpoint);};
     const auto fits=plan_for(exhausted_total),short_one=plan_for(exhausted_total-1);
     Check(fits.ok()&&fits.layout->image_count==exhausted_total&&fits.layout->relations[0].branches.size()==1&&
         short_one.error==db::detail::NativeCreationLayoutError::capacity_exceeded,
@@ -389,7 +411,8 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     for(const auto rows:{db::kNativeHostedCatalogRelationMaximumRows,db::kNativeCatalogScanRelationMaximumRows}) {
       db::NativeCreationCatalogSeed tier;tier[0].assign(rows,fixture_seed[0][1]);
       const auto plan=db::detail::PlanNativeCreationCatalogLayout(size,1,u64{1}<<20,(u64{1}<<20)*size,tier,construction_indexes,
-          request.inventory_format==db::NativeCreationInventoryFormat::in_place);
+          request.inventory_format==db::NativeCreationInventoryFormat::in_place,
+          request.genesis_graph==db::NativeCreationGenesisGraph::transitional_checkpoint);
       Check(plan.ok(),"tier row bound plans at every page size");
       const auto& layout=plan.layout->relations[0];
       u64 planned=1+layout.navigation.size();
@@ -409,8 +432,10 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     }
     const u64 maps=(total_pages+coverage-1)/coverage;
     const u64 navigation=(seed[0].size()+child_capacity-1)/child_capacity;
-    // maps + 20 controls + the transaction header page + catalog pages + two images.
-    const u64 exact=(maps+21+base_pages+navigation+2)*page_bytes;
+    // Page zero, the maps, 13 fixed-root controls and the transaction header
+    // page, then the catalog pages and two images (the drift-era graph had six
+    // more control pages).
+    const u64 exact=(maps+15+base_pages+navigation+2)*page_bytes;
     const auto path=fixture.Next();disk::FileDevice device;
     Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"exact indexed image budget owner");
     Arm();auto refused=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,dense_request,seed,
@@ -495,11 +520,11 @@ void NativeMetricConfigChecks(const fs::path& directory) {
       auto& device=*owner;
       Check(device.Close().ok()&&device.Open(path.string(),disk::FileOpenMode::open_existing).ok(),"close and reopen configured native owner");
       const std::vector<disk::NativeFilespaceDevice> devices{{r.bootstrap.filespace_uuid,r.bootstrap.page_size_profile_uuid,&device}};
-      const auto selected=db::ReadNativeBoundCheckpointSelectionFromOpenDevices(r.bootstrap.database_uuid,devices,r.bootstrap.filespace_uuid,budget);
-      Check(selected.ok(),"configured native selection after reopen");
-      const auto& cp=*selected.checkpoint_inventory.checkpoint;
-      const disk::FilespaceRootReference checkpoint{9,0x300,cp.header.filespace_uuid,cp.header.page_number,cp.header.page_generation,cp.header.page_size_profile_uuid,cp.object_uuid};
-      const auto read=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(r.bootstrap.database_uuid,devices,checkpoint,2,1,relation,budget);
+      // SB_NATIVE_FIXED_ROOT_READ (drift removal R3b3): the reopened file is
+      // read from page zero's fixed roots; it has no checkpoint or selector.
+      Check(!created.receipt->checkpoint,"a fixed-root create carries no checkpoint");
+      const auto read=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(r.bootstrap.database_uuid,devices,
+          db::NativeCatalogSource::PageZero(r.bootstrap.filespace_uuid),2,1,relation,budget);
       Check(read.ok()&&read.rows.size()==4,"actual native configured rows after reopen");
       std::vector<c::CatalogMetricRowView> views;
       for(const auto& row:read.rows)views.push_back({&row.metadata,row.provisional});

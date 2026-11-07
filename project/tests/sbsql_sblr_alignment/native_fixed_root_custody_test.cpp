@@ -53,6 +53,7 @@ namespace d = scratchbird::storage::disk;
 namespace m = scratchbird::core::memory;
 namespace u = scratchbird::core::uuid;
 namespace server = scratchbird::server;
+namespace mga = scratchbird::transaction::mga;
 using namespace scratchbird::core::platform;
 using Host = server::NativeHostedDatabaseCustody;
 using WE = db::NativeWriterError;
@@ -222,34 +223,45 @@ void Differential(unsigned profile) {
   for (const u16 kind : {u16{1}, u16{2}, u16{3}, u16{4}, u16{5}, u16{6}, u16{7}, u16{8}, u16{10}})
     if (const auto* r = fs.Root(kind)) roots[kind] = *r;
   fixed.lease.Reset();
-  // The selected-checkpoint read under the same operation.
-  auto selected = h.operation.ReadWithMemory({256 * n.size, 64u << 20}, h.reading.memory, h.reading.binding);
-  Check(selected.ok(), "the reservation returns when the fixed-root reader retires");
-  const auto ss = db::detail::NativeLeaseSourceAccess::From(selected.lease.source());
-  const auto selected_token = db::NativeReadSourceIdentityFromSelection(*selected.lease.source().selection().selection);
-  Check(selected_token.database_uuid == token.database_uuid && selected_token.filespace_uuid == token.filespace_uuid &&
-            selected_token.page_size_bytes == token.page_size_bytes && !db::SameReadSource(selected_token, token),
-        "both sources are the same database file, but a fixed-root identity never equals a selected one");
+  // Drift removal R3b3: the production create writes no checkpoint, so the
+  // fixed-root read is checked against the file read independently, through
+  // this operation's own bounded I/O, and against the create receipt. (Until
+  // R3b3 it was compared with a selected-checkpoint read under the same
+  // operation; every root, the inventory, the allocation chain and the
+  // directory agreed.)
+  {
+    auto next = h.ReadFixed();
+    Check(next.ok(), "the reservation returns when the fixed-root reader retires");
+  }
+  std::vector<byte> zero_bytes(n.size);
+  Check(h.operation.ReadAtBounded(n.receipt.filespace_uuid, n.profile, 0, zero_bytes).ok(),
+        "page zero read straight from the file");
+  const auto zero = d::DecodeFilespacePageZero(zero_bytes.data(), zero_bytes.size());
+  Check(zero.ok() && zero.record->page_uuid == id.page_zero_uuid &&
+            zero.record->bootstrap.database_uuid == n.receipt.database_uuid &&
+            zero.record->bootstrap.filespace_uuid == n.receipt.filespace_uuid,
+        "the decoded page zero is the one the fixed-root read names");
+  Check(std::none_of(zero.record->roots.begin(), zero.record->roots.end(),
+                     [](const auto& r) { return r.kind == 9 || (r.kind >= 18 && r.kind <= 21); }),
+        "page zero names no checkpoint, selector or watermark root");
   for (const u16 kind : {u16{1}, u16{2}, u16{3}, u16{4}, u16{5}, u16{6}, u16{7}, u16{8}, u16{10}}) {
     Check(roots[kind].has_value(), "every fixed root is present");
-    const auto* y = ss.Root(kind);
-    Check(y && y->page_type == roots[kind]->page_type && y->page == roots[kind]->page &&
-              y->object_uuid == roots[kind]->object_uuid,
-          "both sources name the same page for every fixed root");
+    const auto stored = std::find_if(zero.record->roots.begin(), zero.record->roots.end(),
+                                     [&](const auto& r) { return r.kind == kind; });
+    Check(stored != zero.record->roots.end() && stored->page_type == roots[kind]->page_type &&
+              roots[kind]->page == d::NativePageReference{stored->filespace_uuid, stored->page_number,
+                                                          stored->page_generation, stored->page_size_profile_uuid} &&
+              stored->object_uuid == roots[kind]->object_uuid,
+          "the fixed-root read names exactly the page page zero stores for every root");
   }
-  const auto& si = *ss.inventory;
-  Check(si.next_local_transaction_id == inventory.next_local_transaction_id &&
-            si.next_commit_sequence == inventory.next_commit_sequence && si.entries.size() == entries.size() &&
-            std::equal(entries.begin(), entries.end(), si.entries.begin(),
-                       [](const auto& a, const auto& b) {
-                         return a.identity.transaction_uuid.value == b.identity.transaction_uuid.value &&
-                                a.identity.local_id.value == b.identity.local_id.value && a.state == b.state;
-                       }),
-        "both sources read the same transaction inventory");
-  Check(ss.allocation->pages.size() == allocation_pages && ss.directory->pages.front().directory.total_records ==
-                                                              directory_records,
-        "both sources read the same allocation chain and directory");
-  selected.lease.Reset();
+  Check(inventory.next_local_transaction_id == 2 && entries.size() == 1 &&
+            entries.front().identity.local_id.value == 1 &&
+            entries.front().identity.transaction_uuid.value ==
+                n.receipt.construction_transaction.transaction_uuid.value &&
+            mga::HasCommittedInventoryOutcome(entries.front()),
+        "the inventory holds exactly the committed construction transaction");
+  Check(allocation_pages == n.receipt.workspace.map_pages && directory_records == 1,
+        "the allocation chain is the created maps; the directory holds the one filespace");
   // The observation keeps the images but retires the guards and the
   // reservation: the same operation can now do bounded I/O.
   auto observed = h.operation.ObserveFixedRootWithMemory(h.Limits(), h.reading.memory, h.reading.binding);

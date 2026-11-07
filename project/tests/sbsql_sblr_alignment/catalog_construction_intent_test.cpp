@@ -204,26 +204,47 @@ void Physical(){
         {made.receipt->relations[0].object_uuid,{}},budget);
     Check(rows.ok()&&rows.rows.size()==1&&rows.rows[0].metadata.record.payload==expected&&
         c::CatalogConstructionIntentMatchesMetadata(c::BorrowCatalogMetadataVersion(rows.rows[0].metadata)),"exact typed event/self-anchor persists and reopens");
-    const d::FilespaceBootstrapBinding binding{request.bootstrap.database_uuid,request.bootstrap.filespace_uuid,request.bootstrap.page_size_profile_uuid};
-    const auto recovered=db::RecoverPopulatedNativeCreationWorkspaceSelectionOnOpenDevice(device,binding,request.operation_uuid,seed,budget);
-    Check(recovered.ok()&&!recovered.repaired_slots,"recovery validates exact retained original intent");
-    // Resolve the actual second-selector root. Allocation-map count differs
-    // by page profile; a constant page18 would corrupt a different dependency.
-    const auto before_cut=d::ReadFilespacePageZeroFromOpenDevice(device);Check(before_cut.ok(),"actual native root directory before recovery cut");
-    const auto second=std::find_if(before_cut.record->roots.begin(),before_cut.record->roots.end(),[](const auto& root){return root.kind==19;});
-    Check(second!=before_cut.record->roots.end(),"actual second selector exists");
-    std::vector<p::byte> missing_selector(profile.page_size_bytes,0);
-    Check(device.WriteAt(second->page_number*p::u64{profile.page_size_bytes},missing_selector.data(),missing_selector.size()).ok()&&device.Sync().ok(),
-        "simulate interrupted second selector with real retained first selection");
-    auto changed_seed=seed;auto changed=*acquired.event;++changed.event_time_utc_us;changed_seed[0][0].metadata.record.payload=Golden(changed);
-    const auto refused=db::RecoverPopulatedNativeCreationWorkspaceSelectionOnOpenDevice(device,binding,request.operation_uuid,changed_seed,budget);
-    Check(!refused.ok(),"recovery cannot replace retained event with fresh intent");
-    const auto repaired=db::RecoverPopulatedNativeCreationWorkspaceSelectionOnOpenDevice(device,binding,request.operation_uuid,seed,budget);
-    Check(repaired.ok()&&repaired.repaired_slots==2,"original event/cohort alone repairs missing second selector");
-    const auto retained=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(f::Id(1),devices,db::NativeCatalogSource::PageZero(repaired.receipt->filespace_uuid),2,1,
-        {repaired.receipt->relations[0].object_uuid,{}},budget);
-    Check(retained.ok()&&retained.rows.size()==1&&retained.rows[0].metadata.record.payload==expected,
-        "recovery retains original binary event identity/time/non-evaluation, not new success evidence");
+    // SB_NATIVE_FIXED_ROOT_READ (drift removal R3b3): the production graph
+    // declares no checkpoint, selector or watermark root.
+    {
+      const auto fixed_zero=d::ReadFilespacePageZeroFromOpenDevice(device);
+      Check(fixed_zero.ok()&&std::none_of(fixed_zero.record->roots.begin(),fixed_zero.record->roots.end(),
+          [](const auto& root){return root.kind==9||(root.kind>=18&&root.kind<=21);}),
+          "a fixed-root create declares no checkpoint, selector or watermark root");
+    }
+    {
+      // SB_TRANSITIONAL_CHECKPOINT_GRAPH: create recovery repairs the drift-era
+      // selector pair and is removed in R3c (owner Q12 = 1); until then it
+      // runs on a checkpoint-graph create of the same request and seed.
+      auto recovery_request=request;
+      recovery_request.genesis_graph=db::NativeCreationGenesisGraph::transitional_checkpoint;
+      const auto recovery_path=path+".checkpoint-graph";d::FileDevice t;
+      Check(t.Open(recovery_path,d::FileOpenMode::create_new).ok(),"recovery fixture owned file");
+      Check(db::InitializePopulatedNativeCreationWorkspaceOnOpenDevice(t,recovery_request,seed,budget,issuer).ok(),
+          "checkpoint-graph create for the recovery checks");
+      const std::vector<d::NativeFilespaceDevice> t_devices{{f::Id(2),profile.uuid,&t}};
+      const d::FilespaceBootstrapBinding binding{request.bootstrap.database_uuid,request.bootstrap.filespace_uuid,request.bootstrap.page_size_profile_uuid};
+      const auto recovered=db::RecoverPopulatedNativeCreationWorkspaceSelectionOnOpenDevice(t,binding,request.operation_uuid,seed,budget);
+      Check(recovered.ok()&&!recovered.repaired_slots,"recovery validates exact retained original intent");
+      // Resolve the actual second-selector root. Allocation-map count differs
+      // by page profile; a constant page18 would corrupt a different dependency.
+      const auto before_cut=d::ReadFilespacePageZeroFromOpenDevice(t);Check(before_cut.ok(),"actual native root directory before recovery cut");
+      const auto second=std::find_if(before_cut.record->roots.begin(),before_cut.record->roots.end(),[](const auto& root){return root.kind==19;});
+      Check(second!=before_cut.record->roots.end(),"actual second selector exists");
+      std::vector<p::byte> missing_selector(profile.page_size_bytes,0);
+      Check(t.WriteAt(second->page_number*p::u64{profile.page_size_bytes},missing_selector.data(),missing_selector.size()).ok()&&t.Sync().ok(),
+          "simulate interrupted second selector with real retained first selection");
+      auto changed_seed=seed;auto changed=*acquired.event;++changed.event_time_utc_us;changed_seed[0][0].metadata.record.payload=Golden(changed);
+      const auto refused=db::RecoverPopulatedNativeCreationWorkspaceSelectionOnOpenDevice(t,binding,request.operation_uuid,changed_seed,budget);
+      Check(!refused.ok(),"recovery cannot replace retained event with fresh intent");
+      const auto repaired=db::RecoverPopulatedNativeCreationWorkspaceSelectionOnOpenDevice(t,binding,request.operation_uuid,seed,budget);
+      Check(repaired.ok()&&repaired.repaired_slots==2,"original event/cohort alone repairs missing second selector");
+      const auto retained=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(f::Id(1),t_devices,db::NativeCatalogSource::PageZero(repaired.receipt->filespace_uuid),2,1,
+          {repaired.receipt->relations[0].object_uuid,{}},budget);
+      Check(retained.ok()&&retained.rows.size()==1&&retained.rows[0].metadata.record.payload==expected,
+          "recovery retains original binary event identity/time/non-evaluation, not new success evidence");
+      Check(t.Close().ok(),"recovery fixture released");
+    }
     const auto zero=d::ReadFilespacePageZeroFromOpenDevice(device);
     Check(zero.ok()&&zero.record->bootstrap.lifecycle_state==7,"retained event is not activation or serving proof");
     Check(device.Close().ok(),"private device released");

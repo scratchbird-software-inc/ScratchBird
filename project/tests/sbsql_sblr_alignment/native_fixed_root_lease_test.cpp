@@ -122,6 +122,10 @@ struct Node {
     request.creation_utc_millis = 1789357072000ULL;
     request.total_pages = 64;
     request.inventory_format = format;
+    // SB_TRANSITIONAL_CHECKPOINT_GRAPH: the legacy inventory exists only in the
+    // drift-era graph; the fixed-root lease must refuse it.
+    if (format == db::NativeCreationInventoryFormat::transitional_legacy)
+      request.genesis_graph = db::NativeCreationGenesisGraph::transitional_checkpoint;
     Check(device.Open(path.string(), d::FileOpenMode::create_new).ok(), "node device");
     scratchbird::core::uuid::StandaloneUuidV7Issuer issuer({Id(1), Id(10)}, {{}, 0, 1000});
     Check(db::InitializeNativeCreationWorkspaceOnOpenDevice(device, request, 256 * size, issuer).ok(), "real native create");
