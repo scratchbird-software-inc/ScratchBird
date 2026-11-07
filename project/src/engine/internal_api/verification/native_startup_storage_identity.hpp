@@ -14,7 +14,8 @@ enum class NativeStartupIdentityError {
 // admission: only the private startup owner can retain and consume the proof.
 struct NativeStartupStorageIdentityObservation {
   storage::database::NativeReadSourceIdentity source;
-  storage::database::NativeSystemState system_state;
+  // SB_MGA_DATABASE_STATE: the database's administrative mode (SBSYS002).
+  storage::database::NativeDatabaseState system_state;
   core::platform::Uuid transaction_uuid,snapshot_uuid;
   core::platform::Uuid primary_filespace_uuid,primary_page_uuid,primary_profile_uuid;
   core::platform::u64 primary_page_generation=0;

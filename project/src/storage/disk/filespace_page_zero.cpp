@@ -107,7 +107,10 @@ template<class Roots> Error Validate(const FilespacePageZeroData<Roots>& value) 
       return Error::invalid_root_directory;
   }
   if(h.lifecycle_state==1||h.lifecycle_state==2) {
-    const u32 required=h.filespace_role<=4?0x3feu:0x8u;
+    // Kinds 1-8 (owner ruling 2026-11-07, drift removal): an online or
+    // read-only filespace no longer requires the drift-era checkpoint root
+    // (kind 9); the fixed-root read requires exactly kinds 1-8.
+    const u32 required=h.filespace_role<=4?0x1feu:0x8u;
     if((kinds&required)!=required) return Error::required_root_missing;
   }
   return Error::none;

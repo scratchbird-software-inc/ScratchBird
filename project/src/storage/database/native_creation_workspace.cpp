@@ -145,6 +145,12 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
     const u64 maps=total/coverage+(total%coverage!=0);
     if(maps>total||total-maps<controls) return Fail(E::invalid_capacity);
     const auto at=[&](unsigned control){return maps+offset[control];};
+    // The filespace lifecycle page zero and the directory record. Page zero is
+    // written last, so a fixed-root file whose page zero exists is complete:
+    // online (1), owner ruling 2026-11-07. The drift-era graph keeps the
+    // request's initializing (7).
+    auto written_bootstrap=b;
+    written_bootstrap.lifecycle_state=NativeCreatedFilespaceLifecycle(request);
     // SB_TRANSITIONAL_LEGACY_INVENTORY: only the two named formats exist.
     using Format=NativeCreationInventoryFormat;
     if(request.inventory_format!=Format::in_place&&request.inventory_format!=Format::transitional_legacy)
@@ -413,16 +419,25 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
     page::NativeFilespaceDirectory d;d.header=images[at(directory)].header;
     d.object_uuid=images[at(directory)].owner;d.directory_generation=1;
     d.creator_transaction_uuid=creator;d.creator_local_transaction_id=1;d.total_records=1;
-    d.records.push_back({b,locator,receipt.page_zero_uuid,1,1,total,1,{}});
+    d.records.push_back({written_bootstrap,locator,receipt.page_zero_uuid,1,1,total,1,{}});
     save(at(directory),page::EncodeNativeFilespaceDirectory(d));
-    NativeSystemState state;state.header=images[at(system)].header;state.object_uuid=images[at(system)].owner;
-    state.state_generation=state.restart_generation=state.startup_counter=1;
-    state.creator_transaction_uuid=creator;state.creator_local_transaction_id=1;
-    // The fixed-root graph has no checkpoint: generation 0, no reference.
-    if(checkpoint_graph){state.checkpoint_generation=1;state.checkpoint=ref(at(checkpoint));
-      state.checkpoint_object_uuid=images[at(checkpoint)].owner;}
-    state.transition_operation_uuid=request.operation_uuid;
-    save(at(system),EncodeNativeSystemState(state));
+    if(checkpoint_graph){
+      // SB_TRANSITIONAL_CHECKPOINT_GRAPH: the drift-era system state (SBSYS001).
+      NativeSystemState state;state.header=images[at(system)].header;state.object_uuid=images[at(system)].owner;
+      state.state_generation=state.restart_generation=state.startup_counter=1;
+      state.creator_transaction_uuid=creator;state.creator_local_transaction_id=1;
+      state.checkpoint_generation=1;state.checkpoint=ref(at(checkpoint));
+      state.checkpoint_object_uuid=images[at(checkpoint)].owner;
+      state.transition_operation_uuid=request.operation_uuid;
+      save(at(system),EncodeNativeSystemState(state));
+    }else{
+      // SB_MGA_DATABASE_STATE (owner 2026-11-07): the administrative mode only.
+      // A complete create is an online, read-write database.
+      NativeDatabaseState state;state.header=images[at(system)].header;state.object_uuid=images[at(system)].owner;
+      state.creator_transaction_uuid=creator;state.creator_local_transaction_id=1;
+      state.mode=NativeDatabaseMode::online;state.flags=0;
+      save(at(system),EncodeNativeDatabaseState(state));
+    }
     page::NativeRetentionPage pins;pins.header=images[at(retention)].header;pins.object_uuid=images[at(retention)].owner;
     pins.epoch=1;pins.creator_transaction_uuid=creator;pins.creator_local_transaction_id=1;
     save(at(retention),page::EncodeNativeRetentionPage(pins));
@@ -486,7 +501,7 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
       save(n,EncodeNativeCheckpointSelection(s));
     }
     }
-    disk::FilespacePageZero zero;zero.bootstrap=b;zero.page_uuid=receipt.page_zero_uuid;
+    disk::FilespacePageZero zero;zero.bootstrap=written_bootstrap;zero.page_uuid=receipt.page_zero_uuid;
     zero.creation_operation_uuid=request.operation_uuid;zero.writer_identity_uuid=request.writer_uuid;
     zero.page_generation=zero.root_set_generation=1;zero.total_pages=total;zero.free_pages=receipt.free_pages;
     zero.creation_utc_millis=request.creation_utc_millis;

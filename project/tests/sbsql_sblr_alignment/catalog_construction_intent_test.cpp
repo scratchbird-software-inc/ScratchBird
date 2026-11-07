@@ -212,7 +212,7 @@ void Physical(){
           "a fixed-root create declares no checkpoint, selector or watermark root");
     }
     const auto zero=d::ReadFilespacePageZeroFromOpenDevice(device);
-    Check(zero.ok()&&zero.record->bootstrap.lifecycle_state==7,"retained event is not activation or serving proof");
+    Check(zero.ok()&&zero.record->bootstrap.lifecycle_state==1,"retained event is not activation or serving proof: page zero stays as the create wrote it, an online filespace (owner 2026-11-07); serving is the server's act at open");
     Check(device.Close().ok(),"private device released");
   }
 }

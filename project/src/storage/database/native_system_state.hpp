@@ -54,6 +54,48 @@ struct NativeSystemStateResult {
   std::vector<byte> bytes;
   bool ok() const noexcept {return error==NativeSystemStateError::none&&state.has_value();}
 };
+// SB_MGA_DATABASE_STATE (owner rulings 2026-11-07, option 1 and the mode
+// table): the database's administrative mode, Firebird's model. The page is
+// updated in place by careful write. It carries no clean/dirty flag, recovery
+// classification, observed checkpoint, predecessor chain or transition
+// operation: careful write keeps every on-disk state consistent, and a crash is
+// handled by restart dead-marking of the transaction inventory (Firebird
+// TRA_cleanup). Codes keep the spec's numbers where the meaning survives;
+// creating(1), closed(2), opening(3), draining(5) and recovering(8) are retired.
+// Family SBSYS002; SBSYS001 (NativeSystemState) remains only for the drift-era
+// checkpoint graph until R4.
+enum class NativeDatabaseMode : u16 {
+  online=4,        // Firebird shutdown none
+  restricted=6,    // owner and administrators only (shutdown multi)
+  maintenance=7,   // one administrator attachment (shutdown single)
+  drop_pending=9,
+  quarantined=10,  // refused until the operator acts
+  offline=11       // no attachment (shutdown full)
+};
+namespace NativeDatabaseStateFlag {
+inline constexpr u32 read_only=1;  // Firebird hdr_read_only, separate from the mode
+}
+struct NativeDatabaseState {
+  disk::NativeCommonPageHeader header;
+  Uuid object_uuid;
+  Uuid creator_transaction_uuid;
+  u64 creator_local_transaction_id=0;
+  NativeDatabaseMode mode=NativeDatabaseMode::online;
+  u32 flags=0;
+};
+struct NativeDatabaseStateResult {
+  NativeSystemStateError error=NativeSystemStateError::invalid_family;
+  std::optional<NativeDatabaseState> state;
+  std::vector<byte> bytes;
+  bool ok() const noexcept {return error==NativeSystemStateError::none&&state.has_value();}
+};
+struct NativeDatabaseStateValueResult {
+  NativeSystemStateError error=NativeSystemStateError::invalid_family;
+  std::optional<NativeDatabaseState> state;
+  bool ok() const noexcept {return error==NativeSystemStateError::none&&state.has_value();}
+};
+NativeDatabaseStateResult EncodeNativeDatabaseState(const NativeDatabaseState&) noexcept;
+NativeDatabaseStateValueResult DecodeNativeDatabaseStateValue(std::span<const byte>) noexcept;
 NativeSystemStateResult EncodeNativeSystemState(const NativeSystemState&) noexcept;
 NativeSystemStateResult DecodeNativeSystemState(const std::vector<byte>&) noexcept;
 struct NativeSystemStateValueResult {

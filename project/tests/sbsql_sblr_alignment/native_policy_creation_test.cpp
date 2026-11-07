@@ -806,7 +806,7 @@ void Physical(bool security=false,bool bootstrap=false,bool service=false) {
           validated.state.membership_uuid.value==f::Id(14001)&&validated.state.credential_fingerprint==fingerprint,
           "actual reopened native records preserve bootstrap semantics without claiming authentication or activation");
     }
-    const auto zero=d::ReadFilespacePageZeroFromOpenDevice(device);Check(zero.ok()&&zero.record->bootstrap.lifecycle_state==7,"construction does not falsely activate node or authorize service");
+    const auto zero=d::ReadFilespacePageZeroFromOpenDevice(device);Check(zero.ok()&&zero.record->bootstrap.lifecycle_state==1,"construction does not falsely activate node or authorize service: page zero stays as the create wrote it, an online filespace (owner 2026-11-07); serving is the server's act at open");
     Check(device.Close().ok(),"actual native policy construction device released");
   }
 }

@@ -95,8 +95,8 @@ void Inspect(disk::FileDevice& device,const db::NativeFilespaceInitializationReq
   const auto zero=disk::ReadFilespacePageZeroFromOpenDevice(device);
   Check(zero.ok(),"actual page zero");const auto& z=*zero.record;
   Check(z.bootstrap.database_uuid==b.database_uuid&&z.bootstrap.filespace_uuid==b.filespace_uuid&&
-    z.bootstrap.lifecycle_state==7&&z.bootstrap.filespace_role==b.filespace_role&&z.bootstrap.flags==0,
-    "exact initializing bootstrap, never online");
+    z.bootstrap.lifecycle_state==1&&z.bootstrap.filespace_role==b.filespace_role&&z.bootstrap.flags==0,
+    "exact bootstrap: page zero is written last, so a complete file is an online filespace (owner 2026-11-07)");
   Check(z.creation_operation_uuid==request.operation_uuid&&z.writer_identity_uuid==request.writer_uuid&&
     z.creation_utc_millis==request.creation_utc_millis&&z.page_generation==1&&z.root_set_generation==1,
     "actual creation lineage");
@@ -203,12 +203,15 @@ void Inspect(disk::FileDevice& device,const db::NativeFilespaceInitializationReq
   const auto& dr=directory_pages.front().directory.records.front();unique(dr.locator_uuid);
   Check(dr.page_zero_uuid==z.page_uuid&&dr.verification_epoch==1&&!dr.operation&&dr.total_pages==z.total_pages,
     "directory actual construction binding");
-  const auto system=db::DecodeNativeSystemState(Read(device,maps+3,size));
-  Check(system.ok(),"actual system state");const auto& st=*system.state;
-  Check(st.lifecycle==db::NativeSystemLifecycle::creating&&st.flags==(db::NativeSystemFlag::dirty|db::NativeSystemFlag::write_fenced)&&
-    !st.checkpoint_generation&&!st.checkpoint&&st.checkpoint_object_uuid.is_nil()&&!st.clean_local_transaction_id&&
-    st.transition_operation_uuid==Id(3)&&st.creator_transaction_uuid==Id(5),
-    "never claims ready or clean, and names no checkpoint");
+  // SB_MGA_DATABASE_STATE (owner 2026-11-07): the database's administrative
+  // mode, Firebird's model; a complete create is online and read-write.
+  const auto state_page=Read(device,maps+3,size);
+  const auto system=db::DecodeNativeDatabaseStateValue(state_page);
+  Check(system.ok(),"actual database state");const auto& st=*system.state;
+  Check(st.mode==db::NativeDatabaseMode::online&&st.flags==0&&st.creator_transaction_uuid==Id(5)&&
+    st.creator_local_transaction_id==1&&st.object_uuid==z.roots[0].object_uuid,
+    "a complete create is an online, read-write database owned by the construction transaction");
+  Check(!db::DecodeNativeSystemStateValue(state_page).ok(),"the create writes no drift-era system state");
   const auto retention=page::DecodeNativeRetentionPage(Read(device,maps+4,size));
   Check(retention.ok()&&retention.page->records.empty()&&retention.page->epoch==1,"actual empty retention page");
 }

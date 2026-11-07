@@ -101,7 +101,7 @@ void PopulatedWorkspaceChecks() {
     Check(device.Close().ok(),"close populated owner");
     Check(device.Open(path.string(),disk::FileOpenMode::open_existing).ok(),"reopen populated owner");
     const auto zero=disk::ReadFilespacePageZeroFromOpenDevice(device);
-    Check(zero.ok()&&zero.record->bootstrap.lifecycle_state==7,"population never grants serving state");
+    Check(zero.ok()&&zero.record->bootstrap.lifecycle_state==1,"population never grants serving state: page zero stays as the create wrote it, an online filespace (owner 2026-11-07); serving is the server's act at open");
     const std::vector<disk::NativeFilespaceDevice> devices{{request.bootstrap.filespace_uuid,request.bootstrap.page_size_profile_uuid,&device}};
     // SB_NATIVE_FIXED_ROOT_READ (drift removal R3b3): the created file has no
     // checkpoint or selector; its catalogs are read from page zero.

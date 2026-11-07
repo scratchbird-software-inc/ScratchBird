@@ -300,7 +300,7 @@ void Physical(){
           c::CatalogIdentifierProfileMatchesDatabase(c::BorrowCatalogMetadataVersion(row->metadata),f::Id(1)),
           "complete scalar/optional resource/platform bytes and raw identities survive independent native reopen");
     }
-    const auto zero=d::ReadFilespacePageZeroFromOpenDevice(device);Check(zero.ok()&&zero.record->bootstrap.lifecycle_state==7,"stored profile is not naming/source/security/serving admission");
+    const auto zero=d::ReadFilespacePageZeroFromOpenDevice(device);Check(zero.ok()&&zero.record->bootstrap.lifecycle_state==1,"stored profile is not naming/source/security/serving admission: page zero stays as the create wrote it, an online filespace (owner 2026-11-07); serving is the server's act at open");
     Check(device.Close().ok(),"actual private construction device released");
   }
 }

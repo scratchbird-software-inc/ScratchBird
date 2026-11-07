@@ -208,7 +208,6 @@ NativeOpenVerificationResult NativeHostedDatabaseRuntime::VerifyStartupDatabaseF
       api::NativeStartupStorageIdentityObservation identity;
       identity.source=genesis;identity.workspace_bytes=workspace;
       identity.physical_bytes_read=source.physical_bytes_read;
-      core::platform::Uuid creation_operation;
       for(const auto& directory_page:o.directory().pages)for(const auto& file:directory_page.directory.records){
         if(cancelled()){error=VE::cancelled;return;}
         const auto& b=file.bootstrap;
@@ -231,7 +230,6 @@ NativeOpenVerificationResult NativeHostedDatabaseRuntime::VerifyStartupDatabaseF
           // The page zero read now is the one the source was taken from.
           if(z.page_uuid!=o.identity().page_zero_uuid||z.page_generation!=o.identity().page_generation||
               z.root_set_generation!=o.identity().root_set_generation){error=VE::source_mismatch;return;}
-          creation_operation=z.creation_operation_uuid;
           identity.primary_filespace_uuid=b.filespace_uuid;identity.primary_page_uuid=z.page_uuid;
           identity.primary_profile_uuid=b.page_size_profile_uuid;identity.primary_page_generation=z.page_generation;
           if(z.roots.size()>identity.primary_roots.size()){error=VE::invalid_request;return;}
@@ -248,15 +246,14 @@ NativeOpenVerificationResult NativeHostedDatabaseRuntime::VerifyStartupDatabaseF
       const auto state_image=load_root(*target,*allocated,{static_cast<byte*>(image_block.pointer),maximum_page},
           identity.physical_bytes_read);
       if(state_image.empty())return;
-      const auto decoded=db::DecodeNativeSystemStateValue(state_image);
+      // SB_MGA_DATABASE_STATE (owner 2026-11-07): the database's administrative
+      // mode. Any valid mode verifies; whether a mode admits service is the
+      // server's decision after verification, not a finding here.
+      const auto decoded=db::DecodeNativeDatabaseStateValue(state_image);
       if(!decoded.ok()){error=VE::finding;return;}
       const auto& state=*decoded.state;
-      // The current first-open profile: the constructor's fenced state.
       if(state.object_uuid!=target->object_uuid||state.creator_transaction_uuid!=allocated->creator_transaction_uuid||
-          state.creator_local_transaction_id!=allocated->creator_local_transaction_id||state.lifecycle!=db::NativeSystemLifecycle::creating||
-          state.flags!=(db::NativeSystemFlag::dirty|db::NativeSystemFlag::write_fenced)||
-          state.transition_operation_uuid!=creation_operation||
-          state.clean_local_transaction_id||!state.clean_transaction_uuid.is_nil()){error=VE::finding;return;}
+          state.creator_local_transaction_id!=allocated->creator_local_transaction_id){error=VE::finding;return;}
       const auto creator=std::find_if(inventory.entries.begin(),inventory.entries.end(),[&](const auto& e){
         return e.identity.local_id.value==state.creator_local_transaction_id;});
       if(creator==inventory.entries.end()||creator->identity.transaction_uuid.value!=state.creator_transaction_uuid||

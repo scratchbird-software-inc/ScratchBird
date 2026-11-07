@@ -312,7 +312,7 @@ void Physical(){
         c::CatalogPolicyDescriptorMatchesDatabase(c::BorrowCatalogMetadataVersion(rows.rows[0].metadata),f::Id(1)),"every typed descriptor field and origin survives actual native reopen");
     const auto names=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(f::Id(1),devices,db::NativeCatalogSource::PageZero(created.receipt->filespace_uuid),2,2,{created.receipt->relations[1].object_uuid,{}},budget);
     Check(names.ok()&&names.rows.size()==2&&names.rows[0].name_payload&&names.rows[1].name_payload,"actual allocated name residency survives reopen");
-    const auto zero=d::ReadFilespacePageZeroFromOpenDevice(device);Check(zero.ok()&&zero.record->bootstrap.lifecycle_state==7,"policy declaration persistence is not evaluated permission or activation");
+    const auto zero=d::ReadFilespacePageZeroFromOpenDevice(device);Check(zero.ok()&&zero.record->bootstrap.lifecycle_state==1,"policy declaration persistence is not evaluated permission or activation: page zero stays as the create wrote it, an online filespace (owner 2026-11-07); serving is the server's act at open");
     Check(device.Close().ok(),"actual owned policy device released");
   }
 }

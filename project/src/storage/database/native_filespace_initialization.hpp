@@ -34,6 +34,15 @@ struct NativeFilespaceInitializationRequest {
   NativeCreationInventoryFormat inventory_format=NativeCreationInventoryFormat::in_place;
   NativeCreationGenesisGraph genesis_graph=NativeCreationGenesisGraph::fixed_roots;
 };
+// The filespace lifecycle a native create records in page zero, the directory
+// and the catalog's filespace manifest. Page zero is written last, so a
+// complete fixed-root file is an online filespace (1) (owner ruling
+// 2026-11-07); the drift-era checkpoint graph keeps the request's initializing
+// state. One function, so the three records cannot disagree.
+inline core::platform::u16 NativeCreatedFilespaceLifecycle(const NativeFilespaceInitializationRequest& request) noexcept {
+  return request.genesis_graph==NativeCreationGenesisGraph::fixed_roots?core::platform::u16{1}:
+      request.bootstrap.lifecycle_state;
+}
 enum class NativeFilespaceInitializationError {
   none, invalid_request, invalid_device, device_not_empty, invalid_capacity,
   identity_failure, encoding_failure, resource_exhausted, hash_failure,

@@ -3034,7 +3034,8 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
   if(!opened.ok())std::cerr<<"producer open verification="<<int(opened.error)<<" stage="<<int(opened.stage)<<'\n';
   Check(opened.ok()&&opened.stage==OpenStage::complete&&read.open_verification()&&
       opened.observation->identity.source.root_set_generation==1&&opened.observation->identity.filespaces==1&&
-      opened.observation->identity.system_state.lifecycle==db::NativeSystemLifecycle::creating&&
+      opened.observation->identity.system_state.mode==db::NativeDatabaseMode::online&&
+      opened.observation->identity.system_state.flags==0&&
       opened.observation->allocation.filespaces==1&&opened.observation->allocation.catalog_pages>0&&
       opened.observation->inventory.transactions==1&&opened.observation->inventory.active_transactions==0&&
       opened.observation->inventory.in_doubt_transactions==0&&opened.observation->inventory.horizon_records==0&&

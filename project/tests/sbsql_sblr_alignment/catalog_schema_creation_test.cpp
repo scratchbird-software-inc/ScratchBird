@@ -224,7 +224,10 @@ void PrimaryChecks() {
   expected.filespace_uuid=Typed(p::UuidKind::filespace,2);expected.database_uuid=Typed(p::UuidKind::database,1);
   expected.filespace_role=1;expected.first_filespace=true;expected.startup_authority=true;
   expected.catalog_persistence_owner=true;expected.filespace_manifest_owner=true;expected.recovery_evidence_owner=true;
-  expected.state=7;expected.physical_filespace_id=0;expected.lifecycle_generation=1;expected.filespace_manifest_generation=1;
+  // The manifest records the lifecycle the create writes to page zero: online
+  // (1) for the fixed-root create, page zero being written last (owner ruling
+  // 2026-11-07; was initializing, 7).
+  expected.state=1;expected.physical_filespace_id=0;expected.lifecycle_generation=1;expected.filespace_manifest_generation=1;
   expected.catalog_manifest_format_version=1;expected.resource_seed_manifest_format_version=1;
   expected.registered_txn=1;expected.last_lifecycle_transaction=1;expected.uuid_source=1;
   expected.header_database_uuid_match_required=true;expected.header_filespace_uuid_match_required=true;
@@ -238,7 +241,7 @@ void PrimaryChecks() {
   expected.creator_transaction_number=1;
   Check(made.records->definitions[1].metadata.record.payload==
       scratchbird::tests::catalog_filespace_golden::Golden(expected),
-      "all37 actual native primary fields match independent full byte oracle; no false online state");
+      "all37 actual native primary fields match independent full byte oracle; the manifest state is the one page zero records");
   Check(package.primary.aliases.items[0].metadata.record.payload.empty(),"compound primary input remains unchanged");
   const auto exact=c::CatalogNamedCreationLimits{6,made.records->encoded_bytes};
   Check(package.Assemble(exact).ok(),"exact compound database/primary aggregate budget");
@@ -779,7 +782,7 @@ void PhysicalChecks() {
             "exact supplied schema display/scope/language/profile/default/policy bytes survive native storage");
     }
     const auto zero=disk::ReadFilespacePageZeroFromOpenDevice(device);
-    Check(zero.ok()&&zero.record->bootstrap.lifecycle_state==7,"storage construction does not falsely activate node/serve");
+    Check(zero.ok()&&zero.record->bootstrap.lifecycle_state==1,"storage construction does not falsely activate node/serve: page zero stays as the create wrote it, an online filespace (owner 2026-11-07); serving is the server's act at open");
     Check(device.Close().ok(),"release native schema owner");
   }
   artifacts.Cleanup();

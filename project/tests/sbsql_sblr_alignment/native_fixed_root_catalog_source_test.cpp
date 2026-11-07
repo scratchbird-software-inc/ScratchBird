@@ -258,20 +258,24 @@ void Negatives(unsigned profile) {
     return r;
   };
   {
+    // An online page zero must name root kinds 1-8 (owner ruling 2026-11-07),
+    // so a page zero without this root cannot even be written: the codec
+    // refuses it before any file exists.
     auto zero = ReadZero(made.path);
     std::erase_if(zero.roots, [](const auto& r) { return r.kind == 8; });
-    const auto path = Copy(made, "no-feature");
-    WriteZero(path, zero);
-    const auto r = refused(path, "page zero without the feature catalog root is refused");
-    Check(r.source.error == RE::fixed_root_failure, "a missing fixed root is a fixed-root finding");
+    const auto encoded = d::EncodeFilespacePageZero(zero);
+    Check(!encoded.ok() && encoded.error == d::FilespacePageZeroError::required_root_missing,
+          "page zero without the feature catalog root is refused: an online page zero cannot omit it");
   }
   {
+    // An online page zero must name root kinds 1-8 (owner ruling 2026-11-07),
+    // so a page zero without this root cannot even be written: the codec
+    // refuses it before any file exists.
     auto zero = ReadZero(made.path);
     std::erase_if(zero.roots, [](const auto& r) { return r.kind == 2; });
-    const auto path = Copy(made, "no-catalog");
-    WriteZero(path, zero);
-    const auto r = refused(path, "page zero without the catalog root is refused");
-    Check(r.source.error == RE::fixed_root_failure, "a missing catalog root is a fixed-root finding");
+    const auto encoded = d::EncodeFilespacePageZero(zero);
+    Check(!encoded.ok() && encoded.error == d::FilespacePageZeroError::required_root_missing,
+          "page zero without the catalog root is refused: an online page zero cannot omit it");
   }
   {
     auto zero = ReadZero(made.path);

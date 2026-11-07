@@ -60,6 +60,57 @@ NativeSystemStateResult EncodeNativeSystemState(const NativeSystemState& s) noex
     return {E::none,s,std::move(b)};
   }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}catch(const std::length_error&){return Fail(E::resource_exhausted);}catch(...){return Fail(E::invalid_family);}
 }
+// SB_MGA_DATABASE_STATE: family SBSYS002. Body (after the 128-byte common
+// header): magic, version 2, body size 384, used 512; object UUID; creator
+// transaction UUID and local number; mode; reserved zero; flags; reserved zero
+// up to the seal (the same whole-page SHA-256 at byte 408 as SBSYS001).
+namespace {
+NativeDatabaseStateResult DatabaseFail(E e){NativeDatabaseStateResult r;r.error=e;return r;}
+bool KnownMode(u16 mode){
+  using M=NativeDatabaseMode;
+  for(const auto known:{M::online,M::restricted,M::maintenance,M::drop_pending,M::quarantined,M::offline})
+    if(mode==static_cast<u16>(known))return true;
+  return false;
+}
+E ValidateDatabase(const NativeDatabaseState& s){
+  if(!disk::EncodeNativeCommonPageHeader(s.header).ok()||s.header.page_type!=8||s.header.flags)return E::invalid_header;
+  if(!V7(s.object_uuid)||!V7(s.creator_transaction_uuid)||!s.creator_local_transaction_id)return E::invalid_identity;
+  if(!KnownMode(static_cast<u16>(s.mode))||(s.flags&~NativeDatabaseStateFlag::read_only))return E::invalid_state;
+  return E::none;
+}
+}
+NativeDatabaseStateResult EncodeNativeDatabaseState(const NativeDatabaseState& s) noexcept {
+  try{const auto valid=ValidateDatabase(s);if(valid!=E::none)return DatabaseFail(valid);std::vector<byte> b(s.header.page_size_bytes,0);
+    const auto h=disk::EncodeNativeCommonPageHeader(s.header);if(!h.ok())return DatabaseFail(E::invalid_header);
+    std::copy(h.bytes->begin(),h.bytes->end(),b.begin());
+    auto* f=b.data()+128;std::copy_n("SBSYS002",8,f);StoreLittle16(f+8,2);StoreLittle16(f+10,384);StoreLittle32(f+12,512);
+    PutUuid(f+16,s.object_uuid);PutUuid(f+32,s.creator_transaction_uuid);StoreLittle64(f+48,s.creator_local_transaction_id);
+    StoreLittle16(f+56,static_cast<u16>(s.mode));StoreLittle32(f+60,s.flags);
+    const auto digest=Digest(b);if(!digest.ok())return DatabaseFail(E::hash_failure);
+    std::copy(digest.digest.begin(),digest.digest.end(),b.begin()+seal);
+    return {E::none,s,std::move(b)};
+  }catch(const std::bad_alloc&){return DatabaseFail(E::resource_exhausted);}
+   catch(const std::length_error&){return DatabaseFail(E::resource_exhausted);}
+   catch(...){return DatabaseFail(E::invalid_family);}
+}
+NativeDatabaseStateValueResult DecodeNativeDatabaseStateValue(std::span<const byte> b) noexcept {
+  const auto fail=[](E e){return NativeDatabaseStateValueResult{e,std::nullopt};};
+  try{if(b.size()<used)return fail(E::invalid_header);const auto h=disk::DecodeNativeCommonPageHeader(b.data(),128);
+    if(!h.ok()||h.header->page_type!=8||h.header->flags||b.size()!=h.header->page_size_bytes)return fail(E::invalid_header);
+    const auto digest=Digest(b);if(!digest.ok())return fail(E::hash_failure);
+    if(!std::equal(digest.digest.begin(),digest.digest.end(),b.begin()+seal))return fail(E::invalid_integrity);
+    const auto* f=b.data()+128;
+    if(std::string_view(reinterpret_cast<const char*>(f),8)!="SBSYS002"||LoadLittle16(f+8)!=2||LoadLittle16(f+10)!=384||
+        LoadLittle32(f+12)!=512||LoadLittle16(f+58)||!Zero(f+64,seal-128-64)||!Zero(b.data()+seal+32,used-seal-32)||
+        !Zero(b.data()+used,b.size()-used))return fail(E::invalid_family);
+    NativeDatabaseState s;s.header=*h.header;s.object_uuid=GetUuid(f+16);s.creator_transaction_uuid=GetUuid(f+32);
+    s.creator_local_transaction_id=LoadLittle64(f+48);s.mode=static_cast<NativeDatabaseMode>(LoadLittle16(f+56));s.flags=LoadLittle32(f+60);
+    const auto valid=ValidateDatabase(s);if(valid!=E::none)return fail(valid);
+    return {E::none,std::move(s)};
+  }catch(const std::bad_alloc&){return fail(E::resource_exhausted);}
+   catch(const std::length_error&){return fail(E::resource_exhausted);}
+   catch(...){return fail(E::invalid_family);}
+}
 namespace { NativeSystemStateValueResult ValueFail(E e){return {e,std::nullopt};} }
 NativeSystemStateValueResult DecodeNativeSystemStateValue(std::span<const byte> b) noexcept {
   try{if(b.size()<used)return ValueFail(E::invalid_header);const auto h=disk::DecodeNativeCommonPageHeader(b.data(),128);

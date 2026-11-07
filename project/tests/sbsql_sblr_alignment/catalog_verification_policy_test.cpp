@@ -170,7 +170,7 @@ void Physical(){scratchbird::tests::OwnedTempDirectory artifacts;
   const std::vector<d::NativeFilespaceDevice> devices{{f::Id(2),profile.uuid,&device}};
   const auto rows=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(f::Id(1),devices,db::NativeCatalogSource::PageZero(created.receipt->filespace_uuid),2,5,{created.receipt->relations[4].object_uuid,{}},budget);
   Check(rows.ok()&&rows.rows.size()==1&&rows.rows[0].metadata.record.payload==Golden(item.descriptor)&&c::CatalogVerificationPolicyMatchesDatabase(c::BorrowCatalogMetadataVersion(rows.rows[0].metadata),f::Id(1)),"all limits, action rules and origins survive native reopen");
-  const auto zero=d::ReadFilespacePageZeroFromOpenDevice(device);Check(zero.ok()&&zero.record->bootstrap.lifecycle_state==7,"persisted policy declarations do not activate the node");Check(device.Close().ok(),"owned body file closed");
+  const auto zero=d::ReadFilespacePageZeroFromOpenDevice(device);Check(zero.ok()&&zero.record->bootstrap.lifecycle_state==1,"persisted policy declarations do not activate the node: page zero stays as the create wrote it, an online filespace (owner 2026-11-07); serving is the server's act at open");Check(device.Close().ok(),"owned body file closed");
  }} }
 }
 int main(){try{Values();Bindings();Creation();Physical();std::cout<<checks<<" verification policy body checks passed (declarations only)\n";return 0;}

@@ -227,7 +227,7 @@ int main() {
     Check(names[r.bootstrap_principal_uuid]=="BootstrapAdmin"&&names[r.service_principal_uuid]=="NodeService",
           "the bootstrap and L5 principals carry the names CREATE supplied");
     const auto zero=d::ReadFilespacePageZeroFromOpenDevice(device);
-    Check(zero.ok()&&zero.record->bootstrap.lifecycle_state==7,"construction is not activation: the file stays initializing");
+    Check(zero.ok()&&zero.record->bootstrap.lifecycle_state==1,"construction is not activation: the file stays initializing: page zero stays as the create wrote it, an online filespace (owner 2026-11-07); serving is the server's act at open");
     std::printf("profile %u: %zu definitions, %zu names, security %zu, configuration %zu\n",profile.page_size_bytes,
         definitions.size(),names.size(),relations[3].size(),relations[4].size());
     Check(device.Close().ok(),"owned file closed");

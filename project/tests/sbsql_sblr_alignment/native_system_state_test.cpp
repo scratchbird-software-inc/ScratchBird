@@ -153,4 +153,58 @@ void Histories(){for(unsigned profile=0;profile<5;++profile){const unsigned othe
     Check(read(limit).ok()&&first.read_only()&&second.read_only(),"reopened owned system-state history");
   }}
 }
-int main(){try{Codecs();Files();Histories();std::cout<<"PASS system-state checks="<<checks<<" not_SQL_E2E=true\n";return 0;}catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
+// SB_MGA_DATABASE_STATE (owner 2026-11-07): the administrative-mode page,
+// family SBSYS002, against independently built bytes. Every kept mode and the
+// read-only flag round-trip at every page size; retired and unknown modes,
+// unknown flags, nonzero reserved bytes, a broken seal, the wrong page type and
+// the other family are all refused, and neither family decodes as the other.
+Bytes DatabaseOracle(const db::NativeDatabaseState& s){const auto& h=s.header;Bytes b(h.page_size_bytes,0);
+  std::copy_n("SBPGV002",8,b.begin());Num(b,8,4,128);Num(b,12,4,h.page_size_bytes);Num(b,16,4,h.page_type);Num(b,20,2,1);Num(b,22,2,1);
+  Put(b,24,h.database_uuid);Put(b,40,h.filespace_uuid);Put(b,56,h.page_uuid);Num(b,72,8,h.page_number);Num(b,80,8,h.page_generation);Num(b,88,8,h.flags);Put(b,104,h.page_size_profile_uuid);Num(b,120,2,1);
+  u64 fnv=14695981039346656037ull;for(unsigned i=0;i<128;++i){fnv^=b[i];fnv*=1099511628211ull;}Num(b,96,8,fnv);
+  std::copy_n("SBSYS002",8,b.begin()+128);Num(b,136,2,2);Num(b,138,2,384);Num(b,140,4,512);Put(b,144,s.object_uuid);
+  Put(b,160,s.creator_transaction_uuid);Num(b,176,8,s.creator_local_transaction_id);Num(b,184,2,static_cast<u16>(s.mode));Num(b,188,4,s.flags);
+  Seal(b);return b;
+}
+db::NativeDatabaseState DatabaseExample(unsigned profile=0){const auto& p=d::kCanonicalFilespacePageProfiles[profile];db::NativeDatabaseState s;
+  s.header={p.page_size_bytes,8,Id(1),Id(2),Id(70),11,1,0,p.uuid};s.object_uuid=Id(41);
+  s.creator_transaction_uuid=Id(90);s.creator_local_transaction_id=1;s.mode=db::NativeDatabaseMode::online;return s;
+}
+void DatabaseStateCodecs(){
+  using M=db::NativeDatabaseMode;
+  for(unsigned profile=0;profile<5;++profile){
+    for(const auto mode:{M::online,M::restricted,M::maintenance,M::drop_pending,M::quarantined,M::offline})
+      for(const u32 flags:{0u,db::NativeDatabaseStateFlag::read_only}){
+        auto s=DatabaseExample(profile);s.mode=mode;s.flags=flags;
+        const auto encoded=db::EncodeNativeDatabaseState(s);
+        Check(encoded.ok()&&encoded.bytes==DatabaseOracle(s),"every kept mode and the read-only flag encode to the exact independent bytes");
+        const auto decoded=db::DecodeNativeDatabaseStateValue(encoded.bytes);
+        Check(decoded.ok()&&decoded.state->mode==mode&&decoded.state->flags==flags&&decoded.state->object_uuid==s.object_uuid&&
+          decoded.state->creator_transaction_uuid==s.creator_transaction_uuid&&decoded.state->creator_local_transaction_id==1&&
+          decoded.state->header.page_uuid==s.header.page_uuid,"the decoded administrative mode is the encoded one");
+        Check(!db::DecodeNativeSystemStateValue(encoded.bytes).ok(),"the drift-era decoder refuses the database-state family");
+      }
+    // Retired codes (creating, closed, opening, draining, recovering) and unknown codes.
+    for(const u16 mode:{u16{0},u16{1},u16{2},u16{3},u16{5},u16{8},u16{12},u16{0xffff}}){
+      auto s=DatabaseExample(profile);s.mode=static_cast<M>(mode);
+      Check(!db::EncodeNativeDatabaseState(s).ok(),"a retired or unknown mode is not encoded");
+      const auto bytes=DatabaseOracle(s);
+      const auto decoded=db::DecodeNativeDatabaseStateValue(bytes);
+      Check(!decoded.ok()&&decoded.error==db::NativeSystemStateError::invalid_state&&!decoded.state,"a retired or unknown mode is refused");
+    }
+    {auto s=DatabaseExample(profile);s.flags=2;Check(!db::EncodeNativeDatabaseState(s).ok()&&!db::DecodeNativeDatabaseStateValue(DatabaseOracle(s)).ok(),
+      "an unknown flag bit is refused");}
+    {auto s=DatabaseExample(profile);s.creator_local_transaction_id=0;Check(!db::EncodeNativeDatabaseState(s).ok(),"a page needs its creator");}
+    {auto s=DatabaseExample(profile);s.header.page_type=9;Check(!db::EncodeNativeDatabaseState(s).ok(),"only the system-state page type");}
+    const auto good=db::EncodeNativeDatabaseState(DatabaseExample(profile));Check(good.ok(),"baseline");
+    for(const std::size_t at:{std::size_t{186},std::size_t{192},std::size_t{300},std::size_t{440},std::size_t{511}}){
+      auto bytes=good.bytes;bytes[at]=1;Seal(bytes);
+      Check(!db::DecodeNativeDatabaseStateValue(bytes).ok(),"every reserved byte must be zero, even when resealed");
+    }
+    {auto bytes=good.bytes;bytes[150]^=1;const auto r=db::DecodeNativeDatabaseStateValue(bytes);
+      Check(!r.ok()&&r.error==db::NativeSystemStateError::invalid_integrity,"a changed byte under the seal is an integrity finding");}
+    Check(!db::DecodeNativeDatabaseStateValue(Oracle(Example(profile))).ok(),"the database-state decoder refuses the drift-era family");
+  }
+}
+
+int main(){try{Codecs();DatabaseStateCodecs();Files();Histories();std::cout<<"PASS system-state checks="<<checks<<" not_SQL_E2E=true\n";return 0;}catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}

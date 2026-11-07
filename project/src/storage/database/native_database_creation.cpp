@@ -35,7 +35,7 @@ c::CatalogFilespaceRecord PrimaryDefinition(const NativeFilespaceInitializationR
   r.filespace_role=physical.bootstrap.filespace_role;
   r.first_filespace=r.startup_authority=r.catalog_persistence_owner=
       r.filespace_manifest_owner=r.recovery_evidence_owner=true;
-  r.state=physical.bootstrap.lifecycle_state;r.physical_filespace_id=0;
+  r.state=NativeCreatedFilespaceLifecycle(physical);r.physical_filespace_id=0;
   r.lifecycle_generation=r.filespace_manifest_generation=r.catalog_manifest_format_version=
       r.resource_seed_manifest_format_version=1;
   r.registered_txn=r.last_lifecycle_transaction=r.creator_transaction_number=physical.creator.local_id.value;
