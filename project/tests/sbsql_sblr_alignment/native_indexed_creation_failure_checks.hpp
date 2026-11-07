@@ -126,7 +126,7 @@ void NativeIndexedCreationFailureChecks(unsigned shard,unsigned first_allocation
       Check(target.failed_io_latency_observations()==lost+1,"only explicitly recorded observation loss permits an allocation-fault success");
       const std::vector<disk::NativeFilespaceDevice> files{{request.bootstrap.filespace_uuid,request.bootstrap.page_size_profile_uuid,&target}};
       const auto read=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(request.bootstrap.database_uuid,files,
-          result.receipt->checkpoint,2,1,{indexes[0]->relation_uuid,indexes[0]->dependencies},budget);
+          db::NativeCatalogSource::PageZero(result.receipt->filespace_uuid),2,1,{indexes[0]->relation_uuid,indexes[0]->dependencies},budget);
       Check(read.ok()&&read.rows.size()==47,"telemetry loss cannot hide incomplete construction");
     }else {
       if(result.error!=db::NativeCreationWorkspaceError::resource_exhausted)

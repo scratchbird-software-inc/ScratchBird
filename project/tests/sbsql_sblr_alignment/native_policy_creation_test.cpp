@@ -777,7 +777,7 @@ void Physical(bool security=false,bool bootstrap=false,bool service=false) {
     std::vector<c::CatalogTypedRecord> security_records;
     std::size_t definition_count=0,name_count=0;
     for(unsigned role=0;role<seed.size();++role){
-      const auto rows=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(f::Id(1),devices,created.receipt->checkpoint,2,role+1,
+      const auto rows=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(f::Id(1),devices,db::NativeCatalogSource::PageZero(created.receipt->filespace_uuid),2,role+1,
           {created.receipt->relation_uuids[role],created.receipt->index_dependencies[role]},budget);
       Check(rows.ok()&&rows.rows.size()==seed[role].size(),"every native relation preserves its exact production-placed cohort after independent reopen");
       for(const auto& row:rows.rows){

@@ -173,9 +173,9 @@ void NativeNamedCreationChecks(const db::NativeCreationCatalogSeed& supplied) {
     Check(d.Close().ok()&&d.Open(path.string(),disk::FileOpenMode::open_existing).ok(),"named package actual fresh reopen");
     const std::vector<disk::NativeFilespaceDevice> devices{{r.bootstrap.filespace_uuid,r.bootstrap.page_size_profile_uuid,&d}};
     const auto definitions=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(r.bootstrap.database_uuid,devices,
-        created.receipt->checkpoint,2,1,{indexes[0]->relation_uuid,indexes[0]->dependencies},budget);
+        db::NativeCatalogSource::PageZero(created.receipt->filespace_uuid),2,1,{indexes[0]->relation_uuid,indexes[0]->dependencies},budget);
     const auto localized=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(r.bootstrap.database_uuid,devices,
-        created.receipt->checkpoint,2,2,{indexes[1]->relation_uuid,indexes[1]->dependencies},budget);
+        db::NativeCatalogSource::PageZero(created.receipt->filespace_uuid),2,2,{indexes[1]->relation_uuid,indexes[1]->dependencies},budget);
     Check(definitions.ok()&&definitions.rows.size()==inputs.size()&&localized.ok()&&localized.rows.size()==3*inputs.size(),
         "real indexed catalog read retains the entire named definition set");
     for(const auto& row:localized.rows) {

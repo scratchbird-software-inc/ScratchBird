@@ -739,7 +739,7 @@ void PhysicalChecks() {
     Check(created.ok(),"actual typed schema package writes native construction graph");
     Check(device.Close().ok()&&device.Open(path,disk::FileOpenMode::open_existing).ok(),"independent native schema reopen");
     const std::vector<disk::NativeFilespaceDevice> devices{{Id(2),p.uuid,&device}};
-    const auto rows=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(Id(1),devices,created.receipt->checkpoint,
+    const auto rows=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(Id(1),devices,db::NativeCatalogSource::PageZero(created.receipt->filespace_uuid),
         2,1,{indexes[0]->relation_uuid,indexes[0]->dependencies},budget);
     Check(rows.ok()&&rows.rows.size()==seed[0].size(),"actual persisted native schema relation visibility");
     for(const auto& row:rows.rows) {
@@ -762,7 +762,7 @@ void PhysicalChecks() {
               "native MGA catalog reopen preserves exact V2 absence or V3 selectors without default authority");
       }
     }
-    const auto names=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(Id(1),devices,created.receipt->checkpoint,
+    const auto names=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(Id(1),devices,db::NativeCatalogSource::PageZero(created.receipt->filespace_uuid),
         2,2,{indexes[1]->relation_uuid,indexes[1]->dependencies},budget);
     Check(names.ok()&&names.rows.size()==seed[1].size(),"all actual schema name records persist");
     for(const auto& row:names.rows) {

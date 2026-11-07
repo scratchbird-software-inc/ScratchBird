@@ -172,7 +172,7 @@ void Select(Result& result, const Source& source, const core::platform::Uuid& da
 inline RuntimeAuthorityBindingReadResult ReadRuntimeAuthorityBindingFromOpenDevices(
     const core::platform::Uuid& database_uuid,
     const std::vector<storage::disk::NativeFilespaceDevice>& devices,
-    const storage::disk::FilespaceRootReference& checkpoint,
+    const storage::database::NativeCatalogSource& checkpoint,
     core::platform::u16 catalog_selector, core::platform::u16 relation_role,
     const storage::database::NativeCatalogRelationBinding& relation,
     const transaction::mga::TransactionIdentity& reader,
@@ -205,7 +205,7 @@ inline RuntimeAuthorityBindingReadResult ReadRuntimeAuthorityBindingFromOpenDevi
 inline RuntimeAuthorityBindingCommittedReadResult ReadCommittedRuntimeAuthorityBindingFromOpenDevices(
     const core::platform::Uuid& database_uuid,
     const std::vector<storage::disk::NativeFilespaceDevice>& devices,
-    const storage::disk::FilespaceRootReference& checkpoint,
+    const storage::database::NativeCatalogSource& checkpoint,
     core::platform::u16 catalog_selector, core::platform::u16 relation_role,
     const storage::database::NativeCatalogRelationBinding& relation,
     const core::platform::Uuid& binding_uuid, core::platform::u64 expected_generation,

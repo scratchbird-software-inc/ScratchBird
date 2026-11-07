@@ -127,7 +127,7 @@ void Physical(){
     Check(made.ok(),"typed naming dialect persists through native indexed construction");
     Check(device.Close().ok()&&device.Open(path,d::FileOpenMode::open_existing).ok(),"independent real reopen");
     const std::vector<d::NativeFilespaceDevice> devices{{f::Id(2),profile.uuid,&device}};
-    const auto rows=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(f::Id(1),devices,made.receipt->checkpoint,2,1,{indexes[0]->relation_uuid,deps},budget);
+    const auto rows=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(f::Id(1),devices,db::NativeCatalogSource::PageZero(made.receipt->filespace_uuid),2,1,{indexes[0]->relation_uuid,deps},budget);
     Check(rows.ok()&&rows.rows.size()==1&&rows.rows[0].metadata.record.payload==Golden(value)&&
         c::CatalogNamingDialectProfileMatchesDatabase(c::BorrowCatalogMetadataVersion(rows.rows[0].metadata),f::Id(1)),"complete stored profile survives native committed read");
     const auto zero=d::ReadFilespacePageZeroFromOpenDevice(device);Check(zero.ok()&&zero.record->bootstrap.lifecycle_state==7,"stored naming profile cannot activate a parser or admit serving");

@@ -153,7 +153,7 @@ void PopulatedWorkspaceChecks() {
       Check(recovery.ok()&&recovery.repaired_slots==2&&recovery.receipt->catalog_rows[0]==4,"populated process-crash recovery preserves metric definitions");
       const std::vector<disk::NativeFilespaceDevice> recovered_devices{{request.bootstrap.filespace_uuid,request.bootstrap.page_size_profile_uuid,&crashed}};
       const auto read=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(request.bootstrap.database_uuid,recovered_devices,
-        recovery.receipt->checkpoint,2,1,{recovery.receipt->relations[0].object_uuid,{}},budget);
+        db::NativeCatalogSource::PageZero(recovery.receipt->filespace_uuid),2,1,{recovery.receipt->relations[0].object_uuid,{}},budget);
       Check(read.ok()&&read.rows.size()==4,"actual recovered committed metric catalog read");
     }
     for(const auto& relation:seed)for(const auto& record:relation) {

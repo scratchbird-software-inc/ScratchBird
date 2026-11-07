@@ -106,7 +106,7 @@ int main() {
     std::array<std::vector<db::NativeCatalogVersionRow>,6> relations;
     for(unsigned i=0;i<6;++i) {
       const db::NativeCatalogRelationBinding binding{r.workspace.relation_uuids[i],r.workspace.index_dependencies[i]};
-      auto read=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(r.database_uuid,devices,r.workspace.checkpoint,2,
+      auto read=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(r.database_uuid,devices,db::NativeCatalogSource::PageZero(r.workspace.filespace_uuid),2,
           static_cast<p::u16>(i+1),binding,budget);
       Check(read.ok(),"every catalog relation reads back through the production reader");
       relations[i]=std::move(read.rows);

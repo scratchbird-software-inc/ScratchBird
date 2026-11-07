@@ -200,7 +200,7 @@ void Physical(){
     Check(made.ok(),"actual audit row joins same native construction cohort");
     Check(device.Close().ok()&&device.Open(path,d::FileOpenMode::open_existing).ok(),"independent actual file reopen");
     const std::vector<d::NativeFilespaceDevice> devices{{f::Id(2),profile.uuid,&device}};
-    const auto rows=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(f::Id(1),devices,made.receipt->checkpoint,2,1,
+    const auto rows=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(f::Id(1),devices,db::NativeCatalogSource::PageZero(made.receipt->filespace_uuid),2,1,
         {made.receipt->relations[0].object_uuid,{}},budget);
     Check(rows.ok()&&rows.rows.size()==1&&rows.rows[0].metadata.record.payload==expected&&
         c::CatalogConstructionIntentMatchesMetadata(c::BorrowCatalogMetadataVersion(rows.rows[0].metadata)),"exact typed event/self-anchor persists and reopens");
@@ -220,7 +220,7 @@ void Physical(){
     Check(!refused.ok(),"recovery cannot replace retained event with fresh intent");
     const auto repaired=db::RecoverPopulatedNativeCreationWorkspaceSelectionOnOpenDevice(device,binding,request.operation_uuid,seed,budget);
     Check(repaired.ok()&&repaired.repaired_slots==2,"original event/cohort alone repairs missing second selector");
-    const auto retained=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(f::Id(1),devices,repaired.receipt->checkpoint,2,1,
+    const auto retained=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(f::Id(1),devices,db::NativeCatalogSource::PageZero(repaired.receipt->filespace_uuid),2,1,
         {repaired.receipt->relations[0].object_uuid,{}},budget);
     Check(retained.ok()&&retained.rows.size()==1&&retained.rows[0].metadata.record.payload==expected,
         "recovery retains original binary event identity/time/non-evaluation, not new success evidence");

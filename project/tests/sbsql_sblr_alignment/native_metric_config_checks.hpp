@@ -112,7 +112,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
       Check(device.Close().ok()&&device.Open(path.string(),disk::FileOpenMode::open_existing).ok(),"complete batch reopens");
       const std::vector<disk::NativeFilespaceDevice> devices{{r.bootstrap.filespace_uuid,r.bootstrap.page_size_profile_uuid,&device}};
       const auto read=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(r.bootstrap.database_uuid,devices,
-          made.receipt->checkpoint,2,1,relation,budget);
+          db::NativeCatalogSource::PageZero(made.receipt->filespace_uuid),2,1,relation,budget);
       Check(read.ok()&&read.rows.size()==4*loaded.config->families.size(),"all selected families and their dependencies survive reopen together");
       std::vector<c::CatalogMetricRowView> views;
       for(const auto& row:read.rows)views.push_back({&row.metadata,row.provisional});
@@ -193,7 +193,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     Check(device.Close().ok()&&device.Open(path.string(),disk::FileOpenMode::open_existing).ok(),"indexed complete metric reopen");
     const std::vector<disk::NativeFilespaceDevice> devices{{r.bootstrap.filespace_uuid,r.bootstrap.page_size_profile_uuid,&device}};
     const auto read=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(r.bootstrap.database_uuid,devices,
-        made.receipt->checkpoint,2,1,{Id(20000),deps},budget);
+        db::NativeCatalogSource::PageZero(made.receipt->filespace_uuid),2,1,{Id(20000),deps},budget);
     Check(read.ok()&&read.rows.size()==4*loaded.config->families.size(),"all selected dependencies resolve from actual indexed selected graph");
     std::vector<c::CatalogMetricRowView> views;
     for(const auto& row:read.rows)views.push_back({&row.metadata,row.provisional});
@@ -206,7 +206,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     }
     auto stale=deps;++stale.descriptor_generation;
     const auto refused=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(r.bootstrap.database_uuid,devices,
-        made.receipt->checkpoint,2,1,{Id(20000),stale},budget);
+        db::NativeCatalogSource::PageZero(made.receipt->filespace_uuid),2,1,{Id(20000),stale},budget);
     Check(!refused.ok(),"stale navigation binding cannot read indexed catalog");
     const auto first=Read(device,selector_page,page_bytes),second=Read(device,selector_page+1,page_bytes);
     for(unsigned lost=0;lost<2;++lost) {
@@ -330,7 +330,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     }
     Check(seen==count,"no indexed row is dropped or duplicated at a split boundary");
     const auto read=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(boundary_request.bootstrap.database_uuid,devices,
-        made.receipt->checkpoint,2,1,{Id(20000),construction_deps},budget);
+        db::NativeCatalogSource::PageZero(made.receipt->filespace_uuid),2,1,{Id(20000),construction_deps},budget);
     Check(read.ok()&&read.rows.size()==count,"every split base row has actual committed native custody");
     const auto original_selector=Read(device,selector_page+1,page_bytes);
     const std::vector<byte> blank(page_bytes,0);

@@ -307,10 +307,10 @@ void Physical(){
     const auto created=db::InitializePopulatedNativeCreationWorkspaceOnOpenDevice(device,request,seed,budget,issuer);Check(created.ok(),"real native policy/common/alias persistence");
     Check(device.Close().ok()&&device.Open(path,d::FileOpenMode::open_existing).ok(),"independent native policy reopen");
     const std::vector<d::NativeFilespaceDevice> devices{{f::Id(2),profile.uuid,&device}};
-    const auto rows=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(f::Id(1),devices,created.receipt->checkpoint,2,1,{created.receipt->relations[0].object_uuid,{}},budget);
+    const auto rows=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(f::Id(1),devices,db::NativeCatalogSource::PageZero(created.receipt->filespace_uuid),2,1,{created.receipt->relations[0].object_uuid,{}},budget);
     Check(rows.ok()&&rows.rows.size()==1&&rows.rows[0].metadata.record.payload==Golden(item.descriptor)&&
         c::CatalogPolicyDescriptorMatchesDatabase(c::BorrowCatalogMetadataVersion(rows.rows[0].metadata),f::Id(1)),"every typed descriptor field and origin survives actual native reopen");
-    const auto names=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(f::Id(1),devices,created.receipt->checkpoint,2,2,{created.receipt->relations[1].object_uuid,{}},budget);
+    const auto names=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(f::Id(1),devices,db::NativeCatalogSource::PageZero(created.receipt->filespace_uuid),2,2,{created.receipt->relations[1].object_uuid,{}},budget);
     Check(names.ok()&&names.rows.size()==2&&names.rows[0].name_payload&&names.rows[1].name_payload,"actual allocated name residency survives reopen");
     const auto zero=d::ReadFilespacePageZeroFromOpenDevice(device);Check(zero.ok()&&zero.record->bootstrap.lifecycle_state==7,"policy declaration persistence is not evaluated permission or activation");
     Check(device.Close().ok(),"actual owned policy device released");

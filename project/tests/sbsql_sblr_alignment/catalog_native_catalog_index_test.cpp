@@ -219,7 +219,7 @@ void Physical(){scratchbird::tests::OwnedTempDirectory artifacts;
   const auto created=db::InitializePopulatedNativeCreationWorkspaceOnOpenDevice(device,request,seed,budget,issuer);
   Check(created.ok(),"real native catalog index rows persist");Check(device.Close().ok()&&device.Open(path,d::FileOpenMode::open_existing).ok(),"independent reopen");
   const std::vector<d::NativeFilespaceDevice> devices{{f::Id(2),profile.uuid,&device}};
-  const auto rows=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(f::Id(1),devices,created.receipt->checkpoint,2,5,{created.receipt->relations[4].object_uuid,{}},budget);
+  const auto rows=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(f::Id(1),devices,db::NativeCatalogSource::PageZero(created.receipt->filespace_uuid),2,5,{created.receipt->relations[4].object_uuid,{}},budget);
   Check(rows.ok()&&rows.rows.size()==3,"three rows read back");
   std::array<std::string,3> expected{Golden(KeyValue()),Golden(VisibilityValue()),Golden(MapValue())};
   for(const auto& row:rows.rows){

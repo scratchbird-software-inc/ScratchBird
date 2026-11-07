@@ -292,7 +292,7 @@ void Physical(){
     Check(made.ok(),"actual typed profile persists through native indexed construction");
     Check(device.Close().ok()&&device.Open(path,d::FileOpenMode::open_existing).ok(),"independent actual native profile reopen");
     const std::vector<d::NativeFilespaceDevice> devices{{f::Id(2),profile.uuid,&device}};
-    const auto rows=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(f::Id(1),devices,made.receipt->checkpoint,2,1,{indexes[0]->relation_uuid,deps},budget);
+    const auto rows=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(f::Id(1),devices,db::NativeCatalogSource::PageZero(made.receipt->filespace_uuid),2,1,{indexes[0]->relation_uuid,deps},budget);
     Check(rows.ok()&&rows.rows.size()==3,"all actual profile definitions survive indexed committed read/reopen");
     for(const auto& expected:{value,resource,platform}){
       const auto row=std::find_if(rows.rows.begin(),rows.rows.end(),[&](const auto& row){return row.metadata.record.header.object_uuid.value==expected.profile_uuid;});

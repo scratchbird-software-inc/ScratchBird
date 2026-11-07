@@ -269,7 +269,7 @@ inline NativeCryptoInlinePrivateKeyPolicyLookupResult Select(const Uuid& databas
 // EXECUTE, scope applicability, activation, private-key use or publication.
 inline NativeCryptoInlinePrivateKeyPolicyLookupResult ReadNativeCryptoInlinePrivateKeyPolicyFromOpenDevices(
     const core::platform::Uuid& database,const std::vector<disk::NativeFilespaceDevice>& devices,
-    const disk::FilespaceRootReference& checkpoint,const NativeCatalogRelationBinding& security_relation,
+    const NativeCatalogSource& checkpoint,const NativeCatalogRelationBinding& security_relation,
     const transaction::mga::TransactionIdentity& reader,const transaction::mga::PublishedSnapshotPin& pin,
     const NativeCryptoInlinePrivateKeyPolicyLookupBinding& binding,u64 budget) noexcept {
   using namespace native_crypto_inline_private_key_policy_detail;
@@ -304,7 +304,7 @@ inline NativeCryptoInlinePrivateKeyPolicyLookupResult ReadNativeCryptoInlinePriv
 // it creates no active reader, pin, snapshot identity or admission authority.
 inline NativeCryptoInlinePrivateKeyPolicyLookupResult ReadNativeCommittedCryptoInlinePrivateKeyPolicyFromOpenDevices(
     const core::platform::Uuid& database,const std::vector<disk::NativeFilespaceDevice>& devices,
-    const disk::FilespaceRootReference& checkpoint,const NativeCatalogRelationBinding& security_relation,
+    const NativeCatalogSource& checkpoint,const NativeCatalogRelationBinding& security_relation,
     const NativeCryptoInlinePrivateKeyPolicyLookupBinding& binding,u64 budget) noexcept {
   using namespace native_crypto_inline_private_key_policy_detail;
   if(!budget||!ValidBinding(database,binding))return {};
