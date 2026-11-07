@@ -1560,6 +1560,19 @@ endif()
   set_tests_properties(sbsql_sblr_alignment_native_fixed_root_custody PROPERTIES
     LABELS "sbsql_sblr_alignment;native_storage;fixed_root;host_custody;fault_injection"
     TIMEOUT 900)
+  # SB_NATIVE_FIXED_ROOT_READ: a catalog read from page zero's fixed roots
+  # (drift removal R3b1), against the checkpoint read on a production create.
+  add_executable(sbsql_sblr_alignment_native_fixed_root_catalog_source native_fixed_root_catalog_source_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_native_fixed_root_catalog_source PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_native_fixed_root_catalog_source PRIVATE
+    sb_storage_database OpenSSL::Crypto Threads::Threads)
+  target_compile_definitions(sbsql_sblr_alignment_native_fixed_root_catalog_source PRIVATE
+    SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password")
+  target_link_options(sbsql_sblr_alignment_native_fixed_root_catalog_source PRIVATE "-Wl,--wrap=pread")
+  add_test(NAME sbsql_sblr_alignment_native_fixed_root_catalog_source
+    COMMAND sbsql_sblr_alignment_native_fixed_root_catalog_source)
+  set_tests_properties(sbsql_sblr_alignment_native_fixed_root_catalog_source PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;fixed_root;catalog;fault_injection" TIMEOUT 900)
   # SB_NATIVE_FIXED_ROOT_READ: the fixed-root read source (drift removal R1).
   add_executable(sbsql_sblr_alignment_native_fixed_root_lease native_fixed_root_lease_test.cpp)
   target_compile_features(sbsql_sblr_alignment_native_fixed_root_lease PRIVATE cxx_std_23)

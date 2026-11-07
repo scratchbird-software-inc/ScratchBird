@@ -25,6 +25,7 @@
 #include "transaction_snapshot.hpp"
 #include "node_uuid_issuer.hpp"
 #include "physical_mga_version_batch.hpp"
+#include "native_fixed_root_memory_lease.hpp"
 
 #include <string>
 #include <map>
@@ -347,23 +348,66 @@ struct NativeCatalogCreatorBinding {
 enum class NativeCheckpointCatalogRelationError {
   none, invalid_reference, invalid_filespace, checkpoint_failure, relation_failure,
   missing_relation, creator_mismatch, cluster_requires_authority,
-  resource_exhausted, io_failure
+  resource_exhausted, io_failure,
+  // SB_NATIVE_FIXED_ROOT_READ: page zero's fixed roots did not verify.
+  fixed_root_failure
+};
+// SB_NATIVE_FIXED_ROOT_READ (drift removal R3b1): where a native catalog read
+// starts, chosen explicitly by the caller. A checkpoint reference is the
+// drift-era graph (until R4). Page zero of a filespace starts from its fixed
+// roots: kind 2 the catalog, kind 8 the feature catalog, kind 4 the in-place
+// transaction inventory. A FilespaceRootReference argument always means a
+// checkpoint; page zero is named only through PageZero().
+struct NativeCatalogSource {
+  enum class Kind : scratchbird::core::platform::u8 { checkpoint, page_zero };
+  Kind kind = Kind::checkpoint;
+  scratchbird::storage::disk::FilespaceRootReference checkpoint{};
+  scratchbird::core::platform::Uuid filespace_uuid{};
+  NativeCatalogSource(const scratchbird::storage::disk::FilespaceRootReference& root) noexcept  // NOLINT: a checkpoint
+      : kind(Kind::checkpoint), checkpoint(root) {}
+  static NativeCatalogSource PageZero(const scratchbird::core::platform::Uuid& filespace) noexcept {
+    NativeCatalogSource s;s.kind=Kind::page_zero;s.filespace_uuid=filespace;return s;
+  }
+ private:
+  NativeCatalogSource() noexcept = default;
 };
 struct NativeCheckpointCatalogRelationResult {
   NativeCheckpointCatalogRelationError error = NativeCheckpointCatalogRelationError::invalid_reference;
-  NativeCheckpointCatalogResult checkpoint;
+  NativeCheckpointCatalogResult checkpoint;  // the checkpoint source only
   NativeCatalogRelationImageResult relation;
   std::vector<std::size_t> navigation_creator_entries;
   std::vector<NativeCatalogCreatorBinding> row_creators;
   u64 retained_image_bytes = 0;
-  bool ok() const noexcept { return error==NativeCheckpointCatalogRelationError::none && checkpoint.ok() && relation.ok(); }
+  // SB_NATIVE_FIXED_ROOT_READ: the page-zero source. Its catalog root images
+  // ([0] kind 2; [page_zero_feature_index] kind 8), the in-place inventory and
+  // page zero's cluster flag; and the fixed-root findings when it was refused.
+  bool page_zero_source = false;
+  std::vector<scratchbird::storage::page::NativeCatalogRootResult> page_zero_catalogs;
+  std::size_t page_zero_feature_index = 0;
+  scratchbird::transaction::mga::LocalTransactionInventory page_zero_inventory;
+  bool page_zero_cluster_authority_required = false;
+  NativeFixedRootMemoryError fixed_root_error = NativeFixedRootMemoryError::none;
+  scratchbird::storage::disk::FilespacePageZeroError page_zero_error = scratchbird::storage::disk::FilespacePageZeroError::none;
+  std::optional<u16> fixed_root_kind;
+  // The source-neutral view the relation and version reads use.
+  const scratchbird::transaction::mga::LocalTransactionInventory& inventory() const noexcept {
+    return page_zero_source ? page_zero_inventory : checkpoint.checkpoint_inventory.inventory;
+  }
+  bool cluster_authority_required() const noexcept {
+    return page_zero_source ? page_zero_cluster_authority_required
+                            : checkpoint.checkpoint_inventory.checkpoint && (checkpoint.checkpoint_inventory.checkpoint->flags & 4);
+  }
+  bool ok() const noexcept {
+    return error==NativeCheckpointCatalogRelationError::none && relation.ok() &&
+        (page_zero_source ? !page_zero_catalogs.empty() : checkpoint.ok());
+  }
 };
 // Actual checkpoint -> catalog/feature role -> relation images -> inventory
 // creator identity. Not snapshot, family/key, root-selection or publication authority.
 NativeCheckpointCatalogRelationResult ReadNativeCheckpointCatalogRelationFromOpenDevices(
     const scratchbird::core::platform::Uuid& database_uuid,
     const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
-    const scratchbird::storage::disk::FilespaceRootReference& checkpoint,
+    const NativeCatalogSource& checkpoint,
     u16 catalog_selector, u16 relation_role, const NativeCatalogRelationBinding&,
     u64 maximum_retained_image_bytes) noexcept;
 
@@ -431,7 +475,7 @@ struct NativePinnedCatalogReadResult {
 NativePinnedCatalogReadResult ReadNativePinnedCatalogVersionsFromOpenDevices(
     const scratchbird::core::platform::Uuid& database_uuid,
     const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
-    const scratchbird::storage::disk::FilespaceRootReference& checkpoint,
+    const NativeCatalogSource& checkpoint,
     u16 catalog_selector, u16 relation_role, const NativeCatalogRelationBinding&,
     const scratchbird::transaction::mga::TransactionIdentity& reader,
     const scratchbird::transaction::mga::PublishedSnapshotPin&,
@@ -453,7 +497,7 @@ struct NativeCommittedCatalogReadResult {
 NativeCommittedCatalogReadResult ReadNativeCommittedCatalogVersionsFromOpenDevices(
     const scratchbird::core::platform::Uuid& database_uuid,
     const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
-    const scratchbird::storage::disk::FilespaceRootReference& checkpoint,
+    const NativeCatalogSource& checkpoint,
     u16 catalog_selector,u16 relation_role,const NativeCatalogRelationBinding&,
     u64 maximum_retained_image_bytes) noexcept;
 
@@ -475,7 +519,7 @@ struct NativeMetricCatalogReadResult {
 NativeMetricCatalogReadResult ReadLocalNativeMetricCatalogFromOpenDevices(
     const scratchbird::core::platform::Uuid& database_uuid,
     const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
-    const scratchbird::storage::disk::FilespaceRootReference& checkpoint,
+    const NativeCatalogSource& checkpoint,
     u16 catalog_selector, u16 relation_role, const NativeCatalogRelationBinding&,
     const scratchbird::transaction::mga::TransactionIdentity& reader,
     const scratchbird::transaction::mga::PublishedSnapshotPin&,
@@ -495,7 +539,7 @@ NativeMetricSeriesReadResult ReadLocalNativeMetricSeriesFromOpenDevices(
     const scratchbird::core::platform::Uuid& database_uuid,
     const scratchbird::core::platform::Uuid& node_uuid,
     const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
-    const scratchbird::storage::disk::FilespaceRootReference& checkpoint,
+    const NativeCatalogSource& checkpoint,
     u16 catalog_selector, u16 relation_role, const NativeCatalogRelationBinding&,
     const scratchbird::transaction::mga::TransactionIdentity& reader,
     const scratchbird::transaction::mga::PublishedSnapshotPin&,
