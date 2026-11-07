@@ -275,9 +275,84 @@ void TestRefusals() {
 }
 }  // namespace
 
+// The backed lease (no memory grant; the create's self-check) is the same
+// acquisition over a caller backing: it describes the file exactly as the
+// governed lease does, uses only the backing it is given, refuses a backing one
+// byte short, and refuses every failed or corrupted read the same way.
+void TestBacked(unsigned profile) {
+  Node n(profile);
+  MemoryFixture f(32u << 20);
+  const db::NativeFixedRootMemoryLimits limits{256 * n.size, 8u << 20};
+  auto governed = Acquire(n, f, limits);
+  Check(governed.ok(), "governed lease for the backed comparison");
+  const auto& g = *governed.lease;
+  const auto devices = n.Devices();
+  std::vector<byte> backing(limits.maximum_backing_bytes);
+  auto backed = db::AcquireNativeFixedRootBackedLease(Id(1), devices, Id(2), limits, backing);
+  Check(backed.ok(), "backed lease over the same database");
+  const auto& b = *backed.lease;
+  const auto same = [](const d::FilespaceRootReference& x, const d::FilespaceRootReference& y) {
+    return x.kind == y.kind && x.page_type == y.page_type && x.filespace_uuid == y.filespace_uuid &&
+           x.page_number == y.page_number && x.page_generation == y.page_generation &&
+           x.page_size_profile_uuid == y.page_size_profile_uuid && x.object_uuid == y.object_uuid;
+  };
+  Check(b.identity() == g.identity() && b.roots().size() == g.roots().size() &&
+            std::equal(b.roots().begin(), b.roots().end(), g.roots().begin(), same),
+        "the backed lease has the governed lease's identity and roots");
+  Check(b.inventory().next_local_transaction_id == g.inventory().next_local_transaction_id &&
+            b.inventory().next_commit_sequence == g.inventory().next_commit_sequence &&
+            b.inventory().entries.size() == g.inventory().entries.size() &&
+            b.inventory_pages().size() == g.inventory_pages().size() &&
+            b.allocation().pages.size() == g.allocation().pages.size() &&
+            b.directory().pages.size() == g.directory().pages.size() &&
+            b.retained_image_bytes() == g.retained_image_bytes() && b.backing_bytes_used() == g.backing_bytes_used(),
+        "the backed lease reads the same inventory, allocation and directory with the same bytes");
+  const auto used = b.backing_bytes_used();
+  const auto* first = backing.data();
+  Check(used <= backing.size() && b.allocation().pages.front().image.data() >= first &&
+            b.allocation().pages.front().image.data() < first + backing.size(),
+        "the backed lease keeps its images in the caller's backing");
+  governed.lease.Reset();
+  backed.lease.Reset();
+  {
+    std::vector<byte> exact(used);
+    Check(db::AcquireNativeFixedRootBackedLease(Id(1), devices, Id(2), {256 * n.size, used}, exact).ok(),
+          "exactly the backing used");
+    std::vector<byte> short_one(used - 1);
+    reads = 0;
+    track = true;
+    const auto refused = db::AcquireNativeFixedRootBackedLease(Id(1), devices, Id(2), {256 * n.size, used}, short_one);
+    track = false;
+    Check(!refused.ok() && refused.error == E::resource_exhausted && !refused.lease && !reads,
+          "a backing one byte short of the limit is refused before any read");
+  }
+  // Every read failed, then every read corrupted, through the backed lease.
+  reads = 0;
+  track = true;
+  Check(db::AcquireNativeFixedRootBackedLease(Id(1), devices, Id(2), limits, backing).ok(), "count the backed reads");
+  track = false;
+  const unsigned total = reads;
+  Check(total > 0, "the backed lease reads the file");
+  for (unsigned at = 1; at <= total; ++at)
+    for (bool corrupt : {false, true}) {
+      reads = 0;
+      (corrupt ? corrupt_at : fail_at) = at;
+      track = true;
+      const auto r = db::AcquireNativeFixedRootBackedLease(Id(1), devices, Id(2), limits, backing);
+      track = false;
+      fail_at = corrupt_at = 0;
+      Check(!r.ok() && !r.lease && reads >= at, corrupt ? "every corrupted backed read is refused"
+                                                        : "every failed backed read is refused");
+      if (!corrupt) Check(r.error == E::io_failure, "a failed read is an io_failure");
+    }
+  Check(db::AcquireNativeFixedRootBackedLease(Id(1), devices, Id(2), limits, backing).ok(),
+        "a clean backed read after the sweep");
+}
+
 int main() {
   try {
     for (unsigned profile = 0; profile < 5; ++profile) TestProfile(profile);
+    for (unsigned profile = 0; profile < 5; ++profile) TestBacked(profile);
     TestRefusals();
   } catch (const std::exception& e) {
     std::cerr << "native fixed root FAIL " << e.what() << " after " << checks << " checks\n";

@@ -84,7 +84,12 @@ inline NativeReadSourceIdentity NativeReadSourceIdentityFromFixedRoot(const Nati
 
 struct NativeFixedRootMemoryResult;
 class NativeFixedRootMemoryHandle;
-namespace detail { struct NativeLeaseSourceAccess; }
+namespace detail {
+struct NativeLeaseSourceAccess;
+NativeFixedRootMemoryResult AcquireNativeFixedRootLeaseOn(
+    const Uuid&, std::span<const disk::NativeFilespaceDevice>, const Uuid&, NativeFixedRootMemoryLimits,
+    std::span<core::platform::byte>, NativeStorageArena, NativeFixedRootMemoryResult) noexcept;
+}  // namespace detail
 
 class NativeFixedRootMemoryLease {
  public:
@@ -135,9 +140,9 @@ class NativeFixedRootMemoryLease {
   std::size_t backing_bytes_used_ = 0;
   friend class NativeFixedRootMemoryHandle;
   friend struct detail::NativeLeaseSourceAccess;
-  friend NativeFixedRootMemoryResult AcquireNativeFixedRootMemoryLease(
+  friend NativeFixedRootMemoryResult detail::AcquireNativeFixedRootLeaseOn(
       const Uuid&, std::span<const disk::NativeFilespaceDevice>, const Uuid&, NativeFixedRootMemoryLimits,
-      NativeStorageMemory&, const NativeStorageMemoryBinding&) noexcept;
+      std::span<core::platform::byte>, NativeStorageArena, NativeFixedRootMemoryResult) noexcept;
 };
 
 // Owns the lease and its backing; the backing cannot outlive or be separated
@@ -184,9 +189,9 @@ class NativeFixedRootMemoryHandle {
   void CheckThread() const noexcept { if (lease_) lease_->CheckThread(); }
   NativeStorageArena arena_;
   NativeFixedRootMemoryLease* lease_ = nullptr;
-  friend NativeFixedRootMemoryResult AcquireNativeFixedRootMemoryLease(
+  friend NativeFixedRootMemoryResult detail::AcquireNativeFixedRootLeaseOn(
       const Uuid&, std::span<const disk::NativeFilespaceDevice>, const Uuid&, NativeFixedRootMemoryLimits,
-      NativeStorageMemory&, const NativeStorageMemoryBinding&) noexcept;
+      std::span<core::platform::byte>, NativeStorageArena, NativeFixedRootMemoryResult) noexcept;
 };
 
 struct NativeFixedRootMemoryResult {
@@ -220,60 +225,49 @@ inline const page::NativeAllocationRecord* NativeFixedRootRecord(const NativeRea
 }
 }  // namespace detail
 
-inline NativeFixedRootMemoryResult AcquireNativeFixedRootMemoryLease(
+namespace detail {
+// The request checks every acquisition makes before it touches memory or I/O.
+inline NativeFixedRootMemoryError CheckNativeFixedRootRequest(
     const Uuid& database, std::span<const disk::NativeFilespaceDevice> files, const Uuid& primary,
-    NativeFixedRootMemoryLimits limits, NativeStorageMemory& memory, const NativeStorageMemoryBinding& binding) noexcept {
+    NativeFixedRootMemoryLimits limits) noexcept {
+  using E = NativeFixedRootMemoryError;
+  if (!core::uuid::IsEngineIdentityUuid(database) || !core::uuid::IsEngineIdentityUuid(primary) || files.empty() ||
+      !limits.maximum_verification_image_bytes || !limits.maximum_backing_bytes)
+    return E::invalid_request;
+  bool found = false;
+  for (std::size_t i = 0; i < files.size(); ++i) {
+    const auto& f = files[i];
+    if (!f.device || !core::uuid::IsEngineIdentityUuid(f.filespace_uuid) ||
+        !disk::FindCanonicalFilespacePageProfile(f.page_size_profile_uuid)) {
+      return E::invalid_device;
+    }
+    found |= f.filespace_uuid == primary;
+    for (std::size_t j = 0; j < i; ++j)
+      if (files[j].device == f.device || files[j].filespace_uuid == f.filespace_uuid) {
+        return E::invalid_device;
+      }
+  }
+  if (!found) {
+    return E::invalid_device;
+  }
+  return E::none;
+}
+
+// The acquisition itself, over `backing`. A governed lease passes the arena
+// that owns `backing`; it moves into the handle. A backed lease passes an empty
+// arena, and its caller keeps `backing` alive until the lease is reset.
+inline NativeFixedRootMemoryResult AcquireNativeFixedRootLeaseOn(
+    const Uuid& database, std::span<const disk::NativeFilespaceDevice> files, const Uuid& primary,
+    NativeFixedRootMemoryLimits limits, std::span<core::platform::byte> backing, NativeStorageArena arena,
+    NativeFixedRootMemoryResult out) noexcept {
   using E = NativeFixedRootMemoryError;
   using L = NativeFixedRootMemoryLease;
   namespace mga = scratchbird::transaction::mga;
-  NativeFixedRootMemoryResult out;
   try {
-    out.memory_error = memory.CheckBinding(binding);
-    if (out.memory_error == NativeStorageMemoryError::none && binding.database_uuid != database)
-      out.memory_error = NativeStorageMemoryError::invalid_binding;
-    if (out.memory_error != NativeStorageMemoryError::none) {
-      out.error = E::memory_binding_failure;
-      return out;
-    }
-    if (!core::uuid::IsEngineIdentityUuid(database) || !core::uuid::IsEngineIdentityUuid(primary) || files.empty() ||
-        !limits.maximum_verification_image_bytes || !limits.maximum_backing_bytes)
-      return out;
-    bool found = false;
-    for (std::size_t i = 0; i < files.size(); ++i) {
-      const auto& f = files[i];
-      if (!f.device || !core::uuid::IsEngineIdentityUuid(f.filespace_uuid) ||
-          !disk::FindCanonicalFilespacePageProfile(f.page_size_profile_uuid)) {
-        out.error = E::invalid_device;
-        return out;
-      }
-      found |= f.filespace_uuid == primary;
-      for (std::size_t j = 0; j < i; ++j)
-        if (files[j].device == f.device || files[j].filespace_uuid == f.filespace_uuid) {
-          out.error = E::invalid_device;
-          return out;
-        }
-    }
-    if (!found) {
-      out.error = E::invalid_device;
-      return out;
-    }
-    auto payload = memory.CreateArena(binding, limits.maximum_backing_bytes, alignof(std::max_align_t));
-    out.memory_error = payload.error;
-    out.allocation_status = payload.backing.status;
-    out.allocation_diagnostic = std::move(payload.backing.diagnostic);
-    if (!payload.ok()) {
-      out.error = E::memory_allocation_failure;
-      return out;
-    }
-    auto block = payload.arena.Allocate(limits.maximum_backing_bytes, alignof(std::max_align_t));
-    if (!block.ok()) {
-      out.error = E::resource_exhausted;
-      return out;
-    }
-    detail::NativeMetadataMemory resource({static_cast<byte*>(block.pointer), block.bytes});
+    detail::NativeMetadataMemory resource({backing.data(), backing.size()});
     detail::NativeMetadataScratch scratch{&resource};
     NativeFixedRootMemoryHandle handle;
-    handle.arena_ = std::move(payload.arena);
+    handle.arena_ = std::move(arena);
     handle.lease_ = new (resource.allocate(sizeof(L), alignof(L))) L;
     auto& lease = *handle.lease_;
     auto devices = scratch.Copy<disk::NativeFilespaceDevice>(files);
@@ -509,6 +503,72 @@ inline NativeFixedRootMemoryResult AcquireNativeFixedRootMemoryLease(
     out.error = E::io_failure;
   }
   return out;
+}
+}  // namespace detail
+
+inline NativeFixedRootMemoryResult AcquireNativeFixedRootMemoryLease(
+    const Uuid& database, std::span<const disk::NativeFilespaceDevice> files, const Uuid& primary,
+    NativeFixedRootMemoryLimits limits, NativeStorageMemory& memory, const NativeStorageMemoryBinding& binding) noexcept {
+  using E = NativeFixedRootMemoryError;
+  NativeFixedRootMemoryResult out;
+  try {
+    out.memory_error = memory.CheckBinding(binding);
+    if (out.memory_error == NativeStorageMemoryError::none && binding.database_uuid != database)
+      out.memory_error = NativeStorageMemoryError::invalid_binding;
+    if (out.memory_error != NativeStorageMemoryError::none) {
+      out.error = E::memory_binding_failure;
+      return out;
+    }
+    if (const auto error = detail::CheckNativeFixedRootRequest(database, files, primary, limits); error != E::none) {
+      out.error = error;
+      return out;
+    }
+    auto payload = memory.CreateArena(binding, limits.maximum_backing_bytes, alignof(std::max_align_t));
+    out.memory_error = payload.error;
+    out.allocation_status = payload.backing.status;
+    out.allocation_diagnostic = std::move(payload.backing.diagnostic);
+    if (!payload.ok()) {
+      out.error = E::memory_allocation_failure;
+      return out;
+    }
+    auto block = payload.arena.Allocate(limits.maximum_backing_bytes, alignof(std::max_align_t));
+    if (!block.ok()) {
+      out.error = E::resource_exhausted;
+      return out;
+    }
+    return detail::AcquireNativeFixedRootLeaseOn(database, files, primary, limits,
+                                                 {static_cast<byte*>(block.pointer), block.bytes},
+                                                 std::move(payload.arena), std::move(out));
+  } catch (const std::bad_alloc&) {
+    out.error = E::resource_exhausted;
+  } catch (const std::length_error&) {
+    out.error = E::resource_exhausted;
+  } catch (...) {
+    out.error = E::io_failure;
+  }
+  return out;
+}
+
+// SB_NATIVE_FIXED_ROOT_READ: the same acquisition without a memory grant, over
+// a backing the caller supplies (the native create's self-check, which runs
+// before any memory governor exists). The caller keeps `backing` alive until
+// the lease is reset; at most limits.maximum_backing_bytes of it is used.
+inline NativeFixedRootMemoryResult AcquireNativeFixedRootBackedLease(
+    const Uuid& database, std::span<const disk::NativeFilespaceDevice> files, const Uuid& primary,
+    NativeFixedRootMemoryLimits limits, std::span<core::platform::byte> backing) noexcept {
+  using E = NativeFixedRootMemoryError;
+  NativeFixedRootMemoryResult out;
+  if (const auto error = detail::CheckNativeFixedRootRequest(database, files, primary, limits); error != E::none) {
+    out.error = error;
+    return out;
+  }
+  if (!backing.data() || backing.size() < limits.maximum_backing_bytes) {
+    out.error = E::resource_exhausted;
+    return out;
+  }
+  return detail::AcquireNativeFixedRootLeaseOn(database, files, primary, limits,
+                                               backing.first(limits.maximum_backing_bytes), NativeStorageArena{},
+                                               std::move(out));
 }
 
 }  // namespace scratchbird::storage::database
