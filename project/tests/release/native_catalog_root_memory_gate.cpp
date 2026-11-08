@@ -330,7 +330,9 @@ void Codecs(){
       case 8:v.header.page_type=10;expected=E::invalid_header;break;
       case 9:v.predecessor=v.roots[0].page;expected=E::invalid_reference;break;
       case 10:v.predecessor_sha256.fill(1);expected=E::invalid_reference;break;
-      case 11:v.catalog_generation=2;expected=E::invalid_reference;break;
+      // SB_CATALOG_ROOT_ADVANCE (owner Q24 = 1): a later generation may be
+      // in place (neither predecessor nor digest), never a digest alone.
+      case 11:v.catalog_generation=2;v.predecessor_sha256.fill(1);expected=E::invalid_reference;break;
       case 12:v=Example(0,0,2,2);v.predecessor_sha256={};expected=E::invalid_reference;break;
       case 13:v=Example(0,0,2,2);v.predecessor->filespace_uuid={};expected=E::invalid_reference;break;
       case 14:v=Example(0,0,2,2);v.predecessor=d::NativePageReference{Id(2),19,109,v.header.page_size_profile_uuid};expected=E::invalid_reference;break;
@@ -362,6 +364,9 @@ void Codecs(){
     if(variant==0||variant==8||variant==32)Check(actual.error==ME::header_failure,"actual common expected header refuses before root");
     else Check(actual.error==ME::catalog_root_failure&&actual.catalog_root_error==expected,"actual resealed root refusal preserves nested reason");
   }
+  {auto v=p;v.catalog_generation=2;const auto b=Oracle(v);const auto r=scratch.Decode(b);const auto owned=pg::DecodeNativeCatalogRoot(b);
+    Check(r.error==E::none&&r.root&&owned.ok()&&owned.root->catalog_generation==2&&!owned.root->predecessor,
+        "a later generation in the in-place form (no predecessor, no digest) decodes, borrowed and owned");}
   for(unsigned kind:{6u,7u,8u}){auto v=Example(0,0,kind);v.roots[0].role=1;
     Check(scratch.Decode(Oracle(v)).error==E::invalid_roots,"each dedicated kind requires its exact role");}
   for(unsigned i=0;i<6;++i)for(unsigned j=0;j<6;++j)if(i!=j)for(bool object:{false,true}){

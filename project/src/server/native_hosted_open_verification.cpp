@@ -414,9 +414,13 @@ NativeOpenVerificationResult NativeHostedDatabaseRuntime::VerifyStartupDatabaseF
             if(relation){error=VE::finding;return;}relation=&candidate;
           }
         }
-        if(!relation||route.page!=relation->root||root.catalog_generation!=relation->catalog_generation||
-            root.schema_epoch!=relation->schema_epoch||root.security_epoch!=relation->security_epoch||
-            root.resource_epoch!=relation->resource_epoch){error=VE::finding;return;}
+        // SB_CATALOG_ROOT_ADVANCE (owner Q24 = 1): the catalog root is
+        // rewritten in place after COMMIT, then each route root; a crash
+        // between them leaves a route root behind the catalog root, never
+        // ahead of it. Behind is admitted (the next advance levels it).
+        if(!relation||route.page!=relation->root||root.catalog_generation>relation->catalog_generation||
+            root.schema_epoch>relation->schema_epoch||root.security_epoch>relation->security_epoch||
+            root.resource_epoch>relation->resource_epoch){error=VE::finding;return;}
         const auto found=std::find_if(physical.begin(),physical.end(),[&](const auto& p){
           return p.header.filespace_uuid==route.page.filespace_uuid&&p.header.page_number==route.page.page_number;});
         if(found==physical.end()||found->header.page_generation!=route.page.page_generation||

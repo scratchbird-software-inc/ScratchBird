@@ -945,7 +945,11 @@ void CatalogRoots() {
   {auto r=RootExample(); r.catalog_generation=0; RootInvalid(r,RootError::invalid_family);}
   {auto r=RootExample(); r.schema_epoch=0; RootInvalid(r,RootError::invalid_family);}
   {auto r=RootExample(); r.security_epoch=0; RootInvalid(r,RootError::invalid_family);}
-  {auto r=RootExample(); r.catalog_generation=2; RootInvalid(r,RootError::invalid_reference);}
+  // SB_CATALOG_ROOT_ADVANCE (owner Q24 = 1): a later generation may carry
+  // neither predecessor nor digest (the in-place form), never one without the other.
+  {auto r=RootExample(); r.catalog_generation=2; const auto e=page::EncodeNativeCatalogRoot(r);
+    Check(e.ok()&&page::DecodeNativeCatalogRoot(RootOracle(r)).ok(),"the in-place later generation encodes and decodes");}
+  {auto r=RootExample(); r.catalog_generation=2; r.predecessor_sha256[0]=1; RootInvalid(r,RootError::invalid_reference);}
   {auto r=RootExample(); r.predecessor_sha256[0]=1; RootInvalid(r,RootError::invalid_reference);}
   {auto r=RootExample(); r.roots[0].role=2; RootInvalid(r,RootError::invalid_roots);}
   {auto r=RootExample(); r.roots[0].page_type=5; RootInvalid(r,RootError::invalid_roots);}

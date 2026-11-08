@@ -413,8 +413,11 @@ template<class Root> Error Validate(const Root& r) {
       r.header.page_generation,r.header.page_size_profile_uuid};
   if (!Reference(self)) return Error::invalid_reference;
   const bool empty_digest = Zero(r.predecessor_sha256.data(),r.predecessor_sha256.size());
+  // SB_CATALOG_ROOT_ADVANCE (owner Q24 = 1): a later generation is either the
+  // checkpoint-era history form (a predecessor page and its digest, both
+  // present) or the in-place form (neither). Generation 1 has neither.
   if ((r.catalog_generation==1 && (r.predecessor || !empty_digest))
-      || (r.catalog_generation>1 && (!r.predecessor || empty_digest))) return Error::invalid_reference;
+      || (r.catalog_generation>1 && r.predecessor.has_value()==empty_digest)) return Error::invalid_reference;
   if (r.predecessor && (!Reference(*r.predecessor) || SameSlot(self,*r.predecessor)
       || !ProfilesAgree(self,*r.predecessor))) return Error::invalid_reference;
   if (r.roots.size()!=(r.root_kind==2?6u:1u)) return Error::invalid_roots;

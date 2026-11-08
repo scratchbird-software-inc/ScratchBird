@@ -183,7 +183,7 @@ struct Db {
   std::string name;
   u32 size = 0;
   Uuid database, primary, profile;
-  d::FilespaceRootReference catalog_root, state_root, map_root;
+  d::FilespaceRootReference catalog_root, state_root, map_root, configuration_root, security_root;
   db::NativeCreationWorkspaceReceipt receipt;
   std::vector<byte> bytes;
   mutable u16 role = 0;  // the relation the scenarios change (RoleScope switches it)
@@ -197,8 +197,12 @@ struct Db {
       if (root.kind == 2) catalog_root = root;
       if (root.kind == 3) map_root = root;
       if (root.kind == 4) state_root = root;
+      if (root.kind == 6) configuration_root = root;
+      if (root.kind == 7) security_root = root;
     }
-    Check(catalog_root.kind == 2 && state_root.kind == 4 && map_root.kind == 3, "page zero names the roots");
+    Check(catalog_root.kind == 2 && state_root.kind == 4 && map_root.kind == 3 && configuration_root.kind == 6 &&
+              security_root.kind == 7,
+          "page zero names the roots");
     Check(device.Close().ok(), "close");
     bytes = ReadAll(path);
     // Later transactions begin one second after the creator's commit.
@@ -225,6 +229,8 @@ struct Db {
     b.database_uuid = database;
     b.catalog_root = catalog_root;
     b.state_root = state_root;
+    b.configuration_root = configuration_root;
+    b.security_root = security_root;
     return b;
   }
   db::NativeCatalogRelationBinding Relation() const {
@@ -1311,6 +1317,311 @@ void Faults(const Db& b) {
   std::cout << b.name << " faults page_size=" << b.size << " points=" << calls << " reads=" << reads
             << " writes_or_syncs=" << writes << '\n';
 }
+
+// ---- The catalog root, rewritten in place after COMMIT (owner Q24 = 1) ------------
+pg::NativeCatalogRoot RootOf(const Db& b, std::span<const byte> file) {
+  const auto root = pg::DecodeNativeCatalogRoot(PageOf(file, b.catalog_root.page_number, b.size));
+  Check(root.ok(), "the catalog root decodes");
+  return *root.root;
+}
+db::CatalogRootAdvanceRequest Advance(const pg::NativeCatalogRoot& now, u64 n, u64 tx) {
+  db::CatalogRootAdvanceRequest r;
+  r.transaction_order = n;
+  r.transaction_uuid = TxId(tx);
+  r.catalog_generation = now.catalog_generation + 1;
+  r.schema_epoch = now.schema_epoch;
+  r.security_epoch = now.security_epoch + 1;
+  r.resource_epoch = now.resource_epoch;
+  return r;
+}
+// The file the oracle expects after an advance: the root page re-encoded with
+// the new values, no predecessor and no digest; every other byte unchanged.
+std::vector<byte> AdvanceOracle(const Db& b, std::span<const byte> before, const db::CatalogRootAdvanceRequest& r) {
+  auto root = RootOf(b, before);
+  root.catalog_generation = r.catalog_generation;
+  root.schema_epoch = r.schema_epoch;
+  root.security_epoch = r.security_epoch;
+  root.resource_epoch = r.resource_epoch;
+  root.predecessor.reset();
+  root.predecessor_sha256.fill(0);
+  const auto image = pg::EncodeNativeCatalogRoot(root);
+  Check(image.ok(), "the expected root encodes");
+  std::vector<byte> out(before.begin(), before.end());
+  std::copy(image.bytes.begin(), image.bytes.end(),
+            out.begin() + static_cast<std::ptrdiff_t>(b.catalog_root.page_number * b.size));
+  // The configuration and security route roots, levelled with it.
+  for (const auto* at : {&b.configuration_root, &b.security_root}) {
+    const auto was = pg::DecodeNativeCatalogRoot(PageOf(before, at->page_number, b.size));
+    Check(was.ok() && !was.root->predecessor, "a route root decodes");
+    auto level = *was.root;
+    level.catalog_generation = r.catalog_generation;
+    level.schema_epoch = r.schema_epoch;
+    level.security_epoch = r.security_epoch;
+    level.resource_epoch = r.resource_epoch;
+    const auto route = pg::EncodeNativeCatalogRoot(level);
+    Check(route.ok(), "the expected route root encodes");
+    std::copy(route.bytes.begin(), route.bytes.end(), out.begin() + static_cast<std::ptrdiff_t>(at->page_number * b.size));
+  }
+  return out;
+}
+// A route root's catalog generation as stored.
+u64 RouteGeneration(const Db& b, std::span<const byte> file, const d::FilespaceRootReference& at) {
+  const auto root = pg::DecodeNativeCatalogRoot(PageOf(file, at.page_number, b.size));
+  Check(root.ok(), "a route root decodes");
+  return root.root->catalog_generation;
+}
+void AdvanceRefused(const Db& b, Session& s, const std::string& path, const db::CatalogRootAdvanceRequest& r, CE error,
+                    std::string_view label, bool read_only = false) {
+  const auto before = ReadAll(path);
+  auto binding = b.Binding();
+  binding.read_only_database = read_only;
+  const auto result = db::AdvanceCatalogRoot(s.sink(), binding, r);
+  if (result.error != error) std::cerr << label << ": got " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+  Check(result.error == error && !result.writes && !result.syncs && !result.attempted,
+        std::string(label) + ": refused as expected with no write");
+  Check(ReadAll(path) == before, std::string(label) + ": the file is unchanged");
+}
+void RootAdvance(const Db& b) {
+  const auto [row, v0] = Pick(b);
+  const auto created = RootOf(b, b.bytes);
+  Check(created.catalog_generation == 1 && !created.predecessor, "the create writes generation 1 with no history");
+  const auto path = b.Copy(b.bytes, "root.db");
+  {
+    Session s(b, path);
+    Begin(*s.w, s.sink(), 2);
+    Expect(b, s, path, Next(b, path, row, v0, 2, VersionId(1)), "the change the root publishes");
+    AdvanceRefused(b, s, path, Advance(created, 2, 2), CE::transaction_not_committed, "before COMMIT");
+    Commit(*s.w, s.sink(), 2);
+    Begin(*s.w, s.sink(), 3);
+    Rollback(*s.w, s.sink(), 3);
+    AdvanceRefused(b, s, path, Advance(created, 3, 3), CE::transaction_not_committed, "a rolled-back transaction");
+    AdvanceRefused(b, s, path, Advance(created, 9, 9), CE::transaction_not_committed, "a number never begun");
+    AdvanceRefused(b, s, path, Advance(created, 2, 7), CE::transaction_not_committed, "another transaction's id");
+    AdvanceRefused(b, s, path, Advance(created, 2, 2), CE::read_only_database, "a read-only database", true);
+    {
+      auto r = Advance(created, 2, 2);
+      r.catalog_generation += 1;
+      AdvanceRefused(b, s, path, r, CE::root_regression, "a generation that skips");
+      r.catalog_generation = created.catalog_generation;
+      AdvanceRefused(b, s, path, r, CE::invalid_request, "the current generation");
+      r = Advance(created, 2, 2);
+      r.security_epoch = created.security_epoch - 1;
+      AdvanceRefused(b, s, path, r, CE::root_regression, "a lowered security epoch");
+      r = Advance(created, 2, 2);
+      r.transaction_order = 0;
+      AdvanceRefused(b, s, path, r, CE::invalid_request, "transaction order 0");
+    }
+    // A route root ahead of the catalog root (forged with the production
+    // codec): no state the writer leaves; refused with no write.
+    {
+      const auto before = ReadAll(path);
+      auto forged = pg::DecodeNativeCatalogRoot(PageOf(before, b.security_root.page_number, b.size));
+      Check(forged.ok(), "the security route root decodes");
+      auto ahead = *forged.root;
+      ahead.catalog_generation += 1;
+      const auto image = pg::EncodeNativeCatalogRoot(ahead);
+      Check(image.ok(), "the forged route root encodes");
+      auto file = before;
+      std::copy(image.bytes.begin(), image.bytes.end(),
+                file.begin() + static_cast<std::ptrdiff_t>(b.security_root.page_number * b.size));
+      const auto forged_path = b.Copy(file, "route-ahead.db");
+      Session f(b, forged_path);
+      AdvanceRefused(b, f, forged_path, Advance(created, 2, 2), CE::invalid_catalog, "a route root ahead of the root");
+      fs::remove(forged_path);
+    }
+    // The advance: the catalog root's unit, then each route root's.
+    const auto first = Advance(created, 2, 2);
+    const auto expected = AdvanceOracle(b, ReadAll(path), first);
+    const auto done = db::AdvanceCatalogRoot(s.sink(), b.Binding(), first);
+    if (!done.ok()) std::cerr << "advance: " << db::CatalogVersionWriteErrorName(done.error) << '\n';
+    Check(done.ok() && done.writes == 3 && done.previous_generation == created.catalog_generation,
+          "the committed change's root advance: three unit writes");
+    Check(ReadAll(path) == expected, "the file is the oracle's: the three roots alone changed");
+    const auto advanced = RootOf(b, ReadAll(path));
+    Check(advanced.catalog_generation == 2 && !advanced.predecessor &&
+              advanced.security_epoch == created.security_epoch + 1,
+          "generation 2 in place, no predecessor, the security epoch raised");
+    // The root now admits versions at its new values; never above them.
+    Begin(*s.w, s.sink(), 4);
+    auto at_new = Next(b, path, row, VersionId(1), 4, VersionId(2));
+    at_new.metadata.catalog_generation = advanced.catalog_generation;
+    Refused(b, s, path,
+            [&] {
+              auto r = at_new;
+              r.metadata.catalog_generation = advanced.catalog_generation + 1;
+              return r;
+            }(),
+            CE::ahead_of_catalog_root, "still never above the advanced root");
+    Expect(b, s, path, at_new, "a version at the advanced generation");
+    Commit(*s.w, s.sink(), 4);
+    // A second advance follows the first.
+    const auto second = Advance(advanced, 4, 4);
+    Check(db::AdvanceCatalogRoot(s.sink(), b.Binding(), second).ok(), "the next advance");
+    AdvanceRefused(b, s, path, second, CE::root_regression, "the same advance again");
+  }
+  Check(RootOf(b, ReadAll(path)).catalog_generation == 3, "generation 3 after two advances");
+  Sees(b, path, row, VersionId(2), "the readers admit the in-place root");
+  fs::remove(path);
+  std::cout << b.name << " root advance page_size=" << b.size << '\n';
+}
+// Process loss and torn writes over BEGIN, COMMIT and the advance: the write
+// prefix. The advance writes the root's first 512-byte unit, which holds every
+// changed byte: torn at its half-way point it splits the generation fields
+// from the seal, the seal fails and every catalog read is refused. Any earlier
+// loss leaves the root as it was and the readers admit it.
+bool RootScript(const Db& b, pg::TransactionInventoryWriter& w, d::CarefulWriteSink& sink) {
+  pg::TransactionHeaderRecord h;
+  h.transaction_uuid = TxId(2);
+  if (!w.Begin(sink, h).ok() || !w.Commit(sink, 2, CommitTime(2)).ok()) return false;
+  auto binding = b.Binding();
+  return db::AdvanceCatalogRoot(sink, binding, Advance(RootOf(b, b.bytes), 2, 2)).ok();
+}
+[[noreturn]] void RootChild(const Db& b, const std::string& path, u32 limit, bool torn) {
+  try {
+    d::FileDevice device;
+    if (!device.Open(path, d::FileOpenMode::open_existing).ok()) _exit(kChildFailed);
+    int code = kChildCompleted;
+    {
+      d::FileDeviceCarefulWriteSink file(device);
+      std::optional<scratchbird::tests::CrashAfterWritesSink> crash;
+      std::optional<scratchbird::tests::TornWriteSink> tear;
+      d::CarefulWriteSink* sink = torn ? static_cast<d::CarefulWriteSink*>(&tear.emplace(file, limit, kPlannedCrash))
+                                       : static_cast<d::CarefulWriteSink*>(&crash.emplace(file, limit, kPlannedCrash));
+      pg::TransactionInventoryWriter w(b.TxBinding());
+      if (!w.Restart(*sink).ok() || !RootScript(b, w, *sink)) code = kChildFailed;
+    }
+    if (!device.Close().ok()) code = kChildFailed;
+    _exit(code);
+  } catch (...) {
+    _exit(kChildException);
+  }
+}
+void RootLosses(const Db& b) {
+  const auto [row, v0] = Pick(b);
+  Writes recorded;
+  {
+    const auto path = b.Copy(b.bytes, "root-record.db");
+    {
+      Session s(b, path, false);
+      RecordingSink rec(s.sink());
+      Check(s.w->Restart(rec).ok() && RootScript(b, *s.w, rec), "the root script runs");
+      recorded = rec.writes;
+    }
+    Check(recorded.size() == 8 && recorded[5].first == b.catalog_root.page_number * b.size &&
+              recorded[6].first == b.configuration_root.page_number * b.size &&
+              recorded[7].first == b.security_root.page_number * b.size &&
+              recorded[5].second.size() == 512 && recorded[6].second.size() == 512 && recorded[7].second.size() == 512,
+          "BEGIN, COMMIT, then the catalog root's first unit, then each route root's");
+    fs::remove(path);
+  }
+  const auto total = static_cast<u32>(recorded.size());
+  unsigned cases = 0, torn_roots = 0;
+  for (const bool torn : {false, true}) {
+    for (u32 k = torn ? 1 : 0; k <= total; ++k) {
+      const bool full = !torn && k == total;
+      const std::string label = b.name + (torn ? " root torn write " : " root crash after ") + std::to_string(k);
+      const auto path = b.Copy(b.bytes, "root-loss.db");
+      std::cout.flush();
+      std::cerr.flush();
+      const pid_t child = fork();
+      Check(child >= 0, label + ": fork");
+      if (child == 0) RootChild(b, path, full ? kNoCrash : k, torn);
+      int status = 0;
+      Check(waitpid(child, &status, 0) == child && WIFEXITED(status) &&
+                WEXITSTATUS(status) == (full ? kChildCompleted : kPlannedCrash),
+            label + ": the child stops where planned");
+      const auto file = ReadAll(path);
+      Check(file == (torn ? Apply(b.bytes, recorded, k - 1, 1) : Apply(b.bytes, recorded, k)),
+            label + ": exactly the write prefix");
+      const bool mixed = torn && Apply(b.bytes, recorded, k - 1) != file && Apply(b.bytes, recorded, k) != file;
+      const u64 torn_page = torn ? recorded[k - 1].first / b.size : 0;
+      const u64 applied = torn && !mixed && Apply(b.bytes, recorded, k) == file ? k : torn ? k - 1 : k;
+      if (mixed && torn_page == b.catalog_root.page_number) {
+        Check(pg::DecodeNativeCatalogRoot(PageOf(file, torn_page, b.size)).error ==
+                  pg::NativeCatalogRootError::invalid_integrity,
+              label + ": the torn catalog root fails its seal");
+        Check(!Look(b, path, row).read, label + ": every catalog read is refused");
+        ++torn_roots;
+      } else if (mixed && (torn_page == b.configuration_root.page_number || torn_page == b.security_root.page_number)) {
+        // Only open verification reads a route root: the catalog reads go on.
+        Check(pg::DecodeNativeCatalogRoot(PageOf(file, torn_page, b.size)).error ==
+                  pg::NativeCatalogRootError::invalid_integrity,
+              label + ": the torn route root fails its seal");
+        const auto seen = Look(b, path, row);
+        Check(seen.read && seen.version == v0, label + ": the catalog reads through the catalog root");
+        ++torn_roots;
+      } else {
+        const auto seen = Look(b, path, row);
+        Check(seen.read && seen.version == v0, label + ": the readers admit the roots as they stand");
+        Check(RootOf(b, file).catalog_generation == (applied >= 6 ? 2u : 1u),
+              label + ": the catalog root advanced only by its own write");
+        Check(RouteGeneration(b, file, b.configuration_root) == (applied >= 7 ? 2u : 1u) &&
+                  RouteGeneration(b, file, b.security_root) == (applied >= 8 ? 2u : 1u),
+              label + ": each route root at most the catalog root, levelled by its own write");
+      }
+      fs::remove(path);
+      ++cases;
+    }
+  }
+  Check(torn_roots == 3, "each torn root unit was seen");
+  std::cout << b.name << " root losses page_size=" << b.size << " writes=" << total << " cases=" << cases << '\n';
+}
+// Every read, write and sync failed in turn over BEGIN, COMMIT and the advance.
+void RootFaults(const Db& b) {
+  const auto request = Advance(RootOf(b, b.bytes), 2, 2);
+  Writes recorded;
+  std::vector<byte> final_file;
+  u32 calls = 0;
+  {
+    const auto path = b.Copy(b.bytes, "root-count.db");
+    {
+      Session s(b, path);
+      RecordingSink rec(s.sink());
+      FaultSink count(rec, kNoCrash);
+      Check(RootScript(b, *s.w, count), "the root script runs");
+      calls = count.calls();
+      recorded = rec.writes;
+    }
+    final_file = ReadAll(path);
+    fs::remove(path);
+  }
+  unsigned reads = 0, writes = 0;
+  for (u32 i = 1; i <= calls; ++i) {
+    const std::string label = b.name + " root fault at call " + std::to_string(i);
+    const auto path = b.Copy(b.bytes, "root-fault.db");
+    {
+      Session s(b, path);
+      FaultSink fault(s.sink(), i);
+      pg::TransactionHeaderRecord h;
+      h.transaction_uuid = TxId(2);
+      const auto step_on = [&](int step, d::CarefulWriteSink& sink) {
+        if (step == 0) return s.w->Begin(sink, h).ok();
+        if (step == 1) return s.w->Commit(sink, 2, CommitTime(2)).ok();
+        return db::AdvanceCatalogRoot(sink, b.Binding(), request).ok();
+      };
+      for (int step = 0; step < 3; ++step) {
+        const auto before = fault.writes();
+        if (step_on(step, fault)) continue;
+        Check(fault.failed().has_value(), label + ": a step fails only at the injected fault");
+        if (*fault.failed() == d::BoundedIoOperation::read && fault.writes() == before) {
+          Check(ReadAll(path) == Apply(b.bytes, recorded, before), label + ": a failed read writes nothing");
+          for (int rest = step; rest < 3; ++rest) Check(step_on(rest, s.sink()), label + ": the rest succeeds");
+          Check(ReadAll(path) == final_file, label + ": the script's result");
+          ++reads;
+        } else {
+          Check(ReadAll(path) == Apply(b.bytes, recorded, fault.writes()),
+                label + ": a failed write or sync leaves the prefix of the writes performed");
+          ++writes;
+        }
+        break;
+      }
+    }
+    fs::remove(path);
+  }
+  Check(reads > 0 && writes > 0, "both read and write faults were injected");
+  std::cout << b.name << " root faults page_size=" << b.size << " points=" << calls << " reads=" << reads
+            << " writes_or_syncs=" << writes << '\n';
+}
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1328,9 +1639,12 @@ int main(int argc, char** argv) {
       States(*b);
       Refusals(*b);
       BindingAhead(*b);
+      RootAdvance(*b);
       Fill(*b);
       Losses(*b);
       Faults(*b);
+      RootLosses(*b);
+      RootFaults(*b);
     }
     std::cout << "PASS native catalog version writer page_size=" << production->size << " checks=" << checks << '\n';
     return 0;

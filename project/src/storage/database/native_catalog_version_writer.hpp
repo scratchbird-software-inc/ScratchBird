@@ -68,6 +68,8 @@ enum class CatalogVersionWriteError : std::uint8_t {
   row_deleted,             // the base is a drop
   invalid_successor,       // the new metadata cannot follow the base
   ahead_of_catalog_root,   // a generation or epoch above the catalog root's
+  transaction_not_committed,  // AdvanceCatalogRoot: the named transaction has not committed
+  root_regression,         // AdvanceCatalogRoot: generation not the next, or an epoch lowered
   name_record_unsupported,
   relation_full,           // no reached leaf has room
   plan_refused,            // the careful-write plan refused before any write
@@ -82,6 +84,10 @@ struct CatalogVersionWriterBinding {
   disk::FilespaceRootReference catalog_root;
   // Page-zero root kind 4 (the first transaction-state page).
   disk::FilespaceRootReference state_root;
+  // AdvanceCatalogRoot only: page-zero root kinds 6 and 7, the configuration
+  // and security route roots, which repeat the catalog root's generation and
+  // epochs. Named, they are brought to the new values after the catalog root.
+  std::optional<disk::FilespaceRootReference> configuration_root, security_root;
   // The SBSYS002 read-only flag, from the caller's verified open.
   bool read_only_database = false;
   disk::CarefulWriteBarrierPolicy barrier_policy = disk::CarefulWriteBarrierPolicy::trust_forced_writes;
@@ -127,5 +133,48 @@ struct CatalogVersionWriteResult {
 CatalogVersionWriteResult WriteCatalogSuccessorVersion(disk::CarefulWriteSink& sink,
                                                        const CatalogVersionWriterBinding& binding,
                                                        const CatalogVersionRequest& request) noexcept;
+
+// SEARCH_KEY: SB_CATALOG_ROOT_ADVANCE (owner Q24 = 1, 2026-11-08). After a
+// transaction that changed the catalog has committed (its state word says
+// committed), the catalog root page is rewritten in place: catalog_generation
+// becomes the next, and each epoch the caller names may rise, never fall.
+// FirebirdSQL's post-commit deferred work, not part of the commit: a crash
+// between COMMIT and this rewrite loses only the invalidation (the caches it
+// serves live in the server process), because no committed version may carry
+// a generation or epoch above the root's (WriteCatalogSuccessorVersion refuses
+// ahead_of_catalog_root). The root keeps no history: no predecessor page and
+// no predecessor digest are written (the checkpoint-era history link is drift,
+// like the allocation map's, Q22 = 1). The page keeps its whole-page seal
+// (Q23 = 1), and every byte the rewrite changes (generation and epochs, the
+// empty predecessor, the seal) lies in the page's first 512-byte unit, so
+// only that unit is written, its image as read the preimage: with
+// sector-atomic writes a crash leaves the old root or the new one. A tear
+// inside the unit fails the seal, and with it every catalog read, until
+// repaired.
+// The configuration and security route roots (page-zero kinds 6 and 7) repeat
+// the generation and epochs; three pages cannot change at once, so the
+// catalog root, which every reader uses, is written first and each route root
+// after it, one unit each. A crash between them leaves route roots that lag
+// the catalog root, which open verification admits; the next advance brings
+// them level. A route root ahead of the catalog root is refused.
+struct CatalogRootAdvanceRequest {
+  // The committed transaction whose catalog changes this publishes.
+  core::platform::u64 transaction_order = 0;
+  core::platform::Uuid transaction_uuid;
+  core::platform::u64 catalog_generation = 0;  // the root's current plus one
+  core::platform::u64 schema_epoch = 0, security_epoch = 0, resource_epoch = 0;  // each at least the root's
+};
+struct CatalogRootAdvanceResult {
+  CatalogVersionWriteError error = CatalogVersionWriteError::invalid_request;
+  page::TipPageError inventory_error = page::TipPageError::none;
+  core::platform::u64 previous_generation = 0;
+  disk::CarefulWriteError write_error = disk::CarefulWriteError::none;
+  disk::BoundedIoResult io{};
+  core::platform::u32 writes = 0, syncs = 0;
+  bool attempted = false;
+  bool ok() const noexcept { return error == CatalogVersionWriteError::none; }
+};
+CatalogRootAdvanceResult AdvanceCatalogRoot(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding& binding,
+                                            const CatalogRootAdvanceRequest& request) noexcept;
 
 }  // namespace scratchbird::storage::database

@@ -125,6 +125,8 @@ const char* CatalogVersionWriteErrorName(CatalogVersionWriteError error) noexcep
     case E::row_deleted: return "row_deleted";
     case E::invalid_successor: return "invalid_successor";
     case E::ahead_of_catalog_root: return "ahead_of_catalog_root";
+    case E::transaction_not_committed: return "transaction_not_committed";
+    case E::root_regression: return "root_regression";
     case E::name_record_unsupported: return "name_record_unsupported";
     case E::relation_full: return "relation_full";
     case E::plan_refused: return "plan_refused";
@@ -460,6 +462,162 @@ CatalogVersionWriteResult WriteCatalogSuccessorVersion(disk::CarefulWriteSink& s
     return Refuse(E::resource_exhausted);
   } catch (...) {
     return Refuse(E::invalid_request);
+  }
+}
+
+CatalogRootAdvanceResult AdvanceCatalogRoot(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding& binding,
+                                            const CatalogRootAdvanceRequest& request) noexcept {
+  CatalogRootAdvanceResult result;
+  const auto refuse = [&](E error) {
+    result.error = error;
+    return result;
+  };
+  try {
+    const auto& croot = binding.catalog_root;
+    const auto* profile = disk::FindCanonicalFilespacePageProfile(croot.page_size_profile_uuid);
+    if (!V7(binding.database_uuid) || (croot.kind != 2 && croot.kind != 8) || !croot.page_number ||
+        !croot.page_generation || !profile || binding.state_root.kind != 4 ||
+        binding.state_root.page_size_profile_uuid != croot.page_size_profile_uuid ||
+        binding.state_root.filespace_uuid != croot.filespace_uuid || !binding.maximum_chain_pages ||
+        !request.transaction_order || !V7(request.transaction_uuid) || request.catalog_generation < 2)
+      return result;
+    if (binding.read_only_database) return refuse(E::read_only_database);
+    const u32 page_size = profile->page_size_bytes;
+
+    // The transaction has committed: its state word says so.
+    pg::TransactionWriterBinding tx;
+    tx.database_uuid = binding.database_uuid;
+    tx.state_root = binding.state_root;
+    tx.maximum_chain_pages = binding.maximum_chain_pages;
+    const auto chains = pg::ReadTransactionChainsThroughSink(sink, tx);
+    if (!chains.ok()) {
+      result.error = chains.error == pg::TransactionWriterError::io_failure ? E::io_failure
+                     : chains.error == pg::TransactionWriterError::resource_exhausted ? E::resource_exhausted
+                                                                                       : E::invalid_inventory;
+      result.inventory_error = chains.page_error;
+      result.io = chains.io;
+      return result;
+    }
+    const auto built = pg::BuildLocalTransactionInventoryFromImages(page_size, chains.state_images, chains.header_images);
+    if (!built.ok()) {
+      result.error = E::invalid_inventory;
+      result.inventory_error = built.error;
+      return result;
+    }
+    const auto& entries = built.inventory.entries;
+    const auto at = std::lower_bound(entries.begin(), entries.end(), request.transaction_order,
+                                     [](const auto& e, u64 n) { return e.identity.local_id.value < n; });
+    if (at == entries.end() || at->identity.local_id.value != request.transaction_order ||
+        at->identity.transaction_uuid.value != request.transaction_uuid ||
+        !mga::HasCommittedInventoryOutcome(*at))
+      return refuse(E::transaction_not_committed);
+
+    // The root as it stands.
+    CatalogVersionWriteResult read;
+    std::vector<byte> image;
+    if (!ReadPage(sink, page_size, croot.page_number, image, read)) {
+      result.error = read.error;
+      result.io = read.io;
+      return result;
+    }
+    const disk::NativePageReference ref{croot.filespace_uuid, croot.page_number, croot.page_generation,
+                                        croot.page_size_profile_uuid};
+    if (!HeaderBinds(image, binding.database_uuid, ref, croot.page_type)) return refuse(E::invalid_catalog);
+    const auto decoded = pg::DecodeNativeCatalogRoot(image);
+    if (!decoded.ok() || decoded.root->object_uuid != croot.object_uuid) return refuse(E::invalid_catalog);
+    const auto& now = *decoded.root;
+    result.previous_generation = now.catalog_generation;
+    if (now.catalog_generation == std::numeric_limits<u64>::max() ||
+        request.catalog_generation != now.catalog_generation + 1 || request.schema_epoch < now.schema_epoch ||
+        request.security_epoch < now.security_epoch || request.resource_epoch < now.resource_epoch)
+      return refuse(E::root_regression);
+
+    auto next = now;
+    next.catalog_generation = request.catalog_generation;
+    next.schema_epoch = request.schema_epoch;
+    next.security_epoch = request.security_epoch;
+    next.resource_epoch = request.resource_epoch;
+    next.predecessor.reset();
+    next.predecessor_sha256.fill(0);
+    const auto encoded = pg::EncodeNativeCatalogRoot(next);
+    if (!encoded.ok() || encoded.bytes.size() != image.size()) return refuse(E::invalid_catalog);
+    // Every byte that changes (generation and epochs at 152, the predecessor
+    // at 224, the seal at 304) lies in the page's first 512-byte unit; only
+    // that unit is written, so with sector-atomic writes a crash leaves the
+    // old root or the new one, and a tear inside the unit fails the seal.
+    constexpr std::size_t kUnitBytes = 512;
+    if (!std::equal(encoded.bytes.begin() + kUnitBytes, encoded.bytes.end(), image.begin() + kUnitBytes))
+      return refuse(E::invalid_catalog);
+
+    disk::CarefulWritePlan plan;
+    const auto node = plan.Add(croot.page_number * u64{page_size},
+                               std::span<const byte>(encoded.bytes).first(kUnitBytes),
+                               std::span<const byte>(image).first(kUnitBytes));
+    if (!node.ok()) return refuse(E::plan_refused);
+    // The route roots: each at most the catalog root's current values (a
+    // crash may have left it behind), brought to the new ones after it.
+    std::vector<std::pair<std::vector<byte>, std::vector<byte>>> routes;  // (new, as read)
+    routes.reserve(2);  // no reallocation once a span of it is planned
+    for (const auto* route : {&binding.configuration_root, &binding.security_root}) {
+      if (!*route) continue;
+      const auto& at = **route;
+      const u16 kind = route == &binding.configuration_root ? 6 : 7;
+      if (at.kind != kind || at.page_type != static_cast<u32>(4 + kind) || at.filespace_uuid != croot.filespace_uuid ||
+          at.page_size_profile_uuid != croot.page_size_profile_uuid || !at.page_number || !at.page_generation)
+        return refuse(E::invalid_request);
+      std::vector<byte> current;
+      if (!ReadPage(sink, page_size, at.page_number, current, read)) {
+        result.error = read.error;
+        result.io = read.io;
+        return result;
+      }
+      const disk::NativePageReference route_ref{at.filespace_uuid, at.page_number, at.page_generation,
+                                                at.page_size_profile_uuid};
+      if (!HeaderBinds(current, binding.database_uuid, route_ref, at.page_type)) return refuse(E::invalid_catalog);
+      const auto was = pg::DecodeNativeCatalogRoot(current);
+      if (!was.ok() || was.root->root_kind != kind || was.root->object_uuid != at.object_uuid || was.root->predecessor ||
+          was.root->catalog_generation > now.catalog_generation || was.root->schema_epoch > now.schema_epoch ||
+          was.root->security_epoch > now.security_epoch || was.root->resource_epoch > now.resource_epoch)
+        return refuse(E::invalid_catalog);
+      auto level = *was.root;
+      level.catalog_generation = request.catalog_generation;
+      level.schema_epoch = request.schema_epoch;
+      level.security_epoch = request.security_epoch;
+      level.resource_epoch = request.resource_epoch;
+      const auto image_of = pg::EncodeNativeCatalogRoot(level);
+      if (!image_of.ok() || image_of.bytes.size() != current.size() ||
+          !std::equal(image_of.bytes.begin() + kUnitBytes, image_of.bytes.end(), current.begin() + kUnitBytes))
+        return refuse(E::invalid_catalog);
+      routes.emplace_back(image_of.bytes, std::move(current));
+      const auto& [fresh, old] = routes.back();
+      const auto route_node = plan.Add(at.page_number * u64{page_size}, std::span<const byte>(fresh).first(kUnitBytes),
+                                       std::span<const byte>(old).first(kUnitBytes));
+      if (!route_node.ok() || plan.Before(node.node, route_node.node) != CarefulWriteError::none)
+        return refuse(E::plan_refused);
+    }
+    const auto r = plan.Execute(sink, binding.barrier_policy);
+    result.write_error = r.error;
+    result.io = r.io;
+    result.writes = r.written;
+    result.syncs = r.syncs;
+    if (r.ok()) {
+      result.error = E::none;
+      return result;
+    }
+    result.attempted = r.written > 0 || r.syncs > 0 || r.error == CarefulWriteError::write_failed ||
+                       r.error == CarefulWriteError::barrier_sync_failed ||
+                       r.error == CarefulWriteError::final_sync_failed || r.error == CarefulWriteError::sink_exception;
+    result.error = result.attempted                                      ? E::write_failed
+                   : r.error == CarefulWriteError::preimage_read_failed ? E::io_failure
+                   : r.error == CarefulWriteError::preimage_mismatch    ? E::invalid_catalog
+                                                                        : E::plan_refused;
+    return result;
+  } catch (const std::bad_alloc&) {
+    return refuse(E::resource_exhausted);
+  } catch (const std::length_error&) {
+    return refuse(E::resource_exhausted);
+  } catch (...) {
+    return refuse(E::invalid_request);
   }
 }
 

@@ -4042,6 +4042,16 @@ add_test(NAME sbsql_sblr_alignment_native_local_service_enrollment_producer_unau
 set_tests_properties(sbsql_sblr_alignment_native_local_service_enrollment_producer_unaudited_catalog_change PROPERTIES
   LABELS "sbsql_sblr_alignment;native_storage;native_service_enrollment;native_database_create;catalog"
   TIMEOUT 900)
+# SB_CATALOG_ROOT_ADVANCE: route roots behind the catalog root are admitted by
+# open verification; a route root ahead of it is a finding (owner Q24 = 1).
+foreach(mode root-lag route-ahead)
+  string(REPLACE "-" "_" mode_name "${mode}")
+  add_test(NAME sbsql_sblr_alignment_native_local_service_enrollment_producer_${mode_name}
+    COMMAND sbsql_sblr_alignment_native_local_service_enrollment producer-${mode})
+  set_tests_properties(sbsql_sblr_alignment_native_local_service_enrollment_producer_${mode_name} PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;native_service_enrollment;native_database_create;catalog"
+    TIMEOUT 900)
+endforeach()
 add_executable(sbsql_sblr_alignment_native_runtime_authorization_projection
   native_runtime_authorization_projection_test.cpp)
 target_compile_features(sbsql_sblr_alignment_native_runtime_authorization_projection PRIVATE cxx_std_23)

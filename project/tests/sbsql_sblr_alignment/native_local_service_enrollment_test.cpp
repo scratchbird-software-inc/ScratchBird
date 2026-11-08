@@ -2898,8 +2898,13 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
 // catalog change with no audit event of its own: startup catalog verification
 // refuses it (spec: the construction-intent exception covers only the
 // create's rows; every later change needs its own audit evidence).
+// root_case (with transactions, not unaudited): SB_CATALOG_ROOT_ADVANCE. 0:
+// the catalog root and both route roots advanced; 1: the advance stopped
+// after the catalog root's write (a failed second write, as a crash there
+// leaves it), so the route roots lag, which open verification admits; 2: a
+// route root forged ahead of the catalog root, which it refuses.
 void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& process,bool transactions=false,
-                          bool unaudited=false) {
+                          bool unaudited=false,int root_case=0) {
   platform::Uuid changed_object;
   scratchbird::tests::OwnedTempDirectory artifacts;
   const auto path=(artifacts.path()/"producer-native-node").string();
@@ -2923,7 +2928,7 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
   Check(made.ok()&&created.Close().ok(),"the production producer writes the database and its descriptor retires");
   if(transactions){
     namespace tip=scratchbird::storage::page;
-    disk::FilespaceRootReference state_root,allocation_root,catalog_root;
+    disk::FilespaceRootReference state_root,allocation_root,catalog_root,configuration_root,security_root;
     {
       disk::FileDevice device;
       Check(device.Open(path,disk::FileOpenMode::open_existing_read_only).ok(),"read-only open of the produced file");
@@ -2934,7 +2939,9 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
       Check(fixed.ok()&&(*fixed.lease).Root(4),"page zero names the produced transaction-state chain");
       state_root=*(*fixed.lease).Root(4);allocation_root=*(*fixed.lease).Root(3);
       Check((*fixed.lease).Root(2)!=nullptr,"page zero names the produced catalog root");
-      catalog_root=*(*fixed.lease).Root(2);fixed.lease.Reset();
+      catalog_root=*(*fixed.lease).Root(2);
+      Check((*fixed.lease).Root(6)!=nullptr&&(*fixed.lease).Root(7)!=nullptr,"page zero names the produced route roots");
+      configuration_root=*(*fixed.lease).Root(6);security_root=*(*fixed.lease).Root(7);fixed.lease.Reset();
       Check(device.Close().ok(),"close the read-only open");
     }
     disk::FileDevice device;
@@ -3022,6 +3029,7 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
         const auto id=[](platform::byte tag,u64 n){auto u=Id(241);u.bytes[12]=tag;u.bytes[13]=static_cast<platform::byte>(n>>8);
           u.bytes[14]=static_cast<platform::byte>(n);return u;};
         db::CatalogVersionWriterBinding cv;cv.database_uuid=made.receipt->database_uuid;cv.catalog_root=catalog_root;cv.state_root=state_root;
+        cv.configuration_root=configuration_root;cv.security_root=security_root;
         const auto change=[&](u64 n,const platform::Uuid& tx,const Row& base,const platform::Uuid& predecessor,
                               const catalog::CatalogMetadataVersion& before,const platform::Uuid& version,bool drop){
           db::CatalogVersionRequest r;r.role=4;r.transaction_order=n;r.transaction_uuid=tx;r.row_uuid=base.row;
@@ -3046,6 +3054,55 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
           (void)change(n,second,rows[1],rows[1].version,rows[1].metadata,id(0xc0,2),false);
         }
         Check(!writer.failed(),"the catalog changes leave the transaction writer sound");
+        if(!unaudited){
+          // SB_CATALOG_ROOT_ADVANCE (owner Q24 = 1): the catalog root rewritten
+          // in place after a committed transaction (the last of the growth
+          // loop): generation 2, the security epoch raised, no predecessor.
+          // Open verification and the startup readers must admit that form.
+          const u64 committed=header_slots+1;
+          tip::TransactionHeaderRecord header;header.transaction_uuid=Id(241);
+          header.transaction_uuid.bytes[12]=0xa0;header.transaction_uuid.bytes[13]=static_cast<platform::byte>(committed>>8);
+          header.transaction_uuid.bytes[14]=static_cast<platform::byte>(committed);
+          db::CatalogRootAdvanceRequest advance;advance.transaction_order=committed;
+          advance.transaction_uuid=header.transaction_uuid;advance.catalog_generation=root.root->catalog_generation+1;
+          advance.schema_epoch=root.root->schema_epoch;advance.security_epoch=root.root->security_epoch+1;
+          advance.resource_epoch=root.root->resource_epoch;
+          // Fails the Nth write, as a crash before it would leave the file.
+          struct FailWrite final:disk::CarefulWriteSink{
+            disk::CarefulWriteSink& inner;unsigned fail_at,writes=0;
+            FailWrite(disk::CarefulWriteSink& i,unsigned n):inner(i),fail_at(n){}
+            disk::BoundedIoResult WriteAt(u64 offset,std::span<const platform::byte> bytes)override{
+              if(++writes==fail_at){disk::BoundedIoResult r;r.operation=disk::BoundedIoOperation::write;
+                r.error=disk::BoundedIoError::native_failure;r.offset=offset;r.requested_bytes=bytes.size();
+                r.native_error=EIO;r.native_attempted=true;return r;}
+              return inner.WriteAt(offset,bytes);}
+            disk::BoundedIoResult ReadAt(u64 offset,std::span<platform::byte> bytes)override{return inner.ReadAt(offset,bytes);}
+            disk::BoundedIoResult Sync()override{return inner.Sync();}
+            bool forced_ordered()const noexcept override{return inner.forced_ordered();}
+          } lag(sink,2);
+          const auto advanced=root_case==1?db::AdvanceCatalogRoot(lag,cv,advance):db::AdvanceCatalogRoot(sink,cv,advance);
+          if(root_case==1){
+            Check(advanced.error==db::CatalogVersionWriteError::write_failed&&advanced.attempted&&advanced.writes==1,
+                "the advance stops after the catalog root's write");
+          }else{
+            if(!advanced.ok())std::cerr<<"producer root advance="<<db::CatalogVersionWriteErrorName(advanced.error)<<'\n';
+            Check(advanced.ok()&&advanced.writes==3,"the catalog root and both route roots advance in place after a commit");
+          }
+          const auto now=tip::DecodeNativeCatalogRoot(page(catalog_root.page_number));
+          const auto config=tip::DecodeNativeCatalogRoot(page(configuration_root.page_number));
+          const auto security=tip::DecodeNativeCatalogRoot(page(security_root.page_number));
+          Check(now.ok()&&now.root->catalog_generation==2&&!now.root->predecessor&&config.ok()&&security.ok()&&
+              config.root->catalog_generation==(root_case==1?1u:2u)&&security.root->catalog_generation==(root_case==1?1u:2u),
+              "the produced catalog root is generation 2 with no predecessor; the route roots level, or lag after a stop");
+          if(root_case==2){
+            // Forged with the production codec: a route root ahead of the
+            // catalog root, a state no writer leaves.
+            auto ahead=*security.root;ahead.catalog_generation=3;
+            const auto image=tip::EncodeNativeCatalogRoot(ahead);
+            Check(image.ok()&&sink.WriteAt(security_root.page_number*size,image.bytes).ok()&&sink.Sync().ok(),
+                "a route root forged ahead of the catalog root");
+          }
+        }
       }
     }
     Check(device.Close().ok(),"close the writer's device");
@@ -3202,6 +3259,12 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
         "an I/O error at every verification read is reported as io_failure, never a finding, and writes nothing");
   }
   const auto opened=Host::VerifyStartupDatabaseFile(read,open_limits);
+  if(transactions&&root_case==2){
+    Check(!opened.ok()&&opened.error==server::NativeOpenVerificationError::finding&&opened.stage==OpenStage::catalog_routes,
+        "a route root ahead of the catalog root is a finding at the catalog-route stage");
+    std::cout<<"producer route ahead profile="<<profile<<" refused at catalog routes\n";
+    return;
+  }
   if(!opened.ok())std::cerr<<"producer open verification="<<int(opened.error)<<" stage="<<int(opened.stage)<<'\n';
   Check(opened.ok()&&opened.stage==OpenStage::complete&&read.open_verification()&&
       opened.observation->identity.source.root_set_generation==1&&opened.observation->identity.filespaces==1&&
@@ -3420,6 +3483,8 @@ int main(int argc,char** argv) {
   const bool producer=argc==2&&std::string_view(argv[1])=="producer";
   const bool producer_transactions=argc==2&&std::string_view(argv[1])=="producer-transactions";
   const bool producer_unaudited=argc==2&&std::string_view(argv[1])=="producer-unaudited-catalog-change";
+  const bool producer_root_lag=argc==2&&std::string_view(argv[1])=="producer-root-lag";
+  const bool producer_route_ahead=argc==2&&std::string_view(argv[1])=="producer-route-ahead";
   const bool sharded=argc==4&&std::string_view(argv[1])=="shard";
   unsigned shard=0,shard_count=0;
   if(sharded&&(!ParseShardNumber(argv[2],shard)||!ParseShardNumber(argv[3],shard_count)||
@@ -3428,7 +3493,7 @@ int main(int argc,char** argv) {
     return 2;
   }
   unsigned death_mode=0;
-  if(argc==2&&!producer&&!producer_transactions&&!producer_unaudited&&(!ParseShardNumber(argv[1],death_mode)||death_mode==0||death_mode>kAffinityModes)){
+  if(argc==2&&!producer&&!producer_transactions&&!producer_unaudited&&!producer_root_lag&&!producer_route_ahead&&(!ParseShardNumber(argv[1],death_mode)||death_mode==0||death_mode>kAffinityModes)){
     std::cerr<<"native enrolled source FAIL unknown argument "<<argv[1]<<'\n';return 2;
   }
   if(argc!=1&&argc!=2&&!sharded){std::cerr<<"native enrolled source FAIL unknown arguments\n";return 2;}
@@ -3439,7 +3504,7 @@ int main(int argc,char** argv) {
   server::ServerProcessCryptoOwner process;
   ParentOwnedArtifacts artifacts;int outcome=0;
   try {
-  if(!death&&!producer&&!producer_transactions&&!producer_unaudited&&once)for(unsigned mode=1;mode<=kAffinityModes;++mode){const auto child=::fork();Check(child>=0,"owned native host affinity fixture child");
+  if(!death&&!producer&&!producer_transactions&&!producer_unaudited&&!producer_root_lag&&!producer_route_ahead&&once)for(unsigned mode=1;mode<=kAffinityModes;++mode){const auto child=::fork();Check(child>=0,"owned native host affinity fixture child");
     if(!child){const auto option=std::to_string(mode);::execl(argv[0],argv[0],option.c_str(),nullptr);::_exit(72);}
     int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==73,
         "foreign thread host prerequisite access/move/reset refuses before governed custody");
@@ -3474,6 +3539,8 @@ int main(int argc,char** argv) {
       if(producer){for(unsigned profile=0;profile<5;++profile)ProducerNativeSource(profile,process);return;}
       if(producer_transactions){for(unsigned profile=0;profile<5;++profile)ProducerNativeSource(profile,process,true);return;}
       if(producer_unaudited){for(unsigned profile=0;profile<5;++profile)ProducerNativeSource(profile,process,true,true);return;}
+      if(producer_root_lag){for(unsigned profile=0;profile<5;++profile)ProducerNativeSource(profile,process,true,false,1);return;}
+      if(producer_route_ahead){for(unsigned profile=0;profile<5;++profile)ProducerNativeSource(profile,process,true,false,2);return;}
       if(once)PackPolicyFamiliesMatchFixture();
       for(unsigned profile=0;profile<5;++profile)for(bool indexed:{false,true})run(profile,indexed,process);
       for(unsigned variant=1;variant<=10;++variant)run(0,true,process,variant);
