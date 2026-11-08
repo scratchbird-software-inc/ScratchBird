@@ -156,6 +156,88 @@ bool Run(disk::CarefulWritePlan& plan, disk::CarefulWriteSink& sink, disk::Caref
   return false;
 }
 
+// One growth step (W2c): allocate a page from the map (created by the
+// system), format it as the next page of the state chain (state = true) or the
+// header chain, then link it from the chain's last page; its own plan, each
+// write durable before the next. On failure result carries the refusal.
+bool GrowChain(disk::CarefulWriteSink& sink, const TransactionWriterBinding& binding, u32 page_size, Chains& chains,
+               bool state, TransactionBeginResult& result, bool& failed) {
+  auto loaded = AllocationMapChain::Load(sink, {binding.database_uuid, *binding.allocation_root});
+  if (!loaded.ok()) {
+    result.allocation_error = loaded.error;
+    result.error = loaded.error == AllocationWriteError::io_failure ? E::io_failure : E::invalid_inventory;
+    result.io = loaded.io;
+    return false;
+  }
+  const auto page_id = binding.issuer->Issue(scratchbird::core::platform::UuidKind::page);
+  const auto allocation_id = binding.issuer->Issue(scratchbird::core::platform::UuidKind::object);
+  if (!page_id.ok() || !allocation_id.ok()) {
+    result.error = E::resource_exhausted;
+    return false;
+  }
+  disk::CarefulWritePlan plan;
+  const PageAllocationRequest request{kTransactionStatePageType, binding.state_root.object_uuid, page_id.value->value,
+                                      allocation_id.value->value, {}, 0};
+  const auto planned = loaded.chain->PlanAllocate(plan, request);
+  if (!planned.ok()) {
+    result.allocation_error = planned.error;
+    result.error = planned.error == AllocationWriteError::filespace_full ? E::chain_full : E::invalid_inventory;
+    if (planned.error == AllocationWriteError::filespace_full) result.page_error = TipPageError::invalid_slot;
+    return false;
+  }
+  // The new page, formatted empty; nothing reaches it until the link.
+  std::vector<byte> image(page_size);
+  const disk::NativeCommonPageHeader header{page_size, kTransactionStatePageType, binding.database_uuid,
+                                            binding.state_root.filespace_uuid, page_id.value->value,
+                                            planned.page_number, 1, 0, binding.state_root.page_size_profile_uuid};
+  TipPageError formatted = TipPageError::none;
+  if (state) {
+    TipPageFormat f;
+    f.header = header;
+    f.tip_sequence = chains.state_pages.size();
+    formatted = FormatTransactionStatePage(f, image);
+  } else {
+    TransactionHeaderPageFormat f;
+    f.header = header;
+    f.sequence = chains.header_pages.size();
+    formatted = FormatTransactionHeaderPage(f, image);
+  }
+  if (formatted != TipPageError::none) {
+    result.error = E::invalid_inventory;
+    result.page_error = formatted;
+    return false;
+  }
+  auto& images = state ? chains.state : chains.headers;
+  const auto& numbers = state ? chains.state_pages : chains.header_pages;
+  auto last = PageOf(images, page_size, numbers.size() - 1);
+  const auto link = state ? SetTransactionStateNextPage(last, planned.page_number)
+                          : SetTransactionHeaderNextPage(last, planned.page_number);
+  if (!link.ok() || !link.changed) {
+    result.error = E::invalid_inventory;
+    result.page_error = link.ok() ? TipPageError::invalid_link : link.error;
+    return false;
+  }
+  const auto page_node = plan.Add(planned.page_number * page_size, image);
+  const auto link_node = AddUnit(plan, numbers.back(), page_size, last, link);
+  if (!page_node.ok() || !link_node.ok() || plan.Before(planned.last_node, page_node.node) != CarefulWriteError::none ||
+      plan.Before(page_node.node, link_node.node) != CarefulWriteError::none) {
+    result.error = E::resource_exhausted;
+    return false;
+  }
+  TransactionWriterOutcome growth;
+  const bool ran = Run(plan, sink, binding.barrier_policy, growth, failed);
+  result.growth_writes += growth.writes;
+  result.growth_syncs += growth.syncs;
+  if (!ran) {
+    result.error = growth.error;
+    result.write_error = growth.write_error;
+    result.io = growth.io;
+    return false;
+  }
+  ++(state ? result.grown_state_pages : result.grown_header_pages);
+  return true;
+}
+
 bool InProgress(TipStateCode code) {
   return code == TipStateCode::active || code == TipStateCode::read_only_active;
 }
@@ -264,6 +346,21 @@ TransactionBeginResult TransactionInventoryWriter::Begin(disk::CarefulWriteSink&
     const u64 n = chains.counters.next_transaction;
     result.transaction_order = n;
     if (n == std::numeric_limits<u64>::max()) return Refuse<R>(E::chain_full, TipPageError::invalid_counters);
+    // Chain growth (W2c): grow each chain that lacks n's slot by its next
+    // page, re-reading the chains after each step. Only the next page: a slot
+    // further away would mean a Next the chains never covered.
+    for (int round = 0; round < 2; ++round) {
+      const auto state_need = LocateTransactionStateSlot(page_size_, n);
+      const auto header_need = LocateTransactionHeaderSlot(page_size_, n);
+      if (!state_need || !header_need) break;
+      const bool grow_state = state_need->tip_sequence == chains.state_pages.size();
+      const bool grow_header = header_need->sequence == chains.header_pages.size();
+      if ((!grow_state && !grow_header) || !binding_.allocation_root || !binding_.issuer) break;
+      if (!GrowChain(sink, binding_, page_size_, chains, grow_state, result, failed_)) return result;
+      chains = Chains{};
+      if (!ReadChains(sink, binding_, page_size_, chains, result)) return result;
+      if (chains.counters.next_transaction != n) return Refuse<R>(E::invalid_inventory, TipPageError::invalid_counters);
+    }
     // Capacity: n needs a formatted state slot and header slot.
     const auto state_slot = LocateTransactionStateSlot(page_size_, n);
     const auto header_slot = LocateTransactionHeaderSlot(page_size_, n);
@@ -271,6 +368,8 @@ TransactionBeginResult TransactionInventoryWriter::Begin(disk::CarefulWriteSink&
         header_slot->sequence >= chains.header_pages.size()) {
       auto refused = Refuse<R>(E::chain_full, TipPageError::invalid_slot);
       refused.transaction_order = n;
+      refused.grown_state_pages = result.grown_state_pages;
+      refused.grown_header_pages = result.grown_header_pages;
       return refused;
     }
     // The record, validated before anything is planned.
@@ -285,7 +384,11 @@ TransactionBeginResult TransactionInventoryWriter::Begin(disk::CarefulWriteSink&
     }
     // Horizons over the inventory before n exists (its Next is n).
     const auto built = BuildLocalTransactionInventoryFromImages(page_size_, chains.state, chains.headers);
-    if (!built.ok()) return Refuse<R>(E::invalid_inventory, built.error);
+    if (!built.ok()) {
+      auto refused = Refuse<R>(E::invalid_inventory, built.error);
+      refused.transaction_order = built.transaction_order;  // the entry that could not be built
+      return refused;
+    }
     mga::LocalTransactionHorizons projected;
     if (mga::detail::ProjectValidatedLocalHorizons(built.inventory, {}, projected))
       return Refuse<R>(E::invalid_inventory, TipPageError::invalid_counters);

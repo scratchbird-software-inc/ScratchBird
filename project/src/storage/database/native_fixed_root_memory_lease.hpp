@@ -32,6 +32,8 @@
 #include "native_allocation_chain_backing.hpp"
 #include "native_directory_chain_backing.hpp"
 #include "native_inventory_chain_backing.hpp"
+#include "transaction_header_page.hpp"
+#include "transaction_state_page.hpp"
 #include "native_storage_memory.hpp"
 #include "native_read_source_identity.hpp"
 #include "uuid.hpp"
@@ -108,6 +110,9 @@ class NativeFixedRootMemoryLease {
   const page::TipCounters& counters() const noexcept { CheckThread(); return counters_; }
   // State pages, then header pages.
   std::span<const NativeInventoryPageBinding> inventory_pages() const noexcept { CheckThread(); return inventory_pages_; }
+  // Each inventory page's sequence within its own chain (state chain, then
+  // header chain, as inventory_pages()).
+  std::span<const u64> inventory_page_sequences() const noexcept { CheckThread(); return inventory_sequences_; }
   const NativeReadAllocationChain& allocation() const noexcept { CheckThread(); return allocation_; }
   const NativeReadDirectoryChain& directory() const noexcept { CheckThread(); return directory_; }
   u64 retained_image_bytes() const noexcept { CheckThread(); return retained_image_bytes_; }
@@ -134,6 +139,7 @@ class NativeFixedRootMemoryLease {
   NativeReadTransactionInventory inventory_;
   page::TipCounters counters_;
   std::span<const NativeInventoryPageBinding> inventory_pages_;
+  std::span<const u64> inventory_sequences_;
   NativeReadAllocationChain allocation_;
   NativeReadDirectoryChain directory_;
   u64 retained_image_bytes_ = 0;
@@ -392,6 +398,22 @@ inline NativeFixedRootMemoryResult AcquireNativeFixedRootLeaseOn(
       auto pages = scratch.Array<NativeInventoryPageBinding>(chain.pages.size());
       for (std::size_t n = 0; n < pages.size(); ++n) pages[n] = {chain.pages[n].page.header, chain.pages[n].page.object_uuid};
       lease.inventory_pages_ = pages;
+      // SB_ALLOCATION_MAP_IN_PLACE (W2c): each page's place in its chain; the
+      // first page of each chain is the create's, later pages were grown.
+      auto sequences = scratch.Array<u64>(chain.pages.size());
+      for (std::size_t n = 0; n < sequences.size(); ++n) {
+        const auto image = chain.pages[n].image;
+        if (page::IsTransactionHeaderPageImage(image)) {
+          const auto d = page::DecodeTransactionHeaderPage(image);
+          if (!d.ok()) { out.error = E::inventory_failure; return out; }
+          sequences[n] = d.view->sequence;
+        } else {
+          const auto d = page::DecodeTransactionStatePage(image);
+          if (!d.ok()) { out.error = E::inventory_failure; return out; }
+          sequences[n] = d.view->tip_sequence;
+        }
+      }
+      lease.inventory_sequences_ = sequences;
     }
     const auto committed = [&](const Uuid& creator, u64 local, u16 kind) {
       const auto& entries = lease.inventory_.entries;
@@ -479,12 +501,30 @@ inline NativeFixedRootMemoryResult AcquireNativeFixedRootLeaseOn(
       }
       member(root.page_number, root.page_type, root.object_uuid, root.kind);
     }
-    for (const auto& page : lease.inventory_pages_) {
+    // The first page of each inventory chain is the create's (a committed
+    // transaction); a later page was grown by the system (W2c, owner Q22 = 1)
+    // and its record has no creator at all.
+    for (std::size_t n = 0; n < lease.inventory_pages_.size(); ++n) {
+      const auto& page = lease.inventory_pages_[n];
       if (page.header.filespace_uuid != primary) {
         out.root_kind = 4;
         throw E::root_mismatch;
       }
-      member(page.header.page_number, page.header.page_type, page.object_uuid, 4);
+      if (lease.inventory_sequences_[n] == 0) {
+        member(page.header.page_number, page.header.page_type, page.object_uuid, 4);
+        continue;
+      }
+      const auto* record = detail::NativeFixedRootRecord(lease.allocation_, page.header.page_number);
+      if (!record || record->page_type != page.header.page_type || record->owner_uuid != page.object_uuid ||
+          record->page_uuid != page.header.page_uuid || record->page_generation != page.header.page_generation) {
+        out.root_kind = 4;
+        throw E::root_mismatch;
+      }
+      if (!record->creator_transaction_uuid.is_nil() || record->creator_local_transaction_id ||
+          !record->creator_operation_uuid.is_nil()) {
+        out.root_kind = 4;
+        throw E::creator_mismatch;
+      }
     }
     lease.retained_image_bytes_ = retained;
     lease.backing_bytes_used_ = resource.used();

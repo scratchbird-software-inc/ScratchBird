@@ -70,10 +70,23 @@ inline NativeStartupInitialControlCheck CheckNativeStartupInitialControlAllocati
       if(!record.creator_operation_uuid.is_nil())continue;
       if(record.page_number<map.first_page||record.page_number-map.first_page>=map.states.size()||
           map.states[record.page_number-map.first_page]!=page::NativeAllocationState::allocated)return {E::invalid_record};
+      const auto matches=[&](const db::NativeCapturedCatalogPage& p){return p.header.database_uuid==map.header.database_uuid&&
+          p.header.page_size_profile_uuid==map.header.page_size_profile_uuid&&p.header.page_size_bytes==map.header.page_size_bytes&&
+          p.header.page_uuid==record.page_uuid&&p.header.page_generation==record.page_generation&&
+          p.header.page_type==record.page_type&&p.owner_uuid==record.owner_uuid;};
       // SB_ALLOCATION_MAP_IN_PLACE: a page allocated after the create, by a
-      // later transaction or by the system. Nothing the creator wrote may
-      // reach it; unreached, it is wasted space (owner ruling Q17 = 1).
+      // later transaction or by the system. A transaction-chain page the
+      // system grew (W2c) is reached through the inventory, which the capture
+      // records with the controls; the fixed-root lease has already required
+      // that only the pages after each chain's first are system-created.
+      // Nothing else the creator wrote may reach such a page; unreached, it is
+      // wasted space (owner ruling Q17 = 1).
       if(record.creator_transaction_uuid!=creator.transaction_uuid.value||record.creator_local_transaction_id!=creator.local_id.value){
+        const bool system=record.creator_transaction_uuid.is_nil()&&!record.creator_local_transaction_id;
+        if(system&&record.page_type==0x301)
+          if(const auto* p=find(controls,map.header.filespace_uuid,record.page_number)){
+            if(!matches(*p))return {E::invalid_record};++count;continue;
+          }
         const auto roots=std::span{additional}.first(additional_count);
         if(record.page_number==0||find(catalogs,map.header.filespace_uuid,record.page_number)||
             find(controls,map.header.filespace_uuid,record.page_number)||
@@ -81,10 +94,6 @@ inline NativeStartupInitialControlCheck CheckNativeStartupInitialControlAllocati
           return {E::invalid_record};
         ++wasted;continue;
       }
-      const auto matches=[&](const db::NativeCapturedCatalogPage& p){return p.header.database_uuid==map.header.database_uuid&&
-          p.header.page_size_profile_uuid==map.header.page_size_profile_uuid&&p.header.page_size_bytes==map.header.page_size_bytes&&
-          p.header.page_uuid==record.page_uuid&&p.header.page_generation==record.page_generation&&
-          p.header.page_type==record.page_type&&p.owner_uuid==record.owner_uuid;};
       if(const auto* p=find(catalogs,map.header.filespace_uuid,record.page_number)){
         if(!matches(*p))return {E::invalid_record};continue;
       }

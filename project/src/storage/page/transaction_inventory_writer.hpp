@@ -3,6 +3,8 @@
 #pragma once
 
 #include "careful_write.hpp"
+#include "allocation_map_writer.hpp"
+#include "node_uuid_issuer.hpp"
 #include "filespace_page_zero.hpp"
 #include "transaction_header_page.hpp"
 #include "transaction_header_record.hpp"
@@ -76,10 +78,22 @@ namespace scratchbird::storage::page {
 // next writer's restart resolves the file. A refusal before any write or sync
 // changes nothing and leaves the writer usable.
 //
+// Chain growth (in-place writes W2c, owner Q22 = 1): when n has no formatted
+// slot in the state chain or the header chain, and the binding names the
+// allocation map and an identity issuer, BEGIN first grows that chain in its
+// own careful-write plan: the map's record and state for a new page (created
+// by the system: no transaction), the new page formatted empty, then the link
+// in the chain's last page, each durable before the next. BEGIN then re-reads
+// the chains and makes its usual three writes. Growth is never merged into
+// BEGIN's plan: the new page's image and BEGIN's header record would share a
+// page, and the record must not be durable before Next. A crash before the
+// link leaves an allocated page nothing reaches (wasted space, owner Q17 = 1);
+// after it, a chain one page longer than Next needs, which readers admit and
+// the next BEGIN uses. Without the map binding, or with no free page, BEGIN
+// past the last formatted slot is refused chain_full with no write.
 // Not covered yet (later steps): read-only databases get no transactions at
 // all here (whether they get durable headers is deferred, they cannot write
-// them); growing either chain when it is full is allocation from the map (W2);
-// cluster-authority transactions belong to the cluster library.
+// them); cluster-authority transactions belong to the cluster library.
 // Not thread-safe: the owner serializes calls and holds whatever device guard
 // its sink needs across each call.
 
@@ -112,6 +126,10 @@ struct TransactionWriterBinding {
       scratchbird::storage::disk::CarefulWriteBarrierPolicy::trust_forced_writes;
   // Bound on either chain's length while it is read.
   std::size_t maximum_chain_pages = 4096;
+  // Chain growth: page-zero root kind 3 (the allocation map) and the issuer
+  // of the new pages' identities. Both absent: no growth (chain_full).
+  std::optional<scratchbird::storage::disk::FilespaceRootReference> allocation_root;
+  scratchbird::core::uuid::StandaloneUuidV7Issuer* issuer = nullptr;
 };
 
 struct TransactionWriterOutcome {
@@ -136,6 +154,12 @@ struct TransactionRestartResult : TransactionWriterOutcome {
 
 struct TransactionBeginResult : TransactionWriterOutcome {
   TipCounters counters;  // as written in step 1
+  // Chain growth before BEGIN's own writes (writes and syncs above are
+  // BEGIN's own): pages added to the state and header chains, and the
+  // growth plans' writes and syncs.
+  u32 grown_state_pages = 0, grown_header_pages = 0;
+  u32 growth_writes = 0, growth_syncs = 0;
+  AllocationWriteError allocation_error = AllocationWriteError::none;  // detail of a growth refusal
 };
 
 struct TransactionCompleteResult : TransactionWriterOutcome {

@@ -2929,7 +2929,10 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
     Check(device.Open(path,disk::FileOpenMode::open_existing).ok(),"writable open of the produced file");
     {
       disk::FileDeviceCarefulWriteSink sink(device);
+      // SB_ALLOCATION_MAP_IN_PLACE (W2c): the writer may grow its chains.
+      scratchbird::core::uuid::StandaloneUuidV7Issuer growth_issuer({made.receipt->database_uuid,Id(10)},{{},0,1000});
       tip::TransactionWriterBinding binding;binding.database_uuid=made.receipt->database_uuid;binding.state_root=state_root;
+      binding.allocation_root=allocation_root;binding.issuer=&growth_issuer;
       tip::TransactionInventoryWriter writer(binding);
       tip::TransactionHeaderRecord second,third;second.transaction_uuid=Id(240);third.transaction_uuid=Id(241);
       const auto now=[]{return u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
@@ -2947,6 +2950,25 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
       const auto row_allocated=tip::AllocatePage(sink,map_binding,row_page);
       Check(system_allocated.ok()&&row_allocated.ok()&&system_allocated.page_number!=row_allocated.page_number,
           "the in-place allocator allocates two pages on the produced file");
+      // Past the first header page: 4 .. header slots + 1 committed, so the
+      // header chain grows by one system-created page the inventory reaches.
+      const u64 header_slots=(sizes[profile]-512)/256;
+      bool committed_all=true,grew=false;
+      for(u64 n=4;n<=header_slots+1&&committed_all;++n){
+        // Distinct by construction: this file's Id() keeps only n's low byte.
+        tip::TransactionHeaderRecord header;header.transaction_uuid=Id(241);
+        header.transaction_uuid.bytes[12]=0xa0;header.transaction_uuid.bytes[13]=static_cast<platform::byte>(n>>8);
+        header.transaction_uuid.bytes[14]=static_cast<platform::byte>(n);
+        const auto begun=writer.Begin(sink,header);
+        grew=grew||begun.grown_header_pages==1;
+        const auto done=begun.ok()?writer.Commit(sink,n,now()):tip::TransactionCompleteResult{};
+        committed_all=begun.ok()&&begun.transaction_order==n&&done.ok();
+        if(!committed_all)std::cerr<<"producer growth n="<<n<<" begin="<<tip::TransactionWriterErrorName(begun.error)
+            <<" allocation="<<tip::AllocationWriteErrorName(begun.allocation_error)<<" page="<<int(begun.page_error)
+            <<" order="<<(begun.transaction_order?*begun.transaction_order:0)
+            <<" commit="<<tip::TransactionWriterErrorName(done.error)<<'\n';
+      }
+      Check(committed_all&&grew&&!writer.failed(),"the writer runs past the first header page, growing the header chain");
     }
     Check(device.Close().ok(),"close the writer's device");
   }
@@ -3009,7 +3031,8 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
   const auto counted=Host::ReadStartupCatalogs(read,catalog_limits,catalog_scan_limits);
   if(counted!=server::NativeHostedRuntimeError::none)std::cerr<<"producer catalog scan error="<<int(counted)<<'\n';
   Check(counted==server::NativeHostedRuntimeError::none,"the complete catalog scans within the shared tiers");
-  const db::NativeCatalogCaptureLimits capture_limits{4096,4*1024*1024,1,4,1024,128};
+  // producer-transactions runs past the first header page (up to 511 transactions).
+  const db::NativeCatalogCaptureLimits capture_limits{4096,4*1024*1024,1,transactions?std::size_t{1024}:std::size_t{4},1024,128};
   const auto captured=Host::ReadStartupCatalogs(read,catalog_limits,catalog_scan_limits,capture_limits);
   if(captured!=server::NativeHostedRuntimeError::none)std::cerr<<"producer catalog capture error="<<int(captured)<<'\n';
   Check(captured==server::NativeHostedRuntimeError::none,"the complete catalog is captured");
@@ -3099,14 +3122,15 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
       opened.observation->identity.system_state.mode==db::NativeDatabaseMode::online&&
       opened.observation->identity.system_state.flags==0&&
       opened.observation->allocation.filespaces==1&&opened.observation->allocation.catalog_pages>0&&
-      opened.observation->inventory.transactions==(transactions?3u:1u)&&
+      opened.observation->inventory.transactions==(transactions?(sizes[profile]-512)/256+1:1u)&&
       opened.observation->inventory.active_transactions==(transactions?1u:0u)&&
       opened.observation->inventory.in_doubt_transactions==0&&opened.observation->inventory.horizon_records==0&&
       opened.observation->routes.routes==2,
       "the opened file verifies read-only before any startup transaction: identity, allocation, inventory, catalog routes");
   if(transactions){
     Check(read_file()==created_bytes,"open verification of the written file writes nothing");
-    Check(opened.observation->allocation.wasted_pages==2,"the two unlinked allocations are reported as wasted space");
+    Check(opened.observation->allocation.wasted_pages==2,
+        "the two unlinked allocations are reported as wasted space; the grown header page is reached, not wasted");
     std::cout<<"producer transactions profile="<<profile<<" verified transactions="<<opened.observation->inventory.transactions
         <<" active="<<opened.observation->inventory.active_transactions<<'\n';
     return;
