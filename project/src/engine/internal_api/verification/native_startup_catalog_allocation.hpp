@@ -21,6 +21,13 @@ inline NativeStartupCatalogAllocationCheck CheckNativeStartupCatalogAllocation(
   using E=NativeStartupCatalogAllocationError;
   if(!capture.has_physical_pages()||!chain.ok())return {};
   const auto expected=capture.physical_pages();std::size_t matched=0;
+  // SB_ALLOCATION_MAP_IN_PLACE: the first-create creator (transaction 1).
+  // Pages allocated after the create, by a later transaction or by the system,
+  // that no captured catalog page reaches are wasted space (owner ruling Q17 =
+  // 1), counted by the initial-control check, never an orphan finding here.
+  const auto inventory=capture.inventory();
+  if(!inventory||inventory->inventory.entries.empty()||inventory->inventory.entries.front().identity.local_id.value!=1)return {};
+  const auto creator=inventory->inventory.entries.front().identity;
   for(const auto& page:chain.pages){const auto& map=page.map;
     for(const auto& record:map.records){
       if(record.page_number<map.first_page||record.page_number-map.first_page>=map.states.size())return {E::invalid_record};
@@ -30,7 +37,11 @@ inline NativeStartupCatalogAllocationCheck CheckNativeStartupCatalogAllocation(
       if(at==expected.end()||at->header.filespace_uuid!=map.header.filespace_uuid||at->header.page_number!=record.page_number){
         // First-create has no admitted user record/index graph. A page outside
         // the actually visited catalog graphs is not an empty relation.
-        if(record.page_type==5||record.page_type==6||(record.page_type>=0x100&&record.page_type<0x300))return {E::orphan_page};
+        const bool by_creator=record.creator_operation_uuid.is_nil()&&
+            record.creator_transaction_uuid==creator.transaction_uuid.value&&
+            record.creator_local_transaction_id==creator.local_id.value;
+        if(by_creator&&(record.page_type==5||record.page_type==6||(record.page_type>=0x100&&record.page_type<0x300)))
+          return {E::orphan_page};
         continue;
       }
       const auto& h=at->header;

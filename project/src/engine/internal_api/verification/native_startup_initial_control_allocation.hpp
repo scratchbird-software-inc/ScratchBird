@@ -68,9 +68,19 @@ inline NativeStartupInitialControlCheck CheckNativeStartupInitialControlAllocati
         map.header.database_uuid!=capture.source()->database_uuid)return {E::invalid_record};
     for(const auto& record:map.records){
       if(!record.creator_operation_uuid.is_nil())continue;
-      if(record.creator_transaction_uuid!=creator.transaction_uuid.value||record.creator_local_transaction_id!=creator.local_id.value||
-          record.page_number<map.first_page||record.page_number-map.first_page>=map.states.size()||
+      if(record.page_number<map.first_page||record.page_number-map.first_page>=map.states.size()||
           map.states[record.page_number-map.first_page]!=page::NativeAllocationState::allocated)return {E::invalid_record};
+      // SB_ALLOCATION_MAP_IN_PLACE: a page allocated after the create, by a
+      // later transaction or by the system. Nothing the creator wrote may
+      // reach it; unreached, it is wasted space (owner ruling Q17 = 1).
+      if(record.creator_transaction_uuid!=creator.transaction_uuid.value||record.creator_local_transaction_id!=creator.local_id.value){
+        const auto roots=std::span{additional}.first(additional_count);
+        if(record.page_number==0||find(catalogs,map.header.filespace_uuid,record.page_number)||
+            find(controls,map.header.filespace_uuid,record.page_number)||
+            std::any_of(roots.begin(),roots.end(),[&](const auto& r){return r.page.page_number==record.page_number;}))
+          return {E::invalid_record};
+        ++wasted;continue;
+      }
       const auto matches=[&](const db::NativeCapturedCatalogPage& p){return p.header.database_uuid==map.header.database_uuid&&
           p.header.page_size_profile_uuid==map.header.page_size_profile_uuid&&p.header.page_size_bytes==map.header.page_size_bytes&&
           p.header.page_uuid==record.page_uuid&&p.header.page_generation==record.page_generation&&

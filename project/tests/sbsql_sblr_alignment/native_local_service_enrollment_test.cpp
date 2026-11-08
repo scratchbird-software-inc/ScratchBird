@@ -22,6 +22,7 @@
 #include "catalog_schema_creation.hpp"
 #include "admitted_datatype_cohort.hpp"
 #include "transaction_inventory_writer.hpp"
+#include "allocation_map_writer.hpp"
 #include "native_fixed_root_memory_lease.hpp"
 #include <sys/file.h>
 #include <sys/stat.h>
@@ -2320,6 +2321,10 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
                 std::array<scratchbird::storage::page::NativeAllocationRecord,1> records{};auto& record=records[0];
                 record.page_number=h.page_number;record.page_uuid=h.page_uuid;record.owner_uuid=captured_page.owner_uuid;
                 record.page_generation=h.page_generation;record.page_type=h.page_type;
+                // The create's own pages are created by transaction 1.
+                const auto first_create=read.catalog_capture().inventory()->inventory.entries.front().identity;
+                record.creator_transaction_uuid=first_create.transaction_uuid.value;
+                record.creator_local_transaction_id=first_create.local_id.value;
                 std::array<db::NativeReadAllocationPage,1> pages{};auto& map=pages[0].map;
                 map.header=h;map.first_page=h.page_number;map.states=states;map.records=records;
                 db::NativeReadAllocationChain comparison;comparison.error=scratchbird::storage::page::NativeAllocationError::none;comparison.pages=pages;
@@ -2334,6 +2339,15 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
                 record.page_type=0x100;
                 Check(runtime_security::CheckNativeStartupCatalogAllocation(read.catalog_capture(),comparison).error==runtime_security::NativeStartupCatalogAllocationError::orphan_page,
                     "unvisited user content cannot become an empty first-create graph");
+                // SB_ALLOCATION_MAP_IN_PLACE (owner Q17 = 1): the same unvisited
+                // page allocated after the create, by the system or a later
+                // transaction, is wasted space, not a finding.
+                record.creator_transaction_uuid={};record.creator_local_transaction_id=0;
+                const auto system=runtime_security::CheckNativeStartupCatalogAllocation(read.catalog_capture(),comparison);
+                record.creator_transaction_uuid=Id(240);record.creator_local_transaction_id=2;
+                const auto later=runtime_security::CheckNativeStartupCatalogAllocation(read.catalog_capture(),comparison);
+                Check(system.ok()&&!system.matched_pages&&later.ok()&&!later.matched_pages,
+                    "a page allocated after the create that no catalog page reaches is not an orphan of the create");
               }
               Check(captured_inventory&&captured_inventory->generation==1&&
                   captured_inventory->inventory.next_local_transaction_id==2&&captured_inventory->inventory.next_commit_sequence==2&&
@@ -2899,7 +2913,7 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
   Check(made.ok()&&created.Close().ok(),"the production producer writes the database and its descriptor retires");
   if(transactions){
     namespace tip=scratchbird::storage::page;
-    disk::FilespaceRootReference state_root;
+    disk::FilespaceRootReference state_root,allocation_root;
     {
       disk::FileDevice device;
       Check(device.Open(path,disk::FileOpenMode::open_existing_read_only).ok(),"read-only open of the produced file");
@@ -2908,7 +2922,7 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
       auto fixed=db::AcquireNativeFixedRootBackedLease(made.receipt->database_uuid,files,made.receipt->filespace_uuid,
           {256ull*sizes[profile],backing.size()},backing);
       Check(fixed.ok()&&(*fixed.lease).Root(4),"page zero names the produced transaction-state chain");
-      state_root=*(*fixed.lease).Root(4);fixed.lease.Reset();
+      state_root=*(*fixed.lease).Root(4);allocation_root=*(*fixed.lease).Root(3);fixed.lease.Reset();
       Check(device.Close().ok(),"close the read-only open");
     }
     disk::FileDevice device;
@@ -2923,6 +2937,16 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
       Check(writer.Restart(sink).ok()&&writer.Begin(sink,second).transaction_order==2u&&
           writer.Begin(sink,third).transaction_order==3u&&writer.Commit(sink,2,now()).ok()&&!writer.failed(),
           "the in-place writer commits 2 and leaves 3 in progress on the produced file");
+      // SB_ALLOCATION_MAP_IN_PLACE: two pages allocated after the create, one
+      // by the system and one by transaction 2, which nothing links yet:
+      // wasted space (owner Q17 = 1), never a finding.
+      tip::AllocationMapBinding map_binding{made.receipt->database_uuid,allocation_root};
+      tip::PageAllocationRequest system_page{0x301,state_root.object_uuid,Id(250),Id(251),{},0};
+      tip::PageAllocationRequest row_page{6,Id(252),Id(253),Id(254),Id(240),2};
+      const auto system_allocated=tip::AllocatePage(sink,map_binding,system_page);
+      const auto row_allocated=tip::AllocatePage(sink,map_binding,row_page);
+      Check(system_allocated.ok()&&row_allocated.ok()&&system_allocated.page_number!=row_allocated.page_number,
+          "the in-place allocator allocates two pages on the produced file");
     }
     Check(device.Close().ok(),"close the writer's device");
   }
@@ -3082,6 +3106,7 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
       "the opened file verifies read-only before any startup transaction: identity, allocation, inventory, catalog routes");
   if(transactions){
     Check(read_file()==created_bytes,"open verification of the written file writes nothing");
+    Check(opened.observation->allocation.wasted_pages==2,"the two unlinked allocations are reported as wasted space");
     std::cout<<"producer transactions profile="<<profile<<" verified transactions="<<opened.observation->inventory.transactions
         <<" active="<<opened.observation->inventory.active_transactions<<'\n';
     return;

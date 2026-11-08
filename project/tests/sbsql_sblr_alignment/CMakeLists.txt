@@ -1533,6 +1533,20 @@ endif()
   set_tests_properties(sbsql_sblr_alignment_native_allocation_map_inplace PROPERTIES
     LABELS "sbsql_sblr_alignment;native_storage;allocation_map"
     TIMEOUT 600)
+  # SB_ALLOCATION_MAP_IN_PLACE: allocation from the in-place map by careful
+  # write, one page size per test (in-place writes W2b).
+  add_executable(sbsql_sblr_alignment_native_allocation_writer native_allocation_writer_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_native_allocation_writer PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_native_allocation_writer PRIVATE sb_storage_database)
+  target_compile_definitions(sbsql_sblr_alignment_native_allocation_writer PRIVATE
+    SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password")
+  foreach(profile RANGE 0 4)
+    add_test(NAME sbsql_sblr_alignment_native_allocation_writer_${profile}
+      COMMAND sbsql_sblr_alignment_native_allocation_writer --profile ${profile})
+    set_tests_properties(sbsql_sblr_alignment_native_allocation_writer_${profile} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_storage;allocation_map;careful_write;fault_injection"
+      TIMEOUT 900)
+  endforeach()
   # SB_TRANSACTION_INVENTORY_WRITER: in-place BEGIN/COMMIT/ROLLBACK and restart
   # dead-marking on production-created files, one page size per test (owner
   # Q20 = 1, 2026-11-07).
