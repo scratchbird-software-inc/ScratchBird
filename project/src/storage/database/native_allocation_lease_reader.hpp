@@ -72,10 +72,6 @@ struct NativeAllocationLeaseReadResult {
 // transaction/operation completion or permission to reuse retired pages.
 class NativeAllocationLeaseReader {
  public:
- static NativeAllocationLeaseReadResult Read(const NativeSelectedCheckpointMemoryLease& lease,
-     const Uuid& filespace,u64 maximum_total_image_bytes,NativeAllocationPreparedMemory& backing) noexcept {
-  return ReadWith(detail::NativeLeaseSourceAccess::From(lease),filespace,maximum_total_image_bytes,backing);
- }
  // SB_NATIVE_FIXED_ROOT_READ: the same read from page zero's fixed roots. The
  // primary map head carries no checkpoint digest; its digest is computed from
  // the image read and bound by the directory's allocation root when present.

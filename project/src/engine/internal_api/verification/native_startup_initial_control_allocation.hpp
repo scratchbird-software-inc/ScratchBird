@@ -59,7 +59,6 @@ inline NativeStartupInitialControlCheck CheckNativeStartupInitialControlAllocati
     if(additional_count==additional.size())return false;
     additional[additional_count++]={ref,type,owner};return true;
   };
-  for(const auto& root:capture.initial_control_roots())if(!add(root.page,root.page_type,root.object_uuid))return {E::invalid_record};
   for(const auto& root:std::span{identity.primary_roots}.first(identity.primary_root_count))
     if(!add({root.filespace_uuid,root.page_number,root.page_generation,root.page_size_profile_uuid},root.page_type,root.object_uuid))return {E::invalid_record};
   std::size_t count=0,wasted=0;

@@ -39,10 +39,8 @@ class NativeHostedDatabaseCustody final {
   using Uuid = core::platform::Uuid;
   using Error = NativeHostedCustodyError;
   class Operation;
-  class ReadLease;
   class FixedRootReadLease;
   struct OperationResult;
-  struct ReadResult;
   struct FixedRootReadResult;
   NativeHostedDatabaseCustody(const NativeHostedDatabaseCustody&) = delete;
   NativeHostedDatabaseCustody& operator=(const NativeHostedDatabaseCustody&) = delete;
@@ -102,47 +100,9 @@ class NativeHostedDatabaseCustody final {
   // retaining the original OS owner. External memory users drain separately.
   static Error RetireWriterBacking(std::shared_ptr<NativeHostedDatabaseCustody>) noexcept;
 
-  class ReadLease final {
-   public:
-    ReadLease() noexcept = default;
-    ReadLease(const ReadLease&) = delete;
-    ReadLease& operator=(const ReadLease&) = delete;
-    ReadLease(ReadLease&& other) noexcept
-        : owner_(TakeOwner(other)), reader_(std::move(other.reader_)) {}
-    ReadLease& operator=(ReadLease&& other) noexcept {
-      if (this != &other) { other.CheckOwner(); Reset(); owner_ = std::move(other.owner_); reader_ = std::move(other.reader_); }
-      return *this;
-    }
-    ~ReadLease() { Reset(); }
-    explicit operator bool() const noexcept { CheckOwner(); return bool(reader_); }
-    const storage::database::NativeSelectedCheckpointMemoryLease& source() const noexcept { CheckOwner(); return reader_.source(); }
-    const Uuid& operation_uuid() const noexcept { CheckOwner(); return reader_.operation_uuid(); }
-    void Reset() noexcept { CheckOwner(); reader_.Reset(); owner_.reset(); }
-   private:
-    friend class Operation;
-    ReadLease(std::shared_ptr<NativeHostedDatabaseCustody> owner, Writer::ReadLease&& reader) noexcept
-        : owner_(std::move(owner)), reader_(std::move(reader)) {}
-    void CheckOwner() const noexcept {
-      if (process_ != CurrentProcess() || thread_ != std::this_thread::get_id()) std::terminate();
-    }
-    static std::shared_ptr<NativeHostedDatabaseCustody> TakeOwner(ReadLease& other) noexcept {
-      other.CheckOwner(); return std::move(other.owner_);
-    }
-    const std::uint64_t process_ = CurrentProcess();
-    const std::thread::id thread_ = std::this_thread::get_id();
-    std::shared_ptr<NativeHostedDatabaseCustody> owner_;
-    Writer::ReadLease reader_; // Release device guards BEFORE the full host pin.
-  };
-  struct ReadResult : storage::database::NativeOwnedSourceDiagnostics {
-    storage::database::NativeWriterError writer_error = storage::database::NativeWriterError::invalid_operation;
-    ReadLease lease;
-    bool ok() const noexcept {
-      return writer_error == storage::database::NativeWriterError::none &&
-          error == storage::database::NativeOwnedSourceError::none && bool(lease);
-    }
-  };
   // SB_NATIVE_FIXED_ROOT_READ: a read through page zero's fixed roots under
-  // the same full-custody pin as ReadLease.
+  // the full-custody pin (the selected-checkpoint ReadLease went with that
+  // layer, W4d).
   class FixedRootReadLease final {
    public:
     FixedRootReadLease() noexcept = default;
@@ -204,21 +164,6 @@ class NativeHostedDatabaseCustody final {
       CheckOwner();return operation_.HasContinuity(pin);
     }
     void Reset() noexcept { CheckOwner(); operation_.Reset(); owner_.reset(); }
-    ReadResult ReadWithMemory(storage::database::NativeSelectedCheckpointMemoryLimits limits,
-        storage::database::NativeStorageMemory& memory, const storage::database::NativeStorageMemoryBinding& binding) noexcept {
-      CheckOwner(); auto retained = owner_; // Before any callback can Reset this handle.
-      auto raw = operation_.ReadWithMemory(limits, memory, binding);
-      ReadResult out; static_cast<storage::database::NativeOwnedSourceDiagnostics&>(out) =
-          std::move(static_cast<storage::database::NativeOwnedSourceDiagnostics&>(raw));
-      out.writer_error = raw.writer_error;
-      if (raw.ok()) out.lease = ReadLease(std::move(retained), std::move(raw.lease));
-      return out;
-    }
-    Writer::ObservationResult ObserveWithMemory(storage::database::NativeSelectedCheckpointMemoryLimits limits,
-        storage::database::NativeStorageMemory& memory,const storage::database::NativeStorageMemoryBinding& binding) noexcept {
-      CheckOwner();auto retained=owner_;
-      return operation_.ObserveWithMemory(limits,memory,binding,std::move(retained));
-    }
     FixedRootReadResult ReadFixedRootWithMemory(storage::database::NativeFixedRootMemoryLimits limits,
         storage::database::NativeStorageMemory& memory, const storage::database::NativeStorageMemoryBinding& binding) noexcept {
       CheckOwner(); auto retained = owner_; // Before any callback can Reset this handle.
@@ -238,19 +183,6 @@ class NativeHostedDatabaseCustody final {
         std::uint64_t offset, std::span<core::platform::byte> bytes) noexcept {
       CheckOwner(); auto retained = owner_; return operation_.ReadAtBounded(member, profile, offset, bytes);
     }
-    storage::database::NativeOwnedHistoryReadResult ReadHistoryWithMemory(
-        storage::database::NativeManagementHistoryMemoryLimits limits,
-        storage::database::NativeStorageMemory& memory,const storage::database::NativeStorageMemoryBinding& binding,
-        const storage::database::NativeManagementCheckpointAnchor* anchor=nullptr) noexcept {
-      CheckOwner();auto retained=owner_;
-      return operation_.ReadHistoryWithMemory(limits,memory,binding,anchor);
-    }
-    storage::database::NativeOwnedControlReadResult ReadControlWithMemory(
-        storage::database::NativeManagementControlAuthorityMemoryLimits limits,
-        storage::database::NativeStorageMemory& memory,const storage::database::NativeStorageMemoryBinding& binding) noexcept {
-      CheckOwner();auto retained=owner_;
-      return operation_.ReadControlWithMemory(limits,memory,binding);
-    }
     storage::database::NativeWriterIoResult WriteAtBounded(const Uuid& member, const Uuid& profile,
         std::uint64_t offset, std::span<const core::platform::byte> bytes) noexcept {
       CheckOwner(); auto retained = owner_; return operation_.WriteAtBounded(member, profile, offset, bytes);
@@ -260,8 +192,6 @@ class NativeHostedDatabaseCustody final {
     }
    private:
     friend class NativeHostedDatabaseCustody;
-    friend class storage::database::NativeOwnedInventoryPublication;
-    Writer::Operation& PublicationOperation() noexcept { CheckOwner();return operation_; }
     Operation(std::shared_ptr<NativeHostedDatabaseCustody> owner, Writer::Operation&& operation) noexcept
         : owner_(std::move(owner)), operation_(std::move(operation)) {}
     void CheckOwner() const noexcept {

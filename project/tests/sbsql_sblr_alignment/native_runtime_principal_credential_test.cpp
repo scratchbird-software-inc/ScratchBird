@@ -23,10 +23,12 @@ namespace hash=scratchbird::core::hash;
 namespace runtime=scratchbird::core::runtime;
 using CredentialError=server::NativeRuntimePrincipalCredentialError;
 using CredentialResult=server::NativeRuntimePrincipalCredentialResult;
-static_assert(!server::NativeRuntimeCredentialSource<db::NativeSelectedCheckpointMemoryLease>);
+// W4d: the selected-checkpoint sources were deleted; the fixed-root ones stand
+// in (a bare lease is not a source; the custody's read lease is).
+static_assert(!server::NativeRuntimeCredentialSource<db::NativeFixedRootMemoryLease>);
 static_assert(!server::NativeRuntimeCredentialSource<db::NativeOwnedCheckpointWriter::Operation>);
 static_assert(!server::NativeRuntimeCredentialSource<runtime_security::NativeRuntimeSecurityObservationResult>);
-static_assert(server::NativeRuntimeCredentialSource<server::NativeHostedDatabaseCustody::ReadLease>);
+static_assert(server::NativeRuntimeCredentialSource<server::NativeHostedDatabaseCustody::FixedRootReadLease>);
 static_assert(!server::NativeRuntimeCredentialSource<server::NativeHostedDatabaseCustody::Operation>);
 constexpr std::string_view password="DBLC013G-fixture-password";
 constexpr std::string_view verifier=
@@ -191,7 +193,6 @@ struct CredentialNativeFixture {
     request.genesis_graph=db::NativeCreationGenesisGraph::fixed_roots;
     const auto made=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,request,seed,indexes,budget,issuer);
     if(!made.ok())std::cerr<<"credential fixture creation="<<int(made.error)<<" variant="<<int(variant)<<" profile="<<p
-      <<" checkpoint="<<int(made.checkpoint_error)<<" selection="<<int(made.selection_error)
       <<" catalog="<<(made.catalog_read_error?int(*made.catalog_read_error):-1)<<" relation="<<(made.catalog_relation_error?int(*made.catalog_relation_error):-1)<<'\n';
     Check(made.ok(),"actual security/provider definitions persisted in roles4/5");receipt=*made.receipt;
     Check(device.Close().ok()&&device.Open(path,disk::FileOpenMode::open_existing).ok(),"independent native credential physical reopen");
@@ -422,7 +423,7 @@ void HostedCredentials(unsigned profile,bool indexed,bool compose=false) {
     request.credential.security.configuration_relation={};request.credential.security.security_relation={};
     request.source={Id(231),Id(235),7,
         server::StartupCredentialSource::Mutex::Clock::now()+std::chrono::seconds(10),{}};
-    request.checkpoint_limits={fixture.budget,32*1024*1024};
+    request.fixed_root_limits={fixture.budget,32*1024*1024};
     const auto call=[&](const auto& input){
       return server::ReadNativeLocalServiceStartupCredentials(input,std::move(operation.operation),
           prepared.workspace,reading.memory,reading.binding,custody.source,custody.manager,custody.tag,custody.derived);

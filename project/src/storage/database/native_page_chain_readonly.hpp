@@ -35,6 +35,14 @@ struct NativeReadDirectoryChain {
   std::size_t backing_bytes_used=0;
   bool ok() const noexcept{return error==page::NativeDirectoryError::none&&!pages.empty();}
 };
+// SB_NATIVE_FIXED_ROOT_READ: one inventory page's common header and owning
+// object, moved verbatim out of native_checkpoint_root.hpp (deleted with the
+// checkpoint layer, W4d); the fixed-root lease reports its state and header
+// pages with it.
+struct NativeInventoryPageBinding {
+  scratchbird::storage::disk::NativeCommonPageHeader header;
+  scratchbird::core::platform::Uuid object_uuid;
+};
 namespace detail {
 inline NativeReadAllocationMap ReadOnly(const page::NativeAllocationMapView& v) noexcept {
   return {v.header,v.object_uuid,v.map_generation,v.capacity_generation,v.total_pages,v.first_page,

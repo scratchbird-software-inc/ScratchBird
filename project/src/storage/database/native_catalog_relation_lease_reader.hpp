@@ -204,11 +204,6 @@ struct NativeCatalogRelationLeaseResult {
 // dependency-map/key admission, family/security, allocation or publication.
 class NativeCatalogRelationLeaseReader {
  public:
-  static NativeCatalogRelationLeaseResult Read(const NativeSelectedCheckpointMemoryLease& source,
-      u16 selector,u16 role,const NativeCatalogRelationBinding& binding,u64 maximum_total_image_bytes,
-      NativeCatalogRelationPreparedMemory& w) noexcept {
-    return ReadImpl(detail::NativeLeaseSourceAccess::From(source),selector,role,&binding,maximum_total_image_bytes,w);
-  }
   // SB_NATIVE_FIXED_ROOT_READ: the same reads from page zero's fixed roots.
   static NativeCatalogRelationLeaseResult Read(const NativeFixedRootMemoryLease& source,
       u16 selector,u16 role,const NativeCatalogRelationBinding& binding,u64 maximum_total_image_bytes,
@@ -216,14 +211,6 @@ class NativeCatalogRelationLeaseReader {
     return ReadImpl(detail::NativeLeaseSourceAccess::From(source),selector,role,&binding,maximum_total_image_bytes,w);
   }
   static NativeCatalogRelationLeaseResult ReadSelected(const NativeFixedRootMemoryLease& source,
-      u16 selector,u16 role,u64 maximum_total_image_bytes,
-      NativeCatalogRelationPreparedMemory& w) noexcept {
-    return ReadImpl(detail::NativeLeaseSourceAccess::From(source),selector,role,nullptr,maximum_total_image_bytes,w);
-  }
-  // Discover layout exclusively through the privately selected root and its
-  // complete native navigation/base-leaf graph. No supplied dependency tuple
-  // or creation receipt is required. Result facts are observations, not rights.
-  static NativeCatalogRelationLeaseResult ReadSelected(const NativeSelectedCheckpointMemoryLease& source,
       u16 selector,u16 role,u64 maximum_total_image_bytes,
       NativeCatalogRelationPreparedMemory& w) noexcept {
     return ReadImpl(detail::NativeLeaseSourceAccess::From(source),selector,role,nullptr,maximum_total_image_bytes,w);

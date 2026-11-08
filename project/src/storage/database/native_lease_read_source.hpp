@@ -11,12 +11,9 @@
 // Roots are keyed by page-zero kind: 1 system state, 2 catalog, 3 allocation
 // head, 4 transaction inventory, 5 filespace directory, 6 configuration,
 // 7 security, 8 feature catalog, 10 retention. The fixed-root lease supplies
-// page zero's roots, which carry no digest. The selected-checkpoint lease (the
-// drift layer, removed in R4) supplies its checkpoint roots translated from
-// checkpoint roles, each with the checkpoint's digest of the root image; the
-// horizon root (role 2) has no kind and is not offered.
+// page zero's roots, which carry no digest. (The selected-checkpoint lease, the
+// other source until the checkpoint layer was deleted, W4d, is gone.)
 #include "native_fixed_root_memory_lease.hpp"
-#include "native_selected_checkpoint_memory_lease.hpp"
 #include <array>
 #include <optional>
 
@@ -82,30 +79,6 @@ struct NativeLeaseSourceAccess {
     s.inventory_generation = 1;
     s.allocation = &lease.allocation_;
     s.directory = &lease.directory_;
-    s.retained_image_bytes = lease.retained_image_bytes_;
-    return s;
-  }
-  // Empty database UUID when the lease holds no checkpoint (readers refuse).
-  static NativeLeaseReadSource From(const NativeSelectedCheckpointMemoryLease& lease) noexcept {
-    lease.CheckThread();
-    NativeLeaseReadSource s;
-    const auto& pair = lease.selection_.checkpoint_inventory;
-    if (!pair.checkpoint) return s;
-    const auto& cp = *pair.checkpoint;
-    s.database_uuid = cp.header.database_uuid;
-    s.primary_filespace_uuid = cp.header.filespace_uuid;
-    s.cluster_authority_required = (cp.flags & 4u) != 0;
-    s.devices = lease.devices_;
-    s.batches = lease.batches_;
-    s.batch_count = lease.batch_count_;
-    for (const auto& r : cp.roots) {
-      const u16 kind = NativeCheckpointRoleKind(r.role);
-      if (kind) s.roots[kind] = NativeLeaseRoot{kind, r.page_type, r.page, r.object_uuid, r.sha256};
-    }
-    s.inventory = &pair.inventory;
-    s.inventory_generation = pair.inventory_generation;
-    s.allocation = &lease.selection_.allocation;
-    s.directory = &lease.directory_.directory;
     s.retained_image_bytes = lease.retained_image_bytes_;
     return s;
   }

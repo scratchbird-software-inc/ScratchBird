@@ -201,8 +201,8 @@ NativeHostedDatabaseRuntime::CredentialRead NativeHostedDatabaseRuntime::ReadSta
   if (owner->entering_||owner->read_active_) {out.error=E::busy;return out;}
   if (owner->closed_||owner->writer_retired_) {out.error=E::closed;return out;}
   if (!owner->writer_adopted_||request.credential.security.database_uuid!=owner->database_ ||
-      request.checkpoint_limits.maximum_backing_bytes>owner->limits_.writer.source.maximum_backing_bytes ||
-      request.checkpoint_limits.maximum_verification_image_bytes>owner->limits_.writer.source.maximum_verification_image_bytes)
+      request.fixed_root_limits.maximum_backing_bytes>owner->limits_.writer.source.maximum_backing_bytes ||
+      request.fixed_root_limits.maximum_verification_image_bytes>owner->limits_.writer.source.maximum_verification_image_bytes)
     return out;
   out.owner_=std::move(owner);out.source_=std::move(source);auto& self=*out.owner_;
   self.read_active_=true;self.entering_=true;
@@ -277,7 +277,7 @@ NativeHostedRuntimeError NativeHostedDatabaseRuntime::RetainStartupObservation(
   // the one the credential comparison read; it then anchors every later read
   // of this runtime. A read only: no watermark, repair, provider activation,
   // session or agent BEGIN.
-  const auto& limits=read.inputs_->request.checkpoint_limits;
+  const auto& limits=read.inputs_->request.fixed_root_limits;
   auto& lease=*credentials.comparison->lease;
   const auto crypto=self.database_crypto_.WithMemoryScope(self.crypto_binding_,[&]{
     auto source=lease.retained_operation_.ReadFixedRootWithMemory(
@@ -293,7 +293,7 @@ NativeHostedRuntimeError NativeHostedDatabaseRuntime::RetainStartupObservation(
 }
 
 NativeHostedRuntimeError NativeHostedDatabaseRuntime::ReadStartupCatalogs(CredentialRead& read,
-    storage::database::NativeSelectedCheckpointMemoryLimits limits,
+    storage::database::NativeFixedRootMemoryLimits limits,
     const storage::database::NativeCatalogRelationMemoryLimits& requested_catalog_limits,
     storage::database::NativeCatalogCaptureLimits capture_limits) noexcept {
   namespace db=storage::database;using E=NativeHostedRuntimeError;
@@ -306,8 +306,8 @@ NativeHostedRuntimeError NativeHostedDatabaseRuntime::ReadStartupCatalogs(Creden
   if(!read.authentication_)return E::credential_failure;
   const auto& request=read.inputs_->request;
   if(!limits.maximum_backing_bytes||!limits.maximum_verification_image_bytes||
-      limits.maximum_backing_bytes>request.checkpoint_limits.maximum_backing_bytes||
-      limits.maximum_verification_image_bytes>request.checkpoint_limits.maximum_verification_image_bytes)return E::invalid_request;
+      limits.maximum_backing_bytes>request.fixed_root_limits.maximum_backing_bytes||
+      limits.maximum_verification_image_bytes>request.fixed_root_limits.maximum_verification_image_bytes)return E::invalid_request;
   auto& self=*read.owner_;read.mutating_=true;self.entering_=true;
   struct Leave {bool& reading;bool& hosting;~Leave(){reading=false;hosting=false;}} leave{read.mutating_,self.entering_};
   const auto cancelled=[&]{return request.credential.stop.stop_requested()||request.source.stop.stop_requested();};

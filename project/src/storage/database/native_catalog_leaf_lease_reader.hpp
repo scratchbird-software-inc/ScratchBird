@@ -101,12 +101,6 @@ struct NativeCatalogLeafLeaseReadResult {
 // those separately. In particular, a caller-supplied ref is not catalog authority.
 class NativeCatalogLeafLeaseReader {
  public:
-  static NativeCatalogLeafLeaseReadResult Read(
-      const NativeSelectedCheckpointMemoryLease& lease,
-      const page::NativeCatalogRootReference& ref,
-      NativeCatalogLeafPreparedMemory& backing) noexcept {
-    return ReadImpl(detail::NativeLeaseSourceAccess::From(lease),ref,backing,false);
-  }
   // SB_NATIVE_FIXED_ROOT_READ: the same read from page zero's fixed roots.
   static NativeCatalogLeafLeaseReadResult Read(
       const NativeFixedRootMemoryLease& lease,

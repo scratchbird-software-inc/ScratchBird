@@ -53,9 +53,8 @@ inline usize NativeCatalogCaptureWorkspaceBytes(NativeCatalogCaptureLimits limit
   if(limits.maximum_physical_pages>(SIZE_MAX-inventory)/sizeof(NativeCapturedCatalogPage))return 0;
   const auto physical=inventory+limits.maximum_physical_pages*sizeof(NativeCapturedCatalogPage);
   if(!limits.maximum_initial_control_pages)return physical;
-  constexpr auto roots=32*sizeof(NativeCheckpointRootReference);
-  if(physical>SIZE_MAX-roots||limits.maximum_initial_control_pages>(SIZE_MAX-physical-roots)/sizeof(NativeCapturedCatalogPage))return 0;
-  return physical+roots+limits.maximum_initial_control_pages*sizeof(NativeCapturedCatalogPage);
+  if(limits.maximum_initial_control_pages>(SIZE_MAX-physical)/sizeof(NativeCapturedCatalogPage))return 0;
+  return physical+limits.maximum_initial_control_pages*sizeof(NativeCapturedCatalogPage);
 }
 class NativeCatalogCohortLeaseReader;
 struct NativeCatalogCapturePreparedResult;
@@ -90,9 +89,6 @@ class NativeCatalogCapture {
   std::span<const NativeCapturedCatalogPage> initial_control_pages() const noexcept {
     return has_initial_controls()?initial_control_pages_.first(initial_control_page_count_):std::span<const NativeCapturedCatalogPage>{};
   }
-  std::span<const NativeCheckpointRootReference> initial_control_roots() const noexcept {
-    return has_initial_controls()?initial_control_roots_.first(initial_control_root_count_):std::span<const NativeCheckpointRootReference>{};
-  }
   std::optional<NativeCapturedTransactionInventory> inventory() const noexcept {
     return ok()?inventory_:std::nullopt;
   }
@@ -102,7 +98,7 @@ class NativeCatalogCapture {
   // Consumers may supply scratch storage, but it must not overwrite either
   // the fixed rows or their retained variable fields (including unused backing).
   bool DisjointWorkspace(std::span<const std::byte> workspace) const noexcept {
-    return disk::detail::DisjointNativeDecodeRegions(workspace,rows_,text_,filespaces_,transactions_,physical_pages_,initial_control_pages_,initial_control_roots_,
+    return disk::detail::DisjointNativeDecodeRegions(workspace,rows_,text_,filespaces_,transactions_,physical_pages_,initial_control_pages_,
         std::span<const NativeCatalogCapture>{this,1});
   }
  private:
@@ -113,12 +109,11 @@ class NativeCatalogCapture {
     swap(transactions_,other.transactions_);swap(inventory_,other.inventory_);
     swap(physical_pages_,other.physical_pages_);swap(physical_page_count_,other.physical_page_count_);
     swap(initial_control_pages_,other.initial_control_pages_);swap(initial_control_page_count_,other.initial_control_page_count_);
-    swap(initial_control_roots_,other.initial_control_roots_);swap(initial_control_root_count_,other.initial_control_root_count_);
     swap(initial_controls_complete_,other.initial_controls_complete_);
     swap(relations_,other.relations_);swap(relation_count_,other.relation_count_);
   }
   void Begin() noexcept {source_.reset();inventory_.reset();count_=used_=filespace_count_=physical_page_count_=0;
-    initial_control_page_count_=initial_control_root_count_=0;initial_controls_complete_=false;relation_count_=0;}
+    initial_control_page_count_=0;initial_controls_complete_=false;relation_count_=0;}
   bool AppendRelation(const NativeCapturedCatalogRelation& relation) noexcept {
     if(relation_count_==relations_.size())return false;
     relations_[relation_count_++]=relation;return true;
@@ -175,8 +170,7 @@ class NativeCatalogCapture {
   std::span<transaction::mga::TransactionInventoryEntry> transactions_;
   std::span<NativeCapturedCatalogPage> physical_pages_;
   std::span<NativeCapturedCatalogPage> initial_control_pages_;
-  std::span<NativeCheckpointRootReference> initial_control_roots_;
-  usize initial_control_page_count_=0,initial_control_root_count_=0;
+  usize initial_control_page_count_=0;
   bool initial_controls_complete_=false;
   std::optional<NativeCapturedTransactionInventory> inventory_;
   usize filespace_count_=0,physical_page_count_=0;
@@ -234,14 +228,10 @@ inline NativeCatalogCapturePreparedResult PrepareNativeCatalogCapture(NativeCata
   }
   if(limits.maximum_initial_control_pages){
     const auto pages=out.capture.arena_.Allocate(limits.maximum_initial_control_pages*sizeof(NativeCapturedCatalogPage),alignof(NativeCapturedCatalogPage));
-    const auto roots=out.capture.arena_.Allocate(32*sizeof(NativeCheckpointRootReference),alignof(NativeCheckpointRootReference));
-    if(!pages.ok()||!roots.ok()){out.capture={};out.error=NativeStorageMemoryError::resource_exhausted;return out;}
+    if(!pages.ok()){out.capture={};out.error=NativeStorageMemoryError::resource_exhausted;return out;}
     auto* values=static_cast<NativeCapturedCatalogPage*>(pages.pointer);
-    auto* references=static_cast<NativeCheckpointRootReference*>(roots.pointer);
     std::uninitialized_value_construct_n(values,limits.maximum_initial_control_pages);
-    std::uninitialized_value_construct_n(references,32);
     out.capture.initial_control_pages_={values,limits.maximum_initial_control_pages};
-    out.capture.initial_control_roots_={references,32};
   }
   out.capture.text_={static_cast<byte*>(text.pointer),text.bytes};out.error=NativeStorageMemoryError::none;return out;
 }

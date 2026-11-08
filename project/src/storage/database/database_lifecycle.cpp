@@ -9365,8 +9365,7 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
     {
       const auto plan=detail::PlanNativeCreationCatalogLayout(request.page_size_bytes,0,request.total_pages,
           request.maximum_retained_image_bytes,seed,index_rows.indexes,
-          construction.inventory_format==NativeCreationInventoryFormat::in_place,
-          construction.genesis_graph==NativeCreationGenesisGraph::transitional_checkpoint);
+          construction.inventory_format==NativeCreationInventoryFormat::in_place);
       if(!plan.ok())return fail(plan.error==detail::NativeCreationLayoutError::resource_exhausted?E::resource_exhausted:E::capacity_exceeded);
       for(unsigned i=0;i<6;++i) {
         const auto pages=plan.layout->relations[i].starts.size();

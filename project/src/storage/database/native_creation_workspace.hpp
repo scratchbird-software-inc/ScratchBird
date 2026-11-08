@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 #include "native_filespace_initialization.hpp"
-#include "native_checkpoint_selection.hpp"
+#include "database_dirty_manifest.hpp"
 #include "catalog_name_envelope.hpp"
 #include "catalog_named_creation.hpp"
 #include "native_index_btree_page.hpp"
@@ -20,10 +20,6 @@ struct NativeCreationWorkspaceReceipt {
   core::platform::Uuid database_uuid, filespace_uuid, operation_uuid;
   core::platform::Uuid page_zero_uuid, timeline_uuid, publication_uuid;
   transaction::mga::TransactionIdentity construction_transaction;
-  // SB_TRANSITIONAL_CHECKPOINT_GRAPH: the genesis checkpoint, written only by
-  // the drift-era graph; a fixed-root create has none.
-  std::optional<disk::FilespaceRootReference> checkpoint;
-  std::array<core::platform::byte,32> checkpoint_sha256{};
   std::array<page::NativeCatalogRootReference,6> relations;
   std::array<core::platform::Uuid,6> relation_uuids;
   std::array<std::optional<page::NativeBtreeDependencies>,6> index_dependencies;
@@ -32,8 +28,6 @@ struct NativeCreationWorkspaceReceipt {
 };
 struct NativeCreationWorkspaceResult {
   NativeCreationWorkspaceError error=NativeCreationWorkspaceError::invalid_request;
-  NativeCheckpointError checkpoint_error=NativeCheckpointError::none;
-  NativeCheckpointSelectionError selection_error=NativeCheckpointSelectionError::none;
   std::optional<core::platform::u64> failed_page_number;
   std::optional<NativePinnedCatalogReadError> catalog_read_error;
   std::optional<NativeCatalogRelationError> catalog_relation_error;

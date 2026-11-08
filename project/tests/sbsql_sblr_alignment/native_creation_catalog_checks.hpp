@@ -96,7 +96,7 @@ void PopulatedWorkspaceChecks() {
     const auto budget=256*page_bytes;const auto path=fixture.Next();disk::FileDevice device;
     Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"populated workspace owned open");
     const auto created=db::InitializePopulatedNativeCreationWorkspaceOnOpenDevice(device,request,seed,budget,*fixture.issuer);
-    if(!created.ok())std::cerr<<"populated error="<<static_cast<int>(created.error)<<" checkpoint="<<static_cast<int>(created.checkpoint_error)<<'\n';
+    if(!created.ok())std::cerr<<"populated error="<<static_cast<int>(created.error)<<'\n';
     Check(created.ok()&&created.receipt->catalog_rows[0]==4,"real populated native construction");
     Check(device.Close().ok(),"close populated owner");
     Check(device.Open(path.string(),disk::FileOpenMode::open_existing).ok(),"reopen populated owner");
@@ -105,7 +105,9 @@ void PopulatedWorkspaceChecks() {
     const std::vector<disk::NativeFilespaceDevice> devices{{request.bootstrap.filespace_uuid,request.bootstrap.page_size_profile_uuid,&device}};
     // SB_NATIVE_FIXED_ROOT_READ (drift removal R3b3): the created file has no
     // checkpoint or selector; its catalogs are read from page zero.
-    Check(!created.receipt->checkpoint,"a fixed-root create carries no checkpoint");
+    static_assert(![]<class R>() { return requires(const R& r) { r.checkpoint; }; }
+                   .template operator()<db::NativeCreationWorkspaceReceipt>(),
+                "a fixed-root create carries no checkpoint");
     const auto checkpoint=db::NativeCatalogSource::PageZero(request.bootstrap.filespace_uuid);
     const auto rows=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(request.bootstrap.database_uuid,devices,checkpoint,2,1,{created.receipt->relations[0].object_uuid,{}},budget);
     Check(rows.ok()&&rows.rows.size()==4,"committed native metadata read after reopen");

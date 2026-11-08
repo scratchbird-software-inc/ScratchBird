@@ -96,11 +96,11 @@ struct NativeRuntimeSecurityObservationResult {
 };
 class NativeRuntimeSecurityPreparedMemory;
 struct NativeRuntimeSecurityPreparedResult;
-// SB_NATIVE_FIXED_ROOT_READ: the security records read through either the
-// selected checkpoint or page zero's fixed roots (the catalog is kind 2).
+// SB_NATIVE_FIXED_ROOT_READ: the security records read through page zero's
+// fixed roots (the catalog is kind 2; the selected-checkpoint lease went with
+// that layer, W4d).
 template<class Lease>
 concept NativeRuntimeSecurityLease =
-    std::same_as<Lease,storage::database::NativeSelectedCheckpointMemoryLease>||
     std::same_as<Lease,storage::database::NativeFixedRootMemoryLease>;
 template<NativeRuntimeSecurityLease Lease>
 NativeRuntimeSecurityObservationResult ReadCommittedNativeRuntimeSecurityOnLease(
@@ -226,12 +226,8 @@ inline NativeRuntimeSecurityObservationResult ReadCommittedNativeRuntimeSecurity
         if(found)return std::nullopt;found=&r;
       }
       if(!found||!found->catalog_generation||!found->schema_epoch||!found->security_epoch)return std::nullopt;
-      // The root the catalog was reached through: the selected checkpoint, or
-      // page zero's catalog root.
-      const auto anchor=[&]()->storage::disk::FilespaceRootReference{
-        if constexpr(std::same_as<Lease,db::NativeFixedRootMemoryLease>)return *source.Root(2);
-        else return source.checkpoint();
-      }();
+      // The root the catalog was reached through: page zero's catalog root.
+      const auto anchor=*source.Root(2);
       return NativeRuntimeSelectedCatalogObservation{anchor,found->object_uuid,
           found->header.page_uuid,found->catalog_generation,found->schema_epoch,
           found->security_epoch,found->resource_epoch};

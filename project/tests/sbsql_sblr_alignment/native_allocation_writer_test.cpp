@@ -9,7 +9,7 @@
 // than through the codec under test, and every file is read back by the chain
 // reader and the production fixed-root lease.
 //   - Rules: refused requests write nothing; one allocation per plan; a sealed
-//     (drift-era) map is refused for allocation.
+//     (drift-era) map is refused for allocation (a forgery since W4d).
 //   - Exhaustion: every free slot is allocated, lowest first; the next
 //     allocation is refused filespace_full with no write; a record and state
 //     that share a unit are one write; page zero's free count is not kept or
@@ -358,32 +358,37 @@ void Rules(const Base& b) {
   }
   Check(device.Close().ok(), "close");
   fs::remove(path);
-  // A drift-era (sealed) map is never allocated from in place.
+  // A sealed (drift-era) map is never allocated from in place. W4d: no writer
+  // produces the sealed family any more (the transitional create graph was
+  // deleted), so it is a FORGERY over a production-created file: the map root
+  // is re-encoded in the sealed family from its own decoded content.
   {
-    const auto& p = d::kCanonicalFilespacePageProfiles[0];
-    const auto sealed_path = (b.dir.path() / "sealed.db").string();
-    db::NativeFilespaceInitializationRequest request;
-    request.bootstrap = {V7(1), V7(2), p.uuid, d::kNativeBootstrapIntegrityProfile, {}, p.page_size_bytes, 1, 0, 1, 7};
-    request.operation_uuid = V7(3);
-    request.writer_uuid = V7(4);
-    request.policy_snapshot_uuid = V7(10);
-    request.creator.transaction_uuid = {UuidKind::transaction, V7(5)};
-    request.creator.local_id = mga::MakeLocalTransactionId(1);
-    request.creator.scope = mga::TransactionScope::local_node;
-    request.creation_utc_millis = 1789357072000ULL;
-    request.total_pages = 64;
-    request.genesis_graph = db::NativeCreationGenesisGraph::transitional_checkpoint;
+    const auto sealed_path = b.Fresh("sealed.db");
     d::FileDevice sealed;
-    Check(sealed.Open(sealed_path, d::FileOpenMode::create_new).ok(), "sealed device");
-    u::StandaloneUuidV7Issuer issuer({V7(1), V7(10)}, {{}, 0, 1000});
-    Check(db::InitializeNativeCreationWorkspaceOnOpenDevice(sealed, request, 256ull * p.page_size_bytes, issuer).ok(),
-          "checkpoint-graph create");
-    const auto zero = d::ReadFilespacePageZeroFromOpenDevice(sealed);
-    const auto at = std::find_if(zero.record->roots.begin(), zero.record->roots.end(), [](const auto& x) { return x.kind == 3; });
+    Check(sealed.Open(sealed_path, d::FileOpenMode::open_existing).ok(), "sealed device");
+    const auto chain = pg::ReadNativeAllocationChainFromOpenDevice(sealed, {b.database, b.primary, b.profile}, 64u << 20);
+    Check(chain.ok() && !chain.pages.empty(), "the created map is read");
+    const auto& root = *chain.pages.front().map;
+    pg::NativeAllocationMap forged;
+    forged.header = root.header;
+    forged.object_uuid = root.object_uuid;
+    forged.map_generation = forged.capacity_generation = 1;
+    forged.total_pages = root.total_pages;
+    forged.first_page = root.first_page;
+    forged.creator_transaction_uuid = root.creator_transaction_uuid;
+    forged.creator_local_transaction_id = root.creator_local_transaction_id;
+    forged.states.assign(root.states.begin(), root.states.end());
+    forged.records.assign(root.records.begin(), root.records.end());
+    forged.next = root.next;
+    if (forged.next) forged.next_sha256[0] = 1;
+    const auto encoded = pg::EncodeNativeAllocationMap(forged);
+    Check(encoded.ok(), "the map root re-encodes in the sealed family");
+    const auto io = sealed.WriteAt(b.root.page_number * b.size, encoded.bytes.data(), encoded.bytes.size());
+    Check(io.ok() && io.bytes_transferred == encoded.bytes.size() && sealed.Sync().ok(), "forge the sealed map root");
     const auto before = ReadAll(sealed_path);
     {
       d::FileDeviceCarefulWriteSink sink(sealed);
-      const auto r = pg::AllocatePage(sink, {V7(1), *at}, RequestOf({6, 2030, false}));
+      const auto r = pg::AllocatePage(sink, b.Binding(), RequestOf({6, 2030, false}));
       Check(r.error == AW::sealed_map && r.writes == 0, "a sealed map is refused for in-place allocation");
     }
     Check(sealed.Close().ok() && ReadAll(sealed_path) == before, "and nothing is written");

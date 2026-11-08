@@ -84,16 +84,14 @@ struct NativeLocalServiceStartupSelectionResult;
 struct NativeLocalServiceStartupConfigurationResult;
 struct NativeLocalServiceAgentConfigurationResult;
 class NativeHostedDatabaseRuntime;
-// Every alternative retains an actual selected checkpoint. The writer reader
-// additionally retains its outer operation reservation; it exposes no mutable
-// devices and cannot be converted to the independent read-source alternative.
-// Hosted readers also pin the original server route owner for their lifetime.
-// SB_NATIVE_FIXED_ROOT_READ: or the same three over page zero's fixed roots.
+// SB_NATIVE_FIXED_ROOT_READ: every alternative retains an actual read through
+// page zero's fixed roots (the three selected-checkpoint alternatives went with
+// that layer, W4d). The writer reader additionally retains its outer operation
+// reservation; it exposes no mutable devices and cannot be converted to the
+// independent read-source alternative. Hosted readers also pin the original
+// server route owner for their lifetime.
 template<class Source>
 concept NativeRuntimeCredentialSource =
-    std::same_as<Source, storage::database::NativeSelectedCheckpointMemoryHandle> ||
-    std::same_as<Source, storage::database::NativeOwnedCheckpointWriter::ReadLease> ||
-    std::same_as<Source, NativeHostedDatabaseCustody::ReadLease> ||
     std::same_as<Source, storage::database::NativeFixedRootMemoryHandle> ||
     std::same_as<Source, storage::database::NativeOwnedCheckpointWriter::FixedRootReadLease> ||
     std::same_as<Source, NativeHostedDatabaseCustody::FixedRootReadLease>;
@@ -101,8 +99,7 @@ namespace native_credential_detail {
 // The lease a credential source holds, whichever kind it is.
 template<NativeRuntimeCredentialSource Source>
 const auto& Lease(const Source& source) noexcept {
-  if constexpr (std::same_as<Source, storage::database::NativeSelectedCheckpointMemoryHandle> ||
-                std::same_as<Source, storage::database::NativeFixedRootMemoryHandle>)
+  if constexpr (std::same_as<Source, storage::database::NativeFixedRootMemoryHandle>)
     return *source;
   else return source.source();
 }
@@ -164,8 +161,7 @@ class NativeRuntimePrincipalCredentialLease final {
     if (retained_operation_) return retained_operation_.identity();
     return std::visit([](const auto& source) -> std::optional<core::platform::Uuid> {
       using S = std::decay_t<decltype(source)>;
-      if constexpr (std::same_as<S, storage::database::NativeSelectedCheckpointMemoryHandle> ||
-                    std::same_as<S, storage::database::NativeFixedRootMemoryHandle>)
+      if constexpr (std::same_as<S, storage::database::NativeFixedRootMemoryHandle>)
         return std::nullopt;
       else return source.operation_uuid();
     }, source_);
@@ -222,7 +218,6 @@ class NativeRuntimePrincipalCredentialLease final {
       hosted->Reset();
       return true;
     };
-    if (auto* hosted = std::get_if<NativeHostedDatabaseCustody::ReadLease>(&source_)) return retain(hosted);
     return retain(std::get_if<NativeHostedDatabaseCustody::FixedRootReadLease>(&source_));
   }
   template<NativeRuntimeCredentialSource Source>
@@ -277,10 +272,7 @@ class NativeRuntimePrincipalCredentialLease final {
   // Reverse destruction releases credential and source guards BEFORE governed
   // catalog backing; no allocation/deallocation callback runs under them.
   NativeRuntimePrincipalCredentialPreparedMemory workspace_;
-  std::variant<storage::database::NativeSelectedCheckpointMemoryHandle,
-      storage::database::NativeOwnedCheckpointWriter::ReadLease,
-      NativeHostedDatabaseCustody::ReadLease,
-      storage::database::NativeFixedRootMemoryHandle,
+  std::variant<storage::database::NativeFixedRootMemoryHandle,
       storage::database::NativeOwnedCheckpointWriter::FixedRootReadLease,
       NativeHostedDatabaseCustody::FixedRootReadLease> source_;
   NativeHostedDatabaseCustody::Operation retained_operation_;
@@ -430,11 +422,7 @@ inline NativeRuntimePrincipalCredentialResult VerifyNativeRuntimePrincipalCreden
   if (request.stop.stop_requested()) return fail(E::cancelled);
   out.crypto_error = core::hash::CheckExplicitCryptoMemoryScope(request.security.database_uuid);
   if (out.crypto_error != core::hash::CryptoMemoryError::none) return fail(E::crypto_scope_unavailable);
-  const auto source_identity = [&] {
-    if constexpr (std::same_as<std::decay_t<decltype(selected_source)>, db::NativeFixedRootMemoryLease>)
-      return db::NativeReadSourceIdentityFromFixedRoot(selected_source.identity());
-    else return db::NativeReadSourceIdentityFromSelection(*selected_source.selection().selection);
-  }();
+  const auto source_identity = db::NativeReadSourceIdentityFromFixedRoot(selected_source.identity());
   NativeRuntimePrincipalCredentialLease proof(std::move(workspace), std::move(source), std::move(credential),
       std::move(observed), *provider.record, selected->version_uuid, *custody, rows.rows, source_identity);
   out.lease.emplace(std::move(proof)); out.error = E::none; return out;

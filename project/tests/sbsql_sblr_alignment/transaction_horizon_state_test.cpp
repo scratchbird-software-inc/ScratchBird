@@ -128,53 +128,6 @@ void Projection(){
     std::cout<<"horizon_allocation_sites invalid="<<invalid<<" count="<<count<<'\n';
   }
 }
-struct Fixture {
-  fs::path root;Fixture(){char pattern[]="/tmp/sb-horizon-state.XXXXXX";const auto p=mkdtemp(pattern);Check(p,"owned fixture directory");root=p;}
-  ~Fixture(){std::error_code ec;fs::remove_all(root,ec);}
-};
-void Seal(std::vector<byte>& bytes){std::fill(bytes.begin()+320,bytes.begin()+352,0);std::array<byte,32> hash{};
-  Check(SHA256(bytes.data(),bytes.size(),hash.data()),"independent image reseal");std::copy(hash.begin(),hash.end(),bytes.begin()+320);}
-void NativeImages(){
-  Fixture fixture;
-  for(unsigned p=0;p<5;++p){const auto& profile=disk::kCanonicalFilespacePageProfiles[p];const u64 size=profile.page_size_bytes,budget=256*size;
-    const auto path=(fixture.root/("node-"+std::to_string(p))).string();disk::FileDevice device;Check(device.Open(path,disk::FileOpenMode::create_new).ok(),"owned native file");
-    db::NativeFilespaceInitializationRequest init;init.bootstrap={Id(1),Id(2),profile.uuid,disk::kNativeBootstrapIntegrityProfile,{},profile.page_size_bytes,1,0,1,7};
-    init.operation_uuid=Id(3);init.writer_uuid=Id(4);init.creator.transaction_uuid={UuidKind::transaction,Id(5)};
-    init.creator.local_id=mga::MakeLocalTransactionId(1);init.creator.scope=mga::TransactionScope::local_node;init.creation_utc_millis=1789357072000ULL;init.total_pages=64;
-    // SB_TRANSITIONAL_LEGACY_INVENTORY: this fixture takes the SBTINV01 genesis
-    // page as the base of its typed page-chain cases; delete with that format.
-    init.inventory_format=db::NativeCreationInventoryFormat::transitional_legacy;
-    // SB_TRANSITIONAL_CHECKPOINT_GRAPH: a drift-layer fixture; delete with that layer (R4).
-    init.genesis_graph=db::NativeCreationGenesisGraph::transitional_checkpoint;
-    init.policy_snapshot_uuid=Id(10);scratchbird::core::uuid::StandaloneUuidV7Issuer issuer({init.bootstrap.database_uuid,init.policy_snapshot_uuid},{{},0,1000});
-    Check(db::InitializeNativeCreationWorkspaceOnOpenDevice(device,init,budget,issuer).ok(),"actual native creation dependencies");
-    const auto zero=disk::ReadFilespacePageZeroFromOpenDevice(device);Check(zero.ok(),"actual native bootstrap");
-    const auto root=std::find_if(zero.record->roots.begin(),zero.record->roots.end(),[](const auto& r){return r.kind==4;});Check(root!=zero.record->roots.end(),"native inventory address");
-    std::vector<byte> original(size);Check(device.ReadAt(root->page_number*size,original.data(),original.size()).ok(),"actual inventory read");
-    const auto decoded=page::DecodeNativeTransactionInventoryPage(original);Check(decoded.ok(),"original native inventory");
-    const std::vector<disk::NativeFilespaceDevice> devices{{Id(2),profile.uuid,&device}};
-    // Isolated typed page-chain fixtures, not checkpoint publication or serving.
-    for(const auto& c:cases){auto candidate=*decoded.page;candidate.inventory=Inventory(c);
-      const auto encoded=page::EncodeNativeTransactionInventoryPage(candidate);Check(encoded.ok(),"native lifecycle encoding");
-      Check(LoadLittle64(encoded.bytes.data()+288)==(c.interesting?7u:11u)&&LoadLittle64(encoded.bytes.data()+296)==(c.active?7u:11u)&&
-        LoadLittle64(encoded.bytes.data()+304)==(c.active?7u:11u),"independent byte-offset horizon oracle");
-      Check(page::DecodeNativeTransactionInventoryPage(encoded.bytes).ok(),"native lifecycle image admission");
-      const auto write=[&](const auto& bytes){Check(device.WriteAt(root->page_number*size,bytes.data(),bytes.size()).ok()&&device.Sync().ok(),"actual typed inventory page persistence");};
-      write(encoded.bytes);const auto chain=page::ReadNativeTransactionInventoryChainFromOpenDevices(Id(1),devices,*root,budget);
-      Check(chain.ok()&&chain.inventory.entries.size()==1,"actual native chain read");Expected(chain.horizons,c.interesting?7:11,c.active?7:11,c.active?7:11);
-      auto wrong=encoded.bytes;StoreLittle64(wrong.data()+288,c.interesting?11:7);Seal(wrong);
-      Check(!page::DecodeNativeTransactionInventoryPage(wrong).ok(),"resealed wrong OIT is rejected");write(wrong);
-      const auto failed=page::ReadNativeTransactionInventoryChainFromOpenDevices(Id(1),devices,*root,budget);
-      Check(!failed.ok()&&failed.pages.empty()&&failed.inventory.entries.empty()&&!failed.horizons.valid&&!failed.retained_image_bytes,"bad native summary exposes no chain prefix");
-      wrong=encoded.bytes;StoreLittle64(wrong.data()+296,c.active?11:7);StoreLittle64(wrong.data()+304,c.active?11:7);Seal(wrong);
-      Check(!page::DecodeNativeTransactionInventoryPage(wrong).ok(),"resealed wrong OAT and OST are rejected");
-      write(encoded.bytes);
-    }
-    Check(device.Close().ok(),"release native fixture before fresh process");
-    const auto child=fork();Check(child>=0,"native horizon fork");if(child==0){const auto profile_text=std::to_string(p);execl("/proc/self/exe","horizon-probe","--probe",path.c_str(),profile_text.c_str(),nullptr);_exit(125);}
-    int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh process retains archived failure OIT from native bytes");
-  }
-}
 }
 void* operator new(std::size_t n){if(count_allocations)++allocations;if(allocation_budget==0){allocation_budget=-1;throw std::bad_alloc();}if(allocation_budget>0)--allocation_budget;
   if(auto* p=std::malloc(n?n:1))return p;throw std::bad_alloc();}
@@ -182,14 +135,9 @@ void* operator new[](std::size_t n){return ::operator new(n);}
 void operator delete(void* p) noexcept {std::free(p);}void operator delete[](void* p) noexcept {std::free(p);}
 void operator delete(void* p,std::size_t) noexcept {std::free(p);}void operator delete[](void* p,std::size_t) noexcept {std::free(p);}
 int main(int argc,char** argv)try{
-  if(argc==4&&std::string_view(argv[1])=="--probe"){
-    const auto p=static_cast<unsigned>(std::stoul(argv[3]));if(p>=5)return 2;const auto& profile=disk::kCanonicalFilespacePageProfiles[p];
-    disk::FileDevice device;if(!device.Open(argv[2],disk::FileOpenMode::open_existing_read_only).ok())return 3;
-    const auto zero=disk::ReadFilespacePageZeroFromOpenDevice(device);if(!zero.ok())return 4;
-    const auto root=std::find_if(zero.record->roots.begin(),zero.record->roots.end(),[](const auto& r){return r.kind==4;});if(root==zero.record->roots.end())return 5;
-    const auto chain=page::ReadNativeTransactionInventoryChainFromOpenDevices(Id(1),{{Id(2),profile.uuid,&device}},*root,256*u64{profile.page_size_bytes});
-    return chain.ok()&&chain.inventory.entries.size()==1&&chain.inventory.entries.front().archived_from_state==State::failed_terminal&&
-      chain.horizons.oldest_interesting_transaction.value==7&&chain.horizons.oldest_active_transaction.value==11&&chain.horizons.oldest_snapshot_transaction.value==11?0:6;
-  }
-  Projection();NativeImages();std::cout<<"PASS horizon state checks="<<checks<<'\n';return 0;
+  // W4d (2026-11-08): NativeImages (horizon summaries in the legacy SBTINV01
+  // page, built on the transitional create, and its fresh-process probe) was
+  // deleted with that format's writer; the in-place inventory's horizons are
+  // covered by the transaction inventory writer and open verification tests.
+  Projection();std::cout<<"PASS horizon state checks="<<checks<<'\n';return 0;
 }catch(const std::exception& e){allocation_budget=-1;count_allocations=false;std::cerr<<"FAIL horizon state checks="<<checks<<" "<<e.what()<<'\n';return 1;}

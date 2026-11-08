@@ -399,7 +399,7 @@ int main(int argc,char** argv){try{
     Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"exclusive new device");
     page_bytes=request.bootstrap.page_size_bytes;total_pages=request.total_pages;
     Arm();const auto result=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,128*page_bytes,*fixture.issuer);Disarm();
-    if(!result.ok())std::cerr<<"creation error="<<static_cast<int>(result.error)<<" checkpoint="<<static_cast<int>(result.checkpoint_error)<<" selector="<<static_cast<int>(result.selection_error)<<'\n';
+    if(!result.ok())std::cerr<<"creation error="<<static_cast<int>(result.error)<<'\n';
     Check(result.ok()&&ordered&&zero_phase==3,
         "every page is written, synchronized and read back before page zero, which is written, synchronized and read back last");
     Inspect(device,request);
@@ -472,7 +472,7 @@ int main(int argc,char** argv){try{
     const auto insufficient=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,large,required-1,*fixture.issuer);
     Check(!insufficient.ok()&&!insufficient.receipt&&insufficient.error==db::NativeCreationWorkspaceError::resource_exhausted&&!device.Size().size_bytes,"final selected admission budget deficit refuses before writes");
     const auto r=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,large,required,*fixture.issuer);
-    if(!r.ok())std::cerr<<"large creation error="<<static_cast<int>(r.error)<<" checkpoint="<<static_cast<int>(r.checkpoint_error)<<" selector="<<static_cast<int>(r.selection_error)<<'\n';
+    if(!r.ok())std::cerr<<"large creation error="<<static_cast<int>(r.error)<<'\n';
     Check(r.ok()&&r.receipt->map_pages==62,"control allocations span multiple coverage ranges");Inspect(device,large);}
   {disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"duplicate entropy fixture");
     Arm();repeat_entropy=true;const auto r=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,minimum_budget,*fixture.issuer);repeat_entropy=false;Disarm();

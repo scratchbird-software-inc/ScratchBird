@@ -146,7 +146,12 @@ db::NativeCatalogSource PageZero(const Created& made) { return db::NativeCatalog
 // checkpoint; all 12 relations agreed byte for byte at every page size.)
 void PageZeroReads(unsigned profile) {
   const auto& made = Production(profile);
-  Check(!made.receipt.workspace.checkpoint, "a production create carries no checkpoint");
+  // W4d: the receipt no longer has a checkpoint field at all (the checkpoint
+  // graph was deleted), so "a production create carries no checkpoint" is now
+  // a property of the type, checked at compile time.
+  static_assert(![]<class R>() { return requires(const R& r) { r.checkpoint; }; }
+                     .template operator()<db::NativeCreationWorkspaceReceipt>(),
+                "a production create carries no checkpoint");
   Open o(made, made.path);
   unsigned compared = 0;
   for (unsigned role = 1; role <= 6; ++role) {

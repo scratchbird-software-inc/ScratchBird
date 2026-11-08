@@ -182,7 +182,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"indexed complete metric actual device");
     Arm();const auto made=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,r,complete,indexes,budget,*fixture.issuer);Disarm();
     if(!made.ok())std::cerr<<"indexed creation profile="<<profile<<" error="<<static_cast<unsigned>(made.error)
-        <<" checkpoint="<<static_cast<unsigned>(made.checkpoint_error)<<" selection="<<static_cast<unsigned>(made.selection_error)
+        
         <<" writes="<<calls[write_call]<<" failed_page="<<made.failed_page_number.value_or(~u64{0})
         <<" catalog_error="<<(made.catalog_read_error?static_cast<unsigned>(*made.catalog_read_error):~0u)
         <<" relation_error="<<(made.catalog_relation_error?static_cast<unsigned>(*made.catalog_relation_error):~0u)
@@ -208,7 +208,9 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     const auto refused=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(r.bootstrap.database_uuid,devices,
         db::NativeCatalogSource::PageZero(made.receipt->filespace_uuid),2,1,{Id(20000),stale},budget);
     Check(!refused.ok(),"stale navigation binding cannot read indexed catalog");
-    Check(!made.receipt->checkpoint,"a fixed-root create carries no checkpoint");
+    static_assert(![]<class R>() { return requires(const R& r) { r.checkpoint; }; }
+                   .template operator()<db::NativeCreationWorkspaceReceipt>(),
+                "a fixed-root create carries no checkpoint");
   }
   for(unsigned which=0;which<8;++which) {
     auto inputs=batch_inputs;auto invalid_definition=*inputs.back().definition;
@@ -310,8 +312,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     const auto deep_seed=DenseIndexedCatalogSeed(request,two_level_maximum+1,40000,2500);
     const auto plan_for=[&](u64 total){return db::detail::PlanNativeCreationCatalogLayout(page_bytes,
         (total+coverage-1)/coverage,total,512*page_bytes,deep_seed,construction_indexes,
-        exhausted_request.inventory_format==db::NativeCreationInventoryFormat::in_place,
-        exhausted_request.genesis_graph==db::NativeCreationGenesisGraph::transitional_checkpoint);};
+        exhausted_request.inventory_format==db::NativeCreationInventoryFormat::in_place);};
     const auto fits=plan_for(exhausted_total),short_one=plan_for(exhausted_total-1);
     Check(fits.ok()&&fits.layout->image_count==exhausted_total&&fits.layout->relations[0].branches.size()==1&&
         short_one.error==db::detail::NativeCreationLayoutError::capacity_exceeded,
@@ -344,8 +345,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     for(const auto rows:{db::kNativeHostedCatalogRelationMaximumRows,db::kNativeCatalogScanRelationMaximumRows}) {
       db::NativeCreationCatalogSeed tier;tier[0].assign(rows,fixture_seed[0][1]);
       const auto plan=db::detail::PlanNativeCreationCatalogLayout(size,1,u64{1}<<20,(u64{1}<<20)*size,tier,construction_indexes,
-          request.inventory_format==db::NativeCreationInventoryFormat::in_place,
-          request.genesis_graph==db::NativeCreationGenesisGraph::transitional_checkpoint);
+          request.inventory_format==db::NativeCreationInventoryFormat::in_place);
       Check(plan.ok(),"tier row bound plans at every page size");
       const auto& layout=plan.layout->relations[0];
       u64 planned=1+layout.navigation.size();
@@ -455,7 +455,9 @@ void NativeMetricConfigChecks(const fs::path& directory) {
       const std::vector<disk::NativeFilespaceDevice> devices{{r.bootstrap.filespace_uuid,r.bootstrap.page_size_profile_uuid,&device}};
       // SB_NATIVE_FIXED_ROOT_READ (drift removal R3b3): the reopened file is
       // read from page zero's fixed roots; it has no checkpoint or selector.
-      Check(!created.receipt->checkpoint,"a fixed-root create carries no checkpoint");
+      static_assert(![]<class R>() { return requires(const R& r) { r.checkpoint; }; }
+                   .template operator()<db::NativeCreationWorkspaceReceipt>(),
+                "a fixed-root create carries no checkpoint");
       const auto read=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(r.bootstrap.database_uuid,devices,
           db::NativeCatalogSource::PageZero(r.bootstrap.filespace_uuid),2,1,relation,budget);
       Check(read.ok()&&read.rows.size()==4,"actual native configured rows after reopen");

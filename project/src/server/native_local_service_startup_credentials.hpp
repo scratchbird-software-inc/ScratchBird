@@ -14,9 +14,9 @@ enum class NativeLocalServiceStartupCredentialsError {
 struct NativeLocalServiceStartupCredentialsRequest {
   NativeRuntimePrincipalCredentialRequest credential;
   StartupCredentialSource::Request source;
-  // Bounds of the read through page zero's fixed roots (named for the
-  // checkpoint layer it replaced; renamed when that layer is deleted).
-  storage::database::NativeSelectedCheckpointMemoryLimits checkpoint_limits;
+  // Bounds of the read through page zero's fixed roots (named
+  // checkpoint_limits until the checkpoint layer was deleted, W4d).
+  storage::database::NativeFixedRootMemoryLimits fixed_root_limits;
 };
 
 struct NativeLocalServiceStartupCredentialsResult {
@@ -70,8 +70,8 @@ inline NativeLocalServiceStartupCredentialsResult ReadNativeLocalServiceStartupC
   if (cancelled()) { out.error = E::cancelled; return out; }
   if (!out.operation || !catalog_workspace || !request.source.deadline ||
       !request.source.generation ||
-      !request.checkpoint_limits.maximum_verification_image_bytes ||
-      !request.checkpoint_limits.maximum_backing_bytes ||
+      !request.fixed_root_limits.maximum_verification_image_bytes ||
+      !request.fixed_root_limits.maximum_backing_bytes ||
       request.credential.security.database_uuid != checkpoint_binding.database_uuid ||
       credential_tag.binary_ownership[core::memory::MemoryBinaryScopeKind::database] !=
           request.credential.security.database_uuid.bytes)
@@ -100,7 +100,7 @@ inline NativeLocalServiceStartupCredentialsResult ReadNativeLocalServiceStartupC
   };
   // SB_NATIVE_FIXED_ROOT_READ: page zero's fixed roots (drift removal C3c).
   compare(out.operation.ReadFixedRootWithMemory(
-      {request.checkpoint_limits.maximum_verification_image_bytes, request.checkpoint_limits.maximum_backing_bytes},
+      {request.fixed_root_limits.maximum_verification_image_bytes, request.fixed_root_limits.maximum_backing_bytes},
       checkpoint_memory, checkpoint_binding));
   return out;
 }

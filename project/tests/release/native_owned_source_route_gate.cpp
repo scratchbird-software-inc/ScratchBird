@@ -53,6 +53,42 @@ extern "C" ssize_t __wrap_pread(int fd,void* buffer,size_t size,off_t offset){
   return __real_pread(fd,buffer,size,offset);
 }
 void Check(bool ok,const char* what){if(!ok)throw std::runtime_error(what);}
+namespace m=scratchbird::core::memory;
+// W4d (2026-11-08): the budget-only Adopt/AdoptRoute (selected-checkpoint
+// reads) were deleted with the checkpoint layer; adoption is memory-backed
+// only. Refusals that precede the governors use unbound memory, which also
+// shows they touch neither; the retry that reaches the source uses real grants.
+struct Unbound {db::NativeStorageMemory persistent,transient;db::NativeStorageMemoryBinding binding{};};
+db::NativeOwnedCheckpointMemoryLimits Limits(){return {64*1024,{1048576,1048576}};}
+struct Grant {
+  m::MemoryManager manager;
+  m::HierarchicalMemoryBudgetLedger ledger{3,5};
+  db::NativeStorageMemoryBinding binding;
+  db::NativeStorageMemory memory;
+  static auto Policy(){auto p=m::DefaultLocalEngineMemoryPolicy();p.hard_limit_bytes=1ull<<30;p.per_context_limit_bytes=1ull<<30;return p;}
+  Grant(const scratchbird::core::platform::Uuid& database,std::uint64_t bytes,unsigned char tag):manager(Policy()) {
+    auto id=[&](unsigned char n){auto u=database;u.bytes[14]=tag;u.bytes[15]=n;return u;};
+    binding={database,id(61),id(62),id(63)};
+    m::ReservationBackedMemoryResourceRequest r;
+    r.memory_manager=&manager;r.reservation_ledger=&ledger;
+    r.consumer_kind=m::ReservationBackedMemoryConsumerKind::background_maintenance;
+    r.category=m::MemoryCategory::page_buffer;r.requested_bytes=bytes;r.memory_class="page_buffer";
+    r.route_label="storage.owned.route";r.purpose="owned source route gate";
+    r.binary_operation_uuid=binding.operation_uuid.bytes;
+    r.binary_ownership[m::MemoryBinaryScopeKind::database]=binding.database_uuid.bytes;
+    r.binary_ownership[m::MemoryBinaryScopeKind::owner]=binding.owner_uuid.bytes;
+    r.binary_ownership[m::MemoryBinaryScopeKind::context]=binding.context_uuid.bytes;
+    r.scope_chain={{m::HierarchicalMemoryScopeKind::process,{},id(64).bytes},
+                   {m::HierarchicalMemoryScopeKind::database,{},binding.database_uuid.bytes}};
+    r.provenance.source=m::HierarchicalMemoryBudgetProvenanceSource::server_runtime_api;
+    r.provenance.source_label="owned source route gate";
+    for(const auto& scope:r.scope_chain){m::HierarchicalMemoryBudget b;b.scope=scope;b.hard_limit_bytes=bytes;
+      b.provenance=r.provenance;Check(ledger.SetBudget(b).ok(),"parent budget");}
+    auto grant=m::AcquireReservationBackedMemoryResource(r);Check(grant.ok(),"node-issued grant");
+    auto adopted=db::AdoptNativeStorageMemory(binding,grant.resource);Check(adopted.ok(),"grant adoption");
+    memory=std::move(adopted.memory);
+  }
+};
 struct Fixture {
   std::filesystem::path root;
   Fixture(){char pattern[]="/tmp/sb_owned_source_route.XXXXXX";auto* made=::mkdtemp(pattern);
@@ -240,7 +276,9 @@ void NativeAdmissionFailures(const std::string& path,const std::string& missing)
   {server::DatabaseOwnershipRequest request;request.database_path=missing;
     auto owner=server::AcquireDatabaseOwnership(request);Check(owner.acquired&&owner.lock,"actual route reservation without primary file");
     auto transition=owner.lock->BeginNativeSourceTransition();Check(transition.ok(),"issue unbound native transition");
-    const auto refused=db::NativeOwnedCheckpointSource::AdoptRoute(transition.transition,database,primary,secondary,1048576);
+    Unbound u;
+    const auto refused=db::NativeOwnedCheckpointSource::AdoptRouteWithMemory(transition.transition,database,primary,secondary,Limits(),
+        u.persistent,u.binding,u.transient,u.binding);
     Check(refused.error==E::route_admission&&refused.route_error==R::primary_not_bound&&!refused.owner&&secondary.empty(),
       "pathname reservation cannot fabricate an owned primary");}
   server::DatabaseOwnershipRequest request;request.database_path=path;
@@ -251,12 +289,16 @@ void NativeAdmissionFailures(const std::string& path,const std::string& missing)
   Check(::setrlimit(RLIMIT_NOFILE,&exhausted)==0,"temporarily prohibit any new process descriptor");
   // The source API is noexcept. Restore the original limit before any assertion,
   // diagnostics or further fixture I/O, including on an unexpected result.
-  const auto failed=db::NativeOwnedCheckpointSource::AdoptRoute(transition.transition,database,primary,secondary,1048576);
+  Unbound u;
+  const auto failed=db::NativeOwnedCheckpointSource::AdoptRouteWithMemory(transition.transition,database,primary,secondary,Limits(),
+      u.persistent,u.binding,u.transient,u.binding);
   const bool restored=::setrlimit(RLIMIT_NOFILE,&saved)==0;
   Check(restored&&failed.error==E::route_admission&&failed.route_error==R::io_failure&&!failed.owner,
     "actual descriptor duplication failure is typed and publishes no source");
+  Grant persistent(database,1u<<20,1),transient(database,4u<<20,2);
   reads=0;count_reads=true;
-  const auto retry=db::NativeOwnedCheckpointSource::AdoptRoute(transition.transition,database,primary,secondary,1048576);
+  const auto retry=db::NativeOwnedCheckpointSource::AdoptRouteWithMemory(transition.transition,database,primary,secondary,Limits(),
+      persistent.memory,persistent.binding,transient.memory,transient.binding);
   count_reads=false;
   Check(retry.error==E::bootstrap_failure&&retry.route_error==R::none&&reads&&!retry.owner&&
       transition.transition->ObserveDrain().state==disk::RouteSourceDrainState::drained,
@@ -291,7 +333,9 @@ int main(){try{
   Check(files[0]->Open(path,disk::FileOpenMode::open_existing_read_only).ok(),"open actual route-borrowed file");
   const scratchbird::core::platform::Uuid database{{1,2,3,4,5,6,0x70,8,0x80,10,11,12,13,14,15,1}};
   auto primary=database;primary.bytes[15]=2;
-  count_reads=true;const auto refused=db::NativeOwnedCheckpointSource::Adopt(database,primary,files,1048576);count_reads=false;
+  Unbound u;
+  count_reads=true;const auto refused=db::NativeOwnedCheckpointSource::AdoptWithMemory(database,primary,files,Limits(),
+      u.persistent,u.binding,u.transient,u.binding);count_reads=false;
   Check(refused.error==db::NativeOwnedSourceError::device_ownership&&!refused.owner&&files.size()==1&&files[0]->is_open()&&!reads,
         "route-borrowed source refused before reading or taking ownership");
   route.lock->release();

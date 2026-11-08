@@ -23,34 +23,9 @@ add_library(sb_storage_database
   database_local_private_relation_locator.cpp
   database_lifecycle.cpp
   database_dirty_manifest.cpp
-  native_checkpoint_root.cpp
   local_transaction_store.cpp
   physical_mga_cow_store.cpp
-  native_catalog_leaf_staging.cpp
-  native_row_data_staging.cpp
-  native_catalog_root_staging.cpp
-  native_btree_page_staging.cpp
   native_hash_key_record.cpp
-  native_catalog_version_staging.cpp
-  native_filespace_capacity.cpp
-  native_storage_action_intent.cpp
-  native_checkpoint_selection.cpp
-  native_publication_watermark.cpp
-  native_publication_coordinator.cpp
-  native_inventory_graph_builder.cpp
-  native_owned_inventory_publication.cpp
-  native_owned_inventory_recovery.cpp
-  native_publication_plan.cpp
-  native_management_operation.cpp
-  native_management_extent.cpp
-  native_management_history.cpp
-  native_management_control_authority.cpp
-  native_management_publication_recovery.cpp
-  native_management_control_allocation.cpp
-  native_management_control_bundle.cpp
-  native_checkpoint_selection_binding.cpp
-  native_inventory_successor_staging.cpp
-  native_inventory_publication_delta.cpp
   native_filespace_initialization.cpp
   native_creation_workspace.cpp
   native_catalog_index_rows.cpp

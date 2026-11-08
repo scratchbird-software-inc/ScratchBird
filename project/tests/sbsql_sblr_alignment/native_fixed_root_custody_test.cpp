@@ -4,11 +4,12 @@
 // SEARCH_KEY: SB_NATIVE_FIXED_ROOT_READ
 // The hosted custody operation reads through page zero's fixed roots (C3a of
 // the drift removal). A database written by the production create is adopted
-// through the real route-ownership transfer. Under one operation, a fixed-root
-// read and a selected-checkpoint read must describe the same roots,
-// transaction inventory, allocation and directory. The fixed-root read holds
-// the operation's single read reservation exactly as the selected reader does;
-// its observation retires the device guards so the same operation can do
+// through the real route-ownership transfer. Under one operation, the fixed-
+// root read must describe the roots, transaction inventory, allocation and
+// directory the file holds (until R3b3, the same as a selected-checkpoint
+// read; that reader was deleted with the checkpoint layer, W4d). The fixed-
+// root read holds the operation's single read reservation; its observation
+// retires the device guards so the same operation can do
 // bounded I/O. Every read the fixed-root read makes is then failed in turn and
 // corrupted in turn: each must be refused, and the reservation released.
 #include "native_database_create.hpp"
@@ -200,10 +201,9 @@ void Differential(unsigned profile) {
   // The fixed-root read holds the operation's one read reservation.
   auto fixed = h.ReadFixed();
   Check(fixed.ok() && fixed.lease.operation_uuid() == Fixed(234), "fixed-root read under the reserved operation");
-  Check(h.ReadFixed().writer_error == WE::read_handle_live &&
-            h.operation.ReadWithMemory({256 * n.size, 64u << 20}, h.reading.memory, h.reading.binding).writer_error ==
-                WE::read_handle_live,
-        "a live fixed-root reader excludes a second reader of either kind");
+  // (Until W4d this also refused a second, selected-checkpoint reader; that
+  // reader kind no longer exists.)
+  Check(h.ReadFixed().writer_error == WE::read_handle_live, "a live fixed-root reader excludes a second reader");
   std::vector<byte> page(n.size);
   Check(h.operation.ReadAtBounded(n.receipt.filespace_uuid, n.profile, 0, page).error == WE::read_handle_live,
         "a live fixed-root reader excludes bounded I/O on its operation");

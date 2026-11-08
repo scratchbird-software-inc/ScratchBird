@@ -35,18 +35,16 @@ struct NativeCreationLayoutResult {
 // transaction_header_page: the create writes the in-place inventory, so its
 // header page is planned (SB_TRANSITIONAL_LEGACY_INVENTORY; no default, so every
 // caller plans the format it writes).
-// checkpoint_graph (SB_TRANSITIONAL_CHECKPOINT_GRAPH): the drift-era genesis
-// graph keeps its 19 control pages (first catalog leaf at control 10); the
-// fixed-root graph has 13 (no checkpoint, horizon-root, selector or watermark
-// page; first catalog leaf at control 8). No default: every caller plans the
-// graph it writes.
+// The fixed-root graph has 13 control pages (no checkpoint, horizon-root,
+// selector or watermark page; first catalog leaf at control 8); the drift-era
+// graph's layout went with the checkpoint layer (W4d).
 // No identities, authorization, memory grants, writes or configuration defaults.
 inline NativeCreationLayoutResult PlanNativeCreationCatalogLayout(
     u64 size,u64 maps,u64 total,u64 budget,const NativeCreationCatalogSeed& seed,
-    const NativeCreationCatalogIndexes& indexes,bool transaction_header_page,bool checkpoint_graph) noexcept {
+    const NativeCreationCatalogIndexes& indexes,bool transaction_header_page) noexcept {
   using E=NativeCreationLayoutError;
   const auto fail=[](E e){return NativeCreationLayoutResult{e,{}};};
-  const u64 controls=checkpoint_graph?20:14,first_leaf=checkpoint_graph?10:8;
+  const u64 controls=14,first_leaf=8;
   try {
     if(!std::any_of(disk::kCanonicalFilespacePageProfiles.begin(),disk::kCanonicalFilespacePageProfiles.end(),
         [size](const auto& p){return p.page_size_bytes==size;})||

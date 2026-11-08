@@ -20,9 +20,6 @@
 #include "native_system_state.hpp"
 #include "native_horizon_root.hpp"
 #include "native_retention_root.hpp"
-// Transitional (R0): the checkpoint half moved to native_checkpoint_root.hpp; this include goes
-// when the drift layer is removed (R4).
-#include "native_checkpoint_root.hpp"
 
 #include <array>
 #include <optional>
@@ -31,6 +28,17 @@
 #include <vector>
 
 namespace scratchbird::storage::database {
+// The platform aliases this namespace had through the checkpoint-layer
+// headers (deleted with that layer, W4d); kept storage code relies on them.
+using scratchbird::core::platform::Uuid;
+using scratchbird::core::platform::byte;
+using scratchbird::core::platform::u16;
+using scratchbird::core::platform::u32;
+using scratchbird::core::platform::u64;
+using scratchbird::core::platform::usize;
+using scratchbird::core::platform::TypedUuid;
+using scratchbird::core::platform::Status;
+using scratchbird::core::platform::DiagnosticRecord;
 
 using scratchbird::core::platform::DiagnosticRecord;
 using scratchbird::core::platform::Status;

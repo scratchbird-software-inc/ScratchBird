@@ -15,7 +15,8 @@ namespace scratchbird::storage::database {
 // selector and management publication) keep the starting database they decode
 // until that layer is removed, and it is deleted with that layer. Production
 // create never selects it. Ignored by the bootstrap-only initializer.
-enum class NativeCreationInventoryFormat : core::platform::u8 { in_place, transitional_legacy };
+// W4d (2026-11-08): transitional_legacy was deleted with the checkpoint layer.
+enum class NativeCreationInventoryFormat : core::platform::u8 { in_place };
 // SB_TRANSITIONAL_CHECKPOINT_GRAPH (drift removal R3; extends owner Q8 = 2):
 // the genesis graph a native create writes. fixed_roots is the design: page
 // zero's fixed roots name every control page and page zero, written last, is
@@ -25,7 +26,8 @@ enum class NativeCreationInventoryFormat : core::platform::u8 { in_place, transi
 // 0x500, system-state checkpoint fields). It exists only for the drift-layer
 // tests until that layer is removed (R4), and is deleted with it. Production
 // create never selects it. Ignored by the bootstrap-only initializer.
-enum class NativeCreationGenesisGraph : core::platform::u8 { fixed_roots, transitional_checkpoint };
+// W4d (2026-11-08): transitional_checkpoint was deleted with that layer.
+enum class NativeCreationGenesisGraph : core::platform::u8 { fixed_roots };
 struct NativeFilespaceInitializationRequest {
   disk::FilespaceBootstrap bootstrap;
   core::platform::Uuid operation_uuid,writer_uuid,policy_snapshot_uuid;
@@ -40,8 +42,7 @@ struct NativeFilespaceInitializationRequest {
 // 2026-11-07); the drift-era checkpoint graph keeps the request's initializing
 // state. One function, so the three records cannot disagree.
 inline core::platform::u16 NativeCreatedFilespaceLifecycle(const NativeFilespaceInitializationRequest& request) noexcept {
-  return request.genesis_graph==NativeCreationGenesisGraph::fixed_roots?core::platform::u16{1}:
-      request.bootstrap.lifecycle_state;
+  (void)request;return core::platform::u16{1};
 }
 enum class NativeFilespaceInitializationError {
   none, invalid_request, invalid_device, device_not_empty, invalid_capacity,

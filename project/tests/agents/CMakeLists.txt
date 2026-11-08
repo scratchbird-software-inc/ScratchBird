@@ -362,19 +362,6 @@ target_link_options(route_source_issuer_gate PRIVATE -Wl,--wrap=pthread_mutex_lo
 add_test(NAME route_source_issuer_gate COMMAND route_source_issuer_gate)
 set_tests_properties(route_source_issuer_gate PROPERTIES
   TIMEOUT 60 LABELS "agents;ownership;native_source;real_file_io")
-add_executable(startup_parent_publication_gate
-  "${PROJECT_SOURCE_DIR}/tests/concurrency/startup_parent_publication_gate.cpp")
-target_compile_features(startup_parent_publication_gate PRIVATE cxx_std_23)
-target_link_libraries(startup_parent_publication_gate PRIVATE sb_storage_database OpenSSL::Crypto)
-target_link_options(startup_parent_publication_gate PRIVATE
-  -Wl,--wrap=posix_fallocate
-  -Wl,--wrap=pread -Wl,--wrap=pwrite -Wl,--wrap=fsync -Wl,--wrap=RAND_bytes
-  -Wl,--wrap=_ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv
-  -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex
-  -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex -Wl,--wrap=EVP_Digest)
-add_test(NAME startup_parent_publication_gate COMMAND startup_parent_publication_gate)
-set_tests_properties(startup_parent_publication_gate PROPERTIES
-  TIMEOUT 180 LABELS "agents;startup;native_publication;real_file_io")
 add_executable(runtime_authority_binding_native_gate
   "${PROJECT_SOURCE_DIR}/tests/concurrency/runtime_authority_binding_native_gate.cpp"
   "${PROJECT_SOURCE_DIR}/src/server/database_ownership.cpp")

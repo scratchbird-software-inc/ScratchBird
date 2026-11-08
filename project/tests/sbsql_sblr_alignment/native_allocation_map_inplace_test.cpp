@@ -13,8 +13,9 @@
 //   - the production create (fixed roots) writes the family on every map page
 //     and the chain reader reads it: coverage, sequence, the create's records
 //     (every page it wrote, created by transaction 1), page zero's counters not
-//     compared; the drift-era checkpoint graph still writes the sealed family,
-//     read by the same reader with every sealed check;
+//     compared (until W4d the drift-era checkpoint graph wrote the sealed
+//     family, read by the same reader; that graph was deleted, and the sealed
+//     codec is exercised below by the mixed-family refusal);
 //   - a chain mixing the two families is refused, an in-place chain has no
 //     selected (digest-bound) form, and a state that claims a page without a
 //     record is refused on disk.
@@ -419,38 +420,6 @@ void Production(unsigned index) {
   }
 }
 
-// The drift-era checkpoint graph keeps the sealed family (until W4).
-void Transitional(unsigned index) {
-  const auto& p = d::kCanonicalFilespacePageProfiles[index];
-  scratchbird::tests::OwnedTempDirectory dir;
-  const auto path = (dir.path() / "transitional").string();
-  db::NativeFilespaceInitializationRequest request;
-  request.bootstrap = {V7(1), V7(2), p.uuid, d::kNativeBootstrapIntegrityProfile, {}, p.page_size_bytes, 1, 0, 1, 7};
-  request.operation_uuid = V7(3);
-  request.writer_uuid = V7(4);
-  request.policy_snapshot_uuid = V7(10);
-  request.creator.transaction_uuid = {UuidKind::transaction, V7(5)};
-  request.creator.local_id = mga::MakeLocalTransactionId(1);
-  request.creator.scope = mga::TransactionScope::local_node;
-  request.creation_utc_millis = 1789357072000ULL;
-  request.total_pages = 64;
-  request.genesis_graph = db::NativeCreationGenesisGraph::transitional_checkpoint;
-  {
-    d::FileDevice device;
-    Check(device.Open(path, d::FileOpenMode::create_new).ok(), "node device");
-    u::StandaloneUuidV7Issuer issuer({V7(1), V7(10)}, {{}, 0, 1000});
-    Check(db::InitializeNativeCreationWorkspaceOnOpenDevice(device, request, 256ull * p.page_size_bytes, issuer).ok(),
-          "the checkpoint-graph create");
-    Check(device.Close().ok(), "close");
-  }
-  const auto chain = Chain(path, {V7(1), V7(2), p.uuid});
-  Check(chain.ok(), "the same reader reads the sealed map");
-  const auto file = ReadAll(path);
-  for (const auto& page : chain.pages)
-    Check(!pg::IsAllocationMapInplaceImage(std::span<const byte>(file).subspan(page.map->header.page_number * p.page_size_bytes,
-                                                                               p.page_size_bytes)),
-          "the checkpoint graph writes the sealed family");
-}
 }  // namespace
 
 int main() {
@@ -458,7 +427,6 @@ int main() {
     for (unsigned index = 0; index < d::kCanonicalFilespacePageProfiles.size(); ++index) {
       Codec(d::kCanonicalFilespacePageProfiles[index]);
       Production(index);
-      Transitional(index);
       std::cout << "allocation map in place page_size=" << d::kCanonicalFilespacePageProfiles[index].page_size_bytes
                 << " slots=" << pg::AllocationMapInplaceSlotsPerPage(d::kCanonicalFilespacePageProfiles[index].page_size_bytes)
                 << " ok\n";

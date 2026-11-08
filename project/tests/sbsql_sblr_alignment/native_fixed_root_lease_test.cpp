@@ -105,7 +105,7 @@ struct Node {
   d::FileDevice device;
   db::NativeFilespaceInitializationRequest request;
   u64 size = 0;
-  Node(unsigned profile, db::NativeCreationInventoryFormat format = db::NativeCreationInventoryFormat::in_place) {
+  explicit Node(unsigned profile) {
     char name[] = "/tmp/sb-fixed-root-XXXXXX";
     if (!mkdtemp(name)) throw std::runtime_error("mkdtemp");
     directory = name;
@@ -121,11 +121,6 @@ struct Node {
     request.creator.scope = mga::TransactionScope::local_node;
     request.creation_utc_millis = 1789357072000ULL;
     request.total_pages = 64;
-    request.inventory_format = format;
-    // SB_TRANSITIONAL_CHECKPOINT_GRAPH: the legacy inventory exists only in the
-    // drift-era graph; the fixed-root lease must refuse it.
-    if (format == db::NativeCreationInventoryFormat::transitional_legacy)
-      request.genesis_graph = db::NativeCreationGenesisGraph::transitional_checkpoint;
     Check(device.Open(path.string(), d::FileOpenMode::create_new).ok(), "node device");
     scratchbird::core::uuid::StandaloneUuidV7Issuer issuer({Id(1), Id(10)}, {{}, 0, 1000});
     Check(db::InitializeNativeCreationWorkspaceOnOpenDevice(device, request, 256 * size, issuer).ok(), "real native create");
@@ -137,6 +132,29 @@ struct Node {
   }
   std::vector<d::NativeFilespaceDevice> Devices() { return {{Id(2), request.bootstrap.page_size_profile_uuid, &device}}; }
 };
+
+// W4d (2026-11-08): no writer produces the legacy SBTINV01 inventory any more
+// (the transitional create graph was deleted). A FORGERY over a production-
+// created file: the in-place inventory page's family magic is overwritten
+// with the legacy family's, so the fixed-root lease must refuse a non-in-place
+// inventory family rather than fall back to the legacy decoder.
+void ForgeLegacyInventoryFamily(Node& n) {
+  namespace pg = scratchbird::storage::page;
+  constexpr std::array<byte, 8> legacy{{'S', 'B', 'T', 'I', 'N', 'V', '0', '1'}};
+  std::vector<byte> bytes(n.size);
+  unsigned forged = 0;
+  for (u64 page = 1; page < n.request.total_pages; ++page) {
+    const auto read = n.device.ReadAt(page * n.size, bytes.data(), bytes.size());
+    Check(read.ok() && read.bytes_transferred == bytes.size(), "read a created page");
+    if (!std::equal(pg::kTransactionStatePageMagic.begin(), pg::kTransactionStatePageMagic.end(),
+                    bytes.begin() + pg::kTransactionStateFamilyOffset)) continue;
+    std::copy(legacy.begin(), legacy.end(), bytes.begin() + pg::kTransactionStateFamilyOffset);
+    const auto write = n.device.WriteAt(page * n.size, bytes.data(), bytes.size());
+    Check(write.ok() && write.bytes_transferred == bytes.size(), "forge the legacy inventory family");
+    ++forged;
+  }
+  Check(forged == 1 && n.device.Sync().ok(), "the create wrote exactly one in-place inventory page");
+}
 
 db::NativeFixedRootMemoryResult Acquire(Node& n, MemoryFixture& f, db::NativeFixedRootMemoryLimits limits,
                                        Uuid database = Id(1), Uuid primary = Id(2)) {
@@ -200,7 +218,8 @@ void TestProfile(unsigned profile) {
 
 void TestRefusals() {
   {
-    Node legacy(0, db::NativeCreationInventoryFormat::transitional_legacy);
+    Node legacy(0);
+    ForgeLegacyInventoryFamily(legacy);
     MemoryFixture f(32u << 20);
     const auto r = Acquire(legacy, f, {256 * legacy.size, 8u << 20});
     Check(!r.ok() && r.error == E::inventory_failure && r.inventory_error == scratchbird::storage::page::NativeInventoryError::invalid_family,

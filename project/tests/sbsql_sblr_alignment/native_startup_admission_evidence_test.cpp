@@ -1,6 +1,6 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
-#include "engine/internal_api/verification/native_verification_operation.hpp"
+#include "engine/internal_api/transaction/native_startup_admission_evidence.hpp"
 #include <cstdlib>
 #include <iostream>
 #include <new>
@@ -96,56 +96,9 @@ void Codec(){Fixture f;const auto expected=Oracle();Bytes output(expected.size()
  Check(encode().ok(),"stale-generation decision remains explicit");
  f.input.outcome=v::NativeStartupPolicyOutcome(65536);Empty(encode());
 }
-void StateCarrier(){
- Fixture f;const std::array<Uuid,6> versions{Id(17),Id(19),Id(21),Id(23),Id(101),Id(103)};f.input.metadata_versions=versions;Bytes evidence(4096);const auto audited=NoHeap([&]{return v::EncodeNativeStartupAdmissionEvidenceInto(f.input,4096,evidence);});
- Check(audited.ok(),"admission evidence fixture encodes");
- v::NativeVerificationOperationState state;state.operation_uuid=Id(6);state.database_uuid=state.database_lineage_uuid=Id(4);
- state.repair_policy_uuid=Id(200);state.quarantine_policy_uuid=Id(201);state.salvage_policy_uuid=Id(202);state.evidence_policy_uuid=Id(20);
- state.acting_subject_uuid=Id(9);state.snapshot_boundary_uuid=Id(12);state.maintenance_boundary_uuid=Id(203);
- state.phase=v::NativeVerificationPhase::boundary_established;state.created_at_micros=90;state.updated_at_micros=101;
- state.verification_levels=1;const std::array<Uuid,1> files{Id(24)};state.filespaces=files;
- v::NativeStartupTransactionDetail d;d.transaction_uuid=Id(7);d.database_uuid=Id(4);d.engine_instance_uuid=Id(5);d.principal_uuid=Id(9);
- d.attachment_uuid=Id(204);d.session_uuid=Id(8);d.policy_snapshot_uuid=Id(10);d.security_snapshot_uuid=Id(11);
- d.visibility_epoch_uuid=Id(205);d.isolation_profile_uuid=Id(206);d.operation_uuid=Id(6);d.data_snapshot_uuid=Id(12);
- d.isolation_version_uuid=Id(207);d.transaction_policy_uuid=Id(100);d.transaction_policy_version_uuid=Id(103);
- d.local_transaction_id=2;d.started_at_micros=90;d.isolation_generation=1;d.transaction_policy_generation=2;d.admission_side_effect_started=true;
- state.transaction_detail=d;
- Bytes old_bytes(8192),new_bytes(8192),other_bytes(8192);
- const auto old=NoHeap([&]{return v::EncodeNativeVerificationOperationStateInto(state,8192,old_bytes);});Check(old.ok(),"legacy detail before admission bytes");
- const auto before=state;state.startup_admission_evidence=audited.bytes;
- const auto encoded=NoHeap([&]{return v::EncodeNativeVerificationOperationStateInto(state,8192,new_bytes);});
- Check(encoded.ok(),"version3 exact admission carrier");
- Bytes expected(old.bytes.begin(),old.bytes.end());expected[7]='3';Num(expected,8,2,3);Num(expected,12,4,old.bytes.size()+audited.bytes.size());
- Num(expected,252,4,audited.bytes.size());expected.insert(expected.begin()+584,audited.bytes.begin(),audited.bytes.end());
- Check(std::ranges::equal(encoded.bytes,expected),"version3 preserves legacy offsets and inserts exact evidence before target vectors");
- std::array<Uuid,1> decoded_files;v::NativeVerificationStateWorkspace workspace{decoded_files,{},{}};
- const auto decoded=NoHeap([&]{return v::DecodeNativeVerificationOperationStateInto(expected,8192,workspace);});
- Check(decoded.ok()&&std::ranges::equal(decoded.record->startup_admission_evidence,audited.bytes)&&
-     decoded.record->startup_admission_evidence.data()==expected.data()+584,"version3 retains exact borrowed audit content");
- Check(NoHeap([&]{return v::ValidateNativeVerificationOperationEvolution(before,state);})==v::NativeVerificationStateError::none,
-     "same created transaction may add durable admission evidence after its selected side-effect marker");
- Check(v::ValidateNativeVerificationOperationEvolution(state,before)!=v::NativeVerificationStateError::none,"audit evidence cannot disappear");
- for(unsigned fault=0;fault<9;++fault){auto bad=state;
-  switch(fault){case 0:bad.transaction_detail->admission_side_effect_started=false;break;
-   case 1:bad.transaction_detail->session_uuid=Id(220);break;case 2:bad.transaction_detail->transaction_uuid=Id(220);break;
-   case 3:bad.evidence_policy_uuid=Id(220);break;case 4:bad.transaction_detail->transaction_policy_version_uuid=Id(220);break;
-   case 5:bad.updated_at_micros=100;break;case 6:bad.transaction_detail.reset();break;
-   case 7:bad.transaction_detail->engine_instance_uuid=Id(220);break;case 8:bad.transaction_detail->transaction_policy_generation=8;break;}
-  const auto refused=NoHeap([&]{return v::EncodeNativeVerificationOperationStateInto(bad,8192,other_bytes);});
-  Check(!refused.ok()&&!refused.record&&refused.bytes.empty(),"foreign or incomplete owner bindings cannot carry admission evidence");
- }
- f.input.Number(N::catalog_generation)=2;
- const auto changed=NoHeap([&]{return v::EncodeNativeStartupAdmissionEvidenceInto(f.input,4096,other_bytes);});Check(changed.ok(),"distinct valid evidence fixture");
- auto after=state;after.startup_admission_evidence=changed.bytes;
- Check(v::ValidateNativeVerificationOperationEvolution(state,after)!=v::NativeVerificationStateError::none,"resealed evidence content cannot replace original admission");
- f.policies[0].decision=c::CatalogPolicyDefault::deny;f.input.outcome=v::NativeStartupPolicyOutcome::deny;
- f.input.reason=v::NativeAdmissionReason::applicable_policy_refusal;f.input.Identity(I::decisive_policy)=Id(100);
- const auto denied=NoHeap([&]{return v::EncodeNativeStartupAdmissionEvidenceInto(f.input,4096,other_bytes);});Check(denied.ok(),"denial content retained");
- after.startup_admission_evidence=denied.bytes;
- Check(v::ValidateNativeVerificationOperationState(after)==v::NativeVerificationStateError::none,"denied admission remains valid created-state evidence");
- after.phase=v::NativeVerificationPhase::identity_verified;
- Check(v::ValidateNativeVerificationOperationState(after)!=v::NativeVerificationStateError::none,"denial cannot advance the verifier past its admission boundary");
 }
-}
-int main(){try{Codec();StateCarrier();std::cout<<"native startup admission evidence PASS checks="<<checks<<" representation_only=true\n";return 0;}
+// W4d (2026-11-08): StateCarrier (the evidence carried inside the verification
+// operation state record) was deleted with that record (the checkpoint-era
+// verification history). The evidence codec itself is unchanged.
+int main(){try{Codec();std::cout<<"native startup admission evidence PASS checks="<<checks<<" representation_only=true\n";return 0;}
  catch(const std::exception& e){deny_allocations=false;std::cerr<<"native startup admission evidence FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}

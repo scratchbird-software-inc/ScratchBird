@@ -1594,7 +1594,6 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
     return;
   }
   if(!initialized.ok())std::cerr<<"enrolled construction error="<<int(initialized.error)<<" profile="<<profile<<" indexed="<<indexed
-      <<" checkpoint="<<int(initialized.checkpoint_error)<<" selection="<<int(initialized.selection_error)
       <<" catalog="<<(initialized.catalog_read_error?int(*initialized.catalog_read_error):-1)
       <<" relation="<<(initialized.catalog_relation_error?int(*initialized.catalog_relation_error):-1)<<'\n';
   Check(initialized.ok(),"actual complete native enrollment persists in selected checkpoint/inventory");
@@ -1688,7 +1687,7 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
     request.credential.security.runtime_binding_generation=1;request.credential.security.maximum_retained_image_bytes=budget;
     request.credential.security.catalog_selection=runtime_security::NativeRuntimeCatalogSelection::discover_selected;
     request.source={Id(231),Id(235),7,server::StartupCredentialSource::Mutex::Clock::now()+std::chrono::seconds(10),{}};
-    request.checkpoint_limits={budget,32*1024*1024};
+    request.fixed_root_limits={budget,32*1024*1024};
     const auto writes=stage_writes,syncs=stage_syncs;
     if(profile==0&&reopen==0&&!configuration_variant&&!graph_variant&&!agent_variant) {
       server::NativeHostedRuntimeCloseResult foreign;
@@ -2223,7 +2222,7 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
             Check(!held_source.ok()&&held_source.error==server::StartupCredentialSource::Error::wait,
                 "authenticated decision retains its actual protected-source generation fence after plaintext erasure");
             if(!memory_variant&&!policy_variant){
-              const db::NativeSelectedCheckpointMemoryLimits catalog_limits{budget,12*1024*1024};
+              const db::NativeFixedRootMemoryLimits catalog_limits{budget,12*1024*1024};
               // Bound the page working set in bytes across all page profiles;
               // larger pages need fewer leaf and navigation slots. The row
               // index still covers the complete submitted name catalog.
@@ -2313,10 +2312,10 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
                   "complete actual root/navigation/base identities are retained and a smaller physical budget cannot reuse them");
               Check(read.catalog_capture().has_initial_controls()&&
                   read.catalog_capture().initial_control_pages().size()==expected_initial_control_pages&&
-                  read.catalog_capture().initial_control_roots().empty()&&
                   Host::ReadStartupCatalogs(read,catalog_limits,catalog_scan_limits,{1024,2*1024*1024,1,4,512,1})==server::NativeHostedRuntimeError::invalid_request,
                   "complete actual initial map/inventory/directory identities survive reader retirement and cannot bypass a tighter "
-                  "control-page bound; page zero, not a checkpoint, roots the rest");
+                  "control-page bound; page zero, not a checkpoint, roots the rest (W4d: the capture no longer has "
+                  "a checkpoint-root list at all)");
               if(profile==0&&!configuration_variant&&!graph_variant&&!death&&!agent_variant&&!memory_variant&&!policy_variant&&
                   !authentication_variant&&!name_variant&&!namespace_variant&&!filespace_variant&&!audit_variant&&!verification_policy_variant&&
                   !management_variant&&!transaction_policy_variant){
@@ -3136,7 +3135,7 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
   request.credential.security.runtime_binding_generation=1;request.credential.security.maximum_retained_image_bytes=budget;
   request.credential.security.catalog_selection=runtime_security::NativeRuntimeCatalogSelection::discover_selected;
   request.source={Id(231),Id(235),7,server::StartupCredentialSource::Mutex::Clock::now()+std::chrono::seconds(10),{}};
-  request.checkpoint_limits={budget,32*1024*1024};
+  request.fixed_root_limits={budget,32*1024*1024};
   auto read=Host::ReadStartupCredentials(host.runtime,request,provisioner.source,provisioner.tag,provisioner.derived);
   if(!read.ok())std::cerr<<"producer credentials error="<<int(read.error)<<" credential="<<int(read.credentials().error)
       <<" configuration="<<int(read.configuration().error)<<" binding="<<int(read.configuration().failing_binding)
@@ -3159,7 +3158,7 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
   if(!authenticated.ok())std::cerr<<"producer authentication error="<<int(authenticated.error)<<'\n';
   Check(authenticated.ok()&&authenticated.observation.principal_uuid==receipt.service_principal_uuid,
       "the L5 service authenticates as the producer's principal");
-  const db::NativeSelectedCheckpointMemoryLimits catalog_limits{budget,12*1024*1024};
+  const db::NativeFixedRootMemoryLimits catalog_limits{budget,12*1024*1024};
   const db::NativeCatalogRelationMemoryLimits catalog_scan_limits{Profile(profile),1,db::NativeCatalogScanBasePages(sizes[profile]),
       db::kNativeCatalogScanRelationMaximumRows,db::kNativeCatalogScanRelationMaximumRows,
       db::NativeCatalogScanNavigationLimits(sizes[profile])};
@@ -3305,7 +3304,6 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
     put(0,identity.primary_page_uuid,identity.primary_page_generation,1,identity.primary_filespace_uuid);
     for(const auto& p:capture.physical_pages())put(p.header.page_number,p.header.page_uuid,p.header.page_generation,p.header.page_type,p.owner_uuid);
     for(const auto& p:capture.initial_control_pages())put(p.header.page_number,p.header.page_uuid,p.header.page_generation,p.header.page_type,p.owner_uuid);
-    for(const auto& r:capture.initial_control_roots())put(r.page.page_number,Id(227),r.page.page_generation,r.page_type,r.object_uuid);
     for(const auto& r:std::span{identity.primary_roots}.first(identity.primary_root_count))
       put(r.page_number,Id(227),r.page_generation,r.page_type,r.object_uuid);
     u64 last=0;for(const auto& r:records)last=std::max(last,r.page_number);

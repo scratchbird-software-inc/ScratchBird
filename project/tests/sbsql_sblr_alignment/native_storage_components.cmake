@@ -10,30 +10,9 @@ add_executable(sbsql_sblr_alignment_native_storage_components
   filespace_page_zero_test.cpp
   ../../src/server/database_ownership.cpp
   ../../src/storage/database/database_dirty_manifest.cpp
-  ../../src/storage/database/native_checkpoint_root.cpp
   ../../src/storage/database/physical_mga_cow_store.cpp
-  ../../src/storage/database/native_catalog_leaf_staging.cpp
-  ../../src/storage/database/native_row_data_staging.cpp
-  ../../src/storage/database/native_catalog_root_staging.cpp
-  ../../src/storage/database/native_btree_page_staging.cpp
-  ../../src/storage/database/native_catalog_version_staging.cpp
-  ../../src/storage/database/native_checkpoint_selection.cpp
-  ../../src/storage/database/native_checkpoint_selection_binding.cpp
-  ../../src/storage/database/native_inventory_successor_staging.cpp
-  ../../src/storage/database/native_inventory_publication_delta.cpp
-  ../../src/storage/database/native_management_control_authority.cpp
-  ../../src/storage/database/native_management_control_allocation.cpp
-  ../../src/storage/database/native_management_control_bundle.cpp
-  ../../src/storage/database/native_management_history.cpp
-  ../../src/storage/database/native_management_operation.cpp
-  ../../src/storage/database/native_management_extent.cpp
-  ../../src/storage/database/native_publication_plan.cpp
-  ../../src/storage/database/native_publication_watermark.cpp
-  ../../src/storage/database/native_publication_coordinator.cpp
   ../../src/storage/database/native_system_state.cpp
   ../../src/storage/database/native_filespace_initialization.cpp
-  ../../src/storage/database/native_filespace_capacity.cpp
-  ../../src/storage/database/native_storage_action_intent.cpp
   ../../src/storage/page/catalog_page.cpp
   ../../src/storage/page/row_data_page.cpp
   ../../src/storage/page/native_row_data_page.cpp
@@ -100,13 +79,10 @@ target_link_options(sbsql_sblr_alignment_native_storage_components PRIVATE
   -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex
   -Wl,--wrap=pread -Wl,--wrap=pwrite -Wl,--wrap=fsync)
 
+# W4d (2026-11-08): the staging, checkpoint, selection, directory-control and
+# policy-root components were deleted with the checkpoint layer.
 foreach(native_component IN ITEMS
-    catalog-metric-series-stage catalog-metric-retention-stage catalog-storage-policy-stage catalog-version-stage row-data-stage
-    catalog-stage catalog-root-stage catalog-committed btree-stage inventory-stage
-    inventory-stage-mixed checkpoint-owner checkpoint-horizon checkpoint-system
-    checkpoint-directory directory-stage directory-controls directory-graph
-    directory-allocation checkpoint-directory-allocation policy-roots
-    checkpoint-allocation bound-selector filespace-initialization)
+    filespace-initialization)
   string(REPLACE "-" "_" native_component_name "${native_component}")
   add_test(NAME sbsql_sblr_alignment_native_component_${native_component_name}
     COMMAND sbsql_sblr_alignment_native_storage_components --${native_component}-only)

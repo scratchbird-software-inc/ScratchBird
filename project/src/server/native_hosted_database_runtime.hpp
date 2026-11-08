@@ -68,8 +68,9 @@ enum class NativeOpenVerificationError {
 };
 enum class NativeOpenVerificationStage { none, identity, allocation, inventory, catalog_routes, complete };
 struct NativeOpenVerificationLimits {
-  // One selected-checkpoint read at a time; each stage releases its read.
-  storage::database::NativeSelectedCheckpointMemoryLimits selected;
+  // One read through page zero's fixed roots at a time; each stage releases
+  // its read. (Named `selected` until the checkpoint layer was deleted, W4d.)
+  storage::database::NativeFixedRootMemoryLimits fixed_root;
   // Secondary allocation-chain read workspace; at least one page.
   std::size_t map_backing_bytes = 0;
 };
@@ -352,7 +353,7 @@ class NativeHostedDatabaseRuntime final {
   // coverage, metadata chains and committed row visibility. No full engine
   // startup-verification receipt or service admission is issued by this scan.
   static NativeHostedRuntimeError ReadStartupCatalogs(CredentialRead&,
-      storage::database::NativeSelectedCheckpointMemoryLimits,
+      storage::database::NativeFixedRootMemoryLimits,
       const storage::database::NativeCatalogRelationMemoryLimits&,
       storage::database::NativeCatalogCaptureLimits={}) noexcept;
 

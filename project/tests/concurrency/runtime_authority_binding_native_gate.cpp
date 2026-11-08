@@ -1,79 +1,133 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
-// Reuse independent native page/inventory byte oracles, not a mock catalog.
-#define main UnusedNativeFilespaceRegressionMain
-#include "../sbsql_sblr_alignment/filespace_page_zero_test.cpp"
-#undef main
+//
+// The runtime authority binding readers (management/runtime_authority_binding.hpp)
+// on a database written by the production create primitive (fixed roots) and
+// changed in place as the engine changes it: the transaction inventory writer
+// (W1) and the catalog version writer (W3a). W4d (2026-11-08) moved this gate
+// off its hand-forged checkpoint fixture, which was deleted with that layer.
+//   - Governed: the read on the caller's retained fixed-root lease copies the
+//     exact committed definition; every request refusal exposes nothing; no
+//     heap allocation under the device guards; every physical read is failed
+//     in turn and typed with its extent and filespace; the read recovers and
+//     writes nothing.
+//   - Committed: the read through page zero, the same definition and
+//     refusals; invalid requests refused before any read; every read and
+//     allocation fault refused with nothing usable.
+//   - Pinned: the read under a real published snapshot of a real reader
+//     transaction; every read and allocation fault; a revoked pin refused.
+//   - Visibility: a successor written in place by transaction 2 is invisible
+//     while it is active (and refused to its own reader as not committed),
+//     invisible after ROLLBACK, and the committed definition after COMMIT.
+//   - FORGED (no writer produces them): a definition naming a foreign
+//     database, refused; the construction transaction's state word set back
+//     to active, so the catalog itself has no committed creator, refused.
+//   - Cold: a fresh executable (fork + exec) reads the persisted binding.
+// Not covered here any more: the owned-source read (its API was deleted with
+// the selected-checkpoint source; hosted reads of the binding run in the
+// principal credential test).
+#define SB_NATIVE_RUNTIME_SECURITY_FIXTURE_WITHOUT_MAIN
+#include "../sbsql_sblr_alignment/native_runtime_security_observation_test.cpp"
+#undef SB_NATIVE_RUNTIME_SECURITY_FIXTURE_WITHOUT_MAIN
 #include "management/runtime_authority_binding.hpp"
-#include "../../src/server/database_ownership.hpp"
-#include <future>
-#include <fstream>
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <latch>
+#include "transaction_inventory_reader.hpp"
+#include <sys/wait.h>
+#include <unistd.h>
 
 namespace {
 namespace runtime_api=scratchbird::engine::internal_api;
 using BindingError=runtime_api::RuntimeAuthorityBindingReadError;
 template<class T> concept HasSnapshotIdentity=requires(T value){value.snapshot_uuid;};
 static_assert(!HasSnapshotIdentity<runtime_api::RuntimeAuthorityBindingCommittedReadResult>);
-static_assert(!HasSnapshotIdentity<runtime_api::RuntimeAuthorityBindingOwnedReadResult>);
-static_assert(!std::is_copy_constructible_v<runtime_api::RuntimeAuthorityBindingOwnedReadResult>);
 static_assert(!HasSnapshotIdentity<runtime_api::RuntimeAuthorityBindingLeaseReadResult>);
 
-void GovernedRuntimeBinding(disk::FileDevice& device, unsigned profile) {
-  const u64 budget = 64*u64{sizes[profile]};
-  const db::NativeCatalogRelationMemoryLimits limits{
-      Profile(profile), 1, 1, 4, 4, {1, sizes[profile]}};
+// The fixture's binding (SecurityFixture): Id(180) for database Id(1), service
+// principal Id(200), provider Id(210), policy Id(52), credential reference
+// Id(211), generation 1, policy epoch 31, provider generation 37. It lives in
+// the configuration relation (catalog selector 2, role 5).
+db::NativeCatalogRelationBinding Relation(const SecurityFixture& f) {
+  return {f.receipt.relation_uuids[4],f.receipt.index_dependencies[4]};
+}
+std::string FixturePath(const SecurityFixture& f){return (f.artifacts.path()/"native-security").string();}
+Uuid BaseVersion(SecurityFixture& f) {
+  const auto loaded=db::ReadNativeCatalogLeafFromOpenDevice(f.device,Id(1),f.receipt.relations[4]);
+  Check(loaded.ok(),"the configuration leaf the create wrote");
+  for(const auto& row:loaded.page->body.rows)
+    if(loaded.metadata.at(row.version_uuid).record.header.object_uuid.value==Id(180))return row.version_uuid;
+  Check(false,"the create wrote the runtime binding");return {};
+}
+template<class Result> void Exact(const Result& r,const Uuid& version,u64 generation,const char* why) {
+  if(!r.ok())std::cerr<<"binding error="<<int(r.error)<<" source="<<int(r.source_error)<<'\n';
+  Check(r.ok()&&r.binding->binding_uuid==Id(180)&&r.binding->database_uuid==Id(1)&&
+      r.binding->service_principal_uuid==Id(200)&&r.binding->credential_reference_uuid==Id(211)&&
+      r.binding->provider_uuid==Id(210)&&r.binding->policy_uuid==Id(52)&&r.binding->generation==generation&&
+      r.binding->policy_epoch==31&&r.binding->provider_generation==37&&r.native_version_uuid==version,why);
+}
+template<class Result> void Refused(const Result& r,BindingError error,const char* why) {
+  if(r.error!=error)std::cerr<<"binding error="<<int(r.error)<<" expected="<<int(error)<<'\n';
+  Check(r.error==error&&!r.binding&&r.native_version_uuid.is_nil(),why);
+}
+std::string Hex(const Uuid& id){static constexpr char digits[]="0123456789abcdef";std::string s;
+  for(const auto b:id.bytes){s+=digits[b>>4];s+=digits[b&15];}return s;}
+Uuid FromHex(std::string_view s){Uuid id;if(s.size()!=32)throw std::runtime_error("hex identity");
+  for(unsigned i=0;i<16;++i)id.bytes[i]=static_cast<byte>(std::stoul(std::string(s.substr(2*i,2)),nullptr,16));return id;}
+
+// The device list is built by the caller, once: an allocation fault injected
+// around a read must land in the reader, not in the test's own setup.
+using Devices=std::vector<disk::NativeFilespaceDevice>;
+Devices DevicesOf(disk::FileDevice& device,unsigned profile){return {{Id(2),Profile(profile),&device}};}
+runtime_api::RuntimeAuthorityBindingCommittedReadResult ReadCommitted(const Devices& devices,
+    const db::NativeCatalogRelationBinding& relation,u64 generation,Uuid database,Uuid binding,u64 budget) {
+  return runtime_api::ReadCommittedRuntimeAuthorityBindingFromOpenDevices(database,devices,
+      db::NativeCatalogSource::PageZero(Id(2)),2,5,relation,binding,generation,budget);
+}
+
+// ---- Governed: the caller's retained fixed-root lease --------------------------------
+void Governed(unsigned profile) {
+  SecurityFixture f(profile);
+  const auto base=BaseVersion(f);
+  const u64 budget=f.budget;
+  const db::NativeCatalogRelationMemoryLimits limits{Profile(profile),1,1,4,4,{1,sizes[profile]}};
   LeafMemoryFixture catalog_memory(db::NativeCatalogVisibilityWorkspaceBytes(limits));
   LeafMemoryFixture source_memory(32*1024*1024);
-  auto prepared = db::PrepareNativeCatalogVisibilityRead(
-      limits, catalog_memory.memory, catalog_memory.binding);
-  Check(prepared.ok(), "prepare actual governed configuration backing before source guards");
-  const std::array<disk::NativeFilespaceDevice,1> devices{{{Id(2),Profile(profile),&device}}};
-  auto source = db::AcquireNativeSelectedCheckpointMemoryLease(
-      Id(1), devices, Id(2), {budget,32*1024*1024}, source_memory.memory, source_memory.binding);
-  Check(source.ok(), "retain real selected native source for governed binding read");
+  auto prepared=db::PrepareNativeCatalogVisibilityRead(limits,catalog_memory.memory,catalog_memory.binding);
+  Check(prepared.ok(),"prepare the governed configuration backing before the source guards");
+  const std::array<disk::NativeFilespaceDevice,1> devices{{{Id(2),Profile(profile),&f.device}}};
+  auto source=db::AcquireNativeFixedRootMemoryLease(Id(1),devices,Id(2),{budget,32*1024*1024},
+      source_memory.memory,source_memory.binding);
+  Check(source.ok(),"retain the real fixed-root source for the governed binding read");
   const auto writes_before=stage_writes,syncs_before=stage_syncs;
+  const auto relation=Relation(f);
   const auto read=[&](Uuid database=Id(1),Uuid binding=Id(180),u64 generation=1,u64 ceiling=0) {
     allocation_budget=0;
     auto result=runtime_api::ReadCommittedRuntimeAuthorityBindingOnNativeLease(
-        *source.lease,database,2,1,{Id(101),{}},binding,generation,ceiling?ceiling:budget,prepared.workspace);
+        *source.lease,database,2,5,relation,binding,generation,ceiling?ceiling:budget,prepared.workspace);
     const auto remaining=allocation_budget;allocation_budget=-1;
     if(remaining!=0)std::cerr<<"governed forbidden allocation profile="<<profile<<" reads="<<reads
-        <<" fault="<<read_fault<<" allocation_failure_reads="<<allocation_failure_reads
-        <<" result="<<int(result.error)<<" source="<<int(result.source_error)
+        <<" fault="<<read_fault<<" result="<<int(result.error)<<" source="<<int(result.source_error)
         <<" relation="<<int(result.relation_error)<<'\n';
     Check(remaining==0,"governed runtime binding performs no heap allocation under native device guards");
     return result;
   };
   reads=0;track_reads=true;const auto valid=read();track_reads=false;const auto read_count=reads;
-  if(!valid.ok())std::cerr<<"governed binding="<<int(valid.error)<<" source="<<int(valid.source_error)
-      <<" relation="<<int(valid.relation_error)<<'\n';
-  Check(valid.ok()&&valid.binding->binding_uuid==Id(180)&&valid.binding->service_principal_uuid==Id(200)&&
-      valid.binding->credential_reference_uuid==Id(203)&&valid.binding->generation==1&&
-      valid.binding->provider_generation==5&&valid.native_version_uuid==Id(170)&&valid.physical_bytes_read,
-      "governed reader copies exact committed binary authority definition without a fabricated snapshot");
-  const auto empty=[](const auto& result,BindingError expected) {
-    Check(result.error==expected&&!result.binding&&result.native_version_uuid.is_nil(),
-          "governed configuration refusal exposes no usable authority tuple");
-  };
-  empty(read(Id(1),Id(180),2),BindingError::generation_mismatch);
-  empty(read(Id(1),Id(250)),BindingError::absent);
-  empty(read(Id(250)),BindingError::invalid_request);
-  empty(read({},Id(180)),BindingError::invalid_request);
-  empty(read(Id(1),{}),BindingError::invalid_request);
-  empty(read(Id(1),Id(180),0),BindingError::invalid_request);
-  empty(read(Id(1),Id(180),1,1),BindingError::source_failure);
+  Exact(valid,base,1,"governed reader copies the exact committed binary definition without a fabricated snapshot");
+  Check(valid.physical_bytes_read>0&&read_count>0,"the governed read reads the file");
+  Refused(read(Id(1),Id(180),2),BindingError::generation_mismatch,"another generation is refused");
+  Refused(read(Id(1),Id(250)),BindingError::absent,"an unknown binding is absent");
+  Refused(read(Id(250)),BindingError::invalid_request,"a foreign database is refused");
+  Refused(read({},Id(180)),BindingError::invalid_request,"a nil database is refused");
+  Refused(read(Id(1),{}),BindingError::invalid_request,"a nil binding is refused");
+  Refused(read(Id(1),Id(180),0),BindingError::invalid_request,"generation zero is refused");
+  Refused(read(Id(1),Id(180),1,1),BindingError::source_failure,"a one-byte image ceiling is refused");
   auto moved=std::move(prepared.workspace);
-  const auto missing=read();empty(missing,BindingError::source_failure);
+  const auto missing=read();Refused(missing,BindingError::source_failure,"a missing workspace is refused");
   Check(!missing.physical_bytes_read,"missing pre-admitted backing refuses before configuration I/O");
   prepared.workspace=std::move(moved);
-  const auto again=read();Check(again.ok(),"governed binding succeeds again after workspace restoration");
+  Exact(read(),base,1,"governed binding succeeds again after workspace restoration");
   for(unsigned fault=1;fault<=read_count;++fault) {
     reads=0;read_fault=fault;track_reads=true;const auto failed=read();track_reads=false;
     Check(read_fault==0,"governed binding exact physical read failure injected");
-    empty(failed,BindingError::source_failure);
+    Refused(failed,BindingError::source_failure,"a failed read is refused");
     Check(failed.io_failure&&failed.io_failure->error==disk::BoundedIoError::native_failure&&
         failed.io_failure->operation==disk::BoundedIoOperation::read&&
         failed.io_failure->native_attempted&&failed.io_failure->native_error==EIO&&
@@ -81,481 +135,293 @@ void GovernedRuntimeBinding(disk::FileDevice& device, unsigned profile) {
         failed.io_failure_filespace_uuid==Id(2),
         "governed read refusal preserves the fixed native I/O error and exact requested extent");
   }
-  Check(read().ok(),"governed binding recovers its scratch after each read refusal");
-  Check(valid.binding->binding_uuid==Id(180)&&valid.native_version_uuid==Id(170),
+  Exact(read(),base,1,"governed binding recovers its scratch after each read refusal");
+  Check(valid.binding->binding_uuid==Id(180)&&valid.native_version_uuid==base,
         "workspace reuse does not invalidate the copied fixed-size authority tuple");
   Check(stage_writes==writes_before&&stage_syncs==syncs_before,"governed configuration read is physically read-only");
   source.lease.Reset();prepared.workspace={};
   source_memory.memory={};catalog_memory.memory={};source_memory.Empty();catalog_memory.Empty();
 }
 
-void VerifyCommittedBinding(const runtime_api::RuntimeAuthorityBindingCommittedReadResult& result) {
-  if(!result.ok())std::cerr<<"committed binding error="<<static_cast<unsigned>(result.error)
-      <<" source="<<static_cast<unsigned>(result.source_error)<<'\n';
-  Check(result.ok()&&result.binding->binding_uuid==Id(180)&&result.binding->database_uuid==Id(1)&&
-      result.binding->service_principal_uuid==Id(200)&&result.binding->credential_reference_uuid==Id(203)&&
-      result.binding->provider_uuid==Id(201)&&result.binding->policy_uuid==Id(202)&&
-      result.binding->generation==1&&result.binding->policy_epoch==3&&result.binding->provider_generation==5&&
-      result.native_version_uuid==Id(170),"committed source preserves exact binary definition and version");
-}
-void EmptyCommittedBinding(const runtime_api::RuntimeAuthorityBindingCommittedReadResult& result,BindingError error) {
-  Check(result.error==error&&!result.binding&&result.native_version_uuid.is_nil(),
-        "committed source failure exposes no usable binding/version");
-}
-
-void BindRuntimeDefinition(db::NativeCatalogLeafPage& leaf) {
-  for(auto& row:leaf.body.rows) {
-    auto decoded=catalog::DecodeCatalogMetadataVersion(row.cells[0].value.payload);
-    Check(decoded.ok(),"read common native metadata fixture"); auto& m=decoded.record;
-    catalog::CatalogRuntimeAuthorityBinding binding;
-    binding.binding_uuid=m.record.header.object_uuid.value; binding.database_uuid=Id(1);
-    binding.service_principal_uuid=Id(200); binding.security_authority_uuid=Id(1);
-    binding.provider_uuid=Id(201); binding.policy_uuid=Id(202); binding.credential_reference_uuid=Id(203);
-    binding.generation=1; binding.authority_mode=catalog::RuntimeAuthorityMode::database_local;
-    binding.security_epoch=m.security_epoch; binding.policy_epoch=3; binding.provider_generation=5;
-    binding.catalog_generation=m.catalog_generation; binding.origin_transaction_uuid=m.creator_transaction_uuid;
-    binding.origin_local_transaction_id=m.creator_local_transaction_id;
-    const auto encoded=catalog::EncodeCatalogRuntimeAuthorityBinding(binding); Check(encoded.ok(),"encode typed native runtime binding");
-    m.record.header.kind=catalog::CatalogRecordKind::config_profile;
-    m.record.header.parent_uuid.kind=platform::UuidKind::object;
-    m.object_subtype="agent_runtime_authority"; m.security_policy_uuid={platform::UuidKind::object,binding.policy_uuid};
-    m.record.payload.assign(encoded.bytes.begin(),encoded.bytes.end());
-    const auto outer=catalog::EncodeCatalogMetadataVersion(m); Check(outer.ok(),"bind configuration to native metadata");
-    row.cells[0].value.payload=outer.bytes;
+// ---- Committed: through page zero ----------------------------------------------------
+void Committed(unsigned profile) {
+  SecurityFixture f(profile);
+  const auto base=BaseVersion(f);const auto relation=Relation(f);const auto devices=DevicesOf(f.device,profile);
+  const auto read_committed=[&](u64 generation=1,Uuid binding=Id(180),u64 budget=0){
+    return ReadCommitted(devices,relation,generation,Id(1),binding,budget?budget:f.budget);};
+  stage_writes=stage_syncs=0;
+  Exact(read_committed(),base,1,"committed source preserves the exact binary definition and version");
+  Refused(read_committed(2),BindingError::generation_mismatch,"committed read refuses another generation");
+  Refused(read_committed(1,Id(250)),BindingError::absent,"committed read finds no unknown binding");
+  Check(!stage_writes&&!stage_syncs,"committed configuration observation performs no writes or syncs");
+  if(profile!=0)return;
+  for(unsigned invalid=0;invalid<5;++invalid) {
+    auto database=Id(1),binding=Id(180);u64 generation=1,budget=f.budget;
+    if(invalid==0)database={};if(invalid==1)binding={};if(invalid==2)generation=0;
+    if(invalid==3)budget=0;if(invalid==4)binding.bytes[6]=0x40;
+    reads=0;track_reads=true;
+    const auto bad=ReadCommitted(devices,relation,generation,database,binding,budget);
+    track_reads=false;Refused(bad,BindingError::invalid_request,"an invalid committed request is refused");
+    Check(!reads,"invalid committed request performs no native reads");
   }
-}
-auto ReadRuntimeBinding(disk::FileDevice& device,unsigned profile,const mga::LocalTransactionInventory& inventory,
-                        u64 reader=18,u64 generation=1,byte identity=180) {
-  CatalogTestPin pin(inventory,reader);
-  const auto found=std::find_if(inventory.entries.begin(),inventory.entries.end(),
-      [&](const auto& entry){return entry.identity.local_id.value==reader;});
-  Check(found!=inventory.entries.end(),"actual inventory reader exists");
-  return runtime_api::ReadRuntimeAuthorityBindingFromOpenDevices(Id(1),{{Id(2),Profile(profile),&device}},
-      CheckpointRef(CheckpointExample(profile)),2,1,{Id(101),{}},found->identity,pin.pin,Id(identity),generation,8*u64{sizes[profile]});
-}
-
-// Add independent selector/directory/allocation bytes to the existing actual
-// catalog fixture. No production encoder manufactures the expected selection.
-void InstallOwnedSelection(disk::FileDevice& device,unsigned p,disk::FilespacePageZero zero,
-    db::NativeCheckpointRoot checkpoint,const page::NativeTransactionInventoryPage& inventory) {
-  zero.free_pages=zero.preallocated_pages=0;
-  zero.roots.push_back({18,0x30e,Id(2),31,1,Profile(p),Id(154)});
-  zero.roots.push_back({19,0x30e,Id(2),32,1,Profile(p),Id(154)});
-  page::NativeAllocationMap map;
-  map.header={sizes[p],3,Id(1),Id(2),Id(164),13,103,0,Profile(p)};
-  map.object_uuid=Id(43);map.map_generation=map.capacity_generation=1;
-  map.total_pages=zero.total_pages;map.creator_transaction_uuid=Id(98);map.creator_local_transaction_id=17;
-  map.states.assign(map.total_pages,page::NativeAllocationState::quarantined);
-  const auto add=[&](const disk::NativeCommonPageHeader& h,const Uuid& object) {
-    map.states[h.page_number]=page::NativeAllocationState::allocated;
-    map.records.push_back({h.page_number,Id(static_cast<byte>(210+h.page_number)),h.page_uuid,
-        object,Id(98),17,h.page_generation,0,h.page_type,{}});
-  };
-  add({sizes[p],1,Id(1),Id(2),zero.page_uuid,0,zero.page_generation,0,Profile(p)},Id(2));
-  add(map.header,map.object_uuid);add(inventory.header,inventory.object_uuid);
-  add(checkpoint.header,checkpoint.object_uuid);
-  add({sizes[p],0x30e,Id(1),Id(2),Id(155),31,1,0,Profile(p)},Id(154));
-  add({sizes[p],0x30e,Id(1),Id(2),Id(156),32,1,0,Profile(p)},Id(154));
-  std::sort(map.records.begin(),map.records.end(),[](const auto& a,const auto& b){return a.page_number<b.page_number;});
-  page::NativeFilespaceDirectory directory;
-  directory.header={sizes[p],9,Id(1),Id(2),Id(165),15,105,0,Profile(p)};
-  directory.object_uuid=Id(45);directory.directory_generation=1;
-  directory.creator_transaction_uuid=Id(98);directory.creator_local_transaction_id=17;directory.total_records=1;
-  directory.records.push_back({zero.bootstrap,Id(166),zero.page_uuid,zero.page_generation,
-      zero.root_set_generation,zero.total_pages,0,{}});
-  const auto mb=AllocationOracle(map),dbb=DirectoryOracle(directory);
-  checkpoint.roots[3]={4,3,{Id(2),13,103,Profile(p)},Id(43),WholeRootHash(mb)};
-  checkpoint.roots[2]={3,9,{Id(2),15,105,Profile(p)},Id(45),WholeRootHash(dbb)};
-  const auto cp=CheckpointOracle(checkpoint);
-  db::NativeCheckpointSelection selection;
-  selection.header={sizes[p],0x30e,Id(1),Id(2),Id(155),31,1,0,Profile(p)};
-  selection.object_uuid=Id(154);selection.bootstrap_uuid=zero.page_uuid;selection.publication_uuid=Id(153);
-  selection.selection_generation=1;selection.checkpoint={Id(2),19,109,Profile(p)};
-  selection.checkpoint_object_uuid=checkpoint.object_uuid;selection.checkpoint_sha256=WholeRootHash(cp);
-  selection.checkpoint_generation=checkpoint.checkpoint_generation;
-  selection.root_set_generation=checkpoint.root_set_generation;selection.timeline_uuid=checkpoint.timeline_uuid;
-  const auto put=[&](u64 number,const Bytes& b) {
-    const auto io=device.WriteAt(number*sizes[p],b.data(),b.size());
-    Check(io.ok()&&io.bytes_transferred==b.size(),"persist independent owned configuration source");
-  };
-  put(0,Oracle(zero));put(13,mb);put(15,dbb);put(19,cp);put(31,SelectionOracle(selection));
-  selection.header.page_number=32;selection.header.page_uuid=Id(156);put(32,SelectionOracle(selection));
-  Check(device.Sync().ok(),"durable actual selection fixture");
+  Refused(read_committed(1,Id(180),1),BindingError::source_failure,"a one-byte budget is refused");
+  reads=0;track_reads=true;auto committed=read_committed();track_reads=false;const auto committed_reads=reads;
+  Exact(committed,base,1,"committed source reads the binding");Check(committed_reads>0,"committed source actually reads files");
+  for(unsigned fault=1;fault<=committed_reads;++fault) {
+    reads=0;read_fault=fault;track_reads=true;committed=read_committed();track_reads=false;
+    Check(read_fault==0,"committed source read fault consumed");
+    Refused(committed,BindingError::source_failure,"a committed read fault is refused");
+  }
+  for(long fault:{0l,1l,5l,20l,50l}) {
+    const auto loss=f.device.failed_io_latency_observations();
+    allocation_budget=fault;committed=read_committed();const bool consumed=allocation_budget==-1;allocation_budget=-1;
+    Check(consumed,"committed source allocation fault consumed");
+    if(committed.ok()) {
+      Check(f.device.failed_io_latency_observations()==loss+1,"only recorded telemetry loss preserves committed source success");
+      Exact(committed,base,1,"a committed read that survives an allocation fault is exact");
+    }else {
+      Check(!committed.binding&&committed.native_version_uuid.is_nil()&&
+          (committed.error==BindingError::source_failure||committed.error==BindingError::resource_exhausted),
+          "committed allocation failure retains no usable result");
+    }
+  }
+  Exact(read_committed(),base,1,"committed source recovers after the faults");
 }
 
-void OwnedRuntimeBinding(const std::string& path,unsigned p) {
-  namespace server=scratchbird::server;
-  using Source=db::NativeOwnedCheckpointSource;
-  const u64 budget=64*u64{sizes[p]};
-  server::DatabaseOwnershipRequest request;request.database_path=path;
-  request.storage_access=disk::RouteStorageAccess::read_write;
-  auto route=server::AcquireDatabaseOwnership(request);Check(route.acquired&&route.lock,"actual configuration route owner");
-  Check(route.lock->ObserveWriteCustody()==disk::RouteWriteCustodyState::retained,
-      "initial route owner retains actual same-inode write capability separately from read-source admission");
-  {
-    struct stat target{};Check(::stat(path.c_str(),&target)==0,"inspect owned native primary inode");
-    unsigned readers=0,writers=0;
-    for(const auto& entry:std::filesystem::directory_iterator("/proc/self/fd")) {
-      const auto fd=std::stoi(entry.path().filename().string());struct stat held{};
-      if(::fstat(fd,&held)!=0||held.st_dev!=target.st_dev||held.st_ino!=target.st_ino)continue;
-      const auto access=::fcntl(fd,F_GETFL),flags=::fcntl(fd,F_GETFD);
-      Check(access>=0&&flags>=0&&(flags&FD_CLOEXEC),"native custody descriptors are real and close-on-exec");
-      if((access&O_ACCMODE)==O_RDONLY)++readers;
-      if((access&O_ACCMODE)==O_RDWR)++writers;
-    }
-    Check(readers==1&&writers==1,"OS descriptor oracle proves distinct same-inode read-only and read/write custody");
-  }
-  auto transition=route.lock->BeginNativeSourceTransition();Check(transition.ok(),"actual source transition issuer");
-  {
-    const auto probe=Source::ProbeRouteBootstrap(transition.transition);
-    Check(probe.ok()&&probe.bootstrap->database_uuid==Id(1)&&probe.bootstrap->filespace_uuid==Id(2)&&
-        probe.bootstrap->page_size_profile_uuid==Profile(p)&&probe.bootstrap->page_size_bytes==sizes[p],
-        "route bootstrap discovery returns actual binary identities and owning page profile");
-    Check(probe.physical_bytes_read==disk::kFilespaceBootstrapBytes&&probe.io.ok()&&
-        probe.io.native_attempted&&probe.io.bytes_transferred==disk::kFilespaceBootstrapBytes,
-        "bootstrap probe reports actual bounded read bytes rather than a zero/default observation");
-    Check(transition.transition->ObserveDrain().legacy_borrowers==0,
-        "bootstrap probe releases every temporary route/source pin");
-    const auto repeated=Source::ProbeRouteBootstrap(transition.transition);
-    Check(repeated.ok()&&repeated.bootstrap->database_uuid==probe.bootstrap->database_uuid,
-        "bootstrap observation leaves transition available for fresh admission");
-    const auto absent=Source::ProbeRouteBootstrap({});
-    Check(!absent.ok()&&!absent.bootstrap&&absent.error==db::NativeOwnedSourceError::invalid_request,
-        "missing private route transition cannot discover a node by pathname");
-    reads=0;read_fault=1;track_reads=true;
-    const auto failed=Source::ProbeRouteBootstrap(transition.transition);track_reads=false;
-    Check(read_fault==0&&!failed.ok()&&!failed.bootstrap&&
-        failed.error==db::NativeOwnedSourceError::bootstrap_failure&&
-        failed.bootstrap_error==disk::FilespaceBootstrapError::io_failure,
-        "bootstrap read failure retains exact cause and no usable identity tuple");
-    Check(Source::ProbeRouteBootstrap(transition.transition).ok(),
-        "failed bootstrap probe aborts its reservation and allows original transition retry");
-    const auto retained_path=path+".probe-retained";
-    std::filesystem::rename(path,retained_path);
-    auto foreign=*probe.bootstrap;foreign.database_uuid=Id(250);
-    const auto counterfeit=disk::EncodeFilespaceBootstrap(foreign);
-    Check(counterfeit.ok(),"encode independently replaced pathname bootstrap");
-    {
-      std::ofstream output(path,std::ios::binary|std::ios::trunc);
-      output.write(reinterpret_cast<const char*>(counterfeit.bytes->data()),counterfeit.bytes->size());
-      output.close();Check(bool(output),"write owned pathname-replacement negative fixture");
-    }
-    const auto pinned=Source::ProbeRouteBootstrap(transition.transition);
-    Check(pinned.ok()&&pinned.bootstrap->database_uuid==Id(1),
-        "bootstrap probe uses actual retained inode, never a replacement at its diagnostic pathname");
-    Check(std::filesystem::remove(path),"remove only the owned counterfeit pathname fixture");
-    std::filesystem::rename(retained_path,path);
-  }
-  std::vector<std::unique_ptr<disk::FileDevice>> secondary;
-  auto source=Source::AdoptRoute(transition.transition,Id(1),Id(2),secondary,budget);
-  if(!source.ok())std::cerr<<"owned fixture error="<<int(source.error)<<" selection="<<int(source.selection_error)
-      <<" checkpoint="<<int(source.checkpoint_error)<<" directory="<<int(source.directory_error)<<'\n';
-  Check(source.ok(),"actual complete route-owned configuration source");
-  {
-    const auto held=Source::Read(source.owner,budget);Check(held.ok(),"actual read source after write-custody retention");
-    const byte attempted=0xff;
-    const auto denied=held.lease->devices().front().device->WriteAt(0,&attempted,1);
-    Check(!denied.ok()&&denied.diagnostic.diagnostic_code=="SB-STORAGE-DISK-WRITE-READ-ONLY",
-        "retained write capability does not upgrade observation-source devices or grant mutation");
-  }
-  {
-    const auto consumed=Source::ProbeRouteBootstrap(transition.transition);
-    Check(!consumed.ok()&&!consumed.bootstrap&&consumed.error==db::NativeOwnedSourceError::route_admission&&
-        consumed.route_error==disk::RouteSourceTransitionError::already_transferred,
-        "completed source ownership cannot be reprobed through an old transition");
-  }
-  const auto read=[&](u64 generation=1,byte binding=180,u64 ceiling=0) {
-    return runtime_api::ReadCommittedRuntimeAuthorityBindingFromOwnedSource(source.owner,Id(1),2,1,
-        {Id(101),{}},Id(binding),generation,ceiling?ceiling:budget);
-  };
-  const auto empty=[&](const auto& result,BindingError error) {
-    EmptyCommittedBinding(result,error);Check(!result.source_lease,"failed owned read releases all source guards");
-  };
-  const auto writes_before=stage_writes,syncs_before=stage_syncs;
-  {auto result=read();VerifyCommittedBinding(result);Check(result.ok()&&result.source_lease,
-      "successful configuration observation retains actual current source");}
-  empty(read(2),BindingError::generation_mismatch);empty(read(1,250),BindingError::absent);
-  empty(read(1,180,1),BindingError::source_failure);
-  {const auto bad_relation=runtime_api::ReadCommittedRuntimeAuthorityBindingFromOwnedSource(source.owner,Id(1),2,1,
-      {Id(250),{}},Id(180),1,budget);
-    empty(bad_relation,BindingError::source_failure);
-    Check(bad_relation.source_error!=db::NativeCommittedCatalogReadError::none,
-        "owned binding preserves nested committed-catalog refusal");}
-  reads=0;track_reads=true;
-  empty(runtime_api::ReadCommittedRuntimeAuthorityBindingFromOwnedSource(source.owner,Id(250),2,1,
-      {Id(101),{}},Id(180),1,budget),BindingError::invalid_request);
-  empty(read(0),BindingError::invalid_request);track_reads=false;Check(!reads,"invalid owned binding refuses before I/O");
-  if(p==0) {
-    for(unsigned invalid=0;invalid<4;++invalid) {
-      std::shared_ptr<const Source> owner=source.owner;auto database=Id(1),binding=Id(180);u64 ceiling=budget;
-      if(invalid==0)owner.reset();if(invalid==1)database={};if(invalid==2)binding={};if(invalid==3)ceiling=0;
-      reads=0;track_reads=true;
-      const auto failed=runtime_api::ReadCommittedRuntimeAuthorityBindingFromOwnedSource(owner,database,2,1,
-          {Id(101),{}},binding,1,ceiling);
-      track_reads=false;empty(failed,BindingError::invalid_request);Check(!reads,"invalid owner input rejected before I/O");
-    }
-    reads=observed_full_digests=0;observed_allocations=0;
-    track_reads=count_full_digests=count_allocations=true;auto measured=read();
-    track_reads=count_full_digests=count_allocations=false;const auto count=reads;
-    const auto allocations=observed_allocations;const auto digests=observed_full_digests;
-    VerifyCommittedBinding(measured);Check(count>0,"owned binding uses real source I/O");
-    Check(allocations>0&&digests>0,"measure actual owned binding allocations and hashes");
-    const auto retained=measured.source_lease->source().retained_image_bytes();
-    const auto* device=measured.source_lease->devices().front().device;
-    u64 combined=0;
-    {const auto catalog=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(Id(1),measured.source_lease->devices(),
-        measured.source_lease->source().checkpoint(),2,1,{Id(101),{}},budget);
-      Check(catalog.ok(),"independent catalog image cost");combined=retained+catalog.source.retained_image_bytes;}
-    measured.source_lease.reset();
-    empty(read(1,180,retained),BindingError::resource_exhausted);
-    {auto exact=read(1,180,combined);VerifyCommittedBinding(exact);Check(exact.ok(),"combined source/catalog images fit exactly");}
-    empty(read(1,180,combined-1),BindingError::source_failure);
-    for(unsigned fault=1;fault<=count;++fault) {
-      reads=0;read_fault=fault;track_reads=true;auto failed=read();track_reads=false;
-      Check(!read_fault,"each owned configuration physical read failure consumed");
-      empty(failed,BindingError::source_failure);
-    }
-    for(unsigned fault=1;fault<=digests;++fault) {
-      full_digest_fault=fault;auto failed=read();
-      Check(!full_digest_fault,"each owned configuration digest failure consumed");
-      empty(failed,BindingError::source_failure);
-    }
-    for(unsigned long fault=0;fault<allocations;++fault) {
-      const auto loss=device->failed_io_latency_observations();
-      allocation_budget=static_cast<long>(fault);auto failed=read();const bool consumed=allocation_budget==-1;allocation_budget=-1;
-      Check(consumed,"owned configuration allocation fault consumed");
-      if(failed.ok()) {
-        Check(device->failed_io_latency_observations()==loss+1,
-            "only independently recorded telemetry loss permits owned-read success after allocation failure");
-        VerifyCommittedBinding(failed);continue;
-      }
-      Check(!failed.ok()&&!failed.binding&&failed.native_version_uuid.is_nil()&&!failed.source_lease,
-          "owned configuration allocation failure emits no usable result");
-      Check(failed.error==BindingError::source_failure||failed.error==BindingError::resource_exhausted,
-          "owned allocation refusal retains typed error");
-    }
-    std::cout<<"owned binding fault sweep reads="<<count<<" digests="<<digests<<" allocations="<<allocations<<'\n';
-    const auto child=fork();Check(child>=0,"fork inherited owned configuration reader");
-    if(child==0){auto inherited=read();_exit(!inherited.ok()&&!inherited.binding&&!inherited.source_lease&&
-        inherited.owned_source.error==db::NativeOwnedSourceError::wrong_process?0:9);}
-    int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,
-        "inherited configuration source refuses before device access");
-  }
-  // Read guards are acquired and released on the worker. The main thread
-  // withdraws new admission but cannot destroy the worker's retained source.
-  std::latch ready(1),finish(1);
-  std::weak_ptr<Source> weak=source.owner;
-  auto worker=std::async(std::launch::async,[owner=source.owner,&ready,&finish,budget]() mutable {
-    auto held=runtime_api::ReadCommittedRuntimeAuthorityBindingFromOwnedSource(owner,Id(1),2,1,
-        {Id(101),{}},Id(180),1,budget);
-    owner.reset();ready.count_down();finish.wait();
-    return held.ok()&&held.binding->service_principal_uuid==Id(200)&&held.source_lease!=nullptr;
-  });
-  // A failed main-thread oracle must still release the worker before future
-  // destruction, including negative-control runs that remove the retained pin.
-  std::unique_ptr<std::latch,void(*)(std::latch*)> release(&finish,[](auto* latch){latch->count_down();});
-  ready.wait();source.owner->Withdraw();
-  reads=0;track_reads=true;auto withdrawn=read();track_reads=false;empty(withdrawn,BindingError::source_failure);
-  Check(!reads,"withdrawn configuration source performs no new I/O");
-  Check(withdrawn.owned_source.error==db::NativeOwnedSourceError::withdrawn,"typed owner withdrawal preserved");
-  route.lock->release();route.lock.reset();transition.transition.reset();source.owner.reset();
-  Check(!weak.expired(),"worker configuration read retains actual owner after runtime release");
-  {disk::FileDevice competing;Check(!competing.Open(path,disk::FileOpenMode::open_existing_read_only).ok(),
-      "physical ownership survives withdrawal until worker drains");}
-  release.reset();Check(worker.get()&&weak.expired(),"worker releases source guards before final owner destruction");
-  Check(stage_writes==writes_before&&stage_syncs==syncs_before,"owned configuration observation is physically read-only");
-  disk::FileDevice reopened;Check(reopened.Open(path,disk::FileOpenMode::open_existing_read_only).ok(),
-      "independent reopen only after worker source release");
-  VerifyCommittedBinding(runtime_api::ReadCommittedRuntimeAuthorityBindingFromOpenDevices(Id(1),{{Id(2),Profile(p),&reopened}},
-      CheckpointRef(CheckpointExample(p)),2,1,{Id(101),{}},Id(180),1,budget));
+// ---- Pinned: a real reader's published snapshot --------------------------------------
+struct Reader {
+  mga::LocalTransactionInventory inventory;
+  mga::TransactionIdentity identity;
+  u64 order=0;
+};
+// The local inventory as persisted, read through the sink without a writer
+// (a writer's one-shot restart would mark live transactions dead).
+mga::LocalTransactionInventory InventoryOf(disk::CarefulWriteSink& sink,const SecurityFixture::FixedRoots& roots) {
+  const auto chains=page::ReadTransactionChainsThroughSink(sink,SecurityFixture::TxBinding(roots));
+  Check(chains.ok(),"read the transaction inventory back");
+  auto built=page::BuildLocalTransactionInventoryFromImages(chains.page_size,chains.state_images,chains.header_images);
+  Check(built.ok(),"the local inventory built from the persisted chains");
+  return std::move(built.inventory);
 }
-void RuntimeBindingFiles() {
-  Fixture fixture;
-  for(unsigned profile=0;profile<5;++profile) {
-    disk::FileDevice device; const auto path=(fixture.root/("runtime-binding-"+std::to_string(profile))).string();
-    Check(device.Open(path,disk::FileOpenMode::create_new).ok(),"own native binding fixture");
-    const auto zero=Example(profile,1); auto leaf=LeafExample(profile); BindRuntimeDefinition(leaf);
-    auto inventory=InventoryExample(profile); inventory.inventory.entries.clear();
-    inventory.inventory.next_local_transaction_id=19; inventory.inventory.next_commit_sequence=3;
-    for(unsigned i=0;i<3;++i) {
-      auto entry=InventoryExample(profile).inventory.entries[0];
-      entry.identity.local_id=mga::MakeLocalTransactionId(i==0?13:i==1?17:18);
-      entry.identity.transaction_uuid.value=Id(i==0?162:i==1?98:204);
-      entry.state=i<2?mga::TransactionState::committed:mga::TransactionState::active;
-      entry.commit_sequence=i<2?i+1:0; inventory.inventory.entries.push_back(entry);
-    }
-    auto root=RootExample(profile); root.creator_transaction_uuid=Id(98);
-    auto checkpoint=CheckpointExample(profile); checkpoint.selected_local_transaction_id=18;
-    const auto put=[&](u64 number,const auto& bytes){const auto io=device.WriteAt(number*sizes[profile],bytes.data(),bytes.size());
-      Check(io.ok()&&io.bytes_transferred==bytes.size(),"persist exact native fixture image");};
-    const auto persist=[&] {
-      const auto ib=InventoryStateOracle(inventory),rb=RootOracle(root);
-      checkpoint.roots[0].page=InventoryRef(inventory); checkpoint.roots[0].object_uuid=inventory.object_uuid;
-      checkpoint.roots[0].sha256=WholeRootHash(ib);
-      checkpoint.roots[4].page={Id(2),12,102,Profile(profile)}; checkpoint.roots[4].object_uuid=root.object_uuid;
-      checkpoint.roots[4].sha256=WholeRootHash(rb); checkpoint.roots[8]=checkpoint.roots[4]; checkpoint.roots[8].role=9;
-      put(0,Oracle(zero)); put(12,rb); put(14,ib); put(19,CheckpointOracle(checkpoint)); put(21,LeafOracle(leaf));
-      const byte padding=0; Check(device.WriteAt(zero.total_pages*sizes[profile]-1,&padding,1).ok()&&device.Sync().ok(),"sync native fixture");
-    };
-    persist();
-    const std::vector<disk::NativeFilespaceDevice> committed_devices{{Id(2),Profile(profile),&device}};
-    const auto read_committed=[&](u64 generation=1,byte identity=180,u64 budget=0) {
-      return runtime_api::ReadCommittedRuntimeAuthorityBindingFromOpenDevices(Id(1),committed_devices,
-          CheckpointRef(checkpoint),2,1,{Id(101),{}},Id(identity),generation,budget?budget:8*u64{sizes[profile]});
-    };
-    stage_writes=stage_syncs=0;
-    VerifyCommittedBinding(read_committed());
-    EmptyCommittedBinding(read_committed(2),BindingError::generation_mismatch);
-    EmptyCommittedBinding(read_committed(1,250),BindingError::absent);
-    Check(!stage_writes&&!stage_syncs,"committed configuration observation performs no writes or syncs");
-    const auto verify=[&](const auto& result) {
-      if(!result.ok())std::cerr<<"read error="<<static_cast<unsigned>(result.error)<<" source="<<static_cast<unsigned>(result.source_error)<<'\n';
-      Check(result.ok()&&result.binding->binding_uuid==Id(180)&&result.binding->database_uuid==Id(1)&&
-          result.binding->service_principal_uuid==Id(200)&&result.binding->credential_reference_uuid==Id(203)&&
-          result.native_version_uuid==Id(170)&&!result.snapshot_uuid.is_nil(),"actual committed binary binding and exact native version selected");
-    };
-    verify(ReadRuntimeBinding(device,profile,inventory.inventory));
-    const auto empty=[&](const auto& result,BindingError error) {
-      Check(result.error==error&&!result.binding&&result.native_version_uuid.is_nil()&&result.snapshot_uuid.is_nil(),
-          "refusal returns no usable binding/version/snapshot");
-    };
-    empty(ReadRuntimeBinding(device,profile,inventory.inventory,18,2),BindingError::generation_mismatch);
-    empty(ReadRuntimeBinding(device,profile,inventory.inventory,18,1,250),BindingError::absent);
-    auto saved=inventory;
-    inventory.inventory.entries[0].state=mga::TransactionState::active; inventory.inventory.entries[0].commit_sequence=0;
-    persist(); empty(ReadRuntimeBinding(device,profile,inventory.inventory),BindingError::absent);
-    EmptyCommittedBinding(read_committed(),BindingError::absent);
-    empty(ReadRuntimeBinding(device,profile,inventory.inventory,13),BindingError::not_committed_active);
-    inventory.inventory.entries[0].state=mga::TransactionState::rolled_back; persist();
-    empty(ReadRuntimeBinding(device,profile,inventory.inventory),BindingError::absent);
-    EmptyCommittedBinding(read_committed(),BindingError::absent);
-    inventory=saved; persist();
-    const auto original_leaf=leaf;
-    auto changed=catalog::DecodeCatalogMetadataVersion(leaf.body.rows[0].cells[0].value.payload);
-    Check(changed.ok(),"decode real row for wrong-database negative");
-    auto definition=catalog::DecodeCatalogRuntimeAuthorityBinding(changed.record.record.payload);
-    Check(definition.ok(),"decode typed binding for negative");
-    definition.record->database_uuid=definition.record->security_authority_uuid=Id(250);
-    const auto foreign=catalog::EncodeCatalogRuntimeAuthorityBinding(*definition.record);
-    Check(foreign.ok(),"well-formed foreign definition");
-    changed.record.record.payload.assign(foreign.bytes.begin(),foreign.bytes.end());
-    const auto outer=catalog::EncodeCatalogMetadataVersion(changed.record); Check(outer.ok(),"well-formed foreign metadata");
-    leaf.body.rows[0].cells[0].value.payload=outer.bytes; persist();
-    empty(ReadRuntimeBinding(device,profile,inventory.inventory),BindingError::invalid_definition);
-    EmptyCommittedBinding(read_committed(),BindingError::invalid_definition);
-    leaf=original_leaf; persist();
-    // A committed source requires no active reader. Do not synthesize or begin
-    // a transaction just to load the configuration used to admit that BEGIN.
-    inventory.inventory.entries[2].state=mga::TransactionState::committed;
-    inventory.inventory.entries[2].commit_sequence=3;inventory.inventory.next_commit_sequence=4;
-    persist();VerifyCommittedBinding(read_committed());
-    inventory=saved;persist();
-    // Navigation ownership is independent of the selected binding row.
-    inventory.inventory.entries[1].state=mga::TransactionState::active;
-    inventory.inventory.entries[1].commit_sequence=0;persist();
-    const auto uncommitted_navigation=read_committed();
-    EmptyCommittedBinding(uncommitted_navigation,BindingError::source_failure);
-    // This fixture uses a direct catalog root, not an index navigation page.
-    // Checkpoint selection rejects its uncommitted creator before row selection.
-    Check(uncommitted_navigation.source_error==db::NativeCommittedCatalogReadError::source_failure,
-          "committed binding retains checkpoint source refusal");
-    inventory=saved;persist();
+Reader ReaderOf(mga::LocalTransactionInventory inventory,u64 order) {
+  Reader r;r.inventory=std::move(inventory);r.order=order;
+  const auto found=std::find_if(r.inventory.entries.begin(),r.inventory.entries.end(),
+      [&](const auto& e){return e.identity.local_id.value==order;});
+  Check(found!=r.inventory.entries.end()&&found->state==mga::TransactionState::active,"the reader is active in the inventory");
+  r.identity=found->identity;return r;
+}
+Reader BeginReader(SecurityFixture& f,const Uuid& transaction) {
+  const auto roots=SecurityFixture::RootsOf(f.device);
+  disk::FileDeviceCarefulWriteSink sink(f.device);
+  page::TransactionInventoryWriter w(SecurityFixture::TxBinding(roots));Check(w.Restart(sink).ok(),"restart before the reader BEGIN");
+  page::TransactionHeaderRecord header;header.transaction_uuid=transaction;
+  const auto begun=w.Begin(sink,header);Check(begun.ok(),"the reader transaction begins in place");
+  return ReaderOf(InventoryOf(sink,roots),*begun.transaction_order);
+}
+// One writer (one per database): transaction 2 writes the binding's successor
+// (generation 2, version Id(13)) in place and stays active; transaction 3
+// then begins, as a reader, and stays active too.
+struct ActiveSuccessor {Reader creator,later;};
+ActiveSuccessor ActiveSuccessorAndReader(SecurityFixture& f) {
+  const auto roots=SecurityFixture::RootsOf(f.device);
+  disk::FileDeviceCarefulWriteSink sink(f.device);
+  page::TransactionInventoryWriter w(SecurityFixture::TxBinding(roots));Check(w.Restart(sink).ok(),"restart before transaction 2");
+  page::TransactionHeaderRecord h2;h2.transaction_uuid=Id(12);
+  const auto begun=w.Begin(sink,h2);Check(begun.ok()&&begun.transaction_order==2u,"transaction 2 begins in place");
+  const auto loaded=db::ReadNativeCatalogLeafFromOpenDevice(f.device,Id(1),f.receipt.relations[4]);
+  Check(loaded.ok(),"the configuration leaf before the successor");
+  const auto original=std::find_if(loaded.page->body.rows.begin(),loaded.page->body.rows.end(),[&](const auto& row){
+    return loaded.metadata.at(row.version_uuid).record.header.object_uuid.value==Id(180);});
+  Check(original!=loaded.page->body.rows.end(),"the persisted binding row");
+  auto metadata=loaded.metadata.at(original->version_uuid);
+  metadata.creator_transaction_uuid={platform::UuidKind::transaction,Id(12)};metadata.creator_local_transaction_id=2;
+  metadata.definition_version=2;
+  auto binding=catalog::DecodeCatalogRuntimeAuthorityBinding(metadata.record.payload);Check(binding.ok(),"decode the binding");
+  binding.record->generation=2;
+  const auto payload=catalog::EncodeCatalogRuntimeAuthorityBinding(*binding.record);Check(payload.ok(),"the successor's payload");
+  metadata.record.payload.assign(payload.bytes.begin(),payload.bytes.end());
+  db::CatalogVersionRequest r;r.role=5;r.transaction_order=2;r.transaction_uuid=Id(12);r.row_uuid=original->row_uuid.value;
+  r.predecessor_version_uuid=original->version_uuid;r.version_uuid=Id(13);r.metadata=metadata;
+  const auto written=db::WriteCatalogSuccessorVersion(sink,SecurityFixture::CvBinding(roots),r);
+  if(!written.ok())std::cerr<<"successor="<<db::CatalogVersionWriteErrorName(written.error)<<'\n';
+  Check(written.ok(),"the binding successor written in place by transaction 2");
+  page::TransactionHeaderRecord h3;h3.transaction_uuid=Id(21);
+  const auto later=w.Begin(sink,h3);Check(later.ok()&&later.transaction_order==3u,"transaction 3 begins after it");
+  auto inventory=InventoryOf(sink,roots);
+  return {ReaderOf(inventory,2),ReaderOf(std::move(inventory),3)};
+}
+runtime_api::RuntimeAuthorityBindingReadResult ReadPinned(SecurityFixture& f,const Devices& devices,const Reader& reader,
+    const mga::PublishedSnapshotPin& pin,u64 generation=1,Uuid binding=Id(180),u64 budget=0) {
+  return runtime_api::ReadRuntimeAuthorityBindingFromOpenDevices(Id(1),devices,
+      db::NativeCatalogSource::PageZero(Id(2)),2,5,Relation(f),reader.identity,pin,binding,generation,
+      budget?budget:f.budget);
+}
+void Pinned(unsigned profile) {
+  SecurityFixture f(profile);
+  const auto devices=DevicesOf(f.device,profile);
+  const auto base=BaseVersion(f);
+  const auto reader=BeginReader(f,Id(20));
+  const auto verify=[&](const auto& result,const char* why){
+    Exact(result,base,1,why);Check(!result.snapshot_uuid.is_nil(),"the pinned read names its snapshot");};
+  const auto empty=[&](const auto& result,BindingError error,const char* why){
+    Refused(result,error,why);Check(result.snapshot_uuid.is_nil(),"a refusal names no snapshot");};
+  {
+    CatalogTestPin pin(reader.inventory,reader.order);
+    verify(ReadPinned(f,devices,reader,pin.pin),"the actual committed binary binding and exact native version selected");
+    empty(ReadPinned(f,devices,reader,pin.pin,2),BindingError::generation_mismatch,"pinned read refuses another generation");
+    empty(ReadPinned(f,devices,reader,pin.pin,1,Id(250)),BindingError::absent,"pinned read finds no unknown binding");
     if(profile==0) {
-      for(unsigned invalid=0;invalid<5;++invalid) {
-        auto database=Id(1),binding=Id(180);u64 generation=1,budget=8*u64{sizes[0]};
-        if(invalid==0)database={};if(invalid==1)binding={};if(invalid==2)generation=0;
-        if(invalid==3)budget=0;if(invalid==4)binding.bytes[6]=0x40;
-        reads=0;track_reads=true;
-        const auto bad=runtime_api::ReadCommittedRuntimeAuthorityBindingFromOpenDevices(database,{{Id(2),Profile(0),&device}},
-            CheckpointRef(checkpoint),2,1,{Id(101),{}},binding,generation,budget);
-        track_reads=false;EmptyCommittedBinding(bad,BindingError::invalid_request);
-        Check(!reads,"invalid committed request performs no native reads");
-      }
-      EmptyCommittedBinding(read_committed(1,180,1),BindingError::source_failure);
-      reads=0;track_reads=true;auto committed=read_committed();track_reads=false;const auto committed_reads=reads;
-      VerifyCommittedBinding(committed);Check(committed_reads>0,"committed source actually reads files");
-      for(unsigned fault=1;fault<=committed_reads;++fault) {
-        reads=0;read_fault=fault;track_reads=true;committed=read_committed();track_reads=false;
-        Check(read_fault==0,"committed source read fault consumed");EmptyCommittedBinding(committed,BindingError::source_failure);
-      }
-      for(long fault:{0l,1l,5l,20l,50l}) {
-        const auto loss=device.failed_io_latency_observations();
-        allocation_budget=fault;committed=read_committed();const bool consumed=allocation_budget==-1;allocation_budget=-1;
-        Check(consumed,"committed source selected allocation fault consumed");
-        if(committed.ok()) {
-          Check(device.failed_io_latency_observations()==loss+1,"only recorded telemetry loss preserves committed source success");
-          VerifyCommittedBinding(committed);
-        }else {
-          Check(!committed.binding&&committed.native_version_uuid.is_nil()&&
-              (committed.error==BindingError::source_failure||committed.error==BindingError::resource_exhausted),
-              "committed allocation failure retains no usable result");
-        }
-      }
-      VerifyCommittedBinding(read_committed());
-      CatalogTestPin pin(inventory.inventory,18);
-      const std::vector<disk::NativeFilespaceDevice> devices{{Id(2),Profile(profile),&device}};
-      const auto read=[&](u64 budget=8*u64{sizes[0]}) {
-        return runtime_api::ReadRuntimeAuthorityBindingFromOpenDevices(Id(1),devices,
-            CheckpointRef(checkpoint),2,1,{Id(101),{}},inventory.inventory.entries[2].identity,pin.pin,Id(180),1,budget);
-      };
-      empty(read(1),BindingError::source_failure);
-      reads=0;track_reads=true;auto result=read();track_reads=false;const auto read_count=reads;
-      verify(result);Check(read_count>0,"measure actual source reads");
+      empty(ReadPinned(f,devices,reader,pin.pin,1,Id(180),1),BindingError::source_failure,"a one-byte budget is refused");
+      reads=0;track_reads=true;auto result=ReadPinned(f,devices,reader,pin.pin);track_reads=false;const auto read_count=reads;
+      verify(result,"measure the pinned read");Check(read_count>0,"measure actual source reads");
       for(unsigned fault=1;fault<=read_count;++fault) {
-        reads=0;read_fault=fault;track_reads=true;result=read();track_reads=false;
-        Check(read_fault==0,"native read fault consumed");empty(result,BindingError::source_failure);
+        reads=0;read_fault=fault;track_reads=true;result=ReadPinned(f,devices,reader,pin.pin);track_reads=false;
+        Check(read_fault==0,"native read fault consumed");empty(result,BindingError::source_failure,"a pinned read fault is refused");
       }
       for(long fault:{0l,1l,5l,20l,50l}) {
-        const auto failed_metrics=device.failed_io_latency_observations();
-        allocation_budget=fault;result=read();const bool consumed=allocation_budget==-1;allocation_budget=-1;
-        Check(consumed,"selected allocation fault consumed");
+        const auto failed_metrics=f.device.failed_io_latency_observations();
+        allocation_budget=fault;result=ReadPinned(f,devices,reader,pin.pin);const bool consumed=allocation_budget==-1;allocation_budget=-1;
+        Check(consumed,"pinned allocation fault consumed");
         if(result.ok()) {
           // FileDevice intentionally contains a latency-recorder exception.
           // Only this independently observed failure can preserve a good read.
-          Check(device.failed_io_latency_observations()==failed_metrics+1,
+          Check(f.device.failed_io_latency_observations()==failed_metrics+1,
               "successful read after allocation fault requires actual isolated metric failure");
-          verify(result);continue;
+          verify(result,"a pinned read that survives an allocation fault is exact");continue;
         }
-        Check(!result.ok()&&!result.binding&&result.native_version_uuid.is_nil()&&result.snapshot_uuid.is_nil(),
+        Check(!result.binding&&result.native_version_uuid.is_nil()&&result.snapshot_uuid.is_nil(),
             "allocation failure retains no usable binding");
-        Check(result.error==BindingError::source_failure||result.error==BindingError::resource_exhausted,"typed allocation/source refusal");
+        Check(result.error==BindingError::source_failure||result.error==BindingError::resource_exhausted,
+            "typed allocation/source refusal");
       }
-      verify(read());
+      verify(ReadPinned(f,devices,reader,pin.pin),"the pinned read recovers after the faults");
     }
-    CatalogTestPin revoked(inventory.inventory,18);
-    mga::RevokePublishedSnapshotVector(revoked.published.descriptor.snapshot_uuid);
-    empty(runtime_api::ReadRuntimeAuthorityBindingFromOpenDevices(Id(1),{{Id(2),Profile(profile),&device}},
-        CheckpointRef(checkpoint),2,1,{Id(101),{}},inventory.inventory.entries[2].identity,revoked.pin,Id(180),1,8*u64{sizes[profile]}),BindingError::source_failure);
-    // A new process must read the persisted catalog and inventory; it cannot use
-    // a retained source result or a process-local configuration registry.
-    Check(device.Close().ok(),"close before independent reopen");
-    const auto child=fork(); Check(child>=0,"spawn cold binding reader");
-    const auto argument=std::to_string(profile);
-    if(child==0){execl("/proc/self/exe","runtime-binding-native","--read-binding",path.c_str(),argument.c_str(),nullptr);_exit(125);}
-    int status=0; Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,"fresh executable reads actual committed binding");
-    Check(device.Open(path,disk::FileOpenMode::open_existing).ok(),"own fixture before selector installation");
-    InstallOwnedSelection(device,profile,zero,checkpoint,inventory);
-    GovernedRuntimeBinding(device,profile);
-    Check(device.Close().ok(),"release fixture writer before actual route admission");
-    OwnedRuntimeBinding(path,profile);
   }
+  CatalogTestPin revoked(reader.inventory,reader.order);
+  mga::RevokePublishedSnapshotVector(revoked.published.descriptor.snapshot_uuid);
+  empty(ReadPinned(f,devices,reader,revoked.pin),BindingError::source_failure,"a revoked snapshot pin is refused");
+}
+
+// ---- Visibility of a successor written in place by transaction 2 ---------------------
+void Visibility(unsigned profile) {
+  {  // 1: transaction 2 active (and transaction 3, a later reader, active).
+    SecurityFixture f(profile);
+    const auto devices=DevicesOf(f.device,profile);
+    const auto base=BaseVersion(f);
+    const auto active=ActiveSuccessorAndReader(f);
+    const auto relation=Relation(f);
+    Exact(ReadCommitted(devices,relation,1,Id(1),Id(180),f.budget),base,1,
+        "an active transaction's successor is invisible to the committed read");
+    Refused(ReadCommitted(devices,relation,2,Id(1),Id(180),f.budget),BindingError::generation_mismatch,
+        "the active successor's generation is not the committed one");
+    {
+      CatalogTestPin pin(active.later.inventory,active.later.order);
+      Exact(ReadPinned(f,devices,active.later,pin.pin),base,1,"another reader's snapshot excludes the active successor");
+    }
+    CatalogTestPin pin(active.creator.inventory,active.creator.order);
+    Refused(ReadPinned(f,devices,active.creator,pin.pin,2),BindingError::not_committed_active,
+        "the creator's own uncommitted successor is not a committed active binding");
+  }
+  {  // 3: rolled back.
+    SecurityFixture f(profile);
+    const auto devices=DevicesOf(f.device,profile);
+    const auto base=BaseVersion(f);
+    f.RetainedSuccessor(3,true);
+    Exact(ReadCommitted(devices,Relation(f),1,Id(1),Id(180),f.budget),base,1,
+        "a rolled-back successor is invisible: the committed definition stands");
+  }
+  {  // 4: committed.
+    SecurityFixture f(profile);
+    const auto devices=DevicesOf(f.device,profile);
+    f.RetainedSuccessor(4,true);
+    Exact(ReadCommitted(devices,Relation(f),2,Id(1),Id(180),f.budget),Id(13),2,
+        "a committed successor is the committed definition, at its generation");
+    Refused(ReadCommitted(devices,Relation(f),1,Id(1),Id(180),f.budget),BindingError::generation_mismatch,
+        "the superseded generation is no longer the committed one");
+  }
+}
+
+// ---- FORGED states no writer produces -----------------------------------------------
+// FORGED (production leaf codec, independent byte oracle): the binding's
+// definition names a foreign database. The catalog version writer refuses such
+// a successor, so only a forged leaf can hold it; every reader must refuse it.
+void ForeignDefinition(unsigned profile) {
+  SecurityFixture f(profile);
+  const auto devices=DevicesOf(f.device,profile);
+  const auto loaded=db::ReadNativeCatalogLeafFromOpenDevice(f.device,Id(1),f.receipt.relations[4]);
+  Check(loaded.ok(),"the configuration leaf before the foreign-definition forgery");
+  auto leaf=*loaded.page;bool found=false;
+  for(auto& row:leaf.body.rows){auto metadata=loaded.metadata.at(row.version_uuid);
+    if(metadata.record.header.object_uuid.value!=Id(180))continue;
+    auto binding=catalog::DecodeCatalogRuntimeAuthorityBinding(metadata.record.payload);Check(binding.ok(),"decode the persisted binding");
+    binding.record->database_uuid=binding.record->security_authority_uuid=Id(250);
+    const auto foreign=catalog::EncodeCatalogRuntimeAuthorityBinding(*binding.record);Check(foreign.ok(),"a well-formed foreign definition");
+    metadata.record.payload.assign(foreign.bytes.begin(),foreign.bytes.end());
+    const auto outer=catalog::EncodeCatalogMetadataVersion(metadata);Check(outer.ok(),"well-formed foreign metadata");
+    row.cells.front().value.payload=outer.bytes;found=true;
+  }
+  Check(found,"the persisted binding row was forged");
+  const auto canonical=db::EncodeNativeCatalogLeaf(leaf);Check(canonical.ok(),"the forged leaf framing");
+  const auto bytes=LeafOracle(leaf);Check(bytes==canonical.bytes,"the forged leaf's independent byte oracle");
+  const auto io=f.device.WriteAt(leaf.header.page_number*u64{sizes[profile]},bytes.data(),bytes.size());
+  Check(io.ok()&&io.bytes_transferred==bytes.size()&&f.device.Sync().ok(),"the forged leaf persists");
+  Refused(ReadCommitted(devices,Relation(f),1,Id(1),Id(180),f.budget),BindingError::invalid_definition,
+      "a committed definition naming a foreign database is refused");
+  const auto reader=BeginReader(f,Id(20));
+  CatalogTestPin pin(reader.inventory,reader.order);
+  Refused(ReadPinned(f,devices,reader,pin.pin),BindingError::invalid_definition,"the pinned read refuses it too");
+}
+// FORGED (production state-word codec): the construction transaction's state
+// word set back to active. Its catalog then has no committed creator at all;
+// the committed read must refuse the source before selecting any row.
+void UncommittedCatalog(unsigned profile) {
+  SecurityFixture f(profile);
+  const auto devices=DevicesOf(f.device,profile);
+  SecurityFixture::ForgeStateWord(f.device,profile,SecurityFixture::RootsOf(f.device),1,page::TipStateCode::active);
+  const auto read=ReadCommitted(devices,Relation(f),1,Id(1),Id(180),f.budget);
+  Refused(read,BindingError::source_failure,"a catalog with no committed creator is refused");
+  Check(read.source_error==db::NativeCommittedCatalogReadError::source_failure,
+      "the refusal is the committed source's, before row selection");
+}
+
+// ---- Cold: a fresh executable reads the persisted binding ----------------------------
+void Cold(unsigned profile) {
+  SecurityFixture f(profile);
+  const auto base=BaseVersion(f);
+  const auto relation=Relation(f);
+  Check(!relation.index_dependencies,"the configuration relation is a direct leaf");
+  const auto path=FixturePath(f);
+  // A new process must read the persisted catalog and inventory; it cannot use
+  // a retained source result or a process-local configuration registry.
+  Check(f.device.Close().ok(),"close before the independent reopen");
+  const auto child=fork();Check(child>=0,"spawn the cold binding reader");
+  const auto argument=std::to_string(profile),relation_hex=Hex(relation.relation_uuid),version_hex=Hex(base);
+  if(child==0){execl("/proc/self/exe","runtime-binding-native","--read-binding",path.c_str(),argument.c_str(),
+      relation_hex.c_str(),version_hex.c_str(),nullptr);_exit(125);}
+  int status=0;
+  Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,
+      "a fresh executable reads the actual committed binding");
+  Check(f.device.Open(path,disk::FileOpenMode::open_existing).ok(),"reopen after the cold reader");
+}
+int ColdRead(const char* path,const char* profile_text,const char* relation_hex,const char* version_hex) {
+  const auto profile=static_cast<unsigned>(std::stoul(profile_text));if(profile>=5)return 2;
+  disk::FileDevice device;if(!device.Open(path,disk::FileOpenMode::open_existing_read_only).ok())return 3;
+  const db::NativeCatalogRelationBinding relation{FromHex(relation_hex),{}};
+  const auto devices=DevicesOf(device,profile);
+  const auto read=ReadCommitted(devices,relation,1,Id(1),Id(180),512*u64{sizes[profile]});
+  Exact(read,FromHex(version_hex),1,"the cold reader's committed binding");
+  return device.Close().ok()?0:4;
 }
 } // namespace
 
 int main(int argc,char** argv) {
   try {
-    if(argc==4&&std::string_view(argv[1])=="--read-binding") {
-      const auto profile=static_cast<unsigned>(std::stoul(argv[3])); if(profile>=5)return 2;
-      disk::FileDevice device; if(!device.Open(argv[2],disk::FileOpenMode::open_existing_read_only).ok())return 3;
-      const auto source=db::VerifyNativeCheckpointInventoryFromOpenDevices(Id(1),{{Id(2),Profile(profile),&device}},
-          CheckpointRef(CheckpointExample(profile)),8*u64{sizes[profile]});
-      if(!source.ok())return 4;
-      const auto read=ReadRuntimeBinding(device,profile,source.inventory);
-      if(!read.ok()||read.binding->service_principal_uuid!=Id(200)||read.native_version_uuid!=Id(170))return 5;
-      const auto committed=runtime_api::ReadCommittedRuntimeAuthorityBindingFromOpenDevices(Id(1),{{Id(2),Profile(profile),&device}},
-          CheckpointRef(CheckpointExample(profile)),2,1,{Id(101),{}},Id(180),1,8*u64{sizes[profile]});
-      VerifyCommittedBinding(committed);return 0;
+    if(argc==6&&std::string_view(argv[1])=="--read-binding")return ColdRead(argv[2],argv[3],argv[4],argv[5]);
+    if(argc!=1){std::cerr<<"FAIL unknown mode\n";return 2;}
+    for(unsigned profile=0;profile<5;++profile){
+      Governed(profile);Committed(profile);Pinned(profile);Visibility(profile);
+      ForeignDefinition(profile);UncommittedCatalog(profile);Cold(profile);
     }
-    RuntimeBindingFiles(); std::cout<<"native runtime binding checks="<<checks<<" failures=0\n"; return 0;
+    std::cout<<"native runtime binding checks="<<checks<<" failures=0\n";return 0;
   }catch(const std::exception& error){allocation_budget=-1;std::cerr<<"FAIL "<<error.what()<<" checks="<<checks<<'\n';return 1;}
 }

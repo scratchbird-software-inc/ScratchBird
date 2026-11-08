@@ -110,10 +110,6 @@ struct NativeCatalogRootsLeaseReadResult {
 // not relation/index coverage, row visibility, family/security or publication.
 class NativeCatalogRootsLeaseReader {
  public:
- static NativeCatalogRootsLeaseReadResult Read(const NativeSelectedCheckpointMemoryLease& lease,
-     u64 maximum_additional_image_bytes,NativeCatalogRootsPreparedMemory& backing) noexcept {
-  return ReadWith(detail::NativeLeaseSourceAccess::From(lease),maximum_additional_image_bytes,backing);
- }
  // SB_NATIVE_FIXED_ROOT_READ: the same read from page zero's catalog (kind 2)
  // and feature catalog (kind 8) roots. They carry no digest; the root page's
  // own seal is its integrity check.

@@ -76,11 +76,11 @@ inline NativeCatalogCohortPreparedResult PrepareNativeCatalogCohortRead(
 // constraints, recovery decisions and service admission remain engine-owned.
 class NativeCatalogCohortLeaseReader {
  public:
-  // SB_NATIVE_FIXED_ROOT_READ: through the selected checkpoint or page zero's
-  // fixed roots. Database, inventory, allocation and directory come from the
-  // same lease-neutral view; only the creation graph differs (see below).
+  // SB_NATIVE_FIXED_ROOT_READ: through page zero's fixed roots (the selected-
+  // checkpoint lease went with that layer, W4d). Database, inventory,
+  // allocation and directory come from the lease-neutral view.
   template<class Lease>
-    requires std::same_as<Lease,NativeSelectedCheckpointMemoryLease>||std::same_as<Lease,NativeFixedRootMemoryLease>
+    requires std::same_as<Lease,NativeFixedRootMemoryLease>
   static NativeCatalogCohortInspection Read(const Lease& source,
       u64 maximum_image_bytes,NativeCatalogCohortPreparedMemory& workspace,NativeCatalogCapture* capture=nullptr) noexcept {
     using E=NativeCatalogCohortError;NativeCatalogCohortInspection out;
@@ -163,7 +163,6 @@ class NativeCatalogCohortLeaseReader {
     }
     out.failing_selector=out.failing_role=0;out.source.reset();
     if constexpr(fixed_root)out.source=NativeReadSourceIdentityFromFixedRoot(source.identity());
-    else if(source.selection().selection)out.source=NativeReadSourceIdentityFromSelection(*source.selection().selection);
     if(capture){
       // Preserve the actual selected directory with the same immutable source
       // as the catalog rows. No current device or caller-supplied manifest is
@@ -190,17 +189,7 @@ class NativeCatalogCohortLeaseReader {
           // page zero itself, so no checkpoint roots are captured.
           const auto& id=source.identity();
           if(id.page_generation!=1||id.root_set_generation!=1)return fail(E::binding_mismatch);
-          capture->initial_control_root_count_=0;
           for(const auto& page:source.inventory_pages())
-            if(!append(page.header,page.object_uuid))return fail(E::resource_exhausted);
-        }else{
-          const auto& selected=source.selection();const auto& checkpoint=*selected.checkpoint_inventory.checkpoint;
-          if(selected.selection->selection_generation!=1||checkpoint.predecessor||checkpoint.checkpoint_generation!=1||
-              checkpoint.roots.size()>capture->initial_control_roots_.size())return fail(E::binding_mismatch);
-          std::copy(checkpoint.roots.begin(),checkpoint.roots.end(),capture->initial_control_roots_.begin());
-          capture->initial_control_root_count_=checkpoint.roots.size();
-          if(!append(checkpoint.header,checkpoint.object_uuid))return fail(E::resource_exhausted);
-          for(const auto& page:selected.checkpoint_inventory.inventory_pages)
             if(!append(page.header,page.object_uuid))return fail(E::resource_exhausted);
         }
         for(const auto& map:view.allocation->pages)

@@ -2330,130 +2330,115 @@ NativeCheckpointCatalogRelationResult ReadNativeCheckpointCatalogRelationFromOpe
     const std::vector<scratchbird::storage::page::NativeCatalogRootResult>* catalogs = nullptr;
     std::size_t feature_index = 0;
     u64 consumed = 0;
-    if (checkpoint.kind == NativeCatalogSource::Kind::checkpoint) {
-      result.checkpoint = VerifyNativeCheckpointCatalogRootsFromOpenDevices(
-          database_uuid, ordered, checkpoint.checkpoint, maximum_retained_image_bytes);
-      if (!result.checkpoint.ok()) {
-        auto error = fail(E::checkpoint_failure);
-        error.checkpoint.error = result.checkpoint.error;
-        error.checkpoint.catalog_error = result.checkpoint.catalog_error;
-        error.checkpoint.checkpoint_inventory.error = result.checkpoint.checkpoint_inventory.error;
-        error.checkpoint.checkpoint_inventory.inventory_error = result.checkpoint.checkpoint_inventory.inventory_error;
-        return error;
-      }
-      catalogs = &result.checkpoint.catalogs;
-      feature_index = result.checkpoint.feature_root_index;
-      consumed = result.checkpoint.retained_image_bytes;
-    } else {
-      // SB_NATIVE_FIXED_ROOT_READ (drift removal R3b1): page zero's fixed
-      // roots. The backed fixed-root lease verifies page zero, the in-place
-      // inventory, the allocation chain and the directory, and binds every root
-      // to an allocated page of its type and object created by a committed
-      // transaction. Page-zero roots carry no digest, so each catalog root
-      // image is also bound to its allocation record (page identity and
-      // generation) and its own creator must be committed.
-      result.page_zero_source = true;
-      const auto refused = [&](E error) {
-        NativeCheckpointCatalogRelationResult r;
-        r.error = error;
-        r.page_zero_source = true;
-        r.fixed_root_error = result.fixed_root_error;
-        r.page_zero_error = result.page_zero_error;
-        r.fixed_root_kind = result.fixed_root_kind;
-        r.inventory_error = result.inventory_error;
-        r.allocation_error = result.allocation_error;
-        r.directory_error = result.directory_error;
-        r.catalog_root_error = result.catalog_root_error;
-        return r;
-      };
-      const auto on = [&](const scratchbird::core::platform::Uuid& filespace) -> const disk::NativeFilespaceDevice* {
-        const auto at = std::find_if(ordered.begin(), ordered.end(), [&](const auto& f) { return f.filespace_uuid == filespace; });
-        return at == ordered.end() ? nullptr : &*at;
-      };
-      if (!on(checkpoint.filespace_uuid)) return fail(E::invalid_filespace);
-      // The lease keeps the images it retains (bounded by this read's image
-      // allowance) plus their decoded forms; the backing is reserved, not
-      // touched, beyond what the read uses.
-      if (maximum_retained_image_bytes > (std::numeric_limits<std::size_t>::max() - (1u << 20)) / 2)
-        return fail(E::resource_exhausted);
-      const std::size_t backing_bytes = static_cast<std::size_t>(maximum_retained_image_bytes) * 2 + (1u << 20);
-      std::unique_ptr<scratchbird::core::platform::byte[]> backing(new scratchbird::core::platform::byte[backing_bytes]);
-      auto fixed = AcquireNativeFixedRootBackedLease(database_uuid, ordered, checkpoint.filespace_uuid,
-          {maximum_retained_image_bytes, backing_bytes}, {backing.get(), backing_bytes});
-      result.fixed_root_error = fixed.error;
-      result.page_zero_error = fixed.page_zero_error;
-      result.fixed_root_kind = fixed.root_kind;
-      result.inventory_error = fixed.inventory_error;
-      result.allocation_error = fixed.allocation_error;
-      result.directory_error = fixed.directory_error;
-      if (!fixed.ok()) {
-        using F = NativeFixedRootMemoryError;
-        return refused(fixed.error == F::resource_exhausted || fixed.error == F::memory_allocation_failure
-                           ? E::resource_exhausted
-                       : fixed.error == F::io_failure ? E::io_failure
-                                                      : E::fixed_root_failure);
-      }
-      const auto& lease = *fixed.lease;
-      result.page_zero_cluster_authority_required = lease.identity().cluster_authority_required();
-      auto& inventory = result.page_zero_inventory;
-      inventory.next_local_transaction_id = lease.inventory().next_local_transaction_id;
-      inventory.next_commit_sequence = lease.inventory().next_commit_sequence;
-      inventory.entries.assign(lease.inventory().entries.begin(), lease.inventory().entries.end());
-      consumed = lease.retained_image_bytes();
-      const auto read_root = [&](u16 kind) -> E {
-        const auto* ref = lease.Root(kind);
-        if (!ref) { result.fixed_root_kind = kind; return E::fixed_root_failure; }
-        const auto* device = on(ref->filespace_uuid);
-        if (!device) { result.fixed_root_kind = kind; return E::invalid_filespace; }
-        auto image = scratchbird::storage::page::ReadNativeCatalogRootFromOpenDevice(*device->device, database_uuid, *ref);
-        if (!image.ok()) {
-          result.fixed_root_kind = kind;
-          result.catalog_root_error = image.error;
-          return image.error == scratchbird::storage::page::NativeCatalogRootError::io_failure ? E::io_failure
-               : image.error == scratchbird::storage::page::NativeCatalogRootError::resource_exhausted
-                   ? E::resource_exhausted
-                   : E::fixed_root_failure;
-        }
-        const auto& root = *image.root;
-        const auto* record = detail::NativeFixedRootRecord(lease.allocation(), ref->page_number);
-        if (ref->filespace_uuid != checkpoint.filespace_uuid || !record ||
-            record->page_uuid != root.header.page_uuid || record->page_generation != root.header.page_generation ||
-            record->page_generation != ref->page_generation || root.object_uuid != ref->object_uuid) {
-          result.fixed_root_kind = kind;
-          return E::fixed_root_failure;
-        }
-        const auto entry = std::find_if(inventory.entries.begin(), inventory.entries.end(), [&](const auto& e) {
-          return e.identity.local_id.value == root.creator_local_transaction_id &&
-                 e.identity.transaction_uuid.value == root.creator_transaction_uuid;
-        });
-        if (entry == inventory.entries.end() || !mga::HasCommittedInventoryOutcome(*entry)) {
-          result.fixed_root_kind = kind;
-          return E::creator_mismatch;
-        }
-        if (image.bytes.size() > maximum_retained_image_bytes - consumed) return E::resource_exhausted;
-        consumed += image.bytes.size();
-        result.page_zero_catalogs.push_back(std::move(image));
-        return E::none;
-      };
-      if (const auto error = read_root(2); error != E::none) return refused(error);
-      const auto* catalog_ref = lease.Root(2);
-      const auto* feature_ref = lease.Root(8);
-      if (!feature_ref) { result.fixed_root_kind = 8; return refused(E::fixed_root_failure); }
-      if (feature_ref->filespace_uuid == catalog_ref->filespace_uuid && feature_ref->page_number == catalog_ref->page_number) {
-        if (feature_ref->page_type != catalog_ref->page_type || feature_ref->object_uuid != catalog_ref->object_uuid ||
-            feature_ref->page_generation != catalog_ref->page_generation) {
-          result.fixed_root_kind = 8;
-          return refused(E::fixed_root_failure);
-        }
-        feature_index = 0;
-      } else {
-        if (const auto error = read_root(8); error != E::none) return refused(error);
-        feature_index = 1;
-      }
-      catalogs = &result.page_zero_catalogs;
-      result.page_zero_feature_index = feature_index;
-      if (consumed > maximum_retained_image_bytes) return refused(E::resource_exhausted);
+    // SB_NATIVE_FIXED_ROOT_READ (drift removal R3b1): page zero's fixed
+    // roots. The backed fixed-root lease verifies page zero, the in-place
+    // inventory, the allocation chain and the directory, and binds every root
+    // to an allocated page of its type and object created by a committed
+    // transaction. Page-zero roots carry no digest, so each catalog root
+    // image is also bound to its allocation record (page identity and
+    // generation) and its own creator must be committed.
+    result.page_zero_source = true;
+    const auto refused = [&](E error) {
+      NativeCheckpointCatalogRelationResult r;
+      r.error = error;
+      r.page_zero_source = true;
+      r.fixed_root_error = result.fixed_root_error;
+      r.page_zero_error = result.page_zero_error;
+      r.fixed_root_kind = result.fixed_root_kind;
+      r.inventory_error = result.inventory_error;
+      r.allocation_error = result.allocation_error;
+      r.directory_error = result.directory_error;
+      r.catalog_root_error = result.catalog_root_error;
+      return r;
+    };
+    const auto on = [&](const scratchbird::core::platform::Uuid& filespace) -> const disk::NativeFilespaceDevice* {
+      const auto at = std::find_if(ordered.begin(), ordered.end(), [&](const auto& f) { return f.filespace_uuid == filespace; });
+      return at == ordered.end() ? nullptr : &*at;
+    };
+    if (!on(checkpoint.filespace_uuid)) return fail(E::invalid_filespace);
+    // The lease keeps the images it retains (bounded by this read's image
+    // allowance) plus their decoded forms; the backing is reserved, not
+    // touched, beyond what the read uses.
+    if (maximum_retained_image_bytes > (std::numeric_limits<std::size_t>::max() - (1u << 20)) / 2)
+      return fail(E::resource_exhausted);
+    const std::size_t backing_bytes = static_cast<std::size_t>(maximum_retained_image_bytes) * 2 + (1u << 20);
+    std::unique_ptr<scratchbird::core::platform::byte[]> backing(new scratchbird::core::platform::byte[backing_bytes]);
+    auto fixed = AcquireNativeFixedRootBackedLease(database_uuid, ordered, checkpoint.filespace_uuid,
+        {maximum_retained_image_bytes, backing_bytes}, {backing.get(), backing_bytes});
+    result.fixed_root_error = fixed.error;
+    result.page_zero_error = fixed.page_zero_error;
+    result.fixed_root_kind = fixed.root_kind;
+    result.inventory_error = fixed.inventory_error;
+    result.allocation_error = fixed.allocation_error;
+    result.directory_error = fixed.directory_error;
+    if (!fixed.ok()) {
+      using F = NativeFixedRootMemoryError;
+      return refused(fixed.error == F::resource_exhausted || fixed.error == F::memory_allocation_failure
+                         ? E::resource_exhausted
+                     : fixed.error == F::io_failure ? E::io_failure
+                                                    : E::fixed_root_failure);
     }
+    const auto& lease = *fixed.lease;
+    result.page_zero_cluster_authority_required = lease.identity().cluster_authority_required();
+    auto& inventory = result.page_zero_inventory;
+    inventory.next_local_transaction_id = lease.inventory().next_local_transaction_id;
+    inventory.next_commit_sequence = lease.inventory().next_commit_sequence;
+    inventory.entries.assign(lease.inventory().entries.begin(), lease.inventory().entries.end());
+    consumed = lease.retained_image_bytes();
+    const auto read_root = [&](u16 kind) -> E {
+      const auto* ref = lease.Root(kind);
+      if (!ref) { result.fixed_root_kind = kind; return E::fixed_root_failure; }
+      const auto* device = on(ref->filespace_uuid);
+      if (!device) { result.fixed_root_kind = kind; return E::invalid_filespace; }
+      auto image = scratchbird::storage::page::ReadNativeCatalogRootFromOpenDevice(*device->device, database_uuid, *ref);
+      if (!image.ok()) {
+        result.fixed_root_kind = kind;
+        result.catalog_root_error = image.error;
+        return image.error == scratchbird::storage::page::NativeCatalogRootError::io_failure ? E::io_failure
+             : image.error == scratchbird::storage::page::NativeCatalogRootError::resource_exhausted
+                 ? E::resource_exhausted
+                 : E::fixed_root_failure;
+      }
+      const auto& root = *image.root;
+      const auto* record = detail::NativeFixedRootRecord(lease.allocation(), ref->page_number);
+      if (ref->filespace_uuid != checkpoint.filespace_uuid || !record ||
+          record->page_uuid != root.header.page_uuid || record->page_generation != root.header.page_generation ||
+          record->page_generation != ref->page_generation || root.object_uuid != ref->object_uuid) {
+        result.fixed_root_kind = kind;
+        return E::fixed_root_failure;
+      }
+      const auto entry = std::find_if(inventory.entries.begin(), inventory.entries.end(), [&](const auto& e) {
+        return e.identity.local_id.value == root.creator_local_transaction_id &&
+               e.identity.transaction_uuid.value == root.creator_transaction_uuid;
+      });
+      if (entry == inventory.entries.end() || !mga::HasCommittedInventoryOutcome(*entry)) {
+        result.fixed_root_kind = kind;
+        return E::creator_mismatch;
+      }
+      if (image.bytes.size() > maximum_retained_image_bytes - consumed) return E::resource_exhausted;
+      consumed += image.bytes.size();
+      result.page_zero_catalogs.push_back(std::move(image));
+      return E::none;
+    };
+    if (const auto error = read_root(2); error != E::none) return refused(error);
+    const auto* catalog_ref = lease.Root(2);
+    const auto* feature_ref = lease.Root(8);
+    if (!feature_ref) { result.fixed_root_kind = 8; return refused(E::fixed_root_failure); }
+    if (feature_ref->filespace_uuid == catalog_ref->filespace_uuid && feature_ref->page_number == catalog_ref->page_number) {
+      if (feature_ref->page_type != catalog_ref->page_type || feature_ref->object_uuid != catalog_ref->object_uuid ||
+          feature_ref->page_generation != catalog_ref->page_generation) {
+        result.fixed_root_kind = 8;
+        return refused(E::fixed_root_failure);
+      }
+      feature_index = 0;
+    } else {
+      if (const auto error = read_root(8); error != E::none) return refused(error);
+      feature_index = 1;
+    }
+    catalogs = &result.page_zero_catalogs;
+    result.page_zero_feature_index = feature_index;
+    if (consumed > maximum_retained_image_bytes) return refused(E::resource_exhausted);
+  
     const auto catalog_index = catalog_selector == 2 ? 0 : feature_index;
     const auto& catalog = *(*catalogs)[catalog_index].root;
     const auto head = std::find_if(catalog.roots.begin(), catalog.roots.end(),

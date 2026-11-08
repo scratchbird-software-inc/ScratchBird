@@ -52,200 +52,10 @@ enum class PhysicalMgaCowMutationKind : u16 {
   delete_row
 };
 
-enum class NativeReservedPageDestination { not_observed, zero, exact_image, conflicting };
-// Physical observations only; no publication, transaction finality or authority.
-// All identity-bearing fields are in the binary intended receipt. A write
-// attempt can have effects even when the device reports zero progress or throws.
-template<class Receipt>
-struct NativeReservedPageStageEffects {
-  std::optional<Receipt> intent;
-  u64 requested_bytes=0, write_reported_bytes=0;
-  NativeReservedPageDestination destination=NativeReservedPageDestination::not_observed;
-  bool write_attempted=false, write_completed=false;
-  bool sync_attempted=false, sync_completed=false;
-  bool readback_attempted=false, readback_completed=false, readback_matches=false;
-  DiagnosticRecord diagnostic;
-};
-
-enum class NativeRowDataStageError {
-  none, invalid_request, checkpoint_failure, allocation_failure, page_failure,
-  invalid_destination, creator_mismatch, creator_not_active, reservation_mismatch,
-  map_creator_mismatch, map_creator_not_committed, row_creator_mismatch,
-  root_mismatch, resource_exhausted, hash_failure, destination_not_empty,
-  io_failure, readback_mismatch, cluster_requires_authority, header_requires_authority,
-  creator_rollback_only
-};
-struct NativeRowDataStageReceipt {
-  scratchbird::core::platform::Uuid database_uuid, allocation_uuid, page_uuid, relation_uuid;
-  scratchbird::transaction::mga::TransactionIdentity transaction;
-  scratchbird::storage::disk::NativePageReference page;
-  std::array<scratchbird::core::platform::byte,32> sha256{};
-};
-struct NativeRowDataStageResult {
-  NativeRowDataStageError error=NativeRowDataStageError::invalid_request;
-  NativeCheckpointError checkpoint_error=NativeCheckpointError::none;
-  scratchbird::storage::page::NativeDirectoryError directory_error=scratchbird::storage::page::NativeDirectoryError::none;
-  scratchbird::storage::page::NativeInventoryError inventory_error=scratchbird::storage::page::NativeInventoryError::none;
-  scratchbird::storage::page::NativeAllocationError allocation_error=scratchbird::storage::page::NativeAllocationError::none;
-  scratchbird::storage::page::NativeRowDataError page_error=scratchbird::storage::page::NativeRowDataError::none;
-  std::optional<NativeRowDataStageReceipt> receipt;
-  NativeReservedPageStageEffects<NativeRowDataStageReceipt> effects;
-  bool ok() const noexcept {return error==NativeRowDataStageError::none&&receipt.has_value();}
-};
-// Actual reserved-page write/sync/readback. Does not allocate row identities,
-// decide visibility, grant relocation/archive ownership or publish/commit roots.
-NativeRowDataStageResult StageNativeRowDataPageFromOpenDevices(
-    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
-    const scratchbird::storage::disk::FilespaceRootReference& current_checkpoint,
-    const scratchbird::transaction::mga::TransactionIdentity& owner,
-    const scratchbird::storage::page::NativeRowDataPage&,u64 maximum_retained_image_bytes) noexcept;
-
-enum class NativeCatalogLeafStageError {
-  none, invalid_request, checkpoint_failure, allocation_failure, leaf_failure,
-  invalid_destination, creator_mismatch, creator_not_active, reservation_mismatch,
-  map_creator_mismatch, map_creator_not_committed, row_creator_mismatch,
-  root_mismatch, resource_exhausted, hash_failure, destination_not_empty,
-  io_failure, readback_mismatch, cluster_requires_authority, header_requires_authority,
-  creator_rollback_only
-};
-struct NativeCatalogLeafStageReceipt {
-  scratchbird::core::platform::Uuid database_uuid, allocation_uuid, page_uuid, relation_uuid;
-  scratchbird::transaction::mga::TransactionIdentity transaction;
-  scratchbird::storage::disk::NativePageReference page;
-  std::array<scratchbird::core::platform::byte,32> sha256{};
-};
-struct NativeCatalogLeafStageResult {
-  NativeCatalogLeafStageError error=NativeCatalogLeafStageError::invalid_request;
-  NativeCheckpointError checkpoint_error=NativeCheckpointError::none;
-  scratchbird::storage::page::NativeDirectoryError directory_error=scratchbird::storage::page::NativeDirectoryError::none;
-  scratchbird::storage::page::NativeInventoryError inventory_error=scratchbird::storage::page::NativeInventoryError::none;
-  scratchbird::storage::page::NativeAllocationError allocation_error=scratchbird::storage::page::NativeAllocationError::none;
-  NativeCatalogLeafError leaf_error=NativeCatalogLeafError::none;
-  std::optional<NativeCatalogLeafStageReceipt> receipt;
-  NativeReservedPageStageEffects<NativeCatalogLeafStageReceipt> effects;
-  bool ok() const noexcept {return error==NativeCatalogLeafStageError::none&&receipt.has_value();}
-};
-// Actual reserved native page write/sync/readback only. Does not allocate row
-// versions, commit, change allocation state or publish catalog roots/SQL effects.
-NativeCatalogLeafStageResult StageNativeCatalogLeafFromOpenDevices(
-    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
-    const scratchbird::storage::disk::FilespaceRootReference& current_checkpoint,
-    const scratchbird::transaction::mga::TransactionIdentity& owner,
-    const NativeCatalogLeafPage&,u64 maximum_retained_image_bytes) noexcept;
-
-// Exact reservation retry guard, checked against current owned allocation
-// metadata before destination I/O. Does not grant allocation or write authority.
-NativeCatalogLeafStageResult StageNativeCatalogLeafFromOpenDevices(
-    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
-    const scratchbird::storage::disk::FilespaceRootReference& current_checkpoint,
-    const scratchbird::transaction::mga::TransactionIdentity& owner,
-    const NativeCatalogLeafPage&,u64 maximum_retained_image_bytes,
-    const scratchbird::core::platform::Uuid& expected_allocation_uuid) noexcept;
-
-enum class NativeCatalogRootStageError {
-  none, invalid_request, checkpoint_failure, allocation_failure, root_failure,
-  invalid_destination, creator_mismatch, creator_not_active, reservation_mismatch,
-  map_creator_mismatch, map_creator_not_committed, predecessor_creator_mismatch,
-  root_mismatch, resource_exhausted, hash_failure, destination_not_empty,
-  io_failure, readback_mismatch, cluster_requires_authority, header_requires_authority,
-  creator_rollback_only, predecessor_failure, predecessor_mismatch
-};
-
-enum class NativeInventoryStageError {
-  none, invalid_request, checkpoint_failure, allocation_failure, inventory_failure,
-  invalid_destination, creator_mismatch, creator_not_active, reservation_mismatch,
-  map_creator_mismatch, map_creator_not_committed, root_mismatch,
-  resource_exhausted, hash_failure, destination_not_empty, io_failure,
-  readback_mismatch, cluster_requires_authority, header_requires_authority,
-  creator_rollback_only, chain_mismatch, generation_mismatch, counter_regression
-};
-struct NativeInventoryStageReceipt {
-  scratchbird::core::platform::Uuid database_uuid, allocation_uuid, page_uuid, inventory_uuid;
-  scratchbird::transaction::mga::TransactionIdentity transaction;
-  scratchbird::storage::disk::NativePageReference page;
-  std::array<scratchbird::core::platform::byte,32> sha256{};
-};
-struct NativeInventoryStageResult {
-  NativeInventoryStageError error=NativeInventoryStageError::invalid_request;
-  NativeCheckpointError checkpoint_error=NativeCheckpointError::none;
-  scratchbird::storage::page::NativeDirectoryError directory_error=scratchbird::storage::page::NativeDirectoryError::none;
-  scratchbird::storage::page::NativeInventoryError inventory_error=scratchbird::storage::page::NativeInventoryError::none;
-  scratchbird::storage::page::NativeAllocationError allocation_error=scratchbird::storage::page::NativeAllocationError::none;
-  std::vector<NativeInventoryStageReceipt> receipts;
-  // Retained ordered observations, including completed prefix, even on failure.
-  // receipts is still empty unless the complete chain successfully stages.
-  std::vector<NativeReservedPageStageEffects<NativeInventoryStageReceipt>> page_effects;
-  bool ok() const noexcept {return error==NativeInventoryStageError::none&&!receipts.empty();}
-};
-// Complete immutable inventory chain staging only. No selection, finality,
-// allocation-state change, publication-CAS provenance or SQL-success receipt.
-NativeInventoryStageResult StageNativeInventorySuccessorFromOpenDevices(
-    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
-    const scratchbird::storage::disk::FilespaceRootReference& current_checkpoint,
-    const scratchbird::transaction::mga::TransactionIdentity& owner,
-    const std::vector<scratchbird::storage::page::NativeTransactionInventoryPage>&,
-    u64 maximum_retained_image_bytes) noexcept;
-struct NativeCatalogRootStageReceipt {
-  scratchbird::core::platform::Uuid database_uuid, allocation_uuid, page_uuid, root_uuid;
-  scratchbird::transaction::mga::TransactionIdentity transaction;
-  scratchbird::storage::disk::NativePageReference page;
-  std::array<scratchbird::core::platform::byte,32> sha256{};
-};
-struct NativeCatalogRootStageResult {
-  NativeCatalogRootStageError error=NativeCatalogRootStageError::invalid_request;
-  NativeCheckpointError checkpoint_error=NativeCheckpointError::none;
-  scratchbird::storage::page::NativeDirectoryError directory_error=scratchbird::storage::page::NativeDirectoryError::none;
-  scratchbird::storage::page::NativeInventoryError inventory_error=scratchbird::storage::page::NativeInventoryError::none;
-  scratchbird::storage::page::NativeAllocationError allocation_error=scratchbird::storage::page::NativeAllocationError::none;
-  scratchbird::storage::page::NativeCatalogRootError root_error=scratchbird::storage::page::NativeCatalogRootError::none;
-  std::optional<NativeCatalogRootStageReceipt> receipt;
-  NativeReservedPageStageEffects<NativeCatalogRootStageReceipt> effects;
-  bool ok() const noexcept {return error==NativeCatalogRootStageError::none&&receipt.has_value();}
-};
-// Actual reserved immutable successor write/sync/readback. No root selection,
-// complete target graph, batch finality, recovery or SQL publication receipt.
-NativeCatalogRootStageResult StageNativeCatalogRootSuccessorFromOpenDevices(
-    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
-    const scratchbird::storage::disk::FilespaceRootReference& current_checkpoint,
-    const scratchbird::transaction::mga::TransactionIdentity& owner,
-    const scratchbird::storage::page::NativeCatalogRoot&,u64 maximum_retained_image_bytes) noexcept;
-
 struct NativeCatalogRelationBinding {
   scratchbird::core::platform::Uuid relation_uuid;
   std::optional<scratchbird::storage::page::NativeBtreeDependencies> index_dependencies;
 };
-enum class NativeBtreeStageError {
-  none, invalid_request, checkpoint_failure, allocation_failure, invalid_destination,
-  creator_mismatch, creator_not_active, creator_rollback_only, reservation_mismatch,
-  map_creator_mismatch, map_creator_not_committed, root_mismatch, resource_exhausted,
-  hash_failure, destination_not_empty, io_failure, readback_mismatch,
-  cluster_requires_authority, header_requires_authority, dependency_mismatch, page_failure
-};
-struct NativeBtreeStageReceipt {
-  scratchbird::core::platform::Uuid database_uuid, allocation_uuid, page_uuid, index_uuid;
-  scratchbird::transaction::mga::TransactionIdentity transaction;
-  scratchbird::storage::disk::NativePageReference page;
-  std::array<scratchbird::core::platform::byte,32> sha256{};
-};
-struct NativeBtreeStageResult {
-  NativeBtreeStageError error=NativeBtreeStageError::invalid_request;
-  NativeCheckpointError checkpoint_error=NativeCheckpointError::none;
-  scratchbird::storage::page::NativeDirectoryError directory_error=scratchbird::storage::page::NativeDirectoryError::none;
-  scratchbird::storage::page::NativeInventoryError inventory_error=scratchbird::storage::page::NativeInventoryError::none;
-  scratchbird::storage::page::NativeAllocationError allocation_error=scratchbird::storage::page::NativeAllocationError::none;
-  scratchbird::storage::page::NativeBtreeError page_error=scratchbird::storage::page::NativeBtreeError::none;
-  std::optional<NativeBtreeStageReceipt> receipt;
-  NativeReservedPageStageEffects<NativeBtreeStageReceipt> effects;
-  bool ok() const noexcept {return error==NativeBtreeStageError::none&&receipt.has_value();}
-};
-// Actual reserved native root/branch/leaf write only. A matching expected tuple
-// is not complete dependency-map resolution, typed-key or publication authority.
-NativeBtreeStageResult StageNativeBtreePageFromOpenDevices(
-    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
-    const scratchbird::storage::disk::FilespaceRootReference& current_checkpoint,
-    const scratchbird::transaction::mga::TransactionIdentity& owner,
-    const scratchbird::storage::page::NativeBtreeDependencies& expected_dependencies,
-    const scratchbird::storage::page::NativeBtreePage&,u64 maximum_retained_image_bytes) noexcept;
 struct NativeCatalogIndexEntryLocation {
   std::size_t page_index = 0;
   std::size_t cell_index = 0;
@@ -294,27 +104,26 @@ enum class NativeCheckpointCatalogRelationError {
   fixed_root_failure
 };
 // SB_NATIVE_FIXED_ROOT_READ (drift removal R3b1): where a native catalog read
-// starts, chosen explicitly by the caller. A checkpoint reference is the
-// drift-era graph (until R4). Page zero of a filespace starts from its fixed
-// roots: kind 2 the catalog, kind 8 the feature catalog, kind 4 the in-place
-// transaction inventory. A FilespaceRootReference argument always means a
-// checkpoint; page zero is named only through PageZero().
+// starts, chosen explicitly by the caller. Page zero of a filespace starts
+// from its fixed roots: kind 2 the catalog, kind 8 the feature catalog, kind 4
+// the in-place transaction inventory; it is named only through PageZero().
+// (Until W4d a checkpoint reference was the other source; that graph was
+// deleted. The "Checkpoint" in the relation types and the `checkpoint`
+// parameter names below are left from that era.)
 struct NativeCatalogSource {
-  enum class Kind : scratchbird::core::platform::u8 { checkpoint, page_zero };
-  Kind kind = Kind::checkpoint;
-  scratchbird::storage::disk::FilespaceRootReference checkpoint{};
+  // SB_NATIVE_FIXED_ROOT_READ: page zero's fixed roots are the only source
+  // (the checkpoint-era graph source went with the checkpoint layer, W4d).
+  enum class Kind : scratchbird::core::platform::u8 { page_zero };
+  Kind kind = Kind::page_zero;
   scratchbird::core::platform::Uuid filespace_uuid{};
-  NativeCatalogSource(const scratchbird::storage::disk::FilespaceRootReference& root) noexcept  // NOLINT: a checkpoint
-      : kind(Kind::checkpoint), checkpoint(root) {}
   static NativeCatalogSource PageZero(const scratchbird::core::platform::Uuid& filespace) noexcept {
-    NativeCatalogSource s;s.kind=Kind::page_zero;s.filespace_uuid=filespace;return s;
+    NativeCatalogSource s;s.filespace_uuid=filespace;return s;
   }
  private:
   NativeCatalogSource() noexcept = default;
 };
 struct NativeCheckpointCatalogRelationResult {
   NativeCheckpointCatalogRelationError error = NativeCheckpointCatalogRelationError::invalid_reference;
-  NativeCheckpointCatalogResult checkpoint;  // the checkpoint source only
   NativeCatalogRelationImageResult relation;
   std::vector<std::size_t> navigation_creator_entries;
   std::vector<NativeCatalogCreatorBinding> row_creators;
@@ -336,18 +145,17 @@ struct NativeCheckpointCatalogRelationResult {
   scratchbird::storage::page::NativeCatalogRootError catalog_root_error = scratchbird::storage::page::NativeCatalogRootError::none;
   // The source-neutral view the relation and version reads use.
   const scratchbird::transaction::mga::LocalTransactionInventory& inventory() const noexcept {
-    return page_zero_source ? page_zero_inventory : checkpoint.checkpoint_inventory.inventory;
+    return page_zero_inventory;
   }
   bool cluster_authority_required() const noexcept {
-    return page_zero_source ? page_zero_cluster_authority_required
-                            : checkpoint.checkpoint_inventory.checkpoint && (checkpoint.checkpoint_inventory.checkpoint->flags & 4);
+    return page_zero_cluster_authority_required;
   }
   bool ok() const noexcept {
     return error==NativeCheckpointCatalogRelationError::none && relation.ok() &&
-        (page_zero_source ? !page_zero_catalogs.empty() : checkpoint.ok());
+        page_zero_source && !page_zero_catalogs.empty();
   }
 };
-// Actual checkpoint -> catalog/feature role -> relation images -> inventory
+// Page zero -> catalog/feature role -> relation images -> inventory
 // creator identity. Not snapshot, family/key, root-selection or publication authority.
 NativeCheckpointCatalogRelationResult ReadNativeCheckpointCatalogRelationFromOpenDevices(
     const scratchbird::core::platform::Uuid& database_uuid,
@@ -650,87 +458,6 @@ struct PhysicalMgaCowMutationBatchResult {
     return status.ok();
   }
 };
-
-enum class NativeCatalogVersionStageError {
-  none, invalid_request, invalid_metadata, source_failure, snapshot_failure,
-  writer_not_writable, object_reserved, row_reserved, stale_version,
-  version_overflow, identity_failure, stage_failure, resource_exhausted, io_failure,
-  identity_collision, retry_mismatch, hash_failure
-};
-namespace detail { struct NativeCatalogVersionStager; }
-// Process-local, immutable binding issued by the actual version constructor.
-// Copyable for exact retries, but not caller-constructible or serializable.
-// Not permission, a durable recovery record, or evidence of physical completion.
-class NativeCatalogVersionRetry {
- public:
-  NativeCatalogVersionRetry(const NativeCatalogVersionRetry&) = default;
-  NativeCatalogVersionRetry& operator=(const NativeCatalogVersionRetry&) = default;
- private:
-  NativeCatalogVersionRetry() = default;
-  PhysicalMgaCowRowReceipt row_;
-  scratchbird::storage::disk::FilespaceRootReference checkpoint_;
-  NativeCatalogRelationBinding binding_;
-  scratchbird::core::platform::Uuid snapshot_uuid_,policy_snapshot_uuid_,allocation_uuid_;
-  std::array<scratchbird::core::platform::byte,32> checkpoint_sha256_{},image_sha256_{};
-  u16 selector_=0,role_=0;
-  std::optional<scratchbird::core::time::ClockSnapshot> observation_;
-  scratchbird::core::time::LocalClockObservationDecision clock_decision_=scratchbird::core::time::LocalClockObservationDecision::accepted;
-  friend struct detail::NativeCatalogVersionStager;
-};
-struct NativeCatalogVersionStageResult {
-  NativeCatalogVersionStageError error=NativeCatalogVersionStageError::invalid_request;
-  scratchbird::core::uuid::StandaloneUuidV7Error identity_error=scratchbird::core::uuid::StandaloneUuidV7Error::none;
-  // Retained once issued, including collision or later failure. Never reuse it.
-  scratchbird::core::platform::Uuid issued_version_uuid;
-  std::optional<scratchbird::core::time::ClockSnapshot> identity_observation;
-  scratchbird::core::time::LocalClockObservationDecision identity_clock_decision=scratchbird::core::time::LocalClockObservationDecision::accepted;
-  NativePinnedCatalogReadError source_error=NativePinnedCatalogReadError::none;
-  // Physical completion is independent of the final snapshot recheck. On
-  // snapshot_failure this may still contain a successful physical receipt.
-  NativeCatalogLeafStageResult stage;
-  // Set immediately before entering the physical writer, or retained from the
-  // original attempt on retry. Exact reconciliation
-  // input, NOT proof of writes, durability, version admission or publication.
-  // A failed writer can have effects even without stage.receipt. Retain the
-  // original owning request; do not retry by generating another version UUID.
-  std::optional<PhysicalMgaCowRowReceipt> attempted_row;
-  // Available after complete image construction and actual reservation binding,
-  // even if physical staging fails.
-  // A retry returns this same binding; effects describe only that invocation.
-  std::optional<NativeCatalogVersionRetry> retry;
-  // Only present on complete version-staging success (including pin recheck).
-  std::optional<PhysicalMgaCowRowReceipt> row;
-  DiagnosticRecord diagnostic;
-  bool ok() const noexcept {return error==NativeCatalogVersionStageError::none&&stage.ok()&&row.has_value();}
-};
-// Actual pinned native source -> generated MGA successor -> reserved type6
-// write/readback. Not a multi-page batch, catalog-root publication or SQL result.
-// The kernel supplies its actual admitted policy and retained node-bound issuer;
-// these are checked before any I/O, not inferred from catalog display metadata.
-NativeCatalogVersionStageResult StageNativeCatalogVersionFromOpenDevices(
-    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
-    const scratchbird::storage::disk::FilespaceRootReference& current_checkpoint,
-    u16 catalog_selector,u16 relation_role,const NativeCatalogRelationBinding&,
-    const scratchbird::transaction::mga::PublishedSnapshotPin&,
-    const NativeCatalogVersionMutation&,const NativeCatalogLeafPage& empty_destination,
-    u64 maximum_retained_image_bytes,
-    const scratchbird::core::platform::Uuid& policy_snapshot_uuid,
-    scratchbird::core::uuid::StandaloneUuidV7Issuer&) noexcept;
-
-// Revalidate the exact original checkpoint/snapshot, writer, metadata and
-// reservation, then reconcile the same generated image without issuing a UUID.
-// Blank destinations may be written; exact images are synchronized/read back;
-// conflicting/partial images are preserved for owning recovery. No restart
-// reconstruction, publication, authorization or fresh-operation fallback.
-NativeCatalogVersionStageResult RetryNativeCatalogVersionFromOpenDevices(
-    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
-    const scratchbird::storage::disk::FilespaceRootReference& current_checkpoint,
-    u16 catalog_selector,u16 relation_role,const NativeCatalogRelationBinding&,
-    const scratchbird::transaction::mga::PublishedSnapshotPin&,
-    const NativeCatalogVersionMutation&,const NativeCatalogLeafPage& empty_destination,
-    u64 maximum_retained_image_bytes,
-    const scratchbird::core::platform::Uuid& policy_snapshot_uuid,
-    const NativeCatalogVersionRetry&) noexcept;
 
 struct PhysicalMgaCowFinalizeResult {
   Status status;

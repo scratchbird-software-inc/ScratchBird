@@ -100,10 +100,9 @@ using WE = db::NativeWriterError;
 template <class T> concept ExposesWriter = requires(T value) { value.writer(); };
 template <class T> concept ExposesDevices = requires(T value) { value.devices(); };
 static_assert(!std::is_default_constructible_v<Host> && !std::is_copy_constructible_v<Host>);
-static_assert(!ExposesWriter<Host> && !ExposesDevices<Host> && !ExposesDevices<Host::ReadLease> &&
-              !ExposesDevices<Host::FixedRootReadLease>);
-static_assert(!std::is_copy_constructible_v<Host::Operation> && !std::is_copy_constructible_v<Host::ReadLease> &&
-              !std::is_copy_constructible_v<Host::FixedRootReadLease>);
+// (W4d: the selected-checkpoint Host::ReadLease was deleted with that layer.)
+static_assert(!ExposesWriter<Host> && !ExposesDevices<Host> && !ExposesDevices<Host::FixedRootReadLease>);
+static_assert(!std::is_copy_constructible_v<Host::Operation> && !std::is_copy_constructible_v<Host::FixedRootReadLease>);
 
 unsigned checks = 0;
 void Check(bool ok, std::string_view why, std::source_location at = std::source_location::current()) {
@@ -279,7 +278,7 @@ struct Fixture {
                 << " fixed_root=" << int(adopted.source.fixed_root_error)
                 << " page_zero=" << int(adopted.source.page_zero_error)
                 << " inventory=" << int(adopted.source.inventory_error)
-                << " memory=" << int(adopted.source.memory_source_error) << '\n';
+                << " memory=" << int(adopted.source.memory_error) << '\n';
     Check(adopted.ok(), "the production database is adopted by host custody");
   }
   Host::FixedRootReadResult Read(Host::Operation& operation) {

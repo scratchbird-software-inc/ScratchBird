@@ -38,9 +38,8 @@ bool UncertainState(mga::TransactionState s) noexcept {
 // evidence of damage, so their cause is looked for first, in every
 // diagnostic the read carries.
 VE SourceRefusal(const db::NativeOwnedSourceDiagnostics& d,db::NativeWriterError writer) noexcept {
-  using S=db::NativeOwnedSourceError;using M=db::NativeSelectedCheckpointMemoryError;
-  using B=disk::FilespaceBootstrapError;using R=db::NativeSelectedCheckpointReadError;
-  using C=db::NativeCheckpointSelectionError;using K=db::NativeCheckpointError;using A=page::NativeAllocationError;
+  using S=db::NativeOwnedSourceError;
+  using B=disk::FilespaceBootstrapError;using A=page::NativeAllocationError;
   using D=page::NativeDirectoryError;using I=page::NativeInventoryError;using T=disk::RouteSourceTransitionError;
   switch(d.error){
     case S::none:return writer==db::NativeWriterError::none?VE::none:VE::source_failure;
@@ -63,20 +62,13 @@ VE SourceRefusal(const db::NativeOwnedSourceDiagnostics& d,db::NativeWriterError
   if(d.page_zero_error==Z::resource_exhausted)return VE::memory_failure;
   if(d.page_zero_error==Z::hash_provider_failure)return VE::crypto_failure;
   if(d.page_zero_error==Z::device_not_open||d.page_zero_error==Z::invalid_backing)return VE::source_failure;
-  if(d.bootstrap_error==B::io_failure||d.source_error==R::io_failure||d.selection_error==C::io_failure||
-      d.checkpoint_error==K::io_failure||d.allocation_error==A::io_failure||d.directory_error==D::io_failure||
-      d.inventory_error==I::io_failure||d.route_error==T::io_failure||d.memory_source_error==M::io_failure)return VE::io_failure;
-  if(d.bootstrap_error==B::resource_exhausted||d.source_error==R::resource_exhausted||d.selection_error==C::resource_exhausted||
-      d.checkpoint_error==K::resource_exhausted||d.allocation_error==A::resource_exhausted||d.directory_error==D::resource_exhausted||
-      d.inventory_error==I::resource_exhausted||d.route_error==T::resource_exhausted||d.memory_source_error==M::resource_exhausted||
-      d.memory_source_error==M::memory_binding_failure||d.memory_source_error==M::memory_allocation_failure)return VE::memory_failure;
-  if(d.bootstrap_error==B::hash_provider_failure||d.selection_error==C::hash_failure||d.checkpoint_error==K::hash_failure||
+  if(d.bootstrap_error==B::io_failure||d.allocation_error==A::io_failure||d.directory_error==D::io_failure||
+      d.inventory_error==I::io_failure||d.route_error==T::io_failure)return VE::io_failure;
+  if(d.bootstrap_error==B::resource_exhausted||d.allocation_error==A::resource_exhausted||d.directory_error==D::resource_exhausted||
+      d.inventory_error==I::resource_exhausted||d.route_error==T::resource_exhausted)return VE::memory_failure;
+  if(d.bootstrap_error==B::hash_provider_failure||
       d.allocation_error==A::hash_failure||d.directory_error==D::hash_failure||d.inventory_error==I::hash_failure)return VE::crypto_failure;
-  if(d.source_error==R::lock_failure||d.source_error==R::invalid_device||d.source_error==R::invalid_request||
-      d.memory_source_error==M::lock_failure||d.memory_source_error==M::invalid_device||d.memory_source_error==M::invalid_request||
-      d.bootstrap_error==B::device_not_open||d.route_error!=T::none||
-      d.selection_error==C::encrypted_requires_authority||d.selection_error==C::cluster_requires_authority||
-      d.selection_error==C::invalid_backing||d.checkpoint_error==K::encrypted_requires_crypto_authority||
+  if(d.bootstrap_error==B::device_not_open||d.route_error!=T::none||
       d.allocation_error==A::cluster_requires_authority||d.allocation_error==A::invalid_workspace||
       d.directory_error==D::invalid_backing||d.inventory_error==I::encrypted_requires_crypto_authority||
       d.inventory_error==I::invalid_backing)return VE::source_failure;
@@ -133,11 +125,11 @@ NativeOpenVerificationResult NativeHostedDatabaseRuntime::VerifyStartupDatabaseF
   constexpr std::size_t root_slots=32;
   const std::size_t roots_bytes=root_slots*sizeof(disk::FilespaceRootReference);
   const std::size_t slack=4*alignof(std::max_align_t);
-  if(!limits.selected.maximum_backing_bytes||!limits.selected.maximum_verification_image_bytes||
+  if(!limits.fixed_root.maximum_backing_bytes||!limits.fixed_root.maximum_verification_image_bytes||
       limits.map_backing_bytes<maximum_page||maximum_page>SIZE_MAX-roots_bytes-slack)return fail(VE::invalid_request,VS::none);
   const auto scratch=std::max(limits.map_backing_bytes,maximum_page+roots_bytes)+slack;
-  if(limits.selected.maximum_backing_bytes>SIZE_MAX-scratch)return fail(VE::invalid_request,VS::none);
-  const auto workspace=limits.selected.maximum_backing_bytes+scratch;
+  if(limits.fixed_root.maximum_backing_bytes>SIZE_MAX-scratch)return fail(VE::invalid_request,VS::none);
+  const auto workspace=limits.fixed_root.maximum_backing_bytes+scratch;
   for(const auto& policy:read.verification_policies_.bodies)
     if(policy.maximum_work_bytes<workspace||policy.maximum_scan_pages<files.size()+1)return fail(VE::policy_refused,VS::none);
   const auto& config=*read.configuration_.configuration;
@@ -163,8 +155,8 @@ NativeOpenVerificationResult NativeHostedDatabaseRuntime::VerifyStartupDatabaseF
   // header. No checkpoint, selector, watermark or horizon page is read; the
   // horizons are checked against the counters the first transaction-state
   // page stores.
-  const db::NativeFixedRootMemoryLimits fixed_limits{limits.selected.maximum_verification_image_bytes,
-      limits.selected.maximum_backing_bytes};
+  const db::NativeFixedRootMemoryLimits fixed_limits{limits.fixed_root.maximum_verification_image_bytes,
+      limits.fixed_root.maximum_backing_bytes};
   const auto same_source=[&](const db::NativeFixedRootIdentity& id){
     return read.page_zero_anchor_&&id==*read.page_zero_anchor_&&
         SameReadSource(db::NativeReadSourceIdentityFromFixedRoot(id),genesis);
@@ -278,7 +270,7 @@ NativeOpenVerificationResult NativeHostedDatabaseRuntime::VerifyStartupDatabaseF
         if(cancelled()){error=VE::cancelled;return;}
         ++scan.filespaces;
         const auto chain=db::NativeAllocationLeaseReader::Read(lease,member.bootstrap.filespace_uuid,
-            limits.selected.maximum_verification_image_bytes,maps.workspace);
+            limits.fixed_root.maximum_verification_image_bytes,maps.workspace);
         if(!chain.ok()){error=ChainRefusal(chain);return;}
         const auto coverage=api::CheckNativeStartupCatalogAllocation(read.catalog_capture_,chain.chain);
         if(!coverage.ok()){error=VE::finding;return;}
@@ -391,7 +383,7 @@ NativeOpenVerificationResult NativeHostedDatabaseRuntime::VerifyStartupDatabaseF
             allocated->creator_local_transaction_id!=creator.local_id.value){error=VE::finding;return;}
         allocations[i]=*allocated;
       }
-      const auto image_limit=limits.selected.maximum_verification_image_bytes;
+      const auto image_limit=limits.fixed_root.maximum_verification_image_bytes;
       const auto retained=lease.retained_image_bytes();
       if(retained>image_limit||additional_bytes>image_limit-retained){error=VE::invalid_request;return;}
       source.lease.Reset();

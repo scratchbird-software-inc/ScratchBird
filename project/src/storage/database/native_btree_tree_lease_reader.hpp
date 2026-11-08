@@ -11,12 +11,6 @@ namespace scratchbird::storage::database {
 class NativeCatalogRelationLeaseReader;
 class NativeBtreeTreeLeaseReader {
  public:
-  static NativeBtreeTreeReadResult Read(const NativeSelectedCheckpointMemoryLease& lease,
-      const disk::NativePageReference& root,const page::NativeBtreeDependencies& dependencies,
-      NativeBtreeTreePreparedMemory& backing,
-      std::size_t image_limit=std::numeric_limits<std::size_t>::max()) noexcept {
-    return ReadWith(detail::NativeLeaseSourceAccess::From(lease),root,dependencies,backing,image_limit);
-  }
   // SB_NATIVE_FIXED_ROOT_READ: the same read from page zero's fixed roots.
   static NativeBtreeTreeReadResult Read(const NativeFixedRootMemoryLease& lease,
       const disk::NativePageReference& root,const page::NativeBtreeDependencies& dependencies,

@@ -23,11 +23,6 @@ inline std::optional<storage::page::NativeAllocationRecord> FindNativeStartupPag
   }
   return found;
 }
-inline std::optional<storage::page::NativeAllocationRecord> FindNativeStartupRootAllocation(
-    const storage::database::NativeReadAllocationChain& chain,
-    const storage::database::NativeCheckpointRootReference& root) noexcept {
-  return FindNativeStartupPageAllocation(chain,root.page,root.page_type,root.object_uuid);
-}
 // SB_NATIVE_FIXED_ROOT_READ: a root page zero names.
 inline std::optional<storage::page::NativeAllocationRecord> FindNativeStartupRootAllocation(
     const storage::database::NativeReadAllocationChain& chain,const storage::disk::FilespaceRootReference& root) noexcept {

@@ -1273,17 +1273,6 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   # behaviour changes.
   target_link_libraries(sbsql_sblr_alignment_native_storage_components PRIVATE
     sb_core_catalog_dispatcher_objects)
-  add_executable(sbsql_sblr_alignment_catalog_metric_retention_staging catalog_metric_retention_staging_test.cpp)
-  target_compile_features(sbsql_sblr_alignment_catalog_metric_retention_staging PRIVATE cxx_std_23)
-  target_link_libraries(sbsql_sblr_alignment_catalog_metric_retention_staging PRIVATE sb_storage_database OpenSSL::Crypto)
-  target_link_options(sbsql_sblr_alignment_catalog_metric_retention_staging PRIVATE
-    -Wl,--wrap=_ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv
-    -Wl,--wrap=RAND_bytes -Wl,--wrap=EVP_Digest -Wl,--wrap=EVP_MD_CTX_new
-    -Wl,--wrap=EVP_DigestInit_ex -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex
-    -Wl,--wrap=pread -Wl,--wrap=pwrite -Wl,--wrap=fsync)
-  add_test(NAME sbsql_sblr_alignment_catalog_metric_retention_staging COMMAND sbsql_sblr_alignment_catalog_metric_retention_staging)
-  set_tests_properties(sbsql_sblr_alignment_catalog_metric_retention_staging PROPERTIES
-    LABELS "sbsql_sblr_alignment;IA-12;native_policy;actual_staging;binary_UUID;not_SQL_E2E" TIMEOUT 120)
   add_executable(sbsql_sblr_alignment_native_creation_workspace native_creation_workspace_test.cpp)
   # Owner Q12 = 1 (drift removal R3c): create recovery and its test
   # (native_creation_workspace_recovery, 13 names) are removed; an interrupted
@@ -1347,112 +1336,12 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     COMMAND sbsql_sblr_alignment_filespace_page_zero --filespace-initialization-only)
   set_tests_properties(sbsql_sblr_alignment_native_filespace_initialization PROPERTIES
     LABELS "sbsql_sblr_alignment;native_allocation;actual_initialization;binary_UUID;not_SQL_E2E" TIMEOUT 120)
-  add_test(NAME sbsql_sblr_alignment_native_inventory_mixed_staging
-    COMMAND sbsql_sblr_alignment_filespace_page_zero --inventory-stage-mixed-only)
-  set_tests_properties(sbsql_sblr_alignment_native_inventory_mixed_staging PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_inventory;mixed_filespaces;actual_staging;binary_UUID;not_SQL_E2E" TIMEOUT 120)
-  add_test(NAME sbsql_sblr_alignment_native_inventory_successor_staging
-    COMMAND sbsql_sblr_alignment_filespace_page_zero --inventory-stage-only)
-  set_tests_properties(sbsql_sblr_alignment_native_inventory_successor_staging PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_inventory;actual_staging;binary_UUID;not_SQL_E2E"
-    TIMEOUT 900 RUN_SERIAL TRUE FIXTURES_REQUIRED native_inventory_staging_allocations)
-  foreach(inventory_allocation_shard RANGE 0 15)
-    add_test(NAME sbsql_sblr_alignment_native_inventory_successor_staging_allocations_${inventory_allocation_shard}
-      COMMAND sbsql_sblr_alignment_filespace_page_zero --inventory-stage-allocation-shard ${inventory_allocation_shard})
-    set_tests_properties(sbsql_sblr_alignment_native_inventory_successor_staging_allocations_${inventory_allocation_shard} PROPERTIES
-      LABELS "sbsql_sblr_alignment;native_inventory;actual_staging;binary_UUID;allocation_faults;not_SQL_E2E"
-      TIMEOUT 300 FIXTURES_SETUP native_inventory_staging_allocations)
-  endforeach()
-  add_test(NAME sbsql_sblr_alignment_native_btree_staging
-    COMMAND sbsql_sblr_alignment_filespace_page_zero --btree-stage-only)
-  set_tests_properties(sbsql_sblr_alignment_native_btree_staging PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_btree;actual_staging;binary_UUID;not_SQL_E2E" TIMEOUT 120 RUN_SERIAL TRUE)
+
   add_test(NAME sbsql_sblr_alignment_native_index_filespace_placement
     COMMAND sbsql_sblr_alignment_filespace_page_zero --index-placement-only)
   set_tests_properties(sbsql_sblr_alignment_native_index_filespace_placement PROPERTIES
     LABELS "sbsql_sblr_alignment;native_btree;actual_files;physical_memory;binary_UUID;not_SQL_E2E" TIMEOUT 600)
-  add_test(NAME sbsql_sblr_alignment_native_catalog_root_staging
-    COMMAND sbsql_sblr_alignment_filespace_page_zero --catalog-root-stage-only)
-  set_tests_properties(sbsql_sblr_alignment_native_catalog_root_staging PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_catalog;actual_staging;binary_UUID;not_SQL_E2E" TIMEOUT 120 RUN_SERIAL TRUE)
-  add_test(NAME sbsql_sblr_alignment_bound_checkpoint_selection
-    COMMAND sbsql_sblr_alignment_filespace_page_zero --bound-selector-only)
-  add_test(NAME sbsql_sblr_alignment_directory_selected_staging
-    COMMAND sbsql_sblr_alignment_filespace_page_zero --directory-stage-only)
-  set_tests_properties(sbsql_sblr_alignment_directory_selected_staging PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_directory;mixed_filespaces;actual_staging;binary_UUID;not_SQL_E2E" TIMEOUT 120)
-  add_test(NAME sbsql_sblr_alignment_directory_allocation_chains
-    COMMAND sbsql_sblr_alignment_filespace_page_zero --checkpoint-directory-allocation-only)
-  set_tests_properties(sbsql_sblr_alignment_directory_allocation_chains PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_directory;mixed_filespaces;actual_chain;binary_UUID;not_SQL_E2E" TIMEOUT 120)
-  add_test(NAME sbsql_sblr_alignment_directory_selected_controls
-    COMMAND sbsql_sblr_alignment_filespace_page_zero --directory-controls-only)
-  set_tests_properties(sbsql_sblr_alignment_directory_selected_controls PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_directory;mixed_filespaces;actual_binding;binary_UUID;not_SQL_E2E" TIMEOUT 120)
-  add_test(NAME sbsql_sblr_alignment_directory_immutable_control_graph
-    COMMAND sbsql_sblr_alignment_filespace_page_zero --directory-graph-only)
-  set_tests_properties(sbsql_sblr_alignment_directory_immutable_control_graph PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_directory;mixed_filespaces;immutable_graph;binary_UUID;not_SQL_E2E" TIMEOUT 120)
-  add_test(NAME sbsql_sblr_alignment_bound_checkpoint_history
-    COMMAND sbsql_sblr_alignment_filespace_page_zero --bound-history-only)
-  set_tests_properties(sbsql_sblr_alignment_bound_checkpoint_history PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_checkpoint_selection;actual_binding;binary_UUID;not_SQL_E2E" TIMEOUT 120)
-  foreach(history_shard RANGE 0 7)
-    add_test(NAME sbsql_sblr_alignment_bound_checkpoint_history_faults_${history_shard}
-      COMMAND sbsql_sblr_alignment_filespace_page_zero --bound-history-shard ${history_shard})
-    set_tests_properties(sbsql_sblr_alignment_bound_checkpoint_history_faults_${history_shard} PROPERTIES
-      LABELS "sbsql_sblr_alignment;native_checkpoint_selection;actual_binding;binary_UUID;fault_injection;not_SQL_E2E" TIMEOUT 120)
-  endforeach()
-  add_test(NAME sbsql_sblr_alignment_checkpoint_operation_lineage
-    COMMAND sbsql_sblr_alignment_filespace_page_zero --checkpoint-owner-only)
-  set_tests_properties(sbsql_sblr_alignment_checkpoint_operation_lineage PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_checkpoint;binary_UUID;operation_lineage;not_SQL_E2E" TIMEOUT 120)
-  set_tests_properties(sbsql_sblr_alignment_bound_checkpoint_selection PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_checkpoint_selection;actual_binding;binary_UUID;not_SQL_E2E" TIMEOUT 120)
-  add_test(NAME sbsql_sblr_alignment_native_catalog_version_staging
-    COMMAND sbsql_sblr_alignment_filespace_page_zero --catalog-version-stage-only)
-  set_tests_properties(sbsql_sblr_alignment_native_catalog_version_staging PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_catalog;actual_staging;binary_UUID;not_SQL_E2E" TIMEOUT 120)
-  add_test(NAME sbsql_sblr_alignment_catalog_metric_series_staging
-    COMMAND sbsql_sblr_alignment_filespace_page_zero --catalog-metric-series-stage-only)
-  set_tests_properties(sbsql_sblr_alignment_catalog_metric_series_staging PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_catalog;native_series;actual_staging;binary_UUID;not_SQL_E2E" TIMEOUT 120)
-  add_test(NAME sbsql_sblr_alignment_catalog_context_namespace_staging
-    COMMAND sbsql_sblr_alignment_filespace_page_zero --catalog-context-namespace-stage-only)
-  set_tests_properties(sbsql_sblr_alignment_catalog_context_namespace_staging PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_catalog;context_namespace;actual_staging;binary_UUID;not_SQL_E2E" TIMEOUT 120)
-  add_test(NAME sbsql_sblr_alignment_native_catalog_leaf_staging
-    COMMAND sbsql_sblr_alignment_filespace_page_zero --catalog-stage-only)
-  set_tests_properties(sbsql_sblr_alignment_native_catalog_leaf_staging PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_catalog;actual_staging;binary_UUID;not_SQL_E2E" TIMEOUT 120 RUN_SERIAL TRUE)
-  add_test(NAME sbsql_sblr_alignment_native_row_data_staging
-    COMMAND sbsql_sblr_alignment_filespace_page_zero --row-data-stage-only)
-  set_tests_properties(sbsql_sblr_alignment_native_row_data_staging PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_row;actual_staging;binary_UUID;not_SQL_E2E" TIMEOUT 120 RUN_SERIAL TRUE)
-  add_test(NAME sbsql_sblr_alignment_checkpoint_horizon
-    COMMAND sbsql_sblr_alignment_filespace_page_zero --checkpoint-horizon-only)
-  set_tests_properties(sbsql_sblr_alignment_checkpoint_horizon PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_horizon;checkpoint;binary_UUID;not_SQL_E2E" TIMEOUT 120)
-  add_test(NAME sbsql_sblr_alignment_checkpoint_system_state
-    COMMAND sbsql_sblr_alignment_filespace_page_zero --checkpoint-system-only)
-  set_tests_properties(sbsql_sblr_alignment_checkpoint_system_state PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_system_state;checkpoint;binary_UUID;not_SQL_E2E" TIMEOUT 120)
-  add_test(NAME sbsql_sblr_alignment_checkpoint_directory
-    COMMAND sbsql_sblr_alignment_filespace_page_zero --checkpoint-directory-only)
-  add_test(NAME sbsql_sblr_alignment_directory_allocation_binding
-    COMMAND sbsql_sblr_alignment_filespace_page_zero --directory-allocation-only)
-  set_tests_properties(sbsql_sblr_alignment_directory_allocation_binding PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_filespace_directory;binary_UUID;allocation_root;image_only;not_SQL_E2E" TIMEOUT 120)
-  set_tests_properties(sbsql_sblr_alignment_checkpoint_directory PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_filespace_directory;checkpoint;binary_UUID;not_SQL_E2E" TIMEOUT 120)
-  add_test(NAME sbsql_sblr_alignment_policy_roots
-    COMMAND sbsql_sblr_alignment_filespace_page_zero --policy-roots-only)
-  set_tests_properties(sbsql_sblr_alignment_policy_roots PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_policy_roots;checkpoint;binary_UUID;not_SQL_E2E" TIMEOUT 120)
-  add_test(NAME sbsql_sblr_alignment_checkpoint_allocation
-    COMMAND sbsql_sblr_alignment_filespace_page_zero --checkpoint-allocation-only)
-  set_tests_properties(sbsql_sblr_alignment_checkpoint_allocation PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_allocation;checkpoint;binary_UUID;not_SQL_E2E" TIMEOUT 120)
+
   target_compile_features(sbsql_sblr_alignment_filespace_page_zero PRIVATE cxx_std_23)
   target_link_libraries(sbsql_sblr_alignment_filespace_page_zero PRIVATE sb_storage_database OpenSSL::Crypto)
   target_link_options(sbsql_sblr_alignment_filespace_page_zero PRIVATE
@@ -10843,15 +10732,6 @@ set_tests_properties(sbsql_sblr_alignment_allocation_map_evidence PROPERTIES
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_executable(sbsql_sblr_alignment_native_allocation_map native_allocation_map_test.cpp)
-  add_executable(sbsql_sblr_alignment_native_inventory_publication_delta native_inventory_publication_delta_test.cpp)
-  target_compile_features(sbsql_sblr_alignment_native_inventory_publication_delta PRIVATE cxx_std_23)
-  target_link_libraries(sbsql_sblr_alignment_native_inventory_publication_delta PRIVATE sb_storage_database)
-  target_link_options(sbsql_sblr_alignment_native_inventory_publication_delta PRIVATE
-    -Wl,--wrap=EVP_Digest -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex
-    -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex)
-  add_test(NAME sbsql_sblr_alignment_native_inventory_publication_delta COMMAND sbsql_sblr_alignment_native_inventory_publication_delta)
-  set_tests_properties(sbsql_sblr_alignment_native_inventory_publication_delta PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_inventory_delta;image_only;not_SQL_E2E" TIMEOUT 120)
   add_executable(sbsql_sblr_alignment_native_filespace_directory native_filespace_directory_test.cpp)
   add_executable(sbsql_sblr_alignment_native_horizon_root native_horizon_root_test.cpp)
   add_executable(sbsql_sblr_alignment_transaction_horizon_state transaction_horizon_state_test.cpp)
@@ -10876,10 +10756,6 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   set_tests_properties(sbsql_sblr_alignment_native_horizon_root PROPERTIES
     LABELS "sbsql_sblr_alignment;native_horizon;binary_UUID;retained_chain;not_SQL_E2E" TIMEOUT 120)
   add_executable(sbsql_sblr_alignment_native_system_state native_system_state_test.cpp)
-  add_executable(sbsql_sblr_alignment_native_checkpoint_selection native_checkpoint_selection_test.cpp)
-  add_executable(sbsql_sblr_alignment_native_publication_watermark native_publication_watermark_test.cpp)
-  add_executable(sbsql_sblr_alignment_native_publication_plan native_publication_plan_test.cpp)
-  add_executable(sbsql_sblr_alignment_native_management_operation native_management_operation_test.cpp)
   add_executable(sbsql_sblr_alignment_native_startup_admission_evidence native_startup_admission_evidence_test.cpp)
   target_compile_features(sbsql_sblr_alignment_native_startup_admission_evidence PRIVATE cxx_std_23)
   target_include_directories(sbsql_sblr_alignment_native_startup_admission_evidence PRIVATE ${PROJECT_SOURCE_DIR}/src)
@@ -10887,132 +10763,41 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   add_test(NAME sbsql_sblr_alignment_native_startup_admission_evidence COMMAND sbsql_sblr_alignment_native_startup_admission_evidence)
   set_tests_properties(sbsql_sblr_alignment_native_startup_admission_evidence PROPERTIES
     LABELS "sbsql_sblr_alignment;native_startup_admission_evidence;durable_state;component_not_live_admission" TIMEOUT 120)
-  add_executable(sbsql_sblr_alignment_native_verification_operation native_verification_operation_test.cpp)
-  target_compile_features(sbsql_sblr_alignment_native_verification_operation PRIVATE cxx_std_23)
-  target_include_directories(sbsql_sblr_alignment_native_verification_operation PRIVATE ${PROJECT_SOURCE_DIR}/src)
-  target_link_libraries(sbsql_sblr_alignment_native_verification_operation PRIVATE sb_storage_database)
-  add_test(NAME sbsql_sblr_alignment_native_verification_operation COMMAND sbsql_sblr_alignment_native_verification_operation)
-  set_tests_properties(sbsql_sblr_alignment_native_verification_operation PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_verification;durable_state;component_not_live_admission" TIMEOUT 120)
-  add_executable(sbsql_sblr_alignment_native_management_extent native_management_extent_test.cpp)
-  add_executable(sbsql_sblr_alignment_native_management_install native_management_install_test.cpp)
-  add_executable(sbsql_sblr_alignment_native_management_history native_management_history_test.cpp)
-  add_executable(sbsql_sblr_alignment_native_management_control_allocation native_management_control_allocation_test.cpp)
-  add_executable(sbsql_sblr_alignment_native_management_control_bundle native_management_control_bundle_test.cpp)
-  add_executable(sbsql_sblr_alignment_native_management_control_authority native_management_control_authority_test.cpp)
-  target_compile_features(sbsql_sblr_alignment_native_management_control_authority PRIVATE cxx_std_23)
-  target_link_libraries(sbsql_sblr_alignment_native_management_control_authority PRIVATE sb_storage_database)
-  target_link_options(sbsql_sblr_alignment_native_management_control_authority PRIVATE
-    -Wl,--wrap=pwrite -Wl,--wrap=pread -Wl,--wrap=fsync
-    -Wl,--wrap=EVP_Digest -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex
-    -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex)
-  add_test(NAME sbsql_sblr_alignment_native_management_control_authority COMMAND sbsql_sblr_alignment_native_management_control_authority)
-  add_test(NAME sbsql_sblr_alignment_native_management_publication_recovery COMMAND sbsql_sblr_alignment_native_management_control_authority recovery)
-  add_test(NAME sbsql_sblr_alignment_native_metadata_publication_resolution COMMAND sbsql_sblr_alignment_native_management_control_authority resolution)
-  set_tests_properties(sbsql_sblr_alignment_native_metadata_publication_resolution PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_management_publication;actual_resolution;not_SQL_E2E" TIMEOUT 300)
   foreach(route RANGE 0 1)
     set(test_name "sbsql_sblr_alignment_native_metadata_resolution_faults_${route}")
-    add_test(NAME ${test_name} COMMAND sbsql_sblr_alignment_native_management_control_authority resolution-faults ${route})
-    set_tests_properties(${test_name} PROPERTIES
-      LABELS "sbsql_sblr_alignment;native_management_publication;actual_resolution;operational_fault;not_SQL_E2E" TIMEOUT 1800)
   endforeach()
   foreach(shard RANGE 0 7)
     set(test_name "sbsql_sblr_alignment_native_metadata_resolution_allocations_${shard}")
-    add_test(NAME ${test_name} COMMAND sbsql_sblr_alignment_native_management_control_authority resolution-faults 2 ${shard})
-    set_tests_properties(${test_name} PROPERTIES
-      LABELS "sbsql_sblr_alignment;native_management_publication;actual_resolution;allocation_fault;not_SQL_E2E" TIMEOUT 1800)
   endforeach()
-  set_tests_properties(sbsql_sblr_alignment_native_management_publication_recovery PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_management_publication;actual_recovery;not_SQL_E2E" TIMEOUT 300)
   foreach(route RANGE 0 1)
     set(test_name "sbsql_sblr_alignment_native_metadata_resolution_retry_faults_${route}")
-    add_test(NAME ${test_name} COMMAND sbsql_sblr_alignment_native_management_control_authority resolution-retry-faults ${route})
-    set_tests_properties(${test_name} PROPERTIES
-      LABELS "sbsql_sblr_alignment;native_management_publication;actual_resolution;operational_fault;not_SQL_E2E" TIMEOUT 1800)
   endforeach()
   foreach(shard RANGE 0 7)
     set(test_name "sbsql_sblr_alignment_native_metadata_resolution_retry_allocations_${shard}")
-    add_test(NAME ${test_name} COMMAND sbsql_sblr_alignment_native_management_control_authority resolution-retry-faults 2 ${shard})
-    set_tests_properties(${test_name} PROPERTIES
-      LABELS "sbsql_sblr_alignment;native_management_publication;actual_resolution;allocation_fault;not_SQL_E2E" TIMEOUT 1800)
   endforeach()
   foreach(route RANGE 0 1)
     set(test_name "sbsql_sblr_alignment_native_management_recovery_faults_${route}")
-    add_test(NAME ${test_name} COMMAND sbsql_sblr_alignment_native_management_control_authority recovery-faults ${route})
-    set_tests_properties(${test_name} PROPERTIES
-      LABELS "sbsql_sblr_alignment;native_management_publication;actual_recovery;operational_fault;not_SQL_E2E" TIMEOUT 1800)
   endforeach()
   foreach(shard RANGE 0 7)
     set(test_name "sbsql_sblr_alignment_native_management_recovery_allocations_${shard}")
-    add_test(NAME ${test_name} COMMAND sbsql_sblr_alignment_native_management_control_authority recovery-faults 2 ${shard})
-    set_tests_properties(${test_name} PROPERTIES
-      LABELS "sbsql_sblr_alignment;native_management_publication;actual_recovery;allocation_fault;not_SQL_E2E" TIMEOUT 1800)
   endforeach()
   foreach(route RANGE 0 1)
     set(test_name "sbsql_sblr_alignment_native_management_publication_faults_${route}")
-    add_test(NAME ${test_name} COMMAND sbsql_sblr_alignment_native_management_control_authority publication-faults ${route})
-    set_tests_properties(${test_name} PROPERTIES
-      LABELS "sbsql_sblr_alignment;native_management_publication;actual_write;operational_fault;not_SQL_E2E" TIMEOUT 1800)
   endforeach()
   foreach(shard RANGE 0 7)
     set(test_name "sbsql_sblr_alignment_native_management_publication_allocations_${shard}")
-    add_test(NAME ${test_name} COMMAND sbsql_sblr_alignment_native_management_control_authority publication-faults 2 ${shard})
-    set_tests_properties(${test_name} PROPERTIES
-      LABELS "sbsql_sblr_alignment;native_management_publication;actual_write;allocation_fault;not_SQL_E2E" TIMEOUT 1800)
   endforeach()
-  set_tests_properties(sbsql_sblr_alignment_native_management_control_authority PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_management_control_authority;binary_UUID;actual_read;not_SQL_E2E" TIMEOUT 300)
   foreach(route RANGE 0 4)
     set(test_name "sbsql_sblr_alignment_native_management_control_authority_faults_${route}")
-    add_test(NAME ${test_name} COMMAND sbsql_sblr_alignment_native_management_control_authority faults ${route})
-    set_tests_properties(${test_name} PROPERTIES
-      LABELS "sbsql_sblr_alignment;native_management_control_authority;operational_fault;not_SQL_E2E" TIMEOUT 900)
     foreach(shard RANGE 0 3)
       set(test_name "sbsql_sblr_alignment_native_management_control_authority_allocations_${route}_${shard}")
-      add_test(NAME ${test_name} COMMAND sbsql_sblr_alignment_native_management_control_authority allocations ${route} ${shard})
-      set_tests_properties(${test_name} PROPERTIES
-        LABELS "sbsql_sblr_alignment;native_management_control_authority;allocation_fault;not_SQL_E2E" TIMEOUT 1800)
     endforeach()
   endforeach()
-  add_executable(sbsql_sblr_alignment_native_management_control_install native_management_control_install_test.cpp)
-  target_compile_features(sbsql_sblr_alignment_native_management_control_install PRIVATE cxx_std_23)
-  target_link_libraries(sbsql_sblr_alignment_native_management_control_install PRIVATE sb_storage_database)
-  target_link_options(sbsql_sblr_alignment_native_management_control_install PRIVATE
-    -Wl,--wrap=pwrite -Wl,--wrap=pread -Wl,--wrap=fsync
-    -Wl,--wrap=EVP_Digest -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex
-    -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex)
-  add_test(NAME sbsql_sblr_alignment_native_management_control_install COMMAND sbsql_sblr_alignment_native_management_control_install)
-  set_tests_properties(sbsql_sblr_alignment_native_management_control_install PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_management_control_install;binary_UUID;actual_write;not_SQL_E2E" TIMEOUT 300)
   foreach(mode allocations cold-allocations)
     foreach(shard RANGE 0 3)
       set(test_name "sbsql_sblr_alignment_native_management_control_install_${mode}_${shard}")
-      add_test(NAME ${test_name} COMMAND sbsql_sblr_alignment_native_management_control_install ${mode} ${shard})
-      set_tests_properties(${test_name} PROPERTIES
-        LABELS "sbsql_sblr_alignment;native_management_control_install;allocation_fault;not_SQL_E2E" TIMEOUT 900)
     endforeach()
   endforeach()
-  target_compile_features(sbsql_sblr_alignment_native_management_control_bundle PRIVATE cxx_std_23)
-  target_link_libraries(sbsql_sblr_alignment_native_management_control_bundle PRIVATE sb_storage_database)
-  target_link_options(sbsql_sblr_alignment_native_management_control_bundle PRIVATE
-    -Wl,--wrap=pread -Wl,--wrap=pwrite -Wl,--wrap=fsync -Wl,--wrap=RAND_bytes -Wl,--wrap=posix_fallocate
-    -Wl,--wrap=_ZN11scratchbird4core4time26ReadLocalNodeClockSnapshotEv
-    -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex
-    -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex -Wl,--wrap=EVP_Digest)
-  add_test(NAME sbsql_sblr_alignment_native_management_control_bundle COMMAND sbsql_sblr_alignment_native_management_control_bundle)
-  add_test(NAME sbsql_sblr_alignment_owned_native_inventory_publication
-    COMMAND sbsql_sblr_alignment_native_management_control_bundle --owned-inventory-publication)
-  set_tests_properties(sbsql_sblr_alignment_owned_native_inventory_publication PROPERTIES
-    LABELS "sbsql_sblr_alignment;owned_native_inventory;binary_UUID;actual_write;not_SQL_E2E" TIMEOUT 600)
-  add_test(NAME sbsql_sblr_alignment_owned_native_inventory_mixed
-    COMMAND sbsql_sblr_alignment_native_management_control_bundle --owned-inventory-mixed)
-  set_tests_properties(sbsql_sblr_alignment_owned_native_inventory_mixed PROPERTIES
-    LABELS "sbsql_sblr_alignment;owned_native_inventory;mixed_filespaces;actual_write;not_SQL_E2E" TIMEOUT 600)
-  add_test(NAME sbsql_sblr_alignment_owned_native_inventory_placement
-    COMMAND sbsql_sblr_alignment_native_management_control_bundle --owned-inventory-placement)
-  set_tests_properties(sbsql_sblr_alignment_owned_native_inventory_placement PROPERTIES
-    LABELS "sbsql_sblr_alignment;owned_native_inventory;binary_UUID;actual_write;not_SQL_E2E" TIMEOUT 300)
   foreach(route RANGE 0 3)
     set(owned_inventory_last_shard 0)
     if(route EQUAL 1)
@@ -11020,43 +10805,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
     elseif(route EQUAL 2)
       set(owned_inventory_last_shard 31)
     endif()
-    foreach(shard RANGE 0 ${owned_inventory_last_shard})
-      add_test(NAME sbsql_sblr_alignment_owned_native_inventory_faults_${route}_${shard}
-        COMMAND sbsql_sblr_alignment_native_management_control_bundle --owned-inventory-faults ${route} ${shard})
-      set_tests_properties(sbsql_sblr_alignment_owned_native_inventory_faults_${route}_${shard} PROPERTIES
-        LABELS "sbsql_sblr_alignment;owned_native_inventory_faults;actual_write;not_SQL_E2E" TIMEOUT 600)
-    endforeach()
   endforeach()
-  add_test(NAME sbsql_sblr_alignment_native_directory_control_bundle
-    COMMAND sbsql_sblr_alignment_native_management_control_bundle --directory-bundle)
-  set_tests_properties(sbsql_sblr_alignment_native_directory_control_bundle PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_directory_bundle;mixed_filespaces;binary_UUID;actual_read;not_SQL_E2E" TIMEOUT 300)
-  set_tests_properties(sbsql_sblr_alignment_native_management_control_bundle PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_management_control_bundle;binary_UUID;actual_read;not_SQL_E2E" TIMEOUT 300)
-  add_test(NAME sbsql_sblr_alignment_native_inventory_publication
-    COMMAND sbsql_sblr_alignment_native_management_control_bundle --inventory-publication)
-  set_tests_properties(sbsql_sblr_alignment_native_inventory_publication PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_inventory_publication;binary_UUID;actual_write;not_SQL_E2E" TIMEOUT 300)
-  add_test(NAME sbsql_sblr_alignment_native_inventory_publication_read_only
-    COMMAND sbsql_sblr_alignment_native_management_control_bundle --inventory-publication-read-only)
-  set_tests_properties(sbsql_sblr_alignment_native_inventory_publication_read_only PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_inventory_publication;read_only_transaction;binary_UUID;actual_write;not_SQL_E2E" TIMEOUT 300)
-  add_test(NAME sbsql_sblr_alignment_native_inventory_publication_mixed
-    COMMAND sbsql_sblr_alignment_native_management_control_bundle --inventory-publication-mixed)
-  set_tests_properties(sbsql_sblr_alignment_native_inventory_publication_mixed PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_inventory_publication;mixed_filespace;actual_write;not_SQL_E2E" TIMEOUT 300)
-  add_test(NAME sbsql_sblr_alignment_native_inventory_resolution
-    COMMAND sbsql_sblr_alignment_native_management_control_bundle --inventory-resolution)
-  set_tests_properties(sbsql_sblr_alignment_native_inventory_resolution PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_inventory_publication;pending_resolution;actual_write;not_SQL_E2E" TIMEOUT 300)
-  add_test(NAME sbsql_sblr_alignment_native_inventory_resolution_requests
-    COMMAND sbsql_sblr_alignment_native_management_control_bundle --inventory-resolution-requests)
-  set_tests_properties(sbsql_sblr_alignment_native_inventory_resolution_requests PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_inventory_publication;pending_resolution;request_CAS;not_SQL_E2E" TIMEOUT 300)
-  add_test(NAME sbsql_sblr_alignment_native_inventory_staging_admission
-    COMMAND sbsql_sblr_alignment_native_management_control_bundle --inventory-staging-admission)
-  set_tests_properties(sbsql_sblr_alignment_native_inventory_staging_admission PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_inventory_publication;staging_admission;not_SQL_E2E" TIMEOUT 300)
   foreach(inventory_consumer RANGE 0 1)
     foreach(consumer_fault RANGE 0 2)
       if(consumer_fault EQUAL 2)
@@ -11066,18 +10815,8 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
       else()
         set(consumer_last_shard 7)
       endif()
-      foreach(consumer_shard RANGE 0 ${consumer_last_shard})
-        add_test(NAME sbsql_sblr_alignment_native_inventory_consumer_faults_${inventory_consumer}_${consumer_fault}_${consumer_shard}
-          COMMAND sbsql_sblr_alignment_native_management_control_bundle --inventory-consumer-faults ${inventory_consumer} ${consumer_fault} ${consumer_shard})
-        set_tests_properties(sbsql_sblr_alignment_native_inventory_consumer_faults_${inventory_consumer}_${consumer_fault}_${consumer_shard} PROPERTIES
-          LABELS "sbsql_sblr_alignment;native_inventory_publication;allocation_authority;backend_faults;not_SQL_E2E" TIMEOUT 300)
-      endforeach()
     endforeach()
   endforeach()
-  add_test(NAME sbsql_sblr_alignment_native_inventory_publication_cold
-    COMMAND sbsql_sblr_alignment_native_management_control_bundle --inventory-publication-cold)
-  set_tests_properties(sbsql_sblr_alignment_native_inventory_publication_cold PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_inventory_publication;cold_recovery;not_SQL_E2E" TIMEOUT 300)
   foreach(inventory_stage RANGE 0 1)
     foreach(inventory_fault RANGE 0 3)
       if(inventory_fault EQUAL 2)
@@ -11091,12 +10830,6 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
       else()
         set(inventory_last_shard 0)
       endif()
-      foreach(inventory_shard RANGE 0 ${inventory_last_shard})
-        add_test(NAME sbsql_sblr_alignment_native_inventory_install_faults_${inventory_stage}_${inventory_fault}_${inventory_shard}
-          COMMAND sbsql_sblr_alignment_native_management_control_bundle --inventory-install-faults ${inventory_stage} ${inventory_fault} ${inventory_shard})
-        set_tests_properties(sbsql_sblr_alignment_native_inventory_install_faults_${inventory_stage}_${inventory_fault}_${inventory_shard} PROPERTIES
-          LABELS "sbsql_sblr_alignment;native_inventory_publication;failure_injection;not_SQL_E2E" TIMEOUT 300)
-      endforeach()
     endforeach()
   endforeach()
   foreach(inventory_stage RANGE 0 1)
@@ -11112,12 +10845,6 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
       else()
         set(inventory_last_shard 0)
       endif()
-      foreach(inventory_shard RANGE 0 ${inventory_last_shard})
-        add_test(NAME sbsql_sblr_alignment_native_inventory_reconstruction_faults_${inventory_stage}_${inventory_fault}_${inventory_shard}
-          COMMAND sbsql_sblr_alignment_native_management_control_bundle --inventory-reconstruction-faults ${inventory_stage} ${inventory_fault} ${inventory_shard})
-        set_tests_properties(sbsql_sblr_alignment_native_inventory_reconstruction_faults_${inventory_stage}_${inventory_fault}_${inventory_shard} PROPERTIES
-          LABELS "sbsql_sblr_alignment;native_inventory_publication;cold_recovery;failure_injection;not_SQL_E2E" TIMEOUT 300)
-      endforeach()
     endforeach()
   endforeach()
   foreach(inventory_stage RANGE 0 1)
@@ -11133,125 +10860,10 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
       else()
         set(inventory_last_shard 0)
       endif()
-      foreach(inventory_shard RANGE 0 ${inventory_last_shard})
-        add_test(NAME sbsql_sblr_alignment_native_inventory_resolution_faults_${inventory_stage}_${inventory_fault}_${inventory_shard}
-          COMMAND sbsql_sblr_alignment_native_management_control_bundle --inventory-resolution-faults ${inventory_stage} ${inventory_fault} ${inventory_shard})
-        set_tests_properties(sbsql_sblr_alignment_native_inventory_resolution_faults_${inventory_stage}_${inventory_fault}_${inventory_shard} PROPERTIES
-          LABELS "sbsql_sblr_alignment;native_inventory_publication;pending_resolution;failure_injection;not_SQL_E2E" TIMEOUT 300)
-      endforeach()
     endforeach()
   endforeach()
-  foreach(inventory_route RANGE 0 1)
-    foreach(inventory_shard RANGE 0 3)
-      add_test(NAME sbsql_sblr_alignment_native_inventory_history_allocations_${inventory_route}_${inventory_shard}
-        COMMAND sbsql_sblr_alignment_native_management_control_bundle --inventory-reader-allocations ${inventory_route} ${inventory_shard})
-      set_tests_properties(sbsql_sblr_alignment_native_inventory_history_allocations_${inventory_route}_${inventory_shard} PROPERTIES
-        LABELS "sbsql_sblr_alignment;native_management_control_bundle;inventory_history;allocation_fault;not_SQL_E2E" TIMEOUT 300)
-    endforeach()
-  endforeach()
-  target_compile_features(sbsql_sblr_alignment_native_management_control_allocation PRIVATE cxx_std_23)
-  target_link_libraries(sbsql_sblr_alignment_native_management_control_allocation PRIVATE sb_storage_database)
-  target_link_options(sbsql_sblr_alignment_native_management_control_allocation PRIVATE
-    -Wl,--wrap=pread -Wl,--wrap=pwrite -Wl,--wrap=fsync
-    -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex
-    -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex -Wl,--wrap=EVP_Digest)
-  add_test(NAME sbsql_sblr_alignment_native_management_control_allocation COMMAND sbsql_sblr_alignment_native_management_control_allocation)
-  set_tests_properties(sbsql_sblr_alignment_native_management_control_allocation PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_management_control_allocation;binary_UUID;image_delta;not_SQL_E2E" TIMEOUT 300)
-  target_compile_features(sbsql_sblr_alignment_native_management_history PRIVATE cxx_std_23)
-  target_link_libraries(sbsql_sblr_alignment_native_management_history PRIVATE sb_storage_database)
-  target_link_options(sbsql_sblr_alignment_native_management_history PRIVATE
-    -Wl,--wrap=pread -Wl,--wrap=pwrite -Wl,--wrap=fsync
-    -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex
-    -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex -Wl,--wrap=EVP_Digest)
-  add_test(NAME sbsql_sblr_alignment_native_management_history COMMAND sbsql_sblr_alignment_native_management_history)
-  set_tests_properties(sbsql_sblr_alignment_native_management_history PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_management_history;binary_UUID;actual_read;not_SQL_E2E" TIMEOUT 300)
-  foreach(shard RANGE 0 3)
-    add_test(NAME sbsql_sblr_alignment_native_management_history_allocations_${shard}
-      COMMAND sbsql_sblr_alignment_native_management_history --allocations ${shard})
-    set_tests_properties(sbsql_sblr_alignment_native_management_history_allocations_${shard} PROPERTIES
-      LABELS "sbsql_sblr_alignment;native_management_history;allocation_faults;not_SQL_E2E" TIMEOUT 300)
-  endforeach()
-  target_compile_features(sbsql_sblr_alignment_native_management_install PRIVATE cxx_std_23)
-  target_link_libraries(sbsql_sblr_alignment_native_management_install PRIVATE sb_storage_database)
-  target_link_options(sbsql_sblr_alignment_native_management_install PRIVATE
-    -Wl,--wrap=pread -Wl,--wrap=pwrite -Wl,--wrap=fsync
-    -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex
-    -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex -Wl,--wrap=EVP_Digest)
-  add_test(NAME sbsql_sblr_alignment_native_management_install COMMAND sbsql_sblr_alignment_native_management_install)
-  set_tests_properties(sbsql_sblr_alignment_native_management_install PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_management_install;binary_UUID;actual_files;fault;not_SQL_E2E" TIMEOUT 180)
-  target_compile_features(sbsql_sblr_alignment_native_management_extent PRIVATE cxx_std_23)
-  target_link_libraries(sbsql_sblr_alignment_native_management_extent PRIVATE sb_storage_database)
-  target_link_options(sbsql_sblr_alignment_native_management_extent PRIVATE
-    -Wl,--wrap=pread -Wl,--wrap=pwrite -Wl,--wrap=fsync
-    -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex
-    -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex -Wl,--wrap=EVP_Digest)
-  add_test(NAME sbsql_sblr_alignment_native_management_extent COMMAND sbsql_sblr_alignment_native_management_extent)
-  set_tests_properties(sbsql_sblr_alignment_native_management_extent PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_management_extent;binary_UUID;actual_read;not_SQL_E2E" TIMEOUT 120)
-  target_compile_features(sbsql_sblr_alignment_native_management_operation PRIVATE cxx_std_23)
-  target_link_libraries(sbsql_sblr_alignment_native_management_operation PRIVATE sb_storage_database)
-  target_link_options(sbsql_sblr_alignment_native_management_operation PRIVATE
-    -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex
-    -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex -Wl,--wrap=EVP_Digest)
-  add_test(NAME sbsql_sblr_alignment_native_management_operation COMMAND sbsql_sblr_alignment_native_management_operation)
-  set_tests_properties(sbsql_sblr_alignment_native_management_operation PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_management_operation;binary_UUID;record_codec;not_SQL_E2E" TIMEOUT 120)
-  target_compile_features(sbsql_sblr_alignment_native_publication_plan PRIVATE cxx_std_23)
-  target_link_libraries(sbsql_sblr_alignment_native_publication_plan PRIVATE sb_storage_database)
-  target_link_options(sbsql_sblr_alignment_native_publication_plan PRIVATE
-    -Wl,--wrap=pread -Wl,--wrap=pwrite -Wl,--wrap=fsync
-    -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex
-    -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex -Wl,--wrap=EVP_Digest)
-  add_test(NAME sbsql_sblr_alignment_native_publication_plan COMMAND sbsql_sblr_alignment_native_publication_plan)
-  set_tests_properties(sbsql_sblr_alignment_native_publication_plan PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_publication_plan;binary_UUID;actual_files;fault;not_SQL_E2E" TIMEOUT 180)
-  foreach(shard RANGE 0 3)
-    add_test(NAME sbsql_sblr_alignment_native_publication_plan_allocations_${shard}
-      COMMAND sbsql_sblr_alignment_native_publication_plan --allocations ${shard})
-    set_tests_properties(sbsql_sblr_alignment_native_publication_plan_allocations_${shard} PROPERTIES
-      LABELS "sbsql_sblr_alignment;native_publication_plan;allocation_faults;not_SQL_E2E" TIMEOUT 180)
-  endforeach()
-  add_executable(sbsql_sblr_alignment_native_publication_coordinator native_publication_coordinator_test.cpp)
-  target_compile_features(sbsql_sblr_alignment_native_publication_coordinator PRIVATE cxx_std_23)
-  target_link_libraries(sbsql_sblr_alignment_native_publication_coordinator PRIVATE sb_storage_database)
-  target_link_options(sbsql_sblr_alignment_native_publication_coordinator PRIVATE
-    -Wl,--wrap=pwrite -Wl,--wrap=pread -Wl,--wrap=fsync -Wl,--wrap=EVP_Digest
-    -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex
-    -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex)
-  add_test(NAME sbsql_sblr_alignment_native_publication_coordinator
-    COMMAND sbsql_sblr_alignment_native_publication_coordinator)
-  set_tests_properties(sbsql_sblr_alignment_native_publication_coordinator PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_publication;actual_files;fault;not_SQL_E2E" TIMEOUT 180)
-  foreach(shard RANGE 0 3)
-    add_test(NAME sbsql_sblr_alignment_native_publication_coordinator_allocations_${shard}
-      COMMAND sbsql_sblr_alignment_native_publication_coordinator --allocations ${shard})
-    set_tests_properties(sbsql_sblr_alignment_native_publication_coordinator_allocations_${shard} PROPERTIES
-      LABELS "sbsql_sblr_alignment;native_publication;allocation_faults;not_SQL_E2E" TIMEOUT 180)
-    foreach(mode recover_first recover_second recover_stable reserve_intent resume_intent)
-      add_test(NAME sbsql_sblr_alignment_native_publication_coordinator_allocations_${shard}_${mode}
-        COMMAND sbsql_sblr_alignment_native_publication_coordinator --allocations ${shard} ${mode})
-      set_tests_properties(sbsql_sblr_alignment_native_publication_coordinator_allocations_${shard}_${mode} PROPERTIES
-        LABELS "sbsql_sblr_alignment;native_publication;allocation_faults;not_SQL_E2E" TIMEOUT 180)
-    endforeach()
-  endforeach()
-  target_compile_features(sbsql_sblr_alignment_native_publication_watermark PRIVATE cxx_std_23)
-  target_link_libraries(sbsql_sblr_alignment_native_publication_watermark PRIVATE sb_storage_database)
-  target_link_options(sbsql_sblr_alignment_native_publication_watermark PRIVATE
-    -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex
-    -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex -Wl,--wrap=EVP_Digest)
-  add_test(NAME sbsql_sblr_alignment_native_publication_watermark
-    COMMAND sbsql_sblr_alignment_native_publication_watermark)
-  set_tests_properties(sbsql_sblr_alignment_native_publication_watermark PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_publication_watermark;binary_UUID;image_only;not_SQL_E2E" TIMEOUT 120)
-  target_compile_features(sbsql_sblr_alignment_native_checkpoint_selection PRIVATE cxx_std_23)
-  target_link_libraries(sbsql_sblr_alignment_native_checkpoint_selection PRIVATE sb_storage_database)
-  target_link_options(sbsql_sblr_alignment_native_checkpoint_selection PRIVATE -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_DigestInit_ex -Wl,--wrap=EVP_DigestUpdate -Wl,--wrap=EVP_DigestFinal_ex)
-  add_test(NAME sbsql_sblr_alignment_native_checkpoint_selection COMMAND sbsql_sblr_alignment_native_checkpoint_selection)
-  set_tests_properties(sbsql_sblr_alignment_native_checkpoint_selection PROPERTIES
-    LABELS "sbsql_sblr_alignment;native_checkpoint_selection;binary_UUID;image_only;not_SQL_E2E" TIMEOUT 120)
+
+
   target_compile_features(sbsql_sblr_alignment_native_system_state PRIVATE cxx_std_23)
   target_link_libraries(sbsql_sblr_alignment_native_system_state PRIVATE sb_storage_database)
   target_link_options(sbsql_sblr_alignment_native_system_state PRIVATE -Wl,--wrap=pread -Wl,--wrap=EVP_MD_CTX_new)

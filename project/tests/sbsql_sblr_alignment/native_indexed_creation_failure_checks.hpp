@@ -44,8 +44,8 @@ void NativeIndexedCreationFailureChecks(unsigned shard,unsigned first_allocation
         db::NativeCreationWorkspaceError::io_failure;
     if(kind!=random_call&&refused.error!=expected)
       std::cerr<<"construction fault kind="<<kind<<" site="<<at<<" cause="
-          <<static_cast<unsigned>(refused.error)<<" selection="<<static_cast<unsigned>(refused.selection_error)
-          <<" checkpoint="<<static_cast<unsigned>(refused.checkpoint_error)<<'\n';
+          <<static_cast<unsigned>(refused.error)
+          <<'\n';
     Check(calls[kind]>=at&&!refused.ok()&&!refused.receipt,"every actual construction read/write/sync/random/hash failure prevents receipt");
     if(kind==read_call||kind==write_call||kind==sync_call)
       Check(refused.error==db::NativeCreationWorkspaceError::io_failure,
@@ -76,7 +76,7 @@ void NativeIndexedCreationFailureChecks(unsigned shard,unsigned first_allocation
     }else {
       if(result.error!=db::NativeCreationWorkspaceError::resource_exhausted)
         std::cerr<<"creation allocation site="<<at<<" error="<<static_cast<unsigned>(result.error)
-            <<" checkpoint="<<static_cast<unsigned>(result.checkpoint_error)<<'\n';
+            <<'\n';
       Check(!result.receipt&&result.error==db::NativeCreationWorkspaceError::resource_exhausted,
           "required construction allocation failure is a typed refusal, never a partial receipt");
     }

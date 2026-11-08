@@ -71,12 +71,12 @@ inline NativeStoragePolicyLookupResult Select(const core::platform::Uuid& databa
 // This grants no security, current attachment, resource, admission or I/O lease.
 inline NativeStoragePolicyLookupResult ReadNativeStorageActionPolicyFromOpenDevices(
     const core::platform::Uuid& database,const std::vector<disk::NativeFilespaceDevice>& devices,
-    const disk::FilespaceRootReference& checkpoint,u16 selector,u16 role,
+    const NativeCatalogSource& source,u16 selector,u16 role,
     const NativeCatalogRelationBinding& relation,
     const transaction::mga::TransactionIdentity& reader,const transaction::mga::PublishedSnapshotPin& pin,
     const NativeStoragePolicyLookupBinding& binding,u64 budget) noexcept {
   if(!budget||!native_storage_policy_detail::ValidBinding(database,binding))return {};
   return native_storage_policy_detail::Select(database,
-    ReadNativePinnedCatalogVersionsFromOpenDevices(database,devices,checkpoint,selector,role,relation,reader,pin,budget),binding);
+    ReadNativePinnedCatalogVersionsFromOpenDevices(database,devices,source,selector,role,relation,reader,pin,budget),binding);
 }
 } // namespace scratchbird::storage::database
