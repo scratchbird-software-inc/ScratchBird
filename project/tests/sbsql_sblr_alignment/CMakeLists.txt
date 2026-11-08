@@ -1522,6 +1522,38 @@ endif()
   set_tests_properties(sbsql_sblr_alignment_native_fixed_root_readers PROPERTIES
     LABELS "sbsql_sblr_alignment;native_storage;fixed_root;fault_injection"
     TIMEOUT 900)
+  # SB_NATIVE_FIXED_ROOT_READ: reader memory, image-budget and digest limits on
+  # the fixed-root source (drift removal R4b).
+  add_executable(sbsql_sblr_alignment_native_fixed_root_reader_limits native_fixed_root_reader_limits_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_native_fixed_root_reader_limits PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_native_fixed_root_reader_limits PRIVATE sb_storage_database)
+  target_compile_definitions(sbsql_sblr_alignment_native_fixed_root_reader_limits PRIVATE
+    SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password")
+  target_link_options(sbsql_sblr_alignment_native_fixed_root_reader_limits PRIVATE
+    "-Wl,--wrap=EVP_MD_CTX_new" "-Wl,--wrap=EVP_DigestInit_ex" "-Wl,--wrap=EVP_DigestUpdate"
+    "-Wl,--wrap=EVP_DigestFinal_ex" "-Wl,--wrap=EVP_Digest")
+  add_test(NAME sbsql_sblr_alignment_native_fixed_root_reader_limits COMMAND sbsql_sblr_alignment_native_fixed_root_reader_limits)
+  set_tests_properties(sbsql_sblr_alignment_native_fixed_root_reader_limits PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;fixed_root;memory"
+    TIMEOUT 600)
+  # Relation 2 is unindexed (every leaf is read), relation 4 is the next
+  # largest; their digest sites are split across more shards.
+  foreach(relation RANGE 1 6)
+    set(shards 1)
+    if(relation EQUAL 2)
+      set(shards 8)
+    elseif(relation EQUAL 4)
+      set(shards 2)
+    endif()
+    math(EXPR last "${shards} - 1")
+    foreach(shard RANGE 0 ${last})
+      add_test(NAME sbsql_sblr_alignment_native_fixed_root_reader_digest_${relation}_${shard}
+        COMMAND sbsql_sblr_alignment_native_fixed_root_reader_limits --digest-relation ${relation} ${shard} ${shards})
+      set_tests_properties(sbsql_sblr_alignment_native_fixed_root_reader_digest_${relation}_${shard} PROPERTIES
+        LABELS "sbsql_sblr_alignment;native_storage;fixed_root;fault_injection;digest"
+        TIMEOUT 600)
+    endforeach()
+  endforeach()
   # SB_NATIVE_FIXED_ROOT_READ: the hosted custody operation reads through the
   # fixed-root source (C3a).
   add_executable(sbsql_sblr_alignment_native_fixed_root_custody
