@@ -5,35 +5,25 @@
 #include "transaction_state_page.hpp"
 #include <memory_resource>
 namespace scratchbird::storage::page::detail {
-// Internal complete-source composition. All backing is already admitted and
-// input-disjoint; exact-device batches outlive every enclosing device fence.
-// This confers no memory, transaction, selection or retention authority.
-NativeInventoryChainDeviceRead ReadNativeInventoryChainBacked(
-    const core::platform::Uuid&,std::span<const disk::NativeFilespaceDevice>,
-    const disk::FilespaceRootReference&,u64,NativeInventoryChainReadContext,
-    const std::array<byte,32>*,std::span<const NativeInventoryHistoricalPageZero>,
-    std::span<disk::FileDevice::ReadLatencyBatch* const>,std::pmr::memory_resource&) noexcept;
-
-// SB_TRANSITIONAL_LEGACY_INVENTORY (owner 2026-11-05, Q8 = 2): while the
-// drift-layer tests still build SBTINV01 databases, the checkpoint-bound
-// readers accept both inventory formats through this one reader, so they
-// cannot disagree. `handled` is false when the head page is not an in-place
-// transaction-state page (family SBTIPW01); the caller then reads the SBTINV01
-// chain as before. Otherwise `read` is the in-place inventory, read and checked
-// read-only (transaction_inventory_reader.hpp), in the same chain-view shape:
-// one page view per state page, then one per header page, each with its own
-// common page header and the head's object identity (the inventory object).
-// An in-place inventory has no per-page generation or digest; each page
-// reports generation 1, the constructor's. A current read only: in-place pages
-// have no historical image. Backing comes from `resource`; nothing is written
-// and no lock is taken. `head_image`, when given, is a whole-page read of the
-// head made by the caller (the SBTINV01 reader's in_place_head_image); it
-// stands in for the probe, and the chain's own read of the head must equal
-// it byte for byte. A probe is likewise checked against that read, so every
-// byte this reader is handed or reads is verified. Deleted with the SBTINV01
-// chain.
+// The in-place transaction inventory (SB_COMPACT_TRANSACTION_STATE_PAGE,
+// SB_TRANSACTION_HEADER_PAGE), read and checked read-only
+// (transaction_inventory_reader.hpp) into the chain-view shape: one page view
+// per state page, then one per header page, each with its own common page
+// header and the head's object identity (the inventory object). An in-place
+// inventory has no per-page generation or digest; each page reports generation
+// 1, the constructor's. A current read only: in-place pages have no historical
+// image. Backing comes from `resource`; nothing is written and no lock is taken.
+// All backing is already admitted; exact-device batches outlive every enclosing
+// device fence. This confers no memory, transaction or retention authority.
+//
+// Every refusal is the reader's own. W4d-3 (2026-11-08): the SBTINV01 chain
+// reader that unplaceable heads were once left to is removed, so this reader
+// no longer hands anything on: unusable devices or batches are invalid_backing;
+// a root that is not kind 4 with the inventory page type, or that names no
+// supplied filespace or another page-size profile, is invalid_reference; a head
+// page that is not an in-place transaction-state page (family SBTIPW01) is
+// invalid_family.
 struct NativeInPlaceInventoryRead {
-  bool handled=false;
   NativeInventoryChainDeviceRead read;
   // The counters and horizons the first state page stores, present when the
   // read succeeds. read.chain.horizons are those projected from the entries.
@@ -42,6 +32,5 @@ struct NativeInPlaceInventoryRead {
 NativeInPlaceInventoryRead ReadNativeInPlaceInventoryBacked(
     const core::platform::Uuid&,std::span<const disk::NativeFilespaceDevice>,
     const disk::FilespaceRootReference&,u64 maximum_retained_image_bytes,
-    std::span<disk::FileDevice::ReadLatencyBatch* const>,std::pmr::memory_resource&,
-    std::span<const byte> head_image={}) noexcept;
+    std::span<disk::FileDevice::ReadLatencyBatch* const>,std::pmr::memory_resource&) noexcept;
 } // namespace scratchbird::storage::page::detail

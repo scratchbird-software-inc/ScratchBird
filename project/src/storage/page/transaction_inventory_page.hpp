@@ -34,15 +34,12 @@ using scratchbird::core::platform::u64;
 using scratchbird::transaction::mga::LocalTransactionHorizons;
 using scratchbird::transaction::mga::LocalTransactionInventory;
 
-// MGA-CANONICAL-INVENTORY-IMAGE-001. No prototype-header or fixed-page fallback.
-struct NativeTransactionInventoryPage {
-  scratchbird::storage::disk::NativeCommonPageHeader header;
-  scratchbird::core::platform::Uuid object_uuid;
-  u64 inventory_generation = 0;
-  std::optional<scratchbird::storage::disk::NativePageReference> previous;
-  std::optional<scratchbird::storage::disk::NativePageReference> next;
-  LocalTransactionInventory inventory;
-};
+// W4d-3 (2026-11-08): the SBTINV01 inventory image (MGA-CANONICAL-INVENTORY-IMAGE-001),
+// its codec and its chain readers are removed: nothing writes that family any more.
+// The transaction inventory is the in-place one (transaction_state_page.hpp,
+// transaction_header_page.hpp), read by transaction_inventory_reader.hpp into the
+// views below. The SBTIP003 page body further down belongs to the legacy server
+// path and is not part of this removal.
 struct NativeTransactionInventoryView {
   u64 next_local_transaction_id=1,next_commit_sequence=1;
   std::span<scratchbird::transaction::mga::TransactionInventoryEntry> entries;
@@ -59,13 +56,6 @@ struct NativeTransactionInventoryConstView {
   u64 next_local_transaction_id=1,next_commit_sequence=1;
   std::span<const scratchbird::transaction::mga::TransactionInventoryEntry> entries;
 };
-struct NativeTransactionInventoryPageConstView {
-  scratchbird::storage::disk::NativeCommonPageHeader header;
-  scratchbird::core::platform::Uuid object_uuid;
-  u64 inventory_generation=0;
-  std::optional<scratchbird::storage::disk::NativePageReference> previous,next;
-  NativeTransactionInventoryConstView inventory;
-};
 enum class NativeInventoryError {
   none, invalid_header, invalid_family, invalid_reference, invalid_inventory,
   invalid_integrity, hash_failure, resource_exhausted, invalid_filespace,
@@ -80,87 +70,10 @@ struct NativeInventoryViewValidation {
 // Common structural validation of a complete retained inventory, not page-chain
 // ordering, evolution, transaction outcome or selection authority. Scratch may
 // be reused after return; records are never sorted or mutated.
-NativeInventoryViewValidation ValidateNativeTransactionInventoryView(
-    const NativeTransactionInventoryView&,std::span<std::size_t> uniqueness_indices,
-    std::span<byte> duplicate_markers) noexcept;
 NativeInventoryViewValidation ValidateNativeTransactionInventoryConstView(
     const NativeTransactionInventoryConstView&,std::span<std::size_t> uniqueness_indices,
     std::span<byte> duplicate_markers) noexcept;
-// Complete successor consistency for retained inventories, not transaction,
-// retention, recovery or publication authority. Indices/markers need max(before,
-// after) slots; UUID indices need before.size() slots. Reuses only caller scratch
-// and never changes either record array. Read-only inputs may share storage;
-// writable scratch must be aligned and disjoint from both inputs/descriptors.
-NativeInventoryViewValidation ValidateNativeTransactionInventoryEvolutionView(
-    const NativeTransactionInventoryView& before,const NativeTransactionInventoryView& after,
-    std::span<std::size_t> indices,std::span<std::size_t> prior_uuid_indices,
-    std::span<byte> markers) noexcept;
-struct NativeTransactionInventoryPageResult {
-  NativeInventoryError error = NativeInventoryError::invalid_family;
-  std::optional<NativeTransactionInventoryPage> page;
-  std::vector<byte> bytes;
-  bool ok() const noexcept { return error == NativeInventoryError::none && page.has_value(); }
-};
-NativeTransactionInventoryPageResult EncodeNativeTransactionInventoryPage(
-    const NativeTransactionInventoryPage&) noexcept;
-struct NativeTransactionInventoryEncoding {
-  NativeInventoryError error=NativeInventoryError::invalid_family;
-  std::span<const byte> bytes;
-  bool ok() const noexcept{return error==NativeInventoryError::none&&!bytes.empty();}
-};
-// Immutable entries and no publication-CAS base. One index and marker per entry
-// are required, with no owning fallback. All descriptor/input/output/scratch
-// regions must be disjoint and native entries/indices aligned. Success borrows
-// exactly one output page; oversized output and scratch suffixes are untouched.
-// Validation/short backing leave output unchanged; scratch may change. Hash
-// failure may change the page prefix but returns no successful bytes. Admit
-// actual backing before retaining source guards. Not publication authority.
-NativeTransactionInventoryEncoding EncodeNativeTransactionInventoryPageInto(
-    const NativeTransactionInventoryPageConstView&,std::span<byte> output,
-    std::span<std::size_t> uniqueness_indices,std::span<byte> duplicate_markers) noexcept;
-NativeTransactionInventoryPageResult DecodeNativeTransactionInventoryPage(
-    const std::vector<byte>&) noexcept;
-struct NativeTransactionInventoryPageViewResult {
-  NativeInventoryError error=NativeInventoryError::invalid_family;
-  std::optional<NativeTransactionInventoryPageView> page;
-  bool ok() const noexcept {return error==NativeInventoryError::none&&page.has_value();}
-};
-// Entries must outlive the view. Scratch and input may be discarded after decode.
-// All regions must be disjoint; failures return no usable view or authority.
-NativeTransactionInventoryPageViewResult DecodeNativeTransactionInventoryPageInto(
-    std::span<const byte>,std::span<scratchbird::transaction::mga::TransactionInventoryEntry>,
-    std::span<std::size_t> uniqueness_indices,std::span<byte> duplicate_markers) noexcept;
-struct NativeTransactionInventoryChainResult {
-  NativeInventoryError error = NativeInventoryError::invalid_reference;
-  std::vector<NativeTransactionInventoryPageResult> pages;
-  LocalTransactionInventory inventory;
-  LocalTransactionHorizons horizons;
-  u64 retained_image_bytes = 0;
-  bool ok() const noexcept { return error == NativeInventoryError::none && !pages.empty(); }
-};
-// Borrowed devices only, ordered operation guards, exact complete chain. This
-// verifies the supplied root; checkpoint selection/publication owns authority.
-// No publication-CAS base is issued and no partial inventory is returned.
-NativeTransactionInventoryChainResult ReadNativeTransactionInventoryChainFromOpenDevices(
-    const scratchbird::core::platform::Uuid& database_uuid,
-    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
-    const scratchbird::storage::disk::FilespaceRootReference& head,
-    u64 maximum_retained_image_bytes) noexcept;
 
-// Explicit immutable historical verification, not current inventory selection or
-// transaction authority. The owner authenticates the root and exact contexts.
-// The ceiling includes input contexts and actual immutable-byte observations.
-NativeTransactionInventoryChainResult ReadNativeTransactionInventoryChainAtHistoricalRootFromOpenDevices(
-    const scratchbird::core::platform::Uuid& database_uuid,
-    const std::vector<scratchbird::storage::disk::NativeFilespaceDevice>&,
-    const scratchbird::storage::disk::FilespaceRootReference& head,
-    const std::array<byte,32>& root_sha256,
-    const std::map<scratchbird::core::platform::Uuid,std::vector<byte>>& page_zero_images,
-    u64 maximum_retained_image_bytes) noexcept;
-
-
-struct NativeInventoryHistoricalPageZero {scratchbird::core::platform::Uuid filespace_uuid;std::span<const byte> image;};
-enum class NativeInventoryChainReadContext { current,historical };
 struct NativeInventoryChainPageView {NativeTransactionInventoryPageView page;std::span<const byte> image;};
 struct NativeInventoryChainView {
   NativeInventoryError error=NativeInventoryError::invalid_reference;
@@ -176,28 +89,8 @@ struct NativeInventoryChainDeviceRead {
   Status io_status;
   DiagnosticRecord io_diagnostic;
   u64 physical_bytes_read=0;
-  // SB_TRANSITIONAL_LEGACY_INVENTORY: the head page is an in-place
-  // transaction-state page (family SBTIPW01), refused here as invalid_family
-  // without decoding; the caller may read it with the in-place reader
-  // (native_inventory_chain_backing.hpp). Seen on bytes already read, so an
-  // SBTINV01 read does no extra I/O. in_place_head_image is that read (in the
-  // caller's resource); the in-place reader requires its own read of the page
-  // to equal it, so no byte read here goes unchecked.
-  bool in_place_head=false;
-  std::span<const byte> in_place_head_image;
   bool ok() const noexcept{return chain.ok();}
 };
-// Complete current/historical actual inventory with caller-owned input-disjoint
-// backing and exact-device batches surviving ALL enclosing source fences.
-// Shared image/chain/global-structure/horizon rules; no publication CAS base,
-// selected inventory, transaction outcome or cleanup authority is granted.
-NativeInventoryChainDeviceRead ReadNativeTransactionInventoryChainInto(
-    const scratchbird::core::platform::Uuid&,
-    std::span<const scratchbird::storage::disk::NativeFilespaceDevice>,
-    const scratchbird::storage::disk::FilespaceRootReference&,u64,
-    NativeInventoryChainReadContext,const std::array<byte,32>* root_sha256,
-    std::span<const NativeInventoryHistoricalPageZero>,
-    std::span<scratchbird::storage::disk::FileDevice::ReadLatencyBatch* const>,std::span<byte> backing) noexcept;
 
 inline constexpr u32 kTransactionInventoryPageDigestBytes = 32;
 inline constexpr u32 kTransactionInventoryPageBodyHeaderBytes = 152;

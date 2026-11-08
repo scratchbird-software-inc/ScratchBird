@@ -10,8 +10,9 @@
 // What is read, in this order, under every device's operation guard:
 //  - the primary file's page zero (bootstrap + root directory, hash-sealed);
 //  - the transaction inventory from root kind 4, which must be the in-place
-//    inventory (SB_COMPACT_TRANSACTION_STATE_PAGE); an SBTINV01 inventory has
-//    no fixed-root source;
+//    inventory (SB_COMPACT_TRANSACTION_STATE_PAGE); any other family is
+//    refused by the in-place reader itself (invalid_family; the SBTINV01
+//    family was removed in W4d-3);
 //  - the primary allocation chain from root kind 3 (bootstrap context: the
 //    reader takes the head from page zero itself);
 //  - the filespace directory chain from root kind 5.
@@ -373,11 +374,6 @@ inline NativeFixedRootMemoryResult AcquireNativeFixedRootLeaseOn(
                                                                  pointers, resource);
       merge(read.read);
       out.inventory_error = read.read.chain.error;
-      if (!read.handled) {
-        out.error = E::inventory_failure;
-        out.inventory_error = page::NativeInventoryError::invalid_family;
-        return out;
-      }
       const auto& chain = read.read.chain;
       if (!chain.ok()) {
         out.error = chain.error == page::NativeInventoryError::io_failure            ? E::io_failure

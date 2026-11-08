@@ -9047,9 +9047,8 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
     construction.creator.local_id=transaction::mga::MakeLocalTransactionId(1);
     construction.creator.scope=transaction::mga::TransactionScope::local_node;
     construction.total_pages=request.total_pages;construction.creation_utc_millis=request.creation_utc_millis;
-    // SB_TRANSITIONAL_LEGACY_INVENTORY: production create always writes the
-    // in-place inventory; the legacy format is for drift-layer tests only.
-    construction.inventory_format=NativeCreationInventoryFormat::in_place;
+    // The create always writes the in-place inventory (W4d-3: the legacy
+    // SBTINV01 format and the request's choice of format were removed).
     // SB_TRANSITIONAL_CHECKPOINT_GRAPH: production create writes the fixed-root
     // genesis graph and can never choose the drift-era checkpoint graph.
     construction.genesis_graph=NativeCreationGenesisGraph::fixed_roots;
@@ -9364,8 +9363,7 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
     // relations, the complete-scan tier for all (SB_NATIVE_HOSTED_CATALOG_ROW_BOUND).
     {
       const auto plan=detail::PlanNativeCreationCatalogLayout(request.page_size_bytes,0,request.total_pages,
-          request.maximum_retained_image_bytes,seed,index_rows.indexes,
-          construction.inventory_format==NativeCreationInventoryFormat::in_place);
+          request.maximum_retained_image_bytes,seed,index_rows.indexes);
       if(!plan.ok())return fail(plan.error==detail::NativeCreationLayoutError::resource_exhausted?E::resource_exhausted:E::capacity_exceeded);
       for(unsigned i=0;i<6;++i) {
         const auto pages=plan.layout->relations[i].starts.size();

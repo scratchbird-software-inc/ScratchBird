@@ -155,19 +155,17 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
     // request's initializing (7).
     auto written_bootstrap=b;
     written_bootstrap.lifecycle_state=NativeCreatedFilespaceLifecycle(request);
-    // The in-place transaction inventory (the legacy SBTINV01 format belonged
-    // to the checkpoint-era graph, W4d).
-    if(request.inventory_format!=NativeCreationInventoryFormat::in_place)return Fail(E::invalid_request);
-    constexpr bool in_place=true;
+    // The transaction inventory is always the in-place one (W4d-3: the legacy
+    // SBTINV01 format and the request's choice of format were removed).
     // Full graph + one in-flight encoder image + one physical readback image.
     // The final selected admission retains the maps twice plus four controls,
-    // and an in-place inventory's header page as a fifth.
-    const u64 admitted=in_place?5:4;
+    // and the in-place inventory's header page as a fifth.
+    const u64 admitted=5;
     if(budget/size<controls+2||maps>budget/size-controls-2||
        budget/size<admitted||maps>(budget/size-admitted)/2||
        maps>std::numeric_limits<std::size_t>::max()-controls) return Fail(E::resource_exhausted);
 
-    auto planned=detail::PlanNativeCreationCatalogLayout(size,maps,total,budget,seed,indexes,in_place);
+    auto planned=detail::PlanNativeCreationCatalogLayout(size,maps,total,budget,seed,indexes);
     if(!planned.ok())return Fail(planned.error==detail::NativeCreationLayoutError::resource_exhausted?E::resource_exhausted:
         planned.error==detail::NativeCreationLayoutError::capacity_exceeded?E::catalog_capacity_exceeded:E::invalid_catalog_input);
     auto plan=std::move(*planned.layout);const auto& layouts=plan.relations;
@@ -260,7 +258,7 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
     // SB_TRANSACTION_HEADER_PAGE: the header page belongs to the inventory
     // object, with the inventory page type (a second family under 0x0301).
     const u64 header_page=plan.transaction_header_page;
-    if(in_place){images[header_page].header.page_type=0x301;images[header_page].owner=images[at(inventory)].owner;}
+    images[header_page].header.page_type=0x301;images[header_page].owner=images[at(inventory)].owner;
     const auto ref=[&](u64 n){return disk::NativePageReference{b.filespace_uuid,n,1,b.page_size_profile_uuid};};
     const auto root=[&](u16 kind,u64 n){return disk::FilespaceRootReference{
       kind,images[n].header.page_type,b.filespace_uuid,n,1,b.page_size_profile_uuid,images[n].owner};};
@@ -285,13 +283,7 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
     auto committed=mga::CommitLocalTransaction(std::move(begun.inventory),request.creator.local_id,request.creation_utc_millis);
     if(!committed.ok()) return Fail(E::encoding_failure);
     const auto creator_inventory=std::move(committed.inventory);
-    if(!in_place){
-      // SB_TRANSITIONAL_LEGACY_INVENTORY: the SBTINV01 page, unchanged.
-      page::NativeTransactionInventoryPage inv;
-      inv.header=images[at(inventory)].header;inv.object_uuid=images[at(inventory)].owner;
-      inv.inventory_generation=1;inv.inventory=creator_inventory;
-      save(at(inventory),page::EncodeNativeTransactionInventoryPage(inv));
-    }else{
+    {
     // SB_COMPACT_TRANSACTION_STATE_PAGE / SB_TRANSACTION_HEADER_PAGE (owner
     // 2026-11-05): the in-place transaction inventory. Transaction 1, the
     // construction transaction, is committed; Next is 2.

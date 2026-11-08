@@ -21,11 +21,6 @@ struct NativeMetadataScratch:disk::detail::NativeMetadataScratch {
     const auto records=raw.size()>=384?std::min<std::size_t>(LoadLittle32(raw.data()+308),available/128):0;
     return page::DecodeNativeAllocationMapInto(raw,Array<page::NativeAllocationState>(states),Array<page::NativeAllocationRecord>(records));
   }
-  auto Inventory(Image raw){
-    const auto count=raw.size()>=384?std::min<std::size_t>(LoadLittle32(raw.data()+184),(raw.size()-384)/72):0;
-    return page::DecodeNativeTransactionInventoryPageInto(raw,Array<transaction::mga::TransactionInventoryEntry>(count),
-      Array<std::size_t>(count),Array<byte>(count));
-  }
   auto Directory(Image raw){
     const auto count=raw.size()>=384?std::min<std::size_t>(LoadLittle32(raw.data()+208),(raw.size()-384)/192):0;
     return page::DecodeNativeFilespaceDirectoryInto(raw,Array<page::NativeFilespaceDirectoryRecord>(count),Array<Uuid>(count));

@@ -420,20 +420,19 @@ void TestDeviceReader() {
   Check(before == after, "reader leaves the file unchanged");
 }
 
-// --- the chain-view reader the checkpoint-bound readers share ---------------
-// SB_TRANSITIONAL_LEGACY_INVENTORY: the selected read and the control
-// authority read an in-place inventory through this one reader.
+// --- the chain-view reader the fixed-root lease reads the inventory with ----
+// W4d-3 (2026-11-08): the SBTINV01 reader this one once handed unplaceable
+// heads to is removed; every refusal below is this reader's own.
 
 page::detail::NativeInPlaceInventoryRead ReadChainView(const std::string& path, disk::FilespaceRootReference root,
-                                                       u64 budget, std::vector<byte>* file_bytes = nullptr,
-                                                       std::span<const byte> head_image = {}) {
+                                                       u64 budget, std::vector<byte>* file_bytes = nullptr) {
   disk::FileDevice device;
   Check(device.Open(path, disk::FileOpenMode::open_existing_read_only).ok(), "open read-only");
   disk::FileDevice::ReadLatencyBatch batch(device);
   const disk::NativeFilespaceDevice files[] = {{kFilespace, kProfile, &device}};
   disk::FileDevice::ReadLatencyBatch* const batches[] = {&batch};
   static std::pmr::monotonic_buffer_resource resource;
-  auto out = page::detail::ReadNativeInPlaceInventoryBacked(kDatabase, files, root, budget, batches, resource, head_image);
+  auto out = page::detail::ReadNativeInPlaceInventoryBacked(kDatabase, files, root, budget, batches, resource);
   if (file_bytes) {
     // Copy the borrowed images while the backing is alive (the resource is).
     file_bytes->clear();
@@ -448,7 +447,7 @@ void TestChainViewReader() {
   WritePages(tmp.path, {{1, inv.state}, {3, inv.headers}}, 6);
   std::vector<byte> images;
   auto r = ReadChainView(tmp.path, Root(), 64 * kPage, &images);
-  Check(r.handled && r.read.ok(), "in-place inventory read as a chain view");
+  Check(r.read.ok() && r.counters.has_value(), "in-place inventory read as a chain view");
   const auto& chain = r.read.chain;
   Check(chain.pages.size() == 2 && chain.pages[0].page.header.page_number == 1 &&
             chain.pages[1].page.header.page_number == 3,
@@ -476,64 +475,66 @@ void TestChainViewReader() {
         "horizons projected from the built inventory");
   Check(chain.retained_image_bytes == 2 * kPage, "retained bytes are the pages read");
   Check(r.read.physical_bytes_read == page::kTransactionStateWordsOffset + 2 * kPage, "probe plus both pages");
-  Check(!r.read.in_place_head, "no fallback flag on the in-place reader's own result");
 
-  // A head page the caller already read (the SBTINV01 reader's attempt) stands
-  // in for the probe, and must equal the chain's own read byte for byte.
-  r = ReadChainView(tmp.path, Root(), 64 * kPage, nullptr, inv.state);
-  Check(r.handled && r.read.ok() && r.read.physical_bytes_read == 2 * kPage,
-        "a supplied head image replaces the probe read");
-  auto changed = inv.state;
-  changed.back() ^= 1;
-  r = ReadChainView(tmp.path, Root(), 64 * kPage, nullptr, changed);
-  Check(r.handled && r.read.chain.error == page::NativeInventoryError::binding_mismatch,
-        "a supplied head image that differs in its last byte from the re-read is refused");
-  changed = inv.state;
-  changed[page::kTransactionStateWordsOffset - 1] ^= 1;
-  r = ReadChainView(tmp.path, Root(), 64 * kPage, nullptr, changed);
-  Check(r.handled && r.read.chain.error == page::NativeInventoryError::binding_mismatch,
-        "a supplied head image that differs in an undecoded probe byte is refused");
-  const std::vector<byte> half(inv.state.begin(), inv.state.begin() + kPage / 2);
-  Check(!ReadChainView(tmp.path, Root(), 64 * kPage, nullptr, half).handled,
-        "a head image that is not one whole page is left to the SBTINV01 reader");
-
-  // Not an in-place head: left to the SBTINV01 reader.
+  // Not an in-place head (the page at the root is a header page, family
+  // SBTXHD01): an unknown family, refused by this reader, not handed on.
   WritePages(tmp.path, {{3, inv.headers}}, 6);
   r = ReadChainView(tmp.path, Root(), 64 * kPage);
-  Check(!r.handled, "a head page without the SBTIPW01 family is not handled");
+  Check(!r.read.ok() && r.read.chain.error == page::NativeInventoryError::invalid_family && !r.counters &&
+            r.read.chain.pages.empty(),
+        "a head page without the SBTIPW01 family is refused as an unknown family");
   WritePages(tmp.path, {{1, inv.state}, {3, inv.headers}}, 6);
+  const auto unplaced = [&](disk::FilespaceRootReference root, std::string_view why) {
+    const auto refused = ReadChainView(tmp.path, root, 64 * kPage);
+    Check(!refused.read.ok() && refused.read.chain.error == page::NativeInventoryError::invalid_reference &&
+              refused.read.physical_bytes_read == 0 && !refused.counters,
+          why);
+  };
   auto root = Root();
   root.kind = 5;
-  Check(!ReadChainView(tmp.path, root, 64 * kPage).handled, "a root of another kind is not handled");
+  unplaced(root, "a root of another kind is refused before any read");
+  root = Root();
+  root.page_type = 0x0300;
+  unplaced(root, "a root of another page type is refused before any read");
   root = Root();
   root.filespace_uuid = V7(55);
-  Check(!ReadChainView(tmp.path, root, 64 * kPage).handled, "a root in an unknown filespace is not handled");
+  unplaced(root, "a root in an unknown filespace is refused before any read");
+  root = Root();
+  for (const auto& other : disk::kCanonicalFilespacePageProfiles)
+    if (other.uuid != kProfile) {
+      root.page_size_profile_uuid = other.uuid;
+      break;
+    }
+  Check(root.page_size_profile_uuid != kProfile, "another canonical page-size profile");
+  unplaced(root, "a root whose page-size profile is not its filespace's is refused before any read");
+  r = ReadChainView(tmp.path, Root(), 64 * kPage);
+  Check(r.read.ok(), "the same file reads again with its own root");
 
-  // Handled refusals.
+  // Refusals after the probe.
   r = ReadChainView(tmp.path, Root(), kPage);
-  Check(r.handled && r.read.chain.error == page::NativeInventoryError::resource_exhausted && !r.read.ok(),
+  Check(r.read.chain.error == page::NativeInventoryError::resource_exhausted && !r.read.ok(),
         "a budget below the fewest chain pages is refused before reading the chains");
   r = ReadChainView(tmp.path, Root(), 2 * kPage);
-  Check(r.handled && r.read.ok() && r.read.chain.retained_image_bytes == 2 * kPage,
+  Check(r.read.ok() && r.read.chain.retained_image_bytes == 2 * kPage,
         "a budget of exactly the fewest chain pages reads the inventory");
   WritePages(tmp.path, {{1, inv.state}}, 3);
   r = ReadChainView(tmp.path, Root(), 64 * kPage);
-  Check(r.handled && r.read.chain.error == page::NativeInventoryError::io_failure && !r.read.io_status.ok(),
+  Check(r.read.chain.error == page::NativeInventoryError::io_failure && !r.read.io_status.ok(),
         "a header chain beyond the end of the file is an I/O failure");
   r = ReadChainView(tmp.path, Root(5), 64 * kPage);
-  Check(r.handled && r.read.chain.error == page::NativeInventoryError::io_failure,
+  Check(r.read.chain.error == page::NativeInventoryError::io_failure,
         "a head beyond the end of the file is an I/O failure of the probe");
   Inventory bad;
   SetWord(bad.state, 9, TipStateCode::committed, false);
   WritePages(tmp.path, {{1, bad.state}, {3, bad.headers}}, 6);
   r = ReadChainView(tmp.path, Root(), 64 * kPage);
-  Check(r.handled && r.read.chain.error == page::NativeInventoryError::invalid_inventory,
+  Check(r.read.chain.error == page::NativeInventoryError::invalid_inventory,
         "a failing cross check is an invalid inventory");
   auto foreign = Inventory();
   foreign.headers = HeaderPage(3, 0, 0, V7(77));
   WritePages(tmp.path, {{1, foreign.state}, {3, foreign.headers}}, 6);
   r = ReadChainView(tmp.path, Root(), 64 * kPage);
-  Check(r.handled && !r.read.ok(), "a header page of another database is refused");
+  Check(!r.read.ok(), "a header page of another database is refused");
 }
 }  // namespace
 

@@ -32,16 +32,16 @@ struct NativeCreationLayoutResult {
   bool ok() const noexcept{return error==NativeCreationLayoutError::none&&layout.has_value();}
 };
 // Shared exact physical layout for construction and original-operation recovery.
-// transaction_header_page: the create writes the in-place inventory, so its
-// header page is planned (SB_TRANSITIONAL_LEGACY_INVENTORY; no default, so every
-// caller plans the format it writes).
+// The create writes the in-place inventory, so its transaction header page is
+// always planned (W4d-3: the legacy SBTINV01 inventory, which had none, and
+// the flag that chose between them were removed).
 // The fixed-root graph has 13 control pages (no checkpoint, horizon-root,
 // selector or watermark page; first catalog leaf at control 8); the drift-era
 // graph's layout went with the checkpoint layer (W4d).
 // No identities, authorization, memory grants, writes or configuration defaults.
 inline NativeCreationLayoutResult PlanNativeCreationCatalogLayout(
     u64 size,u64 maps,u64 total,u64 budget,const NativeCreationCatalogSeed& seed,
-    const NativeCreationCatalogIndexes& indexes,bool transaction_header_page) noexcept {
+    const NativeCreationCatalogIndexes& indexes) noexcept {
   using E=NativeCreationLayoutError;
   const auto fail=[](E e){return NativeCreationLayoutResult{e,{}};};
   const u64 controls=14,first_leaf=8;
@@ -88,10 +88,9 @@ inline NativeCreationLayoutResult PlanNativeCreationCatalogLayout(
         }
       }
     }
-    if(transaction_header_page){
+    {
       // The transaction header page (owner 2026-11-05, Q3 = 1), after every
-      // catalog page. A transitional legacy inventory (SBTINV01) has none
-      // (SB_TRANSITIONAL_LEGACY_INVENTORY).
+      // catalog page.
       if(plan.image_count>=total)return fail(E::capacity_exceeded);
       if(plan.image_count>=budget/size-2)return fail(E::resource_exhausted);
       plan.transaction_header_page=plan.image_count++;

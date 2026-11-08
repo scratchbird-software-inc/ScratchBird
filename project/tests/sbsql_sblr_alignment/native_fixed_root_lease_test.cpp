@@ -133,11 +133,11 @@ struct Node {
   std::vector<d::NativeFilespaceDevice> Devices() { return {{Id(2), request.bootstrap.page_size_profile_uuid, &device}}; }
 };
 
-// W4d (2026-11-08): no writer produces the legacy SBTINV01 inventory any more
-// (the transitional create graph was deleted). A FORGERY over a production-
-// created file: the in-place inventory page's family magic is overwritten
-// with the legacy family's, so the fixed-root lease must refuse a non-in-place
-// inventory family rather than fall back to the legacy decoder.
+// W4d (2026-11-08): no writer produces the legacy SBTINV01 inventory any more,
+// and W4d-3 removed its decoder. A FORGERY over a production-created file: the
+// in-place inventory page's family magic is overwritten with another family's
+// (the removed SBTINV01 magic, the likeliest stale bytes), so the fixed-root
+// lease must refuse an unknown inventory family; nothing decodes it.
 void ForgeLegacyInventoryFamily(Node& n) {
   namespace pg = scratchbird::storage::page;
   constexpr std::array<byte, 8> legacy{{'S', 'B', 'T', 'I', 'N', 'V', '0', '1'}};
@@ -160,6 +160,44 @@ db::NativeFixedRootMemoryResult Acquire(Node& n, MemoryFixture& f, db::NativeFix
                                        Uuid database = Id(1), Uuid primary = Id(2)) {
   const auto devices = n.Devices();
   return db::AcquireNativeFixedRootMemoryLease(database, devices, primary, limits, f.memory, f.binding);
+}
+
+// FORGERIES over a production-created file (W4d-3): one page rewritten, read,
+// then restored byte for byte.
+std::vector<byte> ReadPage(Node& n, u64 page) {
+  std::vector<byte> bytes(n.size);
+  const auto read = n.device.ReadAt(page * n.size, bytes.data(), bytes.size());
+  Check(read.ok() && read.bytes_transferred == bytes.size(), "read a page to forge");
+  return bytes;
+}
+void WritePage(Node& n, u64 page, const std::vector<byte>& bytes) {
+  const auto write = n.device.WriteAt(page * n.size, bytes.data(), bytes.size());
+  Check(write.ok() && write.bytes_transferred == bytes.size() && n.device.Sync().ok(), "write a forged or restored page");
+}
+// The page's common header with the payload-encrypted flag set; every other
+// byte as the create wrote it.
+std::vector<byte> EncryptedFlag(std::vector<byte> bytes) {
+  const auto header = d::DecodeNativeCommonPageHeader(bytes.data(), d::kNativeCommonPageHeaderBytes);
+  Check(header.ok() && !(header.header->flags & 1u), "a plaintext page as created");
+  auto flagged = *header.header;
+  flagged.flags |= 1u;
+  const auto encoded = d::EncodeNativeCommonPageHeader(flagged);
+  Check(encoded.ok(), "the flagged header encodes");
+  std::copy(encoded.bytes->begin(), encoded.bytes->end(), bytes.begin());
+  return bytes;
+}
+// Page zero with its kind-4 (inventory) root changed by `change`.
+void ForgeInventoryRoot(Node& n, const auto& change) {
+  auto zero = d::ReadFilespacePageZeroFromOpenDevice(n.device);
+  Check(zero.ok(), "page zero for the inventory root forgery");
+  auto bad = *zero.record;
+  const auto at = std::find_if(bad.roots.begin(), bad.roots.end(), [](const auto& r) { return r.kind == 4; });
+  Check(at != bad.roots.end(), "inventory root");
+  change(*at);
+  const auto encoded = d::EncodeFilespacePageZero(bad);
+  Check(encoded.ok(), "forged page zero encodes");
+  Check(n.device.WriteAt(0, encoded.bytes->data(), encoded.bytes->size()).ok() && n.device.Sync().ok(),
+        "write the forged inventory root");
 }
 
 void TestProfile(unsigned profile) {
@@ -222,10 +260,85 @@ void TestRefusals() {
     ForgeLegacyInventoryFamily(legacy);
     MemoryFixture f(32u << 20);
     const auto r = Acquire(legacy, f, {256 * legacy.size, 8u << 20});
-    Check(!r.ok() && r.error == E::inventory_failure && r.inventory_error == scratchbird::storage::page::NativeInventoryError::invalid_family,
-          "an SBTINV01 inventory has no fixed-root source");
+    Check(!r.ok() && r.error == E::inventory_failure && r.inventory_error == scratchbird::storage::page::NativeInventoryError::invalid_family &&
+              !r.lease,
+          "an unknown inventory family (the removed SBTINV01 magic) is refused, not decoded");
   }
   Node n(0);
+  // The inventory's two pages, from a clean lease.
+  u64 state_page = 0, header_page = 0;
+  {
+    MemoryFixture f(32u << 20);
+    const auto r = Acquire(n, f, {256 * n.size, 8u << 20});
+    Check(r.ok() && r.lease->inventory_pages().size() == 2, "the created inventory's pages");
+    state_page = r.lease->inventory_pages()[0].header.page_number;
+    header_page = r.lease->inventory_pages()[1].header.page_number;
+  }
+  // An encrypted inventory page is never read as plaintext. The state page at
+  // the root is refused on the probe as needing crypto authority. The header
+  // page's decoder refuses any page flag as an invalid header before the
+  // reader's own encryption check is reached, so that refusal reports an
+  // invalid inventory instead (observed 2026-11-08; reported, not changed).
+  for (const u64 page : {state_page, header_page}) {
+    const auto original = ReadPage(n, page);
+    WritePage(n, page, EncryptedFlag(original));
+    MemoryFixture f(32u << 20);
+    const auto r = Acquire(n, f, {256 * n.size, 8u << 20});
+    using IE = scratchbird::storage::page::NativeInventoryError;
+    if (page == state_page)
+      Check(!r.ok() && !r.lease && r.error == E::encrypted_requires_authority &&
+                r.inventory_error == IE::encrypted_requires_crypto_authority,
+            "an encrypted inventory state page is refused as needing crypto authority, not read as plaintext");
+    else
+      Check(!r.ok() && !r.lease && r.error == E::inventory_failure && r.inventory_error == IE::invalid_inventory,
+            "an encrypted inventory header page is refused by its decoder, not read as plaintext");
+    WritePage(n, page, original);
+    MemoryFixture g(32u << 20);
+    Check(Acquire(n, g, {256 * n.size, 8u << 20}).ok(), "the restored inventory reads again");
+  }
+  // The inventory root must name the page as created: its generation and its
+  // object (the inventory pages' allocation owner).
+  {
+    const auto original = ReadPage(n, 0);
+    ForgeInventoryRoot(n, [](d::FilespaceRootReference& root) { ++root.page_generation; });
+    MemoryFixture f(32u << 20);
+    auto r = Acquire(n, f, {256 * n.size, 8u << 20});
+    Check(!r.ok() && r.error == E::inventory_failure && !r.lease,
+          "an inventory root naming another generation is refused");
+    WritePage(n, 0, original);
+    ForgeInventoryRoot(n, [](d::FilespaceRootReference& root) { root.object_uuid = Id(901); });
+    MemoryFixture g(32u << 20);
+    r = Acquire(n, g, {256 * n.size, 8u << 20});
+    Check(!r.ok() && r.error == E::root_mismatch && r.root_kind == u16{4} && !r.lease,
+          "an inventory root naming another object is refused, naming kind 4");
+    WritePage(n, 0, original);
+    MemoryFixture h(32u << 20);
+    Check(Acquire(n, h, {256 * n.size, 8u << 20}).ok(), "restored page zero reads again");
+  }
+  // The device cohort: one device supplied twice, and a device whose page-size
+  // profile is not the one page zero records.
+  {
+    MemoryFixture f(32u << 20);
+    auto devices = n.Devices();
+    devices.push_back(devices.front());
+    const auto r = db::AcquireNativeFixedRootMemoryLease(Id(1), devices, Id(2), {256 * n.size, 8u << 20}, f.memory, f.binding);
+    Check(!r.ok() && r.error == E::invalid_device && !r.lease, "the same device supplied twice is refused");
+  }
+  {
+    MemoryFixture f(32u << 20);
+    auto devices = n.Devices();
+    for (const auto& other : d::kCanonicalFilespacePageProfiles)
+      if (other.uuid != devices.front().page_size_profile_uuid) {
+        devices.front().page_size_profile_uuid = other.uuid;
+        break;
+      }
+    Check(devices.front().page_size_profile_uuid != n.request.bootstrap.page_size_profile_uuid, "another profile");
+    const auto r = db::AcquireNativeFixedRootMemoryLease(Id(1), devices, Id(2), {256 * n.size, 8u << 20}, f.memory, f.binding);
+    // Page zero is read with the supplied device's profile, so the refusal is
+    // page zero's.
+    Check(!r.ok() && !r.lease && r.error == E::page_zero_failure,
+          "a device whose page-size profile is not page zero's is refused");
+  }
   {
     MemoryFixture f(32u << 20);
     Check(Acquire(n, f, {256 * n.size, 8u << 20}, Id(1), Id(9)).error == E::invalid_device, "the primary must be supplied");

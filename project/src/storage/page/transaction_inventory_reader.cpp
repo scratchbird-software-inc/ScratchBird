@@ -335,50 +335,42 @@ TransactionInventoryRead ReadTransactionInventory(const TransactionInventoryRead
 detail::NativeInPlaceInventoryRead detail::ReadNativeInPlaceInventoryBacked(
     const scratchbird::core::platform::Uuid& database, std::span<const disk::NativeFilespaceDevice> files,
     const disk::FilespaceRootReference& head, u64 maximum_retained_image_bytes,
-    std::span<disk::FileDevice::ReadLatencyBatch* const> batches, std::pmr::memory_resource& resource,
-    std::span<const byte> head_image) noexcept {
+    std::span<disk::FileDevice::ReadLatencyBatch* const> batches, std::pmr::memory_resource& resource) noexcept {
   namespace mga = scratchbird::transaction::mga;
   using NE = NativeInventoryError;
   NativeInPlaceInventoryRead out;
-  // Anything this reader cannot place is left to the SBTINV01 reader, which
-  // refuses it with its own finding.
-  if (files.empty() || batches.size() != files.size() || head.kind != 4 || head.page_type != kTransactionStatePageType)
-    return out;
-  std::size_t file = files.size();
-  for (std::size_t i = 0; i < files.size(); ++i) {
-    if (!files[i].device || !batches[i] || &batches[i]->device() != files[i].device) return out;
-    if (files[i].filespace_uuid == head.filespace_uuid) file = i;
-  }
-  if (file == files.size() || files[file].page_size_profile_uuid != head.page_size_profile_uuid) return out;
-  const auto* profile = disk::FindCanonicalFilespacePageProfile(head.page_size_profile_uuid);
-  if (!profile || head.page_number > std::numeric_limits<u64>::max() / profile->page_size_bytes) return out;
-  const u32 page_size = profile->page_size_bytes;
   auto& receipt = out.read;
   const auto fail = [&](NE error) {
     receipt.chain = {};
     receipt.chain.error = error;
     return out;
   };
+  // W4d-3: every refusal is this reader's own (nothing is left to another
+  // decoder any more).
+  if (files.empty() || batches.size() != files.size()) return fail(NE::invalid_backing);
+  std::size_t file = files.size();
+  for (std::size_t i = 0; i < files.size(); ++i) {
+    if (!files[i].device || !batches[i] || &batches[i]->device() != files[i].device) return fail(NE::invalid_backing);
+    if (files[i].filespace_uuid == head.filespace_uuid) file = i;
+  }
+  if (head.kind != 4 || head.page_type != kTransactionStatePageType || file == files.size() ||
+      files[file].page_size_profile_uuid != head.page_size_profile_uuid)
+    return fail(NE::invalid_reference);
+  const auto* profile = disk::FindCanonicalFilespacePageProfile(head.page_size_profile_uuid);
+  if (!profile || head.page_number > std::numeric_limits<u64>::max() / profile->page_size_bytes)
+    return fail(NE::invalid_reference);
+  const u32 page_size = profile->page_size_bytes;
   const auto failed_io = [&](const disk::BoundedIoResult& io) {
     receipt.io_status = disk::BoundedIoStatus(io);
     return fail(NE::io_failure);
   };
   std::array<byte, kTransactionStateWordsOffset> probe{};
-  if (!head_image.empty()) {
-    if (head_image.size() != page_size) return out;
-    std::copy_n(head_image.begin(), probe.size(), probe.begin());
-  } else {
-    const auto probed = batches[file]->ReadAtBounded(head.page_number * page_size, probe.data(), probe.size());
-    receipt.physical_bytes_read += probed.bytes_transferred;
-    if (!probed.ok() || probed.bytes_transferred != probe.size()) {
-      out.handled = true;
-      return failed_io(probed);
-    }
-  }
+  const auto probed = batches[file]->ReadAtBounded(head.page_number * page_size, probe.data(), probe.size());
+  receipt.physical_bytes_read += probed.bytes_transferred;
+  if (!probed.ok() || probed.bytes_transferred != probe.size()) return failed_io(probed);
   if (!std::equal(kTransactionStatePageMagic.begin(), kTransactionStatePageMagic.end(),
                   probe.begin() + kTransactionStateFamilyOffset))
-    return out;
-  out.handled = true;
+    return fail(NE::invalid_family);
   try {
     const auto first = disk::DecodeNativeCommonPageHeader(probe.data(), disk::kNativeCommonPageHeaderBytes);
     if (!first.ok()) return fail(NE::invalid_header);
@@ -404,11 +396,9 @@ detail::NativeInPlaceInventoryRead detail::ReadNativeInPlaceInventoryBacked(
     if (read.io_failure) return failed_io(read.io);
     const std::size_t count = read.state_pages + read.header_pages;
     if (!read.ok()) return fail(read.check.error == TipPageError::short_buffer ? NE::resource_exhausted : NE::invalid_inventory);
-    // The head was read before (the probe, or the caller's whole page): the
-    // chain's read of it must be the same bytes.
-    if (!std::equal(probe.begin(), probe.end(), backing.begin()) ||
-        (!head_image.empty() && !std::equal(head_image.begin(), head_image.end(), backing.begin())))
-      return fail(NE::binding_mismatch);
+    // The head was read before (the probe): the chain's read of it must be the
+    // same bytes.
+    if (!std::equal(probe.begin(), probe.end(), backing.begin())) return fail(NE::binding_mismatch);
     const std::span<const byte> state_images(backing.data(), read.state_pages * page_size);
     const std::span<const byte> header_images(backing.data() + read.state_pages * page_size,
                                               read.header_pages * page_size);

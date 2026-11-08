@@ -7,16 +7,11 @@
 #include "node_uuid_issuer.hpp"
 
 namespace scratchbird::storage::database {
-// SB_TRANSITIONAL_LEGACY_INVENTORY (owner 2026-11-05, Q8 = 2): the
-// transaction inventory a native create writes. in_place is the design: the
+// The transaction inventory a native create writes is the in-place one: the
 // compact state page plus its header page (SB_COMPACT_TRANSACTION_STATE_PAGE,
-// SB_TRANSACTION_HEADER_PAGE). transitional_legacy writes the SBTINV01 page and
-// no header page; it exists only so the drift-layer tests (checkpoint,
-// selector and management publication) keep the starting database they decode
-// until that layer is removed, and it is deleted with that layer. Production
-// create never selects it. Ignored by the bootstrap-only initializer.
-// W4d (2026-11-08): transitional_legacy was deleted with the checkpoint layer.
-enum class NativeCreationInventoryFormat : core::platform::u8 { in_place };
+// SB_TRANSACTION_HEADER_PAGE). The transitional SBTINV01 choice (owner
+// 2026-11-05, Q8 = 2) went with the checkpoint layer (W4d), and the request's
+// inventory-format field, left with one value, went in W4d-3 (2026-11-08).
 // SB_TRANSITIONAL_CHECKPOINT_GRAPH (drift removal R3; extends owner Q8 = 2):
 // the genesis graph a native create writes. fixed_roots is the design: page
 // zero's fixed roots name every control page and page zero, written last, is
@@ -33,7 +28,6 @@ struct NativeFilespaceInitializationRequest {
   core::platform::Uuid operation_uuid,writer_uuid,policy_snapshot_uuid;
   transaction::mga::TransactionIdentity creator;
   core::platform::u64 total_pages=0,creation_utc_millis=0;
-  NativeCreationInventoryFormat inventory_format=NativeCreationInventoryFormat::in_place;
   NativeCreationGenesisGraph genesis_graph=NativeCreationGenesisGraph::fixed_roots;
 };
 // The filespace lifecycle a native create records in page zero, the directory
