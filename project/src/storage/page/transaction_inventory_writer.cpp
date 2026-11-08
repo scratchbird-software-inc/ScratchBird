@@ -554,4 +554,27 @@ TransactionCompleteResult TransactionInventoryWriter::Complete(disk::CarefulWrit
   }
 }
 
+TransactionChainsRead ReadTransactionChainsThroughSink(disk::CarefulWriteSink& sink,
+                                                       const TransactionWriterBinding& binding) noexcept {
+  TransactionChainsRead out;
+  try {
+    const TransactionInventoryWriter checked(binding);
+    if (!checked.page_size()) return out;
+    Chains chains;
+    if (!ReadChains(sink, binding, checked.page_size(), chains, out)) return out;
+    out.page_size = checked.page_size();
+    out.state_images = std::move(chains.state);
+    out.header_images = std::move(chains.headers);
+    out.state_pages = std::move(chains.state_pages);
+    out.header_pages = std::move(chains.header_pages);
+    out.counters = chains.counters;
+    out.error = E::none;
+  } catch (const std::bad_alloc&) {
+    out.error = E::resource_exhausted;
+  } catch (const std::length_error&) {
+    out.error = E::resource_exhausted;
+  }
+  return out;
+}
+
 }  // namespace scratchbird::storage::page

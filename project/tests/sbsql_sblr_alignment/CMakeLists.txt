@@ -1561,6 +1561,20 @@ endif()
       LABELS "sbsql_sblr_alignment;native_storage;transaction_inventory;allocation_map;careful_write;fault_injection"
       TIMEOUT 900)
   endforeach()
+  # SB_CATALOG_VERSION_WRITER: catalog record versions written in place by a
+  # transaction (in-place writes W3a; owner Q20 = 1, Q23 = 1), one page size per test.
+  add_executable(sbsql_sblr_alignment_native_catalog_version_writer native_catalog_version_writer_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_native_catalog_version_writer PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_native_catalog_version_writer PRIVATE sb_storage_database)
+  target_compile_definitions(sbsql_sblr_alignment_native_catalog_version_writer PRIVATE
+    SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password")
+  foreach(profile RANGE 0 4)
+    add_test(NAME sbsql_sblr_alignment_native_catalog_version_writer_${profile}
+      COMMAND sbsql_sblr_alignment_native_catalog_version_writer --profile ${profile})
+    set_tests_properties(sbsql_sblr_alignment_native_catalog_version_writer_${profile} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_storage;catalog;careful_write;fault_injection"
+      TIMEOUT 1800)
+  endforeach()
   # SB_TRANSACTION_INVENTORY_WRITER: in-place BEGIN/COMMIT/ROLLBACK and restart
   # dead-marking on production-created files, one page size per test (owner
   # Q20 = 1, 2026-11-07).
@@ -4020,6 +4034,13 @@ add_test(NAME sbsql_sblr_alignment_native_local_service_enrollment_producer_tran
   COMMAND sbsql_sblr_alignment_native_local_service_enrollment producer-transactions)
 set_tests_properties(sbsql_sblr_alignment_native_local_service_enrollment_producer_transactions PROPERTIES
   LABELS "sbsql_sblr_alignment;native_storage;native_service_enrollment;native_database_create;transaction_inventory"
+  TIMEOUT 900)
+# SB_CATALOG_VERSION_WRITER: a committed catalog change with no audit event of
+# its own is refused by startup catalog verification (in-place writes W3a).
+add_test(NAME sbsql_sblr_alignment_native_local_service_enrollment_producer_unaudited_catalog_change
+  COMMAND sbsql_sblr_alignment_native_local_service_enrollment producer-unaudited-catalog-change)
+set_tests_properties(sbsql_sblr_alignment_native_local_service_enrollment_producer_unaudited_catalog_change PROPERTIES
+  LABELS "sbsql_sblr_alignment;native_storage;native_service_enrollment;native_database_create;catalog"
   TIMEOUT 900)
 add_executable(sbsql_sblr_alignment_native_runtime_authorization_projection
   native_runtime_authorization_projection_test.cpp)

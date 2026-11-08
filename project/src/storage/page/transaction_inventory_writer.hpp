@@ -206,4 +206,18 @@ class TransactionInventoryWriter {
   bool failed_ = false;
 };
 
+// The in-place inventory as this writer reads it, for the other in-place
+// writers (W3, the catalog version writer): both chains read through the
+// sink, each page decoded and bound (the first state page to the root), and
+// the whole checked by CheckTransactionInventoryImages. The binding is checked
+// as the writer's constructor checks it. Nothing is written.
+struct TransactionChainsRead : TransactionWriterOutcome {
+  u32 page_size = 0;
+  std::vector<byte> state_images, header_images;  // each chain, page after page
+  std::vector<u64> state_pages, header_pages;
+  TipCounters counters;
+};
+TransactionChainsRead ReadTransactionChainsThroughSink(scratchbird::storage::disk::CarefulWriteSink& sink,
+                                                       const TransactionWriterBinding& binding) noexcept;
+
 }  // namespace scratchbird::storage::page

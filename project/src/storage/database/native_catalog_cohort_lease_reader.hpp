@@ -128,8 +128,16 @@ class NativeCatalogCohortLeaseReader {
           if(creator.inventory_entry_index>=inventory.entries.size())return fail(E::binding_mismatch);
           const auto& entry=inventory.entries[creator.inventory_entry_index];
           const auto state=transaction::mga::InventoryVisibilityState(entry);
+          // SB_CATALOG_VERSION_WRITER (in-place writes W3a, owner Q23 = 1):
+          // a catalog version written in place by a transaction still marked
+          // in progress (a server that stopped before COMMIT) is uncommitted,
+          // hidden by the visibility read above, and its transaction is dead
+          // once a writer restarts. The startup scan admits it. In-doubt and
+          // transient creators (prepared, limbo, committing, rolling back,
+          // recovering, created) stay unresolved.
           if(state!=transaction::mga::TransactionState::committed&&state!=transaction::mga::TransactionState::rolled_back&&
-              state!=transaction::mga::TransactionState::failed_terminal){
+              state!=transaction::mga::TransactionState::failed_terminal&&state!=transaction::mga::TransactionState::active&&
+              state!=transaction::mga::TransactionState::read_only_active){
             out.unresolved_transaction_uuid=entry.identity.transaction_uuid.value;
             out.unresolved_local_transaction_id=entry.identity.local_id.value;return fail(E::unresolved_creator);}
         }

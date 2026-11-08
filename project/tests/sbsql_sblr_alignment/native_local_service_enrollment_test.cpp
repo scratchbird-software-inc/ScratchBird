@@ -22,6 +22,10 @@
 #include "catalog_schema_creation.hpp"
 #include "admitted_datatype_cohort.hpp"
 #include "transaction_inventory_writer.hpp"
+#include "native_catalog_version_writer.hpp"
+#include "native_creation_catalog_input.hpp"
+#include "native_index_btree_page.hpp"
+#include "catalog_page.hpp"
 #include "allocation_map_writer.hpp"
 #include "native_fixed_root_memory_lease.hpp"
 #include <sys/file.h>
@@ -2890,7 +2894,13 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
 // horizons written at BEGIN 3, which the COMMIT of 2 does not rewrite, so they
 // trail the projection. Open verification must admit that file; the stages
 // after it assume a freshly created file and are not run.
-void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& process,bool transactions=false) {
+// unaudited (with transactions): SB_CATALOG_VERSION_WRITER. One committed
+// catalog change with no audit event of its own: startup catalog verification
+// refuses it (spec: the construction-intent exception covers only the
+// create's rows; every later change needs its own audit evidence).
+void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& process,bool transactions=false,
+                          bool unaudited=false) {
+  platform::Uuid changed_object;
   scratchbird::tests::OwnedTempDirectory artifacts;
   const auto path=(artifacts.path()/"producer-native-node").string();
   const u64 budget=db::NativeHostedSourceBackingBytes(sizes[profile]);
@@ -2913,7 +2923,7 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
   Check(made.ok()&&created.Close().ok(),"the production producer writes the database and its descriptor retires");
   if(transactions){
     namespace tip=scratchbird::storage::page;
-    disk::FilespaceRootReference state_root,allocation_root;
+    disk::FilespaceRootReference state_root,allocation_root,catalog_root;
     {
       disk::FileDevice device;
       Check(device.Open(path,disk::FileOpenMode::open_existing_read_only).ok(),"read-only open of the produced file");
@@ -2922,7 +2932,9 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
       auto fixed=db::AcquireNativeFixedRootBackedLease(made.receipt->database_uuid,files,made.receipt->filespace_uuid,
           {256ull*sizes[profile],backing.size()},backing);
       Check(fixed.ok()&&(*fixed.lease).Root(4),"page zero names the produced transaction-state chain");
-      state_root=*(*fixed.lease).Root(4);allocation_root=*(*fixed.lease).Root(3);fixed.lease.Reset();
+      state_root=*(*fixed.lease).Root(4);allocation_root=*(*fixed.lease).Root(3);
+      Check((*fixed.lease).Root(2)!=nullptr,"page zero names the produced catalog root");
+      catalog_root=*(*fixed.lease).Root(2);fixed.lease.Reset();
       Check(device.Close().ok(),"close the read-only open");
     }
     disk::FileDevice device;
@@ -2969,6 +2981,72 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
             <<" commit="<<tip::TransactionWriterErrorName(done.error)<<'\n';
       }
       Check(committed_all&&grew&&!writer.failed(),"the writer runs past the first header page, growing the header chain");
+      // SB_CATALOG_VERSION_WRITER (in-place writes W3a): catalog versions
+      // written in place on the security relation (role 4) by later
+      // transactions, both invisible to every committed read: one whose
+      // transaction rolled back, and one whose transaction is still in
+      // progress (a server that stopped before COMMIT). Startup must admit
+      // both. Not here: a committed change, which needs its own audit event
+      // (the unaudited mode shows startup refusing one without), and a drop
+      // of a named object, which needs its name rows dropped too (W3b). The
+      // two smallest rows not of a name and not of the receipt's principals,
+      // provider, policy, binding or credential reference are changed (at
+      // 8 KiB the relation has room for about three versions).
+      {
+        namespace catalog=scratchbird::core::catalog;
+        const u64 size=sizes[profile];
+        const auto page=[&](u64 number){std::vector<platform::byte> bytes(size);
+          const auto io=sink.ReadAt(number*size,bytes);Check(io.ok()&&io.bytes_transferred==size,"read a catalog page");return bytes;};
+        const auto root=tip::DecodeNativeCatalogRoot(page(catalog_root.page_number));
+        Check(root.ok(),"the produced catalog root decodes");
+        const auto head=std::find_if(root.root->roots.begin(),root.root->roots.end(),[](const auto& r){return r.role==4;});
+        Check(head!=root.root->roots.end()&&head->page_type==0x200,"the security relation is indexed");
+        std::set<u64> bases,seen;std::vector<u64> stack{head->page.page_number};
+        while(!stack.empty()){const auto n=stack.back();stack.pop_back();if(!seen.insert(n).second)continue;
+          const auto node=tip::DecodeNativeBtreePage(page(n));Check(node.ok(),"a security index page decodes");
+          if(node.page->first_child)stack.push_back(node.page->first_child->page_number);
+          for(const auto& cell:node.page->cells){if(cell.child)stack.push_back(cell.child->page_number);
+            if(cell.base_page)bases.insert(cell.base_page->page_number);}}
+        struct Row{u64 bytes=0;platform::Uuid row,version;catalog::CatalogMetadataVersion metadata;};
+        std::vector<Row> rows;const auto& receipt=*made.receipt;
+        const std::set<platform::Uuid> kept{receipt.bootstrap_principal_uuid,receipt.service_principal_uuid,
+            receipt.service_provider_uuid,receipt.service_policy_uuid,receipt.service_runtime_binding_uuid,
+            receipt.service_credential_reference_uuid,receipt.database_object_uuid};
+        for(const auto n:bases){const auto leaf=db::DecodeNativeCatalogLeaf(page(n));Check(leaf.ok(),"a security leaf decodes");
+          for(const auto& r:leaf.page->body.rows){const auto& m=leaf.metadata.at(r.version_uuid);
+            if(m.record.header.kind==catalog::CatalogRecordKind::localized_name||kept.count(m.record.header.object_uuid.value))continue;
+            const auto bytes=db::NativeCreationCatalogRowBytes({m,{}});
+            if(bytes)rows.push_back({*bytes,r.row_uuid.value,r.version_uuid,m});}}
+        std::sort(rows.begin(),rows.end(),[](const auto& a,const auto& b){return a.bytes<b.bytes;});
+        Check(rows.size()>=2,"two security rows to change");
+        const auto id=[](platform::byte tag,u64 n){auto u=Id(241);u.bytes[12]=tag;u.bytes[13]=static_cast<platform::byte>(n>>8);
+          u.bytes[14]=static_cast<platform::byte>(n);return u;};
+        db::CatalogVersionWriterBinding cv;cv.database_uuid=made.receipt->database_uuid;cv.catalog_root=catalog_root;cv.state_root=state_root;
+        const auto change=[&](u64 n,const platform::Uuid& tx,const Row& base,const platform::Uuid& predecessor,
+                              const catalog::CatalogMetadataVersion& before,const platform::Uuid& version,bool drop){
+          db::CatalogVersionRequest r;r.role=4;r.transaction_order=n;r.transaction_uuid=tx;r.row_uuid=base.row;
+          r.predecessor_version_uuid=predecessor;r.version_uuid=version;r.metadata=before;++r.metadata.definition_version;
+          r.metadata.creator_transaction_uuid={platform::UuidKind::transaction,tx};r.metadata.creator_local_transaction_id=n;
+          if(drop){r.metadata.record.header.deleted=true;r.metadata.lifecycle=catalog::CatalogObjectLifecycle::dropped;
+            r.metadata.status=catalog::CatalogObjectStatus::retired;r.metadata.retired_transaction_uuid={platform::UuidKind::transaction,tx};}
+          const auto written=db::WriteCatalogSuccessorVersion(sink,cv,r);
+          if(!written.ok())std::cerr<<"producer catalog version="<<db::CatalogVersionWriteErrorName(written.error)<<'\n';
+          Check(written.ok(),"the catalog version writer writes the version in place");return r.metadata;};
+        const auto begin=[&](u64 n){tip::TransactionHeaderRecord h;h.transaction_uuid=id(0xb0,n);
+          const auto begun=writer.Begin(sink,h);Check(begun.ok()&&begun.transaction_order==n,"BEGIN for a catalog change");return h.transaction_uuid;};
+        u64 n=header_slots+2;
+        const auto first=begin(n);
+        (void)change(n,first,rows[0],rows[0].version,rows[0].metadata,id(0xc0,1),false);
+        changed_object=rows[0].metadata.record.header.object_uuid.value;
+        if(unaudited){
+          Check(writer.Commit(sink,n,now()).ok(),"COMMIT the unaudited catalog change");
+        }else{
+          Check(writer.Rollback(sink,n,now()).ok(),"ROLLBACK the first catalog change");
+          const auto second=begin(++n);
+          (void)change(n,second,rows[1],rows[1].version,rows[1].metadata,id(0xc0,2),false);
+        }
+        Check(!writer.failed(),"the catalog changes leave the transaction writer sound");
+      }
     }
     Check(device.Close().ok(),"close the writer's device");
   }
@@ -3043,6 +3121,14 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
       <<" namespaces="<<int(m.namespaces.error)<<" filespaces="<<int(m.filespaces.error)<<" audit="<<int(m.audit.error)
       <<" security="<<int(m.security.error)<<" naming_profiles="<<int(m.naming_profiles.error)
       <<" collisions="<<int(m.collisions.error)<<'\n';
+  if(unaudited){
+    Check(metadata==server::NativeHostedRuntimeError::catalog_verification_failure&&!m.audit.ok()&&
+        m.audit.error==scratchbird::engine::internal_api::NativeCatalogAuditError::event_binding&&
+        m.audit.object_uuid==changed_object,
+        "a committed catalog change without its own audit event is refused by startup catalog verification");
+    std::cout<<"producer unaudited catalog change profile="<<profile<<" refused audit="<<int(m.audit.error)<<'\n';
+    return;
+  }
   Check(metadata==server::NativeHostedRuntimeError::none&&m.ok()&&m.names.ok()&&m.indexes.ok()&&m.indexes.indexed_relations==5&&
       m.namespaces.ok()&&m.filespaces.ok()&&m.audit.ok()&&m.security.ok()&&m.naming_profiles.ok()&&m.collisions.ok(),
       "the engine verifies every component of the producer's catalog: names, indexes, namespaces, filespaces, audit, "
@@ -3122,8 +3208,8 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
       opened.observation->identity.system_state.mode==db::NativeDatabaseMode::online&&
       opened.observation->identity.system_state.flags==0&&
       opened.observation->allocation.filespaces==1&&opened.observation->allocation.catalog_pages>0&&
-      opened.observation->inventory.transactions==(transactions?(sizes[profile]-512)/256+1:1u)&&
-      opened.observation->inventory.active_transactions==(transactions?1u:0u)&&
+      opened.observation->inventory.transactions==(transactions?(sizes[profile]-512)/256+3:1u)&&
+      opened.observation->inventory.active_transactions==(transactions?2u:0u)&&
       opened.observation->inventory.in_doubt_transactions==0&&opened.observation->inventory.horizon_records==0&&
       opened.observation->routes.routes==2,
       "the opened file verifies read-only before any startup transaction: identity, allocation, inventory, catalog routes");
@@ -3333,6 +3419,7 @@ int main(int argc,char** argv) {
   // mistyped argument cannot silently run the whole fixture instead.
   const bool producer=argc==2&&std::string_view(argv[1])=="producer";
   const bool producer_transactions=argc==2&&std::string_view(argv[1])=="producer-transactions";
+  const bool producer_unaudited=argc==2&&std::string_view(argv[1])=="producer-unaudited-catalog-change";
   const bool sharded=argc==4&&std::string_view(argv[1])=="shard";
   unsigned shard=0,shard_count=0;
   if(sharded&&(!ParseShardNumber(argv[2],shard)||!ParseShardNumber(argv[3],shard_count)||
@@ -3341,7 +3428,7 @@ int main(int argc,char** argv) {
     return 2;
   }
   unsigned death_mode=0;
-  if(argc==2&&!producer&&!producer_transactions&&(!ParseShardNumber(argv[1],death_mode)||death_mode==0||death_mode>kAffinityModes)){
+  if(argc==2&&!producer&&!producer_transactions&&!producer_unaudited&&(!ParseShardNumber(argv[1],death_mode)||death_mode==0||death_mode>kAffinityModes)){
     std::cerr<<"native enrolled source FAIL unknown argument "<<argv[1]<<'\n';return 2;
   }
   if(argc!=1&&argc!=2&&!sharded){std::cerr<<"native enrolled source FAIL unknown arguments\n";return 2;}
@@ -3352,7 +3439,7 @@ int main(int argc,char** argv) {
   server::ServerProcessCryptoOwner process;
   ParentOwnedArtifacts artifacts;int outcome=0;
   try {
-  if(!death&&!producer&&!producer_transactions&&once)for(unsigned mode=1;mode<=kAffinityModes;++mode){const auto child=::fork();Check(child>=0,"owned native host affinity fixture child");
+  if(!death&&!producer&&!producer_transactions&&!producer_unaudited&&once)for(unsigned mode=1;mode<=kAffinityModes;++mode){const auto child=::fork();Check(child>=0,"owned native host affinity fixture child");
     if(!child){const auto option=std::to_string(mode);::execl(argv[0],argv[0],option.c_str(),nullptr);::_exit(72);}
     int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==73,
         "foreign thread host prerequisite access/move/reset refuses before governed custody");
@@ -3386,6 +3473,7 @@ int main(int argc,char** argv) {
       if(death){run(0,true,process,0,0,death);return;}
       if(producer){for(unsigned profile=0;profile<5;++profile)ProducerNativeSource(profile,process);return;}
       if(producer_transactions){for(unsigned profile=0;profile<5;++profile)ProducerNativeSource(profile,process,true);return;}
+      if(producer_unaudited){for(unsigned profile=0;profile<5;++profile)ProducerNativeSource(profile,process,true,true);return;}
       if(once)PackPolicyFamiliesMatchFixture();
       for(unsigned profile=0;profile<5;++profile)for(bool indexed:{false,true})run(profile,indexed,process);
       for(unsigned variant=1;variant<=10;++variant)run(0,true,process,variant);
