@@ -136,6 +136,16 @@ TransactionInventoryCheck CheckTransactionInventoryImages(u32 page_size, std::sp
   return c;
 }
 
+bool StoredTransactionHorizonsAdmissible(const TipCounters& stored, u64 inventory_next,
+                                         const scratchbird::transaction::mga::LocalTransactionHorizons& projected) noexcept {
+  const auto& h = stored.horizons;
+  return projected.valid && stored.next_transaction == inventory_next &&
+         projected.next_transaction_id.value == inventory_next &&
+         h.oldest_interesting <= projected.oldest_interesting_transaction.value &&
+         h.oldest_active <= projected.oldest_active_transaction.value &&
+         h.oldest_snapshot <= projected.oldest_snapshot_transaction.value;
+}
+
 TransactionInventoryBuildView BuildLocalTransactionInventoryInto(u32 page_size, std::span<const byte> state_images,
                                                                  std::span<const byte> header_images,
                                                                  const TransactionInventoryBuildScratch& scratch) noexcept {

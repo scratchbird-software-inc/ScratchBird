@@ -13,6 +13,7 @@
 #include "native_horizon_root.hpp"
 #include "native_retention_root.hpp"
 #include "transaction/mga/transaction_horizon_projection.hpp"
+#include "transaction_inventory_reader.hpp"
 #include "engine/internal_api/verification/native_startup_catalog_allocation.hpp"
 #include "engine/internal_api/verification/native_startup_root_allocation.hpp"
 #include "engine/internal_api/verification/native_startup_initial_control_allocation.hpp"
@@ -323,11 +324,11 @@ NativeOpenVerificationResult NativeHostedDatabaseRuntime::VerifyStartupDatabaseF
       api::NativeStartupStorageScanObservation scan;scan.source=genesis;
       scan.physical_bytes_read=source.physical_bytes_read;
       if(mga::detail::ProjectValidatedLocalHorizons(view,{},scan.horizons)){error=VE::finding;return;}
-      const auto& stored=lease.counters();
-      if(stored.next_transaction!=inventory.next_local_transaction_id||
-          stored.horizons.oldest_interesting!=scan.horizons.oldest_interesting_transaction.value||
-          stored.horizons.oldest_active!=scan.horizons.oldest_active_transaction.value||
-          stored.horizons.oldest_snapshot!=scan.horizons.oldest_snapshot_transaction.value){error=VE::finding;return;}
+      // SB_TRANSACTION_INVENTORY_WRITER: the stored horizons are written at
+      // BEGIN and trail the projection after COMMIT, ROLLBACK, restart
+      // dead-marking or a crash between BEGIN's writes; stored <= projected.
+      if(!page::StoredTransactionHorizonsAdmissible(lease.counters(),inventory.next_local_transaction_id,scan.horizons)){
+        error=VE::finding;return;}
       for(const auto& entry:inventory.entries){
         if(ActiveState(entry.state))++scan.active_transactions;
         if(UncertainState(entry.state))++scan.in_doubt_transactions;

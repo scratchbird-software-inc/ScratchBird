@@ -25,6 +25,7 @@
 // it does not model a write torn inside one page.
 #include "careful_write.hpp"
 #include "disk_device.hpp"
+#include "../support/careful_write_crash_sink.hpp"
 #include "../support/owned_temp_directory.hpp"
 
 #include <fcntl.h>
@@ -239,27 +240,6 @@ Observation Verify(const std::vector<Page>& pages, const std::string& label) {
   return observation;
 }
 
-// Passes every call to the file sink, but _exits after `limit` writes: before
-// the first write when the limit is 0, otherwise right after the limit-th.
-class CrashAfterWritesSink final : public disk::CarefulWriteSink {
- public:
-  CrashAfterWritesSink(disk::CarefulWriteSink& inner, u32 limit) : inner_(inner), limit_(limit) {}
-  disk::BoundedIoResult WriteAt(u64 offset, std::span<const byte> bytes) override {
-    if (writes_ == limit_) _exit(kPlannedCrash);
-    const auto r = inner_.WriteAt(offset, bytes);
-    if (r.ok() && ++writes_ == limit_) _exit(kPlannedCrash);
-    return r;
-  }
-  disk::BoundedIoResult ReadAt(u64 offset, std::span<byte> bytes) override { return inner_.ReadAt(offset, bytes); }
-  disk::BoundedIoResult Sync() override { return inner_.Sync(); }
-  bool forced_ordered() const noexcept override { return inner_.forced_ordered(); }
-
- private:
-  disk::CarefulWriteSink& inner_;
-  u32 limit_;
-  u32 writes_ = 0;
-};
-
 constexpr u32 kNoCrash = ~u32{0};
 
 [[noreturn]] void RunChild(const std::string& path, u32 limit, CarefulWriteBarrierPolicy policy) {
@@ -270,7 +250,7 @@ constexpr u32 kNoCrash = ~u32{0};
     int code = kChildCompleted;
     {
       disk::FileDeviceCarefulWriteSink file_sink(device);
-      CrashAfterWritesSink sink(file_sink, limit);
+      scratchbird::tests::CrashAfterWritesSink sink(file_sink, limit, kPlannedCrash);
       const auto r = transition.plan.Execute(sink, policy);
       if (!r.ok()) code = kChildPlanFailed;
     }

@@ -5,6 +5,7 @@
 #include "disk_device.hpp"
 #include "filespace_page_zero.hpp"
 #include "transaction_header_page.hpp"
+#include "transaction_horizon.hpp"
 #include "transaction_inventory.hpp"
 #include "transaction_state_page.hpp"
 
@@ -125,5 +126,17 @@ struct TransactionInventoryRead {
 // Reads both chains from the open devices and runs the check. On success the
 // images stay in the backing for the caller (for example the restart pass).
 TransactionInventoryRead ReadTransactionInventory(const TransactionInventoryReadRequest& request) noexcept;
+
+// SB_TRANSACTION_INVENTORY_WRITER (owner Q20 = 1, 2026-11-07): the horizons
+// on the first state page are written when BEGIN allocates a number and are
+// never lowered; COMMIT, ROLLBACK and restart dead-marking do not rewrite them
+// (FirebirdSQL recomputes them at the next start). After any of those, or a
+// crash between BEGIN's writes, they trail what the inventory projects. A
+// reader admits them when the stored Next equals the inventory's Next and each
+// stored OIT, OAT and OST is at most the projected value: a stored horizon may
+// hold back more than needed, never less. The codec already keeps every
+// stored horizon in [1, Next].
+bool StoredTransactionHorizonsAdmissible(const TipCounters& stored, u64 inventory_next,
+                                         const scratchbird::transaction::mga::LocalTransactionHorizons& projected) noexcept;
 
 }  // namespace scratchbird::storage::page
