@@ -6,6 +6,7 @@
 #include "native_management_operation.hpp"
 #include "native_decoded_storage_ranges.hpp"
 #include "uuid.hpp"
+#include "native_verification_classes.hpp"
 #include <algorithm>
 #include <array>
 #include <limits>
@@ -17,13 +18,6 @@ using core::platform::u16;
 using core::platform::u32;
 using core::platform::u64;
 
-enum class NativeVerificationClass : u16 {
-  startup_light=1,startup_full,online_consistency,offline_consistency,maintenance,
-  targeted,cluster,restore,backup_package
-};
-enum class NativeVerificationAuthority : u16 {
-  startup_recovery=1,local_sysarch,cluster_authority,scheduler,restore_operation,administrator_review
-};
 enum class NativeVerificationPhase : u16 {
   admitted=1,boundary_established,identity_verified,allocation_verifying,
   transaction_inventory_verifying,catalog_verifying,record_chain_verifying,
@@ -90,10 +84,6 @@ inline constexpr std::array<Uuid O::*,11> identities{
   &O::operation_uuid,&O::database_uuid,&O::database_lineage_uuid,&O::repair_policy_uuid,
   &O::quarantine_policy_uuid,&O::salvage_policy_uuid,&O::evidence_policy_uuid,
   &O::acting_subject_uuid,&O::snapshot_boundary_uuid,&O::maintenance_boundary_uuid,&O::cluster_uuid};
-template<class T>bool Region(std::span<T> input) noexcept {
-  return storage::disk::detail::DecodedRange(input).valid&&
-      (input.empty()||reinterpret_cast<std::uintptr_t>(input.data())%alignof(T)==0);
-}
 inline bool Terminal(P phase) noexcept {return phase==P::completed||phase==P::failed||phase==P::review_required;}
 inline bool Utf8(std::string_view text) noexcept {
   if(text.size()>4096||!storage::disk::detail::DecodedRange(std::span{text.data(),text.size()}).valid)return false;

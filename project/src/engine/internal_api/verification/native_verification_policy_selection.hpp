@@ -1,7 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
-#include "native_verification_operation.hpp"
+#include "native_verification_classes.hpp"
 #include "native_catalog_cohort_capture.hpp"
 #include "catalog_verification_policy.hpp"
 #include "catalog_evidence_policy.hpp"
