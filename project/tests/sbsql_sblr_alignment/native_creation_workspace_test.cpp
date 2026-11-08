@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "native_creation_workspace.hpp"
+#include "allocation_map_inplace_page.hpp"
 #include "disk_device.hpp"
 #include "physical_mga_cow_store.hpp"
 #include "hash_digest.hpp"
@@ -123,7 +124,12 @@ void Inspect(disk::FileDevice& device,const db::NativeFilespaceInitializationReq
     entry.final_unix_epoch_millis==std::max<u64>(request.creation_utc_millis,creator_begin)&&
     entry.begin_unix_epoch_millis<=entry.final_unix_epoch_millis,
     "real single construction inventory outcome");
-  const std::array<u64,5> coverage{60,124,252,507,1017};
+  // SB_ALLOCATION_MAP_IN_PLACE (owner Q22 = 1): the fixed-root create writes
+  // the in-place allocation map. Pages covered per map page: the largest N
+  // with roundup128(512 + ceil(N/2)) + 128 N <= page size (its fixed header and
+  // mutable unit are 512 bytes, then 4-bit states, then a 128-byte record per
+  // covered page on a 128-byte boundary). The sealed map covered one more.
+  const std::array<u64,5> coverage{59,123,251,506,1016};
   unsigned profile=0;while(disk::kCanonicalFilespacePageProfiles[profile].page_size_bytes!=size)++profile;
   // Page zero, the maps, 13 control pages and the transaction header page.
   const u64 maps=(request.total_pages+coverage[profile]-1)/coverage[profile],used=maps+15;
@@ -182,6 +188,8 @@ void Inspect(disk::FileDevice& device,const db::NativeFilespaceInitializationReq
     }
   }
   Check(allocated==used,"no missing, extra or free control records");
+  for(u64 n=1;n<=maps;++n)
+    Check(page::IsAllocationMapInplaceImage(Read(device,n,size)),"every map page the fixed-root create writes is in place");
   for(u64 n=used;n<z.total_pages;++n){const auto bytes=Read(device,n,size);
     Check(std::all_of(bytes.begin(),bytes.end(),[](byte v){return !v;}),"all physical free bytes are zero");}
   const auto& catalog=*catalog_image.root;
@@ -459,12 +467,13 @@ int main(int argc,char** argv){try{
     Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"cross-map control fixture");
     // The final admission's exact image budget: the maps twice, four controls,
     // and the in-place inventory's header page (SB_TRANSACTION_HEADER_PAGE).
-    const auto required=(2*61+5)*u64{8192};
+    // 3601 pages at 59 per in-place map page: 62 map pages.
+    const auto required=(2*62+5)*u64{8192};
     const auto insufficient=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,large,required-1,*fixture.issuer);
     Check(!insufficient.ok()&&!insufficient.receipt&&insufficient.error==db::NativeCreationWorkspaceError::resource_exhausted&&!device.Size().size_bytes,"final selected admission budget deficit refuses before writes");
     const auto r=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,large,required,*fixture.issuer);
     if(!r.ok())std::cerr<<"large creation error="<<static_cast<int>(r.error)<<" checkpoint="<<static_cast<int>(r.checkpoint_error)<<" selector="<<static_cast<int>(r.selection_error)<<'\n';
-    Check(r.ok()&&r.receipt->map_pages==61,"control allocations span multiple coverage ranges");Inspect(device,large);}
+    Check(r.ok()&&r.receipt->map_pages==62,"control allocations span multiple coverage ranges");Inspect(device,large);}
   {disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"duplicate entropy fixture");
     Arm();repeat_entropy=true;const auto r=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,minimum_budget,*fixture.issuer);repeat_entropy=false;Disarm();
     Check(!r.ok()&&r.error==db::NativeCreationWorkspaceError::identity_failure&&calls[write_call]==0&&device.Size().size_bytes==0,

@@ -1522,6 +1522,17 @@ endif()
   set_tests_properties(sbsql_sblr_alignment_native_fixed_root_readers PROPERTIES
     LABELS "sbsql_sblr_alignment;native_storage;fixed_root;fault_injection"
     TIMEOUT 900)
+  # SB_ALLOCATION_MAP_IN_PLACE: the in-place allocation map family, the dual
+  # family chain reader and the production create's map (owner Q22 = 1).
+  add_executable(sbsql_sblr_alignment_native_allocation_map_inplace native_allocation_map_inplace_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_native_allocation_map_inplace PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_native_allocation_map_inplace PRIVATE sb_storage_database)
+  target_compile_definitions(sbsql_sblr_alignment_native_allocation_map_inplace PRIVATE
+    SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password")
+  add_test(NAME sbsql_sblr_alignment_native_allocation_map_inplace COMMAND sbsql_sblr_alignment_native_allocation_map_inplace)
+  set_tests_properties(sbsql_sblr_alignment_native_allocation_map_inplace PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;allocation_map"
+    TIMEOUT 600)
   # SB_TRANSACTION_INVENTORY_WRITER: in-place BEGIN/COMMIT/ROLLBACK and restart
   # dead-marking on production-created files, one page size per test (owner
   # Q20 = 1, 2026-11-07).

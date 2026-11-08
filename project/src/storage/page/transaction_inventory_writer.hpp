@@ -34,8 +34,8 @@ namespace scratchbird::storage::page {
 // inventory spec's appendix C allocation does: careful write has no two-phase
 // publication for the starting state to protect, and an unused slot below
 // Next is already read as a transaction that crashed while starting.
-// OWNER QUESTION Q21 (asked 2026-11-07, open): this is the recommended
-// option; the other writes the starting word first (one more barrier).
+// Owner ruling Q21 = 1 (2026-11-07): active directly; the spec's starting
+// phase is annotated SB_DRIFT_TIP_STARTING_BEFORE_ACTIVE.
 //
 // COMMIT of n: 1. the header's final state, commit time and completion time;
 // barrier; 2. the state byte: committed, which is the visibility point. A

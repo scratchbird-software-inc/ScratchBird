@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "native_creation_workspace.hpp"
+#include "allocation_map_inplace_page.hpp"
 #include "native_construction_audit.hpp"
 #include "native_creation_catalog_input.hpp"
 #include "native_creation_catalog_layout.hpp"
@@ -82,6 +83,12 @@ u64 Coverage(u64 size) {
   while (((384+(n+1)/2+7)&~u64{7})+128*n>size) --n;
   return n;
 }
+// An encoded in-place allocation map page, in the shape save() takes.
+struct InplaceMapImage {
+  page::NativeAllocationError error=page::NativeAllocationError::invalid_family;
+  std::vector<byte> bytes;
+  bool ok() const noexcept {return error==page::NativeAllocationError::none;}
+};
 }  // namespace
 
 NativeCreationWorkspaceResult InitializeNativeCreationWorkspaceOnOpenDevice(
@@ -139,7 +146,12 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
       }
     }
     const u64 controls=checkpoint_graph?u64{count}:u64{14};
-    const u64 size=b.page_size_bytes,total=request.total_pages,coverage=Coverage(size);
+    // SB_ALLOCATION_MAP_IN_PLACE (owner Q22 = 1): the fixed-root graph writes
+    // the in-place allocation map; the drift-era checkpoint graph keeps the
+    // sealed map, whose digests its checkpoint binds.
+    const u64 size=b.page_size_bytes,total=request.total_pages,
+        coverage=checkpoint_graph?Coverage(size):u64{page::AllocationMapInplaceSlotsPerPage(static_cast<u32>(size))};
+    if(!coverage) return Fail(E::invalid_capacity);
     if(!total||total>std::numeric_limits<u64>::max()/size||
        !disk::CheckFileDeviceExtent(total*size,0).ok()) return Fail(E::invalid_capacity);
     const u64 maps=total/coverage+(total%coverage!=0);
@@ -458,7 +470,23 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
     }
     save(at(horizon),page::EncodeNativeHorizonRoot(h));
     }
-    for(u64 i=maps;i>0;--i) {
+    for(u64 i=maps;i>0&&!checkpoint_graph;--i) {
+      page::AllocationMapInplaceFormat f;f.header=images[i].header;f.object_uuid=map_object;f.sequence=i-1;
+      f.first_page=(i-1)*coverage;f.slots=static_cast<u32>(std::min(coverage,total-f.first_page));f.total_pages=total;
+      f.creator_transaction_uuid=creator;f.creator_local_transaction_id=1;
+      if(i<maps){f.next_page=i+1;f.next_generation=images[i+1].header.page_generation;}
+      std::vector<page::NativeAllocationState> states(f.slots,page::NativeAllocationState::free);
+      std::vector<page::NativeAllocationRecord> records;
+      const auto end=std::min(f.first_page+f.slots,static_cast<u64>(images.size()));
+      for(u64 n=f.first_page;n<end;++n) {
+        const auto& image=images[n];states[n-f.first_page]=page::NativeAllocationState::allocated;
+        records.push_back({n,image.allocation,image.header.page_uuid,image.owner,creator,1,1,0,image.header.page_type});
+      }
+      InplaceMapImage encoded;encoded.bytes.resize(size);
+      encoded.error=page::EncodeAllocationMapInplacePage(f,states,records,encoded.bytes);
+      save(i,std::move(encoded));
+    }
+    for(u64 i=maps;i>0&&checkpoint_graph;--i) {
       page::NativeAllocationMap map;map.header=images[i].header;map.object_uuid=map_object;
       map.map_generation=map.capacity_generation=1;map.total_pages=total;map.first_page=(i-1)*coverage;
       map.creator_transaction_uuid=creator;map.creator_local_transaction_id=1;

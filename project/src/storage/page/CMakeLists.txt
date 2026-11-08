@@ -86,6 +86,7 @@ add_library(sb_storage_page
   transaction_header_page.cpp
   transaction_inventory_reader.cpp
   transaction_inventory_writer.cpp
+  allocation_map_inplace_page.cpp
 )
 
 target_compile_features(sb_storage_page PUBLIC cxx_std_17)

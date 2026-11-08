@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "native_allocation_map.hpp"
+#include "allocation_map_inplace_page.hpp"
 #include "native_allocation_chain_backing.hpp"
 #include "native_decoded_storage_ranges.hpp"
 #include "native_metadata_memory.hpp"
@@ -326,6 +327,12 @@ static NativeAllocationChainView ReadAllocationChainBacked(
     result.retained_image_bytes = retained_bytes;
     std::array<byte, 32> expected_digest = root_sha256 ? *root_sha256 : std::array<byte, 32>{};
     u64 covered = 0;
+    // SB_ALLOCATION_MAP_IN_PLACE (owner Q22 = 1): a chain is wholly sealed or
+    // wholly in place, decided by its first page. The in-place family has no
+    // seal, no digest link and no page-zero counter cross-check, and exists
+    // only as the current bootstrap map (no selected or historical root
+    // binds it by digest). Every sealed check below is unchanged.
+    std::optional<bool> in_place;
     for (;;) {
       if (!slots.insert(ref.page_number).second) return fail(E::chain_mismatch);
       if (z.bootstrap.page_size_bytes > maximum_retained_image_bytes - result.retained_image_bytes)
@@ -339,6 +346,35 @@ static NativeAllocationChainView ReadAllocationChainBacked(
       if (!common.ok()) return fail(E::binding_mismatch);
       if (common.header->flags & 2) return fail(E::cluster_requires_authority);
       if (!page_ids.insert(common.header->page_uuid).second) return fail(E::chain_mismatch);
+      const bool this_in_place = IsAllocationMapInplaceImage(bytes);
+      if (!in_place) in_place = this_in_place;
+      if (*in_place != this_in_place) return fail(E::chain_mismatch);
+      if (*in_place) {
+        if (selected || root_sha256) return fail(E::invalid_reference);
+        const u32 slots = AllocationMapInplaceSlotsPerPage(z.bootstrap.page_size_bytes);
+        if (!slots) return fail(E::invalid_family);
+        const auto decoded = DecodeAllocationMapInplaceInto(bytes, scratch.Array<NativeAllocationState>(slots),
+                                                            scratch.Array<NativeAllocationRecord>(slots), &expected);
+        if (!decoded.ok()) return fail(decoded.error);
+        const auto& map = decoded.view->map;
+        if (map.object_uuid != root->object_uuid || map.total_pages != z.total_pages || map.first_page != covered ||
+            decoded.view->sequence != pages.size())
+          return fail(E::chain_mismatch);
+        if (!pages.empty()) {
+          const auto& head = pages.front().map;
+          if (map.creator_transaction_uuid != head.creator_transaction_uuid ||
+              map.creator_operation_uuid != head.creator_operation_uuid ||
+              map.creator_local_transaction_id != head.creator_local_transaction_id) return fail(E::chain_mismatch);
+        }
+        covered += map.states.size();
+        for (auto state : map.states) ++result.state_counts[static_cast<byte>(state)];
+        result.retained_image_bytes += bytes.size();
+        const auto next = map.next;
+        pages.push_back({map, bytes});
+        if (!next) break;
+        ref = *next;
+        continue;
+      }
       if (!pages.empty() || root_sha256) {
         const auto digest = Digest(bytes, false); if (!digest.ok()) return fail(E::hash_failure);
         if (digest.digest != expected_digest) return fail(E::invalid_integrity);
@@ -367,8 +403,9 @@ static NativeAllocationChainView ReadAllocationChainBacked(
       if (!next) break;
       ref = *next;
     }
-    if (covered != z.total_pages || (!selected&&(result.state_counts[0] + result.state_counts[4] != z.free_pages ||
-        result.state_counts[7] != z.preallocated_pages))) return fail(E::counter_mismatch);
+    if (covered != z.total_pages || (!selected && !in_place.value_or(false) &&
+        (result.state_counts[0] + result.state_counts[4] != z.free_pages ||
+         result.state_counts[7] != z.preallocated_pages))) return fail(E::counter_mismatch);
     const auto allocated = [&](u64 number, const Uuid& id, u64 generation, u32 type, const Uuid& owner) {
       for (const auto& image : pages) {
         const auto& map = image.map;
