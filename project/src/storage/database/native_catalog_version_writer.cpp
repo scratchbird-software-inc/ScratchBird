@@ -124,6 +124,7 @@ const char* CatalogVersionWriteErrorName(CatalogVersionWriteError error) noexcep
     case E::update_conflict: return "update_conflict";
     case E::row_deleted: return "row_deleted";
     case E::invalid_successor: return "invalid_successor";
+    case E::ahead_of_catalog_root: return "ahead_of_catalog_root";
     case E::name_record_unsupported: return "name_record_unsupported";
     case E::relation_full: return "relation_full";
     case E::plan_refused: return "plan_refused";
@@ -341,6 +342,16 @@ CatalogVersionWriteResult WriteCatalogSuccessorVersion(disk::CarefulWriteSink& s
     if (!Follows(base_metadata, request.metadata, request)) {
       result.error = E::invalid_successor;
       return result;
+    }
+    {
+      // A runtime authority binding's payload catalog_generation and
+      // security_epoch equal its metadata's (that family's own rule, checked
+      // above), so this also keeps every binding within the root.
+      const auto& r = *root.root;
+      const auto& m = request.metadata;
+      if (m.catalog_generation > r.catalog_generation || m.schema_epoch > r.schema_epoch ||
+          m.security_epoch > r.security_epoch || m.resource_epoch > r.resource_epoch)
+        return Refuse(E::ahead_of_catalog_root);
     }
     for (const auto& leaf : leaves)
       for (const auto& row : leaf.page.body.rows)

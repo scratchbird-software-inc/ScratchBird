@@ -46,6 +46,7 @@
 #include "native_index_btree_page.hpp"
 #include "catalog_page.hpp"
 #include "catalog_crypto_inline_private_key_policy.hpp"
+#include "catalog_runtime_authority_binding.hpp"
 #include "transaction_inventory_writer.hpp"
 #include "transaction_header_page.hpp"
 #include "careful_write.hpp"
@@ -916,11 +917,74 @@ void Refusals(const Db& b) {
           "cluster authority");
   if (good.metadata.catalog_generation > 0)
     variant([](auto& r) { r.metadata.catalog_generation -= 1; }, CE::invalid_successor, "an earlier catalog generation");
+  // Never ahead of the catalog root, which only the post-commit root rewrite
+  // advances (owner Q24 = 1).
+  {
+    const auto root = pg::DecodeNativeCatalogRoot(PageOf(b.bytes, b.catalog_root.page_number, b.size));
+    Check(root.ok(), "the catalog root decodes");
+    const auto& x = *root.root;
+    variant([&](auto& r) { r.metadata.catalog_generation = x.catalog_generation + 1; }, CE::ahead_of_catalog_root,
+            "a catalog generation above the root's");
+    variant([&](auto& r) { r.metadata.schema_epoch = x.schema_epoch + 1; }, CE::ahead_of_catalog_root,
+            "a schema epoch above the root's");
+    variant([&](auto& r) { r.metadata.security_epoch = x.security_epoch + 1; }, CE::ahead_of_catalog_root,
+            "a security epoch above the root's");
+    variant([&](auto& r) { r.metadata.resource_epoch = x.resource_epoch + 1; }, CE::ahead_of_catalog_root,
+            "a resource epoch above the root's");
+  }
   // The base is the newest committed version: a successor that skips over an
   // in-progress one is refused below in States; here the same request then
   // succeeds unchanged.
   Expect(b, s, path, good, "the unchanged request");
   std::cout << b.name << " refusals page_size=" << b.size << '\n';
+}
+
+// ---- A runtime authority binding never ahead of the root -----------------------------
+// The security reader refuses a binding whose catalog_generation or
+// security_epoch is above the root's; a committed one would leave a file it
+// cannot serve if the server stops before the post-commit root rewrite.
+void BindingAhead(const Db& b) {
+  if (b.name != "production") return;
+  RoleScope scope(b, 5);
+  const auto rel = ReadRelation(b, b.bytes);
+  std::optional<std::pair<Uuid, Uuid>> found;
+  for (const auto& l : rel.leaves)
+    for (const auto& row : l.leaf.body.rows)
+      if (!found && c::IsCatalogRuntimeAuthorityBindingPayload(l.metadata.at(row.version_uuid).record.payload))
+        found = {{row.row_uuid.value, row.version_uuid}};
+  Check(found.has_value(), "the production configuration relation holds a runtime authority binding");
+  const auto root = pg::DecodeNativeCatalogRoot(PageOf(b.bytes, b.catalog_root.page_number, b.size));
+  Check(root.ok(), "the catalog root decodes");
+  const auto path = b.Copy(b.bytes, "binding.db");
+  {
+    Session s(b, path);
+    Begin(*s.w, s.sink(), 2);
+    // That family binds its payload's generation to definition_version and its
+    // catalog_generation and security_epoch to the metadata's: change both.
+    const auto with = [&](auto change) {
+      auto r = Successor(b, rel, found->first, found->second, 2, VersionId(1));
+      auto binding = c::DecodeCatalogRuntimeAuthorityBinding(r.metadata.record.payload);
+      Check(binding.ok(), "the binding decodes");
+      binding.record->generation = r.metadata.definition_version;
+      change(*binding.record);
+      r.metadata.catalog_generation = binding.record->catalog_generation;
+      r.metadata.security_epoch = binding.record->security_epoch;
+      const auto payload = c::EncodeCatalogRuntimeAuthorityBinding(*binding.record);
+      Check(payload.ok(), "the binding encodes");
+      r.metadata.record.payload.assign(payload.bytes.begin(), payload.bytes.end());
+      return r;
+    };
+    Refused(b, s, path, with([&](auto& x) { x.catalog_generation = root.root->catalog_generation + 1; }),
+            CE::ahead_of_catalog_root, "a binding catalog generation above the root's");
+    Refused(b, s, path, with([&](auto& x) { x.security_epoch = root.root->security_epoch + 1; }),
+            CE::ahead_of_catalog_root, "a binding security epoch above the root's");
+    const auto plain = with([](auto&) {});
+    const auto result = Write(b, s.sink(), plain);
+    if (!result.ok()) std::cerr << "binding successor: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+    Check(result.ok(), "the same binding successor within the root's values is written");
+  }
+  fs::remove(path);
+  std::cout << b.name << " binding page_size=" << b.size << '\n';
 }
 
 // ---- Filling the relation -------------------------------------------------------------
@@ -1263,6 +1327,7 @@ int main(int argc, char** argv) {
     for (const Db* b : {production.get(), seeded.get()}) {
       States(*b);
       Refusals(*b);
+      BindingAhead(*b);
       Fill(*b);
       Losses(*b);
       Faults(*b);

@@ -41,6 +41,15 @@ namespace scratchbird::storage::database {
 // must be the version the caller's snapshot saw, else update_conflict. A
 // dropped base refuses row_deleted.
 //
+// Generations and epochs never run ahead of the catalog root: a successor's
+// metadata catalog_generation and schema, security and resource epochs are at
+// most the root's current values (refused ahead_of_catalog_root); a runtime
+// authority binding's own catalog_generation and security_epoch equal its
+// metadata's, so the security reader's rule (never above the root) holds. The root is
+// rewritten in place only after the changing transaction commits (owner Q24 =
+// 1); a crash between that COMMIT and the rewrite then loses only the
+// invalidation, never leaves a committed row the security reader refuses.
+//
 // Not here: inserts (W3b, with their name rows); localized-name records,
 // whose envelope binds the page and slot placement chooses (W3b); waiting;
 // backing out dead versions (sweep).
@@ -58,6 +67,7 @@ enum class CatalogVersionWriteError : std::uint8_t {
   update_conflict,         // the base is not the version the caller saw
   row_deleted,             // the base is a drop
   invalid_successor,       // the new metadata cannot follow the base
+  ahead_of_catalog_root,   // a generation or epoch above the catalog root's
   name_record_unsupported,
   relation_full,           // no reached leaf has room
   plan_refused,            // the careful-write plan refused before any write
