@@ -10,6 +10,7 @@
 // SB_DRIFT_NATIVE_SHADOW_INTENT_HISTORY_LAYER: moved verbatim from database_dirty_manifest.cpp (R0).
 // Deleted with the drift layer (R4).
 
+#include "native_checkpoint_metadata_scratch.hpp"
 #include "database_dirty_manifest.hpp"
 #include "native_checkpoint_inventory_backing.hpp"
 #include "native_current_checkpoint_source_backing.hpp"
@@ -280,7 +281,7 @@ NativeCheckpointRootDeviceRead detail::ReadNativeCheckpointRootBacked(
   try{
     const disk::NativePageReference target{ref.filespace_uuid,ref.page_number,ref.page_generation,ref.page_size_profile_uuid};
     if(!V7(database_uuid)||!V7(ref.object_uuid)||ref.kind!=9||ref.page_type!=0x300||!RefValid(target)||&observation.device()!=&device)return fail(Error::invalid_reference);
-    detail::NativeMetadataScratch scratch{&resource};const auto guard=device.AcquireOperationGuard();
+    detail::NativeCheckpointMetadataScratch scratch{&resource};const auto guard=device.AcquireOperationGuard();
     const disk::FilespaceBootstrapBinding binding{database_uuid,ref.filespace_uuid,ref.page_size_profile_uuid};
     const auto read=[&](u64 offset,void* bytes,std::size_t n){auto io=observation.ReadAt(offset,bytes,n);
       out.io_status=io.status;out.io_diagnostic=std::move(io.diagnostic);

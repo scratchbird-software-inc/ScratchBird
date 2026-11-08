@@ -1,7 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
-#include "native_selected_checkpoint_readonly.hpp"
+#include "native_page_chain_readonly.hpp"
 
 namespace scratchbird::engine::internal_api {
 // Pure comparison, never an allocation grant. The owning reader supplies the

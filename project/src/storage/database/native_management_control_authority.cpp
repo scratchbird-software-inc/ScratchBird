@@ -1,5 +1,6 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
+#include "native_checkpoint_metadata_scratch.hpp"
 #include "native_management_control_authority.hpp"
 #include "native_control_allocation_backing.hpp"
 #include "native_management_history_backing.hpp"
@@ -24,7 +25,7 @@ using E=NativeManagementControlAuthorityError;
 using Image=std::span<const byte>;
 using Images=std::span<const Image>;
 using Pages=std::pmr::vector<Image>;
-using Scratch=detail::NativeMetadataScratch;
+using Scratch=detail::NativeCheckpointMetadataScratch;
 namespace mga=transaction::mga;
 using State=page::NativeAllocationState;
 using Batch=disk::FileDevice::ReadLatencyBatch;

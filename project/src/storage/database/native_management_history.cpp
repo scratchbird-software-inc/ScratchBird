@@ -1,5 +1,6 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
+#include "native_checkpoint_metadata_scratch.hpp"
 #include "native_management_history.hpp"
 #include "native_management_history_backing.hpp"
 #include "native_filespace_directory.hpp"
@@ -19,7 +20,7 @@ namespace scratchbird::storage::database {
 namespace {
 using E=NativeManagementHistoryError;
 using Image=std::span<const byte>;
-using Scratch=detail::NativeMetadataScratch;
+using Scratch=detail::NativeCheckpointMetadataScratch;
 using namespace core::platform;
 void Require(bool ok,E error){if(!ok)throw error;}
 bool V7(const Uuid& id){return core::uuid::IsEngineIdentityUuid(id);}

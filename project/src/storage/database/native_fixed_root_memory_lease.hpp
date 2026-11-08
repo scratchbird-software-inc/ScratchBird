@@ -28,7 +28,7 @@
 // Read-only: nothing is written and no lock is taken beyond the device
 // operation guards a read needs. Thread-affine: the lease may be used only on
 // the thread that acquired it.
-#include "native_selected_checkpoint_readonly.hpp"
+#include "native_page_chain_readonly.hpp"
 #include "native_allocation_chain_backing.hpp"
 #include "native_directory_chain_backing.hpp"
 #include "native_inventory_chain_backing.hpp"

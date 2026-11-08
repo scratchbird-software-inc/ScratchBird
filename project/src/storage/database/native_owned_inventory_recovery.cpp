@@ -1,5 +1,6 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
+#include "native_checkpoint_metadata_scratch.hpp"
 #include "native_owned_inventory_recovery.hpp"
 #include "hash_digest_parts.hpp"
 
@@ -51,7 +52,7 @@ NativeOwnedInventoryRecoveryResult NativeOwnedInventoryRecovery::PrepareImpl() n
     auto block=workspace_.Allocate(limits_.workspace_backing_bytes,alignof(std::max_align_t));
     Require(block.ok(),E::resource_exhausted);
     detail::NativeMetadataMemory resource({static_cast<byte*>(block.pointer),block.bytes});
-    detail::NativeMetadataScratch scratch{&resource};const auto size=reservation_.page_bytes_;
+    detail::NativeCheckpointMetadataScratch scratch{&resource};const auto size=reservation_.page_bytes_;
     scratch_=scratch.Array<byte>(size);
     const auto read=[&](const disk::NativePageReference& ref,std::span<byte> bytes){
       Require(ref.filespace_uuid==reservation_.primary_&&ref.page_size_profile_uuid==reservation_.profile_&&

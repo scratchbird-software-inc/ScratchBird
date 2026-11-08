@@ -5,7 +5,6 @@
 #include "native_allocation_map.hpp"
 #include "transaction_inventory_page.hpp"
 #include "native_filespace_directory.hpp"
-#include "native_management_operation.hpp"
 #include "database_dirty_manifest.hpp"
 
 namespace scratchbird::storage::database::detail {
@@ -32,11 +31,6 @@ struct NativeMetadataScratch:disk::detail::NativeMetadataScratch {
     return page::DecodeNativeFilespaceDirectoryInto(raw,Array<page::NativeFilespaceDirectoryRecord>(count),Array<Uuid>(count));
   }
   auto PageZero(Image raw){return disk::DecodeFilespacePageZeroInto(raw,Array<disk::FilespaceRootReference>(32));}
-  auto Checkpoint(Image raw){return DecodeNativeCheckpointRootInto(raw,Array<NativeCheckpointRootReference>(16));}
-  NativeManagementOperationViewWorkspace OperationWorkspace(Image raw){
-    const auto count=raw.size()>=512?std::min<std::size_t>(LoadLittle32(raw.data()+456),(raw.size()-512)/256):0;
-    return {Array<NativeManagementStepView>(count),Array<Uuid>(2*count+7)};
-  }
 
 };
 } // namespace scratchbird::storage::database::detail
