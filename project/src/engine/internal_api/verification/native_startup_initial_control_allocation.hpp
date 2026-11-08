@@ -28,8 +28,12 @@ inline NativeStartupInitialControlCheck CheckNativeStartupInitialControlAllocati
   if(!capture.has_initial_controls()||!capture.has_physical_pages()||!chain.ok()||
       capture.source()->source_generation!=1||capture.filespaces().size()!=1||identity.filespaces!=1||
       !identity.primary_root_count||identity.primary_root_count>identity.primary_roots.size())return {};
+  // The creator is transaction 1, committed. Later transactions may exist:
+  // the in-place transaction writer (SB_TRANSACTION_INVENTORY_WRITER) adds
+  // them without touching the creator's pages; until allocation from the map
+  // exists every record is still the creator's, checked below.
   const auto inventory=capture.inventory();
-  if(!inventory||inventory->inventory.entries.size()!=1||
+  if(!inventory||inventory->inventory.entries.empty()||inventory->inventory.entries.front().identity.local_id.value!=1||
       !transaction::mga::HasCommittedInventoryOutcome(inventory->inventory.entries.front()))return {};
   const auto creator=inventory->inventory.entries.front().identity;
   const auto& member=capture.filespaces().front();

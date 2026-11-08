@@ -21,6 +21,8 @@
 #include "native_construction_audit.hpp"
 #include "catalog_schema_creation.hpp"
 #include "admitted_datatype_cohort.hpp"
+#include "transaction_inventory_writer.hpp"
+#include "native_fixed_root_memory_lease.hpp"
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <charconv>
@@ -2867,7 +2869,14 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
 // and limits are the variant-0 sequence of EnrolledNativeSource. Management
 // definition, policy resolution and the startup transaction are later stages,
 // not claimed here.
-void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& process) {
+// transactions: SB_TRANSACTION_INVENTORY_WRITER (in-place writes W1c). The
+// in-place transaction writer runs on the produced file before the server
+// opens it, leaving what a server that stopped or crashed with a transaction
+// in progress leaves: transaction 2 committed, 3 in progress, and the stored
+// horizons written at BEGIN 3, which the COMMIT of 2 does not rewrite, so they
+// trail the projection. Open verification must admit that file; the stages
+// after it assume a freshly created file and are not run.
+void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& process,bool transactions=false) {
   scratchbird::tests::OwnedTempDirectory artifacts;
   const auto path=(artifacts.path()/"producer-native-node").string();
   const u64 budget=db::NativeHostedSourceBackingBytes(sizes[profile]);
@@ -2888,6 +2897,35 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
   if(!made.ok())std::cerr<<"producer error="<<int(made.error)<<" policy="<<int(made.policy_error)<<" workspace="
       <<int(made.workspace_error)<<" profile="<<profile<<'\n';
   Check(made.ok()&&created.Close().ok(),"the production producer writes the database and its descriptor retires");
+  if(transactions){
+    namespace tip=scratchbird::storage::page;
+    disk::FilespaceRootReference state_root;
+    {
+      disk::FileDevice device;
+      Check(device.Open(path,disk::FileOpenMode::open_existing_read_only).ok(),"read-only open of the produced file");
+      const std::vector<disk::NativeFilespaceDevice> files{{made.receipt->filespace_uuid,Profile(profile),&device}};
+      std::vector<platform::byte> backing(64u<<20);
+      auto fixed=db::AcquireNativeFixedRootBackedLease(made.receipt->database_uuid,files,made.receipt->filespace_uuid,
+          {256ull*sizes[profile],backing.size()},backing);
+      Check(fixed.ok()&&(*fixed.lease).Root(4),"page zero names the produced transaction-state chain");
+      state_root=*(*fixed.lease).Root(4);fixed.lease.Reset();
+      Check(device.Close().ok(),"close the read-only open");
+    }
+    disk::FileDevice device;
+    Check(device.Open(path,disk::FileOpenMode::open_existing).ok(),"writable open of the produced file");
+    {
+      disk::FileDeviceCarefulWriteSink sink(device);
+      tip::TransactionWriterBinding binding;binding.database_uuid=made.receipt->database_uuid;binding.state_root=state_root;
+      tip::TransactionInventoryWriter writer(binding);
+      tip::TransactionHeaderRecord second,third;second.transaction_uuid=Id(240);third.transaction_uuid=Id(241);
+      const auto now=[]{return u64(std::chrono::duration_cast<std::chrono::nanoseconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count());};
+      Check(writer.Restart(sink).ok()&&writer.Begin(sink,second).transaction_order==2u&&
+          writer.Begin(sink,third).transaction_order==3u&&writer.Commit(sink,2,now()).ok()&&!writer.failed(),
+          "the in-place writer commits 2 and leaves 3 in progress on the produced file");
+    }
+    Check(device.Close().ok(),"close the writer's device");
+  }
   // SB_OPEN_VERIFICATION_READ_ONLY: nothing between create and the first
   // startup transaction may write the file. Compare every byte.
   const auto read_file=[&]{std::ifstream in(path,std::ios::binary);return std::vector<char>(std::istreambuf_iterator<char>(in),{});};
@@ -2995,7 +3033,7 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
    Check(short_map.error==OpenError::invalid_request&&over_policy.error==OpenError::policy_refused&&
        !read.open_verification()&&read_file()==created_bytes,
        "open verification refuses unusable limits before reading, retains nothing and writes nothing");}
-  if(profile==0){
+  if(profile==0&&!transactions){
     // Damage one byte of the primary's page zero on disk. Verification must
     // report a finding, retain nothing and write nothing; restoring the byte
     // restores a clean verification.
@@ -3037,10 +3075,17 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
       opened.observation->identity.system_state.mode==db::NativeDatabaseMode::online&&
       opened.observation->identity.system_state.flags==0&&
       opened.observation->allocation.filespaces==1&&opened.observation->allocation.catalog_pages>0&&
-      opened.observation->inventory.transactions==1&&opened.observation->inventory.active_transactions==0&&
+      opened.observation->inventory.transactions==(transactions?3u:1u)&&
+      opened.observation->inventory.active_transactions==(transactions?1u:0u)&&
       opened.observation->inventory.in_doubt_transactions==0&&opened.observation->inventory.horizon_records==0&&
       opened.observation->routes.routes==2,
       "the opened file verifies read-only before any startup transaction: identity, allocation, inventory, catalog routes");
+  if(transactions){
+    Check(read_file()==created_bytes,"open verification of the written file writes nothing");
+    std::cout<<"producer transactions profile="<<profile<<" verified transactions="<<opened.observation->inventory.transactions
+        <<" active="<<opened.observation->inventory.active_transactions<<'\n';
+    return;
+  }
   // Owner ruling 2026-11-06 (Q17): a creator page that no root, catalog page
   // or control page reaches is wasted space, reported and never refused. The
   // creator's original allocation is rebuilt from what the verification and
@@ -3233,10 +3278,12 @@ bool ParseShardNumber(const char* text,unsigned& value){
 int main(int argc,char** argv) {
   // Arguments: none (every case), "producer" (only the production-producer
   // acceptance stage, its own ctest entry so it neither lengthens nor depends
-  // on the fixture cases), "shard <k> <count>" (one fixture shard), or an
+  // on the fixture cases), "producer-transactions" (that stage's open
+  // verification of a file the in-place transaction writer changed), "shard <k> <count>" (one fixture shard), or an
   // affinity child's positive mode number. Anything else is refused, so a
   // mistyped argument cannot silently run the whole fixture instead.
   const bool producer=argc==2&&std::string_view(argv[1])=="producer";
+  const bool producer_transactions=argc==2&&std::string_view(argv[1])=="producer-transactions";
   const bool sharded=argc==4&&std::string_view(argv[1])=="shard";
   unsigned shard=0,shard_count=0;
   if(sharded&&(!ParseShardNumber(argv[2],shard)||!ParseShardNumber(argv[3],shard_count)||
@@ -3245,7 +3292,7 @@ int main(int argc,char** argv) {
     return 2;
   }
   unsigned death_mode=0;
-  if(argc==2&&!producer&&(!ParseShardNumber(argv[1],death_mode)||death_mode==0||death_mode>kAffinityModes)){
+  if(argc==2&&!producer&&!producer_transactions&&(!ParseShardNumber(argv[1],death_mode)||death_mode==0||death_mode>kAffinityModes)){
     std::cerr<<"native enrolled source FAIL unknown argument "<<argv[1]<<'\n';return 2;
   }
   if(argc!=1&&argc!=2&&!sharded){std::cerr<<"native enrolled source FAIL unknown arguments\n";return 2;}
@@ -3256,7 +3303,7 @@ int main(int argc,char** argv) {
   server::ServerProcessCryptoOwner process;
   ParentOwnedArtifacts artifacts;int outcome=0;
   try {
-  if(!death&&!producer&&once)for(unsigned mode=1;mode<=kAffinityModes;++mode){const auto child=::fork();Check(child>=0,"owned native host affinity fixture child");
+  if(!death&&!producer&&!producer_transactions&&once)for(unsigned mode=1;mode<=kAffinityModes;++mode){const auto child=::fork();Check(child>=0,"owned native host affinity fixture child");
     if(!child){const auto option=std::to_string(mode);::execl(argv[0],argv[0],option.c_str(),nullptr);::_exit(72);}
     int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==73,
         "foreign thread host prerequisite access/move/reset refuses before governed custody");
@@ -3289,6 +3336,7 @@ int main(int argc,char** argv) {
     Check(process.WithProviderScope([&]{
       if(death){run(0,true,process,0,0,death);return;}
       if(producer){for(unsigned profile=0;profile<5;++profile)ProducerNativeSource(profile,process);return;}
+      if(producer_transactions){for(unsigned profile=0;profile<5;++profile)ProducerNativeSource(profile,process,true);return;}
       if(once)PackPolicyFamiliesMatchFixture();
       for(unsigned profile=0;profile<5;++profile)for(bool indexed:{false,true})run(profile,indexed,process);
       for(unsigned variant=1;variant<=10;++variant)run(0,true,process,variant);

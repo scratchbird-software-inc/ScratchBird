@@ -3975,6 +3975,13 @@ add_test(NAME sbsql_sblr_alignment_native_local_service_enrollment_producer
 set_tests_properties(sbsql_sblr_alignment_native_local_service_enrollment_producer PROPERTIES
   LABELS "sbsql_sblr_alignment;native_storage;native_service_enrollment;native_database_create"
   TIMEOUT 900)
+# SB_TRANSACTION_INVENTORY_WRITER: open verification of a produced file after the
+# in-place transaction writer changed it (in-place writes W1c), every profile.
+add_test(NAME sbsql_sblr_alignment_native_local_service_enrollment_producer_transactions
+  COMMAND sbsql_sblr_alignment_native_local_service_enrollment producer-transactions)
+set_tests_properties(sbsql_sblr_alignment_native_local_service_enrollment_producer_transactions PROPERTIES
+  LABELS "sbsql_sblr_alignment;native_storage;native_service_enrollment;native_database_create;transaction_inventory"
+  TIMEOUT 900)
 add_executable(sbsql_sblr_alignment_native_runtime_authorization_projection
   native_runtime_authorization_projection_test.cpp)
 target_compile_features(sbsql_sblr_alignment_native_runtime_authorization_projection PRIVATE cxx_std_23)
