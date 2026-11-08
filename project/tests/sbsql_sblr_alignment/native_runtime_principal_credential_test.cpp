@@ -186,11 +186,9 @@ struct CredentialNativeFixture {
       if(invalid)std::cerr<<"credential metadata role="<<role+1<<" variant="<<int(variant)<<" detail="<<invalid->detail<<'\n';
       Check(!invalid,"complete native credential family/common metadata before physical construction");}
     const auto path=(artifacts.path()/"native-credential").string();Check(device.Open(path,disk::FileOpenMode::create_new).ok(),"create real native credential fixture");
-    // SB_TRANSITIONAL_CHECKPOINT_GRAPH: this fixture's scenarios publish
-    // successor catalog states through the checkpoint and selectors (drift
-    // layer); delete with that layer (R4). The production path (runtime
-    // security over the fixed-root lease) is covered by the enrollment chain.
-    request.genesis_graph=db::NativeCreationGenesisGraph::transitional_checkpoint;
+    // SB_NATIVE_FIXED_ROOT (in-place writes W4b): the production create's
+    // fixed-root graph; every reader below goes through page zero's roots.
+    request.genesis_graph=db::NativeCreationGenesisGraph::fixed_roots;
     const auto made=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,request,seed,indexes,budget,issuer);
     if(!made.ok())std::cerr<<"credential fixture creation="<<int(made.error)<<" variant="<<int(variant)<<" profile="<<p
       <<" checkpoint="<<int(made.checkpoint_error)<<" selection="<<int(made.selection_error)
@@ -260,8 +258,8 @@ template<class Work>void OnActualSource(CredentialNativeFixture& fixture,Work&& 
   auto prepared=server::PrepareNativeRuntimePrincipalCredential(limits,memory.memory,memory.binding);Check(prepared.ok(),"both readers admitted before guards");
   CredentialCustody custody(custody_mismatch,wrong_password,derived_bytes,derived_database);
   const std::array<disk::NativeFilespaceDevice,1> devices{{{Id(2),Profile(fixture.profile),&fixture.device}}};
-  auto selected=db::AcquireNativeSelectedCheckpointMemoryLease(Id(1),devices,Id(2),{fixture.budget,32*1024*1024},source_memory.memory,source_memory.binding);
-  Check(selected.ok(),"actual selected-native checkpoint/inventory lease");
+  auto selected=db::AcquireNativeFixedRootMemoryLease(Id(1),devices,Id(2),{fixture.budget,32*1024*1024},source_memory.memory,source_memory.binding);
+  Check(selected.ok(),"actual fixed-root lease over the in-place inventory");
   auto request=fixture.Request();
   work(request,selected.lease,prepared.workspace,*custody.lease,custody.derived);
   selected.lease.Reset();custody.lease.reset();prepared.workspace={};
@@ -292,8 +290,8 @@ template<class Work>void OnActualWriterSource(CredentialNativeFixture& fixture,W
   Check(adopted.ok(),"actual writable primary adopted with complete real native checkpoint");
   auto operation=Writer::TryBeginOperation(adopted.writer,Id(234));Check(operation.ok(),"real reserved writer operation before selected inspection");
   CredentialCustody custody(0,wrong_password);
-  auto selected=operation.operation.ReadWithMemory({fixture.budget,32*1024*1024},reading.memory,reading.binding);
-  Check(selected.ok()&&selected.lease.operation_uuid()==Id(234),"restricted selected reader retains exact writer reservation");
+  auto selected=operation.operation.ReadFixedRootWithMemory({fixture.budget,32*1024*1024},reading.memory,reading.binding);
+  Check(selected.ok()&&selected.lease.operation_uuid()==Id(234),"restricted fixed-root reader retains exact writer reservation");
   auto request=fixture.Request();work(request,selected.lease,prepared.workspace,*custody.lease,custody.derived,
       operation.operation,adopted.writer,custody);
   selected.lease.Reset();operation.operation.Reset();custody.lease.reset();prepared.workspace={};
@@ -384,7 +382,7 @@ void WriterCredentials(unsigned profile,bool indexed,int death_mode=0) {
 }
 // fixed: the direct read goes through page zero's fixed roots instead of the
 // selected checkpoint. The composed startup read always uses page zero.
-void HostedCredentials(unsigned profile,bool indexed,bool compose=false,bool fixed=false) {
+void HostedCredentials(unsigned profile,bool indexed,bool compose=false) {
   using Host=server::NativeHostedDatabaseCustody;
   CredentialNativeFixture fixture(profile,indexed);
   const db::NativeCatalogRelationMemoryLimits limits{Profile(profile),1,16,64,64,{4,16*static_cast<std::size_t>(sizes[profile])}};
@@ -404,17 +402,15 @@ void HostedCredentials(unsigned profile,bool indexed,bool compose=false,bool fix
       persistent.memory,persistent.binding,transient.memory,transient.binding).ok(),"host adopts full actual native checkpoint and original writer capability");
   auto operation=Host::TryBeginOperation(hosted.custody,Id(234));Check(operation.ok(),"hosted operation before credential inspection");
   CredentialCustody custody;
-  Host::ReadResult selected;Host::FixedRootReadResult fixed_root;
+  Host::FixedRootReadResult fixed_root;
   auto result=[&]() -> CredentialResult {
-    if(!compose&&fixed){
+    // The hosted direct read goes through page zero's roots (W4b: the
+    // checkpoint-era selected reader of the same custody is gone with the
+    // fixed-root fixture).
+    if(!compose){
       fixed_root=operation.operation.ReadFixedRootWithMemory({fixture.budget,32*1024*1024},reading.memory,reading.binding);
       Check(fixed_root.ok(),"actual hosted native fixed-root reader");
       return Verify(fixture.Request(),fixed_root.lease,prepared.workspace,*custody.lease,custody.derived);
-    }
-    if(!compose){
-      selected=operation.operation.ReadWithMemory({fixture.budget,32*1024*1024},reading.memory,reading.binding);
-      Check(selected.ok(),"actual hosted native selected reader");
-      return Verify(fixture.Request(),selected.lease,prepared.workspace,*custody.lease,custody.derived);
     }
     // The production composition must import protected material before it
     // obtains any selected-checkpoint device guards. Release the fixture's
@@ -460,11 +456,11 @@ void HostedCredentials(unsigned profile,bool indexed,bool compose=false,bool fix
         "composed protected-source acquisition and native verification retain the same original hosted operation");
     return std::move(*composed.comparison);
   }();
-  Check(result.ok()&&!selected.lease&&!fixed_root.lease&&!prepared.workspace&&!custody.lease->binding()&&Zero(custody.derived),
+  Check(result.ok()&&!fixed_root.lease&&!prepared.workspace&&!custody.lease->binding()&&Zero(custody.derived),
       "private native comparison consumes hosted reader without fabricating activation or rights");
-  // The catalog is reached through page zero's catalog root (kind 2) on the
-  // fixed-root source, through the selected checkpoint (kind 9) otherwise.
-  Check(result.lease->selected_catalog().checkpoint.kind==(fixed||compose?2:9)&&result.lease->selected_catalog().catalog_generation>0,
+  // The catalog is reached through page zero's catalog root (kind 2), the
+  // only source a fixed-root file has.
+  Check(result.lease->selected_catalog().checkpoint.kind==2&&result.lease->selected_catalog().catalog_generation>0,
       "the catalog observation names the root it was reached through");
   const auto original_owner=std::weak_ptr(route.lock);const auto host_owner=std::weak_ptr(hosted.custody);
   operation.operation.Reset();hosted.custody.reset();route.lock.reset();
@@ -723,8 +719,6 @@ int CredentialMain(int argc,char** argv){
     for(unsigned profile=0;profile<5;++profile)for(bool indexed:{false,true})WriterCredentials(profile,indexed);
     for(unsigned profile=0;profile<5;++profile)for(bool indexed:{false,true})HostedCredentials(profile,indexed);
     for(unsigned profile=0;profile<5;++profile)for(bool indexed:{false,true})HostedCredentials(profile,indexed,true);
-    // The composed read above always uses page zero; the direct read also on page zero:
-    for(unsigned profile:{0u,4u})for(bool indexed:{false,true})HostedCredentials(profile,indexed,false,true);
     Refusals(*foreign);SelectionRefusals();PreparationFaults();});
   // No implicit process fallback: construct/read selected source under a real
   // database scope, then explicitly execute the gate without an active scope.

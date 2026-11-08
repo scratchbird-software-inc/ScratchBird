@@ -6,6 +6,7 @@
 #undef SB_NATIVE_STORAGE_FIXTURE_WITHOUT_MAIN
 #include "security/native_runtime_security_observation.hpp"
 #include "native_creation_workspace.hpp"
+#include "native_catalog_version_writer.hpp"
 #include "bootstrap_policy_fixture.hpp"
 #include "../support/owned_temp_directory.hpp"
 
@@ -112,15 +113,45 @@ struct SecurityFixture {
       Check(!invalid,"complete actual family/common metadata before native security fixture construction");
     }
     const auto path=(artifacts.path()/"native-security").string();Check(device.Open(path,disk::FileOpenMode::create_new).ok(),"actual new native security filespace");
-    // SB_TRANSITIONAL_CHECKPOINT_GRAPH: this fixture's scenarios publish
-    // successor catalog states through the checkpoint and selectors (drift
-    // layer); delete with that layer (R4). The production path (runtime
-    // security over the fixed-root lease) is covered by the enrollment chain.
-    request.genesis_graph=db::NativeCreationGenesisGraph::transitional_checkpoint;
+    // SB_NATIVE_FIXED_ROOT (in-place writes W4b): the production create's
+    // fixed-root graph. Scenarios change the file in place as the engine does:
+    // the transaction inventory writer (W1), the catalog version writer (W3a)
+    // and the post-commit catalog root advance (W4a). States no standalone
+    // writer produces are forged with the production codecs, each labelled.
+    request.genesis_graph=db::NativeCreationGenesisGraph::fixed_roots;
     const auto made=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,request,seed,indexes,budget,issuer);
     if(!made.ok())std::cerr<<"native security fixture creation="<<int(made.error)<<" profile="<<p<<" variant="<<variant<<'\n';
     Check(made.ok(),"actual native security/configuration creation in their declared roles");receipt=*made.receipt;
     Check(device.Close().ok()&&device.Open(path,disk::FileOpenMode::open_existing).ok(),"independent physical native security reopen");
+  }
+  // Page zero's catalog (2), transaction-state (4) and route (6, 7) roots.
+  struct FixedRoots{disk::FilespaceRootReference catalog,state,configuration,security;};
+  static FixedRoots RootsOf(disk::FileDevice& device) {
+    const auto zero=disk::ReadFilespacePageZeroFromOpenDevice(device);Check(zero.ok(),"page zero of the fixed-root fixture");
+    FixedRoots r;
+    for(const auto& root:zero.record->roots){if(root.kind==2)r.catalog=root;if(root.kind==4)r.state=root;
+      if(root.kind==6)r.configuration=root;if(root.kind==7)r.security=root;}
+    Check(r.catalog.kind==2&&r.state.kind==4&&r.configuration.kind==6&&r.security.kind==7,"page zero names the catalog, state and route roots");
+    return r;
+  }
+  static page::TransactionWriterBinding TxBinding(const FixedRoots& r) {
+    page::TransactionWriterBinding b;b.database_uuid=Id(1);b.state_root=r.state;return b;
+  }
+  static db::CatalogVersionWriterBinding CvBinding(const FixedRoots& r) {
+    db::CatalogVersionWriterBinding b;b.database_uuid=Id(1);b.catalog_root=r.catalog;b.state_root=r.state;
+    b.configuration_root=r.configuration;b.security_root=r.security;return b;
+  }
+  // FORGED (production codec): a state word the standalone writer never
+  // writes. prepared needs local prepare enabled; limbo is cluster-only and
+  // must fail closed (specification chapter 4). The reader must resolve both.
+  static void ForgeStateWord(disk::FileDevice& device,unsigned profile,const FixedRoots& r,u64 order,page::TipStateCode code) {
+    const auto at=page::LocateTransactionStateSlot(sizes[profile],order);
+    Check(at.has_value()&&at->tip_sequence==0,"the forged slot is on the first state page");
+    std::vector<byte> image(sizes[profile]);const auto offset=r.state.page_number*u64{sizes[profile]};
+    Check(device.ReadAt(offset,image.data(),image.size()).ok(),"read the state page to forge");
+    const auto edit=page::SetTransactionStateCode(image,at->slot,code);Check(edit.ok(),"the forged state word");
+    Check(device.WriteAt(offset+edit.unit_offset,image.data()+edit.unit_offset,page::kTransactionStateWriteUnitBytes).ok()&&
+        device.Sync().ok(),"the forged state word persists");
   }
   runtime_security::NativeRuntimeSecurityReadRequest Request()const {
     runtime_security::NativeRuntimeSecurityReadRequest r;
@@ -151,94 +182,57 @@ struct SecurityFixture {
     const auto io=device.WriteAt(leaf.header.page_number*u64{sizes[profile]},bytes.data(),bytes.size());
     Check(io.ok()&&io.bytes_transferred==bytes.size()&&device.Sync().ok(),"future binding fixture persisted before native source admission");
   }
-  // Independent byte fixture, not a production policy/catalog mutation. Update
-  // the actual selected root AND its checkpoint/selector commitments; changing
-  // only a binding payload cannot establish a new current generation.
+  // SB_CATALOG_ROOT_ADVANCE (owner Q24 = 1): a committed transaction, then the
+  // catalog root and both route roots advanced in place, as the engine does
+  // after a catalog change commits. The checkpoint era also built a retained
+  // predecessor root and checked the root history range; Q24 removed that
+  // history (no predecessor is written), so that part is gone by ruling.
   void SelectedCatalogEpochs(u64 catalog_generation,u64 security_epoch,u64 schema_epoch=1,u64 resource_epoch=0) {
     SelectedCatalogEpochsOnDevice(device,profile,budget,catalog_generation,security_epoch,schema_epoch,resource_epoch);
   }
   static void SelectedCatalogEpochsOnDevice(disk::FileDevice& device,unsigned profile,u64 budget,
       u64 catalog_generation,u64 security_epoch,u64 schema_epoch=1,u64 resource_epoch=0) {
-    const std::vector<disk::NativeFilespaceDevice> devices{{Id(2),Profile(profile),&device}};
-    const auto selected=db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),devices,Id(2),budget);
-    Check(selected.ok(),"actual selected catalog generation fixture base");
-    auto checkpoint=*selected.checkpoint_inventory.checkpoint;
-    const auto root=std::find_if(checkpoint.roots.begin(),checkpoint.roots.end(),[](const auto& r){return r.role==5;});
-    Check(root!=checkpoint.roots.end(),"actual selected catalog root identity");
-    const auto& ref=root->page;
-    const disk::FilespaceRootReference target{2,root->page_type,ref.filespace_uuid,ref.page_number,
-        ref.page_generation,ref.page_size_profile_uuid,root->object_uuid};
-    const auto loaded=page::ReadNativeCatalogRootFromOpenDevice(device,Id(1),target);
-    Check(loaded.ok(),"actual complete catalog root before independent epoch fixture");
-    Check(catalog_generation==2&&loaded.root->catalog_generation==1,
-        "independent epoch fixture constructs an exact generation-two successor");
-    auto predecessor=*loaded.root;predecessor.header.page_number=250;predecessor.header.page_uuid=Id(247);
-    const auto predecessor_bytes=RootOracle(predecessor);
-    Check(page::DecodeNativeCatalogRoot(predecessor_bytes).ok(),"actual retained generation-one predecessor image");
-    auto maps=selected.allocation.pages;bool allocated=false;
-    for(auto& image:maps){auto& m=*image.map;
-      if(250<m.first_page||250-m.first_page>=m.states.size())continue;
-      Check(m.states[250-m.first_page]==page::NativeAllocationState::free,"actual free predecessor page before fixture allocation");
-      m.states[250-m.first_page]=page::NativeAllocationState::allocated;
-      m.records.push_back({250,Id(246),predecessor.header.page_uuid,predecessor.object_uuid,
-          predecessor.creator_transaction_uuid,predecessor.creator_local_transaction_id,predecessor.header.page_generation,0,5});
-      std::sort(m.records.begin(),m.records.end(),[](const auto& a,const auto& b){return a.page_number<b.page_number;});allocated=true;
-    }
-    Check(allocated,"actual allocation cohort owns retained predecessor");
-    for(std::size_t i=maps.size();i-- >0;){auto& m=*maps[i].map;
-      if(i+1<maps.size())m.next_sha256=WholeRootHash(maps[i+1].bytes);
-      const auto canonical_map=page::EncodeNativeAllocationMap(m);Check(canonical_map.ok(),"actual predecessor allocation-map framing");
-      maps[i].bytes=AllocationOracle(m);Check(maps[i].bytes==canonical_map.bytes,"independent complete predecessor allocation oracle");
-    }
-    auto changed=*loaded.root;changed.catalog_generation=catalog_generation;
-    changed.security_epoch=security_epoch;changed.schema_epoch=schema_epoch;changed.resource_epoch=resource_epoch;
-    changed.predecessor=PageRef(predecessor);changed.predecessor_sha256=WholeRootHash(predecessor_bytes);
-    const auto canonical=page::EncodeNativeCatalogRoot(changed);Check(canonical.ok(),"actual root epoch field validation");
-    const auto root_bytes=RootOracle(changed);
-    Check(root_bytes==canonical.bytes,"independent catalog epoch root oracle");
-    for(auto& r:checkpoint.roots)if(r.page==ref&&r.object_uuid==root->object_uuid)r.sha256=WholeRootHash(root_bytes);
-    for(auto& r:checkpoint.roots)if(r.role==4)r.sha256=WholeRootHash(maps.front().bytes);
-    const auto checkpoint_bytes=CheckpointOracle(checkpoint);
-    Check(db::DecodeNativeCheckpointRoot(checkpoint_bytes).ok(),"actual checkpoint commits changed catalog epochs");
-    const auto put=[&](u64 number,const Bytes& bytes){const auto io=device.WriteAt(number*u64{sizes[profile]},bytes.data(),bytes.size());
-      Check(io.ok()&&io.bytes_transferred==bytes.size(),"actual independent selected epoch image write");};
-    put(250,predecessor_bytes);for(const auto& m:maps)put(m.map->header.page_number,m.bytes);
-    put(ref.page_number,root_bytes);put(checkpoint.header.page_number,checkpoint_bytes);
-    for(const auto& slot:selected.slots){const auto decoded=db::DecodeNativeCheckpointSelection(slot);
-      Check(decoded.ok(),"actual selector before independent epoch fixture");auto selection=*decoded.selection;
-      selection.checkpoint_sha256=WholeRootHash(checkpoint_bytes);put(selection.header.page_number,SelectionOracle(selection));}
-    Check(device.Sync().ok(),"actual selected epoch fixture synchronized before cold source admission");
-    const auto history=page::ReadNativeCatalogRootRangeFromOpenDevices(Id(1),devices,RootRef(changed),RootRef(predecessor),budget);
-    Check(history.ok()&&history.roots.size()==2&&history.roots.back().root->catalog_generation==1,
-        "actual complete immutable predecessor history verified before epoch observation");
-    Check(db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),devices,Id(2),budget).ok(),
-        "actual selected checkpoint and full allocation commitments verify after independent history construction");
+    (void)budget;const auto roots=RootsOf(device);
+    std::vector<byte> image(sizes[profile]);
+    Check(device.ReadAt(roots.catalog.page_number*u64{sizes[profile]},image.data(),image.size()).ok(),"read the catalog root");
+    const auto current=page::DecodeNativeCatalogRoot(image);
+    Check(current.ok()&&catalog_generation==2&&current.root->catalog_generation==1,
+        "the epoch fixture advances generation one to two");
+    disk::FileDeviceCarefulWriteSink sink(device);
+    page::TransactionInventoryWriter w(TxBinding(roots));Check(w.Restart(sink).ok(),"restart before the epoch fixture");
+    page::TransactionHeaderRecord h;h.transaction_uuid=Id(14);
+    const auto begun=w.Begin(sink,h);Check(begun.ok(),"a transaction whose COMMIT the root advance follows");
+    Check(w.Commit(sink,*begun.transaction_order,1789357073000000000ULL).ok(),"its in-place COMMIT");
+    db::CatalogRootAdvanceRequest advance;advance.transaction_order=*begun.transaction_order;advance.transaction_uuid=Id(14);
+    advance.catalog_generation=catalog_generation;advance.schema_epoch=schema_epoch;advance.security_epoch=security_epoch;
+    advance.resource_epoch=resource_epoch;
+    const auto advanced=db::AdvanceCatalogRoot(sink,CvBinding(roots),advance);
+    if(!advanced.ok())std::cerr<<"root advance="<<db::CatalogVersionWriteErrorName(advanced.error)<<'\n';
+    Check(advanced.ok()&&advanced.writes==3,"the catalog root and both route roots advance in place after the COMMIT");
   }
-  // Independent byte-fixture publication, never a production actuator or an
-  // admission receipt. Build an actual on-disk inventory and retained chain so
-  // the subject reader must use MGA, not a supplied visibility Boolean.
+  // Transaction 2 changes the selected object in place (W1 + W3a) and is left
+  // in the scenario's state: 1 active, 2 prepared, 3 rolled back, 4 committed,
+  // 5 limbo, 8 committed drop. The subject reader must resolve each by MGA,
+  // not by a supplied flag. Scenarios 6, 7 and 9 are FORGED leaves (production
+  // leaf codec, independent byte oracle) over the same in-place transaction:
+  // 6 a resident chain whose predecessor is gone and 7 a second row for the
+  // same object are reader refusals; 9, a new principal inserted by the
+  // in-progress transaction, is a positive state the engine will write once
+  // inserts exist (W3b) and is forged until then.
   void RetainedSuccessor(unsigned scenario,bool configuration_phase=false) {
     const unsigned role=configuration_phase?4:3;
     Check(!indexes[role],"MGA fixture uses the actual unindexed owning head");
-    const std::vector<disk::NativeFilespaceDevice> devices{{Id(2),Profile(profile),&device}};
-    const auto selected=db::ReadNativeBoundCheckpointSelectionFromOpenDevices(Id(1),devices,Id(2),budget);
-    Check(selected.ok(),"MGA fixture actual original selection");
-    auto begun=mga::BeginLocalTransaction(selected.checkpoint_inventory.inventory,
-        {platform::UuidKind::transaction,Id(12)},1789357072001ULL);Check(begun.ok(),"actual MGA candidate transform");
-    auto inventory=begun.inventory;
-    if(scenario==2){const auto changed=mga::PrepareLocalTransaction(inventory,mga::MakeLocalTransactionId(2));
-      Check(changed.ok(),"actual prepared candidate");inventory=changed.inventory;}
-    if(scenario==3){const auto changed=mga::RollbackLocalTransaction(inventory,mga::MakeLocalTransactionId(2),1789357072002ULL);
-      Check(changed.ok(),"actual rolled-back candidate");inventory=changed.inventory;}
-    if(scenario==4||scenario==8){const auto changed=mga::CommitLocalTransaction(inventory,mga::MakeLocalTransactionId(2),1789357072002ULL);
-      Check(changed.ok(),"actual committed candidate");inventory=changed.inventory;}
-    if(scenario==5)inventory.entries.back().state=mga::TransactionState::limbo;
+    const auto roots=RootsOf(device);
+    disk::FileDeviceCarefulWriteSink sink(device);
+    page::TransactionInventoryWriter w(TxBinding(roots));Check(w.Restart(sink).ok(),"restart before the MGA fixture");
+    page::TransactionHeaderRecord header;header.transaction_uuid=Id(12);
+    const auto begun=w.Begin(sink,header);Check(begun.ok()&&begun.transaction_order==2u,"actual in-place BEGIN of transaction 2");
     const auto loaded=db::ReadNativeCatalogLeafFromOpenDevice(device,Id(1),receipt.relations[role]);
     Check(loaded.ok(),"actual stored owning base leaf before retained version fixture");auto leaf=*loaded.page;
     const auto original=std::find_if(leaf.body.rows.begin(),leaf.body.rows.end(),[&](const auto& row){
       return loaded.metadata.at(row.version_uuid).record.header.object_uuid.value==Id(configuration_phase?180:200);});
     Check(original!=leaf.body.rows.end(),"actual persisted selected object row");
-    auto row=*original;auto metadata=loaded.metadata.at(row.version_uuid);
+    auto row=*original;auto metadata=loaded.metadata.at(row.version_uuid);const auto predecessor=original->version_uuid;
     row.version_uuid=Id(13);row.previous_version_uuid=original->version_uuid;row.previous_row_version=1;
     row.row_version=2;row.transaction_uuid={platform::UuidKind::transaction,Id(12)};row.local_transaction_id=2;
     row.internal_row_ordinal=row.stable_slot_id=leaf.body.rows.size()+1;
@@ -269,41 +263,28 @@ struct SecurityFixture {
         const auto duplicate=catalog::EncodeCatalogSecurityRecord(*principal.record);Check(duplicate.ok(),"duplicate object canonical payload");
         metadata.record.payload.assign(duplicate.bytes.begin(),duplicate.bytes.end());}
     }
-    const auto outer=catalog::EncodeCatalogMetadataVersion(metadata);Check(outer.ok(),"retained successor common metadata");
-    row.cells.front().value.payload=outer.bytes;leaf.body.rows.push_back(row);
-    // Prove framing and capacity BEFORE the independent byte writer, whose
-    // intentionally minimal fixed-page fixture assumes every row fits.
-    const auto bounded_body=page::BuildRowDataPageBody(leaf.body,leaf.header.page_size_bytes-32);
-    if(!bounded_body.ok())std::cerr<<"retained row framing scenario="<<scenario<<" configuration="<<configuration_phase
-        <<" code="<<bounded_body.diagnostic.diagnostic_code<<" key="<<bounded_body.diagnostic.message_key<<'\n';
-    Check(bounded_body.ok(),"retained history fits actual selected page profile and row framing");
-    const auto canonical=db::EncodeNativeCatalogLeaf(leaf);
-    if(!canonical.ok())std::cerr<<"retained canonical leaf scenario="<<scenario<<" configuration="<<configuration_phase
-        <<" error="<<int(canonical.error)<<'\n';
-    Check(canonical.ok(),"retained history satisfies exact family origin and common metadata binding");
-    const auto leaf_bytes=LeafOracle(leaf);
-    if(leaf_bytes!=canonical.bytes){const auto mismatch=std::mismatch(leaf_bytes.begin(),leaf_bytes.end(),canonical.bytes.begin());
-      std::cerr<<"retained independent image scenario="<<scenario<<" configuration="<<configuration_phase
-          <<" offset="<<(mismatch.first-leaf_bytes.begin())<<" oracle="<<unsigned(*mismatch.first)
-          <<" canonical="<<unsigned(*mismatch.second)<<'\n';}
-    Check(leaf_bytes==canonical.bytes,"independent retained history matches the exact canonical image");
-    Check(db::DecodeNativeCatalogLeaf(leaf_bytes).ok(),"independent retained leaf image");
-    const auto& stored_inventory=selected.checkpoint_inventory.inventory_pages.front();
-    page::NativeTransactionInventoryPage inventory_page;
-    inventory_page.header=stored_inventory.header;inventory_page.object_uuid=stored_inventory.object_uuid;
-    inventory_page.inventory_generation=selected.checkpoint_inventory.inventory_generation;inventory_page.inventory=inventory;
-    const auto inventory_bytes=InventoryStateOracle(inventory_page);Check(page::DecodeNativeTransactionInventoryPage(inventory_bytes).ok(),"independent actual MGA inventory image");
-    auto checkpoint=*selected.checkpoint_inventory.checkpoint;checkpoint.selected_local_transaction_id=2;
-    const auto root=std::find_if(checkpoint.roots.begin(),checkpoint.roots.end(),[](const auto& r){return r.role==1;});
-    Check(root!=checkpoint.roots.end(),"actual checkpoint inventory role");root->sha256=WholeRootHash(inventory_bytes);
-    const auto checkpoint_bytes=CheckpointOracle(checkpoint);
-    Check(db::DecodeNativeCheckpointRoot(checkpoint_bytes).ok(),"independent checkpoint exact selected inventory binding");
-    const auto put=[&](u64 number,const Bytes& bytes){const auto io=device.WriteAt(number*u64{sizes[profile]},bytes.data(),bytes.size());
-      Check(io.ok()&&io.bytes_transferred==bytes.size(),"actual independent MGA fixture page write");};
-    put(leaf.header.page_number,leaf_bytes);put(inventory_page.header.page_number,inventory_bytes);put(checkpoint.header.page_number,checkpoint_bytes);
-    for(const auto& slot:selected.slots){const auto decoded=db::DecodeNativeCheckpointSelection(slot);Check(decoded.ok(),"actual selected replica frame");
-      auto selection=*decoded.selection;selection.checkpoint_sha256=WholeRootHash(checkpoint_bytes);put(selection.header.page_number,SelectionOracle(selection));}
-    Check(device.Sync().ok(),"actual MGA fixture synchronized before source admission");
+    if(scenario==6||scenario==7||scenario==9){
+      const auto outer=catalog::EncodeCatalogMetadataVersion(metadata);Check(outer.ok(),"forged version common metadata");
+      row.cells.front().value.payload=outer.bytes;leaf.body.rows.push_back(row);
+      const auto bounded_body=page::BuildRowDataPageBody(leaf.body,leaf.header.page_size_bytes-32);
+      Check(bounded_body.ok(),"the forged leaf fits the actual page profile and row framing");
+      const auto canonical=db::EncodeNativeCatalogLeaf(leaf);
+      Check(canonical.ok(),"the forged leaf satisfies exact family origin and common metadata binding");
+      const auto leaf_bytes=LeafOracle(leaf);
+      Check(leaf_bytes==canonical.bytes,"independent forged leaf matches the exact canonical image");
+      const auto io=device.WriteAt(leaf.header.page_number*u64{sizes[profile]},leaf_bytes.data(),leaf_bytes.size());
+      Check(io.ok()&&io.bytes_transferred==leaf_bytes.size()&&device.Sync().ok(),"the forged leaf persists");
+    }else{
+      db::CatalogVersionRequest r;r.role=static_cast<platform::u16>(role+1);r.transaction_order=2;r.transaction_uuid=Id(12);
+      r.row_uuid=row.row_uuid.value;r.predecessor_version_uuid=predecessor;r.version_uuid=Id(13);r.metadata=metadata;
+      const auto written=db::WriteCatalogSuccessorVersion(sink,CvBinding(roots),r);
+      if(!written.ok())std::cerr<<"successor="<<db::CatalogVersionWriteErrorName(written.error)<<" scenario="<<scenario<<'\n';
+      Check(written.ok(),"the successor version written in place by transaction 2");
+    }
+    if(scenario==2)ForgeStateWord(device,profile,roots,2,page::TipStateCode::prepared);
+    if(scenario==3)Check(w.Rollback(sink,2,1789357072002000000ULL).ok(),"actual in-place ROLLBACK");
+    if(scenario==4||scenario==8)Check(w.Commit(sink,2,1789357072002000000ULL).ok(),"actual in-place COMMIT");
+    if(scenario==5)ForgeStateWord(device,profile,roots,2,page::TipStateCode::limbo);
   }
 };
 void Empty(const SecurityResult& result,SecurityError error) {
@@ -324,8 +305,8 @@ void Governed(unsigned profile,bool indexed,unsigned variant=0,unsigned mga_scen
   auto prepared=runtime_security::PrepareNativeRuntimeSecurityRead(limits,memory.memory,memory.binding);
   Check(prepared.ok(),"actual binary-bound security workspace preparation before guards");
   const std::array<disk::NativeFilespaceDevice,1> devices{{{Id(2),Profile(profile),&f.device}}};
-  auto source=db::AcquireNativeSelectedCheckpointMemoryLease(Id(1),devices,Id(2),{f.budget,32*1024*1024},source_memory.memory,source_memory.binding);
-  Check(source.ok(),"actual selected checkpoint and committed inventory lease");
+  auto source=db::AcquireNativeFixedRootMemoryLease(Id(1),devices,Id(2),{f.budget,32*1024*1024},source_memory.memory,source_memory.binding);
+  Check(source.ok(),"actual fixed-root lease over the in-place inventory");
   const auto read=[&](runtime_security::NativeRuntimeSecurityReadRequest r){
     allocation_budget=0;const auto result=runtime_security::ReadCommittedNativeRuntimeSecurityOnLease(*source.lease,r,prepared.workspace);
     const auto remaining=allocation_budget;allocation_budget=-1;

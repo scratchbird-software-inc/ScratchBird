@@ -4,6 +4,7 @@
 #include "native_creation_workspace.hpp"
 #include "native_creation_catalog_input.hpp"
 #include "native_catalog_definition_generation.hpp"
+#include "native_catalog_version_writer.hpp"
 #include "bootstrap_policy_fixture.hpp"
 #include "../support/owned_temp_directory.hpp"
 #include <algorithm>
@@ -159,9 +160,9 @@ void Physical(){
     request.operation_uuid=f::Id(3);request.writer_uuid=f::Id(4);request.policy_snapshot_uuid=f::Id(10);
     request.creator.transaction_uuid=origin;request.creator.local_id=mga::MakeLocalTransactionId(1);request.creator.scope=mga::TransactionScope::local_node;
     request.total_pages=64;request.creation_utc_millis=1789357072000ULL;
-    // SB_TRANSITIONAL_CHECKPOINT_GRAPH: this test persists its policy rows
-    // through checkpoint staging (the drift layer); delete with that layer (R4).
-    request.genesis_graph=db::NativeCreationGenesisGraph::transitional_checkpoint;
+    // SB_NATIVE_FIXED_ROOT (in-place writes W4b): the production create's
+    // fixed-root graph; the policy is read through page zero's roots.
+    request.genesis_graph=db::NativeCreationGenesisGraph::fixed_roots;
     const auto budget=128*p::u64{profile.page_size_bytes};u::StandaloneUuidV7Issuer issuer({f::Id(1),f::Id(10)},{{},0,1000});
     const auto path=(artifacts.path()/(std::to_string(profile.page_size_bytes)+"-"+std::to_string(mode))).string();
     d::FileDevice device;Check(device.Open(path,d::FileOpenMode::create_new).ok(),"real private native security-policy file");
@@ -178,33 +179,59 @@ void Physical(){
     }
     const auto created=db::InitializePopulatedNativeCreationWorkspaceOnOpenDevice(device,request,seed,budget,issuer);
     Check(created.ok(),"actual native security body and exact descriptor persist");
+    if(mode){
+      // SB_CATALOG_VERSION_WRITER (in-place writes W4b): the checkpoint-era
+      // staging refusals become the in-place writer's. A successor of the body
+      // requested in any other relation finds no such row there; one whose
+      // body names a foreign database fails the leaf's database binding.
+      // Neither writes. (Staging refused before any read; the in-place writer
+      // reads the inventory and the relation first, so that is not claimed.)
+      // In modes 1 and 3 the same successor in its own relation is written and
+      // rolled back, so the committed reads below must pass over it. Mode 2
+      // keeps the stored body alone: its isolated history vectors (below) build
+      // on the body's next row_version.
+      namespace pg=scratchbird::storage::page;
+      const auto zero=d::ReadFilespacePageZeroFromOpenDevice(device);Check(zero.ok(),"page zero of the created policy file");
+      d::FilespaceRootReference catalog_root,state_root;
+      for(const auto& root:zero.record->roots){if(root.kind==2)catalog_root=root;if(root.kind==4)state_root=root;}
+      Check(catalog_root.kind==2&&state_root.kind==4,"page zero names the catalog and state roots");
+      d::FileDeviceCarefulWriteSink sink(device);
+      pg::TransactionWriterBinding tb;tb.database_uuid=f::Id(1);tb.state_root=state_root;
+      pg::TransactionInventoryWriter writer(tb);Check(writer.Restart(sink).ok(),"restart of the created file");
+      pg::TransactionHeaderRecord header;header.transaction_uuid=f::Id(20);
+      const auto begun=writer.Begin(sink,header);Check(begun.ok()&&begun.transaction_order==2u,"in-place BEGIN of transaction 2");
+      const auto leaf=db::ReadNativeCatalogLeafFromOpenDevice(device,f::Id(1),created.receipt->relations[3]);
+      Check(leaf.ok(),"the policy leaf");
+      const auto at=std::find_if(leaf.page->body.rows.begin(),leaf.page->body.rows.end(),[&](const auto& row){
+        return leaf.metadata.at(row.version_uuid).record.header.object_uuid.value==body.body_uuid;});
+      Check(at!=leaf.page->body.rows.end(),"the stored policy body");
+      db::CatalogVersionWriterBinding cv;cv.database_uuid=f::Id(1);cv.catalog_root=catalog_root;cv.state_root=state_root;
+      const auto successor=[&](unsigned role,const c::CatalogCryptoInlinePrivateKeyPolicy& next){
+        db::CatalogVersionRequest r;r.role=static_cast<p::u16>(role);r.transaction_order=2;r.transaction_uuid=f::Id(20);
+        r.row_uuid=at->row_uuid.value;r.predecessor_version_uuid=at->version_uuid;r.version_uuid=f::Id(704);
+        r.metadata=leaf.metadata.at(at->version_uuid);r.metadata.definition_version=2;
+        r.metadata.creator_transaction_uuid={p::UuidKind::transaction,f::Id(20)};r.metadata.creator_local_transaction_id=2;
+        r.metadata.record.payload=Golden(next);return db::WriteCatalogSuccessorVersion(sink,cv,r);};
+      auto next=body;next.generation=2;
+      for(unsigned role:{1u,2u,3u,5u,6u}){const auto refused=successor(role,next);
+        Check(refused.error==db::CatalogVersionWriteError::row_not_found&&!refused.writes&&!refused.attempted,
+            "a successor of the body in any other relation is refused, with no write");}
+      auto foreign=next;foreign.database_uuid=f::Id(9);const auto refused=successor(4,foreign);
+      Check(refused.error==db::CatalogVersionWriteError::invalid_successor&&!refused.writes&&!refused.attempted,
+          "a successor naming a foreign database is refused, with no write");
+      if(mode!=2){
+        const auto written=successor(4,next);
+        if(!written.ok())std::cerr<<"policy successor="<<db::CatalogVersionWriteErrorName(written.error)<<'\n';
+        Check(written.ok(),"the body's successor in its own relation is written in place");
+      }
+      Check(writer.Rollback(sink,2,1789357072002000000ULL).ok(),"transaction 2 rolls back");
+    }
     Check(device.Close().ok()&&device.Open(path,d::FileOpenMode::open_existing_read_only).ok(),"independent read-only reopen");
     const std::vector<d::NativeFilespaceDevice> devices{{f::Id(2),profile.uuid,&device}};
     const db::NativeCatalogRelationBinding relation{created.receipt->relations[3].object_uuid,{}};
-    if(mode){
-      db::NativeCatalogVersionMutation mutation;mutation.transaction=request.creator;mutation.metadata=BodyMetadata(body);
-      mutation.relation_uuid={p::UuidKind::object,relation.relation_uuid};mutation.page_number=63;
-      db::NativeCatalogLeafPage destination;destination.header.database_uuid=f::Id(1);destination.header.filespace_uuid=f::Id(2);
-      destination.header.page_uuid=f::Id(703);destination.header.page_number=63;destination.header.page_generation=1;
-      destination.header.page_size_profile_uuid=profile.uuid;destination.header.page_size_bytes=profile.page_size_bytes;destination.header.page_type=6;
-      destination.body.relation_uuid=mutation.relation_uuid;
-      mga::PublishedSnapshotPin absent_pin;
-      for(unsigned role:{1u,2u,3u,5u,6u}){
-        reads=0;track_reads=true;
-        const auto rejected=db::StageNativeCatalogVersionFromOpenDevices(devices,*created.receipt->checkpoint,2,role,relation,absent_pin,
-            mutation,destination,budget,f::Id(10),issuer);track_reads=false;
-        Check(rejected.error==db::NativeCatalogVersionStageError::invalid_metadata&&!rejected.retry&&rejected.issued_version_uuid.is_nil()&&!reads,
-            "ordinary typed staging rejects non-security placement before reads or identity issuance");
-      }
-      auto foreign=body;foreign.database_uuid=f::Id(9);mutation.metadata=BodyMetadata(foreign);reads=0;track_reads=true;
-      const auto rejected=db::StageNativeCatalogVersionFromOpenDevices(devices,*created.receipt->checkpoint,2,4,relation,absent_pin,
-          mutation,destination,budget,f::Id(10),issuer);track_reads=false;
-      Check(rejected.error==db::NativeCatalogVersionStageError::invalid_metadata&&!rejected.retry&&rejected.issued_version_uuid.is_nil()&&!reads,
-          "ordinary typed staging rejects foreign database before reads or identity issuance");
-    }
     const db::NativeCryptoInlinePrivateKeyPolicyLookupBinding binding{descriptor.policy_uuid,descriptor.policy_version_uuid,descriptor.generation};
     const auto read=[&](const auto& guard,p::u64 allowance=0){
-      return db::ReadNativeCommittedCryptoInlinePrivateKeyPolicyFromOpenDevices(f::Id(1),devices,*created.receipt->checkpoint,relation,guard,allowance?allowance:budget);
+      return db::ReadNativeCommittedCryptoInlinePrivateKeyPolicyFromOpenDevices(f::Id(1),devices,db::NativeCatalogSource::PageZero(f::Id(2)),relation,guard,allowance?allowance:budget);
     };
     reads=0;track_reads=true;auto observed=read(binding);track_reads=false;const auto count=reads;
     if(!mode){Empty(observed);continue;}
@@ -214,7 +241,8 @@ void Physical(){
         observed.descriptor->body_generation==body.generation&&!observed.descriptor_physical_version_uuid.is_nil()&&!observed.body_physical_version_uuid.is_nil()&&
         observed.descriptor_physical_version_uuid!=descriptor.policy_uuid&&observed.body_physical_version_uuid!=body.body_uuid,
         "observed exact descriptor and actual storage-issued MGA versions never become authorization");
-    const auto zero=d::ReadFilespacePageZeroFromOpenDevice(device);Check(zero.ok()&&zero.record->bootstrap.lifecycle_state==7,"stored permission is not serving activation or an EXECUTE grant");
+    const auto zero=d::ReadFilespacePageZeroFromOpenDevice(device);Check(zero.ok()&&zero.record->bootstrap.lifecycle_state==db::NativeCreatedFilespaceLifecycle(request),
+        "stored permission is not serving activation or an EXECUTE grant: page zero's lifecycle is the create's");
     for(unsigned n=0;n!=4;++n){auto bad=binding;if(n==0)bad.policy_uuid=f::Id(250);if(n==1)bad.policy_version_uuid=f::Id(251);
       if(n==2)bad.policy_generation=2;if(n==3)bad.policy_generation=0;Empty(read(bad));}
     Empty(read(binding,1));

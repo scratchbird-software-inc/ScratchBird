@@ -30,29 +30,41 @@ void ProjectionEmpty(const ProjectionResult& result,ProjectionError error) {
       "projection refusal exposes no usable partial closure/grants/bundle");
 }
 
+// In place, as the engine does it (W4b): the catalog root first (a committed
+// transaction, then the post-commit advance to generation 2, security 4,
+// schema 11, resource 17), then a real successor of the runtime binding born
+// at that generation and epoch by a second committed transaction (never ahead
+// of the root). The checkpoint-era fixture rewrote the binding's bytes under
+// its existing version; a real successor takes that family's next generation
+// (2, its definition_version), which the historical request therefore names.
+// Security descriptors keep their original visibility generations.
 void AdvanceNativeSelectedBindingEpochs(SecurityFixture& f) {
-  // Independent provisioned-fixture bytes, NOT a production actuator or claim
-  // of configuration activation. The actual reopened reader must observe the
-  // new persisted selection while unchanged security descriptors retain their
-  // original visibility generations.
+  f.SelectedCatalogEpochs(2,4,11,17);
+  const auto roots=SecurityFixture::RootsOf(f.device);
+  disk::FileDeviceCarefulWriteSink sink(f.device);
+  page::TransactionInventoryWriter w(SecurityFixture::TxBinding(roots));Check(w.Restart(sink).ok(),"restart before the binding successor");
+  page::TransactionHeaderRecord header;header.transaction_uuid=Id(15);
+  const auto begun=w.Begin(sink,header);Check(begun.ok(),"in-place BEGIN of the binding change");
+  const u64 n=*begun.transaction_order;
   const auto loaded=db::ReadNativeCatalogLeafFromOpenDevice(f.device,Id(1),f.receipt.relations[4]);
   Check(loaded.ok(),"actual configuration leaf before historical epoch fixture");
-  auto leaf=*loaded.page;bool found=false;
-  for(auto& row:leaf.body.rows){auto metadata=loaded.metadata.at(row.version_uuid);
+  const auto& leaf=*loaded.page;bool found=false;
+  for(const auto& row:leaf.body.rows){auto metadata=loaded.metadata.at(row.version_uuid);
     if(metadata.record.header.object_uuid.value!=Id(180))continue;
     auto binding=catalog::DecodeCatalogRuntimeAuthorityBinding(metadata.record.payload);Check(binding.ok(),"actual persisted binding decoded for fixture");
-    binding.record->security_epoch=4;binding.record->catalog_generation=2;
+    binding.record->generation=2;binding.record->security_epoch=4;binding.record->catalog_generation=2;
     const auto body=catalog::EncodeCatalogRuntimeAuthorityBinding(*binding.record);Check(body.ok(),"exact advanced selected epochs remain native u64");
-    metadata.security_epoch=4;metadata.catalog_generation=2;metadata.record.payload.assign(body.bytes.begin(),body.bytes.end());
-    const auto outer=catalog::EncodeCatalogMetadataVersion(metadata);Check(outer.ok(),"complete advanced configuration common metadata");
-    row.cells.front().value.payload=outer.bytes;found=true;
+    metadata.definition_version=2;metadata.security_epoch=4;metadata.catalog_generation=2;
+    metadata.creator_transaction_uuid={platform::UuidKind::transaction,Id(15)};metadata.creator_local_transaction_id=n;
+    metadata.record.payload.assign(body.bytes.begin(),body.bytes.end());
+    db::CatalogVersionRequest r;r.role=5;r.transaction_order=n;r.transaction_uuid=Id(15);r.row_uuid=row.row_uuid.value;
+    r.predecessor_version_uuid=row.version_uuid;r.version_uuid=Id(16);r.metadata=metadata;
+    const auto written=db::WriteCatalogSuccessorVersion(sink,SecurityFixture::CvBinding(roots),r);
+    if(!written.ok())std::cerr<<"binding successor="<<db::CatalogVersionWriteErrorName(written.error)<<'\n';
+    Check(written.ok(),"the binding successor written in place at the advanced generation");found=true;break;
   }
   Check(found,"actual bound configuration identity changed, not synthesized observation");
-  const auto canonical=db::EncodeNativeCatalogLeaf(leaf);Check(canonical.ok(),"advanced native binding leaf framing");
-  const auto independent=LeafOracle(leaf);Check(independent==canonical.bytes,"independent advanced binding fixture byte oracle");
-  const auto io=f.device.WriteAt(leaf.header.page_number*u64{sizes[f.profile]},independent.data(),independent.size());
-  Check(io.ok()&&io.bytes_transferred==independent.size()&&f.device.Sync().ok(),"advanced native bound selection physically persisted");
-  f.SelectedCatalogEpochs(2,4,11,17);
+  Check(w.Commit(sink,n,1789357074000000000ULL).ok(),"the binding change commits in place");
 }
 void RealNativeProjection(unsigned profile,bool indexed,bool historical=false) {
   SecurityFixture f(profile,0,indexed);
@@ -66,9 +78,10 @@ void RealNativeProjection(unsigned profile,bool indexed,bool historical=false) {
   auto graph=authorization::PrepareNativeRuntimeAuthorizationProjection(projection_limits,projection_memory.memory,projection_memory.binding);
   Check(prepared.ok()&&graph.ok(),"all actual native arenas prepared BEFORE retained source/device guards");
   const std::array<disk::NativeFilespaceDevice,1> devices{{{Id(2),Profile(profile),&f.device}}};
-  auto source=db::AcquireNativeSelectedCheckpointMemoryLease(Id(1),devices,Id(2),{f.budget,32*1024*1024},source_memory.memory,source_memory.binding);
-  Check(source.ok(),"actual reopened native selected checkpoint/inventory lease");
-  allocation_budget=0;const auto observed=runtime_security::ReadCommittedNativeRuntimeSecurityOnLease(*source.lease,f.Request(),prepared.workspace);
+  auto source=db::AcquireNativeFixedRootMemoryLease(Id(1),devices,Id(2),{f.budget,32*1024*1024},source_memory.memory,source_memory.binding);
+  Check(source.ok(),"actual reopened native fixed-root lease over the in-place inventory");
+  auto request=f.Request();if(historical)request.runtime_binding_generation=2;
+  allocation_budget=0;const auto observed=runtime_security::ReadCommittedNativeRuntimeSecurityOnLease(*source.lease,request,prepared.workspace);
   const auto remaining=allocation_budget;allocation_budget=-1;
   Check(remaining==0&&observed.ok(),"complete actual role4/role5 read with no ordinary heap");
   const auto before_write=stage_writes,before_sync=stage_syncs;
@@ -92,7 +105,7 @@ void RealNativeProjection(unsigned profile,bool indexed,bool historical=false) {
   // A source failure retains its complete actual typed I/O/MGA failure and no
   // previously successful graph prefix, even when the workspace is reused.
   reads=0;read_fault=1;track_reads=true;
-  const auto failed_source=runtime_security::ReadCommittedNativeRuntimeSecurityOnLease(*source.lease,f.Request(),prepared.workspace);
+  const auto failed_source=runtime_security::ReadCommittedNativeRuntimeSecurityOnLease(*source.lease,request,prepared.workspace);
   track_reads=false;Check(!read_fault&&!failed_source.ok(),"actual native source I/O fault consumed");
   const auto failed=NoHeapProject(failed_source,graph.workspace);ProjectionEmpty(failed,ProjectionError::source_failure);
   Check(failed.source_error==failed_source.error&&failed.catalog_error==failed_source.source_error&&

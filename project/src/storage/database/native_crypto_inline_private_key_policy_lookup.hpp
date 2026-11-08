@@ -64,7 +64,8 @@ struct RetainedRow {
 inline RetainedRow At(const NativePinnedCatalogReadResult& source,std::size_t n) noexcept {
   if(n>=source.source.row_creators.size())return {};
   const auto& loc=source.source.row_creators[n];
-  const auto& entries=source.source.checkpoint.checkpoint_inventory.inventory.entries;
+  // SB_NATIVE_FIXED_ROOT_READ: the source-neutral inventory (page zero or checkpoint).
+  const auto& entries=source.source.inventory().entries;
   if(loc.catalog_page_index>=source.source.relation.catalogs.size()||loc.inventory_entry_index>=entries.size())return {};
   const auto& leaf=source.source.relation.catalogs[loc.catalog_page_index];
   if(!leaf.page||loc.catalog_row_index>=leaf.page->body.rows.size())return {};
@@ -246,7 +247,7 @@ inline NativeCryptoInlinePrivateKeyPolicyLookupResult Select(const Uuid& databas
     // Immutable origins must exist and be committed in the same retained
     // inventory; a current creator or a caller boolean is not that evidence.
     const auto origin=[&](const core::platform::TypedUuid& id,u64 number)->bool {
-      const auto& inventory=out.source.source.checkpoint.checkpoint_inventory.inventory;
+      const auto& inventory=out.source.source.inventory();
       const auto found=mga::LookupLocalTransaction(inventory,mga::MakeLocalTransactionId(number));
       if(!found.ok()){out.diagnostic=found.diagnostic;return false;}
       return found.entry.identity.transaction_uuid.kind==id.kind&&found.entry.identity.transaction_uuid.value==id.value&&
@@ -313,7 +314,7 @@ inline NativeCryptoInlinePrivateKeyPolicyLookupResult ReadNativeCommittedCryptoI
   source.rows=std::move(committed.rows);source.observations=std::move(committed.observations);source.diagnostic=std::move(committed.diagnostic);
   mga::VisibilitySnapshotView visibility;visibility.allow_reader_own_uncommitted=false;
   if(source.ok()){
-    const auto& inventory=source.source.checkpoint.checkpoint_inventory.inventory;
+    const auto& inventory=source.source.inventory();
     visibility.visible_through_local_transaction_id=inventory.next_local_transaction_id-1;
     visibility.visible_through_local_transaction_id_is_boundary=true;
     visibility.visible_through_commit_sequence=inventory.next_commit_sequence-1;
