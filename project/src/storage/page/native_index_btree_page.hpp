@@ -28,7 +28,8 @@ struct NativeBtreeDependencies {
   std::array<byte,32> dependency_map_sha256{};
   bool operator==(const NativeBtreeDependencies&) const = default;
 };
-template<class Bytes> struct BasicNativeBtreeKey {
+template<class B> struct BasicNativeBtreeKey {
+  using Bytes = B;
   Bytes encoded_key;
   Uuid row_uuid;
   Uuid version_uuid;
@@ -44,6 +45,12 @@ template<class Key> struct BasicNativeBtreeCell {
   bool deleted = false;
   std::optional<disk::NativePageReference> child;
   std::optional<disk::NativePageReference> base_page;
+  // SB_NATIVE_BTREE_COMPRESSED_PAGE (SBBTP002) only: a leaf cell's version's
+  // creating local transaction number (owner Q38 = 1: the transaction
+  // inventory decides visibility without reading the base row) and its
+  // included (covering) payload. SBBTP001 cannot hold either and refuses them.
+  u64 creator_local_transaction_id = 0;
+  typename Key::Bytes payload{};
 };
 using NativeBtreeCell = BasicNativeBtreeCell<NativeBtreeKey>;
 using NativeBtreeCellView = BasicNativeBtreeCell<NativeBtreeKeyView>;
@@ -67,7 +74,8 @@ enum class NativeBtreeError {
   invalid_filespace, binding_mismatch, io_failure, encrypted_requires_crypto_authority,
   cluster_requires_authority, header_policy_requires_authority,
   tree_reference_mismatch, tree_level_mismatch, tree_fence_mismatch, tree_sibling_mismatch,
-  invalid_workspace
+  invalid_workspace,
+  key_too_long  // SBBTP002: one entry's key and payload exceed a quarter page (no split can fit it)
 };
 struct NativeBtreePageResult {
   NativeBtreeError error = NativeBtreeError::invalid_family;
@@ -112,9 +120,10 @@ struct NativeBtreeReferenceSlot {
 struct NativeBtreeViewWorkspace {
   std::span<NativeBtreeCellView> cells;
   std::span<NativeBtreeReferenceSlot> references;
+  std::span<byte> keys{};  // SBBTP002: the rebuilt prefix-compressed keys
 };
 struct NativeBtreeViewRequirements {
-  std::size_t cells = 0, reference_slots = 0;
+  std::size_t cells = 0, reference_slots = 0, key_bytes = 0;
 };
 NativeBtreeViewRequirements NativeBtreePageViewBackingRequirements(std::size_t image_bytes) noexcept;
 struct NativeBtreePageViewResult {
@@ -143,6 +152,40 @@ struct NativeBtreeTreeResult {
 };
 // NATIVE-BTREE-RETAINED-TREE-001. Complete navigation-tree verification only;
 // not a dependency-map, base-row/MGA, serving-generation or publication receipt.
+// SEARCH_KEY: SB_NATIVE_BTREE_COMPRESSED_PAGE (owner rulings Q37 = 1, Q38 = 1,
+// Q40, 2026-11-09). SBBTP002: the native catalog B-tree page with FirebirdSQL-
+// style key compression. Same common header, family header, page types,
+// dependency tuple, fences, references and whole-page seal (family offset 384)
+// as SBBTP001; the cells differ:
+//   - packed in key order with no per-cell offset table; each stores the
+//     bytes its encoded key shares with the previous cell's (a LEB128 count)
+//     and the rest (FirebirdSQL btn.h IndexNode prefix/length);
+//   - jump nodes as restart points: every kNativeBtreeJumpInterval-th cell
+//     stores its whole key (shared count 0) and the page lists those cells'
+//     offsets, so a search can start near its key (FirebirdSQL keeps the key
+//     in a separate jump node instead; same purpose, slightly less
+//     compression at each restart cell);
+//   - a leaf cell carries its version's creating local transaction number and
+//     an optional included payload (covering trees, owner Q38 = 1);
+//   - a reference to a page in this page's filespace and profile is a fixed
+//     page number and generation (16 bytes); others are a full PageRefV2;
+//   - when every cell's key is its own 16-byte row UUID (the raw16 row trees)
+//     the row UUID is not stored a second time (page flag row_is_key).
+// The encoding is canonical: every field has one valid form (the longest
+// shared prefix, the compact reference whenever eligible, minimal LEB128, the
+// row_is_key flag exactly when every cell qualifies), so encoding a decoded
+// page gives back its bytes. Limits: one entry's key plus payload at most a
+// quarter page (FirebirdSQL Database.h getMaxIndexKeyLength: key_too_long, which
+// no split can cure); the rebuilt keys of a page at most four pages
+// (resource_exhausted: the page is full). Layout in the spec annotation
+// SB_NATIVE_BTREE_COMPRESSED_PAGE (NATIVE-BTREE-PAGE-IMAGE-001).
+inline constexpr u16 kNativeBtreeJumpInterval = 16;
+NativeBtreePageResult EncodeNativeBtreePageV2(const NativeBtreePage&) noexcept;
+NativeBtreePageResult DecodeNativeBtreePageV2(const std::vector<byte>&) noexcept;
+// Allocation-free: keys are rebuilt into workspace.keys, payloads borrow the
+// image. Sized by NativeBtreePageV2ViewBackingRequirements for any valid page.
+NativeBtreePageViewResult DecodeNativeBtreePageV2Into(std::span<const byte>,NativeBtreeViewWorkspace) noexcept;
+NativeBtreeViewRequirements NativeBtreePageV2ViewBackingRequirements(std::size_t image_bytes) noexcept;
 NativeBtreeTreeResult ReadNativeBtreeTreeFromOpenDevices(
   const Uuid& database_uuid,const std::vector<disk::NativeFilespaceDevice>&,
   const disk::NativePageReference& root,const NativeBtreeDependencies&,

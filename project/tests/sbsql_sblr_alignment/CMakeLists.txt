@@ -1464,6 +1464,14 @@ endif()
       LABELS "sbsql_sblr_alignment;native_storage;catalog;careful_write;fault_injection"
       TIMEOUT 1800)
   endforeach()
+  # SB_NATIVE_BTREE_COMPRESSED_PAGE: SBBTP002, the prefix-compressed catalog
+  # B-tree page (owner Q37 = 1, Q38 = 1, Q40), against an independent oracle.
+  add_executable(sbsql_sblr_alignment_native_btree_page_v2 native_btree_page_v2_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_native_btree_page_v2 PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_native_btree_page_v2 PRIVATE sb_storage_database OpenSSL::Crypto)
+  add_test(NAME sbsql_sblr_alignment_native_btree_page_v2 COMMAND sbsql_sblr_alignment_native_btree_page_v2)
+  set_tests_properties(sbsql_sblr_alignment_native_btree_page_v2 PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;btree;page_format" TIMEOUT 600)
   # SB_CATALOG_INSERT_WRITER: first versions of new catalog rows inserted in place
   # by a transaction (in-place writes W3b-1a), one page size per test.
   add_executable(sbsql_sblr_alignment_native_catalog_insert_writer native_catalog_insert_writer_test.cpp)

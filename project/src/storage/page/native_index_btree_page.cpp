@@ -114,6 +114,9 @@ NativeBtreeViewRequirements NativeBtreePageViewBackingRequirements(std::size_t b
 NativeBtreePageResult EncodeNativeBtreePage(const NativeBtreePage& p) noexcept {
   try {
     const auto valid=Validate(p);if(valid!=E::none)return Fail(valid);
+    // SBBTP001 has no place for a cell's creator or payload (SBBTP002 has):
+    // refused, never dropped.
+    for(const auto& c:p.cells)if(c.creator_local_transaction_id||!c.payload.empty())return Fail(E::invalid_family);
     const std::size_t size=p.header.page_size_bytes;
     if(p.cells.size()>(size-start)/149)return Fail(E::resource_exhausted);
     std::size_t used=start+4*p.cells.size();
@@ -210,6 +213,228 @@ NativeBtreePageResult DecodeNativeBtreePage(const std::vector<byte>& bytes) noex
 NativeBtreePageViewResult DecodeNativeBtreePageInto(std::span<const byte> bytes,NativeBtreeViewWorkspace workspace) noexcept {
   return DecodeBtree<true>(bytes,workspace);
 }
+// ---- SBBTP002 (SB_NATIVE_BTREE_COMPRESSED_PAGE) --------------------------------
+namespace {
+constexpr std::size_t v2_start=640;
+constexpr std::size_t v2_min_cell=35;  // flags, shared, suffix length, version, compact reference
+// Unsigned LEB128, minimal.
+void PutVarint(std::vector<byte>& out,u64 v){do{byte b=static_cast<byte>(v&0x7f);v>>=7;if(v)b|=0x80;out.push_back(b);}while(v);}
+std::size_t VarintBytes(u64 v){std::size_t n=1;while(v>>=7)++n;return n;}
+// Reads one minimal LEB128 value; nullopt on overlong, overflow or truncation.
+std::optional<u64> GetVarint(std::span<const byte> b,std::size_t& at,std::size_t end){
+  u64 v=0;
+  for(unsigned i=0;i<10;++i){
+    if(at>=end)return std::nullopt;
+    const byte x=b[at++];
+    if(i==9&&(x&0xfe))return std::nullopt;
+    v|=u64(x&0x7f)<<(7*i);
+    if(!(x&0x80)){if(i&&!x)return std::nullopt;return v;}
+  }
+  return std::nullopt;
+}
+template<class Bytes> std::size_t SharedPrefix(const Bytes& a,const Bytes& b){
+  const auto n=std::min(a.size(),b.size());std::size_t i=0;while(i<n&&a[i]==b[i])++i;return i;}
+template<class Page> bool RowIsKey(const Page& p){
+  if(p.cells.empty())return false;
+  for(const auto& c:p.cells)if(c.key.encoded_key.size()!=16||!std::equal(c.key.encoded_key.begin(),c.key.encoded_key.end(),c.key.row_uuid.bytes.begin()))return false;
+  return true;
+}
+template<class Page> bool Compact(const Page& p,const disk::NativePageReference& r){
+  return r.filespace_uuid==p.header.filespace_uuid&&r.page_size_profile_uuid==p.header.page_size_profile_uuid;}
+// The rules SBBTP002 adds to the shared ones.
+template<class Page> E ValidateV2(const Page& p){
+  const bool branch=p.tree_level>0;const std::size_t quarter=p.header.page_size_bytes/4;
+  for(const auto* fence:{&p.low_fence,&p.high_fence})if(*fence&&(*fence)->encoded_key.size()>quarter)return E::key_too_long;
+  for(const auto& c:p.cells){
+    if(branch?(c.creator_local_transaction_id||!c.payload.empty()):(!c.creator_local_transaction_id||!c.base_page))return E::invalid_family;
+    if(c.key.encoded_key.size()+c.payload.size()>quarter)return E::key_too_long;
+  }
+  return E::none;
+}
+}  // namespace
+
+NativeBtreeViewRequirements NativeBtreePageV2ViewBackingRequirements(std::size_t bytes) noexcept {
+  if(bytes<v2_start||bytes>std::numeric_limits<u32>::max())return {};
+  const auto cells=(bytes-v2_start)/v2_min_cell;
+  return {cells,4*cells+13,4*bytes};
+}
+
+NativeBtreePageResult EncodeNativeBtreePageV2(const NativeBtreePage& p) noexcept {
+  try {
+    if(const auto valid=Validate(p);valid!=E::none)return Fail(valid);
+    if(const auto valid=ValidateV2(p);valid!=E::none)return Fail(valid);
+    const std::size_t size=p.header.page_size_bytes;
+    const bool branch=p.tree_level>0,row_is_key=RowIsKey(p);
+    std::size_t expanded=0;for(const auto& c:p.cells)expanded+=c.key.encoded_key.size();
+    if(expanded>4*size)return Fail(E::resource_exhausted);
+    const std::size_t count=p.cells.size(),jumps=(count+kNativeBtreeJumpInterval-1)/kNativeBtreeJumpInterval;
+    // The body after the family header, built then placed.
+    std::vector<byte> body;std::vector<u32> jump_offsets;std::array<std::pair<u32,u32>,2> fences{};
+    const auto put_uuid=[&](const Uuid& u){body.insert(body.end(),u.bytes.begin(),u.bytes.end());};
+    const auto put64=[&](u64 v){for(unsigned i=0;i<8;++i)body.push_back(static_cast<byte>(v>>(8*i)));};
+    const auto put32=[&](u32 v){for(unsigned i=0;i<4;++i)body.push_back(static_cast<byte>(v>>(8*i)));};
+    for(unsigned f=0;f<2;++f){const auto& key=f?p.high_fence:p.low_fence;if(!key)continue;
+      fences[f]={static_cast<u32>(v2_start+body.size()),static_cast<u32>(40+key->encoded_key.size())};
+      put32(static_cast<u32>(key->encoded_key.size()));put32(0);put_uuid(key->row_uuid);put_uuid(key->version_uuid);
+      body.insert(body.end(),key->encoded_key.begin(),key->encoded_key.end());}
+    const std::size_t jump_table=v2_start+body.size();
+    body.resize(body.size()+4*jumps);
+    for(std::size_t i=0;i<count;++i){const auto& c=p.cells[i];
+      if(v2_start+body.size()>size)return Fail(E::resource_exhausted);
+      if(i%kNativeBtreeJumpInterval==0)jump_offsets.push_back(static_cast<u32>(v2_start+body.size()));
+      const auto& ref=branch?*c.child:*c.base_page;const bool compact=Compact(p,ref);
+      body.push_back(static_cast<byte>((c.deleted?1:0)|(compact?2:0)|(c.payload.empty()?0:4)));
+      const std::size_t shared=i%kNativeBtreeJumpInterval?SharedPrefix(p.cells[i-1].key.encoded_key,c.key.encoded_key):0;
+      PutVarint(body,shared);PutVarint(body,c.key.encoded_key.size()-shared);
+      body.insert(body.end(),c.key.encoded_key.begin()+static_cast<std::ptrdiff_t>(shared),c.key.encoded_key.end());
+      if(!row_is_key)put_uuid(c.key.row_uuid);
+      put_uuid(c.key.version_uuid);
+      if(!branch)PutVarint(body,c.creator_local_transaction_id);
+      if(compact){put64(ref.page_number);put64(ref.page_generation);}
+      else{put_uuid(ref.filespace_uuid);put64(ref.page_number);put64(ref.page_generation);put_uuid(ref.page_size_profile_uuid);}
+      if(!c.payload.empty()){PutVarint(body,c.payload.size());body.insert(body.end(),c.payload.begin(),c.payload.end());}
+    }
+    const std::size_t used=v2_start+body.size();
+    if(used>size)return Fail(E::resource_exhausted);
+    for(std::size_t j=0;j<jumps;++j)for(unsigned k=0;k<4;++k)body[jump_table-v2_start+4*j+k]=static_cast<byte>(jump_offsets[j]>>(8*k));
+    std::vector<byte> b(size,0);const auto common=disk::EncodeNativeCommonPageHeader(p.header);std::copy(common.bytes->begin(),common.bytes->end(),b.begin());
+    auto* f=b.data()+128;const std::string_view magic="SBBTP002";std::copy(magic.begin(),magic.end(),f);StoreLittle16(f+8,2);StoreLittle16(f+10,512);StoreLittle32(f+12,static_cast<u32>(used));
+    const auto& d=p.dependencies;Put(f+16,d.index_uuid);StoreLittle64(f+32,d.descriptor_generation);StoreLittle64(f+40,d.storage_generation);
+    Put(f+48,d.key_profile_uuid);Put(f+64,d.visibility_profile_uuid);Put(f+80,d.dependency_map_uuid);std::copy(d.dependency_map_sha256.begin(),d.dependency_map_sha256.end(),f+96);
+    Put(f+128,p.creator_transaction_uuid);StoreLittle64(f+144,p.creator_local_transaction_id);StoreLittle16(f+152,p.maintenance_state);StoreLittle16(f+154,p.tree_level);
+    StoreLittle16(f+156,row_is_key?1:0);StoreLittle16(f+158,kNativeBtreeJumpInterval);
+    PutRef(f+160,p.parent);PutRef(f+208,p.left);PutRef(f+256,p.right);PutRef(f+304,p.first_child);
+    StoreLittle32(f+352,fences[0].first);StoreLittle32(f+356,fences[0].second);StoreLittle32(f+360,fences[1].first);StoreLittle32(f+364,fences[1].second);
+    StoreLittle32(f+368,static_cast<u32>(count));StoreLittle32(f+372,static_cast<u32>(std::count_if(p.cells.begin(),p.cells.end(),[](const auto& c){return c.deleted;})));
+    StoreLittle32(f+376,static_cast<u32>(jump_table));StoreLittle32(f+380,static_cast<u32>(jumps));StoreLittle32(f+416,static_cast<u32>(expanded));
+    std::copy(body.begin(),body.end(),b.begin()+v2_start);
+    const auto digest=Digest(b);if(!digest.ok())return Fail(E::hash_failure);std::copy(digest.digest.begin(),digest.digest.end(),b.begin()+seal);
+    return {E::none,p,std::move(b)};
+  }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}catch(const std::length_error&){return Fail(E::resource_exhausted);}catch(...){return Fail(E::invalid_family);}
+}
+
+namespace {
+template<bool Borrowed>
+auto DecodeBtreeV2(std::span<const byte> b,NativeBtreeViewWorkspace workspace) noexcept
+    -> std::conditional_t<Borrowed,NativeBtreePageViewResult,NativeBtreePageResult> {
+  using Result=std::conditional_t<Borrowed,NativeBtreePageViewResult,NativeBtreePageResult>;
+  using Page=std::conditional_t<Borrowed,NativeBtreePageView,NativeBtreePage>;
+  using Cell=std::conditional_t<Borrowed,NativeBtreeCellView,NativeBtreeCell>;
+  const auto fail=[](E error){Result result;result.error=error;return result;};
+  try {
+    if(b.size()<v2_start)return fail(E::invalid_header);
+    const auto common=disk::DecodeNativeCommonPageHeader(b.data(),128);
+    if(!common.ok()||common.header->page_size_bytes!=b.size()||common.header->page_type<0x200||common.header->page_type>0x202)return fail(E::invalid_header);
+    if(common.header->flags&1u)return fail(E::encrypted_requires_crypto_authority);
+    const auto digest=Digest(b);if(!digest.ok())return fail(E::hash_failure);
+    if(!std::equal(digest.digest.begin(),digest.digest.end(),b.begin()+seal))return fail(E::invalid_integrity);
+    const auto* f=b.data()+128;
+    const std::size_t size=b.size(),used=LoadLittle32(f+12),count=LoadLittle32(f+368),deleted=LoadLittle32(f+372),
+        jump_table=LoadLittle32(f+376),jumps=LoadLittle32(f+380),expanded=LoadLittle32(f+416);
+    const u16 key_form=LoadLittle16(f+156);
+    if(std::string_view(reinterpret_cast<const char*>(f),8)!="SBBTP002"||LoadLittle16(f+8)!=2||LoadLittle16(f+10)!=512
+      ||used<v2_start||used>size||key_form>1||LoadLittle16(f+158)!=kNativeBtreeJumpInterval
+      ||count>(used-v2_start)/v2_min_cell||deleted>count||jumps!=(count+kNativeBtreeJumpInterval-1)/kNativeBtreeJumpInterval
+      ||expanded>4*size||!Zero(f+420,92)||!Zero(b.data()+used,size-used))return fail(E::invalid_family);
+    const bool row_is_key=key_form==1;
+    if constexpr(Borrowed){
+      const auto aligned=[](auto region){using T=typename decltype(region)::element_type;
+        return region.empty()||(region.data()&&reinterpret_cast<std::uintptr_t>(region.data())%alignof(T)==0);};
+      if(!aligned(workspace.cells)||!aligned(workspace.references)||
+          !disk::detail::DisjointNativeDecodeRegions(b,workspace.cells,workspace.references)||
+          !disk::detail::DisjointNativeDecodeRegions(b,workspace.keys,workspace.cells)||
+          !disk::detail::DisjointNativeDecodeRegions(b,workspace.keys,workspace.references))
+        return fail(E::invalid_workspace);
+      if(workspace.cells.size()<count||workspace.references.size()<4*count+13||workspace.keys.size()<expanded)
+        return fail(E::resource_exhausted);
+    }
+    Page p;p.header=*common.header;auto& d=p.dependencies;
+    d.index_uuid=Get(f+16);d.descriptor_generation=LoadLittle64(f+32);d.storage_generation=LoadLittle64(f+40);d.key_profile_uuid=Get(f+48);
+    d.visibility_profile_uuid=Get(f+64);d.dependency_map_uuid=Get(f+80);std::copy_n(f+96,32,d.dependency_map_sha256.begin());
+    p.creator_transaction_uuid=Get(f+128);p.creator_local_transaction_id=LoadLittle64(f+144);p.maintenance_state=LoadLittle16(f+152);p.tree_level=LoadLittle16(f+154);
+    p.parent=GetRef(f+160);p.left=GetRef(f+208);p.right=GetRef(f+256);p.first_child=GetRef(f+304);
+    const bool branch=p.tree_level>0;const std::size_t quarter=size/4;
+    std::size_t at=v2_start;
+    const auto fence=[&](auto& key,std::size_t offset){const auto pos=LoadLittle32(f+offset),length=LoadLittle32(f+offset+4);
+      if(!pos&&!length)return true;if(pos!=at||length<41||length>used-at)return false;
+      const auto* in=b.data()+at;const auto n=LoadLittle32(in);if(n!=length-40||!Zero(in+4,4)||n>quarter)return false;
+      typename Page::Key k;k.row_uuid=Get(in+8);k.version_uuid=Get(in+24);
+      if constexpr(Borrowed)k.encoded_key={in+40,length-40};else k.encoded_key.assign(in+40,in+length);
+      key=std::move(k);at+=length;return true;};
+    if(!fence(p.low_fence,352)||!fence(p.high_fence,360))return fail(E::invalid_fence);
+    if(jump_table!=at||4*jumps>used-at)return fail(E::invalid_family);
+    at+=4*jumps;
+    if constexpr(Borrowed)p.cells=workspace.cells.first(count);
+    else p.cells.reserve(count);  // `previous` borrows the prior cell's key: no reallocation
+    std::size_t rebuilt=0;bool all_row_keys=count>0;
+    std::span<const byte> previous;
+    for(std::size_t i=0;i<count;++i){
+      if(i%kNativeBtreeJumpInterval==0&&LoadLittle32(b.data()+jump_table+4*(i/kNativeBtreeJumpInterval))!=at)return fail(E::invalid_family);
+      if(at>=used)return fail(E::invalid_family);
+      const byte flags=b[at++];
+      if(flags&~byte{7}||(branch&&(flags&5)))return fail(E::invalid_family);
+      const auto shared=GetVarint(b,at,used),suffix=shared?GetVarint(b,at,used):std::nullopt;
+      if(!shared||!suffix||*suffix>used-at)return fail(E::invalid_family);
+      const std::size_t prior_size=i?previous.size():0;
+      if((i%kNativeBtreeJumpInterval==0&&*shared)||*shared>prior_size)return fail(E::invalid_family);
+      const std::size_t length=*shared+*suffix;
+      if(!length||length>quarter)return fail(length?E::key_too_long:E::invalid_family);
+      // Canonical: a cell other than a restart cell shares exactly the longest
+      // shared prefix (a restart cell stores its whole key by rule).
+      if(i%kNativeBtreeJumpInterval&&*suffix&&*shared<prior_size&&b[at]==previous[*shared])return fail(E::invalid_family);
+      if(rebuilt+length>expanded)return fail(E::invalid_family);
+      Cell c;c.deleted=flags&1;
+      std::span<const byte> key;
+      if constexpr(Borrowed){
+        auto out=workspace.keys.subspan(rebuilt,length);
+        std::copy_n(previous.begin(),*shared,out.begin());std::copy_n(b.begin()+static_cast<std::ptrdiff_t>(at),*suffix,out.begin()+static_cast<std::ptrdiff_t>(*shared));
+        c.key.encoded_key=out;key=out;
+      }else{
+        c.key.encoded_key.assign(previous.begin(),previous.begin()+static_cast<std::ptrdiff_t>(*shared));
+        c.key.encoded_key.insert(c.key.encoded_key.end(),b.begin()+static_cast<std::ptrdiff_t>(at),b.begin()+static_cast<std::ptrdiff_t>(at+*suffix));
+      }
+      at+=*suffix;rebuilt+=length;
+      const std::size_t fixed=(row_is_key?0:16)+16;
+      if(fixed>used-at)return fail(E::invalid_family);
+      if(row_is_key){if(length!=16)return fail(E::invalid_family);
+        if constexpr(Borrowed)std::copy_n(key.begin(),16,c.key.row_uuid.bytes.begin());
+        else std::copy_n(c.key.encoded_key.begin(),16,c.key.row_uuid.bytes.begin());
+      }else{c.key.row_uuid=Get(b.data()+at);at+=16;}
+      c.key.version_uuid=Get(b.data()+at);at+=16;
+      if(!branch){const auto creator=GetVarint(b,at,used);if(!creator||!*creator)return fail(E::invalid_family);c.creator_local_transaction_id=*creator;}
+      disk::NativePageReference ref;
+      if(flags&2){if(16>used-at)return fail(E::invalid_family);
+        ref={p.header.filespace_uuid,LoadLittle64(b.data()+at),LoadLittle64(b.data()+at+8),p.header.page_size_profile_uuid};at+=16;}
+      else{if(48>used-at)return fail(E::invalid_family);const auto full=GetRef(b.data()+at);at+=48;
+        if(!full||Compact(p,*full))return fail(E::invalid_family);ref=*full;}
+      (branch?c.child:c.base_page)=ref;
+      if(flags&4){const auto n=GetVarint(b,at,used);if(!n||!*n||*n>used-at)return fail(E::invalid_family);
+        if constexpr(Borrowed)c.payload={b.data()+at,static_cast<std::size_t>(*n)};else c.payload.assign(b.begin()+static_cast<std::ptrdiff_t>(at),b.begin()+static_cast<std::ptrdiff_t>(at+*n));
+        at+=*n;}
+      if(!row_is_key&&(length!=16||!std::equal(c.key.encoded_key.begin(),c.key.encoded_key.end(),c.key.row_uuid.bytes.begin())))all_row_keys=false;
+      if constexpr(Borrowed){workspace.cells[i]=std::move(c);previous=workspace.cells[i].key.encoded_key;}
+      else{p.cells.push_back(std::move(c));previous=p.cells.back().key.encoded_key;}
+    }
+    if(at!=used||rebuilt!=expanded||row_is_key!=all_row_keys||
+       deleted!=static_cast<std::size_t>(std::count_if(p.cells.begin(),p.cells.end(),[](const auto& c){return c.deleted;})))return fail(E::invalid_family);
+    E valid;
+    if constexpr(Borrowed){BorrowedReferences references(workspace.references.first(4*count+13));valid=Validate(p,references);}
+    else valid=Validate(p);
+    if(valid==E::none)valid=ValidateV2(p);
+    if(valid!=E::none)return fail(valid);
+    Result out;out.error=E::none;out.page=std::move(p);
+    if constexpr(Borrowed)out.bytes=b;else out.bytes.assign(b.begin(),b.end());
+    return out;
+  }catch(const std::bad_alloc&){return fail(E::resource_exhausted);}catch(const std::length_error&){return fail(E::resource_exhausted);}catch(...){return fail(E::invalid_family);}
+}
+}  // namespace
+NativeBtreePageResult DecodeNativeBtreePageV2(const std::vector<byte>& bytes) noexcept {
+  return DecodeBtreeV2<false>(bytes,{});
+}
+NativeBtreePageViewResult DecodeNativeBtreePageV2Into(std::span<const byte> bytes,NativeBtreeViewWorkspace workspace) noexcept {
+  return DecodeBtreeV2<true>(bytes,workspace);
+}
+
 NativeBtreePageResult ReadNativeBtreePageFromOpenDevice(disk::FileDevice& device,const Uuid& db,
     const disk::NativePageReference& ref,u32 type,const NativeBtreeDependencies& dependencies) noexcept {
   try {
