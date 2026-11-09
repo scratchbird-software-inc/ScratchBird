@@ -127,32 +127,20 @@ inline NativeCatalogCollisionVerification VerifyNativeCatalogNamingCollisions(
   }
   std::size_t used=0;for(std::size_t i=0;i<count;++i)if(marks[i])order[used++]=i;auto entries=order.first(used);
   const auto name=[&](std::size_t i)->const c::CatalogNameEntryView&{return std::get<c::CatalogNameEntryView>(*rows[i].row.name_payload);};
-  const auto common=[&](std::size_t a,std::size_t b){const auto& x=name(a);const auto& y=name(b);
-    if(x.scope_uuid.value!=y.scope_uuid.value)return x.scope_uuid.value<y.scope_uuid.value?-1:1;
-    if(x.identifier_profile_uuid.value!=y.identifier_profile_uuid.value)return x.identifier_profile_uuid.value<y.identifier_profile_uuid.value?-1:1;
-    return 0;
-  };
+  // SB_NAME_COLLISION_ORDER: the order the native catalog writer also applies.
+  const auto common=[&](std::size_t a,std::size_t b){return c::CompareCatalogNameCollisionScope(name(a),name(b));};
   std::sort(entries.begin(),entries.end(),[&](auto a,auto b){const auto c=common(a,b);return c?c<0:name(a).object_class<name(b).object_class;});
   for(std::size_t i=1;i<entries.size();++i){const auto a=entries[i-1],b=entries[i];
     if(!common(a,b)&&name(a).object_class==name(b).object_class&&(bindings[a]>>9)!=(bindings[b]>>9))
       return fail(E::conflicting_policy,name(a).object_uuid.value,name(b).object_uuid.value);
   }
-  const auto language_compare=[](std::string_view a,std::string_view b,bool fold){
-    const auto value=[&](unsigned char ch){return fold&&ch>='A'&&ch<='Z'?ch+('a'-'A'):ch;};
-    for(std::size_t i=0;i<std::min(a.size(),b.size());++i){const auto x=value(a[i]),y=value(b[i]);if(x!=y)return x<y?-1:1;}
-    return a.size()==b.size()?0:a.size()<b.size()?-1:1;
-  };
   const auto compare=[&](std::size_t a,std::size_t b){
     if(const auto result=common(a,b))return result;
     const auto xgroup=bindings[a]>>3,ygroup=bindings[b]>>3;
     if(xgroup!=ygroup)return xgroup<ygroup?-1:1;
-    const auto flags=bindings[a]&7;const auto& x=name(a);const auto& y=name(b);
-    if((flags&3)!=2){const auto result=language_compare(x.language_tag,y.language_tag,(flags&3)==1);if(result)return result;}
-    if(!(flags&4)&&x.requires_exact_match!=y.requires_exact_match)return x.requires_exact_match?1:-1;
-    const auto xkey=x.requires_exact_match?x.exact_lookup_key:x.normalized_lookup_key;
-    const auto ykey=y.requires_exact_match?y.exact_lookup_key:y.normalized_lookup_key;
-    if(std::lexicographical_compare(xkey.begin(),xkey.end(),ykey.begin(),ykey.end()))return -1;
-    if(std::lexicographical_compare(ykey.begin(),ykey.end(),xkey.begin(),xkey.end()))return 1;return 0;
+    const auto flags=bindings[a]&7;
+    return c::CompareCatalogNameCollisionLanes(name(a),name(b),
+        static_cast<c::CatalogCollisionLanguageLane>((flags&3)+1),static_cast<c::CatalogCollisionKeyLane>(((flags>>2)&1)+1));
   };
   std::sort(entries.begin(),entries.end(),[&](auto a,auto b){return compare(a,b)<0;});
   for(std::size_t i=1;i<entries.size();++i){const auto a=entries[i-1],b=entries[i];

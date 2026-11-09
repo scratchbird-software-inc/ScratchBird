@@ -189,11 +189,28 @@ std::optional<std::vector<byte>> InsertOracle(const Db& b, std::span<const byte>
   for (const auto& want : r.rows) {
     RoleScope scope(b, want.role);
     const auto rel = ReadRelation(b, file);
-    const auto need = RowBytes(want.metadata);
+    // A name row's payload is its envelope, binding where it is placed.
+    const auto finished = [&](const LeafSeen& l) {
+      auto m = want.metadata;
+      if (want.name) {
+        u32 slot = 0;
+        for (const auto& x : l.leaf.body.rows) slot = std::max(slot, x.stable_slot_id);
+        const c::CatalogNameVersionBinding at{
+            {UuidKind::database, l.leaf.header.database_uuid}, {UuidKind::filespace, l.leaf.header.filespace_uuid},
+            {UuidKind::row, want.row_uuid}, {UuidKind::row, want.version_uuid}, m.record.header.object_uuid,
+            {UuidKind::transaction, r.transaction_uuid}, l.page, slot + 1, l.leaf.header.page_generation, 1,
+            r.transaction_order, m.catalog_generation};
+        const auto envelope = c::EncodeCatalogNameEnvelope({at, *want.name});
+        Check(envelope.ok(), "the expected name envelope encodes");
+        m.record.payload.assign(envelope.bytes.begin(), envelope.bytes.end());
+      }
+      return m;
+    };
     const LeafSeen* target = nullptr;
     for (const auto& l : rel.leaves)
-      if (!target && l.leaf.body.free_space_bytes >= need) target = &l;
+      if (!target && l.leaf.body.free_space_bytes >= RowBytes(finished(l))) target = &l;
     if (!target) return std::nullopt;
+    const auto final_metadata = finished(*target);
     auto into = target->leaf;
     pg::RowDataRecord row;
     row.row_uuid = {UuidKind::row, want.row_uuid};
@@ -205,7 +222,7 @@ std::optional<std::vector<byte>> InsertOracle(const Db& b, std::span<const byte>
     u32 slot = 0;
     for (const auto& x : into.body.rows) slot = std::max(slot, x.stable_slot_id);
     row.stable_slot_id = slot + 1;
-    const auto encoded = c::EncodeCatalogMetadataVersion(want.metadata);
+    const auto encoded = c::EncodeCatalogMetadataVersion(final_metadata);
     Check(encoded.ok(), "the row metadata encodes");
     scratchbird::core::datatypes::DatatypeBinaryValue cell;
     cell.type_id = scratchbird::core::datatypes::CanonicalTypeId::binary;
@@ -299,7 +316,8 @@ struct Place {
 };
 std::vector<Place> Places(const Db& b, std::span<const byte> file) {
   std::vector<Place> out;
-  for (const u16 role : {u16{6}, u16{4}, u16{2}, u16{1}, u16{5}}) {
+  // Not the names relation (role 2): it holds only name rows (W3b-1b-1).
+  for (const u16 role : {u16{6}, u16{4}, u16{1}, u16{5}}) {
     RoleScope scope(b, role);
     const auto rel = ReadRelation(b, file);
     if (!rel.indexed) continue;
@@ -590,8 +608,10 @@ void InsertRefusals(const Db& b, const Place& at) {
       "a generation above the root's");
   bad([&](auto& m) { m.security_epoch = root.security_epoch + 1; }, CE::ahead_of_catalog_root,
       "an epoch above the root's");
-  bad([](auto& m) { m.record.header.kind = c::CatalogRecordKind::localized_name; }, CE::name_record_unsupported,
-      "a name record (W3b-1b)");
+  // Name records are written since W3b-1b-1 (native_catalog_name_insert_test);
+  // a name-kind row without its name is not one.
+  bad([](auto& m) { m.record.header.kind = c::CatalogRecordKind::localized_name; }, CE::invalid_insert,
+      "a name-kind row without its name");
   InsertRefused(b, s, path, Request(n, {}), CE::invalid_request, "no rows");
   {
     auto r = Request(n, {good});
@@ -925,6 +945,7 @@ void InsertFaults(const Db& b, const Place& at) {
 }
 }  // namespace
 
+#ifndef SB_CATALOG_INSERT_WRITER_TEST_WITHOUT_MAIN
 int main(int argc, char** argv) {
   unsigned profile = 0;
   try {
@@ -955,3 +976,4 @@ int main(int argc, char** argv) {
     return 1;
   }
 }
+#endif  // SB_CATALOG_INSERT_WRITER_TEST_WITHOUT_MAIN

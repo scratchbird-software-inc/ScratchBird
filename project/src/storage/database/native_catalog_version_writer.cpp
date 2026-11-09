@@ -2,7 +2,14 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "native_catalog_version_writer.hpp"
 
+#include "catalog_crypto_inline_private_key_policy.hpp"
+#include "catalog_identifier_lookup_key.hpp"
+#include "catalog_identifier_profile.hpp"
+#include "catalog_naming_collision_policy.hpp"
+#include "catalog_naming_dialect_profile.hpp"
 #include "catalog_page.hpp"
+#include "catalog_policy_descriptor.hpp"
+#include "catalog_records.hpp"
 #include "native_common_page_header.hpp"
 #include "native_index_btree_page.hpp"
 #include "transaction_inventory_reader.hpp"
@@ -30,6 +37,44 @@ using scratchbird::core::platform::u64;
 using disk::CarefulWriteError;
 
 bool V7(const Uuid& id) { return scratchbird::core::uuid::IsEngineIdentityUuid(id); }
+
+// The relations the startup verifiers place records in: the names relation
+// (role 2) holds exactly the localized-name records (name verification);
+// audit evidence is in role 6 (audit); database, schema and filespace records
+// in role 1 (namespaces, filespaces); inline private-key policies in role 3
+// (the create).
+bool RoleAdmits(u16 role, const catalog::CatalogMetadataVersion& m) {
+  using K = catalog::CatalogRecordKind;
+  const auto kind = m.record.header.kind;
+  if ((role == 2) != (kind == K::localized_name)) return false;
+  if (kind == K::audit_evidence && role != 6) return false;
+  if ((kind == K::database || kind == K::schema || kind == K::filespace) && role != 1) return false;
+  if ((m.object_subtype == "crypto_inline_private_key" ||
+       catalog::IsCatalogCryptoInlinePrivateKeyPolicyPayload(m.record.payload)) &&
+      role != 3)
+    return false;
+  return true;
+}
+// Generations and epochs within the catalog root's. A name row's resource
+// epoch is the resource epoch its keys were derived under (the name appendix's
+// resource_epoch field; the create sets it from name_resource_epoch, 1), not
+// the catalog's resource epoch, so it is not bounded by the root's: the create
+// itself writes name entries at 1 under a root at 0. A definition's resource
+// epoch is (SB_DRIFT_DEFINITION_RESOURCE_EPOCH).
+bool AheadOfRoot(const catalog::CatalogMetadataVersion& m, const pg::NativeCatalogRoot& r) {
+  return m.catalog_generation > r.catalog_generation || m.schema_epoch > r.schema_epoch ||
+         m.security_epoch > r.security_epoch ||
+         (m.record.header.kind != catalog::CatalogRecordKind::localized_name && m.resource_epoch > r.resource_epoch);
+}
+// The record kind a name's object_class names (CatalogRecordKindName).
+std::optional<catalog::CatalogRecordKind> KindNamed(std::string_view name) {
+  for (unsigned k = 1; k < 256; ++k) {
+    const auto kind = static_cast<catalog::CatalogRecordKind>(k);
+    const char* text = catalog::CatalogRecordKindName(kind);
+    if (text && name == text && kind != catalog::CatalogRecordKind::unknown) return kind;
+  }
+  return std::nullopt;
+}
 
 // One base leaf as read: its image and its decode.
 struct Leaf {
@@ -253,6 +298,9 @@ const char* CatalogVersionWriteErrorName(CatalogVersionWriteError error) noexcep
     case E::duplicate_object: return "duplicate_object";
     case E::invalid_insert: return "invalid_insert";
     case E::index_full: return "index_full";
+    case E::invalid_role: return "invalid_role";
+    case E::invalid_name: return "invalid_name";
+    case E::duplicate_name: return "duplicate_name";
     case E::plan_refused: return "plan_refused";
     case E::write_failed: return "write_failed";
     case E::resource_exhausted: return "resource_exhausted";
@@ -385,11 +433,7 @@ CatalogVersionWriteResult WriteCatalogSuccessorVersion(disk::CarefulWriteSink& s
       // A runtime authority binding's payload catalog_generation and
       // security_epoch equal its metadata's (that family's own rule, checked
       // above), so this also keeps every binding within the root.
-      const auto& r = *root.root;
-      const auto& m = request.metadata;
-      if (m.catalog_generation > r.catalog_generation || m.schema_epoch > r.schema_epoch ||
-          m.security_epoch > r.security_epoch || m.resource_epoch > r.resource_epoch)
-        return Refuse(E::ahead_of_catalog_root);
+      if (AheadOfRoot(request.metadata, *root.root)) return Refuse(E::ahead_of_catalog_root);
     }
     for (const auto& leaf : leaves)
       for (const auto& row : leaf.page.body.rows)
@@ -527,9 +571,20 @@ CatalogVersionWriteResult WriteCatalogInsertVersions(disk::CarefulWriteSink& sin
         return refuse_row(E::invalid_request, i);
     }
     if (binding.read_only_database) return Refuse(E::read_only_database);
-    for (std::size_t i = 0; i < request.rows.size(); ++i)
-      if (request.rows[i].metadata.record.header.kind == catalog::CatalogRecordKind::localized_name)
-        return refuse_row(E::name_record_unsupported, i);
+    // A name row carries its name and an empty payload (the envelope is
+    // encoded once placed); the relation admits the record's kind.
+    bool any_entry = false;
+    for (std::size_t i = 0; i < request.rows.size(); ++i) {
+      const auto& row = request.rows[i];
+      const auto& m = row.metadata;
+      const bool name = m.record.header.kind == catalog::CatalogRecordKind::localized_name;
+      if (name != row.name.has_value() || (name && !m.record.payload.empty()) ||
+          m.record.header.kind == catalog::CatalogRecordKind::database)
+        return refuse_row(E::invalid_insert, i);
+      if (!RoleAdmits(row.role, m)) return refuse_row(E::invalid_role, i);
+      if (name && !catalog::CatalogNamePayloadMatchesMetadata(*row.name, m)) return refuse_row(E::invalid_insert, i);
+      any_entry = any_entry || (name && std::holds_alternative<catalog::CatalogNameEntry>(*row.name));
+    }
     // Rows and versions are new within the request; objects too.
     for (std::size_t i = 0; i < request.rows.size(); ++i)
       for (std::size_t j = 0; j < i; ++j) {
@@ -585,14 +640,17 @@ CatalogVersionWriteResult WriteCatalogInsertVersions(disk::CarefulWriteSink& sin
     if (!root.ok() || root.root->object_uuid != croot.object_uuid) return Refuse(E::invalid_catalog);
     std::map<u16, Relation> relations;
     std::map<u16, pg::NativeCatalogRootReference> heads;
-    for (const auto& row : request.rows) {
-      if (relations.contains(row.role)) continue;
+    std::vector<u16> roles;
+    for (const auto& row : request.rows) roles.push_back(row.role);
+    if (any_entry) roles.push_back(5);  // the profiles and policies an entry names
+    for (const auto role : roles) {
+      if (relations.contains(role)) continue;
       const auto head = std::find_if(root.root->roots.begin(), root.root->roots.end(),
-                                     [&](const auto& r) { return r.role == row.role; });
+                                     [&](const auto& r) { return r.role == role; });
       if (head == root.root->roots.end() || (head->page_type != 6 && head->page_type != 0x200))
         return Refuse(E::invalid_catalog);
-      heads[row.role] = *head;
-      if (!ReadRelation(sink, binding, page_size, *head, relations[row.role], result)) return result;
+      heads[role] = *head;
+      if (!ReadRelation(sink, binding, page_size, *head, relations[role], result)) return result;
     }
 
     // ---- each row: checked, placed, indexed --------------------------------
@@ -610,6 +668,175 @@ CatalogVersionWriteResult WriteCatalogInsertVersions(disk::CarefulWriteSink& sin
         return Hold::none;
       return InProgress(state) && row.local_transaction_id != request.transaction_order ? Hold::pending : Hold::held;
     };
+
+    // ---- names: what this transaction sees of profiles, policies, names ---
+    const auto state_of = [&](const pg::RowDataRecord& row) -> std::optional<mga::TransactionState> {
+      const auto* creator = entry(row.local_transaction_id);
+      if (!creator || creator->identity.transaction_uuid.value != row.transaction_uuid.value) return std::nullopt;
+      return mga::InventoryVisibilityState(*creator);
+    };
+    const auto dead = [](const std::optional<mga::TransactionState>& state) {
+      return state && (*state == mga::TransactionState::rolled_back || *state == mga::TransactionState::failed_terminal);
+    };
+    // The newest version of an object this transaction sees (its creator
+    // committed, or its own), unless deleted.
+    const auto current = [&](u16 role, const Uuid& object) -> const catalog::CatalogMetadataVersion* {
+      const auto rel = relations.find(role);
+      if (rel == relations.end()) return nullptr;
+      const catalog::CatalogMetadataVersion* best = nullptr;
+      u64 newest = 0;
+      for (const auto& leaf : rel->second.leaves)
+        for (const auto& row : leaf.page.body.rows) {
+          const auto m = leaf.metadata.find(row.version_uuid);
+          if (m == leaf.metadata.end() || m->second.record.header.object_uuid.value != object) continue;
+          const auto state = state_of(row);
+          if (!state || (*state != mga::TransactionState::committed && row.local_transaction_id != request.transaction_order))
+            continue;
+          if (!best || row.row_version > newest) {
+            best = &m->second;
+            newest = row.row_version;
+          }
+        }
+      return best && !best->record.header.deleted ? best : nullptr;
+    };
+    const auto active = [](const catalog::CatalogMetadataVersion& m) {
+      return m.status == catalog::CatalogObjectStatus::active && m.lifecycle == catalog::CatalogObjectLifecycle::active;
+    };
+    const auto view = [](const catalog::CatalogMetadataVersion& m) { return catalog::BorrowCatalogMetadataVersion(m); };
+    // Every stored name version, its envelope checked against where it is.
+    struct StoredName {
+      catalog::CatalogNamePayload payload;
+      Uuid row, object;
+      u64 row_version = 0, order = 0;
+      std::optional<mga::TransactionState> state;
+      bool deleted = false;
+    };
+    std::vector<StoredName> stored;
+    std::map<Uuid, std::size_t> newest_name;  // per row: the newest version not rolled back or dead
+    if (any_entry && relations.contains(2)) {
+      for (const auto& leaf : relations.at(2).leaves)
+        for (const auto& row : leaf.page.body.rows) {
+          const auto m = leaf.metadata.find(row.version_uuid);
+          if (m == leaf.metadata.end()) return Refuse(E::invalid_catalog);
+          const catalog::CatalogNameVersionBinding at{
+              {UuidKind::database, leaf.page.header.database_uuid}, {UuidKind::filespace, leaf.page.header.filespace_uuid},
+              row.row_uuid, {UuidKind::row, row.version_uuid}, m->second.record.header.object_uuid, row.transaction_uuid,
+              leaf.page.body.page_number, row.stable_slot_id, row.storage_generation, row.row_version,
+              row.local_transaction_id, m->second.catalog_generation};
+          const auto& bytes = m->second.record.payload;
+          const auto decoded = catalog::DecodeCatalogNameEnvelopeView(
+              {reinterpret_cast<const byte*>(bytes.data()), bytes.size()}, at);
+          if (!decoded.ok()) return Refuse(E::invalid_catalog);
+          stored.push_back({catalog::MaterializeCatalogNameEnvelope(*decoded.record).payload, row.row_uuid.value,
+                            m->second.record.header.object_uuid.value, row.row_version, row.local_transaction_id,
+                            state_of(row), m->second.record.header.deleted});
+        }
+      for (std::size_t k = 0; k < stored.size(); ++k) {
+        if (dead(stored[k].state)) continue;
+        const auto found = newest_name.find(stored[k].row);
+        if (found == newest_name.end() || stored[found->second].row_version < stored[k].row_version)
+          newest_name[stored[k].row] = k;
+      }
+    }
+    // The vector an entry names: in the request, else the newest stored
+    // version (whoever wrote it: another transaction's entry in progress is
+    // judged by its own vector).
+    const auto vector_of = [&](const Uuid& id) -> const catalog::CatalogNameVector* {
+      for (const auto& row : request.rows)
+        if (row.name)
+          if (const auto* v = std::get_if<catalog::CatalogNameVector>(&*row.name); v && v->name_vector_uuid.value == id)
+            return v;
+      for (const auto& [row, k] : newest_name)
+        if (stored[k].object == id && !stored[k].deleted)
+          if (const auto* v = std::get_if<catalog::CatalogNameVector>(&stored[k].payload)) return v;
+      return nullptr;
+    };
+    // The collision group an entry's class binds to, as startup resolves it:
+    // vector -> policy descriptor -> naming collision policy body -> class.
+    struct Group {
+      Uuid body, group;
+      catalog::CatalogCollisionLanguageLane language{};
+      catalog::CatalogCollisionKeyLane key{};
+    };
+    const auto group_of = [&](const catalog::CatalogNameEntry& e) -> std::optional<Group> {
+      const auto* v = vector_of(e.name_vector_uuid.value);
+      if (!v || v->object_uuid.value != e.object_uuid.value || v->object_class != e.object_class) return std::nullopt;
+      const auto* dm = current(5, v->name_collision_policy_uuid.value);
+      if (!dm || !active(*dm) || !catalog::CatalogPolicyDescriptorMatchesMetadata(view(*dm)) ||
+          !catalog::CatalogPolicyDescriptorMatchesDatabase(view(*dm), binding.database_uuid))
+        return std::nullopt;
+      const auto policy = catalog::DecodeCatalogPolicyDescriptor(dm->record.payload);
+      if (!policy.record || policy.record->policy_class != catalog::CatalogPolicyClass::metadata ||
+          policy.record->scope != catalog::CatalogPolicyScope::database ||
+          policy.record->scope_uuid != binding.database_uuid)
+        return std::nullopt;
+      const auto* bm = current(5, policy.record->body_uuid);
+      if (!bm || !active(*bm) ||
+          !(bm->object_subtype == "naming_collision_policy_body" ||
+            catalog::IsCatalogNamingCollisionPolicyPayload(bm->record.payload)) ||
+          !catalog::CatalogNamingCollisionPolicyMatchesMetadata(view(*bm)) ||
+          !catalog::CatalogNamingCollisionPolicyMatchesDatabase(view(*bm), binding.database_uuid))
+        return std::nullopt;
+      const auto body = catalog::DecodeCatalogNamingCollisionPolicy(bm->record.payload);
+      const auto kind = KindNamed(e.object_class);
+      if (!body.ok() || body.record->generation != policy.record->body_generation || !kind) return std::nullopt;
+      const auto classes = std::span(body.record->classes).first(body.record->class_count);
+      const auto bound = std::find_if(classes.begin(), classes.end(), [&](const auto& c) { return c.kind == *kind; });
+      if (bound == classes.end()) return std::nullopt;
+      const auto groups = std::span(body.record->groups).first(body.record->group_count);
+      const auto group = std::find_if(groups.begin(), groups.end(),
+                                      [&](const auto& g) { return g.group_uuid == bound->group_uuid; });
+      if (group == groups.end()) return std::nullopt;
+      return Group{policy.record->body_uuid, group->group_uuid, group->language_lane, group->key_lane};
+    };
+    // An entry's keys, as startup checks them: its dialect profile, that
+    // profile's identifier profile, and the keys under it.
+    const auto keys_agree = [&](const catalog::CatalogNamePayload& payload) {
+      const auto& e = std::get<catalog::CatalogNameEntry>(payload);
+      if (e.case_fold_profile_uuid || e.quoted_identifier_profile_uuid) return false;
+      const auto* dm = current(5, e.dialect_profile_uuid.value);
+      if (!dm || !active(*dm) || dm->record.header.kind != catalog::CatalogRecordKind::config_profile ||
+          dm->object_subtype != "naming_dialect_profile" || !catalog::CatalogNamingDialectProfileMatchesMetadata(view(*dm)) ||
+          !catalog::CatalogNamingDialectProfileMatchesDatabase(view(*dm), binding.database_uuid))
+        return false;
+      const auto dialect = catalog::DecodeCatalogNamingDialectProfile(dm->record.payload);
+      if (!dialect.record || dialect.record->identifier_profile_uuid != e.identifier_profile_uuid.value) return false;
+      const auto* im = current(5, dialect.record->identifier_profile_uuid);
+      if (!im || !active(*im) || im->record.header.kind != catalog::CatalogRecordKind::config_profile ||
+          im->object_subtype != "identifier_resolution_profile" ||
+          !catalog::CatalogIdentifierProfileMatchesMetadata(view(*im)) ||
+          !catalog::CatalogIdentifierProfileMatchesDatabase(view(*im), binding.database_uuid))
+        return false;
+      const auto identifier = catalog::DecodeCatalogIdentifierProfile(im->record.payload);
+      if (!identifier.record || identifier.record->generation != dialect.record->identifier_profile_generation ||
+          (identifier.record->dialect_mode_flags & ~dialect.record->allowed_dialect_mode_flags))
+        return false;
+      return catalog::CheckCatalogIdentifierLookupKeys(
+                 *identifier.record, std::get<catalog::CatalogNameEntryView>(catalog::BorrowCatalogNamePayload(payload))) ==
+             catalog::CatalogIdentifierKeyError::none;
+    };
+    // The entries that may hold a name: each stored entry row's newest version
+    // not rolled back or dead, then this request's entries as placed.
+    struct Holder {
+      const catalog::CatalogNamePayload* payload;
+      Hold state;
+      u64 order;
+    };
+    std::vector<Holder> holders;
+    for (const auto& [row, k] : newest_name) {
+      const auto& s = stored[k];
+      const auto* e = std::get_if<catalog::CatalogNameEntry>(&s.payload);
+      if (!e) continue;
+      if (s.state && InProgress(*s.state) && s.order != request.transaction_order) {
+        holders.push_back({&s.payload, Hold::pending, s.order});
+        continue;
+      }
+      if (s.deleted || e->lifecycle_state == catalog::CatalogNameLifecycle::dropped ||
+          e->lifecycle_state == catalog::CatalogNameLifecycle::archived)
+        continue;
+      holders.push_back({&s.payload, Hold::held, s.order});
+    }
+
     for (std::size_t i = 0; i < request.rows.size(); ++i) {
       const auto& want = request.rows[i];
       auto& relation = relations.at(want.role);
@@ -617,19 +844,14 @@ CatalogVersionWriteResult WriteCatalogInsertVersions(disk::CarefulWriteSink& sin
       const auto& m = want.metadata;
       const auto& h = m.record.header;
       // A first version by this transaction.
-      if (catalog::ValidateCatalogMetadataVersionView(catalog::BorrowCatalogMetadataVersion(m)) ||
+      if ((!want.name && catalog::ValidateCatalogMetadataVersionView(catalog::BorrowCatalogMetadataVersion(m))) ||
           h.row_uuid.kind != UuidKind::row || h.row_uuid.value != want.row_uuid || h.deleted ||
           m.definition_version != 1 || m.authority_scope == catalog::CatalogAuthorityScope::cluster ||
           m.creator_transaction_uuid.kind != UuidKind::transaction ||
           m.creator_transaction_uuid.value != request.transaction_uuid ||
           m.creator_local_transaction_id != request.transaction_order)
         return refuse_row(E::invalid_insert, i);
-      {
-        const auto& r = *root.root;
-        if (m.catalog_generation > r.catalog_generation || m.schema_epoch > r.schema_epoch ||
-            m.security_epoch > r.security_epoch || m.resource_epoch > r.resource_epoch)
-          return refuse_row(E::ahead_of_catalog_root, i);
-      }
+      if (AheadOfRoot(m, *root.root)) return refuse_row(E::ahead_of_catalog_root, i);
       // New to the relation: no row or version with these UUIDs; no row
       // holding the object (a hold another transaction in progress has is a
       // write conflict: if it rolls back the object can be inserted).
@@ -656,19 +878,66 @@ CatalogVersionWriteResult WriteCatalogInsertVersions(disk::CarefulWriteSink& sin
         for (const auto& cell : page.page.cells)
           if (cell.key.row_uuid == want.row_uuid) return refuse_row(E::duplicate_row, i);
 
-      // The row.
-      const auto encoded = catalog::EncodeCatalogMetadataVersion(m);
-      if (!encoded.ok()) return refuse_row(E::invalid_insert, i);
+      // An entry: its keys, then the names it could collide with.
+      if (want.name && std::holds_alternative<catalog::CatalogNameEntry>(*want.name)) {
+        const auto& x = std::get<catalog::CatalogNameEntry>(*want.name);
+        const auto gx = group_of(x);
+        if (!gx || !keys_agree(*want.name)) return refuse_row(E::invalid_name, i);
+        const auto xv = std::get<catalog::CatalogNameEntryView>(catalog::BorrowCatalogNamePayload(*want.name));
+        std::optional<u64> name_blocker;
+        bool name_held = false;
+        for (const auto& holder : holders) {
+          const auto& y = std::get<catalog::CatalogNameEntry>(*holder.payload);
+          if (y.object_uuid.value == x.object_uuid.value) continue;  // an alias of the same object
+          const auto yv = std::get<catalog::CatalogNameEntryView>(catalog::BorrowCatalogNamePayload(*holder.payload));
+          if (catalog::CompareCatalogNameCollisionScope(xv, yv)) continue;
+          const auto gy = group_of(y);
+          if (!gy) {
+            if (holder.state != Hold::pending) return Refuse(E::invalid_catalog);
+            if (!name_blocker) name_blocker = holder.order;
+            continue;
+          }
+          if (x.object_class == y.object_class && gy->body != gx->body) return refuse_row(E::invalid_name, i);
+          if (gy->body != gx->body || gy->group != gx->group ||
+              catalog::CompareCatalogNameCollisionLanes(xv, yv, gx->language, gx->key))
+            continue;
+          if (holder.state == Hold::held) name_held = true;
+          else if (!name_blocker) name_blocker = holder.order;
+        }
+        if (name_held) return refuse_row(E::duplicate_name, i);
+        if (name_blocker) {
+          result.blocker_order = name_blocker;
+          return refuse_row(E::write_conflict, i);
+        }
+        holders.push_back({&*want.name, Hold::held, request.transaction_order});
+      }
+
+      // The row. A name's envelope binds where the row is placed.
       pg::RowDataRecord added;
       added.row_uuid = {UuidKind::row, want.row_uuid};
       added.version_uuid = want.version_uuid;
       added.transaction_uuid = {UuidKind::transaction, request.transaction_uuid};
       added.local_transaction_id = request.transaction_order;
       added.row_version = 1;
-      scratchbird::core::datatypes::DatatypeBinaryValue cell_value;
-      cell_value.type_id = scratchbird::core::datatypes::CanonicalTypeId::binary;
-      cell_value.payload = encoded.bytes;
-      added.cells = {{1, std::move(cell_value), {}}};
+      const auto placed = [&](const NativeCatalogLeafPage& page, u32 slot)
+          -> std::optional<std::pair<catalog::CatalogMetadataVersion, std::vector<byte>>> {
+        auto final_metadata = m;
+        if (want.name) {
+          const catalog::CatalogNameVersionBinding at{
+              {UuidKind::database, page.header.database_uuid}, {UuidKind::filespace, page.header.filespace_uuid},
+              {UuidKind::row, want.row_uuid}, {UuidKind::row, want.version_uuid}, h.object_uuid,
+              {UuidKind::transaction, request.transaction_uuid}, page.body.page_number, slot, page.header.page_generation,
+              1, request.transaction_order, m.catalog_generation};
+          const auto envelope = catalog::EncodeCatalogNameEnvelope({at, *want.name});
+          if (!envelope.ok()) return std::nullopt;
+          final_metadata.record.payload.assign(envelope.bytes.begin(), envelope.bytes.end());
+          if (catalog::ValidateCatalogMetadataVersionView(catalog::BorrowCatalogMetadataVersion(final_metadata)))
+            return std::nullopt;
+        }
+        auto encoded = catalog::EncodeCatalogMetadataVersion(final_metadata);
+        if (!encoded.ok()) return std::nullopt;
+        return std::pair{std::move(final_metadata), std::move(encoded.bytes)};
+      };
 
       // Placement: the first reached base leaf with room (an unindexed
       // relation has one, its head).
@@ -678,9 +947,15 @@ CatalogVersionWriteResult WriteCatalogInsertVersions(disk::CarefulWriteSink& sin
         u32 slot = 0;
         for (const auto& row : page.body.rows) slot = std::max(slot, row.stable_slot_id);
         if (slot == std::numeric_limits<u32>::max()) continue;
+        auto final_row = placed(page, slot + 1);
+        if (!final_row) return refuse_row(E::invalid_insert, i);
         auto row = added;
         row.stable_slot_id = slot + 1;
         row.storage_generation = page.header.page_generation;
+        scratchbird::core::datatypes::DatatypeBinaryValue cell_value;
+        cell_value.type_id = scratchbird::core::datatypes::CanonicalTypeId::binary;
+        cell_value.payload = std::move(final_row->second);
+        row.cells = {{1, std::move(cell_value), {}}};
         page.body.rows.push_back(std::move(row));
         const auto fits = pg::BuildRowDataPageBody(page.body, page.header.page_size_bytes - 32);
         if (!fits.ok()) {
@@ -689,7 +964,7 @@ CatalogVersionWriteResult WriteCatalogInsertVersions(disk::CarefulWriteSink& sin
           return refuse_row(E::invalid_insert, i);
         }
         relation.leaves[l].page = std::move(page);
-        relation.leaves[l].metadata.emplace(want.version_uuid, m);
+        relation.leaves[l].metadata.emplace(want.version_uuid, std::move(final_row->first));
         target = l;
       }
       if (!target) return refuse_row(E::relation_full, i);

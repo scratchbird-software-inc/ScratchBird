@@ -1478,6 +1478,23 @@ endif()
       LABELS "sbsql_sblr_alignment;native_storage;catalog;careful_write;fault_injection"
       TIMEOUT 1800)
   endforeach()
+  # SB_CATALOG_NAME_INSERT: named objects (definition, name vector, default
+  # entry) inserted in place by a transaction (in-place writes W3b-1b-1), with
+  # startup name, profile and collision verification on a committed capture.
+  add_executable(sbsql_sblr_alignment_native_catalog_name_insert native_catalog_name_insert_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_native_catalog_name_insert PRIVATE cxx_std_23)
+  target_include_directories(sbsql_sblr_alignment_native_catalog_name_insert PRIVATE
+    ${PROJECT_SOURCE_DIR}/src ${PROJECT_SOURCE_DIR}/src/engine/internal_api)
+  target_link_libraries(sbsql_sblr_alignment_native_catalog_name_insert PRIVATE sb_engine_internal_api sb_storage_database)
+  target_compile_definitions(sbsql_sblr_alignment_native_catalog_name_insert PRIVATE
+    SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password")
+  foreach(profile RANGE 0 4)
+    add_test(NAME sbsql_sblr_alignment_native_catalog_name_insert_${profile}
+      COMMAND sbsql_sblr_alignment_native_catalog_name_insert --profile ${profile})
+    set_tests_properties(sbsql_sblr_alignment_native_catalog_name_insert_${profile} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_storage;catalog;careful_write;names"
+      TIMEOUT 1800)
+  endforeach()
   # SB_TRANSACTION_INVENTORY_WRITER: in-place BEGIN/COMMIT/ROLLBACK and restart
   # dead-marking on production-created files, one page size per test (owner
   # Q20 = 1, 2026-11-07).

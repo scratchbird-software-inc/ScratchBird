@@ -3,6 +3,7 @@
 #pragma once
 
 #include "careful_write.hpp"
+#include "catalog_name_envelope.hpp"
 #include "catalog_record_codec.hpp"
 #include "filespace_page_zero.hpp"
 #include "native_catalog_leaf_page.hpp"
@@ -44,7 +45,8 @@ namespace scratchbird::storage::database {
 //
 // Generations and epochs never run ahead of the catalog root: a successor's
 // metadata catalog_generation and schema, security and resource epochs are at
-// most the root's current values (refused ahead_of_catalog_root); a runtime
+// most the root's current values (refused ahead_of_catalog_root; a name row's
+// resource epoch, the epoch its keys were derived under, is exempt); a runtime
 // authority binding's own catalog_generation and security_epoch equal its
 // metadata's, so the security reader's rule (never above the root) holds. The root is
 // rewritten in place only after the changing transaction commits (owner Q24 =
@@ -77,6 +79,9 @@ enum class CatalogVersionWriteError : std::uint8_t {
   duplicate_object,        // insert: a committed or own row of the relation (or the batch) carries the object UUID
   invalid_insert,          // insert: the metadata cannot be a first version by this transaction
   index_full,              // insert: the index leaf the key reaches has no room (splits come with W3b-3)
+  invalid_role,            // insert: the record kind does not belong in the relation (startup verifier rules)
+  invalid_name,            // insert: a name entry's profiles, keys or collision policy do not resolve or agree
+  duplicate_name,          // insert: a committed or own active entry already holds the name in its scope
   plan_refused,            // the careful-write plan refused before any write
   write_failed,            // a write or sync failed after one was attempted
   resource_exhausted,
@@ -173,14 +178,47 @@ CatalogVersionWriteResult WriteCatalogSuccessorVersion(disk::CarefulWriteSink& s
 // inserted). A rolled-back or dead insert leaves its row and cell in place;
 // readers return nothing for it, and sweep removes it.
 //
-// Not here: localized-name records (W3b-1b, their envelope binds the page and
-// slot placement chooses); the catalog-change audit event (W3b-2); new pages
-// (W3b-3).
+// Relations (invalid_role), as the startup verifiers place records: the names
+// relation (role 2) holds exactly the localized-name records; audit evidence
+// is in role 6; database, schema and filespace records in role 1; inline
+// private-key policies in role 3. A database record is never inserted.
+//
+// SEARCH_KEY: SB_CATALOG_NAME_INSERT (in-place writes W3b-1b-1; owner Q32 = 1:
+// the native name writer is admitted). A localized-name row carries its name
+// vector or entry in `name` and an empty metadata payload; the payload becomes
+// the resident envelope (CATALOG_NAME_RESIDENT_ENVELOPE_V1), encoded once the
+// row is placed, binding the page's database and filespace, the page, slot,
+// storage generation, row version 1 and this transaction, as readers rebuild
+// it. The name must agree with its metadata (CatalogNamePayloadMatchesMetadata).
+// An entry's keys are checked as startup checks them: its dialect profile and
+// that profile's identifier profile (role 5, active, as this transaction sees
+// them) and CheckCatalogIdentifierLookupKeys; case-fold and quoted supplements
+// are refused (invalid_name). Collisions (SB_NAME_COLLISION_ORDER, the order
+// startup verification applies): the entry's vector names a policy descriptor
+// whose body binds the object's class to a group. Another entry of a different
+// object in the same scope and identifier profile, under the same body and
+// group, with lane order 0, holds the name if its newest version neither
+// rolled back nor died is committed and active, or this transaction's own
+// (duplicate_name); is another transaction's in progress (a create, rename or
+// drop: write_conflict with its order); is committed dropped or archived (the
+// name is free). Two entries of one class in one scope and identifier profile
+// under different policy bodies refuse invalid_name (startup's
+// conflicting_policy). The vector an entry names is found in the request or
+// the names relation.
+//
+// Per request only: that a new object's vector and default entry exist and
+// agree with its definition, and that a drop takes all three, are
+// transaction-level rules owed by the caller (a transaction may write them in
+// several requests).
+//
+// Not here: name successors (rename, drop: W3b-1b-2); the catalog-change audit
+// event (W3b-2); new pages (W3b-3).
 struct CatalogInsertRow {
   core::platform::u16 role = 0;  // relation role 1..6 in the catalog root
   core::platform::Uuid row_uuid;
   core::platform::Uuid version_uuid;  // a UUIDv7 the caller issued
   core::catalog::CatalogMetadataVersion metadata;
+  std::optional<core::catalog::CatalogNamePayload> name;  // present iff a localized-name record
 };
 struct CatalogInsertRequest {
   core::platform::u64 transaction_order = 0;
