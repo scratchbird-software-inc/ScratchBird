@@ -45,10 +45,10 @@ template<class Key> struct BasicNativeBtreeCell {
   bool deleted = false;
   std::optional<disk::NativePageReference> child;
   std::optional<disk::NativePageReference> base_page;
-  // SB_NATIVE_BTREE_COMPRESSED_PAGE (SBBTP002) only: a leaf cell's version's
-  // creating local transaction number (owner Q38 = 1: the transaction
-  // inventory decides visibility without reading the base row) and its
-  // included (covering) payload. SBBTP001 cannot hold either and refuses them.
+  // A leaf cell's version's creating local transaction number (owner Q38 = 1:
+  // the transaction inventory decides visibility without reading the base
+  // row; the reader that loads the base row checks it) and its included
+  // (covering) payload. Branch cells carry neither.
   u64 creator_local_transaction_id = 0;
   typename Key::Bytes payload{};
 };
@@ -75,7 +75,7 @@ enum class NativeBtreeError {
   cluster_requires_authority, header_policy_requires_authority,
   tree_reference_mismatch, tree_level_mismatch, tree_fence_mismatch, tree_sibling_mismatch,
   invalid_workspace,
-  key_too_long  // SBBTP002: one entry's key and payload exceed a quarter page (no split can fit it)
+  key_too_long  // one entry's key and payload exceed a quarter page (no split can fit it)
 };
 struct NativeBtreePageResult {
   NativeBtreeError error = NativeBtreeError::invalid_family;
@@ -109,8 +109,6 @@ template<class Page> NativeBtreeError ValidateNativeBtreeTraversalStep(
   return E::none;
 }
 } // namespace detail
-NativeBtreePageResult EncodeNativeBtreePage(const NativeBtreePage&) noexcept;
-NativeBtreePageResult DecodeNativeBtreePage(const std::vector<byte>&) noexcept;
 // Empty filespace UUID marks unused scratch; page zero keys profile agreement.
 // Positive pages key direct-child uniqueness, independently of generation.
 struct NativeBtreeReferenceSlot {
@@ -120,23 +118,17 @@ struct NativeBtreeReferenceSlot {
 struct NativeBtreeViewWorkspace {
   std::span<NativeBtreeCellView> cells;
   std::span<NativeBtreeReferenceSlot> references;
-  std::span<byte> keys{};  // SBBTP002: the rebuilt prefix-compressed keys
+  std::span<byte> keys{};  // the rebuilt prefix-compressed keys
 };
 struct NativeBtreeViewRequirements {
   std::size_t cells = 0, reference_slots = 0, key_bytes = 0;
 };
-NativeBtreeViewRequirements NativeBtreePageViewBackingRequirements(std::size_t image_bytes) noexcept;
 struct NativeBtreePageViewResult {
   NativeBtreeError error = NativeBtreeError::invalid_family;
   std::optional<NativeBtreePageView> page;
   std::span<const byte> bytes;
   bool ok() const noexcept {return error==NativeBtreeError::none&&page.has_value();}
 };
-// Complete unchanged image admission, not a grant or tree/visibility receipt.
-// All aligned, disjoint backing and immutable input outlive every returned view.
-// Failed calls expose no page prefix; scratch contents then are unspecified.
-NativeBtreePageViewResult DecodeNativeBtreePageInto(
-  std::span<const byte>,NativeBtreeViewWorkspace) noexcept;
 // Borrow the retained owner. This verifies only the exact image/dependency
 // binding, not the dependency-map contents, tree, creator outcome or serving.
 NativeBtreePageResult ReadNativeBtreePageFromOpenDevice(
@@ -154,9 +146,10 @@ struct NativeBtreeTreeResult {
 // not a dependency-map, base-row/MGA, serving-generation or publication receipt.
 // SEARCH_KEY: SB_NATIVE_BTREE_COMPRESSED_PAGE (owner rulings Q37 = 1, Q38 = 1,
 // Q40, 2026-11-09). SBBTP002: the native catalog B-tree page with FirebirdSQL-
-// style key compression. Same common header, family header, page types,
-// dependency tuple, fences, references and whole-page seal (family offset 384)
-// as SBBTP001; the cells differ:
+// style key compression. It replaced SBBTP001 (fixed 144-byte cells plus an
+// uncompressed key) for new databases; the common header, family header
+// fields, page types, dependency tuple, fences, references and whole-page seal
+// (family offset 384) are SBBTP001's; the cells differ:
 //   - packed in key order with no per-cell offset table; each stores the
 //     bytes its encoded key shares with the previous cell's (a LEB128 count)
 //     and the rest (FirebirdSQL btn.h IndexNode prefix/length);
@@ -176,16 +169,24 @@ struct NativeBtreeTreeResult {
 // row_is_key flag exactly when every cell qualifies), so encoding a decoded
 // page gives back its bytes. Limits: one entry's key plus payload at most a
 // quarter page (FirebirdSQL Database.h getMaxIndexKeyLength: key_too_long, which
-// no split can cure); the rebuilt keys of a page at most four pages
-// (resource_exhausted: the page is full). Layout in the spec annotation
-// SB_NATIVE_BTREE_COMPRESSED_PAGE (NATIVE-BTREE-PAGE-IMAGE-001).
+// no split can cure); the rebuilt keys of a page at most one page
+// (resource_exhausted: the page is full), so a reader reserves as many key bytes
+// as image bytes. Layout in the spec annotation SB_NATIVE_BTREE_COMPRESSED_PAGE
+// (NATIVE-BTREE-PAGE-IMAGE-001).
 inline constexpr u16 kNativeBtreeJumpInterval = 16;
-NativeBtreePageResult EncodeNativeBtreePageV2(const NativeBtreePage&) noexcept;
-NativeBtreePageResult DecodeNativeBtreePageV2(const std::vector<byte>&) noexcept;
-// Allocation-free: keys are rebuilt into workspace.keys, payloads borrow the
-// image. Sized by NativeBtreePageV2ViewBackingRequirements for any valid page.
-NativeBtreePageViewResult DecodeNativeBtreePageV2Into(std::span<const byte>,NativeBtreeViewWorkspace) noexcept;
-NativeBtreeViewRequirements NativeBtreePageV2ViewBackingRequirements(std::size_t image_bytes) noexcept;
+// The smallest cell (flags, shared and suffix counts, version UUID, compact
+// reference): the most cells any page of a size can hold.
+inline constexpr std::size_t kNativeBtreeMinimumCellBytes = 35;
+NativeBtreePageResult EncodeNativeBtreePage(const NativeBtreePage&) noexcept;
+NativeBtreePageResult DecodeNativeBtreePage(const std::vector<byte>&) noexcept;
+// Complete unchanged image admission, not a grant or tree/visibility receipt.
+// Allocation-free: keys are rebuilt into workspace.keys, payloads and fences
+// borrow the image. All aligned, disjoint backing and immutable input outlive
+// every returned view; sized by NativeBtreePageViewBackingRequirements for any
+// valid page. Failed calls expose no page prefix; scratch contents then are
+// unspecified.
+NativeBtreePageViewResult DecodeNativeBtreePageInto(std::span<const byte>,NativeBtreeViewWorkspace) noexcept;
+NativeBtreeViewRequirements NativeBtreePageViewBackingRequirements(std::size_t image_bytes) noexcept;
 NativeBtreeTreeResult ReadNativeBtreeTreeFromOpenDevices(
   const Uuid& database_uuid,const std::vector<disk::NativeFilespaceDevice>&,
   const disk::NativePageReference& root,const NativeBtreeDependencies&,

@@ -348,7 +348,9 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
           page::NativeBtreeKey key;
           key.encoded_key.assign(row.row_uuid.value.bytes.begin(),row.row_uuid.value.bytes.end());
           key.row_uuid=row.row_uuid.value;key.version_uuid=row.version_uuid;
-          navigation_cells.push_back({std::move(key),false,{},ref(n)});
+          // SB_NATIVE_BTREE_COMPRESSED_PAGE: the cell carries its version's
+          // creating transaction (the create's, 1).
+          navigation_cells.push_back({std::move(key),false,{},ref(n),row.local_transaction_id});
         }
         leaf.body.rows.push_back(std::move(row));
       }

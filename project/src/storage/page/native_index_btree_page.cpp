@@ -18,7 +18,7 @@ namespace {
 using namespace scratchbird::core::platform;
 namespace hash=scratchbird::core::hash;
 using E=NativeBtreeError;
-constexpr std::size_t start=640,seal=512;
+constexpr std::size_t seal=512;
 bool Zero(const byte* p,std::size_t n){return std::all_of(p,p+n,[](byte b){return b==0;});}
 bool V7(const Uuid& u){return !u.is_nil()&&(u.bytes[6]>>4)==7&&(u.bytes[8]&0xc0)==0x80;}
 Uuid Get(const byte* p){Uuid u;std::copy_n(p,16,u.bytes.begin());return u;}
@@ -104,119 +104,10 @@ int CompareNativeBtreeKeys(const NativeBtreeKey& a,const NativeBtreeKey& b) noex
 }
 int CompareNativeBtreeKeys(const NativeBtreeKeyView& a,const NativeBtreeKeyView& b) noexcept {return CompareKeys(a,b);}
 bool NativeBtreeDependenciesValid(const NativeBtreeDependencies& d) noexcept {return ValidDependencies(d);}
-NativeBtreeViewRequirements NativeBtreePageViewBackingRequirements(std::size_t bytes) noexcept {
-  if(bytes<start||bytes>std::numeric_limits<u32>::max())return {};
-  const auto cells=(bytes-start)/149;
-  // Each valid branch has at most cells+5 profile entries and cells+1
-  // child entries. A leaf has fewer; keep the table below half occupancy.
-  return {cells,4*cells+13};
-}
-NativeBtreePageResult EncodeNativeBtreePage(const NativeBtreePage& p) noexcept {
-  try {
-    const auto valid=Validate(p);if(valid!=E::none)return Fail(valid);
-    // SBBTP001 has no place for a cell's creator or payload (SBBTP002 has):
-    // refused, never dropped.
-    for(const auto& c:p.cells)if(c.creator_local_transaction_id||!c.payload.empty())return Fail(E::invalid_family);
-    const std::size_t size=p.header.page_size_bytes;
-    if(p.cells.size()>(size-start)/149)return Fail(E::resource_exhausted);
-    std::size_t used=start+4*p.cells.size();
-    const auto charge=[&](std::size_t n){if(n>size-used)return false;used+=n;return true;};
-    for(const auto* fence:{&p.low_fence,&p.high_fence})if(*fence&&(!charge(40)||!charge((*fence)->encoded_key.size())))return Fail(E::resource_exhausted);
-    for(const auto& c:p.cells)if(!charge(144)||!charge(c.key.encoded_key.size()))return Fail(E::resource_exhausted);
-    std::vector<byte> b(size,0);const auto common=disk::EncodeNativeCommonPageHeader(p.header);std::copy(common.bytes->begin(),common.bytes->end(),b.begin());
-    auto* f=b.data()+128;const std::string_view magic="SBBTP001";std::copy(magic.begin(),magic.end(),f);StoreLittle16(f+8,1);StoreLittle16(f+10,512);StoreLittle32(f+12,used);
-    const auto& d=p.dependencies;Put(f+16,d.index_uuid);StoreLittle64(f+32,d.descriptor_generation);StoreLittle64(f+40,d.storage_generation);
-    Put(f+48,d.key_profile_uuid);Put(f+64,d.visibility_profile_uuid);Put(f+80,d.dependency_map_uuid);std::copy(d.dependency_map_sha256.begin(),d.dependency_map_sha256.end(),f+96);
-    Put(f+128,p.creator_transaction_uuid);StoreLittle64(f+144,p.creator_local_transaction_id);StoreLittle16(f+152,p.maintenance_state);StoreLittle16(f+154,p.tree_level);
-    PutRef(f+160,p.parent);PutRef(f+208,p.left);PutRef(f+256,p.right);PutRef(f+304,p.first_child);
-    StoreLittle32(f+368,p.cells.size());StoreLittle32(f+372,std::count_if(p.cells.begin(),p.cells.end(),[](const auto& c){return c.deleted;}));StoreLittle32(f+376,start);
-    std::size_t at=start+4*p.cells.size();
-    const auto fence=[&](const auto& key,std::size_t offset){if(!key)return;StoreLittle32(f+offset,at);StoreLittle32(f+offset+4,40+key->encoded_key.size());
-      StoreLittle32(b.data()+at,key->encoded_key.size());Put(b.data()+at+8,key->row_uuid);Put(b.data()+at+24,key->version_uuid);
-      std::copy(key->encoded_key.begin(),key->encoded_key.end(),b.begin()+at+40);at+=40+key->encoded_key.size();};
-    fence(p.low_fence,352);fence(p.high_fence,360);
-    for(std::size_t i=0;i<p.cells.size();++i){const auto& c=p.cells[i];StoreLittle32(b.data()+start+4*i,at);auto* out=b.data()+at;
-      StoreLittle32(out,144+c.key.encoded_key.size());StoreLittle32(out+4,c.key.encoded_key.size());StoreLittle32(out+8,c.deleted?1:0);
-      Put(out+16,c.key.row_uuid);Put(out+32,c.key.version_uuid);PutRef(out+48,c.child);PutRef(out+96,c.base_page);
-      std::copy(c.key.encoded_key.begin(),c.key.encoded_key.end(),out+144);at+=144+c.key.encoded_key.size();}
-    const auto digest=Digest(b);if(!digest.ok())return Fail(E::hash_failure);std::copy(digest.digest.begin(),digest.digest.end(),b.begin()+seal);
-    return {E::none,p,std::move(b)};
-  }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}catch(const std::length_error&){return Fail(E::resource_exhausted);}catch(...){return Fail(E::invalid_family);}
-}
-namespace {
-template<bool Borrowed>
-auto DecodeBtree(std::span<const byte> b,NativeBtreeViewWorkspace workspace) noexcept
-    -> std::conditional_t<Borrowed,NativeBtreePageViewResult,NativeBtreePageResult> {
-  using Result=std::conditional_t<Borrowed,NativeBtreePageViewResult,NativeBtreePageResult>;
-  using Page=std::conditional_t<Borrowed,NativeBtreePageView,NativeBtreePage>;
-  using Cell=std::conditional_t<Borrowed,NativeBtreeCellView,NativeBtreeCell>;
-  const auto fail=[](E error){Result result;result.error=error;return result;};
-  try {
-    if(b.size()<start)return fail(E::invalid_header);
-    const auto common=disk::DecodeNativeCommonPageHeader(b.data(),128);
-    if(!common.ok()||common.header->page_size_bytes!=b.size()||common.header->page_type<0x200||common.header->page_type>0x202)return fail(E::invalid_header);
-    if(common.header->flags&1u)return fail(E::encrypted_requires_crypto_authority);
-    const auto digest=Digest(b);if(!digest.ok())return fail(E::hash_failure);
-    if(!std::equal(digest.digest.begin(),digest.digest.end(),b.begin()+seal))return fail(E::invalid_integrity);
-    const auto* f=b.data()+128;const auto used=LoadLittle32(f+12),count=LoadLittle32(f+368),deleted=LoadLittle32(f+372);
-    if(std::string_view(reinterpret_cast<const char*>(f),8)!="SBBTP001"||LoadLittle16(f+8)!=1||LoadLittle16(f+10)!=512
-      ||used<start||used>b.size()||count>(used-start)/4||LoadLittle32(f+376)!=start||deleted>count
-      ||!Zero(f+156,4)||!Zero(f+380,4)||!Zero(f+416,96)||!Zero(b.data()+used,b.size()-used))return fail(E::invalid_family);
-    if constexpr(Borrowed){
-      const auto aligned=[](auto region){using T=typename decltype(region)::element_type;
-        return region.empty()||(region.data()&&reinterpret_cast<std::uintptr_t>(region.data())%alignof(T)==0);};
-      if(!aligned(workspace.cells)||!aligned(workspace.references)||
-          !disk::detail::DisjointNativeDecodeRegions(b,workspace.cells,workspace.references))
-        return fail(E::invalid_workspace);
-    }
-    Page p;p.header=*common.header;auto& d=p.dependencies;
-    d.index_uuid=Get(f+16);d.descriptor_generation=LoadLittle64(f+32);d.storage_generation=LoadLittle64(f+40);d.key_profile_uuid=Get(f+48);
-    d.visibility_profile_uuid=Get(f+64);d.dependency_map_uuid=Get(f+80);std::copy_n(f+96,32,d.dependency_map_sha256.begin());
-    p.creator_transaction_uuid=Get(f+128);p.creator_local_transaction_id=LoadLittle64(f+144);p.maintenance_state=LoadLittle16(f+152);p.tree_level=LoadLittle16(f+154);
-    p.parent=GetRef(f+160);p.left=GetRef(f+208);p.right=GetRef(f+256);p.first_child=GetRef(f+304);
-    std::size_t at=start+4*count;
-    const auto fence=[&](auto& key,std::size_t offset){const auto pos=LoadLittle32(f+offset),length=LoadLittle32(f+offset+4);
-      if(!pos&&!length)return true;if(pos!=at||length<41||length>used-at)return false;
-      const auto* in=b.data()+at;const auto n=LoadLittle32(in);if(n!=length-40||!Zero(in+4,4))return false;
-      typename Page::Key k;k.row_uuid=Get(in+8);k.version_uuid=Get(in+24);
-      if constexpr(Borrowed)k.encoded_key={in+40,length-40};else k.encoded_key.assign(in+40,in+length);
-      key=std::move(k);at+=length;return true;};
-    if(!fence(p.low_fence,352)||!fence(p.high_fence,360))return fail(E::invalid_fence);
-    if(count>(used-at)/145)return fail(E::invalid_family);
-    if constexpr(Borrowed){
-      if(workspace.cells.size()<count||workspace.references.size()<4*std::size_t(count)+13)
-        return fail(E::resource_exhausted);
-      p.cells=workspace.cells.first(count);
-    }
-    for(u32 i=0;i<count;++i){if(LoadLittle32(b.data()+start+4*i)!=at||used-at<145)return fail(E::invalid_family);
-      const auto* in=b.data()+at;const auto length=LoadLittle32(in),n=LoadLittle32(in+4),flags=LoadLittle32(in+8);
-      if(length<145||length>used-at||n!=length-144||flags>1||!Zero(in+12,4))return fail(E::invalid_family);
-      Cell c;c.key.row_uuid=Get(in+16);c.key.version_uuid=Get(in+32);
-      if constexpr(Borrowed)c.key.encoded_key={in+144,length-144};else c.key.encoded_key.assign(in+144,in+length);
-      c.deleted=flags==1;c.child=GetRef(in+48);c.base_page=GetRef(in+96);
-      if constexpr(Borrowed)workspace.cells[i]=std::move(c);else p.cells.push_back(std::move(c));
-      at+=length;}
-    if(at!=used||deleted!=std::count_if(p.cells.begin(),p.cells.end(),[](const auto& c){return c.deleted;}))return fail(E::invalid_family);
-    E valid;
-    if constexpr(Borrowed){BorrowedReferences references(workspace.references.first(4*std::size_t(count)+13));valid=Validate(p,references);}
-    else valid=Validate(p);
-    if(valid!=E::none)return fail(valid);
-    Result out;out.error=E::none;out.page=std::move(p);
-    if constexpr(Borrowed)out.bytes=b;else out.bytes.assign(b.begin(),b.end());
-    return out;
-  }catch(const std::bad_alloc&){return fail(E::resource_exhausted);}catch(const std::length_error&){return fail(E::resource_exhausted);}catch(...){return fail(E::invalid_family);}
-}
-} // namespace
-NativeBtreePageResult DecodeNativeBtreePage(const std::vector<byte>& bytes) noexcept {
-  return DecodeBtree<false>(bytes,{});
-}
-NativeBtreePageViewResult DecodeNativeBtreePageInto(std::span<const byte> bytes,NativeBtreeViewWorkspace workspace) noexcept {
-  return DecodeBtree<true>(bytes,workspace);
-}
 // ---- SBBTP002 (SB_NATIVE_BTREE_COMPRESSED_PAGE) --------------------------------
 namespace {
-constexpr std::size_t v2_start=640;
-constexpr std::size_t v2_min_cell=35;  // flags, shared, suffix length, version, compact reference
+constexpr std::size_t start=640;
+constexpr std::size_t min_cell=kNativeBtreeMinimumCellBytes;
 // Unsigned LEB128, minimal.
 void PutVarint(std::vector<byte>& out,u64 v){do{byte b=static_cast<byte>(v&0x7f);v>>=7;if(v)b|=0x80;out.push_back(b);}while(v);}
 std::size_t VarintBytes(u64 v){std::size_t n=1;while(v>>=7)++n;return n;}
@@ -242,7 +133,7 @@ template<class Page> bool RowIsKey(const Page& p){
 template<class Page> bool Compact(const Page& p,const disk::NativePageReference& r){
   return r.filespace_uuid==p.header.filespace_uuid&&r.page_size_profile_uuid==p.header.page_size_profile_uuid;}
 // The rules SBBTP002 adds to the shared ones.
-template<class Page> E ValidateV2(const Page& p){
+template<class Page> E ValidateCells(const Page& p){
   const bool branch=p.tree_level>0;const std::size_t quarter=p.header.page_size_bytes/4;
   for(const auto* fence:{&p.low_fence,&p.high_fence})if(*fence&&(*fence)->encoded_key.size()>quarter)return E::key_too_long;
   for(const auto& c:p.cells){
@@ -253,20 +144,20 @@ template<class Page> E ValidateV2(const Page& p){
 }
 }  // namespace
 
-NativeBtreeViewRequirements NativeBtreePageV2ViewBackingRequirements(std::size_t bytes) noexcept {
-  if(bytes<v2_start||bytes>std::numeric_limits<u32>::max())return {};
-  const auto cells=(bytes-v2_start)/v2_min_cell;
-  return {cells,4*cells+13,4*bytes};
+NativeBtreeViewRequirements NativeBtreePageViewBackingRequirements(std::size_t bytes) noexcept {
+  if(bytes<start||bytes>std::numeric_limits<u32>::max())return {};
+  const auto cells=(bytes-start)/min_cell;
+  return {cells,4*cells+13,bytes};
 }
 
-NativeBtreePageResult EncodeNativeBtreePageV2(const NativeBtreePage& p) noexcept {
+NativeBtreePageResult EncodeNativeBtreePage(const NativeBtreePage& p) noexcept {
   try {
     if(const auto valid=Validate(p);valid!=E::none)return Fail(valid);
-    if(const auto valid=ValidateV2(p);valid!=E::none)return Fail(valid);
+    if(const auto valid=ValidateCells(p);valid!=E::none)return Fail(valid);
     const std::size_t size=p.header.page_size_bytes;
     const bool branch=p.tree_level>0,row_is_key=RowIsKey(p);
     std::size_t expanded=0;for(const auto& c:p.cells)expanded+=c.key.encoded_key.size();
-    if(expanded>4*size)return Fail(E::resource_exhausted);
+    if(expanded>size)return Fail(E::resource_exhausted);
     const std::size_t count=p.cells.size(),jumps=(count+kNativeBtreeJumpInterval-1)/kNativeBtreeJumpInterval;
     // The body after the family header, built then placed.
     std::vector<byte> body;std::vector<u32> jump_offsets;std::array<std::pair<u32,u32>,2> fences{};
@@ -274,14 +165,14 @@ NativeBtreePageResult EncodeNativeBtreePageV2(const NativeBtreePage& p) noexcept
     const auto put64=[&](u64 v){for(unsigned i=0;i<8;++i)body.push_back(static_cast<byte>(v>>(8*i)));};
     const auto put32=[&](u32 v){for(unsigned i=0;i<4;++i)body.push_back(static_cast<byte>(v>>(8*i)));};
     for(unsigned f=0;f<2;++f){const auto& key=f?p.high_fence:p.low_fence;if(!key)continue;
-      fences[f]={static_cast<u32>(v2_start+body.size()),static_cast<u32>(40+key->encoded_key.size())};
+      fences[f]={static_cast<u32>(start+body.size()),static_cast<u32>(40+key->encoded_key.size())};
       put32(static_cast<u32>(key->encoded_key.size()));put32(0);put_uuid(key->row_uuid);put_uuid(key->version_uuid);
       body.insert(body.end(),key->encoded_key.begin(),key->encoded_key.end());}
-    const std::size_t jump_table=v2_start+body.size();
+    const std::size_t jump_table=start+body.size();
     body.resize(body.size()+4*jumps);
     for(std::size_t i=0;i<count;++i){const auto& c=p.cells[i];
-      if(v2_start+body.size()>size)return Fail(E::resource_exhausted);
-      if(i%kNativeBtreeJumpInterval==0)jump_offsets.push_back(static_cast<u32>(v2_start+body.size()));
+      if(start+body.size()>size)return Fail(E::resource_exhausted);
+      if(i%kNativeBtreeJumpInterval==0)jump_offsets.push_back(static_cast<u32>(start+body.size()));
       const auto& ref=branch?*c.child:*c.base_page;const bool compact=Compact(p,ref);
       body.push_back(static_cast<byte>((c.deleted?1:0)|(compact?2:0)|(c.payload.empty()?0:4)));
       const std::size_t shared=i%kNativeBtreeJumpInterval?SharedPrefix(p.cells[i-1].key.encoded_key,c.key.encoded_key):0;
@@ -294,9 +185,9 @@ NativeBtreePageResult EncodeNativeBtreePageV2(const NativeBtreePage& p) noexcept
       else{put_uuid(ref.filespace_uuid);put64(ref.page_number);put64(ref.page_generation);put_uuid(ref.page_size_profile_uuid);}
       if(!c.payload.empty()){PutVarint(body,c.payload.size());body.insert(body.end(),c.payload.begin(),c.payload.end());}
     }
-    const std::size_t used=v2_start+body.size();
+    const std::size_t used=start+body.size();
     if(used>size)return Fail(E::resource_exhausted);
-    for(std::size_t j=0;j<jumps;++j)for(unsigned k=0;k<4;++k)body[jump_table-v2_start+4*j+k]=static_cast<byte>(jump_offsets[j]>>(8*k));
+    for(std::size_t j=0;j<jumps;++j)for(unsigned k=0;k<4;++k)body[jump_table-start+4*j+k]=static_cast<byte>(jump_offsets[j]>>(8*k));
     std::vector<byte> b(size,0);const auto common=disk::EncodeNativeCommonPageHeader(p.header);std::copy(common.bytes->begin(),common.bytes->end(),b.begin());
     auto* f=b.data()+128;const std::string_view magic="SBBTP002";std::copy(magic.begin(),magic.end(),f);StoreLittle16(f+8,2);StoreLittle16(f+10,512);StoreLittle32(f+12,static_cast<u32>(used));
     const auto& d=p.dependencies;Put(f+16,d.index_uuid);StoreLittle64(f+32,d.descriptor_generation);StoreLittle64(f+40,d.storage_generation);
@@ -307,7 +198,7 @@ NativeBtreePageResult EncodeNativeBtreePageV2(const NativeBtreePage& p) noexcept
     StoreLittle32(f+352,fences[0].first);StoreLittle32(f+356,fences[0].second);StoreLittle32(f+360,fences[1].first);StoreLittle32(f+364,fences[1].second);
     StoreLittle32(f+368,static_cast<u32>(count));StoreLittle32(f+372,static_cast<u32>(std::count_if(p.cells.begin(),p.cells.end(),[](const auto& c){return c.deleted;})));
     StoreLittle32(f+376,static_cast<u32>(jump_table));StoreLittle32(f+380,static_cast<u32>(jumps));StoreLittle32(f+416,static_cast<u32>(expanded));
-    std::copy(body.begin(),body.end(),b.begin()+v2_start);
+    std::copy(body.begin(),body.end(),b.begin()+start);
     const auto digest=Digest(b);if(!digest.ok())return Fail(E::hash_failure);std::copy(digest.digest.begin(),digest.digest.end(),b.begin()+seal);
     return {E::none,p,std::move(b)};
   }catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}catch(const std::length_error&){return Fail(E::resource_exhausted);}catch(...){return Fail(E::invalid_family);}
@@ -315,14 +206,14 @@ NativeBtreePageResult EncodeNativeBtreePageV2(const NativeBtreePage& p) noexcept
 
 namespace {
 template<bool Borrowed>
-auto DecodeBtreeV2(std::span<const byte> b,NativeBtreeViewWorkspace workspace) noexcept
+auto DecodeBtree(std::span<const byte> b,NativeBtreeViewWorkspace workspace) noexcept
     -> std::conditional_t<Borrowed,NativeBtreePageViewResult,NativeBtreePageResult> {
   using Result=std::conditional_t<Borrowed,NativeBtreePageViewResult,NativeBtreePageResult>;
   using Page=std::conditional_t<Borrowed,NativeBtreePageView,NativeBtreePage>;
   using Cell=std::conditional_t<Borrowed,NativeBtreeCellView,NativeBtreeCell>;
   const auto fail=[](E error){Result result;result.error=error;return result;};
   try {
-    if(b.size()<v2_start)return fail(E::invalid_header);
+    if(b.size()<start)return fail(E::invalid_header);
     const auto common=disk::DecodeNativeCommonPageHeader(b.data(),128);
     if(!common.ok()||common.header->page_size_bytes!=b.size()||common.header->page_type<0x200||common.header->page_type>0x202)return fail(E::invalid_header);
     if(common.header->flags&1u)return fail(E::encrypted_requires_crypto_authority);
@@ -333,9 +224,9 @@ auto DecodeBtreeV2(std::span<const byte> b,NativeBtreeViewWorkspace workspace) n
         jump_table=LoadLittle32(f+376),jumps=LoadLittle32(f+380),expanded=LoadLittle32(f+416);
     const u16 key_form=LoadLittle16(f+156);
     if(std::string_view(reinterpret_cast<const char*>(f),8)!="SBBTP002"||LoadLittle16(f+8)!=2||LoadLittle16(f+10)!=512
-      ||used<v2_start||used>size||key_form>1||LoadLittle16(f+158)!=kNativeBtreeJumpInterval
-      ||count>(used-v2_start)/v2_min_cell||deleted>count||jumps!=(count+kNativeBtreeJumpInterval-1)/kNativeBtreeJumpInterval
-      ||expanded>4*size||!Zero(f+420,92)||!Zero(b.data()+used,size-used))return fail(E::invalid_family);
+      ||used<start||used>size||key_form>1||LoadLittle16(f+158)!=kNativeBtreeJumpInterval
+      ||count>(used-start)/min_cell||deleted>count||jumps!=(count+kNativeBtreeJumpInterval-1)/kNativeBtreeJumpInterval
+      ||expanded>size||!Zero(f+420,92)||!Zero(b.data()+used,size-used))return fail(E::invalid_family);
     const bool row_is_key=key_form==1;
     if constexpr(Borrowed){
       const auto aligned=[](auto region){using T=typename decltype(region)::element_type;
@@ -354,7 +245,7 @@ auto DecodeBtreeV2(std::span<const byte> b,NativeBtreeViewWorkspace workspace) n
     p.creator_transaction_uuid=Get(f+128);p.creator_local_transaction_id=LoadLittle64(f+144);p.maintenance_state=LoadLittle16(f+152);p.tree_level=LoadLittle16(f+154);
     p.parent=GetRef(f+160);p.left=GetRef(f+208);p.right=GetRef(f+256);p.first_child=GetRef(f+304);
     const bool branch=p.tree_level>0;const std::size_t quarter=size/4;
-    std::size_t at=v2_start;
+    std::size_t at=start;
     const auto fence=[&](auto& key,std::size_t offset){const auto pos=LoadLittle32(f+offset),length=LoadLittle32(f+offset+4);
       if(!pos&&!length)return true;if(pos!=at||length<41||length>used-at)return false;
       const auto* in=b.data()+at;const auto n=LoadLittle32(in);if(n!=length-40||!Zero(in+4,4)||n>quarter)return false;
@@ -420,7 +311,7 @@ auto DecodeBtreeV2(std::span<const byte> b,NativeBtreeViewWorkspace workspace) n
     E valid;
     if constexpr(Borrowed){BorrowedReferences references(workspace.references.first(4*count+13));valid=Validate(p,references);}
     else valid=Validate(p);
-    if(valid==E::none)valid=ValidateV2(p);
+    if(valid==E::none)valid=ValidateCells(p);
     if(valid!=E::none)return fail(valid);
     Result out;out.error=E::none;out.page=std::move(p);
     if constexpr(Borrowed)out.bytes=b;else out.bytes.assign(b.begin(),b.end());
@@ -428,11 +319,11 @@ auto DecodeBtreeV2(std::span<const byte> b,NativeBtreeViewWorkspace workspace) n
   }catch(const std::bad_alloc&){return fail(E::resource_exhausted);}catch(const std::length_error&){return fail(E::resource_exhausted);}catch(...){return fail(E::invalid_family);}
 }
 }  // namespace
-NativeBtreePageResult DecodeNativeBtreePageV2(const std::vector<byte>& bytes) noexcept {
-  return DecodeBtreeV2<false>(bytes,{});
+NativeBtreePageResult DecodeNativeBtreePage(const std::vector<byte>& bytes) noexcept {
+  return DecodeBtree<false>(bytes,{});
 }
-NativeBtreePageViewResult DecodeNativeBtreePageV2Into(std::span<const byte> bytes,NativeBtreeViewWorkspace workspace) noexcept {
-  return DecodeBtreeV2<true>(bytes,workspace);
+NativeBtreePageViewResult DecodeNativeBtreePageInto(std::span<const byte> bytes,NativeBtreeViewWorkspace workspace) noexcept {
+  return DecodeBtree<true>(bytes,workspace);
 }
 
 NativeBtreePageResult ReadNativeBtreePageFromOpenDevice(disk::FileDevice& device,const Uuid& db,

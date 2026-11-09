@@ -8,11 +8,11 @@
 namespace {
 // Four identity ranges of `stride` ids from `base`: object, row, default name,
 // name vector. The defaults hold up to 1000 rows; a three-level tree needs a
-// wider stride (Id() carries 16 bits).
+// wider stride, above every other fixture identity (Id() carries 32 bits).
 db::NativeCreationCatalogSeed DenseIndexedCatalogSeed(const db::NativeFilespaceInitializationRequest& request,unsigned count,
     unsigned base=30000,unsigned stride=1000) {
   namespace c=scratchbird::core::catalog;
-  Check(count<=stride&&base+4*stride<=65536,"dense fixture identity ranges stay distinct");
+  Check(count<=stride&&base+4*u64{stride}<=(u64{1}<<31),"dense fixture identity ranges stay distinct");
   const auto fixture=MetricSeed(request);
   const auto descriptor=c::DecodeCatalogMetricDescriptor(fixture[0][0].metadata.record.payload);
   Check(descriptor.ok(),"dense fixture retains exact typed labels");
@@ -245,20 +245,31 @@ void NativeMetricConfigChecks(const fs::path& directory) {
   u64 coverage=(page_bytes-384)/128;
   while(((384+(coverage+1)/2+7)&~u64{7})+128*coverage>page_bytes)--coverage;
   
-  const unsigned root_capacity=(page_bytes-640)/164,child_capacity=(page_bytes-640-112)/164;
+  // SB_NATIVE_BTREE_COMPRESSED_PAGE (owner Q37 = 1): SBBTP002 cells vary; the
+  // create plans each at the largest a row-UUID tree cell can be: flags,
+  // shared count and suffix count 1 each, the whole 16-byte key (a restart
+  // cell), the version UUID 16, a creator of up to 10 LEB128 bytes, a compact
+  // reference 16, and a quarter-byte jump-table share rounded up (SBBTP001's
+  // fixed cell was 164).
+  constexpr unsigned worst_cell=1+1+1+16+16+10+16+1;
+  const unsigned root_capacity=(page_bytes-640)/worst_cell,child_capacity=(page_bytes-640-112)/worst_cell;
+  // Three-level trees need wider identity ranges and a larger file.
+  constexpr unsigned deep_base=70000,deep_stride=16000;
+  constexpr u64 deep_pages=2048;
   // (R+1)*L rows fill a root over full leaves; one more row needs a branch
   // level (SB_CATALOG_BTREE_N_LEVEL). Those two cases need more pages and image
   // budget than the dense request, and identities past the dense seed's ranges.
   const unsigned two_level_maximum=(root_capacity+1)*child_capacity;
-  const auto deep_request=Request(0,512);u64 deep_non_map_pages=0;
+  const auto deep_request=Request(0,deep_pages);u64 deep_non_map_pages=0;
+  Check(two_level_maximum+child_capacity+1<=deep_stride,"the deep identity ranges hold every deep row");
   // (R+1)*L+L+1 rows give an odd leaf count over two branches: an uneven split.
   for(unsigned count:{0u,1u,root_capacity,root_capacity+1,child_capacity*3+1,two_level_maximum,two_level_maximum+1,
       two_level_maximum+child_capacity+1}) {
     const bool deep=count>=two_level_maximum;
-    const auto& boundary_request=deep?deep_request:dense_request;const unsigned row_base=deep?42500:31000;
-    const u64 budget=(deep?512:256)*page_bytes;
+    const auto& boundary_request=deep?deep_request:dense_request;const unsigned row_base=deep?deep_base+deep_stride:31000;
+    const u64 budget=(deep?deep_pages:256)*page_bytes;
     total_pages=boundary_request.total_pages;
-    const auto seed=deep?DenseIndexedCatalogSeed(request,count,40000,2500):dense_seed(count);
+    const auto seed=deep?DenseIndexedCatalogSeed(request,count,deep_base,deep_stride):dense_seed(count);
     disk::FileDevice device;const auto path=fixture.Next();
     Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"actual boundary construction owner");
     Arm();const auto made=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,boundary_request,seed,
@@ -309,14 +320,14 @@ void NativeMetricConfigChecks(const fs::path& directory) {
   {
     // The planner fills that smallest file exactly and is one page short of
     // the next smaller one, whose last allocation is the last branch page.
-    const auto deep_seed=DenseIndexedCatalogSeed(request,two_level_maximum+1,40000,2500);
+    const auto deep_seed=DenseIndexedCatalogSeed(request,two_level_maximum+1,deep_base,deep_stride);
     // The create has no inventory-format choice: it always writes the in-place
     // inventory and plans its header page (W4d-3).
     static_assert(![]<class R>() { return requires(const R& r) { r.inventory_format; }; }
         .template operator()<db::NativeFilespaceInitializationRequest>(),
         "a create request carries no inventory-format choice");
     const auto plan_for=[&](u64 total){return db::detail::PlanNativeCreationCatalogLayout(page_bytes,
-        (total+coverage-1)/coverage,total,512*page_bytes,deep_seed,construction_indexes);};
+        (total+coverage-1)/coverage,total,deep_pages*page_bytes,deep_seed,construction_indexes);};
     const auto fits=plan_for(exhausted_total),short_one=plan_for(exhausted_total-1);
     Check(fits.ok()&&fits.layout->image_count==exhausted_total&&fits.layout->relations[0].branches.size()==1&&
         short_one.error==db::detail::NativeCreationLayoutError::capacity_exceeded,
@@ -330,12 +341,12 @@ void NativeMetricConfigChecks(const fs::path& directory) {
       case 1:indices[0]->dependencies.descriptor_generation=2;break;
       case 2:indices[0]->dependencies.dependency_map_sha256.fill(0);break;
       case 3:indices[0]->dependencies.key_profile_uuid={};break;
-      case 4:seed=DenseIndexedCatalogSeed(request,two_level_maximum+1,40000,2500);break;
+      case 4:seed=DenseIndexedCatalogSeed(request,two_level_maximum+1,deep_base,deep_stride);break;
       case 5:indices[0]->relation_uuid=dense_request.bootstrap.database_uuid;break;
     }
     // Case 4 gets the image budget of a file it would fit, so pages run out first.
     Arm();const auto refused=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,fault==4?exhausted_request:dense_request,seed,
-        indices,(fault==4?512:256)*page_bytes,*fixture.issuer);Disarm();
+        indices,(fault==4?deep_pages:256)*page_bytes,*fixture.issuer);Disarm();
     Check(!refused.ok()&&!refused.receipt&&!calls[write_call]&&device.Size().ok()&&!device.Size().size_bytes,
         "invalid identity/generation/map or page exhaustion leaves owned file untouched");
     if(fault==4)Check(refused.error==db::NativeCreationWorkspaceError::catalog_capacity_exceeded,

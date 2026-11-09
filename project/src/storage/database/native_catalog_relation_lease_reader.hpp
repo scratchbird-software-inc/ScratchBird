@@ -311,6 +311,9 @@ class NativeCatalogRelationLeaseReader {
             [](const auto& m,const auto& id){return m.version_uuid<id;});
           if(row==leaf.metadata.end()||row->version_uuid!=cell.key.version_uuid){fail(E::invalid_locator);return out;}
           if(leaf.body.rows[row->row_index].row_uuid.value!=cell.key.row_uuid){fail(E::binding_mismatch);return out;}
+          // SB_NATIVE_BTREE_COMPRESSED_PAGE (owner Q38 = 1): the cell's creator
+          // decides visibility from the index alone, so it must be the version's.
+          if(leaf.body.rows[row->row_index].local_transaction_id!=cell.creator_local_transaction_id){fail(E::binding_mismatch);return out;}
           if(!append({NativeCatalogIndexEntryLocation{n,i},p,row->row_index})){fail(failure);return out;}
         }
       }

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "filespace_page_zero.hpp"
 #include "catalog_page.hpp"
+#include "../support/native_btree_page_oracle.hpp"
 #include "native_index_btree_page.hpp"
 #include "physical_mga_cow_store.hpp"
 #include "native_catalog_leaf_memory.hpp"
@@ -541,36 +542,23 @@ page::NativeBtreePage BtreeExample(unsigned p=0,unsigned type=0x200,bool branch=
   if(branch)r.first_child=ref(20);
   for(unsigned i=0;i<3;++i){page::NativeBtreeCell c;c.key={{static_cast<byte>(i==2?255:0)},Id(static_cast<byte>(70+i)),Id(static_cast<byte>(80+i))};
     if(i==1)c.key.encoded_key.push_back(0);if(branch)c.child=ref(21+i);
-    else{c.deleted=i==0;c.base_page=disk::NativePageReference{Id(7),50+i,4,Profile((p+1)%5)};}r.cells.push_back(c);}
+    else{c.deleted=i==0;c.base_page=disk::NativePageReference{Id(7),50+i,4,Profile((p+1)%5)};c.creator_local_transaction_id=5+i;}r.cells.push_back(c);}
   return r;
 }
 void BtreeSeal(Bytes& b) {std::fill(b.begin()+512,b.begin()+544,0);std::array<byte,32> digest{};
   Check(SHA256(b.data(),b.size(),digest.data())!=nullptr,"independent full native B-tree hash");std::copy(digest.begin(),digest.end(),b.begin()+512);}
-template<class Page> Bytes BtreeOracle(const Page& r) {
-  auto common=RootExample();common.header=r.header;auto b=RootOracle(common);std::fill(b.begin()+128,b.end(),0);
-  const std::string_view magic="SBBTP001";std::copy(magic.begin(),magic.end(),b.begin()+128);Number(b,136,2,1);Number(b,138,2,512);
-  const auto& d=r.dependencies;PutUuid(b,144,d.index_uuid);Number(b,160,8,d.descriptor_generation);Number(b,168,8,d.storage_generation);
-  PutUuid(b,176,d.key_profile_uuid);PutUuid(b,192,d.visibility_profile_uuid);PutUuid(b,208,d.dependency_map_uuid);
-  std::copy(d.dependency_map_sha256.begin(),d.dependency_map_sha256.end(),b.begin()+224);PutUuid(b,256,r.creator_transaction_uuid);
-  Number(b,272,8,r.creator_local_transaction_id);Number(b,280,2,r.maintenance_state);Number(b,282,2,r.tree_level);
-  const auto ref=[&](std::size_t at,const auto& p){if(!p)return;PutUuid(b,at,p->filespace_uuid);Number(b,at+16,8,p->page_number);Number(b,at+24,8,p->page_generation);PutUuid(b,at+32,p->page_size_profile_uuid);};
-  ref(288,r.parent);ref(336,r.left);ref(384,r.right);ref(432,r.first_child);
-  Number(b,496,4,r.cells.size());Number(b,500,4,std::count_if(r.cells.begin(),r.cells.end(),[](const auto& c){return c.deleted;}));Number(b,504,4,640);
-  std::size_t at=640+4*r.cells.size();const auto fence=[&](const auto& k,std::size_t slot){if(!k)return;Number(b,slot,4,at);Number(b,slot+4,4,40+k->encoded_key.size());
-    Number(b,at,4,k->encoded_key.size());PutUuid(b,at+8,k->row_uuid);PutUuid(b,at+24,k->version_uuid);std::copy(k->encoded_key.begin(),k->encoded_key.end(),b.begin()+at+40);at+=40+k->encoded_key.size();};
-  fence(r.low_fence,480);fence(r.high_fence,488);
-  for(unsigned i=0;i<r.cells.size();++i){const auto& c=r.cells[i];Number(b,640+4*i,4,at);Number(b,at,4,144+c.key.encoded_key.size());Number(b,at+4,4,c.key.encoded_key.size());Number(b,at+8,4,c.deleted?1:0);
-    PutUuid(b,at+16,c.key.row_uuid);PutUuid(b,at+32,c.key.version_uuid);ref(at+48,c.child);ref(at+96,c.base_page);std::copy(c.key.encoded_key.begin(),c.key.encoded_key.end(),b.begin()+at+144);at+=144+c.key.encoded_key.size();}
-  Number(b,140,4,at);BtreeSeal(b);return b;
-}
+// SB_NATIVE_BTREE_COMPRESSED_PAGE: SBBTP002 bytes from the independent oracle in
+// tests/support/native_btree_page_oracle.hpp (owner Q37 = 1 replaced SBBTP001).
+template<class Page> Bytes BtreeOracle(const Page& r) {return scratchbird::tests::btree_oracle::Pack(r);}
 struct BorrowedBtreeWorkspace {
   std::vector<page::NativeBtreeCellView> cells;
   std::vector<page::NativeBtreeReferenceSlot> references;
+  Bytes keys;
   explicit BorrowedBtreeWorkspace(std::size_t bytes){
     const auto required=page::NativeBtreePageViewBackingRequirements(bytes);
-    cells.resize(required.cells);references.resize(required.reference_slots);
+    cells.resize(required.cells);references.resize(required.reference_slots);keys.resize(required.key_bytes);
   }
-  page::NativeBtreeViewWorkspace get(){return {cells,references};}
+  page::NativeBtreeViewWorkspace get(){return {cells,references,keys};}
 };
 void BtreeBorrowedCheck(const Bytes& image,const page::NativeBtreePageResult& owning) {
   BorrowedBtreeWorkspace scratch(image.size());allocation_budget=0;
@@ -581,11 +569,12 @@ void BtreeBorrowedCheck(const Bytes& image,const page::NativeBtreePageResult& ow
   if(!view.ok()){Check(!view.page&&view.bytes.empty(),"borrowed B-tree failure exposes no page prefix");return;}
   Check(view.bytes.data()==image.data()&&view.bytes.size()==image.size()&&BtreeOracle(*view.page)==image,
     "every borrowed B-tree field independently reconstructs the exact original bytes");
-  const auto resident=[&](const auto& key){return key.encoded_key.data()>=image.data()&&
-    key.encoded_key.data()+key.encoded_key.size()<=image.data()+image.size();};
-  if(view.page->low_fence)Check(resident(*view.page->low_fence),"low fence borrows exact immutable image");
-  if(view.page->high_fence)Check(resident(*view.page->high_fence),"high fence borrows exact immutable image");
-  for(const auto& cell:view.page->cells)Check(resident(cell.key),"every B-tree key borrows exact immutable image");
+  const auto within=[](const auto& bytes,const auto& region){return bytes.data()>=region.data()&&
+    bytes.data()+bytes.size()<=region.data()+region.size();};
+  if(view.page->low_fence)Check(within(view.page->low_fence->encoded_key,image),"low fence borrows exact immutable image");
+  if(view.page->high_fence)Check(within(view.page->high_fence->encoded_key,image),"high fence borrows exact immutable image");
+  // SBBTP002 keys are prefix-compressed: rebuilt in the key workspace.
+  for(const auto& cell:view.page->cells)Check(within(cell.key.encoded_key,scratch.keys),"every B-tree key is rebuilt in the key workspace");
 }
 void BtreeBorrowedBounds() {
   using E=page::NativeBtreeError;
@@ -600,6 +589,8 @@ void BtreeBorrowedBounds() {
     };
     auto workspace=scratch.get();workspace.cells=workspace.cells.first(2);refuse(workspace,E::resource_exhausted);
     workspace=scratch.get();workspace.references=workspace.references.first(24);refuse(workspace,E::resource_exhausted);
+    workspace=scratch.get();workspace.keys=workspace.keys.first(1);refuse(workspace,E::resource_exhausted);
+    workspace=scratch.get();workspace.keys={image.data()+640,8};refuse(workspace,E::invalid_workspace);
     for(std::size_t offset:{std::size_t(0),std::size_t(512),image.size()-sizeof(page::NativeBtreeCellView)}){
       workspace=scratch.get();workspace.cells={reinterpret_cast<page::NativeBtreeCellView*>(image.data()+offset),1};
       refuse(workspace,E::invalid_workspace);
@@ -614,23 +605,26 @@ void BtreeBorrowedBounds() {
       reinterpret_cast<byte*>(scratch.cells.data())+1),1};refuse(workspace,E::invalid_workspace);
     workspace=scratch.get();workspace.references={reinterpret_cast<page::NativeBtreeReferenceSlot*>(
       reinterpret_cast<byte*>(scratch.references.data())+1),1};refuse(workspace,E::invalid_workspace);
-    // Maximum density reaches the advertised cell/reference bounds. Each
-    // reference uses a distinct filespace with binary suffixes beyond word one.
+    // Maximum density within the advertised cell/reference bounds: SBBTP002
+    // cells vary in size, so cells are added until the encoder refuses. Each
+    // reference uses a distinct filespace with binary suffixes beyond word one
+    // (full references: the reference-slot bound).
     for(bool branch:{false,true}){
       auto dense=BtreeExample(profile,0x200,branch);dense.cells.clear();
-      const auto n=page::NativeBtreePageViewBackingRequirements(image.size()).cells;
-      for(std::size_t i=0;i<n;++i){page::NativeBtreeCell cell;cell.key.encoded_key={0};
+      const auto cell_at=[&](std::size_t i){page::NativeBtreeCell cell;cell.key.encoded_key={0};
         cell.key.row_uuid=Id(60);cell.key.row_uuid.bytes[13]=0xa5;
         cell.key.row_uuid.bytes[14]=static_cast<byte>(i>>8);cell.key.row_uuid.bytes[15]=static_cast<byte>(i);
         cell.key.version_uuid=Id(61);auto filespace=cell.key.row_uuid;filespace.bytes[13]=0xb6;
         disk::NativePageReference ref{filespace,50+i,1,Profile(i%5)};
-        if(branch)cell.child=ref;else cell.base_page=ref;dense.cells.push_back(cell);
-      }
+        if(branch)cell.child=ref;else{cell.base_page=ref;cell.creator_local_transaction_id=1+i;}return cell;};
+      for(std::size_t i=0;;++i){dense.cells.push_back(cell_at(i));
+        if(!page::EncodeNativeBtreePage(dense).ok()){dense.cells.pop_back();break;}}
+      Check(dense.cells.size()<=page::NativeBtreePageViewBackingRequirements(image.size()).cells,
+        "the fullest page stays within the advertised cell bound");
       const auto packed=BtreeOracle(dense);const auto owning=page::DecodeNativeBtreePage(packed);
       Check(owning.ok(),"maximal independent B-tree cell and reference population");
       BtreeBorrowedCheck(packed,owning);
-      dense.cells.push_back(dense.cells.back());dense.cells.back().key.encoded_key={1};
-      if(branch)++dense.cells.back().child->page_number;
+      dense.cells.push_back(cell_at(dense.cells.size()));
       Check(page::EncodeNativeBtreePage(dense).error==E::resource_exhausted,"first extra B-tree cell cannot fit");
     }
     auto collided=BtreeExample(profile,0x200,true);
@@ -658,11 +652,12 @@ void BtreeBorrowedBounds() {
     collision_image=BtreeOracle(collided);admitted=page::DecodeNativeBtreePage(collision_image);
     Check(admitted.error==E::invalid_reference,"same native filespace cannot acquire a second page profile");
     BtreeBorrowedCheck(collision_image,admitted);
-    auto large=BtreeExample(profile);large.cells.resize(1);large.cells[0].key.encoded_key.resize(image.size()-640-4-144,0xab);
+    // SBBTP002: one entry's key at most a quarter page (FirebirdSQL's maximum key length).
+    auto large=BtreeExample(profile);large.cells.resize(1);large.cells[0].key.encoded_key.resize(image.size()/4,0xab);
     auto packed=BtreeOracle(large);auto large_result=page::DecodeNativeBtreePage(packed);
-    Check(large_result.ok(),"largest complete inline key is admitted in every profile");BtreeBorrowedCheck(packed,large_result);
+    Check(large_result.ok(),"largest complete key is admitted in every profile");BtreeBorrowedCheck(packed,large_result);
     large.cells[0].key.encoded_key.push_back(0);
-    Check(page::EncodeNativeBtreePage(large).error==E::resource_exhausted,"one excess key octet is not silently truncated");
+    Check(page::EncodeNativeBtreePage(large).error==E::key_too_long,"one excess key octet is not silently truncated");
     auto empty=BtreeExample(profile);empty.cells.clear();packed=BtreeOracle(empty);
     const auto empty_result=page::DecodeNativeBtreePage(packed);
     Check(empty_result.ok(),"empty allocated root leaf remains valid in every profile");BtreeBorrowedCheck(packed,empty_result);
@@ -694,15 +689,26 @@ void NativeBtreePages() {
     if(which==13)r.first_child.reset();if(which==14)r.cells[1].child=r.first_child;if(which==15)r.cells[1].child->page_size_profile_uuid=Profile(1);
     if(which==16)r.cells[1].child->page_number=r.header.page_number;if(which==17)r.cells[1].key.row_uuid={};if(which==18)r.cells[1].key=r.cells[0].key;
     if(which==19)r.high_fence=r.cells.back().key;if(which==20)r.cells[1].deleted=true;if(which==21)r.cells[1].base_page=r.parent;
-    empty(page::EncodeNativeBtreePage(r));const auto bad=BtreeOracle(r);const auto result=page::DecodeNativeBtreePage(bad);
+    empty(page::EncodeNativeBtreePage(r));
+    // SBBTP002 has no place for a branch cell's base page (variant 21): the
+    // encoder refuses it and no image can carry it.
+    if(which==21)continue;
+    const auto bad=BtreeOracle(r);const auto result=page::DecodeNativeBtreePage(bad);
     empty(result);BtreeBorrowedCheck(bad,result);}
-  for(auto offset:{128u,136u,138u,140u,284u,504u,508u,544u,639u,640u,644u,656u,660u,664u,8191u}){
-    auto bad=bytes;bad[offset]^=1;BtreeSeal(bad);const auto result=page::DecodeNativeBtreePage(bad);
-    empty(result);BtreeBorrowedCheck(bad,result);}
+  // SBBTP002 fields: magic, version, header bytes, used end, key form, jump
+  // interval, jump-table start and count, rebuilt bytes, reserved bytes, the
+  // jump entry, the first cell's flags (deleted: the count disagrees), the
+  // second cell's shared count, and the page's last byte.
+  {const std::size_t table=640,cell0=table+4,cell1=[&]{std::size_t at=cell0+1;
+      const auto skip_leb=[&]{while(bytes[at++]&0x80){}};skip_leb();const std::size_t suffix=bytes[at];skip_leb();
+      at+=suffix+32;skip_leb();at+=(bytes[cell0]&2)?16:48;return at;}();
+    for(auto offset:{128ul,136ul,138ul,140ul,284ul,286ul,504ul,508ul,544ul,548ul,639ul,table,cell0,cell1+1,bytes.size()-1}){
+      auto bad=bytes;bad[offset]^=1;BtreeSeal(bad);const auto result=page::DecodeNativeBtreePage(bad);
+      empty(result);BtreeBorrowedCheck(bad,result);}}
   for(auto size:{0u,127u,639u,8191u,8193u}){auto bad=bytes;bad.resize(size);const auto result=page::DecodeNativeBtreePage(bad);
     empty(result);BtreeBorrowedCheck(bad,result);}
   {auto r=good;r.cells.clear();Check(page::EncodeNativeBtreePage(r).ok()&&page::DecodeNativeBtreePage(BtreeOracle(r)).ok(),"empty allocated root leaf is representable");}
-  {auto r=good;r.cells.resize(1);r.cells[0].key.encoded_key.resize(sizes[0],0);const auto e=page::EncodeNativeBtreePage(r);empty(e);Check(e.error==E::resource_exhausted,"oversized inline key cannot be truncated");}
+  {auto r=good;r.cells.resize(1);r.cells[0].key.encoded_key.resize(sizes[0],0);const auto e=page::EncodeNativeBtreePage(r);empty(e);Check(e.error==E::key_too_long,"oversized key cannot be truncated");}
   // Tie-breaking is binary, including bytes after the first machine word.
   {auto a=good.cells[0].key,b=a;b.row_uuid.bytes[15]^=1;Check(page::CompareNativeBtreeKeys(a,b)!=0,"full row UUID participates in tuple order");
     b=a;b.version_uuid.bytes[15]^=1;Check(page::CompareNativeBtreeKeys(a,b)!=0,"full native version UUID participates in tuple order");}
@@ -769,7 +775,7 @@ std::vector<page::NativeBtreePage> BtreeTreeExample(unsigned p) {
   for(unsigned i=3;i<7;++i){auto& r=pages[i];r.parent=ref(i<5?1:2);
     if(i>3){r.left=ref(i-1);r.low_fence=key((i-3)*20);}if(i<6){r.right=ref(i+1);r.high_fence=key((i-2)*20);}
     for(unsigned n:{i==3?10u:(i-3)*20,i==3?15u:(i-3)*20+10}){page::NativeBtreeCell c;c.key=key(n);c.deleted=n==15;
-      c.base_page=disk::NativePageReference{Id(9),50+i,3,Profile(s)};r.cells.push_back(c);}}
+      c.base_page=disk::NativePageReference{Id(9),50+i,3,Profile(s)};c.creator_local_transaction_id=3+n;r.cells.push_back(c);}}
   return pages;
 }
 std::vector<page::NativeBtreePage> BtreeDeepTreeExample(unsigned p) {
@@ -1302,7 +1308,8 @@ CatalogBindingFixtureImages CatalogBindingImages(unsigned p) {
       auto metadata=catalog::DecodeCatalogMetadataVersion(row.cells[0].value.payload);Check(metadata.ok(),"existing common metadata fixture decoded");
       metadata.record.record.header.row_uuid=row.row_uuid;metadata.record.record.header.object_uuid.value=Id(static_cast<byte>(180+2*j+i));
       const auto encoded=catalog::EncodeCatalogMetadataVersion(metadata.record);Check(encoded.ok(),"bound common metadata fixture produced");row.cells[0].value.payload=encoded.bytes;
-      cell.base_page=disk::NativePageReference{h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid};}
+      cell.base_page=disk::NativePageReference{h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid};
+      cell.creator_local_transaction_id=row.local_transaction_id;}  // SBBTP002: the version's creator
     images.leaves.push_back(std::move(leaf));}
   auto extra=images.nodes[3].cells[0];extra.key.encoded_key={12};images.nodes[3].cells.insert(images.nodes[3].cells.begin()+1,extra);
   return images;
@@ -1352,7 +1359,15 @@ void NativeCatalogRelationBindings() {
         if(fault==0){images.nodes[6].cells[1].key.row_uuid=Id(240);expected=E::binding_mismatch;}
         if(fault==1)images.nodes[6].cells[1].key.version_uuid=Id(241);
         if(fault==2)images.nodes[6].cells[1].base_page=images.nodes[3].cells[0].base_page;
-        if(fault==3)images.nodes[6].cells[1].base_page.reset();
+        if(fault==3){
+          // SBBTP002 cannot represent a leaf entry without its base page (the
+          // SBBTP001 join refused one as invalid_locator): the encoder refuses it.
+          images.nodes[6].cells[1].base_page.reset();
+          const auto unrepresentable=page::EncodeNativeBtreePage(images.nodes[6]);
+          Check(!unrepresentable.ok()&&unrepresentable.error==page::NativeBtreeError::invalid_family,
+            "a leaf entry without its base page cannot be written");
+          continue;
+        }
         if(fault==4){++images.nodes[3].cells[1].base_page->page_generation;expected=E::binding_mismatch;}
         if(fault==5){images.leaves[3].header.page_uuid=images.leaves[0].header.page_uuid;expected=E::duplicate_identity;}
         if(fault==6){images.leaves[3].body.rows[0].version_uuid=images.leaves[0].body.rows[1].version_uuid;expected=E::duplicate_identity;}

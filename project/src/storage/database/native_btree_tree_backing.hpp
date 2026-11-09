@@ -19,14 +19,22 @@ struct NativeBtreeTreeMemoryLimits {
 // Index cells per page of the native catalog B-tree, by page size: one
 // definition for the creation layout that builds the tree and for the bounds
 // that read it back (SB_NATIVE_HOSTED_CATALOG_ROW_BOUND). Construction builds
-// as many levels as the rows need (SB_CATALOG_BTREE_N_LEVEL). A cell is 164
-// bytes (4-byte slot, 144-byte record, 16-byte row-UUID key) after the 640-byte
-// prefix; a leaf or branch also carries two 56-byte fences, the root none.
+// as many levels as the rows need (SB_CATALOG_BTREE_N_LEVEL).
+// SB_NATIVE_BTREE_COMPRESSED_PAGE (owner Q37 = 1): pages are SBBTP002, whose
+// cells are prefix-compressed and vary in size; the shape uses the largest a
+// row-UUID tree's cell can be, so every planned page encodes: 62 bytes for a
+// leaf cell (flags, shared and suffix counts 1 each, the whole 16-byte key as a
+// restart cell stores it, the version UUID 16, a creator up to 10 bytes of
+// LEB128, a compact reference 16, a quarter-byte share of the jump table rounded
+// up), at least as large as a branch cell, after the 640-byte prefix; a leaf or
+// branch also carries two 56-byte fences, the root none. (SBBTP001's fixed cell
+// was 164 bytes.)
+inline constexpr std::size_t kNativeCatalogBtreeWorstCellBytes = 62;
 inline constexpr std::size_t NativeCatalogBtreeRootCells(std::size_t page_size) noexcept {
-  return page_size>640?(page_size-640)/164:0;
+  return page_size>640?(page_size-640)/kNativeCatalogBtreeWorstCellBytes:0;
 }
 inline constexpr std::size_t NativeCatalogBtreeLeafCells(std::size_t page_size) noexcept {
-  return page_size>640+112?(page_size-640-112)/164:0;
+  return page_size>640+112?(page_size-640-112)/kNativeCatalogBtreeWorstCellBytes:0;
 }
 // SEARCH_KEY: SB_CATALOG_BTREE_N_LEVEL. The shape of the native catalog B-tree
 // that native create builds for `rows` index cells, and that the read bounds
@@ -147,10 +155,12 @@ inline std::size_t NativeBtreeTreeWorkspaceBytes(const core::platform::Uuid& max
      !array.template operator()<page::NativeBtreePageViewResult>(n)||
      !array.template operator()<std::size_t>(n)||!array.template operator()<std::size_t>(std::min(n,std::size_t{65536}))||
      !array.template operator()<std::size_t>(2*n+1)||!array.template operator()<std::size_t>(2*n+1)||
-     !array.template operator()<page::NativeBtreeCellView>(limits.maximum_retained_image_bytes/149)||
+     !array.template operator()<page::NativeBtreeCellView>(limits.maximum_retained_image_bytes/page::kNativeBtreeMinimumCellBytes)||
      !array.template operator()<page::NativeBtreeReferenceSlot>(page::NativeBtreePageViewBackingRequirements(largest).reference_slots)||
      !array.template operator()<disk::FilespaceRootReference>(32)||
-     !add(largest,1,largest)||!add(limits.maximum_retained_image_bytes,1,largest))return 0;
+     !add(largest,1,largest)||!add(limits.maximum_retained_image_bytes,1,largest)||
+     // SB_NATIVE_BTREE_COMPRESSED_PAGE: each page's rebuilt keys, at most its size.
+     !add(limits.maximum_retained_image_bytes,1,1))return 0;
   return bytes;
 }
 
@@ -180,7 +190,7 @@ class NativeBtreeTreePreparedMemory {
   std::span<page::NativeBtreeCellView> cells_;
   std::span<page::NativeBtreeReferenceSlot> references_;
   std::span<disk::FilespaceRootReference> roots_;
-  std::span<core::platform::byte> zero_bytes_,image_bytes_;
+  std::span<core::platform::byte> zero_bytes_,image_bytes_,key_bytes_;
   friend struct btree_memory_detail::Reader;
   friend class NativeBtreeTreeLeaseReader;
   friend NativeBtreeTreePreparedResult PrepareNativeBtreeTreeRead(const core::platform::Uuid&,
@@ -232,12 +242,13 @@ inline NativeBtreeTreePreparedResult PrepareNativeBtreeTreeRead(
     auto levels=array.template operator()<std::size_t>(std::min(limits.maximum_pages,std::size_t{65536}));
     auto slots=array.template operator()<std::size_t>(2*limits.maximum_pages+1);
     auto identities=array.template operator()<std::size_t>(2*limits.maximum_pages+1);
-    auto cells=array.template operator()<page::NativeBtreeCellView>(limits.maximum_retained_image_bytes/149);
+    auto cells=array.template operator()<page::NativeBtreeCellView>(limits.maximum_retained_image_bytes/page::kNativeBtreeMinimumCellBytes);
     auto references=array.template operator()<page::NativeBtreeReferenceSlot>(page::NativeBtreePageViewBackingRequirements(largest).reference_slots);
     auto roots=array.template operator()<disk::FilespaceRootReference>(32);
     const auto zero_bytes=payload.arena.Allocate(largest,largest);
     const auto image_bytes=payload.arena.Allocate(limits.maximum_retained_image_bytes,largest);
-    if(!allocated||!zero_bytes.ok()||!image_bytes.ok()){out.error=NativeBtreeTreeMemoryError::resource_exhausted;return out;}
+    const auto key_bytes=payload.arena.Allocate(limits.maximum_retained_image_bytes,1);
+    if(!allocated||!zero_bytes.ok()||!image_bytes.ok()||!key_bytes.ok()){out.error=NativeBtreeTreeMemoryError::resource_exhausted;return out;}
 
     auto& w=out.workspace;w.arena_=std::move(payload.arena);w.limits_=limits;w.largest_=largest;
     w.sources_=sources;w.files_=files;w.locks_=locks;w.batches_=batches;w.pending_=pending;w.pages_=pages;
@@ -245,6 +256,7 @@ inline NativeBtreeTreePreparedResult PrepareNativeBtreeTreeRead(
     w.cells_=cells;w.references_=references;w.roots_=roots;
     w.zero_bytes_={static_cast<byte*>(zero_bytes.pointer),zero_bytes.bytes};
     w.image_bytes_={static_cast<byte*>(image_bytes.pointer),image_bytes.bytes};
+    w.key_bytes_={static_cast<byte*>(key_bytes.pointer),key_bytes.bytes};
     out.error=NativeBtreeTreeMemoryError::none;
   }catch(const std::bad_alloc&){out.error=NativeBtreeTreeMemoryError::resource_exhausted;}
    catch(const std::length_error&){out.error=NativeBtreeTreeMemoryError::resource_exhausted;}
@@ -280,7 +292,7 @@ struct Reader {
     auto limits=w.limits_;limits.maximum_retained_image_bytes=std::min(limits.maximum_retained_image_bytes,image_limit);
     auto pending=w.pending_;auto pages=w.pages_;auto leaves=w.leaves_;
     auto levels=w.levels_;auto slots=w.slots_;auto identities=w.identities_;auto cells=w.cells_;
-    auto references=w.references_;auto roots=w.roots_;auto zero_bytes=w.zero_bytes_;auto image_bytes=w.image_bytes_;
+    auto references=w.references_;auto roots=w.roots_;auto zero_bytes=w.zero_bytes_;auto image_bytes=w.image_bytes_;auto key_bytes=w.key_bytes_;
     std::fill(slots.begin(),slots.end(),missing);std::fill(identities.begin(),identities.end(),missing);
     std::fill(levels.begin(),levels.end(),missing);
     const auto read=[&](std::size_t i,u64 offset,void* data,std::size_t size){
@@ -339,8 +351,10 @@ struct Reader {
       if(common.header->flags&2u){fail(T::cluster_requires_authority);return out;}
       if(common.header->flags&12u){fail(T::header_policy_requires_authority);return out;}
       const auto required=page::NativeBtreePageViewBackingRequirements(f.size);
-      if(required.cells>cells.size()-cells_used){fail(T::resource_exhausted);return out;}
-      auto decoded=page::DecodeNativeBtreePageInto({image,f.size},{cells.subspan(cells_used,required.cells),references});
+      if(required.cells>cells.size()-cells_used||required.key_bytes>key_bytes.size()-image_used){fail(T::resource_exhausted);return out;}
+      // Keys rebuilt into this page's share of the key bytes (as large as its image).
+      auto decoded=page::DecodeNativeBtreePageInto({image,f.size},{cells.subspan(cells_used,required.cells),references,
+          key_bytes.subspan(image_used,required.key_bytes)});
       if(!decoded.ok()){fail(decoded.error);return out;}
       const auto& p=*decoded.page;
       // Only the selected-catalog reader may request root discovery. The actual

@@ -125,11 +125,26 @@ std::size_t LeafFor(const TreeSeen& t, const pg::NativeBtreeKey& key) {
   }
   throw std::runtime_error("no leaf holds the key");
 }
-// Free 16-byte-key cells on an index page: a slot, a 144-byte record, the key.
+// Room on an index leaf for more cells like its last (row-UUID keys, a
+// creator and a base page in this filespace): cells added just above its
+// largest key, one at a time, until the production encoder refuses the page
+// (SBBTP002 cells are prefix-compressed and vary in size). Capped at 64.
 std::size_t FreeCells(const Db& b, std::span<const byte> file, u64 page) {
   const auto image = PageOf(file, page, b.size);
-  const u32 used = image[140] | (image[141] << 8) | (image[142] << 16) | (u32{image[143]} << 24);
-  return (b.size - used) / 164;
+  auto decoded = pg::DecodeNativeBtreePage(std::vector<byte>(image.begin(), image.end()));
+  Check(decoded.ok(), "an index page decodes");
+  auto leaf = std::move(*decoded.page);
+  if (leaf.tree_level || leaf.cells.empty()) return 0;
+  std::size_t n = 0;
+  auto next = leaf.cells.back();
+  while (n < 64) {
+    for (int i = 15; i >= 9; --i)
+      if (++next.key.version_uuid.bytes[i]) break;
+    leaf.cells.push_back(next);
+    if (!pg::EncodeNativeBtreePage(leaf).ok()) break;
+    ++n;
+  }
+  return n;
 }
 
 // ---- Rows (mechanics fixtures) -------------------------------------------------------
@@ -241,6 +256,7 @@ std::optional<std::vector<byte>> InsertOracle(const Db& b, std::span<const byte>
     pg::NativeBtreeCell entry;
     entry.key = key;
     entry.base_page = d::NativePageReference{b.primary, target->page, into.header.page_generation, b.profile};
+    entry.creator_local_transaction_id = r.transaction_order;  // SB_NATIVE_BTREE_COMPRESSED_PAGE
     leaf.page.cells.insert(leaf.page.cells.begin() + static_cast<std::ptrdiff_t>(at), std::move(entry));
     const auto index = pg::EncodeNativeBtreePage(leaf.page);
     if (!index.ok()) return std::nullopt;

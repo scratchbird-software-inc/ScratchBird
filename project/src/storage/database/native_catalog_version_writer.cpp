@@ -1005,10 +1005,16 @@ CatalogVersionWriteResult WriteCatalogInsertVersions(disk::CarefulWriteSink& sin
       pg::NativeBtreeCell cell;
       cell.key = key;
       cell.base_page = relation.bases[*target];
+      // SB_NATIVE_BTREE_COMPRESSED_PAGE (owner Q38 = 1): the cell carries the
+      // version's creating transaction.
+      cell.creator_local_transaction_id = request.transaction_order;
       page.cells.insert(at, std::move(cell));
       const auto fits = pg::EncodeNativeBtreePage(page);
+      // A full page is index_full (splits: W3b-3); an entry no page can hold
+      // (above a quarter page) is not an index_full a split could cure.
       if (!fits.ok()) return refuse_row(fits.error == pg::NativeBtreeError::resource_exhausted ? E::index_full
-                                                                                              : E::invalid_catalog,
+                                        : fits.error == pg::NativeBtreeError::key_too_long      ? E::invalid_insert
+                                                                                                : E::invalid_catalog,
                                         i);
       relation.tree[*reached].page = std::move(page);
       changed_tree.insert({want.role, *reached});

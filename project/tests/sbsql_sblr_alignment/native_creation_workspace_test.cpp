@@ -59,7 +59,8 @@ bool ordered=true;
 bool Hit(Call kind){if(!armed)return false;return ++calls[kind]==fault_at&&kind==fault_kind;}
 void Arm(unsigned kind=call_count,unsigned at=0){calls={};fault_kind=kind;fault_at=at;corrupt_at=0;zero_phase=0;first_write_hashes=~0u;zero_writes=0;zero_bytes=largest_zero_write=0;ordered=true;armed=true;}
 void Disarm(){armed=false;}
-Uuid Id(unsigned n){Uuid id;id.bytes[0]=1;id.bytes[6]=0x70;id.bytes[8]=0x80;id.bytes[14]=n>>8;id.bytes[15]=n;return id;}
+// 32 bits in the last four bytes; below 65536 the UUIDs are those of the earlier 16-bit form.
+Uuid Id(unsigned n){Uuid id;id.bytes[0]=1;id.bytes[6]=0x70;id.bytes[8]=0x80;id.bytes[12]=n>>24;id.bytes[13]=n>>16;id.bytes[14]=n>>8;id.bytes[15]=n;return id;}
 db::NativeFilespaceInitializationRequest Request(unsigned profile=0,u64 total=16){
   const auto& p=disk::kCanonicalFilespacePageProfiles[profile];
   db::NativeFilespaceInitializationRequest r;
