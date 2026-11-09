@@ -39,8 +39,9 @@ enum class AllocationWriteError : std::uint8_t {
   none,
   invalid_request,   // bad binding or request; nothing read
   io_failure,        // a read failed; nothing written
-  invalid_map,       // the chain on disk is not a valid in-place map
-  sealed_map,        // the chain is the sealed (drift-era) family: no in-place allocation
+  invalid_map,       // the chain on disk is not a valid in-place map (W4d-3b: a head
+                     // page of any other family, the removed sealed one included,
+                     // is an unknown family)
   filespace_full,    // no free slot
   plan_refused,      // the caller's plan refused the nodes (for example an overlapping unit)
   write_failed,      // a write or sync failed (stand-alone allocation only)

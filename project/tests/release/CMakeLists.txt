@@ -368,7 +368,7 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
   target_compile_features(native_allocation_map_memory_gate PRIVATE cxx_std_23)
   target_compile_definitions(native_allocation_map_memory_gate PRIVATE SB_NATIVE_ALLOCATION_MEMORY_TESTS=1 NATIVE_HISTORICAL_IO_FAULTS=1)
   target_include_directories(native_allocation_map_memory_gate PRIVATE ../../src/storage/database)
-  target_link_libraries(native_allocation_map_memory_gate PRIVATE sb_storage_page)
+  target_link_libraries(native_allocation_map_memory_gate PRIVATE sb_storage_page sb_storage_database)
   target_link_options(native_allocation_map_memory_gate PRIVATE
     -Wl,--wrap=pread -Wl,--wrap=pwrite -Wl,--wrap=fsync -Wl,--wrap=fstat
     -Wl,--wrap=EVP_MD_CTX_new -Wl,--wrap=EVP_Digest -Wl,--wrap=EVP_DigestInit_ex

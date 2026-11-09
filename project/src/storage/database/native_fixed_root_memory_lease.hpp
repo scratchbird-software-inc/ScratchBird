@@ -429,8 +429,7 @@ inline NativeFixedRootMemoryResult AcquireNativeFixedRootLeaseOn(
     // 3. The primary allocation chain (kind 3, read from page zero itself).
     {
       auto read = page::detail::ReadNativeAllocationChainBacked(
-          *owner->device, zero_binding, limits.maximum_verification_image_bytes - retained,
-          page::NativeAllocationChainReadContext::bootstrap, nullptr, nullptr, {}, batch, resource);
+          *owner->device, zero_binding, limits.maximum_verification_image_bytes - retained, batch, resource);
       merge(read);
       out.allocation_error = read.chain.error;
       if (!read.chain.ok()) {

@@ -14,11 +14,12 @@
 //     and the chain reader reads it: coverage, sequence, the create's records
 //     (every page it wrote, created by transaction 1), page zero's counters not
 //     compared (until W4d the drift-era checkpoint graph wrote the sealed
-//     family, read by the same reader; that graph was deleted, and the sealed
-//     codec is exercised below by the mixed-family refusal);
-//   - a chain mixing the two families is refused, an in-place chain has no
-//     selected (digest-bound) form, and a state that claims a page without a
-//     record is refused on disk.
+//     family; W4d-3b removed that family, its codec and the selected and
+//     historical reads, owner Q28 = 1);
+//   - forgeries on the created file: a head map page of another family is an
+//     unknown family, a later one breaks the chain; a later page naming
+//     another creator, or linking back into the chain, breaks it; a state
+//     that claims a page without a record is refused.
 #include "native_database_create.hpp"
 #include "native_catalog_relation_lease_reader.hpp"
 #include "admitted_datatype_cohort.hpp"
@@ -362,16 +363,19 @@ void Production(unsigned index) {
     fixed.lease.Reset();
     Check(device.Close().ok(), "close");
   }
-  // There is no selected (digest-bound) form of an in-place map.
+  // W4d-3b: the selected (digest-bound) read is gone; the bootstrap read is
+  // the only read, so "an in-place map is never read as a selected root" has
+  // no API left to ask.
+  // A head map page of another family (the removed sealed family's magic, the
+  // likeliest stale bytes) is an unknown family.
+  constexpr std::array<byte, 8> removed_family{{'S', 'B', 'A', 'B', 'M', '0', '0', '2'}};
   {
-    d::FileDevice device;
-    Check(device.Open(c.path, d::FileOpenMode::open_existing_read_only).ok(), "read-only open");
-    const auto zero = d::ReadFilespacePageZeroFromOpenDevice(device);
-    Check(zero.ok(), "page zero");
-    const auto root = std::find_if(zero.record->roots.begin(), zero.record->roots.end(), [](const auto& r) { return r.kind == 3; });
-    const auto selected = pg::ReadNativeAllocationChainAtRootFromOpenDevice(device, binding, *root, 64u << 20);
-    Check(!selected.ok() && selected.error == AE::invalid_reference, "an in-place map is never read as a selected root");
-    Check(device.Close().ok(), "close");
+    const u64 at = chain.pages.front().map->header.page_number * c.size + 128;
+    WriteAt(c.path, at, removed_family);
+    const auto forged = Chain(c.path, binding);
+    Check(!forged.ok() && forged.error == AE::invalid_family, "a head map page of another family is an unknown family");
+    WriteAt(c.path, at, std::span<const byte>(file).subspan(at, removed_family.size()));
+    Check(Chain(c.path, binding).ok(), "restored");
   }
   // Damage on disk: a free slot claimed without a record.
   {
@@ -388,35 +392,32 @@ void Production(unsigned index) {
     WriteAt(c.path, at, std::span<const byte>(&file[at], 1));
     Check(Chain(c.path, binding).ok(), "restored");
   }
-  // A chain that mixes families is refused (needs a second map page).
+  // Later map pages (needs a second map page): one field rewritten in place,
+  // read, then restored byte for byte.
   if (chain.pages.size() > 1) {
     const auto& second = chain.pages[1];
-    pg::NativeAllocationMap sealed;
-    sealed.header = second.map->header;
-    sealed.object_uuid = second.map->object_uuid;
-    sealed.map_generation = sealed.capacity_generation = 1;
-    sealed.total_pages = second.map->total_pages;
-    sealed.first_page = second.map->first_page;
-    sealed.creator_transaction_uuid = second.map->creator_transaction_uuid;
-    sealed.creator_local_transaction_id = second.map->creator_local_transaction_id;
-    sealed.states.assign(second.map->states.begin(), second.map->states.end());
-    sealed.records.assign(second.map->records.begin(), second.map->records.end());
-    sealed.next = second.map->next;
-    if (sealed.next) sealed.next_sha256[0] = 1;
-    const auto encoded = pg::EncodeNativeAllocationMap(sealed);
-    if (encoded.ok()) {
-      const u64 at = second.map->header.page_number * c.size;
-      WriteAt(c.path, at, encoded.bytes);
-      const auto mixed = Chain(c.path, binding);
-      Check(!mixed.ok() && mixed.error == AE::chain_mismatch, "a chain mixing sealed and in-place pages is refused");
-      ++mixed_refused;
-      WriteAt(c.path, at, std::span<const byte>(file).subspan(at, c.size));
+    const u64 page_at = second.map->header.page_number * c.size;
+    const auto forge = [&](u64 offset, std::span<const byte> bytes, AE expected, std::string_view why) {
+      WriteAt(c.path, page_at + offset, bytes);
+      const auto forged = Chain(c.path, binding);
+      Check(!forged.ok() && forged.error == expected, why);
+      WriteAt(c.path, page_at + offset, std::span<const byte>(file).subspan(page_at + offset, bytes.size()));
       Check(Chain(c.path, binding).ok(), "restored");
-    } else {
-      // The sealed page holds fewer records than the in-place one covers;
-      // the second page's slots then cannot be re-encoded sealed.
-      Check(encoded.error == AE::invalid_range, "the only reason a sealed re-encode can fail");
-    }
+    };
+    // Another family after an in-place head breaks the chain.
+    forge(128, removed_family, AE::chain_mismatch, "a later map page of another family breaks the chain");
+    ++mixed_refused;
+    // Every map page names the head's creator (family header +80: the local
+    // transaction number).
+    std::array<byte, 8> number{};
+    scratchbird::core::platform::StoreLittle64(number.data(), second.map->creator_local_transaction_id + 1);
+    forge(128 + 80, number, AE::chain_mismatch, "a later map page naming another creator breaks the chain");
+    // A link back into the chain is a cycle: the second page's next link
+    // (offset 256: page, then generation) names the head map page.
+    std::array<byte, 16> link{};
+    scratchbird::core::platform::StoreLittle64(link.data(), chain.pages.front().map->header.page_number);
+    scratchbird::core::platform::StoreLittle64(link.data() + 8, chain.pages.front().map->header.page_generation);
+    forge(256, link, AE::chain_mismatch, "a link back to the head map page is a cycle");
   }
 }
 
@@ -431,7 +432,7 @@ int main() {
                 << " slots=" << pg::AllocationMapInplaceSlotsPerPage(d::kCanonicalFilespacePageProfiles[index].page_size_bytes)
                 << " ok\n";
     }
-    Check(mixed_refused >= 4, "the mixed-chain probe ran at every page size with more than one map page");
+    Check(mixed_refused >= 4, "the later-page forgeries ran at every page size with more than one map page");
     std::cout << "PASS native allocation map in place checks=" << checks << " mixed_refused=" << mixed_refused << '\n';
     return 0;
   } catch (const std::exception& e) {

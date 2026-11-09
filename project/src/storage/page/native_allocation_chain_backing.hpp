@@ -9,9 +9,9 @@ namespace scratchbird::storage::page::detail {
 // caller excludes every input/device/batch from its backing and retains the
 // exact-device batch beyond ALL enclosing fences. Reuses the entire chain
 // reader, not a single-image shortcut. This supplies no memory or reuse grant.
+// The bootstrap read only (W4d-3b: the selected and historical reads were
+// removed with the sealed family).
 NativeAllocationChainDeviceRead ReadNativeAllocationChainBacked(
     disk::FileDevice&,const disk::FilespaceBootstrapBinding&,u64 budget,
-    NativeAllocationChainReadContext,const disk::FilespaceRootReference*,
-    const std::array<byte,32>*,std::span<const byte> historical,
     disk::FileDevice::ReadLatencyBatch&,std::pmr::memory_resource&) noexcept;
 } // namespace scratchbird::storage::page::detail

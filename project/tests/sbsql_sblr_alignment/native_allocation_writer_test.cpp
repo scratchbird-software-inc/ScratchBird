@@ -8,8 +8,9 @@
 // pages itself (states and every record, including crash leftovers) rather
 // than through the codec under test, and every file is read back by the chain
 // reader and the production fixed-root lease.
-//   - Rules: refused requests write nothing; one allocation per plan; a sealed
-//     (drift-era) map is refused for allocation (a forgery since W4d).
+//   - Rules: refused requests write nothing; one allocation per plan; a map
+//     root of any other family is refused for allocation (a forgery: W4d-3b
+//     removed the sealed family, the only other one).
 //   - Exhaustion: every free slot is allocated, lowest first; the next
 //     allocation is refused filespace_full with no write; a record and state
 //     that share a unit are one write; page zero's free count is not kept or
@@ -358,41 +359,32 @@ void Rules(const Base& b) {
   }
   Check(device.Close().ok(), "close");
   fs::remove(path);
-  // A sealed (drift-era) map is never allocated from in place. W4d: no writer
-  // produces the sealed family any more (the transitional create graph was
-  // deleted), so it is a FORGERY over a production-created file: the map root
-  // is re-encoded in the sealed family from its own decoded content.
+  // A map root of any other family is never allocated from in place. W4d-3b
+  // removed the sealed family, the only other one, so this is a FORGERY over a
+  // production-created file: the map root's family magic is overwritten with
+  // the removed sealed family's (the likeliest stale bytes); nothing else
+  // changes.
   {
-    const auto sealed_path = b.Fresh("sealed.db");
-    d::FileDevice sealed;
-    Check(sealed.Open(sealed_path, d::FileOpenMode::open_existing).ok(), "sealed device");
-    const auto chain = pg::ReadNativeAllocationChainFromOpenDevice(sealed, {b.database, b.primary, b.profile}, 64u << 20);
-    Check(chain.ok() && !chain.pages.empty(), "the created map is read");
-    const auto& root = *chain.pages.front().map;
-    pg::NativeAllocationMap forged;
-    forged.header = root.header;
-    forged.object_uuid = root.object_uuid;
-    forged.map_generation = forged.capacity_generation = 1;
-    forged.total_pages = root.total_pages;
-    forged.first_page = root.first_page;
-    forged.creator_transaction_uuid = root.creator_transaction_uuid;
-    forged.creator_local_transaction_id = root.creator_local_transaction_id;
-    forged.states.assign(root.states.begin(), root.states.end());
-    forged.records.assign(root.records.begin(), root.records.end());
-    forged.next = root.next;
-    if (forged.next) forged.next_sha256[0] = 1;
-    const auto encoded = pg::EncodeNativeAllocationMap(forged);
-    Check(encoded.ok(), "the map root re-encodes in the sealed family");
-    const auto io = sealed.WriteAt(b.root.page_number * b.size, encoded.bytes.data(), encoded.bytes.size());
-    Check(io.ok() && io.bytes_transferred == encoded.bytes.size() && sealed.Sync().ok(), "forge the sealed map root");
-    const auto before = ReadAll(sealed_path);
+    const auto forged_path = b.Fresh("unknown-family.db");
+    d::FileDevice forged;
+    Check(forged.Open(forged_path, d::FileOpenMode::open_existing).ok(), "forgery device");
+    std::vector<byte> image(b.size);
+    const auto read = forged.ReadAt(b.root.page_number * b.size, image.data(), image.size());
+    Check(read.ok() && read.bytes_transferred == image.size() && pg::IsAllocationMapInplaceImage(image),
+          "the created map root is in place");
+    constexpr std::array<byte, 8> removed{{'S', 'B', 'A', 'B', 'M', '0', '0', '2'}};
+    std::copy(removed.begin(), removed.end(), image.begin() + 128);
+    const auto io = forged.WriteAt(b.root.page_number * b.size, image.data(), image.size());
+    Check(io.ok() && io.bytes_transferred == image.size() && forged.Sync().ok(), "forge the map root's family");
+    const auto before = ReadAll(forged_path);
     {
-      d::FileDeviceCarefulWriteSink sink(sealed);
+      d::FileDeviceCarefulWriteSink sink(forged);
       const auto r = pg::AllocatePage(sink, b.Binding(), RequestOf({6, 2030, false}));
-      Check(r.error == AW::sealed_map && r.writes == 0, "a sealed map is refused for in-place allocation");
+      Check(r.error == AW::invalid_map && r.map_error == pg::NativeAllocationError::invalid_family && r.writes == 0,
+            "a map root of an unknown family is refused for in-place allocation");
     }
-    Check(sealed.Close().ok() && ReadAll(sealed_path) == before, "and nothing is written");
-    fs::remove(sealed_path);
+    Check(forged.Close().ok() && ReadAll(forged_path) == before, "and nothing is written");
+    fs::remove(forged_path);
   }
 }
 

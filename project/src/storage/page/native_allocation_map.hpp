@@ -72,31 +72,11 @@ struct NativeAllocationMapResult {
   std::vector<byte> bytes;
   bool ok() const noexcept { return error == NativeAllocationError::none && map.has_value(); }
 };
-NativeAllocationMapResult EncodeNativeAllocationMap(const NativeAllocationMap&) noexcept;
-struct NativeAllocationMapEncoding {
-  NativeAllocationError error=NativeAllocationError::invalid_family;
-  std::span<const byte> bytes;
-  bool ok() const noexcept{return error==NativeAllocationError::none&&!bytes.empty();}
-};
-// Writes one canonical page into externally admitted backing with no heap
-// fallback. Output must be disjoint from the descriptor and both input spans.
-// An oversized output retains its untouched suffix. Failure returns no image;
-// the page-sized output prefix is unspecified after hashing begins. This is
-// image construction, not allocation admission or durable publication.
-NativeAllocationMapEncoding EncodeNativeAllocationMapInto(
-    const NativeAllocationMapConstView&,std::span<byte> output) noexcept;
-NativeAllocationMapResult DecodeNativeAllocationMap(const std::vector<byte>&) noexcept;
-struct NativeAllocationMapViewResult {
-  NativeAllocationError error=NativeAllocationError::invalid_family;
-  std::optional<NativeAllocationMapView> map;
-  bool ok() const noexcept {return error==NativeAllocationError::none&&map.has_value();}
-};
-// No image copy or metadata allocation. Caller-owned decoded buffers outlive
-// this view and must not overlap the input or each other. On failure there is
-// no usable view; scratch contents are unspecified, never a decoded prefix.
-// This validates an image, not its allocation chain or current-root authority.
-NativeAllocationMapViewResult DecodeNativeAllocationMapInto(std::span<const byte>,
-    std::span<NativeAllocationState>,std::span<NativeAllocationRecord>) noexcept;
+// W4d-3b (owner Q28 = 1, 2026-11-08): the sealed family's codec (SBABM001/2,
+// whole-page seal, next-page digest link) is removed with its last writer. The
+// allocation map is the in-place family (allocation_map_inplace_page.hpp),
+// whose decoder produces the views above. NativeAllocationMapResult remains
+// the materialized form of one read map page.
 
 struct NativeAllocationChainResult {
   NativeAllocationError error = NativeAllocationError::invalid_family;
@@ -111,23 +91,9 @@ struct NativeAllocationChainResult {
 NativeAllocationChainResult ReadNativeAllocationChainFromOpenDevice(
     disk::FileDevice&, const disk::FilespaceBootstrapBinding&,
     u64 maximum_retained_image_bytes) noexcept;
-// Exact selected root, independently hash-bound by the checkpoint owner.
-// Actual map counts replace stale bootstrap counters; no reuse/publication grant.
-NativeAllocationChainResult ReadNativeAllocationChainAtRootFromOpenDevice(
-    disk::FileDevice&,const disk::FilespaceBootstrapBinding&,
-    const disk::FilespaceRootReference&,u64 maximum_retained_image_bytes) noexcept;
-// STORAGE-NATIVE-HISTORICAL-ALLOCATION-READ-001. Verification of retained
-// immutable history, NOT current capacity, recovery selection or mutation
-// authority. The owner must bind the historical page-zero image and root digest
-// to its actual publication. Extra physical bytes never become free pages.
-// The image ceiling includes historical page zero, bootstrap probe and maps.
-NativeAllocationChainResult ReadNativeAllocationChainAtHistoricalRootFromOpenDevice(
-    disk::FileDevice&, const disk::FilespaceBootstrapBinding&,
-    const disk::FilespaceRootReference&, const std::array<byte, 32>& root_sha256,
-    const std::vector<byte>& historical_page_zero,
-    u64 maximum_retained_image_bytes) noexcept;
-
-enum class NativeAllocationChainReadContext { bootstrap, selected, historical };
+// The selected (digest-bound) and historical reads went with the checkpoint
+// layer and the sealed family (W4d-3b): an in-place map has no digest binding
+// and no retained historical image; the bootstrap read is the only read.
 struct NativeAllocationChainPageView {
   NativeAllocationMapView map;
   std::span<const byte> image;
@@ -147,17 +113,15 @@ struct NativeAllocationChainDeviceRead {
   u64 physical_bytes_read=0;
   bool ok() const noexcept {return chain.ok();}
 };
-// Complete bootstrap / explicit current / historical chain, sharing all owning
-// reader validation. Every image, decoded array, index and retained descriptor
-// lives in backing. The exact-device batch must outlive ALL enclosing fences.
-// All backing is disjoint from input descriptors, historical bytes, device and
-// batch objects. Failure withholds the entire chain while retaining actual I/O
-// diagnostics/bytes. No capacity, creator admission, selection or reuse grant.
+// The complete bootstrap chain (from page zero's allocation root), sharing all
+// owning reader validation. Every image, decoded array, index and retained
+// descriptor lives in backing. The exact-device batch must outlive ALL
+// enclosing fences. All backing is disjoint from the device, binding and batch
+// objects. Failure withholds the entire chain while retaining actual I/O
+// diagnostics/bytes. No capacity, creator admission or reuse grant.
 NativeAllocationChainDeviceRead ReadNativeAllocationChainInto(
     disk::FileDevice&,const disk::FilespaceBootstrapBinding&,
-    u64 maximum_retained_image_bytes,NativeAllocationChainReadContext,
-    const disk::FilespaceRootReference*,const std::array<byte,32>* root_sha256,
-    std::span<const byte> historical_page_zero,
+    u64 maximum_retained_image_bytes,
     disk::FileDevice::ReadLatencyBatch&,std::span<byte> backing) noexcept;
 
 }  // namespace scratchbird::storage::page

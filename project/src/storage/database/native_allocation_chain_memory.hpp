@@ -3,9 +3,13 @@
 #pragma once
 #include "native_allocation_map.hpp"
 #include "native_storage_memory.hpp"
+#include "disk_device.hpp"
 #include <system_error>
 
 namespace scratchbird::storage::database {
+// (W4d-3b: these came with the removed single sealed map memory header.)
+using core::platform::u64;
+using core::platform::byte;
 struct NativeAllocationChainMemoryLimits {
   u64 maximum_retained_image_bytes=0;
   std::size_t maximum_backing_bytes=0;
@@ -29,13 +33,12 @@ struct NativeAllocationChainMemoryResult {
 // this actual binary-bound grant before taking the source fence. Observations
 // and backing cleanup run after it releases. The manager/ledger must outlive the
 // returned owner. No implied checkpoint, visibility, free-page or execution grant.
+// The bootstrap read only (W4d-3b: the selected and historical reads were
+// removed with the sealed allocation map family).
 inline NativeAllocationChainMemoryResult ReadNativeAllocationChainWithMemoryFromOpenDevice(
     disk::FileDevice& device,const disk::FilespaceBootstrapBinding& source,
     NativeAllocationChainMemoryLimits limits,NativeStorageMemory& memory,
-    const NativeStorageMemoryBinding& binding,
-    page::NativeAllocationChainReadContext context=page::NativeAllocationChainReadContext::bootstrap,
-    const disk::FilespaceRootReference* root=nullptr,
-    const std::array<byte,32>* root_sha256=nullptr,std::span<const byte> historical={}) noexcept {
+    const NativeStorageMemoryBinding& binding) noexcept {
   using E=NativeAllocationChainMemoryError;
   NativeAllocationChainMemoryResult out;
   try{
@@ -53,8 +56,7 @@ inline NativeAllocationChainMemoryResult ReadNativeAllocationChainWithMemoryFrom
     {
       disk::FileDevice::ReadLatencyBatch observations(device);
       auto read=page::ReadNativeAllocationChainInto(device,source,limits.maximum_retained_image_bytes,
-        context,root,root_sha256,historical,observations,
-        {static_cast<byte*>(allocation.pointer),allocation.bytes});
+        observations,{static_cast<byte*>(allocation.pointer),allocation.bytes});
       out.chain_error=read.chain.error;out.io_status=read.io_status;
       out.io_diagnostic=std::move(read.io_diagnostic);out.physical_bytes_read=read.physical_bytes_read;
       if(!read.ok()){out.error=E::chain_failure;return out;}

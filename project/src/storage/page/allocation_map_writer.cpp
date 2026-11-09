@@ -36,7 +36,6 @@ const char* AllocationWriteErrorName(AllocationWriteError error) noexcept {
     case E::invalid_request: return "invalid_request";
     case E::io_failure: return "io_failure";
     case E::invalid_map: return "invalid_map";
-    case E::sealed_map: return "sealed_map";
     case E::filespace_full: return "filespace_full";
     case E::plan_refused: return "plan_refused";
     case E::write_failed: return "write_failed";
@@ -76,8 +75,8 @@ AllocationMapChain::LoadResult AllocationMapChain::Load(disk::CarefulWriteSink& 
         return out;
       }
       if (!IsAllocationMapInplaceImage(image)) {
-        out.error = i == 0 ? E::sealed_map : E::invalid_map;
-        out.map_error = NativeAllocationError::chain_mismatch;
+        out.error = E::invalid_map;
+        out.map_error = i == 0 ? NativeAllocationError::invalid_family : NativeAllocationError::chain_mismatch;
         return out;
       }
       const disk::NativeCommonPageHeaderBinding expected{

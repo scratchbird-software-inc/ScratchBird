@@ -109,15 +109,16 @@ class NativeAllocationLeaseReader {
      digest=hash.digest;
     }
    }else{
-    disk::FilespaceRootReference selected;
-    const auto* explicit_root=member->allocation_root?&*member->allocation_root:nullptr;
-    if(explicit_root){const auto& r=*explicit_root;
-     selected={3,3,r.page.filespace_uuid,r.page.page_number,r.page.page_generation,r.page.page_size_profile_uuid,r.object_uuid};}
+    // A secondary member whose directory record binds an allocation root by
+    // digest is refused, as the in-place reader refused its selected read
+    // (invalid_reference): an in-place map is edited in place, so no digest
+    // can bind it. W4d-3b removed that read with the sealed family; the
+    // directory record's digest form is owed with "add filespace".
+    if(member->allocation_root){out.chain_error=page::NativeAllocationError::invalid_reference;return fail(E::chain_failure);}
     detail::NativeMetadataMemory resource(backing.bytes_);
     auto read=page::detail::ReadNativeAllocationChainBacked(*file->device,
       {source.database_uuid,filespace,file->page_size_profile_uuid},maximum_total_image_bytes-source.retained_image_bytes,
-      explicit_root?page::NativeAllocationChainReadContext::selected:page::NativeAllocationChainReadContext::bootstrap,
-      explicit_root?&selected:nullptr,nullptr,{},source.batches[file-source.devices.begin()],resource);
+      source.batches[file-source.devices.begin()],resource);
     out.chain_error=read.chain.error;out.io_status=read.io_status;out.io_diagnostic=std::move(read.io_diagnostic);
     out.physical_bytes_read=read.physical_bytes_read;out.backing_bytes_used=resource.used();
     if(!read.ok())return fail(E::chain_failure);

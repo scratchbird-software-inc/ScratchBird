@@ -15,12 +15,6 @@ using disk::detail::NativeMetadataHeapMemory;
 using disk::detail::ReadNativeMetadataPageZero;
 struct NativeMetadataScratch:disk::detail::NativeMetadataScratch {
   using disk::detail::NativeMetadataScratch::NativeMetadataScratch;
-  auto Map(Image raw){
-    const auto available=raw.size()>=384?raw.size()-384:0;
-    const auto states=raw.size()>=384?std::min<u64>(LoadLittle64(raw.data()+192),u64{available}*2):0;
-    const auto records=raw.size()>=384?std::min<std::size_t>(LoadLittle32(raw.data()+308),available/128):0;
-    return page::DecodeNativeAllocationMapInto(raw,Array<page::NativeAllocationState>(states),Array<page::NativeAllocationRecord>(records));
-  }
   auto Directory(Image raw){
     const auto count=raw.size()>=384?std::min<std::size_t>(LoadLittle32(raw.data()+208),(raw.size()-384)/192):0;
     return page::DecodeNativeFilespaceDirectoryInto(raw,Array<page::NativeFilespaceDirectoryRecord>(count),Array<Uuid>(count));
