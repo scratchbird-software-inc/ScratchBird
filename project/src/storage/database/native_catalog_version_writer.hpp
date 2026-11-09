@@ -15,6 +15,36 @@
 
 namespace scratchbird::storage::database {
 
+// SEARCH_KEY: SB_CATALOG_SINGLE_WRITER (owner Q36 = 1, 2026-11-09). ONE CATALOG
+// WRITER PER DATABASE AT A TIME: the caller serializes every call into this
+// file (WriteCatalogSuccessorVersion, WriteCatalogInsertVersions,
+// AdvanceCatalogRoot), as it serializes the transaction inventory writer.
+//
+// Why: each writer reads the pages it changes, checks them (conflicts,
+// duplicate rows, objects and names, room), then writes them. Nothing holds
+// the pages between the read and the write: a second writer in that window
+// would pass the same checks against the same images (two creates of one name
+// would both commit, leaving a database that does not open, with no winner),
+// and its whole-page write would replace the first writer's page. The
+// careful-write plan notices a changed preimage only page by page, after
+// earlier pages may already be written; it is not a lock.
+//
+// What the rule stands in for: FirebirdSQL keeps concurrent writers apart with
+// short physical latches on pages in its shared page cache (exclusive to
+// write, shared to read; latch coupling down the tree; a reader that finds its
+// key moved by a split follows the right sibling; precedence in the cache
+// orders the disk writes), and logical conflicts are settled by record
+// versions (MGA), not by latches. These writers have no page cache: they write
+// straight to the file. Catalog changes are DDL and rare, so one writer at a
+// time costs little here.
+//
+// To be rebuilt with the page manager (owner, 2026-11-09): per-page write
+// latches in the server process (one process owns a database), readers
+// without latches (whole-page seal checked, retried on a torn read: no waits
+// on read paths), right-sibling following for splits, write order from
+// precedence in the page cache; tests will then choose the method. When that
+// lands, this rule and every SB_CATALOG_SINGLE_WRITER note in the .cpp go.
+//
 // SEARCH_KEY: SB_CATALOG_VERSION_WRITER
 // In-place writes, step W3a (owner Q20 = 1; Q23 = 1, 2026-11-08). A
 // transaction writes the successor version of an existing catalog row (an

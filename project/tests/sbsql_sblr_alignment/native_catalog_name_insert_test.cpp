@@ -31,6 +31,8 @@
 //     of one request with one key; an alias of the same object is admitted.
 //   - Refusals before any write: keys, profiles, supplements, policy, vector,
 //     relation rules, name/payload presence, binding, database kind.
+//   - One class in one scope under a second collision policy the transaction
+//     inserted: invalid_name (startup's conflicting_policy).
 //   - Name rows at keys between two keys and below the smallest of the names
 //     relation (index_full where its leftmost leaf is full).
 // Where the names relation has no room at a page size (no reached leaf, or a
@@ -42,6 +44,8 @@
 
 #include "catalog_identifier_lookup_key.hpp"
 #include "catalog_identifier_profile.hpp"
+#include "catalog_naming_collision_policy.hpp"
+#include "catalog_policy_descriptor.hpp"
 #include "catalog_records.hpp"
 #include <memory>
 #include "native_catalog_cohort_capture.hpp"
@@ -513,6 +517,101 @@ void NameRefusals(const Db& b, const NameTemplate& t, u16 role) {
   fs::remove(path);
 }
 
+// ---- One class in one scope under two collision policies ----------------------------------
+// Startup refuses two entries of one class, scope and identifier profile
+// under different collision policy bodies (conflicting_policy); the writer
+// refuses invalid_name. A second descriptor and body, copies of the
+// database's under new identities, are inserted by the transaction, which
+// sees its own rows; its named object of the template's class and scope
+// whose vector names the second descriptor is refused, and the same object
+// under the database's policy is admitted.
+void ConflictingPolicy(const Db& b, const NameTemplate& t, u16 role) {
+  const auto path = b.Copy(b.bytes, "conflicting-policy.db");
+  Session s(b, path);
+  const u64 n = 2;
+  Begin(*s.w, s.sink(), n);
+  const auto file = ReadAll(path);
+  const auto ms = std::max(After(b, file, role), After(b, file, 5));
+  std::optional<c::CatalogMetadataVersion> dm, bm;
+  {
+    RoleScope scope(b, 5);
+    const auto rel = ReadRelation(b, file);
+    for (const auto& l : rel.leaves)
+      for (const auto& [version, m] : l.metadata)
+        if (m.record.header.object_uuid.value == t.vector.name_collision_policy_uuid.value) dm = m;
+    Check(dm.has_value(), "the database's collision policy descriptor");
+    const auto descriptor = c::DecodeCatalogPolicyDescriptor(dm->record.payload);
+    Check(descriptor.ok(), "the descriptor decodes");
+    for (const auto& l : rel.leaves)
+      for (const auto& [version, m] : l.metadata)
+        if (m.record.header.object_uuid.value == descriptor.record->body_uuid) bm = m;
+    Check(bm.has_value(), "the database's collision policy body");
+  }
+  const scratchbird::core::platform::TypedUuid tx{UuidKind::transaction, TxId(n)};
+  auto body = *c::DecodeCatalogNamingCollisionPolicy(bm->record.payload).record;
+  body.body_uuid = V7(ms, 0xf00001);
+  body.generation = 1;
+  for (std::size_t g = 0; g < body.group_count; ++g) {
+    const auto fresh = V7(ms, 0xf10000 + static_cast<unsigned>(g));
+    for (std::size_t k = 0; k < body.class_count; ++k)
+      if (body.classes[k].group_uuid == body.groups[g].group_uuid) body.classes[k].group_uuid = fresh;
+    body.groups[g].group_uuid = fresh;
+  }
+  body.origin_transaction_uuid = body.creating_transaction_uuid = tx;
+  body.origin_local_transaction_id = body.creating_local_transaction_id = n;
+  auto descriptor = *c::DecodeCatalogPolicyDescriptor(dm->record.payload).record;
+  descriptor.policy_uuid = V7(ms, 0xf00002);
+  descriptor.policy_version_uuid = V7(ms, 0xf00003);
+  descriptor.body_uuid = body.body_uuid;
+  descriptor.body_generation = 1;
+  descriptor.generation = 1;
+  descriptor.creating_transaction_number = n;
+  descriptor.creating_transaction_uuid = descriptor.origin_transaction_uuid = tx;
+  descriptor.origin_local_transaction_id = n;
+  const auto row = [&](c::CatalogMetadataVersion m, const Uuid& object, unsigned k, std::vector<byte> payload) {
+    m.record.header.object_uuid = {UuidKind::object, object};
+    m.record.header.row_uuid = {UuidKind::row, V7(ms, 0xf20000 + k)};
+    m.record.payload.assign(reinterpret_cast<const char*>(payload.data()), payload.size());
+    m.definition_version = 1;
+    m.creator_transaction_uuid = tx;
+    m.creator_local_transaction_id = n;
+    m.default_name_uuid = {UuidKind::object, V7(ms, 0xf30000 + k)};
+    m.name_vector_uuid = {UuidKind::object, V7(ms, 0xf40000 + k)};
+    db::CatalogInsertRow r;
+    r.role = 5;
+    r.row_uuid = m.record.header.row_uuid.value;
+    r.version_uuid = VersionId(9000 + k);
+    r.metadata = std::move(m);
+    return r;
+  };
+  std::vector<byte> body_bytes(*c::CatalogNamingCollisionPolicyEncodedBytes(body));
+  Check(c::EncodeCatalogNamingCollisionPolicyInto(body, body_bytes).ok(), "the second body encodes");
+  std::vector<byte> descriptor_bytes(*c::CatalogPolicyDescriptorEncodedBytes(descriptor));
+  Check(c::EncodeCatalogPolicyDescriptorInto(descriptor, descriptor_bytes).ok(), "the second descriptor encodes");
+  const auto body_row = row(*bm, body.body_uuid, 1, body_bytes);
+  const auto descriptor_row = row(*dm, descriptor.policy_uuid, 2, descriptor_bytes);
+  Check(c::CatalogNamingCollisionPolicyMatchesMetadata(c::BorrowCatalogMetadataVersion(body_row.metadata)) &&
+            c::CatalogPolicyDescriptorMatchesMetadata(c::BorrowCatalogMetadataVersion(descriptor_row.metadata)),
+        "the second body and descriptor agree with their metadata");
+  const auto policy = Request(n, {body_row, descriptor_row});
+  if (!InsertOracle(b, file, policy)) {
+    std::cout << b.name << " conflicting policy page_size=" << b.size << " skipped: no room in role 5 for a second policy\n";
+    fs::remove(path);
+    return;
+  }
+  ExpectInsert(b, s, path, policy, "a second collision policy, inserted by the transaction");
+  const auto named = NamedAfter(b, ReadAll(path), t, role, ms + 1, 1, n, "w3b_other_policy");
+  auto other = named;
+  auto v = std::get<c::CatalogNameVector>(*other.vector.name);
+  v.name_collision_policy_uuid = {UuidKind::object, descriptor.policy_uuid};
+  other.vector.name = c::CatalogNamePayload{v};
+  InsertRefused(b, s, path, Request(n, other.EntryFirst()), CE::invalid_name,
+                "one class in one scope under a second collision policy");
+  ExpectInsert(b, s, path, Request(n, named.Rows()), "the same object under the database's policy");
+  std::cout << b.name << " conflicting policy page_size=" << b.size << " refused\n";
+  fs::remove(path);
+}
+
 // ---- Name rows inside and below the names relation's keys ---------------------------------
 void NameKeys(const Db& b, const NameTemplate& t, u16 role) {
   const auto path = b.Copy(b.bytes, "name-keys.db");
@@ -591,6 +690,7 @@ int main(int argc, char** argv) {
     const bool room = NamedStates(b, t, *role, fresh.names.definitions);
     NameCollisions(b, t, *role, room);
     NameRefusals(b, t, *role);
+    ConflictingPolicy(b, t, *role);
     if (room) NameKeys(b, t, *role);
     std::cout << "PASS native catalog name insert page_size=" << b.size << " checks=" << checks << '\n';
     return 0;

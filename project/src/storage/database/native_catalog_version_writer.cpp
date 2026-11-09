@@ -60,7 +60,8 @@ bool RoleAdmits(u16 role, const catalog::CatalogMetadataVersion& m) {
 // resource_epoch field; the create sets it from name_resource_epoch, 1), not
 // the catalog's resource epoch, so it is not bounded by the root's: the create
 // itself writes name entries at 1 under a root at 0. A definition's resource
-// epoch is (SB_DRIFT_DEFINITION_RESOURCE_EPOCH).
+// epoch is (SB_DRIFT_DEFINITION_RESOURCE_EPOCH). Owner ruling Q33 = 1
+// (2026-11-09); spec annotation SB_CLARIFY_NAME_ROW_RESOURCE_EPOCH.
 bool AheadOfRoot(const catalog::CatalogMetadataVersion& m, const pg::NativeCatalogRoot& r) {
   return m.catalog_generation > r.catalog_generation || m.schema_epoch > r.schema_epoch ||
          m.security_epoch > r.security_epoch ||
@@ -382,6 +383,8 @@ CatalogVersionWriteResult WriteCatalogSuccessorVersion(disk::CarefulWriteSink& s
     auto& leaves = relation_read.leaves;
 
     // ---- the row's versions, newest first ----------------------------------
+    // SB_CATALOG_SINGLE_WRITER: the conflict decided from these images stays
+    // decided only while no other catalog writer runs before the write.
     std::vector<Version> versions;
     for (std::size_t l = 0; l < leaves.size(); ++l)
       for (std::size_t r = 0; r < leaves[l].page.body.rows.size(); ++r)
@@ -855,6 +858,9 @@ CatalogVersionWriteResult WriteCatalogInsertVersions(disk::CarefulWriteSink& sin
       // New to the relation: no row or version with these UUIDs; no row
       // holding the object (a hold another transaction in progress has is a
       // write conflict: if it rolls back the object can be inserted).
+      // SB_CATALOG_SINGLE_WRITER: checked against images read above and
+      // written below with nothing held between; only one catalog writer per
+      // database makes the check still true when the pages are written.
       std::optional<u64> blocker;
       bool held = false;
       for (const auto& leaf : relation.leaves)
@@ -879,6 +885,8 @@ CatalogVersionWriteResult WriteCatalogInsertVersions(disk::CarefulWriteSink& sin
           if (cell.key.row_uuid == want.row_uuid) return refuse_row(E::duplicate_row, i);
 
       // An entry: its keys, then the names it could collide with.
+      // SB_CATALOG_SINGLE_WRITER: like the object check above, this holds only
+      // while no other catalog writer runs between the read and the write.
       if (want.name && std::holds_alternative<catalog::CatalogNameEntry>(*want.name)) {
         const auto& x = std::get<catalog::CatalogNameEntry>(*want.name);
         const auto gx = group_of(x);
