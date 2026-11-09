@@ -21,7 +21,10 @@
 // position; the expected pages encoded by the production codecs from the
 // expected rows and cells; every other byte of the file unchanged.
 //   - One insert by a transaction in progress, committed, rolled back, dead at
-//     restart: the committed read returns the row only once committed.
+//     restart: the committed read returns the row only once committed; a
+//     rolled-back or dead row's object may be inserted again.
+//   - An object another transaction in progress inserted: write_conflict
+//     naming it; insertable once it rolls back; a duplicate once it commits.
 //   - Keys: after the largest key, between two keys inside a leaf, below the
 //     smallest (inserted into a root leaf; index_full in a multi-leaf tree,
 //     whose leftmost leaf is full on a fresh database).
@@ -31,6 +34,7 @@
 //   - Refusals before any write, the file unchanged.
 //   - Filling a relation's room: relation_full with no write.
 //   - Process loss after each write and each write torn at its half-way point;
+//     the index leaf's write torn at the sector before its last change;
 //     every read, write and sync failed in turn.
 #define SB_CATALOG_VERSION_WRITER_TEST_WITHOUT_MAIN
 #include "native_catalog_version_writer_test.cpp"
@@ -314,7 +318,7 @@ std::vector<Place> Places(const Db& b, std::span<const byte> file) {
 
 // ---- Visibility by creator state ------------------------------------------------------
 void States(const Db& b, const Place& at) {
-  const auto path = b.Copy(b.bytes, "states.db");
+  auto path = b.Copy(b.bytes, "states.db");
   RoleScope scope(b, at.role);
   u64 n = 2;
   const auto row_a = V7(Ms(at.largest) + 1, 0x10), row_b = V7(Ms(at.largest) + 2, 0x11),
@@ -352,17 +356,71 @@ void States(const Db& b, const Place& at) {
     Commit(*s.w, s.sink(), n + 1);
     PeekSees(b, path, again.row_uuid, VersionId(4), "the object inserted again, committed");
   }
-  n += 2;
+  fs::remove(path);
+  // A fresh copy: at 8 KiB the relation chosen holds four fixture rows.
+  path = b.Copy(b.bytes, "states-dead.db");
+  n = 2;
   {
+    const auto lost = Row(b, ReadAll(path), at.role, row_c, 5, n);
     {
       Session s(b, path);
       Begin(*s.w, s.sink(), n);
-      ExpectInsert(b, s, path, Request(n, {Row(b, ReadAll(path), at.role, row_c, 5, n)}), "an insert then lost");
+      ExpectInsert(b, s, path, Request(n, {lost}), "an insert then lost");
     }
     Session s(b, path);  // Restart: the transaction in progress is dead
     const auto seen = Peek(b, path, row_c);
     Check(seen.read && !seen.version, "an insert dead at restart is not visible");
+    // A dead row's object may be inserted again (the reader passes over a
+    // dead creator's row as over a rolled-back one).
+    auto again = Row(b, ReadAll(path), at.role, V7(Ms(at.largest) + 5, 0x14), 6, n + 1);
+    again.metadata.record.header.object_uuid = lost.metadata.record.header.object_uuid;
+    Begin(*s.w, s.sink(), n + 1);
+    ExpectInsert(b, s, path, Request(n + 1, {again}), "a dead row's object, inserted again");
+    Commit(*s.w, s.sink(), n + 1);
+    PeekSees(b, path, again.row_uuid, VersionId(6), "the dead row's object inserted again, committed");
   }
+  fs::remove(path);
+}
+
+// ---- An object another transaction holds ------------------------------------------------
+// MGA: only write-write blocks, and nothing waits. An object carried by a row
+// another transaction in progress inserted refuses write_conflict naming it;
+// once that transaction rolls back the object can be inserted; once it commits
+// the object is a duplicate. One's own earlier insert is a duplicate.
+void Conflicts(const Db& b, const Place& at) {
+  const auto path = b.Copy(b.bytes, "conflicts.db");
+  RoleScope scope(b, at.role);
+  Session s(b, path);
+  Begin(*s.w, s.sink(), 2);
+  Begin(*s.w, s.sink(), 3);
+  const auto x = Row(b, ReadAll(path), at.role, V7(Ms(at.largest) + 1, 0x90), 90, 2);
+  const auto object = x.metadata.record.header.object_uuid;
+  ExpectInsert(b, s, path, Request(2, {x}), "an insert by transaction 2, in progress");
+  const auto conflict = [&](u64 n, const db::CatalogInsertRow& row, u64 blocker, std::string_view label) {
+    const auto before = ReadAll(path);
+    const auto result = Insert(b, s.sink(), Request(n, {row}));
+    if (result.error != CE::write_conflict) std::cerr << label << ": got " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+    Check(result.error == CE::write_conflict && result.blocker_order == blocker && result.failed_row == 0u &&
+              result.writes == 0 && !result.attempted && ReadAll(path) == before,
+          std::string(label) + ": write_conflict naming the holder, with no write");
+  };
+  auto y = Row(b, ReadAll(path), at.role, V7(Ms(at.largest) + 2, 0x91), 91, 3);
+  y.metadata.record.header.object_uuid = object;
+  conflict(3, y, 2, "the object of transaction 2's insert in progress");
+  auto own = Row(b, ReadAll(path), at.role, V7(Ms(at.largest) + 3, 0x92), 92, 2);
+  own.metadata.record.header.object_uuid = object;
+  InsertRefused(b, s, path, Request(2, {own}), CE::duplicate_object, "an object this transaction already inserted");
+  Rollback(*s.w, s.sink(), 2);
+  y = Row(b, ReadAll(path), at.role, y.row_uuid, 91, 3);
+  y.metadata.record.header.object_uuid = object;
+  ExpectInsert(b, s, path, Request(3, {y}), "the object, once its holder rolled back");
+  Begin(*s.w, s.sink(), 4);
+  auto z = Row(b, ReadAll(path), at.role, V7(Ms(at.largest) + 4, 0x93), 93, 4);
+  z.metadata.record.header.object_uuid = object;
+  conflict(4, z, 3, "the object of transaction 3's insert in progress");
+  Commit(*s.w, s.sink(), 3);
+  InsertRefused(b, s, path, Request(4, {z}), CE::duplicate_object, "an object a committed transaction inserted");
+  PeekSees(b, path, y.row_uuid, VersionId(91), "the object's committed row");
   fs::remove(path);
 }
 
@@ -674,6 +732,97 @@ void InsertLosses(const Db& b, const Place& at) {
     }
 }
 
+// ---- An index page torn at a sector boundary ---------------------------------------------
+// The half-way tear above leaves an index page whole (its changes and seal lie
+// in its first half). Here the index leaf's write keeps only the 512-byte
+// sectors before the last one it changes: the page is neither its old nor its
+// new image, fails its seal, and the relation is refused until repaired
+// (Q23 = 1); the base leaf, written first, is whole.
+class SectorTornSink final : public d::CarefulWriteSink {
+ public:
+  SectorTornSink(d::CarefulWriteSink& inner, u32 torn, std::size_t keep, int exit_code)
+      : inner_(inner), torn_(torn), keep_(keep), exit_code_(exit_code) {}
+  d::BoundedIoResult WriteAt(u64 offset, std::span<const byte> bytes) override {
+    if (++writes_ == torn_) {
+      (void)inner_.WriteAt(offset, bytes.first(keep_));
+      _exit(exit_code_);
+    }
+    return inner_.WriteAt(offset, bytes);
+  }
+  d::BoundedIoResult ReadAt(u64 offset, std::span<byte> bytes) override { return inner_.ReadAt(offset, bytes); }
+  d::BoundedIoResult Sync() override { return inner_.Sync(); }
+  bool forced_ordered() const noexcept override { return inner_.forced_ordered(); }
+
+ private:
+  d::CarefulWriteSink& inner_;
+  u32 torn_;
+  std::size_t keep_;
+  int exit_code_;
+  u32 writes_ = 0;
+};
+void TornIndex(const Db& b, const Place& at) {
+  RoleScope scope(b, at.role);
+  const auto row = V7(Ms(at.largest) + 1, 0x78);
+  const auto path = b.Copy(b.bytes, "torn-index.db");
+  std::vector<byte> before;
+  {
+    Session s(b, path);
+    Begin(*s.w, s.sink(), 2);
+    before = ReadAll(path);
+  }
+  const auto request = Request(2, {Row(b, before, at.role, row, 78, 2)});
+  const auto expected = InsertOracle(b, before, request);
+  Check(expected.has_value(), "the oracle places the insert");
+  std::optional<u64> index_page, base_page;
+  for (u64 p = 0; p * b.size < before.size(); ++p) {
+    const auto o = static_cast<std::ptrdiff_t>(p * b.size);
+    if (std::equal(before.begin() + o, before.begin() + o + b.size, expected->begin() + o)) continue;
+    const auto h = d::DecodeNativeCommonPageHeader(expected->data() + o, 128);
+    Check(h.ok(), "a changed page has a header");
+    (h.header->page_type == 6 ? base_page : index_page) = p;
+  }
+  Check(index_page && base_page, "the insert changes a base leaf and an index leaf");
+  const auto o = static_cast<std::ptrdiff_t>(*index_page * b.size);
+  std::size_t first = b.size, last = 0;
+  for (std::size_t i = 0; i < b.size; ++i)
+    if (before[o + i] != (*expected)[o + i]) {
+      first = std::min(first, i);
+      last = i;
+    }
+  const std::size_t keep = last / 512 * 512;
+  Check(first < keep, "the index page's changes span more than one sector");
+  const pid_t child = fork();
+  Check(child >= 0, "fork");
+  if (child == 0) {
+    d::FileDevice device;
+    if (!device.Open(path, d::FileOpenMode::open_existing).ok()) _exit(kChildFailed);
+    d::FileDeviceCarefulWriteSink file(device);
+    SectorTornSink sink(file, 2, keep, kPlannedCrash);
+    (void)Insert(b, sink, request);
+    _exit(kChildCompleted);
+  }
+  int status = 0;
+  Check(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == kPlannedCrash,
+        "the writer process was lost in the index leaf's write");
+  const auto after = ReadAll(path);
+  const auto ob = static_cast<std::ptrdiff_t>(*base_page * b.size);
+  Check(std::equal(after.begin() + ob, after.begin() + ob + b.size, expected->begin() + ob), "the base leaf is whole");
+  Check(std::equal(after.begin() + o, after.begin() + o + keep, expected->begin() + o) &&
+            std::equal(after.begin() + o + keep, after.begin() + o + b.size, before.begin() + o + keep),
+        "the index leaf holds its new sectors up to the tear and its old ones after");
+  Check(!std::equal(after.begin() + o, after.begin() + o + b.size, expected->begin() + o) &&
+            !std::equal(after.begin() + o, after.begin() + o + b.size, before.begin() + o),
+        "the torn index leaf is neither its old nor its new image");
+  Check(!pg::DecodeNativeBtreePage(PageOf(after, *index_page, b.size)).ok(), "the torn index leaf fails its seal");
+  {
+    Session restart(b, path);
+  }
+  Check(!Look(b, path, row).read, "a torn index leaf: the relation is refused until repaired (Q23 = 1)");
+  std::cout << b.name << " torn index page_size=" << b.size << " changed=[" << first << "," << last << "] kept=" << keep
+            << '\n';
+  fs::remove(path);
+}
+
 // ---- I/O failures --------------------------------------------------------------------------
 // Fails the k-th call of one kind (read, write or sync).
 class KindFaultSink final : public d::CarefulWriteSink {
@@ -789,11 +938,13 @@ int main(int argc, char** argv) {
     for (const auto& p : places) std::cout << ' ' << p.role;
     std::cout << '\n';
     States(*production, places.front());
+    Conflicts(*production, places.front());
     Keys(*production, places);
     Batch(*production, places);
     InsertRefusals(*production, places.front());
     InsertFill(*production, places.front());
     InsertLosses(*production, places.front());
+    TornIndex(*production, places.front());
     InsertFaults(*production, places.front());
     Unindexed(*seeded);
     std::cout << "PASS native catalog insert writer page_size=" << production->size << " checks=" << checks << '\n';

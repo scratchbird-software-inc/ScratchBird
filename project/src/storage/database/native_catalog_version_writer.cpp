@@ -598,11 +598,17 @@ CatalogVersionWriteResult WriteCatalogInsertVersions(disk::CarefulWriteSink& sin
     // ---- each row: checked, placed, indexed --------------------------------
     // The pages a placement changes, by (role, index): their pages as changed.
     std::set<std::pair<u16, std::size_t>> changed_leaves, changed_tree;
-    const auto creator_lives = [&](const pg::RowDataRecord& row) {
+    // A row's hold on its object: none once its creator rolled back or died;
+    // pending while another transaction that created it is in progress;
+    // otherwise held (committed, or this transaction's own).
+    enum class Hold { none, pending, held };
+    const auto hold = [&](const pg::RowDataRecord& row) {
       const auto* creator = entry(row.local_transaction_id);
-      if (!creator || creator->identity.transaction_uuid.value != row.transaction_uuid.value) return true;
+      if (!creator || creator->identity.transaction_uuid.value != row.transaction_uuid.value) return Hold::held;
       const auto state = mga::InventoryVisibilityState(*creator);
-      return state != mga::TransactionState::rolled_back && state != mga::TransactionState::failed_terminal;
+      if (state == mga::TransactionState::rolled_back || state == mga::TransactionState::failed_terminal)
+        return Hold::none;
+      return InProgress(state) && row.local_transaction_id != request.transaction_order ? Hold::pending : Hold::held;
     };
     for (std::size_t i = 0; i < request.rows.size(); ++i) {
       const auto& want = request.rows[i];
@@ -624,18 +630,28 @@ CatalogVersionWriteResult WriteCatalogInsertVersions(disk::CarefulWriteSink& sin
             m.security_epoch > r.security_epoch || m.resource_epoch > r.resource_epoch)
           return refuse_row(E::ahead_of_catalog_root, i);
       }
-      // New to the relation: no row or version with these UUIDs, no live row
-      // carrying the object.
+      // New to the relation: no row or version with these UUIDs; no row
+      // holding the object (a hold another transaction in progress has is a
+      // write conflict: if it rolls back the object can be inserted).
+      std::optional<u64> blocker;
+      bool held = false;
       for (const auto& leaf : relation.leaves)
         for (const auto& row : leaf.page.body.rows) {
           if (row.row_uuid.value == want.row_uuid || row.version_uuid == want.version_uuid ||
               row.row_uuid.value == want.version_uuid || row.version_uuid == want.row_uuid)
             return refuse_row(E::duplicate_row, i);
           const auto found = leaf.metadata.find(row.version_uuid);
-          if (found != leaf.metadata.end() && found->second.record.header.object_uuid.value == h.object_uuid.value &&
-              creator_lives(row))
-            return refuse_row(E::duplicate_object, i);
+          if (found == leaf.metadata.end() || found->second.record.header.object_uuid.value != h.object_uuid.value)
+            continue;
+          const auto state = hold(row);
+          if (state == Hold::held) held = true;
+          if (state == Hold::pending && !blocker) blocker = row.local_transaction_id;
         }
+      if (held) return refuse_row(E::duplicate_object, i);
+      if (blocker) {
+        result.blocker_order = blocker;
+        return refuse_row(E::write_conflict, i);
+      }
       for (const auto& page : relation.tree)
         for (const auto& cell : page.page.cells)
           if (cell.key.row_uuid == want.row_uuid) return refuse_row(E::duplicate_row, i);

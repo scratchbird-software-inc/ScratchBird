@@ -64,7 +64,7 @@ enum class CatalogVersionWriteError : std::uint8_t {
   transaction_not_active,  // the transaction is not in progress in the TIP
   read_only_transaction,   // the transaction began read-only
   row_not_found,
-  write_conflict,          // a newer version by a transaction in progress
+  write_conflict,          // a newer version (insert: a row carrying the object) by another transaction in progress
   update_conflict,         // the base is not the version the caller saw
   row_deleted,             // the base is a drop
   invalid_successor,       // the new metadata cannot follow the base
@@ -74,7 +74,7 @@ enum class CatalogVersionWriteError : std::uint8_t {
   name_record_unsupported,
   relation_full,           // no reached leaf has room
   duplicate_row,           // insert: the row UUID or version UUID is already in the relation (or the batch)
-  duplicate_object,        // insert: a live row of the relation (or the batch) carries the object UUID
+  duplicate_object,        // insert: a committed or own row of the relation (or the batch) carries the object UUID
   invalid_insert,          // insert: the metadata cannot be a first version by this transaction
   index_full,              // insert: the index leaf the key reaches has no room (splits come with W3b-3)
   plan_refused,            // the careful-write plan refused before any write
@@ -166,9 +166,12 @@ CatalogVersionWriteResult WriteCatalogSuccessorVersion(disk::CarefulWriteSink& s
 // transaction, not deleted, not cluster-scoped, generations and epochs within
 // the catalog root's. Its row and version UUIDs are new to the relation and to
 // the request (duplicate_row); its object UUID is carried by no other row of
-// the relation whose creator has not rolled back or died, nor by another row
-// of the request (duplicate_object). A rolled-back insert leaves its row and
-// cell in place; readers return nothing for it, and sweep removes it.
+// the relation whose creator committed or is this transaction, nor by another
+// row of the request (duplicate_object); a row carrying it whose creator is
+// another transaction still in progress refuses write_conflict with that
+// transaction's order (no waiting; if it rolls back the object can be
+// inserted). A rolled-back or dead insert leaves its row and cell in place;
+// readers return nothing for it, and sweep removes it.
 //
 // Not here: localized-name records (W3b-1b, their envelope binds the page and
 // slot placement chooses); the catalog-change audit event (W3b-2); new pages

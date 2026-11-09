@@ -28,6 +28,7 @@
 #include "catalog_page.hpp"
 #include "allocation_map_writer.hpp"
 #include "native_fixed_root_memory_lease.hpp"
+#include "bootstrap_policy_fixture.hpp"
 #include <sys/file.h>
 #include <sys/stat.h>
 #include <charconv>
@@ -2991,8 +2992,8 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
       // written in place on the security relation (role 4) by later
       // transactions, both invisible to every committed read: one whose
       // transaction rolled back, and one whose transaction is still in
-      // progress (a server that stopped before COMMIT). Startup must admit
-      // both. Not here: a committed change, which needs its own audit event
+      // progress (a server that stopped before COMMIT), each also inserting a
+      // new row (W3b-1a). Startup must admit them all. Not here: a committed change, which needs its own audit event
       // (the unaudited mode shows startup refusing one without), and a drop
       // of a named object, which needs its name rows dropped too (W3b). The
       // two smallest rows not of a name and not of the receipt's principals,
@@ -3007,12 +3008,14 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
         Check(root.ok(),"the produced catalog root decodes");
         const auto head=std::find_if(root.root->roots.begin(),root.root->roots.end(),[](const auto& r){return r.role==4;});
         Check(head!=root.root->roots.end()&&head->page_type==0x200,"the security relation is indexed");
-        std::set<u64> bases,seen;std::vector<u64> stack{head->page.page_number};
+        std::set<u64> bases,seen;std::vector<u64> stack{head->page.page_number};platform::Uuid largest{};
         while(!stack.empty()){const auto n=stack.back();stack.pop_back();if(!seen.insert(n).second)continue;
           const auto node=tip::DecodeNativeBtreePage(page(n));Check(node.ok(),"a security index page decodes");
           if(node.page->first_child)stack.push_back(node.page->first_child->page_number);
           for(const auto& cell:node.page->cells){if(cell.child)stack.push_back(cell.child->page_number);
-            if(cell.base_page)bases.insert(cell.base_page->page_number);}}
+            if(cell.base_page)bases.insert(cell.base_page->page_number);
+            if(!node.page->tree_level&&std::lexicographical_compare(largest.bytes.begin(),largest.bytes.end(),
+                cell.key.row_uuid.bytes.begin(),cell.key.row_uuid.bytes.end()))largest=cell.key.row_uuid;}}
         struct Row{u64 bytes=0;platform::Uuid row,version;catalog::CatalogMetadataVersion metadata;};
         std::vector<Row> rows;const auto& receipt=*made.receipt;
         const std::set<platform::Uuid> kept{receipt.bootstrap_principal_uuid,receipt.service_principal_uuid,
@@ -3039,6 +3042,33 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
           const auto written=db::WriteCatalogSuccessorVersion(sink,cv,r);
           if(!written.ok())std::cerr<<"producer catalog version="<<db::CatalogVersionWriteErrorName(written.error)<<'\n';
           Check(written.ok(),"the catalog version writer writes the version in place");return r.metadata;};
+        // SB_CATALOG_INSERT_WRITER (in-place writes W3b-1a): a new row inserted
+        // in place by each of the two invisible transactions (one rolled back,
+        // one dead at restart). Startup must admit both: a row with no visible
+        // version is neither captured nor named nor audited. The row is an
+        // unnamed generic policy row (a mechanics fixture) with the smallest
+        // changed row's schema, parent, owner, audit and security policy, its
+        // key after the largest.
+        const auto insert=[&](u64 n,const platform::Uuid& tx,unsigned k){
+          auto key=largest;u64 ms=0;for(int i=0;i<6;++i)ms=(ms<<8)|key.bytes[i];ms+=k;
+          for(int i=5;i>=0;--i){key.bytes[i]=static_cast<platform::byte>(ms);ms>>=8;}
+          key.bytes[15]=static_cast<platform::byte>(0xe0+k);
+          auto object=key;object.bytes[14]^=0x5a;
+          const auto& like=rows[0].metadata;
+          db::CatalogInsertRow row;row.role=4;row.row_uuid=key;row.version_uuid=id(0xd0,k);
+          row.metadata=scratchbird::tests::bootstrap_policy::Metadata(0,{platform::UuidKind::transaction,tx},
+              like.owning_schema_uuid.value,"W3B-1A unnamed catalog insert mechanics fixture");
+          auto& m=row.metadata;m.record.header.row_uuid={platform::UuidKind::row,key};
+          m.record.header.parent_uuid=like.record.header.parent_uuid;m.owner_uuid=like.owner_uuid;m.audit_uuid=like.audit_uuid;
+          m.security_policy_uuid=like.security_policy_uuid;m.owning_schema_uuid=like.owning_schema_uuid;
+          m.object_subtype="w3b_insert_mechanics_fixture";m.trace_search_key="W3B-1A-INSERT-FIXTURE";
+          m.record.header.object_uuid={platform::UuidKind::object,object};m.definition_version=1;
+          m.creator_transaction_uuid={platform::UuidKind::transaction,tx};m.creator_local_transaction_id=n;
+          m.default_name_uuid={};m.name_vector_uuid={};
+          db::CatalogInsertRequest r;r.transaction_order=n;r.transaction_uuid=tx;r.rows={row};
+          const auto written=db::WriteCatalogInsertVersions(sink,cv,r);
+          if(!written.ok())std::cerr<<"producer catalog insert="<<db::CatalogVersionWriteErrorName(written.error)<<'\n';
+          Check(written.ok(),"the catalog insert writer inserts a new row in place");};
         const auto begin=[&](u64 n){tip::TransactionHeaderRecord h;h.transaction_uuid=id(0xb0,n);
           const auto begun=writer.Begin(sink,h);Check(begun.ok()&&begun.transaction_order==n,"BEGIN for a catalog change");return h.transaction_uuid;};
         u64 n=header_slots+2;
@@ -3048,9 +3078,11 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
         if(unaudited){
           Check(writer.Commit(sink,n,now()).ok(),"COMMIT the unaudited catalog change");
         }else{
+          insert(n,first,1);
           Check(writer.Rollback(sink,n,now()).ok(),"ROLLBACK the first catalog change");
           const auto second=begin(++n);
           (void)change(n,second,rows[1],rows[1].version,rows[1].metadata,id(0xc0,2),false);
+          insert(n,second,2);
         }
         Check(!writer.failed(),"the catalog changes leave the transaction writer sound");
         if(!unaudited){
