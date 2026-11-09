@@ -157,6 +157,20 @@ std::string DomainForArtifact(const std::string& identity) {
   return "auxiliary";
 }
 
+// Lock and pending files are not database state. A lock file coordinates
+// threads and processes (the owner lock is removed whenever a device closes,
+// SB_OWNER_LOCK_FILE_REMOVED_ON_CLOSE); a pending file is renamed over its
+// target during publication. Naming either as a commit artifact makes the
+// commit race every concurrent close or publication: the file can vanish
+// between this scan and its sync, size and hash.
+bool IsTransientCoordinationFile(const std::string& filename) {
+  const auto ends_with = [&](std::string_view suffix) {
+    return filename.size() >= suffix.size() &&
+           filename.compare(filename.size() - suffix.size(), suffix.size(), suffix) == 0;
+  };
+  return ends_with(".lock") || ends_with(".pending");
+}
+
 std::vector<std::filesystem::path> PublicationArtifacts(
     const EngineRequestContext& context,
     bool* scan_ok) {
@@ -177,6 +191,7 @@ std::vector<std::filesystem::path> PublicationArtifacts(
     if (filename.rfind(database_filename + ".sb.", 0) != 0 ||
         filename == database_filename + ".sb.txn_publish" ||
         filename.find(".tmp.") != std::string::npos ||
+        IsTransientCoordinationFile(filename) ||
         IsPublicationManifest(filename, database_filename)) {
       continue;
     }
@@ -188,7 +203,9 @@ std::vector<std::filesystem::path> PublicationArtifacts(
       for (std::filesystem::recursive_directory_iterator nested(it->path(), type_error), nested_end;
            !type_error && nested != nested_end; nested.increment(type_error)) {
         std::error_code nested_type_error;
-        if (nested->is_regular_file(nested_type_error)) paths.push_back(nested->path());
+        if (nested->is_regular_file(nested_type_error) &&
+            !IsTransientCoordinationFile(nested->path().filename().string()))
+          paths.push_back(nested->path());
         if (nested_type_error) return {};
       }
     }

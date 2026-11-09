@@ -20,12 +20,18 @@ inline MgaRelationLocators LoadMgaRelationLocators(const std::string& root) {
   const auto path = root + "/locators.v2";
   if (!std::filesystem::exists(root)) return result;
   if (!std::filesystem::exists(path)) {
+    bool other = false;
     for (const auto& entry : std::filesystem::directory_iterator(root)) {
       const auto name = entry.path().filename().string();
-      if (name != "locators.v2.lock" && name != "locators.v2.pending")
-        throw std::runtime_error("mga_relation_locator_missing_or_legacy");
+      if (name != "locators.v2.lock" && name != "locators.v2.pending") other = true;
     }
-    return result;
+    if (!other) return result;
+    // A writer may publish the directory between the check above and the
+    // listing (the listing then shows locators.v2 itself). Once published the
+    // directory is only ever replaced, never removed, so it is legacy only if
+    // it is still absent after the listing.
+    if (!std::filesystem::exists(path))
+      throw std::runtime_error("mga_relation_locator_missing_or_legacy");
   }
   // Publication atomically replaces this pathname. Measure the opened file,
   // not a pathname that may identify a different generation before open.

@@ -6578,7 +6578,12 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
               # served engine open, startup verify, bootstrap/metric reads),
               # measured 2026-11-03 below: the 2 left are the owner's own
               # acquisition of the file. Agent threads now open it 0 times.
-              --expect "0:2,238;1:2,533;4:2,557"
+              # 2026-11-08 (ipar concurrency fix): the commit no longer names
+              # lock or pending files as artifacts, so it no longer opens them
+              # to sync: sidecar opens 238 -> 235, 533 -> 527, 557 -> 551
+              # (measured twice; with only that fix reverted the old counts
+              # return exactly).
+              --expect "0:2,235;1:2,527;4:2,551"
               --expect-agent-file-opens 0
     )
     set_tests_properties(c9_live_server_path_open_instrument PROPERTIES

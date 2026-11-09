@@ -28,6 +28,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -60,40 +61,68 @@ bool InspectBinarySegment(const std::string& path, bool* present) {
 
 }  // namespace
 
-bool ReadCompleteMgaBinaryFile(const std::string& path,
-                              std::vector<idx::byte>* bytes,
-                              const std::uint64_t maximum_bytes) {
-  if (bytes == nullptr) return false;
+namespace {
+enum class CompleteReadAttempt { complete, changed, failed };
+// One attempt: the bytes are returned only if the file had the same size and
+// modification time before and after the read. `changed` means another writer
+// appended to or replaced the file while it was read.
+CompleteReadAttempt ReadCompleteMgaBinaryFileOnce(const std::string& path,
+                                                  std::vector<idx::byte>* bytes,
+                                                  const std::uint64_t maximum_bytes) {
+  using A = CompleteReadAttempt;
   bytes->clear();
   bool present = false;
-  if (!InspectBinarySegment(path, &present)) return false;
-  if (!present) return true;
+  if (!InspectBinarySegment(path, &present)) return A::failed;
+  if (!present) return A::complete;
   std::error_code error;
   const auto expected_size = std::filesystem::file_size(path, error);
-  if (error || expected_size > bytes->max_size() || expected_size > maximum_bytes) return false;
+  if (error) return A::changed;  // removed or replaced since the inspection
+  if (expected_size > bytes->max_size() || expected_size > maximum_bytes) return A::failed;
   const auto expected_time = std::filesystem::last_write_time(path, error);
-  if (error) return false;
+  if (error) return A::changed;
   std::ifstream input(path, std::ios::binary);
-  if (!input.is_open() || !input.good()) return false;
+  if (!input.is_open() || !input.good()) return A::changed;
   std::vector<idx::byte> staged;
   std::array<char, 64 * 1024> chunk{};
   for (;;) {
     input.read(chunk.data(), static_cast<std::streamsize>(chunk.size()));
     const auto count = input.gcount();
-    if (input.bad() || count < 0 ||
-        static_cast<std::uintmax_t>(count) > expected_size - staged.size()) return false;
+    if (input.bad() || count < 0) return A::failed;
+    if (static_cast<std::uintmax_t>(count) > expected_size - staged.size()) return A::changed;
     staged.insert(staged.end(), chunk.data(), chunk.data() + count);
     if (input.eof()) break;
-    if (input.fail()) return false;
+    if (input.fail()) return A::failed;
   }
-  if (staged.size() != expected_size ||
-      !InspectBinarySegment(path, &present) || !present) return false;
+  if (staged.size() != expected_size) return A::changed;
+  if (!InspectBinarySegment(path, &present)) return A::failed;
+  if (!present) return A::changed;
   const auto final_size = std::filesystem::file_size(path, error);
-  if (error || final_size != expected_size) return false;
+  if (error || final_size != expected_size) return A::changed;
   const auto final_time = std::filesystem::last_write_time(path, error);
-  if (error || final_time != expected_time) return false;
+  if (error || final_time != expected_time) return A::changed;
   *bytes = std::move(staged);
-  return true;
+  return A::complete;
+}
+// Readers take no lock (only write-write conflicts block), so a writer can
+// append to a file while it is read. A read that saw the file change is
+// repeated; a bounded number of attempts keeps a reader from spinning forever
+// behind a writer that never stops.
+constexpr unsigned kCompleteReadAttempts = 64;
+}  // namespace
+
+bool ReadCompleteMgaBinaryFile(const std::string& path,
+                              std::vector<idx::byte>* bytes,
+                              const std::uint64_t maximum_bytes) {
+  if (bytes == nullptr) return false;
+  for (unsigned attempt = 0; attempt < kCompleteReadAttempts; ++attempt) {
+    switch (ReadCompleteMgaBinaryFileOnce(path, bytes, maximum_bytes)) {
+      case CompleteReadAttempt::complete: return true;
+      case CompleteReadAttempt::failed: bytes->clear(); return false;
+      case CompleteReadAttempt::changed: std::this_thread::yield(); break;
+    }
+  }
+  bytes->clear();
+  return false;
 }
 
 void ReserveAmortizedAppendCapacity(std::string* out, std::size_t extra);
