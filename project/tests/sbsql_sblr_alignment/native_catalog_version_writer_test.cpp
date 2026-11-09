@@ -1624,6 +1624,9 @@ void RootFaults(const Db& b) {
 }
 }  // namespace
 
+// native_catalog_insert_writer_test includes this file for its databases,
+// transactions, relation read and committed reads (W3b-1a).
+#ifndef SB_CATALOG_VERSION_WRITER_TEST_WITHOUT_MAIN
 int main(int argc, char** argv) {
   unsigned profile = 0;
   try {
@@ -1654,3 +1657,4 @@ int main(int argc, char** argv) {
     return 1;
   }
 }
+#endif  // SB_CATALOG_VERSION_WRITER_TEST_WITHOUT_MAIN

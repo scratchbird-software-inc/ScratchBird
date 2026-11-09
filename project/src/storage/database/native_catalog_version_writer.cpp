@@ -107,6 +107,126 @@ bool Follows(const catalog::CatalogMetadataVersion& before, const catalog::Catal
          after.invalidation_generation >= before.invalidation_generation &&
          catalog::CatalogMetadataPreservesFamilyOrigin(before, after);
 }
+// One index page as read: where, its image, its decode.
+struct TreePage {
+  disk::NativePageReference ref;
+  std::vector<byte> image;
+  pg::NativeBtreePage page;
+};
+// A relation as its head reaches it: the index pages (empty when unindexed),
+// in walk order, and every base leaf, sorted by page number.
+struct Relation {
+  std::vector<TreePage> tree;
+  std::vector<disk::NativePageReference> bases;
+  std::vector<Leaf> leaves;  // parallel to bases
+};
+// Reads the relation `head` names through the sink: the index walked and
+// checked as the tree reader walks it, then every base leaf the index names
+// (or the head itself, unindexed). False, with `result` set, on a refusal.
+bool ReadRelation(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding& binding, u32 page_size,
+                  const pg::NativeCatalogRootReference& head, Relation& out, CatalogVersionWriteResult& result) {
+  const auto& croot = binding.catalog_root;
+  const auto refuse = [&](E error) {
+    result.error = error;
+    return false;
+  };
+  std::vector<byte> image;
+  auto& bases = out.bases;
+  if (head.page_type == 6) {
+    bases.push_back(head.page);
+  } else {
+    // The index, walked as the tree reader walks it, read through the sink.
+    struct Pending {
+      disk::NativePageReference ref;
+      std::optional<std::size_t> parent;
+      u16 level = 0;
+      std::optional<pg::NativeBtreeKey> low, high;
+    };
+    auto& tree = out.tree;
+    std::vector<Pending> pending{{head.page, {}, 0, {}, {}}};
+    std::set<u64> seen;
+    std::map<u16, std::size_t> last_by_level;
+    std::optional<pg::NativeBtreeDependencies> dependencies;
+    while (!pending.empty()) {
+      auto next = std::move(pending.back());
+      pending.pop_back();
+      if (tree.size() >= binding.maximum_index_pages) return refuse(E::resource_exhausted);
+      if (next.ref.filespace_uuid != croot.filespace_uuid ||
+          next.ref.page_size_profile_uuid != croot.page_size_profile_uuid || !seen.insert(next.ref.page_number).second)
+        return refuse(E::invalid_catalog);
+      if (!ReadPage(sink, page_size, next.ref.page_number, image, result)) return false;
+      const u32 type = !next.parent ? 0x200 : next.level ? 0x201 : 0x202;
+      if (!HeaderBinds(image, binding.database_uuid, next.ref, type)) return refuse(E::invalid_catalog);
+      auto decoded = pg::DecodeNativeBtreePage(image);
+      if (!decoded.ok()) return refuse(E::invalid_catalog);
+      auto& page = *decoded.page;
+      if (!dependencies) {
+        if (page.dependencies.index_uuid != head.object_uuid) return refuse(E::invalid_catalog);
+        dependencies = page.dependencies;
+      } else if (page.dependencies != *dependencies) {
+        return refuse(E::invalid_catalog);
+      }
+      const auto previous = last_by_level.find(page.tree_level);
+      if (pg::detail::ValidateNativeBtreeTraversalStep(
+              page, next.parent ? &tree[*next.parent].page : nullptr, next.level, next.low, next.high,
+              previous == last_by_level.end() ? nullptr : &tree[previous->second].page) != pg::NativeBtreeError::none)
+        return refuse(E::invalid_catalog);
+      const auto index = tree.size();
+      last_by_level[page.tree_level] = index;
+      tree.push_back({next.ref, image, std::move(page)});
+      const auto& current = tree.back().page;
+      if (!current.tree_level) {
+        for (const auto& cell : current.cells) {
+          if (!cell.base_page) return refuse(E::invalid_catalog);
+          const auto& ref = *cell.base_page;
+          const auto known = std::find_if(bases.begin(), bases.end(),
+                                          [&](const auto& b) { return b.page_number == ref.page_number; });
+          if (known == bases.end()) bases.push_back(ref);
+          else if (*known != ref) return refuse(E::invalid_catalog);
+        }
+        continue;
+      }
+      if (!current.first_child || current.cells.empty()) return refuse(E::invalid_catalog);
+      const auto child_level = static_cast<u16>(current.tree_level - 1);
+      for (std::size_t i = current.cells.size(); i > 0; --i) {
+        const auto& cell = current.cells[i - 1];
+        if (!cell.child) return refuse(E::invalid_catalog);
+        pending.push_back({*cell.child, index, child_level, cell.key,
+                           i == current.cells.size() ? current.high_fence : std::optional{current.cells[i].key}});
+      }
+      pending.push_back({*current.first_child, index, child_level, current.low_fence, current.cells.front().key});
+    }
+    for (const auto& [level, index] : last_by_level)
+      if (tree[index].page.right) return refuse(E::invalid_catalog);
+  }
+  if (bases.size() > binding.maximum_base_pages) return refuse(E::resource_exhausted);
+  std::sort(bases.begin(), bases.end(),
+            [](const auto& a, const auto& b) { return a.page_number < b.page_number; });
+
+  auto& leaves = out.leaves;
+  leaves.assign(bases.size(), Leaf{});
+  std::optional<Uuid> relation;
+  for (std::size_t i = 0; i < bases.size(); ++i) {
+    const auto& ref = bases[i];
+    if (ref.filespace_uuid != croot.filespace_uuid || ref.page_size_profile_uuid != croot.page_size_profile_uuid)
+      return refuse(E::invalid_catalog);
+    if (!ReadPage(sink, page_size, ref.page_number, leaves[i].image, result)) return false;
+    if (!HeaderBinds(leaves[i].image, binding.database_uuid, ref, 6)) return refuse(E::invalid_catalog);
+    auto decoded = DecodeNativeCatalogLeaf(leaves[i].image);
+    if (!decoded.ok()) {
+      result.error = E::invalid_catalog;
+      result.leaf_error = decoded.error;
+      return false;
+    }
+    const auto& id = decoded.page->body.relation_uuid.value;
+    if (head.page_type == 6 ? id != head.object_uuid : relation && *relation != id) return refuse(E::invalid_catalog);
+    relation = id;
+    leaves[i].page = std::move(*decoded.page);
+    leaves[i].metadata = std::move(decoded.metadata);
+  }
+
+  return true;
+}
 }  // namespace
 
 const char* CatalogVersionWriteErrorName(CatalogVersionWriteError error) noexcept {
@@ -129,6 +249,10 @@ const char* CatalogVersionWriteErrorName(CatalogVersionWriteError error) noexcep
     case E::root_regression: return "root_regression";
     case E::name_record_unsupported: return "name_record_unsupported";
     case E::relation_full: return "relation_full";
+    case E::duplicate_row: return "duplicate_row";
+    case E::duplicate_object: return "duplicate_object";
+    case E::invalid_insert: return "invalid_insert";
+    case E::index_full: return "index_full";
     case E::plan_refused: return "plan_refused";
     case E::write_failed: return "write_failed";
     case E::resource_exhausted: return "resource_exhausted";
@@ -204,98 +328,10 @@ CatalogVersionWriteResult WriteCatalogSuccessorVersion(disk::CarefulWriteSink& s
       return Refuse(E::invalid_catalog);
 
     // ---- every base leaf the head reaches ----------------------------------
-    std::vector<disk::NativePageReference> bases;
-    if (head->page_type == 6) {
-      bases.push_back(head->page);
-    } else {
-      // The index, walked as the tree reader walks it, read through the sink.
-      struct Pending {
-        disk::NativePageReference ref;
-        std::optional<std::size_t> parent;
-        u16 level = 0;
-        std::optional<pg::NativeBtreeKey> low, high;
-      };
-      std::vector<pg::NativeBtreePage> pages;
-      std::vector<Pending> pending{{head->page, {}, 0, {}, {}}};
-      std::set<u64> seen;
-      std::map<u16, std::size_t> last_by_level;
-      std::optional<pg::NativeBtreeDependencies> dependencies;
-      while (!pending.empty()) {
-        auto next = std::move(pending.back());
-        pending.pop_back();
-        if (pages.size() >= binding.maximum_index_pages) return Refuse(E::resource_exhausted);
-        if (next.ref.filespace_uuid != croot.filespace_uuid ||
-            next.ref.page_size_profile_uuid != croot.page_size_profile_uuid || !seen.insert(next.ref.page_number).second)
-          return Refuse(E::invalid_catalog);
-        if (!ReadPage(sink, page_size, next.ref.page_number, image, result)) return result;
-        const u32 type = !next.parent ? 0x200 : next.level ? 0x201 : 0x202;
-        if (!HeaderBinds(image, binding.database_uuid, next.ref, type)) return Refuse(E::invalid_catalog);
-        auto decoded = pg::DecodeNativeBtreePage(image);
-        if (!decoded.ok()) return Refuse(E::invalid_catalog);
-        auto& page = *decoded.page;
-        if (!dependencies) {
-          if (page.dependencies.index_uuid != head->object_uuid) return Refuse(E::invalid_catalog);
-          dependencies = page.dependencies;
-        } else if (page.dependencies != *dependencies) {
-          return Refuse(E::invalid_catalog);
-        }
-        const auto previous = last_by_level.find(page.tree_level);
-        if (pg::detail::ValidateNativeBtreeTraversalStep(
-                page, next.parent ? &pages[*next.parent] : nullptr, next.level, next.low, next.high,
-                previous == last_by_level.end() ? nullptr : &pages[previous->second]) != pg::NativeBtreeError::none)
-          return Refuse(E::invalid_catalog);
-        const auto index = pages.size();
-        last_by_level[page.tree_level] = index;
-        pages.push_back(std::move(page));
-        const auto& current = pages.back();
-        if (!current.tree_level) {
-          for (const auto& cell : current.cells) {
-            if (!cell.base_page) return Refuse(E::invalid_catalog);
-            const auto& ref = *cell.base_page;
-            const auto known = std::find_if(bases.begin(), bases.end(),
-                                            [&](const auto& b) { return b.page_number == ref.page_number; });
-            if (known == bases.end()) bases.push_back(ref);
-            else if (*known != ref) return Refuse(E::invalid_catalog);
-          }
-          continue;
-        }
-        if (!current.first_child || current.cells.empty()) return Refuse(E::invalid_catalog);
-        const auto child_level = static_cast<u16>(current.tree_level - 1);
-        for (std::size_t i = current.cells.size(); i > 0; --i) {
-          const auto& cell = current.cells[i - 1];
-          if (!cell.child) return Refuse(E::invalid_catalog);
-          pending.push_back({*cell.child, index, child_level, cell.key,
-                             i == current.cells.size() ? current.high_fence : std::optional{current.cells[i].key}});
-        }
-        pending.push_back({*current.first_child, index, child_level, current.low_fence, current.cells.front().key});
-      }
-      for (const auto& [level, index] : last_by_level)
-        if (pages[index].right) return Refuse(E::invalid_catalog);
-    }
-    if (bases.size() > binding.maximum_base_pages) return Refuse(E::resource_exhausted);
-    std::sort(bases.begin(), bases.end(),
-              [](const auto& a, const auto& b) { return a.page_number < b.page_number; });
-
-    std::vector<Leaf> leaves(bases.size());
-    std::optional<Uuid> relation;
-    for (std::size_t i = 0; i < bases.size(); ++i) {
-      const auto& ref = bases[i];
-      if (ref.filespace_uuid != croot.filespace_uuid || ref.page_size_profile_uuid != croot.page_size_profile_uuid)
-        return Refuse(E::invalid_catalog);
-      if (!ReadPage(sink, page_size, ref.page_number, leaves[i].image, result)) return result;
-      if (!HeaderBinds(leaves[i].image, binding.database_uuid, ref, 6)) return Refuse(E::invalid_catalog);
-      auto decoded = DecodeNativeCatalogLeaf(leaves[i].image);
-      if (!decoded.ok()) {
-        result.error = E::invalid_catalog;
-        result.leaf_error = decoded.error;
-        return result;
-      }
-      const auto& id = decoded.page->body.relation_uuid.value;
-      if (head->page_type == 6 ? id != head->object_uuid : relation && *relation != id) return Refuse(E::invalid_catalog);
-      relation = id;
-      leaves[i].page = std::move(*decoded.page);
-      leaves[i].metadata = std::move(decoded.metadata);
-    }
+    Relation relation_read;
+    if (!ReadRelation(sink, binding, page_size, *head, relation_read, result)) return result;
+    auto& bases = relation_read.bases;
+    auto& leaves = relation_read.leaves;
 
     // ---- the row's versions, newest first ----------------------------------
     std::vector<Version> versions;
@@ -444,6 +480,289 @@ CatalogVersionWriteResult WriteCatalogSuccessorVersion(disk::CarefulWriteSink& s
     result.page_number = bases[*target].page_number;
     result.forward_link_page = bases[base->leaf].page_number;
     result.row_version = added.row_version;
+    if (r.ok()) {
+      result.error = E::none;
+      return result;
+    }
+    result.attempted = r.written > 0 || r.syncs > 0 || r.error == CarefulWriteError::write_failed ||
+                       r.error == CarefulWriteError::barrier_sync_failed ||
+                       r.error == CarefulWriteError::final_sync_failed || r.error == CarefulWriteError::sink_exception;
+    result.error = result.attempted                                      ? E::write_failed
+                   : r.error == CarefulWriteError::preimage_read_failed ? E::io_failure
+                   : r.error == CarefulWriteError::preimage_mismatch    ? E::invalid_catalog
+                                                                        : E::plan_refused;
+    return result;
+  } catch (const std::bad_alloc&) {
+    return Refuse(E::resource_exhausted);
+  } catch (const std::length_error&) {
+    return Refuse(E::resource_exhausted);
+  } catch (...) {
+    return Refuse(E::invalid_request);
+  }
+}
+
+CatalogVersionWriteResult WriteCatalogInsertVersions(disk::CarefulWriteSink& sink,
+                                                     const CatalogVersionWriterBinding& binding,
+                                                     const CatalogInsertRequest& request) noexcept {
+  CatalogVersionWriteResult result;
+  const auto refuse_row = [&](E error, std::size_t row) {
+    result.error = error;
+    result.failed_row = row;
+    return result;
+  };
+  try {
+    // ---- the request alone -------------------------------------------------
+    const auto& croot = binding.catalog_root;
+    const auto* profile = disk::FindCanonicalFilespacePageProfile(croot.page_size_profile_uuid);
+    if (!V7(binding.database_uuid) || (croot.kind != 2 && croot.kind != 8) || !croot.page_number ||
+        !croot.page_generation || !profile || binding.state_root.kind != 4 ||
+        binding.state_root.page_size_profile_uuid != croot.page_size_profile_uuid ||
+        binding.state_root.filespace_uuid != croot.filespace_uuid || !binding.maximum_chain_pages ||
+        !binding.maximum_index_pages || !binding.maximum_base_pages || !request.transaction_order ||
+        !V7(request.transaction_uuid) || request.rows.empty())
+      return result;
+    for (std::size_t i = 0; i < request.rows.size(); ++i) {
+      const auto& row = request.rows[i];
+      if (row.role < 1 || row.role > 6 || !V7(row.row_uuid) || !V7(row.version_uuid) || row.version_uuid == row.row_uuid)
+        return refuse_row(E::invalid_request, i);
+    }
+    if (binding.read_only_database) return Refuse(E::read_only_database);
+    for (std::size_t i = 0; i < request.rows.size(); ++i)
+      if (request.rows[i].metadata.record.header.kind == catalog::CatalogRecordKind::localized_name)
+        return refuse_row(E::name_record_unsupported, i);
+    // Rows and versions are new within the request; objects too.
+    for (std::size_t i = 0; i < request.rows.size(); ++i)
+      for (std::size_t j = 0; j < i; ++j) {
+        const auto& a = request.rows[i];
+        const auto& b = request.rows[j];
+        if (a.version_uuid == b.version_uuid || a.version_uuid == b.row_uuid || a.row_uuid == b.version_uuid ||
+            (a.role == b.role && a.row_uuid == b.row_uuid))
+          return refuse_row(E::duplicate_row, i);
+        if (a.role == b.role && a.metadata.record.header.object_uuid.value == b.metadata.record.header.object_uuid.value)
+          return refuse_row(E::duplicate_object, i);
+      }
+    const u32 page_size = profile->page_size_bytes;
+
+    // ---- the transaction ---------------------------------------------------
+    pg::TransactionWriterBinding tx;
+    tx.database_uuid = binding.database_uuid;
+    tx.state_root = binding.state_root;
+    tx.maximum_chain_pages = binding.maximum_chain_pages;
+    const auto chains = pg::ReadTransactionChainsThroughSink(sink, tx);
+    if (!chains.ok()) {
+      result.error = chains.error == pg::TransactionWriterError::io_failure ? E::io_failure
+                     : chains.error == pg::TransactionWriterError::resource_exhausted ? E::resource_exhausted
+                                                                                       : E::invalid_inventory;
+      result.inventory_error = chains.page_error;
+      result.io = chains.io;
+      return result;
+    }
+    const auto built = pg::BuildLocalTransactionInventoryFromImages(page_size, chains.state_images, chains.header_images);
+    if (!built.ok()) {
+      result.error = E::invalid_inventory;
+      result.inventory_error = built.error;
+      return result;
+    }
+    const auto& entries = built.inventory.entries;
+    const auto entry = [&](u64 order) -> const mga::TransactionInventoryEntry* {
+      const auto at = std::lower_bound(entries.begin(), entries.end(), order,
+                                       [](const auto& e, u64 n) { return e.identity.local_id.value < n; });
+      return at == entries.end() || at->identity.local_id.value != order ? nullptr : &*at;
+    };
+    const auto* self = entry(request.transaction_order);
+    if (!self || self->identity.transaction_uuid.value != request.transaction_uuid)
+      return Refuse(E::transaction_not_active);
+    if (self->state == mga::TransactionState::read_only_active) return Refuse(E::read_only_transaction);
+    if (self->state != mga::TransactionState::active) return Refuse(E::transaction_not_active);
+
+    // ---- the catalog root and each relation the request names -------------
+    std::vector<byte> image;
+    if (!ReadPage(sink, page_size, croot.page_number, image, result)) return result;
+    const disk::NativePageReference root_ref{croot.filespace_uuid, croot.page_number, croot.page_generation,
+                                             croot.page_size_profile_uuid};
+    if (!HeaderBinds(image, binding.database_uuid, root_ref, croot.page_type)) return Refuse(E::invalid_catalog);
+    const auto root = pg::DecodeNativeCatalogRoot(image);
+    if (!root.ok() || root.root->object_uuid != croot.object_uuid) return Refuse(E::invalid_catalog);
+    std::map<u16, Relation> relations;
+    std::map<u16, pg::NativeCatalogRootReference> heads;
+    for (const auto& row : request.rows) {
+      if (relations.contains(row.role)) continue;
+      const auto head = std::find_if(root.root->roots.begin(), root.root->roots.end(),
+                                     [&](const auto& r) { return r.role == row.role; });
+      if (head == root.root->roots.end() || (head->page_type != 6 && head->page_type != 0x200))
+        return Refuse(E::invalid_catalog);
+      heads[row.role] = *head;
+      if (!ReadRelation(sink, binding, page_size, *head, relations[row.role], result)) return result;
+    }
+
+    // ---- each row: checked, placed, indexed --------------------------------
+    // The pages a placement changes, by (role, index): their pages as changed.
+    std::set<std::pair<u16, std::size_t>> changed_leaves, changed_tree;
+    const auto creator_lives = [&](const pg::RowDataRecord& row) {
+      const auto* creator = entry(row.local_transaction_id);
+      if (!creator || creator->identity.transaction_uuid.value != row.transaction_uuid.value) return true;
+      const auto state = mga::InventoryVisibilityState(*creator);
+      return state != mga::TransactionState::rolled_back && state != mga::TransactionState::failed_terminal;
+    };
+    for (std::size_t i = 0; i < request.rows.size(); ++i) {
+      const auto& want = request.rows[i];
+      auto& relation = relations.at(want.role);
+      const auto& head = heads.at(want.role);
+      const auto& m = want.metadata;
+      const auto& h = m.record.header;
+      // A first version by this transaction.
+      if (catalog::ValidateCatalogMetadataVersionView(catalog::BorrowCatalogMetadataVersion(m)) ||
+          h.row_uuid.kind != UuidKind::row || h.row_uuid.value != want.row_uuid || h.deleted ||
+          m.definition_version != 1 || m.authority_scope == catalog::CatalogAuthorityScope::cluster ||
+          m.creator_transaction_uuid.kind != UuidKind::transaction ||
+          m.creator_transaction_uuid.value != request.transaction_uuid ||
+          m.creator_local_transaction_id != request.transaction_order)
+        return refuse_row(E::invalid_insert, i);
+      {
+        const auto& r = *root.root;
+        if (m.catalog_generation > r.catalog_generation || m.schema_epoch > r.schema_epoch ||
+            m.security_epoch > r.security_epoch || m.resource_epoch > r.resource_epoch)
+          return refuse_row(E::ahead_of_catalog_root, i);
+      }
+      // New to the relation: no row or version with these UUIDs, no live row
+      // carrying the object.
+      for (const auto& leaf : relation.leaves)
+        for (const auto& row : leaf.page.body.rows) {
+          if (row.row_uuid.value == want.row_uuid || row.version_uuid == want.version_uuid ||
+              row.row_uuid.value == want.version_uuid || row.version_uuid == want.row_uuid)
+            return refuse_row(E::duplicate_row, i);
+          const auto found = leaf.metadata.find(row.version_uuid);
+          if (found != leaf.metadata.end() && found->second.record.header.object_uuid.value == h.object_uuid.value &&
+              creator_lives(row))
+            return refuse_row(E::duplicate_object, i);
+        }
+      for (const auto& page : relation.tree)
+        for (const auto& cell : page.page.cells)
+          if (cell.key.row_uuid == want.row_uuid) return refuse_row(E::duplicate_row, i);
+
+      // The row.
+      const auto encoded = catalog::EncodeCatalogMetadataVersion(m);
+      if (!encoded.ok()) return refuse_row(E::invalid_insert, i);
+      pg::RowDataRecord added;
+      added.row_uuid = {UuidKind::row, want.row_uuid};
+      added.version_uuid = want.version_uuid;
+      added.transaction_uuid = {UuidKind::transaction, request.transaction_uuid};
+      added.local_transaction_id = request.transaction_order;
+      added.row_version = 1;
+      scratchbird::core::datatypes::DatatypeBinaryValue cell_value;
+      cell_value.type_id = scratchbird::core::datatypes::CanonicalTypeId::binary;
+      cell_value.payload = encoded.bytes;
+      added.cells = {{1, std::move(cell_value), {}}};
+
+      // Placement: the first reached base leaf with room (an unindexed
+      // relation has one, its head).
+      std::optional<std::size_t> target;
+      for (std::size_t l = 0; l < relation.leaves.size() && !target; ++l) {
+        auto page = relation.leaves[l].page;
+        u32 slot = 0;
+        for (const auto& row : page.body.rows) slot = std::max(slot, row.stable_slot_id);
+        if (slot == std::numeric_limits<u32>::max()) continue;
+        auto row = added;
+        row.stable_slot_id = slot + 1;
+        row.storage_generation = page.header.page_generation;
+        page.body.rows.push_back(std::move(row));
+        const auto fits = pg::BuildRowDataPageBody(page.body, page.header.page_size_bytes - 32);
+        if (!fits.ok()) {
+          if (fits.diagnostic.diagnostic_code == "SB-ROW-DATA-PAGE-BODY-TOO-LARGE") continue;
+          if (fits.resource_failure()) return Refuse(E::resource_exhausted);
+          return refuse_row(E::invalid_insert, i);
+        }
+        relation.leaves[l].page = std::move(page);
+        relation.leaves[l].metadata.emplace(want.version_uuid, m);
+        target = l;
+      }
+      if (!target) return refuse_row(E::relation_full, i);
+      changed_leaves.insert({want.role, *target});
+      if (head.page_type == 6) continue;
+
+      // The index: the leaf whose key range holds the key, the cell at its
+      // position. With low-key separators nothing above the leaf changes.
+      pg::NativeBtreeKey key;
+      key.encoded_key.assign(want.row_uuid.bytes.begin(), want.row_uuid.bytes.end());
+      key.row_uuid = want.row_uuid;
+      key.version_uuid = want.version_uuid;
+      const auto view = [](const pg::NativeBtreeKey& k) {
+        return pg::NativeBtreeKeyView{std::span<const byte>(k.encoded_key), k.row_uuid, k.version_uuid};
+      };
+      std::optional<std::size_t> reached;
+      for (std::size_t t = 0; t < relation.tree.size(); ++t) {
+        const auto& page = relation.tree[t].page;
+        if (page.tree_level) continue;
+        if (page.low_fence && pg::CompareNativeBtreeKeys(view(key), view(*page.low_fence)) < 0) continue;
+        if (page.high_fence && pg::CompareNativeBtreeKeys(view(key), view(*page.high_fence)) >= 0) continue;
+        reached = t;
+        break;
+      }
+      if (!reached) return refuse_row(E::invalid_catalog, i);
+      auto page = relation.tree[*reached].page;
+      const auto at = std::lower_bound(page.cells.begin(), page.cells.end(), key, [&](const auto& c, const auto& k) {
+        return pg::CompareNativeBtreeKeys(view(c.key), view(k)) < 0;
+      });
+      pg::NativeBtreeCell cell;
+      cell.key = key;
+      cell.base_page = relation.bases[*target];
+      page.cells.insert(at, std::move(cell));
+      const auto fits = pg::EncodeNativeBtreePage(page);
+      if (!fits.ok()) return refuse_row(fits.error == pg::NativeBtreeError::resource_exhausted ? E::index_full
+                                                                                              : E::invalid_catalog,
+                                        i);
+      relation.tree[*reached].page = std::move(page);
+      changed_tree.insert({want.role, *reached});
+    }
+
+    // ---- the images --------------------------------------------------------
+    // Pages are kept apart (each image lives until the plan executes).
+    struct Planned {
+      u64 page_number;
+      std::vector<byte> image;
+      const std::vector<byte>* as_read;
+    };
+    std::vector<Planned> leaf_writes, tree_writes;
+    for (const auto& [role, l] : changed_leaves) {
+      auto& leaf = relations.at(role).leaves[l];
+      auto encoded = EncodeNativeCatalogLeaf(leaf.page);
+      if (!encoded.ok()) {
+        result.error = encoded.error == NativeCatalogLeafError::resource_exhausted ? E::resource_exhausted
+                                                                                   : E::invalid_insert;
+        result.leaf_error = encoded.error;
+        return result;
+      }
+      leaf_writes.push_back({relations.at(role).bases[l].page_number, std::move(encoded.bytes), &leaf.image});
+    }
+    for (const auto& [role, t] : changed_tree) {
+      auto& page = relations.at(role).tree[t];
+      auto encoded = pg::EncodeNativeBtreePage(page.page);
+      if (!encoded.ok()) return Refuse(E::invalid_catalog);
+      tree_writes.push_back({page.ref.page_number, std::move(encoded.bytes), &page.image});
+    }
+
+    // ---- the writes: every base leaf before every index leaf ----------------
+    disk::CarefulWritePlan plan;
+    std::vector<disk::CarefulWriteNodeId> leaf_nodes;
+    for (const auto& w : leaf_writes) {
+      const auto node = plan.Add(w.page_number * u64{page_size}, std::span<const byte>(w.image),
+                                 std::span<const byte>(*w.as_read));
+      if (!node.ok()) return Refuse(E::plan_refused);
+      leaf_nodes.push_back(node.node);
+    }
+    for (const auto& w : tree_writes) {
+      const auto node = plan.Add(w.page_number * u64{page_size}, std::span<const byte>(w.image),
+                                 std::span<const byte>(*w.as_read));
+      if (!node.ok()) return Refuse(E::plan_refused);
+      for (const auto before : leaf_nodes)
+        if (plan.Before(before, node.node) != CarefulWriteError::none) return Refuse(E::plan_refused);
+    }
+    const auto r = plan.Execute(sink, binding.barrier_policy);
+    result.write_error = r.error;
+    result.io = r.io;
+    result.writes = r.written;
+    result.syncs = r.syncs;
+    if (!leaf_writes.empty()) result.page_number = leaf_writes.front().page_number;
     if (r.ok()) {
       result.error = E::none;
       return result;

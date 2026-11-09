@@ -10,6 +10,7 @@
 
 #include <cstdint>
 #include <optional>
+#include <vector>
 
 namespace scratchbird::storage::database {
 
@@ -50,9 +51,9 @@ namespace scratchbird::storage::database {
 // 1); a crash between that COMMIT and the rewrite then loses only the
 // invalidation, never leaves a committed row the security reader refuses.
 //
-// Not here: inserts (W3b, with their name rows); localized-name records,
-// whose envelope binds the page and slot placement chooses (W3b); waiting;
-// backing out dead versions (sweep).
+// Not here: inserts (WriteCatalogInsertVersions below, W3b-1a);
+// localized-name records, whose envelope binds the page and slot placement
+// chooses (W3b-1b); waiting; backing out dead versions (sweep).
 enum class CatalogVersionWriteError : std::uint8_t {
   none,
   invalid_request,         // malformed binding or request; nothing read
@@ -72,6 +73,10 @@ enum class CatalogVersionWriteError : std::uint8_t {
   root_regression,         // AdvanceCatalogRoot: generation not the next, or an epoch lowered
   name_record_unsupported,
   relation_full,           // no reached leaf has room
+  duplicate_row,           // insert: the row UUID or version UUID is already in the relation (or the batch)
+  duplicate_object,        // insert: a live row of the relation (or the batch) carries the object UUID
+  invalid_insert,          // insert: the metadata cannot be a first version by this transaction
+  index_full,              // insert: the index leaf the key reaches has no room (splits come with W3b-3)
   plan_refused,            // the careful-write plan refused before any write
   write_failed,            // a write or sync failed after one was attempted
   resource_exhausted,
@@ -127,12 +132,61 @@ struct CatalogVersionWriteResult {
   // A write or sync was attempted and failed: the file holds a prefix of the
   // planned writes.
   bool attempted = false;
+  // WriteCatalogInsertVersions: the request row a refusal concerns.
+  std::optional<std::size_t> failed_row;
   bool ok() const noexcept { return error == CatalogVersionWriteError::none; }
 };
 
 CatalogVersionWriteResult WriteCatalogSuccessorVersion(disk::CarefulWriteSink& sink,
                                                        const CatalogVersionWriterBinding& binding,
                                                        const CatalogVersionRequest& request) noexcept;
+
+// SEARCH_KEY: SB_CATALOG_INSERT_WRITER
+// In-place writes, step W3b-1a. A transaction inserts the first versions of
+// new catalog rows, in one or more relations, in place, through the same
+// CarefulWriteSink and the same read of each relation as
+// WriteCatalogSuccessorVersion (the transaction's state word decides
+// visibility; nothing is published).
+//
+// Placement: each row goes on the first base leaf the relation's head already
+// reaches that has room (an unindexed relation has exactly one, its head),
+// rows of one request accumulating on the pages they share. An indexed
+// relation's row also gets a cell in the index leaf whose key range holds its
+// key (the 16 bytes of the row UUID, then row and version UUIDs, as the create
+// keys them), at the key's position: with low-key separators an insert inside
+// a leaf's range changes only that leaf. No page is added: relation_full when
+// no reached base leaf has room, index_full when the index leaf the key reaches
+// has none (new leaves and splits come with W3b-3).
+//
+// Order (owner Q23 = 1, what is pointed to before what points to it): every
+// changed base leaf is written before every changed index leaf; each page is
+// one whole-page sealed write whose image as read is the plan's preimage.
+//
+// A row is a first version: definition_version 1, created by this
+// transaction, not deleted, not cluster-scoped, generations and epochs within
+// the catalog root's. Its row and version UUIDs are new to the relation and to
+// the request (duplicate_row); its object UUID is carried by no other row of
+// the relation whose creator has not rolled back or died, nor by another row
+// of the request (duplicate_object). A rolled-back insert leaves its row and
+// cell in place; readers return nothing for it, and sweep removes it.
+//
+// Not here: localized-name records (W3b-1b, their envelope binds the page and
+// slot placement chooses); the catalog-change audit event (W3b-2); new pages
+// (W3b-3).
+struct CatalogInsertRow {
+  core::platform::u16 role = 0;  // relation role 1..6 in the catalog root
+  core::platform::Uuid row_uuid;
+  core::platform::Uuid version_uuid;  // a UUIDv7 the caller issued
+  core::catalog::CatalogMetadataVersion metadata;
+};
+struct CatalogInsertRequest {
+  core::platform::u64 transaction_order = 0;
+  core::platform::Uuid transaction_uuid;
+  std::vector<CatalogInsertRow> rows;
+};
+CatalogVersionWriteResult WriteCatalogInsertVersions(disk::CarefulWriteSink& sink,
+                                                     const CatalogVersionWriterBinding& binding,
+                                                     const CatalogInsertRequest& request) noexcept;
 
 // SEARCH_KEY: SB_CATALOG_ROOT_ADVANCE (owner Q24 = 1, 2026-11-08). After a
 // transaction that changed the catalog has committed (its state word says
