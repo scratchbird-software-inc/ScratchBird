@@ -6583,6 +6583,17 @@ if(NOT WIN32 AND TARGET sb_server AND TARGET sb_listener AND TARGET sbp_sbsql)
               # to sync: sidecar opens 238 -> 235, 533 -> 527, 557 -> 551
               # (measured twice; with only that fix reverted the old counts
               # return exactly).
+              # 2026-11-09, known variance under load (owner Q39 = 1, kept
+              # exact, not loosened): with eight copies at once the 4-statement
+              # run counted 553 sidecar opens in 1 of 24 and 3 of 48 runs (alone
+              # 4 of 4 pass). Traced in one failing run against a passing one:
+              # the 2 extra are statement-thread reads of <db>.sb.txn_publish,
+              # refreshing the process-wide transaction-inventory cache after
+              # an agent's commit through that journal invalidated it (agents
+              # start, commit and end on their timers; their own opens are not
+              # counted). Owed to moving the transaction journal into the
+              # database file, which removes these reads; until then a failure
+              # with 4:2,553 is this, checked by its message.
               --expect "0:2,235;1:2,527;4:2,551"
               --expect-agent-file-opens 0
     )
