@@ -137,7 +137,10 @@ template<class Page> E ValidateCells(const Page& p){
   const bool branch=p.tree_level>0;const std::size_t quarter=p.header.page_size_bytes/4;
   for(const auto* fence:{&p.low_fence,&p.high_fence})if(*fence&&(*fence)->encoded_key.size()>quarter)return E::key_too_long;
   for(const auto& c:p.cells){
-    if(branch?(c.creator_local_transaction_id||!c.payload.empty()):(!c.creator_local_transaction_id||!c.base_page))return E::invalid_family;
+    if(branch?(c.creator_local_transaction_id||c.superseding_local_transaction_id||!c.payload.empty())
+             :(!c.creator_local_transaction_id||!c.base_page||
+               (c.superseding_local_transaction_id&&c.superseding_local_transaction_id<=c.creator_local_transaction_id)))
+      return E::invalid_family;
     if(c.key.encoded_key.size()+c.payload.size()>quarter)return E::key_too_long;
   }
   return E::none;
@@ -174,13 +177,14 @@ NativeBtreePageResult EncodeNativeBtreePage(const NativeBtreePage& p) noexcept {
       if(start+body.size()>size)return Fail(E::resource_exhausted);
       if(i%kNativeBtreeJumpInterval==0)jump_offsets.push_back(static_cast<u32>(start+body.size()));
       const auto& ref=branch?*c.child:*c.base_page;const bool compact=Compact(p,ref);
-      body.push_back(static_cast<byte>((c.deleted?1:0)|(compact?2:0)|(c.payload.empty()?0:4)));
+      body.push_back(static_cast<byte>((c.deleted?1:0)|(compact?2:0)|(c.payload.empty()?0:4)|(c.superseding_local_transaction_id?8:0)));
       const std::size_t shared=i%kNativeBtreeJumpInterval?SharedPrefix(p.cells[i-1].key.encoded_key,c.key.encoded_key):0;
       PutVarint(body,shared);PutVarint(body,c.key.encoded_key.size()-shared);
       body.insert(body.end(),c.key.encoded_key.begin()+static_cast<std::ptrdiff_t>(shared),c.key.encoded_key.end());
       if(!row_is_key)put_uuid(c.key.row_uuid);
       put_uuid(c.key.version_uuid);
       if(!branch)PutVarint(body,c.creator_local_transaction_id);
+      if(c.superseding_local_transaction_id)PutVarint(body,c.superseding_local_transaction_id);
       if(compact){put64(ref.page_number);put64(ref.page_generation);}
       else{put_uuid(ref.filespace_uuid);put64(ref.page_number);put64(ref.page_generation);put_uuid(ref.page_size_profile_uuid);}
       if(!c.payload.empty()){PutVarint(body,c.payload.size());body.insert(body.end(),c.payload.begin(),c.payload.end());}
@@ -263,7 +267,7 @@ auto DecodeBtree(std::span<const byte> b,NativeBtreeViewWorkspace workspace) noe
       if(i%kNativeBtreeJumpInterval==0&&LoadLittle32(b.data()+jump_table+4*(i/kNativeBtreeJumpInterval))!=at)return fail(E::invalid_family);
       if(at>=used)return fail(E::invalid_family);
       const byte flags=b[at++];
-      if(flags&~byte{7}||(branch&&(flags&5)))return fail(E::invalid_family);
+      if(flags&~byte{15}||(branch&&(flags&13)))return fail(E::invalid_family);
       const auto shared=GetVarint(b,at,used),suffix=shared?GetVarint(b,at,used):std::nullopt;
       if(!shared||!suffix||*suffix>used-at)return fail(E::invalid_family);
       const std::size_t prior_size=i?previous.size():0;
@@ -293,6 +297,8 @@ auto DecodeBtree(std::span<const byte> b,NativeBtreeViewWorkspace workspace) noe
       }else{c.key.row_uuid=Get(b.data()+at);at+=16;}
       c.key.version_uuid=Get(b.data()+at);at+=16;
       if(!branch){const auto creator=GetVarint(b,at,used);if(!creator||!*creator)return fail(E::invalid_family);c.creator_local_transaction_id=*creator;}
+      if(flags&8){const auto superseding=GetVarint(b,at,used);
+        if(!superseding||*superseding<=c.creator_local_transaction_id)return fail(E::invalid_family);c.superseding_local_transaction_id=*superseding;}
       disk::NativePageReference ref;
       if(flags&2){if(16>used-at)return fail(E::invalid_family);
         ref={p.header.filespace_uuid,LoadLittle64(b.data()+at),LoadLittle64(b.data()+at+8),p.header.page_size_profile_uuid};at+=16;}

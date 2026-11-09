@@ -42,6 +42,7 @@ add_library(sb_core_catalog_dispatcher_objects OBJECT
   catalog_metric_series.cpp
   catalog_metric_visibility_policy.cpp
   catalog_naming_collision_policy.cpp
+  catalog_name_tree_keys.cpp
   catalog_naming_dialect_profile.cpp
   catalog_native_catalog_index.cpp
   catalog_builtin_type_domain.cpp

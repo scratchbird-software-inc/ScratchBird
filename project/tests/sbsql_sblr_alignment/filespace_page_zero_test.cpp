@@ -312,6 +312,9 @@ void Invalid(const disk::FilespacePageZero& v,Error expected) {
 void Codecs() {
   for(unsigned k=0;k<root_types.size();++k) Check(disk::CanonicalPageZeroRootPageType(static_cast<disk::u16>(k))==root_types[k],"exact root symbol mapping");
   Check(disk::CanonicalPageZeroRootPageType(65535)==0,"unknown root kind");
+  // SB_NATIVE_NAME_TREES: the name trees' roots, B-tree root pages (0x200).
+  Check(disk::CanonicalPageZeroRootPageType(22)==0x200&&disk::CanonicalPageZeroRootPageType(23)==0x200&&
+      disk::CanonicalPageZeroRootPageType(24)==0,"name tree root kinds 22 and 23, nothing at 24");
   for(unsigned p=0;p<5;++p) for(unsigned role=1;role<=14;++role)
     for(unsigned state=1;state<=15;++state) for(unsigned flags=0;flags<4;++flags) {
       const auto v=Example(p,role,state,flags); const auto b=Oracle(v);

@@ -50,6 +50,18 @@ template<class Key> struct BasicNativeBtreeCell {
   // row; the reader that loads the base row checks it) and its included
   // (covering) payload. Branch cells carry neither.
   u64 creator_local_transaction_id = 0;
+  // SEARCH_KEY: SB_NATIVE_BTREE_SUPERSEDING (owner Q42 = 1, 2026-11-09). The
+  // local transaction that wrote this version's successor (a rename or drop),
+  // stamped into the old version's cells in the same careful-write plan as the
+  // successor; 0 when none. Always above the creator (the successor's
+  // transaction began after this version's creator committed). A reader decides
+  // from the index which version its snapshot sees: the creator's state shows
+  // when the version began, this one's when it ended; a rolled-back successor's
+  // state hides its stamp, as MGA's back versions do. Leaf cells only. The
+  // row-UUID trees are never stamped (they index a row's first version only and
+  // successors do not touch them), so an index-only answer from them is not
+  // complete for a row with later versions.
+  u64 superseding_local_transaction_id = 0;
   typename Key::Bytes payload{};
 };
 using NativeBtreeCell = BasicNativeBtreeCell<NativeBtreeKey>;
@@ -158,8 +170,9 @@ struct NativeBtreeTreeResult {
 //     offsets, so a search can start near its key (FirebirdSQL keeps the key
 //     in a separate jump node instead; same purpose, slightly less
 //     compression at each restart cell);
-//   - a leaf cell carries its version's creating local transaction number and
-//     an optional included payload (covering trees, owner Q38 = 1);
+//   - a leaf cell carries its version's creating local transaction number, an
+//     optional superseding one (owner Q42 = 1) and an optional included payload
+//     (covering trees, owner Q38 = 1);
 //   - a reference to a page in this page's filespace and profile is a fixed
 //     page number and generation (16 bytes); others are a full PageRefV2;
 //   - when every cell's key is its own 16-byte row UUID (the raw16 row trees)

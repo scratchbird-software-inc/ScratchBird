@@ -36,6 +36,7 @@ struct Knobs {
   bool full_references = false;    // every reference written in full
   bool rows_always = false;        // row UUIDs stored and the flag clear even when they are the keys
   int empty_payload_flag_at = -1;  // cell i's payload flag set with length 0
+  int zero_superseding_at = -1;    // cell i's superseding flag set with the number 0
 };
 inline void Le(Bytes& b, std::size_t at, u64 v, unsigned n) {
   for (unsigned i = 0; i < n; ++i) b[at + i] = static_cast<byte>(v >> (8 * i));
@@ -105,7 +106,8 @@ template <class Page> Bytes Pack(const Page& r, const Knobs& k = {}) {
     const bool compact = !k.full_references && ref.filespace_uuid == r.header.filespace_uuid &&
                          ref.page_size_profile_uuid == r.header.page_size_profile_uuid;
     const bool payload_flag = !c.payload.empty() || int(i) == k.empty_payload_flag_at;
-    body.push_back(static_cast<byte>((c.deleted ? 1 : 0) | (compact ? 2 : 0) | (payload_flag ? 4 : 0)));
+    const bool superseding_flag = c.superseding_local_transaction_id || int(i) == k.zero_superseding_at;
+    body.push_back(static_cast<byte>((c.deleted ? 1 : 0) | (compact ? 2 : 0) | (payload_flag ? 4 : 0) | (superseding_flag ? 8 : 0)));
     std::size_t shared = 0;
     if (i % 16) {
       const auto& prev = r.cells[i - 1].key.encoded_key;
@@ -124,6 +126,7 @@ template <class Page> Bytes Pack(const Page& r, const Knobs& k = {}) {
     if (!row_is_key) Raw(body, c.key.row_uuid);
     Raw(body, c.key.version_uuid);
     if (!branch) Leb(body, c.creator_local_transaction_id);
+    if (superseding_flag) Leb(body, c.superseding_local_transaction_id);
     if (compact) {
       Raw64(body, ref.page_number);
       Raw64(body, ref.page_generation);

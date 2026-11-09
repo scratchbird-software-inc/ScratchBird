@@ -1464,6 +1464,14 @@ endif()
       LABELS "sbsql_sblr_alignment;native_storage;catalog;careful_write;fault_injection"
       TIMEOUT 1800)
   endforeach()
+  # SB_NATIVE_NAME_TREES: the keys and payloads of the native name trees
+  # (owner Q34, Q35 = 2, Q38), against an independent oracle.
+  add_executable(sbsql_sblr_alignment_native_name_tree_keys native_name_tree_keys_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_native_name_tree_keys PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_native_name_tree_keys PRIVATE sb_storage_database)
+  add_test(NAME sbsql_sblr_alignment_native_name_tree_keys COMMAND sbsql_sblr_alignment_native_name_tree_keys)
+  set_tests_properties(sbsql_sblr_alignment_native_name_tree_keys PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;names;btree" TIMEOUT 300)
   # SB_NATIVE_BTREE_COMPRESSED_PAGE: SBBTP002, the prefix-compressed catalog
   # B-tree page (owner Q37 = 1, Q38 = 1, Q40), against an independent oracle.
   add_executable(sbsql_sblr_alignment_native_btree_page_v2 native_btree_page_v2_test.cpp)

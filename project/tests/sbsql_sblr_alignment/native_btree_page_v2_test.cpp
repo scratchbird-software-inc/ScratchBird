@@ -7,6 +7,8 @@
 // here (its own LEB128, shared-prefix and layout rules and OpenSSL SHA-256; the
 // production codec only supplies the 128-byte common header, another format),
 // at every canonical page size:
+//   - superseding numbers (owner Q42 = 1) on some leaf cells; one of zero or not
+//     above the creator, or on a branch cell, is refused;
 //   - root, branch and leaf pages; keys that are their own row UUIDs (the row
 //     UUID then not stored twice) and composite keys; more cells than one jump
 //     interval (restart cells and the jump table); deleted cells; references
@@ -128,6 +130,7 @@ pg::NativeBtreePage RowLeaf(unsigned p) {
     c.deleted = i % 7 == 3;
     c.base_page = i % 5 == 4 ? Elsewhere(p, 50 + i) : Here(p, 30 + i % 3);
     c.creator_local_transaction_id = i % 3 == 0 ? 1 : i % 3 == 1 ? 300 : 70000 + i;
+    if (i % 4 == 2) c.superseding_local_transaction_id = c.creator_local_transaction_id + 1 + 200 * i;  // Q42 stamps
     r.cells.push_back(c);
   }
   return r;
@@ -224,7 +227,8 @@ void Accepts(const pg::NativeBtreePage& page, const std::string& label) {
     const auto& a = page.cells[i];
     const auto& b = got.cells[i];
     Check(SameKey(a.key, b.key) && a.deleted == b.deleted && a.child == b.child && a.base_page == b.base_page &&
-              a.creator_local_transaction_id == b.creator_local_transaction_id && a.payload == b.payload,
+              a.creator_local_transaction_id == b.creator_local_transaction_id &&
+              a.superseding_local_transaction_id == b.superseding_local_transaction_id && a.payload == b.payload,
           label + ": every decoded cell equals the page's");
   }
   const auto again = pg::EncodeNativeBtreePage(got);
@@ -242,6 +246,7 @@ void Accepts(const pg::NativeBtreePage& page, const std::string& label) {
     const auto& v = view.page->cells[i];
     Check(SameKey(page.cells[i].key, v.key) && SameBytes(page.cells[i].payload, v.payload) &&
               v.creator_local_transaction_id == page.cells[i].creator_local_transaction_id &&
+              v.superseding_local_transaction_id == page.cells[i].superseding_local_transaction_id &&
               v.base_page == page.cells[i].base_page && v.child == page.cells[i].child,
           label + ": every borrowed cell equals the page's");
     Check(in(v.key.encoded_key, w.keys) && in(v.payload, bytes), label + ": keys rebuilt in the workspace, payloads borrowed");
@@ -299,6 +304,16 @@ void Malformed(unsigned p) {
   Refuses(Pack(rows, {.full_references = true}), E::invalid_family, "a full reference that could be compact");
   Refuses(Pack(rows, {.rows_always = true}), E::invalid_family, "row UUIDs stored when they are the keys");
   Refuses(Pack(leaf, {.empty_payload_flag_at = 1}), E::invalid_family, "a payload flag with an empty payload");
+  Refuses(Pack(leaf, {.zero_superseding_at = 1}), E::invalid_family, "a superseding flag with the number 0");
+  {
+    auto r = rows;
+    r.cells[2].superseding_local_transaction_id = r.cells[2].creator_local_transaction_id;
+    Refuses(Pack(r), E::invalid_family, "a superseding number not above the creator");
+    Check(pg::EncodeNativeBtreePage(r).error == E::invalid_family, "the encoder refuses it too");
+    const auto branch = Pack(Branch(p));
+    const auto at = Get(branch, Get(branch, 504, 4), 4);
+    Refuses(Resealed(branch, at, Get(branch, at, 1) | 8, 1), E::invalid_family, "a branch cell with a superseding flag");
+  }
   {
     // A restart cell (cell 16) that shares bytes.
     const auto& bytes = row_bytes;
