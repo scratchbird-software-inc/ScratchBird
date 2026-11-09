@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "native_filespace_initialization.hpp"
+#include "allocation_map_inplace_page.hpp"
 #include "disk_device.hpp"
 #include "hash_digest.hpp"
 #include "uuid.hpp"
@@ -23,14 +24,6 @@ NativeFilespaceInitializationResult Fail(E error) {
 }
 
 bool V7(const Uuid& id) { return core::uuid::IsEngineIdentityUuid(id); }
-
-// Reserve space for a record for every covered page, not only today's control
-// pages. All admitted profiles are large enough for positive coverage.
-u64 Coverage(u64 size) {
-  u64 count = (size - 384) / 128;
-  while (((384 + (count + 1) / 2 + 7) & ~u64{7}) + 128 * count > size) --count;
-  return count;
-}
 }  // namespace
 
 NativeFilespaceInitializationResult InitializeNativeFilespaceOnOpenDevice(
@@ -56,8 +49,12 @@ NativeFilespaceInitializationResult InitializeNativeFilespaceOnOpenDevice(
     if (!existing.ok()) return Fail(E::io_failure);
     if (existing.size_bytes) return Fail(E::device_not_empty);
 
-    const u64 size = b.page_size_bytes, coverage = Coverage(size), total = request.total_pages;
-    if (!total || total > std::numeric_limits<u64>::max() / size ||
+    // W4d-3b (owner Q28 = 1, 2026-11-08): the maps are the in-place family
+    // (SB_ALLOCATION_MAP_IN_PLACE), written exactly as the native create
+    // writes them: one slot, with room for a record, per covered page.
+    const u64 size = b.page_size_bytes, total = request.total_pages;
+    const u64 coverage = page::AllocationMapInplaceSlotsPerPage(static_cast<u32>(size));
+    if (!coverage || !total || total > std::numeric_limits<u64>::max() / size ||
         !disk::CheckFileDeviceExtent(total * size, 0).ok())
       return Fail(E::invalid_capacity);
     const u64 count = total / coverage + (total % coverage != 0);
@@ -66,7 +63,7 @@ NativeFilespaceInitializationResult InitializeNativeFilespaceOnOpenDevice(
         count > std::numeric_limits<std::size_t>::max() - 1)
       return Fail(E::resource_exhausted);
 
-    // Resolve every identity and seal every metadata image before any write.
+    // Resolve every identity and encode every metadata image before any write.
     std::set<Uuid> ids{b.database_uuid, b.filespace_uuid, b.page_size_profile_uuid,
                       b.checksum_profile_uuid, request.operation_uuid, request.writer_uuid,
                       request.creator.transaction_uuid.value, request.policy_snapshot_uuid};
@@ -107,49 +104,48 @@ NativeFilespaceInitializationResult InitializeNativeFilespaceOnOpenDevice(
     auto zero_image = disk::EncodeFilespacePageZero(zero);
     if (!zero_image.ok()) return Fail(E::encoding_failure);
 
+    // Map page i covers pages i * coverage onward and links the next map page
+    // by number and generation (no digest: the family is edited in place).
     std::vector<std::vector<byte>> images(count);
-    std::array<byte, 32> successor_hash{};
-    for (u64 i = count; i-- > 0;) {
-      page::NativeAllocationMap map;
-      map.header = {b.page_size_bytes, 3, b.database_uuid, b.filespace_uuid,
-                    pages[i], i + 1, 1, 0, b.page_size_profile_uuid};
-      map.object_uuid = *map_id;
-      map.map_generation = map.capacity_generation = 1;
-      map.total_pages = total;
-      map.first_page = i * coverage;
-      map.creator_transaction_uuid = request.creator.transaction_uuid.value;
-      map.creator_local_transaction_id = request.creator.local_id.value;
-      const auto covered = std::min(coverage, total - map.first_page);
-      map.states.assign(covered, S::free);
-      const auto end = std::min(map.first_page + covered, count + 1);
-      for (u64 n = map.first_page; n < end; ++n) {
-        map.states[n - map.first_page] = S::allocated;
-        map.records.push_back(
+    for (u64 i = 0; i < count; ++i) {
+      page::AllocationMapInplaceFormat f;
+      f.header = {b.page_size_bytes, 3, b.database_uuid, b.filespace_uuid,
+                  pages[i], i + 1, 1, 0, b.page_size_profile_uuid};
+      f.object_uuid = *map_id;
+      f.sequence = i;
+      f.first_page = i * coverage;
+      f.slots = static_cast<u32>(std::min(coverage, total - f.first_page));
+      f.total_pages = total;
+      f.creator_transaction_uuid = request.creator.transaction_uuid.value;
+      f.creator_local_transaction_id = request.creator.local_id.value;
+      if (i + 1 < count) {
+        f.next_page = i + 2;
+        f.next_generation = 1;
+      }
+      std::vector<S> states(f.slots, S::free);
+      std::vector<page::NativeAllocationRecord> records;
+      const auto end = std::min(f.first_page + f.slots, count + 1);
+      for (u64 n = f.first_page; n < end; ++n) {
+        states[n - f.first_page] = S::allocated;
+        records.push_back(
             {n, allocations[n], n ? pages[n - 1] : *zero_id, n ? *map_id : b.filespace_uuid,
              request.creator.transaction_uuid.value, request.creator.local_id.value,
              1, 0, n ? 3u : (b.filespace_role <= 4 ? 1u : 2u)});
       }
-      if (i + 1 < count) {
-        map.next = disk::NativePageReference{b.filespace_uuid, i + 2, 1, b.page_size_profile_uuid};
-        map.next_sha256 = successor_hash;
-      }
-      auto encoded = page::EncodeNativeAllocationMap(map);
-      if (!encoded.ok()) {
+      images[i].resize(size);
+      const auto encoded = page::EncodeAllocationMapInplacePage(f, states, records, images[i]);
+      if (encoded != page::NativeAllocationError::none) {
         auto result = Fail(E::encoding_failure);
-        result.allocation_error = encoded.error;
+        result.allocation_error = encoded;
         return result;
       }
-      const auto digest = core::hash::ComputeSha256Digest(encoded.bytes);
-      if (!digest.ok()) return Fail(E::hash_failure);
-      successor_hash = digest.digest;
-      images[i] = std::move(encoded.bytes);
     }
     const auto zero_hash = core::hash::ComputeSha256Digest(*zero_image.bytes);
     if (!zero_hash.ok()) return Fail(E::hash_failure);
     const NativeFilespaceInitializationReceipt receipt{
         b.database_uuid, b.filespace_uuid, *zero_id, *map_id,
         request.operation_uuid, request.writer_uuid, request.creator, zero.roots.front(),
-        zero_hash.digest, successor_hash, total, zero.free_pages, count};
+        zero_hash.digest, total, zero.free_pages, count};
 
     // No truncate/retry of nonempty bytes. A failed physical attempt belongs
     // to creation recovery; this primitive cannot certify activation.

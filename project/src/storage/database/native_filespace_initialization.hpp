@@ -48,7 +48,9 @@ struct NativeFilespaceInitializationReceipt {
   core::platform::Uuid operation_uuid,writer_uuid;
   transaction::mga::TransactionIdentity creator;
   disk::FilespaceRootReference allocation_root;
-  std::array<core::platform::byte,32> page_zero_sha256{},allocation_head_sha256{};
+  // W4d-3b: no allocation-head digest. The maps are the in-place family,
+  // edited in place by careful write, so no digest can bind one.
+  std::array<core::platform::byte,32> page_zero_sha256{};
   core::platform::u64 total_pages=0,free_pages=0,map_pages=0;
 };
 struct NativeFilespaceInitializationResult {
@@ -58,7 +60,10 @@ struct NativeFilespaceInitializationResult {
   bool ok() const noexcept {return error==NativeFilespaceInitializationError::none&&receipt.has_value();}
 };
 // Creates real non-serving bootstrap/allocation storage on an empty owned
-// device. No node activation, selected inventory, allocation grant or SQL success.
+// device: page zero (initializing, one allocation root) and the in-place
+// allocation maps (owner Q28 = 1, 2026-11-08: the same family the native create
+// writes; the seed of "add filespace"). No node activation, selected
+// inventory, allocation grant or SQL success.
 NativeFilespaceInitializationResult InitializeNativeFilespaceOnOpenDevice(
     disk::FileDevice&,const NativeFilespaceInitializationRequest&,
     core::platform::u64 maximum_retained_image_bytes,

@@ -2355,31 +2355,37 @@ namespace mga=scratchbird::transaction::mga;
 // a fresh process reading it in runtime_authority_binding_native_gate.
 
 
-Bytes AllocationOracle(const page::NativeAllocationMap& map) {
+// W4d-3b (owner Q28 = 1, 2026-11-08): the stand-alone initializer writes the
+// in-place allocation map family (SBAMIP01), as the native create does; the
+// sealed family's oracle and digest links went with its writer.
+// Independent of the codec: slots per map page, the largest N with
+// roundup128(512 + ceil(N / 2)) + 128 N <= P (allocation_map_inplace_page.hpp).
+u64 InitializationCoverage(unsigned p){
+  const u64 size=sizes[p];u64 best=0;
+  for(u64 n=1;n<size;++n){const u64 at=(512+(n+1)/2+127)/128*128;if(at+128*n<=size)best=n;}
+  return best;
+}
+// Independent framing of one in-place map page from the documented layout:
+// family header at 128, the next link at 256, 4-bit states at 512, then one
+// 128-byte record per slot from the next 128-byte boundary; free slots zero.
+Bytes InplaceAllocationOracle(const page::NativeAllocationMap& map,u64 sequence){
   auto common=RootExample();common.header=map.header;
   auto b=RootOracle(common);std::fill(b.begin()+128,b.end(),0);
-  unsigned version=map.creator_operation_uuid.is_nil()?1:2;
-  for(const auto& r:map.records)if(!r.creator_operation_uuid.is_nil())version=2;
-  std::copy_n(version==1?"SBABM001":"SBABM002",8,b.begin()+128);Number(b,136,2,version);Number(b,138,2,256);
-  const auto bitmap=(map.states.size()+1)/2,at=(384+bitmap+7)&~std::size_t(7);
-  Number(b,140,4,at+128*map.records.size());PutUuid(b,144,map.object_uuid);
-  Number(b,160,8,map.map_generation);Number(b,168,8,map.capacity_generation);
-  Number(b,176,8,map.total_pages);Number(b,184,8,map.first_page);Number(b,192,8,map.states.size());
-  PutUuid(b,200,map.creator_transaction_uuid);Number(b,216,8,map.creator_local_transaction_id);
-  if(map.next){PutUuid(b,224,map.next->filespace_uuid);Number(b,240,8,map.next->page_number);
-    Number(b,248,8,map.next->page_generation);PutUuid(b,256,map.next->page_size_profile_uuid);}
-  std::copy(map.next_sha256.begin(),map.next_sha256.end(),b.begin()+272);
-  Number(b,304,4,bitmap);Number(b,308,4,map.records.size());
-  PutUuid(b,344,map.creator_operation_uuid);
-  for(std::size_t i=0;i<map.states.size();++i)b[384+i/2]|=static_cast<byte>(map.states[i])<<(4*(i%2));
-  for(std::size_t i=0;i<map.records.size();++i){const auto& r=map.records[i];const auto pos=at+128*i;
+  const u64 slots=map.states.size(),records=(512+(slots+1)/2+127)/128*128;
+  std::copy_n("SBAMIP01",8,b.begin()+128);Number(b,136,2,1);Number(b,138,2,128);
+  Number(b,140,4,slots);Number(b,144,4,records);PutUuid(b,152,map.object_uuid);
+  Number(b,168,8,sequence);Number(b,176,8,map.first_page);Number(b,184,8,map.total_pages);
+  PutUuid(b,192,map.creator_transaction_uuid);Number(b,208,8,map.creator_local_transaction_id);
+  PutUuid(b,216,map.creator_operation_uuid);
+  if(map.next){Number(b,256,8,map.next->page_number);Number(b,264,8,map.next->page_generation);}
+  for(std::size_t i=0;i<slots;++i)b[512+i/2]|=static_cast<byte>(map.states[i])<<(4*(i%2));
+  for(const auto& r:map.records){const auto pos=records+128*(r.page_number-map.first_page);
     Number(b,pos,8,r.page_number);PutUuid(b,pos+8,r.allocation_uuid);PutUuid(b,pos+24,r.page_uuid);
     PutUuid(b,pos+40,r.owner_uuid);PutUuid(b,pos+56,r.creator_transaction_uuid);
     Number(b,pos+72,8,r.creator_local_transaction_id);Number(b,pos+80,8,r.page_generation);
     Number(b,pos+88,8,r.reuse_horizon);Number(b,pos+96,4,r.page_type);PutUuid(b,pos+100,r.creator_operation_uuid);}
-  Check(SHA256(b.data(),b.size(),b.data()+312)!=nullptr,"independent allocation image seal");return b;
+  return b;
 }
-constexpr std::array<u64,5> initialization_coverage{{60,124,252,507,1017}};
 db::NativeFilespaceInitializationRequest InitializationRequest(unsigned p=0,unsigned role=1,u64 total=5,unsigned flags=0){
   db::NativeFilespaceInitializationRequest r;r.bootstrap=Example(p,role,7,flags).bootstrap;
   r.operation_uuid=Id(5);r.writer_uuid=Id(6);r.policy_snapshot_uuid=Id(10);r.creator={{1},{scratchbird::core::platform::UuidKind::transaction,Id(90)},mga::TransactionScope::local_node};
@@ -2387,7 +2393,7 @@ db::NativeFilespaceInitializationRequest InitializationRequest(unsigned p=0,unsi
 }
 void VerifyInitializedFilespace(disk::FileDevice& device,const db::NativeFilespaceInitializationRequest& request,
     unsigned p,const db::NativeFilespaceInitializationReceipt* receipt=nullptr){
-  const u64 size=sizes[p],coverage=initialization_coverage[p];const auto total=request.total_pages;
+  const u64 size=sizes[p],coverage=InitializationCoverage(p);const auto total=request.total_pages;
   const u64 count=(total+coverage-1)/coverage,budget=(count+2)*size;
   const auto z=disk::ReadFilespacePageZeroFromOpenDevice(device);Check(z.ok(),"actual initialized page zero");
   const auto& zero=*z.record;const auto& b=request.bootstrap;
@@ -2412,10 +2418,11 @@ void VerifyInitializedFilespace(disk::FileDevice& device,const db::NativeFilespa
     Check(h.page_size_bytes==size&&h.page_type==3&&h.database_uuid==b.database_uuid&&h.filespace_uuid==b.filespace_uuid&&h.page_number==i+1&&
       h.page_generation==1&&h.flags==0&&h.page_size_profile_uuid==b.page_size_profile_uuid&&map.object_uuid==root.object_uuid&&map.map_generation==1&&
       map.capacity_generation==1&&map.total_pages==total&&map.first_page==first&&map.states.size()==covered&&map.creator_transaction_uuid==request.creator.transaction_uuid.value&&
-      map.creator_local_transaction_id==request.creator.local_id.value,"exact initialized map identity, creator and independently specified coverage");
+      map.creator_local_transaction_id==request.creator.local_id.value&&map.next_sha256==std::array<byte,32>{},
+      "exact initialized map identity, creator, independently specified coverage, generations 1 and no digest link");
     Check(map.next.has_value()==(i+1<count),"complete map chain terminality");
     if(map.next){const auto& next=*map.next;Check(next.filespace_uuid==b.filespace_uuid&&next.page_number==i+2&&next.page_generation==1&&
-      next.page_size_profile_uuid==b.page_size_profile_uuid&&map.next_sha256==WholeRootHash(chain.pages[i+1].bytes),"exact actual map successor reference and whole-image hash");}
+      next.page_size_profile_uuid==b.page_size_profile_uuid,"exact actual map successor reference, by page number and generation");}
     else Check(map.next_sha256==std::array<byte,32>{},"terminal map has no hidden link digest");
     std::size_t records=0;for(u64 n=first;n<first+covered;++n){Check(map.states[n-first]==(n<=count?page::NativeAllocationState::allocated:page::NativeAllocationState::free),"only actual control pages allocated");
       if(n>count)continue;Check(records<map.records.size(),"every control page has allocation identity");const auto& r=map.records[records++];fresh(r.allocation_uuid);
@@ -2423,7 +2430,7 @@ void VerifyInitializedFilespace(disk::FileDevice& device,const db::NativeFilespa
         r.creator_transaction_uuid==request.creator.transaction_uuid.value&&r.creator_local_transaction_id==request.creator.local_id.value&&r.page_generation==1&&
         r.reuse_horizon==0&&r.page_type==(n?3u:b.filespace_role<=4?1u:2u),"exact physical control-page allocation and pending creation lineage");}
     Check(records==map.records.size(),"free pages carry no fabricated allocations");
-    Check(device.ReadAt((i+1)*size,actual.data(),actual.size()).ok()&&actual==AllocationOracle(map)&&actual==chain.pages[i].bytes,"independent complete initialized map image");
+    Check(device.ReadAt((i+1)*size,actual.data(),actual.size()).ok()&&actual==InplaceAllocationOracle(map,i)&&actual==chain.pages[i].bytes,"independent complete initialized map image");
   }
   for(u64 n=count+1;n<total;++n)Check(device.ReadAt(n*size,actual.data(),actual.size()).ok()&&std::all_of(actual.begin(),actual.end(),[](byte v){return !v;}),"every actual free physical page is zero");
   if(receipt)Check(receipt->database_uuid==b.database_uuid&&receipt->filespace_uuid==b.filespace_uuid&&receipt->page_zero_uuid==zero.page_uuid&&
@@ -2432,14 +2439,20 @@ void VerifyInitializedFilespace(disk::FileDevice& device,const db::NativeFilespa
     receipt->creator.scope==request.creator.scope&&receipt->allocation_root.kind==3&&receipt->allocation_root.page_type==3&&
     receipt->allocation_root.filespace_uuid==b.filespace_uuid&&receipt->allocation_root.page_number==1&&receipt->allocation_root.page_generation==1&&
     receipt->allocation_root.page_size_profile_uuid==b.page_size_profile_uuid&&receipt->allocation_root.object_uuid==root.object_uuid&&
-    receipt->page_zero_sha256==WholeRootHash(Oracle(zero))&&receipt->allocation_head_sha256==WholeRootHash(chain.pages.front().bytes)&&
+    receipt->page_zero_sha256==WholeRootHash(Oracle(zero))&&
     receipt->total_pages==total&&receipt->free_pages==total-count-1&&receipt->map_pages==count,"receipt derives from actual complete initialized storage");
 }
+// The receipt names no allocation-head digest: an in-place map is edited in
+// place, so no digest can bind it.
+static_assert(![]<class R>() { return requires(const R& r) { r.allocation_head_sha256; }; }
+    .template operator()<db::NativeFilespaceInitializationReceipt>(),
+    "an initialization receipt carries no allocation-head digest");
 void CanonicalFilespaceInitialization(){using E=db::NativeFilespaceInitializationError;
   for(unsigned p=0;p<5;++p)for(unsigned role=1;role<=15;++role){Fixture fixture;disk::FileDevice device;
-    const auto path=(fixture.root/"initializing").string();auto request=InitializationRequest(p,role==15?1:role,role==1?initialization_coverage[p]+1:5,role==15?1:0);
+    const auto path=(fixture.root/"initializing").string();auto request=InitializationRequest(p,role==15?1:role,role==1?InitializationCoverage(p)+1:5,role==15?1:0);
     auto issuer=std::make_unique<scratchbird::core::uuid::StandaloneUuidV7Issuer>(scratchbird::core::uuid::StandaloneUuidV7Binding{request.bootstrap.database_uuid,request.policy_snapshot_uuid},scratchbird::core::uuid::StandaloneUuidV7Policy{{},0,1000});
-    const u64 count=(request.total_pages+initialization_coverage[p]-1)/initialization_coverage[p],budget=(count+2)*sizes[p];
+    const u64 count=(request.total_pages+InitializationCoverage(p)-1)/InitializationCoverage(p),budget=(count+2)*sizes[p];
+    if(role==1)Check(count==2&&request.total_pages-InitializationCoverage(p)==1,"the two-map boundary: the second map covers exactly one page");
     Check(device.Open(path,disk::FileOpenMode::create_new).ok(),"exclusively own empty initialization device");
     auto result=db::InitializeNativeFilespaceOnOpenDevice(device,request,budget-1,*issuer);
     Check(!result.ok()&&!result.receipt&&result.error==E::resource_exhausted&&device.Size().size_bytes==0,"one-byte image-budget deficit cannot write");
@@ -2514,12 +2527,18 @@ void CanonicalFilespaceInitialization(){using E=db::NativeFilespaceInitializatio
   const bool was_blocked=!second_finished.load();resume_tree_read=true;a.join();b.join();
   Check(was_blocked&&first.ok()&&!second.ok()&&!second.receipt&&second.error==E::device_not_empty,"retained guard excludes concurrent initialization through final readback");VerifyInitializedFilespace(device,request,0,&*first.receipt);
   reset();request.total_pages=2;result=initialize();Check(result.ok()&&result.receipt->free_pages==0,"minimum complete physical capacity initializes without free pages");VerifyInitializedFilespace(device,request,0,&*result.receipt);
-  request.total_pages=initialization_coverage[0]+1;
-  for(unsigned fault:{1u,61u,62u,63u,64u}){reset();stage_write_fault=3;stage_write_fault_after=fault;
+  request.total_pages=InitializationCoverage(0)+1;
+  // Writes: every page zeroed (1..total), then the two maps, then page zero.
+  const auto pages=static_cast<unsigned>(request.total_pages);
+  for(unsigned fault:{1u,pages,pages+1,pages+2,pages+3}){reset();stage_write_fault=3;stage_write_fault_after=fault;
     result=db::InitializeNativeFilespaceOnOpenDevice(device,request,4*sizes[0],*issuer);empty(result);
     Check(!stage_write_fault&&!stage_write_fault_after,"multi-map zeroing, first and second map, and final page-zero write faults consumed");preserved();}
-  reset();request.total_pages=initialization_coverage[0]*initialization_coverage[0]+1;
-  result=db::InitializeNativeFilespaceOnOpenDevice(device,request,63*sizes[0],*issuer);Check(result.ok()&&result.receipt->map_pages==61,"control pages can span allocation coverage ranges");VerifyInitializedFilespace(device,request,0,&*result.receipt);
+  // coverage^2 + 1 pages need coverage + 1 maps, so the control pages (page
+  // zero and the maps) outrun the first map's coverage.
+  reset();request.total_pages=InitializationCoverage(0)*InitializationCoverage(0)+1;
+  result=db::InitializeNativeFilespaceOnOpenDevice(device,request,63*sizes[0],*issuer);
+  Check(result.ok()&&result.receipt->map_pages==InitializationCoverage(0)+1&&result.receipt->map_pages+1>InitializationCoverage(0),
+    "control pages can span allocation coverage ranges");VerifyInitializedFilespace(device,request,0,&*result.receipt);
 }
 
 
