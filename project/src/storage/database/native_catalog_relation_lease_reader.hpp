@@ -65,10 +65,27 @@ inline usize NativeCatalogScanBasePages(usize page_size) noexcept {
 inline NativeBtreeTreeMemoryLimits NativeCatalogScanNavigationLimits(usize page_size) noexcept {
   return NativeCatalogNavigationLimitsFor(page_size,kNativeCatalogScanRelationMaximumRows);
 }
+// SB_NATIVE_NAME_TREES: the pages one name tree can need for a names relation
+// of `rows` rows, as the create packs it (NativeCreationNameTreeLayout, three
+// quarters full) and as later inserts may grow it. A name cell carries a
+// variable key and an included payload, up to four times a row-UUID cell on
+// the default pack (measured 2026-11-09 at 8 KiB: 1,063 entries, 33 pages for
+// the authoritative tree, 53 for the UUID-to-name tree, against 9 and 19 for
+// the same rows in a row-UUID tree), so four times that tree's shape, plus one.
+// The cohort reader reads the two trees one after the other through one backing.
+inline NativeBtreeTreeMemoryLimits NativeNameTreeNavigationLimits(usize page_size,usize rows) noexcept {
+  const auto one=NativeCatalogNavigationLimitsFor(page_size,rows);
+  if(!one.maximum_pages)return {};
+  const auto pages=4*one.maximum_pages+1;
+  return {pages,pages*page_size};
+}
 struct NativeCatalogRelationMemoryLimits {
   Uuid maximum_profile;
   usize maximum_devices=0,maximum_base_pages=0,maximum_rows=0,maximum_bindings=0;
   NativeBtreeTreeMemoryLimits navigation;
+  // SB_NATIVE_NAME_TREES: backing for reading one name tree at a time; zero
+  // reads none (a filespace with name-tree roots then fails to open).
+  NativeBtreeTreeMemoryLimits name_trees;
 };
 struct NativeReadCatalogLeafImage {
   NativeCatalogLeafPageView page;

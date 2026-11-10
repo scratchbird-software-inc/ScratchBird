@@ -38,6 +38,12 @@
 //     every read, write and sync failed in turn.
 #define SB_CATALOG_VERSION_WRITER_TEST_WITHOUT_MAIN
 #include "native_catalog_version_writer_test.cpp"
+#include "catalog_name_envelope.hpp"
+#include "catalog_name_path.hpp"
+#include "catalog_name_tree_keys.hpp"
+#include "catalog_records.hpp"
+#include "filespace_page_zero.hpp"
+#include <deque>
 
 #include <compare>
 
@@ -85,14 +91,10 @@ struct TreeSeen {
   std::vector<std::size_t> leaves;  // level-0 pages in key order
   bool root_is_leaf = false;
 };
-TreeSeen ReadTree(const Db& b, std::span<const byte> file) {
-  const auto root = pg::DecodeNativeCatalogRoot(PageOf(file, b.catalog_root.page_number, b.size));
-  Check(root.ok(), "the catalog root decodes");
-  const auto head = std::find_if(root.root->roots.begin(), root.root->roots.end(),
-                                 [&](const auto& r) { return r.role == b.role; });
-  Check(head != root.root->roots.end() && head->page_type == 0x200, "an indexed relation head");
+// The tree rooted at page `root_page`.
+TreeSeen ReadTreeAt(const Db& b, std::span<const byte> file, u64 root_page) {
   TreeSeen out;
-  std::vector<u64> stack{head->page.page_number};
+  std::vector<u64> stack{root_page};
   while (!stack.empty()) {
     const auto n = stack.back();
     stack.pop_back();
@@ -103,7 +105,7 @@ TreeSeen ReadTree(const Db& b, std::span<const byte> file) {
       if (cell.child) stack.push_back(cell.child->page_number);
     if (!page.page->tree_level) {
       out.leaves.push_back(out.pages.size());
-      if (n == head->page.page_number) out.root_is_leaf = true;
+      if (n == root_page) out.root_is_leaf = true;
     }
     out.pages.push_back({n, std::move(*page.page)});
   }
@@ -115,6 +117,14 @@ TreeSeen ReadTree(const Db& b, std::span<const byte> file) {
     return KeyOrder(*a, *c) < 0;
   });
   return out;
+}
+TreeSeen ReadTree(const Db& b, std::span<const byte> file) {
+  const auto root = pg::DecodeNativeCatalogRoot(PageOf(file, b.catalog_root.page_number, b.size));
+  Check(root.ok(), "the catalog root decodes");
+  const auto head = std::find_if(root.root->roots.begin(), root.root->roots.end(),
+                                 [&](const auto& r) { return r.role == b.role; });
+  Check(head != root.root->roots.end() && head->page_type == 0x200, "an indexed relation head");
+  return ReadTreeAt(b, file, head->page.page_number);
 }
 std::size_t LeafFor(const TreeSeen& t, const pg::NativeBtreeKey& key) {
   for (const auto i : t.leaves) {
@@ -247,6 +257,80 @@ std::optional<std::vector<byte>> InsertOracle(const Db& b, std::span<const byte>
     const auto image = db::EncodeNativeCatalogLeaf(into);
     Check(image.ok(), "the expected leaf encodes");
     put(target->page, image.bytes);
+    // SB_NATIVE_NAME_TREES: a name row's cells in the two name trees page zero
+    // names (none when the file has no trees), each at its key's position in
+    // the leaf that holds the key: the authoritative tree per entry, the
+    // UUID-to-name tree per name row, the entry's payload carrying its path's
+    // display components resolved over the file's names and the request's.
+    if (want.name) {
+      const auto zero = d::DecodeFilespacePageZero(file.data(), b.size);
+      Check(zero.ok(), "page zero decodes");
+      const auto root_of = [&](u16 kind) -> std::optional<u64> {
+        for (const auto& root : zero.record->roots) if (root.kind == kind) return root.page_number;
+        return std::nullopt;
+      };
+      const auto first = root_of(22), second = root_of(23);
+      Check(first.has_value() == second.has_value(), "both name tree roots or neither");
+      if (first) {
+        std::deque<c::CatalogNamePayload> keep;
+        c::CatalogNameIndex names;
+        {
+          RoleScope scope(b, 2);
+          const auto name_relation = ReadRelation(b, file);
+          for (const auto& l : name_relation.leaves)
+            for (const auto& row : l.leaf.body.rows) {
+              const auto& m = l.metadata.at(row.version_uuid);
+              const c::CatalogNameVersionBinding at{
+                  {UuidKind::database, l.leaf.header.database_uuid}, {UuidKind::filespace, l.leaf.header.filespace_uuid},
+                  row.row_uuid, {UuidKind::row, row.version_uuid}, m.record.header.object_uuid, row.transaction_uuid, l.page,
+                  row.stable_slot_id, row.storage_generation, row.row_version, row.local_transaction_id, m.catalog_generation};
+              const std::vector<byte> bytes(reinterpret_cast<const byte*>(m.record.payload.data()),
+                                            reinterpret_cast<const byte*>(m.record.payload.data()) + m.record.payload.size());
+              const auto decoded = c::DecodeCatalogNameEnvelope(bytes, at);
+              Check(decoded.ok(), "a stored name decodes for the oracle");
+              names.Add(c::BorrowCatalogNamePayload(keep.emplace_back(decoded.record->payload)));
+            }
+        }
+        for (const auto& other : r.rows) if (other.name) names.Add(c::BorrowCatalogNamePayload(*other.name));
+        const auto view = c::BorrowCatalogNamePayload(*want.name);
+        struct Planned { unsigned tree; std::vector<byte> key, payload; };
+        std::vector<Planned> cells;
+        if (const auto* v = std::get_if<c::CatalogNameVectorView>(&view)) {
+          const auto kind = c::CatalogRecordKindFromName(v->object_class);
+          Check(kind.has_value(), "the vector's object class names a record kind");
+          cells.push_back({1, c::CatalogNameUuidTreeVectorKey(v->object_uuid.value, *kind), c::CatalogNameUuidTreeVectorPayload(*v)});
+        } else {
+          const auto& e = std::get<c::CatalogNameEntryView>(view);
+          const auto kind = c::CatalogRecordKindFromName(e.object_class);
+          Check(kind.has_value(), "the entry's object class names a record kind");
+          const auto path = c::ResolveCatalogNamePath(e, names);
+          Check(path.ok(), "the entry's path resolves for the oracle");
+          std::vector<std::string_view> components;
+          for (const auto& component : path.components) components.push_back(component.display_name);
+          cells.push_back({0, c::CatalogNameAuthoritativeTreeKey(e, *kind), c::CatalogNameAuthoritativeTreePayload(e)});
+          cells.push_back({1, c::CatalogNameUuidTreeEntryKey(e, *kind), c::CatalogNameUuidTreeEntryPayload(e.name_entry_uuid.value, components)});
+        }
+        for (auto& planned : cells) {
+          auto tree = ReadTreeAt(b, file, planned.tree ? *second : *first);
+          pg::NativeBtreeKey key;
+          key.encoded_key = std::move(planned.key);
+          key.row_uuid = want.row_uuid;
+          key.version_uuid = want.version_uuid;
+          auto& leaf = tree.pages[LeafFor(tree, key)];
+          std::size_t at = 0;
+          while (at < leaf.page.cells.size() && KeyOrder(leaf.page.cells[at].key, key) < 0) ++at;
+          pg::NativeBtreeCell entry;
+          entry.key = key;
+          entry.base_page = d::NativePageReference{b.primary, target->page, into.header.page_generation, b.profile};
+          entry.creator_local_transaction_id = r.transaction_order;
+          entry.payload = std::move(planned.payload);
+          leaf.page.cells.insert(leaf.page.cells.begin() + static_cast<std::ptrdiff_t>(at), std::move(entry));
+          const auto encoded = pg::EncodeNativeBtreePage(leaf.page);
+          if (!encoded.ok()) return std::nullopt;
+          put(leaf.number, encoded.bytes);
+        }
+      }
+    }
     if (!rel.indexed) continue;
     auto tree = ReadTree(b, file);
     const auto key = KeyOf(want.row_uuid, want.version_uuid);

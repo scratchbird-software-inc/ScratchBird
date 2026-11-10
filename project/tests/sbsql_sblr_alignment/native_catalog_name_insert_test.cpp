@@ -281,10 +281,12 @@ Verified Verify(const Db& b, const std::string& original) {
                                                        g.memory, g.binding);
     Check(fixed.ok(), "the fixed-root lease admits the file");
     // The shared complete-scan tier and the capture bounds startup uses.
+    // SB_NATIVE_NAME_TREES: the production database has the name trees.
     const db::NativeCatalogRelationMemoryLimits limits{b.profile, 1, db::NativeCatalogScanBasePages(b.size),
                                                        db::kNativeCatalogScanRelationMaximumRows,
                                                        db::kNativeCatalogScanRelationMaximumRows,
-                                                       db::NativeCatalogScanNavigationLimits(b.size)};
+                                                       db::NativeCatalogScanNavigationLimits(b.size),
+                                                       db::NativeNameTreeNavigationLimits(b.size, db::kNativeCatalogScanRelationMaximumRows)};
     auto cohort = db::PrepareNativeCatalogCohortRead(limits, g.memory, g.binding);
     Check(cohort.ok(), "cohort workspace");
     auto capture = db::PrepareNativeCatalogCapture({4096, 4u << 20, 1, 1024, 1024, 128}, g.memory, g.binding);

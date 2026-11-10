@@ -127,8 +127,12 @@ bool FillNativeCreationNamePaths(NativeCreationCatalogSeed& seed) {
 NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevice(
     disk::FileDevice& device,const NativeFilespaceInitializationRequest& request,
     const NativeCreationCatalogSeed& seed,const NativeCreationCatalogIndexes& indexes,u64 budget,
-    core::uuid::StandaloneUuidV7Issuer& issuer) noexcept {
+    core::uuid::StandaloneUuidV7Issuer& issuer,const NativeCreationCatalogNameTrees& name_trees) noexcept {
   try {
+    // SB_NATIVE_NAME_TREES: both trees or neither.
+    if(name_trees.authoritative.has_value()!=name_trees.uuid.has_value())return Fail(E::invalid_request);
+    if(name_trees.requested()&&(!page::NativeBtreeDependenciesValid(*name_trees.authoritative)||
+        !page::NativeBtreeDependenciesValid(*name_trees.uuid)))return Fail(E::invalid_catalog_input);
     const auto guard=device.AcquireOperationGuard();
     const auto& b=request.bootstrap;
     const auto v7=[](const Uuid& id){return core::uuid::IsEngineIdentityUuid(id);};
@@ -186,7 +190,7 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
        budget/size<admitted||maps>(budget/size-admitted)/2||
        maps>std::numeric_limits<std::size_t>::max()-controls) return Fail(E::resource_exhausted);
 
-    auto planned=detail::PlanNativeCreationCatalogLayout(size,maps,total,budget,seed,indexes);
+    auto planned=detail::PlanNativeCreationCatalogLayout(size,maps,total,budget,seed,indexes,name_trees.requested());
     if(!planned.ok())return Fail(planned.error==detail::NativeCreationLayoutError::resource_exhausted?E::resource_exhausted:
         planned.error==detail::NativeCreationLayoutError::capacity_exceeded?E::catalog_capacity_exceeded:E::invalid_catalog_input);
     auto plan=std::move(*planned.layout);const auto& layouts=plan.relations;
@@ -329,6 +333,9 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
     receipt.operation_uuid=request.operation_uuid;receipt.page_zero_uuid=images[0].header.page_uuid;
     receipt.timeline_uuid=timeline;receipt.publication_uuid=publication;receipt.construction_transaction=request.creator;
     receipt.total_pages=total;receipt.free_pages=total-images.size();receipt.map_pages=maps;
+    // SB_NATIVE_NAME_TREES: where each names-relation row lands (base page,
+    // version), for the trees' cells.
+    std::vector<std::pair<u64,Uuid>> name_placement(seed[1].size());
     for(unsigned i=0;i<6;++i) {
       const auto& layout=layouts[i];
       const Uuid relation_uuid=indexes[i]?indexes[i]->relation_uuid:images[layout.bases.front()].owner;
@@ -349,6 +356,7 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
         page::RowDataRecord row;row.row_uuid=metadata.record.header.row_uuid;
         row.version_uuid=issue(UuidKind::row);row.transaction_uuid=request.creator.transaction_uuid;
         row.local_transaction_id=1;row.internal_row_ordinal=at+1;row.stable_slot_id=++slot;
+        if(i==1)name_placement[at]={n,row.version_uuid};
         row.row_version=row.storage_generation=1;
         if(record.name) {
           const core::catalog::CatalogNameVersionBinding binding{
@@ -414,6 +422,54 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
       if(!built)return Fail(E::encoding_failure);
       receipt.relations[i]={static_cast<u16>(i+1),0x200,ref(layout.root),deps.index_uuid};
     }
+    if(name_trees.requested()) {
+      // SB_NATIVE_NAME_TREES: the two name trees over the names relation, from
+      // the same cell seeds the planner packed, now bound to the placed rows.
+      if(!plan.name_trees)return Fail(E::encoding_failure);
+      auto seeds=detail::BuildNativeCreationNameTreeCellSeeds(seed);
+      if(!seeds)return Fail(E::invalid_catalog_input);
+      const std::array<const page::NativeBtreeDependencies*,2> tuples{&*name_trees.authoritative,&*name_trees.uuid};
+      for(unsigned t=0;t<2;++t) {
+        const auto& layout=(*plan.name_trees)[t];const auto& deps=*tuples[t];
+        if(layout.cells!=(*seeds)[t].size())return Fail(E::encoding_failure);
+        std::vector<page::NativeBtreeCell> cells;cells.reserve(layout.cells);
+        for(auto& cell_seed:(*seeds)[t]) {
+          page::NativeBtreeKey key;key.encoded_key=std::move(cell_seed.key);
+          key.row_uuid=seed[1][cell_seed.row].metadata.record.header.row_uuid.value;
+          key.version_uuid=name_placement[cell_seed.row].second;
+          page::NativeBtreeCell cell{std::move(key),false,{},ref(name_placement[cell_seed.row].first),1};
+          cell.payload=std::move(cell_seed.payload);
+          cells.push_back(std::move(cell));
+        }
+        // The planner's order (key, then row UUID) is the key order: rows are
+        // distinct, so the version tie-break never decides.
+        for(std::size_t i=1;i<cells.size();++i)
+          if(page::CompareNativeBtreeKeys(cells[i-1].key,cells[i].key)>=0)return Fail(E::encoding_failure);
+        const auto node=[&](u64 n,u32 type,u16 level) {
+          images[n].header.page_type=type;images[n].owner=deps.index_uuid;
+          page::NativeBtreePage p;p.header=images[n].header;p.dependencies=deps;
+          p.creator_transaction_uuid=creator;p.creator_local_transaction_id=1;
+          p.maintenance_state=1;p.tree_level=level;return p;
+        };
+        std::optional<NativeCreationWorkspaceResult> tree_failure;
+        const bool built=detail::BuildNativeCreationCatalogBtree(layout.tree,0,std::move(cells),ref,node,
+            [&](u64 n,const page::NativeBtreePage& p) {
+          auto encoded=page::EncodeNativeBtreePage(p);
+          if(!encoded.ok()) {
+            tree_failure=Fail(encoded.error==page::NativeBtreeError::resource_exhausted?E::resource_exhausted:
+                encoded.error==page::NativeBtreeError::hash_failure?E::hash_failure:E::encoding_failure);
+            tree_failure->btree_error=encoded.error;tree_failure->failed_page_number=n;return false;
+          }
+          save(n,std::move(encoded));return true;
+        },layout.leaf_starts);
+        if(tree_failure)return *tree_failure;
+        if(!built)return Fail(E::encoding_failure);
+        receipt.name_tree_roots[t]=root(static_cast<u16>(22+t),layout.tree.root);
+        receipt.name_tree_cells[t]=layout.cells;
+        receipt.name_tree_pages[t]=1+layout.tree.navigation.size();
+        for(const auto& level:layout.tree.branches)receipt.name_tree_pages[t]+=level.size();
+      }
+    }
     for(const auto control:{catalog,configuration,security}) {
       const u64 n=at(control);
       page::NativeCatalogRoot c;c.header=images[n].header;c.object_uuid=images[n].owner;
@@ -467,6 +523,8 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
     // The fixed-root graph names kinds 1-8 and 10 (no kind 9 checkpoint).
     for(unsigned i=0;i<zero_roots.size();++i)
       if(i+1!=9)zero.roots.push_back(root(i+1,zero_roots[i]));
+    // SB_NATIVE_NAME_TREES: kinds 22 and 23, after the fixed roots.
+    for(const auto& tree_root:receipt.name_tree_roots)if(tree_root)zero.roots.push_back(*tree_root);
     auto encoded_zero=disk::EncodeFilespacePageZero(zero);
     if(!encoded_zero.ok()) return Fail(
         encoded_zero.error==disk::FilespacePageZeroError::resource_exhausted?E::resource_exhausted:
@@ -535,7 +593,13 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
     const auto& lease=*fixed.lease;
     if(lease.identity().page_zero_uuid!=receipt.page_zero_uuid||lease.identity().filespace_uuid!=b.filespace_uuid||
         lease.identity().database_uuid!=b.database_uuid)return Fail(E::graph_failure);
-    for(const auto& r:lease.roots())if(r.kind==9||r.kind>10)return Fail(E::graph_failure);
+    for(const auto& r:lease.roots()){
+      const bool tree=r.kind==22||r.kind==23;
+      if(r.kind==9||(r.kind>10&&!tree)||(tree&&!name_trees.requested()))return Fail(E::graph_failure);
+      if(tree&&(!receipt.name_tree_roots[r.kind-22]||receipt.name_tree_roots[r.kind-22]->page_number!=r.page_number||
+          receipt.name_tree_roots[r.kind-22]->object_uuid!=r.object_uuid||r.page_type!=0x200))return Fail(E::graph_failure);
+    }
+    if(name_trees.requested()&&(!lease.Root(22)||!lease.Root(23)))return Fail(E::graph_failure);
     const auto allocated=[&](const auto& target,u32 type,const Uuid& owner)->E {
       if(target.filespace_uuid!=b.filespace_uuid||target.page_size_profile_uuid!=b.page_size_profile_uuid)return E::graph_failure;
       std::vector<byte> bytes(size);
@@ -559,6 +623,15 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
         if(const auto error=allocated(ref(n),0x202,receipt.index_dependencies[i]->index_uuid);error!=E::none){auto failed=Fail(error);failed.failed_page_number=n;return failed;}
       for(const auto& level:layouts[i].branches)for(const auto n:level)
         if(const auto error=allocated(ref(n),0x201,receipt.index_dependencies[i]->index_uuid);error!=E::none){auto failed=Fail(error);failed.failed_page_number=n;return failed;}
+    }
+    if(plan.name_trees)for(unsigned t=0;t<2;++t) {
+      // SB_NATIVE_NAME_TREES: every tree page is allocated to the tree's index.
+      const auto& layout=(*plan.name_trees)[t].tree;const auto& index=t?name_trees.uuid->index_uuid:name_trees.authoritative->index_uuid;
+      if(const auto error=allocated(ref(layout.root),0x200,index);error!=E::none){auto failed=Fail(error);failed.failed_page_number=layout.root;return failed;}
+      for(const auto n:layout.navigation)
+        if(const auto error=allocated(ref(n),0x202,index);error!=E::none){auto failed=Fail(error);failed.failed_page_number=n;return failed;}
+      for(const auto& level:layout.branches)for(const auto n:level)
+        if(const auto error=allocated(ref(n),0x201,index);error!=E::none){auto failed=Fail(error);failed.failed_page_number=n;return failed;}
     }
   
     const NativeCatalogSource catalog_source=NativeCatalogSource::PageZero(b.filespace_uuid);

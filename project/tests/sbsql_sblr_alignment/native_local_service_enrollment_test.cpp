@@ -3204,9 +3204,11 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
   Check(authenticated.ok()&&authenticated.observation.principal_uuid==receipt.service_principal_uuid,
       "the L5 service authenticates as the producer's principal");
   const db::NativeFixedRootMemoryLimits catalog_limits{budget,12*1024*1024};
+  // SB_NATIVE_NAME_TREES: the production database has the name trees.
   const db::NativeCatalogRelationMemoryLimits catalog_scan_limits{Profile(profile),1,db::NativeCatalogScanBasePages(sizes[profile]),
       db::kNativeCatalogScanRelationMaximumRows,db::kNativeCatalogScanRelationMaximumRows,
-      db::NativeCatalogScanNavigationLimits(sizes[profile])};
+      db::NativeCatalogScanNavigationLimits(sizes[profile]),
+      db::NativeNameTreeNavigationLimits(sizes[profile],db::kNativeCatalogScanRelationMaximumRows)};
   const auto counted=Host::ReadStartupCatalogs(read,catalog_limits,catalog_scan_limits);
   if(counted!=server::NativeHostedRuntimeError::none)std::cerr<<"producer catalog scan error="<<int(counted)<<'\n';
   Check(counted==server::NativeHostedRuntimeError::none,"the complete catalog scans within the shared tiers");

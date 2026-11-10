@@ -115,6 +115,7 @@ enum class CatalogVersionWriteError : std::uint8_t {
   plan_refused,            // the careful-write plan refused before any write
   write_failed,            // a write or sync failed after one was attempted
   resource_exhausted,
+  name_tree_full,          // insert: the name tree leaf a name row's cell reaches has no room (splits: W3b-3)
 };
 const char* CatalogVersionWriteErrorName(CatalogVersionWriteError error) noexcept;
 
@@ -223,7 +224,11 @@ CatalogVersionWriteResult WriteCatalogSuccessorVersion(disk::CarefulWriteSink& s
 // An entry's keys are checked as startup checks them: its dialect profile and
 // that profile's identifier profile (role 5, active, as this transaction sees
 // them) and CheckCatalogIdentifierLookupKeys; case-fold and quoted supplements
-// are refused (invalid_name). Its full path (full_path_lookup_key,
+// are refused (invalid_name). SB_NATIVE_NAME_TREES: when page zero carries the
+// name trees (kinds 22 and 23), every inserted name row gets its cells in the
+// same careful-write plan: one in the authoritative tree per entry, one in the
+// UUID-to-name tree per name row; a leaf without room is name_tree_full
+// (splits come with W3b-3). Its full path (full_path_lookup_key,
 // path_component_count) must be the one SB_NATIVE_NAME_PATH resolves from the
 // names this transaction sees and the request's own (invalid_name). Collisions
 // (SB_NAME_COLLISION_ORDER, the order

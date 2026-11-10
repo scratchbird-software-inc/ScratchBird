@@ -9,7 +9,12 @@
 namespace scratchbird::storage::database {
 enum class NativeCatalogCohortError {
   none,invalid_request,root_failure,relation_failure,unresolved_creator,
-  binding_mismatch,resource_exhausted
+  binding_mismatch,resource_exhausted,
+  // SB_NATIVE_NAME_TREES: one name tree root without the other, a root of the
+  // wrong page type or object, or a tree that does not read; a cell that does
+  // not bind to a names-relation row version (or a row version without its
+  // cells).
+  name_tree_failure,name_tree_mismatch
 };
 struct NativeCatalogRelationInspection {
   u16 selector=0,role=0;
@@ -28,6 +33,11 @@ struct NativeCatalogCohortInspection {
   std::optional<NativeReadSourceIdentity> source;
   std::array<NativeCatalogRelationInspection,12> relations{};
   usize relation_count=0;
+  // SB_NATIVE_NAME_TREES: whether page zero had the name trees and what they held.
+  bool name_trees_present=false;
+  std::array<usize,2> name_tree_pages{},name_tree_cells{};
+  NativeBtreeTreeMemoryError name_tree_error=NativeBtreeTreeMemoryError::none;
+  page::NativeBtreeError name_tree_page_error=page::NativeBtreeError::none;
   u16 failing_selector=0,failing_role=0;
   Uuid unresolved_transaction_uuid;
   u64 unresolved_local_transaction_id=0,physical_bytes_read=0,verified_image_bytes=0;
@@ -36,6 +46,8 @@ struct NativeCatalogCohortInspection {
 struct NativeCatalogCohortPreparedMemory {
   NativeCatalogRootsPreparedMemory roots;
   NativeCatalogVisibilityPreparedMemory visibility;
+  // SB_NATIVE_NAME_TREES: one tree at a time; empty when the limits asked for none.
+  NativeBtreeTreePreparedMemory name_trees;
   explicit operator bool() const noexcept{return bool(roots)&&bool(visibility);}
 };
 struct NativeCatalogCohortPreparedResult {
@@ -49,7 +61,11 @@ struct NativeCatalogCohortPreparedResult {
 inline usize NativeCatalogCohortWorkspaceBytes(const NativeCatalogRelationMemoryLimits& limits) noexcept {
   const auto roots=NativeCatalogRootsWorkspaceBytes(limits.maximum_profile);
   const auto visibility=NativeCatalogVisibilityWorkspaceBytes(limits);
-  return roots&&visibility&&roots<=SIZE_MAX-visibility?roots+visibility:0;
+  if(!roots||!visibility||roots>SIZE_MAX-visibility)return 0;
+  const auto base=roots+visibility;
+  if(!limits.name_trees.maximum_pages)return base;
+  const auto trees=NativeBtreeTreeWorkspaceBytes(limits.maximum_profile,limits.maximum_devices,limits.name_trees);
+  return trees&&trees<=SIZE_MAX-base?base+trees:0;
 }
 // One reusable, admitted relation workspace covers every declared role. It is
 // prepared before source guards and reused only after each role's complete
@@ -68,6 +84,13 @@ inline NativeCatalogCohortPreparedResult PrepareNativeCatalogCohortRead(
   out.allocation_diagnostic=std::move(visibility.allocation_diagnostic);
   if(!visibility.ok()){out.error=visibility.error;return out;}
   out.workspace.roots=std::move(root.workspace);out.workspace.visibility=std::move(visibility.workspace);
+  if(limits.name_trees.maximum_pages){
+    auto trees=PrepareNativeBtreeTreeRead(limits.maximum_profile,limits.maximum_devices,limits.name_trees,memory,binding);
+    out.memory_error=trees.memory_error;out.allocation_status=trees.allocation_status;
+    out.allocation_diagnostic=std::move(trees.allocation_diagnostic);
+    if(!trees.ok()){out.error=NativeCatalogRelationLeaseError::memory_failure;return out;}
+    out.workspace.name_trees=std::move(trees.workspace);
+  }
   out.error=NativeCatalogRelationLeaseError::none;return out;
 }
 // Actual selected catalog/navigation/base-leaf coverage, metadata chains and
@@ -159,6 +182,78 @@ class NativeCatalogCohortLeaseReader {
           if(!capture->Append(selector,relation.role,row))return fail(E::resource_exhausted);
         if(capture&&!capture->AppendRelation({selector,relation.role,read.source.relation.relation_uuid,
             read.source.relation.index_dependencies}))return fail(E::resource_exhausted);
+        if(selector==2&&relation.role==2){
+          // SB_NATIVE_NAME_TREES: the two name trees over this relation, read
+          // from page zero (kinds 22 and 23) while the relation's base leaves
+          // are still live, so every cell can be bound to its row version.
+          const auto* first=view.Root(22);const auto* second=view.Root(23);
+          if((first!=nullptr)!=(second!=nullptr))return fail(E::name_tree_failure);
+          if(first){
+            if(!workspace.name_trees)return fail(E::resource_exhausted);
+            out.name_trees_present=true;
+            const auto& bases=read.source.bases;
+            for(unsigned t=0;t<2;++t){
+              const auto& tree_root=t?*second:*first;
+              if(tree_root.page_type!=0x200)return fail(E::name_tree_failure);
+              if(out.verified_image_bytes>=maximum_image_bytes)return fail(E::resource_exhausted);
+              const auto limit=static_cast<usize>(std::min<u64>(maximum_image_bytes-out.verified_image_bytes,std::numeric_limits<usize>::max()));
+              const auto tree=NativeBtreeTreeLeaseReader::ReadPageZeroTree(view,tree_root,workspace.name_trees,limit);
+              out.physical_bytes_read+=tree.physical_bytes_read;
+              if(!tree.ok()){out.name_tree_error=tree.error;out.name_tree_page_error=tree.tree_error;return fail(E::name_tree_failure);}
+              if(tree.retained_image_bytes>maximum_image_bytes-out.verified_image_bytes)return fail(E::resource_exhausted);
+              out.verified_image_bytes+=tree.retained_image_bytes;
+              const auto& dependencies=tree.pages.front().page->dependencies;
+              if(dependencies.index_uuid!=tree_root.object_uuid)return fail(E::name_tree_failure);
+              // Every cell binds to a row version of this relation: its base
+              // leaf, that version in it, the row's identity and creator; the
+              // row is a name row (an entry, for the authoritative tree).
+              usize cells=0;
+              for(const auto n:tree.leaves){const auto& page=*tree.pages[n].page;
+                for(const auto& cell:page.cells){
+                  ++cells;
+                  if(!cell.base_page)return fail(E::name_tree_mismatch);
+                  const NativeReadCatalogLeafImage* base=nullptr;
+                  for(const auto& candidate:bases){const auto& h=candidate.page.header;
+                    if(h.filespace_uuid==cell.base_page->filespace_uuid&&h.page_number==cell.base_page->page_number){
+                      if(h.page_generation!=cell.base_page->page_generation||h.page_size_profile_uuid!=cell.base_page->page_size_profile_uuid)
+                        return fail(E::name_tree_mismatch);
+                      base=&candidate;break;}}
+                  if(!base)return fail(E::name_tree_mismatch);
+                  const auto& metadata=base->page.metadata;
+                  const auto found=std::lower_bound(metadata.begin(),metadata.end(),cell.key.version_uuid,
+                      [](const auto& m,const Uuid& id){return m.version_uuid<id;});
+                  if(found==metadata.end()||found->version_uuid!=cell.key.version_uuid||!found->name)return fail(E::name_tree_mismatch);
+                  const auto& row=base->page.body.rows[found->row_index];
+                  if(row.row_uuid.value!=cell.key.row_uuid||row.local_transaction_id!=cell.creator_local_transaction_id)
+                    return fail(E::name_tree_mismatch);
+                  if(t==0&&!std::holds_alternative<core::catalog::CatalogNameEntryView>(*found->name))return fail(E::name_tree_mismatch);
+                  if(capture&&!capture->AppendNameTreeCell(static_cast<u16>(t),cell))return fail(E::resource_exhausted);
+                }}
+              // Every row version has its cells: one in the authoritative tree
+              // per entry, one in the UUID-to-name tree per name row. Counted
+              // by scanning the tree for each row (rows x cells, a few
+              // milliseconds on the default pack); with the cell count above
+              // this is a bijection. The page manager rebuild can index it.
+              usize expected=0;
+              for(const auto& candidate:bases)for(const auto& m:candidate.page.metadata){
+                if(!m.name)continue;
+                const bool wants=t==1||std::holds_alternative<core::catalog::CatalogNameEntryView>(*m.name);
+                usize matches=0;
+                for(const auto n:tree.leaves)for(const auto& cell:tree.pages[n].page->cells)
+                  if(cell.key.version_uuid==m.version_uuid)++matches;
+                if(matches!=(wants?1u:0u))return fail(E::name_tree_mismatch);
+                expected+=wants;
+              }
+              if(cells!=expected)return fail(E::name_tree_mismatch);
+              out.name_tree_cells[t]=cells;out.name_tree_pages[t]=tree.pages.size();
+              if(capture){
+                for(const auto& page:tree.pages)
+                  if(!capture->AppendPhysical(page.page->header,dependencies.index_uuid))return fail(E::resource_exhausted);
+                capture->name_trees_[t]=NativeCapturedNameTree{tree_root.kind,dependencies,tree_root.page,cells,tree.pages.size()};
+              }
+            }
+          }
+        }
       }
     }
     out.failing_selector=out.failing_role=0;out.source.reset();

@@ -371,7 +371,8 @@ FilespaceRecoveryRootCandidates ProbeFilespaceRecoveryRootCandidatesFromOpenDevi
     for(unsigned i=0;i<32;++i,offset+=80){const auto* entry=image.data()+offset;if(Zero(entry,80))break;
       FilespaceRootReference r{LoadLittle16(entry),LoadLittle32(entry+4),GetUuid(entry+8),
         LoadLittle64(entry+24),LoadLittle64(entry+32),GetUuid(entry+40),GetUuid(entry+56)};
-      require(r.kind>previous&&r.kind<=21&&CanonicalPageZeroRootPageType(r.kind)==r.page_type&&r.page_type&&
+      // Kinds 22 and 23 are the name trees (SB_NATIVE_NAME_TREES).
+      require(r.kind>previous&&r.kind<=23&&CanonicalPageZeroRootPageType(r.kind)==r.page_type&&r.page_type&&
         !LoadLittle16(entry+2)&&Zero(entry+72,8)&&V7(r.filespace_uuid)&&V7(r.object_uuid)&&r.page_number&&r.page_generation,E::invalid_directory);
       const auto* profile=FindCanonicalFilespacePageProfile(r.page_size_profile_uuid);require(profile,E::invalid_directory);
       require(r.page_number<=std::numeric_limits<u64>::max()/profile->page_size_bytes&&

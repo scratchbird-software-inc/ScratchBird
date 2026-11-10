@@ -489,7 +489,9 @@ inline NativeFixedRootMemoryResult AcquireNativeFixedRootLeaseOn(
       committed(record->creator_transaction_uuid, record->creator_local_transaction_id, kind);
     };
     for (const auto& root : lease.roots_) {
-      if (root.kind > 10 || root.kind == 9) continue;
+      // The fixed roots 1-8 and 10, and the name trees 22 and 23
+      // (SB_NATIVE_NAME_TREES); a cluster-only root is not a local page.
+      if ((root.kind > 10 && root.kind != 22 && root.kind != 23) || root.kind == 9) continue;
       if (root.filespace_uuid != primary || root.page_size_profile_uuid != owner->page_size_profile_uuid) {
         out.root_kind = root.kind;
         throw E::root_mismatch;

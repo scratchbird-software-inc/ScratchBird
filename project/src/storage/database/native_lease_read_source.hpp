@@ -10,7 +10,8 @@
 //
 // Roots are keyed by page-zero kind: 1 system state, 2 catalog, 3 allocation
 // head, 4 transaction inventory, 5 filespace directory, 6 configuration,
-// 7 security, 8 feature catalog, 10 retention. The fixed-root lease supplies
+// 7 security, 8 feature catalog, 10 retention, 22 and 23 the name trees
+// (SB_NATIVE_NAME_TREES). The fixed-root lease supplies
 // page zero's roots, which carry no digest. (The selected-checkpoint lease, the
 // other source until the checkpoint layer was deleted, W4d, is gone.)
 #include "native_fixed_root_memory_lease.hpp"
@@ -33,7 +34,7 @@ struct NativeLeaseReadSource {
   std::span<const disk::NativeFilespaceDevice> devices;
   disk::FileDevice::ReadLatencyBatch* batches = nullptr;
   std::size_t batch_count = 0;
-  std::array<std::optional<NativeLeaseRoot>, 11> roots;  // by page-zero kind
+  std::array<std::optional<NativeLeaseRoot>, 24> roots;  // by page-zero kind
   const NativeReadTransactionInventory* inventory = nullptr;
   u64 inventory_generation = 0;
   const NativeReadAllocationChain* allocation = nullptr;  // the primary file's

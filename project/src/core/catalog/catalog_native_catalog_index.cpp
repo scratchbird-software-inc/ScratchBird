@@ -47,7 +47,9 @@ auto Controls(const Visibility& r){return std::array{r.profile_uuid,r.database_u
 auto Controls(const Map& r){return std::array{r.map_uuid,r.database_uuid,r.relation_uuid,r.index_uuid,r.index_family_uuid,
     r.key_profile_uuid,r.visibility_profile_uuid,r.origin_transaction_uuid.value,r.creating_transaction_uuid.value};}
 bool Valid(const Key& r) noexcept {
-  return Provenance(r)&&Distinct(Controls(r))&&r.key_form==NativeCatalogIndexKeyForm::raw16_canonical_row_uuid&&
+  return Provenance(r)&&Distinct(Controls(r))&&
+      (r.key_form==NativeCatalogIndexKeyForm::raw16_canonical_row_uuid||
+       r.key_form==NativeCatalogIndexKeyForm::name_authoritative_v1||r.key_form==NativeCatalogIndexKeyForm::name_uuid_v1)&&
       r.key_order==NativeCatalogIndexKeyOrder::unsigned_canonical_bytes&&
       r.tie_break==NativeCatalogIndexTieBreak::native_row_then_version_uuid;
 }

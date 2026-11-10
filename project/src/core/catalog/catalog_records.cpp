@@ -7,6 +7,9 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "catalog_records.hpp"
+#include <string_view>
+#include <optional>
+#include <map>
 
 #include <array>
 #include <utility>
@@ -65,6 +68,20 @@ CatalogRecordValidationResult CatalogRecordError(std::string diagnostic_code,
 
 }  // namespace
 
+std::optional<CatalogRecordKind> CatalogRecordKindFromName(std::string_view name) {
+  // Built once from the names above: every u16 whose name is not "unknown".
+  static const std::map<std::string_view, CatalogRecordKind> table = [] {
+    std::map<std::string_view, CatalogRecordKind> out;
+    for (unsigned value = 1; value <= 0xffff; ++value) {
+      const auto kind = static_cast<CatalogRecordKind>(value);
+      const std::string_view text = CatalogRecordKindName(kind);
+      if (text != "unknown") out.emplace(text, kind);
+    }
+    return out;
+  }();
+  const auto found = table.find(name);
+  return found == table.end() ? std::nullopt : std::optional{found->second};
+}
 const char* CatalogRecordKindName(CatalogRecordKind kind) {
   switch (kind) {
     case CatalogRecordKind::database: return "database";

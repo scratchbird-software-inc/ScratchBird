@@ -23,15 +23,23 @@ inline constexpr Uuid kNativeCatalogIndexKeyProfileUuid{
     {0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0x0c,0xa7,0x02}};
 inline constexpr Uuid kNativeCatalogIndexVisibilityProfileUuid{
     {0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0x0c,0xa7,0x03}};
+// SB_NATIVE_NAME_TREES (owner 2026-11-09): the key profiles of the two name
+// trees over the names relation, fixed values like the profile above; their
+// index identities and dependency maps are issued per database.
+inline constexpr Uuid kNativeNameAuthoritativeTreeKeyProfileUuid{
+    {0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0x0c,0xa7,0x04}};
+inline constexpr Uuid kNativeNameUuidTreeKeyProfileUuid{
+    {0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0x0c,0xa7,0x05}};
 // The btree global index family (registries/native-index-family-identity-registry.csv).
 inline constexpr Uuid kNativeBtreeIndexFamilyUuid{
     {0x96,0xa7,0xb8,0xc9,0xda,0xeb,0x7c,0x0d,0x9e,0x2f,0x40,0x51,0x62,0x73,0x84,0x95}};
 
-// Closed vocabularies. One value each today: the catalog relation index keys
-// are the raw16 canonical row UUID in unsigned canonical-byte order, tie-broken
-// by the native row then version identity, and every entry is an access hint
+// Closed vocabularies. The catalog relation index keys are the raw16 canonical
+// row UUID; the name trees' keys are the forms catalog_name_tree_keys encodes
+// (SB_NATIVE_NAME_TREES). All in unsigned canonical-byte order, tie-broken by
+// the native row then version identity, and every entry is an access hint
 // whose row is resolved against the selected transaction inventory.
-enum class NativeCatalogIndexKeyForm : u64 { raw16_canonical_row_uuid=1 };
+enum class NativeCatalogIndexKeyForm : u64 { raw16_canonical_row_uuid=1, name_authoritative_v1=2, name_uuid_v1=3 };
 enum class NativeCatalogIndexKeyOrder : u64 { unsigned_canonical_bytes=1 };
 enum class NativeCatalogIndexTieBreak : u64 { native_row_then_version_uuid=1 };
 enum class NativeCatalogIndexVisibility : u64 { native_mga_inventory_creator=1 };

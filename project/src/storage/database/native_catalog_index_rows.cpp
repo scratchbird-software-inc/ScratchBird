@@ -26,7 +26,8 @@ NativeCatalogIndexRowsResult BuildNativeCatalogIndexRows(const NativeCatalogInde
     // including the constants and the database and transaction identities.
     std::vector<Uuid> taken{request.database_uuid,request.construction_transaction.value,
         c::kNativeNameCatalogRelationUuid,c::kNativeCatalogIndexKeyProfileUuid,
-        c::kNativeCatalogIndexVisibilityProfileUuid,c::kNativeBtreeIndexFamilyUuid};
+        c::kNativeCatalogIndexVisibilityProfileUuid,c::kNativeBtreeIndexFamilyUuid,
+        c::kNativeNameAuthoritativeTreeKeyProfileUuid,c::kNativeNameUuidTreeKeyProfileUuid};
     std::array<Uuid,6> relations{};
     bool any=false;
     for(unsigned i=0;i<6;++i){
@@ -37,6 +38,14 @@ NativeCatalogIndexRowsResult BuildNativeCatalogIndexRows(const NativeCatalogInde
         return Fail(E::invalid_request);
       if(i!=1)taken.push_back(relations[i]);
       taken.push_back(role->index_uuid);taken.push_back(role->map_uuid);
+    }
+    if(request.name_trees){
+      const auto& t=*request.name_trees;
+      for(const auto& id:{t.authoritative_index_uuid,t.authoritative_map_uuid,t.uuid_index_uuid,t.uuid_map_uuid}){
+        if(!core::uuid::IsEngineIdentityUuid(id))return Fail(E::invalid_request);
+        taken.push_back(id);
+      }
+      any=true;
     }
     std::sort(taken.begin(),taken.end());
     if(std::adjacent_find(taken.begin(),taken.end())!=taken.end())return Fail(E::duplicate_identity);
@@ -81,6 +90,43 @@ NativeCatalogIndexRowsResult BuildNativeCatalogIndexRows(const NativeCatalogInde
       dependencies.dependency_map_uuid=map.map_uuid;dependencies.dependency_map_sha256=digest.digest;
       out.indexes[i]=NativeCreationCatalogIndexBinding{map.relation_uuid,dependencies};
       out.rows.push_back({map.map_uuid,"native_catalog_index_dependency_map",Payload(encoded.bytes)});
+    }
+    if(request.name_trees){
+      // SB_NATIVE_NAME_TREES: the two name trees over the names relation (role
+      // 2): a fixed key profile each, and an issued index and map each.
+      const auto& t=*request.name_trees;
+      struct Tree{Uuid profile;c::NativeCatalogIndexKeyForm form;Uuid index,map;std::optional<page::NativeBtreeDependencies>* out;};
+      const Tree trees[2]{
+        {c::kNativeNameAuthoritativeTreeKeyProfileUuid,c::NativeCatalogIndexKeyForm::name_authoritative_v1,
+         t.authoritative_index_uuid,t.authoritative_map_uuid,&out.name_trees.authoritative},
+        {c::kNativeNameUuidTreeKeyProfileUuid,c::NativeCatalogIndexKeyForm::name_uuid_v1,
+         t.uuid_index_uuid,t.uuid_map_uuid,&out.name_trees.uuid}};
+      for(const auto& tree:trees){
+        auto profile=key;profile.profile_uuid=tree.profile;profile.key_form=tree.form;
+        const auto encoded_profile=c::EncodeCatalogNativeCatalogIndexKeyProfile(profile);
+        if(!encoded_profile.ok())return Fail(E::encoding_failure);
+        out.rows.push_back({profile.profile_uuid,"native_catalog_index_key_profile",Payload(encoded_profile.bytes)});
+      }
+      for(const auto& tree:trees){
+        c::CatalogNativeCatalogIndexDependencyMap map;
+        map.map_uuid=tree.map;map.database_uuid=request.database_uuid;map.generation=1;map.relation_role=2;
+        map.relation_uuid=c::kNativeNameCatalogRelationUuid;map.index_uuid=tree.index;map.index_family_uuid=c::kNativeBtreeIndexFamilyUuid;
+        map.key_profile_uuid=tree.profile;map.visibility_profile_uuid=visibility.profile_uuid;
+        map.descriptor_generation=map.storage_generation=1;
+        map.origin_transaction_uuid=map.creating_transaction_uuid=tx;
+        map.origin_local_transaction_id=map.creating_local_transaction_id=local;
+        const auto encoded=c::EncodeCatalogNativeCatalogIndexDependencyMap(map);
+        if(!encoded.ok())return Fail(E::encoding_failure);
+        const auto digest=core::hash::ComputeSha256Digest(encoded.bytes);
+        if(!digest.ok())return Fail(E::hash_failure);
+        page::NativeBtreeDependencies dependencies;
+        dependencies.index_uuid=map.index_uuid;
+        dependencies.descriptor_generation=map.descriptor_generation;dependencies.storage_generation=map.storage_generation;
+        dependencies.key_profile_uuid=map.key_profile_uuid;dependencies.visibility_profile_uuid=map.visibility_profile_uuid;
+        dependencies.dependency_map_uuid=map.map_uuid;dependencies.dependency_map_sha256=digest.digest;
+        *tree.out=dependencies;
+        out.rows.push_back({map.map_uuid,"native_catalog_index_dependency_map",Payload(encoded.bytes)});
+      }
     }
     out.error=E::none;return out;
   } catch(const std::bad_alloc&) {return Fail(E::resource_exhausted);}

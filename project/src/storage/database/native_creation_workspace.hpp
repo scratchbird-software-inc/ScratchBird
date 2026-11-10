@@ -16,6 +16,16 @@ enum class NativeCreationWorkspaceError {
   io_failure, readback_mismatch, graph_failure, cluster_requires_authority,
   encrypted_requires_crypto_authority, invalid_catalog_input, catalog_capacity_exceeded
 };
+// SEARCH_KEY: SB_NATIVE_NAME_TREES (owner 2026-11-09). The dependency tuples
+// of the two name trees the create builds over the names relation: the
+// authoritative name tree (page-zero root kind 22) and the UUID-to-name tree
+// (kind 23). Both or neither: a caller that supplies them gets the trees and
+// their roots; one that does not (component tests writing partial catalogs)
+// gets a filespace without them.
+struct NativeCreationCatalogNameTrees {
+  std::optional<page::NativeBtreeDependencies> authoritative,uuid;
+  bool requested() const noexcept {return authoritative.has_value()&&uuid.has_value();}
+};
 struct NativeCreationWorkspaceReceipt {
   core::platform::Uuid database_uuid, filespace_uuid, operation_uuid;
   core::platform::Uuid page_zero_uuid, timeline_uuid, publication_uuid;
@@ -25,6 +35,10 @@ struct NativeCreationWorkspaceReceipt {
   std::array<std::optional<page::NativeBtreeDependencies>,6> index_dependencies;
   core::platform::u64 total_pages=0, free_pages=0, map_pages=0;
   std::array<core::platform::u64,6> catalog_rows{};
+  // SB_NATIVE_NAME_TREES: the trees' page-zero roots (kinds 22, 23), cells and
+  // pages, when they were built.
+  std::array<std::optional<disk::FilespaceRootReference>,2> name_tree_roots;
+  std::array<core::platform::u64,2> name_tree_cells{},name_tree_pages{};
 };
 struct NativeCreationWorkspaceResult {
   NativeCreationWorkspaceError error=NativeCreationWorkspaceError::invalid_request;
@@ -87,5 +101,6 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
     disk::FileDevice&,const NativeFilespaceInitializationRequest&,
     const NativeCreationCatalogSeed&,const NativeCreationCatalogIndexes&,
     core::platform::u64 maximum_retained_image_bytes,
-    core::uuid::StandaloneUuidV7Issuer&) noexcept;
+    core::uuid::StandaloneUuidV7Issuer&,
+    const NativeCreationCatalogNameTrees& name_trees={}) noexcept;
 }  // namespace scratchbird::storage::database

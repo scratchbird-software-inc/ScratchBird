@@ -315,7 +315,8 @@ NativeHostedRuntimeError NativeHostedDatabaseRuntime::ReadStartupCatalogs(Creden
   const auto workspace=db::NativeCatalogCohortWorkspaceBytes(catalog_limits);
   if(!workspace||workspace>SIZE_MAX-limits.maximum_backing_bytes||catalog_limits.maximum_devices<self.close_receipts_.size())return E::invalid_request;
   const bool capture_requested=capture_limits.maximum_rows||capture_limits.maximum_text_bytes||capture_limits.maximum_filespaces||
-      capture_limits.maximum_transactions||capture_limits.maximum_physical_pages||capture_limits.maximum_initial_control_pages;
+      capture_limits.maximum_transactions||capture_limits.maximum_physical_pages||capture_limits.maximum_initial_control_pages||
+      capture_limits.maximum_name_tree_cells;
   const auto capture_bytes=capture_requested?db::NativeCatalogCaptureWorkspaceBytes(capture_limits):0;
   if(capture_requested&&!capture_bytes)return E::invalid_request;
   if(read.catalogs_.ok()){

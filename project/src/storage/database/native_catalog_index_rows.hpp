@@ -30,12 +30,19 @@ struct NativeCatalogIndexRoleIdentities {
   core::platform::Uuid relation_uuid;
   core::platform::Uuid index_uuid,map_uuid;
 };
+// SB_NATIVE_NAME_TREES: the issued identities of the two name trees' indexes
+// and dependency maps; their key profiles are the fixed values.
+struct NativeCatalogNameTreeIdentities {
+  core::platform::Uuid authoritative_index_uuid,authoritative_map_uuid,uuid_index_uuid,uuid_map_uuid;
+};
 struct NativeCatalogIndexRowsRequest {
   core::platform::Uuid database_uuid;
   core::platform::TypedUuid construction_transaction;
   core::platform::u64 construction_local_transaction_id=1;
   // Position i is catalog relation role i+1; an absent role is not indexed.
   std::array<std::optional<NativeCatalogIndexRoleIdentities>,6> roles;
+  // Absent: no name trees (component fixtures).
+  std::optional<NativeCatalogNameTreeIdentities> name_trees;
 };
 struct NativeCatalogIndexRow {
   core::platform::Uuid object_uuid;
@@ -48,9 +55,11 @@ enum class NativeCatalogIndexRowsError {
 struct NativeCatalogIndexRowsResult {
   NativeCatalogIndexRowsError error=NativeCatalogIndexRowsError::invalid_request;
   // The key profile, the visibility profile, then one dependency map per
-  // indexed role in role order. Empty when no role is indexed.
+  // indexed role in role order; with name trees, then their two key profiles
+  // and two dependency maps. Empty when nothing is indexed.
   std::vector<NativeCatalogIndexRow> rows;
   NativeCreationCatalogIndexes indexes;
+  NativeCreationCatalogNameTrees name_trees;
   bool ok() const noexcept {return error==NativeCatalogIndexRowsError::none;}
 };
 NativeCatalogIndexRowsResult BuildNativeCatalogIndexRows(const NativeCatalogIndexRowsRequest&) noexcept;

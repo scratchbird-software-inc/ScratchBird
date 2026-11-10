@@ -7,6 +7,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #pragma once
+#include <optional>
 
 // SB-CATALOG-RECORDS-ANCHOR
 #include "datatype_descriptor.hpp"
@@ -205,6 +206,12 @@ struct CatalogRecordValidationResult {
 };
 
 const char* CatalogRecordKindName(CatalogRecordKind kind);
+// The kind whose name this is; nullopt for "unknown" or any other text. A name
+// vector's and entry's object_class is CatalogRecordKindName of the object's
+// kind (the startup name verifier holds them equal), so a writer that holds
+// only the name rows can derive the kind the name trees key on
+// (SB_NATIVE_NAME_TREES).
+std::optional<CatalogRecordKind> CatalogRecordKindFromName(std::string_view name);
 const char* CatalogRecordScopeName(CatalogRecordScope scope);
 const std::vector<CatalogRecordDescriptor>& BuiltinCatalogRecordDescriptors();
 // Immutable process-lifetime views of the same builtin registry, without

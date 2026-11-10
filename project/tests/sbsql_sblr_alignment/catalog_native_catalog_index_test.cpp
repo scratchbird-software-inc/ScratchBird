@@ -115,7 +115,7 @@ void Values(){
  {auto r=KeyValue();r.generation=2;r.creating_transaction_uuid.value=f::Id(8);r.creating_local_transaction_id=2;Roundtrip<KeyCodec>(r);}
  for(unsigned n=0;n<8;++n){auto r=KeyValue();switch(n){
    case 0:r.profile_uuid={};break;case 1:r.database_uuid.bytes[6]=0x40;break;case 2:r.key_form=c::NativeCatalogIndexKeyForm(0);break;
-   case 3:r.key_form=c::NativeCatalogIndexKeyForm(2);break;case 4:r.key_order=c::NativeCatalogIndexKeyOrder(2);break;
+   case 3:r.key_form=c::NativeCatalogIndexKeyForm(4);break;case 4:r.key_order=c::NativeCatalogIndexKeyOrder(2);break;  // forms 2 and 3 are the name trees (SB_NATIVE_NAME_TREES)
    case 5:r.tie_break=c::NativeCatalogIndexTieBreak(0);break;case 6:r.database_uuid=r.profile_uuid;break;
    case 7:r.origin_transaction_uuid.value=r.creating_transaction_uuid.value=r.database_uuid;break;}
    Refuse<KeyCodec>(r);}

@@ -1472,6 +1472,18 @@ endif()
   add_test(NAME sbsql_sblr_alignment_native_name_tree_keys COMMAND sbsql_sblr_alignment_native_name_tree_keys)
   set_tests_properties(sbsql_sblr_alignment_native_name_tree_keys PROPERTIES
     LABELS "sbsql_sblr_alignment;native_storage;names;btree" TIMEOUT 300)
+  # SB_NATIVE_NAME_TREES: the name trees the production create builds, read
+  # back through the fixed-root lease and cohort reader; mutations.
+  add_executable(sbsql_sblr_alignment_native_name_trees native_name_trees_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_native_name_trees PRIVATE cxx_std_23)
+  target_include_directories(sbsql_sblr_alignment_native_name_trees PRIVATE
+    ${PROJECT_SOURCE_DIR}/src ${PROJECT_SOURCE_DIR}/src/engine/internal_api)
+  target_link_libraries(sbsql_sblr_alignment_native_name_trees PRIVATE sb_engine_internal_api sb_storage_database)
+  target_compile_definitions(sbsql_sblr_alignment_native_name_trees PRIVATE
+    SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password")
+  add_test(NAME sbsql_sblr_alignment_native_name_trees COMMAND sbsql_sblr_alignment_native_name_trees)
+  set_tests_properties(sbsql_sblr_alignment_native_name_trees PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;names;btree;native_database_create" TIMEOUT 900)
   # SB_NATIVE_NAME_PATH: the full-path rule of name entry rows (owner
   # 2026-11-09), against an independent oracle.
   add_executable(sbsql_sblr_alignment_native_name_path native_name_path_test.cpp)

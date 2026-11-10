@@ -17,6 +17,26 @@ struct NativeCatalogCaptureLimits {
   // Optional complete initial checkpoint/map/inventory/directory identities.
   // Only an actual generation-one source can supply this creation graph.
   usize maximum_initial_control_pages=0;
+  // SB_NATIVE_NAME_TREES: optional copy of every name tree cell (both trees),
+  // for the engine to compare with the captured name rows. Zero captures the
+  // trees' tuples and counts only.
+  usize maximum_name_tree_cells=0;
+};
+// SB_NATIVE_NAME_TREES: one name tree as read from page zero: its root kind
+// (22 authoritative, 23 UUID-to-name), the dependency tuple its pages carry,
+// its root and what it held.
+struct NativeCapturedNameTree {
+  u16 root_kind=0;
+  page::NativeBtreeDependencies dependencies;
+  disk::NativePageReference root;
+  usize cells=0,pages=0;
+};
+// One name tree leaf cell, its key and payload copied into admitted backing.
+struct NativeCapturedNameTreeCell {
+  u16 tree=0;  // 0 authoritative, 1 UUID-to-name
+  std::span<const byte> key,payload;
+  Uuid row_uuid,version_uuid;
+  u64 creator_local_transaction_id=0,superseding_local_transaction_id=0;
 };
 struct NativeCapturedTransactionInventory {
   u64 generation=0;
@@ -52,9 +72,10 @@ inline usize NativeCatalogCaptureWorkspaceBytes(NativeCatalogCaptureLimits limit
   const auto inventory=filespaces+limits.maximum_transactions*sizeof(transaction::mga::TransactionInventoryEntry);
   if(limits.maximum_physical_pages>(SIZE_MAX-inventory)/sizeof(NativeCapturedCatalogPage))return 0;
   const auto physical=inventory+limits.maximum_physical_pages*sizeof(NativeCapturedCatalogPage);
-  if(!limits.maximum_initial_control_pages)return physical;
   if(limits.maximum_initial_control_pages>(SIZE_MAX-physical)/sizeof(NativeCapturedCatalogPage))return 0;
-  return physical+limits.maximum_initial_control_pages*sizeof(NativeCapturedCatalogPage);
+  const auto controls=physical+limits.maximum_initial_control_pages*sizeof(NativeCapturedCatalogPage);
+  if(limits.maximum_name_tree_cells>(SIZE_MAX-controls)/sizeof(NativeCapturedNameTreeCell))return 0;
+  return controls+limits.maximum_name_tree_cells*sizeof(NativeCapturedNameTreeCell);
 }
 class NativeCatalogCohortLeaseReader;
 struct NativeCatalogCapturePreparedResult;
@@ -95,11 +116,18 @@ class NativeCatalogCapture {
   std::span<const NativeCapturedCatalogRelation> relations() const noexcept {
     return ok()?std::span<const NativeCapturedCatalogRelation>{relations_}.first(relation_count_):std::span<const NativeCapturedCatalogRelation>{};
   }
+  // SB_NATIVE_NAME_TREES: the two name trees when page zero had them (both or
+  // neither), and their cells when the limits asked for them.
+  const std::array<std::optional<NativeCapturedNameTree>,2>& name_trees() const noexcept {return name_trees_;}
+  bool has_name_tree_cells() const noexcept{return ok()&&!name_tree_cells_.empty();}
+  std::span<const NativeCapturedNameTreeCell> name_tree_cells() const noexcept {
+    return ok()?name_tree_cells_.first(name_tree_cell_count_):std::span<const NativeCapturedNameTreeCell>{};
+  }
   // Consumers may supply scratch storage, but it must not overwrite either
   // the fixed rows or their retained variable fields (including unused backing).
   bool DisjointWorkspace(std::span<const std::byte> workspace) const noexcept {
     return disk::detail::DisjointNativeDecodeRegions(workspace,rows_,text_,filespaces_,transactions_,physical_pages_,initial_control_pages_,
-        std::span<const NativeCatalogCapture>{this,1});
+        name_tree_cells_,std::span<const NativeCatalogCapture>{this,1});
   }
  private:
   void Swap(NativeCatalogCapture& other) noexcept {
@@ -111,9 +139,19 @@ class NativeCatalogCapture {
     swap(initial_control_pages_,other.initial_control_pages_);swap(initial_control_page_count_,other.initial_control_page_count_);
     swap(initial_controls_complete_,other.initial_controls_complete_);
     swap(relations_,other.relations_);swap(relation_count_,other.relation_count_);
+    swap(name_trees_,other.name_trees_);swap(name_tree_cells_,other.name_tree_cells_);swap(name_tree_cell_count_,other.name_tree_cell_count_);
   }
   void Begin() noexcept {source_.reset();inventory_.reset();count_=used_=filespace_count_=physical_page_count_=0;
-    initial_control_page_count_=0;initial_controls_complete_=false;relation_count_=0;}
+    initial_control_page_count_=0;initial_controls_complete_=false;relation_count_=0;
+    name_trees_={};name_tree_cell_count_=0;}
+  bool AppendNameTreeCell(u16 tree,const page::NativeBtreeCellView& cell) noexcept {
+    if(name_tree_cells_.empty())return true;
+    if(name_tree_cell_count_==name_tree_cells_.size())return false;
+    NativeCapturedNameTreeCell value{tree,cell.key.encoded_key,cell.payload,cell.key.row_uuid,cell.key.version_uuid,
+        cell.creator_local_transaction_id,cell.superseding_local_transaction_id};
+    if(!Copy(value.key)||!Copy(value.payload))return false;
+    name_tree_cells_[name_tree_cell_count_++]=value;return true;
+  }
   bool AppendRelation(const NativeCapturedCatalogRelation& relation) noexcept {
     if(relation_count_==relations_.size())return false;
     relations_[relation_count_++]=relation;return true;
@@ -178,6 +216,9 @@ class NativeCatalogCapture {
   std::optional<NativeReadSourceIdentity> source_;
   std::array<NativeCapturedCatalogRelation,12> relations_{};
   usize relation_count_=0;
+  std::array<std::optional<NativeCapturedNameTree>,2> name_trees_{};
+  std::span<NativeCapturedNameTreeCell> name_tree_cells_;
+  usize name_tree_cell_count_=0;
   friend class NativeCatalogCohortLeaseReader;
   friend NativeCatalogCapturePreparedResult PrepareNativeCatalogCapture(
       NativeCatalogCaptureLimits,NativeStorageMemory&,const NativeStorageMemoryBinding&) noexcept;
@@ -232,6 +273,14 @@ inline NativeCatalogCapturePreparedResult PrepareNativeCatalogCapture(NativeCata
     auto* values=static_cast<NativeCapturedCatalogPage*>(pages.pointer);
     std::uninitialized_value_construct_n(values,limits.maximum_initial_control_pages);
     out.capture.initial_control_pages_={values,limits.maximum_initial_control_pages};
+  }
+  if(limits.maximum_name_tree_cells){
+    static_assert(std::is_trivially_destructible_v<NativeCapturedNameTreeCell>);
+    const auto cells=out.capture.arena_.Allocate(limits.maximum_name_tree_cells*sizeof(NativeCapturedNameTreeCell),alignof(NativeCapturedNameTreeCell));
+    if(!cells.ok()){out.capture={};out.error=NativeStorageMemoryError::resource_exhausted;return out;}
+    auto* values=static_cast<NativeCapturedNameTreeCell*>(cells.pointer);
+    std::uninitialized_value_construct_n(values,limits.maximum_name_tree_cells);
+    out.capture.name_tree_cells_={values,limits.maximum_name_tree_cells};
   }
   out.capture.text_={static_cast<byte*>(text.pointer),text.bytes};out.error=NativeStorageMemoryError::none;return out;
 }
