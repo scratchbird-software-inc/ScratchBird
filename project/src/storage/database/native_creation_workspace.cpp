@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "native_creation_workspace.hpp"
+#include "catalog_name_path.hpp"
 #include "allocation_map_inplace_page.hpp"
 #include "native_construction_audit.hpp"
 #include "native_creation_catalog_input.hpp"
@@ -101,6 +102,26 @@ NativeCreationWorkspaceResult InitializePopulatedNativeCreationWorkspaceOnOpenDe
     const NativeCreationCatalogSeed& seed,u64 budget,
     core::uuid::StandaloneUuidV7Issuer& issuer) noexcept {
   return InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,request,seed,{},budget,issuer);
+}
+
+bool FillNativeCreationNamePaths(NativeCreationCatalogSeed& seed) {
+  namespace c=core::catalog;
+  c::CatalogNameIndex names;
+  for(const auto& record:seed[1])if(record.name)names.Add(c::BorrowCatalogNamePayload(*record.name));
+  std::vector<std::pair<std::size_t,c::CatalogNamePath>> paths;
+  for(std::size_t i=0;i<seed[1].size();++i){
+    const auto& record=seed[1][i];if(!record.name)continue;
+    const auto* entry=std::get_if<c::CatalogNameEntry>(&*record.name);if(!entry)continue;
+    auto path=c::ResolveCatalogNamePath(c::BorrowCatalogNameEntry(*entry),names);
+    if(!path.ok())return false;
+    paths.emplace_back(i,std::move(path));
+  }
+  // Keys first (the paths borrow the seed), then assigned.
+  std::vector<std::pair<std::size_t,std::pair<std::vector<byte>,u64>>> keys;
+  for(const auto& [i,path]:paths)keys.push_back({i,{c::CatalogNamePathLookupKey(path),path.components.size()}});
+  for(auto& [i,key]:keys){auto& entry=std::get<c::CatalogNameEntry>(*seed[1][i].name);
+    entry.full_path_lookup_key=std::move(key.first);entry.path_component_count=key.second;}
+  return true;
 }
 
 NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevice(

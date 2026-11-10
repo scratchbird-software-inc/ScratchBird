@@ -5,6 +5,7 @@
 #include "catalog_crypto_inline_private_key_policy.hpp"
 #include "catalog_identifier_lookup_key.hpp"
 #include "catalog_identifier_profile.hpp"
+#include "catalog_name_path.hpp"
 #include "catalog_naming_collision_policy.hpp"
 #include "catalog_naming_dialect_profile.hpp"
 #include "catalog_page.hpp"
@@ -839,6 +840,18 @@ CatalogVersionWriteResult WriteCatalogInsertVersions(disk::CarefulWriteSink& sin
         continue;
       holders.push_back({&s.payload, Hold::held, s.order});
     }
+    // SB_NATIVE_NAME_PATH: the names a path through this request may use: the
+    // newest version of each stored name this transaction sees (committed or
+    // its own, not deleted), then the request's names.
+    catalog::CatalogNameIndex path_names;
+    for (const auto& [row, k] : newest_name) {
+      const auto& s = stored[k];
+      if (s.deleted || !s.state) continue;
+      if (*s.state != mga::TransactionState::committed && s.order != request.transaction_order) continue;
+      path_names.Add(catalog::BorrowCatalogNamePayload(s.payload));
+    }
+    for (const auto& row : request.rows)
+      if (row.name) path_names.Add(catalog::BorrowCatalogNamePayload(*row.name));
 
     for (std::size_t i = 0; i < request.rows.size(); ++i) {
       const auto& want = request.rows[i];
@@ -892,6 +905,9 @@ CatalogVersionWriteResult WriteCatalogInsertVersions(disk::CarefulWriteSink& sin
         const auto gx = group_of(x);
         if (!gx || !keys_agree(*want.name)) return refuse_row(E::invalid_name, i);
         const auto xv = std::get<catalog::CatalogNameEntryView>(catalog::BorrowCatalogNamePayload(*want.name));
+        // Its stored full path is the one the path rule resolves.
+        if (catalog::CheckCatalogNameEntryPath(xv, path_names) != catalog::CatalogNamePathError::none)
+          return refuse_row(E::invalid_name, i);
         std::optional<u64> name_blocker;
         bool name_held = false;
         for (const auto& holder : holders) {

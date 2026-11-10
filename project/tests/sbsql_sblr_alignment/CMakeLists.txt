@@ -1472,6 +1472,14 @@ endif()
   add_test(NAME sbsql_sblr_alignment_native_name_tree_keys COMMAND sbsql_sblr_alignment_native_name_tree_keys)
   set_tests_properties(sbsql_sblr_alignment_native_name_tree_keys PROPERTIES
     LABELS "sbsql_sblr_alignment;native_storage;names;btree" TIMEOUT 300)
+  # SB_NATIVE_NAME_PATH: the full-path rule of name entry rows (owner
+  # 2026-11-09), against an independent oracle.
+  add_executable(sbsql_sblr_alignment_native_name_path native_name_path_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_native_name_path PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_native_name_path PRIVATE sb_storage_database)
+  add_test(NAME sbsql_sblr_alignment_native_name_path COMMAND sbsql_sblr_alignment_native_name_path)
+  set_tests_properties(sbsql_sblr_alignment_native_name_path PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;names" TIMEOUT 300)
   # SB_NATIVE_BTREE_COMPRESSED_PAGE: SBBTP002, the prefix-compressed catalog
   # B-tree page (owner Q37 = 1, Q38 = 1, Q40), against an independent oracle.
   add_executable(sbsql_sblr_alignment_native_btree_page_v2 native_btree_page_v2_test.cpp)

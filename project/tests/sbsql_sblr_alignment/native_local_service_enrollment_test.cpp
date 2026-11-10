@@ -1581,6 +1581,19 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
   // The host's own source backing (512 pages, at least 8 MiB since 2026-11-03).
   const u64 budget=db::NativeHostedSourceBackingBytes(sizes[profile]);
   const auto construction_writes=stage_writes,construction_syncs=stage_syncs;
+  // SB_NATIVE_NAME_PATH: the seed's names carry their full paths, as the
+  // database create sets them where it assembles a seed. These variants break
+  // the scope chain on purpose, so their names cannot carry paths; startup
+  // refuses each with the variant's own error, from verifiers that run before
+  // the path check: name_variant 5 scopes the database's entry to an object
+  // that does not exist; namespace_variant 1 removes the root schema and its
+  // names, 3 and 4 move the root schema under objects that do not exist, 5
+  // removes the database; filespace_variant 8 moves the filespace under an
+  // object that does not exist.
+  const bool scope_chain_broken=name_variant==5||namespace_variant==1||namespace_variant==3||
+      namespace_variant==4||namespace_variant==5||filespace_variant==8;
+  const bool paths_filled=db::FillNativeCreationNamePaths(catalogs.plan->catalogs);
+  Check(paths_filled||scope_chain_broken,"the enrolled node seed's name paths resolve");
   auto initialized=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(created,construction,
       catalogs.plan->catalogs,indexes,budget,issuer);
   if(!indexed){

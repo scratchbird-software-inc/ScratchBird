@@ -64,7 +64,8 @@ struct NativeDatabaseCreateRequest {
 enum class NativeDatabaseCreateError {
   none,invalid_request,invalid_principal,identity_failure,policy_assembly,database_assembly,
   schema_assembly,agent_assembly,audit_failure,index_failure,capacity_exceeded,workspace_failure,
-  resource_exhausted,datatype_assembly
+  resource_exhausted,datatype_assembly,
+  name_path  // SB_NATIVE_NAME_PATH: a name entry's path does not resolve
 };
 struct NativeDatabaseCreateReceipt {
   core::platform::Uuid database_uuid,filespace_uuid,database_object_uuid;

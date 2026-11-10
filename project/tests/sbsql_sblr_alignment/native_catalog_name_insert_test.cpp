@@ -137,6 +137,34 @@ c::CatalogNameEntry Keyed(c::CatalogNameEntry e, const NameTemplate& t, const st
   else e.display_name.assign(derived.normalized.begin(), derived.normalized.end());
   return e;
 }
+// SB_NATIVE_NAME_PATH, written out here rather than called: a component's own
+// lane key, escaped (0x00 -> 0x00 0xFF, then 0x00 0x00), root side first.
+std::vector<byte> Escaped(std::span<const byte> raw) {
+  std::vector<byte> out;
+  for (const byte b : raw) {
+    out.push_back(b);
+    if (!b) out.push_back(0xff);
+  }
+  out.push_back(0);
+  out.push_back(0);
+  return out;
+}
+std::span<const byte> OwnKey(const c::CatalogNameEntry& e) {
+  return e.requires_exact_match ? std::span<const byte>(e.exact_lookup_key) : std::span<const byte>(e.normalized_lookup_key);
+}
+// The full path of `e`, named in the same scope and language as `neighbour`:
+// the neighbour's path without its own component, then e's own key.
+void PathBeside(c::CatalogNameEntry& e, const c::CatalogNameEntry& neighbour) {
+  const auto last = Escaped(OwnKey(neighbour));
+  const auto& path = neighbour.full_path_lookup_key;
+  Check(neighbour.path_component_count >= 1 && path.size() >= last.size() &&
+            std::equal(last.begin(), last.end(), path.end() - static_cast<std::ptrdiff_t>(last.size())),
+        "a stored name's full path ends with its own key");
+  e.full_path_lookup_key.assign(path.begin(), path.end() - static_cast<std::ptrdiff_t>(last.size()));
+  const auto own = Escaped(OwnKey(e));
+  e.full_path_lookup_key.insert(e.full_path_lookup_key.end(), own.begin(), own.end());
+  e.path_component_count = neighbour.path_component_count;
+}
 // The definition in `role` at row `key`; its vector and entry in the names
 // relation at `vector_key` and `entry_key`. Its parent and schema are the
 // template object's, so its name resolves in the template's scope.
@@ -199,6 +227,7 @@ Named NamedObject(const Db& b, std::span<const byte> file, const NameTemplate& t
   e.default_for_object = true;
   e.lifecycle_state = c::CatalogNameLifecycle::active;
   e.dropped_transaction_uuid.reset();
+  PathBeside(e, t.entry);
 
   out.vector = {2, vector_key, VersionId(k + 3000), vm, c::CatalogNamePayload{v}};
   out.entry = {2, entry_key, VersionId(k + 6000), em, c::CatalogNamePayload{e}};
@@ -225,6 +254,7 @@ db::CatalogInsertRow Alias(const Named& of, const NameTemplate& t, const Uuid& k
   e.default_for_object = false;
   e.default_for_language = false;
   e.created_transaction_uuid = row.metadata.creator_transaction_uuid;
+  PathBeside(e, std::get<c::CatalogNameEntry>(*of.entry.name));
   row.name = c::CatalogNamePayload{e};
   Check(c::CatalogNamePayloadMatchesMetadata(*row.name, row.metadata), "the alias agrees with its metadata");
   return row;
@@ -459,6 +489,14 @@ void NameRefusals(const Db& b, const NameTemplate& t, u16 role) {
         "an identifier profile the dialect profile does not name");
   entry([](auto& e, auto&) { e.case_fold_profile_uuid = scratchbird::core::platform::TypedUuid{UuidKind::object, V7(1, 4)}; }, CE::invalid_name,
         "a case-fold supplement");
+  // SB_NATIVE_NAME_PATH: the stored full path is the resolved one.
+  entry([](auto& e, auto&) { e.full_path_lookup_key.back() = byte{1}; }, CE::invalid_name,
+        "a full path whose last component is not the entry's own key");
+  entry([](auto& e, auto&) { e.full_path_lookup_key.insert(e.full_path_lookup_key.begin(), {byte{'x'}, byte{0}, byte{0}}); },
+        CE::invalid_name, "a full path with a component above the scope");
+  entry([](auto& e, auto&) { ++e.path_component_count; }, CE::invalid_name, "a full path counting one component too many");
+  entry([](auto& e, auto&) { e.full_path_lookup_key.clear(); e.path_component_count = 0; }, CE::invalid_name,
+        "an entry without its full path");
   entry([](auto& e, auto& named) {
     e.name_vector_uuid.value = V7(1, 5);
     named.entry.metadata.name_vector_uuid.value = V7(1, 5);

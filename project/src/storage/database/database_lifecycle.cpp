@@ -9357,6 +9357,9 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
       for(auto& row:index_records.records->names)seed[1].push_back(std::move(row));
     }
     for(auto& relation:seed)for(auto& row:relation)row.metadata.audit_uuid={UuidKind::object,audit_object};
+    // SB_NATIVE_NAME_PATH: every name entry carries its full path (the
+    // workspace fills its own copy the same way; both plans see these sizes).
+    if(!FillNativeCreationNamePaths(seed))return fail(E::name_path);
 
     // Refuse before any write unless the hosted reader can open what this
     // writes: the credential tier for the security and configuration

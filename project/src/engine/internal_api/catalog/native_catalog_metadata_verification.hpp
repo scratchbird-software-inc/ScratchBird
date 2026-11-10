@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 #include "native_catalog_name_verification.hpp"
+#include "native_catalog_name_path_verification.hpp"
 #include "native_catalog_namespace_verification.hpp"
 #include "native_catalog_filespace_verification.hpp"
 #include "native_catalog_audit_verification.hpp"
@@ -16,6 +17,8 @@ namespace scratchbird::engine::internal_api {
 // lifecycle verification remain obligations of the owning operation.
 struct NativeCatalogMetadataVerification {
   NativeCatalogNameVerification names;
+  // SB_NATIVE_NAME_PATH: every name entry's stored full path.
+  NativeCatalogNamePathVerification paths;
   // SB_CLARIFY_NATIVE_CATALOG_INDEX_PROFILE_ROWS: catalog index tuples against
   // their profile and dependency-map rows, and the shared names-relation identity.
   NativeCatalogIndexVerification indexes;
@@ -26,7 +29,7 @@ struct NativeCatalogMetadataVerification {
   NativeCatalogNamingProfileVerification naming_profiles;
   NativeCatalogCollisionVerification collisions;
   std::optional<storage::database::NativeReadSourceIdentity> source;
-  bool ok() const noexcept{return source.has_value()&&names.ok()&&indexes.ok()&&namespaces.ok()&&filespaces.ok()&&audit.ok()&&security.ok()&&naming_profiles.ok()&&collisions.ok();}
+  bool ok() const noexcept{return source.has_value()&&names.ok()&&paths.ok()&&indexes.ok()&&namespaces.ok()&&filespaces.ok()&&audit.ok()&&security.ok()&&naming_profiles.ok()&&collisions.ok();}
 };
 inline NativeCatalogMetadataVerification VerifyNativeCatalogMetadata(
     const storage::database::NativeCatalogCapture& capture,NativeCatalogNamespaceWorkspace workspace) noexcept {
@@ -46,7 +49,11 @@ inline NativeCatalogMetadataVerification VerifyNativeCatalogMetadata(
   out.naming_profiles=VerifyNativeCatalogNamingProfileReferences(capture,workspace.order);
   if(!out.naming_profiles.ok())return out;
   out.collisions=VerifyNativeCatalogNamingCollisions(capture,workspace);
-  if(out.collisions.ok())out.source=capture.source();
+  if(!out.collisions.ok())return out;
+  // Last: a path rests on the bindings, the namespace forest and the
+  // filespace and policy references checked above.
+  out.paths=VerifyNativeCatalogNamePaths(capture,workspace);
+  if(out.paths.ok())out.source=capture.source();
   return out;
 }
 } // namespace scratchbird::engine::internal_api

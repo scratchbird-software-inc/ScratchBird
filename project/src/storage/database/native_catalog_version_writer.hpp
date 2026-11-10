@@ -223,7 +223,10 @@ CatalogVersionWriteResult WriteCatalogSuccessorVersion(disk::CarefulWriteSink& s
 // An entry's keys are checked as startup checks them: its dialect profile and
 // that profile's identifier profile (role 5, active, as this transaction sees
 // them) and CheckCatalogIdentifierLookupKeys; case-fold and quoted supplements
-// are refused (invalid_name). Collisions (SB_NAME_COLLISION_ORDER, the order
+// are refused (invalid_name). Its full path (full_path_lookup_key,
+// path_component_count) must be the one SB_NATIVE_NAME_PATH resolves from the
+// names this transaction sees and the request's own (invalid_name). Collisions
+// (SB_NAME_COLLISION_ORDER, the order
 // startup verification applies): the entry's vector names a policy descriptor
 // whose body binds the object's class to a group. Another entry of a different
 // object in the same scope and identifier profile, under the same body and
