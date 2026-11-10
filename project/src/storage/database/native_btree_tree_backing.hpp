@@ -7,6 +7,7 @@
 #include "uuid.hpp"
 #include <algorithm>
 #include <array>
+#include <bitset>
 #include <limits>
 #include <memory>
 #include <system_error>
@@ -108,6 +109,7 @@ struct Pending {
   std::size_t parent=missing;
   core::platform::u16 level=0;
   std::optional<page::NativeBtreeKeyView> low,high;
+  bool unlisted=false;  // SB_CATALOG_SPLIT_LAG: reached by a sibling link only
 };
 struct File {
   disk::NativeFilespaceDevice source;
@@ -330,6 +332,7 @@ struct Reader {
       return f==files.end()||f->source.filespace_uuid!=ref.filespace_uuid||f->source.page_size_profile_uuid!=ref.page_size_profile_uuid||ref.page_number>=f->total_pages?
         files.size():static_cast<std::size_t>(f-files.begin());};
     std::size_t pending_count=1,count=0,leaf_count=0,image_used=0,cells_used=0;pending[0]={root};
+    std::bitset<65536> unlisted_level;  // whether the last page read at each level was unlisted
     while(pending_count){const auto next=pending[--pending_count];const auto fs=filespace(next.ref);
       if(fs==files.size()){fail(T::invalid_filespace);return out;}const auto& f=files[fs];
       // Bootstrap validation admits the registered role. Index placement is
@@ -338,7 +341,8 @@ struct Reader {
       if(f.flags&disk::FilespaceBootstrapFlag::cluster_authority_required){fail(T::cluster_requires_authority);return out;}
       auto slot=Hash(next.ref.filespace_uuid,next.ref.page_number)%slots.size();
       while(slots[slot]!=missing){const auto& h=pages[slots[slot]].page->header;
-        if(h.filespace_uuid==next.ref.filespace_uuid&&h.page_number==next.ref.page_number){fail(T::tree_reference_mismatch);return out;}
+        if(h.filespace_uuid==next.ref.filespace_uuid&&h.page_number==next.ref.page_number){
+          fail(next.unlisted?T::tree_fence_mismatch:T::tree_reference_mismatch);return out;}
         if(++slot==slots.size())slot=0;}
       if(count==pages.size()||f.size>limits.maximum_retained_image_bytes-image_used){fail(T::resource_exhausted);return out;}
       auto* image=static_cast<byte*>(image_bytes.data())+image_used;
@@ -374,13 +378,25 @@ struct Reader {
         if(++identity==identities.size())identity=0;}
       if(p.tree_level>=levels.size()){fail(T::resource_exhausted);return out;}
       const auto previous=levels[p.tree_level];
+      // SB_CATALOG_SPLIT_LAG (owner Q45 = 1): a page whose split has not
+      // reached its parent is validated against its own high fence; its right
+      // sibling, which no parent lists yet, is visited next at this level.
+      const bool lags=next.parent!=missing&&page::detail::NativeBtreeSplitLags(p,*pages[next.parent].page,next.high);
       const auto topology=page::detail::ValidateNativeBtreeTraversalStep(p,next.parent==missing?nullptr:&*pages[next.parent].page,
-        next.level,next.low,next.high,previous==missing?nullptr:&*pages[previous].page);
-      if(topology!=T::none){fail(topology);return out;}
+        next.level,next.low,lags?p.high_fence:next.high,previous==missing?nullptr:&*pages[previous].page,
+        previous!=missing&&unlisted_level.test(p.tree_level));
+      // SB_CATALOG_SPLIT_LAG: an unlisted sibling that fails is the short fence.
+      if(topology!=T::none){fail(next.unlisted?T::tree_fence_mismatch:topology);return out;}
       for(const auto& cell:p.cells)if(cell.base_page&&filespace(*cell.base_page)==files.size()){fail(T::invalid_filespace);return out;}
       slots[slot]=identities[identity]=levels[p.tree_level]=count;
       pages[count]=decoded;image_used+=f.size;cells_used+=required.cells;
+      unlisted_level.set(p.tree_level,next.unlisted);
       const auto index=count++;
+      if(lags){
+        if(pending_count==pending.size()){fail(T::resource_exhausted);return out;}
+        Pending sibling{*p.right,next.parent,next.level,p.high_fence,next.high};sibling.unlisted=true;
+        pending[pending_count++]=sibling;
+      }
       if(!p.tree_level){leaves[leaf_count++]=index;continue;}
       if(p.cells.size()+1>pending.size()-pending_count){fail(T::resource_exhausted);return out;}
       const auto child_level=static_cast<core::platform::u16>(p.tree_level-1);

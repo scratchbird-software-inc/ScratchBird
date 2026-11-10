@@ -406,13 +406,18 @@ NativeBtreeTreeResult ReadNativeBtreeTreeFromOpenDevices(const Uuid& db,
       std::optional<std::size_t> parent;
       u16 level=0;
       std::optional<NativeBtreeKey> low,high;
+      bool unlisted=false;  // SB_CATALOG_SPLIT_LAG: reached by a sibling link only
     };
     std::vector<Pending> pending{{root,{},0,{},{}}};NativeBtreeTreeResult result;
     std::set<std::pair<Uuid,u64>> slots;std::set<Uuid> page_ids;std::map<u16,std::size_t> last_by_level;
+    std::set<u16> unlisted_last;
     while(!pending.empty()){
       auto next=std::move(pending.back());pending.pop_back();const auto fs=filespace(next.ref);
       if(fs==ordered.size())return fail(E::invalid_filespace);
-      if(!slots.emplace(next.ref.filespace_uuid,next.ref.page_number).second)return fail(E::tree_reference_mismatch);
+      // SB_CATALOG_SPLIT_LAG: a page reached as an unlisted sibling that fails
+      // is the short fence that sent the walk there.
+      if(!slots.emplace(next.ref.filespace_uuid,next.ref.page_number).second)
+        return fail(next.unlisted?E::tree_fence_mismatch:E::tree_reference_mismatch);
       const auto page_size=zeros[fs].bootstrap.page_size_bytes;
       if(page_size>maximum_retained_image_bytes-result.retained_image_bytes)return fail(E::resource_exhausted);
       const u32 type=!next.parent?0x200:next.level?0x201:0x202;
@@ -420,10 +425,14 @@ NativeBtreeTreeResult ReadNativeBtreeTreeFromOpenDevices(const Uuid& db,
       if(!loaded.ok())return fail(loaded.error);const auto& page=*loaded.page;
       if(!page_ids.insert(page.header.page_uuid).second)return fail(E::tree_reference_mismatch);
       const auto previous=last_by_level.find(page.tree_level);
+      const bool lags=next.parent&&detail::NativeBtreeSplitLags(page,*result.pages[*next.parent].page,next.high);
       const auto topology=detail::ValidateNativeBtreeTraversalStep(page,
-        next.parent?&*result.pages[*next.parent].page:nullptr,next.level,next.low,next.high,
-        previous==last_by_level.end()?nullptr:&*result.pages[previous->second].page);
-      if(topology!=E::none)return fail(topology);
+        next.parent?&*result.pages[*next.parent].page:nullptr,next.level,next.low,lags?page.high_fence:next.high,
+        previous==last_by_level.end()?nullptr:&*result.pages[previous->second].page,unlisted_last.contains(page.tree_level));
+      if(topology!=E::none)return fail(next.unlisted?E::tree_fence_mismatch:topology);
+      if(next.unlisted)unlisted_last.insert(page.tree_level);else unlisted_last.erase(page.tree_level);
+      // The unlisted sibling, visited next at this level (pushed before any child).
+      if(lags)pending.push_back({*page.right,next.parent,next.level,page.high_fence,next.high,true});
       for(const auto& cell:page.cells)if(cell.base_page&&filespace(*cell.base_page)==ordered.size())return fail(E::invalid_filespace);
       const auto index=result.pages.size();last_by_level[page.tree_level]=index;
       result.retained_image_bytes+=loaded.bytes.size();result.pages.push_back(std::move(loaded));

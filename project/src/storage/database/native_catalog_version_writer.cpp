@@ -164,6 +164,13 @@ struct TreePage {
   // image is what the file holds there now, and it is written before the
   // pages that point to it.
   bool added = false;
+  // SB_CATALOG_SPLIT_LAG (owner Q45 = 1): reached by a sibling link only, its
+  // split interrupted before the parent's rewrite; the next write repairs it.
+  bool unlisted = false;
+  // The write order of a changed page (FirebirdSQL's precedence): 0 a page a
+  // split adds, 1 the split leaf (and any page an insert alone changes), 2 the
+  // old right neighbour, 3 the parent. Each rank is durable before the next.
+  int rank = 1;
 };
 // A relation as its head reaches it: the index pages (empty when unindexed),
 // in walk order, and every base leaf, sorted by page number.
@@ -191,6 +198,7 @@ bool ReadTree(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding& b
     std::optional<std::size_t> parent;
     u16 level = 0;
     std::optional<pg::NativeBtreeKey> low, high;
+    bool unlisted = false;  // SB_CATALOG_SPLIT_LAG: reached by a sibling link only
   };
   std::vector<Pending> pending{{head.page, {}, 0, {}, {}}};
   std::set<u64> seen;
@@ -216,13 +224,18 @@ bool ReadTree(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding& b
       return refuse(E::invalid_catalog);
     }
     const auto previous = last_by_level.find(page.tree_level);
+    // SB_CATALOG_SPLIT_LAG (owner Q45 = 1): as the tree readers walk it.
+    const bool lags = next.parent && pg::detail::NativeBtreeSplitLags(page, tree[*next.parent].page, next.high);
     if (pg::detail::ValidateNativeBtreeTraversalStep(
-            page, next.parent ? &tree[*next.parent].page : nullptr, next.level, next.low, next.high,
-            previous == last_by_level.end() ? nullptr : &tree[previous->second].page) != pg::NativeBtreeError::none)
+            page, next.parent ? &tree[*next.parent].page : nullptr, next.level, next.low, lags ? page.high_fence : next.high,
+            previous == last_by_level.end() ? nullptr : &tree[previous->second].page,
+            previous != last_by_level.end() && tree[previous->second].unlisted) != pg::NativeBtreeError::none)
       return refuse(E::invalid_catalog);
     const auto index = tree.size();
     last_by_level[page.tree_level] = index;
+    if (lags) pending.push_back({*page.right, next.parent, next.level, page.high_fence, next.high, true});
     tree.push_back({next.ref, image, std::move(page)});
+    tree.back().unlisted = next.unlisted;
     const auto& current = tree.back().page;
     if (!current.tree_level) {
       for (const auto& cell : current.cells) {
@@ -664,6 +677,41 @@ std::optional<E> InsertTreeCell(disk::CarefulWriteSink& sink, std::vector<TreePa
   const auto view = [](const pg::NativeBtreeKey& k) {
     return pg::NativeBtreeKeyView{std::span<const byte>(k.encoded_key), k.row_uuid, k.version_uuid};
   };
+  const auto find = [&](const disk::NativePageReference& ref) -> std::optional<std::size_t> {
+    for (std::size_t t = 0; t < tree.size(); ++t)
+      if (tree[t].ref.page_number == ref.page_number) return t;
+    return std::nullopt;
+  };
+  // SB_CATALOG_SPLIT_LAG (owner Q45 = 1): first complete any split a crash
+  // interrupted: the parent's separator for the unlisted page, and the next
+  // page's left link, in the same order a split writes them.
+  for (std::size_t t = 0; t < tree.size(); ++t) {
+    if (!tree[t].unlisted) continue;
+    const auto& lost = tree[t].page;
+    if (!lost.parent || !lost.low_fence || !may_grow) return full;
+    const auto parent = find(*lost.parent);
+    if (!parent) return E::invalid_catalog;
+    auto up = tree[*parent].page;
+    pg::NativeBtreeCell separator;
+    separator.key = *lost.low_fence;
+    separator.child = tree[t].ref;
+    const auto slot = std::lower_bound(up.cells.begin(), up.cells.end(), separator.key, [&](const auto& c, const auto& k) {
+      return pg::CompareNativeBtreeKeys(view(c.key), view(k)) < 0;
+    });
+    up.cells.insert(slot, std::move(separator));
+    const auto fits = pg::EncodeNativeBtreePage(up);
+    if (!fits.ok()) return fits.error == pg::NativeBtreeError::resource_exhausted ? full : E::invalid_catalog;
+    tree[*parent].page = std::move(up);
+    tree[*parent].rank = std::max(tree[*parent].rank, 3);
+    changed.insert(*parent);
+    if (lost.right)
+      if (const auto next = find(*lost.right); next && tree[*next].page.left != std::optional{tree[t].ref}) {
+        tree[*next].page.left = tree[t].ref;
+        tree[*next].rank = std::max(tree[*next].rank, 2);
+        changed.insert(*next);
+      }
+    tree[t].unlisted = false;
+  }
   std::optional<std::size_t> reached;
   for (std::size_t t = 0; t < tree.size() && !reached; ++t) {
     const auto& page = tree[t].page;
@@ -696,11 +744,6 @@ std::optional<E> InsertTreeCell(disk::CarefulWriteSink& sink, std::vector<TreePa
   if (!may_grow) return full;
   const auto& old = tree[*reached].page;
   if (old.header.page_type != 0x202 || !old.parent) return full;
-  const auto find = [&](const disk::NativePageReference& ref) -> std::optional<std::size_t> {
-    for (std::size_t t = 0; t < tree.size(); ++t)
-      if (tree[t].ref.page_number == ref.page_number) return t;
-    return std::nullopt;
-  };
   const auto parent = find(*old.parent);
   if (!parent) return E::invalid_catalog;
   const std::optional<std::size_t> neighbour = old.right ? find(*old.right) : std::nullopt;
@@ -751,6 +794,7 @@ std::optional<E> InsertTreeCell(disk::CarefulWriteSink& sink, std::vector<TreePa
     added.ref = new_ref;
     added.page = std::move(right);
     added.added = true;
+    added.rank = 0;
     if (!pages.dry()) {
       added.image.assign(page_size, 0);
       const auto io = sink.ReadAt(taken->page_number * u64{page_size}, std::span<byte>(added.image));
@@ -764,6 +808,11 @@ std::optional<E> InsertTreeCell(disk::CarefulWriteSink& sink, std::vector<TreePa
     tree[*parent].page = std::move(up);
     if (neighbour) tree[*neighbour].page = std::move(*next);
     tree.push_back(std::move(added));
+    // FirebirdSQL's order (SB_CATALOG_SPLIT_LAG): the new page, the split
+    // leaf, the old right neighbour, then the parent.
+    tree[old_index].rank = std::max(tree[old_index].rank, 1);
+    tree[*parent].rank = std::max(tree[*parent].rank, 3);
+    if (neighbour) tree[*neighbour].rank = std::max(tree[*neighbour].rank, 2);
     changed.insert(old_index);
     changed.insert(*parent);
     if (neighbour) changed.insert(*neighbour);
@@ -1309,20 +1358,20 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
       if (!encoded.ok()) return Refuse(E::invalid_catalog);
       w.image = std::move(encoded.bytes);
     }
-    std::vector<disk::CarefulWriteNodeId> added_nodes;
-    for (const bool added : {true, false})
+    std::vector<disk::CarefulWriteNodeId> earlier = leaf_nodes;
+    for (int rank = 0; rank <= 3; ++rank) {
+      std::vector<disk::CarefulWriteNodeId> these;
       for (const auto& w : tree_writes) {
-        if (w.page->added != added) continue;
+        if (w.page->rank != rank) continue;
         const auto node = plan.Add(w.page->ref.page_number * u64{page_size}, std::span<const byte>(w.image),
                                    std::span<const byte>(w.page->image));
         if (!node.ok()) return Refuse(E::plan_refused);
-        for (const auto before : leaf_nodes)
+        for (const auto before : earlier)
           if (plan.Before(before, node.node) != CarefulWriteError::none) return Refuse(E::plan_refused);
-        if (added) added_nodes.push_back(node.node);
-        else
-          for (const auto before : added_nodes)
-            if (plan.Before(before, node.node) != CarefulWriteError::none) return Refuse(E::plan_refused);
+        these.push_back(node.node);
       }
+      earlier.insert(earlier.end(), these.begin(), these.end());
+    }
     const auto r = plan.Execute(sink, binding.barrier_policy);
     result.write_error = r.error;
     result.io = r.io;
@@ -1731,7 +1780,7 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
       u64 page_number;
       std::vector<byte> image;
       const std::vector<byte>* as_read;
-      bool added = false;  // a page this write adds: written before the pages that point to it
+      int rank = 1;  // SB_CATALOG_SPLIT_LAG write order (TreePage::rank)
     };
     std::vector<Planned> leaf_writes, tree_writes;
     for (const auto& [role, l] : changed_leaves) {
@@ -1750,7 +1799,7 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
         auto& page = relations.at(role).tree[t];
         auto encoded = pg::EncodeNativeBtreePage(page.page);
         if (!encoded.ok()) return Refuse(E::invalid_catalog);
-        tree_writes.push_back({page.ref.page_number, std::move(encoded.bytes), &page.image, page.added});
+        tree_writes.push_back({page.ref.page_number, std::move(encoded.bytes), &page.image, page.rank});
       }
     // SB_NATIVE_NAME_TREES: the name tree pages, after every base leaf like
     // the relation index pages.
@@ -1760,7 +1809,7 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
           auto& page = tree.tree[t];
           auto encoded = pg::EncodeNativeBtreePage(page.page);
           if (!encoded.ok()) return Refuse(E::invalid_catalog);
-          tree_writes.push_back({page.ref.page_number, std::move(encoded.bytes), &page.image, page.added});
+          tree_writes.push_back({page.ref.page_number, std::move(encoded.bytes), &page.image, page.rank});
         }
 
     // SB_CATALOG_NEW_PAGES: a dry pass that needs pages stops here, every
@@ -1779,22 +1828,23 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
       if (!node.ok()) return Refuse(E::plan_refused);
       leaf_nodes.push_back(node.node);
     }
-    // Tree pages: every page a split added before every existing tree page
-    // (one of which points to it), all after the base leaves.
-    std::vector<disk::CarefulWriteNodeId> added_nodes;
-    for (const bool added : {true, false})
+    // Tree pages after the base leaves, rank by rank (SB_CATALOG_SPLIT_LAG):
+    // a page a split added, the split leaf, its old right neighbour, the
+    // parent; each rank durable before the next.
+    std::vector<disk::CarefulWriteNodeId> earlier = leaf_nodes;
+    for (int rank = 0; rank <= 3; ++rank) {
+      std::vector<disk::CarefulWriteNodeId> these;
       for (const auto& w : tree_writes) {
-        if (w.added != added) continue;
+        if (w.rank != rank) continue;
         const auto node = plan.Add(w.page_number * u64{page_size}, std::span<const byte>(w.image),
                                    std::span<const byte>(*w.as_read));
         if (!node.ok()) return Refuse(E::plan_refused);
-        for (const auto before : leaf_nodes)
+        for (const auto before : earlier)
           if (plan.Before(before, node.node) != CarefulWriteError::none) return Refuse(E::plan_refused);
-        if (added) added_nodes.push_back(node.node);
-        else
-          for (const auto before : added_nodes)
-            if (plan.Before(before, node.node) != CarefulWriteError::none) return Refuse(E::plan_refused);
+        these.push_back(node.node);
       }
+      earlier.insert(earlier.end(), these.begin(), these.end());
+    }
     const auto r = plan.Execute(sink, binding.barrier_policy);
     result.write_error = r.error;
     result.io = r.io;

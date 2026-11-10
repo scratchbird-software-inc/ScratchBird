@@ -103,10 +103,31 @@ bool NativeBtreeDependenciesValid(const NativeBtreeDependencies&) noexcept;
 namespace detail {
 // Shared whole-tree step: decoded page validity alone cannot establish these
 // inherited ranges, parent bindings or cross-parent sibling relationships.
+// SEARCH_KEY: SB_CATALOG_SPLIT_LAG (owner Q45 = 1, 2026-11-10; FirebirdSQL
+// btr.cpp: the split page is written first, then the original page with its
+// sibling pointer, then the parent, and readers walk btr_sibling when a key is
+// past a page's end). A split interrupted after the old page's rewrite and
+// before the parent's leaves the old page's high fence short of the bound its
+// parent gives it, with its right link naming the new page, which no parent
+// lists yet. A walk validates such a page against its own high fence and then
+// visits the right sibling as an unlisted page of the same parent, between the
+// two fences, before the parent's next child; the next child's left link may
+// still name the old page (the neighbour's rewrite comes after the old page's).
+// The next write into the tree completes the split (the writers' repair).
+// Only a right sibling the parent does not list is unlisted: one the parent
+// lists makes the short fence a fault (tree_fence_mismatch), as before.
+template<class Page> bool NativeBtreeSplitLags(const Page& page,const Page& parent,const std::optional<typename Page::Key>& high) noexcept {
+  if(!page.right||!page.high_fence)return false;
+  if(high&&CompareNativeBtreeKeys(*page.high_fence,*high)>=0)return false;
+  const auto same=[&](const auto& r){return r&&r->filespace_uuid==page.right->filespace_uuid&&r->page_number==page.right->page_number;};
+  if(same(parent.first_child))return false;
+  for(const auto& c:parent.cells)if(same(c.child))return false;
+  return true;
+}
 template<class Page> NativeBtreeError ValidateNativeBtreeTraversalStep(
     const Page& page,const Page* parent,u16 level,
     const std::optional<typename Page::Key>& low,
-    const std::optional<typename Page::Key>& high,const Page* prior) noexcept {
+    const std::optional<typename Page::Key>& high,const Page* prior,bool prior_unlisted=false) noexcept {
   using E=NativeBtreeError;
   const auto self=[](const Page& p){const auto& h=p.header;
     return disk::NativePageReference{h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid};};
@@ -117,7 +138,10 @@ template<class Page> NativeBtreeError ValidateNativeBtreeTraversalStep(
   if(page.low_fence!=low||page.high_fence!=high)return E::tree_fence_mismatch;
   if(!prior){if(page.left)return E::tree_sibling_mismatch;}
   else {
-    if(prior->right!=std::optional{self(page)}||page.left!=std::optional{self(*prior)})return E::tree_sibling_mismatch;
+    // After an unlisted page (SB_CATALOG_SPLIT_LAG) the left link may still
+    // name the page before it.
+    if(prior->right!=std::optional{self(page)}||
+       (page.left!=std::optional{self(*prior)}&&!(prior_unlisted&&page.left==prior->left)))return E::tree_sibling_mismatch;
     if(!page.low_fence||!prior->high_fence||page.low_fence!=prior->high_fence)return E::tree_fence_mismatch;
   }
   return E::none;

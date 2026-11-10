@@ -1223,6 +1223,66 @@ u32 TypeAt(const Db& b, std::span<const byte> file, u64 page) {
   Check(h.ok(), "a page header decodes");
   return h.header->page_type;
 }
+// Whether every page of the tree rooted at `root_page` that a sibling link
+// names is also a child of a parent (no split is left unfinished).
+bool TreeComplete(const Db& b, std::span<const byte> file, u64 root_page) {
+  const auto tree = ReadTreeAt(b, file, root_page);
+  std::set<u64> listed;
+  for (const auto& p : tree.pages) listed.insert(p.number);
+  for (const auto& p : tree.pages)
+    if (p.page.right && !listed.contains(p.page.right->page_number)) return false;
+  return true;
+}
+u64 HeadPage(const Db& b, std::span<const byte> file) {
+  const auto root = pg::DecodeNativeCatalogRoot(PageOf(file, b.catalog_root.page_number, b.size));
+  Check(root.ok(), "the catalog root decodes");
+  const auto head = std::find_if(root.root->roots.begin(), root.root->roots.end(), [&](const auto& h) { return h.role == b.role; });
+  Check(head != root.root->roots.end(), "the relation's head");
+  return head->page.page_number;
+}
+// SB_CATALOG_SPLIT_LAG (owner Q45 = 1): the insert that split, again on copies
+// of the file before it, by a fresh transaction, failing each of its writes in
+// turn (a crash at that point). Every time the relation still reads (a split
+// left short of its parent is walked through the old leaf's right link); the
+// failed transaction rolls back; the next insert, by another transaction,
+// completes any unfinished split, commits and is read back, and then no tree
+// page is reachable by a sibling link only.
+void SplitCrashes(const Db& b, const Place& at, std::span<const byte> pre, const Uuid& row, unsigned k) {
+  unsigned failures = 0, unfinished = 0;
+  for (u32 w = 1; w <= 16; ++w) {
+    const auto copy = b.Copy(pre, "split-crash.db");
+    Session c(b, copy);  // restart: the earlier rows' transaction (2) was in progress, now dead
+    Begin(*c.w, c.sink(), 3);
+    auto r = Request(3, {Row(b, ReadAll(copy), at.role, row, 9000 + k, 3)});
+    r.new_pages = {{V7(kT + 810000 + w, 0xe50000 + w), V7(kT + 810000 + w, 0xe60000 + w)}};
+    KindFaultSink sink(c.sink(), KindFaultSink::Kind::write, w);
+    const auto result = db::WriteCatalogInsertVersions(sink, GrowingBinding(b), r);
+    if (result.ok()) {
+      fs::remove(copy);
+      break;
+    }
+    ++failures;
+    Rollback(*c.w, c.sink(), 3);
+    const auto crashed = ReadAll(copy);
+    if (!TreeComplete(b, crashed, HeadPage(b, crashed))) ++unfinished;
+    const auto seen = Peek(b, copy, at.largest);
+    Check(seen.read && seen.version.has_value(), "after a failed write " + std::to_string(w) + " the relation still reads");
+    Begin(*c.w, c.sink(), 4);
+    auto next = Request(4, {Row(b, ReadAll(copy), at.role, V7(Ms(row) + 50, 0x910000 + w), 9500 + k, 4)});
+    next.new_pages = {{V7(kT + 820000 + w, 0xeb0000 + w), V7(kT + 820000 + w, 0xec0000 + w)}};
+    const auto completed = db::WriteCatalogInsertVersions(c.sink(), GrowingBinding(b), next);
+    if (!completed.ok()) std::cerr << "after failed write " << w << ": " << db::CatalogVersionWriteErrorName(completed.error) << '\n';
+    Check(completed.ok(), "the next insert succeeds after failed write " + std::to_string(w));
+    Commit(*c.w, c.sink(), 4);
+    PeekSees(b, copy, next.rows.front().row_uuid, next.rows.front().version_uuid, "the next insert, committed");
+    const auto after = ReadAll(copy);
+    Check(TreeComplete(b, after, HeadPage(b, after)), "the next write completes an unfinished split");
+    fs::remove(copy);
+  }
+  Check(failures > 0 && unfinished > 0, "some failure points leave a split unfinished, and they are survived");
+  std::cout << b.name << " split crashes page_size=" << b.size << " failure points " << failures << ", " << unfinished
+            << " leaving a split unfinished\n";
+}
 // SB_CATALOG_LEAF_SPLIT (W3b-3a-2): rows inserted one at a time, by one
 // transaction, until the relation's row-UUID tree splits its rightmost leaf
 // (UUIDv7 keys ascend into the rightmost leaf). Every
@@ -1270,11 +1330,13 @@ void IndexGrowth(const Db& b, const std::vector<Place>& places) {
         break;
       }
     }
+    const auto pre = ReadAll(path);
     const auto pages = ExpectGrowingInsert(b, s.sink(), path, r, "row " + std::to_string(k));
     inserted.push_back({r.rows.front().row_uuid, r.rows.front().version_uuid});
     const auto now = ReadAll(path);
     for (const auto page : pages)
       if (TypeAt(b, now, page) == 0x202) split = page;
+    if (split) SplitCrashes(b, at, pre, r.rows.front().row_uuid, k);
   }
   Check(split.has_value(), "the row-UUID tree's rightmost leaf splits within the rows tried");
   {
