@@ -538,6 +538,70 @@ void NameGrowth(const Db& b, const NameTemplate& t, u16 role, std::size_t defini
   std::cout << b.name << " growth page_size=" << b.size << " new base leaf after " << inserted << " named objects\n";
 }
 
+// SB_CATALOG_LEAF_SPLIT (W3b-3a-2): named objects in one scope, by one
+// transaction, until the authoritative name tree splits a leaf in the middle
+// of the tree (the names sort together, among other names): the old leaf,
+// the new leaf, the old right neighbour and the parent all change. Every
+// insert is checked byte for byte; committed, the database verifies (names,
+// paths, the trees' cells against their rows, allocation coverage).
+void NameSplits(const Db& b, const NameTemplate& t, u16 role, std::size_t definitions) {
+  const auto path = b.Copy(b.bytes, "name-splits.db");
+  Session s(b, path);
+  Begin(*s.w, s.sink(), 2);
+  const auto zero = d::DecodeFilespacePageZero(b.bytes.data(), b.size);
+  Check(zero.ok(), "page zero decodes");
+  Uuid authoritative{};
+  for (const auto& r : zero.record->roots)
+    if (r.kind == 22) authoritative = r.object_uuid;
+  std::optional<u64> mid;
+  unsigned k = 1, added = 0;
+  for (; k <= 200 && !mid; ++k) {
+    const auto file = ReadAll(path);
+    const auto named = NamedAfter(b, file, t, role, After(b, file, role), 300 + k, 2, "w3b_split_" + std::to_string(1000 + k));
+    auto r = Request(2, named.Rows());
+    for (unsigned i = 0; i < 6; ++i)
+      r.new_pages.push_back({V7(kT + 900000 + 10 * k + i, 0xe90000 + k), V7(kT + 900000 + 10 * k + i, 0xea0000 + k)});
+    if (!InsertOracle(b, file, r)) {
+      const auto trial = b.Copy(file, "name-splits-trial.db");
+      Session t2(b, trial, false);
+      const auto tried = db::WriteCatalogInsertVersions(t2.sink(), GrowingBinding(b), r);
+      fs::remove(trial);
+      if (!tried.ok()) {
+        std::cout << b.name << " name splits page_size=" << b.size << " stop at named object " << k << ": "
+                  << db::CatalogVersionWriteErrorName(tried.error) << '\n';
+        break;
+      }
+    }
+    const auto pages = ExpectGrowingInsert(b, s.sink(), path, r, "named object " + std::to_string(k));
+    added += static_cast<unsigned>(pages.size());
+    const auto now = ReadAll(path);
+    for (const auto page : pages) {
+      if (TypeAt(b, now, page) != 0x202) continue;
+      const auto tree_page = pg::DecodeNativeBtreePage(PageOf(now, page, b.size));
+      if (tree_page.ok() && tree_page.page->dependencies.index_uuid == authoritative && tree_page.page->right) mid = page;
+    }
+  }
+  if (!mid) {
+    std::cout << b.name << " name splits page_size=" << b.size << " no mid-tree split after " << (k - 1) << " named objects\n";
+    Rollback(*s.w, s.sink(), 2);
+    fs::remove(path);
+    return;
+  }
+  {
+    // The neighbour's left link names the new leaf.
+    const auto now = ReadAll(path);
+    const auto page = pg::DecodeNativeBtreePage(PageOf(now, *mid, b.size));
+    const auto next = pg::DecodeNativeBtreePage(PageOf(now, page.page->right->page_number, b.size));
+    Check(next.ok() && next.page->left && next.page->left->page_number == *mid,
+          "the old right neighbour's left link names the new leaf");
+  }
+  Commit(*s.w, s.sink(), 2);
+  ExpectNamedVerification(b, path, definitions + (k - 1), "named objects past a mid-tree split, committed");
+  fs::remove(path);
+  std::cout << b.name << " name splits page_size=" << b.size << " mid-tree split after " << (k - 1)
+            << " named objects, " << added << " pages added\n";
+}
+
 // ---- Name successors (N4a) ---------------------------------------------------------------
 // The file after a name row's successor: the row placed as the version
 // writer's oracle places it, its envelope bound there; the base version's
@@ -1249,6 +1313,7 @@ int main(int argc, char** argv) {
     if (room) NameKeys(b, t, *role);
     if (room) NameSuccessors(b, t, *role, fresh.names.definitions);
     if (room) NameGrowth(b, t, *role, fresh.names.definitions);
+    if (room) NameSplits(b, t, *role, fresh.names.definitions);
     std::cout << "PASS native catalog name insert page_size=" << b.size << " checks=" << checks << '\n';
     return 0;
   } catch (const std::exception& e) {

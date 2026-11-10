@@ -206,6 +206,91 @@ db::CatalogInsertRequest Request(u64 n, std::vector<db::CatalogInsertRow> rows) 
 // The file after the request: each row in turn on the lowest-numbered reached
 // leaf with room, its cell at its key's position in the index leaf that holds
 // the key. nullopt when a row has no room or its index leaf none.
+// SB_CATALOG_LEAF_SPLIT (W3b-3a-2), as the writer's rule states it, written
+// here over the file: `entry` goes into the leaf of the tree rooted at
+// `root_page` whose fences hold its key. Without room, and with a page left
+// in `new_pages`, a leaf that is not the root splits: all its cells left and
+// the new one alone right when the new one is last, else at the middle (the
+// first split point both sides of which encode); the right part on the new
+// page (the system's: no creator, generation 1, the request's next page
+// UUID); the old leaf's high fence and right link, the new leaf's fences and
+// links, the old right neighbour's left link and the parent's separator.
+// False when the write cannot place it (no room and no split).
+bool OracleInsertCell(const Db& b, std::vector<byte>& file, u64 root_page, pg::NativeBtreeCell entry,
+                      std::span<const u64> new_pages, std::span<const db::CatalogNewPageIdentity> ids, std::size_t& taken) {
+  const auto put = [&](u64 number, const pg::NativeBtreePage& page) {
+    const auto image = pg::EncodeNativeBtreePage(page);
+    Check(image.ok(), "the expected tree page encodes");
+    std::copy(image.bytes.begin(), image.bytes.end(), file.begin() + static_cast<std::ptrdiff_t>(number * b.size));
+  };
+  auto tree = ReadTreeAt(b, file, root_page);
+  const auto leaf_index = LeafFor(tree, entry.key);
+  const auto& leaf = tree.pages[leaf_index];
+  std::size_t at = 0;
+  while (at < leaf.page.cells.size() && KeyOrder(leaf.page.cells[at].key, entry.key) < 0) ++at;
+  auto cells = leaf.page.cells;
+  cells.insert(cells.begin() + static_cast<std::ptrdiff_t>(at), entry);
+  {
+    auto page = leaf.page;
+    page.cells = cells;
+    if (pg::EncodeNativeBtreePage(page).ok()) {
+      put(leaf.number, page);
+      return true;
+    }
+  }
+  if (taken >= new_pages.size() || leaf.page.header.page_type != 0x202 || !leaf.page.parent) return false;
+  const auto index_of = [&](u64 number) -> std::optional<std::size_t> {
+    for (std::size_t i = 0; i < tree.pages.size(); ++i)
+      if (tree.pages[i].number == number) return i;
+    return std::nullopt;
+  };
+  const auto parent = index_of(leaf.page.parent->page_number);
+  Check(parent.has_value(), "the leaf's parent is in the tree");
+  const std::optional<std::size_t> neighbour = leaf.page.right ? index_of(leaf.page.right->page_number) : std::nullopt;
+  const u64 number = new_pages[taken];
+  const d::NativePageReference ref{b.primary, number, 1, b.profile};
+  std::vector<std::size_t> points;
+  if (at + 1 == cells.size()) points.push_back(cells.size() - 1);
+  points.push_back(cells.size() / 2);
+  for (const auto m : points) {
+    if (m == 0 || m >= cells.size()) continue;
+    auto left = leaf.page;
+    left.cells.assign(cells.begin(), cells.begin() + static_cast<std::ptrdiff_t>(m));
+    left.right = ref;
+    left.high_fence = cells[m].key;
+    auto right = leaf.page;
+    right.header.page_uuid = ids[taken].page_uuid;
+    right.header.page_number = number;
+    right.header.page_generation = 1;
+    right.creator_transaction_uuid = {};
+    right.creator_local_transaction_id = 0;
+    right.cells.assign(cells.begin() + static_cast<std::ptrdiff_t>(m), cells.end());
+    right.left = d::NativePageReference{b.primary, leaf.number, leaf.page.header.page_generation, b.profile};
+    right.right = leaf.page.right;
+    right.low_fence = cells[m].key;
+    right.high_fence = leaf.page.high_fence;
+    if (!pg::EncodeNativeBtreePage(left).ok() || !pg::EncodeNativeBtreePage(right).ok()) continue;
+    auto up = tree.pages[*parent].page;
+    std::size_t slot = 0;
+    while (slot < up.cells.size() && KeyOrder(up.cells[slot].key, cells[m].key) < 0) ++slot;
+    pg::NativeBtreeCell separator;
+    separator.key = cells[m].key;
+    separator.child = ref;
+    up.cells.insert(up.cells.begin() + static_cast<std::ptrdiff_t>(slot), std::move(separator));
+    if (!pg::EncodeNativeBtreePage(up).ok()) return false;
+    put(leaf.number, left);
+    put(number, right);
+    put(tree.pages[*parent].number, up);
+    if (neighbour) {
+      auto next = tree.pages[*neighbour].page;
+      next.left = ref;
+      put(tree.pages[*neighbour].number, next);
+    }
+    ++taken;
+    return true;
+  }
+  return false;
+}
 // SB_CATALOG_NEW_PAGES (W3b-3a): `new_pages`, the pages the writer allocated,
 // taken in order when no reached leaf of an indexed relation has room: a new
 // leaf is a sibling's header and body identity with that page's number, the
@@ -331,40 +416,28 @@ std::optional<std::vector<byte>> InsertOracle(const Db& b, std::span<const byte>
           cells.push_back({1, c::CatalogNameUuidTreeEntryKey(e, *kind), c::CatalogNameUuidTreeEntryPayload(e.name_entry_uuid.value, components)});
         }
         for (auto& planned : cells) {
-          auto tree = ReadTreeAt(b, file, planned.tree ? *second : *first);
-          pg::NativeBtreeKey key;
-          key.encoded_key = std::move(planned.key);
-          key.row_uuid = want.row_uuid;
-          key.version_uuid = want.version_uuid;
-          auto& leaf = tree.pages[LeafFor(tree, key)];
-          std::size_t at = 0;
-          while (at < leaf.page.cells.size() && KeyOrder(leaf.page.cells[at].key, key) < 0) ++at;
           pg::NativeBtreeCell entry;
-          entry.key = key;
+          entry.key.encoded_key = std::move(planned.key);
+          entry.key.row_uuid = want.row_uuid;
+          entry.key.version_uuid = want.version_uuid;
           entry.base_page = d::NativePageReference{b.primary, target->page, into.header.page_generation, b.profile};
           entry.creator_local_transaction_id = r.transaction_order;
           entry.payload = std::move(planned.payload);
-          leaf.page.cells.insert(leaf.page.cells.begin() + static_cast<std::ptrdiff_t>(at), std::move(entry));
-          const auto encoded = pg::EncodeNativeBtreePage(leaf.page);
-          if (!encoded.ok()) return std::nullopt;
-          put(leaf.number, encoded.bytes);
+          if (!OracleInsertCell(b, file, planned.tree ? *second : *first, std::move(entry), new_pages, r.new_pages, taken))
+            return std::nullopt;
         }
       }
     }
     if (!rel.indexed) continue;
-    auto tree = ReadTree(b, file);
-    const auto key = KeyOf(want.row_uuid, want.version_uuid);
-    auto& leaf = tree.pages[LeafFor(tree, key)];
-    std::size_t at = 0;
-    while (at < leaf.page.cells.size() && KeyOrder(leaf.page.cells[at].key, key) < 0) ++at;
     pg::NativeBtreeCell entry;
-    entry.key = key;
+    entry.key = KeyOf(want.row_uuid, want.version_uuid);
     entry.base_page = d::NativePageReference{b.primary, target->page, into.header.page_generation, b.profile};
     entry.creator_local_transaction_id = r.transaction_order;  // SB_NATIVE_BTREE_COMPRESSED_PAGE
-    leaf.page.cells.insert(leaf.page.cells.begin() + static_cast<std::ptrdiff_t>(at), std::move(entry));
-    const auto index = pg::EncodeNativeBtreePage(leaf.page);
-    if (!index.ok()) return std::nullopt;
-    put(leaf.number, index.bytes);
+    const auto root = pg::DecodeNativeCatalogRoot(PageOf(file, b.catalog_root.page_number, b.size));
+    Check(root.ok(), "the catalog root decodes");
+    const auto head = std::find_if(root.root->roots.begin(), root.root->roots.end(), [&](const auto& h) { return h.role == b.role; });
+    Check(head != root.root->roots.end(), "the relation's head");
+    if (!OracleInsertCell(b, file, head->page.page_number, std::move(entry), new_pages, r.new_pages, taken)) return std::nullopt;
   }
   if (taken != new_pages.size()) return std::nullopt;  // the writer added a page the oracle did not need
   return file;
@@ -419,9 +492,22 @@ std::vector<u64> ExpectGrowingInsert(const Db& b, d::CarefulWriteSink& sink, con
     const auto page = result.allocated_pages[i];
     const auto was = AllocationOf(b, before, page);
     const auto now = AllocationOf(b, after, page);
-    const auto leaf = db::DecodeNativeCatalogLeaf(PageOf(after, page, b.size));
-    Check(!was.record && leaf.ok(), std::string(label) + ": a free slot, now a base leaf");
-    Check(now.record && now.record->page_type == 6 && now.record->owner_uuid == leaf.page->body.relation_uuid.value &&
+    // A base leaf (owned by its relation) or a split's tree leaf (owned by its index).
+    const auto header = d::DecodeNativeCommonPageHeader(after.data() + page * b.size, 128);
+    Check(!was.record && header.ok(), std::string(label) + ": a free slot, now a page");
+    Uuid owner{};
+    if (header.header->page_type == 6) {
+      const auto leaf = db::DecodeNativeCatalogLeaf(PageOf(after, page, b.size));
+      Check(leaf.ok(), std::string(label) + ": the new base leaf decodes");
+      owner = leaf.page->body.relation_uuid.value;
+    } else {
+      const auto tree_page = pg::DecodeNativeBtreePage(PageOf(after, page, b.size));
+      Check(tree_page.ok() && header.header->page_type == 0x202 && tree_page.page->creator_transaction_uuid.is_nil() &&
+                !tree_page.page->creator_local_transaction_id,
+            std::string(label) + ": the new tree leaf decodes, the system's");
+      owner = tree_page.page->dependencies.index_uuid;
+    }
+    Check(now.record && now.record->page_type == header.header->page_type && now.record->owner_uuid == owner &&
               now.record->page_uuid == r.new_pages[i].page_uuid && now.record->allocation_uuid == r.new_pages[i].allocation_uuid &&
               now.record->creator_transaction_uuid.is_nil() && !now.record->creator_local_transaction_id &&
               now.record->creator_operation_uuid.is_nil() && now.record->page_generation == 1,
@@ -1131,6 +1217,82 @@ void InsertFaults(const Db& b, const Place& at) {
             << " reads=" << reads
             << " writes=" << writes << " syncs=" << syncs << '\n';
 }
+// The page type the file holds at `page`.
+u32 TypeAt(const Db& b, std::span<const byte> file, u64 page) {
+  const auto h = d::DecodeNativeCommonPageHeader(file.data() + page * b.size, 128);
+  Check(h.ok(), "a page header decodes");
+  return h.header->page_type;
+}
+// SB_CATALOG_LEAF_SPLIT (W3b-3a-2): rows inserted one at a time, by one
+// transaction, until the relation's row-UUID tree splits its rightmost leaf
+// (UUIDv7 keys ascend into the rightmost leaf). Every
+// insert is checked byte for byte against the oracle. Then committed, every
+// inserted row is read back through the production fixed-root lease and
+// visibility reader (the system page has no creator to wait for).
+void IndexGrowth(const Db& b, const std::vector<Place>& places) {
+  // A relation whose tree has leaves under its root: a root that is itself
+  // the only leaf splits only with root splits (W3b-3b), refused index_full.
+  const Place* chosen = nullptr;
+  for (const auto& p : places) {
+    RoleScope probe(b, p.role);
+    if (!ReadTree(b, b.bytes).root_is_leaf) {
+      chosen = &p;
+      break;
+    }
+  }
+  if (!chosen) {
+    std::cout << b.name << " index growth page_size=" << b.size << " every relation with room has a one-page tree (W3b-3b)\n";
+    return;
+  }
+  const auto& at = *chosen;
+  RoleScope scope(b, at.role);
+  const auto path = b.Copy(b.bytes, "index-growth.db");
+  Session s(b, path);
+  Begin(*s.w, s.sink(), 2);
+  std::vector<std::pair<Uuid, Uuid>> inserted;
+  std::optional<u64> split;
+  unsigned k = 1;
+  for (; k <= 1500 && !split; ++k) {
+    const auto file = ReadAll(path);
+    auto r = Request(2, {Row(b, file, at.role, V7(Ms(at.largest) + 100 + k, 0x900000 + k), 9000 + k, 2)});
+    r.new_pages = {{V7(kT + 800000 + k, 0xe50000 + k), V7(kT + 800000 + k, 0xe60000 + k)},
+                   {V7(kT + 800000 + k, 0xe70000 + k), V7(kT + 800000 + k, 0xe80000 + k)}};
+    if (!InsertOracle(b, file, r)) {
+      const auto trial = b.Copy(file, "index-growth-trial.db");
+      Session t(b, trial, false);
+      const auto tried = db::WriteCatalogInsertVersions(t.sink(), GrowingBinding(b), r);
+      fs::remove(trial);
+      if (!tried.ok()) {
+        const auto tree = ReadTree(b, file);
+        std::cout << b.name << " index growth page_size=" << b.size << " role " << at.role << " stops at row " << k << ": "
+                  << db::CatalogVersionWriteErrorName(tried.error) << " (tree pages " << tree.pages.size()
+                  << ", root is leaf " << tree.root_is_leaf << ")\n";
+        break;
+      }
+    }
+    const auto pages = ExpectGrowingInsert(b, s.sink(), path, r, "row " + std::to_string(k));
+    inserted.push_back({r.rows.front().row_uuid, r.rows.front().version_uuid});
+    const auto now = ReadAll(path);
+    for (const auto page : pages)
+      if (TypeAt(b, now, page) == 0x202) split = page;
+  }
+  Check(split.has_value(), "the row-UUID tree's rightmost leaf splits within the rows tried");
+  {
+    const auto now = ReadAll(path);
+    const auto page = pg::DecodeNativeBtreePage(PageOf(now, *split, b.size));
+    // The new rightmost leaf holds the new row's cell, last. (An old leaf the
+    // create packed to its limit cannot take the high fence an append split
+    // adds, so the rule's middle split point is used: the oracle agrees.)
+    Check(page.ok() && !page.page->right && page.page->left && !page.page->cells.empty() &&
+              page.page->cells.back().key.row_uuid == inserted.back().first,
+          "the split's new leaf is the rightmost, holding the new row's cell last");
+    std::cout << b.name << " index growth page_size=" << b.size << " new leaf holds " << page.page->cells.size() << " cells\n";
+  }
+  Commit(*s.w, s.sink(), 2);
+  for (const auto& [row, version] : inserted) PeekSees(b, path, row, version, "an inserted row, committed, past a split");
+  fs::remove(path);
+  std::cout << b.name << " index growth page_size=" << b.size << " role " << at.role << " split after " << inserted.size() << " rows\n";
+}
 }  // namespace
 
 #ifndef SB_CATALOG_INSERT_WRITER_TEST_WITHOUT_MAIN
@@ -1155,6 +1317,7 @@ int main(int argc, char** argv) {
     InsertLosses(*production, places.front());
     TornIndex(*production, places.front());
     InsertFaults(*production, places.front());
+    IndexGrowth(*production, places);
     Unindexed(*seeded);
     std::cout << "PASS native catalog insert writer page_size=" << production->size << " checks=" << checks << '\n';
     return 0;

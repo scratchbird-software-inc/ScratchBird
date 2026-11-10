@@ -160,6 +160,10 @@ struct TreePage {
   disk::NativePageReference ref;
   std::vector<byte> image;
   pg::NativeBtreePage page;
+  // SB_CATALOG_NEW_PAGES: a page this write adds (a split's new leaf); its
+  // image is what the file holds there now, and it is written before the
+  // pages that point to it.
+  bool added = false;
 };
 // A relation as its head reaches it: the index pages (empty when unindexed),
 // in walk order, and every base leaf, sorted by page number.
@@ -636,6 +640,139 @@ std::optional<Leaf> NewBaseLeaf(disk::CarefulWriteSink& sink, const NativeCatalo
   return leaf;
 }
 
+
+// SEARCH_KEY: SB_CATALOG_LEAF_SPLIT (W3b-3a-2, owner Q30 = 1). Inserts `cell`
+// into the leaf of `tree` whose fences hold its key, at its key's position;
+// `changed` gains every page of `tree` the insert changes. A leaf without
+// room is split: its cells and the new one are divided at a split point (all
+// old cells left and the new one alone right when it is the last, the common
+// case of ascending UUIDv7 keys; else the middle), the right part goes to a
+// new leaf (the system's, SB_NATIVE_BTREE_SYSTEM_PAGE), and
+//  - the old leaf keeps its page, its low fence and left link; its high fence
+//    becomes the split key and its right link the new leaf;
+//  - the new leaf's low fence is the split key, its high fence and right link
+//    the old leaf's, its left link the old leaf, its parent the old leaf's;
+//  - the old right neighbour's left link becomes the new leaf (rewritten in
+//    place, keeping its generation);
+//  - the parent gains a separator, the split key with the new leaf as child.
+// With low-key separators nothing above the parent changes. A leaf that is
+// the root, or a parent without room, is refused `full` until branch and
+// root splits exist (W3b-3b); a cell no page can hold is invalid.
+std::optional<E> InsertTreeCell(disk::CarefulWriteSink& sink, std::vector<TreePage>& tree, std::set<std::size_t>& changed,
+                                pg::NativeBtreeCell cell, E full, E too_long, PageSource& pages, u32 page_size,
+                                bool may_grow, CatalogVersionWriteResult& result) {
+  const auto view = [](const pg::NativeBtreeKey& k) {
+    return pg::NativeBtreeKeyView{std::span<const byte>(k.encoded_key), k.row_uuid, k.version_uuid};
+  };
+  std::optional<std::size_t> reached;
+  for (std::size_t t = 0; t < tree.size() && !reached; ++t) {
+    const auto& page = tree[t].page;
+    if (page.tree_level) continue;
+    if (page.low_fence && pg::CompareNativeBtreeKeys(view(cell.key), view(*page.low_fence)) < 0) continue;
+    if (page.high_fence && pg::CompareNativeBtreeKeys(view(cell.key), view(*page.high_fence)) >= 0) continue;
+    reached = t;
+  }
+  if (!reached) return E::invalid_catalog;
+  auto cells = tree[*reached].page.cells;
+  const auto at = std::lower_bound(cells.begin(), cells.end(), cell.key, [&](const auto& c, const auto& k) {
+    return pg::CompareNativeBtreeKeys(view(c.key), view(k)) < 0;
+  });
+  const auto position = static_cast<std::size_t>(at - cells.begin());
+  cells.insert(at, std::move(cell));
+  {
+    auto page = tree[*reached].page;
+    page.cells = cells;
+    const auto fits = pg::EncodeNativeBtreePage(page);
+    if (fits.ok()) {
+      tree[*reached].page = std::move(page);
+      changed.insert(*reached);
+      return std::nullopt;
+    }
+    if (fits.error == pg::NativeBtreeError::key_too_long) return too_long;
+    if (fits.error != pg::NativeBtreeError::resource_exhausted) return E::invalid_catalog;
+  }
+  // The split: only where the write may add pages (an allocation map is
+  // bound), and only of a leaf with a parent (not the root).
+  if (!may_grow) return full;
+  const auto& old = tree[*reached].page;
+  if (old.header.page_type != 0x202 || !old.parent) return full;
+  const auto find = [&](const disk::NativePageReference& ref) -> std::optional<std::size_t> {
+    for (std::size_t t = 0; t < tree.size(); ++t)
+      if (tree[t].ref.page_number == ref.page_number) return t;
+    return std::nullopt;
+  };
+  const auto parent = find(*old.parent);
+  if (!parent) return E::invalid_catalog;
+  const std::optional<std::size_t> neighbour = old.right ? find(*old.right) : std::nullopt;
+  if (old.right && !neighbour) return E::invalid_catalog;
+  const auto taken = pages.Take(0x202, old.dependencies.index_uuid);
+  if (!taken) return pages.disagreed() ? E::invalid_catalog : E::new_pages_exhausted;
+  const disk::NativePageReference new_ref{old.header.filespace_uuid, taken->page_number, 1, old.header.page_size_profile_uuid};
+  // The split points to try, in order; the first both sides of which encode.
+  std::vector<std::size_t> points;
+  if (position + 1 == cells.size()) points.push_back(cells.size() - 1);
+  points.push_back(cells.size() / 2);
+  for (const auto m : points) {
+    if (m == 0 || m >= cells.size()) continue;
+    auto left = old;
+    left.cells.assign(cells.begin(), cells.begin() + static_cast<std::ptrdiff_t>(m));
+    left.right = new_ref;
+    left.high_fence = cells[m].key;
+    pg::NativeBtreePage right = old;
+    right.header.page_uuid = taken->page_uuid;
+    right.header.page_number = taken->page_number;
+    right.header.page_generation = 1;
+    right.creator_transaction_uuid = {};
+    right.creator_local_transaction_id = 0;
+    right.cells.assign(cells.begin() + static_cast<std::ptrdiff_t>(m), cells.end());
+    right.left = tree[*reached].ref;
+    right.right = old.right;
+    right.low_fence = cells[m].key;
+    right.high_fence = old.high_fence;
+    if (!pg::EncodeNativeBtreePage(left).ok() || !pg::EncodeNativeBtreePage(right).ok()) continue;
+    // The parent's separator, after the old leaf's.
+    auto up = tree[*parent].page;
+    pg::NativeBtreeCell separator;
+    separator.key = cells[m].key;
+    separator.child = new_ref;
+    const auto slot = std::lower_bound(up.cells.begin(), up.cells.end(), separator.key, [&](const auto& c, const auto& k) {
+      return pg::CompareNativeBtreeKeys(view(c.key), view(k)) < 0;
+    });
+    up.cells.insert(slot, std::move(separator));
+    const auto parent_fits = pg::EncodeNativeBtreePage(up);
+    if (!parent_fits.ok()) return parent_fits.error == pg::NativeBtreeError::resource_exhausted ? full : E::invalid_catalog;
+    std::optional<pg::NativeBtreePage> next;
+    if (neighbour) {
+      next = tree[*neighbour].page;
+      next->left = new_ref;
+      if (!pg::EncodeNativeBtreePage(*next).ok()) return E::invalid_catalog;
+    }
+    TreePage added;
+    added.ref = new_ref;
+    added.page = std::move(right);
+    added.added = true;
+    if (!pages.dry()) {
+      added.image.assign(page_size, 0);
+      const auto io = sink.ReadAt(taken->page_number * u64{page_size}, std::span<byte>(added.image));
+      if (!io.ok() || io.bytes_transferred != page_size) {
+        result.io = io;
+        return E::io_failure;
+      }
+    }
+    const auto old_index = *reached;
+    tree[old_index].page = std::move(left);
+    tree[*parent].page = std::move(up);
+    if (neighbour) tree[*neighbour].page = std::move(*next);
+    tree.push_back(std::move(added));
+    changed.insert(old_index);
+    changed.insert(*parent);
+    if (neighbour) changed.insert(*neighbour);
+    changed.insert(tree.size() - 1);
+    return std::nullopt;
+  }
+  return full;
+}
+
 // Allocates the dry pass's pages, in order, each durable on its own (the
 // system's: no creator). False with `result` set on a failure; the pages
 // allocated before it are in result.allocated_pages.
@@ -997,37 +1134,17 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
     // in the row-UUID tree (the tree otherwise indexes first versions only;
     // the visibility reader selects one visible version per row however many
     // of its versions have cells).
-    std::optional<std::size_t> changed_index_page;
+    std::set<std::size_t> changed_index_pages;
     if (on_new_leaf) {
-      const auto key_view = [](const pg::NativeBtreeKey& k) {
-        return pg::NativeBtreeKeyView{std::span<const byte>(k.encoded_key), k.row_uuid, k.version_uuid};
-      };
       pg::NativeBtreeCell cell;
       cell.key.encoded_key.assign(request.row_uuid.bytes.begin(), request.row_uuid.bytes.end());
       cell.key.row_uuid = request.row_uuid;
       cell.key.version_uuid = request.version_uuid;
       cell.base_page = bases[*target];
       cell.creator_local_transaction_id = request.transaction_order;
-      auto& tree = relation_read.tree;
-      std::optional<std::size_t> reached;
-      for (std::size_t t = 0; t < tree.size() && !reached; ++t) {
-        const auto& page = tree[t].page;
-        if (page.tree_level) continue;
-        if (page.low_fence && pg::CompareNativeBtreeKeys(key_view(cell.key), key_view(*page.low_fence)) < 0) continue;
-        if (page.high_fence && pg::CompareNativeBtreeKeys(key_view(cell.key), key_view(*page.high_fence)) >= 0) continue;
-        reached = t;
-      }
-      if (!reached) return Refuse(E::invalid_catalog);
-      auto page = tree[*reached].page;
-      const auto at = std::lower_bound(page.cells.begin(), page.cells.end(), cell.key, [&](const auto& c, const auto& k) {
-        return pg::CompareNativeBtreeKeys(key_view(c.key), key_view(k)) < 0;
-      });
-      page.cells.insert(at, std::move(cell));
-      const auto fits = pg::EncodeNativeBtreePage(page);
-      if (!fits.ok())
-        return Refuse(fits.error == pg::NativeBtreeError::resource_exhausted ? E::index_full : E::invalid_catalog);
-      tree[*reached].page = std::move(page);
-      changed_index_page = *reached;
+      if (const auto error = InsertTreeCell(sink, relation_read.tree, changed_index_pages, std::move(cell), E::index_full,
+                                            E::invalid_successor, pages, page_size, binding.allocation_root.has_value(), result))
+        return Refuse(*error);
     }
     if (*target != base->leaf) {
       link_image = EncodeNativeCatalogLeaf(link(leaves[base->leaf].page));
@@ -1118,30 +1235,6 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
         }
         // The new version's cells, unless it is a drop.
         if (!request.metadata.record.header.deleted) {
-          const auto insert_cell = [&](std::vector<TreePage>& tree, pg::NativeBtreeCell cell) -> std::optional<E> {
-            std::optional<std::size_t> reached;
-            for (std::size_t p = 0; p < tree.size(); ++p) {
-              const auto& page = tree[p].page;
-              if (page.tree_level) continue;
-              if (page.low_fence && pg::CompareNativeBtreeKeys(key_view(cell.key), key_view(*page.low_fence)) < 0) continue;
-              if (page.high_fence && pg::CompareNativeBtreeKeys(key_view(cell.key), key_view(*page.high_fence)) >= 0) continue;
-              reached = p;
-              break;
-            }
-            if (!reached) return E::invalid_catalog;
-            auto page = tree[*reached].page;
-            const auto at = std::lower_bound(page.cells.begin(), page.cells.end(), cell.key, [&](const auto& c, const auto& k) {
-              return pg::CompareNativeBtreeKeys(key_view(c.key), key_view(k)) < 0;
-            });
-            page.cells.insert(at, std::move(cell));
-            const auto fits = pg::EncodeNativeBtreePage(page);
-            if (!fits.ok())
-              return fits.error == pg::NativeBtreeError::resource_exhausted ? E::name_tree_full
-                     : fits.error == pg::NativeBtreeError::key_too_long      ? E::invalid_successor
-                                                                              : E::invalid_catalog;
-            tree[*reached].page = std::move(page);
-            return std::nullopt;
-          };
           const auto payload_view = catalog::BorrowCatalogNamePayload(*request.name);
           const auto add = [&](unsigned t, std::vector<byte> encoded_key, std::vector<byte> payload) -> std::optional<E> {
             pg::NativeBtreeCell cell;
@@ -1151,16 +1244,9 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
             cell.base_page = bases[*target];
             cell.creator_local_transaction_id = request.transaction_order;
             cell.payload = std::move(payload);
-            const auto before = name_trees[t].tree.size();
-            (void)before;
-            if (const auto error = insert_cell(name_trees[t].tree, std::move(cell))) return error;
-            return std::nullopt;
+            return InsertTreeCell(sink, name_trees[t].tree, name_trees[t].changed, std::move(cell), E::name_tree_full,
+                                  E::invalid_successor, pages, page_size, binding.allocation_root.has_value(), result);
           };
-          // insert_cell changes one leaf; record which by comparing images later
-          // is wasteful, so record every leaf whose cells changed below.
-          std::vector<std::vector<std::size_t>> cell_counts(2);
-          for (unsigned t = 0; t < 2; ++t)
-            for (const auto& page : name_trees[t].tree) cell_counts[t].push_back(page.page.cells.size());
           if (const auto* v = std::get_if<catalog::CatalogNameVectorView>(&payload_view)) {
             const auto kind = KindNamed(v->object_class);
             if (!kind) return Refuse(E::invalid_name);
@@ -1183,9 +1269,6 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
                                        catalog::CatalogNameUuidTreeEntryPayload(e.name_entry_uuid.value, components)))
               return Refuse(*error);
           }
-          for (unsigned t = 0; t < 2; ++t)
-            for (std::size_t p = 0; p < name_trees[t].tree.size(); ++p)
-              if (name_trees[t].tree[p].page.cells.size() != cell_counts[t][p]) name_trees[t].changed.insert(p);
         }
       }
     }
@@ -1209,38 +1292,37 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
         return Refuse(E::plan_refused);
       leaf_nodes.push_back(second.node);
     }
-    // The name tree pages, and the row-UUID tree page a new leaf's cell went
-    // into, after every base leaf; each image kept until the plan executes.
-    std::vector<std::vector<byte>> tree_images;
-    std::vector<byte> index_image;
-    if (changed_index_page) {
-      auto& page = relation_read.tree[*changed_index_page];
-      auto encoded = pg::EncodeNativeBtreePage(page.page);
-      if (!encoded.ok()) return Refuse(E::invalid_catalog);
-      index_image = std::move(encoded.bytes);
-      const auto node = plan.Add(page.ref.page_number * u64{page_size}, std::span<const byte>(index_image),
-                                 std::span<const byte>(page.image));
-      if (!node.ok()) return Refuse(E::plan_refused);
-      for (const auto before : leaf_nodes)
-        if (plan.Before(before, node.node) != CarefulWriteError::none) return Refuse(E::plan_refused);
-    }
+    // The row-UUID tree pages a new leaf's cell changed and the name tree
+    // pages, after every base leaf; a page a split added before every
+    // existing tree page (one of which points to it). Each image is kept
+    // until the plan executes.
+    struct TreeWrite {
+      TreePage* page;
+      std::vector<byte> image;
+    };
+    std::vector<TreeWrite> tree_writes;
+    for (const auto t : changed_index_pages) tree_writes.push_back({&relation_read.tree[t], {}});
     for (auto& tree : name_trees)
-      for (const auto p : tree.changed) {
-        auto encoded = pg::EncodeNativeBtreePage(tree.tree[p].page);
-        if (!encoded.ok()) return Refuse(E::invalid_catalog);
-        tree_images.push_back(std::move(encoded.bytes));
-      }
-    {
-      std::size_t next = 0;
-      for (auto& tree : name_trees)
-        for (const auto p : tree.changed) {
-          const auto node = plan.Add(tree.tree[p].ref.page_number * u64{page_size}, std::span<const byte>(tree_images[next++]),
-                                     std::span<const byte>(tree.tree[p].image));
-          if (!node.ok()) return Refuse(E::plan_refused);
-          for (const auto before : leaf_nodes)
-            if (plan.Before(before, node.node) != CarefulWriteError::none) return Refuse(E::plan_refused);
-        }
+      for (const auto t : tree.changed) tree_writes.push_back({&tree.tree[t], {}});
+    for (auto& w : tree_writes) {
+      auto encoded = pg::EncodeNativeBtreePage(w.page->page);
+      if (!encoded.ok()) return Refuse(E::invalid_catalog);
+      w.image = std::move(encoded.bytes);
     }
+    std::vector<disk::CarefulWriteNodeId> added_nodes;
+    for (const bool added : {true, false})
+      for (const auto& w : tree_writes) {
+        if (w.page->added != added) continue;
+        const auto node = plan.Add(w.page->ref.page_number * u64{page_size}, std::span<const byte>(w.image),
+                                   std::span<const byte>(w.page->image));
+        if (!node.ok()) return Refuse(E::plan_refused);
+        for (const auto before : leaf_nodes)
+          if (plan.Before(before, node.node) != CarefulWriteError::none) return Refuse(E::plan_refused);
+        if (added) added_nodes.push_back(node.node);
+        else
+          for (const auto before : added_nodes)
+            if (plan.Before(before, node.node) != CarefulWriteError::none) return Refuse(E::plan_refused);
+      }
     const auto r = plan.Execute(sink, binding.barrier_policy);
     result.write_error = r.error;
     result.io = r.io;
@@ -1424,41 +1506,10 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
         }
       }
     }
-    // The leaf of `tree` whose key range holds the cell's key, the cell at its
-    // position; with low-key separators nothing above the leaf changes. A
-    // full leaf is `full` (splits: W3b-3); an entry no page can hold (above a
-    // quarter page) is not a fullness a split could cure.
-    const auto key_view = [](const pg::NativeBtreeKey& k) {
-      return pg::NativeBtreeKeyView{std::span<const byte>(k.encoded_key), k.row_uuid, k.version_uuid};
-    };
-    const auto insert_cell = [&](std::vector<TreePage>& tree, pg::NativeBtreeCell cell, E full) -> std::variant<std::size_t, E> {
-      std::optional<std::size_t> reached;
-      for (std::size_t t = 0; t < tree.size(); ++t) {
-        const auto& page = tree[t].page;
-        if (page.tree_level) continue;
-        if (page.low_fence && pg::CompareNativeBtreeKeys(key_view(cell.key), key_view(*page.low_fence)) < 0) continue;
-        if (page.high_fence && pg::CompareNativeBtreeKeys(key_view(cell.key), key_view(*page.high_fence)) >= 0) continue;
-        reached = t;
-        break;
-      }
-      if (!reached) return E::invalid_catalog;
-      auto page = tree[*reached].page;
-      const auto at = std::lower_bound(page.cells.begin(), page.cells.end(), cell.key, [&](const auto& c, const auto& k) {
-        return pg::CompareNativeBtreeKeys(key_view(c.key), key_view(k)) < 0;
-      });
-      page.cells.insert(at, std::move(cell));
-      const auto fits = pg::EncodeNativeBtreePage(page);
-      if (!fits.ok())
-        return fits.error == pg::NativeBtreeError::resource_exhausted ? full
-               : fits.error == pg::NativeBtreeError::key_too_long      ? E::invalid_insert
-                                                                        : E::invalid_catalog;
-      tree[*reached].page = std::move(page);
-      return *reached;
-    };
-
     // ---- each row: checked, placed, indexed --------------------------------
     // The pages a placement changes, by (role, index): their pages as changed.
-    std::set<std::pair<u16, std::size_t>> changed_leaves, changed_tree;
+    std::set<std::pair<u16, std::size_t>> changed_leaves;
+    std::map<u16, std::set<std::size_t>> changed_tree;  // per role: tree pages changed or added
     const auto hold = [&](const pg::RowDataRecord& row) {
       const auto* creator = entry(row.local_transaction_id);
       if (!creator || creator->identity.transaction_uuid.value != row.transaction_uuid.value) return Hold::held;
@@ -1633,10 +1684,8 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
           cell.base_page = relation.bases[*target];
           cell.creator_local_transaction_id = request.transaction_order;
           cell.payload = std::move(payload);
-          const auto placed_at = insert_cell((*name_trees)[t].tree, std::move(cell), E::name_tree_full);
-          if (const auto* error = std::get_if<E>(&placed_at)) return *error;
-          (*name_trees)[t].changed.insert(std::get<std::size_t>(placed_at));
-          return std::nullopt;
+          return InsertTreeCell(sink, (*name_trees)[t].tree, (*name_trees)[t].changed, std::move(cell), E::name_tree_full,
+                                E::invalid_insert, pages, page_size, binding.allocation_root.has_value(), result);
         };
         if (const auto* v = std::get_if<catalog::CatalogNameVectorView>(&payload_view)) {
           const auto kind = KindNamed(v->object_class);
@@ -1671,9 +1720,9 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
       cell.key.version_uuid = want.version_uuid;
       cell.base_page = relation.bases[*target];
       cell.creator_local_transaction_id = request.transaction_order;
-      const auto placed_at = insert_cell(relation.tree, std::move(cell), E::index_full);
-      if (const auto* error = std::get_if<E>(&placed_at)) return refuse_row(*error, i);
-      changed_tree.insert({want.role, std::get<std::size_t>(placed_at)});
+      if (const auto error = InsertTreeCell(sink, relation.tree, changed_tree[want.role], std::move(cell), E::index_full,
+                                            E::invalid_insert, pages, page_size, binding.allocation_root.has_value(), result))
+        return refuse_row(*error, i);
     }
 
     // ---- the images --------------------------------------------------------
@@ -1682,6 +1731,7 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
       u64 page_number;
       std::vector<byte> image;
       const std::vector<byte>* as_read;
+      bool added = false;  // a page this write adds: written before the pages that point to it
     };
     std::vector<Planned> leaf_writes, tree_writes;
     for (const auto& [role, l] : changed_leaves) {
@@ -1695,12 +1745,13 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
       }
       leaf_writes.push_back({relations.at(role).bases[l].page_number, std::move(encoded.bytes), &leaf.image});
     }
-    for (const auto& [role, t] : changed_tree) {
-      auto& page = relations.at(role).tree[t];
-      auto encoded = pg::EncodeNativeBtreePage(page.page);
-      if (!encoded.ok()) return Refuse(E::invalid_catalog);
-      tree_writes.push_back({page.ref.page_number, std::move(encoded.bytes), &page.image});
-    }
+    for (const auto& [role, pages_changed] : changed_tree)
+      for (const auto t : pages_changed) {
+        auto& page = relations.at(role).tree[t];
+        auto encoded = pg::EncodeNativeBtreePage(page.page);
+        if (!encoded.ok()) return Refuse(E::invalid_catalog);
+        tree_writes.push_back({page.ref.page_number, std::move(encoded.bytes), &page.image, page.added});
+      }
     // SB_NATIVE_NAME_TREES: the name tree pages, after every base leaf like
     // the relation index pages.
     if (name_trees)
@@ -1709,7 +1760,7 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
           auto& page = tree.tree[t];
           auto encoded = pg::EncodeNativeBtreePage(page.page);
           if (!encoded.ok()) return Refuse(E::invalid_catalog);
-          tree_writes.push_back({page.ref.page_number, std::move(encoded.bytes), &page.image});
+          tree_writes.push_back({page.ref.page_number, std::move(encoded.bytes), &page.image, page.added});
         }
 
     // SB_CATALOG_NEW_PAGES: a dry pass that needs pages stops here, every
@@ -1728,13 +1779,22 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
       if (!node.ok()) return Refuse(E::plan_refused);
       leaf_nodes.push_back(node.node);
     }
-    for (const auto& w : tree_writes) {
-      const auto node = plan.Add(w.page_number * u64{page_size}, std::span<const byte>(w.image),
-                                 std::span<const byte>(*w.as_read));
-      if (!node.ok()) return Refuse(E::plan_refused);
-      for (const auto before : leaf_nodes)
-        if (plan.Before(before, node.node) != CarefulWriteError::none) return Refuse(E::plan_refused);
-    }
+    // Tree pages: every page a split added before every existing tree page
+    // (one of which points to it), all after the base leaves.
+    std::vector<disk::CarefulWriteNodeId> added_nodes;
+    for (const bool added : {true, false})
+      for (const auto& w : tree_writes) {
+        if (w.added != added) continue;
+        const auto node = plan.Add(w.page_number * u64{page_size}, std::span<const byte>(w.image),
+                                   std::span<const byte>(*w.as_read));
+        if (!node.ok()) return Refuse(E::plan_refused);
+        for (const auto before : leaf_nodes)
+          if (plan.Before(before, node.node) != CarefulWriteError::none) return Refuse(E::plan_refused);
+        if (added) added_nodes.push_back(node.node);
+        else
+          for (const auto before : added_nodes)
+            if (plan.Before(before, node.node) != CarefulWriteError::none) return Refuse(E::plan_refused);
+      }
     const auto r = plan.Execute(sink, binding.barrier_policy);
     result.write_error = r.error;
     result.io = r.io;
