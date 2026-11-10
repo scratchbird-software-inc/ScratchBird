@@ -289,7 +289,8 @@ Verified Verify(const Db& b, const std::string& original) {
                                                        db::NativeNameTreeNavigationLimits(b.size, db::kNativeCatalogScanRelationMaximumRows)};
     auto cohort = db::PrepareNativeCatalogCohortRead(limits, g.memory, g.binding);
     Check(cohort.ok(), "cohort workspace");
-    auto capture = db::PrepareNativeCatalogCapture({4096, 4u << 20, 1, 1024, 1024, 128}, g.memory, g.binding);
+    // SB_NATIVE_NAME_TREES: the cells too, for the engine's name tree check.
+    auto capture = db::PrepareNativeCatalogCapture({4096, 8u << 20, 1, 1024, 1024, 128, 8192}, g.memory, g.binding);
     Check(capture.ok(), "capture workspace");
     const auto read = db::NativeCatalogCohortLeaseReader::Read(*fixed.lease, 256u << 20, cohort.workspace, &capture.capture);
     if (!read.ok()) std::cerr << "cohort read error=" << int(read.error) << '\n';

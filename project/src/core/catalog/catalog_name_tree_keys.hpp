@@ -78,4 +78,19 @@ std::optional<CatalogNameUuidTreeEntryPayloadView> DecodeCatalogNameUuidTreeEntr
     std::span<const byte> payload);
 
 std::vector<byte> CatalogNameFullPathLookupKey(std::span<const std::span<const byte>> component_keys);
+
+// Allocation-free equality of stored bytes with what the functions above would
+// encode, for the startup verifiers (which allocate nothing).
+bool CatalogNameAuthoritativeTreeKeyEquals(const CatalogNameEntryView& entry, CatalogRecordKind kind,
+                                           std::span<const byte> key) noexcept;
+bool CatalogNameAuthoritativeTreePayloadEquals(const CatalogNameEntryView& entry, std::span<const byte> payload) noexcept;
+bool CatalogNameUuidTreeVectorKeyEquals(const Uuid& object_uuid, CatalogRecordKind kind, std::span<const byte> key) noexcept;
+bool CatalogNameUuidTreeVectorPayloadEquals(const CatalogNameVectorView& vector, std::span<const byte> payload) noexcept;
+bool CatalogNameUuidTreeEntryKeyEquals(const CatalogNameEntryView& entry, CatalogRecordKind kind,
+                                       std::span<const byte> key) noexcept;
+// Decodes a UUID-to-name entry payload into caller storage: the entry UUID and
+// up to components.size() display components. False when malformed or when
+// there are more components than the storage holds.
+bool DecodeCatalogNameUuidTreeEntryPayloadInto(std::span<const byte> payload, Uuid& entry_uuid,
+                                               std::span<std::string_view> components, std::size_t& count) noexcept;
 }  // namespace scratchbird::core::catalog

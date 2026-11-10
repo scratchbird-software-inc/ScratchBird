@@ -149,4 +149,92 @@ std::vector<byte> CatalogNameFullPathLookupKey(std::span<const std::span<const b
   for (const auto key : component_keys) AppendCatalogNameTreeEscaped(out, key);
   return out;
 }
+
+namespace {
+// Consumes `bytes` against what the encoders above would have written.
+class Matcher {
+ public:
+  explicit Matcher(std::span<const byte> bytes) noexcept : bytes_(bytes) {}
+  Matcher& Uuid(const struct Uuid& u) noexcept { return Raw(u.bytes); }
+  Matcher& Kind(CatalogRecordKind kind) noexcept {
+    const auto v = static_cast<u16>(kind);
+    const byte pair[2]{static_cast<byte>(v >> 8), static_cast<byte>(v)};
+    return Raw(pair);
+  }
+  Matcher& Byte(byte b) noexcept { return Raw(std::span<const byte>(&b, 1)); }
+  Matcher& Escaped(std::span<const byte> raw) noexcept {
+    for (const byte b : raw) {
+      Byte(b);
+      if (!b) Byte(0xff);
+    }
+    Byte(0);
+    return Byte(0);
+  }
+  Matcher& Escaped(std::string_view text) noexcept { return Escaped(Bytes(text)); }
+  bool Done() const noexcept { return ok_ && at_ == bytes_.size(); }
+
+ private:
+  Matcher& Raw(std::span<const byte> expected) noexcept {
+    if (!ok_ || expected.size() > bytes_.size() - at_ ||
+        !std::equal(expected.begin(), expected.end(), bytes_.begin() + static_cast<std::ptrdiff_t>(at_)))
+      ok_ = false;
+    else
+      at_ += expected.size();
+    return *this;
+  }
+  std::span<const byte> bytes_;
+  std::size_t at_ = 0;
+  bool ok_ = true;
+};
+}  // namespace
+
+bool CatalogNameAuthoritativeTreeKeyEquals(const CatalogNameEntryView& entry, CatalogRecordKind kind,
+                                           std::span<const byte> key) noexcept {
+  return Matcher(key)
+      .Uuid(entry.scope_uuid.value)
+      .Uuid(entry.identifier_profile_uuid.value)
+      .Escaped(entry.language_tag)
+      .Escaped(CatalogNameEntryOwnLaneKey(entry))
+      .Kind(kind)
+      .Done();
+}
+bool CatalogNameAuthoritativeTreePayloadEquals(const CatalogNameEntryView& entry, std::span<const byte> payload) noexcept {
+  return Matcher(payload).Uuid(entry.object_uuid.value).Uuid(entry.name_entry_uuid.value).Done();
+}
+bool CatalogNameUuidTreeVectorKeyEquals(const Uuid& object_uuid, CatalogRecordKind kind, std::span<const byte> key) noexcept {
+  return Matcher(key).Uuid(object_uuid).Kind(kind).Byte(0).Done();
+}
+bool CatalogNameUuidTreeVectorPayloadEquals(const CatalogNameVectorView& vector, std::span<const byte> payload) noexcept {
+  return Matcher(payload)
+      .Uuid(vector.name_vector_uuid.value)
+      .Uuid(vector.default_name_entry_uuid.value)
+      .Uuid(vector.name_collision_policy_uuid.value)
+      .Done();
+}
+bool CatalogNameUuidTreeEntryKeyEquals(const CatalogNameEntryView& entry, CatalogRecordKind kind,
+                                       std::span<const byte> key) noexcept {
+  return Matcher(key)
+      .Uuid(entry.object_uuid.value)
+      .Kind(kind)
+      .Byte(1)
+      .Escaped(entry.language_tag)
+      .Byte(static_cast<byte>(entry.name_class))
+      .Done();
+}
+bool DecodeCatalogNameUuidTreeEntryPayloadInto(std::span<const byte> payload, Uuid& entry_uuid,
+                                               std::span<std::string_view> components, std::size_t& count) noexcept {
+  count = 0;
+  if (payload.size() < 17) return false;
+  entry_uuid = GetUuid(payload, 0);
+  std::size_t at = 16;
+  const auto n = GetLeb(payload, at);
+  if (!n || *n > payload.size() - at || *n > components.size()) return false;
+  for (u64 i = 0; i < *n; ++i) {
+    const auto length = GetLeb(payload, at);
+    if (!length || *length > payload.size() - at) return false;
+    components[count++] = {reinterpret_cast<const char*>(payload.data() + at), static_cast<std::size_t>(*length)};
+    at += static_cast<std::size_t>(*length);
+  }
+  return at == payload.size();
+}
 }  // namespace scratchbird::core::catalog

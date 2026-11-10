@@ -21,9 +21,16 @@
 //     allocation check finds no orphan;
 //   - without name-tree backing the read refuses (resource_exhausted);
 //   - the sizing helper covers the trees the create built;
+//   - the engine's metadata verification accepts the capture: the index
+//     verifier resolves both trees' tuples to their map and key-profile rows,
+//     the name tree verifier finds every cell's key and payload equal to what
+//     its row derives and every name row's cells present; without the cells
+//     captured it refuses (cells_not_captured);
 //   - mutations of a copy: a cell's version changed, a cell's creator
 //     changed, a cell removed (a row without its cell), root 23 removed from
-//     page zero, the two roots' objects swapped.
+//     page zero, the two roots' objects swapped (all refused by storage);
+//     a cell's payload byte changed and a cell's key byte changed (bound by
+//     storage, refused by the engine: cell_payload, cell_key).
 #define SB_CATALOG_VERSION_WRITER_TEST_WITHOUT_MAIN
 #include "native_catalog_version_writer_test.cpp"
 
@@ -33,6 +40,7 @@
 #include "native_catalog_cohort_capture.hpp"
 #include "native_catalog_cohort_lease_reader.hpp"
 #include "engine/internal_api/verification/native_startup_catalog_allocation.hpp"
+#include "engine/internal_api/catalog/native_catalog_metadata_verification.hpp"
 
 namespace {
 namespace ia = scratchbird::engine::internal_api;
@@ -42,6 +50,7 @@ struct Trees {
   // The lease's refusal, when the file does not get as far as the cohort read.
   std::optional<db::NativeFixedRootMemoryError> lease_error;
   db::NativeCatalogCohortInspection inspection;
+  ia::NativeCatalogMetadataVerification metadata;  // the engine's verdict on the capture
   std::array<u64, 2> entries_and_vectors{};  // [0] entries, [1] vectors among the captured name rows
   std::size_t cells_captured = 0, cells_mismatched = 0, tree_pages_captured = 0;
   bool allocation_ok = false, maps_and_profiles_ok = false;
@@ -146,6 +155,12 @@ Trees Open(const Db& b, const std::string& path, bool with_trees, bool with_cell
           (page.owner_uuid == out.trees[0]->dependencies.index_uuid || page.owner_uuid == out.trees[1]->dependencies.index_uuid))
         ++out.tree_pages_captured;
     out.allocation_ok = ia::CheckNativeStartupCatalogAllocation(cap, fixed.lease->allocation()).ok();
+    {
+      const auto count = cap.rows().size();
+      std::vector<std::size_t> order(count), parents(count);
+      std::vector<byte> colors(count);
+      out.metadata = ia::VerifyNativeCatalogMetadata(cap, {order, parents, colors});
+    }
   }
   Check(device.Close().ok(), "close");
   return out;
@@ -182,10 +197,17 @@ void Mutations(const Db& b, const std::string& original) {
     Check(at != page_zero.record->roots.end(), "page zero has the name tree root");
     return *at;
   };
+  using NE = ia::NativeCatalogNameTreeVerificationError;
   const auto expect = [&](const std::vector<byte>& image, CoE error, std::string_view what,
-                          std::optional<db::NativeFixedRootMemoryError> lease_error = std::nullopt) {
+                          std::optional<db::NativeFixedRootMemoryError> lease_error = std::nullopt,
+                          std::optional<NE> engine_error = std::nullopt) {
     const auto path = b.Copy(image, "mutated.db");
-    const auto opened = Open(b, path, true, false);
+    const auto opened = Open(b, path, true, engine_error.has_value());
+    if (engine_error && opened.inspection.ok()) {
+      if (opened.metadata.name_trees.error != *engine_error)
+        std::cerr << what << ": engine name_trees error=" << int(opened.metadata.name_trees.error) << '\n';
+      Check(!opened.metadata.ok() && opened.metadata.name_trees.error == *engine_error, what);
+    }
     if (opened.lease_error != lease_error || (!lease_error && opened.inspection.error != error))
       std::cerr << what << ": lease=" << (opened.lease_error ? int(*opened.lease_error) : -1) << " error=" << int(opened.inspection.error)
                 << " tree_error=" << int(opened.inspection.name_tree_error) << " page_error=" << int(opened.inspection.name_tree_page_error) << '\n';
@@ -218,6 +240,22 @@ void Mutations(const Db& b, const std::string& original) {
       auto changed = page;
       changed.cells.pop_back();
       expect(with_page(leaf, changed), CoE::name_tree_mismatch, "a name row without its cell is refused");
+    }
+    {
+      auto changed = page;
+      changed.cells.front().payload.back() ^= byte{1};
+      expect(with_page(leaf, changed), CoE::none, "a cell whose payload is not its row's is refused by the engine",
+             std::nullopt, NE::cell_payload);
+    }
+    {
+      // The key's last byte: the record kind (authoritative) or the name
+      // class (UUID-to-name), neither of which reorders the leaf here.
+      auto changed = page;
+      changed.cells.front().key.encoded_key.back() ^= byte{1};
+      const auto encoded = pg::EncodeNativeBtreePage(changed);
+      if (encoded.ok())
+        expect(with_page(leaf, changed), CoE::none, "a cell whose key is not its row's is refused by the engine",
+               std::nullopt, NE::cell_key);
     }
   }
   {
@@ -280,6 +318,25 @@ int main() {
             "every captured cell's key and payload derive from its row");
       Check(opened.tree_pages_captured == i.name_tree_pages[0] + i.name_tree_pages[1], "the trees' pages are captured as physical pages");
       Check(opened.allocation_ok, "the startup allocation check finds no orphan");
+      if (!opened.metadata.ok())
+        std::cerr << "metadata: names=" << int(opened.metadata.names.error) << " paths=" << int(opened.metadata.paths.error)
+                  << " indexes=" << int(opened.metadata.indexes.error) << " name_trees=" << int(opened.metadata.name_trees.error)
+                  << " namespaces=" << int(opened.metadata.namespaces.error) << " audit=" << int(opened.metadata.audit.error)
+                  << " security=" << int(opened.metadata.security.error) << " profiles=" << int(opened.metadata.naming_profiles.error)
+                  << " collisions=" << int(opened.metadata.collisions.error) << '\n';
+      Check(opened.metadata.ok(), "the engine's metadata verification accepts the production database");
+      // The create indexes every non-empty relation and role 5: five of six.
+      Check(opened.metadata.indexes.indexed_relations == 5 && opened.metadata.indexes.indexed_name_trees == 2,
+            "the index verifier resolves the five relation tuples and both tree tuples");
+      Check(opened.metadata.name_trees.present && opened.metadata.name_trees.cells == opened.cells_captured &&
+                opened.metadata.name_trees.rows == entries + vectors,
+            "the name tree verifier compared every cell and every name row");
+      {
+        const auto without_cells = Open(*b, original, true, false);
+        Check(without_cells.inspection.ok() && !without_cells.metadata.ok() &&
+                  without_cells.metadata.name_trees.error == ia::NativeCatalogNameTreeVerificationError::cells_not_captured,
+              "without the cells captured the engine refuses to verify the trees");
+      }
       const auto without = Open(*b, original, false, false);
       Check(!without.lease_error && !without.inspection.ok() && without.inspection.error == CoE::resource_exhausted,
             "without name-tree backing the cohort read refuses");

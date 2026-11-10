@@ -3213,7 +3213,9 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
   if(counted!=server::NativeHostedRuntimeError::none)std::cerr<<"producer catalog scan error="<<int(counted)<<'\n';
   Check(counted==server::NativeHostedRuntimeError::none,"the complete catalog scans within the shared tiers");
   // producer-transactions runs past the first header page (up to 511 transactions).
-  const db::NativeCatalogCaptureLimits capture_limits{4096,4*1024*1024,1,transactions?std::size_t{1024}:std::size_t{4},1024,128};
+  // SB_NATIVE_NAME_TREES: the production database's name tree cells too (the
+  // engine refuses to verify the trees without them), with text room for them.
+  const db::NativeCatalogCaptureLimits capture_limits{4096,8*1024*1024,1,transactions?std::size_t{1024}:std::size_t{4},1024,128,8192};
   const auto captured=Host::ReadStartupCatalogs(read,catalog_limits,catalog_scan_limits,capture_limits);
   if(captured!=server::NativeHostedRuntimeError::none)std::cerr<<"producer catalog capture error="<<int(captured)<<'\n';
   Check(captured==server::NativeHostedRuntimeError::none,"the complete catalog is captured");
@@ -3223,7 +3225,7 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
       <<" names="<<int(m.names.error)<<" indexes="<<int(m.indexes.error)<<" role="<<m.indexes.role
       <<" namespaces="<<int(m.namespaces.error)<<" filespaces="<<int(m.filespaces.error)<<" audit="<<int(m.audit.error)
       <<" security="<<int(m.security.error)<<" naming_profiles="<<int(m.naming_profiles.error)
-      <<" collisions="<<int(m.collisions.error)<<'\n';
+      <<" collisions="<<int(m.collisions.error)<<" paths="<<int(m.paths.error)<<" name_trees="<<int(m.name_trees.error)<<'\n';
   if(unaudited){
     Check(metadata==server::NativeHostedRuntimeError::catalog_verification_failure&&!m.audit.ok()&&
         m.audit.error==scratchbird::engine::internal_api::NativeCatalogAuditError::event_binding&&
@@ -3233,6 +3235,7 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
     return;
   }
   Check(metadata==server::NativeHostedRuntimeError::none&&m.ok()&&m.names.ok()&&m.indexes.ok()&&m.indexes.indexed_relations==5&&
+      m.indexes.indexed_name_trees==2&&m.name_trees.ok()&&m.name_trees.present&&
       m.namespaces.ok()&&m.filespaces.ok()&&m.audit.ok()&&m.security.ok()&&m.naming_profiles.ok()&&m.collisions.ok(),
       "the engine verifies every component of the producer's catalog: names, indexes, namespaces, filespaces, audit, "
       "security references, naming profiles and collisions");
