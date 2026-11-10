@@ -51,6 +51,7 @@
 #include "native_catalog_cohort_capture.hpp"
 #include "native_catalog_cohort_lease_reader.hpp"
 #include "engine/internal_api/catalog/native_catalog_metadata_verification.hpp"
+#include "engine/internal_api/verification/native_startup_catalog_allocation.hpp"
 
 namespace {
 namespace ia = scratchbird::engine::internal_api;
@@ -268,6 +269,10 @@ struct Verified {
   ia::NativeCatalogSecurityReferenceVerification security;
   ia::NativeCatalogNamingProfileVerification profiles;
   ia::NativeCatalogCollisionVerification collisions;
+  // The startup allocation check over the capture's physical pages: every
+  // page the allocation map holds that the capture reaches matches it, and
+  // every captured page is matched (SB_CATALOG_NEW_PAGES: system pages too).
+  bool allocation = false;
 };
 // On a copy of the file as it stands (a writing session keeps its device open).
 Verified Verify(const Db& b, const std::string& original) {
@@ -306,6 +311,8 @@ Verified Verify(const Db& b, const std::string& original) {
     out.security = ia::VerifyNativeCatalogSecurityReferences(capture.capture, order);
     out.profiles = ia::VerifyNativeCatalogNamingProfileReferences(capture.capture, order);
     out.collisions = ia::VerifyNativeCatalogNamingCollisions(capture.capture, workspace);
+    const auto coverage = ia::CheckNativeStartupCatalogAllocation(capture.capture, fixed.lease->allocation());
+    out.allocation = coverage.ok() && coverage.matched_pages == capture.capture.physical_pages().size();
   }
   Check(device.Close().ok(), "close the verifier's open");
   fs::remove(path);
@@ -327,6 +334,7 @@ void ExpectNamedVerification(const Db& b, const std::string& path, std::size_t d
   Check(v.names.ok() && v.names.definitions == definitions, std::string(label) + ": name verification accepts it");
   Check(v.profiles.ok() && v.collisions.ok() && v.security.ok(),
         std::string(label) + ": naming-profile, collision and security verification accept it");
+  Check(v.allocation, std::string(label) + ": every captured catalog page is an allocated page the map records");
   if (!v.name_trees.ok()) std::cerr << label << " name_trees=" << int(v.name_trees.error) << '\n';
   Check(v.name_trees.ok() && v.name_trees.present, std::string(label) + ": the name trees agree with the names");
   if (full_passes) {
@@ -425,6 +433,111 @@ bool NamedStates(const Db& b, const NameTemplate& t, u16 role, std::size_t defin
   return true;
 }
 
+// ---- New base leaves (W3b-3a) ---------------------------------------------
+// Fails the first write outside the allocation map: a crash after a write's
+// allocation and before its own plan.
+class FailAfterAllocation final : public d::CarefulWriteSink {
+ public:
+  FailAfterAllocation(d::CarefulWriteSink& inner, u64 map_end) : inner_(inner), map_end_(map_end) {}
+  d::BoundedIoResult WriteAt(u64 offset, std::span<const byte> bytes) override {
+    if (!failed && offset >= map_end_) {
+      failed = true;
+      d::BoundedIoResult r;
+      r.error = d::BoundedIoError::native_failure;
+      r.native_error = EIO;
+      r.native_attempted = true;
+      return r;
+    }
+    return inner_.WriteAt(offset, bytes);
+  }
+  d::BoundedIoResult ReadAt(u64 offset, std::span<byte> bytes) override { return inner_.ReadAt(offset, bytes); }
+  d::BoundedIoResult Sync() override { return inner_.Sync(); }
+  bool forced_ordered() const noexcept override { return inner_.forced_ordered(); }
+  bool failed = false;
+
+ private:
+  d::CarefulWriteSink& inner_;
+  u64 map_end_;
+};
+std::vector<db::CatalogNewPageIdentity> PageIds(unsigned k) {
+  return {{V7(kT + 700000 + k, 0xe30000 + k), V7(kT + 700000 + k, 0xe40000 + k)}};
+}
+// Named objects inserted by one transaction until one needs a new base leaf
+// of the names relation; then, on a copy of the file before that insert, a
+// crash after its allocation: the page is allocated and nothing reaches it
+// (wasted space, Q17 = 1), the database verifies, and the insert then
+// succeeds on another new page.
+void NameGrowth(const Db& b, const NameTemplate& t, u16 role, std::size_t definitions) {
+  const auto path = b.Copy(b.bytes, "growth.db");
+  Session s(b, path);
+  Begin(*s.w, s.sink(), 2);
+  std::optional<std::pair<std::vector<byte>, db::CatalogInsertRequest>> grew;
+  unsigned k = 1;
+  for (; k <= 60 && !grew; ++k) {
+    const auto file = ReadAll(path);
+    const auto named = NamedAfter(b, file, t, role, After(b, file, role), 40 + k, 2, "w3b_grow_" + std::to_string(k));
+    auto r = Request(2, named.Rows());
+    r.new_pages = PageIds(k);
+    // Stop when the writer refuses (an index leaf full first: splits are the
+    // next step), found by a trial on a copy.
+    if (!InsertOracle(b, file, r)) {
+      const auto trial = b.Copy(file, "growth-trial.db");
+      Session t2(b, trial, false);
+      const auto tried = db::WriteCatalogInsertVersions(t2.sink(), GrowingBinding(b), r);
+      fs::remove(trial);
+      if (!tried.ok()) {
+        std::cout << b.name << " growth page_size=" << b.size << " stops at named object " << k << ": "
+                  << db::CatalogVersionWriteErrorName(tried.error) << '\n';
+        break;
+      }
+    }
+    const auto pages = ExpectGrowingInsert(b, s.sink(), path, r, "named object " + std::to_string(k));
+    if (!pages.empty()) grew = std::pair{file, r};
+  }
+  if (!grew) {
+    std::cout << b.name << " growth page_size=" << b.size << " not reached after " << (k - 1)
+              << " named objects (the names relation has room, or an index leaf filled first)\n";
+    Rollback(*s.w, s.sink(), 2);
+    fs::remove(path);
+    return;
+  }
+  const unsigned inserted = k - 1;
+  Commit(*s.w, s.sink(), 2);
+  ExpectNamedVerification(b, path, definitions + inserted, "named objects past a new base leaf, committed");
+  // The crash, on the file as it was before the insert that grew.
+  const auto crash = b.Copy(grew->first, "growth-crash.db");
+  {
+    Session c(b, crash, false);  // transaction 2 still in progress, as it was
+    FailAfterAllocation sink(c.sink(), (b.receipt.map_pages + 1) * u64{b.size});
+    const auto result = db::WriteCatalogInsertVersions(sink, GrowingBinding(b), grew->second);
+    Check(sink.failed && !result.ok() && result.error == CE::write_failed && result.attempted &&
+              result.allocated_pages.size() == 1,
+          "a failure after the allocation fails the insert, its page allocated");
+    const auto after = ReadAll(crash);
+    for (u64 p = b.receipt.map_pages + 1; p * b.size < after.size(); ++p)
+      Check(std::equal(after.begin() + static_cast<std::ptrdiff_t>(p * b.size), after.begin() + static_cast<std::ptrdiff_t>((p + 1) * b.size),
+                       grew->first.begin() + static_cast<std::ptrdiff_t>(p * b.size)),
+            "nothing but the allocation map was written");
+    const auto record = AllocationOf(b, after, result.allocated_pages.front());
+    Check(record.record && record.record->page_type == 6 && record.record->creator_transaction_uuid.is_nil(),
+          "the page is allocated to the system, and nothing reaches it");
+  }
+  // In the copy the earlier named objects' transaction is still in progress,
+  // so nothing of them is committed: the database is as created, plus a
+  // wasted page.
+  ExpectNamedVerification(b, crash, definitions, "a crash after an allocation (the page is wasted space)", true);
+  {
+    Session c(b, crash, false);
+    auto again = grew->second;
+    again.new_pages = PageIds(99);
+    const auto pages = ExpectGrowingInsert(b, c.sink(), crash, again, "the insert after the crash");
+    Check(pages.size() == 1, "the insert after the crash takes another new page");
+  }
+  fs::remove(crash);
+  fs::remove(path);
+  std::cout << b.name << " growth page_size=" << b.size << " new base leaf after " << inserted << " named objects\n";
+}
+
 // ---- Name successors (N4a) ---------------------------------------------------------------
 // The file after a name row's successor: the row placed as the version
 // writer's oracle places it, its envelope bound there; the base version's
@@ -434,8 +547,14 @@ struct NameSuccessorExpected {
   std::vector<byte> file;
   std::size_t writes = 0;
 };
+// `new_page`: where the writer put a new base leaf when no leaf had room
+// (SB_CATALOG_NEW_PAGES); the leaf is then a sibling's header and body
+// identity with this page's number, the request's first page UUID and
+// generation 1, holding the version, and the version gets its own cell in the
+// names relation's row-UUID tree.
 std::optional<NameSuccessorExpected> NameSuccessorOracle(const Db& b, std::span<const byte> before,
-                                                         const db::CatalogVersionRequest& r) {
+                                                         const db::CatalogVersionRequest& r,
+                                                         std::optional<u64> new_page = std::nullopt) {
   RoleScope scope(b, 2);
   const auto rel = ReadRelation(b, before);
   const auto versions = rel.Versions(r.row_uuid);
@@ -460,12 +579,28 @@ std::optional<NameSuccessorExpected> NameSuccessorOracle(const Db& b, std::span<
   if (rel.At(base.first).leaf.body.free_space_bytes >= RowBytes(finished(rel.At(base.first)))) target = base.first;
   for (const auto& l : rel.leaves)
     if (!target && l.page != base.first && l.leaf.body.free_space_bytes >= RowBytes(finished(l))) target = l.page;
+  std::optional<LeafSeen> fresh;
+  if (!target && new_page) {
+    LeafSeen l;
+    l.page = *new_page;
+    l.leaf.header = rel.leaves.front().leaf.header;
+    l.leaf.header.page_uuid = r.new_pages.front().page_uuid;
+    l.leaf.header.page_number = *new_page;
+    l.leaf.header.page_generation = 1;
+    l.leaf.body = rel.leaves.front().leaf.body;
+    l.leaf.body.rows.clear();
+    l.leaf.body.page_number = *new_page;
+    l.leaf.body.page_generation = 1;
+    fresh = std::move(l);
+    target = *new_page;
+  }
   if (!target) return std::nullopt;
+  const auto& target_leaf = fresh ? *fresh : rel.At(*target);
   auto link = rel.At(base.first).leaf;
   link.body.rows[base.second].next_version_uuid = r.version_uuid;
   link.body.rows[base.second].next_row_version = newest + 1;
-  auto into = *target == base.first ? link : rel.At(*target).leaf;
-  const auto final_metadata = finished(rel.At(*target));
+  auto into = *target == base.first ? link : target_leaf.leaf;
+  const auto final_metadata = finished(target_leaf);
   pg::RowDataRecord row;
   row.row_uuid = {UuidKind::row, r.row_uuid};
   row.version_uuid = r.version_uuid;
@@ -495,6 +630,25 @@ std::optional<NameSuccessorExpected> NameSuccessorOracle(const Db& b, std::span<
   };
   put_leaf(into);
   if (*target != base.first) put_leaf(link);
+  // A version on a new leaf: its own cell in the row-UUID tree, after the
+  // leaves (the tree read here is the file's as it stands).
+  std::size_t index_writes = 0;
+  if (fresh) {
+    auto tree = ReadTree(b, out.file);
+    const auto key = KeyOf(r.row_uuid, r.version_uuid);
+    auto& leaf = tree.pages[LeafFor(tree, key)];
+    std::size_t at = 0;
+    while (at < leaf.page.cells.size() && KeyOrder(leaf.page.cells[at].key, key) < 0) ++at;
+    pg::NativeBtreeCell entry;
+    entry.key = key;
+    entry.base_page = d::NativePageReference{b.primary, *new_page, 1, b.profile};
+    entry.creator_local_transaction_id = r.transaction_order;
+    leaf.page.cells.insert(leaf.page.cells.begin() + static_cast<std::ptrdiff_t>(at), std::move(entry));
+    const auto image = pg::EncodeNativeBtreePage(leaf.page);
+    if (!image.ok()) return std::nullopt;
+    std::copy(image.bytes.begin(), image.bytes.end(), out.file.begin() + static_cast<std::ptrdiff_t>(leaf.number * b.size));
+    index_writes = 1;
+  }
   // The trees.
   const auto zero = d::DecodeFilespacePageZero(out.file.data(), b.size);
   Check(zero.ok(), "page zero decodes");
@@ -573,25 +727,51 @@ std::optional<NameSuccessorExpected> NameSuccessorOracle(const Db& b, std::span<
       put_tree(leaf.number, leaf.page);
     }
   }
-  out.writes += tree_pages_changed.size();
+  out.writes += tree_pages_changed.size() + index_writes;
   return out;
 }
 // False when no leaf of the names relation has room for the version: the
 // writer then refuses relation_full with no write (new pages: W3b-3).
+// SB_CATALOG_NEW_PAGES (W3b-3a): when no leaf has room the version goes on a
+// new base leaf; the oracle is then given the page the writer allocated, whose
+// record is checked on its own (the system's: no creator; the lowest free
+// slot; type, owner, identities, generation 1), and the map pages are taken
+// from the file once their one record is.
 bool ExpectNameSuccessor(const Db& b, Session& s, const std::string& path, const db::CatalogVersionRequest& r,
                          std::string_view label) {
   const auto before = ReadAll(path);
-  const auto expected = NameSuccessorOracle(b, before, r);
-  if (!expected) {
-    Refused(b, s, path, r, CE::relation_full, std::string(label) + " (no room, W3b-3)");
-    std::cout << b.name << " name successor page_size=" << b.size << " no room: " << label << " (W3b-3)\n";
-    return false;
-  }
-  const auto result = Write(b, s.sink(), r);
+  const auto in_place = NameSuccessorOracle(b, before, r);
+  const auto result = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), r);
   if (!result.ok()) std::cerr << label << ": " << db::CatalogVersionWriteErrorName(result.error) << '\n';
   Check(result.ok(), std::string(label) + ": the successor is written");
-  Check(result.writes == expected->writes, std::string(label) + ": one write per changed page");
-  Check(ReadAll(path) == expected->file, std::string(label) + ": the file is the oracle's");
+  const auto after = ReadAll(path);
+  if (in_place) {
+    Check(result.allocated_pages.empty(), std::string(label) + ": no page is added while a leaf has room");
+    Check(result.writes == in_place->writes, std::string(label) + ": one write per changed page");
+    Check(after == in_place->file, std::string(label) + ": the file is the oracle's");
+    return true;
+  }
+  Check(result.allocated_pages.size() == 1, std::string(label) + ": one new base leaf");
+  const auto page = result.allocated_pages.front();
+  auto expected = NameSuccessorOracle(b, before, r, page);
+  Check(expected.has_value(), std::string(label) + ": the oracle places the version on the new leaf");
+  const auto was = AllocationOf(b, before, page);
+  const auto now = AllocationOf(b, after, page);
+  Check(!was.record && was.lower_all_allocated, std::string(label) + ": the lowest free slot");
+  RoleScope scope(b, 2);
+  Check(now.record && now.record->page_type == 6 && now.record->owner_uuid == b.Relation().relation_uuid &&
+            now.record->page_uuid == r.new_pages.front().page_uuid &&
+            now.record->allocation_uuid == r.new_pages.front().allocation_uuid &&
+            now.record->creator_transaction_uuid.is_nil() && !now.record->creator_local_transaction_id &&
+            now.record->creator_operation_uuid.is_nil() && now.record->page_generation == 1,
+        std::string(label) + ": the system's allocation record for the new leaf");
+  for (u64 m = 1; m <= b.receipt.map_pages; ++m)
+    std::copy(after.begin() + static_cast<std::ptrdiff_t>(m * b.size), after.begin() + static_cast<std::ptrdiff_t>((m + 1) * b.size),
+              expected->file.begin() + static_cast<std::ptrdiff_t>(m * b.size));
+  Check(result.writes == expected->writes + 1 || result.writes == expected->writes + 2,
+        std::string(label) + ": the allocation's one or two writes, then one write per changed page");
+  Check(after == expected->file, std::string(label) + ": the file is the oracle's");
+  std::cout << b.name << " name successor page_size=" << b.size << " new base leaf " << page << ": " << label << '\n';
   return true;
 }
 // A successor request for a name row the test inserted: the insert's
@@ -616,6 +796,8 @@ db::CatalogVersionRequest NameSuccessor(const db::CatalogInsertRow& inserted, co
     r.metadata.retired_transaction_uuid = {UuidKind::transaction, TxId(n)};
   }
   r.name = std::move(name);
+  // One page identity, should the version need a new base leaf.
+  r.new_pages = {{V7(Ms(version), 0xe10000 + version.bytes[15]), V7(Ms(version), 0xe20000 + version.bytes[15])}};
   return r;
 }
 // A written successor as the base of the next one.
@@ -1066,6 +1248,7 @@ int main(int argc, char** argv) {
     ConflictingPolicy(b, t, *role);
     if (room) NameKeys(b, t, *role);
     if (room) NameSuccessors(b, t, *role, fresh.names.definitions);
+    if (room) NameGrowth(b, t, *role, fresh.names.definitions);
     std::cout << "PASS native catalog name insert page_size=" << b.size << " checks=" << checks << '\n';
     return 0;
   } catch (const std::exception& e) {

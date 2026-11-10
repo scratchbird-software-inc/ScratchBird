@@ -206,7 +206,13 @@ db::CatalogInsertRequest Request(u64 n, std::vector<db::CatalogInsertRow> rows) 
 // The file after the request: each row in turn on the lowest-numbered reached
 // leaf with room, its cell at its key's position in the index leaf that holds
 // the key. nullopt when a row has no room or its index leaf none.
-std::optional<std::vector<byte>> InsertOracle(const Db& b, std::span<const byte> before, const db::CatalogInsertRequest& r) {
+// SB_CATALOG_NEW_PAGES (W3b-3a): `new_pages`, the pages the writer allocated,
+// taken in order when no reached leaf of an indexed relation has room: a new
+// leaf is a sibling's header and body identity with that page's number, the
+// request's next page UUID and generation 1.
+std::optional<std::vector<byte>> InsertOracle(const Db& b, std::span<const byte> before, const db::CatalogInsertRequest& r,
+                                              std::span<const u64> new_pages = {}) {
+  std::size_t taken = 0;
   std::vector<byte> file(before.begin(), before.end());
   const auto put = [&](u64 page, std::span<const byte> image) {
     std::copy(image.begin(), image.end(), file.begin() + static_cast<std::ptrdiff_t>(page * b.size));
@@ -234,6 +240,20 @@ std::optional<std::vector<byte>> InsertOracle(const Db& b, std::span<const byte>
     const LeafSeen* target = nullptr;
     for (const auto& l : rel.leaves)
       if (!target && l.leaf.body.free_space_bytes >= RowBytes(finished(l))) target = &l;
+    LeafSeen fresh;
+    if (!target && rel.indexed && taken < new_pages.size()) {
+      fresh.page = new_pages[taken];
+      fresh.leaf.header = rel.leaves.front().leaf.header;
+      fresh.leaf.header.page_uuid = r.new_pages[taken].page_uuid;
+      fresh.leaf.header.page_number = fresh.page;
+      fresh.leaf.header.page_generation = 1;
+      fresh.leaf.body = rel.leaves.front().leaf.body;
+      fresh.leaf.body.rows.clear();
+      fresh.leaf.body.page_number = fresh.page;
+      fresh.leaf.body.page_generation = 1;
+      ++taken;
+      target = &fresh;
+    }
     if (!target) return std::nullopt;
     const auto final_metadata = finished(*target);
     auto into = target->leaf;
@@ -346,7 +366,75 @@ std::optional<std::vector<byte>> InsertOracle(const Db& b, std::span<const byte>
     if (!index.ok()) return std::nullopt;
     put(leaf.number, index.bytes);
   }
+  if (taken != new_pages.size()) return std::nullopt;  // the writer added a page the oracle did not need
   return file;
+}
+// SB_CATALOG_NEW_PAGES (W3b-3a): the writer may add base leaves from the
+// allocation map (page-zero root kind 3).
+db::CatalogVersionWriterBinding GrowingBinding(const Db& b) {
+  auto binding = b.Binding();
+  binding.allocation_root = b.map_root;
+  return binding;
+}
+// The allocation record of `page` and whether it is allocated, through the
+// production fixed-root lease on a copy of `file`; also whether every page
+// below it is allocated (the allocator takes the lowest free slot).
+struct Allocation {
+  std::optional<pg::NativeAllocationRecord> record;
+  bool lower_all_allocated = false;
+};
+Allocation AllocationOf(const Db& b, std::span<const byte> file, u64 page) {
+  const auto path = b.Copy(file, "allocation.db");
+  d::FileDevice device;
+  Check(device.Open(path, d::FileOpenMode::open_existing_read_only).ok(), "allocation read-only open");
+  Allocation out;
+  {
+    const std::vector<d::NativeFilespaceDevice> files{{b.primary, b.profile, &device}};
+    Grant g(b.database, 512u << 20);
+    auto fixed = db::AcquireNativeFixedRootMemoryLease(b.database, files, b.primary, {512 * u64{b.size}, 64u << 20},
+                                                       g.memory, g.binding);
+    Check(fixed.ok(), "the fixed-root lease admits the file");
+    if (const auto* r = db::detail::NativeFixedRootRecord(fixed.lease->allocation(), page)) out.record = *r;
+    out.lower_all_allocated = true;
+    for (u64 n = 0; n < page; ++n)
+      if (!db::detail::NativeFixedRootRecord(fixed.lease->allocation(), n)) out.lower_all_allocated = false;
+  }
+  Check(device.Close().ok(), "close");
+  fs::remove(path);
+  return out;
+}
+// An insert through a binding that may add pages, checked against the oracle
+// given the pages the writer allocated; each allocation's record is checked on
+// its own and the map pages are then taken from the file.
+std::vector<u64> ExpectGrowingInsert(const Db& b, d::CarefulWriteSink& sink, const std::string& path,
+                                     const db::CatalogInsertRequest& r, std::string_view label) {
+  const auto before = ReadAll(path);
+  const auto result = db::WriteCatalogInsertVersions(sink, GrowingBinding(b), r);
+  if (!result.ok()) std::cerr << label << ": " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+  Check(result.ok(), std::string(label) + ": the rows are inserted");
+  const auto after = ReadAll(path);
+  auto expected = InsertOracle(b, before, r, result.allocated_pages);
+  Check(expected.has_value(), std::string(label) + ": the oracle places the rows on the pages the writer added");
+  for (std::size_t i = 0; i < result.allocated_pages.size(); ++i) {
+    const auto page = result.allocated_pages[i];
+    const auto was = AllocationOf(b, before, page);
+    const auto now = AllocationOf(b, after, page);
+    const auto leaf = db::DecodeNativeCatalogLeaf(PageOf(after, page, b.size));
+    Check(!was.record && leaf.ok(), std::string(label) + ": a free slot, now a base leaf");
+    Check(now.record && now.record->page_type == 6 && now.record->owner_uuid == leaf.page->body.relation_uuid.value &&
+              now.record->page_uuid == r.new_pages[i].page_uuid && now.record->allocation_uuid == r.new_pages[i].allocation_uuid &&
+              now.record->creator_transaction_uuid.is_nil() && !now.record->creator_local_transaction_id &&
+              now.record->creator_operation_uuid.is_nil() && now.record->page_generation == 1,
+          std::string(label) + ": the system's allocation record for the new leaf");
+  }
+  if (!result.allocated_pages.empty())
+    Check(AllocationOf(b, before, result.allocated_pages.front()).lower_all_allocated,
+          std::string(label) + ": the lowest free slot");
+  for (u64 m = 1; m <= b.receipt.map_pages; ++m)
+    std::copy(after.begin() + static_cast<std::ptrdiff_t>(m * b.size), after.begin() + static_cast<std::ptrdiff_t>((m + 1) * b.size),
+              expected->begin() + static_cast<std::ptrdiff_t>(m * b.size));
+  Check(after == *expected, std::string(label) + ": the file is the oracle's");
+  return result.allocated_pages;
 }
 
 // A sink that records the offset of every write, in order.

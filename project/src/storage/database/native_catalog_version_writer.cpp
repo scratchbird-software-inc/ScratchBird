@@ -8,6 +8,7 @@
 #include "catalog_name_path.hpp"
 #include "catalog_name_tree_keys.hpp"
 #include "filespace_page_zero.hpp"
+#include "allocation_map_writer.hpp"
 #include <array>
 #include <functional>
 #include <variant>
@@ -551,6 +552,127 @@ class NameState {
   std::vector<Holder> holders_;
   catalog::CatalogNameIndex path_names_;
 };
+
+// SEARCH_KEY: SB_CATALOG_NEW_PAGES (W3b-3a, owner Q30 = 1). The pages one
+// write adds, taken in order. A write runs twice when it needs pages: a dry
+// pass, which decides everything and refuses before any write, hands out
+// placeholder numbers and records what each page will be; the pages are then
+// allocated, each durable on its own; and the real pass, given the allocated
+// numbers, builds the images and runs the write's plan. A write that needs no
+// page runs once.
+class PageSource {
+ public:
+  struct Need {
+    u32 page_type = 0;
+    Uuid owner;
+  };
+  // Dry: placeholders past the file's end; a real pass: these numbers.
+  PageSource(std::span<const CatalogNewPageIdentity> identities, u64 placeholder_base)
+      : identities_(identities), next_placeholder_(placeholder_base) {}
+  PageSource(std::span<const CatalogNewPageIdentity> identities, std::vector<u64> numbers, std::vector<Need> needs)
+      : identities_(identities), numbers_(std::move(numbers)), expected_(std::move(needs)), dry_(false) {}
+  struct Taken {
+    u64 page_number = 0;
+    Uuid page_uuid;
+  };
+  // Nullopt when the request has no identity left (new_pages_exhausted), or
+  // when a real pass asks for a page the dry pass did not (the passes
+  // disagree: the caller refuses).
+  std::optional<Taken> Take(u32 page_type, const Uuid& owner) {
+    const auto at = used_;
+    if (at >= identities_.size()) return std::nullopt;
+    if (dry_) {
+      needs_.push_back({page_type, owner});
+      ++used_;
+      return Taken{next_placeholder_++, identities_[at].page_uuid};
+    }
+    if (at >= numbers_.size() || expected_[at].page_type != page_type || expected_[at].owner != owner) {
+      disagreed_ = true;
+      return std::nullopt;
+    }
+    ++used_;
+    return Taken{numbers_[at], identities_[at].page_uuid};
+  }
+  bool exhausted_by(std::size_t index) const { return index >= identities_.size(); }
+  bool dry() const { return dry_; }
+  bool needed() const { return dry_ && !needs_.empty(); }
+  const std::vector<Need>& needs() const { return needs_; }
+  std::size_t used() const { return used_; }
+  bool disagreed() const { return disagreed_; }
+
+ private:
+  std::span<const CatalogNewPageIdentity> identities_;
+  std::vector<u64> numbers_;
+  std::vector<Need> expected_, needs_;
+  u64 next_placeholder_ = 0;
+  std::size_t used_ = 0;
+  bool dry_ = true, disagreed_ = false;
+};
+
+// A new, empty base leaf of the relation `like` belongs to, at `taken`:
+// `like`'s header and body identity with this page's number, UUID and
+// generation 1, and no rows. Its "as read" image is what the file holds there
+// now (the real pass reads it; the dry pass never writes).
+std::optional<Leaf> NewBaseLeaf(disk::CarefulWriteSink& sink, const NativeCatalogLeafPage& like, u32 page_size,
+                                const PageSource::Taken& taken, bool read_image, CatalogVersionWriteResult& result) {
+  Leaf leaf;
+  leaf.page.header = like.header;
+  leaf.page.header.page_uuid = taken.page_uuid;
+  leaf.page.header.page_number = taken.page_number;
+  leaf.page.header.page_generation = 1;
+  leaf.page.body = like.body;
+  leaf.page.body.rows.clear();
+  leaf.page.body.page_number = taken.page_number;
+  leaf.page.body.page_generation = 1;
+  if (read_image) {
+    leaf.image.assign(page_size, 0);
+    const auto io = sink.ReadAt(taken.page_number * u64{page_size}, std::span<byte>(leaf.image));
+    if (!io.ok() || io.bytes_transferred != page_size) {
+      result.error = E::io_failure;
+      result.io = io;
+      return std::nullopt;
+    }
+  }
+  return leaf;
+}
+
+// Allocates the dry pass's pages, in order, each durable on its own (the
+// system's: no creator). False with `result` set on a failure; the pages
+// allocated before it are in result.allocated_pages.
+bool AllocateNewPages(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding& binding,
+                      std::span<const CatalogNewPageIdentity> identities, const std::vector<PageSource::Need>& needs,
+                      CatalogVersionWriteResult& result) {
+  if (!binding.allocation_root) {
+    result.error = E::invalid_request;
+    return false;
+  }
+  const pg::AllocationMapBinding map{binding.database_uuid, *binding.allocation_root};
+  for (std::size_t i = 0; i < needs.size(); ++i) {
+    pg::PageAllocationRequest request;
+    request.page_type = needs[i].page_type;
+    request.owner_uuid = needs[i].owner;
+    request.page_uuid = identities[i].page_uuid;
+    request.allocation_uuid = identities[i].allocation_uuid;
+    const auto allocated = pg::AllocatePage(sink, map, request, binding.barrier_policy);
+    result.writes += allocated.writes;
+    result.syncs += allocated.syncs;
+    if (!allocated.ok()) {
+      using A = pg::AllocationWriteError;
+      result.io = allocated.io;
+      result.write_error = allocated.write_error;
+      result.attempted = allocated.attempted || !result.allocated_pages.empty();
+      result.error = allocated.error == A::filespace_full     ? E::filespace_full
+                     : allocated.error == A::io_failure       ? E::io_failure
+                     : allocated.error == A::invalid_map      ? E::invalid_catalog
+                     : allocated.error == A::invalid_request  ? E::invalid_request
+                     : allocated.attempted                    ? E::write_failed
+                                                              : E::plan_refused;
+      return false;
+    }
+    result.allocated_pages.push_back(allocated.page_number);
+  }
+  return true;
+}
 }  // namespace
 
 const char* CatalogVersionWriteErrorName(CatalogVersionWriteError error) noexcept {
@@ -584,13 +706,15 @@ const char* CatalogVersionWriteErrorName(CatalogVersionWriteError error) noexcep
     case E::write_failed: return "write_failed";
     case E::resource_exhausted: return "resource_exhausted";
     case E::name_tree_full: return "name_tree_full";
+    case E::new_pages_exhausted: return "new_pages_exhausted";
+    case E::filespace_full: return "filespace_full";
   }
   return "unknown";
 }
 
-CatalogVersionWriteResult WriteCatalogSuccessorVersion(disk::CarefulWriteSink& sink,
-                                                       const CatalogVersionWriterBinding& binding,
-                                                       const CatalogVersionRequest& request) noexcept {
+namespace {
+CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding& binding,
+                                        const CatalogVersionRequest& request, PageSource& pages, bool& deferred) noexcept {
   CatalogVersionWriteResult result;
   try {
     // ---- the request alone -------------------------------------------------
@@ -820,6 +944,22 @@ CatalogVersionWriteResult WriteCatalogSuccessorVersion(disk::CarefulWriteSink& s
       if (i != base->leaf) order.push_back(i);
     std::optional<std::size_t> target;
     NativeCatalogLeafResult target_image, link_image;
+    // SB_CATALOG_NEW_PAGES (W3b-3a): when no reached leaf has room, a second
+    // round places the version on a new base leaf of an indexed relation.
+    bool on_new_leaf = false;
+    for (unsigned round = 0; round < 2 && !target; ++round) {
+    if (round == 1) {
+      if (head->page_type != 0x200 || !binding.allocation_root || leaves.empty()) break;
+      const auto& like = leaves.front().page;
+      const auto taken = pages.Take(6, like.body.relation_uuid.value);
+      if (!taken) return Refuse(pages.disagreed() ? E::invalid_catalog : E::new_pages_exhausted);
+      auto leaf = NewBaseLeaf(sink, like, page_size, *taken, !pages.dry(), result);
+      if (!leaf) return result;
+      leaves.push_back(std::move(*leaf));
+      bases.push_back({croot.filespace_uuid, taken->page_number, 1, croot.page_size_profile_uuid});
+      order = {leaves.size() - 1};
+      on_new_leaf = true;
+    }
     for (const auto i : order) {
       auto page = i == base->leaf ? link(leaves[i].page) : leaves[i].page;
       u32 slot = 0;
@@ -851,7 +991,44 @@ CatalogVersionWriteResult WriteCatalogSuccessorVersion(disk::CarefulWriteSink& s
       target = i;
       break;
     }
+    }
     if (!target) return Refuse(E::relation_full);
+    // SB_CATALOG_NEW_PAGES: a version on a new leaf is reached by its own cell
+    // in the row-UUID tree (the tree otherwise indexes first versions only;
+    // the visibility reader selects one visible version per row however many
+    // of its versions have cells).
+    std::optional<std::size_t> changed_index_page;
+    if (on_new_leaf) {
+      const auto key_view = [](const pg::NativeBtreeKey& k) {
+        return pg::NativeBtreeKeyView{std::span<const byte>(k.encoded_key), k.row_uuid, k.version_uuid};
+      };
+      pg::NativeBtreeCell cell;
+      cell.key.encoded_key.assign(request.row_uuid.bytes.begin(), request.row_uuid.bytes.end());
+      cell.key.row_uuid = request.row_uuid;
+      cell.key.version_uuid = request.version_uuid;
+      cell.base_page = bases[*target];
+      cell.creator_local_transaction_id = request.transaction_order;
+      auto& tree = relation_read.tree;
+      std::optional<std::size_t> reached;
+      for (std::size_t t = 0; t < tree.size() && !reached; ++t) {
+        const auto& page = tree[t].page;
+        if (page.tree_level) continue;
+        if (page.low_fence && pg::CompareNativeBtreeKeys(key_view(cell.key), key_view(*page.low_fence)) < 0) continue;
+        if (page.high_fence && pg::CompareNativeBtreeKeys(key_view(cell.key), key_view(*page.high_fence)) >= 0) continue;
+        reached = t;
+      }
+      if (!reached) return Refuse(E::invalid_catalog);
+      auto page = tree[*reached].page;
+      const auto at = std::lower_bound(page.cells.begin(), page.cells.end(), cell.key, [&](const auto& c, const auto& k) {
+        return pg::CompareNativeBtreeKeys(key_view(c.key), key_view(k)) < 0;
+      });
+      page.cells.insert(at, std::move(cell));
+      const auto fits = pg::EncodeNativeBtreePage(page);
+      if (!fits.ok())
+        return Refuse(fits.error == pg::NativeBtreeError::resource_exhausted ? E::index_full : E::invalid_catalog);
+      tree[*reached].page = std::move(page);
+      changed_index_page = *reached;
+    }
     if (*target != base->leaf) {
       link_image = EncodeNativeCatalogLeaf(link(leaves[base->leaf].page));
       if (!link_image.ok()) {
@@ -1013,6 +1190,11 @@ CatalogVersionWriteResult WriteCatalogSuccessorVersion(disk::CarefulWriteSink& s
       }
     }
 
+    if (pages.needed()) {
+      deferred = true;
+      result.error = E::none;
+      return result;
+    }
     // ---- the writes --------------------------------------------------------
     disk::CarefulWritePlan plan;
     const auto offset = [&](std::size_t i) { return bases[i].page_number * u64{page_size}; };
@@ -1027,9 +1209,21 @@ CatalogVersionWriteResult WriteCatalogSuccessorVersion(disk::CarefulWriteSink& s
         return Refuse(E::plan_refused);
       leaf_nodes.push_back(second.node);
     }
-    // The name tree pages after every base leaf, each image kept until the
-    // plan executes.
+    // The name tree pages, and the row-UUID tree page a new leaf's cell went
+    // into, after every base leaf; each image kept until the plan executes.
     std::vector<std::vector<byte>> tree_images;
+    std::vector<byte> index_image;
+    if (changed_index_page) {
+      auto& page = relation_read.tree[*changed_index_page];
+      auto encoded = pg::EncodeNativeBtreePage(page.page);
+      if (!encoded.ok()) return Refuse(E::invalid_catalog);
+      index_image = std::move(encoded.bytes);
+      const auto node = plan.Add(page.ref.page_number * u64{page_size}, std::span<const byte>(index_image),
+                                 std::span<const byte>(page.image));
+      if (!node.ok()) return Refuse(E::plan_refused);
+      for (const auto before : leaf_nodes)
+        if (plan.Before(before, node.node) != CarefulWriteError::none) return Refuse(E::plan_refused);
+    }
     for (auto& tree : name_trees)
       for (const auto p : tree.changed) {
         auto encoded = pg::EncodeNativeBtreePage(tree.tree[p].page);
@@ -1075,10 +1269,15 @@ CatalogVersionWriteResult WriteCatalogSuccessorVersion(disk::CarefulWriteSink& s
     return Refuse(E::invalid_request);
   }
 }
+}  // namespace
 
-CatalogVersionWriteResult WriteCatalogInsertVersions(disk::CarefulWriteSink& sink,
-                                                     const CatalogVersionWriterBinding& binding,
-                                                     const CatalogInsertRequest& request) noexcept {
+CatalogVersionWriteResult WriteCatalogSuccessorVersion(disk::CarefulWriteSink& sink,
+                                                       const CatalogVersionWriterBinding& binding,
+                                                       const CatalogVersionRequest& request) noexcept;
+
+namespace {
+CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding& binding,
+                                     const CatalogInsertRequest& request, PageSource& pages, bool& deferred) noexcept {
   CatalogVersionWriteResult result;
   const auto refuse_row = [&](E error, std::size_t row) {
     result.error = error;
@@ -1388,6 +1587,39 @@ CatalogVersionWriteResult WriteCatalogInsertVersions(disk::CarefulWriteSink& sin
         relation.leaves[l].metadata.emplace(want.version_uuid, std::move(final_row->first));
         target = l;
       }
+      // SB_CATALOG_NEW_PAGES (W3b-3a): no reached leaf has room; an indexed
+      // relation gets a new base leaf, reached by this row's cell. An
+      // unindexed relation has only its head.
+      if (!target && head.page_type == 0x200 && binding.allocation_root && !relation.leaves.empty()) {
+        const auto& like = relation.leaves.front().page;
+        const auto taken = pages.Take(6, like.body.relation_uuid.value);
+        if (!taken) return pages.disagreed() ? Refuse(E::invalid_catalog) : refuse_row(E::new_pages_exhausted, i);
+        auto leaf = NewBaseLeaf(sink, like, page_size, *taken, !pages.dry(), result);
+        if (!leaf) return result;
+        relation.leaves.push_back(std::move(*leaf));
+        relation.bases.push_back({croot.filespace_uuid, taken->page_number, 1, croot.page_size_profile_uuid});
+        const auto l = relation.leaves.size() - 1;
+        auto page = relation.leaves[l].page;
+        auto final_row = placed(page, 1);
+        if (!final_row) return refuse_row(E::invalid_insert, i);
+        auto row = added;
+        row.stable_slot_id = 1;
+        row.storage_generation = 1;
+        scratchbird::core::datatypes::DatatypeBinaryValue cell_value;
+        cell_value.type_id = scratchbird::core::datatypes::CanonicalTypeId::binary;
+        cell_value.payload = std::move(final_row->second);
+        row.cells = {{1, std::move(cell_value), {}}};
+        page.body.rows.push_back(std::move(row));
+        const auto fits = pg::BuildRowDataPageBody(page.body, page.header.page_size_bytes - 32);
+        if (!fits.ok()) {
+          if (fits.resource_failure()) return Refuse(E::resource_exhausted);
+          return refuse_row(fits.diagnostic.diagnostic_code == "SB-ROW-DATA-PAGE-BODY-TOO-LARGE" ? E::relation_full
+                                                                                               : E::invalid_insert, i);
+        }
+        relation.leaves[l].page = std::move(page);
+        relation.leaves[l].metadata.emplace(want.version_uuid, std::move(final_row->first));
+        target = l;
+      }
       if (!target) return refuse_row(E::relation_full, i);
       changed_leaves.insert({want.role, *target});
       // SB_NATIVE_NAME_TREES: the row's cells in the name trees.
@@ -1480,6 +1712,13 @@ CatalogVersionWriteResult WriteCatalogInsertVersions(disk::CarefulWriteSink& sin
           tree_writes.push_back({page.ref.page_number, std::move(encoded.bytes), &page.image});
         }
 
+    // SB_CATALOG_NEW_PAGES: a dry pass that needs pages stops here, every
+    // refusal behind it; the pages are allocated and the real pass writes.
+    if (pages.needed()) {
+      deferred = true;
+      result.error = E::none;
+      return result;
+    }
     // ---- the writes: every base leaf before every index leaf ----------------
     disk::CarefulWritePlan plan;
     std::vector<disk::CarefulWriteNodeId> leaf_nodes;
@@ -1521,6 +1760,51 @@ CatalogVersionWriteResult WriteCatalogInsertVersions(disk::CarefulWriteSink& sin
   } catch (...) {
     return Refuse(E::invalid_request);
   }
+}
+}  // namespace
+
+// Runs a write as SB_CATALOG_NEW_PAGES describes: one pass when it needs no
+// page; otherwise a dry pass, the allocations, then the real pass.
+template <class Request, class Pass>
+CatalogVersionWriteResult WithNewPages(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding& binding,
+                                       const Request& request, Pass pass) noexcept {
+  try {
+    // Placeholder numbers far past any file's end; the real pass uses the
+    // allocated ones. Every encoded size is independent of the number.
+    PageSource dry(request.new_pages, u64{1} << 32);
+    bool deferred = false;
+    auto first = pass(sink, binding, request, dry, deferred);
+    if (!first.ok() || !deferred) return first;
+    CatalogVersionWriteResult allocated;
+    if (!AllocateNewPages(sink, binding, request.new_pages, dry.needs(), allocated)) return allocated;
+    PageSource real(request.new_pages, allocated.allocated_pages, dry.needs());
+    bool again = false;
+    auto second = pass(sink, binding, request, real, again);
+    second.allocated_pages = allocated.allocated_pages;
+    second.writes += allocated.writes;
+    second.syncs += allocated.syncs;
+    // The passes must agree: the same pages, all of them, and a real write.
+    if (second.ok() && (again || real.used() != dry.needs().size())) {
+      second.error = E::invalid_catalog;
+      second.attempted = true;
+    }
+    if (!second.ok()) second.attempted = true;  // the allocations were written
+    return second;
+  } catch (...) {
+    return Refuse(E::resource_exhausted);
+  }
+}
+
+CatalogVersionWriteResult WriteCatalogInsertVersions(disk::CarefulWriteSink& sink,
+                                                     const CatalogVersionWriterBinding& binding,
+                                                     const CatalogInsertRequest& request) noexcept {
+  return WithNewPages(sink, binding, request, InsertPass);
+}
+
+CatalogVersionWriteResult WriteCatalogSuccessorVersion(disk::CarefulWriteSink& sink,
+                                                       const CatalogVersionWriterBinding& binding,
+                                                       const CatalogVersionRequest& request) noexcept {
+  return WithNewPages(sink, binding, request, SuccessorPass);
 }
 
 CatalogRootAdvanceResult AdvanceCatalogRoot(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding& binding,

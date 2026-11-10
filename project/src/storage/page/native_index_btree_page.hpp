@@ -70,6 +70,8 @@ template<class KeyType,class Cells> struct BasicNativeBtreePage {
   using Key = KeyType;
   disk::NativeCommonPageHeader header;
   NativeBtreeDependencies dependencies;
+  // The creating transaction; both nil/0 for a system page a later change
+  // added (SB_NATIVE_BTREE_SYSTEM_PAGE, owner Q30 = 1).
   Uuid creator_transaction_uuid;
   u64 creator_local_transaction_id = 0;
   u16 maintenance_state = 0;

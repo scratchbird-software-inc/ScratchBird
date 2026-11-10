@@ -279,9 +279,13 @@ class NativeCatalogRelationLeaseReader {
         if(entry->identity.scope!=transaction::mga::TransactionScope::local_node){failure=E::cluster_requires_authority;return missing;}
         return static_cast<usize>(entry-inventory.begin());
       };
+      // SB_NATIVE_BTREE_SYSTEM_PAGE (owner Q30 = 1): a system page has no
+      // creator to bind, so committed reads have none to wait for.
+      usize navigation_count=0;
       for(usize i=0;i<out.tree.pages.size();++i){const auto& p=*out.tree.pages[i].page;
+        if(p.creator_transaction_uuid.is_nil()&&!p.creator_local_transaction_id)continue;
         const auto at=creator(p.creator_local_transaction_id,p.creator_transaction_uuid);
-        if(at==missing){fail(failure);return out;}w.navigation_creators_[i]=at;}
+        if(at==missing){fail(failure);return out;}w.navigation_creators_[navigation_count++]=at;}
       const auto same_slot=[](const auto& h,const auto& r){return h.filespace_uuid==r.filespace_uuid&&h.page_number==r.page_number;};
       const auto load=[&](const disk::NativePageReference& ref)->usize{
         for(const auto& p:out.tree.pages)if(same_slot(p.page->header,ref)){failure=E::invalid_locator;return missing;}
@@ -339,7 +343,7 @@ class NativeCatalogRelationLeaseReader {
       if(!core::uuid::IsEngineIdentityUuid(binding.relation_uuid)){fail(E::missing_relation);return out;}
       out.relation=binding;
       out.bases=w.bases_.first(page_count);out.bindings=w.bindings_.first(binding_count);
-      out.row_creators=w.creators_.first(row_count);out.navigation_creators=w.navigation_creators_.first(out.tree.pages.size());
+      out.row_creators=w.creators_.first(row_count);out.navigation_creators=w.navigation_creators_.first(navigation_count);
       out.retained_image_bytes=retained;out.error=E::none;return out;
     }catch(const std::bad_alloc&){fail(E::resource_exhausted);}
      catch(const std::length_error&){fail(E::resource_exhausted);}

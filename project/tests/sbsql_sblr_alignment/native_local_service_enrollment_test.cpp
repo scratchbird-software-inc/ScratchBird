@@ -3366,6 +3366,34 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
     const auto base=runtime_security::CheckNativeStartupInitialControlAllocation(capture,identity,chain);
     Check(base.ok()&&base.wasted_pages==0&&base.control_pages==opened.observation->allocation.initial_control_pages,
         "the rebuilt original allocation verifies exactly as the file's own did");
+    {
+      // SB_CATALOG_NEW_PAGES (owner Q30 = 1): a catalog page a later change
+      // added is the system's (no creator). Reached, it is admitted when it
+      // matches the captured page, refused when it does not; unreached, it is
+      // wasted space.
+      const auto leaf=std::find_if(capture.physical_pages().begin(),capture.physical_pages().end(),
+          [](const auto& p){return p.header.page_type==6;});
+      Check(leaf!=capture.physical_pages().end(),"a captured base leaf");
+      const auto system=[&](pg::NativeAllocationRecord r){r.creator_transaction_uuid={};r.creator_local_transaction_id=0;return r;};
+      auto grown=records;
+      for(auto& r:grown)if(r.page_number==leaf->header.page_number)r=system(r);
+      map.records=grown;
+      const auto admitted=runtime_security::CheckNativeStartupInitialControlAllocation(capture,identity,chain);
+      Check(admitted.ok()&&admitted.wasted_pages==0&&admitted.control_pages==base.control_pages,
+          "a system-created base leaf that matches its captured page is admitted");
+      for(auto& r:grown)if(r.page_number==leaf->header.page_number)r.owner_uuid=Id(229);
+      map.records=grown;
+      Check(runtime_security::CheckNativeStartupInitialControlAllocation(capture,identity,chain).error==
+          runtime_security::NativeStartupInitialControlError::invalid_record,
+          "a system-created base leaf that does not match its captured page is refused");
+      auto unreached=records;
+      pg::NativeAllocationRecord extra=system(records.back());extra.page_number=last+1;extra.page_uuid=Id(228);
+      extra.owner_uuid=leaf->owner_uuid;extra.page_type=6;unreached.push_back(extra);
+      states[last+1]=pg::NativeAllocationState::allocated;map.records=unreached;
+      const auto spare=runtime_security::CheckNativeStartupInitialControlAllocation(capture,identity,chain);
+      Check(spare.ok()&&spare.wasted_pages==1,"a system-created base leaf nothing reaches is wasted space");
+      states[last+1]=pg::NativeAllocationState::free;map.records=records;
+    }
     auto with_extra=records;
     pg::NativeAllocationRecord extra=records.back();extra.page_number=last+1;extra.page_uuid=Id(228);extra.owner_uuid=Id(229);extra.page_type=0x302;
     with_extra.push_back(extra);states[last+1]=pg::NativeAllocationState::allocated;map.records=with_extra;

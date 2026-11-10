@@ -68,7 +68,14 @@ template<class Page,class References> E Validate(const Page& p,References& refer
   if(!h.ok()||p.header.page_type<0x200||p.header.page_type>0x202)return E::invalid_header;
   if(p.header.flags&1u)return E::encrypted_requires_crypto_authority;
   if(!ValidDependencies(p.dependencies))return E::invalid_dependencies;
-  if(!V7(p.creator_transaction_uuid)||!p.creator_local_transaction_id||p.maintenance_state<1||p.maintenance_state>9)return E::invalid_family;
+  // SB_NATIVE_BTREE_SYSTEM_PAGE (owner Q30 = 1): a page a later change adds
+  // to a catalog tree (a split's new page) is the system's, with no creator:
+  // a nil transaction and local number 0, both or neither. Visibility stays
+  // with the row versions the cells name, as in FirebirdSQL, whose index
+  // pages carry no transaction.
+  const bool system=p.creator_transaction_uuid.is_nil()&&!p.creator_local_transaction_id;
+  if((!system&&(!V7(p.creator_transaction_uuid)||!p.creator_local_transaction_id))||p.maintenance_state<1||p.maintenance_state>9)
+    return E::invalid_family;
   const bool root=p.header.page_type==0x200,branch=p.tree_level>0;
   if((p.header.page_type==0x201&&!branch)||(p.header.page_type==0x202&&branch)
     ||(root&&(p.parent||p.left||p.right||p.low_fence||p.high_fence))||(!root&&!p.parent)

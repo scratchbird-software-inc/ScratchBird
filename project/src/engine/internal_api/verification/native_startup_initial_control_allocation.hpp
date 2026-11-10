@@ -86,6 +86,13 @@ inline NativeStartupInitialControlCheck CheckNativeStartupInitialControlAllocati
           if(const auto* p=find(controls,map.header.filespace_uuid,record.page_number)){
             if(!matches(*p))return {E::invalid_record};++count;continue;
           }
+        // SB_NATIVE_BTREE_SYSTEM_PAGE (owner Q30 = 1): a catalog page a later
+        // change added (a new base leaf, a split's new tree page) is the
+        // system's; reached, it is a captured catalog page and must match it.
+        if(system&&(record.page_type==6||record.page_type==0x201||record.page_type==0x202))
+          if(const auto* p=find(catalogs,map.header.filespace_uuid,record.page_number)){
+            if(!matches(*p))return {E::invalid_record};continue;
+          }
         const auto roots=std::span{additional}.first(additional_count);
         if(record.page_number==0||find(catalogs,map.header.filespace_uuid,record.page_number)||
             find(controls,map.header.filespace_uuid,record.page_number)||

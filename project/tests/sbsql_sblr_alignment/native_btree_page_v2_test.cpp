@@ -443,6 +443,21 @@ void Refusals(unsigned p) {
   branch = Branch(p);
   branch.cells[2].payload = {1};
   Check(pg::EncodeNativeBtreePage(branch).error == E::invalid_family, "a branch cell with a payload");
+  // SB_NATIVE_BTREE_SYSTEM_PAGE (owner Q30 = 1): a page a later change added
+  // is the system's: nil creator and local number 0 round-trip; half of it
+  // does not encode.
+  {
+    auto system = RowLeaf(p);
+    system.creator_transaction_uuid = {};
+    system.creator_local_transaction_id = 0;
+    Accepts(system, "a system page (no creator)");
+    auto half = system;
+    half.creator_local_transaction_id = 3;
+    Check(pg::EncodeNativeBtreePage(half).error == E::invalid_family, "a nil creator with a local number");
+    half = RowLeaf(p);
+    half.creator_local_transaction_id = 0;
+    Check(pg::EncodeNativeBtreePage(half).error == E::invalid_family, "a creator without a local number");
+  }
 }
 }  // namespace
 

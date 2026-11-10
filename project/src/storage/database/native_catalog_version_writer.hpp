@@ -116,6 +116,10 @@ enum class CatalogVersionWriteError : std::uint8_t {
   write_failed,            // a write or sync failed after one was attempted
   resource_exhausted,
   name_tree_full,          // insert: the name tree leaf a name row's cell reaches has no room (splits: W3b-3)
+  // SB_CATALOG_NEW_PAGES (W3b-3a, owner Q30 = 1): a new page was needed and
+  // the request carries no further caller-issued identity for one.
+  new_pages_exhausted,
+  filespace_full,          // a new page was needed and the allocation map has no free slot
 };
 const char* CatalogVersionWriteErrorName(CatalogVersionWriteError error) noexcept;
 
@@ -132,10 +136,27 @@ struct CatalogVersionWriterBinding {
   // The SBSYS002 read-only flag, from the caller's verified open.
   bool read_only_database = false;
   disk::CarefulWriteBarrierPolicy barrier_policy = disk::CarefulWriteBarrierPolicy::trust_forced_writes;
+  // SB_CATALOG_NEW_PAGES (W3b-3a): page-zero root kind 3, the allocation map,
+  // from which a write that needs a new page allocates it. Absent: no new
+  // pages (a write that needs one is refused relation_full / index_full).
+  std::optional<disk::FilespaceRootReference> allocation_root;
   // Bounds on what one write reads.
   std::size_t maximum_chain_pages = 4096;
   std::size_t maximum_index_pages = 4096;
   std::size_t maximum_base_pages = 4096;
+};
+
+// SB_CATALOG_NEW_PAGES (W3b-3a, owner Q30 = 1). The caller-issued identities
+// (UUIDv7) of pages a write may add, used in order; unused ones are not
+// consumed. A page a write adds is the system's: its allocation record has no
+// creator, and so does a new tree page; a new base leaf carries no creator by
+// its format. Each is allocated, durably, before the write's own plan, and
+// written before anything points to it. Allocation happens only after every
+// check a refusal can come from has passed; a crash, or a failure, after an
+// allocation and before the write leaves an allocated page nothing reaches:
+// wasted space (owner Q17 = 1), never a page something reaches unwritten.
+struct CatalogNewPageIdentity {
+  core::platform::Uuid page_uuid, allocation_uuid;
 };
 
 struct CatalogVersionRequest {
@@ -162,6 +183,10 @@ struct CatalogVersionRequest {
   // name whose entry other names' paths run through cannot yet be renamed or
   // dropped (invalid_successor; the cascade is N4b).
   std::optional<core::catalog::CatalogNamePayload> name;
+  // SB_CATALOG_NEW_PAGES: when no reached base leaf has room, the version goes
+  // on a new base leaf, reached by a cell for this version in the relation's
+  // row-UUID tree (which otherwise indexes a row's first version only).
+  std::vector<CatalogNewPageIdentity> new_pages;
 };
 
 struct CatalogVersionWriteResult {
@@ -181,6 +206,10 @@ struct CatalogVersionWriteResult {
   bool attempted = false;
   // WriteCatalogInsertVersions: the request row a refusal concerns.
   std::optional<std::size_t> failed_row;
+  // SB_CATALOG_NEW_PAGES: the pages allocated for this write, in the order of
+  // the request's new_pages identities they took. Set also when the write
+  // then failed: those pages are allocated and unreached (wasted, Q17 = 1).
+  std::vector<core::platform::u64> allocated_pages;
   bool ok() const noexcept { return error == CatalogVersionWriteError::none; }
 };
 
@@ -273,6 +302,9 @@ struct CatalogInsertRequest {
   core::platform::u64 transaction_order = 0;
   core::platform::Uuid transaction_uuid;
   std::vector<CatalogInsertRow> rows;
+  // SB_CATALOG_NEW_PAGES: when no reached base leaf of an indexed relation has
+  // room for a row, it goes on a new base leaf.
+  std::vector<CatalogNewPageIdentity> new_pages;
 };
 CatalogVersionWriteResult WriteCatalogInsertVersions(disk::CarefulWriteSink& sink,
                                                      const CatalogVersionWriterBinding& binding,
