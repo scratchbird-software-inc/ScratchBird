@@ -877,8 +877,10 @@ void Refusals(const Db& b) {
     Check(ReadAll(path) == before, "malformed bindings write nothing");
   }
   Refused(b, s, path, good, CE::read_only_database, "read-only database", true);
+  // SB_NATIVE_NAME_TREES (N4a): a name record carries its name; one without
+  // (or a name on a record that is not one) cannot follow any base.
   variant([](auto& r) { r.metadata.record.header.kind = c::CatalogRecordKind::localized_name; },
-          CE::name_record_unsupported, "a name record");
+          CE::invalid_successor, "a name record without its name");
   variant([](auto& r) { r.transaction_order = 1; }, CE::transaction_not_active, "the creator, committed");
   variant([](auto& r) { r.transaction_order = 99; }, CE::transaction_not_active, "a number never begun");
   variant([](auto& r) { r.transaction_uuid = TxId(7); }, CE::transaction_not_active, "another transaction's id");

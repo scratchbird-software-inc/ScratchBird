@@ -103,7 +103,7 @@ enum class CatalogVersionWriteError : std::uint8_t {
   ahead_of_catalog_root,   // a generation or epoch above the catalog root's
   transaction_not_committed,  // AdvanceCatalogRoot: the named transaction has not committed
   root_regression,         // AdvanceCatalogRoot: generation not the next, or an epoch lowered
-  name_record_unsupported,
+  name_record_unsupported,  // no longer produced since name successors (N4a); kept so values do not shift
   relation_full,           // no reached leaf has room
   duplicate_row,           // insert: the row UUID or version UUID is already in the relation (or the batch)
   duplicate_object,        // insert: a committed or own row of the relation (or the batch) carries the object UUID
@@ -151,6 +151,17 @@ struct CatalogVersionRequest {
   // Creator fields name this transaction; row UUID, object UUID and kind are
   // the predecessor's; definition_version is the predecessor's plus one.
   core::catalog::CatalogMetadataVersion metadata;
+  // SB_NATIVE_NAME_TREES (N4a): present iff the record is a localized name.
+  // The payload preserves the base version's identity
+  // (CatalogNamePayloadPreservesIdentity); a deleted version carries lifecycle
+  // dropped and, for an entry, the retiring transaction; an entry's keys, path
+  // and collisions are checked as an insert's are. Its envelope is encoded
+  // where the version is placed, like an insert's. The base version's cells in
+  // the name trees are stamped with this transaction (owner Q42) and a version
+  // that is not a drop gets its own cells, in the same careful-write plan. A
+  // name whose entry other names' paths run through cannot yet be renamed or
+  // dropped (invalid_successor; the cascade is N4b).
+  std::optional<core::catalog::CatalogNamePayload> name;
 };
 
 struct CatalogVersionWriteResult {

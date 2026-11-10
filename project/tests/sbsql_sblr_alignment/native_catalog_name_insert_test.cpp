@@ -263,6 +263,7 @@ db::CatalogInsertRow Alias(const Named& of, const NameTemplate& t, const Uuid& k
 // ---- Startup verification on a committed capture -----------------------------------------
 struct Verified {
   ia::NativeCatalogMetadataVerification full;
+  ia::NativeCatalogNameTreeVerification name_trees;  // SB_NATIVE_NAME_TREES, run on its own
   ia::NativeCatalogNameVerification names;
   ia::NativeCatalogSecurityReferenceVerification security;
   ia::NativeCatalogNamingProfileVerification profiles;
@@ -300,6 +301,7 @@ Verified Verify(const Db& b, const std::string& original) {
     std::vector<byte> colors(count);
     const ia::NativeCatalogNamespaceWorkspace workspace{order, parents, colors};
     out.full = ia::VerifyNativeCatalogMetadata(capture.capture, workspace);
+    out.name_trees = ia::VerifyNativeCatalogNameTrees(capture.capture, workspace);
     out.names = ia::VerifyNativeCatalogNameBindings(capture.capture, order);
     out.security = ia::VerifyNativeCatalogSecurityReferences(capture.capture, order);
     out.profiles = ia::VerifyNativeCatalogNamingProfileReferences(capture.capture, order);
@@ -311,7 +313,11 @@ Verified Verify(const Db& b, const std::string& original) {
 }
 // A committed named object: every verifier but audit accepts it, and full
 // verification refuses at exactly audit event_binding (W3b-2's flip target).
-void ExpectNamedVerification(const Db& b, const std::string& path, std::size_t definitions, std::string_view label) {
+// `full_passes`: the audit verifier judges live versions (W3b-2 adds the
+// event every change cites); a drop leaves none of the object's live, so full
+// verification passes for it.
+void ExpectNamedVerification(const Db& b, const std::string& path, std::size_t definitions, std::string_view label,
+                             bool full_passes = false) {
   const auto v = Verify(b, path);
   using AE = ia::NativeCatalogAuditError;
   if (!v.names.ok()) std::cerr << label << " names=" << int(v.names.error) << '\n';
@@ -321,6 +327,22 @@ void ExpectNamedVerification(const Db& b, const std::string& path, std::size_t d
   Check(v.names.ok() && v.names.definitions == definitions, std::string(label) + ": name verification accepts it");
   Check(v.profiles.ok() && v.collisions.ok() && v.security.ok(),
         std::string(label) + ": naming-profile, collision and security verification accept it");
+  if (!v.name_trees.ok()) std::cerr << label << " name_trees=" << int(v.name_trees.error) << '\n';
+  Check(v.name_trees.ok() && v.name_trees.present, std::string(label) + ": the name trees agree with the names");
+  if (full_passes) {
+    if (!v.full.ok())
+      std::cerr << label << " full: audit=" << int(v.full.audit.error) << " paths=" << int(v.full.paths.error)
+                << " name_trees=" << int(v.full.name_trees.error) << '\n';
+    Check(v.full.ok(), std::string(label) + ": full verification passes (nothing of the object is left to audit)");
+    return;
+  }
+  if (!(v.full.names.ok() && v.full.indexes.ok() && v.full.namespaces.ok() && v.full.filespaces.ok() &&
+        v.full.audit.error == AE::event_binding && !v.full.ok()))
+    std::cerr << label << " full: names=" << int(v.full.names.error) << " indexes=" << int(v.full.indexes.error)
+              << " namespaces=" << int(v.full.namespaces.error) << " filespaces=" << int(v.full.filespaces.error)
+              << " audit=" << int(v.full.audit.error) << " security=" << int(v.full.security.error)
+              << " profiles=" << int(v.full.naming_profiles.error) << " collisions=" << int(v.full.collisions.error)
+              << " paths=" << int(v.full.paths.error) << " name_trees=" << int(v.full.name_trees.error) << '\n';
   Check(v.full.names.ok() && v.full.indexes.ok() && v.full.namespaces.ok() && v.full.filespaces.ok() &&
             v.full.audit.error == AE::event_binding && !v.full.ok(),
         std::string(label) + ": full verification refuses at exactly audit event_binding (W3b-2)");
@@ -401,6 +423,316 @@ bool NamedStates(const Db& b, const NameTemplate& t, u16 role, std::size_t defin
   }
   fs::remove(path);
   return true;
+}
+
+// ---- Name successors (N4a) ---------------------------------------------------------------
+// The file after a name row's successor: the row placed as the version
+// writer's oracle places it, its envelope bound there; the base version's
+// cells stamped with the transaction in each tree that holds one; a version
+// that is not a drop given its own cells.
+struct NameSuccessorExpected {
+  std::vector<byte> file;
+  std::size_t writes = 0;
+};
+std::optional<NameSuccessorExpected> NameSuccessorOracle(const Db& b, std::span<const byte> before,
+                                                         const db::CatalogVersionRequest& r) {
+  RoleScope scope(b, 2);
+  const auto rel = ReadRelation(b, before);
+  const auto versions = rel.Versions(r.row_uuid);
+  Check(!versions.empty(), "the name row exists");
+  const u64 newest = rel.Row(versions.front()).row_version;
+  const auto base = rel.Find(r.predecessor_version_uuid);
+  const auto finished = [&](const LeafSeen& l) {
+    auto m = r.metadata;
+    u32 slot = 0;
+    for (const auto& x : l.leaf.body.rows) slot = std::max(slot, x.stable_slot_id);
+    const c::CatalogNameVersionBinding at{
+        {UuidKind::database, l.leaf.header.database_uuid}, {UuidKind::filespace, l.leaf.header.filespace_uuid},
+        {UuidKind::row, r.row_uuid}, {UuidKind::row, r.version_uuid}, m.record.header.object_uuid,
+        {UuidKind::transaction, r.transaction_uuid}, l.page, slot + 1, l.leaf.header.page_generation, newest + 1,
+        r.transaction_order, m.catalog_generation};
+    const auto envelope = c::EncodeCatalogNameEnvelope({at, *r.name});
+    Check(envelope.ok(), "the expected successor envelope encodes");
+    m.record.payload.assign(envelope.bytes.begin(), envelope.bytes.end());
+    return m;
+  };
+  std::optional<u64> target;
+  if (rel.At(base.first).leaf.body.free_space_bytes >= RowBytes(finished(rel.At(base.first)))) target = base.first;
+  for (const auto& l : rel.leaves)
+    if (!target && l.page != base.first && l.leaf.body.free_space_bytes >= RowBytes(finished(l))) target = l.page;
+  if (!target) return std::nullopt;
+  auto link = rel.At(base.first).leaf;
+  link.body.rows[base.second].next_version_uuid = r.version_uuid;
+  link.body.rows[base.second].next_row_version = newest + 1;
+  auto into = *target == base.first ? link : rel.At(*target).leaf;
+  const auto final_metadata = finished(rel.At(*target));
+  pg::RowDataRecord row;
+  row.row_uuid = {UuidKind::row, r.row_uuid};
+  row.version_uuid = r.version_uuid;
+  row.previous_version_uuid = r.predecessor_version_uuid;
+  row.transaction_uuid = {UuidKind::transaction, r.transaction_uuid};
+  row.local_transaction_id = r.transaction_order;
+  row.row_version = newest + 1;
+  row.previous_row_version = rel.Row(base).row_version;
+  row.storage_generation = into.header.page_generation;
+  u32 slot = 0;
+  for (const auto& x : into.body.rows) slot = std::max(slot, x.stable_slot_id);
+  row.stable_slot_id = slot + 1;
+  const auto encoded = c::EncodeCatalogMetadataVersion(final_metadata);
+  Check(encoded.ok(), "the successor metadata encodes");
+  scratchbird::core::datatypes::DatatypeBinaryValue cell;
+  cell.type_id = scratchbird::core::datatypes::CanonicalTypeId::binary;
+  cell.payload = encoded.bytes;
+  row.cells = {{1, std::move(cell), {}}};
+  into.body.rows.push_back(std::move(row));
+  NameSuccessorExpected out;
+  out.file.assign(before.begin(), before.end());
+  const auto put_leaf = [&](const db::NativeCatalogLeafPage& page) {
+    const auto image = db::EncodeNativeCatalogLeaf(page);
+    Check(image.ok(), "the expected leaf encodes");
+    std::copy(image.bytes.begin(), image.bytes.end(), out.file.begin() + static_cast<std::ptrdiff_t>(page.header.page_number * b.size));
+    ++out.writes;
+  };
+  put_leaf(into);
+  if (*target != base.first) put_leaf(link);
+  // The trees.
+  const auto zero = d::DecodeFilespacePageZero(out.file.data(), b.size);
+  Check(zero.ok(), "page zero decodes");
+  const auto root_of = [&](u16 kind) -> std::optional<u64> {
+    for (const auto& root : zero.record->roots) if (root.kind == kind) return root.page_number;
+    return std::nullopt;
+  };
+  const auto first = root_of(22), second = root_of(23);
+  Check(first.has_value() && second.has_value(), "the production database has both name trees");
+  std::set<u64> tree_pages_changed;
+  const auto put_tree = [&](u64 number, const pg::NativeBtreePage& page) {
+    const auto image = pg::EncodeNativeBtreePage(page);
+    Check(image.ok(), "the expected tree page encodes");
+    std::copy(image.bytes.begin(), image.bytes.end(), out.file.begin() + static_cast<std::ptrdiff_t>(number * b.size));
+    tree_pages_changed.insert(number);
+  };
+  for (unsigned t = 0; t < 2; ++t) {
+    if (t == 0 && !std::holds_alternative<c::CatalogNameEntry>(*r.name)) continue;
+    auto tree = ReadTreeAt(b, out.file, t ? *second : *first);
+    bool stamped = false;
+    for (const auto i : tree.leaves) {
+      auto& page = tree.pages[i];
+      for (auto& cell : page.page.cells)
+        if (cell.key.version_uuid == r.predecessor_version_uuid && cell.key.row_uuid == r.row_uuid) {
+          cell.superseding_local_transaction_id = r.transaction_order;
+          put_tree(page.number, page.page);
+          stamped = true;
+          break;
+        }
+      if (stamped) break;
+    }
+    Check(stamped, "the base version's cell is found to stamp");
+  }
+  if (!r.metadata.record.header.deleted) {
+    std::deque<c::CatalogNamePayload> keep;
+    c::CatalogNameIndex names;
+    const auto stored = NamesOf(b, out.file);
+    for (const auto& v : stored.vectors) names.Add(c::BorrowCatalogNamePayload(keep.emplace_back(v)));
+    for (const auto& e : stored.entries) names.Add(c::BorrowCatalogNamePayload(keep.emplace_back(e)));
+    names.Add(c::BorrowCatalogNamePayload(*r.name));
+    struct Planned { unsigned tree; std::vector<byte> key, payload; };
+    std::vector<Planned> cells;
+    const auto view = c::BorrowCatalogNamePayload(*r.name);
+    if (const auto* v = std::get_if<c::CatalogNameVectorView>(&view)) {
+      const auto kind = c::CatalogRecordKindFromName(v->object_class);
+      Check(kind.has_value(), "the vector's class names a kind");
+      cells.push_back({1, c::CatalogNameUuidTreeVectorKey(v->object_uuid.value, *kind), c::CatalogNameUuidTreeVectorPayload(*v)});
+    } else {
+      const auto& e = std::get<c::CatalogNameEntryView>(view);
+      const auto kind = c::CatalogRecordKindFromName(e.object_class);
+      Check(kind.has_value(), "the entry's class names a kind");
+      const auto path = c::ResolveCatalogNamePath(e, names);
+      Check(path.ok(), "the successor's path resolves for the oracle");
+      std::vector<std::string_view> components;
+      for (const auto& component : path.components) components.push_back(component.display_name);
+      cells.push_back({0, c::CatalogNameAuthoritativeTreeKey(e, *kind), c::CatalogNameAuthoritativeTreePayload(e)});
+      cells.push_back({1, c::CatalogNameUuidTreeEntryKey(e, *kind), c::CatalogNameUuidTreeEntryPayload(e.name_entry_uuid.value, components)});
+    }
+    for (auto& planned : cells) {
+      auto tree = ReadTreeAt(b, out.file, planned.tree ? *second : *first);
+      pg::NativeBtreeKey key;
+      key.encoded_key = std::move(planned.key);
+      key.row_uuid = r.row_uuid;
+      key.version_uuid = r.version_uuid;
+      auto& leaf = tree.pages[LeafFor(tree, key)];
+      std::size_t at = 0;
+      while (at < leaf.page.cells.size() && KeyOrder(leaf.page.cells[at].key, key) < 0) ++at;
+      pg::NativeBtreeCell entry;
+      entry.key = key;
+      entry.base_page = d::NativePageReference{b.primary, *target, into.header.page_generation, b.profile};
+      entry.creator_local_transaction_id = r.transaction_order;
+      entry.payload = std::move(planned.payload);
+      leaf.page.cells.insert(leaf.page.cells.begin() + static_cast<std::ptrdiff_t>(at), std::move(entry));
+      const auto image = pg::EncodeNativeBtreePage(leaf.page);
+      if (!image.ok()) return std::nullopt;
+      put_tree(leaf.number, leaf.page);
+    }
+  }
+  out.writes += tree_pages_changed.size();
+  return out;
+}
+// False when no leaf of the names relation has room for the version: the
+// writer then refuses relation_full with no write (new pages: W3b-3).
+bool ExpectNameSuccessor(const Db& b, Session& s, const std::string& path, const db::CatalogVersionRequest& r,
+                         std::string_view label) {
+  const auto before = ReadAll(path);
+  const auto expected = NameSuccessorOracle(b, before, r);
+  if (!expected) {
+    Refused(b, s, path, r, CE::relation_full, std::string(label) + " (no room, W3b-3)");
+    std::cout << b.name << " name successor page_size=" << b.size << " no room: " << label << " (W3b-3)\n";
+    return false;
+  }
+  const auto result = Write(b, s.sink(), r);
+  if (!result.ok()) std::cerr << label << ": " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+  Check(result.ok(), std::string(label) + ": the successor is written");
+  Check(result.writes == expected->writes, std::string(label) + ": one write per changed page");
+  Check(ReadAll(path) == expected->file, std::string(label) + ": the file is the oracle's");
+  return true;
+}
+// A successor request for a name row the test inserted: the insert's
+// metadata advanced by one version under transaction `n`.
+db::CatalogVersionRequest NameSuccessor(const db::CatalogInsertRow& inserted, const Uuid& predecessor, u64 n,
+                                        const Uuid& version, c::CatalogNamePayload name, bool drop) {
+  db::CatalogVersionRequest r;
+  r.role = 2;
+  r.transaction_order = n;
+  r.transaction_uuid = TxId(n);
+  r.row_uuid = inserted.row_uuid;
+  r.predecessor_version_uuid = predecessor;
+  r.version_uuid = version;
+  r.metadata = inserted.metadata;
+  r.metadata.definition_version += 1;
+  r.metadata.creator_transaction_uuid = {UuidKind::transaction, TxId(n)};
+  r.metadata.creator_local_transaction_id = n;
+  if (drop) {
+    r.metadata.record.header.deleted = true;
+    r.metadata.lifecycle = c::CatalogObjectLifecycle::dropped;
+    r.metadata.status = c::CatalogObjectStatus::retired;
+    r.metadata.retired_transaction_uuid = {UuidKind::transaction, TxId(n)};
+  }
+  r.name = std::move(name);
+  return r;
+}
+// A written successor as the base of the next one.
+db::CatalogInsertRow AsRow(const db::CatalogVersionRequest& r) {
+  return db::CatalogInsertRow{2, r.row_uuid, r.version_uuid, r.metadata, r.name};
+}
+void NameSuccessors(const Db& b, const NameTemplate& t, u16 role, std::size_t definitions) {
+  const auto path = b.Copy(b.bytes, "successors.db");
+  Session s(b, path);
+  Begin(*s.w, s.sink(), 2);
+  const auto file = ReadAll(path);
+  const auto named = NamedAfter(b, file, t, role, After(b, file, role), 1, 2, "w3b_renamed");
+  if (!InsertOracle(b, file, Request(2, named.Rows()))) {
+    std::cout << b.name << " successors page_size=" << b.size << " no room (W3b-3)\n";
+    fs::remove(path);
+    return;
+  }
+  ExpectInsert(b, s, path, Request(2, named.Rows()), "a named object to rename");
+  Commit(*s.w, s.sink(), 2);
+  const auto entry_of = [&](const std::string& text) {
+    auto e = Keyed(std::get<c::CatalogNameEntry>(*named.entry.name), t, text);
+    PathBeside(e, t.entry);
+    return c::CatalogNamePayload{e};
+  };
+  // A rename: the old version's cells stamped, the new version's added.
+  Begin(*s.w, s.sink(), 3);
+  const auto renamed = NameSuccessor(named.entry, named.entry.version_uuid, 3, VersionId(9001), entry_of("w3b_renamed_v2"), false);
+  if (!ExpectNameSuccessor(b, s, path, renamed, "a renamed entry by a transaction in progress")) {
+    Rollback(*s.w, s.sink(), 3);
+    fs::remove(path);
+    return;
+  }
+  {
+    RoleScope a(b, 2);
+    PeekSees(b, path, named.entry.row_uuid, named.entry.version_uuid, "the old name while the rename is in progress");
+  }
+  Commit(*s.w, s.sink(), 3);
+  {
+    RoleScope a(b, 2);
+    PeekSees(b, path, named.entry.row_uuid, VersionId(9001), "the new name, committed");
+  }
+  ExpectNamedVerification(b, path, definitions + 1, "a renamed entry, committed");
+  // A rename to a name another object holds in the scope: duplicate_name.
+  Begin(*s.w, s.sink(), 4);
+  Refused(b, s, path, NameSuccessor(AsRow(renamed), VersionId(9001), 4, VersionId(9002), entry_of(t.entry.raw_name_text), false),
+          CE::duplicate_name, "a rename onto the template's name");
+  // A rename rolled back: its stamp stays on the visible version's cells; the
+  // engine admits a stamp from a transaction that did not commit.
+  const bool rolled = ExpectNameSuccessor(b, s, path, NameSuccessor(AsRow(renamed), VersionId(9001), 4, VersionId(9003), entry_of("w3b_renamed_v3"), false),
+                                          "a rename then rolled back");
+  Rollback(*s.w, s.sink(), 4);
+  (void)rolled;
+  {
+    RoleScope a(b, 2);
+    PeekSees(b, path, named.entry.row_uuid, VersionId(9001), "the committed name after a rolled-back rename");
+  }
+  ExpectNamedVerification(b, path, definitions + 1, "a rolled-back rename");
+  Begin(*s.w, s.sink(), 5);
+  // A name other names' paths run through cannot be renamed yet (N4b): the
+  // template's scope (a schema) is a component of the template's own path.
+  // (The database's own name is not: paths run from below the root.)
+  {
+    const auto now = ReadAll(path);
+    const auto stored = NamesOf(b, now);
+    const auto database = std::find_if(stored.entries.begin(), stored.entries.end(), [&](const auto& e) {
+      return e.object_uuid.value == t.entry.scope_uuid.value && e.language_tag == t.entry.language_tag && e.default_for_language;
+    });
+    Check(database != stored.entries.end(), "the template's scope has a name in the template's language");
+    RoleScope a(b, 2);
+    const auto rel = ReadRelation(b, now);
+    std::optional<db::CatalogInsertRow> as_inserted;
+    for (const auto& l : rel.leaves)
+      for (const auto& row : l.leaf.body.rows) {
+        const auto& m = l.metadata.at(row.version_uuid);
+        if (m.record.header.object_uuid.value != database->name_entry_uuid.value) continue;
+        db::CatalogInsertRow r{2, row.row_uuid.value, row.version_uuid, m, c::CatalogNamePayload{*database}};
+        r.metadata.record.payload.clear();
+        as_inserted = r;
+      }
+    Check(as_inserted.has_value(), "the scope's name row is found");
+    auto e = *database;
+    e.raw_name_text = "orders_renamed";
+    e.display_name = "orders_renamed";
+    PathBeside(e, *database);
+    Refused(b, s, path, NameSuccessor(*as_inserted, as_inserted->version_uuid, 5, VersionId(9007), c::CatalogNamePayload{e}, false),
+            CE::invalid_successor, "renaming a scope's name, which other names' paths run through");
+  }
+  // A drop: the definition, the vector and the entry retired together; the
+  // entry's and vector's cells stamped, no new cells.
+  {
+    auto e = std::get<c::CatalogNameEntry>(*renamed.name);
+    e.lifecycle_state = c::CatalogNameLifecycle::dropped;
+    e.dropped_transaction_uuid = scratchbird::core::platform::TypedUuid{UuidKind::transaction, TxId(5)};
+    auto entry_drop = NameSuccessor(AsRow(renamed), VersionId(9001), 5, VersionId(9004), c::CatalogNamePayload{e}, true);
+    entry_drop.metadata.record.payload.clear();
+    if (!ExpectNameSuccessor(b, s, path, entry_drop, "the entry dropped")) {
+      Rollback(*s.w, s.sink(), 5);
+      fs::remove(path);
+      return;
+    }
+    auto v = std::get<c::CatalogNameVector>(*named.vector.name);
+    v.lifecycle_state = c::CatalogNameLifecycle::dropped;
+    if (!ExpectNameSuccessor(b, s, path, NameSuccessor(named.vector, named.vector.version_uuid, 5, VersionId(9005), c::CatalogNamePayload{v}, true),
+                             "the vector dropped")) {
+      Rollback(*s.w, s.sink(), 5);
+      fs::remove(path);
+      return;
+    }
+    RoleScope a(b, role);
+    const auto rel = ReadRelation(b, ReadAll(path));
+    Expect(b, s, path, Successor(b, rel, named.definition.row_uuid, named.definition.version_uuid, 5, VersionId(9006), true),
+           "the definition dropped");
+  }
+  Commit(*s.w, s.sink(), 5);
+  ExpectNamedVerification(b, path, definitions, "a dropped named object", true);
+  fs::remove(path);
+  std::cout << b.name << " name successors page_size=" << b.size << '\n';
 }
 
 // ---- Collisions ---------------------------------------------------------------------------
@@ -733,6 +1065,7 @@ int main(int argc, char** argv) {
     NameRefusals(b, t, *role);
     ConflictingPolicy(b, t, *role);
     if (room) NameKeys(b, t, *role);
+    if (room) NameSuccessors(b, t, *role, fresh.names.definitions);
     std::cout << "PASS native catalog name insert page_size=" << b.size << " checks=" << checks << '\n';
     return 0;
   } catch (const std::exception& e) {

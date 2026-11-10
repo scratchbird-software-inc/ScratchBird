@@ -230,14 +230,18 @@ class NativeCatalogCohortLeaseReader {
                   if(capture&&!capture->AppendNameTreeCell(static_cast<u16>(t),cell))return fail(E::resource_exhausted);
                 }}
               // Every row version has its cells: one in the authoritative tree
-              // per entry, one in the UUID-to-name tree per name row. Counted
+              // per entry, one in the UUID-to-name tree per name row (a deleted
+              // version none). Counted
               // by scanning the tree for each row (rows x cells, a few
               // milliseconds on the default pack); with the cell count above
               // this is a bijection. The page manager rebuild can index it.
               usize expected=0;
               for(const auto& candidate:bases)for(const auto& m:candidate.page.metadata){
                 if(!m.name)continue;
-                const bool wants=t==1||std::holds_alternative<core::catalog::CatalogNameEntryView>(*m.name);
+                // A drop's version (deleted) has no cells of its own: the
+                // version it retired keeps its stamped ones (owner Q42, N4a).
+                const bool wants=!m.metadata.record.header.deleted&&
+                    (t==1||std::holds_alternative<core::catalog::CatalogNameEntryView>(*m.name));
                 usize matches=0;
                 for(const auto n:tree.leaves)for(const auto& cell:tree.pages[n].page->cells)
                   if(cell.key.version_uuid==m.version_uuid)++matches;

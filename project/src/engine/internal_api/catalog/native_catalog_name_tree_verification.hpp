@@ -32,9 +32,14 @@ struct NativeCatalogNameTreeVerification {
 //    kind from its captured definition; an entry's path components from the
 //    path rule over the captured names, SB_NATIVE_NAME_PATH);
 //  - a cell whose version is not captured belongs to a version the snapshot
-//    does not see: its creator must not be committed (a rolled-back or still
-//    active insert; MGA's back versions, which a sweep removes); a committed
-//    creator with no captured row is a dangling cell;
+//    does not see: either its creator did not commit (a rolled-back or still
+//    active insert) or a committed successor stamped it (owner Q42: a renamed
+//    or dropped version's cell, MGA's back version a sweep removes); a cell
+//    with a committed creator, no captured row and no committed stamp is
+//    dangling;
+//  - a captured (visible) row's cell may carry a stamp only from a successor
+//    that did not commit (rolled back, dead, or still in progress): a
+//    committed successor would have made another version the visible one;
 //  - every captured name row has its cells: one in the authoritative tree per
 //    entry, one in the UUID-to-name tree per name row (counted in `colors`).
 // Cells are found by scanning the captured cells per row (rows x cells, a few
@@ -71,15 +76,25 @@ inline NativeCatalogNameTreeVerification VerifyNativeCatalogNameTrees(
     std::size_t found=rows.size();
     for(std::size_t i=0;i<rows.size()&&found==rows.size();++i)if(rows[i].row.version_uuid==cell.version_uuid)found=i;
     if(found==rows.size()){
-      // Not a version this snapshot sees: its creator must not have committed.
+      // Not a version this snapshot sees: its creator did not commit, or a
+      // committed successor stamped it.
       const auto state=creator_state(cell.creator_local_transaction_id);
-      if(!state||*state==transaction::mga::TransactionState::committed)return fail(E::cell_without_row,cell.version_uuid);
+      if(!state)return fail(E::cell_without_row,cell.version_uuid);
+      if(*state==transaction::mga::TransactionState::committed){
+        if(!cell.superseding_local_transaction_id)return fail(E::cell_without_row,cell.version_uuid);
+        const auto superseder=creator_state(cell.superseding_local_transaction_id);
+        if(!superseder||*superseder!=transaction::mga::TransactionState::committed)return fail(E::cell_without_row,cell.version_uuid);
+      }
       continue;
     }
     const auto& row=rows[found].row;
     if(rows[found].role!=2||!row.name_payload)return fail(E::cell_row_kind,cell.version_uuid);
     if(row.metadata.creator_local_transaction_id!=cell.creator_local_transaction_id)return fail(E::cell_creator,cell.version_uuid);
-    if(cell.superseding_local_transaction_id)return fail(E::cell_superseded,cell.version_uuid);
+    if(cell.superseding_local_transaction_id){
+      // A stamp on the visible version: its successor did not commit.
+      const auto superseder=creator_state(cell.superseding_local_transaction_id);
+      if(!superseder||*superseder==transaction::mga::TransactionState::committed)return fail(E::cell_superseded,cell.version_uuid);
+    }
     if(const auto* v=std::get_if<c::CatalogNameVectorView>(&*row.name_payload)){
       if(cell.tree!=1)return fail(E::cell_row_kind,cell.version_uuid);
       const auto* object=lookup.Find(v->object_uuid.value);
@@ -116,6 +131,7 @@ inline NativeCatalogNameTreeVerification VerifyNativeCatalogNameTrees(
   }
   for(std::size_t i=0;i<rows.size();++i){
     const auto& row=rows[i].row;
+    // A drop's version has no cells of its own (N4a).
     if(rows[i].role!=2||!row.name_payload||row.metadata.record.header.deleted)continue;
     ++out.rows;
     const bool entry=std::holds_alternative<c::CatalogNameEntryView>(*row.name_payload);
