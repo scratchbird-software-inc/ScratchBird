@@ -275,6 +275,53 @@ bool ReadTree(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding& b
     if (tree[index].page.right) return refuse(E::invalid_catalog);
   return true;
 }
+// SEARCH_KEY: SB_NATIVE_NAME_PROBE (N3). The rows of the leaf cells of a tree
+// read by ReadTree (the root first) whose keys begin with `prefix`: one descent
+// from the root to the first leaf that may hold such a key, then right along
+// the leaf level (sibling links, so a lagging page a parent does not list yet
+// is walked too) until a key past the prefix. False when a page the walk
+// needs is not among those read (invalid_catalog).
+bool ProbeTreePrefix(const std::vector<TreePage>& tree, std::span<const byte> prefix, std::set<Uuid>& rows) {
+  if (tree.empty()) return false;
+  std::map<u64, std::size_t> at;
+  for (std::size_t i = 0; i < tree.size(); ++i) at.emplace(tree[i].ref.page_number, i);
+  const auto index_of = [&](const std::optional<disk::NativePageReference>& ref) -> std::optional<std::size_t> {
+    if (!ref) return std::nullopt;
+    const auto found = at.find(ref->page_number);
+    return found == at.end() ? std::nullopt : std::optional{found->second};
+  };
+  const auto below = [&](std::span<const byte> key) {  // key < prefix
+    return std::lexicographical_compare(key.begin(), key.end(), prefix.begin(), prefix.end());
+  };
+  std::size_t page = 0;
+  while (tree[page].page.tree_level) {
+    // The last child whose separator is below the prefix; every key with the
+    // prefix is above it (no key is the prefix itself), so none is left of it.
+    auto child = tree[page].page.first_child;
+    for (const auto& cell : tree[page].page.cells) {
+      if (!below(cell.key.encoded_key)) break;
+      child = cell.child;
+    }
+    const auto next = index_of(child);
+    if (!next) return false;
+    page = *next;
+  }
+  for (;;) {
+    for (const auto& cell : tree[page].page.cells) {
+      const auto& key = cell.key.encoded_key;
+      if (key.size() >= prefix.size() && std::equal(prefix.begin(), prefix.end(), key.begin())) {
+        rows.insert(cell.key.row_uuid);
+      } else if (!below(key)) {
+        return true;
+      }
+    }
+    if (!tree[page].page.right) return true;
+    const auto next = index_of(tree[page].page.right);
+    if (!next) return false;
+    page = *next;
+  }
+}
+
 // Reads the relation `head` names through the sink: the index walked and
 // checked as the tree reader walks it, then every base leaf the index names
 // (or the head itself, unindexed). False, with `result` set, on a refusal.
@@ -398,13 +445,13 @@ class NameState {
       const auto* e = std::get_if<catalog::CatalogNameEntry>(&s.payload);
       if (!e) continue;
       if (s.state && InProgress(*s.state) && s.order != order_) {
-        holders_.push_back({&s.payload, Hold::pending, s.order});
+        holders_.push_back({&s.payload, Hold::pending, s.order, row});
         continue;
       }
       if (s.deleted || e->lifecycle_state == catalog::CatalogNameLifecycle::dropped ||
           e->lifecycle_state == catalog::CatalogNameLifecycle::archived)
         continue;
-      holders_.push_back({&s.payload, Hold::held, s.order});
+      holders_.push_back({&s.payload, Hold::held, s.order, row});
     }
     // SB_NATIVE_NAME_PATH: the names a path through this request may use: the
     // newest version of each stored name this transaction sees (committed or
@@ -582,9 +629,24 @@ class NameState {
     const auto xv = std::get<catalog::CatalogNameEntryView>(catalog::BorrowCatalogNamePayload(payload));
     if (const auto blocker = PendingOnPath(xv, path_names_)) return {E::write_conflict, blocker};  // Q47 = 1
     if (catalog::CheckCatalogNameEntryPath(xv, path_names_) != catalog::CatalogNamePathError::none) return {E::invalid_name};
+    // SB_NATIVE_NAME_PROBE (N3): with the authoritative tree, the candidates
+    // are the rows its (scope, identifier profile) range holds - every entry
+    // version in the scope has a cell there, so each row whose holding version
+    // is in the scope is found (through any of its versions' cells); each is
+    // then judged by its holding version, as before. That range, not the
+    // name's key: startup judges every entry of the scope (a class bound under
+    // two policy bodies), and the ASCII-folded and all-languages lanes compare
+    // across language tags. The request's own entries are not in the tree yet.
+    std::set<Uuid> probed;
+    if (authoritative_) {
+      auto prefix = catalog::CatalogNameAuthoritativeTreeNamePrefix(xv);
+      prefix.resize(32);  // scope16 | identifier profile16
+      if (!ProbeTreePrefix(*authoritative_, prefix, probed)) return {E::invalid_catalog};
+    }
     std::optional<u64> blocker;
     bool held = false;
     for (const auto& holder : holders_) {
+      if (authoritative_ && holder.row && !probed.contains(*holder.row)) continue;  // outside the scope
       const auto& y = std::get<catalog::CatalogNameEntry>(*holder.payload);
       if (y.object_uuid.value == x.object_uuid.value) continue;  // an alias of the same object
       const auto yv = std::get<catalog::CatalogNameEntryView>(catalog::BorrowCatalogNamePayload(*holder.payload));
@@ -607,7 +669,14 @@ class NameState {
     return {};
   }
   // This request's entry, once placed: later entries of the request see it.
-  void HoldEntry(const catalog::CatalogNamePayload& payload) { holders_.push_back({&payload, Hold::held, order_}); }
+  void HoldEntry(const catalog::CatalogNamePayload& payload) {
+    holders_.push_back({&payload, Hold::held, order_, std::nullopt});
+  }
+  // SB_NATIVE_NAME_PROBE (N3): the authoritative name tree (kind 22) as read
+  // for this request; CheckEntry takes its candidates from it. Without one
+  // (a database without name trees: component fixtures, owner Q44 = 1) every
+  // holder is a candidate.
+  void ProbeWith(const std::vector<TreePage>* authoritative) { authoritative_ = authoritative; }
   const catalog::CatalogNameIndex& Paths() const { return path_names_; }
   // SB_NATIVE_NAME_CASCADE (N4b): the names a path may run through as stored
   // (the newest version of each name row this transaction sees, not deleted:
@@ -637,7 +706,9 @@ class NameState {
     const catalog::CatalogNamePayload* payload;
     Hold state;
     u64 order;
+    std::optional<Uuid> row;  // a stored entry's row; none for the request's own
   };
+  const std::vector<TreePage>* authoritative_ = nullptr;
   std::optional<mga::TransactionState> StateOf(const pg::RowDataRecord& row) const {
     const auto* creator = entry_(row.local_transaction_id);
     if (!creator || creator->identity.transaction_uuid.value != row.transaction_uuid.value) return std::nullopt;
@@ -1218,6 +1289,53 @@ struct NameTree {
   std::set<std::size_t> changed;
 };
 
+// SB_NATIVE_NAME_TREES: the two name trees over the names relation, from page
+// zero (kinds 22 and 23), read as the tree readers walk them: both or neither
+// (a database without the roots - component fixtures, owner Q44 = 1 - has none
+// to maintain or probe; one root without the other is a damaged catalog).
+// `out` is left empty without them, else holds kind 22 then kind 23.
+bool ReadNameTrees(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding& binding, u32 page_size,
+                   std::vector<byte>& image, std::vector<NameTree>& out, CatalogVersionWriteResult& result) {
+  const auto& croot = binding.catalog_root;
+  image.assign(page_size, 0);  // ReadPage refuses page zero: no catalog page is page zero
+  const auto zero_io = sink.ReadAt(0, std::span<byte>(image));
+  if (!zero_io.ok() || zero_io.bytes_transferred != page_size) {
+    result.error = E::io_failure;
+    result.io = zero_io;
+    return false;
+  }
+  const disk::FilespaceBootstrapBinding zero_binding{binding.database_uuid, croot.filespace_uuid,
+                                                     croot.page_size_profile_uuid};
+  const auto zero = disk::DecodeFilespacePageZero(image.data(), image.size(), &zero_binding);
+  if (!zero.ok()) {
+    result.error = E::invalid_catalog;
+    return false;
+  }
+  const auto& zero_roots = zero.record->roots;
+  const auto find_root = [&](u16 kind) {
+    return std::find_if(zero_roots.begin(), zero_roots.end(), [&](const auto& r) { return r.kind == kind; });
+  };
+  const auto first = find_root(22), second = find_root(23);
+  if ((first == zero_roots.end()) != (second == zero_roots.end())) {
+    result.error = E::invalid_catalog;
+    return false;
+  }
+  if (first == zero_roots.end()) return true;
+  out.resize(2);
+  for (unsigned t = 0; t < 2; ++t) {
+    const auto& r = t ? *second : *first;
+    if (r.page_type != 0x200) {
+      result.error = E::invalid_catalog;
+      return false;
+    }
+    const pg::NativeCatalogRootReference head{
+        2, 0x200, {r.filespace_uuid, r.page_number, r.page_generation, r.page_size_profile_uuid}, r.object_uuid};
+    std::vector<disk::NativePageReference> bases;
+    if (!ReadTree(sink, binding, page_size, head, out[t].tree, bases, result)) return false;
+  }
+  return true;
+}
+
 // A live entry whose stored path or display components a change moves.
 struct Moved {
   const NameState::StoredName* stored;
@@ -1717,6 +1835,9 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
     // row-UUID order.
     std::vector<Succ> succs;
     std::optional<catalog::CatalogNameIndex> moved_paths;
+    // SB_NATIVE_NAME_TREES (Q42): each base version's cells are stamped with
+    // this transaction; a version that is not a drop gets its own cells.
+    std::vector<NameTree> name_trees;
     if (named) {
       names.emplace(binding, request.transaction_order, relations, entry,
                     std::vector<const catalog::CatalogNamePayload*>{&*request.name});
@@ -1725,6 +1846,10 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
         if (s.row == request.row_uuid && s.row_version == base_row.row_version) base_name = &s.payload;
       if (!base_name || !catalog::CatalogNamePayloadPreservesIdentity(*base_name, *request.name))
         return Refuse(E::invalid_successor);
+      // SB_NATIVE_NAME_TREES: read before the checks; the collision check
+      // probes the authoritative tree (SB_NATIVE_NAME_PROBE, N3).
+      if (!ReadNameTrees(sink, binding, page_size, image, name_trees, result)) return result;
+      if (!name_trees.empty()) names->ProbeWith(&name_trees[0].tree);
       const auto* entry_payload = std::get_if<catalog::CatalogNameEntry>(&*request.name);
       if (!request.metadata.record.header.deleted && entry_payload) {
         const auto verdict = names->CheckEntry(*request.name);
@@ -1819,41 +1944,12 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
     // ---- the name trees (SB_NATIVE_NAME_TREES, owner Q42) ------------------
     // Each base version's cells are stamped with this transaction; a version
     // that is not a drop gets its own cells. Both trees or neither, from page
-    // zero; a database without them has nothing to maintain.
-    std::vector<NameTree> name_trees;
-    if (named) {
-      image.assign(page_size, 0);  // ReadPage refuses page zero: no catalog page is page zero
-      const auto zero_io = sink.ReadAt(0, std::span<byte>(image));
-      if (!zero_io.ok() || zero_io.bytes_transferred != page_size) {
-        result.error = E::io_failure;
-        result.io = zero_io;
-        return result;
-      }
-      const disk::FilespaceBootstrapBinding zero_binding{binding.database_uuid, croot.filespace_uuid,
-                                                         croot.page_size_profile_uuid};
-      const auto zero = disk::DecodeFilespacePageZero(image.data(), image.size(), &zero_binding);
-      if (!zero.ok()) return Refuse(E::invalid_catalog);
-      const auto& zero_roots = zero.record->roots;
-      const auto find_root = [&](u16 kind) {
-        return std::find_if(zero_roots.begin(), zero_roots.end(), [&](const auto& r) { return r.kind == kind; });
-      };
-      const auto first_root = find_root(22), second_root = find_root(23);
-      if ((first_root == zero_roots.end()) != (second_root == zero_roots.end())) return Refuse(E::invalid_catalog);
-      if (first_root != zero_roots.end()) {
-        name_trees.resize(2);
-        for (unsigned t = 0; t < 2; ++t) {
-          const auto& r = t ? *second_root : *first_root;
-          if (r.page_type != 0x200) return Refuse(E::invalid_catalog);
-          const pg::NativeCatalogRootReference tree_head{
-              2, 0x200, {r.filespace_uuid, r.page_number, r.page_generation, r.page_size_profile_uuid}, r.object_uuid};
-          std::vector<disk::NativePageReference> tree_bases;
-          if (!ReadTree(sink, binding, page_size, tree_head, name_trees[t].tree, tree_bases, result)) return result;
-        }
-        if (auto stop = StampAndAddNameCells(sink, binding, succs, relation_read, name_trees.data(), entry, pages,
-                                             page_size, request.transaction_order))
-          return *stop;
-      }
-    }
+    // zero (read above, before the collision check that probes them); a
+    // database without them has nothing to maintain.
+    if (!name_trees.empty())
+      if (auto stop = StampAndAddNameCells(sink, binding, succs, relation_read, name_trees.data(), entry, pages,
+                                           page_size, request.transaction_order))
+        return *stop;
 
     if (pages.needed()) {
       deferred = true;
@@ -2057,37 +2153,10 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
     // tree per name row (the entry's with its path's display components). A
     // database without the roots (component fixtures) has no trees to
     // maintain; one root without the other is a damaged catalog.
-    std::optional<std::array<NameTree, 2>> name_trees;
-    if (std::any_of(request.rows.begin(), request.rows.end(), [](const auto& r) { return r.name.has_value(); })) {
-      image.assign(page_size, 0);  // ReadPage refuses page zero: no catalog page is page zero
-      const auto zero_io = sink.ReadAt(0, std::span<byte>(image));
-      if (!zero_io.ok() || zero_io.bytes_transferred != page_size) {
-        result.error = E::io_failure;
-        result.io = zero_io;
-        return result;
-      }
-      const disk::FilespaceBootstrapBinding zero_binding{binding.database_uuid, croot.filespace_uuid,
-                                                         croot.page_size_profile_uuid};
-      const auto zero = disk::DecodeFilespacePageZero(image.data(), image.size(), &zero_binding);
-      if (!zero.ok()) return Refuse(E::invalid_catalog);
-      const auto& zero_roots = zero.record->roots;
-      const auto find_root = [&](u16 kind) {
-        return std::find_if(zero_roots.begin(), zero_roots.end(), [&](const auto& r) { return r.kind == kind; });
-      };
-      const auto first = find_root(22), second = find_root(23);
-      if ((first == zero_roots.end()) != (second == zero_roots.end())) return Refuse(E::invalid_catalog);
-      if (first != zero_roots.end()) {
-        name_trees.emplace();
-        for (unsigned t = 0; t < 2; ++t) {
-          const auto& r = t ? *second : *first;
-          if (r.page_type != 0x200) return Refuse(E::invalid_catalog);
-          const pg::NativeCatalogRootReference head{
-              2, 0x200, {r.filespace_uuid, r.page_number, r.page_generation, r.page_size_profile_uuid}, r.object_uuid};
-          std::vector<disk::NativePageReference> bases;
-          if (!ReadTree(sink, binding, page_size, head, (*name_trees)[t].tree, bases, result)) return result;
-        }
-      }
-    }
+    std::vector<NameTree> name_trees;
+    if (std::any_of(request.rows.begin(), request.rows.end(), [](const auto& r) { return r.name.has_value(); }) &&
+        !ReadNameTrees(sink, binding, page_size, image, name_trees, result))
+      return result;
     // ---- each row: checked, placed, indexed --------------------------------
     // The pages a placement changes, by (role, index): their pages as changed.
     std::set<std::pair<u16, std::size_t>> changed_leaves;
@@ -2107,6 +2176,7 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
       if (row.name) request_names.push_back(&*row.name);
     NameState names(binding, request.transaction_order, relations, entry, std::move(request_names));
     if (any_entry && !names.Load()) return Refuse(E::invalid_catalog);
+    if (!name_trees.empty()) names.ProbeWith(&name_trees[0].tree);  // SB_NATIVE_NAME_PROBE (N3)
     const std::size_t names_leaves_before = relations.contains(2) ? relations.at(2).leaves.size() : 0;
 
     for (std::size_t i = 0; i < request.rows.size(); ++i) {
@@ -2279,7 +2349,7 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
       if (!target) return refuse_row(E::relation_full, i);
       changed_leaves.insert({want.role, *target});
       // SB_NATIVE_NAME_TREES: the row's cells in the name trees.
-      if (want.name && name_trees) {
+      if (want.name && !name_trees.empty()) {
         const auto payload_view = catalog::BorrowCatalogNamePayload(*want.name);
         const auto add = [&](unsigned t, std::vector<byte> encoded_key, std::vector<byte> payload) -> std::optional<E> {
           pg::NativeBtreeCell cell;
@@ -2289,7 +2359,7 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
           cell.base_page = relation.bases[*target];
           cell.creator_local_transaction_id = request.transaction_order;
           cell.payload = std::move(payload);
-          return InsertTreeCell(sink, (*name_trees)[t].tree, (*name_trees)[t].changed, std::move(cell), E::name_tree_full,
+          return InsertTreeCell(sink, name_trees[t].tree, name_trees[t].changed, std::move(cell), E::name_tree_full,
                                 E::invalid_insert, pages, page_size, binding.allocation_root.has_value(), result);
         };
         if (const auto* v = std::get_if<catalog::CatalogNameVectorView>(&payload_view)) {
@@ -2376,8 +2446,8 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
           if (auto stop = IndexNewLeafVersions(sink, binding, succs, relation, names_leaves_before, changed_tree[2], pages,
                                                page_size, request.transaction_order))
             return *stop;
-        if (name_trees)
-          if (auto stop = StampAndAddNameCells(sink, binding, succs, relation, name_trees->data(), entry, pages, page_size,
+        if (!name_trees.empty())
+          if (auto stop = StampAndAddNameCells(sink, binding, succs, relation, name_trees.data(), entry, pages, page_size,
                                                request.transaction_order))
             return *stop;
       }
@@ -2414,8 +2484,8 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
       }
     // SB_NATIVE_NAME_TREES: the name tree pages, after every base leaf like
     // the relation index pages.
-    if (name_trees)
-      for (auto& tree : *name_trees)
+    if (!name_trees.empty())
+      for (auto& tree : name_trees)
         for (const auto t : tree.changed) {
           auto& page = tree.tree[t];
           auto encoded = pg::EncodeNativeBtreePage(page.page);
