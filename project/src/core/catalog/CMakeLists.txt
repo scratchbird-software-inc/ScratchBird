@@ -29,6 +29,7 @@ add_library(sb_core_catalog_dispatcher_objects OBJECT
   catalog_authorization_policy.cpp
   catalog_bootstrap_policy.cpp
   catalog_construction_intent.cpp
+  catalog_metadata_change.cpp
   catalog_context_namespace.cpp
   catalog_evidence_policy.cpp
   catalog_identifier_profile.cpp

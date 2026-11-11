@@ -42,7 +42,10 @@
 #define SB_CATALOG_INSERT_WRITER_TEST_WITHOUT_MAIN
 #include "native_catalog_insert_writer_test.cpp"
 
+#include "catalog_construction_intent.hpp"
 #include "catalog_identifier_lookup_key.hpp"
+#include "catalog_metadata_change.hpp"
+#include <functional>
 #include "catalog_identifier_profile.hpp"
 #include "catalog_naming_collision_policy.hpp"
 #include "catalog_policy_descriptor.hpp"
@@ -1727,7 +1730,8 @@ void NameConflicts(const Db& b, const NameTemplate& t, u16 role, std::size_t def
     if (!result.ok()) std::cerr << "B: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
     Check(result.ok() && result.cascaded.size() == below, "B: 2 rolled back, the rename cascades the entries below but 2's");
     Commit(*s.w, s.sink(), 3);
-    ExpectNamedVerification(b, path, definitions, "B: insert rolled back, rename committed", false, true);
+    // Only name rows committed (data, Q50): full verification passes.
+    ExpectNamedVerification(b, path, definitions, "B: insert rolled back, rename committed", true, true);
     fs::remove(path);
   }
   // C.
@@ -1806,7 +1810,8 @@ void NameConflicts(const Db& b, const NameTemplate& t, u16 role, std::size_t def
     Check(result.ok(), "D: a rename no path below the schema runs through succeeds while the schema's rename is in progress");
     Commit(*s.w, s.sink(), 3);
     Commit(*s.w, s.sink(), 2);
-    ExpectNamedVerification(b, path, definitions, "D: both renames committed", false, true);
+    // Only name rows committed (data, Q50): full verification passes.
+    ExpectNamedVerification(b, path, definitions, "D: both renames committed", true, true);
     std::cout << b.name << " name conflicts page_size=" << b.size << ": D renamed " << other->entry.display_name << " ("
               << result.cascaded.size() << " cascaded) beside the schema's rename (" << renamed.cascaded.size() << ")\n";
     fs::remove(path);
@@ -1960,6 +1965,180 @@ void NameInsertCascade(const Db& b, const NameTemplate& t, u16 role, std::size_t
   }
   Check(failures > 0, "the cascading insert has failure points");
   std::cout << b.name << " insert cascade crashes page_size=" << b.size << " failure points " << failures << '\n';
+  fs::remove(path);
+}
+
+// ---- The catalog-change audit event (W3b-2a, owner Q31 = 1, Q49 = 1, Q50 = 1) -------------
+// The create's construction-intent row (role 6): the template an event row's
+// metadata starts from (its owner, schema and parent), and its intent.
+std::pair<c::CatalogMetadataVersion, c::CatalogConstructionIntent> ConstructionIntentOf(const Db& b, std::span<const byte> file) {
+  RoleScope scope(b, 6);
+  const auto rel = ReadRelation(b, file);
+  for (const auto& l : rel.leaves)
+    for (const auto& [version, m] : l.metadata)
+      if (m.object_subtype == "node_construction_intent") {
+        const auto intent = c::DecodeCatalogConstructionIntent(m.record.payload);
+        Check(intent.ok(), "the create's construction intent decodes");
+        return {m, *intent.record};
+      }
+  Check(false, "the create's construction intent is found");
+  return {};
+}
+// A catalog.metadata_change event for transaction `n`, written as written by
+// the caller: payload as given, row metadata from the construction intent's
+// with the event as its object and its own audit anchor, first version by `n`.
+c::CatalogMetadataChange ChangeEventPayload(const c::CatalogConstructionIntent& intent, const Uuid& event, u64 n, u64 generation) {
+  c::CatalogMetadataChange p;
+  p.event_uuid = event;
+  p.database_uuid = intent.database_uuid;
+  p.engine_uuid = intent.engine_uuid;
+  p.origin_transaction_uuid = {UuidKind::transaction, TxId(n)};
+  p.origin_local_transaction_id = n;
+  p.event_time_utc_us = intent.event_time_utc_us + 1000 * n;
+  p.catalog_generation = generation;
+  p.event = c::MetadataChangeAuditEvent::metadata_change;
+  p.event_class = c::MetadataChangeAuditClass::metadata_change;
+  p.policy_decision = c::MetadataChangeAuditDecision::not_evaluated;
+  p.redaction = c::MetadataChangeAuditRedaction::safe_message_only;
+  return p;
+}
+db::CatalogInsertRow ChangeEventRow(const Db& b, std::span<const byte> file, u64 n, const Uuid& key, unsigned k,
+                                    const std::function<void(c::CatalogMetadataChange&)>& edit = {}) {
+  const auto [like, intent] = ConstructionIntentOf(b, file);
+  const Uuid event = V7(Ms(key), 0x790000 + k);
+  auto p = ChangeEventPayload(intent, event, n, like.catalog_generation);
+  if (edit) edit(p);
+  std::array<byte, c::kCatalogMetadataChangeMaxBytes> out{};
+  const auto encoded = c::EncodeCatalogMetadataChangeInto(p, out);
+  Check(encoded.ok(), "the event encodes");
+  auto m = like;
+  m.record.header.object_uuid = {UuidKind::object, event};
+  m.record.header.row_uuid = {UuidKind::row, key};
+  m.record.payload.assign(reinterpret_cast<const char*>(encoded.bytes.data()), encoded.bytes.size());
+  m.object_subtype = "catalog_metadata_change";
+  m.audit_uuid = {UuidKind::object, event};
+  m.creator_transaction_uuid = {UuidKind::transaction, TxId(n)};
+  m.creator_local_transaction_id = n;
+  m.definition_version = 1;
+  return {6, key, V7(Ms(key), 0x7a0000 + k), m, std::nullopt};
+}
+// The codec, against the registry's carrier (catalog_metadata_change_v1):
+// extents 232 / 256, a round trip, and each refused value.
+void MetadataChangeCodec(const Db& b) {
+  const auto [like, intent] = ConstructionIntentOf(b, b.bytes);
+  const auto event = V7(kT + 2200000, 0x790001);
+  auto p = ChangeEventPayload(intent, event, 2, 1);
+  std::array<byte, c::kCatalogMetadataChangeMaxBytes> out{};
+  const auto encoded = c::EncodeCatalogMetadataChangeInto(p, out);
+  Check(encoded.ok() && encoded.bytes.size() == 232 && c::CatalogMetadataChangeEncodedBytes(p) == std::optional<std::size_t>{232},
+        "codec: 232 bytes without an actor, as the carrier states");
+  const std::string_view bytes(reinterpret_cast<const char*>(encoded.bytes.data()), encoded.bytes.size());
+  Check(c::IsCatalogMetadataChangePayload(bytes) && !c::IsCatalogConstructionIntentPayload(bytes), "codec: its own schema id");
+  const auto back = c::DecodeCatalogMetadataChange(bytes);
+  Check(back.ok() && back.record->event_uuid == event && back.record->origin_local_transaction_id == 2 &&
+            back.record->database_uuid == intent.database_uuid && !back.record->actor_uuid,
+        "codec: a round trip");
+  auto with_actor = p;
+  with_actor.actor_uuid = scratchbird::core::platform::TypedUuid{UuidKind::principal, V7(kT + 2200001, 0x790002)};
+  Check(c::CatalogMetadataChangeEncodedBytes(with_actor) == std::optional<std::size_t>{256}, "codec: 256 bytes with an actor");
+  const std::vector<std::pair<std::string, std::function<void(c::CatalogMetadataChange&)>>> refused{
+      {"no origin number", [](auto& r) { r.origin_local_transaction_id = 0; }},
+      {"no event time", [](auto& r) { r.event_time_utc_us = 0; }},
+      {"no catalog generation", [](auto& r) { r.catalog_generation = 0; }},
+      {"another decision", [](auto& r) { r.policy_decision = static_cast<c::MetadataChangeAuditDecision>(2); }},
+      {"another class", [](auto& r) { r.event_class = static_cast<c::MetadataChangeAuditClass>(2); }},
+      {"another name", [](auto& r) { r.event = static_cast<c::MetadataChangeAuditEvent>(2); }},
+      {"another redaction", [](auto& r) { r.redaction = static_cast<c::MetadataChangeAuditRedaction>(2); }},
+      {"the engine is the database", [&](auto& r) { r.engine_uuid = r.database_uuid; }},
+      {"the origin is not a transaction", [](auto& r) { r.origin_transaction_uuid.kind = UuidKind::object; }},
+      {"an actor that is not a principal",
+       [](auto& r) { r.actor_uuid = scratchbird::core::platform::TypedUuid{UuidKind::object, V7(kT + 2200002, 0x790003)}; }}};
+  for (const auto& [what, edit] : refused) {
+    auto r = p;
+    edit(r);
+    std::array<byte, c::kCatalogMetadataChangeMaxBytes> o{};
+    Check(!c::EncodeCatalogMetadataChangeInto(r, o).ok() && !c::CatalogMetadataChangeEncodedBytes(r), "codec refuses: " + what);
+  }
+  std::cout << b.name << " metadata change codec page_size=" << b.size << ": 232/256 bytes, " << refused.size() << " refusals\n";
+}
+// SB_AUDIT_CATALOG_METADATA_CHANGE: a committed change whose definition cites
+// its transaction's event passes FULL open verification (the W3b-2 flip: until
+// now any committed change refused at audit event_binding), name rows being
+// data (Q50): a rename alone, citing nothing new, also passes. An unaudited
+// definition still refuses at event_binding. The writer refuses an event that
+// is another transaction's or another database's, and a construction intent
+// written after the create.
+void AuditedChanges(const Db& b, const NameTemplate& t, u16 role, std::size_t definitions) {
+  MetadataChangeCodec(b);
+  const auto path = b.Copy(b.bytes, "audited.db");
+  Session s(b, path);
+  Begin(*s.w, s.sink(), 2);
+  auto file = ReadAll(path);
+  const auto key = V7(After(b, file, 6), 0xd40001);
+  // Refusals first, nothing written.
+  {
+    auto other = ChangeEventRow(b, file, 2, key, 1, [](auto& p) {
+      p.origin_transaction_uuid = {UuidKind::transaction, TxId(3)};
+      p.origin_local_transaction_id = 3;
+    });
+    InsertRefused(b, s, path, Request(2, {other}), CE::invalid_insert, "an event naming another transaction as its origin");
+    auto foreign = ChangeEventRow(b, file, 2, key, 1, [](auto& p) { p.database_uuid = V7(kT + 2200003, 0x790004); });
+    InsertRefused(b, s, path, Request(2, {foreign}), CE::invalid_insert, "an event of another database");
+    auto [intent_row, intent] = ConstructionIntentOf(b, file);
+    auto late = intent_row;
+    late.record.header.object_uuid = {UuidKind::object, V7(Ms(key), 0x790010)};
+    late.record.header.row_uuid = {UuidKind::row, key};
+    late.creator_transaction_uuid = {UuidKind::transaction, TxId(2)};
+    late.creator_local_transaction_id = 2;
+    InsertRefused(b, s, path, Request(2, {db::CatalogInsertRow{6, key, V7(Ms(key), 0x7a0010), late, std::nullopt}}),
+                  CE::invalid_insert, "a construction intent written after the create");
+  }
+  // The event and a named object whose definition cites it, by 2.
+  const auto event_row = ChangeEventRow(b, file, 2, key, 1);
+  auto named = NamedAfter(b, file, t, role, After(b, file, role), 3601, 2, "w3b_audited_object");
+  named.definition.metadata.audit_uuid = event_row.metadata.record.header.object_uuid;
+  auto request = Request(2, {event_row, named.definition, named.vector, named.entry});
+  request.new_pages = PageIds(31);
+  {
+    const auto result = db::WriteCatalogInsertVersions(s.sink(), GrowingBinding(b), request);
+    if (!result.ok()) std::cerr << "audited insert: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+    Check(result.ok(), "the event and a named object citing it are inserted");
+  }
+  Commit(*s.w, s.sink(), 2);
+  // The event counts among the unnamed definitions name verification admits.
+  ExpectNamedVerification(b, path, definitions + 2, "an audited named object, committed", true, true);
+  // A rename alone (name rows are data): committed, still passes.
+  Begin(*s.w, s.sink(), 3);
+  file = ReadAll(path);
+  {
+    const auto result = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), ScopeRename(b, t, file, 3, 9430, 4096, "orders_audited"));
+    if (!result.ok()) std::cerr << "rename: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+    Check(result.ok() && !result.cascaded.empty(), "the schema renamed, cascading, with no event");
+  }
+  Commit(*s.w, s.sink(), 3);
+  ExpectNamedVerification(b, path, definitions + 2, "an unaudited rename (name rows are data), committed", true, true);
+  // An unaudited definition (citing the create's event): still event_binding.
+  Begin(*s.w, s.sink(), 4);
+  file = ReadAll(path);
+  auto unaudited = NamedAfter(b, file, t, role, After(b, file, role), 3602, 4, "w3b_unaudited_object");
+  {
+    // Its path through the schema's new name.
+    auto e = std::get<c::CatalogNameEntry>(*unaudited.entry.name);
+    const auto neighbour = NewestEntries(b, file).at(NameRowOf(b, file, [&](const c::CatalogNamePayload& p) {
+      const auto* x = std::get_if<c::CatalogNameEntry>(&p);
+      return x && x->name_entry_uuid.value == t.entry.name_entry_uuid.value;
+    }, "the template's entry").row_uuid);
+    PathBeside(e, neighbour.entry);
+    unaudited.entry.name = c::CatalogNamePayload{e};
+    auto r = Request(4, unaudited.Rows());
+    r.new_pages = PageIds(32);
+    const auto result = db::WriteCatalogInsertVersions(s.sink(), GrowingBinding(b), r);
+    if (!result.ok()) std::cerr << "unaudited: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+    Check(result.ok(), "an unaudited named object is inserted (the writer does not refuse it yet: W3b-2b)");
+  }
+  Commit(*s.w, s.sink(), 4);
+  ExpectNamedVerification(b, path, definitions + 3, "an unaudited definition, committed", false, true);
+  std::cout << b.name << " audited changes page_size=" << b.size << ": audited insert and unaudited rename pass full; unaudited definition refuses\n";
   fs::remove(path);
 }
 
@@ -2394,6 +2573,7 @@ int main(int argc, char** argv) {
     if (room) NameCascadePaths(b, t, *role, fresh.names.definitions);
     if (room) NameConflicts(b, t, *role, fresh.names.definitions);
     if (room) NameInsertCascade(b, t, *role, fresh.names.definitions);
+    if (room) AuditedChanges(b, t, *role, fresh.names.definitions);
     if (room) NameGrowth(b, t, *role, fresh.names.definitions);
     if (room) NameSplits(b, t, *role, fresh.names.definitions);
     // Long names past a root-branch split and a branch split below the root:

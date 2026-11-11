@@ -7,6 +7,7 @@
 #include "catalog_identifier_profile.hpp"
 #include "catalog_name_path.hpp"
 #include "catalog_name_tree_keys.hpp"
+#include "catalog_metadata_change.hpp"
 #include "filespace_page_zero.hpp"
 #include "allocation_map_writer.hpp"
 #include "native_btree_tree_backing.hpp"
@@ -2083,6 +2084,15 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
           m.creator_local_transaction_id != request.transaction_order)
         return refuse_row(E::invalid_insert, i);
       if (AheadOfRoot(m, *root.root)) return refuse_row(E::ahead_of_catalog_root, i);
+      // SB_AUDIT_CATALOG_METADATA_CHANGE: an event row is this transaction's
+      // (the codec's metadata rule: created by its origin) and this database's.
+      if (!catalog::CatalogMetadataChangeMatchesDatabase(catalog::BorrowCatalogMetadataVersion(m), binding.database_uuid) ||
+          (catalog::IsCatalogMetadataChangePayload(m.record.payload) &&
+           (catalog::DecodeCatalogMetadataChange(m.record.payload).record->origin_transaction_uuid.value !=
+                request.transaction_uuid ||
+            catalog::DecodeCatalogMetadataChange(m.record.payload).record->origin_local_transaction_id !=
+                request.transaction_order)))
+        return refuse_row(E::invalid_insert, i);
       // New to the relation: no row or version with these UUIDs; no row
       // holding the object (a hold another transaction in progress has is a
       // write conflict: if it rolls back the object can be inserted).

@@ -3,6 +3,7 @@
 #pragma once
 #include "native_catalog_cohort_capture.hpp"
 #include "catalog_construction_intent.hpp"
+#include "catalog_metadata_change.hpp"
 #include <numeric>
 
 namespace scratchbird::engine::internal_api {
@@ -20,6 +21,12 @@ struct NativeCatalogAuditVerification {
 // registered construction event attests intent only. Its retained presence is
 // not a policy decision, authentication, completed effect or readiness receipt.
 // Other event families require their own typed validation before admission.
+// SB_AUDIT_CATALOG_METADATA_CHANGE (owner Q31 = 1, Q50 = 1): the registered
+// catalog.metadata_change event is admitted too: a definition row version cites
+// an event whose origin transaction created it (the construction intent for the
+// create's own rows, a metadata-change event for a later transaction's). Name
+// rows (role 2, the UUID-to-name lookup table) are data (Q50): their reference
+// must resolve to a registered event, but their creator is not bound to it.
 inline NativeCatalogAuditVerification VerifyNativeCatalogAuditReferences(
     const storage::database::NativeCatalogCapture& capture,std::span<std::size_t> scratch) noexcept {
   namespace c=core::catalog;using E=NativeCatalogAuditError;
@@ -45,7 +52,13 @@ inline NativeCatalogAuditVerification VerifyNativeCatalogAuditReferences(
     const auto& row=captured.row;const auto& m=row.metadata;const auto id=m.record.header.object_uuid.value;
     if(row.provisional)return fail(E::provisional_row,id);
     if(m.record.header.deleted)continue;
-    if(m.record.header.kind==c::CatalogRecordKind::audit_evidence){
+    const bool change_event=m.object_subtype=="catalog_metadata_change"||c::IsCatalogMetadataChangePayload(m.record.payload);
+    if(m.record.header.kind==c::CatalogRecordKind::audit_evidence&&change_event){
+      if(m.object_subtype!="catalog_metadata_change"||!c::IsCatalogMetadataChangePayload(m.record.payload)||
+          captured.role!=6||row.name_payload||!c::CatalogMetadataChangeMatchesDatabase(m,capture.source()->database_uuid))
+        return fail(E::invalid_event,id);
+      ++out.events;
+    }else if(m.record.header.kind==c::CatalogRecordKind::audit_evidence){
       if(m.object_subtype!="node_construction_intent"||!c::IsCatalogConstructionIntentPayload(m.record.payload))
         return fail(E::unsupported_event,id);
       if(captured.role!=6||row.name_payload||!c::CatalogConstructionIntentMatchesDatabase(m,capture.source()->database_uuid))
@@ -64,6 +77,18 @@ inline NativeCatalogAuditVerification VerifyNativeCatalogAuditReferences(
     if(m.audit_uuid.kind!=core::platform::UuidKind::object||target->role!=6||
         evidence.record.header.kind!=c::CatalogRecordKind::audit_evidence)
       return fail(E::invalid_event,id,m.audit_uuid.value);
+    const bool name_row=captured.role==2&&row.name_payload;
+    if(evidence.object_subtype=="catalog_metadata_change"&&c::IsCatalogMetadataChangePayload(evidence.record.payload)){
+      if(!c::CatalogMetadataChangeMatchesDatabase(evidence,capture.source()->database_uuid))
+        return fail(E::invalid_event,id,m.audit_uuid.value);
+      const auto event=c::DecodeCatalogMetadataChange(evidence.record.payload);
+      if(!name_row&&id!=event.record->event_uuid&&
+          (m.creator_transaction_uuid.value!=event.record->origin_transaction_uuid.value||
+           m.creator_local_transaction_id!=event.record->origin_local_transaction_id))
+        return fail(E::event_binding,id,m.audit_uuid.value);
+      ++out.references;
+      continue;
+    }
     if(evidence.object_subtype!="node_construction_intent"||!c::IsCatalogConstructionIntentPayload(evidence.record.payload))
       return fail(E::unsupported_event,id,m.audit_uuid.value);
     if(!c::CatalogConstructionIntentMatchesDatabase(evidence,capture.source()->database_uuid))
@@ -71,7 +96,7 @@ inline NativeCatalogAuditVerification VerifyNativeCatalogAuditReferences(
     const auto event=c::DecodeCatalogConstructionIntent(evidence.record.payload);
     // The event can be preserved under subsequent admitted metadata versions.
     // Other mutations cannot reuse pre-policy construction intent as their audit.
-    if(id!=event.record->event_uuid&&
+    if(!name_row&&id!=event.record->event_uuid&&
         (m.creator_transaction_uuid.value!=event.record->origin_transaction_uuid.value||
          m.creator_local_transaction_id!=event.record->origin_local_transaction_id))
       return fail(E::event_binding,id,m.audit_uuid.value);

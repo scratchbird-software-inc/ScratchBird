@@ -23,6 +23,7 @@
 #include "catalog_naming_dialect_profile.hpp"
 #include "catalog_naming_collision_policy.hpp"
 #include "catalog_construction_intent.hpp"
+#include "catalog_metadata_change.hpp"
 #include "catalog_policy_descriptor.hpp"
 #include "catalog_verification_policy.hpp"
 #include "catalog_evidence_policy.hpp"
@@ -180,6 +181,10 @@ CatalogTypedRecordViewResult ValidateCatalogTypedRecordView(CatalogTypedRecordVi
       !CatalogConstructionIntentMatchesHeader(record))
     return RecordViewError("AUDIT.EVENT_INVALID", "audit.construction_intent.invalid",
                           "construction_intent_binary_payload_or_header_invalid");
+  if (IsCatalogMetadataChangePayload(record.payload) &&
+      !CatalogMetadataChangeMatchesHeader(record))
+    return RecordViewError("AUDIT.EVENT_INVALID", "audit.metadata_change.invalid",
+                          "metadata_change_binary_payload_or_header_invalid");
   if (IsCatalogPolicyDescriptorPayload(record.payload) &&
       !CatalogPolicyDescriptorMatchesHeader(record))
     return RecordViewError("CATALOG.INVALID_INPUT", "catalog.policy_descriptor.invalid",
@@ -507,6 +512,11 @@ std::optional<CatalogRecordDiagnosticView> ValidateCatalogMetadataVersionView(co
       !CatalogConstructionIntentMatchesMetadata(value))
     return CatalogRecordDiagnosticView{CodecErrorStatus(),"AUDIT.EVENT_INVALID",
         "audit.construction_intent.invalid","construction_intent_definition_binding_invalid","core.catalog.record_codec"};
+  if ((value.object_subtype == "catalog_metadata_change" ||
+       IsCatalogMetadataChangePayload(value.record.payload)) &&
+      !CatalogMetadataChangeMatchesMetadata(value))
+    return CatalogRecordDiagnosticView{CodecErrorStatus(),"AUDIT.EVENT_INVALID",
+        "audit.metadata_change.invalid","metadata_change_definition_binding_invalid","core.catalog.record_codec"};
   if ((value.object_subtype == "policy_descriptor" ||
        IsCatalogPolicyDescriptorPayload(value.record.payload)) &&
       !CatalogPolicyDescriptorMatchesMetadata(value))
@@ -783,6 +793,7 @@ bool CatalogMetadataPreservesFamilyOrigin(
       CatalogNamingDialectProfilePreservesOrigin(previous,successor) &&
       CatalogNamingCollisionPolicyPreservesOrigin(previous,successor) &&
       CatalogConstructionIntentPreservesOrigin(previous,successor) &&
+      CatalogMetadataChangePreservesOrigin(previous,successor) &&
       CatalogPolicyDescriptorPreservesOrigin(previous,successor) &&
       CatalogVerificationPolicyPreservesOrigin(previous,successor) &&
       CatalogEvidencePolicyPreservesOrigin(previous,successor) &&
