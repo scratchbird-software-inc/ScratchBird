@@ -236,7 +236,7 @@ class NativeCatalogCohortLeaseReader {
               // milliseconds on the default pack); with the cell count above
               // this is a bijection. The page manager rebuild can index it.
               usize expected=0;
-              for(const auto& candidate:bases)for(const auto& m:candidate.page.metadata){
+              for(usize bi=0;bi<bases.size();++bi)for(const auto& m:bases[bi].page.metadata){
                 if(!m.name)continue;
                 // A drop's version (deleted) has no cells of its own: the
                 // version it retired keeps its stamped ones (owner Q42, N4a).
@@ -245,8 +245,28 @@ class NativeCatalogCohortLeaseReader {
                 usize matches=0;
                 for(const auto n:tree.leaves)for(const auto& cell:tree.pages[n].page->cells)
                   if(cell.key.version_uuid==m.version_uuid)++matches;
-                if(matches!=(wants?1u:0u))return fail(E::name_tree_mismatch);
-                expected+=wants;
+                if(matches!=(wants?1u:0u)){
+                  // SB_NATIVE_NAME_CASCADE (N4b): a writer puts its base leaves
+                  // before its tree pages, so a write that stopped between them
+                  // leaves versions without their cells. Their creator never
+                  // committed: in progress when the server stopped (dead once a
+                  // writer restarts, owner Q23 = 1), rolled back or failed. Such a
+                  // version may lack its cell (garbage a sweep removes); any other
+                  // creator's may not.
+                  bool admitted=false;
+                  if(wants&&matches==0)
+                    for(const auto& creator:read.source.row_creators){
+                      if(creator.catalog_page_index!=bi||creator.catalog_row_index!=m.row_index)continue;
+                      if(creator.inventory_entry_index>=inventory.entries.size())break;
+                      const auto state=transaction::mga::InventoryVisibilityState(inventory.entries[creator.inventory_entry_index]);
+                      admitted=state==transaction::mga::TransactionState::active||
+                          state==transaction::mga::TransactionState::rolled_back||
+                          state==transaction::mga::TransactionState::failed_terminal;
+                      break;
+                    }
+                  if(!admitted)return fail(E::name_tree_mismatch);
+                }
+                expected+=matches;
               }
               if(cells!=expected)return fail(E::name_tree_mismatch);
               out.name_tree_cells[t]=cells;out.name_tree_pages[t]=tree.pages.size();

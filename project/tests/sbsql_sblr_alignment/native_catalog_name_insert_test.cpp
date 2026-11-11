@@ -1129,6 +1129,840 @@ db::CatalogVersionRequest NameSuccessor(const db::CatalogInsertRow& inserted, co
 db::CatalogInsertRow AsRow(const db::CatalogVersionRequest& r) {
   return db::CatalogInsertRow{2, r.row_uuid, r.version_uuid, r.metadata, r.name};
 }
+// ---- Name cascade (N4b) ------------------------------------------------------------------
+// Every version of every name entry row: where the cascade checks look.
+struct EntryVersion {
+  Uuid row, version;
+  u64 row_version = 0, order = 0;
+  bool deleted = false;
+  c::CatalogNameEntry entry;
+};
+std::vector<EntryVersion> EntryVersionsOf(const Db& b, std::span<const byte> file) {
+  RoleScope scope(b, 2);
+  const auto rel = ReadRelation(b, file);
+  std::vector<EntryVersion> out;
+  for (const auto& l : rel.leaves)
+    for (const auto& row : l.leaf.body.rows) {
+      const auto& m = l.metadata.at(row.version_uuid);
+      const c::CatalogNameVersionBinding at{
+          {UuidKind::database, l.leaf.header.database_uuid}, {UuidKind::filespace, l.leaf.header.filespace_uuid},
+          row.row_uuid, {UuidKind::row, row.version_uuid}, m.record.header.object_uuid, row.transaction_uuid, l.page,
+          row.stable_slot_id, row.storage_generation, row.row_version, row.local_transaction_id, m.catalog_generation};
+      const std::vector<byte> bytes(reinterpret_cast<const byte*>(m.record.payload.data()),
+                                    reinterpret_cast<const byte*>(m.record.payload.data()) + m.record.payload.size());
+      const auto decoded = c::DecodeCatalogNameEnvelope(bytes, at);
+      Check(decoded.ok(), "every stored name decodes against where it is");
+      if (const auto* e = std::get_if<c::CatalogNameEntry>(&decoded.record->payload))
+        out.push_back({row.row_uuid.value, row.version_uuid, row.row_version, row.local_transaction_id,
+                       m.record.header.deleted, *e});
+    }
+  return out;
+}
+// Each entry row's newest version, the versions of transactions in `dead` left out.
+std::map<Uuid, EntryVersion> NewestEntries(const Db& b, std::span<const byte> file, const std::set<u64>& dead = {}) {
+  std::map<Uuid, EntryVersion> out;
+  for (auto& v : EntryVersionsOf(b, file)) {
+    if (dead.contains(v.order)) continue;
+    const auto at = out.find(v.row);
+    if (at == out.end() || at->second.row_version < v.row_version) out.insert_or_assign(v.row, std::move(v));
+  }
+  return out;
+}
+bool StartsWith(std::span<const byte> whole, std::span<const byte> prefix) {
+  return whole.size() > prefix.size() && std::equal(prefix.begin(), prefix.end(), whole.begin());
+}
+// SB_NATIVE_NAME_CASCADE (N4b): renaming a scope's name (the template's
+// schema, whose name is a component of every path below it) regenerates every
+// entry below it, in the same write. Written out here rather than computed by
+// the shared path rule: the entries below are those whose stored full path has
+// the scope's old full path as a prefix, and each one's new full path is the
+// scope's new full path followed by the rest of its old one; its UUID-to-name
+// display components change at the scope's position only; nothing else of the
+// entry changes. Also: a conflict with another transaction's entry below the
+// scope, the identities a cascade needs, a drop that would leave the entries
+// below without a path, and failing each write of the cascading rename in turn.
+void NameCascade(const Db& b, const NameTemplate& t, u16 role, std::size_t definitions) {
+  const auto path = b.Copy(b.bytes, "cascade.db");
+  Session s(b, path);
+  // The schema's name in the template's language, and its row.
+  // `dead`: transactions that rolled back, whose versions are not the base.
+  const auto scope_entry = [&](std::span<const byte> file, const std::set<u64>& dead = {}) {
+    for (const auto& [row, v] : NewestEntries(b, file, dead))
+      if (!v.deleted && v.entry.object_uuid.value == t.entry.scope_uuid.value && v.entry.language_tag == t.entry.language_tag &&
+          v.entry.default_for_language)
+        return v;
+    Check(false, "the template's scope has a name in the template's language");
+    return EntryVersion{};
+  };
+  const auto as_row = [&](std::span<const byte> file, const EntryVersion& v) {
+    RoleScope a(b, 2);
+    const auto rel = ReadRelation(b, file);
+    for (const auto& l : rel.leaves)
+      for (const auto& row : l.leaf.body.rows)
+        if (row.version_uuid == v.version) {
+          db::CatalogInsertRow r{2, row.row_uuid.value, row.version_uuid, l.metadata.at(row.version_uuid), c::CatalogNamePayload{v.entry}};
+          r.metadata.record.payload.clear();
+          return r;
+        }
+    Check(false, "the scope's name row is found");
+    return db::CatalogInsertRow{};
+  };
+  const auto below = [&](std::span<const byte> file, const std::vector<byte>& prefix) {
+    std::vector<EntryVersion> out;
+    for (const auto& [row, v] : NewestEntries(b, file))
+      if (!v.deleted && v.entry.lifecycle_state == c::CatalogNameLifecycle::active && StartsWith(v.entry.full_path_lookup_key, prefix))
+        out.push_back(v);
+    return out;
+  };
+  const auto rename_request = [&](std::span<const byte> file, u64 n, unsigned k, std::size_t identities,
+                                  const std::set<u64>& dead = {}) {
+    const auto old = scope_entry(file, dead);
+    Check(old.entry.identifier_profile_uuid.value == t.entry.identifier_profile_uuid.value,
+          "the scope's name keys under the template's identifier profile");
+    auto e = Keyed(old.entry, t, "orders_cascaded");
+    PathBeside(e, old.entry);
+    auto r = NameSuccessor(as_row(file, old), old.version, n, VersionId(k), c::CatalogNamePayload{e}, false);
+    // Their own range: VersionId's would meet other requests' identities.
+    for (std::size_t i = 0; i < identities; ++i)
+      r.cascade_versions.push_back(V7(kT + 1300000 + 1000 * u64{k} + i, 0x700000 + 4096 * k + static_cast<unsigned>(i)));
+    for (unsigned i = 0; i < 16; ++i)
+      r.new_pages.push_back({V7(kT + 1100000 + 20 * k + i, 0xf50000 + k), V7(kT + 1100000 + 20 * k + i, 0xf60000 + k)});
+    return std::pair{r, e};
+  };
+
+  // Another transaction's entry below the scope, in progress: the rename
+  // cannot cascade it and is a write conflict with that transaction.
+  Begin(*s.w, s.sink(), 2);
+  {
+    const auto file = ReadAll(path);
+    const auto named = NamedAfter(b, file, t, role, After(b, file, role), 3101, 2, "w3b_below_scope");
+    ExpectInsert(b, s, path, Request(2, named.Rows()), "a named object below the scope, in progress");
+  }
+  Begin(*s.w, s.sink(), 3);
+  {
+    const auto file = ReadAll(path);
+    auto [r, e] = rename_request(file, 3, 9100, 4096);
+    const auto result = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), r);
+    Check(result.error == CE::write_conflict && result.blocker_order == u64{2} && !result.attempted && ReadAll(path) == file,
+          "renaming the scope over another transaction's entry below it is a write conflict with it, no write");
+  }
+  Commit(*s.w, s.sink(), 2);
+
+  // The identities the cascade needs, refused before any write when short.
+  auto pre = ReadAll(path);
+  const auto old_scope = scope_entry(pre);
+  const auto expected = below(pre, old_scope.entry.full_path_lookup_key);
+  Check(!expected.empty(), "entries below the scope");
+  {
+    auto [r, e] = rename_request(pre, 3, 9100, expected.size() - 1);
+    const auto result = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), r);
+    std::cout << b.name << " cascade short: " << db::CatalogVersionWriteErrorName(result.error) << " needed " << result.cascade_needed
+              << " expected " << expected.size() << '\n';
+    Check(result.error == CE::cascade_versions_exhausted && result.cascade_needed == expected.size() && !result.attempted &&
+              result.allocated_pages.empty() && ReadAll(path) == pre,
+          "one identity short: cascade_versions_exhausted, the count needed, nothing written");
+  }
+  // The rename and its cascade, checked against the rule above.
+  const auto check_cascade = [&](std::span<const byte> after, const db::CatalogVersionWriteResult& result,
+                                 const c::CatalogNameEntry& renamed, const std::string& label) {
+    Check(result.cascaded.size() == expected.size(), label + ": one version per entry below the scope");
+    const auto versions = EntryVersionsOf(b, after);
+    const auto t2 = ReadTreeAt(b, after, NameRootPage(b, after, 23));
+    for (std::size_t i = 0; i < expected.size(); ++i) {
+      const auto& old = expected[i];
+      Check(i == 0 || expected[i - 1].row < old.row, "entries in row-UUID order");
+      Check(result.cascaded[i].first == old.row, label + ": the cascade in row-UUID order");
+      const auto found = std::find_if(versions.begin(), versions.end(), [&](const auto& v) { return v.version == result.cascaded[i].second; });
+      Check(found != versions.end() && found->row == old.row && found->row_version > old.row_version && !found->deleted,
+            label + ": the cascaded version is stored");
+      auto want = old.entry;
+      want.full_path_lookup_key = renamed.full_path_lookup_key;
+      want.full_path_lookup_key.insert(want.full_path_lookup_key.end(),
+                                       old.entry.full_path_lookup_key.begin() + static_cast<std::ptrdiff_t>(old_scope.entry.full_path_lookup_key.size()),
+                                       old.entry.full_path_lookup_key.end());
+      Check(found->entry.full_path_lookup_key == want.full_path_lookup_key &&
+                found->entry.path_component_count == old.entry.path_component_count,
+            label + ": the full path is the scope's new path then the rest of the old one");
+      // Nothing else of the entry changes but the catalog generation.
+      auto same = found->entry;
+      same.full_path_lookup_key = old.entry.full_path_lookup_key;
+      same.catalog_generation_id = old.entry.catalog_generation_id;
+      const auto a = c::EncodeCatalogNameEnvelope({{}, c::CatalogNamePayload{same}});
+      const auto z = c::EncodeCatalogNameEnvelope({{}, c::CatalogNamePayload{old.entry}});
+      Check(a.ok() == z.ok() && a.bytes == z.bytes, label + ": nothing else of the entry changes");
+      bool cell = false;
+      for (const auto leaf : t2.leaves)
+        for (const auto& x : t2.pages[leaf].page.cells) {
+          if (x.key.version_uuid != found->version) continue;
+          const auto payload = c::DecodeCatalogNameUuidTreeEntryPayload(x.payload);
+          Check(payload.has_value() && payload->display_components.size() == old.entry.path_component_count &&
+                    payload->display_components[old_scope.entry.path_component_count - 1] == renamed.display_name,
+                label + ": the UUID-to-name cell shows the scope's new name at its place");
+          cell = true;
+        }
+      Check(cell, label + ": the cascaded version has its UUID-to-name cell");
+    }
+  };
+  const auto written_pre = pre;
+  {
+    auto [r, e] = rename_request(pre, 3, 9100, expected.size());
+    const auto result = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), r);
+    if (!result.ok()) std::cerr << "cascade: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+    Check(result.ok(), "renaming the scope cascades to the entries below it");
+    const auto after = ReadAll(path);
+    check_cascade(after, result, e, "the cascading rename");
+    std::cout << b.name << " name cascade page_size=" << b.size << ": " << expected.size() << " entries below the scope, "
+              << result.writes << " writes, " << result.allocated_pages.size() << " new pages\n";
+    Commit(*s.w, s.sink(), 3);
+    ExpectNamedVerification(b, path, definitions + 1, "a scope rename and its cascade, committed", false, true);
+    // Dropping the scope's only name in its language would leave the entries
+    // below without a path: refused.
+    Begin(*s.w, s.sink(), 4);
+    const auto now = ReadAll(path);
+    const auto renamed_scope = scope_entry(now);
+    auto dropped = renamed_scope.entry;
+    dropped.lifecycle_state = c::CatalogNameLifecycle::dropped;
+    dropped.dropped_transaction_uuid = {UuidKind::transaction, TxId(4)};
+    auto drop = NameSuccessor(as_row(now, renamed_scope), renamed_scope.version, 4, VersionId(9900), c::CatalogNamePayload{dropped}, true);
+    drop.cascade_versions = {VersionId(9901)};
+    Refused(b, s, path, drop, CE::invalid_successor, "dropping the scope's name, which paths below it need");
+    Rollback(*s.w, s.sink(), 4);
+  }
+  // SB_CATALOG_SPLIT_LAG / careful write: the cascading rename again on copies
+  // of the file before it, by a fresh transaction, failing each of its writes
+  // in turn. Every time the database verifies (the failed transaction's
+  // versions and stamps are a dead transaction's); the rename then succeeds by
+  // another transaction, cascading the same entries, and verifies.
+  unsigned failures = 0;
+  for (u32 w = 1; w <= 256; ++w) {
+    const auto copy = b.Copy(written_pre, "cascade-crash.db");
+    Session c(b, copy);  // restart: transaction 3 was in progress, now dead
+    Begin(*c.w, c.sink(), 4);
+    auto [r, e] = rename_request(written_pre, 4, 9200, expected.size());
+    KindFaultSink sink(c.sink(), KindFaultSink::Kind::write, w);
+    const auto result = db::WriteCatalogSuccessorVersion(sink, GrowingBinding(b), r);
+    if (result.ok()) {
+      fs::remove(copy);
+      break;
+    }
+    ++failures;
+    Check(result.error == CE::write_failed, "a failed write is write_failed");
+    Rollback(*c.w, c.sink(), 4);
+    if (w <= 3 || w % 8 == 0) ExpectNamedVerification(b, copy, definitions + 1, "after a failed cascade write " + std::to_string(w), false, true);
+    Begin(*c.w, c.sink(), 5);
+    const auto file = ReadAll(copy);
+    auto [next, ne] = rename_request(file, 5, 9600, expected.size(), {4});
+    const auto done = db::WriteCatalogSuccessorVersion(c.sink(), GrowingBinding(b), next);
+    if (!done.ok()) std::cerr << "after failed cascade write " << w << ": " << db::CatalogVersionWriteErrorName(done.error) << '\n';
+    Check(done.ok(), "the rename succeeds after failed cascade write " + std::to_string(w));
+    check_cascade(ReadAll(copy), done, ne, "the rename after failed write " + std::to_string(w));
+    Commit(*c.w, c.sink(), 5);
+    if (w <= 3 || w % 8 == 0) ExpectNamedVerification(b, copy, definitions + 1, "the rename after failed write " + std::to_string(w), false, true);
+    fs::remove(copy);
+  }
+  Check(failures > 0, "the cascading rename has failure points");
+  std::cout << b.name << " name cascade crashes page_size=" << b.size << " failure points " << failures << '\n';
+  fs::remove(path);
+}
+
+// The newest version of the name row whose payload `match` accepts, as a
+// request row (payload cleared, the name alongside).
+template <class Match>
+db::CatalogInsertRow NameRowOf(const Db& b, std::span<const byte> file, Match match, const std::string& what) {
+  RoleScope scope(b, 2);
+  const auto rel = ReadRelation(b, file);
+  std::optional<db::CatalogInsertRow> out;
+  u64 newest = 0;
+  for (const auto& l : rel.leaves)
+    for (const auto& row : l.leaf.body.rows) {
+      const auto& m = l.metadata.at(row.version_uuid);
+      const c::CatalogNameVersionBinding at{
+          {UuidKind::database, l.leaf.header.database_uuid}, {UuidKind::filespace, l.leaf.header.filespace_uuid},
+          row.row_uuid, {UuidKind::row, row.version_uuid}, m.record.header.object_uuid, row.transaction_uuid, l.page,
+          row.stable_slot_id, row.storage_generation, row.row_version, row.local_transaction_id, m.catalog_generation};
+      const std::vector<byte> bytes(reinterpret_cast<const byte*>(m.record.payload.data()),
+                                    reinterpret_cast<const byte*>(m.record.payload.data()) + m.record.payload.size());
+      const auto decoded = c::DecodeCatalogNameEnvelope(bytes, at);
+      Check(decoded.ok(), "every stored name decodes against where it is");
+      if (!match(decoded.record->payload) || (out && row.row_version < newest)) continue;
+      newest = row.row_version;
+      out = db::CatalogInsertRow{2, row.row_uuid.value, row.version_uuid, m, decoded.record->payload};
+      out->metadata.record.payload.clear();
+    }
+  Check(out.has_value(), what + " is found");
+  return *out;
+}
+// A further entry for the object `of` names (by `n`, at row `key`): `text`
+// in `language`, as `name_class`, default for its language or not, named in
+// the same scope.
+db::CatalogInsertRow EntryLike(const db::CatalogInsertRow& of, const NameTemplate& t, const Uuid& key, unsigned k, u64 n,
+                               const std::string& text, const std::string& language, bool default_for_language,
+                               c::CatalogNameClass name_class) {
+  auto row = of;
+  row.row_uuid = key;
+  row.version_uuid = V7(Ms(key), 0x740000 + k);
+  const scratchbird::core::platform::TypedUuid id{UuidKind::object, V7(Ms(key), 0x750000 + k)};
+  row.metadata.record.header.object_uuid = id;
+  row.metadata.record.header.row_uuid = {UuidKind::row, key};
+  row.metadata.default_name_uuid = id;
+  row.metadata.creator_transaction_uuid = {UuidKind::transaction, TxId(n)};
+  row.metadata.creator_local_transaction_id = n;
+  row.metadata.definition_version = 1;
+  const auto& base = std::get<c::CatalogNameEntry>(*of.name);
+  auto e = Keyed(base, t, text);
+  e.name_entry_uuid = id;
+  e.language_tag = language;
+  e.name_class = name_class;
+  e.default_for_object = false;
+  e.default_for_language = default_for_language;
+  e.created_transaction_uuid = row.metadata.creator_transaction_uuid;
+  e.catalog_generation_id = row.metadata.catalog_generation;
+  PathBeside(e, base);
+  row.name = c::CatalogNamePayload{e};
+  Check(c::CatalogNamePayloadMatchesMetadata(*row.name, row.metadata), "the further entry agrees with its metadata");
+  return row;
+}
+// SB_NATIVE_NAME_CASCADE (N4b): the path rule's choices, each moved by a
+// change to the schema's names and checked against expectations written out
+// here (not computed by the shared path rule):
+//  - an entry in a language the schema has no name in (French) runs through
+//    the schema's vector default;
+//  - the schema's default name changed to an alias (four rows by one
+//    transaction: the old entry unmarked, which moves nothing while it is the
+//    vector's default; the alias marked default, which moves every English
+//    entry below; the vector's default, which moves the French one; the
+//    definition's default name);
+//  - the old English entry, which no path now uses, dropped: nothing moves.
+// Each transaction is committed and the database verifies.
+void NameCascadePaths(const Db& b, const NameTemplate& t, u16 role, std::size_t definitions) {
+  const auto path = b.Copy(b.bytes, "cascade-paths.db");
+  Session s(b, path);
+  const auto schema = t.entry.scope_uuid.value;
+  const auto entry_of = [&](std::span<const byte> file, const std::string& language, bool default_only) {
+    return NameRowOf(b, file, [&](const c::CatalogNamePayload& p) {
+      const auto* e = std::get_if<c::CatalogNameEntry>(&p);
+      return e && e->object_uuid.value == schema && e->language_tag == language && (!default_only || e->default_for_language);
+    }, "the schema's " + language + " entry");
+  };
+  const auto english = std::get<c::CatalogNameEntry>(*entry_of(b.bytes, t.entry.language_tag, true).name);
+  const std::string other_language = t.entry.language_tag == "fr" ? "de" : "fr";
+  // A named object below the schema, then its name in the other language.
+  Begin(*s.w, s.sink(), 2);
+  auto file = ReadAll(path);
+  const auto named = NamedAfter(b, file, t, role, After(b, file, role), 3201, 2, "w3b_paths_object");
+  ExpectInsert(b, s, path, Request(2, named.Rows()), "a named object below the schema");
+  file = ReadAll(path);
+  const auto foreign = EntryLike(named.entry, t, V7(After(b, file, role), 0xd10001), 1, 2, "w3b_paths_objet", other_language, true,
+                                 c::CatalogNameClass::primary);
+  ExpectInsert(b, s, path, Request(2, {foreign}), "its name in another language, through the schema's vector default");
+  // An English alias of the schema, not its English default.
+  file = ReadAll(path);
+  const auto alias = EntryLike(entry_of(file, t.entry.language_tag, true), t, V7(After(b, file, role), 0xd10002), 2, 2,
+                               "w3b_paths_alias", t.entry.language_tag, false, c::CatalogNameClass::alias);
+  ExpectInsert(b, s, path, Request(2, {alias}), "an alias of the schema");
+  Commit(*s.w, s.sink(), 2);
+  ExpectNamedVerification(b, path, definitions + 1, "the further names, committed", false, true);
+  const auto alias_entry = std::get<c::CatalogNameEntry>(*alias.name);
+  // The expected moves, written out: entries below the schema in `language`
+  // (or not in it), whose path's schema part `from` becomes `to`.
+  const auto expect_moves = [&](std::span<const byte> before, std::span<const byte> after, const db::CatalogVersionWriteResult& result,
+                                const c::CatalogNameEntry& from, const c::CatalogNameEntry& to, bool english_only,
+                                const std::string& label) {
+    std::vector<EntryVersion> want;
+    for (const auto& [row, v] : NewestEntries(b, before))
+      if (!v.deleted && v.entry.lifecycle_state == c::CatalogNameLifecycle::active &&
+          StartsWith(v.entry.full_path_lookup_key, from.full_path_lookup_key) &&
+          (v.entry.language_tag == t.entry.language_tag) == english_only)
+        want.push_back(v);
+    if (result.cascaded.size() != want.size())
+      std::cerr << label << ": cascaded " << result.cascaded.size() << " expected " << want.size() << '\n';
+    Check(result.cascaded.size() == want.size() && !want.empty(), label + ": the entries expected to move, and only those");
+    const auto versions = EntryVersionsOf(b, after);
+    const auto t2 = ReadTreeAt(b, after, NameRootPage(b, after, 23));
+    for (std::size_t i = 0; i < want.size(); ++i) {
+      Check(result.cascaded[i].first == want[i].row, label + ": in row-UUID order");
+      const auto found = std::find_if(versions.begin(), versions.end(), [&](const auto& v) { return v.version == result.cascaded[i].second; });
+      Check(found != versions.end(), label + ": the cascaded version is stored");
+      auto key = to.full_path_lookup_key;
+      key.insert(key.end(), want[i].entry.full_path_lookup_key.begin() + static_cast<std::ptrdiff_t>(from.full_path_lookup_key.size()),
+                 want[i].entry.full_path_lookup_key.end());
+      Check(found->entry.full_path_lookup_key == key, label + ": the path runs through the new name");
+      bool cell = false;
+      for (const auto leaf : t2.leaves)
+        for (const auto& x : t2.pages[leaf].page.cells)
+          if (x.key.version_uuid == found->version) {
+            const auto payload = c::DecodeCatalogNameUuidTreeEntryPayload(x.payload);
+            Check(payload && payload->display_components[from.path_component_count - 1] == to.display_name,
+                  label + ": the UUID-to-name cell shows the new name");
+            cell = true;
+          }
+      Check(cell, label + ": the cascaded version has its cell");
+    }
+  };
+  const auto cascade_ids = [&](db::CatalogVersionRequest& r, unsigned k) {
+    for (unsigned i = 0; i < 64; ++i) r.cascade_versions.push_back(V7(kT + 1500000 + 100 * u64{k} + i, 0x760000 + 64 * k + i));
+    for (unsigned i = 0; i < 16; ++i)
+      r.new_pages.push_back({V7(kT + 1600000 + 100 * u64{k} + i, 0xf70000 + k), V7(kT + 1600000 + 100 * u64{k} + i, 0xf80000 + k)});
+  };
+  // The schema's default name becomes the alias: four rows by one
+  // transaction, since the default name is the definition's, the vector's,
+  // and the one entry marked default for the object and for the vector's
+  // language (the startup name rules). Each step's cascade is checked.
+  Begin(*s.w, s.sink(), 3);
+  {
+    const auto successor_of = [&](const db::CatalogInsertRow& row, unsigned k, c::CatalogNamePayload payload) {
+      auto r = NameSuccessor(row, row.version_uuid, 3, VersionId(k), std::move(payload), false);
+      cascade_ids(r, k - 9300);
+      return r;
+    };
+    const auto write = [&](const db::CatalogVersionRequest& r, const std::string& label) {
+      const auto result = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), r);
+      if (!result.ok()) std::cerr << label << ": " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+      Check(result.ok(), label + ": written");
+      return result;
+    };
+    // 1. The English entry no longer the default: paths still reach it as
+    //    the vector's default, so nothing moves.
+    file = ReadAll(path);
+    {
+      const auto row = entry_of(file, t.entry.language_tag, true);
+      auto e = std::get<c::CatalogNameEntry>(*row.name);
+      e.default_for_language = false;
+      e.default_for_object = false;
+      const auto result = write(successor_of(row, 9301, c::CatalogNamePayload{e}), "the English entry no longer the default");
+      Check(result.cascaded.empty(), "a name still reached as the vector's default moves nothing");
+    }
+    // 2. The alias default for English and for the object: every English
+    //    entry below moves onto it.
+    file = ReadAll(path);
+    {
+      const auto row = NameRowOf(b, file, [&](const c::CatalogNamePayload& p) {
+        const auto* e = std::get_if<c::CatalogNameEntry>(&p);
+        return e && e->name_entry_uuid.value == alias_entry.name_entry_uuid.value;
+      }, "the alias");
+      auto e = std::get<c::CatalogNameEntry>(*row.name);
+      e.default_for_language = true;
+      e.default_for_object = true;
+      const auto result = write(successor_of(row, 9302, c::CatalogNamePayload{e}), "the alias default for English");
+      expect_moves(file, ReadAll(path), result, english, alias_entry, true, "the alias default for English");
+    }
+    // 3. The vector's default the alias: the entry in the other language,
+    //    which runs through the vector's default, moves onto it.
+    file = ReadAll(path);
+    {
+      const auto vector = NameRowOf(b, file, [&](const c::CatalogNamePayload& p) {
+        const auto* v = std::get_if<c::CatalogNameVector>(&p);
+        return v && v->object_uuid.value == schema;
+      }, "the schema's vector");
+      auto v = std::get<c::CatalogNameVector>(*vector.name);
+      v.default_name_entry_uuid = alias_entry.name_entry_uuid;
+      auto r = successor_of(vector, 9303, c::CatalogNamePayload{v});
+      r.metadata.default_name_uuid = alias_entry.name_entry_uuid;
+      const auto result = write(r, "the vector's default the alias");
+      expect_moves(file, ReadAll(path), result, english, alias_entry, false, "the vector's default the alias");
+    }
+    // 4. The schema's definition names the alias as its default.
+    file = ReadAll(path);
+    {
+      std::optional<db::CatalogVersionRequest> r;
+      for (const u16 at : {u16{1}, u16{3}, u16{4}, u16{5}, u16{6}}) {
+        RoleScope scope(b, at);
+        const auto rel = ReadRelation(b, file);
+        for (const auto& l : rel.leaves)
+          for (const auto& row : l.leaf.body.rows)
+            if (l.metadata.at(row.version_uuid).record.header.object_uuid.value == schema && !r) {
+              const auto newest = rel.Versions(row.row_uuid.value).front();
+              const auto& version = rel.At(newest.first).leaf.body.rows[newest.second].version_uuid;
+              r = Successor(b, rel, row.row_uuid.value, version, 3, VersionId(9304));
+            }
+      }
+      Check(r.has_value(), "the schema's definition is found");
+      r->metadata.default_name_uuid = alias_entry.name_entry_uuid;
+      cascade_ids(*r, 4);  // page identities, should its relation need a new leaf
+      r->cascade_versions.clear();
+      write(*r, "the schema's definition names the alias");
+    }
+    Commit(*s.w, s.sink(), 3);
+    ExpectNamedVerification(b, path, definitions + 1, "the schema's default name changed and its cascades, committed", false, true);
+  }
+  // The old English entry, now on no path, dropped: nothing moves.
+  Begin(*s.w, s.sink(), 4);
+  {
+    file = ReadAll(path);
+    const auto row = NameRowOf(b, file, [&](const c::CatalogNamePayload& p) {
+      const auto* e = std::get_if<c::CatalogNameEntry>(&p);
+      return e && e->name_entry_uuid.value == english.name_entry_uuid.value;
+    }, "the old English entry");
+    auto e = std::get<c::CatalogNameEntry>(*row.name);
+    e.lifecycle_state = c::CatalogNameLifecycle::dropped;
+    e.dropped_transaction_uuid = {UuidKind::transaction, TxId(4)};
+    auto r = NameSuccessor(row, row.version_uuid, 4, VersionId(9320), c::CatalogNamePayload{e}, true);
+    const auto result = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), r);
+    if (!result.ok()) std::cerr << "drop: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+    Check(result.ok() && result.cascaded.empty(), "dropping a name no path uses moves nothing and needs no identity");
+    Commit(*s.w, s.sink(), 4);
+    ExpectNamedVerification(b, path, definitions + 1, "the unused name dropped, committed", false, true);
+  }
+  std::cout << b.name << " name cascade paths page_size=" << b.size << ": default name changed (4 rows), unused drop\n";
+  fs::remove(path);
+}
+
+// ---- Paths through another transaction's change (owner Q47 = 1) ----------------------------
+// The template's schema's name in the template's language (its newest version,
+// those of `dead` transactions left out), as a request row.
+EntryVersion ScopeEntry(const Db& b, const NameTemplate& t, std::span<const byte> file, const std::set<u64>& dead = {}) {
+  for (const auto& [row, v] : NewestEntries(b, file, dead))
+    if (!v.deleted && v.entry.object_uuid.value == t.entry.scope_uuid.value && v.entry.language_tag == t.entry.language_tag &&
+        v.entry.default_for_language)
+      return v;
+  Check(false, "the template's scope has a name in the template's language");
+  return EntryVersion{};
+}
+// A rename of the template's schema by `n` (version VersionId(k)), with
+// `identities` cascade identities of its own range and page identities.
+db::CatalogVersionRequest ScopeRename(const Db& b, const NameTemplate& t, std::span<const byte> file, u64 n, unsigned k,
+                                      std::size_t identities, const std::string& text, const std::set<u64>& dead = {}) {
+  const auto old = ScopeEntry(b, t, file, dead);
+  const auto row = NameRowOf(b, file, [&](const c::CatalogNamePayload& p) {
+    const auto* e = std::get_if<c::CatalogNameEntry>(&p);
+    return e && e->name_entry_uuid.value == old.entry.name_entry_uuid.value;
+  }, "the scope's name row");
+  auto e = Keyed(old.entry, t, text);
+  PathBeside(e, old.entry);
+  auto r = NameSuccessor(row, old.version, n, VersionId(k), c::CatalogNamePayload{e}, false);
+  for (std::size_t i = 0; i < identities; ++i)
+    r.cascade_versions.push_back(V7(kT + 1700000 + 1000 * u64{k} + i, 0x780000 + 4096 * (k % 64) + static_cast<unsigned>(i)));
+  for (unsigned i = 0; i < 16; ++i)
+    r.new_pages.push_back({V7(kT + 1800000 + 20 * u64{k} + i, 0xf90000 + k), V7(kT + 1800000 + 20 * u64{k} + i, 0xfa0000 + k)});
+  return r;
+}
+std::size_t EntriesBelow(const Db& b, std::span<const byte> file, const std::vector<byte>& prefix) {
+  std::size_t n = 0;
+  for (const auto& [row, v] : NewestEntries(b, file))
+    if (!v.deleted && v.entry.lifecycle_state == c::CatalogNameLifecycle::active && StartsWith(v.entry.full_path_lookup_key, prefix)) ++n;
+  return n;
+}
+// SB_NATIVE_NAME_PATH_CONFLICT (owner Q47 = 1): a write whose path runs
+// through a name another transaction is changing is a write_conflict with it,
+// both ways round, and the right thing happens once that transaction ends:
+//  A. the schema renamed by 2, in progress; 3 inserts a named object below it:
+//     write_conflict with 2, no write. 2 rolls back: 3's insert succeeds. Or 2
+//     commits: 3's insert, its path still through the old name, is
+//     invalid_name; with the path through the new name it succeeds.
+//  B. 2 inserts a named object below the schema, in progress; 3 renames the
+//     schema: write_conflict with 2 (N4b). 2 rolls back: the rename succeeds,
+//     cascading the entries below but 2's.
+//  C. 2 inserts a named object X, in progress; 3 inserts a name scoped under
+//     X: write_conflict with 2 (it was invalid_name: X's name was not in 3's
+//     view). 2 rolls back: invalid_name (X has no name).
+//  D. the schema renamed by 2, in progress; 3 renames a name no path below
+//     the schema runs through: it succeeds (before Q47's fix the schema's
+//     name left the path index, and everything below it went unnamed), both
+//     commit, and the database verifies.
+void NameConflicts(const Db& b, const NameTemplate& t, u16 role, std::size_t definitions) {
+  // A.
+  for (const bool commit : {false, true}) {
+    const auto path = b.Copy(b.bytes, "conflict-a.db");
+    Session s(b, path);
+    Begin(*s.w, s.sink(), 2);
+    auto file = ReadAll(path);
+    const auto rename = ScopeRename(b, t, file, 2, 9400, 4096, "orders_renamed_a");
+    const auto renamed = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), rename);
+    Check(renamed.ok() && !renamed.cascaded.empty(), "A: the schema renamed by 2, cascading, in progress");
+    Begin(*s.w, s.sink(), 3);
+    file = ReadAll(path);
+    const auto named = NamedAfter(b, file, t, role, After(b, file, role), 3401, 3, "w3b_conflict_a");
+    {
+      const auto result = db::WriteCatalogInsertVersions(s.sink(), GrowingBinding(b), Request(3, named.Rows()));
+      if (result.error != CE::write_conflict) std::cerr << "A: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+      Check(result.error == CE::write_conflict && result.blocker_order == u64{2} && !result.attempted && ReadAll(path) == file,
+            "A: an insert below a schema another transaction is renaming is a write conflict with it, no write");
+    }
+    if (!commit) {
+      Rollback(*s.w, s.sink(), 2);
+      const auto result = db::WriteCatalogInsertVersions(s.sink(), GrowingBinding(b), Request(3, named.Rows()));
+      if (!result.ok()) std::cerr << "A rollback: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+      Check(result.ok(), "A: the rename rolled back, the insert below the schema succeeds");
+    } else {
+      Commit(*s.w, s.sink(), 2);
+      file = ReadAll(path);
+      InsertRefused(b, s, path, Request(3, named.Rows()), CE::invalid_name,
+                    "A: the rename committed, an insert whose path runs through the old name");
+      auto rows = named.Rows();
+      auto e = std::get<c::CatalogNameEntry>(*rows[2].name);
+      const auto neighbour = NewestEntries(b, file).at(NameRowOf(b, file, [&](const c::CatalogNamePayload& p) {
+        const auto* x = std::get_if<c::CatalogNameEntry>(&p);
+        return x && x->name_entry_uuid.value == t.entry.name_entry_uuid.value;
+      }, "the template's entry").row_uuid);
+      PathBeside(e, neighbour.entry);
+      rows[2].name = c::CatalogNamePayload{e};
+      const auto result = db::WriteCatalogInsertVersions(s.sink(), GrowingBinding(b), Request(3, rows));
+      if (!result.ok()) std::cerr << "A commit: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+      Check(result.ok(), "A: the rename committed, the insert with its path through the new name succeeds");
+    }
+    Commit(*s.w, s.sink(), 3);
+    ExpectNamedVerification(b, path, definitions + 1, commit ? "A: rename committed, insert below" : "A: rename rolled back, insert below",
+                            false, true);
+    fs::remove(path);
+  }
+  // B.
+  {
+    const auto path = b.Copy(b.bytes, "conflict-b.db");
+    Session s(b, path);
+    Begin(*s.w, s.sink(), 2);
+    auto file = ReadAll(path);
+    const auto below = EntriesBelow(b, file, ScopeEntry(b, t, file).entry.full_path_lookup_key);
+    const auto named = NamedAfter(b, file, t, role, After(b, file, role), 3402, 2, "w3b_conflict_b");
+    ExpectInsert(b, s, path, Request(2, named.Rows()), "B: a named object below the schema, in progress");
+    Begin(*s.w, s.sink(), 3);
+    file = ReadAll(path);
+    {
+      const auto result = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), ScopeRename(b, t, file, 3, 9410, 4096, "orders_renamed_b"));
+      Check(result.error == CE::write_conflict && result.blocker_order == u64{2} && !result.attempted && ReadAll(path) == file,
+            "B: renaming the schema over another transaction's entry below it is a write conflict with it, no write");
+    }
+    Rollback(*s.w, s.sink(), 2);
+    file = ReadAll(path);
+    const auto result = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), ScopeRename(b, t, file, 3, 9411, 4096, "orders_renamed_b", {2}));
+    if (!result.ok()) std::cerr << "B: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+    Check(result.ok() && result.cascaded.size() == below, "B: 2 rolled back, the rename cascades the entries below but 2's");
+    Commit(*s.w, s.sink(), 3);
+    ExpectNamedVerification(b, path, definitions, "B: insert rolled back, rename committed", false, true);
+    fs::remove(path);
+  }
+  // C.
+  {
+    const auto path = b.Copy(b.bytes, "conflict-c.db");
+    Session s(b, path);
+    Begin(*s.w, s.sink(), 2);
+    auto file = ReadAll(path);
+    const auto parent = NamedAfter(b, file, t, role, After(b, file, role), 3403, 2, "w3b_conflict_parent");
+    {
+      // Through the writer: at 8 KiB the names relation may need a new leaf,
+      // which the in-place oracle does not model.
+      auto r = Request(2, parent.Rows());
+      r.new_pages = PageIds(7);
+      const auto result = db::WriteCatalogInsertVersions(s.sink(), GrowingBinding(b), r);
+      if (!result.ok()) std::cerr << "C: X: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+      Check(result.ok(), "C: a named object X, in progress");
+    }
+    Begin(*s.w, s.sink(), 3);
+    file = ReadAll(path);
+    auto child = NamedAfter(b, file, t, role, After(b, file, role), 3404, 3, "w3b_conflict_child");
+    const auto& x = std::get<c::CatalogNameEntry>(*parent.entry.name);
+    auto e = std::get<c::CatalogNameEntry>(*child.entry.name);
+    e.scope_uuid = x.object_uuid;
+    e.full_path_lookup_key = x.full_path_lookup_key;
+    const auto own = Escaped(OwnKey(e));
+    e.full_path_lookup_key.insert(e.full_path_lookup_key.end(), own.begin(), own.end());
+    e.path_component_count = x.path_component_count + 1;
+    child.entry.name = c::CatalogNamePayload{e};
+    child.definition.metadata.record.header.parent_uuid = x.object_uuid;
+    {
+      const auto result = db::WriteCatalogInsertVersions(s.sink(), GrowingBinding(b), Request(3, child.Rows()));
+      if (result.error != CE::write_conflict) std::cerr << "C: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+      Check(result.error == CE::write_conflict && result.blocker_order == u64{2} && !result.attempted && ReadAll(path) == file,
+            "C: a name under an object another transaction is creating is a write conflict with it, no write");
+    }
+    Rollback(*s.w, s.sink(), 2);
+    InsertRefused(b, s, path, Request(3, child.Rows()), CE::invalid_name, "C: X rolled back, the name under it has no path");
+    Rollback(*s.w, s.sink(), 3);
+    fs::remove(path);
+  }
+  // D.
+  {
+    const auto path = b.Copy(b.bytes, "conflict-d.db");
+    Session s(b, path);
+    Begin(*s.w, s.sink(), 2);
+    auto file = ReadAll(path);
+    const auto scope = ScopeEntry(b, t, file);
+    const auto renamed = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), ScopeRename(b, t, file, 2, 9420, 4096, "orders_renamed_d"));
+    Check(renamed.ok(), "D: the schema renamed by 2, in progress");
+    Begin(*s.w, s.sink(), 3);
+    file = ReadAll(path);
+    // A name of another object in the template's language and identifier
+    // profile, not the database's, whose path does not run through the schema
+    // and through which no path below the schema runs.
+    std::optional<EntryVersion> other;
+    for (const auto& [row, v] : NewestEntries(b, file))
+      if (!other && !v.deleted && v.entry.lifecycle_state == c::CatalogNameLifecycle::active && v.entry.default_for_language &&
+          v.entry.path_component_count >= 2 && v.entry.language_tag == t.entry.language_tag &&
+          v.entry.identifier_profile_uuid.value == t.entry.identifier_profile_uuid.value &&
+          !StartsWith(v.entry.full_path_lookup_key, scope.entry.full_path_lookup_key) &&
+          !StartsWith(scope.entry.full_path_lookup_key, v.entry.full_path_lookup_key) && v.order != 2)
+        other = v;
+    Check(other.has_value(), "D: a name outside the schema's paths");
+    const auto row = NameRowOf(b, file, [&](const c::CatalogNamePayload& p) {
+      const auto* e = std::get_if<c::CatalogNameEntry>(&p);
+      return e && e->name_entry_uuid.value == other->entry.name_entry_uuid.value;
+    }, "the unrelated name's row");
+    auto e = Keyed(other->entry, t, "w3b_unrelated_d");
+    PathBeside(e, other->entry);
+    auto r = NameSuccessor(row, other->version, 3, VersionId(9421), c::CatalogNamePayload{e}, false);
+    for (unsigned i = 0; i < 4096; ++i) r.cascade_versions.push_back(V7(kT + 1900000 + i, 0x7c0000 + i));
+    for (unsigned i = 0; i < 16; ++i) r.new_pages.push_back({V7(kT + 1950000 + i, 0xfb0000), V7(kT + 1950000 + i, 0xfc0000)});
+    const auto result = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), r);
+    if (!result.ok()) std::cerr << "D: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+    Check(result.ok(), "D: a rename no path below the schema runs through succeeds while the schema's rename is in progress");
+    Commit(*s.w, s.sink(), 3);
+    Commit(*s.w, s.sink(), 2);
+    ExpectNamedVerification(b, path, definitions, "D: both renames committed", false, true);
+    std::cout << b.name << " name conflicts page_size=" << b.size << ": D renamed " << other->entry.display_name << " ("
+              << result.cascaded.size() << " cascaded) beside the schema's rename (" << renamed.cascaded.size() << ")\n";
+    fs::remove(path);
+  }
+  std::cout << b.name << " name conflicts page_size=" << b.size << ": A (both endings), B, C, D\n";
+}
+
+// ---- Inserts that move paths (owner Q48 = 1) -----------------------------------------------
+// SB_NATIVE_NAME_CASCADE for inserts: a name for the schema in a second
+// language, marked default for it, moves the entries in that language below
+// the schema (their paths ran through the schema's vector default), in the
+// same write. Written out, not computed by the shared path rule: the entry
+// below's new full path is the new name's full path then the rest of its old
+// one after the vector default's. Also: the count needed when short; another
+// transaction's entry below in that language while the insert is in progress
+// (write_conflict, Q47); a second default in that language, which leaves the
+// entry below ambiguous (invalid_name); failing each write in turn.
+void NameInsertCascade(const Db& b, const NameTemplate& t, u16 role, std::size_t definitions) {
+  const auto path = b.Copy(b.bytes, "insert-cascade.db");
+  Session s(b, path);
+  const auto schema = t.entry.scope_uuid.value;
+  const std::string language = t.entry.language_tag == "fr" ? "de" : "fr";
+  const auto english_row = [&](std::span<const byte> file) {
+    return NameRowOf(b, file, [&](const c::CatalogNamePayload& p) {
+      const auto* e = std::get_if<c::CatalogNameEntry>(&p);
+      return e && e->object_uuid.value == schema && e->language_tag == t.entry.language_tag && e->default_for_language;
+    }, "the schema's default entry");
+  };
+  // A named object below the schema and its name in the second language.
+  Begin(*s.w, s.sink(), 2);
+  auto file = ReadAll(path);
+  const auto named = NamedAfter(b, file, t, role, After(b, file, role), 3501, 2, "w3b_insert_cascade");
+  ExpectInsert(b, s, path, Request(2, named.Rows()), "a named object below the schema");
+  file = ReadAll(path);
+  const auto foreign = EntryLike(named.entry, t, V7(After(b, file, role), 0xd20001), 11, 2, "w3b_insert_objet", language, true,
+                                 c::CatalogNameClass::primary);
+  ExpectInsert(b, s, path, Request(2, {foreign}), "its name in the second language");
+  Commit(*s.w, s.sink(), 2);
+  const auto pre = ReadAll(path);
+  const auto english = std::get<c::CatalogNameEntry>(*english_row(pre).name);
+  const auto foreign_entry = std::get<c::CatalogNameEntry>(*foreign.name);
+  Check(StartsWith(foreign_entry.full_path_lookup_key, english.full_path_lookup_key),
+        "the second-language entry's path runs through the schema's vector default");
+  // The schema's name in the second language, default for it, by `n`.
+  const auto schema_name = [&](std::span<const byte> file, u64 n, unsigned k, const std::string& text, std::size_t identities) {
+    auto row = EntryLike(english_row(file), t, V7(After(b, file, role), 0xd30000 + k), k, n, text, language, true,
+                         c::CatalogNameClass::alias);
+    auto r = Request(n, {row});
+    for (std::size_t i = 0; i < identities; ++i) r.cascade_versions.push_back(V7(kT + 2000000 + 100 * u64{k} + i, 0x7d0000 + 64 * k + static_cast<unsigned>(i)));
+    for (unsigned i = 0; i < 16; ++i)
+      r.new_pages.push_back({V7(kT + 2100000 + 100 * u64{k} + i, 0xfd0000 + k), V7(kT + 2100000 + 100 * u64{k} + i, 0xfe0000 + k)});
+    return std::pair{r, std::get<c::CatalogNameEntry>(*row.name)};
+  };
+  const auto check = [&](std::span<const byte> after, const db::CatalogVersionWriteResult& result, const c::CatalogNameEntry& name,
+                         const std::string& label) {
+    Check(result.cascaded.size() == 1 && result.cascaded[0].first == foreign.row_uuid, label + ": the second-language entry moves, only it");
+    const auto versions = EntryVersionsOf(b, after);
+    const auto found = std::find_if(versions.begin(), versions.end(), [&](const auto& v) { return v.version == result.cascaded[0].second; });
+    Check(found != versions.end(), label + ": its version is stored");
+    auto key = name.full_path_lookup_key;
+    key.insert(key.end(), foreign_entry.full_path_lookup_key.begin() + static_cast<std::ptrdiff_t>(english.full_path_lookup_key.size()),
+               foreign_entry.full_path_lookup_key.end());
+    Check(found->entry.full_path_lookup_key == key && found->entry.path_component_count == foreign_entry.path_component_count,
+          label + ": its path runs through the new name");
+    const auto t2 = ReadTreeAt(b, after, NameRootPage(b, after, 23));
+    bool cell = false;
+    for (const auto leaf : t2.leaves)
+      for (const auto& x : t2.pages[leaf].page.cells)
+        if (x.key.version_uuid == found->version) {
+          const auto payload = c::DecodeCatalogNameUuidTreeEntryPayload(x.payload);
+          Check(payload && payload->display_components[english.path_component_count - 1] == name.display_name,
+                label + ": the UUID-to-name cell shows the new name");
+          cell = true;
+        }
+    Check(cell, label + ": the cascaded version has its cell");
+  };
+  Begin(*s.w, s.sink(), 3);
+  const auto begun = ReadAll(path);  // BEGIN wrote the inventory
+  {
+    auto [r, name] = schema_name(pre, 3, 21, "w3b_schema_nom", 0);
+    const auto result = db::WriteCatalogInsertVersions(s.sink(), GrowingBinding(b), r);
+    std::cout << b.name << " insert cascade short: " << db::CatalogVersionWriteErrorName(result.error) << " needed "
+              << result.cascade_needed << " failed_row " << (result.failed_row ? int(*result.failed_row) : -1) << '\n';
+    Check(result.error == CE::cascade_versions_exhausted && result.cascade_needed == 1 && !result.failed_row && !result.attempted &&
+              result.allocated_pages.empty() && ReadAll(path) == begun,
+          "no identity: cascade_versions_exhausted, one needed, no row blamed, nothing written");
+  }
+  {
+    auto [r, name] = schema_name(pre, 3, 21, "w3b_schema_nom", 4);
+    const auto result = db::WriteCatalogInsertVersions(s.sink(), GrowingBinding(b), r);
+    if (!result.ok()) std::cerr << "insert cascade: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+    Check(result.ok(), "the schema's second-language default name is inserted, cascading");
+    check(ReadAll(path), result, name, "the cascading insert");
+    std::cout << b.name << " insert cascade page_size=" << b.size << ": " << result.writes << " writes, "
+              << result.allocated_pages.size() << " new pages\n";
+  }
+  // Q47 with it: another transaction's second-language name below the schema
+  // while the insert is in progress.
+  Begin(*s.w, s.sink(), 4);
+  {
+    file = ReadAll(path);
+    const auto alias = EntryLike(named.entry, t, V7(After(b, file, role), 0xd20002), 12, 4, "w3b_insert_alias", language, false,
+                                 c::CatalogNameClass::alias);
+    const auto result = db::WriteCatalogInsertVersions(s.sink(), GrowingBinding(b), Request(4, {alias}));
+    Check(result.error == CE::write_conflict && result.blocker_order == u64{3} && !result.attempted && ReadAll(path) == file,
+          "a second-language name below the schema while its second-language default is inserted: write conflict");
+  }
+  Rollback(*s.w, s.sink(), 4);
+  Commit(*s.w, s.sink(), 3);
+  ExpectNamedVerification(b, path, definitions + 1, "the cascading insert, committed", false, true);
+  // A second default in that language: the entry below's scope is ambiguous.
+  Begin(*s.w, s.sink(), 5);
+  {
+    file = ReadAll(path);
+    auto [r, name] = schema_name(file, 5, 22, "w3b_schema_nom_deux", 4);
+    const auto result = db::WriteCatalogInsertVersions(s.sink(), GrowingBinding(b), r);
+    if (result.error != CE::invalid_name) std::cerr << "ambiguous: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+    Check(result.error == CE::invalid_name && !result.failed_row && !result.attempted && ReadAll(path) == file,
+          "a second default in one language leaves the entry below ambiguous: invalid_name, nothing written");
+  }
+  Rollback(*s.w, s.sink(), 5);
+  // The cascading insert again on copies of the file before it, failing each
+  // write in turn; the database verifies; another transaction's insert then
+  // cascades the same entry, and verifies.
+  unsigned failures = 0;
+  for (u32 w = 1; w <= 128; ++w) {
+    const auto copy = b.Copy(pre, "insert-cascade-crash.db");
+    Session c(b, copy);
+    Begin(*c.w, c.sink(), 3);
+    auto [r, name] = schema_name(pre, 3, 23, "w3b_schema_nom", 4);
+    KindFaultSink sink(c.sink(), KindFaultSink::Kind::write, w);
+    const auto result = db::WriteCatalogInsertVersions(sink, GrowingBinding(b), r);
+    if (result.ok()) {
+      fs::remove(copy);
+      break;
+    }
+    ++failures;
+    Check(result.error == CE::write_failed, "a failed write is write_failed");
+    Rollback(*c.w, c.sink(), 3);
+    if (w <= 3 || w % 4 == 0) ExpectNamedVerification(b, copy, definitions + 1, "after failed insert-cascade write " + std::to_string(w), false, true);
+    Begin(*c.w, c.sink(), 4);
+    const auto now = ReadAll(copy);
+    auto [next, next_name] = schema_name(now, 4, 24, "w3b_schema_nom", 4);
+    const auto done = db::WriteCatalogInsertVersions(c.sink(), GrowingBinding(b), next);
+    if (!done.ok()) std::cerr << "after failed insert-cascade write " << w << ": " << db::CatalogVersionWriteErrorName(done.error) << '\n';
+    Check(done.ok(), "the insert succeeds after failed write " + std::to_string(w));
+    check(ReadAll(copy), done, next_name, "the insert after failed write " + std::to_string(w));
+    Commit(*c.w, c.sink(), 4);
+    if (w <= 3 || w % 4 == 0) ExpectNamedVerification(b, copy, definitions + 1, "the insert after failed write " + std::to_string(w), false, true);
+    fs::remove(copy);
+  }
+  Check(failures > 0, "the cascading insert has failure points");
+  std::cout << b.name << " insert cascade crashes page_size=" << b.size << " failure points " << failures << '\n';
+  fs::remove(path);
+}
+
 void NameSuccessors(const Db& b, const NameTemplate& t, u16 role, std::size_t definitions) {
   const auto path = b.Copy(b.bytes, "successors.db");
   Session s(b, path);
@@ -1181,35 +2015,8 @@ void NameSuccessors(const Db& b, const NameTemplate& t, u16 role, std::size_t de
   }
   ExpectNamedVerification(b, path, definitions + 1, "a rolled-back rename");
   Begin(*s.w, s.sink(), 5);
-  // A name other names' paths run through cannot be renamed yet (N4b): the
-  // template's scope (a schema) is a component of the template's own path.
-  // (The database's own name is not: paths run from below the root.)
-  {
-    const auto now = ReadAll(path);
-    const auto stored = NamesOf(b, now);
-    const auto database = std::find_if(stored.entries.begin(), stored.entries.end(), [&](const auto& e) {
-      return e.object_uuid.value == t.entry.scope_uuid.value && e.language_tag == t.entry.language_tag && e.default_for_language;
-    });
-    Check(database != stored.entries.end(), "the template's scope has a name in the template's language");
-    RoleScope a(b, 2);
-    const auto rel = ReadRelation(b, now);
-    std::optional<db::CatalogInsertRow> as_inserted;
-    for (const auto& l : rel.leaves)
-      for (const auto& row : l.leaf.body.rows) {
-        const auto& m = l.metadata.at(row.version_uuid);
-        if (m.record.header.object_uuid.value != database->name_entry_uuid.value) continue;
-        db::CatalogInsertRow r{2, row.row_uuid.value, row.version_uuid, m, c::CatalogNamePayload{*database}};
-        r.metadata.record.payload.clear();
-        as_inserted = r;
-      }
-    Check(as_inserted.has_value(), "the scope's name row is found");
-    auto e = *database;
-    e.raw_name_text = "orders_renamed";
-    e.display_name = "orders_renamed";
-    PathBeside(e, *database);
-    Refused(b, s, path, NameSuccessor(*as_inserted, as_inserted->version_uuid, 5, VersionId(9007), c::CatalogNamePayload{e}, false),
-            CE::invalid_successor, "renaming a scope's name, which other names' paths run through");
-  }
+  // (N4a refused renaming a name other names' paths run through; N4b
+  // cascades it: NameCascade.)
   // A drop: the definition, the vector and the entry retired together; the
   // entry's and vector's cells stamped, no new cells.
   {
@@ -1583,6 +2390,10 @@ int main(int argc, char** argv) {
     ConflictingPolicy(b, t, *role);
     if (room) NameKeys(b, t, *role);
     if (room) NameSuccessors(b, t, *role, fresh.names.definitions);
+    if (room) NameCascade(b, t, *role, fresh.names.definitions);
+    if (room) NameCascadePaths(b, t, *role, fresh.names.definitions);
+    if (room) NameConflicts(b, t, *role, fresh.names.definitions);
+    if (room) NameInsertCascade(b, t, *role, fresh.names.definitions);
     if (room) NameGrowth(b, t, *role, fresh.names.definitions);
     if (room) NameSplits(b, t, *role, fresh.names.definitions);
     // Long names past a root-branch split and a branch split below the root:

@@ -137,17 +137,23 @@ bool InProgress(mga::TransactionState state) {
 
 // The new metadata may follow the base (the same checks the visibility reader
 // applies to a resident chain, and the creator the leaf codec binds).
+bool FollowsAs(const catalog::CatalogMetadataVersion& before, const catalog::CatalogMetadataVersion& after, const Uuid& row,
+               const Uuid& transaction_uuid, u64 transaction_order);
 bool Follows(const catalog::CatalogMetadataVersion& before, const catalog::CatalogMetadataVersion& after,
              const CatalogVersionRequest& request) {
+  return FollowsAs(before, after, request.row_uuid, request.transaction_uuid, request.transaction_order);
+}
+bool FollowsAs(const catalog::CatalogMetadataVersion& before, const catalog::CatalogMetadataVersion& after, const Uuid& row,
+               const Uuid& transaction_uuid, u64 transaction_order) {
   const auto& b = before.record.header;
   const auto& a = after.record.header;
   if (catalog::ValidateCatalogMetadataVersionView(catalog::BorrowCatalogMetadataVersion(after))) return false;
   return a.kind == b.kind && a.object_uuid.kind == b.object_uuid.kind && a.object_uuid.value == b.object_uuid.value &&
-         a.row_uuid.kind == UuidKind::row && a.row_uuid.value == request.row_uuid &&
+         a.row_uuid.kind == UuidKind::row && a.row_uuid.value == row &&
          after.authority_scope != catalog::CatalogAuthorityScope::cluster &&
          after.creator_transaction_uuid.kind == UuidKind::transaction &&
-         after.creator_transaction_uuid.value == request.transaction_uuid &&
-         after.creator_local_transaction_id == request.transaction_order &&
+         after.creator_transaction_uuid.value == transaction_uuid &&
+         after.creator_local_transaction_id == transaction_order &&
          before.definition_version != std::numeric_limits<u64>::max() &&
          after.definition_version == before.definition_version + 1 && after.schema_epoch >= before.schema_epoch &&
          after.security_epoch >= before.security_epoch && after.resource_epoch >= before.resource_epoch &&
@@ -400,15 +406,78 @@ class NameState {
     }
     // SB_NATIVE_NAME_PATH: the names a path through this request may use: the
     // newest version of each stored name this transaction sees (committed or
-    // its own, not deleted), then the request's names.
+    // its own, not deleted), then the request's names. Q47 = 1: a row whose
+    // newest version is another transaction's in progress is seen as its
+    // newest committed version (it was dropped from the index outright, which
+    // left everything below that name unnamed to an unrelated writer); the
+    // row is also recorded as contended, for PendingOnPath.
+    for (std::size_t k = 0; k < stored_.size(); ++k) {
+      const auto& s = stored_[k];
+      if (!s.state || (*s.state != mga::TransactionState::committed && s.order != order_)) continue;
+      const auto found = visible_name_.find(s.row);
+      if (found == visible_name_.end() || stored_[found->second].row_version < s.row_version) visible_name_[s.row] = k;
+    }
+    for (const auto& [row, k] : visible_name_)
+      if (!stored_[k].deleted) path_names_.Add(catalog::BorrowCatalogNamePayload(stored_[k].payload));
+    for (const auto* name : request_names_) path_names_.Add(catalog::BorrowCatalogNamePayload(*name));
     for (const auto& [row, k] : newest_name_) {
       const auto& s = stored_[k];
-      if (s.deleted || !s.state) continue;
-      if (*s.state != mga::TransactionState::committed && s.order != order_) continue;
-      path_names_.Add(catalog::BorrowCatalogNamePayload(s.payload));
+      if (!s.state || !InProgress(*s.state) || s.order == order_) continue;
+      const auto seen = visible_name_.find(row);
+      contended_.push_back({s.order, &s.payload, seen == visible_name_.end() ? nullptr : &stored_[seen->second].payload});
     }
-    for (const auto* name : request_names_) path_names_.Add(catalog::BorrowCatalogNamePayload(*name));
     return true;
+  }
+
+  // SEARCH_KEY: SB_NATIVE_NAME_PATH_CONFLICT (owner Q47 = 1, 2026-11-11).
+  // Whether a version of a name row decides the lookup a path makes at
+  // (object, language): the object's vector (its default entry is the
+  // fallback); an entry of the object marked default_for_language in that
+  // language; an entry of the object that any live version of its vector
+  // names as default.
+  bool Decides(const catalog::CatalogNamePayload& payload, const Uuid& object, std::string_view language) const {
+    if (const auto* v = std::get_if<catalog::CatalogNameVector>(&payload)) return v->object_uuid.value == object;
+    const auto& e = std::get<catalog::CatalogNameEntry>(payload);
+    if (e.object_uuid.value != object) return false;
+    if (e.default_for_language && e.language_tag == language) return true;
+    const auto names_default = [&](const catalog::CatalogNamePayload& p) {
+      const auto* v = std::get_if<catalog::CatalogNameVector>(&p);
+      return v && v->object_uuid.value == object && v->default_name_entry_uuid.value == e.name_entry_uuid.value;
+    };
+    for (const auto* name : request_names_)
+      if (names_default(*name)) return true;
+    for (const auto& s : stored_)
+      if (!Dead(s.state) && names_default(s.payload)) return true;
+    return false;
+  }
+  // The first lookup a walk of `entry`'s path over `index` makes for which
+  // `at(object, language)` gives a transaction order. The walk is the path
+  // rule's own; the lookups up to where it stops (an unnamed scope included)
+  // are all tried.
+  template <class At>
+  std::optional<u64> FirstOnPath(const catalog::CatalogNameEntryView& entry, const catalog::CatalogNameIndex& index,
+                                 At&& at) const {
+    std::optional<u64> found;
+    (void)catalog::WalkCatalogNamePath(
+        entry,
+        [&](const Uuid& object, std::string_view language) {
+          if (!found) found = at(object, language);
+          return index(object, language);
+        },
+        [](const catalog::CatalogNameEntryView&) {});
+    return found;
+  }
+  // Q47 = 1: the transaction whose change in progress a path over `index`
+  // runs through (a name row another transaction is changing, whose old or
+  // new version decides a lookup on the path), if any. A write of such a path
+  // is a write_conflict with it, as a cascade reaching its entry is: the path
+  // goes stale whichever way that transaction ends.
+  std::optional<u64> PendingOnPath(const catalog::CatalogNameEntryView& entry, const catalog::CatalogNameIndex& index) const {
+    return FirstOnPath(entry, index, [&](const Uuid& object, std::string_view language) -> std::optional<u64> {
+      for (const auto& c : contended_)
+        if (Decides(*c.newest, object, language) || (c.seen && Decides(*c.seen, object, language))) return c.order;
+      return std::nullopt;
+    });
   }
 
   // The newest version of an object this transaction sees (its creator
@@ -509,6 +578,7 @@ class NameState {
     const auto gx = GroupOf(x);
     if (!gx || !KeysAgree(payload)) return {E::invalid_name};
     const auto xv = std::get<catalog::CatalogNameEntryView>(catalog::BorrowCatalogNamePayload(payload));
+    if (const auto blocker = PendingOnPath(xv, path_names_)) return {E::write_conflict, blocker};  // Q47 = 1
     if (catalog::CheckCatalogNameEntryPath(xv, path_names_) != catalog::CatalogNamePathError::none) return {E::invalid_name};
     std::optional<u64> blocker;
     bool held = false;
@@ -537,6 +607,22 @@ class NameState {
   // This request's entry, once placed: later entries of the request see it.
   void HoldEntry(const catalog::CatalogNamePayload& payload) { holders_.push_back({&payload, Hold::held, order_}); }
   const catalog::CatalogNameIndex& Paths() const { return path_names_; }
+  // SB_NATIVE_NAME_CASCADE (N4b): the names a path may run through as stored
+  // (the newest version of each name row this transaction sees, not deleted:
+  // the rows Paths() holds), with `row`'s replaced by `replacement` (none:
+  // removed). The payloads must outlive the index.
+  // Q48 = 1: an insert's `added` names are added after the stored ones.
+  catalog::CatalogNameIndex StoredPaths(const std::optional<Uuid>& row, const catalog::CatalogNamePayload* replacement,
+                                        std::span<const catalog::CatalogNamePayload* const> added = {}) const {
+    catalog::CatalogNameIndex out;
+    for (const auto& [r, k] : visible_name_) {
+      if (row && r == *row) continue;
+      if (!stored_[k].deleted) out.Add(catalog::BorrowCatalogNamePayload(stored_[k].payload));
+    }
+    if (replacement) out.Add(catalog::BorrowCatalogNamePayload(*replacement));
+    for (const auto* name : added) out.Add(catalog::BorrowCatalogNamePayload(*name));
+    return out;
+  }
   std::span<const StoredName> Stored() const { return stored_; }
   // The newest stored version of a name row not rolled back or dead.
   const StoredName* Newest(const Uuid& row) const {
@@ -571,6 +657,15 @@ class NameState {
   std::vector<const catalog::CatalogNamePayload*> request_names_;
   std::vector<StoredName> stored_;
   std::map<Uuid, std::size_t> newest_name_;  // per row: the newest version not rolled back or dead
+  std::map<Uuid, std::size_t> visible_name_;  // per row: the newest version committed or this transaction's
+  // Q47: each name row whose newest version is another transaction's in
+  // progress: that version, and the version this transaction sees (if any).
+  struct Contended {
+    u64 order;
+    const catalog::CatalogNamePayload* newest;
+    const catalog::CatalogNamePayload* seen;
+  };
+  std::vector<Contended> contended_;
   std::vector<Holder> holders_;
   catalog::CatalogNameIndex path_names_;
 };
@@ -1065,10 +1160,376 @@ const char* CatalogVersionWriteErrorName(CatalogVersionWriteError error) noexcep
     case E::name_tree_full: return "name_tree_full";
     case E::new_pages_exhausted: return "new_pages_exhausted";
     case E::filespace_full: return "filespace_full";
+    case E::cascade_versions_exhausted: return "cascade_versions_exhausted";
   }
   return "unknown";
 }
 
+namespace {
+// ---- SB_NATIVE_NAME_CASCADE (N4b), shared by successors and, under owner
+// Q48 = 1, inserts ----------------------------------------------------------
+// A helper that stops the write returns the result to return; nullopt goes on.
+using Stop = std::optional<CatalogVersionWriteResult>;
+Stop Conflict(u64 blocker) {
+  CatalogVersionWriteResult result;
+  result.error = E::write_conflict;
+  result.blocker_order = blocker;
+  return result;
+}
+
+// One new version of a row: a successor's own, or an entry the cascade moves.
+struct Succ {
+  Uuid row, version;
+  Version base;
+  const catalog::CatalogMetadataVersion* base_metadata = nullptr;
+  catalog::CatalogMetadataVersion metadata;
+  std::optional<catalog::CatalogNamePayload> name;
+  const catalog::CatalogNamePayload* base_name = nullptr;
+  std::vector<std::string> components;  // an entry's UUID-to-name display components
+  pg::RowDataRecord added;
+  std::optional<std::size_t> target;
+};
+struct NameTree {
+  std::vector<TreePage> tree;
+  std::set<std::size_t> changed;
+};
+
+// A live entry whose stored path or display components a change moves.
+struct Moved {
+  const NameState::StoredName* stored;
+  std::vector<byte> key;
+  u64 count = 0;
+  std::vector<std::string> components;
+};
+// Every other live entry (not of `skip`) whose stored full path, component
+// count or display components differ between the names a path runs through
+// before the change and after it. A cascaded version changes only those, so
+// it moves no other entry's path: one pass is complete. `changed`: the old
+// and new versions of the name rows the request writes.
+//   An entry whose newest version is another transaction's in progress cannot
+// be cascaded: write_conflict with it when the change moves its path (as
+// resolved here, before against after: its stored path is its creator's
+// view); when its path does not resolve in this transaction's view (it runs
+// through names that transaction has not committed), when a lookup its path
+// makes is one a changed row decides (SB_NATIVE_NAME_PATH_CONFLICT).
+//   A change that leaves an entry without a path is `unresolvable`. An entry
+// whose new path runs through another transaction's change in progress is a
+// write_conflict with it (Q47 = 1).
+Stop FindMoved(const NameState& names, const catalog::CatalogNameIndex& before, const catalog::CatalogNameIndex& after,
+               u64 order, std::span<const Uuid> skip, std::span<const catalog::CatalogNamePayload* const> changed,
+               E unresolvable, std::vector<Moved>& moved) {
+  const auto decided = [&](const Uuid& object, std::string_view language) -> std::optional<u64> {
+    for (const auto* p : changed)
+      if (names.Decides(*p, object, language)) return order;
+    return std::nullopt;
+  };
+  for (const auto& s : names.Stored()) {
+    if (std::find(skip.begin(), skip.end(), s.row) != skip.end() || names.Newest(s.row) != &s || s.deleted || !s.state)
+      continue;
+    const auto* e = std::get_if<catalog::CatalogNameEntry>(&s.payload);
+    if (!e || e->lifecycle_state == catalog::CatalogNameLifecycle::dropped ||
+        e->lifecycle_state == catalog::CatalogNameLifecycle::archived)
+      continue;
+    const bool seen = *s.state == mga::TransactionState::committed || s.order == order;
+    const bool other = InProgress(*s.state) && s.order != order;
+    if (!seen && !other) continue;
+    const auto view = catalog::BorrowCatalogNameEntry(*e);
+    const auto now = catalog::ResolveCatalogNamePath(view, after);
+    const auto was = catalog::ResolveCatalogNamePath(view, before);
+    if (other && (!was.ok() || !now.ok())) {
+      if (names.FirstOnPath(view, before, decided) || names.FirstOnPath(view, after, decided)) return Conflict(s.order);
+      continue;
+    }
+    // Another transaction's entry holds the path in its own view (names it
+    // has not committed included): it moves when this change moves its path
+    // here, not when this view's path differs from the stored one.
+    bool moves = !now.ok() || !was.ok() || now.components.size() != was.components.size();
+    std::vector<byte> key;
+    if (now.ok()) {
+      key = catalog::CatalogNamePathLookupKey(now);
+      if (other) moves = moves || key != catalog::CatalogNamePathLookupKey(was);
+      else moves = moves || key != e->full_path_lookup_key || now.components.size() != e->path_component_count;
+      for (std::size_t c = 0; !moves && c < now.components.size(); ++c)
+        moves = now.components[c].display_name != was.components[c].display_name;
+    }
+    if (!moves) continue;
+    if (other) return Conflict(s.order);
+    if (!now.ok()) return Refuse(unresolvable);
+    if (const auto blocker = names.PendingOnPath(view, after)) return Conflict(*blocker);
+    Moved m{&s, std::move(key), now.components.size(), {}};
+    for (const auto& c : now.components) m.components.emplace_back(c.display_name);
+    moved.push_back(std::move(m));
+  }
+  std::sort(moved.begin(), moved.end(), [](const auto& a, const auto& b) { return a.stored->row < b.stored->row; });
+  return std::nullopt;
+}
+
+// The cascade's versions, one per moved entry, from the request's
+// `cascade_versions` in that order: too few is cascade_versions_exhausted
+// (with the count needed); one repeated, `reserved` (the request's own row
+// and version UUIDs) or already in the relation is refused. Each changes only
+// the entry's full path, component count and catalog generation (the larger of
+// its base's and `generation`); the metadata is its base's with this
+// transaction as creator and the next definition version.
+Stop BuildCascade(const std::vector<Moved>& moved, std::span<const Uuid> versions,
+                  const std::function<bool(const Uuid&)>& reserved, const std::vector<Leaf>& leaves, const Uuid& transaction,
+                  u64 order, u64 generation, const pg::NativeCatalogRoot& root, std::vector<Succ>& succs) {
+  if (versions.size() < moved.size()) {
+    CatalogVersionWriteResult result;
+    result.cascade_needed = moved.size();
+    result.error = E::cascade_versions_exhausted;
+    return result;
+  }
+  for (std::size_t i = 0; i < moved.size(); ++i) {
+    const auto& m = moved[i];
+    Succ c;
+    c.row = m.stored->row;
+    c.version = versions[i];
+    if (!V7(c.version) || reserved(c.version)) return Refuse(E::invalid_request);
+    for (std::size_t j = 0; j < i; ++j)
+      if (versions[j] == c.version) return Refuse(E::invalid_request);
+    bool found = false;
+    u64 newest_row_version = 0;
+    for (std::size_t l = 0; l < leaves.size(); ++l)
+      for (std::size_t r = 0; r < leaves[l].page.body.rows.size(); ++r) {
+        const auto& row = leaves[l].page.body.rows[r];
+        if (row.version_uuid == c.version) return Refuse(E::invalid_successor);
+        if (row.row_uuid.value != c.row) continue;
+        newest_row_version = std::max(newest_row_version, row.row_version);
+        if (row.row_version == m.stored->row_version) {
+          c.base = {l, r};
+          found = true;
+        }
+      }
+    if (!found || newest_row_version == std::numeric_limits<u64>::max()) return Refuse(E::invalid_catalog);
+    const auto& cbase = leaves[c.base.leaf].page.body.rows[c.base.row];
+    c.base_metadata = &leaves[c.base.leaf].metadata.at(cbase.version_uuid);
+    c.base_name = &m.stored->payload;
+    auto payload = std::get<catalog::CatalogNameEntry>(m.stored->payload);
+    const u64 g = std::max(c.base_metadata->catalog_generation, generation);
+    payload.full_path_lookup_key = m.key;
+    payload.path_component_count = m.count;
+    payload.catalog_generation_id = g;
+    c.metadata = *c.base_metadata;
+    c.metadata.record.payload.clear();
+    c.metadata.creator_transaction_uuid = {UuidKind::transaction, transaction};
+    c.metadata.creator_local_transaction_id = order;
+    c.metadata.definition_version = c.base_metadata->definition_version + 1;
+    c.metadata.catalog_generation = g;
+    c.name = std::move(payload);
+    c.components = m.components;
+    if (!catalog::CatalogNamePayloadMatchesMetadata(*c.name, c.metadata) ||
+        !catalog::CatalogNamePayloadPreservesIdentity(*c.base_name, *c.name))
+      return Refuse(E::invalid_successor);
+    if (AheadOfRoot(c.metadata, root)) return Refuse(E::ahead_of_catalog_root);
+    c.added.row_uuid = {UuidKind::row, c.row};
+    c.added.version_uuid = c.version;
+    c.added.previous_version_uuid = cbase.version_uuid;
+    c.added.transaction_uuid = {UuidKind::transaction, transaction};
+    c.added.local_transaction_id = order;
+    c.added.row_version = newest_row_version + 1;
+    c.added.previous_row_version = cbase.row_version;
+    succs.push_back(std::move(c));
+  }
+  return std::nullopt;
+}
+
+// A version's metadata as placed on `page` at `slot`: a name's envelope binds
+// where it is (SB_NATIVE_NAME_TREES), and must then follow the base.
+std::optional<std::vector<byte>> PlacedImage(const Succ& c, const NativeCatalogLeafPage& page, u32 slot,
+                                             const Uuid& transaction, u64 order) {
+  auto final_metadata = c.metadata;
+  if (c.name) {
+    const catalog::CatalogNameVersionBinding at{
+        {UuidKind::database, page.header.database_uuid}, {UuidKind::filespace, page.header.filespace_uuid},
+        {UuidKind::row, c.row}, {UuidKind::row, c.version}, c.metadata.record.header.object_uuid,
+        {UuidKind::transaction, transaction}, page.body.page_number, slot, page.header.page_generation,
+        c.added.row_version, order, c.metadata.catalog_generation};
+    const auto envelope = catalog::EncodeCatalogNameEnvelope({at, *c.name});
+    if (!envelope.ok()) return std::nullopt;
+    final_metadata.record.payload.assign(envelope.bytes.begin(), envelope.bytes.end());
+    if (!FollowsAs(*c.base_metadata, final_metadata, c.row, transaction, order)) return std::nullopt;
+  }
+  const auto encoded = catalog::EncodeCatalogMetadataVersion(final_metadata);
+  if (!encoded.ok()) return std::nullopt;
+  return encoded.bytes;
+}
+
+// Placement: every page is edited in memory (`work`, the relation's leaf
+// pages as this write has them so far) and written once. A version goes on
+// its predecessor's page when it has room (the version and its forward link,
+// a hint to readers, in one image); otherwise on a page that carries no
+// forward link in this write, or on a new base leaf. `link_pages` gets the
+// pages carrying links: the caller writes every other page first, so no link
+// is ever written before its version and no two pages need each other first.
+Stop PlaceSuccs(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding& binding, std::vector<Succ>& succs,
+                Relation& relation, const pg::NativeCatalogRootReference& head, std::vector<NativeCatalogLeafPage>& work,
+                std::set<std::size_t>& link_pages, PageSource& pages, u32 page_size, const Uuid& transaction, u64 order) {
+  for (const auto& c : succs) link_pages.insert(c.base.leaf);
+  std::optional<E> place_error;
+  const auto try_place = [&](Succ& c, std::size_t i) -> bool {
+    auto page = work[i];
+    u32 slot = 0;
+    for (const auto& row : page.body.rows) slot = std::max(slot, row.stable_slot_id);
+    if (slot == std::numeric_limits<u32>::max()) return false;
+    auto row = c.added;
+    row.stable_slot_id = slot + 1;
+    row.storage_generation = page.header.page_generation;
+    auto payload = PlacedImage(c, page, slot + 1, transaction, order);
+    if (!payload) {
+      place_error = E::invalid_successor;
+      return false;
+    }
+    scratchbird::core::datatypes::DatatypeBinaryValue cell;
+    cell.type_id = scratchbird::core::datatypes::CanonicalTypeId::binary;
+    cell.payload = std::move(*payload);
+    row.cells = {{1, std::move(cell), {}}};
+    page.body.rows.push_back(std::move(row));
+    const auto fits = pg::BuildRowDataPageBody(page.body, page.header.page_size_bytes - 32);
+    if (!fits.ok()) {
+      if (fits.diagnostic.diagnostic_code == "SB-ROW-DATA-PAGE-BODY-TOO-LARGE") return false;
+      place_error = fits.resource_failure() ? E::resource_exhausted : E::invalid_successor;
+      return false;
+    }
+    work[i] = std::move(page);
+    c.target = i;
+    return true;
+  };
+  for (auto& c : succs) {
+    auto& row = work[c.base.leaf].body.rows[c.base.row];
+    row.next_version_uuid = c.version;
+    row.next_row_version = c.added.row_version;
+    if (try_place(c, c.base.leaf)) continue;
+    if (place_error) return Refuse(*place_error);
+  }
+  for (auto& c : succs) {
+    if (c.target) continue;
+    for (std::size_t i = 0; i < work.size() && !c.target; ++i) {
+      if (link_pages.contains(i)) continue;
+      if (try_place(c, i)) break;
+      if (place_error) return Refuse(*place_error);
+    }
+    if (c.target) continue;
+    // SB_CATALOG_NEW_PAGES (W3b-3a): a new base leaf of an indexed relation.
+    if (head.page_type != 0x200 || !binding.allocation_root || relation.leaves.empty()) return Refuse(E::relation_full);
+    const auto& like = relation.leaves.front().page;
+    const auto taken = pages.Take(6, like.body.relation_uuid.value);
+    if (!taken) return Refuse(pages.disagreed() ? E::invalid_catalog : E::new_pages_exhausted);
+    CatalogVersionWriteResult result;
+    auto leaf = NewBaseLeaf(sink, like, page_size, *taken, !pages.dry(), result);
+    if (!leaf) return result;
+    work.push_back(leaf->page);
+    relation.leaves.push_back(std::move(*leaf));
+    relation.bases.push_back({binding.catalog_root.filespace_uuid, taken->page_number, 1,
+                              binding.catalog_root.page_size_profile_uuid});
+    if (!try_place(c, work.size() - 1)) return Refuse(place_error ? *place_error : E::relation_full);
+  }
+  return std::nullopt;
+}
+
+// SB_CATALOG_NEW_PAGES: a version on a leaf this write added is reached by its
+// own cell in the row-UUID tree (the tree otherwise indexes first versions
+// only; the visibility reader selects one visible version per row however
+// many of its versions have cells). Leaves from `first_new` on were added.
+Stop IndexNewLeafVersions(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding& binding,
+                          const std::vector<Succ>& succs, Relation& relation, std::size_t first_new,
+                          std::set<std::size_t>& changed, PageSource& pages, u32 page_size, u64 order) {
+  for (const auto& c : succs) {
+    if (*c.target < first_new) continue;
+    pg::NativeBtreeCell cell;
+    cell.key.encoded_key.assign(c.row.bytes.begin(), c.row.bytes.end());
+    cell.key.row_uuid = c.row;
+    cell.key.version_uuid = c.version;
+    cell.base_page = relation.bases[*c.target];
+    cell.creator_local_transaction_id = order;
+    CatalogVersionWriteResult result;
+    if (const auto error = InsertTreeCell(sink, relation.tree, changed, std::move(cell), E::index_full,
+                                          E::invalid_successor, pages, page_size, binding.allocation_root.has_value(),
+                                          result))
+      return Refuse(*error);
+  }
+  return std::nullopt;
+}
+
+// The name trees (SB_NATIVE_NAME_TREES, owner Q42): each base version's cells
+// are stamped with this transaction; a version that is not a drop gets its own
+// cells (`trees`: the authoritative tree, then the UUID-to-name tree).
+Stop StampAndAddNameCells(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding& binding,
+                          const std::vector<Succ>& succs, const Relation& relation, NameTree* trees,
+                          const std::function<const mga::TransactionInventoryEntry*(u64)>& entry, PageSource& pages,
+                          u32 page_size, u64 order) {
+  for (const auto& c : succs) {
+    const auto& c_base_row = relation.leaves[c.base.leaf].page.body.rows[c.base.row];
+    const bool base_is_entry = std::holds_alternative<catalog::CatalogNameEntry>(*c.base_name);
+    // The stamps: the base version's cell in each tree that holds one.
+    for (unsigned t = 0; t < 2; ++t) {
+      if (t == 0 && !base_is_entry) continue;
+      bool stamped = false;
+      for (std::size_t p = 0; p < trees[t].tree.size() && !stamped; ++p) {
+        auto& page = trees[t].tree[p];
+        if (page.page.tree_level) continue;
+        for (auto& cell : page.page.cells) {
+          if (cell.key.version_uuid != c_base_row.version_uuid || cell.key.row_uuid != c.row) continue;
+          if (cell.superseding_local_transaction_id && cell.superseding_local_transaction_id != order) {
+            // A stamp already there: from a successor that rolled back or
+            // died it is void and is overwritten; from one still in progress
+            // it is a write conflict; from one that committed the base would
+            // not be the newest version.
+            const auto* stamper = entry(cell.superseding_local_transaction_id);
+            const auto state = stamper ? std::optional{mga::InventoryVisibilityState(*stamper)} : std::nullopt;
+            if (!state || *state == mga::TransactionState::committed) return Refuse(E::invalid_catalog);
+            if (InProgress(*state)) return Conflict(cell.superseding_local_transaction_id);
+          }
+          auto changed = page.page;
+          changed.cells[&cell - page.page.cells.data()].superseding_local_transaction_id = order;
+          const auto fits = pg::EncodeNativeBtreePage(changed);
+          if (!fits.ok())
+            return Refuse(fits.error == pg::NativeBtreeError::resource_exhausted ? E::name_tree_full : E::invalid_catalog);
+          page.page = std::move(changed);
+          trees[t].changed.insert(p);
+          stamped = true;
+          break;
+        }
+      }
+      if (!stamped) return Refuse(E::invalid_catalog);  // a name row version without its cell
+    }
+    // The new version's cells, unless it is a drop.
+    if (c.metadata.record.header.deleted) continue;
+    const auto payload_view = catalog::BorrowCatalogNamePayload(*c.name);
+    CatalogVersionWriteResult result;
+    const auto add = [&](unsigned t, std::vector<byte> encoded_key, std::vector<byte> payload) -> std::optional<E> {
+      pg::NativeBtreeCell cell;
+      cell.key.encoded_key = std::move(encoded_key);
+      cell.key.row_uuid = c.row;
+      cell.key.version_uuid = c.version;
+      cell.base_page = relation.bases[*c.target];
+      cell.creator_local_transaction_id = order;
+      cell.payload = std::move(payload);
+      return InsertTreeCell(sink, trees[t].tree, trees[t].changed, std::move(cell), E::name_tree_full,
+                            E::invalid_successor, pages, page_size, binding.allocation_root.has_value(), result);
+    };
+    if (const auto* v = std::get_if<catalog::CatalogNameVectorView>(&payload_view)) {
+      const auto kind = KindNamed(v->object_class);
+      if (!kind) return Refuse(E::invalid_name);
+      if (const auto error = add(1, catalog::CatalogNameUuidTreeVectorKey(v->object_uuid.value, *kind),
+                                 catalog::CatalogNameUuidTreeVectorPayload(*v)))
+        return Refuse(*error);
+    } else {
+      const auto& e = std::get<catalog::CatalogNameEntryView>(payload_view);
+      const auto kind = KindNamed(e.object_class);
+      if (!kind) return Refuse(E::invalid_name);
+      std::vector<std::string_view> components(c.components.begin(), c.components.end());
+      if (const auto error = add(0, catalog::CatalogNameAuthoritativeTreeKey(e, *kind),
+                                 catalog::CatalogNameAuthoritativeTreePayload(e)))
+        return Refuse(*error);
+      if (const auto error = add(1, catalog::CatalogNameUuidTreeEntryKey(e, *kind),
+                                 catalog::CatalogNameUuidTreeEntryPayload(e.name_entry_uuid.value, components)))
+        return Refuse(*error);
+    }
+  }
+  return std::nullopt;
+}
+}  // namespace
 namespace {
 CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding& binding,
                                         const CatalogVersionRequest& request, PageSource& pages, bool& deferred) noexcept {
@@ -1212,6 +1673,11 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
     // SB_NATIVE_NAME_TREES (N4a): the name's rules.
     std::optional<NameState> names;
     const catalog::CatalogNamePayload* base_name = nullptr;
+    // SB_NATIVE_NAME_CASCADE (N4b): one successor per changed row: the
+    // request's first, then each entry whose path the change moves, in
+    // row-UUID order.
+    std::vector<Succ> succs;
+    std::optional<catalog::CatalogNameIndex> moved_paths;
     if (named) {
       names.emplace(binding, request.transaction_order, relations, entry,
                     std::vector<const catalog::CatalogNamePayload*>{&*request.name});
@@ -1220,25 +1686,6 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
         if (s.row == request.row_uuid && s.row_version == base_row.row_version) base_name = &s.payload;
       if (!base_name || !catalog::CatalogNamePayloadPreservesIdentity(*base_name, *request.name))
         return Refuse(E::invalid_successor);
-      // N4b: a name other live names' paths run through cannot change yet;
-      // their stored paths and UUID-to-name payloads would have to follow.
-      // Checked before the name's own keys, so the refusal does not depend on
-      // how the new name derives.
-      if (const auto* base_entry = std::get_if<catalog::CatalogNameEntry>(base_name)) {
-        for (const auto& s : names->Stored()) {
-          const auto* other = std::get_if<catalog::CatalogNameEntry>(&s.payload);
-          if (!other || s.row == request.row_uuid || s.deleted || !s.state ||
-              (*s.state != mga::TransactionState::committed && s.order != request.transaction_order) ||
-              names->Newest(s.row) != &s)
-            continue;
-          bool through = false;
-          (void)catalog::WalkCatalogNamePath(catalog::BorrowCatalogNameEntry(*other), names->Paths(),
-                                             [&](const catalog::CatalogNameEntryView& component) {
-                                               if (component.name_entry_uuid.value == base_entry->name_entry_uuid.value) through = true;
-                                             });
-          if (through) return Refuse(E::invalid_successor);
-        }
-      }
       const auto* entry_payload = std::get_if<catalog::CatalogNameEntry>(&*request.name);
       if (!request.metadata.record.header.deleted && entry_payload) {
         const auto verdict = names->CheckEntry(*request.name);
@@ -1248,6 +1695,22 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
           return Refuse(verdict.error);
         }
       }
+      // The names a path runs through before and after the change: the
+      // stored names this transaction sees, then with the request's row
+      // replaced by its new version (removed when it is a drop).
+      const auto before_paths = names->StoredPaths(std::nullopt, nullptr);
+      moved_paths = names->StoredPaths(request.row_uuid, request.metadata.record.header.deleted ? nullptr : &*request.name);
+      std::vector<Moved> moved;
+      const std::array<const catalog::CatalogNamePayload*, 2> changed{base_name, &*request.name};
+      const std::array<Uuid, 1> skip{request.row_uuid};
+      if (auto stop = FindMoved(*names, before_paths, *moved_paths, request.transaction_order, skip, changed,
+                                E::invalid_successor, moved))
+        return *stop;
+      if (auto stop = BuildCascade(
+              moved, request.cascade_versions,
+              [&](const Uuid& u) { return u == request.version_uuid || u == request.row_uuid; }, leaves,
+              request.transaction_uuid, request.transaction_order, request.metadata.catalog_generation, *root.root, succs))
+        return *stop;
     }
     {
       // A runtime authority binding's payload catalog_generation and
@@ -1256,134 +1719,68 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
       if (AheadOfRoot(request.metadata, *root.root)) return Refuse(E::ahead_of_catalog_root);
     }
     for (const auto& leaf : leaves)
-      for (const auto& row : leaf.page.body.rows)
+      for (const auto& row : leaf.page.body.rows) {
         if (row.version_uuid == request.version_uuid) return Refuse(E::invalid_successor);
-
-    // ---- the new row -------------------------------------------------------
-    pg::RowDataRecord added;
-    added.row_uuid = {UuidKind::row, request.row_uuid};
-    added.version_uuid = request.version_uuid;
-    added.previous_version_uuid = base_row.version_uuid;
-    added.transaction_uuid = {UuidKind::transaction, request.transaction_uuid};
-    added.local_transaction_id = request.transaction_order;
-    added.row_version = newest + 1;
-    added.previous_row_version = base_row.row_version;
-    // The row's metadata as placed on `page` at `slot`: a name's envelope
-    // binds where it is (SB_NATIVE_NAME_TREES), and must then follow the base.
-    const auto placed = [&](const NativeCatalogLeafPage& page, u32 slot) -> std::optional<std::vector<byte>> {
-      auto final_metadata = request.metadata;
-      if (named) {
-        const catalog::CatalogNameVersionBinding at{
-            {UuidKind::database, page.header.database_uuid}, {UuidKind::filespace, page.header.filespace_uuid},
-            {UuidKind::row, request.row_uuid}, {UuidKind::row, request.version_uuid}, request.metadata.record.header.object_uuid,
-            {UuidKind::transaction, request.transaction_uuid}, page.body.page_number, slot, page.header.page_generation,
-            added.row_version, request.transaction_order, request.metadata.catalog_generation};
-        const auto envelope = catalog::EncodeCatalogNameEnvelope({at, *request.name});
-        if (!envelope.ok()) return std::nullopt;
-        final_metadata.record.payload.assign(envelope.bytes.begin(), envelope.bytes.end());
-        if (!Follows(base_metadata, final_metadata, request)) return std::nullopt;
       }
-      const auto encoded = catalog::EncodeCatalogMetadataVersion(final_metadata);
-      if (!encoded.ok()) return std::nullopt;
-      return encoded.bytes;
-    };
 
-    // The predecessor's page with the forward link (a hint to readers).
-    const auto link = [&](NativeCatalogLeafPage page) {
-      auto& row = page.body.rows[base->row];
-      row.next_version_uuid = request.version_uuid;
-      row.next_row_version = added.row_version;
-      return page;
-    };
-    // Placement: the predecessor's page first, then the others in page order.
-    std::vector<std::size_t> order{base->leaf};
-    for (std::size_t i = 0; i < leaves.size(); ++i)
-      if (i != base->leaf) order.push_back(i);
-    std::optional<std::size_t> target;
-    NativeCatalogLeafResult target_image, link_image;
-    // SB_CATALOG_NEW_PAGES (W3b-3a): when no reached leaf has room, a second
-    // round places the version on a new base leaf of an indexed relation.
-    bool on_new_leaf = false;
-    for (unsigned round = 0; round < 2 && !target; ++round) {
-    if (round == 1) {
-      if (head->page_type != 0x200 || !binding.allocation_root || leaves.empty()) break;
-      const auto& like = leaves.front().page;
-      const auto taken = pages.Take(6, like.body.relation_uuid.value);
-      if (!taken) return Refuse(pages.disagreed() ? E::invalid_catalog : E::new_pages_exhausted);
-      auto leaf = NewBaseLeaf(sink, like, page_size, *taken, !pages.dry(), result);
-      if (!leaf) return result;
-      leaves.push_back(std::move(*leaf));
-      bases.push_back({croot.filespace_uuid, taken->page_number, 1, croot.page_size_profile_uuid});
-      order = {leaves.size() - 1};
-      on_new_leaf = true;
+    // ---- the new rows ------------------------------------------------------
+    {
+      Succ primary;
+      primary.row = request.row_uuid;
+      primary.version = request.version_uuid;
+      primary.base = *base;
+      primary.base_metadata = &base_metadata;
+      primary.metadata = request.metadata;
+      primary.name = request.name;
+      primary.base_name = base_name;
+      if (named && !request.metadata.record.header.deleted)
+        if (const auto* e = std::get_if<catalog::CatalogNameEntry>(&*request.name)) {
+          const auto path = catalog::ResolveCatalogNamePath(catalog::BorrowCatalogNameEntry(*e), *moved_paths);
+          if (!path.ok()) return Refuse(E::invalid_name);
+          for (const auto& c : path.components) primary.components.emplace_back(c.display_name);
+        }
+      auto& added = primary.added;
+      added.row_uuid = {UuidKind::row, request.row_uuid};
+      added.version_uuid = request.version_uuid;
+      added.previous_version_uuid = base_row.version_uuid;
+      added.transaction_uuid = {UuidKind::transaction, request.transaction_uuid};
+      added.local_transaction_id = request.transaction_order;
+      added.row_version = newest + 1;
+      added.previous_row_version = base_row.row_version;
+      succs.insert(succs.begin(), std::move(primary));
     }
-    for (const auto i : order) {
-      auto page = i == base->leaf ? link(leaves[i].page) : leaves[i].page;
-      u32 slot = 0;
-      for (const auto& row : page.body.rows) slot = std::max(slot, row.stable_slot_id);
-      if (slot == std::numeric_limits<u32>::max()) continue;
-      auto row = added;
-      row.stable_slot_id = slot + 1;
-      row.storage_generation = page.header.page_generation;
-      auto payload = placed(page, slot + 1);
-      if (!payload) return Refuse(E::invalid_successor);
-      scratchbird::core::datatypes::DatatypeBinaryValue cell;
-      cell.type_id = scratchbird::core::datatypes::CanonicalTypeId::binary;
-      cell.payload = std::move(*payload);
-      row.cells = {{1, std::move(cell), {}}};
-      page.body.rows.push_back(std::move(row));
-      const auto fits = pg::BuildRowDataPageBody(page.body, page.header.page_size_bytes - 32);
-      if (!fits.ok()) {
-        if (fits.diagnostic.diagnostic_code == "SB-ROW-DATA-PAGE-BODY-TOO-LARGE") continue;
-        if (fits.resource_failure()) return Refuse(E::resource_exhausted);
-        return Refuse(E::invalid_successor);
-      }
-      target_image = EncodeNativeCatalogLeaf(page);
-      if (!target_image.ok()) {
-        result.error = target_image.error == NativeCatalogLeafError::resource_exhausted ? E::resource_exhausted
-                                                                                        : E::invalid_successor;
-        result.leaf_error = target_image.error;
+    // Placement (SB_NATIVE_NAME_CASCADE): PlaceSuccs; pages carrying forward
+    // links are written last.
+    std::vector<NativeCatalogLeafPage> work;
+    work.reserve(leaves.size());
+    for (const auto& leaf : leaves) work.push_back(leaf.page);
+    std::set<std::size_t> link_pages;
+    const std::size_t original_leaves = leaves.size();
+    if (auto stop = PlaceSuccs(sink, binding, succs, relation_read, *head, work, link_pages, pages, page_size,
+                               request.transaction_uuid, request.transaction_order))
+      return *stop;
+    std::set<std::size_t> changed_leaves = link_pages;
+    for (const auto& c : succs) changed_leaves.insert(*c.target);
+    std::map<std::size_t, NativeCatalogLeafResult> leaf_images;
+    for (const auto i : changed_leaves) {
+      auto encoded = EncodeNativeCatalogLeaf(work[i]);
+      if (!encoded.ok()) {
+        result.error = encoded.error == NativeCatalogLeafError::resource_exhausted ? E::resource_exhausted
+                                                                                   : E::invalid_successor;
+        result.leaf_error = encoded.error;
         return result;
       }
-      target = i;
-      break;
+      leaf_images.emplace(i, std::move(encoded));
     }
-    }
-    if (!target) return Refuse(E::relation_full);
-    // SB_CATALOG_NEW_PAGES: a version on a new leaf is reached by its own cell
-    // in the row-UUID tree (the tree otherwise indexes first versions only;
-    // the visibility reader selects one visible version per row however many
-    // of its versions have cells).
     std::set<std::size_t> changed_index_pages;
-    if (on_new_leaf) {
-      pg::NativeBtreeCell cell;
-      cell.key.encoded_key.assign(request.row_uuid.bytes.begin(), request.row_uuid.bytes.end());
-      cell.key.row_uuid = request.row_uuid;
-      cell.key.version_uuid = request.version_uuid;
-      cell.base_page = bases[*target];
-      cell.creator_local_transaction_id = request.transaction_order;
-      if (const auto error = InsertTreeCell(sink, relation_read.tree, changed_index_pages, std::move(cell), E::index_full,
-                                            E::invalid_successor, pages, page_size, binding.allocation_root.has_value(), result))
-        return Refuse(*error);
-    }
-    if (*target != base->leaf) {
-      link_image = EncodeNativeCatalogLeaf(link(leaves[base->leaf].page));
-      if (!link_image.ok()) {
-        result.error = link_image.error == NativeCatalogLeafError::resource_exhausted ? E::resource_exhausted
-                                                                                      : E::invalid_catalog;
-        result.leaf_error = link_image.error;
-        return result;
-      }
-    }
+    if (auto stop = IndexNewLeafVersions(sink, binding, succs, relation_read, original_leaves, changed_index_pages, pages,
+                                         page_size, request.transaction_order))
+      return *stop;
 
     // ---- the name trees (SB_NATIVE_NAME_TREES, owner Q42) ------------------
-    // The base version's cells are stamped with this transaction; a version
+    // Each base version's cells are stamped with this transaction; a version
     // that is not a drop gets its own cells. Both trees or neither, from page
     // zero; a database without them has nothing to maintain.
-    struct NameTree {
-      std::vector<TreePage> tree;
-      std::set<std::size_t> changed;
-    };
     std::vector<NameTree> name_trees;
     if (named) {
       image.assign(page_size, 0);  // ReadPage refuses page zero: no catalog page is page zero
@@ -1413,83 +1810,9 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
           std::vector<disk::NativePageReference> tree_bases;
           if (!ReadTree(sink, binding, page_size, tree_head, name_trees[t].tree, tree_bases, result)) return result;
         }
-        const auto key_view = [](const pg::NativeBtreeKey& k) {
-          return pg::NativeBtreeKeyView{std::span<const byte>(k.encoded_key), k.row_uuid, k.version_uuid};
-        };
-        const bool base_is_entry = std::holds_alternative<catalog::CatalogNameEntry>(*base_name);
-        // The stamps: the base version's cell in each tree that holds one.
-        for (unsigned t = 0; t < 2; ++t) {
-          if (t == 0 && !base_is_entry) continue;
-          bool stamped = false;
-          for (std::size_t p = 0; p < name_trees[t].tree.size() && !stamped; ++p) {
-            auto& page = name_trees[t].tree[p];
-            if (page.page.tree_level) continue;
-            for (auto& cell : page.page.cells) {
-              if (cell.key.version_uuid != base_row.version_uuid || cell.key.row_uuid != request.row_uuid) continue;
-              if (cell.superseding_local_transaction_id && cell.superseding_local_transaction_id != request.transaction_order) {
-                // A stamp already there: from a successor that rolled back or
-                // died it is void and is overwritten; from one still in
-                // progress it is a write conflict; from one that committed the
-                // base would not be the newest version (update_conflict above).
-                const auto* stamper = entry(cell.superseding_local_transaction_id);
-                const auto state = stamper ? std::optional{mga::InventoryVisibilityState(*stamper)} : std::nullopt;
-                if (!state || *state == mga::TransactionState::committed) return Refuse(E::invalid_catalog);
-                if (InProgress(*state)) {
-                  result.error = E::write_conflict;
-                  result.blocker_order = cell.superseding_local_transaction_id;
-                  return result;
-                }
-              }
-              auto changed = page.page;
-              changed.cells[&cell - page.page.cells.data()].superseding_local_transaction_id = request.transaction_order;
-              const auto fits = pg::EncodeNativeBtreePage(changed);
-              if (!fits.ok())
-                return Refuse(fits.error == pg::NativeBtreeError::resource_exhausted ? E::name_tree_full : E::invalid_catalog);
-              page.page = std::move(changed);
-              name_trees[t].changed.insert(p);
-              stamped = true;
-              break;
-            }
-          }
-          if (!stamped) return Refuse(E::invalid_catalog);  // a name row version without its cell
-        }
-        // The new version's cells, unless it is a drop.
-        if (!request.metadata.record.header.deleted) {
-          const auto payload_view = catalog::BorrowCatalogNamePayload(*request.name);
-          const auto add = [&](unsigned t, std::vector<byte> encoded_key, std::vector<byte> payload) -> std::optional<E> {
-            pg::NativeBtreeCell cell;
-            cell.key.encoded_key = std::move(encoded_key);
-            cell.key.row_uuid = request.row_uuid;
-            cell.key.version_uuid = request.version_uuid;
-            cell.base_page = bases[*target];
-            cell.creator_local_transaction_id = request.transaction_order;
-            cell.payload = std::move(payload);
-            return InsertTreeCell(sink, name_trees[t].tree, name_trees[t].changed, std::move(cell), E::name_tree_full,
-                                  E::invalid_successor, pages, page_size, binding.allocation_root.has_value(), result);
-          };
-          if (const auto* v = std::get_if<catalog::CatalogNameVectorView>(&payload_view)) {
-            const auto kind = KindNamed(v->object_class);
-            if (!kind) return Refuse(E::invalid_name);
-            if (const auto error = add(1, catalog::CatalogNameUuidTreeVectorKey(v->object_uuid.value, *kind),
-                                       catalog::CatalogNameUuidTreeVectorPayload(*v)))
-              return Refuse(*error);
-          } else {
-            const auto& e = std::get<catalog::CatalogNameEntryView>(payload_view);
-            const auto kind = KindNamed(e.object_class);
-            if (!kind) return Refuse(E::invalid_name);
-            const auto path = catalog::ResolveCatalogNamePath(e, names->Paths());
-            if (!path.ok()) return Refuse(E::invalid_name);
-            std::vector<std::string_view> components;
-            components.reserve(path.components.size());
-            for (const auto& component : path.components) components.push_back(component.display_name);
-            if (const auto error = add(0, catalog::CatalogNameAuthoritativeTreeKey(e, *kind),
-                                       catalog::CatalogNameAuthoritativeTreePayload(e)))
-              return Refuse(*error);
-            if (const auto error = add(1, catalog::CatalogNameUuidTreeEntryKey(e, *kind),
-                                       catalog::CatalogNameUuidTreeEntryPayload(e.name_entry_uuid.value, components)))
-              return Refuse(*error);
-          }
-        }
+        if (auto stop = StampAndAddNameCells(sink, binding, succs, relation_read, name_trees.data(), entry, pages,
+                                             page_size, request.transaction_order))
+          return *stop;
       }
     }
 
@@ -1501,17 +1824,18 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
     // ---- the writes --------------------------------------------------------
     disk::CarefulWritePlan plan;
     const auto offset = [&](std::size_t i) { return bases[i].page_number * u64{page_size}; };
-    const auto first = plan.Add(offset(*target), std::span<const byte>(target_image.bytes),
-                                std::span<const byte>(leaves[*target].image));
-    if (!first.ok()) return Refuse(E::plan_refused);
-    std::vector<disk::CarefulWriteNodeId> leaf_nodes{first.node};
-    if (*target != base->leaf) {
-      const auto second = plan.Add(offset(base->leaf), std::span<const byte>(link_image.bytes),
-                                   std::span<const byte>(leaves[base->leaf].image));
-      if (!second.ok() || plan.Before(first.node, second.node) != CarefulWriteError::none)
-        return Refuse(E::plan_refused);
-      leaf_nodes.push_back(second.node);
-    }
+    std::vector<disk::CarefulWriteNodeId> unlinked_nodes, leaf_nodes;
+    for (const bool linked : {false, true})
+      for (const auto i : changed_leaves) {
+        if (link_pages.contains(i) != linked) continue;
+        const auto node = plan.Add(offset(i), std::span<const byte>(leaf_images.at(i).bytes), std::span<const byte>(leaves[i].image));
+        if (!node.ok()) return Refuse(E::plan_refused);
+        if (linked)
+          for (const auto before : unlinked_nodes)
+            if (plan.Before(before, node.node) != CarefulWriteError::none) return Refuse(E::plan_refused);
+        (linked ? leaf_nodes : unlinked_nodes).push_back(node.node);
+      }
+    leaf_nodes.insert(leaf_nodes.end(), unlinked_nodes.begin(), unlinked_nodes.end());
     // The row-UUID tree pages a new leaf's cell changed and the name tree
     // pages, after every base leaf; a page a split added before every
     // existing tree page (one of which points to it). Each image is kept
@@ -1548,9 +1872,10 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
     result.io = r.io;
     result.writes = r.written;
     result.syncs = r.syncs;
-    result.page_number = bases[*target].page_number;
+    result.page_number = bases[*succs.front().target].page_number;
     result.forward_link_page = bases[base->leaf].page_number;
-    result.row_version = added.row_version;
+    result.row_version = succs.front().added.row_version;
+    for (std::size_t i = 1; i < succs.size(); ++i) result.cascaded.emplace_back(succs[i].row, succs[i].version);
     if (r.ok()) {
       result.error = E::none;
       return result;
@@ -1691,10 +2016,6 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
     // tree per name row (the entry's with its path's display components). A
     // database without the roots (component fixtures) has no trees to
     // maintain; one root without the other is a damaged catalog.
-    struct NameTree {
-      std::vector<TreePage> tree;
-      std::set<std::size_t> changed;
-    };
     std::optional<std::array<NameTree, 2>> name_trees;
     if (std::any_of(request.rows.begin(), request.rows.end(), [](const auto& r) { return r.name.has_value(); })) {
       image.assign(page_size, 0);  // ReadPage refuses page zero: no catalog page is page zero
@@ -1745,6 +2066,7 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
       if (row.name) request_names.push_back(&*row.name);
     NameState names(binding, request.transaction_order, relations, entry, std::move(request_names));
     if (any_entry && !names.Load()) return Refuse(E::invalid_catalog);
+    const std::size_t names_leaves_before = relations.contains(2) ? relations.at(2).leaves.size() : 0;
 
     for (std::size_t i = 0; i < request.rows.size(); ++i) {
       const auto& want = request.rows[i];
@@ -1945,6 +2267,59 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
         return refuse_row(*error, i);
     }
 
+    // ---- the cascade (SB_NATIVE_NAME_CASCADE, owner Q48 = 1) ----------------
+    // The request's names may change which name a stored entry's path uses (a
+    // new entry marked default_for_language for an object whose entries in
+    // that language fell back to its vector's default): each stored entry the
+    // request's names move gets a successor version in this write, as a
+    // successor's cascade does. An entry they would leave without a path (an
+    // ambiguous scope: a second default in one language) is invalid_name.
+    // These refusals concern the request as a whole: no failed_row.
+    std::vector<Succ> succs;
+    std::set<std::size_t> link_pages;
+    if (any_entry) {
+      std::vector<const catalog::CatalogNamePayload*> added;
+      u64 generation = 0;
+      for (const auto& row : request.rows)
+        if (row.name) {
+          added.push_back(&*row.name);
+          generation = std::max(generation, row.metadata.catalog_generation);
+        }
+      const auto before_paths = names.StoredPaths(std::nullopt, nullptr);
+      const auto after_paths = names.StoredPaths(std::nullopt, nullptr, added);
+      std::vector<Moved> moved;
+      if (auto stop = FindMoved(names, before_paths, after_paths, request.transaction_order, {}, added, E::invalid_name,
+                                moved))
+        return *stop;
+      if (!moved.empty()) {
+        auto& relation = relations.at(2);
+        const auto reserved = [&](const Uuid& u) {
+          return std::any_of(request.rows.begin(), request.rows.end(),
+                             [&](const auto& r) { return r.row_uuid == u || r.version_uuid == u; });
+        };
+        if (auto stop = BuildCascade(moved, request.cascade_versions, reserved, relation.leaves, request.transaction_uuid,
+                                     request.transaction_order, generation, *root.root, succs))
+          return *stop;
+        std::vector<NativeCatalogLeafPage> work;
+        work.reserve(relation.leaves.size());
+        for (const auto& leaf : relation.leaves) work.push_back(leaf.page);
+        if (auto stop = PlaceSuccs(sink, binding, succs, relation, heads.at(2), work, link_pages, pages, page_size,
+                                   request.transaction_uuid, request.transaction_order))
+          return *stop;
+        for (std::size_t l = 0; l < work.size(); ++l) relation.leaves[l].page = std::move(work[l]);
+        for (const auto l : link_pages) changed_leaves.insert({2, l});
+        for (const auto& c : succs) changed_leaves.insert({2, *c.target});
+        if (heads.at(2).page_type == 0x200)
+          if (auto stop = IndexNewLeafVersions(sink, binding, succs, relation, names_leaves_before, changed_tree[2], pages,
+                                               page_size, request.transaction_order))
+            return *stop;
+        if (name_trees)
+          if (auto stop = StampAndAddNameCells(sink, binding, succs, relation, name_trees->data(), entry, pages, page_size,
+                                               request.transaction_order))
+            return *stop;
+      }
+    }
+
     // ---- the images --------------------------------------------------------
     // Pages are kept apart (each image lives until the plan executes).
     struct Planned {
@@ -1952,6 +2327,7 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
       std::vector<byte> image;
       const std::vector<byte>* as_read;
       int rank = 1;  // SB_CATALOG_SPLIT_LAG write order (TreePage::rank)
+      bool linked = false;  // carries a cascade's forward link: written after every other leaf
     };
     std::vector<Planned> leaf_writes, tree_writes;
     for (const auto& [role, l] : changed_leaves) {
@@ -1963,7 +2339,8 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
         result.leaf_error = encoded.error;
         return result;
       }
-      leaf_writes.push_back({relations.at(role).bases[l].page_number, std::move(encoded.bytes), &leaf.image});
+      leaf_writes.push_back({relations.at(role).bases[l].page_number, std::move(encoded.bytes), &leaf.image, 1,
+                             role == 2 && link_pages.contains(l)});
     }
     for (const auto& [role, pages_changed] : changed_tree)
       for (const auto t : pages_changed) {
@@ -1991,14 +2368,21 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
       return result;
     }
     // ---- the writes: every base leaf before every index leaf ----------------
+    // A leaf carrying a cascade's forward link after every other leaf.
     disk::CarefulWritePlan plan;
-    std::vector<disk::CarefulWriteNodeId> leaf_nodes;
-    for (const auto& w : leaf_writes) {
-      const auto node = plan.Add(w.page_number * u64{page_size}, std::span<const byte>(w.image),
-                                 std::span<const byte>(*w.as_read));
-      if (!node.ok()) return Refuse(E::plan_refused);
-      leaf_nodes.push_back(node.node);
-    }
+    std::vector<disk::CarefulWriteNodeId> leaf_nodes, unlinked_nodes;
+    for (const bool linked : {false, true})
+      for (const auto& w : leaf_writes) {
+        if (w.linked != linked) continue;
+        const auto node = plan.Add(w.page_number * u64{page_size}, std::span<const byte>(w.image),
+                                   std::span<const byte>(*w.as_read));
+        if (!node.ok()) return Refuse(E::plan_refused);
+        if (linked)
+          for (const auto before : unlinked_nodes)
+            if (plan.Before(before, node.node) != CarefulWriteError::none) return Refuse(E::plan_refused);
+        (linked ? leaf_nodes : unlinked_nodes).push_back(node.node);
+      }
+    leaf_nodes.insert(leaf_nodes.end(), unlinked_nodes.begin(), unlinked_nodes.end());
     // Tree pages after the base leaves, rank by rank (SB_CATALOG_SPLIT_LAG):
     // a page a split added, the split leaf, its old right neighbour, the
     // parent; each rank durable before the next.
@@ -2022,6 +2406,7 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
     result.writes = r.written;
     result.syncs = r.syncs;
     if (!leaf_writes.empty()) result.page_number = leaf_writes.front().page_number;
+    for (const auto& c : succs) result.cascaded.emplace_back(c.row, c.version);
     if (r.ok()) {
       result.error = E::none;
       return result;
