@@ -9,6 +9,7 @@
 #include "catalog_name_tree_keys.hpp"
 #include "filespace_page_zero.hpp"
 #include "allocation_map_writer.hpp"
+#include "native_btree_tree_backing.hpp"
 #include <array>
 #include <functional>
 #include <variant>
@@ -167,10 +168,13 @@ struct TreePage {
   // SB_CATALOG_SPLIT_LAG (owner Q45 = 1): reached by a sibling link only, its
   // split interrupted before the parent's rewrite; the next write repairs it.
   bool unlisted = false;
-  // The write order of a changed page (FirebirdSQL's precedence): 0 a page a
-  // split adds, 1 the split leaf (and any page an insert alone changes), 2 the
-  // old right neighbour, 3 the parent. Each rank is durable before the next.
+  // The write order of a changed page (FirebirdSQL's precedence): 4 * level
+  // + 0 for a page a split adds, + 1 for a split or otherwise changed page,
+  // + 2 for an old right neighbour. Each rank is durable before the next.
   int rank = 1;
+  // SB_CATALOG_PARENT_UNCHECKED (owner Q46 = 1): the page's parent, as the
+  // walk reached it (an index into the tree); none for the root.
+  std::optional<std::size_t> parent_index;
 };
 // A relation as its head reaches it: the index pages (empty when unindexed),
 // in walk order, and every base leaf, sorted by page number.
@@ -236,6 +240,7 @@ bool ReadTree(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding& b
     if (lags) pending.push_back({*page.right, next.parent, next.level, page.high_fence, next.high, true});
     tree.push_back({next.ref, image, std::move(page)});
     tree.back().unlisted = next.unlisted;
+    tree.back().parent_index = next.parent;
     const auto& current = tree.back().page;
     if (!current.tree_level) {
       for (const auto& cell : current.cells) {
@@ -654,63 +659,235 @@ std::optional<Leaf> NewBaseLeaf(disk::CarefulWriteSink& sink, const NativeCatalo
 }
 
 
-// SEARCH_KEY: SB_CATALOG_LEAF_SPLIT (W3b-3a-2, owner Q30 = 1). Inserts `cell`
-// into the leaf of `tree` whose fences hold its key, at its key's position;
-// `changed` gains every page of `tree` the insert changes. A leaf without
-// room is split: its cells and the new one are divided at a split point (all
-// old cells left and the new one alone right when it is the last, the common
-// case of ascending UUIDv7 keys; else the middle), the right part goes to a
-// new leaf (the system's, SB_NATIVE_BTREE_SYSTEM_PAGE), and
-//  - the old leaf keeps its page, its low fence and left link; its high fence
-//    becomes the split key and its right link the new leaf;
-//  - the new leaf's low fence is the split key, its high fence and right link
-//    the old leaf's, its left link the old leaf, its parent the old leaf's;
-//  - the old right neighbour's left link becomes the new leaf (rewritten in
-//    place, keeping its generation);
-//  - the parent gains a separator, the split key with the new leaf as child.
-// With low-key separators nothing above the parent changes. A leaf that is
-// the root, or a parent without room, is refused `full` until branch and
-// root splits exist (W3b-3b); a cell no page can hold is invalid.
-std::optional<E> InsertTreeCell(disk::CarefulWriteSink& sink, std::vector<TreePage>& tree, std::set<std::size_t>& changed,
-                                pg::NativeBtreeCell cell, E full, E too_long, PageSource& pages, u32 page_size,
-                                bool may_grow, CatalogVersionWriteResult& result) {
-  const auto view = [](const pg::NativeBtreeKey& k) {
+// SEARCH_KEY: SB_CATALOG_LEAF_SPLIT (W3b-3a-2), SB_CATALOG_ROOT_LEAF_SPLIT
+// (W3b-3b-1), SB_CATALOG_BRANCH_SPLIT (W3b-3b-2); owner Q30 = 1, Q45 = 1,
+// Q46 = 1. Inserts `cell` into the leaf of `tree` whose fences hold its key,
+// at its key's position; `changed` gains every page the insert changes. A
+// full page splits; new pages are the system's (SB_NATIVE_BTREE_SYSTEM_PAGE).
+//  - A leaf that is not the root: its cells and the new one divide at the
+//    first split point both sides of which encode (all old cells left and the
+//    new one alone right when it is last, the common case of ascending UUIDv7
+//    keys; else the middle); the right part goes to a new leaf. The old leaf
+//    keeps its page, low fence and left link and takes the split key as high
+//    fence and the new leaf as right link; the new leaf takes the split key as
+//    low fence and the old high fence and right link; the old right
+//    neighbour's left link becomes the new leaf; the parent gains the
+//    separator (the split key, the new leaf as child), which may split it.
+//  - A root that is the only page keeps its page (page zero and the route
+//    roots name its number and generation): its cells move to two new leaves
+//    and it becomes a level-1 branch over them, the split key its separator.
+//  - A full branch that is not the root splits at its middle separator: the
+//    branch keeps its first child and the separators before it, a new branch
+//    takes that separator's child as first child and the separators after it,
+//    the middle key goes up as the separator for the new branch; fences and
+//    sibling links as for a leaf. The moved children's stored parent
+//    references are not rewritten: a page's parent is the page the walk
+//    reaches it from (SB_CATALOG_PARENT_UNCHECKED, owner Q46 = 1).
+//  - A full root branch keeps its page: its first child and separators move
+//    to two new branches split at the middle separator, and it becomes a
+//    branch one level higher over them.
+// Write order (SB_CATALOG_SPLIT_LAG, FirebirdSQL's precedence), rank 4*level
+// + 0 for a page a split adds, + 1 for a split or otherwise changed page, + 2
+// for an old right neighbour; each rank durable before the next, so a page's
+// parent (one level up) is always written after it. A root rewritten over new
+// children is one switch. The tree's depth is bounded by the readers'
+// NativeCatalogBtreeShape::kMaximumDepth; a cell no page can hold is
+// `too_long`.
+namespace {
+int SplitRank(u16 level, int role) { return 4 * static_cast<int>(level) + role; }
+struct TreeEdit {
+  disk::CarefulWriteSink& sink;
+  std::vector<TreePage>& tree;
+  std::set<std::size_t>& changed;
+  E full;
+  PageSource& pages;
+  u32 page_size;
+  CatalogVersionWriteResult& result;
+  static pg::NativeBtreeKeyView View(const pg::NativeBtreeKey& k) {
     return pg::NativeBtreeKeyView{std::span<const byte>(k.encoded_key), k.row_uuid, k.version_uuid};
-  };
-  const auto find = [&](const disk::NativePageReference& ref) -> std::optional<std::size_t> {
+  }
+  std::optional<std::size_t> Find(const disk::NativePageReference& ref) const {
     for (std::size_t t = 0; t < tree.size(); ++t)
       if (tree[t].ref.page_number == ref.page_number) return t;
     return std::nullopt;
-  };
+  }
+  void Mark(std::size_t t, int rank) {
+    tree[t].rank = std::max(tree[t].rank, rank);
+    changed.insert(t);
+  }
+  // A new system page of `type` like `like`, owned by the tree's index.
+  std::optional<E> NewPage(const pg::NativeBtreePage& like, u32 type, pg::NativeBtreePage& out, disk::NativePageReference& ref,
+                           std::vector<byte>& image) {
+    const auto taken = pages.Take(type, like.dependencies.index_uuid);
+    if (!taken) return pages.disagreed() ? E::invalid_catalog : E::new_pages_exhausted;
+    out = like;
+    out.header.page_type = type;
+    out.header.page_uuid = taken->page_uuid;
+    out.header.page_number = taken->page_number;
+    out.header.page_generation = 1;
+    out.creator_transaction_uuid = {};
+    out.creator_local_transaction_id = 0;
+    out.parent.reset();
+    out.left.reset();
+    out.right.reset();
+    out.low_fence.reset();
+    out.high_fence.reset();
+    out.first_child.reset();
+    out.cells.clear();
+    ref = {like.header.filespace_uuid, taken->page_number, 1, like.header.page_size_profile_uuid};
+    if (!pages.dry()) {
+      image.assign(page_size, 0);
+      const auto io = sink.ReadAt(taken->page_number * u64{page_size}, std::span<byte>(image));
+      if (!io.ok() || io.bytes_transferred != page_size) {
+        result.io = io;
+        return E::io_failure;
+      }
+    }
+    return std::nullopt;
+  }
+  std::size_t Add(pg::NativeBtreePage page, const disk::NativePageReference& ref, std::vector<byte> image,
+                   std::optional<std::size_t> parent_index) {
+    TreePage added;
+    added.ref = ref;
+    added.page = std::move(page);
+    added.image = std::move(image);
+    added.added = true;
+    added.parent_index = parent_index;
+    // Rank 0 at its level, set outright: a new page must precede every page
+    // that points to it (Mark only raises a rank).
+    added.rank = SplitRank(added.page.tree_level, 0);
+    tree.push_back(std::move(added));
+    changed.insert(tree.size() - 1);
+    return tree.size() - 1;
+  }
+  // The children of branch `t`: its first child, then each cell's child.
+  std::vector<std::size_t> Children(std::size_t t) const {
+    std::vector<std::size_t> out;
+    const auto& page = tree[t].page;
+    if (page.first_child)
+      if (const auto c = Find(*page.first_child)) out.push_back(*c);
+    for (const auto& c : page.cells)
+      if (c.child)
+        if (const auto i = Find(*c.child)) out.push_back(*i);
+    return out;
+  }
+  void Adopt(std::size_t branch) {
+    for (const auto c : Children(branch)) tree[c].parent_index = branch;
+  }
+  // Inserts the separator (key, child) into branch `at`, splitting it when full.
+  std::optional<E> Separator(std::size_t at, const pg::NativeBtreeKey& key, const disk::NativePageReference& child,
+                             std::size_t child_index) {
+    auto page = tree[at].page;
+    const auto level = page.tree_level;
+    pg::NativeBtreeCell separator;
+    separator.key = key;
+    separator.child = child;
+    const auto slot = std::lower_bound(page.cells.begin(), page.cells.end(), key,
+                                       [&](const auto& c, const auto& k) { return pg::CompareNativeBtreeKeys(View(c.key), View(k)) < 0; });
+    page.cells.insert(slot, std::move(separator));
+    const auto fits = pg::EncodeNativeBtreePage(page);
+    if (fits.ok()) {
+      tree[at].page = std::move(page);
+      tree[child_index].parent_index = at;
+      Mark(at, SplitRank(level, 1));
+      return std::nullopt;
+    }
+    if (fits.error != pg::NativeBtreeError::resource_exhausted) return E::invalid_catalog;
+    const auto cells = page.cells;  // with the new separator
+    if (cells.size() < 3) return full;
+    const auto m = cells.size() / 2;
+    // Left part: the first child and cells[0..m); right part: cells[m]'s child
+    // as first child and cells(m..]; cells[m]'s key goes up.
+    if (page.header.page_type == 0x200) {
+      if (level + 2 > NativeCatalogBtreeShape::kMaximumDepth) return full;
+      pg::NativeBtreePage left, right;
+      disk::NativePageReference left_ref, right_ref;
+      std::vector<byte> left_image, right_image;
+      if (const auto e = NewPage(page, 0x201, left, left_ref, left_image)) return e;
+      if (const auto e = NewPage(page, 0x201, right, right_ref, right_image)) return e;
+      left.tree_level = right.tree_level = level;
+      left.parent = right.parent = tree[at].ref;
+      left.first_child = page.first_child;
+      left.cells.assign(cells.begin(), cells.begin() + static_cast<std::ptrdiff_t>(m));
+      left.high_fence = cells[m].key;
+      left.right = right_ref;
+      right.first_child = cells[m].child;
+      right.cells.assign(cells.begin() + static_cast<std::ptrdiff_t>(m) + 1, cells.end());
+      right.low_fence = cells[m].key;
+      right.left = left_ref;
+      auto root = page;
+      root.tree_level = static_cast<u16>(level + 1);
+      root.first_child = left_ref;
+      pg::NativeBtreeCell up;
+      up.key = cells[m].key;
+      up.child = right_ref;
+      root.cells = {std::move(up)};
+      if (!pg::EncodeNativeBtreePage(left).ok() || !pg::EncodeNativeBtreePage(right).ok() || !pg::EncodeNativeBtreePage(root).ok())
+        return full;
+      const auto l = Add(std::move(left), left_ref, std::move(left_image), at);
+      const auto r = Add(std::move(right), right_ref, std::move(right_image), at);
+      tree[at].page = std::move(root);
+      Mark(at, SplitRank(static_cast<u16>(level + 1), 1));
+      Adopt(l);
+      Adopt(r);
+      return std::nullopt;
+    }
+    const auto parent = tree[at].parent_index;
+    if (!parent) return E::invalid_catalog;
+    const std::optional<std::size_t> neighbour = page.right ? Find(*page.right) : std::nullopt;
+    if (page.right && !neighbour) return E::invalid_catalog;
+    pg::NativeBtreePage right;
+    disk::NativePageReference right_ref;
+    std::vector<byte> right_image;
+    if (const auto e = NewPage(page, 0x201, right, right_ref, right_image)) return e;
+    right.tree_level = level;
+    right.parent = page.parent;
+    right.first_child = cells[m].child;
+    right.cells.assign(cells.begin() + static_cast<std::ptrdiff_t>(m) + 1, cells.end());
+    right.low_fence = cells[m].key;
+    right.high_fence = page.high_fence;
+    right.left = tree[at].ref;
+    right.right = page.right;
+    auto left = page;
+    left.cells.assign(cells.begin(), cells.begin() + static_cast<std::ptrdiff_t>(m));
+    left.high_fence = cells[m].key;
+    left.right = right_ref;
+    if (!pg::EncodeNativeBtreePage(left).ok() || !pg::EncodeNativeBtreePage(right).ok()) return full;
+    const auto up_key = cells[m].key;
+    const auto r = Add(std::move(right), right_ref, std::move(right_image), parent);
+    tree[at].page = std::move(left);
+    Mark(at, SplitRank(level, 1));
+    if (neighbour) {
+      tree[*neighbour].page.left = right_ref;
+      Mark(*neighbour, SplitRank(level, 2));
+    }
+    Adopt(at);
+    Adopt(r);
+    return Separator(*parent, up_key, right_ref, r);
+  }
+};
+}  // namespace
+
+std::optional<E> InsertTreeCell(disk::CarefulWriteSink& sink, std::vector<TreePage>& tree, std::set<std::size_t>& changed,
+                                pg::NativeBtreeCell cell, E full, E too_long, PageSource& pages, u32 page_size,
+                                bool may_grow, CatalogVersionWriteResult& result) {
+  TreeEdit edit{sink, tree, changed, full, pages, page_size, result};
+  const auto view = TreeEdit::View;
   // SB_CATALOG_SPLIT_LAG (owner Q45 = 1): first complete any split a crash
-  // interrupted: the parent's separator for the unlisted page, and the next
-  // page's left link, in the same order a split writes them.
+  // interrupted: the parent's separator for the unlisted page (which may
+  // split the parent), and the next page's left link.
   for (std::size_t t = 0; t < tree.size(); ++t) {
     if (!tree[t].unlisted) continue;
-    const auto& lost = tree[t].page;
-    if (!lost.parent || !lost.low_fence || !may_grow) return full;
-    const auto parent = find(*lost.parent);
-    if (!parent) return E::invalid_catalog;
-    auto up = tree[*parent].page;
-    pg::NativeBtreeCell separator;
-    separator.key = *lost.low_fence;
-    separator.child = tree[t].ref;
-    const auto slot = std::lower_bound(up.cells.begin(), up.cells.end(), separator.key, [&](const auto& c, const auto& k) {
-      return pg::CompareNativeBtreeKeys(view(c.key), view(k)) < 0;
-    });
-    up.cells.insert(slot, std::move(separator));
-    const auto fits = pg::EncodeNativeBtreePage(up);
-    if (!fits.ok()) return fits.error == pg::NativeBtreeError::resource_exhausted ? full : E::invalid_catalog;
-    tree[*parent].page = std::move(up);
-    tree[*parent].rank = std::max(tree[*parent].rank, 3);
-    changed.insert(*parent);
-    if (lost.right)
-      if (const auto next = find(*lost.right); next && tree[*next].page.left != std::optional{tree[t].ref}) {
-        tree[*next].page.left = tree[t].ref;
-        tree[*next].rank = std::max(tree[*next].rank, 2);
-        changed.insert(*next);
-      }
+    if (!tree[t].page.low_fence || !tree[t].parent_index || !may_grow) return full;
     tree[t].unlisted = false;
+    const auto low = *tree[t].page.low_fence;
+    const auto ref = tree[t].ref;
+    if (const auto right = tree[t].page.right)
+      if (const auto next = edit.Find(*right); next && tree[*next].page.left != std::optional{ref}) {
+        tree[*next].page.left = ref;
+        edit.Mark(*next, SplitRank(tree[*next].page.tree_level, 2));
+      }
+    if (const auto e = edit.Separator(*tree[t].parent_index, low, ref, t)) return e;
   }
   std::optional<std::size_t> reached;
   for (std::size_t t = 0; t < tree.size() && !reached; ++t) {
@@ -733,61 +910,36 @@ std::optional<E> InsertTreeCell(disk::CarefulWriteSink& sink, std::vector<TreePa
     const auto fits = pg::EncodeNativeBtreePage(page);
     if (fits.ok()) {
       tree[*reached].page = std::move(page);
-      changed.insert(*reached);
+      edit.Mark(*reached, SplitRank(0, 1));
       return std::nullopt;
     }
     if (fits.error == pg::NativeBtreeError::key_too_long) return too_long;
     if (fits.error != pg::NativeBtreeError::resource_exhausted) return E::invalid_catalog;
   }
-  // The split: only where the write may add pages (an allocation map is
-  // bound), and only of a leaf with a parent (not the root).
+  // The split: only where the write may add pages (an allocation map is bound).
   if (!may_grow) return full;
-  const auto& old = tree[*reached].page;
-  // The split points to try, in order; the first both sides of which encode.
+  const auto old = tree[*reached].page;
   std::vector<std::size_t> points;
   if (position + 1 == cells.size()) points.push_back(cells.size() - 1);
   points.push_back(cells.size() / 2);
-  // SB_CATALOG_ROOT_LEAF_SPLIT (W3b-3b-1): a root that is the tree's only
-  // page keeps its page (page zero and the route roots name its number and
-  // generation): its cells move to two new leaves, and it becomes a branch
-  // over them, with the split key as its one separator. The new leaves are
-  // written first (rank 0, unreached), the root last (rank 3): one switch, no
-  // interrupted state to read through. A root branch, or a parent without
-  // room, waits for branch splits.
-  if (old.header.page_type == 0x200 && old.tree_level == 0 && !old.parent) {
-    // The pages are taken first (a dry pass that then refuses allocates
-    // nothing): the leaves are built with their own numbers.
-    const auto first = pages.Take(0x202, old.dependencies.index_uuid);
-    if (!first) return pages.disagreed() ? E::invalid_catalog : E::new_pages_exhausted;
-    const auto second = pages.Take(0x202, old.dependencies.index_uuid);
-    if (!second) return pages.disagreed() ? E::invalid_catalog : E::new_pages_exhausted;
-    const disk::NativePageReference left_ref{old.header.filespace_uuid, first->page_number, 1, old.header.page_size_profile_uuid};
-    const disk::NativePageReference right_ref{old.header.filespace_uuid, second->page_number, 1, old.header.page_size_profile_uuid};
+  if (old.header.page_type == 0x200 && old.tree_level == 0) {
+    // The root that is the only page: two new leaves, the root over them.
+    pg::NativeBtreePage left, right;
+    disk::NativePageReference left_ref, right_ref;
+    std::vector<byte> left_image, right_image;
+    if (const auto e = edit.NewPage(old, 0x202, left, left_ref, left_image)) return e;
+    if (const auto e = edit.NewPage(old, 0x202, right, right_ref, right_image)) return e;
     for (const auto m : points) {
       if (m == 0 || m >= cells.size()) continue;
-      pg::NativeBtreePage left = old, right = old;
-      for (auto* leaf : {&left, &right}) {
-        leaf->header.page_type = 0x202;
-        leaf->header.page_generation = 1;
-        leaf->creator_transaction_uuid = {};
-        leaf->creator_local_transaction_id = 0;
-        leaf->parent = tree[*reached].ref;
-        leaf->left.reset();
-        leaf->right.reset();
-        leaf->low_fence.reset();
-        leaf->high_fence.reset();
-      }
-      left.header.page_uuid = first->page_uuid;
-      left.header.page_number = first->page_number;
-      right.header.page_uuid = second->page_uuid;
-      right.header.page_number = second->page_number;
-      left.cells.assign(cells.begin(), cells.begin() + static_cast<std::ptrdiff_t>(m));
-      right.cells.assign(cells.begin() + static_cast<std::ptrdiff_t>(m), cells.end());
-      left.high_fence = cells[m].key;
-      right.low_fence = cells[m].key;
-      left.right = right_ref;
-      right.left = left_ref;
-      if (!pg::EncodeNativeBtreePage(left).ok() || !pg::EncodeNativeBtreePage(right).ok()) continue;
+      auto l = left, r = right;
+      l.parent = r.parent = tree[*reached].ref;
+      l.cells.assign(cells.begin(), cells.begin() + static_cast<std::ptrdiff_t>(m));
+      r.cells.assign(cells.begin() + static_cast<std::ptrdiff_t>(m), cells.end());
+      l.high_fence = cells[m].key;
+      r.low_fence = cells[m].key;
+      l.right = right_ref;
+      r.left = left_ref;
+      if (!pg::EncodeNativeBtreePage(l).ok() || !pg::EncodeNativeBtreePage(r).ok()) continue;
       auto root = old;
       root.tree_level = 1;
       root.first_child = left_ref;
@@ -795,105 +947,48 @@ std::optional<E> InsertTreeCell(disk::CarefulWriteSink& sink, std::vector<TreePa
       separator.key = cells[m].key;
       separator.child = right_ref;
       root.cells = {std::move(separator)};
-      if (!pg::EncodeNativeBtreePage(root).ok() || !pg::EncodeNativeBtreePage(left).ok() ||
-          !pg::EncodeNativeBtreePage(right).ok())
-        return E::invalid_catalog;
+      if (!pg::EncodeNativeBtreePage(root).ok()) return E::invalid_catalog;
       const auto root_index = *reached;
-      for (auto* added_page : {&left, &right}) {
-        TreePage added;
-        added.ref = added_page == &left ? left_ref : right_ref;
-        added.page = std::move(*added_page);
-        added.added = true;
-        added.rank = 0;
-        if (!pages.dry()) {
-          added.image.assign(page_size, 0);
-          const auto io = sink.ReadAt(added.ref.page_number * u64{page_size}, std::span<byte>(added.image));
-          if (!io.ok() || io.bytes_transferred != page_size) {
-            result.io = io;
-            return E::io_failure;
-          }
-        }
-        tree.push_back(std::move(added));
-        changed.insert(tree.size() - 1);
-      }
+      edit.Add(std::move(l), left_ref, std::move(left_image), root_index);
+      edit.Add(std::move(r), right_ref, std::move(right_image), root_index);
       tree[root_index].page = std::move(root);
-      tree[root_index].rank = 3;
-      changed.insert(root_index);
+      edit.Mark(root_index, SplitRank(1, 1));
       return std::nullopt;
     }
     return full;
   }
-  if (old.header.page_type != 0x202 || !old.parent) return full;
-  const auto parent = find(*old.parent);
-  if (!parent) return E::invalid_catalog;
-  const std::optional<std::size_t> neighbour = old.right ? find(*old.right) : std::nullopt;
+  if (old.header.page_type != 0x202 || !tree[*reached].parent_index) return full;
+  const auto parent = *tree[*reached].parent_index;
+  const std::optional<std::size_t> neighbour = old.right ? edit.Find(*old.right) : std::nullopt;
   if (old.right && !neighbour) return E::invalid_catalog;
-  const auto taken = pages.Take(0x202, old.dependencies.index_uuid);
-  if (!taken) return pages.disagreed() ? E::invalid_catalog : E::new_pages_exhausted;
-  const disk::NativePageReference new_ref{old.header.filespace_uuid, taken->page_number, 1, old.header.page_size_profile_uuid};
+  pg::NativeBtreePage fresh;
+  disk::NativePageReference new_ref;
+  std::vector<byte> image;
+  if (const auto e = edit.NewPage(old, 0x202, fresh, new_ref, image)) return e;
   for (const auto m : points) {
     if (m == 0 || m >= cells.size()) continue;
     auto left = old;
     left.cells.assign(cells.begin(), cells.begin() + static_cast<std::ptrdiff_t>(m));
     left.right = new_ref;
     left.high_fence = cells[m].key;
-    pg::NativeBtreePage right = old;
-    right.header.page_uuid = taken->page_uuid;
-    right.header.page_number = taken->page_number;
-    right.header.page_generation = 1;
-    right.creator_transaction_uuid = {};
-    right.creator_local_transaction_id = 0;
+    auto right = fresh;
+    right.parent = old.parent;
     right.cells.assign(cells.begin() + static_cast<std::ptrdiff_t>(m), cells.end());
     right.left = tree[*reached].ref;
     right.right = old.right;
     right.low_fence = cells[m].key;
     right.high_fence = old.high_fence;
     if (!pg::EncodeNativeBtreePage(left).ok() || !pg::EncodeNativeBtreePage(right).ok()) continue;
-    // The parent's separator, after the old leaf's.
-    auto up = tree[*parent].page;
-    pg::NativeBtreeCell separator;
-    separator.key = cells[m].key;
-    separator.child = new_ref;
-    const auto slot = std::lower_bound(up.cells.begin(), up.cells.end(), separator.key, [&](const auto& c, const auto& k) {
-      return pg::CompareNativeBtreeKeys(view(c.key), view(k)) < 0;
-    });
-    up.cells.insert(slot, std::move(separator));
-    const auto parent_fits = pg::EncodeNativeBtreePage(up);
-    if (!parent_fits.ok()) return parent_fits.error == pg::NativeBtreeError::resource_exhausted ? full : E::invalid_catalog;
-    std::optional<pg::NativeBtreePage> next;
-    if (neighbour) {
-      next = tree[*neighbour].page;
-      next->left = new_ref;
-      if (!pg::EncodeNativeBtreePage(*next).ok()) return E::invalid_catalog;
-    }
-    TreePage added;
-    added.ref = new_ref;
-    added.page = std::move(right);
-    added.added = true;
-    added.rank = 0;
-    if (!pages.dry()) {
-      added.image.assign(page_size, 0);
-      const auto io = sink.ReadAt(taken->page_number * u64{page_size}, std::span<byte>(added.image));
-      if (!io.ok() || io.bytes_transferred != page_size) {
-        result.io = io;
-        return E::io_failure;
-      }
-    }
     const auto old_index = *reached;
+    const auto split_key = cells[m].key;
     tree[old_index].page = std::move(left);
-    tree[*parent].page = std::move(up);
-    if (neighbour) tree[*neighbour].page = std::move(*next);
-    tree.push_back(std::move(added));
-    // FirebirdSQL's order (SB_CATALOG_SPLIT_LAG): the new page, the split
-    // leaf, the old right neighbour, then the parent.
-    tree[old_index].rank = std::max(tree[old_index].rank, 1);
-    tree[*parent].rank = std::max(tree[*parent].rank, 3);
-    if (neighbour) tree[*neighbour].rank = std::max(tree[*neighbour].rank, 2);
-    changed.insert(old_index);
-    changed.insert(*parent);
-    if (neighbour) changed.insert(*neighbour);
-    changed.insert(tree.size() - 1);
-    return std::nullopt;
+    edit.Mark(old_index, SplitRank(0, 1));
+    const auto added = edit.Add(std::move(right), new_ref, std::move(image), parent);
+    if (neighbour) {
+      tree[*neighbour].page.left = new_ref;
+      edit.Mark(*neighbour, SplitRank(0, 2));
+    }
+    return edit.Separator(parent, split_key, new_ref, added);
   }
   return full;
 }
@@ -1435,7 +1530,7 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
       w.image = std::move(encoded.bytes);
     }
     std::vector<disk::CarefulWriteNodeId> earlier = leaf_nodes;
-    for (int rank = 0; rank <= 3; ++rank) {
+    for (int rank = 0; rank <= 4 * static_cast<int>(NativeCatalogBtreeShape::kMaximumDepth) + 3; ++rank) {
       std::vector<disk::CarefulWriteNodeId> these;
       for (const auto& w : tree_writes) {
         if (w.page->rank != rank) continue;
@@ -1908,7 +2003,7 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
     // a page a split added, the split leaf, its old right neighbour, the
     // parent; each rank durable before the next.
     std::vector<disk::CarefulWriteNodeId> earlier = leaf_nodes;
-    for (int rank = 0; rank <= 3; ++rank) {
+    for (int rank = 0; rank <= 4 * static_cast<int>(NativeCatalogBtreeShape::kMaximumDepth) + 3; ++rank) {
       std::vector<disk::CarefulWriteNodeId> these;
       for (const auto& w : tree_writes) {
         if (w.rank != rank) continue;

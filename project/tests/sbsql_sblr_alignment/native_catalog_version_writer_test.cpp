@@ -246,7 +246,8 @@ struct RoleScope {
   ~RoleScope() { b.role = saved; }
 };
 
-std::unique_ptr<Db> ProductionDb(unsigned index) {
+// `total_pages`: 0 for the fixture's size (1,024 pages at 8 KiB, else 512).
+std::unique_ptr<Db> ProductionDb(unsigned index, u64 total_pages = 0) {
   auto b = std::make_unique<Db>();
   b->name = "production";
   const auto& p = d::kCanonicalFilespacePageProfiles[index];
@@ -259,7 +260,7 @@ std::unique_ptr<Db> ProductionDb(unsigned index) {
   r.database_default_language = "en";
   r.page_size_profile_uuid = p.uuid;
   r.page_size_bytes = p.page_size_bytes;
-  r.total_pages = p.page_size_bytes == 8192 ? 1024 : 512;
+  r.total_pages = total_pages ? total_pages : (p.page_size_bytes == 8192 ? 1024 : 512);
   r.creation_utc_millis = 1789357072000ULL;
   r.engine_uuid = Fixed(4);
   r.datatype_cohort = {{UuidKind::object, scratchbird::core::datatypes::kDatatypeCohortV11}, 11, 11};

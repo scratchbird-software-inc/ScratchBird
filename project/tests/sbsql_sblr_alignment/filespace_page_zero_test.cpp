@@ -853,7 +853,13 @@ void NativeBtreeTrees() {
         if(fault==12||fault==13){auto& key=*nodes[4].low_fence;if(fault==12)--key.row_uuid.bytes[15];else --key.version_uuid.bytes[15];
           nodes[3].high_fence=key;expected=E::tree_fence_mismatch;}
         for(const auto& n:nodes)Check(page::DecodeNativeBtreePage(BtreeOracle(n)).ok(),"negative tree still has individually valid native images");
-        persist();result=read(budget);empty(result);Check(result.error==expected,"exact cross-page tree fault classification actual="+std::to_string(static_cast<unsigned>(result.error))+" expected="+std::to_string(static_cast<unsigned>(expected)));
+        persist();result=read(budget);
+        // SB_CATALOG_PARENT_UNCHECKED (owner Q46 = 1, 2026-11-10): a page's
+        // parent is the page the walk reached it from; a stale stored parent
+        // reference (fault 0) is no longer a fault, the tree reads.
+        if(fault==0){Check(result.ok()&&result.pages.size()==7,"a stale stored parent reference is not checked (owner Q46 = 1)");
+          GovernedBtreeParity(devices,root,original[0].dependencies,budget,result);continue;}
+        empty(result);Check(result.error==expected,"exact cross-page tree fault classification actual="+std::to_string(static_cast<unsigned>(result.error))+" expected="+std::to_string(static_cast<unsigned>(expected)));
         GovernedBtreeParity(devices,root,original[0].dependencies,budget,result);}
       nodes=original;persist();
       auto duplicate=devices;duplicate.push_back(devices[0]);result=page::ReadNativeBtreeTreeFromOpenDevices(Id(1),duplicate,root,original[0].dependencies,budget);empty(result);Check(result.error==E::invalid_filespace,"duplicate retained filespace refused");

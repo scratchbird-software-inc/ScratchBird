@@ -273,33 +273,52 @@ struct Verified {
   // page the allocation map holds that the capture reaches matches it, and
   // every captured page is matched (SB_CATALOG_NEW_PAGES: system pages too).
   bool allocation = false;
+  // Set when the caller admits a refused capture and it was refused.
+  std::optional<db::NativeCatalogCohortInspection> refused;
 };
 // On a copy of the file as it stands (a writing session keeps its device open).
-Verified Verify(const Db& b, const std::string& original) {
+// `tier`: 1 is the startup complete-scan tier; a larger value is a TEST-ONLY
+// tier (that many times its bytes and rows), so the verifiers can be run over a
+// names relation grown past the startup tier. The startup tier's refusal of
+// such a relation is asserted separately (ExpectNamedVerification).
+Verified Verify(const Db& b, const std::string& original, bool admit_refusal = false, usize tier = 1) {
   const auto path = b.Copy(ReadAll(original), "verify.db");
   d::FileDevice device;
   Check(device.Open(path, d::FileOpenMode::open_existing_read_only).ok(), "independent read-only open");
   Verified out;
   {
     const std::vector<d::NativeFilespaceDevice> files{{b.primary, b.profile, &device}};
-    Grant g(b.database, 512u << 20);
+    Grant g(b.database, 512u << 20);  // the page-buffer pool limit of the default memory policy
     auto fixed = db::AcquireNativeFixedRootMemoryLease(b.database, files, b.primary, {512 * u64{b.size}, 64u << 20},
                                                        g.memory, g.binding);
     Check(fixed.ok(), "the fixed-root lease admits the file");
     // The shared complete-scan tier and the capture bounds startup uses.
     // SB_NATIVE_NAME_TREES: the production database has the name trees.
-    const db::NativeCatalogRelationMemoryLimits limits{b.profile, 1, db::NativeCatalogScanBasePages(b.size),
-                                                       db::kNativeCatalogScanRelationMaximumRows,
-                                                       db::kNativeCatalogScanRelationMaximumRows,
-                                                       db::NativeCatalogScanNavigationLimits(b.size),
-                                                       db::NativeNameTreeNavigationLimits(b.size, db::kNativeCatalogScanRelationMaximumRows)};
+    const usize rows = db::kNativeCatalogScanRelationMaximumRows * tier;
+    const db::NativeCatalogRelationMemoryLimits limits{b.profile, 1,
+                                                       db::NativeCatalogBasePagesFor(b.size, db::kNativeCatalogScanRelationMaximumBytes * tier),
+                                                       rows, rows, db::NativeCatalogNavigationLimitsFor(b.size, rows),
+                                                       db::NativeNameTreeNavigationLimits(b.size, rows)};
     auto cohort = db::PrepareNativeCatalogCohortRead(limits, g.memory, g.binding);
     Check(cohort.ok(), "cohort workspace");
     // SB_NATIVE_NAME_TREES: the cells too, for the engine's name tree check.
-    auto capture = db::PrepareNativeCatalogCapture({4096, 8u << 20, 1, 1024, 1024, 128, 8192}, g.memory, g.binding);
+    // The capture's page bounds cover the file: a database larger than the
+    // fixture's (1,024 pages at 8 KiB) has more catalog and initial control
+    // (allocation map) pages.
+    const usize file_pages = b.bytes.size() / b.size;
+    const bool larger = file_pages > 1024;
+    auto capture = db::PrepareNativeCatalogCapture({4096 * tier, (8u << 20) * tier, 1, 1024, larger ? file_pages : 1024,
+                                                    larger ? file_pages : 128, 8192 * tier},
+                                                   g.memory, g.binding);
     Check(capture.ok(), "capture workspace");
     const auto read = db::NativeCatalogCohortLeaseReader::Read(*fixed.lease, 256u << 20, cohort.workspace, &capture.capture);
-    if (!read.ok()) std::cerr << "cohort read error=" << int(read.error) << '\n';
+    if (!read.ok())
+      std::cerr << "cohort read error=" << int(read.error) << " relation_error=" << int(read.relation_error)
+                << " visibility_error=" << int(read.visibility_error) << " role=" << read.failing_role
+                << " name_tree_error=" << int(read.name_tree_error) << '\n';
+    if (!read.ok() && admit_refusal) {
+      out.refused = read;
+    } else {
     Check(read.ok(), "the committed catalog captures");
     const auto count = capture.capture.rows().size();
     std::vector<std::size_t> order(count), parents(count);
@@ -313,6 +332,7 @@ Verified Verify(const Db& b, const std::string& original) {
     out.collisions = ia::VerifyNativeCatalogNamingCollisions(capture.capture, workspace);
     const auto coverage = ia::CheckNativeStartupCatalogAllocation(capture.capture, fixed.lease->allocation());
     out.allocation = coverage.ok() && coverage.matched_pages == capture.capture.physical_pages().size();
+    }
   }
   Check(device.Close().ok(), "close the verifier's open");
   fs::remove(path);
@@ -323,9 +343,21 @@ Verified Verify(const Db& b, const std::string& original) {
 // `full_passes`: the audit verifier judges live versions (W3b-2 adds the
 // event every change cites); a drop leaves none of the object's live, so full
 // verification passes for it.
+// `admit_scan_bound`: the startup scan tier bounds a relation at 4 MiB
+// (kNativeCatalogScanRelationMaximumBytes); a names relation grown past it
+// is refused there, resource_exhausted for role 2, and nothing else is.
 void ExpectNamedVerification(const Db& b, const std::string& path, std::size_t definitions, std::string_view label,
-                             bool full_passes = false) {
-  const auto v = Verify(b, path);
+                             bool full_passes = false, bool admit_scan_bound = false) {
+  auto v = Verify(b, path, admit_scan_bound);
+  if (v.refused) {
+    Check(v.refused->error == db::NativeCatalogCohortError::relation_failure &&
+              v.refused->relation_error == db::NativeCatalogRelationLeaseError::resource_exhausted && v.refused->failing_role == 2,
+          std::string(label) + ": refused only as the names relation past the startup scan tier");
+    std::cout << b.name << " page_size=" << b.size << " " << label
+              << ": the names relation is past the startup scan tier (4 MiB): capture refused resource_exhausted;"
+                 " verified again on a TEST-ONLY tier twice its size\n";
+    v = Verify(b, path, false, 2);
+  }
   using AE = ia::NativeCatalogAuditError;
   if (!v.names.ok()) std::cerr << label << " names=" << int(v.names.error) << '\n';
   if (!v.profiles.ok()) std::cerr << label << " profiles=" << int(v.profiles.error) << '\n';
@@ -600,6 +632,235 @@ void NameSplits(const Db& b, const NameTemplate& t, u16 role, std::size_t defini
   fs::remove(path);
   std::cout << b.name << " name splits page_size=" << b.size << " mid-tree split after " << (k - 1)
             << " named objects, " << added << " pages added\n";
+}
+
+// The name tree of page-zero root `kind` (22 authoritative, 23 UUID-to-name)
+// read whole by the production device reader
+// (ReadNativeBtreeTreeFromOpenDevices): its leaf cells, or nullopt when it does
+// not read.
+std::optional<std::size_t> ProductionNameTreeCells(const Db& b, std::span<const byte> file, u16 kind) {
+  const auto zero = d::DecodeFilespacePageZero(file.data(), b.size);
+  Check(zero.ok(), "page zero decodes");
+  u64 root_page = 0;
+  for (const auto& r : zero.record->roots)
+    if (r.kind == kind) root_page = r.page_number;
+  const auto root = pg::DecodeNativeBtreePage(PageOf(file, root_page, b.size));
+  Check(root.ok(), "the name tree root decodes");
+  const auto path = b.Copy(std::vector<byte>(file.begin(), file.end()), "name-tree-read.db");
+  std::optional<std::size_t> out;
+  {
+    d::FileDevice device;
+    Check(device.Open(path, d::FileOpenMode::open_existing_read_only).ok(), "the tree reader's read-only open");
+    const std::vector<d::NativeFilespaceDevice> devices{{b.primary, b.profile, &device}};
+    const d::NativePageReference ref{b.primary, root_page, root.page->header.page_generation, b.profile};
+    const auto read = pg::ReadNativeBtreeTreeFromOpenDevices(b.database, devices, ref, root.page->dependencies, file.size());
+    if (read.ok()) {
+      std::size_t cells = 0;
+      for (const auto leaf : read.leaves) cells += read.pages[leaf].page->cells.size();
+      out = cells;
+    } else {
+      std::cerr << "name tree " << kind << " device read error=" << int(read.error) << '\n';
+    }
+    Check(device.Close().ok(), "close the tree reader's open");
+  }
+  fs::remove(path);
+  return out;
+}
+u64 NameRootPage(const Db& b, std::span<const byte> file, u16 kind) {
+  const auto zero = d::DecodeFilespacePageZero(file.data(), b.size);
+  Check(zero.ok(), "page zero decodes");
+  for (const auto& r : zero.record->roots)
+    if (r.kind == kind) return r.page_number;
+  Check(false, "the name tree root");
+  return 0;
+}
+// The highest level of a page of the tree that a sibling link names and no
+// parent lists (a split left unfinished), or -1.
+int UnlistedLevel(const Db& b, std::span<const byte> file, u64 root_page) {
+  const auto tree = ReadTreeAt(b, file, root_page);
+  std::set<u64> listed;
+  for (const auto& p : tree.pages) listed.insert(p.number);
+  int level = -1;
+  for (const auto& p : tree.pages)
+    if (p.page.right && !listed.contains(p.page.right->page_number)) {
+      const auto lag = pg::DecodeNativeBtreePage(PageOf(file, p.page.right->page_number, b.size));
+      Check(lag.ok(), "an unlisted page decodes");
+      level = std::max<int>(level, lag.page->tree_level);
+    }
+  return level;
+}
+// SB_CATALOG_SPLIT_LAG over branch splits (owner Q45 = 1, Q46 = 1): the
+// long-named insert that split a branch, again on copies of the file before
+// it, by a fresh transaction, failing each of its writes in turn (a crash at
+// that point). Every time both name trees still read through the production
+// device reader with their cells unchanged or the new one added; the failed
+// transaction rolls back; the next long-named insert, by another transaction,
+// completes any unfinished split (refusing nothing), commits, and then no
+// page of either tree is reachable by a sibling link only, and both trees
+// read with one cell more. Returns the highest level a failure point left
+// unlisted (-1 for none).
+int NameBranchCrashes(const Db& b, const NameTemplate& t, u16 role, std::span<const byte> pre, unsigned k, std::size_t length,
+                      const char* what) {
+  unsigned failures = 0, unfinished = 0;
+  int highest = -1;
+  const auto cells = [&](std::span<const byte> f) {
+    return std::pair{ProductionNameTreeCells(b, f, 22), ProductionNameTreeCells(b, f, 23)};
+  };
+  const auto before = cells(pre);
+  Check(before.first && before.second, std::string(what) + ": both name trees read before the insert");
+  for (u32 w = 1; w <= 64; ++w) {
+    const auto copy = b.Copy(std::vector<byte>(pre.begin(), pre.end()), "name-branch-crash.db");
+    Session c(b, copy);  // restart: transaction 2 was in progress, now dead
+    Begin(*c.w, c.sink(), 3);
+    auto file = ReadAll(copy);
+    std::string text = "w3b_branch_" + std::to_string(10000 + k) + "_";
+    text.resize(length, 'x');
+    const auto named = NamedAfter(b, file, t, role, After(b, file, role), 2000 + k, 3, text);
+    auto r = Request(3, named.Rows());
+    for (unsigned i = 0; i < 8; ++i)
+      r.new_pages.push_back({V7(kT + 970000 + 10 * w + i, 0xf10000 + w), V7(kT + 970000 + 10 * w + i, 0xf20000 + w)});
+    KindFaultSink sink(c.sink(), KindFaultSink::Kind::write, w);
+    const auto result = db::WriteCatalogInsertVersions(sink, GrowingBinding(b), r);
+    if (result.ok()) {
+      fs::remove(copy);
+      break;
+    }
+    ++failures;
+    Rollback(*c.w, c.sink(), 3);
+    const auto crashed = ReadAll(copy);
+    const int lag = std::max(UnlistedLevel(b, crashed, NameRootPage(b, crashed, 22)), UnlistedLevel(b, crashed, NameRootPage(b, crashed, 23)));
+    if (lag >= 0) ++unfinished;
+    highest = std::max(highest, lag);
+    const auto seen = cells(crashed);
+    Check(seen.first && seen.second, std::string(what) + ": after a failed write " + std::to_string(w) + " both name trees read");
+    const std::size_t per = *before.second / *before.first;
+    Check(*seen.first >= *before.first && *seen.first <= *before.first + 1 && *seen.second >= *before.second &&
+              *seen.second <= *before.second + per,
+          std::string(what) + ": after a failed write " + std::to_string(w) + " the trees hold their cells, the new one at most");
+    Begin(*c.w, c.sink(), 4);
+    file = ReadAll(copy);
+    std::string next_text = "w3b_branch_next_" + std::to_string(10000 + k) + "_";
+    next_text.resize(length, 'y');
+    const auto next_named = NamedAfter(b, file, t, role, After(b, file, role), 2600 + k, 4, next_text);
+    auto next = Request(4, next_named.Rows());
+    for (unsigned i = 0; i < 8; ++i)
+      next.new_pages.push_back({V7(kT + 990000 + 10 * w + i, 0xf30000 + w), V7(kT + 990000 + 10 * w + i, 0xf40000 + w)});
+    const auto completed = db::WriteCatalogInsertVersions(c.sink(), GrowingBinding(b), next);
+    if (!completed.ok()) std::cerr << what << " after failed write " << w << ": " << db::CatalogVersionWriteErrorName(completed.error) << '\n';
+    Check(completed.ok(), std::string(what) + ": the next insert succeeds after failed write " + std::to_string(w));
+    Commit(*c.w, c.sink(), 4);
+    const auto after = ReadAll(copy);
+    Check(UnlistedLevel(b, after, NameRootPage(b, after, 22)) < 0 && UnlistedLevel(b, after, NameRootPage(b, after, 23)) < 0,
+          std::string(what) + ": the next write completes an unfinished split");
+    const auto now = cells(after);
+    Check(now.first && now.second && *now.first >= *before.first + 1 && *now.second >= *before.second + per,
+          std::string(what) + ": after the next insert both trees read with its cell");
+    fs::remove(copy);
+  }
+  Check(failures > 0 && unfinished > 0, std::string(what) + ": some failure points leave a split unfinished, and they are survived");
+  std::cout << b.name << " " << what << " crashes page_size=" << b.size << " failure points " << failures << ", " << unfinished
+            << " leaving a split unfinished, highest unlisted level " << highest << '\n';
+  return highest;
+}
+
+// SB_CATALOG_BRANCH_SPLIT (W3b-3b-2, owner Q46 = 1): named objects whose
+// names are as long as the identifier profile admits (up to 240 bytes), so
+// the authoritative name tree's separators are long and its branches fill:
+// inserted by one transaction until a branch below the root splits (after the
+// root branch itself has split, keeping its page one level higher), or 600
+// objects. Every insert is checked byte for byte; committed, the database
+// verifies.
+void NameBranchSplits(const Db& b, const NameTemplate& t, u16 role, std::size_t definitions) {
+  const auto path = b.Copy(b.bytes, "name-branches.db");
+  Session s(b, path);
+  Begin(*s.w, s.sink(), 2);
+  const auto zero = d::DecodeFilespacePageZero(b.bytes.data(), b.size);
+  Check(zero.ok(), "page zero decodes");
+  u64 root_page = 0;
+  Uuid authoritative{};
+  for (const auto& r : zero.record->roots)
+    if (r.kind == 22) {
+      authoritative = r.object_uuid;
+      root_page = r.page_number;
+    }
+  const std::size_t limit = t.identifier.maximum_identifier_length ? t.identifier.maximum_identifier_length : 240;
+  const std::size_t length = std::min<std::size_t>(limit, 240);
+  bool root_grew = false, branch_split = false;
+  unsigned k = 1, grew_at = 0;
+  const auto root_level = [&](std::span<const byte> file) {
+    return pg::DecodeNativeBtreePage(PageOf(file, root_page, b.size)).page->tree_level;
+  };
+  const auto initial_level = root_level(b.bytes);
+  std::cout << b.name << " branch splits page_size=" << b.size << " pages=" << b.bytes.size() / b.size
+            << " identifier profile maximum length " << t.identifier.maximum_identifier_length << '\n';
+  std::vector<byte> pre_root, pre_branch;
+  unsigned root_k = 0, branch_k = 0;
+  const auto cells_before = std::pair{ProductionNameTreeCells(b, b.bytes, 22), ProductionNameTreeCells(b, b.bytes, 23)};
+  Check(cells_before.first && cells_before.second, "both name trees read through the production device reader");
+  for (; k <= 2000 && !branch_split; ++k) {
+    const auto file = ReadAll(path);
+    std::string text = "w3b_branch_" + std::to_string(10000 + k) + "_";
+    text.resize(length, 'x');
+    const auto named = NamedAfter(b, file, t, role, After(b, file, role), 2000 + k, 2, text);
+    auto r = Request(2, named.Rows());
+    for (unsigned i = 0; i < 8; ++i)
+      r.new_pages.push_back({V7(kT + 950000 + 10 * k + i, 0xef0000 + k), V7(kT + 950000 + 10 * k + i, 0xf00000 + k)});
+    if (!InsertOracle(b, file, r)) {
+      const auto trial = b.Copy(file, "name-branches-trial.db");
+      Session t2(b, trial, false);
+      const auto tried = db::WriteCatalogInsertVersions(t2.sink(), GrowingBinding(b), r);
+      fs::remove(trial);
+      if (!tried.ok()) {
+        std::cout << b.name << " branch splits page_size=" << b.size << " stop at named object " << k << ": "
+                  << db::CatalogVersionWriteErrorName(tried.error) << '\n';
+        break;
+      }
+    }
+    const auto pages = ExpectGrowingInsert(b, s.sink(), path, r, "long-named object " + std::to_string(k));
+    const auto now = ReadAll(path);
+    const bool grew = root_level(now) > root_level(file);
+    unsigned branches = 0;
+    for (const auto page : pages)
+      if (TypeAt(b, now, page) == 0x201 &&
+          pg::DecodeNativeBtreePage(PageOf(now, page, b.size)).page->dependencies.index_uuid == authoritative)
+        ++branches;
+    // A root-branch split adds two branches and a level; a branch split below
+    // the root adds one branch and no level.
+    if (grew && root_level(now) >= 2 && !root_grew) {
+      root_grew = true;
+      grew_at = k;
+      Check(branches == 2, "a root-branch split adds two branches under the kept root");
+      pre_root = file;
+      root_k = k;
+    }
+    if (branches && !grew && !branch_split) {
+      branch_split = true;
+      pre_branch = file;
+      branch_k = k;
+    }
+  }
+  std::cout << b.name << " branch splits page_size=" << b.size << " name length " << length << ": root "
+            << (root_grew ? "grew to level 2 at named object " + std::to_string(grew_at) : std::string("did not grow"))
+            << ", branch split below the root " << (branch_split ? "yes" : "no") << " after " << (k - 1) << " named objects\n";
+  Check(root_grew && branch_split, "long names split the root branch and a branch below it");
+  Commit(*s.w, s.sink(), 2);
+  const auto final_file = ReadAll(path);
+  const auto cells_after = std::pair{ProductionNameTreeCells(b, final_file, 22), ProductionNameTreeCells(b, final_file, 23)};
+  if (cells_after.first && cells_after.second)
+    std::cout << b.name << " name tree cells before " << *cells_before.first << "/" << *cells_before.second << " after "
+              << *cells_after.first << "/" << *cells_after.second << " for " << (k - 1) << " named objects\n";
+  // The UUID-to-name tree holds two cells per name entry (2,126 for the
+  // create's 1,063 at 8 KiB), the authoritative tree one.
+  const std::size_t per = *cells_before.second / *cells_before.first;
+  Check(per * *cells_before.first == *cells_before.second, "the UUID-to-name tree holds a whole number of cells per entry");
+  Check(cells_after.first && cells_after.second && *cells_after.first == *cells_before.first + (k - 1) &&
+            *cells_after.second == *cells_before.second + per * (k - 1),
+        "committed, both name trees read through the production device reader with each named object's cells");
+  ExpectNamedVerification(b, path, definitions + (k - 1), "long-named objects past branch splits, committed", false, true);
+  NameBranchCrashes(b, t, role, pre_root, root_k, length, "root-branch split");
+  const auto lag = NameBranchCrashes(b, t, role, pre_branch, branch_k, length, "branch split");
+  Check(lag >= 1, "some failure point of a branch split leaves a branch unlisted, and it is survived");
+  fs::remove(path);
 }
 
 // ---- Name successors (N4a) ---------------------------------------------------------------
@@ -1304,6 +1565,16 @@ int main(int argc, char** argv) {
     const auto places = Places(b, b.bytes);
     const auto role = DefinitionRole(places);
     Check(role.has_value(), "a relation with room for the definition");
+    {
+      // The names relation (role 2) against the startup complete-scan tier.
+      RoleScope scope(b, 2);
+      const auto rel = ReadRelation(b, b.bytes);
+      std::size_t leaves = rel.leaves.size(), rows = 0;
+      for (const auto& l : rel.leaves) rows += l.leaf.body.rows.size();
+      std::cout << b.name << " names relation page_size=" << b.size << ": " << leaves << " base pages of "
+                << db::NativeCatalogScanBasePages(b.size) << ", " << rows << " rows of " << db::kNativeCatalogScanRelationMaximumRows
+                << " (startup complete-scan tier)\n";
+    }
     std::cout << b.name << " names page_size=" << b.size << " definition role=" << *role
               << " template=" << t.entry.raw_name_text << '\n';
     const bool room = NamedStates(b, t, *role, fresh.names.definitions);
@@ -1314,6 +1585,16 @@ int main(int argc, char** argv) {
     if (room) NameSuccessors(b, t, *role, fresh.names.definitions);
     if (room) NameGrowth(b, t, *role, fresh.names.definitions);
     if (room) NameSplits(b, t, *role, fresh.names.definitions);
+    // Long names past a root-branch split and a branch split below the root:
+    // at 8 KiB only, on a database with room for them (2,048 pages); at the
+    // larger sizes 600 long-named objects split no branch (measured).
+    if (room && b.size == 8192) {
+      const auto big = ProductionDb(profile, 2048);
+      const auto big_fresh = Verify(*big, big->Copy(big->bytes, "fresh-big.db"));
+      const auto big_role = DefinitionRole(Places(*big, big->bytes));
+      Check(big_role.has_value(), "a relation with room for the definition, 2,048 pages");
+      NameBranchSplits(*big, Template(*big, big->bytes), *big_role, big_fresh.names.definitions);
+    }
     std::cout << "PASS native catalog name insert page_size=" << b.size << " checks=" << checks << '\n';
     return 0;
   } catch (const std::exception& e) {

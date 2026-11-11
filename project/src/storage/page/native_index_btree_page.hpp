@@ -131,8 +131,12 @@ template<class Page> NativeBtreeError ValidateNativeBtreeTraversalStep(
   using E=NativeBtreeError;
   const auto self=[](const Page& p){const auto& h=p.header;
     return disk::NativePageReference{h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid};};
+  // SB_CATALOG_PARENT_UNCHECKED (owner Q46 = 1, 2026-11-10): a page's parent
+  // is the page the walk reached it from; the parent reference a page stores
+  // is written but no longer checked. A branch split moves children whose
+  // stored references would otherwise all have to change, and no write order
+  // keeps them consistent through a crash (FirebirdSQL's pages carry none).
   if(parent){
-    if(page.parent!=std::optional{self(*parent)})return E::tree_reference_mismatch;
     if(page.tree_level!=level)return E::tree_level_mismatch;
   }
   if(page.low_fence!=low||page.high_fence!=high)return E::tree_fence_mismatch;
