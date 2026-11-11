@@ -7,6 +7,7 @@
 #include "native_catalog_version_writer.hpp"
 #include "bootstrap_policy_fixture.hpp"
 #include "../support/owned_temp_directory.hpp"
+#include "../support/catalog_change_event_fixture.hpp"
 #include <algorithm>
 #include <array>
 #include <cerrno>
@@ -164,6 +165,12 @@ void Physical(){
     // fixed-root graph; the policy is read through page zero's roots.
     request.genesis_graph=db::NativeCreationGenesisGraph::fixed_roots;
     const auto budget=128*p::u64{profile.page_size_bytes};u::StandaloneUuidV7Issuer issuer({f::Id(1),f::Id(10)},{{},0,1000});
+    // W3b-2b: the create's construction intent (role 6), as the production
+    // create writes it, so transaction 2 can write its catalog.metadata_change
+    // event before changing the body.
+    {const auto intent=scratchbird::tests::catalog_change_event::IntentSeedRow(request,f::Id(9790),issuer,
+        f::Metadata(0,origin,f::Id(60),{}));
+     Check(intent.has_value(),"the fixture's construction intent");seed[5].push_back({*intent,{}});}
     const auto path=(artifacts.path()/(std::to_string(profile.page_size_bytes)+"-"+std::to_string(mode))).string();
     d::FileDevice device;Check(device.Open(path,d::FileOpenMode::create_new).ok(),"real private native security-policy file");
     if(mode){
@@ -206,11 +213,15 @@ void Physical(){
         return leaf.metadata.at(row.version_uuid).record.header.object_uuid.value==body.body_uuid;});
       Check(at!=leaf.page->body.rows.end(),"the stored policy body");
       db::CatalogVersionWriterBinding cv;cv.database_uuid=f::Id(1);cv.catalog_root=catalog_root;cv.state_root=state_root;
+      // W3b-2b: transaction 2's catalog.metadata_change event, which its successors cite.
+      Check(scratchbird::tests::catalog_change_event::WriteEvent(sink,cv,2,f::Id(20),f::Id(9791),f::Id(9792),f::Id(9793),
+          f::Id(9790),1789357072001000ULL).ok(),"transaction 2's catalog change event");
       const auto successor=[&](unsigned role,const c::CatalogCryptoInlinePrivateKeyPolicy& next){
         db::CatalogVersionRequest r;r.role=static_cast<p::u16>(role);r.transaction_order=2;r.transaction_uuid=f::Id(20);
         r.row_uuid=at->row_uuid.value;r.predecessor_version_uuid=at->version_uuid;r.version_uuid=f::Id(704);
         r.metadata=leaf.metadata.at(at->version_uuid);r.metadata.definition_version=2;
         r.metadata.creator_transaction_uuid={p::UuidKind::transaction,f::Id(20)};r.metadata.creator_local_transaction_id=2;
+        r.metadata.audit_uuid={p::UuidKind::object,f::Id(9791)};
         r.metadata.record.payload=Golden(next);return db::WriteCatalogSuccessorVersion(sink,cv,r);};
       auto next=body;next.generation=2;
       for(unsigned role:{1u,2u,3u,5u,6u}){const auto refused=successor(role,next);

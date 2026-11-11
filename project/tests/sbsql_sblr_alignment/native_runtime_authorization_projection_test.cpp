@@ -57,6 +57,10 @@ void AdvanceNativeSelectedBindingEpochs(SecurityFixture& f) {
     metadata.definition_version=2;metadata.security_epoch=4;metadata.catalog_generation=2;
     metadata.creator_transaction_uuid={platform::UuidKind::transaction,Id(15)};metadata.creator_local_transaction_id=n;
     metadata.record.payload.assign(body.bytes.begin(),body.bytes.end());
+    // W3b-2b: the transaction's catalog.metadata_change event, which the successor cites.
+    Check(scratchbird::tests::catalog_change_event::WriteEvent(sink,SecurityFixture::CvBinding(roots),n,Id(15),security_fixture::Id(9794),security_fixture::Id(9795),
+        security_fixture::Id(9796),security_fixture::Id(9790),1789357073001000ULL).ok(),"the binding change's catalog change event");
+    metadata.audit_uuid={platform::UuidKind::object,security_fixture::Id(9794)};
     db::CatalogVersionRequest r;r.role=5;r.transaction_order=n;r.transaction_uuid=Id(15);r.row_uuid=row.row_uuid.value;
     r.predecessor_version_uuid=row.version_uuid;r.version_uuid=Id(16);r.metadata=metadata;
     const auto written=db::WriteCatalogSuccessorVersion(sink,SecurityFixture::CvBinding(roots),r);
@@ -67,7 +71,7 @@ void AdvanceNativeSelectedBindingEpochs(SecurityFixture& f) {
   Check(w.Commit(sink,n,1789357074000000000ULL).ok(),"the binding change commits in place");
 }
 void RealNativeProjection(unsigned profile,bool indexed,bool historical=false) {
-  SecurityFixture f(profile,0,indexed);
+  SecurityFixture f(profile,0,indexed,historical);  // W3b-2b: audited where it writes
   if(historical)AdvanceNativeSelectedBindingEpochs(f);
   const db::NativeCatalogRelationMemoryLimits limits{Profile(profile),1,16,64,64,{4,16*static_cast<std::size_t>(sizes[profile])}};
   const auto amount=runtime_security::NativeRuntimeSecurityWorkspaceBytes(limits);

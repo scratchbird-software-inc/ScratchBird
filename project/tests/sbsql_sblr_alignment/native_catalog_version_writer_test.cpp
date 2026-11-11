@@ -40,6 +40,8 @@
 #include "native_creation_workspace.hpp"
 #include "native_creation_catalog_input.hpp"
 #include "native_catalog_version_writer.hpp"
+#include "native_construction_audit.hpp"
+#include "catalog_construction_intent.hpp"
 #include "native_catalog_leaf_page.hpp"
 #include "native_catalog_visibility_lease_reader.hpp"
 #include "native_fixed_root_memory_lease.hpp"
@@ -319,6 +321,7 @@ std::unique_ptr<Db> SeededDb(unsigned index) {
   db::NativeCreationCatalogSeed seed;
   seed[3].push_back({SeedMetadata(f::Id(100), 101, "crypto_inline_private_key", SeedBody()), {}});
   db::NativeFilespaceInitializationRequest request;
+  u::StandaloneUuidV7Issuer issuer({f::Id(1), f::Id(10)}, {{}, 0, 1000});
   request.bootstrap = {f::Id(1), f::Id(2), p.uuid, d::kNativeBootstrapIntegrityProfile, {}, p.page_size_bytes, 1, 0, 1, 7};
   request.operation_uuid = f::Id(3);
   request.writer_uuid = f::Id(4);
@@ -329,11 +332,31 @@ std::unique_ptr<Db> SeededDb(unsigned index) {
   request.total_pages = 64;
   request.creation_utc_millis = 1789357072000ULL;
   request.genesis_graph = db::NativeCreationGenesisGraph::fixed_roots;
+  // W3b-2b: the create's construction intent (role 6), as the production
+  // create writes it (database_lifecycle), so a later transaction can write
+  // its catalog.metadata_change event (WriteCatalogChangeEvent takes its row's
+  // owner, schema and parent) and the policy row cites it.
+  {
+    const auto audit = db::AcquireNativeConstructionIntent(request, f::Id(8), issuer);
+    Check(audit.ok(), "the seeded create's construction intent");
+    std::array<byte, c::kCatalogConstructionIntentMaxBytes> bytes{};
+    const auto encoded = c::EncodeCatalogConstructionIntentInto(*audit.event, bytes);
+    Check(encoded.ok(), "the construction intent encodes");
+    auto m = SeedMetadata(audit.event->event_uuid, 0, "node_construction_intent",
+                          std::string(reinterpret_cast<const char*>(encoded.bytes.data()), encoded.bytes.size()));
+    m.record.header.kind = c::CatalogRecordKind::audit_evidence;
+    m.record.header.row_uuid = audit.row_uuid;
+    m.record.header.parent_uuid = {UuidKind::object, m.owning_schema_uuid.value};
+    m.default_name_uuid = {};
+    m.name_vector_uuid = {};
+    m.audit_uuid = m.record.header.object_uuid;
+    seed[3].front().metadata.audit_uuid = m.audit_uuid;
+    seed[5].push_back({std::move(m), {}});
+  }
   const auto path = (b->dir.path() / "seeded").string();
   {
     d::FileDevice device;
     Check(device.Open(path, d::FileOpenMode::create_new).ok(), "seeded device");
-    u::StandaloneUuidV7Issuer issuer({f::Id(1), f::Id(10)}, {{}, 0, 1000});
     const auto made =
         db::InitializePopulatedNativeCreationWorkspaceOnOpenDevice(device, request, seed, 128 * u64{p.page_size_bytes}, issuer);
     Check(made.ok(), "the create primitive writes the seeded database");
@@ -432,10 +455,11 @@ u64 RowBytes(const c::CatalogMetadataVersion& metadata) {
 
 // ---- Transactions (the W1 writer) ------------------------------------------------
 struct Session {
+  const Db* db = nullptr;
   d::FileDevice device;
   std::optional<d::FileDeviceCarefulWriteSink> file;
   std::optional<pg::TransactionInventoryWriter> w;
-  Session(const Db& b, const std::string& path, bool restart = true) {
+  Session(const Db& b, const std::string& path, bool restart = true) : db(&b) {
     Check(device.Open(path, d::FileOpenMode::open_existing).ok(), "open for writing");
     file.emplace(device);
     w.emplace(b.TxBinding());
@@ -453,6 +477,38 @@ u64 Begin(pg::TransactionInventoryWriter& w, d::CarefulWriteSink& sink, u64 n, b
   h.read_only = read_only;
   const auto r = w.Begin(sink, h);
   Check(r.ok() && r.transaction_order == n, "BEGIN takes the expected number");
+  return n;
+}
+// SB_AUDIT_CATALOG_METADATA_CHANGE (W3b-2b): transaction n's catalog.metadata_change
+// event, which every definition version it writes cites. Written right after
+// its BEGIN (Begin(Session&, n)), before anything a check compares.
+Uuid EventId(u64 n) { return V7(kT + 2400000 + n, 0x7b0000 + static_cast<unsigned>(n)); }
+scratchbird::core::platform::TypedUuid EventRef(u64 n) { return {UuidKind::object, EventId(n)}; }
+db::CatalogVersionWriteResult WriteEvent(const Db& b, d::CarefulWriteSink& sink, u64 n, const Uuid& transaction) {
+  db::CatalogChangeEventRequest r;
+  r.transaction_order = n;
+  r.transaction_uuid = transaction;
+  r.event_uuid = EventId(n);
+  r.row_uuid = V7(kT + 2400000 + n, 0x7c0000 + static_cast<unsigned>(n));
+  r.version_uuid = V7(kT + 2400000 + n, 0x7d0000 + static_cast<unsigned>(n));
+  r.engine_uuid = V7(kT + 2500000, 0x7e0000);
+  r.event_time_utc_us = CommitTime(n) - 500'000;  // a fixed fixture time, before the commit
+  // A new base leaf, and a split up to the root of role 6's tree, should it be full.
+  for (unsigned i = 0; i < 6; ++i)
+    r.new_pages.push_back({V7(kT + 2600000 + 10 * n + i, 0x7f0000 + static_cast<unsigned>(n)),
+                           V7(kT + 2600000 + 10 * n + i, 0x7f8000 + static_cast<unsigned>(n))});
+  auto binding = b.Binding();
+  binding.allocation_root = b.map_root;
+  return db::WriteCatalogChangeEvent(sink, binding, r);
+}
+void Audit(Session& s, u64 n, const std::optional<Uuid>& transaction = std::nullopt) {
+  const auto result = WriteEvent(*s.db, s.sink(), n, transaction ? *transaction : TxId(n));
+  if (!result.ok()) std::cerr << "event of " << n << ": " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+  Check(result.ok(), "the transaction's catalog.metadata_change event is written");
+}
+u64 Begin(Session& s, u64 n, bool read_only = false) {
+  Begin(*s.w, s.sink(), n, read_only);
+  if (!read_only) Audit(s, n);
   return n;
 }
 void Commit(pg::TransactionInventoryWriter& w, d::CarefulWriteSink& sink, u64 n) {
@@ -477,6 +533,7 @@ db::CatalogVersionRequest Successor(const Db& b, const Relation& rel, const Uuid
   r.metadata.definition_version += 1;
   r.metadata.creator_transaction_uuid = {UuidKind::transaction, TxId(n)};
   r.metadata.creator_local_transaction_id = n;
+  r.metadata.audit_uuid = EventRef(n);  // W3b-2b: the transaction's event
   if (c::IsCatalogCryptoInlinePrivateKeyPolicyFamily(c::BorrowCatalogMetadataVersion(r.metadata))) {
     // That family binds its body's generation to definition_version.
     auto body = c::DecodeCatalogCryptoInlinePrivateKeyPolicy(r.metadata.record.payload);
@@ -694,12 +751,12 @@ void States(const Db& b) {
   const auto path = b.Copy(b.bytes, "states.db");
   {
     Session s(b, path);
-    Begin(*s.w, s.sink(), 2);
+    Begin(s, 2);
     const auto first = Expect(b, s, path, Next(b, path, row, v0, 2, VersionId(1)), "in progress");
     Check(first.row_version == ReadRelation(b, b.bytes).Row(ReadRelation(b, b.bytes).Find(v0)).row_version + 1,
           "the successor's row_version follows the newest");
     PeekSees(b, path, row, v0, "in progress");
-    Begin(*s.w, s.sink(), 3);
+    Begin(s, 3);
     auto blocked = Next(b, path, row, v0, 3, VersionId(2));
     {
       const auto before = ReadAll(path);
@@ -725,10 +782,10 @@ void States(const Db& b) {
   const auto gap_path = b.Copy(b.bytes, "gap.db");
   {
     Session s(b, gap_path);
-    Begin(*s.w, s.sink(), 2);
+    Begin(s, 2);
     Expect(b, s, gap_path, Next(b, gap_path, row, v0, 2, VersionId(1)), "to be rolled back");
     Rollback(*s.w, s.sink(), 2);
-    Begin(*s.w, s.sink(), 3);
+    Begin(s, 3);
     const auto gap = Expect(b, s, gap_path, Next(b, gap_path, row, v0, 3, VersionId(2)), "past a rolled-back version");
     const auto rel = ReadRelation(b, ReadAll(gap_path));
     const auto& written = rel.Row(rel.Find(VersionId(2)));
@@ -743,7 +800,7 @@ void States(const Db& b) {
   const auto twice = b.Copy(b.bytes, "twice.db");
   {
     Session s(b, twice);
-    Begin(*s.w, s.sink(), 2);
+    Begin(s, 2);
     Expect(b, s, twice, Next(b, twice, row, v0, 2, VersionId(1)), "the first change");
     Expect(b, s, twice, Next(b, twice, row, VersionId(1), 2, VersionId(2)), "the same transaction again");
     PeekSees(b, twice, row, v0, "two versions in progress");
@@ -787,7 +844,7 @@ void States(const Db& b) {
     const auto own = b.Copy(b.bytes, "own.db");
     {
       Session s(b, own);
-      Begin(*s.w, s.sink(), 2);
+      Begin(s, 2);
       const auto rel = ReadRelation(b, b.bytes);
       const auto home = rel.Find(same_version).first;
       const auto r = Next(b, own, same_row, same_version, 2, VersionId(1));
@@ -807,14 +864,14 @@ void States(const Db& b) {
   const auto drop = b.Copy(b.bytes, "drop.db");
   {
     Session s(b, drop);
-    Begin(*s.w, s.sink(), 2);
+    Begin(s, 2);
     Expect(b, s, drop, Next(b, drop, row, v0, 2, VersionId(1), true), "a drop");
     Refused(b, s, drop, Next(b, drop, row, VersionId(1), 2, VersionId(2)), CE::row_deleted,
             "the dropping transaction changes the dropped row");
     Commit(*s.w, s.sink(), 2);
     const auto dropped = Peek(b, drop, row);
     Check(dropped.read && dropped.version == VersionId(1) && dropped.deleted, "the committed drop is the visible version");
-    Begin(*s.w, s.sink(), 3);
+    Begin(s, 3);
     Refused(b, s, drop, Next(b, drop, row, VersionId(1), 3, VersionId(2)), CE::row_deleted, "after a drop");
   }
   fs::remove(drop);
@@ -822,13 +879,13 @@ void States(const Db& b) {
   const auto dead = b.Copy(b.bytes, "dead.db");
   {
     Session s(b, dead);
-    Begin(*s.w, s.sink(), 2);
+    Begin(s, 2);
     Expect(b, s, dead, Next(b, dead, row, v0, 2, VersionId(1)), "left in progress");
   }
   Sees(b, dead, row, v0, "in progress at close");
   {
     Session s(b, dead);  // restart marks 2 dead
-    Begin(*s.w, s.sink(), 3);
+    Begin(s, 3);
     const auto passed = Expect(b, s, dead, Next(b, dead, row, v0, 3, VersionId(2)), "past a dead version");
     Check(passed.row_version == ReadRelation(b, b.bytes).Row(ReadRelation(b, b.bytes).Find(v0)).row_version + 2,
           "the dead version keeps its row_version");
@@ -844,11 +901,11 @@ void Refusals(const Db& b) {
   const auto [row, v0] = Pick(b);
   const auto path = b.Copy(b.bytes, "refusals.db");
   Session s(b, path);
-  Begin(*s.w, s.sink(), 2);
-  Begin(*s.w, s.sink(), 3, true);
-  Begin(*s.w, s.sink(), 4);
+  Begin(s, 2);
+  Begin(s, 3, true);
+  Begin(s, 4);
   Commit(*s.w, s.sink(), 4);
-  Begin(*s.w, s.sink(), 5);
+  Begin(s, 5);
   Rollback(*s.w, s.sink(), 5);
   const auto good = Next(b, path, row, v0, 2, VersionId(1));
   const auto variant = [&](auto change, CE error, std::string_view label) {
@@ -967,7 +1024,7 @@ void BindingAhead(const Db& b) {
   const auto path = b.Copy(b.bytes, "binding.db");
   {
     Session s(b, path);
-    Begin(*s.w, s.sink(), 2);
+    Begin(s, 2);
     // That family binds its payload's generation to definition_version and its
     // catalog_generation and security_epoch to the metadata's: change both.
     const auto with = [&](auto change) {
@@ -1004,7 +1061,7 @@ void Fill(const Db& b) {
   Uuid last = v0;
   {
     Session s(b, path);
-    Begin(*s.w, s.sink(), 2);
+    Begin(s, 2);
     for (;; ++written) {
       Check(written < 100000, "the relation fills");
       const auto r = Next(b, path, row, last, 2, VersionId(1000 + written));
@@ -1054,11 +1111,16 @@ std::vector<byte> Apply(std::span<const byte> base, const Writes& w, std::size_t
   return out;
 }
 // The script: BEGIN 2, a successor of `row` by 2, COMMIT 2.
+// BEGIN, the transaction's event (W3b-2b; `event_writes` gets its write
+// count), the successor, COMMIT.
 bool Script(const Db& b, pg::TransactionInventoryWriter& w, d::CarefulWriteSink& sink, const Uuid& row, const Uuid& v0,
-            const db::CatalogVersionRequest& r) {
+            const db::CatalogVersionRequest& r, u32* event_writes = nullptr) {
   pg::TransactionHeaderRecord h;
   h.transaction_uuid = TxId(2);
   if (!w.Begin(sink, h).ok()) return false;
+  const auto event = WriteEvent(b, sink, 2, TxId(2));
+  if (!event.ok()) return false;
+  if (event_writes) *event_writes = event.writes;
   if (!Write(b, sink, r).ok()) return false;
   (void)row;
   (void)v0;
@@ -1106,9 +1168,11 @@ void Recover(const Db& b, const std::string& path, const Uuid& row, std::string_
     const auto begun = s.w->Begin(s.sink(), h);
     Check(begun.ok(), std::string(label) + ": the next BEGIN");
     const u64 n = *begun.transaction_order;
+    Audit(s, n, TxId(40));
     auto r = Successor(b, rel, row, *seen.version, n, next_version);
     r.transaction_uuid = TxId(40);
     r.metadata.creator_transaction_uuid = {UuidKind::transaction, TxId(40)};
+    r.metadata.audit_uuid = EventRef(n);
     const auto written = Write(b, s.sink(), r);
     if (!written.ok()) std::cerr << label << ": " << db::CatalogVersionWriteErrorName(written.error) << '\n';
     Check(written.ok(), std::string(label) + ": the next successor");
@@ -1119,6 +1183,7 @@ void Recover(const Db& b, const std::string& path, const Uuid& row, std::string_
 void Losses(const Db& b) {
   const auto [row, v0] = Pick(b);
   const auto request = Successor(b, ReadRelation(b, b.bytes), row, v0, 2, VersionId(1));
+  u32 event_writes = 0;
   Writes recorded;
   std::vector<byte> final_file;
   {
@@ -1126,7 +1191,7 @@ void Losses(const Db& b) {
     {
       Session s(b, path, false);
       RecordingSink rec(s.sink());
-      Check(s.w->Restart(rec).ok() && Script(b, *s.w, rec, row, v0, request), "the script runs");
+      Check(s.w->Restart(rec).ok() && Script(b, *s.w, rec, row, v0, request, &event_writes), "the script runs");
       recorded = rec.writes;
     }
     final_file = ReadAll(path);
@@ -1134,22 +1199,25 @@ void Losses(const Db& b) {
     // The successor's writes, independently of the recording: BEGIN writes
     // three units; then the oracle's target page, then (when it is another
     // page) the predecessor's page with the forward link; then COMMIT.
-    const auto after_begin = Apply(b.bytes, recorded, 3);
+    // W3b-2b: after BEGIN, the transaction's event (its writes counted).
+    const std::size_t E = event_writes;
+    Check(E >= 1, "the event is written");
+    const auto after_begin = Apply(b.bytes, recorded, 3 + E);
     const auto expected = Oracle(b, after_begin, request);
     Check(expected.has_value(), "the oracle places the script's successor");
     const std::size_t pages = expected->target == expected->link ? 1 : 2;
-    Check(recorded.size() == 3 + pages + 2, "BEGIN, the successor's pages, COMMIT");
+    Check(recorded.size() == 3 + E + pages + 2, "BEGIN, the event, the successor's pages, COMMIT");
     const auto page_write = [&](std::size_t i, u64 page) {
       const auto image = PageOf(expected->file, page, b.size);
       return recorded[i].first == page * b.size && recorded[i].second == image;
     };
-    Check(page_write(3, expected->target), "the successor's page is written first");
-    if (pages == 2) Check(page_write(4, expected->link), "then the predecessor's forward link");
+    Check(page_write(3 + E, expected->target), "the successor's page is written first");
+    if (pages == 2) Check(page_write(4 + E, expected->link), "then the predecessor's forward link");
     Sees(b, path, row, VersionId(1), "the script's result");
     fs::remove(path);
   }
   const auto total = static_cast<u32>(recorded.size());
-  unsigned cases = 0, torn_leaves = 0;
+  unsigned cases = 0, torn_leaves = 0, torn_events = 0;
   for (const bool torn : {false, true}) {
     for (u32 k = torn ? 1 : 0; k <= total; ++k) {
       const bool full = !torn && k == total;
@@ -1168,6 +1236,28 @@ void Losses(const Db& b) {
       const auto expected = torn ? Apply(b.bytes, recorded, k - 1, 1) : Apply(b.bytes, recorded, k);
       Check(file == expected, label + ": exactly the write prefix");
       const auto& at = recorded[torn ? k - 1 : 0];
+      // W3b-2b: a write of the event torn (not a page of the successor's
+      // relation): that page fails its seal, so the next transaction's event
+      // is refused with no write.
+      const bool torn_event = torn && k - 1 >= 3 && k - 1 < 3 + event_writes && at.second.size() == b.size &&
+                              Apply(b.bytes, recorded, k - 1) != file && Apply(b.bytes, recorded, k) != file &&
+                              !IsLeafPage(b, b.bytes, at.first);
+      if (torn_event) {
+        Session s(b, path);
+        pg::TransactionHeaderRecord h;
+        h.transaction_uuid = TxId(40);
+        const auto begun = s.w->Begin(s.sink(), h);
+        Check(begun.ok(), label + ": BEGIN still works");
+        const auto mid = ReadAll(path);
+        const auto refused = WriteEvent(b, s.sink(), *begun.transaction_order, TxId(40));
+        if (refused.error != CE::invalid_catalog) std::cerr << label << ": " << db::CatalogVersionWriteErrorName(refused.error) << '\n';
+        Check(refused.error == CE::invalid_catalog && !refused.writes && ReadAll(path) == mid,
+              label + ": the next event is refused (the torn page fails its seal), no write");
+        ++torn_events;
+        fs::remove(path);
+        ++cases;
+        continue;
+      }
       const bool torn_leaf = torn && at.second.size() == b.size && IsLeafPage(b, b.bytes, at.first) &&
                              Apply(b.bytes, recorded, k - 1) != file && Apply(b.bytes, recorded, k) != file;
       if (torn_leaf) {
@@ -1203,7 +1293,7 @@ void Losses(const Db& b) {
   }
   Check(torn_leaves > 0, "a torn leaf write was seen");
   std::cout << b.name << " losses page_size=" << b.size << " writes=" << total << " cases=" << cases
-            << " torn_leaves=" << torn_leaves << '\n';
+            << " torn_leaves=" << torn_leaves << " torn_events=" << torn_events << " event_writes=" << event_writes << '\n';
 }
 
 class FaultSink final : public d::CarefulWriteSink {
@@ -1276,12 +1366,13 @@ void Faults(const Db& b) {
       // Each step through the fault sink; after a failed read with nothing
       // written the step runs again through the file; after any other failure
       // the run stops.
-      enum { begin, write, commit, done } step = begin;
+      enum { begin, event, write, commit, done } step = begin;  // W3b-2b: the event after BEGIN
       bool stopped = false;
       while (step != done && !stopped) {
         const auto before = fault.writes();
         bool ok = false;
         if (step == begin) ok = s.w->Begin(fault, h).ok();
+        if (step == event) ok = WriteEvent(b, fault, 2, TxId(2)).ok();
         if (step == write) ok = Write(b, fault, request).ok();
         if (step == commit) ok = s.w->Commit(fault, 2, CommitTime(2)).ok();
         if (ok) {
@@ -1297,11 +1388,13 @@ void Faults(const Db& b) {
                 label + ": a failed read writes nothing");
           bool again = false;
           if (step == begin) again = s.w->Begin(s.sink(), h).ok();
+          if (step == event) again = WriteEvent(b, s.sink(), 2, TxId(2)).ok();
           if (step == write) again = Write(b, s.sink(), request).ok();
           if (step == commit) again = s.w->Commit(s.sink(), 2, CommitTime(2)).ok();
           Check(again, label + ": the step succeeds again");
           ++reads;
           // The rest through the file.
+          if (step < event && !WriteEvent(b, s.sink(), 2, TxId(2)).ok()) Check(false, label + ": the event");
           if (step < write && Write(b, s.sink(), request).ok() == false) Check(false, label + ": the successor");
           if (step < commit) Check(s.w->Commit(s.sink(), 2, CommitTime(2)).ok(), label + ": the COMMIT");
           Check(ReadAll(path) == final_file, label + ": the script's result");
@@ -1391,11 +1484,11 @@ void RootAdvance(const Db& b) {
   const auto path = b.Copy(b.bytes, "root.db");
   {
     Session s(b, path);
-    Begin(*s.w, s.sink(), 2);
+    Begin(s, 2);
     Expect(b, s, path, Next(b, path, row, v0, 2, VersionId(1)), "the change the root publishes");
     AdvanceRefused(b, s, path, Advance(created, 2, 2), CE::transaction_not_committed, "before COMMIT");
     Commit(*s.w, s.sink(), 2);
-    Begin(*s.w, s.sink(), 3);
+    Begin(s, 3);
     Rollback(*s.w, s.sink(), 3);
     AdvanceRefused(b, s, path, Advance(created, 3, 3), CE::transaction_not_committed, "a rolled-back transaction");
     AdvanceRefused(b, s, path, Advance(created, 9, 9), CE::transaction_not_committed, "a number never begun");
@@ -1445,7 +1538,7 @@ void RootAdvance(const Db& b) {
               advanced.security_epoch == created.security_epoch + 1,
           "generation 2 in place, no predecessor, the security epoch raised");
     // The root now admits versions at its new values; never above them.
-    Begin(*s.w, s.sink(), 4);
+    Begin(s, 4);
     auto at_new = Next(b, path, row, VersionId(1), 4, VersionId(2));
     at_new.metadata.catalog_generation = advanced.catalog_generation;
     Refused(b, s, path,

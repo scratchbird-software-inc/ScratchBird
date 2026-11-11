@@ -240,6 +240,10 @@ ActiveSuccessor ActiveSuccessorAndReader(SecurityFixture& f) {
   binding.record->generation=2;
   const auto payload=catalog::EncodeCatalogRuntimeAuthorityBinding(*binding.record);Check(payload.ok(),"the successor's payload");
   metadata.record.payload.assign(payload.bytes.begin(),payload.bytes.end());
+  // W3b-2b: transaction 2's catalog.metadata_change event, which the successor cites.
+  Check(scratchbird::tests::catalog_change_event::WriteEvent(sink,SecurityFixture::CvBinding(roots),2,Id(12),security_fixture::Id(9791),security_fixture::Id(9792),
+      security_fixture::Id(9793),security_fixture::Id(9790),1789357072001000ULL).ok(),"transaction 2's catalog change event");
+  metadata.audit_uuid={platform::UuidKind::object,security_fixture::Id(9791)};
   db::CatalogVersionRequest r;r.role=5;r.transaction_order=2;r.transaction_uuid=Id(12);r.row_uuid=original->row_uuid.value;
   r.predecessor_version_uuid=original->version_uuid;r.version_uuid=Id(13);r.metadata=metadata;
   const auto written=db::WriteCatalogSuccessorVersion(sink,SecurityFixture::CvBinding(roots),r);
@@ -305,7 +309,7 @@ void Pinned(unsigned profile) {
 // ---- Visibility of a successor written in place by transaction 2 ---------------------
 void Visibility(unsigned profile) {
   {  // 1: transaction 2 active (and transaction 3, a later reader, active).
-    SecurityFixture f(profile);
+    SecurityFixture f(profile,0,false,true);  // W3b-2b: audited, it writes
     const auto devices=DevicesOf(f.device,profile);
     const auto base=BaseVersion(f);
     const auto active=ActiveSuccessorAndReader(f);
@@ -323,7 +327,7 @@ void Visibility(unsigned profile) {
         "the creator's own uncommitted successor is not a committed active binding");
   }
   {  // 3: rolled back.
-    SecurityFixture f(profile);
+    SecurityFixture f(profile,0,false,true);  // W3b-2b: audited, it writes
     const auto devices=DevicesOf(f.device,profile);
     const auto base=BaseVersion(f);
     f.RetainedSuccessor(3,true);
@@ -331,7 +335,7 @@ void Visibility(unsigned profile) {
         "a rolled-back successor is invisible: the committed definition stands");
   }
   {  // 4: committed.
-    SecurityFixture f(profile);
+    SecurityFixture f(profile,0,false,true);  // W3b-2b: audited, it writes
     const auto devices=DevicesOf(f.device,profile);
     f.RetainedSuccessor(4,true);
     Exact(ReadCommitted(devices,Relation(f),2,Id(1),Id(180),f.budget),Id(13),2,

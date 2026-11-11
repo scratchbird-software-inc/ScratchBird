@@ -9,6 +9,7 @@
 #include "native_catalog_version_writer.hpp"
 #include "bootstrap_policy_fixture.hpp"
 #include "../support/owned_temp_directory.hpp"
+#include "../support/catalog_change_event_fixture.hpp"
 
 namespace {
 namespace runtime_security=scratchbird::engine::internal_api;
@@ -43,7 +44,9 @@ struct SecurityFixture {
   u64 budget;
   db::NativeCreationCatalogIndexes indexes;
   db::NativeCreationWorkspaceReceipt receipt;
-  explicit SecurityFixture(unsigned p,unsigned variant=0,bool indexed=false):profile(p),budget(512*u64{sizes[p]}) {
+  // `audited` (W3b-2b): the fixture's scenarios write a catalog change, so the
+  // create's construction intent is laid down (see below).
+  explicit SecurityFixture(unsigned p,unsigned variant=0,bool indexed=false,bool audited=false):profile(p),budget(512*u64{sizes[p]}) {
     using K=catalog::CatalogRecordKind;db::NativeCreationCatalogSeed seed;
     auto principal=SecurityRecord(K::user_account,200);
     principal.attributes.emplace("kind","service");principal.attributes.emplace("principal_kind","service");
@@ -107,6 +110,14 @@ struct SecurityFixture {
     request.creator.transaction_uuid=security_tx;request.creator.local_id=mga::MakeLocalTransactionId(1);
     request.creator.scope=mga::TransactionScope::local_node;request.total_pages=256;request.creation_utc_millis=1789357072000ULL;
     scratchbird::core::uuid::StandaloneUuidV7Issuer issuer({Id(1),Id(10)},{{},0,1000});
+    // W3b-2b: the create's construction intent (role 6), as the production
+    // create writes it, so a transaction can write its catalog.metadata_change
+    // event (the writer builds it from this row) before changing a definition.
+    // Only where a scenario writes: the read-only scenarios keep the layout
+    // they had.
+    if(audited){const auto intent=scratchbird::tests::catalog_change_event::IntentSeedRow(request,security_fixture::Id(9790),issuer,
+        security_fixture::Metadata(0,security_tx,Id(61),{}));
+     Check(intent.has_value(),"the fixture's construction intent");seed[5].push_back({*intent,{}});}
     for(const auto& relation:seed)for(const auto& row:relation){
       const auto invalid=catalog::ValidateCatalogMetadataVersionView(catalog::BorrowCatalogMetadataVersion(row.metadata));
       if(invalid)std::cerr<<"native security fixture metadata="<<invalid->detail<<" profile="<<p<<" variant="<<variant<<'\n';
@@ -275,6 +286,10 @@ struct SecurityFixture {
       const auto io=device.WriteAt(leaf.header.page_number*u64{sizes[profile]},leaf_bytes.data(),leaf_bytes.size());
       Check(io.ok()&&io.bytes_transferred==leaf_bytes.size()&&device.Sync().ok(),"the forged leaf persists");
     }else{
+      // W3b-2b: transaction 2's catalog.metadata_change event, which its successor cites.
+      Check(scratchbird::tests::catalog_change_event::WriteEvent(sink,CvBinding(roots),2,Id(12),security_fixture::Id(9791),security_fixture::Id(9792),security_fixture::Id(9793),security_fixture::Id(9790),
+          1789357072001000ULL).ok(),"transaction 2's catalog change event");
+      metadata.audit_uuid={platform::UuidKind::object,security_fixture::Id(9791)};
       db::CatalogVersionRequest r;r.role=static_cast<platform::u16>(role+1);r.transaction_order=2;r.transaction_uuid=Id(12);
       r.row_uuid=row.row_uuid.value;r.predecessor_version_uuid=predecessor;r.version_uuid=Id(13);r.metadata=metadata;
       const auto written=db::WriteCatalogSuccessorVersion(sink,CvBinding(roots),r);
@@ -294,7 +309,7 @@ void Empty(const SecurityResult& result,SecurityError error) {
       "refusal exposes no usable security/binding prefix");
 }
 void Governed(unsigned profile,bool indexed,unsigned variant=0,unsigned mga_scenario=0,bool configuration_phase=false,bool discover=false,unsigned epochs=0) {
-  SecurityFixture f(profile,variant,indexed);
+  SecurityFixture f(profile,variant,indexed,mga_scenario!=0);
   if(epochs&&epochs<=4)SecurityFixture::BindingEpochsOnDevice(f.device,profile,f.receipt.relations[4],
       epochs==1?2:epochs==3?UINT64_MAX:1,epochs==2?2:epochs==4?UINT64_MAX:1);
   if(epochs==5)f.SelectedCatalogEpochs(2,4,19,23);

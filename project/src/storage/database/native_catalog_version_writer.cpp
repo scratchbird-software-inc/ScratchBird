@@ -8,6 +8,7 @@
 #include "catalog_name_path.hpp"
 #include "catalog_name_tree_keys.hpp"
 #include "catalog_metadata_change.hpp"
+#include "catalog_construction_intent.hpp"
 #include "filespace_page_zero.hpp"
 #include "allocation_map_writer.hpp"
 #include "native_btree_tree_backing.hpp"
@@ -1162,6 +1163,7 @@ const char* CatalogVersionWriteErrorName(CatalogVersionWriteError error) noexcep
     case E::new_pages_exhausted: return "new_pages_exhausted";
     case E::filespace_full: return "filespace_full";
     case E::cascade_versions_exhausted: return "cascade_versions_exhausted";
+    case E::unaudited_change: return "unaudited_change";
   }
   return "unknown";
 }
@@ -1176,6 +1178,27 @@ Stop Conflict(u64 blocker) {
   result.error = E::write_conflict;
   result.blocker_order = blocker;
   return result;
+}
+
+// SB_AUDIT_CATALOG_METADATA_CHANGE (W3b-2b): a catalog.metadata_change event row.
+bool IsChangeEvent(const catalog::CatalogMetadataVersion& m) {
+  return m.record.header.kind == catalog::CatalogRecordKind::audit_evidence &&
+         catalog::IsCatalogMetadataChangePayload(m.record.payload);
+}
+// Whether `audit` names a catalog.metadata_change event stored in `events`
+// (role 6) that this transaction wrote (its creator).
+bool StoredOwnEvent(const Relation& events, const scratchbird::core::platform::TypedUuid& audit, const Uuid& transaction,
+                    u64 order) {
+  if (audit.kind != UuidKind::object) return false;
+  for (const auto& leaf : events.leaves)
+    for (const auto& row : leaf.page.body.rows) {
+      const auto m = leaf.metadata.find(row.version_uuid);
+      if (m == leaf.metadata.end() || m->second.record.header.object_uuid.value != audit.value) continue;
+      if (IsChangeEvent(m->second) && !m->second.record.header.deleted && row.local_transaction_id == order &&
+          row.transaction_uuid.value == transaction)
+        return true;
+    }
+  return false;
 }
 
 // One new version of a row: a successor's own, or an entry the cascade moves.
@@ -1615,6 +1638,21 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
         return Refuse(E::invalid_catalog);
       if (!ReadRelation(sink, binding, page_size, *profiles, relations[5], result)) return result;
     }
+    // SB_AUDIT_CATALOG_METADATA_CHANGE (W3b-2b): an event is immutable; a
+    // definition version cites an event of this transaction.
+    if (request.metadata.record.header.kind == catalog::CatalogRecordKind::audit_evidence)
+      return Refuse(E::invalid_successor);
+    if (!named) {
+      if (!relations.contains(6)) {
+        const auto events = std::find_if(root.root->roots.begin(), root.root->roots.end(),
+                                         [&](const auto& r) { return r.role == 6; });
+        if (events == root.root->roots.end() || (events->page_type != 6 && events->page_type != 0x200))
+          return Refuse(E::invalid_catalog);
+        if (!ReadRelation(sink, binding, page_size, *events, relations[6], result)) return result;
+      }
+      if (!StoredOwnEvent(relations.at(6), request.metadata.audit_uuid, request.transaction_uuid, request.transaction_order))
+        return Refuse(E::unaudited_change);
+    }
     auto& relation_read = relations.at(request.role);
     auto& bases = relation_read.bases;
     auto& leaves = relation_read.leaves;
@@ -1931,7 +1969,7 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
     if (binding.read_only_database) return Refuse(E::read_only_database);
     // A name row carries its name and an empty payload (the envelope is
     // encoded once placed); the relation admits the record's kind.
-    bool any_entry = false;
+    bool any_entry = false, needs_audit = false;
     for (std::size_t i = 0; i < request.rows.size(); ++i) {
       const auto& row = request.rows[i];
       const auto& m = row.metadata;
@@ -1942,6 +1980,7 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
       if (!RoleAdmits(row.role, m)) return refuse_row(E::invalid_role, i);
       if (name && !catalog::CatalogNamePayloadMatchesMetadata(*row.name, m)) return refuse_row(E::invalid_insert, i);
       any_entry = any_entry || (name && std::holds_alternative<catalog::CatalogNameEntry>(*row.name));
+      needs_audit = needs_audit || (!name && m.record.header.kind != catalog::CatalogRecordKind::audit_evidence);
     }
     // Rows and versions are new within the request; objects too.
     for (std::size_t i = 0; i < request.rows.size(); ++i)
@@ -2001,6 +2040,7 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
     std::vector<u16> roles;
     for (const auto& row : request.rows) roles.push_back(row.role);
     if (any_entry) roles.push_back(5);  // the profiles and policies an entry names
+    if (needs_audit) roles.push_back(6);  // the events a definition cites (W3b-2b)
     for (const auto role : roles) {
       if (relations.contains(role)) continue;
       const auto head = std::find_if(root.root->roots.begin(), root.root->roots.end(),
@@ -2075,6 +2115,19 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
       const auto& head = heads.at(want.role);
       const auto& m = want.metadata;
       const auto& h = m.record.header;
+      // SB_AUDIT_CATALOG_METADATA_CHANGE (W3b-2b): a definition cites an event
+      // of this transaction, in this request or already written by it.
+      // (An audit_evidence row is its own anchor; one not of a registered
+      // family the codec refuses below.)
+      if (!want.name && m.record.header.kind != catalog::CatalogRecordKind::audit_evidence) {
+        const bool in_request =
+            m.audit_uuid.kind == UuidKind::object &&
+            std::any_of(request.rows.begin(), request.rows.end(), [&](const auto& r) {
+              return r.role == 6 && IsChangeEvent(r.metadata) && r.metadata.record.header.object_uuid.value == m.audit_uuid.value;
+            });
+        if (!in_request && !StoredOwnEvent(relations.at(6), m.audit_uuid, request.transaction_uuid, request.transaction_order))
+          return refuse_row(E::unaudited_change, i);
+      }
       // A first version by this transaction.
       if ((!want.name && catalog::ValidateCatalogMetadataVersionView(catalog::BorrowCatalogMetadataVersion(m))) ||
           h.row_uuid.kind != UuidKind::row || h.row_uuid.value != want.row_uuid || h.deleted ||
@@ -2639,4 +2692,69 @@ CatalogRootAdvanceResult AdvanceCatalogRoot(disk::CarefulWriteSink& sink, const 
   }
 }
 
+// SB_AUDIT_CATALOG_METADATA_CHANGE (W3b-2b): a transaction's event, built
+// from the create's construction intent row (owner, owning schema, parent)
+// and written through the insert path.
+CatalogVersionWriteResult WriteCatalogChangeEvent(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding& binding,
+                                                  const CatalogChangeEventRequest& request) noexcept {
+  CatalogVersionWriteResult result;
+  try {
+    const auto& croot = binding.catalog_root;
+    const auto* profile = disk::FindCanonicalFilespacePageProfile(croot.page_size_profile_uuid);
+    if (!profile || !croot.page_number || !V7(binding.database_uuid)) return result;
+    const u32 page_size = profile->page_size_bytes;
+    std::vector<byte> image;
+    if (!ReadPage(sink, page_size, croot.page_number, image, result)) return result;
+    const disk::NativePageReference root_ref{croot.filespace_uuid, croot.page_number, croot.page_generation,
+                                             croot.page_size_profile_uuid};
+    if (!HeaderBinds(image, binding.database_uuid, root_ref, croot.page_type)) return Refuse(E::invalid_catalog);
+    const auto root = pg::DecodeNativeCatalogRoot(image);
+    if (!root.ok() || root.root->object_uuid != croot.object_uuid) return Refuse(E::invalid_catalog);
+    const auto head = std::find_if(root.root->roots.begin(), root.root->roots.end(), [](const auto& r) { return r.role == 6; });
+    if (head == root.root->roots.end() || (head->page_type != 6 && head->page_type != 0x200)) return Refuse(E::invalid_catalog);
+    Relation events;
+    if (!ReadRelation(sink, binding, page_size, *head, events, result)) return result;
+    const catalog::CatalogMetadataVersion* intent = nullptr;
+    for (const auto& leaf : events.leaves)
+      for (const auto& [version, m] : leaf.metadata)
+        if (!intent && m.object_subtype == "node_construction_intent" && catalog::IsCatalogConstructionIntentPayload(m.record.payload))
+          intent = &m;
+    if (!intent) return Refuse(E::invalid_catalog);
+    catalog::CatalogMetadataChange p;
+    p.event_uuid = request.event_uuid;
+    p.database_uuid = binding.database_uuid;
+    p.engine_uuid = request.engine_uuid;
+    p.origin_transaction_uuid = {UuidKind::transaction, request.transaction_uuid};
+    p.origin_local_transaction_id = request.transaction_order;
+    p.event_time_utc_us = request.event_time_utc_us;
+    p.catalog_generation = root.root->catalog_generation;
+    p.event = catalog::MetadataChangeAuditEvent::metadata_change;
+    p.event_class = catalog::MetadataChangeAuditClass::metadata_change;
+    p.policy_decision = catalog::MetadataChangeAuditDecision::not_evaluated;
+    p.redaction = catalog::MetadataChangeAuditRedaction::safe_message_only;
+    p.actor_uuid = request.actor_uuid;
+    std::array<byte, catalog::kCatalogMetadataChangeMaxBytes> out{};
+    const auto encoded = catalog::EncodeCatalogMetadataChangeInto(p, out);
+    if (!encoded.ok()) return Refuse(E::invalid_insert);
+    auto m = *intent;
+    m.record.header.object_uuid = {UuidKind::object, request.event_uuid};
+    m.record.header.row_uuid = {UuidKind::row, request.row_uuid};
+    m.record.header.deleted = false;
+    m.record.payload.assign(reinterpret_cast<const char*>(encoded.bytes.data()), encoded.bytes.size());
+    m.object_subtype = "catalog_metadata_change";
+    m.audit_uuid = {UuidKind::object, request.event_uuid};
+    m.creator_transaction_uuid = {UuidKind::transaction, request.transaction_uuid};
+    m.creator_local_transaction_id = request.transaction_order;
+    m.definition_version = 1;
+    m.catalog_generation = root.root->catalog_generation;
+    CatalogInsertRequest insert;
+    insert.transaction_order = request.transaction_order;
+    insert.transaction_uuid = request.transaction_uuid;
+    insert.rows.push_back({6, request.row_uuid, request.version_uuid, std::move(m), std::nullopt});
+    insert.new_pages = request.new_pages;
+    return WriteCatalogInsertVersions(sink, binding, insert);
+  } catch (...) {
+    return Refuse(E::resource_exhausted);
+  }
+}
 }  // namespace scratchbird::storage::database

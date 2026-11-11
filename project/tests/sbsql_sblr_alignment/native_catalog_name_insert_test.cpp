@@ -22,6 +22,8 @@
 // verification refuses at exactly the audit verifier's event_binding (its
 // rows cite the create's event, whose origin is transaction 1: the
 // catalog-change audit event comes with W3b-2, and this is its flip target).
+// [W3b-2b: flipped. Every transaction writes its catalog.metadata_change event
+// at BEGIN and every definition cites it: full verification passes.]
 //   - A named object by a transaction in progress (not visible), committed
 //     (visible; verifiers as above).
 //   - Collisions: the template's own name, and the same name in another case
@@ -343,6 +345,7 @@ Verified Verify(const Db& b, const std::string& original, bool admit_refusal = f
 }
 // A committed named object: every verifier but audit accepts it, and full
 // verification refuses at exactly audit event_binding (W3b-2's flip target).
+// [W3b-2b: flipped; see the body: every committed change is audited now.]
 // `full_passes`: the audit verifier judges live versions (W3b-2 adds the
 // event every change cites); a drop leaves none of the object's live, so full
 // verification passes for it.
@@ -351,6 +354,14 @@ Verified Verify(const Db& b, const std::string& original, bool admit_refusal = f
 // is refused there, resource_exhausted for role 2, and nothing else is.
 void ExpectNamedVerification(const Db& b, const std::string& path, std::size_t definitions, std::string_view label,
                              bool full_passes = false, bool admit_scan_bound = false) {
+  // W3b-2b: every transaction writes its catalog.metadata_change event at
+  // BEGIN and every definition cites it, so every committed state is audited
+  // and FULL verification passes (until W3b-2 it refused at audit
+  // event_binding; `full_passes` no longer selects anything). `definitions`
+  // counts the named definitions; name verification also counts each event
+  // row as an unnamed definition: the events the audit verifier counts beyond
+  // the create's construction intent are added.
+  (void)full_passes;
   auto v = Verify(b, path, admit_scan_bound);
   if (v.refused) {
     Check(v.refused->error == db::NativeCatalogCohortError::relation_failure &&
@@ -361,34 +372,22 @@ void ExpectNamedVerification(const Db& b, const std::string& path, std::size_t d
                  " verified again on a TEST-ONLY tier twice its size\n";
     v = Verify(b, path, false, 2);
   }
-  using AE = ia::NativeCatalogAuditError;
-  if (!v.names.ok()) std::cerr << label << " names=" << int(v.names.error) << '\n';
-  if (!v.profiles.ok()) std::cerr << label << " profiles=" << int(v.profiles.error) << '\n';
-  if (!v.collisions.ok()) std::cerr << label << " collisions=" << int(v.collisions.error) << '\n';
-  if (!v.security.ok()) std::cerr << label << " security=" << int(v.security.error) << '\n';
-  Check(v.names.ok() && v.names.definitions == definitions, std::string(label) + ": name verification accepts it");
-  Check(v.profiles.ok() && v.collisions.ok() && v.security.ok(),
-        std::string(label) + ": naming-profile, collision and security verification accept it");
-  Check(v.allocation, std::string(label) + ": every captured catalog page is an allocated page the map records");
-  if (!v.name_trees.ok()) std::cerr << label << " name_trees=" << int(v.name_trees.error) << '\n';
-  Check(v.name_trees.ok() && v.name_trees.present, std::string(label) + ": the name trees agree with the names");
-  if (full_passes) {
-    if (!v.full.ok())
-      std::cerr << label << " full: audit=" << int(v.full.audit.error) << " paths=" << int(v.full.paths.error)
-                << " name_trees=" << int(v.full.name_trees.error) << '\n';
-    Check(v.full.ok(), std::string(label) + ": full verification passes (nothing of the object is left to audit)");
-    return;
-  }
-  if (!(v.full.names.ok() && v.full.indexes.ok() && v.full.namespaces.ok() && v.full.filespaces.ok() &&
-        v.full.audit.error == AE::event_binding && !v.full.ok()))
+  if (!v.full.ok())
     std::cerr << label << " full: names=" << int(v.full.names.error) << " indexes=" << int(v.full.indexes.error)
               << " namespaces=" << int(v.full.namespaces.error) << " filespaces=" << int(v.full.filespaces.error)
               << " audit=" << int(v.full.audit.error) << " security=" << int(v.full.security.error)
               << " profiles=" << int(v.full.naming_profiles.error) << " collisions=" << int(v.full.collisions.error)
               << " paths=" << int(v.full.paths.error) << " name_trees=" << int(v.full.name_trees.error) << '\n';
-  Check(v.full.names.ok() && v.full.indexes.ok() && v.full.namespaces.ok() && v.full.filespaces.ok() &&
-            v.full.audit.error == AE::event_binding && !v.full.ok(),
-        std::string(label) + ": full verification refuses at exactly audit event_binding (W3b-2)");
+  Check(v.full.ok(), std::string(label) + ": full verification passes (every committed change audited)");
+  const std::size_t events = v.full.audit.events ? v.full.audit.events - 1 : 0;
+  if (!v.names.ok() || v.names.definitions != definitions + events)
+    std::cerr << label << " names=" << int(v.names.error) << " definitions=" << v.names.definitions << " expected "
+              << definitions << " + " << events << " events\n";
+  Check(v.names.ok() && v.names.definitions == definitions + events, std::string(label) + ": name verification accepts it");
+  Check(v.profiles.ok() && v.collisions.ok() && v.security.ok(),
+        std::string(label) + ": naming-profile, collision and security verification accept it");
+  Check(v.allocation, std::string(label) + ": every captured catalog page is an allocated page the map records");
+  Check(v.name_trees.ok() && v.name_trees.present, std::string(label) + ": the name trees agree with the names");
 }
 
 // ---- Choosing keys ----------------------------------------------------------------------
@@ -423,7 +422,7 @@ std::optional<u16> DefinitionRole(const std::vector<Place>& places) {
 bool NamedStates(const Db& b, const NameTemplate& t, u16 role, std::size_t definitions) {
   const auto path = b.Copy(b.bytes, "named.db");
   Session s(b, path);
-  Begin(*s.w, s.sink(), 2);
+  Begin(s, 2);
   const auto file = ReadAll(path);
   const auto named = NamedAfter(b, file, t, role, After(b, file, role), 1, 2, "w3b_named_object");
   const auto request = Request(2, named.Rows());
@@ -456,7 +455,7 @@ bool NamedStates(const Db& b, const NameTemplate& t, u16 role, std::size_t defin
   }
   ExpectNamedVerification(b, path, definitions + 1, "a committed named object");
   // An alias of the same object, same name: admitted (one object).
-  Begin(*s.w, s.sink(), 3);
+  Begin(s, 3);
   {
     const auto now = ReadAll(path);
     const auto alias = Alias(named, t, V7(After(b, now, role), 0xd00001), 2, 3, "w3b_named_object");
@@ -505,7 +504,7 @@ std::vector<db::CatalogNewPageIdentity> PageIds(unsigned k) {
 void NameGrowth(const Db& b, const NameTemplate& t, u16 role, std::size_t definitions) {
   const auto path = b.Copy(b.bytes, "growth.db");
   Session s(b, path);
-  Begin(*s.w, s.sink(), 2);
+  Begin(s, 2);
   std::optional<std::pair<std::vector<byte>, db::CatalogInsertRequest>> grew;
   unsigned k = 1;
   for (; k <= 60 && !grew; ++k) {
@@ -582,7 +581,7 @@ void NameGrowth(const Db& b, const NameTemplate& t, u16 role, std::size_t defini
 void NameSplits(const Db& b, const NameTemplate& t, u16 role, std::size_t definitions) {
   const auto path = b.Copy(b.bytes, "name-splits.db");
   Session s(b, path);
-  Begin(*s.w, s.sink(), 2);
+  Begin(s, 2);
   const auto zero = d::DecodeFilespacePageZero(b.bytes.data(), b.size);
   Check(zero.ok(), "page zero decodes");
   Uuid authoritative{};
@@ -714,7 +713,7 @@ int NameBranchCrashes(const Db& b, const NameTemplate& t, u16 role, std::span<co
   for (u32 w = 1; w <= 64; ++w) {
     const auto copy = b.Copy(std::vector<byte>(pre.begin(), pre.end()), "name-branch-crash.db");
     Session c(b, copy);  // restart: transaction 2 was in progress, now dead
-    Begin(*c.w, c.sink(), 3);
+    Begin(c, 3);
     auto file = ReadAll(copy);
     std::string text = "w3b_branch_" + std::to_string(10000 + k) + "_";
     text.resize(length, 'x');
@@ -740,7 +739,7 @@ int NameBranchCrashes(const Db& b, const NameTemplate& t, u16 role, std::span<co
     Check(*seen.first >= *before.first && *seen.first <= *before.first + 1 && *seen.second >= *before.second &&
               *seen.second <= *before.second + per,
           std::string(what) + ": after a failed write " + std::to_string(w) + " the trees hold their cells, the new one at most");
-    Begin(*c.w, c.sink(), 4);
+    Begin(c, 4);
     file = ReadAll(copy);
     std::string next_text = "w3b_branch_next_" + std::to_string(10000 + k) + "_";
     next_text.resize(length, 'y');
@@ -776,7 +775,7 @@ int NameBranchCrashes(const Db& b, const NameTemplate& t, u16 role, std::span<co
 void NameBranchSplits(const Db& b, const NameTemplate& t, u16 role, std::size_t definitions) {
   const auto path = b.Copy(b.bytes, "name-branches.db");
   Session s(b, path);
-  Begin(*s.w, s.sink(), 2);
+  Begin(s, 2);
   const auto zero = d::DecodeFilespacePageZero(b.bytes.data(), b.size);
   Check(zero.ok(), "page zero decodes");
   u64 root_page = 0;
@@ -1235,13 +1234,13 @@ void NameCascade(const Db& b, const NameTemplate& t, u16 role, std::size_t defin
 
   // Another transaction's entry below the scope, in progress: the rename
   // cannot cascade it and is a write conflict with that transaction.
-  Begin(*s.w, s.sink(), 2);
+  Begin(s, 2);
   {
     const auto file = ReadAll(path);
     const auto named = NamedAfter(b, file, t, role, After(b, file, role), 3101, 2, "w3b_below_scope");
     ExpectInsert(b, s, path, Request(2, named.Rows()), "a named object below the scope, in progress");
   }
-  Begin(*s.w, s.sink(), 3);
+  Begin(s, 3);
   {
     const auto file = ReadAll(path);
     auto [r, e] = rename_request(file, 3, 9100, 4096);
@@ -1320,7 +1319,7 @@ void NameCascade(const Db& b, const NameTemplate& t, u16 role, std::size_t defin
     ExpectNamedVerification(b, path, definitions + 1, "a scope rename and its cascade, committed", false, true);
     // Dropping the scope's only name in its language would leave the entries
     // below without a path: refused.
-    Begin(*s.w, s.sink(), 4);
+    Begin(s, 4);
     const auto now = ReadAll(path);
     const auto renamed_scope = scope_entry(now);
     auto dropped = renamed_scope.entry;
@@ -1340,7 +1339,7 @@ void NameCascade(const Db& b, const NameTemplate& t, u16 role, std::size_t defin
   for (u32 w = 1; w <= 256; ++w) {
     const auto copy = b.Copy(written_pre, "cascade-crash.db");
     Session c(b, copy);  // restart: transaction 3 was in progress, now dead
-    Begin(*c.w, c.sink(), 4);
+    Begin(c, 4);
     auto [r, e] = rename_request(written_pre, 4, 9200, expected.size());
     KindFaultSink sink(c.sink(), KindFaultSink::Kind::write, w);
     const auto result = db::WriteCatalogSuccessorVersion(sink, GrowingBinding(b), r);
@@ -1352,7 +1351,7 @@ void NameCascade(const Db& b, const NameTemplate& t, u16 role, std::size_t defin
     Check(result.error == CE::write_failed, "a failed write is write_failed");
     Rollback(*c.w, c.sink(), 4);
     if (w <= 3 || w % 8 == 0) ExpectNamedVerification(b, copy, definitions + 1, "after a failed cascade write " + std::to_string(w), false, true);
-    Begin(*c.w, c.sink(), 5);
+    Begin(c, 5);
     const auto file = ReadAll(copy);
     auto [next, ne] = rename_request(file, 5, 9600, expected.size(), {4});
     const auto done = db::WriteCatalogSuccessorVersion(c.sink(), GrowingBinding(b), next);
@@ -1450,7 +1449,7 @@ void NameCascadePaths(const Db& b, const NameTemplate& t, u16 role, std::size_t 
   const auto english = std::get<c::CatalogNameEntry>(*entry_of(b.bytes, t.entry.language_tag, true).name);
   const std::string other_language = t.entry.language_tag == "fr" ? "de" : "fr";
   // A named object below the schema, then its name in the other language.
-  Begin(*s.w, s.sink(), 2);
+  Begin(s, 2);
   auto file = ReadAll(path);
   const auto named = NamedAfter(b, file, t, role, After(b, file, role), 3201, 2, "w3b_paths_object");
   ExpectInsert(b, s, path, Request(2, named.Rows()), "a named object below the schema");
@@ -1511,7 +1510,7 @@ void NameCascadePaths(const Db& b, const NameTemplate& t, u16 role, std::size_t 
   // transaction, since the default name is the definition's, the vector's,
   // and the one entry marked default for the object and for the vector's
   // language (the startup name rules). Each step's cascade is checked.
-  Begin(*s.w, s.sink(), 3);
+  Begin(s, 3);
   {
     const auto successor_of = [&](const db::CatalogInsertRow& row, unsigned k, c::CatalogNamePayload payload) {
       auto r = NameSuccessor(row, row.version_uuid, 3, VersionId(k), std::move(payload), false);
@@ -1589,7 +1588,7 @@ void NameCascadePaths(const Db& b, const NameTemplate& t, u16 role, std::size_t 
     ExpectNamedVerification(b, path, definitions + 1, "the schema's default name changed and its cascades, committed", false, true);
   }
   // The old English entry, now on no path, dropped: nothing moves.
-  Begin(*s.w, s.sink(), 4);
+  Begin(s, 4);
   {
     file = ReadAll(path);
     const auto row = NameRowOf(b, file, [&](const c::CatalogNamePayload& p) {
@@ -1667,12 +1666,12 @@ void NameConflicts(const Db& b, const NameTemplate& t, u16 role, std::size_t def
   for (const bool commit : {false, true}) {
     const auto path = b.Copy(b.bytes, "conflict-a.db");
     Session s(b, path);
-    Begin(*s.w, s.sink(), 2);
+    Begin(s, 2);
     auto file = ReadAll(path);
     const auto rename = ScopeRename(b, t, file, 2, 9400, 4096, "orders_renamed_a");
     const auto renamed = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), rename);
     Check(renamed.ok() && !renamed.cascaded.empty(), "A: the schema renamed by 2, cascading, in progress");
-    Begin(*s.w, s.sink(), 3);
+    Begin(s, 3);
     file = ReadAll(path);
     const auto named = NamedAfter(b, file, t, role, After(b, file, role), 3401, 3, "w3b_conflict_a");
     {
@@ -1712,12 +1711,12 @@ void NameConflicts(const Db& b, const NameTemplate& t, u16 role, std::size_t def
   {
     const auto path = b.Copy(b.bytes, "conflict-b.db");
     Session s(b, path);
-    Begin(*s.w, s.sink(), 2);
+    Begin(s, 2);
     auto file = ReadAll(path);
     const auto below = EntriesBelow(b, file, ScopeEntry(b, t, file).entry.full_path_lookup_key);
     const auto named = NamedAfter(b, file, t, role, After(b, file, role), 3402, 2, "w3b_conflict_b");
     ExpectInsert(b, s, path, Request(2, named.Rows()), "B: a named object below the schema, in progress");
-    Begin(*s.w, s.sink(), 3);
+    Begin(s, 3);
     file = ReadAll(path);
     {
       const auto result = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), ScopeRename(b, t, file, 3, 9410, 4096, "orders_renamed_b"));
@@ -1738,7 +1737,7 @@ void NameConflicts(const Db& b, const NameTemplate& t, u16 role, std::size_t def
   {
     const auto path = b.Copy(b.bytes, "conflict-c.db");
     Session s(b, path);
-    Begin(*s.w, s.sink(), 2);
+    Begin(s, 2);
     auto file = ReadAll(path);
     const auto parent = NamedAfter(b, file, t, role, After(b, file, role), 3403, 2, "w3b_conflict_parent");
     {
@@ -1750,7 +1749,7 @@ void NameConflicts(const Db& b, const NameTemplate& t, u16 role, std::size_t def
       if (!result.ok()) std::cerr << "C: X: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
       Check(result.ok(), "C: a named object X, in progress");
     }
-    Begin(*s.w, s.sink(), 3);
+    Begin(s, 3);
     file = ReadAll(path);
     auto child = NamedAfter(b, file, t, role, After(b, file, role), 3404, 3, "w3b_conflict_child");
     const auto& x = std::get<c::CatalogNameEntry>(*parent.entry.name);
@@ -1777,12 +1776,12 @@ void NameConflicts(const Db& b, const NameTemplate& t, u16 role, std::size_t def
   {
     const auto path = b.Copy(b.bytes, "conflict-d.db");
     Session s(b, path);
-    Begin(*s.w, s.sink(), 2);
+    Begin(s, 2);
     auto file = ReadAll(path);
     const auto scope = ScopeEntry(b, t, file);
     const auto renamed = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), ScopeRename(b, t, file, 2, 9420, 4096, "orders_renamed_d"));
     Check(renamed.ok(), "D: the schema renamed by 2, in progress");
-    Begin(*s.w, s.sink(), 3);
+    Begin(s, 3);
     file = ReadAll(path);
     // A name of another object in the template's language and identifier
     // profile, not the database's, whose path does not run through the schema
@@ -1841,7 +1840,7 @@ void NameInsertCascade(const Db& b, const NameTemplate& t, u16 role, std::size_t
     }, "the schema's default entry");
   };
   // A named object below the schema and its name in the second language.
-  Begin(*s.w, s.sink(), 2);
+  Begin(s, 2);
   auto file = ReadAll(path);
   const auto named = NamedAfter(b, file, t, role, After(b, file, role), 3501, 2, "w3b_insert_cascade");
   ExpectInsert(b, s, path, Request(2, named.Rows()), "a named object below the schema");
@@ -1888,7 +1887,7 @@ void NameInsertCascade(const Db& b, const NameTemplate& t, u16 role, std::size_t
         }
     Check(cell, label + ": the cascaded version has its cell");
   };
-  Begin(*s.w, s.sink(), 3);
+  Begin(s, 3);
   const auto begun = ReadAll(path);  // BEGIN wrote the inventory
   {
     auto [r, name] = schema_name(pre, 3, 21, "w3b_schema_nom", 0);
@@ -1910,7 +1909,7 @@ void NameInsertCascade(const Db& b, const NameTemplate& t, u16 role, std::size_t
   }
   // Q47 with it: another transaction's second-language name below the schema
   // while the insert is in progress.
-  Begin(*s.w, s.sink(), 4);
+  Begin(s, 4);
   {
     file = ReadAll(path);
     const auto alias = EntryLike(named.entry, t, V7(After(b, file, role), 0xd20002), 12, 4, "w3b_insert_alias", language, false,
@@ -1923,7 +1922,7 @@ void NameInsertCascade(const Db& b, const NameTemplate& t, u16 role, std::size_t
   Commit(*s.w, s.sink(), 3);
   ExpectNamedVerification(b, path, definitions + 1, "the cascading insert, committed", false, true);
   // A second default in that language: the entry below's scope is ambiguous.
-  Begin(*s.w, s.sink(), 5);
+  Begin(s, 5);
   {
     file = ReadAll(path);
     auto [r, name] = schema_name(file, 5, 22, "w3b_schema_nom_deux", 4);
@@ -1940,7 +1939,7 @@ void NameInsertCascade(const Db& b, const NameTemplate& t, u16 role, std::size_t
   for (u32 w = 1; w <= 128; ++w) {
     const auto copy = b.Copy(pre, "insert-cascade-crash.db");
     Session c(b, copy);
-    Begin(*c.w, c.sink(), 3);
+    Begin(c, 3);
     auto [r, name] = schema_name(pre, 3, 23, "w3b_schema_nom", 4);
     KindFaultSink sink(c.sink(), KindFaultSink::Kind::write, w);
     const auto result = db::WriteCatalogInsertVersions(sink, GrowingBinding(b), r);
@@ -1952,7 +1951,7 @@ void NameInsertCascade(const Db& b, const NameTemplate& t, u16 role, std::size_t
     Check(result.error == CE::write_failed, "a failed write is write_failed");
     Rollback(*c.w, c.sink(), 3);
     if (w <= 3 || w % 4 == 0) ExpectNamedVerification(b, copy, definitions + 1, "after failed insert-cascade write " + std::to_string(w), false, true);
-    Begin(*c.w, c.sink(), 4);
+    Begin(c, 4);
     const auto now = ReadAll(copy);
     auto [next, next_name] = schema_name(now, 4, 24, "w3b_schema_nom", 4);
     const auto done = db::WriteCatalogInsertVersions(c.sink(), GrowingBinding(b), next);
@@ -2061,20 +2060,22 @@ void MetadataChangeCodec(const Db& b) {
   }
   std::cout << b.name << " metadata change codec page_size=" << b.size << ": 232/256 bytes, " << refused.size() << " refusals\n";
 }
-// SB_AUDIT_CATALOG_METADATA_CHANGE: a committed change whose definition cites
-// its transaction's event passes FULL open verification (the W3b-2 flip: until
-// now any committed change refused at audit event_binding), name rows being
-// data (Q50): a rename alone, citing nothing new, also passes. An unaudited
-// definition still refuses at event_binding. The writer refuses an event that
-// is another transaction's or another database's, and a construction intent
-// written after the create.
+// SB_AUDIT_CATALOG_METADATA_CHANGE (W3b-2a, W3b-2b): a committed change whose
+// definition cites its transaction's event passes FULL open verification; name
+// rows being data (Q50), a rename alone also passes. The writer refuses, before
+// any write: an event that is another transaction's or another database's, a
+// construction intent after the create; a definition citing no event of its own
+// transaction (none written yet, the create's construction intent, another
+// transaction's committed event: unaudited_change), an insert's or a
+// successor's; a successor of an event row (events are immutable).
 void AuditedChanges(const Db& b, const NameTemplate& t, u16 role, std::size_t definitions) {
   MetadataChangeCodec(b);
   const auto path = b.Copy(b.bytes, "audited.db");
   Session s(b, path);
-  Begin(*s.w, s.sink(), 2);
+  Begin(*s.w, s.sink(), 2);  // no event at BEGIN: this transaction writes its own below
   auto file = ReadAll(path);
   const auto key = V7(After(b, file, 6), 0xd40001);
+  const auto [intent_row, intent] = ConstructionIntentOf(b, file);
   // Refusals first, nothing written.
   {
     auto other = ChangeEventRow(b, file, 2, key, 1, [](auto& p) {
@@ -2084,7 +2085,6 @@ void AuditedChanges(const Db& b, const NameTemplate& t, u16 role, std::size_t de
     InsertRefused(b, s, path, Request(2, {other}), CE::invalid_insert, "an event naming another transaction as its origin");
     auto foreign = ChangeEventRow(b, file, 2, key, 1, [](auto& p) { p.database_uuid = V7(kT + 2200003, 0x790004); });
     InsertRefused(b, s, path, Request(2, {foreign}), CE::invalid_insert, "an event of another database");
-    auto [intent_row, intent] = ConstructionIntentOf(b, file);
     auto late = intent_row;
     late.record.header.object_uuid = {UuidKind::object, V7(Ms(key), 0x790010)};
     late.record.header.row_uuid = {UuidKind::row, key};
@@ -2092,11 +2092,17 @@ void AuditedChanges(const Db& b, const NameTemplate& t, u16 role, std::size_t de
     late.creator_local_transaction_id = 2;
     InsertRefused(b, s, path, Request(2, {db::CatalogInsertRow{6, key, V7(Ms(key), 0x7a0010), late, std::nullopt}}),
                   CE::invalid_insert, "a construction intent written after the create");
+    const auto bare = NamedAfter(b, file, t, role, After(b, file, role), 3600, 2, "w3b_no_event_object");
+    InsertRefused(b, s, path, Request(2, bare.Rows()), CE::unaudited_change,
+                  "a definition by a transaction that has written no event");
   }
-  // The event and a named object whose definition cites it, by 2.
+  // The event and a named object whose definition cites it, in one request.
   const auto event_row = ChangeEventRow(b, file, 2, key, 1);
   auto named = NamedAfter(b, file, t, role, After(b, file, role), 3601, 2, "w3b_audited_object");
   named.definition.metadata.audit_uuid = event_row.metadata.record.header.object_uuid;
+  // Its name rows' references resolve to it too (open verification requires a
+  // name row's audit reference to resolve; the writer does not check it).
+  named.vector.metadata.audit_uuid = named.entry.metadata.audit_uuid = event_row.metadata.record.header.object_uuid;
   auto request = Request(2, {event_row, named.definition, named.vector, named.entry});
   request.new_pages = PageIds(31);
   {
@@ -2105,47 +2111,78 @@ void AuditedChanges(const Db& b, const NameTemplate& t, u16 role, std::size_t de
     Check(result.ok(), "the event and a named object citing it are inserted");
   }
   Commit(*s.w, s.sink(), 2);
-  // The event counts among the unnamed definitions name verification admits.
-  ExpectNamedVerification(b, path, definitions + 2, "an audited named object, committed", true, true);
-  // A rename alone (name rows are data): committed, still passes.
-  Begin(*s.w, s.sink(), 3);
+  ExpectNamedVerification(b, path, definitions + 1, "an audited named object, committed", true, true);
+  // A rename (name rows are data): committed, passes.
+  Begin(s, 3);
   file = ReadAll(path);
   {
     const auto result = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), ScopeRename(b, t, file, 3, 9430, 4096, "orders_audited"));
     if (!result.ok()) std::cerr << "rename: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
-    Check(result.ok() && !result.cascaded.empty(), "the schema renamed, cascading, with no event");
+    Check(result.ok() && !result.cascaded.empty(), "the schema renamed, cascading");
   }
   Commit(*s.w, s.sink(), 3);
-  ExpectNamedVerification(b, path, definitions + 2, "an unaudited rename (name rows are data), committed", true, true);
-  // An unaudited definition (citing the create's event): still event_binding.
-  Begin(*s.w, s.sink(), 4);
+  ExpectNamedVerification(b, path, definitions + 1, "a rename (name rows are data), committed", true, true);
+  // 4 (its event written at BEGIN): definitions citing another event refused.
+  Begin(s, 4);
   file = ReadAll(path);
-  auto unaudited = NamedAfter(b, file, t, role, After(b, file, role), 3602, 4, "w3b_unaudited_object");
+  auto next = NamedAfter(b, file, t, role, After(b, file, role), 3602, 4, "w3b_second_audited_object");
   {
     // Its path through the schema's new name.
-    auto e = std::get<c::CatalogNameEntry>(*unaudited.entry.name);
+    auto e = std::get<c::CatalogNameEntry>(*next.entry.name);
     const auto neighbour = NewestEntries(b, file).at(NameRowOf(b, file, [&](const c::CatalogNamePayload& p) {
       const auto* x = std::get_if<c::CatalogNameEntry>(&p);
       return x && x->name_entry_uuid.value == t.entry.name_entry_uuid.value;
     }, "the template's entry").row_uuid);
     PathBeside(e, neighbour.entry);
-    unaudited.entry.name = c::CatalogNamePayload{e};
-    auto r = Request(4, unaudited.Rows());
+    next.entry.name = c::CatalogNamePayload{e};
+  }
+  {
+    auto cites_create = next;
+    cites_create.definition.metadata.audit_uuid = intent_row.audit_uuid;
+    InsertRefused(b, s, path, Request(4, cites_create.Rows()), CE::unaudited_change, "a definition citing the create's construction intent");
+    auto cites_other = next;
+    cites_other.definition.metadata.audit_uuid = event_row.metadata.record.header.object_uuid;
+    InsertRefused(b, s, path, Request(4, cites_other.Rows()), CE::unaudited_change,
+                  "a definition citing another transaction's committed event");
+  }
+  {
+    // Successors: tx 2's definition, citing tx 2's event; tx 2's event row.
+    RoleScope scope(b, role);
+    const auto rel = ReadRelation(b, file);
+    auto r = Successor(b, rel, named.definition.row_uuid, named.definition.version_uuid, 4, VersionId(9440));
+    r.metadata.audit_uuid = event_row.metadata.record.header.object_uuid;
+    const auto before = ReadAll(path);
+    const auto refused = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), r);
+    Check(refused.error == CE::unaudited_change && !refused.attempted && ReadAll(path) == before,
+          "a successor citing another transaction's event: unaudited_change, nothing written");
+  }
+  {
+    RoleScope scope(b, 6);
+    const auto rel = ReadRelation(b, file);
+    auto r = Successor(b, rel, event_row.row_uuid, event_row.version_uuid, 4, VersionId(9441));
+    r.metadata.audit_uuid = event_row.metadata.record.header.object_uuid;
+    const auto before = ReadAll(path);
+    const auto refused = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), r);
+    Check(refused.error == CE::invalid_successor && !refused.attempted && ReadAll(path) == before,
+          "a successor of an event row (immutable): invalid_successor, nothing written");
+  }
+  {
+    auto r = Request(4, next.Rows());
     r.new_pages = PageIds(32);
     const auto result = db::WriteCatalogInsertVersions(s.sink(), GrowingBinding(b), r);
-    if (!result.ok()) std::cerr << "unaudited: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
-    Check(result.ok(), "an unaudited named object is inserted (the writer does not refuse it yet: W3b-2b)");
+    if (!result.ok()) std::cerr << "own event: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+    Check(result.ok(), "a definition citing its transaction's event (written at BEGIN) is inserted");
   }
   Commit(*s.w, s.sink(), 4);
-  ExpectNamedVerification(b, path, definitions + 3, "an unaudited definition, committed", false, true);
-  std::cout << b.name << " audited changes page_size=" << b.size << ": audited insert and unaudited rename pass full; unaudited definition refuses\n";
+  ExpectNamedVerification(b, path, definitions + 2, "a second audited named object, committed", true, true);
+  std::cout << b.name << " audited changes page_size=" << b.size << ": audited inserts and a rename pass full; unaudited definitions refused at write\n";
   fs::remove(path);
 }
 
 void NameSuccessors(const Db& b, const NameTemplate& t, u16 role, std::size_t definitions) {
   const auto path = b.Copy(b.bytes, "successors.db");
   Session s(b, path);
-  Begin(*s.w, s.sink(), 2);
+  Begin(s, 2);
   const auto file = ReadAll(path);
   const auto named = NamedAfter(b, file, t, role, After(b, file, role), 1, 2, "w3b_renamed");
   if (!InsertOracle(b, file, Request(2, named.Rows()))) {
@@ -2161,7 +2198,7 @@ void NameSuccessors(const Db& b, const NameTemplate& t, u16 role, std::size_t de
     return c::CatalogNamePayload{e};
   };
   // A rename: the old version's cells stamped, the new version's added.
-  Begin(*s.w, s.sink(), 3);
+  Begin(s, 3);
   const auto renamed = NameSuccessor(named.entry, named.entry.version_uuid, 3, VersionId(9001), entry_of("w3b_renamed_v2"), false);
   if (!ExpectNameSuccessor(b, s, path, renamed, "a renamed entry by a transaction in progress")) {
     Rollback(*s.w, s.sink(), 3);
@@ -2179,7 +2216,7 @@ void NameSuccessors(const Db& b, const NameTemplate& t, u16 role, std::size_t de
   }
   ExpectNamedVerification(b, path, definitions + 1, "a renamed entry, committed");
   // A rename to a name another object holds in the scope: duplicate_name.
-  Begin(*s.w, s.sink(), 4);
+  Begin(s, 4);
   Refused(b, s, path, NameSuccessor(AsRow(renamed), VersionId(9001), 4, VersionId(9002), entry_of(t.entry.raw_name_text), false),
           CE::duplicate_name, "a rename onto the template's name");
   // A rename rolled back: its stamp stays on the visible version's cells; the
@@ -2193,7 +2230,7 @@ void NameSuccessors(const Db& b, const NameTemplate& t, u16 role, std::size_t de
     PeekSees(b, path, named.entry.row_uuid, VersionId(9001), "the committed name after a rolled-back rename");
   }
   ExpectNamedVerification(b, path, definitions + 1, "a rolled-back rename");
-  Begin(*s.w, s.sink(), 5);
+  Begin(s, 5);
   // (N4a refused renaming a name other names' paths run through; N4b
   // cascades it: NameCascade.)
   // A drop: the definition, the vector and the entry retired together; the
@@ -2237,8 +2274,8 @@ std::string Upper(std::string text) {
 void NameCollisions(const Db& b, const NameTemplate& t, u16 role, bool room) {
   const auto path = b.Copy(b.bytes, "collisions.db");
   Session s(b, path);
-  Begin(*s.w, s.sink(), 2);
-  Begin(*s.w, s.sink(), 3);
+  Begin(s, 2);
+  Begin(s, 3);
   const auto file = ReadAll(path);
   const auto ms = After(b, file, role);
   // The template's own name, in its scope: a committed holder.
@@ -2283,7 +2320,7 @@ void NameCollisions(const Db& b, const NameTemplate& t, u16 role, bool room) {
   Rollback(*s.w, s.sink(), 2);
   const auto y = NamedAfter(b, ReadAll(path), t, role, ms, 8, 3, "w3b_contended");
   ExpectInsert(b, s, path, Request(3, y.Rows()), "the name, once its holder rolled back");
-  Begin(*s.w, s.sink(), 4);
+  Begin(s, 4);
   const auto z = NamedAfter(b, ReadAll(path), t, role, ms, 9, 4, "w3b_contended");
   conflict(4, z, 3, "the name of transaction 3's insert in progress");
   Commit(*s.w, s.sink(), 3);
@@ -2298,7 +2335,7 @@ void NameRefusals(const Db& b, const NameTemplate& t, u16 role) {
   const auto path = b.Copy(b.bytes, "name-refusals.db");
   Session s(b, path);
   const u64 n = 2;
-  Begin(*s.w, s.sink(), n);
+  Begin(s, n);
   const auto file = ReadAll(path);
   const auto ms = After(b, file, role);
   const auto good = NamedAfter(b, file, t, role, ms, 1, n, "w3b_refused");
@@ -2395,7 +2432,7 @@ void ConflictingPolicy(const Db& b, const NameTemplate& t, u16 role) {
   const auto path = b.Copy(b.bytes, "conflicting-policy.db");
   Session s(b, path);
   const u64 n = 2;
-  Begin(*s.w, s.sink(), n);
+  Begin(s, n);
   const auto file = ReadAll(path);
   const auto ms = std::max(After(b, file, role), After(b, file, 5));
   std::optional<c::CatalogMetadataVersion> dm, bm;
@@ -2441,6 +2478,7 @@ void ConflictingPolicy(const Db& b, const NameTemplate& t, u16 role) {
     m.definition_version = 1;
     m.creator_transaction_uuid = tx;
     m.creator_local_transaction_id = n;
+    m.audit_uuid = EventRef(n);  // W3b-2b: the transaction's event
     m.default_name_uuid = {UuidKind::object, V7(ms, 0xf30000 + k)};
     m.name_vector_uuid = {UuidKind::object, V7(ms, 0xf40000 + k)};
     db::CatalogInsertRow r;
@@ -2497,7 +2535,7 @@ void NameKeys(const Db& b, const NameTemplate& t, u16 role) {
       const auto second = Between(*first, leaf.page.cells[k + 1].key.row_uuid);
       if (!second) continue;
       Session s(b, path);
-      Begin(*s.w, s.sink(), n);
+      Begin(s, n);
       const auto named = NamedObject(b, ReadAll(path), t, role, V7(ms + 1, 0xe00001), *first, *second, 11, n,
                                      "w3b_between_keys");
       const auto request = Request(n, named.Rows());
@@ -2518,7 +2556,7 @@ void NameKeys(const Db& b, const NameTemplate& t, u16 role) {
     const auto& leftmost = fresh.pages[fresh.leaves.front()];
     const auto lowest = Ms(leftmost.page.cells.front().key.row_uuid);
     Session s(b, path);
-    Begin(*s.w, s.sink(), n);
+    Begin(s, n);
     const auto named = NamedObject(b, now, t, role, V7(ms + 2, 0xe00002), V7(lowest - 1, 0xe00003),
                                    V7(lowest - 1, 0xe00004), 12, n, "w3b_below_keys");
     const auto request = Request(n, named.Rows());

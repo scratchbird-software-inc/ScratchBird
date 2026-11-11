@@ -177,7 +177,7 @@ c::CatalogMetadataVersion FixtureRow(const Db& b, std::span<const byte> file, u1
   m.record.header.row_uuid = {UuidKind::row, row};
   m.record.header.parent_uuid = like->record.header.parent_uuid;
   m.owner_uuid = like->owner_uuid;
-  m.audit_uuid = like->audit_uuid;
+  m.audit_uuid = EventRef(n);  // W3b-2b: the transaction's catalog.metadata_change event
   m.security_policy_uuid = like->security_policy_uuid;
   m.owning_schema_uuid = like->owning_schema_uuid;
   m.default_name_uuid = {};
@@ -760,7 +760,7 @@ void States(const Db& b, const Place& at) {
              row_c = V7(Ms(at.largest) + 3, 0x12);
   {
     Session s(b, path);
-    Begin(*s.w, s.sink(), n);
+    Begin(s, n);
     const auto file = ReadAll(path);
     const auto r = Request(n, {Row(b, file, at.role, row_a, 1, n)});
     const auto writes = ExpectInsert(b, s, path, r, "insert by a transaction in progress");
@@ -773,13 +773,13 @@ void States(const Db& b, const Place& at) {
   ++n;
   {
     Session s(b, path);
-    Begin(*s.w, s.sink(), n);
+    Begin(s, n);
     ExpectInsert(b, s, path, Request(n, {Row(b, ReadAll(path), at.role, row_b, 2, n)}), "an insert then rolled back");
     Rollback(*s.w, s.sink(), n);
     const auto seen = Peek(b, path, row_b);
     Check(seen.read && !seen.version, "a rolled-back insert is not visible; the relation still reads");
     // The row stays until sweep: its UUID cannot be inserted again.
-    Begin(*s.w, s.sink(), n + 1);
+    Begin(s, n + 1);
     InsertRefused(b, s, path, Request(n + 1, {Row(b, ReadAll(path), at.role, row_b, 3, n + 1)}), CE::duplicate_row,
                   "a rolled-back row's UUID");
     // A rolled-back row's object may be inserted again (the reader admits a
@@ -799,7 +799,7 @@ void States(const Db& b, const Place& at) {
     const auto lost = Row(b, ReadAll(path), at.role, row_c, 5, n);
     {
       Session s(b, path);
-      Begin(*s.w, s.sink(), n);
+      Begin(s, n);
       ExpectInsert(b, s, path, Request(n, {lost}), "an insert then lost");
     }
     Session s(b, path);  // Restart: the transaction in progress is dead
@@ -809,7 +809,7 @@ void States(const Db& b, const Place& at) {
     // dead creator's row as over a rolled-back one).
     auto again = Row(b, ReadAll(path), at.role, V7(Ms(at.largest) + 5, 0x14), 6, n + 1);
     again.metadata.record.header.object_uuid = lost.metadata.record.header.object_uuid;
-    Begin(*s.w, s.sink(), n + 1);
+    Begin(s, n + 1);
     ExpectInsert(b, s, path, Request(n + 1, {again}), "a dead row's object, inserted again");
     Commit(*s.w, s.sink(), n + 1);
     PeekSees(b, path, again.row_uuid, VersionId(6), "the dead row's object inserted again, committed");
@@ -826,8 +826,8 @@ void Conflicts(const Db& b, const Place& at) {
   const auto path = b.Copy(b.bytes, "conflicts.db");
   RoleScope scope(b, at.role);
   Session s(b, path);
-  Begin(*s.w, s.sink(), 2);
-  Begin(*s.w, s.sink(), 3);
+  Begin(s, 2);
+  Begin(s, 3);
   const auto x = Row(b, ReadAll(path), at.role, V7(Ms(at.largest) + 1, 0x90), 90, 2);
   const auto object = x.metadata.record.header.object_uuid;
   ExpectInsert(b, s, path, Request(2, {x}), "an insert by transaction 2, in progress");
@@ -849,7 +849,7 @@ void Conflicts(const Db& b, const Place& at) {
   y = Row(b, ReadAll(path), at.role, y.row_uuid, 91, 3);
   y.metadata.record.header.object_uuid = object;
   ExpectInsert(b, s, path, Request(3, {y}), "the object, once its holder rolled back");
-  Begin(*s.w, s.sink(), 4);
+  Begin(s, 4);
   auto z = Row(b, ReadAll(path), at.role, V7(Ms(at.largest) + 4, 0x93), 93, 4);
   z.metadata.record.header.object_uuid = object;
   conflict(4, z, 3, "the object of transaction 3's insert in progress");
@@ -876,7 +876,7 @@ void Keys(const Db& b, const std::vector<Place>& places) {
         const auto mid = Between(leaf.page.cells[k].key.row_uuid, leaf.page.cells[k + 1].key.row_uuid);
         if (!mid) continue;
         Session s(b, path);
-        Begin(*s.w, s.sink(), n);
+        Begin(s, n);
         ExpectInsert(b, s, path, Request(n, {Row(b, ReadAll(path), at.role, *mid, 20, n)}), "a key between two keys");
         Commit(*s.w, s.sink(), n);
         PeekSees(b, path, *mid, VersionId(20), "the key between two keys, committed");
@@ -889,7 +889,7 @@ void Keys(const Db& b, const std::vector<Place>& places) {
     if (first.page.cells.empty()) continue;
     const auto below = V7(Ms(first.page.cells.front().key.row_uuid) - 1, 0x21);
     Session s(b, path);
-    Begin(*s.w, s.sink(), n);
+    Begin(s, n);
     const auto r = Request(n, {Row(b, ReadAll(path), at.role, below, 21 + at.role, n)});
     if (FreeCells(b, ReadAll(path), first.number) == 0) {
       InsertRefused(b, s, path, r, CE::index_full, "a key below the smallest, its leaf full");
@@ -920,7 +920,7 @@ void Batch(const Db& b, const std::vector<Place>& places) {
   const auto path = b.Copy(b.bytes, "batch.db");
   const u64 n = 2;
   Session s(b, path);
-  Begin(*s.w, s.sink(), n);
+  Begin(s, n);
   const auto file = ReadAll(path);
   const auto& p = places[0];
   const auto& q = places[1];
@@ -958,7 +958,7 @@ void Unindexed(const Db& b) {
   const u64 n = 2;
   RoleScope scope(b, 4);
   Session s(b, path);
-  Begin(*s.w, s.sink(), n);
+  Begin(s, n);
   const auto row = V7(kT + 900000, 0x40);
   const auto writes = ExpectInsert(b, s, path, Request(n, {Row(b, ReadAll(path), 4, row, 40, n)}), "an unindexed insert");
   Check(writes.size() == 1, "one write: the head leaf");
@@ -973,7 +973,7 @@ void InsertRefusals(const Db& b, const Place& at) {
   RoleScope scope(b, at.role);
   Session s(b, path);
   const u64 n = 2;
-  Begin(*s.w, s.sink(), n);
+  Begin(s, n);
   const auto file = ReadAll(path);
   const auto fresh = V7(Ms(at.largest) + 1, 0x50);
   const auto good = Row(b, file, at.role, fresh, 50, n);
@@ -1039,7 +1039,7 @@ void InsertRefusals(const Db& b, const Place& at) {
   InsertRefused(b, s, path, Request(n + 1, {good}), CE::transaction_not_active, "a transaction never begun");
   Commit(*s.w, s.sink(), n);
   InsertRefused(b, s, path, Request(n, {good}), CE::transaction_not_active, "a committed transaction");
-  Begin(*s.w, s.sink(), n + 1, true);
+  Begin(s, n + 1, true);
   auto ro = Row(b, file, at.role, fresh, 53, n + 1);
   InsertRefused(b, s, path, Request(n + 1, {ro}), CE::read_only_transaction, "a read-only transaction");
   fs::remove(path);
@@ -1051,7 +1051,7 @@ void InsertFill(const Db& b, const Place& at) {
   RoleScope scope(b, at.role);
   Session s(b, path);
   const u64 n = 2;
-  Begin(*s.w, s.sink(), n);
+  Begin(s, n);
   unsigned k = 0;
   for (;; ++k) {
     Check(k < 4096, "the relation fills");
@@ -1082,7 +1082,7 @@ void InsertLosses(const Db& b, const Place& at) {
       std::vector<byte> before;
       {
         Session s(b, path);
-        Begin(*s.w, s.sink(), 2);
+        Begin(s, 2);
         before = ReadAll(path);
       }
       const auto request = Request(2, {Row(b, before, at.role, row, 70, 2)});
@@ -1160,7 +1160,7 @@ void InsertLosses(const Db& b, const Place& at) {
         // A new process inserts another row.
         Session s(b, path);
         const auto again = Request(3, {Row(b, ReadAll(path), at.role, V7(Ms(at.largest) + 2, 0x71), 71, 3)});
-        Begin(*s.w, s.sink(), 3);
+        Begin(s, 3);
         ExpectInsert(b, s, path, again, "an insert after the loss");
         Commit(*s.w, s.sink(), 3);
         PeekSees(b, path, again.rows[0].row_uuid, VersionId(71), "the insert after the loss, committed");
@@ -1204,7 +1204,7 @@ void TornIndex(const Db& b, const Place& at) {
   std::vector<byte> before;
   {
     Session s(b, path);
-    Begin(*s.w, s.sink(), 2);
+    Begin(s, 2);
     before = ReadAll(path);
   }
   const auto request = Request(2, {Row(b, before, at.role, row, 78, 2)});
@@ -1304,7 +1304,7 @@ void InsertFaults(const Db& b, const Place& at) {
   {
     const auto path = b.Copy(b.bytes, "count.db");
     Session s(b, path);
-    Begin(*s.w, s.sink(), 2);
+    Begin(s, 2);
     KindFaultSink count(s.sink(), KindFaultSink::Kind::read, 0);
     Check(Insert(b, count, Request(2, {Row(b, ReadAll(path), at.role, row, 80, 2)})).ok(), "a clean insert");
     reads = count.reads;
@@ -1319,7 +1319,7 @@ void InsertFaults(const Db& b, const Place& at) {
     for (u32 k = 1; k <= calls; ++k) {
       const auto path = b.Copy(b.bytes, "fault.db");
       Session s(b, path);
-      Begin(*s.w, s.sink(), 2);
+      Begin(s, 2);
       const auto before = ReadAll(path);
       const auto request = Request(2, {Row(b, before, at.role, row, 80, 2)});
       const auto expected = InsertOracle(b, before, request);
@@ -1425,7 +1425,7 @@ void SplitCrashes(const Db& b, const Place& at, std::span<const byte> pre, const
   for (u32 w = 1; w <= 16; ++w) {
     const auto copy = b.Copy(pre, "split-crash.db");
     Session c(b, copy);  // restart: the earlier rows' transaction (2) was in progress, now dead
-    Begin(*c.w, c.sink(), 3);
+    Begin(c, 3);
     auto r = Request(3, {Row(b, ReadAll(copy), at.role, row, 9000 + k, 3)});
     for (unsigned i = 0; i < 4; ++i)
       r.new_pages.push_back({V7(kT + 810000 + 10 * w + i, 0xe50000 + w), V7(kT + 810000 + 10 * w + i, 0xe60000 + w)});
@@ -1441,7 +1441,7 @@ void SplitCrashes(const Db& b, const Place& at, std::span<const byte> pre, const
     if (!TreeComplete(b, crashed, HeadPage(b, crashed))) ++unfinished;
     const auto seen = Peek(b, copy, at.largest);
     Check(seen.read && seen.version.has_value(), "after a failed write " + std::to_string(w) + " the relation still reads");
-    Begin(*c.w, c.sink(), 4);
+    Begin(c, 4);
     auto next = Request(4, {Row(b, ReadAll(copy), at.role, V7(Ms(row) + 50, 0x910000 + w), 9500 + k, 4)});
     for (unsigned i = 0; i < 4; ++i)
       next.new_pages.push_back({V7(kT + 860000 + 10 * w + i, 0xeb0000 + w), V7(kT + 860000 + 10 * w + i, 0xec0000 + w)});
@@ -1492,7 +1492,16 @@ void IndexGrowthOn(const Db& b, const Place& at) {
   RoleScope scope(b, at.role);
   const auto path = b.Copy(b.bytes, "index-growth.db");
   Session s(b, path);
-  Begin(*s.w, s.sink(), 2);
+  Begin(s, 2);
+  // W3b-2b: keys after every key of the relation as BEGIN left it (its event
+  // row, newer than the create's rows, is in role 6).
+  u64 largest_ms = Ms(at.largest);
+  {
+    const auto tree = ReadTree(b, ReadAll(path));
+    for (const auto& p : tree.pages)
+      if (!p.page.tree_level)
+        for (const auto& cell : p.page.cells) largest_ms = std::max(largest_ms, Ms(cell.key.row_uuid));
+  }
   std::vector<std::pair<Uuid, Uuid>> inserted;
   std::optional<u64> split;
   // At 64 and 128 KiB a one-page tree holds thousands of rows: fill it,
@@ -1509,7 +1518,7 @@ void IndexGrowthOn(const Db& b, const Place& at) {
     std::vector<db::CatalogInsertRow> rows;
     for (unsigned i = 0; i < 40; ++i) {
       const unsigned n = batches * 40 + i;
-      rows.push_back(Row(b, file, at.role, V7(Ms(at.largest) + 10 + n, 0xa00000 + n), 20000 + n, 2));
+      rows.push_back(Row(b, file, at.role, V7(largest_ms + 10 + n, 0xa00000 + n), 20000 + n, 2));
     }
     auto r = Request(2, rows);
     for (unsigned i = 0; i < 8; ++i)
@@ -1519,7 +1528,7 @@ void IndexGrowthOn(const Db& b, const Place& at) {
     Check(filled.ok(), "a fill batch is inserted");
     for (const auto& row : r.rows) inserted.push_back({row.row_uuid, row.version_uuid});
   }
-  const u64 base_ms = Ms(at.largest) + 10 + 40 * (batches + 1);
+  const u64 base_ms = largest_ms + 10 + 40 * (batches + 1);
   unsigned k = 1;
   for (; k <= 1500 && !split; ++k) {
     const auto file = ReadAll(path);

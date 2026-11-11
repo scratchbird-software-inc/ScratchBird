@@ -125,6 +125,10 @@ enum class CatalogVersionWriteError : std::uint8_t {
   // and the request carries too few cascade_versions identities for them
   // (result.cascade_needed says how many).
   cascade_versions_exhausted,
+  // SB_AUDIT_CATALOG_METADATA_CHANGE (W3b-2b): a definition (system-table) row
+  // version that does not cite a catalog.metadata_change event of its own
+  // transaction (in the same request, or already written by that transaction).
+  unaudited_change,
 };
 const char* CatalogVersionWriteErrorName(CatalogVersionWriteError error) noexcept;
 
@@ -360,6 +364,33 @@ struct CatalogInsertRequest {
 CatalogVersionWriteResult WriteCatalogInsertVersions(disk::CarefulWriteSink& sink,
                                                      const CatalogVersionWriterBinding& binding,
                                                      const CatalogInsertRequest& request) noexcept;
+
+// SEARCH_KEY: SB_AUDIT_CATALOG_METADATA_CHANGE (W3b-2b). Every definition
+// (system-table) row version a transaction writes, an insert's or a
+// successor's, a drop included, cites (audit_uuid) a catalog.metadata_change
+// event that transaction wrote: in the same request, or stored with that
+// transaction as creator. Otherwise unaudited_change, before any write. Name
+// rows (role 2) are data (owner, Q50) and are not bound; the event row is its
+// own anchor; an event is immutable: a successor of an audit_evidence row is
+// refused (invalid_successor). Writer enforcement is the implementing AI's
+// reading of Q50, announced to the owner without objection (2026-11-11).
+//
+// WriteCatalogChangeEvent writes a transaction's event: one row in role 6
+// through the insert path, its metadata the create's construction intent row's
+// owner, owning schema and parent, its catalog generation the catalog root's;
+// the identities, engine, event time (from the time service, never derived)
+// and actor are the caller's. Q49 = 1: policy decision not_evaluated, no policy
+// generation.
+struct CatalogChangeEventRequest {
+  core::platform::u64 transaction_order = 0;
+  core::platform::Uuid transaction_uuid;
+  core::platform::Uuid event_uuid, row_uuid, version_uuid, engine_uuid;
+  core::platform::u64 event_time_utc_us = 0;
+  std::optional<core::platform::TypedUuid> actor_uuid;
+  std::vector<CatalogNewPageIdentity> new_pages;
+};
+CatalogVersionWriteResult WriteCatalogChangeEvent(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding& binding,
+                                                  const CatalogChangeEventRequest& request) noexcept;
 
 // SEARCH_KEY: SB_CATALOG_ROOT_ADVANCE (owner Q24 = 1, 2026-11-08). After a
 // transaction that changed the catalog has committed (its state word says

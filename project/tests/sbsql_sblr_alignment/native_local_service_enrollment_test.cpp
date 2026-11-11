@@ -7,6 +7,7 @@
 #undef __wrap_pread
 #undef main
 #define Check CheckCredentialTest
+#include "../support/catalog_change_event_fixture.hpp"
 #include "../support/native_local_service_creation_fixture.hpp"
 #include "../../src/server/native_hosted_database_runtime.hpp"
 #include "../../src/core/agents/agent_bootstrap_configuration.hpp"
@@ -2911,6 +2912,10 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
 // catalog change with no audit event of its own: startup catalog verification
 // refuses it (spec: the construction-intent exception covers only the
 // create's rows; every later change needs its own audit evidence).
+// [W3b-2b: the catalog writer now refuses such a change before any write
+// (unaudited_change); this mode asserts that refusal and that what committed
+// verifies. Startup's event_binding refusal is not reachable through the
+// writers any more.]
 // root_case (with transactions, not unaudited): SB_CATALOG_ROOT_ADVANCE. 0:
 // the catalog root and both route roots advanced; 1: the advance stopped
 // after the catalog root's write (a failed second write, as a crash there
@@ -3045,11 +3050,15 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
           u.bytes[14]=static_cast<platform::byte>(n);return u;};
         db::CatalogVersionWriterBinding cv;cv.database_uuid=made.receipt->database_uuid;cv.catalog_root=catalog_root;cv.state_root=state_root;
         cv.configuration_root=configuration_root;cv.security_root=security_root;
+        // W3b-2b: transaction n's catalog.metadata_change event (written at its
+        // BEGIN below), which every definition version it writes cites.
+        const auto event_of=[&](u64 n){return platform::TypedUuid{platform::UuidKind::object,id(0xe1,n)};};
         const auto change=[&](u64 n,const platform::Uuid& tx,const Row& base,const platform::Uuid& predecessor,
                               const catalog::CatalogMetadataVersion& before,const platform::Uuid& version,bool drop){
           db::CatalogVersionRequest r;r.role=4;r.transaction_order=n;r.transaction_uuid=tx;r.row_uuid=base.row;
           r.predecessor_version_uuid=predecessor;r.version_uuid=version;r.metadata=before;++r.metadata.definition_version;
           r.metadata.creator_transaction_uuid={platform::UuidKind::transaction,tx};r.metadata.creator_local_transaction_id=n;
+          r.metadata.audit_uuid=event_of(n);
           if(drop){r.metadata.record.header.deleted=true;r.metadata.lifecycle=catalog::CatalogObjectLifecycle::dropped;
             r.metadata.status=catalog::CatalogObjectStatus::retired;r.metadata.retired_transaction_uuid={platform::UuidKind::transaction,tx};}
           const auto written=db::WriteCatalogSuccessorVersion(sink,cv,r);
@@ -3072,7 +3081,7 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
           row.metadata=scratchbird::tests::bootstrap_policy::Metadata(0,{platform::UuidKind::transaction,tx},
               like.owning_schema_uuid.value,"W3B-1A unnamed catalog insert mechanics fixture");
           auto& m=row.metadata;m.record.header.row_uuid={platform::UuidKind::row,key};
-          m.record.header.parent_uuid=like.record.header.parent_uuid;m.owner_uuid=like.owner_uuid;m.audit_uuid=like.audit_uuid;
+          m.record.header.parent_uuid=like.record.header.parent_uuid;m.owner_uuid=like.owner_uuid;m.audit_uuid=event_of(n);
           m.security_policy_uuid=like.security_policy_uuid;m.owning_schema_uuid=like.owning_schema_uuid;
           m.object_subtype="w3b_insert_mechanics_fixture";m.trace_search_key="W3B-1A-INSERT-FIXTURE";
           m.record.header.object_uuid={platform::UuidKind::object,object};m.definition_version=1;
@@ -3083,14 +3092,29 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
           if(!written.ok())std::cerr<<"producer catalog insert="<<db::CatalogVersionWriteErrorName(written.error)<<'\n';
           Check(written.ok(),"the catalog insert writer inserts a new row in place");};
         const auto begin=[&](u64 n){tip::TransactionHeaderRecord h;h.transaction_uuid=id(0xb0,n);
-          const auto begun=writer.Begin(sink,h);Check(begun.ok()&&begun.transaction_order==n,"BEGIN for a catalog change");return h.transaction_uuid;};
+          const auto begun=writer.Begin(sink,h);Check(begun.ok()&&begun.transaction_order==n,"BEGIN for a catalog change");
+          const auto event=scratchbird::tests::catalog_change_event::WriteEvent(sink,cv,n,h.transaction_uuid,id(0xe1,n),id(0xe2,n),
+              id(0xe3,n),id(0xe4,0),now()/1000);
+          if(!event.ok())std::cerr<<"producer catalog change event="<<db::CatalogVersionWriteErrorName(event.error)<<'\n';
+          Check(event.ok(),"the transaction's catalog.metadata_change event");return h.transaction_uuid;};
         u64 n=header_slots+2;
         const auto first=begin(n);
-        (void)change(n,first,rows[0],rows[0].version,rows[0].metadata,id(0xc0,1),false);
-        changed_object=rows[0].metadata.record.header.object_uuid.value;
         if(unaudited){
-          Check(writer.Commit(sink,n,now()).ok(),"COMMIT the unaudited catalog change");
+          // W3b-2b: a change citing the create's event, not its own, is refused
+          // by the writer before any write (unaudited_change): an unaudited
+          // committed change is no longer producible, so startup's event_binding
+          // refusal is not reached from here (it was until W3b-2b).
+          db::CatalogVersionRequest r;r.role=4;r.transaction_order=n;r.transaction_uuid=first;r.row_uuid=rows[0].row;
+          r.predecessor_version_uuid=rows[0].version;r.version_uuid=id(0xc0,1);r.metadata=rows[0].metadata;
+          ++r.metadata.definition_version;r.metadata.creator_transaction_uuid={platform::UuidKind::transaction,first};
+          r.metadata.creator_local_transaction_id=n;
+          const auto refused=db::WriteCatalogSuccessorVersion(sink,cv,r);
+          Check(refused.error==db::CatalogVersionWriteError::unaudited_change&&!refused.writes&&!refused.attempted,
+                "a catalog change citing the create's event, not its own, is refused before any write");
+          Check(writer.Commit(sink,n,now()).ok(),"COMMIT the transaction (its event alone)");
         }else{
+          (void)change(n,first,rows[0],rows[0].version,rows[0].metadata,id(0xc0,1),false);
+          changed_object=rows[0].metadata.record.header.object_uuid.value;
           insert(n,first,1);
           Check(writer.Rollback(sink,n,now()).ok(),"ROLLBACK the first catalog change");
           const auto second=begin(++n);
@@ -3227,11 +3251,11 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
       <<" security="<<int(m.security.error)<<" naming_profiles="<<int(m.naming_profiles.error)
       <<" collisions="<<int(m.collisions.error)<<" paths="<<int(m.paths.error)<<" name_trees="<<int(m.name_trees.error)<<'\n';
   if(unaudited){
-    Check(metadata==server::NativeHostedRuntimeError::catalog_verification_failure&&!m.audit.ok()&&
-        m.audit.error==scratchbird::engine::internal_api::NativeCatalogAuditError::event_binding&&
-        m.audit.object_uuid==changed_object,
-        "a committed catalog change without its own audit event is refused by startup catalog verification");
-    std::cout<<"producer unaudited catalog change profile="<<profile<<" refused audit="<<int(m.audit.error)<<'\n';
+    // W3b-2b (flipped): the unaudited change was refused at write; what
+    // committed (the transaction's event alone) verifies.
+    Check(metadata==server::NativeHostedRuntimeError::none&&m.ok()&&m.audit.ok(),
+        "the refused unaudited change left a catalog startup verification accepts");
+    std::cout<<"producer unaudited catalog change profile="<<profile<<" refused at write; startup audit="<<int(m.audit.error)<<'\n';
     return;
   }
   Check(metadata==server::NativeHostedRuntimeError::none&&m.ok()&&m.names.ok()&&m.indexes.ok()&&m.indexes.indexed_relations==5&&
