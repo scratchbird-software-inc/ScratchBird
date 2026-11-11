@@ -238,6 +238,55 @@ bool OracleInsertCell(const Db& b, std::vector<byte>& file, u64 root_page, pg::N
       return true;
     }
   }
+  std::vector<std::size_t> candidates;
+  if (at + 1 == cells.size()) candidates.push_back(cells.size() - 1);
+  candidates.push_back(cells.size() / 2);
+  // SB_CATALOG_ROOT_LEAF_SPLIT (W3b-3b-1): a root that is the only page
+  // keeps its page and becomes a branch over two new leaves (the next two
+  // pages), the split key its one separator.
+  if (leaf.page.header.page_type == 0x200 && leaf.page.tree_level == 0) {
+    if (taken + 2 > new_pages.size()) return false;
+    for (const auto m : candidates) {
+      if (m == 0 || m >= cells.size()) continue;
+      const d::NativePageReference root_ref{b.primary, leaf.number, leaf.page.header.page_generation, b.profile};
+      const d::NativePageReference left_ref{b.primary, new_pages[taken], 1, b.profile};
+      const d::NativePageReference right_ref{b.primary, new_pages[taken + 1], 1, b.profile};
+      auto left = leaf.page, right = leaf.page;
+      left.header.page_type = right.header.page_type = 0x202;
+      left.header.page_generation = right.header.page_generation = 1;
+      left.header.page_uuid = ids[taken].page_uuid;
+      left.header.page_number = new_pages[taken];
+      right.header.page_uuid = ids[taken + 1].page_uuid;
+      right.header.page_number = new_pages[taken + 1];
+      left.creator_transaction_uuid = right.creator_transaction_uuid = {};
+      left.creator_local_transaction_id = right.creator_local_transaction_id = 0;
+      left.parent = right.parent = root_ref;
+      left.left.reset();
+      right.right.reset();
+      left.right = right_ref;
+      right.left = left_ref;
+      left.low_fence.reset();
+      right.high_fence.reset();
+      left.high_fence = cells[m].key;
+      right.low_fence = cells[m].key;
+      left.cells.assign(cells.begin(), cells.begin() + static_cast<std::ptrdiff_t>(m));
+      right.cells.assign(cells.begin() + static_cast<std::ptrdiff_t>(m), cells.end());
+      if (!pg::EncodeNativeBtreePage(left).ok() || !pg::EncodeNativeBtreePage(right).ok()) continue;
+      auto root = leaf.page;
+      root.tree_level = 1;
+      root.first_child = left_ref;
+      pg::NativeBtreeCell separator;
+      separator.key = cells[m].key;
+      separator.child = right_ref;
+      root.cells = {separator};
+      put(new_pages[taken], left);
+      put(new_pages[taken + 1], right);
+      put(leaf.number, root);
+      taken += 2;
+      return true;
+    }
+    return false;
+  }
   if (taken >= new_pages.size() || leaf.page.header.page_type != 0x202 || !leaf.page.parent) return false;
   const auto index_of = [&](u64 number) -> std::optional<std::size_t> {
     for (std::size_t i = 0; i < tree.pages.size(); ++i)
@@ -249,10 +298,7 @@ bool OracleInsertCell(const Db& b, std::vector<byte>& file, u64 root_page, pg::N
   const std::optional<std::size_t> neighbour = leaf.page.right ? index_of(leaf.page.right->page_number) : std::nullopt;
   const u64 number = new_pages[taken];
   const d::NativePageReference ref{b.primary, number, 1, b.profile};
-  std::vector<std::size_t> points;
-  if (at + 1 == cells.size()) points.push_back(cells.size() - 1);
-  points.push_back(cells.size() / 2);
-  for (const auto m : points) {
+  for (const auto m : candidates) {
     if (m == 0 || m >= cells.size()) continue;
     auto left = leaf.page;
     left.cells.assign(cells.begin(), cells.begin() + static_cast<std::ptrdiff_t>(m));
@@ -1223,6 +1269,36 @@ u32 TypeAt(const Db& b, std::span<const byte> file, u64 page) {
   Check(h.ok(), "a page header decodes");
   return h.header->page_type;
 }
+// Every committed row's visible version, by row, from one committed read of
+// a copy of the file through the production fixed-root lease and visibility
+// reader; nullopt when the relation does not read.
+std::optional<std::map<Uuid, Uuid>> PeekAll(const Db& b, const std::string& path) {
+  const auto copy = b.Copy(ReadAll(path), "peek-all.db");
+  d::FileDevice device;
+  Check(device.Open(copy, d::FileOpenMode::open_existing_read_only).ok(), "independent read-only open");
+  std::optional<std::map<Uuid, Uuid>> out;
+  {
+    const std::vector<d::NativeFilespaceDevice> files{{b.primary, b.profile, &device}};
+    Grant g(b.database, 512u << 20);
+    auto fixed = db::AcquireNativeFixedRootMemoryLease(b.database, files, b.primary, {512 * u64{b.size}, 64u << 20},
+                                                       g.memory, g.binding);
+    Check(fixed.ok(), "the fixed-root lease admits the file");
+    const auto pages = [&](std::size_t bytes) { return bytes / b.size; };
+    const db::NativeCatalogRelationMemoryLimits limits{b.profile, 1, pages(16u << 20), 8192, 8192,
+                                                       {pages(4u << 20), 4u << 20}};
+    auto prepared = db::PrepareNativeCatalogVisibilityRead(limits, g.memory, g.binding);
+    Check(prepared.ok(), "visibility workspace");
+    const auto read = db::NativeCatalogVisibilityLeaseReader::ReadCommitted(*fixed.lease, 2, b.role, b.Relation(),
+                                                                            2048 * u64{b.size}, prepared.workspace);
+    if (read.ok()) {
+      out.emplace();
+      for (const auto& v : read.rows) (*out)[v.metadata.record.header.row_uuid.value] = v.version_uuid;
+    }
+  }
+  Check(device.Close().ok(), "close the reader");
+  fs::remove(copy);
+  return out;
+}
 // Whether every page of the tree rooted at `root_page` that a sibling link
 // names is also a child of a parent (no split is left unfinished).
 bool TreeComplete(const Db& b, std::span<const byte> file, u64 root_page) {
@@ -1247,14 +1323,15 @@ u64 HeadPage(const Db& b, std::span<const byte> file) {
 // failed transaction rolls back; the next insert, by another transaction,
 // completes any unfinished split, commits and is read back, and then no tree
 // page is reachable by a sibling link only.
-void SplitCrashes(const Db& b, const Place& at, std::span<const byte> pre, const Uuid& row, unsigned k) {
+void SplitCrashes(const Db& b, const Place& at, std::span<const byte> pre, const Uuid& row, unsigned k, bool root_split) {
   unsigned failures = 0, unfinished = 0;
   for (u32 w = 1; w <= 16; ++w) {
     const auto copy = b.Copy(pre, "split-crash.db");
     Session c(b, copy);  // restart: the earlier rows' transaction (2) was in progress, now dead
     Begin(*c.w, c.sink(), 3);
     auto r = Request(3, {Row(b, ReadAll(copy), at.role, row, 9000 + k, 3)});
-    r.new_pages = {{V7(kT + 810000 + w, 0xe50000 + w), V7(kT + 810000 + w, 0xe60000 + w)}};
+    for (unsigned i = 0; i < 4; ++i)
+      r.new_pages.push_back({V7(kT + 810000 + 10 * w + i, 0xe50000 + w), V7(kT + 810000 + 10 * w + i, 0xe60000 + w)});
     KindFaultSink sink(c.sink(), KindFaultSink::Kind::write, w);
     const auto result = db::WriteCatalogInsertVersions(sink, GrowingBinding(b), r);
     if (result.ok()) {
@@ -1269,7 +1346,8 @@ void SplitCrashes(const Db& b, const Place& at, std::span<const byte> pre, const
     Check(seen.read && seen.version.has_value(), "after a failed write " + std::to_string(w) + " the relation still reads");
     Begin(*c.w, c.sink(), 4);
     auto next = Request(4, {Row(b, ReadAll(copy), at.role, V7(Ms(row) + 50, 0x910000 + w), 9500 + k, 4)});
-    next.new_pages = {{V7(kT + 820000 + w, 0xeb0000 + w), V7(kT + 820000 + w, 0xec0000 + w)}};
+    for (unsigned i = 0; i < 4; ++i)
+      next.new_pages.push_back({V7(kT + 860000 + 10 * w + i, 0xeb0000 + w), V7(kT + 860000 + 10 * w + i, 0xec0000 + w)});
     const auto completed = db::WriteCatalogInsertVersions(c.sink(), GrowingBinding(b), next);
     if (!completed.ok()) std::cerr << "after failed write " << w << ": " << db::CatalogVersionWriteErrorName(completed.error) << '\n';
     Check(completed.ok(), "the next insert succeeds after failed write " + std::to_string(w));
@@ -1279,7 +1357,11 @@ void SplitCrashes(const Db& b, const Place& at, std::span<const byte> pre, const
     Check(TreeComplete(b, after, HeadPage(b, after)), "the next write completes an unfinished split");
     fs::remove(copy);
   }
-  Check(failures > 0 && unfinished > 0, "some failure points leave a split unfinished, and they are survived");
+  // A root-leaf split rewrites the root last, after its two new pages: it
+  // has no interrupted state to leave.
+  Check(failures > 0 && (root_split ? unfinished == 0 : unfinished > 0),
+        root_split ? "a root-leaf split leaves nothing unfinished at any failure point"
+                   : "some failure points leave a split unfinished, and they are survived");
   std::cout << b.name << " split crashes page_size=" << b.size << " failure points " << failures << ", " << unfinished
             << " leaving a split unfinished\n";
 }
@@ -1289,34 +1371,66 @@ void SplitCrashes(const Db& b, const Place& at, std::span<const byte> pre, const
 // insert is checked byte for byte against the oracle. Then committed, every
 // inserted row is read back through the production fixed-root lease and
 // visibility reader (the system page has no creator to wait for).
+void IndexGrowthOn(const Db& b, const Place& at);
+// Both shapes, where the relations with room have them: a tree with leaves
+// under its root (a leaf split) and a one-page tree (a root-leaf split,
+// SB_CATALOG_ROOT_LEAF_SPLIT).
 void IndexGrowth(const Db& b, const std::vector<Place>& places) {
-  // A relation whose tree has leaves under its root: a root that is itself
-  // the only leaf splits only with root splits (W3b-3b), refused index_full.
-  const Place* chosen = nullptr;
-  for (const auto& p : places) {
-    RoleScope probe(b, p.role);
-    if (!ReadTree(b, b.bytes).root_is_leaf) {
-      chosen = &p;
-      break;
+  for (const bool one_page : {false, true}) {
+    const Place* chosen = nullptr;
+    for (const auto& p : places) {
+      RoleScope probe(b, p.role);
+      if (ReadTree(b, b.bytes).root_is_leaf == one_page) {
+        chosen = &p;
+        break;
+      }
     }
+    if (chosen) IndexGrowthOn(b, *chosen);
+    else
+      std::cout << b.name << " index growth page_size=" << b.size << " no relation with room has a "
+                << (one_page ? "one-page" : "two-level") << " tree\n";
   }
-  if (!chosen) {
-    std::cout << b.name << " index growth page_size=" << b.size << " every relation with room has a one-page tree (W3b-3b)\n";
-    return;
-  }
-  const auto& at = *chosen;
+}
+void IndexGrowthOn(const Db& b, const Place& at) {
   RoleScope scope(b, at.role);
   const auto path = b.Copy(b.bytes, "index-growth.db");
   Session s(b, path);
   Begin(*s.w, s.sink(), 2);
   std::vector<std::pair<Uuid, Uuid>> inserted;
   std::optional<u64> split;
+  // At 64 and 128 KiB a one-page tree holds thousands of rows: fill it,
+  // checked for success only, in batches until its rightmost leaf has fewer
+  // than 64 free cells; the rows that reach the split are then checked one by
+  // one, byte for byte (every row is, at the smaller sizes). Batch rows take
+  // keys below the checked rows' keys.
+  unsigned batches = 0;
+  for (;; ++batches) {
+    const auto file = ReadAll(path);
+    const auto tree = ReadTree(b, file);
+    // Only where checking every row would take too long: 64 and 128 KiB.
+    if (b.size < 65536 || FreeCells(b, file, tree.pages[tree.leaves.back()].number) < 64 || batches >= 200) break;
+    std::vector<db::CatalogInsertRow> rows;
+    for (unsigned i = 0; i < 40; ++i) {
+      const unsigned n = batches * 40 + i;
+      rows.push_back(Row(b, file, at.role, V7(Ms(at.largest) + 10 + n, 0xa00000 + n), 20000 + n, 2));
+    }
+    auto r = Request(2, rows);
+    for (unsigned i = 0; i < 8; ++i)
+      r.new_pages.push_back({V7(kT + 870000 + 10 * batches + i, 0xed0000 + batches), V7(kT + 870000 + 10 * batches + i, 0xee0000 + batches)});
+    const auto filled = db::WriteCatalogInsertVersions(s.sink(), GrowingBinding(b), r);
+    if (!filled.ok()) std::cerr << "fill batch " << batches << ": " << db::CatalogVersionWriteErrorName(filled.error) << '\n';
+    Check(filled.ok(), "a fill batch is inserted");
+    for (const auto& row : r.rows) inserted.push_back({row.row_uuid, row.version_uuid});
+  }
+  const u64 base_ms = Ms(at.largest) + 10 + 40 * (batches + 1);
   unsigned k = 1;
   for (; k <= 1500 && !split; ++k) {
     const auto file = ReadAll(path);
-    auto r = Request(2, {Row(b, file, at.role, V7(Ms(at.largest) + 100 + k, 0x900000 + k), 9000 + k, 2)});
-    r.new_pages = {{V7(kT + 800000 + k, 0xe50000 + k), V7(kT + 800000 + k, 0xe60000 + k)},
-                   {V7(kT + 800000 + k, 0xe70000 + k), V7(kT + 800000 + k, 0xe80000 + k)}};
+    auto r = Request(2, {Row(b, file, at.role, V7(base_ms + k, 0x900000 + k), 9000 + k, 2)});
+    // Up to three pages one insert can need (a base leaf, then a root-leaf
+    // split's two leaves), and one to spare.
+    for (unsigned i = 0; i < 4; ++i)
+      r.new_pages.push_back({V7(kT + 800000 + 10 * k + i, 0xe50000 + k), V7(kT + 800000 + 10 * k + i, 0xe60000 + k)});
     if (!InsertOracle(b, file, r)) {
       const auto trial = b.Copy(file, "index-growth-trial.db");
       Session t(b, trial, false);
@@ -1336,11 +1450,16 @@ void IndexGrowth(const Db& b, const std::vector<Place>& places) {
     const auto now = ReadAll(path);
     for (const auto page : pages)
       if (TypeAt(b, now, page) == 0x202) split = page;
-    if (split) SplitCrashes(b, at, pre, r.rows.front().row_uuid, k);
+    if (split) {
+      const auto before_root = pg::DecodeNativeBtreePage(PageOf(pre, HeadPage(b, pre), b.size));
+      SplitCrashes(b, at, pre, r.rows.front().row_uuid, k, before_root.ok() && before_root.page->tree_level == 0);
+    }
   }
   Check(split.has_value(), "the row-UUID tree's rightmost leaf splits within the rows tried");
   {
     const auto now = ReadAll(path);
+    const auto root = pg::DecodeNativeBtreePage(PageOf(now, HeadPage(b, now), b.size));
+    Check(root.ok() && root.page->tree_level >= 1, "the root has leaves under it");
     const auto page = pg::DecodeNativeBtreePage(PageOf(now, *split, b.size));
     // The new rightmost leaf holds the new row's cell, last. (An old leaf the
     // create packed to its limit cannot take the high fence an append split
@@ -1351,7 +1470,13 @@ void IndexGrowth(const Db& b, const std::vector<Place>& places) {
     std::cout << b.name << " index growth page_size=" << b.size << " new leaf holds " << page.page->cells.size() << " cells\n";
   }
   Commit(*s.w, s.sink(), 2);
-  for (const auto& [row, version] : inserted) PeekSees(b, path, row, version, "an inserted row, committed, past a split");
+  // One committed read sees every inserted row's version.
+  const auto all = PeekAll(b, path);
+  Check(all.has_value(), "the relation reads, committed, past a split");
+  for (const auto& [row, version] : inserted) {
+    const auto found = all->find(row);
+    Check(found != all->end() && found->second == version, "an inserted row, committed, past a split");
+  }
   fs::remove(path);
   std::cout << b.name << " index growth page_size=" << b.size << " role " << at.role << " split after " << inserted.size() << " rows\n";
 }

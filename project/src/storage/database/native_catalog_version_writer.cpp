@@ -743,6 +743,86 @@ std::optional<E> InsertTreeCell(disk::CarefulWriteSink& sink, std::vector<TreePa
   // bound), and only of a leaf with a parent (not the root).
   if (!may_grow) return full;
   const auto& old = tree[*reached].page;
+  // The split points to try, in order; the first both sides of which encode.
+  std::vector<std::size_t> points;
+  if (position + 1 == cells.size()) points.push_back(cells.size() - 1);
+  points.push_back(cells.size() / 2);
+  // SB_CATALOG_ROOT_LEAF_SPLIT (W3b-3b-1): a root that is the tree's only
+  // page keeps its page (page zero and the route roots name its number and
+  // generation): its cells move to two new leaves, and it becomes a branch
+  // over them, with the split key as its one separator. The new leaves are
+  // written first (rank 0, unreached), the root last (rank 3): one switch, no
+  // interrupted state to read through. A root branch, or a parent without
+  // room, waits for branch splits.
+  if (old.header.page_type == 0x200 && old.tree_level == 0 && !old.parent) {
+    // The pages are taken first (a dry pass that then refuses allocates
+    // nothing): the leaves are built with their own numbers.
+    const auto first = pages.Take(0x202, old.dependencies.index_uuid);
+    if (!first) return pages.disagreed() ? E::invalid_catalog : E::new_pages_exhausted;
+    const auto second = pages.Take(0x202, old.dependencies.index_uuid);
+    if (!second) return pages.disagreed() ? E::invalid_catalog : E::new_pages_exhausted;
+    const disk::NativePageReference left_ref{old.header.filespace_uuid, first->page_number, 1, old.header.page_size_profile_uuid};
+    const disk::NativePageReference right_ref{old.header.filespace_uuid, second->page_number, 1, old.header.page_size_profile_uuid};
+    for (const auto m : points) {
+      if (m == 0 || m >= cells.size()) continue;
+      pg::NativeBtreePage left = old, right = old;
+      for (auto* leaf : {&left, &right}) {
+        leaf->header.page_type = 0x202;
+        leaf->header.page_generation = 1;
+        leaf->creator_transaction_uuid = {};
+        leaf->creator_local_transaction_id = 0;
+        leaf->parent = tree[*reached].ref;
+        leaf->left.reset();
+        leaf->right.reset();
+        leaf->low_fence.reset();
+        leaf->high_fence.reset();
+      }
+      left.header.page_uuid = first->page_uuid;
+      left.header.page_number = first->page_number;
+      right.header.page_uuid = second->page_uuid;
+      right.header.page_number = second->page_number;
+      left.cells.assign(cells.begin(), cells.begin() + static_cast<std::ptrdiff_t>(m));
+      right.cells.assign(cells.begin() + static_cast<std::ptrdiff_t>(m), cells.end());
+      left.high_fence = cells[m].key;
+      right.low_fence = cells[m].key;
+      left.right = right_ref;
+      right.left = left_ref;
+      if (!pg::EncodeNativeBtreePage(left).ok() || !pg::EncodeNativeBtreePage(right).ok()) continue;
+      auto root = old;
+      root.tree_level = 1;
+      root.first_child = left_ref;
+      pg::NativeBtreeCell separator;
+      separator.key = cells[m].key;
+      separator.child = right_ref;
+      root.cells = {std::move(separator)};
+      if (!pg::EncodeNativeBtreePage(root).ok() || !pg::EncodeNativeBtreePage(left).ok() ||
+          !pg::EncodeNativeBtreePage(right).ok())
+        return E::invalid_catalog;
+      const auto root_index = *reached;
+      for (auto* added_page : {&left, &right}) {
+        TreePage added;
+        added.ref = added_page == &left ? left_ref : right_ref;
+        added.page = std::move(*added_page);
+        added.added = true;
+        added.rank = 0;
+        if (!pages.dry()) {
+          added.image.assign(page_size, 0);
+          const auto io = sink.ReadAt(added.ref.page_number * u64{page_size}, std::span<byte>(added.image));
+          if (!io.ok() || io.bytes_transferred != page_size) {
+            result.io = io;
+            return E::io_failure;
+          }
+        }
+        tree.push_back(std::move(added));
+        changed.insert(tree.size() - 1);
+      }
+      tree[root_index].page = std::move(root);
+      tree[root_index].rank = 3;
+      changed.insert(root_index);
+      return std::nullopt;
+    }
+    return full;
+  }
   if (old.header.page_type != 0x202 || !old.parent) return full;
   const auto parent = find(*old.parent);
   if (!parent) return E::invalid_catalog;
@@ -751,10 +831,6 @@ std::optional<E> InsertTreeCell(disk::CarefulWriteSink& sink, std::vector<TreePa
   const auto taken = pages.Take(0x202, old.dependencies.index_uuid);
   if (!taken) return pages.disagreed() ? E::invalid_catalog : E::new_pages_exhausted;
   const disk::NativePageReference new_ref{old.header.filespace_uuid, taken->page_number, 1, old.header.page_size_profile_uuid};
-  // The split points to try, in order; the first both sides of which encode.
-  std::vector<std::size_t> points;
-  if (position + 1 == cells.size()) points.push_back(cells.size() - 1);
-  points.push_back(cells.size() / 2);
   for (const auto m : points) {
     if (m == 0 || m >= cells.size()) continue;
     auto left = old;
