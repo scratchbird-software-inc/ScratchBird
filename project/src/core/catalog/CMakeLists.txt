@@ -30,6 +30,7 @@ add_library(sb_core_catalog_dispatcher_objects OBJECT
   catalog_bootstrap_policy.cpp
   catalog_construction_intent.cpp
   catalog_metadata_change.cpp
+  catalog_native_security_record.cpp
   catalog_language.cpp
   catalog_context_namespace.cpp
   catalog_evidence_policy.cpp
