@@ -298,7 +298,7 @@ std::string CatalogVariableBytes(const catalog::CatalogMetadataVersionView& meta
   // Name envelopes receive actual physical version locators at construction;
   // compare their independently supplied logical fields below.
   if(!name)append(metadata.record.payload);
-  append(metadata.trace_search_key);append(metadata.object_subtype);append(metadata.retention_class);
+  append(metadata.object_subtype);
   if(name){
     if(const auto* vector=std::get_if<catalog::CatalogNameVectorView>(&*name)){
       append(std::to_string(static_cast<unsigned>(vector->object_kind)));
@@ -3087,7 +3087,7 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
           auto& m=row.metadata;m.record.header.row_uuid={platform::UuidKind::row,key};
           m.record.header.parent_uuid=like.record.header.parent_uuid;m.owner_uuid=like.owner_uuid;m.audit_uuid=event_of(n);
           m.security_policy_uuid=like.security_policy_uuid;m.owning_schema_uuid=like.owning_schema_uuid;
-          m.object_subtype="w3b_insert_mechanics_fixture";m.trace_search_key="W3B-1A-INSERT-FIXTURE";
+          m.object_subtype="w3b_insert_mechanics_fixture";
           m.record.header.object_uuid={platform::UuidKind::object,object};m.definition_version=1;
           m.creator_transaction_uuid={platform::UuidKind::transaction,tx};m.creator_local_transaction_id=n;
           m.default_name_uuid={};m.name_vector_uuid={};

@@ -125,8 +125,6 @@ db::NativeInitialGeneratedDefinitions Seed() {
   seed.name_collision_policy_uuid = Id(20055);
   seed.dialect_profile_uuid = Id(20056);
   seed.identifier_profile = &IdentifierProfile();
-  seed.trace_search_key = "NATIVE-GENERATED-DEFINITION-CREATION";
-  seed.retention_class = "catalog_history";
   return seed;
 }
 

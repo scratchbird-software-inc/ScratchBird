@@ -86,8 +86,7 @@ c::CatalogMetadataVersion Metadata(const Policy& p) {
   m.definition_version = p.generation;
   m.schema_epoch = m.security_epoch = m.catalog_generation = m.dependency_generation = m.invalidation_generation = 1;
   m.lifecycle = c::CatalogObjectLifecycle::active; m.status = c::CatalogObjectStatus::active;
-  m.object_subtype = "scheduler_runtime"; m.trace_search_key = "SCHEDULER-POLICY-ORACLE";
-  m.retention_class = "catalog_history";
+  m.object_subtype = "scheduler_runtime";
   return m;
 }
 void Good(const Policy& p) {

@@ -102,9 +102,10 @@ struct CatalogMetadataVersion {
   TypedUuid donor_overlay_uuid;
   TypedUuid audit_uuid;
   TypedUuid owning_schema_uuid;
-  std::string trace_search_key;
+  // SB_CATALOG_NO_TEXT_IDENTIFIERS (owner Q57 = 1, Q58 = 1, 2026-11-12): no trace
+  // search key and no retention class; the engine never read either, and
+  // retention is a per-table policy.
   std::string object_subtype;
-  std::string retention_class;
 };
 
 // Complete structural view. The immutable input and its actual grant must
@@ -134,9 +135,7 @@ struct CatalogMetadataVersionView {
   TypedUuid donor_overlay_uuid;
   TypedUuid audit_uuid;
   TypedUuid owning_schema_uuid;
-  std::string_view trace_search_key;
   std::string_view object_subtype;
-  std::string_view retention_class;
 };
 inline CatalogMetadataVersionView BorrowCatalogMetadataVersion(const CatalogMetadataVersion& r) {
   return {BorrowCatalogTypedRecord(r.record),
@@ -163,9 +162,7 @@ inline CatalogMetadataVersionView BorrowCatalogMetadataVersion(const CatalogMeta
       r.donor_overlay_uuid,
       r.audit_uuid,
       r.owning_schema_uuid,
-      r.trace_search_key,
-      r.object_subtype,
-      r.retention_class};
+      r.object_subtype};
 }
 struct CatalogMetadataVersionViewResult {
   std::optional<CatalogMetadataVersionView> record;

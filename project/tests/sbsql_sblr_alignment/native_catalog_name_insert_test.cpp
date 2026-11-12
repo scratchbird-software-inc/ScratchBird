@@ -1473,7 +1473,7 @@ void NameCascadePaths(const Db& b, const NameTemplate& t, u16 role, std::size_t 
   file = ReadAll(path);
   const auto alias = EntryLike(entry_of(file, t.entry.language_uuid.value, true), t, V7(After(b, file, role), 0xd10002), 2, 2,
                                "w3b_paths_alias", t.entry.language_uuid.value, false, c::CatalogNameClass::alias);
-  ExpectInsert(b, s, path, Request(2, {alias}), "an alias of the schema");
+  ExpectInsertOrGrow(b, s, path, Request(2, {alias}), "an alias of the schema", 2);
   Commit(*s.w, s.sink(), 2);
   ExpectNamedVerification(b, path, definitions + 1, "the further names, committed", false, true);
   const auto alias_entry = std::get<c::CatalogNameEntry>(*alias.name);
@@ -2510,12 +2510,9 @@ void ConflictingPolicy(const Db& b, const NameTemplate& t, u16 role) {
             c::CatalogPolicyDescriptorMatchesMetadata(c::BorrowCatalogMetadataVersion(descriptor_row.metadata)),
         "the second body and descriptor agree with their metadata");
   const auto policy = Request(n, {body_row, descriptor_row});
-  if (!InsertOracle(b, file, policy)) {
-    std::cout << b.name << " conflicting policy page_size=" << b.size << " skipped: no room in role 5 for a second policy\n";
-    fs::remove(path);
-    return;
-  }
-  ExpectInsert(b, s, path, policy, "a second collision policy, inserted by the transaction");
+  // Where role 5 has no room left the policy takes a new page (it was skipped
+  // here, which lost the case at 16 KiB once create packed role 5 tighter).
+  ExpectInsertOrGrow(b, s, path, policy, "a second collision policy, inserted by the transaction", 3);
   const auto named = NamedAfter(b, ReadAll(path), t, role, ms + 1, 1, n, "w3b_other_policy");
   auto other = named;
   auto v = std::get<c::CatalogNameVector>(*other.vector.name);

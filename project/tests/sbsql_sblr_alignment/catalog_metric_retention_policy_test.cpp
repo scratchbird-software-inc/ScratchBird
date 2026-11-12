@@ -86,7 +86,7 @@ c::CatalogMetadataVersion Metadata(const c::CatalogMetricRetentionPolicy& r) {
   v.definition_version = r.policy.generation;
   v.schema_epoch = v.security_epoch = v.catalog_generation = v.dependency_generation = v.invalidation_generation = 1;
   v.lifecycle = c::CatalogObjectLifecycle::active; v.status = c::CatalogObjectStatus::active;
-  v.trace_search_key = "RETENTION-POLICY-ORACLE"; v.object_subtype = "metric_retention"; v.retention_class = "catalog_history";
+  v.object_subtype = "metric_retention";
   if (r.policy.scope == "cluster") v.authority_scope = c::CatalogAuthorityScope::cluster;
   return v;
 }

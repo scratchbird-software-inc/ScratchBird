@@ -206,9 +206,9 @@ void BorrowedPermissionMetadataChecks() {
     if(mutation==9)value.owning_schema_uuid.kind=p::UuidKind::object;
     if(mutation==10)value.record.header.parent_uuid.value.bytes.back()^=1;
     if(mutation==11)value.record.payload.assign(1024*1024,'x');
-    if(mutation==12)value.trace_search_key.assign(4097,'x');
+    if(mutation==12)value.object_subtype="not a key";  // (was an oversized trace key: Q57 = 1 removed it)
     if(mutation==13)value.object_subtype.assign(257,'x');
-    if(mutation==14)value.retention_class.assign(257,'x');
+    if(mutation==14)value.object_subtype.clear();  // (was an oversized retention class: Q58 = 1 removed it)
     if(mutation==15)value.authority_scope=static_cast<c::CatalogAuthorityScope>(255);
     if(mutation==16)value.record.header.deleted=true;
     if(mutation==17)value.record.header.object_uuid.value.bytes[6]=0x41;

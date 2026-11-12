@@ -93,11 +93,6 @@ struct NativeInitialGeneratedDefinitions {
   // Exactly one per enumerated object, carrying that object's schema placement
   // and label. A missing or extra entry is a refusal.
   std::span<const NativeInitialDefinitionName> names;
-  // Carried by every generated metadata version. Non-empty printable keys: the
-  // metadata codec refuses an envelope without them, so there is no usable
-  // default to fall back on and none is invented here.
-  std::string_view trace_search_key;
-  std::string_view retention_class;
 };
 struct NativeInitialPolicyRequest {
   std::string_view policy_seed_pack_root;

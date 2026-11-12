@@ -80,13 +80,8 @@ struct BootstrapDefinitionMetadataInput {
   // definition is refused. Security records use CatalogRecordKindName(kind).
   std::string object_subtype;
 
-  // ValidateCatalogMetadataVersionView requires all three text keys to be
-  // non-empty printable keys, so an envelope without them cannot be encoded at
-  // all: CatalogMetadataVersionEncodedBytes returns nothing and the named
-  // creation preflight refuses it as invalid_metadata. They are classification,
-  // not identity, and are not guessed here.
-  std::string trace_search_key;
-  std::string retention_class;
+  // (No trace search key or retention class: SB_CATALOG_NO_TEXT_IDENTIFIERS,
+  // owner Q57 = 1, Q58 = 1, 2026-11-12.)
 
   // Shared bootstrap identities.
   core::platform::Uuid owner_principal_uuid;
@@ -139,8 +134,6 @@ enum class BootstrapDefinitionMetadataError {
   transaction_identity_invalid,
   subtype_empty,
   subtype_invalid,
-  trace_search_key_invalid,
-  retention_class_invalid,
   generation_invalid,
 };
 
@@ -169,8 +162,6 @@ inline const char* BootstrapDefinitionMetadataDiagnosticCode(
     case E::transaction_identity_invalid: return "CATALOG.DEFINITION_TRANSACTION_IDENTITY_INVALID";
     case E::subtype_empty: return "CATALOG.DEFINITION_SUBTYPE_EMPTY";
     case E::subtype_invalid: return "CATALOG.DEFINITION_SUBTYPE_INVALID";
-    case E::trace_search_key_invalid: return "CATALOG.DEFINITION_TRACE_SEARCH_KEY_INVALID";
-    case E::retention_class_invalid: return "CATALOG.DEFINITION_RETENTION_CLASS_INVALID";
     case E::generation_invalid: return "CATALOG.DEFINITION_GENERATION_INVALID";
   }
   return "CATALOG.DEFINITION_OBJECT_IDENTITY_INVALID";
@@ -226,14 +217,6 @@ inline BootstrapDefinitionMetadataResult BuildBootstrapDefinitionMetadata(
   };
   if (!valid_key(input.object_subtype, 256)) {
     out.error = E::subtype_invalid;
-    return out;
-  }
-  if (!valid_key(input.trace_search_key, 4096)) {
-    out.error = E::trace_search_key_invalid;
-    return out;
-  }
-  if (!valid_key(input.retention_class, 256)) {
-    out.error = E::retention_class_invalid;
     return out;
   }
   if (!IsEngineIdentityUuid(input.owner_principal_uuid)) {
@@ -306,8 +289,6 @@ inline BootstrapDefinitionMetadataResult BuildBootstrapDefinitionMetadata(
   m.creator_transaction_uuid = input.creator_transaction_uuid;
 
   m.object_subtype = input.object_subtype;
-  m.trace_search_key = input.trace_search_key;
-  m.retention_class = input.retention_class;
 
   out.error = E::none;
   return out;

@@ -49,7 +49,7 @@ db::NativeCreationCatalogSeed MetricSeed(const db::NativeFilespaceInitialization
     meta.dependency_generation=meta.invalidation_generation=1;
     meta.creator_transaction_uuid=request.creator.transaction_uuid;meta.creator_local_transaction_id=1;
     meta.lifecycle=c::CatalogObjectLifecycle::active;meta.status=c::CatalogObjectStatus::active;
-    meta.object_subtype=subtype;meta.retention_class="catalog_history";meta.trace_search_key="NATIVE-CREATION-CATALOG-FIXTURE";
+    meta.object_subtype=subtype;
     Check(c::EncodeCatalogMetadataVersion(meta).ok(),"complete common native metadata");
     seed[0].push_back({std::move(meta),{}});
   };
@@ -141,7 +141,7 @@ void PopulatedWorkspaceChecks() {
       if(fault==3)bad[0][0].metadata.definition_version=2;
       if(fault==4)bad[0][0].metadata.record.payload="bad";
       if(fault==5)bad[0][0].metadata.record.header.object_uuid.value=request.bootstrap.database_uuid;
-      if(fault==6)bad[0][0].metadata.trace_search_key=std::string(page_bytes*2,'x');
+      if(fault==6)bad[0][0].metadata.object_subtype=std::string(page_bytes*2,'x');  // (was the trace key: Q57 = 1)
       if(fault==7)bad[1][0].name.reset();
       if(fault==8)bad[1][0].metadata.record.payload="prebound payload is forbidden";
       if(fault==9)std::get<c::CatalogNameEntry>(*bad[1][1].name).created_transaction_uuid.value=Id(999);

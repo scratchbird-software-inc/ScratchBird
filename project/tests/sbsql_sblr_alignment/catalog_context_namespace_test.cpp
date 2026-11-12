@@ -66,8 +66,8 @@ c::CatalogMetadataVersion Metadata(const c::CatalogContextNamespace& r) {
   m.creator_transaction_uuid={p::UuidKind::transaction,r.origin_transaction_uuid};
   m.default_name_uuid={p::UuidKind::object,Id(8)};m.name_vector_uuid={p::UuidKind::object,Id(9)};
   m.audit_uuid={p::UuidKind::object,Id(10)};m.owning_schema_uuid={p::UuidKind::schema,r.schema_uuid};
-  m.trace_search_key="context_namespace.test";m.object_subtype="application_context_namespace";
-  m.retention_class="catalog";return m;
+  m.object_subtype="application_context_namespace";
+  return m;
 }
 template<class F> auto NoHeap(F f) {
   deny_heap=true;

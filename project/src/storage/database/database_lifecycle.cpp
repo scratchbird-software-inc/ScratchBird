@@ -8764,8 +8764,6 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
         // object is placed where its own family belongs.
         input.definition.owning_schema_uuid=name->owning_schema_uuid;
         input.definition.creator_transaction_uuid=request.construction_transaction;
-        input.definition.trace_search_key=std::string(seed.trace_search_key);
-        input.definition.retention_class=std::string(seed.retention_class);
         input.language_uuid=request.database_default_language;
         // An empty name asks for the object's own reference name.
         input.name_text=name->name_text.empty()?NativeDefinitionReferenceName(identity,definition.kind,definition.payload):
@@ -9146,7 +9144,6 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
     generated.name_collision_policy_uuid=families.identities->collision_descriptors.front().policy_uuid;
     generated.dialect_profile_uuid=families.identities->dialect_profiles.front();
     generated.fresh_identities=fresh;generated.names=names;
-    generated.trace_search_key="SB_NATIVE_DATABASE_CREATE_PRODUCER";generated.retention_class="catalog_history";
     policy.policy.generated_definitions=generated;
     auto catalogs=AssembleNativeInitialPolicySecurityCatalogs(policy);
     if(!catalogs.ok()){result.policy_error=catalogs.source_error;result.name_error=catalogs.name_error;
@@ -9173,7 +9170,6 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
       d.name_vector_uuid=issue_kind(UuidKind::object);d.default_name_entry_uuid=issue_kind(UuidKind::object);
       input.name_vector_row_uuid=issue_kind(UuidKind::row);input.name_entry_row_uuid=issue_kind(UuidKind::row);
       d.kind=kind;d.object_subtype=std::string(subtype);
-      d.trace_search_key="SB_NATIVE_DATABASE_CREATE_PRODUCER";d.retention_class="catalog_history";
       d.owner_principal_uuid=bootstrap.principal_uuid;d.audit_object_uuid=audit_object;
       d.security_policy_uuid=service_identity.policy_uuid;d.owning_schema_uuid=owning_schema;d.creator_transaction_uuid=tx;
       if(root_parent){d.root_placement=true;d.root_parent_uuid=*root_parent;}

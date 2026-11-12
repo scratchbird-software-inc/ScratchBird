@@ -79,7 +79,6 @@ inline c::CatalogMetadataVersion Metadata(unsigned index,const p::TypedUuid& tx,
   m.creator_transaction_uuid=tx;m.creator_local_transaction_id=1;
   m.definition_version=m.catalog_generation=m.schema_epoch=m.security_epoch=m.dependency_generation=m.invalidation_generation=1;
   m.status=c::CatalogObjectStatus::active;m.lifecycle=c::CatalogObjectLifecycle::active;
-  m.trace_search_key="BOOTSTRAP-POLICY-TEST";m.retention_class="catalog_history";
   constexpr const char* subtypes[]{"bootstrap_policy_pack","bootstrap_security_provider","bootstrap_policy_profile"};
   m.object_subtype=subtypes[index];return m;
 }

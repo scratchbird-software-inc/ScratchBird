@@ -59,7 +59,7 @@ c::CatalogMetadataVersion Metadata(const Binding& r) {
   m.definition_version=r.generation; m.catalog_generation=r.catalog_generation; m.security_epoch=r.security_epoch;
   m.schema_epoch=m.resource_epoch=m.dependency_generation=m.invalidation_generation=1;
   m.lifecycle=c::CatalogObjectLifecycle::active; m.status=c::CatalogObjectStatus::active;
-  m.object_subtype="agent_runtime_authority"; m.trace_search_key="RUNTIME-BINDING-GATE"; m.retention_class="catalog_history";
+  m.object_subtype="agent_runtime_authority";
   return m;
 }
 void Good(const Binding& r) {

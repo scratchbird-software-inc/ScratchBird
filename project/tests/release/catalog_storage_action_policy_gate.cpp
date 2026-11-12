@@ -56,7 +56,7 @@ c::CatalogMetadataVersion Metadata(const P& p){c::CatalogMetadataVersion m;
   m.creator_transaction_uuid=p.origin_transaction_uuid;m.creator_local_transaction_id=p.origin_local_transaction_id;
   m.definition_version=p.generation;m.schema_epoch=m.security_epoch=m.catalog_generation=m.dependency_generation=m.invalidation_generation=1;
   m.lifecycle=c::CatalogObjectLifecycle::active;m.status=c::CatalogObjectStatus::active;m.object_subtype="storage_action";
-  m.trace_search_key="STORAGE-POLICY-ORACLE";m.retention_class="catalog_history";return m;
+  return m;
 }
 void Good(const P& p){const auto oracle=Oracle(p);const auto encoded=c::EncodeCatalogStorageActionPolicy(p);
   Check(encoded.ok()&&std::string(encoded.bytes.begin(),encoded.bytes.end())==oracle,"exact independent policy byte oracle");

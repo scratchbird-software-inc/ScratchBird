@@ -85,23 +85,23 @@ M Fixture(){
   m.security_policy_uuid=Id(K::object,9);m.dependency_group_uuid=Id(K::object,10);
   m.storage_binding_uuid=Id(K::object,11);m.donor_overlay_uuid=Id(K::object,12);
   m.lifecycle=c::CatalogObjectLifecycle::active;m.status=c::CatalogObjectStatus::active;
-  m.trace_search_key=std::string(32,'T');m.object_subtype="application";m.retention_class=std::string(32,'R');
+  m.object_subtype="application";
   m.record.payload=std::string("opaque\0\r\n",9)+std::string(40,'x');return m;
 }
-// Offset oracle from SBCMV001/SBCTREC2. No production serializers or integer helpers.
+// Offset oracle from SBCMV001 version 2 (no trace key or retention class: owner Q57 = 1,
+// Q58 = 1; their length slots 352 and 364 are reserved zero)/SBCTREC2. No production
+// serializers or integer helpers.
 Bytes Golden(const M& m){
-  const auto text=m.trace_search_key.size()+m.object_subtype.size()+m.retention_class.size();
+  const auto text=m.object_subtype.size();
   const auto start=384+text;Bytes b(start+96+m.record.payload.size());
-  std::copy_n("SBCMV001",8,b.begin());Put(b,8,1,2);Put(b,10,384,2);Put(b,12,b.size(),4);
+  std::copy_n("SBCMV001",8,b.begin());Put(b,8,2,2);Put(b,10,384,2);Put(b,12,b.size(),4);
   Put(b,16,static_cast<unsigned>(m.authority_scope),2);Put(b,18,static_cast<unsigned>(m.lifecycle),2);
   Put(b,20,static_cast<unsigned>(m.status),2);Put(b,22,static_cast<unsigned>(m.visibility),2);
   for(unsigned i=0;i<8;++i)Put(b,32+8*i,m.*counters[i],8);
   for(unsigned i=0;i<11;++i){const auto& id=m.*refs[i];b[272+i]=static_cast<unsigned>(id.kind);
     std::copy(id.value.bytes.begin(),id.value.bytes.end(),b.begin()+96+16*i);}
-  Put(b,352,m.trace_search_key.size(),4);Put(b,356,96+m.record.payload.size(),4);
-  Put(b,360,m.object_subtype.size(),4);Put(b,364,m.retention_class.size(),4);
-  auto at=384u;for(const auto* s:{&m.trace_search_key,&m.object_subtype,&m.retention_class}){
-    std::copy(s->begin(),s->end(),b.begin()+at);at+=s->size();}
+  Put(b,356,96+m.record.payload.size(),4);Put(b,360,m.object_subtype.size(),4);
+  std::copy(m.object_subtype.begin(),m.object_subtype.end(),b.begin()+384);
   std::copy_n("SBCTREC2",8,b.begin()+start);Put(b,start+8,2,2);Put(b,start+10,96,2);
   Put(b,start+12,96+m.record.payload.size(),4);Put(b,start+16,static_cast<unsigned>(m.record.header.kind),2);
   Put(b,start+20,m.record.header.record_version,4);Put(b,start+24,m.record.header.deleted,4);
@@ -139,14 +139,16 @@ void Framing(){
     for(int at=begin;at<end;++at)for(unsigned value=1;value<256;++value){
       bad=good;bad[at]=value;Seal(bad);Refused(bad,"digest_reserved_or_canonical_mismatch");}
   bad=good;bad[288]^=1;Seal(bad);Refused(bad,"digest_reserved_or_canonical_mismatch");
-  bad=good;Put(bad,352,4097,4);Refused(bad,"length_invalid");
+  bad=good;Put(bad,352,1,4);Refused(bad,"length_invalid");  // reserved (version 1's trace-key length)
+  bad=good;Put(bad,364,1,4);Refused(bad,"length_invalid");  // reserved (version 1's retention-class length)
+  bad=good;Put(bad,8,1,2);Refused(bad,"header_invalid");  // version 1
   bad=good;Put(bad,356,0xffffffffu,4);Refused(bad,"length_invalid");
   bad=Bytes(262145,0);Refused(bad,"size_invalid");
   auto copy=*view.record;
-  Check(copy.trace_search_key.data()==reinterpret_cast<const char*>(good.data()+384),"text lifetime input-backed");
+  Check(copy.object_subtype.data()==reinterpret_cast<const char*>(good.data()+384),"text lifetime input-backed");
   Check(copy.record.payload.data()==reinterpret_cast<const char*>(good.data()+good.size()-m.record.payload.size()),"payload input-backed");
   auto disposable=good;const auto materialized=c::DecodeCatalogMetadataVersion(disposable);std::fill(disposable.begin(),disposable.end(),0);
-  Check(materialized.record.record.payload==m.record.payload&&materialized.record.trace_search_key==m.trace_search_key,"owning independent lifetime");
+  Check(materialized.record.record.payload==m.record.payload&&materialized.record.object_subtype==m.object_subtype,"owning independent lifetime");
 }
 void Semantics(){
   const auto base=Fixture();
@@ -177,13 +179,13 @@ void Semantics(){
   for(unsigned slot=0;slot<11;++slot){auto m=base;m.*refs[slot]={};const auto v=Decode(Golden(m));
     const bool required=slot==0||slot==1||slot==9;const bool paired=slot==3||slot==4;
     Check(v.ok()==(!required&&!paired),"exact optional absence and name pairing");}
-  for(auto member:{&M::trace_search_key,&M::object_subtype,&M::retention_class}){
-    const auto cap=member==&M::trace_search_key?4096u:256u;
+  for(auto member:{&M::object_subtype}){  // (trace key and retention class removed: Q57 = 1, Q58 = 1)
+    const auto cap=256u;
     auto m=base;m.*member=std::string(cap,'Z');Check(Decode(Golden(m)).ok(),"text exact cap");
-    m.*member="";Refused(Golden(m),"trace_key_invalid");
+    m.*member="";Refused(Golden(m),"subtype_invalid");
     m.*member=std::string(cap+1,'Z');Refused(Golden(m),"length_invalid");
     for(unsigned octet=0;octet<256;++octet){m.*member=std::string(1,static_cast<char>(octet));
-      Check(Decode(Golden(m)).ok()==(octet>=33&&octet<=126),"exact trace/subtype/retention byte alphabet");}
+      Check(Decode(Golden(m)).ok()==(octet>=33&&octet<=126),"exact subtype byte alphabet");}
   }
   auto retired=base;retired.record.header.deleted=true;Refused(Golden(retired),"retirement_binding_invalid");
   retired.retired_transaction_uuid=retired.creator_transaction_uuid;retired.status=c::CatalogObjectStatus::retired;

@@ -67,7 +67,7 @@ c::CatalogMetadataVersion Common() {
   m.creator_transaction_uuid=Id(60,p::UuidKind::transaction);m.creator_local_transaction_id=9;
   m.definition_version=m.schema_epoch=m.security_epoch=m.catalog_generation=m.dependency_generation=m.invalidation_generation=1;
   m.lifecycle=c::CatalogObjectLifecycle::active;m.status=c::CatalogObjectStatus::active;
-  m.trace_search_key="INTERVAL-OCCURRENCE-COMPONENT";m.retention_class="catalog_history";return m;
+  return m;
 }
 Fixture MakeFixture() {
   Fixture f;auto result=d::BuildCurrentIntervalValidatedProfileHandleV3(d::kDatatypeCohortV10);

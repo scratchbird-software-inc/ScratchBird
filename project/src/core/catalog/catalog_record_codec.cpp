@@ -445,9 +445,7 @@ std::optional<CatalogRecordDiagnosticView> ValidateCatalogMetadataVersionView(co
     return !key.empty() && key.size() <= maximum && std::all_of(key.begin(), key.end(),
         [](unsigned char c) { return c >= 33 && c <= 126; });
   };
-  if (!valid_key(value.trace_search_key, 4096) || !valid_key(value.object_subtype, 256) ||
-      !valid_key(value.retention_class, 256))
-    return MetadataViewError("trace_key_invalid");
+  if (!valid_key(value.object_subtype, 256)) return MetadataViewError("subtype_invalid");
   for (std::size_t i = 0; i < kMetadataReferences.size(); ++i) {
     const auto& id = value.*kMetadataReferences[i];
     if (!IsSuppliedIdentity(id)) {
@@ -611,26 +609,27 @@ std::optional<CatalogRecordDiagnosticView> ValidateCatalogMetadataVersionView(co
   const auto inner=ValidateCatalogTypedRecordView(value.record);
   if(!inner.ok())return inner.diagnostic;
   const auto inner_size=kBinaryHeaderBytes+value.record.payload.size();
-  const auto text_size=value.trace_search_key.size()+value.object_subtype.size()+value.retention_class.size();
+  const auto text_size=value.object_subtype.size();
   if(inner_size>kMetadataMaxBytes-kMetadataHeaderBytes-text_size)return MetadataViewError("size_limit");
   return std::nullopt;
 }
 
 std::optional<std::size_t> CatalogMetadataVersionEncodedBytes(const CatalogMetadataVersionView& v) {
   if(ValidateCatalogMetadataVersionView(v))return {};
-  return kMetadataHeaderBytes+kBinaryHeaderBytes+v.record.payload.size()+v.trace_search_key.size()+
-      v.object_subtype.size()+v.retention_class.size();
+  return kMetadataHeaderBytes+kBinaryHeaderBytes+v.record.payload.size()+v.object_subtype.size();
 }
 CatalogMetadataVersionCodecResult EncodeCatalogMetadataVersion(const CatalogMetadataVersion& value) {
   const auto view=BorrowCatalogMetadataVersion(value);
   if(const auto error=ValidateCatalogMetadataVersionView(view))return MetadataFailure(*error);
   const auto inner_size=kBinaryHeaderBytes+value.record.payload.size();
-  const auto text_size=value.trace_search_key.size()+value.object_subtype.size()+value.retention_class.size();
+  const auto text_size=value.object_subtype.size();
   CatalogMetadataVersionCodecResult result;
   result.bytes.assign(kMetadataHeaderBytes + text_size + inner_size, 0);
   auto* out = result.bytes.data();
   std::memcpy(out, "SBCMV001", 8);
-  StoreLittle16(out + 8, 1); StoreLittle16(out + 10, kMetadataHeaderBytes);
+  // Version 2 (SB_CATALOG_NO_TEXT_IDENTIFIERS, owner Q57/Q58 = 1): the trace-key
+  // and retention-class length slots (352, 364) are reserved, zero.
+  StoreLittle16(out + 8, 2); StoreLittle16(out + 10, kMetadataHeaderBytes);
   StoreLittle32(out + 12, static_cast<u32>(result.bytes.size()));
   StoreLittle16(out + 16, static_cast<u16>(value.authority_scope));
   StoreLittle16(out + 18, static_cast<u16>(value.lifecycle));
@@ -651,13 +650,9 @@ CatalogMetadataVersionCodecResult EncodeCatalogMetadataVersion(const CatalogMeta
     failure.status=definition.status;failure.diagnostic=definition.diagnostic;return failure;
   }
   std::copy(definition.digest.begin(), definition.digest.end(), out + 288);
-  StoreLittle32(out + 352, static_cast<u32>(value.trace_search_key.size()));
   StoreLittle32(out + 356, static_cast<u32>(inner_size));
   StoreLittle32(out + 360, static_cast<u32>(value.object_subtype.size()));
-  StoreLittle32(out + 364, static_cast<u32>(value.retention_class.size()));
-  std::copy(value.trace_search_key.begin(), value.trace_search_key.end(), out + kMetadataHeaderBytes);
-  std::copy(value.object_subtype.begin(), value.object_subtype.end(), out + kMetadataHeaderBytes + value.trace_search_key.size());
-  std::copy(value.retention_class.begin(), value.retention_class.end(), out + kMetadataHeaderBytes + value.trace_search_key.size() + value.object_subtype.size());
+  std::copy(value.object_subtype.begin(), value.object_subtype.end(), out + kMetadataHeaderBytes);
   const auto digest = scratchbird::core::hash::ComputeSha256Digest(result.bytes);
   if (!digest.ok()) {
     CatalogMetadataVersionCodecResult failure;
@@ -675,13 +670,13 @@ CatalogMetadataVersionViewResult DecodeCatalogMetadataVersionView(std::span<cons
   const auto invalid=[&](const char* detail) { return failure(MetadataViewError(detail)); };
   if(bytes.size()<kMetadataHeaderBytes || bytes.size()>kMetadataMaxBytes)return invalid("size_invalid");
   const auto* in=bytes.data();
-  if(std::memcmp(in,"SBCMV001",8) || LoadLittle16(in+8)!=1 ||
+  if(std::memcmp(in,"SBCMV001",8) || LoadLittle16(in+8)!=2 ||
       LoadLittle16(in+10)!=kMetadataHeaderBytes || LoadLittle32(in+12)!=bytes.size())
     return invalid("header_invalid");
-  const auto trace_size=LoadLittle32(in+352),inner_size=LoadLittle32(in+356);
-  const auto subtype_size=LoadLittle32(in+360),retention_size=LoadLittle32(in+364);
-  const auto text_size=static_cast<u64>(trace_size)+subtype_size+retention_size;
-  if(trace_size>4096 || subtype_size>256 || retention_size>256 ||
+  const auto inner_size=LoadLittle32(in+356),subtype_size=LoadLittle32(in+360);
+  const auto text_size=static_cast<u64>(subtype_size);
+  // 352 and 364 (version 1's trace-key and retention-class lengths) are reserved.
+  if(LoadLittle32(in+352)!=0 || LoadLittle32(in+364)!=0 || subtype_size>256 ||
       static_cast<u64>(kMetadataHeaderBytes)+text_size+inner_size!=bytes.size())
     return invalid("length_invalid");
   constexpr std::array<byte,32> zero{};
@@ -701,9 +696,7 @@ CatalogMetadataVersionViewResult DecodeCatalogMetadataVersionView(std::span<cons
     auto& id=value.*kMetadataReferences[i];id.kind=static_cast<UuidKind>(in[272+i]);
     std::copy(in+96+16*i,in+112+16*i,id.value.bytes.begin());
   }
-  value.trace_search_key={reinterpret_cast<const char*>(in+kMetadataHeaderBytes),trace_size};
-  value.object_subtype={reinterpret_cast<const char*>(in+kMetadataHeaderBytes+trace_size),subtype_size};
-  value.retention_class={reinterpret_cast<const char*>(in+kMetadataHeaderBytes+trace_size+subtype_size),retention_size};
+  value.object_subtype={reinterpret_cast<const char*>(in+kMetadataHeaderBytes),subtype_size};
   const auto* nested=in+kMetadataHeaderBytes+text_size;
   const auto inner=DecodeCatalogTypedRecordView(CatalogPageRowKind::typed_catalog_record,
       {reinterpret_cast<const char*>(nested),inner_size});
@@ -749,9 +742,7 @@ CatalogMetadataVersion MaterializeCatalogMetadataVersion(const CatalogMetadataVe
       v.donor_overlay_uuid,
       v.audit_uuid,
       v.owning_schema_uuid,
-      std::string(v.trace_search_key),
-      std::string(v.object_subtype),
-      std::string(v.retention_class)};
+      std::string(v.object_subtype)};
 }
 
 CatalogMetadataVersionCodecResult DecodeCatalogMetadataVersion(const std::vector<byte>& bytes) {

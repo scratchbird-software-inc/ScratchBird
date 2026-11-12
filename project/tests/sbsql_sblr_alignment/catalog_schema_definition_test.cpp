@@ -82,7 +82,6 @@ c::CatalogMetadataVersion Metadata(const c::CatalogSchemaDefinition& d) {
   m.creator_transaction_uuid=d.origin_transaction_uuid;m.creator_local_transaction_id=d.origin_local_transaction_id;
   m.definition_version=m.schema_epoch=m.security_epoch=m.catalog_generation=m.dependency_generation=m.invalidation_generation=1;
   m.lifecycle=c::CatalogObjectLifecycle::active;m.status=c::CatalogObjectStatus::active;
-  m.trace_search_key="SCHEMA-DEFINITION-ORACLE";m.retention_class="catalog_history";
   const std::array names{"system","user_home","remote_native","remote_emulated","public_compat","application","cluster"};
   m.object_subtype=names[static_cast<unsigned>(d.schema_type)-1];
   if(d.schema_type==c::CatalogSchemaType::cluster)m.authority_scope=c::CatalogAuthorityScope::cluster;

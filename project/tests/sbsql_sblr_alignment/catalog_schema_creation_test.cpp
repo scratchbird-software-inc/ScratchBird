@@ -60,7 +60,7 @@ c::CatalogMetadataVersion Metadata(unsigned n,c::CatalogRecordKind kind,const ch
   m.creator_transaction_uuid=tx;m.creator_local_transaction_id=1;
   m.definition_version=m.schema_epoch=m.security_epoch=m.catalog_generation=m.dependency_generation=m.invalidation_generation=1;
   m.lifecycle=c::CatalogObjectLifecycle::active;m.status=c::CatalogObjectStatus::active;
-  m.trace_search_key="INITIAL-SCHEMA-BOUND-INPUT";m.object_subtype=subtype;m.retention_class="catalog_history";
+  m.object_subtype=subtype;
   return m;
 }
 c::CatalogMetadataVersion Database(unsigned profile=0) {
@@ -270,7 +270,7 @@ void PrimaryChecks() {
       case 11:x.entry.scope_uuid.kind=p::UuidKind::filespace;expected_error=DE::invalid_names;break;
       case 12:x.entry.parent_object_uuid=Typed(p::UuidKind::object,99);expected_error=DE::invalid_names;break;
       case 13:x.entry.default_for_object=false;expected_error=DE::invalid_names;break;
-      case 14:x.entry_metadata.trace_search_key.assign(200000,'x');break;
+      case 14:x.entry_metadata.object_subtype.assign(200000,'x');break;  // (was the trace key: Q57 = 1)
       case 15:x.metadata.creator_transaction_uuid=Typed(p::UuidKind::transaction,99);break;
       case 16:x.metadata.catalog_generation=2;break;
     }
@@ -418,13 +418,14 @@ void DatabaseChecks() {
     auto request=many.Request();request.definition.entries=entries;
     const auto large=db::AssembleNativeInitialDatabaseRecords(request);
     Check(large.ok()&&large.records->names.size()==34,"complete enlarged database alias family owns all supplied entries");
-    metadata.back().trace_search_key.assign(200000,'x');
+    const auto kept_subtype=metadata.back().object_subtype;  // (the trace key was oversized here: Q57 = 1)
+    metadata.back().object_subtype.assign(200000,'x');
     allocation_calls=0;allocation_budget=0;
     const auto malformed=db::AssembleNativeInitialDatabaseRecords(request);
     const bool no_copy=allocation_calls==0;allocation_budget=-1;
     Check(no_copy&&malformed.error==DE::invalid_definition&&!malformed.records,
           "malformed final enlarged alias refuses before scratch or payload/name copies");
-    metadata.back().trace_search_key=x.entry_metadata.trace_search_key;
+    metadata.back().object_subtype=kept_subtype;
     allocation_calls=0;allocation_budget=1000000;
     const auto counted=db::AssembleNativeInitialDatabaseRecords(request);
     const auto sites=allocation_calls;allocation_budget=-1;Check(counted.ok()&&sites,"enlarged database allocation calibration");
@@ -627,8 +628,8 @@ void LogicalChecks() {
   }
   for(unsigned field=0;field<3;++field) {
     Package bad;auto& x=bad.items.back();
-    if(field==0)x.metadata.trace_search_key.assign(200000,'x');
-    if(field==1)x.vector_metadata.trace_search_key.assign(200000,'x');
+    if(field==0)x.metadata.object_subtype.assign(200000,'x');  // (was the trace key: Q57 = 1)
+    if(field==1)x.vector_metadata.object_subtype.assign(200000,'x');
     if(field==2)x.entry.display_name.assign(200000,'x');
     allocation_calls=0;allocation_budget=0;const auto failed=bad.Assemble();
     const bool no_allocation=allocation_calls==0;allocation_budget=-1;

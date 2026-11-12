@@ -157,7 +157,7 @@ void CheckOrigin(c::CatalogRecordKind kind,unsigned physical_kind,unsigned prima
   m.creator_transaction_uuid={p::UuidKind::transaction,Origin()};m.creator_local_transaction_id=1;
   m.definition_version=m.schema_epoch=m.security_epoch=m.catalog_generation=m.dependency_generation=m.invalidation_generation=1;
   m.lifecycle=c::CatalogObjectLifecycle::active;m.status=c::CatalogObjectStatus::active;
-  m.trace_search_key="SECURITY-NATIVE-V2";m.object_subtype=c::CatalogRecordKindName(kind);m.retention_class="catalog_history";
+  m.object_subtype=c::CatalogRecordKindName(kind);
   const auto encoded=c::EncodeCatalogMetadataVersion(m);
   Check(encoded.ok()&&c::DecodeCatalogMetadataVersion(encoded.bytes).ok(),"complete native security metadata refused");
   for(unsigned fault=0;fault<9;++fault){auto bad=m;

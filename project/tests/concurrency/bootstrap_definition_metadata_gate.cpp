@@ -35,8 +35,6 @@ db::BootstrapDefinitionMetadataInput Good() {
   in.default_name_entry_uuid = Id(0x59);
   in.kind = c::CatalogRecordKind::config_profile;
   in.object_subtype = "agent_runtime_authority";
-  in.trace_search_key = "BOOTSTRAP-DEFINITION-METADATA-GATE";
-  in.retention_class = "catalog_history";
   in.owner_principal_uuid = Id(0x52);
   in.audit_object_uuid = Id(0x53);
   in.security_policy_uuid = Id(0x54);
@@ -117,10 +115,8 @@ int main() {
           m.default_name_uuid.value != m.record.header.object_uuid.value,
           "object, name-vector and name-entry identities are all distinct");
     Check(m.object_subtype == "agent_runtime_authority", "subtype preserved verbatim");
-    Check(m.trace_search_key == "BOOTSTRAP-DEFINITION-METADATA-GATE" &&
-          m.retention_class == "catalog_history",
-          "both text keys the metadata codec requires are carried; an envelope "
-          "without them cannot be encoded at all");
+    // (No trace search key or retention class to carry: SB_CATALOG_NO_TEXT_IDENTIFIERS,
+    // owner Q57 = 1, Q58 = 1; the metadata codec no longer has them.)
     Check(m.owner_uuid.kind == p::UuidKind::principal && m.owner_uuid.value == Id(0x52),
           "owner is a principal identity");
     Check(m.audit_uuid.kind == p::UuidKind::object && m.audit_uuid.value == Id(0x53),
@@ -155,9 +151,6 @@ int main() {
     auto entry_is_vector = Good(); entry_is_vector.default_name_entry_uuid = entry_is_vector.name_vector_uuid;
     auto no_subtype = Good(); no_subtype.object_subtype.clear();
     auto spaced_subtype = Good(); spaced_subtype.object_subtype = "agent runtime authority";
-    auto no_trace = Good(); no_trace.trace_search_key.clear();
-    auto spaced_trace = Good(); spaced_trace.trace_search_key = "not a key";
-    auto no_retention = Good(); no_retention.retention_class.clear();
     auto nil_owner = Good(); nil_owner.owner_principal_uuid = {};
     auto nil_audit = Good(); nil_audit.audit_object_uuid = {};
     auto nil_policy = Good(); nil_policy.security_policy_uuid = {};
@@ -177,12 +170,8 @@ int main() {
        entry_is_vector, E::name_entry_identity_invalid},
       {"an empty subtype refuses", no_subtype, E::subtype_empty},
       {"a subtype that is not a printable key refuses", spaced_subtype, E::subtype_invalid},
-      {"an empty trace search key refuses, because the metadata codec requires one",
-       no_trace, E::trace_search_key_invalid},
-      {"a trace search key that is not a printable key refuses",
-       spaced_trace, E::trace_search_key_invalid},
-      {"an empty retention class refuses, because the metadata codec requires one",
-       no_retention, E::retention_class_invalid},
+      // (The trace-key and retention-class refusals went with the fields,
+      // owner Q57 = 1, Q58 = 1.)
       {"a nil owner refuses", nil_owner, E::owner_identity_invalid},
       {"a nil audit identity refuses", nil_audit, E::audit_identity_invalid},
       {"a nil security policy refuses", nil_policy, E::policy_identity_invalid},

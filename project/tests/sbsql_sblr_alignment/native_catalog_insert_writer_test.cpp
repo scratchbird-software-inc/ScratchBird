@@ -184,7 +184,6 @@ c::CatalogMetadataVersion FixtureRow(const Db& b, std::span<const byte> file, u1
   m.name_vector_uuid = {};
   m.creator_local_transaction_id = n;
   m.object_subtype = "w3b_insert_mechanics_fixture";
-  m.trace_search_key = "W3B-1A-INSERT-FIXTURE";
   return m;
 }
 db::CatalogInsertRow Row(const Db& b, std::span<const byte> file, u16 role, const Uuid& row, unsigned version_k,
@@ -712,6 +711,17 @@ std::vector<u64> ExpectInsert(const Db& b, Session& s, const std::string& path, 
   Check(result.writes == changed && recording.offsets.size() == changed, std::string(label) + ": one write per changed page");
   return recording.offsets;
 }
+// SB_CATALOG_NO_TEXT_IDENTIFIERS: rows changed size, so create packs its leaves
+// differently, and a leaf a check inserts into may have no room left. Then the
+// same insert takes new pages (two identities: a base leaf and a tree leaf), and
+// is checked as a growing insert. `seed` keeps the identities distinct.
+std::vector<u64> ExpectInsertOrGrow(const Db& b, Session& s, const std::string& path, db::CatalogInsertRequest r,
+                                    std::string_view label, unsigned seed) {
+  if (InsertOracle(b, ReadAll(path), r)) return ExpectInsert(b, s, path, r, label);
+  for (unsigned i = 0; i < 2; ++i)
+    r.new_pages.push_back({V7(kT + 760000 + 4 * seed + i, 0xe70000 + seed), V7(kT + 760000 + 4 * seed + i, 0xe80000 + seed)});
+  return ExpectGrowingInsert(b, s.sink(), path, r, std::string(label) + ", on a new page");
+}
 void InsertRefused(const Db& b, Session& s, const std::string& path, const db::CatalogInsertRequest& r, CE error,
                    std::string_view label, bool read_only = false) {
   const auto before = ReadAll(path);
@@ -787,7 +797,7 @@ void States(const Db& b, const Place& at) {
     auto again = Row(b, ReadAll(path), at.role, V7(Ms(at.largest) + 4, 0x13), 4, n + 1);
     const auto rel = ReadRelation(b, ReadAll(path));
     again.metadata.record.header.object_uuid = rel.At(rel.Find(VersionId(2)).first).metadata.at(VersionId(2)).record.header.object_uuid;
-    ExpectInsert(b, s, path, Request(n + 1, {again}), "a rolled-back row's object, inserted again");
+    ExpectInsertOrGrow(b, s, path, Request(n + 1, {again}), "a rolled-back row's object, inserted again", 1);
     Commit(*s.w, s.sink(), n + 1);
     PeekSees(b, path, again.row_uuid, VersionId(4), "the object inserted again, committed");
   }

@@ -220,7 +220,6 @@ c::CatalogMetadataVersion Metadata(bool table) {
   m.creator_transaction_uuid=t.origin_transaction_uuid;m.creator_local_transaction_id=9;
   m.definition_version=m.schema_epoch=m.security_epoch=m.catalog_generation=m.dependency_generation=m.invalidation_generation=1;
   m.lifecycle=c::CatalogObjectLifecycle::active;m.status=c::CatalogObjectStatus::active;
-  m.trace_search_key="NATIVE-TABLE-ORACLE";m.retention_class="catalog_history";
   m.object_subtype=table?"ordinary_persistent_table":"persistent_table_column";
   if(table)m.storage_binding_uuid=t.storage_descriptor.uuid;
   return m;

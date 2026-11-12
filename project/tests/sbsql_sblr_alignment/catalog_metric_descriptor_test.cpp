@@ -158,8 +158,8 @@ c::CatalogMetadataVersion Metadata(const c::CatalogMetricDescriptor& r){
   v.security_policy_uuid={p::UuidKind::object,r.binding.visibility_policy_uuid};v.definition_version=r.binding.descriptor_generation;
   v.creator_transaction_uuid=r.origin_transaction_uuid;v.creator_local_transaction_id=r.origin_local_transaction_id;
   v.schema_epoch=v.security_epoch=v.catalog_generation=v.dependency_generation=v.invalidation_generation=1;
-  v.lifecycle=c::CatalogObjectLifecycle::active;v.status=c::CatalogObjectStatus::active;v.trace_search_key="METRIC-DESCRIPTOR-ORACLE";
-  v.object_subtype="metric_descriptor";v.retention_class="catalog_history";
+  v.lifecycle=c::CatalogObjectLifecycle::active;v.status=c::CatalogObjectStatus::active;
+  v.object_subtype="metric_descriptor";
   if(r.definition.cluster_only)v.authority_scope=c::CatalogAuthorityScope::cluster;
   return v;
 }
