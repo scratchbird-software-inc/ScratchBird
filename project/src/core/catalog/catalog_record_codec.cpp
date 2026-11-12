@@ -445,7 +445,7 @@ std::optional<CatalogRecordDiagnosticView> ValidateCatalogMetadataVersionView(co
     return !key.empty() && key.size() <= maximum && std::all_of(key.begin(), key.end(),
         [](unsigned char c) { return c >= 33 && c <= 126; });
   };
-  if (!valid_key(value.object_subtype, 256)) return MetadataViewError("subtype_invalid");
+  if (!IsKnownCatalogObjectSubtype(value.object_subtype)) return MetadataViewError("subtype_invalid");
   for (std::size_t i = 0; i < kMetadataReferences.size(); ++i) {
     const auto& id = value.*kMetadataReferences[i];
     if (!IsSuppliedIdentity(id)) {
@@ -468,75 +468,75 @@ std::optional<CatalogRecordDiagnosticView> ValidateCatalogMetadataVersionView(co
     if (IsSuppliedIdentity(value.*member) && !IsTypedIdentity(value.*member, UuidKind::object))
       return MetadataViewError("object_reference_kind_invalid");
   if ((value.record.header.kind == CatalogRecordKind::metric_series ||
-       value.object_subtype == "metric_series" || IsCatalogMetricSeriesPayload(value.record.payload)) &&
+       value.object_subtype == CatalogObjectSubtype::metric_series || IsCatalogMetricSeriesPayload(value.record.payload)) &&
       !CatalogMetricSeriesMatchesMetadata(value))
     return MetadataViewError("metric_series_definition_binding_invalid");
-  if ((value.object_subtype == "application_context_namespace" ||
+  if ((value.object_subtype == CatalogObjectSubtype::application_context_namespace ||
        IsCatalogContextNamespacePayload(value.record.payload)) &&
       !CatalogContextNamespaceMatchesMetadata(value))
     return MetadataViewError("context_namespace_definition_binding_invalid");
   if ((value.record.header.kind == CatalogRecordKind::metric_label_schema ||
-       value.object_subtype == "metric_label_schema" || IsCatalogMetricLabelSchemaPayload(value.record.payload)) &&
+       value.object_subtype == CatalogObjectSubtype::metric_label_schema || IsCatalogMetricLabelSchemaPayload(value.record.payload)) &&
       !CatalogMetricLabelSchemaMatchesMetadata(value))
     return MetadataViewError("metric_label_schema_definition_binding_invalid");
   if ((value.record.header.kind == CatalogRecordKind::metric_descriptor ||
-       value.object_subtype == "metric_descriptor" || IsCatalogMetricDescriptorPayload(value.record.payload)) &&
+       value.object_subtype == CatalogObjectSubtype::metric_descriptor || IsCatalogMetricDescriptorPayload(value.record.payload)) &&
       !CatalogMetricDescriptorMatchesMetadata(value))
     return MetadataViewError("metric_descriptor_definition_binding_invalid");
-  if ((value.object_subtype == "storage_action_attachment" ||
+  if ((value.object_subtype == CatalogObjectSubtype::storage_action_attachment ||
        IsCatalogStorageActionAttachmentPayload(value.record.payload)) &&
       !CatalogStorageActionAttachmentMatchesMetadata(value))
     return MetadataViewError("storage_action_attachment_binding_invalid");
-  if ((value.object_subtype == "storage_action" ||
+  if ((value.object_subtype == CatalogObjectSubtype::storage_action ||
        IsCatalogStorageActionPolicyPayload(value.record.payload)) &&
       !CatalogStorageActionPolicyMatchesMetadata(value))
     return MetadataViewError("storage_action_definition_binding_invalid");
-  if ((value.object_subtype == "agent_runtime_authority" ||
+  if ((value.object_subtype == CatalogObjectSubtype::agent_runtime_authority ||
        IsCatalogRuntimeAuthorityBindingPayload(value.record.payload)) &&
       !CatalogRuntimeAuthorityBindingMatchesMetadata(value))
     return MetadataViewError("runtime_authority_definition_binding_invalid");
-  if ((value.object_subtype == "bootstrap_policy_pack" ||
-       value.object_subtype == "bootstrap_security_provider" ||
-       value.object_subtype == "bootstrap_policy_profile" ||
+  if ((value.object_subtype == CatalogObjectSubtype::bootstrap_policy_pack ||
+       value.object_subtype == CatalogObjectSubtype::bootstrap_security_provider ||
+       value.object_subtype == CatalogObjectSubtype::bootstrap_policy_profile ||
        IsCatalogBootstrapPolicyPayload(value.record.payload)) &&
       !CatalogBootstrapPolicyMatchesMetadata(value))
     return MetadataViewError("bootstrap_policy_definition_binding_invalid");
-  if ((value.object_subtype == "memory_configuration" ||
+  if ((value.object_subtype == CatalogObjectSubtype::memory_configuration ||
        IsCatalogMemoryConfigurationPayload(value.record.payload)) &&
       !CatalogMemoryConfigurationMatchesMetadata(value))
     return MetadataViewError("memory_configuration_definition_binding_invalid");
-  if ((value.object_subtype == "node_construction_intent" ||
+  if ((value.object_subtype == CatalogObjectSubtype::node_construction_intent ||
        IsCatalogConstructionIntentPayload(value.record.payload)) &&
       !CatalogConstructionIntentMatchesMetadata(value))
     return CatalogRecordDiagnosticView{CodecErrorStatus(),"AUDIT.EVENT_INVALID",
         "audit.construction_intent.invalid","construction_intent_definition_binding_invalid","core.catalog.record_codec"};
-  if ((value.object_subtype == "catalog_metadata_change" ||
+  if ((value.object_subtype == CatalogObjectSubtype::catalog_metadata_change ||
        IsCatalogMetadataChangePayload(value.record.payload)) &&
       !CatalogMetadataChangeMatchesMetadata(value))
     return CatalogRecordDiagnosticView{CodecErrorStatus(),"AUDIT.EVENT_INVALID",
         "audit.metadata_change.invalid","metadata_change_definition_binding_invalid","core.catalog.record_codec"};
-  if ((value.object_subtype == "policy_descriptor" ||
+  if ((value.object_subtype == CatalogObjectSubtype::policy_descriptor ||
        IsCatalogPolicyDescriptorPayload(value.record.payload)) &&
       !CatalogPolicyDescriptorMatchesMetadata(value))
     return MetadataViewError("policy_descriptor_definition_binding_invalid");
-  if ((value.object_subtype == "evidence_policy_body" || IsCatalogEvidencePolicyPayload(value.record.payload)) &&
+  if ((value.object_subtype == CatalogObjectSubtype::evidence_policy_body || IsCatalogEvidencePolicyPayload(value.record.payload)) &&
       !CatalogEvidencePolicyMatchesMetadata(value))
     return MetadataViewError("evidence_policy_definition_binding_invalid");
-  if ((value.object_subtype == "authorization_policy_body" || IsCatalogAuthorizationPolicyPayload(value.record.payload)) &&
+  if ((value.object_subtype == CatalogObjectSubtype::authorization_policy_body || IsCatalogAuthorizationPolicyPayload(value.record.payload)) &&
       !CatalogAuthorizationPolicyMatchesMetadata(value))
     return MetadataViewError("authorization_policy_definition_binding_invalid");
-  if ((value.object_subtype == "transaction_policy_body" || IsCatalogTransactionPolicyPayload(value.record.payload)) &&
+  if ((value.object_subtype == CatalogObjectSubtype::transaction_policy_body || IsCatalogTransactionPolicyPayload(value.record.payload)) &&
       !CatalogTransactionPolicyMatchesMetadata(value))
     return MetadataViewError("transaction_policy_definition_binding_invalid");
-  if ((value.object_subtype == "lock_policy_body" || IsCatalogLockPolicyPayload(value.record.payload)) &&
+  if ((value.object_subtype == CatalogObjectSubtype::lock_policy_body || IsCatalogLockPolicyPayload(value.record.payload)) &&
       !CatalogLockPolicyMatchesMetadata(value))
     return MetadataViewError("lock_policy_definition_binding_invalid");
-  if ((value.object_subtype == "isolation_profile" || IsCatalogIsolationProfilePayload(value.record.payload)) &&
+  if ((value.object_subtype == CatalogObjectSubtype::isolation_profile || IsCatalogIsolationProfilePayload(value.record.payload)) &&
       !CatalogIsolationProfileMatchesMetadata(value))
     return MetadataViewError("isolation_profile_definition_binding_invalid");
-  if ((value.object_subtype == "native_catalog_index_key_profile" ||
-       value.object_subtype == "native_catalog_index_visibility_profile" ||
-       value.object_subtype == "native_catalog_index_dependency_map" ||
+  if ((value.object_subtype == CatalogObjectSubtype::native_catalog_index_key_profile ||
+       value.object_subtype == CatalogObjectSubtype::native_catalog_index_visibility_profile ||
+       value.object_subtype == CatalogObjectSubtype::native_catalog_index_dependency_map ||
        IsCatalogNativeCatalogIndexPayload(value.record.payload)) &&
       !CatalogNativeCatalogIndexMatchesMetadata(value))
     return MetadataViewError("native_catalog_index_definition_binding_invalid");
@@ -544,57 +544,57 @@ std::optional<CatalogRecordDiagnosticView> ValidateCatalogMetadataVersionView(co
        IsCatalogBuiltinTypeDomainPayload(value.record.payload)) &&
       !CatalogBuiltinTypeDomainMatchesMetadata(value))
     return MetadataViewError("builtin_type_domain_definition_binding_invalid");
-  if ((value.object_subtype == "verification_policy_body" || IsCatalogVerificationPolicyPayload(value.record.payload)) &&
+  if ((value.object_subtype == CatalogObjectSubtype::verification_policy_body || IsCatalogVerificationPolicyPayload(value.record.payload)) &&
       !CatalogVerificationPolicyMatchesMetadata(value))
     return MetadataViewError("verification_policy_definition_binding_invalid");
-  if ((value.object_subtype == "management_profile" || IsCatalogManagementProfilePayload(value.record.payload)) &&
+  if ((value.object_subtype == CatalogObjectSubtype::management_profile || IsCatalogManagementProfilePayload(value.record.payload)) &&
       !CatalogManagementProfileMatchesMetadata(value))return MetadataViewError("management_profile_definition_binding_invalid");
-  if ((value.object_subtype == "management_descriptor" || IsCatalogManagementDescriptorPayload(value.record.payload)) &&
+  if ((value.object_subtype == CatalogObjectSubtype::management_descriptor || IsCatalogManagementDescriptorPayload(value.record.payload)) &&
       !CatalogManagementDescriptorMatchesMetadata(value))return MetadataViewError("management_descriptor_definition_binding_invalid");
   if (IsCatalogCryptoInlinePrivateKeyPolicyFamily(value) &&
       !CatalogCryptoInlinePrivateKeyPolicyMatchesMetadata(value))
     return MetadataViewError("crypto_inline_private_key_definition_binding_invalid");
-  if ((value.object_subtype == "identifier_resolution_profile" ||
+  if ((value.object_subtype == CatalogObjectSubtype::identifier_resolution_profile ||
        IsCatalogIdentifierProfilePayload(value.record.payload)) &&
       !CatalogIdentifierProfileMatchesMetadata(value))
     return MetadataViewError("identifier_profile_definition_binding_invalid");
-  if ((value.object_subtype == "naming_dialect_profile" ||
+  if ((value.object_subtype == CatalogObjectSubtype::naming_dialect_profile ||
        IsCatalogNamingDialectProfilePayload(value.record.payload)) &&
       !CatalogNamingDialectProfileMatchesMetadata(value))
     return MetadataViewError("naming_dialect_profile_definition_binding_invalid");
-  if ((value.object_subtype == "naming_collision_policy_body" ||
+  if ((value.object_subtype == CatalogObjectSubtype::naming_collision_policy_body ||
        IsCatalogNamingCollisionPolicyPayload(value.record.payload)) &&
       !CatalogNamingCollisionPolicyMatchesMetadata(value))
     return MetadataViewError("naming_collision_policy_definition_binding_invalid");
   if ((IsCatalogTableDefinitionPayload(value.record.payload) ||
-       value.object_subtype == "ordinary_persistent_table") &&
+       value.object_subtype == CatalogObjectSubtype::ordinary_persistent_table) &&
       !CatalogTableDefinitionMatchesMetadata(value))
     return MetadataViewError("table_definition_binding_invalid");
   if ((IsCatalogColumnDefinitionPayload(value.record.payload) ||
-       value.object_subtype == "persistent_table_column") &&
+       value.object_subtype == CatalogObjectSubtype::persistent_table_column) &&
       !CatalogColumnDefinitionMatchesMetadata(value))
     return MetadataViewError("column_definition_binding_invalid");
   const bool retired = value.record.header.deleted;
-  if ((value.object_subtype == "metric_visibility" ||
+  if ((value.object_subtype == CatalogObjectSubtype::metric_visibility ||
        IsCatalogMetricVisibilityPolicyPayload(value.record.payload)) &&
       !CatalogMetricVisibilityPolicyMatchesMetadata(value))
     return MetadataViewError("metric_visibility_definition_binding_invalid");
-  if ((value.object_subtype == "metric_retention" ||
+  if ((value.object_subtype == CatalogObjectSubtype::metric_retention ||
        IsCatalogMetricRetentionPolicyPayload(value.record.payload)) &&
       !CatalogMetricRetentionPolicyMatchesMetadata(value))
     return MetadataViewError("metric_retention_definition_binding_invalid");
   if (value.record.header.kind == CatalogRecordKind::schema &&
       !CatalogSchemaDefinitionMatchesMetadata(value))
     return MetadataViewError("schema_definition_binding_invalid");
-  if ((value.object_subtype == "scheduler_runtime" ||
+  if ((value.object_subtype == CatalogObjectSubtype::scheduler_runtime ||
        IsCatalogSchedulerPolicyPayload(value.record.payload)) &&
       !CatalogSchedulerPolicyMatchesMetadata(value))
     return MetadataViewError("scheduler_runtime_definition_binding_invalid");
-  if ((value.object_subtype == "scheduler_queues" ||
+  if ((value.object_subtype == CatalogObjectSubtype::scheduler_queues ||
        IsCatalogSchedulerQueueProfilePayload(value.record.payload)) &&
       !CatalogSchedulerQueueProfileMatchesMetadata(value))
     return MetadataViewError("scheduler_queues_definition_binding_invalid");
-  if ((value.object_subtype == "scheduler_fairness" ||
+  if ((value.object_subtype == CatalogObjectSubtype::scheduler_fairness ||
        IsCatalogSchedulerFairnessProfilePayload(value.record.payload)) &&
       !CatalogSchedulerFairnessProfileMatchesMetadata(value))
     return MetadataViewError("scheduler_fairness_definition_binding_invalid");
@@ -609,27 +609,27 @@ std::optional<CatalogRecordDiagnosticView> ValidateCatalogMetadataVersionView(co
   const auto inner=ValidateCatalogTypedRecordView(value.record);
   if(!inner.ok())return inner.diagnostic;
   const auto inner_size=kBinaryHeaderBytes+value.record.payload.size();
-  const auto text_size=value.object_subtype.size();
-  if(inner_size>kMetadataMaxBytes-kMetadataHeaderBytes-text_size)return MetadataViewError("size_limit");
+  if(inner_size>kMetadataMaxBytes-kMetadataHeaderBytes)return MetadataViewError("size_limit");
   return std::nullopt;
 }
 
 std::optional<std::size_t> CatalogMetadataVersionEncodedBytes(const CatalogMetadataVersionView& v) {
   if(ValidateCatalogMetadataVersionView(v))return {};
-  return kMetadataHeaderBytes+kBinaryHeaderBytes+v.record.payload.size()+v.object_subtype.size();
+  return kMetadataHeaderBytes+kBinaryHeaderBytes+v.record.payload.size();
 }
 CatalogMetadataVersionCodecResult EncodeCatalogMetadataVersion(const CatalogMetadataVersion& value) {
   const auto view=BorrowCatalogMetadataVersion(value);
   if(const auto error=ValidateCatalogMetadataVersionView(view))return MetadataFailure(*error);
   const auto inner_size=kBinaryHeaderBytes+value.record.payload.size();
-  const auto text_size=value.object_subtype.size();
   CatalogMetadataVersionCodecResult result;
-  result.bytes.assign(kMetadataHeaderBytes + text_size + inner_size, 0);
+  result.bytes.assign(kMetadataHeaderBytes + inner_size, 0);
   auto* out = result.bytes.data();
   std::memcpy(out, "SBCMV001", 8);
   // Version 2 (SB_CATALOG_NO_TEXT_IDENTIFIERS, owner Q57/Q58 = 1): the trace-key
-  // and retention-class length slots (352, 364) are reserved, zero.
-  StoreLittle16(out + 8, 2); StoreLittle16(out + 10, kMetadataHeaderBytes);
+  // and retention-class length slots (352, 364) are reserved, zero. Version 3
+  // (SB_CATALOG_OBJECT_CONSTANTS, Q52 = 1): 360 holds the subtype constant, and
+  // the envelope carries no text.
+  StoreLittle16(out + 8, 3); StoreLittle16(out + 10, kMetadataHeaderBytes);
   StoreLittle32(out + 12, static_cast<u32>(result.bytes.size()));
   StoreLittle16(out + 16, static_cast<u16>(value.authority_scope));
   StoreLittle16(out + 18, static_cast<u16>(value.lifecycle));
@@ -642,7 +642,7 @@ CatalogMetadataVersionCodecResult EncodeCatalogMetadataVersion(const CatalogMeta
     std::copy(id.value.bytes.begin(), id.value.bytes.end(), out + 96 + 16 * i);
     out[272 + i] = static_cast<byte>(id.kind);
   }
-  auto* nested=out+kMetadataHeaderBytes+text_size;
+  auto* nested=out+kMetadataHeaderBytes;
   WriteTypedRecord(view.record,nested);
   const auto definition=scratchbird::core::hash::ComputeSha256Digest(nested,inner_size);
   if(!definition.ok()) {
@@ -651,8 +651,7 @@ CatalogMetadataVersionCodecResult EncodeCatalogMetadataVersion(const CatalogMeta
   }
   std::copy(definition.digest.begin(), definition.digest.end(), out + 288);
   StoreLittle32(out + 356, static_cast<u32>(inner_size));
-  StoreLittle32(out + 360, static_cast<u32>(value.object_subtype.size()));
-  std::copy(value.object_subtype.begin(), value.object_subtype.end(), out + kMetadataHeaderBytes);
+  StoreLittle32(out + 360, static_cast<u32>(value.object_subtype));
   const auto digest = scratchbird::core::hash::ComputeSha256Digest(result.bytes);
   if (!digest.ok()) {
     CatalogMetadataVersionCodecResult failure;
@@ -670,14 +669,14 @@ CatalogMetadataVersionViewResult DecodeCatalogMetadataVersionView(std::span<cons
   const auto invalid=[&](const char* detail) { return failure(MetadataViewError(detail)); };
   if(bytes.size()<kMetadataHeaderBytes || bytes.size()>kMetadataMaxBytes)return invalid("size_invalid");
   const auto* in=bytes.data();
-  if(std::memcmp(in,"SBCMV001",8) || LoadLittle16(in+8)!=2 ||
+  if(std::memcmp(in,"SBCMV001",8) || LoadLittle16(in+8)!=3 ||
       LoadLittle16(in+10)!=kMetadataHeaderBytes || LoadLittle32(in+12)!=bytes.size())
     return invalid("header_invalid");
-  const auto inner_size=LoadLittle32(in+356),subtype_size=LoadLittle32(in+360);
-  const auto text_size=static_cast<u64>(subtype_size);
-  // 352 and 364 (version 1's trace-key and retention-class lengths) are reserved.
-  if(LoadLittle32(in+352)!=0 || LoadLittle32(in+364)!=0 || subtype_size>256 ||
-      static_cast<u64>(kMetadataHeaderBytes)+text_size+inner_size!=bytes.size())
+  const auto inner_size=LoadLittle32(in+356),subtype=LoadLittle32(in+360);
+  // 352 and 364 (version 1's trace-key and retention-class lengths) are reserved;
+  // 360 is the subtype constant.
+  if(LoadLittle32(in+352)!=0 || LoadLittle32(in+364)!=0 || subtype>0xffffu ||
+      static_cast<u64>(kMetadataHeaderBytes)+inner_size!=bytes.size())
     return invalid("length_invalid");
   constexpr std::array<byte,32> zero{};
   const scratchbird::core::hash::HashDigestSegment parts[]{
@@ -696,8 +695,8 @@ CatalogMetadataVersionViewResult DecodeCatalogMetadataVersionView(std::span<cons
     auto& id=value.*kMetadataReferences[i];id.kind=static_cast<UuidKind>(in[272+i]);
     std::copy(in+96+16*i,in+112+16*i,id.value.bytes.begin());
   }
-  value.object_subtype={reinterpret_cast<const char*>(in+kMetadataHeaderBytes),subtype_size};
-  const auto* nested=in+kMetadataHeaderBytes+text_size;
+  value.object_subtype=static_cast<CatalogObjectSubtype>(subtype);
+  const auto* nested=in+kMetadataHeaderBytes;
   const auto inner=DecodeCatalogTypedRecordView(CatalogPageRowKind::typed_catalog_record,
       {reinterpret_cast<const char*>(nested),inner_size});
   if(!inner.ok())return failure(inner.diagnostic);
@@ -742,7 +741,7 @@ CatalogMetadataVersion MaterializeCatalogMetadataVersion(const CatalogMetadataVe
       v.donor_overlay_uuid,
       v.audit_uuid,
       v.owning_schema_uuid,
-      std::string(v.object_subtype)};
+      v.object_subtype};
 }
 
 CatalogMetadataVersionCodecResult DecodeCatalogMetadataVersion(const std::vector<byte>& bytes) {

@@ -94,12 +94,12 @@ bool Header(const CatalogTypedRecordView& m,const CatalogTransactionPolicyBody& 
   return true;
 }
 bool Metadata(const CatalogMetadataVersionView& m,const CatalogTransactionPolicyBody& r){
-  return Header(m.record,r)&&m.object_subtype=="transaction_policy_body"&&m.definition_version==r.generation&&
+  return Header(m.record,r)&&m.object_subtype==CatalogObjectSubtype::transaction_policy_body&&m.definition_version==r.generation&&
       m.creator_transaction_uuid.kind==UuidKind::transaction&&m.creator_transaction_uuid.value==r.creating_transaction_uuid.value&&
       m.creator_local_transaction_id==r.creating_local_transaction_id&&
       (m.authority_scope==CatalogAuthorityScope::cluster)==r.cluster_uuid.has_value();
 }
-bool Family(const CatalogMetadataVersionView& m){return m.object_subtype=="transaction_policy_body"||IsCatalogTransactionPolicyPayload(m.record.payload);}
+bool Family(const CatalogMetadataVersionView& m){return m.object_subtype==CatalogObjectSubtype::transaction_policy_body||IsCatalogTransactionPolicyPayload(m.record.payload);}
 }
 std::optional<std::size_t> CatalogTransactionPolicyEncodedBytes(const CatalogTransactionPolicyBody& r) noexcept {
   if(!Valid(r))return {};const Backing b(r);if(ValidateCatalogValueFields(schema,b.View())!=E::none)return {};

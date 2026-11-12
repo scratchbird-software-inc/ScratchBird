@@ -10,6 +10,7 @@
 
 // SB-CATALOG-RECORD-CODEC-ANCHOR
 #include "catalog_page.hpp"
+#include "catalog_object_constants.hpp"
 #include "catalog_records.hpp"
 #include "runtime_platform.hpp"
 
@@ -105,7 +106,8 @@ struct CatalogMetadataVersion {
   // SB_CATALOG_NO_TEXT_IDENTIFIERS (owner Q57 = 1, Q58 = 1, 2026-11-12): no trace
   // search key and no retention class; the engine never read either, and
   // retention is a per-table policy.
-  std::string object_subtype;
+  // SB_CATALOG_OBJECT_CONSTANTS (Q52 = 1): the subtype is a constant.
+  CatalogObjectSubtype object_subtype = CatalogObjectSubtype::none;
 };
 
 // Complete structural view. The immutable input and its actual grant must
@@ -135,7 +137,7 @@ struct CatalogMetadataVersionView {
   TypedUuid donor_overlay_uuid;
   TypedUuid audit_uuid;
   TypedUuid owning_schema_uuid;
-  std::string_view object_subtype;
+  CatalogObjectSubtype object_subtype = CatalogObjectSubtype::none;
 };
 inline CatalogMetadataVersionView BorrowCatalogMetadataVersion(const CatalogMetadataVersion& r) {
   return {BorrowCatalogTypedRecord(r.record),

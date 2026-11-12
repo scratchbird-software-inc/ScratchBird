@@ -159,7 +159,7 @@ c::CatalogMetadataVersion Metadata(const c::CatalogMetricDescriptor& r){
   v.creator_transaction_uuid=r.origin_transaction_uuid;v.creator_local_transaction_id=r.origin_local_transaction_id;
   v.schema_epoch=v.security_epoch=v.catalog_generation=v.dependency_generation=v.invalidation_generation=1;
   v.lifecycle=c::CatalogObjectLifecycle::active;v.status=c::CatalogObjectStatus::active;
-  v.object_subtype="metric_descriptor";
+  v.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::metric_descriptor;
   if(r.definition.cluster_only)v.authority_scope=c::CatalogAuthorityScope::cluster;
   return v;
 }
@@ -274,7 +274,7 @@ void Binding(){
   for(unsigned which=0;which<17;++which){auto v=initial;
     switch(which){
       case 0:v.record.header.object_uuid.value.bytes[15]++;break;case 1:v.record.header.kind=c::CatalogRecordKind::table_descriptor;break;
-      case 2:v.object_subtype="table";break;case 3:v.definition_version++;break;
+      case 2:v.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;break;case 3:v.definition_version++;break;
       case 4:v.record.header.parent_uuid.value.bytes[15]++;break;case 5:v.owning_schema_uuid={};break;
       case 6:v.default_name_uuid={};break;case 7:v.name_vector_uuid={};break;
       case 8:v.security_policy_uuid.value.bytes[15]++;break;case 9:v.authority_scope=c::CatalogAuthorityScope::cluster;break;
@@ -300,7 +300,7 @@ void Binding(){
     Check(c::EncodeCatalogMetadataVersion(v).ok(),"individually valid changed-origin fixture refused");
     Check(!SharedDescriptorOrigin(initial,v),"version changed immutable origin");
   }
-  auto other=initial;other.record.header.kind=c::CatalogRecordKind::table_descriptor;other.object_subtype="table";other.record.payload="unrelated";
+  auto other=initial;other.record.header.kind=c::CatalogRecordKind::table_descriptor;other.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;other.record.payload="unrelated";
   Check(!SharedDescriptorOrigin(initial,other)&&!SharedDescriptorOrigin(other,initial),"family swap bypassed origin");
   Check(SharedDescriptorOrigin(other,other),"unrelated family redefined");
   const auto wrapped=c::EncodeCatalogMetadataVersion(initial);

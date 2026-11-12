@@ -55,7 +55,7 @@ bool Header(const CatalogTypedRecordView& m,const CatalogNamingDialectProfile& r
   return true;
 }
 bool Metadata(const CatalogMetadataVersionView& m,const CatalogNamingDialectProfile& r){
-  return Header(m.record,r)&&m.object_subtype=="naming_dialect_profile"&&m.definition_version==r.generation&&
+  return Header(m.record,r)&&m.object_subtype==CatalogObjectSubtype::naming_dialect_profile&&m.definition_version==r.generation&&
       m.authority_scope==CatalogAuthorityScope::local&&Typed(m.owning_schema_uuid,UuidKind::schema)&&
       m.record.header.parent_uuid.kind==UuidKind::object&&m.record.header.parent_uuid.value==m.owning_schema_uuid.value&&
       Typed(m.owner_uuid,UuidKind::principal)&&Typed(m.audit_uuid,UuidKind::object)&&Typed(m.security_policy_uuid,UuidKind::object)&&
@@ -63,7 +63,7 @@ bool Metadata(const CatalogMetadataVersionView& m,const CatalogNamingDialectProf
       Typed(m.creator_transaction_uuid,UuidKind::transaction)&&m.creator_transaction_uuid.value==r.creating_transaction_uuid.value&&
       m.creator_local_transaction_id==r.creating_local_transaction_id;
 }
-bool Family(const CatalogMetadataVersionView& m){return m.object_subtype=="naming_dialect_profile"||IsCatalogNamingDialectProfilePayload(m.record.payload);}
+bool Family(const CatalogMetadataVersionView& m){return m.object_subtype==CatalogObjectSubtype::naming_dialect_profile||IsCatalogNamingDialectProfilePayload(m.record.payload);}
 }
 std::optional<std::size_t> CatalogNamingDialectProfileEncodedBytes(const CatalogNamingDialectProfile& r) noexcept {
   if(!Valid(r))return {};const Backing b(r);

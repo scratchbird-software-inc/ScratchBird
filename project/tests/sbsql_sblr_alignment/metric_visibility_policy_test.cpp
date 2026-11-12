@@ -56,7 +56,7 @@ struct VisibilityFixture {
     pm.record.header.kind=c::CatalogRecordKind::policy;
     pm.record.header.object_uuid={p::UuidKind::object,policy.policy_uuid};
     pm.record.header.row_uuid=Id(p::UuidKind::row,83);
-    pm.definition_version=policy.generation;pm.object_subtype="metric_visibility";
+    pm.definition_version=policy.generation;pm.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::metric_visibility;
     pm.record.payload=PolicyGolden(policy);
   }
   api::LocalMetricVisibilityDecision Read() const {
@@ -169,7 +169,7 @@ void PermissionChecks() {
         case 2:row.record.header.row_uuid={};break;
         case 3:row.lifecycle=static_cast<c::CatalogObjectLifecycle>(0);break;
         case 4:row.status=static_cast<c::CatalogObjectStatus>(0);break;
-        case 5:row.object_subtype="security_owner_fixture";row.record.payload=std::string(16,char(0xa5));break;
+        case 5:row.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;row.record.payload=std::string(16,char(0xa5));break;
         case 6:row.definition_version++;break;
       }
       Refused(f);
@@ -206,9 +206,9 @@ void BorrowedPermissionMetadataChecks() {
     if(mutation==9)value.owning_schema_uuid.kind=p::UuidKind::object;
     if(mutation==10)value.record.header.parent_uuid.value.bytes.back()^=1;
     if(mutation==11)value.record.payload.assign(1024*1024,'x');
-    if(mutation==12)value.object_subtype="not a key";  // (was an oversized trace key: Q57 = 1 removed it)
-    if(mutation==13)value.object_subtype.assign(257,'x');
-    if(mutation==14)value.object_subtype.clear();  // (was an oversized retention class: Q58 = 1 removed it)
+    if(mutation==12)value.object_subtype=static_cast<scratchbird::core::catalog::CatalogObjectSubtype>(0xfffe);  // an unlisted subtype (was an oversized trace key: Q57 = 1 removed it)
+    if(mutation==13)value.object_subtype=static_cast<scratchbird::core::catalog::CatalogObjectSubtype>(0xfffd);  // an unlisted subtype (was 257 bytes of text)
+    if(mutation==14)value.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::none;  // (was an oversized retention class: Q58 = 1 removed it)
     if(mutation==15)value.authority_scope=static_cast<c::CatalogAuthorityScope>(255);
     if(mutation==16)value.record.header.deleted=true;
     if(mutation==17)value.record.header.object_uuid.value.bytes[6]=0x41;

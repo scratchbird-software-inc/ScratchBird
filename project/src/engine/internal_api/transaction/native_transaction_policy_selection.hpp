@@ -91,7 +91,7 @@ inline NativeTransactionPolicyDeclarations ResolveNativeTransactionPolicyDeclara
   if(!origin(*pack.record))return fail(E::origin_not_committed,request.policy_pack_uuid);
   NativeTransactionPolicyDeclarations out;
   for(const auto& row:rows){const auto& m=row.row.metadata;
-    if(m.record.header.deleted||m.object_subtype!="bootstrap_policy_profile")continue;
+    if(m.record.header.deleted||m.object_subtype!=scratchbird::core::catalog::CatalogObjectSubtype::bootstrap_policy_profile)continue;
     const auto profile=c::DecodeCatalogBootstrapPolicyProfile(m.record.payload);
     if(!profile.ok())return fail(E::invalid_selection,m.record.header.object_uuid.value);
     const auto& p=*profile.record;

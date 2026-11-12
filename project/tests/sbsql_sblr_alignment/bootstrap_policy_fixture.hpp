@@ -79,7 +79,7 @@ inline c::CatalogMetadataVersion Metadata(unsigned index,const p::TypedUuid& tx,
   m.creator_transaction_uuid=tx;m.creator_local_transaction_id=1;
   m.definition_version=m.catalog_generation=m.schema_epoch=m.security_epoch=m.dependency_generation=m.invalidation_generation=1;
   m.status=c::CatalogObjectStatus::active;m.lifecycle=c::CatalogObjectLifecycle::active;
-  constexpr const char* subtypes[]{"bootstrap_policy_pack","bootstrap_security_provider","bootstrap_policy_profile"};
+  constexpr scratchbird::core::catalog::CatalogObjectSubtype subtypes[]{scratchbird::core::catalog::CatalogObjectSubtype::bootstrap_policy_pack,scratchbird::core::catalog::CatalogObjectSubtype::bootstrap_security_provider,scratchbird::core::catalog::CatalogObjectSubtype::bootstrap_policy_profile};
   m.object_subtype=subtypes[index];return m;
 }
 } // namespace scratchbird::tests::bootstrap_policy

@@ -277,7 +277,7 @@ NativeInitialPolicyResult AssembleNativeInitialPolicySecurityRecords(
 struct NativeInitialDefinitionIdentity {
   core::platform::Uuid object_uuid;
   core::catalog::CatalogRecordKind kind=core::catalog::CatalogRecordKind::config_profile;
-  std::string object_subtype;
+  core::catalog::CatalogObjectSubtype object_subtype=core::catalog::CatalogObjectSubtype::none;
 };
 struct NativeInitialDefinitionEnumerationResult {
   NativeInitialPolicyError error=NativeInitialPolicyError::invalid_request;

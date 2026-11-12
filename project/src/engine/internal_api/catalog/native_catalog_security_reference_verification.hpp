@@ -60,7 +60,7 @@ inline NativeCatalogSecurityReferenceVerification VerifyNativeCatalogSecurityRef
     if(!policy)return fail(E::missing_policy,id,m.security_policy_uuid.value);
     const auto& definition=policy->row.metadata;
     if(m.security_policy_uuid.kind!=core::platform::UuidKind::object||policy->role!=5||policy->row.provisional||
-        definition.record.header.kind!=K::policy||definition.object_subtype!="bootstrap_policy_profile"||
+        definition.record.header.kind!=K::policy||definition.object_subtype!=scratchbird::core::catalog::CatalogObjectSubtype::bootstrap_policy_profile||
         !c::CatalogBootstrapPolicyMatchesMetadata(definition))return fail(E::invalid_policy,id,m.security_policy_uuid.value);
     const auto posture=c::DecodeCatalogBootstrapPolicyProfile(definition.record.payload);
     if(!posture.ok()||posture.record->profile_uuid!=m.security_policy_uuid.value||posture.record->area!="default_security_posture")
@@ -70,7 +70,7 @@ inline NativeCatalogSecurityReferenceVerification VerifyNativeCatalogSecurityRef
     if(!pack)return fail(E::missing_pack,id,posture.record->policy_pack_uuid);
     const auto& pack_metadata=pack->row.metadata;
     if(pack->role!=5||pack->row.provisional||pack_metadata.record.header.kind!=K::policy||
-        pack_metadata.object_subtype!="bootstrap_policy_pack"||!c::CatalogBootstrapPolicyMatchesMetadata(pack_metadata))
+        pack_metadata.object_subtype!=scratchbird::core::catalog::CatalogObjectSubtype::bootstrap_policy_pack||!c::CatalogBootstrapPolicyMatchesMetadata(pack_metadata))
       return fail(E::invalid_pack,id,posture.record->policy_pack_uuid);
     const auto decoded=c::DecodeCatalogBootstrapPolicyPack(pack_metadata.record.payload);
     if(!decoded.ok()||decoded.record->policy_pack_uuid!=posture.record->policy_pack_uuid||

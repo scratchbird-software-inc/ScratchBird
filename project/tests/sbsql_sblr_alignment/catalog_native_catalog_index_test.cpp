@@ -131,14 +131,14 @@ void Values(){
    case 11:r.key_profile_uuid={};break;case 12:r.generation=0;break;case 13:r.creating_local_transaction_id=2;break;}
    Refuse<MapCodec>(r);}
 }
-template<class R> c::CatalogMetadataVersion Metadata(const R& r,const p::Uuid& object,std::string_view subtype,unsigned n){
+template<class R> c::CatalogMetadataVersion Metadata(const R& r,const p::Uuid& object,scratchbird::core::catalog::CatalogObjectSubtype subtype,unsigned n){
  auto m=f::Metadata(0,r.creating_transaction_uuid,f::Id(60),Golden(r));m.record.header.kind=c::CatalogRecordKind::config_profile;
  m.record.header.object_uuid={p::UuidKind::object,object};m.record.header.row_uuid={p::UuidKind::row,f::Id(1000+3*n)};
  m.default_name_uuid={p::UuidKind::object,f::Id(2000+2*n)};m.name_vector_uuid={p::UuidKind::object,f::Id(2001+2*n)};
- m.object_subtype=std::string(subtype);m.creator_local_transaction_id=r.creating_local_transaction_id;m.definition_version=r.generation;return m;}
-c::CatalogMetadataVersion KeyMetadata(const Key& r){return Metadata(r,r.profile_uuid,"native_catalog_index_key_profile",0);}
-c::CatalogMetadataVersion VisibilityMetadata(const Visibility& r){return Metadata(r,r.profile_uuid,"native_catalog_index_visibility_profile",1);}
-c::CatalogMetadataVersion MapMetadata(const Map& r){return Metadata(r,r.map_uuid,"native_catalog_index_dependency_map",2);}
+ m.object_subtype=subtype;m.creator_local_transaction_id=r.creating_local_transaction_id;m.definition_version=r.generation;return m;}
+c::CatalogMetadataVersion KeyMetadata(const Key& r){return Metadata(r,r.profile_uuid,scratchbird::core::catalog::CatalogObjectSubtype::native_catalog_index_key_profile,0);}
+c::CatalogMetadataVersion VisibilityMetadata(const Visibility& r){return Metadata(r,r.profile_uuid,scratchbird::core::catalog::CatalogObjectSubtype::native_catalog_index_visibility_profile,1);}
+c::CatalogMetadataVersion MapMetadata(const Map& r){return Metadata(r,r.map_uuid,scratchbird::core::catalog::CatalogObjectSubtype::native_catalog_index_dependency_map,2);}
 void Bindings(){
  for(const auto& m:{KeyMetadata(KeyValue()),VisibilityMetadata(VisibilityValue()),MapMetadata(MapValue())}){
    Check(c::CatalogMetadataVersionEncodedBytes(c::BorrowCatalogMetadataVersion(m)).has_value(),"common dispatcher accepts exact metadata");
@@ -147,12 +147,12 @@ void Bindings(){
    Check(c::CatalogMetadataPreservesFamilyOrigin(m,m),"exact same-generation replay");
    for(unsigned n=0;n<7;++n){auto bad=m;switch(n){
      case 0:bad.record.header.object_uuid.value=f::Id(8);break;case 1:bad.record.header.row_uuid.value=f::Id(1);break;
-     case 2:bad.definition_version=2;break;case 3:bad.creator_local_transaction_id=2;break;case 4:bad.object_subtype="generic_profile";break;
+     case 2:bad.definition_version=2;break;case 3:bad.creator_local_transaction_id=2;break;case 4:bad.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;break;
      case 5:bad.record.header.kind=c::CatalogRecordKind::policy;break;case 6:bad.authority_scope=c::CatalogAuthorityScope::cluster;break;}
      Check(!c::CatalogMetadataVersionEncodedBytes(c::BorrowCatalogMetadataVersion(bad)),"header/creator/generation/subtype/kind/scope bound");}
  }
  // A subtype of one family cannot carry another family's payload.
- auto swapped=KeyMetadata(KeyValue());swapped.object_subtype="native_catalog_index_dependency_map";
+ auto swapped=KeyMetadata(KeyValue());swapped.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::native_catalog_index_dependency_map;
  Check(!c::CatalogMetadataVersionEncodedBytes(c::BorrowCatalogMetadataVersion(swapped)),"subtype and payload family agree");
  Check(c::CatalogNativeCatalogIndexMatchesDatabase(c::BorrowCatalogMetadataVersion(f::Metadata(0,tx,f::Id(60),"")),f::Id(9)),
    "records outside the family pass the family's database check");
@@ -180,9 +180,9 @@ struct Item {
     vector_metadata=entry_metadata=definition;vector_metadata.record.payload.clear();entry_metadata.record.payload.clear();
     vector_metadata.record.header.kind=entry_metadata.record.header.kind=c::CatalogRecordKind::localized_name;
     vector_metadata.record.header.object_uuid=definition.name_vector_uuid;vector_metadata.record.header.row_uuid.value=f::Id(1001+3*n);
-    vector_metadata.record.header.parent_uuid=definition.record.header.object_uuid;vector_metadata.object_subtype="name_vector";
+    vector_metadata.record.header.parent_uuid=definition.record.header.object_uuid;vector_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_vector;
     entry_metadata.record.header.object_uuid=definition.default_name_uuid;entry_metadata.record.header.row_uuid.value=f::Id(1002+3*n);
-    entry_metadata.record.header.parent_uuid=definition.name_vector_uuid;entry_metadata.object_subtype="name_entry";entry_metadata.resource_epoch=1;
+    entry_metadata.record.header.parent_uuid=definition.name_vector_uuid;entry_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_entry;entry_metadata.resource_epoch=1;
     vector.name_vector_uuid=entry.name_vector_uuid=definition.name_vector_uuid;vector.object_uuid=entry.object_uuid=definition.record.header.object_uuid;
     vector.default_name_entry_uuid=entry.name_entry_uuid=definition.default_name_uuid;vector.object_kind=entry.object_kind=c::CatalogRecordKind::config_profile;
     vector.owning_schema_uuid=definition.owning_schema_uuid;vector.default_language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_en_US);
@@ -244,7 +244,7 @@ void Builder(){
    Check(built.indexes[i].has_value(),"every indexed role gets a binding");
    const auto& binding=*built.indexes[i];const auto& row=built.rows[at++];
    const auto map=c::DecodeCatalogNativeCatalogIndexDependencyMap(row.payload);
-   Check(map.ok()&&row.object_uuid==map.record->map_uuid&&row.object_subtype=="native_catalog_index_dependency_map","map row decodes");
+   Check(map.ok()&&row.object_uuid==map.record->map_uuid&&row.object_subtype==scratchbird::core::catalog::CatalogObjectSubtype::native_catalog_index_dependency_map,"map row decodes");
    const auto& m=*map.record;const auto& d=binding.dependencies;
    Check(m.relation_role==i+1&&m.relation_uuid==binding.relation_uuid&&m.index_uuid==d.index_uuid&&
      m.key_profile_uuid==d.key_profile_uuid&&m.visibility_profile_uuid==d.visibility_profile_uuid&&m.map_uuid==d.dependency_map_uuid&&

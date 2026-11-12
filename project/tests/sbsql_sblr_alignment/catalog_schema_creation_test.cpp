@@ -52,7 +52,7 @@ db::NativeFilespaceInitializationRequest Construction(unsigned profile=0) {
   request.creator.scope=mga::TransactionScope::local_node;
   request.total_pages=96;request.creation_utc_millis=1789357072000ULL;return request;
 }
-c::CatalogMetadataVersion Metadata(unsigned n,c::CatalogRecordKind kind,const char* subtype) {
+c::CatalogMetadataVersion Metadata(unsigned n,c::CatalogRecordKind kind,scratchbird::core::catalog::CatalogObjectSubtype subtype) {
   c::CatalogMetadataVersion m;m.record.header.kind=kind;
   m.record.header.object_uuid=Typed(p::UuidKind::object,n);m.record.header.row_uuid=Typed(p::UuidKind::row,n+100000);
   m.owner_uuid=Typed(p::UuidKind::principal,50);m.audit_uuid=Typed(p::UuidKind::object,51);
@@ -64,7 +64,7 @@ c::CatalogMetadataVersion Metadata(unsigned n,c::CatalogRecordKind kind,const ch
   return m;
 }
 c::CatalogMetadataVersion Database(unsigned profile=0) {
-  auto meta=Metadata(100,c::CatalogRecordKind::database,"database");
+  auto meta=Metadata(100,c::CatalogRecordKind::database,scratchbird::core::catalog::CatalogObjectSubtype::database);
   c::CatalogDatabaseRecord record;
   record.database_uuid=Typed(p::UuidKind::database,1);record.database_header_format_major=1;
   record.catalog_manifest_format_version=1;record.page_size=disk::kCanonicalFilespacePageProfiles[profile].page_size_bytes;
@@ -89,7 +89,7 @@ struct Package {
     for(unsigned i=0;i<count;++i) {
       auto& x=items[i];const auto type=static_cast<c::CatalogSchemaType>(1+i%6);
       const unsigned oid=1000+4*i;
-      x.metadata=Metadata(oid,c::CatalogRecordKind::schema,c::CatalogSchemaTypeName(type));
+      x.metadata=Metadata(oid,c::CatalogRecordKind::schema,c::CatalogSchemaSubtype(type));
       x.metadata.default_name_uuid=Typed(p::UuidKind::object,oid+2);x.metadata.name_vector_uuid=Typed(p::UuidKind::object,oid+1);
       x.definition.schema_object_uuid=x.metadata.record.header.object_uuid;
       x.definition.database_catalog_object_uuid=database.record.header.object_uuid;
@@ -101,7 +101,7 @@ struct Package {
       x.definition.origin_transaction_uuid=tx;x.definition.origin_local_transaction_id=1;
       x.metadata.record.header.parent_uuid=i?x.definition.parent_schema_uuid:database.record.header.object_uuid;
       if(i)x.metadata.owning_schema_uuid={p::UuidKind::schema,x.definition.parent_schema_uuid.value};
-      x.vector_metadata=Metadata(oid+1,c::CatalogRecordKind::localized_name,"name_vector");
+      x.vector_metadata=Metadata(oid+1,c::CatalogRecordKind::localized_name,scratchbird::core::catalog::CatalogObjectSubtype::name_vector);
       x.vector_metadata.record.header.parent_uuid=x.definition.schema_object_uuid;
       x.vector_metadata.default_name_uuid=x.metadata.default_name_uuid;
       x.vector_metadata.name_vector_uuid=x.metadata.name_vector_uuid;
@@ -112,7 +112,7 @@ struct Package {
       x.vector.name_collision_policy_uuid=Typed(p::UuidKind::object,55);
       x.vector.catalog_generation_id=1;x.vector.security_policy_uuid=x.metadata.security_policy_uuid;
       x.vector.lifecycle_state=c::CatalogNameLifecycle::active;
-      x.entry_metadata=Metadata(oid+2,c::CatalogRecordKind::localized_name,"name_entry");
+      x.entry_metadata=Metadata(oid+2,c::CatalogRecordKind::localized_name,scratchbird::core::catalog::CatalogObjectSubtype::name_entry);
       x.entry_metadata.record.header.parent_uuid=x.metadata.name_vector_uuid;
       x.entry_metadata.default_name_uuid=x.metadata.default_name_uuid;x.entry_metadata.name_vector_uuid=x.metadata.name_vector_uuid;
       x.entry_metadata.owning_schema_uuid=x.metadata.owning_schema_uuid;x.entry_metadata.resource_epoch=1;
@@ -153,14 +153,14 @@ struct DatabasePackage {
       {p::UuidKind::object,scratchbird::core::datatypes::kDatatypeCohortV10},10,10};
   explicit DatabasePackage(unsigned profile=0):construction(Construction(profile)) {
     auto& x=aliases.items[0];
-    x.metadata=Metadata(100,c::CatalogRecordKind::database,"database");
+    x.metadata=Metadata(100,c::CatalogRecordKind::database,scratchbird::core::catalog::CatalogObjectSubtype::database);
     x.metadata.name_vector_uuid=Typed(p::UuidKind::object,120);
     x.metadata.default_name_uuid=Typed(p::UuidKind::object,121);
-    x.vector_metadata=Metadata(120,c::CatalogRecordKind::localized_name,"name_vector");
+    x.vector_metadata=Metadata(120,c::CatalogRecordKind::localized_name,scratchbird::core::catalog::CatalogObjectSubtype::name_vector);
     x.vector_metadata.record.header.parent_uuid=x.metadata.record.header.object_uuid;
     x.vector_metadata.default_name_uuid=x.metadata.default_name_uuid;
     x.vector_metadata.name_vector_uuid=x.metadata.name_vector_uuid;
-    x.entry_metadata=Metadata(121,c::CatalogRecordKind::localized_name,"name_entry");
+    x.entry_metadata=Metadata(121,c::CatalogRecordKind::localized_name,scratchbird::core::catalog::CatalogObjectSubtype::name_entry);
     x.entry_metadata.record.header.parent_uuid=x.metadata.name_vector_uuid;
     x.entry_metadata.default_name_uuid=x.metadata.default_name_uuid;
     x.entry_metadata.name_vector_uuid=x.metadata.name_vector_uuid;x.entry_metadata.resource_epoch=1;
@@ -186,14 +186,14 @@ struct PrimaryPackage {
   DatabasePackage database,primary;
   explicit PrimaryPackage(unsigned profile=0):database(profile),primary(profile) {
     auto& x=primary.aliases.items[0];
-    x.metadata=Metadata(130,c::CatalogRecordKind::filespace,"filespace");
+    x.metadata=Metadata(130,c::CatalogRecordKind::filespace,scratchbird::core::catalog::CatalogObjectSubtype::filespace);
     x.metadata.record.header.parent_uuid=database.aliases.items[0].metadata.record.header.object_uuid;
     x.metadata.name_vector_uuid=Typed(p::UuidKind::object,150);
     x.metadata.default_name_uuid=Typed(p::UuidKind::object,151);
-    x.vector_metadata=Metadata(150,c::CatalogRecordKind::localized_name,"name_vector");
+    x.vector_metadata=Metadata(150,c::CatalogRecordKind::localized_name,scratchbird::core::catalog::CatalogObjectSubtype::name_vector);
     x.vector_metadata.record.header.parent_uuid=x.metadata.record.header.object_uuid;
     x.vector_metadata.default_name_uuid=x.metadata.default_name_uuid;x.vector_metadata.name_vector_uuid=x.metadata.name_vector_uuid;
-    x.entry_metadata=Metadata(151,c::CatalogRecordKind::localized_name,"name_entry");
+    x.entry_metadata=Metadata(151,c::CatalogRecordKind::localized_name,scratchbird::core::catalog::CatalogObjectSubtype::name_entry);
     x.entry_metadata.record.header.parent_uuid=x.metadata.name_vector_uuid;
     x.entry_metadata.default_name_uuid=x.metadata.default_name_uuid;x.entry_metadata.name_vector_uuid=x.metadata.name_vector_uuid;
     x.entry_metadata.resource_epoch=1;
@@ -259,7 +259,7 @@ void PrimaryChecks() {
       case 0:request.primary_filespace.definition=nullptr;expected_error=DE::invalid_request;break;
       case 1:request.primary_filespace.entries={};expected_error=DE::invalid_request;break;
       case 2:x.metadata.record.header.kind=c::CatalogRecordKind::database;break;
-      case 3:x.metadata.object_subtype="table";break;
+      case 3:x.metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::agent_registration;break;
       case 4:x.metadata.record.header.parent_uuid.value=Id(99);break;
       case 5:x.metadata.record.header.parent_uuid.kind=p::UuidKind::database;break;
       case 6:x.metadata.record.payload="prototype filespace manifest";break;
@@ -270,7 +270,7 @@ void PrimaryChecks() {
       case 11:x.entry.scope_uuid.kind=p::UuidKind::filespace;expected_error=DE::invalid_names;break;
       case 12:x.entry.parent_object_uuid=Typed(p::UuidKind::object,99);expected_error=DE::invalid_names;break;
       case 13:x.entry.default_for_object=false;expected_error=DE::invalid_names;break;
-      case 14:x.entry_metadata.object_subtype.assign(200000,'x');break;  // (was the trace key: Q57 = 1)
+      case 14:x.entry_metadata.object_subtype=static_cast<scratchbird::core::catalog::CatalogObjectSubtype>(0xfffd);  // an unlisted subtypebreak;  // (was the trace key: Q57 = 1)
       case 15:x.metadata.creator_transaction_uuid=Typed(p::UuidKind::transaction,99);break;
       case 16:x.metadata.catalog_generation=2;break;
     }
@@ -419,7 +419,7 @@ void DatabaseChecks() {
     const auto large=db::AssembleNativeInitialDatabaseRecords(request);
     Check(large.ok()&&large.records->names.size()==34,"complete enlarged database alias family owns all supplied entries");
     const auto kept_subtype=metadata.back().object_subtype;  // (the trace key was oversized here: Q57 = 1)
-    metadata.back().object_subtype.assign(200000,'x');
+    metadata.back().object_subtype=static_cast<scratchbird::core::catalog::CatalogObjectSubtype>(0xfffd);  // an unlisted subtype
     allocation_calls=0;allocation_budget=0;
     const auto malformed=db::AssembleNativeInitialDatabaseRecords(request);
     const bool no_copy=allocation_calls==0;allocation_budget=-1;
@@ -628,8 +628,8 @@ void LogicalChecks() {
   }
   for(unsigned field=0;field<3;++field) {
     Package bad;auto& x=bad.items.back();
-    if(field==0)x.metadata.object_subtype.assign(200000,'x');  // (was the trace key: Q57 = 1)
-    if(field==1)x.vector_metadata.object_subtype.assign(200000,'x');
+    if(field==0)x.metadata.object_subtype=static_cast<scratchbird::core::catalog::CatalogObjectSubtype>(0xfffd);  // (was the trace key: Q57 = 1)
+    if(field==1)x.vector_metadata.object_subtype=static_cast<scratchbird::core::catalog::CatalogObjectSubtype>(0xfffd);
     if(field==2)x.entry.display_name.assign(200000,'x');
     allocation_calls=0;allocation_budget=0;const auto failed=bad.Assemble();
     const bool no_allocation=allocation_calls==0;allocation_budget=-1;
@@ -644,7 +644,7 @@ void LogicalChecks() {
   for(unsigned options=0;options<32;++options)for(unsigned type=1;type<=7;++type) {
     Package variation;auto& x=variation.items.back();
     x.definition.schema_type=static_cast<c::CatalogSchemaType>(type);
-    x.metadata.object_subtype=c::CatalogSchemaTypeName(x.definition.schema_type);
+    x.metadata.object_subtype=c::CatalogSchemaSubtype(x.definition.schema_type);
     if(!(options&1)) {
       x.definition.parent_schema_uuid={};x.metadata.record.header.parent_uuid=variation.database.record.header.object_uuid;
       x.metadata.owning_schema_uuid={};x.vector_metadata.owning_schema_uuid={};x.entry_metadata.owning_schema_uuid={};
@@ -668,7 +668,7 @@ void LogicalChecks() {
       case 2:x.definition.origin_local_transaction_id=2;break;
       // Was a refusal until 2026-11-04 (SB_DRIFT_CLUSTER_SCHEMA_IN_EVERY_DATABASE):
       // a cluster-type schema now assembles in a local package.
-      case 3:x.definition.schema_type=c::CatalogSchemaType::cluster;x.metadata.object_subtype="cluster";expected=E::none;break;
+      case 3:x.definition.schema_type=c::CatalogSchemaType::cluster;x.metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_cluster;expected=E::none;break;
       case 4:bad.Parent(5,Typed(p::UuidKind::object,99));expected=E::missing_parent;break;
       case 5:bad.Parent(0,x.definition.schema_object_uuid);expected=E::cyclic_parent;break;
       case 6:x.definition.schema_object_uuid=bad.items.front().definition.schema_object_uuid;

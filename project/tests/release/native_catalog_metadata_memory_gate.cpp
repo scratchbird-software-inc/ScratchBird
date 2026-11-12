@@ -85,23 +85,23 @@ M Fixture(){
   m.security_policy_uuid=Id(K::object,9);m.dependency_group_uuid=Id(K::object,10);
   m.storage_binding_uuid=Id(K::object,11);m.donor_overlay_uuid=Id(K::object,12);
   m.lifecycle=c::CatalogObjectLifecycle::active;m.status=c::CatalogObjectStatus::active;
-  m.object_subtype="application";
+  m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;
   m.record.payload=std::string("opaque\0\r\n",9)+std::string(40,'x');return m;
 }
 // Offset oracle from SBCMV001 version 2 (no trace key or retention class: owner Q57 = 1,
 // Q58 = 1; their length slots 352 and 364 are reserved zero)/SBCTREC2. No production
 // serializers or integer helpers.
 Bytes Golden(const M& m){
-  const auto text=m.object_subtype.size();
-  const auto start=384+text;Bytes b(start+96+m.record.payload.size());
-  std::copy_n("SBCMV001",8,b.begin());Put(b,8,2,2);Put(b,10,384,2);Put(b,12,b.size(),4);
+  // Version 3 (SB_CATALOG_OBJECT_CONSTANTS, Q52 = 1): 360 holds the subtype
+  // constant; the envelope has no text.
+  const auto start=384u;Bytes b(start+96+m.record.payload.size());
+  std::copy_n("SBCMV001",8,b.begin());Put(b,8,3,2);Put(b,10,384,2);Put(b,12,b.size(),4);
   Put(b,16,static_cast<unsigned>(m.authority_scope),2);Put(b,18,static_cast<unsigned>(m.lifecycle),2);
   Put(b,20,static_cast<unsigned>(m.status),2);Put(b,22,static_cast<unsigned>(m.visibility),2);
   for(unsigned i=0;i<8;++i)Put(b,32+8*i,m.*counters[i],8);
   for(unsigned i=0;i<11;++i){const auto& id=m.*refs[i];b[272+i]=static_cast<unsigned>(id.kind);
     std::copy(id.value.bytes.begin(),id.value.bytes.end(),b.begin()+96+16*i);}
-  Put(b,356,96+m.record.payload.size(),4);Put(b,360,m.object_subtype.size(),4);
-  std::copy(m.object_subtype.begin(),m.object_subtype.end(),b.begin()+384);
+  Put(b,356,96+m.record.payload.size(),4);Put(b,360,static_cast<unsigned>(m.object_subtype),4);
   std::copy_n("SBCTREC2",8,b.begin()+start);Put(b,start+8,2,2);Put(b,start+10,96,2);
   Put(b,start+12,96+m.record.payload.size(),4);Put(b,start+16,static_cast<unsigned>(m.record.header.kind),2);
   Put(b,start+20,m.record.header.record_version,4);Put(b,start+24,m.record.header.deleted,4);
@@ -142,10 +142,12 @@ void Framing(){
   bad=good;Put(bad,352,1,4);Refused(bad,"length_invalid");  // reserved (version 1's trace-key length)
   bad=good;Put(bad,364,1,4);Refused(bad,"length_invalid");  // reserved (version 1's retention-class length)
   bad=good;Put(bad,8,1,2);Refused(bad,"header_invalid");  // version 1
+  bad=good;Put(bad,8,2,2);Refused(bad,"header_invalid");  // version 2 (text subtype)
+  bad=good;Put(bad,360,0x10000,4);Seal(bad);Refused(bad,"length_invalid");  // a subtype code past u16
   bad=good;Put(bad,356,0xffffffffu,4);Refused(bad,"length_invalid");
   bad=Bytes(262145,0);Refused(bad,"size_invalid");
   auto copy=*view.record;
-  Check(copy.object_subtype.data()==reinterpret_cast<const char*>(good.data()+384),"text lifetime input-backed");
+  Check(copy.object_subtype==m.object_subtype,"subtype constant decoded");
   Check(copy.record.payload.data()==reinterpret_cast<const char*>(good.data()+good.size()-m.record.payload.size()),"payload input-backed");
   auto disposable=good;const auto materialized=c::DecodeCatalogMetadataVersion(disposable);std::fill(disposable.begin(),disposable.end(),0);
   Check(materialized.record.record.payload==m.record.payload&&materialized.record.object_subtype==m.object_subtype,"owning independent lifetime");
@@ -179,19 +181,18 @@ void Semantics(){
   for(unsigned slot=0;slot<11;++slot){auto m=base;m.*refs[slot]={};const auto v=Decode(Golden(m));
     const bool required=slot==0||slot==1||slot==9;const bool paired=slot==3||slot==4;
     Check(v.ok()==(!required&&!paired),"exact optional absence and name pairing");}
-  for(auto member:{&M::object_subtype}){  // (trace key and retention class removed: Q57 = 1, Q58 = 1)
-    const auto cap=256u;
-    auto m=base;m.*member=std::string(cap,'Z');Check(Decode(Golden(m)).ok(),"text exact cap");
-    m.*member="";Refused(Golden(m),"subtype_invalid");
-    m.*member=std::string(cap+1,'Z');Refused(Golden(m),"length_invalid");
-    for(unsigned octet=0;octet<256;++octet){m.*member=std::string(1,static_cast<char>(octet));
-      Check(Decode(Golden(m)).ok()==(octet>=33&&octet<=126),"exact subtype byte alphabet");}
+  // The subtype is a constant: every listed one is admitted (where no family
+  // check applies to this opaque payload), none and every unlisted code refused.
+  for(unsigned code=0;code<=0xffffu;++code){
+    auto m=base;m.object_subtype=static_cast<scratchbird::core::catalog::CatalogObjectSubtype>(code);
+    const bool listed=scratchbird::core::catalog::IsKnownCatalogObjectSubtype(m.object_subtype);
+    if(!listed)Refused(Golden(m),"subtype_invalid");
   }
   auto retired=base;retired.record.header.deleted=true;Refused(Golden(retired),"retirement_binding_invalid");
   retired.retired_transaction_uuid=retired.creator_transaction_uuid;retired.status=c::CatalogObjectStatus::retired;
   retired.lifecycle=c::CatalogObjectLifecycle::dropped;Check(Decode(Golden(retired)).ok(),"complete retirement binding");
-  for(const auto* subtype:{"metric_series","metric_label_schema","metric_descriptor","storage_action_attachment","storage_action",
-      "agent_runtime_authority","metric_visibility","metric_retention"}){
+  for(const auto subtype:{scratchbird::core::catalog::CatalogObjectSubtype::metric_series,scratchbird::core::catalog::CatalogObjectSubtype::metric_label_schema,scratchbird::core::catalog::CatalogObjectSubtype::metric_descriptor,scratchbird::core::catalog::CatalogObjectSubtype::storage_action_attachment,scratchbird::core::catalog::CatalogObjectSubtype::storage_action,
+      scratchbird::core::catalog::CatalogObjectSubtype::agent_runtime_authority,scratchbird::core::catalog::CatalogObjectSubtype::metric_visibility,scratchbird::core::catalog::CatalogObjectSubtype::metric_retention}){
     auto m=base;m.object_subtype=subtype;Refused(Golden(m));
   }
   auto both=Golden(base);both[16]=0;both[24]=1;Seal(both);Refused(both,"enum_invalid");
@@ -271,7 +272,7 @@ void OwningFaults(){
 }
 void RuntimeFamily(){
   auto m=Fixture();m.record.header.kind=c::CatalogRecordKind::config_profile;
-  m.record.header.parent_uuid.kind=K::object;m.object_subtype="agent_runtime_authority";
+  m.record.header.parent_uuid.kind=K::object;m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::agent_runtime_authority;
   c::CatalogRuntimeAuthorityBinding b;b.binding_uuid=m.record.header.object_uuid.value;b.database_uuid=Id(K::database,20).value;
   b.service_principal_uuid=m.owner_uuid.value;b.security_authority_uuid=b.database_uuid;b.provider_uuid=Id(K::object,21).value;
   b.policy_uuid=m.security_policy_uuid.value;b.generation=b.security_epoch=b.policy_epoch=b.provider_generation=b.catalog_generation=1;

@@ -46,7 +46,7 @@ struct NativeCatalogIndexRowsRequest {
 };
 struct NativeCatalogIndexRow {
   core::platform::Uuid object_uuid;
-  std::string_view object_subtype;
+  scratchbird::core::catalog::CatalogObjectSubtype object_subtype;
   std::string payload;
 };
 enum class NativeCatalogIndexRowsError {

@@ -38,7 +38,7 @@ c::CatalogMetadataVersion Metadata(const Bytes& b,unsigned scope) {
   x.record.header.parent_uuid={p::UuidKind::object,Id(3)};x.owning_schema_uuid={p::UuidKind::schema,Id(3)};
   x.default_name_uuid={p::UuidKind::object,Id(4)};x.name_vector_uuid={p::UuidKind::object,Id(5)};
   x.creator_transaction_uuid={p::UuidKind::transaction,Id(8)};x.creator_local_transaction_id=1;
-  x.definition_version=1;x.object_subtype="metric_retention";x.record.payload=View(b);
+  x.definition_version=1;x.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::metric_retention;x.record.payload=View(b);
   x.authority_scope=scope==4?c::CatalogAuthorityScope::cluster:c::CatalogAuthorityScope::local;return x;
 }
 void Matrix() {

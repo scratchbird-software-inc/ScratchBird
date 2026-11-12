@@ -50,7 +50,7 @@ std::string Pinned(){
 c::CatalogMetadataVersion Metadata(const Body& v){
   auto m=f::Metadata(0,v.origin_transaction_uuid,f::Id(60),Golden(v));
   m.record.header.object_uuid={p::UuidKind::object,v.body_uuid};m.record.header.row_uuid={p::UuidKind::row,f::Id(100)};
-  m.object_subtype="crypto_inline_private_key";m.definition_version=v.generation;
+  m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::crypto_inline_private_key;m.definition_version=v.generation;
   m.creator_local_transaction_id=v.origin_local_transaction_id;return m;
 }
 bool Filled(const std::array<p::byte,256>& b,p::byte value=0x5a){return std::all_of(b.begin(),b.end(),[=](auto v){return v==value;});}
@@ -157,7 +157,7 @@ void ValuesAndFrames(){
 void MetadataAndContinuity(){
   const auto v=Value();const auto m=Metadata(v);const auto view=c::BorrowCatalogMetadataVersion(m);
   for(unsigned n=0;n<20;++n){auto bad=m;
-    if(n==0)bad.record.header.kind=c::CatalogRecordKind::config_profile;if(n==1)bad.object_subtype="other";
+    if(n==0)bad.record.header.kind=c::CatalogRecordKind::config_profile;if(n==1)bad.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;
     if(n==2)bad.record.header.object_uuid.value=f::Id(8);if(n==3)bad.record.header.object_uuid.kind=p::UuidKind::principal;
     if(n==4)bad.record.header.row_uuid.value=v.body_uuid;if(n==5)bad.record.header.row_uuid.kind=p::UuidKind::object;
     if(n==6)bad.definition_version=2;if(n==7)bad.owning_schema_uuid={};if(n==8)bad.record.header.parent_uuid.value=f::Id(61);
@@ -196,7 +196,7 @@ void MetadataAndContinuity(){
   retired.status=c::CatalogObjectStatus::retired;retired.retired_transaction_uuid=retired.creator_transaction_uuid;
   {HeapGuard guard;Check(c::CatalogMetadataVersionEncodedBytes(c::BorrowCatalogMetadataVersion(retired)).has_value() &&
       c::CatalogMetadataPreservesFamilyOrigin(m,retired),"logical retirement retains a valid definition/origin; eligibility belongs to owning lookup");}
-  auto erased=successor;erased.object_subtype="unrelated";erased.record.payload="unrelated";
+  auto erased=successor;erased.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;erased.record.payload="unrelated";
   {HeapGuard guard;Check(!c::CatalogMetadataPreservesFamilyOrigin(m,erased),"family cannot vanish during successor mutation");}
   auto changed=v;changed.inline_private_key_use_allowed=true;const auto same=Metadata(changed);
   {HeapGuard guard;Check(!c::CatalogMetadataPreservesFamilyOrigin(m,same),"same semantic generation cannot change permission bytes");}

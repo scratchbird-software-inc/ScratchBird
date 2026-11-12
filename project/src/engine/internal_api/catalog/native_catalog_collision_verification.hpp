@@ -57,7 +57,7 @@ inline NativeCatalogCollisionVerification VerifyNativeCatalogNamingCollisions(
   const auto find=[&](const core::platform::Uuid& id){const auto at=raw_find(id);
     return at==SIZE_MAX||rows[at].row.metadata.record.header.deleted?SIZE_MAX:at;};
   const auto body_family=[](const c::CatalogMetadataVersionView& m){
-    return m.object_subtype=="naming_collision_policy_body"||c::IsCatalogNamingCollisionPolicyPayload(m.record.payload);
+    return m.object_subtype==scratchbird::core::catalog::CatalogObjectSubtype::naming_collision_policy_body||c::IsCatalogNamingCollisionPolicyPayload(m.record.payload);
   };
   const auto active=[](const c::CatalogMetadataVersionView& m){return m.status==c::CatalogObjectStatus::active&&m.lifecycle==c::CatalogObjectLifecycle::active;};
   const auto database=capture.source()->database_uuid;

@@ -75,7 +75,7 @@ bool Header(const CatalogTypedRecordView& m,const CatalogIdentifierResolutionPro
   return m.header.kind==CatalogRecordKind::config_profile&&m.header.object_uuid.kind==UuidKind::object&&m.header.object_uuid.value==r.profile_uuid;
 }
 bool Metadata(const CatalogMetadataVersionView& m,const CatalogIdentifierResolutionProfile& r){
-  return Header(m.record,r)&&m.object_subtype=="identifier_resolution_profile"&&m.authority_scope==CatalogAuthorityScope::local&&
+  return Header(m.record,r)&&m.object_subtype==CatalogObjectSubtype::identifier_resolution_profile&&m.authority_scope==CatalogAuthorityScope::local&&
       m.definition_version==r.generation&&m.owning_schema_uuid.kind==UuidKind::schema&&Id(m.owning_schema_uuid.value)&&
       m.record.header.parent_uuid.kind==UuidKind::object&&m.record.header.parent_uuid.value==m.owning_schema_uuid.value&&
       m.owner_uuid.kind==UuidKind::principal&&Id(m.owner_uuid.value)&&m.audit_uuid.kind==UuidKind::object&&Id(m.audit_uuid.value)&&
@@ -86,7 +86,7 @@ bool Metadata(const CatalogMetadataVersionView& m,const CatalogIdentifierResolut
       r.origin_local_transaction_id<=m.creator_local_transaction_id&&
       (m.definition_version!=1||(r.origin_transaction_uuid.value==m.creator_transaction_uuid.value&&r.origin_local_transaction_id==m.creator_local_transaction_id));
 }
-bool Family(const CatalogMetadataVersionView& m){return m.object_subtype=="identifier_resolution_profile"||IsCatalogIdentifierProfilePayload(m.record.payload);}
+bool Family(const CatalogMetadataVersionView& m){return m.object_subtype==CatalogObjectSubtype::identifier_resolution_profile||IsCatalogIdentifierProfilePayload(m.record.payload);}
 }
 std::optional<std::size_t> CatalogIdentifierProfileEncodedBytes(const CatalogIdentifierResolutionProfile& r){
   if(!Valid(r))return {};FieldBacking backing;backing.Bind(r);

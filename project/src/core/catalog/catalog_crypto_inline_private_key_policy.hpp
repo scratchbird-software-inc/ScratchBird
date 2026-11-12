@@ -77,7 +77,7 @@ inline bool Header(const CatalogTypedRecordView& m,const CatalogCryptoInlinePriv
       m.header.row_uuid.value != r.body_uuid;
 }
 inline bool Metadata(const CatalogMetadataVersionView& m,const CatalogCryptoInlinePrivateKeyPolicy& r) noexcept {
-  return Header(m.record,r) && m.object_subtype == "crypto_inline_private_key" &&
+  return Header(m.record,r) && m.object_subtype == CatalogObjectSubtype::crypto_inline_private_key &&
       m.definition_version == r.generation && Owner(m.owner_uuid) &&
       Identity(m.owning_schema_uuid,UuidKind::schema) && Identity(m.record.header.parent_uuid,UuidKind::object) &&
       m.owning_schema_uuid.value == m.record.header.parent_uuid.value && Identity(m.audit_uuid,UuidKind::object) &&
@@ -144,7 +144,7 @@ inline bool CatalogCryptoInlinePrivateKeyPolicyMatchesMetadata(const CatalogMeta
   return r.ok() && crypto_inline_private_key_policy_detail::Metadata(m,*r.record);
 }
 inline bool IsCatalogCryptoInlinePrivateKeyPolicyFamily(const CatalogMetadataVersionView& m) noexcept {
-  return m.object_subtype == "crypto_inline_private_key" || IsCatalogCryptoInlinePrivateKeyPolicyPayload(m.record.payload);
+  return m.object_subtype == CatalogObjectSubtype::crypto_inline_private_key || IsCatalogCryptoInlinePrivateKeyPolicyPayload(m.record.payload);
 }
 inline bool CatalogCryptoInlinePrivateKeyPolicyMatchesDatabase(const CatalogMetadataVersionView& m,const Uuid& database) {
   if(!IsCatalogCryptoInlinePrivateKeyPolicyFamily(m)) return true;

@@ -220,7 +220,7 @@ c::CatalogMetadataVersion Metadata(bool table) {
   m.creator_transaction_uuid=t.origin_transaction_uuid;m.creator_local_transaction_id=9;
   m.definition_version=m.schema_epoch=m.security_epoch=m.catalog_generation=m.dependency_generation=m.invalidation_generation=1;
   m.lifecycle=c::CatalogObjectLifecycle::active;m.status=c::CatalogObjectStatus::active;
-  m.object_subtype=table?"ordinary_persistent_table":"persistent_table_column";
+  m.object_subtype=table?scratchbird::core::catalog::CatalogObjectSubtype::ordinary_persistent_table:scratchbird::core::catalog::CatalogObjectSubtype::persistent_table_column;
   if(table)m.storage_binding_uuid=t.storage_descriptor.uuid;
   return m;
 }
@@ -237,7 +237,7 @@ void MetadataAndEvolution() {
       if(mutation==2)bad.default_name_uuid={};
       if(mutation==3)bad.name_vector_uuid={};
       if(mutation==4)bad.owning_schema_uuid={};
-      if(mutation==5)bad.object_subtype="wrong_family";
+      if(mutation==5)bad.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;
       if(mutation==6)bad.creator_transaction_uuid=Id(92,p::UuidKind::transaction);
       if(mutation==7)bad.creator_local_transaction_id=8;
       if(mutation==8)bad.authority_scope=c::CatalogAuthorityScope::temporary;
@@ -518,7 +518,7 @@ void DefinitionDependencies() {
     auto invalid=b;
     if(bad==0)invalid.record.payload.resize(20);
     if(bad==1)invalid.record.header.object_uuid=Id(230);
-    if(bad==2)invalid.object_subtype="generic";
+    if(bad==2)invalid.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;
     if(bad==3)invalid.owning_schema_uuid={};
     if(bad==4){auto changed=d;changed.ordinal++;invalid.record.payload=Wire(65701,Fields(changed));}
     if(bad==5){auto changed=d;changed.origin_local_transaction_id=8;invalid.record.payload=Wire(65701,Fields(changed));}

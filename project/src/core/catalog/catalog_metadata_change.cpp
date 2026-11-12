@@ -69,7 +69,7 @@ bool Header(const CatalogTypedRecordView& m, const CatalogMetadataChange& r) {
          m.header.row_uuid.value != r.event_uuid;
 }
 bool Metadata(const CatalogMetadataVersionView& m, const CatalogMetadataChange& r) {
-  if (!Header(m.record, r) || m.object_subtype != "catalog_metadata_change" ||
+  if (!Header(m.record, r) || m.object_subtype != CatalogObjectSubtype::catalog_metadata_change ||
       m.authority_scope != CatalogAuthorityScope::local || !Typed(m.owner_uuid, UuidKind::principal) ||
       !Typed(m.owning_schema_uuid, UuidKind::schema) || !Typed(m.record.header.parent_uuid, UuidKind::object) ||
       m.record.header.parent_uuid.value != m.owning_schema_uuid.value || !Typed(m.audit_uuid, UuidKind::object) ||
@@ -87,7 +87,7 @@ bool Metadata(const CatalogMetadataVersionView& m, const CatalogMetadataChange& 
   return true;
 }
 bool Family(const CatalogMetadataVersionView& m) {
-  return m.object_subtype == "catalog_metadata_change" || IsCatalogMetadataChangePayload(m.record.payload);
+  return m.object_subtype == CatalogObjectSubtype::catalog_metadata_change || IsCatalogMetadataChangePayload(m.record.payload);
 }
 }  // namespace
 std::optional<std::size_t> CatalogMetadataChangeEncodedBytes(const CatalogMetadataChange& r) {

@@ -40,7 +40,7 @@ c::CatalogMetadataVersion Metadata(const Bytes& b,bool cluster=false){
   x.record.header.parent_uuid={p::UuidKind::object,Id(30)};x.owning_schema_uuid={p::UuidKind::schema,Id(30)};
   x.default_name_uuid={p::UuidKind::object,Id(31)};x.name_vector_uuid={p::UuidKind::object,Id(32)};
   x.security_policy_uuid={p::UuidKind::object,Id(12)};x.creator_transaction_uuid={p::UuidKind::transaction,Id(19)};
-  x.creator_local_transaction_id=1;x.definition_version=1;x.object_subtype="metric_series";x.record.payload=View(b);
+  x.creator_local_transaction_id=1;x.definition_version=1;x.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::metric_series;x.record.payload=View(b);
   x.authority_scope=cluster?c::CatalogAuthorityScope::cluster:c::CatalogAuthorityScope::local;return x;
 }
 void Matrices(){

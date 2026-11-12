@@ -48,17 +48,17 @@ c::CatalogPolicyDescriptor Descriptor(const c::CatalogCryptoInlinePrivateKeyPoli
   r.scope=c::CatalogPolicyScope::database;r.scope_uuid=r.database_uuid;r.authority_owner_uuid=f::Id(50);
   r.precedence_rank=1;r.enforcement_points=c::kCatalogPolicyEnforcementMask;return r;
 }
-c::CatalogMetadataVersion Metadata(const p::Uuid& object,unsigned row,std::string subtype,std::string payload){
+c::CatalogMetadataVersion Metadata(const p::Uuid& object,unsigned row,scratchbird::core::catalog::CatalogObjectSubtype subtype,std::string payload){
   auto r=f::Metadata(0,origin,f::Id(60),std::move(payload));r.record.header.kind=c::CatalogRecordKind::policy;
   r.record.header.object_uuid={p::UuidKind::object,object};r.record.header.row_uuid={p::UuidKind::row,f::Id(row)};
-  r.object_subtype=std::move(subtype);r.default_name_uuid={p::UuidKind::object,f::Id(row+1000)};
+  r.object_subtype=subtype;r.default_name_uuid={p::UuidKind::object,f::Id(row+1000)};
   r.name_vector_uuid={p::UuidKind::object,f::Id(row+2000)};return r;
 }
-auto BodyMetadata(const c::CatalogCryptoInlinePrivateKeyPolicy& b){return Metadata(b.body_uuid,101,"crypto_inline_private_key",Golden(b));}
+auto BodyMetadata(const c::CatalogCryptoInlinePrivateKeyPolicy& b){return Metadata(b.body_uuid,101,scratchbird::core::catalog::CatalogObjectSubtype::crypto_inline_private_key,Golden(b));}
 auto DescriptorMetadata(const c::CatalogPolicyDescriptor& v){
   std::array<p::byte,c::kCatalogPolicyDescriptorMaxBytes> buffer;
   const auto encoded=c::EncodeCatalogPolicyDescriptorInto(v,buffer);Check(encoded.ok(),"encode actual exact descriptor");
-  return Metadata(v.policy_uuid,202,"policy_descriptor",std::string(reinterpret_cast<const char*>(encoded.bytes.data()),encoded.bytes.size()));
+  return Metadata(v.policy_uuid,202,scratchbird::core::catalog::CatalogObjectSubtype::policy_descriptor,std::string(reinterpret_cast<const char*>(encoded.bytes.data()),encoded.bytes.size()));
 }
 void Empty(const auto& result){
   if(result.ok()||result.descriptor||result.body)std::cerr<<"unexpected observation at check="<<checks<<" error="<<int(result.error)
@@ -76,7 +76,7 @@ void Generations(){
   body.generation=UINT64_MAX;before=BodyMetadata(body);before.definition_version=body.generation;after=before;
   Check(db::NativeCatalogDefinitionGenerationFollows(before,after),"identical metadata-only policy successor does not overflow maximum semantic generation");
   after.definition_version=0;Check(!db::NativeCatalogDefinitionGenerationFollows(before,after),"semantic generation never wraps");
-  before.object_subtype="unrelated";before.definition_version=1;after=before;
+  before.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;before.definition_version=1;after=before;
   Check(!db::NativeCatalogDefinitionGenerationFollows(before,after),"same-generation exception never relaxes unrelated family rules");
   auto descriptor=Descriptor(Body(false));before=DescriptorMetadata(descriptor);after=before;++after.security_epoch;
   Check(db::NativeCatalogDefinitionGenerationFollows(before,after),"descriptor metadata successor retains exact semantic definition");

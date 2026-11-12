@@ -124,6 +124,15 @@ std::optional<CatalogValueType> CatalogSecurityAttributeType(std::string_view na
 }
 
 bool IsCatalogSecurityRecordKind(CatalogRecordKind kind) { return PrimaryField(kind) != 0; }
+CatalogObjectSubtype CatalogSecuritySubtype(CatalogRecordKind kind) noexcept {
+  switch (kind) {
+    case CatalogRecordKind::user_account: return CatalogObjectSubtype::user_account;
+    case CatalogRecordKind::group_account: return CatalogObjectSubtype::group_account;
+    case CatalogRecordKind::role_account: return CatalogObjectSubtype::role_account;
+    case CatalogRecordKind::grant_record: return CatalogObjectSubtype::grant_record;
+    default: return CatalogObjectSubtype::none;
+  }
+}
 
 std::string_view CatalogSecurityPrimaryIdentityName(CatalogRecordKind kind) {
   const auto id = PrimaryField(kind);
@@ -266,7 +275,7 @@ bool CatalogSecurityPayloadMatchesMetadata(const CatalogMetadataVersionView& m) 
         (id.value.bytes[8]&0xc0)==0x80;
   };
   if (!CatalogSecurityPayloadMatchesHeader(m.record) ||
-      m.object_subtype!=CatalogRecordKindName(m.record.header.kind) ||
+      m.object_subtype!=CatalogSecuritySubtype(m.record.header.kind) ||
       m.authority_scope!=CatalogAuthorityScope::local ||
       !typed(m.owner_uuid,UuidKind::principal) || !typed(m.audit_uuid,UuidKind::object) ||
       !typed(m.security_policy_uuid,UuidKind::object) || !typed(m.default_name_uuid,UuidKind::object) ||

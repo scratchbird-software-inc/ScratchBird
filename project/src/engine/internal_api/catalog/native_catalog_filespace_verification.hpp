@@ -35,7 +35,7 @@ inline NativeCatalogFilespaceVerification VerifyNativeCatalogFilespaces(
     const auto& m=captured.row.metadata;const auto& h=m.record.header;
     if(h.deleted||h.kind!=c::CatalogRecordKind::filespace)continue;
     const auto decoded=c::DecodeCatalogFilespaceRecord(m.record.payload);
-    if(captured.role!=1||captured.row.provisional||!decoded.ok()||m.object_subtype!="filespace"||
+    if(captured.role!=1||captured.row.provisional||!decoded.ok()||m.object_subtype!=scratchbird::core::catalog::CatalogObjectSubtype::filespace||
         h.parent_uuid.value!=database_object||!m.owning_schema_uuid.value.is_nil())
       return fail(E::invalid_manifest,h.object_uuid.value);
     const auto& manifest=*decoded.record;const auto id=manifest.filespace_uuid.value;

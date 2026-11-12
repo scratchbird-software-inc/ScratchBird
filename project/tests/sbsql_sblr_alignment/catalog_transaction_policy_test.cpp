@@ -53,7 +53,7 @@ std::string Golden(const Body& r){f::Golden g(65624);
 c::CatalogMetadataVersion Metadata(const Body& r,unsigned n=0){auto m=f::Metadata(0,r.creating_transaction_uuid,f::Id(60),Golden(r));
  m.record.header.object_uuid={p::UuidKind::object,r.body_uuid};m.record.header.row_uuid={p::UuidKind::row,f::Id(1000+3*n)};
  m.default_name_uuid={p::UuidKind::object,f::Id(2000+2*n)};m.name_vector_uuid={p::UuidKind::object,f::Id(2001+2*n)};
- m.object_subtype="transaction_policy_body";m.creator_local_transaction_id=r.creating_local_transaction_id;m.definition_version=r.generation;
+ m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::transaction_policy_body;m.creator_local_transaction_id=r.creating_local_transaction_id;m.definition_version=r.generation;
  if(r.cluster_uuid)m.authority_scope=c::CatalogAuthorityScope::cluster;return m;}
 void Roundtrip(const Body& value){const auto expected=Golden(value);std::array<p::byte,c::kCatalogTransactionPolicyMaxBytes+2> output;output.fill(0xa7);
  const auto size=NoHeap([&]{return c::CatalogTransactionPolicyEncodedBytes(value);});Check(size&&*size==expected.size()&&*size<=c::kCatalogTransactionPolicyMaxBytes,"independent complete byte count");
@@ -116,7 +116,7 @@ void Values(){const auto base=Value();Roundtrip(base);Check(Golden(base).size()=
 void Bindings(){auto b=Value();auto m=Metadata(b);
  Check(c::CatalogMetadataVersionEncodedBytes(c::BorrowCatalogMetadataVersion(m)).has_value(),"common catalog dispatcher accepts exact transaction metadata");
  for(unsigned n=0;n<5;++n){auto bad=m;if(n==0)bad.record.header.object_uuid.value=f::Id(8);if(n==1)bad.record.header.row_uuid.value=b.lock_policy_uuid;
-  if(n==2)bad.definition_version=2;if(n==3)bad.creator_local_transaction_id=2;if(n==4)bad.object_subtype="generic_policy";
+  if(n==2)bad.definition_version=2;if(n==3)bad.creator_local_transaction_id=2;if(n==4)bad.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;
   Check(!c::CatalogMetadataVersionEncodedBytes(c::BorrowCatalogMetadataVersion(bad)),"common dispatcher cannot bypass family header/creator/generation/subtype checks");}
  Check(!c::CatalogTransactionPolicyMatchesDatabase(c::BorrowCatalogMetadataVersion(m),f::Id(9)),"database binding uses actual body identity");
  c::CatalogPolicyDescriptor d;d.policy_uuid=f::Id(500);d.policy_version_uuid=f::Id(501);d.database_uuid=b.database_uuid;
@@ -146,9 +146,9 @@ struct Item {
     vector_metadata=entry_metadata=definition;vector_metadata.record.payload.clear();entry_metadata.record.payload.clear();
     vector_metadata.record.header.kind=entry_metadata.record.header.kind=c::CatalogRecordKind::localized_name;
     vector_metadata.record.header.object_uuid=definition.name_vector_uuid;vector_metadata.record.header.row_uuid.value=f::Id(1001+3*n);
-    vector_metadata.record.header.parent_uuid=definition.record.header.object_uuid;vector_metadata.object_subtype="name_vector";
+    vector_metadata.record.header.parent_uuid=definition.record.header.object_uuid;vector_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_vector;
     entry_metadata.record.header.object_uuid=definition.default_name_uuid;entry_metadata.record.header.row_uuid.value=f::Id(1002+3*n);
-    entry_metadata.record.header.parent_uuid=definition.name_vector_uuid;entry_metadata.object_subtype="name_entry";entry_metadata.resource_epoch=1;
+    entry_metadata.record.header.parent_uuid=definition.name_vector_uuid;entry_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_entry;entry_metadata.resource_epoch=1;
     vector.name_vector_uuid=entry.name_vector_uuid=definition.name_vector_uuid;vector.object_uuid=entry.object_uuid=definition.record.header.object_uuid;
     vector.default_name_entry_uuid=entry.name_entry_uuid=definition.default_name_uuid;vector.object_kind=entry.object_kind=c::CatalogRecordKind::policy;
     vector.owning_schema_uuid=definition.owning_schema_uuid;vector.default_language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_en_US);

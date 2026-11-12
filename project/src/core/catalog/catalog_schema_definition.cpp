@@ -34,6 +34,18 @@ bool Valid(const CatalogSchemaDefinition& d) {
 }
 }  // namespace
 
+CatalogObjectSubtype CatalogSchemaSubtype(CatalogSchemaType type) noexcept {
+  switch (type) {
+    case CatalogSchemaType::system: return CatalogObjectSubtype::schema_system;
+    case CatalogSchemaType::user_home: return CatalogObjectSubtype::schema_user_home;
+    case CatalogSchemaType::remote_native: return CatalogObjectSubtype::schema_remote_native;
+    case CatalogSchemaType::remote_emulated: return CatalogObjectSubtype::schema_remote_emulated;
+    case CatalogSchemaType::public_compat: return CatalogObjectSubtype::schema_public_compat;
+    case CatalogSchemaType::application: return CatalogObjectSubtype::schema_application;
+    case CatalogSchemaType::cluster: return CatalogObjectSubtype::schema_cluster;
+  }
+  return CatalogObjectSubtype::none;
+}
 const char* CatalogSchemaTypeName(CatalogSchemaType type) {
   switch (type) {
     case CatalogSchemaType::system: return "system";
@@ -136,7 +148,7 @@ bool CatalogSchemaDefinitionMatchesMetadata(const CatalogMetadataVersionView& m)
   if (!Same(d.schema_object_uuid,m.record.header.object_uuid) || !Same(parent,m.record.header.parent_uuid) ||
       !Identity(m.default_name_uuid,UuidKind::object) || !Identity(m.name_vector_uuid,UuidKind::object) ||
       !Same(d.permissions_policy_uuid,m.security_policy_uuid) ||
-      m.object_subtype != CatalogSchemaTypeName(d.schema_type) ||
+      m.object_subtype != CatalogSchemaSubtype(d.schema_type) ||
       // SB_DRIFT_CLUSTER_SCHEMA_IN_EVERY_DATABASE (owner direction 2026-11-04):
       // the cluster schema exists in every database, standalone included, so a
       // cluster-type schema may be a local catalog object; the cluster library

@@ -381,7 +381,7 @@ inline NativeRuntimePrincipalCredentialResult VerifyNativeRuntimePrincipalCreden
   }
   if (!selected) return fail(E::provider_absent);
   const auto& metadata = selected->metadata;
-  if (!catalog::CatalogBootstrapPolicyMatchesMetadata(metadata) || metadata.object_subtype != "bootstrap_security_provider")
+  if (!catalog::CatalogBootstrapPolicyMatchesMetadata(metadata) || metadata.object_subtype != scratchbird::core::catalog::CatalogObjectSubtype::bootstrap_security_provider)
     return fail(E::provider_invalid);
   const auto provider = catalog::DecodeCatalogBootstrapSecurityProvider(metadata.record.payload);
   out.record_error = provider.error;

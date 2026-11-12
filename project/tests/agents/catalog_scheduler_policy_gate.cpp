@@ -86,7 +86,7 @@ c::CatalogMetadataVersion Metadata(const Policy& p) {
   m.definition_version = p.generation;
   m.schema_epoch = m.security_epoch = m.catalog_generation = m.dependency_generation = m.invalidation_generation = 1;
   m.lifecycle = c::CatalogObjectLifecycle::active; m.status = c::CatalogObjectStatus::active;
-  m.object_subtype = "scheduler_runtime";
+  m.object_subtype = scratchbird::core::catalog::CatalogObjectSubtype::scheduler_runtime;
   return m;
 }
 void Good(const Policy& p) {
@@ -174,7 +174,7 @@ void BoundariesAndOrigin() {
   Check(!c::CatalogSchedulerPolicyPreservesOrigin(first,Metadata(changed)),"origin UUID preserved");
   for (unsigned which = 0; which < 9; ++which) {
     auto wrong = first;
-    if (which == 0) wrong.object_subtype = "storage_action";
+    if (which == 0) wrong.object_subtype = scratchbird::core::catalog::CatalogObjectSubtype::storage_action;
     if (which == 1) wrong.record.header.kind = c::CatalogRecordKind::config_profile;
     if (which == 2) wrong.record.header.object_uuid = Id(UuidKind::object,32);
     if (which == 3) ++wrong.definition_version;
@@ -185,7 +185,7 @@ void BoundariesAndOrigin() {
     if (which == 8) wrong.authority_scope = static_cast<c::CatalogAuthorityScope>(255);
     Check(!c::CatalogSchedulerPolicyMatchesMetadata(wrong),"exact envelope binding");
   }
-  auto unrelated = first; unrelated.object_subtype = "unrelated"; unrelated.record.payload = "unrelated";
+  auto unrelated = first; unrelated.object_subtype = scratchbird::core::catalog::CatalogObjectSubtype::schema_application; unrelated.record.payload = "unrelated";
   Check(c::CatalogSchedulerPolicyPreservesOrigin(unrelated,unrelated),"unrelated family remains owner's concern");
   deny_heap = true;
   const bool matches = c::CatalogSchedulerPolicyMatchesMetadata(first);
@@ -239,7 +239,7 @@ std::string QueueOracle(const QueueProfile& p) {
 }
 c::CatalogMetadataVersion QueueMetadata(const QueueProfile& p) {
   auto m = Metadata(Example()); m.record.header.object_uuid = {UuidKind::object,p.profile_uuid};
-  m.record.payload = QueueOracle(p); m.object_subtype = "scheduler_queues"; m.definition_version = p.generation;
+  m.record.payload = QueueOracle(p); m.object_subtype = scratchbird::core::catalog::CatalogObjectSubtype::scheduler_queues; m.definition_version = p.generation;
   m.creator_transaction_uuid = p.origin_transaction_uuid; m.creator_local_transaction_id = p.origin_local_transaction_id;
   return m;
 }
@@ -313,7 +313,7 @@ void QueueDefinition() {
   }
   for (unsigned field = 0; field < 9; ++field) {
     auto wrong = first;
-    if (field == 0) wrong.object_subtype = "scheduler_runtime";
+    if (field == 0) wrong.object_subtype = scratchbird::core::catalog::CatalogObjectSubtype::scheduler_runtime;
     if (field == 1) wrong.record.header.kind = c::CatalogRecordKind::config_profile;
     if (field == 2) wrong.record.header.object_uuid = Id(UuidKind::object,32);
     if (field == 3) ++wrong.definition_version;
@@ -381,7 +381,7 @@ c::CatalogMetadataVersion FairnessMetadata(const Fairness& p) {
   auto m = Metadata(Example()); m.record.header.object_uuid = {UuidKind::object,p.profile_uuid};
   m.record.payload = FairnessOracle(p); m.definition_version = p.generation;
   m.creator_transaction_uuid = p.origin_transaction_uuid; m.creator_local_transaction_id = p.origin_local_transaction_id;
-  m.object_subtype = "scheduler_fairness"; return m;
+  m.object_subtype = scratchbird::core::catalog::CatalogObjectSubtype::scheduler_fairness; return m;
 }
 void FairnessGood(const Fairness& p) {
   const auto bytes = FairnessOracle(p); const auto metadata = FairnessMetadata(p);
@@ -487,7 +487,7 @@ void FairnessDefinition() {
   }
   for (unsigned field = 0; field < 11; ++field) {
     auto wrong = first;
-    if (field == 0) wrong.object_subtype = "scheduler_queues";
+    if (field == 0) wrong.object_subtype = scratchbird::core::catalog::CatalogObjectSubtype::scheduler_queues;
     if (field == 1) wrong.record.header.kind = c::CatalogRecordKind::config_profile;
     if (field == 2) wrong.record.header.object_uuid = Id(UuidKind::object,32);
     if (field == 3) ++wrong.definition_version;
@@ -536,7 +536,7 @@ void SharedRegistration() {
           "native shared family admission decode and origin without allocation");
     Check(c::DecodeCatalogMetadataVersion(encoded.bytes).ok() && c::EncodeCatalogMetadataVersion(next).ok(),
           "owning compatibility and successor accept registered families");
-    auto wrong = m; wrong.object_subtype = "unrelated"; invalid_metadata(wrong,details[i]);
+    auto wrong = m; wrong.object_subtype = scratchbird::core::catalog::CatalogObjectSubtype::schema_application; invalid_metadata(wrong,details[i]);
     wrong = m; wrong.record.payload = "opaque unrelated payload"; invalid_metadata(wrong,details[i]);
     wrong = m; wrong.record.header.object_uuid = Id(UuidKind::object,91); invalid_metadata(wrong,details[i]);
     deny_heap = true;
@@ -550,7 +550,7 @@ void SharedRegistration() {
     deny_heap = false;
     Check(!precedence.ok() && precedence.diagnostic.diagnostic_code == "SB-CATALOG-RECORD-CODEC-ROW-UUID-MUST-BE-V7",
           "common identity error retains precedence over new family error");
-    wrong = m; wrong.object_subtype = "metric_retention";
+    wrong = m; wrong.object_subtype = scratchbird::core::catalog::CatalogObjectSubtype::metric_retention;
     invalid_metadata(wrong,"metric_retention_definition_binding_invalid");
     wrong = m; wrong.record.header.kind = c::CatalogRecordKind::storage_descriptor;
     deny_heap = true;
@@ -583,7 +583,7 @@ void SharedRegistration() {
       deny_heap = false;
       Check(!same && !c::CatalogMetadataPreservesFamilyOrigin(m,wrong),"common family origin substitution refused");
     }
-    wrong = next; wrong.object_subtype = "unrelated"; wrong.record.payload = "unrelated";
+    wrong = next; wrong.object_subtype = scratchbird::core::catalog::CatalogObjectSubtype::schema_application; wrong.record.payload = "unrelated";
     Check(!c::CatalogMetadataPreservesFamilyOrigin(m,wrong) && !c::CatalogMetadataPreservesFamilyOrigin(wrong,m),
           "common family cannot morph to or from unrelated definition");
     Check(c::CatalogMetadataPreservesFamilyOrigin(wrong,wrong),"unrelated family origin behavior retained");

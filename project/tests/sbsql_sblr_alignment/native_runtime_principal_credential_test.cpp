@@ -125,7 +125,7 @@ struct CredentialNativeFixture {
     auto metadata=security_fixture::Metadata(0,security_tx,Id(61),{});metadata.record.header.kind=K::config_profile;
     metadata.record.header.object_uuid={platform::UuidKind::object,Id(180)};metadata.record.header.row_uuid={platform::UuidKind::row,security_fixture::Id(3100)};
     metadata.security_policy_uuid={platform::UuidKind::object,binding.policy_uuid};
-    metadata.object_subtype="agent_runtime_authority";metadata.record.payload.assign(encoded.bytes.begin(),encoded.bytes.end());
+    metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::agent_runtime_authority;metadata.record.payload.assign(encoded.bytes.begin(),encoded.bytes.end());
     if(variant==CredentialVariant::retired_binding){metadata.lifecycle=catalog::CatalogObjectLifecycle::archived;
       metadata.status=catalog::CatalogObjectStatus::retired;metadata.retired_transaction_uuid=security_tx;}
     seed[4].push_back({metadata,{}});
@@ -147,7 +147,7 @@ struct CredentialNativeFixture {
         // that the native leaf codec must refuse before family selection.
         auto other=binding;other.binding_uuid=Id(210);const auto payload=catalog::EncodeCatalogRuntimeAuthorityBinding(other);
         Check(payload.ok(),"valid foreign family for exact provider identity");
-        provider_meta.record.header.kind=K::config_profile;provider_meta.object_subtype="agent_runtime_authority";
+        provider_meta.record.header.kind=K::config_profile;provider_meta.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::agent_runtime_authority;
         provider_meta.security_policy_uuid={platform::UuidKind::object,other.policy_uuid};
         provider_meta.record.payload.assign(payload.bytes.begin(),payload.bytes.end());}
       if(variant==CredentialVariant::retired_provider){provider_meta.lifecycle=catalog::CatalogObjectLifecycle::archived;
@@ -161,7 +161,7 @@ struct CredentialNativeFixture {
         meta.status=catalog::CatalogObjectStatus::retired;meta.retired_transaction_uuid=security_tx;}
       if(variant==CredentialVariant::wrong_posture_class){auto other=binding;other.binding_uuid=Id(52);other.policy_uuid=Id(248);
         const auto bytes=catalog::EncodeCatalogRuntimeAuthorityBinding(other);Check(bytes.ok(),"valid other family at selected posture identity");
-        meta.record.header.kind=K::config_profile;meta.object_subtype="agent_runtime_authority";
+        meta.record.header.kind=K::config_profile;meta.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::agent_runtime_authority;
         meta.security_policy_uuid={platform::UuidKind::object,other.policy_uuid};meta.record.payload.assign(bytes.bytes.begin(),bytes.bytes.end());}
       seed[4].push_back({std::move(meta),{}});
     }
@@ -171,7 +171,7 @@ struct CredentialNativeFixture {
       if(variant==CredentialVariant::retired_pack){meta.lifecycle=catalog::CatalogObjectLifecycle::archived;
         meta.status=catalog::CatalogObjectStatus::retired;meta.retired_transaction_uuid=security_tx;}
       if(variant==CredentialVariant::wrong_pack_class){auto other=policy.profile;other.profile_uuid=policy.pack.policy_pack_uuid;
-        other.policy_pack_uuid=Id(247);meta.object_subtype="bootstrap_policy_profile";meta.record.payload=security_fixture::EncodeGolden(other);}
+        other.policy_pack_uuid=Id(247);meta.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::bootstrap_policy_profile;meta.record.payload=security_fixture::EncodeGolden(other);}
       seed[4].push_back({std::move(meta),{}});
     }
     if(indexed)for(unsigned role:{3u,4u}){page::NativeBtreeDependencies deps;deps.index_uuid=security_fixture::Id(8000+role);

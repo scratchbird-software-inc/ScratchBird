@@ -41,7 +41,7 @@ std::string SeriesGolden(const c::CatalogMetricSeries& r,bool sort=true) {
 c::CatalogMetadataVersion SeriesMetadata(const c::CatalogMetricSeries& r) {
   auto v=Metadata(Descriptor());v.record.header.kind=c::CatalogRecordKind::metric_series;
   v.record.header.object_uuid={p::UuidKind::object,r.series_uuid};v.record.payload=SeriesGolden(r);
-  v.object_subtype="metric_series";v.definition_version=r.generation;
+  v.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::metric_series;v.definition_version=r.generation;
   v.creator_transaction_uuid=r.origin_transaction_uuid;v.creator_local_transaction_id=r.origin_local_transaction_id;
   v.authority_scope=r.binding.cluster_uuid.is_nil()?c::CatalogAuthorityScope::local:c::CatalogAuthorityScope::cluster;return v;
 }
@@ -145,7 +145,7 @@ void SeriesBindings() {
   const auto base=Series();const auto metadata=SeriesMetadata(base);
   for(unsigned which=0;which<13;++which){auto v=metadata;
     if(which==0)v.record.header.kind=c::CatalogRecordKind::table_descriptor;if(which==1)v.record.header.object_uuid.value.bytes[15]++;
-    if(which==2)v.object_subtype="table";if(which==3)v.definition_version++;if(which==4)v.record.header.parent_uuid.value.bytes[15]++;
+    if(which==2)v.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;if(which==3)v.definition_version++;if(which==4)v.record.header.parent_uuid.value.bytes[15]++;
     if(which==5)v.owning_schema_uuid={};if(which==6)v.default_name_uuid={};if(which==7)v.name_vector_uuid={};
     if(which==8)v.security_policy_uuid={};if(which==9)v.creator_transaction_uuid.value.bytes[15]++;
     if(which==10)v.creator_local_transaction_id++;if(which==11)v.authority_scope=c::CatalogAuthorityScope::cluster;
@@ -168,7 +168,7 @@ void SeriesBindings() {
     Check(c::EncodeCatalogMetadataVersion(v).ok(),"series changed-origin fixture invalid");
     Check(!SharedSeriesOrigin(metadata,v),"series immutable key or origin changed");
   }
-  auto other=metadata;other.record.header.kind=c::CatalogRecordKind::table_descriptor;other.object_subtype="other";other.record.payload="unrelated";
+  auto other=metadata;other.record.header.kind=c::CatalogRecordKind::table_descriptor;other.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;other.record.payload="unrelated";
   Check(SharedSeriesOrigin(other,other),"series changed unrelated family");
   Check(!SharedSeriesOrigin(metadata,other)&&!SharedSeriesOrigin(other,metadata),"series family swap admitted");
   auto d0=Descriptor();m::MetricDescriptor d;static_cast<m::MetricDescriptorDefinition&>(d)=d0.definition;static_cast<m::MetricDescriptorBinding&>(d)=d0.binding;

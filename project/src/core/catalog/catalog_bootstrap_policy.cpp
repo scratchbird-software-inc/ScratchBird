@@ -97,19 +97,19 @@ u32 Schema(std::string_view bytes) {
 }
 struct Family {
   Uuid object,pack;u64 generation=0;
-  TypedUuid origin;u64 local=0;std::string_view subtype;
+  TypedUuid origin;u64 local=0;scratchbird::core::catalog::CatalogObjectSubtype subtype;
 };
 std::optional<Family> DecodeFamily(std::string_view bytes) {
   switch(Schema(bytes)) {
     case 65588:{const auto r=DecodeCatalogBootstrapPolicyPack(bytes);if(r.ok())return Family{
       r.record->policy_pack_uuid,r.record->policy_pack_uuid,r.record->generation,
-      r.record->origin_transaction_uuid,r.record->origin_local_transaction_id,"bootstrap_policy_pack"};break;}
+      r.record->origin_transaction_uuid,r.record->origin_local_transaction_id,CatalogObjectSubtype::bootstrap_policy_pack};break;}
     case 65589:{const auto r=DecodeCatalogBootstrapSecurityProvider(bytes);if(r.ok())return Family{
       r.record->provider_uuid,r.record->policy_pack_uuid,r.record->generation,
-      r.record->origin_transaction_uuid,r.record->origin_local_transaction_id,"bootstrap_security_provider"};break;}
+      r.record->origin_transaction_uuid,r.record->origin_local_transaction_id,CatalogObjectSubtype::bootstrap_security_provider};break;}
     case 65590:{const auto r=DecodeCatalogBootstrapPolicyProfile(bytes);if(r.ok())return Family{
       r.record->profile_uuid,r.record->policy_pack_uuid,r.record->generation,
-      r.record->origin_transaction_uuid,r.record->origin_local_transaction_id,"bootstrap_policy_profile"};break;}
+      r.record->origin_transaction_uuid,r.record->origin_local_transaction_id,CatalogObjectSubtype::bootstrap_policy_profile};break;}
   }
   return {};
 }
@@ -222,7 +222,7 @@ bool CatalogBootstrapPolicyMatchesMetadata(const CatalogMetadataVersionView& m) 
 }
 bool CatalogBootstrapPolicyPreservesOrigin(const CatalogMetadataVersionView& a,const CatalogMetadataVersionView& b) {
   const auto family=[](const auto& m){return IsCatalogBootstrapPolicyPayload(m.record.payload)||
-    m.object_subtype=="bootstrap_policy_pack"||m.object_subtype=="bootstrap_security_provider"||m.object_subtype=="bootstrap_policy_profile";};
+    m.object_subtype==CatalogObjectSubtype::bootstrap_policy_pack||m.object_subtype==CatalogObjectSubtype::bootstrap_security_provider||m.object_subtype==CatalogObjectSubtype::bootstrap_policy_profile;};
   if(!family(a)&&!family(b))return true;
   if(!CatalogBootstrapPolicyMatchesMetadata(a)||!CatalogBootstrapPolicyMatchesMetadata(b))return false;
   const auto x=DecodeFamily(a.record.payload),y=DecodeFamily(b.record.payload);

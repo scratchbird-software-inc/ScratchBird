@@ -66,7 +66,7 @@ c::CatalogMetadataVersion Metadata(const c::CatalogContextNamespace& r) {
   m.creator_transaction_uuid={p::UuidKind::transaction,r.origin_transaction_uuid};
   m.default_name_uuid={p::UuidKind::object,Id(8)};m.name_vector_uuid={p::UuidKind::object,Id(9)};
   m.audit_uuid={p::UuidKind::object,Id(10)};m.owning_schema_uuid={p::UuidKind::schema,r.schema_uuid};
-  m.object_subtype="application_context_namespace";
+  m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::application_context_namespace;
   return m;
 }
 template<class F> auto NoHeap(F f) {
@@ -111,11 +111,11 @@ int main() {
   Check(!resident(m,Id(90))&&!resident(m,p::Uuid{}),"foreign and absent node residency refused");
   auto old_uuid=r.database_uuid;old_uuid.bytes[6]=0x40;
   Check(!resident(m,old_uuid),"non-system residency identity refused");
-  auto relabelled=m;relabelled.object_subtype="generic";
+  auto relabelled=m;relabelled.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;
   Check(!resident(relabelled,r.database_uuid),"binary schema marker prevents subtype bypass");
   relabelled=m;relabelled.record.payload="not a definition";
   Check(!resident(relabelled,r.database_uuid),"explicit subtype prevents payload bypass");
-  relabelled.object_subtype="generic";
+  relabelled.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;
   Check(resident(relabelled,r.database_uuid),"unrelated generic families retain their own admission");
   Check(!NoHeap([&]{return c::ValidateCatalogMetadataVersionView(c::BorrowCatalogMetadataVersion(m));}),"valid metadata refused");
   const auto complete=c::EncodeCatalogMetadataVersion(m);
@@ -135,7 +135,7 @@ int main() {
       case 4:bad.owner_uuid.value=Id(20);break;
       case 5:bad.owner_uuid.kind=p::UuidKind::object;break;
       case 6:bad.definition_version=2;break;
-      case 7:bad.object_subtype="unrelated";break;
+      case 7:bad.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;break;
       case 8:bad.record.payload[16]^=1;break;
       case 9:bad.creator_transaction_uuid.value=Id(20);break;
       case 10:bad.creator_local_transaction_id=8;break;

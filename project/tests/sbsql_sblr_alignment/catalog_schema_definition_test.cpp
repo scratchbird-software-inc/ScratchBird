@@ -83,7 +83,7 @@ c::CatalogMetadataVersion Metadata(const c::CatalogSchemaDefinition& d) {
   m.definition_version=m.schema_epoch=m.security_epoch=m.catalog_generation=m.dependency_generation=m.invalidation_generation=1;
   m.lifecycle=c::CatalogObjectLifecycle::active;m.status=c::CatalogObjectStatus::active;
   const std::array names{"system","user_home","remote_native","remote_emulated","public_compat","application","cluster"};
-  m.object_subtype=names[static_cast<unsigned>(d.schema_type)-1];
+  m.object_subtype=c::CatalogSchemaSubtype(d.schema_type);
   if(d.schema_type==c::CatalogSchemaType::cluster)m.authority_scope=c::CatalogAuthorityScope::cluster;
   return m;
 }
@@ -142,7 +142,7 @@ int main() {
     if(fault==0)bad.record.header.object_uuid=Id(p::UuidKind::object,20);
     if(fault==1)bad.record.header.parent_uuid=Id(p::UuidKind::object,20);
     if(fault==2)bad.default_name_uuid={};if(fault==3)bad.name_vector_uuid={};
-    if(fault==4)bad.security_policy_uuid={};if(fault==5)bad.object_subtype="wrong";
+    if(fault==4)bad.security_policy_uuid={};if(fault==5)bad.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::agent_registration;
     if(fault==6)bad.owning_schema_uuid={};if(fault==7)bad.owning_schema_uuid.kind=p::UuidKind::object;
     if(fault==8)bad.creator_local_transaction_id=10;if(fault==9)bad.creator_local_transaction_id=12;
     if(fault==10)bad.creator_transaction_uuid=Id(p::UuidKind::transaction,20);
@@ -175,7 +175,7 @@ int main() {
   {auto retired=successor;retired.record.header.deleted=true;retired.lifecycle=c::CatalogObjectLifecycle::dropped;
     retired.status=c::CatalogObjectStatus::retired;retired.retired_transaction_uuid=retired.creator_transaction_uuid;
     Check(c::EncodeCatalogMetadataVersion(retired).ok()&&SharedSchemaOrigin(metadata,retired),"schema retirement preserves original creation");}
-  {auto other=metadata;other.record.header.kind=c::CatalogRecordKind::table_descriptor;other.object_subtype="table";other.record.payload="unrelated";
+  {auto other=metadata;other.record.header.kind=c::CatalogRecordKind::table_descriptor;other.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::agent_registration;other.record.payload="unrelated";
     Check(!SharedSchemaOrigin(metadata,other)&&!SharedSchemaOrigin(other,metadata),"shared schema origin refuses family swaps");
     Check(SharedSchemaOrigin(other,other),"shared schema origin preserves unrelated families");}
   allocation_budget=0;

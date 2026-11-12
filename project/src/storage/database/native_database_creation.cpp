@@ -73,7 +73,7 @@ static NativeInitialDatabaseResult AssembleNativeInitialDatabaseRecordsImpl(
     }
     const auto& metadata=*named.definition;
     if(metadata.record.header.kind!=c::CatalogRecordKind::database||
-        metadata.object_subtype!="database"||!metadata.record.payload.empty()||
+        metadata.object_subtype!=scratchbird::core::catalog::CatalogObjectSubtype::database||!metadata.record.payload.empty()||
         !metadata.record.header.parent_uuid.value.is_nil()||!metadata.owning_schema_uuid.value.is_nil())
       return Fail(E::invalid_definition);
     c::CatalogDatabaseRecord definition;
@@ -101,7 +101,7 @@ static NativeInitialDatabaseResult AssembleNativeInitialDatabaseRecordsImpl(
       if(!primary->definition||!primary->vector_metadata||!primary->vector||primary->entries.empty()||
           !primary->entries.data())return Fail(E::invalid_request);
       const auto& m=*primary->definition;
-      if(m.record.header.kind!=c::CatalogRecordKind::filespace||m.object_subtype!="filespace"||
+      if(m.record.header.kind!=c::CatalogRecordKind::filespace||m.object_subtype!=scratchbird::core::catalog::CatalogObjectSubtype::filespace||
           !m.record.payload.empty()||m.record.header.parent_uuid.kind!=UuidKind::object||
           m.record.header.parent_uuid.value!=metadata.record.header.object_uuid.value||
           !m.owning_schema_uuid.value.is_nil())return Fail(E::invalid_definition);

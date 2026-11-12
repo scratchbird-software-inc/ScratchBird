@@ -61,7 +61,7 @@ bool Header(const CatalogTypedRecordView& m,const CatalogConstructionIntent& r){
       m.header.row_uuid.value!=r.event_uuid;
 }
 bool Metadata(const CatalogMetadataVersionView& m,const CatalogConstructionIntent& r){
-  if(!Header(m.record,r)||m.object_subtype!="node_construction_intent"||m.authority_scope!=CatalogAuthorityScope::local||
+  if(!Header(m.record,r)||m.object_subtype!=CatalogObjectSubtype::node_construction_intent||m.authority_scope!=CatalogAuthorityScope::local||
       !Typed(m.owner_uuid,UuidKind::principal)||!Typed(m.owning_schema_uuid,UuidKind::schema)||
       !Typed(m.record.header.parent_uuid,UuidKind::object)||m.record.header.parent_uuid.value!=m.owning_schema_uuid.value||
       !Typed(m.audit_uuid,UuidKind::object)||m.audit_uuid.value!=r.event_uuid||
@@ -75,7 +75,7 @@ bool Metadata(const CatalogMetadataVersionView& m,const CatalogConstructionInten
   if(r.actor_uuid&&(m.record.header.row_uuid.value==r.actor_uuid->value||m.owning_schema_uuid.value==r.actor_uuid->value))return false;
   return true;
 }
-bool Family(const CatalogMetadataVersionView& m){return m.object_subtype=="node_construction_intent"||IsCatalogConstructionIntentPayload(m.record.payload);}
+bool Family(const CatalogMetadataVersionView& m){return m.object_subtype==CatalogObjectSubtype::node_construction_intent||IsCatalogConstructionIntentPayload(m.record.payload);}
 }
 std::optional<std::size_t> CatalogConstructionIntentEncodedBytes(const CatalogConstructionIntent& r){
   if(!Valid(r))return {};const Backing b(r);

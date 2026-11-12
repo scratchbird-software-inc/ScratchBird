@@ -124,7 +124,7 @@ int main() {
       const auto& m=row.metadata;
       Check(m.catalog_generation==1&&m.schema_epoch==1&&m.security_epoch==1,
             "every row is at the initial catalog generation and epochs");
-      if(m.object_subtype=="name_entry")Check(m.resource_epoch!=0,"a name entry carries its key's resource epoch");
+      if(m.object_subtype==scratchbird::core::catalog::CatalogObjectSubtype::name_entry)Check(m.resource_epoch!=0,"a name entry carries its key's resource epoch");
       else Check(m.resource_epoch==0,"no initial row claims a resource dependency the catalog lacks");
     }
 
@@ -140,7 +140,7 @@ int main() {
     for(const auto& [id,row]:definitions) {
       const auto kind=row->metadata.record.header.kind;
       const auto found=names.find(id);
-      if(row->metadata.object_subtype=="node_construction_intent"){++unnamed;Check(found==names.end(),"the construction intent is unnamed");continue;}
+      if(row->metadata.object_subtype==scratchbird::core::catalog::CatalogObjectSubtype::node_construction_intent){++unnamed;Check(found==names.end(),"the construction intent is unnamed");continue;}
       Check(found!=names.end(),"every other definition is named");
       const bool by_name=kind==c::CatalogRecordKind::user_account||kind==c::CatalogRecordKind::role_account||
           kind==c::CatalogRecordKind::group_account||kind==c::CatalogRecordKind::schema||

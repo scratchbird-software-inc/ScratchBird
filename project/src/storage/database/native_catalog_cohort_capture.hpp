@@ -187,7 +187,7 @@ class NativeCatalogCapture {
   bool Append(u16 selector,u16 role,const NativeCatalogVisibleRow& source) noexcept {
     if(count_==rows_.size())return false;
     NativeCapturedCatalogRow value{selector,role,source};auto& metadata=value.row.metadata;
-    if(!Copy(metadata.record.payload)||!Copy(metadata.object_subtype))return false;
+    if(!Copy(metadata.record.payload))return false;
     if(value.row.name_payload){
       if(std::holds_alternative<core::catalog::CatalogNameEntryView>(*value.row.name_payload)){
         // (A vector holds no borrowed bytes: SB_CATALOG_NO_TEXT_IDENTIFIERS.)

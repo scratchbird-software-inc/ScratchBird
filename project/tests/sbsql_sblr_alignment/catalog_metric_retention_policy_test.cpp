@@ -86,7 +86,7 @@ c::CatalogMetadataVersion Metadata(const c::CatalogMetricRetentionPolicy& r) {
   v.definition_version = r.policy.generation;
   v.schema_epoch = v.security_epoch = v.catalog_generation = v.dependency_generation = v.invalidation_generation = 1;
   v.lifecycle = c::CatalogObjectLifecycle::active; v.status = c::CatalogObjectStatus::active;
-  v.object_subtype = "metric_retention";
+  v.object_subtype = scratchbird::core::catalog::CatalogObjectSubtype::metric_retention;
   if (r.policy.scope == "cluster") v.authority_scope = c::CatalogAuthorityScope::cluster;
   return v;
 }
@@ -124,7 +124,7 @@ void Binding() {
       case 0: v.record.header.object_uuid.value.bytes[15]++; break;
       case 1: v.record.header.object_uuid.kind = p::UuidKind::schema; break;
       case 2: v.record.header.kind = c::CatalogRecordKind::table_descriptor; break;
-      case 3: v.object_subtype = "other_policy"; break;
+      case 3: v.object_subtype = scratchbird::core::catalog::CatalogObjectSubtype::schema_application; break;
       case 4: v.definition_version++; break;
       case 5: v.record.header.parent_uuid.value.bytes[15]++; break;
       case 6: v.record.header.parent_uuid.kind = p::UuidKind::schema; break;
@@ -175,7 +175,7 @@ void Binding() {
     Check(c::EncodeCatalogMetadataVersion(other).ok(), "individually valid changed-origin fixture rejected");
     Check(!SharedRetentionOrigin(initial, other), "successor changed immutable origin");
   }
-  auto other = initial; other.object_subtype = "generic"; other.record.payload = "unrelated-family";
+  auto other = initial; other.object_subtype = scratchbird::core::catalog::CatalogObjectSubtype::schema_application; other.record.payload = "unrelated-family";
   Check(!SharedRetentionOrigin(initial, other) &&
         !SharedRetentionOrigin(other, initial), "family swap bypassed origin");
   Check(SharedRetentionOrigin(other, other), "unrelated policy family redefined");

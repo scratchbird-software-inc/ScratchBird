@@ -26,7 +26,7 @@ Fixture Catalog() {
   Check(encoded_labels.ok(),"label dependency fixture encoding failed");
   auto lm=Metadata(d);lm.record.header.kind=c::CatalogRecordKind::metric_label_schema;
   lm.record.header.object_uuid={p::UuidKind::object,b.label_schema_uuid};lm.definition_version=b.label_schema_generation;
-  lm.object_subtype="metric_label_schema";lm.record.payload.assign(encoded_labels.bytes.begin(),encoded_labels.bytes.end());
+  lm.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::metric_label_schema;lm.record.payload.assign(encoded_labels.bytes.begin(),encoded_labels.bytes.end());
   lm.record.header.row_uuid=Id(p::UuidKind::row,50);
   lm.default_name_uuid=Id(p::UuidKind::object,51);lm.name_vector_uuid=Id(p::UuidKind::object,52);
   f.rows.push_back(std::move(lm));
@@ -38,7 +38,7 @@ Fixture Catalog() {
   Check(encoded_policy.ok(),"retention dependency fixture encoding failed");
   auto pm=Metadata(d);pm.record.header.kind=c::CatalogRecordKind::policy;
   pm.record.header.object_uuid={p::UuidKind::object,b.retention_policy_uuid};pm.definition_version=b.retention_policy_generation;
-  pm.object_subtype="metric_retention";pm.record.payload.assign(encoded_policy.bytes.begin(),encoded_policy.bytes.end());
+  pm.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::metric_retention;pm.record.payload.assign(encoded_policy.bytes.begin(),encoded_policy.bytes.end());
   pm.record.header.row_uuid=Id(p::UuidKind::row,53);
   pm.default_name_uuid=Id(p::UuidKind::object,54);pm.name_vector_uuid=Id(p::UuidKind::object,55);
   f.rows.push_back(std::move(pm));
@@ -46,7 +46,7 @@ Fixture Catalog() {
   // fixture bytes verify preservation only; they are no executable grant.
   auto vm=Metadata(d);vm.record.header.kind=c::CatalogRecordKind::policy;
   vm.record.header.object_uuid={p::UuidKind::object,b.visibility_policy_uuid};vm.definition_version=b.visibility_policy_generation;
-  vm.object_subtype="security_owner_fixture";vm.record.payload=std::string(16,char(0xa5));
+  vm.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;vm.record.payload=std::string(16,char(0xa5));
   vm.record.header.row_uuid=Id(p::UuidKind::row,56);
   vm.default_name_uuid=Id(p::UuidKind::object,57);vm.name_vector_uuid=Id(p::UuidKind::object,58);
   f.rows.push_back(std::move(vm));return f;
@@ -110,7 +110,7 @@ void DependencySelection() {
     f.rows[1].record.payload.assign(changed.bytes.begin(),changed.bytes.end());
     BindingRefused(Resolve(f),BE::label_mismatch);
   }
-  f=Catalog();f.rows[2].object_subtype="unrelated";f.rows[2].record.payload="opaque unrelated policy";
+  f=Catalog();f.rows[2].object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;f.rows[2].record.payload="opaque unrelated policy";
   BindingRefused(Resolve(f),BE::wrong_family);
   // Annotation changes cannot redirect binary policy selection.
   f=Catalog();f.descriptor.definition.family="unrelated-name";f.descriptor.definition.producer_owner="other";
@@ -174,7 +174,7 @@ c::CatalogMetadataVersion SeriesRow(const Fixture& f,const c::CatalogMetricSerie
   row.record.header.object_uuid={p::UuidKind::object,series.series_uuid};
   row.record.header.row_uuid=Id(p::UuidKind::row,84);
   row.default_name_uuid=Id(p::UuidKind::object,85);row.name_vector_uuid=Id(p::UuidKind::object,86);
-  row.object_subtype="metric_series";row.definition_version=series.generation;
+  row.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::metric_series;row.definition_version=series.generation;
   row.authority_scope=series.binding.cluster_uuid.is_nil()?c::CatalogAuthorityScope::local:c::CatalogAuthorityScope::cluster;
   row.creator_transaction_uuid=series.origin_transaction_uuid;row.creator_local_transaction_id=series.origin_local_transaction_id;
   const auto bytes=c::EncodeCatalogMetricSeries(series);Check(bytes.ok(),"series fixture must encode");
@@ -338,7 +338,7 @@ void SeriesAmbiguity() {
     other.binding.node_uuid.bytes[15]++;f.rows.push_back(SeriesRow(f,other));
     if(which==0)f.rows.back().record.payload="series=legacy";
     if(which==1)f.rows.back().record.header.kind=c::CatalogRecordKind::table_descriptor;
-    if(which==2)f.rows.back().object_subtype="table";
+    if(which==2)f.rows.back().object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;
     if(which==3)f.rows.back().record.header.row_uuid={};
     if(which==4)f.rows.back().definition_version++;
     SeriesBindingRefused(ResolveSeries(f),BE::invalid_catalog);
@@ -377,9 +377,9 @@ void BorrowedMetadataValidationParity() {
     if(mutation==9)value.owning_schema_uuid.kind=p::UuidKind::object;
     if(mutation==10)value.record.header.parent_uuid.value.bytes.back()^=1;
     if(mutation==11)value.record.payload.assign(1024*1024,'x');
-    if(mutation==12)value.object_subtype="not a key";  // (was an oversized trace key: Q57 = 1 removed it)
-    if(mutation==13)value.object_subtype.assign(257,'x');
-    if(mutation==14)value.object_subtype.clear();  // (was an oversized retention class: Q58 = 1 removed it)
+    if(mutation==12)value.object_subtype=static_cast<scratchbird::core::catalog::CatalogObjectSubtype>(0xfffe);  // an unlisted subtype (was an oversized trace key: Q57 = 1 removed it)
+    if(mutation==13)value.object_subtype=static_cast<scratchbird::core::catalog::CatalogObjectSubtype>(0xfffd);  // an unlisted subtype (was 257 bytes of text)
+    if(mutation==14)value.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::none;  // (was an oversized retention class: Q58 = 1 removed it)
     if(mutation==15)value.authority_scope=static_cast<c::CatalogAuthorityScope>(255);
     if(mutation==16)value.record.header.deleted=true;
     if(mutation==17)value.record.header.object_uuid.value.bytes[6]=0x41;

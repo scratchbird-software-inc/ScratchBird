@@ -241,7 +241,7 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
            !core::catalog::CatalogBuiltinTypeDomainMatchesDatabase(core::catalog::BorrowCatalogMetadataVersion(m),b.database_uuid)||
            !core::catalog::CatalogManagementDefinitionMatchesDatabase(core::catalog::BorrowCatalogMetadataVersion(m),b.database_uuid)||
            !core::catalog::CatalogCryptoInlinePrivateKeyPolicyMatchesDatabase(core::catalog::BorrowCatalogMetadataVersion(m),b.database_uuid)||
-           ((m.object_subtype=="crypto_inline_private_key"||core::catalog::IsCatalogCryptoInlinePrivateKeyPolicyPayload(m.record.payload))&&role!=3)||
+           ((m.object_subtype==scratchbird::core::catalog::CatalogObjectSubtype::crypto_inline_private_key||core::catalog::IsCatalogCryptoInlinePrivateKeyPolicyPayload(m.record.payload))&&role!=3)||
            name!=record.name.has_value()||
            (name&&(!m.record.payload.empty()||!core::catalog::CatalogNamePayloadMatchesMetadata(*record.name,m)))||
            !ids.insert(m.record.header.object_uuid.value).second||

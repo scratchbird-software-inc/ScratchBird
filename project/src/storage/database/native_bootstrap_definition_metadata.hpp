@@ -78,7 +78,7 @@ struct BootstrapDefinitionMetadataInput {
   core::catalog::CatalogRecordKind kind = core::catalog::CatalogRecordKind::config_profile;
   // Must equal the subtype the assembler registered for this object, or the
   // definition is refused. Security records use CatalogRecordKindName(kind).
-  std::string object_subtype;
+  core::catalog::CatalogObjectSubtype object_subtype = core::catalog::CatalogObjectSubtype::none;  // SB_CATALOG_OBJECT_CONSTANTS
 
   // (No trace search key or retention class: SB_CATALOG_NO_TEXT_IDENTIFIERS,
   // owner Q57 = 1, Q58 = 1, 2026-11-12.)
@@ -202,20 +202,15 @@ inline BootstrapDefinitionMetadataResult BuildBootstrapDefinitionMetadata(
     out.error = E::name_entry_identity_invalid;
     return out;
   }
-  if (input.object_subtype.empty()) {
+  if (input.object_subtype == core::catalog::CatalogObjectSubtype::none) {
     out.error = E::subtype_empty;
     return out;
   }
-  // The same key rule the metadata codec applies. Checking it here turns an
-  // unusable envelope into a cause at its construction site, instead of an
-  // invalid_metadata refusal several layers away with nothing naming the field.
-  const auto valid_key = [](std::string_view key, std::size_t maximum) {
-    if (key.empty() || key.size() > maximum) return false;
-    for (const unsigned char ch : key)
-      if (ch < 33 || ch > 126) return false;
-    return true;
-  };
-  if (!valid_key(input.object_subtype, 256)) {
+  // The same rule the metadata codec applies (a listed subtype constant).
+  // Checking it here turns an unusable envelope into a cause at its
+  // construction site, instead of an invalid_metadata refusal several layers
+  // away with nothing naming the field.
+  if (!core::catalog::IsKnownCatalogObjectSubtype(input.object_subtype)) {
     out.error = E::subtype_invalid;
     return out;
   }
@@ -512,14 +507,14 @@ inline BootstrapNamedCreationUnitResult BuildBootstrapNamedCreationUnit(
   unit.vector_metadata.record.header.object_uuid = name_vector;
   unit.vector_metadata.record.header.row_uuid = {p::UuidKind::row, input.name_vector_row_uuid};
   unit.vector_metadata.record.header.parent_uuid = object;
-  unit.vector_metadata.object_subtype = "name_vector";
+  unit.vector_metadata.object_subtype = scratchbird::core::catalog::CatalogObjectSubtype::name_vector;
 
   unit.entry_metadata = unit.definition;
   unit.entry_metadata.record.header.kind = c::CatalogRecordKind::localized_name;
   unit.entry_metadata.record.header.object_uuid = name_entry;
   unit.entry_metadata.record.header.row_uuid = {p::UuidKind::row, input.name_entry_row_uuid};
   unit.entry_metadata.record.header.parent_uuid = name_vector;
-  unit.entry_metadata.object_subtype = "name_entry";
+  unit.entry_metadata.object_subtype = scratchbird::core::catalog::CatalogObjectSubtype::name_entry;
   unit.entry_metadata.resource_epoch = input.name_resource_epoch;
 
   auto& v = unit.vector;

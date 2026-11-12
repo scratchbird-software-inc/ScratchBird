@@ -22,7 +22,7 @@ struct Oracle {
     const auto id=Id(value);for(byte b:id.bytes)bytes[at++]=b;}
   void Scalar(unsigned tag,u64 value){Number(tag,2);Number(1,1);Number(0,1);Number(8,4);Number(value,8);}
 };
-c::CatalogMetadataVersionView Metadata(std::string_view payload,Uuid object,std::string_view subtype){
+c::CatalogMetadataVersionView Metadata(std::string_view payload,Uuid object,scratchbird::core::catalog::CatalogObjectSubtype subtype){
   c::CatalogMetadataVersionView m;m.record.header.kind=c::CatalogRecordKind::management_operation;
   m.record.header.object_uuid={UuidKind::object,object};m.record.header.row_uuid={UuidKind::row,Id(90)};
   m.record.header.parent_uuid={UuidKind::object,Id(91)};m.record.payload=payload;m.object_subtype=subtype;m.definition_version=1;
@@ -76,12 +76,12 @@ int main(){
     if(fault==9)r.creating_transaction_uuid.value=Id(5);if(fault==10)r.origin_transaction_uuid.kind=UuidKind::object;
     if(fault==11)r.profiles[9]={};out=unchanged;
     Check(!c::EncodeCatalogManagementDescriptorInto(r,out).ok()&&out==unchanged,"invalid descriptor has no encoded prefix");}
-  auto pm=Metadata(Text(std::span{po.bytes}.first(po.at)),p.profile_uuid,"management_profile");
-  auto dm=Metadata(Text(op.bytes),d.descriptor_uuid,"management_descriptor");
+  auto pm=Metadata(Text(std::span{po.bytes}.first(po.at)),p.profile_uuid,scratchbird::core::catalog::CatalogObjectSubtype::management_profile);
+  auto dm=Metadata(Text(op.bytes),d.descriptor_uuid,scratchbird::core::catalog::CatalogObjectSubtype::management_descriptor);
   Check(c::CatalogManagementProfileMatchesMetadata(pm)&&c::CatalogManagementDescriptorMatchesMetadata(dm)&&
       c::CatalogManagementDefinitionMatchesDatabase(dm,Id(2))&&!c::CatalogManagementDefinitionMatchesDatabase(dm,Id(20)),"native metadata and database binding");
   for(unsigned fault=0;fault<8;++fault){auto m=dm;
-    if(fault==0)m.object_subtype="management_profile";if(fault==1)m.definition_version=2;
+    if(fault==0)m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::management_profile;if(fault==1)m.definition_version=2;
     if(fault==2)m.creator_local_transaction_id=2;if(fault==3)m.creator_transaction_uuid.value=Id(5);
     if(fault==4)m.record.header.object_uuid.value=Id(5);if(fault==5)m.owning_schema_uuid.value=Id(5);
     if(fault==6)m.authority_scope=c::CatalogAuthorityScope::cluster;if(fault==7)m.record.header.kind=c::CatalogRecordKind::policy;

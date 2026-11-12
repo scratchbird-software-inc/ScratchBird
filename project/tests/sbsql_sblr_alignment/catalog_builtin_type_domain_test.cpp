@@ -112,12 +112,12 @@ void Constants(){
  Check(c::SystemDomainUuid(0x0102).bytes[14]==0x01&&c::SystemDomainUuid(0x0102).bytes[15]==0x02,"the type code fills the last two bytes");
  Check(c::SystemDomainUuid(0).is_nil()&&c::SystemDomainUuid(0x10000).is_nil(),"no constant outside the 16-bit code range");
 }
-c::CatalogMetadataVersion Metadata(const std::string& payload,c::CatalogRecordKind kind,const p::Uuid& object,std::string_view subtype,
+c::CatalogMetadataVersion Metadata(const std::string& payload,c::CatalogRecordKind kind,const p::Uuid& object,scratchbird::core::catalog::CatalogObjectSubtype subtype,
     u64 generation,const p::TypedUuid& creating,u64 creating_local,unsigned n){
  auto m=f::Metadata(0,creating,f::Id(60),payload);m.record.header.kind=kind;
  m.record.header.object_uuid={p::UuidKind::object,object};m.record.header.row_uuid={p::UuidKind::row,f::Id(1000+3*n)};
  m.default_name_uuid={p::UuidKind::object,f::Id(2000+2*n)};m.name_vector_uuid={p::UuidKind::object,f::Id(2001+2*n)};
- m.object_subtype=std::string(subtype);m.creator_local_transaction_id=creating_local;m.definition_version=generation;return m;}
+ m.object_subtype=subtype;m.creator_local_transaction_id=creating_local;m.definition_version=generation;return m;}
 c::CatalogMetadataVersion DatatypeMetadata(const Datatype& r){return Metadata(Golden(r),c::CatalogRecordKind::datatype_descriptor,
   r.descriptor_uuid,c::kBuiltinDatatypeDescriptorSubtype,r.generation,r.creating_transaction_uuid,r.creating_local_transaction_id,0);}
 c::CatalogMetadataVersion DomainMetadata(const Domain& r){return Metadata(Golden(r),c::CatalogRecordKind::domain,
@@ -130,11 +130,11 @@ void Bindings(){
    Check(c::CatalogMetadataPreservesFamilyOrigin(m,m),"exact same-generation replay");
    for(unsigned n=0;n<7;++n){auto bad=m;switch(n){
      case 0:bad.record.header.object_uuid.value=f::Id(8);break;case 1:bad.record.header.row_uuid.value=f::Id(1);break;
-     case 2:bad.definition_version=2;break;case 3:bad.creator_local_transaction_id=2;break;case 4:bad.object_subtype="generic_profile";break;
+     case 2:bad.definition_version=2;break;case 3:bad.creator_local_transaction_id=2;break;case 4:bad.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;break;
      case 5:bad.record.header.kind=c::CatalogRecordKind::policy;break;case 6:bad.authority_scope=c::CatalogAuthorityScope::cluster;break;}
      Check(!c::CatalogMetadataVersionEncodedBytes(c::BorrowCatalogMetadataVersion(bad)),"header/creator/generation/subtype/kind/scope bound");}
  }
- auto swapped=DatatypeMetadata(DatatypeValue());swapped.object_subtype=std::string(c::kSystemDomainSubtype);
+ auto swapped=DatatypeMetadata(DatatypeValue());swapped.object_subtype=c::kSystemDomainSubtype;
  Check(!c::CatalogMetadataVersionEncodedBytes(c::BorrowCatalogMetadataVersion(swapped)),"subtype and payload family agree");
  Check(c::CatalogBuiltinTypeDomainMatchesDatabase(c::BorrowCatalogMetadataVersion(f::Metadata(0,tx,f::Id(60),"")),f::Id(9)),
    "records outside the family pass the family's database check");

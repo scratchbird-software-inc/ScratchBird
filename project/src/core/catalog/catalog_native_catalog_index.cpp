@@ -20,9 +20,9 @@ constexpr std::array map_fields{Id(1,O),Id(2,D),Number(3),Number(4),Id(5,O),Id(6
 constexpr CatalogValueSchemaView key_schema{kCatalogNativeCatalogIndexKeyProfileSchemaId,1,key_fields};
 constexpr CatalogValueSchemaView visibility_schema{kCatalogNativeCatalogIndexVisibilityProfileSchemaId,1,visibility_fields};
 constexpr CatalogValueSchemaView map_schema{kCatalogNativeCatalogIndexDependencyMapSchemaId,1,map_fields};
-constexpr std::string_view kKeySubtype="native_catalog_index_key_profile";
-constexpr std::string_view kVisibilitySubtype="native_catalog_index_visibility_profile";
-constexpr std::string_view kMapSubtype="native_catalog_index_dependency_map";
+constexpr CatalogObjectSubtype kKeySubtype=CatalogObjectSubtype::native_catalog_index_key_profile;
+constexpr CatalogObjectSubtype kVisibilitySubtype=CatalogObjectSubtype::native_catalog_index_visibility_profile;
+constexpr CatalogObjectSubtype kMapSubtype=CatalogObjectSubtype::native_catalog_index_dependency_map;
 
 bool Identity(const Uuid& id){return uuid::IsEngineIdentityUuid(id);}
 bool Transaction(const TypedUuid& id){return id.kind==UuidKind::transaction&&Identity(id.value);}
@@ -116,7 +116,7 @@ u32 SchemaOf(std::string_view bytes) noexcept {
 }
 // The record's own identity, its creator and its subtype.
 struct Binding {
-  Uuid object;std::string_view subtype;u64 generation=0;TypedUuid creating;u64 creating_local=0;
+  Uuid object;scratchbird::core::catalog::CatalogObjectSubtype subtype;u64 generation=0;TypedUuid creating;u64 creating_local=0;
 };
 Binding Bind(const Key& r){return {r.profile_uuid,kKeySubtype,r.generation,r.creating_transaction_uuid,r.creating_local_transaction_id};}
 Binding Bind(const Visibility& r){return {r.profile_uuid,kVisibilitySubtype,r.generation,r.creating_transaction_uuid,r.creating_local_transaction_id};}

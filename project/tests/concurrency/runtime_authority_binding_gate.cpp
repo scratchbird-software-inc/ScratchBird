@@ -59,7 +59,7 @@ c::CatalogMetadataVersion Metadata(const Binding& r) {
   m.definition_version=r.generation; m.catalog_generation=r.catalog_generation; m.security_epoch=r.security_epoch;
   m.schema_epoch=m.resource_epoch=m.dependency_generation=m.invalidation_generation=1;
   m.lifecycle=c::CatalogObjectLifecycle::active; m.status=c::CatalogObjectStatus::active;
-  m.object_subtype="agent_runtime_authority";
+  m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::agent_runtime_authority;
   return m;
 }
 void Good(const Binding& r) {
@@ -117,7 +117,7 @@ void Run() {
     switch(mutation) {
       case 0: m.record.header.kind=c::CatalogRecordKind::policy; break;
       case 1: m.record.header.object_uuid.value=Id(99); break;
-      case 2: m.object_subtype="another_config"; break;
+      case 2: m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application; break;
       case 3: m.authority_scope=c::CatalogAuthorityScope::cluster; break;
       case 4: m.visibility=c::CatalogVisibilityClass::public_metadata; break;
       case 5: m.owning_schema_uuid.value=Id(99); break;
@@ -144,7 +144,7 @@ void Run() {
     if(mutation==3) ++r.origin_local_transaction_id;
     Check(!c::CatalogMetadataPreservesFamilyOrigin(original,Metadata(r)),"family path refuses origin substitution");
   }
-  auto other=original; other.object_subtype="unrelated"; other.record.payload="not a startup definition";
+  auto other=original; other.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application; other.record.payload="not a startup definition";
   Check(!c::CatalogMetadataPreservesFamilyOrigin(original,other),"cannot morph binding into unrelated family");
   Check(c::CatalogMetadataPreservesFamilyOrigin(other,other),"unrelated configuration untouched");
 }

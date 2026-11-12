@@ -61,7 +61,7 @@ std::string Golden(const c::CatalogConstructionIntent& r){
 c::CatalogMetadataVersion Metadata(const c::CatalogConstructionIntent& r,p::Uuid row=f::Id(101)){
   auto m=f::Metadata(0,r.origin_transaction_uuid,f::Id(60),Golden(r));m.record.header.kind=c::CatalogRecordKind::audit_evidence;
   m.record.header.object_uuid={p::UuidKind::object,r.event_uuid};m.record.header.row_uuid={p::UuidKind::row,row};
-  m.object_subtype="node_construction_intent";m.audit_uuid=m.record.header.object_uuid;
+  m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::node_construction_intent;m.audit_uuid=m.record.header.object_uuid;
   m.default_name_uuid={};m.name_vector_uuid={};return m;
 }
 void Roundtrip(const c::CatalogConstructionIntent& r){
@@ -125,7 +125,7 @@ void Bindings(){
       !c::CatalogConstructionIntentMatchesDatabase(view,f::Id(200)),"native common/self-anchor/database binding");
   for(unsigned n=0;n<14;++n){auto bad=m;
     if(n==0)bad.record.header.kind=c::CatalogRecordKind::config_profile;if(n==1)bad.record.header.object_uuid.value=f::Id(200);
-    if(n==2)bad.object_subtype="other";if(n==3)bad.audit_uuid.value=bad.record.header.row_uuid.value;
+    if(n==2)bad.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;if(n==3)bad.audit_uuid.value=bad.record.header.row_uuid.value;
     if(n==4)bad.audit_uuid.value=v.operation_uuid;if(n==5)bad.creator_transaction_uuid.value=f::Id(201);
     if(n==6)bad.creator_local_transaction_id=2;if(n==7)bad.record.header.parent_uuid.value=f::Id(202);
     if(n==8)bad.owning_schema_uuid.kind=p::UuidKind::object;if(n==9)bad.authority_scope=c::CatalogAuthorityScope::cluster;

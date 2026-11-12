@@ -85,8 +85,8 @@ struct CatalogDefinitionDependencyComparison {
 // deletion of removed references: retained old versions still require them.
 inline CatalogDefinitionDependencyComparison CompareCatalogDefinitionDependencies(
     const CatalogMetadataVersionView& before, const CatalogMetadataVersionView& after) {
-  const bool table = before.object_subtype == "ordinary_persistent_table";
-  const bool column = before.object_subtype == "persistent_table_column";
+  const bool table = before.object_subtype == CatalogObjectSubtype::ordinary_persistent_table;
+  const bool column = before.object_subtype == CatalogObjectSubtype::persistent_table_column;
   if ((!table && !column) || (table ? !CatalogTableDefinitionPreservesOrigin(before,after)
                                    : !CatalogColumnDefinitionPreservesOrigin(before,after))) return {};
   CatalogDefinitionDependencyComparison out;

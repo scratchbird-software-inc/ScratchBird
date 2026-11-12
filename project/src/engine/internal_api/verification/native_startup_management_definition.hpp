@@ -52,7 +52,7 @@ inline NativeStartupManagementDefinition ResolveNativeStartupManagementDefinitio
   };
   NativeStartupManagementDefinition out;
   for(const auto& r:rows){const auto& m=r.row.metadata;
-    if(m.record.header.deleted||(!c::IsCatalogManagementDescriptorPayload(m.record.payload)&&m.object_subtype!="management_descriptor"))continue;
+    if(m.record.header.deleted||(!c::IsCatalogManagementDescriptorPayload(m.record.payload)&&m.object_subtype!=scratchbird::core::catalog::CatalogObjectSubtype::management_descriptor))continue;
     const auto value=c::DecodeCatalogManagementDescriptor(m.record.payload);
     if(!value.ok()||!active(r))return fail(E::invalid_descriptor,m.record.header.object_uuid.value);
     if(!out.descriptor_version_uuid.is_nil())return fail(E::duplicate_descriptor,m.record.header.object_uuid.value);

@@ -290,12 +290,12 @@ std::unique_ptr<Db> ProductionDb(unsigned index, u64 total_pages = 0) {
 // The crypto-inline policy body row of native_crypto_inline_private_key_policy_test,
 // alone in the unindexed role 4.
 const TypedUuid kSeedCreator{UuidKind::transaction, f::Id(5)};
-c::CatalogMetadataVersion SeedMetadata(const Uuid& object, unsigned row, std::string subtype, std::string payload) {
+c::CatalogMetadataVersion SeedMetadata(const Uuid& object, unsigned row, scratchbird::core::catalog::CatalogObjectSubtype subtype, std::string payload) {
   auto r = f::Metadata(0, kSeedCreator, f::Id(60), std::move(payload));
   r.record.header.kind = c::CatalogRecordKind::policy;
   r.record.header.object_uuid = {UuidKind::object, object};
   r.record.header.row_uuid = {UuidKind::row, f::Id(row)};
-  r.object_subtype = std::move(subtype);
+  r.object_subtype = subtype;
   r.default_name_uuid = {UuidKind::object, f::Id(row + 1000)};
   r.name_vector_uuid = {UuidKind::object, f::Id(row + 2000)};
   return r;
@@ -319,7 +319,7 @@ std::unique_ptr<Db> SeededDb(unsigned index) {
   b->profile = p.uuid;
   b->role = 4;
   db::NativeCreationCatalogSeed seed;
-  seed[3].push_back({SeedMetadata(f::Id(100), 101, "crypto_inline_private_key", SeedBody()), {}});
+  seed[3].push_back({SeedMetadata(f::Id(100), 101, scratchbird::core::catalog::CatalogObjectSubtype::crypto_inline_private_key, SeedBody()), {}});
   db::NativeFilespaceInitializationRequest request;
   u::StandaloneUuidV7Issuer issuer({f::Id(1), f::Id(10)}, {{}, 0, 1000});
   request.bootstrap = {f::Id(1), f::Id(2), p.uuid, d::kNativeBootstrapIntegrityProfile, {}, p.page_size_bytes, 1, 0, 1, 7};
@@ -342,7 +342,7 @@ std::unique_ptr<Db> SeededDb(unsigned index) {
     std::array<byte, c::kCatalogConstructionIntentMaxBytes> bytes{};
     const auto encoded = c::EncodeCatalogConstructionIntentInto(*audit.event, bytes);
     Check(encoded.ok(), "the construction intent encodes");
-    auto m = SeedMetadata(audit.event->event_uuid, 0, "node_construction_intent",
+    auto m = SeedMetadata(audit.event->event_uuid, 0, scratchbird::core::catalog::CatalogObjectSubtype::node_construction_intent,
                           std::string(reinterpret_cast<const char*>(encoded.bytes.data()), encoded.bytes.size()));
     m.record.header.kind = c::CatalogRecordKind::audit_evidence;
     m.record.header.row_uuid = audit.row_uuid;

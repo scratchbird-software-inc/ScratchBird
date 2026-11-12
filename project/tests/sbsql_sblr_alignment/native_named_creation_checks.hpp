@@ -40,7 +40,7 @@ void NativeNamedCreationChecks(const db::NativeCreationCatalogSeed& supplied) {
       e.object_uuid=definition.record.header.object_uuid;e.object_kind=definition.record.header.kind;
       e.security_policy_uuid=definition.security_policy_uuid;e.language_uuid=c::CatalogLanguageIdentity(alias?c::kCatalogLanguage_de_DE:c::kCatalogLanguage_en_US);
       e.name_class=alias?c::CatalogNameClass::alias:c::CatalogNameClass::primary;
-      e.raw_name_text=e.display_name=(alias?"de_":"en_")+definition.object_subtype+"_"+std::to_string(at);
+      e.raw_name_text=e.display_name=(alias?"de_":"en_")+std::to_string(static_cast<unsigned>(definition.object_subtype))+"_"+std::to_string(at);
       e.default_for_object=!alias;e.default_for_language=true;
       // Supplied fixture profile-derived material, not production admission.
       e.normalized_lookup_key.assign(e.raw_name_text.begin(),e.raw_name_text.end());

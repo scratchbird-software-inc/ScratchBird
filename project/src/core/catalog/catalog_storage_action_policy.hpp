@@ -59,7 +59,7 @@ inline bool Valid(const CatalogStorageActionPolicy& r){
     r.maximum_retained_image_bytes>=768&&r.cooldown_microseconds<=86400000000ULL&&
     r.maximum_runtime_microseconds&&r.maximum_runtime_microseconds<=86400000000ULL;
 }
-inline bool Family(const CatalogMetadataVersionView& r){return r.object_subtype=="storage_action"||IsCatalogStorageActionPolicyPayload(r.record.payload);}
+inline bool Family(const CatalogMetadataVersionView& r){return r.object_subtype==CatalogObjectSubtype::storage_action||IsCatalogStorageActionPolicyPayload(r.record.payload);}
 }
 inline constexpr CatalogValueSchemaView CatalogStorageActionPolicySchemaView() {
   using T = CatalogValueType;
@@ -127,7 +127,7 @@ inline bool CatalogStorageActionPolicyMatchesHeader(const CatalogTypedRecord& r)
   return CatalogStorageActionPolicyMatchesHeader(BorrowCatalogTypedRecord(r));
 }
 inline bool CatalogStorageActionPolicyMatchesMetadata(const CatalogMetadataVersionView& m){
-  if(!CatalogStorageActionPolicyMatchesHeader(m.record)||m.object_subtype!="storage_action"||
+  if(!CatalogStorageActionPolicyMatchesHeader(m.record)||m.object_subtype!=CatalogObjectSubtype::storage_action||
       m.authority_scope!=CatalogAuthorityScope::local||!storage_action_policy_detail::Identity(m.owning_schema_uuid,UuidKind::schema)||
       !storage_action_policy_detail::Identity(m.record.header.parent_uuid,UuidKind::object)||m.owning_schema_uuid.value!=m.record.header.parent_uuid.value||
       !storage_action_policy_detail::Identity(m.default_name_uuid,UuidKind::object)||!storage_action_policy_detail::Identity(m.name_vector_uuid,UuidKind::object)||
@@ -222,7 +222,7 @@ inline bool CatalogStorageActionAttachmentMatchesHeader(const CatalogTypedRecord
   return CatalogStorageActionAttachmentMatchesHeader(BorrowCatalogTypedRecord(r));
 }
 inline bool CatalogStorageActionAttachmentMatchesMetadata(const CatalogMetadataVersionView& m){
-  if(!CatalogStorageActionAttachmentMatchesHeader(m.record)||m.object_subtype!="storage_action_attachment"||
+  if(!CatalogStorageActionAttachmentMatchesHeader(m.record)||m.object_subtype!=CatalogObjectSubtype::storage_action_attachment||
       m.authority_scope!=CatalogAuthorityScope::local||!storage_action_policy_detail::Identity(m.owning_schema_uuid,UuidKind::schema)||
       !storage_action_policy_detail::Identity(m.record.header.parent_uuid,UuidKind::object)||m.owning_schema_uuid.value!=m.record.header.parent_uuid.value||
       !storage_action_policy_detail::Identity(m.default_name_uuid,UuidKind::object)||!storage_action_policy_detail::Identity(m.name_vector_uuid,UuidKind::object)||
@@ -232,7 +232,7 @@ inline bool CatalogStorageActionAttachmentMatchesMetadata(const CatalogMetadataV
     (m.definition_version!=1||(r.origin_transaction_uuid.value==m.creator_transaction_uuid.value&&r.origin_local_transaction_id==m.creator_local_transaction_id));
 }
 inline bool CatalogStorageActionAttachmentPreservesOrigin(const CatalogMetadataVersionView& a,const CatalogMetadataVersionView& b){
-  const auto family=[](const auto& m){return m.object_subtype=="storage_action_attachment"||IsCatalogStorageActionAttachmentPayload(m.record.payload);};
+  const auto family=[](const auto& m){return m.object_subtype==CatalogObjectSubtype::storage_action_attachment||IsCatalogStorageActionAttachmentPayload(m.record.payload);};
   if(!family(a)&&!family(b))return true;
   if(!CatalogStorageActionAttachmentMatchesMetadata(a)||!CatalogStorageActionAttachmentMatchesMetadata(b))return false;
   const auto x=DecodeCatalogStorageActionAttachment(a.record.payload),y=DecodeCatalogStorageActionAttachment(b.record.payload);

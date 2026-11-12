@@ -173,7 +173,7 @@ Names NameEveryObject(const std::vector<db::NativeInitialDefinitionIdentity>& en
   out.identities.reserve(5 * enumerated.size());
   for (unsigned at = 0; at < enumerated.size(); ++at) {
     // Mixed case on purpose: the folded lane must differ from the text.
-    out.text.push_back("Bootstrap_" + enumerated[at].object_subtype + "_" + std::to_string(at));
+    out.text.push_back("Bootstrap_" + std::to_string(static_cast<unsigned>(enumerated[at].object_subtype)) + "_" + std::to_string(at));
     for (unsigned slot = 0; slot < 5; ++slot)
       out.identities.push_back(Id(identity_base + 5 * at + slot));
   }
@@ -227,13 +227,13 @@ int main() {
   {
     unsigned subtypes[6]{};
     for (const auto& row : enumerated.definitions) {
-      subtypes[0] += row.object_subtype == "bootstrap_policy_pack";
-      subtypes[1] += row.object_subtype == "bootstrap_security_provider";
-      subtypes[2] += row.object_subtype == "bootstrap_policy_profile";
-      subtypes[3] += row.object_subtype == "memory_configuration";
-      subtypes[4] += row.object_subtype == "agent_runtime_authority";
+      subtypes[0] += row.object_subtype == scratchbird::core::catalog::CatalogObjectSubtype::bootstrap_policy_pack;
+      subtypes[1] += row.object_subtype == scratchbird::core::catalog::CatalogObjectSubtype::bootstrap_security_provider;
+      subtypes[2] += row.object_subtype == scratchbird::core::catalog::CatalogObjectSubtype::bootstrap_policy_profile;
+      subtypes[3] += row.object_subtype == scratchbird::core::catalog::CatalogObjectSubtype::memory_configuration;
+      subtypes[4] += row.object_subtype == scratchbird::core::catalog::CatalogObjectSubtype::agent_runtime_authority;
       subtypes[5] += c::IsCatalogSecurityRecordKind(row.kind) &&
-                     row.object_subtype == c::CatalogRecordKindName(row.kind);
+                     row.object_subtype == c::CatalogSecuritySubtype(row.kind);
     }
     Check(subtypes[0] == 1, "exactly one policy pack is enumerated");
     Check(subtypes[1] == 12, "every security provider is enumerated");
@@ -252,7 +252,7 @@ int main() {
     Check(std::adjacent_find(identities.begin(), identities.end()) == identities.end(),
           "every enumerated object identity is distinct");
     const auto binding = std::find_if(enumerated.definitions.begin(), enumerated.definitions.end(),
-        [](const auto& row) { return row.object_subtype == "agent_runtime_authority"; });
+        [](const auto& row) { return row.object_subtype == scratchbird::core::catalog::CatalogObjectSubtype::agent_runtime_authority; });
     Check(binding != enumerated.definitions.end() &&
           binding->object_uuid == Service().runtime_binding_uuid,
           "the enumerated binding identity is the one the caller supplied");
@@ -289,8 +289,8 @@ int main() {
       Check(row.metadata.record.header.kind == c::CatalogRecordKind::localized_name,
             "every name row is a localized_name version");
       Check(row.name.has_value(), "every name row carries a name payload");
-      vectors += row.metadata.object_subtype == "name_vector";
-      entries += row.metadata.object_subtype == "name_entry";
+      vectors += row.metadata.object_subtype == scratchbird::core::catalog::CatalogObjectSubtype::name_vector;
+      entries += row.metadata.object_subtype == scratchbird::core::catalog::CatalogObjectSubtype::name_entry;
     }
     Check(vectors == 731, "one name vector per object");
     Check(entries == 731, "one name entry per object");
@@ -361,7 +361,7 @@ int main() {
     // only resolvable if its metadata and payload agree.
     const auto binding = std::find_if(records.records->definitions.begin(),
         records.records->definitions.end(),
-        [](const auto& row) { return row.metadata.object_subtype == "agent_runtime_authority"; });
+        [](const auto& row) { return row.metadata.object_subtype == scratchbird::core::catalog::CatalogObjectSubtype::agent_runtime_authority; });
     Check(binding != records.records->definitions.end(),
           "the assembled set contains the runtime authority binding");
     Check(c::CatalogRuntimeAuthorityBindingMatchesHeader(binding->metadata.record),
@@ -627,9 +627,9 @@ int main() {
     unsigned pack = 0, memory = 0;
     for (const auto& row : policy_enumeration.definitions) {
       no_security = no_security && !c::IsCatalogSecurityRecordKind(row.kind) &&
-                    row.object_subtype != "agent_runtime_authority";
-      pack += row.object_subtype == "bootstrap_policy_pack";
-      memory += row.object_subtype == "memory_configuration";
+                    row.object_subtype != scratchbird::core::catalog::CatalogObjectSubtype::agent_runtime_authority;
+      pack += row.object_subtype == scratchbird::core::catalog::CatalogObjectSubtype::bootstrap_policy_pack;
+      memory += row.object_subtype == scratchbird::core::catalog::CatalogObjectSubtype::memory_configuration;
     }
     Check(no_security,
           "no security record and no runtime authority binding is enumerated without "

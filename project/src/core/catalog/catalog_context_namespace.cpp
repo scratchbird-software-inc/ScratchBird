@@ -29,7 +29,7 @@ bool Identity(const TypedUuid& id, UuidKind kind, const Uuid& expected) {
   return id.kind == kind && id.value == expected && uuid::IsEngineIdentityUuid(id.value);
 }
 bool Family(const CatalogMetadataVersionView& m) {
-  return m.object_subtype == "application_context_namespace" ||
+  return m.object_subtype == CatalogObjectSubtype::application_context_namespace ||
       IsCatalogContextNamespacePayload(m.record.payload);
 }
 bool HeaderMatches(const CatalogTypedRecordView& header, const CatalogContextNamespace& r) {
@@ -38,7 +38,7 @@ bool HeaderMatches(const CatalogTypedRecordView& header, const CatalogContextNam
       Identity(header.header.parent_uuid,UuidKind::object,r.schema_uuid);
 }
 bool MetadataMatches(const CatalogMetadataVersionView& m, const CatalogContextNamespace& r) {
-  return m.object_subtype == "application_context_namespace" &&
+  return m.object_subtype == CatalogObjectSubtype::application_context_namespace &&
       m.authority_scope == CatalogAuthorityScope::local && HeaderMatches(m.record,r) &&
       r.generation == m.definition_version &&
       Identity(m.owning_schema_uuid,UuidKind::schema,r.schema_uuid) &&

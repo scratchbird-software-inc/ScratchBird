@@ -157,7 +157,7 @@ void Tests() {
   const auto encoded=c::EncodeCatalogMetadataVersion(metadata);Check(encoded.ok(),"owning native memory envelope encoded");
   const auto reopened=c::DecodeCatalogMetadataVersion(encoded.bytes);Check(reopened.ok()&&reopened.record.record.payload==metadata.record.payload,"complete native envelope roundtrip");
   for(unsigned scenario=0;scenario<7;++scenario){auto bad=metadata;
-    if(scenario==0)bad.object_subtype="other";if(scenario==1)bad.record.header.kind=c::CatalogRecordKind::policy;
+    if(scenario==0)bad.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;if(scenario==1)bad.record.header.kind=c::CatalogRecordKind::policy;
     if(scenario==2)bad.record.header.object_uuid.value=f::Id(100);if(scenario==3)bad.default_name_uuid={};
     if(scenario==4)bad.name_vector_uuid={};if(scenario==5)bad.owning_schema_uuid={};if(scenario==6)bad.definition_version=2;
     heap_denied=true;const auto size=c::CatalogMetadataVersionEncodedBytes(c::BorrowCatalogMetadataVersion(bad));heap_denied=false;

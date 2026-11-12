@@ -143,7 +143,7 @@ inline bool CatalogRuntimeAuthorityBindingMatchesHeader(const CatalogTypedRecord
 inline bool CatalogRuntimeAuthorityBindingMatchesMetadata(const CatalogMetadataVersionView& m) {
   using runtime_binding_detail::Identity;
   if (!CatalogRuntimeAuthorityBindingMatchesHeader(m.record) ||
-      m.object_subtype != "agent_runtime_authority" || m.authority_scope != CatalogAuthorityScope::local ||
+      m.object_subtype != CatalogObjectSubtype::agent_runtime_authority || m.authority_scope != CatalogAuthorityScope::local ||
       m.visibility != CatalogVisibilityClass::internal_only ||
       !Identity(m.owning_schema_uuid, UuidKind::schema) ||
       !Identity(m.record.header.parent_uuid, UuidKind::object) ||
@@ -162,7 +162,7 @@ inline bool CatalogRuntimeAuthorityBindingMatchesMetadata(const CatalogMetadataV
 inline bool CatalogRuntimeAuthorityBindingPreservesOrigin(
     const CatalogMetadataVersionView& a, const CatalogMetadataVersionView& b) {
   const auto family = [](const auto& m) {
-    return m.object_subtype == "agent_runtime_authority" || IsCatalogRuntimeAuthorityBindingPayload(m.record.payload);
+    return m.object_subtype == CatalogObjectSubtype::agent_runtime_authority || IsCatalogRuntimeAuthorityBindingPayload(m.record.payload);
   };
   if (!family(a) && !family(b)) return true;
   if (!CatalogRuntimeAuthorityBindingMatchesMetadata(a) || !CatalogRuntimeAuthorityBindingMatchesMetadata(b)) return false;

@@ -8125,7 +8125,7 @@ std::string NativeDefinitionReferenceName(const Uuid& identity,CatalogRecordKind
 struct NativePolicyFamilyDefinition {
   Uuid identity;
   CatalogRecordKind kind;
-  std::string_view subtype;
+  scratchbird::core::catalog::CatalogObjectSubtype subtype;
   std::string payload;
 };
 struct NativePolicyFamilyBuild {
@@ -8187,7 +8187,7 @@ NativeInitialPolicyError BuildNativePolicyFamilyDefinitions(
     return found->second;
   };
   std::vector<scratchbird::core::platform::byte> backing(c::kCatalogEvidencePolicyMaxBytes);
-  const auto emit=[&](const Uuid& id,CatalogRecordKind kind,std::string_view subtype,const c::CatalogValueEncodeIntoResult& encoded) {
+  const auto emit=[&](const Uuid& id,CatalogRecordKind kind,scratchbird::core::catalog::CatalogObjectSubtype subtype,const c::CatalogValueEncodeIntoResult& encoded) {
     if(!resolved||!encoded.ok())return false;
     out->definitions.push_back({id,kind,subtype,std::string(encoded.bytes.begin(),encoded.bytes.end())});
     return true;
@@ -8211,7 +8211,7 @@ NativeInitialPolicyError BuildNativePolicyFamilyDefinitions(
     if(decision)d.default_decision=*decision;
     if(!evidence.empty())d.evidence_profile_uuid=ref(evidence);
     d.cache_invalidation_mask=invalidation;
-    return emit(id,CatalogRecordKind::policy,"policy_descriptor",c::EncodeCatalogPolicyDescriptorInto(d,backing));
+    return emit(id,CatalogRecordKind::policy,c::CatalogObjectSubtype::policy_descriptor,c::EncodeCatalogPolicyDescriptorInto(d,backing));
   };
   for(const auto* family:{&s.verification_descriptors,&s.transaction_descriptors}) {
     const auto& identities=family==&s.verification_descriptors?ids.verification_descriptors:ids.transaction_descriptors;
@@ -8232,7 +8232,7 @@ NativeInitialPolicyError BuildNativePolicyFamilyDefinitions(
     if(!seed.access_policy.empty())b.access_policy_uuid=ref(seed.access_policy);
     if(seed.mark_salvaged_output)b.flags|=c::kVerificationPolicyMarkSalvagedOutput;
     origin(b);
-    if(!emit(b.body_uuid,CatalogRecordKind::policy,"verification_policy_body",c::EncodeCatalogVerificationPolicyInto(b,backing)))
+    if(!emit(b.body_uuid,CatalogRecordKind::policy,c::CatalogObjectSubtype::verification_policy_body,c::EncodeCatalogVerificationPolicyInto(b,backing)))
       return E::invalid_definition;
   }
   for(std::size_t i=0;i<s.evidence_bodies.size();++i) {
@@ -8246,7 +8246,7 @@ NativeInitialPolicyError BuildNativePolicyFamilyDefinitions(
     b.storage_filespace_uuid=ids.primary_filespace_uuid;
     b.maximum_record_bytes=seed.maximum_record_bytes;b.maximum_batch_bytes=seed.maximum_batch_bytes;
     origin(b);
-    if(!emit(b.body_uuid,CatalogRecordKind::policy,"evidence_policy_body",c::EncodeCatalogEvidencePolicyInto(b,backing)))
+    if(!emit(b.body_uuid,CatalogRecordKind::policy,c::CatalogObjectSubtype::evidence_policy_body,c::EncodeCatalogEvidencePolicyInto(b,backing)))
       return E::invalid_definition;
   }
   for(std::size_t i=0;i<s.authorization_bodies.size();++i) {
@@ -8258,7 +8258,7 @@ NativeInitialPolicyError BuildNativePolicyFamilyDefinitions(
     b.maximum_records=seed.maximum_records;b.maximum_membership_depth=seed.maximum_membership_depth;
     b.maximum_work=seed.maximum_work;
     origin(b);
-    if(!emit(b.body_uuid,CatalogRecordKind::policy,"authorization_policy_body",c::EncodeCatalogAuthorizationPolicyInto(b,backing)))
+    if(!emit(b.body_uuid,CatalogRecordKind::policy,c::CatalogObjectSubtype::authorization_policy_body,c::EncodeCatalogAuthorizationPolicyInto(b,backing)))
       return E::invalid_definition;
   }
   for(std::size_t i=0;i<s.transaction_bodies.size();++i) {
@@ -8274,7 +8274,7 @@ NativeInitialPolicyError BuildNativePolicyFamilyDefinitions(
     b.maximum_active_transactions=seed.maximum_active_transactions;
     b.lock_policy_uuid=ref(seed.lock_policy);b.evidence_policy_uuid=ref(seed.evidence_policy);
     origin(b);
-    if(!emit(b.body_uuid,CatalogRecordKind::policy,"transaction_policy_body",c::EncodeCatalogTransactionPolicyInto(b,backing)))
+    if(!emit(b.body_uuid,CatalogRecordKind::policy,c::CatalogObjectSubtype::transaction_policy_body,c::EncodeCatalogTransactionPolicyInto(b,backing)))
       return E::invalid_definition;
   }
   for(std::size_t i=0;i<s.lock_bodies.size();++i) {
@@ -8286,7 +8286,7 @@ NativeInitialPolicyError BuildNativePolicyFamilyDefinitions(
     b.deadlock_detection_interval_microseconds=seed.deadlock_detection_interval_microseconds;
     b.evidence_policy_uuid=ref(seed.evidence_policy);
     origin(b);
-    if(!emit(b.body_uuid,CatalogRecordKind::policy,"lock_policy_body",c::EncodeCatalogLockPolicyInto(b,backing)))
+    if(!emit(b.body_uuid,CatalogRecordKind::policy,c::CatalogObjectSubtype::lock_policy_body,c::EncodeCatalogLockPolicyInto(b,backing)))
       return E::invalid_definition;
   }
   for(std::size_t i=0;i<s.isolation_profiles.size();++i) {
@@ -8297,13 +8297,13 @@ NativeInitialPolicyError BuildNativePolicyFamilyDefinitions(
     b.metadata_visibility=seed.metadata_visibility;
     b.wait_policy_uuid=ref(seed.wait_policy);b.deadlock_policy_uuid=ref(seed.deadlock_policy);
     origin(b);
-    if(!emit(b.profile_uuid,CatalogRecordKind::policy,"isolation_profile",c::EncodeCatalogIsolationProfileInto(b,backing)))
+    if(!emit(b.profile_uuid,CatalogRecordKind::policy,c::CatalogObjectSubtype::isolation_profile,c::EncodeCatalogIsolationProfileInto(b,backing)))
       return E::invalid_definition;
   }
   for(std::size_t i=0;i<s.management_profiles.size();++i) {
     c::CatalogManagementProfile p;p.profile_uuid=ids.management_profiles[i];p.database_uuid=database_uuid;p.generation=1;
     p.code=s.management_profiles[i];origin(p);
-    if(!emit(p.profile_uuid,CatalogRecordKind::management_operation,"management_profile",
+    if(!emit(p.profile_uuid,CatalogRecordKind::management_operation,c::CatalogObjectSubtype::management_profile,
           c::EncodeCatalogManagementProfileInto(p,backing)))return E::invalid_definition;
   }
   for(std::size_t i=0;i<s.management_descriptors.size();++i) {
@@ -8318,7 +8318,7 @@ NativeInitialPolicyError BuildNativePolicyFamilyDefinitions(
       d.profiles[n]=ids.management_profiles[static_cast<std::size_t>(found-s.management_profiles.begin())];
     }
     origin(d);
-    if(!emit(d.descriptor_uuid,CatalogRecordKind::management_operation,"management_descriptor",
+    if(!emit(d.descriptor_uuid,CatalogRecordKind::management_operation,c::CatalogObjectSubtype::management_descriptor,
           c::EncodeCatalogManagementDescriptorInto(d,backing)))return E::invalid_definition;
   }
   for(std::size_t i=0;i<s.identifier_profiles.size();++i) {
@@ -8328,14 +8328,14 @@ NativeInitialPolicyError BuildNativePolicyFamilyDefinitions(
     p.storage_display_mode=seed.storage_display_mode;p.reserved_word_behavior=seed.reserved_word_behavior;
     p.length_unit=seed.length_unit;p.dialect_mode_flags=seed.dialect_mode_flags;
     p.origin_transaction_uuid=tx;p.origin_local_transaction_id=kBootstrapCatalogTransactionId;
-    if(!emit(p.profile_uuid,CatalogRecordKind::config_profile,"identifier_resolution_profile",
+    if(!emit(p.profile_uuid,CatalogRecordKind::config_profile,c::CatalogObjectSubtype::identifier_resolution_profile,
           c::EncodeCatalogIdentifierProfileInto(p,backing)))return E::invalid_definition;
   }
   for(std::size_t i=0;i<s.dialect_profiles.size();++i) {
     c::CatalogNamingDialectProfile p;p.profile_uuid=ids.dialect_profiles[i];p.database_uuid=database_uuid;
     p.identifier_profile_uuid=ref(s.dialect_profiles[i].identifier_profile);
     p.generation=p.identifier_profile_generation=1;origin(p);
-    if(!emit(p.profile_uuid,CatalogRecordKind::config_profile,"naming_dialect_profile",
+    if(!emit(p.profile_uuid,CatalogRecordKind::config_profile,c::CatalogObjectSubtype::naming_dialect_profile,
           c::EncodeCatalogNamingDialectProfileInto(p,backing)))return E::invalid_definition;
   }
   {
@@ -8350,7 +8350,7 @@ NativeInitialPolicyError BuildNativePolicyFamilyDefinitions(
     for(const auto& kind:kinds)b.classes[b.class_count++]={kind.kind,group};
     std::sort(b.classes.begin(),b.classes.begin()+static_cast<std::ptrdiff_t>(b.class_count),[](const auto& x,const auto& y){
       return static_cast<scratchbird::core::platform::u16>(x.kind)<static_cast<scratchbird::core::platform::u16>(y.kind);});
-    if(!emit(b.body_uuid,CatalogRecordKind::policy,"naming_collision_policy_body",
+    if(!emit(b.body_uuid,CatalogRecordKind::policy,c::CatalogObjectSubtype::naming_collision_policy_body,
           c::EncodeCatalogNamingCollisionPolicyInto(b,backing)))return E::invalid_definition;
     // A collision descriptor governs catalog metadata: its class is fixed.
     if(!descriptor(ids.collision_descriptors[0].policy_uuid,ids.collision_descriptors[0].version_uuid,
@@ -8557,9 +8557,9 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
           request.construction_transaction,bootstrap->principal_uuid,seen,&*family_build);
       if(built!=E::none)return fail(built);
     }
-    struct Definition {CatalogRecordKind kind;std::string_view subtype;std::string payload;};
+    struct Definition {CatalogRecordKind kind;scratchbird::core::catalog::CatalogObjectSubtype subtype;std::string payload;};
     std::map<Uuid,Definition> definitions;
-    const auto append=[&]<class Record>(const Uuid& identity,CatalogRecordKind kind,std::string_view subtype,const Record& record) {
+    const auto append=[&]<class Record>(const Uuid& identity,CatalogRecordKind kind,scratchbird::core::catalog::CatalogObjectSubtype subtype,const Record& record) {
       std::array<scratchbird::core::platform::byte,2048> backing;
       const auto encoded=[&] {
         if constexpr(std::is_same_v<Record,c::CatalogBootstrapPolicyPack>)return c::EncodeCatalogBootstrapPolicyPackInto(record,backing);
@@ -8571,10 +8571,10 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
           std::string(encoded.bytes.begin(),encoded.bytes.end())}).second;
     };
     const auto native_pack=NativePolicyPackDefinition(pack,request.construction_transaction);
-    if(!native_pack||!append(native_pack->policy_pack_uuid,CatalogRecordKind::policy,"bootstrap_policy_pack",*native_pack))
+    if(!native_pack||!append(native_pack->policy_pack_uuid,CatalogRecordKind::policy,c::CatalogObjectSubtype::bootstrap_policy_pack,*native_pack))
       return fail(E::invalid_definition);
     for(const auto& provider:pack.providers)
-      if(!append(provider.provider_uuid,CatalogRecordKind::policy,"bootstrap_security_provider",
+      if(!append(provider.provider_uuid,CatalogRecordKind::policy,c::CatalogObjectSubtype::bootstrap_security_provider,
           NativePolicyProviderDefinition(pack,provider,request.construction_transaction)))return fail(E::invalid_definition);
     for(const auto& profile:pack.profiles) {
       auto native=NativePolicyProfileDefinition(pack,profile,request.construction_transaction,request.memory_configuration_uuid);
@@ -8584,10 +8584,10 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
         if(native.resource_definition_uuid)return fail(E::invalid_definition);
         native.resource_definition_uuid=resource;native.resource_definition_generation=1;
       }
-      if(!append(profile.profile_uuid,CatalogRecordKind::policy,"bootstrap_policy_profile",native))
+      if(!append(profile.profile_uuid,CatalogRecordKind::policy,c::CatalogObjectSubtype::bootstrap_policy_profile,native))
         return fail(E::invalid_definition);
     }
-    if(!append(request.memory_configuration_uuid,CatalogRecordKind::config_profile,"memory_configuration",
+    if(!append(request.memory_configuration_uuid,CatalogRecordKind::config_profile,c::CatalogObjectSubtype::memory_configuration,
         NativeMemoryConfigurationDefinition(pack,request.memory_configuration_uuid,request.construction_transaction)))
       return fail(E::invalid_definition);
     if(family_build)for(auto& family:family_build->definitions)
@@ -8599,7 +8599,7 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
         const auto encoded=c::EncodeCatalogSecurityRecord(record);
         const auto identity=record.Identity(c::CatalogSecurityPrimaryIdentityName(record.kind));
         return encoded.ok()&&definitions.emplace(identity,Definition{record.kind,
-            c::CatalogRecordKindName(record.kind),std::string(encoded.bytes.begin(),encoded.bytes.end())}).second;
+            c::CatalogSecuritySubtype(record.kind),std::string(encoded.bytes.begin(),encoded.bytes.end())}).second;
       };
       for(const auto& role:pack.roles)
         if(!append_security(NativeImportedRoleDefinition(pack,role,request.construction_transaction)))return fail(E::invalid_definition);
@@ -8643,7 +8643,7 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
         binding.origin_transaction_uuid=request.construction_transaction;binding.origin_local_transaction_id=1;
         const auto encoded=c::EncodeCatalogRuntimeAuthorityBinding(binding);
         if(!encoded.ok()||!definitions.emplace(binding.binding_uuid,Definition{CatalogRecordKind::config_profile,
-            "agent_runtime_authority",std::string(encoded.bytes.begin(),encoded.bytes.end())}).second)
+            c::CatalogObjectSubtype::agent_runtime_authority,std::string(encoded.bytes.begin(),encoded.bytes.end())}).second)
           return fail(E::duplicate_identity);
       }
       // SEARCH_KEY: SB_NATIVE_CREATE_AGENT_PRINCIPALS. Same records legacy create
@@ -8679,7 +8679,7 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
       enumeration->definitions.clear();
       enumeration->definitions.reserve(definitions.size());
       for(const auto& [identity,definition]:definitions)
-        enumeration->definitions.push_back({identity,definition.kind,std::string(definition.subtype)});
+        enumeration->definitions.push_back({identity,definition.kind,definition.subtype});
       NativeInitialPolicyResult enumerated;enumerated.error=E::none;return enumerated;
     }
 
@@ -8755,7 +8755,7 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
         input.name_entry_row_uuid=seed.fresh_identities[issued+4];
         issued+=5;
         input.definition.kind=definition.kind;
-        input.definition.object_subtype=std::string(definition.subtype);
+        input.definition.object_subtype=definition.subtype;
         input.definition.owner_principal_uuid=seed.owner_principal_uuid;
         input.definition.audit_object_uuid=seed.audit_object_uuid;
         input.definition.security_policy_uuid=seed.security_policy_uuid;
@@ -9131,8 +9131,8 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
     std::vector<NativeInitialDefinitionName> names;names.reserve(listed.definitions.size());
     std::vector<Uuid> fresh;fresh.reserve(5*listed.definitions.size());
     for(const auto& definition:listed.definitions) {
-      const bool security=c::IsCatalogSecurityRecordKind(definition.kind)||definition.object_subtype=="agent_runtime_authority"||
-          definition.object_subtype=="bootstrap_security_provider";
+      const bool security=c::IsCatalogSecurityRecordKind(definition.kind)||definition.object_subtype==scratchbird::core::catalog::CatalogObjectSubtype::agent_runtime_authority||
+          definition.object_subtype==scratchbird::core::catalog::CatalogObjectSubtype::bootstrap_security_provider;
       const auto schema=security?sys_security:definition.kind==c::CatalogRecordKind::management_operation?sys_management:sys_configuration;
       names.push_back({definition.object_uuid,schema,{}});
       for(unsigned n=0;n<5;++n)fresh.push_back(issue_kind(UuidKind::object));
@@ -9162,14 +9162,14 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
     // One named unit per object, built by the same builder the assembler uses.
     std::deque<BootstrapNamedCreationUnit> units;
     bool units_ok=true;
-    const auto unit=[&](const Uuid& object,CatalogRecordKind kind,std::string_view subtype,const Uuid& owning_schema,
+    const auto unit=[&](const Uuid& object,CatalogRecordKind kind,scratchbird::core::catalog::CatalogObjectSubtype subtype,const Uuid& owning_schema,
         std::optional<Uuid> root_parent,std::string name)->BootstrapNamedCreationUnit* {
       BootstrapNamedCreationUnitInput input;
       auto& d=input.definition;
       d.object_uuid=object;d.row_uuid=issue_kind(UuidKind::row);
       d.name_vector_uuid=issue_kind(UuidKind::object);d.default_name_entry_uuid=issue_kind(UuidKind::object);
       input.name_vector_row_uuid=issue_kind(UuidKind::row);input.name_entry_row_uuid=issue_kind(UuidKind::row);
-      d.kind=kind;d.object_subtype=std::string(subtype);
+      d.kind=kind;d.object_subtype=subtype;
       d.owner_principal_uuid=bootstrap.principal_uuid;d.audit_object_uuid=audit_object;
       d.security_policy_uuid=service_identity.policy_uuid;d.owning_schema_uuid=owning_schema;d.creator_transaction_uuid=tx;
       if(root_parent){d.root_placement=true;d.root_parent_uuid=*root_parent;}
@@ -9185,8 +9185,8 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
     const auto uuid_text=[](const Uuid& id){return scratchbird::core::uuid::UuidToString(id);};
 
     // Database and primary filespace (filespace_0, owner 2026-10-30).
-    auto* database_unit=unit(database_object,CatalogRecordKind::database,"database",{},Uuid{},std::string(request.database_name));
-    auto* filespace_unit=unit(filespace_object,CatalogRecordKind::filespace,"filespace",{},database_object,"filespace_0");
+    auto* database_unit=unit(database_object,CatalogRecordKind::database,c::CatalogObjectSubtype::database,{},Uuid{},std::string(request.database_name));
+    auto* filespace_unit=unit(filespace_object,CatalogRecordKind::filespace,c::CatalogObjectSubtype::filespace,{},database_object,"filespace_0");
     if(!units_ok)return fail(E::database_assembly);
     database_unit->Bind();filespace_unit->Bind();
     NativeInitialDatabaseRequest database_request{&construction,request.datatype_cohort,*language,
@@ -9206,7 +9206,7 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
     for(std::size_t i=0;i<tree.size();++i) {
       const auto& node=tree[i];
       const bool root=node.parent<0;
-      schema_units[i]=unit(schema_objects[i],CatalogRecordKind::schema,c::CatalogSchemaTypeName(node.type),
+      schema_units[i]=unit(schema_objects[i],CatalogRecordKind::schema,c::CatalogSchemaSubtype(node.type),
           root?Uuid{}:schema_objects[node.parent],root?std::optional<Uuid>{database_object}:std::nullopt,std::string(node.label));
       if(!units_ok)return fail(E::schema_assembly);
       auto& s=schema_definitions[i];
@@ -9248,7 +9248,7 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
         if(!encoded.ok())return fail(E::agent_assembly);
         const bool is_policy=declaration.kind==agent_catalog::AgentBootstrapDefinitionKind::policy;
         auto* u=unit(declaration_ids[i],is_policy?CatalogRecordKind::policy:CatalogRecordKind::config_profile,
-            is_policy?"agent_policy":"agent_registration",sys_agents,std::nullopt,uuid_text(declaration_ids[i]));
+            is_policy?c::CatalogObjectSubtype::agent_policy:c::CatalogObjectSubtype::agent_registration,sys_agents,std::nullopt,uuid_text(declaration_ids[i]));
         if(!units_ok)return fail(E::agent_assembly);
         u->definition.record.payload.assign(encoded.bytes.begin(),encoded.bytes.end());
         agent_units.push_back(u);
@@ -9325,7 +9325,7 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
       m.record.header.kind=CatalogRecordKind::audit_evidence;
       m.record.header.object_uuid={UuidKind::object,audit_object};m.record.header.row_uuid=audit.row_uuid;
       m.record.header.parent_uuid={UuidKind::object,sys_audit};m.owning_schema_uuid={UuidKind::schema,sys_audit};
-      m.object_subtype="node_construction_intent";m.default_name_uuid={};m.name_vector_uuid={};
+      m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::node_construction_intent;m.default_name_uuid={};m.name_vector_uuid={};
       m.audit_uuid=m.record.header.object_uuid;
       m.record.payload.assign(reinterpret_cast<const char*>(encoded.bytes.data()),encoded.bytes.size());
       seed[5].push_back({std::move(m),{}});

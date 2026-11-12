@@ -157,14 +157,14 @@ void CheckOrigin(c::CatalogRecordKind kind,unsigned physical_kind,unsigned prima
   m.creator_transaction_uuid={p::UuidKind::transaction,Origin()};m.creator_local_transaction_id=1;
   m.definition_version=m.schema_epoch=m.security_epoch=m.catalog_generation=m.dependency_generation=m.invalidation_generation=1;
   m.lifecycle=c::CatalogObjectLifecycle::active;m.status=c::CatalogObjectStatus::active;
-  m.object_subtype=c::CatalogRecordKindName(kind);
+  m.object_subtype=c::CatalogSecuritySubtype(kind);
   const auto encoded=c::EncodeCatalogMetadataVersion(m);
   Check(encoded.ok()&&c::DecodeCatalogMetadataVersion(encoded.bytes).ok(),"complete native security metadata refused");
   for(unsigned fault=0;fault<9;++fault){auto bad=m;
     if(fault==0)bad.creator_transaction_uuid.value=Identity(90);
     if(fault==1)bad.creator_local_transaction_id=2;
     if(fault==2)bad.creator_transaction_uuid.kind=p::UuidKind::object;
-    if(fault==3)bad.object_subtype="unregistered_security";
+    if(fault==3)bad.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;
     if(fault==4)bad.record.header.object_uuid.value=Identity(91);
     if(fault==5)bad.default_name_uuid={};
     if(fault==6)bad.security_policy_uuid={};

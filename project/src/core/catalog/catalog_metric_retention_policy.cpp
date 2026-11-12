@@ -24,7 +24,7 @@ bool Valid(const CatalogMetricRetentionPolicy& record) {
       record.origin_local_transaction_id != 0;
 }
 bool IsFamily(const CatalogMetadataVersionView& record) {
-  return record.object_subtype == "metric_retention" ||
+  return record.object_subtype == CatalogObjectSubtype::metric_retention ||
       IsCatalogMetricRetentionPolicyPayload(record.record.payload);
 }
 }  // namespace
@@ -161,7 +161,7 @@ bool CatalogMetricRetentionPolicyMatchesHeader(const CatalogTypedRecord& r) {
 }
 bool CatalogMetricRetentionPolicyMatchesMetadata(const CatalogMetadataVersionView& m) {
   if (!CatalogMetricRetentionPolicyMatchesHeader(m.record) ||
-      m.object_subtype != "metric_retention" ||
+      m.object_subtype != CatalogObjectSubtype::metric_retention ||
       !Identity(m.owning_schema_uuid, UuidKind::schema) ||
       !Identity(m.record.header.parent_uuid, UuidKind::object) ||
       m.owning_schema_uuid.value != m.record.header.parent_uuid.value ||

@@ -1236,7 +1236,7 @@ db::NativeCatalogLeafPage LeafExample(unsigned p=0) {
     metadata.definition_version=metadata.schema_epoch=metadata.security_epoch=metadata.catalog_generation=1;
     metadata.dependency_generation=metadata.invalidation_generation=1;
     metadata.lifecycle=catalog::CatalogObjectLifecycle::active; metadata.status=catalog::CatalogObjectStatus::active;
-    metadata.object_subtype="application";
+    metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;
     // Opaque common-envelope storage fixture, not an admitted SQL definition.
     metadata.record.payload="opaque-leaf-family-oracle";
     const auto encoded=catalog::EncodeCatalogMetadataVersion(metadata); Check(encoded.ok(),"leaf metadata fixture");

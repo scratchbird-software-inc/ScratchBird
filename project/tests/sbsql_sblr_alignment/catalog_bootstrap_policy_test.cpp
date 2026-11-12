@@ -121,7 +121,7 @@ void Tests() {
     const auto reopened=c::DecodeCatalogMetadataVersion(encoded.bytes);Check(reopened.ok()&&reopened.record.record.payload==payloads[i],"complete common byte roundtrip");
     for(unsigned bad=0;bad<8;++bad) {
       auto altered=m;if(bad==0)altered.record.header.object_uuid.value=f::Id(9999);
-      if(bad==1)altered.object_subtype="other";if(bad==2)altered.default_name_uuid={};
+      if(bad==1)altered.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;if(bad==2)altered.default_name_uuid={};
       if(bad==3)altered.name_vector_uuid={};if(bad==4)altered.owning_schema_uuid={};
       if(bad==5)altered.record.header.parent_uuid.value=f::Id(9999);if(bad==6)altered.definition_version=2;
       if(bad==7)altered.record.header.kind=c::CatalogRecordKind::config_profile;

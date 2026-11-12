@@ -60,14 +60,14 @@ inline NativeCatalogNameVerification VerifyNativeCatalogNameBindings(
         return fail(E::object_binding,id);
       // This registered immutable evidence family has no aliases. Nullable
       // names alone never exempt an ordinary catalog definition from lookup.
-      if(m.object_subtype=="node_construction_intent"||c::IsCatalogConstructionIntentPayload(m.record.payload)){
+      if(m.object_subtype==scratchbird::core::catalog::CatalogObjectSubtype::node_construction_intent||c::IsCatalogConstructionIntentPayload(m.record.payload)){
         if(captured.role!=6||!c::CatalogConstructionIntentMatchesDatabase(m,capture.source()->database_uuid))
           return fail(E::invalid_unnamed_event,id);
         continue;
       }
       // SB_AUDIT_CATALOG_METADATA_CHANGE (owner Q31 = 1): the registered
       // catalog-change event is immutable evidence too, and unnamed.
-      if(m.object_subtype=="catalog_metadata_change"||c::IsCatalogMetadataChangePayload(m.record.payload)){
+      if(m.object_subtype==scratchbird::core::catalog::CatalogObjectSubtype::catalog_metadata_change||c::IsCatalogMetadataChangePayload(m.record.payload)){
         if(captured.role!=6||!c::CatalogMetadataChangeMatchesDatabase(m,capture.source()->database_uuid))
           return fail(E::invalid_unnamed_event,id);
         continue;

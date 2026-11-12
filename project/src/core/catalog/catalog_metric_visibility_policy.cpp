@@ -25,7 +25,7 @@ template <typename Record> bool Valid(const Record& r) {
       Identity(r.origin_transaction_uuid,UuidKind::transaction) && r.origin_local_transaction_id;
 }
 bool Family(const CatalogMetadataVersionView& m) {
-  return m.object_subtype == "metric_visibility" || IsCatalogMetricVisibilityPolicyPayload(m.record.payload);
+  return m.object_subtype == CatalogObjectSubtype::metric_visibility || IsCatalogMetricVisibilityPolicyPayload(m.record.payload);
 }
 }
 constexpr CatalogValueSchemaView CatalogMetricVisibilityPolicySchemaView() {
@@ -101,7 +101,7 @@ bool CatalogMetricVisibilityPolicyMatchesHeader(const CatalogTypedRecord& r) {
   return CatalogMetricVisibilityPolicyMatchesHeader(BorrowCatalogTypedRecord(r));
 }
 bool CatalogMetricVisibilityPolicyMatchesMetadata(const CatalogMetadataVersionView& m) {
-  if (!CatalogMetricVisibilityPolicyMatchesHeader(m.record) || m.object_subtype!="metric_visibility" ||
+  if (!CatalogMetricVisibilityPolicyMatchesHeader(m.record) || m.object_subtype!=CatalogObjectSubtype::metric_visibility ||
       m.authority_scope!=CatalogAuthorityScope::local || !Identity(m.owning_schema_uuid,UuidKind::schema) ||
       !Identity(m.record.header.parent_uuid,UuidKind::object) ||
       m.owning_schema_uuid.value!=m.record.header.parent_uuid.value ||

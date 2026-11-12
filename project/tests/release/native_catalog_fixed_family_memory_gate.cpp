@@ -50,7 +50,7 @@ std::vector<WireField> VisibilityFields(std::string_view read="READ",std::string
       {5,T::utf8_text,Bytes(read.begin(),read.end())},{6,T::utf8_text,Bytes(sensitive.begin(),sensitive.end())},
       {7,T::engine_identity,Identity(8)},{8,T::unsigned_integer,Integer(1)}};
 }
-c::CatalogMetadataVersion Metadata(const Bytes& b,c::CatalogRecordKind kind,std::string_view subtype) {
+c::CatalogMetadataVersion Metadata(const Bytes& b,c::CatalogRecordKind kind,scratchbird::core::catalog::CatalogObjectSubtype subtype) {
   c::CatalogMetadataVersion m;m.record.header.kind=kind;m.record.header.object_uuid={p::UuidKind::object,Id(1)};
   m.record.header.parent_uuid={p::UuidKind::object,Id(20)};m.owning_schema_uuid={p::UuidKind::schema,Id(20)};
   m.record.payload=View(b);m.object_subtype=subtype;m.authority_scope=c::CatalogAuthorityScope::local;
@@ -85,7 +85,7 @@ void Schemas() {
     Check(d.schema_object_uuid.value==Id(1)&&d.database_catalog_object_uuid.value==Id(2)&&
         d.origin_transaction_uuid.value==Id(8)&&d.origin_local_transaction_id==local,"schema native values");
     const auto encoded=c::EncodeCatalogSchemaDefinition(d);Check(encoded.ok()&&encoded.bytes==bytes,"schema exact independent bytes");
-    auto m=Metadata(bytes,c::CatalogRecordKind::schema,names[type-1]);m.creator_local_transaction_id=local;
+    auto m=Metadata(bytes,c::CatalogRecordKind::schema,c::CatalogSchemaSubtype(static_cast<c::CatalogSchemaType>(type)));m.creator_local_transaction_id=local;
     m.record.header.parent_uuid={p::UuidKind::object,Id(mask&1?3:2)};
     m.owning_schema_uuid=mask&1?p::TypedUuid{p::UuidKind::schema,Id(3)}:p::TypedUuid{};
     if(mask&16)m.security_policy_uuid={p::UuidKind::object,Id(7)};
@@ -103,7 +103,7 @@ void Policies() {
     const auto bytes=Wire(PolicyFields(profile,flags,approval,pressure),65548);
     const auto r=NoHeap([&]{return c::DecodeCatalogStorageActionPolicy(View(bytes));});Check(r.ok(),"policy dimensions without heap");
     const auto encoded=c::EncodeCatalogStorageActionPolicy(*r.record);Check(encoded.ok()&&encoded.bytes==bytes,"policy every field exact bytes");
-    auto m=Metadata(bytes,c::CatalogRecordKind::policy,"storage_action");
+    auto m=Metadata(bytes,c::CatalogRecordKind::policy,scratchbird::core::catalog::CatalogObjectSubtype::storage_action);
     Check(NoHeap([&]{return c::CatalogStorageActionPolicyMatchesMetadata(m)&&c::CatalogStorageActionPolicyPreservesOrigin(m,m);}),"policy metadata origin no heap");
     m.creator_transaction_uuid.value=Id(99);Check(!NoHeap([&]{return c::CatalogStorageActionPolicyMatchesMetadata(m);}),"policy version1 origin mismatch");
   }
@@ -117,7 +117,7 @@ void Policies() {
     auto f=PolicyFields(profile);f[1].value=Integer(~p::u64{0});f[7].value=Integer(~p::u64{0});
     f[15].value=Integer((~p::u64{0})/(8192u<<profile));f[19].value=Integer(86400000000ull);f[20].value=Integer(86400000000ull);
     const auto b=Wire(f,65548);const auto r=NoHeap([&]{return c::DecodeCatalogStorageActionPolicy(View(b));});Check(r.ok(),"policy inclusive maximum bounds");
-    auto m=Metadata(b,c::CatalogRecordKind::policy,"storage_action");m.definition_version=~p::u64{0};
+    auto m=Metadata(b,c::CatalogRecordKind::policy,scratchbird::core::catalog::CatalogObjectSubtype::storage_action);m.definition_version=~p::u64{0};
     Check(NoHeap([&]{return c::CatalogStorageActionPolicyMatchesMetadata(m);}),"policy origin local number is not commit order");
   }
   for(unsigned field:{6u,9u,10u,11u}){auto f=PolicyFields();
@@ -130,7 +130,7 @@ void Attachments() {
   for(unsigned profile=0;profile<5;++profile){auto fields=AttachmentFields(profile);const auto b=Wire(fields,65549);
     const auto r=NoHeap([&]{return c::DecodeCatalogStorageActionAttachment(View(b));});Check(r.ok(),"attachment profile no heap");
     Check(c::EncodeCatalogStorageActionAttachment(*r.record).bytes==b,"attachment exact bytes");
-    const auto m=Metadata(b,c::CatalogRecordKind::config_profile,"storage_action_attachment");
+    const auto m=Metadata(b,c::CatalogRecordKind::config_profile,scratchbird::core::catalog::CatalogObjectSubtype::storage_action_attachment);
     Check(NoHeap([&]{return c::CatalogStorageActionAttachmentMatchesMetadata(m)&&c::CatalogStorageActionAttachmentPreservesOrigin(m,m);}),"attachment metadata origin no heap");
     fields[1].value=Integer(2);fields[6].value=Identity(99);
     auto next=m;next.record.payload=View(Wire(fields,65549));next.definition_version=2;
@@ -150,7 +150,7 @@ void Visibility() {
     Check(r.record->read_right.data()==reinterpret_cast<const char*>(b.data()+120),"read right aliases exact input bytes");
     const auto owned=c::DecodeCatalogMetricVisibilityPolicy(View(b));Check(owned.ok(),"visibility owning parity");
     Check(c::EncodeCatalogMetricVisibilityPolicy(*owned.record).bytes==b,"visibility exact independent bytes");
-    auto m=Metadata(b,c::CatalogRecordKind::policy,"metric_visibility");
+    auto m=Metadata(b,c::CatalogRecordKind::policy,scratchbird::core::catalog::CatalogObjectSubtype::metric_visibility);
     Check(NoHeap([&]{return c::CatalogMetricVisibilityPolicyMatchesMetadata(m)&&c::CatalogMetricVisibilityPolicyPreservesOrigin(m,m);}),"visibility metadata origin no heap");
     auto fields=VisibilityFields(read,sensitive);fields[1].value=Integer(2);
     auto next=m;next.record.payload=View(Wire(fields,65559));next.definition_version=2;

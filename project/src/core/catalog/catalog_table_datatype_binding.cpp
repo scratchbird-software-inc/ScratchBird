@@ -91,7 +91,7 @@ CatalogIntervalColumnBindingResult BindCatalogIntervalColumn(
     out.error=E::invalid_occurrence_metadata;out.metadata_diagnostic=error;return out;
   }
   if(occurrence.record.header.kind!=CatalogRecordKind::datatype_descriptor||
-      occurrence.object_subtype!="persistent_interval_value_occurrence"||
+      occurrence.object_subtype!=CatalogObjectSubtype::persistent_interval_value_occurrence||
       occurrence.authority_scope!=CatalogAuthorityScope::local||
       occurrence.owning_schema_uuid.kind!=UuidKind::schema||
       !uuid::IsEngineIdentityUuid(occurrence.owning_schema_uuid.value)||

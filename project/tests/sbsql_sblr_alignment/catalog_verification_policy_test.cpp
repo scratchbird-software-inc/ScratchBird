@@ -44,7 +44,7 @@ std::string Golden(const Body& r){f::Golden g(65621);g.Identity(1,r.body_uuid);g
 c::CatalogMetadataVersion Metadata(const Body& r,unsigned n=0){auto m=f::Metadata(0,r.creating_transaction_uuid,f::Id(60),Golden(r));
  m.record.header.object_uuid={p::UuidKind::object,r.body_uuid};m.record.header.row_uuid={p::UuidKind::row,f::Id(1000+3*n)};
  m.default_name_uuid={p::UuidKind::object,f::Id(2000+2*n)};m.name_vector_uuid={p::UuidKind::object,f::Id(2001+2*n)};
- m.object_subtype="verification_policy_body";m.creator_local_transaction_id=r.creating_local_transaction_id;m.definition_version=r.generation;return m;}
+ m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::verification_policy_body;m.creator_local_transaction_id=r.creating_local_transaction_id;m.definition_version=r.generation;return m;}
 void Roundtrip(const Body& value){const auto expected=Golden(value);std::array<p::byte,512> output;output.fill(0xa7);
  const auto size=NoHeap([&]{return c::CatalogVerificationPolicyEncodedBytes(value);});Check(size&&*size==expected.size()&&*size<=c::kCatalogVerificationPolicyMaxBytes,"independent complete byte count");
  const auto encoded=NoHeap([&]{return c::EncodeCatalogVerificationPolicyInto(value,std::span(output).subspan(1));});
@@ -104,7 +104,7 @@ void Bindings(){auto b=Value();auto m=Metadata(b);auto view=c::BorrowCatalogMeta
   Check(!c::CatalogVerificationPolicyMatchesDescriptor(b,bad,role),"wrong class database body generation or verification role cannot bind");}
  Check(c::CatalogVerificationPolicyMatchesHeader(view.record)&&c::CatalogVerificationPolicyMatchesMetadata(view)&&!c::ValidateCatalogMetadataVersionView(view),"full common metadata dispatch accepts typed body");
  Check(c::CatalogVerificationPolicyMatchesDatabase(view,f::Id(1))&&!c::CatalogVerificationPolicyMatchesDatabase(view,f::Id(2)),"native owning database binding");
- for(unsigned n=0;n<5;++n){auto bad=m;switch(n){case 0:bad.object_subtype="policy_descriptor";break;case 1:bad.record.header.kind=c::CatalogRecordKind::config_profile;break;
+ for(unsigned n=0;n<5;++n){auto bad=m;switch(n){case 0:bad.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::policy_descriptor;break;case 1:bad.record.header.kind=c::CatalogRecordKind::config_profile;break;
   case 2:bad.definition_version++;break;case 3:bad.creator_local_transaction_id++;break;case 4:bad.creator_transaction_uuid.value=f::Id(99);break;}
   Check(c::ValidateCatalogMetadataVersionView(c::BorrowCatalogMetadataVersion(bad)).has_value(),"common dispatcher rejects body/header/subtype/creator mismatch");}
  auto next=b;next.generation=2;next.creating_transaction_uuid.value=f::Id(7);next.creating_local_transaction_id=2;
@@ -124,9 +124,9 @@ struct Item {
     definition.record.payload.clear();vector_metadata=entry_metadata=definition;
     vector_metadata.record.header.kind=entry_metadata.record.header.kind=c::CatalogRecordKind::localized_name;
     vector_metadata.record.header.object_uuid=definition.name_vector_uuid;vector_metadata.record.header.row_uuid.value=f::Id(1001+3*n);
-    vector_metadata.record.header.parent_uuid=definition.record.header.object_uuid;vector_metadata.object_subtype="name_vector";
+    vector_metadata.record.header.parent_uuid=definition.record.header.object_uuid;vector_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_vector;
     entry_metadata.record.header.object_uuid=definition.default_name_uuid;entry_metadata.record.header.row_uuid.value=f::Id(1002+3*n);
-    entry_metadata.record.header.parent_uuid=definition.name_vector_uuid;entry_metadata.object_subtype="name_entry";entry_metadata.resource_epoch=1;
+    entry_metadata.record.header.parent_uuid=definition.name_vector_uuid;entry_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_entry;entry_metadata.resource_epoch=1;
     vector.name_vector_uuid=entry.name_vector_uuid=definition.name_vector_uuid;vector.object_uuid=entry.object_uuid=definition.record.header.object_uuid;
     vector.default_name_entry_uuid=entry.name_entry_uuid=definition.default_name_uuid;vector.object_kind=entry.object_kind=c::CatalogRecordKind::policy;
     vector.owning_schema_uuid=definition.owning_schema_uuid;vector.default_language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_en_US);

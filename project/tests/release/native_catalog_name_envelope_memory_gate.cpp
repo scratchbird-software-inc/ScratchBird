@@ -127,11 +127,11 @@ c::CatalogMetadataVersion NameMetadata(const c::CatalogNamePayload& payload){
     m.security_policy_uuid=r.security_policy_uuid;
     m.catalog_generation=r.catalog_generation_id;
     if constexpr(std::is_same_v<std::decay_t<decltype(r)>,c::CatalogNameVector>){
-      m.object_subtype="name_vector";m.record.header.object_uuid=r.name_vector_uuid;
+      m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_vector;m.record.header.object_uuid=r.name_vector_uuid;
       m.record.header.parent_uuid=r.object_uuid;m.default_name_uuid=r.default_name_entry_uuid;
       m.owning_schema_uuid=r.owning_schema_uuid.value_or(TypedUuid{});
     }else{
-      m.object_subtype="name_entry";m.record.header.object_uuid=r.name_entry_uuid;
+      m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_entry;m.record.header.object_uuid=r.name_entry_uuid;
       m.record.header.parent_uuid=r.name_vector_uuid;m.default_name_uuid=r.name_entry_uuid;
       m.owning_schema_uuid=r.parent_schema_uuid.value_or(TypedUuid{});
       m.retired_transaction_uuid=r.dropped_transaction_uuid.value_or(TypedUuid{});
@@ -157,7 +157,7 @@ void MetadataAdmission(bool entry){
   };
   matches(payload,metadata,true);
   auto m=metadata;m.record.header.kind=c::CatalogRecordKind::sql_object;matches(payload,m,false);
-  m=metadata;m.object_subtype="unknown";matches(payload,m,false);
+  m=metadata;m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;matches(payload,m,false);
   for(auto member:{&c::CatalogMetadataVersion::name_vector_uuid,&c::CatalogMetadataVersion::default_name_uuid,
       &c::CatalogMetadataVersion::owning_schema_uuid,&c::CatalogMetadataVersion::security_policy_uuid}){
     m=metadata;(m.*member).value.bytes[15]^=0x80;matches(payload,m,false);

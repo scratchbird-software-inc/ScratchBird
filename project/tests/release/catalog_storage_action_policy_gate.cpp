@@ -55,7 +55,7 @@ c::CatalogMetadataVersion Metadata(const P& p){c::CatalogMetadataVersion m;
   m.audit_uuid=Id(UuidKind::object,13);m.default_name_uuid=Id(UuidKind::object,14);m.name_vector_uuid=Id(UuidKind::object,15);
   m.creator_transaction_uuid=p.origin_transaction_uuid;m.creator_local_transaction_id=p.origin_local_transaction_id;
   m.definition_version=p.generation;m.schema_epoch=m.security_epoch=m.catalog_generation=m.dependency_generation=m.invalidation_generation=1;
-  m.lifecycle=c::CatalogObjectLifecycle::active;m.status=c::CatalogObjectStatus::active;m.object_subtype="storage_action";
+  m.lifecycle=c::CatalogObjectLifecycle::active;m.status=c::CatalogObjectStatus::active;m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::storage_action;
   return m;
 }
 void Good(const P& p){const auto oracle=Oracle(p);const auto encoded=c::EncodeCatalogStorageActionPolicy(p);
@@ -127,7 +127,7 @@ void Evolution(const P& p){const auto first=Metadata(p);auto next=p;++next.gener
     Check(!c::CatalogMetadataPreservesFamilyOrigin(first,m),"identity/profile cannot be rewritten through update");
   }
   for(unsigned fault=0;fault<9;++fault){auto m=second;
-    switch(fault){case 0:m.object_subtype="other";break;case 1:m.record.header.kind=c::CatalogRecordKind::sql_object;break;
+    switch(fault){case 0:m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;break;case 1:m.record.header.kind=c::CatalogRecordKind::sql_object;break;
       case 2:m.record.header.object_uuid=Id(UuidKind::object,99);break;case 3:m.definition_version++;break;
       case 4:m.authority_scope=c::CatalogAuthorityScope::cluster;break;case 5:m.owning_schema_uuid=Id(UuidKind::schema,99);break;
       case 6:m.default_name_uuid={};break;case 7:m.name_vector_uuid={};break;case 8:m.record.payload="caller supplied text policy";break;}
@@ -158,7 +158,7 @@ void Attachment(const P& p){using A=c::CatalogStorageActionAttachment;
     Field(b,4,5,Identity(v.filespace_uuid));Field(b,5,5,Identity(v.storage_profile_uuid));Field(b,6,5,Identity(v.page_size_profile_uuid));
     Field(b,7,5,Identity(v.policy_uuid));Field(b,8,5,Identity(v.origin_transaction_uuid.value));Field(b,9,1,Number(v.origin_local_transaction_id));Put(b,8,b.size(),4);return b;};
   const auto metadata=[&](const A& v){auto m=Metadata(p);m.record.header.kind=c::CatalogRecordKind::config_profile;
-    m.record.header.object_uuid.value=v.attachment_uuid;m.object_subtype="storage_action_attachment";
+    m.record.header.object_uuid.value=v.attachment_uuid;m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::storage_action_attachment;
     m.definition_version=v.generation;m.record.payload=oracle(v);return m;};
   const auto bytes=oracle(a);const auto encoded=c::EncodeCatalogStorageActionAttachment(a);
   Check(encoded.ok()&&std::string(encoded.bytes.begin(),encoded.bytes.end())==bytes,"independent attachment byte oracle");
@@ -184,7 +184,7 @@ void Attachment(const P& p){using A=c::CatalogStorageActionAttachment;
   changed_origin=successor;++changed_origin.origin_local_transaction_id;
   Check(!c::CatalogMetadataPreservesFamilyOrigin(m,metadata(changed_origin)),"attachment origin transaction number is immutable");
   for(unsigned mode=0;mode<9;++mode){auto changed=next;
-    if(mode==0)changed.object_subtype="generic";if(mode==1)changed.record.header.kind=c::CatalogRecordKind::policy;
+    if(mode==0)changed.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;if(mode==1)changed.record.header.kind=c::CatalogRecordKind::policy;
     if(mode==2)changed.record.header.object_uuid=Id(UuidKind::object,33);if(mode==3)changed.definition_version++;
     if(mode==4)changed.authority_scope=c::CatalogAuthorityScope::cluster;if(mode==5)changed.owning_schema_uuid=Id(UuidKind::schema,33);
     if(mode==6)changed.default_name_uuid={};if(mode==7)changed.name_vector_uuid={};if(mode==8)changed.record.payload="text attachment";

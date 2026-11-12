@@ -121,7 +121,7 @@ bool CatalogMemoryConfigurationMatchesHeader(const CatalogTypedRecordView& recor
   return decoded.ok()&&decoded.record->configuration_uuid==record.header.object_uuid.value;
 }
 bool CatalogMemoryConfigurationMatchesMetadata(const CatalogMetadataVersionView& m) {
-  if(m.object_subtype!="memory_configuration"||m.record.header.kind!=CatalogRecordKind::config_profile||
+  if(m.object_subtype!=CatalogObjectSubtype::memory_configuration||m.record.header.kind!=CatalogRecordKind::config_profile||
       !Typed(m.record.header.object_uuid,UuidKind::object)||
       m.authority_scope!=CatalogAuthorityScope::local||!Typed(m.owner_uuid,UuidKind::principal)||
       !Typed(m.audit_uuid,UuidKind::object)||!Typed(m.security_policy_uuid,UuidKind::object)||
@@ -138,7 +138,7 @@ bool CatalogMemoryConfigurationMatchesMetadata(const CatalogMetadataVersionView&
        r.origin_transaction_uuid.value==m.creator_transaction_uuid.value&&r.origin_local_transaction_id==m.creator_local_transaction_id));
 }
 bool CatalogMemoryConfigurationPreservesOrigin(const CatalogMetadataVersionView& a,const CatalogMetadataVersionView& b) {
-  const auto family=[](const auto& m){return m.object_subtype=="memory_configuration"||IsCatalogMemoryConfigurationPayload(m.record.payload);};
+  const auto family=[](const auto& m){return m.object_subtype==CatalogObjectSubtype::memory_configuration||IsCatalogMemoryConfigurationPayload(m.record.payload);};
   if(!family(a)&&!family(b))return true;
   if(!CatalogMemoryConfigurationMatchesMetadata(a)||!CatalogMemoryConfigurationMatchesMetadata(b))return false;
   const auto x=DecodeCatalogMemoryConfiguration(a.record.payload),y=DecodeCatalogMemoryConfiguration(b.record.payload);

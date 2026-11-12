@@ -194,14 +194,14 @@ Named NamedObject(const Db& b, std::span<const byte> file, const NameTemplate& t
   vm.record.header.row_uuid = {UuidKind::row, vector_key};
   vm.record.header.parent_uuid = object;
   vm.record.payload.clear();
-  vm.object_subtype = "name_vector";
+  vm.object_subtype = scratchbird::core::catalog::CatalogObjectSubtype::name_vector;
   auto em = d;
   em.record.header.kind = c::CatalogRecordKind::localized_name;
   em.record.header.object_uuid = entry;
   em.record.header.row_uuid = {UuidKind::row, entry_key};
   em.record.header.parent_uuid = vector;
   em.record.payload.clear();
-  em.object_subtype = "name_entry";
+  em.object_subtype = scratchbird::core::catalog::CatalogObjectSubtype::name_entry;
   em.resource_epoch = t.entry.resource_epoch;  // the name key's epoch, as the create sets it
 
   auto v = t.vector;
@@ -511,6 +511,10 @@ void NameGrowth(const Db& b, const NameTemplate& t, u16 role, std::size_t defini
     const auto named = NamedAfter(b, file, t, role, After(b, file, role), 40 + k, 2, "w3b_grow_" + std::to_string(k));
     auto r = Request(2, named.Rows());
     r.new_pages = PageIds(k);
+    // A second identity: an insert may also split a name-tree leaf before the
+    // base leaf this covers fills (SB_CATALOG_OBJECT_CONSTANTS changed the row
+    // sizes, and at 16 KiB one such insert needed two pages).
+    r.new_pages.push_back(PageIds(200 + k).front());
     // Stop when the writer refuses (an index leaf full first: splits are the
     // next step), found by a trial on a copy.
     if (!InsertOracle(b, file, r)) {
@@ -1987,7 +1991,7 @@ std::pair<c::CatalogMetadataVersion, c::CatalogConstructionIntent> ConstructionI
   const auto rel = ReadRelation(b, file);
   for (const auto& l : rel.leaves)
     for (const auto& [version, m] : l.metadata)
-      if (m.object_subtype == "node_construction_intent") {
+      if (m.object_subtype == scratchbird::core::catalog::CatalogObjectSubtype::node_construction_intent) {
         const auto intent = c::DecodeCatalogConstructionIntent(m.record.payload);
         Check(intent.ok(), "the create's construction intent decodes");
         return {m, *intent.record};
@@ -2026,7 +2030,7 @@ db::CatalogInsertRow ChangeEventRow(const Db& b, std::span<const byte> file, u64
   m.record.header.object_uuid = {UuidKind::object, event};
   m.record.header.row_uuid = {UuidKind::row, key};
   m.record.payload.assign(reinterpret_cast<const char*>(encoded.bytes.data()), encoded.bytes.size());
-  m.object_subtype = "catalog_metadata_change";
+  m.object_subtype = scratchbird::core::catalog::CatalogObjectSubtype::catalog_metadata_change;
   m.audit_uuid = {UuidKind::object, event};
   m.creator_transaction_uuid = {UuidKind::transaction, TxId(n)};
   m.creator_local_transaction_id = n;

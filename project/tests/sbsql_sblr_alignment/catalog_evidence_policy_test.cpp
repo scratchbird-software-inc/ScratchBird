@@ -47,7 +47,7 @@ std::string Golden(const Body& r){f::Golden g(65622);g.Identity(1,r.body_uuid);g
 c::CatalogMetadataVersion Metadata(const Body& r,unsigned n=0){auto m=f::Metadata(0,r.creating_transaction_uuid,f::Id(60),Golden(r));
  m.record.header.object_uuid={p::UuidKind::object,r.body_uuid};m.record.header.row_uuid={p::UuidKind::row,f::Id(1000+3*n)};
  m.default_name_uuid={p::UuidKind::object,f::Id(2000+2*n)};m.name_vector_uuid={p::UuidKind::object,f::Id(2001+2*n)};
- m.object_subtype="evidence_policy_body";m.creator_local_transaction_id=r.creating_local_transaction_id;m.definition_version=r.generation;
+ m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::evidence_policy_body;m.creator_local_transaction_id=r.creating_local_transaction_id;m.definition_version=r.generation;
  if(r.cluster_uuid)m.authority_scope=c::CatalogAuthorityScope::cluster;return m;}
 void Roundtrip(const Body& value){const auto expected=Golden(value);std::array<p::byte,c::kCatalogEvidencePolicyMaxBytes+2> output;output.fill(0xa7);
  const auto size=NoHeap([&]{return c::CatalogEvidencePolicyEncodedBytes(value);});Check(size&&*size==expected.size()&&*size<=c::kCatalogEvidencePolicyMaxBytes,"independent complete byte count");
@@ -110,7 +110,7 @@ void Values(){const auto base=Value();Roundtrip(base);
 void Bindings(){auto b=Value();auto m=Metadata(b);auto v=c::BorrowCatalogMetadataVersion(m);
  Check(c::CatalogEvidencePolicyMatchesHeader(v.record)&&c::CatalogEvidencePolicyMatchesMetadata(v)&&!c::ValidateCatalogMetadataVersionView(v),"common dispatcher admits exact evidence body");
  Check(c::CatalogEvidencePolicyMatchesDatabase(v,f::Id(1))&&!c::CatalogEvidencePolicyMatchesDatabase(v,f::Id(9)),"body owning database exact");
- for(unsigned field=0;field<6;++field){auto bad=m;switch(field){case 0:bad.object_subtype="other";break;case 1:bad.record.header.kind=c::CatalogRecordKind::config_profile;break;
+ for(unsigned field=0;field<6;++field){auto bad=m;switch(field){case 0:bad.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;break;case 1:bad.record.header.kind=c::CatalogRecordKind::config_profile;break;
   case 2:++bad.definition_version;break;case 3:++bad.creator_local_transaction_id;break;case 4:bad.creator_transaction_uuid.value=f::Id(99);break;
   case 5:bad.authority_scope=c::CatalogAuthorityScope::cluster;break;}
   Check(c::ValidateCatalogMetadataVersionView(c::BorrowCatalogMetadataVersion(bad)).has_value(),"common mismatched metadata refused");}
@@ -139,9 +139,9 @@ struct Item {
     vector_metadata=entry_metadata=definition;vector_metadata.record.payload.clear();entry_metadata.record.payload.clear();
     vector_metadata.record.header.kind=entry_metadata.record.header.kind=c::CatalogRecordKind::localized_name;
     vector_metadata.record.header.object_uuid=definition.name_vector_uuid;vector_metadata.record.header.row_uuid.value=f::Id(1001+3*n);
-    vector_metadata.record.header.parent_uuid=definition.record.header.object_uuid;vector_metadata.object_subtype="name_vector";
+    vector_metadata.record.header.parent_uuid=definition.record.header.object_uuid;vector_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_vector;
     entry_metadata.record.header.object_uuid=definition.default_name_uuid;entry_metadata.record.header.row_uuid.value=f::Id(1002+3*n);
-    entry_metadata.record.header.parent_uuid=definition.name_vector_uuid;entry_metadata.object_subtype="name_entry";entry_metadata.resource_epoch=1;
+    entry_metadata.record.header.parent_uuid=definition.name_vector_uuid;entry_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_entry;entry_metadata.resource_epoch=1;
     vector.name_vector_uuid=entry.name_vector_uuid=definition.name_vector_uuid;vector.object_uuid=entry.object_uuid=definition.record.header.object_uuid;
     vector.default_name_entry_uuid=entry.name_entry_uuid=definition.default_name_uuid;vector.object_kind=entry.object_kind=c::CatalogRecordKind::policy;
     vector.owning_schema_uuid=definition.owning_schema_uuid;vector.default_language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_en_US);

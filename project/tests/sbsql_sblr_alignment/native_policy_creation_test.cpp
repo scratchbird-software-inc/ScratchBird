@@ -85,8 +85,8 @@ struct Package {
           n<grants_end?(n-members_end<11?SourceId(0x300+n-members_end):SourceId(0x1000+n-members_end-11)):
           t==0?SourceId(0x105):t<=2?f::Id(14000+t-1):t<=4?f::Id(15000+t-3):f::Id(15100+t-5);
       const bool role=n>=28&&(n<roles_end||t==0);
-      const auto subtype=n==0?"bootstrap_policy_pack":n<=12?"bootstrap_security_provider":n<=26?"bootstrap_policy_profile":n==27?"memory_configuration":
-          role?"role_account":n<groups_end?"group_account":n<grants_end?"grant_record":t==1||t==3?"user_account":t==4?"agent_runtime_authority":"grant_record";
+      const auto subtype=n==0?scratchbird::core::catalog::CatalogObjectSubtype::bootstrap_policy_pack:n<=12?scratchbird::core::catalog::CatalogObjectSubtype::bootstrap_security_provider:n<=26?scratchbird::core::catalog::CatalogObjectSubtype::bootstrap_policy_profile:n==27?scratchbird::core::catalog::CatalogObjectSubtype::memory_configuration:
+          role?scratchbird::core::catalog::CatalogObjectSubtype::role_account:n<groups_end?scratchbird::core::catalog::CatalogObjectSubtype::group_account:n<grants_end?scratchbird::core::catalog::CatalogObjectSubtype::grant_record:t==1||t==3?scratchbird::core::catalog::CatalogObjectSubtype::user_account:t==4?scratchbird::core::catalog::CatalogObjectSubtype::agent_runtime_authority:scratchbird::core::catalog::CatalogObjectSubtype::grant_record;
       std::optional<c::CatalogRecordKind> kind;
       if(n==27)kind=c::CatalogRecordKind::config_profile;
       if(n>=28)kind=role?c::CatalogRecordKind::role_account:n<groups_end?c::CatalogRecordKind::group_account:n>=grants_end&&(t==1||t==3)?c::CatalogRecordKind::user_account:n>=grants_end&&t==4?c::CatalogRecordKind::config_profile:c::CatalogRecordKind::grant_record;
@@ -108,17 +108,17 @@ struct Package {
     }
     Rebind();
   }
-  void Fill(unsigned n,const p::Uuid& object,std::optional<c::CatalogRecordKind> kind,std::string_view subtype,bool service_policy) {
+  void Fill(unsigned n,const p::Uuid& object,std::optional<c::CatalogRecordKind> kind,scratchbird::core::catalog::CatalogObjectSubtype subtype,bool service_policy) {
       auto& x=items[n];
       auto& meta=x.definition;meta=f::Metadata(0,tx,f::Id(60),{});
       if(bootstrap_owned)meta.owner_uuid=Typed(p::UuidKind::principal,14000);
       meta.record.header.object_uuid={p::UuidKind::object,object};meta.record.header.row_uuid=Typed(p::UuidKind::row,200000+3*n);
-      meta.object_subtype=std::string(subtype);if(kind)meta.record.header.kind=*kind;
+      meta.object_subtype=subtype;if(kind)meta.record.header.kind=*kind;
       if(service_policy)meta.security_policy_uuid={p::UuidKind::object,SourceId(0x402)};
       meta.default_name_uuid=Typed(p::UuidKind::object,300000+2*n);meta.name_vector_uuid=Typed(p::UuidKind::object,300001+2*n);
       x.vector_metadata=meta;x.vector_metadata.record.header.kind=c::CatalogRecordKind::localized_name;
       x.vector_metadata.record.header.object_uuid=meta.name_vector_uuid;x.vector_metadata.record.header.row_uuid=Typed(p::UuidKind::row,200001+3*n);
-      x.vector_metadata.record.header.parent_uuid=meta.record.header.object_uuid;x.vector_metadata.object_subtype="name_vector";
+      x.vector_metadata.record.header.parent_uuid=meta.record.header.object_uuid;x.vector_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_vector;
       auto& v=x.vector;v.name_vector_uuid=meta.name_vector_uuid;v.object_uuid=meta.record.header.object_uuid;
       v.object_kind=meta.record.header.kind;v.owning_schema_uuid=meta.owning_schema_uuid;
       v.default_language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_en_US);v.default_name_entry_uuid=meta.default_name_uuid;
@@ -126,7 +126,7 @@ struct Package {
       v.security_policy_uuid=meta.security_policy_uuid;v.lifecycle_state=c::CatalogNameLifecycle::active;
       x.entry_metadata=meta;x.entry_metadata.record.header.kind=c::CatalogRecordKind::localized_name;
       x.entry_metadata.record.header.object_uuid=meta.default_name_uuid;x.entry_metadata.record.header.row_uuid=Typed(p::UuidKind::row,200002+3*n);
-      x.entry_metadata.record.header.parent_uuid=meta.name_vector_uuid;x.entry_metadata.object_subtype="name_entry";x.entry_metadata.resource_epoch=1;
+      x.entry_metadata.record.header.parent_uuid=meta.name_vector_uuid;x.entry_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_entry;x.entry_metadata.resource_epoch=1;
       auto& e=x.entry;e.name_entry_uuid=meta.default_name_uuid;e.name_vector_uuid=meta.name_vector_uuid;
       e.object_uuid=meta.record.header.object_uuid;e.object_kind=v.object_kind;e.scope_uuid=meta.record.header.parent_uuid;
       e.parent_schema_uuid=meta.owning_schema_uuid;e.language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_en_US);e.dialect_profile_uuid=Typed(p::UuidKind::object,56);
@@ -136,7 +136,7 @@ struct Package {
       e.resource_epoch=e.name_resolution_epoch=1;e.default_for_language=e.default_for_object=true;e.lifecycle_state=c::CatalogNameLifecycle::active;
   }
   void Append(unsigned& n,const p::Uuid& object,c::CatalogRecordKind kind) {
-    items.emplace_back();Fill(n++,object,kind,c::CatalogRecordKindName(kind),false);
+    items.emplace_back();Fill(n++,object,kind,c::CatalogSecuritySubtype(kind),false);
   }
   void Rebind(){inputs.clear();for(auto& x:items){x.entries[0]={&x.entry_metadata,&x.entry};inputs.push_back({&x.definition,&x.vector_metadata,&x.vector,x.entries});}}
   auto Request()const{return db::NativeInitialPolicyRequest{SB_DEFAULT_POLICY_PACK_ROOT,f::Id(1),tx,f::Id(12000),c::kCatalogLanguage_en_US,inputs,{3000,16*1024*1024}};}
@@ -420,7 +420,7 @@ void ServiceLogical() {
     if(scenario==31)changed.policy.limits.maximum_encoded_bytes=made.records->encoded_bytes-1;
     if(scenario==32)bad.items[Package::kSecurity+3].definition.owner_uuid=Typed(p::UuidKind::principal,16002);
     if(scenario==33)bad.items[Package::kSecurity+4].definition.security_policy_uuid=Typed(p::UuidKind::object,55);
-    if(scenario==34)bad.items[Package::kSecurity+4].definition.object_subtype="memory_configuration";
+    if(scenario==34)bad.items[Package::kSecurity+4].definition.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::memory_configuration;
     if(scenario==35)bad.items[Package::kSecurity+9].definition.owner_uuid=Typed(p::UuidKind::principal,16002);
     if(scenario==36)s.credential_reference_uuid=bad.items[Package::kSecurity+9].definition.record.header.row_uuid.value;
     if(scenario==37)s.credential_reference_uuid=bad.items[Package::kSecurity+9].entry.name_entry_uuid.value;
@@ -496,7 +496,7 @@ void Logical() {
     if(scenario==4)changed.definitions=changed.definitions.first(27);
     if(scenario==5)bad.items[0].definition.record.payload="must_not_be_reinterpreted";
     if(scenario==6)bad.items[0].definition.record.header.object_uuid.value=f::Id(999);
-    if(scenario==7)bad.items[0].definition.object_subtype="policy";
+    if(scenario==7)bad.items[0].definition.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;
     if(scenario==8)bad.items[0].definition.owner_uuid={};if(scenario==9)bad.items[0].entry.default_for_object=false;
     if(scenario==10)bad.items[0].definition.record.header.row_uuid.value=bad.items[1].definition.record.header.row_uuid.value;
     if(scenario==11)bad.items[0].entry_metadata.record.header.row_uuid.value=changed.database_uuid;
@@ -715,7 +715,7 @@ void PlacementLogical() {
       if(scenario==1)changed.policy.policy_seed_pack_root="/not-an-existing-scratchbird-policy-pack";
       if(scenario==2)changed.policy.limits.maximum_records=3*definitions-1;
       if(scenario==3)changed.policy.limits.maximum_encoded_bytes=made.plan->encoded_bytes-1;
-      if(scenario==4)bad.items[0].definition.object_subtype="unsupported_future_definition";
+      if(scenario==4)bad.items[0].definition.object_subtype=static_cast<scratchbird::core::catalog::CatalogObjectSubtype>(0xfffe);  // an unlisted subtype
       if(scenario==5)bad.items[0].entry.default_for_object=false;
       if(scenario==6)bad.items[0].definition.record.header.row_uuid=bad.items[1].definition.record.header.row_uuid;
       if(scenario==7)changed.policy.definitions=changed.policy.definitions.first(definitions-1);

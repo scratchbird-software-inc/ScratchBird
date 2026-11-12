@@ -61,8 +61,8 @@ class NativeLocalServiceCreationFixture {
           n<grants_end?(n-members_end<11?SourceId(0x300+n-members_end):SourceId(0x1000+n-members_end-11)):
           t==0?SourceId(0x105):t<=2?f::Id(14000+t-1):t<=4?f::Id(15000+t-3):f::Id(15100+t-5);
       const bool role=n>=28&&(n<roles_end||t==0);
-      const auto subtype=n==0?"bootstrap_policy_pack":n<=12?"bootstrap_security_provider":n<=26?"bootstrap_policy_profile":n==27?"memory_configuration":
-          role?"role_account":n<groups_end?"group_account":n<grants_end?"grant_record":t==1||t==3?"user_account":t==4?"agent_runtime_authority":"grant_record";
+      const auto subtype=n==0?scratchbird::core::catalog::CatalogObjectSubtype::bootstrap_policy_pack:n<=12?scratchbird::core::catalog::CatalogObjectSubtype::bootstrap_security_provider:n<=26?scratchbird::core::catalog::CatalogObjectSubtype::bootstrap_policy_profile:n==27?scratchbird::core::catalog::CatalogObjectSubtype::memory_configuration:
+          role?scratchbird::core::catalog::CatalogObjectSubtype::role_account:n<groups_end?scratchbird::core::catalog::CatalogObjectSubtype::group_account:n<grants_end?scratchbird::core::catalog::CatalogObjectSubtype::grant_record:t==1||t==3?scratchbird::core::catalog::CatalogObjectSubtype::user_account:t==4?scratchbird::core::catalog::CatalogObjectSubtype::agent_runtime_authority:scratchbird::core::catalog::CatalogObjectSubtype::grant_record;
       std::optional<c::CatalogRecordKind> kind;
       if(n==27)kind=c::CatalogRecordKind::config_profile;
       if(n>=28)kind=role?c::CatalogRecordKind::role_account:n<groups_end?c::CatalogRecordKind::group_account:n>=grants_end&&(t==1||t==3)?c::CatalogRecordKind::user_account:n>=grants_end&&t==4?c::CatalogRecordKind::config_profile:c::CatalogRecordKind::grant_record;
@@ -79,17 +79,17 @@ class NativeLocalServiceCreationFixture {
   }
   // One definition with its name vector and default name entry. The row, name
   // and alias identities follow the item position, as they always have.
-  void Fill(unsigned n,const p::Uuid& object,std::optional<c::CatalogRecordKind> kind,std::string_view subtype) {
+  void Fill(unsigned n,const p::Uuid& object,std::optional<c::CatalogRecordKind> kind,scratchbird::core::catalog::CatalogObjectSubtype subtype) {
       auto& x=items[n];
       auto& meta=x.definition;meta=f::Metadata(0,construction_,f::Id(60),{});
       meta.owner_uuid=Typed(p::UuidKind::principal,14000);
       meta.record.header.object_uuid={p::UuidKind::object,object};meta.record.header.row_uuid=Typed(p::UuidKind::row,200000+3*n);
-      meta.object_subtype=std::string(subtype);if(kind)meta.record.header.kind=*kind;
+      meta.object_subtype=subtype;if(kind)meta.record.header.kind=*kind;
       meta.security_policy_uuid={p::UuidKind::object,SourceId(0x402)};
       meta.default_name_uuid=Typed(p::UuidKind::object,300000+2*n);meta.name_vector_uuid=Typed(p::UuidKind::object,300001+2*n);
       x.vector_metadata=meta;x.vector_metadata.record.header.kind=c::CatalogRecordKind::localized_name;
       x.vector_metadata.record.header.object_uuid=meta.name_vector_uuid;x.vector_metadata.record.header.row_uuid=Typed(p::UuidKind::row,200001+3*n);
-      x.vector_metadata.record.header.parent_uuid=meta.record.header.object_uuid;x.vector_metadata.object_subtype="name_vector";
+      x.vector_metadata.record.header.parent_uuid=meta.record.header.object_uuid;x.vector_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_vector;
       auto& v=x.vector;v.name_vector_uuid=meta.name_vector_uuid;v.object_uuid=meta.record.header.object_uuid;
       v.object_kind=meta.record.header.kind;v.owning_schema_uuid=meta.owning_schema_uuid;
       v.default_language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_en_US);v.default_name_entry_uuid=meta.default_name_uuid;
@@ -97,7 +97,7 @@ class NativeLocalServiceCreationFixture {
       v.security_policy_uuid=meta.security_policy_uuid;v.lifecycle_state=c::CatalogNameLifecycle::active;
       x.entry_metadata=meta;x.entry_metadata.record.header.kind=c::CatalogRecordKind::localized_name;
       x.entry_metadata.record.header.object_uuid=meta.default_name_uuid;x.entry_metadata.record.header.row_uuid=Typed(p::UuidKind::row,200002+3*n);
-      x.entry_metadata.record.header.parent_uuid=meta.name_vector_uuid;x.entry_metadata.object_subtype="name_entry";x.entry_metadata.resource_epoch=1;
+      x.entry_metadata.record.header.parent_uuid=meta.name_vector_uuid;x.entry_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_entry;x.entry_metadata.resource_epoch=1;
       auto& e=x.entry;e.name_entry_uuid=meta.default_name_uuid;e.name_vector_uuid=meta.name_vector_uuid;
       e.object_uuid=meta.record.header.object_uuid;e.object_kind=v.object_kind;e.scope_uuid=meta.record.header.parent_uuid;
       e.parent_schema_uuid=meta.owning_schema_uuid;e.language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_en_US);e.dialect_profile_uuid=Typed(p::UuidKind::object,56);
@@ -107,29 +107,29 @@ class NativeLocalServiceCreationFixture {
       e.resource_epoch=e.name_resolution_epoch=1;e.default_for_language=e.default_for_object=true;e.lifecycle_state=c::CatalogNameLifecycle::active;
   }
   void Append(unsigned& n,const p::Uuid& object,c::CatalogRecordKind kind) {
-    items.emplace_back();Fill(n++,object,kind,c::CatalogRecordKindName(kind));
+    items.emplace_back();Fill(n++,object,kind,c::CatalogSecuritySubtype(kind));
   }
   // SB_NATIVE_POLICY_FAMILY_SEEDS: one definition per native policy family
   // object, with the kind and subtype the assembler assigns it, for a request
   // that carries these identities as policy_families.
   void AddPolicyFamilies(const db::NativeInitialPolicyFamilyIdentities& ids) {
     unsigned n=static_cast<unsigned>(items.size());
-    const auto add=[&](const p::Uuid& object,c::CatalogRecordKind kind,std::string_view subtype){
+    const auto add=[&](const p::Uuid& object,c::CatalogRecordKind kind,scratchbird::core::catalog::CatalogObjectSubtype subtype){
       items.emplace_back();Fill(n++,object,kind,subtype);};
     using K=c::CatalogRecordKind;
     for(const auto* list:{&ids.verification_descriptors,&ids.transaction_descriptors,&ids.collision_descriptors})
-      for(const auto& d:*list)add(d.policy_uuid,K::policy,"policy_descriptor");
-    for(const auto& id:ids.verification_bodies)add(id,K::policy,"verification_policy_body");
-    for(const auto& id:ids.evidence_bodies)add(id,K::policy,"evidence_policy_body");
-    for(const auto& id:ids.authorization_bodies)add(id,K::policy,"authorization_policy_body");
-    for(const auto& id:ids.transaction_bodies)add(id,K::policy,"transaction_policy_body");
-    for(const auto& id:ids.lock_bodies)add(id,K::policy,"lock_policy_body");
-    for(const auto& id:ids.isolation_profiles)add(id,K::policy,"isolation_profile");
-    for(const auto& id:ids.management_profiles)add(id,K::management_operation,"management_profile");
-    for(const auto& id:ids.management_descriptors)add(id,K::management_operation,"management_descriptor");
-    for(const auto& id:ids.identifier_profiles)add(id,K::config_profile,"identifier_resolution_profile");
-    for(const auto& id:ids.dialect_profiles)add(id,K::config_profile,"naming_dialect_profile");
-    for(const auto& id:ids.collision_bodies)add(id,K::policy,"naming_collision_policy_body");
+      for(const auto& d:*list)add(d.policy_uuid,K::policy,scratchbird::core::catalog::CatalogObjectSubtype::policy_descriptor);
+    for(const auto& id:ids.verification_bodies)add(id,K::policy,scratchbird::core::catalog::CatalogObjectSubtype::verification_policy_body);
+    for(const auto& id:ids.evidence_bodies)add(id,K::policy,scratchbird::core::catalog::CatalogObjectSubtype::evidence_policy_body);
+    for(const auto& id:ids.authorization_bodies)add(id,K::policy,scratchbird::core::catalog::CatalogObjectSubtype::authorization_policy_body);
+    for(const auto& id:ids.transaction_bodies)add(id,K::policy,scratchbird::core::catalog::CatalogObjectSubtype::transaction_policy_body);
+    for(const auto& id:ids.lock_bodies)add(id,K::policy,scratchbird::core::catalog::CatalogObjectSubtype::lock_policy_body);
+    for(const auto& id:ids.isolation_profiles)add(id,K::policy,scratchbird::core::catalog::CatalogObjectSubtype::isolation_profile);
+    for(const auto& id:ids.management_profiles)add(id,K::management_operation,scratchbird::core::catalog::CatalogObjectSubtype::management_profile);
+    for(const auto& id:ids.management_descriptors)add(id,K::management_operation,scratchbird::core::catalog::CatalogObjectSubtype::management_descriptor);
+    for(const auto& id:ids.identifier_profiles)add(id,K::config_profile,scratchbird::core::catalog::CatalogObjectSubtype::identifier_resolution_profile);
+    for(const auto& id:ids.dialect_profiles)add(id,K::config_profile,scratchbird::core::catalog::CatalogObjectSubtype::naming_dialect_profile);
+    for(const auto& id:ids.collision_bodies)add(id,K::policy,scratchbird::core::catalog::CatalogObjectSubtype::naming_collision_policy_body);
     Rebind();
   }
   void Rebind(){inputs.clear();for(auto& x:items){x.entries[0]={&x.entry_metadata,&x.entry};inputs.push_back({&x.definition,&x.vector_metadata,&x.vector,x.entries});}}

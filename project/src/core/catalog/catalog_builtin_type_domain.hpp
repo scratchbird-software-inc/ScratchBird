@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
+#include "catalog_object_constants.hpp"
 #include "catalog_value_codec.hpp"
 #include "catalog_record_codec.hpp"
 
@@ -54,8 +55,8 @@ struct CatalogSystemDomain {
 };
 inline constexpr u32 kCatalogBuiltinDatatypeDescriptorSchemaId=65632;
 inline constexpr u32 kCatalogSystemDomainSchemaId=65633;
-inline constexpr std::string_view kBuiltinDatatypeDescriptorSubtype="builtin_datatype_descriptor";
-inline constexpr std::string_view kSystemDomainSubtype="system_domain";
+inline constexpr CatalogObjectSubtype kBuiltinDatatypeDescriptorSubtype=CatalogObjectSubtype::builtin_datatype_descriptor;
+inline constexpr CatalogObjectSubtype kSystemDomainSubtype=CatalogObjectSubtype::system_domain;
 template<class T> struct CatalogBuiltinTypeDomainResult {
   CatalogValueError error=CatalogValueError::invalid_value;
   std::optional<T> record;

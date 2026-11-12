@@ -611,7 +611,7 @@ void NativeCatalogNames() {
     m.definition_version=m.schema_epoch=m.security_epoch=m.resource_epoch=m.catalog_generation=1;
     m.dependency_generation=m.invalidation_generation=1;
     m.lifecycle=c::CatalogObjectLifecycle::active;m.status=c::CatalogObjectStatus::active;
-    m.object_subtype=is_entry?"name_entry":"name_vector";
+    m.object_subtype=is_entry?scratchbird::core::catalog::CatalogObjectSubtype::name_entry:scratchbird::core::catalog::CatalogObjectSubtype::name_vector;
     return m;
   };
   db::NativeCatalogVersionMutation v{f.relation,f.first_page,created,metadata(false),{},vector};
@@ -741,7 +741,7 @@ void NativeCatalogMetadataVersions() {
   metadata.definition_version = metadata.schema_epoch = metadata.security_epoch = 1;
   metadata.catalog_generation = metadata.dependency_generation = metadata.invalidation_generation = 1;
   metadata.lifecycle = catalog::CatalogObjectLifecycle::active; metadata.status = catalog::CatalogObjectStatus::active;
-  metadata.object_subtype = "application";
+  metadata.object_subtype = scratchbird::core::catalog::CatalogObjectSubtype::schema_application;
   constexpr char payload[] = "opaque-family-storage-oracle\0\r\n";
   metadata.record.payload.assign(payload, sizeof(payload) - 1);
   // Deliberately an opaque storage oracle, not a valid SQL object definition.
@@ -750,10 +750,10 @@ void NativeCatalogMetadataVersions() {
   const auto encoded = catalog::EncodeCatalogMetadataVersion(metadata);
   Check(encoded.ok(), "encode native metadata version");
   // (Version 2: no trace key or retention class, owner Q57 = 1, Q58 = 1.)
-  Check(encoded.bytes.size() == 384 + metadata.object_subtype.size() + 96 + metadata.record.payload.size(),
+  Check(encoded.bytes.size() == 384 + 96 + metadata.record.payload.size(),  // version 3: no text
       "independent metadata extent");
   Check(std::equal(encoded.bytes.begin(), encoded.bytes.begin() + 8, "SBCMV001") &&
-      platform::LoadLittle16(encoded.bytes.data() + 8) == 2 && platform::LoadLittle16(encoded.bytes.data() + 10) == 384 &&
+      platform::LoadLittle16(encoded.bytes.data() + 8) == 3 && platform::LoadLittle16(encoded.bytes.data() + 10) == 384 &&
       platform::LoadLittle64(encoded.bytes.data() + 88) == created.local_id.value &&
       std::equal(created.transaction_uuid.value.bytes.begin(), created.transaction_uuid.value.bytes.end(), encoded.bytes.begin() + 112),
       "independent metadata UUID/counter offsets");
@@ -814,14 +814,13 @@ void NativeCatalogMetadataVersions() {
   replacement.creator_local_transaction_id = replacement_tx.local_id.value;
   replacement.definition_version = replacement.schema_epoch = replacement.catalog_generation = 2;
   replacement.dependency_generation = replacement.invalidation_generation = 2;
-  replacement.object_subtype = "application-replaced";  // the marker (was the trace key: Q57 = 1)
   const auto replaced = write(replacement_tx, replacement, staged.row_version.version_uuid);
   Check(replaced.ok() && replaced.row_version.previous_version_uuid == staged.row_version.version_uuid,
       "catalog replacement lost native chain precondition");
   f.Finish(replacement_tx, true);
   rows = db::ReadNativeCatalogVersionsFromOpenDevice(f.device, f.relation, f.first_page, old_snapshot, false, reader);
   Check(rows.ok() && rows.rows.size() == 1 && rows.rows[0].metadata.definition_version == 1 &&
-      rows.rows[0].metadata.object_subtype == metadata.object_subtype, "old snapshot exposed replaced metadata");
+      rows.rows[0].metadata.schema_epoch == metadata.schema_epoch, "old snapshot exposed replaced metadata");
   const auto third_tx = f.Begin();
   auto third = replacement; third.creator_transaction_uuid = third_tx.transaction_uuid;
   third.creator_local_transaction_id = third_tx.local_id.value; third.definition_version = 3;
@@ -1096,7 +1095,7 @@ void NativeCatalogMetadataVersions() {
     auto value = metadata;
     value.record.header.row_uuid = Id(UuidKind::row); value.record.header.object_uuid = Id(UuidKind::object);
     value.creator_transaction_uuid = batch_tx.transaction_uuid; value.creator_local_transaction_id = batch_tx.local_id.value;
-    value.object_subtype = "application-batch-" + std::to_string(i);  // (was the trace key: Q57 = 1)
+    value.dependency_generation = i + 1;  // distinct rows (the marker was the trace key, then the subtype)
     mutations.push_back({combined.relation, combined.first_page + i / 2, batch_tx, value, {}});
   }
   for (unsigned fault = 0; fault != 4; ++fault) {

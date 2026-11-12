@@ -58,7 +58,7 @@ NativeConstructionAuditResult AcquireNativeConstructionIntent(
   return {E::none,core::uuid::StandaloneUuidV7Error::none,value,*row.value,event.observation};
 }
 bool NativeConstructionIntentMatchesRequest(const c::CatalogMetadataVersionView& m,const NativeFilespaceInitializationRequest& r){
-  if(m.object_subtype!="node_construction_intent"&&!c::IsCatalogConstructionIntentPayload(m.record.payload))return true;
+  if(m.object_subtype!=scratchbird::core::catalog::CatalogObjectSubtype::node_construction_intent&&!c::IsCatalogConstructionIntentPayload(m.record.payload))return true;
   const auto value=c::DecodeCatalogConstructionIntent(m.record.payload);
   return value.ok()&&c::CatalogConstructionIntentMatchesDatabase(m,r.bootstrap.database_uuid)&&
       value.record->filespace_uuid==r.bootstrap.filespace_uuid&&value.record->operation_uuid==r.operation_uuid&&

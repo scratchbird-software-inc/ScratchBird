@@ -42,7 +42,7 @@ inline std::optional<cat::CatalogMetadataVersion> IntentSeedRow(const sdb::Nativ
   m.record.header.parent_uuid = {UuidKind::object, m.owning_schema_uuid.value};
   m.record.header.deleted = false;
   m.record.payload.assign(reinterpret_cast<const char*>(encoded.bytes.data()), encoded.bytes.size());
-  m.object_subtype = "node_construction_intent";
+  m.object_subtype = scratchbird::core::catalog::CatalogObjectSubtype::node_construction_intent;
   m.default_name_uuid = {};
   m.name_vector_uuid = {};
   m.audit_uuid = m.record.header.object_uuid;

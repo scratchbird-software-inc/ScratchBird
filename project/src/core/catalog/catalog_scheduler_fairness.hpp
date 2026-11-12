@@ -141,7 +141,7 @@ inline bool CatalogSchedulerFairnessProfileMatchesMetadata(const CatalogMetadata
   const auto identity = [](const TypedUuid& id, UuidKind kind) {
     return id.kind == kind && uuid::IsEngineIdentityUuid(id.value);
   };
-  if (!CatalogSchedulerFairnessProfileMatchesHeader(m.record) || m.object_subtype != "scheduler_fairness" ||
+  if (!CatalogSchedulerFairnessProfileMatchesHeader(m.record) || m.object_subtype != CatalogObjectSubtype::scheduler_fairness ||
       m.authority_scope != CatalogAuthorityScope::local ||
       !identity(m.owning_schema_uuid,UuidKind::schema) ||
       !identity(m.record.header.parent_uuid,UuidKind::object) ||
@@ -160,7 +160,7 @@ inline bool CatalogSchedulerFairnessProfileMatchesMetadata(const CatalogMetadata
 inline bool CatalogSchedulerFairnessProfilePreservesOrigin(
     const CatalogMetadataVersionView& previous, const CatalogMetadataVersionView& successor) {
   const auto family = [](const auto& m) {
-    return m.object_subtype == "scheduler_fairness" || IsCatalogSchedulerFairnessProfilePayload(m.record.payload);
+    return m.object_subtype == CatalogObjectSubtype::scheduler_fairness || IsCatalogSchedulerFairnessProfilePayload(m.record.payload);
   };
   if (!family(previous) && !family(successor)) return true;
   if (!CatalogSchedulerFairnessProfileMatchesMetadata(previous) ||

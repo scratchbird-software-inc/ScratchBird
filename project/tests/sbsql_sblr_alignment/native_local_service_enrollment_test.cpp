@@ -298,7 +298,7 @@ std::string CatalogVariableBytes(const catalog::CatalogMetadataVersionView& meta
   // Name envelopes receive actual physical version locators at construction;
   // compare their independently supplied logical fields below.
   if(!name)append(metadata.record.payload);
-  append(metadata.object_subtype);
+  append(std::to_string(static_cast<unsigned>(metadata.object_subtype)));
   if(name){
     if(const auto* vector=std::get_if<catalog::CatalogNameVectorView>(&*name)){
       append(std::to_string(static_cast<unsigned>(vector->object_kind)));
@@ -326,7 +326,7 @@ void AddDatabaseDefinitionFixture(db::NativeCreationCatalogSeed& seed,
   definition.record.header.object_uuid=typed(platform::UuidKind::object,90000);
   definition.record.header.row_uuid=typed(platform::UuidKind::row,90001);
   definition.record.header.parent_uuid={};definition.owning_schema_uuid={};
-  definition.record.payload.clear();definition.object_subtype="database";
+  definition.record.payload.clear();definition.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::database;
   definition.default_name_uuid=typed(platform::UuidKind::object,90002);
   definition.name_vector_uuid=typed(platform::UuidKind::object,90003);
   auto& vector_metadata=input.vector_metadata;vector_metadata=definition;
@@ -334,13 +334,13 @@ void AddDatabaseDefinitionFixture(db::NativeCreationCatalogSeed& seed,
   vector_metadata.record.header.object_uuid=definition.name_vector_uuid;
   vector_metadata.record.header.row_uuid=typed(platform::UuidKind::row,90004);
   vector_metadata.record.header.parent_uuid=definition.record.header.object_uuid;
-  vector_metadata.object_subtype="name_vector";
+  vector_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_vector;
   auto& entry_metadata=input.entry_metadata;entry_metadata=definition;
   entry_metadata.record.header.kind=catalog::CatalogRecordKind::localized_name;
   entry_metadata.record.header.object_uuid=definition.default_name_uuid;
   entry_metadata.record.header.row_uuid=typed(platform::UuidKind::row,90005);
   entry_metadata.record.header.parent_uuid=definition.name_vector_uuid;
-  entry_metadata.object_subtype="name_entry";entry_metadata.resource_epoch=1;
+  entry_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_entry;entry_metadata.resource_epoch=1;
   input.vector.name_vector_uuid=definition.name_vector_uuid;
   input.vector.object_uuid=definition.record.header.object_uuid;
   input.vector.object_kind=catalog::CatalogRecordKind::database;input.vector.owning_schema_uuid.reset();
@@ -361,19 +361,19 @@ void AddDatabaseDefinitionFixture(db::NativeCreationCatalogSeed& seed,
   file.record.header.object_uuid=typed(platform::UuidKind::object,90030);
   file.record.header.row_uuid=typed(platform::UuidKind::row,90031);
   file.record.header.parent_uuid=definition.record.header.object_uuid;
-  file.object_subtype="filespace";
+  file.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::filespace;
   file.default_name_uuid=typed(platform::UuidKind::object,90032);
   file.name_vector_uuid=typed(platform::UuidKind::object,90033);
   file_input.vector_metadata=file;file_input.vector_metadata.record.header.kind=catalog::CatalogRecordKind::localized_name;
   file_input.vector_metadata.record.header.object_uuid=file.name_vector_uuid;
   file_input.vector_metadata.record.header.row_uuid=typed(platform::UuidKind::row,90034);
   file_input.vector_metadata.record.header.parent_uuid=file.record.header.object_uuid;
-  file_input.vector_metadata.object_subtype="name_vector";
+  file_input.vector_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_vector;
   file_input.entry_metadata=file;file_input.entry_metadata.record.header.kind=catalog::CatalogRecordKind::localized_name;
   file_input.entry_metadata.record.header.object_uuid=file.default_name_uuid;
   file_input.entry_metadata.record.header.row_uuid=typed(platform::UuidKind::row,90035);
   file_input.entry_metadata.record.header.parent_uuid=file.name_vector_uuid;
-  file_input.entry_metadata.object_subtype="name_entry";file_input.entry_metadata.resource_epoch=1;
+  file_input.entry_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_entry;file_input.entry_metadata.resource_epoch=1;
   file_input.vector.object_uuid=file.record.header.object_uuid;file_input.vector.name_vector_uuid=file.name_vector_uuid;
   file_input.vector.default_name_entry_uuid=file.default_name_uuid;file_input.vector.object_kind=catalog::CatalogRecordKind::filespace;
   file_input.entry.object_uuid=file.record.header.object_uuid;file_input.entry.name_vector_uuid=file.name_vector_uuid;
@@ -409,17 +409,17 @@ void AddDatabaseDefinitionFixture(db::NativeCreationCatalogSeed& seed,
     schema.schema_type=i==1?catalog::CatalogSchemaType::application:catalog::CatalogSchemaType::system;
     schema.permissions_policy_uuid=metadata.security_policy_uuid;
     schema.origin_transaction_uuid=security_tx;schema.origin_local_transaction_id=1;
-    metadata.object_subtype=catalog::CatalogSchemaTypeName(schema.schema_type);metadata.record.payload.clear();
+    metadata.object_subtype=catalog::CatalogSchemaSubtype(schema.schema_type);metadata.record.payload.clear();
     named.vector_metadata=metadata;named.vector_metadata.record.header.kind=catalog::CatalogRecordKind::localized_name;
     named.vector_metadata.record.header.object_uuid=metadata.name_vector_uuid;
     named.vector_metadata.record.header.row_uuid=typed(platform::UuidKind::row,90011+3*i);
     named.vector_metadata.record.header.parent_uuid=metadata.record.header.object_uuid;
-    named.vector_metadata.object_subtype="name_vector";
+    named.vector_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_vector;
     named.entry_metadata=metadata;named.entry_metadata.record.header.kind=catalog::CatalogRecordKind::localized_name;
     named.entry_metadata.record.header.object_uuid=metadata.default_name_uuid;
     named.entry_metadata.record.header.row_uuid=typed(platform::UuidKind::row,90012+3*i);
     named.entry_metadata.record.header.parent_uuid=metadata.name_vector_uuid;
-    named.entry_metadata.object_subtype="name_entry";named.entry_metadata.resource_epoch=1;
+    named.entry_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_entry;named.entry_metadata.resource_epoch=1;
     named.vector.object_uuid=metadata.record.header.object_uuid;named.vector.name_vector_uuid=metadata.name_vector_uuid;
     named.vector.default_name_entry_uuid=metadata.default_name_uuid;named.vector.object_kind=catalog::CatalogRecordKind::schema;
     named.vector.owning_schema_uuid=i?std::optional{metadata.owning_schema_uuid}:std::nullopt;
@@ -633,7 +633,7 @@ AgentError AddAgentConfigurationFixture(db::NativeCreationCatalogSeed& seed,
     m.record.header.row_uuid=enrollment::Typed(platform::UuidKind::row,500000+3*n);
     m.record.header.kind=declaration.kind==K::policy?catalog::CatalogRecordKind::policy:catalog::CatalogRecordKind::config_profile;
     m.record.payload.assign(encoded.bytes.begin(),encoded.bytes.end());
-    m.object_subtype=declaration.kind==K::policy?"agent_policy":"agent_registration";
+    m.object_subtype=declaration.kind==K::policy?scratchbird::core::catalog::CatalogObjectSubtype::agent_policy:scratchbird::core::catalog::CatalogObjectSubtype::agent_registration;
     m.default_name_uuid=enrollment::Typed(platform::UuidKind::object,600000+2*n);
     m.name_vector_uuid=enrollment::Typed(platform::UuidKind::object,600001+2*n);
     item.vector_metadata=m;item.vector_metadata.record.payload.clear();
@@ -641,13 +641,13 @@ AgentError AddAgentConfigurationFixture(db::NativeCreationCatalogSeed& seed,
     item.vector_metadata.record.header.object_uuid=m.name_vector_uuid;
     item.vector_metadata.record.header.row_uuid=enrollment::Typed(platform::UuidKind::row,500001+3*n);
     item.vector_metadata.record.header.parent_uuid=m.record.header.object_uuid;
-    item.vector_metadata.object_subtype="name_vector";
+    item.vector_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_vector;
     item.vector.name_vector_uuid=m.name_vector_uuid;item.vector.object_uuid=m.record.header.object_uuid;
     item.vector.object_kind=m.record.header.kind;
     item.vector.default_name_entry_uuid=m.default_name_uuid;
     item.entry_metadata=item.vector_metadata;item.entry_metadata.record.header.object_uuid=m.default_name_uuid;
     item.entry_metadata.record.header.row_uuid=enrollment::Typed(platform::UuidKind::row,500002+3*n);
-    item.entry_metadata.record.header.parent_uuid=m.name_vector_uuid;item.entry_metadata.object_subtype="name_entry";
+    item.entry_metadata.record.header.parent_uuid=m.name_vector_uuid;item.entry_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_entry;
     item.entry_metadata.resource_epoch=1;
     item.entry.name_entry_uuid=m.default_name_uuid;item.entry.name_vector_uuid=m.name_vector_uuid;
     item.entry.object_uuid=m.record.header.object_uuid;item.entry.object_kind=item.vector.object_kind;
@@ -689,7 +689,7 @@ db::NativeCreationCatalogIndexes AddCatalogIndexRowsFixture(db::NativeCreationCa
     m.record.header.kind=catalog::CatalogRecordKind::config_profile;
     m.record.header.object_uuid={platform::UuidKind::object,row.object_uuid};
     m.record.header.row_uuid=enrollment::Typed(platform::UuidKind::row,700000+3*n);
-    m.record.payload=row.payload;m.object_subtype=std::string(row.object_subtype);
+    m.record.payload=row.payload;m.object_subtype=row.object_subtype;
     m.default_name_uuid=enrollment::Typed(platform::UuidKind::object,800000+2*n);
     m.name_vector_uuid=enrollment::Typed(platform::UuidKind::object,800001+2*n);
     item.vector_metadata=m;item.vector_metadata.record.payload.clear();
@@ -697,13 +697,13 @@ db::NativeCreationCatalogIndexes AddCatalogIndexRowsFixture(db::NativeCreationCa
     item.vector_metadata.record.header.object_uuid=m.name_vector_uuid;
     item.vector_metadata.record.header.row_uuid=enrollment::Typed(platform::UuidKind::row,700001+3*n);
     item.vector_metadata.record.header.parent_uuid=m.record.header.object_uuid;
-    item.vector_metadata.object_subtype="name_vector";
+    item.vector_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_vector;
     item.vector.name_vector_uuid=m.name_vector_uuid;item.vector.object_uuid=m.record.header.object_uuid;
     item.vector.object_kind=m.record.header.kind;
     item.vector.default_name_entry_uuid=m.default_name_uuid;
     item.entry_metadata=item.vector_metadata;item.entry_metadata.record.header.object_uuid=m.default_name_uuid;
     item.entry_metadata.record.header.row_uuid=enrollment::Typed(platform::UuidKind::row,700002+3*n);
-    item.entry_metadata.record.header.parent_uuid=m.name_vector_uuid;item.entry_metadata.object_subtype="name_entry";
+    item.entry_metadata.record.header.parent_uuid=m.name_vector_uuid;item.entry_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_entry;
     item.entry_metadata.resource_epoch=1;
     item.entry.name_entry_uuid=m.default_name_uuid;item.entry.name_vector_uuid=m.name_vector_uuid;
     item.entry.object_uuid=m.record.header.object_uuid;item.entry.object_kind=item.vector.object_kind;
@@ -854,7 +854,7 @@ void AddVerificationPolicies(db::NativeCreationCatalogSeed& seed,
       if(n==3&&variant==13)d.body_generation=2;
       if(n==4&&variant==15)d.body_generation=2;
       if(n==0&&variant==12)d.policy_class=CatalogPolicyClass::authorization;
-      encoded=EncodeCatalogPolicyDescriptorInto(d,backing);m.object_subtype="policy_descriptor";
+      encoded=EncodeCatalogPolicyDescriptorInto(d,backing);m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::policy_descriptor;
     }else if(n<8){
       CatalogVerificationPolicyBody b;b.body_uuid=id;b.database_uuid=Id(1);b.generation=1;
       b.role=VerificationPolicyRole(n-4);b.verification_class_mask=511;b.authority_class_mask=63;b.verification_level_mask=1023;
@@ -869,7 +869,7 @@ void AddVerificationPolicies(db::NativeCreationCatalogSeed& seed,
       if(n==5&&variant==6)b.authority_class_mask=2;
       if(n==5&&variant==7)b.verification_level_mask=1;
       if(n==5&&variant==8)b.evidence_policy_uuid=security_fixture::Id(92004);
-      encoded=EncodeCatalogVerificationPolicyInto(b,backing);m.object_subtype="verification_policy_body";
+      encoded=EncodeCatalogVerificationPolicyInto(b,backing);m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::verification_policy_body;
     }else if(n==8){
       CatalogEvidencePolicyBody b;b.body_uuid=id;b.database_uuid=Id(1);b.generation=1;
       b.required_evidence_classes.entries[0]="verification";b.required_evidence_classes.count=1;
@@ -877,7 +877,7 @@ void AddVerificationPolicies(db::NativeCreationCatalogSeed& seed,
       b.storage_filespace_uuid=variant==10?security_fixture::Id(92099):Id(2);
       b.maximum_record_bytes=4096;b.maximum_batch_bytes=65536;
       b.origin_transaction_uuid=b.creating_transaction_uuid=security_tx;b.origin_local_transaction_id=b.creating_local_transaction_id=1;
-      encoded=EncodeCatalogEvidencePolicyInto(b,backing);m.object_subtype="evidence_policy_body";
+      encoded=EncodeCatalogEvidencePolicyInto(b,backing);m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::evidence_policy_body;
     }else{
       CatalogAuthorizationPolicyBody b;b.body_uuid=id;b.database_uuid=Id(1);b.generation=1;
       b.user_schema_uuid=b.role_schema_uuid=b.group_schema_uuid=b.grant_schema_uuid=
@@ -891,7 +891,7 @@ void AddVerificationPolicies(db::NativeCreationCatalogSeed& seed,
       if(variant==16)b.user_schema_uuid=security_fixture::Id(92000);
       if(variant==17)b.role_schema_uuid=security_fixture::Id(92099);
       if(variant==18){b.external_mapping=AuthorizationExternalMapping::internal_snapshot;b.external_mapping_schema_uuid=security_fixture::Id(92099);}
-      encoded=EncodeCatalogAuthorizationPolicyInto(b,backing);m.object_subtype="authorization_policy_body";
+      encoded=EncodeCatalogAuthorizationPolicyInto(b,backing);m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::authorization_policy_body;
     }
     Check(encoded.ok(),"complete typed verification/evidence/access policy fixture encodes");
     m.record.payload.assign(reinterpret_cast<const char*>(encoded.bytes.data()),encoded.bytes.size());
@@ -899,10 +899,10 @@ void AddVerificationPolicies(db::NativeCreationCatalogSeed& seed,
     item.vector_metadata.record.header.kind=CatalogRecordKind::localized_name;
     item.vector_metadata.record.header.object_uuid=m.name_vector_uuid;
     item.vector_metadata.record.header.row_uuid=enrollment::Typed(platform::UuidKind::row,94001+3*n);
-    item.vector_metadata.record.header.parent_uuid=m.record.header.object_uuid;item.vector_metadata.object_subtype="name_vector";
+    item.vector_metadata.record.header.parent_uuid=m.record.header.object_uuid;item.vector_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_vector;
     item.entry_metadata=item.vector_metadata;item.entry_metadata.record.header.object_uuid=m.default_name_uuid;
     item.entry_metadata.record.header.row_uuid=enrollment::Typed(platform::UuidKind::row,94002+3*n);
-    item.entry_metadata.record.header.parent_uuid=m.name_vector_uuid;item.entry_metadata.object_subtype="name_entry";item.entry_metadata.resource_epoch=1;
+    item.entry_metadata.record.header.parent_uuid=m.name_vector_uuid;item.entry_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_entry;item.entry_metadata.resource_epoch=1;
     item.vector.name_vector_uuid=item.entry.name_vector_uuid=m.name_vector_uuid;
     item.vector.object_uuid=item.entry.object_uuid=m.record.header.object_uuid;
     item.vector.default_name_entry_uuid=item.entry.name_entry_uuid=m.default_name_uuid;
@@ -955,24 +955,24 @@ void AddManagementDefinitions(db::NativeCreationCatalogSeed& seed,
     if(n<10){CatalogManagementProfile p;p.profile_uuid=id;p.database_uuid=Id(1);p.generation=1;
       p.code=CatalogManagementProfileCode(variant==4&&n==0?2:n+1);
       p.origin_transaction_uuid=p.creating_transaction_uuid=security_tx;p.origin_local_transaction_id=p.creating_local_transaction_id=1;
-      encoded=EncodeCatalogManagementProfileInto(p,backing);m.object_subtype="management_profile";
+      encoded=EncodeCatalogManagementProfileInto(p,backing);m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::management_profile;
     }else{CatalogManagementOperationDescriptor d;d.descriptor_uuid=id;d.database_uuid=Id(1);d.generation=1;
       d.code=CatalogManagementOperationCode::verify_start;d.flags=31;
       for(unsigned i=0;i<10;++i)d.profiles[i]=security_fixture::Id(95000+i);
       if(variant==3)std::swap(d.profiles[0],d.profiles[1]);
       if(variant==9)d.profiles[0]=security_fixture::Id(92000);
       d.origin_transaction_uuid=d.creating_transaction_uuid=security_tx;d.origin_local_transaction_id=d.creating_local_transaction_id=1;
-      encoded=EncodeCatalogManagementDescriptorInto(d,backing);m.object_subtype="management_descriptor";
+      encoded=EncodeCatalogManagementDescriptorInto(d,backing);m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::management_descriptor;
     }
     Check(encoded.ok(),"actual registered management definitions encode before native construction");
     m.record.payload.assign(reinterpret_cast<const char*>(encoded.bytes.data()),encoded.bytes.size());
     item.vector_metadata=m;item.vector_metadata.record.payload.clear();item.vector_metadata.record.header.kind=CatalogRecordKind::localized_name;
     item.vector_metadata.record.header.object_uuid=m.name_vector_uuid;
     item.vector_metadata.record.header.row_uuid=enrollment::Typed(platform::UuidKind::row,97001+3*n);
-    item.vector_metadata.record.header.parent_uuid=m.record.header.object_uuid;item.vector_metadata.object_subtype="name_vector";
+    item.vector_metadata.record.header.parent_uuid=m.record.header.object_uuid;item.vector_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_vector;
     item.entry_metadata=item.vector_metadata;item.entry_metadata.record.header.object_uuid=m.default_name_uuid;
     item.entry_metadata.record.header.row_uuid=enrollment::Typed(platform::UuidKind::row,97002+3*n);
-    item.entry_metadata.record.header.parent_uuid=m.name_vector_uuid;item.entry_metadata.object_subtype="name_entry";item.entry_metadata.resource_epoch=1;
+    item.entry_metadata.record.header.parent_uuid=m.name_vector_uuid;item.entry_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_entry;item.entry_metadata.resource_epoch=1;
     item.vector.name_vector_uuid=item.entry.name_vector_uuid=m.name_vector_uuid;
     item.vector.object_uuid=item.entry.object_uuid=m.record.header.object_uuid;
     item.vector.default_name_entry_uuid=item.entry.name_entry_uuid=m.default_name_uuid;
@@ -1044,7 +1044,7 @@ void AddTransactionPolicies(db::NativeCreationCatalogSeed& seed,
         if(variant==40){d.scope=CatalogPolicyScope::filespace;d.scope_uuid=Id(2);}
         d.cache_invalidation_mask=255;
       }
-      encoded=EncodeCatalogPolicyDescriptorInto(d,backing);m.object_subtype="policy_descriptor";
+      encoded=EncodeCatalogPolicyDescriptorInto(d,backing);m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::policy_descriptor;
     }else if(n==2){CatalogTransactionPolicyBody b;b.body_uuid=id;b.database_uuid=Id(1);b.generation=1;
       b.default_isolation_profile_uuid=security_fixture::Id(variant==9?92013:98020);b.startup_isolation_profile_uuid=security_fixture::Id(98021);
       b.allowed_isolation_profiles[0]=b.default_isolation_profile_uuid;b.allowed_isolation_profiles[1]=b.startup_isolation_profile_uuid;
@@ -1060,7 +1060,7 @@ void AddTransactionPolicies(db::NativeCreationCatalogSeed& seed,
       if(variant==30){b.maximum_transaction_microseconds=180000000;b.maximum_snapshot_microseconds=60000000;}
       if(variant==41)b.maximum_transaction_microseconds=b.maximum_snapshot_microseconds=60000000;
       b.origin_transaction_uuid=b.creating_transaction_uuid=security_tx;b.origin_local_transaction_id=b.creating_local_transaction_id=1;
-      encoded=EncodeCatalogTransactionPolicyInto(b,backing);m.object_subtype="transaction_policy_body";
+      encoded=EncodeCatalogTransactionPolicyInto(b,backing);m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::transaction_policy_body;
     }else if(n==3){CatalogLockPolicyBody b;b.body_uuid=id;b.database_uuid=Id(1);b.generation=1;
       // Lock count, memory, wait graph and deadlock work: 0, no limit (owner
       // 2026-11-04, SB_DRIFT_LOCK_POLICY_ZERO_IS_NO_LIMIT); they were 256,
@@ -1071,7 +1071,7 @@ void AddTransactionPolicies(db::NativeCreationCatalogSeed& seed,
       b.deadlock_detection_interval_microseconds=10000000;
       b.evidence_policy_uuid=security_fixture::Id(92003);
       b.origin_transaction_uuid=b.creating_transaction_uuid=security_tx;b.origin_local_transaction_id=b.creating_local_transaction_id=1;
-      encoded=EncodeCatalogLockPolicyInto(b,backing);m.object_subtype="lock_policy_body";
+      encoded=EncodeCatalogLockPolicyInto(b,backing);m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::lock_policy_body;
     }else{CatalogIsolationProfile b;b.profile_uuid=id;b.database_uuid=Id(1);b.generation=1;
       b.profile_kind=n==4?IsolationProfileKind::read_committed_statement:IsolationProfileKind::maintenance_operation_isolation;
       b.snapshot_construction_point=n==4?IsolationSnapshotPoint::statement_start:IsolationSnapshotPoint::operation_start;
@@ -1084,17 +1084,17 @@ void AddTransactionPolicies(db::NativeCreationCatalogSeed& seed,
       if(n==5&&variant==21){b.profile_kind=IsolationProfileKind::read_committed_statement;
         b.snapshot_construction_point=IsolationSnapshotPoint::statement_start;b.snapshot_refresh_mask=2;
         b.metadata_visibility=IsolationMetadataVisibility::statement_epoch;}
-      encoded=EncodeCatalogIsolationProfileInto(b,backing);m.object_subtype="isolation_profile";
+      encoded=EncodeCatalogIsolationProfileInto(b,backing);m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::isolation_profile;
     }
     Check(encoded.ok(),"actual transaction/isolation/lock definitions encode before native construction");
     m.record.payload.assign(reinterpret_cast<const char*>(encoded.bytes.data()),encoded.bytes.size());
     item.vector_metadata=m;item.vector_metadata.record.payload.clear();item.vector_metadata.record.header.kind=CatalogRecordKind::localized_name;
     item.vector_metadata.record.header.object_uuid=m.name_vector_uuid;
     item.vector_metadata.record.header.row_uuid=enrollment::Typed(platform::UuidKind::row,100001+3*n);
-    item.vector_metadata.record.header.parent_uuid=m.record.header.object_uuid;item.vector_metadata.object_subtype="name_vector";
+    item.vector_metadata.record.header.parent_uuid=m.record.header.object_uuid;item.vector_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_vector;
     item.entry_metadata=item.vector_metadata;item.entry_metadata.record.header.object_uuid=m.default_name_uuid;
     item.entry_metadata.record.header.row_uuid=enrollment::Typed(platform::UuidKind::row,100002+3*n);
-    item.entry_metadata.record.header.parent_uuid=m.name_vector_uuid;item.entry_metadata.object_subtype="name_entry";item.entry_metadata.resource_epoch=1;
+    item.entry_metadata.record.header.parent_uuid=m.name_vector_uuid;item.entry_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_entry;item.entry_metadata.resource_epoch=1;
     item.vector.name_vector_uuid=item.entry.name_vector_uuid=m.name_vector_uuid;
     item.vector.object_uuid=item.entry.object_uuid=m.record.header.object_uuid;
     item.vector.default_name_entry_uuid=item.entry.name_entry_uuid=m.default_name_uuid;
@@ -1111,7 +1111,7 @@ void AddTransactionPolicies(db::NativeCreationCatalogSeed& seed,
     if(id!=removed)seed[4].push_back(std::move(row));}
   for(auto& row:result.records->names)if(!row.name||!std::visit([&](const auto& name){return name.object_uuid.value==removed;},*row.name))seed[1].push_back(std::move(row));
   bool selected=false;
-  for(auto& row:seed[4])if(row.metadata.object_subtype=="bootstrap_policy_profile"){
+  for(auto& row:seed[4])if(row.metadata.object_subtype==scratchbird::core::catalog::CatalogObjectSubtype::bootstrap_policy_profile){
     auto profile=DecodeCatalogBootstrapPolicyProfile(row.metadata.record.payload);Check(profile.ok(),"actual bootstrap profile decodes");
     if(profile.record->area!="transaction_mga_cleanup_archive_backup_forward")continue;
     Check(!selected,"one actual transaction selection");selected=true;
@@ -1154,7 +1154,7 @@ void AddNamingProfileFixture(db::NativeCreationCatalogSeed& seed,
     m.record.header.kind=CatalogRecordKind::config_profile;
     m.record.header.object_uuid={platform::UuidKind::object,n?identifier.profile_uuid:dialect.profile_uuid};
     m.record.header.row_uuid=enrollment::Typed(platform::UuidKind::row,101000+100*copy+3*n);
-    m.object_subtype=n?"identifier_resolution_profile":"naming_dialect_profile";
+    m.object_subtype=n?scratchbird::core::catalog::CatalogObjectSubtype::identifier_resolution_profile:scratchbird::core::catalog::CatalogObjectSubtype::naming_dialect_profile;
     const auto encoded=n?EncodeCatalogIdentifierProfileInto(identifier,backing):EncodeCatalogNamingDialectProfileInto(dialect,backing);
     Check(encoded.ok(),"explicit naming profile persists supplied values, no inferred label algorithm");
     m.record.payload.assign(encoded.bytes.begin(),encoded.bytes.end());
@@ -1163,10 +1163,10 @@ void AddNamingProfileFixture(db::NativeCreationCatalogSeed& seed,
     x.vector_metadata=m;x.vector_metadata.record.payload.clear();x.vector_metadata.record.header.kind=CatalogRecordKind::localized_name;
     x.vector_metadata.record.header.object_uuid=m.name_vector_uuid;
     x.vector_metadata.record.header.row_uuid=enrollment::Typed(platform::UuidKind::row,101001+100*copy+3*n);
-    x.vector_metadata.record.header.parent_uuid=m.record.header.object_uuid;x.vector_metadata.object_subtype="name_vector";
+    x.vector_metadata.record.header.parent_uuid=m.record.header.object_uuid;x.vector_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_vector;
     x.entry_metadata=x.vector_metadata;x.entry_metadata.record.header.object_uuid=m.default_name_uuid;
     x.entry_metadata.record.header.row_uuid=enrollment::Typed(platform::UuidKind::row,101002+100*copy+3*n);
-    x.entry_metadata.record.header.parent_uuid=m.name_vector_uuid;x.entry_metadata.object_subtype="name_entry";x.entry_metadata.resource_epoch=1;
+    x.entry_metadata.record.header.parent_uuid=m.name_vector_uuid;x.entry_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_entry;x.entry_metadata.resource_epoch=1;
     x.vector.name_vector_uuid=m.name_vector_uuid;x.vector.object_uuid=m.record.header.object_uuid;
     x.vector.object_kind=m.record.header.kind;x.vector.default_name_entry_uuid=m.default_name_uuid;
     x.entry.name_entry_uuid=m.default_name_uuid;x.entry.name_vector_uuid=m.name_vector_uuid;
@@ -1178,8 +1178,8 @@ void AddNamingProfileFixture(db::NativeCreationCatalogSeed& seed,
   auto assembled=AssembleLocalNamedCreationRecords(Id(1),security_tx,scratchbird::core::catalog::kCatalogLanguage_en_US,named,{6,1024*1024});
   Check(assembled.ok(),"actual named identifier and dialect definitions assemble before physical creation");
   for(auto& row:assembled.records->definitions){
-    if((variant==9&&row.metadata.object_subtype=="identifier_resolution_profile")||
-        (variant==10&&row.metadata.object_subtype=="naming_dialect_profile"))row.metadata.status=CatalogObjectStatus::disabled_by_policy;
+    if((variant==9&&row.metadata.object_subtype==scratchbird::core::catalog::CatalogObjectSubtype::identifier_resolution_profile)||
+        (variant==10&&row.metadata.object_subtype==scratchbird::core::catalog::CatalogObjectSubtype::naming_dialect_profile))row.metadata.status=CatalogObjectStatus::disabled_by_policy;
     seed[4].push_back(std::move(row));
   }
   for(auto& row:assembled.records->names)seed[1].push_back(std::move(row));
@@ -1249,7 +1249,7 @@ void AddCollisionPolicyFixture(db::NativeCreationCatalogSeed& seed,
     auto& x=items[n];auto& m=x.definition;m.record.header.kind=CatalogRecordKind::policy;
     m.record.header.object_uuid={platform::UuidKind::object,n?body.body_uuid:policy.policy_uuid};
     m.record.header.row_uuid=enrollment::Typed(platform::UuidKind::row,102200+1000*copy+3*n);
-    m.object_subtype=n?"naming_collision_policy_body":"policy_descriptor";
+    m.object_subtype=n?scratchbird::core::catalog::CatalogObjectSubtype::naming_collision_policy_body:scratchbird::core::catalog::CatalogObjectSubtype::policy_descriptor;
     const auto encoded=n?EncodeCatalogNamingCollisionPolicyInto(body,backing):EncodeCatalogPolicyDescriptorInto(policy,backing);
     Check(encoded.ok(),"actual collision descriptor and body encode explicit rules");
     m.record.payload.assign(encoded.bytes.begin(),encoded.bytes.end());
@@ -1258,10 +1258,10 @@ void AddCollisionPolicyFixture(db::NativeCreationCatalogSeed& seed,
     x.vector_metadata=m;x.vector_metadata.record.payload.clear();x.vector_metadata.record.header.kind=CatalogRecordKind::localized_name;
     x.vector_metadata.record.header.object_uuid=m.name_vector_uuid;
     x.vector_metadata.record.header.row_uuid=enrollment::Typed(platform::UuidKind::row,102201+1000*copy+3*n);
-    x.vector_metadata.record.header.parent_uuid=m.record.header.object_uuid;x.vector_metadata.object_subtype="name_vector";
+    x.vector_metadata.record.header.parent_uuid=m.record.header.object_uuid;x.vector_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_vector;
     x.entry_metadata=x.vector_metadata;x.entry_metadata.record.header.object_uuid=m.default_name_uuid;
     x.entry_metadata.record.header.row_uuid=enrollment::Typed(platform::UuidKind::row,102202+1000*copy+3*n);
-    x.entry_metadata.record.header.parent_uuid=m.name_vector_uuid;x.entry_metadata.object_subtype="name_entry";x.entry_metadata.resource_epoch=1;
+    x.entry_metadata.record.header.parent_uuid=m.name_vector_uuid;x.entry_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_entry;x.entry_metadata.resource_epoch=1;
     x.vector.name_vector_uuid=x.entry.name_vector_uuid=m.name_vector_uuid;
     x.vector.object_uuid=x.entry.object_uuid=m.record.header.object_uuid;
     x.vector.default_name_entry_uuid=x.entry.name_entry_uuid=m.default_name_uuid;
@@ -1273,9 +1273,9 @@ void AddCollisionPolicyFixture(db::NativeCreationCatalogSeed& seed,
   auto assembled=AssembleLocalNamedCreationRecords(Id(1),security_tx,scratchbird::core::catalog::kCatalogLanguage_en_US,named,{6,1024*1024});
   Check(assembled.ok(),"actual named collision definitions assemble before physical creation");
   for(auto& row:assembled.records->definitions){
-    if((variant==9&&row.metadata.object_subtype=="policy_descriptor")||
-        (variant==10&&row.metadata.object_subtype=="naming_collision_policy_body"))row.metadata.status=CatalogObjectStatus::disabled_by_policy;
-    seed[variant==22&&row.metadata.object_subtype=="naming_collision_policy_body"?0:4].push_back(std::move(row));
+    if((variant==9&&row.metadata.object_subtype==scratchbird::core::catalog::CatalogObjectSubtype::policy_descriptor)||
+        (variant==10&&row.metadata.object_subtype==scratchbird::core::catalog::CatalogObjectSubtype::naming_collision_policy_body))row.metadata.status=CatalogObjectStatus::disabled_by_policy;
+    seed[variant==22&&row.metadata.object_subtype==scratchbird::core::catalog::CatalogObjectSubtype::naming_collision_policy_body?0:4].push_back(std::move(row));
   }
   for(auto& row:assembled.records->names)seed[1].push_back(std::move(row));
   if(variant==19)AddNamingProfileFixture(seed,prototype,0,1);
@@ -1379,8 +1379,8 @@ void PackPolicyFamiliesMatchFixture() {
         [&](const auto& d){return d.object_uuid==header.object_uuid.value;});
     if(found==with.definitions.end()||found->kind!=header.kind||found->object_subtype!=input.definition->object_subtype){
       std::cerr<<"supplied definition "<<scratchbird::core::uuid::UuidToString(header.object_uuid.value)<<" "
-          <<input.definition->object_subtype<<" kind="<<int(header.kind)<<" enumerated="
-          <<(found==with.definitions.end()?std::string("absent"):found->object_subtype+" kind="+std::to_string(int(found->kind)))<<'\n';
+          <<static_cast<unsigned>(input.definition->object_subtype)<<" kind="<<int(header.kind)<<" enumerated="
+          <<(found==with.definitions.end()?std::string("absent"):std::to_string(static_cast<unsigned>(found->object_subtype))+" kind="+std::to_string(int(found->kind)))<<'\n';
       supplied_match=false;
     }
   }
@@ -1562,7 +1562,7 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
   audit_metadata.record.header.row_uuid=audit.row_uuid;
   audit_metadata.record.header.parent_uuid={platform::UuidKind::object,security_fixture::Id(62)};
   audit_metadata.owning_schema_uuid={platform::UuidKind::schema,security_fixture::Id(62)};
-  audit_metadata.object_subtype="node_construction_intent";
+  audit_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::node_construction_intent;
   audit_metadata.default_name_uuid={};audit_metadata.name_vector_uuid={};
   audit_metadata.audit_uuid=audit_metadata.record.header.object_uuid;
   std::array<byte,catalog::kCatalogConstructionIntentMaxBytes> audit_bytes;
@@ -3087,7 +3087,7 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
           auto& m=row.metadata;m.record.header.row_uuid={platform::UuidKind::row,key};
           m.record.header.parent_uuid=like.record.header.parent_uuid;m.owner_uuid=like.owner_uuid;m.audit_uuid=event_of(n);
           m.security_policy_uuid=like.security_policy_uuid;m.owning_schema_uuid=like.owning_schema_uuid;
-          m.object_subtype="w3b_insert_mechanics_fixture";
+          m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;
           m.record.header.object_uuid={platform::UuidKind::object,object};m.definition_version=1;
           m.creator_transaction_uuid={platform::UuidKind::transaction,tx};m.creator_local_transaction_id=n;
           m.default_name_uuid={};m.name_vector_uuid={};

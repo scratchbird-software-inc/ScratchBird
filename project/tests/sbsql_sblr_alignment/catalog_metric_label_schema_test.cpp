@@ -33,7 +33,7 @@ c::CatalogMetadataVersion LabelMetadata(const c::CatalogMetricLabelSchema& r) {
   m.record.header.object_uuid={p::UuidKind::object,r.label_schema_uuid};
   m.record.payload=LabelGolden(r);m.definition_version=r.generation;
   m.creator_transaction_uuid=r.origin_transaction_uuid;m.creator_local_transaction_id=r.origin_local_transaction_id;
-  m.object_subtype="metric_label_schema";
+  m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::metric_label_schema;
   m.authority_scope=r.cluster_only?c::CatalogAuthorityScope::cluster:c::CatalogAuthorityScope::local;return m;
 }
 bool SharedLabelOrigin(const c::CatalogMetadataVersion& a,const c::CatalogMetadataVersion& b) {
@@ -136,7 +136,7 @@ void LabelBinding() {
     switch(which){
       case 0:m.record.header.object_uuid.value.bytes[15]++;break;
       case 1:m.record.header.kind=c::CatalogRecordKind::table_descriptor;break;
-      case 2:m.object_subtype="table";break;case 3:m.definition_version++;break;
+      case 2:m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;break;case 3:m.definition_version++;break;
       case 4:m.record.header.parent_uuid.value.bytes[15]++;break;case 5:m.owning_schema_uuid={};break;
       case 6:m.default_name_uuid={};break;case 7:m.name_vector_uuid={};break;
       case 8:m.security_policy_uuid={};break;case 9:m.authority_scope=c::CatalogAuthorityScope::cluster;break;
@@ -163,7 +163,7 @@ void LabelBinding() {
     Check(c::EncodeCatalogMetadataVersion(m).ok(),"changed origin fixture not individually valid");
     Check(!SharedLabelOrigin(initial,m),"label schema changed immutable origin");
   }
-  auto other=initial;other.record.header.kind=c::CatalogRecordKind::table_descriptor;other.object_subtype="other";other.record.payload="unrelated";
+  auto other=initial;other.record.header.kind=c::CatalogRecordKind::table_descriptor;other.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;other.record.payload="unrelated";
   Check(SharedLabelOrigin(other,other),"label schema redefined unrelated family");
   Check(!SharedLabelOrigin(initial,other)&&!SharedLabelOrigin(other,initial),"schema family swap bypassed origin");
   const auto wrapped=c::EncodeCatalogMetadataVersion(initial);

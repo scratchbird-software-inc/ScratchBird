@@ -70,7 +70,7 @@ std::string Golden(const c::CatalogIdentifierResolutionProfile& r,unsigned resou
 c::CatalogMetadataVersion Metadata(const c::CatalogIdentifierResolutionProfile& r){
   auto m=f::Metadata(0,r.origin_transaction_uuid,f::Id(60),Golden(r));m.record.header.kind=c::CatalogRecordKind::config_profile;
   m.record.header.object_uuid={p::UuidKind::object,r.profile_uuid};m.record.header.row_uuid={p::UuidKind::row,f::Id(101)};
-  m.object_subtype="identifier_resolution_profile";m.definition_version=r.generation;return m;
+  m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::identifier_resolution_profile;m.definition_version=r.generation;return m;
 }
 void Roundtrip(const c::CatalogIdentifierResolutionProfile& r){
   const auto expected=Golden(r);std::array<p::byte,1024> backing;backing.fill(0x5a);
@@ -160,7 +160,7 @@ void Bindings(){
       c::CatalogIdentifierProfileMatchesDatabase(view,f::Id(1))&&!c::CatalogIdentifierProfileMatchesDatabase(view,f::Id(2)),"full native common and owning database binding");
   for(unsigned n=0;n<17;++n){auto bad=m;
     if(n==0)bad.record.header.kind=c::CatalogRecordKind::policy;if(n==1)bad.record.header.object_uuid.value=f::Id(102);
-    if(n==2)bad.object_subtype="other_profile";if(n==3)bad.authority_scope=c::CatalogAuthorityScope::cluster;
+    if(n==2)bad.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;if(n==3)bad.authority_scope=c::CatalogAuthorityScope::cluster;
     if(n==4)bad.definition_version=2;if(n==5)bad.owning_schema_uuid.kind=p::UuidKind::object;
     if(n==6)bad.record.header.parent_uuid.value=f::Id(61);if(n==7)bad.owner_uuid={};if(n==8)bad.audit_uuid={};
     if(n==9)bad.creator_transaction_uuid.value=f::Id(6);if(n==10)bad.creator_local_transaction_id=2;

@@ -32,6 +32,9 @@ struct CatalogSchemaDefinitionResult {
   bool ok() const { return error == CatalogValueError::none && definition.has_value(); }
 };
 const char* CatalogSchemaTypeName(CatalogSchemaType type);
+// A schema definition's subtype constant for its schema type
+// (SB_CATALOG_OBJECT_CONSTANTS); none for a type not listed.
+CatalogObjectSubtype CatalogSchemaSubtype(CatalogSchemaType type) noexcept;
 const CatalogValueSchema& CatalogSchemaDefinitionSchema();
 // Exact validated fixed-width payload size; no allocation or serialization.
 std::optional<std::size_t> CatalogSchemaDefinitionEncodedBytes(const CatalogSchemaDefinition&);

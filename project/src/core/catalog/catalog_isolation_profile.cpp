@@ -96,12 +96,12 @@ bool Header(const CatalogTypedRecordView& m,const CatalogIsolationProfile& r){
   for(const auto& id:Controls(r))if(m.header.row_uuid.value==id)return false;return true;
 }
 bool Metadata(const CatalogMetadataVersionView& m,const CatalogIsolationProfile& r){
-  return Header(m.record,r)&&m.object_subtype=="isolation_profile"&&m.definition_version==r.generation&&
+  return Header(m.record,r)&&m.object_subtype==CatalogObjectSubtype::isolation_profile&&m.definition_version==r.generation&&
       m.creator_transaction_uuid.kind==UuidKind::transaction&&m.creator_transaction_uuid.value==r.creating_transaction_uuid.value&&
       m.creator_local_transaction_id==r.creating_local_transaction_id&&
       (m.authority_scope==CatalogAuthorityScope::cluster)==r.cluster_uuid.has_value();
 }
-bool Family(const CatalogMetadataVersionView& m){return m.object_subtype=="isolation_profile"||IsCatalogIsolationProfilePayload(m.record.payload);}
+bool Family(const CatalogMetadataVersionView& m){return m.object_subtype==CatalogObjectSubtype::isolation_profile||IsCatalogIsolationProfilePayload(m.record.payload);}
 }
 std::optional<std::size_t> CatalogIsolationProfileEncodedBytes(const CatalogIsolationProfile& r) noexcept {
   if(!Valid(r))return {};const Backing b(r);if(ValidateCatalogValueFields(schema,b.View())!=E::none)return {};

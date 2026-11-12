@@ -34,7 +34,7 @@ db::BootstrapDefinitionMetadataInput Good() {
   in.name_vector_uuid = Id(0x58);
   in.default_name_entry_uuid = Id(0x59);
   in.kind = c::CatalogRecordKind::config_profile;
-  in.object_subtype = "agent_runtime_authority";
+  in.object_subtype = scratchbird::core::catalog::CatalogObjectSubtype::agent_runtime_authority;
   in.owner_principal_uuid = Id(0x52);
   in.audit_object_uuid = Id(0x53);
   in.security_policy_uuid = Id(0x54);
@@ -114,7 +114,7 @@ int main() {
           m.name_vector_uuid.value != m.default_name_uuid.value &&
           m.default_name_uuid.value != m.record.header.object_uuid.value,
           "object, name-vector and name-entry identities are all distinct");
-    Check(m.object_subtype == "agent_runtime_authority", "subtype preserved verbatim");
+    Check(m.object_subtype == scratchbird::core::catalog::CatalogObjectSubtype::agent_runtime_authority, "subtype preserved verbatim");
     // (No trace search key or retention class to carry: SB_CATALOG_NO_TEXT_IDENTIFIERS,
     // owner Q57 = 1, Q58 = 1; the metadata codec no longer has them.)
     Check(m.owner_uuid.kind == p::UuidKind::principal && m.owner_uuid.value == Id(0x52),
@@ -149,8 +149,8 @@ int main() {
     auto vector_is_object = Good(); vector_is_object.name_vector_uuid = vector_is_object.object_uuid;
     auto nil_entry = Good(); nil_entry.default_name_entry_uuid = {};
     auto entry_is_vector = Good(); entry_is_vector.default_name_entry_uuid = entry_is_vector.name_vector_uuid;
-    auto no_subtype = Good(); no_subtype.object_subtype.clear();
-    auto spaced_subtype = Good(); spaced_subtype.object_subtype = "agent runtime authority";
+    auto no_subtype = Good(); no_subtype.object_subtype = scratchbird::core::catalog::CatalogObjectSubtype::none;
+    auto spaced_subtype = Good(); spaced_subtype.object_subtype = static_cast<scratchbird::core::catalog::CatalogObjectSubtype>(0xfffe);  // an unlisted subtype (was text with spaces)
     auto nil_owner = Good(); nil_owner.owner_principal_uuid = {};
     auto nil_audit = Good(); nil_audit.audit_object_uuid = {};
     auto nil_policy = Good(); nil_policy.security_policy_uuid = {};
@@ -217,8 +217,8 @@ int main() {
     Check(vm.record.header.kind == c::CatalogRecordKind::localized_name &&
           em.record.header.kind == c::CatalogRecordKind::localized_name,
           "both name versions carry the localized_name kind");
-    Check(vm.object_subtype == "name_vector", "the vector version is subtyped name_vector");
-    Check(em.object_subtype == "name_entry", "the entry version is subtyped name_entry");
+    Check(vm.object_subtype == scratchbird::core::catalog::CatalogObjectSubtype::name_vector, "the vector version is subtyped name_vector");
+    Check(em.object_subtype == scratchbird::core::catalog::CatalogObjectSubtype::name_entry, "the entry version is subtyped name_entry");
     Check(d.record.header.kind == c::CatalogRecordKind::config_profile,
           "the definition keeps its own kind");
 

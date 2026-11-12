@@ -52,14 +52,14 @@ inline NativeCatalogAuditVerification VerifyNativeCatalogAuditReferences(
     const auto& row=captured.row;const auto& m=row.metadata;const auto id=m.record.header.object_uuid.value;
     if(row.provisional)return fail(E::provisional_row,id);
     if(m.record.header.deleted)continue;
-    const bool change_event=m.object_subtype=="catalog_metadata_change"||c::IsCatalogMetadataChangePayload(m.record.payload);
+    const bool change_event=m.object_subtype==scratchbird::core::catalog::CatalogObjectSubtype::catalog_metadata_change||c::IsCatalogMetadataChangePayload(m.record.payload);
     if(m.record.header.kind==c::CatalogRecordKind::audit_evidence&&change_event){
-      if(m.object_subtype!="catalog_metadata_change"||!c::IsCatalogMetadataChangePayload(m.record.payload)||
+      if(m.object_subtype!=scratchbird::core::catalog::CatalogObjectSubtype::catalog_metadata_change||!c::IsCatalogMetadataChangePayload(m.record.payload)||
           captured.role!=6||row.name_payload||!c::CatalogMetadataChangeMatchesDatabase(m,capture.source()->database_uuid))
         return fail(E::invalid_event,id);
       ++out.events;
     }else if(m.record.header.kind==c::CatalogRecordKind::audit_evidence){
-      if(m.object_subtype!="node_construction_intent"||!c::IsCatalogConstructionIntentPayload(m.record.payload))
+      if(m.object_subtype!=scratchbird::core::catalog::CatalogObjectSubtype::node_construction_intent||!c::IsCatalogConstructionIntentPayload(m.record.payload))
         return fail(E::unsupported_event,id);
       if(captured.role!=6||row.name_payload||!c::CatalogConstructionIntentMatchesDatabase(m,capture.source()->database_uuid))
         return fail(E::invalid_event,id);
@@ -78,7 +78,7 @@ inline NativeCatalogAuditVerification VerifyNativeCatalogAuditReferences(
         evidence.record.header.kind!=c::CatalogRecordKind::audit_evidence)
       return fail(E::invalid_event,id,m.audit_uuid.value);
     const bool name_row=captured.role==2&&row.name_payload;
-    if(evidence.object_subtype=="catalog_metadata_change"&&c::IsCatalogMetadataChangePayload(evidence.record.payload)){
+    if(evidence.object_subtype==scratchbird::core::catalog::CatalogObjectSubtype::catalog_metadata_change&&c::IsCatalogMetadataChangePayload(evidence.record.payload)){
       if(!c::CatalogMetadataChangeMatchesDatabase(evidence,capture.source()->database_uuid))
         return fail(E::invalid_event,id,m.audit_uuid.value);
       const auto event=c::DecodeCatalogMetadataChange(evidence.record.payload);
@@ -89,7 +89,7 @@ inline NativeCatalogAuditVerification VerifyNativeCatalogAuditReferences(
       ++out.references;
       continue;
     }
-    if(evidence.object_subtype!="node_construction_intent"||!c::IsCatalogConstructionIntentPayload(evidence.record.payload))
+    if(evidence.object_subtype!=scratchbird::core::catalog::CatalogObjectSubtype::node_construction_intent||!c::IsCatalogConstructionIntentPayload(evidence.record.payload))
       return fail(E::unsupported_event,id,m.audit_uuid.value);
     if(!c::CatalogConstructionIntentMatchesDatabase(evidence,capture.source()->database_uuid))
       return fail(E::invalid_event,id,m.audit_uuid.value);

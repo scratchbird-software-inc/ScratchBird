@@ -97,7 +97,7 @@ bool Header(const CatalogTypedRecordView& m,const CatalogPolicyDescriptor& r){
       m.header.row_uuid.value!=r.body_uuid;
 }
 bool Metadata(const CatalogMetadataVersionView& m,const CatalogPolicyDescriptor& r){
-  return Header(m.record,r)&&m.object_subtype=="policy_descriptor"&&m.definition_version==r.generation&&
+  return Header(m.record,r)&&m.object_subtype==CatalogObjectSubtype::policy_descriptor&&m.definition_version==r.generation&&
       AuthorityOwner(m.owner_uuid)&&m.owner_uuid.value==r.authority_owner_uuid&&
       Typed(m.owning_schema_uuid,UuidKind::schema)&&Typed(m.record.header.parent_uuid,UuidKind::object)&&
       m.record.header.parent_uuid.value==m.owning_schema_uuid.value&&Typed(m.audit_uuid,UuidKind::object)&&
@@ -107,7 +107,7 @@ bool Metadata(const CatalogMetadataVersionView& m,const CatalogPolicyDescriptor&
       (!(m.authority_scope==CatalogAuthorityScope::cluster)||r.cluster_uuid.has_value())&&
       (!ClusterScope(r.scope)||m.authority_scope==CatalogAuthorityScope::cluster);
 }
-bool Family(const CatalogMetadataVersionView& m){return m.object_subtype=="policy_descriptor"||IsCatalogPolicyDescriptorPayload(m.record.payload);}
+bool Family(const CatalogMetadataVersionView& m){return m.object_subtype==CatalogObjectSubtype::policy_descriptor||IsCatalogPolicyDescriptorPayload(m.record.payload);}
 }
 std::optional<std::size_t> CatalogPolicyDescriptorEncodedBytes(const CatalogPolicyDescriptor& r){
   if(!Valid(r))return {};const Backing b(r);if(ValidateCatalogValueFields(schema,b.View())!=E::none)return {};

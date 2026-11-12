@@ -56,6 +56,9 @@ struct CatalogSecurityRecordViewResult {
 CatalogSecurityRecordViewResult DecodeCatalogSecurityRecordView(CatalogRecordKind kind, std::string_view bytes);
 
 bool IsCatalogSecurityRecordKind(CatalogRecordKind kind);
+// A security record's subtype constant (SB_CATALOG_OBJECT_CONSTANTS: it was
+// the kind's name); none for a kind that is not a security record kind.
+CatalogObjectSubtype CatalogSecuritySubtype(CatalogRecordKind kind) noexcept;
 // Classification only; never an implicit text-to-native conversion.
 std::optional<CatalogValueType> CatalogSecurityAttributeType(std::string_view name);
 std::string_view CatalogSecurityPrimaryIdentityName(CatalogRecordKind kind);

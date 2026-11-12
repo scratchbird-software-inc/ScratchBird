@@ -183,7 +183,7 @@ c::CatalogMetadataVersion FixtureRow(const Db& b, std::span<const byte> file, u1
   m.default_name_uuid = {};
   m.name_vector_uuid = {};
   m.creator_local_transaction_id = n;
-  m.object_subtype = "w3b_insert_mechanics_fixture";
+  m.object_subtype = scratchbird::core::catalog::CatalogObjectSubtype::schema_application;
   return m;
 }
 db::CatalogInsertRow Row(const Db& b, std::span<const byte> file, u16 role, const Uuid& row, unsigned version_k,

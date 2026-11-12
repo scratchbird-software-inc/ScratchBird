@@ -103,7 +103,7 @@ u32 SchemaOf(std::string_view bytes) noexcept {
   return platform::LoadLittle32(reinterpret_cast<const byte*>(bytes.data())+16);
 }
 struct Binding {
-  Uuid object;CatalogRecordKind kind;std::string_view subtype;u64 generation=0;TypedUuid creating;u64 creating_local=0;
+  Uuid object;CatalogRecordKind kind;scratchbird::core::catalog::CatalogObjectSubtype subtype;u64 generation=0;TypedUuid creating;u64 creating_local=0;
 };
 Binding Bind(const Datatype& r){return {r.descriptor_uuid,CatalogRecordKind::datatype_descriptor,kBuiltinDatatypeDescriptorSubtype,
     r.generation,r.creating_transaction_uuid,r.creating_local_transaction_id};}

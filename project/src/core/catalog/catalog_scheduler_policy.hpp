@@ -119,7 +119,7 @@ inline bool CatalogSchedulerPolicyMatchesMetadata(const CatalogMetadataVersionVi
   const auto identity = [](const TypedUuid& id, UuidKind kind) {
     return id.kind == kind && uuid::IsEngineIdentityUuid(id.value);
   };
-  if (!CatalogSchedulerPolicyMatchesHeader(m.record) || m.object_subtype != "scheduler_runtime" ||
+  if (!CatalogSchedulerPolicyMatchesHeader(m.record) || m.object_subtype != CatalogObjectSubtype::scheduler_runtime ||
       m.authority_scope != CatalogAuthorityScope::local ||
       !identity(m.owning_schema_uuid, UuidKind::schema) ||
       !identity(m.record.header.parent_uuid, UuidKind::object) ||
@@ -141,7 +141,7 @@ inline bool CatalogSchedulerPolicyMatchesMetadata(const CatalogMetadataVersion& 
 inline bool CatalogSchedulerPolicyPreservesOrigin(
     const CatalogMetadataVersionView& previous, const CatalogMetadataVersionView& successor) {
   const auto family = [](const auto& m) {
-    return m.object_subtype == "scheduler_runtime" || IsCatalogSchedulerPolicyPayload(m.record.payload);
+    return m.object_subtype == CatalogObjectSubtype::scheduler_runtime || IsCatalogSchedulerPolicyPayload(m.record.payload);
   };
   if (!family(previous) && !family(successor)) return true;
   if (!CatalogSchedulerPolicyMatchesMetadata(previous) ||
@@ -264,7 +264,7 @@ inline bool CatalogSchedulerQueueProfileMatchesMetadata(const CatalogMetadataVer
   const auto identity = [](const TypedUuid& id, UuidKind kind) {
     return id.kind == kind && uuid::IsEngineIdentityUuid(id.value);
   };
-  if (!CatalogSchedulerQueueProfileMatchesHeader(m.record) || m.object_subtype != "scheduler_queues" ||
+  if (!CatalogSchedulerQueueProfileMatchesHeader(m.record) || m.object_subtype != CatalogObjectSubtype::scheduler_queues ||
       m.authority_scope != CatalogAuthorityScope::local ||
       !identity(m.owning_schema_uuid,UuidKind::schema) || !identity(m.record.header.parent_uuid,UuidKind::object) ||
       m.owning_schema_uuid.value != m.record.header.parent_uuid.value ||
@@ -281,7 +281,7 @@ inline bool CatalogSchedulerQueueProfileMatchesMetadata(const CatalogMetadataVer
 inline bool CatalogSchedulerQueueProfilePreservesOrigin(
     const CatalogMetadataVersionView& previous, const CatalogMetadataVersionView& successor) {
   const auto family = [](const auto& m) {
-    return m.object_subtype == "scheduler_queues" || IsCatalogSchedulerQueueProfilePayload(m.record.payload);
+    return m.object_subtype == CatalogObjectSubtype::scheduler_queues || IsCatalogSchedulerQueueProfilePayload(m.record.payload);
   };
   if (!family(previous) && !family(successor)) return true;
   if (!CatalogSchedulerQueueProfileMatchesMetadata(previous) ||

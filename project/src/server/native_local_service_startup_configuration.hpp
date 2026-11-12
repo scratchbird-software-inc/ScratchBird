@@ -97,7 +97,7 @@ inline NativeLocalServiceStartupConfigurationResult SelectNativeLocalServiceStar
     const auto& m=row.metadata;const auto id=m.record.header.object_uuid.value;
     if((id==declarations.pack.policy_pack_uuid||id==declarations.posture.profile_uuid||
         id==declarations.provider.provider_uuid)&&!provenance(m))return fail(E::source_generation_mismatch,id);
-    if(m.object_subtype!="bootstrap_policy_profile")continue;
+    if(m.object_subtype!=scratchbird::core::catalog::CatalogObjectSubtype::bootstrap_policy_profile)continue;
     const auto decoded=c::DecodeCatalogBootstrapPolicyProfile(m.record.payload);
     out.record_error=decoded.error;
     if(!decoded.ok()||!c::CatalogBootstrapPolicyMatchesMetadata(m))return fail(E::profile_invalid,id);

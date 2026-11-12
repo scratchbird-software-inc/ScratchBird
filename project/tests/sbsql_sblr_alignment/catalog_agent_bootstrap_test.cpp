@@ -64,7 +64,7 @@ void Values(){auto value=Value();Roundtrip(value);auto legacy=value;legacy.start
  auto downgraded=bytes;f::Put(downgraded,20,1,2);Check(!c::DecodeCatalogAgentBootstrapDefinition(downgraded).ok(),"version1 cannot carry unregistered extra selection fields");
  auto missing=Golden(legacy);f::Put(missing,20,2,2);Check(!c::DecodeCatalogAgentBootstrapDefinition(missing).ok(),"version2 cannot omit complete required selection");
  auto trailing=bytes;trailing.push_back(0);Check(!c::DecodeCatalogAgentBootstrapDefinition(trailing).ok(),"trailing carrier bytes refused");
- auto m=f::Metadata(0,value.origin_transaction_uuid,f::Id(60),bytes);m.record.header.object_uuid={p::UuidKind::object,value.definition_uuid};m.object_subtype="agent_policy";
+ auto m=f::Metadata(0,value.origin_transaction_uuid,f::Id(60),bytes);m.record.header.object_uuid={p::UuidKind::object,value.definition_uuid};m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::agent_policy;
  Check(!c::ValidateCatalogMetadataVersionView(c::BorrowCatalogMetadataVersion(m)),"common native dispatcher validates version2 policy carrier");
  std::vector<p::Uuid> reserved;db::ReserveNativeCreationCatalogReferences({m,{}},[&](auto id){reserved.push_back(id);});
  for(const auto& id:{value.database_uuid,value.policy_uuid,value.origin_transaction_uuid.value,value.startup_verification->repair_policy_uuid,

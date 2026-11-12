@@ -101,7 +101,7 @@ std::optional<MetricScalar> NumericValue(MetricScalarType type, std::span<const 
 }
 bool Family(const CatalogMetadataVersionView& m) {
   return m.record.header.kind == CatalogRecordKind::metric_descriptor ||
-      m.object_subtype == "metric_descriptor" || IsCatalogMetricDescriptorPayload(m.record.payload);
+      m.object_subtype == CatalogObjectSubtype::metric_descriptor || IsCatalogMetricDescriptorPayload(m.record.payload);
 }
 }  // namespace
 
@@ -260,7 +260,7 @@ bool CatalogMetricDescriptorMatchesHeader(const CatalogTypedRecord& r) {
   return CatalogMetricDescriptorMatchesHeader(BorrowCatalogTypedRecord(r));
 }
 bool CatalogMetricDescriptorMatchesMetadata(const CatalogMetadataVersionView& m) {
-  if (!CatalogMetricDescriptorMatchesHeader(m.record) || m.object_subtype!="metric_descriptor" ||
+  if (!CatalogMetricDescriptorMatchesHeader(m.record) || m.object_subtype!=CatalogObjectSubtype::metric_descriptor ||
       !Identity(m.owning_schema_uuid,UuidKind::schema) || !Identity(m.record.header.parent_uuid,UuidKind::object) ||
       m.record.header.parent_uuid.value!=m.owning_schema_uuid.value ||
       !Identity(m.default_name_uuid,UuidKind::object) || !Identity(m.name_vector_uuid,UuidKind::object) ||

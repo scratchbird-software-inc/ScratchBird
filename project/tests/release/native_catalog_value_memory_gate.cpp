@@ -311,12 +311,12 @@ void RuntimeFirstUse() {
   m.owning_schema_uuid={p::UuidKind::schema,Id(20)}; m.owner_uuid={p::UuidKind::principal,Id(4)};
   m.audit_uuid={p::UuidKind::object,Id(21)}; m.security_policy_uuid={p::UuidKind::object,Id(7)};
   m.creator_transaction_uuid={p::UuidKind::transaction,Id(14)}; m.creator_local_transaction_id=56;
-  m.object_subtype="agent_runtime_authority"; m.definition_version=1; m.catalog_generation=54; m.security_epoch=51;
+  m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::agent_runtime_authority; m.definition_version=1; m.catalog_generation=54; m.security_epoch=51;
   Check(NoHeap([&]{return c::CatalogRuntimeAuthorityBindingMatchesMetadata(m);}),"runtime metadata match");
   auto next=m; next.definition_version=2; auto next_bytes=RuntimeWire(true,1,2);
   next.record.payload.assign(next_bytes.begin(),next_bytes.end()); next.creator_transaction_uuid.value=Id(30);
   Check(NoHeap([&]{return c::CatalogRuntimeAuthorityBindingPreservesOrigin(m,next);}),"runtime origin continuity");
-  auto invalid=m; invalid.object_subtype="different";
+  auto invalid=m; invalid.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;
   Check(!NoHeap([&]{return c::CatalogRuntimeAuthorityBindingMatchesMetadata(invalid);}),"subtype erased");
   invalid=m; invalid.record.header.kind=c::CatalogRecordKind::schema;
   Check(!NoHeap([&]{return c::CatalogRuntimeAuthorityBindingMatchesMetadata(invalid);}),"header erased");

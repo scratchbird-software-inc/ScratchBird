@@ -32,7 +32,7 @@ db::NativeCreationCatalogRecord SecurityMetadata(catalog::CatalogSecurityRecord 
   metadata.record.header.kind=record.kind;
   metadata.record.header.object_uuid={platform::UuidKind::object,record.Identity(catalog::CatalogSecurityPrimaryIdentityName(record.kind))};
   metadata.record.header.row_uuid={platform::UuidKind::row,security_fixture::Id(3000+ordinal)};
-  metadata.object_subtype=catalog::CatalogRecordKindName(record.kind);
+  metadata.object_subtype=catalog::CatalogSecuritySubtype(record.kind);
   const auto encoded=catalog::EncodeCatalogSecurityRecord(record);Check(encoded.ok(),"canonical native security payload");
   metadata.record.payload.assign(encoded.bytes.begin(),encoded.bytes.end());
   return {metadata,{}};
@@ -95,7 +95,7 @@ struct SecurityFixture {
     meta.record.header.kind=K::config_profile;meta.record.header.object_uuid={platform::UuidKind::object,Id(180)};
     meta.record.header.row_uuid={platform::UuidKind::row,security_fixture::Id(3100)};
     meta.security_policy_uuid={platform::UuidKind::object,binding.policy_uuid};
-    meta.object_subtype="agent_runtime_authority";meta.record.payload.assign(encoded.bytes.begin(),encoded.bytes.end());
+    meta.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::agent_runtime_authority;meta.record.payload.assign(encoded.bytes.begin(),encoded.bytes.end());
     if(variant==7){meta.lifecycle=catalog::CatalogObjectLifecycle::archived;meta.status=catalog::CatalogObjectStatus::retired;}
     seed[4].push_back({meta,{}});
     if(indexed)for(unsigned role:{3u,4u}){

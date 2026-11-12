@@ -108,7 +108,7 @@ CatalogMetricSeriesBindingResult ResolveLocalCatalogMetricSeriesBinding(
     for (const auto& row:rows) {
       if (!row.metadata) return {E::invalid_catalog,{}};
       const auto& m=*row.metadata;
-      if (m.record.header.kind!=CatalogRecordKind::metric_series && m.object_subtype!="metric_series" &&
+      if (m.record.header.kind!=CatalogRecordKind::metric_series && m.object_subtype!=CatalogObjectSubtype::metric_series &&
           !IsCatalogMetricSeriesPayload(m.record.payload)) continue;
       if (!CatalogMetadataVersionEncodedBytes(BorrowCatalogMetadataVersion(m)) ||
           !CatalogMetricSeriesMatchesMetadata(m))

@@ -78,7 +78,7 @@ template<class R> bool Valid(const R& r) {
   return true;
 }
 bool Family(const CatalogMetadataVersionView& m) {
-  return m.record.header.kind==CatalogRecordKind::metric_series || m.object_subtype=="metric_series" ||
+  return m.record.header.kind==CatalogRecordKind::metric_series || m.object_subtype==CatalogObjectSubtype::metric_series ||
       IsCatalogMetricSeriesPayload(m.record.payload);
 }
 }  // namespace
@@ -224,7 +224,7 @@ bool CatalogMetricSeriesMatchesHeader(const CatalogTypedRecord& r) {
   return CatalogMetricSeriesMatchesHeader(BorrowCatalogTypedRecord(r));
 }
 bool CatalogMetricSeriesMatchesMetadata(const CatalogMetadataVersionView& m) {
-  if(!CatalogMetricSeriesMatchesHeader(m.record) || m.object_subtype!="metric_series" ||
+  if(!CatalogMetricSeriesMatchesHeader(m.record) || m.object_subtype!=CatalogObjectSubtype::metric_series ||
       !Identity(m.owning_schema_uuid,UuidKind::schema) || !Identity(m.record.header.parent_uuid,UuidKind::object) ||
       m.owning_schema_uuid.value!=m.record.header.parent_uuid.value ||
       !Identity(m.default_name_uuid,UuidKind::object) || !Identity(m.name_vector_uuid,UuidKind::object) ||

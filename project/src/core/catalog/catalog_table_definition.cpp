@@ -204,7 +204,7 @@ bool CatalogTableDefinitionMatchesMetadata(const CatalogMetadataVersionView& m) 
   const auto decoded = DecodeCatalogTableDefinition(m.record.payload);
   const auto& d = *decoded.definition;
   return Common(m,d.origin_transaction_uuid,d.origin_local_transaction_id) &&
-      m.object_subtype == "ordinary_persistent_table" && m.authority_scope == CatalogAuthorityScope::local &&
+      m.object_subtype == CatalogObjectSubtype::ordinary_persistent_table && m.authority_scope == CatalogAuthorityScope::local &&
       m.record.header.parent_uuid.value == m.owning_schema_uuid.value && Same(d.storage_descriptor.uuid,m.storage_binding_uuid);
 }
 bool CatalogColumnDefinitionMatchesMetadata(const CatalogMetadataVersionView& m) {
@@ -212,10 +212,10 @@ bool CatalogColumnDefinitionMatchesMetadata(const CatalogMetadataVersionView& m)
   const auto decoded = DecodeCatalogColumnDefinition(m.record.payload);
   const auto& d = *decoded.definition;
   return Common(m,d.origin_transaction_uuid,d.origin_local_transaction_id) &&
-      m.object_subtype == "persistent_table_column" && m.authority_scope == CatalogAuthorityScope::local;
+      m.object_subtype == CatalogObjectSubtype::persistent_table_column && m.authority_scope == CatalogAuthorityScope::local;
 }
 bool CatalogTableDefinitionPreservesOrigin(const CatalogMetadataVersionView& a, const CatalogMetadataVersionView& b) {
-  if (a.object_subtype != "ordinary_persistent_table" && b.object_subtype != "ordinary_persistent_table" &&
+  if (a.object_subtype != CatalogObjectSubtype::ordinary_persistent_table && b.object_subtype != CatalogObjectSubtype::ordinary_persistent_table &&
       !IsCatalogTableDefinitionPayload(a.record.payload) && !IsCatalogTableDefinitionPayload(b.record.payload)) return true;
   if (!CatalogTableDefinitionMatchesMetadata(a) || !CatalogTableDefinitionMatchesMetadata(b)) return false;
   const auto before=DecodeCatalogTableDefinition(a.record.payload), after=DecodeCatalogTableDefinition(b.record.payload);
@@ -225,7 +225,7 @@ bool CatalogTableDefinitionPreservesOrigin(const CatalogMetadataVersionView& a, 
       CatalogColumnOrdinalHighWaterAdvances(x.next_column_ordinal,y.next_column_ordinal);
 }
 bool CatalogColumnDefinitionPreservesOrigin(const CatalogMetadataVersionView& a, const CatalogMetadataVersionView& b) {
-  if (a.object_subtype != "persistent_table_column" && b.object_subtype != "persistent_table_column" &&
+  if (a.object_subtype != CatalogObjectSubtype::persistent_table_column && b.object_subtype != CatalogObjectSubtype::persistent_table_column &&
       !IsCatalogColumnDefinitionPayload(a.record.payload) && !IsCatalogColumnDefinitionPayload(b.record.payload)) return true;
   if (!CatalogColumnDefinitionMatchesMetadata(a) || !CatalogColumnDefinitionMatchesMetadata(b)) return false;
   const auto before=DecodeCatalogColumnDefinition(a.record.payload), after=DecodeCatalogColumnDefinition(b.record.payload);

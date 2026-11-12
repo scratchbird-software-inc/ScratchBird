@@ -98,7 +98,7 @@ bool CatalogNamePayloadMatchesMetadata(const CatalogNamePayloadView& payload, co
     return value ? SameIdentity(*value,common) : common.kind == UuidKind::unknown && common.value.is_nil();
   };
   if (const auto* v=std::get_if<CatalogNameVectorView>(&payload)) {
-    return ValidateCatalogNameVector(*v) == CatalogValueError::none && m.object_subtype == "name_vector" &&
+    return ValidateCatalogNameVector(*v) == CatalogValueError::none && m.object_subtype == CatalogObjectSubtype::name_vector &&
         SameIdentity(v->name_vector_uuid,m.record.header.object_uuid) &&
         SameIdentity(v->object_uuid,m.record.header.parent_uuid) &&
         SameIdentity(v->name_vector_uuid,m.name_vector_uuid) &&
@@ -112,7 +112,7 @@ bool CatalogNamePayloadMatchesMetadata(const CatalogNamePayloadView& payload, co
         (!m.record.header.deleted || v->lifecycle_state == CatalogNameLifecycle::dropped);
   }
   if (const auto* e=std::get_if<CatalogNameEntryView>(&payload)) {
-    return ValidateCatalogNameEntry(*e) == CatalogValueError::none && m.object_subtype == "name_entry" &&
+    return ValidateCatalogNameEntry(*e) == CatalogValueError::none && m.object_subtype == CatalogObjectSubtype::name_entry &&
         SameIdentity(e->name_entry_uuid,m.record.header.object_uuid) &&
         SameIdentity(e->name_vector_uuid,m.record.header.parent_uuid) &&
         SameIdentity(e->name_vector_uuid,m.name_vector_uuid) &&

@@ -14,25 +14,25 @@ namespace c = core::catalog;
 std::optional<std::size_t> DefinitionSlot(const c::CatalogCreationRecord& row) noexcept {
   const auto kind = row.metadata.record.header.kind;
   const auto& subtype = row.metadata.object_subtype;
-  if (c::IsCatalogSecurityRecordKind(kind) && subtype == c::CatalogRecordKindName(kind))
+  if (c::IsCatalogSecurityRecordKind(kind) && subtype == c::CatalogSecuritySubtype(kind))
     return 3;
   if (kind == c::CatalogRecordKind::policy &&
-      (subtype == "bootstrap_policy_pack" || subtype == "bootstrap_security_provider" ||
-       subtype == "bootstrap_policy_profile")) return 4;
+      (subtype == c::CatalogObjectSubtype::bootstrap_policy_pack || subtype == c::CatalogObjectSubtype::bootstrap_security_provider ||
+       subtype == c::CatalogObjectSubtype::bootstrap_policy_profile)) return 4;
   if (kind == c::CatalogRecordKind::config_profile &&
-      (subtype == "memory_configuration" || subtype == "agent_runtime_authority")) return 4;
+      (subtype == c::CatalogObjectSubtype::memory_configuration || subtype == c::CatalogObjectSubtype::agent_runtime_authority)) return 4;
   // SB_NATIVE_POLICY_FAMILY_SEEDS: the native policy families. Policies and
   // naming profiles share role5 with the bootstrap profiles; management
   // definitions take role6.
   if (kind == c::CatalogRecordKind::policy &&
-      (subtype == "policy_descriptor" || subtype == "verification_policy_body" ||
-       subtype == "evidence_policy_body" || subtype == "authorization_policy_body" ||
-       subtype == "transaction_policy_body" || subtype == "lock_policy_body" ||
-       subtype == "isolation_profile" || subtype == "naming_collision_policy_body")) return 4;
+      (subtype == c::CatalogObjectSubtype::policy_descriptor || subtype == c::CatalogObjectSubtype::verification_policy_body ||
+       subtype == c::CatalogObjectSubtype::evidence_policy_body || subtype == c::CatalogObjectSubtype::authorization_policy_body ||
+       subtype == c::CatalogObjectSubtype::transaction_policy_body || subtype == c::CatalogObjectSubtype::lock_policy_body ||
+       subtype == c::CatalogObjectSubtype::isolation_profile || subtype == c::CatalogObjectSubtype::naming_collision_policy_body)) return 4;
   if (kind == c::CatalogRecordKind::config_profile &&
-      (subtype == "identifier_resolution_profile" || subtype == "naming_dialect_profile")) return 4;
+      (subtype == c::CatalogObjectSubtype::identifier_resolution_profile || subtype == c::CatalogObjectSubtype::naming_dialect_profile)) return 4;
   if (kind == c::CatalogRecordKind::management_operation &&
-      (subtype == "management_profile" || subtype == "management_descriptor")) return 5;
+      (subtype == c::CatalogObjectSubtype::management_profile || subtype == c::CatalogObjectSubtype::management_descriptor)) return 5;
   return std::nullopt;
 }
 NativeInitialPolicyCatalogResult Route(NativeInitialPolicyResult source) noexcept {

@@ -15,7 +15,7 @@ inline bool NativeCatalogDefinitionGenerationFollows(
     const core::catalog::CatalogMetadataVersion& after) {
   namespace c=core::catalog;
   if(before.definition_version==after.definition_version &&
-      (before.object_subtype=="policy_descriptor" || before.object_subtype=="crypto_inline_private_key"))
+      (before.object_subtype==scratchbird::core::catalog::CatalogObjectSubtype::policy_descriptor || before.object_subtype==scratchbird::core::catalog::CatalogObjectSubtype::crypto_inline_private_key))
     return before.record.payload==after.record.payload &&
         c::CatalogMetadataPreservesFamilyOrigin(before,after);
   return before.definition_version!=std::numeric_limits<core::platform::u64>::max() &&

@@ -81,13 +81,13 @@ Fixture MakeFixture() {
   f.column.type_uuid={p::UuidKind::object,id.type_uuid};
   f.column_metadata=Common();f.column_metadata.record.header.kind=c::CatalogRecordKind::column_descriptor;
   f.column_metadata.default_name_uuid=Id(70);f.column_metadata.name_vector_uuid=Id(71);
-  f.column_metadata.object_subtype="persistent_table_column";
+  f.column_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::persistent_table_column;
   const auto encoded=c::EncodeCatalogColumnDefinition(f.column);Check(encoded.ok(),"column fixture invalid");
   f.column_metadata.record.payload={encoded.bytes.begin(),encoded.bytes.end()};
   f.occurrence_metadata=Common();f.occurrence_metadata.record.header.kind=c::CatalogRecordKind::datatype_descriptor;
   f.occurrence_metadata.record.header.row_uuid=Id(31,p::UuidKind::row);
   f.occurrence_metadata.record.header.object_uuid=Id(20);f.occurrence_metadata.record.header.parent_uuid=Id(50);
-  f.occurrence_metadata.object_subtype="persistent_interval_value_occurrence";
+  f.occurrence_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::persistent_interval_value_occurrence;
   f.occurrence_metadata.definition_version=8;f.occurrence_metadata.record.payload=Golden(f.occurrence);
   return f;
 }
@@ -166,7 +166,7 @@ void Bindings(const Fixture& f) {
     if(mutation==1)m.definition_version=9;
     if(mutation==2)m.record.header.parent_uuid=Id(51);
     if(mutation==3)m.owning_schema_uuid=Id(51,p::UuidKind::schema),m.record.header.parent_uuid=Id(51);
-    if(mutation==4)m.object_subtype="datatype_descriptor";
+    if(mutation==4)m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::builtin_datatype_descriptor;
     if(mutation==5)m.authority_scope=c::CatalogAuthorityScope::temporary;
     if(mutation==6)m.record.header.kind=c::CatalogRecordKind::sql_object;
     if(mutation==7)m.owning_schema_uuid={};
@@ -178,7 +178,7 @@ void Bindings(const Fixture& f) {
     if(mutation==13)v.column.charset={Id(25),1};
     if(mutation==14)v.column.charset={Id(25),1},v.column.collation={Id(26),2};
     if(mutation==15)v.column_metadata.record.header.object_uuid=Id(12);
-    if(mutation==16)v.column_metadata.object_subtype="other_column";
+    if(mutation==16)v.column_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;
     auto bytes=c::EncodeCatalogColumnDefinition(v.column);Check(bytes.ok(),"negative column fixture malformed");
     v.column_metadata.record.payload={bytes.bytes.begin(),bytes.bytes.end()};
     auto r=Bind(v);Check(!r.ok()&&!r.binding,"mismatched metadata/column reference admitted");

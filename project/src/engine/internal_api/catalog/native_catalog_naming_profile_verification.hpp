@@ -55,22 +55,22 @@ inline NativeCatalogNamingProfileVerification VerifyNativeCatalogNamingProfileRe
   const auto db=capture.source()->database_uuid;
   const auto identifier=[&](const storage::database::NativeCapturedCatalogRow& row){
     return row.role==5&&!row.row.provisional&&row.row.metadata.record.header.kind==K::config_profile&&
-        row.row.metadata.object_subtype=="identifier_resolution_profile"&&
+        row.row.metadata.object_subtype==scratchbird::core::catalog::CatalogObjectSubtype::identifier_resolution_profile&&
         c::CatalogIdentifierProfileMatchesMetadata(row.row.metadata)&&c::CatalogIdentifierProfileMatchesDatabase(row.row.metadata,db);
   };
   const auto dialect=[&](const storage::database::NativeCapturedCatalogRow& row){
     return row.role==5&&!row.row.provisional&&row.row.metadata.record.header.kind==K::config_profile&&
-        row.row.metadata.object_subtype=="naming_dialect_profile"&&
+        row.row.metadata.object_subtype==scratchbird::core::catalog::CatalogObjectSubtype::naming_dialect_profile&&
         c::CatalogNamingDialectProfileMatchesMetadata(row.row.metadata)&&c::CatalogNamingDialectProfileMatchesDatabase(row.row.metadata,db);
   };
   for(const auto& captured:rows){
     const auto& m=captured.row.metadata;const auto id=m.record.header.object_uuid.value;
     if(captured.row.provisional)return fail(E::provisional_row,id);
     if(m.record.header.deleted)continue;
-    if(m.object_subtype=="identifier_resolution_profile"||c::IsCatalogIdentifierProfilePayload(m.record.payload)){
+    if(m.object_subtype==scratchbird::core::catalog::CatalogObjectSubtype::identifier_resolution_profile||c::IsCatalogIdentifierProfilePayload(m.record.payload)){
       if(!identifier(captured))return fail(E::invalid_identifier,id);++out.identifiers;
     }
-    if(m.object_subtype=="naming_dialect_profile"||c::IsCatalogNamingDialectProfilePayload(m.record.payload)){
+    if(m.object_subtype==scratchbird::core::catalog::CatalogObjectSubtype::naming_dialect_profile||c::IsCatalogNamingDialectProfilePayload(m.record.payload)){
       if(!dialect(captured))return fail(E::invalid_dialect,id);
       const auto profile=*c::DecodeCatalogNamingDialectProfile(m.record.payload).record;
       const auto* referenced=find(profile.identifier_profile_uuid);

@@ -94,7 +94,7 @@ bool Owner(const TypedUuid& owner){
   switch(owner.kind){case UuidKind::principal:case UuidKind::object:case UuidKind::schema:
     case UuidKind::database:case UuidKind::cluster:return Id(owner.value);default:return false;}
 }
-template<class R>bool Metadata(const CatalogMetadataVersionView& m,const R& r,const Uuid& object,std::string_view subtype){
+template<class R>bool Metadata(const CatalogMetadataVersionView& m,const R& r,const Uuid& object,scratchbird::core::catalog::CatalogObjectSubtype subtype){
   return Header(m.record,r,object)&&
       m.object_subtype==subtype&&m.definition_version==r.generation&&m.authority_scope==CatalogAuthorityScope::local&&
       Typed(m.owning_schema_uuid,UuidKind::schema)&&Typed(m.record.header.parent_uuid,UuidKind::object)&&
@@ -104,8 +104,8 @@ template<class R>bool Metadata(const CatalogMetadataVersionView& m,const R& r,co
       Typed(m.creator_transaction_uuid,UuidKind::transaction)&&m.creator_transaction_uuid.value==r.creating_transaction_uuid.value&&
       m.creator_local_transaction_id==r.creating_local_transaction_id;
 }
-bool ProfileFamily(const CatalogMetadataVersionView& m){return m.object_subtype=="management_profile"||IsCatalogManagementProfilePayload(m.record.payload);}
-bool DescriptorFamily(const CatalogMetadataVersionView& m){return m.object_subtype=="management_descriptor"||IsCatalogManagementDescriptorPayload(m.record.payload);}
+bool ProfileFamily(const CatalogMetadataVersionView& m){return m.object_subtype==CatalogObjectSubtype::management_profile||IsCatalogManagementProfilePayload(m.record.payload);}
+bool DescriptorFamily(const CatalogMetadataVersionView& m){return m.object_subtype==CatalogObjectSubtype::management_descriptor||IsCatalogManagementDescriptorPayload(m.record.payload);}
 template<class R>bool Preserves(const R& a,const R& b,std::string_view before,std::string_view after){
   return a.database_uuid==b.database_uuid&&a.code==b.code&&a.origin_transaction_uuid.value==b.origin_transaction_uuid.value&&
       a.origin_local_transaction_id==b.origin_local_transaction_id&&
@@ -143,10 +143,10 @@ bool CatalogManagementDescriptorMatchesHeader(const CatalogTypedRecordView& m){
   const auto d=DecodeCatalogManagementDescriptor(m.payload);return d.ok()&&Header(m,*d.record,d.record->descriptor_uuid);
 }
 bool CatalogManagementProfileMatchesMetadata(const CatalogMetadataVersionView& m){
-  const auto d=DecodeCatalogManagementProfile(m.record.payload);return d.ok()&&Metadata(m,*d.record,d.record->profile_uuid,"management_profile");
+  const auto d=DecodeCatalogManagementProfile(m.record.payload);return d.ok()&&Metadata(m,*d.record,d.record->profile_uuid,CatalogObjectSubtype::management_profile);
 }
 bool CatalogManagementDescriptorMatchesMetadata(const CatalogMetadataVersionView& m){
-  const auto d=DecodeCatalogManagementDescriptor(m.record.payload);return d.ok()&&Metadata(m,*d.record,d.record->descriptor_uuid,"management_descriptor");
+  const auto d=DecodeCatalogManagementDescriptor(m.record.payload);return d.ok()&&Metadata(m,*d.record,d.record->descriptor_uuid,CatalogObjectSubtype::management_descriptor);
 }
 bool CatalogManagementDefinitionMatchesDatabase(const CatalogMetadataVersionView& m,const Uuid& database){
   if(ProfileFamily(m)){const auto r=DecodeCatalogManagementProfile(m.record.payload);

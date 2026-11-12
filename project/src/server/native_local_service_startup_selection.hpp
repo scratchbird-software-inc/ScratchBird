@@ -78,7 +78,7 @@ inline NativeLocalServiceStartupSelectionResult SelectNativeLocalServiceStartupD
   if(!active(*posture_row))return fail(E::policy_inactive,binding.policy_uuid);
   const auto& policy_metadata=posture_row->metadata;
   if(!c::CatalogBootstrapPolicyMatchesMetadata(policy_metadata)||
-      policy_metadata.object_subtype!="bootstrap_policy_profile")
+      policy_metadata.object_subtype!=scratchbird::core::catalog::CatalogObjectSubtype::bootstrap_policy_profile)
     return fail(E::policy_invalid,binding.policy_uuid);
   const auto posture=c::DecodeCatalogBootstrapPolicyProfile(policy_metadata.record.payload);
   out.record_error=posture.error;
@@ -96,7 +96,7 @@ inline NativeLocalServiceStartupSelectionResult SelectNativeLocalServiceStartupD
   if(!active(*pack_row))return fail(E::pack_inactive,provider.policy_pack_uuid);
   const auto& pack_metadata=pack_row->metadata;
   if(!c::CatalogBootstrapPolicyMatchesMetadata(pack_metadata)||
-      pack_metadata.object_subtype!="bootstrap_policy_pack")
+      pack_metadata.object_subtype!=scratchbird::core::catalog::CatalogObjectSubtype::bootstrap_policy_pack)
     return fail(E::pack_invalid,provider.policy_pack_uuid);
   const auto pack=c::DecodeCatalogBootstrapPolicyPack(pack_metadata.record.payload);
   out.record_error=pack.error;

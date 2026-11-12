@@ -59,7 +59,7 @@ bool RoleAdmits(u16 role, const catalog::CatalogMetadataVersion& m) {
   if ((role == 2) != (kind == K::localized_name)) return false;
   if (kind == K::audit_evidence && role != 6) return false;
   if ((kind == K::database || kind == K::schema || kind == K::filespace) && role != 1) return false;
-  if ((m.object_subtype == "crypto_inline_private_key" ||
+  if ((m.object_subtype == scratchbird::core::catalog::CatalogObjectSubtype::crypto_inline_private_key ||
        catalog::IsCatalogCryptoInlinePrivateKeyPolicyPayload(m.record.payload)) &&
       role != 3)
     return false;
@@ -576,7 +576,7 @@ class NameState {
       return std::nullopt;
     const auto* bm = Current(5, policy.record->body_uuid);
     if (!bm || !Active(*bm) ||
-        !(bm->object_subtype == "naming_collision_policy_body" ||
+        !(bm->object_subtype == scratchbird::core::catalog::CatalogObjectSubtype::naming_collision_policy_body ||
           catalog::IsCatalogNamingCollisionPolicyPayload(bm->record.payload)) ||
         !catalog::CatalogNamingCollisionPolicyMatchesMetadata(View(*bm)) ||
         !catalog::CatalogNamingCollisionPolicyMatchesDatabase(View(*bm), binding_.database_uuid))
@@ -600,14 +600,14 @@ class NameState {
     if (e.case_fold_profile_uuid || e.quoted_identifier_profile_uuid) return false;
     const auto* dm = Current(5, e.dialect_profile_uuid.value);
     if (!dm || !Active(*dm) || dm->record.header.kind != catalog::CatalogRecordKind::config_profile ||
-        dm->object_subtype != "naming_dialect_profile" || !catalog::CatalogNamingDialectProfileMatchesMetadata(View(*dm)) ||
+        dm->object_subtype != scratchbird::core::catalog::CatalogObjectSubtype::naming_dialect_profile || !catalog::CatalogNamingDialectProfileMatchesMetadata(View(*dm)) ||
         !catalog::CatalogNamingDialectProfileMatchesDatabase(View(*dm), binding_.database_uuid))
       return false;
     const auto dialect = catalog::DecodeCatalogNamingDialectProfile(dm->record.payload);
     if (!dialect.record || dialect.record->identifier_profile_uuid != e.identifier_profile_uuid.value) return false;
     const auto* im = Current(5, dialect.record->identifier_profile_uuid);
     if (!im || !Active(*im) || im->record.header.kind != catalog::CatalogRecordKind::config_profile ||
-        im->object_subtype != "identifier_resolution_profile" ||
+        im->object_subtype != scratchbird::core::catalog::CatalogObjectSubtype::identifier_resolution_profile ||
         !catalog::CatalogIdentifierProfileMatchesMetadata(View(*im)) ||
         !catalog::CatalogIdentifierProfileMatchesDatabase(View(*im), binding_.database_uuid))
       return false;
@@ -2789,7 +2789,7 @@ CatalogVersionWriteResult WriteCatalogChangeEvent(disk::CarefulWriteSink& sink, 
     const catalog::CatalogMetadataVersion* intent = nullptr;
     for (const auto& leaf : events.leaves)
       for (const auto& [version, m] : leaf.metadata)
-        if (!intent && m.object_subtype == "node_construction_intent" && catalog::IsCatalogConstructionIntentPayload(m.record.payload))
+        if (!intent && m.object_subtype == scratchbird::core::catalog::CatalogObjectSubtype::node_construction_intent && catalog::IsCatalogConstructionIntentPayload(m.record.payload))
           intent = &m;
     if (!intent) return Refuse(E::invalid_catalog);
     catalog::CatalogMetadataChange p;
@@ -2813,7 +2813,7 @@ CatalogVersionWriteResult WriteCatalogChangeEvent(disk::CarefulWriteSink& sink, 
     m.record.header.row_uuid = {UuidKind::row, request.row_uuid};
     m.record.header.deleted = false;
     m.record.payload.assign(reinterpret_cast<const char*>(encoded.bytes.data()), encoded.bytes.size());
-    m.object_subtype = "catalog_metadata_change";
+    m.object_subtype = scratchbird::core::catalog::CatalogObjectSubtype::catalog_metadata_change;
     m.audit_uuid = {UuidKind::object, request.event_uuid};
     m.creator_transaction_uuid = {UuidKind::transaction, request.transaction_uuid};
     m.creator_local_transaction_id = request.transaction_order;

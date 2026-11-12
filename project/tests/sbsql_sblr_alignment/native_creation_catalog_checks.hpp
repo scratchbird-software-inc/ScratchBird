@@ -34,7 +34,7 @@ db::NativeCreationCatalogSeed MetricSeed(const db::NativeFilespaceInitialization
   v.metric_uuid=Id(500);v.read_right=d.definition.security_family;
   v.origin_transaction_uuid=d.origin_transaction_uuid;v.origin_local_transaction_id=1;
   db::NativeCreationCatalogSeed seed;
-  const auto add=[&](unsigned index,c::CatalogRecordKind kind,const char* subtype,const auto& encoded) {
+  const auto add=[&](unsigned index,c::CatalogRecordKind kind,scratchbird::core::catalog::CatalogObjectSubtype subtype,const auto& encoded) {
     Check(encoded.ok(),"actual metric dependency codec");
     c::CatalogMetadataVersion meta;
     meta.record.header.kind=kind;meta.record.header.row_uuid={UuidKind::row,Id(600+index)};
@@ -53,16 +53,16 @@ db::NativeCreationCatalogSeed MetricSeed(const db::NativeFilespaceInitialization
     Check(c::EncodeCatalogMetadataVersion(meta).ok(),"complete common native metadata");
     seed[0].push_back({std::move(meta),{}});
   };
-  add(0,c::CatalogRecordKind::metric_descriptor,"metric_descriptor",c::EncodeCatalogMetricDescriptor(d));
-  add(1,c::CatalogRecordKind::metric_label_schema,"metric_label_schema",c::EncodeCatalogMetricLabelSchema(l));
-  add(2,c::CatalogRecordKind::policy,"metric_retention",c::EncodeCatalogMetricRetentionPolicy(r));
-  add(3,c::CatalogRecordKind::policy,"metric_visibility",c::EncodeCatalogMetricVisibilityPolicy(v));
+  add(0,c::CatalogRecordKind::metric_descriptor,scratchbird::core::catalog::CatalogObjectSubtype::metric_descriptor,c::EncodeCatalogMetricDescriptor(d));
+  add(1,c::CatalogRecordKind::metric_label_schema,scratchbird::core::catalog::CatalogObjectSubtype::metric_label_schema,c::EncodeCatalogMetricLabelSchema(l));
+  add(2,c::CatalogRecordKind::policy,scratchbird::core::catalog::CatalogObjectSubtype::metric_retention,c::EncodeCatalogMetricRetentionPolicy(r));
+  add(3,c::CatalogRecordKind::policy,scratchbird::core::catalog::CatalogObjectSubtype::metric_visibility,c::EncodeCatalogMetricVisibilityPolicy(v));
   auto names=seed[0][0].metadata;
   names.record.header.kind=c::CatalogRecordKind::localized_name;names.record.payload.clear();
   names.record.header.row_uuid={UuidKind::row,Id(620)};
   names.record.header.object_uuid={UuidKind::object,Id(720)};
   names.record.header.parent_uuid={UuidKind::object,Id(500)};
-  names.object_subtype="name_vector";names.name_vector_uuid=names.record.header.object_uuid;
+  names.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_vector;names.name_vector_uuid=names.record.header.object_uuid;
   c::CatalogNameVector vector;
   vector.name_vector_uuid=names.name_vector_uuid;vector.object_uuid=names.record.header.parent_uuid;
   vector.object_kind=c::CatalogRecordKind::metric_descriptor;vector.owning_schema_uuid=names.owning_schema_uuid;
@@ -73,7 +73,7 @@ db::NativeCreationCatalogSeed MetricSeed(const db::NativeFilespaceInitialization
   names.record.header.row_uuid={UuidKind::row,Id(621)};
   names.record.header.object_uuid=names.default_name_uuid;
   names.record.header.parent_uuid=names.name_vector_uuid;
-  names.object_subtype="name_entry";names.resource_epoch=1;
+  names.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_entry;names.resource_epoch=1;
   c::CatalogNameEntry entry;
   entry.name_entry_uuid=names.record.header.object_uuid;entry.name_vector_uuid=names.name_vector_uuid;
   entry.object_uuid={UuidKind::object,Id(500)};entry.object_kind=c::CatalogRecordKind::metric_descriptor;
@@ -141,13 +141,13 @@ void PopulatedWorkspaceChecks() {
       if(fault==3)bad[0][0].metadata.definition_version=2;
       if(fault==4)bad[0][0].metadata.record.payload="bad";
       if(fault==5)bad[0][0].metadata.record.header.object_uuid.value=request.bootstrap.database_uuid;
-      if(fault==6)bad[0][0].metadata.object_subtype=std::string(page_bytes*2,'x');  // (was the trace key: Q57 = 1)
+      if(fault==6)bad[0][0].metadata.object_subtype=static_cast<scratchbird::core::catalog::CatalogObjectSubtype>(0xfffd);  // (was the trace key: Q57 = 1)
       if(fault==7)bad[1][0].name.reset();
       if(fault==8)bad[1][0].metadata.record.payload="prebound payload is forbidden";
       if(fault==9)std::get<c::CatalogNameEntry>(*bad[1][1].name).created_transaction_uuid.value=Id(999);
       if(fault==10) {
         auto& meta=bad[0][0].metadata;meta.record.header.kind=c::CatalogRecordKind::policy;
-        meta.object_subtype="opaque_oversize_fixture";meta.record.payload=std::string(page_bytes-96,'x');
+        meta.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;meta.record.payload=std::string(page_bytes-96,'x');
         Check(c::EncodeCatalogMetadataVersion(meta).ok(),"oversize fixture is valid metadata, not a malformed definition");
       }
       Arm();const auto refused=db::InitializePopulatedNativeCreationWorkspaceOnOpenDevice(target,request,bad,budget,*fixture.issuer);Disarm();
@@ -157,7 +157,7 @@ void PopulatedWorkspaceChecks() {
     {
       db::NativeCreationCatalogSeed exact;
       auto row=seed[0][0];row.metadata.record.header.kind=c::CatalogRecordKind::policy;
-      row.metadata.object_subtype="opaque_exact_fit_fixture";row.metadata.record.payload="x";
+      row.metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;row.metadata.record.payload="x";
       const auto initial=db::NativeCreationCatalogRowBytes(row);Check(initial.has_value(),"exact capacity measurement");
       const auto available=page_bytes-128-32-page::kRowDataPageBodyHeaderBytes;
       row.metadata.record.payload.resize(available-*initial+1,'x');exact[0].push_back(row);

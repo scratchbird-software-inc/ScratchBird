@@ -50,7 +50,7 @@ constexpr std::array<CatalogValueFieldSchema,8> kFields{{
 }};
 bool Family(const CatalogMetadataVersionView& m) {
   return m.record.header.kind == CatalogRecordKind::metric_label_schema ||
-      m.object_subtype == "metric_label_schema" || IsCatalogMetricLabelSchemaPayload(m.record.payload);
+      m.object_subtype == CatalogObjectSubtype::metric_label_schema || IsCatalogMetricLabelSchemaPayload(m.record.payload);
 }
 }  // namespace
 
@@ -138,7 +138,7 @@ bool CatalogMetricLabelSchemaMatchesHeader(const CatalogTypedRecord& r) {
   return CatalogMetricLabelSchemaMatchesHeader(BorrowCatalogTypedRecord(r));
 }
 bool CatalogMetricLabelSchemaMatchesMetadata(const CatalogMetadataVersionView& m) {
-  if (!CatalogMetricLabelSchemaMatchesHeader(m.record) || m.object_subtype != "metric_label_schema" ||
+  if (!CatalogMetricLabelSchemaMatchesHeader(m.record) || m.object_subtype != CatalogObjectSubtype::metric_label_schema ||
       !Identity(m.owning_schema_uuid,UuidKind::schema) || !Identity(m.record.header.parent_uuid,UuidKind::object) ||
       m.owning_schema_uuid.value != m.record.header.parent_uuid.value ||
       !Identity(m.default_name_uuid,UuidKind::object) || !Identity(m.name_vector_uuid,UuidKind::object) ||

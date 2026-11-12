@@ -68,8 +68,8 @@ NativeCatalogIndexRowsResult BuildNativeCatalogIndexRows(const NativeCatalogInde
     const auto encoded_visibility=c::EncodeCatalogNativeCatalogIndexVisibilityProfile(visibility);
     if(!encoded_key.ok()||!encoded_visibility.ok())return Fail(E::encoding_failure);
     out.rows.reserve(8);
-    out.rows.push_back({key.profile_uuid,"native_catalog_index_key_profile",Payload(encoded_key.bytes)});
-    out.rows.push_back({visibility.profile_uuid,"native_catalog_index_visibility_profile",Payload(encoded_visibility.bytes)});
+    out.rows.push_back({key.profile_uuid,c::CatalogObjectSubtype::native_catalog_index_key_profile,Payload(encoded_key.bytes)});
+    out.rows.push_back({visibility.profile_uuid,c::CatalogObjectSubtype::native_catalog_index_visibility_profile,Payload(encoded_visibility.bytes)});
     for(unsigned i=0;i<6;++i){
       const auto& role=request.roles[i];if(!role)continue;
       c::CatalogNativeCatalogIndexDependencyMap map;
@@ -89,7 +89,7 @@ NativeCatalogIndexRowsResult BuildNativeCatalogIndexRows(const NativeCatalogInde
       dependencies.key_profile_uuid=map.key_profile_uuid;dependencies.visibility_profile_uuid=map.visibility_profile_uuid;
       dependencies.dependency_map_uuid=map.map_uuid;dependencies.dependency_map_sha256=digest.digest;
       out.indexes[i]=NativeCreationCatalogIndexBinding{map.relation_uuid,dependencies};
-      out.rows.push_back({map.map_uuid,"native_catalog_index_dependency_map",Payload(encoded.bytes)});
+      out.rows.push_back({map.map_uuid,c::CatalogObjectSubtype::native_catalog_index_dependency_map,Payload(encoded.bytes)});
     }
     if(request.name_trees){
       // SB_NATIVE_NAME_TREES: the two name trees over the names relation (role
@@ -105,7 +105,7 @@ NativeCatalogIndexRowsResult BuildNativeCatalogIndexRows(const NativeCatalogInde
         auto profile=key;profile.profile_uuid=tree.profile;profile.key_form=tree.form;
         const auto encoded_profile=c::EncodeCatalogNativeCatalogIndexKeyProfile(profile);
         if(!encoded_profile.ok())return Fail(E::encoding_failure);
-        out.rows.push_back({profile.profile_uuid,"native_catalog_index_key_profile",Payload(encoded_profile.bytes)});
+        out.rows.push_back({profile.profile_uuid,c::CatalogObjectSubtype::native_catalog_index_key_profile,Payload(encoded_profile.bytes)});
       }
       for(const auto& tree:trees){
         c::CatalogNativeCatalogIndexDependencyMap map;
@@ -125,7 +125,7 @@ NativeCatalogIndexRowsResult BuildNativeCatalogIndexRows(const NativeCatalogInde
         dependencies.key_profile_uuid=map.key_profile_uuid;dependencies.visibility_profile_uuid=map.visibility_profile_uuid;
         dependencies.dependency_map_uuid=map.map_uuid;dependencies.dependency_map_sha256=digest.digest;
         *tree.out=dependencies;
-        out.rows.push_back({map.map_uuid,"native_catalog_index_dependency_map",Payload(encoded.bytes)});
+        out.rows.push_back({map.map_uuid,c::CatalogObjectSubtype::native_catalog_index_dependency_map,Payload(encoded.bytes)});
       }
     }
     out.error=E::none;return out;
