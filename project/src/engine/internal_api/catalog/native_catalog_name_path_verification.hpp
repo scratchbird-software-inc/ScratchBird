@@ -53,8 +53,8 @@ struct NativeCatalogNamePathLookup {
     if(row.metadata.record.header.deleted||!row.name_payload)return nullptr;
     return std::get_if<core::catalog::CatalogNameEntryView>(&*row.name_payload);
   }
-  std::pair<core::platform::Uuid,std::string_view> LanguageKey(std::size_t i) const noexcept {
-    const auto* e=Entry(i);return {e->object_uuid.value,e->language_tag};
+  std::pair<core::platform::Uuid,core::platform::Uuid> LanguageKey(std::size_t i) const noexcept {
+    const auto* e=Entry(i);return {e->object_uuid.value,e->language_uuid.value};
   }
   // The live row with this object identity, or nullptr.
   const storage::database::NativeCatalogVisibleRow* Find(const core::platform::Uuid& id) const noexcept {
@@ -63,7 +63,7 @@ struct NativeCatalogNamePathLookup {
     if(at==order.end()||identity(*at)!=id||rows[*at].row.metadata.record.header.deleted)return nullptr;
     return &rows[*at].row;
   }
-  core::catalog::CatalogNamePathName operator()(const core::platform::Uuid& object,std::string_view language) const noexcept {
+  core::catalog::CatalogNamePathName operator()(const core::platform::Uuid& object,const core::platform::Uuid& language) const noexcept {
     core::catalog::CatalogNamePathName name;
     const std::pair key{object,language};
     const auto at=std::lower_bound(by_language.begin(),by_language.end(),key,[&](auto i,const auto& value){return LanguageKey(i)<value;});

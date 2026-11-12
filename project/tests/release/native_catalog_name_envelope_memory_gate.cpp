@@ -44,21 +44,15 @@ template<class F> auto WithoutEnvelopeHeap(F action){
 #include "../sbsql_sblr_alignment/catalog_name_envelope_test.cpp"
 #undef main
 
-// SB_CATALOG_NO_TEXT_IDENTIFIERS: the class is a kind and the reference engine a
-// UUID now; the language tag (still text until it converts) is the text field
-// these probes size and alias.
-template<class R> auto& LanguageText(R& r){
-  if constexpr(std::is_same_v<std::decay_t<R>,c::CatalogNameVector>||std::is_same_v<std::decay_t<R>,c::CatalogNameVectorView>)
-    return r.default_language_tag;
-  else return r.language_tag;
-}
+// SB_CATALOG_NO_TEXT_IDENTIFIERS: class, reference engine and language are
+// fixed-size identities now, so a vector holds no text and borrows nothing;
+// the entry's display name is the text these probes size and alias.
+template<class R> constexpr bool IsVector=std::is_same_v<std::decay_t<R>,c::CatalogNameVector>||
+    std::is_same_v<std::decay_t<R>,c::CatalogNameVectorView>;
 void OwningEnvelopeFaults(bool entry){
   auto fixture=Fixture(entry);
   std::visit([](auto& r){
-    if constexpr(std::is_same_v<std::decay_t<decltype(r)>,c::CatalogNameVector>)
-      r.default_language_tag=std::string(64,'l');
-    else {
-      r.language_tag=std::string(64,'l');
+    if constexpr(!IsVector<decltype(r)>){
       r.raw_name_text=std::string(64,'r');r.display_name=std::string(64,'s');
       r.normalized_lookup_key.assign(128,0xfe);r.exact_lookup_key.assign(128,0xff);
       r.full_path_lookup_key.assign(128,0x80);r.path_component_count=1;
@@ -70,15 +64,17 @@ void OwningEnvelopeFaults(bool entry){
   if(!view.ok())return;
   const auto copy=WithoutEnvelopeHeap([&]{return *view.record;});
   std::visit([&](const auto& payload){
-    const auto* p=reinterpret_cast<const byte*>(LanguageText(payload).data());
-    Check(p>=bytes.data()+176&&p+LanguageText(payload).size()<=bytes.data()+bytes.size(),
-        "envelope payload aliases retained original bytes");
+    if constexpr(!IsVector<decltype(payload)>){
+      const auto* p=reinterpret_cast<const byte*>(payload.display_name.data());
+      Check(p>=bytes.data()+176&&p+payload.display_name.size()<=bytes.data()+bytes.size(),
+          "envelope payload aliases retained original bytes");
+    }
   },copy.payload);
   const auto action=[&]{return c::DecodeCatalogNameEnvelope(bytes,fixture.binding);};
   const auto before=envelope_memory_fault::allocations;
   Check(action().ok(),"owning envelope allocation baseline");
   const auto count=envelope_memory_fault::allocations-before;
-  Check(count==(entry?6:1),"envelope only final fields allocate");  // was 8:2 with text class and donor_id
+  Check(count==(entry?5:0),"envelope only final fields allocate");  // was 8:2 (text class, donor_id, language)
   for(std::size_t point=0;point<count;++point){
     bool success=false;envelope_memory_fault::remaining=point;envelope_memory_fault::fired=false;
     try{success=action().ok();}catch(const std::bad_alloc&){}
@@ -97,12 +93,14 @@ void OwningEnvelopeFaults(bool entry){
   std::cout<<"name envelope entry="<<entry<<" owning allocation_sites="<<count<<'\n';
 }
 void ExactEnvelopeBounds(bool entry){
+  // A vector is fixed-size now (no text), so it cannot reach the maximum.
+  if(!entry)return;
   auto fixture=Fixture(entry);
   const auto initial=c::EncodeCatalogNameEnvelope(fixture);
   Check(initial.ok(),"envelope maximum fixture");
-  const auto fixed=std::visit([&](const auto& p){return initial.bytes.size()-LanguageText(p).size();},fixture.payload);
+  const auto fixed=std::visit([&](const auto& p)->std::size_t{if constexpr(IsVector<decltype(p)>)return 0;else return initial.bytes.size()-p.display_name.size();},fixture.payload);
   for(const auto size:{std::size_t(131071),std::size_t(131072),std::size_t(131073)}){
-    std::visit([&](auto& p){LanguageText(p).assign(size-fixed,'x');},fixture.payload);
+    std::visit([&](auto& p){if constexpr(!IsVector<decltype(p)>)p.display_name.assign(size-fixed,'x');},fixture.payload);
     // Independently assemble outer lengths around the admitted payload; the
     // oversized case bypasses the owning envelope encoder's expected refusal.
     const auto payload=std::visit([](const auto& p){
@@ -174,17 +172,19 @@ void MetadataAdmission(bool entry){
   auto dropped=payload;
   std::visit([](auto& r){r.lifecycle_state=c::CatalogNameLifecycle::dropped;},dropped);
   matches(dropped,m,true);
-  auto invalid=payload;std::visit([](auto& r){LanguageText(r)=std::string(1,char(0x80));},invalid);
-  matches(invalid,metadata,false);
-  invalid=payload;std::visit([](auto& r){LanguageText(r).assign(131041,'x');},invalid);
-  matches(invalid,metadata,false);
-  // Individually valid fields exceed the total block: only the entry still has
-  // two text fields (the vector's one text field is its language tag).
+  auto invalid=payload;
+  if(entry){  // the vector has no text to make invalid
+    std::visit([](auto& r){if constexpr(!IsVector<decltype(r)>)r.display_name=std::string(1,char(0x80));},invalid);
+    matches(invalid,metadata,false);
+    invalid=payload;std::visit([](auto& r){if constexpr(!IsVector<decltype(r)>)r.display_name.assign(131041,'x');},invalid);
+    matches(invalid,metadata,false);
+  }
+  // Individually valid fields exceed the total block: only the entry has text.
   if(std::holds_alternative<c::CatalogNameEntry>(payload)){
     invalid=payload;
     std::visit([](auto& r){
       if constexpr(std::is_same_v<std::decay_t<decltype(r)>,c::CatalogNameEntry>){
-        r.language_tag.assign(70000,'x');r.display_name.assign(70000,'y');
+        r.raw_name_text.assign(70000,'x');r.display_name.assign(70000,'y');
       }
     },invalid);
     matches(invalid,metadata,false);

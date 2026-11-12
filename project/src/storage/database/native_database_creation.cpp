@@ -54,8 +54,7 @@ static NativeInitialDatabaseResult AssembleNativeInitialDatabaseRecordsImpl(
   try {
     const auto& named=r.definition;
     if(!r.construction||!named.definition||!named.vector_metadata||!named.vector||
-        named.entries.empty()||!named.entries.data()||r.database_default_language.empty()||
-        !r.database_default_language.data()||r.database_default_language.size()>131040||
+        named.entries.empty()||!named.entries.data()||!c::IsKnownCatalogLanguage(r.database_default_language)||
         !r.limits.maximum_records||!r.limits.maximum_encoded_bytes)return Fail(E::invalid_request);
     const auto& physical=*r.construction;const auto& b=physical.bootstrap;
     if(disk::ValidateFilespaceBootstrap(b)!=disk::FilespaceBootstrapError::none||

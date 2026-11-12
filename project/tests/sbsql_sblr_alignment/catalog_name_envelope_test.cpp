@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "catalog_name_envelope.hpp"
+#include "catalog_language.hpp"
 #include "catalog_page.hpp"
 #include <algorithm>
 #include <array>
@@ -49,7 +50,7 @@ c::CatalogNameVector Vector() {
   c::CatalogNameVector v;
   v.name_vector_uuid=Id(UuidKind::object,1);v.object_uuid=Id(UuidKind::object,2);
   v.object_kind=c::CatalogRecordKind::table_descriptor;v.owning_schema_uuid=Id(UuidKind::schema,4);
-  v.default_language_tag="fr-CA";v.default_name_entry_uuid=Id(UuidKind::object,6);
+  v.default_language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_fr_CA);v.default_name_entry_uuid=Id(UuidKind::object,6);
   v.name_collision_policy_uuid=Id(UuidKind::object,7);v.catalog_generation_id=0x0102030405060708;
   v.security_policy_uuid=Id(UuidKind::object,9);v.lifecycle_state=c::CatalogNameLifecycle::active;
   return v;
@@ -67,7 +68,7 @@ c::CatalogNameEnvelope Fixture(bool entry=false) {
     c::CatalogNameEntry e;
     e.name_entry_uuid=b.catalog_object_uuid;e.name_vector_uuid=Id(UuidKind::object,2);
     e.object_uuid=Id(UuidKind::object,3);e.object_kind=c::CatalogRecordKind::table_descriptor;e.scope_uuid=Id(UuidKind::object,5);
-    e.language_tag="en";e.dialect_profile_uuid=Id(UuidKind::object,11);
+    e.language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_en);e.dialect_profile_uuid=Id(UuidKind::object,11);
     e.identifier_profile_uuid=Id(UuidKind::object,12);e.raw_name_text="a";e.display_name="a";
     e.catalog_generation_id=b.catalog_generation;e.created_transaction_uuid=b.creating_transaction_uuid;
     e.security_policy_uuid=Id(UuidKind::object,30);e.resource_epoch=1;e.name_resolution_epoch=2;
@@ -78,25 +79,26 @@ std::vector<byte> Golden() {
   // Independent Core byte oracle: header and payload both literal, not generated
   // with a production serializer. The owning version metadata is a test fixture.
   auto out=Hex(
-    "53424352 0100 b000 95010000 e5000000 01000500 0200 0500 "
+    "53424352 0100 b000 a0010000 f0000000 01000500 0300 0500 "
     "019213243546778899aabbccddeeff65 019213243546778899aabbccddeeff66 "
     "019213243546778899aabbccddeeff67 019213243546778899aabbccddeeff68 "
     "019213243546778899aabbccddeeff01 019213243546778899aabbccddeeff6a "
     "0900000000000000 03000000 00000000 0400000000000000 0500000000000000 "
     "0600000000000000 0807060504030201 0000000000000000 "
-    "53424356 0100 1800 e5000000 0a000000 01000500 02000000 "
+    "53424356 0100 1800 f0000000 0a000000 01000500 03000000 "
     "0100 05 00 10000000 019213243546778899aabbccddeeff01 "
     "0200 05 00 10000000 019213243546778899aabbccddeeff02 "
-    // field 3: object_kind table_descriptor (81); schema version 2
+    // field 3: object_kind table_descriptor (81); field 5: language fr-CA
+    // (SB_CATALOG_LANGUAGE_CONSTANTS); schema version 3
     "0300 01 00 08000000 5100000000000000 "
     "0400 05 00 10000000 019213243546778899aabbccddeeff04 "
-    "0500 03 00 05000000 66722d4341 "
+    "0500 05 00 10000000 01a1cd4019907f88b42d9afadfb5098f "
     "0600 05 00 10000000 019213243546778899aabbccddeeff06 "
     "0700 05 00 10000000 019213243546778899aabbccddeeff07 "
     "0800 01 00 08000000 0807060504030201 "
     "0900 05 00 10000000 019213243546778899aabbccddeeff09 "
     "0a00 01 00 08000000 0200000000000000");
-  Check(out.size()==405,"golden envelope size");return out;  // 402 with the 5-byte class text
+  Check(out.size()==416,"golden envelope size");return out;  // 402 with text class and language
 }
 void Roundtrip(const c::CatalogNameEnvelope& r) {
   const auto encoded=c::EncodeCatalogNameEnvelope(r);
@@ -114,7 +116,7 @@ void HeaderAndIdentity() {
   Check(decoded.ok(),"golden decode refused");
   if(decoded.ok()) {
     const auto& v=std::get<c::CatalogNameVector>(decoded.record->payload);
-    Check(v.default_language_tag=="fr-CA" && v.name_vector_uuid.value==Id(UuidKind::object,1).value &&
+    Check(v.default_language_uuid.value==c::kCatalogLanguage_fr_CA && v.name_vector_uuid.value==Id(UuidKind::object,1).value &&
           decoded.record->binding.version_uuid.value==Id(UuidKind::row,104).value,"golden values changed");
   }
   for(unsigned offset=0;offset<176;++offset)for(unsigned value=0;value<256;++value) {
@@ -207,22 +209,27 @@ void BindingAndPayload() {
       "name successor envelope rewrote original entry creation");
   auto bad=golden;bad[16]=2;Refused(CheckedEnvelopeDecode(bad,base.binding));
   bad=golden;bad[176+16]=2;Refused(CheckedEnvelopeDecode(bad,base.binding));
-  // Version 1 (text class and donor_id) is refused in the envelope and the payload.
-  bad=golden;bad[20]=1;Refused(CheckedEnvelopeDecode(bad,base.binding));
-  bad=golden;bad[176+20]=1;Refused(CheckedEnvelopeDecode(bad,base.binding));
+  // Versions 1 (text class, donor_id) and 2 (text language) are refused in the
+  // envelope and the payload.
+  for(const byte old:{byte{1},byte{2}}){
+    bad=golden;bad[20]=old;Refused(CheckedEnvelopeDecode(bad,base.binding));
+    bad=golden;bad[176+20]=old;Refused(CheckedEnvelopeDecode(bad,base.binding));
+  }
   const std::string legacy="kind=5\nrow_uuid=01921324-3546-7788-99aa-bbccddeeff67\n";
   Refused(CheckedEnvelopeDecode({legacy.begin(),legacy.end()},base.binding));
   Check(!c::CatalogNameEnvelopeEncodeResult{}.ok() && !c::CatalogNameEnvelopeDecodeResult{}.ok(),
         "default constructed result asserts success");
 }
 void SizeAndPageContainer() {
-  auto r=Fixture();auto& v=std::get<c::CatalogNameVector>(r.payload);
-  // SB_CATALOG_NO_TEXT_IDENTIFIERS: the class is an 8-byte kind now (was 5
-  // bytes of "table"), so the vector's remaining text field takes the padding.
-  v.default_language_tag=std::string(130672,'x');
+  // SB_CATALOG_NO_TEXT_IDENTIFIERS: a vector holds no text now (kind and
+  // language are fixed-size), so the entry's display name is padded to the
+  // exact maximum.
+  auto r=Fixture(true);auto& e=std::get<c::CatalogNameEntry>(r.payload);
+  const auto base_size=c::EncodeCatalogNameEnvelope(r).bytes.size()-e.display_name.size();
+  e.display_name=std::string(131072-base_size,'x');
   auto encoded=c::EncodeCatalogNameEnvelope(r);
   Check(encoded.ok() && encoded.bytes.size()==131072,"exact envelope size maximum");
-  Roundtrip(r);v.default_language_tag.push_back('x');
+  Roundtrip(r);e.display_name.push_back('x');
   Refused(c::EncodeCatalogNameEnvelope(r));
   encoded.bytes.push_back(0);Refused(CheckedEnvelopeDecode(encoded.bytes,r.binding));
   r=Fixture();encoded=c::EncodeCatalogNameEnvelope(r);
@@ -241,15 +248,17 @@ void SizeAndPageContainer() {
           "page recovered envelope did not bind");
   }
   // Envelope structural validation is NOT a checksum or visibility oracle.
-  // (The class is a kind number now; the language tag is the text altered.)
-  auto changed=encoded.bytes;const std::vector<byte> needle{'f','r','-','C','A'};
+  // (A vector holds no text now; its default entry identity is altered, to
+  // another well-formed UUIDv7 the codec cannot tell from the right one.)
+  auto changed=encoded.bytes;const auto& entry_id=Id(UuidKind::object,6).value.bytes;
+  const std::vector<byte> needle(entry_id.begin(),entry_id.end());
   auto at=std::search(changed.begin()+176,changed.end(),needle.begin(),needle.end());
-  Check(at!=changed.end(),"fixture language not located");if(at==changed.end())return;
-  *at='c';Check(CheckedEnvelopeDecode(changed,r.binding).ok(),"codec invents metadata authority");
+  Check(at!=changed.end(),"fixture default entry not located");if(at==changed.end())return;
+  at+=15;*at=0x7e;Check(CheckedEnvelopeDecode(changed,r.binding).ok(),"codec invents metadata authority");
   auto damaged=pages.pages[0].body;
   auto record_at=std::search(damaged.begin(),damaged.end(),encoded.bytes.begin(),encoded.bytes.end());
   Check(record_at!=damaged.end(),"packed record bytes not found");if(record_at==damaged.end())return;
-  record_at[at-changed.begin()]='c';
+  record_at[at-changed.begin()]=0x7e;
   Check(!page::ParseCatalogPageBody(damaged,9).ok(),"owning page checksum accepted altered payload");
   // This is page-container integration, not a live MGA version or disk commit.
 }

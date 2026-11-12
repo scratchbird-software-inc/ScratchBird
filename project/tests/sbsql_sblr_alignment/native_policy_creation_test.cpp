@@ -121,7 +121,7 @@ struct Package {
       x.vector_metadata.record.header.parent_uuid=meta.record.header.object_uuid;x.vector_metadata.object_subtype="name_vector";
       auto& v=x.vector;v.name_vector_uuid=meta.name_vector_uuid;v.object_uuid=meta.record.header.object_uuid;
       v.object_kind=meta.record.header.kind;v.owning_schema_uuid=meta.owning_schema_uuid;
-      v.default_language_tag="en-US";v.default_name_entry_uuid=meta.default_name_uuid;
+      v.default_language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_en_US);v.default_name_entry_uuid=meta.default_name_uuid;
       v.name_collision_policy_uuid=Typed(p::UuidKind::object,55);v.catalog_generation_id=1;
       v.security_policy_uuid=meta.security_policy_uuid;v.lifecycle_state=c::CatalogNameLifecycle::active;
       x.entry_metadata=meta;x.entry_metadata.record.header.kind=c::CatalogRecordKind::localized_name;
@@ -129,7 +129,7 @@ struct Package {
       x.entry_metadata.record.header.parent_uuid=meta.name_vector_uuid;x.entry_metadata.object_subtype="name_entry";x.entry_metadata.resource_epoch=1;
       auto& e=x.entry;e.name_entry_uuid=meta.default_name_uuid;e.name_vector_uuid=meta.name_vector_uuid;
       e.object_uuid=meta.record.header.object_uuid;e.object_kind=v.object_kind;e.scope_uuid=meta.record.header.parent_uuid;
-      e.parent_schema_uuid=meta.owning_schema_uuid;e.language_tag="en-US";e.dialect_profile_uuid=Typed(p::UuidKind::object,56);
+      e.parent_schema_uuid=meta.owning_schema_uuid;e.language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_en_US);e.dialect_profile_uuid=Typed(p::UuidKind::object,56);
       e.identifier_profile_uuid=Typed(p::UuidKind::object,57);e.raw_name_text=e.display_name="supplied_alias_"+std::to_string(n);
       e.normalized_lookup_key.assign(e.raw_name_text.begin(),e.raw_name_text.end());e.catalog_generation_id=1;
       e.created_transaction_uuid=tx;e.security_policy_uuid=meta.security_policy_uuid;
@@ -139,7 +139,7 @@ struct Package {
     items.emplace_back();Fill(n++,object,kind,c::CatalogRecordKindName(kind),false);
   }
   void Rebind(){inputs.clear();for(auto& x:items){x.entries[0]={&x.entry_metadata,&x.entry};inputs.push_back({&x.definition,&x.vector_metadata,&x.vector,x.entries});}}
-  auto Request()const{return db::NativeInitialPolicyRequest{SB_DEFAULT_POLICY_PACK_ROOT,f::Id(1),tx,f::Id(12000),"en-US",inputs,{3000,16*1024*1024}};}
+  auto Request()const{return db::NativeInitialPolicyRequest{SB_DEFAULT_POLICY_PACK_ROOT,f::Id(1),tx,f::Id(12000),c::kCatalogLanguage_en_US,inputs,{3000,16*1024*1024}};}
   auto SecurityRequest()const{return db::NativeInitialPolicySecurityRequest{Request(),memberships};}
   auto BootstrapRequest()const{return db::NativeInitialPolicySecurityRequest{Request(),memberships,
       db::NativeInitialBootstrapIdentity{f::Id(14000),f::Id(14001),"BootstrapAdmin",fingerprint}};}
@@ -510,7 +510,7 @@ void Logical() {
     if(scenario==19)bad.inputs[0].vector_metadata=nullptr;
     if(scenario==20)bad.items[0].entries[0].entry=nullptr;
     if(scenario==21)changed.policy_seed_pack_root={static_cast<const char*>(nullptr),1};
-    if(scenario==22)changed.database_default_language={static_cast<const char*>(nullptr),1};
+    if(scenario==22)changed.database_default_language=SourceId(0x998);  // an engine UUID that is no language constant
     const auto refused=db::AssembleNativeInitialPolicyRecords(changed);
     Check(!refused.ok()&&!refused.records,"invalid source, identity, metadata, names and bounds yield no partial native package");
     if(scenario==3)Check(refused.error==db::NativeInitialPolicyError::source_invalid&&refused.source_diagnostic.has_value(),"actual source refusal retains diagnostic");

@@ -585,14 +585,14 @@ void NativeCatalogNames() {
   Fixture f; const auto created=f.Begin();
   c::CatalogNameVector vector;
   vector.name_vector_uuid=Id(UuidKind::object);vector.object_uuid=Id(UuidKind::object);
-  vector.object_kind=c::CatalogRecordKind::schema;vector.default_language_tag="en";vector.owning_schema_uuid=Id(UuidKind::schema);
+  vector.object_kind=c::CatalogRecordKind::schema;vector.default_language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_en);vector.owning_schema_uuid=Id(UuidKind::schema);
   vector.default_name_entry_uuid=Id(UuidKind::object);vector.name_collision_policy_uuid=Id(UuidKind::object);
   vector.catalog_generation_id=1;vector.security_policy_uuid=Id(UuidKind::object);
   vector.lifecycle_state=c::CatalogNameLifecycle::active;
   c::CatalogNameEntry entry;
   entry.name_entry_uuid=vector.default_name_entry_uuid;entry.name_vector_uuid=vector.name_vector_uuid;
   entry.object_uuid=vector.object_uuid;entry.object_kind=vector.object_kind;entry.scope_uuid=Id(UuidKind::object);
-  entry.language_tag="en";entry.parent_schema_uuid=vector.owning_schema_uuid;
+  entry.language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_en);entry.parent_schema_uuid=vector.owning_schema_uuid;
   entry.dialect_profile_uuid=Id(UuidKind::object);entry.identifier_profile_uuid=Id(UuidKind::object);
   entry.raw_name_text=entry.display_name="Native name";entry.normalized_lookup_key={0,0xff,42};entry.exact_lookup_key={0xfe,0,41};
   entry.default_for_language=entry.default_for_object=true;

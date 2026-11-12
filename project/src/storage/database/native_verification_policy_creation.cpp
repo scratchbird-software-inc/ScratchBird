@@ -26,7 +26,7 @@ NativeInitialPolicyDescriptorResult AssembleNativeInitialVerificationPolicyRecor
   try{
     if(!core::uuid::IsEngineIdentityUuid(r.database_uuid)||r.construction_transaction.kind!=core::platform::UuidKind::transaction||
         !core::uuid::IsEngineIdentityUuid(r.construction_transaction.value)||r.database_uuid==r.construction_transaction.value||
-        r.database_default_language.empty()||!r.database_default_language.data()||r.database_default_language.size()>131040||
+        !c::IsKnownCatalogLanguage(r.database_default_language)||
         r.policies.empty()||!r.policies.data())return Fail(E::invalid_request);
     if(!r.limits.maximum_records||!r.limits.maximum_encoded_bytes||r.policies.size()>r.limits.maximum_records/3)
       return Fail(E::resource_exhausted);

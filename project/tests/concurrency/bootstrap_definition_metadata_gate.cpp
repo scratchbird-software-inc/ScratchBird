@@ -77,7 +77,7 @@ db::BootstrapNamedCreationUnitInput GoodUnit() {
   in.definition = Good();
   in.name_vector_row_uuid = Id(0x5a);
   in.name_entry_row_uuid = Id(0x5b);
-  in.language_tag = "en-US";
+  in.language_uuid = c::kCatalogLanguage_en_US;
   in.name_text = "Supplied_Name";
   in.name_collision_policy_uuid = Id(0x5c);
   in.dialect_profile_uuid = Id(0x5d);
@@ -266,7 +266,7 @@ int main() {
           "the vector value carries the definition's security policy");
     Check(v.lifecycle_state == c::CatalogNameLifecycle::active,
           "the vector is active, not left in the creating default");
-    Check(v.default_language_tag == "en-US", "the vector default language is the supplied tag");
+    Check(v.default_language_uuid.value == c::kCatalogLanguage_en_US, "the vector default language is the supplied language");
 
     Check(e.name_entry_uuid.value == d.default_name_uuid.value &&
           e.name_vector_uuid.value == d.name_vector_uuid.value &&
@@ -331,7 +331,7 @@ int main() {
     auto nil_entry_row = GoodUnit(); nil_entry_row.name_entry_row_uuid = {};
     auto repeated_entry_row = GoodUnit();
     repeated_entry_row.name_entry_row_uuid = repeated_entry_row.name_vector_row_uuid;
-    auto no_language = GoodUnit(); no_language.language_tag.clear();
+    auto no_language = GoodUnit(); no_language.language_uuid = Id(0xe1);  // an engine UUID that is no language constant
     auto no_text = GoodUnit(); no_text.name_text.clear();
     auto no_profile = GoodUnit(); no_profile.identifier_profile = nullptr;
     auto long_label = GoodUnit(); long_label.name_text = std::string(200, 'a');
@@ -354,7 +354,7 @@ int main() {
        repeated_entry_row, U::name_entry_row_identity_invalid},
       // (The "empty object class" refusal is gone with the input field: the
       // class is the definition's kind, so there is nothing to leave empty.)
-      {"an empty language tag refuses", no_language, U::language_tag_empty},
+      {"a language that is not a language constant refuses", no_language, U::language_unknown},
       {"an empty name text refuses", no_text, U::name_text_empty},
       {"an absent identifier profile refuses: the keys cannot be derived without it",
        no_profile, U::identifier_profile_missing},

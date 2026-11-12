@@ -12,7 +12,7 @@ struct NativeInitialPolicyDescriptorInput {
 struct NativeInitialPolicyDescriptorRequest {
   core::platform::Uuid database_uuid;
   core::platform::TypedUuid construction_transaction;
-  std::string_view database_default_language;
+  core::platform::Uuid database_default_language;  // a language constant (SB_CATALOG_LANGUAGE_CONSTANTS)
   std::span<const NativeInitialPolicyDescriptorInput> policies;
   core::catalog::CatalogNamedCreationLimits limits;
 };

@@ -11,7 +11,7 @@ struct NativeInitialDatabaseRequest {
   // Exact independently admitted node datatype cohort; never defaulted from
   // the current executable or the initial catalog generation.
   core::catalog::CatalogDatabaseDatatypeCohort datatype_cohort;
-  std::string_view database_default_language;
+  core::platform::Uuid database_default_language;  // a language constant (SB_CATALOG_LANGUAGE_CONSTANTS)
   // Complete owner-issued database common metadata and actual aliases. The
   // definition payload is empty; native construction values supply it.
   core::catalog::CatalogNamedCreationInput definition;

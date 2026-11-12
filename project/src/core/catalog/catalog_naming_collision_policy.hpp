@@ -55,17 +55,19 @@ inline int CompareCatalogNameCollisionScope(const CatalogNameEntryView& x,const 
     return x.identifier_profile_uuid.value<y.identifier_profile_uuid.value?-1:1;
   return 0;
 }
-// Lane order under one group: the language tag (exactly, ASCII-folded, or not
-// at all), then the exact-match flag unless the group shares one key lane, then
-// the key of each entry's own lane (exact or normalized).
+// Lane order under one group: the language (or not at all), then the
+// exact-match flag unless the group shares one key lane, then the key of each
+// entry's own lane (exact or normalized).
+// SB_CATALOG_LANGUAGE_CONSTANTS (owner Q53 = 1, 2026-11-11): a language is a
+// constant UUID, so exact_tag compares the UUIDs. ascii_folded_tag compared
+// tags with ASCII case folded; tags are folded once where a tag becomes a
+// language (CatalogLanguageForTag), so it now compares the UUIDs too - its
+// distinction from exact_tag is gone (annotated as drift, value kept).
 inline int CompareCatalogNameCollisionLanes(const CatalogNameEntryView& x,const CatalogNameEntryView& y,
     CatalogCollisionLanguageLane language,CatalogCollisionKeyLane key) noexcept {
   if(language!=CatalogCollisionLanguageLane::all_languages){
-    const bool fold=language==CatalogCollisionLanguageLane::ascii_folded_tag;
-    const auto value=[&](unsigned char ch){return fold&&ch>='A'&&ch<='Z'?ch+('a'-'A'):ch;};
-    const std::string_view a=x.language_tag,b=y.language_tag;
-    for(std::size_t i=0;i<std::min(a.size(),b.size());++i){const auto p=value(a[i]),q=value(b[i]);if(p!=q)return p<q?-1:1;}
-    if(a.size()!=b.size())return a.size()<b.size()?-1:1;
+    const auto& a=x.language_uuid.value.bytes;const auto& b=y.language_uuid.value.bytes;
+    if(a!=b)return a<b?-1:1;
   }
   if(key!=CatalogCollisionKeyLane::shared&&x.requires_exact_match!=y.requires_exact_match)return x.requires_exact_match?1:-1;
   const auto xkey=x.requires_exact_match?x.exact_lookup_key:x.normalized_lookup_key;

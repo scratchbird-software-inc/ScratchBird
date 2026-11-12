@@ -10,12 +10,14 @@
 //   - order: sorting random name tuples field by field (scope, identifier
 //     profile, language, own-lane key, record kind; object, kind, marker,
 //     language, name class) gives the order of their encoded keys, with keys
-//     and languages that hold 0x00 and 0xFF bytes and prefixes of each other;
+//     that hold 0x00 and 0xFF bytes and prefixes of each other (a language is
+//     a fixed 16-byte constant UUID: SB_CATALOG_LANGUAGE_CONSTANTS);
 //   - prefix-freeness: one name's authoritative prefix starts exactly the keys
 //     of that name (every class), never another name's;
 //   - payloads round-trip; malformed ones (wrong size, truncated, overlong
 //     LEB128, trailing bytes, a count past the end) are refused;
 //   - the full-path lookup key is the escaped components, concatenated.
+#include "catalog_language.hpp"
 #include "catalog_name_tree_keys.hpp"
 
 #include <algorithm>
@@ -63,7 +65,7 @@ Bytes Text(const std::string& s) { return Bytes(s.begin(), s.end()); }
 
 struct Name {
   Uuid scope, profile, object, entry;
-  std::string language;
+  Uuid language;  // a language constant
   Bytes key;  // own lane
   bool exact = false;
   unsigned kind = 0;
@@ -73,7 +75,7 @@ Bytes OracleAuthoritative(const Name& n, bool with_kind = true) {
   Bytes out;
   U(out, n.scope);
   U(out, n.profile);
-  Esc(out, Text(n.language));
+  U(out, n.language);
   Esc(out, n.key);
   if (with_kind) {
     out.push_back(static_cast<byte>(n.kind >> 8));
@@ -87,7 +89,7 @@ Bytes OracleUuidEntry(const Name& n) {
   out.push_back(static_cast<byte>(n.kind >> 8));
   out.push_back(static_cast<byte>(n.kind));
   out.push_back(1);
-  Esc(out, Text(n.language));
+  U(out, n.language);
   out.push_back(static_cast<byte>(n.name_class));
   return out;
 }
@@ -103,7 +105,7 @@ Entry Make(const Name& n) {
   o.identifier_profile_uuid = {UuidKind::object, n.profile};
   o.object_uuid = {UuidKind::object, n.object};
   o.name_entry_uuid = {UuidKind::object, n.entry};
-  o.language_tag = n.language;
+  o.language_uuid = c::CatalogLanguageIdentity(n.language);
   o.requires_exact_match = n.exact;
   // The other lane holds something else, to show it is not used.
   o.normalized_lookup_key = n.exact ? Text("other-lane") : n.key;
@@ -117,18 +119,20 @@ void Golden() {
   Name n;
   n.scope = Id(1);
   n.profile = Id(2);
-  n.language = "en";
+  n.language = c::kCatalogLanguage_en;
   n.key = {'a', 0, 'b'};
   n.kind = 0x0102;
   const auto key = c::CatalogNameAuthoritativeTreeKey(Make(n).view(), static_cast<c::CatalogRecordKind>(n.kind));
   Bytes want;
   U(want, Id(1));
   U(want, Id(2));
-  for (byte b : Bytes{'e', 'n', 0, 0, 'a', 0, 255, 'b', 0, 0, 1, 2}) want.push_back(b);
+  U(want, c::kCatalogLanguage_en);  // fixed 16 bytes, no escape
+  for (byte b : Bytes{'a', 0, 255, 'b', 0, 0, 1, 2}) want.push_back(b);
   Check(key == want, "a key written out byte by byte");
 }
 void Order(std::mt19937& rng) {
-  const std::vector<std::string> languages{"en", "en-GB", "e", "fr", std::string("e\0n", 3), "\xff"};
+  std::vector<Uuid> languages;
+  for (const auto& l : c::kCatalogLanguages) languages.push_back(l.uuid);
   const std::vector<Bytes> keys{{}, {0}, {0, 0}, {0, 255}, {1}, {255}, {255, 0}, {'a'}, {'a', 0}, {'a', 'b'}, {'b'}};
   std::vector<Name> names;
   for (int i = 0; i < 3000; ++i) {
@@ -146,10 +150,10 @@ void Order(std::mt19937& rng) {
   }
   // Authoritative: field order scope, profile, language, key, kind.
   const auto tuple_a = [](const Name& n) {
-    return std::tuple{n.scope.bytes, n.profile.bytes, Text(n.language), n.key, n.kind};
+    return std::tuple{n.scope.bytes, n.profile.bytes, n.language.bytes, n.key, n.kind};
   };
   const auto tuple_u = [](const Name& n) {
-    return std::tuple{n.object.bytes, n.kind, Text(n.language), n.name_class};
+    return std::tuple{n.object.bytes, n.kind, n.language.bytes, n.name_class};
   };
   for (std::size_t i = 0; i + 1 < names.size(); ++i) {
     const auto& a = names[i];

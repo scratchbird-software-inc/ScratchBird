@@ -301,12 +301,14 @@ std::string CatalogVariableBytes(const catalog::CatalogMetadataVersionView& meta
   append(metadata.trace_search_key);append(metadata.object_subtype);append(metadata.retention_class);
   if(name){
     if(const auto* vector=std::get_if<catalog::CatalogNameVectorView>(&*name)){
-      append(std::to_string(static_cast<unsigned>(vector->object_kind)));append(vector->default_language_tag);
+      append(std::to_string(static_cast<unsigned>(vector->object_kind)));
+      append({reinterpret_cast<const char*>(vector->default_language_uuid.value.bytes.data()),16});
     }else{
       const auto& entry=std::get<catalog::CatalogNameEntryView>(*name);
       append(std::to_string(static_cast<unsigned>(entry.object_kind)));
       append(entry.reference_engine_uuid?std::string_view(reinterpret_cast<const char*>(entry.reference_engine_uuid->value.bytes.data()),16):std::string_view{});
-      for(const auto value:{entry.language_tag,entry.raw_name_text,entry.display_name})append(value);
+      append({reinterpret_cast<const char*>(entry.language_uuid.value.bytes.data()),16});
+      for(const auto value:{entry.raw_name_text,entry.display_name})append(value);
       for(const auto value:{entry.normalized_lookup_key,entry.exact_lookup_key,entry.full_path_lookup_key})
         append({reinterpret_cast<const char*>(value.data()),value.size()});
     }
@@ -351,7 +353,7 @@ void AddDatabaseDefinitionFixture(db::NativeCreationCatalogSeed& seed,
   input.entry.normalized_lookup_key.assign(input.entry.raw_name_text.begin(),input.entry.raw_name_text.end());
   input.entries[0]={&input.entry_metadata,&input.entry};
   db::NativeInitialDatabaseRequest request{&construction,
-      {{platform::UuidKind::object,scratchbird::core::datatypes::kDatatypeCohortV10},10,10},"en-US",
+      {{platform::UuidKind::object,scratchbird::core::datatypes::kDatatypeCohortV10},10,10},scratchbird::core::catalog::kCatalogLanguage_en_US,
       {&definition,&vector_metadata,&input.vector,input.entries},{3,1024*1024}};
   auto file_input=input;
   auto& file=file_input.definition;
@@ -431,7 +433,7 @@ void AddDatabaseDefinitionFixture(db::NativeCreationCatalogSeed& seed,
     schema_inputs[i]={&schema,&metadata,&named.vector_metadata,&named.vector,named.entries};
   }
   auto schema_result=catalog::AssembleLocalInitialSchemaRecords(construction.bootstrap.database_uuid,
-      seed[0].front().metadata,security_tx,"en-US",schema_inputs,{9,1024*1024});
+      seed[0].front().metadata,security_tx,scratchbird::core::catalog::kCatalogLanguage_en_US,schema_inputs,{9,1024*1024});
   Check(schema_result.ok(),"production native schema assembler supplies the actual namespace forest");
   for(auto& row:schema_result.records->definitions)seed[0].push_back(std::move(row));
   for(auto& row:schema_result.records->names)seed[1].push_back(std::move(row));
@@ -655,7 +657,7 @@ AgentError AddAgentConfigurationFixture(db::NativeCreationCatalogSeed& seed,
   std::vector<catalog::CatalogNamedCreationInput> named;
   for(auto& item:items){item.entries[0]={&item.entry_metadata,&item.entry};
     named.push_back({&item.definition,&item.vector_metadata,&item.vector,item.entries});}
-  auto result=catalog::AssembleLocalNamedCreationRecords(Id(1),security_tx,"en-US",named,{1000,4*1024*1024});
+  auto result=catalog::AssembleLocalNamedCreationRecords(Id(1),security_tx,scratchbird::core::catalog::kCatalogLanguage_en_US,named,{1000,4*1024*1024});
   Check(result.ok(),"complete named agent definitions assemble atomically before native persistence");
   for(auto& row:result.records->definitions)seed[4].push_back(std::move(row));
   for(auto& row:result.records->names)seed[1].push_back(std::move(row));
@@ -711,7 +713,7 @@ db::NativeCreationCatalogIndexes AddCatalogIndexRowsFixture(db::NativeCreationCa
   std::vector<catalog::CatalogNamedCreationInput> named;
   for(auto& item:items){item.entries[0]={&item.entry_metadata,&item.entry};
     named.push_back({&item.definition,&item.vector_metadata,&item.vector,item.entries});}
-  auto result=catalog::AssembleLocalNamedCreationRecords(Id(1),security_tx,"en-US",named,{100,1024*1024});
+  auto result=catalog::AssembleLocalNamedCreationRecords(Id(1),security_tx,scratchbird::core::catalog::kCatalogLanguage_en_US,named,{100,1024*1024});
   Check(result.ok(),"catalog index rows assemble as complete named definitions");
   for(auto& row:result.records->definitions)seed[4].push_back(std::move(row));
   for(auto& row:result.records->names)seed[1].push_back(std::move(row));
@@ -910,7 +912,7 @@ void AddVerificationPolicies(db::NativeCreationCatalogSeed& seed,
     item.entries[0]={&item.entry_metadata,&item.entry};
     named[n]={&m,&item.vector_metadata,&item.vector,item.entries};
   }
-  auto result=AssembleLocalNamedCreationRecords(Id(1),security_tx,"en-US",named,{30,1024*1024});
+  auto result=AssembleLocalNamedCreationRecords(Id(1),security_tx,scratchbird::core::catalog::kCatalogLanguage_en_US,named,{30,1024*1024});
   Check(result.ok(),"actual verification policy declarations and names assemble before native creation");
   const auto removed=variant==1?security_fixture::Id(92000):variant==2?security_fixture::Id(92010):variant==14?security_fixture::Id(92014):platform::Uuid{};
   for(auto& row:result.records->definitions){
@@ -979,7 +981,7 @@ void AddManagementDefinitions(db::NativeCreationCatalogSeed& seed,
     item.entry.normalized_lookup_key.assign(item.entry.raw_name_text.begin(),item.entry.raw_name_text.end());
     item.entries[0]={&item.entry_metadata,&item.entry};named.push_back({&m,&item.vector_metadata,&item.vector,item.entries});
   }
-  auto result=AssembleLocalNamedCreationRecords(Id(1),security_tx,"en-US",named,{36,1024*1024});
+  auto result=AssembleLocalNamedCreationRecords(Id(1),security_tx,scratchbird::core::catalog::kCatalogLanguage_en_US,named,{36,1024*1024});
   Check(result.ok(),"complete management profiles and descriptor assemble with real named metadata");
   for(auto& row:result.records->definitions){const auto id=row.metadata.record.header.object_uuid.value;
     const bool wrong_role=(variant==6&&id==security_fixture::Id(95000))||(variant==7&&id==security_fixture::Id(95020));
@@ -1101,7 +1103,7 @@ void AddTransactionPolicies(db::NativeCreationCatalogSeed& seed,
     item.entry.normalized_lookup_key.assign(item.entry.raw_name_text.begin(),item.entry.raw_name_text.end());
     item.entries[0]={&item.entry_metadata,&item.entry};named.push_back({&m,&item.vector_metadata,&item.vector,item.entries});
   }
-  auto result=AssembleLocalNamedCreationRecords(Id(1),security_tx,"en-US",named,{3*item_count,1024*1024});
+  auto result=AssembleLocalNamedCreationRecords(Id(1),security_tx,scratchbird::core::catalog::kCatalogLanguage_en_US,named,{3*item_count,1024*1024});
   Check(result.ok(),"complete transaction policy closure assembles with actual names");
   const auto removed=variant==4?security_fixture::Id(98020):variant==10?security_fixture::Id(98000):platform::Uuid{};
   for(auto& row:result.records->definitions){const auto id=row.metadata.record.header.object_uuid.value;
@@ -1173,7 +1175,7 @@ void AddNamingProfileFixture(db::NativeCreationCatalogSeed& seed,
     x.entry.normalized_lookup_key.assign(x.entry.raw_name_text.begin(),x.entry.raw_name_text.end());
     x.entries[0]={&x.entry_metadata,&x.entry};named[n]={&m,&x.vector_metadata,&x.vector,x.entries};
   }
-  auto assembled=AssembleLocalNamedCreationRecords(Id(1),security_tx,"en-US",named,{6,1024*1024});
+  auto assembled=AssembleLocalNamedCreationRecords(Id(1),security_tx,scratchbird::core::catalog::kCatalogLanguage_en_US,named,{6,1024*1024});
   Check(assembled.ok(),"actual named identifier and dialect definitions assemble before physical creation");
   for(auto& row:assembled.records->definitions){
     if((variant==9&&row.metadata.object_subtype=="identifier_resolution_profile")||
@@ -1268,7 +1270,7 @@ void AddCollisionPolicyFixture(db::NativeCreationCatalogSeed& seed,
     x.entry.normalized_lookup_key.assign(x.entry.raw_name_text.begin(),x.entry.raw_name_text.end());
     x.entries[0]={&x.entry_metadata,&x.entry};named[n]={&m,&x.vector_metadata,&x.vector,x.entries};
   }
-  auto assembled=AssembleLocalNamedCreationRecords(Id(1),security_tx,"en-US",named,{6,1024*1024});
+  auto assembled=AssembleLocalNamedCreationRecords(Id(1),security_tx,scratchbird::core::catalog::kCatalogLanguage_en_US,named,{6,1024*1024});
   Check(assembled.ok(),"actual named collision definitions assemble before physical creation");
   for(auto& row:assembled.records->definitions){
     if((variant==9&&row.metadata.object_subtype=="policy_descriptor")||
@@ -1296,7 +1298,7 @@ void AddCollisionPolicyFixture(db::NativeCreationCatalogSeed& seed,
   for(auto& row:seed[1])if(row.name){
     if(auto* vector=std::get_if<CatalogNameVector>(&*row.name);vector&&vector->object_uuid.value==target){
       if(variant==1||variant==2||variant==21)vector->name_collision_policy_uuid.value=security_fixture::Id(variant==1?99970:variant==2?57:155);
-      if(variant==12||variant==13)vector->default_language_tag="fr-FR";
+      if(variant==12||variant==13)vector->default_language_uuid=catalog::CatalogLanguageIdentity(catalog::kCatalogLanguage_fr_CA);
       if(variant==20){vector->owning_schema_uuid=enrollment::Typed(platform::UuidKind::schema,61);
         row.metadata.owning_schema_uuid=*vector->owning_schema_uuid;}
     }
@@ -1305,7 +1307,7 @@ void AddCollisionPolicyFixture(db::NativeCreationCatalogSeed& seed,
         entry->raw_name_text=entry->display_name=duplicate;
         entry->normalized_lookup_key.assign(duplicate.begin(),duplicate.end());
       }
-      if(variant==12||variant==13)entry->language_tag="fr-FR";
+      if(variant==12||variant==13)entry->language_uuid=catalog::CatalogLanguageIdentity(catalog::kCatalogLanguage_fr_CA);
       if(variant==14||variant==15){entry->was_quoted=entry->requires_exact_match=true;
         entry->quote_style=CatalogNameQuoteStyle::double_quote;entry->exact_lookup_key=entry->normalized_lookup_key;}
       if(variant==19){entry->dialect_profile_uuid.value=security_fixture::Id(156);entry->identifier_profile_uuid.value=security_fixture::Id(157);}
@@ -1480,7 +1482,7 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
       if(name_variant==2){
         if(auto* vector=std::get_if<catalog::CatalogNameVector>(&*row.name);
             vector&&vector->object_uuid.value==enrollment::SourceId(1)){
-          vector->default_language_tag="de-DE";changed=true;break;
+          vector->default_language_uuid=catalog::CatalogLanguageIdentity(catalog::kCatalogLanguage_de_DE);changed=true;break;
         }
       }else if(auto* entry=std::get_if<catalog::CatalogNameEntry>(&*row.name);
           entry&&entry->object_uuid.value==enrollment::SourceId(1)){

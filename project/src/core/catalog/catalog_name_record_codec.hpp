@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
+#include "catalog_language.hpp"
 #include "catalog_records.hpp"
 #include "catalog_value_codec.hpp"
 #include <optional>
@@ -21,7 +22,7 @@ struct CatalogNameVector {
   TypedUuid object_uuid;
   CatalogRecordKind object_kind = CatalogRecordKind::unknown;  // SB_CATALOG_NO_TEXT_IDENTIFIERS
   std::optional<TypedUuid> owning_schema_uuid;
-  std::string default_language_tag;
+  TypedUuid default_language_uuid;  // SB_CATALOG_LANGUAGE_CONSTANTS
   TypedUuid default_name_entry_uuid;
   TypedUuid name_collision_policy_uuid;
   u64 catalog_generation_id = 0;
@@ -36,7 +37,7 @@ struct CatalogNameEntry {
   TypedUuid scope_uuid;
   std::optional<TypedUuid> parent_object_uuid;
   std::optional<TypedUuid> parent_schema_uuid;
-  std::string language_tag;
+  TypedUuid language_uuid;  // SB_CATALOG_LANGUAGE_CONSTANTS
   CatalogNameClass name_class = CatalogNameClass::primary;
   std::optional<TypedUuid> reference_engine_uuid;  // absent: native (SB_CATALOG_NO_TEXT_IDENTIFIERS)
   TypedUuid dialect_profile_uuid;
@@ -71,7 +72,7 @@ struct CatalogNameVectorView {
   TypedUuid object_uuid;
   CatalogRecordKind object_kind = CatalogRecordKind::unknown;
   std::optional<TypedUuid> owning_schema_uuid;
-  std::string_view default_language_tag;
+  TypedUuid default_language_uuid;
   TypedUuid default_name_entry_uuid;
   TypedUuid name_collision_policy_uuid;
   u64 catalog_generation_id = 0;
@@ -86,7 +87,7 @@ struct CatalogNameEntryView {
   TypedUuid scope_uuid;
   std::optional<TypedUuid> parent_object_uuid;
   std::optional<TypedUuid> parent_schema_uuid;
-  std::string_view language_tag;
+  TypedUuid language_uuid;
   CatalogNameClass name_class = CatalogNameClass::primary;
   std::optional<TypedUuid> reference_engine_uuid;
   TypedUuid dialect_profile_uuid;

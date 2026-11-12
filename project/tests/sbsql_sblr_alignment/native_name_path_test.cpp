@@ -18,6 +18,7 @@
 //   - the index: an entry added twice is one name; a re-added entry that moved
 //     language is no longer found under the old one;
 //   - the in-place check allocates nothing when its lookup allocates nothing.
+#include "catalog_language.hpp"
 #include "catalog_name_path.hpp"
 
 #include <algorithm>
@@ -45,6 +46,14 @@ void operator delete(void* p) noexcept { std::free(p); }
 void operator delete(void* p, std::size_t) noexcept { std::free(p); }
 
 namespace c = scratchbird::core::catalog;
+// The fixture's language labels as language constants
+// (SB_CATALOG_LANGUAGE_CONSTANTS): "en", and two other languages.
+scratchbird::core::platform::Uuid Lang(std::string_view label) {
+  if (label == "en") return c::kCatalogLanguage_en;
+  if (label == "fr") return c::kCatalogLanguage_fr_CA;
+  if (label == "de") return c::kCatalogLanguage_de_DE;
+  throw std::logic_error("unknown fixture language label");
+}
 using scratchbird::core::platform::byte;
 using scratchbird::core::platform::TypedUuid;
 using scratchbird::core::platform::Uuid;
@@ -98,7 +107,7 @@ struct Forest {
     e.object_uuid = T(object);
     e.object_kind = c::CatalogRecordKind::table_descriptor;
     e.scope_uuid = T(parent.at(object));
-    e.language_tag = std::move(language);
+    e.language_uuid = c::CatalogLanguageIdentity(Lang(language));
     e.display_name = std::move(display);
     e.requires_exact_match = exact;
     (exact ? e.exact_lookup_key : e.normalized_lookup_key) = std::move(key);
@@ -111,15 +120,15 @@ struct Forest {
       v.name_vector_uuid = T(object + 500000);
       v.object_uuid = T(object);
       v.default_name_entry_uuid = T(id);
-      v.default_language_tag = e.language_tag;
+      v.default_language_uuid = e.language_uuid;
       vectors[object] = v;
     }
     return entries[id] = std::move(e);
   }
   // The name a path through `object` uses in `language`.
-  const c::CatalogNameEntry* PathName(unsigned object, const std::string& language) const {
+  const c::CatalogNameEntry* PathName(unsigned object, const Uuid& language) const {
     for (const auto& [id, e] : entries)
-      if (e.object_uuid.value == Id(object) && e.default_for_language && e.language_tag == language) return &e;
+      if (e.object_uuid.value == Id(object) && e.default_for_language && e.language_uuid.value == language) return &e;
     const auto d = default_entry.find(object);
     return d == default_entry.end() ? nullptr : &entries.at(d->second);
   }
@@ -134,7 +143,7 @@ struct Forest {
     for (const auto& [o, p] : parent)
       if (Id(o) == e.object_uuid.value) object = o;
     if (object != 1)
-      for (unsigned x = parent.at(object); x != 1; x = parent.at(x)) chain.push_back(PathName(x, e.language_tag));
+      for (unsigned x = parent.at(object); x != 1; x = parent.at(x)) chain.push_back(PathName(x, e.language_uuid.value));
     std::reverse(chain.begin(), chain.end());
     Path out;
     for (const auto* n : chain) {
@@ -278,7 +287,7 @@ void Refusals() {
     Check(c::ResolveCatalogNamePath(View(second), names.index).ok(),
           "two language defaults on the entry's own object are not a path refusal");
     auto fr = leaf;
-    fr.language_tag = "fr";
+    fr.language_uuid = c::CatalogLanguageIdentity(Lang("fr"));
     fr.default_for_language = false;
     Check(c::ResolveCatalogNamePath(View(fr), names.index).ok(),
           "in another language the ancestor's default entry is its one name");
@@ -337,7 +346,7 @@ void IndexReplacement() {
   auto path = c::ResolveCatalogNamePath(View(leaf), names.index);
   Check(path.ok() && path.components[0].display_name == "f", "an entry added twice is one name");
   auto moved = fr_name;
-  moved.language_tag = "de";
+  moved.language_uuid = c::CatalogLanguageIdentity(Lang("de"));
   const auto moved_payload = c::CatalogNamePayload{moved};
   names.index.Add(c::BorrowCatalogNamePayload(moved_payload));
   path = c::ResolveCatalogNamePath(View(leaf), names.index);
@@ -355,7 +364,7 @@ void NoAllocation() {
   const auto want = f.OraclePath(c4);
   const Stored stored(c4, want.key, want.display.size());
   const auto vdb = View(db), va = View(a), vb = View(b);
-  const auto lookup = [&](const Uuid& object, std::string_view) {
+  const auto lookup = [&](const Uuid& object, const Uuid&) {
     c::CatalogNamePathName out;
     if (object == vdb.object_uuid.value) out.name = vdb;
     if (object == va.object_uuid.value) out.name = va;

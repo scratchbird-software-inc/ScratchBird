@@ -108,7 +108,7 @@ struct Package {
       x.vector_metadata.owning_schema_uuid=x.metadata.owning_schema_uuid;
       x.vector.name_vector_uuid=x.metadata.name_vector_uuid;x.vector.object_uuid=x.definition.schema_object_uuid;
       x.vector.object_kind=c::CatalogRecordKind::schema;if(i)x.vector.owning_schema_uuid=x.metadata.owning_schema_uuid;
-      x.vector.default_language_tag="en-US";x.vector.default_name_entry_uuid=x.metadata.default_name_uuid;
+      x.vector.default_language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_en_US);x.vector.default_name_entry_uuid=x.metadata.default_name_uuid;
       x.vector.name_collision_policy_uuid=Typed(p::UuidKind::object,55);
       x.vector.catalog_generation_id=1;x.vector.security_policy_uuid=x.metadata.security_policy_uuid;
       x.vector.lifecycle_state=c::CatalogNameLifecycle::active;
@@ -119,7 +119,7 @@ struct Package {
       auto& e=x.entry;e.name_entry_uuid=x.metadata.default_name_uuid;e.name_vector_uuid=x.metadata.name_vector_uuid;
       e.object_uuid=x.definition.schema_object_uuid;e.object_kind=c::CatalogRecordKind::schema;
       e.scope_uuid=x.metadata.record.header.parent_uuid;if(i)e.parent_schema_uuid=x.metadata.owning_schema_uuid;
-      e.language_tag="en-US";e.dialect_profile_uuid=Typed(p::UuidKind::object,56);e.identifier_profile_uuid=Typed(p::UuidKind::object,57);
+      e.language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_en_US);e.dialect_profile_uuid=Typed(p::UuidKind::object,56);e.identifier_profile_uuid=Typed(p::UuidKind::object,57);
       e.raw_name_text=e.display_name="schema_"+std::to_string(i);
       e.normalized_lookup_key.assign(e.raw_name_text.begin(),e.raw_name_text.end());
       e.catalog_generation_id=1;e.created_transaction_uuid=tx;e.security_policy_uuid=x.metadata.security_policy_uuid;
@@ -143,7 +143,7 @@ struct Package {
     x.entry.parent_schema_uuid=x.metadata.owning_schema_uuid;x.entry.scope_uuid=parent;
   }
   auto Assemble(c::CatalogNamedCreationLimits limits={100000,64*1024*1024}) const {
-    return c::AssembleLocalInitialSchemaRecords(Id(1),database,tx,"en-US",inputs,limits);
+    return c::AssembleLocalInitialSchemaRecords(Id(1),database,tx,c::kCatalogLanguage_en_US,inputs,limits);
   }
 };
 struct DatabasePackage {
@@ -175,7 +175,7 @@ struct DatabasePackage {
   }
   auto Request(c::CatalogNamedCreationLimits limits={100000,64*1024*1024}) const {
     const auto& x=aliases.items[0];
-    return db::NativeInitialDatabaseRequest{&construction,cohort,"en-US",
+    return db::NativeInitialDatabaseRequest{&construction,cohort,c::kCatalogLanguage_en_US,
         {&x.metadata,&x.vector_metadata,&x.vector,x.entries},limits};
   }
   auto Assemble(c::CatalogNamedCreationLimits limits={100000,64*1024*1024}) const {

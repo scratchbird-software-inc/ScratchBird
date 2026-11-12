@@ -38,7 +38,7 @@ void NativeNamedCreationChecks(const db::NativeCreationCatalogSeed& supplied) {
       e=std::get<c::CatalogNameEntry>(*example[1][1].name);
       e.name_entry_uuid=m.record.header.object_uuid;e.name_vector_uuid=definition.name_vector_uuid;
       e.object_uuid=definition.record.header.object_uuid;e.object_kind=definition.record.header.kind;
-      e.security_policy_uuid=definition.security_policy_uuid;e.language_tag=alias?"de-DE":"en-US";
+      e.security_policy_uuid=definition.security_policy_uuid;e.language_uuid=c::CatalogLanguageIdentity(alias?c::kCatalogLanguage_de_DE:c::kCatalogLanguage_en_US);
       e.name_class=alias?c::CatalogNameClass::alias:c::CatalogNameClass::primary;
       e.raw_name_text=e.display_name=(alias?"de_":"en_")+definition.object_subtype+"_"+std::to_string(at);
       e.default_for_object=!alias;e.default_for_language=true;
@@ -51,7 +51,7 @@ void NativeNamedCreationChecks(const db::NativeCreationCatalogSeed& supplied) {
   const c::CatalogNamedCreationLimits limits{4*inputs.size(),4*1024*1024};
   const auto assemble=[&](const auto& values,c::CatalogNamedCreationLimits bound) {
     return c::AssembleLocalNamedCreationRecords(request.bootstrap.database_uuid,
-        request.creator.transaction_uuid,"en-US",values,bound);
+        request.creator.transaction_uuid,c::kCatalogLanguage_en_US,values,bound);
   };
   const auto made=assemble(inputs,limits);
   Check(made.ok()&&inputs.size()%4==0&&made.records->definitions.size()==inputs.size()&&made.records->names.size()==3*inputs.size(),
@@ -89,7 +89,7 @@ void NativeNamedCreationChecks(const db::NativeCreationCatalogSeed& supplied) {
     bad.back()={&definition,&altered.vector_metadata,&altered.vector,altered.input_entries};
     if(fault==0)bad.back().definition=nullptr;
     if(fault==1)bad.back().entries={};
-    if(fault==2)altered.vector.default_language_tag="fr-FR";
+    if(fault==2)altered.vector.default_language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_fr_CA);
     if(fault==3)altered.entries[0].default_for_object=false;
     if(fault==4)altered.entries[1].default_for_object=true;
     if(fault==5)altered.entries[1].object_uuid.value=Id(30000);
@@ -106,7 +106,7 @@ void NativeNamedCreationChecks(const db::NativeCreationCatalogSeed& supplied) {
   }
   for(unsigned fault=0;fault<7;++fault) {
     auto database=request.bootstrap.database_uuid;auto transaction=request.creator.transaction_uuid;
-    auto bound=limits;std::string_view language="en-US";std::span<const c::CatalogNamedCreationInput> values=inputs;
+    auto bound=limits;scratchbird::core::platform::Uuid language=c::kCatalogLanguage_en_US;std::span<const c::CatalogNamedCreationInput> values=inputs;
     if(fault==0)database.bytes[6]=0x41;
     if(fault==1)transaction.kind=UuidKind::row;
     if(fault==2)database=transaction.value;
@@ -136,7 +136,7 @@ void NativeNamedCreationChecks(const db::NativeCreationCatalogSeed& supplied) {
     auto& m=extra_metadata[i];auto& e=extra_entries[i];
     m=names[i].metadata[1];m.record.header.row_uuid={UuidKind::row,Id(22000+i)};
     m.record.header.object_uuid=m.default_name_uuid={UuidKind::object,Id(23000+i)};
-    e=names[i].entries[1];e.name_entry_uuid=m.record.header.object_uuid;e.language_tag="fr-FR";
+    e=names[i].entries[1];e.name_entry_uuid=m.record.header.object_uuid;e.language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_fr_CA);
     e.display_name=e.raw_name_text="fr_"+std::to_string(i);
     e.normalized_lookup_key.assign(e.raw_name_text.begin(),e.raw_name_text.end());
     extra_inputs[i]={names[i].input_entries[0],names[i].input_entries[1],{&m,&e}};

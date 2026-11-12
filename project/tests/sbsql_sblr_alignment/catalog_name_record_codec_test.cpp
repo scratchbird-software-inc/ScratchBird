@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "catalog_name_record_codec.hpp"
+#include "catalog_language.hpp"
 #include <algorithm>
 #include <array>
 #include <iostream>
@@ -23,7 +24,7 @@ c::CatalogNameVector Vector() {
   r.object_uuid=Identity(UuidKind::object,2);
   r.object_kind=c::CatalogRecordKind::table_descriptor;
   r.owning_schema_uuid=Identity(UuidKind::schema,4);
-  r.default_language_tag="fr-CA";
+  r.default_language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_fr_CA);
   r.default_name_entry_uuid=Identity(UuidKind::object,6);
   r.name_collision_policy_uuid=Identity(UuidKind::object,7);
   r.catalog_generation_id=0x0102030405060708;
@@ -40,7 +41,7 @@ c::CatalogNameEntry Entry() {
   r.scope_uuid=Identity(UuidKind::object,5);
   r.parent_object_uuid=Identity(UuidKind::object,6);
   r.parent_schema_uuid=Identity(UuidKind::schema,7);
-  r.language_tag="fr-CA";
+  r.language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_fr_CA);
   r.name_class=c::CatalogNameClass::alias;
   r.reference_engine_uuid=Identity(UuidKind::object,10);
   r.dialect_profile_uuid=Identity(UuidKind::object,11);
@@ -91,7 +92,7 @@ void Optional(std::vector<Field>& f,u16 id,const std::optional<TypedUuid>& v) { 
 std::vector<Field> Fields(const c::CatalogNameVector& r) {
   std::vector<Field> f{Id(1,r.name_vector_uuid),Id(2,r.object_uuid),Number(3,static_cast<u64>(r.object_kind))};
   Optional(f,4,r.owning_schema_uuid);
-  f.push_back(Text(5,r.default_language_tag));f.push_back(Id(6,r.default_name_entry_uuid));
+  f.push_back(Id(5,r.default_language_uuid));f.push_back(Id(6,r.default_name_entry_uuid));
   f.push_back(Id(7,r.name_collision_policy_uuid));f.push_back(Number(8,r.catalog_generation_id));
   f.push_back(Id(9,r.security_policy_uuid));f.push_back(Number(10,static_cast<u64>(r.lifecycle_state)));
   return f;
@@ -100,7 +101,7 @@ std::vector<Field> Fields(const c::CatalogNameEntry& r) {
   std::vector<Field> f{Id(1,r.name_entry_uuid),Id(2,r.name_vector_uuid),Id(3,r.object_uuid),
     Number(4,static_cast<u64>(r.object_kind)),Id(5,r.scope_uuid)};
   Optional(f,6,r.parent_object_uuid);Optional(f,7,r.parent_schema_uuid);
-  f.push_back(Text(8,r.language_tag));f.push_back(Number(9,static_cast<u64>(r.name_class)));
+  f.push_back(Id(8,r.language_uuid));f.push_back(Number(9,static_cast<u64>(r.name_class)));
   Optional(f,10,r.reference_engine_uuid);f.push_back(Id(11,r.dialect_profile_uuid));
   f.push_back(Id(12,r.identifier_profile_uuid));Optional(f,13,r.case_fold_profile_uuid);
   Optional(f,14,r.quoted_identifier_profile_uuid);f.push_back(Text(15,r.raw_name_text));
@@ -121,7 +122,7 @@ std::vector<byte> Oracle(u32 schema,const std::vector<Field>& fields) {
   for(const auto& f:fields)size+=8+f.bytes.size();
   const auto append=[&](const std::vector<byte>& value){out.insert(out.end(),value.begin(),value.end());};
   append(Little(size,4));append(Little(fields.size(),4));append(Little(schema,4));
-  append({2,0,0,0});  // schema version 2 (SB_CATALOG_NO_TEXT_IDENTIFIERS)
+  append({3,0,0,0});  // schema version 3 (SB_CATALOG_NO_TEXT_IDENTIFIERS)
   for(const auto& f:fields){append(Little(f.id,2));append({f.tag,0});append(Little(f.bytes.size(),4));append(f.bytes);}
   return out;
 }
@@ -245,14 +246,14 @@ template<class Record>void Framing(const Record& record,const std::vector<u16>& 
     auto malformed=fields;malformed[i].id=0;Refused(Decode(record,Oracle(SchemaId(record),malformed)));
   }
   auto extra=fields;extra.push_back(Text(65535,"ignored?"));Refused(Decode(record,Oracle(SchemaId(record),extra)));
-  auto wrong_version=bytes;wrong_version[20]=1;Refused(Decode(record,wrong_version));  // version 1 held text classes
+  for(const byte old:{byte{1},byte{2}}){auto wrong_version=bytes;wrong_version[20]=old;Refused(Decode(record,wrong_version));}  // 1: text class, 2: text language
   auto reversed=fields;std::reverse(reversed.begin(),reversed.end());Refused(Decode(record,Oracle(SchemaId(record),reversed)));
   const std::string legacy="kind=5\nrow_uuid=01921324-3546-7788-99aa-bbccddeeff01\npayload=name=x\n";
   Refused(Decode(record,{legacy.begin(),legacy.end()}));
 }
 void SchemaContract() {
   const auto& v=c::CatalogNameVectorSchema();const auto& e=c::CatalogNameEntrySchema();
-  Check(v.id==327681 && e.id==327682 && v.version==2 && e.version==2,"allocated schema identity drift");
+  Check(v.id==327681 && e.id==327682 && v.version==3 && e.version==3,"allocated schema identity drift");
   Check(v.fields.size()==10 && e.fields.size()==33,"Core field omitted");
   const auto verify=[](const auto& schema,const auto& fields,const std::vector<u16>& optional) {
     for(std::size_t i=0;i<fields.size();++i) {
@@ -282,10 +283,23 @@ void SemanticBoundaries() {
   v.catalog_generation_id=0;Invalid(v);
   v=Vector();v.object_kind=c::CatalogRecordKind::unknown;Invalid(v);
   v=Vector();v.object_kind=static_cast<c::CatalogRecordKind>(12);Invalid(v);  // not a listed kind
-  v=Vector();v.default_language_tag.clear();Invalid(v);
+  // SB_CATALOG_LANGUAGE_CONSTANTS: a language is one of the constants, typed
+  // object; every constant round-trips, anything else is refused.
+  for(const auto& language:c::kCatalogLanguages){
+    v=Vector();v.default_language_uuid=c::CatalogLanguageIdentity(language.uuid);Roundtrip(v);
+    e=Entry();e.language_uuid=c::CatalogLanguageIdentity(language.uuid);Roundtrip(e);
+  }
+  v=Vector();v.default_language_uuid={};Invalid(v);
+  v=Vector();v.default_language_uuid=Identity(UuidKind::object,5);Invalid(v);  // an engine UUID, no language
+  e=Entry();e.language_uuid=Identity(UuidKind::object,8);Invalid(e);
+  for(unsigned kind=0;kind<256;++kind)if(kind!=static_cast<unsigned>(UuidKind::object)){
+    v=Vector();v.default_language_uuid.kind=static_cast<UuidKind>(kind);Refused(Encode(v));
+    e=Entry();e.language_uuid.kind=static_cast<UuidKind>(kind);Refused(Encode(e));
+  }
+  v=Vector();e=Entry();
   e.object_kind=c::CatalogRecordKind::unknown;Invalid(e);
   e=Entry();e.object_kind=static_cast<c::CatalogRecordKind>(12);Invalid(e);
- e=Entry();e.language_tag.clear();Invalid(e);
+ e=Entry();
   for(auto member:{&c::CatalogNameEntry::catalog_generation_id,&c::CatalogNameEntry::resource_epoch,
                    &c::CatalogNameEntry::name_resolution_epoch}) {
     e=Entry();e.*member=0;Invalid(e);

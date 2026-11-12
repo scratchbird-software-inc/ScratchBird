@@ -66,7 +66,7 @@ db::NativeCreationCatalogSeed MetricSeed(const db::NativeFilespaceInitialization
   c::CatalogNameVector vector;
   vector.name_vector_uuid=names.name_vector_uuid;vector.object_uuid=names.record.header.parent_uuid;
   vector.object_kind=c::CatalogRecordKind::metric_descriptor;vector.owning_schema_uuid=names.owning_schema_uuid;
-  vector.default_language_tag="en-US";vector.default_name_entry_uuid=names.default_name_uuid;
+  vector.default_language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_en_US);vector.default_name_entry_uuid=names.default_name_uuid;
   vector.name_collision_policy_uuid={UuidKind::object,Id(740)};vector.catalog_generation_id=1;
   vector.security_policy_uuid=names.security_policy_uuid;vector.lifecycle_state=c::CatalogNameLifecycle::active;
   seed[1].push_back({names,vector});
@@ -78,7 +78,7 @@ db::NativeCreationCatalogSeed MetricSeed(const db::NativeFilespaceInitialization
   entry.name_entry_uuid=names.record.header.object_uuid;entry.name_vector_uuid=names.name_vector_uuid;
   entry.object_uuid={UuidKind::object,Id(500)};entry.object_kind=c::CatalogRecordKind::metric_descriptor;
   entry.scope_uuid={UuidKind::object,Id(700)};entry.parent_schema_uuid=names.owning_schema_uuid;
-  entry.language_tag="en-US";entry.dialect_profile_uuid={UuidKind::object,Id(741)};
+  entry.language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_en_US);entry.dialect_profile_uuid={UuidKind::object,Id(741)};
   entry.identifier_profile_uuid={UuidKind::object,Id(742)};
   entry.raw_name_text=entry.display_name="fixture_construction_measurement";
   entry.catalog_generation_id=1;entry.created_transaction_uuid=request.creator.transaction_uuid;

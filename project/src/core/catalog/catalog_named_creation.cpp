@@ -28,10 +28,10 @@ template<class F> void Each(std::span<const CatalogNamedCreationInput> inputs,F 
 }
 CatalogNamedCreationPreflightResult PreflightLocalNamedCreationRecord(
     const CatalogMetadataVersionView& d,const CatalogNamedCreationInput& input,
-    const TypedUuid& tx,std::string_view language,CatalogNamedCreationLimits limits) noexcept {
+    const TypedUuid& tx,const Uuid& language,CatalogNamedCreationLimits limits) noexcept {
   try {
     if(!uuid::IsEngineIdentityUuid(tx.value)||tx.kind!=UuidKind::transaction||
-        language.empty()||language.size()>131040)
+        !IsKnownCatalogLanguage(language))
       return {E::invalid_request,0,0};
     if(!limits.maximum_records||!limits.maximum_encoded_bytes)
       return {E::resource_exhausted,0,0};
@@ -52,7 +52,7 @@ CatalogNamedCreationPreflightResult PreflightLocalNamedCreationRecord(
       const CatalogNamePayloadView vector=BorrowCatalogNameVector(v);
       const auto name_extent=CatalogNameEnvelopeEncodedBytes(vector);
       if(!name_extent||!CatalogNamePayloadMatchesMetadata(vector,BorrowCatalogMetadataVersion(vm))||
-          v.lifecycle_state!=CatalogNameLifecycle::active||v.default_language_tag!=language||
+          v.lifecycle_state!=CatalogNameLifecycle::active||v.default_language_uuid.value!=language||
           v.object_uuid.value!=d.record.header.object_uuid.value||
           v.name_vector_uuid.value!=d.name_vector_uuid.value||v.default_name_entry_uuid.value!=d.default_name_uuid.value||
           v.owning_schema_uuid.has_value()!=( !d.owning_schema_uuid.value.is_nil())||
@@ -72,7 +72,7 @@ CatalogNamedCreationPreflightResult PreflightLocalNamedCreationRecord(
             e.lifecycle_state!=CatalogNameLifecycle::active||e.object_uuid.value!=d.record.header.object_uuid.value||
             e.name_vector_uuid.value!=v.name_vector_uuid.value||e.object_kind!=v.object_kind||
             e.default_for_object!=is_default||
-            (is_default&&(e.language_tag!=language||!e.default_for_language)))return {E::invalid_names,0,0};
+            (is_default&&(e.language_uuid.value!=language||!e.default_for_language)))return {E::invalid_names,0,0};
         defaults+=is_default;
         account(*metadata_extent+*entry_extent);
       }
@@ -82,11 +82,11 @@ CatalogNamedCreationPreflightResult PreflightLocalNamedCreationRecord(
   }catch(E e){return {e,0,0};}
 }
 CatalogNamedCreationResult AssembleLocalNamedCreationRecords(
-    const Uuid& database,const TypedUuid& tx,std::string_view language,
+    const Uuid& database,const TypedUuid& tx,const Uuid& language,
     std::span<const CatalogNamedCreationInput> inputs,CatalogNamedCreationLimits limits) noexcept {
   try {
     if(!uuid::IsEngineIdentityUuid(database)||tx.kind!=platform::UuidKind::transaction||
-        !uuid::IsEngineIdentityUuid(tx.value)||database==tx.value||language.empty()||language.size()>131040||
+        !uuid::IsEngineIdentityUuid(tx.value)||database==tx.value||!IsKnownCatalogLanguage(language)||
         inputs.empty()||!limits.maximum_records||!limits.maximum_encoded_bytes)return Fail(E::invalid_request);
     if(inputs.size()>limits.maximum_records/3)return Fail(E::resource_exhausted);
     u64 records=0,bytes=0;

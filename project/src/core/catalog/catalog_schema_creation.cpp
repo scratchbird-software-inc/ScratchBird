@@ -37,12 +37,12 @@ E NameError(CatalogNamedCreationError e) {
 }
 CatalogInitialSchemaResult AssembleLocalInitialSchemaRecords(
     const Uuid& database,const CatalogMetadataVersion& db,const TypedUuid& tx,
-    std::string_view language,std::span<const CatalogInitialSchemaInput> inputs,
+    const Uuid& language,std::span<const CatalogInitialSchemaInput> inputs,
     CatalogNamedCreationLimits limits) noexcept {
   try {
     if(!uuid::IsEngineIdentityUuid(database)||tx.kind!=UuidKind::transaction||
         !uuid::IsEngineIdentityUuid(tx.value)||database==tx.value||inputs.empty()||
-        language.empty()||language.size()>131040||!limits.maximum_records||!limits.maximum_encoded_bytes)
+        !IsKnownCatalogLanguage(language)||!limits.maximum_records||!limits.maximum_encoded_bytes)
       return Fail(E::invalid_request);
     if(inputs.size()>limits.maximum_records/3)return Fail(E::resource_exhausted);
     if(db.record.header.kind!=CatalogRecordKind::database||!First(db,tx)||

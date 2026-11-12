@@ -47,7 +47,7 @@ struct CatalogNamedCreationPreflightResult {
 // the owning cohort assembler must separately reject raw identity collisions.
 CatalogNamedCreationPreflightResult PreflightLocalNamedCreationRecord(
     const CatalogMetadataVersionView&,const CatalogNamedCreationInput&,
-    const TypedUuid& creation_transaction,std::string_view database_default_language,
+    const TypedUuid& creation_transaction,const Uuid& database_default_language,
     CatalogNamedCreationLimits) noexcept;
 // All supplied definitions, vectors and aliases are returned together or not
 // at all. Complete borrowed preflight precedes owning field/payload copies.
@@ -59,6 +59,6 @@ CatalogNamedCreationPreflightResult PreflightLocalNamedCreationRecord(
 // Inputs remain immutable under the owner's fence through the entire call.
 CatalogNamedCreationResult AssembleLocalNamedCreationRecords(
     const Uuid& database_uuid,const TypedUuid& creation_transaction,
-    std::string_view database_default_language,
+    const Uuid& database_default_language,
     std::span<const CatalogNamedCreationInput>,CatalogNamedCreationLimits) noexcept;
 } // namespace scratchbird::core::catalog

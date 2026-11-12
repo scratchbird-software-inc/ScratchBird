@@ -190,12 +190,10 @@ class NativeCatalogCapture {
     if(!Copy(metadata.record.payload)||!Copy(metadata.trace_search_key)||!Copy(metadata.object_subtype)||
         !Copy(metadata.retention_class))return false;
     if(value.row.name_payload){
-      if(auto* vector=std::get_if<core::catalog::CatalogNameVectorView>(&*value.row.name_payload)){
-        if(!Copy(vector->default_language_tag))return false;
-      }else{
+      if(std::holds_alternative<core::catalog::CatalogNameEntryView>(*value.row.name_payload)){
+        // (A vector holds no borrowed bytes: SB_CATALOG_NO_TEXT_IDENTIFIERS.)
         auto& entry=std::get<core::catalog::CatalogNameEntryView>(*value.row.name_payload);
-        if(!Copy(entry.language_tag)||
-            !Copy(entry.raw_name_text)||!Copy(entry.display_name)||!Copy(entry.normalized_lookup_key)||
+        if(!Copy(entry.raw_name_text)||!Copy(entry.display_name)||!Copy(entry.normalized_lookup_key)||
             !Copy(entry.exact_lookup_key)||!Copy(entry.full_path_lookup_key))return false;
       }
     }

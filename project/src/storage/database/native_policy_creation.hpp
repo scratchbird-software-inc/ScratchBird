@@ -105,7 +105,7 @@ struct NativeInitialPolicyRequest {
   core::platform::TypedUuid construction_transaction;
   // Actual owner-issued identity of the materialized memory configuration.
   core::platform::Uuid memory_configuration_uuid;
-  std::string_view database_default_language;
+  core::platform::Uuid database_default_language;  // a language constant (SB_CATALOG_LANGUAGE_CONSTANTS)
   // Exact complete metadata/names, with empty definition payloads. The source
   // pack supplies identities/typed values, never owner/audit/name authority.
   std::span<const core::catalog::CatalogNamedCreationInput> definitions;

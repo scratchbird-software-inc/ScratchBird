@@ -62,7 +62,7 @@ std::vector<byte> CatalogNameAuthoritativeTreeNamePrefix(const CatalogNameEntryV
   std::vector<byte> out;
   PutUuid(out, entry.scope_uuid.value);
   PutUuid(out, entry.identifier_profile_uuid.value);
-  AppendCatalogNameTreeEscaped(out, Bytes(entry.language_tag));
+  PutUuid(out, entry.language_uuid.value);  // SB_CATALOG_LANGUAGE_CONSTANTS: fixed 16 bytes
   AppendCatalogNameTreeEscaped(out, CatalogNameEntryOwnLaneKey(entry));
   return out;
 }
@@ -108,7 +108,7 @@ std::vector<byte> CatalogNameUuidTreeEntryKey(const CatalogNameEntryView& entry,
   PutUuid(out, entry.object_uuid.value);
   PutKind(out, kind);
   out.push_back(1);
-  AppendCatalogNameTreeEscaped(out, Bytes(entry.language_tag));
+  PutUuid(out, entry.language_uuid.value);
   out.push_back(static_cast<byte>(entry.name_class));
   return out;
 }
@@ -193,7 +193,7 @@ bool CatalogNameAuthoritativeTreeKeyEquals(const CatalogNameEntryView& entry, Ca
   return Matcher(key)
       .Uuid(entry.scope_uuid.value)
       .Uuid(entry.identifier_profile_uuid.value)
-      .Escaped(entry.language_tag)
+      .Uuid(entry.language_uuid.value)
       .Escaped(CatalogNameEntryOwnLaneKey(entry))
       .Kind(kind)
       .Done();
@@ -217,7 +217,7 @@ bool CatalogNameUuidTreeEntryKeyEquals(const CatalogNameEntryView& entry, Catalo
       .Uuid(entry.object_uuid.value)
       .Kind(kind)
       .Byte(1)
-      .Escaped(entry.language_tag)
+      .Uuid(entry.language_uuid.value)
       .Byte(static_cast<byte>(entry.name_class))
       .Done();
 }

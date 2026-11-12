@@ -351,7 +351,7 @@ struct BootstrapNamedCreationUnitInput {
 
   // Must equal the request's database_default_language: the default name entry
   // is the one the default language resolves to.
-  std::string language_tag;
+  core::platform::Uuid language_uuid;  // a language constant (SB_CATALOG_LANGUAGE_CONSTANTS)
 
   // Caller authority. The source pack supplies identities and typed values,
   // never name authority.
@@ -379,7 +379,7 @@ enum class BootstrapNamedCreationUnitError {
   definition_invalid,
   name_vector_row_identity_invalid,
   name_entry_row_identity_invalid,
-  language_tag_empty,
+  language_unknown,  // not a language constant (was language_tag_empty)
   name_text_empty,
   collision_policy_identity_invalid,
   dialect_profile_identity_invalid,
@@ -404,7 +404,7 @@ inline const char* BootstrapNamedCreationUnitDiagnosticCode(
     case E::definition_invalid: return "CATALOG.NAMED_UNIT_DEFINITION_INVALID";
     case E::name_vector_row_identity_invalid: return "CATALOG.NAMED_UNIT_VECTOR_ROW_IDENTITY_INVALID";
     case E::name_entry_row_identity_invalid: return "CATALOG.NAMED_UNIT_ENTRY_ROW_IDENTITY_INVALID";
-    case E::language_tag_empty: return "CATALOG.NAMED_UNIT_LANGUAGE_TAG_EMPTY";
+    case E::language_unknown: return "CATALOG.NAMED_UNIT_LANGUAGE_UNKNOWN";
     case E::name_text_empty: return "CATALOG.NAMED_UNIT_NAME_TEXT_EMPTY";
     case E::collision_policy_identity_invalid: return "CATALOG.NAMED_UNIT_COLLISION_POLICY_IDENTITY_INVALID";
     case E::dialect_profile_identity_invalid: return "CATALOG.NAMED_UNIT_DIALECT_PROFILE_IDENTITY_INVALID";
@@ -481,8 +481,8 @@ inline BootstrapNamedCreationUnitResult BuildBootstrapNamedCreationUnit(
     out.error = E::name_entry_row_identity_invalid;
     return out;
   }
-  if (input.language_tag.empty()) {
-    out.error = E::language_tag_empty;
+  if (!core::catalog::IsKnownCatalogLanguage(input.language_uuid)) {
+    out.error = E::language_unknown;
     return out;
   }
   if (input.name_text.empty()) {
@@ -548,7 +548,7 @@ inline BootstrapNamedCreationUnitResult BuildBootstrapNamedCreationUnit(
   // A root object has no owning schema: the optional is omitted, not a nil.
   if (owning_schema.value.is_nil()) v.owning_schema_uuid.reset();
   else v.owning_schema_uuid = owning_schema;
-  v.default_language_tag = input.language_tag;
+  v.default_language_uuid = c::CatalogLanguageIdentity(input.language_uuid);
   v.default_name_entry_uuid = name_entry;
   v.name_collision_policy_uuid = {p::UuidKind::object, input.name_collision_policy_uuid};
   // Taken from the metadata version, not defaulted in parallel with it: the
@@ -567,7 +567,7 @@ inline BootstrapNamedCreationUnitResult BuildBootstrapNamedCreationUnit(
   e.scope_uuid = unit.definition.record.header.kind == c::CatalogRecordKind::database ? object : schema_as_object;
   if (owning_schema.value.is_nil()) e.parent_schema_uuid.reset();
   else e.parent_schema_uuid = owning_schema;
-  e.language_tag = input.language_tag;
+  e.language_uuid = c::CatalogLanguageIdentity(input.language_uuid);
   e.name_class = c::CatalogNameClass::primary;
   e.dialect_profile_uuid = {p::UuidKind::object, input.dialect_profile_uuid};
   // The verifier requires this to be the profile that produced the keys below.

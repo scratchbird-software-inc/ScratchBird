@@ -192,7 +192,7 @@ db::NativeInitialPolicySecurityRequest ServiceRequest(
   request.policy.database_uuid = kDatabase;
   request.policy.construction_transaction = kTransaction;
   request.policy.memory_configuration_uuid = kMemoryConfiguration;
-  request.policy.database_default_language = "en-US";
+  request.policy.database_default_language = c::kCatalogLanguage_en_US;
   // Three records per object; a complete database is about 731 objects.
   request.policy.limits = {3000, 16 * 1024 * 1024};
   request.group_memberships = memberships;
@@ -615,7 +615,7 @@ int main() {
     policy_only.database_uuid = kDatabase;
     policy_only.construction_transaction = kTransaction;
     policy_only.memory_configuration_uuid = kMemoryConfiguration;
-    policy_only.database_default_language = "en-US";
+    policy_only.database_default_language = c::kCatalogLanguage_en_US;
     policy_only.limits = {1000, 4 * 1024 * 1024};
 
     const auto policy_enumeration = db::EnumerateNativeInitialPolicyDefinitions(policy_only);
@@ -717,7 +717,7 @@ int main() {
     Check(twins.size() == 2, "both labelled entries are present in the assembled set");
     Check(twins[0]->object_uuid.value != twins[1]->object_uuid.value,
           "they label two different objects");
-    Check(twins[0]->language_tag == twins[1]->language_tag,
+    Check(twins[0]->language_uuid.value == twins[1]->language_uuid.value,
           "they are in the same language");
     Check(twins[0]->object_kind != twins[1]->object_kind ||
           twins[0]->scope_uuid.value != twins[1]->scope_uuid.value,

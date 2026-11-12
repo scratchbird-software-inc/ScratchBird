@@ -8387,7 +8387,7 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
         request.memory_configuration_uuid==request.construction_transaction.value||
         request.policy_seed_pack_root.empty()||!request.policy_seed_pack_root.data()||
         request.policy_seed_pack_root.find('\0')!=std::string_view::npos||
-        request.database_default_language.empty()||!request.database_default_language.data()||
+        !c::IsKnownCatalogLanguage(request.database_default_language)||
         // A supplied list and a generated one are mutually exclusive: one
         // authority per request, never a merge of two. Enumeration consults
         // neither, so it is not measured against either.
@@ -8766,7 +8766,7 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
         input.definition.creator_transaction_uuid=request.construction_transaction;
         input.definition.trace_search_key=std::string(seed.trace_search_key);
         input.definition.retention_class=std::string(seed.retention_class);
-        input.language_tag=std::string(request.database_default_language);
+        input.language_uuid=request.database_default_language;
         // An empty name asks for the object's own reference name.
         input.name_text=name->name_text.empty()?NativeDefinitionReferenceName(identity,definition.kind,definition.payload):
             std::string(name->name_text);
@@ -8780,7 +8780,7 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
         if(!built.ok()) {
           using U=BootstrapNamedCreationUnitError;
           switch(built.error) {
-            case U::language_tag_empty:case U::name_text_empty:
+            case U::language_unknown:case U::name_text_empty:
             case U::collision_policy_identity_invalid:case U::dialect_profile_identity_invalid:
             case U::identifier_profile_missing:case U::lookup_key_derivation_refused:
             case U::lookup_key_verification_failed:case U::name_resolution_epoch_invalid:
@@ -9009,7 +9009,12 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
   NativeDatabaseCreateResult result;
   const auto fail=[&](E error){result.error=error;result.receipt.reset();return result;};
   try {
-    if(request.policy_seed_pack_root.empty()||request.database_name.empty()||request.database_default_language.empty()||
+    // SB_CATALOG_LANGUAGE_CONSTANTS: the one place create turns the requested
+    // language tag (text, from the caller) into the language constant; a tag
+    // with no constant is refused, never defaulted.
+    const auto language=c::CatalogLanguageForTag(request.database_default_language);
+    if(!language)return fail(E::invalid_request);
+    if(request.policy_seed_pack_root.empty()||request.database_name.empty()||
         !request.page_size_bytes||!request.total_pages||!request.creation_utc_millis||
         !IsEngineIdentityUuid(request.engine_uuid)||!request.maximum_retained_image_bytes)return fail(E::invalid_request);
     // The L5 service credential is required (owner 2026-11-04), as is the
@@ -9116,7 +9121,7 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
     if(!identities_ok)return fail(E::identity_failure);
 
     NativeInitialPolicySecurityRequest policy;
-    policy.policy={request.policy_seed_pack_root,database,tx,memory_configuration,request.database_default_language,{},
+    policy.policy={request.policy_seed_pack_root,database,tx,memory_configuration,*language,{},
         {8192,64ull*1024*1024}};
     policy.group_memberships=memberships.memberships;policy.bootstrap=bootstrap;policy.local_service=service_identity;
     policy.agents=agents.agents;policy.policy_families=*families.identities;
@@ -9172,7 +9177,7 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
       d.owner_principal_uuid=bootstrap.principal_uuid;d.audit_object_uuid=audit_object;
       d.security_policy_uuid=service_identity.policy_uuid;d.owning_schema_uuid=owning_schema;d.creator_transaction_uuid=tx;
       if(root_parent){d.root_placement=true;d.root_parent_uuid=*root_parent;}
-      input.language_tag=std::string(request.database_default_language);
+      input.language_uuid=*language;
       input.name_text=std::move(name);
       input.name_collision_policy_uuid=generated.name_collision_policy_uuid;input.dialect_profile_uuid=generated.dialect_profile_uuid;
       input.identifier_profile=&*profile;
@@ -9188,7 +9193,7 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
     auto* filespace_unit=unit(filespace_object,CatalogRecordKind::filespace,"filespace",{},database_object,"filespace_0");
     if(!units_ok)return fail(E::database_assembly);
     database_unit->Bind();filespace_unit->Bind();
-    NativeInitialDatabaseRequest database_request{&construction,request.datatype_cohort,request.database_default_language,
+    NativeInitialDatabaseRequest database_request{&construction,request.datatype_cohort,*language,
         database_unit->Input(),{6,1024*1024}};
     const auto database_records=AssembleNativeInitialDatabaseFilespaceRecords({database_request,filespace_unit->Input()});
     if(!database_records.ok()){result.database_error=database_records.error;result.name_error=database_records.name_error;
@@ -9221,7 +9226,7 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
       schema_inputs[i]={&schema_definitions[i],in.definition,in.vector_metadata,in.vector,in.entries};
     }
     const auto schema_records=c::AssembleLocalInitialSchemaRecords(database,database_definition->metadata,tx,
-        request.database_default_language,schema_inputs,{3*28,1024*1024});
+        *language,schema_inputs,{3*28,1024*1024});
     if(!schema_records.ok()){result.schema_error=schema_records.error;result.name_error=schema_records.name_error;
       return fail(E::schema_assembly);}
     for(const auto& row:schema_records.records->definitions)seed[0].push_back(row);
@@ -9253,7 +9258,7 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
         agent_units.push_back(u);
       }
       for(auto* u:agent_units){u->Bind();named.push_back(u->Input());}
-      auto agent_records=c::AssembleLocalNamedCreationRecords(database,tx,request.database_default_language,named,
+      auto agent_records=c::AssembleLocalNamedCreationRecords(database,tx,*language,named,
           {3*declarations.size(),8*1024*1024});
       if(!agent_records.ok()){result.name_error=agent_records.error;return fail(E::agent_assembly);}
       for(auto& row:agent_records.records->definitions)seed[4].push_back(std::move(row));
@@ -9308,7 +9313,7 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
         type_units.push_back(du);type_units.push_back(su);
       }
       for(auto* u:type_units){u->Bind();named.push_back(u->Input());}
-      auto type_records=c::AssembleLocalNamedCreationRecords(database,tx,request.database_default_language,named,
+      auto type_records=c::AssembleLocalNamedCreationRecords(database,tx,*language,named,
           {3*type_units.size(),2*1024*1024});
       if(!type_records.ok()){result.name_error=type_records.error;return fail(E::datatype_assembly);}
       for(auto& row:type_records.records->definitions)seed[0].push_back(std::move(row));
@@ -9351,7 +9356,7 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
         u->definition.record.payload=row.payload;index_units.push_back(u);
       }
       for(auto* u:index_units){u->Bind();named.push_back(u->Input());}
-      auto index_records=c::AssembleLocalNamedCreationRecords(database,tx,request.database_default_language,named,{64,1024*1024});
+      auto index_records=c::AssembleLocalNamedCreationRecords(database,tx,*language,named,{64,1024*1024});
       if(!index_records.ok()){result.name_error=index_records.error;return fail(E::index_failure);}
       for(auto& row:index_records.records->definitions)seed[4].push_back(std::move(row));
       for(auto& row:index_records.records->names)seed[1].push_back(std::move(row));

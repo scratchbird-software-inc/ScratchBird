@@ -83,7 +83,7 @@ inline NativeCatalogNameVerification VerifyNativeCatalogNameBindings(
           e.object_kind!=v.object_kind||!schema(v.owning_schema_uuid,m.owning_schema_uuid))return fail(E::object_binding,id);
       if(v.default_name_entry_uuid.value!=m.default_name_uuid.value||e.name_vector_uuid.value!=m.name_vector_uuid.value)
         return fail(E::vector_binding,id);
-      if(v.default_language_tag!=e.language_tag||!e.default_for_object||!e.default_for_language)
+      if(v.default_language_uuid.value!=e.language_uuid.value||!e.default_for_object||!e.default_for_language)
         return fail(E::default_binding,id,m.default_name_uuid.value);
     }else if(const auto* v=std::get_if<c::CatalogNameVectorView>(&*row.name_payload)){
       ++out.vectors;const auto* object=find(v->object_uuid.value);

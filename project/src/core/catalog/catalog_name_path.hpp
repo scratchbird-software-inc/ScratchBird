@@ -58,7 +58,7 @@ CatalogNamePathError WalkCatalogNamePath(const CatalogNameEntryView& entry, cons
   auto scope = entry.scope_uuid.value;
   if (scope == entry.object_uuid.value) return CatalogNamePathError::none;  // the database's own names
   for (;;) {
-    const CatalogNamePathName found = path_name(scope, entry.language_tag);
+    const CatalogNamePathName found = path_name(scope, entry.language_uuid.value);
     if (found.ambiguous) return CatalogNamePathError::ambiguous_scope;
     if (!found.name || found.name->object_uuid.value != scope) return CatalogNamePathError::unnamed_scope;
     if (found.name->scope_uuid.value == scope) return CatalogNamePathError::none;  // the database: below its root
@@ -119,14 +119,14 @@ class CatalogNameIndex {
   void Add(const CatalogNameEntryView& entry);
   void Add(const CatalogNamePayloadView& payload);
   // The lookup the path rule uses.
-  CatalogNamePathName operator()(const Uuid& object, std::string_view language) const;
+  CatalogNamePathName operator()(const Uuid& object, const Uuid& language) const;
 
  private:
   std::map<Uuid, Uuid> default_entry_;  // object -> its vector's default entry
   std::map<Uuid, CatalogNameEntryView> entries_;  // entry UUID -> entry
   // (object, language) -> entry UUIDs ever added as default_for_language there;
   // a lookup re-checks each against entries_, so a replaced entry drops out.
-  std::multimap<std::pair<Uuid, std::string>, Uuid> by_language_;
+  std::multimap<std::pair<Uuid, Uuid>, Uuid> by_language_;
 };
 
 struct CatalogNamePathComponent {

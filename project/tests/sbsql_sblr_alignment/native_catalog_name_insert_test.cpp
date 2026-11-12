@@ -222,7 +222,7 @@ Named NamedObject(const Db& b, std::span<const byte> file, const NameTemplate& t
   if (d.owning_schema_uuid.value.is_nil()) e.parent_schema_uuid.reset();
   else e.parent_schema_uuid = d.owning_schema_uuid;
   e.parent_object_uuid.reset();
-  e.language_tag = v.default_language_tag;
+  e.language_uuid = v.default_language_uuid;
   e.name_class = c::CatalogNameClass::primary;
   e.catalog_generation_id = em.catalog_generation;
   e.created_transaction_uuid = d.creator_transaction_uuid;
@@ -1197,7 +1197,7 @@ void NameCascade(const Db& b, const NameTemplate& t, u16 role, std::size_t defin
   // `dead`: transactions that rolled back, whose versions are not the base.
   const auto scope_entry = [&](std::span<const byte> file, const std::set<u64>& dead = {}) {
     for (const auto& [row, v] : NewestEntries(b, file, dead))
-      if (!v.deleted && v.entry.object_uuid.value == t.entry.scope_uuid.value && v.entry.language_tag == t.entry.language_tag &&
+      if (!v.deleted && v.entry.object_uuid.value == t.entry.scope_uuid.value && v.entry.language_uuid.value == t.entry.language_uuid.value &&
           v.entry.default_for_language)
         return v;
     Check(false, "the template's scope has a name in the template's language");
@@ -1404,8 +1404,13 @@ db::CatalogInsertRow NameRowOf(const Db& b, std::span<const byte> file, Match ma
 // A further entry for the object `of` names (by `n`, at row `key`): `text`
 // in `language`, as `name_class`, default for its language or not, named in
 // the same scope.
+// A second language for a test: fr-CA, or de-DE when the template is fr-CA
+// (language constants, SB_CATALOG_LANGUAGE_CONSTANTS; was "fr"/"de" text).
+Uuid OtherLanguage(const Uuid& template_language) {
+  return template_language == c::kCatalogLanguage_fr_CA ? c::kCatalogLanguage_de_DE : c::kCatalogLanguage_fr_CA;
+}
 db::CatalogInsertRow EntryLike(const db::CatalogInsertRow& of, const NameTemplate& t, const Uuid& key, unsigned k, u64 n,
-                               const std::string& text, const std::string& language, bool default_for_language,
+                               const std::string& text, const Uuid& language, bool default_for_language,
                                c::CatalogNameClass name_class) {
   auto row = of;
   row.row_uuid = key;
@@ -1420,7 +1425,7 @@ db::CatalogInsertRow EntryLike(const db::CatalogInsertRow& of, const NameTemplat
   const auto& base = std::get<c::CatalogNameEntry>(*of.name);
   auto e = Keyed(base, t, text);
   e.name_entry_uuid = id;
-  e.language_tag = language;
+  e.language_uuid = c::CatalogLanguageIdentity(language);
   e.name_class = name_class;
   e.default_for_object = false;
   e.default_for_language = default_for_language;
@@ -1447,14 +1452,14 @@ void NameCascadePaths(const Db& b, const NameTemplate& t, u16 role, std::size_t 
   const auto path = b.Copy(b.bytes, "cascade-paths.db");
   Session s(b, path);
   const auto schema = t.entry.scope_uuid.value;
-  const auto entry_of = [&](std::span<const byte> file, const std::string& language, bool default_only) {
+  const auto entry_of = [&](std::span<const byte> file, const Uuid& language, bool default_only) {
     return NameRowOf(b, file, [&](const c::CatalogNamePayload& p) {
       const auto* e = std::get_if<c::CatalogNameEntry>(&p);
-      return e && e->object_uuid.value == schema && e->language_tag == language && (!default_only || e->default_for_language);
-    }, "the schema's " + language + " entry");
+      return e && e->object_uuid.value == schema && e->language_uuid.value == language && (!default_only || e->default_for_language);
+    }, "the schema's entry in the language");
   };
-  const auto english = std::get<c::CatalogNameEntry>(*entry_of(b.bytes, t.entry.language_tag, true).name);
-  const std::string other_language = t.entry.language_tag == "fr" ? "de" : "fr";
+  const auto english = std::get<c::CatalogNameEntry>(*entry_of(b.bytes, t.entry.language_uuid.value, true).name);
+  const Uuid other_language = OtherLanguage(t.entry.language_uuid.value);
   // A named object below the schema, then its name in the other language.
   Begin(s, 2);
   auto file = ReadAll(path);
@@ -1466,8 +1471,8 @@ void NameCascadePaths(const Db& b, const NameTemplate& t, u16 role, std::size_t 
   ExpectInsert(b, s, path, Request(2, {foreign}), "its name in another language, through the schema's vector default");
   // An English alias of the schema, not its English default.
   file = ReadAll(path);
-  const auto alias = EntryLike(entry_of(file, t.entry.language_tag, true), t, V7(After(b, file, role), 0xd10002), 2, 2,
-                               "w3b_paths_alias", t.entry.language_tag, false, c::CatalogNameClass::alias);
+  const auto alias = EntryLike(entry_of(file, t.entry.language_uuid.value, true), t, V7(After(b, file, role), 0xd10002), 2, 2,
+                               "w3b_paths_alias", t.entry.language_uuid.value, false, c::CatalogNameClass::alias);
   ExpectInsert(b, s, path, Request(2, {alias}), "an alias of the schema");
   Commit(*s.w, s.sink(), 2);
   ExpectNamedVerification(b, path, definitions + 1, "the further names, committed", false, true);
@@ -1481,7 +1486,7 @@ void NameCascadePaths(const Db& b, const NameTemplate& t, u16 role, std::size_t 
     for (const auto& [row, v] : NewestEntries(b, before))
       if (!v.deleted && v.entry.lifecycle_state == c::CatalogNameLifecycle::active &&
           StartsWith(v.entry.full_path_lookup_key, from.full_path_lookup_key) &&
-          (v.entry.language_tag == t.entry.language_tag) == english_only)
+          (v.entry.language_uuid.value == t.entry.language_uuid.value) == english_only)
         want.push_back(v);
     if (result.cascaded.size() != want.size())
       std::cerr << label << ": cascaded " << result.cascaded.size() << " expected " << want.size() << '\n';
@@ -1534,7 +1539,7 @@ void NameCascadePaths(const Db& b, const NameTemplate& t, u16 role, std::size_t 
     //    the vector's default, so nothing moves.
     file = ReadAll(path);
     {
-      const auto row = entry_of(file, t.entry.language_tag, true);
+      const auto row = entry_of(file, t.entry.language_uuid.value, true);
       auto e = std::get<c::CatalogNameEntry>(*row.name);
       e.default_for_language = false;
       e.default_for_object = false;
@@ -1621,7 +1626,7 @@ void NameCascadePaths(const Db& b, const NameTemplate& t, u16 role, std::size_t 
 // those of `dead` transactions left out), as a request row.
 EntryVersion ScopeEntry(const Db& b, const NameTemplate& t, std::span<const byte> file, const std::set<u64>& dead = {}) {
   for (const auto& [row, v] : NewestEntries(b, file, dead))
-    if (!v.deleted && v.entry.object_uuid.value == t.entry.scope_uuid.value && v.entry.language_tag == t.entry.language_tag &&
+    if (!v.deleted && v.entry.object_uuid.value == t.entry.scope_uuid.value && v.entry.language_uuid.value == t.entry.language_uuid.value &&
         v.entry.default_for_language)
       return v;
   Check(false, "the template's scope has a name in the template's language");
@@ -1796,7 +1801,7 @@ void NameConflicts(const Db& b, const NameTemplate& t, u16 role, std::size_t def
     std::optional<EntryVersion> other;
     for (const auto& [row, v] : NewestEntries(b, file))
       if (!other && !v.deleted && v.entry.lifecycle_state == c::CatalogNameLifecycle::active && v.entry.default_for_language &&
-          v.entry.path_component_count >= 2 && v.entry.language_tag == t.entry.language_tag &&
+          v.entry.path_component_count >= 2 && v.entry.language_uuid.value == t.entry.language_uuid.value &&
           v.entry.identifier_profile_uuid.value == t.entry.identifier_profile_uuid.value &&
           !StartsWith(v.entry.full_path_lookup_key, scope.entry.full_path_lookup_key) &&
           !StartsWith(scope.entry.full_path_lookup_key, v.entry.full_path_lookup_key) && v.order != 2)
@@ -1839,11 +1844,11 @@ void NameInsertCascade(const Db& b, const NameTemplate& t, u16 role, std::size_t
   const auto path = b.Copy(b.bytes, "insert-cascade.db");
   Session s(b, path);
   const auto schema = t.entry.scope_uuid.value;
-  const std::string language = t.entry.language_tag == "fr" ? "de" : "fr";
+  const Uuid language = OtherLanguage(t.entry.language_uuid.value);
   const auto english_row = [&](std::span<const byte> file) {
     return NameRowOf(b, file, [&](const c::CatalogNamePayload& p) {
       const auto* e = std::get_if<c::CatalogNameEntry>(&p);
-      return e && e->object_uuid.value == schema && e->language_tag == t.entry.language_tag && e->default_for_language;
+      return e && e->object_uuid.value == schema && e->language_uuid.value == t.entry.language_uuid.value && e->default_for_language;
     }, "the schema's default entry");
   };
   // A named object below the schema and its name in the second language.
@@ -2518,7 +2523,15 @@ void ConflictingPolicy(const Db& b, const NameTemplate& t, u16 role) {
   other.vector.name = c::CatalogNamePayload{v};
   InsertRefused(b, s, path, Request(n, other.EntryFirst()), CE::invalid_name,
                 "one class in one scope under a second collision policy");
-  ExpectInsert(b, s, path, Request(n, named.Rows()), "the same object under the database's policy");
+  // The name rows grew with the language constants (SB_CATALOG_LANGUAGE_CONSTANTS):
+  // where the names leaf has no room left, the same insert takes a new leaf.
+  auto same = Request(n, named.Rows());
+  if (InsertOracle(b, ReadAll(path), same)) {
+    ExpectInsert(b, s, path, same, "the same object under the database's policy");
+  } else {
+    same.new_pages = PageIds(41);
+    ExpectGrowingInsert(b, s.sink(), path, same, "the same object under the database's policy, on a new page");
+  }
   std::cout << b.name << " conflicting policy page_size=" << b.size << " refused\n";
   fs::remove(path);
 }

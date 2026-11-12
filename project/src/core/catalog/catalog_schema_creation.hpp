@@ -34,6 +34,6 @@ struct CatalogInitialSchemaResult {
 // memory grants; this package is not full node bootstrap/activation or serving.
 CatalogInitialSchemaResult AssembleLocalInitialSchemaRecords(
     const Uuid& database_uuid,const CatalogMetadataVersion& database_definition,
-    const TypedUuid& creation_transaction,std::string_view database_default_language,
+    const TypedUuid& creation_transaction,const Uuid& database_default_language,
     std::span<const CatalogInitialSchemaInput>,CatalogNamedCreationLimits) noexcept;
 } // namespace scratchbird::core::catalog

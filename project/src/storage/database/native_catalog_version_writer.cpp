@@ -486,11 +486,11 @@ class NameState {
   // fallback); an entry of the object marked default_for_language in that
   // language; an entry of the object that any live version of its vector
   // names as default.
-  bool Decides(const catalog::CatalogNamePayload& payload, const Uuid& object, std::string_view language) const {
+  bool Decides(const catalog::CatalogNamePayload& payload, const Uuid& object, const Uuid& language) const {
     if (const auto* v = std::get_if<catalog::CatalogNameVector>(&payload)) return v->object_uuid.value == object;
     const auto& e = std::get<catalog::CatalogNameEntry>(payload);
     if (e.object_uuid.value != object) return false;
-    if (e.default_for_language && e.language_tag == language) return true;
+    if (e.default_for_language && e.language_uuid.value == language) return true;
     const auto names_default = [&](const catalog::CatalogNamePayload& p) {
       const auto* v = std::get_if<catalog::CatalogNameVector>(&p);
       return v && v->object_uuid.value == object && v->default_name_entry_uuid.value == e.name_entry_uuid.value;
@@ -511,7 +511,7 @@ class NameState {
     std::optional<u64> found;
     (void)catalog::WalkCatalogNamePath(
         entry,
-        [&](const Uuid& object, std::string_view language) {
+        [&](const Uuid& object, const Uuid& language) {
           if (!found) found = at(object, language);
           return index(object, language);
         },
@@ -524,7 +524,7 @@ class NameState {
   // is a write_conflict with it, as a cascade reaching its entry is: the path
   // goes stale whichever way that transaction ends.
   std::optional<u64> PendingOnPath(const catalog::CatalogNameEntryView& entry, const catalog::CatalogNameIndex& index) const {
-    return FirstOnPath(entry, index, [&](const Uuid& object, std::string_view language) -> std::optional<u64> {
+    return FirstOnPath(entry, index, [&](const Uuid& object, const Uuid& language) -> std::optional<u64> {
       for (const auto& c : contended_)
         if (Decides(*c.newest, object, language) || (c.seen && Decides(*c.seen, object, language))) return c.order;
       return std::nullopt;
@@ -1362,7 +1362,7 @@ struct Moved {
 Stop FindMoved(const NameState& names, const catalog::CatalogNameIndex& before, const catalog::CatalogNameIndex& after,
                u64 order, std::span<const Uuid> skip, std::span<const catalog::CatalogNamePayload* const> changed,
                E unresolvable, std::vector<Moved>& moved) {
-  const auto decided = [&](const Uuid& object, std::string_view language) -> std::optional<u64> {
+  const auto decided = [&](const Uuid& object, const Uuid& language) -> std::optional<u64> {
     for (const auto* p : changed)
       if (names.Decides(*p, object, language)) return order;
     return std::nullopt;
