@@ -205,8 +205,8 @@ NativeDatabaseMemoryEnvelopeResult ServerProcessCryptoOwner::ConstrainNativeData
     m::MemoryPolicyConfig policy;
     // 3b: the catalog record carries no policy name or provenance any more. On
     // this path only the resolver's effective_hard_limit_bytes and diagnostics
-    // are read; its policy label and provenance are never read, so the
-    // MemoryPolicyConfig defaults stand (reported to the owner).
+    // are read, so no label is set here (owner Q66 = 1, 2026-11-12: dropped from
+    // this path, not replaced by the configuration UUID).
     policy.hard_limit_bytes=config.hard_limit_bytes;policy.soft_limit_bytes=config.soft_limit_bytes;
     policy.per_context_limit_bytes=config.per_context_limit_bytes;
     policy.page_buffer_pool_limit_bytes=config.page_buffer_pool_limit_bytes;

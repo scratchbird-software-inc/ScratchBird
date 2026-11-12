@@ -11816,3 +11816,13 @@ add_test(NAME sbsql_sblr_alignment_execute_result_cursor_identity_framing
 set_tests_properties(sbsql_sblr_alignment_execute_result_cursor_identity_framing PROPERTIES
   LABELS "sbsql_sblr_alignment;binary_uuid;SBPS;cursor_framing;component_codec;not_e2e"
   TIMEOUT 60)
+# SB_CATALOG_AGENT_CONSTANTS: agent types, agent policy families and metric
+# families as coding-time constants (code + permanent UUID); constants only,
+# not yet wired.
+add_executable(sbsql_sblr_alignment_catalog_agent_constants catalog_agent_constants_test.cpp)
+target_compile_features(sbsql_sblr_alignment_catalog_agent_constants PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_catalog_agent_constants PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(sbsql_sblr_alignment_catalog_agent_constants PRIVATE sb_storage_database sb_engine_internal_api)
+add_test(NAME sbsql_sblr_alignment_catalog_agent_constants COMMAND sbsql_sblr_alignment_catalog_agent_constants)
+set_tests_properties(sbsql_sblr_alignment_catalog_agent_constants PROPERTIES
+  LABELS "sbsql_sblr_alignment;catalog;binary_uuid;native_policy;not_runtime_acceptance" TIMEOUT 120)
