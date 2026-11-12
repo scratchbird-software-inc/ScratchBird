@@ -96,8 +96,19 @@ class ProcedureLifecycleError(RuntimeError):
 
 
 def durable_api_authority_rows(raw_journal: bytes) -> tuple[bytes, ...]:
-    """Compare every complete native API record, including binary identities."""
-    return tuple(row.framed_bytes for row in read_api_journal(raw_journal))
+    """Compare every complete native API record a session wrote, including
+    binary identities.
+
+    Owner Q55 = 1 (2026-11-12): records of kind agent_hook are left out. They
+    are engine agents doing their own work on their own trigger (the file
+    space agent woken by its schedule or by the page manager running out of
+    space writes agents.request_page_preallocation), not anything a session's
+    statement did, so they may land inside a refusal's window at any time.
+    Every other record is compared byte for byte, so a record a refused
+    statement wrote still fails the check.
+    """
+    return tuple(row.framed_bytes for row in read_api_journal(raw_journal)
+                 if row.object_kind != b"agent_hook")
 
 
 def create_sql(name: str) -> str:
