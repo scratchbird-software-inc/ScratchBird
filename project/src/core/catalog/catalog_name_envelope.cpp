@@ -137,13 +137,13 @@ bool CatalogNamePayloadPreservesIdentity(const CatalogNamePayloadView& before,co
   if (const auto* a=std::get_if<CatalogNameVectorView>(&before)) {
     const auto* b=std::get_if<CatalogNameVectorView>(&after);
     return b && SameIdentity(a->name_vector_uuid,b->name_vector_uuid) &&
-        SameIdentity(a->object_uuid,b->object_uuid) && a->object_class == b->object_class;
+        SameIdentity(a->object_uuid,b->object_uuid) && a->object_kind == b->object_kind;
   }
   if (const auto* a=std::get_if<CatalogNameEntryView>(&before)) {
     const auto* b=std::get_if<CatalogNameEntryView>(&after);
     return b && SameIdentity(a->name_entry_uuid,b->name_entry_uuid) &&
         SameIdentity(a->name_vector_uuid,b->name_vector_uuid) && SameIdentity(a->object_uuid,b->object_uuid) &&
-        a->object_class == b->object_class && SameIdentity(a->created_transaction_uuid,b->created_transaction_uuid) &&
+        a->object_kind == b->object_kind && SameIdentity(a->created_transaction_uuid,b->created_transaction_uuid) &&
         b->name_resolution_epoch >= a->name_resolution_epoch;
   }
   return false;
@@ -180,7 +180,7 @@ CatalogNameEnvelopeEncodeResult EncodeCatalogNameEnvelope(const CatalogNameEnvel
   bytes[0]='S'; bytes[1]='B'; bytes[2]='C'; bytes[3]='R';
   Put(bytes,4,1,2); Put(bytes,6,kHeaderBytes,2); Put(bytes,8,bytes.size(),4);
   Put(bytes,12,payload.bytes.size(),4); Put(bytes,16,schema_id,4);
-  Put(bytes,20,1,2); Put(bytes,22,5,2);
+  Put(bytes,20,2,2); Put(bytes,22,5,2);  // payload schema version 2 (SB_CATALOG_NO_TEXT_IDENTIFIERS)
   const auto& b=record.binding;
   for (const auto& field:kIdentityFields) {
     const auto& id=b.*field.member;
@@ -201,7 +201,7 @@ CatalogNameEnvelopeViewResult DecodeCatalogNameEnvelopeView(
     return {Error::invalid_header,{}};
   if (Get(bytes,4,2)!=1) return {Error::unsupported_format,{}};
   if (Get(bytes,6,2)!=kHeaderBytes || Get(bytes,8,4)!=bytes.size() ||
-      Get(bytes,12,4)!=bytes.size()-kHeaderBytes || Get(bytes,20,2)!=1 ||
+      Get(bytes,12,4)!=bytes.size()-kHeaderBytes || Get(bytes,20,2)!=2 ||
       Get(bytes,22,2)!=5 || Get(bytes,132,4)!=0 || Get(bytes,168,8)!=0)
     return {Error::invalid_header,{}};
   const auto schema_id=Get(bytes,16,4);

@@ -48,7 +48,7 @@ TypedUuid Id(UuidKind kind,byte seed) {
 c::CatalogNameVector Vector() {
   c::CatalogNameVector v;
   v.name_vector_uuid=Id(UuidKind::object,1);v.object_uuid=Id(UuidKind::object,2);
-  v.object_class="table";v.owning_schema_uuid=Id(UuidKind::schema,4);
+  v.object_kind=c::CatalogRecordKind::table_descriptor;v.owning_schema_uuid=Id(UuidKind::schema,4);
   v.default_language_tag="fr-CA";v.default_name_entry_uuid=Id(UuidKind::object,6);
   v.name_collision_policy_uuid=Id(UuidKind::object,7);v.catalog_generation_id=0x0102030405060708;
   v.security_policy_uuid=Id(UuidKind::object,9);v.lifecycle_state=c::CatalogNameLifecycle::active;
@@ -66,7 +66,7 @@ c::CatalogNameEnvelope Fixture(bool entry=false) {
   if(entry) {
     c::CatalogNameEntry e;
     e.name_entry_uuid=b.catalog_object_uuid;e.name_vector_uuid=Id(UuidKind::object,2);
-    e.object_uuid=Id(UuidKind::object,3);e.object_class="table";e.scope_uuid=Id(UuidKind::object,5);
+    e.object_uuid=Id(UuidKind::object,3);e.object_kind=c::CatalogRecordKind::table_descriptor;e.scope_uuid=Id(UuidKind::object,5);
     e.language_tag="en";e.dialect_profile_uuid=Id(UuidKind::object,11);
     e.identifier_profile_uuid=Id(UuidKind::object,12);e.raw_name_text="a";e.display_name="a";
     e.catalog_generation_id=b.catalog_generation;e.created_transaction_uuid=b.creating_transaction_uuid;
@@ -78,16 +78,17 @@ std::vector<byte> Golden() {
   // Independent Core byte oracle: header and payload both literal, not generated
   // with a production serializer. The owning version metadata is a test fixture.
   auto out=Hex(
-    "53424352 0100 b000 92010000 e2000000 01000500 0100 0500 "
+    "53424352 0100 b000 95010000 e5000000 01000500 0200 0500 "
     "019213243546778899aabbccddeeff65 019213243546778899aabbccddeeff66 "
     "019213243546778899aabbccddeeff67 019213243546778899aabbccddeeff68 "
     "019213243546778899aabbccddeeff01 019213243546778899aabbccddeeff6a "
     "0900000000000000 03000000 00000000 0400000000000000 0500000000000000 "
     "0600000000000000 0807060504030201 0000000000000000 "
-    "53424356 0100 1800 e2000000 0a000000 01000500 01000000 "
+    "53424356 0100 1800 e5000000 0a000000 01000500 02000000 "
     "0100 05 00 10000000 019213243546778899aabbccddeeff01 "
     "0200 05 00 10000000 019213243546778899aabbccddeeff02 "
-    "0300 03 00 05000000 7461626c65 "
+    // field 3: object_kind table_descriptor (81); schema version 2
+    "0300 01 00 08000000 5100000000000000 "
     "0400 05 00 10000000 019213243546778899aabbccddeeff04 "
     "0500 03 00 05000000 66722d4341 "
     "0600 05 00 10000000 019213243546778899aabbccddeeff06 "
@@ -95,7 +96,7 @@ std::vector<byte> Golden() {
     "0800 01 00 08000000 0807060504030201 "
     "0900 05 00 10000000 019213243546778899aabbccddeeff09 "
     "0a00 01 00 08000000 0200000000000000");
-  Check(out.size()==402,"golden envelope size");return out;
+  Check(out.size()==405,"golden envelope size");return out;  // 402 with the 5-byte class text
 }
 void Roundtrip(const c::CatalogNameEnvelope& r) {
   const auto encoded=c::EncodeCatalogNameEnvelope(r);
@@ -188,7 +189,7 @@ void BindingAndPayload() {
     payload=entry?c::EncodeCatalogNameEntry(std::get<c::CatalogNameEntry>(changed.payload)):
                   c::EncodeCatalogNameVector(std::get<c::CatalogNameVector>(changed.payload));
     Refused(CheckedEnvelopeDecode(Repack(r,payload.bytes),r.binding));
-    changed=r;std::visit([](auto& p){p.object_class.clear();},changed.payload);
+    changed=r;std::visit([](auto& p){p.object_kind=c::CatalogRecordKind::unknown;},changed.payload);
     Refused(c::EncodeCatalogNameEnvelope(changed));
   }
   r=Fixture(true);r.binding.version_sequence=1;auto changed=r;
@@ -206,6 +207,9 @@ void BindingAndPayload() {
       "name successor envelope rewrote original entry creation");
   auto bad=golden;bad[16]=2;Refused(CheckedEnvelopeDecode(bad,base.binding));
   bad=golden;bad[176+16]=2;Refused(CheckedEnvelopeDecode(bad,base.binding));
+  // Version 1 (text class and donor_id) is refused in the envelope and the payload.
+  bad=golden;bad[20]=1;Refused(CheckedEnvelopeDecode(bad,base.binding));
+  bad=golden;bad[176+20]=1;Refused(CheckedEnvelopeDecode(bad,base.binding));
   const std::string legacy="kind=5\nrow_uuid=01921324-3546-7788-99aa-bbccddeeff67\n";
   Refused(CheckedEnvelopeDecode({legacy.begin(),legacy.end()},base.binding));
   Check(!c::CatalogNameEnvelopeEncodeResult{}.ok() && !c::CatalogNameEnvelopeDecodeResult{}.ok(),
@@ -213,10 +217,12 @@ void BindingAndPayload() {
 }
 void SizeAndPageContainer() {
   auto r=Fixture();auto& v=std::get<c::CatalogNameVector>(r.payload);
-  v.object_class=std::string(130675,'x');
+  // SB_CATALOG_NO_TEXT_IDENTIFIERS: the class is an 8-byte kind now (was 5
+  // bytes of "table"), so the vector's remaining text field takes the padding.
+  v.default_language_tag=std::string(130672,'x');
   auto encoded=c::EncodeCatalogNameEnvelope(r);
   Check(encoded.ok() && encoded.bytes.size()==131072,"exact envelope size maximum");
-  Roundtrip(r);v.object_class.push_back('x');
+  Roundtrip(r);v.default_language_tag.push_back('x');
   Refused(c::EncodeCatalogNameEnvelope(r));
   encoded.bytes.push_back(0);Refused(CheckedEnvelopeDecode(encoded.bytes,r.binding));
   r=Fixture();encoded=c::EncodeCatalogNameEnvelope(r);
@@ -235,9 +241,10 @@ void SizeAndPageContainer() {
           "page recovered envelope did not bind");
   }
   // Envelope structural validation is NOT a checksum or visibility oracle.
-  auto changed=encoded.bytes;const std::vector<byte> needle{'t','a','b','l','e'};
+  // (The class is a kind number now; the language tag is the text altered.)
+  auto changed=encoded.bytes;const std::vector<byte> needle{'f','r','-','C','A'};
   auto at=std::search(changed.begin()+176,changed.end(),needle.begin(),needle.end());
-  Check(at!=changed.end(),"fixture class not located");if(at==changed.end())return;
+  Check(at!=changed.end(),"fixture language not located");if(at==changed.end())return;
   *at='c';Check(CheckedEnvelopeDecode(changed,r.binding).ok(),"codec invents metadata authority");
   auto damaged=pages.pages[0].body;
   auto record_at=std::search(damaged.begin(),damaged.end(),encoded.bytes.begin(),encoded.bytes.end());

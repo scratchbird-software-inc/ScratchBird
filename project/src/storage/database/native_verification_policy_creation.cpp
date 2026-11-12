@@ -43,7 +43,7 @@ NativeInitialPolicyDescriptorResult AssembleNativeInitialVerificationPolicyRecor
       const auto checked=c::PreflightLocalNamedCreationRecord(view,input.named,r.construction_transaction,r.database_default_language,
           {r.limits.maximum_records-records,r.limits.maximum_encoded_bytes-bytes});
       if(checked.error!=c::CatalogNamedCreationError::none)return Fail(NameError(checked.error),checked.error);
-      if(input.named.vector->object_class!="policy")return Fail(E::invalid_names);
+      if(input.named.vector->object_kind!=c::CatalogRecordKind::policy)return Fail(E::invalid_names);
       records+=checked.records;bytes+=checked.encoded_bytes;
     }
     if(records>std::numeric_limits<std::size_t>::max()/2)return Fail(E::resource_exhausted);

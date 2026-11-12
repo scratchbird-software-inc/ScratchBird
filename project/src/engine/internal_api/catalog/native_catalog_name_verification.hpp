@@ -79,8 +79,8 @@ inline NativeCatalogNameVerification VerifyNativeCatalogNameBindings(
         return fail(E::missing_default_name,id,m.default_name_uuid.value);
       const auto& v=std::get<c::CatalogNameVectorView>(*vector->name_payload);
       const auto& e=std::get<c::CatalogNameEntryView>(*entry->name_payload);
-      if(v.object_uuid.value!=id||e.object_uuid.value!=id||v.object_class!=c::CatalogRecordKindName(m.record.header.kind)||
-          e.object_class!=v.object_class||!schema(v.owning_schema_uuid,m.owning_schema_uuid))return fail(E::object_binding,id);
+      if(v.object_uuid.value!=id||e.object_uuid.value!=id||v.object_kind!=m.record.header.kind||
+          e.object_kind!=v.object_kind||!schema(v.owning_schema_uuid,m.owning_schema_uuid))return fail(E::object_binding,id);
       if(v.default_name_entry_uuid.value!=m.default_name_uuid.value||e.name_vector_uuid.value!=m.name_vector_uuid.value)
         return fail(E::vector_binding,id);
       if(v.default_language_tag!=e.language_tag||!e.default_for_object||!e.default_for_language)
@@ -99,7 +99,7 @@ inline NativeCatalogNameVerification VerifyNativeCatalogNameBindings(
       const auto& parent_vector=std::get<c::CatalogNameVectorView>(*vector->name_payload);
       const auto expected_scope=object->metadata.record.header.kind==c::CatalogRecordKind::database?
           object->metadata.record.header.object_uuid.value:object->metadata.record.header.parent_uuid.value;
-      if(e.object_uuid.value!=parent_vector.object_uuid.value||e.object_class!=parent_vector.object_class||
+      if(e.object_uuid.value!=parent_vector.object_uuid.value||e.object_kind!=parent_vector.object_kind||
           object->metadata.name_vector_uuid.value!=e.name_vector_uuid.value||
           !schema(e.parent_schema_uuid,object->metadata.owning_schema_uuid)||
           e.scope_uuid.value!=expected_scope)return fail(E::object_binding,id,e.object_uuid.value);

@@ -349,9 +349,6 @@ struct BootstrapNamedCreationUnitInput {
   core::platform::Uuid name_vector_row_uuid;
   core::platform::Uuid name_entry_row_uuid;
 
-  // Must equal CatalogRecordKindName(definition.kind): the assembler refuses a
-  // name vector whose object_class disagrees with the kind it registered.
-  std::string object_class;
   // Must equal the request's database_default_language: the default name entry
   // is the one the default language resolves to.
   std::string language_tag;
@@ -382,7 +379,6 @@ enum class BootstrapNamedCreationUnitError {
   definition_invalid,
   name_vector_row_identity_invalid,
   name_entry_row_identity_invalid,
-  object_class_empty,
   language_tag_empty,
   name_text_empty,
   collision_policy_identity_invalid,
@@ -408,7 +404,6 @@ inline const char* BootstrapNamedCreationUnitDiagnosticCode(
     case E::definition_invalid: return "CATALOG.NAMED_UNIT_DEFINITION_INVALID";
     case E::name_vector_row_identity_invalid: return "CATALOG.NAMED_UNIT_VECTOR_ROW_IDENTITY_INVALID";
     case E::name_entry_row_identity_invalid: return "CATALOG.NAMED_UNIT_ENTRY_ROW_IDENTITY_INVALID";
-    case E::object_class_empty: return "CATALOG.NAMED_UNIT_OBJECT_CLASS_EMPTY";
     case E::language_tag_empty: return "CATALOG.NAMED_UNIT_LANGUAGE_TAG_EMPTY";
     case E::name_text_empty: return "CATALOG.NAMED_UNIT_NAME_TEXT_EMPTY";
     case E::collision_policy_identity_invalid: return "CATALOG.NAMED_UNIT_COLLISION_POLICY_IDENTITY_INVALID";
@@ -486,10 +481,6 @@ inline BootstrapNamedCreationUnitResult BuildBootstrapNamedCreationUnit(
     out.error = E::name_entry_row_identity_invalid;
     return out;
   }
-  if (input.object_class.empty()) {
-    out.error = E::object_class_empty;
-    return out;
-  }
   if (input.language_tag.empty()) {
     out.error = E::language_tag_empty;
     return out;
@@ -553,7 +544,7 @@ inline BootstrapNamedCreationUnitResult BuildBootstrapNamedCreationUnit(
   auto& v = unit.vector;
   v.name_vector_uuid = name_vector;
   v.object_uuid = object;
-  v.object_class = input.object_class;
+  v.object_kind = input.definition.kind;  // SB_CATALOG_NO_TEXT_IDENTIFIERS: the kind, not its name
   // A root object has no owning schema: the optional is omitted, not a nil.
   if (owning_schema.value.is_nil()) v.owning_schema_uuid.reset();
   else v.owning_schema_uuid = owning_schema;
@@ -570,7 +561,7 @@ inline BootstrapNamedCreationUnitResult BuildBootstrapNamedCreationUnit(
   e.name_entry_uuid = name_entry;
   e.name_vector_uuid = name_vector;
   e.object_uuid = object;
-  e.object_class = input.object_class;
+  e.object_kind = input.definition.kind;
   // The schema the name resolves within, under the kind each field requires.
   // The database object's own names resolve within itself.
   e.scope_uuid = unit.definition.record.header.kind == c::CatalogRecordKind::database ? object : schema_as_object;

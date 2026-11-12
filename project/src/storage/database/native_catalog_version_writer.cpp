@@ -77,9 +77,11 @@ bool AheadOfRoot(const catalog::CatalogMetadataVersion& m, const pg::NativeCatal
          m.security_epoch > r.security_epoch ||
          (m.record.header.kind != catalog::CatalogRecordKind::localized_name && m.resource_epoch > r.resource_epoch);
 }
-// The record kind a name's object_class names (CatalogRecordKindName).
-std::optional<catalog::CatalogRecordKind> KindNamed(std::string_view name) {
-  return catalog::CatalogRecordKindFromName(name);
+// A name's object kind when it is a known kind (the codec admits no other;
+// SB_CATALOG_NO_TEXT_IDENTIFIERS: the kind itself, not its name).
+std::optional<catalog::CatalogRecordKind> KnownKind(catalog::CatalogRecordKind kind) {
+  if (!catalog::IsKnownCatalogRecordKind(kind)) return std::nullopt;
+  return kind;
 }
 
 // One base leaf as read: its image and its decode.
@@ -562,7 +564,7 @@ class NameState {
   }
   std::optional<Group> GroupOf(const catalog::CatalogNameEntry& e) const {
     const auto* v = VectorOf(e.name_vector_uuid.value);
-    if (!v || v->object_uuid.value != e.object_uuid.value || v->object_class != e.object_class) return std::nullopt;
+    if (!v || v->object_uuid.value != e.object_uuid.value || v->object_kind != e.object_kind) return std::nullopt;
     const auto* dm = Current(5, v->name_collision_policy_uuid.value);
     if (!dm || !Active(*dm) || !catalog::CatalogPolicyDescriptorMatchesMetadata(View(*dm)) ||
         !catalog::CatalogPolicyDescriptorMatchesDatabase(View(*dm), binding_.database_uuid))
@@ -580,7 +582,7 @@ class NameState {
         !catalog::CatalogNamingCollisionPolicyMatchesDatabase(View(*bm), binding_.database_uuid))
       return std::nullopt;
     const auto body = catalog::DecodeCatalogNamingCollisionPolicy(bm->record.payload);
-    const auto kind = KindNamed(e.object_class);
+    const auto kind = KnownKind(e.object_kind);
     if (!body.ok() || body.record->generation != policy.record->body_generation || !kind) return std::nullopt;
     const auto classes = std::span(body.record->classes).first(body.record->class_count);
     const auto bound = std::find_if(classes.begin(), classes.end(), [&](const auto& c) { return c.kind == *kind; });
@@ -657,7 +659,7 @@ class NameState {
         if (!blocker) blocker = holder.order;
         continue;
       }
-      if (x.object_class == y.object_class && gy->body != gx->body) return {E::invalid_name};
+      if (x.object_kind == y.object_kind && gy->body != gx->body) return {E::invalid_name};
       if (gy->body != gx->body || gy->group != gx->group ||
           catalog::CompareCatalogNameCollisionLanes(xv, yv, gx->language, gx->key))
         continue;
@@ -1651,14 +1653,14 @@ Stop StampAndAddNameCells(disk::CarefulWriteSink& sink, const CatalogVersionWrit
                             E::invalid_successor, pages, page_size, binding.allocation_root.has_value(), result);
     };
     if (const auto* v = std::get_if<catalog::CatalogNameVectorView>(&payload_view)) {
-      const auto kind = KindNamed(v->object_class);
+      const auto kind = KnownKind(v->object_kind);
       if (!kind) return Refuse(E::invalid_name);
       if (const auto error = add(1, catalog::CatalogNameUuidTreeVectorKey(v->object_uuid.value, *kind),
                                  catalog::CatalogNameUuidTreeVectorPayload(*v)))
         return Refuse(*error);
     } else {
       const auto& e = std::get<catalog::CatalogNameEntryView>(payload_view);
-      const auto kind = KindNamed(e.object_class);
+      const auto kind = KnownKind(e.object_kind);
       if (!kind) return Refuse(E::invalid_name);
       std::vector<std::string_view> components(c.components.begin(), c.components.end());
       if (const auto error = add(0, catalog::CatalogNameAuthoritativeTreeKey(e, *kind),
@@ -2363,14 +2365,14 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
                                 E::invalid_insert, pages, page_size, binding.allocation_root.has_value(), result);
         };
         if (const auto* v = std::get_if<catalog::CatalogNameVectorView>(&payload_view)) {
-          const auto kind = KindNamed(v->object_class);
+          const auto kind = KnownKind(v->object_kind);
           if (!kind) return refuse_row(E::invalid_name, i);
           if (const auto error = add(1, catalog::CatalogNameUuidTreeVectorKey(v->object_uuid.value, *kind),
                                      catalog::CatalogNameUuidTreeVectorPayload(*v)))
             return refuse_row(*error, i);
         } else {
           const auto& e = std::get<catalog::CatalogNameEntryView>(payload_view);
-          const auto kind = KindNamed(e.object_class);
+          const auto kind = KnownKind(e.object_kind);
           if (!kind) return refuse_row(E::invalid_name, i);
           const auto path = catalog::ResolveCatalogNamePath(e, names.Paths());
           if (!path.ok()) return refuse_row(E::invalid_name, i);

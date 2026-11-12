@@ -301,10 +301,12 @@ std::string CatalogVariableBytes(const catalog::CatalogMetadataVersionView& meta
   append(metadata.trace_search_key);append(metadata.object_subtype);append(metadata.retention_class);
   if(name){
     if(const auto* vector=std::get_if<catalog::CatalogNameVectorView>(&*name)){
-      append(vector->object_class);append(vector->default_language_tag);
+      append(std::to_string(static_cast<unsigned>(vector->object_kind)));append(vector->default_language_tag);
     }else{
       const auto& entry=std::get<catalog::CatalogNameEntryView>(*name);
-      for(const auto value:{entry.object_class,entry.language_tag,entry.donor_id,entry.raw_name_text,entry.display_name})append(value);
+      append(std::to_string(static_cast<unsigned>(entry.object_kind)));
+      append(entry.reference_engine_uuid?std::string_view(reinterpret_cast<const char*>(entry.reference_engine_uuid->value.bytes.data()),16):std::string_view{});
+      for(const auto value:{entry.language_tag,entry.raw_name_text,entry.display_name})append(value);
       for(const auto value:{entry.normalized_lookup_key,entry.exact_lookup_key,entry.full_path_lookup_key})
         append({reinterpret_cast<const char*>(value.data()),value.size()});
     }
@@ -339,10 +341,10 @@ void AddDatabaseDefinitionFixture(db::NativeCreationCatalogSeed& seed,
   entry_metadata.object_subtype="name_entry";entry_metadata.resource_epoch=1;
   input.vector.name_vector_uuid=definition.name_vector_uuid;
   input.vector.object_uuid=definition.record.header.object_uuid;
-  input.vector.object_class="database";input.vector.owning_schema_uuid.reset();
+  input.vector.object_kind=catalog::CatalogRecordKind::database;input.vector.owning_schema_uuid.reset();
   input.vector.default_name_entry_uuid=definition.default_name_uuid;
   input.entry.name_entry_uuid=definition.default_name_uuid;input.entry.name_vector_uuid=definition.name_vector_uuid;
-  input.entry.object_uuid=definition.record.header.object_uuid;input.entry.object_class="database";
+  input.entry.object_uuid=definition.record.header.object_uuid;input.entry.object_kind=catalog::CatalogRecordKind::database;
   input.entry.scope_uuid=definition.record.header.object_uuid;
   input.entry.parent_schema_uuid.reset();input.entry.parent_object_uuid.reset();
   input.entry.raw_name_text=input.entry.display_name="enrolled_native_node";
@@ -371,9 +373,9 @@ void AddDatabaseDefinitionFixture(db::NativeCreationCatalogSeed& seed,
   file_input.entry_metadata.record.header.parent_uuid=file.name_vector_uuid;
   file_input.entry_metadata.object_subtype="name_entry";file_input.entry_metadata.resource_epoch=1;
   file_input.vector.object_uuid=file.record.header.object_uuid;file_input.vector.name_vector_uuid=file.name_vector_uuid;
-  file_input.vector.default_name_entry_uuid=file.default_name_uuid;file_input.vector.object_class="filespace";
+  file_input.vector.default_name_entry_uuid=file.default_name_uuid;file_input.vector.object_kind=catalog::CatalogRecordKind::filespace;
   file_input.entry.object_uuid=file.record.header.object_uuid;file_input.entry.name_vector_uuid=file.name_vector_uuid;
-  file_input.entry.name_entry_uuid=file.default_name_uuid;file_input.entry.object_class="filespace";
+  file_input.entry.name_entry_uuid=file.default_name_uuid;file_input.entry.object_kind=catalog::CatalogRecordKind::filespace;
   file_input.entry.raw_name_text=file_input.entry.display_name="enrolled_primary_filespace";
   file_input.entry.normalized_lookup_key.assign(file_input.entry.raw_name_text.begin(),file_input.entry.raw_name_text.end());
   file_input.entries[0]={&file_input.entry_metadata,&file_input.entry};
@@ -417,10 +419,10 @@ void AddDatabaseDefinitionFixture(db::NativeCreationCatalogSeed& seed,
     named.entry_metadata.record.header.parent_uuid=metadata.name_vector_uuid;
     named.entry_metadata.object_subtype="name_entry";named.entry_metadata.resource_epoch=1;
     named.vector.object_uuid=metadata.record.header.object_uuid;named.vector.name_vector_uuid=metadata.name_vector_uuid;
-    named.vector.default_name_entry_uuid=metadata.default_name_uuid;named.vector.object_class="schema";
+    named.vector.default_name_entry_uuid=metadata.default_name_uuid;named.vector.object_kind=catalog::CatalogRecordKind::schema;
     named.vector.owning_schema_uuid=i?std::optional{metadata.owning_schema_uuid}:std::nullopt;
     named.entry.name_entry_uuid=metadata.default_name_uuid;named.entry.name_vector_uuid=metadata.name_vector_uuid;
-    named.entry.object_uuid=metadata.record.header.object_uuid;named.entry.object_class="schema";
+    named.entry.object_uuid=metadata.record.header.object_uuid;named.entry.object_kind=catalog::CatalogRecordKind::schema;
     named.entry.scope_uuid=metadata.record.header.parent_uuid;named.entry.parent_object_uuid.reset();
     named.entry.parent_schema_uuid=named.vector.owning_schema_uuid;
     named.entry.raw_name_text=named.entry.display_name=i==2?"audit":i==1?"verification_child":"verification_system";
@@ -639,14 +641,14 @@ AgentError AddAgentConfigurationFixture(db::NativeCreationCatalogSeed& seed,
     item.vector_metadata.record.header.parent_uuid=m.record.header.object_uuid;
     item.vector_metadata.object_subtype="name_vector";
     item.vector.name_vector_uuid=m.name_vector_uuid;item.vector.object_uuid=m.record.header.object_uuid;
-    item.vector.object_class=catalog::CatalogRecordKindName(m.record.header.kind);
+    item.vector.object_kind=m.record.header.kind;
     item.vector.default_name_entry_uuid=m.default_name_uuid;
     item.entry_metadata=item.vector_metadata;item.entry_metadata.record.header.object_uuid=m.default_name_uuid;
     item.entry_metadata.record.header.row_uuid=enrollment::Typed(platform::UuidKind::row,500002+3*n);
     item.entry_metadata.record.header.parent_uuid=m.name_vector_uuid;item.entry_metadata.object_subtype="name_entry";
     item.entry_metadata.resource_epoch=1;
     item.entry.name_entry_uuid=m.default_name_uuid;item.entry.name_vector_uuid=m.name_vector_uuid;
-    item.entry.object_uuid=m.record.header.object_uuid;item.entry.object_class=item.vector.object_class;
+    item.entry.object_uuid=m.record.header.object_uuid;item.entry.object_kind=item.vector.object_kind;
     item.entry.raw_name_text=item.entry.display_name="native_agent_alias_"+std::to_string(n);
     item.entry.normalized_lookup_key.assign(item.entry.raw_name_text.begin(),item.entry.raw_name_text.end());
   }
@@ -695,14 +697,14 @@ db::NativeCreationCatalogIndexes AddCatalogIndexRowsFixture(db::NativeCreationCa
     item.vector_metadata.record.header.parent_uuid=m.record.header.object_uuid;
     item.vector_metadata.object_subtype="name_vector";
     item.vector.name_vector_uuid=m.name_vector_uuid;item.vector.object_uuid=m.record.header.object_uuid;
-    item.vector.object_class=catalog::CatalogRecordKindName(m.record.header.kind);
+    item.vector.object_kind=m.record.header.kind;
     item.vector.default_name_entry_uuid=m.default_name_uuid;
     item.entry_metadata=item.vector_metadata;item.entry_metadata.record.header.object_uuid=m.default_name_uuid;
     item.entry_metadata.record.header.row_uuid=enrollment::Typed(platform::UuidKind::row,700002+3*n);
     item.entry_metadata.record.header.parent_uuid=m.name_vector_uuid;item.entry_metadata.object_subtype="name_entry";
     item.entry_metadata.resource_epoch=1;
     item.entry.name_entry_uuid=m.default_name_uuid;item.entry.name_vector_uuid=m.name_vector_uuid;
-    item.entry.object_uuid=m.record.header.object_uuid;item.entry.object_class=item.vector.object_class;
+    item.entry.object_uuid=m.record.header.object_uuid;item.entry.object_kind=item.vector.object_kind;
     item.entry.raw_name_text=item.entry.display_name=scratchbird::core::uuid::UuidToString(row.object_uuid);
     item.entry.normalized_lookup_key.assign(item.entry.raw_name_text.begin(),item.entry.raw_name_text.end());
   }
@@ -902,7 +904,7 @@ void AddVerificationPolicies(db::NativeCreationCatalogSeed& seed,
     item.vector.name_vector_uuid=item.entry.name_vector_uuid=m.name_vector_uuid;
     item.vector.object_uuid=item.entry.object_uuid=m.record.header.object_uuid;
     item.vector.default_name_entry_uuid=item.entry.name_entry_uuid=m.default_name_uuid;
-    item.vector.object_class=item.entry.object_class="policy";
+    item.vector.object_kind=item.entry.object_kind=catalog::CatalogRecordKind::policy;
     item.entry.raw_name_text=item.entry.display_name="verification_fixture_"+std::to_string(n);
     item.entry.normalized_lookup_key.assign(item.entry.raw_name_text.begin(),item.entry.raw_name_text.end());
     item.entries[0]={&item.entry_metadata,&item.entry};
@@ -972,7 +974,7 @@ void AddManagementDefinitions(db::NativeCreationCatalogSeed& seed,
     item.vector.name_vector_uuid=item.entry.name_vector_uuid=m.name_vector_uuid;
     item.vector.object_uuid=item.entry.object_uuid=m.record.header.object_uuid;
     item.vector.default_name_entry_uuid=item.entry.name_entry_uuid=m.default_name_uuid;
-    item.vector.object_class=item.entry.object_class="management_operation";
+    item.vector.object_kind=item.entry.object_kind=catalog::CatalogRecordKind::management_operation;
     item.entry.raw_name_text=item.entry.display_name="management_fixture_"+std::to_string(n);
     item.entry.normalized_lookup_key.assign(item.entry.raw_name_text.begin(),item.entry.raw_name_text.end());
     item.entries[0]={&item.entry_metadata,&item.entry};named.push_back({&m,&item.vector_metadata,&item.vector,item.entries});
@@ -1094,7 +1096,7 @@ void AddTransactionPolicies(db::NativeCreationCatalogSeed& seed,
     item.vector.name_vector_uuid=item.entry.name_vector_uuid=m.name_vector_uuid;
     item.vector.object_uuid=item.entry.object_uuid=m.record.header.object_uuid;
     item.vector.default_name_entry_uuid=item.entry.name_entry_uuid=m.default_name_uuid;
-    item.vector.object_class=item.entry.object_class="policy";
+    item.vector.object_kind=item.entry.object_kind=catalog::CatalogRecordKind::policy;
     item.entry.raw_name_text=item.entry.display_name="transaction_fixture_"+std::to_string(n);
     item.entry.normalized_lookup_key.assign(item.entry.raw_name_text.begin(),item.entry.raw_name_text.end());
     item.entries[0]={&item.entry_metadata,&item.entry};named.push_back({&m,&item.vector_metadata,&item.vector,item.entries});
@@ -1164,9 +1166,9 @@ void AddNamingProfileFixture(db::NativeCreationCatalogSeed& seed,
     x.entry_metadata.record.header.row_uuid=enrollment::Typed(platform::UuidKind::row,101002+100*copy+3*n);
     x.entry_metadata.record.header.parent_uuid=m.name_vector_uuid;x.entry_metadata.object_subtype="name_entry";x.entry_metadata.resource_epoch=1;
     x.vector.name_vector_uuid=m.name_vector_uuid;x.vector.object_uuid=m.record.header.object_uuid;
-    x.vector.object_class=CatalogRecordKindName(m.record.header.kind);x.vector.default_name_entry_uuid=m.default_name_uuid;
+    x.vector.object_kind=m.record.header.kind;x.vector.default_name_entry_uuid=m.default_name_uuid;
     x.entry.name_entry_uuid=m.default_name_uuid;x.entry.name_vector_uuid=m.name_vector_uuid;
-    x.entry.object_uuid=m.record.header.object_uuid;x.entry.object_class=x.vector.object_class;
+    x.entry.object_uuid=m.record.header.object_uuid;x.entry.object_kind=x.vector.object_kind;
     x.entry.raw_name_text=x.entry.display_name="native_naming_profile_"+std::to_string(n+2*copy);
     x.entry.normalized_lookup_key.assign(x.entry.raw_name_text.begin(),x.entry.raw_name_text.end());
     x.entries[0]={&x.entry_metadata,&x.entry};named[n]={&m,&x.vector_metadata,&x.vector,x.entries};
@@ -1261,7 +1263,7 @@ void AddCollisionPolicyFixture(db::NativeCreationCatalogSeed& seed,
     x.vector.name_vector_uuid=x.entry.name_vector_uuid=m.name_vector_uuid;
     x.vector.object_uuid=x.entry.object_uuid=m.record.header.object_uuid;
     x.vector.default_name_entry_uuid=x.entry.name_entry_uuid=m.default_name_uuid;
-    x.vector.object_class=x.entry.object_class="policy";
+    x.vector.object_kind=x.entry.object_kind=CatalogRecordKind::policy;
     x.entry.raw_name_text=x.entry.display_name="native_collision_policy_"+std::to_string(n+2*copy);
     x.entry.normalized_lookup_key.assign(x.entry.raw_name_text.begin(),x.entry.raw_name_text.end());
     x.entries[0]={&x.entry_metadata,&x.entry};named[n]={&m,&x.vector_metadata,&x.vector,x.entries};
@@ -1483,7 +1485,7 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
       }else if(auto* entry=std::get_if<catalog::CatalogNameEntry>(&*row.name);
           entry&&entry->object_uuid.value==enrollment::SourceId(1)){
         if(name_variant==1)entry->object_uuid.value=security_fixture::Id(91000);
-        if(name_variant==3)entry->object_class="schema";
+        if(name_variant==3)entry->object_kind=catalog::CatalogRecordKind::schema;
         if(name_variant==4)entry->default_for_object=false;
         changed=true;break;
       }

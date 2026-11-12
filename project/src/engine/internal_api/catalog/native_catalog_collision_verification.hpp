@@ -96,8 +96,8 @@ inline NativeCatalogCollisionVerification VerifyNativeCatalogNamingCollisions(
     if(vector==SIZE_MAX||rows[vector].role!=2||!rows[vector].row.name_payload)return fail(E::missing_vector,identity(i),entry->name_vector_uuid.value);
     const auto* names=std::get_if<c::CatalogNameVectorView>(&*rows[vector].row.name_payload);
     const auto& definition=rows[object].row.metadata;
-    if(!names||names->object_uuid.value!=entry->object_uuid.value||entry->object_class!=c::CatalogRecordKindName(definition.record.header.kind)||
-        names->object_class!=entry->object_class||definition.name_vector_uuid.value!=entry->name_vector_uuid.value)
+    if(!names||names->object_uuid.value!=entry->object_uuid.value||entry->object_kind!=definition.record.header.kind||
+        names->object_kind!=entry->object_kind||definition.name_vector_uuid.value!=entry->name_vector_uuid.value)
       return fail(E::invalid_name,identity(i));
     const auto descriptor=find(names->name_collision_policy_uuid.value);
     if(descriptor==SIZE_MAX)return fail(E::missing_policy,identity(i),names->name_collision_policy_uuid.value);
@@ -129,9 +129,9 @@ inline NativeCatalogCollisionVerification VerifyNativeCatalogNamingCollisions(
   const auto name=[&](std::size_t i)->const c::CatalogNameEntryView&{return std::get<c::CatalogNameEntryView>(*rows[i].row.name_payload);};
   // SB_NAME_COLLISION_ORDER: the order the native catalog writer also applies.
   const auto common=[&](std::size_t a,std::size_t b){return c::CompareCatalogNameCollisionScope(name(a),name(b));};
-  std::sort(entries.begin(),entries.end(),[&](auto a,auto b){const auto c=common(a,b);return c?c<0:name(a).object_class<name(b).object_class;});
+  std::sort(entries.begin(),entries.end(),[&](auto a,auto b){const auto c=common(a,b);return c?c<0:name(a).object_kind<name(b).object_kind;});
   for(std::size_t i=1;i<entries.size();++i){const auto a=entries[i-1],b=entries[i];
-    if(!common(a,b)&&name(a).object_class==name(b).object_class&&(bindings[a]>>9)!=(bindings[b]>>9))
+    if(!common(a,b)&&name(a).object_kind==name(b).object_kind&&(bindings[a]>>9)!=(bindings[b]>>9))
       return fail(E::conflicting_policy,name(a).object_uuid.value,name(b).object_uuid.value);
   }
   const auto compare=[&](std::size_t a,std::size_t b){

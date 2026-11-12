@@ -27,7 +27,7 @@ void NativeNamedCreationChecks(const db::NativeCreationCatalogSeed& supplied) {
     n.vector=std::get<c::CatalogNameVector>(*example[1][0].name);
     n.vector.name_vector_uuid=definition.name_vector_uuid;n.vector.object_uuid=definition.record.header.object_uuid;
     n.vector.default_name_entry_uuid=definition.default_name_uuid;n.vector.security_policy_uuid=definition.security_policy_uuid;
-    n.vector.object_class=definition.object_subtype;
+    n.vector.object_kind=definition.record.header.kind;
     for(unsigned alias=0;alias<2;++alias) {
       auto& m=n.metadata[alias];auto& e=n.entries[alias];
       m=example[1][1].metadata;m.record.header.row_uuid={UuidKind::row,Id(18001+3*at+alias)};
@@ -37,7 +37,7 @@ void NativeNamedCreationChecks(const db::NativeCreationCatalogSeed& supplied) {
       m.security_policy_uuid=definition.security_policy_uuid;
       e=std::get<c::CatalogNameEntry>(*example[1][1].name);
       e.name_entry_uuid=m.record.header.object_uuid;e.name_vector_uuid=definition.name_vector_uuid;
-      e.object_uuid=definition.record.header.object_uuid;e.object_class=definition.object_subtype;
+      e.object_uuid=definition.record.header.object_uuid;e.object_kind=definition.record.header.kind;
       e.security_policy_uuid=definition.security_policy_uuid;e.language_tag=alias?"de-DE":"en-US";
       e.name_class=alias?c::CatalogNameClass::alias:c::CatalogNameClass::primary;
       e.raw_name_text=e.display_name=(alias?"de_":"en_")+definition.object_subtype+"_"+std::to_string(at);

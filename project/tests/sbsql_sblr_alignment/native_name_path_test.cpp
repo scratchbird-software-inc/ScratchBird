@@ -96,7 +96,7 @@ struct Forest {
     e.name_entry_uuid = T(id);
     e.name_vector_uuid = T(object + 500000);
     e.object_uuid = T(object);
-    e.object_class = "table";
+    e.object_kind = c::CatalogRecordKind::table_descriptor;
     e.scope_uuid = T(parent.at(object));
     e.language_tag = std::move(language);
     e.display_name = std::move(display);

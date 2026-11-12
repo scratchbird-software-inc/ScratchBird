@@ -119,7 +119,7 @@ static NativeInitialDatabaseResult AssembleNativeInitialDatabaseRecordsImpl(
           physical.creator.transaction_uuid,r.database_default_language,
           {r.limits.maximum_records-records,r.limits.maximum_encoded_bytes-bytes});
       if(checked.error!=c::CatalogNamedCreationError::none)return Fail(NameError(checked.error),checked.error);
-      if(input.vector->object_class!=(family?"filespace":"database"))return Fail(E::invalid_names);
+      if(input.vector->object_kind!=(family?c::CatalogRecordKind::filespace:c::CatalogRecordKind::database))return Fail(E::invalid_names);
       for(const auto& entry:input.entries)
         if(entry.entry->scope_uuid.kind!=UuidKind::object||
             entry.entry->scope_uuid.value!=metadata.record.header.object_uuid.value||entry.entry->parent_object_uuid||

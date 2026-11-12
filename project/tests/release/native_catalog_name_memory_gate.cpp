@@ -61,12 +61,10 @@ template<class Record> void ViewLifetime(const Record& r) {
               value.size()==f.bytes.size(),"exact input-backed view extent");
       };
       if constexpr(std::is_same_v<Record,c::CatalogNameVector>){
-        if(f.id==3)check(copy.object_class);
         if(f.id==5)check(copy.default_language_tag);
       }else{
         switch(f.id){
-          case 4:check(copy.object_class);break;case 8:check(copy.language_tag);break;
-          case 10:check(copy.donor_id);break;case 15:check(copy.raw_name_text);break;
+          case 8:check(copy.language_tag);break;case 15:check(copy.raw_name_text);break;
           case 16:check(copy.display_name);break;case 20:check(copy.normalized_lookup_key);break;
           case 21:check(copy.exact_lookup_key);break;case 22:check(copy.full_path_lookup_key);break;
         }
@@ -142,10 +140,9 @@ template<class Record> void ExactWireErrors(const Record& r) {
   }
 }
 template<class Record> void OwningFaults(Record r) {
-  r.object_class=std::string(64,'c');
   if constexpr(std::is_same_v<Record,c::CatalogNameVector>)r.default_language_tag=std::string(64,'l');
   else {
-    r.language_tag=std::string(64,'l');r.donor_id=std::string(64,'d');
+    r.language_tag=std::string(64,'l');
     r.raw_name_text=std::string(64,'r');r.display_name=std::string(64,'s');
     r.normalized_lookup_key.assign(128,0xfe);r.exact_lookup_key.assign(128,0xff);
     r.full_path_lookup_key.assign(128,0x80);r.path_component_count=1;
@@ -158,7 +155,7 @@ template<class Record> void OwningFaults(Record r) {
   const auto before=name_memory_fault::allocations;
   Check(action().ok(),"owning baseline");
   const auto count=name_memory_fault::allocations-before;
-  Check(count==(std::is_same_v<Record,c::CatalogNameVector>?2:8),"only final fields allocate");
+  Check(count==(std::is_same_v<Record,c::CatalogNameVector>?1:6),"only final fields allocate");  // was 2:8 with text class and donor_id
   for(std::size_t point=0;point<count;++point){
     bool published=false;name_memory_fault::remaining=point;name_memory_fault::fired=false;
     try{published=action().ok();}catch(const std::bad_alloc&){}

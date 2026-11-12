@@ -8766,9 +8766,6 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
         input.definition.creator_transaction_uuid=request.construction_transaction;
         input.definition.trace_search_key=std::string(seed.trace_search_key);
         input.definition.retention_class=std::string(seed.retention_class);
-        // Derived from the kind this function registered, not from the caller:
-        // the name vector's object_class is cross-checked against it below.
-        input.object_class=std::string(c::CatalogRecordKindName(definition.kind));
         input.language_tag=std::string(request.database_default_language);
         // An empty name asks for the object's own reference name.
         input.name_text=name->name_text.empty()?NativeDefinitionReferenceName(identity,definition.kind,definition.payload):
@@ -8783,7 +8780,7 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
         if(!built.ok()) {
           using U=BootstrapNamedCreationUnitError;
           switch(built.error) {
-            case U::object_class_empty:case U::language_tag_empty:case U::name_text_empty:
+            case U::language_tag_empty:case U::name_text_empty:
             case U::collision_policy_identity_invalid:case U::dialect_profile_identity_invalid:
             case U::identifier_profile_missing:case U::lookup_key_derivation_refused:
             case U::lookup_key_verification_failed:case U::name_resolution_epoch_invalid:
@@ -8813,7 +8810,7 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
           std::find(service->grant_uuids.begin(),service->grant_uuids.end(),found->first)!=service->grant_uuids.end())&&
           (input.definition->owner_uuid.kind!=UuidKind::principal||input.definition->owner_uuid.value!=bootstrap->principal_uuid))
         return fail(E::invalid_definition);
-      if(input.vector->object_class!=c::CatalogRecordKindName(found->second.kind))return fail(E::invalid_names);
+      if(input.vector->object_kind!=found->second.kind)return fail(E::invalid_names);
       auto view=c::BorrowCatalogMetadataVersion(*input.definition);view.record.payload=found->second.payload;
       const auto checked=c::PreflightLocalNamedCreationRecord(view,input,request.construction_transaction,
           request.database_default_language,{request.limits.maximum_records-records,request.limits.maximum_encoded_bytes-bytes});
@@ -9175,7 +9172,6 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
       d.owner_principal_uuid=bootstrap.principal_uuid;d.audit_object_uuid=audit_object;
       d.security_policy_uuid=service_identity.policy_uuid;d.owning_schema_uuid=owning_schema;d.creator_transaction_uuid=tx;
       if(root_parent){d.root_placement=true;d.root_parent_uuid=*root_parent;}
-      input.object_class=std::string(c::CatalogRecordKindName(kind));
       input.language_tag=std::string(request.database_default_language);
       input.name_text=std::move(name);
       input.name_collision_policy_uuid=generated.name_collision_policy_uuid;input.dialect_profile_uuid=generated.dialect_profile_uuid;

@@ -544,13 +544,13 @@ std::optional<std::vector<byte>> InsertOracle(const Db& b, std::span<const byte>
         struct Planned { unsigned tree; std::vector<byte> key, payload; };
         std::vector<Planned> cells;
         if (const auto* v = std::get_if<c::CatalogNameVectorView>(&view)) {
-          const auto kind = c::CatalogRecordKindFromName(v->object_class);
-          Check(kind.has_value(), "the vector's object class names a record kind");
+          const auto kind = std::optional{v->object_kind};
+          Check(c::IsKnownCatalogRecordKind(*kind), "the vector's object kind is a record kind");
           cells.push_back({1, c::CatalogNameUuidTreeVectorKey(v->object_uuid.value, *kind), c::CatalogNameUuidTreeVectorPayload(*v)});
         } else {
           const auto& e = std::get<c::CatalogNameEntryView>(view);
-          const auto kind = c::CatalogRecordKindFromName(e.object_class);
-          Check(kind.has_value(), "the entry's object class names a record kind");
+          const auto kind = std::optional{e.object_kind};
+          Check(c::IsKnownCatalogRecordKind(*kind), "the entry's object kind is a record kind");
           const auto path = c::ResolveCatalogNamePath(e, names);
           Check(path.ok(), "the entry's path resolves for the oracle");
           std::vector<std::string_view> components;

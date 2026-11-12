@@ -16,11 +16,11 @@ bool ValidLifecycle(CatalogNameLifecycle state) {
   return raw >= 1 && raw <= 7;
 }
 template<class Record> bool ValidVector(const Record& r) {
-  return !r.object_class.empty() && !r.default_language_tag.empty() &&
+  return IsKnownCatalogRecordKind(r.object_kind) && !r.default_language_tag.empty() &&
       r.catalog_generation_id != 0 && ValidLifecycle(r.lifecycle_state);
 }
 template<class Record> bool ValidEntry(const Record& r) {
-  return !r.object_class.empty() && !r.language_tag.empty() &&
+  return IsKnownCatalogRecordKind(r.object_kind) && !r.language_tag.empty() &&
       r.catalog_generation_id != 0 && r.resource_epoch != 0 &&
       r.name_resolution_epoch != 0 && ValidLifecycle(r.lifecycle_state) &&
       static_cast<u64>(r.name_class) >= 1 && static_cast<u64>(r.name_class) <= 5 &&
@@ -31,7 +31,7 @@ template <typename Record, typename Visitor>
 void VisitVector(Record& r, Visitor visit) {
   visit(1, r.name_vector_uuid);
   visit(2, r.object_uuid);
-  visit(3, r.object_class);
+  visit(3, r.object_kind);
   visit(4, r.owning_schema_uuid);
   visit(5, r.default_language_tag);
   visit(6, r.default_name_entry_uuid);
@@ -45,13 +45,13 @@ void VisitEntry(Record& r, Visitor visit) {
   visit(1, r.name_entry_uuid);
   visit(2, r.name_vector_uuid);
   visit(3, r.object_uuid);
-  visit(4, r.object_class);
+  visit(4, r.object_kind);
   visit(5, r.scope_uuid);
   visit(6, r.parent_object_uuid);
   visit(7, r.parent_schema_uuid);
   visit(8, r.language_tag);
   visit(9, r.name_class);
-  visit(10, r.donor_id);
+  visit(10, r.reference_engine_uuid);
   visit(11, r.dialect_profile_uuid);
   visit(12, r.identifier_profile_uuid);
   visit(13, r.case_fold_profile_uuid);
@@ -130,7 +130,7 @@ CatalogValueSchemaView CatalogNameVectorSchemaView() {
   static constexpr CatalogValueFieldSchema fields[]{
     {1, Type::engine_identity, true, 16, UuidKind::object},  // name_vector_uuid
     {2, Type::engine_identity, true, 16, UuidKind::object},  // object_uuid
-    {3, Type::utf8_text, true, 131040},  // object_class
+    {3, Type::unsigned_integer, true, 8},  // object_kind (CatalogRecordKind)
     {4, Type::engine_identity, false, 16, UuidKind::schema},  // owning_schema_uuid
     {5, Type::utf8_text, true, 131040},  // default_language_tag
     {6, Type::engine_identity, true, 16, UuidKind::object},  // default_name_entry_uuid
@@ -139,7 +139,7 @@ CatalogValueSchemaView CatalogNameVectorSchemaView() {
     {9, Type::engine_identity, true, 16, UuidKind::object},  // security_policy_uuid
     {10, Type::unsigned_integer, true, 8},  // lifecycle_state
   };
-  return {327681, 1, fields};
+  return {327681, 2, fields};  // 2: SB_CATALOG_NO_TEXT_IDENTIFIERS
 }
 }  // namespace
 const CatalogValueSchema& CatalogNameVectorSchema() {
@@ -155,13 +155,13 @@ CatalogValueSchemaView CatalogNameEntrySchemaView() {
     {1, Type::engine_identity, true, 16, UuidKind::object},  // name_entry_uuid
     {2, Type::engine_identity, true, 16, UuidKind::object},  // name_vector_uuid
     {3, Type::engine_identity, true, 16, UuidKind::object},  // object_uuid
-    {4, Type::utf8_text, true, 131040},  // object_class
+    {4, Type::unsigned_integer, true, 8},  // object_kind (CatalogRecordKind)
     {5, Type::engine_identity, true, 16, UuidKind::object},  // scope_uuid
     {6, Type::engine_identity, false, 16, UuidKind::object},  // parent_object_uuid
     {7, Type::engine_identity, false, 16, UuidKind::schema},  // parent_schema_uuid
     {8, Type::utf8_text, true, 131040},  // language_tag
     {9, Type::unsigned_integer, true, 8},  // name_class
-    {10, Type::utf8_text, true, 131040},  // donor_id
+    {10, Type::engine_identity, false, 16, UuidKind::object},  // reference_engine_uuid
     {11, Type::engine_identity, true, 16, UuidKind::object},  // dialect_profile_uuid
     {12, Type::engine_identity, true, 16, UuidKind::object},  // identifier_profile_uuid
     {13, Type::engine_identity, false, 16, UuidKind::object},  // case_fold_profile_uuid
@@ -186,7 +186,7 @@ CatalogValueSchemaView CatalogNameEntrySchemaView() {
     {32, Type::unsigned_integer, true, 8},  // name_resolution_epoch
     {33, Type::unsigned_integer, true, 8},  // lifecycle_state
   };
-  return {327682, 1, fields};
+  return {327682, 2, fields};  // 2: SB_CATALOG_NO_TEXT_IDENTIFIERS
 }
 }  // namespace
 const CatalogValueSchema& CatalogNameEntrySchema() {
@@ -265,14 +265,14 @@ CatalogValueError ValidateCatalogNameEntry(const CatalogNameEntryView& record) {
       {fields.fields.data(), fields.count});
 }
 CatalogNameVectorView BorrowCatalogNameVector(const CatalogNameVector& r) {
-  return {r.name_vector_uuid, r.object_uuid, r.object_class, r.owning_schema_uuid,
+  return {r.name_vector_uuid, r.object_uuid, r.object_kind, r.owning_schema_uuid,
       r.default_language_tag, r.default_name_entry_uuid, r.name_collision_policy_uuid,
       r.catalog_generation_id, r.security_policy_uuid, r.lifecycle_state};
 }
 CatalogNameEntryView BorrowCatalogNameEntry(const CatalogNameEntry& r) {
-  return {r.name_entry_uuid, r.name_vector_uuid, r.object_uuid, r.object_class,
+  return {r.name_entry_uuid, r.name_vector_uuid, r.object_uuid, r.object_kind,
       r.scope_uuid, r.parent_object_uuid, r.parent_schema_uuid, r.language_tag,
-      r.name_class, r.donor_id, r.dialect_profile_uuid, r.identifier_profile_uuid,
+      r.name_class, r.reference_engine_uuid, r.dialect_profile_uuid, r.identifier_profile_uuid,
       r.case_fold_profile_uuid, r.quoted_identifier_profile_uuid, r.raw_name_text,
       r.display_name, r.was_quoted, r.quote_style, r.requires_exact_match,
       r.normalized_lookup_key, r.exact_lookup_key, r.full_path_lookup_key,
@@ -307,7 +307,7 @@ CatalogNameRecordDecodeResult<CatalogNameVectorView> DecodeCatalogNameVectorView
 CatalogNameVector MaterializeCatalogNameVector(const CatalogNameVectorView& record) {
   return {record.name_vector_uuid,
       record.object_uuid,
-      std::string(record.object_class),
+      record.object_kind,
       record.owning_schema_uuid,
       std::string(record.default_language_tag),
       record.default_name_entry_uuid,
@@ -336,13 +336,13 @@ CatalogNameEntry MaterializeCatalogNameEntry(const CatalogNameEntryView& record)
   return {record.name_entry_uuid,
       record.name_vector_uuid,
       record.object_uuid,
-      std::string(record.object_class),
+      record.object_kind,
       record.scope_uuid,
       record.parent_object_uuid,
       record.parent_schema_uuid,
       std::string(record.language_tag),
       record.name_class,
-      std::string(record.donor_id),
+      record.reference_engine_uuid,
       record.dialect_profile_uuid,
       record.identifier_profile_uuid,
       record.case_fold_profile_uuid,

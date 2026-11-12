@@ -107,7 +107,7 @@ struct Package {
       x.vector_metadata.name_vector_uuid=x.metadata.name_vector_uuid;
       x.vector_metadata.owning_schema_uuid=x.metadata.owning_schema_uuid;
       x.vector.name_vector_uuid=x.metadata.name_vector_uuid;x.vector.object_uuid=x.definition.schema_object_uuid;
-      x.vector.object_class="schema";if(i)x.vector.owning_schema_uuid=x.metadata.owning_schema_uuid;
+      x.vector.object_kind=c::CatalogRecordKind::schema;if(i)x.vector.owning_schema_uuid=x.metadata.owning_schema_uuid;
       x.vector.default_language_tag="en-US";x.vector.default_name_entry_uuid=x.metadata.default_name_uuid;
       x.vector.name_collision_policy_uuid=Typed(p::UuidKind::object,55);
       x.vector.catalog_generation_id=1;x.vector.security_policy_uuid=x.metadata.security_policy_uuid;
@@ -117,7 +117,7 @@ struct Package {
       x.entry_metadata.default_name_uuid=x.metadata.default_name_uuid;x.entry_metadata.name_vector_uuid=x.metadata.name_vector_uuid;
       x.entry_metadata.owning_schema_uuid=x.metadata.owning_schema_uuid;x.entry_metadata.resource_epoch=1;
       auto& e=x.entry;e.name_entry_uuid=x.metadata.default_name_uuid;e.name_vector_uuid=x.metadata.name_vector_uuid;
-      e.object_uuid=x.definition.schema_object_uuid;e.object_class="schema";
+      e.object_uuid=x.definition.schema_object_uuid;e.object_kind=c::CatalogRecordKind::schema;
       e.scope_uuid=x.metadata.record.header.parent_uuid;if(i)e.parent_schema_uuid=x.metadata.owning_schema_uuid;
       e.language_tag="en-US";e.dialect_profile_uuid=Typed(p::UuidKind::object,56);e.identifier_profile_uuid=Typed(p::UuidKind::object,57);
       e.raw_name_text=e.display_name="schema_"+std::to_string(i);
@@ -167,7 +167,7 @@ struct DatabasePackage {
     x.vector.object_uuid=x.entry.object_uuid=x.metadata.record.header.object_uuid;
     x.vector.name_vector_uuid=x.entry.name_vector_uuid=x.metadata.name_vector_uuid;
     x.vector.default_name_entry_uuid=x.entry.name_entry_uuid=x.metadata.default_name_uuid;
-    x.vector.object_class=x.entry.object_class="database";
+    x.vector.object_kind=x.entry.object_kind=c::CatalogRecordKind::database;
     x.entry.scope_uuid=x.metadata.record.header.object_uuid;
     x.entry.raw_name_text=x.entry.display_name="native_node";
     x.entry.normalized_lookup_key.assign(x.entry.raw_name_text.begin(),x.entry.raw_name_text.end());
@@ -200,7 +200,7 @@ struct PrimaryPackage {
     x.vector.object_uuid=x.entry.object_uuid=x.metadata.record.header.object_uuid;
     x.vector.name_vector_uuid=x.entry.name_vector_uuid=x.metadata.name_vector_uuid;
     x.vector.default_name_entry_uuid=x.entry.name_entry_uuid=x.metadata.default_name_uuid;
-    x.vector.object_class=x.entry.object_class="filespace";
+    x.vector.object_kind=x.entry.object_kind=c::CatalogRecordKind::filespace;
     x.entry.scope_uuid=database.aliases.items[0].metadata.record.header.object_uuid;
     x.entry.raw_name_text=x.entry.display_name="initial_primary";
     x.entry.normalized_lookup_key.assign(x.entry.raw_name_text.begin(),x.entry.raw_name_text.end());
@@ -265,7 +265,7 @@ void PrimaryChecks() {
       case 6:x.metadata.record.payload="prototype filespace manifest";break;
       case 7:x.metadata.owner_uuid={};break;
       case 8:x.metadata.owning_schema_uuid=Typed(p::UuidKind::schema,99);break;
-      case 9:x.vector.object_class=x.entry.object_class="database";expected_error=DE::invalid_names;break;
+      case 9:x.vector.object_kind=x.entry.object_kind=c::CatalogRecordKind::database;expected_error=DE::invalid_names;break;
       case 10:x.entry.scope_uuid.value=Id(99);expected_error=DE::invalid_names;break;
       case 11:x.entry.scope_uuid.kind=p::UuidKind::filespace;expected_error=DE::invalid_names;break;
       case 12:x.entry.parent_object_uuid=Typed(p::UuidKind::object,99);expected_error=DE::invalid_names;break;
@@ -368,7 +368,7 @@ void DatabaseChecks() {
       case 16:x.entry.display_name.assign(200000,'x');expected=DE::invalid_names;break;
       case 17:x.metadata.creator_local_transaction_id=2;expected=DE::invalid_definition;break;
       case 18:x.metadata.record.header.parent_uuid=Typed(p::UuidKind::object,77);expected=DE::invalid_definition;break;
-      case 19:x.vector.object_class=x.entry.object_class="schema";expected=DE::invalid_names;break;
+      case 19:x.vector.object_kind=x.entry.object_kind=c::CatalogRecordKind::schema;expected=DE::invalid_names;break;
       case 20:x.entry.scope_uuid.value=Id(77);expected=DE::invalid_names;break;
       case 21:x.entry.scope_uuid.kind=p::UuidKind::schema;expected=DE::invalid_names;break;
       case 22:x.entry.parent_object_uuid=Typed(p::UuidKind::object,77);expected=DE::invalid_names;break;

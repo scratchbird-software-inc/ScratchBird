@@ -21,7 +21,7 @@ c::CatalogNameVector Vector() {
   c::CatalogNameVector r;
   r.name_vector_uuid=Identity(UuidKind::object,1);
   r.object_uuid=Identity(UuidKind::object,2);
-  r.object_class="table";
+  r.object_kind=c::CatalogRecordKind::table_descriptor;
   r.owning_schema_uuid=Identity(UuidKind::schema,4);
   r.default_language_tag="fr-CA";
   r.default_name_entry_uuid=Identity(UuidKind::object,6);
@@ -36,13 +36,13 @@ c::CatalogNameEntry Entry() {
   r.name_entry_uuid=Identity(UuidKind::object,1);
   r.name_vector_uuid=Identity(UuidKind::object,2);
   r.object_uuid=Identity(UuidKind::object,3);
-  r.object_class="table";
+  r.object_kind=c::CatalogRecordKind::table_descriptor;
   r.scope_uuid=Identity(UuidKind::object,5);
   r.parent_object_uuid=Identity(UuidKind::object,6);
   r.parent_schema_uuid=Identity(UuidKind::schema,7);
   r.language_tag="fr-CA";
   r.name_class=c::CatalogNameClass::alias;
-  r.donor_id="";
+  r.reference_engine_uuid=Identity(UuidKind::object,10);
   r.dialect_profile_uuid=Identity(UuidKind::object,11);
   r.identifier_profile_uuid=Identity(UuidKind::object,12);
   r.case_fold_profile_uuid=Identity(UuidKind::object,13);
@@ -89,7 +89,7 @@ Field Bytes(u16 id,const std::vector<byte>& v) { return {id,4,v}; }
 Field Id(u16 id,const TypedUuid& v) { return {id,5,{v.value.bytes.begin(),v.value.bytes.end()},v.kind}; }
 void Optional(std::vector<Field>& f,u16 id,const std::optional<TypedUuid>& v) { if(v)f.push_back(Id(id,*v)); }
 std::vector<Field> Fields(const c::CatalogNameVector& r) {
-  std::vector<Field> f{Id(1,r.name_vector_uuid),Id(2,r.object_uuid),Text(3,r.object_class)};
+  std::vector<Field> f{Id(1,r.name_vector_uuid),Id(2,r.object_uuid),Number(3,static_cast<u64>(r.object_kind))};
   Optional(f,4,r.owning_schema_uuid);
   f.push_back(Text(5,r.default_language_tag));f.push_back(Id(6,r.default_name_entry_uuid));
   f.push_back(Id(7,r.name_collision_policy_uuid));f.push_back(Number(8,r.catalog_generation_id));
@@ -98,10 +98,10 @@ std::vector<Field> Fields(const c::CatalogNameVector& r) {
 }
 std::vector<Field> Fields(const c::CatalogNameEntry& r) {
   std::vector<Field> f{Id(1,r.name_entry_uuid),Id(2,r.name_vector_uuid),Id(3,r.object_uuid),
-    Text(4,r.object_class),Id(5,r.scope_uuid)};
+    Number(4,static_cast<u64>(r.object_kind)),Id(5,r.scope_uuid)};
   Optional(f,6,r.parent_object_uuid);Optional(f,7,r.parent_schema_uuid);
   f.push_back(Text(8,r.language_tag));f.push_back(Number(9,static_cast<u64>(r.name_class)));
-  f.push_back(Text(10,r.donor_id));f.push_back(Id(11,r.dialect_profile_uuid));
+  Optional(f,10,r.reference_engine_uuid);f.push_back(Id(11,r.dialect_profile_uuid));
   f.push_back(Id(12,r.identifier_profile_uuid));Optional(f,13,r.case_fold_profile_uuid);
   Optional(f,14,r.quoted_identifier_profile_uuid);f.push_back(Text(15,r.raw_name_text));
   f.push_back(Text(16,r.display_name));f.push_back(Bool(17,r.was_quoted));
@@ -121,7 +121,7 @@ std::vector<byte> Oracle(u32 schema,const std::vector<Field>& fields) {
   for(const auto& f:fields)size+=8+f.bytes.size();
   const auto append=[&](const std::vector<byte>& value){out.insert(out.end(),value.begin(),value.end());};
   append(Little(size,4));append(Little(fields.size(),4));append(Little(schema,4));
-  append({1,0,0,0});
+  append({2,0,0,0});  // schema version 2 (SB_CATALOG_NO_TEXT_IDENTIFIERS)
   for(const auto& f:fields){append(Little(f.id,2));append({f.tag,0});append(Little(f.bytes.size(),4));append(f.bytes);}
   return out;
 }
@@ -210,6 +210,7 @@ void Identities() {
   MutateUuid(e,5,[](auto& r)->auto&{return r.scope_uuid;});
   MutateUuid(e,6,[](auto& r)->auto&{return *r.parent_object_uuid;});
   MutateUuid(e,7,[](auto& r)->auto&{return *r.parent_schema_uuid;});
+  MutateUuid(e,10,[](auto& r)->auto&{return *r.reference_engine_uuid;});
   MutateUuid(e,11,[](auto& r)->auto&{return r.dialect_profile_uuid;});
   MutateUuid(e,12,[](auto& r)->auto&{return r.identifier_profile_uuid;});
   MutateUuid(e,13,[](auto& r)->auto&{return *r.case_fold_profile_uuid;});
@@ -218,11 +219,12 @@ void Identities() {
   MutateUuid(e,29,[](auto& r)->auto&{return *r.dropped_transaction_uuid;});
   MutateUuid(e,30,[](auto& r)->auto&{return r.security_policy_uuid;});
   v.owning_schema_uuid.reset();Roundtrip(v);
-  for(unsigned mask=0;mask<32;++mask) {
+  for(unsigned mask=0;mask<64;++mask) {
     e=Entry();
     if(mask&1)e.parent_object_uuid.reset();if(mask&2)e.parent_schema_uuid.reset();
     if(mask&4)e.case_fold_profile_uuid.reset();if(mask&8)e.quoted_identifier_profile_uuid.reset();
     if(mask&16)e.dropped_transaction_uuid.reset();
+    if(mask&32)e.reference_engine_uuid.reset();
     Roundtrip(e);
   }
 }
@@ -243,14 +245,14 @@ template<class Record>void Framing(const Record& record,const std::vector<u16>& 
     auto malformed=fields;malformed[i].id=0;Refused(Decode(record,Oracle(SchemaId(record),malformed)));
   }
   auto extra=fields;extra.push_back(Text(65535,"ignored?"));Refused(Decode(record,Oracle(SchemaId(record),extra)));
-  auto wrong_version=bytes;wrong_version[20]=2;Refused(Decode(record,wrong_version));
+  auto wrong_version=bytes;wrong_version[20]=1;Refused(Decode(record,wrong_version));  // version 1 held text classes
   auto reversed=fields;std::reverse(reversed.begin(),reversed.end());Refused(Decode(record,Oracle(SchemaId(record),reversed)));
   const std::string legacy="kind=5\nrow_uuid=01921324-3546-7788-99aa-bbccddeeff01\npayload=name=x\n";
   Refused(Decode(record,{legacy.begin(),legacy.end()}));
 }
 void SchemaContract() {
   const auto& v=c::CatalogNameVectorSchema();const auto& e=c::CatalogNameEntrySchema();
-  Check(v.id==327681 && e.id==327682 && v.version==1 && e.version==1,"allocated schema identity drift");
+  Check(v.id==327681 && e.id==327682 && v.version==2 && e.version==2,"allocated schema identity drift");
   Check(v.fields.size()==10 && e.fields.size()==33,"Core field omitted");
   const auto verify=[](const auto& schema,const auto& fields,const std::vector<u16>& optional) {
     for(std::size_t i=0;i<fields.size();++i) {
@@ -261,7 +263,7 @@ void SchemaContract() {
       Check(s.maximum_bytes==maximum,"field limit mismatch");
     }
   };
-  verify(v,Fields(Vector()),{4});verify(e,Fields(Entry()),{6,7,13,14,29});
+  verify(v,Fields(Vector()),{4});verify(e,Fields(Entry()),{6,7,10,13,14,29});
   Refused(c::DecodeCatalogNameVector(Oracle(327682,Fields(Entry()))));
   Refused(c::DecodeCatalogNameEntry(Oracle(327681,Fields(Vector()))));
 }
@@ -278,9 +280,12 @@ void SemanticBoundaries() {
   }
   auto v=Vector();auto e=Entry();
   v.catalog_generation_id=0;Invalid(v);
-  v=Vector();v.object_class.clear();Invalid(v);
+  v=Vector();v.object_kind=c::CatalogRecordKind::unknown;Invalid(v);
+  v=Vector();v.object_kind=static_cast<c::CatalogRecordKind>(12);Invalid(v);  // not a listed kind
   v=Vector();v.default_language_tag.clear();Invalid(v);
-  e.object_class.clear();Invalid(e);e=Entry();e.language_tag.clear();Invalid(e);
+  e.object_kind=c::CatalogRecordKind::unknown;Invalid(e);
+  e=Entry();e.object_kind=static_cast<c::CatalogRecordKind>(12);Invalid(e);
+ e=Entry();e.language_tag.clear();Invalid(e);
   for(auto member:{&c::CatalogNameEntry::catalog_generation_id,&c::CatalogNameEntry::resource_epoch,
                    &c::CatalogNameEntry::name_resolution_epoch}) {
     e=Entry();e.*member=0;Invalid(e);
@@ -300,7 +305,7 @@ void SemanticBoundaries() {
 }
 int main() {
   SchemaContract();Roundtrip(Vector());Roundtrip(Entry());Identities();
-  Framing(Vector(),{4});Framing(Entry(),{6,7,13,14,29});SemanticBoundaries();
+  Framing(Vector(),{4});Framing(Entry(),{6,7,10,13,14,29});SemanticBoundaries();
   std::cout<<"catalog name record schemas: checks="<<checks<<" failures="<<failures<<'\n';
   return failures?1:0;
 }

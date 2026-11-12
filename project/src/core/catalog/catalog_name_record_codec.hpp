@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
+#include "catalog_records.hpp"
 #include "catalog_value_codec.hpp"
 #include <optional>
 #include <string_view>
@@ -18,7 +19,7 @@ enum class CatalogNameQuoteStyle : u64 {
 struct CatalogNameVector {
   TypedUuid name_vector_uuid;
   TypedUuid object_uuid;
-  std::string object_class;
+  CatalogRecordKind object_kind = CatalogRecordKind::unknown;  // SB_CATALOG_NO_TEXT_IDENTIFIERS
   std::optional<TypedUuid> owning_schema_uuid;
   std::string default_language_tag;
   TypedUuid default_name_entry_uuid;
@@ -31,13 +32,13 @@ struct CatalogNameEntry {
   TypedUuid name_entry_uuid;
   TypedUuid name_vector_uuid;
   TypedUuid object_uuid;
-  std::string object_class;
+  CatalogRecordKind object_kind = CatalogRecordKind::unknown;  // SB_CATALOG_NO_TEXT_IDENTIFIERS
   TypedUuid scope_uuid;
   std::optional<TypedUuid> parent_object_uuid;
   std::optional<TypedUuid> parent_schema_uuid;
   std::string language_tag;
   CatalogNameClass name_class = CatalogNameClass::primary;
-  std::string donor_id;
+  std::optional<TypedUuid> reference_engine_uuid;  // absent: native (SB_CATALOG_NO_TEXT_IDENTIFIERS)
   TypedUuid dialect_profile_uuid;
   TypedUuid identifier_profile_uuid;
   std::optional<TypedUuid> case_fold_profile_uuid;
@@ -68,7 +69,7 @@ struct CatalogNameEntry {
 struct CatalogNameVectorView {
   TypedUuid name_vector_uuid;
   TypedUuid object_uuid;
-  std::string_view object_class;
+  CatalogRecordKind object_kind = CatalogRecordKind::unknown;
   std::optional<TypedUuid> owning_schema_uuid;
   std::string_view default_language_tag;
   TypedUuid default_name_entry_uuid;
@@ -81,13 +82,13 @@ struct CatalogNameEntryView {
   TypedUuid name_entry_uuid;
   TypedUuid name_vector_uuid;
   TypedUuid object_uuid;
-  std::string_view object_class;
+  CatalogRecordKind object_kind = CatalogRecordKind::unknown;
   TypedUuid scope_uuid;
   std::optional<TypedUuid> parent_object_uuid;
   std::optional<TypedUuid> parent_schema_uuid;
   std::string_view language_tag;
   CatalogNameClass name_class = CatalogNameClass::primary;
-  std::string_view donor_id;
+  std::optional<TypedUuid> reference_engine_uuid;
   TypedUuid dialect_profile_uuid;
   TypedUuid identifier_profile_uuid;
   std::optional<TypedUuid> case_fold_profile_uuid;

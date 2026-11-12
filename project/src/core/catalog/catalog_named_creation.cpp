@@ -70,7 +70,7 @@ CatalogNamedCreationPreflightResult PreflightLocalNamedCreationRecord(
         const bool is_default=e.name_entry_uuid.value==v.default_name_entry_uuid.value;
         if(!entry_extent||!CatalogNamePayloadMatchesMetadata(entry,BorrowCatalogMetadataVersion(m))||
             e.lifecycle_state!=CatalogNameLifecycle::active||e.object_uuid.value!=d.record.header.object_uuid.value||
-            e.name_vector_uuid.value!=v.name_vector_uuid.value||e.object_class!=v.object_class||
+            e.name_vector_uuid.value!=v.name_vector_uuid.value||e.object_kind!=v.object_kind||
             e.default_for_object!=is_default||
             (is_default&&(e.language_tag!=language||!e.default_for_language)))return {E::invalid_names,0,0};
         defaults+=is_default;

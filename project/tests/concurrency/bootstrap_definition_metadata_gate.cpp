@@ -77,7 +77,6 @@ db::BootstrapNamedCreationUnitInput GoodUnit() {
   in.definition = Good();
   in.name_vector_row_uuid = Id(0x5a);
   in.name_entry_row_uuid = Id(0x5b);
-  in.object_class = "config_profile";
   in.language_tag = "en-US";
   in.name_text = "Supplied_Name";
   in.name_collision_policy_uuid = Id(0x5c);
@@ -254,8 +253,10 @@ int main() {
           "the vector value agrees with the definition on the default entry identity");
     Check(v.object_uuid.value == d.record.header.object_uuid.value,
           "the vector value names the object it belongs to");
-    Check(v.object_class == "config_profile",
-          "object_class is the supplied kind name, which the assembler cross-checks");
+    // SB_CATALOG_NO_TEXT_IDENTIFIERS: the class is the definition's kind itself
+    // (no supplied kind name to cross-check any more).
+    Check(v.object_kind == d.record.header.kind && v.object_kind == c::CatalogRecordKind::config_profile,
+          "object_kind is the definition's kind");
     Check(v.owning_schema_uuid.has_value() &&
           v.owning_schema_uuid->value == d.owning_schema_uuid.value,
           "the vector value carries the owning schema");
@@ -271,7 +272,7 @@ int main() {
           e.name_vector_uuid.value == d.name_vector_uuid.value &&
           e.object_uuid.value == d.record.header.object_uuid.value,
           "the entry value carries all three identities it links");
-    Check(e.object_class == v.object_class, "entry and vector agree on object_class");
+    Check(e.object_kind == v.object_kind, "entry and vector agree on object_kind");
     Check(e.parent_schema_uuid.has_value() &&
           e.parent_schema_uuid->value == d.owning_schema_uuid.value,
           "the entry resolves within the owning schema");
@@ -330,7 +331,6 @@ int main() {
     auto nil_entry_row = GoodUnit(); nil_entry_row.name_entry_row_uuid = {};
     auto repeated_entry_row = GoodUnit();
     repeated_entry_row.name_entry_row_uuid = repeated_entry_row.name_vector_row_uuid;
-    auto no_class = GoodUnit(); no_class.object_class.clear();
     auto no_language = GoodUnit(); no_language.language_tag.clear();
     auto no_text = GoodUnit(); no_text.name_text.clear();
     auto no_profile = GoodUnit(); no_profile.identifier_profile = nullptr;
@@ -352,7 +352,8 @@ int main() {
       {"a nil name-entry row identity refuses", nil_entry_row, U::name_entry_row_identity_invalid},
       {"a name-entry row identity repeating the vector row identity refuses",
        repeated_entry_row, U::name_entry_row_identity_invalid},
-      {"an empty object class refuses", no_class, U::object_class_empty},
+      // (The "empty object class" refusal is gone with the input field: the
+      // class is the definition's kind, so there is nothing to leave empty.)
       {"an empty language tag refuses", no_language, U::language_tag_empty},
       {"an empty name text refuses", no_text, U::name_text_empty},
       {"an absent identifier profile refuses: the keys cannot be derived without it",

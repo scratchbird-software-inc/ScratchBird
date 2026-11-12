@@ -355,7 +355,7 @@ int main() {
             "parent schema and its lookup scope are that schema");
       Check(entry.default_for_object && entry.default_for_language,
             "the single supplied name is the object's default in the default language");
-      Check(entry.object_class == c::CatalogRecordKindName(enumerated.definitions[at].kind),
+      Check(entry.object_kind == enumerated.definitions[at].kind,
             "the assembled entry is classed by the kind the assembler registered");
     }
 
@@ -719,7 +719,7 @@ int main() {
           "they label two different objects");
     Check(twins[0]->language_tag == twins[1]->language_tag,
           "they are in the same language");
-    Check(twins[0]->object_class != twins[1]->object_class ||
+    Check(twins[0]->object_kind != twins[1]->object_kind ||
           twins[0]->scope_uuid.value != twins[1]->scope_uuid.value,
           "and they are still distinguishable by the index key, which carries the scope");
     Check(twins[0]->scope_uuid.value != twins[1]->scope_uuid.value,
@@ -777,8 +777,9 @@ int main() {
                 entry->dialect_profile_uuid.value == families.identities->dialect_profiles.front(),
             "every name uses the pack's own naming family");
       const auto as_text = scratchbird::core::uuid::UuidToString(entry->object_uuid.value);
-      const bool security = entry->object_class == "user_account" || entry->object_class == "role_account" ||
-                            entry->object_class == "group_account";
+      const bool security = entry->object_kind == c::CatalogRecordKind::user_account ||
+                            entry->object_kind == c::CatalogRecordKind::role_account ||
+                            entry->object_kind == c::CatalogRecordKind::group_account;
       if (security) {
         ++addressed;
         Check(!entry->raw_name_text.empty() && entry->raw_name_text != as_text,

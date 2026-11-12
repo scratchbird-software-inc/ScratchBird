@@ -68,19 +68,62 @@ CatalogRecordValidationResult CatalogRecordError(std::string diagnostic_code,
 
 }  // namespace
 
-std::optional<CatalogRecordKind> CatalogRecordKindFromName(std::string_view name) {
-  // Built once from the names above: every u16 whose name is not "unknown".
-  static const std::map<std::string_view, CatalogRecordKind> table = [] {
-    std::map<std::string_view, CatalogRecordKind> out;
-    for (unsigned value = 1; value <= 0xffff; ++value) {
-      const auto kind = static_cast<CatalogRecordKind>(value);
-      const std::string_view text = CatalogRecordKindName(kind);
-      if (text != "unknown") out.emplace(text, kind);
-    }
-    return out;
-  }();
-  const auto found = table.find(name);
-  return found == table.end() ? std::nullopt : std::optional{found->second};
+bool IsKnownCatalogRecordKind(CatalogRecordKind kind) noexcept {
+  switch (kind) {
+    case CatalogRecordKind::database:
+    case CatalogRecordKind::filespace:
+    case CatalogRecordKind::schema:
+    case CatalogRecordKind::sql_object:
+    case CatalogRecordKind::localized_name:
+    case CatalogRecordKind::localized_comment:
+    case CatalogRecordKind::synonym_descriptor:
+    case CatalogRecordKind::constraint_descriptor:
+    case CatalogRecordKind::key_descriptor:
+    case CatalogRecordKind::constraint_subject:
+    case CatalogRecordKind::constraint_dependency:
+    case CatalogRecordKind::constraint_support_structure:
+    case CatalogRecordKind::column_descriptor:
+    case CatalogRecordKind::datatype_descriptor:
+    case CatalogRecordKind::domain:
+    case CatalogRecordKind::charset:
+    case CatalogRecordKind::charset_alias:
+    case CatalogRecordKind::collation:
+    case CatalogRecordKind::collation_tailoring:
+    case CatalogRecordKind::timezone:
+    case CatalogRecordKind::timezone_transition:
+    case CatalogRecordKind::timezone_leap_second:
+    case CatalogRecordKind::resource_bundle:
+    case CatalogRecordKind::resource_artifact:
+    case CatalogRecordKind::policy:
+    case CatalogRecordKind::config_profile:
+    case CatalogRecordKind::user_account:
+    case CatalogRecordKind::group_account:
+    case CatalogRecordKind::role_account:
+    case CatalogRecordKind::grant_record:
+    case CatalogRecordKind::masking_policy:
+    case CatalogRecordKind::rls_policy:
+    case CatalogRecordKind::udr_package:
+    case CatalogRecordKind::parser_package:
+    case CatalogRecordKind::sblr_module:
+    case CatalogRecordKind::storage_descriptor:
+    case CatalogRecordKind::table_descriptor:
+    case CatalogRecordKind::index_descriptor:
+    case CatalogRecordKind::toast_reference:
+    case CatalogRecordKind::audit_evidence:
+    case CatalogRecordKind::management_operation:
+    case CatalogRecordKind::metric_descriptor:
+    case CatalogRecordKind::metric_current_value:
+    case CatalogRecordKind::metric_label_schema:
+    case CatalogRecordKind::metric_series:
+    case CatalogRecordKind::protected_material:
+    case CatalogRecordKind::protected_material_version:
+    case CatalogRecordKind::protected_material_policy_binding:
+    case CatalogRecordKind::protected_material_audit_event:
+    case CatalogRecordKind::cluster_stub:
+      return true;
+    default:
+      return false;
+  }
 }
 const char* CatalogRecordKindName(CatalogRecordKind kind) {
   switch (kind) {

@@ -191,10 +191,10 @@ class NativeCatalogCapture {
         !Copy(metadata.retention_class))return false;
     if(value.row.name_payload){
       if(auto* vector=std::get_if<core::catalog::CatalogNameVectorView>(&*value.row.name_payload)){
-        if(!Copy(vector->object_class)||!Copy(vector->default_language_tag))return false;
+        if(!Copy(vector->default_language_tag))return false;
       }else{
         auto& entry=std::get<core::catalog::CatalogNameEntryView>(*value.row.name_payload);
-        if(!Copy(entry.object_class)||!Copy(entry.language_tag)||!Copy(entry.donor_id)||
+        if(!Copy(entry.language_tag)||
             !Copy(entry.raw_name_text)||!Copy(entry.display_name)||!Copy(entry.normalized_lookup_key)||
             !Copy(entry.exact_lookup_key)||!Copy(entry.full_path_lookup_key))return false;
       }

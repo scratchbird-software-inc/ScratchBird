@@ -98,9 +98,8 @@ StoredNames NamesOf(const Db& b, std::span<const byte> file) {
 }
 NameTemplate Template(const Db& b, std::span<const byte> file) {
   const auto names = NamesOf(b, file);
-  const std::string policy = c::CatalogRecordKindName(c::CatalogRecordKind::policy);
   for (const auto& e : names.entries) {
-    if (e.object_class != policy || !e.default_for_object || e.lifecycle_state != c::CatalogNameLifecycle::active) continue;
+    if (e.object_kind != c::CatalogRecordKind::policy || !e.default_for_object || e.lifecycle_state != c::CatalogNameLifecycle::active) continue;
     const auto v = std::find_if(names.vectors.begin(), names.vectors.end(),
                                 [&](const auto& x) { return x.name_vector_uuid.value == e.name_vector_uuid.value; });
     if (v == names.vectors.end()) continue;
@@ -526,7 +525,15 @@ void NameGrowth(const Db& b, const NameTemplate& t, u16 role, std::size_t defini
       }
     }
     const auto pages = ExpectGrowingInsert(b, s.sink(), path, r, "named object " + std::to_string(k));
-    if (!pages.empty()) grew = std::pair{file, r};
+    // The growth this covers is a new BASE leaf (page type 6), alone. An insert
+    // that only splits a name-tree leaf (0x202) comes first at some page sizes
+    // (since SB_CATALOG_NO_TEXT_IDENTIFIERS changed the name rows' sizes), so it
+    // is inserted and checked like the rest, and the loop goes on.
+    if (pages.size() == 1) {
+      const auto now = ReadAll(path);
+      const auto allocated = AllocationOf(b, now, pages.front());
+      if (allocated.record && allocated.record->page_type == 6) grew = std::pair{file, r};
+    }
   }
   if (!grew) {
     std::cout << b.name << " growth page_size=" << b.size << " not reached after " << (k - 1)
@@ -1020,13 +1027,13 @@ std::optional<NameSuccessorExpected> NameSuccessorOracle(const Db& b, std::span<
     std::vector<Planned> cells;
     const auto view = c::BorrowCatalogNamePayload(*r.name);
     if (const auto* v = std::get_if<c::CatalogNameVectorView>(&view)) {
-      const auto kind = c::CatalogRecordKindFromName(v->object_class);
-      Check(kind.has_value(), "the vector's class names a kind");
+      const auto kind = std::optional{v->object_kind};
+      Check(c::IsKnownCatalogRecordKind(*kind), "the vector's kind is a record kind");
       cells.push_back({1, c::CatalogNameUuidTreeVectorKey(v->object_uuid.value, *kind), c::CatalogNameUuidTreeVectorPayload(*v)});
     } else {
       const auto& e = std::get<c::CatalogNameEntryView>(view);
-      const auto kind = c::CatalogRecordKindFromName(e.object_class);
-      Check(kind.has_value(), "the entry's class names a kind");
+      const auto kind = std::optional{e.object_kind};
+      Check(c::IsKnownCatalogRecordKind(*kind), "the entry's kind is a record kind");
       const auto path = c::ResolveCatalogNamePath(e, names);
       Check(path.ok(), "the successor's path resolves for the oracle");
       std::vector<std::string_view> components;

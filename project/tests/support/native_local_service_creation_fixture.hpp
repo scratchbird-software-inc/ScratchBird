@@ -91,7 +91,7 @@ class NativeLocalServiceCreationFixture {
       x.vector_metadata.record.header.object_uuid=meta.name_vector_uuid;x.vector_metadata.record.header.row_uuid=Typed(p::UuidKind::row,200001+3*n);
       x.vector_metadata.record.header.parent_uuid=meta.record.header.object_uuid;x.vector_metadata.object_subtype="name_vector";
       auto& v=x.vector;v.name_vector_uuid=meta.name_vector_uuid;v.object_uuid=meta.record.header.object_uuid;
-      v.object_class=c::CatalogRecordKindName(meta.record.header.kind);v.owning_schema_uuid=meta.owning_schema_uuid;
+      v.object_kind=meta.record.header.kind;v.owning_schema_uuid=meta.owning_schema_uuid;
       v.default_language_tag="en-US";v.default_name_entry_uuid=meta.default_name_uuid;
       v.name_collision_policy_uuid=Typed(p::UuidKind::object,55);v.catalog_generation_id=1;
       v.security_policy_uuid=meta.security_policy_uuid;v.lifecycle_state=c::CatalogNameLifecycle::active;
@@ -99,7 +99,7 @@ class NativeLocalServiceCreationFixture {
       x.entry_metadata.record.header.object_uuid=meta.default_name_uuid;x.entry_metadata.record.header.row_uuid=Typed(p::UuidKind::row,200002+3*n);
       x.entry_metadata.record.header.parent_uuid=meta.name_vector_uuid;x.entry_metadata.object_subtype="name_entry";x.entry_metadata.resource_epoch=1;
       auto& e=x.entry;e.name_entry_uuid=meta.default_name_uuid;e.name_vector_uuid=meta.name_vector_uuid;
-      e.object_uuid=meta.record.header.object_uuid;e.object_class=v.object_class;e.scope_uuid=meta.record.header.parent_uuid;
+      e.object_uuid=meta.record.header.object_uuid;e.object_kind=v.object_kind;e.scope_uuid=meta.record.header.parent_uuid;
       e.parent_schema_uuid=meta.owning_schema_uuid;e.language_tag="en-US";e.dialect_profile_uuid=Typed(p::UuidKind::object,56);
       e.identifier_profile_uuid=Typed(p::UuidKind::object,57);e.raw_name_text=e.display_name="supplied_alias_"+std::to_string(n);
       e.normalized_lookup_key.assign(e.raw_name_text.begin(),e.raw_name_text.end());e.catalog_generation_id=1;
