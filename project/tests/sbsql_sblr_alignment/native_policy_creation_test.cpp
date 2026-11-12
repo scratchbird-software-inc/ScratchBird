@@ -357,7 +357,7 @@ void Verify(const c::CatalogNamedCreationSet& out,bool security=false,bool boots
     const auto memory=c::DecodeCatalogMemoryConfiguration(meta.record.payload);
     if(pack.ok()){++packs;Check(pack.record->policy_pack_uuid==SourceId(1)&&pack.record->declared_counts==std::array<p::u64,9>{12,1,11,49,6,5,210,14,58},"actual admitted pack counts and identity");}
     else if(provider.ok()){++providers;Check(provider.record->provider_uuid==SourceId(0x10+static_cast<unsigned>(provider.record->family)-1)&&provider.record->policy_pack_uuid==SourceId(1),"every real imported provider keeps exact binary source identity and family");}
-    else if(profile.ok()){++profiles;if(profile.record->area=="memory_resource_governance") {
+    else if(profile.ok()){++profiles;if(profile.record->area==c::BootstrapPolicyArea::memory_resource_governance) {/*3b*/
       ++bindings;Check(profile.record->resource_definition_uuid==f::Id(12000)&&profile.record->resource_definition_generation==1,"real materialized resource binding, no inferred identity/generation");}}
     else if(memory.ok()){
       ++memories;auto expected=m::Values(tx);expected.policy_pack_uuid=SourceId(1);expected.profile_uuid=SourceId(0x403);
@@ -611,8 +611,15 @@ void CustomSource(bool security=false) {
   Package package(security);auto request=package.Request();const auto path=root.string();request.policy_seed_pack_root=path;
   const auto made=security?db::AssembleNativeInitialPolicySecurityRecords({request,package.memberships}):db::AssembleNativeInitialPolicyRecords(request);Check(made.ok(),"actual custom manifest selection assembles native records without fixed-label fallback");
   const auto pack=c::DecodeCatalogBootstrapPolicyPack(made.records->definitions[0].metadata.record.payload);
-  Check(pack.ok()&&pack.record->pack_id=="selected-custom-label"&&pack.record->pack_version=="1.0.9"&&pack.record->policy_pack_uuid==SourceId(1),
-      "manifest labels remain data, exact binary pack identity is retained");
+  // 3b: the manifest's text id and version are not record data any more (the id
+  // is the pack's reference name in the names table; the version is not carried).
+  // A pack differing only in those labels writes a record byte-identical to the
+  // default pack's, with the exact binary pack identity.
+  Package plain(security);const auto plain_request=plain.Request();
+  const auto baseline=security?db::AssembleNativeInitialPolicySecurityRecords({plain_request,plain.memberships}):db::AssembleNativeInitialPolicyRecords(plain_request);
+  Check(pack.ok()&&pack.record->policy_pack_uuid==SourceId(1)&&baseline.ok()&&
+      made.records->definitions[0].metadata.record.payload==baseline.records->definitions[0].metadata.record.payload,
+      "3b: manifest labels are not record data; exact binary pack identity is retained");
   Check(std::filesystem::remove_all(root)>0,"remove exact owned mutable source after successful assembly");
   Verify(*made.records,security);
 }
@@ -659,7 +666,7 @@ void ServiceSourceMutations() {
         }
         if(meta.record.header.object_uuid.value==SourceId(0x450)){
           const auto value=c::DecodeCatalogBootstrapPolicyProfile(meta.record.payload);
-          Check(value.ok()&&value.record->profile_uuid==SourceId(0x450)&&value.record->area=="default_security_posture"&&value.record->mode=="deny_by_default",
+          Check(value.ok()&&value.record->profile_uuid==SourceId(0x450)&&value.record->area==c::BootstrapPolicyArea::default_security_posture&&value.record->mode==c::BootstrapPolicyMode::deny_by_default,/*3b*/
               "actual alternate posture source survives source removal");++policies;
         }
         if(meta.record.header.object_uuid.value==f::Id(15001)){

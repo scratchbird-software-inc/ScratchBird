@@ -95,10 +95,11 @@ inline NativeTransactionPolicyDeclarations ResolveNativeTransactionPolicyDeclara
     const auto profile=c::DecodeCatalogBootstrapPolicyProfile(m.record.payload);
     if(!profile.ok())return fail(E::invalid_selection,m.record.header.object_uuid.value);
     const auto& p=*profile.record;
-    if(p.policy_pack_uuid!=request.policy_pack_uuid||p.area!="transaction_mga_cleanup_archive_backup_forward")continue;
+    // 3b: area and mode are constants (SB_CATALOG_NO_TEXT_STEP3B).
+    if(p.policy_pack_uuid!=request.policy_pack_uuid||p.area!=c::BootstrapPolicyArea::transaction_mga_cleanup_archive_backup_forward)continue;
     if(!out.selection_version_uuid.is_nil())return fail(E::ambiguous_selection,p.profile_uuid);
     if(!active(row)||!c::CatalogBootstrapPolicyMatchesMetadata(m)||p.policy_pack_generation!=request.policy_pack_generation||
-        p.mode!="mga_inventory_authority"||!p.resource_definition_uuid||!p.resource_definition_generation)
+        p.mode!=c::BootstrapPolicyMode::mga_inventory_authority||!p.resource_definition_uuid||!p.resource_definition_generation)
       return fail(E::invalid_selection,p.profile_uuid);
     if(!origin(p))return fail(E::origin_not_committed,p.profile_uuid);
     out.selection_profile=p;out.selection_version_uuid=row.row.version_uuid;

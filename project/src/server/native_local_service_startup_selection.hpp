@@ -86,7 +86,8 @@ inline NativeLocalServiceStartupSelectionResult SelectNativeLocalServiceStartupD
     return fail(E::policy_invalid,binding.policy_uuid);
   // This is the explicitly specified local-service default, not a fallback
   // for external/cluster providers or other architect-selected profiles.
-  if(posture.record->area!="default_security_posture"||posture.record->mode!="deny_by_default"||
+  // 3b: area and mode are constants (SB_CATALOG_NO_TEXT_STEP3B).
+  if(posture.record->area!=c::BootstrapPolicyArea::default_security_posture||posture.record->mode!=c::BootstrapPolicyMode::deny_by_default||
       posture.record->resource_definition_uuid||posture.record->resource_definition_generation)
     return fail(E::posture_not_supported,binding.policy_uuid);
   if(posture.record->policy_pack_uuid!=provider.policy_pack_uuid||

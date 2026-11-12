@@ -31,15 +31,19 @@ void Check(bool ok,const char* why,std::source_location loc=std::source_location
 template<class Call>auto NoHeap(Call&& call){allocation_budget=0;allocation_count=0;auto result=call();const auto calls=allocation_count;allocation_budget=-1;
  Check(!calls,"bounded evidence policy codecs never allocate");return result;}
 Body Value(unsigned n=0){Body b;b.body_uuid=f::Id(100+n);b.database_uuid=f::Id(1);b.storage_filespace_uuid=f::Id(2);b.generation=1;
- b.required_evidence_classes.entries[0]="verification_finding";b.required_evidence_classes.entries[1]="verification_operation";b.required_evidence_classes.count=2;
- b.required_search_keys.entries[0]="SB-MGA-VERIFY";b.required_search_keys.count=1;
+ // 3b: the class set is a bit set of EvidenceClass (bit 0 = verification); no search keys.
+ b.required_evidence_classes=1;
  b.maximum_record_bytes=4096;b.maximum_batch_bytes=1048576;
  b.origin_transaction_uuid=b.creating_transaction_uuid={p::UuidKind::transaction,f::Id(5)};
  b.origin_local_transaction_id=b.creating_local_transaction_id=1;return b;}
-std::string Set(const c::CatalogEvidenceStringSet& set){std::string bytes(4,0);f::Put(bytes,0,set.count,4);
- for(std::size_t i=0;i<set.count;++i){const auto at=bytes.size();bytes.resize(at+4);f::Put(bytes,at,set.entries[i].size(),4);bytes.append(set.entries[i]);}return bytes;}
-std::string Golden(const Body& r){f::Golden g(65622);g.Identity(1,r.body_uuid);g.Identity(2,r.database_uuid);g.Integer(3,r.generation);
- g.Field(4,8,Set(r.required_evidence_classes));g.Field(5,8,Set(r.required_search_keys));g.Identity(6,r.storage_filespace_uuid);
+// 3b: the retired version-1 string set (u32 count, then u32 length + bytes).
+std::string Set(std::initializer_list<std::string_view> set){std::string bytes(4,0);f::Put(bytes,0,set.size(),4);
+ for(const auto text:set){const auto at=bytes.size();bytes.resize(at+4);f::Put(bytes,at,text.size(),4);bytes.append(text);}return bytes;}
+// 3b: schema version 2: tag 4 is the u64 class bit set, tag 5 is gone. With
+// `v1` the oracle builds the retired version-1 layout (both text sets).
+std::string Golden(const Body& r,bool v1=false){f::Golden g(65622,v1?1:2);g.Identity(1,r.body_uuid);g.Identity(2,r.database_uuid);g.Integer(3,r.generation);
+ if(v1){g.Field(4,8,Set({"verification"}));g.Field(5,8,Set({"SB-MGA-VERIFY"}));}else g.Integer(4,r.required_evidence_classes);
+ g.Identity(6,r.storage_filespace_uuid);
  g.Integer(7,p::u64(r.retention_class));g.Integer(8,p::u64(r.redaction_rule));g.Integer(9,p::u64(r.digest_rule));g.Integer(10,p::u64(r.external_export_rule));
  g.Integer(11,p::u64(r.chain_of_custody_rule));g.Integer(12,p::u64(r.cluster_replication_rule));if(r.cluster_uuid)g.Identity(13,*r.cluster_uuid);
  g.Integer(14,r.maximum_record_bytes);g.Integer(15,r.maximum_batch_bytes);g.Integer(16,r.flags);g.Identity(17,r.origin_transaction_uuid.value);
@@ -76,36 +80,37 @@ void Values(){const auto base=Value();Roundtrip(base);
   case 17:b.redaction_rule=c::EvidenceRedactionRule::external_reference;break;
   case 18:b.origin_local_transaction_id=0;break;case 19:b.creating_transaction_uuid.value=f::Id(8);break;
   case 20:b.creating_local_transaction_id=2;break;case 21:b.origin_transaction_uuid.kind=p::UuidKind::object;break;
-  case 22:b.required_evidence_classes.count=0;break;case 23:b.required_search_keys.count=65;break;
-  case 24:b.required_evidence_classes.entries[1]=b.required_evidence_classes.entries[0];break;
-  case 25:std::swap(b.required_evidence_classes.entries[0],b.required_evidence_classes.entries[1]);break;
-  case 26:b.required_search_keys.entries[0]="";break;case 27:b.required_search_keys.entries[0]=std::string_view("A\0B",3);break;
-  case 28:b.required_search_keys.entries[0]=std::string_view("\xc0\xaf",2);break;
-  case 29:b.required_search_keys.entries[0]=std::string_view("\xed\xa0\x80",3);break;}
-  Refuse(b,field!=21&&field!=23);
+  // 3b: the class set is a closed bit set: empty, an unknown bit and the top
+  // bit refuse. Cases 25-29 mutated the retired text sets (ordering, empty,
+  // NUL, overlong and surrogate UTF-8); the version-1 refusal below covers them.
+  case 22:b.required_evidence_classes=0;break;case 23:b.required_evidence_classes=2;break;
+  case 24:b.required_evidence_classes|=p::u64{1}<<63;break;
+  case 25:case 26:case 27:case 28:case 29:continue;}
+  Refuse(b,field!=21);
  }
- std::array<std::string,64> strings;auto maximum=base;maximum.cluster_uuid=f::Id(3000);maximum.cluster_replication_rule=c::EvidenceReplicationRule::cluster_quorum;
- for(unsigned i=0;i<64;++i){strings[i]=std::string(128,'a');strings[i][0]='A'+i/26;strings[i][1]='A'+i%26;
-  maximum.required_evidence_classes.entries[i]=strings[i];maximum.required_search_keys.entries[i]=strings[i];}
- maximum.required_evidence_classes.count=maximum.required_search_keys.count=64;Roundtrip(maximum);
- Check(Golden(maximum).size()==c::kCatalogEvidencePolicyMaxBytes,"maximum set envelope exact extent");
- std::string long_key(129,'a');auto long_body=base;long_body.required_search_keys.entries[0]=long_key;Refuse(long_body);
- for(const auto bad_utf8:{std::string_view("\xf4\x90\x80\x80",4),std::string_view("\xe2\x82",2),std::string_view("\x80",1)}){
-  auto malformed=base;malformed.required_search_keys.entries[0]=bad_utf8;Refuse(malformed);
- }
- auto unicode=base;unicode.required_search_keys.entries[0]="\xe2\x82\xac";Roundtrip(unicode);
+ auto maximum=base;maximum.cluster_uuid=f::Id(3000);maximum.cluster_replication_rule=c::EvidenceReplicationRule::cluster_quorum;
+ maximum.required_evidence_classes=c::kCatalogEvidenceClassMask;Roundtrip(maximum);
+ // 3b: every field present (incl. the optional cluster) is the fixed maximum.
+ Check(Golden(maximum).size()==c::kCatalogEvidencePolicyMaxBytes,"maximum envelope exact extent");
+ Check(static_cast<p::u64>(c::EvidenceClass::verification)==1&&c::kCatalogEvidenceClassMask==1&&
+     c::CatalogEvidenceClassBit(c::EvidenceClass::verification)==1,"3b: the class constant and its bit are frozen");
+ // 3b: the retired version-1 layout (text sets at tags 4 and 5) refuses, also
+ // through the common metadata dispatcher; it is still recognized as this family.
+ {const auto old=Golden(base,true);Check(c::IsCatalogEvidencePolicyPayload(old)&&!NoHeap([&]{return c::DecodeCatalogEvidencePolicy(old);}).ok(),"3b: version-1 evidence body refuses");
+  auto m=Metadata(base);m.record.payload=old;Check(c::ValidateCatalogMetadataVersionView(c::BorrowCatalogMetadataVersion(m)).has_value(),"3b: dispatcher refuses version 1");}
  const auto raw=Golden(base);std::array<p::byte,c::kCatalogEvidencePolicyMaxBytes> out;out.fill(0xa7);const auto before=out;
  for(std::size_t n=0;n<raw.size();++n){Check(!NoHeap([&]{return c::DecodeCatalogEvidencePolicy(std::string_view(raw).substr(0,n));}).ok(),"every truncation refused");
   Check(!NoHeap([&]{return c::EncodeCatalogEvidencePolicyInto(base,std::span(out).first(n));}).ok()&&out==before,"every short output untouched");}
  auto extra=raw;extra.push_back(0);Check(!c::DecodeCatalogEvidencePolicy(extra).ok(),"trailing byte refused");
  for(unsigned offset:{0u,4u,6u,8u,12u,16u,20u,24u,26u,28u}){auto bad=raw;bad[offset]^=0x7f;Check(!c::DecodeCatalogEvidencePolicy(bad).ok(),"invalid framing schema field refused");}
- for(unsigned count:{0u,1u,3u,65u,0xffffffffu}){auto bad=raw;f::Put(bad,96,count,4);
-  Check(!c::DecodeCatalogEvidencePolicy(bad).ok(),"nested string count mismatch or overflow refused");}
- for(unsigned length:{0u,129u,0xffffffffu}){auto bad=raw;f::Put(bad,100,length,4);
-  Check(!c::DecodeCatalogEvidencePolicy(bad).ok(),"nested string length mismatch or overflow refused");}
+ // 3b: tag 4's value (offset 96) is the class bit set; every value outside
+ // the closed set refuses on decode (the nested text count/length checks that
+ // stood here had a text set to corrupt).
+ for(const p::u64 mask:{p::u64{0},p::u64{2},p::u64{3},p::u64{1}<<32,~p::u64{0}}){auto bad=raw;f::Put(bad,96,mask,8);
+  Check(!c::DecodeCatalogEvidencePolicy(bad).ok(),"3b: class bit set outside the closed set refused");}
+ {auto good=raw;f::Put(good,96,1,8);Check(c::DecodeCatalogEvidencePolicy(good).ok(),"3b: offset 96 is the class set (control)");}
  auto alias=base;Check(!NoHeap([&]{return c::EncodeCatalogEvidencePolicyInto(alias,{reinterpret_cast<p::byte*>(&alias),sizeof(alias)});}).ok()&&Golden(alias)==raw,"input object overlap refused");
- std::array<p::byte,20000> shared{};std::copy_n("source-key",10,shared.begin());alias.required_search_keys.entries[0]={reinterpret_cast<char*>(shared.data()),10};const auto prior=shared;
- Check(!NoHeap([&]{return c::EncodeCatalogEvidencePolicyInto(alias,shared);}).ok()&&shared==prior,"borrowed string overlap refused");
+ // 3b: the body borrows no strings any more; the borrowed-string overlap check is gone.
 }
 void Bindings(){auto b=Value();auto m=Metadata(b);auto v=c::BorrowCatalogMetadataVersion(m);
  Check(c::CatalogEvidencePolicyMatchesHeader(v.record)&&c::CatalogEvidencePolicyMatchesMetadata(v)&&!c::ValidateCatalogMetadataVersionView(v),"common dispatcher admits exact evidence body");

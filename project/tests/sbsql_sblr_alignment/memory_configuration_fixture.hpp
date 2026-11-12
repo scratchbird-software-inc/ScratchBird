@@ -10,8 +10,7 @@ inline c::CatalogMemoryConfiguration Values(p::TypedUuid tx) {
   c::CatalogMemoryConfiguration r;
   r.configuration_uuid=f::Id(12000);r.policy_pack_uuid=f::Id(12001);r.profile_uuid=f::Id(12002);
   r.generation=r.policy_pack_generation=r.imported_schema_version=1;
-  r.policy_key="server.memory_cache.default";r.policy_name="default_local_server_memory_cache_v1";
-  r.provenance="default_policy_pack:default-local-password:server_memory_cache_policy";
+  // 3b: no policy_key, policy_name or provenance in the record (version 2).
   r.origin_transaction_uuid=tx;r.origin_local_transaction_id=1;
   r.hard_limit_bytes=1073741824;r.soft_limit_bytes=805306368;r.per_context_limit_bytes=268435456;
   r.page_buffer_pool_limit_bytes=536870912;r.openssl_budget_bytes=4194304;r.min_startup_available_bytes=1073741824;
@@ -23,9 +22,9 @@ inline c::CatalogMemoryConfiguration Values(p::TypedUuid tx) {
   return r;
 }
 inline std::string Golden(const c::CatalogMemoryConfiguration& r) {
-  f::Golden g(65591);g.Identity(1,r.configuration_uuid);g.Integer(2,r.generation);g.Identity(3,r.policy_pack_uuid);
+  // 3b: schema version 2; tags 7-9 (the version-1 labels) are gone.
+  f::Golden g(65591,2);g.Identity(1,r.configuration_uuid);g.Integer(2,r.generation);g.Identity(3,r.policy_pack_uuid);
   g.Integer(4,r.policy_pack_generation);g.Identity(5,r.profile_uuid);g.Integer(6,r.imported_schema_version);
-  g.Field(7,3,r.policy_key);g.Field(8,3,r.policy_name);g.Field(9,3,r.provenance);
   g.Identity(10,r.origin_transaction_uuid.value);g.Integer(11,r.origin_local_transaction_id);
   g.Integer(12,r.hard_limit_bytes);g.Integer(13,r.soft_limit_bytes);g.Integer(14,r.per_context_limit_bytes);
   g.Integer(15,r.page_buffer_pool_limit_bytes);g.Integer(16,r.openssl_budget_bytes);g.Integer(17,r.min_startup_available_bytes);

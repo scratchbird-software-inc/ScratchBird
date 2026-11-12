@@ -22,6 +22,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -89,14 +90,14 @@ p::Uuid SchemaFor(const db::NativeInitialDefinitionIdentity& object) {
 
 // An admitted ASCII-lane identifier resolution profile. Lower-folding, so the
 // folded and exact lanes differ and the engine's derivation is observably doing
-// the work. Static: the request borrows it and its profile_name backing.
+// the work. Static: the request borrows it.
 const c::CatalogIdentifierResolutionProfile& IdentifierProfile() {
   static const c::CatalogIdentifierResolutionProfile profile = [] {
     c::CatalogIdentifierResolutionProfile value;
     value.profile_uuid = Id(20057);
     value.database_uuid = kDatabase;
     value.generation = 1;
-    value.profile_name = "bootstrap_identifier_profile";
+    // 3b: the identifier profile record carries no name (names table only).
     value.quote_styles = 1;
     value.escape_rule = c::IdentifierEscapeRule::doubled_delimiter;
     value.unquoted_fold_mode = c::IdentifierFoldMode::lower_ascii;
@@ -434,8 +435,10 @@ int main() {
           if (supplied.object_uuid == id) { supplied.name_text = {}; return true; }
         return false;
       };
-      const auto role = SourceId(0x100), group = SourceId(0x200), pack = SourceId(1);
-      Check(blank(role) && blank(group) && blank(kBootstrapPrincipal) && blank(pack),
+      // 3b: plus a policy profile (the deny-by-default posture), which keeps the
+      // UUID-text rule under test now that the pack has a name of its own.
+      const auto role = SourceId(0x100), group = SourceId(0x200), pack = SourceId(1), posture = SourceId(0x402);
+      Check(blank(role) && blank(group) && blank(kBootstrapPrincipal) && blank(pack) && blank(posture),
             "the blanked objects are enumerated");
       auto seed = *value.policy.generated_definitions;
       seed.names = other.supplied;
@@ -452,7 +455,12 @@ int main() {
       // Independent values: roles.json and groups.json, and the request's principal name.
       Check(text(role) == "ROLE_APP_RUNTIME" && text(group) == "PUBLIC" && text(kBootstrapPrincipal) == "BootstrapAdmin",
             "addressed objects keep the names their own records carry");
-      Check(text(pack) == scratchbird::core::uuid::UuidToString(pack),
+      // 3b (SB_CATALOG_NO_TEXT_STEP3B): the pack record no longer carries its
+      // text id, so the pack takes it as its reference name (manifest
+      // policy_pack_id). A profile, which carries no name, keeps its UUID text.
+      Check(text(pack) == "default-local-password",
+            "3b: the pack is named by its manifest id, not its UUID text");
+      Check(text(posture) == scratchbird::core::uuid::UuidToString(posture),
             "any other object's reference name is its UUID text");
     }
     {
@@ -766,7 +774,17 @@ int main() {
                    static_cast<int>(out.error), static_cast<int>(out.name_error));
     Check(out.ok() && out.records->definitions.size() == 762 && out.records->names.size() == 2 * 762,
           "the family path assembles every object with derived names");
-    std::size_t addressed = 0, by_uuid = 0;
+    std::size_t addressed = 0, by_uuid = 0, pack_named = 0;
+    // 3b (SB_CATALOG_NO_TEXT_STEP3B): an object whose pack text was a name its
+    // record carried, and no longer does, takes that name as its reference
+    // name. Independent values from the pack: native_naming_profiles.json,
+    // server_memory_cache_policy.json and POLICY_PACK_MANIFEST.json.
+    const auto pack_name = [&](const p::Uuid& id) -> std::optional<std::string> {
+      if (id == families.identities->identifier_profiles.front()) return std::string("explicit_internal_aliases");
+      if (id == kMemoryConfiguration) return std::string("default_local_server_memory_cache_v1");
+      if (id == SourceId(1)) return std::string("default-local-password");
+      return std::nullopt;
+    };
     for (const auto& row : out.records->names) {
       if (!row.name) continue;
       const auto* entry = std::get_if<c::CatalogNameEntry>(&*row.name);
@@ -782,13 +800,17 @@ int main() {
         ++addressed;
         Check(!entry->raw_name_text.empty() && entry->raw_name_text != as_text,
               "a principal, role or group keeps its own name");
+      } else if (const auto expected = pack_name(entry->object_uuid.value)) {
+        ++pack_named;
+        Check(entry->raw_name_text == *expected, "3b: an object the pack names takes that name, not its UUID text");
       } else {
         ++by_uuid;
         Check(entry->raw_name_text == as_text, "any other object is named by its UUID text");
       }
     }
     // 162 principals (bootstrap, service and 160 agents), 50 roles and 6 groups.
-    Check(addressed == 162 + 50 + 6 && addressed + by_uuid == 762, "every object is named exactly once");
+    // 3b: plus the objects the pack names (identifier profile, memory configuration, pack).
+    Check(addressed == 162 + 50 + 6 && pack_named == 3 && addressed + pack_named + by_uuid == 762, "every object is named exactly once");
     auto foreign_dialect = with_families();
     auto seed = family_seed(derived);
     seed.dialect_profile_uuid = Id(70950);

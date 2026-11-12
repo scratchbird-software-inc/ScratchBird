@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <map>
+#include <optional>
 #include <set>
 #include <source_location>
 #include <string>
@@ -136,7 +137,17 @@ int main() {
       if(const auto* entry=std::get_if<c::CatalogNameEntry>(&*row.name_payload))
         Check(names.emplace(entry->object_uuid.value,entry->raw_name_text).second,"one default name per object");
     }
-    std::size_t unnamed=0,by_uuid=0,addressed=0;
+    std::size_t unnamed=0,by_uuid=0,addressed=0,pack_named=0;
+    // 3b (SB_CATALOG_NO_TEXT_STEP3B): objects whose record lost a pack-given
+    // name take it as their reference name. Independent values from the pack:
+    // native_naming_profiles.json, server_memory_cache_policy.json and the
+    // manifest's policy_pack_id.
+    const auto pack_name=[](const db::NativeCatalogVersionRow& row)->std::optional<std::string>{
+      using S=scratchbird::core::catalog::CatalogObjectSubtype;
+      if(row.metadata.object_subtype==S::identifier_resolution_profile)return std::string("explicit_internal_aliases");
+      if(row.metadata.object_subtype==S::memory_configuration)return std::string("default_local_server_memory_cache_v1");
+      if(row.metadata.object_subtype==S::bootstrap_policy_pack)return std::string("default-local-password");
+      return std::nullopt;};
     for(const auto& [id,row]:definitions) {
       const auto kind=row->metadata.record.header.kind;
       const auto found=names.find(id);
@@ -147,9 +158,10 @@ int main() {
           kind==c::CatalogRecordKind::database||kind==c::CatalogRecordKind::filespace||
           kind==c::CatalogRecordKind::datatype_descriptor||kind==c::CatalogRecordKind::domain;
       if(by_name){++addressed;Check(found->second!=u::UuidToString(id),"an object addressed by name keeps its name");}
+      else if(const auto expected=pack_name(*row)){++pack_named;Check(found->second==*expected,"3b: an object the pack names takes that name");}
       else{++by_uuid;Check(found->second==u::UuidToString(id),"any other object is named by its UUID text");}
     }
-    Check(unnamed==1&&addressed>0&&by_uuid>0,"one construction intent, named and UUID-named objects");
+    Check(unnamed==1&&addressed>0&&by_uuid>0&&pack_named==3,"one construction intent, named, pack-named (3b) and UUID-named objects");
 
     // The database, its primary filespace and the schema tree.
     std::multiset<std::string> schemas;std::size_t databases=0,filespaces=0,cluster_typed=0;

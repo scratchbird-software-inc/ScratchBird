@@ -16,8 +16,9 @@ inline std::string Bytes(const p::Uuid& id){return {reinterpret_cast<const char*
 // Independent Core SBCV/TLV construction, no production schema/codec helpers.
 struct Golden {
   std::string bytes=std::string(24,0);unsigned count=0;
-  explicit Golden(unsigned schema){bytes.replace(0,4,"SBCV");Put(bytes,4,1,2);Put(bytes,6,24,2);
-    Put(bytes,16,schema,4);Put(bytes,20,1,2);}
+  // 3b: the schema version is a parameter; the step-3b codecs are version 2.
+  explicit Golden(unsigned schema,unsigned version=1){bytes.replace(0,4,"SBCV");Put(bytes,4,1,2);Put(bytes,6,24,2);
+    Put(bytes,16,schema,4);Put(bytes,20,version,2);}
   void Field(unsigned tag,unsigned type,std::string_view value){const auto at=bytes.size();bytes.resize(at+8,0);
     Put(bytes,at,tag,2);Put(bytes,at+2,type,1);Put(bytes,at+4,value.size(),4);bytes.append(value);++count;}
   void Integer(unsigned tag,p::u64 n){Field(tag,1,Number(n));}
@@ -26,8 +27,9 @@ struct Golden {
   std::string Finish(){Put(bytes,8,bytes.size(),4);Put(bytes,12,count,4);return bytes;}
 };
 inline std::string EncodeGolden(const c::CatalogBootstrapPolicyPack& r) {
-  Golden g(65588);g.Identity(1,r.policy_pack_uuid);g.Integer(2,r.generation);g.Field(3,3,r.pack_id);g.Field(4,3,r.pack_version);
-  g.Field(5,4,{reinterpret_cast<const char*>(r.content_sha256.data()),32});g.Field(6,3,r.declared_signature_status);
+  // 3b: version 2; tags 3/4 (text id, version) retired, tag 6 the status constant.
+  Golden g(65588,2);g.Identity(1,r.policy_pack_uuid);g.Integer(2,r.generation);
+  g.Field(5,4,{reinterpret_cast<const char*>(r.content_sha256.data()),32});g.Integer(6,static_cast<p::u64>(r.declared_signature_status));
   g.Boolean(7,r.create_time_only);g.Boolean(8,r.post_create_filesystem_authority);g.Boolean(9,r.local_password_only);
   g.Identity(10,r.origin_transaction_uuid.value);g.Integer(11,r.origin_local_transaction_id);
   for(unsigned i=0;i<9;++i)g.Integer(12+i,r.declared_counts[i]);g.Integer(21,r.imported_schema_version);return g.Finish();
@@ -40,8 +42,9 @@ inline std::string EncodeGolden(const c::CatalogBootstrapSecurityProvider& r) {
   g.Identity(10,r.origin_transaction_uuid.value);g.Integer(11,r.origin_local_transaction_id);return g.Finish();
 }
 inline std::string EncodeGolden(const c::CatalogBootstrapPolicyProfile& r) {
-  Golden g(65590);g.Identity(1,r.profile_uuid);g.Integer(2,r.generation);g.Identity(3,r.policy_pack_uuid);
-  g.Integer(4,r.policy_pack_generation);g.Field(5,3,r.area);g.Field(6,3,r.mode);
+  // 3b: version 2; tags 5/6 are the area and mode constants.
+  Golden g(65590,2);g.Identity(1,r.profile_uuid);g.Integer(2,r.generation);g.Identity(3,r.policy_pack_uuid);
+  g.Integer(4,r.policy_pack_generation);g.Integer(5,static_cast<p::u64>(r.area));g.Integer(6,static_cast<p::u64>(r.mode));
   if(r.resource_definition_uuid)g.Identity(7,*r.resource_definition_uuid);
   g.Identity(8,r.origin_transaction_uuid.value);g.Integer(9,r.origin_local_transaction_id);
   if(r.resource_definition_generation)g.Integer(10,*r.resource_definition_generation);return g.Finish();
@@ -52,7 +55,7 @@ struct Fixture {
   c::CatalogBootstrapPolicyProfile profile;
   explicit Fixture(p::TypedUuid tx) {
     pack.policy_pack_uuid=Id(9000);pack.generation=1;pack.imported_schema_version=1;
-    pack.pack_id="selected-pack";pack.pack_version="1.0.0";pack.declared_signature_status="signature-ready-unsigned";
+    pack.declared_signature_status=c::BootstrapSignatureStatus::signature_ready_unsigned;/*3b*/
     for(unsigned i=0;i<32;++i)pack.content_sha256[i]=i;
     pack.create_time_only=pack.local_password_only=true;pack.origin_transaction_uuid=tx;
     pack.origin_local_transaction_id=1;pack.declared_counts={12,1,11,6,3,3,24,14,14};
@@ -63,8 +66,8 @@ struct Fixture {
     provider.verifier_policy=c::BootstrapVerifierPolicy::local_password_verifier_required;
     provider.origin_transaction_uuid=tx;provider.origin_local_transaction_id=1;
     profile.profile_uuid=Id(9002);profile.policy_pack_uuid=pack.policy_pack_uuid;
-    profile.generation=profile.policy_pack_generation=1;profile.area="security_provider_selection";
-    profile.mode="local_password_only";profile.origin_transaction_uuid=tx;profile.origin_local_transaction_id=1;
+    profile.generation=profile.policy_pack_generation=1;profile.area=c::BootstrapPolicyArea::security_provider_selection;
+    profile.mode=c::BootstrapPolicyMode::local_password_only;/*3b*/profile.origin_transaction_uuid=tx;profile.origin_local_transaction_id=1;
   }
   std::array<std::string,3> Payloads() const{return {EncodeGolden(pack),EncodeGolden(provider),EncodeGolden(profile)};}
 };

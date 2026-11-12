@@ -78,8 +78,8 @@ struct NativeInitialGeneratedDefinitions {
   // yet; they are the caller's to issue.
   core::platform::Uuid name_collision_policy_uuid;
   core::platform::Uuid dialect_profile_uuid;
-  // Borrowed and caller-owned; must outlive the call, along with its
-  // profile_name backing. Supplied as the profile rather than its identity
+  // Borrowed and caller-owned; must outlive the call (3b: it borrows no name
+  // text). Supplied as the profile rather than its identity
   // because both lookup lanes and the display form are derived from it by
   // DeriveCatalogIdentifierLookupKeysInto, and the entry's
   // identifier_profile_uuid is taken from the profile itself so the two cannot

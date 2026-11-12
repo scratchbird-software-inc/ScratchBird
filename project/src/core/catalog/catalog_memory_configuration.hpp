@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
+#include "catalog_bootstrap_policy.hpp"
 #include "catalog_record_codec.hpp"
 #include "catalog_value_codec.hpp"
 
@@ -11,11 +12,15 @@ enum class MemoryConfigurationWriteAuthority : u64 { mga_inventory_and_page_writ
 
 // Actual submitted configuration, not an effective platform envelope, grant,
 // allocator installation, activation receipt or policy evaluation result.
-// Text borrows immutable caller-owned backing; identities/scalars are values.
+// Identities and scalars only.
+// 3b (SB_CATALOG_NO_TEXT_STEP3B): schema version 2 carries no policy_key,
+// policy_name or provenance (version-1 tags 7-9). The pack's policy_name is the
+// configuration's reference name in the names table (native create); the key
+// and provenance only labelled what the configuration, pack and profile UUIDs
+// identify. Version 1 payloads refuse.
 struct CatalogMemoryConfiguration {
   Uuid configuration_uuid,policy_pack_uuid,profile_uuid;
   u64 generation=0,policy_pack_generation=0,imported_schema_version=0;
-  std::string_view policy_key,policy_name,provenance;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id=0;
   u64 hard_limit_bytes=0,soft_limit_bytes=0,per_context_limit_bytes=0;
@@ -45,12 +50,20 @@ struct MemoryConfigurationImportDiagnostic {
   std::string_view policy_name() const {return {labels.data()+lengths[0],lengths[1]};}
   std::string_view provenance() const {return {labels.data()+lengths[0]+lengths[1],lengths[2]};}
 };
+// 3b: the import file's three labels. Import-boundary text only: the server's
+// own memory configuration (config.cpp) displays them, and native create takes
+// policy_name as the configuration's reference name. Never catalog record data.
+// Borrows the caller's character backing, never the mutable import file.
+struct MemoryConfigurationImportLabels {
+  std::string_view policy_key,policy_name,provenance;
+};
 struct MemoryConfigurationImportResult {
   CatalogValueError error=CatalogValueError::invalid_value;
   // Settings only: owner/pack/profile/transaction identities remain unset.
-  // Text borrows the caller's character backing, never a mutable import file.
   std::optional<CatalogMemoryConfiguration> settings;
   std::optional<MemoryConfigurationImportDiagnostic> diagnostic;
+  // Present exactly when settings are (3b).
+  std::optional<MemoryConfigurationImportLabels> labels;
   bool ok() const noexcept{return error==CatalogValueError::none&&settings.has_value();}
 };
 // Exact versioned import schema, including every supplied adaptive-cache field.
@@ -59,7 +72,9 @@ struct MemoryConfigurationImportResult {
 MemoryConfigurationImportResult ImportMemoryConfigurationInto(std::string_view,std::span<char>);
 struct BootstrapPolicyProfileImport {
   Uuid profile_uuid;
-  std::string_view area,mode;
+  // 3b: the pack's area and mode text, mapped here to constants; unknown refuses.
+  BootstrapPolicyArea area=static_cast<BootstrapPolicyArea>(0);
+  BootstrapPolicyMode mode=static_cast<BootstrapPolicyMode>(0);
   std::optional<std::string_view> resource_file;
 };
 struct BootstrapPolicyProfileImportResult {
@@ -69,6 +84,7 @@ struct BootstrapPolicyProfileImportResult {
 };
 // Creation/import boundary only. Optional resource absence differs from null,
 // wrong type and an empty path. Source paths never become runtime authority.
+// The backing receives only the resource path (3b: area and mode are constants).
 BootstrapPolicyProfileImportResult ImportBootstrapPolicyProfileInto(std::string_view,std::span<char>);
 bool IsCatalogMemoryConfigurationPayload(std::string_view);
 bool CatalogMemoryConfigurationMatchesHeader(const CatalogTypedRecordView&);

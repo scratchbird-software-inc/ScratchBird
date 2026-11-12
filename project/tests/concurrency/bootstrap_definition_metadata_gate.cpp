@@ -51,7 +51,7 @@ c::CatalogIdentifierResolutionProfile Profile() {
   profile.profile_uuid = Id(0x5e);
   profile.database_uuid = Id(0x50);
   profile.generation = 1;
-  profile.profile_name = "bootstrap_definition_metadata_gate_profile";
+  // 3b: the identifier profile record carries no name (names table only).
   profile.quote_styles = 1;
   profile.escape_rule = c::IdentifierEscapeRule::doubled_delimiter;
   profile.unquoted_fold_mode = c::IdentifierFoldMode::lower_ascii;

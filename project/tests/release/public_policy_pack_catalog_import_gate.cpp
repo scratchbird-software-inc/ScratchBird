@@ -308,8 +308,10 @@ void RequirePolicyPackSummary(const std::vector<page::CatalogPageRow>& rows,
     Require(decoded.ok(),"policy pack summary is not a native declaration");
     const auto& pack=*decoded.record;
     const auto expected=uuid::ParseTypedUuid(UuidKind::object,descriptor.policy_pack_uuid);
-    Require(pack.pack_id == descriptor.policy_pack_id,
-            "policy pack summary id mismatch");
+    // 3b (SB_CATALOG_NO_TEXT_STEP3B): the record carries no text id; the
+    // signature status is a constant. Identity is the UUID below.
+    Require(pack.declared_signature_status == catalog::BootstrapSignatureStatus::signature_ready_unsigned,
+            "policy pack summary signature status mismatch");
     Require(expected.ok()&&pack.policy_pack_uuid == expected.value.value,
             "policy pack summary UUID mismatch");
     Require(scratchbird::core::hash::HexLower(pack.content_sha256) == descriptor.content_sha256,
@@ -328,13 +330,19 @@ void RequirePolicyPackSummary(const std::vector<page::CatalogPageRow>& rows,
   Require(summaries == 1, "expected exactly one policy seed pack summary row");
 }
 
+// 3b (SB_CATALOG_NO_TEXT_STEP3B): `read_back` is true for a state read from
+// the catalog by an open; the pack record no longer stores the manifest's text
+// id, so such a state carries none. The create-time state is built from the
+// loaded manifest and still does. Identity is the UUID either way.
 void RequirePolicyCatalogImport(const std::filesystem::path& database_path,
-                                const db::DatabaseLifecycleState& state) {
+                                const db::DatabaseLifecycleState& state,
+                                bool read_back) {
   const auto descriptor = db::DefaultPolicyPackDescriptor();
   Require(state.policy_seed_catalog_present, "create/open state did not report policy seed catalog");
   Require(state.policy_seed_catalog.active, "policy seed catalog image was inactive");
-  Require(state.policy_seed_catalog.policy_pack_id == descriptor.policy_pack_id,
-          "state policy pack id mismatch");
+  Require(read_back ? state.policy_seed_catalog.policy_pack_id.empty()
+                    : state.policy_seed_catalog.policy_pack_id == descriptor.policy_pack_id,
+          "state policy pack id mismatch (3b: none when read back from the catalog)");
   const auto expected_pack=uuid::ParseTypedUuid(UuidKind::object,descriptor.policy_pack_uuid);
   Require(expected_pack.ok()&&state.policy_seed_catalog.policy_pack_uuid == expected_pack.value.value,
           "state policy pack UUID mismatch");
@@ -393,7 +401,7 @@ void RequirePolicyCatalogImport(const std::filesystem::path& database_path,
         "all persisted memory values, raw identities and generation must match independent actual defaults");
     for(const auto& candidate:records) {
       const auto profile=catalog::DecodeCatalogBootstrapPolicyProfile(candidate.record.payload);
-      if(!profile.ok()||profile.record->area!="memory_resource_governance")continue;
+      if(!profile.ok()||profile.record->area!=catalog::BootstrapPolicyArea::memory_resource_governance)continue;/*3b*/
       Require(profile.record->profile_uuid==memory.record->profile_uuid&&
           profile.record->resource_definition_uuid==memory.record->configuration_uuid&&
           profile.record->resource_definition_generation==memory.record->generation,
@@ -442,7 +450,7 @@ void RunSuccessfulImportCase() {
     std::cerr << created.diagnostic.diagnostic_code << '\n';
   }
   Require(created.ok(), "CreateDatabaseFile failed for default policy pack");
-  RequirePolicyCatalogImport(database_path, created.state);
+  RequirePolicyCatalogImport(database_path, created.state, false);
 
   db::DatabaseOpenConfig open;
   open.path = database_path.string();
@@ -452,7 +460,7 @@ void RunSuccessfulImportCase() {
     std::cerr << opened.diagnostic.diagnostic_code << '\n';
   }
   Require(opened.ok(), "OpenDatabaseFile failed after policy import");
-  RequirePolicyCatalogImport(database_path, opened.state);
+  RequirePolicyCatalogImport(database_path, opened.state, true);
 }
 
 void RunHashMismatchCase() {
@@ -668,7 +676,7 @@ void RunMemoryImportAdmissionCases() {
       db::DatabaseOpenConfig open;open.path=path.string();open.read_only=true;
       const auto reopened=db::OpenDatabaseFile(open);
       Require(reopened.ok(),"persisted memory configuration improperly depends on import source after creation");
-      RequirePolicyCatalogImport(path,reopened.state);
+      RequirePolicyCatalogImport(path,reopened.state,true);
     }
   }
 }
@@ -694,7 +702,7 @@ void RunNativePolicyReopenCorruptionCases() {
         const auto foreign=uuid::ParseTypedUuid(UuidKind::object,"018f7a10-1280-7000-8000-000000000999");
         Require(foreign.ok(),"memory foreign identity fixture invalid");
         if(scenario<=12) {
-          if(!profile.ok()||profile.record->area!="memory_resource_governance")continue;
+          if(!profile.ok()||profile.record->area!=catalog::BootstrapPolicyArea::memory_resource_governance)continue;/*3b*/
           if(scenario==10)profile.record->resource_definition_generation=2;
           if(scenario==11)profile.record->resource_definition_uuid=foreign.value.value;
           if(scenario==12){profile.record->resource_definition_uuid.reset();profile.record->resource_definition_generation.reset();}
@@ -724,7 +732,10 @@ void RunNativePolicyReopenCorruptionCases() {
         auto pack=catalog::DecodeCatalogBootstrapPolicyPack(payload);
         if(!pack.ok())continue;
         if(scenario==3&&row.kind!=page::CatalogPageRowKind::policy_seed_pack)continue;
-        if(scenario==3)pack.record->pack_version="1.0.9";
+        // 3b: scenario 3 proves the summary row must equal the typed pack
+        // record byte for byte; it altered the retired version text, and now
+        // alters the content digest (still a valid, well-formed value).
+        if(scenario==3)pack.record->content_sha256[0]^=0xff;
         if(scenario==4) {
           const auto foreign=uuid::ParseTypedUuid(UuidKind::transaction,"018f7a10-1280-7000-8000-000000000999");
           Require(foreign.ok(),"foreign pack origin fixture invalid");pack.record->origin_transaction_uuid=foreign.value;

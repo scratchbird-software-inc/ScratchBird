@@ -11,7 +11,7 @@ constexpr CatalogValueFieldSchema fields[]{
   {1,T::engine_identity,true,16,UuidKind::object},{2,T::unsigned_integer,true,8},
   {3,T::engine_identity,true,16,UuidKind::object},{4,T::unsigned_integer,true,8},
   {5,T::engine_identity,true,16,UuidKind::object},{6,T::unsigned_integer,true,8},
-  {7,T::utf8_text,true,256},{8,T::utf8_text,true,256},{9,T::utf8_text,true,256},
+  // Tags 7-9 (policy_key, policy_name, provenance; version 1) are retired.
   {10,T::engine_identity,true,16,UuidKind::transaction},{11,T::unsigned_integer,true,8},
   {12,T::unsigned_integer,true,8},{13,T::unsigned_integer,true,8},{14,T::unsigned_integer,true,8},
   {15,T::unsigned_integer,true,8},{16,T::unsigned_integer,true,8},{17,T::unsigned_integer,true,8},
@@ -20,13 +20,11 @@ constexpr CatalogValueFieldSchema fields[]{
   {25,T::boolean,true,1},{26,T::unsigned_integer,true,8},{27,T::boolean,true,1},
   {28,T::boolean,true,1},{29,T::boolean,true,1},{30,T::unsigned_integer,true,8},
   {31,T::boolean,true,1},{32,T::boolean,true,1},{33,T::boolean,true,1}};
-constexpr CatalogValueSchemaView schema{65591,1,fields};
+constexpr CatalogValueSchemaView schema{65591,2,fields};
 bool Id(const Uuid& value){return uuid::IsEngineIdentityUuid(value);}
 bool Typed(const TypedUuid& value,UuidKind kind){return value.kind==kind&&Id(value.value);}
-bool Text(std::string_view value){return !value.empty()&&value.size()<=256&&value.find('\0')==value.npos;}
 bool ValidSettings(const CatalogMemoryConfiguration& r) {
-  if(!r.generation||r.imported_schema_version!=1||
-      !Text(r.policy_key)||!Text(r.policy_name)||!Text(r.provenance))return false;
+  if(!r.generation||r.imported_schema_version!=1)return false;
   return r.hard_limit_bytes&&r.soft_limit_bytes<=r.hard_limit_bytes&&
       r.per_context_limit_bytes<=r.hard_limit_bytes&&r.page_buffer_pool_limit_bytes<=r.hard_limit_bytes&&
       r.openssl_budget_bytes&&r.openssl_budget_bytes<r.hard_limit_bytes&&
@@ -55,10 +53,7 @@ struct Encoder {
     for(int i=0;i<size;++i)bytes[i]=static_cast<byte>(n>>(8*i));
     values[count++]={tag,type,UuidKind::unknown,std::span<const byte>(bytes).first(size)};
   }
-  void Text(u16 tag,std::string_view text){values[count++]={tag,T::utf8_text,UuidKind::unknown,
-      {reinterpret_cast<const byte*>(text.data()),text.size()}};}
 };
-std::string_view Text(const CatalogValueFieldView& value){return {reinterpret_cast<const char*>(value.bytes.data()),value.bytes.size()};}
 } // namespace
 CatalogValueError ValidateCatalogMemoryConfigurationSettings(const CatalogMemoryConfiguration& r) {
   return ValidSettings(r)?E::none:E::invalid_value;
@@ -67,7 +62,6 @@ CatalogValueEncodeIntoResult EncodeCatalogMemoryConfigurationInto(const CatalogM
   if(!Valid(r))return {E::invalid_value,{}};
   Encoder f;f.Id(1,r.configuration_uuid);f.Number(2,r.generation);f.Id(3,r.policy_pack_uuid);
   f.Number(4,r.policy_pack_generation);f.Id(5,r.profile_uuid);f.Number(6,r.imported_schema_version);
-  f.Text(7,r.policy_key);f.Text(8,r.policy_name);f.Text(9,r.provenance);
   f.Id(10,r.origin_transaction_uuid.value,UuidKind::transaction);f.Number(11,r.origin_local_transaction_id);
   f.Number(12,r.hard_limit_bytes);f.Number(13,r.soft_limit_bytes);f.Number(14,r.per_context_limit_bytes);
   f.Number(15,r.page_buffer_pool_limit_bytes);f.Number(16,r.openssl_budget_bytes);f.Number(17,r.min_startup_available_bytes);
@@ -79,7 +73,7 @@ CatalogValueEncodeIntoResult EncodeCatalogMemoryConfigurationInto(const CatalogM
   f.Number(28,r.ordinary_disconnect_heap_trim,T::boolean);f.Number(29,r.dirty_writeback_required,T::boolean);
   f.Number(30,static_cast<u64>(r.write_flush_authority));f.Number(31,r.cache_finality_authority,T::boolean);
   f.Number(32,r.cache_visibility_authority,T::boolean);f.Number(33,r.wal_or_redo_authority,T::boolean);
-  return EncodeCatalogValueBlockInto(schema,f.values,backing);
+  return EncodeCatalogValueBlockInto(schema,std::span<const CatalogValueFieldView>(f.values).first(f.count),backing);
 }
 CatalogMemoryConfigurationResult DecodeCatalogMemoryConfiguration(std::string_view bytes) {
   std::array<CatalogValueFieldView,33> backing;
@@ -91,7 +85,6 @@ CatalogMemoryConfigurationResult DecodeCatalogMemoryConfiguration(std::string_vi
     case 1:r.configuration_uuid=f.identity()->value;break;case 2:r.generation=*f.unsigned_value();break;
     case 3:r.policy_pack_uuid=f.identity()->value;break;case 4:r.policy_pack_generation=*f.unsigned_value();break;
     case 5:r.profile_uuid=f.identity()->value;break;case 6:r.imported_schema_version=*f.unsigned_value();break;
-    case 7:r.policy_key=Text(f);break;case 8:r.policy_name=Text(f);break;case 9:r.provenance=Text(f);break;
     case 10:r.origin_transaction_uuid=*f.identity();break;case 11:r.origin_local_transaction_id=*f.unsigned_value();break;
     case 12:r.hard_limit_bytes=*f.unsigned_value();break;case 13:r.soft_limit_bytes=*f.unsigned_value();break;
     case 14:r.per_context_limit_bytes=*f.unsigned_value();break;case 15:r.page_buffer_pool_limit_bytes=*f.unsigned_value();break;

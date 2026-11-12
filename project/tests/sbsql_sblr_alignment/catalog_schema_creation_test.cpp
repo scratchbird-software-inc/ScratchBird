@@ -719,7 +719,8 @@ void PhysicalChecks() {
     scratchbird::tests::bootstrap_policy::Fixture policies(tx);
     auto memory=scratchbird::tests::memory_configuration::Values(tx);
     memory.policy_pack_uuid=policies.pack.policy_pack_uuid;memory.profile_uuid=policies.profile.profile_uuid;
-    policies.profile.area="memory_resource_governance";policies.profile.mode="configured_policy_required";
+    policies.profile.area=scratchbird::core::catalog::BootstrapPolicyArea::memory_resource_governance;/*3b*/
+    policies.profile.mode=scratchbird::core::catalog::BootstrapPolicyMode::configured_policy_required;
     policies.profile.resource_definition_uuid=memory.configuration_uuid;
     policies.profile.resource_definition_generation=memory.generation;
     const auto policy_payloads=policies.Payloads();

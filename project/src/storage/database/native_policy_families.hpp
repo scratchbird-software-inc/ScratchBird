@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
+#include "catalog_bootstrap_policy.hpp"
 #include "catalog_identifier_profile.hpp"
 #include "catalog_isolation_profile.hpp"
 #include "catalog_management_descriptor.hpp"
@@ -37,7 +38,9 @@ struct NativeVerificationBodySeed {
 };
 struct NativeEvidenceBodySeed {
   std::string key, storage_filespace;
-  std::vector<std::string> required_evidence_classes, required_search_keys;
+  // 3b: the pack's class names mapped at import to EvidenceClass bits; the
+  // pack's required_search_keys are not carried (trace keys, see the codec).
+  u64 required_evidence_classes=0;
   u64 maximum_record_bytes=0, maximum_batch_bytes=0;
 };
 struct NativeAuthorizationBodySeed {
@@ -64,7 +67,9 @@ struct NativeIsolationProfileSeed {
   u64 snapshot_refresh_mask=0, write_conflict_detection_mask=0;
 };
 struct NativeProfileBindingSeed {
-  std::string policy_profile_area, resource_definition;
+  // 3b: the area constant, mapped from the pack's text at import.
+  core::catalog::BootstrapPolicyArea policy_profile_area{};
+  std::string resource_definition;
 };
 struct NativeManagementDescriptorSeed {
   std::string key;

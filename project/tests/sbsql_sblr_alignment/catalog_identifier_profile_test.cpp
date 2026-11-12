@@ -51,20 +51,32 @@ unsigned checks=0;
 void Check(bool ok,const char* why){++checks;if(!ok){heap_denied=false;throw std::runtime_error(why);}}
 c::CatalogIdentifierResolutionProfile Profile(){
   c::CatalogIdentifierResolutionProfile r;r.profile_uuid=f::Id(100);r.database_uuid=f::Id(1);r.generation=1;
-  r.profile_name="display_data_not_an_algorithm";r.quote_styles=1;r.escape_rule=c::IdentifierEscapeRule::doubled_delimiter;
+  r.quote_styles=1;r.escape_rule=c::IdentifierEscapeRule::doubled_delimiter;
   r.unquoted_fold_mode=c::IdentifierFoldMode::upper_ascii;r.quoted_preserves_case=true;r.comparison_mode=c::IdentifierComparisonMode::folded;
   r.storage_display_mode=c::IdentifierDisplayMode::preserve_user_text;r.reserved_word_behavior=c::IdentifierReservedWordMode::reserved_requires_quote;
   r.maximum_identifier_length=0;r.length_unit=c::IdentifierLengthUnit::unicode_scalar_values;
   r.origin_transaction_uuid={p::UuidKind::transaction,f::Id(5)};r.origin_local_transaction_id=1;return r;
 }
 std::string Golden(const c::CatalogIdentifierResolutionProfile& r,unsigned resource_mask=15,unsigned platform_mask=3){
-  f::Golden g(65617);g.Identity(1,r.profile_uuid);g.Integer(2,r.generation);g.Identity(3,r.database_uuid);g.Field(4,3,r.profile_name);
+  // 3b: schema version 2; tag 4 (the version-1 profile name) is gone.
+  f::Golden g(65617,2);g.Identity(1,r.profile_uuid);g.Integer(2,r.generation);g.Identity(3,r.database_uuid);
   g.Integer(5,r.quote_styles);g.Integer(6,static_cast<p::u64>(r.escape_rule));g.Integer(7,static_cast<p::u64>(r.unquoted_fold_mode));
   g.Boolean(8,r.quoted_preserves_case);g.Integer(9,static_cast<p::u64>(r.comparison_mode));g.Integer(10,static_cast<p::u64>(r.storage_display_mode));
   g.Integer(11,static_cast<p::u64>(r.reserved_word_behavior));g.Integer(12,r.maximum_identifier_length);g.Integer(13,static_cast<p::u64>(r.length_unit));g.Integer(14,r.dialect_mode_flags);
   if(r.resources){if(resource_mask&1)g.Identity(15,r.resources->charset_uuid);if(resource_mask&2)g.Integer(16,r.resources->charset_generation);
     if(resource_mask&4)g.Identity(17,r.resources->collation_uuid);if(resource_mask&8)g.Integer(18,r.resources->collation_generation);}
   if(r.platform){if(platform_mask&1)g.Identity(19,r.platform->profile_uuid);if(platform_mask&2)g.Integer(20,r.platform->generation);}
+  g.Identity(21,r.origin_transaction_uuid.value);g.Integer(22,r.origin_local_transaction_id);return g.Finish();
+}
+// 3b: the retired version-1 layout, built independently: version 1 and a tag-4
+// name. Used only to prove that the old version refuses. `name_version` lets a
+// version-2 header carry the retired tag (an unknown field in version 2).
+std::string GoldenV1(const c::CatalogIdentifierResolutionProfile& r,unsigned version=1){
+  f::Golden g(65617,version);g.Identity(1,r.profile_uuid);g.Integer(2,r.generation);g.Identity(3,r.database_uuid);
+  g.Field(4,3,"display_data_not_an_algorithm");
+  g.Integer(5,r.quote_styles);g.Integer(6,static_cast<p::u64>(r.escape_rule));g.Integer(7,static_cast<p::u64>(r.unquoted_fold_mode));
+  g.Boolean(8,r.quoted_preserves_case);g.Integer(9,static_cast<p::u64>(r.comparison_mode));g.Integer(10,static_cast<p::u64>(r.storage_display_mode));
+  g.Integer(11,static_cast<p::u64>(r.reserved_word_behavior));g.Integer(12,r.maximum_identifier_length);g.Integer(13,static_cast<p::u64>(r.length_unit));g.Integer(14,r.dialect_mode_flags);
   g.Identity(21,r.origin_transaction_uuid.value);g.Integer(22,r.origin_local_transaction_id);return g.Finish();
 }
 c::CatalogMetadataVersion Metadata(const c::CatalogIdentifierResolutionProfile& r){
@@ -80,8 +92,8 @@ void Roundtrip(const c::CatalogIdentifierResolutionProfile& r){
       std::equal(encoded.bytes.begin(),encoded.bytes.end(),reinterpret_cast<const p::byte*>(expected.data()))&&Golden(*decoded.record)==expected,
       "heap-free first-use exact full independent native profile byte oracle");
   Check(std::all_of(backing.begin()+expected.size(),backing.end(),[](auto b){return b==0x5a;}),"unused output tail retained");
-  const auto begin=reinterpret_cast<std::uintptr_t>(expected.data()),name=reinterpret_cast<std::uintptr_t>(decoded.record->profile_name.data());
-  Check(name>=begin&&name+decoded.record->profile_name.size()<=begin+expected.size(),"decoded name borrows exact admitted source, no owning copy");
+  // 3b: the decoded record borrows nothing (no name text); the borrowed-name
+  // extent check that stood here has no subject any more.
   allocations=0;const auto owned=c::EncodeCatalogIdentifierProfile(r);const auto allocated=allocations;
   Check(owned.ok()&&allocated==1&&owned.bytes==std::vector<p::byte>(encoded.bytes.begin(),encoded.bytes.end()),"owning encoding makes only its final payload allocation");
   for(std::size_t n=0;n<expected.size();++n){backing.fill(0x5a);heap_denied=true;
@@ -101,7 +113,13 @@ void Refuse(const c::CatalogIdentifierResolutionProfile& r,bool check_wire=true)
 }
 void Values(){
   const auto original=Profile();Roundtrip(original);
-  auto unicode=original;unicode.profile_name="\xe6\x97\xa5\xe6\x9c\xac\xe8\xaa\x9e";Roundtrip(unicode);
+  // 3b: the version-1 layout (tag-4 name) refuses, and so does the retired
+  // tag inside a version-2 header; the profile's name is in the names table.
+  for(const auto& old:{GoldenV1(original),GoldenV1(original,2)}){heap_denied=true;const auto decoded=c::DecodeCatalogIdentifierProfile(old);heap_denied=false;
+    auto m=Metadata(original);m.record.payload=old;const auto view=c::BorrowCatalogMetadataVersion(m);
+    Check(!decoded.ok()&&!decoded.record&&!c::CatalogIdentifierProfileMatchesMetadata(view)&&!c::CatalogMetadataVersionEncodedBytes(view),
+        "3b: version-1 profile (and its name tag) refuses, also through the common metadata dispatcher");}
+  Check(c::IsCatalogIdentifierProfilePayload(GoldenV1(original)),"3b: a version-1 payload is still recognized as this family, so it refuses rather than passing as foreign");
   const auto framed=Golden(original);
   for(const auto at:{0u,4u,6u,8u,12u,16u,20u,22u,24u,26u,27u,28u}){
     auto malformed=framed;malformed[at]^=1;heap_denied=true;const auto decoded=c::DecodeCatalogIdentifierProfile(malformed);heap_denied=false;
@@ -116,18 +134,19 @@ void Values(){
   for(unsigned display=1;display<=3;++display)for(unsigned words=1;words<=3;++words)for(unsigned unit=1;unit<=2;++unit){auto r=original;
     r.storage_display_mode=static_cast<c::IdentifierDisplayMode>(display);r.reserved_word_behavior=static_cast<c::IdentifierReservedWordMode>(words);
     r.length_unit=static_cast<c::IdentifierLengthUnit>(unit);r.quoted_preserves_case=false;Roundtrip(r);}
-  std::string maximum_name(256,'N');auto maximum=original;maximum.profile_name=maximum_name;
+  auto maximum=original;
   maximum.generation=maximum.origin_local_transaction_id=maximum.maximum_identifier_length=maximum.dialect_mode_flags=std::numeric_limits<p::u64>::max();
   maximum.resources=c::CatalogIdentifierResourceBinding{f::Id(200),f::Id(201),UINT64_MAX,UINT64_MAX};
   maximum.comparison_mode=c::IdentifierComparisonMode::profile_platform;maximum.platform=c::CatalogIdentifierPlatformBinding{f::Id(202),UINT64_MAX};Roundtrip(maximum);
   for(unsigned mask=1;mask<15;++mask){const auto wire=Golden(maximum,mask);heap_denied=true;const auto r=c::DecodeCatalogIdentifierProfile(wire);heap_denied=false;Check(!r.ok()&&!r.record,"partial resource UUID/generation quartet refuses");}
   for(unsigned mask=1;mask<3;++mask){const auto wire=Golden(maximum,15,mask);heap_denied=true;const auto r=c::DecodeCatalogIdentifierProfile(wire);heap_denied=false;Check(!r.ok()&&!r.record,"partial platform UUID/generation pair refuses");}
-  for(unsigned n=0;n<33;++n){auto r=maximum;std::string text;
+  for(unsigned n=0;n<33;++n){auto r=maximum;
+    // 3b: cases 7-10 and 31 mutated the retired name; the field is gone and the
+    // version-1 refusal above stands in for them.
+    if(n==7||n==8||n==9||n==10||n==31)continue;
     if(n==0)r.profile_uuid={};if(n==1)r.database_uuid.bytes[6]=0x40;if(n==2)r.generation=0;
     if(n==3)r.profile_uuid=r.database_uuid;if(n==4)r.origin_transaction_uuid.value=r.profile_uuid;
     if(n==5)r.origin_transaction_uuid.kind=p::UuidKind::object;if(n==6)r.origin_local_transaction_id=0;
-    if(n==7)r.profile_name="";if(n==8)r.profile_name=std::string_view("bad\0name",8);
-    if(n==9){text.assign(257,'X');r.profile_name=text;}if(n==10)r.profile_name=std::string_view("\xff",1);
     if(n==11)r.quote_styles=16;if(n==12)r.escape_rule=static_cast<c::IdentifierEscapeRule>(5);
     if(n==13)r.unquoted_fold_mode=static_cast<c::IdentifierFoldMode>(5);if(n==14)r.comparison_mode=static_cast<c::IdentifierComparisonMode>(5);
     if(n==15)r.storage_display_mode=static_cast<c::IdentifierDisplayMode>(0);if(n==16)r.reserved_word_behavior=static_cast<c::IdentifierReservedWordMode>(4);
@@ -140,19 +159,15 @@ void Values(){
     if(n==27)r.platform->profile_uuid=r.resources->collation_uuid;
     if(n==28)r.resources->charset_uuid=r.database_uuid;if(n==29)r.resources->collation_uuid=r.origin_transaction_uuid.value;
     if(n==30)r.origin_transaction_uuid.value=r.database_uuid;
-    if(n==31)r.profile_name={static_cast<const char*>(nullptr),1};
     if(n==32){r.platform.reset();r.resources.reset();r.comparison_mode=c::IdentifierComparisonMode::case_insensitive;}
-    Refuse(r,n!=5&&n!=31);
+    Refuse(r,n!=5);
   }
   // Every byte of the input object and borrowed text is protected from aliasing
   // destination writes, including scalar/padding bytes not directly serialized.
   auto value=original;std::array<p::byte,sizeof(value)> before,after;std::memcpy(before.data(),&value,sizeof(value));
   for(std::size_t at=0;at<sizeof(value);++at){heap_denied=true;const auto r=c::EncodeCatalogIdentifierProfileInto(value,{reinterpret_cast<p::byte*>(&value)+at,1});heap_denied=false;
     std::memcpy(after.data(),&value,sizeof(value));Check(!r.ok()&&r.error==c::CatalogValueError::invalid_backing&&after==before,"whole-object input overlap is refused unchanged");}
-  std::array<p::byte,1024> text_backing{};const auto text=std::string(original.profile_name);std::copy(text.begin(),text.end(),text_backing.begin());
-  value.profile_name={reinterpret_cast<const char*>(text_backing.data()),text.size()};const auto text_before=text_backing;
-  heap_denied=true;const auto alias=c::EncodeCatalogIdentifierProfileInto(value,text_backing);heap_denied=false;
-  Check(!alias.ok()&&alias.error==c::CatalogValueError::invalid_backing&&text_backing==text_before,"borrowed name backing cannot be overwritten");
+  // 3b: no borrowed name backing exists to alias any more.
 }
 void Bindings(){
   const auto r=Profile();const auto m=Metadata(r);const auto view=c::BorrowCatalogMetadataVersion(m);
@@ -178,7 +193,7 @@ void Bindings(){
 void LookupKeys(){
   using E=c::CatalogIdentifierKeyError;
   const auto bytes=[](std::string_view value){return std::span<const p::byte>(reinterpret_cast<const p::byte*>(value.data()),value.size());};
-  auto profile=Profile();profile.profile_name="postgresql_family_label_does_not_select_folding";
+  auto profile=Profile();
   const std::string raw=" Aa_\xc3\xa9\xf0\x9f\x90\xa6 ";
   const std::array<std::string,3> expected{raw," AA_\xc3\xa9\xf0\x9f\x90\xa6 "," aa_\xc3\xa9\xf0\x9f\x90\xa6 "};
   c::CatalogIdentifierKeyRequest request{&profile,raw};std::array<p::byte,256> output;
@@ -256,9 +271,7 @@ void LookupKeys(){
   request.text={reinterpret_cast<const char*>(text_backing.data()),raw.size()};auto before=text_backing;
   heap_denied=true;const auto text_alias=c::DeriveCatalogIdentifierLookupKeysInto(request,text_backing);heap_denied=false;
   Check(text_alias.error==E::invalid_backing&&text_backing==before,"input text cannot be overwritten by key derivation");
-  request.text=raw;profile.profile_name={reinterpret_cast<const char*>(text_backing.data()),raw.size()};
-  heap_denied=true;const auto name_alias=c::DeriveCatalogIdentifierLookupKeysInto(request,text_backing);heap_denied=false;
-  Check(name_alias.error==E::invalid_backing&&text_backing==before,"even non-algorithm profile-label backing cannot alias output");
+  // 3b: the profile carries no label backing; the label-alias check is gone.
 }
 void Physical(){
   scratchbird::tests::OwnedTempDirectory artifacts;const auto value=Profile();const auto meta=Metadata(value);

@@ -13,6 +13,7 @@
 #include "database_format.hpp"
 #include "catalog_database_record_codec.hpp"
 #include "catalog_runtime_authority_binding.hpp"
+#include "catalog_bootstrap_policy.hpp"
 #include "catalog_metric_config_materialization.hpp"
 #include "disk_device.hpp"
 #include "agent_engine_lifecycle.hpp"
@@ -138,7 +139,12 @@ struct PolicySeedPackCatalogImage {
   u32 grant_records = 0;
   u32 policy_profile_records = 0;
   u32 default_policy_records = 0;
-  std::vector<std::string> policy_profile_areas;
+  // 3b (SB_CATALOG_NO_TEXT_STEP3B): area constants, not the pack's text. An
+  // image read back from the catalog leaves policy_pack_id, policy_pack_version
+  // and signature_status empty: the records no longer carry them (the pack's
+  // UUID and content hash identify it; the signature status is checked as a
+  // constant while the image is read).
+  std::vector<scratchbird::core::catalog::BootstrapPolicyArea> policy_profile_areas;
 };
 
 struct DatabaseOpenConfig {

@@ -3,14 +3,17 @@
 #include "catalog_bootstrap_policy.hpp"
 #include "uuid.hpp"
 #include <algorithm>
+#include <iterator>
 
 namespace scratchbird::core::catalog {
 namespace {
 using E=CatalogValueError;using T=CatalogValueType;
+// 3b: pack tags 3 (pack_id) and 4 (pack_version) are retired; tag 6 is the
+// BootstrapSignatureStatus constant (text in version 1).
 constexpr CatalogValueFieldSchema pack_fields[]{
   {1,T::engine_identity,true,16,UuidKind::object},{2,T::unsigned_integer,true,8},
-  {3,T::utf8_text,true,256},{4,T::utf8_text,true,256},{5,T::opaque_bytes,true,32},
-  {6,T::utf8_text,true,256},{7,T::boolean,true,1},{8,T::boolean,true,1},{9,T::boolean,true,1},
+  {5,T::opaque_bytes,true,32},
+  {6,T::unsigned_integer,true,8},{7,T::boolean,true,1},{8,T::boolean,true,1},{9,T::boolean,true,1},
   {10,T::engine_identity,true,16,UuidKind::transaction},{11,T::unsigned_integer,true,8},
   {12,T::unsigned_integer,true,8},{13,T::unsigned_integer,true,8},{14,T::unsigned_integer,true,8},
   {15,T::unsigned_integer,true,8},{16,T::unsigned_integer,true,8},{17,T::unsigned_integer,true,8},
@@ -25,21 +28,21 @@ constexpr CatalogValueFieldSchema provider_fields[]{
 constexpr CatalogValueFieldSchema profile_fields[]{
   {1,T::engine_identity,true,16,UuidKind::object},{2,T::unsigned_integer,true,8},
   {3,T::engine_identity,true,16,UuidKind::object},{4,T::unsigned_integer,true,8},
-  {5,T::utf8_text,true,256},{6,T::utf8_text,true,256},
+  // 3b: tags 5 and 6 are the area and mode constants (text in version 1).
+  {5,T::unsigned_integer,true,8},{6,T::unsigned_integer,true,8},
   {7,T::engine_identity,false,16,UuidKind::object},
   {8,T::engine_identity,true,16,UuidKind::transaction},{9,T::unsigned_integer,true,8},
   {10,T::unsigned_integer,false,8}};
-constexpr CatalogValueSchemaView pack_schema{65588,1,pack_fields};
+constexpr CatalogValueSchemaView pack_schema{65588,2,pack_fields};
 constexpr CatalogValueSchemaView provider_schema{65589,1,provider_fields};
-constexpr CatalogValueSchemaView profile_schema{65590,1,profile_fields};
+constexpr CatalogValueSchemaView profile_schema{65590,2,profile_fields};
 bool Id(const Uuid& id){return uuid::IsEngineIdentityUuid(id);}
 bool Typed(const TypedUuid& id,UuidKind kind){return id.kind==kind&&Id(id.value);}
-bool Text(std::string_view v){return !v.empty()&&v.size()<=256&&v.find('\0')==v.npos;}
 bool Origin(const TypedUuid& tx,u64 local){return Typed(tx,UuidKind::transaction)&&local;}
 bool Valid(const CatalogBootstrapPolicyPack& r) {
   if(!Id(r.policy_pack_uuid)||!r.generation||!r.imported_schema_version||!Origin(r.origin_transaction_uuid,r.origin_local_transaction_id)||
-      r.policy_pack_uuid==r.origin_transaction_uuid.value||!Text(r.pack_id)||!Text(r.pack_version)||
-      !Text(r.declared_signature_status)||r.post_create_filesystem_authority)return false;
+      r.policy_pack_uuid==r.origin_transaction_uuid.value||
+      r.declared_signature_status!=BootstrapSignatureStatus::signature_ready_unsigned||r.post_create_filesystem_authority)return false;
   const auto& c=r.declared_counts;
   return c[1]<=c[0]&&c[2]<=c[0]-c[1]&&
       (!r.local_password_only||(c[1]==1&&c[2]==c[0]-1));
@@ -61,7 +64,8 @@ bool Valid(const CatalogBootstrapPolicyProfile& r) {
   return Id(r.profile_uuid)&&Id(r.policy_pack_uuid)&&r.profile_uuid!=r.policy_pack_uuid&&
       r.generation&&r.policy_pack_generation&&Origin(r.origin_transaction_uuid,r.origin_local_transaction_id)&&
       r.profile_uuid!=r.origin_transaction_uuid.value&&r.policy_pack_uuid!=r.origin_transaction_uuid.value&&
-      Text(r.area)&&Text(r.mode)&&(r.resource_definition_uuid?
+      static_cast<u64>(r.area)>=1&&static_cast<u64>(r.area)<=kBootstrapPolicyAreaCount&&
+      static_cast<u64>(r.mode)>=1&&static_cast<u64>(r.mode)<=kBootstrapPolicyModeCount&&(r.resource_definition_uuid?
         (r.resource_definition_generation&&*r.resource_definition_generation&&
          Id(*r.resource_definition_uuid)&&*r.resource_definition_uuid!=r.profile_uuid&&
          *r.resource_definition_uuid!=r.policy_pack_uuid&&*r.resource_definition_uuid!=r.origin_transaction_uuid.value):
@@ -81,16 +85,11 @@ struct Fields {
     for(int i=0;i<size;++i)bytes[i]=static_cast<byte>(value>>(8*i));
     fields[count++]={tag,type,UuidKind::unknown,std::span<const byte>(bytes).first(size)};
   }
-  void Text(u16 tag,std::string_view value) {
-    fields[count++]={tag,T::utf8_text,UuidKind::unknown,
-        {reinterpret_cast<const byte*>(value.data()),value.size()}};
-  }
   void Bytes(u16 tag,std::span<const byte> value){fields[count++]={tag,T::opaque_bytes,UuidKind::unknown,value};}
   CatalogValueEncodeIntoResult Encode(CatalogValueSchemaView schema,std::span<byte> backing) const {
     return EncodeCatalogValueBlockInto(schema,std::span<const CatalogValueFieldView>(fields).first(count),backing);
   }
 };
-std::string_view Text(const CatalogValueFieldView& f){return {reinterpret_cast<const char*>(f.bytes.data()),f.bytes.size()};}
 u32 Schema(std::string_view bytes) {
   if(bytes.size()<kCatalogValueBlockHeaderBytes||bytes.substr(0,4)!="SBCV")return 0;
   return platform::LoadLittle32(reinterpret_cast<const byte*>(bytes.data())+16);
@@ -114,10 +113,33 @@ std::optional<Family> DecodeFamily(std::string_view bytes) {
   return {};
 }
 } // namespace
+// 3b import boundary: the pack's exact spellings, in constant order.
+std::optional<BootstrapPolicyArea> BootstrapPolicyAreaFromImportText(std::string_view text) noexcept {
+  constexpr std::string_view names[]{"security_provider_selection","standard_roles_groups_grants","default_security_posture",
+    "memory_resource_governance","storage_filespace_page_policy","transaction_mga_cleanup_archive_backup_forward",
+    "optimizer_statistics_feedback","index_maintenance","agent_policy","diagnostics","observability",
+    "unsupported_feature_behavior","cluster_boundary","release_default_configuration"};
+  static_assert(std::size(names)==kBootstrapPolicyAreaCount);
+  for(u64 n=0;n<kBootstrapPolicyAreaCount;++n)if(names[n]==text)return static_cast<BootstrapPolicyArea>(n+1);
+  return std::nullopt;
+}
+std::optional<BootstrapPolicyMode> BootstrapPolicyModeFromImportText(std::string_view text) noexcept {
+  constexpr std::string_view names[]{"local_password_only","uuid_catalog_seed","deny_by_default","configured_policy_required",
+    "local_durable_fail_closed","mga_inventory_authority","catalog_backed_or_diagnostic_only","provider_admission_required",
+    "evidence_not_authority","stable_redacted_diagnostics","redacted_evidence_only","deterministic_fail_closed",
+    "external_provider_required","secure_defaults"};
+  static_assert(std::size(names)==kBootstrapPolicyModeCount);
+  for(u64 n=0;n<kBootstrapPolicyModeCount;++n)if(names[n]==text)return static_cast<BootstrapPolicyMode>(n+1);
+  return std::nullopt;
+}
+std::optional<BootstrapSignatureStatus> BootstrapSignatureStatusFromImportText(std::string_view text) noexcept {
+  if(text=="signature-ready-unsigned")return BootstrapSignatureStatus::signature_ready_unsigned;
+  return std::nullopt;
+}
 CatalogValueEncodeIntoResult EncodeCatalogBootstrapPolicyPackInto(const CatalogBootstrapPolicyPack& r,std::span<byte> backing) {
   if(!Valid(r))return {E::invalid_value,{}};
-  Fields f;f.Id(1,r.policy_pack_uuid);f.Number(2,r.generation);f.Text(3,r.pack_id);f.Text(4,r.pack_version);
-  f.Bytes(5,r.content_sha256);f.Text(6,r.declared_signature_status);f.Number(7,r.create_time_only,T::boolean);
+  Fields f;f.Id(1,r.policy_pack_uuid);f.Number(2,r.generation);
+  f.Bytes(5,r.content_sha256);f.Number(6,static_cast<u64>(r.declared_signature_status));f.Number(7,r.create_time_only,T::boolean);
   f.Number(8,r.post_create_filesystem_authority,T::boolean);f.Number(9,r.local_password_only,T::boolean);
   f.Id(10,r.origin_transaction_uuid.value,UuidKind::transaction);f.Number(11,r.origin_local_transaction_id);
   for(unsigned i=0;i<r.declared_counts.size();++i)f.Number(12+i,r.declared_counts[i]);
@@ -136,7 +158,7 @@ CatalogValueEncodeIntoResult EncodeCatalogBootstrapSecurityProviderInto(const Ca
 CatalogValueEncodeIntoResult EncodeCatalogBootstrapPolicyProfileInto(const CatalogBootstrapPolicyProfile& r,std::span<byte> backing) {
   if(!Valid(r))return {E::invalid_value,{}};
   Fields f;f.Id(1,r.profile_uuid);f.Number(2,r.generation);f.Id(3,r.policy_pack_uuid);f.Number(4,r.policy_pack_generation);
-  f.Text(5,r.area);f.Text(6,r.mode);if(r.resource_definition_uuid)f.Id(7,*r.resource_definition_uuid);
+  f.Number(5,static_cast<u64>(r.area));f.Number(6,static_cast<u64>(r.mode));if(r.resource_definition_uuid)f.Id(7,*r.resource_definition_uuid);
   f.Id(8,r.origin_transaction_uuid.value,UuidKind::transaction);f.Number(9,r.origin_local_transaction_id);
   if(r.resource_definition_generation)f.Number(10,*r.resource_definition_generation);
   return f.Encode(profile_schema,backing);
@@ -149,10 +171,9 @@ CatalogBootstrapPolicyResult<CatalogBootstrapPolicyPack> DecodeCatalogBootstrapP
   CatalogBootstrapPolicyPack r;
   for(const auto& f:fields.fields) switch(f.id) {
     case 1:r.policy_pack_uuid=f.identity()->value;break;case 2:r.generation=*f.unsigned_value();break;
-    case 3:r.pack_id=Text(f);break;case 4:r.pack_version=Text(f);break;
     case 5:if(f.bytes.size()!=32)return {E::invalid_value,{}};
       std::copy(f.bytes.begin(),f.bytes.end(),r.content_sha256.begin());break;
-    case 6:r.declared_signature_status=Text(f);break;
+    case 6:r.declared_signature_status=static_cast<BootstrapSignatureStatus>(*f.unsigned_value());break;
     case 7:r.create_time_only=f.bytes[0];break;case 8:r.post_create_filesystem_authority=f.bytes[0];break;
     case 9:r.local_password_only=f.bytes[0];break;case 10:r.origin_transaction_uuid=*f.identity();break;
     case 11:r.origin_local_transaction_id=*f.unsigned_value();break;
@@ -190,7 +211,8 @@ CatalogBootstrapPolicyResult<CatalogBootstrapPolicyProfile> DecodeCatalogBootstr
   for(const auto& f:fields.fields) switch(f.id) {
     case 1:r.profile_uuid=f.identity()->value;break;case 2:r.generation=*f.unsigned_value();break;
     case 3:r.policy_pack_uuid=f.identity()->value;break;case 4:r.policy_pack_generation=*f.unsigned_value();break;
-    case 5:r.area=Text(f);break;case 6:r.mode=Text(f);break;
+    case 5:r.area=static_cast<BootstrapPolicyArea>(*f.unsigned_value());break;
+    case 6:r.mode=static_cast<BootstrapPolicyMode>(*f.unsigned_value());break;
     case 7:r.resource_definition_uuid=f.identity()->value;break;
     case 8:r.origin_transaction_uuid=*f.identity();break;case 9:r.origin_local_transaction_id=*f.unsigned_value();break;
     case 10:r.resource_definition_generation=*f.unsigned_value();break;

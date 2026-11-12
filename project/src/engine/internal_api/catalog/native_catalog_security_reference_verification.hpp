@@ -64,7 +64,7 @@ inline NativeCatalogSecurityReferenceVerification VerifyNativeCatalogSecurityRef
         definition.record.header.kind!=K::policy||definition.object_subtype!=scratchbird::core::catalog::CatalogObjectSubtype::bootstrap_policy_profile||
         !c::CatalogBootstrapPolicyMatchesMetadata(definition))return fail(E::invalid_policy,id,m.security_policy_uuid.value);
     const auto posture=c::DecodeCatalogBootstrapPolicyProfile(definition.record.payload);
-    if(!posture.ok()||posture.record->profile_uuid!=m.security_policy_uuid.value||posture.record->area!="default_security_posture")
+    if(!posture.ok()||posture.record->profile_uuid!=m.security_policy_uuid.value||posture.record->area!=c::BootstrapPolicyArea::default_security_posture)/*3b*/
       return fail(E::invalid_policy,id,m.security_policy_uuid.value);
     ++out.policies;
     const auto* pack=find(posture.record->policy_pack_uuid);

@@ -147,10 +147,12 @@ struct CredentialNativeFixture {
       metadata.status=catalog::CatalogObjectStatus::retired;metadata.retired_transaction_uuid=security_tx;}
     seed[4].push_back({metadata,{}});
     security_fixture::Fixture policy(security_tx);policy.provider.provider_uuid=Id(210);
-    policy.profile.profile_uuid=Id(52);policy.profile.area="default_security_posture";policy.profile.mode="deny_by_default";
+    policy.profile.profile_uuid=Id(52);policy.profile.area=catalog::BootstrapPolicyArea::default_security_posture;policy.profile.mode=catalog::BootstrapPolicyMode::deny_by_default;/*3b*/
     if(variant==CredentialVariant::foreign_posture_pack)policy.profile.policy_pack_uuid=Id(249);
     if(variant==CredentialVariant::stale_posture_pack)policy.profile.policy_pack_generation=2;
-    if(variant==CredentialVariant::wrong_posture_mode)policy.profile.mode="allow_all";
+    // 3b: modes are constants; a valid mode other than deny_by_default is the
+    // wrong posture mode (the free text "allow_all" has no constant).
+    if(variant==CredentialVariant::wrong_posture_mode)policy.profile.mode=catalog::BootstrapPolicyMode::secure_defaults;
     if(variant==CredentialVariant::posture_resource){policy.profile.resource_definition_uuid=Id(248);
       policy.profile.resource_definition_generation=1;}
     if(variant==CredentialVariant::stale_pack_reference){policy.provider.policy_pack_generation=2;policy.profile.policy_pack_generation=2;}
@@ -520,7 +522,8 @@ void Success(unsigned profile,bool indexed,int death_mode=0,bool discover=false)
     allocation_budget=0;const auto selected=server::SelectNativeLocalServiceStartupDeclarations(*result.lease);
     const auto selection_budget=allocation_budget;allocation_budget=-1;
     Check(selected.ok()&&selection_budget==0&&selected.declarations->posture.profile_uuid==Id(52)&&
-        selected.declarations->posture.area=="default_security_posture"&&selected.declarations->posture.mode=="deny_by_default"&&
+        selected.declarations->posture.area==catalog::BootstrapPolicyArea::default_security_posture&&/*3b*/
+        selected.declarations->posture.mode==catalog::BootstrapPolicyMode::deny_by_default&&
         selected.declarations->pack.policy_pack_uuid==security_fixture::Id(9000)&&selected.declarations->pack.generation==1&&
         selected.declarations->posture.generation==1&&result.lease->binding().policy_epoch==31&&
         !selected.declarations->pack_version_uuid.is_nil()&&!selected.declarations->posture_version_uuid.is_nil(),

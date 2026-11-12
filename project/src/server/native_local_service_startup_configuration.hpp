@@ -103,23 +103,24 @@ inline NativeLocalServiceStartupConfigurationResult SelectNativeLocalServiceStar
     if(!decoded.ok()||!c::CatalogBootstrapPolicyMatchesMetadata(m))return fail(E::profile_invalid,id);
     const auto& p=*decoded.record;
     if(p.policy_pack_uuid!=declarations.pack.policy_pack_uuid)continue;
-    if(p.area!="security_provider_selection"&&p.area!="memory_resource_governance")continue;
+    // 3b: area and mode are constants (SB_CATALOG_NO_TEXT_STEP3B).
+    if(p.area!=c::BootstrapPolicyArea::security_provider_selection&&p.area!=c::BootstrapPolicyArea::memory_resource_governance)continue;
     if(p.policy_pack_generation!=declarations.pack.generation){
       out.failing_binding=F::pack_generation;out.expected_generation=declarations.pack.generation;
       out.observed_generation=p.policy_pack_generation;return fail(E::pack_generation_mismatch,id);
     }
     if(!provenance(m))return fail(E::source_generation_mismatch,id);
     if(!committed(p))return fail(E::origin_not_committed,id);
-    if(p.area=="security_provider_selection"){
+    if(p.area==c::BootstrapPolicyArea::security_provider_selection){
       if(provider_row)return fail(E::provider_selection_ambiguous,id);
       if(!active(row))return fail(E::provider_selection_inactive,id);
-      if(p.mode!="local_password_only"||p.resource_definition_uuid||p.resource_definition_generation)
+      if(p.mode!=c::BootstrapPolicyMode::local_password_only||p.resource_definition_uuid||p.resource_definition_generation)
         return fail(E::provider_selection_unsupported,id);
       provider_row=&row;provider_profile=p;
     }else{
       if(memory_row)return fail(E::memory_profile_ambiguous,id);
       if(!active(row))return fail(E::memory_profile_inactive,id);
-      if(p.mode!="configured_policy_required"||!p.resource_definition_uuid||!p.resource_definition_generation)
+      if(p.mode!=c::BootstrapPolicyMode::configured_policy_required||!p.resource_definition_uuid||!p.resource_definition_generation)
         return fail(E::memory_profile_unsupported,id);
       memory_row=&row;memory_profile=p;
     }

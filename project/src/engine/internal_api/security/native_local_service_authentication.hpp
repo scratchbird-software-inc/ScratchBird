@@ -88,8 +88,9 @@ class NativeLocalServiceAuthentication final {
         in.provider.authority!=c::BootstrapProviderAuthority::durable_catalog||in.provider.external_provider||
         in.provider.verifier_policy!=c::BootstrapVerifierPolicy::local_password_verifier_required)
       return fail(E::provider_unsupported);
-    if(in.selection.area!="security_provider_selection"||in.selection.mode!="local_password_only"||
-        in.posture.area!="default_security_posture"||in.posture.mode!="deny_by_default"||
+    // 3b: area and mode are constants (SB_CATALOG_NO_TEXT_STEP3B).
+    if(in.selection.area!=c::BootstrapPolicyArea::security_provider_selection||in.selection.mode!=c::BootstrapPolicyMode::local_password_only||
+        in.posture.area!=c::BootstrapPolicyArea::default_security_posture||in.posture.mode!=c::BootstrapPolicyMode::deny_by_default||
         in.posture.profile_uuid!=in.binding.policy_uuid||
         in.selection.policy_pack_uuid!=in.provider.policy_pack_uuid||
         in.posture.policy_pack_uuid!=in.provider.policy_pack_uuid||

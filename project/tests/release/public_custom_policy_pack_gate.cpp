@@ -286,8 +286,12 @@ void ProveCustomPackCreateAndReopen(const std::filesystem::path& root) {
     std::cerr << opened.diagnostic.diagnostic_code << '\n';
   }
   Require(opened.ok(), "custom policy pack database did not reopen");
-  Require(opened.state.policy_seed_catalog.policy_pack_id == "custom-local-password",
-          "custom policy pack id was not durable after reopen");
+  // 3b (SB_CATALOG_NO_TEXT_STEP3B): the pack record no longer stores the
+  // manifest's text id, so the reopened state (read from the catalog) has none;
+  // the custom pack's durable identity is its UUID.
+  Require(opened.state.policy_seed_catalog.policy_pack_id.empty() &&
+              opened.state.policy_seed_catalog.policy_pack_uuid == expected_pack.value.value,
+          "custom policy pack UUID was not durable after reopen");
 }
 
 void ProveFailClosedDiagnostics(const std::filesystem::path& root) {

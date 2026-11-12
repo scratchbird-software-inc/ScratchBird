@@ -66,6 +66,28 @@ void Tests() {
   for(unsigned i=0;i<3;++i){auto bad=base;if(i==0)bad.cache_finality_authority=true;if(i==1)bad.cache_visibility_authority=true;if(i==2)bad.wal_or_redo_authority=true;Refuse(bad);}
   for(unsigned version: {0,1,4,6,8}) {auto bad=base;bad.configuration_uuid.bytes[6]=version<<4;Refuse(bad);}
   {
+    // 3b: the retired version-1 layout (labels at tags 7-9) refuses, and so do
+    // the retired tags inside a version-2 header. Independently framed.
+    for(const unsigned version:{1u,2u}){
+      f::Golden g(65591,version);g.Identity(1,base.configuration_uuid);g.Integer(2,base.generation);g.Identity(3,base.policy_pack_uuid);
+      g.Integer(4,base.policy_pack_generation);g.Identity(5,base.profile_uuid);g.Integer(6,base.imported_schema_version);
+      g.Field(7,3,"server.memory_cache.default");g.Field(8,3,"default_local_server_memory_cache_v1");
+      g.Field(9,3,"default_policy_pack:default-local-password:server_memory_cache_policy");
+      // Re-append tags 10..33 from the version-2 oracle, then fix the header.
+      const auto all=m::Golden(base);std::size_t at=24;unsigned skipped=0;
+      const auto byte=[&](std::size_t n){return static_cast<std::size_t>(static_cast<unsigned char>(all[n]));};
+      while(at<all.size()){const auto tag=byte(at)|byte(at+1)<<8;
+        const auto n=byte(at+4)|byte(at+5)<<8|byte(at+6)<<16|byte(at+7)<<24;
+        if(tag>=10)g.Field(static_cast<unsigned>(tag),static_cast<unsigned>(byte(at+2)),std::string_view(all).substr(at+8,n));else ++skipped;at+=8+n;}
+      Check(skipped==6,"3b: the oracle's first six fields precede the retired tags");
+      const auto old=g.Finish();heap_denied=true;const auto decoded=c::DecodeCatalogMemoryConfiguration(old);heap_denied=false;
+      Check(!decoded.ok()&&!decoded.record&&c::IsCatalogMemoryConfigurationPayload(old),"3b: version-1 memory configuration (and its label tags) refuses");
+      auto meta=m::Metadata(base,f::Id(60));meta.record.payload=old;
+      Check(!c::CatalogMemoryConfigurationMatchesMetadata(c::BorrowCatalogMetadataVersion(meta))&&
+          !c::CatalogMetadataVersionEncodedBytes(c::BorrowCatalogMetadataVersion(meta)),"3b: the common dispatcher refuses the old layout too");
+    }
+  }
+  {
     auto wrong_kind=base;wrong_kind.origin_transaction_uuid.kind=p::UuidKind::object;
     std::array<p::byte,2048> backing;backing.fill(0x5a);heap_denied=true;
     const auto refused=c::EncodeCatalogMemoryConfigurationInto(wrong_kind,backing);heap_denied=false;
@@ -83,8 +105,15 @@ void Tests() {
   auto bound=*imported.settings;bound.configuration_uuid=base.configuration_uuid;bound.policy_pack_uuid=base.policy_pack_uuid;
   bound.policy_pack_generation=base.policy_pack_generation;bound.profile_uuid=base.profile_uuid;
   bound.origin_transaction_uuid=tx;bound.origin_local_transaction_id=1;
-  Check(m::Golden(bound)==m::Golden(base),"every actual imported limit/flag/label matches independent expected native bytes");
-  const auto used=bound.policy_key.size()+bound.policy_name.size()+bound.provenance.size();
+  Check(m::Golden(bound)==m::Golden(base),"every actual imported limit/flag matches independent expected native bytes");
+  // 3b: the labels come back beside the settings, as import-boundary text,
+  // and are not part of the record. Independent values: the resource file.
+  Check(imported.labels&&imported.labels->policy_key=="server.memory_cache.default"&&
+      imported.labels->policy_name=="default_local_server_memory_cache_v1"&&
+      imported.labels->provenance=="default_policy_pack:default-local-password:server_memory_cache_policy"&&
+      imported.labels->policy_name.data()>=labels.data()&&imported.labels->provenance.data()+imported.labels->provenance.size()<=labels.data()+labels.size(),
+      "3b: import labels are exact, borrowed from the caller's backing, beside the settings");
+  const auto used=imported.labels->policy_key.size()+imported.labels->policy_name.size()+imported.labels->provenance.size();
   for(std::size_t n=0;n<used;++n){labels.fill('Z');heap_denied=true;
     const auto refused=c::ImportMemoryConfigurationInto(source,std::span<char>(labels).first(n));heap_denied=false;
     Check(!refused.ok()&&!refused.settings&&std::all_of(labels.begin(),labels.end(),[](char c){return c=='Z';}),"every truncated import string grant preserves backing");}
@@ -107,17 +136,19 @@ void Tests() {
     labels.fill('Z');heap_denied=true;const auto refused=c::ImportMemoryConfigurationInto(bad,labels);heap_denied=false;
     Check(!refused.ok()&&!refused.settings&&std::all_of(labels.begin(),labels.end(),[](char c){return c=='Z';}),"malformed/contradictory/duplicate imports refuse before writes");
     if(scenario==2) {
-      Check(refused.diagnostic&&refused.diagnostic->policy_name()==base.policy_name&&refused.diagnostic->provenance()==base.provenance,
+      // 3b: expected labels from the resource file, not from the record.
+      const std::string_view name="default_local_server_memory_cache_v1",provenance="default_policy_pack:default-local-password:server_memory_cache_policy";
+      Check(refused.diagnostic&&!refused.labels&&refused.diagnostic->policy_name()==name&&refused.diagnostic->provenance()==provenance,
           "semantic refusal retains exact bounded diagnostic labels without partial settings or output writes");
       const auto copied=refused;
-      Check(copied.diagnostic->policy_name()==base.policy_name&&copied.diagnostic->provenance()==base.provenance,
+      Check(copied.diagnostic->policy_name()==name&&copied.diagnostic->provenance()==provenance,
           "copied diagnostic owns labels rather than retaining stack views");
     }
   }
   auto escaped=source;Replace(escaped,"\"limits\"","\"\\u006cimits\"");
   Replace(escaped,"\"policy_name\": \"default_local_server_memory_cache_v1\"","\"policy_name\": \"A\\n\\u03a9\\ud834\\udd1e\"");
   heap_denied=true;const auto unicode=c::ImportMemoryConfigurationInto(escaped,labels);heap_denied=false;
-  Check(unicode.ok()&&unicode.settings->policy_name=="A\n\xce\xa9\xf0\x9d\x84\x9e","decoded Unicode keys/labels preserve exact scalar bytes");
+  Check(unicode.ok()&&unicode.labels->policy_name=="A\n\xce\xa9\xf0\x9d\x84\x9e","decoded Unicode keys/labels preserve exact scalar bytes");
   auto overlap=source;const auto before=overlap;heap_denied=true;
   const auto refused_overlap=c::ImportMemoryConfigurationInto(overlap,{overlap.data(),overlap.size()});heap_denied=false;
   Check(!refused_overlap.ok()&&overlap==before,"import backing cannot overlap immutable input");
@@ -125,14 +156,18 @@ void Tests() {
   labels.fill('Z');heap_denied=true;
   const auto profile=c::ImportBootstrapPolicyProfileInto(profile_source,labels);heap_denied=false;
   Check(profile.ok()&&profile.profile->profile_uuid.bytes[0]==1&&profile.profile->profile_uuid.bytes[1]==0x90&&
-      profile.profile->profile_uuid.bytes[15]==1&&profile.profile->area=="memory_resource_governance"&&
-      profile.profile->mode=="configured_policy_required"&&profile.profile->resource_file=="policies/server_memory_cache_policy.json",
-      "profile import resolves canonical raw16 identity and scoped settings without allocation");
-  const auto profile_used=profile.profile->area.size()+profile.profile->mode.size()+profile.profile->resource_file->size();
+      profile.profile->profile_uuid.bytes[15]==1&&profile.profile->area==c::BootstrapPolicyArea::memory_resource_governance&&
+      profile.profile->mode==c::BootstrapPolicyMode::configured_policy_required&&profile.profile->resource_file=="policies/server_memory_cache_policy.json"&&
+      profile.profile->resource_file->data()==labels.data(),
+      "profile import resolves canonical raw16 identity, area/mode constants (3b) and the path without allocation");
+  // 3b: only the resource path is written to the caller's backing now.
+  const auto profile_used=profile.profile->resource_file->size();
   for(std::size_t n=0;n<profile_used;++n){labels.fill('Z');heap_denied=true;
     const auto refused=c::ImportBootstrapPolicyProfileInto(profile_source,std::span<char>(labels).first(n));heap_denied=false;
     Check(!refused.ok()&&!refused.profile&&std::all_of(labels.begin(),labels.end(),[](char c){return c=='Z';}),"every profile backing truncation refuses atomically");}
-  for(unsigned scenario=0;scenario<12;++scenario){auto bad=profile_source;
+  // 3b: scenarios 12-14 are text the import must map: an unknown area, an
+  // unknown mode and a near-miss spelling refuse; nothing defaults.
+  for(unsigned scenario=0;scenario<15;++scenario){auto bad=profile_source;
     if(scenario==0)Replace(bad,"7000","4000");if(scenario==1)Replace(bad,"8000","0000");
     if(scenario==2)Replace(bad,"01900000-","01900000_");
     if(scenario==3)Replace(bad,"\"resource_file\":\"policies/server_memory_cache_policy.json\"","\"resource_file\":null");
@@ -143,6 +178,9 @@ void Tests() {
     if(scenario==8)Replace(bad,"\"resource_file\"","\"unknown\"");
     if(scenario==9)Replace(bad,"\"area\":\"memory_resource_governance\",","");
     if(scenario==10)bad.pop_back();if(scenario==11)Replace(bad,"\"mode\":\"configured_policy_required\"","\"mode\":\"\\ud834\"");
+    if(scenario==12)Replace(bad,"\"area\":\"memory_resource_governance\"","\"area\":\"memory_governance\"");
+    if(scenario==13)Replace(bad,"\"mode\":\"configured_policy_required\"","\"mode\":\"ignore_policy\"");
+    if(scenario==14)Replace(bad,"\"mode\":\"configured_policy_required\"","\"mode\":\"configured-policy-required\"");
     labels.fill('Z');heap_denied=true;const auto refused=c::ImportBootstrapPolicyProfileInto(bad,labels);heap_denied=false;
     Check(!refused.ok()&&!refused.profile&&std::all_of(labels.begin(),labels.end(),[](char c){return c=='Z';}),"malformed, duplicate, missing and ill-typed profile members refuse without writes");}
   auto without_resource=profile_source;Replace(without_resource,",\"resource_file\":\"policies/server_memory_cache_policy.json\"","");

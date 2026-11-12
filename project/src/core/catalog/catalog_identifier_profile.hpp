@@ -24,8 +24,9 @@ struct CatalogIdentifierPlatformBinding {Uuid profile_uuid;u64 generation=0;};
 struct CatalogIdentifierResolutionProfile {
   Uuid profile_uuid,database_uuid;
   u64 generation=0;
-  // Display/import/export data only; never used to select a fold algorithm.
-  std::string_view profile_name;
+  // 3b (SB_CATALOG_NO_TEXT_STEP3B): schema version 2 carries no profile name.
+  // The pack's profile_name is the object's reference name in the names table
+  // (native create); version 1 payloads, which carried it as tag 4, refuse.
   // bits0..3: double_quote,backtick,bracket,donor_api. Zero admits no quotes.
   u64 quote_styles=0;
   IdentifierEscapeRule escape_rule=static_cast<IdentifierEscapeRule>(0);
@@ -49,8 +50,8 @@ struct CatalogIdentifierProfileResult {
   std::optional<CatalogIdentifierResolutionProfile> record;
   bool ok()const noexcept{return error==CatalogValueError::none&&record.has_value();}
 };
-// Heap-free borrowed decode/size/Into encode, including first use. The caller
-// owns immutable profile_name backing for the lifetime of a decoded view.
+// Heap-free decode/size/Into encode, including first use. The record holds
+// only identities and values; it borrows nothing.
 std::optional<std::size_t> CatalogIdentifierProfileEncodedBytes(const CatalogIdentifierResolutionProfile&);
 CatalogValueEncodeIntoResult EncodeCatalogIdentifierProfileInto(const CatalogIdentifierResolutionProfile&,std::span<byte>);
 CatalogValueEncodeResult EncodeCatalogIdentifierProfile(const CatalogIdentifierResolutionProfile&);

@@ -111,8 +111,11 @@ MemoryConfigurationImportResult ImportMemoryConfigurationInto(std::string_view j
   for(std::size_t n=0;n<3;++n){
     if(text[n].size()<2||text[n].front()!='"')return {E::type_mismatch,{}};
     if(!String(text[n],std::span<char>(staged).subspan(used,256),lengths[n]))return {E::size_limit,{}};used+=lengths[n];}
-  r.policy_key={staged.data(),lengths[0]};r.policy_name={staged.data()+lengths[0],lengths[1]};r.provenance={staged.data()+lengths[0]+lengths[1],lengths[2]};
-  if(ValidateCatalogMemoryConfigurationSettings(r)!=E::none||
+  // 3b: the labels are import-boundary text, validated here (they were record
+  // fields before): each nonempty, at most 256 bytes, no NUL.
+  const auto label=[&](std::size_t n){const std::string_view v(staged.data()+(n?lengths[0]:0)+(n==2?lengths[1]:0),lengths[n]);
+    return !v.empty()&&v.size()<=256&&v.find('\0')==v.npos;};
+  if(!label(0)||!label(1)||!label(2)||ValidateCatalogMemoryConfigurationSettings(r)!=E::none||
       !Label(root[3],"memory_resource_governance")||!Label(root[4],"configured_policy_required")) {
     MemoryConfigurationImportDiagnostic context;
     std::memcpy(context.labels.data(),staged.data(),used);context.lengths=lengths;
@@ -123,8 +126,9 @@ MemoryConfigurationImportResult ImportMemoryConfigurationInto(std::string_view j
   if(input>std::numeric_limits<std::uintptr_t>::max()-json.size()||output>std::numeric_limits<std::uintptr_t>::max()-used||
       (input<output+used&&output<input+json.size()))return {E::invalid_backing,{}};
   std::memcpy(backing.data(),staged.data(),used);
-  r.policy_key={backing.data(),lengths[0]};r.policy_name={backing.data()+lengths[0],lengths[1]};r.provenance={backing.data()+lengths[0]+lengths[1],lengths[2]};
-  return {E::none,r};
+  const MemoryConfigurationImportLabels labels{{backing.data(),lengths[0]},{backing.data()+lengths[0],lengths[1]},
+      {backing.data()+lengths[0]+lengths[1],lengths[2]}};
+  return {E::none,r,{},labels};
 }
 BootstrapPolicyProfileImportResult ImportBootstrapPolicyProfileInto(std::string_view json,std::span<char> backing) {
   if(json.size()>maximum_import_bytes)return {E::size_limit,{}};
@@ -151,13 +155,18 @@ BootstrapPolicyProfileImportResult ImportBootstrapPolicyProfileInto(std::string_
     if(!lengths[n]||std::string_view(staged.data()+used,lengths[n]).find('\0')!=std::string_view::npos)return {E::invalid_value,{}};
     used+=lengths[n];
   }
-  if(backing.size()<used)return {E::invalid_backing,{}};
+  // 3b: area and mode map to their constants here, once; unknown text refuses.
+  const auto area=BootstrapPolicyAreaFromImportText({staged.data(),lengths[0]});
+  const auto mode=BootstrapPolicyModeFromImportText({staged.data()+lengths[0],lengths[1]});
+  if(!area||!mode)return {E::invalid_value,{}};
+  r.area=*area;r.mode=*mode;
+  const auto path=lengths[2];
+  if(backing.size()<path)return {E::invalid_backing,{}};
   const auto input=reinterpret_cast<std::uintptr_t>(json.data()),output=reinterpret_cast<std::uintptr_t>(backing.data());
-  if(input>std::numeric_limits<std::uintptr_t>::max()-json.size()||output>std::numeric_limits<std::uintptr_t>::max()-used||
-      (input<output+used&&output<input+json.size()))return {E::invalid_backing,{}};
-  std::memcpy(backing.data(),staged.data(),used);
-  r.area={backing.data(),lengths[0]};r.mode={backing.data()+lengths[0],lengths[1]};
-  if(!values[3].empty())r.resource_file=std::string_view(backing.data()+lengths[0]+lengths[1],lengths[2]);
+  if(input>std::numeric_limits<std::uintptr_t>::max()-json.size()||output>std::numeric_limits<std::uintptr_t>::max()-path||
+      (input<output+path&&output<input+json.size()))return {E::invalid_backing,{}};
+  std::memcpy(backing.data(),staged.data()+lengths[0]+lengths[1],path);
+  if(!values[3].empty())r.resource_file=std::string_view(backing.data(),path);
   return {E::none,r};
 }
 } // namespace scratchbird::core::catalog

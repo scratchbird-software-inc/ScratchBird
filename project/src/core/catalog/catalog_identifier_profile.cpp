@@ -11,7 +11,8 @@ using E=CatalogValueError;using T=CatalogValueType;
 constexpr u32 schema_id=65617;
 constexpr CatalogValueFieldSchema fields[]{
   {1,T::engine_identity,true,16,UuidKind::object},{2,T::unsigned_integer,true,8},
-  {3,T::engine_identity,true,16,UuidKind::database},{4,T::utf8_text,true,256},
+  // Tag 4 (profile_name, version 1) is retired: names live in the names table.
+  {3,T::engine_identity,true,16,UuidKind::database},
   {5,T::unsigned_integer,true,8},{6,T::unsigned_integer,true,8},{7,T::unsigned_integer,true,8},
   {8,T::boolean,true,1},{9,T::unsigned_integer,true,8},{10,T::unsigned_integer,true,8},
   {11,T::unsigned_integer,true,8},{12,T::unsigned_integer,true,8},{13,T::unsigned_integer,true,8},
@@ -20,7 +21,7 @@ constexpr CatalogValueFieldSchema fields[]{
   {17,T::engine_identity,false,16,UuidKind::object},{18,T::unsigned_integer,false,8},
   {19,T::engine_identity,false,16,UuidKind::object},{20,T::unsigned_integer,false,8},
   {21,T::engine_identity,true,16,UuidKind::transaction},{22,T::unsigned_integer,true,8}};
-constexpr CatalogValueSchemaView schema{schema_id,1,fields};
+constexpr CatalogValueSchemaView schema{schema_id,2,fields};
 bool Id(const Uuid& id){return uuid::IsEngineIdentityUuid(id);}
 template<class Enum>bool Range(Enum value,u64 low,u64 high){const auto n=static_cast<u64>(value);return n>=low&&n<=high;}
 bool Valid(const CatalogIdentifierResolutionProfile& r){
@@ -28,7 +29,6 @@ bool Valid(const CatalogIdentifierResolutionProfile& r){
       r.origin_transaction_uuid.kind!=UuidKind::transaction||!Id(r.origin_transaction_uuid.value)||
       !r.origin_local_transaction_id||r.profile_uuid==r.database_uuid||
       r.profile_uuid==r.origin_transaction_uuid.value||r.database_uuid==r.origin_transaction_uuid.value||
-      r.profile_name.empty()||r.profile_name.size()>256||!r.profile_name.data()||r.profile_name.find('\0')!=r.profile_name.npos||
       r.quote_styles>15||!Range(r.escape_rule,1,4)||!Range(r.unquoted_fold_mode,0,4)||
       !Range(r.comparison_mode,1,4)||!Range(r.storage_display_mode,1,3)||
       !Range(r.reserved_word_behavior,1,3)||!Range(r.length_unit,1,2)||
@@ -59,7 +59,6 @@ struct FieldBacking {
   }
   void Bind(const CatalogIdentifierResolutionProfile& r){
     Identity(1,r.profile_uuid);Number(2,r.generation);Identity(3,r.database_uuid,UuidKind::database);
-    views[size++]={4,T::utf8_text,UuidKind::unknown,{reinterpret_cast<const byte*>(r.profile_name.data()),r.profile_name.size()}};
     Number(5,r.quote_styles);Number(6,static_cast<u64>(r.escape_rule));Number(7,static_cast<u64>(r.unquoted_fold_mode));
     Number(8,r.quoted_preserves_case,T::boolean);Number(9,static_cast<u64>(r.comparison_mode));
     Number(10,static_cast<u64>(r.storage_display_mode));Number(11,static_cast<u64>(r.reserved_word_behavior));
@@ -114,7 +113,6 @@ CatalogIdentifierProfileResult DecodeCatalogIdentifierProfile(std::string_view b
   for(const auto& f:decoded.fields)switch(f.id){
     case 1:r.profile_uuid=f.identity()->value;break;case 2:r.generation=*f.unsigned_value();break;
     case 3:r.database_uuid=f.identity()->value;break;
-    case 4:r.profile_name={reinterpret_cast<const char*>(f.bytes.data()),f.bytes.size()};break;
     case 5:r.quote_styles=*f.unsigned_value();break;case 6:r.escape_rule=static_cast<IdentifierEscapeRule>(*f.unsigned_value());break;
     case 7:r.unquoted_fold_mode=static_cast<IdentifierFoldMode>(*f.unsigned_value());break;
     case 8:r.quoted_preserves_case=f.bytes[0]!=0;break;

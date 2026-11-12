@@ -841,7 +841,8 @@ bool ApplyDefaultMemoryPolicyFromPolicyPack(
     return false;
   }
   const auto& settings=*imported.settings;
-  const std::string policy_name(settings.policy_name),provenance(settings.provenance);
+  // 3b: the labels are import-boundary text beside the settings, not record data.
+  const std::string policy_name(imported.labels->policy_name),provenance(imported.labels->provenance);
   const auto policy_generation=settings.generation,hard_limit_bytes=settings.hard_limit_bytes,
       soft_limit_bytes=settings.soft_limit_bytes,per_context_limit_bytes=settings.per_context_limit_bytes,
       page_buffer_pool_limit_bytes=settings.page_buffer_pool_limit_bytes,openssl_budget_bytes=settings.openssl_budget_bytes,

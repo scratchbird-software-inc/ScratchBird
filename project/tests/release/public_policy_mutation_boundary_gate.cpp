@@ -116,10 +116,13 @@ db::DatabaseCreateConfig CreateConfig(const std::filesystem::path& database_path
 void RequireSamePolicyImage(const db::PolicySeedPackCatalogImage& expected,
                             const db::PolicySeedPackCatalogImage& actual) {
   Require(actual.active, "opened database did not report durable policy catalog image");
-  Require(actual.policy_pack_id == expected.policy_pack_id, "policy pack id changed after reopen");
+  // 3b (SB_CATALOG_NO_TEXT_STEP3B): the pack record no longer stores the
+  // manifest's text id or version. The reopened image is read from the catalog
+  // and carries neither; the created image is built from the manifest. The
+  // pack's identity across reopen is its UUID (and content hash, below).
+  Require(actual.policy_pack_id.empty() && actual.policy_pack_version.empty(),
+          "3b: reopened policy image carries no pack text id or version");
   Require(actual.policy_pack_uuid == expected.policy_pack_uuid, "policy pack UUID changed after reopen");
-  Require(actual.policy_pack_version == expected.policy_pack_version,
-          "policy pack version changed after reopen");
   Require(actual.content_sha256 == expected.content_sha256,
           "policy pack content hash changed after post-create filesystem mutation");
   Require(actual.policy_profile_records == expected.policy_profile_records,

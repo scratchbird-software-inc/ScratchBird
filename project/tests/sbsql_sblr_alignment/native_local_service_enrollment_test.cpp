@@ -747,7 +747,7 @@ ConfigurationError ChangeConfigurationFixture(db::NativeCreationCatalogSeed& see
     auto& selected=variant==6?provider->metadata:profile->metadata;
     auto decoded=catalog::DecodeCatalogBootstrapPolicyProfile(selected.record.payload);
     Check(decoded.ok(),"actual profile refusal fixture decode");
-    if(variant==6)decoded.record->mode="external_provider_required";
+    if(variant==6)decoded.record->mode=catalog::BootstrapPolicyMode::external_provider_required;/*3b*/
     if(variant==7)decoded.record->resource_definition_generation=2;
     if(variant==8)decoded.record->policy_pack_generation=2;
     const auto encoded=catalog::EncodeCatalogBootstrapPolicyProfileInto(*decoded.record,backing);
@@ -831,7 +831,9 @@ void AddVerificationPolicies(db::NativeCreationCatalogSeed& seed,
   using namespace catalog;
   std::array<enrollment::NativeLocalServiceCreationItem,10> items;
   std::array<catalog::CatalogNamedCreationInput,10> named;
-  std::array<byte,kCatalogEvidencePolicyMaxBytes> backing;
+  // 3b: one backing for every family below, so sized for the largest record
+  // (the version-1 evidence body's ceiling), not the evidence body's own.
+  std::array<byte,17280> backing;
   for(unsigned n=0;n<items.size();++n){
     auto& item=items[n];item=prototype;auto& m=item.definition;
     const auto id=security_fixture::Id(n<5?92000+n:92010+n-5);
@@ -875,8 +877,8 @@ void AddVerificationPolicies(db::NativeCreationCatalogSeed& seed,
       encoded=EncodeCatalogVerificationPolicyInto(b,backing);m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::verification_policy_body;
     }else if(n==8){
       CatalogEvidencePolicyBody b;b.body_uuid=id;b.database_uuid=Id(1);b.generation=1;
-      b.required_evidence_classes.entries[0]="verification";b.required_evidence_classes.count=1;
-      b.required_search_keys.entries[0]="SB-MGA-VERIFY";b.required_search_keys.count=1;
+      // 3b: the class set is the EvidenceClass bit set; no search keys.
+      b.required_evidence_classes=CatalogEvidenceClassBit(EvidenceClass::verification);
       b.storage_filespace_uuid=variant==10?security_fixture::Id(92099):Id(2);
       b.maximum_record_bytes=4096;b.maximum_batch_bytes=65536;
       b.origin_transaction_uuid=b.creating_transaction_uuid=security_tx;b.origin_local_transaction_id=b.creating_local_transaction_id=1;
@@ -1116,7 +1118,7 @@ void AddTransactionPolicies(db::NativeCreationCatalogSeed& seed,
   bool selected=false;
   for(auto& row:seed[4])if(row.metadata.object_subtype==scratchbird::core::catalog::CatalogObjectSubtype::bootstrap_policy_profile){
     auto profile=DecodeCatalogBootstrapPolicyProfile(row.metadata.record.payload);Check(profile.ok(),"actual bootstrap profile decodes");
-    if(profile.record->area!="transaction_mga_cleanup_archive_backup_forward")continue;
+    if(profile.record->area!=catalog::BootstrapPolicyArea::transaction_mga_cleanup_archive_backup_forward)continue;/*3b*/
     Check(!selected,"one actual transaction selection");selected=true;
     if(variant!=1){profile.record->resource_definition_uuid=security_fixture::Id(variant==13?98001:98000);
       profile.record->resource_definition_generation=variant==2?2:1;}
@@ -1132,7 +1134,7 @@ void AddNamingProfileFixture(db::NativeCreationCatalogSeed& seed,
   using namespace catalog;
   CatalogIdentifierResolutionProfile identifier;
   identifier.profile_uuid=security_fixture::Id(57+100*copy);identifier.database_uuid=Id(1);identifier.generation=1;
-  identifier.profile_name="explicit_internal_aliases";
+  // 3b: the identifier profile record carries no name (names table only).
   identifier.escape_rule=IdentifierEscapeRule::not_applicable;
   identifier.comparison_mode=IdentifierComparisonMode::exact;
   identifier.storage_display_mode=IdentifierDisplayMode::preserve_user_text;
@@ -1824,7 +1826,7 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
             memory_variant?(memory_variant==2?64*1024:memory_variant==12?96*1024*1024:64*1024*1024):1073741824)&&
         configuration.memory.openssl_budget_bytes==(memory_variant==2?16*1024:memory_variant==7?1024*1024:
             (memory_variant==9||memory_variant==12)?32*1024*1024:4194304)&&
-        configuration.provider_selection.mode=="local_password_only"&&actual_catalog.catalog_generation==1&&
+        configuration.provider_selection.mode==catalog::BootstrapPolicyMode::local_password_only&&/*3b*/actual_catalog.catalog_generation==1&&
         actual_catalog.security_epoch==1&&!actual_catalog.resource_epoch,
         "production host retains exact submitted memory body, provider selection and independent actual catalog epochs");
     allocation_budget=0;
@@ -2600,7 +2602,7 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
                     selected_policies.evidence.body_uuid.is_nil()&&selected_policies.bodies[0].body_uuid.is_nil(),
                     "failed policy reference closure exposes no partially selected body or source");
                 else {
-                  Check(selected_policies.ok()&&selected_policies.evidence.required_evidence_classes.entries[0]=="verification"&&
+                  Check(selected_policies.ok()&&selected_policies.evidence.required_evidence_classes==catalog::CatalogEvidenceClassBit(catalog::EvidenceClass::verification)&&/*3b*/
                       selected_policies.bodies[0].maximum_scan_pages==4096&&selected_policies.bodies[1].role==catalog::VerificationPolicyRole::quarantine&&
                       selected_policies.bodies[2].role==catalog::VerificationPolicyRole::salvage&&
                       selected_policies.access_descriptor.policy_class==catalog::CatalogPolicyClass::authorization&&
@@ -2784,8 +2786,11 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
         "management descriptor selection moves with authenticated native source and invalidates the prior owner");
     Check(!read.transaction_policies().ok()&&!read.transaction_policies().source&&moved.transaction_policies().ok()==had_transaction_policies,
         "transaction policy closure transfers with authenticated native ownership and clears borrowed source views");
-    if(had_verification_policies)Check(moved.verification_policies().evidence.required_search_keys.entries[0]=="SB-MGA-VERIFY",
-        "evidence text still borrows retained immutable catalog after host move");
+    // 3b: the evidence body holds no borrowed text any more; its values must
+    // still be the selected body's after the host move.
+    if(had_verification_policies)Check(moved.verification_policies().evidence.required_evidence_classes==
+        catalog::CatalogEvidenceClassBit(catalog::EvidenceClass::verification)&&!moved.verification_policies().evidence.body_uuid.is_nil(),
+        "evidence body values survive the host move");
     if(profile==0&&indexed&&!death)InheritedCredentialRefusals([&](unsigned mode){
       if(mode==0)(void)moved.authentication();
       if(mode==1){auto inherited=std::move(moved);(void)inherited;}

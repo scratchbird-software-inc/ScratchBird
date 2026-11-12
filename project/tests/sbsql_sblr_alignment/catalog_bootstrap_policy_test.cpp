@@ -84,11 +84,14 @@ void Tests() {
   for(unsigned bad=0;bad<8;++bad) {
     auto r=fixture.pack;if(bad==0)r.post_create_filesystem_authority=true;if(bad==1)r.generation=0;
     if(bad==2)r.imported_schema_version=0;if(bad==3)r.declared_counts[1]=0;if(bad==4)r.declared_counts[2]=12;
-    if(bad==5)r.pack_id={};if(bad==6)r.pack_version=std::string_view("bad\0v",5);
+    // 3b: cases 5/6 mutated the retired text id/version; the status constant
+    // takes their places (zero and an unknown value refuse).
+    if(bad==5)r.declared_signature_status=static_cast<c::BootstrapSignatureStatus>(0);
+    if(bad==6)r.declared_signature_status=static_cast<c::BootstrapSignatureStatus>(2);
     if(bad==7)r.policy_pack_uuid=r.origin_transaction_uuid.value;Refused(r);
   }
   for(unsigned bad=0;bad<7;++bad) {
-    auto r=fixture.profile;if(bad==0)r.generation=0;if(bad==1)r.policy_pack_generation=0;if(bad==2)r.mode={};
+    auto r=fixture.profile;if(bad==0)r.generation=0;if(bad==1)r.policy_pack_generation=0;if(bad==2)r.mode=static_cast<c::BootstrapPolicyMode>(0);/*3b*/
     if(bad==3)r.profile_uuid=r.policy_pack_uuid;if(bad==4)r.resource_definition_uuid=p::Uuid{};
     if(bad==5)r.resource_definition_uuid=r.origin_transaction_uuid.value;
     if(bad==6)r.origin_transaction_uuid.kind=p::UuidKind::unknown;Refused(r);
@@ -106,11 +109,60 @@ void Tests() {
     if(bad==3){profile.resource_definition_uuid=f::Id(9200);profile.resource_definition_generation=0;}
     Refused(profile);
   }
-  std::string maximum_text(256,'x');auto profile=fixture.profile;profile.area=maximum_text;Roundtrip(profile);
-  maximum_text.push_back('x');profile.area=maximum_text;Refused(profile);
+  // 3b: every area and mode constant roundtrips; zero and one past the last
+  // refuse. The pack's spellings map to exactly these values, unknown refuses.
+  for(p::u64 area=1;area<=c::kBootstrapPolicyAreaCount;++area)for(p::u64 mode=1;mode<=c::kBootstrapPolicyModeCount;++mode){
+    auto r=fixture.profile;r.area=static_cast<c::BootstrapPolicyArea>(area);r.mode=static_cast<c::BootstrapPolicyMode>(mode);Roundtrip(r);}
+  for(const p::u64 bad:{p::u64{0},p::u64{15}}){
+    auto r=fixture.profile;r.area=static_cast<c::BootstrapPolicyArea>(bad);Refused(r);
+    r=fixture.profile;r.mode=static_cast<c::BootstrapPolicyMode>(bad);Refused(r);}
+  {
+    constexpr std::string_view areas[]{"security_provider_selection","standard_roles_groups_grants","default_security_posture",
+      "memory_resource_governance","storage_filespace_page_policy","transaction_mga_cleanup_archive_backup_forward",
+      "optimizer_statistics_feedback","index_maintenance","agent_policy","diagnostics","observability",
+      "unsupported_feature_behavior","cluster_boundary","release_default_configuration"};
+    constexpr std::string_view modes[]{"local_password_only","uuid_catalog_seed","deny_by_default","configured_policy_required",
+      "local_durable_fail_closed","mga_inventory_authority","catalog_backed_or_diagnostic_only","provider_admission_required",
+      "evidence_not_authority","stable_redacted_diagnostics","redacted_evidence_only","deterministic_fail_closed",
+      "external_provider_required","secure_defaults"};
+    for(p::u64 n=0;n<14;++n){
+      Check(c::BootstrapPolicyAreaFromImportText(areas[n])==static_cast<c::BootstrapPolicyArea>(n+1),"3b: pack area text maps to its frozen constant");
+      Check(c::BootstrapPolicyModeFromImportText(modes[n])==static_cast<c::BootstrapPolicyMode>(n+1),"3b: pack mode text maps to its frozen constant");}
+    for(const std::string_view unknown:{"","Security_Provider_Selection","local-password-only","updated-mode","security_provider_selection "}){
+      Check(!c::BootstrapPolicyAreaFromImportText(unknown)&&!c::BootstrapPolicyModeFromImportText(unknown),"3b: unknown area/mode text refuses, nothing defaults");}
+    Check(c::BootstrapSignatureStatusFromImportText("signature-ready-unsigned")==c::BootstrapSignatureStatus::signature_ready_unsigned&&
+        static_cast<p::u64>(c::BootstrapSignatureStatus::signature_ready_unsigned)==1&&
+        !c::BootstrapSignatureStatusFromImportText("signed")&&!c::BootstrapSignatureStatusFromImportText("signature_ready_unsigned"),
+        "3b: the signature status maps exactly; unknown refuses");
+  }
+  {
+    // 3b: the retired version-1 layouts (pack text id/version/status, profile
+    // area/mode text), independently framed, refuse; both are still recognized
+    // as this family so they refuse rather than pass as foreign payloads.
+    const auto& r=fixture.pack;f::Golden pack(65588,1);pack.Identity(1,r.policy_pack_uuid);pack.Integer(2,r.generation);
+    pack.Field(3,3,"selected-pack");pack.Field(4,3,"1.0.0");
+    pack.Field(5,4,{reinterpret_cast<const char*>(r.content_sha256.data()),32});pack.Field(6,3,"signature-ready-unsigned");
+    pack.Boolean(7,r.create_time_only);pack.Boolean(8,r.post_create_filesystem_authority);pack.Boolean(9,r.local_password_only);
+    pack.Identity(10,r.origin_transaction_uuid.value);pack.Integer(11,r.origin_local_transaction_id);
+    for(unsigned i=0;i<9;++i)pack.Integer(12+i,r.declared_counts[i]);pack.Integer(21,r.imported_schema_version);
+    const auto& q=fixture.profile;f::Golden profile(65590,1);profile.Identity(1,q.profile_uuid);profile.Integer(2,q.generation);
+    profile.Identity(3,q.policy_pack_uuid);profile.Integer(4,q.policy_pack_generation);
+    profile.Field(5,3,"security_provider_selection");profile.Field(6,3,"local_password_only");
+    profile.Identity(8,q.origin_transaction_uuid.value);profile.Integer(9,q.origin_local_transaction_id);
+    const auto old_pack=pack.Finish(),old_profile=profile.Finish();
+    heap_denied=true;const auto a=c::DecodeCatalogBootstrapPolicyPack(old_pack);const auto b=c::DecodeCatalogBootstrapPolicyProfile(old_profile);heap_denied=false;
+    Check(!a.ok()&&!a.record&&!b.ok()&&!b.record&&c::IsCatalogBootstrapPolicyPayload(old_pack)&&c::IsCatalogBootstrapPolicyPayload(old_profile),
+        "3b: version-1 pack and profile refuse");
+    for(unsigned i:{0u,2u}){auto m=f::Metadata(i,tx,f::Id(60),i?old_profile:old_pack);
+      Check(!c::CatalogBootstrapPolicyMatchesMetadata(c::BorrowCatalogMetadataVersion(m))&&
+          !c::CatalogMetadataVersionEncodedBytes(c::BorrowCatalogMetadataVersion(m)),"3b: the common dispatcher refuses version 1 too");}
+  }
   const auto payloads=fixture.Payloads();
   auto replacement=fixture;replacement.pack.generation=replacement.provider.generation=replacement.profile.generation=2;
-  replacement.pack.pack_version="2.0.0";replacement.provider.enabled_by_default=false;replacement.profile.mode="updated-mode";
+  // 3b: the generation-2 changes are to fields that still exist (was pack_version
+  // text and a free-text mode).
+  replacement.pack.content_sha256[0]^=0xff;replacement.provider.enabled_by_default=false;
+  replacement.profile.mode=c::BootstrapPolicyMode::secure_defaults;
   const auto replacement_payloads=replacement.Payloads();
   for(unsigned i=0;i<3;++i) {
     auto m=f::Metadata(i,tx,f::Id(60),payloads[i]);heap_denied=true;

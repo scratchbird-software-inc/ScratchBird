@@ -1304,8 +1304,9 @@ struct PolicyAgentTypeSeed {
 
 struct PolicyProfileSeed {
   Uuid profile_uuid;
-  std::string area;
-  std::string mode;
+  // 3b: constants, mapped from the pack's text at import.
+  scratchbird::core::catalog::BootstrapPolicyArea area{};
+  scratchbird::core::catalog::BootstrapPolicyMode mode{};
 };
 
 struct PolicyDefaultSeed {
@@ -1320,12 +1321,11 @@ struct PolicyMemoryConfigurationSeed {
   scratchbird::core::catalog::CatalogMemoryConfiguration values;
   std::array<char,768> labels{};
   std::array<std::size_t,3> lengths{};
-  // Do not retain self-referential views across package moves/copies.
-  scratchbird::core::catalog::CatalogMemoryConfiguration Borrow() const {
-    auto out=values;out.policy_key={labels.data(),lengths[0]};
-    out.policy_name={labels.data()+lengths[0],lengths[1]};
-    out.provenance={labels.data()+lengths[0]+lengths[1],lengths[2]};return out;
-  }
+  // 3b: the record carries no text; the import's policy_name is kept here only
+  // as the configuration's reference name (names table). Do not retain
+  // self-referential views across package moves/copies.
+  scratchbird::core::catalog::CatalogMemoryConfiguration Borrow() const {return values;}
+  std::string ReferenceName() const {return std::string(labels.data()+lengths[0],lengths[1]);}
 };
 
 struct LoadedPolicySeedPack {
@@ -1810,28 +1810,15 @@ bool IsBootstrapCredentialFingerprint(const std::string& value) {
   return ParseBootstrapCredentialFingerprint(value, nullptr);
 }
 
-const std::set<std::string>& RequiredPolicyProfileAreas() {
-  static const std::set<std::string> areas = {
-      "agent_policy",
-      "cluster_boundary",
-      "default_security_posture",
-      "diagnostics",
-      "index_maintenance",
-      "memory_resource_governance",
-      "observability",
-      "optimizer_statistics_feedback",
-      "release_default_configuration",
-      "security_provider_selection",
-      "standard_roles_groups_grants",
-      "storage_filespace_page_policy",
-      "transaction_mga_cleanup_archive_backup_forward",
-      "unsupported_feature_behavior",
-  };
-  return areas;
-}
-
-bool PolicyProfileAreasExactlyCovered(const std::vector<std::string>& areas) {
-  return std::set<std::string>(areas.begin(), areas.end()) == RequiredPolicyProfileAreas();
+// 3b (SB_CATALOG_NO_TEXT_STEP3B): the 14 required areas are exactly the
+// BootstrapPolicyArea constants; coverage is every constant exactly once.
+bool PolicyProfileAreasExactlyCovered(const std::vector<scratchbird::core::catalog::BootstrapPolicyArea>& areas) {
+  std::set<scratchbird::core::catalog::BootstrapPolicyArea> seen;
+  for(const auto area:areas) {
+    const auto n=static_cast<u64>(area);
+    if(n<1||n>scratchbird::core::catalog::kBootstrapPolicyAreaCount||!seen.insert(area).second)return false;
+  }
+  return seen.size()==scratchbird::core::catalog::kBootstrapPolicyAreaCount;
 }
 
 const std::set<std::string>& RequiredDefaultPolicyKeys() {
@@ -2105,8 +2092,17 @@ std::optional<PolicyPackLoadResult> ParseNativePolicyFamilies(
       if(!key(object,&b.key)||!ExtractStringField(object,"storage_filespace",&b.storage_filespace)||b.storage_filespace!="primary"||
           !u64_field(object,"maximum_record_bytes",&b.maximum_record_bytes)||!u64_field(object,"maximum_batch_bytes",&b.maximum_batch_bytes))
         return fail("evidence body "+b.key);
-      b.required_evidence_classes=ExtractStringArrayField(object,"required_evidence_classes");
-      b.required_search_keys=ExtractStringArrayField(object,"required_search_keys");
+      // 3b (SB_CATALOG_NO_TEXT_STEP3B): each class name maps once, here, to
+      // its constant; an unknown or repeated name refuses, an empty list too.
+      // The pack's required_search_keys are implementation trace keys and are
+      // not imported (as the envelope's trace_search_key, owner Q57).
+      for(const auto& name:ExtractStringArrayField(object,"required_evidence_classes")) {
+        std::optional<c::EvidenceClass> mapped;
+        if(name=="verification")mapped=c::EvidenceClass::verification;
+        if(!mapped||(b.required_evidence_classes&c::CatalogEvidenceClassBit(*mapped)))return fail("evidence body class "+b.key);
+        b.required_evidence_classes|=c::CatalogEvidenceClassBit(*mapped);
+      }
+      if(!b.required_evidence_classes)return fail("evidence body classes "+b.key);
       seeds.evidence_bodies.push_back(std::move(b));
     }
     if(!ExtractArrayBody(file,"authorization_bodies",&body))return fail("authorization bodies");
@@ -2159,9 +2155,13 @@ std::optional<PolicyPackLoadResult> ParseNativePolicyFamilies(
     }
     if(!ExtractArrayBody(file,"profile_bindings",&body))return fail("profile bindings");
     for(const auto& object:SplitTopLevelObjects(body)){
-      NativeProfileBindingSeed b;
-      if(!ExtractStringField(object,"policy_profile_area",&b.policy_profile_area)||
+      NativeProfileBindingSeed b;std::string area;
+      if(!ExtractStringField(object,"policy_profile_area",&area)||
           !ExtractStringField(object,"resource_definition",&b.resource_definition))return fail("profile binding");
+      // 3b: the area text maps to its constant here; unknown refuses.
+      const auto mapped=c::BootstrapPolicyAreaFromImportText(area);
+      if(!mapped)return fail("profile binding area "+area);
+      b.policy_profile_area=*mapped;
       seeds.profile_bindings.push_back(std::move(b));
     }
   }
@@ -2258,7 +2258,7 @@ std::optional<PolicyPackLoadResult> ParseNativePolicyFamilies(
   for(const auto& b:seeds.profile_bindings)
     if(!in(seeds.transaction_descriptors,b.resource_definition)||
         std::none_of(loaded->profiles.begin(),loaded->profiles.end(),[&](const auto& p){return p.area==b.policy_profile_area;}))
-      return fail("profile binding "+b.policy_profile_area);
+      return fail("profile binding "+b.resource_definition);
   for(const auto& p:seeds.dialect_profiles)if(!in(seeds.identifier_profiles,p.identifier_profile))return fail("dialect profile reference "+p.key);
   for(const auto& p:seeds.collision_policies)if(!in(seeds.collision_groups,p.record_kind_group))return fail("collision policy reference "+p.key);
   if(seeds.identifier_profiles.empty()||seeds.dialect_profiles.empty()||seeds.collision_policies.empty()||
@@ -2584,13 +2584,21 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
   if (!ExtractArrayBody(profiles_json, "profiles", &array_body)) {
     return PolicyPackLoadError("SB-POLICY-PACK-PROFILES-INVALID", "profiles");
   }
-  std::set<std::string> profile_areas;
+  std::set<scratchbird::core::catalog::BootstrapPolicyArea> profile_areas;
   for (const std::string& object : SplitTopLevelObjects(array_body)) {
     PolicyProfileSeed profile;
     std::array<char,768> profile_labels;
     namespace c=scratchbird::core::catalog;
     const auto imported=c::ImportBootstrapPolicyProfileInto(object,profile_labels);
-    if(!imported.ok())return PolicyPackLoadError("SB-POLICY-PACK-PROFILES-INVALID","profile schema");
+    if(!imported.ok()) {
+      // 3b: an area or mode with no constant is refused at import now; it keeps
+      // the class the coverage check gave it before (PROFILES-UNKNOWN).
+      std::string area,mode;
+      if((ExtractStringField(object,"area",&area)&&!c::BootstrapPolicyAreaFromImportText(area))||
+          (ExtractStringField(object,"mode",&mode)&&!c::BootstrapPolicyModeFromImportText(mode)))
+        return PolicyPackLoadError("SB-POLICY-PACK-PROFILES-UNKNOWN","policy profile area or mode");
+      return PolicyPackLoadError("SB-POLICY-PACK-PROFILES-INVALID","profile schema");
+    }
     profile.profile_uuid=imported.profile->profile_uuid;
     profile.area=imported.profile->area;profile.mode=imported.profile->mode;
     if (
@@ -2598,8 +2606,8 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
         !profile_areas.insert(profile.area).second) {
       return PolicyPackLoadError("SB-POLICY-PACK-PROFILES-INVALID", "profile");
     }
-    if(profile.area=="memory_resource_governance") {
-      if(!imported.profile->resource_file||profile.mode!="configured_policy_required"||
+    if(profile.area==c::BootstrapPolicyArea::memory_resource_governance) {
+      if(!imported.profile->resource_file||profile.mode!=c::BootstrapPolicyMode::configured_policy_required||
           !IsSafePackRelativePath(std::string(*imported.profile->resource_file)))
         return PolicyPackLoadError("SB-POLICY-PACK-PROFILES-INVALID","memory configuration source required");
       const auto content=admitted_content.find(std::string(*imported.profile->resource_file));
@@ -2609,8 +2617,7 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
       if(!parsed.ok()||parsed.settings->generation!=image.policy_generation)
         return PolicyPackLoadError("SB-POLICY-PACK-PROFILES-INVALID","memory configuration schema, values or generation invalid");
       memory.values=*parsed.settings;
-      memory.lengths={memory.values.policy_key.size(),memory.values.policy_name.size(),memory.values.provenance.size()};
-      memory.values.policy_key={};memory.values.policy_name={};memory.values.provenance={};
+      memory.lengths={parsed.labels->policy_key.size(),parsed.labels->policy_name.size(),parsed.labels->provenance.size()};
       memory.values.profile_uuid=profile.profile_uuid;memory.values.policy_pack_uuid=image.policy_pack_uuid;
       memory.values.policy_pack_generation=image.policy_generation;
       loaded.memory_configuration=std::move(memory);
@@ -3188,8 +3195,11 @@ std::optional<scratchbird::core::catalog::CatalogBootstrapPolicyPack> NativePoli
   scratchbird::core::catalog::CatalogBootstrapPolicyPack native;
   native.policy_pack_uuid=pack.image.policy_pack_uuid;native.generation=pack.image.policy_generation;
   native.imported_schema_version=pack.image.schema_version;
-  native.pack_id=pack.image.policy_pack_id;native.pack_version=pack.image.policy_pack_version;
-  native.declared_signature_status=pack.image.signature_status;
+  // 3b: the text id becomes the pack's reference name (native create) and the
+  // version string is not carried; the status maps to its constant, once.
+  const auto status=scratchbird::core::catalog::BootstrapSignatureStatusFromImportText(pack.image.signature_status);
+  if(!status)return {};
+  native.declared_signature_status=*status;
   native.create_time_only=pack.image.create_time_only;native.post_create_filesystem_authority=pack.image.post_create_filesystem_authority;
   native.local_password_only=pack.image.local_password_only;native.origin_transaction_uuid=creator_transaction_uuid;
   native.origin_local_transaction_id=kBootstrapCatalogTransactionId;
@@ -5538,7 +5548,7 @@ std::optional<ResourceSeedCatalogImage> BuildResourceImageFromCatalogRows(const 
 PolicySeedPackCatalogImage BuildPolicyImageFromCatalogRows(const std::vector<CatalogPageRow>& rows,
                                                           const TypedUuid& committed_origin) {
   PolicySeedPackCatalogImage image;
-  std::set<std::string> profile_areas;
+  std::set<scratchbird::core::catalog::BootstrapPolicyArea> profile_areas;
   u32 default_policy_records_from_catalog = 0;
   u64 native_providers=0,native_local_enabled=0,native_external_disabled=0,native_profiles=0;
   std::set<Uuid> native_identities;
@@ -5557,10 +5567,12 @@ PolicySeedPackCatalogImage BuildPolicyImageFromCatalogRows(const std::vector<Cat
       const auto& pack=*decoded.record;
       selected_pack_payload=row.payload;selected_pack_identity=pack.policy_pack_uuid;
       image.active = true;
-      image.policy_pack_id=pack.pack_id;image.policy_pack_version=pack.pack_version;
+      // 3b: the record carries no text id, version or status text; the pack is
+      // identified by its UUID and content hash, the status is a constant.
       image.policy_pack_uuid=pack.policy_pack_uuid;
       image.content_sha256=HexDigest(pack.content_sha256.data(),pack.content_sha256.size());
-      image.signature_status=pack.declared_signature_status;
+      if(pack.declared_signature_status!=c::BootstrapSignatureStatus::signature_ready_unsigned)
+        image.native_definition_error=c::CatalogValueError::invalid_value;
       if(pack.imported_schema_version>std::numeric_limits<u32>::max()||pack.generation>std::numeric_limits<u32>::max()||
           std::any_of(pack.declared_counts.begin(),pack.declared_counts.end(),[](u64 n){return n>std::numeric_limits<u32>::max();})) {
         image.native_definition_error=c::CatalogValueError::invalid_value;continue;
@@ -5689,9 +5701,9 @@ PolicySeedPackCatalogImage BuildPolicyImageFromCatalogRows(const std::vector<Cat
         image.native_definition_error=scratchbird::core::catalog::CatalogValueError::invalid_value;
       if(profile.ok()) {
         const auto& p=*profile.record;
-        if(p.area=="memory_resource_governance") {
+        if(p.area==c::BootstrapPolicyArea::memory_resource_governance) {
           const auto found=p.resource_definition_uuid?memory_configurations.find(*p.resource_definition_uuid):memory_configurations.end();
-          if(p.mode!="configured_policy_required"||!p.resource_definition_generation||found==memory_configurations.end())
+          if(p.mode!=c::BootstrapPolicyMode::configured_policy_required||!p.resource_definition_generation||found==memory_configurations.end())
             image.native_definition_error=c::CatalogValueError::invalid_value;
           else {
             const auto& memory=found->second;
@@ -5733,11 +5745,10 @@ DatabaseLifecycleResult ValidatePolicySeedCatalogImage(const PolicySeedPackCatal
     result.status = DatabaseLifecycleOkStatus();
     return result;
   }
-  if (!IsSafePolicyPackId(image.policy_pack_id) ||
-      !IsEngineIdentityUuid(image.policy_pack_uuid) ||
-      image.policy_pack_version.empty() ||
+  // 3b: no text id, version or status text to check (see the reader); the
+  // status constant was checked while the image was read.
+  if (!IsEngineIdentityUuid(image.policy_pack_uuid) ||
       !IsSha256Hex(image.content_sha256) ||
-      image.signature_status != "signature-ready-unsigned" ||
       image.schema_version != 1 ||
       image.policy_generation != 1 ||
       !image.create_time_only ||
@@ -5756,7 +5767,7 @@ DatabaseLifecycleResult ValidatePolicySeedCatalogImage(const PolicySeedPackCatal
     return LifecycleError("SB-POLICY-PACK-CATALOG-INVALID",
                           "storage.database_lifecycle.policy_pack_catalog_invalid",
                           path,
-                          image.policy_pack_id);
+                          "native_policy_pack_declaration_invalid");
   }
   DatabaseLifecycleResult result;
   result.status = DatabaseLifecycleOkStatus();
@@ -8112,6 +8123,10 @@ DatabaseLifecycleResult RecordStartupEvidence(const DatabaseLifecycleOperationCo
 // (CreateObjectNameFor): principal_name; role_name else role_code; group_name
 // else group_code. Every other definition gets its UUID text, because the
 // native name verification requires a name on every definition.
+// 3b (SB_CATALOG_NO_TEXT_STEP3B): an object whose pack text was a human name
+// carried in its record, removed from the record in 3b, takes that text as its
+// reference name instead: the identifier profile (profile_name), the memory
+// configuration (policy_name) and the policy pack (manifest policy_pack_id).
 // 3a-2 (SB_CATALOG_NATIVE_SECURITY_RECORDS): the typed payload carries no name,
 // so the name is taken from the attribute bag BEFORE conversion, by the same
 // rule (an empty value counts as absent), and carried beside the definition.
@@ -8326,17 +8341,23 @@ std::optional<std::string> NativeTypedSecurityPayload(const scratchbird::core::c
   return std::string(encoded.bytes.begin(),encoded.bytes.end());
 }
 
+// The evidence policy body (version 1, with its two string sets) was the
+// largest family record; this keeps that ceiling for every family encode.
+constexpr std::size_t kNativePolicyFamilyBackingBytes=17280;
 struct NativePolicyFamilyDefinition {
   Uuid identity;
   CatalogRecordKind kind;
   scratchbird::core::catalog::CatalogObjectSubtype subtype;
   std::string payload;
+  // 3b (SB_CATALOG_NO_TEXT_STEP3B): a name the pack gives the object, which
+  // its record no longer carries; it becomes the object's reference name.
+  std::optional<std::string> reference_name{};
 };
 struct NativePolicyFamilyBuild {
   std::vector<NativePolicyFamilyDefinition> definitions;
   // Identities that are not definitions: descriptor versions, collision groups.
   std::vector<Uuid> other_identities;
-  std::vector<std::pair<std::string_view,Uuid>> bindings;
+  std::vector<std::pair<scratchbird::core::catalog::BootstrapPolicyArea,Uuid>> bindings;
 };
 NativeInitialPolicyError BuildNativePolicyFamilyDefinitions(
     const NativePolicyFamilySeeds& s,const NativeInitialPolicyFamilyIdentities& ids,const Uuid& database_uuid,
@@ -8390,10 +8411,13 @@ NativeInitialPolicyError BuildNativePolicyFamilyDefinitions(
     if(found==uuid_of.end()){resolved=false;return {};}
     return found->second;
   };
-  std::vector<scratchbird::core::platform::byte> backing(c::kCatalogEvidencePolicyMaxBytes);
-  const auto emit=[&](const Uuid& id,CatalogRecordKind kind,scratchbird::core::catalog::CatalogObjectSubtype subtype,const c::CatalogValueEncodeIntoResult& encoded) {
+  // 3b: one shared backing for every family encode below, sized for the
+  // largest family record rather than borrowed from one family's limit.
+  std::vector<scratchbird::core::platform::byte> backing(kNativePolicyFamilyBackingBytes);
+  const auto emit=[&](const Uuid& id,CatalogRecordKind kind,scratchbird::core::catalog::CatalogObjectSubtype subtype,const c::CatalogValueEncodeIntoResult& encoded,
+      std::optional<std::string> reference_name=std::nullopt) {
     if(!resolved||!encoded.ok())return false;
-    out->definitions.push_back({id,kind,subtype,std::string(encoded.bytes.begin(),encoded.bytes.end())});
+    out->definitions.push_back({id,kind,subtype,std::string(encoded.bytes.begin(),encoded.bytes.end()),std::move(reference_name)});
     return true;
   };
   const auto origin=[&](auto& record) {
@@ -8442,11 +8466,8 @@ NativeInitialPolicyError BuildNativePolicyFamilyDefinitions(
   for(std::size_t i=0;i<s.evidence_bodies.size();++i) {
     const auto& seed=s.evidence_bodies[i];
     c::CatalogEvidencePolicyBody b;b.body_uuid=ids.evidence_bodies[i];b.database_uuid=database_uuid;b.generation=1;
-    if(seed.storage_filespace!="primary"||seed.required_evidence_classes.size()>b.required_evidence_classes.entries.size()||
-        seed.required_search_keys.size()>b.required_search_keys.entries.size())return E::invalid_definition;
-    for(const auto& value:seed.required_evidence_classes)
-      b.required_evidence_classes.entries[b.required_evidence_classes.count++]=value;
-    for(const auto& value:seed.required_search_keys)b.required_search_keys.entries[b.required_search_keys.count++]=value;
+    if(seed.storage_filespace!="primary")return E::invalid_definition;
+    b.required_evidence_classes=seed.required_evidence_classes;
     b.storage_filespace_uuid=ids.primary_filespace_uuid;
     b.maximum_record_bytes=seed.maximum_record_bytes;b.maximum_batch_bytes=seed.maximum_batch_bytes;
     origin(b);
@@ -8528,12 +8549,13 @@ NativeInitialPolicyError BuildNativePolicyFamilyDefinitions(
   for(std::size_t i=0;i<s.identifier_profiles.size();++i) {
     const auto& seed=s.identifier_profiles[i];
     c::CatalogIdentifierResolutionProfile p;p.profile_uuid=ids.identifier_profiles[i];p.database_uuid=database_uuid;
-    p.generation=1;p.profile_name=seed.profile_name;p.escape_rule=seed.escape_rule;p.comparison_mode=seed.comparison_mode;
+    p.generation=1;p.escape_rule=seed.escape_rule;p.comparison_mode=seed.comparison_mode;
     p.storage_display_mode=seed.storage_display_mode;p.reserved_word_behavior=seed.reserved_word_behavior;
     p.length_unit=seed.length_unit;p.dialect_mode_flags=seed.dialect_mode_flags;
     p.origin_transaction_uuid=tx;p.origin_local_transaction_id=kBootstrapCatalogTransactionId;
+    // 3b: the pack's profile_name is the profile's reference name, not record data.
     if(!emit(p.profile_uuid,CatalogRecordKind::config_profile,c::CatalogObjectSubtype::identifier_resolution_profile,
-          c::EncodeCatalogIdentifierProfileInto(p,backing)))return E::invalid_definition;
+          c::EncodeCatalogIdentifierProfileInto(p,backing),seed.profile_name))return E::invalid_definition;
   }
   for(std::size_t i=0;i<s.dialect_profiles.size();++i) {
     c::CatalogNamingDialectProfile p;p.profile_uuid=ids.dialect_profiles[i];p.database_uuid=database_uuid;
@@ -8728,7 +8750,8 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
           !provider->enabled_by_default||provider->external_provider||
           provider->authority!=c::BootstrapProviderAuthority::durable_catalog||
           provider->verifier_policy!=c::BootstrapVerifierPolicy::local_password_verifier_required||
-          policy==pack.profiles.end()||policy->area!="default_security_posture"||policy->mode!="deny_by_default")
+          policy==pack.profiles.end()||policy->area!=c::BootstrapPolicyArea::default_security_posture||
+          policy->mode!=c::BootstrapPolicyMode::deny_by_default)
         return fail(E::invalid_definition);
     }
     // The policy-only entrypoint excludes these security definitions, but both
@@ -8766,7 +8789,8 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
     struct Definition {CatalogRecordKind kind;scratchbird::core::catalog::CatalogObjectSubtype subtype;std::string payload;
       std::optional<std::string> reference_name{};};
     std::map<Uuid,Definition> definitions;
-    const auto append=[&]<class Record>(const Uuid& identity,CatalogRecordKind kind,scratchbird::core::catalog::CatalogObjectSubtype subtype,const Record& record) {
+    const auto append=[&]<class Record>(const Uuid& identity,CatalogRecordKind kind,scratchbird::core::catalog::CatalogObjectSubtype subtype,const Record& record,
+        std::optional<std::string> reference_name=std::nullopt) {
       std::array<scratchbird::core::platform::byte,2048> backing;
       const auto encoded=[&] {
         if constexpr(std::is_same_v<Record,c::CatalogBootstrapPolicyPack>)return c::EncodeCatalogBootstrapPolicyPackInto(record,backing);
@@ -8775,10 +8799,12 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
         else return c::EncodeCatalogMemoryConfigurationInto(record,backing);
       }();
       return encoded.ok()&&definitions.emplace(identity,Definition{kind,subtype,
-          std::string(encoded.bytes.begin(),encoded.bytes.end())}).second;
+          std::string(encoded.bytes.begin(),encoded.bytes.end()),std::move(reference_name)}).second;
     };
     const auto native_pack=NativePolicyPackDefinition(pack,request.construction_transaction);
-    if(!native_pack||!append(native_pack->policy_pack_uuid,CatalogRecordKind::policy,c::CatalogObjectSubtype::bootstrap_policy_pack,*native_pack))
+    // 3b: the pack's text id (manifest policy_pack_id) is its reference name.
+    if(!native_pack||!append(native_pack->policy_pack_uuid,CatalogRecordKind::policy,c::CatalogObjectSubtype::bootstrap_policy_pack,*native_pack,
+        pack.image.policy_pack_id))
       return fail(E::invalid_definition);
     for(const auto& provider:pack.providers)
       if(!append(provider.provider_uuid,CatalogRecordKind::policy,c::CatalogObjectSubtype::bootstrap_security_provider,
@@ -8794,11 +8820,13 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
       if(!append(profile.profile_uuid,CatalogRecordKind::policy,c::CatalogObjectSubtype::bootstrap_policy_profile,native))
         return fail(E::invalid_definition);
     }
+    // 3b: the pack's memory policy_name is the configuration's reference name.
     if(!append(request.memory_configuration_uuid,CatalogRecordKind::config_profile,c::CatalogObjectSubtype::memory_configuration,
-        NativeMemoryConfigurationDefinition(pack,request.memory_configuration_uuid,request.construction_transaction)))
+        NativeMemoryConfigurationDefinition(pack,request.memory_configuration_uuid,request.construction_transaction),
+        pack.memory_configuration?std::optional<std::string>(pack.memory_configuration->ReferenceName()):std::nullopt))
       return fail(E::invalid_definition);
     if(family_build)for(auto& family:family_build->definitions)
-      if(!definitions.emplace(family.identity,Definition{family.kind,family.subtype,std::move(family.payload)}).second)
+      if(!definitions.emplace(family.identity,Definition{family.kind,family.subtype,std::move(family.payload),std::move(family.reference_name)}).second)
         return fail(E::duplicate_identity);
 
     if(security_memberships) {
@@ -8929,8 +8957,7 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
       // pack's own naming family: its collision policy, a dialect profile and
       // that dialect's identifier profile, byte for byte. A seed that supplies
       // no identifier profile takes the family's own, decoded from the record
-      // this call built (its profile_name borrows that record's payload, which
-      // outlives the units).
+      // this call built (3b: the record borrows nothing).
       const c::CatalogIdentifierResolutionProfile* identifier_profile=seed.identifier_profile;
       std::optional<c::CatalogIdentifierResolutionProfile> family_identifier_profile;
       if(family_build) {
@@ -9205,7 +9232,7 @@ NativeInitialLocalServiceIdentityResult IssueNativeInitialLocalServiceIdentity(
           p.authority==c::BootstrapProviderAuthority::durable_catalog&&
           p.verifier_policy==c::BootstrapVerifierPolicy::local_password_verifier_required;});
     const auto policy=std::find_if(pack.profiles.begin(),pack.profiles.end(),[](const auto& p){
-      return p.area=="default_security_posture"&&p.mode=="deny_by_default";});
+      return p.area==c::BootstrapPolicyArea::default_security_posture&&p.mode==c::BootstrapPolicyMode::deny_by_default;});
     if(provider==pack.providers.end()||policy==pack.profiles.end()){out.error=NativeInitialPolicyError::source_invalid;return out;}
     std::array<Uuid,9> ids{};
     for(auto& id:ids){const auto issued=issue();if(!issued||!IsEngineIdentityUuid(*issued))return out;id=*issued;}

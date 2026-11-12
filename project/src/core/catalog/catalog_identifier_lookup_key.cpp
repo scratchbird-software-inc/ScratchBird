@@ -56,8 +56,9 @@ CatalogIdentifierKeyResult DeriveCatalogIdentifierLookupKeysInto(
     const CatalogIdentifierKeyRequest& request,std::span<byte> output) noexcept {
   const auto error=Admit(request);if(error!=E::none)return {error,{},{}};
   const auto& p=*request.profile;
+  // 3b: the profile carries no borrowed name text any more.
   if(Overlap(output,&request,sizeof(request))||Overlap(output,&p,sizeof(p))||
-      Overlap(output,p.profile_name.data(),p.profile_name.size())||Overlap(output,request.text.data(),request.text.size()))
+      Overlap(output,request.text.data(),request.text.size()))
     return {E::invalid_backing,{},{}};
   const auto size=request.text.size();if(output.size()/2<size)return {E::size_limit,{},{}};
   for(std::size_t i=0;i<size;++i){output[i]=Value(request,i,false);output[size+i]=Value(request,i,true);}
