@@ -12,6 +12,7 @@
 #include "bootstrap_policy_fixture.hpp"
 #include "memory_configuration_fixture.hpp"
 #include "catalog_security_record_codec.hpp"
+#include "catalog_native_security_record.hpp"
 #include "catalog_runtime_authority_binding.hpp"
 #include "default_pack_agent_roles.inc"
 #include "default_pack_agent_principals.inc"
@@ -148,6 +149,68 @@ struct Package {
       {f::Id(15100),f::Id(15101),f::Id(15102),f::Id(15103),f::Id(15104)},"NodeService",fingerprint,f::Id(kL5Membership)};
     request.agents=agents;return request;}
 };
+// ---- 3a-2: independent hand-built SBCV goldens of the typed native security
+// schema (65635 principal, 65636 role, 65637 group, 65638 grant; version 1).
+// Field numbers and enumeration codes are written out here, not taken from
+// the production schema or encoder. A right's code is its coding-time
+// constant (catalog_security_constants.hpp), the definition of that code.
+p::u64 RightCode(std::string_view tag){const auto r=c::CatalogSecurityRightForTag(tag);Check(r.has_value(),"every golden right has a constant");return static_cast<p::u64>(*r);}
+p::u64 AuthorityCode(std::string_view s){
+  static constexpr std::array<std::string_view,6> names{"engine_owned_sysarch","l5_database","direct_bounded_action",
+      "observe_only","recommend_only","request_action"};
+  for(unsigned i=0;i<names.size();++i)if(names[i]==s)return i+1;
+  Check(false,"golden authority class listed");return 0;
+}
+std::string HexBytes(std::string_view hex){std::string out;
+  for(std::size_t i=0;i+1<hex.size();i+=2)out.push_back(static_cast<char>(std::stoi(std::string(hex.substr(i,2)),nullptr,16)));return out;}
+// The fixture fingerprint's parts, parsed independently of the engine.
+struct BootstrapCredential {
+  p::u64 iterations=0;std::string salt,verifier;
+  explicit BootstrapCredential(std::string_view text){
+    const auto at=[&](std::string_view key){const auto k=text.find(key);Check(k!=text.npos,"fixture fingerprint field");return k+key.size();};
+    const auto i=at("iterations="),sa=at(":salt="),v=at(":verifier=");
+    iterations=std::stoull(std::string(text.substr(i,text.find(':',i)-i)));
+    salt=HexBytes(text.substr(sa,32));verifier=HexBytes(text.substr(v,64));
+  }
+  bool Matches(const c::NativeSecurityCredential& credential)const{
+    return credential.scheme==c::CatalogSecurityCredentialScheme::pbkdf2_sha256_v1&&credential.iterations==iterations&&
+        std::string(reinterpret_cast<const char*>(credential.salt.data()),16)==salt&&
+        std::string(reinterpret_cast<const char*>(credential.verifier.data()),32)==verifier;
+  }
+};
+// Fields 1..6: primary, origin transaction, origin local 1, creator_tx 1,
+// policy generation 1, optional pack.
+void TypedCommon(f::Golden& g,const p::Uuid& id,const std::optional<p::Uuid>& pack){
+  g.Identity(1,id);g.Identity(2,tx.value);g.Integer(3,1);g.Integer(4,1);g.Integer(5,1);if(pack)g.Identity(6,*pack);}
+// principal_kind 1 user / 2 service; the bootstrap/service credential is the
+// fixture fingerprint's parts (600000, salt, verifier); agents have none.
+std::string TypedPrincipal(const p::Uuid& id,p::u64 kind,std::optional<p::u64> authority,bool active,bool create_time_only,
+    bool bootstrap,bool credential=true){
+  f::Golden g(65635);TypedCommon(g,id,std::nullopt);g.Integer(7,kind);if(authority)g.Integer(8,*authority);
+  g.Boolean(9,active);g.Boolean(10,create_time_only);g.Boolean(11,bootstrap);g.Integer(12,1);g.Integer(13,1);g.Integer(14,1);
+  if(credential){g.Integer(15,1);g.Integer(16,600000);g.Field(17,4,HexBytes("89abcdef0123456789abcdef01234567"));
+    g.Field(18,4,HexBytes("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"));}
+  return g.Finish();
+}
+std::string TypedRole(const p::Uuid& id,const std::optional<p::Uuid>& pack,std::optional<p::u64> authority,bool engine_owned,
+    bool immutable,bool active,bool loaded,bool create_time_only,p::u64 context_version,p::u64 context_generation){
+  f::Golden g(65636);TypedCommon(g,id,pack);if(authority)g.Integer(7,*authority);g.Boolean(8,engine_owned);g.Boolean(9,immutable);
+  g.Boolean(10,active);g.Boolean(11,loaded);g.Boolean(12,create_time_only);g.Integer(13,context_version);g.Integer(14,context_generation);
+  return g.Finish();
+}
+std::string TypedGroup(const p::Uuid& id,const p::Uuid& pack){
+  f::Golden g(65637);TypedCommon(g,id,pack);g.Boolean(7,true);g.Boolean(8,true);return g.Finish();}
+// grant_class 1 privilege / 2 role_membership / 3 group_membership; subject,
+// member and parent kinds 1 principal / 2 role / 3 group; effect 1 allow.
+struct GrantGolden{p::Uuid id;std::optional<p::Uuid> pack,subject,member,parent,target,principal,role;
+  p::u64 cls=0,sk=0,mk=0,pk=0,effect=0,right=0,security_generation=0;};
+std::string TypedGrant(const GrantGolden& r){
+  f::Golden g(65638);TypedCommon(g,r.id,r.pack);g.Integer(7,r.cls);
+  if(r.subject)g.Identity(8,*r.subject);if(r.member)g.Identity(9,*r.member);if(r.parent)g.Identity(10,*r.parent);
+  if(r.target)g.Identity(11,*r.target);if(r.principal)g.Identity(13,*r.principal);if(r.role)g.Identity(14,*r.role);
+  if(r.sk)g.Integer(15,r.sk);if(r.mk)g.Integer(16,r.mk);if(r.pk)g.Integer(17,r.pk);if(r.effect)g.Integer(18,r.effect);
+  if(r.right)g.Integer(19,r.right);g.Integer(20,r.security_generation);return g.Finish();
+}
 std::pair<p::Uuid,std::string> SecurityGolden(unsigned n) {
   static constexpr std::array<const char*,5> roles{"ROLE_APP_RUNTIME","ROLE_DBA","ROLE_SECURITY_ADMIN","ROLE_AUDIT_READER","ROLE_OPERATOR"};
   static constexpr std::array<const char*,5> role_descriptions{
@@ -169,41 +232,32 @@ std::pair<p::Uuid,std::string> SecurityGolden(unsigned n) {
   const unsigned kind=n<5||agent_role?62:n<11?61:63;
   const auto id=agent_role?SourceId(ar->suffix):agent_grant?SourceId(ag->suffix):
       n<5?SourceId(0x100+n):n<11?SourceId(0x200+n-5):n<16?f::Id(13000+n-11):SourceId(0x300+n-16);
-  f::Golden g(65536+kind);f::Put(g.bytes,20,2,2);
-  g.Identity(kind==62?3:kind==61?2:4,id);
-  if(n>=11&&n<16){g.Identity(5,SourceId(0x201+n-11));g.Identity(6,SourceId(0x100+n-11));}
-  if(agent_grant)g.Identity(7,SourceId(ag->subject));
-  else if(public_connect)g.Identity(7,SourceId(0x200));
-  else if(n>=16&&!agent_role)g.Identity(7,SourceId(0x100+subjects[n-16]));
-  g.Identity(9,SourceId(1));
-  if(n>=11&&n<16)g.Identity(10,id);
-  g.Identity(11,tx.value);
-  g.Integer(32,1);g.Integer(33,1);g.Integer(34,1);g.Boolean(35,true);g.Field(36,3,"uuid");g.Boolean(37,true);
-  if(agent_role){g.Field(44,3,ar->code);g.Field(46,3,ar->description);g.Field(47,3,ar->assignment);}
-  else if(agent_grant){g.Field(54,3,"privilege");g.Field(57,3,"role");g.Field(58,3,"allow");g.Field(59,3,ag->right);}
-  else if(n<5){g.Field(44,3,roles[n]);g.Field(46,3,role_descriptions[n]);g.Field(47,3,std::string("group:")+groups[n+1]);}
-  else if(n<11){g.Field(46,3,group_descriptions[n-5]);g.Field(48,3,groups[n-5]);}
-  else if(n<16){g.Field(54,3,"group_membership");g.Field(55,3,"group");g.Field(56,3,"role");g.Field(58,3,"allow");}
-  else if(public_connect){g.Field(54,3,"privilege");g.Field(57,3,"group");g.Field(58,3,"allow");g.Field(59,3,"CONNECT");}
-  else {g.Field(54,3,"privilege");g.Field(57,3,"role");g.Field(58,3,"allow");g.Field(59,3,rights[n-16]);}
-  return {id,g.Finish()};
+  // The pack's codes and descriptions above no longer appear in the typed
+  // records (3a-2); kept as the pack's documented content.
+  (void)roles;(void)role_descriptions;(void)groups;(void)group_descriptions;
+  // 3a-2 (SB_CATALOG_NATIVE_SECURITY_RECORDS): the typed schema, hand-built.
+  // Imported records: origin local 1, creator_tx 1, policy generation 1, the
+  // pack, engine-owned and loaded at create. Codes, descriptions, default
+  // assignments and identity_authority are no longer record fields (names go
+  // to the names table; description/default_assignment dropped, owner Q65).
+  if(kind==62)return {id,TypedRole(id,SourceId(1),std::nullopt,true,false,true,true,false,0,0)};
+  if(kind==61)return {id,TypedGroup(id,SourceId(1))};
+  GrantGolden r;r.id=id;r.pack=SourceId(1);
+  if(n>=11&&n<16){r.cls=3;r.member=SourceId(0x201+n-11);r.parent=SourceId(0x100+n-11);r.mk=3;r.pk=2;r.effect=1;}
+  else{r.cls=1;r.effect=1;
+    if(agent_grant){r.subject=SourceId(ag->subject);r.sk=2;r.right=RightCode(ag->right);}
+    else if(public_connect){r.subject=SourceId(0x200);r.sk=3;r.right=RightCode("CONNECT");}
+    else{r.subject=SourceId(0x100+subjects[n-16]);r.sk=2;r.right=RightCode(rights[n-16]);}}
+  return {id,TypedGrant(r)};
 }
 std::pair<p::Uuid,std::string> BootstrapGolden(unsigned n) {
-  const unsigned kind=n==0?62:n==1?60:63;
-  const auto id=n==0?SourceId(0x105):f::Id(14000+n-1);
-  f::Golden g(65536+kind);f::Put(g.bytes,20,2,2);
-  if(n==0)g.Identity(3,id);
-  else if(n==1)g.Identity(1,id);
-  else{g.Identity(1,f::Id(14000));g.Identity(3,SourceId(0x105));g.Identity(4,id);g.Identity(5,f::Id(14000));g.Identity(6,SourceId(0x105));g.Identity(10,id);}
-  g.Identity(11,tx.value);g.Integer(32,1);g.Integer(34,1);g.Field(36,3,"uuid");
-  if(n==0)g.Boolean(37,true);else g.Integer(38,1);
-  g.Integer(39,1);g.Integer(40,1);g.Boolean(41,true);
-  if(n==0)g.Boolean(42,true);
-  g.Boolean(43,true);
-  if(n==0){g.Field(44,3,"ROLE_SYSARCH");g.Field(63,3,"engine_owned_sysarch");}
-  if(n==1){g.Field(49,3,"BootstrapAdmin");g.Field(50,3,fingerprint);g.Field(51,3,"user");g.Field(52,3,"user");g.Boolean(53,true);}
-  if(n==2){g.Field(54,3,"role_membership");g.Field(55,3,"principal");g.Field(56,3,"role");}
-  return {id,g.Finish()};
+  // 3a-2 typed schema. SYSARCH (canonical UUID, no pack), the bootstrap
+  // principal (user, its binary credential) and its SYSARCH membership.
+  if(n==0)return {SourceId(0x105),TypedRole(SourceId(0x105),std::nullopt,1,true,true,true,false,true,1,1)};
+  if(n==1)return {f::Id(14000),TypedPrincipal(f::Id(14000),1,std::nullopt,true,true,true)};
+  GrantGolden r;r.id=f::Id(14001);r.cls=2;r.member=f::Id(14000);r.parent=SourceId(0x105);r.principal=f::Id(14000);
+  r.role=SourceId(0x105);r.mk=1;r.pk=2;r.security_generation=1;
+  return {r.id,TypedGrant(r)};
 }
 std::pair<p::Uuid,std::string> ServiceGolden(unsigned n) {
   if(n==1){
@@ -212,46 +266,36 @@ std::pair<p::Uuid,std::string> ServiceGolden(unsigned n) {
     g.Identity(8,f::Id(15002));g.Integer(9,1);g.Integer(10,1);g.Integer(11,1);g.Integer(12,1);g.Integer(13,1);
     g.Identity(14,tx.value);g.Integer(15,1);return {f::Id(15001),g.Finish()};
   }
-  const auto id=n==0?f::Id(15000):f::Id(15100+n-2);
-  f::Golden g(n==0?65596:65599);f::Put(g.bytes,20,2,2);
-  g.Identity(n==0?1:4,id);if(n!=0)g.Identity(7,f::Id(15000));g.Identity(11,tx.value);
-  g.Integer(32,1);g.Integer(34,1);g.Field(36,3,"uuid");g.Integer(38,1);g.Integer(39,1);g.Integer(40,1);
-  g.Boolean(41,true);g.Boolean(43,false);
-  // Field 63 (authority_class) since 2026-11-03, as legacy create writes it.
-  if(n==0){g.Field(49,3,"NodeService");g.Field(50,3,fingerprint);g.Field(51,3,"service");g.Field(52,3,"service");g.Boolean(53,false);
-    g.Field(63,3,"l5_database");}
-  else {static constexpr std::array<const char*,5> rights{"CONNECT","CATALOG_MUTATE","OBS_AGENT_STATE_READ","OBS_AGENT_EVIDENCE_READ","OBS_AGENT_CONTROL"};
-    g.Field(54,3,"privilege");g.Field(57,3,"principal");g.Field(58,3,"allow");g.Field(59,3,rights[n-2]);}
-  return {id,g.Finish()};
+  // 3a-2 typed schema. The L5 principal (service, authority class l5_database,
+  // its binary credential) and its five direct grants.
+  if(n==0)return {f::Id(15000),TypedPrincipal(f::Id(15000),2,2,true,false,false)};
+  static constexpr std::array<const char*,5> rights{"CONNECT","CATALOG_MUTATE","OBS_AGENT_STATE_READ","OBS_AGENT_EVIDENCE_READ","OBS_AGENT_CONTROL"};
+  GrantGolden r;r.id=f::Id(15100+n-2);r.cls=1;r.subject=f::Id(15000);r.sk=1;r.effect=1;r.right=RightCode(rights[n-2]);r.security_generation=1;
+  return {r.id,TypedGrant(r)};
 }
 // SB_NATIVE_CREATE_AGENT_PRINCIPALS (2026-11-03): L5's SYSARCH membership (D5)
 // and every pack agent type's principal, grants and task-group membership,
 // encoded independently like the goldens above, keyed by object identity. The
 // rights, roles and authority classes come from the generated pack table.
+// 3a-2: typed schema; a grant record has no create_time_only field.
 std::map<p::Uuid,std::string> AgentGoldens(const std::vector<db::NativeInitialAgentIdentity>& agents) {
   Check(agents.size()==std::size(kDefaultPackAgentPrincipals),"one issued identity set per pack agent type");
   std::map<p::Uuid,std::string> out;
-  const auto common=[](f::Golden& g,bool create_time_only){
-    g.Identity(11,tx.value);g.Integer(32,1);g.Integer(34,1);g.Field(36,3,"uuid");g.Integer(38,1);g.Integer(39,1);g.Integer(40,1);
-    g.Boolean(41,true);g.Boolean(43,create_time_only);};
-  const auto membership=[&](const p::Uuid& id,const p::Uuid& principal,const p::Uuid& role,bool create_time_only){
-    f::Golden g(65599);f::Put(g.bytes,20,2,2);
-    g.Identity(1,principal);g.Identity(3,role);g.Identity(4,id);g.Identity(5,principal);g.Identity(6,role);g.Identity(10,id);
-    common(g,create_time_only);g.Field(54,3,"role_membership");g.Field(55,3,"principal");g.Field(56,3,"role");
-    Check(out.emplace(id,g.Finish()).second,"distinct golden membership identity");};
-  membership(f::Id(Package::kL5Membership),f::Id(15000),SourceId(0x105),true);
+  const auto membership=[&](const p::Uuid& id,const p::Uuid& principal,const p::Uuid& role){
+    GrantGolden r;r.id=id;r.cls=2;r.member=principal;r.parent=role;r.principal=principal;r.role=role;r.mk=1;r.pk=2;r.security_generation=1;
+    Check(out.emplace(id,TypedGrant(r)).second,"distinct golden membership identity");};
+  membership(f::Id(Package::kL5Membership),f::Id(15000),SourceId(0x105));
   for(std::size_t i=0;i<agents.size();++i){
     const auto& expected=kDefaultPackAgentPrincipals[i];const auto& agent=agents[i];
     Check(agent.agent_type_id==expected.type&&agent.grant_uuids.size()==expected.right_count,"issued identities follow pack order");
-    {f::Golden g(65596);f::Put(g.bytes,20,2,2);g.Identity(1,agent.principal_uuid);common(g,false);
-      g.Field(49,3,expected.type);g.Field(51,3,"service");g.Field(52,3,"service");g.Boolean(53,false);
-      if(*expected.authority_class)g.Field(63,3,expected.authority_class);
-      Check(out.emplace(agent.principal_uuid,g.Finish()).second,"distinct golden agent principal");}
+    const auto authority=*expected.authority_class?std::optional<p::u64>(AuthorityCode(expected.authority_class)):std::nullopt;
+    Check(out.emplace(agent.principal_uuid,TypedPrincipal(agent.principal_uuid,2,authority,true,false,false,false)).second,
+        "distinct golden agent principal");
     for(unsigned r=0;r<expected.right_count;++r){
-      f::Golden g(65599);f::Put(g.bytes,20,2,2);g.Identity(4,agent.grant_uuids[r]);g.Identity(7,agent.principal_uuid);common(g,false);
-      g.Field(54,3,"privilege");g.Field(57,3,"principal");g.Field(58,3,"allow");g.Field(59,3,kDefaultPackAgentRights[expected.first_right+r]);
-      Check(out.emplace(agent.grant_uuids[r],g.Finish()).second,"distinct golden agent grant");}
-    membership(agent.membership_uuid,agent.principal_uuid,SourceId(expected.role_suffix),false);
+      GrantGolden g;g.id=agent.grant_uuids[r];g.cls=1;g.subject=agent.principal_uuid;g.sk=1;g.effect=1;
+      g.right=RightCode(kDefaultPackAgentRights[expected.first_right+r]);g.security_generation=1;
+      Check(out.emplace(agent.grant_uuids[r],TypedGrant(g)).second,"distinct golden agent grant");}
+    membership(agent.membership_uuid,agent.principal_uuid,SourceId(expected.role_suffix));
   }
   return out;
 }
@@ -335,13 +379,31 @@ void BootstrapLogical() {
   const auto made=db::AssembleNativeInitialPolicySecurityRecords(request);Check(made.ok(),"explicit native bootstrap enrollment");
   name.assign("changed");credential_input.assign("destroyed caller credential input");Verify(*made.records,true,true);
   request.bootstrap->principal_name="BootstrapAdmin";request.bootstrap->credential_fingerprint=fingerprint;
-  std::vector<c::CatalogTypedRecord> records;
-  for(const auto& record:made.records->definitions)if(c::IsCatalogSecurityRecordKind(record.metadata.record.header.kind))records.push_back(record.metadata.record);
-  const auto semantic=db::ValidateBootstrapSecurityRecords(records,"native-bootstrap");
-  Check(semantic.ok()&&semantic.state.present&&!semantic.state.committed_by_inventory&&semantic.state.principal_uuid.value==f::Id(14000)&&
-      semantic.state.membership_uuid.value==f::Id(14001)&&semantic.state.sysarch_role_uuid.value==SourceId(0x105)&&
-      semantic.state.principal_name=="BootstrapAdmin"&&semantic.state.credential_fingerprint==fingerprint&&semantic.state.security_context_generation==1,
-      "shared semantic bootstrap validation preserves identities, not commitment or authentication");
+  // 3a-2: native records are typed; the legacy semantic validator
+  // (ValidateBootstrapSecurityRecords) reads only the legacy attribute bag, a
+  // drift path left unchanged, so the same identities, credential and context
+  // generation are checked on the typed records directly. The principal's name
+  // ("BootstrapAdmin") is a names-table entry, which this caller supplies, so
+  // it is not a record field (the generated-name path is exercised by
+  // native_generated_definition_creation_test).
+  {
+    std::optional<c::NativeSecurityPrincipal> principal;std::optional<c::NativeSecurityGrant> membership;std::optional<c::NativeSecurityRole> sysarch;
+    for(const auto& record:made.records->definitions){
+      const auto& meta=record.metadata;if(!c::IsCatalogSecurityRecordKind(meta.record.header.kind))continue;
+      const auto typed=c::DecodeNativeSecurityRecord(meta.record.header.kind,meta.record.payload);
+      Check(typed.ok()&&c::NativeSecurityRecordMatchesMetadata(c::BorrowCatalogMetadataVersion(meta)),"every native security record is the typed record");
+      if(meta.record.header.object_uuid.value==f::Id(14000))principal=*typed.record->principal();
+      if(meta.record.header.object_uuid.value==f::Id(14001))membership=*typed.record->grant();
+      if(meta.record.header.object_uuid.value==SourceId(0x105))sysarch=*typed.record->role();
+    }
+    BootstrapCredential expected(fingerprint);
+    Check(principal&&principal->principal_kind==c::CatalogSecurityPrincipalKind::user&&principal->bootstrap_principal&&principal->active&&
+        principal->security_context_generation==1&&principal->credential&&expected.Matches(*principal->credential)&&
+        membership&&membership->member_uuid==f::Id(14000)&&membership->parent_uuid==SourceId(0x105)&&
+        membership->grant_class==c::CatalogSecurityGrantClass::role_membership&&
+        sysarch&&sysarch->authority_class==c::CatalogSecurityAuthorityClass::engine_owned_sysarch&&sysarch->engine_owned&&sysarch->immutable,
+        "typed bootstrap records preserve identities and the parsed credential, not commitment or authentication");
+  }
   for(unsigned scenario=0;scenario<24;++scenario){Package bad(true,true);auto changed=bad.BootstrapRequest();std::string credential;
     auto& b=*changed.bootstrap;
     if(scenario==0)b.principal_uuid={};if(scenario==1)b.membership_uuid.bytes[6]=0x40;
@@ -368,12 +430,16 @@ void BootstrapLogical() {
   }
   request.policy.limits={3*(Package::kSecurity+3),made.records->encoded_bytes};Check(db::AssembleNativeInitialPolicySecurityRecords(request).ok(),"exact enrolled bootstrap limits");
   std::string maximum(fingerprint);maximum.replace(maximum.find("600000"),6,"10000000");
+  // 3a-2: the typed credential is fixed-width, so the two extra digits no
+  // longer grow the record; the +2 byte allowance is now unused slack.
   auto bounded=request;bounded.policy.limits.maximum_encoded_bytes+=2;bounded.bootstrap->credential_fingerprint=maximum;
   const auto admitted_maximum=db::AssembleNativeInitialPolicySecurityRecords(bounded);
   Check(admitted_maximum.ok(),"exact maximum verifier iteration bound accepted");
   for(const auto& record:admitted_maximum.records->definitions)if(record.metadata.record.header.kind==c::CatalogRecordKind::user_account){
-    const auto native=c::DecodeCatalogSecurityRecordView(record.metadata.record.header.kind,record.metadata.record.payload);
-    Check(native.ok()&&native.record->Attribute("credential_fingerprint")==maximum,"maximum verifier value is retained exactly, not normalized/truncated");}
+    // 3a-2: the parsed parts are retained exactly (iterations 10000000).
+    const auto native=c::DecodeNativeSecurityRecord(record.metadata.record.header.kind,record.metadata.record.payload);
+    Check(native.ok()&&native.record->principal()->credential&&BootstrapCredential(maximum).Matches(*native.record->principal()->credential),
+        "maximum verifier value is retained exactly, not normalized/truncated");}
   for(long budget:{0,1,5,31,97,257}){allocation_failed=false;allocation_budget=budget;
     const auto refused=db::AssembleNativeInitialPolicySecurityRecords(request);allocation_budget=-1;
     Check(allocation_failed&&!refused.ok()&&!refused.records,"actual bootstrap allocation fault cannot publish partial credentials or metadata");}
@@ -637,14 +703,18 @@ void SecuritySourceMutations() {
       unsigned changed=0,targets=0;
       for(const auto& record:made.records->definitions){
         if(!c::IsCatalogSecurityRecordKind(record.metadata.record.header.kind))continue;
-        const auto decoded=c::DecodeCatalogSecurityRecordView(record.metadata.record.header.kind,record.metadata.record.payload);
+        // 3a-2: typed records. Role and group descriptions are not record
+        // fields (dropped, owner Q65; the comments table is step 4), so of the
+        // three changed source values only the grant's right is observable;
+        // the role and group are checked present and typed.
+        const auto decoded=c::DecodeNativeSecurityRecord(record.metadata.record.header.kind,record.metadata.record.payload);
         Check(decoded.ok(),"custom security payload native decode");
         const auto id=record.metadata.record.header.object_uuid.value;
-        if(id==SourceId(0x100)){Check(decoded.record->Attribute("description")=="Custom admitted role description.","actual selected role value");++changed;}
-        if(id==SourceId(0x200)){Check(decoded.record->Attribute("description")=="Custom admitted group description.","actual selected group value");++changed;}
-        if(id==SourceId(0x300)){Check(decoded.record->Attribute("right")=="AUDIT_READ","actual selected grant value");++changed;}
-        if(decoded.record->Attribute("grant_class")=="privilege"){
-          Check(decoded.record->Identity("target_uuid")==SourceId(0x106)&&decoded.record->Attribute("effect")=="deny",
+        if(id==SourceId(0x100)){Check(decoded.record->role()!=nullptr,"actual selected role present");++changed;}
+        if(id==SourceId(0x200)){Check(decoded.record->group()!=nullptr,"actual selected group present");++changed;}
+        if(id==SourceId(0x300)){Check(decoded.record->grant()&&decoded.record->grant()->right==c::CatalogSecurityRight::AUDIT_READ,"actual selected grant value");++changed;}
+        if(const auto* g=decoded.record->grant();g&&g->grant_class==c::CatalogSecurityGrantClass::privilege){
+          Check(g->target_uuid==SourceId(0x106)&&g->effect==c::CatalogSecurityEffect::deny,
               "actual nonempty target and explicit deny retained, not text/unscoped/default-allow fallback");++targets;
         }
       }
@@ -801,9 +871,16 @@ void Physical(bool security=false,bool bootstrap=false,bool service=false) {
     Check(definition_count==package.items.size()&&name_count==2*package.items.size(),
         "all original definitions and every supplied name are retained exactly once across declared roles");
     if(bootstrap){
-      const auto validated=db::ValidateBootstrapSecurityRecords(security_records,"actual-native-bootstrap-reopen");
-      Check(validated.ok()&&validated.state.present&&!validated.state.committed_by_inventory&&validated.state.principal_uuid.value==f::Id(14000)&&
-          validated.state.membership_uuid.value==f::Id(14001)&&validated.state.credential_fingerprint==fingerprint,
+      // 3a-2: typed records (the legacy validator reads only the legacy bag).
+      std::optional<c::NativeSecurityPrincipal> principal;std::optional<c::NativeSecurityGrant> membership;
+      for(const auto& record:security_records){
+        const auto typed=c::DecodeNativeSecurityRecord(record.header.kind,record.payload);
+        Check(typed.ok(),"reopened native security record is typed");
+        if(record.header.object_uuid.value==f::Id(14000))principal=*typed.record->principal();
+        if(record.header.object_uuid.value==f::Id(14001))membership=*typed.record->grant();
+      }
+      Check(principal&&principal->bootstrap_principal&&principal->credential&&BootstrapCredential(fingerprint).Matches(*principal->credential)&&
+          membership&&membership->member_uuid==f::Id(14000)&&membership->parent_uuid==SourceId(0x105),
           "actual reopened native records preserve bootstrap semantics without claiming authentication or activation");
     }
     const auto zero=d::ReadFilespacePageZeroFromOpenDevice(device);Check(zero.ok()&&zero.record->bootstrap.lifecycle_state==1,"construction does not falsely activate node or authorize service: page zero stays as the create wrote it, an online filespace (owner 2026-11-07); serving is the server's act at open");

@@ -65,7 +65,9 @@ class NativeLocalServiceAuthentication final {
     const core::catalog::CatalogBootstrapPolicyProfile& selection;
     const NativeRuntimeAuthorizationProjection& authorization;
     NativeLocalServiceAuthenticationObservation identity;
-    std::string_view verifier, credential;
+    // 3a-2: the principal's stored verifier as the typed record's binary parts.
+    LocalPasswordStoredVerifier verifier;
+    std::string_view credential;
     const core::memory::ScopedProtectedBuffer& derived;
     std::stop_token credential_stop, source_stop;
   };
@@ -111,7 +113,7 @@ class NativeLocalServiceAuthentication final {
         in.authorization.binding().binding_uuid!=in.binding.binding_uuid||
         in.authorization.principal().principal_uuid!=identity.principal_uuid)
       return fail(E::principal_mismatch);
-    if(!in.authorization.Allows("CONNECT",identity.database_uuid))return fail(E::authorization_refused);
+    if(!in.authorization.Allows(core::catalog::CatalogSecurityRight::CONNECT,identity.database_uuid))return fail(E::authorization_refused);
     const auto& derived=in.derived;
     if(!derived.valid()||derived.size()!=32||!derived.evidence().platform_lock_succeeded||
         !derived.evidence().no_dump_succeeded||

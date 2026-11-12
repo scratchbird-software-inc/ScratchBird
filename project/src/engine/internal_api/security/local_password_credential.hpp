@@ -64,6 +64,23 @@ inline bool Disjoint(std::span<std::byte, 32> out, std::string_view input) noexc
   if (a > maximum - out.size() || b > maximum - input.size()) return false;
   return a + out.size() <= b || b + input.size() <= a;
 }
+inline bool Disjoint(std::span<std::byte, 32> out, std::span<const unsigned char> input) noexcept {
+  return Disjoint(out, std::string_view(reinterpret_cast<const char*>(input.data()), input.size()));
+}
+// The single PBKDF2-SHA256 derivation and constant-time comparison both
+// verifier forms share. Callers have admitted the workspace, the password and
+// the parameters, and erase the workspace themselves.
+inline LocalPasswordCredentialVerification DeriveAndCompare(
+    std::string_view password, std::uint64_t iterations, const unsigned char* salt,
+    const unsigned char* expected, std::span<std::byte, 32> derived) noexcept {
+  using E = LocalPasswordCredentialError;
+  if (PKCS5_PBKDF2_HMAC(password.data(), static_cast<int>(password.size()),
+          salt, 16, static_cast<int>(iterations),
+          EVP_sha256(), static_cast<int>(derived.size()),
+          reinterpret_cast<unsigned char*>(derived.data())) != 1)
+    return {E::provider_failure};
+  return {CRYPTO_memcmp(expected, derived.data(), 32) == 0 ? E::none : E::mismatch};
+}
 }  // namespace local_password_credential_detail
 
 // The caller exclusively owns the entire 32-byte derived workspace throughout
@@ -113,12 +130,41 @@ inline LocalPasswordCredentialVerification VerifyLocalPasswordCredential(
   if (!detail::Decode(stored.substr(salt_begin, 32), salt) ||
       !detail::Decode(stored.substr(verifier_begin, 64), expected))
     return {E::invalid_verifier};
-  if (PKCS5_PBKDF2_HMAC(password.data(), static_cast<int>(password.size()),
-          salt.data(), static_cast<int>(salt.size()), static_cast<int>(iterations),
-          EVP_sha256(), static_cast<int>(derived.size()),
-          reinterpret_cast<unsigned char*>(derived.data())) != 1)
-    return {E::provider_failure};
-  return {CRYPTO_memcmp(expected.data(), derived.data(), expected.size()) == 0
-              ? E::none : E::mismatch};
+  return detail::DeriveAndCompare(password, iterations, salt.data(), expected.data(), derived);
+}
+
+// SB_CATALOG_NATIVE_SECURITY_RECORDS (3a-2): the same verification over a
+// stored verifier already held as binary parts (the typed native principal's
+// credential: PBKDF2-SHA256 v1 iterations, 16-byte salt, 32-byte verifier),
+// with the text form's admission rules: workspace disjoint from every input,
+// password 1..1024 bytes without NUL, iterations 600000..10000000, salt and
+// verifier not all zero. One derivation (DeriveAndCompare) serves both forms.
+struct LocalPasswordStoredVerifier {
+  std::uint64_t iterations = 0;
+  std::span<const unsigned char, 16> salt;
+  std::span<const unsigned char, 32> verifier;
+};
+inline LocalPasswordCredentialVerification VerifyLocalPasswordCredential(
+    const LocalPasswordStoredVerifier& stored, std::string_view password,
+    std::span<std::byte, 32> derived) noexcept {
+  namespace detail = local_password_credential_detail;
+  using E = LocalPasswordCredentialError;
+  if (!derived.data() || !stored.salt.data() || !stored.verifier.data() ||
+      !detail::Disjoint(derived, std::span<const unsigned char>(stored.salt)) ||
+      !detail::Disjoint(derived, std::span<const unsigned char>(stored.verifier)) ||
+      !detail::Disjoint(derived, password)) return {E::invalid_workspace};
+  struct Erase {
+    std::span<std::byte, 32> bytes;
+    ~Erase() { OPENSSL_cleanse(bytes.data(), bytes.size()); }
+  } erase{derived};
+  if (password.empty() || password.size() > 1024 ||
+      password.find('\0') != std::string_view::npos) return {E::invalid_credential};
+  const auto zero = [](auto bytes) {
+    for (const auto b : bytes) if (b != 0) return false;
+    return true;
+  };
+  if (stored.iterations < 600000 || stored.iterations > 10000000 || zero(stored.salt) || zero(stored.verifier))
+    return {E::invalid_verifier};
+  return detail::DeriveAndCompare(password, stored.iterations, stored.salt.data(), stored.verifier.data(), derived);
 }
 }  // namespace scratchbird::engine::internal_api

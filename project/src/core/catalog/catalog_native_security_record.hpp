@@ -9,6 +9,7 @@
 #include <optional>
 #include <span>
 #include <string_view>
+#include <variant>
 
 namespace scratchbird::core::catalog {
 // SEARCH_KEY: SB_CATALOG_NATIVE_SECURITY_RECORDS (owner Q61 = 1, Q62 = 1,
@@ -19,8 +20,9 @@ namespace scratchbird::core::catalog {
 // catalog_security_constants.hpp); no field carries text. A principal's, role's
 // or group's human names live only in the names table. These replace, for the
 // native create path, the legacy text attribute-bag codec
-// (catalog_security_record_codec), which is unchanged. Not yet wired: no writer,
-// reader or dispatcher consults these codecs.
+// (catalog_security_record_codec), which is unchanged. Wired in commit 3a-2
+// (SB_CATALOG_NATIVE_SECURITY_DISPATCH below): native create writes them, the
+// native readers and the common validators read them.
 //
 // Common to all four: the primary identity (kind object), the origin
 // transaction (UUID, kind transaction, and its nonzero local id), creator_tx
@@ -80,10 +82,13 @@ struct NativeSecurityGroup {
 // Class rules (enforced on encode and decode):
 //  privilege:              subject_uuid, subject_kind, right (listed), effect;
 //                          no member/parent identity or kind.
-//  role_membership:        member_uuid, parent_uuid, member_kind, parent_kind
-//                          = role; effect allow if present; no subject or right.
-//  group_membership:       as role_membership with parent_kind = role and
-//                          member_kind = group.
+//  role_membership,
+//  group_membership:       member_uuid, parent_uuid, member_kind (principal,
+//                          role or group), parent_kind (role or group, never
+//                          principal); effect allow if present; no subject or
+//                          right. The class name is a legacy label: the kinds
+//                          decide the edge (coordinator correction 2026-11-12;
+//                          3a-1 had required parent_kind = role).
 //  agent_principal_binding: subject_uuid, subject_kind = principal, target_uuid;
 //                          no right, effect, member or parent.
 // Every present identity differs from grant_uuid; member differs from parent.
@@ -135,10 +140,64 @@ NativeSecurityDecodeResult<NativeSecurityGrant> DecodeNativeSecurityGrant(std::s
 // version, a creator transaction of kind transaction, and for the first
 // version (definition_version 1) creator transaction UUID and local id = the
 // payload's origin transaction UUID and local id. Nothing else (owner, names,
-// schema, audit) is checked here; those stay with the common row checks. Not
-// wired yet.
+// schema, audit) is checked here; NativeSecurityRecordMatchesMetadata below
+// adds the legacy matcher's common checks.
 bool NativeSecurityPrincipalMatchesMetadata(const CatalogMetadataVersionView&);
 bool NativeSecurityRoleMatchesMetadata(const CatalogMetadataVersionView&);
 bool NativeSecurityGroupMatchesMetadata(const CatalogMetadataVersionView&);
 bool NativeSecurityGrantMatchesMetadata(const CatalogMetadataVersionView&);
+
+// SEARCH_KEY: SB_CATALOG_NATIVE_SECURITY_DISPATCH (commit 3a-2, 2026-11-12).
+// Wired: native create writes these records; the native readers and the
+// common catalog validators read them.
+//
+// One of the four typed records, tagged by its catalog kind. Trivially
+// destructible and allocation-free, so native readers can hold it in governed
+// arena slots.
+struct NativeSecurityRecord {
+  CatalogRecordKind kind = CatalogRecordKind::unknown;
+  std::variant<std::monostate, NativeSecurityPrincipal, NativeSecurityRole, NativeSecurityGroup, NativeSecurityGrant>
+      value;
+  const NativeSecurityPrincipal* principal() const noexcept { return std::get_if<NativeSecurityPrincipal>(&value); }
+  const NativeSecurityRole* role() const noexcept { return std::get_if<NativeSecurityRole>(&value); }
+  const NativeSecurityGroup* group() const noexcept { return std::get_if<NativeSecurityGroup>(&value); }
+  const NativeSecurityGrant* grant() const noexcept { return std::get_if<NativeSecurityGrant>(&value); }
+  // Fields every record carries; nil/zero when empty.
+  Uuid primary() const noexcept;
+  Uuid origin_transaction_uuid() const noexcept;
+  u64 origin_local_transaction_id() const noexcept;
+  u64 creator_tx() const noexcept;
+  u64 policy_generation() const noexcept;
+};
+// The typed schema id a security kind is written under; 0 for any other kind.
+u32 NativeSecuritySchemaIdFor(CatalogRecordKind) noexcept;
+// True when the payload is an SBCV block under one of the four typed schema ids
+// (65635..65638). Selection only; the payload is not validated.
+bool IsNativeSecurityPayload(std::string_view payload) noexcept;
+// Decodes the typed record of `kind`; refuses a payload of another kind or the
+// legacy attribute bag. Allocation-free.
+NativeSecurityDecodeResult<NativeSecurityRecord> DecodeNativeSecurityRecord(CatalogRecordKind kind,
+                                                                            std::string_view payload);
+// The checks the legacy codec makes on a typed record header, for a typed
+// payload: header kind is the record's, object (kind object) = the primary
+// identity, row differs from the object and from the origin transaction.
+bool NativeSecurityPayloadMatchesHeader(const CatalogTypedRecordView&);
+// The typed *MatchesMetadata binding for the header's kind, plus the common
+// checks the legacy matcher makes (owner kind principal; audit, security
+// policy, default name and name vector kind object; owning schema kind schema
+// and equal to the header parent; origin local id <= creator local id), so the
+// typed path is never a weaker gate than the legacy one.
+bool NativeSecurityRecordMatchesMetadata(const CatalogMetadataVersionView&);
+// A successor version keeps the kind, object, origin transaction (UUID and
+// local id) and creator_tx of its predecessor.
+bool NativeSecurityPreservesOrigin(const CatalogMetadataVersionView&, const CatalogMetadataVersionView&);
+
+// Common validator dispatch: by the payload's SBCV schema id, a typed record
+// (65635..65638) goes to the typed matcher above, anything else to the legacy
+// attribute-bag codec (catalog_security_record_codec, unchanged). Native
+// readers that read only native-created databases call the typed functions
+// directly instead.
+bool CatalogSecurityDefinitionMatchesHeader(const CatalogTypedRecordView&);
+bool CatalogSecurityDefinitionMatchesMetadata(const CatalogMetadataVersionView&);
+bool CatalogSecurityDefinitionPreservesOrigin(const CatalogMetadataVersionView&, const CatalogMetadataVersionView&);
 }  // namespace scratchbird::core::catalog

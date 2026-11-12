@@ -6,7 +6,8 @@
 #include "native_fixed_root_memory_lease.hpp"
 #include "native_lease_read_source.hpp"
 #include <concepts>
-#include "catalog_security_record_codec.hpp"
+#include "catalog_native_security_record.hpp"
+#include "catalog_security_record_codec.hpp"  // IsCatalogSecurityRecordKind (kind classification only)
 #include <limits>
 
 namespace scratchbird::engine::internal_api {
@@ -29,8 +30,12 @@ enum class NativeRuntimeSecurityReadError {
 // This observes the four native user/group/role/grant families, not policy
 // execution, external authority, private-event reconciliation or whole-node
 // activation. Other catalog families cannot silently become privilege rows.
+// SB_CATALOG_NATIVE_SECURITY_RECORDS (3a-2): `record` is the typed native
+// record (identities and coding-time constants only); a legacy attribute-bag
+// payload is refused as security_record_invalid. This reader reads only
+// native-created databases.
 struct NativeRuntimeSecurityRecordObservation {
-  core::catalog::CatalogSecurityRecordView record;
+  core::catalog::NativeSecurityRecord record;
   EngineUuid object_uuid, row_uuid, version_uuid, previous_version_uuid;
   EngineUuid origin_transaction_uuid, creator_transaction_uuid, retired_transaction_uuid;
   core::platform::u64 origin_local_transaction_id=0, creator_local_transaction_id=0;
@@ -298,15 +303,15 @@ inline NativeRuntimeSecurityObservationResult ReadCommittedNativeRuntimeSecurity
     // become a structurally corrupt bypass merely because MGA excludes them.
     for(const auto& base:rows.source.bases)for(const auto& indexed:base.page.metadata){
       const auto& m=indexed.metadata;if(!c::IsCatalogSecurityRecordKind(m.record.header.kind))continue;
-      const auto decoded=c::DecodeCatalogSecurityRecordView(m.record.header.kind,m.record.payload);
-      if(!decoded.ok()||!c::CatalogSecurityPayloadMatchesMetadata(m)){
+      const auto decoded=c::DecodeNativeSecurityRecord(m.record.header.kind,m.record.payload);
+      if(!decoded.ok()||!c::NativeSecurityRecordMatchesMetadata(m)){
         out.record_error=decoded.error;fail(E::security_record_invalid);return out;
       }
-      const auto origin=decoded.record->Unsigned("creator_tx");
-      const auto found=std::lower_bound(inventory.begin(),inventory.end(),origin.value_or(0),
+      const auto origin=decoded.record->origin_local_transaction_id();
+      const auto found=std::lower_bound(inventory.begin(),inventory.end(),origin,
           [](const auto& e,core::platform::u64 n){return e.identity.local_id.value<n;});
-      if(!origin||found==inventory.end()||found->identity.local_id.value!=*origin||
-          found->identity.transaction_uuid.value!=decoded.record->Identity("origin_transaction_uuid")||
+      if(!origin||found==inventory.end()||found->identity.local_id.value!=origin||
+          found->identity.transaction_uuid.value!=decoded.record->origin_transaction_uuid()||
           found->identity.scope!=mga::TransactionScope::local_node){fail(E::origin_not_committed);return out;}
     }
     core::platform::usize count=0;std::optional<NativeRuntimeServicePrincipalObservation> principal;
@@ -317,19 +322,19 @@ inline NativeRuntimeSecurityObservationResult ReadCommittedNativeRuntimeSecurity
         if(m.record.header.kind!=c::CatalogRecordKind::user_account){fail(E::principal_wrong_family);return out;}}
       if(!c::IsCatalogSecurityRecordKind(m.record.header.kind))continue;
       if(row.provisional){fail(E::security_record_invalid);return out;}
-      const auto decoded=c::DecodeCatalogSecurityRecordView(m.record.header.kind,m.record.payload);
-      if(!decoded.ok()||!c::CatalogSecurityPayloadMatchesMetadata(m)){
+      const auto decoded=c::DecodeNativeSecurityRecord(m.record.header.kind,m.record.payload);
+      if(!decoded.ok()||!c::NativeSecurityRecordMatchesMetadata(m)){
         out.record_error=decoded.error;fail(E::security_record_invalid);return out;
       }
-      if(!committed_origin(*decoded.record->Unsigned("creator_tx"),decoded.record->Identity("origin_transaction_uuid"))){
+      if(!committed_origin(decoded.record->origin_local_transaction_id(),decoded.record->origin_transaction_uuid())){
         fail(E::origin_not_committed);return out;
       }
       if(count==w.records_.size()){fail(E::resource_exhausted);return out;}
       auto& record=w.records_[count];record={};record.record=*decoded.record;
       record.object_uuid=m.record.header.object_uuid.value;record.row_uuid=m.record.header.row_uuid.value;
       record.version_uuid=row.version_uuid;record.previous_version_uuid=row.previous_version_uuid;
-      record.origin_transaction_uuid=decoded.record->Identity("origin_transaction_uuid");
-      record.origin_local_transaction_id=*decoded.record->Unsigned("creator_tx");
+      record.origin_transaction_uuid=decoded.record->origin_transaction_uuid();
+      record.origin_local_transaction_id=decoded.record->origin_local_transaction_id();
       record.creator_transaction_uuid=m.creator_transaction_uuid.value;record.creator_local_transaction_id=m.creator_local_transaction_id;
       record.retired_transaction_uuid=m.retired_transaction_uuid.value;
       if(!record.retired_transaction_uuid.is_nil()){
@@ -345,15 +350,17 @@ inline NativeRuntimeSecurityObservationResult ReadCommittedNativeRuntimeSecurity
       record.lifecycle=row.effective_lifecycle;record.status=row.effective_status;record.deleted=m.record.header.deleted;
       ++count;
       if(!wanted)continue;
+      // Typed (3a-2): principal_kind is one constant (it replaces both text
+      // `kind` and `principal_kind`); `created_disabled` is not a typed field.
+      const auto* p=decoded.record->principal();
+      if(!p){fail(E::principal_wrong_family);return out;}
       if(record.deleted||record.lifecycle!=c::CatalogObjectLifecycle::active||record.status!=c::CatalogObjectStatus::active||
-          decoded.record->Boolean("active")!=true||decoded.record->Boolean("created_disabled")==true){fail(E::principal_not_active);return out;}
-      if(decoded.record->Attribute("kind")!="service"||decoded.record->Attribute("principal_kind")!="service"||
-          decoded.record->Boolean("bootstrap_principal")!=false){fail(E::principal_not_service);return out;}
-      const auto context=decoded.record->Unsigned("security_context_generation"),security=decoded.record->Unsigned("security_generation"),
-          policy=decoded.record->Unsigned("policy_generation");
-      if(decoded.record->Unsigned("security_context_authority_version")!=1||!context||!*context||!security||!*security||!policy||!*policy){
+          !p->active){fail(E::principal_not_active);return out;}
+      if(p->principal_kind!=c::CatalogSecurityPrincipalKind::service||p->bootstrap_principal){fail(E::principal_not_service);return out;}
+      if(p->security_context_authority_version!=1||!p->security_context_generation||!p->security_generation||!p->policy_generation){
         fail(E::principal_generation_invalid);return out;}
-      principal=NativeRuntimeServicePrincipalObservation{record.object_uuid,record.version_uuid,record.definition_generation,*context,*security,*policy};
+      principal=NativeRuntimeServicePrincipalObservation{record.object_uuid,record.version_uuid,record.definition_generation,
+          p->security_context_generation,p->security_generation,p->policy_generation};
     }
     if(!principal){fail(E::principal_absent);return out;}
     const auto records=w.records_.first(count);

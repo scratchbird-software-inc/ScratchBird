@@ -7,6 +7,7 @@
 
 #include <algorithm>
 #include <limits>
+#include <type_traits>
 
 namespace scratchbird::core::catalog {
 namespace {
@@ -142,14 +143,16 @@ bool Valid(const NativeSecurityGrant& r) {
     case CatalogSecurityGrantClass::privilege:
       return r.subject_uuid && r.subject_kind && r.right && r.effect && no_member;
     case CatalogSecurityGrantClass::role_membership:
-    case CatalogSecurityGrantClass::group_membership: {
-      if (!r.member_uuid || !r.parent_uuid || !r.member_kind || !r.parent_kind || *r.member_uuid == *r.parent_uuid ||
-          *r.parent_kind != CatalogSecuritySubjectKind::role || r.subject_uuid || r.subject_kind || r.right ||
-          (r.effect && *r.effect != CatalogSecurityEffect::allow))
-        return false;
-      return r.grant_class == CatalogSecurityGrantClass::role_membership ||
-             *r.member_kind == CatalogSecuritySubjectKind::group;
-    }
+    case CatalogSecurityGrantClass::group_membership:
+      // Coordinator correction 2026-11-12 (3a-2 follow-up): the class name is
+      // a legacy label; the member and parent kinds decide the edge. A member
+      // may be a principal, role or group; a parent a role or group (a
+      // principal is never a parent). This matches what the legacy projection
+      // accepted, so memberships into groups (principal->group, group->group)
+      // are writable and a group's grants reach its member principals.
+      return r.member_uuid && r.parent_uuid && r.member_kind && r.parent_kind && *r.member_uuid != *r.parent_uuid &&
+             *r.parent_kind != CatalogSecuritySubjectKind::principal && !r.subject_uuid && !r.subject_kind && !r.right &&
+             (!r.effect || *r.effect == CatalogSecurityEffect::allow);
     case CatalogSecurityGrantClass::agent_principal_binding:
       return r.subject_uuid && r.subject_kind && *r.subject_kind == CatalogSecuritySubjectKind::principal &&
              r.target_uuid && !r.right && !r.effect && no_member;
@@ -483,5 +486,130 @@ bool NativeSecurityGroupMatchesMetadata(const CatalogMetadataVersionView& m) {
 bool NativeSecurityGrantMatchesMetadata(const CatalogMetadataVersionView& m) {
   const auto r = DecodeNativeSecurityGrant(m.record.payload);
   return r.ok() && Header(m, *r.record, CatalogRecordKind::grant_record, r.record->grant_uuid);
+}
+
+// ---- SB_CATALOG_NATIVE_SECURITY_DISPATCH (commit 3a-2) ----
+namespace {
+template <class F>
+auto Common(const NativeSecurityRecord& r, F f) noexcept {
+  return std::visit([&](const auto& v) -> decltype(f(std::declval<const NativeSecurityPrincipal&>())) {
+    if constexpr (std::is_same_v<std::decay_t<decltype(v)>, std::monostate>) return {};
+    else return f(v);
+  }, r.value);
+}
+Uuid PrimaryOf(const NativeSecurityPrincipal& r) { return r.principal_uuid; }
+Uuid PrimaryOf(const NativeSecurityRole& r) { return r.role_uuid; }
+Uuid PrimaryOf(const NativeSecurityGroup& r) { return r.group_uuid; }
+Uuid PrimaryOf(const NativeSecurityGrant& r) { return r.grant_uuid; }
+u32 PayloadSchema(std::string_view bytes) noexcept {
+  if (bytes.size() < kCatalogValueBlockHeaderBytes || bytes.substr(0, 4) != "SBCV") return 0;
+  return platform::LoadLittle32(reinterpret_cast<const byte*>(bytes.data()) + 16);
+}
+// The legacy matcher's UUIDv7 typed-reference test, repeated exactly.
+bool V7(const TypedUuid& id, UuidKind kind) {
+  return id.kind == kind && !id.value.is_nil() && (id.value.bytes[6] >> 4) == 7 && (id.value.bytes[8] & 0xc0) == 0x80;
+}
+}  // namespace
+
+Uuid NativeSecurityRecord::primary() const noexcept {
+  return Common(*this, [](const auto& v) { return PrimaryOf(v); });
+}
+Uuid NativeSecurityRecord::origin_transaction_uuid() const noexcept {
+  return Common(*this, [](const auto& v) { return v.origin_transaction_uuid.value; });
+}
+u64 NativeSecurityRecord::origin_local_transaction_id() const noexcept {
+  return Common(*this, [](const auto& v) { return v.origin_local_transaction_id; });
+}
+u64 NativeSecurityRecord::creator_tx() const noexcept {
+  return Common(*this, [](const auto& v) { return v.creator_tx; });
+}
+u64 NativeSecurityRecord::policy_generation() const noexcept {
+  return Common(*this, [](const auto& v) { return v.policy_generation; });
+}
+
+u32 NativeSecuritySchemaIdFor(CatalogRecordKind kind) noexcept {
+  switch (kind) {
+    case CatalogRecordKind::user_account: return kNativeSecurityPrincipalSchemaId;
+    case CatalogRecordKind::role_account: return kNativeSecurityRoleSchemaId;
+    case CatalogRecordKind::group_account: return kNativeSecurityGroupSchemaId;
+    case CatalogRecordKind::grant_record: return kNativeSecurityGrantSchemaId;
+    default: return 0;
+  }
+}
+bool IsNativeSecurityPayload(std::string_view payload) noexcept {
+  const auto id = PayloadSchema(payload);
+  return id >= kNativeSecurityPrincipalSchemaId && id <= kNativeSecurityGrantSchemaId;
+}
+NativeSecurityDecodeResult<NativeSecurityRecord> DecodeNativeSecurityRecord(CatalogRecordKind kind,
+                                                                            std::string_view payload) {
+  const auto schema = NativeSecuritySchemaIdFor(kind);
+  if (!schema) return {E::invalid_schema, {}};
+  if (PayloadSchema(payload) != schema) return {E::invalid_schema, {}};
+  const auto wrap = [&](auto decoded) -> NativeSecurityDecodeResult<NativeSecurityRecord> {
+    if (!decoded.ok()) return {decoded.error, {}};
+    NativeSecurityRecord r;
+    r.kind = kind;
+    r.value = *decoded.record;
+    return {E::none, r};
+  };
+  switch (kind) {
+    case CatalogRecordKind::user_account: return wrap(DecodeNativeSecurityPrincipal(payload));
+    case CatalogRecordKind::role_account: return wrap(DecodeNativeSecurityRole(payload));
+    case CatalogRecordKind::group_account: return wrap(DecodeNativeSecurityGroup(payload));
+    default: return wrap(DecodeNativeSecurityGrant(payload));
+  }
+}
+bool NativeSecurityPayloadMatchesHeader(const CatalogTypedRecordView& record) {
+  const auto decoded = DecodeNativeSecurityRecord(record.header.kind, record.payload);
+  if (!decoded.ok()) return false;
+  const auto primary = decoded.record->primary();
+  return record.header.object_uuid.kind == UuidKind::object && record.header.object_uuid.value == primary &&
+         record.header.row_uuid.value != primary &&
+         record.header.row_uuid.value != decoded.record->origin_transaction_uuid();
+}
+bool NativeSecurityRecordMatchesMetadata(const CatalogMetadataVersionView& m) {
+  bool bound = false;
+  switch (m.record.header.kind) {
+    case CatalogRecordKind::user_account: bound = NativeSecurityPrincipalMatchesMetadata(m); break;
+    case CatalogRecordKind::role_account: bound = NativeSecurityRoleMatchesMetadata(m); break;
+    case CatalogRecordKind::group_account: bound = NativeSecurityGroupMatchesMetadata(m); break;
+    case CatalogRecordKind::grant_record: bound = NativeSecurityGrantMatchesMetadata(m); break;
+    default: return false;
+  }
+  if (!bound || !NativeSecurityPayloadMatchesHeader(m.record) || !V7(m.owner_uuid, UuidKind::principal) ||
+      !V7(m.audit_uuid, kObj) || !V7(m.security_policy_uuid, kObj) || !V7(m.default_name_uuid, kObj) ||
+      !V7(m.name_vector_uuid, kObj) || !V7(m.owning_schema_uuid, UuidKind::schema) ||
+      !V7(m.creator_transaction_uuid, UuidKind::transaction) ||
+      m.record.header.parent_uuid.value != m.owning_schema_uuid.value)
+    return false;
+  const auto r = DecodeNativeSecurityRecord(m.record.header.kind, m.record.payload);
+  return r.ok() && r.record->origin_local_transaction_id() <= m.creator_local_transaction_id;
+}
+bool NativeSecurityPreservesOrigin(const CatalogMetadataVersionView& a, const CatalogMetadataVersionView& b) {
+  if (!NativeSecurityRecordMatchesMetadata(a) || !NativeSecurityRecordMatchesMetadata(b)) return false;
+  const auto x = DecodeNativeSecurityRecord(a.record.header.kind, a.record.payload);
+  const auto y = DecodeNativeSecurityRecord(b.record.header.kind, b.record.payload);
+  return x.ok() && y.ok() && a.record.header.kind == b.record.header.kind &&
+         a.record.header.object_uuid.value == b.record.header.object_uuid.value &&
+         x.record->origin_transaction_uuid() == y.record->origin_transaction_uuid() &&
+         x.record->origin_local_transaction_id() == y.record->origin_local_transaction_id() &&
+         x.record->creator_tx() == y.record->creator_tx();
+}
+
+bool CatalogSecurityDefinitionMatchesHeader(const CatalogTypedRecordView& record) {
+  return IsNativeSecurityPayload(record.payload) ? NativeSecurityPayloadMatchesHeader(record)
+                                                 : CatalogSecurityPayloadMatchesHeader(record);
+}
+bool CatalogSecurityDefinitionMatchesMetadata(const CatalogMetadataVersionView& m) {
+  return IsNativeSecurityPayload(m.record.payload) ? NativeSecurityRecordMatchesMetadata(m)
+                                                   : CatalogSecurityPayloadMatchesMetadata(m);
+}
+bool CatalogSecurityDefinitionPreservesOrigin(const CatalogMetadataVersionView& a, const CatalogMetadataVersionView& b) {
+  if (!IsCatalogSecurityRecordKind(a.record.header.kind) && !IsCatalogSecurityRecordKind(b.record.header.kind))
+    return true;
+  const bool typed = IsNativeSecurityPayload(a.record.payload);
+  // A version may not change between the typed record and the legacy bag.
+  if (typed != IsNativeSecurityPayload(b.record.payload)) return false;
+  return typed ? NativeSecurityPreservesOrigin(a, b) : CatalogSecurityPreservesOrigin(a, b);
 }
 }  // namespace scratchbird::core::catalog

@@ -3,7 +3,7 @@
 #pragma once
 #include "native_catalog_cohort_capture.hpp"
 #include "catalog_bootstrap_policy.hpp"
-#include "catalog_security_record_codec.hpp"
+#include "catalog_native_security_record.hpp"
 #include <numeric>
 
 namespace scratchbird::engine::internal_api {
@@ -54,7 +54,8 @@ inline NativeCatalogSecurityReferenceVerification VerifyNativeCatalogSecurityRef
     const auto& principal=owner->row.metadata;const auto kind=principal.record.header.kind;
     if(m.owner_uuid.kind!=core::platform::UuidKind::principal||owner->role!=4||owner->row.provisional||
         (kind!=K::user_account&&kind!=K::role_account&&kind!=K::group_account)||
-        !c::CatalogSecurityPayloadMatchesMetadata(principal))return fail(E::invalid_owner,id,m.owner_uuid.value);
+        // 3a-2: a native owner is a typed native security record.
+        !c::NativeSecurityRecordMatchesMetadata(principal))return fail(E::invalid_owner,id,m.owner_uuid.value);
     ++out.owners;
     const auto* policy=find(m.security_policy_uuid.value);
     if(!policy)return fail(E::missing_policy,id,m.security_policy_uuid.value);

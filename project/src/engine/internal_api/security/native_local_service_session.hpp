@@ -50,7 +50,7 @@ class NativeLocalServiceSession final {
         source.database_uuid!=identity.database_uuid||!source.root_set_generation||!source.source_generation||
         !core::uuid::IsEngineIdentityUuid(source.root_set_uuid)||!core::uuid::IsEngineIdentityUuid(identity.decision_uuid))
       return {E::source_mismatch};
-    if(!authentication.authorization_.Allows("CONNECT",identity.database_uuid))return {E::authorization_refused};
+    if(!authentication.authorization_.Allows(core::catalog::CatalogSecurityRight::CONNECT,identity.database_uuid))return {E::authorization_refused};
     if(core::hash::CheckExplicitCryptoMemoryScope(identity.database_uuid)!=core::hash::CryptoMemoryError::none)
       return {E::crypto_scope_unavailable};
     // This private owner registers both the actual internal attachment and its

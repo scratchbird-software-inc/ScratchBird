@@ -405,10 +405,14 @@ inline NativeRuntimePrincipalCredentialResult VerifyNativeRuntimePrincipalCreden
       origin->identity.transaction_uuid.value != provider.record->origin_transaction_uuid.value ||
       origin->identity.scope != mga::TransactionScope::local_node || !mga::HasCommittedInventoryOutcome(*origin))
     return fail(E::provider_invalid);
-  std::optional<std::string_view> verifier;
+  // 3a-2: the typed principal's binary verifier parts (no text fingerprint).
+  std::optional<api::LocalPasswordStoredVerifier> verifier;
   for (const auto& record : observed.records)
     if (record.object_uuid == binding.service_principal_uuid)
-      verifier = record.record.Attribute("credential_fingerprint");
+      if (const auto* principal = record.record.principal(); principal && principal->credential)
+        verifier = api::LocalPasswordStoredVerifier{principal->credential->iterations,
+            std::span<const unsigned char, 16>(principal->credential->salt),
+            std::span<const unsigned char, 32>(principal->credential->verifier)};
   if (!verifier) {
     out.verifier_error = api::LocalPasswordCredentialError::invalid_verifier;
     return fail(E::credential_rejected);

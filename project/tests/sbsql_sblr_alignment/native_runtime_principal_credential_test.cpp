@@ -34,6 +34,17 @@ constexpr std::string_view password="DBLC013G-fixture-password";
 constexpr std::string_view verifier=
     "local-password-pbkdf2-sha256:v1:iterations=600000:salt=0123456789abcdef0123456789abcdef:"
     "verifier=4ce03aa5a5657aaf221192635ed9c63acdb76d78a0994ec6e6ab55286e29e6a5";
+// 3a-2: the stored verifier's parts as the typed native principal holds them,
+// parsed here independently of the engine from the text form above.
+catalog::NativeSecurityCredential VerifierParts(std::string_view text){
+  catalog::NativeSecurityCredential c;c.scheme=catalog::CatalogSecurityCredentialScheme::pbkdf2_sha256_v1;
+  const auto at=[&](std::string_view key){const auto k=text.find(key);return k==text.npos?k:k+key.size();};
+  const auto i=at("iterations="),sa=at(":salt="),v=at(":verifier=");
+  c.iterations=std::stoull(std::string(text.substr(i,text.find(':',i)-i)));
+  const auto unhex=[&](std::size_t from,auto& out){for(std::size_t n=0;n<out.size();++n)
+    out[n]=static_cast<platform::byte>(std::stoi(std::string(text.substr(from+2*n,2)),nullptr,16));};
+  unhex(sa,c.salt);unhex(v,c.verifier);return c;
+}
 bool password_provider_fault=false;
 unsigned password_calls=0;
 std::stop_source* password_cancel=nullptr;
@@ -102,19 +113,25 @@ struct CredentialNativeFixture {
   db::NativeCreationWorkspaceReceipt receipt;
   CredentialNativeFixture(unsigned p,bool indexed=false,CredentialVariant variant=CredentialVariant::valid):profile(p),budget(512*u64{sizes[p]}) {
     using K=catalog::CatalogRecordKind;db::NativeCreationCatalogSeed seed;db::NativeCreationCatalogIndexes indexes;
-    auto principal=SecurityRecord(K::user_account,200);principal.attributes.emplace("kind","service");
-    principal.attributes.emplace("principal_kind","service");principal.attributes.emplace("bootstrap_principal",false);
-    principal.attributes.emplace("principal_name","actual-native-service");
-    principal.attributes.emplace("credential_fingerprint",std::string(variant==CredentialVariant::malformed_verifier?"not-a-verifier":verifier));
-    if(variant==CredentialVariant::inactive_principal)principal.attributes["active"]=false;
+    // 3a-2: the typed service principal; its name is a names-table entry and
+    // its stored verifier the typed binary credential. The typed codec cannot
+    // hold a malformed verifier ("not-a-verifier" was text), so the malformed
+    // variant stores NO verifier: the comparison refuses it the same way
+    // (credential_rejected, verifier_error invalid_verifier).
+    auto principal=SecurityRecord(K::user_account,200);
+    {auto& p=AsPrincipal(principal);p.principal_kind=catalog::CatalogSecurityPrincipalKind::service;p.bootstrap_principal=false;
+     if(variant!=CredentialVariant::malformed_verifier)p.credential=VerifierParts(verifier);
+     if(variant==CredentialVariant::inactive_principal)p.active=false;}
     auto principal_row=SecurityMetadata(principal,0);
     if(variant==CredentialVariant::retired_principal){
       principal_row.metadata.lifecycle=catalog::CatalogObjectLifecycle::archived;principal_row.metadata.status=catalog::CatalogObjectStatus::retired;
       principal_row.metadata.retired_transaction_uuid=security_tx;}
     seed[3].push_back(std::move(principal_row));
-    auto grant=SecurityRecord(K::grant_record,201);grant.identities.emplace("subject_uuid",Id(200));
-    grant.attributes.emplace("grant_class","privilege");grant.attributes.emplace("subject_kind","principal");
-    grant.attributes.emplace("right","CONNECT");grant.attributes.emplace("effect","allow");seed[3].push_back(SecurityMetadata(grant,1));
+    auto grant=SecurityRecord(K::grant_record,201);
+    {auto& g=AsGrant(grant);g.subject_uuid=Id(200);g.grant_class=catalog::CatalogSecurityGrantClass::privilege;
+     g.subject_kind=catalog::CatalogSecuritySubjectKind::principal;g.right=catalog::CatalogSecurityRight::CONNECT;
+     g.effect=catalog::CatalogSecurityEffect::allow;}
+    seed[3].push_back(SecurityMetadata(grant,1));
     catalog::CatalogRuntimeAuthorityBinding binding;binding.binding_uuid=Id(180);binding.database_uuid=binding.security_authority_uuid=Id(1);
     binding.service_principal_uuid=Id(200);binding.provider_uuid=Id(210);binding.policy_uuid=Id(52);binding.credential_reference_uuid=Id(211);
     binding.generation=binding.security_epoch=binding.catalog_generation=binding.provider_generation=1;binding.policy_epoch=31;
@@ -318,7 +335,7 @@ void WriterCredentials(unsigned profile,bool indexed,int death_mode=0) {
         "actual password verification consumes restricted reader without extracting a writer or read-source handle");
     allocation_budget=0;const auto selected=server::SelectNativeLocalServiceStartupDeclarations(*result.lease);
     const auto rights=result.lease->ProjectAuthorization(graph.workspace);const auto remaining=allocation_budget;allocation_budget=-1;
-    Check(selected.ok()&&rights.ok()&&rights.projection.Allows("CONNECT")&&!rights.projection.Allows("CATALOG_MUTATE")&&remaining==0,
+    Check(selected.ok()&&rights.ok()&&rights.projection.Allows(catalog::CatalogSecurityRight::CONNECT)&&!rights.projection.Allows(catalog::CatalogSecurityRight::CATALOG_MUTATE)&&remaining==0,
         "writer comparison selects same committed policy and actual rights without ordinary allocation");
     Check(operation.effects()==effects&&stage_writes==writes&&stage_syncs==syncs,
         "writer credential comparison and projection perform no physical mutation or activation");
@@ -469,7 +486,7 @@ void HostedCredentials(unsigned profile,bool indexed,bool compose=false) {
       "credential proof alone retains complete original server owner as well as exact native writer operation");
   allocation_budget=0;const auto declarations=server::SelectNativeLocalServiceStartupDeclarations(*result.lease);
   const auto rights=result.lease->ProjectAuthorization(graph.workspace);const auto remaining=allocation_budget;allocation_budget=-1;
-  Check(declarations.ok()&&rights.ok()&&remaining==0&&rights.projection.Allows("CONNECT")&&!rights.projection.Allows("CATALOG_MUTATE"),
+  Check(declarations.ok()&&rights.ok()&&remaining==0&&rights.projection.Allows(catalog::CatalogSecurityRight::CONNECT)&&!rights.projection.Allows(catalog::CatalogSecurityRight::CATALOG_MUTATE),
       "hosted proof reads exact committed policy and rights without an allocation or invented catalog privilege");
   server::StartupCredentialSource::Outcome revoke;
   std::thread revoker([&]{revoke=custody.source.Revoke({Id(231),Id(236),7,
@@ -511,8 +528,8 @@ void Success(unsigned profile,bool indexed,int death_mode=0,bool discover=false)
     allocation_budget=0;
     const auto rights=result.lease->ProjectAuthorization(graph.workspace);
     const auto graph_budget=allocation_budget;allocation_budget=-1;
-    Check(rights.ok()&&graph_budget==0&&rights.projection.Allows("CONNECT")&&
-        !rights.projection.Allows("CATALOG_MUTATE")&&rights.projection.grants().size()==1&&
+    Check(rights.ok()&&graph_budget==0&&rights.projection.Allows(catalog::CatalogSecurityRight::CONNECT)&&
+        !rights.projection.Allows(catalog::CatalogSecurityRight::CATALOG_MUTATE)&&rights.projection.grants().size()==1&&
         rights.projection.principal().security_context_generation==9&&
         rights.projection.binding().policy_epoch==31,
         "verified credential projects only its actual retained rights and independent context generations");
@@ -705,6 +722,34 @@ extern "C" int __wrap_PKCS5_PBKDF2_HMAC(const char* p,int pn,const unsigned char
   const auto result=__real_PKCS5_PBKDF2_HMAC(p,pn,s,sn,iterations,md,n,out);
   if(password_cancel)password_cancel->request_stop();return result;
 }
+// 3a-2 known-answer vector: the same password verified through the text
+// fingerprint and through the typed binary parts of that fingerprint gives
+// the same verdict -- both accept the right password, both refuse a wrong one
+// as a mismatch -- and each runs the one PBKDF2 derivation exactly once.
+void KnownAnswerCredential(){
+  const auto parts=VerifierParts(verifier);
+  const runtime_security::LocalPasswordStoredVerifier stored{parts.iterations,
+      std::span<const unsigned char,16>(parts.salt),std::span<const unsigned char,32>(parts.verifier)};
+  std::array<std::byte,32> derived{};
+  const auto text=[&](std::string_view candidate){return runtime_security::VerifyLocalPasswordCredential(verifier,candidate,derived).error;};
+  const auto binary=[&](std::string_view candidate){return runtime_security::VerifyLocalPasswordCredential(stored,candidate,derived).error;};
+  using LE=runtime_security::LocalPasswordCredentialError;
+  for(const auto candidate:{password,std::string_view("DBLC013G-fixture-passwore"),std::string_view("wrong")}){
+    const auto calls=password_calls;const auto a=text(candidate);const auto after_text=password_calls;const auto b=binary(candidate);
+    Check(a==b&&(candidate==password?a==LE::none:a==LE::mismatch),"text and binary verifier forms give the same verdict");
+    Check(after_text==calls+1&&password_calls==after_text+1,"each form runs the shared PBKDF2 derivation once");
+    Check(std::all_of(derived.begin(),derived.end(),[](std::byte x){return x==std::byte{0};}),"the derived workspace is erased");
+  }
+  // The binary form keeps the text form's admission rules.
+  Check(binary("")==LE::invalid_credential&&text("")==LE::invalid_credential,"empty password refused by both forms");
+  auto low=stored;low.iterations=599999;
+  Check(runtime_security::VerifyLocalPasswordCredential(low,password,derived).error==LE::invalid_verifier,"iterations below the floor refused");
+  std::array<unsigned char,16> zero_salt{};auto zeroed=stored;zeroed.salt=zero_salt;
+  Check(runtime_security::VerifyLocalPasswordCredential(zeroed,password,derived).error==LE::invalid_verifier,"an all-zero salt refused");
+  const runtime_security::LocalPasswordStoredVerifier aliased{parts.iterations,
+      std::span<const unsigned char,16>(reinterpret_cast<const unsigned char*>(derived.data()),16),stored.verifier};
+  Check(runtime_security::VerifyLocalPasswordCredential(aliased,password,derived).error==LE::invalid_workspace,"a workspace aliasing the salt refused");
+}
 int CredentialMain(int argc,char** argv){
   ParentOwnedArtifacts artifacts;
   const int death=argc==2?std::atoi(argv[1]):0;
@@ -720,7 +765,7 @@ int CredentialMain(int argc,char** argv){
     for(unsigned profile=0;profile<5;++profile)for(bool indexed:{false,true})WriterCredentials(profile,indexed);
     for(unsigned profile=0;profile<5;++profile)for(bool indexed:{false,true})HostedCredentials(profile,indexed);
     for(unsigned profile=0;profile<5;++profile)for(bool indexed:{false,true})HostedCredentials(profile,indexed,true);
-    Refusals(*foreign);SelectionRefusals();PreparationFaults();});
+    Refusals(*foreign);SelectionRefusals();PreparationFaults();KnownAnswerCredential();});
   // No implicit process fallback: construct/read selected source under a real
   // database scope, then explicitly execute the gate without an active scope.
   std::optional<CredentialNativeFixture> no_scope;

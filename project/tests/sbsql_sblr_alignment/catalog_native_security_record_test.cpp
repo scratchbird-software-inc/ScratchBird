@@ -486,8 +486,13 @@ void Grants() {
   auto b = priv; b.target_uuid.reset(); Roundtrip(b);
   b = priv; b.effect = Eff::deny; Roundtrip(b);
   for (const auto s : {S::principal, S::role, S::group}) { b = priv; b.subject_kind = s; Roundtrip(b); }
-  b = role_m; b.member_kind = S::role; Roundtrip(b);
-  b = role_m; b.member_kind = S::group; Roundtrip(b);
+  // Coordinator correction 2026-11-12 (3a-2): for both membership classes
+  // every (member principal|role|group, parent role|group) pair is accepted
+  // against the independent oracle; the class name is a legacy label, the
+  // kinds decide the edge. A principal parent is refused (below).
+  for (const auto& m : {role_m, group_m})
+    for (const auto mk : {S::principal, S::role, S::group})
+      for (const auto pk : {S::role, S::group}) { b = m; b.member_kind = mk; b.parent_kind = pk; Roundtrip(b); }
   b = role_m; b.effect = Eff::allow; b.membership_uuid = f::Id(322); Roundtrip(b);
   b = group_m; b.effect = Eff::allow; Roundtrip(b);
   b = bind; b.principal_uuid = f::Id(332); b.role_uuid = f::Id(333); b.membership_uuid = f::Id(334); Roundtrip(b);
@@ -545,16 +550,16 @@ void Grants() {
     b = m; b.parent_uuid.reset(); Refuse(b);
     b = m; b.member_kind.reset(); Refuse(b);
     b = m; b.parent_kind.reset(); Refuse(b);
-    b = m; b.parent_kind = S::group; Refuse(b);
-    b = m; b.parent_kind = S::principal; Refuse(b);
+    // (3a-2 correction: parent_kind = group is now accepted, above.)
+    for (const auto mk : {S::principal, S::role, S::group}) { b = m; b.member_kind = mk; b.parent_kind = S::principal; Refuse(b); }
     b = m; b.effect = Eff::deny; Refuse(b);
     b = m; b.right = c::CatalogSecurityRight::SELECT; Refuse(b);
     b = m; b.subject_uuid = f::Id(310); Refuse(b);
     b = m; b.subject_kind = S::role; Refuse(b);
     b = m; b.parent_uuid = b.member_uuid; Refuse(b);
   }
-  b = group_m; b.member_kind = S::principal; Refuse(b);
-  b = group_m; b.member_kind = S::role; Refuse(b);
+  // (3a-2 correction: a group_membership member may be a principal or role,
+  // accepted above; it was refused under the 3a-1 rule.)
   // Agent principal binding rules.
   b = bind; b.subject_uuid.reset(); Refuse(b);
   b = bind; b.subject_kind.reset(); Refuse(b);

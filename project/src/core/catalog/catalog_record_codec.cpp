@@ -11,6 +11,7 @@
 #include "catalog_schema_definition.hpp"
 #include "catalog_table_definition.hpp"
 #include "catalog_security_record_codec.hpp"
+#include "catalog_native_security_record.hpp"
 #include "catalog_context_namespace.hpp"
 #include "catalog_storage_record_codec.hpp"
 #include "catalog_metric_retention_policy.hpp"
@@ -246,8 +247,10 @@ CatalogTypedRecordViewResult ValidateCatalogTypedRecordView(CatalogTypedRecordVi
     return RecordViewError("CATALOG.INVALID_INPUT", "catalog.storage_record.invalid",
                       "storage_binary_payload_or_header_invalid");
   }
+  // SB_CATALOG_NATIVE_SECURITY_DISPATCH (3a-2): by payload schema id, typed
+  // native record or legacy attribute bag.
   if (IsCatalogSecurityRecordKind(record.header.kind) &&
-      !CatalogSecurityPayloadMatchesHeader(record)) {
+      !CatalogSecurityDefinitionMatchesHeader(record)) {
     return RecordViewError("CATALOG.INVALID_INPUT", "catalog.security_record.invalid",
                       "security_binary_payload_or_header_invalid");
   }
@@ -433,8 +436,9 @@ template <typename Enum> bool MetadataEnum(Enum value, u16 maximum) {
 }
 
 std::optional<CatalogRecordDiagnosticView> ValidateCatalogMetadataVersionView(const CatalogMetadataVersionView& value) {
+  // SB_CATALOG_NATIVE_SECURITY_DISPATCH (3a-2): by payload schema id.
   if (IsCatalogSecurityRecordKind(value.record.header.kind) &&
-      !CatalogSecurityPayloadMatchesMetadata(value))
+      !CatalogSecurityDefinitionMatchesMetadata(value))
     return MetadataViewError("security_definition_binding_invalid");
   if (!MetadataEnum(value.authority_scope, 7) || !MetadataEnum(value.lifecycle, 10) ||
       !MetadataEnum(value.status, 9) || !MetadataEnum(value.visibility, 7))
@@ -776,7 +780,7 @@ DiagnosticRecord MakeCatalogRecordCodecDiagnostic(Status status,
 
 bool CatalogMetadataPreservesFamilyOrigin(
     const CatalogMetadataVersionView& previous, const CatalogMetadataVersionView& successor) {
-  return CatalogSecurityPreservesOrigin(previous,successor) &&
+  return CatalogSecurityDefinitionPreservesOrigin(previous,successor) &&  // 3a-2 dispatch
       CatalogBootstrapPolicyPreservesOrigin(previous,successor) &&
       CatalogMemoryConfigurationPreservesOrigin(previous,successor) &&
       CatalogIdentifierProfilePreservesOrigin(previous,successor) &&

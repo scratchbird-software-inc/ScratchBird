@@ -44,7 +44,9 @@ struct NativeRuntimeAuthorizationMembership {
 struct NativeRuntimeAuthorizationGrant {
   EngineUuid grant_uuid, subject_uuid, target_uuid, version_uuid;
   NativeRuntimeAuthorizationSubjectKind subject_kind=NativeRuntimeAuthorizationSubjectKind::invalid;
-  std::string_view right; // governed copy of the actual registered vocabulary
+  // SB_CATALOG_SECURITY_CONSTANTS (3a-2): the right is its coding-time
+  // constant, never text.
+  core::catalog::CatalogSecurityRight right=core::catalog::CatalogSecurityRight::none;
   bool deny=false;
   core::platform::u64 definition_generation=0, security_epoch=0;
   core::platform::u64 source_security_epoch=0, catalog_generation=0;
@@ -75,9 +77,11 @@ class NativeRuntimeAuthorizationProjection {
   // Base-right projection ONLY. Row/column/domain/runtime/cluster gates remain
   // mandatory at their owning operation. Explicit global/target denies precede
   // both grants and the genuinely resolved engine-owned bootstrap bundle.
-  bool Allows(std::string_view right,const EngineUuid& target={},bool permit_bootstrap_bundle=true) const noexcept {
+  // 3a-2: the right is a constant; one that is not a listed right (including
+  // none) is refused, as an unregistered name was.
+  bool Allows(core::catalog::CatalogSecurityRight right,const EngineUuid& target={},bool permit_bootstrap_bundle=true) const noexcept {
     if(!present()||(!target.is_nil()&&!core::uuid::IsEngineIdentityUuid(target)))return false;
-    if(std::find(rights_.begin(),rights_.end(),right)==rights_.end())return false;
+    if(right==core::catalog::CatalogSecurityRight::none||!core::catalog::IsKnownCatalogSecurityRight(right))return false;
     bool allow=permit_bootstrap_bundle&&!bootstrap_.is_nil();
     for(const auto& g:grants_)if(g.right==right&&(g.target_uuid.is_nil()||g.target_uuid==target)){
       if(g.deny)return false;allow=true;
@@ -91,7 +95,6 @@ class NativeRuntimeAuthorizationProjection {
   std::span<const NativeRuntimeAuthorizationSubject> subjects_;
   std::span<const NativeRuntimeAuthorizationMembership> memberships_;
   std::span<const NativeRuntimeAuthorizationGrant> grants_;
-  std::span<const std::string_view> rights_;
   core::platform::usize source_record_count_=0,maximum_membership_depth_=0;
   core::platform::u64 work_performed_=0;
   friend NativeRuntimeAuthorizationResult ProjectNativeRuntimeAuthorization(
@@ -120,8 +123,10 @@ namespace native_authorization_detail {
 using Size=core::platform::usize;
 inline constexpr Size absent=std::numeric_limits<Size>::max();
 using Kind=NativeRuntimeAuthorizationSubjectKind;
-inline Kind KindOf(std::string_view s) noexcept {
-  return s=="principal"?Kind::principal:s=="role"?Kind::role:s=="group"?Kind::group:Kind::invalid;
+// 3a-2: the typed subject kind constant, not its text.
+inline Kind KindOf(std::optional<core::catalog::CatalogSecuritySubjectKind> s) noexcept {
+  using S=core::catalog::CatalogSecuritySubjectKind;
+  return !s?Kind::invalid:*s==S::principal?Kind::principal:*s==S::role?Kind::role:*s==S::group?Kind::group:Kind::invalid;
 }
 inline Kind KindOf(core::catalog::CatalogRecordKind k) noexcept {
   using K=core::catalog::CatalogRecordKind;
@@ -131,10 +136,23 @@ struct Node {NativeRuntimeAuthorizationSubject value;Size first=absent,height=1;
 struct Edge {NativeRuntimeAuthorizationMembership value;Size member=absent,parent=absent,next=absent;};
 struct Grant {NativeRuntimeAuthorizationGrant value;Size subject=absent;};
 struct Frame {Size node=absent,next=absent;};
+// 3a-2: principals and roles carry a typed active flag; groups and grants have
+// none (the legacy reader read an absent flag as active). The typed record has
+// no created_disabled.
 inline bool Active(const NativeRuntimeSecurityRecordObservation& r) noexcept {
+  const auto* principal=r.record.principal();const auto* role=r.record.role();
   return !r.deleted&&r.lifecycle==core::catalog::CatalogObjectLifecycle::active&&
-      r.status==core::catalog::CatalogObjectStatus::active&&r.record.Boolean("active")!=false&&
-      r.record.Boolean("created_disabled")!=true;
+      r.status==core::catalog::CatalogObjectStatus::active&&(!principal||principal->active)&&(!role||role->active);
+}
+// Re-validates a supplied typed record with its own codec's complete field and
+// class rules (allocation-free), rather than trusting the caller's value.
+inline bool TypedRecordValid(const core::catalog::NativeSecurityRecord& r) noexcept {
+  namespace c=core::catalog;
+  if(const auto* v=r.principal())return r.kind==c::CatalogRecordKind::user_account&&c::NativeSecurityPrincipalEncodedBytes(*v).has_value();
+  if(const auto* v=r.role())return r.kind==c::CatalogRecordKind::role_account&&c::NativeSecurityRoleEncodedBytes(*v).has_value();
+  if(const auto* v=r.group())return r.kind==c::CatalogRecordKind::group_account&&c::NativeSecurityGroupEncodedBytes(*v).has_value();
+  if(const auto* v=r.grant())return r.kind==c::CatalogRecordKind::grant_record&&c::NativeSecurityGrantEncodedBytes(*v).has_value();
+  return false;
 }
 inline bool Overlap(const void* a,Size n,const void* b,Size m) noexcept {
   if(!n||!m)return false;
@@ -162,13 +180,13 @@ class NativeRuntimeAuthorizationPreparedMemory {
   NativeRuntimeAuthorizationPreparedMemory& operator=(const NativeRuntimeAuthorizationPreparedMemory&)=delete;
   NativeRuntimeAuthorizationPreparedMemory(NativeRuntimeAuthorizationPreparedMemory&&) noexcept=default;
   NativeRuntimeAuthorizationPreparedMemory& operator=(NativeRuntimeAuthorizationPreparedMemory&&) noexcept=default;
-  explicit operator bool() const noexcept {return bool(arena_)&&!raw_.empty()&&!rights_.empty();}
+  explicit operator bool() const noexcept {return bool(arena_)&&!raw_.empty();}
  private:
   storage::database::NativeStorageArena arena_;
   NativeRuntimeAuthorizationLimits limits_;
   std::span<core::platform::byte> raw_;
-  std::span<std::string_view> rights_;
-  std::array<core::catalog::CatalogValueSchemaView,4> schemas_;
+  // 3a-2: no rights vocabulary or field-schema copies: the records are typed
+  // and the rights are coding-time constants.
   std::span<core::platform::usize> order_;
   std::span<native_authorization_detail::Node> nodes_;
   std::span<native_authorization_detail::Edge> edges_;
@@ -187,16 +205,6 @@ inline core::platform::usize NativeRuntimeAuthorizationWorkspaceBytes(NativeRunt
   using namespace native_authorization_detail;
   try {
     if(!Limits(limits))return 0;Size bytes=0;
-    const auto& rights=KnownSecurityRights();
-    if(rights.empty()||!Add(bytes,rights.size(),sizeof(std::string_view),alignof(std::string_view)))return 0;
-    for(const auto& r:rights)if(!Add(bytes,r.size(),1,1))return 0;
-    // Copy the real registered field schemas, too: no lazy registry setup under
-    // native guards, and no hand-maintained shadow of the native scalar schema.
-    using K=core::catalog::CatalogRecordKind;
-    for(auto kind:{K::user_account,K::role_account,K::group_account,K::grant_record}){
-      const auto& s=core::catalog::CatalogSecurityRecordSchema(kind);
-      if(!Add(bytes,s.fields.size(),sizeof(core::catalog::CatalogValueFieldSchema),alignof(core::catalog::CatalogValueFieldSchema)))return 0;
-    }
     const auto n=limits.maximum_records;
     if(!Add(bytes,n,sizeof(Size),alignof(Size))||!Add(bytes,n,sizeof(Node),alignof(Node))||
         !Add(bytes,n,sizeof(Edge),alignof(Edge))||!Add(bytes,n,sizeof(Grant),alignof(Grant))||
@@ -220,12 +228,7 @@ inline NativeRuntimeAuthorizationPreparedResult PrepareNativeRuntimeAuthorizatio
     const storage::database::NativeStorageMemoryBinding& binding) noexcept {
   using namespace native_authorization_detail;NativeRuntimeAuthorizationPreparedResult out;
   try {
-    // Initialize the owning registries while failures still have an explicit
-    // preparation resource cause, never for the first time under a source lock.
-    (void)KnownSecurityRights();
-    using InitialKind=core::catalog::CatalogRecordKind;
-    for(auto kind:{InitialKind::user_account,InitialKind::role_account,InitialKind::group_account,InitialKind::grant_record})
-      (void)core::catalog::CatalogSecurityRecordSchema(kind);
+    // 3a-2: no owning registry is consulted (typed records, constant rights).
     const auto bytes=NativeRuntimeAuthorizationWorkspaceBytes(limits);if(!bytes)return out;
     auto allocated=memory.CreateArena(binding,bytes,alignof(std::max_align_t));
     if(!allocated.ok()){
@@ -242,19 +245,6 @@ inline NativeRuntimeAuthorizationPreparedResult PrepareNativeRuntimeAuthorizatio
       auto* typed=static_cast<T*>(p);std::uninitialized_value_construct_n(typed,count);
       cursor=static_cast<core::platform::byte*>(p)+count*sizeof(T);left-=count*sizeof(T);return {typed,count};
     };
-    const auto& rights=KnownSecurityRights();w.rights_=slots.template operator()<std::string_view>(rights.size());
-    if(w.rights_.size()!=rights.size()){out.error=NativeRuntimeAuthorizationError::resource_exhausted;return out;}
-    Size ordinal=0;
-    for(const auto& r:rights){auto copy=slots.template operator()<char>(r.size());
-      if(copy.size()!=r.size()){out.error=NativeRuntimeAuthorizationError::resource_exhausted;return out;}
-      std::memcpy(copy.data(),r.data(),r.size());w.rights_[ordinal++]={copy.data(),copy.size()};}
-    using K=core::catalog::CatalogRecordKind;ordinal=0;
-    for(auto kind:{K::user_account,K::role_account,K::group_account,K::grant_record}){
-      const auto& s=core::catalog::CatalogSecurityRecordSchema(kind);
-      auto fields=slots.template operator()<core::catalog::CatalogValueFieldSchema>(s.fields.size());
-      if(fields.size()!=s.fields.size()){out.error=NativeRuntimeAuthorizationError::resource_exhausted;return out;}
-      std::copy(s.fields.begin(),s.fields.end(),fields.begin());w.schemas_[ordinal++]={s.id,s.version,fields};
-    }
     const auto n=limits.maximum_records;
     w.order_=slots.template operator()<Size>(n);w.nodes_=slots.template operator()<Node>(n);
     w.edges_=slots.template operator()<Edge>(n);w.grants_=slots.template operator()<Grant>(n);
@@ -326,55 +316,22 @@ inline NativeRuntimeAuthorizationResult ProjectNativeRuntimeAuthorization(
     const auto n=w.order_[ordered];const auto& r=source.records[n];const auto& body=r.record;
     if(!spend())return fail(E::work_limit,n);
     if(ordered&&source.records[w.order_[ordered-1]].object_uuid==r.object_uuid)return fail(E::duplicate_identity,n);
+    // 3a-2: the typed record (TypedRecordValid re-runs its codec's field and
+    // class rules); identities and classifications are compared as values.
     const auto kind=KindOf(body.kind);const bool grant=body.kind==c::CatalogRecordKind::grant_record;
-    if((kind==Kind::invalid&&!grant)||!id(r.object_uuid)||!id(r.row_uuid)||r.object_uuid==r.row_uuid||
+    if((kind==Kind::invalid&&!grant)||!TypedRecordValid(body)||!id(r.object_uuid)||!id(r.row_uuid)||r.object_uuid==r.row_uuid||
         !id(r.version_uuid)||(!r.previous_version_uuid.is_nil()&&!id(r.previous_version_uuid))||
         !id(r.origin_transaction_uuid)||!id(r.creator_transaction_uuid)||!r.origin_local_transaction_id||
         !r.creator_local_transaction_id||r.origin_local_transaction_id>r.creator_local_transaction_id||
         !r.definition_generation||!r.catalog_generation||!r.security_epoch||
-        body.Identity(c::CatalogSecurityPrimaryIdentityName(body.kind))!=r.object_uuid||
-        body.Identity("origin_transaction_uuid")!=r.origin_transaction_uuid||
-        body.Unsigned("creator_tx")!=r.origin_local_transaction_id||
-        (body.Unsigned("created_txn")&&body.Unsigned("created_txn")!=body.Unsigned("creator_tx"))||
+        body.primary()!=r.object_uuid||
+        body.origin_transaction_uuid()!=r.origin_transaction_uuid||
+        body.origin_local_transaction_id()!=r.origin_local_transaction_id||
         (r.definition_generation==1&&(r.origin_transaction_uuid!=r.creator_transaction_uuid||r.origin_local_transaction_id!=r.creator_local_transaction_id))||
         (!r.retired_transaction_uuid.is_nil()&&(!id(r.retired_transaction_uuid)||r.retired_transaction_uuid!=r.creator_transaction_uuid||r.retired_local_transaction_id!=r.creator_local_transaction_id))||
         (r.retired_transaction_uuid.is_nil()&&r.retired_local_transaction_id)||
         static_cast<unsigned>(r.lifecycle)<1||static_cast<unsigned>(r.lifecycle)>10||
         static_cast<unsigned>(r.status)<1||static_cast<unsigned>(r.status)>9)return fail(E::invalid_record,n);
-    const Size schema_index=grant?3:kind==Kind::principal?0:kind==Kind::role?1:2;
-    const auto& schema=w.schemas_[schema_index];
-    // Validate every supplied slot against the real pre-copied native schema,
-    // including inactive/unreachable records, rather than last-wins defaults.
-    std::array<c::CatalogValueFieldView,48> fields;
-    std::array<std::array<core::platform::byte,8>,37> scalars{};Size field_count=0;
-    for(Size i=0;i<body.identities.size();++i){
-      if(!spend())return fail(E::work_limit,n);
-      if(body.identities[i]){
-        if(i<10&&body.identities[i]==body.identities[10])return fail(E::invalid_record,n);
-        fields[field_count++]={static_cast<core::platform::u16>(i+1),c::CatalogValueType::engine_identity,
-            i==10?core::platform::UuidKind::transaction:core::platform::UuidKind::object,body.identities[i]->bytes};
-      }
-    }
-    for(Size i=0;i<body.attributes.size();++i){
-      if(!spend())return fail(E::work_limit,n);
-      if(!body.attributes[i])continue;
-      const auto& a=*body.attributes[i];
-      c::CatalogValueFieldView field;field.id=static_cast<core::platform::u16>(i+32);
-      if(const auto* text=std::get_if<std::string_view>(&a)){
-        const auto definition=std::find_if(schema.fields.begin(),schema.fields.end(),[&](const auto& f){return f.id==field.id;});
-        if(definition==schema.fields.end()||text->size()>definition->maximum_bytes||(!text->empty()&&!text->data()))return fail(E::invalid_record,n);
-        if(Overlap(text->data(),text->size(),w.raw_.data(),w.raw_.size()))return fail(E::input_overlap,n);
-        if(!spend(text->size()))return fail(E::work_limit,n);
-        field.type=c::CatalogValueType::utf8_text;field.bytes={reinterpret_cast<const core::platform::byte*>(text->data()),text->size()};
-      }else if(const auto* value=std::get_if<core::platform::u64>(&a)){
-        for(unsigned j=0;j<8;++j)scalars[i][j]=static_cast<core::platform::byte>(*value>>(j*8));
-        field.type=c::CatalogValueType::unsigned_integer;field.bytes=scalars[i];
-      }else{
-        scalars[i][0]=std::get<bool>(a)?1:0;field.type=c::CatalogValueType::boolean;field.bytes={scalars[i].data(),1};
-      }fields[field_count++]=field;
-    }
-    const auto structural=c::ValidateCatalogValueFields(schema,std::span(fields).first(field_count));
-    if(structural!=c::CatalogValueError::none){out.record_error=structural;return fail(E::invalid_record,n);}
     // Metadata epochs describe WHEN THIS VERSION became visible, not the
     // current admitted snapshot epoch. Unchanged historical active versions
     // remain valid; a record from a future catalog/security selection does not.
@@ -382,23 +339,26 @@ inline NativeRuntimeAuthorizationResult ProjectNativeRuntimeAuthorization(
     const bool active=Active(r);
     if(!grant){
       auto& node=w.nodes_[nodes];node={};node.active=active;
+      const auto* principal_record=body.principal();
       node.value={r.object_uuid,r.row_uuid,r.version_uuid,r.definition_generation,r.catalog_generation,r.security_epoch,
-          body.Unsigned("security_generation"),body.Unsigned("policy_generation"),kind};
+          principal_record?std::optional<core::platform::u64>(principal_record->security_generation):std::nullopt,
+          body.policy_generation(),kind};
+      // SYSARCH is the role whose UUID is the create-fixed canonical identity
+      // (never a caller's); no role_code or identity_authority text is read.
       if(kind==Kind::role&&r.object_uuid==storage::database::kCanonicalSysarchRoleIdentity){
-        const auto context_generation=body.Unsigned("security_context_generation"),policy_generation=body.Unsigned("policy_generation");
-        if(body.Attribute("role_code")!="ROLE_SYSARCH"||body.Attribute("authority_class")!="engine_owned_sysarch"||
-            body.Attribute("identity_authority")!="uuid"||body.Boolean("engine_owned")!=true||body.Boolean("immutable")!=true||
-            body.Boolean("create_time_only")!=true||body.Boolean("active")!=true||body.Unsigned("creator_tx")!=1||
-            body.Unsigned("security_context_authority_version")!=1||!context_generation||!*context_generation||
-            !policy_generation||!*policy_generation||*policy_generation>std::numeric_limits<core::platform::u32>::max())return fail(E::invalid_record,n);
+        const auto& role=*body.role();
+        if(role.authority_class!=c::CatalogSecurityAuthorityClass::engine_owned_sysarch||!role.engine_owned||!role.immutable||
+            !role.create_time_only||!role.active||role.creator_tx!=1||
+            role.security_context_authority_version!=1||!role.security_context_generation||
+            !role.policy_generation||role.policy_generation>std::numeric_limits<core::platform::u32>::max())return fail(E::invalid_record,n);
         node.bootstrap=true;
       }
       if(r.object_uuid==principal.principal_uuid){
-        if(kind!=Kind::principal||!active||body.Boolean("active")!=true||body.Boolean("bootstrap_principal")!=false||
-            body.Attribute("kind")!="service"||body.Attribute("principal_kind")!="service"||
-            body.Unsigned("security_context_authority_version")!=1||
-            body.Unsigned("security_context_generation")!=principal.security_context_generation||
-            body.Unsigned("security_generation")!=principal.security_generation||body.Unsigned("policy_generation")!=principal.policy_generation||
+        if(kind!=Kind::principal||!active||!principal_record||!principal_record->active||principal_record->bootstrap_principal||
+            principal_record->principal_kind!=c::CatalogSecurityPrincipalKind::service||
+            principal_record->security_context_authority_version!=1||
+            principal_record->security_context_generation!=principal.security_context_generation||
+            principal_record->security_generation!=principal.security_generation||principal_record->policy_generation!=principal.policy_generation||
             r.version_uuid!=principal.version_uuid||r.definition_generation!=principal.definition_generation)return fail(E::principal_invalid,n);
         selected=nodes;
       }
@@ -407,39 +367,36 @@ inline NativeRuntimeAuthorizationResult ProjectNativeRuntimeAuthorization(
     // Active membership rows may omit effect: owning native bootstrap/import
     // schema uses positive links. An explicit effect must be exactly allow;
     // membership-deny semantics cannot silently turn into an allow edge.
-    const auto cls=body.Attribute("grant_class");
-    if(cls=="role_membership"||cls=="group_membership"){
-      const auto member=body.Identity("member_uuid"),parent=body.Identity("parent_uuid");
-      const auto mk=KindOf(body.Attribute("member_kind").value_or("")),pk=KindOf(body.Attribute("parent_kind").value_or(""));
-      // Native imported group-to-role links are group_membership records,
-      // as are links into a group. The actual typed endpoints determine the
-      // graph edge; the class label must not reinterpret a role as a group.
-      const bool parent_valid=cls=="role_membership"?pk==Kind::role:
-          pk==Kind::group||(mk==Kind::group&&pk==Kind::role);
+    const auto& g=*body.grant();
+    using G=c::CatalogSecurityGrantClass;
+    const auto nil=[](const std::optional<EngineUuid>& u){return !u||u->is_nil();};
+    if(g.grant_class==G::role_membership||g.grant_class==G::group_membership){
+      const auto member=g.member_uuid.value_or(EngineUuid{}),parent=g.parent_uuid.value_or(EngineUuid{});
+      const auto mk=KindOf(g.member_kind),pk=KindOf(g.parent_kind);
+      // The actual typed endpoints determine the graph edge; the class name
+      // is a legacy label (coordinator correction 2026-11-12, matching the
+      // typed codec): any member kind, and a role or group parent (never a
+      // principal). A kind that disagrees with the node's own record leaves
+      // the endpoint unresolved, so the label cannot turn a role into a group.
+      const bool parent_valid=pk==Kind::role||pk==Kind::group;
       if(!id(member)||!id(parent)||mk==Kind::invalid||!parent_valid||
-          (body.Attribute("effect")&&body.Attribute("effect")!="allow")||
-          (!body.Identity("membership_uuid").is_nil()&&body.Identity("membership_uuid")!=r.object_uuid)||
-          (!body.Identity("principal_uuid").is_nil()&&(mk!=Kind::principal||body.Identity("principal_uuid")!=member))||
-          (!body.Identity("role_uuid").is_nil()&&(pk!=Kind::role||body.Identity("role_uuid")!=parent))||
-          !body.Identity("subject_uuid").is_nil()||!body.Identity("target_uuid").is_nil()||body.Attribute("right"))return fail(E::malformed_membership,n);
+          (g.effect&&*g.effect!=c::CatalogSecurityEffect::allow)||
+          (!nil(g.membership_uuid)&&*g.membership_uuid!=r.object_uuid)||
+          (!nil(g.principal_uuid)&&(mk!=Kind::principal||*g.principal_uuid!=member))||
+          (!nil(g.role_uuid)&&(pk!=Kind::role||*g.role_uuid!=parent))||
+          !nil(g.subject_uuid)||!nil(g.target_uuid)||g.right)return fail(E::malformed_membership,n);
       if(active)w.edges_[edges++]={{r.object_uuid,member,parent,r.version_uuid,mk,pk,r.definition_generation,
           binding.security_epoch,r.security_epoch,r.catalog_generation}};
-    }else if(cls=="privilege"){
-      const auto subject=body.Identity("subject_uuid"),target=body.Identity("target_uuid");
-      const auto sk=KindOf(body.Attribute("subject_kind").value_or(""));
-      const auto effect=body.Attribute("effect"),right=body.Attribute("right");
-      if(!id(subject)||(!target.is_nil()&&!id(target))||sk==Kind::invalid||!effect||(*effect!="allow"&&*effect!="deny")||!right||right->empty()||
-          !body.Identity("member_uuid").is_nil()||!body.Identity("parent_uuid").is_nil()||!body.Identity("membership_uuid").is_nil()||
-          !body.Identity("principal_uuid").is_nil()||!body.Identity("role_uuid").is_nil()||body.Attribute("member_kind")||body.Attribute("parent_kind"))return fail(E::malformed_grant,n);
-      auto registered=w.rights_.end();
-      for(auto candidate=w.rights_.begin();candidate!=w.rights_.end();++candidate){
-        if(!spend())return fail(E::work_limit,n);
-        if(*candidate==*right){registered=candidate;break;}
-      }
-      if(registered==w.rights_.end())return fail(E::unknown_right,n);
-      if(active)w.grants_[grants++]={{r.object_uuid,subject,target,r.version_uuid,sk,*registered,*effect=="deny",r.definition_generation,
+    }else if(g.grant_class==G::privilege){
+      const auto subject=g.subject_uuid.value_or(EngineUuid{}),target=g.target_uuid.value_or(EngineUuid{});
+      const auto sk=KindOf(g.subject_kind);
+      if(!id(subject)||(!target.is_nil()&&!id(target))||sk==Kind::invalid||!g.effect||!g.right||
+          !c::IsKnownCatalogSecurityRight(*g.right)||
+          !nil(g.member_uuid)||!nil(g.parent_uuid)||!nil(g.membership_uuid)||
+          !nil(g.principal_uuid)||!nil(g.role_uuid)||g.member_kind||g.parent_kind)return fail(E::malformed_grant,n);
+      if(active)w.grants_[grants++]={{r.object_uuid,subject,target,r.version_uuid,sk,*g.right,*g.effect==c::CatalogSecurityEffect::deny,r.definition_generation,
           binding.security_epoch,r.security_epoch,r.catalog_generation}};
-    }else if(cls=="agent_principal_binding"){
+    }else if(g.grant_class==G::agent_principal_binding){
       // SB_AGENT_PRINCIPAL_BINDING_BY_UUID: links an agent policy to its
       // principal. It confers no authority, so it adds no edge or grant.
     }else return fail(E::malformed_grant,n);
@@ -489,7 +446,7 @@ inline NativeRuntimeAuthorizationResult ProjectNativeRuntimeAuthorization(
     if(w.grants_[g].subject!=absent&&w.nodes_[w.grants_[g].subject].color==2)w.grants_out_[grant_count++]=w.grants_[g].value;}
   auto& result=out.projection;result.binding_=binding;result.principal_=principal;result.bootstrap_=bootstrap;
   result.subjects_=w.subjects_out_.first(subject_count);result.memberships_=w.edges_out_.first(edge_count);
-  result.grants_=w.grants_out_.first(grant_count);result.rights_=w.rights_;
+  result.grants_=w.grants_out_.first(grant_count);
   result.source_record_count_=count;result.maximum_membership_depth_=w.nodes_[selected].height;
   result.work_performed_=out.work_performed;out.error=E::none;return out;
 }

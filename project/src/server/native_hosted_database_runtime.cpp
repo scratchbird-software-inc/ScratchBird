@@ -569,7 +569,7 @@ NativeDatabaseMemoryEnvelopeResult NativeHostedDatabaseRuntime::ConstrainStartup
   const auto& credential=*read.credentials_->comparison->lease;
   if(credential.has_selected_source())return {E::selected_guards_held};
   if(!credential.has_retained_operation()||!read.anchored()||!read.agent_policies_.ok())return {E::not_ready};
-  if(!read.authorization_.projection.Allows("CONNECT",read.owner_->database_))return {E::authorization_refused};
+  if(!read.authorization_.projection.Allows(core::catalog::CatalogSecurityRight::CONNECT,read.owner_->database_))return {E::authorization_refused};
   read.mutating_=true;read.owner_->entering_=true;
   struct Leave {bool& reading;bool& hosting;~Leave(){reading=false;hosting=false;}}
       leave{read.mutating_,read.owner_->entering_};
@@ -586,7 +586,7 @@ NativeDatabaseAllocationBehaviorResult NativeHostedDatabaseRuntime::InstallStart
   const auto& credential=*read.credentials_->comparison->lease;
   if(credential.has_selected_source())return {E::selected_guards_held};
   if(!credential.has_retained_operation()||!read.anchored()||!read.agent_policies_.ok())return {E::not_ready};
-  if(!read.authorization_.projection.Allows("CONNECT",read.owner_->database_))return {E::authorization_refused};
+  if(!read.authorization_.projection.Allows(core::catalog::CatalogSecurityRight::CONNECT,read.owner_->database_))return {E::authorization_refused};
   read.mutating_=true;read.owner_->entering_=true;
   struct Leave {bool& reading;bool& hosting;~Leave(){reading=false;hosting=false;}}
       leave{read.mutating_,read.owner_->entering_};
@@ -651,7 +651,7 @@ NativeHostedDatabaseRuntime::AuthenticateStartupService(
   auto& credential=*read.credentials_->comparison->lease;
   if(credential.has_selected_source())return {E::selected_guards_held};
   if(!credential.has_retained_operation()||!read.anchored()||!read.agent_policies_.ok())return {E::not_ready};
-  if(!read.authorization_.projection.Allows("CONNECT",read.owner_->database_))return {E::authorization_refused};
+  if(!read.authorization_.projection.Allows(core::catalog::CatalogSecurityRight::CONNECT,read.owner_->database_))return {E::authorization_refused};
   const auto& selected=*read.configuration_.configuration;
   auto& owner=*read.owner_;
   if(!owner.process_->HasNativeDatabaseAllocationBehavior(owner.database_,selected.memory,selected.memory_version_uuid))
@@ -676,9 +676,13 @@ NativeHostedDatabaseRuntime::AuthenticateStartupService(
       source->principal!=binding.service_principal_uuid||source->provider!=binding.provider_uuid||
       !binding.credential_reference_uuid||source->credential_reference!=*binding.credential_reference_uuid)
     return {E::principal_mismatch};
-  std::optional<std::string_view> verifier;
+  // 3a-2: the typed principal's binary verifier parts (no text fingerprint).
+  std::optional<api::LocalPasswordStoredVerifier> verifier;
   for(const auto& row:credential.security_records())if(row.object_uuid==binding.service_principal_uuid)
-    verifier=row.record.Attribute("credential_fingerprint");
+    if(const auto* principal=row.record.principal();principal&&principal->credential)
+      verifier=api::LocalPasswordStoredVerifier{principal->credential->iterations,
+          std::span<const unsigned char,16>(principal->credential->salt),
+          std::span<const unsigned char,32>(principal->credential->verifier)};
   if(!verifier)return {E::credential_rejected};
   api::NativeLocalServiceAuthenticationObservation identity;
   identity.database_uuid=binding.database_uuid;identity.principal_uuid=binding.service_principal_uuid;

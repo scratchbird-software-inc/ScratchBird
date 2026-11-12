@@ -50,6 +50,7 @@
 #include "catalog_localized_record_codec.hpp"
 #include "catalog_resource_record_codec.hpp"
 #include "catalog_security_record_codec.hpp"
+#include "catalog_native_security_record.hpp"
 #include "resource_artifact_content_codec.hpp"
 #include "cluster_catalog_schema_versioning.hpp"
 #include "agent_engine_lifecycle.hpp"
@@ -1721,6 +1722,10 @@ bool IsSafeBootstrapPrincipalName(std::string_view value) {
 struct BootstrapCredentialFingerprintFields {
   u64 iterations = 0;
   std::string salt_hex;
+  // 3a-2 (additive): the verifier's 64 lowercase hex digits, for the native
+  // create's typed credential (NativeTypedSecurityPayload). Legacy callers
+  // never read it.
+  std::string verifier_hex;
 };
 
 bool ParseBootstrapCredentialFingerprint(
@@ -1796,6 +1801,7 @@ bool ParseBootstrapCredentialFingerprint(
   if (parsed_fields != nullptr) {
     parsed_fields->iterations = iterations;
     parsed_fields->salt_hex = salt;
+    parsed_fields->verifier_hex = value.substr(verifier_begin);
   }
   return true;
 }
@@ -8106,20 +8112,218 @@ DatabaseLifecycleResult RecordStartupEvidence(const DatabaseLifecycleOperationCo
 // (CreateObjectNameFor): principal_name; role_name else role_code; group_name
 // else group_code. Every other definition gets its UUID text, because the
 // native name verification requires a name on every definition.
-std::string NativeDefinitionReferenceName(const Uuid& identity,CatalogRecordKind kind,std::string_view payload) {
+// 3a-2 (SB_CATALOG_NATIVE_SECURITY_RECORDS): the typed payload carries no name,
+// so the name is taken from the attribute bag BEFORE conversion, by the same
+// rule (an empty value counts as absent), and carried beside the definition.
+std::optional<std::string> NativeSecurityReferenceName(const scratchbird::core::catalog::CatalogSecurityRecord& bag) {
   const auto attribute=[&](const char* key,const char* fallback)->std::optional<std::string> {
-    const auto security=scratchbird::core::catalog::DecodeCatalogSecurityRecord(kind,payload);
-    if(!security.ok())return std::nullopt;
-    auto value=security.record->Attribute(key);
-    if((!value||value->empty())&&fallback)value=security.record->Attribute(fallback);
+    auto value=bag.Attribute(key);
+    if((!value||value->empty())&&fallback)value=bag.Attribute(fallback);
     if(!value||value->empty())return std::nullopt;
     return std::string(*value);
   };
-  std::optional<std::string> name;
-  if(kind==CatalogRecordKind::user_account)name=attribute("principal_name",nullptr);
-  if(kind==CatalogRecordKind::role_account)name=attribute("role_name","role_code");
-  if(kind==CatalogRecordKind::group_account)name=attribute("group_name","group_code");
-  return name?std::move(*name):scratchbird::core::uuid::UuidToString(identity);
+  if(bag.kind==CatalogRecordKind::user_account)return attribute("principal_name",nullptr);
+  if(bag.kind==CatalogRecordKind::role_account)return attribute("role_name","role_code");
+  if(bag.kind==CatalogRecordKind::group_account)return attribute("group_name","group_code");
+  return std::nullopt;
+}
+std::string NativeDefinitionReferenceName(const Uuid& identity,const std::optional<std::string>& reference) {
+  return reference?*reference:scratchbird::core::uuid::UuidToString(identity);
+}
+
+// SEARCH_KEY: SB_CATALOG_NATIVE_SECURITY_RECORDS (commit 3a-2, owner Q61 = 1,
+// Q62 = 1, Q65 = 1). The native create's one boundary adapter: the shared
+// attribute-bag builders (which legacy create still uses unchanged) produce a
+// CatalogSecurityRecord; this converts it once into the typed record and
+// encodes it. Every text classification maps to its coding-time constant here
+// and nowhere else; a value with no constant refuses (nullopt), never defaults.
+// Names (principal_name, role_code/role_name, group_code/group_name) leave
+// through NativeSecurityReferenceName into the names table; description and
+// default_assignment are dropped (owner Q65); identity_authority must be
+// "uuid" (the typed record IS UUID-identified) and is dropped. created_txn, when
+// present, must equal creator_tx. Any other attribute or identity the typed
+// record cannot carry refuses, except the grant-only exceptions noted below.
+std::optional<std::string> NativeTypedSecurityPayload(const scratchbird::core::catalog::CatalogSecurityRecord& bag) {
+  namespace c=scratchbird::core::catalog;
+  std::set<std::string_view> used;
+  const auto text=[&](std::string_view key)->std::optional<std::string_view> {
+    if(bag.attributes.count(std::string(key)))used.insert(key);
+    return bag.Attribute(key);
+  };
+  const auto number=[&](std::string_view key)->std::optional<u64> {
+    if(bag.attributes.count(std::string(key)))used.insert(key);
+    return bag.Unsigned(key);
+  };
+  const auto flag=[&](std::string_view key)->std::optional<bool> {
+    if(bag.attributes.count(std::string(key)))used.insert(key);
+    return bag.Boolean(key);
+  };
+  std::set<std::string_view> used_ids;
+  const auto identity=[&](std::string_view key)->std::optional<Uuid> {
+    const auto found=bag.identities.find(std::string(key));
+    if(found==bag.identities.end())return std::nullopt;
+    used_ids.insert(key);return found->second;
+  };
+  // Every attribute present must have been consumed with its right type: a
+  // present key of the wrong type reads as absent above, so it is refused here.
+  bool typed_ok=true;
+  const auto require_number=[&](std::string_view key,u64& out){
+    const auto v=number(key);if(!v){typed_ok=false;return;}out=*v;};
+  const auto number_or=[&](std::string_view key,u64 fallback)->u64{
+    if(!bag.attributes.count(std::string(key)))return fallback;
+    const auto v=number(key);if(!v)typed_ok=false;return v.value_or(fallback);};
+  const auto flag_or=[&](std::string_view key,bool fallback)->bool{
+    if(!bag.attributes.count(std::string(key)))return fallback;
+    const auto v=flag(key);if(!v)typed_ok=false;return v.value_or(fallback);};
+  const auto authority=[&](std::optional<c::CatalogSecurityAuthorityClass>& out){
+    if(!bag.attributes.count("authority_class"))return;
+    const auto v=text("authority_class");
+    using A=c::CatalogSecurityAuthorityClass;
+    if(!v)typed_ok=false;
+    else if(*v=="engine_owned_sysarch")out=A::engine_owned_sysarch;
+    else if(*v=="l5_database")out=A::l5_database;
+    else if(*v=="direct_bounded_action")out=A::direct_bounded_action;
+    else if(*v=="observe_only")out=A::observe_only;
+    else if(*v=="recommend_only")out=A::recommend_only;
+    else if(*v=="request_action")out=A::request_action;
+    else typed_ok=false;
+  };
+  const auto subject_kind=[&](std::string_view key,std::optional<c::CatalogSecuritySubjectKind>& out){
+    if(!bag.attributes.count(std::string(key)))return;
+    const auto v=text(key);
+    using K=c::CatalogSecuritySubjectKind;
+    if(!v)typed_ok=false;
+    else if(*v=="principal")out=K::principal;
+    else if(*v=="role")out=K::role;
+    else if(*v=="group")out=K::group;
+    else typed_ok=false;
+  };
+  // Dropped names and descriptions (consumed, never written).
+  for(const auto key:{"role_code","role_name","group_code","group_name","principal_name","description","default_assignment"})
+    if(bag.attributes.count(key)&&!text(key))typed_ok=false;
+  if(bag.attributes.count("identity_authority")&&text("identity_authority")!="uuid")return std::nullopt;
+  const auto primary=identity(c::CatalogSecurityPrimaryIdentityName(bag.kind));
+  const auto origin=identity("origin_transaction_uuid");
+  if(!primary||!origin)return std::nullopt;
+  u64 creator=0;require_number("creator_tx",creator);
+  if(bag.attributes.count("created_txn")&&number("created_txn")!=creator)return std::nullopt;
+  const auto pack=identity("policy_pack_uuid");
+  const auto common=[&](auto& r){
+    r.origin_transaction_uuid={UuidKind::transaction,*origin};
+    // creator_tx is the origin transaction's local id, as legacy writes it.
+    r.origin_local_transaction_id=creator;r.creator_tx=creator;
+    require_number("policy_generation",r.policy_generation);
+    r.policy_pack_uuid=pack;
+  };
+  c::CatalogValueEncodeResult encoded;
+  switch(bag.kind) {
+    case CatalogRecordKind::user_account: {
+      c::NativeSecurityPrincipal r;r.principal_uuid=*primary;common(r);
+      // kind and principal_kind are one classification; both, when present, agree.
+      std::optional<c::CatalogSecurityPrincipalKind> kind;
+      for(const auto key:{"kind","principal_kind"}){
+        if(!bag.attributes.count(key))continue;
+        const auto v=text(key);
+        const auto mapped=v=="user"?std::optional(c::CatalogSecurityPrincipalKind::user):
+            v=="service"?std::optional(c::CatalogSecurityPrincipalKind::service):std::nullopt;
+        if(!mapped||(kind&&*kind!=*mapped))return std::nullopt;
+        kind=mapped;
+      }
+      if(!kind)return std::nullopt;
+      r.principal_kind=*kind;authority(r.authority_class);
+      // An absent active flag reads as active (the native readers' rule).
+      r.active=flag_or("active",true);r.create_time_only=flag_or("create_time_only",false);
+      r.bootstrap_principal=flag_or("bootstrap_principal",false);
+      r.security_generation=number_or("security_generation",0);
+      r.security_context_authority_version=number_or("security_context_authority_version",0);
+      r.security_context_generation=number_or("security_context_generation",0);
+      if(bag.attributes.count("credential_fingerprint")) {
+        const auto fingerprint=text("credential_fingerprint");
+        BootstrapCredentialFingerprintFields parsed;
+        if(!fingerprint||!ParseBootstrapCredentialFingerprint(*fingerprint,&parsed))return std::nullopt;
+        c::NativeSecurityCredential credential;
+        credential.scheme=c::CatalogSecurityCredentialScheme::pbkdf2_sha256_v1;credential.iterations=parsed.iterations;
+        const auto unhex=[](std::string_view hex,auto& out){
+          if(hex.size()!=2*out.size())return false;
+          const auto digit=[](char ch)->int{return ch>='0'&&ch<='9'?ch-'0':ch>='a'&&ch<='f'?10+ch-'a':-1;};
+          for(std::size_t i=0;i<out.size();++i){
+            const int hi=digit(hex[2*i]),lo=digit(hex[2*i+1]);if(hi<0||lo<0)return false;
+            out[i]=static_cast<scratchbird::core::platform::byte>((hi<<4)|lo);
+          }
+          return true;
+        };
+        if(!unhex(parsed.salt_hex,credential.salt)||!unhex(parsed.verifier_hex,credential.verifier))return std::nullopt;
+        r.credential=credential;
+      }
+      if(!typed_ok)return std::nullopt;
+      encoded=c::EncodeNativeSecurityPrincipal(r);break;
+    }
+    case CatalogRecordKind::role_account: {
+      c::NativeSecurityRole r;r.role_uuid=*primary;common(r);authority(r.authority_class);
+      r.engine_owned=flag_or("engine_owned",false);r.immutable=flag_or("immutable",false);
+      r.active=flag_or("active",true);r.loaded_at_database_create=flag_or("loaded_at_database_create",false);
+      r.create_time_only=flag_or("create_time_only",false);
+      r.security_context_authority_version=number_or("security_context_authority_version",0);
+      r.security_context_generation=number_or("security_context_generation",0);
+      if(!typed_ok)return std::nullopt;
+      encoded=c::EncodeNativeSecurityRole(r);break;
+    }
+    case CatalogRecordKind::group_account: {
+      c::NativeSecurityGroup r;r.group_uuid=*primary;common(r);
+      r.engine_owned=flag_or("engine_owned",false);r.loaded_at_database_create=flag_or("loaded_at_database_create",false);
+      if(!typed_ok)return std::nullopt;
+      encoded=c::EncodeNativeSecurityGroup(r);break;
+    }
+    case CatalogRecordKind::grant_record: {
+      c::NativeSecurityGrant r;r.grant_uuid=*primary;common(r);
+      using G=c::CatalogSecurityGrantClass;
+      const auto cls=text("grant_class");
+      if(cls=="privilege")r.grant_class=G::privilege;
+      else if(cls=="role_membership")r.grant_class=G::role_membership;
+      else if(cls=="group_membership")r.grant_class=G::group_membership;
+      else if(cls=="agent_principal_binding")r.grant_class=G::agent_principal_binding;
+      else return std::nullopt;
+      r.subject_uuid=identity("subject_uuid");r.member_uuid=identity("member_uuid");r.parent_uuid=identity("parent_uuid");
+      r.target_uuid=identity("target_uuid");r.principal_uuid=identity("principal_uuid");r.role_uuid=identity("role_uuid");
+      // A membership names itself: the bag repeats the primary as membership_uuid,
+      // which the typed record forbids. Equal is omitted; different refuses.
+      if(const auto membership=identity("membership_uuid");membership&&*membership!=*primary)return std::nullopt;
+      subject_kind("subject_kind",r.subject_kind);subject_kind("member_kind",r.member_kind);
+      subject_kind("parent_kind",r.parent_kind);
+      if(bag.attributes.count("effect")){
+        const auto v=text("effect");
+        if(v=="allow")r.effect=c::CatalogSecurityEffect::allow;
+        else if(v=="deny")r.effect=c::CatalogSecurityEffect::deny;
+        else return std::nullopt;
+      }
+      if(bag.attributes.count("right")){
+        const auto v=text("right");
+        const auto right=v?c::CatalogSecurityRightForTag(*v):std::nullopt;
+        if(!right)return std::nullopt;
+        r.right=*right;
+      }
+      r.security_generation=number_or("security_generation",0);
+      // Grant-only exceptions (3a-2 judgment, reported): the typed grant has no
+      // state or context-version fields. The shared builders still stamp them
+      // on grants (an always-true active, create_time_only, the context
+      // version/generation, and the import provenance flags), and no native
+      // reader consults them on a grant; they are consumed and dropped. A grant
+      // marked inactive cannot be represented, so it refuses.
+      if(bag.attributes.count("active")&&flag("active")!=true)return std::nullopt;
+      for(const auto key:{"create_time_only","engine_owned","loaded_at_database_create"})
+        if(bag.attributes.count(key)&&!flag(key))return std::nullopt;
+      for(const auto key:{"security_context_authority_version","security_context_generation"})
+        if(bag.attributes.count(key)&&!number(key))return std::nullopt;
+      if(!typed_ok)return std::nullopt;
+      encoded=c::EncodeNativeSecurityGrant(r);break;
+    }
+    default:return std::nullopt;
+  }
+  // Refuse anything the typed record could not carry.
+  for(const auto& [key,value]:bag.attributes)if(!used.count(key))return std::nullopt;
+  for(const auto& [key,value]:bag.identities)if(!used_ids.count(key))return std::nullopt;
+  if(!encoded.ok())return std::nullopt;
+  return std::string(encoded.bytes.begin(),encoded.bytes.end());
 }
 
 struct NativePolicyFamilyDefinition {
@@ -8557,7 +8761,10 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
           request.construction_transaction,bootstrap->principal_uuid,seen,&*family_build);
       if(built!=E::none)return fail(built);
     }
-    struct Definition {CatalogRecordKind kind;scratchbird::core::catalog::CatalogObjectSubtype subtype;std::string payload;};
+    // reference_name (3a-2): a security definition's name, taken from its
+    // attribute bag before the typed conversion (NativeSecurityReferenceName).
+    struct Definition {CatalogRecordKind kind;scratchbird::core::catalog::CatalogObjectSubtype subtype;std::string payload;
+      std::optional<std::string> reference_name{};};
     std::map<Uuid,Definition> definitions;
     const auto append=[&]<class Record>(const Uuid& identity,CatalogRecordKind kind,scratchbird::core::catalog::CatalogObjectSubtype subtype,const Record& record) {
       std::array<scratchbird::core::platform::byte,2048> backing;
@@ -8595,30 +8802,41 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
         return fail(E::duplicate_identity);
 
     if(security_memberships) {
+      // SB_CATALOG_NATIVE_SECURITY_RECORDS (3a-2): the native create writes the
+      // typed record, converted once from the shared builders' attribute bag.
+      // The reference name is read from the bag first. A bag the adapter
+      // cannot map is a definition failure (invalid_definition), reported
+      // apart from an identity collision (duplicate_identity).
+      bool security_conversion_failed=false;
       const auto append_security=[&](const c::CatalogSecurityRecord& record) {
-        const auto encoded=c::EncodeCatalogSecurityRecord(record);
+        // An identity already taken is a collision whatever the record holds,
+        // so it is classified before the conversion is attempted.
         const auto identity=record.Identity(c::CatalogSecurityPrimaryIdentityName(record.kind));
-        return encoded.ok()&&definitions.emplace(identity,Definition{record.kind,
-            c::CatalogSecuritySubtype(record.kind),std::string(encoded.bytes.begin(),encoded.bytes.end())}).second;
+        if(definitions.count(identity))return false;
+        const auto payload=NativeTypedSecurityPayload(record);
+        if(!payload){security_conversion_failed=true;return false;}
+        return definitions.emplace(identity,Definition{record.kind,
+            c::CatalogSecuritySubtype(record.kind),*payload,NativeSecurityReferenceName(record)}).second;
       };
+      const auto security_fail=[&](E collision){return fail(security_conversion_failed?E::invalid_definition:collision);};
       for(const auto& role:pack.roles)
-        if(!append_security(NativeImportedRoleDefinition(pack,role,request.construction_transaction)))return fail(E::invalid_definition);
+        if(!append_security(NativeImportedRoleDefinition(pack,role,request.construction_transaction)))return security_fail(E::invalid_definition);
       for(const auto& group:pack.groups)
-        if(!append_security(NativeImportedGroupDefinition(pack,group,request.construction_transaction)))return fail(E::invalid_definition);
+        if(!append_security(NativeImportedGroupDefinition(pack,group,request.construction_transaction)))return security_fail(E::invalid_definition);
       for(const auto& membership:pack.memberships) {
         const auto found=membership_identities.find({membership.member_uuid,membership.parent_uuid});
-        if(found==membership_identities.end())return fail(E::invalid_definition);
+        if(found==membership_identities.end())return security_fail(E::invalid_definition);
         if(!append_security(NativeImportedMembershipDefinition(pack,membership,found->second,request.construction_transaction)))
-          return fail(E::duplicate_identity);
+          return security_fail(E::duplicate_identity);
       }
       for(const auto& grant:pack.grants)
-        if(!append_security(NativeImportedGrantDefinition(pack,grant,request.construction_transaction)))return fail(E::invalid_definition);
+        if(!append_security(NativeImportedGrantDefinition(pack,grant,request.construction_transaction)))return security_fail(E::invalid_definition);
       if(bootstrap) {
         if(!append_security(NativeBootstrapRoleDefinition(request.construction_transaction,pack.image.policy_generation))||
             !append_security(NativeBootstrapPrincipalDefinition(bootstrap->principal_uuid,bootstrap->principal_name,
               bootstrap->credential_fingerprint,request.construction_transaction,pack.image.policy_generation))||
             !append_security(NativeBootstrapMembershipDefinition(bootstrap->membership_uuid,bootstrap->principal_uuid,
-              request.construction_transaction,pack.image.policy_generation)))return fail(E::duplicate_identity);
+              request.construction_transaction,pack.image.policy_generation)))return security_fail(E::duplicate_identity);
       }
       if(service) {
         // As legacy create writes it: L5's principal names its authority class
@@ -8628,10 +8846,10 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
         if(!append_security(service_principal)||
             !append_security(NativeBootstrapMembershipDefinition(service->l5_membership_uuid,service->principal_uuid,
               request.construction_transaction,pack.image.policy_generation)))
-          return fail(E::duplicate_identity);
+          return security_fail(E::duplicate_identity);
         for(unsigned slot=0;slot<service->grant_uuids.size();++slot)
           if(!append_security(NativeLocalServiceGrantDefinition(*service,slot,request.construction_transaction,pack.image.policy_generation)))
-            return fail(E::duplicate_identity);
+            return security_fail(E::duplicate_identity);
         c::CatalogRuntimeAuthorityBinding binding;
         binding.binding_uuid=service->runtime_binding_uuid;binding.database_uuid=request.database_uuid;
         binding.service_principal_uuid=service->principal_uuid;binding.security_authority_uuid=request.database_uuid;
@@ -8644,7 +8862,7 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
         const auto encoded=c::EncodeCatalogRuntimeAuthorityBinding(binding);
         if(!encoded.ok()||!definitions.emplace(binding.binding_uuid,Definition{CatalogRecordKind::config_profile,
             c::CatalogObjectSubtype::agent_runtime_authority,std::string(encoded.bytes.begin(),encoded.bytes.end())}).second)
-          return fail(E::duplicate_identity);
+          return security_fail(E::duplicate_identity);
       }
       // SEARCH_KEY: SB_NATIVE_CREATE_AGENT_PRINCIPALS. Same records legacy create
       // writes (BuildBootstrapSecurityCatalogRows, policy links in
@@ -8654,16 +8872,16 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
         const auto* authority=agent_authority_for(type.agent_type_id);
         if(!append_security(NativeAgentPrincipalDefinition(agent.principal_uuid,type.agent_type_id,
               authority?std::string_view(authority->authority_class):std::string_view{},
-              request.construction_transaction,pack.image.policy_generation)))return fail(E::duplicate_identity);
+              request.construction_transaction,pack.image.policy_generation)))return security_fail(E::duplicate_identity);
         if(authority)for(std::size_t r=0;r<authority->rights.size();++r)
           if(!append_security(NativeAgentPrincipalGrantDefinition(agent.principal_uuid,agent.grant_uuids[r],
                 authority->rights[r],request.construction_transaction,pack.image.policy_generation)))
-            return fail(E::duplicate_identity);
+            return security_fail(E::duplicate_identity);
         if(!append_security(NativeAgentRoleMembershipDefinition(agent.membership_uuid,agent.principal_uuid,type.role_uuid,
-              request.construction_transaction,pack.image.policy_generation)))return fail(E::duplicate_identity);
+              request.construction_transaction,pack.image.policy_generation)))return security_fail(E::duplicate_identity);
         if(!agent.link_uuid.is_nil()&&!append_security(NativeAgentPrincipalBindingDefinition(agent.link_uuid,
               agent.principal_uuid,agent.policy_uuid,request.construction_transaction,pack.image.policy_generation)))
-          return fail(E::duplicate_identity);
+          return security_fail(E::duplicate_identity);
       }
     }
 
@@ -8766,7 +8984,7 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
         input.definition.creator_transaction_uuid=request.construction_transaction;
         input.language_uuid=request.database_default_language;
         // An empty name asks for the object's own reference name.
-        input.name_text=name->name_text.empty()?NativeDefinitionReferenceName(identity,definition.kind,definition.payload):
+        input.name_text=name->name_text.empty()?NativeDefinitionReferenceName(identity,definition.reference_name):
             std::string(name->name_text);
         input.name_collision_policy_uuid=seed.name_collision_policy_uuid;
         input.dialect_profile_uuid=seed.dialect_profile_uuid;

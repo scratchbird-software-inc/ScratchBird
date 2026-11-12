@@ -18,22 +18,46 @@ using SecurityError=runtime_security::NativeRuntimeSecurityReadError;
 using SecurityResult=runtime_security::NativeRuntimeSecurityObservationResult;
 const platform::TypedUuid security_tx{platform::UuidKind::transaction,Id(5)};
 
-catalog::CatalogSecurityRecord SecurityRecord(catalog::CatalogRecordKind kind,unsigned id) {
-  catalog::CatalogSecurityRecord r;r.kind=kind;
-  r.identities.emplace(std::string(catalog::CatalogSecurityPrimaryIdentityName(kind)),Id(id));
-  r.identities.emplace("origin_transaction_uuid",security_tx.value);
-  r.attributes={{"creator_tx",u64{1}},{"security_context_authority_version",u64{1}},
-      {"security_context_generation",u64{9}},{"security_generation",u64{11}},
-      {"policy_generation",u64{13}},{"active",true}};
+// SB_CATALOG_NATIVE_SECURITY_RECORDS (3a-2): the fixture writes the typed
+// native security records native create writes (identities and coding-time
+// constants; no names or text classifications). The values are the ones the
+// attribute-bag fixture used: creator/origin local 1, context version 1,
+// context generation 9, security generation 11, policy generation 13, active.
+using SecurityRow=catalog::NativeSecurityRecord;
+SecurityRow SecurityRecord(catalog::CatalogRecordKind kind,unsigned id) {
+  using K=catalog::CatalogRecordKind;SecurityRow r;r.kind=kind;
+  const auto common=[&](auto& v){v.origin_transaction_uuid=security_tx;v.origin_local_transaction_id=1;v.creator_tx=1;v.policy_generation=13;};
+  if(kind==K::user_account){catalog::NativeSecurityPrincipal v;v.principal_uuid=Id(id);common(v);
+    v.principal_kind=catalog::CatalogSecurityPrincipalKind::user;v.active=true;v.security_context_authority_version=1;
+    v.security_context_generation=9;v.security_generation=11;r.value=v;}
+  else if(kind==K::role_account){catalog::NativeSecurityRole v;v.role_uuid=Id(id);common(v);v.active=true;
+    v.security_context_authority_version=1;v.security_context_generation=9;r.value=v;}
+  else if(kind==K::group_account){catalog::NativeSecurityGroup v;v.group_uuid=Id(id);common(v);r.value=v;}
+  else {catalog::NativeSecurityGrant v;v.grant_uuid=Id(id);common(v);v.security_generation=11;r.value=v;}
   return r;
 }
-db::NativeCreationCatalogRecord SecurityMetadata(catalog::CatalogSecurityRecord record,unsigned ordinal) {
+catalog::NativeSecurityPrincipal& AsPrincipal(SecurityRow& r){return std::get<catalog::NativeSecurityPrincipal>(r.value);}
+catalog::NativeSecurityRole& AsRole(SecurityRow& r){return std::get<catalog::NativeSecurityRole>(r.value);}
+catalog::NativeSecurityGrant& AsGrant(SecurityRow& r){return std::get<catalog::NativeSecurityGrant>(r.value);}
+catalog::CatalogValueEncodeResult EncodeSecurityRow(const SecurityRow& r){
+  if(const auto* v=r.principal())return catalog::EncodeNativeSecurityPrincipal(*v);
+  if(const auto* v=r.role())return catalog::EncodeNativeSecurityRole(*v);
+  if(const auto* v=r.group())return catalog::EncodeNativeSecurityGroup(*v);
+  if(const auto* v=r.grant())return catalog::EncodeNativeSecurityGrant(*v);
+  return {catalog::CatalogValueError::invalid_value,{}};
+}
+// A structurally valid stored verifier: the observation never authenticates.
+catalog::NativeSecurityCredential StructuralCredential(){
+  catalog::NativeSecurityCredential c;c.scheme=catalog::CatalogSecurityCredentialScheme::pbkdf2_sha256_v1;c.iterations=600000;
+  c.salt.fill(0x5a);c.verifier.fill(0xa5);return c;
+}
+db::NativeCreationCatalogRecord SecurityMetadata(SecurityRow record,unsigned ordinal) {
   auto metadata=security_fixture::Metadata(0,security_tx,Id(60),{});
   metadata.record.header.kind=record.kind;
-  metadata.record.header.object_uuid={platform::UuidKind::object,record.Identity(catalog::CatalogSecurityPrimaryIdentityName(record.kind))};
+  metadata.record.header.object_uuid={platform::UuidKind::object,record.primary()};
   metadata.record.header.row_uuid={platform::UuidKind::row,security_fixture::Id(3000+ordinal)};
   metadata.object_subtype=catalog::CatalogSecuritySubtype(record.kind);
-  const auto encoded=catalog::EncodeCatalogSecurityRecord(record);Check(encoded.ok(),"canonical native security payload");
+  const auto encoded=EncodeSecurityRow(record);Check(encoded.ok(),"canonical native security payload");
   metadata.record.payload.assign(encoded.bytes.begin(),encoded.bytes.end());
   return {metadata,{}};
 }
@@ -48,36 +72,37 @@ struct SecurityFixture {
   // create's construction intent is laid down (see below).
   explicit SecurityFixture(unsigned p,unsigned variant=0,bool indexed=false,bool audited=false):profile(p),budget(512*u64{sizes[p]}) {
     using K=catalog::CatalogRecordKind;db::NativeCreationCatalogSeed seed;
+    // 3a-2: the principal's name ("native-service") is a names-table entry,
+    // not a record field, and its stored verifier is the typed binary
+    // credential (structural only, never authenticated here).
     auto principal=SecurityRecord(K::user_account,200);
-    principal.attributes.emplace("kind","service");principal.attributes.emplace("principal_kind","service");
-    principal.attributes.emplace("bootstrap_principal",false);
-    principal.attributes.emplace("principal_name","native-service");
-    principal.attributes.emplace("credential_fingerprint","structural-only-not-authentication");
-    if(variant==1)principal.attributes["active"]=false;
-    if(variant==2)principal.attributes["principal_kind"]="user";
-    if(variant==3)principal.attributes["security_context_generation"]=u64{0};
-    if(variant==8)for(const auto* name:{"security_context_generation","security_generation","policy_generation"})
-      principal.attributes[name]=std::numeric_limits<u64>::max();
-    if(variant==4){principal.kind=K::role_account;principal.identities.erase("principal_uuid");principal.identities.emplace("role_uuid",Id(200));}
+    {auto& p=AsPrincipal(principal);p.principal_kind=catalog::CatalogSecurityPrincipalKind::service;p.bootstrap_principal=false;
+     p.credential=StructuralCredential();
+     if(variant==1)p.active=false;
+     if(variant==2)p.principal_kind=catalog::CatalogSecurityPrincipalKind::user;
+     if(variant==3)p.security_context_generation=0;
+     if(variant==8)p.security_context_generation=p.security_generation=p.policy_generation=std::numeric_limits<u64>::max();}
+    if(variant==4)principal=SecurityRecord(K::role_account,200);
     seed[3].push_back(SecurityMetadata(principal,0));
+    using SK=catalog::CatalogSecuritySubjectKind;using GC=catalog::CatalogSecurityGrantClass;
+    using EF=catalog::CatalogSecurityEffect;using RT=catalog::CatalogSecurityRight;
     auto grant=SecurityRecord(K::grant_record,201);
-    grant.identities.emplace("subject_uuid",Id(200));grant.attributes.emplace("grant_class","privilege");
-    grant.attributes.emplace("subject_kind","principal");grant.attributes.emplace("right","CONNECT");grant.attributes.emplace("effect","allow");
+    {auto& g=AsGrant(grant);g.subject_uuid=Id(200);g.grant_class=GC::privilege;g.subject_kind=SK::principal;
+     g.right=RT::CONNECT;g.effect=EF::allow;}
     seed[3].push_back(SecurityMetadata(grant,1));
-    auto group=SecurityRecord(K::group_account,202);group.attributes.emplace("group_name","literal alias");
+    // 3a-2: as the attribute-bag fixture: group 202, the principal a member of
+    // it (group_membership, parent_kind group), a targeted denial on the group.
+    auto group=SecurityRecord(K::group_account,202);
     seed[3].push_back(SecurityMetadata(group,2));
     auto membership=SecurityRecord(K::grant_record,203);
-    membership.identities.emplace("member_uuid",Id(200));membership.identities.emplace("parent_uuid",Id(202));
-    membership.identities.emplace("membership_uuid",Id(203));membership.attributes.emplace("grant_class","group_membership");
-    membership.attributes.emplace("member_kind","principal");membership.attributes.emplace("parent_kind","group");
+    {auto& g=AsGrant(membership);g.member_uuid=Id(200);g.parent_uuid=Id(202);g.grant_class=GC::group_membership;
+     g.member_kind=SK::principal;g.parent_kind=SK::group;}
     seed[3].push_back(SecurityMetadata(membership,3));
     auto denial=SecurityRecord(K::grant_record,204);
-    denial.identities.emplace("subject_uuid",Id(202));denial.identities.emplace("target_uuid",Id(240));
-    denial.attributes.emplace("grant_class","privilege");denial.attributes.emplace("subject_kind","group");
-    denial.attributes.emplace("right","SELECT");denial.attributes.emplace("effect","deny");
+    {auto& g=AsGrant(denial);g.subject_uuid=Id(202);g.target_uuid=Id(240);g.grant_class=GC::privilege;
+     g.subject_kind=SK::group;g.right=RT::SELECT;g.effect=EF::deny;}
     seed[3].push_back(SecurityMetadata(denial,4));
-    auto retired=SecurityRecord(K::user_account,205);retired.attributes["active"]=false;
-    retired.attributes.emplace("kind","user");retired.attributes.emplace("principal_kind","user");
+    auto retired=SecurityRecord(K::user_account,205);AsPrincipal(retired).active=false;
     auto retired_metadata=SecurityMetadata(retired,5);retired_metadata.metadata.lifecycle=catalog::CatalogObjectLifecycle::archived;
     retired_metadata.metadata.status=catalog::CatalogObjectStatus::retired;
     retired_metadata.metadata.retired_transaction_uuid=security_tx;
@@ -254,9 +279,9 @@ struct SecurityFixture {
       const auto payload=catalog::EncodeCatalogRuntimeAuthorityBinding(*binding.record);
       Check(payload.ok(),"retained configuration successor exact native payload");metadata.record.payload.assign(payload.bytes.begin(),payload.bytes.end());
     }else{
-      auto principal=catalog::DecodeCatalogSecurityRecord(metadata.record.header.kind,metadata.record.payload);
-      Check(principal.ok(),"retained successor family codec");principal.record->attributes["active"]=false;
-      const auto payload=catalog::EncodeCatalogSecurityRecord(*principal.record);Check(payload.ok(),"retained successor exact native payload");
+      auto principal=catalog::DecodeNativeSecurityRecord(metadata.record.header.kind,metadata.record.payload);
+      Check(principal.ok(),"retained successor family codec");AsPrincipal(*principal.record).active=false;
+      const auto payload=EncodeSecurityRow(*principal.record);Check(payload.ok(),"retained successor exact native payload");
       metadata.record.payload.assign(payload.bytes.begin(),payload.bytes.end());
       if(scenario==8){metadata.record.header.deleted=true;metadata.lifecycle=catalog::CatalogObjectLifecycle::dropped;
         metadata.status=catalog::CatalogObjectStatus::retired;metadata.retired_transaction_uuid=row.transaction_uuid;}
@@ -269,9 +294,10 @@ struct SecurityFixture {
       }
       if(scenario==7||scenario==9){row.row_uuid={platform::UuidKind::row,Id(248)};metadata.record.header.row_uuid=row.row_uuid;
         row.previous_version_uuid={};row.previous_row_version=0;row.row_version=1;metadata.definition_version=1;
-        principal.record->attributes["creator_tx"]=u64{2};principal.record->identities["origin_transaction_uuid"]=Id(12);
-        if(scenario==9){metadata.record.header.object_uuid.value=Id(206);principal.record->identities["principal_uuid"]=Id(206);}
-        const auto duplicate=catalog::EncodeCatalogSecurityRecord(*principal.record);Check(duplicate.ok(),"duplicate object canonical payload");
+        {auto& p=AsPrincipal(*principal.record);p.creator_tx=p.origin_local_transaction_id=2;
+         p.origin_transaction_uuid={platform::UuidKind::transaction,Id(12)};
+         if(scenario==9){metadata.record.header.object_uuid.value=Id(206);p.principal_uuid=Id(206);}}
+        const auto duplicate=EncodeSecurityRow(*principal.record);Check(duplicate.ok(),"duplicate object canonical payload");
         metadata.record.payload.assign(duplicate.bytes.begin(),duplicate.bytes.end());}
     }
     if(scenario==6||scenario==7||scenario==9){
@@ -367,10 +393,13 @@ void Governed(unsigned profile,bool indexed,unsigned variant=0,unsigned mga_scen
       const auto found=std::find_if(valid.records.begin(),valid.records.end(),[&](const auto& r){return r.object_uuid==Id(id);});
       Check(found!=valid.records.end(),"actual retained security identity");return *found;
     };
-    Check(find(201).record.Attribute("effect")=="allow"&&find(201).record.Attribute("right")=="CONNECT", "exact direct grant");
-    Check(find(203).record.Identity("member_uuid")==Id(200)&&find(203).record.Identity("parent_uuid")==Id(202),"membership graph retained without flattening");
-    Check(find(204).record.Attribute("effect")=="deny"&&find(204).record.Identity("target_uuid")==Id(240),"targeted denial retained");
-    Check(find(205).lifecycle==catalog::CatalogObjectLifecycle::archived&&find(205).status==catalog::CatalogObjectStatus::retired&&find(205).record.Boolean("active")==false&&
+    // 3a-2: compared as typed constants and identities, not text.
+    Check(find(201).record.grant()&&find(201).record.grant()->effect==catalog::CatalogSecurityEffect::allow&&
+        find(201).record.grant()->right==catalog::CatalogSecurityRight::CONNECT, "exact direct grant");
+    Check(find(203).record.grant()&&find(203).record.grant()->member_uuid==Id(200)&&find(203).record.grant()->parent_uuid==Id(202),"membership graph retained without flattening");
+    Check(find(204).record.grant()&&find(204).record.grant()->effect==catalog::CatalogSecurityEffect::deny&&find(204).record.grant()->target_uuid==Id(240),"targeted denial retained");
+    Check(find(205).lifecycle==catalog::CatalogObjectLifecycle::archived&&find(205).status==catalog::CatalogObjectStatus::retired&&
+        find(205).record.principal()&&!find(205).record.principal()->active&&
         find(205).retired_transaction_uuid==security_tx.value&&find(205).retired_local_transaction_id==1,"retirement remains real inventory-bound data");
     auto bad=request;bad.runtime_binding_generation=2;Empty(read(bad),SecurityError::binding_generation_mismatch);
     bad=request;bad.runtime_binding_uuid=Id(250);Empty(read(bad),SecurityError::binding_absent);

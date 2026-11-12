@@ -265,13 +265,16 @@ void ChangeMemoryEnvelopeFixture(db::NativeCreationCatalogSeed& seed,unsigned va
     for(auto& row:seed[3]){
       const auto id=row.metadata.record.header.object_uuid.value;
       if(id!=security_fixture::Id(15100)&&id!=security_fixture::Id(15102))continue;
-      auto grant=catalog::DecodeCatalogSecurityRecord(row.metadata.record.header.kind,row.metadata.record.payload);
-      Check(grant.ok(),"actual service grant decodes before database-target denial fixture");
-      grant.record->attributes["right"]="CONNECT";
+      // 3a-2: the create writes typed grants; the fixture edits the typed
+      // record (right and effect are constants, the target a UUID).
+      auto grant=catalog::DecodeNativeSecurityRecord(row.metadata.record.header.kind,row.metadata.record.payload);
+      Check(grant.ok()&&grant.record->grant(),"actual service grant decodes before database-target denial fixture");
+      auto typed=*grant.record->grant();
+      typed.right=catalog::CatalogSecurityRight::CONNECT;
       if(id==security_fixture::Id(15100)){
-        grant.record->identities["target_uuid"]=Id(1);grant.record->attributes["effect"]="deny";
+        typed.target_uuid=Id(1);typed.effect=catalog::CatalogSecurityEffect::deny;
       }
-      const auto encoded=catalog::EncodeCatalogSecurityRecord(*grant.record);
+      const auto encoded=catalog::EncodeNativeSecurityGrant(typed);
       Check(encoded.ok(),"targeted denial and separate global allow remain canonical security records");
       row.metadata.record.payload.assign(encoded.bytes.begin(),encoded.bytes.end());++changed;
     }
@@ -1864,9 +1867,11 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
     }
     // As SYSARCH, L5 holds every right database-wide, a removed direct grant
     // included (memory variant 3). Only an explicit deny narrows it (variant 13).
-    for(const auto& right:runtime_security::KnownSecurityRights())
-      Check(rights.projection.Allows(right),"L5 as a SYSARCH member holds every known right database-wide");
-    if(memory_variant==13)Check(rights.projection.Allows("CONNECT")&&!rights.projection.Allows("CONNECT",Id(1)),
+    // 3a-2: every listed right constant (the same 122 as KnownSecurityRights).
+    for(const auto& right:catalog::kCatalogSecurityRights)
+      Check(rights.projection.Allows(right.right),"L5 as a SYSARCH member holds every known right database-wide");
+    if(memory_variant==13)Check(rights.projection.Allows(catalog::CatalogSecurityRight::CONNECT)&&
+        !rights.projection.Allows(catalog::CatalogSecurityRight::CONNECT,Id(1)),
         "a global CONNECT allow cannot override the persisted denial for this actual database");
     Check(stage_writes==writes&&stage_syncs==syncs,"credential/rights prerequisites publish no activation or transaction");
     allocation_budget=0;
@@ -2011,7 +2016,7 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
           read.configuration().ok()&&read.agents().ok()&&read.agents().entries().size()==66&&
           AgentPayloadFingerprint(read.agents())==agent_payload_fingerprint&&
           // D5: SYSARCH keeps CONNECT even without the direct grant (variant 3).
-          read.authorization().projection.Allows("CONNECT"),
+          read.authorization().projection.Allows(catalog::CatalogSecurityRight::CONNECT),
           "original writer reservation, protected credential generation and governed observations survive guard retirement");
       Check(Host::RetainStartupObservation(read)==server::NativeHostedRuntimeError::none&&
           !server::SelectNativeLocalServiceStartupDeclarations(*admitted.comparison->lease).ok()&&
