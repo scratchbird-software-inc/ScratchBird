@@ -1,13 +1,16 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
-// SEARCH_KEY: SB_CATALOG_NATIVE_AGENT_RECORDS (owner Q68 = 1, Q69 = 1, Q70 = 2).
+// SEARCH_KEY: SB_CATALOG_NATIVE_AGENT_RECORDS (owner Q68 = 1, Q69 = 1, Q70 = 2,
+// Q71 = 1, Q72 = 1, Q73 = 1).
 // Typed native agent policy / registration / per-family config value blocks:
 // independent hand-built SBCV byte oracles (policy, registration and three
 // family configs; no production schema or encoder), round trips of every row
 // DefaultAgentBootstrapDeclarations writes today and of every family's
 // default config through the boundary adapters, the generated field tables
-// checked against AgentPolicySchemaForFamily, the exact unrepresented-field
-// set, and refusals. Codec only; not wired.
+// checked against AgentPolicySchemaForFamily, the exact set of 13 one-value
+// "baseline" enums (3c, owner Q71 = 1; formerly the unrepresented set), the
+// three budget fields that are policy-record only (3c, owner Q73 = 1), and
+// refusals.
 #include "core/catalog/catalog_native_agent_record.hpp"
 #include "core/agents/agent_bootstrap_configuration.hpp"
 #include "core/agents/agent_policy_schema.hpp"
@@ -216,9 +219,10 @@ void CommonOracle(G& g, const c::NativeAgentConfigResourceBudget& b) {
   const std::optional<p::u64> numbers[]{b.max_cpu_time_microseconds, b.max_memory_bytes, b.max_io_bytes,
                                         b.max_io_ops, b.max_thread_slots, b.max_queue_depth,
                                         b.min_run_interval_microseconds, b.retry_backoff_microseconds,
-                                        b.watchdog_timeout_microseconds, b.max_history_query_rows,
-                                        b.max_evidence_fanout, b.max_label_cardinality};
-  for (unsigned i = 0; i < 12; ++i)
+                                        b.watchdog_timeout_microseconds};
+  // 3c (owner Q73 = 1): tags 74..76 (max_history_query_rows, max_evidence_fanout,
+  // max_label_cardinality) are reserved, unused; those live on the policy record.
+  for (unsigned i = 0; i < 9; ++i)
     if (numbers[i]) g.Int(65 + i, *numbers[i]);
 }
 template <class R>
@@ -262,6 +266,28 @@ std::string Golden(const c::NativeAgentConfig_agent_startup_policy& r) {
   g.Opaque(9, Codes(r.dependency_order));
   g.Int(10, r.readiness_timeout_microseconds);
   g.Int(11, r.max_retry_attempts);
+  CommonOracle(g, r.common);
+  return g.Finish();
+}
+// 3c (owner Q71 = 1): a Token and a TokenList "baseline" field, each a
+// one-value u16 enum stored as one unsigned integer in its reserved tag.
+std::string Golden(const c::NativeAgentConfig_backup_policy& r) {
+  G g(65660);
+  HeadOracle(g, r);
+  g.Int(4, r.stuck_progress_window);
+  g.Bool(5, r.verification_required);
+  g.Int(6, p::u64(r.blocker_policy));
+  g.Bool(7, r.cancel_requires_approval);
+  CommonOracle(g, r.common);
+  return g.Finish();
+}
+std::string Golden(const c::NativeAgentConfig_admission_control_policy& r) {
+  G g(65648);
+  HeadOracle(g, r);
+  g.Int(4, r.listener_queue_threshold);
+  g.Int(5, r.scheduler_queue_threshold);
+  g.Int(6, r.hard_limit_threshold);
+  g.Int(7, p::u64(r.workload_class_rules));
   CommonOracle(g, r.common);
   return g.Finish();
 }
@@ -653,7 +679,8 @@ void FullCommon(R& r) {
   b.max_cpu_time_microseconds = b.max_memory_bytes = b.max_io_bytes = 1;
   b.max_io_ops = b.max_thread_slots = b.max_queue_depth = 0;
   b.min_run_interval_microseconds = b.retry_backoff_microseconds = b.watchdog_timeout_microseconds = ~p::u64{0};
-  b.max_history_query_rows = b.max_evidence_fanout = b.max_label_cardinality = 7;
+  // 3c (owner Q73 = 1): the three history/evidence/label budgets are no longer
+  // config fields (policy record tags 33-35 only).
 }
 template <class R>
 void ConfigHeadRefusals(const R& base) {
@@ -711,9 +738,12 @@ void Coordinator() {
   for (unsigned tag : required) RefuseWire<R>(GoldenWith(full, [&](Wire& w) { w.omit.insert(tag); }), "missing required config field refused");
   RefuseWire<R>(GoldenWith(full, [](Wire& w) { w.append[99] = 1; }), "unknown config field refused");
   const auto bare = c::DecodeNativeAgentConfig<R>(GoldenWith(full, [](Wire& w) {
-    for (unsigned tag = 64; tag <= 76; ++tag) w.omit.insert(tag);
+    for (unsigned tag = 64; tag <= 73; ++tag) w.omit.insert(tag);  // 3c: common tags end at 73 (Q73 = 1)
   }));
   Check(bare.ok() && bare.record->common == c::NativeAgentConfigResourceBudget{}, "common fields optional");
+  // 3c (owner Q73 = 1): the reserved tags 74..76 are refused on the wire.
+  for (unsigned tag = 74; tag <= 76; ++tag)
+    RefuseWire<R>(GoldenWith(full, [&](Wire& w) { w.append[tag] = 1; }), "reserved Q73 config tag refused");
   RefuseWire<c::NativeAgentConfig_agent_startup_policy>(raw, "coordinator schema id refused by another family");
 }
 void StartupConfig() {
@@ -775,8 +805,60 @@ void RecommendationConfig() {
   Refuse(route);
 }
 
+// ---- 3c (owner Q71 = 1): the 13 free-text "baseline" fields ----
+template <class R, class En>
+void BaselineField(En R::*member, unsigned tag, const char* key) {
+  const auto base = FromDefaults<R>();
+  Check(base.*member == En::baseline && p::u64(En::baseline) == 1, std::string("baseline default mapped: ") + key);
+  Roundtrip(base);  // exact oracle bytes
+  auto b = base; b.*member = En::none; Refuse(b);
+  b = base; b.*member = En(2); Refuse(b);
+  RefuseWire<R>(GoldenWith(base, [&](Wire& w) { w.number[tag] = 2; }), "unlisted baseline-enum value refused");
+  RefuseWire<R>(GoldenWith(base, [&](Wire& w) { w.number[tag] = 0x10001; }), "baseline enum wider than u16 refused");
+  RefuseWire<R>(GoldenWith(base, [&](Wire& w) { w.omit.insert(tag); }), "baseline field required on the wire");
+}
+void BaselineOnly() {
+  using Backup = c::NativeAgentConfig_backup_policy;
+  using Admission = c::NativeAgentConfig_admission_control_policy;
+  BaselineField(&Backup::blocker_policy, 6, "blocker_policy");                    // Token
+  BaselineField(&Admission::workload_class_rules, 7, "workload_class_rules");      // TokenList
+}
+// ---- 3c (owner Q73 = 1): three budgets are policy-record fields only ----
+void PolicyRecordBudgets() {
+  using R = c::NativeAgentConfig_agent_coordinator_policy;
+  const auto defaults = a::DefaultAgentPolicyConfigFieldsForFamily("agent_coordinator_policy");
+  const auto plain = c::NativeAgentConfigFromTags<R>(MapTags(defaults));
+  Check(plain.ok(), "coordinator defaults");
+  auto policy = Policy();
+  policy.max_history_query_rows = 1024; policy.max_evidence_fanout = 128; policy.max_label_cardinality = 256;
+  for (const auto& [key, value] : std::vector<std::pair<std::string, std::string>>{
+           {"max_history_query_rows", "1024"}, {"max_evidence_fanout", "128"}, {"max_label_cardinality", "256"}}) {
+    auto m = defaults;
+    m[key] = value;
+    const auto tags = MapTags(m);
+    Check(!c::NativeAgentConfigFromTags<R>(tags).ok(), "Q73 key refused without the policy record: " + key);
+    const auto agreed = c::NativeAgentConfigFromTags<R>(tags, &policy);
+    Check(agreed.ok() && *agreed.record == *plain.record, "Q73 key equal to the policy record: accepted, not carried: " + key);
+    auto other = m;
+    other[key] = "7";
+    Check(!c::NativeAgentConfigFromTags<R>(MapTags(other), &policy).ok(), "Q73 key disagreeing with the policy refused: " + key);
+    other[key] = "x";
+    Check(!c::NativeAgentConfigFromTags<R>(MapTags(other), &policy).ok(), "Q73 key not a number refused: " + key);
+    auto twice = tags;
+    for (const auto& t : tags)
+      if (t.key == key) twice.push_back(t);
+    Check(!c::NativeAgentConfigFromTags<R>(twice, &policy).ok(), "Q73 key repeated refused: " + key);
+  }
+  for (const auto& d : c::NativeAgentConfigCommonFields())
+    Check(d.key != "max_history_query_rows" && d.key != "max_evidence_fanout" && d.key != "max_label_cardinality" &&
+              d.tag >= 64 && d.tag <= 73,
+          "Q73: not a common config field");
+}
+
 // ---- every family: generated tables vs the schema map, defaults round trip ----
-const std::map<std::string, std::set<std::string>> kExpectedUnrepresented{
+// 3c (owner Q71 = 1): formerly the exact unrepresented set; now each is a
+// one-value enum {baseline} and nothing is unrepresented.
+const std::map<std::string, std::set<std::string>> kExpectedBaselineOnly{
     {"admission_control_policy", {"workload_class_rules"}},
     {"parser_health_policy", {"package_quarantine_rules"}},
     {"backup_policy", {"blocker_policy"}},
@@ -788,17 +870,26 @@ const std::map<std::string, std::set<std::string>> kExpectedUnrepresented{
     {"page_preallocation_policy", {"allowed_page_families", "workload_calendar"}},
     {"page_relocation_policy", {"unmovable_blocker_classes"}}};
 void EveryFamily() {
-  unsigned families = 0, unrepresented = 0;
+  unsigned families = 0, unrepresented = 0, baseline_only = 0;
   std::set<p::u32> schema_ids;
   for (const auto& identity : c::kCatalogAgentPolicyFamilies) {
     const std::string tag(identity.tag);
     const auto fields = c::NativeAgentConfigFieldsFor(identity.family);
     const auto common = c::NativeAgentConfigCommonFields();
     const auto schema = a::AgentPolicySchemaForFamily(tag);
-    Check(!fields.empty() && fields.size() + common.size() == schema.size(), "generated table size = schema map: " + tag);
-    for (std::size_t i = 0; i < schema.size(); ++i) {
+    // 3c (owner Q73 = 1): the schema map's last three common fields are
+    // policy-record fields; they keep reserved tags 74..76 and no descriptor.
+    const std::set<std::string> policy_record{"max_history_query_rows", "max_evidence_fanout", "max_label_cardinality"};
+    std::vector<a::AgentPolicyFieldSchema> config_schema;
+    for (std::size_t i = 0; i < schema.size(); ++i)
+      if (!(i >= fields.size() && policy_record.count(schema[i].name))) config_schema.push_back(schema[i]);
+      else Check(i - fields.size() + 64 >= 74, "Q73 fields are the last three common fields");
+    Check(config_schema.size() + 3 == schema.size(), "three common fields are policy-record only: " + tag);
+    Check(!fields.empty() && fields.size() + common.size() == config_schema.size(), "generated table size = schema map: " + tag);
+    const auto expected_baseline = kExpectedBaselineOnly.find(tag);
+    for (std::size_t i = 0; i < config_schema.size(); ++i) {
       const auto& d = i < fields.size() ? fields[i] : common[i - fields.size()];
-      const auto& s = schema[i];
+      const auto& s = config_schema[i];
       Check(d.key == s.name && d.required == s.required &&
                 a::AgentPolicyFieldTypeName(s.type) == SourceTypeName(d.source_type) &&
                 d.has_minimum == s.minimum.has_value() && (!d.has_minimum || d.minimum == *s.minimum) &&
@@ -807,6 +898,14 @@ void EveryFamily() {
       Check(d.tag == (i < fields.size() ? 4 + i : 64 + (i - fields.size())), "field tag layout: " + s.name);
       if (!s.allowed_values.empty())
         Check(d.kind == c::NativeAgentConfigValueKind::enumeration, "allowed values become an enumeration: " + s.name);
+      const bool is_baseline = expected_baseline != kExpectedBaselineOnly.end() && expected_baseline->second.count(s.name);
+      if (is_baseline) {  // 3c (owner Q71 = 1)
+        Check(d.kind == c::NativeAgentConfigValueKind::enumeration && s.allowed_values.empty() &&
+                  s.default_value == "baseline" &&
+                  (s.type == a::AgentPolicyFieldType::token || s.type == a::AgentPolicyFieldType::token_list),
+              "free-text baseline field is a one-value enum: " + s.name);
+        ++baseline_only;
+      }
       if (s.type == a::AgentPolicyFieldType::decimal) Check(d.kind == c::NativeAgentConfigValueKind::decimal, "decimal: " + s.name);
     }
     std::set<std::string> listed;
@@ -814,9 +913,7 @@ void EveryFamily() {
     for (const auto& d : fields)
       Check(listed.count(std::string(d.key)) == (d.kind == c::NativeAgentConfigValueKind::unrepresented),
             "unrepresented list = unrepresented descriptors");
-    const auto expected = kExpectedUnrepresented.find(tag);
-    Check(listed == (expected == kExpectedUnrepresented.end() ? std::set<std::string>{} : expected->second),
-          "exact unrepresented set: " + tag);
+    Check(listed.empty(), "3c (owner Q71 = 1): nothing unrepresented: " + tag);
     unrepresented += listed.size();
     const bool dispatched = c::WithNativeAgentConfigType(identity.family, [&](auto type) {
       using R = typename decltype(type)::type;
@@ -847,6 +944,15 @@ void EveryFamily() {
       Check(common_adapted.ok() && common_adapted.record->common.max_thread_slots == 1u &&
                 common_adapted.record->common.protect_foreground_work == true,
             "common optional keys adapted");
+      // 3c (owner Q71 = 1): a baseline field accepts exactly "baseline".
+      if (expected_baseline != kExpectedBaselineOnly.end())
+        for (const auto& key : expected_baseline->second)
+          for (const std::string_view bad_value : {"other", "", "baseline,baseline", "Baseline", "baseline "}) {
+            auto bad = tags;
+            for (auto& t : bad)
+              if (t.key == key) t.value = bad_value;
+            Check(!c::NativeAgentConfigFromTags<R>(bad).ok(), "baseline field refuses other text: " + key);
+          }
       for (const auto& d : fields) {
         if (d.kind != c::NativeAgentConfigValueKind::boolean) continue;
         auto bad = tags;
@@ -860,7 +966,7 @@ void EveryFamily() {
   }
   Check(families == 36 && schema_ids.size() == 36 && *schema_ids.begin() == 65642 && *schema_ids.rbegin() == 65677,
         "36 config schemas 65642..65677");
-  Check(unrepresented == 13, "13 unrepresented fields");
+  Check(unrepresented == 0 && baseline_only == 13, "3c (owner Q71 = 1): 13 one-value baseline enums, none unrepresented");
   Check(!c::WithNativeAgentConfigType(c::CatalogAgentPolicyFamily::none, [](auto) {}) &&
             !c::WithNativeAgentConfigType(c::CatalogAgentPolicyFamily(37), [](auto) {}),
         "no config type for an unlisted family");
@@ -1050,6 +1156,11 @@ void BuilderRows() {
       Roundtrip(r);
       // The family config record from the same row's config.* keys.
       const auto config = Tags(d.properties, true, keep);
+      // 3c (owner Q73 = 1): the builder never writes the three policy-record
+      // budgets under config.
+      for (const auto& t : config)
+        Check(t.key != "max_history_query_rows" && t.key != "max_evidence_fanout" && t.key != "max_label_cardinality",
+              "builder writes no Q73 budget under config");
       const std::string family_tag = FamilyTag(r.policy_family);
       config_families.insert(family_tag);
       const bool dispatched = c::WithNativeAgentConfigType(r.policy_family, [&](auto t) {
@@ -1152,6 +1263,8 @@ int main() {
     Coordinator();
     StartupConfig();
     RecommendationConfig();
+    BaselineOnly();
+    PolicyRecordBudgets();
     EveryFamily();
     BuilderRows();
     PolicyAdapterRefusals();

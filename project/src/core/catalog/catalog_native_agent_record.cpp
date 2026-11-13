@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdint>
 #include <limits>
+#include <utility>
 
 namespace scratchbird::core::catalog {
 namespace {
@@ -230,10 +231,7 @@ bool ParseList(std::string_view s, std::optional<En> (*for_tag)(std::string_view
   {70, T::unsigned_integer, false, 8}, \
   {71, T::unsigned_integer, false, 8}, \
   {72, T::unsigned_integer, false, 8}, \
-  {73, T::unsigned_integer, false, 8}, \
-  {74, T::unsigned_integer, false, 8}, \
-  {75, T::unsigned_integer, false, 8}, \
-  {76, T::unsigned_integer, false, 8}
+  {73, T::unsigned_integer, false, 8}
 constexpr NativeAgentConfigFieldDescriptor kCommonFields[]{
     {"protect_foreground_work", 64, NativeAgentConfigSourceType::boolean, NativeAgentConfigValueKind::boolean, false, false, false, 0.0, 0.0},
     {"max_cpu_time_microseconds", 65, NativeAgentConfigSourceType::duration_microseconds, NativeAgentConfigValueKind::unsigned_integer, false, true, false, 1.0, 0.0},
@@ -245,9 +243,6 @@ constexpr NativeAgentConfigFieldDescriptor kCommonFields[]{
     {"min_run_interval_microseconds", 71, NativeAgentConfigSourceType::duration_microseconds, NativeAgentConfigValueKind::unsigned_integer, false, true, false, 1.0, 0.0},
     {"retry_backoff_microseconds", 72, NativeAgentConfigSourceType::duration_microseconds, NativeAgentConfigValueKind::unsigned_integer, false, true, false, 1.0, 0.0},
     {"watchdog_timeout_microseconds", 73, NativeAgentConfigSourceType::duration_microseconds, NativeAgentConfigValueKind::unsigned_integer, false, true, false, 1.0, 0.0},
-    {"max_history_query_rows", 74, NativeAgentConfigSourceType::unsigned_integer, NativeAgentConfigValueKind::unsigned_integer, false, true, false, 0.0, 0.0},
-    {"max_evidence_fanout", 75, NativeAgentConfigSourceType::unsigned_integer, NativeAgentConfigValueKind::unsigned_integer, false, true, false, 0.0, 0.0},
-    {"max_label_cardinality", 76, NativeAgentConfigSourceType::unsigned_integer, NativeAgentConfigValueKind::unsigned_integer, false, true, false, 0.0, 0.0},
 };
 void FillCommon(Fields& f, const NativeAgentConfigResourceBudget& r) {
   f.OptFlag(64, r.protect_foreground_work);
@@ -260,9 +255,6 @@ void FillCommon(Fields& f, const NativeAgentConfigResourceBudget& r) {
   f.OptNumber(71, r.min_run_interval_microseconds);
   f.OptNumber(72, r.retry_backoff_microseconds);
   f.OptNumber(73, r.watchdog_timeout_microseconds);
-  f.OptNumber(74, r.max_history_query_rows);
-  f.OptNumber(75, r.max_evidence_fanout);
-  f.OptNumber(76, r.max_label_cardinality);
 }
 bool DecodeCommon(const CatalogValueFieldView& v, NativeAgentConfigResourceBudget& r) {
   switch (v.id) {
@@ -276,9 +268,6 @@ bool DecodeCommon(const CatalogValueFieldView& v, NativeAgentConfigResourceBudge
     case 71: r.min_run_interval_microseconds = *v.unsigned_value(); return true;
     case 72: r.retry_backoff_microseconds = *v.unsigned_value(); return true;
     case 73: r.watchdog_timeout_microseconds = *v.unsigned_value(); return true;
-    case 74: r.max_history_query_rows = *v.unsigned_value(); return true;
-    case 75: r.max_evidence_fanout = *v.unsigned_value(); return true;
-    case 76: r.max_label_cardinality = *v.unsigned_value(); return true;
     default: return false;
   }
 }
@@ -303,9 +292,6 @@ bool AssignCommon(NativeAgentConfigResourceBudget& r, std::size_t index, std::st
     case 7: return ParseOptU64(v, r.min_run_interval_microseconds);
     case 8: return ParseOptU64(v, r.retry_backoff_microseconds);
     case 9: return ParseOptU64(v, r.watchdog_timeout_microseconds);
-    case 10: return ParseOptU64(v, r.max_history_query_rows);
-    case 11: return ParseOptU64(v, r.max_evidence_fanout);
-    case 12: return ParseOptU64(v, r.max_label_cardinality);
     default: return false;
   }
 }
@@ -618,6 +604,7 @@ constexpr CatalogValueFieldSchema kNativeAgentConfig_admission_control_policyWir
     {4, T::unsigned_integer, true, 8},  // listener_queue_threshold
     {5, T::unsigned_integer, true, 8},  // scheduler_queue_threshold
     {6, T::unsigned_integer, true, 8},  // hard_limit_threshold
+    {7, T::unsigned_integer, true, 8},  // workload_class_rules
     SB_NATIVE_AGENT_CONFIG_COMMON_WIRE};
 constexpr CatalogValueSchemaView SchemaOf(const NativeAgentConfig_admission_control_policy*) {
   return {65648, kNativeAgentSchemaVersion, kNativeAgentConfig_admission_control_policyWire};
@@ -626,15 +613,16 @@ constexpr NativeAgentConfigFieldDescriptor kNativeAgentConfig_admission_control_
     {"listener_queue_threshold", 4, NativeAgentConfigSourceType::unsigned_integer, NativeAgentConfigValueKind::unsigned_integer, true, true, false, 0.0, 0.0},
     {"scheduler_queue_threshold", 5, NativeAgentConfigSourceType::unsigned_integer, NativeAgentConfigValueKind::unsigned_integer, true, true, false, 0.0, 0.0},
     {"hard_limit_threshold", 6, NativeAgentConfigSourceType::unsigned_integer, NativeAgentConfigValueKind::unsigned_integer, true, true, false, 0.0, 0.0},
-    {"workload_class_rules", 7, NativeAgentConfigSourceType::token_list, NativeAgentConfigValueKind::unrepresented, true, false, false, 0.0, 0.0},
+    {"workload_class_rules", 7, NativeAgentConfigSourceType::token_list, NativeAgentConfigValueKind::enumeration, true, false, false, 0.0, 0.0},
 };
 std::span<const NativeAgentConfigFieldDescriptor> FieldsOf(const NativeAgentConfig_admission_control_policy*) { return kNativeAgentConfig_admission_control_policyFields; }
-constexpr std::array<std::string_view, 1> kNativeAgentConfig_admission_control_policyUnrepresented{"workload_class_rules"};
+constexpr std::array<std::string_view, 0> kNativeAgentConfig_admission_control_policyUnrepresented{};
 std::span<const std::string_view> UnrepresentedOf(const NativeAgentConfig_admission_control_policy*) { return kNativeAgentConfig_admission_control_policyUnrepresented; }
 void FillFamily(Fields& f, const NativeAgentConfig_admission_control_policy& r) {
   f.Number(4, r.listener_queue_threshold);
   f.Number(5, r.scheduler_queue_threshold);
   f.Number(6, r.hard_limit_threshold);
+  f.Enum(7, r.workload_class_rules);
 }
 // 1 decoded, 0 not a family tag, -1 refused.
 int DecodeFamily(const CatalogValueFieldView& v, NativeAgentConfig_admission_control_policy& r) {
@@ -642,18 +630,20 @@ int DecodeFamily(const CatalogValueFieldView& v, NativeAgentConfig_admission_con
     case 4: r.listener_queue_threshold = *v.unsigned_value(); return 1;
     case 5: r.scheduler_queue_threshold = *v.unsigned_value(); return 1;
     case 6: r.hard_limit_threshold = *v.unsigned_value(); return 1;
+    case 7: return DecodeEnum(v, r.workload_class_rules) ? 1 : -1;
     default: return 0;
   }
 }
 bool ValidFamily(const NativeAgentConfig_admission_control_policy& r) {
-  return true;
+  return true &&
+         KnownGenerated(r.workload_class_rules, 1);
 }
 bool AssignFamily(NativeAgentConfig_admission_control_policy& r, std::size_t index, std::string_view v) {
   switch (index) {
     case 0: return ParseU64(v, r.listener_queue_threshold);
     case 1: return ParseU64(v, r.scheduler_queue_threshold);
     case 2: return ParseU64(v, r.hard_limit_threshold);
-    case 3: return !v.empty();  // accepted, NOT carried
+    case 3: return ParseEnum(v, &NativeAgentConfigEnum_admission_control_policy_workload_class_rulesForTag, r.workload_class_rules);
     default: return false;
   }
 }
@@ -662,6 +652,7 @@ constexpr CatalogValueFieldSchema kNativeAgentConfig_parser_health_policyWire[]{
     SB_NATIVE_AGENT_CONFIG_HEAD_WIRE,
     {4, T::unsigned_integer, true, 8},  // parser_crash_quarantine_threshold
     {5, T::unsigned_integer, true, 8},  // drain_cooldown
+    {6, T::unsigned_integer, true, 8},  // package_quarantine_rules
     {7, T::unsigned_integer, true, 8},  // policy_attach_latency_warn_us
     SB_NATIVE_AGENT_CONFIG_COMMON_WIRE};
 constexpr CatalogValueSchemaView SchemaOf(const NativeAgentConfig_parser_health_policy*) {
@@ -670,15 +661,16 @@ constexpr CatalogValueSchemaView SchemaOf(const NativeAgentConfig_parser_health_
 constexpr NativeAgentConfigFieldDescriptor kNativeAgentConfig_parser_health_policyFields[]{
     {"parser_crash_quarantine_threshold", 4, NativeAgentConfigSourceType::unsigned_integer, NativeAgentConfigValueKind::unsigned_integer, true, true, false, 0.0, 0.0},
     {"drain_cooldown", 5, NativeAgentConfigSourceType::duration_seconds, NativeAgentConfigValueKind::unsigned_integer, true, true, false, 1.0, 0.0},
-    {"package_quarantine_rules", 6, NativeAgentConfigSourceType::token_list, NativeAgentConfigValueKind::unrepresented, true, false, false, 0.0, 0.0},
+    {"package_quarantine_rules", 6, NativeAgentConfigSourceType::token_list, NativeAgentConfigValueKind::enumeration, true, false, false, 0.0, 0.0},
     {"policy_attach_latency_warn_us", 7, NativeAgentConfigSourceType::duration_microseconds, NativeAgentConfigValueKind::unsigned_integer, true, true, false, 1.0, 0.0},
 };
 std::span<const NativeAgentConfigFieldDescriptor> FieldsOf(const NativeAgentConfig_parser_health_policy*) { return kNativeAgentConfig_parser_health_policyFields; }
-constexpr std::array<std::string_view, 1> kNativeAgentConfig_parser_health_policyUnrepresented{"package_quarantine_rules"};
+constexpr std::array<std::string_view, 0> kNativeAgentConfig_parser_health_policyUnrepresented{};
 std::span<const std::string_view> UnrepresentedOf(const NativeAgentConfig_parser_health_policy*) { return kNativeAgentConfig_parser_health_policyUnrepresented; }
 void FillFamily(Fields& f, const NativeAgentConfig_parser_health_policy& r) {
   f.Number(4, r.parser_crash_quarantine_threshold);
   f.Number(5, r.drain_cooldown);
+  f.Enum(6, r.package_quarantine_rules);
   f.Number(7, r.policy_attach_latency_warn_us);
 }
 // 1 decoded, 0 not a family tag, -1 refused.
@@ -686,6 +678,7 @@ int DecodeFamily(const CatalogValueFieldView& v, NativeAgentConfig_parser_health
   switch (v.id) {
     case 4: r.parser_crash_quarantine_threshold = *v.unsigned_value(); return 1;
     case 5: r.drain_cooldown = *v.unsigned_value(); return 1;
+    case 6: return DecodeEnum(v, r.package_quarantine_rules) ? 1 : -1;
     case 7: r.policy_attach_latency_warn_us = *v.unsigned_value(); return 1;
     default: return 0;
   }
@@ -693,13 +686,14 @@ int DecodeFamily(const CatalogValueFieldView& v, NativeAgentConfig_parser_health
 bool ValidFamily(const NativeAgentConfig_parser_health_policy& r) {
   return true &&
          r.drain_cooldown >= 1ull &&
+         KnownGenerated(r.package_quarantine_rules, 1) &&
          r.policy_attach_latency_warn_us >= 1ull;
 }
 bool AssignFamily(NativeAgentConfig_parser_health_policy& r, std::size_t index, std::string_view v) {
   switch (index) {
     case 0: return ParseU64(v, r.parser_crash_quarantine_threshold);
     case 1: return ParseU64(v, r.drain_cooldown);
-    case 2: return !v.empty();  // accepted, NOT carried
+    case 2: return ParseEnum(v, &NativeAgentConfigEnum_parser_health_policy_package_quarantine_rulesForTag, r.package_quarantine_rules);
     case 3: return ParseU64(v, r.policy_attach_latency_warn_us);
     default: return false;
   }
@@ -1207,6 +1201,7 @@ constexpr CatalogValueFieldSchema kNativeAgentConfig_backup_policyWire[]{
     SB_NATIVE_AGENT_CONFIG_HEAD_WIRE,
     {4, T::unsigned_integer, true, 8},  // stuck_progress_window
     {5, T::boolean, true, 1},  // verification_required
+    {6, T::unsigned_integer, true, 8},  // blocker_policy
     {7, T::boolean, true, 1},  // cancel_requires_approval
     SB_NATIVE_AGENT_CONFIG_COMMON_WIRE};
 constexpr CatalogValueSchemaView SchemaOf(const NativeAgentConfig_backup_policy*) {
@@ -1215,15 +1210,16 @@ constexpr CatalogValueSchemaView SchemaOf(const NativeAgentConfig_backup_policy*
 constexpr NativeAgentConfigFieldDescriptor kNativeAgentConfig_backup_policyFields[]{
     {"stuck_progress_window", 4, NativeAgentConfigSourceType::duration_seconds, NativeAgentConfigValueKind::unsigned_integer, true, true, false, 1.0, 0.0},
     {"verification_required", 5, NativeAgentConfigSourceType::boolean, NativeAgentConfigValueKind::boolean, true, false, false, 0.0, 0.0},
-    {"blocker_policy", 6, NativeAgentConfigSourceType::token, NativeAgentConfigValueKind::unrepresented, true, false, false, 0.0, 0.0},
+    {"blocker_policy", 6, NativeAgentConfigSourceType::token, NativeAgentConfigValueKind::enumeration, true, false, false, 0.0, 0.0},
     {"cancel_requires_approval", 7, NativeAgentConfigSourceType::boolean, NativeAgentConfigValueKind::boolean, true, false, false, 0.0, 0.0},
 };
 std::span<const NativeAgentConfigFieldDescriptor> FieldsOf(const NativeAgentConfig_backup_policy*) { return kNativeAgentConfig_backup_policyFields; }
-constexpr std::array<std::string_view, 1> kNativeAgentConfig_backup_policyUnrepresented{"blocker_policy"};
+constexpr std::array<std::string_view, 0> kNativeAgentConfig_backup_policyUnrepresented{};
 std::span<const std::string_view> UnrepresentedOf(const NativeAgentConfig_backup_policy*) { return kNativeAgentConfig_backup_policyUnrepresented; }
 void FillFamily(Fields& f, const NativeAgentConfig_backup_policy& r) {
   f.Number(4, r.stuck_progress_window);
   f.Flag(5, r.verification_required);
+  f.Enum(6, r.blocker_policy);
   f.Flag(7, r.cancel_requires_approval);
 }
 // 1 decoded, 0 not a family tag, -1 refused.
@@ -1231,19 +1227,21 @@ int DecodeFamily(const CatalogValueFieldView& v, NativeAgentConfig_backup_policy
   switch (v.id) {
     case 4: r.stuck_progress_window = *v.unsigned_value(); return 1;
     case 5: r.verification_required = Flag(v); return 1;
+    case 6: return DecodeEnum(v, r.blocker_policy) ? 1 : -1;
     case 7: r.cancel_requires_approval = Flag(v); return 1;
     default: return 0;
   }
 }
 bool ValidFamily(const NativeAgentConfig_backup_policy& r) {
   return true &&
-         r.stuck_progress_window >= 1ull;
+         r.stuck_progress_window >= 1ull &&
+         KnownGenerated(r.blocker_policy, 1);
 }
 bool AssignFamily(NativeAgentConfig_backup_policy& r, std::size_t index, std::string_view v) {
   switch (index) {
     case 0: return ParseU64(v, r.stuck_progress_window);
     case 1: return ParseFlagText(v, r.verification_required);
-    case 2: return !v.empty();  // accepted, NOT carried
+    case 2: return ParseEnum(v, &NativeAgentConfigEnum_backup_policy_blocker_policyForTag, r.blocker_policy);
     case 3: return ParseFlagText(v, r.cancel_requires_approval);
     default: return false;
   }
@@ -1400,42 +1398,50 @@ bool AssignFamily(NativeAgentConfig_pitr_policy& r, std::size_t index, std::stri
 // ---- identity_lifecycle_policy ----
 constexpr CatalogValueFieldSchema kNativeAgentConfig_identity_lifecycle_policyWire[]{
     SB_NATIVE_AGENT_CONFIG_HEAD_WIRE,
+    {4, T::unsigned_integer, true, 8},  // auth_anomaly_policy
     {5, T::boolean, true, 1},  // lock_requires_sec_right
     {6, T::boolean, true, 1},  // evidence_required
+    {7, T::unsigned_integer, true, 8},  // redaction_class
     SB_NATIVE_AGENT_CONFIG_COMMON_WIRE};
 constexpr CatalogValueSchemaView SchemaOf(const NativeAgentConfig_identity_lifecycle_policy*) {
   return {65664, kNativeAgentSchemaVersion, kNativeAgentConfig_identity_lifecycle_policyWire};
 }
 constexpr NativeAgentConfigFieldDescriptor kNativeAgentConfig_identity_lifecycle_policyFields[]{
-    {"auth_anomaly_policy", 4, NativeAgentConfigSourceType::token, NativeAgentConfigValueKind::unrepresented, true, false, false, 0.0, 0.0},
+    {"auth_anomaly_policy", 4, NativeAgentConfigSourceType::token, NativeAgentConfigValueKind::enumeration, true, false, false, 0.0, 0.0},
     {"lock_requires_sec_right", 5, NativeAgentConfigSourceType::boolean, NativeAgentConfigValueKind::boolean, true, false, false, 0.0, 0.0},
     {"evidence_required", 6, NativeAgentConfigSourceType::boolean, NativeAgentConfigValueKind::boolean, true, false, false, 0.0, 0.0},
-    {"redaction_class", 7, NativeAgentConfigSourceType::token, NativeAgentConfigValueKind::unrepresented, true, false, false, 0.0, 0.0},
+    {"redaction_class", 7, NativeAgentConfigSourceType::token, NativeAgentConfigValueKind::enumeration, true, false, false, 0.0, 0.0},
 };
 std::span<const NativeAgentConfigFieldDescriptor> FieldsOf(const NativeAgentConfig_identity_lifecycle_policy*) { return kNativeAgentConfig_identity_lifecycle_policyFields; }
-constexpr std::array<std::string_view, 2> kNativeAgentConfig_identity_lifecycle_policyUnrepresented{"auth_anomaly_policy", "redaction_class"};
+constexpr std::array<std::string_view, 0> kNativeAgentConfig_identity_lifecycle_policyUnrepresented{};
 std::span<const std::string_view> UnrepresentedOf(const NativeAgentConfig_identity_lifecycle_policy*) { return kNativeAgentConfig_identity_lifecycle_policyUnrepresented; }
 void FillFamily(Fields& f, const NativeAgentConfig_identity_lifecycle_policy& r) {
+  f.Enum(4, r.auth_anomaly_policy);
   f.Flag(5, r.lock_requires_sec_right);
   f.Flag(6, r.evidence_required);
+  f.Enum(7, r.redaction_class);
 }
 // 1 decoded, 0 not a family tag, -1 refused.
 int DecodeFamily(const CatalogValueFieldView& v, NativeAgentConfig_identity_lifecycle_policy& r) {
   switch (v.id) {
+    case 4: return DecodeEnum(v, r.auth_anomaly_policy) ? 1 : -1;
     case 5: r.lock_requires_sec_right = Flag(v); return 1;
     case 6: r.evidence_required = Flag(v); return 1;
+    case 7: return DecodeEnum(v, r.redaction_class) ? 1 : -1;
     default: return 0;
   }
 }
 bool ValidFamily(const NativeAgentConfig_identity_lifecycle_policy& r) {
-  return true;
+  return true &&
+         KnownGenerated(r.auth_anomaly_policy, 1) &&
+         KnownGenerated(r.redaction_class, 1);
 }
 bool AssignFamily(NativeAgentConfig_identity_lifecycle_policy& r, std::size_t index, std::string_view v) {
   switch (index) {
-    case 0: return !v.empty();  // accepted, NOT carried
+    case 0: return ParseEnum(v, &NativeAgentConfigEnum_identity_lifecycle_policy_auth_anomaly_policyForTag, r.auth_anomaly_policy);
     case 1: return ParseFlagText(v, r.lock_requires_sec_right);
     case 2: return ParseFlagText(v, r.evidence_required);
-    case 3: return !v.empty();  // accepted, NOT carried
+    case 3: return ParseEnum(v, &NativeAgentConfigEnum_identity_lifecycle_policy_redaction_classForTag, r.redaction_class);
     default: return false;
   }
 }
@@ -1445,6 +1451,7 @@ constexpr CatalogValueFieldSchema kNativeAgentConfig_session_control_policyWire[
     {4, T::boolean, true, 1},  // disconnect_requires_right
     {5, T::unsigned_integer, true, 8},  // reauth_cooldown
     {6, T::boolean, true, 1},  // revoke_requires_sec_right
+    {7, T::unsigned_integer, true, 8},  // self_view_redaction
     SB_NATIVE_AGENT_CONFIG_COMMON_WIRE};
 constexpr CatalogValueSchemaView SchemaOf(const NativeAgentConfig_session_control_policy*) {
   return {65665, kNativeAgentSchemaVersion, kNativeAgentConfig_session_control_policyWire};
@@ -1453,15 +1460,16 @@ constexpr NativeAgentConfigFieldDescriptor kNativeAgentConfig_session_control_po
     {"disconnect_requires_right", 4, NativeAgentConfigSourceType::boolean, NativeAgentConfigValueKind::boolean, true, false, false, 0.0, 0.0},
     {"reauth_cooldown", 5, NativeAgentConfigSourceType::duration_seconds, NativeAgentConfigValueKind::unsigned_integer, true, true, false, 1.0, 0.0},
     {"revoke_requires_sec_right", 6, NativeAgentConfigSourceType::boolean, NativeAgentConfigValueKind::boolean, true, false, false, 0.0, 0.0},
-    {"self_view_redaction", 7, NativeAgentConfigSourceType::token, NativeAgentConfigValueKind::unrepresented, true, false, false, 0.0, 0.0},
+    {"self_view_redaction", 7, NativeAgentConfigSourceType::token, NativeAgentConfigValueKind::enumeration, true, false, false, 0.0, 0.0},
 };
 std::span<const NativeAgentConfigFieldDescriptor> FieldsOf(const NativeAgentConfig_session_control_policy*) { return kNativeAgentConfig_session_control_policyFields; }
-constexpr std::array<std::string_view, 1> kNativeAgentConfig_session_control_policyUnrepresented{"self_view_redaction"};
+constexpr std::array<std::string_view, 0> kNativeAgentConfig_session_control_policyUnrepresented{};
 std::span<const std::string_view> UnrepresentedOf(const NativeAgentConfig_session_control_policy*) { return kNativeAgentConfig_session_control_policyUnrepresented; }
 void FillFamily(Fields& f, const NativeAgentConfig_session_control_policy& r) {
   f.Flag(4, r.disconnect_requires_right);
   f.Number(5, r.reauth_cooldown);
   f.Flag(6, r.revoke_requires_sec_right);
+  f.Enum(7, r.self_view_redaction);
 }
 // 1 decoded, 0 not a family tag, -1 refused.
 int DecodeFamily(const CatalogValueFieldView& v, NativeAgentConfig_session_control_policy& r) {
@@ -1469,19 +1477,21 @@ int DecodeFamily(const CatalogValueFieldView& v, NativeAgentConfig_session_contr
     case 4: r.disconnect_requires_right = Flag(v); return 1;
     case 5: r.reauth_cooldown = *v.unsigned_value(); return 1;
     case 6: r.revoke_requires_sec_right = Flag(v); return 1;
+    case 7: return DecodeEnum(v, r.self_view_redaction) ? 1 : -1;
     default: return 0;
   }
 }
 bool ValidFamily(const NativeAgentConfig_session_control_policy& r) {
   return true &&
-         r.reauth_cooldown >= 1ull;
+         r.reauth_cooldown >= 1ull &&
+         KnownGenerated(r.self_view_redaction, 1);
 }
 bool AssignFamily(NativeAgentConfig_session_control_policy& r, std::size_t index, std::string_view v) {
   switch (index) {
     case 0: return ParseFlagText(v, r.disconnect_requires_right);
     case 1: return ParseU64(v, r.reauth_cooldown);
     case 2: return ParseFlagText(v, r.revoke_requires_sec_right);
-    case 3: return !v.empty();  // accepted, NOT carried
+    case 3: return ParseEnum(v, &NativeAgentConfigEnum_session_control_policy_self_view_redactionForTag, r.self_view_redaction);
     default: return false;
   }
 }
@@ -1489,6 +1499,7 @@ bool AssignFamily(NativeAgentConfig_session_control_policy& r, std::size_t index
 constexpr CatalogValueFieldSchema kNativeAgentConfig_alerting_baselineWire[]{
     SB_NATIVE_AGENT_CONFIG_HEAD_WIRE,
     {4, T::unsigned_integer, true, 8},  // dedupe_window
+    {5, T::unsigned_integer, true, 8},  // grouping_rules
     {6, T::unsigned_integer, true, 8},  // silence_max_duration
     {7, T::boolean, true, 1},  // critical_silence_requires_override
     SB_NATIVE_AGENT_CONFIG_COMMON_WIRE};
@@ -1497,15 +1508,16 @@ constexpr CatalogValueSchemaView SchemaOf(const NativeAgentConfig_alerting_basel
 }
 constexpr NativeAgentConfigFieldDescriptor kNativeAgentConfig_alerting_baselineFields[]{
     {"dedupe_window", 4, NativeAgentConfigSourceType::duration_seconds, NativeAgentConfigValueKind::unsigned_integer, true, true, false, 1.0, 0.0},
-    {"grouping_rules", 5, NativeAgentConfigSourceType::token_list, NativeAgentConfigValueKind::unrepresented, true, false, false, 0.0, 0.0},
+    {"grouping_rules", 5, NativeAgentConfigSourceType::token_list, NativeAgentConfigValueKind::enumeration, true, false, false, 0.0, 0.0},
     {"silence_max_duration", 6, NativeAgentConfigSourceType::duration_seconds, NativeAgentConfigValueKind::unsigned_integer, true, true, false, 1.0, 0.0},
     {"critical_silence_requires_override", 7, NativeAgentConfigSourceType::boolean, NativeAgentConfigValueKind::boolean, true, false, false, 0.0, 0.0},
 };
 std::span<const NativeAgentConfigFieldDescriptor> FieldsOf(const NativeAgentConfig_alerting_baseline*) { return kNativeAgentConfig_alerting_baselineFields; }
-constexpr std::array<std::string_view, 1> kNativeAgentConfig_alerting_baselineUnrepresented{"grouping_rules"};
+constexpr std::array<std::string_view, 0> kNativeAgentConfig_alerting_baselineUnrepresented{};
 std::span<const std::string_view> UnrepresentedOf(const NativeAgentConfig_alerting_baseline*) { return kNativeAgentConfig_alerting_baselineUnrepresented; }
 void FillFamily(Fields& f, const NativeAgentConfig_alerting_baseline& r) {
   f.Number(4, r.dedupe_window);
+  f.Enum(5, r.grouping_rules);
   f.Number(6, r.silence_max_duration);
   f.Flag(7, r.critical_silence_requires_override);
 }
@@ -1513,6 +1525,7 @@ void FillFamily(Fields& f, const NativeAgentConfig_alerting_baseline& r) {
 int DecodeFamily(const CatalogValueFieldView& v, NativeAgentConfig_alerting_baseline& r) {
   switch (v.id) {
     case 4: r.dedupe_window = *v.unsigned_value(); return 1;
+    case 5: return DecodeEnum(v, r.grouping_rules) ? 1 : -1;
     case 6: r.silence_max_duration = *v.unsigned_value(); return 1;
     case 7: r.critical_silence_requires_override = Flag(v); return 1;
     default: return 0;
@@ -1521,12 +1534,13 @@ int DecodeFamily(const CatalogValueFieldView& v, NativeAgentConfig_alerting_base
 bool ValidFamily(const NativeAgentConfig_alerting_baseline& r) {
   return true &&
          r.dedupe_window >= 1ull &&
+         KnownGenerated(r.grouping_rules, 1) &&
          r.silence_max_duration >= 1ull;
 }
 bool AssignFamily(NativeAgentConfig_alerting_baseline& r, std::size_t index, std::string_view v) {
   switch (index) {
     case 0: return ParseU64(v, r.dedupe_window);
-    case 1: return !v.empty();  // accepted, NOT carried
+    case 1: return ParseEnum(v, &NativeAgentConfigEnum_alerting_baseline_grouping_rulesForTag, r.grouping_rules);
     case 2: return ParseU64(v, r.silence_max_duration);
     case 3: return ParseFlagText(v, r.critical_silence_requires_override);
     default: return false;
@@ -1585,6 +1599,8 @@ constexpr CatalogValueFieldSchema kNativeAgentConfig_upgrade_policyWire[]{
     SB_NATIVE_AGENT_CONFIG_HEAD_WIRE,
     {4, T::boolean, true, 1},  // readiness_required
     {5, T::boolean, true, 1},  // fence_required
+    {6, T::unsigned_integer, true, 8},  // rolling_step_order
+    {7, T::unsigned_integer, true, 8},  // rollback_gate
     {8, T::boolean, true, 1},  // version_compatibility_required
     SB_NATIVE_AGENT_CONFIG_COMMON_WIRE};
 constexpr CatalogValueSchemaView SchemaOf(const NativeAgentConfig_upgrade_policy*) {
@@ -1593,16 +1609,18 @@ constexpr CatalogValueSchemaView SchemaOf(const NativeAgentConfig_upgrade_policy
 constexpr NativeAgentConfigFieldDescriptor kNativeAgentConfig_upgrade_policyFields[]{
     {"readiness_required", 4, NativeAgentConfigSourceType::boolean, NativeAgentConfigValueKind::boolean, true, false, false, 0.0, 0.0},
     {"fence_required", 5, NativeAgentConfigSourceType::boolean, NativeAgentConfigValueKind::boolean, true, false, false, 0.0, 0.0},
-    {"rolling_step_order", 6, NativeAgentConfigSourceType::token_list, NativeAgentConfigValueKind::unrepresented, true, false, false, 0.0, 0.0},
-    {"rollback_gate", 7, NativeAgentConfigSourceType::token, NativeAgentConfigValueKind::unrepresented, true, false, false, 0.0, 0.0},
+    {"rolling_step_order", 6, NativeAgentConfigSourceType::token_list, NativeAgentConfigValueKind::enumeration, true, false, false, 0.0, 0.0},
+    {"rollback_gate", 7, NativeAgentConfigSourceType::token, NativeAgentConfigValueKind::enumeration, true, false, false, 0.0, 0.0},
     {"version_compatibility_required", 8, NativeAgentConfigSourceType::boolean, NativeAgentConfigValueKind::boolean, true, false, false, 0.0, 0.0},
 };
 std::span<const NativeAgentConfigFieldDescriptor> FieldsOf(const NativeAgentConfig_upgrade_policy*) { return kNativeAgentConfig_upgrade_policyFields; }
-constexpr std::array<std::string_view, 2> kNativeAgentConfig_upgrade_policyUnrepresented{"rolling_step_order", "rollback_gate"};
+constexpr std::array<std::string_view, 0> kNativeAgentConfig_upgrade_policyUnrepresented{};
 std::span<const std::string_view> UnrepresentedOf(const NativeAgentConfig_upgrade_policy*) { return kNativeAgentConfig_upgrade_policyUnrepresented; }
 void FillFamily(Fields& f, const NativeAgentConfig_upgrade_policy& r) {
   f.Flag(4, r.readiness_required);
   f.Flag(5, r.fence_required);
+  f.Enum(6, r.rolling_step_order);
+  f.Enum(7, r.rollback_gate);
   f.Flag(8, r.version_compatibility_required);
 }
 // 1 decoded, 0 not a family tag, -1 refused.
@@ -1610,19 +1628,23 @@ int DecodeFamily(const CatalogValueFieldView& v, NativeAgentConfig_upgrade_polic
   switch (v.id) {
     case 4: r.readiness_required = Flag(v); return 1;
     case 5: r.fence_required = Flag(v); return 1;
+    case 6: return DecodeEnum(v, r.rolling_step_order) ? 1 : -1;
+    case 7: return DecodeEnum(v, r.rollback_gate) ? 1 : -1;
     case 8: r.version_compatibility_required = Flag(v); return 1;
     default: return 0;
   }
 }
 bool ValidFamily(const NativeAgentConfig_upgrade_policy& r) {
-  return true;
+  return true &&
+         KnownGenerated(r.rolling_step_order, 1) &&
+         KnownGenerated(r.rollback_gate, 1);
 }
 bool AssignFamily(NativeAgentConfig_upgrade_policy& r, std::size_t index, std::string_view v) {
   switch (index) {
     case 0: return ParseFlagText(v, r.readiness_required);
     case 1: return ParseFlagText(v, r.fence_required);
-    case 2: return !v.empty();  // accepted, NOT carried
-    case 3: return !v.empty();  // accepted, NOT carried
+    case 2: return ParseEnum(v, &NativeAgentConfigEnum_upgrade_policy_rolling_step_orderForTag, r.rolling_step_order);
+    case 3: return ParseEnum(v, &NativeAgentConfigEnum_upgrade_policy_rollback_gateForTag, r.rollback_gate);
     case 4: return ParseFlagText(v, r.version_compatibility_required);
     default: return false;
   }
@@ -2025,6 +2047,7 @@ constexpr CatalogValueFieldSchema kNativeAgentConfig_filespace_capacity_policyWi
     {12, T::boolean, true, 1},  // truncate_allowed
     {13, T::unsigned_integer, true, 8},  // critical_device_error_threshold
     {14, T::unsigned_integer, true, 8},  // fsync_p99_critical_us
+    {15, T::unsigned_integer, true, 8},  // required_approval_class
     SB_NATIVE_AGENT_CONFIG_COMMON_WIRE};
 constexpr CatalogValueSchemaView SchemaOf(const NativeAgentConfig_filespace_capacity_policy*) {
   return {65674, kNativeAgentSchemaVersion, kNativeAgentConfig_filespace_capacity_policyWire};
@@ -2041,10 +2064,10 @@ constexpr NativeAgentConfigFieldDescriptor kNativeAgentConfig_filespace_capacity
     {"truncate_allowed", 12, NativeAgentConfigSourceType::boolean, NativeAgentConfigValueKind::boolean, true, false, false, 0.0, 0.0},
     {"critical_device_error_threshold", 13, NativeAgentConfigSourceType::unsigned_integer, NativeAgentConfigValueKind::unsigned_integer, true, true, false, 0.0, 0.0},
     {"fsync_p99_critical_us", 14, NativeAgentConfigSourceType::duration_microseconds, NativeAgentConfigValueKind::unsigned_integer, true, true, false, 1.0, 0.0},
-    {"required_approval_class", 15, NativeAgentConfigSourceType::token, NativeAgentConfigValueKind::unrepresented, true, false, false, 0.0, 0.0},
+    {"required_approval_class", 15, NativeAgentConfigSourceType::token, NativeAgentConfigValueKind::enumeration, true, false, false, 0.0, 0.0},
 };
 std::span<const NativeAgentConfigFieldDescriptor> FieldsOf(const NativeAgentConfig_filespace_capacity_policy*) { return kNativeAgentConfig_filespace_capacity_policyFields; }
-constexpr std::array<std::string_view, 1> kNativeAgentConfig_filespace_capacity_policyUnrepresented{"required_approval_class"};
+constexpr std::array<std::string_view, 0> kNativeAgentConfig_filespace_capacity_policyUnrepresented{};
 std::span<const std::string_view> UnrepresentedOf(const NativeAgentConfig_filespace_capacity_policy*) { return kNativeAgentConfig_filespace_capacity_policyUnrepresented; }
 void FillFamily(Fields& f, const NativeAgentConfig_filespace_capacity_policy& r) {
   f.Number(4, r.minimum_free_bytes);
@@ -2058,6 +2081,7 @@ void FillFamily(Fields& f, const NativeAgentConfig_filespace_capacity_policy& r)
   f.Flag(12, r.truncate_allowed);
   f.Number(13, r.critical_device_error_threshold);
   f.Number(14, r.fsync_p99_critical_us);
+  f.Enum(15, r.required_approval_class);
 }
 // 1 decoded, 0 not a family tag, -1 refused.
 int DecodeFamily(const CatalogValueFieldView& v, NativeAgentConfig_filespace_capacity_policy& r) {
@@ -2073,6 +2097,7 @@ int DecodeFamily(const CatalogValueFieldView& v, NativeAgentConfig_filespace_cap
     case 12: r.truncate_allowed = Flag(v); return 1;
     case 13: r.critical_device_error_threshold = *v.unsigned_value(); return 1;
     case 14: r.fsync_p99_critical_us = *v.unsigned_value(); return 1;
+    case 15: return DecodeEnum(v, r.required_approval_class) ? 1 : -1;
     default: return 0;
   }
 }
@@ -2083,7 +2108,8 @@ bool ValidFamily(const NativeAgentConfig_filespace_capacity_policy& r) {
          r.growth_rate_window_seconds >= 1ull &&
          r.depletion_eta_warning_seconds >= 1ull &&
          r.depletion_eta_action_seconds >= 1ull &&
-         r.fsync_p99_critical_us >= 1ull;
+         r.fsync_p99_critical_us >= 1ull &&
+         KnownGenerated(r.required_approval_class, 1);
 }
 bool AssignFamily(NativeAgentConfig_filespace_capacity_policy& r, std::size_t index, std::string_view v) {
   switch (index) {
@@ -2098,7 +2124,7 @@ bool AssignFamily(NativeAgentConfig_filespace_capacity_policy& r, std::size_t in
     case 8: return ParseFlagText(v, r.truncate_allowed);
     case 9: return ParseU64(v, r.critical_device_error_threshold);
     case 10: return ParseU64(v, r.fsync_p99_critical_us);
-    case 11: return !v.empty();  // accepted, NOT carried
+    case 11: return ParseEnum(v, &NativeAgentConfigEnum_filespace_capacity_policy_required_approval_classForTag, r.required_approval_class);
     default: return false;
   }
 }
@@ -2157,6 +2183,8 @@ constexpr CatalogValueFieldSchema kNativeAgentConfig_page_preallocation_policyWi
     {5, T::unsigned_integer, true, 8},  // forecast_window_seconds
     {6, T::opaque_bytes, true, 8},  // history_confidence_threshold
     {7, T::unsigned_integer, true, 8},  // max_reserved_bytes_per_filespace
+    {8, T::unsigned_integer, true, 8},  // allowed_page_families
+    {9, T::unsigned_integer, true, 8},  // workload_calendar
     {10, T::unsigned_integer, true, 8},  // allocation_throttle_pages_per_second
     SB_NATIVE_AGENT_CONFIG_COMMON_WIRE};
 constexpr CatalogValueSchemaView SchemaOf(const NativeAgentConfig_page_preallocation_policy*) {
@@ -2167,18 +2195,20 @@ constexpr NativeAgentConfigFieldDescriptor kNativeAgentConfig_page_preallocation
     {"forecast_window_seconds", 5, NativeAgentConfigSourceType::duration_seconds, NativeAgentConfigValueKind::unsigned_integer, true, true, false, 1.0, 0.0},
     {"history_confidence_threshold", 6, NativeAgentConfigSourceType::decimal, NativeAgentConfigValueKind::decimal, true, true, true, 0.0, 1.0},
     {"max_reserved_bytes_per_filespace", 7, NativeAgentConfigSourceType::byte_count, NativeAgentConfigValueKind::unsigned_integer, true, true, false, 1.0, 0.0},
-    {"allowed_page_families", 8, NativeAgentConfigSourceType::token_list, NativeAgentConfigValueKind::unrepresented, true, false, false, 0.0, 0.0},
-    {"workload_calendar", 9, NativeAgentConfigSourceType::token_list, NativeAgentConfigValueKind::unrepresented, true, false, false, 0.0, 0.0},
+    {"allowed_page_families", 8, NativeAgentConfigSourceType::token_list, NativeAgentConfigValueKind::enumeration, true, false, false, 0.0, 0.0},
+    {"workload_calendar", 9, NativeAgentConfigSourceType::token_list, NativeAgentConfigValueKind::enumeration, true, false, false, 0.0, 0.0},
     {"allocation_throttle_pages_per_second", 10, NativeAgentConfigSourceType::unsigned_integer, NativeAgentConfigValueKind::unsigned_integer, true, true, false, 0.0, 0.0},
 };
 std::span<const NativeAgentConfigFieldDescriptor> FieldsOf(const NativeAgentConfig_page_preallocation_policy*) { return kNativeAgentConfig_page_preallocation_policyFields; }
-constexpr std::array<std::string_view, 2> kNativeAgentConfig_page_preallocation_policyUnrepresented{"allowed_page_families", "workload_calendar"};
+constexpr std::array<std::string_view, 0> kNativeAgentConfig_page_preallocation_policyUnrepresented{};
 std::span<const std::string_view> UnrepresentedOf(const NativeAgentConfig_page_preallocation_policy*) { return kNativeAgentConfig_page_preallocation_policyUnrepresented; }
 void FillFamily(Fields& f, const NativeAgentConfig_page_preallocation_policy& r) {
   f.Flag(4, r.preallocation_allowed);
   f.Number(5, r.forecast_window_seconds);
   f.Decimal(6, r.history_confidence_threshold);
   f.Number(7, r.max_reserved_bytes_per_filespace);
+  f.Enum(8, r.allowed_page_families);
+  f.Enum(9, r.workload_calendar);
   f.Number(10, r.allocation_throttle_pages_per_second);
 }
 // 1 decoded, 0 not a family tag, -1 refused.
@@ -2188,6 +2218,8 @@ int DecodeFamily(const CatalogValueFieldView& v, NativeAgentConfig_page_prealloc
     case 5: r.forecast_window_seconds = *v.unsigned_value(); return 1;
     case 6: return DecodeDecimal(v, r.history_confidence_threshold) ? 1 : -1;
     case 7: r.max_reserved_bytes_per_filespace = *v.unsigned_value(); return 1;
+    case 8: return DecodeEnum(v, r.allowed_page_families) ? 1 : -1;
+    case 9: return DecodeEnum(v, r.workload_calendar) ? 1 : -1;
     case 10: r.allocation_throttle_pages_per_second = *v.unsigned_value(); return 1;
     default: return 0;
   }
@@ -2196,7 +2228,9 @@ bool ValidFamily(const NativeAgentConfig_page_preallocation_policy& r) {
   return true &&
          r.forecast_window_seconds >= 1ull &&
          ValidDecimal(r.history_confidence_threshold, true, 1.0) &&
-         r.max_reserved_bytes_per_filespace >= 1ull;
+         r.max_reserved_bytes_per_filespace >= 1ull &&
+         KnownGenerated(r.allowed_page_families, 1) &&
+         KnownGenerated(r.workload_calendar, 1);
 }
 bool AssignFamily(NativeAgentConfig_page_preallocation_policy& r, std::size_t index, std::string_view v) {
   switch (index) {
@@ -2204,8 +2238,8 @@ bool AssignFamily(NativeAgentConfig_page_preallocation_policy& r, std::size_t in
     case 1: return ParseU64(v, r.forecast_window_seconds);
     case 2: return ParseDecimal(v, r.history_confidence_threshold);
     case 3: return ParseU64(v, r.max_reserved_bytes_per_filespace);
-    case 4: return !v.empty();  // accepted, NOT carried
-    case 5: return !v.empty();  // accepted, NOT carried
+    case 4: return ParseEnum(v, &NativeAgentConfigEnum_page_preallocation_policy_allowed_page_familiesForTag, r.allowed_page_families);
+    case 5: return ParseEnum(v, &NativeAgentConfigEnum_page_preallocation_policy_workload_calendarForTag, r.workload_calendar);
     case 6: return ParseU64(v, r.allocation_throttle_pages_per_second);
     default: return false;
   }
@@ -2218,6 +2252,7 @@ constexpr CatalogValueFieldSchema kNativeAgentConfig_page_relocation_policyWire[
     {6, T::boolean, true, 1},  // publish_shrink_ready_allowed
     {7, T::unsigned_integer, true, 8},  // max_pages_per_interval
     {8, T::unsigned_integer, true, 8},  // interval_seconds
+    {9, T::unsigned_integer, true, 8},  // unmovable_blocker_classes
     {10, T::boolean, true, 1},  // require_checksum_valid
     {11, T::boolean, true, 1},  // require_transaction_holds_clear
     {12, T::boolean, true, 1},  // require_backup_archive_holds_clear
@@ -2231,13 +2266,13 @@ constexpr NativeAgentConfigFieldDescriptor kNativeAgentConfig_page_relocation_po
     {"publish_shrink_ready_allowed", 6, NativeAgentConfigSourceType::boolean, NativeAgentConfigValueKind::boolean, true, false, false, 0.0, 0.0},
     {"max_pages_per_interval", 7, NativeAgentConfigSourceType::unsigned_integer, NativeAgentConfigValueKind::unsigned_integer, true, true, false, 0.0, 0.0},
     {"interval_seconds", 8, NativeAgentConfigSourceType::duration_seconds, NativeAgentConfigValueKind::unsigned_integer, true, true, false, 1.0, 0.0},
-    {"unmovable_blocker_classes", 9, NativeAgentConfigSourceType::token_list, NativeAgentConfigValueKind::unrepresented, true, false, false, 0.0, 0.0},
+    {"unmovable_blocker_classes", 9, NativeAgentConfigSourceType::token_list, NativeAgentConfigValueKind::enumeration, true, false, false, 0.0, 0.0},
     {"require_checksum_valid", 10, NativeAgentConfigSourceType::boolean, NativeAgentConfigValueKind::boolean, true, false, false, 0.0, 0.0},
     {"require_transaction_holds_clear", 11, NativeAgentConfigSourceType::boolean, NativeAgentConfigValueKind::boolean, true, false, false, 0.0, 0.0},
     {"require_backup_archive_holds_clear", 12, NativeAgentConfigSourceType::boolean, NativeAgentConfigValueKind::boolean, true, false, false, 0.0, 0.0},
 };
 std::span<const NativeAgentConfigFieldDescriptor> FieldsOf(const NativeAgentConfig_page_relocation_policy*) { return kNativeAgentConfig_page_relocation_policyFields; }
-constexpr std::array<std::string_view, 1> kNativeAgentConfig_page_relocation_policyUnrepresented{"unmovable_blocker_classes"};
+constexpr std::array<std::string_view, 0> kNativeAgentConfig_page_relocation_policyUnrepresented{};
 std::span<const std::string_view> UnrepresentedOf(const NativeAgentConfig_page_relocation_policy*) { return kNativeAgentConfig_page_relocation_policyUnrepresented; }
 void FillFamily(Fields& f, const NativeAgentConfig_page_relocation_policy& r) {
   f.Flag(4, r.relocation_allowed);
@@ -2245,6 +2280,7 @@ void FillFamily(Fields& f, const NativeAgentConfig_page_relocation_policy& r) {
   f.Flag(6, r.publish_shrink_ready_allowed);
   f.Number(7, r.max_pages_per_interval);
   f.Number(8, r.interval_seconds);
+  f.Enum(9, r.unmovable_blocker_classes);
   f.Flag(10, r.require_checksum_valid);
   f.Flag(11, r.require_transaction_holds_clear);
   f.Flag(12, r.require_backup_archive_holds_clear);
@@ -2257,6 +2293,7 @@ int DecodeFamily(const CatalogValueFieldView& v, NativeAgentConfig_page_relocati
     case 6: r.publish_shrink_ready_allowed = Flag(v); return 1;
     case 7: r.max_pages_per_interval = *v.unsigned_value(); return 1;
     case 8: r.interval_seconds = *v.unsigned_value(); return 1;
+    case 9: return DecodeEnum(v, r.unmovable_blocker_classes) ? 1 : -1;
     case 10: r.require_checksum_valid = Flag(v); return 1;
     case 11: r.require_transaction_holds_clear = Flag(v); return 1;
     case 12: r.require_backup_archive_holds_clear = Flag(v); return 1;
@@ -2265,7 +2302,8 @@ int DecodeFamily(const CatalogValueFieldView& v, NativeAgentConfig_page_relocati
 }
 bool ValidFamily(const NativeAgentConfig_page_relocation_policy& r) {
   return true &&
-         r.interval_seconds >= 1ull;
+         r.interval_seconds >= 1ull &&
+         KnownGenerated(r.unmovable_blocker_classes, 1);
 }
 bool AssignFamily(NativeAgentConfig_page_relocation_policy& r, std::size_t index, std::string_view v) {
   switch (index) {
@@ -2274,7 +2312,7 @@ bool AssignFamily(NativeAgentConfig_page_relocation_policy& r, std::size_t index
     case 2: return ParseFlagText(v, r.publish_shrink_ready_allowed);
     case 3: return ParseU64(v, r.max_pages_per_interval);
     case 4: return ParseU64(v, r.interval_seconds);
-    case 5: return !v.empty();  // accepted, NOT carried
+    case 5: return ParseEnum(v, &NativeAgentConfigEnum_page_relocation_policy_unmovable_blocker_classesForTag, r.unmovable_blocker_classes);
     case 6: return ParseFlagText(v, r.require_checksum_valid);
     case 7: return ParseFlagText(v, r.require_transaction_holds_clear);
     case 8: return ParseFlagText(v, r.require_backup_archive_holds_clear);
@@ -2805,9 +2843,22 @@ NativeAgentDecodeResult<R> DecodeNativeAgentConfig(std::string_view bytes) {
   if (!ValidRecord(r)) return {E::invalid_value, {}};
   return {E::none, r};
 }
+// Owner Q73 = 1: these three live on the policy record only (tags 33-35);
+// their config tags stay reserved. A config key naming one is accepted only
+// when a policy record is supplied and the value equals the policy's.
+constexpr std::pair<std::string_view, u64 NativeAgentPolicyRecord::*> kPolicyRecordBudget[]{
+    {"max_history_query_rows", &NativeAgentPolicyRecord::max_history_query_rows},
+    {"max_evidence_fanout", &NativeAgentPolicyRecord::max_evidence_fanout},
+    {"max_label_cardinality", &NativeAgentPolicyRecord::max_label_cardinality}};
 template <class R>
 NativeAgentTagResult<R> NativeAgentConfigFromTags(std::span<const NativeAgentPropertyTag> tags) {
-  constexpr std::size_t kCommonOffset = 32;
+  return NativeAgentConfigFromTags<R>(tags, nullptr);
+}
+template <class R>
+NativeAgentTagResult<R> NativeAgentConfigFromTags(std::span<const NativeAgentPropertyTag> tags,
+                                                  const NativeAgentPolicyRecord* policy) {
+  constexpr std::size_t kCommonOffset = 32, kPolicyOffset = 60;
+  static_assert(kCommonOffset + 32 > kPolicyOffset + std::size(kPolicyRecordBudget));
   const auto fields = FieldsOf(static_cast<const R*>(nullptr));
   static_assert(std::size(kCommonFields) <= 32);
   R r;
@@ -2819,6 +2870,17 @@ NativeAgentTagResult<R> NativeAgentConfigFromTags(std::span<const NativeAgentPro
     if (index < fields.size()) {
       if (index >= kCommonOffset || seen[index] || !AssignFamily(r, index, t.value)) return {{}, t.key};
       seen[index] = true;
+      continue;
+    }
+    std::size_t carried = std::size(kPolicyRecordBudget);
+    for (std::size_t i = 0; i < std::size(kPolicyRecordBudget); ++i)
+      if (kPolicyRecordBudget[i].first == t.key) carried = i;
+    if (carried < std::size(kPolicyRecordBudget)) {
+      u64 value = 0;
+      if (!policy || seen[kPolicyOffset + carried] || !ParseU64(t.value, value) ||
+          value != policy->*kPolicyRecordBudget[carried].second)
+        return {{}, t.key};
+      seen[kPolicyOffset + carried] = true;  // agrees with the policy record; not carried here
       continue;
     }
     std::size_t common = std::size(kCommonFields);
@@ -2838,7 +2900,9 @@ NativeAgentTagResult<R> NativeAgentConfigFromTags(std::span<const NativeAgentPro
   template CatalogValueEncodeIntoResult EncodeNativeAgentConfigInto<R>(const R&, std::span<byte>);      \
   template CatalogValueEncodeResult EncodeNativeAgentConfig<R>(const R&);                               \
   template NativeAgentDecodeResult<R> DecodeNativeAgentConfig<R>(std::string_view);                     \
-  template NativeAgentTagResult<R> NativeAgentConfigFromTags<R>(std::span<const NativeAgentPropertyTag>);
+  template NativeAgentTagResult<R> NativeAgentConfigFromTags<R>(std::span<const NativeAgentPropertyTag>);      \
+  template NativeAgentTagResult<R> NativeAgentConfigFromTags<R>(std::span<const NativeAgentPropertyTag>,       \
+                                                                const NativeAgentPolicyRecord*);
 SB_NATIVE_AGENT_CONFIG_TYPES(SB_NATIVE_AGENT_CONFIG_INSTANTIATE)
 #undef SB_NATIVE_AGENT_CONFIG_INSTANTIATE
 #undef SB_NATIVE_AGENT_CONFIG_TYPES

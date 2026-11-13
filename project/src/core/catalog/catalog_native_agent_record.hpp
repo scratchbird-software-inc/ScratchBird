@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
 // SEARCH_KEY: SB_CATALOG_NATIVE_AGENT_RECORDS (owner Q68 = 1, Q69 = 1, Q70 = 2,
-// 2026-11-12). Typed native agent catalog records, each a fixed-schema SBCV
-// value block with no text field:
+// Q71 = 1, Q72 = 1, Q73 = 1, 2026-11-12). Typed native agent catalog
+// records, each a fixed-schema SBCV value block with no text field:
 //  - NativeAgentPolicyRecord (schema 65640): one agent policy (replaces the
 //    text bootstrap row of kind policy, schema 65824).
 //  - NativeAgentRegistrationRecord (schema 65641): one agent registration
@@ -187,7 +187,8 @@ NativeAgentTagResult<NativeAgentRegistrationRecord> NativeAgentRegistrationFromT
 // it configures, kind object), tag 2 origin transaction (kind transaction),
 // tag 3 origin local id (nonzero); tags 4.. the family's fields in schema-map
 // order (a field that is not representable keeps its tag, unused); tags
-// 64..76 the optional common resource-budget fields.
+// 64..73 the optional common resource-budget fields; tags 74..76 reserved,
+// unused (owner Q73 = 1: those three are policy-record fields only).
 enum class NativeAgentConfigSourceType : u8 {  // mirrors AgentPolicyFieldType
   boolean = 1, unsigned_integer, decimal, duration_seconds, duration_microseconds, byte_count, percent, token,
   token_list };
@@ -200,7 +201,7 @@ enum class NativeAgentConfigValueKind : u8 {
   launch_trigger,        // CatalogAgentLaunchTrigger
   agent_type_list,       // NativeAgentTypeList
   layer_list,            // NativeAgentLayerList (boundary "L1".."L5")
-  unrepresented,         // free text; NOT carried (no tag on the wire)
+  unrepresented,         // free text; NOT carried (no tag on the wire). None since Q71 = 1.
 };
 struct NativeAgentConfigFieldDescriptor {
   std::string_view key;  // boundary spelling (without "config.")
@@ -216,7 +217,9 @@ struct NativeAgentConfigFieldDescriptor {
 // Inputs: agent_policy_schema.cpp sha256 0ff5471aefedc938047b42a0b0b5ac97d5238dbeeda2be89a0016c756e4bef28
 //         catalog_agent_constants.hpp sha256 60641899040a89bfa385a6da5a52cd83e85fea7fe7713083cfcb48c7efdd4763
 // The optional common resource-budget fields (CommonResourceBudgetFields,
-// appended to every family by AgentPolicySchemaForFamily). Tags 64..76.
+// appended to every family by AgentPolicySchemaForFamily). Tags 64..73.
+// Owner Q73 = 1: max_history_query_rows, max_evidence_fanout, max_label_cardinality
+// live on the policy record only; their tags 74, 75, 76 stay reserved, unused.
 struct NativeAgentConfigResourceBudget {
   std::optional<bool> protect_foreground_work;
   std::optional<u64> max_cpu_time_microseconds;
@@ -228,23 +231,20 @@ struct NativeAgentConfigResourceBudget {
   std::optional<u64> min_run_interval_microseconds;
   std::optional<u64> retry_backoff_microseconds;
   std::optional<u64> watchdog_timeout_microseconds;
-  std::optional<u64> max_history_query_rows;
-  std::optional<u64> max_evidence_fanout;
-  std::optional<u64> max_label_cardinality;
   bool operator==(const NativeAgentConfigResourceBudget&) const noexcept = default;
 };
-// node_resource_policy (code 1): schema 65642, max 337 bytes.
+// node_resource_policy (code 1): schema 65642, max 289 bytes.
 struct NativeAgentConfig_node_resource_policy {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::node_resource_policy;
   static constexpr u32 schema_id = 65642;
-  static constexpr std::size_t max_bytes = 337;
+  static constexpr std::size_t max_bytes = 289;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
   u64 capability_probe_interval = 0;  // tag 4
   u64 suitability_score_window = 0;  // tag 5
   u64 stale_after = 0;  // tag 6
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_node_resource_policy& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
@@ -256,11 +256,11 @@ struct NativeAgentConfig_node_resource_policy {
            common == o.common;
   }
 };
-// metric_registry_policy (code 2): schema 65643, max 362 bytes.
+// metric_registry_policy (code 2): schema 65643, max 314 bytes.
 struct NativeAgentConfig_metric_registry_policy {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::metric_registry_policy;
   static constexpr u32 schema_id = 65643;
-  static constexpr std::size_t max_bytes = 362;
+  static constexpr std::size_t max_bytes = 314;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
@@ -269,7 +269,7 @@ struct NativeAgentConfig_metric_registry_policy {
   u64 retention_window = 0;  // tag 6
   u64 rollup_interval = 0;  // tag 7
   bool reject_on_schema_drift = false;  // tag 8
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_metric_registry_policy& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
@@ -283,11 +283,11 @@ struct NativeAgentConfig_metric_registry_policy {
            common == o.common;
   }
 };
-// storage_health_policy (code 3): schema 65644, max 353 bytes.
+// storage_health_policy (code 3): schema 65644, max 305 bytes.
 struct NativeAgentConfig_storage_health_policy {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::storage_health_policy;
   static constexpr u32 schema_id = 65644;
-  static constexpr std::size_t max_bytes = 353;
+  static constexpr std::size_t max_bytes = 305;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
@@ -295,7 +295,7 @@ struct NativeAgentConfig_storage_health_policy {
   u64 unknown_page_quarantine_threshold = 0;  // tag 5
   u64 checksum_failure_threshold = 0;  // tag 6
   u64 optimizer_cost_update_window = 0;  // tag 7
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_storage_health_policy& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
@@ -308,11 +308,11 @@ struct NativeAgentConfig_storage_health_policy {
            common == o.common;
   }
 };
-// memory_governor_policy (code 4): schema 65645, max 353 bytes.
+// memory_governor_policy (code 4): schema 65645, max 305 bytes.
 struct NativeAgentConfig_memory_governor_policy {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::memory_governor_policy;
   static constexpr u32 schema_id = 65645;
-  static constexpr std::size_t max_bytes = 353;
+  static constexpr std::size_t max_bytes = 305;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
@@ -320,7 +320,7 @@ struct NativeAgentConfig_memory_governor_policy {
   u64 allocation_failure_pressure = 0;  // tag 5
   u64 spill_threshold = 0;  // tag 6
   u64 cache_shrink_limit = 0;  // tag 7
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_memory_governor_policy& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
@@ -333,11 +333,11 @@ struct NativeAgentConfig_memory_governor_policy {
            common == o.common;
   }
 };
-// index_health_policy (code 5): schema 65646, max 353 bytes.
+// index_health_policy (code 5): schema 65646, max 305 bytes.
 struct NativeAgentConfig_index_health_policy {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::index_health_policy;
   static constexpr u32 schema_id = 65646;
-  static constexpr std::size_t max_bytes = 353;
+  static constexpr std::size_t max_bytes = 305;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
@@ -345,7 +345,7 @@ struct NativeAgentConfig_index_health_policy {
   u64 split_pressure_threshold = 0;  // tag 5
   u64 unused_index_window = 0;  // tag 6
   u64 recommendation_cooldown = 0;  // tag 7
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_index_health_policy& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
@@ -358,11 +358,11 @@ struct NativeAgentConfig_index_health_policy {
            common == o.common;
   }
 };
-// cluster_autoscale_policy (code 6): schema 65647, max 346 bytes.
+// cluster_autoscale_policy (code 6): schema 65647, max 298 bytes.
 struct NativeAgentConfig_cluster_autoscale_policy {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::cluster_autoscale_policy;
   static constexpr u32 schema_id = 65647;
-  static constexpr std::size_t max_bytes = 346;
+  static constexpr std::size_t max_bytes = 298;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
@@ -370,7 +370,7 @@ struct NativeAgentConfig_cluster_autoscale_policy {
   u64 scale_down_threshold = 0;  // tag 5
   u64 cooldown_seconds = 0;  // tag 6
   bool no_scale_down_when_limbo = false;  // tag 7
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_cluster_autoscale_policy& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
@@ -383,19 +383,29 @@ struct NativeAgentConfig_cluster_autoscale_policy {
            common == o.common;
   }
 };
-// admission_control_policy (code 7): schema 65648, max 337 bytes.
+// admission_control_policy config.workload_class_rules (token_list): owner Q71 = 1, the one value "baseline".
+enum class NativeAgentConfigEnum_admission_control_policy_workload_class_rules : u16 {
+  none = 0,
+  baseline = 1,
+};
+inline constexpr std::array<CatalogAgentTagEntry<NativeAgentConfigEnum_admission_control_policy_workload_class_rules>, 1> kNativeAgentConfigEnum_admission_control_policy_workload_class_rulesTags{{
+    {NativeAgentConfigEnum_admission_control_policy_workload_class_rules::baseline, "baseline"}}};
+constexpr std::optional<NativeAgentConfigEnum_admission_control_policy_workload_class_rules> NativeAgentConfigEnum_admission_control_policy_workload_class_rulesForTag(std::string_view tag) noexcept {
+  return CatalogAgentTagLookup(kNativeAgentConfigEnum_admission_control_policy_workload_class_rulesTags, tag);
+}
+// admission_control_policy (code 7): schema 65648, max 305 bytes.
 struct NativeAgentConfig_admission_control_policy {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::admission_control_policy;
   static constexpr u32 schema_id = 65648;
-  static constexpr std::size_t max_bytes = 337;
+  static constexpr std::size_t max_bytes = 305;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
   u64 listener_queue_threshold = 0;  // tag 4
   u64 scheduler_queue_threshold = 0;  // tag 5
   u64 hard_limit_threshold = 0;  // tag 6
-  // tag 7 workload_class_rules (token_list): free text, NOT carried (unrepresented).
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigEnum_admission_control_policy_workload_class_rules workload_class_rules = NativeAgentConfigEnum_admission_control_policy_workload_class_rules::none;  // tag 7
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_admission_control_policy& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
@@ -404,22 +414,33 @@ struct NativeAgentConfig_admission_control_policy {
            listener_queue_threshold == o.listener_queue_threshold &&
            scheduler_queue_threshold == o.scheduler_queue_threshold &&
            hard_limit_threshold == o.hard_limit_threshold &&
+           workload_class_rules == o.workload_class_rules &&
            common == o.common;
   }
 };
-// parser_health_policy (code 8): schema 65649, max 337 bytes.
+// parser_health_policy config.package_quarantine_rules (token_list): owner Q71 = 1, the one value "baseline".
+enum class NativeAgentConfigEnum_parser_health_policy_package_quarantine_rules : u16 {
+  none = 0,
+  baseline = 1,
+};
+inline constexpr std::array<CatalogAgentTagEntry<NativeAgentConfigEnum_parser_health_policy_package_quarantine_rules>, 1> kNativeAgentConfigEnum_parser_health_policy_package_quarantine_rulesTags{{
+    {NativeAgentConfigEnum_parser_health_policy_package_quarantine_rules::baseline, "baseline"}}};
+constexpr std::optional<NativeAgentConfigEnum_parser_health_policy_package_quarantine_rules> NativeAgentConfigEnum_parser_health_policy_package_quarantine_rulesForTag(std::string_view tag) noexcept {
+  return CatalogAgentTagLookup(kNativeAgentConfigEnum_parser_health_policy_package_quarantine_rulesTags, tag);
+}
+// parser_health_policy (code 8): schema 65649, max 305 bytes.
 struct NativeAgentConfig_parser_health_policy {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::parser_health_policy;
   static constexpr u32 schema_id = 65649;
-  static constexpr std::size_t max_bytes = 337;
+  static constexpr std::size_t max_bytes = 305;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
   u64 parser_crash_quarantine_threshold = 0;  // tag 4
   u64 drain_cooldown = 0;  // tag 5
-  // tag 6 package_quarantine_rules (token_list): free text, NOT carried (unrepresented).
+  NativeAgentConfigEnum_parser_health_policy_package_quarantine_rules package_quarantine_rules = NativeAgentConfigEnum_parser_health_policy_package_quarantine_rules::none;  // tag 6
   u64 policy_attach_latency_warn_us = 0;  // tag 7
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_parser_health_policy& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
@@ -427,15 +448,16 @@ struct NativeAgentConfig_parser_health_policy {
            origin_local_transaction_id == o.origin_local_transaction_id &&
            parser_crash_quarantine_threshold == o.parser_crash_quarantine_threshold &&
            drain_cooldown == o.drain_cooldown &&
+           package_quarantine_rules == o.package_quarantine_rules &&
            policy_attach_latency_warn_us == o.policy_attach_latency_warn_us &&
            common == o.common;
   }
 };
-// long_transaction_policy (code 9): schema 65650, max 346 bytes.
+// long_transaction_policy (code 9): schema 65650, max 298 bytes.
 struct NativeAgentConfig_long_transaction_policy {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::long_transaction_policy;
   static constexpr u32 schema_id = 65650;
-  static constexpr std::size_t max_bytes = 346;
+  static constexpr std::size_t max_bytes = 298;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
@@ -443,7 +465,7 @@ struct NativeAgentConfig_long_transaction_policy {
   u64 idle_warning_seconds = 0;  // tag 5
   u64 blocker_escalation_seconds = 0;  // tag 6
   bool cancel_requires_approval = false;  // tag 7
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_long_transaction_policy& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
@@ -456,11 +478,11 @@ struct NativeAgentConfig_long_transaction_policy {
            common == o.common;
   }
 };
-// storage_version_cleanup_policy (code 10): schema 65651, max 362 bytes.
+// storage_version_cleanup_policy (code 10): schema 65651, max 314 bytes.
 struct NativeAgentConfig_storage_version_cleanup_policy {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::storage_version_cleanup_policy;
   static constexpr u32 schema_id = 65651;
-  static constexpr std::size_t max_bytes = 362;
+  static constexpr std::size_t max_bytes = 314;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
@@ -469,7 +491,7 @@ struct NativeAgentConfig_storage_version_cleanup_policy {
   u64 max_versions_per_batch = 0;  // tag 6
   u64 retained_row_pressure = 0;  // tag 7
   u64 active_blocker_threshold = 0;  // tag 8
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_storage_version_cleanup_policy& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
@@ -483,11 +505,11 @@ struct NativeAgentConfig_storage_version_cleanup_policy {
            common == o.common;
   }
 };
-// cleanup_archive_policy (code 11): schema 65652, max 339 bytes.
+// cleanup_archive_policy (code 11): schema 65652, max 291 bytes.
 struct NativeAgentConfig_cleanup_archive_policy {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::cleanup_archive_policy;
   static constexpr u32 schema_id = 65652;
-  static constexpr std::size_t max_bytes = 339;
+  static constexpr std::size_t max_bytes = 291;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
@@ -495,7 +517,7 @@ struct NativeAgentConfig_cleanup_archive_policy {
   u64 archive_slice_max_age_us = 0;  // tag 5
   bool authoritative_lwm_required = false;  // tag 6
   bool verify_before_release = false;  // tag 7
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_cleanup_archive_policy& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
@@ -508,11 +530,11 @@ struct NativeAgentConfig_cleanup_archive_policy {
            common == o.common;
   }
 };
-// policy_recommendation_policy (code 12): schema 65653, max 346 bytes.
+// policy_recommendation_policy (code 12): schema 65653, max 298 bytes.
 struct NativeAgentConfig_policy_recommendation_policy {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::policy_recommendation_policy;
   static constexpr u32 schema_id = 65653;
-  static constexpr std::size_t max_bytes = 346;
+  static constexpr std::size_t max_bytes = 298;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
@@ -520,7 +542,7 @@ struct NativeAgentConfig_policy_recommendation_policy {
   double confidence_threshold = 0;  // tag 5
   u64 cooldown_seconds = 0;  // tag 6
   bool no_auto_apply = false;  // tag 7
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_policy_recommendation_policy& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
@@ -533,18 +555,18 @@ struct NativeAgentConfig_policy_recommendation_policy {
            common == o.common;
   }
 };
-// distributed_query_policy (code 13): schema 65654, max 337 bytes.
+// distributed_query_policy (code 13): schema 65654, max 289 bytes.
 struct NativeAgentConfig_distributed_query_policy {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::distributed_query_policy;
   static constexpr u32 schema_id = 65654;
-  static constexpr std::size_t max_bytes = 337;
+  static constexpr std::size_t max_bytes = 289;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
   u64 fragment_delay_warn_us = 0;  // tag 4
   u64 queue_sample_interval = 0;  // tag 5
   u64 remote_fragment_trace_level = 0;  // tag 6
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_distributed_query_policy& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
@@ -556,11 +578,11 @@ struct NativeAgentConfig_distributed_query_policy {
            common == o.common;
   }
 };
-// remote_routing_policy (code 14): schema 65655, max 332 bytes.
+// remote_routing_policy (code 14): schema 65655, max 284 bytes.
 struct NativeAgentConfig_remote_routing_policy {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::remote_routing_policy;
   static constexpr u32 schema_id = 65655;
-  static constexpr std::size_t max_bytes = 332;
+  static constexpr std::size_t max_bytes = 284;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
@@ -568,7 +590,7 @@ struct NativeAgentConfig_remote_routing_policy {
   bool stale_route_refusal = false;  // tag 5
   bool local_fallback_required = false;  // tag 6
   bool fence_required = false;  // tag 7
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_remote_routing_policy& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
@@ -581,11 +603,11 @@ struct NativeAgentConfig_remote_routing_policy {
            common == o.common;
   }
 };
-// optimizer_learning_policy (code 15): schema 65656, max 346 bytes.
+// optimizer_learning_policy (code 15): schema 65656, max 298 bytes.
 struct NativeAgentConfig_optimizer_learning_policy {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::optimizer_learning_policy;
   static constexpr u32 schema_id = 65656;
-  static constexpr std::size_t max_bytes = 346;
+  static constexpr std::size_t max_bytes = 298;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
@@ -593,7 +615,7 @@ struct NativeAgentConfig_optimizer_learning_policy {
   double confidence_floor = 0;  // tag 5
   u64 max_correction_age = 0;  // tag 6
   bool no_semantic_override = false;  // tag 7
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_optimizer_learning_policy& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
@@ -606,11 +628,11 @@ struct NativeAgentConfig_optimizer_learning_policy {
            common == o.common;
   }
 };
-// support_bundle_policy (code 16): schema 65657, max 332 bytes.
+// support_bundle_policy (code 16): schema 65657, max 284 bytes.
 struct NativeAgentConfig_support_bundle_policy {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::support_bundle_policy;
   static constexpr u32 schema_id = 65657;
-  static constexpr std::size_t max_bytes = 332;
+  static constexpr std::size_t max_bytes = 284;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
@@ -618,7 +640,7 @@ struct NativeAgentConfig_support_bundle_policy {
   bool redaction_required = false;  // tag 5
   u64 bundle_expiry = 0;  // tag 6
   bool secret_classes_forbidden = false;  // tag 7
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_support_bundle_policy& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
@@ -631,11 +653,11 @@ struct NativeAgentConfig_support_bundle_policy {
            common == o.common;
   }
 };
-// cluster_scheduler_policy (code 17): schema 65658, max 339 bytes.
+// cluster_scheduler_policy (code 17): schema 65658, max 291 bytes.
 struct NativeAgentConfig_cluster_scheduler_policy {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::cluster_scheduler_policy;
   static constexpr u32 schema_id = 65658;
-  static constexpr std::size_t max_bytes = 339;
+  static constexpr std::size_t max_bytes = 291;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
@@ -643,7 +665,7 @@ struct NativeAgentConfig_cluster_scheduler_policy {
   double placement_score_floor = 0;  // tag 5
   bool fence_required = false;  // tag 6
   bool keep_queued_on_uncertainty = false;  // tag 7
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_cluster_scheduler_policy& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
@@ -656,11 +678,11 @@ struct NativeAgentConfig_cluster_scheduler_policy {
            common == o.common;
   }
 };
-// job_control_policy (code 18): schema 65659, max 339 bytes.
+// job_control_policy (code 18): schema 65659, max 291 bytes.
 struct NativeAgentConfig_job_control_policy {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::job_control_policy;
   static constexpr u32 schema_id = 65659;
-  static constexpr std::size_t max_bytes = 339;
+  static constexpr std::size_t max_bytes = 291;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
@@ -668,7 +690,7 @@ struct NativeAgentConfig_job_control_policy {
   u64 retry_cooldown = 0;  // tag 5
   u64 suppression_max_duration = 0;  // tag 6
   bool audit_required = false;  // tag 7
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_job_control_policy& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
@@ -681,19 +703,29 @@ struct NativeAgentConfig_job_control_policy {
            common == o.common;
   }
 };
-// backup_policy (code 19): schema 65660, max 323 bytes.
+// backup_policy config.blocker_policy (token): owner Q71 = 1, the one value "baseline".
+enum class NativeAgentConfigEnum_backup_policy_blocker_policy : u16 {
+  none = 0,
+  baseline = 1,
+};
+inline constexpr std::array<CatalogAgentTagEntry<NativeAgentConfigEnum_backup_policy_blocker_policy>, 1> kNativeAgentConfigEnum_backup_policy_blocker_policyTags{{
+    {NativeAgentConfigEnum_backup_policy_blocker_policy::baseline, "baseline"}}};
+constexpr std::optional<NativeAgentConfigEnum_backup_policy_blocker_policy> NativeAgentConfigEnum_backup_policy_blocker_policyForTag(std::string_view tag) noexcept {
+  return CatalogAgentTagLookup(kNativeAgentConfigEnum_backup_policy_blocker_policyTags, tag);
+}
+// backup_policy (code 19): schema 65660, max 291 bytes.
 struct NativeAgentConfig_backup_policy {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::backup_policy;
   static constexpr u32 schema_id = 65660;
-  static constexpr std::size_t max_bytes = 323;
+  static constexpr std::size_t max_bytes = 291;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
   u64 stuck_progress_window = 0;  // tag 4
   bool verification_required = false;  // tag 5
-  // tag 6 blocker_policy (token): free text, NOT carried (unrepresented).
+  NativeAgentConfigEnum_backup_policy_blocker_policy blocker_policy = NativeAgentConfigEnum_backup_policy_blocker_policy::none;  // tag 6
   bool cancel_requires_approval = false;  // tag 7
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_backup_policy& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
@@ -701,15 +733,16 @@ struct NativeAgentConfig_backup_policy {
            origin_local_transaction_id == o.origin_local_transaction_id &&
            stuck_progress_window == o.stuck_progress_window &&
            verification_required == o.verification_required &&
+           blocker_policy == o.blocker_policy &&
            cancel_requires_approval == o.cancel_requires_approval &&
            common == o.common;
   }
 };
-// archive_policy (code 20): schema 65661, max 339 bytes.
+// archive_policy (code 20): schema 65661, max 291 bytes.
 struct NativeAgentConfig_archive_policy {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::archive_policy;
   static constexpr u32 schema_id = 65661;
-  static constexpr std::size_t max_bytes = 339;
+  static constexpr std::size_t max_bytes = 291;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
@@ -717,7 +750,7 @@ struct NativeAgentConfig_archive_policy {
   u64 slice_max_age = 0;  // tag 5
   bool verification_required = false;  // tag 6
   bool protected_slice_delete_forbidden = false;  // tag 7
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_archive_policy& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
@@ -730,11 +763,11 @@ struct NativeAgentConfig_archive_policy {
            common == o.common;
   }
 };
-// restore_drill_policy (code 21): schema 65662, max 332 bytes.
+// restore_drill_policy (code 21): schema 65662, max 284 bytes.
 struct NativeAgentConfig_restore_drill_policy {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::restore_drill_policy;
   static constexpr u32 schema_id = 65662;
-  static constexpr std::size_t max_bytes = 332;
+  static constexpr std::size_t max_bytes = 284;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
@@ -742,7 +775,7 @@ struct NativeAgentConfig_restore_drill_policy {
   u64 max_duration_us = 0;  // tag 5
   bool verification_required = false;  // tag 6
   bool source_mutation_forbidden = false;  // tag 7
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_restore_drill_policy& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
@@ -755,11 +788,11 @@ struct NativeAgentConfig_restore_drill_policy {
            common == o.common;
   }
 };
-// pitr_policy (code 22): schema 65663, max 346 bytes.
+// pitr_policy (code 22): schema 65663, max 298 bytes.
 struct NativeAgentConfig_pitr_policy {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::pitr_policy;
   static constexpr u32 schema_id = 65663;
-  static constexpr std::size_t max_bytes = 346;
+  static constexpr std::size_t max_bytes = 298;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
@@ -767,7 +800,7 @@ struct NativeAgentConfig_pitr_policy {
   u64 estimate_refresh_interval = 0;  // tag 5
   bool restore_plan_requires_approval = false;  // tag 6
   u64 archive_freshness_limit = 0;  // tag 7
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_pitr_policy& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
@@ -780,42 +813,74 @@ struct NativeAgentConfig_pitr_policy {
            common == o.common;
   }
 };
-// identity_lifecycle_policy (code 23): schema 65664, max 307 bytes.
+// identity_lifecycle_policy config.auth_anomaly_policy (token): owner Q71 = 1, the one value "baseline".
+enum class NativeAgentConfigEnum_identity_lifecycle_policy_auth_anomaly_policy : u16 {
+  none = 0,
+  baseline = 1,
+};
+inline constexpr std::array<CatalogAgentTagEntry<NativeAgentConfigEnum_identity_lifecycle_policy_auth_anomaly_policy>, 1> kNativeAgentConfigEnum_identity_lifecycle_policy_auth_anomaly_policyTags{{
+    {NativeAgentConfigEnum_identity_lifecycle_policy_auth_anomaly_policy::baseline, "baseline"}}};
+constexpr std::optional<NativeAgentConfigEnum_identity_lifecycle_policy_auth_anomaly_policy> NativeAgentConfigEnum_identity_lifecycle_policy_auth_anomaly_policyForTag(std::string_view tag) noexcept {
+  return CatalogAgentTagLookup(kNativeAgentConfigEnum_identity_lifecycle_policy_auth_anomaly_policyTags, tag);
+}
+// identity_lifecycle_policy config.redaction_class (token): owner Q71 = 1, the one value "baseline".
+enum class NativeAgentConfigEnum_identity_lifecycle_policy_redaction_class : u16 {
+  none = 0,
+  baseline = 1,
+};
+inline constexpr std::array<CatalogAgentTagEntry<NativeAgentConfigEnum_identity_lifecycle_policy_redaction_class>, 1> kNativeAgentConfigEnum_identity_lifecycle_policy_redaction_classTags{{
+    {NativeAgentConfigEnum_identity_lifecycle_policy_redaction_class::baseline, "baseline"}}};
+constexpr std::optional<NativeAgentConfigEnum_identity_lifecycle_policy_redaction_class> NativeAgentConfigEnum_identity_lifecycle_policy_redaction_classForTag(std::string_view tag) noexcept {
+  return CatalogAgentTagLookup(kNativeAgentConfigEnum_identity_lifecycle_policy_redaction_classTags, tag);
+}
+// identity_lifecycle_policy (code 23): schema 65664, max 291 bytes.
 struct NativeAgentConfig_identity_lifecycle_policy {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::identity_lifecycle_policy;
   static constexpr u32 schema_id = 65664;
-  static constexpr std::size_t max_bytes = 307;
+  static constexpr std::size_t max_bytes = 291;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
-  // tag 4 auth_anomaly_policy (token): free text, NOT carried (unrepresented).
+  NativeAgentConfigEnum_identity_lifecycle_policy_auth_anomaly_policy auth_anomaly_policy = NativeAgentConfigEnum_identity_lifecycle_policy_auth_anomaly_policy::none;  // tag 4
   bool lock_requires_sec_right = false;  // tag 5
   bool evidence_required = false;  // tag 6
-  // tag 7 redaction_class (token): free text, NOT carried (unrepresented).
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigEnum_identity_lifecycle_policy_redaction_class redaction_class = NativeAgentConfigEnum_identity_lifecycle_policy_redaction_class::none;  // tag 7
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_identity_lifecycle_policy& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
            origin_transaction_uuid.value == o.origin_transaction_uuid.value &&
            origin_local_transaction_id == o.origin_local_transaction_id &&
+           auth_anomaly_policy == o.auth_anomaly_policy &&
            lock_requires_sec_right == o.lock_requires_sec_right &&
            evidence_required == o.evidence_required &&
+           redaction_class == o.redaction_class &&
            common == o.common;
   }
 };
-// session_control_policy (code 24): schema 65665, max 323 bytes.
+// session_control_policy config.self_view_redaction (token): owner Q71 = 1, the one value "baseline".
+enum class NativeAgentConfigEnum_session_control_policy_self_view_redaction : u16 {
+  none = 0,
+  baseline = 1,
+};
+inline constexpr std::array<CatalogAgentTagEntry<NativeAgentConfigEnum_session_control_policy_self_view_redaction>, 1> kNativeAgentConfigEnum_session_control_policy_self_view_redactionTags{{
+    {NativeAgentConfigEnum_session_control_policy_self_view_redaction::baseline, "baseline"}}};
+constexpr std::optional<NativeAgentConfigEnum_session_control_policy_self_view_redaction> NativeAgentConfigEnum_session_control_policy_self_view_redactionForTag(std::string_view tag) noexcept {
+  return CatalogAgentTagLookup(kNativeAgentConfigEnum_session_control_policy_self_view_redactionTags, tag);
+}
+// session_control_policy (code 24): schema 65665, max 291 bytes.
 struct NativeAgentConfig_session_control_policy {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::session_control_policy;
   static constexpr u32 schema_id = 65665;
-  static constexpr std::size_t max_bytes = 323;
+  static constexpr std::size_t max_bytes = 291;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
   bool disconnect_requires_right = false;  // tag 4
   u64 reauth_cooldown = 0;  // tag 5
   bool revoke_requires_sec_right = false;  // tag 6
-  // tag 7 self_view_redaction (token): free text, NOT carried (unrepresented).
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigEnum_session_control_policy_self_view_redaction self_view_redaction = NativeAgentConfigEnum_session_control_policy_self_view_redaction::none;  // tag 7
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_session_control_policy& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
@@ -824,38 +889,50 @@ struct NativeAgentConfig_session_control_policy {
            disconnect_requires_right == o.disconnect_requires_right &&
            reauth_cooldown == o.reauth_cooldown &&
            revoke_requires_sec_right == o.revoke_requires_sec_right &&
+           self_view_redaction == o.self_view_redaction &&
            common == o.common;
   }
 };
-// alerting_baseline (code 25): schema 65666, max 330 bytes.
+// alerting_baseline config.grouping_rules (token_list): owner Q71 = 1, the one value "baseline".
+enum class NativeAgentConfigEnum_alerting_baseline_grouping_rules : u16 {
+  none = 0,
+  baseline = 1,
+};
+inline constexpr std::array<CatalogAgentTagEntry<NativeAgentConfigEnum_alerting_baseline_grouping_rules>, 1> kNativeAgentConfigEnum_alerting_baseline_grouping_rulesTags{{
+    {NativeAgentConfigEnum_alerting_baseline_grouping_rules::baseline, "baseline"}}};
+constexpr std::optional<NativeAgentConfigEnum_alerting_baseline_grouping_rules> NativeAgentConfigEnum_alerting_baseline_grouping_rulesForTag(std::string_view tag) noexcept {
+  return CatalogAgentTagLookup(kNativeAgentConfigEnum_alerting_baseline_grouping_rulesTags, tag);
+}
+// alerting_baseline (code 25): schema 65666, max 298 bytes.
 struct NativeAgentConfig_alerting_baseline {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::alerting_baseline;
   static constexpr u32 schema_id = 65666;
-  static constexpr std::size_t max_bytes = 330;
+  static constexpr std::size_t max_bytes = 298;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
   u64 dedupe_window = 0;  // tag 4
-  // tag 5 grouping_rules (token_list): free text, NOT carried (unrepresented).
+  NativeAgentConfigEnum_alerting_baseline_grouping_rules grouping_rules = NativeAgentConfigEnum_alerting_baseline_grouping_rules::none;  // tag 5
   u64 silence_max_duration = 0;  // tag 6
   bool critical_silence_requires_override = false;  // tag 7
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_alerting_baseline& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
            origin_transaction_uuid.value == o.origin_transaction_uuid.value &&
            origin_local_transaction_id == o.origin_local_transaction_id &&
            dedupe_window == o.dedupe_window &&
+           grouping_rules == o.grouping_rules &&
            silence_max_duration == o.silence_max_duration &&
            critical_silence_requires_override == o.critical_silence_requires_override &&
            common == o.common;
   }
 };
-// export_default_baseline (code 26): schema 65667, max 332 bytes.
+// export_default_baseline (code 26): schema 65667, max 284 bytes.
 struct NativeAgentConfig_export_default_baseline {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::export_default_baseline;
   static constexpr u32 schema_id = 65667;
-  static constexpr std::size_t max_bytes = 332;
+  static constexpr std::size_t max_bytes = 284;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
@@ -863,7 +940,7 @@ struct NativeAgentConfig_export_default_baseline {
   bool redaction_required = false;  // tag 5
   u64 queue_backpressure = 0;  // tag 6
   bool adapter_health_required = false;  // tag 7
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_export_default_baseline& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
@@ -876,20 +953,40 @@ struct NativeAgentConfig_export_default_baseline {
            common == o.common;
   }
 };
-// upgrade_policy (code 27): schema 65668, max 316 bytes.
+// upgrade_policy config.rolling_step_order (token_list): owner Q71 = 1, the one value "baseline".
+enum class NativeAgentConfigEnum_upgrade_policy_rolling_step_order : u16 {
+  none = 0,
+  baseline = 1,
+};
+inline constexpr std::array<CatalogAgentTagEntry<NativeAgentConfigEnum_upgrade_policy_rolling_step_order>, 1> kNativeAgentConfigEnum_upgrade_policy_rolling_step_orderTags{{
+    {NativeAgentConfigEnum_upgrade_policy_rolling_step_order::baseline, "baseline"}}};
+constexpr std::optional<NativeAgentConfigEnum_upgrade_policy_rolling_step_order> NativeAgentConfigEnum_upgrade_policy_rolling_step_orderForTag(std::string_view tag) noexcept {
+  return CatalogAgentTagLookup(kNativeAgentConfigEnum_upgrade_policy_rolling_step_orderTags, tag);
+}
+// upgrade_policy config.rollback_gate (token): owner Q71 = 1, the one value "baseline".
+enum class NativeAgentConfigEnum_upgrade_policy_rollback_gate : u16 {
+  none = 0,
+  baseline = 1,
+};
+inline constexpr std::array<CatalogAgentTagEntry<NativeAgentConfigEnum_upgrade_policy_rollback_gate>, 1> kNativeAgentConfigEnum_upgrade_policy_rollback_gateTags{{
+    {NativeAgentConfigEnum_upgrade_policy_rollback_gate::baseline, "baseline"}}};
+constexpr std::optional<NativeAgentConfigEnum_upgrade_policy_rollback_gate> NativeAgentConfigEnum_upgrade_policy_rollback_gateForTag(std::string_view tag) noexcept {
+  return CatalogAgentTagLookup(kNativeAgentConfigEnum_upgrade_policy_rollback_gateTags, tag);
+}
+// upgrade_policy (code 27): schema 65668, max 300 bytes.
 struct NativeAgentConfig_upgrade_policy {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::upgrade_policy;
   static constexpr u32 schema_id = 65668;
-  static constexpr std::size_t max_bytes = 316;
+  static constexpr std::size_t max_bytes = 300;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
   bool readiness_required = false;  // tag 4
   bool fence_required = false;  // tag 5
-  // tag 6 rolling_step_order (token_list): free text, NOT carried (unrepresented).
-  // tag 7 rollback_gate (token): free text, NOT carried (unrepresented).
+  NativeAgentConfigEnum_upgrade_policy_rolling_step_order rolling_step_order = NativeAgentConfigEnum_upgrade_policy_rolling_step_order::none;  // tag 6
+  NativeAgentConfigEnum_upgrade_policy_rollback_gate rollback_gate = NativeAgentConfigEnum_upgrade_policy_rollback_gate::none;  // tag 7
   bool version_compatibility_required = false;  // tag 8
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_upgrade_policy& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
@@ -897,6 +994,8 @@ struct NativeAgentConfig_upgrade_policy {
            origin_local_transaction_id == o.origin_local_transaction_id &&
            readiness_required == o.readiness_required &&
            fence_required == o.fence_required &&
+           rolling_step_order == o.rolling_step_order &&
+           rollback_gate == o.rollback_gate &&
            version_compatibility_required == o.version_compatibility_required &&
            common == o.common;
   }
@@ -913,11 +1012,11 @@ inline constexpr std::array<CatalogAgentTagEntry<NativeAgentConfigEnum_agent_coo
 constexpr std::optional<NativeAgentConfigEnum_agent_coordinator_policy_startup_verification_class> NativeAgentConfigEnum_agent_coordinator_policy_startup_verification_classForTag(std::string_view tag) noexcept {
   return CatalogAgentTagLookup(kNativeAgentConfigEnum_agent_coordinator_policy_startup_verification_classTags, tag);
 }
-// agent_coordinator_policy (code 28): schema 65669, max 530 bytes.
+// agent_coordinator_policy (code 28): schema 65669, max 482 bytes.
 struct NativeAgentConfig_agent_coordinator_policy {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::agent_coordinator_policy;
   static constexpr u32 schema_id = 65669;
-  static constexpr std::size_t max_bytes = 530;
+  static constexpr std::size_t max_bytes = 482;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
@@ -939,7 +1038,7 @@ struct NativeAgentConfig_agent_coordinator_policy {
   CatalogAgentType startup_agent = CatalogAgentType::none;  // tag 19
   CatalogAgentType shutdown_agent = CatalogAgentType::none;  // tag 20
   bool coordinator_stops_last = false;  // tag 21
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_agent_coordinator_policy& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
@@ -966,11 +1065,11 @@ struct NativeAgentConfig_agent_coordinator_policy {
            common == o.common;
   }
 };
-// agent_startup_policy (code 29): schema 65670, max 445 bytes.
+// agent_startup_policy (code 29): schema 65670, max 397 bytes.
 struct NativeAgentConfig_agent_startup_policy {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::agent_startup_policy;
   static constexpr u32 schema_id = 65670;
-  static constexpr std::size_t max_bytes = 445;
+  static constexpr std::size_t max_bytes = 397;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
@@ -982,7 +1081,7 @@ struct NativeAgentConfig_agent_startup_policy {
   NativeAgentTypeList dependency_order;  // tag 9
   u64 readiness_timeout_microseconds = 0;  // tag 10
   u64 max_retry_attempts = 0;  // tag 11
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_agent_startup_policy& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
@@ -999,11 +1098,11 @@ struct NativeAgentConfig_agent_startup_policy {
            common == o.common;
   }
 };
-// agent_shutdown_policy (code 30): schema 65671, max 366 bytes.
+// agent_shutdown_policy (code 30): schema 65671, max 318 bytes.
 struct NativeAgentConfig_agent_shutdown_policy {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::agent_shutdown_policy;
   static constexpr u32 schema_id = 65671;
-  static constexpr std::size_t max_bytes = 366;
+  static constexpr std::size_t max_bytes = 318;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
@@ -1014,7 +1113,7 @@ struct NativeAgentConfig_agent_shutdown_policy {
   bool engine_final_receipt_required = false;  // tag 8
   bool cooperative_cancellation_only = false;  // tag 9
   u64 drain_timeout_microseconds = 0;  // tag 10
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_agent_shutdown_policy& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
@@ -1030,11 +1129,11 @@ struct NativeAgentConfig_agent_shutdown_policy {
            common == o.common;
   }
 };
-// coordinator_policy (code 31): schema 65672, max 394 bytes.
+// coordinator_policy (code 31): schema 65672, max 346 bytes.
 struct NativeAgentConfig_coordinator_policy {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::coordinator_policy;
   static constexpr u32 schema_id = 65672;
-  static constexpr std::size_t max_bytes = 394;
+  static constexpr std::size_t max_bytes = 346;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
@@ -1045,7 +1144,7 @@ struct NativeAgentConfig_coordinator_policy {
   u64 cardinality_surprise_repeat_window_microseconds = 0;  // tag 8
   u64 max_observation_queue_depth = 0;  // tag 9
   u64 max_active_leg_workers = 0;  // tag 10
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_coordinator_policy& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
@@ -1061,11 +1160,11 @@ struct NativeAgentConfig_coordinator_policy {
            common == o.common;
   }
 };
-// cleanup_cycle_policy (code 32): schema 65673, max 355 bytes.
+// cleanup_cycle_policy (code 32): schema 65673, max 307 bytes.
 struct NativeAgentConfig_cleanup_cycle_policy {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::cleanup_cycle_policy;
   static constexpr u32 schema_id = 65673;
-  static constexpr std::size_t max_bytes = 355;
+  static constexpr std::size_t max_bytes = 307;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
@@ -1074,7 +1173,7 @@ struct NativeAgentConfig_cleanup_cycle_policy {
   u64 orphaned_leg_kill_timeout_microseconds = 0;  // tag 6
   bool write_absence_evidence_required = false;  // tag 7
   bool degrade_on_stale_log = false;  // tag 8
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_cleanup_cycle_policy& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
@@ -1088,11 +1187,21 @@ struct NativeAgentConfig_cleanup_cycle_policy {
            common == o.common;
   }
 };
-// filespace_capacity_policy (code 33): schema 65674, max 437 bytes.
+// filespace_capacity_policy config.required_approval_class (token): owner Q71 = 1, the one value "baseline".
+enum class NativeAgentConfigEnum_filespace_capacity_policy_required_approval_class : u16 {
+  none = 0,
+  baseline = 1,
+};
+inline constexpr std::array<CatalogAgentTagEntry<NativeAgentConfigEnum_filespace_capacity_policy_required_approval_class>, 1> kNativeAgentConfigEnum_filespace_capacity_policy_required_approval_classTags{{
+    {NativeAgentConfigEnum_filespace_capacity_policy_required_approval_class::baseline, "baseline"}}};
+constexpr std::optional<NativeAgentConfigEnum_filespace_capacity_policy_required_approval_class> NativeAgentConfigEnum_filespace_capacity_policy_required_approval_classForTag(std::string_view tag) noexcept {
+  return CatalogAgentTagLookup(kNativeAgentConfigEnum_filespace_capacity_policy_required_approval_classTags, tag);
+}
+// filespace_capacity_policy (code 33): schema 65674, max 405 bytes.
 struct NativeAgentConfig_filespace_capacity_policy {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::filespace_capacity_policy;
   static constexpr u32 schema_id = 65674;
-  static constexpr std::size_t max_bytes = 437;
+  static constexpr std::size_t max_bytes = 405;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
@@ -1107,8 +1216,8 @@ struct NativeAgentConfig_filespace_capacity_policy {
   bool truncate_allowed = false;  // tag 12
   u64 critical_device_error_threshold = 0;  // tag 13
   u64 fsync_p99_critical_us = 0;  // tag 14
-  // tag 15 required_approval_class (token): free text, NOT carried (unrepresented).
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigEnum_filespace_capacity_policy_required_approval_class required_approval_class = NativeAgentConfigEnum_filespace_capacity_policy_required_approval_class::none;  // tag 15
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_filespace_capacity_policy& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
@@ -1125,14 +1234,15 @@ struct NativeAgentConfig_filespace_capacity_policy {
            truncate_allowed == o.truncate_allowed &&
            critical_device_error_threshold == o.critical_device_error_threshold &&
            fsync_p99_critical_us == o.fsync_p99_critical_us &&
+           required_approval_class == o.required_approval_class &&
            common == o.common;
   }
 };
-// filespace_shadow_promotion_policy (code 34): schema 65675, max 332 bytes.
+// filespace_shadow_promotion_policy (code 34): schema 65675, max 284 bytes.
 struct NativeAgentConfig_filespace_shadow_promotion_policy {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::filespace_shadow_promotion_policy;
   static constexpr u32 schema_id = 65675;
-  static constexpr std::size_t max_bytes = 332;
+  static constexpr std::size_t max_bytes = 284;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
@@ -1140,7 +1250,7 @@ struct NativeAgentConfig_filespace_shadow_promotion_policy {
   bool candidate_readiness_required = false;  // tag 5
   bool catalog_persistence_move_required = false;  // tag 6
   bool operator_approval_required = false;  // tag 7
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_filespace_shadow_promotion_policy& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
@@ -1153,11 +1263,31 @@ struct NativeAgentConfig_filespace_shadow_promotion_policy {
            common == o.common;
   }
 };
-// page_preallocation_policy (code 35): schema 65676, max 362 bytes.
+// page_preallocation_policy config.allowed_page_families (token_list): owner Q71 = 1, the one value "baseline".
+enum class NativeAgentConfigEnum_page_preallocation_policy_allowed_page_families : u16 {
+  none = 0,
+  baseline = 1,
+};
+inline constexpr std::array<CatalogAgentTagEntry<NativeAgentConfigEnum_page_preallocation_policy_allowed_page_families>, 1> kNativeAgentConfigEnum_page_preallocation_policy_allowed_page_familiesTags{{
+    {NativeAgentConfigEnum_page_preallocation_policy_allowed_page_families::baseline, "baseline"}}};
+constexpr std::optional<NativeAgentConfigEnum_page_preallocation_policy_allowed_page_families> NativeAgentConfigEnum_page_preallocation_policy_allowed_page_familiesForTag(std::string_view tag) noexcept {
+  return CatalogAgentTagLookup(kNativeAgentConfigEnum_page_preallocation_policy_allowed_page_familiesTags, tag);
+}
+// page_preallocation_policy config.workload_calendar (token_list): owner Q71 = 1, the one value "baseline".
+enum class NativeAgentConfigEnum_page_preallocation_policy_workload_calendar : u16 {
+  none = 0,
+  baseline = 1,
+};
+inline constexpr std::array<CatalogAgentTagEntry<NativeAgentConfigEnum_page_preallocation_policy_workload_calendar>, 1> kNativeAgentConfigEnum_page_preallocation_policy_workload_calendarTags{{
+    {NativeAgentConfigEnum_page_preallocation_policy_workload_calendar::baseline, "baseline"}}};
+constexpr std::optional<NativeAgentConfigEnum_page_preallocation_policy_workload_calendar> NativeAgentConfigEnum_page_preallocation_policy_workload_calendarForTag(std::string_view tag) noexcept {
+  return CatalogAgentTagLookup(kNativeAgentConfigEnum_page_preallocation_policy_workload_calendarTags, tag);
+}
+// page_preallocation_policy (code 35): schema 65676, max 346 bytes.
 struct NativeAgentConfig_page_preallocation_policy {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::page_preallocation_policy;
   static constexpr u32 schema_id = 65676;
-  static constexpr std::size_t max_bytes = 362;
+  static constexpr std::size_t max_bytes = 346;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
@@ -1165,10 +1295,10 @@ struct NativeAgentConfig_page_preallocation_policy {
   u64 forecast_window_seconds = 0;  // tag 5
   double history_confidence_threshold = 0;  // tag 6
   u64 max_reserved_bytes_per_filespace = 0;  // tag 7
-  // tag 8 allowed_page_families (token_list): free text, NOT carried (unrepresented).
-  // tag 9 workload_calendar (token_list): free text, NOT carried (unrepresented).
+  NativeAgentConfigEnum_page_preallocation_policy_allowed_page_families allowed_page_families = NativeAgentConfigEnum_page_preallocation_policy_allowed_page_families::none;  // tag 8
+  NativeAgentConfigEnum_page_preallocation_policy_workload_calendar workload_calendar = NativeAgentConfigEnum_page_preallocation_policy_workload_calendar::none;  // tag 9
   u64 allocation_throttle_pages_per_second = 0;  // tag 10
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_page_preallocation_policy& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
@@ -1178,15 +1308,27 @@ struct NativeAgentConfig_page_preallocation_policy {
            forecast_window_seconds == o.forecast_window_seconds &&
            history_confidence_threshold == o.history_confidence_threshold &&
            max_reserved_bytes_per_filespace == o.max_reserved_bytes_per_filespace &&
+           allowed_page_families == o.allowed_page_families &&
+           workload_calendar == o.workload_calendar &&
            allocation_throttle_pages_per_second == o.allocation_throttle_pages_per_second &&
            common == o.common;
   }
 };
-// page_relocation_policy (code 36): schema 65677, max 375 bytes.
+// page_relocation_policy config.unmovable_blocker_classes (token_list): owner Q71 = 1, the one value "baseline".
+enum class NativeAgentConfigEnum_page_relocation_policy_unmovable_blocker_classes : u16 {
+  none = 0,
+  baseline = 1,
+};
+inline constexpr std::array<CatalogAgentTagEntry<NativeAgentConfigEnum_page_relocation_policy_unmovable_blocker_classes>, 1> kNativeAgentConfigEnum_page_relocation_policy_unmovable_blocker_classesTags{{
+    {NativeAgentConfigEnum_page_relocation_policy_unmovable_blocker_classes::baseline, "baseline"}}};
+constexpr std::optional<NativeAgentConfigEnum_page_relocation_policy_unmovable_blocker_classes> NativeAgentConfigEnum_page_relocation_policy_unmovable_blocker_classesForTag(std::string_view tag) noexcept {
+  return CatalogAgentTagLookup(kNativeAgentConfigEnum_page_relocation_policy_unmovable_blocker_classesTags, tag);
+}
+// page_relocation_policy (code 36): schema 65677, max 343 bytes.
 struct NativeAgentConfig_page_relocation_policy {
   static constexpr CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::page_relocation_policy;
   static constexpr u32 schema_id = 65677;
-  static constexpr std::size_t max_bytes = 375;
+  static constexpr std::size_t max_bytes = 343;
   Uuid definition_uuid;
   TypedUuid origin_transaction_uuid;
   u64 origin_local_transaction_id = 0;
@@ -1195,11 +1337,11 @@ struct NativeAgentConfig_page_relocation_policy {
   bool publish_shrink_ready_allowed = false;  // tag 6
   u64 max_pages_per_interval = 0;  // tag 7
   u64 interval_seconds = 0;  // tag 8
-  // tag 9 unmovable_blocker_classes (token_list): free text, NOT carried (unrepresented).
+  NativeAgentConfigEnum_page_relocation_policy_unmovable_blocker_classes unmovable_blocker_classes = NativeAgentConfigEnum_page_relocation_policy_unmovable_blocker_classes::none;  // tag 9
   bool require_checksum_valid = false;  // tag 10
   bool require_transaction_holds_clear = false;  // tag 11
   bool require_backup_archive_holds_clear = false;  // tag 12
-  NativeAgentConfigResourceBudget common;  // tags 64..76
+  NativeAgentConfigResourceBudget common;  // tags 64..73
   bool operator==(const NativeAgentConfig_page_relocation_policy& o) const noexcept {
     return definition_uuid == o.definition_uuid &&
            origin_transaction_uuid.kind == o.origin_transaction_uuid.kind &&
@@ -1210,6 +1352,7 @@ struct NativeAgentConfig_page_relocation_policy {
            publish_shrink_ready_allowed == o.publish_shrink_ready_allowed &&
            max_pages_per_interval == o.max_pages_per_interval &&
            interval_seconds == o.interval_seconds &&
+           unmovable_blocker_classes == o.unmovable_blocker_classes &&
            require_checksum_valid == o.require_checksum_valid &&
            require_transaction_holds_clear == o.require_transaction_holds_clear &&
            require_backup_archive_holds_clear == o.require_backup_archive_holds_clear &&
@@ -1267,8 +1410,8 @@ bool WithNativeAgentConfigType(CatalogAgentPolicyFamily family, F&& f) {
 std::span<const NativeAgentConfigFieldDescriptor> NativeAgentConfigFieldsFor(CatalogAgentPolicyFamily) noexcept;
 std::span<const NativeAgentConfigFieldDescriptor> NativeAgentConfigCommonFields() noexcept;
 // Keys a family declares whose value is free text with no enumeration or
-// identifier meaning: accepted by the boundary adapter, NOT carried. Pending
-// an owner ruling; see the 3c-2 report.
+// identifier meaning: accepted by the boundary adapter, NOT carried. Empty for
+// every family since owner Q71 = 1 (the generator refuses to emit one).
 std::span<const std::string_view> NativeAgentConfigUnrepresentedKeys(CatalogAgentPolicyFamily) noexcept;
 
 // Config codec, one instantiation per NativeAgentConfig_<family>.
@@ -1278,7 +1421,18 @@ template <class R> CatalogValueEncodeResult EncodeNativeAgentConfig(const R&);
 template <class R> NativeAgentDecodeResult<R> DecodeNativeAgentConfig(std::string_view);
 // Config boundary adapter: keys without the "config." prefix. Every family
 // field is required exactly once; common fields are optional; unknown or
-// repeated keys are refused. Unrepresented keys are accepted and dropped.
+// repeated keys are refused. Unrepresented keys are accepted and dropped
+// (none remain after owner Q71 = 1, 2026-11-12: the 13 free-text "baseline"
+// fields are one-value enums that accept exactly "baseline").
+// Owner Q73 = 1: max_history_query_rows, max_evidence_fanout and
+// max_label_cardinality are policy-record fields only. A config key naming one
+// is accepted only with `policy` supplied and a value equal to the policy
+// record's (then not carried); otherwise it is refused. The builder
+// (agent_bootstrap_configuration.hpp) writes only required config fields, so
+// it never writes them under config.
 // Identity and origin fields are left for the caller; not validated.
 template <class R> NativeAgentTagResult<R> NativeAgentConfigFromTags(std::span<const NativeAgentPropertyTag>);
+template <class R>
+NativeAgentTagResult<R> NativeAgentConfigFromTags(std::span<const NativeAgentPropertyTag>,
+                                                  const NativeAgentPolicyRecord* policy);
 }  // namespace scratchbird::core::catalog
