@@ -1,0 +1,282 @@
+{
+  "schema_version": 1,
+  "purpose": "Descriptions of system objects, kept for a possible fully internally documented database. Not written at create: a new database has no comments (owner 2026-11-13).",
+  "language": "en",
+  "comments": [
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000100",
+      "comment": "Application runtime role for connect and event delivery.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000100"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000101",
+      "comment": "Database administration role for local database objects.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000101"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000102",
+      "comment": "Security administration role for identities, grants, and policies.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000102"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000103",
+      "comment": "Audit and lineage inspection role.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000103"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000104",
+      "comment": "Operational management and observability role.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000104"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000600",
+      "comment": "Agent task group metrics: L1 readers, no write of any kind.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000600"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000601",
+      "comment": "Agent task group metrics: L2-L4 members.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000601"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000602",
+      "comment": "Agent task group node_validation: L2-L4 members.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000602"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000603",
+      "comment": "Agent task group filespace_capacity: L1 readers, no write of any kind.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000603"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000604",
+      "comment": "Agent task group filespace_capacity: L2-L4 members.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000604"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000605",
+      "comment": "Agent task group page_allocation: L1 readers, no write of any kind.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000605"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000606",
+      "comment": "Agent task group page_allocation: L2-L4 members.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000606"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000607",
+      "comment": "Agent task group memory_governor: L1 readers, no write of any kind.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000607"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000608",
+      "comment": "Agent task group memory_governor: L2-L4 members.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000608"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000609",
+      "comment": "Agent task group storage_health: L1 readers, no write of any kind.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000609"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-00000000060a",
+      "comment": "Agent task group storage_health: L2-L4 members.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-00000000060a"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-00000000060b",
+      "comment": "Agent task group admission_control: L1 readers, no write of any kind.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-00000000060b"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-00000000060c",
+      "comment": "Agent task group admission_control: L2-L4 members.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-00000000060c"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-00000000060d",
+      "comment": "Agent task group parser_interface: L1 readers, no write of any kind.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-00000000060d"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-00000000060e",
+      "comment": "Agent task group parser_interface: L2-L4 members.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-00000000060e"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-00000000060f",
+      "comment": "Agent task group listener: L2-L4 members.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-00000000060f"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000610",
+      "comment": "Agent task group session_control: L1 readers, no write of any kind.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000610"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000611",
+      "comment": "Agent task group session_control: L2-L4 members.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000611"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000612",
+      "comment": "Agent task group transaction_pressure: L1 readers, no write of any kind.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000612"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000613",
+      "comment": "Agent task group transaction_pressure: L2-L4 members.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000613"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000614",
+      "comment": "Agent task group storage_version_cleanup: L2-L4 members.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000614"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000615",
+      "comment": "Agent task group garbage_collection: L2-L4 members.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000615"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000616",
+      "comment": "Agent task group cleanup_archive: L1 readers, no write of any kind.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000616"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000617",
+      "comment": "Agent task group cleanup_archive: L2-L4 members.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000617"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000618",
+      "comment": "Agent task group archive: L1 readers, no write of any kind.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000618"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000619",
+      "comment": "Agent task group archive: L2-L4 members.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000619"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-00000000061a",
+      "comment": "Agent task group backup: L1 readers, no write of any kind.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-00000000061a"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-00000000061b",
+      "comment": "Agent task group backup: L2-L4 members.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-00000000061b"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-00000000061c",
+      "comment": "Agent task group restore_drill: L1 readers, no write of any kind.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-00000000061c"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-00000000061d",
+      "comment": "Agent task group restore_drill: L2-L4 members.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-00000000061d"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-00000000061e",
+      "comment": "Agent task group pitr: L1 readers, no write of any kind.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-00000000061e"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-00000000061f",
+      "comment": "Agent task group pitr: L2-L4 members.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-00000000061f"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000620",
+      "comment": "Agent task group index_health: L1 readers, no write of any kind.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000620"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000621",
+      "comment": "Agent task group index_health: L2-L4 members.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000621"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000622",
+      "comment": "Agent task group runtime_learning: L2-L4 members.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000622"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000623",
+      "comment": "Agent task group policy_recommendation: L1 readers, no write of any kind.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000623"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000624",
+      "comment": "Agent task group policy_recommendation: L2-L4 members.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000624"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000625",
+      "comment": "Agent task group alert: L2-L4 members.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000625"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000626",
+      "comment": "Agent task group support_bundle_triage: L1 readers, no write of any kind.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000626"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000627",
+      "comment": "Agent task group support_bundle_triage: L2-L4 members.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000627"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000628",
+      "comment": "Agent task group identity: L1 readers, no write of any kind.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000628"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000629",
+      "comment": "Agent task group identity: L2-L4 members.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-000000000629"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-00000000062a",
+      "comment": "Agent task group job_control: L2-L4 members.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-00000000062a"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-00000000062b",
+      "comment": "Agent task group export_adapter: L2-L4 members.",
+      "source": "policy-packs/default-local-password/policies/roles.json#018f7a10-1280-7000-8000-00000000062b"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000200",
+      "comment": "Baseline public group with no implicit engine authority.",
+      "source": "policy-packs/default-local-password/policies/groups.json#018f7a10-1280-7000-8000-000000000200"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000201",
+      "comment": "Application runtime users.",
+      "source": "policy-packs/default-local-password/policies/groups.json#018f7a10-1280-7000-8000-000000000201"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000202",
+      "comment": "Local database administrators.",
+      "source": "policy-packs/default-local-password/policies/groups.json#018f7a10-1280-7000-8000-000000000202"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000203",
+      "comment": "Security administrators.",
+      "source": "policy-packs/default-local-password/policies/groups.json#018f7a10-1280-7000-8000-000000000203"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000204",
+      "comment": "Audit readers.",
+      "source": "policy-packs/default-local-password/policies/groups.json#018f7a10-1280-7000-8000-000000000204"
+    },
+    {
+      "target_uuid": "018f7a10-1280-7000-8000-000000000205",
+      "comment": "Operators.",
+      "source": "policy-packs/default-local-password/policies/groups.json#018f7a10-1280-7000-8000-000000000205"
+    }
+  ]
+}
