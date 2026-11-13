@@ -889,15 +889,26 @@ void NameBranchSplits(const Db& b, const NameTemplate& t, u16 role, std::size_t 
 struct NameSuccessorExpected {
   std::vector<byte> file;
   std::size_t writes = 0;
+  std::set<u64> pages;  // step4-open3: every page the successor writes (outside the allocation map)
 };
-// `new_page`: where the writer put a new base leaf when no leaf had room
-// (SB_CATALOG_NEW_PAGES); the leaf is then a sibling's header and body
-// identity with this page's number, the request's first page UUID and
-// generation 1, holding the version, and the version gets its own cell in the
-// names relation's row-UUID tree.
+// `new_pages`: the pages the writer allocated (SB_CATALOG_NEW_PAGES), taken in
+// order with the request's page identities. When no leaf has room the first is
+// a new base leaf: a sibling's header and body identity with this page's
+// number, the request's first page UUID and generation 1, holding the version,
+// and the version gets its own cell in the names relation's row-UUID tree.
+// step4-open3: every tree cell the successor adds (that row-UUID cell, the new
+// name's cells in the two name trees) goes in through OracleTree, the insert
+// oracle's tree model written over the file (native_catalog_insert_writer_test:
+// leaf, root-leaf and branch splits), taking the remaining allocated pages in
+// the writer's order (the base leaf, the row-UUID cell, then the stamps, the
+// authoritative tree, the UUID-to-name tree); nullopt when a cell does not fit
+// and no page is left, or when the writer allocated a page this did not take.
+// `base_room`, when given, says whether a reached base leaf had room for the
+// version (whatever its tree cells need).
 std::optional<NameSuccessorExpected> NameSuccessorOracle(const Db& b, std::span<const byte> before,
                                                          const db::CatalogVersionRequest& r,
-                                                         std::optional<u64> new_page = std::nullopt) {
+                                                         std::span<const u64> new_pages = {},
+                                                         bool* base_room = nullptr) {
   RoleScope scope(b, 2);
   const auto rel = ReadRelation(b, before);
   const auto versions = rel.Versions(r.row_uuid);
@@ -922,20 +933,24 @@ std::optional<NameSuccessorExpected> NameSuccessorOracle(const Db& b, std::span<
   if (rel.At(base.first).leaf.body.free_space_bytes >= RowBytes(finished(rel.At(base.first)))) target = base.first;
   for (const auto& l : rel.leaves)
     if (!target && l.page != base.first && l.leaf.body.free_space_bytes >= RowBytes(finished(l))) target = l.page;
+  if (base_room) *base_room = target.has_value();
+  std::size_t taken = 0;
   std::optional<LeafSeen> fresh;
-  if (!target && new_page) {
+  if (!target && !new_pages.empty()) {
+    const auto new_page = new_pages.front();
+    taken = 1;
     LeafSeen l;
-    l.page = *new_page;
+    l.page = new_page;
     l.leaf.header = rel.leaves.front().leaf.header;
     l.leaf.header.page_uuid = r.new_pages.front().page_uuid;
-    l.leaf.header.page_number = *new_page;
+    l.leaf.header.page_number = new_page;
     l.leaf.header.page_generation = 1;
     l.leaf.body = rel.leaves.front().leaf.body;
     l.leaf.body.rows.clear();
-    l.leaf.body.page_number = *new_page;
+    l.leaf.body.page_number = new_page;
     l.leaf.body.page_generation = 1;
     fresh = std::move(l);
-    target = *new_page;
+    target = new_page;
   }
   if (!target) return std::nullopt;
   const auto& target_leaf = fresh ? *fresh : rel.At(*target);
@@ -970,27 +985,35 @@ std::optional<NameSuccessorExpected> NameSuccessorOracle(const Db& b, std::span<
     Check(image.ok(), "the expected leaf encodes");
     std::copy(image.bytes.begin(), image.bytes.end(), out.file.begin() + static_cast<std::ptrdiff_t>(page.header.page_number * b.size));
     ++out.writes;
+    out.pages.insert(page.header.page_number);
   };
   put_leaf(into);
   if (*target != base.first) put_leaf(link);
+  std::set<u64> tree_pages_changed;
+  // step4-open3: a cell into the tree rooted at `root`, as read from the file
+  // as it stands, through the insert oracle's tree model (splits taking the
+  // allocated pages left, in order); its changed and added pages written.
+  const auto insert_cell = [&](u64 root, pg::NativeBtreeCell entry) {
+    OracleTree oracle{b, out.file, ReadTreeAt(b, out.file, root), new_pages,
+                      std::span<const db::CatalogNewPageIdentity>(r.new_pages), taken, {}};
+    if (!oracle.Insert(std::move(entry))) return false;
+    for (const auto i : oracle.changed) {
+      const auto image = pg::EncodeNativeBtreePage(oracle.tree.pages[i].page);
+      Check(image.ok(), "the expected tree page encodes");
+      std::copy(image.bytes.begin(), image.bytes.end(),
+                out.file.begin() + static_cast<std::ptrdiff_t>(oracle.tree.pages[i].number * b.size));
+      tree_pages_changed.insert(oracle.tree.pages[i].number);
+    }
+    return true;
+  };
   // A version on a new leaf: its own cell in the row-UUID tree, after the
   // leaves (the tree read here is the file's as it stands).
-  std::size_t index_writes = 0;
   if (fresh) {
-    auto tree = ReadTree(b, out.file);
-    const auto key = KeyOf(r.row_uuid, r.version_uuid);
-    auto& leaf = tree.pages[LeafFor(tree, key)];
-    std::size_t at = 0;
-    while (at < leaf.page.cells.size() && KeyOrder(leaf.page.cells[at].key, key) < 0) ++at;
     pg::NativeBtreeCell entry;
-    entry.key = key;
-    entry.base_page = d::NativePageReference{b.primary, *new_page, 1, b.profile};
+    entry.key = KeyOf(r.row_uuid, r.version_uuid);
+    entry.base_page = d::NativePageReference{b.primary, fresh->page, 1, b.profile};
     entry.creator_local_transaction_id = r.transaction_order;
-    leaf.page.cells.insert(leaf.page.cells.begin() + static_cast<std::ptrdiff_t>(at), std::move(entry));
-    const auto image = pg::EncodeNativeBtreePage(leaf.page);
-    if (!image.ok()) return std::nullopt;
-    std::copy(image.bytes.begin(), image.bytes.end(), out.file.begin() + static_cast<std::ptrdiff_t>(leaf.number * b.size));
-    index_writes = 1;
+    if (!insert_cell(HeadPage(b, out.file), std::move(entry))) return std::nullopt;
   }
   // The trees.
   const auto zero = d::DecodeFilespacePageZero(out.file.data(), b.size);
@@ -1001,7 +1024,6 @@ std::optional<NameSuccessorExpected> NameSuccessorOracle(const Db& b, std::span<
   };
   const auto first = root_of(22), second = root_of(23);
   Check(first.has_value() && second.has_value(), "the production database has both name trees");
-  std::set<u64> tree_pages_changed;
   const auto put_tree = [&](u64 number, const pg::NativeBtreePage& page) {
     const auto image = pg::EncodeNativeBtreePage(page);
     Check(image.ok(), "the expected tree page encodes");
@@ -1051,26 +1073,19 @@ std::optional<NameSuccessorExpected> NameSuccessorOracle(const Db& b, std::span<
       cells.push_back({1, c::CatalogNameUuidTreeEntryKey(e, *kind), c::CatalogNameUuidTreeEntryPayload(e.name_entry_uuid.value, components)});
     }
     for (auto& planned : cells) {
-      auto tree = ReadTreeAt(b, out.file, planned.tree ? *second : *first);
-      pg::NativeBtreeKey key;
-      key.encoded_key = std::move(planned.key);
-      key.row_uuid = r.row_uuid;
-      key.version_uuid = r.version_uuid;
-      auto& leaf = tree.pages[LeafFor(tree, key)];
-      std::size_t at = 0;
-      while (at < leaf.page.cells.size() && KeyOrder(leaf.page.cells[at].key, key) < 0) ++at;
       pg::NativeBtreeCell entry;
-      entry.key = key;
+      entry.key.encoded_key = std::move(planned.key);
+      entry.key.row_uuid = r.row_uuid;
+      entry.key.version_uuid = r.version_uuid;
       entry.base_page = d::NativePageReference{b.primary, *target, into.header.page_generation, b.profile};
       entry.creator_local_transaction_id = r.transaction_order;
       entry.payload = std::move(planned.payload);
-      leaf.page.cells.insert(leaf.page.cells.begin() + static_cast<std::ptrdiff_t>(at), std::move(entry));
-      const auto image = pg::EncodeNativeBtreePage(leaf.page);
-      if (!image.ok()) return std::nullopt;
-      put_tree(leaf.number, leaf.page);
+      if (!insert_cell(planned.tree ? *second : *first, std::move(entry))) return std::nullopt;
     }
   }
-  out.writes += tree_pages_changed.size() + index_writes;
+  if (taken != new_pages.size()) return std::nullopt;  // the writer added a page the oracle did not need
+  out.writes += tree_pages_changed.size();
+  out.pages.insert(tree_pages_changed.begin(), tree_pages_changed.end());
   return out;
 }
 // False when no leaf of the names relation has room for the version: the
@@ -1080,41 +1095,121 @@ std::optional<NameSuccessorExpected> NameSuccessorOracle(const Db& b, std::span<
 // record is checked on its own (the system's: no creator; the lowest free
 // slot; type, owner, identities, generation 1), and the map pages are taken
 // from the file once their one record is.
+// step4-open3: the writer may also allocate tree pages, for splits of the
+// row-UUID tree or the name trees the version's cells reach (or only those,
+// when a base leaf has room): the oracle is given every allocated page in
+// order; each one's record is checked (the first a base leaf of the names
+// relation when no leaf had room, the rest tree pages of the tree that split).
+// The writes are checked page by page through a recording sink: the
+// allocations' map writes first (one or two each), then exactly the pages the
+// oracle changed, each once; every base leaf before any tree page; and no
+// existing page written before a new page it now names (SB_CATALOG_SPLIT_LAG:
+// a page a split added is durable before anything points at it).
 bool ExpectNameSuccessor(const Db& b, Session& s, const std::string& path, const db::CatalogVersionRequest& r,
-                         std::string_view label) {
+                         std::string_view label, std::size_t* split_pages = nullptr) {
+  const std::string what(label);
+  if (split_pages) *split_pages = 0;
   const auto before = ReadAll(path);
   const auto in_place = NameSuccessorOracle(b, before, r);
-  const auto result = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), r);
+  InsertRecordingSink recording(s.sink());
+  const auto result = db::WriteCatalogSuccessorVersion(recording, GrowingBinding(b), r);
   if (!result.ok()) std::cerr << label << ": " << db::CatalogVersionWriteErrorName(result.error) << '\n';
-  Check(result.ok(), std::string(label) + ": the successor is written");
+  Check(result.ok(), what + ": the successor is written");
   const auto after = ReadAll(path);
   if (in_place) {
-    Check(result.allocated_pages.empty(), std::string(label) + ": no page is added while a leaf has room");
-    Check(result.writes == in_place->writes, std::string(label) + ": one write per changed page");
-    Check(after == in_place->file, std::string(label) + ": the file is the oracle's");
+    Check(result.allocated_pages.empty(), what + ": no page is added while a leaf has room");
+    Check(result.writes == in_place->writes, what + ": one write per changed page");
+    Check(after == in_place->file, what + ": the file is the oracle's");
     return true;
   }
-  Check(result.allocated_pages.size() == 1, std::string(label) + ": one new base leaf");
-  const auto page = result.allocated_pages.front();
-  auto expected = NameSuccessorOracle(b, before, r, page);
-  Check(expected.has_value(), std::string(label) + ": the oracle places the version on the new leaf");
-  const auto was = AllocationOf(b, before, page);
-  const auto now = AllocationOf(b, after, page);
-  Check(!was.record && was.lower_all_allocated, std::string(label) + ": the lowest free slot");
-  RoleScope scope(b, 2);
-  Check(now.record && now.record->page_type == 6 && now.record->owner_uuid == b.Relation().relation_uuid &&
-            now.record->page_uuid == r.new_pages.front().page_uuid &&
-            now.record->allocation_uuid == r.new_pages.front().allocation_uuid &&
-            now.record->creator_transaction_uuid.is_nil() && !now.record->creator_local_transaction_id &&
-            now.record->creator_operation_uuid.is_nil() && now.record->page_generation == 1,
-        std::string(label) + ": the system's allocation record for the new leaf");
+  const auto& allocated = result.allocated_pages;
+  Check(!allocated.empty() && allocated.size() <= r.new_pages.size(), what + ": pages are added, one per page identity at most");
+  bool base_room = false;
+  auto expected = NameSuccessorOracle(b, before, r, allocated, &base_room);
+  Check(expected.has_value(), what + ": the oracle places the version and its cells on the pages the writer added");
+  Check(AllocationOf(b, before, allocated.front()).lower_all_allocated, what + ": the lowest free slot");
+  std::size_t tree_pages = 0;
+  for (std::size_t i = 0; i < allocated.size(); ++i) {
+    const auto page = allocated[i];
+    const auto was = AllocationOf(b, before, page);
+    const auto now = AllocationOf(b, after, page);
+    Check(!was.record, what + ": a free slot, now a page");
+    Uuid owner{};
+    u32 type = 0;
+    if (i == 0 && !base_room) {
+      RoleScope scope(b, 2);
+      type = 6;
+      owner = b.Relation().relation_uuid;
+    } else {
+      const auto tree_page = pg::DecodeNativeBtreePage(PageOf(after, page, b.size));
+      Check(tree_page.ok() && (tree_page.page->header.page_type == 0x202 || tree_page.page->header.page_type == 0x201) &&
+                tree_page.page->header.page_generation == 1 && tree_page.page->creator_transaction_uuid.is_nil() &&
+                !tree_page.page->creator_local_transaction_id,
+            what + ": a new tree page (a leaf or a branch) of a split, the system's");
+      type = tree_page.page->header.page_type;
+      owner = tree_page.page->dependencies.index_uuid;
+      ++tree_pages;
+    }
+    Check(now.record && now.record->page_type == type && now.record->owner_uuid == owner &&
+              now.record->page_uuid == r.new_pages[i].page_uuid && now.record->allocation_uuid == r.new_pages[i].allocation_uuid &&
+              now.record->creator_transaction_uuid.is_nil() && !now.record->creator_local_transaction_id &&
+              now.record->creator_operation_uuid.is_nil() && now.record->page_generation == 1,
+          what + ": the system's allocation record for new page " + std::to_string(i));
+  }
+  // The writes, page by page.
+  std::vector<u64> written;
+  std::size_t map_writes = 0;
+  for (const auto offset : recording.offsets) {
+    const u64 page = offset / b.size;
+    if (page >= 1 && page <= b.receipt.map_pages) {
+      // An allocation's record or state, within a map page.
+      Check(written.empty(), what + ": the allocations' map writes come first");
+      ++map_writes;
+    } else {
+      Check(offset % b.size == 0, what + ": whole-page writes outside the allocation map");
+      written.push_back(page);
+    }
+  }
+  Check(map_writes >= allocated.size() && map_writes <= 2 * allocated.size(),
+        what + ": one or two map writes per allocation");
+  Check(result.writes == map_writes + written.size(), what + ": the writes the result counts are the writes made");
+  Check(written.size() == expected->writes && std::set<u64>(written.begin(), written.end()) == expected->pages,
+        what + ": exactly the pages the oracle changed, each written once");
+  std::map<u64, std::size_t> order;
+  for (std::size_t i = 0; i < written.size(); ++i) order[written[i]] = i;
+  const std::set<u64> added(allocated.begin(), allocated.end());
+  std::optional<std::size_t> last_leaf, first_tree;
+  for (std::size_t i = 0; i < written.size(); ++i) {
+    const auto header = d::DecodeNativeCommonPageHeader(after.data() + written[i] * b.size, 128);
+    Check(header.ok(), what + ": a written page's header decodes");
+    if (header.header->page_type == 6) {
+      last_leaf = i;
+      continue;
+    }
+    if (!first_tree) first_tree = i;
+    if (added.contains(written[i])) continue;
+    // An existing tree page: every new page it names was written before it.
+    const auto page = pg::DecodeNativeBtreePage(PageOf(after, written[i], b.size));
+    Check(page.ok(), what + ": a written tree page decodes");
+    std::vector<d::NativePageReference> refs;
+    for (const auto& ref : {page.page->first_child, page.page->left, page.page->right, page.page->parent})
+      if (ref) refs.push_back(*ref);
+    for (const auto& cell : page.page->cells)
+      if (cell.child) refs.push_back(*cell.child);
+    for (const auto& ref : refs)
+      if (added.contains(ref.page_number))
+        Check(order.contains(ref.page_number) && order.at(ref.page_number) < i,
+              what + ": a new page is written before an existing page that names it");
+  }
+  Check(!last_leaf || !first_tree || *last_leaf < *first_tree, what + ": every base leaf before any tree page");
   for (u64 m = 1; m <= b.receipt.map_pages; ++m)
     std::copy(after.begin() + static_cast<std::ptrdiff_t>(m * b.size), after.begin() + static_cast<std::ptrdiff_t>((m + 1) * b.size),
               expected->file.begin() + static_cast<std::ptrdiff_t>(m * b.size));
-  Check(result.writes == expected->writes + 1 || result.writes == expected->writes + 2,
-        std::string(label) + ": the allocation's one or two writes, then one write per changed page");
-  Check(after == expected->file, std::string(label) + ": the file is the oracle's");
-  std::cout << b.name << " name successor page_size=" << b.size << " new base leaf " << page << ": " << label << '\n';
+  Check(after == expected->file, what + ": the file is the oracle's");
+  if (split_pages) *split_pages = tree_pages;
+  std::cout << b.name << " name successor page_size=" << b.size << " "
+            << (base_room ? "no new base leaf" : "new base leaf " + std::to_string(allocated.front())) << ", "
+            << tree_pages << " tree pages added by splits, " << written.size() << " pages written: " << label << '\n';
   return true;
 }
 // A successor request for a name row the test inserted: the insert's
@@ -2297,6 +2392,26 @@ void NameSuccessors(const Db& b, const NameTemplate& t, u16 role, std::size_t de
 // short-named objects until no reached leaf of the names relation has room for
 // the renamed entry (its new name is longer than theirs), then renames: the
 // version goes on a new base leaf, its envelope binding that page and slot.
+// step4-open3: the fillers stop on the base leaves alone (a reached base leaf
+// with room for the version), not on the oracle's whole placement: at 8 KiB a
+// name-tree leaf the version's cells reach fills before the base leaves do, so
+// the old stop (the whole in-place placement) ended the fillers there and the
+// writer split that tree leaf instead, which was reported "not checked". The
+// rename now has page identities to spare, and the oracle models the tree
+// splits its cells cause (OracleTree, as the inserts'), so every page size is
+// checked: the new base leaf, any split tree pages, the allocation records,
+// the writes page by page (ExpectNameSuccessor), the old name while the rename
+// is in progress, the new one committed, full startup verification. Then the
+// rename again on copies of the file before it, failing each of its writes in
+// turn (a crash at that point): the database verifies with the old name, any
+// split left unfinished is survived, and a rename by the next transaction
+// succeeds, completes any unfinished split, commits and verifies.
+std::vector<db::CatalogNewPageIdentity> NewLeafRenamePages(unsigned seed) {
+  std::vector<db::CatalogNewPageIdentity> out;
+  for (unsigned i = 0; i < 8; ++i)
+    out.push_back({V7(kT + 2700000 + 100 * u64{seed} + i, 0x6a0000 + seed), V7(kT + 2700000 + 100 * u64{seed} + i, 0x6b0000 + seed)});
+  return out;
+}
 void NameSuccessorOnNewLeaf(const Db& b, const NameTemplate& t, u16 role, std::size_t definitions) {
   const auto path = b.Copy(b.bytes, "successor-new-leaf.db");
   Session s(b, path);
@@ -2310,11 +2425,23 @@ void NameSuccessorOnNewLeaf(const Db& b, const NameTemplate& t, u16 role, std::s
   Commit(*s.w, s.sink(), 2);
   auto e = Keyed(std::get<c::CatalogNameEntry>(*named.entry.name), t, "w3b_moved_" + std::string(100, 'x'));
   PathBeside(e, t.entry);
-  const auto renamed = NameSuccessor(named.entry, named.entry.version_uuid, 3, VersionId(9101), c::CatalogNamePayload{e}, false);
+  auto renamed = NameSuccessor(named.entry, named.entry.version_uuid, 3, VersionId(9101), c::CatalogNamePayload{e}, false);
+  renamed.new_pages = NewLeafRenamePages(0);
+  const auto base_room = [&](std::span<const byte> f) {
+    bool room = false;
+    const auto in_place = NameSuccessorOracle(b, f, renamed, {}, &room);
+    return std::pair{room, in_place.has_value()};
+  };
   Begin(s, 3);
   unsigned fillers = 0;
-  for (unsigned k = 1; k <= 400 && NameSuccessorOracle(b, ReadAll(path), renamed); ++k) {
+  bool tree_first = false;
+  for (unsigned k = 1; k <= 400 && base_room(ReadAll(path)).first; ++k) {
     file = ReadAll(path);
+    if (!tree_first && !base_room(file).second) {
+      tree_first = true;
+      std::cout << b.name << " name successor on a new leaf page_size=" << b.size << " after " << fillers
+                << " fillers: a base leaf has room but a tree leaf the version's cells reach is full (a split)\n";
+    }
     const auto filler = NamedAfter(b, file, t, role, After(b, file, role), 700 + k, 3, "w3b_f" + std::to_string(k));
     auto r = Request(3, filler.Rows());
     r.new_pages = PageIds(800 + k);
@@ -2322,38 +2449,12 @@ void NameSuccessorOnNewLeaf(const Db& b, const NameTemplate& t, u16 role, std::s
     ExpectGrowingInsert(b, s.sink(), path, r, "a filler named object " + std::to_string(k));
     ++fillers;
   }
-  if (NameSuccessorOracle(b, ReadAll(path), renamed)) {
-    std::cout << b.name << " name successor on a new leaf page_size=" << b.size << " not reached after " << fillers
-              << " fillers\n";
-    Rollback(*s.w, s.sink(), 3);
-    fs::remove(path);
-    return;
-  }
-  // No reached leaf has room: ExpectNameSuccessor takes its new-leaf branch
-  // (the oracle on the page the writer allocated, the allocation record). A
-  // trial on a copy first: where the version's cells also reach a full tree
-  // leaf (a split, which this oracle does not model; 8 KiB here), the case is
-  // reported, not checked against the oracle.
-  {
-    const auto before = ReadAll(path);
-    const auto trial = b.Copy(before, "successor-new-leaf-trial.db");
-    std::optional<u64> page;
-    {
-      Session t2(b, trial, false);
-      const auto tried = db::WriteCatalogSuccessorVersion(t2.sink(), GrowingBinding(b), renamed);
-      Check(tried.ok() && !tried.allocated_pages.empty(), "the trial rename goes on a new page");
-      page = tried.allocated_pages.front();
-    }
-    fs::remove(trial);
-    if (!NameSuccessorOracle(b, before, renamed, page)) {
-      std::cout << b.name << " name successor on a new leaf page_size=" << b.size << " after " << fillers
-                << " fillers: a tree leaf its cells reach is full too (a split this oracle does not model); not checked\n";
-      Rollback(*s.w, s.sink(), 3);
-      fs::remove(path);
-      return;
-    }
-  }
-  Check(ExpectNameSuccessor(b, s, path, renamed, "a renamed entry by a transaction in progress"),
+  Check(!base_room(ReadAll(path)).first, "the fillers leave no reached base leaf with room for the renamed entry");
+  // No reached leaf has room: ExpectNameSuccessor takes its new-pages branch
+  // (the oracle on the pages the writer allocated, their allocation records).
+  const auto pre = ReadAll(path);
+  std::size_t split_pages = 0;
+  Check(ExpectNameSuccessor(b, s, path, renamed, "a renamed entry by a transaction in progress", &split_pages),
         "the rename goes on a new base leaf");
   {
     RoleScope a(b, 2);
@@ -2365,8 +2466,83 @@ void NameSuccessorOnNewLeaf(const Db& b, const NameTemplate& t, u16 role, std::s
     PeekSees(b, path, named.entry.row_uuid, VersionId(9101), "the new name on its new leaf, committed");
   }
   ExpectNamedVerification(b, path, definitions + 1 + fillers, "a rename on a new base leaf, committed", false, true);
-  std::cout << b.name << " name successor on a new leaf page_size=" << b.size << " after " << fillers << " fillers\n";
+  std::cout << b.name << " name successor on a new leaf page_size=" << b.size << " after " << fillers << " fillers, "
+            << split_pages << " tree pages added by splits\n";
   fs::remove(path);
+
+  // step4-open3: the rename on copies of the file before it, failing each
+  // write in turn. On restart the fillers' transaction (3) is dead, as is the
+  // failed rename's (4): only the named object (2) is committed.
+  const auto unlisted = [&](std::span<const byte> f) {
+    RoleScope a(b, 2);
+    return std::max({UnlistedLevel(b, f, NameRootPage(b, f, 22)), UnlistedLevel(b, f, NameRootPage(b, f, 23)),
+                     UnlistedLevel(b, f, HeadPage(b, f))});
+  };
+  unsigned failures = 0, unfinished = 0;
+  for (u32 w = 1; w <= 64; ++w) {
+    const auto copy = b.Copy(pre, "successor-new-leaf-crash.db");
+    Session c(b, copy);  // restart: transaction 3 was in progress, now dead
+    Begin(c, 4);
+    auto r = NameSuccessor(named.entry, named.entry.version_uuid, 4, VersionId(9102), c::CatalogNamePayload{e}, false);
+    r.new_pages = NewLeafRenamePages(w);
+    KindFaultSink sink(c.sink(), KindFaultSink::Kind::write, w);
+    const auto result = db::WriteCatalogSuccessorVersion(sink, GrowingBinding(b), r);
+    if (result.ok()) {
+      fs::remove(copy);
+      break;
+    }
+    ++failures;
+    const std::string at = "after failed rename write " + std::to_string(w);
+    Check(result.error == CE::write_failed && result.attempted, at + ": write_failed");
+    Rollback(*c.w, c.sink(), 4);
+    if (unlisted(ReadAll(copy)) >= 0) ++unfinished;
+    {
+      RoleScope a(b, 2);
+      PeekSees(b, copy, named.entry.row_uuid, named.entry.version_uuid, at + ": the old name");
+    }
+    ExpectNamedVerification(b, copy, definitions + 1, at, false, true);
+    Begin(c, 5);
+    auto next = NameSuccessor(named.entry, named.entry.version_uuid, 5, VersionId(9103), c::CatalogNamePayload{e}, false);
+    next.new_pages = NewLeafRenamePages(100 + w);
+    const auto done = db::WriteCatalogSuccessorVersion(c.sink(), GrowingBinding(b), next);
+    if (!done.ok()) std::cerr << at << ": " << db::CatalogVersionWriteErrorName(done.error) << '\n';
+    Check(done.ok(), at + ": the rename by the next transaction succeeds");
+    Commit(*c.w, c.sink(), 5);
+    const auto now = ReadAll(copy);
+    // A tree the next rename adds a cell to has its unfinished split completed:
+    // both name trees; the row-UUID tree only when the rename needed a new
+    // base leaf (the failed rename's new leaf, reached through the page its
+    // unfinished split added, may have room for it: then the row-UUID tree is
+    // not written and its split stays unfinished, which readers follow).
+    {
+      RoleScope a(b, 2);
+      Check(UnlistedLevel(b, now, NameRootPage(b, now, 22)) < 0 && UnlistedLevel(b, now, NameRootPage(b, now, 23)) < 0,
+            at + ": the next rename completes any unfinished split of the name trees");
+      if (!done.allocated_pages.empty())
+        Check(UnlistedLevel(b, now, HeadPage(b, now)) < 0, at + ": the next rename on a new base leaf completes the row-UUID tree");
+      PeekSees(b, copy, named.entry.row_uuid, VersionId(9103), at + ": the next rename, committed");
+    }
+    ExpectNamedVerification(b, copy, definitions + 1, at + ", the next rename committed", false, true);
+    if (unlisted(now) >= 0) {
+      // The row-UUID tree's split still unfinished: the next insert of a row
+      // (whose first version gets a row-UUID cell) completes it.
+      Begin(c, 6);
+      const auto f = ReadAll(copy);
+      const auto more = NamedAfter(b, f, t, role, After(b, f, role), 2900 + w, 6, "w3b_after_crash_" + std::to_string(w));
+      auto insert = Request(6, more.Rows());
+      insert.new_pages = NewLeafRenamePages(200 + w);
+      const auto added = db::WriteCatalogInsertVersions(c.sink(), GrowingBinding(b), insert);
+      if (!added.ok()) std::cerr << at << " insert: " << db::CatalogVersionWriteErrorName(added.error) << '\n';
+      Check(added.ok(), at + ": a named object inserted by the next transaction");
+      Commit(*c.w, c.sink(), 6);
+      Check(unlisted(ReadAll(copy)) < 0, at + ": the next insert completes the row-UUID tree's unfinished split");
+      ExpectNamedVerification(b, copy, definitions + 2, at + ", a named object after it committed", false, true);
+    }
+    fs::remove(copy);
+  }
+  Check(failures > 0, "the rename on a new leaf has failure points");
+  std::cout << b.name << " name successor on a new leaf crashes page_size=" << b.size << " failure points " << failures
+            << ", " << unfinished << " leaving a split unfinished\n";
 }
 
 // ---- Collisions ---------------------------------------------------------------------------
