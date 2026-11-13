@@ -18,8 +18,13 @@ namespace scratchbird::storage::page {
 // order and each durable before the next:
 //   1. the page's 128-byte record into its free slot;
 //   2. the slot's state: free -> allocated.
-// When the record and the state lie in the same 512-byte unit they are one
-// write (the unit's old and new images are both valid). The caller orders
+// When the record and the state lie in the same 512-byte unit they are still
+// two writes of that unit, in that order (owner Q76 = 1, 2026-11-13; the
+// record-before-state order of allocation_map_inplace_page.hpp): first the
+// unit with the new record and the old state, durable, then the unit with
+// both, so a write torn anywhere leaves a valid map. A plan holds one node per
+// extent, so the first is returned in Planned for the caller to run, durable,
+// before the plan (PlanAllocationRecordFirst). The caller orders
 // what depends on the page after the last map write: the new page's image,
 // then the page that links to it (FirebirdSQL: the new page depends on the
 // page inventory page; pag.cpp:736). A crash after 1 leaves a record over a
@@ -80,7 +85,14 @@ class AllocationMapChain {
     u64 page_number = 0;
     // The last map write: the caller orders the new page after it.
     scratchbird::storage::disk::CarefulWriteNodeId last_node = scratchbird::storage::disk::kCarefulWriteNoNode;
-    u32 map_writes = 0;  // 1 or 2
+    u32 map_writes = 0;  // always 2 (Q76 = 1)
+    // Owner Q76 = 1: when the record shares the state's unit, the record's
+    // write (that unit with the new record and the old state, and its
+    // preimage) must be durable before the plan runs; empty otherwise, when
+    // both writes are in the plan.
+    u64 record_first_offset = 0;
+    std::vector<byte> record_first_image, record_first_preimage;
+    bool record_first() const noexcept { return !record_first_image.empty(); }
     bool ok() const noexcept { return error == AllocationWriteError::none; }
   };
   // Adds the allocation's map writes to `plan` (with their preimages and
@@ -110,6 +122,11 @@ struct AllocationMapChain::LoadResult {
   std::optional<AllocationMapChain> chain;
   bool ok() const noexcept { return error == AllocationWriteError::none && chain.has_value(); }
 };
+
+// Adds a planned allocation's record-first write (Q76 = 1) to its own plan;
+// refused when the allocation has none.
+scratchbird::storage::disk::CarefulWriteAddResult PlanAllocationRecordFirst(
+    scratchbird::storage::disk::CarefulWritePlan& plan, const AllocationMapChain::Planned& planned);
 
 // A stand-alone allocation: load, plan, execute. The page is allocated and
 // unformatted; what the caller writes into it and links is the caller's.

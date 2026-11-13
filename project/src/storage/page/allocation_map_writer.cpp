@@ -5,6 +5,7 @@
 #include "uuid.hpp"
 
 #include <algorithm>
+#include <array>
 #include <limits>
 #include <new>
 
@@ -159,6 +160,9 @@ AllocationMapChain::Planned AllocationMapChain::PlanAllocate(disk::CarefulWriteP
         out.map_error = written.error;
         return out;
       }
+      // The record's unit with the new record and the old state (Q76 = 1).
+      std::array<byte, kUnit> record_unit{};
+      std::copy_n(image.begin() + written.unit_offset, kUnit, record_unit.begin());
       const auto allocated = SetAllocationMapInplaceAllocated(image, slot);
       if (!allocated.ok()) {
         out.error = E::invalid_map;
@@ -168,15 +172,30 @@ AllocationMapChain::Planned AllocationMapChain::PlanAllocate(disk::CarefulWriteP
       const u64 base = pages_[i] * page_size_;
       const auto unit = [&](u32 offset) { return std::span<const byte>(image).subspan(offset, kUnit); };
       if (written.unit_offset == allocated.unit_offset) {
-        // Record and state in one unit: one write, old and new both valid.
+        // Record and state in one unit (owner Q76 = 1, 2026-11-13): still two
+        // writes, the record first and durable, then the state, so a write
+        // torn anywhere in the unit leaves the old map, a leftover record over
+        // a free slot, or the new map; never a state without its record. A
+        // plan holds one node per extent, so the record's write is returned
+        // for the caller to run before `plan` (PlanAllocationRecordFirst).
+        try {
+          out.record_first_image.assign(record_unit.begin(), record_unit.end());
+          out.record_first_preimage.assign(written.preimage.begin(), written.preimage.end());
+        } catch (...) {
+          out.record_first_image.clear();
+          out.record_first_preimage.clear();
+          out.error = E::plan_refused;
+          return out;
+        }
+        out.record_first_offset = base + written.unit_offset;
         const auto node = plan.Add(base + written.unit_offset, unit(written.unit_offset),
-                                   std::span<const byte>(written.preimage));
+                                   std::span<const byte>(out.record_first_image));
         if (!node.ok()) {
           out.error = E::plan_refused;
           return out;
         }
         out.last_node = node.node;
-        out.map_writes = 1;
+        out.map_writes = 2;
       } else {
         const auto first = plan.Add(base + written.unit_offset, unit(written.unit_offset),
                                     std::span<const byte>(written.preimage));
@@ -196,6 +215,13 @@ AllocationMapChain::Planned AllocationMapChain::PlanAllocate(disk::CarefulWriteP
   }
   out.error = E::filespace_full;
   return out;
+}
+
+disk::CarefulWriteAddResult PlanAllocationRecordFirst(disk::CarefulWritePlan& plan,
+                                                      const AllocationMapChain::Planned& planned) {
+  if (!planned.ok() || !planned.record_first()) return {CarefulWriteError::empty_image, disk::kCarefulWriteNoNode};
+  return plan.Add(planned.record_first_offset, planned.record_first_image,
+                  std::span<const byte>(planned.record_first_preimage));
 }
 
 PageAllocationResult AllocatePage(disk::CarefulWriteSink& sink, const AllocationMapBinding& binding,
@@ -218,17 +244,34 @@ PageAllocationResult AllocatePage(disk::CarefulWriteSink& sink, const Allocation
       out.map_error = planned.map_error;
       return out;
     }
-    const auto r = plan.Execute(sink, policy);
+    // Owner Q76 = 1: a record sharing the state's unit is written, durable,
+    // by its own plan first.
+    disk::CarefulWriteResult r;
+    bool earlier = false;
+    if (planned.record_first()) {
+      disk::CarefulWritePlan first;
+      if (!PlanAllocationRecordFirst(first, planned).ok()) {
+        out.error = E::plan_refused;
+        return out;
+      }
+      r = first.Execute(sink, policy);
+      out.writes = r.written;
+      out.syncs = r.syncs;
+      earlier = r.written > 0;
+    }
+    if (r.ok()) {
+      r = plan.Execute(sink, policy);
+      out.writes += r.written;
+      out.syncs += r.syncs;
+    }
     out.write_error = r.error;
     out.io = r.io;
-    out.writes = r.written;
-    out.syncs = r.syncs;
     if (r.ok()) {
       out.page_number = planned.page_number;
       out.error = E::none;
       return out;
     }
-    out.attempted = r.written > 0 || r.syncs > 0 || r.error == CarefulWriteError::write_failed ||
+    out.attempted = earlier || r.written > 0 || r.syncs > 0 || r.error == CarefulWriteError::write_failed ||
                     r.error == CarefulWriteError::barrier_sync_failed ||
                     r.error == CarefulWriteError::final_sync_failed || r.error == CarefulWriteError::sink_exception;
     out.error = out.attempted                                          ? E::write_failed

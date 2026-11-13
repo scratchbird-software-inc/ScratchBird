@@ -12,9 +12,14 @@
 //     root of any other family is refused for allocation (a forgery: W4d-3b
 //     removed the sealed family, the only other one).
 //   - Exhaustion: every free slot is allocated, lowest first; the next
-//     allocation is refused filespace_full with no write; a record and state
-//     that share a unit are one write; page zero's free count is not kept or
-//     compared (owner Q22 = 1).
+//     allocation is refused filespace_full with no write; every allocation is
+//     two writes, record then state, even when they share a unit (owner Q76 =
+//     1, 2026-11-13: that unit is written twice, the record first and
+//     durable); page zero's free count is not kept or compared (owner Q22 =
+//     1).
+//   - Q76: at every page size with slots whose record shares the state's unit
+//     and lies past its half-way point, both writes of such an allocation torn
+//     at their half-way point leave a valid prefix that the readers open.
 //   - Process loss after every write of a scripted sequence (fork + _exit),
 //     and every write torn at its half-way point: the file is exactly the
 //     oracle's write prefix (a torn unit is old or new); the readers admit it;
@@ -189,8 +194,8 @@ pg::PageAllocationRequest RequestOf(const Alloc& a) {
   }
   return r;
 }
-// The lowest free slot gets the record (step 1) and then the state (step 2);
-// when they share a unit, one step does both.
+// The lowest free slot gets the record (step 1) and then the state (step 2),
+// two steps even when they share a unit (owner Q76 = 1).
 using Step = std::function<void(MapModel&)>;
 void AddSteps(std::vector<Step>& out, const Alloc& a, const MapModel& model, std::span<const byte> file, u32 size) {
   u64 page = 0;
@@ -211,15 +216,16 @@ void AddSteps(std::vector<Step>& out, const Alloc& a, const MapModel& model, std
   r.page_generation = 1;
   r.page_type = request.page_type;
   const auto bytes = RecordBytes(r);
-  if (SameUnit(page, model, file, size)) {
-    out.push_back([page, bytes](MapModel& m) {
-      m.slots[page].record = bytes;
-      m.slots[page].state = 2;
-    });
-  } else {
-    out.push_back([page, bytes](MapModel& m) { m.slots[page].record = bytes; });
-    out.push_back([page](MapModel& m) { m.slots[page].state = 2; });
-  }
+  (void)file;
+  (void)size;
+  // Q76: was one combined step when SameUnit; now always record, then state.
+  out.push_back([page, bytes](MapModel& m) { m.slots[page].record = bytes; });
+  out.push_back([page](MapModel& m) { m.slots[page].state = 2; });
+}
+u64 LowestFree(const MapModel& model) {
+  for (const auto& [n, s] : model.slots)
+    if (s.state == 0) return n;
+  return 0;
 }
 // Steps for a sequence of allocations from a starting model.
 std::vector<Step> Steps(std::span<const Alloc> allocs, MapModel model, std::span<const byte> file, u32 size) {
@@ -354,7 +360,7 @@ void Rules(const Base& b) {
     d::CarefulWritePlan plan;
     const auto first = loaded.chain->PlanAllocate(plan, RequestOf({6, 2010, false}));
     const auto second = loaded.chain->PlanAllocate(plan, RequestOf({6, 2020, false}));
-    Check(first.ok() && first.map_writes >= 1 && !second.ok(), "one allocation per plan");
+    Check(first.ok() && first.map_writes == 2 && !second.ok(), "one allocation per plan, two map writes (Q76)");
     Check(ReadAll(path) == before, "planning writes nothing");
   }
   Check(device.Close().ok(), "close");
@@ -396,7 +402,7 @@ void Exhaustion(const Base& b) {
   for (const auto& [n, s] : base.slots) free += s.state == 0;
   Check(free > 0, "the create leaves free pages");
   MapModel model = base;
-  u64 merged = 0, split = 0;
+  u64 shared = 0, split = 0;  // Q76: was merged (one write) vs split
   d::FileDevice device;
   Check(device.Open(path, d::FileOpenMode::open_existing).ok(), "open");
   {
@@ -405,12 +411,15 @@ void Exhaustion(const Base& b) {
     for (u64 i = 0; i < free; ++i) {
       const Alloc a{i % 2 ? 6u : 0x301u, 10000 + static_cast<unsigned>(i) * 4, i % 3 == 0};
       std::vector<Step> steps;
+      const bool same = SameUnit(LowestFree(model), model, b.bytes, b.size);
       AddSteps(steps, a, model, b.bytes, b.size);
       for (const auto& s : steps) s(model);
       const auto r = Allocate(sink, b, a);
-      Check(r.ok() && r.writes == steps.size() && r.syncs == (forced ? 1u : steps.size()),
+      // Q76: a shared unit's record is its own plan, so its two writes each
+      // end with a Sync whatever the sink's ordering.
+      Check(r.ok() && steps.size() == 2 && r.writes == 2 && r.syncs == (same ? 2u : forced ? 1u : 2u),
             "every free slot is allocated, with a barrier between its two writes");
-      (steps.size() == 1 ? merged : split)++;
+      (same ? shared : split)++;
     }
     const auto before = ReadAll(path);
     const auto full = Allocate(sink, b, {6, 900000, false});
@@ -422,10 +431,11 @@ void Exhaustion(const Base& b) {
   Check(b.Model(file) == model, "the map is the oracle's, slot for slot");
   b.Untouched(file, model, "exhaustion");
   b.Readers(path, "exhaustion");
-  Check(split > 0 && (b.size == 131072 || merged > 0),
-        "both a split allocation and (where a record shares the state unit) a single-write allocation occurred");
-  std::cout << "exhaustion page_size=" << b.size << " allocated=" << free << " single_write=" << merged
-            << " two_writes=" << split << '\n';
+  Check(split > 0 && (b.size == 131072 || shared > 0),
+        "both kinds occurred: record and state in two units, and (Q76; where a record shares the state unit) "
+        "the shared unit written twice");
+  std::cout << "exhaustion page_size=" << b.size << " allocated=" << free << " shared_unit=" << shared
+            << " two_units=" << split << '\n';
   fs::remove(path);
 }
 
@@ -515,6 +525,134 @@ void ProcessLoss(const Base& b, bool torn) {
   else Check(leftovers_reused > 0, "a crash between an allocation's writes left a leftover, reused next");
   std::cout << (torn ? "torn writes " : "process loss ") << "page_size=" << b.size << " writes=" << total
             << " leftovers_reused=" << leftovers_reused << '\n';
+}
+
+// ---- Q76: the shared unit torn at its half-way point ----------------------------
+// A slot is exposed when its record shares the state's unit and lies past the
+// unit's half-way point (state written, record not, by a half write). In the
+// first map page as create lays it out: 1-2 at 8/16/32 KiB, 0-1 at 64 KiB and
+// at 128 KiB (its one map page covers 512 pages, so records start at 768).
+bool Exposed(u64 page, const MapModel& m, std::span<const byte> file, u32 size) {
+  for (const auto map_page : m.map_pages) {
+    const auto* p = file.data() + map_page * size;
+    const u32 n = Load32(p + 128 + 12);
+    const u64 first = Load64(p + 128 + 48);
+    if (page < first || page >= first + n) continue;
+    const u64 i = page - first, records_at = (512 + (n + 1) / 2 + 127) / 128 * 128;
+    const u64 record = records_at + 128 * i, state = 512 + i / 2, unit = state / 512 * 512;
+    return record / 512 == state / 512 && state < unit + 256 && record >= unit + 256;
+  }
+  return false;
+}
+void ExposedTear(const Base& b) {
+  // The expected exposed indices, from the format's own layout.
+  const std::map<u32, std::vector<u32>> expected{
+      {8192, {1, 2}}, {16384, {1, 2}}, {32768, {1, 2}}, {65536, {0, 1}}, {131072, {0, 1}}};
+  const MapModel base = b.Model(b.bytes);
+  std::vector<u32> indices;
+  {
+    const auto* p = b.bytes.data() + base.map_pages.front() * b.size;
+    const u64 first = Load64(p + 128 + 48);
+    for (const auto& [n, s] : base.slots)
+      if (n >= first && n < first + Load32(p + 128 + 12) && Exposed(n, base, b.bytes, b.size))
+        indices.push_back(static_cast<u32>(n - first));
+  }
+  if (!expected.contains(b.size) || indices != expected.at(b.size)) {
+    std::cerr << "exposed indices page_size=" << b.size << ":";
+    for (const auto i : indices) std::cerr << ' ' << i;
+    std::cerr << '\n';
+  }
+  Check(expected.contains(b.size) && indices == expected.at(b.size), "the exposed slot indices are the layout's");
+
+  // Fill, in a fresh copy, every free slot below the first free exposed slot,
+  // so the next allocation takes an exposed slot; then tear each of its two
+  // writes at the half-way point.
+  u64 target = 0;
+  for (const auto& [n, s] : base.slots)
+    if (s.state == 0 && Exposed(n, base, b.bytes, b.size)) {
+      target = n;
+      break;
+    }
+  if (target == 0) {
+    // 128 KiB: the exposed slots cover pages 0 and 1, which create allocates;
+    // no allocation can reach them.
+    for (const auto& [n, s] : base.slots)
+      if (Exposed(n, base, b.bytes, b.size)) Check(s.state != 0, "an exposed slot with no free one is allocated");
+    std::cout << "exposed tear page_size=" << b.size << " no free exposed slot (create allocated them)\n";
+    return;
+  }
+  const auto prepared = b.Fresh("exposed.db");
+  MapModel model = base;
+  {
+    d::FileDevice device;
+    Check(device.Open(prepared, d::FileOpenMode::open_existing).ok(), "open");
+    {
+      d::FileDeviceCarefulWriteSink sink(device);
+      unsigned id = 70000;
+      while (LowestFree(model) != target) {
+        const Alloc a{6, id, false};
+        id += 4;
+        std::vector<Step> steps;
+        AddSteps(steps, a, model, b.bytes, b.size);
+        for (const auto& s : steps) s(model);
+        Check(Allocate(sink, b, a).ok(), "fill below the exposed slot");
+      }
+    }
+    Check(device.Close().ok(), "close");
+  }
+  Check(b.Model(ReadAll(prepared)) == model, "filled to the exposed slot");
+  const auto prepared_bytes = ReadAll(prepared);
+  const Alloc exposed{6, 90000, false};
+  std::vector<Step> steps;
+  AddSteps(steps, exposed, model, b.bytes, b.size);
+  Check(steps.size() == 2, "the exposed allocation is two writes");
+  for (u32 k = 1; k <= 2; ++k) {
+    const std::string label = "exposed tear write " + std::to_string(k);
+    const auto path = (b.dir.path() / "exposed-torn.db").string();
+    WriteAll(path, prepared_bytes);
+    std::cout.flush();
+    std::cerr.flush();
+    const pid_t child = fork();
+    Check(child >= 0, label + ": fork");
+    if (child == 0) {
+      try {
+        d::FileDevice device;
+        if (!device.Open(path, d::FileOpenMode::open_existing).ok()) _exit(kChildFailed);
+        {
+          d::FileDeviceCarefulWriteSink file(device);
+          scratchbird::tests::TornWriteSink tear(file, k, kPlannedCrash);
+          (void)Allocate(tear, b, exposed);
+        }
+        _exit(kChildCompleted);
+      } catch (...) {
+        _exit(kChildException);
+      }
+    }
+    int status = 0;
+    Check(waitpid(child, &status, 0) == child && WIFEXITED(status) && WEXITSTATUS(status) == kPlannedCrash,
+          label + ": the child stops at the torn write");
+    const auto file = ReadAll(path);
+    const auto seen = b.Model(file);
+    Check(seen == Prefix(model, steps, k - 1) || seen == Prefix(model, steps, k),
+          label + ": the map is the old or the new prefix, never a state without its record");
+    Check(seen.slots.at(target).state == 0 || seen.slots.at(target).record != std::array<byte, 128>{},
+          label + ": an allocated slot has its record");
+    b.Untouched(file, seen, label);
+    b.Readers(path, label);  // the file opens
+    {
+      d::FileDevice device;
+      Check(device.Open(path, d::FileOpenMode::open_existing).ok(), label + ": reopen");
+      {
+        d::FileDeviceCarefulWriteSink sink(device);
+        Check(Allocate(sink, b, {6, 95000 + 4 * k, false}).ok(), label + ": the next allocation succeeds");
+      }
+      Check(device.Close().ok(), label + ": close");
+    }
+    b.Readers(path, label + " after");
+    fs::remove(path);
+  }
+  fs::remove(prepared);
+  std::cout << "exposed tear page_size=" << b.size << " page=" << target << " both writes torn, file opens\n";
 }
 
 // ---- I/O failures -----------------------------------------------------------------
@@ -611,6 +749,7 @@ int main(int argc, char** argv) {
     Exhaustion(b);
     ProcessLoss(b, false);
     ProcessLoss(b, true);
+    ExposedTear(b);
     Faults(b);
     std::cout << "PASS native allocation writer page_size=" << b.size << " checks=" << checks << '\n';
     return 0;

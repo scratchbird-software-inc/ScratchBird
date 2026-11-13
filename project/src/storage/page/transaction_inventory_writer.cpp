@@ -224,8 +224,34 @@ bool GrowChain(disk::CarefulWriteSink& sink, const TransactionWriterBinding& bin
     result.error = E::resource_exhausted;
     return false;
   }
+  // Owner Q76 = 1: a record sharing the state's map unit is written, durable,
+  // by its own plan first.
+  bool record_written = false;
+  if (planned.record_first()) {
+    disk::CarefulWritePlan first;
+    if (!PlanAllocationRecordFirst(first, planned).ok()) {
+      result.error = E::resource_exhausted;
+      return false;
+    }
+    TransactionWriterOutcome record;
+    const bool wrote = Run(first, sink, binding.barrier_policy, record, failed);
+    result.growth_writes += record.writes;
+    result.growth_syncs += record.syncs;
+    record_written = record.writes > 0;
+    if (!wrote) {
+      result.error = record.error;
+      result.write_error = record.write_error;
+      result.io = record.io;
+      return false;
+    }
+  }
   TransactionWriterOutcome growth;
-  const bool ran = Run(plan, sink, binding.barrier_policy, growth, failed);
+  bool ran = Run(plan, sink, binding.barrier_policy, growth, failed);
+  if (!ran && record_written && !failed) {
+    // The record is already on the file: the allocation was attempted.
+    failed = true;
+    growth.error = E::write_failed;
+  }
   result.growth_writes += growth.writes;
   result.growth_syncs += growth.syncs;
   if (!ran) {

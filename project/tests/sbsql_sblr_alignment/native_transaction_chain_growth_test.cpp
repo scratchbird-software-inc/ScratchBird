@@ -349,15 +349,6 @@ std::set<u64> Issued(const State& now, const State& base, std::span<const byte> 
 // 512 + i / 2 and its record at roundup128(512 + ceil(N / 2)) + 128 i.
 u64 TipSlots(u32 size) { return (size - 512) / 4; }
 u64 HeaderSlots(u32 size) { return (size - 512) / 256; }
-bool RecordSharesStateUnit(const State& m, u64 page) {
-  for (const auto& [first, n] : m.map_ranges) {
-    if (page < first || page >= first + n) continue;
-    const u64 i = page - first, records_at = (512 + (n + 1) / 2 + 127) / 128 * 128;
-    return (records_at + 128 * i) / 512 == (512 + i / 2) / 512;
-  }
-  Check(false, "the page is covered by the map");
-  return false;
-}
 pg::TipHorizons BeginHorizons(const State& m, u64 n) {
   u64 oit = n, oat = n;
   for (const auto& [k, w] : m.words) {
@@ -424,22 +415,16 @@ u32 AddGrowth(Planned& out, State& model, bool state_chain, const Uuid& owner) {
   std::copy(owner.bytes.begin(), owner.bytes.end(), record.begin() + 40);
   record[80] = 1;  // generation 1
   for (int i = 0; i < 4; ++i) record[96 + i] = static_cast<byte>(pg::kTransactionStatePageType >> (8 * i));
-  const bool same = RecordSharesStateUnit(model, page);
-  if (same) {
-    out.steps.push_back([page, record](State& m) {
-      m.slots[page].record = record;
-      m.slots[page].state = 2;
-    });
-  } else {
-    out.steps.push_back([page, record](State& m) { m.slots[page].record = record; });
-    out.steps.push_back([page](State& m) { m.slots[page].state = 2; });
-  }
+  // Owner Q76 = 1 (2026-11-13): the record, then the state, two writes even
+  // when they share a unit (was one combined step when the record shared the state's unit).
+  out.steps.push_back([page, record](State& m) { m.slots[page].record = record; });
+  out.steps.push_back([page](State& m) { m.slots[page].state = 2; });
   out.steps.push_back([](State&) {});
   out.steps.push_back([page, state_chain](State& m) { (state_chain ? m.tip_pages : m.header_pages).push_back(page); });
   model.slots[page].record = record;
   model.slots[page].state = 2;
   (state_chain ? model.tip_pages : model.header_pages).push_back(page);
-  return same ? 3u : 4u;
+  return 4u;  // Q76: was 3 when the record shared the state's unit
 }
 void AddBegin(Planned& out, State& model, u64 n, const Uuid& database) {
   out.steps.push_back([n](State& m) {
