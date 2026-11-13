@@ -52,7 +52,13 @@ inline NativeCatalogNameVerification VerifyNativeCatalogNameBindings(
     if(row.provisional)return fail(E::provisional_row,id);
     if((captured.role==2)!=(m.record.header.kind==c::CatalogRecordKind::localized_name)||
         row.name_payload.has_value()!=(m.record.header.kind==c::CatalogRecordKind::localized_name))return fail(E::invalid_role,id);
+    // SB_NATIVE_COMMENT_RELATION: the comments relation (role 7) holds exactly
+    // the localized-comment rows. They are data, unnamed (owner Q79 = 1); the
+    // comment verifier checks them (VerifyNativeCatalogComments).
+    if((captured.role==storage::page::kNativeCommentRelationRole)!=(m.record.header.kind==c::CatalogRecordKind::localized_comment))
+      return fail(E::invalid_role,id);
     if(m.record.header.deleted)continue;
+    if(m.record.header.kind==c::CatalogRecordKind::localized_comment)continue;
     if(!row.name_payload){
       ++out.definitions;
       if(m.record.header.kind==c::CatalogRecordKind::database&&

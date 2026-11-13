@@ -326,8 +326,11 @@ int main() {
                   << " collisions=" << int(opened.metadata.collisions.error) << '\n';
       Check(opened.metadata.ok(), "the engine's metadata verification accepts the production database");
       // The create indexes every non-empty relation and role 5: five of six.
-      Check(opened.metadata.indexes.indexed_relations == 5 && opened.metadata.indexes.indexed_name_trees == 2,
-            "the index verifier resolves the five relation tuples and both tree tuples");
+      // step4: and role 7, the comments relation (empty, indexed): six of
+      // seven, plus the comment tree's tuple.
+      Check(opened.metadata.indexes.indexed_relations == 6 && opened.metadata.indexes.indexed_name_trees == 2 &&
+                opened.metadata.indexes.indexed_comment_trees == 1,
+            "step4: the index verifier resolves the six relation tuples, both name tree tuples and the comment tree's");
       Check(opened.metadata.name_trees.present && opened.metadata.name_trees.cells == opened.cells_captured &&
                 opened.metadata.name_trees.rows == entries + vectors,
             "the name tree verifier compared every cell and every name row");

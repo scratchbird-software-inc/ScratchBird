@@ -7,6 +7,8 @@
 #include "catalog_identifier_profile.hpp"
 #include "catalog_name_path.hpp"
 #include "catalog_name_tree_keys.hpp"
+#include "catalog_comment_record_codec.hpp"
+#include "native_catalog_constant_relations.hpp"
 #include "catalog_metadata_change.hpp"
 #include "catalog_construction_intent.hpp"
 #include "filespace_page_zero.hpp"
@@ -50,13 +52,15 @@ bool V7(const Uuid& id) { return scratchbird::core::uuid::IsEngineIdentityUuid(i
 
 // The relations the startup verifiers place records in: the names relation
 // (role 2) holds exactly the localized-name records (name verification);
-// audit evidence is in role 6 (audit); database, schema and filespace records
-// in role 1 (namespaces, filespaces); inline private-key policies in role 3
-// (the create).
+// the comments relation (role 7) exactly the localized-comment records
+// (comment verification, SB_NATIVE_COMMENT_RELATION); audit evidence is in
+// role 6 (audit); database, schema and filespace records in role 1
+// (namespaces, filespaces); inline private-key policies in role 3 (the create).
 bool RoleAdmits(u16 role, const catalog::CatalogMetadataVersion& m) {
   using K = catalog::CatalogRecordKind;
   const auto kind = m.record.header.kind;
   if ((role == 2) != (kind == K::localized_name)) return false;
+  if ((role == pg::kNativeCommentRelationRole) != (kind == K::localized_comment)) return false;
   if (kind == K::audit_evidence && role != 6) return false;
   if ((kind == K::database || kind == K::schema || kind == K::filespace) && role != 1) return false;
   if ((m.object_subtype == scratchbird::core::catalog::CatalogObjectSubtype::crypto_inline_private_key ||
@@ -1237,6 +1241,8 @@ const char* CatalogVersionWriteErrorName(CatalogVersionWriteError error) noexcep
     case E::filespace_full: return "filespace_full";
     case E::cascade_versions_exhausted: return "cascade_versions_exhausted";
     case E::unaudited_change: return "unaudited_change";
+    case E::duplicate_comment: return "duplicate_comment";
+    case E::comment_tree_full: return "comment_tree_full";
   }
   return "unknown";
 }
@@ -1336,6 +1342,114 @@ bool ReadNameTrees(disk::CarefulWriteSink& sink, const CatalogVersionWriterBindi
     if (!ReadTree(sink, binding, page_size, head, out[t].tree, bases, result)) return false;
   }
   return true;
+}
+
+// SEARCH_KEY: SB_NATIVE_COMMENT_TREE (2026-11-13). The comments relation's
+// (target, language) tree, from page zero (kind 24), read as the tree readers
+// walk it. `out` stays empty without the root (a component fixture).
+bool ReadCommentTree(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding& binding, u32 page_size,
+                     std::vector<byte>& image, std::optional<NameTree>& out, CatalogVersionWriteResult& result) {
+  const auto& croot = binding.catalog_root;
+  image.assign(page_size, 0);
+  const auto zero_io = sink.ReadAt(0, std::span<byte>(image));
+  if (!zero_io.ok() || zero_io.bytes_transferred != page_size) {
+    result.error = E::io_failure;
+    result.io = zero_io;
+    return false;
+  }
+  const disk::FilespaceBootstrapBinding zero_binding{binding.database_uuid, croot.filespace_uuid,
+                                                     croot.page_size_profile_uuid};
+  const auto zero = disk::DecodeFilespacePageZero(image.data(), image.size(), &zero_binding);
+  if (!zero.ok()) {
+    result.error = E::invalid_catalog;
+    return false;
+  }
+  const auto& zero_roots = zero.record->roots;
+  const auto r = std::find_if(zero_roots.begin(), zero_roots.end(), [](const auto& z) { return z.kind == 24; });
+  if (r == zero_roots.end()) return true;
+  if (r->page_type != 0x200) {
+    result.error = E::invalid_catalog;
+    return false;
+  }
+  const pg::NativeCatalogRootReference head{pg::kNativeCommentRelationRole, 0x200,
+                                            {r->filespace_uuid, r->page_number, r->page_generation,
+                                             r->page_size_profile_uuid},
+                                            r->object_uuid};
+  out.emplace();
+  std::vector<disk::NativePageReference> bases;
+  return ReadTree(sink, binding, page_size, head, out->tree, bases, result);
+}
+
+// SEARCH_KEY: SB_NATIVE_COMMENT_RELATION (owner Q82 = 1). Whether a live
+// comment of the comments relation holds (target, language), as this
+// transaction sees it: per comment row, its newest version neither rolled back
+// nor dead decides; committed or this transaction's own and not a drop is
+// `held`; another transaction's in progress is a `blocker` (it may still
+// commit the comment, or the drop). Candidates are the rows the tree's
+// (target, language) range holds, or every row without the tree.
+// SB_CATALOG_SINGLE_WRITER: holds only while no other catalog writer runs
+// between the read and the write.
+struct CommentHold {
+  bool held = false, invalid = false;
+  std::optional<u64> blocker;
+};
+CommentHold HoldOfCommentPair(const Relation& comments, const std::vector<TreePage>* tree, const Uuid& target,
+                              const Uuid& language,
+                              const std::function<const mga::TransactionInventoryEntry*(u64)>& entry, u64 order) {
+  CommentHold out;
+  const auto key = catalog::CatalogCommentTreeKey(target, language);
+  std::set<Uuid> candidates;
+  if (tree) {
+    if (!ProbeTreePrefix(*tree, key, candidates)) {
+      out.invalid = true;
+      return out;
+    }
+  } else {
+    for (const auto& leaf : comments.leaves)
+      for (const auto& row : leaf.page.body.rows) candidates.insert(row.row_uuid.value);
+  }
+  for (const auto& id : candidates) {
+    const pg::RowDataRecord* newest = nullptr;
+    const catalog::CatalogMetadataVersion* newest_metadata = nullptr;
+    std::optional<mga::TransactionState> newest_state;
+    for (const auto& leaf : comments.leaves)
+      for (const auto& row : leaf.page.body.rows) {
+        if (row.row_uuid.value != id) continue;
+        const auto* creator = entry(row.local_transaction_id);
+        const auto m = leaf.metadata.find(row.version_uuid);
+        if (!creator || creator->identity.transaction_uuid.value != row.transaction_uuid.value ||
+            m == leaf.metadata.end()) {
+          out.invalid = true;
+          return out;
+        }
+        const auto state = mga::InventoryVisibilityState(*creator);
+        if (state == mga::TransactionState::rolled_back || state == mga::TransactionState::failed_terminal) continue;
+        if (!newest || row.row_version > newest->row_version) {
+          newest = &row;
+          newest_metadata = &m->second;
+          newest_state = state;
+        }
+      }
+    if (!newest) continue;  // every version rolled back or dead: the pair is free
+    const auto decoded = catalog::DecodeCatalogComment(newest_metadata->record.payload);
+    if (!decoded.ok()) {
+      out.invalid = true;
+      return out;
+    }
+    if (decoded.record->target_object_uuid != target || decoded.record->language_uuid != language) {
+      if (tree) {  // a cell keyed for this pair on a row that is not
+        out.invalid = true;
+        return out;
+      }
+      continue;
+    }
+    if (InProgress(*newest_state) && newest->local_transaction_id != order) {
+      if (!out.blocker) out.blocker = newest->local_transaction_id;
+      continue;
+    }
+    if (!newest_metadata->record.header.deleted) out.held = true;
+  }
+  return out;
 }
 
 // A live entry whose stored path or display components a change moves.
@@ -1673,6 +1787,55 @@ Stop StampAndAddNameCells(disk::CarefulWriteSink& sink, const CatalogVersionWrit
   }
   return std::nullopt;
 }
+// SB_NATIVE_COMMENT_TREE: a successor's comment cells, as the name trees'
+// (owner Q42): the base version's cell is stamped with this transaction (a
+// stamp from another transaction in progress is a write conflict; from one
+// rolled back or dead it is void and overwritten); a version that is not a
+// drop gets its own cell under the same (target, language).
+Stop StampAndAddCommentCell(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding& binding, const Succ& c,
+                            const Relation& relation, NameTree& tree,
+                            const std::function<const mga::TransactionInventoryEntry*(u64)>& entry, PageSource& pages,
+                            u32 page_size, u64 order, const catalog::CatalogCommentRecordView& comment) {
+  const auto& base_row = relation.leaves[c.base.leaf].page.body.rows[c.base.row];
+  bool stamped = false;
+  for (std::size_t p = 0; p < tree.tree.size() && !stamped; ++p) {
+    auto& page = tree.tree[p];
+    if (page.page.tree_level) continue;
+    for (auto& cell : page.page.cells) {
+      if (cell.key.version_uuid != base_row.version_uuid || cell.key.row_uuid != c.row) continue;
+      if (cell.superseding_local_transaction_id && cell.superseding_local_transaction_id != order) {
+        const auto* stamper = entry(cell.superseding_local_transaction_id);
+        const auto state = stamper ? std::optional{mga::InventoryVisibilityState(*stamper)} : std::nullopt;
+        if (!state || *state == mga::TransactionState::committed) return Refuse(E::invalid_catalog);
+        if (InProgress(*state)) return Conflict(cell.superseding_local_transaction_id);
+      }
+      auto changed = page.page;
+      changed.cells[&cell - page.page.cells.data()].superseding_local_transaction_id = order;
+      const auto fits = pg::EncodeNativeBtreePage(changed);
+      if (!fits.ok())
+        return Refuse(fits.error == pg::NativeBtreeError::resource_exhausted ? E::comment_tree_full : E::invalid_catalog);
+      page.page = std::move(changed);
+      tree.changed.insert(p);
+      stamped = true;
+      break;
+    }
+  }
+  if (!stamped) return Refuse(E::invalid_catalog);  // a comment version without its cell
+  if (c.metadata.record.header.deleted) return std::nullopt;
+  const auto key = catalog::CatalogCommentTreeKey(comment.target_object_uuid, comment.language_uuid);
+  pg::NativeBtreeCell cell;
+  cell.key.encoded_key.assign(key.begin(), key.end());
+  cell.key.row_uuid = c.row;
+  cell.key.version_uuid = c.version;
+  cell.base_page = relation.bases[*c.target];
+  cell.creator_local_transaction_id = order;
+  CatalogVersionWriteResult result;
+  if (const auto error = InsertTreeCell(sink, tree.tree, tree.changed, std::move(cell), E::comment_tree_full,
+                                        E::invalid_successor, pages, page_size, binding.allocation_root.has_value(),
+                                        result))
+    return Refuse(*error);
+  return std::nullopt;
+}
 }  // namespace
 namespace {
 CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding& binding,
@@ -1686,7 +1849,7 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
         !croot.page_generation || !profile || binding.state_root.kind != 4 ||
         binding.state_root.page_size_profile_uuid != croot.page_size_profile_uuid ||
         binding.state_root.filespace_uuid != croot.filespace_uuid || !binding.maximum_chain_pages ||
-        !binding.maximum_index_pages || !binding.maximum_base_pages || request.role < 1 || request.role > 6 ||
+        !binding.maximum_index_pages || !binding.maximum_base_pages || request.role < 1 || request.role > pg::kNativeCatalogRelationRoles ||
         !request.transaction_order || !V7(request.transaction_uuid) || !V7(request.row_uuid) ||
         !V7(request.predecessor_version_uuid) || !V7(request.version_uuid) ||
         request.version_uuid == request.predecessor_version_uuid || request.version_uuid == request.row_uuid)
@@ -1749,6 +1912,10 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
     std::map<u16, Relation> relations;
     if (!ReadRelation(sink, binding, page_size, *head, relations[request.role], result)) return result;
     if (named && request.role != 2) return Refuse(E::invalid_role);
+    // SB_NATIVE_COMMENT_INSERT: a comment row's successor is in role 7, and
+    // role 7 holds nothing else.
+    const bool commented = request.metadata.record.header.kind == catalog::CatalogRecordKind::localized_comment;
+    if (commented != (request.role == pg::kNativeCommentRelationRole)) return Refuse(E::invalid_role);
     if (named) {
       // The names relation (this one) and the profiles and policies an
       // entry names.
@@ -1762,7 +1929,8 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
     // definition version cites an event of this transaction.
     if (request.metadata.record.header.kind == catalog::CatalogRecordKind::audit_evidence)
       return Refuse(E::invalid_successor);
-    if (!named) {
+    // Comment rows are data (owner Q79 = 1): no event either.
+    if (!named && !commented) {
       if (!relations.contains(6)) {
         const auto events = std::find_if(root.root->roots.begin(), root.root->roots.end(),
                                          [&](const auto& r) { return r.role == 6; });
@@ -1828,6 +1996,20 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
     if (!named && !Follows(base_metadata, request.metadata, request)) {
       result.error = E::invalid_successor;
       return result;
+    }
+    // SB_NATIVE_COMMENT_INSERT (owner Q82 = 1): an edit or a drop keeps the
+    // comment UUID, the target and the language; only the text changes.
+    std::optional<catalog::CatalogCommentRecordView> comment_record;
+    std::optional<NameTree> comment_tree;
+    if (commented) {
+      const auto before = catalog::DecodeCatalogComment(base_metadata.record.payload);
+      const auto after = catalog::DecodeCatalogComment(request.metadata.record.payload);
+      if (!before.ok()) return Refuse(E::invalid_catalog);
+      if (!after.ok() || !catalog::CatalogCommentPreservesIdentity(*before.record, *after.record))
+        return Refuse(E::invalid_successor);
+      comment_record = *after.record;
+      // SB_NATIVE_COMMENT_TREE: read now; maintained with the other trees.
+      if (!ReadCommentTree(sink, binding, page_size, image, comment_tree, result)) return result;
     }
     // SB_NATIVE_NAME_TREES (N4a): the name's rules.
     std::optional<NameState> names;
@@ -1952,6 +2134,12 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
       if (auto stop = StampAndAddNameCells(sink, binding, succs, relation_read, name_trees.data(), entry, pages,
                                            page_size, request.transaction_order))
         return *stop;
+    // SB_NATIVE_COMMENT_TREE: the base version's cell is stamped with this
+    // transaction; a version that is not a drop gets its own cell.
+    if (comment_tree)
+      if (auto stop = StampAndAddCommentCell(sink, binding, succs.front(), relation_read, *comment_tree, entry, pages,
+                                             page_size, request.transaction_order, *comment_record))
+        return *stop;
 
     if (pages.needed()) {
       deferred = true;
@@ -1985,6 +2173,8 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
     for (const auto t : changed_index_pages) tree_writes.push_back({&relation_read.tree[t], {}});
     for (auto& tree : name_trees)
       for (const auto t : tree.changed) tree_writes.push_back({&tree.tree[t], {}});
+    if (comment_tree)
+      for (const auto t : comment_tree->changed) tree_writes.push_back({&comment_tree->tree[t], {}});
     for (auto& w : tree_writes) {
       auto encoded = pg::EncodeNativeBtreePage(w.page->page);
       if (!encoded.ok()) return Refuse(E::invalid_catalog);
@@ -2061,24 +2251,27 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
       return result;
     for (std::size_t i = 0; i < request.rows.size(); ++i) {
       const auto& row = request.rows[i];
-      if (row.role < 1 || row.role > 6 || !V7(row.row_uuid) || !V7(row.version_uuid) || row.version_uuid == row.row_uuid)
+      if (row.role < 1 || row.role > pg::kNativeCatalogRelationRoles || !V7(row.row_uuid) || !V7(row.version_uuid) || row.version_uuid == row.row_uuid)
         return refuse_row(E::invalid_request, i);
     }
     if (binding.read_only_database) return Refuse(E::read_only_database);
     // A name row carries its name and an empty payload (the envelope is
     // encoded once placed); the relation admits the record's kind.
-    bool any_entry = false, needs_audit = false;
+    bool any_entry = false, needs_audit = false, any_comment = false;
     for (std::size_t i = 0; i < request.rows.size(); ++i) {
       const auto& row = request.rows[i];
       const auto& m = row.metadata;
       const bool name = m.record.header.kind == catalog::CatalogRecordKind::localized_name;
+      // SB_NATIVE_COMMENT_INSERT: comment rows are data (owner Q79 = 1).
+      const bool comment = m.record.header.kind == catalog::CatalogRecordKind::localized_comment;
+      any_comment = any_comment || comment;
       if (name != row.name.has_value() || (name && !m.record.payload.empty()) ||
           m.record.header.kind == catalog::CatalogRecordKind::database)
         return refuse_row(E::invalid_insert, i);
       if (!RoleAdmits(row.role, m)) return refuse_row(E::invalid_role, i);
       if (name && !catalog::CatalogNamePayloadMatchesMetadata(*row.name, m)) return refuse_row(E::invalid_insert, i);
       any_entry = any_entry || (name && std::holds_alternative<catalog::CatalogNameEntry>(*row.name));
-      needs_audit = needs_audit || (!name && m.record.header.kind != catalog::CatalogRecordKind::audit_evidence);
+      needs_audit = needs_audit || (!name && !comment && m.record.header.kind != catalog::CatalogRecordKind::audit_evidence);
     }
     // Rows and versions are new within the request; objects too.
     for (std::size_t i = 0; i < request.rows.size(); ++i)
@@ -2159,6 +2352,11 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
     if (std::any_of(request.rows.begin(), request.rows.end(), [](const auto& r) { return r.name.has_value(); }) &&
         !ReadNameTrees(sink, binding, page_size, image, name_trees, result))
       return result;
+    // SB_NATIVE_COMMENT_TREE: the comment tree (kind 24), when the request
+    // inserts comment rows: each gets its cell in the same plan, and the
+    // duplicate check probes it.
+    std::optional<NameTree> comment_tree;
+    if (any_comment && !ReadCommentTree(sink, binding, page_size, image, comment_tree, result)) return result;
     // ---- each row: checked, placed, indexed --------------------------------
     // The pages a placement changes, by (role, index): their pages as changed.
     std::set<std::pair<u16, std::size_t>> changed_leaves;
@@ -2191,7 +2389,8 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
       // of this transaction, in this request or already written by it.
       // (An audit_evidence row is its own anchor; one not of a registered
       // family the codec refuses below.)
-      if (!want.name && m.record.header.kind != catalog::CatalogRecordKind::audit_evidence) {
+      const bool comment = h.kind == catalog::CatalogRecordKind::localized_comment;
+      if (!want.name && !comment && m.record.header.kind != catalog::CatalogRecordKind::audit_evidence) {
         const bool in_request =
             m.audit_uuid.kind == UuidKind::object &&
             std::any_of(request.rows.begin(), request.rows.end(), [&](const auto& r) {
@@ -2246,6 +2445,32 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
       for (const auto& page : relation.tree)
         for (const auto& cell : page.page.cells)
           if (cell.key.row_uuid == want.row_uuid) return refuse_row(E::duplicate_row, i);
+
+      // SB_NATIVE_COMMENT_INSERT (owner Q82 = 1): one live comment per
+      // (target, language): this request's earlier rows, then the stored ones.
+      std::optional<catalog::CatalogCommentRecordView> comment_record;
+      if (comment) {
+        const auto decoded = catalog::DecodeCatalogComment(m.record.payload);
+        if (!decoded.ok()) return refuse_row(E::invalid_insert, i);
+        comment_record = *decoded.record;
+        for (std::size_t j = 0; j < i; ++j) {
+          const auto& earlier = request.rows[j].metadata;
+          if (earlier.record.header.kind != catalog::CatalogRecordKind::localized_comment) continue;
+          const auto other = catalog::DecodeCatalogComment(earlier.record.payload);
+          if (other.ok() && other.record->target_object_uuid == comment_record->target_object_uuid &&
+              other.record->language_uuid == comment_record->language_uuid)
+            return refuse_row(E::duplicate_comment, i);
+        }
+        const auto pair = HoldOfCommentPair(relation, comment_tree ? &comment_tree->tree : nullptr,
+                                            comment_record->target_object_uuid, comment_record->language_uuid, entry,
+                                            request.transaction_order);
+        if (pair.invalid) return Refuse(E::invalid_catalog);
+        if (pair.held) return refuse_row(E::duplicate_comment, i);
+        if (pair.blocker) {
+          result.blocker_order = pair.blocker;
+          return refuse_row(E::write_conflict, i);
+        }
+      }
 
       // An entry: its keys, then the names it could collide with.
       // SB_CATALOG_SINGLE_WRITER: like the object check above, this holds only
@@ -2318,8 +2543,19 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
       // SB_CATALOG_NEW_PAGES (W3b-3a): no reached leaf has room; an indexed
       // relation gets a new base leaf, reached by this row's cell. An
       // unindexed relation has only its head.
-      if (!target && head.page_type == 0x200 && binding.allocation_root && !relation.leaves.empty()) {
-        const auto& like = relation.leaves.front().page;
+      // SB_NATIVE_COMMENT_RELATION: an indexed relation still empty (the
+      // comments relation at create: its empty index reaches no leaf) whose
+      // identity is a universal constant gets its first base leaf the same way.
+      const auto constant = NativeCatalogConstantRelationUuid(want.role);
+      NativeCatalogLeafPage first;
+      if (relation.leaves.empty() && constant) {
+        first.header = {page_size, 6, binding.database_uuid, croot.filespace_uuid, {}, 0, 1, 0, croot.page_size_profile_uuid};
+        first.body.relation_uuid = {UuidKind::object, *constant};
+        first.body.segment_id = first.body.segment_generation = first.body.page_generation =
+            first.body.compaction_generation = 1;
+      }
+      if (!target && head.page_type == 0x200 && binding.allocation_root && (!relation.leaves.empty() || constant)) {
+        const auto& like = relation.leaves.empty() ? first : relation.leaves.front().page;
         const auto taken = pages.Take(6, like.body.relation_uuid.value);
         if (!taken) return pages.disagreed() ? Refuse(E::invalid_catalog) : refuse_row(E::new_pages_exhausted, i);
         auto leaf = NewBaseLeaf(sink, like, page_size, *taken, !pages.dry(), result);
@@ -2350,6 +2586,20 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
       }
       if (!target) return refuse_row(E::relation_full, i);
       changed_leaves.insert({want.role, *target});
+      // SB_NATIVE_COMMENT_TREE: the row's cell in the comment tree.
+      if (comment && comment_tree) {
+        const auto key = catalog::CatalogCommentTreeKey(comment_record->target_object_uuid, comment_record->language_uuid);
+        pg::NativeBtreeCell cell;
+        cell.key.encoded_key.assign(key.begin(), key.end());
+        cell.key.row_uuid = want.row_uuid;
+        cell.key.version_uuid = want.version_uuid;
+        cell.base_page = relation.bases[*target];
+        cell.creator_local_transaction_id = request.transaction_order;
+        if (const auto error = InsertTreeCell(sink, comment_tree->tree, comment_tree->changed, std::move(cell),
+                                              E::comment_tree_full, E::invalid_insert, pages, page_size,
+                                              binding.allocation_root.has_value(), result))
+          return refuse_row(*error, i);
+      }
       // SB_NATIVE_NAME_TREES: the row's cells in the name trees.
       if (want.name && !name_trees.empty()) {
         const auto payload_view = catalog::BorrowCatalogNamePayload(*want.name);
@@ -2485,15 +2735,17 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
         tree_writes.push_back({page.ref.page_number, std::move(encoded.bytes), &page.image, page.rank});
       }
     // SB_NATIVE_NAME_TREES: the name tree pages, after every base leaf like
-    // the relation index pages.
-    if (!name_trees.empty())
-      for (auto& tree : name_trees)
-        for (const auto t : tree.changed) {
-          auto& page = tree.tree[t];
-          auto encoded = pg::EncodeNativeBtreePage(page.page);
-          if (!encoded.ok()) return Refuse(E::invalid_catalog);
-          tree_writes.push_back({page.ref.page_number, std::move(encoded.bytes), &page.image, page.rank});
-        }
+    // the relation index pages; SB_NATIVE_COMMENT_TREE: the comment tree's too.
+    std::vector<NameTree*> trees;
+    for (auto& tree : name_trees) trees.push_back(&tree);
+    if (comment_tree) trees.push_back(&*comment_tree);
+    for (auto* tree : trees)
+      for (const auto t : tree->changed) {
+        auto& page = tree->tree[t];
+        auto encoded = pg::EncodeNativeBtreePage(page.page);
+        if (!encoded.ok()) return Refuse(E::invalid_catalog);
+        tree_writes.push_back({page.ref.page_number, std::move(encoded.bytes), &page.image, page.rank});
+      }
 
     // SB_CATALOG_NEW_PAGES: a dry pass that needs pages stops here, every
     // refusal behind it; the pages are allocated and the real pass writes.

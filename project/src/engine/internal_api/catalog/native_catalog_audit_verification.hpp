@@ -77,7 +77,10 @@ inline NativeCatalogAuditVerification VerifyNativeCatalogAuditReferences(
     if(m.audit_uuid.kind!=core::platform::UuidKind::object||target->role!=6||
         evidence.record.header.kind!=c::CatalogRecordKind::audit_evidence)
       return fail(E::invalid_event,id,m.audit_uuid.value);
-    const bool name_row=captured.role==2&&row.name_payload;
+    // Name rows and comment rows are data (owner Q50, Q79 = 1): they cite an
+    // event, but not one of their own transaction.
+    const bool name_row=(captured.role==2&&row.name_payload)||
+        (captured.role==storage::page::kNativeCommentRelationRole&&m.record.header.kind==c::CatalogRecordKind::localized_comment);
     if(evidence.object_subtype==scratchbird::core::catalog::CatalogObjectSubtype::catalog_metadata_change&&c::IsCatalogMetadataChangePayload(evidence.record.payload)){
       if(!c::CatalogMetadataChangeMatchesDatabase(evidence,capture.source()->database_uuid))
         return fail(E::invalid_event,id,m.audit_uuid.value);

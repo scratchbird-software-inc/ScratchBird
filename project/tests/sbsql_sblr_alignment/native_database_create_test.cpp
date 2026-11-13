@@ -18,6 +18,7 @@
 #include "native_catalog_relation_lease_reader.hpp"
 #include "physical_mga_cow_store.hpp"
 #include "filespace_page_zero.hpp"
+#include "native_index_btree_page.hpp"
 #include "admitted_datatype_cohort.hpp"
 #include "uuid.hpp"
 #include "../support/owned_temp_directory.hpp"
@@ -31,6 +32,7 @@
 
 namespace c=scratchbird::core::catalog;namespace p=scratchbird::core::platform;
 namespace db=scratchbird::storage::database;namespace d=scratchbird::storage::disk;namespace u=scratchbird::core::uuid;
+namespace pg=scratchbird::storage::page;
 namespace {
 int checks=0;
 void Check(bool ok,const char* what,std::source_location at=std::source_location::current()) {
@@ -103,11 +105,16 @@ int main() {
           "fresh UUIDv7 database and filespace identities bind the written file");
     Check(r.workspace.relation_uuids[1]==c::kNativeNameCatalogRelationUuid,
           "the name/uuid catalog table carries the identity it has in every database");
+    // step4 (SB_NATIVE_COMMENT_RELATION, owner Q77 = 2): a 7th relation, the
+    // comments relation, with its constant identity.
+    Check(r.workspace.relations.size()==7&&r.workspace.relation_uuids[6]==c::kNativeCommentCatalogRelationUuid&&
+          r.workspace.relations[6].role==7,"step4: the comments relation is role 7 and carries its constant identity");
     Check(device.Close().ok()&&device.Open(path,d::FileOpenMode::open_existing).ok(),"independent reopen");
     const std::vector<d::NativeFilespaceDevice> devices{{r.filespace_uuid,profile.uuid,&device}};
     const auto budget=request.maximum_retained_image_bytes;
-    std::array<std::vector<db::NativeCatalogVersionRow>,6> relations;
-    for(unsigned i=0;i<6;++i) {
+    // step4: seven relations (was six).
+    std::array<std::vector<db::NativeCatalogVersionRow>,7> relations;
+    for(unsigned i=0;i<7;++i) {
       const db::NativeCatalogRelationBinding binding{r.workspace.relation_uuids[i],r.workspace.index_dependencies[i]};
       auto read=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(r.database_uuid,devices,db::NativeCatalogSource::PageZero(r.workspace.filespace_uuid),2,
           static_cast<p::u16>(i+1),binding,budget);
@@ -117,13 +124,32 @@ int main() {
     Check(relations[2].empty()&&!r.workspace.index_dependencies[2]&&
           r.workspace.index_dependencies[0]&&r.workspace.index_dependencies[1]&&r.workspace.index_dependencies[3]&&
           r.workspace.index_dependencies[4]&&r.workspace.index_dependencies[5],"every populated relation is indexed");
+    // step4 (owner 2026-11-13): no comments at create, the database object's
+    // included; the comments relation is empty and indexed all the same, and
+    // its (target, language) tree is an empty root on page zero (kind 24).
+    Check(relations[6].empty()&&r.workspace.catalog_rows[6]==0&&r.workspace.index_dependencies[6].has_value(),
+          "step4: the comments relation is empty at create, and indexed");
+    for(unsigned i=0;i<7;++i)for(const auto& row:relations[i])
+      Check(row.metadata.record.header.kind!=c::CatalogRecordKind::localized_comment&&
+            row.metadata.object_subtype!=c::CatalogObjectSubtype::localized_comment,
+            "step4: no localized_comment row anywhere at create");
+    Check(r.workspace.comment_tree_root.has_value()&&r.workspace.comment_tree_root->kind==24&&
+          r.workspace.comment_tree_root->page_type==0x200,"step4: the comment tree root is on page zero (kind 24)");
+    {
+      std::vector<p::byte> page(profile.page_size_bytes);
+      const auto io=device.ReadAt(r.workspace.comment_tree_root->page_number*profile.page_size_bytes,page.data(),page.size());
+      const auto tree=io.ok()?pg::DecodeNativeBtreePage(page):pg::NativeBtreePageResult{};
+      Check(tree.ok()&&tree.page->tree_level==0&&tree.page->cells.empty()&&
+            tree.page->dependencies.key_profile_uuid==c::kNativeCommentTreeKeyProfileUuid,
+            "step4: the comment tree is one empty root under its fixed key profile");
+    }
 
     // The hosted startup provenance rule: no row is newer than its catalog. The
     // initial catalog roots carry generation/schema/security 1 and resource 0,
     // so every definition declares no resource dependency; only a name entry
     // carries a resource epoch, the one its lookup keys were generated under
     // (SB_DRIFT_DEFINITION_RESOURCE_EPOCH).
-    for(unsigned i=0;i<6;++i)for(const auto& row:relations[i]) {
+    for(unsigned i=0;i<7;++i)for(const auto& row:relations[i]) {  // step4: 7 relations
       const auto& m=row.metadata;
       Check(m.catalog_generation==1&&m.schema_epoch==1&&m.security_epoch==1,
             "every row is at the initial catalog generation and epochs");
@@ -134,7 +160,7 @@ int main() {
     // Every definition carries exactly one name, except the construction intent.
     std::map<p::Uuid,const db::NativeCatalogVersionRow*> definitions;
     std::map<p::Uuid,std::string> names;
-    for(unsigned i=0;i<6;++i)for(const auto& row:relations[i]) {
+    for(unsigned i=0;i<7;++i)for(const auto& row:relations[i]) {  // step4: 7 relations
       if(!row.name_payload){definitions.emplace(row.metadata.record.header.object_uuid.value,&row);continue;}
       if(const auto* entry=std::get_if<c::CatalogNameEntry>(&*row.name_payload))
         Check(names.emplace(entry->object_uuid.value,entry->raw_name_text).second,"one default name per object");
@@ -220,8 +246,8 @@ int main() {
     Check(databases==1&&filespaces==1&&schemas==tree,"one database, one primary filespace and the 28-schema system tree");
     Check(cluster_typed==6,"the cluster schema and its five children are cluster-type local schemas");
 
-    // The catalog index rows behind every binding.
-    for(unsigned i=0;i<6;++i) {
+    // The catalog index rows behind every binding (step4: 7 relations).
+    for(unsigned i=0;i<7;++i) {
       const auto& deps=r.workspace.index_dependencies[i];if(!deps)continue;
       const auto map=definitions.find(deps->dependency_map_uuid);
       Check(map!=definitions.end(),"each index binding's dependency map is a catalog row");

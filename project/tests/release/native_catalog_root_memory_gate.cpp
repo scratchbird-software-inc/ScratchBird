@@ -109,13 +109,14 @@ pg::NativeCatalogRoot Example(unsigned profile=0,unsigned member=0,unsigned kind
   p.root_kind=kind;p.object_uuid=Id(20);p.creator_transaction_uuid=Id(21);p.creator_local_transaction_id=42;
   p.catalog_generation=generation;p.schema_epoch=9;p.security_epoch=10;p.resource_epoch=0;
   if(generation>1){p.predecessor=d::NativePageReference{Id(3),30,12,target.uuid};p.predecessor_sha256.fill(0x5c);}
-  for(unsigned i=0;i<(kind==2?6u:1u);++i){Entry r;r.role=kind==2?i+1:kind==6?5:kind==7?4:6;
+  // step4 (SB_NATIVE_COMMENT_RELATION): a kind-2 root has seven roles (was six).
+  for(unsigned i=0;i<(kind==2?7u:1u);++i){Entry r;r.role=kind==2?i+1:kind==6?5:kind==7?4:6;
     r.page_type=(types&(1u<<i))?0x200:6;r.page={Id(3),40+i,13+i,target.uuid};r.object_uuid=Id(100+i);p.roots.push_back(r);}
   return p;
 }
 struct Scratch {
   std::vector<Entry> roots;
-  explicit Scratch(usize n=6):roots(n){}
+  explicit Scratch(usize n=7):roots(n){}  // step4: seven slots
   auto Decode(std::span<const byte> b){return pg::DecodeNativeCatalogRootInto(b,roots);}
 };
 namespace m=scratchbird::core::memory;
@@ -181,7 +182,7 @@ void NoPage(const db::NativeCatalogRootMemoryResult& r){Check(!r.ok()&&!r.page&&
 void MemoryTests(){
   for(unsigned profile=0;profile<5;++profile)for(bool root:{false,true}){MemoryFile file(profile,root);
     const auto capacity=db::NativeCatalogRootWorkspaceBytes(file.value.header.page_size_profile_uuid);
-    Check(capacity==file.bytes.size()+6*sizeof(Entry)+(alignof(std::max_align_t)-1),"independent native backing size formula");
+    Check(capacity==file.bytes.size()+7*sizeof(Entry)/*step4*/+(alignof(std::max_align_t)-1),"independent native backing size formula");
     {
       MemoryFixture f(capacity);
       {auto guard=file.device.AcquireOperationGuard();allocation_device_mutex=guard.mutex();}
@@ -260,7 +261,7 @@ void MemoryTests(){
       Check(r.error==ME::encrypted_requires_authority,"encrypted common header never parsed as plaintext");}file.Store(file.bytes);
     if(!root){
       for(unsigned member=0;member<5;++member)for(unsigned kind:{2u,6u,7u,8u})for(unsigned generation:{1u,2u})
-        for(unsigned types=0;types<(kind==2?64u:2u);++types)for(unsigned flags=0;flags<16;++flags){
+        for(unsigned types=0;types<(kind==2?128u:2u);++types)/*step4: 7 role bits*/for(unsigned flags=0;flags<16;++flags){
           auto v=Example(profile,member,kind,generation,types,flags);const auto image=Oracle(v);
           file.expected.page_type=v.header.page_type;file.Store(image);auto r=file.Read(valid);
           if(flags&1){NoPage(r);Check(r.error==ME::encrypted_requires_authority,"physical encrypted bytes require owning crypto route");}
@@ -293,7 +294,7 @@ void Codecs(){
   Scratch scratch;
   for(unsigned profile=0;profile<5;++profile)for(unsigned member=0;member<5;++member)
     for(unsigned kind:{2u,6u,7u,8u})for(unsigned generation:{1u,2u})
-      for(unsigned types=0;types<(kind==2?64u:2u);++types)for(unsigned flags=0;flags<16;++flags){
+      for(unsigned types=0;types<(kind==2?128u:2u);++types)/*step4: 7 role bits*/for(unsigned flags=0;flags<16;++flags){
         const auto v=Example(profile,member,kind,generation,types,flags);const auto b=Oracle(v);
         allocations=0;measuring=true;budget=0;auto r=scratch.Decode(b);const auto remaining=budget;budget=-1;measuring=false;
         Check(r.ok()&&!allocations&&remaining==0&&r.root->roots.data()==scratch.roots.data(),"all logical root variants use caller backing");
@@ -302,16 +303,16 @@ void Codecs(){
       }
   const auto p=Example();const auto good=Oracle(p);
   for(unsigned kind:{2u,6u,7u,8u}){
-    const auto b=Oracle(Example(0,0,kind));const auto count=kind==2?6:1;
+    const auto b=Oracle(Example(0,0,kind));const auto count=kind==2?7:1;  // step4
     auto shortfall=pg::DecodeNativeCatalogRootInto(b,std::span(scratch.roots).first(count-1));
     Check(!shortfall.root&&shortfall.error==E::resource_exhausted,"one root-reference slot short");
     for(usize i=0;i<b.size();++i){auto bad=b;bad[i]^=1;Check(!scratch.Decode(bad).root,"every byte of every root family sealed");}
   }
-  auto alias=pg::DecodeNativeCatalogRootInto(good,{reinterpret_cast<Entry*>(const_cast<byte*>(good.data())),6});
+  auto alias=pg::DecodeNativeCatalogRootInto(good,{reinterpret_cast<Entry*>(const_cast<byte*>(good.data())),7}/*step4*/);
   Check(!alias.root&&alias.error==E::invalid_backing,"image reference alias before writes");
   auto overflow=pg::DecodeNativeCatalogRootInto(good,{scratch.roots.data(),std::numeric_limits<usize>::max()/sizeof(Entry)+1});
   Check(!overflow.root&&overflow.error==E::invalid_backing,"reference multiplication overflow");
-  auto wrap=pg::DecodeNativeCatalogRootInto(good,{reinterpret_cast<Entry*>(std::numeric_limits<std::uintptr_t>::max()-7),6});
+  auto wrap=pg::DecodeNativeCatalogRootInto(good,{reinterpret_cast<Entry*>(std::numeric_limits<std::uintptr_t>::max()-7),7}/*step4*/);
   Check(!wrap.root&&wrap.error==E::invalid_backing,"reference address overflow");
   Check(Oracle(p)==good,"invalid backing leaves input unchanged");
   Bytes unaligned(1);unaligned.insert(unaligned.end(),good.begin(),good.end());

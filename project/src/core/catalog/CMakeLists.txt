@@ -28,6 +28,7 @@ add_library(sb_core_catalog_dispatcher_objects OBJECT
   catalog_record_codec.cpp
   catalog_authorization_policy.cpp
   catalog_bootstrap_policy.cpp
+  catalog_comment_record_codec.cpp
   catalog_construction_intent.cpp
   catalog_metadata_change.cpp
   catalog_native_security_record.cpp

@@ -38,7 +38,7 @@ class NativeBtreeTreeLeaseReader {
   // compares it with the catalog's profile and map rows.
   static NativeBtreeTreeReadResult ReadPageZeroTree(const detail::NativeLeaseReadSource& source,
       const detail::NativeLeaseRoot& root,NativeBtreeTreePreparedMemory& backing,std::size_t image_limit) noexcept {
-    if(root.kind!=22&&root.kind!=23)return {};
+    if(root.kind!=22&&root.kind!=23&&root.kind!=24)return {};  // 24: SB_NATIVE_COMMENT_TREE
     return ReadWith(source,root.page,{},backing,image_limit,&root.object_uuid);
   }
  private:

@@ -67,9 +67,13 @@ template<class Source> E FixedRootCause(const Source& r) {
 }
 
 // Control offsets after the last allocation-map page. Page zero is separate.
+// SB_NATIVE_COMMENT_RELATION: the first leaves of roles 1..6 only; role 7,
+// the comments relation, is empty at create and has no base leaf (its first
+// leaf is allocated by its first insert), so the control block is unchanged.
 enum Control : unsigned {checkpoint=1, inventory, directory, system, retention,
   horizon, catalog, configuration, security, first_leaf, selector_first=16,
   selector_second=17, watermark_first=18, watermark_second=19, count=20};
+static_assert(selector_first==first_leaf+detail::kNativeCreationFixedLeafRoles);
 constexpr std::array<u32,count> types{0,0x300,0x301,9,8,0x303,0x302,5,10,11,
   6,6,6,6,6,6,0x30e,0x30e,0x500,0x500};
 struct Image {
@@ -127,12 +131,16 @@ bool FillNativeCreationNamePaths(NativeCreationCatalogSeed& seed) {
 NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevice(
     disk::FileDevice& device,const NativeFilespaceInitializationRequest& request,
     const NativeCreationCatalogSeed& seed,const NativeCreationCatalogIndexes& indexes,u64 budget,
-    core::uuid::StandaloneUuidV7Issuer& issuer,const NativeCreationCatalogNameTrees& name_trees) noexcept {
+    core::uuid::StandaloneUuidV7Issuer& issuer,const NativeCreationCatalogNameTrees& name_trees,
+    const std::optional<page::NativeBtreeDependencies>& comment_tree) noexcept {
   try {
     // SB_NATIVE_NAME_TREES: both trees or neither.
     if(name_trees.authoritative.has_value()!=name_trees.uuid.has_value())return Fail(E::invalid_request);
     if(name_trees.requested()&&(!page::NativeBtreeDependenciesValid(*name_trees.authoritative)||
         !page::NativeBtreeDependenciesValid(*name_trees.uuid)))return Fail(E::invalid_catalog_input);
+    // SB_NATIVE_COMMENT_TREE: over an indexed, empty comments relation.
+    if(comment_tree&&(!page::NativeBtreeDependenciesValid(*comment_tree)||!indexes[detail::kNativeCommentRelationIndex]||
+        !seed[detail::kNativeCommentRelationIndex].empty()))return Fail(E::invalid_catalog_input);
     const auto guard=device.AcquireOperationGuard();
     const auto& b=request.bootstrap;
     const auto v7=[](const Uuid& id){return core::uuid::IsEngineIdentityUuid(id);};
@@ -164,7 +172,7 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
         if(offset[c])control_at[offset[c]]=c;
       }
     }
-    const u64 controls=14;
+    const u64 controls=detail::kNativeCreationControlPages;
     // SB_ALLOCATION_MAP_IN_PLACE (owner Q22 = 1): the in-place allocation map.
     const u64 size=b.page_size_bytes,total=request.total_pages,
         coverage=u64{page::AllocationMapInplaceSlotsPerPage(static_cast<u32>(size))};
@@ -190,7 +198,8 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
        budget/size<admitted||maps>(budget/size-admitted)/2||
        maps>std::numeric_limits<std::size_t>::max()-controls) return Fail(E::resource_exhausted);
 
-    auto planned=detail::PlanNativeCreationCatalogLayout(size,maps,total,budget,seed,indexes,name_trees.requested());
+    auto planned=detail::PlanNativeCreationCatalogLayout(size,maps,total,budget,seed,indexes,name_trees.requested(),
+        comment_tree.has_value());
     if(!planned.ok())return Fail(planned.error==detail::NativeCreationLayoutError::resource_exhausted?E::resource_exhausted:
         planned.error==detail::NativeCreationLayoutError::capacity_exceeded?E::catalog_capacity_exceeded:E::invalid_catalog_input);
     auto plan=std::move(*planned.layout);const auto& layouts=plan.relations;
@@ -336,7 +345,7 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
     // SB_NATIVE_NAME_TREES: where each names-relation row lands (base page,
     // version), for the trees' cells.
     std::vector<std::pair<u64,Uuid>> name_placement(seed[1].size());
-    for(unsigned i=0;i<6;++i) {
+    for(unsigned i=0;i<page::kNativeCatalogRelationRoles;++i) {
       const auto& layout=layouts[i];
       const Uuid relation_uuid=indexes[i]?indexes[i]->relation_uuid:images[layout.bases.front()].owner;
       receipt.relation_uuids[i]=relation_uuid;
@@ -470,6 +479,23 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
         for(const auto& level:layout.tree.branches)receipt.name_tree_pages[t]+=level.size();
       }
     }
+    if(comment_tree) {
+      // SB_NATIVE_COMMENT_TREE: the comment tree, its root alone and empty.
+      if(!plan.comment_tree_root)return Fail(E::encoding_failure);
+      const u64 n=*plan.comment_tree_root;
+      images[n].header.page_type=0x200;images[n].owner=comment_tree->index_uuid;
+      page::NativeBtreePage p;p.header=images[n].header;p.dependencies=*comment_tree;
+      p.creator_transaction_uuid=creator;p.creator_local_transaction_id=1;
+      p.maintenance_state=1;p.tree_level=0;
+      auto encoded=page::EncodeNativeBtreePage(p);
+      if(!encoded.ok()) {
+        auto failed=Fail(encoded.error==page::NativeBtreeError::resource_exhausted?E::resource_exhausted:
+            encoded.error==page::NativeBtreeError::hash_failure?E::hash_failure:E::encoding_failure);
+        failed.btree_error=encoded.error;failed.failed_page_number=n;return failed;
+      }
+      save(n,std::move(encoded));
+      receipt.comment_tree_root=root(24,n);
+    }
     for(const auto control:{catalog,configuration,security}) {
       const u64 n=at(control);
       page::NativeCatalogRoot c;c.header=images[n].header;c.object_uuid=images[n].owner;
@@ -525,6 +551,8 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
       if(i+1!=9)zero.roots.push_back(root(i+1,zero_roots[i]));
     // SB_NATIVE_NAME_TREES: kinds 22 and 23, after the fixed roots.
     for(const auto& tree_root:receipt.name_tree_roots)if(tree_root)zero.roots.push_back(*tree_root);
+    // SB_NATIVE_COMMENT_TREE: kind 24, after them.
+    if(receipt.comment_tree_root)zero.roots.push_back(*receipt.comment_tree_root);
     auto encoded_zero=disk::EncodeFilespacePageZero(zero);
     if(!encoded_zero.ok()) return Fail(
         encoded_zero.error==disk::FilespacePageZeroError::resource_exhausted?E::resource_exhausted:
@@ -594,12 +622,18 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
     if(lease.identity().page_zero_uuid!=receipt.page_zero_uuid||lease.identity().filespace_uuid!=b.filespace_uuid||
         lease.identity().database_uuid!=b.database_uuid)return Fail(E::graph_failure);
     for(const auto& r:lease.roots()){
+      if(r.kind==24) {  // SB_NATIVE_COMMENT_TREE
+        if(!receipt.comment_tree_root||receipt.comment_tree_root->page_number!=r.page_number||
+            receipt.comment_tree_root->object_uuid!=r.object_uuid||r.page_type!=0x200)return Fail(E::graph_failure);
+        continue;
+      }
       const bool tree=r.kind==22||r.kind==23;
       if(r.kind==9||(r.kind>10&&!tree)||(tree&&!name_trees.requested()))return Fail(E::graph_failure);
       if(tree&&(!receipt.name_tree_roots[r.kind-22]||receipt.name_tree_roots[r.kind-22]->page_number!=r.page_number||
           receipt.name_tree_roots[r.kind-22]->object_uuid!=r.object_uuid||r.page_type!=0x200))return Fail(E::graph_failure);
     }
     if(name_trees.requested()&&(!lease.Root(22)||!lease.Root(23)))return Fail(E::graph_failure);
+    if(comment_tree.has_value()!=(lease.Root(24)!=nullptr))return Fail(E::graph_failure);
     const auto allocated=[&](const auto& target,u32 type,const Uuid& owner)->E {
       if(target.filespace_uuid!=b.filespace_uuid||target.page_size_profile_uuid!=b.page_size_profile_uuid)return E::graph_failure;
       std::vector<byte> bytes(size);
@@ -624,6 +658,9 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
       for(const auto& level:layouts[i].branches)for(const auto n:level)
         if(const auto error=allocated(ref(n),0x201,receipt.index_dependencies[i]->index_uuid);error!=E::none){auto failed=Fail(error);failed.failed_page_number=n;return failed;}
     }
+    if(plan.comment_tree_root)  // SB_NATIVE_COMMENT_TREE: allocated to the tree's index.
+      if(const auto error=allocated(ref(*plan.comment_tree_root),0x200,comment_tree->index_uuid);error!=E::none){
+        auto failed=Fail(error);failed.failed_page_number=*plan.comment_tree_root;return failed;}
     if(plan.name_trees)for(unsigned t=0;t<2;++t) {
       // SB_NATIVE_NAME_TREES: every tree page is allocated to the tree's index.
       const auto& layout=(*plan.name_trees)[t].tree;const auto& index=t?name_trees.uuid->index_uuid:name_trees.authoritative->index_uuid;

@@ -382,7 +382,10 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     // Page zero, the maps, 13 fixed-root controls and the transaction header
     // page, then the catalog pages and two images (the drift-era graph had six
     // more control pages).
-    const u64 exact=(maps+15+base_pages+navigation+2)*page_bytes;
+    // step4 (SB_NATIVE_COMMENT_RELATION): + one page, the head leaf of role 7
+    // (the comments relation; unindexed here, only role 1 is), allocated after
+    // the header page; the comment tree is not requested here.
+    const u64 exact=(maps+15+1+base_pages+navigation+2)*page_bytes;
     const auto path=fixture.Next();disk::FileDevice device;
     Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"exact indexed image budget owner");
     Arm();auto refused=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,dense_request,seed,

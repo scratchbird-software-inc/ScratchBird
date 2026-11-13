@@ -11,6 +11,7 @@
 #include "native_catalog_naming_profile_verification.hpp"
 #include "native_catalog_collision_verification.hpp"
 #include "native_catalog_index_verification.hpp"
+#include "native_catalog_comment_verification.hpp"
 
 namespace scratchbird::engine::internal_api {
 // A source-bound component observation, never a complete startup receipt.
@@ -18,6 +19,9 @@ namespace scratchbird::engine::internal_api {
 // lifecycle verification remain obligations of the owning operation.
 struct NativeCatalogMetadataVerification {
   NativeCatalogNameVerification names;
+  // SB_NATIVE_COMMENT_RELATION: every live comment row, its target and its
+  // (target, language) uniqueness.
+  NativeCatalogCommentVerification comments;
   // SB_NATIVE_NAME_PATH: every name entry's stored full path.
   NativeCatalogNamePathVerification paths;
   // SB_NATIVE_NAME_TREES: every captured name tree cell against its row.
@@ -32,13 +36,15 @@ struct NativeCatalogMetadataVerification {
   NativeCatalogNamingProfileVerification naming_profiles;
   NativeCatalogCollisionVerification collisions;
   std::optional<storage::database::NativeReadSourceIdentity> source;
-  bool ok() const noexcept{return source.has_value()&&names.ok()&&paths.ok()&&name_trees.ok()&&indexes.ok()&&namespaces.ok()&&filespaces.ok()&&audit.ok()&&security.ok()&&naming_profiles.ok()&&collisions.ok();}
+  bool ok() const noexcept{return source.has_value()&&names.ok()&&comments.ok()&&paths.ok()&&name_trees.ok()&&indexes.ok()&&namespaces.ok()&&filespaces.ok()&&audit.ok()&&security.ok()&&naming_profiles.ok()&&collisions.ok();}
 };
 inline NativeCatalogMetadataVerification VerifyNativeCatalogMetadata(
     const storage::database::NativeCatalogCapture& capture,NativeCatalogNamespaceWorkspace workspace) noexcept {
   NativeCatalogMetadataVerification out;
   out.names=VerifyNativeCatalogNameBindings(capture,workspace.order);
   if(!out.names.ok())return out;
+  out.comments=VerifyNativeCatalogComments(capture,workspace.order);
+  if(!out.comments.ok())return out;
   out.indexes=VerifyNativeCatalogIndexBindings(capture);
   if(!out.indexes.ok())return out;
   out.namespaces=VerifyNativeCatalogNamespaces(capture,workspace);

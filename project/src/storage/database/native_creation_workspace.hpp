@@ -6,6 +6,7 @@
 #include "catalog_name_envelope.hpp"
 #include "catalog_named_creation.hpp"
 #include "native_index_btree_page.hpp"
+#include "catalog_page.hpp"
 
 namespace scratchbird::storage::database {
 enum class NativePinnedCatalogReadError;
@@ -30,15 +31,19 @@ struct NativeCreationWorkspaceReceipt {
   core::platform::Uuid database_uuid, filespace_uuid, operation_uuid;
   core::platform::Uuid page_zero_uuid, timeline_uuid, publication_uuid;
   transaction::mga::TransactionIdentity construction_transaction;
-  std::array<page::NativeCatalogRootReference,6> relations;
-  std::array<core::platform::Uuid,6> relation_uuids;
-  std::array<std::optional<page::NativeBtreeDependencies>,6> index_dependencies;
+  // SB_NATIVE_COMMENT_RELATION: one per catalog relation role, 1..7.
+  std::array<page::NativeCatalogRootReference,page::kNativeCatalogRelationRoles> relations;
+  std::array<core::platform::Uuid,page::kNativeCatalogRelationRoles> relation_uuids;
+  std::array<std::optional<page::NativeBtreeDependencies>,page::kNativeCatalogRelationRoles> index_dependencies;
   core::platform::u64 total_pages=0, free_pages=0, map_pages=0;
-  std::array<core::platform::u64,6> catalog_rows{};
+  std::array<core::platform::u64,page::kNativeCatalogRelationRoles> catalog_rows{};
   // SB_NATIVE_NAME_TREES: the trees' page-zero roots (kinds 22, 23), cells and
   // pages, when they were built.
   std::array<std::optional<disk::FilespaceRootReference>,2> name_tree_roots;
   std::array<core::platform::u64,2> name_tree_cells{},name_tree_pages{};
+  // SB_NATIVE_COMMENT_TREE: the comment tree's page-zero root (kind 24), when
+  // it was built (empty: the create writes no comments).
+  std::optional<disk::FilespaceRootReference> comment_tree_root;
 };
 struct NativeCreationWorkspaceResult {
   NativeCreationWorkspaceError error=NativeCreationWorkspaceError::invalid_request;
@@ -60,13 +65,14 @@ NativeCreationWorkspaceResult InitializeNativeCreationWorkspaceOnOpenDevice(
     core::uuid::StandaloneUuidV7Issuer&) noexcept;
 
 using NativeCreationCatalogRecord = core::catalog::CatalogCreationRecord;
-// Role1..6 correspond to the six native catalog relations. Inputs are complete
+// Role1..7 correspond to the seven native catalog relations (role 7, the
+// comments relation, SB_NATIVE_COMMENT_RELATION). Inputs are complete
 // owning-catalog definitions, not strings interpreted by storage. The caller
 // retains admitted input memory and owns family/reference/security admission.
 // One native leaf per role: a row set which does not fit is refused BEFORE I/O,
 // never truncated. This bounded construction API does not replace subsequent
 // indexed catalog population or ordinary CREATE activation.
-using NativeCreationCatalogSeed = std::array<std::vector<NativeCreationCatalogRecord>,6>;
+using NativeCreationCatalogSeed = std::array<std::vector<NativeCreationCatalogRecord>,page::kNativeCatalogRelationRoles>;
 // SEARCH_KEY: SB_NATIVE_NAME_PATH. Sets every name entry's full path in the
 // names relation (role 2, seed[1]) by the one rule (core ResolveCatalogNamePath),
 // from the seed's own names. False, with the seed unchanged, when a path does not
@@ -91,7 +97,7 @@ struct NativeCreationCatalogIndexBinding {
   core::platform::Uuid relation_uuid;
   page::NativeBtreeDependencies dependencies;
 };
-using NativeCreationCatalogIndexes = std::array<std::optional<NativeCreationCatalogIndexBinding>,6>;
+using NativeCreationCatalogIndexes = std::array<std::optional<NativeCreationCatalogIndexBinding>,page::kNativeCatalogRelationRoles>;
 // A missing index retains the original single-leaf bound. A supplied index
 // packs complete base leaves and a real native navigation tree, built bottom-up
 // with as many levels as the rows need (SB_CATALOG_BTREE_N_LEVEL). Overcapacity
@@ -102,5 +108,10 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
     const NativeCreationCatalogSeed&,const NativeCreationCatalogIndexes&,
     core::platform::u64 maximum_retained_image_bytes,
     core::uuid::StandaloneUuidV7Issuer&,
-    const NativeCreationCatalogNameTrees& name_trees={}) noexcept;
+    const NativeCreationCatalogNameTrees& name_trees={},
+    // SB_NATIVE_COMMENT_TREE (2026-11-13): the dependency tuple of the comments
+    // relation's (target, language) tree; with it the create builds the tree
+    // (an empty root, page-zero kind 24). It needs the comments relation
+    // (role 7) indexed and empty.
+    const std::optional<page::NativeBtreeDependencies>& comment_tree={}) noexcept;
 }  // namespace scratchbird::storage::database

@@ -52,7 +52,10 @@ u64 zero_bytes=0,largest_zero_write=0;
 // pages) + the transaction header page (SB_TRANSACTION_HEADER_PAGE, allocated
 // last). The smallest image budget adds one in-flight encoder image and one
 // readback image. (The drift-era graph had 20 controls.)
-u64 page_bytes=8192,total_pages=16;
+// step4 (SB_NATIVE_COMMENT_RELATION): + the head leaf of role 7, the comments
+// relation (unindexed here, so it has a head leaf), allocated after the header
+// page: 17 pages.
+u64 page_bytes=8192,total_pages=17;
 unsigned first_write_hashes=~0u;  // digest calls before the first physical write
 unsigned torn_at=0;  // the write torn in half (then failed), counted as calls[write_call]
 bool ordered=true;
@@ -61,7 +64,7 @@ void Arm(unsigned kind=call_count,unsigned at=0){calls={};fault_kind=kind;fault_
 void Disarm(){armed=false;}
 // 32 bits in the last four bytes; below 65536 the UUIDs are those of the earlier 16-bit form.
 Uuid Id(unsigned n){Uuid id;id.bytes[0]=1;id.bytes[6]=0x70;id.bytes[8]=0x80;id.bytes[12]=n>>24;id.bytes[13]=n>>16;id.bytes[14]=n>>8;id.bytes[15]=n;return id;}
-db::NativeFilespaceInitializationRequest Request(unsigned profile=0,u64 total=16){
+db::NativeFilespaceInitializationRequest Request(unsigned profile=0,u64 total=17){  // step4: + role 7's head leaf (was 16)
   const auto& p=disk::kCanonicalFilespacePageProfiles[profile];
   db::NativeFilespaceInitializationRequest r;
   r.bootstrap={Id(1),Id(2),p.uuid,disk::kNativeBootstrapIntegrityProfile,{},p.page_size_bytes,1,0,1,7};
@@ -132,8 +135,9 @@ void Inspect(disk::FileDevice& device,const db::NativeFilespaceInitializationReq
   // covered page on a 128-byte boundary). The sealed map covered one more.
   const std::array<u64,5> coverage{59,123,251,506,1016};
   unsigned profile=0;while(disk::kCanonicalFilespacePageProfiles[profile].page_size_bytes!=size)++profile;
-  // Page zero, the maps, 13 control pages and the transaction header page.
-  const u64 maps=(request.total_pages+coverage[profile]-1)/coverage[profile],used=maps+15;
+  // Page zero, the maps, 13 control pages and the transaction header page;
+  // step4: then role 7's head leaf.
+  const u64 maps=(request.total_pages+coverage[profile]-1)/coverage[profile],used=maps+16;
   const auto& chain=lease.allocation();
   Check(z.total_pages==request.total_pages&&z.free_pages==request.total_pages-used&&!z.preallocated_pages&&
     chain.pages.size()==maps&&chain.state_counts[2]==used&&chain.state_counts[0]==z.free_pages,
@@ -141,7 +145,8 @@ void Inspect(disk::FileDevice& device,const db::NativeFilespaceInitializationReq
   // Controls: inventory, directory, system state, retention, catalog,
   // configuration, security, six relation heads; then the header page, a
   // second family under the inventory page type.
-  const std::array<u32,15> control_types{0,0x301,9,8,0x303,5,10,11,6,6,6,6,6,6,0x301};
+  // step4: role 7's head leaf (type 6) after the header page.
+  const std::array<u32,16> control_types{0,0x301,9,8,0x303,5,10,11,6,6,6,6,6,6,0x301,6};
   const std::array<u16,9> kinds{1,2,3,4,5,6,7,8,10};
   const std::array<u64,9> zero_slots{maps+3,maps+5,1,maps+1,maps+2,maps+6,maps+7,maps+5,maps+4};
   Check(z.roots.size()==kinds.size(),"exact fixed root set: kinds 1-8 and 10, no checkpoint, selector or watermark root");
@@ -194,11 +199,12 @@ void Inspect(disk::FileDevice& device,const db::NativeFilespaceInitializationReq
   for(u64 n=used;n<z.total_pages;++n){const auto bytes=Read(device,n,size);
     Check(std::all_of(bytes.begin(),bytes.end(),[](byte v){return !v;}),"all physical free bytes are zero");}
   const auto& catalog=*catalog_image.root;
-  Check(catalog.roots.size()==6&&catalog.catalog_generation==1&&catalog.schema_epoch==1&&catalog.security_epoch==1&&
+  Check(catalog.roots.size()==7&&catalog.catalog_generation==1&&catalog.schema_epoch==1&&catalog.security_epoch==1&&
     catalog.resource_epoch==0&&!catalog.predecessor&&catalog.creator_transaction_uuid==Id(5)&&catalog.creator_local_transaction_id==1,
     "empty construction catalog epochs not resource activation");
-  for(unsigned i=0;i<6;++i){const auto& r=catalog.roots[i];
-    Check(r.role==i+1&&r.page_type==6&&r.page.page_number==maps+8+i,"six exact real relation heads");
+  // step4: seven relation heads; role 7's head leaf follows the header page.
+  for(unsigned i=0;i<7;++i){const auto& r=catalog.roots[i];
+    Check(r.role==i+1&&r.page_type==6&&r.page.page_number==(i<6?maps+8+i:maps+15),"step4: seven exact real relation heads");
     const auto leaf=db::ReadNativeCatalogLeafFromOpenDevice(device,b.database_uuid,r);
     Check(leaf.ok()&&leaf.page->body.rows.empty()&&leaf.metadata.empty()&&leaf.page->body.relation_uuid.value==r.object_uuid,
       "empty is actual empty catalog storage, not fake seed/security rows");}
@@ -319,7 +325,8 @@ int main(int argc,char** argv){try{
       const u64 maps=profile?1:2;
       for(const u64 extra:{u64{0},u64{4},u64{64}}){
         disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"zero batch device");
-        Arm();const auto result=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,(maps+17+extra)*page_bytes,*fixture.issuer);Disarm();
+        // step4: one more image (role 7's head leaf), so the same batch sizes need one more page of budget (was maps+17).
+        Arm();const auto result=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,(maps+18+extra)*page_bytes,*fixture.issuer);Disarm();
         const u64 batch=std::min<u64>(16,extra+1);
         Check(result.ok()&&ordered&&zero_phase==3&&zero_writes==(total_pages+batch-1)/batch&&
           zero_bytes==total_pages*page_bytes&&largest_zero_write==batch*page_bytes,
@@ -415,8 +422,9 @@ int main(int argc,char** argv){try{
   }
   // The smallest fixed-root file: page zero, one map, 13 controls and the
   // header page; the smallest image budget adds an encoder and a readback image.
-  const auto request=Request();page_bytes=8192;total_pages=16;
-  const u64 minimum_budget=18*page_bytes;
+  // step4: + role 7's head leaf: 17 pages, 19 images.
+  const auto request=Request();page_bytes=8192;total_pages=17;
+  const u64 minimum_budget=19*page_bytes;
   // SB_NATIVE_FIXED_ROOT_READ (drift removal R3b3): a fixed root changed
   // after page zero is written and read back is caught by the create's own
   // read of the file, before any receipt.

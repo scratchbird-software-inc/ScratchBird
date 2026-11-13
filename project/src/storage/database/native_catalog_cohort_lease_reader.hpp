@@ -4,6 +4,7 @@
 #include "native_catalog_cohort_capture.hpp"
 #include "native_fixed_root_memory_lease.hpp"
 #include "native_lease_read_source.hpp"
+#include "catalog_comment_record_codec.hpp"
 #include <concepts>
 
 namespace scratchbird::storage::database {
@@ -14,7 +15,12 @@ enum class NativeCatalogCohortError {
   // wrong page type or object, or a tree that does not read; a cell that does
   // not bind to a names-relation row version (or a row version without its
   // cells).
-  name_tree_failure,name_tree_mismatch
+  name_tree_failure,name_tree_mismatch,
+  // SB_NATIVE_COMMENT_TREE: the comment tree root (kind 24) of the wrong page
+  // type or object, or a tree that does not read; a cell that does not bind to
+  // a comment row version of the comments relation, or whose key is not that
+  // row's target and language (or a comment row version without its cell).
+  comment_tree_failure,comment_tree_mismatch
 };
 struct NativeCatalogRelationInspection {
   u16 selector=0,role=0;
@@ -31,11 +37,14 @@ struct NativeCatalogCohortInspection {
   NativePinnedCatalogReadError visibility_error=NativePinnedCatalogReadError::none;
   NativeCatalogRelationLeaseError relation_error=NativeCatalogRelationLeaseError::none;
   std::optional<NativeReadSourceIdentity> source;
-  std::array<NativeCatalogRelationInspection,12> relations{};
+  std::array<NativeCatalogRelationInspection,2*page::kNativeCatalogRelationRoles> relations{};
   usize relation_count=0;
   // SB_NATIVE_NAME_TREES: whether page zero had the name trees and what they held.
   bool name_trees_present=false;
   std::array<usize,2> name_tree_pages{},name_tree_cells{};
+  // SB_NATIVE_COMMENT_TREE: whether page zero had the comment tree and what it held.
+  bool comment_tree_present=false;
+  usize comment_tree_pages=0,comment_tree_cells=0;
   NativeBtreeTreeMemoryError name_tree_error=NativeBtreeTreeMemoryError::none;
   page::NativeBtreeError name_tree_page_error=page::NativeBtreeError::none;
   u16 failing_selector=0,failing_role=0;
@@ -275,6 +284,86 @@ class NativeCatalogCohortLeaseReader {
                   if(!capture->AppendPhysical(page.page->header,dependencies.index_uuid))return fail(E::resource_exhausted);
                 capture->name_trees_[t]=NativeCapturedNameTree{tree_root.kind,dependencies,tree_root.page,cells,tree.pages.size()};
               }
+            }
+          }
+        }
+        if(selector==2&&relation.role==page::kNativeCommentRelationRole){
+          // SEARCH_KEY: SB_NATIVE_COMMENT_TREE (2026-11-13). The comments
+          // relation's (target, language) tree, read from page zero (kind 24)
+          // while the relation's base leaves are still live: every cell binds
+          // to a comment row version of this relation, its key is that row's
+          // target16 | language16, and every comment row version that is not
+          // a drop has exactly one cell (the name trees' rule, with the same
+          // admission for an uncommitted writer's version that lost its cell).
+          if(const auto* comment_root=view.Root(24)){
+            if(!workspace.name_trees)return fail(E::resource_exhausted);
+            out.comment_tree_present=true;
+            const auto& bases=read.source.bases;
+            if(comment_root->page_type!=0x200)return fail(E::comment_tree_failure);
+            if(out.verified_image_bytes>=maximum_image_bytes)return fail(E::resource_exhausted);
+            const auto limit=static_cast<usize>(std::min<u64>(maximum_image_bytes-out.verified_image_bytes,std::numeric_limits<usize>::max()));
+            const auto tree=NativeBtreeTreeLeaseReader::ReadPageZeroTree(view,*comment_root,workspace.name_trees,limit);
+            out.physical_bytes_read+=tree.physical_bytes_read;
+            if(!tree.ok()){out.name_tree_error=tree.error;out.name_tree_page_error=tree.tree_error;return fail(E::comment_tree_failure);}
+            if(tree.retained_image_bytes>maximum_image_bytes-out.verified_image_bytes)return fail(E::resource_exhausted);
+            out.verified_image_bytes+=tree.retained_image_bytes;
+            const auto& dependencies=tree.pages.front().page->dependencies;
+            if(dependencies.index_uuid!=comment_root->object_uuid)return fail(E::comment_tree_failure);
+            usize cells=0;
+            for(const auto n:tree.leaves){const auto& page=*tree.pages[n].page;
+              for(const auto& cell:page.cells){
+                ++cells;
+                if(!cell.base_page)return fail(E::comment_tree_mismatch);
+                const NativeReadCatalogLeafImage* base=nullptr;
+                for(const auto& candidate:bases){const auto& h=candidate.page.header;
+                  if(h.filespace_uuid==cell.base_page->filespace_uuid&&h.page_number==cell.base_page->page_number){
+                    if(h.page_generation!=cell.base_page->page_generation||h.page_size_profile_uuid!=cell.base_page->page_size_profile_uuid)
+                      return fail(E::comment_tree_mismatch);
+                    base=&candidate;break;}}
+                if(!base)return fail(E::comment_tree_mismatch);
+                const auto& metadata=base->page.metadata;
+                const auto found=std::lower_bound(metadata.begin(),metadata.end(),cell.key.version_uuid,
+                    [](const auto& m,const Uuid& id){return m.version_uuid<id;});
+                if(found==metadata.end()||found->version_uuid!=cell.key.version_uuid||found->name)return fail(E::comment_tree_mismatch);
+                const auto& row=base->page.body.rows[found->row_index];
+                if(row.row_uuid.value!=cell.key.row_uuid||row.local_transaction_id!=cell.creator_local_transaction_id||
+                    found->metadata.record.header.kind!=core::catalog::CatalogRecordKind::localized_comment)
+                  return fail(E::comment_tree_mismatch);
+                const auto comment=core::catalog::DecodeCatalogComment(found->metadata.record.payload);
+                if(!comment.ok())return fail(E::comment_tree_mismatch);
+                const auto key=core::catalog::CatalogCommentTreeKey(comment.record->target_object_uuid,comment.record->language_uuid);
+                if(cell.key.encoded_key.size()!=key.size()||!std::equal(key.begin(),key.end(),cell.key.encoded_key.begin())||
+                    !cell.payload.empty())return fail(E::comment_tree_mismatch);
+              }}
+            usize expected=0;
+            for(usize bi=0;bi<bases.size();++bi)for(const auto& m:bases[bi].page.metadata){
+              if(m.metadata.record.header.kind!=core::catalog::CatalogRecordKind::localized_comment)continue;
+              const bool wants=!m.metadata.record.header.deleted;
+              usize matches=0;
+              for(const auto n:tree.leaves)for(const auto& cell:tree.pages[n].page->cells)
+                if(cell.key.version_uuid==m.version_uuid)++matches;
+              if(matches!=(wants?1u:0u)){
+                bool admitted=false;
+                if(wants&&matches==0)
+                  for(const auto& creator:read.source.row_creators){
+                    if(creator.catalog_page_index!=bi||creator.catalog_row_index!=m.row_index)continue;
+                    if(creator.inventory_entry_index>=inventory.entries.size())break;
+                    const auto state=transaction::mga::InventoryVisibilityState(inventory.entries[creator.inventory_entry_index]);
+                    admitted=state==transaction::mga::TransactionState::active||
+                        state==transaction::mga::TransactionState::rolled_back||
+                        state==transaction::mga::TransactionState::failed_terminal;
+                    break;
+                  }
+                if(!admitted)return fail(E::comment_tree_mismatch);
+              }
+              expected+=matches;
+            }
+            if(cells!=expected)return fail(E::comment_tree_mismatch);
+            out.comment_tree_cells=cells;out.comment_tree_pages=tree.pages.size();
+            if(capture){
+              for(const auto& page:tree.pages)
+                if(!capture->AppendPhysical(page.page->header,dependencies.index_uuid))return fail(E::resource_exhausted);
+              capture->comment_tree_=NativeCapturedNameTree{comment_root->kind,dependencies,comment_root->page,cells,tree.pages.size()};
             }
           }
         }

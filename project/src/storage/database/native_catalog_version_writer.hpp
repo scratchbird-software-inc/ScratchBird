@@ -129,6 +129,13 @@ enum class CatalogVersionWriteError : std::uint8_t {
   // version that does not cite a catalog.metadata_change event of its own
   // transaction (in the same request, or already written by that transaction).
   unaudited_change,
+  // SB_NATIVE_COMMENT_RELATION (owner Q82 = 1, 2026-11-13): insert: a live
+  // comment already holds the (target, language): committed, this
+  // transaction's own, or earlier in the request.
+  duplicate_comment,
+  // SB_NATIVE_COMMENT_TREE: the comment tree leaf a comment row's cell reaches
+  // has no room and no page can be added.
+  comment_tree_full,
 };
 const char* CatalogVersionWriteErrorName(CatalogVersionWriteError error) noexcept;
 
@@ -169,7 +176,7 @@ struct CatalogNewPageIdentity {
 };
 
 struct CatalogVersionRequest {
-  core::platform::u16 role = 0;  // relation role 1..6 in the catalog root
+  core::platform::u16 role = 0;  // relation role 1..7 in the catalog root
   core::platform::u64 transaction_order = 0;
   core::platform::Uuid transaction_uuid;
   core::platform::Uuid row_uuid;
@@ -344,7 +351,7 @@ CatalogVersionWriteResult WriteCatalogSuccessorVersion(disk::CarefulWriteSink& s
 // language makes its scope ambiguous) is invalid_name. Q47's write_conflict
 // applies to each inserted entry's path and each cascaded one.
 struct CatalogInsertRow {
-  core::platform::u16 role = 0;  // relation role 1..6 in the catalog root
+  core::platform::u16 role = 0;  // relation role 1..7 in the catalog root
   core::platform::Uuid row_uuid;
   core::platform::Uuid version_uuid;  // a UUIDv7 the caller issued
   core::catalog::CatalogMetadataVersion metadata;
@@ -365,6 +372,38 @@ CatalogVersionWriteResult WriteCatalogInsertVersions(disk::CarefulWriteSink& sin
                                                      const CatalogVersionWriterBinding& binding,
                                                      const CatalogInsertRequest& request) noexcept;
 
+// SEARCH_KEY: SB_NATIVE_COMMENT_INSERT (owner Q77 = 2, Q79 = 1, Q81 = 1,
+// Q82 = 1; 2026-11-13). A localized-comment row (record kind
+// localized_comment, subtype localized_comment, payload schema 65678: the
+// comment UUID, the target object, the language constant and the text) goes in
+// the comments relation (role 7) and nowhere else, and role 7 takes nothing
+// else (invalid_role). It is inserted and changed through these writers like
+// any catalog row (placement, the row-UUID index, new pages, the careful-write
+// order and MGA's single-version rules are the same), with these rules:
+//  - one live comment per (target, language): an insert whose pair a live
+//    comment holds (newest version neither rolled back nor dead, not a drop)
+//    is refused duplicate_comment when that version is committed or this
+//    transaction's own (or an earlier row of the request has the pair), and
+//    write_conflict with its creator when another transaction's is in
+//    progress; a dropped comment's pair is free again;
+//  - a successor (an edit, or a drop) keeps the comment UUID, the target and
+//    the language (invalid_successor otherwise); only the text changes;
+//  - comment rows are data (owner Q79 = 1, as name rows are, Q50): neither an
+//    insert nor a successor cites a catalog.metadata_change event;
+//  - SB_NATIVE_COMMENT_TREE: when page zero carries the comment tree (kind 24;
+//    a component fixture may have none), each new comment version gets a cell
+//    keyed target16 | language16 in the same careful-write plan, and a
+//    successor stamps its base version's cell with this transaction (as the
+//    name trees, owner Q42); the duplicate check takes its candidates from
+//    the tree's (target, language) range, as the name collision check does
+//    (SB_NATIVE_NAME_PROBE).
+// Not checked here (rules the engine-API caller owes, as a name's object is):
+// that the target object exists when the comment is written, and that its
+// comments are dropped with it. Startup verification refuses a database
+// holding a live comment whose target is not a live definition
+// (missing_target). The engine-API COMMENT ON path that will call these is
+// not wired here.
+//
 // SEARCH_KEY: SB_AUDIT_CATALOG_METADATA_CHANGE (W3b-2b). Every definition
 // (system-table) row version a transaction writes, an insert's or a
 // successor's, a drop included, cites (audit_uuid) a catalog.metadata_change

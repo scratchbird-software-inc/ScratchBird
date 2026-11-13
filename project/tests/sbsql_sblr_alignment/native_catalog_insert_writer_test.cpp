@@ -742,6 +742,10 @@ void InsertRefused(const Db& b, Session& s, const std::string& path, const db::C
 struct Place {
   u16 role = 0;
   Uuid largest;
+  // step4: the index leaf has room but no reached base leaf has room for two
+  // rows (role 5 at 8 KiB took the comment relation's three index rows):
+  // inserts into it may take a new base leaf (ExpectInsertOrGrow).
+  bool grow = false;
 };
 std::vector<Place> Places(const Db& b, std::span<const byte> file) {
   std::vector<Place> out;
@@ -757,8 +761,8 @@ std::vector<Place> Places(const Db& b, std::span<const byte> file) {
     const auto need = RowBytes(FixtureRow(b, file, role, V7(Ms(largest) + 1, 0x7fffff), V7(Ms(largest) + 1, 1), 2));
     u64 room = 0;
     for (const auto& l : rel.leaves) room = std::max<u64>(room, l.leaf.body.free_space_bytes);
-    if (room < 2 * need) continue;
-    out.push_back({role, largest});
+    // step4: kept, growing, rather than dropped (no case is lost).
+    out.push_back({role, largest, room < 2 * need});
   }
   return out;
 }
@@ -889,7 +893,9 @@ void Keys(const Db& b, const std::vector<Place>& places) {
         if (!mid) continue;
         Session s(b, path);
         Begin(s, n);
-        ExpectInsert(b, s, path, Request(n, {Row(b, ReadAll(path), at.role, *mid, 20, n)}), "a key between two keys");
+        const auto r = Request(n, {Row(b, ReadAll(path), at.role, *mid, 20, n)});
+        if (at.grow) ExpectInsertOrGrow(b, s, path, r, "a key between two keys", 40 + at.role);  // step4
+        else ExpectInsert(b, s, path, r, "a key between two keys");
         Commit(*s.w, s.sink(), n);
         PeekSees(b, path, *mid, VersionId(20), "the key between two keys, committed");
         ++n;
@@ -907,7 +913,8 @@ void Keys(const Db& b, const std::vector<Place>& places) {
       InsertRefused(b, s, path, r, CE::index_full, "a key below the smallest, its leaf full");
       refused_below = true;
     } else if (tree.root_is_leaf && !root_below) {
-      ExpectInsert(b, s, path, r, "a key below the smallest, in a root leaf");
+      if (at.grow) ExpectInsertOrGrow(b, s, path, r, "a key below the smallest, in a root leaf", 50 + at.role);  // step4
+      else ExpectInsert(b, s, path, r, "a key below the smallest, in a root leaf");
       Commit(*s.w, s.sink(), n);
       PeekSees(b, path, below, VersionId(21 + at.role), "the key below the smallest, committed");
       root_below = true;
@@ -1044,8 +1051,13 @@ void InsertRefusals(const Db& b, const Place& at) {
   InsertRefused(b, s, path, Request(n, {}), CE::invalid_request, "no rows");
   {
     auto r = Request(n, {good});
+    // step4: role 7 is now the comments relation (SB_NATIVE_COMMENT_RELATION);
+    // the first role outside the root is 8. A non-comment row in role 7 is
+    // invalid_role.
+    r.rows[0].role = 8;
+    InsertRefused(b, s, path, r, CE::invalid_request, "role 8");
     r.rows[0].role = 7;
-    InsertRefused(b, s, path, r, CE::invalid_request, "role 7");
+    InsertRefused(b, s, path, r, CE::invalid_role, "step4: a non-comment row in role 7");
   }
   InsertRefused(b, s, path, Request(n, {good}), CE::read_only_database, "a read-only database", true);
   InsertRefused(b, s, path, Request(n + 1, {good}), CE::transaction_not_active, "a transaction never begun");

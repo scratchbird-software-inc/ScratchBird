@@ -42,7 +42,7 @@ NativeInitialPolicyCatalogResult Route(NativeInitialPolicyResult source) noexcep
   result.source_diagnostic = std::move(source.source_diagnostic);
   if (!source.ok()) return result;
   try {
-    std::array<std::size_t,6> counts{};
+    std::array<std::size_t,page::kNativeCatalogRelationRoles> counts{};
     for (const auto& row : source.records->definitions) {
       const auto slot = DefinitionSlot(row);
       if (!slot || row.name) { result.error = E::unsupported_definition; return result; }

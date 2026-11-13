@@ -27,16 +27,23 @@ NativeCatalogIndexRowsResult BuildNativeCatalogIndexRows(const NativeCatalogInde
     std::vector<Uuid> taken{request.database_uuid,request.construction_transaction.value,
         c::kNativeNameCatalogRelationUuid,c::kNativeCatalogIndexKeyProfileUuid,
         c::kNativeCatalogIndexVisibilityProfileUuid,c::kNativeBtreeIndexFamilyUuid,
-        c::kNativeNameAuthoritativeTreeKeyProfileUuid,c::kNativeNameUuidTreeKeyProfileUuid};
-    std::array<Uuid,6> relations{};
+        c::kNativeNameAuthoritativeTreeKeyProfileUuid,c::kNativeNameUuidTreeKeyProfileUuid,
+        c::kNativeCommentCatalogRelationUuid,c::kNativeCommentTreeKeyProfileUuid};
+    // SB_NATIVE_COMMENT_RELATION: roles 2 (names) and 7 (comments) take their
+    // constant identities.
+    const auto constant=[](unsigned i)->std::optional<Uuid>{
+      if(i==1)return c::kNativeNameCatalogRelationUuid;
+      if(i==6)return c::kNativeCommentCatalogRelationUuid;
+      return std::nullopt;};
+    std::array<Uuid,page::kNativeCatalogRelationRoles> relations{};
     bool any=false;
-    for(unsigned i=0;i<6;++i){
+    for(unsigned i=0;i<page::kNativeCatalogRelationRoles;++i){
       const auto& role=request.roles[i];if(!role)continue;any=true;
-      if(i==1?!role->relation_uuid.is_nil():!core::uuid::IsEngineIdentityUuid(role->relation_uuid))return Fail(E::invalid_request);
-      relations[i]=i==1?c::kNativeNameCatalogRelationUuid:role->relation_uuid;
+      if(constant(i)?!role->relation_uuid.is_nil():!core::uuid::IsEngineIdentityUuid(role->relation_uuid))return Fail(E::invalid_request);
+      relations[i]=constant(i)?*constant(i):role->relation_uuid;
       if(!core::uuid::IsEngineIdentityUuid(role->index_uuid)||!core::uuid::IsEngineIdentityUuid(role->map_uuid))
         return Fail(E::invalid_request);
-      if(i!=1)taken.push_back(relations[i]);
+      if(!constant(i))taken.push_back(relations[i]);
       taken.push_back(role->index_uuid);taken.push_back(role->map_uuid);
     }
     if(request.name_trees){
@@ -46,6 +53,14 @@ NativeCatalogIndexRowsResult BuildNativeCatalogIndexRows(const NativeCatalogInde
         taken.push_back(id);
       }
       any=true;
+    }
+    if(request.comment_tree){
+      // SB_NATIVE_COMMENT_TREE: over the comments relation, so it is indexed.
+      if(!request.roles[6])return Fail(E::invalid_request);
+      for(const auto& id:{request.comment_tree->index_uuid,request.comment_tree->map_uuid}){
+        if(!core::uuid::IsEngineIdentityUuid(id))return Fail(E::invalid_request);
+        taken.push_back(id);
+      }
     }
     std::sort(taken.begin(),taken.end());
     if(std::adjacent_find(taken.begin(),taken.end())!=taken.end())return Fail(E::duplicate_identity);
@@ -70,7 +85,7 @@ NativeCatalogIndexRowsResult BuildNativeCatalogIndexRows(const NativeCatalogInde
     out.rows.reserve(8);
     out.rows.push_back({key.profile_uuid,c::CatalogObjectSubtype::native_catalog_index_key_profile,Payload(encoded_key.bytes)});
     out.rows.push_back({visibility.profile_uuid,c::CatalogObjectSubtype::native_catalog_index_visibility_profile,Payload(encoded_visibility.bytes)});
-    for(unsigned i=0;i<6;++i){
+    for(unsigned i=0;i<page::kNativeCatalogRelationRoles;++i){
       const auto& role=request.roles[i];if(!role)continue;
       c::CatalogNativeCatalogIndexDependencyMap map;
       map.map_uuid=role->map_uuid;map.database_uuid=request.database_uuid;map.generation=1;map.relation_role=i+1;
@@ -127,6 +142,34 @@ NativeCatalogIndexRowsResult BuildNativeCatalogIndexRows(const NativeCatalogInde
         *tree.out=dependencies;
         out.rows.push_back({map.map_uuid,c::CatalogObjectSubtype::native_catalog_index_dependency_map,Payload(encoded.bytes)});
       }
+    }
+    if(request.comment_tree){
+      // SB_NATIVE_COMMENT_TREE: the (target, language) tree over the comments
+      // relation (role 7): a fixed key profile, an issued index and map.
+      auto profile=key;profile.profile_uuid=c::kNativeCommentTreeKeyProfileUuid;
+      profile.key_form=c::NativeCatalogIndexKeyForm::comment_target_language_v1;
+      const auto encoded_profile=c::EncodeCatalogNativeCatalogIndexKeyProfile(profile);
+      if(!encoded_profile.ok())return Fail(E::encoding_failure);
+      out.rows.push_back({profile.profile_uuid,c::CatalogObjectSubtype::native_catalog_index_key_profile,Payload(encoded_profile.bytes)});
+      c::CatalogNativeCatalogIndexDependencyMap map;
+      map.map_uuid=request.comment_tree->map_uuid;map.database_uuid=request.database_uuid;map.generation=1;map.relation_role=7;
+      map.relation_uuid=c::kNativeCommentCatalogRelationUuid;map.index_uuid=request.comment_tree->index_uuid;
+      map.index_family_uuid=c::kNativeBtreeIndexFamilyUuid;
+      map.key_profile_uuid=profile.profile_uuid;map.visibility_profile_uuid=visibility.profile_uuid;
+      map.descriptor_generation=map.storage_generation=1;
+      map.origin_transaction_uuid=map.creating_transaction_uuid=tx;
+      map.origin_local_transaction_id=map.creating_local_transaction_id=local;
+      const auto encoded=c::EncodeCatalogNativeCatalogIndexDependencyMap(map);
+      if(!encoded.ok())return Fail(E::encoding_failure);
+      const auto digest=core::hash::ComputeSha256Digest(encoded.bytes);
+      if(!digest.ok())return Fail(E::hash_failure);
+      page::NativeBtreeDependencies dependencies;
+      dependencies.index_uuid=map.index_uuid;
+      dependencies.descriptor_generation=map.descriptor_generation;dependencies.storage_generation=map.storage_generation;
+      dependencies.key_profile_uuid=map.key_profile_uuid;dependencies.visibility_profile_uuid=map.visibility_profile_uuid;
+      dependencies.dependency_map_uuid=map.map_uuid;dependencies.dependency_map_sha256=digest.digest;
+      out.comment_tree=dependencies;
+      out.rows.push_back({map.map_uuid,c::CatalogObjectSubtype::native_catalog_index_dependency_map,Payload(encoded.bytes)});
     }
     out.error=E::none;return out;
   } catch(const std::bad_alloc&) {return Fail(E::resource_exhausted);}

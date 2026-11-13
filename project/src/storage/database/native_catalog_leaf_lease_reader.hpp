@@ -137,7 +137,7 @@ class NativeCatalogLeafLeaseReader {
       const auto* profile=disk::FindCanonicalFilespacePageProfile(target.page_size_profile_uuid);
       if(!profile||backing.arena_.binding().database_uuid!=database||
           (backing.profile_mode_==NativeCatalogLeafProfileMode::exact&&backing.profile_!=target.page_size_profile_uuid)||
-          ref.role<1||ref.role>6||ref.page_type!=6||
+          ref.role<1||ref.role>page::kNativeCatalogRelationRoles||ref.page_type!=6||
           (!discover_relation&&!core::uuid::IsEngineIdentityUuid(ref.object_uuid))||
           !target.page_number||!target.page_generation)return out;
       if(profile->page_size_bytes>backing.image_.size()){out.error=E::resource_exhausted;return out;}

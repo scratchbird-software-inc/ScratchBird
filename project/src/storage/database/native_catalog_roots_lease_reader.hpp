@@ -29,7 +29,7 @@ struct NativeReadCatalogRootImage {
 inline usize NativeCatalogRootsWorkspaceBytes(const Uuid& maximum_profile) noexcept {
  const auto* p=disk::FindCanonicalFilespacePageProfile(maximum_profile);
  return p?2*p->page_size_bytes+32*sizeof(disk::FilespaceRootReference)+
-   12*sizeof(page::NativeCatalogRootReference)+2*sizeof(NativeReadCatalogRootImage)+
+   2*page::kNativeCatalogRelationRoles*sizeof(page::NativeCatalogRootReference)+2*sizeof(NativeReadCatalogRootImage)+
    3*(alignof(std::max_align_t)-1):0;
 }
 struct NativeCatalogRootsPreparedResult;
@@ -82,7 +82,7 @@ inline NativeCatalogRootsPreparedResult PrepareNativeCatalogRootsRead(
   if(!images.ok()){out.error=E::resource_exhausted;return out;}
   prepared.images_={static_cast<byte*>(images.pointer),images.bytes};prepared.maximum_page_bytes_=p->page_size_bytes;
   prepared.zero_roots_=array.template operator()<disk::FilespaceRootReference>(32);
-  prepared.references_=array.template operator()<page::NativeCatalogRootReference>(12);
+  prepared.references_=array.template operator()<page::NativeCatalogRootReference>(2*page::kNativeCatalogRelationRoles);
   prepared.decoded_=array.template operator()<NativeReadCatalogRootImage>(2);
   out.workspace=std::move(prepared);out.error=E::none;
  }catch(const std::bad_alloc&){out.error=E::resource_exhausted;}
@@ -176,7 +176,7 @@ class NativeCatalogRootsLeaseReader {
     if(header.header->flags&1u){out.error=E::encrypted_requires_authority;return out;}
     if(header.header->flags&2u){out.error=E::cluster_requires_authority;return out;}
     if(header.header->flags&12u){out.error=E::header_policy_requires_authority;return out;}
-    auto decoded=page::DecodeNativeCatalogRootInto(image,backing.references_.subspan(count*6,6));
+    auto decoded=page::DecodeNativeCatalogRootInto(image,backing.references_.subspan(count*page::kNativeCatalogRelationRoles,page::kNativeCatalogRelationRoles));
     if(!decoded.ok()){out.error=E::catalog_failure;out.catalog_error=decoded.error;return out;}
     const auto& r=*decoded.root;
     if(r.object_uuid!=target->object_uuid||(target==catalog?r.root_kind!=2:(r.root_kind!=2&&r.root_kind!=8))){out.error=E::binding_mismatch;return out;}

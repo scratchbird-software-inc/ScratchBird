@@ -32,16 +32,36 @@ struct NativeCreationNameTreeLayout {
   std::vector<std::size_t> leaf_starts;
   std::size_t cells=0;
 };
+// SB_NATIVE_COMMENT_RELATION: page zero and the maps aside, the fixed-root
+// graph's control block: the inventory, directory, database state, retention,
+// catalog, configuration and security roots (offsets 1..7), then the first
+// leaf of each of roles 1..6 (offsets 8..13); 14 counts page zero's slot too,
+// as the planner's `controls` always has. Role 7, the comments relation, has
+// no fixed first leaf: it is empty at create and, indexed, has no base leaf
+// at all (an allocated leaf nothing reaches would be an orphan to startup's
+// allocation check); its first insert allocates its first leaf. Were a seed to
+// give it rows, its leaves would be allocated after the fixed block.
+inline constexpr u64 kNativeCreationFixedLeafRoles=6;
+inline constexpr u64 kNativeCreationControlPages=8+kNativeCreationFixedLeafRoles;
+inline constexpr u64 kNativeCreationFirstLeafControl=8;
+// The seed position of the comments relation (role 7).
+inline constexpr std::size_t kNativeCommentRelationIndex=page::kNativeCommentRelationRole-1;
 struct NativeCreationCatalogLayout {
-  std::array<NativeCreationRelationLayout,6> relations;
+  std::array<NativeCreationRelationLayout,page::kNativeCatalogRelationRoles> relations;
   u64 image_count=0,root_cells=0,leaf_cells=0;
-  // SB_TRANSACTION_HEADER_PAGE: the first transaction header page, the last
-  // catalog page allocated, so no catalog page number moves; 0 when none is
-  // planned. The name trees (below) are allocated after it for the same reason.
+  // SB_TRANSACTION_HEADER_PAGE: the first transaction header page, allocated
+  // after the catalog pages of roles 1..6, so none of their page numbers
+  // moves; 0 when none is planned. Role 7's pages (SB_NATIVE_COMMENT_RELATION)
+  // and the name trees (below) are allocated after it for the same reason.
   u64 transaction_header_page=0;
   // SB_NATIVE_NAME_TREES: the authoritative name tree (root kind 22) then the
   // UUID-to-name tree (kind 23); planned only when the caller asked for them.
   std::optional<std::array<NativeCreationNameTreeLayout,2>> name_trees;
+  // SB_NATIVE_COMMENT_TREE (2026-11-13): the comments relation's (target,
+  // language) tree (root kind 24), after the name trees; planned only when the
+  // caller asked for it. The comments relation is empty at create, so the tree
+  // is its root alone, with no cells.
+  std::optional<u64> comment_tree_root;
 };
 // SB_NATIVE_NAME_TREES. One cell of a name tree before placement: the names
 // relation row it indexes (an index into seed[1]), its key and its included
@@ -120,15 +140,16 @@ struct NativeCreationLayoutResult {
 // always planned (W4d-3: the legacy SBTINV01 inventory, which had none, and
 // the flag that chose between them were removed).
 // The fixed-root graph has 13 control pages (no checkpoint, horizon-root,
-// selector or watermark page; first catalog leaf at control 8); the drift-era
+// selector or watermark page; first catalog leaf at control 8, roles 1..6;
+// SB_NATIVE_COMMENT_RELATION: role 7 has none, see above); the drift-era
 // graph's layout went with the checkpoint layer (W4d).
 // No identities, authorization, memory grants, writes or configuration defaults.
 inline NativeCreationLayoutResult PlanNativeCreationCatalogLayout(
     u64 size,u64 maps,u64 total,u64 budget,const NativeCreationCatalogSeed& seed,
-    const NativeCreationCatalogIndexes& indexes,bool name_trees=false) noexcept {
+    const NativeCreationCatalogIndexes& indexes,bool name_trees=false,bool comment_tree=false) noexcept {
   using E=NativeCreationLayoutError;
   const auto fail=[](E e){return NativeCreationLayoutResult{e,{}};};
-  const u64 controls=14,first_leaf=8;
+  const u64 controls=kNativeCreationControlPages,first_leaf=kNativeCreationFirstLeafControl;
   try {
     if(!std::any_of(disk::kCanonicalFilespacePageProfiles.begin(),disk::kCanonicalFilespacePageProfiles.end(),
         [size](const auto& p){return p.page_size_bytes==size;})||
@@ -138,7 +159,19 @@ inline NativeCreationLayoutResult PlanNativeCreationCatalogLayout(
     NativeCreationCatalogLayout plan;plan.image_count=maps+controls;
     plan.root_cells=NativeCatalogBtreeRootCells(size);plan.leaf_cells=NativeCatalogBtreeLeafCells(size);
     const u64 capacity=size-128-32-page::kRowDataPageBodyHeaderBytes;
-    for(unsigned role=0;role<seed.size();++role) {
+    // Roles 1..6, the transaction header page, then role 7
+    // (SB_NATIVE_COMMENT_RELATION): the comments relation's pages come after
+    // the header page, so no page number of the six-role layout moves.
+    for(unsigned step=0;step<=seed.size();++step) {
+      if(step==kNativeCreationFixedLeafRoles) {
+        // The transaction header page (owner 2026-11-05, Q3 = 1), after every
+        // catalog page of roles 1..6.
+        if(plan.image_count>=total)return fail(E::capacity_exceeded);
+        if(plan.image_count>=budget/size-2)return fail(E::resource_exhausted);
+        plan.transaction_header_page=plan.image_count++;
+        continue;
+      }
+      const unsigned role=step<kNativeCreationFixedLeafRoles?step:step-1;
       const auto& rows=seed[role];auto& p=plan.relations[role];
       const auto shape=NativeCatalogBtreeShapeFor(size,rows.size());
       if(indexes[role]?!shape.ok():rows.size()>size/128)
@@ -159,7 +192,9 @@ inline NativeCreationLayoutResult PlanNativeCreationCatalogLayout(
         if(plan.image_count>=budget/size-2)throw E::resource_exhausted;
         return plan.image_count++;
       };
-      p.bases.push_back(maps+first_leaf+role);
+      if(role<kNativeCreationFixedLeafRoles)p.bases.push_back(maps+first_leaf+role);
+      else if(!indexes[role]||!rows.empty())p.bases.push_back(allocate());
+      else p.starts.clear();  // indexed and empty: no base leaf (SB_NATIVE_COMMENT_RELATION)
       for(std::size_t i=1;i<p.starts.size();++i)p.bases.push_back(allocate());
       if(indexes[role]) {
         // Root, then leaves, then branches level by level: a tree of depth
@@ -171,13 +206,6 @@ inline NativeCreationLayoutResult PlanNativeCreationCatalogLayout(
           for(u64 i=0;i<shape.level_pages[level];++i)pages.push_back(allocate());
         }
       }
-    }
-    {
-      // The transaction header page (owner 2026-11-05, Q3 = 1), after every
-      // catalog page.
-      if(plan.image_count>=total)return fail(E::capacity_exceeded);
-      if(plan.image_count>=budget/size-2)return fail(E::resource_exhausted);
-      plan.transaction_header_page=plan.image_count++;
     }
     if(name_trees){
       // SB_NATIVE_NAME_TREES: both trees, after the header page. Leaves are
@@ -228,6 +256,14 @@ inline NativeCreationLayoutResult PlanNativeCreationCatalogLayout(
         }
       }
       plan.name_trees=std::move(trees);
+    }
+    if(comment_tree){
+      // SB_NATIVE_COMMENT_TREE: one root page; a create with comment rows has
+      // no tree layout (the native create writes none, owner 2026-11-13).
+      if(!seed[kNativeCommentRelationIndex].empty())return fail(E::invalid_input);
+      if(plan.image_count>=total)return fail(E::capacity_exceeded);
+      if(plan.image_count>=budget/size-2)return fail(E::resource_exhausted);
+      plan.comment_tree_root=plan.image_count++;
     }
     return {E::none,std::move(plan)};
   }catch(E e){return fail(e);}

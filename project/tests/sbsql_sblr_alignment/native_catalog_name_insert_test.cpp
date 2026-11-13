@@ -2289,6 +2289,86 @@ void NameSuccessors(const Db& b, const NameTemplate& t, u16 role, std::size_t de
   std::cout << b.name << " name successors page_size=" << b.size << '\n';
 }
 
+// ---- A rename onto a new base leaf -------------------------------------------------------
+// step4: the names relation's layout changed (three more names for the
+// comments relation's index rows), and no page size happened any longer to
+// leave every names leaf too full for the rename above (the baseline reached it
+// at 16 KiB). Here the case is forced: the renaming transaction first inserts
+// short-named objects until no reached leaf of the names relation has room for
+// the renamed entry (its new name is longer than theirs), then renames: the
+// version goes on a new base leaf, its envelope binding that page and slot.
+void NameSuccessorOnNewLeaf(const Db& b, const NameTemplate& t, u16 role, std::size_t definitions) {
+  const auto path = b.Copy(b.bytes, "successor-new-leaf.db");
+  Session s(b, path);
+  Begin(s, 2);
+  auto file = ReadAll(path);
+  const auto named = NamedAfter(b, file, t, role, After(b, file, role), 700, 2, "w3b_moved");
+  auto first = Request(2, named.Rows());
+  first.new_pages = PageIds(700);
+  first.new_pages.push_back(PageIds(701).front());
+  ExpectGrowingInsert(b, s.sink(), path, first, "a named object to rename onto a new leaf");
+  Commit(*s.w, s.sink(), 2);
+  auto e = Keyed(std::get<c::CatalogNameEntry>(*named.entry.name), t, "w3b_moved_" + std::string(100, 'x'));
+  PathBeside(e, t.entry);
+  const auto renamed = NameSuccessor(named.entry, named.entry.version_uuid, 3, VersionId(9101), c::CatalogNamePayload{e}, false);
+  Begin(s, 3);
+  unsigned fillers = 0;
+  for (unsigned k = 1; k <= 400 && NameSuccessorOracle(b, ReadAll(path), renamed); ++k) {
+    file = ReadAll(path);
+    const auto filler = NamedAfter(b, file, t, role, After(b, file, role), 700 + k, 3, "w3b_f" + std::to_string(k));
+    auto r = Request(3, filler.Rows());
+    r.new_pages = PageIds(800 + k);
+    r.new_pages.push_back(PageIds(1300 + k).front());
+    ExpectGrowingInsert(b, s.sink(), path, r, "a filler named object " + std::to_string(k));
+    ++fillers;
+  }
+  if (NameSuccessorOracle(b, ReadAll(path), renamed)) {
+    std::cout << b.name << " name successor on a new leaf page_size=" << b.size << " not reached after " << fillers
+              << " fillers\n";
+    Rollback(*s.w, s.sink(), 3);
+    fs::remove(path);
+    return;
+  }
+  // No reached leaf has room: ExpectNameSuccessor takes its new-leaf branch
+  // (the oracle on the page the writer allocated, the allocation record). A
+  // trial on a copy first: where the version's cells also reach a full tree
+  // leaf (a split, which this oracle does not model; 8 KiB here), the case is
+  // reported, not checked against the oracle.
+  {
+    const auto before = ReadAll(path);
+    const auto trial = b.Copy(before, "successor-new-leaf-trial.db");
+    std::optional<u64> page;
+    {
+      Session t2(b, trial, false);
+      const auto tried = db::WriteCatalogSuccessorVersion(t2.sink(), GrowingBinding(b), renamed);
+      Check(tried.ok() && !tried.allocated_pages.empty(), "the trial rename goes on a new page");
+      page = tried.allocated_pages.front();
+    }
+    fs::remove(trial);
+    if (!NameSuccessorOracle(b, before, renamed, page)) {
+      std::cout << b.name << " name successor on a new leaf page_size=" << b.size << " after " << fillers
+                << " fillers: a tree leaf its cells reach is full too (a split this oracle does not model); not checked\n";
+      Rollback(*s.w, s.sink(), 3);
+      fs::remove(path);
+      return;
+    }
+  }
+  Check(ExpectNameSuccessor(b, s, path, renamed, "a renamed entry by a transaction in progress"),
+        "the rename goes on a new base leaf");
+  {
+    RoleScope a(b, 2);
+    PeekSees(b, path, named.entry.row_uuid, named.entry.version_uuid, "the old name while the rename on a new leaf is in progress");
+  }
+  Commit(*s.w, s.sink(), 3);
+  {
+    RoleScope a(b, 2);
+    PeekSees(b, path, named.entry.row_uuid, VersionId(9101), "the new name on its new leaf, committed");
+  }
+  ExpectNamedVerification(b, path, definitions + 1 + fillers, "a rename on a new base leaf, committed", false, true);
+  std::cout << b.name << " name successor on a new leaf page_size=" << b.size << " after " << fillers << " fillers\n";
+  fs::remove(path);
+}
+
 // ---- Collisions ---------------------------------------------------------------------------
 std::string Upper(std::string text) {
   for (auto& ch : text)
@@ -2608,6 +2688,9 @@ void NameKeys(const Db& b, const NameTemplate& t, u16 role) {
 }
 }  // namespace
 
+// step4: native_catalog_comment_insert_test includes this file for its
+// databases, transactions and Verify (no expectation here changes).
+#ifndef SB_CATALOG_NAME_INSERT_TEST_WITHOUT_MAIN
 int main(int argc, char** argv) {
   unsigned profile = 0;
   try {
@@ -2639,6 +2722,7 @@ int main(int argc, char** argv) {
     ConflictingPolicy(b, t, *role);
     if (room) NameKeys(b, t, *role);
     if (room) NameSuccessors(b, t, *role, fresh.names.definitions);
+    if (room) NameSuccessorOnNewLeaf(b, t, *role, fresh.names.definitions);  // step4
     if (room) NameCascade(b, t, *role, fresh.names.definitions);
     if (room) NameCascadePaths(b, t, *role, fresh.names.definitions);
     if (room) NameConflicts(b, t, *role, fresh.names.definitions);
@@ -2664,3 +2748,4 @@ int main(int argc, char** argv) {
     return 1;
   }
 }
+#endif  // SB_CATALOG_NAME_INSERT_TEST_WITHOUT_MAIN

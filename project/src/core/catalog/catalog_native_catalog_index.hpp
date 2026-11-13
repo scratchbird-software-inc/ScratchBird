@@ -30,6 +30,19 @@ inline constexpr Uuid kNativeNameAuthoritativeTreeKeyProfileUuid{
     {0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0x0c,0xa7,0x04}};
 inline constexpr Uuid kNativeNameUuidTreeKeyProfileUuid{
     {0x01,0x9d,0,0,0,0,0x70,0,0x80,0,0,0,0,0x0c,0xa7,0x05}};
+// SEARCH_KEY: SB_NATIVE_COMMENT_RELATION (owner Q77 = 2, 2026-11-13). The
+// comments relation (role 7) has a constant identity like the names relation,
+// the same in every database: it is the names relation's companion (text bound
+// to a UUID and a language), unnamed, and empty at create. The key profile of
+// its (target, language) tree (SB_NATIVE_COMMENT_TREE) is a fixed value like
+// the name trees'. Generated once 2026-11-13 (UUIDv7, permanent; record:
+// 28e-comment-relation-uuids.md):
+//   relation    01a1d523-d5a0-7ec1-9c7d-957a74cdcd8b
+//   key profile 01a1d523-d5a1-72f1-a79a-c52176b033ef
+inline constexpr Uuid kNativeCommentCatalogRelationUuid{
+    {0x01,0xa1,0xd5,0x23,0xd5,0xa0,0x7e,0xc1,0x9c,0x7d,0x95,0x7a,0x74,0xcd,0xcd,0x8b}};
+inline constexpr Uuid kNativeCommentTreeKeyProfileUuid{
+    {0x01,0xa1,0xd5,0x23,0xd5,0xa1,0x72,0xf1,0xa7,0x9a,0xc5,0x21,0x76,0xb0,0x33,0xef}};
 // The btree global index family (registries/native-index-family-identity-registry.csv).
 inline constexpr Uuid kNativeBtreeIndexFamilyUuid{
     {0x96,0xa7,0xb8,0xc9,0xda,0xeb,0x7c,0x0d,0x9e,0x2f,0x40,0x51,0x62,0x73,0x84,0x95}};
@@ -39,7 +52,11 @@ inline constexpr Uuid kNativeBtreeIndexFamilyUuid{
 // (SB_NATIVE_NAME_TREES). All in unsigned canonical-byte order, tie-broken by
 // the native row then version identity, and every entry is an access hint
 // whose row is resolved against the selected transaction inventory.
-enum class NativeCatalogIndexKeyForm : u64 { raw16_canonical_row_uuid=1, name_authoritative_v1=2, name_uuid_v1=3 };
+// comment_target_language_v1 (SB_NATIVE_COMMENT_TREE): target UUID (16 raw
+// bytes) then language UUID (16 raw bytes), one cell per comment row version.
+enum class NativeCatalogIndexKeyForm : u64 {
+  raw16_canonical_row_uuid=1, name_authoritative_v1=2, name_uuid_v1=3, comment_target_language_v1=4
+};
 enum class NativeCatalogIndexKeyOrder : u64 { unsigned_canonical_bytes=1 };
 enum class NativeCatalogIndexTieBreak : u64 { native_row_then_version_uuid=1 };
 enum class NativeCatalogIndexVisibility : u64 { native_mga_inventory_creator=1 };
@@ -70,7 +87,7 @@ struct CatalogNativeCatalogIndexVisibilityProfile {
 struct CatalogNativeCatalogIndexDependencyMap {
   Uuid map_uuid,database_uuid;
   u64 generation=0;
-  // The catalog relation role, 1..6.
+  // The catalog relation role, 1..7 (SB_NATIVE_COMMENT_RELATION).
   u64 relation_role=0;
   Uuid relation_uuid,index_uuid,index_family_uuid,key_profile_uuid,visibility_profile_uuid;
   u64 descriptor_generation=0,storage_generation=0;

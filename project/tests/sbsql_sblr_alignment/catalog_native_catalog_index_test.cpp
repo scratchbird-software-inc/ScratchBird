@@ -100,7 +100,9 @@ template<class Codec,class R> void Framing(const R& value){const auto raw=Golden
    c::CatalogValueError::invalid_backing&&Golden(overlap)==Golden(value),"encoding cannot overwrite its input object");}
 void Values(){
  Roundtrip<KeyCodec>(KeyValue());Roundtrip<VisibilityCodec>(VisibilityValue());Roundtrip<MapCodec>(MapValue());
- for(p::u64 role=1;role<=6;++role){auto m=MapValue();m.relation_role=role;Roundtrip<MapCodec>(m);}
+ // step4: roles 1..7 (role 7, the comments relation); key form 4 is the comment tree's.
+ for(p::u64 role=1;role<=7;++role){auto m=MapValue();m.relation_role=role;Roundtrip<MapCodec>(m);}
+ {auto k=KeyValue();k.key_form=c::NativeCatalogIndexKeyForm::comment_target_language_v1;Roundtrip<KeyCodec>(k);}
  // The three schemas are distinct: no record decodes as another family.
  Check(!c::DecodeCatalogNativeCatalogIndexDependencyMap(Golden(KeyValue())).ok()&&
    !c::DecodeCatalogNativeCatalogIndexKeyProfile(Golden(VisibilityValue())).ok()&&
@@ -115,7 +117,7 @@ void Values(){
  {auto r=KeyValue();r.generation=2;r.creating_transaction_uuid.value=f::Id(8);r.creating_local_transaction_id=2;Roundtrip<KeyCodec>(r);}
  for(unsigned n=0;n<8;++n){auto r=KeyValue();switch(n){
    case 0:r.profile_uuid={};break;case 1:r.database_uuid.bytes[6]=0x40;break;case 2:r.key_form=c::NativeCatalogIndexKeyForm(0);break;
-   case 3:r.key_form=c::NativeCatalogIndexKeyForm(4);break;case 4:r.key_order=c::NativeCatalogIndexKeyOrder(2);break;  // forms 2 and 3 are the name trees (SB_NATIVE_NAME_TREES)
+   case 3:r.key_form=c::NativeCatalogIndexKeyForm(5);break;case 4:r.key_order=c::NativeCatalogIndexKeyOrder(2);break;  // forms 2 and 3 are the name trees (SB_NATIVE_NAME_TREES); step4: 4 the comment tree, so 5 is the first unknown
    case 5:r.tie_break=c::NativeCatalogIndexTieBreak(0);break;case 6:r.database_uuid=r.profile_uuid;break;
    case 7:r.origin_transaction_uuid.value=r.creating_transaction_uuid.value=r.database_uuid;break;}
    Refuse<KeyCodec>(r);}
@@ -124,7 +126,7 @@ void Values(){
    case 2:r.profile_uuid={};break;case 3:r.profile_uuid=r.database_uuid;break;}
    Refuse<VisibilityCodec>(r);}
  for(unsigned n=0;n<14;++n){auto r=MapValue();switch(n){
-   case 0:r.relation_role=0;break;case 1:r.relation_role=7;break;case 2:r.descriptor_generation=0;break;case 3:r.storage_generation=0;break;
+   case 0:r.relation_role=0;break;case 1:r.relation_role=8;break;  /* step4: 7 is now a role */case 2:r.descriptor_generation=0;break;case 3:r.storage_generation=0;break;
    case 4:r.index_family_uuid=f::Id(320);break;case 5:r.index_uuid={};break;case 6:r.relation_uuid.bytes[8]=0;break;
    case 7:r.key_profile_uuid=r.visibility_profile_uuid;break;case 8:r.index_uuid=r.relation_uuid;break;
    case 9:r.map_uuid=r.index_uuid;break;case 10:r.visibility_profile_uuid=r.database_uuid;break;

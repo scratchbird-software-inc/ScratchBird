@@ -22,6 +22,15 @@
 namespace scratchbird::storage::page {
 
 using NativeCatalogPageReference = scratchbird::storage::disk::NativePageReference;
+// SEARCH_KEY: SB_NATIVE_COMMENT_RELATION (owner Q77 = 2, 2026-11-13). The
+// catalog root (root kind 2) lists exactly this many relation roles, 1..7, in
+// role order. Role 7 is the comments relation: localized comment rows only,
+// empty at create. The root format is unchanged (the page stores its own
+// count); a kind-2 root with any other count is refused. There is no root
+// format version for six roles: databases written before the 7th role are
+// drift (owner 2026-11-12) and are not opened.
+inline constexpr std::size_t kNativeCatalogRelationRoles = 7;
+inline constexpr scratchbird::core::platform::u16 kNativeCommentRelationRole = 7;
 struct NativeCatalogRootReference {
   scratchbird::core::platform::u16 role = 0;
   scratchbird::core::platform::u32 page_type = 0;

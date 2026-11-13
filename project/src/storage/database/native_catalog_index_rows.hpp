@@ -25,8 +25,10 @@ namespace scratchbird::storage::database {
 //
 // Rows carry payloads only. Their metadata envelopes and names belong to the
 // caller, like every other definition the caller submits.
+// SB_NATIVE_COMMENT_RELATION (owner Q77 = 2): the comments relation (role 7)
+// likewise has a constant identity, kNativeCommentCatalogRelationUuid.
 struct NativeCatalogIndexRoleIdentities {
-  // Nil for role 2, which takes the constant.
+  // Nil for roles 2 and 7, which take their constants.
   core::platform::Uuid relation_uuid;
   core::platform::Uuid index_uuid,map_uuid;
 };
@@ -35,14 +37,21 @@ struct NativeCatalogIndexRoleIdentities {
 struct NativeCatalogNameTreeIdentities {
   core::platform::Uuid authoritative_index_uuid,authoritative_map_uuid,uuid_index_uuid,uuid_map_uuid;
 };
+// SB_NATIVE_COMMENT_TREE: the issued index and dependency map of the comments
+// relation's (target, language) tree; its key profile is the fixed value.
+struct NativeCatalogCommentTreeIdentities {
+  core::platform::Uuid index_uuid,map_uuid;
+};
 struct NativeCatalogIndexRowsRequest {
   core::platform::Uuid database_uuid;
   core::platform::TypedUuid construction_transaction;
   core::platform::u64 construction_local_transaction_id=1;
   // Position i is catalog relation role i+1; an absent role is not indexed.
-  std::array<std::optional<NativeCatalogIndexRoleIdentities>,6> roles;
+  std::array<std::optional<NativeCatalogIndexRoleIdentities>,page::kNativeCatalogRelationRoles> roles;
   // Absent: no name trees (component fixtures).
   std::optional<NativeCatalogNameTreeIdentities> name_trees;
+  // Absent: no comment tree (component fixtures).
+  std::optional<NativeCatalogCommentTreeIdentities> comment_tree;
 };
 struct NativeCatalogIndexRow {
   core::platform::Uuid object_uuid;
@@ -56,10 +65,12 @@ struct NativeCatalogIndexRowsResult {
   NativeCatalogIndexRowsError error=NativeCatalogIndexRowsError::invalid_request;
   // The key profile, the visibility profile, then one dependency map per
   // indexed role in role order; with name trees, then their two key profiles
-  // and two dependency maps. Empty when nothing is indexed.
+  // and two dependency maps; with the comment tree, then its key profile and
+  // its dependency map. Empty when nothing is indexed.
   std::vector<NativeCatalogIndexRow> rows;
   NativeCreationCatalogIndexes indexes;
   NativeCreationCatalogNameTrees name_trees;
+  std::optional<page::NativeBtreeDependencies> comment_tree;  // SB_NATIVE_COMMENT_TREE
   bool ok() const noexcept {return error==NativeCatalogIndexRowsError::none;}
 };
 NativeCatalogIndexRowsResult BuildNativeCatalogIndexRows(const NativeCatalogIndexRowsRequest&) noexcept;

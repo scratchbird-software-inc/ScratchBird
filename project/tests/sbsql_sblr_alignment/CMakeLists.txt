@@ -1531,6 +1531,24 @@ endif()
       LABELS "sbsql_sblr_alignment;native_storage;catalog;careful_write;names"
       TIMEOUT 1800)
   endforeach()
+  # step4 (SB_NATIVE_COMMENT_INSERT, owner Q77/Q79/Q81/Q82, 2026-11-13):
+  # comment rows (role 7) inserted, edited and dropped in place on
+  # production-created files, with startup verification, the careful-write
+  # order and forged files.
+  add_executable(sbsql_sblr_alignment_native_catalog_comment_insert native_catalog_comment_insert_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_native_catalog_comment_insert PRIVATE cxx_std_23)
+  target_include_directories(sbsql_sblr_alignment_native_catalog_comment_insert PRIVATE
+    ${PROJECT_SOURCE_DIR}/src ${PROJECT_SOURCE_DIR}/src/engine/internal_api)
+  target_link_libraries(sbsql_sblr_alignment_native_catalog_comment_insert PRIVATE sb_engine_internal_api sb_storage_database)
+  target_compile_definitions(sbsql_sblr_alignment_native_catalog_comment_insert PRIVATE
+    SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password")
+  foreach(profile RANGE 0 4)
+    add_test(NAME sbsql_sblr_alignment_native_catalog_comment_insert_${profile}
+      COMMAND sbsql_sblr_alignment_native_catalog_comment_insert --profile ${profile})
+    set_tests_properties(sbsql_sblr_alignment_native_catalog_comment_insert_${profile} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_storage;catalog;careful_write;comment"
+      TIMEOUT 1800)
+  endforeach()
   # SB_TRANSACTION_INVENTORY_WRITER: in-place BEGIN/COMMIT/ROLLBACK and restart
   # dead-marking on production-created files, one page size per test (owner
   # Q20 = 1, 2026-11-07).
@@ -2780,6 +2798,14 @@ set_tests_properties(sbsql_sblr_alignment_catalog_schema_record PROPERTIES
   LABELS "sbsql_sblr_alignment;IA-03;component_regression;binary_uuid;catalog_payload;real_storage"
   TIMEOUT 120)
 
+# step4 (SB_NATIVE_COMMENT_RECORD, 2026-11-13): the native comment row codec,
+# schema 65678, against an independent byte oracle, and its maximum length.
+add_executable(sbsql_sblr_alignment_catalog_comment_record catalog_comment_record_test.cpp)
+target_compile_features(sbsql_sblr_alignment_catalog_comment_record PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_catalog_comment_record PRIVATE sb_storage_database)
+add_test(NAME sbsql_sblr_alignment_catalog_comment_record COMMAND sbsql_sblr_alignment_catalog_comment_record)
+set_tests_properties(sbsql_sblr_alignment_catalog_comment_record PROPERTIES
+  LABELS "sbsql_sblr_alignment;catalog;binary_uuid;catalog_payload;comment" TIMEOUT 120)
 add_executable(sbsql_sblr_alignment_catalog_localized_record catalog_localized_record_test.cpp)
 target_compile_features(sbsql_sblr_alignment_catalog_localized_record PRIVATE cxx_std_23)
 target_link_libraries(sbsql_sblr_alignment_catalog_localized_record PRIVATE

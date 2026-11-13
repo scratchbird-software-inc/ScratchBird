@@ -2190,7 +2190,7 @@ NativeCatalogLeafResult ReadNativeCatalogLeafFromOpenDevice(
     if (!scratchbird::core::uuid::IsEngineIdentityUuid(database_uuid)
         || !scratchbird::core::uuid::IsEngineIdentityUuid(ref.object_uuid)
         || !scratchbird::core::uuid::IsEngineIdentityUuid(p.filespace_uuid)
-        || ref.role<1 || ref.role>6 || ref.page_type!=6 || !profile || !p.page_number || !p.page_generation
+        || ref.role<1 || ref.role>page::kNativeCatalogRelationRoles || ref.page_type!=6 || !profile || !p.page_number || !p.page_generation
         || p.page_number>=std::numeric_limits<u64>::max()/profile->page_size_bytes
         || !disk::CheckFileDeviceExtent(p.page_number*profile->page_size_bytes,profile->page_size_bytes).ok())
       return LeafFailure(LeafError::binding_mismatch);
@@ -2236,7 +2236,7 @@ NativeCatalogRelationImageResult ReadNativeCatalogRelationImagesFromOpenDevices(
   const auto fail=[](E e){NativeCatalogRelationImageResult r;r.error=e;return r;};
   const auto v7=[](const auto& id){return scratchbird::core::uuid::IsEngineIdentityUuid(id);};
   try {
-    if(!v7(database_uuid)||!v7(binding.relation_uuid)||!v7(head.object_uuid)||head.role<1||head.role>6
+    if(!v7(database_uuid)||!v7(binding.relation_uuid)||!v7(head.object_uuid)||head.role<1||head.role>page::kNativeCatalogRelationRoles
       ||!v7(head.page.filespace_uuid)||!head.page.page_number||!head.page.page_generation
       ||!disk::FindCanonicalFilespacePageProfile(head.page.page_size_profile_uuid)||devices.empty()||!maximum_retained_image_bytes
       ||(head.page_type!=6&&head.page_type!=0x200))return fail(E::invalid_reference);
@@ -2309,7 +2309,7 @@ NativeCheckpointCatalogRelationResult ReadNativeCheckpointCatalogRelationFromOpe
   using E = NativeCheckpointCatalogRelationError;
   const auto fail = [](E error) { NativeCheckpointCatalogRelationResult r; r.error = error; return r; };
   try {
-    if ((catalog_selector != 2 && catalog_selector != 8) || relation_role < 1 || relation_role > 6 ||
+    if ((catalog_selector != 2 && catalog_selector != 8) || relation_role < 1 || relation_role > page::kNativeCatalogRelationRoles ||
         !maximum_retained_image_bytes || devices.empty() ||
         !scratchbird::core::uuid::IsEngineIdentityUuid(database_uuid)) return fail(E::invalid_reference);
     auto ordered = devices;

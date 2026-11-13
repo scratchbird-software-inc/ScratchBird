@@ -25,6 +25,7 @@
 #include "catalog_naming_dialect_profile.hpp"
 #include "catalog_naming_collision_policy.hpp"
 #include "catalog_construction_intent.hpp"
+#include "catalog_comment_record_codec.hpp"
 #include "catalog_metadata_change.hpp"
 #include "catalog_policy_descriptor.hpp"
 #include "catalog_verification_policy.hpp"
@@ -185,6 +186,12 @@ CatalogTypedRecordViewResult ValidateCatalogTypedRecordView(CatalogTypedRecordVi
       !CatalogAgentBootstrapMatchesHeader(record))
     return RecordViewError("CATALOG.INVALID_INPUT", "catalog.agent_bootstrap.invalid",
                           "agent_bootstrap_binary_payload_or_header_invalid");
+  // SB_NATIVE_COMMENT_RECORD (2026-11-13): by payload schema id. 65678 is the
+  // native comment row; the legacy create's 65542 comment records are not
+  // dispatched here (unchanged).
+  if (IsCatalogCommentPayload(record.payload) && !CatalogCommentMatchesHeader(record))
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.localized_comment.invalid",
+                          "localized_comment_binary_payload_or_header_invalid");
   if (IsCatalogConstructionIntentPayload(record.payload) &&
       !CatalogConstructionIntentMatchesHeader(record))
     return RecordViewError("AUDIT.EVENT_INVALID", "audit.construction_intent.invalid",
@@ -478,6 +485,14 @@ std::optional<CatalogRecordDiagnosticView> ValidateCatalogMetadataVersionView(co
                      &Metadata::storage_binding_uuid, &Metadata::donor_overlay_uuid})
     if (IsSuppliedIdentity(value.*member) && !IsTypedIdentity(value.*member, UuidKind::object))
       return MetadataViewError("object_reference_kind_invalid");
+  // SB_NATIVE_COMMENT_RECORD: a native comment row version is exactly the
+  // typed 65678 record under subtype localized_comment. Every metadata
+  // version of kind localized_comment is one (the legacy create's 65542
+  // comment records are bare typed records, never metadata versions).
+  if ((value.record.header.kind == CatalogRecordKind::localized_comment ||
+       value.object_subtype == CatalogObjectSubtype::localized_comment || IsCatalogCommentPayload(value.record.payload)) &&
+      !CatalogCommentMatchesMetadata(value))
+    return MetadataViewError("localized_comment_binding_invalid");
   if ((value.record.header.kind == CatalogRecordKind::metric_series ||
        value.object_subtype == CatalogObjectSubtype::metric_series || IsCatalogMetricSeriesPayload(value.record.payload)) &&
       !CatalogMetricSeriesMatchesMetadata(value))

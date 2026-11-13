@@ -123,6 +123,10 @@ class NativeCatalogCapture {
   std::span<const NativeCapturedNameTreeCell> name_tree_cells() const noexcept {
     return ok()?name_tree_cells_.first(name_tree_cell_count_):std::span<const NativeCapturedNameTreeCell>{};
   }
+  // SB_NATIVE_COMMENT_TREE: the comments relation's (target, language) tree
+  // when page zero had it (root kind 24). The reader bound every cell to its
+  // comment row version and its key to that row's target and language.
+  const std::optional<NativeCapturedNameTree>& comment_tree() const noexcept {return comment_tree_;}
   // Consumers may supply scratch storage, but it must not overwrite either
   // the fixed rows or their retained variable fields (including unused backing).
   bool DisjointWorkspace(std::span<const std::byte> workspace) const noexcept {
@@ -140,10 +144,11 @@ class NativeCatalogCapture {
     swap(initial_controls_complete_,other.initial_controls_complete_);
     swap(relations_,other.relations_);swap(relation_count_,other.relation_count_);
     swap(name_trees_,other.name_trees_);swap(name_tree_cells_,other.name_tree_cells_);swap(name_tree_cell_count_,other.name_tree_cell_count_);
+    swap(comment_tree_,other.comment_tree_);
   }
   void Begin() noexcept {source_.reset();inventory_.reset();count_=used_=filespace_count_=physical_page_count_=0;
     initial_control_page_count_=0;initial_controls_complete_=false;relation_count_=0;
-    name_trees_={};name_tree_cell_count_=0;}
+    name_trees_={};name_tree_cell_count_=0;comment_tree_.reset();}
   bool AppendNameTreeCell(u16 tree,const page::NativeBtreeCellView& cell) noexcept {
     if(name_tree_cells_.empty())return true;
     if(name_tree_cell_count_==name_tree_cells_.size())return false;
@@ -211,11 +216,12 @@ class NativeCatalogCapture {
   usize filespace_count_=0,physical_page_count_=0;
   usize count_=0,used_=0;
   std::optional<NativeReadSourceIdentity> source_;
-  std::array<NativeCapturedCatalogRelation,12> relations_{};
+  std::array<NativeCapturedCatalogRelation,2*page::kNativeCatalogRelationRoles> relations_{};
   usize relation_count_=0;
   std::array<std::optional<NativeCapturedNameTree>,2> name_trees_{};
   std::span<NativeCapturedNameTreeCell> name_tree_cells_;
   usize name_tree_cell_count_=0;
+  std::optional<NativeCapturedNameTree> comment_tree_;
   friend class NativeCatalogCohortLeaseReader;
   friend NativeCatalogCapturePreparedResult PrepareNativeCatalogCapture(
       NativeCatalogCaptureLimits,NativeStorageMemory&,const NativeStorageMemoryBinding&) noexcept;

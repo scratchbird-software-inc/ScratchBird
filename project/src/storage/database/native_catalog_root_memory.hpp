@@ -21,12 +21,12 @@ enum class NativeCatalogRootMemoryError {
   io_failure, resource_exhausted, lock_failure, encrypted_requires_authority,
   cluster_requires_authority, header_policy_requires_authority
 };
-// One image, all six native root-reference slots and native alignment padding.
+// One image, all seven native root-reference slots (SB_NATIVE_COMMENT_RELATION) and native alignment padding.
 // Every byte of this real backing is charged even when a sparse image uses less.
 inline usize NativeCatalogRootWorkspaceBytes(const Uuid& profile) noexcept {
   const auto* p=disk::FindCanonicalFilespacePageProfile(profile);
   if(!p)return 0;
-  return p->page_size_bytes+6*sizeof(page::NativeCatalogRootReference)+(alignof(std::max_align_t)-1);
+  return p->page_size_bytes+page::kNativeCatalogRelationRoles*sizeof(page::NativeCatalogRootReference)+(alignof(std::max_align_t)-1);
 }
 struct NativeCatalogRootMemoryResult {
   NativeCatalogRootMemoryError error=NativeCatalogRootMemoryError::invalid_request;
@@ -70,7 +70,7 @@ inline NativeCatalogRootMemoryResult ReadNativeCatalogRootWithMemoryFromOpenDevi
     out.allocation_diagnostic=std::move(payload.backing.diagnostic);
     if(!payload.ok()){out.error=E::memory_allocation_failure;return out;}
     auto image=payload.arena.Allocate(profile->page_size_bytes,profile->page_size_bytes);
-    constexpr usize count=6;
+    constexpr usize count=page::kNativeCatalogRelationRoles;
     using Record=page::NativeCatalogRootReference;
     std::span<Record> records;
     if(!image.ok()){out.error=E::resource_exhausted;return out;}

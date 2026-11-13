@@ -9642,14 +9642,21 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
 
     // The catalog index profile and dependency-map rows (owner decision
     // 2026-11-04, option a), for every non-empty relation, under sys.catalog.
+    // SB_NATIVE_COMMENT_RELATION (owner Q77 = 2): the comments relation (role
+    // 7) is empty at create (no comments, owner 2026-11-13) and indexed all the
+    // same, so a comment insert can grow it; it and the names relation take
+    // their constant identities.
     NativeCatalogIndexRowsRequest index_request{database,tx,1,{}};
-    for(unsigned i=0;i<6;++i)if(!seed[i].empty()||i==4)
-      index_request.roles[i]=NativeCatalogIndexRoleIdentities{i==1?Uuid{}:issue_kind(UuidKind::object),
+    for(unsigned i=0;i<page::kNativeCatalogRelationRoles;++i)if(!seed[i].empty()||i==4||i==6)
+      index_request.roles[i]=NativeCatalogIndexRoleIdentities{i==1||i==6?Uuid{}:issue_kind(UuidKind::object),
           issue_kind(UuidKind::object),issue_kind(UuidKind::object)};
     // SB_NATIVE_NAME_TREES (owner 2026-11-09): every database has the two
     // name trees over its names relation; their indexes and maps are issued.
     index_request.name_trees=NativeCatalogNameTreeIdentities{issue_kind(UuidKind::object),issue_kind(UuidKind::object),
         issue_kind(UuidKind::object),issue_kind(UuidKind::object)};
+    // SB_NATIVE_COMMENT_TREE (2026-11-13): and the comments relation's
+    // (target, language) tree, empty at create; its index and map are issued.
+    index_request.comment_tree=NativeCatalogCommentTreeIdentities{issue_kind(UuidKind::object),issue_kind(UuidKind::object)};
     if(!identities_ok)return fail(E::identity_failure);
     auto index_rows=BuildNativeCatalogIndexRows(index_request);
     if(!index_rows.ok())return fail(E::index_failure);
@@ -9676,9 +9683,9 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
     // relations, the complete-scan tier for all (SB_NATIVE_HOSTED_CATALOG_ROW_BOUND).
     {
       const auto plan=detail::PlanNativeCreationCatalogLayout(request.page_size_bytes,0,request.total_pages,
-          request.maximum_retained_image_bytes,seed,index_rows.indexes,true);
+          request.maximum_retained_image_bytes,seed,index_rows.indexes,true,index_rows.comment_tree.has_value());
       if(!plan.ok())return fail(plan.error==detail::NativeCreationLayoutError::resource_exhausted?E::resource_exhausted:E::capacity_exceeded);
-      for(unsigned i=0;i<6;++i) {
+      for(unsigned i=0;i<page::kNativeCatalogRelationRoles;++i) {
         const auto pages=plan.layout->relations[i].starts.size();
         const bool credential=i==3||i==4;
         if(seed[i].size()>(credential?kNativeHostedCatalogRelationMaximumRows:kNativeCatalogScanRelationMaximumRows)||
@@ -9688,7 +9695,7 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
     }
 
     const auto written=InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,construction,seed,index_rows.indexes,
-        request.maximum_retained_image_bytes,issuer,index_rows.name_trees);
+        request.maximum_retained_image_bytes,issuer,index_rows.name_trees,index_rows.comment_tree);
     if(!written.ok()){result.workspace_error=written.error;return fail(E::workspace_failure);}
     NativeDatabaseCreateReceipt receipt;
     receipt.database_uuid=database;receipt.filespace_uuid=filespace;receipt.database_object_uuid=database_object;

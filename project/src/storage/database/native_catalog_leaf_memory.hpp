@@ -60,7 +60,7 @@ inline NativeCatalogLeafMemoryResult ReadNativeCatalogLeafWithMemoryFromOpenDevi
     if(out.memory_error!=NativeStorageMemoryError::none){out.error=E::memory_binding_failure;return out;}
     const auto& target=ref.page;
     const auto* profile=disk::FindCanonicalFilespacePageProfile(target.page_size_profile_uuid);
-    if(!profile||ref.role<1||ref.role>6||ref.page_type!=6||!core::uuid::IsEngineIdentityUuid(database)||
+    if(!profile||ref.role<1||ref.role>page::kNativeCatalogRelationRoles||ref.page_type!=6||!core::uuid::IsEngineIdentityUuid(database)||
         !core::uuid::IsEngineIdentityUuid(ref.object_uuid)||!core::uuid::IsEngineIdentityUuid(target.filespace_uuid)||
         !target.page_number||!target.page_generation||
         target.page_number>std::numeric_limits<core::platform::u64>::max()/profile->page_size_bytes)return out;

@@ -34,7 +34,7 @@ struct NativeLeaseReadSource {
   std::span<const disk::NativeFilespaceDevice> devices;
   disk::FileDevice::ReadLatencyBatch* batches = nullptr;
   std::size_t batch_count = 0;
-  std::array<std::optional<NativeLeaseRoot>, 24> roots;  // by page-zero kind
+  std::array<std::optional<NativeLeaseRoot>, 25> roots;  // by page-zero kind (24: SB_NATIVE_COMMENT_TREE)
   const NativeReadTransactionInventory* inventory = nullptr;
   u64 inventory_generation = 0;
   const NativeReadAllocationChain* allocation = nullptr;  // the primary file's

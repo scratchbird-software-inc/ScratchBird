@@ -834,10 +834,12 @@ AgentError AddAgentConfigurationFixture(db::NativeCreationCatalogSeed& seed,
 db::NativeCreationCatalogIndexes AddCatalogIndexRowsFixture(db::NativeCreationCatalogSeed& seed,
     const enrollment::NativeLocalServiceCreationItem& prototype) {
   db::NativeCatalogIndexRowsRequest request{Id(1),security_tx,1,{}};
-  for(unsigned i:{1u,3u,4u,5u})request.roles[i]=db::NativeCatalogIndexRoleIdentities{
-      i==1?platform::Uuid{}:security_fixture::Id(8000+i),security_fixture::Id(8010+i),security_fixture::Id(8040+i)};
+  // step4 (SB_NATIVE_COMMENT_RELATION): role 7, the comments relation, is
+  // indexed under its constant identity, as the production create does it.
+  for(unsigned i:{1u,3u,4u,5u,6u})request.roles[i]=db::NativeCatalogIndexRoleIdentities{
+      i==1||i==6?platform::Uuid{}:security_fixture::Id(8000+i),security_fixture::Id(8010+i),security_fixture::Id(8040+i)};
   const auto built=db::BuildNativeCatalogIndexRows(request);
-  Check(built.ok()&&built.rows.size()==6,"production builder issues both profiles and one map per indexed relation");
+  Check(built.ok()&&built.rows.size()==7,"step4: production builder issues both profiles and one map per indexed relation (five)");
   Check(built.indexes[1]&&built.indexes[1]->relation_uuid==catalog::kNativeNameCatalogRelationUuid,
       "the names relation carries the shared constant identity");
   std::vector<enrollment::NativeLocalServiceCreationItem> items;items.reserve(built.rows.size());
@@ -2458,12 +2460,12 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
                   <<" visibility="<<int(read.catalogs().visibility_error)<<" relation="<<int(read.catalogs().relation_error)
                   <<" role="<<read.catalogs().failing_role<<" profile="<<profile<<'\n';
               Check(catalog_read==server::NativeHostedRuntimeError::none&&read.catalogs().ok()&&reads>0&&
-                  read.catalogs().relation_count==6&&db::SameReadSource(*read.catalogs().source,db::NativeReadSourceIdentityFromFixedRoot(*read.page_zero_anchor())),
+                  read.catalogs().relation_count==7/*step4*/&&db::SameReadSource(*read.catalogs().source,db::NativeReadSourceIdentityFromFixedRoot(*read.page_zero_anchor())),
                   "actual startup scan covers every catalog role, metadata chain and committed visibility on original custody");
               for(std::size_t i=0;i<expected_catalog_rows.size();++i){
                 const auto& relation=read.catalogs().relations[i];
                 Check(relation.selector==2&&relation.role==i+1&&relation.versions==expected_catalog_rows[i]&&
-                    relation.visible_rows==expected_catalog_rows[i]&&relation.base_pages>0,
+                    relation.visible_rows==expected_catalog_rows[i]&&relation.base_pages>0,  // roles 1..6
                     "full catalog observation matches every independently submitted row, including empty roles");
               }
               reads=0;track_reads=true;allocation_budget=0;
@@ -2600,7 +2602,7 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
                 using I=runtime_security::NativeCatalogIndexVerificationError;
                 const auto expected=ExpectedIndexError(index_variant);
                 Check(index_check.error==expected&&index_heap==0&&(expected==I::none?
-                    index_check.indexed_relations==4&&index_check.referenced_uuid.is_nil():
+                    index_check.indexed_relations==5/*step4: + role 7*/&&index_check.referenced_uuid.is_nil():
                     !index_check.indexed_relations&&index_check.role==(index_variant>=4?2:4)&&!index_check.referenced_uuid.is_nil()),
                     "engine resolves every catalog index tuple against its actual profile and map rows without allocation");
               }
@@ -3452,8 +3454,8 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
     std::cout<<"producer unaudited catalog change profile="<<profile<<" refused at write; startup audit="<<int(m.audit.error)<<'\n';
     return;
   }
-  Check(metadata==server::NativeHostedRuntimeError::none&&m.ok()&&m.names.ok()&&m.indexes.ok()&&m.indexes.indexed_relations==5&&
-      m.indexes.indexed_name_trees==2&&m.name_trees.ok()&&m.name_trees.present&&
+  Check(metadata==server::NativeHostedRuntimeError::none&&m.ok()&&m.names.ok()&&m.indexes.ok()&&m.indexes.indexed_relations==6/*step4: + role 7*/&&
+      m.indexes.indexed_name_trees==2&&m.indexes.indexed_comment_trees==1&&m.comments.ok()&&m.name_trees.ok()&&m.name_trees.present&&
       m.namespaces.ok()&&m.filespaces.ok()&&m.audit.ok()&&m.security.ok()&&m.naming_profiles.ok()&&m.collisions.ok(),
       "the engine verifies every component of the producer's catalog: names, indexes, namespaces, filespaces, audit, "
       "security references, naming profiles and collisions");

@@ -313,8 +313,10 @@ void Codecs() {
   for(unsigned k=0;k<root_types.size();++k) Check(disk::CanonicalPageZeroRootPageType(static_cast<disk::u16>(k))==root_types[k],"exact root symbol mapping");
   Check(disk::CanonicalPageZeroRootPageType(65535)==0,"unknown root kind");
   // SB_NATIVE_NAME_TREES: the name trees' roots, B-tree root pages (0x200).
+  // step4 (SB_NATIVE_COMMENT_TREE): kind 24 is the comment tree's root; nothing at 25.
   Check(disk::CanonicalPageZeroRootPageType(22)==0x200&&disk::CanonicalPageZeroRootPageType(23)==0x200&&
-      disk::CanonicalPageZeroRootPageType(24)==0,"name tree root kinds 22 and 23, nothing at 24");
+      disk::CanonicalPageZeroRootPageType(24)==0x200&&disk::CanonicalPageZeroRootPageType(25)==0,
+      "step4: name tree root kinds 22 and 23, the comment tree at 24, nothing at 25");
   for(unsigned p=0;p<5;++p) for(unsigned role=1;role<=14;++role)
     for(unsigned state=1;state<=15;++state) for(unsigned flags=0;flags<4;++flags) {
       const auto v=Example(p,role,state,flags); const auto b=Oracle(v);
@@ -493,7 +495,7 @@ page::NativeCatalogRoot RootExample(unsigned p=0) {
   r.object_uuid=Id(42); r.creator_transaction_uuid=Id(91);
   r.creator_local_transaction_id=17; r.catalog_generation=1;
   r.schema_epoch=2; r.security_epoch=3;
-  for(unsigned role=1;role<=6;++role)
+  for(unsigned role=1;role<=7;++role)  // step4: a kind-2 root has seven roles (role 7: comments)
     r.roots.push_back({static_cast<disk::u16>(role),role%2?6u:512u,
       {Id(2),20+role,7,Profile(p)},Id(static_cast<byte>(100+role))});
   return r;
@@ -931,7 +933,8 @@ void CatalogRoots() {
     auto b=good; b[at]^=1; const auto r=page::DecodeNativeCatalogRoot(b);
     Check(!r.ok()&&!r.root&&r.bytes.empty(),"every byte corruption rejected without partial root");
   }
-  for(unsigned at:{128u,136u,138u,140u,148u,336u,383u,864u,8191u}) {
+  // step4: seven entries end at 384+80*7 = 944 (was 864, after six).
+  for(unsigned at:{128u,136u,138u,140u,148u,336u,383u,944u,8191u}) {
     auto b=good; b[at]^=1; RootSeal(b); RootReject(b,RootError::invalid_family);
   }
   for(unsigned at:{386u,387u,456u,463u}) {
@@ -941,6 +944,10 @@ void CatalogRoots() {
     auto b=good; b.resize(size); RootReject(b,RootError::invalid_header);
   }
   {auto r=RootExample(); r.root_kind=9; Check(!page::EncodeNativeCatalogRoot(r).ok(),"unknown kind producer");}
+  // step4 (SB_NATIVE_COMMENT_RELATION): a kind-2 root has exactly seven roles;
+  // six (the format before the comments relation) or eight are refused.
+  {auto r=RootExample(); r.roots.pop_back(); RootInvalid(r,RootError::invalid_roots);}
+  {auto r=RootExample(); r.roots.push_back({8,6,{Id(2),40,7,Profile(0)},Id(200)}); RootInvalid(r,RootError::invalid_roots);}
   {auto r=RootExample(); r.header.page_type=6; RootInvalid(r,RootError::invalid_header);}
   {auto r=RootExample(); r.object_uuid.bytes[6]=0x41; RootInvalid(r,RootError::invalid_family);}
   {auto r=RootExample(); r.creator_transaction_uuid={}; RootInvalid(r,RootError::invalid_family);}
@@ -1019,7 +1026,8 @@ void CatalogRootFiles() {
     Check(device.WriteAt(ref.page_number*sizes[p],badimage.data(),badimage.size()).ok(),"encrypted-header fixture");
     r=page::ReadNativeCatalogRootFromOpenDevice(device,Id(1),ref);
     Check(r.error==RootError::encrypted_requires_crypto_authority&&!r.root&&r.bytes.empty(),"no plaintext encrypted root admission");
-    changed=root; changed.root_kind=8; changed.roots.erase(changed.roots.begin(),changed.roots.end()-1);
+    // step4: the feature registry is role 6, no longer the last of the seven.
+    changed=root; changed.root_kind=8; changed.roots={changed.roots[5]};
     badimage=RootOracle(changed);
     Check(device.WriteAt(ref.page_number*sizes[p],badimage.data(),badimage.size()).ok(),"dedicated feature root persisted");
     Check(page::ReadNativeCatalogRootFromOpenDevice(device,Id(1),feature).ok(),"dedicated feature root read");
@@ -2269,7 +2277,7 @@ void CatalogLeafFiles() {
         reads=0;track_reads=true;auto refused=db::ReadNativeCatalogLeafWithMemoryFromOpenDevice(device,Id(1),ref,grant.memory,wrong);track_reads=false;
         no_page(refused);Check(refused.error==ME::memory_binding_failure&&!reads&&!grant.manager.Snapshot().current_bytes,
             "each binary grant ownership dimension checked before effects");}
-      for(unsigned role:{0u,7u}){auto wrong=ref;wrong.role=role;reads=0;track_reads=true;
+      for(unsigned role:{0u,8u}){auto wrong=ref;wrong.role=role;reads=0;track_reads=true;  // step4: 7 is a role now
         const auto invalid=db::ReadNativeCatalogLeafWithMemoryFromOpenDevice(device,Id(1),wrong,grant.memory,grant.binding);
         track_reads=false;no_page(invalid);Check(invalid.error==ME::invalid_request&&!reads&&
           !grant.manager.Snapshot().current_bytes,"catalog root role refused before admission and I/O");}

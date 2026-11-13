@@ -420,7 +420,7 @@ template<class Root> Error Validate(const Root& r) {
       || (r.catalog_generation>1 && r.predecessor.has_value()==empty_digest)) return Error::invalid_reference;
   if (r.predecessor && (!Reference(*r.predecessor) || SameSlot(self,*r.predecessor)
       || !ProfilesAgree(self,*r.predecessor))) return Error::invalid_reference;
-  if (r.roots.size()!=(r.root_kind==2?6u:1u)) return Error::invalid_roots;
+  if (r.roots.size()!=(r.root_kind==2?kNativeCatalogRelationRoles:1u)) return Error::invalid_roots;
   for (std::size_t i=0;i<r.roots.size();++i) {
     const auto& target=r.roots[i];
     const auto role=r.root_kind==2?i+1:r.root_kind==6?5:r.root_kind==7?4:6;
@@ -500,7 +500,7 @@ template<class Root> Error DecodeValues(std::span<const byte> b,Root& r) noexcep
     if (!Zero(f+96,48)) r.predecessor=GetRef(f+96);
     std::copy_n(f+144,32,r.predecessor_sha256.begin());
     // Bound cardinality before allocating or interpreting any target.
-    if ((r.root_kind==2 && count!=6) || (r.root_kind!=2 && count!=1)
+    if ((r.root_kind==2 && count!=kNativeCatalogRelationRoles) || (r.root_kind!=2 && count!=1)
         || (r.root_kind!=2 && r.root_kind!=6 && r.root_kind!=7 && r.root_kind!=8)) return Error::invalid_roots;
     if constexpr(std::is_same_v<Root,NativeCatalogRoot>)r.roots.resize(count);
     else {if(count>r.roots.size())return Error::resource_exhausted;r.roots=r.roots.first(count);}

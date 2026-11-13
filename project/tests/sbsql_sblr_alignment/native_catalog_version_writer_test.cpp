@@ -914,7 +914,10 @@ void Refusals(const Db& b) {
     Refused(b, s, path, r, error, label);
   };
   variant([](auto& r) { r.role = 0; }, CE::invalid_request, "role 0");
-  variant([](auto& r) { r.role = 7; }, CE::invalid_request, "role 7");
+  // step4: role 7 is now the comments relation; the first role outside the
+  // root is 8, and a non-comment successor in role 7 is invalid_role.
+  variant([](auto& r) { r.role = 8; }, CE::invalid_request, "role 8");
+  variant([](auto& r) { r.role = 7; }, CE::invalid_role, "step4: a non-comment successor in role 7");
   variant([](auto& r) { r.transaction_order = 0; }, CE::invalid_request, "transaction order 0");
   variant([](auto& r) { r.transaction_uuid = {}; }, CE::invalid_request, "nil transaction");
   variant([](auto& r) { r.row_uuid = {}; }, CE::invalid_request, "nil row");

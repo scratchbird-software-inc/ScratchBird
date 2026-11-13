@@ -49,7 +49,8 @@ auto Controls(const Map& r){return std::array{r.map_uuid,r.database_uuid,r.relat
 bool Valid(const Key& r) noexcept {
   return Provenance(r)&&Distinct(Controls(r))&&
       (r.key_form==NativeCatalogIndexKeyForm::raw16_canonical_row_uuid||
-       r.key_form==NativeCatalogIndexKeyForm::name_authoritative_v1||r.key_form==NativeCatalogIndexKeyForm::name_uuid_v1)&&
+       r.key_form==NativeCatalogIndexKeyForm::name_authoritative_v1||r.key_form==NativeCatalogIndexKeyForm::name_uuid_v1||
+       r.key_form==NativeCatalogIndexKeyForm::comment_target_language_v1)&&
       r.key_order==NativeCatalogIndexKeyOrder::unsigned_canonical_bytes&&
       r.tie_break==NativeCatalogIndexTieBreak::native_row_then_version_uuid;
 }
@@ -58,7 +59,7 @@ bool Valid(const Visibility& r) noexcept {
 }
 // Catalog relation indexes are native B-trees only.
 bool Valid(const Map& r) noexcept {
-  return Provenance(r)&&Distinct(Controls(r))&&r.relation_role>=1&&r.relation_role<=6&&
+  return Provenance(r)&&Distinct(Controls(r))&&r.relation_role>=1&&r.relation_role<=7&&
       r.index_family_uuid==kNativeBtreeIndexFamilyUuid&&r.descriptor_generation&&r.storage_generation;
 }
 template<std::size_t N> struct Backing {

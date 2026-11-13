@@ -366,7 +366,7 @@ NativeOpenVerificationResult NativeHostedDatabaseRuntime::VerifyStartupDatabaseF
       api::NativeStartupCatalogRouteObservation routes{genesis,0,source.physical_bytes_read};
       std::array<disk::FilespaceRootReference,2> targets;
       std::array<page::NativeAllocationRecord,2> allocations;
-      std::array<page::NativeCatalogRootReference,6> references;
+      std::array<page::NativeCatalogRootReference,page::kNativeCatalogRelationRoles> references;
       const auto& inventory=lease.inventory();
       if(inventory.entries.empty()||!mga::HasCommittedInventoryOutcome(inventory.entries.front())){error=VE::finding;return;}
       const auto creator=inventory.entries.front().identity;

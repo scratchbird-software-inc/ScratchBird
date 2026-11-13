@@ -8,6 +8,9 @@
 namespace scratchbird::engine::internal_api {
 enum class NativeCatalogIndexVerificationError {
   none,source_required,name_relation_identity,missing_dependency_map,invalid_dependency_map,
+  // SB_NATIVE_COMMENT_RELATION: the comments relation (role 7) without its
+  // constant identity, or not indexed.
+  comment_relation_identity,
   dependency_map_binding,dependency_map_digest,missing_key_profile,invalid_key_profile,
   missing_visibility_profile,invalid_visibility_profile,hash_failure
 };
@@ -18,6 +21,8 @@ struct NativeCatalogIndexVerification {
   std::size_t indexed_relations=0;
   // SB_NATIVE_NAME_TREES: the name trees whose tuples resolved (0 or 2).
   std::size_t indexed_name_trees=0;
+  // SB_NATIVE_COMMENT_TREE: the comment tree, when its tuple resolved (0 or 1).
+  std::size_t indexed_comment_trees=0;
   bool ok() const noexcept{return error==NativeCatalogIndexVerificationError::none;}
 };
 // SEARCH_KEY: SB_CLARIFY_NATIVE_CATALOG_INDEX_PROFILE_ROWS (owner decision
@@ -35,7 +40,8 @@ inline NativeCatalogIndexVerification VerifyNativeCatalogIndexBindings(
   namespace c=core::catalog;using E=NativeCatalogIndexVerificationError;using core::platform::Uuid;
   NativeCatalogIndexVerification out;
   const auto fail=[&](E error,core::platform::u16 role,const Uuid& reference){
-    out.error=error;out.role=role;out.referenced_uuid=reference;out.indexed_relations=0;out.indexed_name_trees=0;return out;};
+    out.error=error;out.role=role;out.referenced_uuid=reference;out.indexed_relations=0;out.indexed_name_trees=0;
+    out.indexed_comment_trees=0;return out;};
   if(!capture.ok()||!capture.source())return out;
   const auto database=capture.source()->database_uuid;
   const auto rows=capture.rows();
@@ -83,6 +89,9 @@ inline NativeCatalogIndexVerification VerifyNativeCatalogIndexBindings(
   for(const auto& relation:capture.relations()){
     if(relation.role==2&&relation.relation_uuid!=c::kNativeNameCatalogRelationUuid)
       return fail(E::name_relation_identity,relation.role,relation.relation_uuid);
+    if(relation.role==storage::page::kNativeCommentRelationRole&&
+        (relation.relation_uuid!=c::kNativeCommentCatalogRelationUuid||!relation.index_dependencies))
+      return fail(E::comment_relation_identity,relation.role,relation.relation_uuid);
     if(!relation.index_dependencies)continue;
     Uuid reference;
     if(const auto error=resolve(relation.role,relation.relation_uuid,*relation.index_dependencies,std::nullopt,reference);error!=E::none)
@@ -100,6 +109,17 @@ inline NativeCatalogIndexVerification VerifyNativeCatalogIndexBindings(
         t?c::NativeCatalogIndexKeyForm::name_uuid_v1:c::NativeCatalogIndexKeyForm::name_authoritative_v1,reference);error!=E::none)
       return fail(error,2,reference);
     ++out.indexed_name_trees;
+  }
+  // SB_NATIVE_COMMENT_TREE: the comment tree's tuple, as role 7 over the
+  // comments relation, to its fixed key profile.
+  if(const auto& tree=capture.comment_tree()){
+    const auto& d=tree->dependencies;const auto role=storage::page::kNativeCommentRelationRole;
+    if(d.key_profile_uuid!=c::kNativeCommentTreeKeyProfileUuid)return fail(E::invalid_key_profile,role,d.key_profile_uuid);
+    Uuid reference;
+    if(const auto error=resolve(role,c::kNativeCommentCatalogRelationUuid,d,
+        c::NativeCatalogIndexKeyForm::comment_target_language_v1,reference);error!=E::none)
+      return fail(error,role,reference);
+    ++out.indexed_comment_trees;
   }
   out.error=E::none;return out;
 }

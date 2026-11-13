@@ -4,6 +4,7 @@
 #include "native_catalog_roots_lease_reader.hpp"
 #include "native_catalog_leaf_lease_reader.hpp"
 #include "native_btree_tree_lease_reader.hpp"
+#include "native_catalog_constant_relations.hpp"
 
 namespace scratchbird::storage::database {
 // SEARCH_KEY: SB_NATIVE_HOSTED_CATALOG_ROW_BOUND. Two tiers of relation bounds,
@@ -244,7 +245,7 @@ class NativeCatalogRelationLeaseReader {
       out.leaf_failure.image={};out.leaf_failure.leaf.page.reset();out.bases={};out.bindings={};
       out.row_creators={};out.navigation_creators={};out.retained_image_bytes=0;out.relation={};};
     try {
-      if(!w||(selector!=2&&selector!=8)||role<1||role>6||
+      if(!w||(selector!=2&&selector!=8)||role<1||role>page::kNativeCatalogRelationRoles||
           (expected&&!core::uuid::IsEngineIdentityUuid(binding.relation_uuid)))return out;
       if(source.database_uuid.is_nil()||w.arena_.binding().database_uuid!=source.database_uuid)return out;
       u64 retained=source.retained_image_bytes;
@@ -340,6 +341,10 @@ class NativeCatalogRelationLeaseReader {
       }
       // Empty indexed heads contain no base relation identity to discover.
       // They cannot manufacture one from the index UUID or caller expectations.
+      // SB_NATIVE_COMMENT_RELATION: a relation whose identity is a universal
+      // constant (the comments relation, empty at create) has it without one.
+      if(!core::uuid::IsEngineIdentityUuid(binding.relation_uuid)&&indexed&&!page_count)
+        if(const auto constant=NativeCatalogConstantRelationUuid(role))binding.relation_uuid=*constant;
       if(!core::uuid::IsEngineIdentityUuid(binding.relation_uuid)){fail(E::missing_relation);return out;}
       out.relation=binding;
       out.bases=w.bases_.first(page_count);out.bindings=w.bindings_.first(binding_count);
