@@ -20,7 +20,12 @@ enum class NativeCatalogCohortError {
   // type or object, or a tree that does not read; a cell that does not bind to
   // a comment row version of the comments relation, or whose key is not that
   // row's target and language (or a comment row version without its cell).
-  comment_tree_failure,comment_tree_mismatch
+  comment_tree_failure,comment_tree_mismatch,
+  // SB_CATALOG_OWN_VERSION_REPLACE (owner Q88 = 1, 2026-11-13): a name or
+  // comment row with two versions by one transaction (a transaction's
+  // successor of its own version replaces it in place, so no writer leaves
+  // two).
+  own_version_repeated
 };
 struct NativeCatalogRelationInspection {
   u16 selector=0,role=0;
@@ -191,6 +196,21 @@ class NativeCatalogCohortLeaseReader {
           if(!capture->Append(selector,relation.role,row))return fail(E::resource_exhausted);
         if(capture&&!capture->AppendRelation({selector,relation.role,read.source.relation.relation_uuid,
             read.source.relation.index_dependencies}))return fail(E::resource_exhausted);
+        if(selector==2&&(relation.role==2||relation.role==page::kNativeCommentRelationRole)){
+          // SB_CATALOG_OWN_VERSION_REPLACE (owner Q88 = 1): at most one
+          // version per (row, creator transaction) in the names and comments
+          // relations, whatever the creator's state. Rows x rows over the
+          // relation's base leaves (heap-free; a few milliseconds on the
+          // default pack).
+          const auto& bases=read.source.bases;
+          for(usize a=0;a<bases.size();++a)for(usize i=0;i<bases[a].page.body.rows.size();++i){
+            const auto& x=bases[a].page.body.rows[i];
+            for(usize b=a;b<bases.size();++b)for(usize j=(b==a?i+1:0);j<bases[b].page.body.rows.size();++j){
+              const auto& y=bases[b].page.body.rows[j];
+              if(x.row_uuid.value==y.row_uuid.value&&x.local_transaction_id==y.local_transaction_id)
+                return fail(E::own_version_repeated);
+            }}
+        }
         if(selector==2&&relation.role==2){
           // SB_NATIVE_NAME_TREES: the two name trees over this relation, read
           // from page zero (kinds 22 and 23) while the relation's base leaves

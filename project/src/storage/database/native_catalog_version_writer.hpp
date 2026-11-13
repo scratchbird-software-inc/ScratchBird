@@ -136,6 +136,19 @@ enum class CatalogVersionWriteError : std::uint8_t {
   // SB_NATIVE_COMMENT_TREE: the comment tree leaf a comment row's cell reaches
   // has no room and no page can be added.
   comment_tree_full,
+  // SB_NATIVE_COMMENT_TARGET (owner 2026-11-13, Q86, Q87 = 1): a comment
+  // insert or edit whose target is not a live definition in this
+  // transaction's view: no such row, a committed drop, another transaction's
+  // uncommitted create, or this transaction's own drop.
+  missing_target,
+  // SB_CATALOG_DEPENDENT_CASCADE: a drop has fully dependent rows to drop
+  // with it and the request carries too few dependent_versions identities
+  // (result.cascade_needed says how many).
+  dependent_versions_exhausted,
+  // SB_CATALOG_OWN_VERSION_REPLACE (owner Q88 = 1): removing a replaced
+  // version's tree cell would leave a non-root B-tree leaf empty, which the
+  // page codec refuses (no leaf merge yet); nothing written.
+  tree_leaf_emptied,
 };
 const char* CatalogVersionWriteErrorName(CatalogVersionWriteError error) noexcept;
 
@@ -183,7 +196,9 @@ struct CatalogVersionRequest {
   // The version the caller's snapshot saw: the newest committed version, or
   // this transaction's own newest.
   core::platform::Uuid predecessor_version_uuid;
-  // The new version's identity, a UUIDv7 the caller issued.
+  // The new version's identity, a UUIDv7 the caller issued. Unused when the
+  // successor replaces this transaction's own name or comment version in
+  // place (SB_CATALOG_OWN_VERSION_REPLACE, owner Q88 = 1).
   core::platform::Uuid version_uuid;
   // Creator fields name this transaction; row UUID, object UUID and kind are
   // the predecessor's; definition_version is the predecessor's plus one.
@@ -223,6 +238,13 @@ struct CatalogVersionRequest {
   // transaction's entry in progress whose path does not resolve in this view
   // conflicts when its path's lookups reach a name this request changes.
   std::vector<core::platform::Uuid> cascade_versions;
+  // SEARCH_KEY: SB_CATALOG_DEPENDENT_CASCADE (owner 2026-11-13, Q86, Q87 = 1).
+  // The identities (UUIDv7, caller-issued) of the drop versions a definition
+  // drop writes for its fully dependent rows (today: its live comments), used
+  // in order: dependent class by class (comments first), row-UUID order within
+  // a class. Unused ones are not consumed; too few is
+  // dependent_versions_exhausted with result.cascade_needed, before any write.
+  std::vector<core::platform::Uuid> dependent_versions;
   // SB_CATALOG_NEW_PAGES: when no reached base leaf has room, the version goes
   // on a new base leaf, reached by a cell for this version in the relation's
   // row-UUID tree (which otherwise indexes a row's first version only).
@@ -256,6 +278,16 @@ struct CatalogVersionWriteResult {
   // many identities it needs.
   std::vector<std::pair<core::platform::Uuid, core::platform::Uuid>> cascaded;
   std::size_t cascade_needed = 0;
+  // SB_CATALOG_DEPENDENT_CASCADE: the dependent rows' drop versions a
+  // definition drop wrote (row, version), in the order their identities were
+  // used; on dependent_versions_exhausted, cascade_needed says how many.
+  std::vector<std::pair<core::platform::Uuid, core::platform::Uuid>> dependents;
+  // SB_CATALOG_OWN_VERSION_REPLACE (owner Q88 = 1): the version the
+  // successor wrote (the request's version_uuid, or, when it replaced this
+  // transaction's own version in place, that version's UUID) and whether it
+  // replaced.
+  core::platform::Uuid version_uuid;
+  bool replaced = false;
   bool ok() const noexcept { return error == CatalogVersionWriteError::none; }
 };
 
@@ -397,12 +429,115 @@ CatalogVersionWriteResult WriteCatalogInsertVersions(disk::CarefulWriteSink& sin
 //    name trees, owner Q42); the duplicate check takes its candidates from
 //    the tree's (target, language) range, as the name collision check does
 //    (SB_NATIVE_NAME_PROBE).
-// Not checked here (rules the engine-API caller owes, as a name's object is):
-// that the target object exists when the comment is written, and that its
-// comments are dropped with it. Startup verification refuses a database
-// holding a live comment whose target is not a live definition
-// (missing_target). The engine-API COMMENT ON path that will call these is
-// not wired here.
+// (Superseded 2026-11-13 by SB_NATIVE_COMMENT_TARGET and
+// SB_CATALOG_DEPENDENT_CASCADE below: the writer now checks the target and
+// drops a definition's comments with it. The earlier text read: "Not checked
+// here (rules the engine-API caller owes, as a name's object is): that the
+// target object exists when the comment is written, and that its comments are
+// dropped with it.") Startup verification still refuses a database holding a
+// live comment whose target is not a live definition (missing_target). The
+// engine-API COMMENT ON path that will call these is not wired here.
+//
+// SEARCH_KEY: SB_NATIVE_COMMENT_TARGET (owner 2026-11-13: metadata behaves
+// like ordinary rows under MGA; Q86: comments are fully dependent on their
+// target; Q87 = 1: only a drop of the target conflicts with a comment change).
+// A comment insert, and a comment edit (a successor that is not a drop), names
+// a target that is a live definition in this transaction's view: a row of a
+// relation other than the names (role 2) and the comments (role 7) carrying
+// the target as its object, as startup's missing_target check reads it. Per
+// such row, newest version first, rolled-back and dead versions passed over:
+//  - this transaction's own version decides: not a drop, the target lives; its
+//    drop refuses missing_target (a comment on what this transaction dropped);
+//  - another transaction's in-progress drop is a write_conflict with it (in
+//    FirebirdSQL the comment is a blob in the target's RDB$RELATIONS row, so
+//    the comment and the drop write one row);
+//  - another transaction's in-progress version that is not a drop (an ALTER,
+//    or its uncommitted create) does not conflict (Q87 = 1: different rows);
+//    the version below it decides, as this transaction's snapshot sees it;
+//  - a committed version decides: not a drop, the target lives; a drop
+//    refuses missing_target.
+// A row of the same insert request carrying the target (not a name or a
+// comment) is this transaction's own live definition. A conflict on any row
+// carrying the target wins; else a live one admits; else missing_target. A
+// comment drop does not check its target. Another transaction's uncommitted
+// create of the target is missing_target, not a conflict (owner Q89 = 1,
+// 2026-11-13). (Earlier note: "the implementing AI's reading of snapshot
+// visibility, not an owner ruling"; now ruled.)
+//
+// SEARCH_KEY: SB_CATALOG_DEPENDENT_CASCADE (owner 2026-11-13, Q86, Q87 = 1).
+// Fully dependent rows go with their definition: a successor that drops a
+// definition (metadata deleted; any record but a name row or a comment row)
+// writes, in the same careful-write plan, a drop version of each of the
+// target's dependent rows still live, class by class (a general hook keyed by
+// dependent class; comments are the only class now: triggers, indexes and
+// constraints of a table come later). For comments: every comment row whose
+// (target, language) tree cells carry the target's 16-byte prefix (every row
+// of role 7 without the tree; nothing without a role-7 relation). Per row,
+// rolled-back and dead versions passed over:
+//  - any version by another transaction still in progress (its insert, edit
+//    or drop) refuses the whole drop write_conflict with that transaction,
+//    nothing written (MGA: only write-write blocks; no lock, no wait);
+//  - newest this transaction's own, not a drop (its uncommitted comment):
+//    replaced in place by its drop (owner Q88 = 1, 2026-11-13;
+//    SB_CATALOG_OWN_VERSION_REPLACE below); it uses no dependent identity.
+//    (Superseded note, step4-open2 round 1: "refused invalid_successor,
+//    nothing written. OPEN (an owner ruling is pending): ... that version's
+//    tree cell would be stamped by its own creator, which the B-tree cell
+//    codec refuses (superseding > creator); the writer already cannot write a
+//    successor of its own uncommitted comment ... nor of its own uncommitted
+//    name row".)
+//  - newest committed, not a drop: a drop version follows it (the base's metadata with this transaction as creator, the
+//    next definition version, generation the larger of the base's and the
+//    request's, lifecycle dropped, status retired, retired by this
+//    transaction; the comment payload unchanged), checked as any successor
+//    (FollowsAs, the catalog root's bounds), placed as successors are, its
+//    base's tree cell stamped with this transaction (no new cell for a drop);
+//  - newest already a drop: nothing.
+// Its identities are the request's dependent_versions. Every refusal (a
+// conflict, too few identities, no room and no page to add) comes before any
+// write; the dependent rows' leaves are written with the definition's (every
+// page carrying a forward link after every other leaf), every tree page after
+// every leaf.
+//
+// SEARCH_KEY: SB_CATALOG_OWN_VERSION_REPLACE (owner Q88 = 1, 2026-11-13).
+// A transaction's successor of its OWN uncommitted version of a name row or a
+// comment row replaces that version in place, as FirebirdSQL overwrites a
+// record version the same transaction created (the prior state serving only
+// savepoint undo, which this writer does not keep). It applies wherever a
+// successor's base is this transaction's own name or comment version: a
+// request's successor, the name cascade's moved entries (successor and insert
+// paths), and a definition drop's own comments. Definition rows keep
+// appending own successors (their relations have no tree cells to stamp).
+// Format choice (a), not (b): the record is rewritten in its slot on its page
+// (one whole-page sealed write) keeping its version UUID, row_version, links
+// and definition_version (one more than its committed predecessor's, as the
+// visibility reader checks a resident chain); the request is checked as the
+// successor of the replaced version (definition_version one more), and its
+// version_uuid (and a cascade or dependent identity) is unused:
+// result.version_uuid is the version written, result.replaced says so.
+// Because the version UUID is kept, the relation's row-UUID cell (keyed by row
+// and version) and the committed predecessor's forward link stay valid, and a
+// comment edit's tree cell (key target | language, which an edit cannot
+// change) stays as it is. (b), keeping the earlier record marked superseded,
+// would need a row-format marker and a verifier rule that do not exist; the
+// lease readers require exactly one tree cell per non-dropped name or
+// comment version.
+// Tree cells: the replaced version's cells (a name's, both trees; a comment's
+// when the replacement is a drop) are removed and written FIRST, as a plan of
+// their own (removal-only images of the pages as read), then the main plan
+// (leaves, then tree pages with the new version's cells). A crash between
+// leaves the own version without cells, which the lease readers admit only
+// because its creator did not commit; the old cells never outlive the old
+// contents. An own insert then dropped leaves its row with one version, the
+// drop (definition_version 1), and no tree cell; its row-UUID index cell
+// stays. A rollback leaves the committed predecessor (if any) visible again:
+// its cell's stamp by the rolled-back transaction is void.
+// Refusals: a replacement that does not fit its page is relation_full (moving
+// it would leave its version UUID on two pages between writes); removing a
+// cell that would empty a non-root tree leaf is tree_leaf_emptied (the codec
+// refuses an empty non-root leaf; there is no leaf merge). Both before any
+// write. Startup refuses a name or comment row with two versions by one
+// transaction (cohort reader: own_version_repeated).
 //
 // SEARCH_KEY: SB_AUDIT_CATALOG_METADATA_CHANGE (W3b-2b). Every definition
 // (system-table) row version a transaction writes, an insert's or a
