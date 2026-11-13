@@ -1,7 +1,8 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 // SEARCH_KEY: SB_CATALOG_NATIVE_AGENT_RECORDS (owner Q68 = 1, Q69 = 1, Q70 = 2,
-// Q71 = 1, Q72 = 1, Q73 = 1).
+// Q71 = 1, Q72 = 1, Q73 = 1). 3c-3: plus the wiring helpers (header and
+// metadata binding, the config head, the pack encoder, subtype 57).
 // Typed native agent policy / registration / per-family config value blocks:
 // independent hand-built SBCV byte oracles (policy, registration and three
 // family configs; no production schema or encoder), round trips of every row
@@ -15,6 +16,8 @@
 #include "core/agents/agent_bootstrap_configuration.hpp"
 #include "core/agents/agent_policy_schema.hpp"
 #include "bootstrap_policy_fixture.hpp"
+#include "core/catalog/catalog_object_constants.hpp"
+#include "uuid.hpp"
 
 #include <algorithm>
 #include <array>
@@ -69,6 +72,8 @@ auto NoHeap(Call&& call) {
   return result;
 }
 p::TypedUuid Tx(unsigned n) { return {p::UuidKind::transaction, f::Id(n)}; }
+bool SameTyped(const p::TypedUuid& a, const p::TypedUuid& b) { return a.kind == b.kind && a.value == b.value; }
+std::string uuid_text_of(const p::Uuid& id) { return scratchbird::core::uuid::UuidToString(id); }
 std::string FamilyTag(c::CatalogAgentPolicyFamily family) {
   for (const auto& identity : c::kCatalogAgentPolicyFamilies)
     if (identity.family == family) return std::string(identity.tag);
@@ -1254,6 +1259,87 @@ void PolicyAdapterRefusals() {
     Check(refused, "registration adapter/codec refuses " + std::string(key));
   }
 }
+// ---- 3c-3 wiring helpers: header/metadata binding, config head, pack encoder ----
+void Wiring() {
+  using S = c::CatalogObjectSubtype;
+  using R = c::NativeAgentConfig_agent_coordinator_policy;
+  auto policy = Policy();
+  policy.agent_type = c::CatalogAgentType::agent_coordinator;
+  policy.policy_family = c::CatalogAgentPolicyFamily::agent_coordinator_policy;
+  const auto policy_bytes = c::EncodeNativeAgentPolicy(policy);
+  Check(policy_bytes.ok(), "coordinator policy encodes");
+  const std::string policy_payload(policy_bytes.bytes.begin(), policy_bytes.bytes.end());
+  const auto defaults = a::DefaultAgentPolicyConfigFieldsForFamily("agent_coordinator_policy");
+  const auto config = c::EncodeNativeAgentConfigFromTags(MapTags(defaults), policy);
+  Check(config.ok() && config.bad_key.empty(), "pack encoder: config record from config text");
+  const std::string config_payload(config.bytes.begin(), config.bytes.end());
+  const auto decoded = c::DecodeNativeAgentConfig<R>(config_payload);
+  Check(decoded.ok() && decoded.record->definition_uuid == policy.definition_uuid &&
+            SameTyped(decoded.record->origin_transaction_uuid, policy.origin_transaction_uuid) &&
+            decoded.record->origin_local_transaction_id == policy.origin_local_transaction_id,
+        "pack encoder: head from the policy record");
+  auto other = policy;
+  other.max_history_query_rows = policy.max_history_query_rows + 1;
+  auto with_budget = defaults;
+  with_budget["max_history_query_rows"] = std::to_string(policy.max_history_query_rows);
+  Check(c::EncodeNativeAgentConfigFromTags(MapTags(with_budget), policy).ok(), "pack encoder: Q73 key equal to the policy");
+  const auto refused = c::EncodeNativeAgentConfigFromTags(MapTags(with_budget), other);
+  Check(!refused.ok() && refused.bad_key == "max_history_query_rows", "pack encoder: Q73 key disagreeing refused");
+  auto unlisted = policy;
+  unlisted.policy_family = c::CatalogAgentPolicyFamily::none;
+  Check(!c::EncodeNativeAgentConfigFromTags(MapTags(defaults), unlisted).ok(), "pack encoder: no family, no record");
+  // Schema id selection.
+  Check(c::NativeAgentPayloadSchemaId(policy_payload) == 65640 && c::NativeAgentPayloadSchemaId(config_payload) == 65669 &&
+            c::NativeAgentPayloadSchemaId("SBCX") == 0,
+        "payload schema id");
+  Check(c::NativeAgentConfigFamilyForSchemaId(65641) == c::CatalogAgentPolicyFamily::none &&
+            c::NativeAgentConfigFamilyForSchemaId(65642) == c::CatalogAgentPolicyFamily::node_resource_policy &&
+            c::NativeAgentConfigFamilyForSchemaId(65677) == c::CatalogAgentPolicyFamily::page_relocation_policy &&
+            c::NativeAgentConfigFamilyForSchemaId(65678) == c::CatalogAgentPolicyFamily::none,
+        "config family for schema id, 65642..65677 only");
+  // The config head: a complete typed decode, allocation-free.
+  const auto head = NoHeap([&] { return c::DecodeNativeAgentConfigHead(config_payload); });
+  Check(head.ok() && head.record->family == c::CatalogAgentPolicyFamily::agent_coordinator_policy &&
+            head.record->definition_uuid == policy.definition_uuid,
+        "config head");
+  Check(!c::DecodeNativeAgentConfigHead(policy_payload).ok() &&
+            !c::DecodeNativeAgentConfigHead(config_payload.substr(0, config_payload.size() - 1)).ok(),
+        "config head refuses a policy record and a truncated config");
+  // Header binding: the config is its own object, never the policy's.
+  c::CatalogTypedRecordView view;
+  view.header.kind = c::CatalogRecordKind::policy;
+  view.header.object_uuid = {p::UuidKind::object, f::Id(901)};
+  view.payload = config_payload;
+  Check(c::NativeAgentConfigMatchesHeader(view) && c::NativeAgentRecordMatchesHeader(view), "config under its own object");
+  auto bad = view;
+  bad.header.object_uuid.value = policy.definition_uuid;
+  Check(!c::NativeAgentConfigMatchesHeader(bad), "config under the policy's object refused");
+  bad = view; bad.header.kind = c::CatalogRecordKind::config_profile;
+  Check(!c::NativeAgentConfigMatchesHeader(bad), "config under another kind refused");
+  bad = view; bad.header.object_uuid.kind = p::UuidKind::row;
+  Check(!c::NativeAgentConfigMatchesHeader(bad), "config under a non-object identity refused");
+  c::CatalogTypedRecordView policy_view;
+  policy_view.header.kind = c::CatalogRecordKind::policy;
+  policy_view.header.object_uuid = {p::UuidKind::object, policy.definition_uuid};
+  policy_view.payload = policy_payload;
+  Check(c::NativeAgentRecordMatchesHeader(policy_view) && !c::NativeAgentConfigMatchesHeader(policy_view),
+        "dispatch by schema id: policy");
+  // Metadata: the subtype of the schema id.
+  c::CatalogMetadataVersionView m;
+  m.record = view;
+  m.object_subtype = S::agent_policy_config;
+  Check(c::NativeAgentRecordMatchesMetadata(m), "config record under agent_policy_config");
+  m.object_subtype = S::agent_policy;
+  Check(!c::NativeAgentRecordMatchesMetadata(m), "config record under agent_policy refused");
+  m.record = policy_view;
+  Check(c::NativeAgentRecordMatchesMetadata(m), "policy record under agent_policy");
+  m.object_subtype = S::agent_policy_config;
+  Check(!c::NativeAgentRecordMatchesMetadata(m), "policy record under agent_policy_config refused");
+  Check(c::IsKnownCatalogObjectSubtype(S::agent_policy_config) && c::CatalogObjectSubtypeIdentity(S::agent_policy_config) &&
+            uuid_text_of(*c::CatalogObjectSubtypeIdentity(S::agent_policy_config)) == "01a1d215-033b-71e3-b48b-d4bebeda5b3a",
+        "agent_policy_config is subtype 57 with its fixed identity");
+  Check(static_cast<unsigned>(S::agent_policy_config) == 57, "subtype code 57");
+}
 }  // namespace
 
 int main() {
@@ -1268,6 +1354,7 @@ int main() {
     EveryFamily();
     BuilderRows();
     PolicyAdapterRefusals();
+    Wiring();
   } catch (const std::exception& e) {
     std::cerr << "FAIL: " << e.what() << '\n';
     return 1;

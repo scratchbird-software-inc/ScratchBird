@@ -73,6 +73,7 @@ enum class CatalogObjectSubtype : scratchbird::core::platform::u16 {
   schema_public_compat = 54,  // 01a1cf35-db62-735e-aece-6088623fe49c
   schema_application = 55,  // 01a1cf35-db64-70ac-8250-cf649a9188ee
   schema_cluster = 56,  // 01a1cf35-db66-7e75-b406-b42faaee3617
+  agent_policy_config = 57,  // 01a1d215-033b-71e3-b48b-d4bebeda5b3a
 };
 
 struct CatalogKindIdentity {
@@ -135,7 +136,7 @@ inline constexpr std::array<CatalogKindIdentity, 50> kCatalogKindIdentities{{
     CatalogKindIdentity{CatalogRecordKind::metric_series, scratchbird::core::platform::Uuid{std::array<scratchbird::core::platform::byte, 16>{0x01,0xa1,0xcf,0x1f,0x40,0xb5,0x72,0xe5,0x87,0x82,0xc0,0x70,0x3a,0x4d,0xae,0xa5}}},
     CatalogKindIdentity{CatalogRecordKind::cluster_stub, scratchbird::core::platform::Uuid{std::array<scratchbird::core::platform::byte, 16>{0x01,0xa1,0xcf,0x1f,0x40,0xb6,0x7e,0x12,0x88,0xec,0x2d,0xba,0x92,0x77,0xbb,0x3a}}},
 }};
-inline constexpr std::array<CatalogSubtypeIdentity, 56> kCatalogSubtypeIdentities{{
+inline constexpr std::array<CatalogSubtypeIdentity, 57> kCatalogSubtypeIdentities{{
     CatalogSubtypeIdentity{CatalogObjectSubtype::agent_runtime_authority, scratchbird::core::platform::Uuid{std::array<scratchbird::core::platform::byte, 16>{0x01,0xa1,0xcf,0x1f,0x40,0xb7,0x7a,0x6a,0xbc,0x08,0xa6,0xcd,0xe6,0xb2,0xb2,0x30}}},
     CatalogSubtypeIdentity{CatalogObjectSubtype::application_context_namespace, scratchbird::core::platform::Uuid{std::array<scratchbird::core::platform::byte, 16>{0x01,0xa1,0xcf,0x1f,0x40,0xb8,0x70,0xf0,0x9d,0x23,0xe9,0xdb,0xf7,0x2e,0xd6,0x64}}},
     CatalogSubtypeIdentity{CatalogObjectSubtype::authorization_policy_body, scratchbird::core::platform::Uuid{std::array<scratchbird::core::platform::byte, 16>{0x01,0xa1,0xcf,0x1f,0x40,0xb9,0x7e,0x0f,0xb2,0xcf,0x92,0xc2,0x89,0x5b,0x03,0x10}}},
@@ -192,6 +193,7 @@ inline constexpr std::array<CatalogSubtypeIdentity, 56> kCatalogSubtypeIdentitie
     CatalogSubtypeIdentity{CatalogObjectSubtype::schema_public_compat, scratchbird::core::platform::Uuid{std::array<scratchbird::core::platform::byte, 16>{0x01,0xa1,0xcf,0x35,0xdb,0x62,0x73,0x5e,0xae,0xce,0x60,0x88,0x62,0x3f,0xe4,0x9c}}},
     CatalogSubtypeIdentity{CatalogObjectSubtype::schema_application, scratchbird::core::platform::Uuid{std::array<scratchbird::core::platform::byte, 16>{0x01,0xa1,0xcf,0x35,0xdb,0x64,0x70,0xac,0x82,0x50,0xcf,0x64,0x9a,0x91,0x88,0xee}}},
     CatalogSubtypeIdentity{CatalogObjectSubtype::schema_cluster, scratchbird::core::platform::Uuid{std::array<scratchbird::core::platform::byte, 16>{0x01,0xa1,0xcf,0x35,0xdb,0x66,0x7e,0x75,0xb4,0x06,0xb4,0x2f,0xaa,0xee,0x36,0x17}}},
+    CatalogSubtypeIdentity{CatalogObjectSubtype::agent_policy_config, scratchbird::core::platform::Uuid{std::array<scratchbird::core::platform::byte, 16>{0x01,0xa1,0xd2,0x15,0x03,0x3b,0x71,0xe3,0xb4,0x8b,0xd4,0xbe,0xbe,0xda,0x5b,0x3a}}},
 }};
 
 // Whether `subtype` is one of the subtypes above.

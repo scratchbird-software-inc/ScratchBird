@@ -11,6 +11,8 @@
 #include "datatype_descriptor.hpp"
 #include "native_database_create.hpp"
 #include "catalog_native_catalog_index.hpp"
+#include "catalog_native_agent_record.hpp"
+#include "agent_bootstrap_configuration.hpp"
 #include "catalog_name_record_codec.hpp"
 #include "catalog_schema_definition.hpp"
 #include "native_catalog_relation_lease_reader.hpp"
@@ -148,9 +150,41 @@ int main() {
       if(row.metadata.object_subtype==S::memory_configuration)return std::string("default_local_server_memory_cache_v1");
       if(row.metadata.object_subtype==S::bootstrap_policy_pack)return std::string("default-local-password");
       return std::nullopt;};
+    // 3c (SB_CATALOG_NATIVE_AGENT_RECORDS): an agent policy takes the
+    // builder's policy_name and a registration its profile_name as their
+    // reference names (they were named by UUID text). Independent values: the
+    // declarations' own text. A config record object is named by UUID text.
+    std::multiset<std::string> expected_policy_names,expected_registration_names,policy_names,registration_names;
+    for(const auto& declaration:scratchbird::core::agents::DefaultAgentBootstrapDeclarations()){
+      const bool policy=declaration.kind==c::AgentBootstrapDefinitionKind::policy;
+      const std::string key=policy?"policy_name=":"profile_name=";
+      const auto at=declaration.properties.find(key);
+      Check(at!=std::string::npos,"declaration carries its name text");
+      const auto value=declaration.properties.substr(at+key.size(),declaration.properties.find('\n',at)-at-key.size());
+      (policy?expected_policy_names:expected_registration_names).insert(value);
+    }
+    std::size_t agent_configs=0;
     for(const auto& [id,row]:definitions) {
       const auto kind=row->metadata.record.header.kind;
       const auto found=names.find(id);
+      using S=scratchbird::core::catalog::CatalogObjectSubtype;
+      if(row->metadata.object_subtype==S::agent_policy||row->metadata.object_subtype==S::agent_registration){
+        Check(found!=names.end()&&c::IsNativeAgentPayload(row->metadata.record.payload),"3c: a typed agent record, named");
+        (row->metadata.object_subtype==S::agent_policy?policy_names:registration_names).insert(found->second);
+        ++pack_named;continue;
+      }
+      if(row->metadata.object_subtype==S::agent_policy_config){
+        const auto head=c::DecodeNativeAgentConfigHead(row->metadata.record.payload);
+        const auto policy=definitions.find(head.ok()?head.record->definition_uuid:p::Uuid{});
+        Check(head.ok()&&policy!=definitions.end()&&policy->second->metadata.object_subtype==S::agent_policy&&
+              policy->first!=id&&c::DecodeNativeAgentPolicy(policy->second->metadata.record.payload).record->policy_family==head.record->family,
+              "3c: a config record configures a policy object of its family");
+        // Owner Q75 = 1: a config record is named "<its policy's name> config".
+        const auto policy_name=policy!=definitions.end()?names.find(policy->first):names.end();
+        Check(found!=names.end()&&policy_name!=names.end()&&found->second==policy_name->second+" config",
+              "3c: a config record is named after its policy");
+        ++agent_configs;continue;
+      }
       if(row->metadata.object_subtype==scratchbird::core::catalog::CatalogObjectSubtype::node_construction_intent){++unnamed;Check(found==names.end(),"the construction intent is unnamed");continue;}
       Check(found!=names.end(),"every other definition is named");
       const bool by_name=kind==c::CatalogRecordKind::user_account||kind==c::CatalogRecordKind::role_account||
@@ -161,7 +195,9 @@ int main() {
       else if(const auto expected=pack_name(*row)){++pack_named;Check(found->second==*expected,"3b: an object the pack names takes that name");}
       else{++by_uuid;Check(found->second==u::UuidToString(id),"any other object is named by its UUID text");}
     }
-    Check(unnamed==1&&addressed>0&&by_uuid>0&&pack_named==3,"one construction intent, named, pack-named (3b) and UUID-named objects");
+    Check(policy_names==expected_policy_names&&registration_names==expected_registration_names&&agent_configs==34,
+          "3c: 34 policies by policy_name, 32 registrations by profile_name, 34 config records");
+    Check(unnamed==1&&addressed>0&&by_uuid>0&&pack_named==3+66,"one construction intent, named, pack-named (3b; 3c: +66 agent rows) and UUID-named objects");
 
     // The database, its primary filespace and the schema tree.
     std::multiset<std::string> schemas;std::size_t databases=0,filespaces=0,cluster_typed=0;

@@ -718,6 +718,8 @@ std::vector<u64> ExpectInsert(const Db& b, Session& s, const std::string& path, 
 std::vector<u64> ExpectInsertOrGrow(const Db& b, Session& s, const std::string& path, db::CatalogInsertRequest r,
                                     std::string_view label, unsigned seed) {
   if (InsertOracle(b, ReadAll(path), r)) return ExpectInsert(b, s, path, r, label);
+  // 3c: say which way it went, so a run shows each site that grew.
+  std::cout << "insert or grow page_size=" << b.size << " grew: " << label << '\n';
   for (unsigned i = 0; i < 2; ++i)
     r.new_pages.push_back({V7(kT + 760000 + 4 * seed + i, 0xe70000 + seed), V7(kT + 760000 + 4 * seed + i, 0xe80000 + seed)});
   return ExpectGrowingInsert(b, s.sink(), path, r, std::string(label) + ", on a new page");

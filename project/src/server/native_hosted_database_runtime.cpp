@@ -505,20 +505,27 @@ NativeHostedRuntimeError NativeHostedDatabaseRuntime::ResolveConfiguredStartupVe
   if(read.mutating_||(read.owner_&&read.owner_->entering_))return E::busy;
   if(!read.ok()||!read.owner_)return E::closed;
   if(!read.agent_policies_.ok())return E::agent_policy_failure;
-  const c::CatalogAgentBootstrapDefinition* selected=nullptr;
+  // SB_CATALOG_NATIVE_AGENT_RECORDS (3c-3): the coordinator is selected by its
+  // constant; its selection and verification class come from its typed policy
+  // and config records.
+  const NativeStartupAgentDefinition* selected=nullptr;
   for(const auto& entry:read.agents_.entries()){
-    const auto& definition=entry.definition;
-    if(definition.kind!=c::AgentBootstrapDefinitionKind::policy||definition.agent_type!="agent_coordinator")continue;
+    if(!entry.is_policy()||entry.agent_type!=c::CatalogAgentType::agent_coordinator)continue;
     if(selected)return E::agent_policy_failure;
-    selected=&definition;
+    selected=&entry;
   }
-  if(!selected||!selected->startup_verification)return E::verification_policy_failure;
-  const auto& v=*selected->startup_verification;
+  if(!selected)return E::verification_policy_failure;
+  const auto policy=selected->Policy();
+  const auto config=selected->Config<c::NativeAgentConfig_agent_coordinator_policy>();
+  if(!policy.ok()||!config.ok())return E::agent_policy_failure;
+  if(!policy.record->startup_verification)return E::verification_policy_failure;
+  const auto& v=*policy.record->startup_verification;
   ia::NativeVerificationPolicyRequest request{v.repair_policy_uuid,v.quarantine_policy_uuid,v.salvage_policy_uuid,v.evidence_policy_uuid};
   request.verification_levels=static_cast<core::platform::u32>(v.verification_levels);
-  const auto klass=native_agent_configuration_detail::Property(selected->properties,"config.startup_verification_class");
-  if(klass=="startup_full_verify")request.verification_class=ia::NativeVerificationClass::startup_full;
-  else if(klass=="startup_light_verify")request.verification_class=ia::NativeVerificationClass::startup_light;
+  using Class=c::NativeAgentConfigEnum_agent_coordinator_policy_startup_verification_class;
+  const auto klass=config.record->startup_verification_class;
+  if(klass==Class::startup_full_verify)request.verification_class=ia::NativeVerificationClass::startup_full;
+  else if(klass==Class::startup_light_verify)request.verification_class=ia::NativeVerificationClass::startup_light;
   else return E::agent_policy_failure;
   request.authority_class=ia::NativeVerificationAuthority::startup_recovery;
   return ResolveStartupVerificationPolicies(read,request);
@@ -627,8 +634,11 @@ engine::internal_api::NativeLocalServiceSessionResult NativeHostedDatabaseRuntim
   api::NativeLocalServiceSessionResult result;
   std::optional<api::NativeLocalServiceSession> issued;
   core::agents::AgentStartupClockPolicySelection clock;
-  for(const auto& entry:read.agents_.entries())if(entry.definition.kind==core::catalog::AgentBootstrapDefinitionKind::policy&&
-      entry.definition.agent_type=="agent_coordinator")clock=core::agents::SelectAgentStartupClockPolicy(entry.definition,entry.version_uuid);
+  for(const auto& entry:read.agents_.entries())if(entry.is_policy()&&entry.agent_type==core::catalog::CatalogAgentType::agent_coordinator){
+    const auto policy=entry.Policy();
+    const auto config=entry.Config<core::catalog::NativeAgentConfig_agent_coordinator_policy>();
+    if(policy.ok()&&config.ok())clock=core::agents::SelectAgentStartupClockPolicy(*policy.record,*config.record,entry.version_uuid);
+  }
   if(!clock.ok())return {E::policy_required};
   const auto crypto=self.database_crypto_.WithMemoryScope(self.crypto_binding_,[&]{
     result=api::NativeLocalServiceSession::Attach(*read.authentication_,*read.catalog_capture_.source(),clock,

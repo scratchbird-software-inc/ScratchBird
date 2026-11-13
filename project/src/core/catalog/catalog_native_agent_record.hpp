@@ -19,10 +19,20 @@
 // duplicates, each a listed nonzero code. Enumerations must be a listed
 // nonzero value; a wire value wider than u16 is refused, never truncated.
 //
-// Codec only (commit 3c-2): nothing writes or reads these yet; the text codec
-// (catalog_agent_bootstrap.hpp) is unchanged. The *FromTags functions are the
-// boundary adapters from the text the current code writes
-// (agent_bootstrap_configuration.hpp); engine code compares the constants.
+// 3c-3 wiring: native create writes these (never the text codec, which stays
+// for legacy-created databases only), and the native startup readers decode
+// them. The *FromTags functions are the boundary adapters from the text the
+// builder writes (agent_bootstrap_configuration.hpp); engine code compares
+// the constants.
+//
+// Catalog placement (3c-3): each record is its own catalog object in the
+// configuration relation (MGA: one object, one row version). Policy: kind
+// policy, subtype agent_policy, header object = definition_uuid. Registration:
+// kind config_profile, subtype agent_registration, header object =
+// definition_uuid. Config: kind policy, subtype agent_policy_config, its own
+// object identity in the header (never the policy's), and its definition_uuid
+// field names the policy object it configures, as a policy descriptor names
+// its body.
 #include "catalog_agent_bootstrap.hpp"
 #include "catalog_agent_constants.hpp"
 #include "catalog_record_codec.hpp"
@@ -35,6 +45,7 @@
 #include <span>
 #include <string_view>
 #include <type_traits>
+#include <vector>
 
 namespace scratchbird::core::catalog {
 inline constexpr u32 kNativeAgentPolicySchemaId = 65640;
@@ -153,13 +164,32 @@ NativeAgentDecodeResult<NativeAgentRegistrationRecord> DecodeNativeAgentRegistra
 
 // Header binding, as CatalogAgentBootstrapMatchesHeader: a policy record under
 // header kind policy, a registration under config_profile; header object (kind
-// object) = definition_uuid. Config records have no header binding yet (their
-// catalog record kind is a wiring decision).
+// object) = definition_uuid. A config record: header kind policy, header
+// object (kind object) an engine identity that is not its definition_uuid.
 bool NativeAgentPolicyMatchesHeader(const CatalogTypedRecordView&);
 bool NativeAgentRegistrationMatchesHeader(const CatalogTypedRecordView&);
+bool NativeAgentConfigMatchesHeader(const CatalogTypedRecordView&);
+// Any record under 65640..65677: the header binding above plus the subtype of
+// its schema id (agent_policy, agent_registration, agent_policy_config).
+bool NativeAgentRecordMatchesHeader(const CatalogTypedRecordView&);
+bool NativeAgentRecordMatchesMetadata(const CatalogMetadataVersionView&);
 // True when the payload is an SBCV block under one of 65640..65677. Selection
 // only; the payload is not validated.
 bool IsNativeAgentPayload(std::string_view payload) noexcept;
+// The schema id of an SBCV payload (0 when not SBCV), and the family of a
+// config schema id (none otherwise). Selection only; not validated.
+u32 NativeAgentPayloadSchemaId(std::string_view payload) noexcept;
+CatalogAgentPolicyFamily NativeAgentConfigFamilyForSchemaId(u32 schema_id) noexcept;
+// A complete typed decode of any family's config record, keeping only its
+// head (allocation-free). error none and a head when the payload is a valid
+// config record of a listed family.
+struct NativeAgentConfigHead {
+  CatalogAgentPolicyFamily family = CatalogAgentPolicyFamily::none;
+  Uuid definition_uuid;
+  TypedUuid origin_transaction_uuid;
+  u64 origin_local_transaction_id = 0;
+};
+NativeAgentDecodeResult<NativeAgentConfigHead> DecodeNativeAgentConfigHead(std::string_view payload);
 
 // ---- boundary adapters from the current text (key=value properties) ----
 struct NativeAgentPropertyTag {
@@ -1435,4 +1465,16 @@ template <class R> NativeAgentTagResult<R> NativeAgentConfigFromTags(std::span<c
 template <class R>
 NativeAgentTagResult<R> NativeAgentConfigFromTags(std::span<const NativeAgentPropertyTag>,
                                                   const NativeAgentPolicyRecord* policy);
+// The config record of `policy`'s family from its config.* text (keys without
+// the prefix), at the pack boundary: the policy record supplies the family,
+// the definition_uuid and the origin. bad_key names the refused key; error is
+// invalid_value then, or the encoder's error.
+struct NativeAgentConfigEncodeResult {
+  CatalogValueError error = CatalogValueError::invalid_value;
+  std::vector<byte> bytes;
+  std::string_view bad_key;
+  bool ok() const noexcept { return error == CatalogValueError::none; }
+};
+NativeAgentConfigEncodeResult EncodeNativeAgentConfigFromTags(std::span<const NativeAgentPropertyTag> config,
+                                                              const NativeAgentPolicyRecord& policy);
 }  // namespace scratchbird::core::catalog

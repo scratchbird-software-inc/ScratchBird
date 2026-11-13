@@ -18,6 +18,7 @@
 #include "catalog_builtin_type_domain.hpp"
 #include "catalog_management_descriptor.hpp"
 #include "catalog_agent_bootstrap.hpp"
+#include "catalog_native_agent_record.hpp"
 #include "catalog_crypto_inline_private_key_policy.hpp"
 #include "catalog_database_record_codec.hpp"
 
@@ -87,6 +88,27 @@ template<class Reserve> void ReserveNativeCreationCatalogReferences(
       const auto& e=*event.record;
       for(const auto& id:{e.database_uuid,e.engine_uuid,e.operation_uuid,e.filespace_uuid,e.origin_transaction_uuid.value})reserve(id);
       if(e.actor_uuid)reserve(e.actor_uuid->value);
+    }
+  }
+  // SB_CATALOG_NATIVE_AGENT_RECORDS (3c-3): native create writes the typed
+  // agent records; their identities are reserved by schema id. The legacy text
+  // record (65824) below is kept as is.
+  if(core::catalog::IsNativeAgentPayload(m.record.payload)){
+    const auto schema=core::catalog::NativeAgentPayloadSchemaId(m.record.payload);
+    if(schema==core::catalog::kNativeAgentPolicySchemaId){
+      const auto decoded=core::catalog::DecodeNativeAgentPolicy(m.record.payload);
+      if(decoded.ok()){const auto& p=*decoded.record;
+        for(const auto& id:{p.definition_uuid,p.database_uuid,p.policy_uuid,p.origin_transaction_uuid.value})reserve(id);
+        if(p.startup_verification){const auto& v=*p.startup_verification;
+          for(const auto& id:{v.repair_policy_uuid,v.quarantine_policy_uuid,v.salvage_policy_uuid,v.evidence_policy_uuid})reserve(id);}
+      }
+    }else if(schema==core::catalog::kNativeAgentRegistrationSchemaId){
+      const auto decoded=core::catalog::DecodeNativeAgentRegistration(m.record.payload);
+      if(decoded.ok()){const auto& p=*decoded.record;
+        for(const auto& id:{p.definition_uuid,p.database_uuid,p.policy_uuid,p.origin_transaction_uuid.value})reserve(id);}
+    }else{
+      const auto decoded=core::catalog::DecodeNativeAgentConfigHead(m.record.payload);
+      if(decoded.ok())for(const auto& id:{decoded.record->definition_uuid,decoded.record->origin_transaction_uuid.value})reserve(id);
     }
   }
   if(core::catalog::IsCatalogAgentBootstrapPayload(m.record.payload)){

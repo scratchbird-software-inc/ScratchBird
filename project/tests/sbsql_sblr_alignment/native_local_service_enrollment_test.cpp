@@ -11,6 +11,7 @@
 #include "../support/native_local_service_creation_fixture.hpp"
 #include "../../src/server/native_hosted_database_runtime.hpp"
 #include "../../src/core/agents/agent_bootstrap_configuration.hpp"
+#include "../../src/core/agents/agent_policy_schema.hpp"
 #include "engine/internal_api/catalog/native_catalog_name_verification.hpp"
 #include "engine/internal_api/catalog/native_catalog_namespace_verification.hpp"
 #include "engine/internal_api/catalog/native_catalog_index_verification.hpp"
@@ -195,18 +196,21 @@ runtime_security::NativeCatalogIndexVerificationError ExpectedIndexError(unsigne
   }
 }
 
+// 3c (typed agent records): variants 2, 3, 4, 5, 13, 16, 18, 23, 24, 27, 28
+// and 29 had text values with no typed form; their forged records are refused
+// by the catalog write gate before any file exists (AddAgentConfigurationFixture
+// checks it, and that the reader's typed decoder refuses them). Variant 1 is a
+// zero run interval: was invalid_property ("-1"), now schema_refused.
 PolicyError ExpectedPolicyError(unsigned variant) {
   switch(variant){
-    case 1:case 2:case 18:return PolicyError::invalid_property;
-    case 3:case 4:case 5:case 23:case 24:case 27:case 28:case 29:return PolicyError::schema_refused;
-    case 6:case 13:case 14:case 19:case 20:case 21:return PolicyError::lifecycle_invariant;
+    case 1:return PolicyError::schema_refused;
+    case 6:case 14:case 19:case 20:case 21:return PolicyError::lifecycle_invariant;
     case 7:return PolicyError::descriptor_mismatch;
     case 8:return PolicyError::generation_mismatch;
     case 9:return PolicyError::metric_contract_mismatch;
     case 10:return PolicyError::dependency_missing;
     case 11:case 12:return PolicyError::dependency_cycle;
     case 15:return PolicyError::cluster_admission_required;
-    case 16:return PolicyError::unknown_agent;
     default:return PolicyError::none;
   }
 }
@@ -284,10 +288,11 @@ void ChangeMemoryEnvelopeFixture(db::NativeCreationCatalogSeed& seed,unsigned va
 
 // Test-only byte fingerprint, with no allocation while selected guards are
 // held. Exercise the actual borrowed payloads again after handoff and move.
+// 3c: the borrowed typed record bytes (policy or registration, and config).
 std::uint64_t AgentPayloadFingerprint(const server::NativeLocalServiceAgentConfigurationResult& selected) {
   std::uint64_t value=14695981039346656037ULL;
   for(const auto& entry:selected.entries())
-    for(const auto text:{entry.definition.agent_type,entry.definition.properties}){
+    for(const auto text:{entry.payload,entry.config_payload}){
       for(const unsigned char byte:text){value^=byte;value*=1099511628211ULL;}
       value^=0xff;value*=1099511628211ULL;
     }
@@ -530,141 +535,291 @@ void AddDatabaseDefinitionFixture(db::NativeCreationCatalogSeed& seed,
   }
 }
 
-// Actual named native catalog rows, using the same declarations as embedded
-// CREATE. Identities are explicit fixture inputs, never startup authority.
+// SB_CATALOG_NATIVE_AGENT_RECORDS (3c): forged SBCV bytes for refusals a typed
+// record cannot express (a malformed or out-of-range wire value). Parses an
+// encoded block into its fields, lets the caller edit them, and rebuilds the
+// block with the independent fixture writer (bootstrap_policy::Golden).
+struct ForgedField {unsigned tag=0,type=0;std::string value;};
+std::string Forge(std::string_view bytes,const std::function<void(std::vector<ForgedField>&)>& edit) {
+  namespace bp=scratchbird::tests::bootstrap_policy;
+  const auto u=[&](std::size_t at,unsigned n){platform::u64 v=0;for(unsigned i=0;i<n;++i)v|=platform::u64(static_cast<unsigned char>(bytes[at+i]))<<(8*i);return v;};
+  Check(bytes.size()>=24&&bytes.substr(0,4)=="SBCV","forge input is an SBCV block");
+  std::vector<ForgedField> fields;
+  for(std::size_t at=24;at<bytes.size();){
+    const auto size=u(at+4,4);
+    fields.push_back({static_cast<unsigned>(u(at,2)),static_cast<unsigned>(u(at+2,1)),std::string(bytes.substr(at+8,size))});
+    at+=8+size;
+  }
+  edit(fields);
+  bp::Golden g(static_cast<unsigned>(u(16,4)),static_cast<unsigned>(u(20,2)));
+  for(const auto& f:fields)g.Field(f.tag,f.type,f.value);
+  return g.Finish();
+}
+ForgedField& ForgedTag(std::vector<ForgedField>& fields,unsigned tag) {
+  const auto found=std::find_if(fields.begin(),fields.end(),[&](const auto& f){return f.tag==tag;});
+  Check(found!=fields.end(),"forged field exists");return *found;
+}
+void ForgeOmit(std::vector<ForgedField>& fields,unsigned tag){std::erase_if(fields,[&](const auto& f){return f.tag==tag;});}
+std::string bp_number(platform::u64 n){return scratchbird::tests::bootstrap_policy::Number(n);}
+// Whether the typed decoder for the payload's schema id admits it.
+bool TypedAgentDecodes(std::string_view payload) {
+  const auto schema=catalog::NativeAgentPayloadSchemaId(payload);
+  if(schema==catalog::kNativeAgentPolicySchemaId)return catalog::DecodeNativeAgentPolicy(payload).ok();
+  if(schema==catalog::kNativeAgentRegistrationSchemaId)return catalog::DecodeNativeAgentRegistration(payload).ok();
+  return catalog::DecodeNativeAgentConfigHead(payload).ok();
+}
+
+// Actual named native catalog rows, built as native create builds them
+// (SB_CATALOG_NATIVE_AGENT_RECORDS, 3c): the same declarations, mapped once by
+// the boundary adapters to typed policy, config and registration records.
+// Identities are explicit fixture inputs, never startup authority.
+// write_gated: the variant's forged record was refused by the catalog write
+// gate (record codec dispatch), so no file is written for it (3c).
 AgentError AddAgentConfigurationFixture(db::NativeCreationCatalogSeed& seed,
-    const enrollment::NativeLocalServiceCreationItem& prototype,unsigned variant,unsigned policy_variant=0) {
+    const enrollment::NativeLocalServiceCreationItem& prototype,unsigned variant,unsigned policy_variant,bool& write_gated) {
+  write_gated=false;
   namespace agents=scratchbird::core::agents;
   using K=catalog::AgentBootstrapDefinitionKind;
+  using T=catalog::CatalogAgentType;
+  using F=catalog::CatalogAgentPolicyFamily;
   const auto declarations=agents::DefaultAgentBootstrapDeclarations();
   Check(declarations.size()==66,"complete default declarations: 32 agents and 34 policies");
   if(variant==1)return AgentError::absent;
   std::vector<enrollment::NativeLocalServiceCreationItem> items;
-  items.reserve(declarations.size());
+  items.reserve(2*declarations.size()+2);
   AgentError expected=AgentError::none;
-  const auto change=[](std::string& body,std::string_view key,std::string_view value){
-    const auto prefix=std::string(key)+"=";const auto at=body.find(prefix);
-    Check(at!=std::string::npos&&(at==0||body[at-1]=='\n'),"explicit agent property exists in fixture");
-    body.replace(at+prefix.size(),body.find('\n',at)-at-prefix.size(),value);
-  };
-  for(unsigned n=0;n<declarations.size();++n){
-    const auto& declaration=declarations[n];
-    if(variant==2&&declaration.agent_type=="startup_agent"){
-      expected=AgentError::missing_lifecycle_agent;continue;
-    }
-    const auto object=security_fixture::Id(400000+n);
-    auto agent_type=declaration.agent_type,properties=declaration.properties;
-    catalog::CatalogAgentBootstrapDefinition definition{object,Id(1),
-        security_fixture::Id(400000+declaration.primary_policy_index),declaration.kind,
-        agent_type,properties,security_tx,1,1};
-    if(declaration.agent_type=="startup_agent"&&declaration.kind==K::registration){
-      if(variant==3){definition.database_uuid=Id(249);expected=AgentError::database_mismatch;}
-      if(variant==4){definition.policy_uuid=security_fixture::Id(400000);expected=AgentError::policy_mismatch;}
-      if(variant==5){properties+="starts_during_create=0\n";expected=AgentError::invalid_properties;}
-      if(variant==6){change(properties,"state","disabled");expected=AgentError::policy_mismatch;}
-      if(variant==7){definition.origin_transaction_uuid.value=Id(248);expected=AgentError::origin_not_committed;}
-      if(variant==8){definition.policy_uuid=Id(247);expected=AgentError::policy_missing;}
-      if(variant==9){change(properties,"launch_trigger","server_open");expected=AgentError::invalid_lifecycle_agent;}
-      if(variant==10){change(properties,"managed_by","ipc_server");expected=AgentError::invalid_properties;}
-      if(variant==11){
-        agent_type="shutdown_agent";change(properties,"agent_type",agent_type);
-        expected=AgentError::duplicate_registration;
-      }
-      if(variant==12){change(properties,"policy_families","agent_startup_policy,absent_family");expected=AgentError::policy_missing;}
-      if(variant==13){change(properties,"policy_families","agent_startup_policy,agent_startup_policy");expected=AgentError::policy_mismatch;}
-    }
-    if(variant==14&&declaration.agent_type=="startup_agent"&&declaration.kind==K::policy){
-      agent_type="shutdown_agent";change(properties,"agent_type",agent_type);
-      change(properties,"policy_family","agent_shutdown_policy");expected=AgentError::duplicate_policy_family;
-    }
-    if(declaration.kind==K::policy&&declaration.agent_type=="memory_governor"){
-      if(policy_variant==1)change(properties,"run_interval_microseconds","-1");
-      if(policy_variant==2)change(properties,"run_interval_microseconds","18446744073709551616");
-      if(policy_variant==7)change(properties,"layer","L5");
-      if(policy_variant==8)change(properties,"policy_generation","2");
-      if(policy_variant==9)change(properties,"required_metric_families","");
-      if(policy_variant==10)change(properties,"policy_dependencies","missing_policy");
-      if(policy_variant==11)change(properties,"policy_dependencies","memory_governor_policy");
-      if(policy_variant==12)change(properties,"policy_dependencies","filespace_capacity_policy");
-      if(policy_variant==17)change(properties,"run_interval_microseconds","2100000");
-      if(policy_variant==18)change(properties,"action_mode","accept_any");
-    }
-    if(policy_variant==12&&declaration.kind==K::policy&&declaration.agent_type=="filespace_capacity_manager"&&
-        properties.find("policy_family=filespace_capacity_policy\n")!=std::string::npos)
-      change(properties,"policy_dependencies","memory_governor_policy");
-    if(declaration.kind==K::policy&&declaration.agent_type=="startup_agent"){
-      if(policy_variant==3){const auto at=properties.find("config.readiness_timeout_microseconds=");
-        Check(at!=std::string::npos,"required startup schema field exists");properties.erase(at,properties.find('\n',at)-at+1);}
-      if(policy_variant==4)properties+="config.forged_gate=true\n";
-      if(policy_variant==5)change(properties,"config.engine_verification_required","maybe");
-      if(policy_variant==6)change(properties,"config.engine_verification_required","false");
-      if(policy_variant==13)change(properties,"config.dependency_order","memory_governor,memory_governor");
-      if(policy_variant==14)change(properties,"config.dependency_order","cluster_autoscale_manager");
-      if(policy_variant==21)change(properties,"config.configured_components_only","false");
-      if(policy_variant==22){change(properties,"require_manual_approval","1");change(properties,"require_dry_run_before_live","1");}
-    }
-    if(policy_variant==19&&declaration.kind==K::policy&&declaration.agent_type=="agent_coordinator")
-      change(properties,"config.worker_launch_forbidden","false");
-    if(declaration.kind==K::policy&&declaration.agent_type=="agent_coordinator"){
-      if(policy_variant==23)change(properties,"config.startup_verification_class","skip");
-      if(policy_variant==24){const auto at=properties.find("config.startup_verification_class=");
-        Check(at!=std::string::npos,"explicit selected startup verification class exists");
-        properties.erase(at,properties.find('\n',at)-at+1);}
-      if(policy_variant==25)change(properties,"config.startup_verification_class","startup_light_verify");
-      if(policy_variant==27)change(properties,"config.startup_uuid_same_ms_wait_timeout_ms","0");
-      if(policy_variant==28){const auto at=properties.find("config.startup_uuid_same_ms_wait_timeout_ms=");
-        Check(at!=std::string::npos,"persisted startup clock policy is present");properties.erase(at,properties.find('\n',at)-at+1);}
-      if(policy_variant==29)change(properties,"config.startup_clock_max_backward_ns","18446744073709551616");
-    }
-    if(policy_variant==20&&declaration.kind==K::policy&&declaration.agent_type=="shutdown_agent")
-      change(properties,"config.cooperative_cancellation_only","false");
-    if(policy_variant==15&&declaration.agent_type=="cluster_autoscale_manager"){
-      if(declaration.kind==K::registration)change(properties,"state","registered");
-      else {change(properties,"enabled","1");change(properties,"activation","recommend_only");change(properties,"action_mode","request_action");}
-    }
-    if(policy_variant==16&&declaration.agent_type=="memory_governor"){
-      agent_type="future_memory";change(properties,"agent_type",agent_type);
-    }
-    definition.agent_type=agent_type;definition.properties=properties;
-    if(definition.kind==K::policy&&definition.agent_type=="agent_coordinator"&&policy_variant!=26)
-      definition.startup_verification=catalog::CatalogAgentStartupVerificationSelection{
-          security_fixture::Id(92000),security_fixture::Id(92001),security_fixture::Id(92002),security_fixture::Id(92003),3};
-    const auto encoded=catalog::EncodeCatalogAgentBootstrapDefinition(definition);
-    Check(encoded.ok(),"agent refusal fixtures remain legal typed native frames");
+  // 3c: variants whose old text mutation has no typed form now forge the
+  // record bytes; the typed codec refuses them at selection.
+  const auto moved=[&]{expected=AgentError::invalid_definition;};
+  const auto add=[&](const platform::Uuid& object,unsigned slot,catalog::CatalogRecordKind kind,
+      catalog::CatalogObjectSubtype subtype,std::string payload){
+    const auto n=static_cast<unsigned>(items.size());
     auto& item=items.emplace_back(prototype);auto& m=item.definition;
     m.record.header.object_uuid={platform::UuidKind::object,object};
-    m.record.header.row_uuid=enrollment::Typed(platform::UuidKind::row,500000+3*n);
-    m.record.header.kind=declaration.kind==K::policy?catalog::CatalogRecordKind::policy:catalog::CatalogRecordKind::config_profile;
-    m.record.payload.assign(encoded.bytes.begin(),encoded.bytes.end());
-    m.object_subtype=declaration.kind==K::policy?scratchbird::core::catalog::CatalogObjectSubtype::agent_policy:scratchbird::core::catalog::CatalogObjectSubtype::agent_registration;
-    m.default_name_uuid=enrollment::Typed(platform::UuidKind::object,600000+2*n);
-    m.name_vector_uuid=enrollment::Typed(platform::UuidKind::object,600001+2*n);
+    m.record.header.row_uuid=enrollment::Typed(platform::UuidKind::row,500000+3*slot);
+    m.record.header.kind=kind;
+    m.record.payload=std::move(payload);
+    m.object_subtype=subtype;
+    m.default_name_uuid=enrollment::Typed(platform::UuidKind::object,600000+2*slot);
+    m.name_vector_uuid=enrollment::Typed(platform::UuidKind::object,600001+2*slot);
     item.vector_metadata=m;item.vector_metadata.record.payload.clear();
     item.vector_metadata.record.header.kind=catalog::CatalogRecordKind::localized_name;
     item.vector_metadata.record.header.object_uuid=m.name_vector_uuid;
-    item.vector_metadata.record.header.row_uuid=enrollment::Typed(platform::UuidKind::row,500001+3*n);
+    item.vector_metadata.record.header.row_uuid=enrollment::Typed(platform::UuidKind::row,500001+3*slot);
     item.vector_metadata.record.header.parent_uuid=m.record.header.object_uuid;
     item.vector_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_vector;
     item.vector.name_vector_uuid=m.name_vector_uuid;item.vector.object_uuid=m.record.header.object_uuid;
     item.vector.object_kind=m.record.header.kind;
     item.vector.default_name_entry_uuid=m.default_name_uuid;
     item.entry_metadata=item.vector_metadata;item.entry_metadata.record.header.object_uuid=m.default_name_uuid;
-    item.entry_metadata.record.header.row_uuid=enrollment::Typed(platform::UuidKind::row,500002+3*n);
+    item.entry_metadata.record.header.row_uuid=enrollment::Typed(platform::UuidKind::row,500002+3*slot);
     item.entry_metadata.record.header.parent_uuid=m.name_vector_uuid;item.entry_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_entry;
     item.entry_metadata.resource_epoch=1;
     item.entry.name_entry_uuid=m.default_name_uuid;item.entry.name_vector_uuid=m.name_vector_uuid;
     item.entry.object_uuid=m.record.header.object_uuid;item.entry.object_kind=item.vector.object_kind;
     item.entry.raw_name_text=item.entry.display_name="native_agent_alias_"+std::to_string(n);
     item.entry.normalized_lookup_key.assign(item.entry.raw_name_text.begin(),item.entry.raw_name_text.end());
+  };
+  const auto bytes=[](const auto& encoded){Check(encoded.ok(),"agent fixture records remain legal typed native frames");
+    return std::string(encoded.bytes.begin(),encoded.bytes.end());};
+  // Forged items and their valid payloads.
+  std::vector<std::pair<std::size_t,std::string>> forged;
+  const auto add_forged=[&](const platform::Uuid& object,unsigned slot,catalog::CatalogRecordKind kind,
+      catalog::CatalogObjectSubtype subtype,const std::string& valid,const std::function<void(std::vector<ForgedField>&)>& edit){
+    if(!edit){add(object,slot,kind,subtype,valid);return;}
+    auto bad=Forge(valid,edit);
+    Check(TypedAgentDecodes(valid)&&!TypedAgentDecodes(bad),"the reader's typed decoder refuses the forged record");
+    forged.emplace_back(items.size(),valid);
+    add(object,slot,kind,subtype,std::move(bad));
+  };
+  for(unsigned n=0;n<declarations.size();++n){
+    const auto& declaration=declarations[n];
+    if(variant==2&&declaration.agent_type=="startup_agent"){
+      expected=AgentError::missing_lifecycle_agent;continue;
+    }
+    const auto object=security_fixture::Id(400000+n),config_object=security_fixture::Id(410000+n);
+    // The builder's key=value text, once, at the boundary (as native create).
+    std::vector<catalog::NativeAgentPropertyTag> top,config;
+    for(std::string_view body=declaration.properties;!body.empty();){
+      const auto end=body.find('\n');const auto line=body.substr(0,end);const auto equal=line.find('=');
+      const auto key=line.substr(0,equal),value=line.substr(equal+1);
+      if(key.starts_with("config."))config.push_back({key.substr(7),value});else top.push_back({key,value});
+      body.remove_prefix(end+1);
+    }
+    const auto type=*catalog::CatalogAgentTypeForTag(declaration.agent_type);
+    if(declaration.kind==K::registration){
+      const auto adapted=catalog::NativeAgentRegistrationFromTags(top);
+      Check(adapted.ok(),"registration adapts");
+      auto r=*adapted.record;
+      r.definition_uuid=object;r.database_uuid=Id(1);r.policy_uuid=security_fixture::Id(400000+declaration.primary_policy_index);
+      r.origin_transaction_uuid=security_tx;r.origin_local_transaction_id=1;r.generation=1;
+      bool forge_families=false;
+      if(type==T::startup_agent){
+        if(variant==3){r.database_uuid=Id(249);expected=AgentError::database_mismatch;}
+        if(variant==4){r.policy_uuid=security_fixture::Id(400000);expected=AgentError::policy_mismatch;}
+        // 3c: was a repeated starts_during_create=0 line (no typed form); now
+        // the typed flag set, refused the same way.
+        if(variant==5){r.starts_during_create=true;expected=AgentError::invalid_properties;}
+        if(variant==6){r.state=catalog::CatalogAgentRegistrationState::disabled;expected=AgentError::policy_mismatch;}
+        if(variant==7){r.origin_transaction_uuid.value=Id(248);expected=AgentError::origin_not_committed;}
+        if(variant==8){r.policy_uuid=Id(247);expected=AgentError::policy_missing;}
+        if(variant==9){r.launch_trigger=catalog::CatalogAgentLaunchTrigger::server_open;expected=AgentError::invalid_lifecycle_agent;}
+        if(variant==10){r.managed_by=catalog::CatalogAgentManagedBy::ipc_server;expected=AgentError::invalid_properties;}
+        if(variant==11){r.agent_type=T::shutdown_agent;expected=AgentError::duplicate_registration;}
+        // 3c: was "agent_startup_policy,absent_family"; a family with no policy row.
+        if(variant==12){r.policy_families.push(F::coordinator_policy);expected=AgentError::policy_missing;}
+        // 3c: was a repeated family (policy_mismatch); the codec refuses a
+        // repeated code, so the forged list is refused at selection.
+        if(variant==13){forge_families=true;moved();}
+      }
+      if(policy_variant==15&&type==T::cluster_autoscale_manager)r.state=catalog::CatalogAgentRegistrationState::registered;
+      const auto payload=bytes(catalog::EncodeNativeAgentRegistration(r));
+      std::function<void(std::vector<ForgedField>&)> edit;
+      if(forge_families)edit=[](auto& f){
+        const auto code=static_cast<char>(static_cast<unsigned>(F::agent_startup_policy));
+        ForgedTag(f,8).value=std::string{code,0,code,0};};
+      // 3c (was policy_variant 16, agent_type "future_memory"): an unlisted agent type code.
+      if(policy_variant==16&&type==T::memory_governor){edit=[](auto& f){ForgedTag(f,7).value=bp_number(33);};moved();}
+      add_forged(object,n,catalog::CatalogRecordKind::config_profile,catalog::CatalogObjectSubtype::agent_registration,payload,edit);
+      continue;
+    }
+    const auto adapted=catalog::NativeAgentPolicyFromTags(top);
+    Check(adapted.ok(),"policy adapts");
+    auto r=*adapted.record;
+    r.definition_uuid=r.policy_uuid=object;r.database_uuid=Id(1);
+    r.origin_transaction_uuid=security_tx;r.origin_local_transaction_id=1;r.generation=1;
+    if(r.agent_type==T::agent_coordinator&&policy_variant!=26)
+      r.startup_verification=catalog::CatalogAgentStartupVerificationSelection{
+          security_fixture::Id(92000),security_fixture::Id(92001),security_fixture::Id(92002),security_fixture::Id(92003),3};
+    const auto family=r.policy_family;
+    if(variant==14&&type==T::startup_agent){
+      r.agent_type=T::shutdown_agent;r.policy_family=F::agent_shutdown_policy;expected=AgentError::duplicate_policy_family;
+    }
+    std::function<void(std::vector<ForgedField>&)> forge_policy,forge_config;
+    if(type==T::memory_governor){
+      // 3c: was run_interval "-1" (invalid_property); the typed analog is a
+      // zero interval, refused by the policy budget rule (schema_refused).
+      if(policy_variant==1)r.run_interval_microseconds=0;
+      // 3c: was "18446744073709551616" (overflow); a 9-byte integer field.
+      if(policy_variant==2){forge_policy=[](auto& f){ForgedTag(f,25).value+=std::string(1,'\0');};moved();}
+      if(policy_variant==7)r.layer=catalog::CatalogAgentRuntimeLayer::l5_coordinator;
+      if(policy_variant==8)r.policy_generation=2;
+      if(policy_variant==9)r.required_metric_families={};
+      // 3c: was "missing_policy" (no such family text); a listed family with no policy row.
+      if(policy_variant==10){r.policy_dependencies={};r.policy_dependencies.push(F::coordinator_policy);}
+      if(policy_variant==11){r.policy_dependencies={};r.policy_dependencies.push(F::memory_governor_policy);}
+      if(policy_variant==12){r.policy_dependencies={};r.policy_dependencies.push(F::filespace_capacity_policy);}
+      if(policy_variant==17)r.run_interval_microseconds=2100000;
+      // 3c: was action_mode "accept_any"; an unlisted action-mode code.
+      if(policy_variant==18){forge_policy=[](auto& f){ForgedTag(f,17).value=bp_number(99);};moved();}
+      if(policy_variant==16){forge_policy=[](auto& f){ForgedTag(f,7).value=bp_number(33);};moved();}
+    }
+    if(policy_variant==12&&type==T::filespace_capacity_manager&&family==F::filespace_capacity_policy){
+      r.policy_dependencies={};r.policy_dependencies.push(F::memory_governor_policy);
+    }
+    if(policy_variant==15&&type==T::cluster_autoscale_manager){
+      r.enabled=true;r.activation=catalog::CatalogAgentActivationProfile::recommend_only;
+      r.action_mode=catalog::CatalogAgentActionMode::request_action;
+    }
+    if(type==T::startup_agent&&policy_variant==22){r.require_manual_approval=true;r.require_dry_run_before_live=true;}
+    const auto policy_payload=bytes(catalog::EncodeNativeAgentPolicy(r));
+    // Its family config record: adapted from the same row's config.* keys,
+    // then any typed change, then encoded (or forged).
+    auto config_record=r;config_record.policy_family=family;
+    std::string config_payload;
+    const bool dispatched=catalog::WithNativeAgentConfigType(family,[&](auto t){
+      using R=typename decltype(t)::type;
+      const auto cfg=catalog::NativeAgentConfigFromTags<R>(config,&config_record);
+      Check(cfg.ok(),"config adapts");
+      auto c=*cfg.record;
+      c.definition_uuid=object;c.origin_transaction_uuid=security_tx;c.origin_local_transaction_id=1;
+      if constexpr(std::is_same_v<R,catalog::NativeAgentConfig_agent_startup_policy>){
+        // 3c: was a deleted readiness_timeout line; the field omitted on the wire.
+        if(policy_variant==3){forge_config=[](auto& f){ForgeOmit(f,10);};moved();}
+        // 3c: was config.forged_gate=true; an unknown tag on the wire.
+        if(policy_variant==4){forge_config=[](auto& f){f.push_back({99,2,std::string(1,'\1')});};moved();}
+        // 3c: was "maybe"; a boolean byte other than 0/1.
+        if(policy_variant==5){forge_config=[](auto& f){ForgedTag(f,5).value=std::string(1,'\2');};moved();}
+        if(policy_variant==6)c.engine_verification_required=false;
+        // 3c: was "memory_governor,memory_governor" (lifecycle_invariant); the
+        // codec refuses a repeated code, so the forged list is refused at selection.
+        if(policy_variant==13){forge_config=[](auto& f){
+          const auto code=static_cast<char>(static_cast<unsigned>(T::memory_governor));
+          ForgedTag(f,9).value=std::string{code,0,code,0};};moved();}
+        if(policy_variant==14){c.dependency_order={};c.dependency_order.push(T::cluster_autoscale_manager);}
+        if(policy_variant==21)c.configured_components_only=false;
+      }
+      if constexpr(std::is_same_v<R,catalog::NativeAgentConfig_agent_coordinator_policy>){
+        if(policy_variant==19)c.worker_launch_forbidden=false;
+        // 3c: was "skip"; an unlisted verification-class code.
+        if(policy_variant==23){forge_config=[](auto& f){ForgedTag(f,5).value=bp_number(3);};moved();}
+        // 3c: was a deleted startup_verification_class line; omitted on the wire.
+        if(policy_variant==24){forge_config=[](auto& f){ForgeOmit(f,5);};moved();}
+        if(policy_variant==25)c.startup_verification_class=
+            catalog::NativeAgentConfigEnum_agent_coordinator_policy_startup_verification_class::startup_light_verify;
+        // 3c: was "0" (schema_refused); the codec's minimum 1 refuses it at selection.
+        if(policy_variant==27){forge_config=[](auto& f){ForgedTag(f,12).value=bp_number(0);};moved();}
+        // 3c: was a deleted line; omitted on the wire.
+        if(policy_variant==28){forge_config=[](auto& f){ForgeOmit(f,12);};moved();}
+        // 3c: was "18446744073709551616"; a 9-byte integer field.
+        if(policy_variant==29){forge_config=[](auto& f){ForgedTag(f,6).value+=std::string(1,'\0');};moved();}
+      }
+      if constexpr(std::is_same_v<R,catalog::NativeAgentConfig_agent_shutdown_policy>)
+        if(policy_variant==20)c.cooperative_cancellation_only=false;
+      config_payload=bytes(catalog::EncodeNativeAgentConfig(c));
+    });
+    Check(dispatched,"every policy family has its config record type");
+    add_forged(object,n,catalog::CatalogRecordKind::policy,catalog::CatalogObjectSubtype::agent_policy,policy_payload,forge_policy);
+    // 3c: one config record object per policy (new refusals: variants 15-18).
+    if(variant==15&&type==T::memory_governor){expected=AgentError::config_missing;continue;}
+    if(variant==16&&type==T::memory_governor){
+      // A config of another family naming this policy.
+      auto other=r;other.policy_family=F::storage_health_policy;
+      const auto defaults=agents::DefaultAgentPolicyConfigFieldsForFamily("storage_health_policy");
+      std::vector<catalog::NativeAgentPropertyTag> tags;for(const auto& [k,v]:defaults)tags.push_back({k,v});
+      const auto mismatched=catalog::EncodeNativeAgentConfigFromTags(tags,other);
+      config_payload=bytes(mismatched);expected=AgentError::config_mismatch;
+    }
+    if(variant==18&&type==T::memory_governor){
+      auto orphan=r;orphan.definition_uuid=Id(246);
+      config_payload=bytes(catalog::EncodeNativeAgentConfigFromTags(config,orphan));expected=AgentError::orphan_config;
+    }
+    add_forged(config_object,100+n,catalog::CatalogRecordKind::policy,catalog::CatalogObjectSubtype::agent_policy_config,
+        config_payload,forge_config);
+    if(variant==17&&type==T::agent_coordinator){
+      add(security_fixture::Id(420000),200,catalog::CatalogRecordKind::policy,catalog::CatalogObjectSubtype::agent_policy_config,config_payload);
+      expected=AgentError::duplicate_config;
+    }
+  }
+  // 3c: a legacy text record (schema 65824) in a native catalog is refused.
+  if(variant==19){
+    const auto& declaration=declarations.front();
+    catalog::CatalogAgentBootstrapDefinition legacy{security_fixture::Id(430000),Id(1),security_fixture::Id(430000),
+        declaration.kind,declaration.agent_type,declaration.properties,security_tx,1,1};
+    add(legacy.definition_uuid,201,catalog::CatalogRecordKind::policy,catalog::CatalogObjectSubtype::agent_policy,
+        bytes(catalog::EncodeCatalogAgentBootstrapDefinition(legacy)));
+    expected=AgentError::invalid_definition;
   }
   std::vector<catalog::CatalogNamedCreationInput> named;
   for(auto& item:items){item.entries[0]={&item.entry_metadata,&item.entry};
     named.push_back({&item.definition,&item.vector_metadata,&item.vector,item.entries});}
   auto result=catalog::AssembleLocalNamedCreationRecords(Id(1),security_tx,scratchbird::core::catalog::kCatalogLanguage_en_US,named,{1000,4*1024*1024});
+  if(!forged.empty()){
+    // 3c: the catalog write gate refuses the forged record, and admits the
+    // same set with its valid payload restored; nothing is written.
+    Check(!result.ok(),"the catalog write gate refuses a forged typed agent record");
+    for(const auto& [index,valid]:forged)items[index].definition.record.payload=valid;
+    Check(catalog::AssembleLocalNamedCreationRecords(Id(1),security_tx,scratchbird::core::catalog::kCatalogLanguage_en_US,
+        named,{1000,4*1024*1024}).ok(),"the same set with the valid record restored assembles");
+    Check(expected==AgentError::invalid_definition,"forged variants are refused before any reader");
+    write_gated=true;return expected;
+  }
+  if(!result.ok())std::cerr<<"agent fixture assembly error="<<int(result.error)<<'\n';
   Check(result.ok(),"complete named agent definitions assemble atomically before native persistence");
   for(auto& row:result.records->definitions)seed[4].push_back(std::move(row));
   for(auto& row:result.records->names)seed[1].push_back(std::move(row));
-  if(!variant)Check(seed[4].size()==95&&seed[1].size()==1594,"all 66 agent definitions and 132 names join native creation");  // 1462 pack names (616 before agent principals, 2026-11-03) + 132
+  // 3c: 34 config record objects join the 66 definitions (+34 rows, +68 names).
+  if(!variant)Check(seed[4].size()==129&&seed[1].size()==1662,"all 66 agent definitions, 34 config records and 200 names join native creation");  // 1462 pack names (616 before agent principals, 2026-11-03) + 200
   Check(!variant||expected!=AgentError::none,"known agent configuration refusal fixture");
   return expected;
 }
@@ -1466,7 +1621,11 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
     else target->metadata.security_policy_uuid.value=reference_variant==3?security_fixture::Id(99991):
         reference_variant==4?security_fixture::Id(14000):enrollment::SourceId(0x400);
   }
-  const auto agent_error=AddAgentConfigurationFixture(catalogs.plan->catalogs,inputs.items[0],agent_variant,policy_variant);
+  bool agent_write_gated=false;
+  const auto agent_error=AddAgentConfigurationFixture(catalogs.plan->catalogs,inputs.items[0],agent_variant,policy_variant,agent_write_gated);
+  // 3c: a forged typed agent record is refused by the catalog write gate
+  // (checked in the fixture); there is no file for the reader to refuse.
+  if(agent_write_gated)return;
   ChangeMemoryEnvelopeFixture(catalogs.plan->catalogs,memory_variant);
   const auto configuration_error=ChangeConfigurationFixture(catalogs.plan->catalogs,configuration_variant);
   if(authentication_variant==1){
@@ -1805,18 +1964,23 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
     Check(read.agents().ok()&&read.agents().definition_count==66&&read.agents().registration_count==32&&
         read.agents().policy_count==34,"cold startup selects the entire persisted agent configuration");
     unsigned critical=0;for(const auto& entry:read.agents().entries()){
-      Check(entry.definition.database_uuid==Id(1)&&entry.definition.origin_transaction_uuid.value==security_tx.value&&
-          entry.definition.origin_local_transaction_id==1&&entry.definition.generation==1&&!entry.version_uuid.is_nil(),
+      Check(entry.database_uuid==Id(1)&&entry.origin_transaction_uuid.value==security_tx.value&&
+          entry.origin_local_transaction_id==1&&entry.generation==1&&!entry.version_uuid.is_nil(),
           "each agent definition retains actual database, creation and version provenance");
-      if(entry.definition.kind!=catalog::AgentBootstrapDefinitionKind::registration)continue;
-      if(entry.definition.agent_type=="agent_coordinator")critical|=1;
-      if(entry.definition.agent_type=="startup_agent")critical|=2;
-      if(entry.definition.agent_type=="shutdown_agent")critical|=4;
-      if(entry.definition.agent_type=="memory_governor")critical|=8;
-      if(entry.definition.agent_type=="filespace_capacity_manager")critical|=16;
-      if(entry.definition.agent_type=="page_allocation_manager")critical|=32;
+      // 3c: each policy carries its own config record object and version.
+      if(entry.is_policy())Check(!entry.config_payload.empty()&&!entry.config_uuid.is_nil()&&
+          entry.config_uuid!=entry.definition_uuid&&!entry.config_version_uuid.is_nil(),"each policy selects its typed config record");
+      if(entry.kind!=server::NativeStartupAgentKind::registration)continue;
+      using AT=catalog::CatalogAgentType;
+      if(entry.agent_type==AT::agent_coordinator)critical|=1;
+      if(entry.agent_type==AT::startup_agent)critical|=2;
+      if(entry.agent_type==AT::shutdown_agent)critical|=4;
+      if(entry.agent_type==AT::memory_governor)critical|=8;
+      if(entry.agent_type==AT::filespace_capacity_manager)critical|=16;
+      if(entry.agent_type==AT::page_allocation_manager)critical|=32;
     }
-    Check(critical==(policy_variant==16?55:63),"coordinator lifecycle and memory/file/page managers survive real cold native reopen");
+    // 3c: policy variant 16 (unknown agent type) is refused at the write gate now.
+    Check(critical==63,"coordinator lifecycle and memory/file/page managers survive real cold native reopen");
     const auto agent_payload_fingerprint=AgentPayloadFingerprint(read.agents());
     const auto& configuration=*read.configuration().configuration;
     const auto& actual_catalog=admitted.comparison->lease->selected_catalog();
@@ -1951,14 +2115,20 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
           "with no startup mutation");
       Check(read.agent_policies().ok()&&read.agent_policies().policy_count==34&&read.agent_policies().registration_count==32,
           "every actual persisted policy and registration passes canonical descriptor, schema and static dependency validation");
+      // 3c: the coordinator by its constant; its clock limits from its typed
+      // policy and agent_coordinator_policy config records.
+      using CoordinatorConfig=catalog::NativeAgentConfig_agent_coordinator_policy;
       const auto clock_entry=std::find_if(read.agents().entries().begin(),read.agents().entries().end(),[](const auto& entry){
-        return entry.definition.kind==catalog::AgentBootstrapDefinitionKind::policy&&entry.definition.agent_type=="agent_coordinator";});
+        return entry.is_policy()&&entry.agent_type==catalog::CatalogAgentType::agent_coordinator;});
       Check(clock_entry!=read.agents().entries().end(),"actual retained coordinator owns startup clock configuration");
       allocation_budget=0;
-      const auto clock=scratchbird::core::agents::SelectAgentStartupClockPolicy(clock_entry->definition,clock_entry->version_uuid);
+      const auto clock_policy=clock_entry->Policy();
+      const auto clock_config=clock_entry->Config<CoordinatorConfig>();
+      Check(clock_policy.ok()&&clock_config.ok(),"actual retained coordinator policy and config decode");
+      const auto clock=scratchbird::core::agents::SelectAgentStartupClockPolicy(*clock_policy.record,*clock_config.record,clock_entry->version_uuid);
       const auto clock_heap=allocation_budget;allocation_budget=-1;
-      Check(clock.ok()&&clock_heap==0&&clock.database_uuid==Id(1)&&clock.policy_uuid==clock_entry->definition.definition_uuid&&
-          clock.version_uuid==clock_entry->version_uuid&&clock.generation==clock_entry->definition.generation&&
+      Check(clock.ok()&&clock_heap==0&&clock.database_uuid==Id(1)&&clock.policy_uuid==clock_entry->definition_uuid&&
+          clock.version_uuid==clock_entry->version_uuid&&clock.generation==clock_entry->generation&&
           clock.policy.max_uuid_regression_ms==0&&clock.policy.same_ms_wait_timeout_ms==1000&&
           clock.policy.clock.max_wall_clock_backward_nanoseconds==0&&clock.policy.clock.max_wall_clock_forward_jump_nanoseconds==60000000000ULL&&
           clock.policy.clock.fail_closed_on_wall_clock_rollback&&clock.policy.clock.fail_closed_on_monotonic_regression&&
@@ -1966,49 +2136,59 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
           "native source retains exact persisted standalone clock limits and distinct coordinator version without default substitution");
       if(profile==0&&reopen==0&&!policy_variant&&!memory_variant){
         using CE=scratchbird::core::agents::AgentStartupClockPolicyError;
-        constexpr std::pair<std::string_view,std::string_view> invalid_clock[]{
-          {"startup_uuid_same_ms_wait_timeout_ms","0"},{"startup_uuid_same_ms_wait_timeout_ms","18446744073710"},
-          {"startup_uuid_max_regression_ms","281474976710656"},{"startup_clock_max_backward_ns","18446744073709551616"},
-          {"startup_clock_max_backward_ns","-1"},{"startup_clock_max_backward_ns","+1"},
-          {"startup_clock_max_backward_ns","1x"},{"startup_clock_max_backward_ns"," 1"},
-          {"startup_clock_max_backward_ns",""},{"startup_clock_fail_on_rollback","1"},
-          {"startup_clock_fail_on_monotonic_regression","maybe"},{"startup_clock_fail_on_forward_jump","TRUE"}};
-        for(const auto& [key,value]:invalid_clock){
-          std::string body(clock_entry->definition.properties);const auto name="config."+std::string(key)+"=";
-          const auto at=body.find(name)+name.size();body.replace(at,body.find('\n',at)-at,value);
-          auto declaration=clock_entry->definition;declaration.properties=body;
-          allocation_budget=0;const auto invalid=scratchbird::core::agents::SelectAgentStartupClockPolicy(declaration,clock_entry->version_uuid);
+        // 3c: out-of-range typed values the selection itself refuses.
+        for(unsigned n=0;n<3;++n){
+          auto config=*clock_config.record;
+          if(n==0)config.startup_uuid_same_ms_wait_timeout_ms=0;
+          if(n==1)config.startup_uuid_same_ms_wait_timeout_ms=18446744073710ULL;
+          if(n==2)config.startup_uuid_max_regression_ms=281474976710656ULL;
+          allocation_budget=0;const auto invalid=scratchbird::core::agents::SelectAgentStartupClockPolicy(*clock_policy.record,config,clock_entry->version_uuid);
           const auto heap=allocation_budget;allocation_budget=-1;
           Check(invalid.error==CE::invalid_field&&heap==0&&invalid.policy_uuid.is_nil(),
               "invalid explicit clock fields refuse without allocating or exposing partial source binding");
         }
-        for(unsigned fault=0;fault<4;++fault){
-          std::string body(clock_entry->definition.properties);
-          const auto at=body.find("config.startup_uuid_same_ms_wait_timeout_ms=");
-          if(fault==0)body.erase(at,body.find('\n',at)-at+1);
-          if(fault==1)body+="config.startup_uuid_same_ms_wait_timeout_ms=1000\n";
-          if(fault==2)body.pop_back();
-          if(fault==3)body.replace(at,body.find('\n',at)-at,"config.startup_uuid_same_ms_wait_timeout_ms=2500");
-          auto declaration=clock_entry->definition;declaration.properties=body;
-          allocation_budget=0;const auto decoded=scratchbird::core::agents::SelectAgentStartupClockPolicy(declaration,clock_entry->version_uuid);
+        // 3c: the text-only spellings ("18446744073709551616", "-1", "+1", "1x",
+        // " 1", "", "1", "maybe", "TRUE") have no typed form; their binary
+        // analogs (wrong width, wrong type, empty, a boolean byte not 0/1) are
+        // refused by the persisted record's decoder without allocating.
+        const auto integer=[](auto& f,unsigned tag,std::string value){ForgedTag(f,tag).value=std::move(value);};
+        const std::function<void(std::vector<ForgedField>&)> invalid_wire[]{
+          [&](auto& f){integer(f,6,std::string(9,'\1'));},[&](auto& f){integer(f,6,std::string(4,'\1'));},
+          [&](auto& f){ForgedTag(f,6).type=2;integer(f,6,std::string(1,'\1'));},[&](auto& f){integer(f,6,{});},
+          [&](auto& f){ForgedTag(f,8).value=std::string(1,'\2');},[&](auto& f){ForgedTag(f,9).value={};},
+          [&](auto& f){ForgedTag(f,10).type=1;ForgedTag(f,10).value=bp_number(1);}};
+        for(const auto& edit:invalid_wire){
+          const auto forged=Forge(clock_entry->config_payload,edit);
+          allocation_budget=0;const auto invalid=catalog::DecodeNativeAgentConfig<CoordinatorConfig>(forged);
           const auto heap=allocation_budget;allocation_budget=-1;
-          Check(heap==0&&(fault==3?decoded.ok()&&decoded.policy.same_ms_wait_timeout_ms==2500:
-              decoded.error==(fault==0?CE::missing_field:CE::invalid_field)),
+          Check(!invalid.ok()&&!invalid.record&&heap==0,
+              "invalid persisted clock fields refuse without allocating or exposing a partial record");
+        }
+        for(unsigned fault=0;fault<4;++fault){
+          const auto forged=Forge(clock_entry->config_payload,[&](auto& f){
+            if(fault==0)ForgeOmit(f,12);
+            if(fault==1){const auto copy=ForgedTag(f,12);f.push_back(copy);}
+            if(fault==3)ForgedTag(f,12).value=bp_number(2500);});
+          const auto bytes=fault==2?std::string(clock_entry->config_payload.substr(0,clock_entry->config_payload.size()-1)):forged;
+          allocation_budget=0;const auto decoded=catalog::DecodeNativeAgentConfig<CoordinatorConfig>(bytes);
+          const auto selected=decoded.ok()?scratchbird::core::agents::SelectAgentStartupClockPolicy(*clock_policy.record,*decoded.record,
+              clock_entry->version_uuid):scratchbird::core::agents::AgentStartupClockPolicySelection{};
+          const auto heap=allocation_budget;allocation_budget=-1;
+          Check(heap==0&&(fault==3?selected.ok()&&selected.policy.same_ms_wait_timeout_ms==2500:!decoded.ok()&&!selected.ok()),
               "clock selection requires unique complete explicit fields and preserves configured nondefault limits");
         }
       }
       if(policy_variant==17){
         const auto configured=std::find_if(read.agents().entries().begin(),read.agents().entries().end(),[](const auto& entry){
-          return entry.definition.kind==catalog::AgentBootstrapDefinitionKind::policy&&entry.definition.agent_type=="memory_governor";});
-        Check(configured!=read.agents().entries().end()&&server::native_agent_configuration_detail::Property(
-            configured->definition.properties,"run_interval_microseconds")=="2100000","valid configured scheduling survives without baseline substitution");
+          return entry.is_policy()&&entry.agent_type==catalog::CatalogAgentType::memory_governor;});
+        Check(configured!=read.agents().entries().end()&&configured->Policy().ok()&&
+            configured->Policy().record->run_interval_microseconds==2100000,"valid configured scheduling survives without baseline substitution");
       }
       if(policy_variant==22){
         const auto configured=std::find_if(read.agents().entries().begin(),read.agents().entries().end(),[](const auto& entry){
-          return entry.definition.kind==catalog::AgentBootstrapDefinitionKind::policy&&entry.definition.agent_type=="startup_agent";});
-        Check(configured!=read.agents().entries().end()&&
-            server::native_agent_configuration_detail::Property(configured->definition.properties,"require_manual_approval")=="1"&&
-            server::native_agent_configuration_detail::Property(configured->definition.properties,"require_dry_run_before_live")=="1",
+          return entry.is_policy()&&entry.agent_type==catalog::CatalogAgentType::startup_agent;});
+        Check(configured!=read.agents().entries().end()&&configured->Policy().ok()&&
+            configured->Policy().record->require_manual_approval&&configured->Policy().record->require_dry_run_before_live,
             "valid stricter approval and dry-run prerequisites are retained without satisfying their runtime gates");
       }
       Check(read.ok()&&!admitted.operation&&admitted.comparison->lease->has_retained_operation()&&
@@ -3659,7 +3839,9 @@ int main(int argc,char** argv) {
       for(unsigned profile=0;profile<5;++profile)for(bool indexed:{false,true})run(profile,indexed,process);
       for(unsigned variant=1;variant<=10;++variant)run(0,true,process,variant);
       for(unsigned variant=1;variant<=2;++variant)run(0,true,process,0,variant);
-      for(unsigned variant=1;variant<=14;++variant)run(0,true,process,0,0,0,variant);
+      // 3c: agent variants 15-19 (config_missing, config_mismatch,
+      // duplicate_config, orphan_config, a legacy text record) are new.
+      for(unsigned variant=1;variant<=19;++variant)run(0,true,process,0,0,0,variant);
       for(unsigned variant=1;variant<=13;++variant)run(0,true,process,0,0,0,0,variant);
       for(unsigned variant=1;variant<=29;++variant)run(0,true,process,0,0,0,0,0,variant);
       for(unsigned variant=1;variant<=3;++variant)run(0,true,process,0,0,0,0,0,0,variant);

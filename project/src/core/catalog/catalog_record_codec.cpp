@@ -18,6 +18,7 @@
 #include "catalog_storage_action_policy.hpp"
 #include "catalog_runtime_authority_binding.hpp"
 #include "catalog_agent_bootstrap.hpp"
+#include "catalog_native_agent_record.hpp"
 #include "catalog_bootstrap_policy.hpp"
 #include "catalog_memory_configuration.hpp"
 #include "catalog_identifier_profile.hpp"
@@ -174,6 +175,12 @@ CatalogTypedRecordViewResult ValidateCatalogTypedRecordView(CatalogTypedRecordVi
       !CatalogRuntimeAuthorityBindingMatchesHeader(record))
     return RecordViewError("CATALOG.INVALID_INPUT", "catalog.runtime_authority_binding.invalid",
                       "runtime_authority_binary_payload_or_header_invalid");
+  // SB_CATALOG_NATIVE_AGENT_DISPATCH (3c-3): by payload schema id. 65640..65677
+  // are the typed native agent records (native create); 65824 is the legacy
+  // text bootstrap record, kept as is for legacy-created databases.
+  if (IsNativeAgentPayload(record.payload) && !NativeAgentRecordMatchesHeader(record))
+    return RecordViewError("CATALOG.INVALID_INPUT", "catalog.agent_bootstrap.invalid",
+                          "agent_native_binary_payload_or_header_invalid");
   if (IsCatalogAgentBootstrapPayload(record.payload) &&
       !CatalogAgentBootstrapMatchesHeader(record))
     return RecordViewError("CATALOG.INVALID_INPUT", "catalog.agent_bootstrap.invalid",
@@ -495,6 +502,12 @@ std::optional<CatalogRecordDiagnosticView> ValidateCatalogMetadataVersionView(co
        IsCatalogStorageActionPolicyPayload(value.record.payload)) &&
       !CatalogStorageActionPolicyMatchesMetadata(value))
     return MetadataViewError("storage_action_definition_binding_invalid");
+  // SB_CATALOG_NATIVE_AGENT_DISPATCH (3c-3): a typed agent payload carries its
+  // own subtype; the config subtype admits only a typed config payload. Legacy
+  // text payloads under agent_policy/agent_registration are unchanged.
+  if ((value.object_subtype == CatalogObjectSubtype::agent_policy_config || IsNativeAgentPayload(value.record.payload)) &&
+      !NativeAgentRecordMatchesMetadata(value))
+    return MetadataViewError("agent_native_definition_binding_invalid");
   if ((value.object_subtype == CatalogObjectSubtype::agent_runtime_authority ||
        IsCatalogRuntimeAuthorityBindingPayload(value.record.payload)) &&
       !CatalogRuntimeAuthorityBindingMatchesMetadata(value))

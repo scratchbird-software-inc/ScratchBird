@@ -458,7 +458,12 @@ bool NamedStates(const Db& b, const NameTemplate& t, u16 role, std::size_t defin
   {
     const auto now = ReadAll(path);
     const auto alias = Alias(named, t, V7(After(b, now, role), 0xd00001), 2, 3, "w3b_named_object");
-    ExpectInsert(b, s, path, Request(3, {alias}), "an alias of the same object, same name");
+    // 3c: native create now writes 34 more objects (the agent config records,
+    // named "<policy name> config") and names 66 agent rows by their longer
+    // policy/profile names, so at 16 KiB the leaf this alias reaches can be
+    // full; then the same insert takes new pages and is checked as a growing
+    // insert.
+    ExpectInsertOrGrow(b, s, path, Request(3, {alias}), "an alias of the same object, same name", 4);
     Commit(*s.w, s.sink(), 3);
     ExpectNamedVerification(b, path, definitions + 1, "an alias, committed");
   }
@@ -1472,7 +1477,9 @@ void NameCascadePaths(const Db& b, const NameTemplate& t, u16 role, std::size_t 
   file = ReadAll(path);
   const auto foreign = EntryLike(named.entry, t, V7(After(b, file, role), 0xd10001), 1, 2, "w3b_paths_objet", other_language, true,
                                  c::CatalogNameClass::primary);
-  ExpectInsert(b, s, path, Request(2, {foreign}), "its name in another language, through the schema's vector default");
+  // 3c: the larger names relation (agent config objects, longer agent names)
+  // can leave this leaf full at 16 KiB; then the insert takes new pages.
+  ExpectInsertOrGrow(b, s, path, Request(2, {foreign}), "its name in another language, through the schema's vector default", 6);
   // An English alias of the schema, not its English default.
   file = ReadAll(path);
   const auto alias = EntryLike(entry_of(file, t.entry.language_uuid.value, true), t, V7(After(b, file, role), 0xd10002), 2, 2,
@@ -1863,7 +1870,8 @@ void NameInsertCascade(const Db& b, const NameTemplate& t, u16 role, std::size_t
   file = ReadAll(path);
   const auto foreign = EntryLike(named.entry, t, V7(After(b, file, role), 0xd20001), 11, 2, "w3b_insert_objet", language, true,
                                  c::CatalogNameClass::primary);
-  ExpectInsert(b, s, path, Request(2, {foreign}), "its name in the second language");
+  // 3c: as above, the leaf can be full at 16 KiB; then new pages.
+  ExpectInsertOrGrow(b, s, path, Request(2, {foreign}), "its name in the second language", 7);
   Commit(*s.w, s.sink(), 2);
   const auto pre = ReadAll(path);
   const auto english = std::get<c::CatalogNameEntry>(*english_row(pre).name);
@@ -2335,7 +2343,10 @@ void NameCollisions(const Db& b, const NameTemplate& t, u16 role, bool room) {
                 CE::duplicate_name, "a name this transaction already inserted");
   Rollback(*s.w, s.sink(), 2);
   const auto y = NamedAfter(b, ReadAll(path), t, role, ms, 8, 3, "w3b_contended");
-  ExpectInsert(b, s, path, Request(3, y.Rows()), "the name, once its holder rolled back");
+  // 3c: with the larger names relation (agent config objects, longer agent
+  // names), the rolled-back rows can leave this leaf full at 16 KiB; then the
+  // insert takes new pages.
+  ExpectInsertOrGrow(b, s, path, Request(3, y.Rows()), "the name, once its holder rolled back", 5);
   Begin(s, 4);
   const auto z = NamedAfter(b, ReadAll(path), t, role, ms, 9, 4, "w3b_contended");
   conflict(4, z, 3, "the name of transaction 3's insert in progress");

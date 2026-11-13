@@ -30,6 +30,7 @@
 #include "catalog_memory_configuration.hpp"
 #include "catalog_runtime_authority_binding.hpp"
 #include "catalog_agent_bootstrap.hpp"
+#include "catalog_native_agent_record.hpp"
 #include "agent_bootstrap_configuration.hpp"
 #include "bootstrap_security_validation.hpp"
 #include "native_drop_evidence.hpp"
@@ -9357,10 +9358,24 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
     const auto declarations=scratchbird::core::agents::DefaultAgentBootstrapDeclarations();
     std::vector<Uuid> declaration_ids(declarations.size());
     for(auto& id:declaration_ids)id=issue_kind(UuidKind::object);
-    for(auto& agent:agents.agents)
+    // SB_CATALOG_NATIVE_AGENT_RECORDS (3c-3): the builder's and the pack's agent
+    // type text is mapped to its constant once, here at the boundary; the link
+    // compares constants.
+    std::vector<c::CatalogAgentType> declaration_types(declarations.size());
+    for(std::size_t i=0;i<declarations.size();++i){
+      const auto type=c::CatalogAgentTypeForTag(declarations[i].agent_type);
+      if(!type)return fail(E::agent_assembly);
+      declaration_types[i]=*type;
+    }
+    for(auto& agent:agents.agents){
+      // The pack also lists worker and reader agent types (principals only);
+      // they have no constant and no bootstrap declaration, so no policy link.
+      const auto type=c::CatalogAgentTypeForTag(agent.agent_type_id);
+      if(!type)continue;
       for(std::size_t i=0;i<declarations.size();++i)
         if(declarations[i].kind==agent_catalog::AgentBootstrapDefinitionKind::policy&&declarations[i].primary_policy_index==i&&
-            declarations[i].agent_type==agent.agent_type_id){agent.policy_uuid=declaration_ids[i];agent.link_uuid=issue_kind(UuidKind::object);break;}
+            declaration_types[i]==*type){agent.policy_uuid=declaration_ids[i];agent.link_uuid=issue_kind(UuidKind::object);break;}
+    }
     if(!identities_ok)return fail(E::identity_failure);
 
     NativeInitialPolicySecurityRequest policy;
@@ -9473,34 +9488,83 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
     for(const auto& row:schema_records.records->definitions)seed[0].push_back(row);
     for(const auto& row:schema_records.records->names)seed[1].push_back(row);
 
-    // The agent bootstrap declarations under sys.agents, named by UUID text.
+    // SB_CATALOG_NATIVE_AGENT_RECORDS (3c-3): the agent bootstrap declarations
+    // under sys.agents as typed records, never the text record (65824, legacy
+    // create only). The builder's key=value text is read once, here, by the
+    // boundary adapters. Each policy is two objects: the policy record (named
+    // by its policy_name) and its family's config record (its own identity,
+    // named by its UUID text, as other unaddressed rows); each registration is
+    // one object named by its profile_name.
     std::vector<c::CatalogNamedCreationInput> named;
     {
-      std::vector<BootstrapNamedCreationUnit*> agent_units;agent_units.reserve(declarations.size());
+      std::vector<BootstrapNamedCreationUnit*> agent_units;agent_units.reserve(2*declarations.size());
       const auto& verification=families.identities->verification_descriptors;
       if(verification.size()<4)return fail(E::agent_assembly);
       for(std::size_t i=0;i<declarations.size();++i) {
         const auto& declaration=declarations[i];
-        agent_catalog::CatalogAgentBootstrapDefinition definition{declaration_ids[i],database,
-            declaration_ids.at(declaration.primary_policy_index),declaration.kind,declaration.agent_type,declaration.properties,tx,1,1};
-        // The coordinator's startup verification: the pack's repair,
-        // quarantine and salvage policies and its evidence policy, in that
-        // declared order (native_verification_policies.json), all three levels.
-        if(declaration.kind==agent_catalog::AgentBootstrapDefinitionKind::policy&&declaration.agent_type=="agent_coordinator")
-          definition.startup_verification=agent_catalog::CatalogAgentStartupVerificationSelection{
-              verification[0].policy_uuid,verification[1].policy_uuid,verification[2].policy_uuid,verification[3].policy_uuid,3};
-        const auto encoded=agent_catalog::EncodeCatalogAgentBootstrapDefinition(definition);
-        if(!encoded.ok())return fail(E::agent_assembly);
+        std::vector<c::NativeAgentPropertyTag> top,config;
+        for(std::string_view body=declaration.properties;!body.empty();){
+          const auto end=body.find('\n');if(end==body.npos)return fail(E::agent_assembly);
+          const auto line=body.substr(0,end);const auto equal=line.find('=');
+          if(!equal||equal==line.npos)return fail(E::agent_assembly);
+          const auto key=line.substr(0,equal),value=line.substr(equal+1);
+          if(key.starts_with("config."))config.push_back({key.substr(7),value});else top.push_back({key,value});
+          body.remove_prefix(end+1);
+        }
+        const auto text=[&](std::string_view key)->std::string{
+          for(const auto& t:top)if(t.key==key)return std::string(t.value);return {};};
         const bool is_policy=declaration.kind==agent_catalog::AgentBootstrapDefinitionKind::policy;
+        std::vector<scratchbird::core::platform::byte> payload;
+        if(is_policy){
+          auto adapted=c::NativeAgentPolicyFromTags(top);
+          if(!adapted.ok()||adapted.record->agent_type!=declaration_types[i]||declaration.primary_policy_index!=i)
+            return fail(E::agent_assembly);
+          auto r=*adapted.record;
+          r.definition_uuid=r.policy_uuid=declaration_ids[i];r.database_uuid=database;
+          r.origin_transaction_uuid=tx;r.origin_local_transaction_id=1;r.generation=1;
+          // The coordinator's startup verification: the pack's repair,
+          // quarantine and salvage policies and its evidence policy, in that
+          // declared order (native_verification_policies.json), all three levels.
+          if(r.agent_type==c::CatalogAgentType::agent_coordinator)
+            r.startup_verification=c::CatalogAgentStartupVerificationSelection{
+                verification[0].policy_uuid,verification[1].policy_uuid,verification[2].policy_uuid,verification[3].policy_uuid,3};
+          auto encoded=c::EncodeNativeAgentPolicy(r);
+          const auto configured=c::EncodeNativeAgentConfigFromTags(config,r);
+          if(!encoded.ok()||!configured.ok())return fail(E::agent_assembly);
+          payload=std::move(encoded.bytes);
+          const auto config_id=issue_kind(UuidKind::object);
+          // Owner Q75 = 1 (2026-11-12): named from its policy, "<policy_name> config".
+          auto* cu=unit(config_id,CatalogRecordKind::policy,c::CatalogObjectSubtype::agent_policy_config,sys_agents,
+              std::nullopt,text("policy_name")+" config");
+          if(!units_ok)return fail(E::agent_assembly);
+          cu->definition.record.payload.assign(configured.bytes.begin(),configured.bytes.end());
+          agent_units.push_back(cu);
+        }else{
+          if(!config.empty())return fail(E::agent_assembly);
+          auto adapted=c::NativeAgentRegistrationFromTags(top);
+          if(!adapted.ok()||adapted.record->agent_type!=declaration_types[i])return fail(E::agent_assembly);
+          auto r=*adapted.record;
+          r.definition_uuid=declaration_ids[i];r.database_uuid=database;
+          r.policy_uuid=declaration_ids.at(declaration.primary_policy_index);
+          r.origin_transaction_uuid=tx;r.origin_local_transaction_id=1;r.generation=1;
+          auto encoded=c::EncodeNativeAgentRegistration(r);
+          if(!encoded.ok())return fail(E::agent_assembly);
+          payload=std::move(encoded.bytes);
+        }
+        // Reference names (3c-3, like 3a/3b): the builder's policy_name and
+        // profile_name text, carried to the names table and nowhere else.
+        auto name=text(is_policy?"policy_name":"profile_name");
+        if(name.empty())return fail(E::agent_assembly);
         auto* u=unit(declaration_ids[i],is_policy?CatalogRecordKind::policy:CatalogRecordKind::config_profile,
-            is_policy?c::CatalogObjectSubtype::agent_policy:c::CatalogObjectSubtype::agent_registration,sys_agents,std::nullopt,uuid_text(declaration_ids[i]));
+            is_policy?c::CatalogObjectSubtype::agent_policy:c::CatalogObjectSubtype::agent_registration,sys_agents,std::nullopt,std::move(name));
         if(!units_ok)return fail(E::agent_assembly);
-        u->definition.record.payload.assign(encoded.bytes.begin(),encoded.bytes.end());
+        u->definition.record.payload.assign(payload.begin(),payload.end());
         agent_units.push_back(u);
       }
+      if(!identities_ok)return fail(E::identity_failure);
       for(auto* u:agent_units){u->Bind();named.push_back(u->Input());}
       auto agent_records=c::AssembleLocalNamedCreationRecords(database,tx,*language,named,
-          {3*declarations.size(),8*1024*1024});
+          {3*agent_units.size(),8*1024*1024});
       if(!agent_records.ok()){result.name_error=agent_records.error;return fail(E::agent_assembly);}
       for(auto& row:agent_records.records->definitions)seed[4].push_back(std::move(row));
       for(auto& row:agent_records.records->names)seed[1].push_back(std::move(row));

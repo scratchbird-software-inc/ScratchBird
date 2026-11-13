@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 // SEARCH_KEY: SB_CATALOG_NATIVE_AGENT_RECORDS
 #include "catalog_native_agent_record.hpp"
+#include "catalog_object_constants.hpp"
 #include "uuid.hpp"
 
 #include <bit>
@@ -2712,10 +2713,51 @@ bool NativeAgentRegistrationMatchesHeader(const CatalogTypedRecordView& record) 
   return decoded.ok() && record.header.kind == CatalogRecordKind::config_profile &&
          record.header.object_uuid.kind == kObj && record.header.object_uuid.value == decoded.record->definition_uuid;
 }
+u32 NativeAgentPayloadSchemaId(std::string_view bytes) noexcept {
+  if (bytes.size() < kCatalogValueBlockHeaderBytes || bytes.substr(0, 4) != "SBCV") return 0;
+  return platform::LoadLittle32(reinterpret_cast<const byte*>(bytes.data()) + 16);
+}
 bool IsNativeAgentPayload(std::string_view bytes) noexcept {
-  if (bytes.size() < kCatalogValueBlockHeaderBytes || bytes.substr(0, 4) != "SBCV") return false;
-  const auto id = platform::LoadLittle32(reinterpret_cast<const byte*>(bytes.data()) + 16);
+  const auto id = NativeAgentPayloadSchemaId(bytes);
   return id >= kNativeAgentFirstSchemaId && id <= kNativeAgentLastSchemaId;
+}
+CatalogAgentPolicyFamily NativeAgentConfigFamilyForSchemaId(u32 id) noexcept {
+  if (id <= kNativeAgentConfigSchemaIdBase || id > kNativeAgentLastSchemaId) return CatalogAgentPolicyFamily::none;
+  const auto family = static_cast<CatalogAgentPolicyFamily>(id - kNativeAgentConfigSchemaIdBase);
+  return IsKnownCatalogAgentPolicyFamily(family) ? family : CatalogAgentPolicyFamily::none;
+}
+NativeAgentDecodeResult<NativeAgentConfigHead> DecodeNativeAgentConfigHead(std::string_view bytes) {
+  NativeAgentDecodeResult<NativeAgentConfigHead> out;
+  const auto family = NativeAgentConfigFamilyForSchemaId(NativeAgentPayloadSchemaId(bytes));
+  WithNativeAgentConfigType(family, [&](auto type) {
+    using R = typename decltype(type)::type;
+    const auto decoded = DecodeNativeAgentConfig<R>(bytes);
+    out.error = decoded.error;
+    if (decoded.ok())
+      out.record = NativeAgentConfigHead{R::family, decoded.record->definition_uuid,
+                                         decoded.record->origin_transaction_uuid,
+                                         decoded.record->origin_local_transaction_id};
+  });
+  if (out.error == E::none && !out.record) out.error = E::invalid_value;
+  return out;
+}
+bool NativeAgentConfigMatchesHeader(const CatalogTypedRecordView& record) {
+  const auto decoded = DecodeNativeAgentConfigHead(record.payload);
+  return decoded.ok() && record.header.kind == CatalogRecordKind::policy && record.header.object_uuid.kind == kObj &&
+         Id(record.header.object_uuid.value) && record.header.object_uuid.value != decoded.record->definition_uuid;
+}
+bool NativeAgentRecordMatchesHeader(const CatalogTypedRecordView& record) {
+  const auto id = NativeAgentPayloadSchemaId(record.payload);
+  if (id == kNativeAgentPolicySchemaId) return NativeAgentPolicyMatchesHeader(record);
+  if (id == kNativeAgentRegistrationSchemaId) return NativeAgentRegistrationMatchesHeader(record);
+  return NativeAgentConfigMatchesHeader(record);
+}
+bool NativeAgentRecordMatchesMetadata(const CatalogMetadataVersionView& m) {
+  const auto id = NativeAgentPayloadSchemaId(m.record.payload);
+  const auto subtype = id == kNativeAgentPolicySchemaId         ? CatalogObjectSubtype::agent_policy
+                       : id == kNativeAgentRegistrationSchemaId ? CatalogObjectSubtype::agent_registration
+                                                                : CatalogObjectSubtype::agent_policy_config;
+  return m.object_subtype == subtype && NativeAgentRecordMatchesHeader(m.record);
 }
 
 // ---- boundary adapters ----
@@ -2893,6 +2935,27 @@ NativeAgentTagResult<R> NativeAgentConfigFromTags(std::span<const NativeAgentPro
   for (std::size_t i = 0; i < fields.size(); ++i)
     if (fields[i].required && !seen[i]) return {{}, fields[i].key};
   return {r, {}};
+}
+
+NativeAgentConfigEncodeResult EncodeNativeAgentConfigFromTags(std::span<const NativeAgentPropertyTag> config,
+                                                              const NativeAgentPolicyRecord& policy) {
+  NativeAgentConfigEncodeResult out;
+  WithNativeAgentConfigType(policy.policy_family, [&](auto type) {
+    using R = typename decltype(type)::type;
+    const auto adapted = NativeAgentConfigFromTags<R>(config, &policy);
+    if (!adapted.ok()) {
+      out.bad_key = adapted.bad_key;
+      return;
+    }
+    auto r = *adapted.record;
+    r.definition_uuid = policy.definition_uuid;
+    r.origin_transaction_uuid = policy.origin_transaction_uuid;
+    r.origin_local_transaction_id = policy.origin_local_transaction_id;
+    auto encoded = EncodeNativeAgentConfig(r);
+    out.error = encoded.error;
+    out.bytes = std::move(encoded.bytes);
+  });
+  return out;
 }
 
 #define SB_NATIVE_AGENT_CONFIG_INSTANTIATE(R)                                                            \
