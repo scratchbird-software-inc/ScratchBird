@@ -406,13 +406,38 @@ const char* NativeCreateErrorName(scratchbird::storage::database::NativeDatabase
   return "unknown";
 }
 
+// Q134 (SB_NATIVE_CREATE_WRITE_CONSUMES_PLAN): the workspace's own refusal,
+// named in a create refusal's detail (plan or write).
+const char* NativeCreationWorkspaceErrorName(scratchbird::storage::database::NativeCreationWorkspaceError error) {
+  using E = scratchbird::storage::database::NativeCreationWorkspaceError;
+  switch (error) {
+    case E::none: return "none";
+    case E::invalid_request: return "invalid_request";
+    case E::invalid_device: return "invalid_device";
+    case E::device_not_empty: return "device_not_empty";
+    case E::invalid_capacity: return "invalid_capacity";
+    case E::resource_exhausted: return "resource_exhausted";
+    case E::identity_failure: return "identity_failure";
+    case E::encoding_failure: return "encoding_failure";
+    case E::hash_failure: return "hash_failure";
+    case E::io_failure: return "io_failure";
+    case E::readback_mismatch: return "readback_mismatch";
+    case E::graph_failure: return "graph_failure";
+    case E::cluster_requires_authority: return "cluster_requires_authority";
+    case E::encrypted_requires_crypto_authority: return "encrypted_requires_crypto_authority";
+    case E::invalid_catalog_input: return "invalid_catalog_input";
+    case E::catalog_capacity_exceeded: return "catalog_capacity_exceeded";
+  }
+  return "unknown";
+}
+
 // SEARCH_KEY: SB_ENGINE_CREATE_DATABASE_NATIVE (owner Q92/Q93/Q95/Q97/Q100 = 1,
 // 2026-11-13; plan 31 step S2). CREATE DATABASE in the native single-file
 // format through the production engine API. Authorised by the caller's server
 // session (ValidateLifecycleAuthority, Q95); the construction transaction the
 // native create writes is the MGA evidence, so no transaction is required
 // before the database exists. Every input is validated before the file is
-// opened; the file is opened by OpenNewNativeDatabaseFile only (O_EXCL + flock
+// opened (Q134 = 1, 2026-11-14: and the whole create is assembled before it); the file is opened by OpenNewNativeDatabaseFile only (O_EXCL + flock
 // on the data file, no lock file, S1). The result carries the engine's receipt
 // identities. Input sources (owner questions where marked, S2 report):
 //   name, language     the request's typed fields (descriptor v2): data, and a
@@ -468,11 +493,14 @@ EngineCreateLifecycleResult NativeCreateLifecycle(const EngineCreateLifecycleReq
   // and Q108 then removed the still-empty file.)
   // Update 2026-11-14 (Q127 = 3, Q130 = 2): the two statements above about
   // the profile's maximum length are no longer true. The pack's profile now
-  // declares a maximum (default pack: 1024 encoded octets), the database name
+  // declares a maximum (default pack: 1024 encoded octets; since Q139 = 1,
+  // 512 unicode scalar values), the database name
   // is held to it below (SB_CATALOG_IDENTIFIER_PROFILE_LENGTH_RULE), and
   // every other assembled name is held to it before the open by the plan
   // (SB_NATIVE_CREATE_NAMES_UNDER_PACK_PROFILE). Assembly still applies the
   // same rule again after the open.
+  // Update 2026-11-14 (Q134 = 1): there is no assembly after the open any
+  // more; the plan is the one assembly, and it runs before the open.
   if (scratchbird::core::catalog::AdmitCatalogIdentifierText(request.database_name) !=
       scratchbird::core::catalog::CatalogIdentifierKeyError::none) {
     return refuse("DATABASE.CREATE_NAME_INVALID", "database_name_refused_by_catalog_name_rule");
@@ -517,8 +545,9 @@ EngineCreateLifecycleResult NativeCreateLifecycle(const EngineCreateLifecycleReq
   // (AdmitCatalogIdentifierProfileLength). A pack that does not load refuses
   // here too. (Was: a pack that did not load was refused after the O_EXCL
   // open, and Q108 removed the still-empty file.)
+  // Q133 = 1: the pack's families are kept for the principal-name check below.
+  const auto families = db::LoadNativePolicyFamilies(policy_root);
   {
-    const auto families = db::LoadNativePolicyFamilies(policy_root);
     if (!families.ok() || !families.seeds || families.seeds->identifier_profiles.empty()) {
       return refuse("DATABASE.CREATE_POLICY_PACK_INVALID",
                     "native_server_policy_pack_refused_before_open:" + families.diagnostic.diagnostic_code);
@@ -543,6 +572,51 @@ EngineCreateLifecycleResult NativeCreateLifecycle(const EngineCreateLifecycleReq
     // both required by native create (owner 2026-11-04); nothing is defaulted.
     return refuse("DATABASE.CREATE_PRINCIPAL_REQUIRED",
                   "native_bootstrap_and_service_principals_required");
+  }
+  // SEARCH_KEY: SB_NATIVE_CREATE_PRINCIPAL_NAMES_UNDER_PACK_PROFILE (owner
+  // Q133 = 1, 2026-11-14). The bootstrap and internal-service principal names
+  // are checked here, explicitly, against the identifier profile the create
+  // names them under, before any identity is issued and before the plan: the
+  // profile of the pack's first dialect profile (generated naming uses that
+  // dialect's identifier profile for the security cohort,
+  // AssembleNativeInitialPolicyRecordsImpl), by the one length rule
+  // (AdmitCatalogIdentifierProfileLength). A too-long principal name is always
+  // DATABASE.CREATE_NAME_INVALID naming which principal, never its text.
+  // (Was, Q130: found only by the plan, classified by matching the refused
+  // unit's identity to the principal's issued UUID, so the outcome followed
+  // the plan's assembly order.) The plan still classifies such a name as a
+  // second check.
+  {
+    const auto& seeds = *families.seeds;
+    const scratchbird::storage::database::NativeIdentifierProfileSeed* principal_naming = nullptr;
+    if (!seeds.dialect_profiles.empty()) {
+      for (const auto& candidate : seeds.identifier_profiles) {
+        if (candidate.key == seeds.dialect_profiles.front().identifier_profile) {
+          principal_naming = &candidate;
+          break;
+        }
+      }
+    }
+    if (principal_naming == nullptr) {
+      return refuse("DATABASE.CREATE_POLICY_PACK_INVALID",
+                    "native_server_policy_pack_has_no_dialect_identifier_profile");
+    }
+    const auto over_profile = [&](std::string_view name) {
+      scratchbird::core::platform::u64 scalars = 0;
+      return scratchbird::core::catalog::AdmitCatalogIdentifierText(name, &scalars) ==
+                 scratchbird::core::catalog::CatalogIdentifierKeyError::none &&
+             scratchbird::core::catalog::AdmitCatalogIdentifierProfileLength(
+                 name, scalars, principal_naming->maximum_identifier_length, principal_naming->length_unit) !=
+                 scratchbird::core::catalog::CatalogIdentifierKeyError::none;
+    };
+    if (over_profile(bootstrap_name)) {
+      return refuse("DATABASE.CREATE_NAME_INVALID",
+                    "bootstrap_principal_name_longer_than_policy_identifier_profile_maximum");
+    }
+    if (over_profile(service_name)) {
+      return refuse("DATABASE.CREATE_NAME_INVALID",
+                    "internal_service_principal_name_longer_than_policy_identifier_profile_maximum");
+    }
   }
 
   const auto now = static_cast<std::uint64_t>(
@@ -584,26 +658,30 @@ EngineCreateLifecycleResult NativeCreateLifecycle(const EngineCreateLifecycleReq
   // built-in datatypes and domains, catalog index rows) is held to the
   // maximum length of the identifier profile it is named under, BEFORE the
   // file is opened. The names are not listed here: the create's own assembly
-  // is run without a device (PlanNativeDatabaseCreate, the same body as
-  // CreateNativeDatabaseOnOpenDevice, stopped before its first write), so
-  // the names checked are exactly the names the create writes. Its issuer is
-  // a separate one bound like the create's; its identities are discarded.
-  // A plan refused for a name over the profile maximum refuses here, naming
-  // the kind of name, never its text. A plan refused for any other reason
-  // is not acted on here: the create below meets the same refusal after the
-  // open, as before (Q108 removes the empty file).
+  // is run without a device (PlanNativeDatabaseCreate), so the names checked
+  // are exactly the names the create writes. A plan refused for a name over
+  // the profile maximum refuses here, naming the kind of name, never its text.
   // (Was: such a name was refused at assembly after the O_EXCL open,
   // DATABASE.CREATE_FAILED native_create_refused:policy_assembly (or the
   // stage's error), and Q108 removed the still-empty file.)
+  // SEARCH_KEY: SB_NATIVE_CREATE_WRITE_CONSUMES_PLAN (owner Q134 = 1,
+  // 2026-11-14). The create assembles ONCE, here, before the O_EXCL open, with
+  // the create's own issuer: the plan is the whole assembly (names, principal
+  // and fingerprint checks, policy, schema, agents, datatypes, indexes, the
+  // workspace's capacity, budget and layout checks and every encoded page
+  // image). Every refusal assembly can produce is produced here, and the file
+  // is opened only for a plan that is ready; the write then consumes it.
+  // (Was, Q130: a separate issuer, its identities discarded; plan refusals
+  // other than names were left to the create after the open, which ran the
+  // whole assembly again: DATABASE.CREATE_FAILED native_create_refused:<stage>
+  // and Q108 removed the still-empty file.)
+  auto plan = db::PlanNativeDatabaseCreate(create, issuer);
   {
-    scratchbird::core::uuid::StandaloneUuidV7Issuer plan_issuer(
-        {database_uuid.value.value, policy_snapshot_uuid.value.value},
-        scratchbird::core::uuid::kStandardLocalClockUuidV7Policy);
-    const auto plan = db::PlanNativeDatabaseCreate(create, plan_issuer);
     using N = db::NativeCreateNameClass;
     if (plan.name_over_profile_maximum == N::bootstrap_principal ||
         plan.name_over_profile_maximum == N::service_principal) {
-      // The caller's own text, like the database name: a name refusal.
+      // The caller's own text, like the database name: a name refusal. (Q133
+      // checks these first; this is the plan's second check.)
       return refuse("DATABASE.CREATE_NAME_INVALID",
                     std::string(db::NativeCreateNameClassName(plan.name_over_profile_maximum)) +
                         "_longer_than_policy_identifier_profile_maximum");
@@ -615,6 +693,14 @@ EngineCreateLifecycleResult NativeCreateLifecycle(const EngineCreateLifecycleReq
                     std::string("native_create_name_longer_than_policy_identifier_profile_maximum:") +
                         db::NativeCreateNameClassName(plan.name_over_profile_maximum));
     }
+    if (!plan.ok()) {
+      // Any other assembly refusal, now before the open. No file exists.
+      return refuse("DATABASE.CREATE_FAILED",
+                    std::string("native_create_refused_before_open:") + NativeCreateErrorName(plan.error) +
+                        (plan.error == db::NativeDatabaseCreateError::workspace_failure
+                             ? std::string(":") + NativeCreationWorkspaceErrorName(plan.workspace_error)
+                             : std::string()));
+    }
   }
 
   disk::FileDevice device;
@@ -623,18 +709,25 @@ EngineCreateLifecycleResult NativeCreateLifecycle(const EngineCreateLifecycleReq
     return refuse("DATABASE.CREATE_FAILED",
                   "native_database_file_open_refused:" + opened.diagnostic.diagnostic_code);
   }
-  const auto made = db::CreateNativeDatabaseOnOpenDevice(device, create, issuer);
+  const auto made = db::WriteNativeDatabaseCreatePlan(device, std::move(plan.plan));
   if (!made.ok()) {
     // SEARCH_KEY: SB_NATIVE_CREATE_EMPTY_FILE_UNLINK (owner Q108 = 1,
     // 2026-11-13). The refusal came after our O_EXCL open. While we still
     // hold the flock, our own file is removed only if it is still empty and
     // the path still names it; then the device is closed. A file that is not
     // empty, or a path that names another file, is left alone.
+    // Update 2026-11-14 (Q134 = 1): every assembly refusal is now before the
+    // open, so only the write's own failures reach here (the device checks,
+    // I/O, readback). A failure before the first byte leaves an empty file,
+    // which is removed; one after it leaves a partial file, which is not.
     const auto removal = device.RemoveAndCloseIfStillEmptyNativeCreate();
     const bool removed =
         removal == disk::FileDevice::EmptyNativeCreateRemoval::removed;
     return refuse("DATABASE.CREATE_FAILED",
                   std::string("native_create_refused:") + NativeCreateErrorName(made.error) +
+                      (made.error == db::NativeDatabaseCreateError::workspace_failure
+                           ? std::string(":") + NativeCreationWorkspaceErrorName(made.workspace_error)
+                           : std::string()) +
                       (removed ? ";empty_file_removed" : ";empty_file_not_removed"));
   }
   const auto closed = device.Close();

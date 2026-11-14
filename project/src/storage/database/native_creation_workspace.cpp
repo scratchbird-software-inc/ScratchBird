@@ -128,11 +128,53 @@ bool FillNativeCreationNamePaths(NativeCreationCatalogSeed& seed) {
   return true;
 }
 
-NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevice(
-    disk::FileDevice& device,const NativeFilespaceInitializationRequest& request,
+// SEARCH_KEY: SB_NATIVE_CREATE_WRITE_CONSUMES_PLAN (owner Q134 = 1,
+// 2026-11-14). What the plan hands the write: every page image, encoded and
+// hashed, the receipt, the layout and what the readback checks against. The
+// write adds nothing to it; it writes it, syncs it and reads it back.
+struct NativeCreationWorkspacePlan::State {
+  NativeFilespaceInitializationRequest request;
+  u64 budget=0,size=0,total=0,maps=0;
+  std::vector<Image> images;
+  detail::NativeCreationCatalogLayout plan;
+  NativeCreationWorkspaceReceipt receipt;
+  NativeCreationCatalogNameTrees name_trees;
+  std::optional<page::NativeBtreeDependencies> comment_tree;
+};
+NativeCreationWorkspacePlan::NativeCreationWorkspacePlan() noexcept=default;
+NativeCreationWorkspacePlan::NativeCreationWorkspacePlan(std::unique_ptr<State> state) noexcept:state_(std::move(state)) {}
+NativeCreationWorkspacePlan::NativeCreationWorkspacePlan(NativeCreationWorkspacePlan&&) noexcept=default;
+NativeCreationWorkspacePlan& NativeCreationWorkspacePlan::operator=(NativeCreationWorkspacePlan&&) noexcept=default;
+NativeCreationWorkspacePlan::~NativeCreationWorkspacePlan()=default;
+std::unique_ptr<NativeCreationWorkspacePlan::State> NativeCreationWorkspacePlan::release() noexcept {return std::move(state_);}
+
+namespace {
+// SB_NATIVE_DATA_FILE_OWNERSHIP (owner 2026-11-13, S1): native files are
+// built only on a device that owns them by its data-file flock alone
+// (FileDevice::Open(..., native_data_file)), never one that made a lock file.
+E CheckOwnedEmptyDevice(disk::FileDevice& device) {
+  if(!device.is_open()||device.read_only()||!device.native_data_file_owner()) return E::invalid_device;
+  const auto existing=device.Size();
+  if(!existing.ok()) return E::io_failure;
+  if(existing.size_bytes) return E::device_not_empty;
+  return E::none;
+}
+
+// SB_NATIVE_CREATE_WRITE_CONSUMES_PLAN (owner Q134 = 1, 2026-11-14): the
+// workspace's assembly, everything before the first device write: request
+// and seed validation, capacity and budget checks, the layout, every storage
+// identity and every encoded page image. With `device` it also checks that
+// device at the point it always did (the combined
+// InitializeIndexedNativeCreationWorkspaceOnOpenDevice, whose refusal order is
+// unchanged); without one it touches no device (the plan native CREATE
+// DATABASE makes before its O_EXCL open). (Was: this body and the write were
+// one function, run only after the open.)
+NativeCreationWorkspaceResult PlanWorkspaceImpl(
+    disk::FileDevice* device,const NativeFilespaceInitializationRequest& request,
     const NativeCreationCatalogSeed& seed,const NativeCreationCatalogIndexes& indexes,u64 budget,
     core::uuid::StandaloneUuidV7Issuer& issuer,const NativeCreationCatalogNameTrees& name_trees,
-    const std::optional<page::NativeBtreeDependencies>& comment_tree) noexcept {
+    const std::optional<page::NativeBtreeDependencies>& comment_tree,
+    std::unique_ptr<NativeCreationWorkspacePlan::State>& out) noexcept {
   try {
     // SB_NATIVE_NAME_TREES: both trees or neither.
     if(name_trees.authoritative.has_value()!=name_trees.uuid.has_value())return Fail(E::invalid_request);
@@ -141,7 +183,7 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
     // SB_NATIVE_COMMENT_TREE: over an indexed, empty comments relation.
     if(comment_tree&&(!page::NativeBtreeDependenciesValid(*comment_tree)||!indexes[detail::kNativeCommentRelationIndex]||
         !seed[detail::kNativeCommentRelationIndex].empty()))return Fail(E::invalid_catalog_input);
-    const auto guard=device.AcquireOperationGuard();
+    // The device guard is the caller's (Initialize... and Write... hold it).
     const auto& b=request.bootstrap;
     const auto v7=[](const Uuid& id){return core::uuid::IsEngineIdentityUuid(id);};
     if(disk::ValidateFilespaceBootstrap(b)!=disk::FilespaceBootstrapError::none||
@@ -154,13 +196,9 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
        request.creation_utc_millis>0xffffffffffffULL) return Fail(E::invalid_request);
     if(b.flags&disk::FilespaceBootstrapFlag::cluster_authority_required) return Fail(E::cluster_requires_authority);
     if(b.flags&disk::FilespaceBootstrapFlag::payload_encrypted) return Fail(E::encrypted_requires_crypto_authority);
-    // SB_NATIVE_DATA_FILE_OWNERSHIP (owner 2026-11-13, S1): native files are
-    // built only on a device that owns them by its data-file flock alone
-    // (FileDevice::Open(..., native_data_file)), never one that made a lock file.
-    if(!device.is_open()||device.read_only()||!device.native_data_file_owner()) return Fail(E::invalid_device);
-    const auto existing=device.Size();
-    if(!existing.ok()) return Fail(E::io_failure);
-    if(existing.size_bytes) return Fail(E::device_not_empty);
+    // SB_NATIVE_DATA_FILE_OWNERSHIP: the device checks (CheckOwnedEmptyDevice),
+    // here only when a device is given; the plan-only path has none yet.
+    if(device)if(const auto checked=CheckOwnedEmptyDevice(*device);checked!=E::none)return Fail(checked);
     // The fixed-root graph (the checkpoint-era graph went with that layer,
     // W4d). The control block after the maps has no checkpoint, horizon-root,
     // selector or watermark page; the rest is packed in control order.
@@ -569,6 +607,43 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
         encoded_zero.error==disk::FilespacePageZeroError::resource_exhausted?E::resource_exhausted:
         encoded_zero.error==disk::FilespacePageZeroError::hash_provider_failure?E::hash_failure:E::encoding_failure);
     images[0].bytes=std::move(*encoded_zero.bytes);
+    // The readback's backing (below, in the write) is sized from the budget;
+    // a budget it cannot size is refused here, before any write.
+    // (Was: checked after the write, before the readback.)
+    if(budget>(std::numeric_limits<std::size_t>::max()-(std::size_t{1}<<20))/2)return Fail(E::resource_exhausted);
+
+    // Q134: the assembly is complete. Everything the write needs moves into
+    // the plan; nothing below this point is decided without a device.
+    auto planned_state=std::make_unique<NativeCreationWorkspacePlan::State>();
+    planned_state->request=request;planned_state->budget=budget;planned_state->size=size;
+    planned_state->total=total;planned_state->maps=maps;
+    planned_state->images=std::move(images);planned_state->plan=std::move(plan);
+    planned_state->receipt=std::move(receipt);
+    planned_state->name_trees=name_trees;planned_state->comment_tree=comment_tree;
+    out=std::move(planned_state);
+    NativeCreationWorkspaceResult done;done.error=E::none;return done;
+  }catch(E error){return Fail(error);}
+   catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}
+   catch(const std::length_error&){return Fail(E::resource_exhausted);}
+   catch(...){return Fail(E::io_failure);}  // as the combined function did
+}
+
+// SB_NATIVE_CREATE_WRITE_CONSUMES_PLAN (owner Q134 = 1, 2026-11-14): the
+// write. The caller holds the device guard and has checked the device. It
+// writes the plan's images, syncs, reads them back, writes page zero last and
+// verifies the file the way the server opens it. Its only refusals are the
+// device's: I/O, readback mismatch, and a file that does not read back as
+// the graph the plan built.
+NativeCreationWorkspaceResult WriteWorkspaceImpl(disk::FileDevice& device,
+    NativeCreationWorkspacePlan::State& planned_state) noexcept {
+  try {
+    const auto& request=planned_state.request;const auto& b=request.bootstrap;
+    const u64 budget=planned_state.budget,size=planned_state.size,total=planned_state.total;
+    auto& images=planned_state.images;const auto& plan=planned_state.plan;const auto& layouts=plan.relations;
+    auto& receipt=planned_state.receipt;const auto& name_trees=planned_state.name_trees;
+    const auto& comment_tree=planned_state.comment_tree;
+    const Uuid creator=request.creator.transaction_uuid.value;
+    const auto ref=[&](u64 n){return disk::NativePageReference{b.filespace_uuid,n,1,b.page_size_profile_uuid};};
 
     // No writes before the complete graph, identities and receipt are prepared.
     // Device writes are ordered/durable. Coalesce zero initialization within
@@ -617,6 +692,7 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
     // an allocated page of its type and object created by a committed
     // transaction. Every catalog relation page is then bound to its own
     // allocation record, and every relation is read through page zero below.
+    // Q134: the plan refuses such a budget before any write; kept as a guard.
     if(budget>(std::numeric_limits<std::size_t>::max()-(std::size_t{1}<<20))/2)return Fail(E::resource_exhausted);
     const std::size_t backing_bytes=static_cast<std::size_t>(budget)*2+(std::size_t{1}<<20);
     std::unique_ptr<byte[]> backing(new byte[backing_bytes]);
@@ -718,5 +794,45 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
    catch(const std::bad_alloc&){return Fail(E::resource_exhausted);}
    catch(const std::length_error&){return Fail(E::resource_exhausted);}
    catch(...){return Fail(E::io_failure);}
+}
+}  // namespace
+
+NativeCreationWorkspacePlanResult PlanIndexedNativeCreationWorkspace(
+    const NativeFilespaceInitializationRequest& request,const NativeCreationCatalogSeed& seed,
+    const NativeCreationCatalogIndexes& indexes,u64 budget,core::uuid::StandaloneUuidV7Issuer& issuer,
+    const NativeCreationCatalogNameTrees& name_trees,
+    const std::optional<page::NativeBtreeDependencies>& comment_tree) noexcept {
+  NativeCreationWorkspacePlanResult result;
+  std::unique_ptr<NativeCreationWorkspacePlan::State> state;
+  const auto planned=PlanWorkspaceImpl(nullptr,request,seed,indexes,budget,issuer,name_trees,comment_tree,state);
+  result.error=planned.error;result.failed_page_number=planned.failed_page_number;result.btree_error=planned.btree_error;
+  if(planned.error==E::none&&state)result.plan=NativeCreationWorkspacePlan(std::move(state));
+  else if(planned.error==E::none)result.error=E::invalid_request;
+  return result;
+}
+
+NativeCreationWorkspaceResult WriteNativeCreationWorkspacePlanOnOpenDevice(
+    disk::FileDevice& device,NativeCreationWorkspacePlan&& plan) noexcept {
+  // The plan is consumed: whatever happens below, it is not written twice.
+  auto state=plan.release();
+  if(!state)return Fail(E::invalid_request);
+  const auto guard=device.AcquireOperationGuard();
+  if(const auto checked=CheckOwnedEmptyDevice(device);checked!=E::none)return Fail(checked);
+  return WriteWorkspaceImpl(device,*state);
+}
+
+NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevice(
+    disk::FileDevice& device,const NativeFilespaceInitializationRequest& request,
+    const NativeCreationCatalogSeed& seed,const NativeCreationCatalogIndexes& indexes,u64 budget,
+    core::uuid::StandaloneUuidV7Issuer& issuer,const NativeCreationCatalogNameTrees& name_trees,
+    const std::optional<page::NativeBtreeDependencies>& comment_tree) noexcept {
+  // Q134: plan then write, under one device guard, with the device checked at
+  // the point the combined function always checked it (same refusal order).
+  const auto guard=device.AcquireOperationGuard();
+  std::unique_ptr<NativeCreationWorkspacePlan::State> state;
+  auto planned=PlanWorkspaceImpl(&device,request,seed,indexes,budget,issuer,name_trees,comment_tree,state);
+  if(planned.error!=E::none)return planned;
+  if(!state)return Fail(E::invalid_request);
+  return WriteWorkspaceImpl(device,*state);
 }
 }  // namespace scratchbird::storage::database

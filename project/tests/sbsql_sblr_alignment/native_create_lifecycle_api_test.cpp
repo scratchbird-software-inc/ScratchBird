@@ -49,6 +49,19 @@
 //    encoded octets), checked before the open; the engine's hand-written
 //    1024-byte cap is removed. The pack is read before the open, so a pack
 //    that does not load is now a pre-open refusal (was a Q108 late case).
+//  - Q133 = 1 (SB_NATIVE_CREATE_PRINCIPAL_NAMES_UNDER_PACK_PROFILE): the two
+//    principal names are checked explicitly against the pack's profile before
+//    the plan: a too-long one is always DATABASE.CREATE_NAME_INVALID.
+//  - Q134 = 1 (SB_NATIVE_CREATE_WRITE_CONSUMES_PLAN): the create assembles
+//    once, before the O_EXCL open, and the write consumes the plan. Every
+//    assembly refusal (the Q108 bad-fingerprint and too-few-pages cases
+//    included) is now before the open: no file is created at all. Q108's
+//    removal remains for the write's own failures; a write that fails before
+//    its first byte (RLIMIT_FSIZE 0) still leaves no file.
+//  - Q135 = 1: the 128-byte principal-name cap is gone on the native path;
+//    the pack's profile decides (default: 512 scalars).
+//  - Q139 = 1: the default pack's profile is 512 unicode scalar values (was
+//    1024 encoded octets).
 //
 // Modes: none (every check) or
 //   create <path> <page size> <language: en|fr-CA>
@@ -76,6 +89,8 @@
 #include "../support/owned_temp_directory.hpp"
 
 #include <algorithm>
+#include <csignal>
+#include <sys/resource.h>
 #include <array>
 #include <chrono>
 #include <cstdio>
@@ -337,10 +352,12 @@ std::filesystem::path PackWithMaximum(const std::filesystem::path& under, const 
   std::filesystem::copy(SB_DEFAULT_POLICY_PACK_ROOT, pack, std::filesystem::copy_options::recursive);
   const auto naming = pack / "policies" / "native_naming_profiles.json";
   auto text = ReadAll(naming);
-  const std::string from = "\"maximum_identifier_length\": 1024";
+  // Q139 = 1 (owner 2026-11-14): the default pack's value is 512 (unicode
+  // scalar values); the copy keeps that unit. Was: "...: 1024" (octets).
+  const std::string from = "\"maximum_identifier_length\": 512";
   const auto at = text.find(from);
   Check(at != std::string::npos && text.find(from, at + 1) == std::string::npos,
-        "Q129/Q130: the default pack declares maximum_identifier_length 1024 exactly once");
+        "Q129/Q130/Q139: the default pack declares maximum_identifier_length 512 exactly once");
   text.replace(at, from.size(), "\"maximum_identifier_length\": " + std::to_string(maximum));
   { std::ofstream out(naming, std::ios::binary | std::ios::trunc); out << text; }
   RehashPack(pack);
@@ -704,41 +721,121 @@ int main(int argc, char** argv) {
 
   // Q108 = 1: refusals AFTER our O_EXCL open leave no file, and a retry on
   // the same path succeeds.
+  // Q134 = 1 (owner 2026-11-14, SB_NATIVE_CREATE_WRITE_CONSUMES_PLAN): both
+  // cases below are assembly refusals, and the create now assembles once,
+  // BEFORE the open: they are refused with no file ever created (no open of
+  // their q122-q134-* directory; the strace check holds them to that), the
+  // detail names the stage, and a retry on the same path succeeds.
+  // (Was: late(...) here: DATABASE.CREATE_FAILED native_create_refused:<stage>
+  // after the open, ;empty_file_removed, directories late-fingerprint and
+  // late-pages.)
   {
-    const auto late = [&](const char* label, auto edit, const char* what) {
-      const auto dir = artifacts.path() / (std::string("late-") + label);
+    const auto before_open = [&](const char* label, auto edit, const char* stage, const char* what) {
+      const auto dir = artifacts.path() / (std::string("q122-q134-") + label);
       std::filesystem::create_directory(dir);
       const auto path = (dir / "orders.sdb").string();
       auto request = NativeRequest(path, 16384, c::kCatalogLanguage_en);
       edit(request);
       const auto result = api::EngineCreateLifecycle(request);
-      if (result.ok || !DetailHas(result, "native_create_refused:"))
+      if (result.ok || !DetailHas(result, stage))
         for (const auto& diagnostic : result.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
-      Check(!result.ok && HasDiagnostic(result, "DATABASE.CREATE_FAILED") && DetailHas(result, "native_create_refused:"),
+      Check(!result.ok && HasDiagnostic(result, "DATABASE.CREATE_FAILED") &&
+                DetailHas(result, std::string("native_create_refused_before_open:") + stage) &&
+                !DetailHas(result, "native_create_refused:") && !DetailHas(result, ";empty_file_removed") &&
+                !DetailHas(result, ";empty_file_not_removed") && Entries(dir).empty(),
             what);
-      Check(DetailHas(result, ";empty_file_removed") && Entries(dir).empty(),
-            "Q108: the refused create removed its own still-empty file; nothing is left");
-      const auto retried = api::EngineCreateLifecycle(NativeRequest(path, 16384, c::kCatalogLanguage_en));
+      std::printf("Q134 %s: refused before the open (%s), no file\n", label, stage);
+      // The retry is a separate directory so the refusal's stays open-free.
+      const auto retry_dir = artifacts.path() / (std::string("q134-retry-") + label);
+      std::filesystem::create_directory(retry_dir);
+      const auto retried = api::EngineCreateLifecycle(
+          NativeRequest((retry_dir / "orders.sdb").string(), 16384, c::kCatalogLanguage_en));
       if (!retried.ok) for (const auto& diagnostic : retried.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
-      Check(retried.ok && Entries(dir).size() == 1, "Q108: a retry on the same path succeeds");
-      std::printf("Q108 %s: refused after open, no file left, retry ok\n", label);
+      Check(retried.ok && Entries(retry_dir).size() == 1, "Q134: the same request, corrected, creates");
     };
-    late("fingerprint", [](auto& r) {
+    before_open("fingerprint", [](auto& r) {
       std::erase_if(r.option_envelopes, [](const auto& o) { return o.starts_with("bootstrap_credential_fingerprint:"); });
       r.option_envelopes.push_back("bootstrap_credential_fingerprint:not-a-fingerprint");
-    }, "Q108: a bad credential fingerprint is refused after the open");
+    }, "invalid_principal",
+       "Q134: a bad credential fingerprint is refused before the open (was: Q108, after the open, file removed)");
     // Q127 = 3 (owner 2026-11-14): the server's pack is now read before the
     // open (for its identifier profile), so a pack that does not load is a
     // pre-open refusal; see the Q127 block below. Was: late("policy-pack",
     // root = <artifacts>/no-such-policy-pack, "Q108: a bad (server) policy
     // pack is refused after the open").
-    late("pages", [](auto& r) {
+    before_open("pages", [](auto& r) {
       std::erase_if(r.option_envelopes, [](const auto& o) { return o.starts_with("total_pages:"); });
       r.option_envelopes.push_back("total_pages:2");
-    }, "Q108: too few pages is refused after the open");
+    }, "capacity_exceeded",
+       "Q134: too few pages is refused before the open (was: Q108, after the open, file removed)");
+    // Q135 = 1: the principal-name character rule stays (first byte an ASCII
+    // letter or '_'); a name that breaks it is an assembly refusal, so it too
+    // is refused before the open.
+    before_open("principal-characters", [](auto& r) {
+      std::erase_if(r.option_envelopes, [](const auto& o) { return o.starts_with("bootstrap_principal_name:"); });
+      r.option_envelopes.push_back("bootstrap_principal_name:9Admin");
+    }, "invalid_principal",
+       "Q135: a principal name that breaks the character rule is refused before the open");
     // Q122 = 1 (owner 2026-11-14): the non-UTF-8 name case is no longer a
     // late refusal; it is refused before the open (the Q122 block below).
     // Was: late("utf8", name "bad\xc3", "...is refused after the open").
+  }
+
+  // Q134 = 1: what Q108 still covers. The only refusals left after the open
+  // are the write's own: a device check or an I/O failure. A write that fails
+  // before its first byte leaves our own empty file, which Q108 removes; a
+  // retry succeeds. The failure is real, not simulated: the process file-size
+  // limit (RLIMIT_FSIZE) is set to 0 for the one call, so the first pwrite
+  // fails (EFBIG, SIGXFSZ ignored). A write that fails part-way leaves a
+  // partial file, which Q108 never removes (it is not empty): recorded here
+  // as the behaviour today (owner question in the Q134 report).
+  {
+    const auto with_file_limit = [&](rlim_t limit, auto call) {
+      rlimit saved{};
+      Check(getrlimit(RLIMIT_FSIZE, &saved) == 0, "Q134: the file-size limit is readable");
+      const auto old_handler = std::signal(SIGXFSZ, SIG_IGN);
+      rlimit lowered = saved;
+      lowered.rlim_cur = limit;
+      Check(setrlimit(RLIMIT_FSIZE, &lowered) == 0, "Q134: the file-size limit is lowered for one call");
+      auto result = call();
+      Check(setrlimit(RLIMIT_FSIZE, &saved) == 0, "Q134: the file-size limit is restored");
+      std::signal(SIGXFSZ, old_handler);
+      return result;
+    };
+    {
+      const auto dir = artifacts.path() / "q134-write-fails-first-byte";
+      std::filesystem::create_directory(dir);
+      const auto path = (dir / "orders.sdb").string();
+      const auto result = with_file_limit(0, [&] {
+        return api::EngineCreateLifecycle(NativeRequest(path, 16384, c::kCatalogLanguage_en));
+      });
+      if (result.ok || !DetailHas(result, ";empty_file_removed"))
+        for (const auto& diagnostic : result.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+      Check(!result.ok && HasDiagnostic(result, "DATABASE.CREATE_FAILED") &&
+                DetailHas(result, "native_create_refused:workspace_failure:io_failure") &&
+                DetailHas(result, ";empty_file_removed") && Entries(dir).empty(),
+            "Q108/Q134: a write that fails before its first byte (after the open) removes our own empty file");
+      const auto retried = api::EngineCreateLifecycle(NativeRequest(path, 16384, c::kCatalogLanguage_en));
+      Check(retried.ok && Entries(dir).size() == 1, "Q108/Q134: a retry on the same path succeeds");
+      std::printf("Q134 write fails at its first byte: empty file removed, retry ok\n");
+    }
+    {
+      const auto dir = artifacts.path() / "q134-write-fails-part-way";
+      std::filesystem::create_directory(dir);
+      const auto path = (dir / "orders.sdb").string();
+      const auto result = with_file_limit(3 * 16384, [&] {
+        return api::EngineCreateLifecycle(NativeRequest(path, 16384, c::kCatalogLanguage_en));
+      });
+      if (result.ok || !DetailHas(result, ";empty_file_not_removed"))
+        for (const auto& diagnostic : result.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+      Check(!result.ok && HasDiagnostic(result, "DATABASE.CREATE_FAILED") &&
+                DetailHas(result, "native_create_refused:workspace_failure:io_failure") &&
+                DetailHas(result, ";empty_file_not_removed") && Entries(dir).size() == 1 &&
+                std::filesystem::file_size(dir / "orders.sdb") > 0,
+            "Q108/Q134: a write that fails part-way leaves its partial file (not empty, never removed): today's behaviour");
+      std::printf("Q134 write fails part-way: partial file of %llu bytes left (owner question)\n",
+                  static_cast<unsigned long long>(std::filesystem::file_size(dir / "orders.sdb")));
+    }
   }
 
   // Q122 = 1 (owner 2026-11-14, SB_CATALOG_IDENTIFIER_TEXT_RULE): every name
@@ -821,19 +918,35 @@ int main(int argc, char** argv) {
                 Entries(dir).empty(), what);
       std::printf("Q127 %s: refused before the open, no file\n", label.c_str());
     };
-    // The default pack: 1024 encoded octets.
-    created("q127-ok-1024-octets", std::string(1024, 'a'), {},
-            "Q127: a 1024-octet name creates under the default pack's profile (maximum 1024 encoded octets)");
+    // Q139 = 1 (owner 2026-11-14): the default pack is 512 unicode scalar
+    // values, counted on the unqualified name (the name row's text). Was:
+    // 1024 encoded octets (Q127/Q131), under which the first case below
+    // created and the next was the first refused.
+    too_long("q122-q139-1024-ascii", std::string(1024, 'a'), {},
+             "Q139: a 1024-scalar ASCII name is refused before the open (was: created, Q127, 1024 octets)");
     too_long("q122-q127-1025-octets", std::string(1025, 'a'), {},
              "Q127: a 1025-octet name is refused before the open by the pack's profile maximum "
              "(was: the engine's hand-written size() > 1024 cap, detail database_name_required_as_data)");
+    created("q127-ok-q139-512-ascii", std::string(512, 'a'), {},
+            "Q139: a 512-scalar ASCII name creates under the default pack (512 unicode scalar values)");
+    too_long("q122-q139-513-ascii", std::string(513, 'a'), {},
+             "Q139: a 513-scalar ASCII name is refused before the open");
     std::string e_acute_512, e_acute_513;
     for (int n = 0; n < 512; ++n) e_acute_512 += "\xc3\xa9";
     e_acute_513 = e_acute_512 + "\xc3\xa9";
     created("q127-ok-512-scalars-1024-octets", e_acute_512, {},
-            "Q127: 512 two-octet scalars (1024 octets) create: the unit is the profile's, encoded octets");
+            "Q139: 512 two-octet scalars (1024 octets) create as 512 scalars (Q127: created as 1024 octets)");
     too_long("q122-q127-513-scalars-1026-octets", e_acute_513, {},
-             "Q127: 513 two-octet scalars (1026 octets, 513 scalars) are refused: octets are counted, not scalars");
+             "Q139: 513 two-octet scalars are refused as 513 scalars (Q127: refused as 1026 octets)");
+    // Four-octet scalars: 512 of them are 2048 octets and create; the
+    // profile counts scalars, not octets.
+    std::string four_512, four_513;
+    for (int n = 0; n < 512; ++n) four_512 += "\xf0\x9f\x90\xa6";
+    four_513 = four_512 + "\xf0\x9f\x90\xa6";
+    created("q127-ok-q139-512-four-octet-scalars", four_512, {},
+            "Q139: 512 four-octet scalars (2048 octets) create: scalars are counted, not octets");
+    too_long("q122-q139-513-four-octet-scalars", four_513, {},
+             "Q139: 513 four-octet scalars (2052 octets) are refused before the open");
 
     // The value comes from the pack: a rehashed copy whose profile says 128.
     // (Not smaller: the maximum governs every name the create assembles under
@@ -848,10 +961,11 @@ int main(int argc, char** argv) {
       const auto naming = pack / "policies" / "native_naming_profiles.json";
       std::string text;
       { std::ifstream in(naming, std::ios::binary); text.assign(std::istreambuf_iterator<char>(in), {}); }
-      const std::string from = "\"maximum_identifier_length\": 1024", to = "\"maximum_identifier_length\": 128";
+      // Q139 = 1: the default pack's value is 512 (was "...: 1024").
+      const std::string from = "\"maximum_identifier_length\": 512", to = "\"maximum_identifier_length\": 128";
       const auto at = text.find(from);
       Check(at != std::string::npos && text.find(from, at + 1) == std::string::npos,
-            "Q127: the default pack declares maximum_identifier_length 1024 exactly once");
+            "Q127/Q139: the default pack declares maximum_identifier_length 512 exactly once");
       text.replace(at, from.size(), to);
       { std::ofstream out(naming, std::ios::binary | std::ios::trunc); out << text; }
       RehashPack(pack);
@@ -908,16 +1022,19 @@ int main(int argc, char** argv) {
     };
     {
       std::filesystem::path dir;
-      const auto result = through_codec("q122-q129-1025-default-pack", std::string(1025, 'a'), {}, &dir);
+      // Q139 = 1: the default pack's maximum is 512 scalars, so 513 is the
+      // first name over it. (Was: 1025 bytes against the pack's 1024 octets;
+      // directory q122-q129-1025-default-pack.)
+      const auto result = through_codec("q122-q129-513-default-pack", std::string(513, 'a'), {}, &dir);
       if (result.api_result.ok || !DetailHas(result.api_result, "database_name_longer_than_policy_identifier_profile_maximum"))
         for (const auto& diagnostic : result.api_result.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
       Check(result.envelope_validated && result.dispatched_to_api && !result.api_result.ok &&
                 HasDiagnostic(result.api_result, "DATABASE.CREATE_NAME_INVALID") &&
                 DetailHas(result.api_result, "database_name_longer_than_policy_identifier_profile_maximum") &&
                 !DetailHas(result.api_result, "native_create_refused:") && Entries(dir).empty(),
-            "Q129: a 1025-byte name passes the codec, the gateway and dispatch, and the engine refuses it from the "
-            "default pack's profile (1024) before the open, no file (was: refused by the codec's own 1024 cap)");
-      std::printf("Q129 1025 bytes, default pack: codec and gateway admit, engine refuses before the open, no file\n");
+            "Q129/Q139: a 513-scalar name passes the codec, the gateway and dispatch, and the engine refuses it from "
+            "the default pack's profile (512 scalars) before the open, no file");
+      std::printf("Q129 513 scalars, default pack: codec and gateway admit, engine refuses before the open, no file\n");
     }
     const auto pack_2048 = PackWithMaximum(artifacts.path(), "q129-pack-max-2048", 2048);
     {
@@ -1027,6 +1144,66 @@ int main(int argc, char** argv) {
       Check(result.ok && Entries(dir).size() == 1,
             "Q130 control: under a pack at 96, 96-octet principal names and every assembled name create");
       std::printf("Q130 pack at 96, 96-octet principals: created\n");
+    }
+    // Q133 = 1 (owner 2026-11-14): the principal names are checked
+    // explicitly against the pack's profile BEFORE the plan, so a too-long
+    // principal name is DATABASE.CREATE_NAME_INVALID even under a pack whose
+    // own names would also fail (the pack at 8): the outcome does not depend
+    // on which name the plan's assembly meets first.
+    {
+      const auto [result, dir] = attempt("q122-q133-pack-8-bootstrap-10", pack_8, [&](auto& r) {
+        replace(r.option_envelopes, "bootstrap_principal_name:", "BootAdmin9");
+        replace(r.option_envelopes, "internal_service_principal_name:", "Svc");
+      });
+      Check(HasDiagnostic(result, "DATABASE.CREATE_NAME_INVALID") &&
+                DetailHas(result, "bootstrap_principal_name_longer_than_policy_identifier_profile_maximum") &&
+                !HasDiagnostic(result, "DATABASE.CREATE_POLICY_PACK_INVALID") && pre_open(result, dir),
+            "Q133: a 10-octet bootstrap name under a pack at 8 is a name refusal before the plan, no file");
+      std::printf("Q133 bootstrap 10, pack at 8: name refusal before the plan, no file\n");
+    }
+    {
+      const auto [result, dir] = attempt("q122-q133-pack-8-service-9", pack_8, [&](auto& r) {
+        replace(r.option_envelopes, "bootstrap_principal_name:", "Boot");
+        replace(r.option_envelopes, "internal_service_principal_name:", "NodeSvc99");
+      });
+      Check(HasDiagnostic(result, "DATABASE.CREATE_NAME_INVALID") &&
+                DetailHas(result, "internal_service_principal_name_longer_than_policy_identifier_profile_maximum") &&
+                !HasDiagnostic(result, "DATABASE.CREATE_POLICY_PACK_INVALID") && pre_open(result, dir),
+            "Q133: a 9-octet service name under a pack at 8 is a name refusal before the plan, no file");
+      std::printf("Q133 service 9, pack at 8: name refusal before the plan, no file\n");
+    }
+    // Q135 = 1 (owner 2026-11-14): no hand-written 128-byte principal cap on
+    // the native path; the default pack's profile (512 scalars) decides.
+    // (Was: IsSafeBootstrapPrincipalName refused any principal name over 128
+    // bytes, invalid_principal, after the open, and Q108 removed the file.)
+    const std::filesystem::path default_pack = SB_DEFAULT_POLICY_PACK_ROOT;
+    {
+      const auto [result, dir] = attempt("q135-ok-principals-129", default_pack, [&](auto& r) {
+        replace(r.option_envelopes, "bootstrap_principal_name:", std::string(129, 'b'));
+        replace(r.option_envelopes, "internal_service_principal_name:", std::string(129, 's'));
+      });
+      Check(result.ok && Entries(dir).size() == 1,
+            "Q135: 129-octet principal names create under the default pack (was: refused by the 128-byte cap)");
+      std::printf("Q135 129-octet principals, default pack: created\n");
+    }
+    {
+      const auto [result, dir] = attempt("q135-ok-principals-512", default_pack, [&](auto& r) {
+        replace(r.option_envelopes, "bootstrap_principal_name:", std::string(512, 'b'));
+        replace(r.option_envelopes, "internal_service_principal_name:", std::string(512, 's'));
+      });
+      Check(result.ok && Entries(dir).size() == 1,
+            "Q135/Q139: 512-scalar principal names create under the default pack (its maximum)");
+      std::printf("Q135 512-octet principals, default pack: created\n");
+    }
+    {
+      const auto [result, dir] = attempt("q122-q135-bootstrap-513", default_pack, [&](auto& r) {
+        replace(r.option_envelopes, "bootstrap_principal_name:", std::string(513, 'b'));
+      });
+      Check(HasDiagnostic(result, "DATABASE.CREATE_NAME_INVALID") &&
+                DetailHas(result, "bootstrap_principal_name_longer_than_policy_identifier_profile_maximum") &&
+                pre_open(result, dir),
+            "Q133/Q135: a 513-scalar bootstrap name under the default pack is refused before the open, no file");
+      std::printf("Q135 bootstrap 513, default pack: refused before the open, no file\n");
     }
   }
 

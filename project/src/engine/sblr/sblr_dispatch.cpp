@@ -2752,6 +2752,20 @@ bool IsClusterOperationId(std::string_view operation_id) {
 SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   SblrDispatchResult result;
   result.api_result.operation_id = request.envelope.operation_id;
+  // SEARCH_KEY: SB_CREATE_DATABASE_NOT_ON_SESSION_ROUTE (owner Q132 = 2,
+  // Q138 = 1, 2026-11-14). The contract-only build's dispatcher refuses a
+  // CREATE DATABASE under a statement receipt exactly as the engine's does
+  // (same test, same code, same detail), before anything else. (Was: no such
+  // guard here; the Q132 guard was only in the full dispatcher.)
+  if (!request.context.statement_receipt_uuid.is_nil() &&
+      IsSblrCreateDatabaseOperation(request.envelope)) {
+    constexpr const char* detail =
+        "create_database_is_a_pre_security_file_write_not_a_session_statement";
+    result.api_result = QueryRouteFailure(request.context, request.envelope.operation_id,
+                                          "DATABASE.CREATE_NOT_ON_SESSION_ROUTE", detail);
+    result.diagnostics.push_back({"DATABASE.CREATE_NOT_ON_SESSION_ROUTE", detail, true});
+    return result;
+  }
   if ((request.envelope.operation_id == "ddl.operator.create" && request.envelope.opcode == "SBLR_DDL_CREATE_OPERATOR" && request.envelope.opcode_code == 1590) ||
       (request.envelope.operation_id == "ddl.operator.drop" && request.envelope.opcode == "SBLR_DDL_DROP_OPERATOR" && request.envelope.opcode_code == 1591)) {
     result.accepted = true;

@@ -1703,6 +1703,40 @@ bool IsSha256Hex(const std::string& value) {
   return true;
 }
 
+// SEARCH_KEY: SB_NATIVE_CREATE_PRINCIPAL_NAMES_UNDER_PACK_PROFILE (owner
+// Q135 = 1, 2026-11-14). The principal-name character rule without a length
+// cap: non-empty; the first byte an ASCII letter or '_'; every byte an ASCII
+// letter, digit, '_', '-' or '.' (so the name is ASCII and its octet and
+// scalar counts are equal). Native create (PlanNativeDatabaseCreateImpl,
+// AssembleNativeInitialPolicyRecordsImpl) applies only this rule here: the
+// name's maximum length is the pack's identifier profile's, checked before
+// the open (NativeCreateLifecycle, Q133) and again by key derivation when the
+// name row is built. (Was: IsSafeBootstrapPrincipalName, with its
+// hand-written `value.size() > 128` cap, on the native path too.)
+bool IsSafeBootstrapPrincipalNameCharacters(std::string_view value) {
+  if (value.empty()) {
+    return false;
+  }
+  const auto first = static_cast<unsigned char>(value.front());
+  if (!std::isalpha(first) && value.front() != '_') {
+    return false;
+  }
+  for (const char ch : value) {
+    const auto uch = static_cast<unsigned char>(ch);
+    if (!std::isalnum(uch) && ch != '_' && ch != '-' && ch != '.') {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Q135 (2026-11-14): kept, with its 128-byte cap, ONLY for callers that hold
+// no identifier profile: the policy-pack loader's agent_type_id keys (not
+// principal names), the legacy create paths (ValidateCreateConfig,
+// MaterializeBootstrapSecurityRows) and the legacy security-record read
+// validator (ValidateBootstrapSecurityRecords). Owner question: whether those
+// keep a cap, take the pack's profile, or go with the legacy create (Q93).
+// The native create path no longer calls it.
 bool IsSafeBootstrapPrincipalName(std::string_view value) {
   if (value.empty() || value.size() > 128) {
     return false;
@@ -8635,7 +8669,8 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
       const auto& b=*bootstrap;
       if(!security_memberships || !IsEngineIdentityUuid(b.principal_uuid)||!IsEngineIdentityUuid(b.membership_uuid)||
           !b.principal_name.data()||!b.credential_fingerprint.data()||b.credential_fingerprint.size()>256||
-          !IsSafeBootstrapPrincipalName(b.principal_name)||!ParseBootstrapCredentialFingerprint(b.credential_fingerprint))
+          // Q135: character rule only; the length is the profile's (below).
+          !IsSafeBootstrapPrincipalNameCharacters(b.principal_name)||!ParseBootstrapCredentialFingerprint(b.credential_fingerprint))
         return fail(E::invalid_request);
       if(b.principal_uuid==b.membership_uuid)return fail(E::duplicate_identity);
       for(const auto& id:{b.principal_uuid,b.membership_uuid,kCanonicalSysarchRoleIdentity})
@@ -8646,7 +8681,7 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
     if(service) {
       const auto& s=*service;
       if(!bootstrap||!security_memberships||!s.principal_name.data()||!s.credential_fingerprint.data()||
-          s.credential_fingerprint.size()>256||!IsSafeBootstrapPrincipalName(s.principal_name)||
+          s.credential_fingerprint.size()>256||!IsSafeBootstrapPrincipalNameCharacters(s.principal_name)||  // Q135
           !ParseBootstrapCredentialFingerprint(s.credential_fingerprint))return fail(E::invalid_request);
       const std::array<Uuid,11> ids{s.principal_uuid,s.runtime_binding_uuid,s.credential_reference_uuid,
           s.provider_uuid,s.policy_uuid,s.grant_uuids[0],s.grant_uuids[1],s.grant_uuids[2],s.grant_uuids[3],s.grant_uuids[4],
@@ -9273,8 +9308,14 @@ NativeInitialLocalServiceIdentityResult IssueNativeInitialLocalServiceIdentity(
 // 2026-11-14). One body for the create and its plan: with no device
 // (PlanNativeDatabaseCreate) it runs every step before the first write and
 // stops there, writing nothing; with a device it is the create, unchanged.
-static NativeDatabaseCreateResult CreateNativeDatabaseImpl(disk::FileDevice* device,
-    const NativeDatabaseCreateRequest& request,core::uuid::StandaloneUuidV7Issuer& issuer) noexcept {
+// Update 2026-11-14 (Q134 = 1, SB_NATIVE_CREATE_WRITE_CONSUMES_PLAN): the
+// body is the plan only, and it no longer stops early: it runs the
+// workspace's assembly as well and fills `out`, which the write consumes.
+// No device reaches it. (Was: CreateNativeDatabaseImpl(FileDevice*), run
+// twice per native create: once with no device, once with it.)
+static NativeDatabaseCreateResult PlanNativeDatabaseCreateImpl(
+    const NativeDatabaseCreateRequest& request,core::uuid::StandaloneUuidV7Issuer& issuer,
+    NativeDatabaseCreatePlan& out) noexcept {
   namespace c=scratchbird::core::catalog;namespace agent_catalog=scratchbird::core::catalog;
   using E=NativeDatabaseCreateError;
   NativeDatabaseCreateResult result;
@@ -9294,7 +9335,12 @@ static NativeDatabaseCreateResult CreateNativeDatabaseImpl(disk::FileDevice* dev
         !IsEngineIdentityUuid(request.engine_uuid)||!request.maximum_retained_image_bytes)return fail(E::invalid_request);
     // The L5 service credential is required (owner 2026-11-04), as is the
     // credentialed bootstrap principal. The assembler re-checks both.
-    if(!IsSafeBootstrapPrincipalName(request.bootstrap_principal_name)||!IsSafeBootstrapPrincipalName(request.service_principal_name)||
+    // Q135 = 1 (2026-11-14): the character rule only; the names' maximum
+    // length is the pack's identifier profile's (NativeCreateLifecycle checks
+    // it before the open, Q133; key derivation applies it to the name rows).
+    // (Was: IsSafeBootstrapPrincipalName, which also capped them at 128 bytes.)
+    if(!IsSafeBootstrapPrincipalNameCharacters(request.bootstrap_principal_name)||
+        !IsSafeBootstrapPrincipalNameCharacters(request.service_principal_name)||
         request.bootstrap_credential_fingerprint.size()>256||!ParseBootstrapCredentialFingerprint(request.bootstrap_credential_fingerprint)||
         request.service_credential_fingerprint.size()>256||!ParseBootstrapCredentialFingerprint(request.service_credential_fingerprint))
       return fail(E::invalid_principal);
@@ -9758,11 +9804,17 @@ static NativeDatabaseCreateResult CreateNativeDatabaseImpl(disk::FileDevice* dev
       }
     }
 
-    // Q130: the plan stops here, before the first write; nothing was written.
-    if(device==nullptr){result.error=E::none;result.receipt.reset();return result;}
-    const auto written=InitializeIndexedNativeCreationWorkspaceOnOpenDevice(*device,construction,seed,index_rows.indexes,
+    // SEARCH_KEY: SB_NATIVE_CREATE_WRITE_CONSUMES_PLAN (owner Q134 = 1,
+    // 2026-11-14). The workspace's own assembly (its validation, capacity and
+    // budget checks, layout, storage identities and every encoded page image)
+    // runs here too, still without a device, so every refusal assembly can
+    // produce is produced by the plan. The plan holds the result; the write
+    // (WriteNativeDatabaseCreatePlan) consumes it and assembles nothing.
+    // (Was, Q130: the plan stopped above this point, the workspace assembled
+    // after the open, and the create ran this whole body a second time.)
+    auto workspace=PlanIndexedNativeCreationWorkspace(construction,seed,index_rows.indexes,
         request.maximum_retained_image_bytes,issuer,index_rows.name_trees,index_rows.comment_tree);
-    if(!written.ok()){result.workspace_error=written.error;return fail(E::workspace_failure);}
+    if(!workspace.ok()){result.workspace_error=workspace.error;return fail(E::workspace_failure);}
     NativeDatabaseCreateReceipt receipt;
     // SB_ONE_DATABASE_UUID: no separate database-object UUID to return.
     receipt.database_uuid=database;receipt.filespace_uuid=filespace;
@@ -9771,18 +9823,39 @@ static NativeDatabaseCreateResult CreateNativeDatabaseImpl(disk::FileDevice* dev
     receipt.service_credential_reference_uuid=service_identity.credential_reference_uuid;
     receipt.service_provider_uuid=service_identity.provider_uuid;receipt.service_policy_uuid=service_identity.policy_uuid;
     receipt.service_runtime_binding_uuid=service_identity.runtime_binding_uuid;
-    receipt.workspace=*written.receipt;
-    result.receipt=std::move(receipt);result.error=E::none;return result;
+    out.receipt=std::move(receipt);out.workspace=std::move(workspace.plan);
+    result.error=E::none;result.receipt.reset();return result;
   }catch(const std::bad_alloc&){return fail(E::resource_exhausted);}
    catch(const std::length_error&){return fail(E::resource_exhausted);}
 }
+NativeDatabaseCreatePlanResult PlanNativeDatabaseCreate(const NativeDatabaseCreateRequest& request,
+    core::uuid::StandaloneUuidV7Issuer& issuer) noexcept {
+  NativeDatabaseCreatePlanResult planned;
+  NativeDatabaseCreatePlan plan;
+  static_cast<NativeDatabaseCreateResult&>(planned)=PlanNativeDatabaseCreateImpl(request,issuer,plan);
+  if(planned.error==NativeDatabaseCreateError::none)planned.plan=std::move(plan);
+  return planned;
+}
+NativeDatabaseCreateResult WriteNativeDatabaseCreatePlan(disk::FileDevice& empty_owned,
+    NativeDatabaseCreatePlan&& plan) noexcept {
+  NativeDatabaseCreateResult result;
+  // The plan is consumed whether or not the write succeeds.
+  auto workspace=std::move(plan.workspace);auto receipt=std::move(plan.receipt);
+  if(!workspace.ready()||!receipt){result.error=NativeDatabaseCreateError::invalid_request;return result;}
+  const auto written=WriteNativeCreationWorkspacePlanOnOpenDevice(empty_owned,std::move(workspace));
+  if(!written.ok()){result.workspace_error=written.error;result.error=NativeDatabaseCreateError::workspace_failure;return result;}
+  try {
+    receipt->workspace=*written.receipt;
+    result.receipt=std::move(receipt);result.error=NativeDatabaseCreateError::none;
+  }catch(const std::bad_alloc&){result.receipt.reset();result.error=NativeDatabaseCreateError::resource_exhausted;}
+  return result;
+}
+// Q134: plan then write, one assembly, the same issuer throughout.
 NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& device,
     const NativeDatabaseCreateRequest& request,core::uuid::StandaloneUuidV7Issuer& issuer) noexcept {
-  return CreateNativeDatabaseImpl(&device,request,issuer);
-}
-NativeDatabaseCreateResult PlanNativeDatabaseCreate(const NativeDatabaseCreateRequest& request,
-    core::uuid::StandaloneUuidV7Issuer& issuer) noexcept {
-  return CreateNativeDatabaseImpl(nullptr,request,issuer);
+  auto planned=PlanNativeDatabaseCreate(request,issuer);
+  if(!planned.ok())return static_cast<NativeDatabaseCreateResult&&>(std::move(planned));
+  return WriteNativeDatabaseCreatePlan(device,std::move(planned.plan));
 }
 const char* NativeCreateNameClassName(NativeCreateNameClass name_class) noexcept {
   using N=NativeCreateNameClass;
@@ -10071,8 +10144,13 @@ PolicySeedPackDescriptor DefaultPolicyPackDescriptor() {
   // pack; the Q127 review flag on that value is removed from
   // policies/native_naming_profiles.json (the value is unchanged).
   // Previous: 6ef052c62763142d7270ee5cd69ac9ae5b0dd52071f08892812216223dbae84b
+  // Owner ruling Q139 = 1 (2026-11-14): the default pack's identifier profile
+  // is maximum_identifier_length 512 in unicode_scalar_values (the length of
+  // the unqualified name, the name row's text; a policy value, not an engine
+  // constant). Supersedes Q131's 1024 encoded octets.
+  // Previous: 261c56c6fd47b98dc78c1ba8d9424cfb35d3a1292d47e46ee44db860d78b14fd
   descriptor.content_sha256 =
-      "261c56c6fd47b98dc78c1ba8d9424cfb35d3a1292d47e46ee44db860d78b14fd";
+      "9c610876d2671c4b8d1cd65cd80a7481e7ddd6e80fc9cb57737c73e418019d81";
   descriptor.create_time_only = true;
   descriptor.post_create_filesystem_authority = false;
   descriptor.local_password_only = true;

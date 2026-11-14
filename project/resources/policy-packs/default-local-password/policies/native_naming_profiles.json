@@ -10,8 +10,8 @@
       "comparison_mode": "exact",
       "storage_display_mode": "preserve_user_text",
       "reserved_word_behavior": "parser_profile_specific",
-      "length_unit": "encoded_octets",
-      "maximum_identifier_length": 1024,
+      "length_unit": "unicode_scalar_values",
+      "maximum_identifier_length": 512,
       "dialect_mode_flags": 0
     }
   ],

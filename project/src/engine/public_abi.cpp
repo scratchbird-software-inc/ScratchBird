@@ -9019,6 +9019,18 @@ sb_engine_status_t AcquireStatementContextReceipt(
   receipt->view = view;
   receipt->snapshot_vector = snapshot;
   receipt->engine_context = std::move(engine_context);
+  // SEARCH_KEY: SB_STATEMENT_RECEIPT_STAMPED_AT_ACQUIRE (owner Q137 = 1,
+  // 2026-11-14). The receipt's own context carries the receipt's identity
+  // from the moment it is issued, so every context derived from a receipt
+  // (copies, dispatch contexts, the cancellation binding and DML resource
+  // receipt built just below from this context) carries it: a statement is
+  // traceable to its receipt, the receipt to its session, the session to
+  // the user it was given to. It also replaces any value the caller put in
+  // its request context. (Was: nil here; stamped only on copies,
+  // CopyStatementContextEngineContextV1 / ProjectStatementContextLiteral-
+  // AuthorityV2 / CoordinateSessionValueDescriptorV1, and on this context
+  // lazily at dispatch, DispatchStatementContextReceipt.)
+  receipt->engine_context.statement_receipt_uuid = view.receipt_uuid;
   try {
     using namespace scratchbird::engine::internal_api;
     auto lexical = std::move(receipt->engine_context.query_cancellation_requested);

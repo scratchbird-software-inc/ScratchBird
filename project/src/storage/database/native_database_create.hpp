@@ -129,8 +129,38 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(
 // name_over_profile_maximum says which kind of name was too long for the
 // pack's identifier profile. Native CREATE DATABASE calls it before its
 // O_EXCL open, with a separate issuer bound like the create's.
-NativeDatabaseCreateResult PlanNativeDatabaseCreate(
+// Update 2026-11-14 (owner Q134 = 1, SB_NATIVE_CREATE_WRITE_CONSUMES_PLAN):
+// the plan is no longer discarded. PlanNativeDatabaseCreate runs the WHOLE
+// assembly, the workspace's included (its capacity, budget and layout checks,
+// storage identities and every encoded page image), and returns it as a
+// NativeDatabaseCreatePlan. Every refusal assembly can produce is produced
+// here, before any device exists. WriteNativeDatabaseCreatePlan consumes the
+// plan: device checks (owned native data file, open, writable, empty), the
+// writes, sync, readback and page zero last; it assembles nothing, issues no
+// identity and needs no issuer. The issuer's identities are the ones the file
+// carries, so native CREATE DATABASE uses ONE issuer, bound to the database
+// it creates. CreateNativeDatabaseOnOpenDevice is plan + write.
+// (Was: the identities were spent and discarded, a separate issuer was used,
+// and the create assembled everything a second time after the open.)
+struct NativeDatabaseCreatePlan {
+  // The receipt identities (workspace receipt filled by the write).
+  std::optional<NativeDatabaseCreateReceipt> receipt;
+  NativeCreationWorkspacePlan workspace;
+  bool ready() const noexcept {return receipt.has_value()&&workspace.ready();}
+};
+struct NativeDatabaseCreatePlanResult:NativeDatabaseCreateResult {
+  NativeDatabaseCreatePlan plan;  // ready() exactly when error == none
+  bool ok() const noexcept {return error==NativeDatabaseCreateError::none&&plan.ready();}
+};
+NativeDatabaseCreatePlanResult PlanNativeDatabaseCreate(
     const NativeDatabaseCreateRequest&,core::uuid::StandaloneUuidV7Issuer&) noexcept;
+// Consumes `plan` (moved from, whatever the outcome). `empty_owned` as for
+// CreateNativeDatabaseOnOpenDevice. The only refusals are the device's
+// (workspace_failure with invalid_device / device_not_empty / io_failure /
+// readback_mismatch / graph_failure ...), or invalid_request for a plan that
+// is not ready.
+NativeDatabaseCreateResult WriteNativeDatabaseCreatePlan(
+    disk::FileDevice& empty_owned,NativeDatabaseCreatePlan&& plan) noexcept;
 // Opens a new, empty native database file for CreateNativeDatabaseOnOpenDevice:
 // O_CREAT|O_EXCL, then flock(LOCK_EX|LOCK_NB) on the new descriptor before any
 // write, and no lock file. If another opener flocks the new file between the

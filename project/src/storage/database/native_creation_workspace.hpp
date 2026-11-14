@@ -7,6 +7,7 @@
 #include "catalog_named_creation.hpp"
 #include "native_index_btree_page.hpp"
 #include "catalog_page.hpp"
+#include <memory>
 
 namespace scratchbird::storage::database {
 enum class NativePinnedCatalogReadError;
@@ -114,4 +115,48 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
     // (an empty root, page-zero kind 24). It needs the comments relation
     // (role 7) indexed and empty.
     const std::optional<page::NativeBtreeDependencies>& comment_tree={}) noexcept;
+
+// SEARCH_KEY: SB_NATIVE_CREATE_WRITE_CONSUMES_PLAN (owner Q134 = 1,
+// 2026-11-14). InitializeIndexedNativeCreationWorkspaceOnOpenDevice in two
+// halves, so the assembly can run before the database file exists:
+//  - PlanIndexedNativeCreationWorkspace runs every step before the first
+//    write (validation, capacity and budget checks, the layout, every storage
+//    identity from the issuer, every page image encoded and hashed) and
+//    touches no device. Every refusal it can produce happens here.
+//  - WriteNativeCreationWorkspacePlanOnOpenDevice consumes the plan: it checks
+//    the device (owned native data file, open, writable, empty), writes the
+//    images, syncs, reads back, writes page zero last and verifies the file as
+//    the server opens it. Its refusals are the device's only.
+// InitializeIndexedNativeCreationWorkspaceOnOpenDevice is plan + write under
+// one device guard, with its refusal order unchanged. (Was: one function,
+// which assembled and wrote after the caller had opened the file.)
+class NativeCreationWorkspacePlan {
+ public:
+  struct State;  // native_creation_workspace.cpp
+  NativeCreationWorkspacePlan() noexcept;
+  explicit NativeCreationWorkspacePlan(std::unique_ptr<State>) noexcept;
+  NativeCreationWorkspacePlan(NativeCreationWorkspacePlan&&) noexcept;
+  NativeCreationWorkspacePlan& operator=(NativeCreationWorkspacePlan&&) noexcept;
+  NativeCreationWorkspacePlan(const NativeCreationWorkspacePlan&)=delete;
+  NativeCreationWorkspacePlan& operator=(const NativeCreationWorkspacePlan&)=delete;
+  ~NativeCreationWorkspacePlan();
+  bool ready() const noexcept {return state_!=nullptr;}
+  std::unique_ptr<State> release() noexcept;  // defined where State is complete
+ private:
+  std::unique_ptr<State> state_;
+};
+struct NativeCreationWorkspacePlanResult {
+  NativeCreationWorkspaceError error=NativeCreationWorkspaceError::invalid_request;
+  std::optional<core::platform::u64> failed_page_number;
+  page::NativeBtreeError btree_error=page::NativeBtreeError::none;
+  NativeCreationWorkspacePlan plan;
+  bool ok() const noexcept {return error==NativeCreationWorkspaceError::none&&plan.ready();}
+};
+NativeCreationWorkspacePlanResult PlanIndexedNativeCreationWorkspace(
+    const NativeFilespaceInitializationRequest&,const NativeCreationCatalogSeed&,
+    const NativeCreationCatalogIndexes&,core::platform::u64 maximum_retained_image_bytes,
+    core::uuid::StandaloneUuidV7Issuer&,const NativeCreationCatalogNameTrees& name_trees={},
+    const std::optional<page::NativeBtreeDependencies>& comment_tree={}) noexcept;
+NativeCreationWorkspaceResult WriteNativeCreationWorkspacePlanOnOpenDevice(
+    disk::FileDevice&,NativeCreationWorkspacePlan&&) noexcept;
 }  // namespace scratchbird::storage::database

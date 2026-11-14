@@ -145,9 +145,11 @@ int main() try {
   for (std::size_t i = 0; i < s.management_profiles.size(); ++i)
     Check(static_cast<std::uint64_t>(s.management_profiles[i]) == i + 1, "management profile codes 1..10 in order");
   Check(s.identifier_profiles[0].comparison_mode == c::IdentifierComparisonMode::exact &&
-            s.identifier_profiles[0].length_unit == c::IdentifierLengthUnit::encoded_octets &&
+            // Q139 = 1 (owner 2026-11-14): unicode scalar values (was encoded_octets).
+            s.identifier_profiles[0].length_unit == c::IdentifierLengthUnit::unicode_scalar_values &&
             // Q127 = 3 (owner 2026-11-14): the profile's maximum, from the pack.
-            s.identifier_profiles[0].maximum_identifier_length == 1024 &&
+            // Q139 = 1: 512 (was 1024, Q127/Q131).
+            s.identifier_profiles[0].maximum_identifier_length == 512 &&
             s.collision_policies[0].enforcement_points == (1ull << 13) && s.collision_policies[0].all_built_in_record_kinds &&
             s.collision_groups[0].language_lane == c::CatalogCollisionLanguageLane::exact_tag, "naming and collision values");
 
@@ -165,10 +167,12 @@ int main() try {
   Refuses(LoadEdited(nullptr, "", "", true), "a partial native policy family set refuses");
   // Q127 = 3 (owner 2026-11-14): maximum_identifier_length is required (0 is
   // the explicit "no limit"); a profile without it refuses.
-  Refuses(LoadEdited("policies/native_naming_profiles.json", "\"maximum_identifier_length\": 1024,", ""),
+  // Q139 = 1: the default pack's value is now 512 (was "...: 1024," here).
+  Refuses(LoadEdited("policies/native_naming_profiles.json", "\"maximum_identifier_length\": 512,", ""),
           "Q127: an identifier profile without maximum_identifier_length refuses");
   {
-    const auto unlimited = LoadEdited("policies/native_naming_profiles.json", "\"maximum_identifier_length\": 1024",
+    // Q139 = 1: edits the pack's 512 (was its 1024).
+    const auto unlimited = LoadEdited("policies/native_naming_profiles.json", "\"maximum_identifier_length\": 512",
                                       "\"maximum_identifier_length\": 0");
     Check(unlimited.ok() && unlimited.seeds && unlimited.seeds->identifier_profiles[0].maximum_identifier_length == 0,
           "Q127: maximum_identifier_length 0 (no project-defined limit) loads");
