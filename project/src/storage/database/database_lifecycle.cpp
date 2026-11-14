@@ -1732,11 +1732,15 @@ bool IsSafeBootstrapPrincipalNameCharacters(std::string_view value) {
 
 // Q135 (2026-11-14): kept, with its 128-byte cap, ONLY for callers that hold
 // no identifier profile: the policy-pack loader's agent_type_id keys (not
-// principal names), the legacy create paths (ValidateCreateConfig,
+// principal names; since Q141 = 1 they have their own rule,
+// IsValidPolicyPackAgentTypeIdKey, below), the legacy create paths (ValidateCreateConfig,
 // MaterializeBootstrapSecurityRows) and the legacy security-record read
 // validator (ValidateBootstrapSecurityRecords). Owner question: whether those
 // keep a cap, take the pack's profile, or go with the legacy create (Q93).
 // The native create path no longer calls it.
+// Update 2026-11-14 (owner Q141 = 1): the remaining callers (legacy create,
+// legacy security-record validation) keep it until the legacy create cut
+// (Q93).
 bool IsSafeBootstrapPrincipalName(std::string_view value) {
   if (value.empty() || value.size() > 128) {
     return false;
@@ -1752,6 +1756,27 @@ bool IsSafeBootstrapPrincipalName(std::string_view value) {
     }
   }
   return true;
+}
+
+// SEARCH_KEY: SB_POLICY_PACK_AGENT_TYPE_ID_KEY_RULE (owner Q141 = 1,
+// 2026-11-14). The policy-pack loader's agent_type_id values are pack KEYS
+// (one per agent type, unique in the pack), not principal names a caller
+// chooses, so they get their own named rule and length constant here instead
+// of borrowing IsSafeBootstrapPrincipalName. The rule is deliberately the same
+// one (same characters, same 128-byte cap), because the key is coupled to a
+// principal name: the agent's principal is named by its agent_type_id
+// (NativeAgentPrincipalDefinition, "principal_name"; legacy create matches it
+// against spec.principal_name and checks that with
+// IsSafeBootstrapPrincipalName), and CatalogAgentTypeForTag maps it to the
+// agent-type constant. A divergence would let a pack load and then fail at a
+// legacy principal check. Until the legacy create cut (Q93) the two stay equal.
+// (Was: IsSafeBootstrapPrincipalName(agent_type_id) at both loader sites.)
+inline constexpr std::size_t kPolicyPackAgentTypeIdKeyMaximumOctets = 128;
+bool IsValidPolicyPackAgentTypeIdKey(std::string_view value) {
+  if (value.empty() || value.size() > kPolicyPackAgentTypeIdKeyMaximumOctets) {
+    return false;
+  }
+  return IsSafeBootstrapPrincipalNameCharacters(value);
 }
 
 struct BootstrapCredentialFingerprintFields {
@@ -2787,7 +2812,7 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
       if (!ExtractStringField(object, "agent_type_id", &seed.agent_type_id) ||
           !ExtractStringField(object, "authority_class", &seed.authority_class) ||
           seed.agent_type_id.empty() || seed.authority_class.empty() ||
-          !IsSafeBootstrapPrincipalName(seed.agent_type_id) ||
+          !IsValidPolicyPackAgentTypeIdKey(seed.agent_type_id) ||
           !seen_agent_types.insert(seed.agent_type_id).second) {
         return PolicyPackLoadError("SB-POLICY-PACK-AGENT-AUTHORITY-INVALID",
                                    seed.agent_type_id);
@@ -2842,7 +2867,7 @@ PolicyPackLoadResult LoadSelectedPolicySeedPack(const std::string& pack_root_tex
           !ExtractStringField(object, "task_group", &type.task_group) ||
           !ExtractPolicyIdentity(object, "role_uuid", &type.role_uuid) ||
           type.task_group.empty() ||
-          !IsSafeBootstrapPrincipalName(type.agent_type_id) ||
+          !IsValidPolicyPackAgentTypeIdKey(type.agent_type_id) ||
           !seen_type_ids.insert(type.agent_type_id).second) {
         return PolicyPackLoadError("SB-POLICY-PACK-AGENT-AUTHORITY-INVALID",
                                    "agent_types/" + type.agent_type_id);
@@ -9794,13 +9819,15 @@ static NativeDatabaseCreateResult PlanNativeDatabaseCreateImpl(
     {
       const auto plan=detail::PlanNativeCreationCatalogLayout(request.page_size_bytes,0,request.total_pages,
           request.maximum_retained_image_bytes,seed,index_rows.indexes,true,index_rows.comment_tree.has_value());
-      if(!plan.ok())return fail(plan.error==detail::NativeCreationLayoutError::resource_exhausted?E::resource_exhausted:E::capacity_exceeded);
+      // Q144 (SB_NATIVE_CREATE_CAPACITY_BOUND): the bound is carried out.
+      if(!plan.ok()){result.capacity_bound=plan.bound;
+        return fail(plan.error==detail::NativeCreationLayoutError::resource_exhausted?E::resource_exhausted:E::capacity_exceeded);}
       for(unsigned i=0;i<page::kNativeCatalogRelationRoles;++i) {
         const auto pages=plan.layout->relations[i].starts.size();
         const bool credential=i==3||i==4;
         if(seed[i].size()>(credential?kNativeHostedCatalogRelationMaximumRows:kNativeCatalogScanRelationMaximumRows)||
             pages>(credential?NativeHostedCatalogBasePages(request.page_size_bytes):NativeCatalogScanBasePages(request.page_size_bytes)))
-          return fail(E::capacity_exceeded);
+          {result.capacity_bound=NativeCreationCapacityBound::relation_hosted_bound;return fail(E::capacity_exceeded);}
       }
     }
 
@@ -9814,7 +9841,7 @@ static NativeDatabaseCreateResult PlanNativeDatabaseCreateImpl(
     // after the open, and the create ran this whole body a second time.)
     auto workspace=PlanIndexedNativeCreationWorkspace(construction,seed,index_rows.indexes,
         request.maximum_retained_image_bytes,issuer,index_rows.name_trees,index_rows.comment_tree);
-    if(!workspace.ok()){result.workspace_error=workspace.error;return fail(E::workspace_failure);}
+    if(!workspace.ok()){result.workspace_error=workspace.error;result.capacity_bound=workspace.capacity_bound;return fail(E::workspace_failure);}
     NativeDatabaseCreateReceipt receipt;
     // SB_ONE_DATABASE_UUID: no separate database-object UUID to return.
     receipt.database_uuid=database;receipt.filespace_uuid=filespace;
@@ -9841,8 +9868,10 @@ NativeDatabaseCreateResult WriteNativeDatabaseCreatePlan(disk::FileDevice& empty
   NativeDatabaseCreateResult result;
   // The plan is consumed whether or not the write succeeds.
   auto workspace=std::move(plan.workspace);auto receipt=std::move(plan.receipt);
-  if(!workspace.ready()||!receipt){result.error=NativeDatabaseCreateError::invalid_request;return result;}
+  if(!workspace.ready()||!receipt){result.error=NativeDatabaseCreateError::invalid_request;
+    result.write_progress=NativeCreationWriteProgress::no_write_issued;return result;}
   const auto written=WriteNativeCreationWorkspacePlanOnOpenDevice(empty_owned,std::move(workspace));
+  result.write_progress=written.write_progress;  // Q140
   if(!written.ok()){result.workspace_error=written.error;result.error=NativeDatabaseCreateError::workspace_failure;return result;}
   try {
     receipt->workspace=*written.receipt;

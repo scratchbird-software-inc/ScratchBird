@@ -272,9 +272,27 @@ class FileDevice {
   // a device not opened for native ownership. Either way the device is closed
   // when this returns. POSIX only; refused (nothing unlinked) on Windows.
   enum class EmptyNativeCreateRemoval {
-    removed, not_owner, not_empty, path_replaced, inspect_failed, unlink_failed
+    removed, not_owner, not_empty, path_replaced, inspect_failed, unlink_failed,
+    // Q140 (below) only:
+    removed_page_zero_blank,  // non-empty, page zero all zero bytes: removed
+    page_zero_not_blank       // page zero has a non-zero byte: left alone
   };
   EmptyNativeCreateRemoval RemoveAndCloseIfStillEmptyNativeCreate() noexcept;
+  // SEARCH_KEY: SB_NATIVE_CREATE_PARTIAL_FILE_UNLINK (owner Q140 = 1,
+  // 2026-11-14). For a native create whose write failed part-way after the
+  // O_EXCL open, when the CALLER knows its write never issued the page-zero
+  // image write (page zero is written last; NativeCreationWriteProgress::
+  // page_zero_never_issued). The same checks as the Q108 removal above
+  // (native data-file owner, flock held, the path's st_dev/st_ino equal our
+  // descriptor's), except that a non-empty file is removed too, provided the
+  // first min(file size, page_size_bytes) bytes, read under the flock through
+  // our own descriptor, are all zero: page zero was never written. The
+  // create's zero fill writes page zero as zeros first, so a blank page zero
+  // is what our own partial write leaves; any non-zero byte there
+  // (page_zero_not_blank) leaves the file alone. An empty file is removed as
+  // by Q108 (removed). The device is closed when this returns.
+  // page_size_bytes 0 refuses (not_owner, nothing unlinked).
+  EmptyNativeCreateRemoval RemoveAndCloseNativeCreateWithBlankPageZero(u64 page_size_bytes) noexcept;
   IoResult ReadAt(u64 offset, void* buffer, usize bytes);
   // Declare before ALL enclosing device/source guards; device outlives batch.
   // Fixed receipts include partial effects and numeric native errors. Captured
@@ -402,6 +420,8 @@ class FileDevice {
   }
 
  private:
+  // Q108 / Q140 body (SB_NATIVE_CREATE_EMPTY_FILE_UNLINK, SB_NATIVE_CREATE_PARTIAL_FILE_UNLINK).
+  EmptyNativeCreateRemoval RemoveAndCloseNativeCreateImpl(u64 page_size_bytes, bool blank_page_zero_allowed) noexcept;
   friend class scratchbird::storage::database::NativeOwnedCheckpointSource;
   friend class scratchbird::storage::database::NativeOwnedCheckpointWriter;
   friend class RouteSourceTransition;

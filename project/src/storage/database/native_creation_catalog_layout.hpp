@@ -130,9 +130,12 @@ inline constexpr std::size_t NativeNameTreeLeafCellBytes(std::size_t key,std::si
 inline constexpr std::size_t NativeNameTreeBranchCellBytes(std::size_t key) noexcept {return 3+key+16+1;}
 
 enum class NativeCreationLayoutError {none,invalid_input,capacity_exceeded,resource_exhausted};
+// Q144: NativeCreationCapacityBound (native_creation_workspace.hpp) names
+// the bound a refused layout met.
 struct NativeCreationLayoutResult {
   NativeCreationLayoutError error=NativeCreationLayoutError::invalid_input;
   std::optional<NativeCreationCatalogLayout> layout;
+  NativeCreationCapacityBound bound=NativeCreationCapacityBound::none;  // Q144
   bool ok() const noexcept{return error==NativeCreationLayoutError::none&&layout.has_value();}
 };
 // Shared exact physical layout for construction and original-operation recovery.
@@ -148,14 +151,18 @@ inline NativeCreationLayoutResult PlanNativeCreationCatalogLayout(
     u64 size,u64 maps,u64 total,u64 budget,const NativeCreationCatalogSeed& seed,
     const NativeCreationCatalogIndexes& indexes,bool name_trees=false,bool comment_tree=false) noexcept {
   using E=NativeCreationLayoutError;
-  const auto fail=[](E e){return NativeCreationLayoutResult{e,{}};};
+  using B=NativeCreationCapacityBound;
+  B bound=B::none;  // Q144: set before each capacity refusal below
+  const auto fail=[&bound](E e){return NativeCreationLayoutResult{e,{},bound};};
   const u64 controls=kNativeCreationControlPages,first_leaf=kNativeCreationFirstLeafControl;
   try {
     if(!std::any_of(disk::kCanonicalFilespacePageProfiles.begin(),disk::kCanonicalFilespacePageProfiles.end(),
         [size](const auto& p){return p.page_size_bytes==size;})||
-        maps>std::numeric_limits<u64>::max()-20||total<maps+controls)
+        maps>std::numeric_limits<u64>::max()-20)
       return fail(E::invalid_input);
-    if(budget/size<2||maps+controls>budget/size-2)return fail(E::resource_exhausted);
+    // Q144: still invalid_input (unchanged), now with its bound named.
+    if(total<maps+controls){bound=B::total_pages;return fail(E::invalid_input);}
+    if(budget/size<2||maps+controls>budget/size-2){bound=B::image_budget;return fail(E::resource_exhausted);}
     NativeCreationCatalogLayout plan;plan.image_count=maps+controls;
     plan.root_cells=NativeCatalogBtreeRootCells(size);plan.leaf_cells=NativeCatalogBtreeLeafCells(size);
     const u64 capacity=size-128-32-page::kRowDataPageBodyHeaderBytes;
@@ -166,8 +173,8 @@ inline NativeCreationLayoutResult PlanNativeCreationCatalogLayout(
       if(step==kNativeCreationFixedLeafRoles) {
         // The transaction header page (owner 2026-11-05, Q3 = 1), after every
         // catalog page of roles 1..6.
-        if(plan.image_count>=total)return fail(E::capacity_exceeded);
-        if(plan.image_count>=budget/size-2)return fail(E::resource_exhausted);
+        if(plan.image_count>=total){bound=B::total_pages;return fail(E::capacity_exceeded);}
+        if(plan.image_count>=budget/size-2){bound=B::image_budget;return fail(E::resource_exhausted);}
         plan.transaction_header_page=plan.image_count++;
         continue;
       }
@@ -175,21 +182,21 @@ inline NativeCreationLayoutResult PlanNativeCreationCatalogLayout(
       const auto& rows=seed[role];auto& p=plan.relations[role];
       const auto shape=NativeCatalogBtreeShapeFor(size,rows.size());
       if(indexes[role]?!shape.ok():rows.size()>size/128)
-        return fail(E::capacity_exceeded);
+        {bound=B::relation_rows;return fail(E::capacity_exceeded);}
       p.starts.push_back(0);u64 remaining=capacity;
       for(std::size_t at=0;at<rows.size();++at) {
         const auto bytes=NativeCreationCatalogRowBytes(rows[at]);
         if(!bytes)return fail(E::invalid_input);
-        if(*bytes>capacity)return fail(E::capacity_exceeded);
+        if(*bytes>capacity){bound=B::row_bytes;return fail(E::capacity_exceeded);}
         if(*bytes>remaining) {
-          if(!indexes[role])return fail(E::capacity_exceeded);
+          if(!indexes[role]){bound=B::relation_rows;return fail(E::capacity_exceeded);}
           p.starts.push_back(at);remaining=capacity;
         }
         remaining-=*bytes;
       }
       const auto allocate=[&]() {
-        if(plan.image_count>=total)throw E::capacity_exceeded;
-        if(plan.image_count>=budget/size-2)throw E::resource_exhausted;
+        if(plan.image_count>=total){bound=B::total_pages;throw E::capacity_exceeded;}
+        if(plan.image_count>=budget/size-2){bound=B::image_budget;throw E::resource_exhausted;}
         return plan.image_count++;
       };
       if(role<kNativeCreationFixedLeafRoles)p.bases.push_back(maps+first_leaf+role);
@@ -214,8 +221,8 @@ inline NativeCreationLayoutResult PlanNativeCreationCatalogLayout(
       auto cells=BuildNativeCreationNameTreeCellSeeds(seed);
       if(!cells)return fail(E::invalid_input);
       const auto allocate=[&]() {
-        if(plan.image_count>=total)throw E::capacity_exceeded;
-        if(plan.image_count>=budget/size-2)throw E::resource_exhausted;
+        if(plan.image_count>=total){bound=B::total_pages;throw E::capacity_exceeded;}
+        if(plan.image_count>=budget/size-2){bound=B::image_budget;throw E::resource_exhausted;}
         return plan.image_count++;
       };
       std::array<NativeCreationNameTreeLayout,2> trees;
@@ -223,14 +230,14 @@ inline NativeCreationLayoutResult PlanNativeCreationCatalogLayout(
         auto& layout=trees[t];const auto& tree_cells=(*cells)[t];layout.cells=tree_cells.size();
         std::size_t longest_key=0,largest_cell=0,total_bytes=0;
         for(const auto& cell:tree_cells){
-          if(cell.key.size()+cell.payload.size()>size/4)return fail(E::capacity_exceeded);  // key_too_long
+          if(cell.key.size()+cell.payload.size()>size/4){bound=B::name_tree_cell;return fail(E::capacity_exceeded);}  // key_too_long
           longest_key=std::max(longest_key,cell.key.size());
           const auto bytes=NativeNameTreeLeafCellBytes(cell.key.size(),cell.payload.size());
           largest_cell=std::max(largest_cell,bytes);total_bytes+=bytes;
         }
         // Prefix 640; a leaf or branch carries two fences of up to the longest key.
         const std::size_t fences=2*(longest_key+40);
-        if(size<640+fences+2*largest_cell)return fail(E::capacity_exceeded);
+        if(size<640+fences+2*largest_cell){bound=B::name_tree_cell;return fail(E::capacity_exceeded);}
         const std::size_t root_budget=(size-640)*kNativeNameTreeCreateFillNumerator/kNativeNameTreeCreateFillDenominator;
         const std::size_t leaf_budget=std::max(largest_cell,(size-640-fences)*kNativeNameTreeCreateFillNumerator/kNativeNameTreeCreateFillDenominator);
         layout.tree.root=allocate();
@@ -261,11 +268,11 @@ inline NativeCreationLayoutResult PlanNativeCreationCatalogLayout(
       // SB_NATIVE_COMMENT_TREE: one root page; a create with comment rows has
       // no tree layout (the native create writes none, owner 2026-11-13).
       if(!seed[kNativeCommentRelationIndex].empty())return fail(E::invalid_input);
-      if(plan.image_count>=total)return fail(E::capacity_exceeded);
-      if(plan.image_count>=budget/size-2)return fail(E::resource_exhausted);
+      if(plan.image_count>=total){bound=B::total_pages;return fail(E::capacity_exceeded);}
+      if(plan.image_count>=budget/size-2){bound=B::image_budget;return fail(E::resource_exhausted);}
       plan.comment_tree_root=plan.image_count++;
     }
-    return {E::none,std::move(plan)};
+    return {E::none,std::move(plan),B::none};
   }catch(E e){return fail(e);}
    catch(const std::bad_alloc&){return fail(E::resource_exhausted);}
    catch(const std::length_error&){return fail(E::resource_exhausted);}

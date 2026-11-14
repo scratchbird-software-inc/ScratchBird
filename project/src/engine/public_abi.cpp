@@ -7173,7 +7173,13 @@ sb_engine_status_t AcquireStatementContextReceipt(
         "ENGINE.STATEMENT_CONTEXT.SESSION_CONTEXT_MISMATCH",
         "engine.statement_context.session_context_mismatch");
   }
+  // SEARCH_KEY: SB_STATEMENT_RECEIPT_STAMPED_AT_ACQUIRE (owner Q143 = 1,
+  // 2026-11-14). The receipt identity is the engine's, like the statement
+  // identity: a caller-supplied non-nil statement_receipt_uuid is refused
+  // here with the statement_uuid refusal's code and detail. (Was, Q137: any
+  // caller value was silently replaced by the issued receipt's UUID.)
   if (!engine_context.statement_uuid.is_nil() ||
+      !engine_context.statement_receipt_uuid.is_nil() ||
       !engine_context.statement_snapshot_uuid.is_nil() ||
       engine_context.statement_metadata_snapshot_engine_owned ||
       !engine_context.statement_metadata_snapshot_uuid.is_nil() ||
@@ -9025,8 +9031,10 @@ sb_engine_status_t AcquireStatementContextReceipt(
   // (copies, dispatch contexts, the cancellation binding and DML resource
   // receipt built just below from this context) carries it: a statement is
   // traceable to its receipt, the receipt to its session, the session to
-  // the user it was given to. It also replaces any value the caller put in
-  // its request context. (Was: nil here; stamped only on copies,
+  // the user it was given to. Update 2026-11-14 (owner Q143 = 1): a caller
+  // value is now refused above (4037), so this is always the first value.
+  // (Was, Q137: "It also replaces any value the caller put in its request
+  // context.") (Was: nil here; stamped only on copies,
   // CopyStatementContextEngineContextV1 / ProjectStatementContextLiteral-
   // AuthorityV2 / CoordinateSessionValueDescriptorV1, and on this context
   // lazily at dispatch, DispatchStatementContextReceipt.)

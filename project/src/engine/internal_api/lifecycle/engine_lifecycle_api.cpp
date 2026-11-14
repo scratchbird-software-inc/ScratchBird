@@ -431,6 +431,70 @@ const char* NativeCreationWorkspaceErrorName(scratchbird::storage::database::Nat
   return "unknown";
 }
 
+// SEARCH_KEY: SB_NATIVE_CREATE_CAPACITY_BOUND (owner Q144 = 1, 2026-11-14).
+const char* NativeCreationCapacityBoundName(scratchbird::storage::database::NativeCreationCapacityBound bound) {
+  using B = scratchbird::storage::database::NativeCreationCapacityBound;
+  switch (bound) {
+    case B::none: return "none";
+    case B::total_pages: return "total_pages";
+    case B::total_pages_excessive: return "total_pages_excessive";
+    case B::row_bytes: return "row_bytes";
+    case B::name_tree_cell: return "name_tree_cell";
+    case B::relation_rows: return "relation_rows";
+    case B::relation_hosted_bound: return "relation_hosted_bound";
+    case B::image_budget: return "image_budget";
+  }
+  return "unknown";
+}
+
+// SEARCH_KEY: SB_NATIVE_CREATE_CAPACITY_BOUND (owner Q144 = 1, 2026-11-14).
+// The code for a native-create plan refusal (before the open). A refusal
+// whose cause the plan can attribute to the caller's own input gets its own
+// code; every other stage stays DATABASE.CREATE_FAILED. Not every one of those
+// is engine- or pack-only: policy_assembly is also reached by the caller's
+// principal names colliding (bootstrap named as the service principal), and
+// the plan does not say which name collided, so no code is invented for it
+// (owner question). Stage by stage
+// (NativeDatabaseCreateError; the bound decides for the capacity stages):
+//   invalid_principal                     -> DATABASE.CREATE_PRINCIPAL_INVALID
+//     (a principal name breaking the character rule, a credential
+//     fingerprint that does not parse or is over 256 bytes)
+//   any stage, bound total_pages          -> DATABASE.CREATE_TOTAL_PAGES_INSUFFICIENT
+//     (total_pages: cannot hold the maps, controls and catalog pages)
+//   any stage, bound total_pages_excessive -> DATABASE.CREATE_TOTAL_PAGES_EXCESSIVE
+//     (total_pages: over the device extent, or more allocation maps than the
+//     page size's image budget holds)
+//   any stage, bound row_bytes or name_tree_cell
+//                                         -> DATABASE.CREATE_ROW_EXCEEDS_PAGE_CAPACITY
+//     (one row or name-tree cell, in practice a long caller name, is larger
+//     than this page size holds: a larger page size or a shorter name)
+//   capacity_exceeded with bound relation_rows / relation_hosted_bound, and
+//   resource_exhausted with bound image_budget (the pack's content against
+//   this page size's fixed bounds), invalid_request, identity_failure,
+//   policy_assembly, database_assembly, schema_assembly, agent_assembly,
+//   audit_failure, index_failure, datatype_assembly, name_path,
+//   resource_exhausted (memory), workspace_failure without an input bound
+//                                         -> DATABASE.CREATE_FAILED (unchanged)
+// The detail keeps native_create_refused_before_open:<stage>[:<workspace>]
+// and adds :bound=<bound> when a bound is named.
+// (Was: every plan refusal DATABASE.CREATE_FAILED.)
+const char* NativeCreatePlanRefusalCode(const scratchbird::storage::database::NativeDatabaseCreateResult& plan) {
+  using E = scratchbird::storage::database::NativeDatabaseCreateError;
+  using B = scratchbird::storage::database::NativeCreationCapacityBound;
+  if (plan.error == E::invalid_principal) return "DATABASE.CREATE_PRINCIPAL_INVALID";
+  switch (plan.capacity_bound) {
+    case B::total_pages: return "DATABASE.CREATE_TOTAL_PAGES_INSUFFICIENT";
+    case B::total_pages_excessive: return "DATABASE.CREATE_TOTAL_PAGES_EXCESSIVE";
+    case B::row_bytes:
+    case B::name_tree_cell: return "DATABASE.CREATE_ROW_EXCEEDS_PAGE_CAPACITY";
+    case B::none:
+    case B::relation_rows:
+    case B::relation_hosted_bound:
+    case B::image_budget: break;
+  }
+  return "DATABASE.CREATE_FAILED";
+}
+
 // SEARCH_KEY: SB_ENGINE_CREATE_DATABASE_NATIVE (owner Q92/Q93/Q95/Q97/Q100 = 1,
 // 2026-11-13; plan 31 step S2). CREATE DATABASE in the native single-file
 // format through the production engine API. Authorised by the caller's server
@@ -695,10 +759,15 @@ EngineCreateLifecycleResult NativeCreateLifecycle(const EngineCreateLifecycleReq
     }
     if (!plan.ok()) {
       // Any other assembly refusal, now before the open. No file exists.
-      return refuse("DATABASE.CREATE_FAILED",
+      // Q144 = 1: input-driven stages get their own code
+      // (NativeCreatePlanRefusalCode); the detail names the bound.
+      return refuse(NativeCreatePlanRefusalCode(plan),
                     std::string("native_create_refused_before_open:") + NativeCreateErrorName(plan.error) +
                         (plan.error == db::NativeDatabaseCreateError::workspace_failure
                              ? std::string(":") + NativeCreationWorkspaceErrorName(plan.workspace_error)
+                             : std::string()) +
+                        (plan.capacity_bound != db::NativeCreationCapacityBound::none
+                             ? std::string(":bound=") + NativeCreationCapacityBoundName(plan.capacity_bound)
                              : std::string()));
     }
   }
@@ -720,15 +789,34 @@ EngineCreateLifecycleResult NativeCreateLifecycle(const EngineCreateLifecycleReq
     // open, so only the write's own failures reach here (the device checks,
     // I/O, readback). A failure before the first byte leaves an empty file,
     // which is removed; one after it leaves a partial file, which is not.
-    const auto removal = device.RemoveAndCloseIfStillEmptyNativeCreate();
-    const bool removed =
-        removal == disk::FileDevice::EmptyNativeCreateRemoval::removed;
+    // SEARCH_KEY: SB_NATIVE_CREATE_PARTIAL_FILE_UNLINK (owner Q140 = 1,
+    // 2026-11-14). A write that failed part-way but never issued its
+    // page-zero image write (page zero is written last) left a file that is
+    // not a database: it is removed too, while we hold the flock, with the
+    // Q108 checks plus proof read from the file. Two proofs, both required:
+    // the write's own record that it never issued the page-zero write
+    // (made.write_progress == page_zero_never_issued, set before each step)
+    // AND page zero's bytes, read under the flock, all zero. The record says
+    // our code never wrote page zero; the bytes guard against a fault in that
+    // record and against any other writer of the file. Either alone misses
+    // one of those. Every other outcome is as Q108: no write issued (device
+    // checks) or unknown -> removed only if empty; page-zero write issued ->
+    // never removed (a file with page zero may be a database).
+    // (Was: a part-way failure left its partial file, ;empty_file_not_removed.)
+    using Removal = disk::FileDevice::EmptyNativeCreateRemoval;
+    const auto removal =
+        made.write_progress == db::NativeCreationWriteProgress::page_zero_never_issued
+            ? device.RemoveAndCloseNativeCreateWithBlankPageZero(profile->page_size_bytes)
+            : device.RemoveAndCloseIfStillEmptyNativeCreate();
     return refuse("DATABASE.CREATE_FAILED",
                   std::string("native_create_refused:") + NativeCreateErrorName(made.error) +
                       (made.error == db::NativeDatabaseCreateError::workspace_failure
                            ? std::string(":") + NativeCreationWorkspaceErrorName(made.workspace_error)
                            : std::string()) +
-                      (removed ? ";empty_file_removed" : ";empty_file_not_removed"));
+                      (removal == Removal::removed                   ? ";empty_file_removed"
+                       : removal == Removal::removed_page_zero_blank ? ";partial_file_removed_page_zero_never_written"
+                       : removal == Removal::page_zero_not_blank     ? ";partial_file_not_removed_page_zero_not_blank"
+                                                                     : ";empty_file_not_removed"));
   }
   const auto closed = device.Close();
   if (!closed.ok()) {

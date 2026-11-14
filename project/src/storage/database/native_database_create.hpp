@@ -108,6 +108,13 @@ struct NativeDatabaseCreateResult {
   NativeInitialDatabaseError database_error=NativeInitialDatabaseError::none;
   core::catalog::CatalogInitialSchemaError schema_error=core::catalog::CatalogInitialSchemaError::none;
   NativeCreationWorkspaceError workspace_error=NativeCreationWorkspaceError::none;
+  // Q140 (SB_NATIVE_CREATE_PARTIAL_FILE_UNLINK): how far the write got, from
+  // WriteNativeDatabaseCreatePlan; unknown for a plan and elsewhere.
+  NativeCreationWriteProgress write_progress=NativeCreationWriteProgress::unknown;
+  // Q144 (SB_NATIVE_CREATE_CAPACITY_BOUND): with capacity_exceeded,
+  // resource_exhausted or workspace_failure, the bound the plan met (none if
+  // the refusal was not a capacity bound).
+  NativeCreationCapacityBound capacity_bound=NativeCreationCapacityBound::none;
   std::optional<core::platform::DiagnosticRecord> source_diagnostic;
   std::optional<NativeDatabaseCreateReceipt> receipt;
   bool ok() const noexcept {return error==NativeDatabaseCreateError::none&&receipt.has_value();}

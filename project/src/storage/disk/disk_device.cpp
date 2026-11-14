@@ -25,6 +25,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -2541,6 +2542,22 @@ IoResult FileDevice::Close() {
 // header. The checks and the unlink run under the operation guard while our
 // descriptor still holds the flock; Close follows in every case.
 FileDevice::EmptyNativeCreateRemoval FileDevice::RemoveAndCloseIfStillEmptyNativeCreate() noexcept {
+  return RemoveAndCloseNativeCreateImpl(0, false);
+}
+
+// SEARCH_KEY: SB_NATIVE_CREATE_PARTIAL_FILE_UNLINK (owner Q140 = 1). See the
+// header. One body with the Q108 removal; only the emptiness test differs.
+FileDevice::EmptyNativeCreateRemoval FileDevice::RemoveAndCloseNativeCreateWithBlankPageZero(
+    u64 page_size_bytes) noexcept {
+  if (page_size_bytes == 0) {
+    try { if (is_open()) (void)Close(); } catch (...) {}
+    return EmptyNativeCreateRemoval::not_owner;
+  }
+  return RemoveAndCloseNativeCreateImpl(page_size_bytes, true);
+}
+
+FileDevice::EmptyNativeCreateRemoval FileDevice::RemoveAndCloseNativeCreateImpl(
+    u64 page_size_bytes, bool blank_page_zero_allowed) noexcept {
   using R = EmptyNativeCreateRemoval;
   R outcome = R::not_owner;
   try {
@@ -2550,28 +2567,54 @@ FileDevice::EmptyNativeCreateRemoval FileDevice::RemoveAndCloseIfStillEmptyNativ
         outcome = R::not_owner;
       } else {
 #ifdef _WIN32
+        (void)page_size_bytes;
+        (void)blank_page_zero_allowed;
         outcome = R::not_owner;  // Native ownership is refused on Windows (S1).
 #else
         struct stat ours {};
         struct stat named {};
+        // Q140: for a non-empty file, read its page zero (or what exists of
+        // it) through our own descriptor while we hold the flock.
+        const auto page_zero_blank = [&]() -> std::optional<bool> {
+          const u64 want = std::min<u64>(static_cast<u64>(ours.st_size), page_size_bytes);
+          std::vector<unsigned char> bytes(static_cast<std::size_t>(want));
+          std::size_t done = 0;
+          while (done < bytes.size()) {
+            const auto got = ::pread(file_fd_, bytes.data() + done, bytes.size() - done,
+                                     static_cast<off_t>(done));
+            if (got < 0 && errno == EINTR) continue;
+            if (got <= 0) return std::nullopt;
+            done += static_cast<std::size_t>(got);
+          }
+          return std::all_of(bytes.begin(), bytes.end(), [](unsigned char b) { return b == 0; });
+        };
         if (::fstat(file_fd_, &ours) != 0) {
           outcome = R::inspect_failed;
-        } else if (ours.st_size != 0) {
+        } else if (ours.st_size != 0 && !blank_page_zero_allowed) {
           outcome = R::not_empty;
-        } else if (::lstat(path_.c_str(), &named) != 0 ||
-                   named.st_dev != ours.st_dev || named.st_ino != ours.st_ino) {
-          outcome = R::path_replaced;
-        } else if (::unlink(path_.c_str()) != 0) {
-          outcome = R::unlink_failed;
         } else {
-          outcome = R::removed;
+          const bool was_empty = ours.st_size == 0;
+          std::optional<bool> blank = true;
+          if (!was_empty) blank = page_zero_blank();
+          if (!blank) {
+            outcome = R::inspect_failed;
+          } else if (!*blank) {
+            outcome = R::page_zero_not_blank;
+          } else if (::lstat(path_.c_str(), &named) != 0 ||
+                     named.st_dev != ours.st_dev || named.st_ino != ours.st_ino) {
+            outcome = R::path_replaced;
+          } else if (::unlink(path_.c_str()) != 0) {
+            outcome = R::unlink_failed;
+          } else {
+            outcome = was_empty ? R::removed : R::removed_page_zero_blank;
+          }
         }
 #endif
       }
     }
     if (is_open()) (void)Close();
   } catch (...) {
-    if (outcome == R::removed) return outcome;
+    if (outcome == R::removed || outcome == R::removed_page_zero_blank) return outcome;
     outcome = R::inspect_failed;
   }
   return outcome;

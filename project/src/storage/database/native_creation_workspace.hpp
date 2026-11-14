@@ -18,6 +18,25 @@ enum class NativeCreationWorkspaceError {
   io_failure, readback_mismatch, graph_failure, cluster_requires_authority,
   encrypted_requires_crypto_authority, invalid_catalog_input, catalog_capacity_exceeded
 };
+// SEARCH_KEY: SB_NATIVE_CREATE_CAPACITY_BOUND (owner Q144 = 1, 2026-11-14).
+// Which bound a refused layout met, beside the error (whose values are
+// unchanged), so a create refusal can say what the caller's input ran into:
+//  total_pages            the page count cannot hold the layout (too few pages)
+//  total_pages_excessive  the page count is too large for the device extent or
+//                         the image budget (set by the workspace, not here)
+//  row_bytes              one catalog row is larger than a row page's capacity
+//  name_tree_cell         one name-tree cell (key + payload) is larger than a
+//                         quarter page, or two cells and fences do not fit
+//  relation_rows          a relation's row count or tree shape is over its bound
+//                         for this page size (or an unindexed relation needs a
+//                         second page)
+//  relation_hosted_bound  over the hosted reader's row or page bound (set by
+//                         native create's own check, not here)
+//  image_budget           the retained-image budget (from the page size)
+// none: not a capacity bound (invalid input, or no refusal).
+enum class NativeCreationCapacityBound {
+  none,total_pages,total_pages_excessive,row_bytes,name_tree_cell,relation_rows,relation_hosted_bound,image_budget
+};
 // SEARCH_KEY: SB_NATIVE_NAME_TREES (owner 2026-11-09). The dependency tuples
 // of the two name trees the create builds over the names relation: the
 // authoritative name tree (page-zero root kind 22) and the UUID-to-name tree
@@ -46,8 +65,28 @@ struct NativeCreationWorkspaceReceipt {
   // it was built (empty: the create writes no comments).
   std::optional<disk::FilespaceRootReference> comment_tree_root;
 };
+// SEARCH_KEY: SB_NATIVE_CREATE_PARTIAL_FILE_UNLINK (owner Q140 = 1,
+// 2026-11-14). How far a native create's write got, recorded by the write
+// itself BEFORE each step is issued, so it never claims less than was done:
+//  - no_write_issued: refused before the first device write (the device
+//    checks, a plan that is not ready);
+//  - page_zero_never_issued: device writes were issued, but never the page-zero
+//    image write (page zero is written last: the zero fill, every other
+//    page, their sync and readback);
+//  - page_zero_issued: the page-zero image write was issued (it, its sync,
+//    its readback or the verification after it failed).
+// unknown (the default, and any path that does not set it) is treated as
+// page_zero_issued: no partial-file removal.
+enum class NativeCreationWriteProgress {
+  unknown, no_write_issued, page_zero_never_issued, page_zero_issued
+};
 struct NativeCreationWorkspaceResult {
   NativeCreationWorkspaceError error=NativeCreationWorkspaceError::invalid_request;
+  // Q140: set by the write (WriteNativeCreationWorkspacePlanOnOpenDevice and
+  // InitializeIndexedNativeCreationWorkspaceOnOpenDevice); unknown elsewhere.
+  NativeCreationWriteProgress write_progress=NativeCreationWriteProgress::unknown;
+  // Q144 (SB_NATIVE_CREATE_CAPACITY_BOUND): the bound a capacity refusal met.
+  NativeCreationCapacityBound capacity_bound=NativeCreationCapacityBound::none;
   std::optional<core::platform::u64> failed_page_number;
   std::optional<NativePinnedCatalogReadError> catalog_read_error;
   std::optional<NativeCatalogRelationError> catalog_relation_error;
@@ -147,6 +186,8 @@ class NativeCreationWorkspacePlan {
 };
 struct NativeCreationWorkspacePlanResult {
   NativeCreationWorkspaceError error=NativeCreationWorkspaceError::invalid_request;
+  // Q144 (SB_NATIVE_CREATE_CAPACITY_BOUND): the bound a capacity refusal met.
+  NativeCreationCapacityBound capacity_bound=NativeCreationCapacityBound::none;
   std::optional<core::platform::u64> failed_page_number;
   page::NativeBtreeError btree_error=page::NativeBtreeError::none;
   NativeCreationWorkspacePlan plan;

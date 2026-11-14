@@ -24,6 +24,8 @@ using namespace core::platform;
 using E=NativeCreationWorkspaceError;
 namespace mga=transaction::mga;
 NativeCreationWorkspaceResult Fail(E e) {NativeCreationWorkspaceResult r;r.error=e;return r;}
+// Q144 (SB_NATIVE_CREATE_CAPACITY_BOUND): a refusal that names its bound.
+NativeCreationWorkspaceResult Fail(E e,NativeCreationCapacityBound bound) {auto r=Fail(e);r.capacity_bound=bound;return r;}
 template<class Error> E Cause(Error error) {
   if constexpr(requires{Error::resource_exhausted;})
     if(error==Error::resource_exhausted)return E::resource_exhausted;
@@ -217,11 +219,13 @@ NativeCreationWorkspaceResult PlanWorkspaceImpl(
     // SB_ALLOCATION_MAP_IN_PLACE (owner Q22 = 1): the in-place allocation map.
     const u64 size=b.page_size_bytes,total=request.total_pages,
         coverage=u64{page::AllocationMapInplaceSlotsPerPage(static_cast<u32>(size))};
+    using Bound=NativeCreationCapacityBound;  // Q144: errors unchanged, bounds named
     if(!coverage) return Fail(E::invalid_capacity);
-    if(!total||total>std::numeric_limits<u64>::max()/size||
-       !disk::CheckFileDeviceExtent(total*size,0).ok()) return Fail(E::invalid_capacity);
+    if(!total) return Fail(E::invalid_capacity);
+    if(total>std::numeric_limits<u64>::max()/size||
+       !disk::CheckFileDeviceExtent(total*size,0).ok()) return Fail(E::invalid_capacity,Bound::total_pages_excessive);
     const u64 maps=total/coverage+(total%coverage!=0);
-    if(maps>total||total-maps<controls) return Fail(E::invalid_capacity);
+    if(maps>total||total-maps<controls) return Fail(E::invalid_capacity,Bound::total_pages);
     const auto at=[&](unsigned control){return maps+offset[control];};
     // The filespace lifecycle page zero and the directory record. Page zero is
     // written last, so a fixed-root file whose page zero exists is complete:
@@ -235,14 +239,16 @@ NativeCreationWorkspaceResult PlanWorkspaceImpl(
     // The final selected admission retains the maps twice plus four controls,
     // and the in-place inventory's header page as a fifth.
     const u64 admitted=5;
-    if(budget/size<controls+2||maps>budget/size-controls-2||
-       budget/size<admitted||maps>(budget/size-admitted)/2||
-       maps>std::numeric_limits<std::size_t>::max()-controls) return Fail(E::resource_exhausted);
+    if(budget/size<controls+2||budget/size<admitted) return Fail(E::resource_exhausted,Bound::image_budget);
+    // Q144: the allocation maps grow with total_pages; too many for the budget.
+    if(maps>budget/size-controls-2||maps>(budget/size-admitted)/2||
+       maps>std::numeric_limits<std::size_t>::max()-controls) return Fail(E::resource_exhausted,Bound::total_pages_excessive);
 
     auto planned=detail::PlanNativeCreationCatalogLayout(size,maps,total,budget,seed,indexes,name_trees.requested(),
         comment_tree.has_value());
     if(!planned.ok())return Fail(planned.error==detail::NativeCreationLayoutError::resource_exhausted?E::resource_exhausted:
-        planned.error==detail::NativeCreationLayoutError::capacity_exceeded?E::catalog_capacity_exceeded:E::invalid_catalog_input);
+        planned.error==detail::NativeCreationLayoutError::capacity_exceeded?E::catalog_capacity_exceeded:E::invalid_catalog_input,
+        planned.bound);
     auto plan=std::move(*planned.layout);const auto& layouts=plan.relations;
     const auto image_count=plan.image_count,leaf_cells=plan.leaf_cells;
     std::set<Uuid> ids;
@@ -634,8 +640,12 @@ NativeCreationWorkspaceResult PlanWorkspaceImpl(
 // verifies the file the way the server opens it. Its only refusals are the
 // device's: I/O, readback mismatch, and a file that does not read back as
 // the graph the plan built.
+// Q140 (SB_NATIVE_CREATE_PARTIAL_FILE_UNLINK): `progress` is the caller's
+// and is set before each step is issued, so a failure or an exception at any
+// point leaves it saying at least how far the write went.
 NativeCreationWorkspaceResult WriteWorkspaceImpl(disk::FileDevice& device,
-    NativeCreationWorkspacePlan::State& planned_state) noexcept {
+    NativeCreationWorkspacePlan::State& planned_state,NativeCreationWriteProgress& progress) noexcept {
+  progress=NativeCreationWriteProgress::no_write_issued;
   try {
     const auto& request=planned_state.request;const auto& b=request.bootstrap;
     const u64 budget=planned_state.budget,size=planned_state.size,total=planned_state.total;
@@ -662,6 +672,7 @@ NativeCreationWorkspaceResult WriteWorkspaceImpl(disk::FileDevice& device,
       if(expected?scratch!=*expected:!std::all_of(scratch.begin(),scratch.end(),[](byte b){return !b;}))return E::readback_mismatch;
       return E::none;
     };
+    progress=NativeCreationWriteProgress::page_zero_never_issued;  // Q140
     for(u64 n=0;n<total;) {
       const u64 pages=std::min(zero_batch_pages,total-n),bytes=pages*size;
       const auto io=device.WriteAt(n*size,scratch.data(),bytes);
@@ -679,6 +690,7 @@ NativeCreationWorkspaceResult WriteWorkspaceImpl(disk::FileDevice& device,
       const auto error=compare(n,n>0&&n<images.size()?&images[n].bytes:nullptr);
       if(error!=E::none){auto failed=Fail(error);failed.failed_page_number=n;return failed;}
     }
+    progress=NativeCreationWriteProgress::page_zero_issued;  // Q140: from here, never removed
     if(!write(0,images[0].bytes)||!device.Sync().ok())return Fail(E::io_failure);
     if(const auto error=compare(0,&images[0].bytes);error!=E::none){
       auto failed=Fail(error);failed.failed_page_number=0;return failed;
@@ -806,6 +818,7 @@ NativeCreationWorkspacePlanResult PlanIndexedNativeCreationWorkspace(
   std::unique_ptr<NativeCreationWorkspacePlan::State> state;
   const auto planned=PlanWorkspaceImpl(nullptr,request,seed,indexes,budget,issuer,name_trees,comment_tree,state);
   result.error=planned.error;result.failed_page_number=planned.failed_page_number;result.btree_error=planned.btree_error;
+  result.capacity_bound=planned.capacity_bound;  // Q144
   if(planned.error==E::none&&state)result.plan=NativeCreationWorkspacePlan(std::move(state));
   else if(planned.error==E::none)result.error=E::invalid_request;
   return result;
@@ -817,8 +830,12 @@ NativeCreationWorkspaceResult WriteNativeCreationWorkspacePlanOnOpenDevice(
   auto state=plan.release();
   if(!state)return Fail(E::invalid_request);
   const auto guard=device.AcquireOperationGuard();
-  if(const auto checked=CheckOwnedEmptyDevice(device);checked!=E::none)return Fail(checked);
-  return WriteWorkspaceImpl(device,*state);
+  if(const auto checked=CheckOwnedEmptyDevice(device);checked!=E::none){
+    auto failed=Fail(checked);failed.write_progress=NativeCreationWriteProgress::no_write_issued;return failed;}
+  auto progress=NativeCreationWriteProgress::unknown;
+  auto written=WriteWorkspaceImpl(device,*state,progress);
+  written.write_progress=progress;
+  return written;
 }
 
 NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevice(
@@ -831,8 +848,11 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
   const auto guard=device.AcquireOperationGuard();
   std::unique_ptr<NativeCreationWorkspacePlan::State> state;
   auto planned=PlanWorkspaceImpl(&device,request,seed,indexes,budget,issuer,name_trees,comment_tree,state);
-  if(planned.error!=E::none)return planned;
-  if(!state)return Fail(E::invalid_request);
-  return WriteWorkspaceImpl(device,*state);
+  if(planned.error!=E::none){planned.write_progress=NativeCreationWriteProgress::no_write_issued;return planned;}
+  if(!state){auto failed=Fail(E::invalid_request);failed.write_progress=NativeCreationWriteProgress::no_write_issued;return failed;}
+  auto progress=NativeCreationWriteProgress::unknown;
+  auto written=WriteWorkspaceImpl(device,*state,progress);
+  written.write_progress=progress;
+  return written;
 }
 }  // namespace scratchbird::storage::database

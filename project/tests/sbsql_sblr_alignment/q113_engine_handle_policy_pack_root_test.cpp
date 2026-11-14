@@ -29,6 +29,10 @@
 // substitute a fresh target path into a copy of the receipt context; where a
 // create's target path should come from on this route is an owner question.
 //
+// Q143 = 1 (owner 2026-11-14): a request context that carries a non-nil
+// statement_receipt_uuid is refused at acquire (CALLER_AUTHORITY_FORBIDDEN),
+// checked in the receipt helper before its normal acquire.
+//
 // Q125 = 3 (owner 2026-11-14, SB_CREATE_DATABASE_NOT_ON_SESSION_ROUTE):
 // CREATE DATABASE stays OFF the session / statement-receipt route (create is
 // pre-security: a file write, not a connection). Checked here through the
@@ -198,6 +202,37 @@ api::EngineRequestContext ReceiptContext(const Fixture& fixture, sb_engine_handl
   // The caller (the server) cannot choose the root: whatever it puts here is
   // replaced by the handle's.
   context.server_policy_seed_pack_root = caller_root;
+  // Q143 = 1 (owner 2026-11-14, SB_STATEMENT_RECEIPT_STAMPED_AT_ACQUIRE): a
+  // caller-supplied receipt identity is refused, as a caller statement_uuid
+  // is: SB_ENGINE_STATUS_CONFLICT, ENGINE.STATEMENT_CONTEXT.CALLER_AUTHORITY_
+  // FORBIDDEN, and no receipt. (Was, Q137: accepted and replaced by the
+  // issued receipt's UUID.) The same context, with the field nil, is then
+  // acquired normally below.
+  {
+    auto stale = context;
+    stale.statement_receipt_uuid = api::EngineUuid{Fixed(0x77)};
+    bridge::StatementContextAcquireRequest refused_acquire;
+    refused_acquire.engine_context = &stale;
+    refused_acquire.exact_transaction_uuid = stale.transaction_uuid;
+    bridge::StatementContextReceiptHandle refused_receipt;
+    bridge::StatementContextReceiptView refused_view;
+    sb_engine_result_t refused_result = nullptr;
+    const auto refused =
+        bridge::AcquireStatementContextReceipt(session, &refused_acquire, &refused_receipt, &refused_view, &refused_result);
+    std::string code;
+    if (refused_result != nullptr) {
+      sb_engine_diagnostic_set_view_t diagnostics{};
+      if (sb_engine_result_diagnostics(refused_result, &diagnostics) == SB_ENGINE_STATUS_OK &&
+          diagnostics.diagnostic_count != 0)
+        code.assign(diagnostics.diagnostics[0].symbolic_code.data, diagnostics.diagnostics[0].symbolic_code.size_bytes);
+      (void)sb_engine_result_release(refused_result);
+    }
+    if (refused != SB_ENGINE_STATUS_CONFLICT || code != "ENGINE.STATEMENT_CONTEXT.CALLER_AUTHORITY_FORBIDDEN")
+      std::cerr << "Q143 acquire: " << sb_engine_status_name(refused) << " code=" << code << '\n';
+    Check(refused == SB_ENGINE_STATUS_CONFLICT && code == "ENGINE.STATEMENT_CONTEXT.CALLER_AUTHORITY_FORBIDDEN" &&
+              !refused_receipt,
+          "Q143: a caller-supplied statement_receipt_uuid is refused at acquire (was: replaced, Q137)");
+  }
   bridge::StatementContextAcquireRequest acquire;
   acquire.engine_context = &context;
   acquire.exact_transaction_uuid = context.transaction_uuid;

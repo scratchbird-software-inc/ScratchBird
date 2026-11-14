@@ -62,6 +62,12 @@
 //    the pack's profile decides (default: 512 scalars).
 //  - Q139 = 1: the default pack's profile is 512 unicode scalar values (was
 //    1024 encoded octets).
+//  - Q140 = 1 (SB_NATIVE_CREATE_PARTIAL_FILE_UNLINK): a write that fails
+//    part-way, never having issued its page-zero write, removes its partial
+//    file (write record + blank page zero, under the flock); a retry succeeds.
+//  - Q144 = 1 (SB_NATIVE_CREATE_CAPACITY_BOUND): input-driven plan refusals
+//    have their own codes (CREATE_PRINCIPAL_INVALID,
+//    CREATE_TOTAL_PAGES_INSUFFICIENT, ...); internal stages stay CREATE_FAILED.
 //
 // Modes: none (every check) or
 //   create <path> <page size> <language: en|fr-CA>
@@ -730,7 +736,11 @@ int main(int argc, char** argv) {
   // after the open, ;empty_file_removed, directories late-fingerprint and
   // late-pages.)
   {
-    const auto before_open = [&](const char* label, auto edit, const char* stage, const char* what) {
+    // Q144 = 1 (owner 2026-11-14, SB_NATIVE_CREATE_CAPACITY_BOUND): each case
+    // names its own code (was: DATABASE.CREATE_FAILED for all three); the
+    // detail still names the stage.
+    const auto before_open = [&](const char* label, auto edit, const char* stage, const char* code,
+                                 const char* what) {
       const auto dir = artifacts.path() / (std::string("q122-q134-") + label);
       std::filesystem::create_directory(dir);
       const auto path = (dir / "orders.sdb").string();
@@ -739,12 +749,12 @@ int main(int argc, char** argv) {
       const auto result = api::EngineCreateLifecycle(request);
       if (result.ok || !DetailHas(result, stage))
         for (const auto& diagnostic : result.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
-      Check(!result.ok && HasDiagnostic(result, "DATABASE.CREATE_FAILED") &&
+      Check(!result.ok && HasDiagnostic(result, code) && !HasDiagnostic(result, "DATABASE.CREATE_FAILED") &&
                 DetailHas(result, std::string("native_create_refused_before_open:") + stage) &&
                 !DetailHas(result, "native_create_refused:") && !DetailHas(result, ";empty_file_removed") &&
                 !DetailHas(result, ";empty_file_not_removed") && Entries(dir).empty(),
             what);
-      std::printf("Q134 %s: refused before the open (%s), no file\n", label, stage);
+      std::printf("Q134 %s: refused before the open (%s, %s), no file\n", label, code, stage);
       // The retry is a separate directory so the refusal's stays open-free.
       const auto retry_dir = artifacts.path() / (std::string("q134-retry-") + label);
       std::filesystem::create_directory(retry_dir);
@@ -756,8 +766,9 @@ int main(int argc, char** argv) {
     before_open("fingerprint", [](auto& r) {
       std::erase_if(r.option_envelopes, [](const auto& o) { return o.starts_with("bootstrap_credential_fingerprint:"); });
       r.option_envelopes.push_back("bootstrap_credential_fingerprint:not-a-fingerprint");
-    }, "invalid_principal",
-       "Q134: a bad credential fingerprint is refused before the open (was: Q108, after the open, file removed)");
+    }, "invalid_principal", "DATABASE.CREATE_PRINCIPAL_INVALID",
+       "Q134/Q144: a bad credential fingerprint is refused before the open, DATABASE.CREATE_PRINCIPAL_INVALID "
+       "(was: Q108, after the open, file removed; then Q134, DATABASE.CREATE_FAILED)");
     // Q127 = 3 (owner 2026-11-14): the server's pack is now read before the
     // open (for its identifier profile), so a pack that does not load is a
     // pre-open refusal; see the Q127 block below. Was: late("policy-pack",
@@ -766,16 +777,90 @@ int main(int argc, char** argv) {
     before_open("pages", [](auto& r) {
       std::erase_if(r.option_envelopes, [](const auto& o) { return o.starts_with("total_pages:"); });
       r.option_envelopes.push_back("total_pages:2");
-    }, "capacity_exceeded",
-       "Q134: too few pages is refused before the open (was: Q108, after the open, file removed)");
+    }, "capacity_exceeded:bound=total_pages", "DATABASE.CREATE_TOTAL_PAGES_INSUFFICIENT",
+       "Q134/Q144: too few pages is refused before the open, DATABASE.CREATE_TOTAL_PAGES_INSUFFICIENT "
+       "(was: Q108, after the open, file removed; then Q134, DATABASE.CREATE_FAILED capacity_exceeded)");
     // Q135 = 1: the principal-name character rule stays (first byte an ASCII
     // letter or '_'); a name that breaks it is an assembly refusal, so it too
     // is refused before the open.
     before_open("principal-characters", [](auto& r) {
       std::erase_if(r.option_envelopes, [](const auto& o) { return o.starts_with("bootstrap_principal_name:"); });
       r.option_envelopes.push_back("bootstrap_principal_name:9Admin");
-    }, "invalid_principal",
-       "Q135: a principal name that breaks the character rule is refused before the open");
+    }, "invalid_principal", "DATABASE.CREATE_PRINCIPAL_INVALID",
+       "Q135/Q144: a principal name that breaks the character rule is refused before the open, "
+       "DATABASE.CREATE_PRINCIPAL_INVALID (was: DATABASE.CREATE_FAILED)");
+    // Q144 = 1: the other input-driven bounds. Too many pages for the page
+    // size's image budget (the allocation maps) or for the device extent:
+    // DATABASE.CREATE_TOTAL_PAGES_EXCESSIVE.
+    before_open("pages-excessive-maps", [](auto& r) {
+      std::erase_if(r.option_envelopes, [](const auto& o) { return o.starts_with("total_pages:"); });
+      r.option_envelopes.push_back("total_pages:1000000000");
+    }, "workspace_failure:resource_exhausted:bound=total_pages_excessive", "DATABASE.CREATE_TOTAL_PAGES_EXCESSIVE",
+       "Q144: more pages than the page size's image budget can map is refused before the open, "
+       "DATABASE.CREATE_TOTAL_PAGES_EXCESSIVE (new case)");
+    before_open("pages-excessive-extent", [](auto& r) {
+      std::erase_if(r.option_envelopes, [](const auto& o) { return o.starts_with("total_pages:"); });
+      r.option_envelopes.push_back("total_pages:4611686018427387904");
+    }, "workspace_failure:invalid_capacity:bound=total_pages_excessive", "DATABASE.CREATE_TOTAL_PAGES_EXCESSIVE",
+       "Q144: a page count past the device extent is refused before the open, "
+       "DATABASE.CREATE_TOTAL_PAGES_EXCESSIVE (new case)");
+    // A name the default pack admits (512 scalars) but an 8K page cannot
+    // store: 331 four-byte scalars (1,324 octets). Q145 measured the 8K bound
+    // at 330 such scalars (1,320 octets); the name row is over the row page's
+    // capacity: DATABASE.CREATE_ROW_EXCEEDS_PAGE_CAPACITY.
+    before_open("row-exceeds-8k", [](auto& r) {
+      std::erase_if(r.option_envelopes, [](const auto& o) {
+        return o.starts_with("page_size:") || o.starts_with("total_pages:"); });
+      r.option_envelopes.push_back("page_size:8192");
+      r.option_envelopes.push_back("total_pages:2048");
+      r.database_name.clear();
+      for (int i = 0; i < 331; ++i) r.database_name += "\xf0\x9f\x98\x80";
+    }, "capacity_exceeded:bound=row_bytes", "DATABASE.CREATE_ROW_EXCEEDS_PAGE_CAPACITY",
+       "Q144/Q145: a 331-scalar four-byte name under the default pack at 8K is refused before the open, "
+       "DATABASE.CREATE_ROW_EXCEEDS_PAGE_CAPACITY (new case)");
+    // Q144 = 1: input-driven but left DATABASE.CREATE_FAILED. A bootstrap
+    // principal named like the service principal is refused at the plan's
+    // policy assembly; the plan does not say which caller name collided, so
+    // no code is invented for it (owner question in the Q144 report).
+    {
+      const auto dir = artifacts.path() / "q122-q144-bootstrap-is-service";
+      std::filesystem::create_directory(dir);
+      auto request = NativeRequest((dir / "orders.sdb").string(), 16384, c::kCatalogLanguage_en);
+      std::erase_if(request.option_envelopes, [](const auto& o) { return o.starts_with("bootstrap_principal_name:"); });
+      request.option_envelopes.push_back("bootstrap_principal_name:NodeService");
+      const auto result = api::EngineCreateLifecycle(request);
+      if (result.ok || !HasDiagnostic(result, "DATABASE.CREATE_FAILED"))
+        for (const auto& diagnostic : result.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+      Check(!result.ok && HasDiagnostic(result, "DATABASE.CREATE_FAILED") &&
+                DetailHas(result, "native_create_refused_before_open:policy_assembly") && Entries(dir).empty(),
+            "Q144: bootstrap principal named as the service principal: refused before the open, policy_assembly, "
+            "still DATABASE.CREATE_FAILED (recorded; no attribution invented)");
+    }
+    // Recorded, not a ruling: a bootstrap principal named like an agent
+    // type's principal (agent principals are named by their pack
+    // agent_type_id) is NOT refused; the create succeeds. Owner question in
+    // the Q144 report.
+    {
+      const auto dir = artifacts.path() / "q144-bootstrap-is-agent";
+      std::filesystem::create_directory(dir);
+      auto request = NativeRequest((dir / "orders.sdb").string(), 16384, c::kCatalogLanguage_en);
+      std::erase_if(request.option_envelopes, [](const auto& o) { return o.starts_with("bootstrap_principal_name:"); });
+      request.option_envelopes.push_back("bootstrap_principal_name:alert_manager");
+      const auto result = api::EngineCreateLifecycle(request);
+      Check(result.ok && Entries(dir).size() == 1,
+            "Q144 (recorded behaviour today): a bootstrap principal named like an agent principal (alert_manager) creates");
+      std::printf("Q144 bootstrap named like an agent principal: creates (recorded; owner question)\n");
+    }
+    {
+      const auto dir = artifacts.path() / "q145-8k-330";
+      std::filesystem::create_directory(dir);
+      auto request = NativeRequest((dir / "orders.sdb").string(), 8192, c::kCatalogLanguage_en, "");
+      for (int i = 0; i < 330; ++i) request.database_name += "\xf0\x9f\x98\x80";
+      const auto created = api::EngineCreateLifecycle(request);
+      if (!created.ok) for (const auto& diagnostic : created.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+      Check(created.ok && Entries(dir).size() == 1,
+            "Q145: the 330-scalar four-byte name (1,320 octets) creates at 8K under the default pack");
+    }
     // Q122 = 1 (owner 2026-11-14): the non-UTF-8 name case is no longer a
     // late refusal; it is refused before the open (the Q122 block below).
     // Was: late("utf8", name "bad\xc3", "...is refused after the open").
@@ -789,6 +874,10 @@ int main(int argc, char** argv) {
   // fails (EFBIG, SIGXFSZ ignored). A write that fails part-way leaves a
   // partial file, which Q108 never removes (it is not empty): recorded here
   // as the behaviour today (owner question in the Q134 report).
+  // Q140 = 1 (owner 2026-11-14, SB_NATIVE_CREATE_PARTIAL_FILE_UNLINK): a
+  // part-way failure that never issued the page-zero write now removes its
+  // partial file too, and a retry on the same path succeeds. (Was: the
+  // 49,152-byte partial file was left, ;empty_file_not_removed.)
   {
     const auto with_file_limit = [&](rlim_t limit, auto call) {
       rlimit saved{};
@@ -826,15 +915,17 @@ int main(int argc, char** argv) {
       const auto result = with_file_limit(3 * 16384, [&] {
         return api::EngineCreateLifecycle(NativeRequest(path, 16384, c::kCatalogLanguage_en));
       });
-      if (result.ok || !DetailHas(result, ";empty_file_not_removed"))
+      if (result.ok || !DetailHas(result, ";partial_file_removed_page_zero_never_written"))
         for (const auto& diagnostic : result.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
       Check(!result.ok && HasDiagnostic(result, "DATABASE.CREATE_FAILED") &&
                 DetailHas(result, "native_create_refused:workspace_failure:io_failure") &&
-                DetailHas(result, ";empty_file_not_removed") && Entries(dir).size() == 1 &&
-                std::filesystem::file_size(dir / "orders.sdb") > 0,
-            "Q108/Q134: a write that fails part-way leaves its partial file (not empty, never removed): today's behaviour");
-      std::printf("Q134 write fails part-way: partial file of %llu bytes left (owner question)\n",
-                  static_cast<unsigned long long>(std::filesystem::file_size(dir / "orders.sdb")));
+                DetailHas(result, ";partial_file_removed_page_zero_never_written") && Entries(dir).empty(),
+            "Q140: a write that fails part-way, before its page-zero write, removes its partial file "
+            "(was: Q108/Q134, the partial file was left, ;empty_file_not_removed)");
+      const auto retried = api::EngineCreateLifecycle(NativeRequest(path, 16384, c::kCatalogLanguage_en));
+      if (!retried.ok) for (const auto& diagnostic : retried.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+      Check(retried.ok && Entries(dir).size() == 1, "Q140: a retry on the same path succeeds");
+      std::printf("Q140 write fails part-way: partial file removed, retry ok\n");
     }
   }
 
@@ -1259,6 +1350,70 @@ int main(int argc, char** argv) {
                 std::filesystem::exists(dir / "read-only"),
             "Q108: a device that did not create the file (read-only) removes nothing");
     }
+    // Q140 = 1 (owner 2026-11-14, SB_NATIVE_CREATE_PARTIAL_FILE_UNLINK): the
+    // partial-file removal, guard by guard, on hand-made files. A create
+    // failure that reaches it but leaves bytes past page zero (images 1..n
+    // written, page zero not) cannot be produced with RLIMIT_FSIZE (those
+    // writes do not grow the file after the zero fill), so these cases are
+    // what covers that window.
+    const std::size_t page = 16384;
+    {
+      d::FileDevice device;
+      open_new(device, dir / "q140-blank-page-zero");
+      std::vector<char> bytes(3 * page, 0);
+      bytes[page + 7] = 'x';  // page one written, page zero still the zero fill
+      Check(device.WriteAt(0, bytes.data(), bytes.size()).ok(), "Q140: three pages written, page zero zero");
+      Check(device.RemoveAndCloseNativeCreateWithBlankPageZero(page) == R::removed_page_zero_blank && !device.is_open() &&
+                !std::filesystem::exists(dir / "q140-blank-page-zero"),
+            "Q140: our own non-empty file whose page zero is all zero is removed");
+    }
+    {
+      d::FileDevice device;
+      open_new(device, dir / "q140-short-blank");
+      std::vector<char> bytes(page / 2, 0);
+      Check(device.WriteAt(0, bytes.data(), bytes.size()).ok(), "Q140: half a page of zeros written");
+      Check(device.RemoveAndCloseNativeCreateWithBlankPageZero(page) == R::removed_page_zero_blank && !device.is_open() &&
+                !std::filesystem::exists(dir / "q140-short-blank"),
+            "Q140: a file shorter than a page, all zero, is removed (only the bytes present are read)");
+    }
+    {
+      d::FileDevice device;
+      open_new(device, dir / "q140-empty");
+      Check(device.RemoveAndCloseNativeCreateWithBlankPageZero(page) == R::removed && !device.is_open() &&
+                !std::filesystem::exists(dir / "q140-empty"),
+            "Q140: an empty file is removed as by Q108");
+    }
+    {
+      d::FileDevice device;
+      open_new(device, dir / "q140-page-zero-written");
+      std::vector<char> bytes(2 * page, 0);
+      bytes[page - 1] = 'z';  // the last byte of page zero
+      Check(device.WriteAt(0, bytes.data(), bytes.size()).ok(), "Q140: page zero has a non-zero byte");
+      Check(device.RemoveAndCloseNativeCreateWithBlankPageZero(page) == R::page_zero_not_blank && !device.is_open() &&
+                std::filesystem::file_size(dir / "q140-page-zero-written") == 2 * page,
+            "Q140: a file whose page zero is not all zero is never removed");
+    }
+    {
+      d::FileDevice device;
+      open_new(device, dir / "q140-replaced");
+      std::vector<char> bytes(page, 0);
+      Check(device.WriteAt(0, bytes.data(), bytes.size()).ok(), "Q140: one zero page written");
+      { std::ofstream other(dir / "q140-other"); }
+      std::filesystem::rename(dir / "q140-other", dir / "q140-replaced");
+      Check(device.RemoveAndCloseNativeCreateWithBlankPageZero(page) == R::path_replaced && !device.is_open() &&
+                std::filesystem::exists(dir / "q140-replaced"),
+            "Q140: a path that now names another file is never removed");
+    }
+    {
+      { std::ofstream existing(dir / "q140-read-only"); existing << std::string(page, '\0'); }
+      d::FileDevice device;
+      Check(device.Open((dir / "q140-read-only").string(), d::FileOpenMode::open_existing_read_only,
+                        d::DatabaseFileOwnership::native_data_file).ok(), "Q140: an existing zero file opens read-only");
+      Check(device.RemoveAndCloseNativeCreateWithBlankPageZero(page) == R::not_owner && !device.is_open() &&
+                std::filesystem::exists(dir / "q140-read-only"),
+            "Q140: a device that did not create the file removes nothing");
+    }
+    std::printf("Q140 removal helper: blank page zero removed; non-blank, replaced, not-owner kept\n");
   }
 
   // Native create at every native profile: one file, receipt identities on page zero.
