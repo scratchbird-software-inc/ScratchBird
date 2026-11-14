@@ -589,6 +589,17 @@ struct sb_engine_handle_s {
   // server bridge open, from the route owner in the same process; contexts this
   // handle builds copy it. Empty for every sb_engine_open caller.
   std::shared_ptr<scratchbird::storage::disk::RouteOwnershipLease> served_route_owner;
+  // SEARCH_KEY: SB_SERVER_POLICY_SEED_PACK_ROOT (owner Q113 = 1, 2026-11-14).
+  // The hosting server's own policy seed pack root
+  // (ServerBootstrapConfig::database_policy_seed_pack_root), attached by the
+  // server when it opens this handle (OpenServedEngine). Process-local: never
+  // serialized, never taken from a client, a parser, an SBLR operand or a
+  // request option. Every statement context this handle issues carries it
+  // (AcquireStatementContextReceipt overwrites the caller's field), so a
+  // native CREATE DATABASE on any route through the handle gets the server's
+  // pack. Empty for every sb_engine_open caller (native create then refuses
+  // with DATABASE.CREATE_POLICY_PACK_REQUIRED).
+  std::string server_policy_seed_pack_root;
 };
 
 struct EnginePreparedStatementRecordV1 {
@@ -5092,7 +5103,8 @@ static sb_engine_status_t open_engine_impl(
     const sb_engine_open_params_v1_t* params,
     sb_engine_handle_t* out_engine,
     sb_engine_result_t* out_result,
-    const std::shared_ptr<scratchbird::storage::disk::RouteOwnershipLease>& served_owner) try {
+    const std::shared_ptr<scratchbird::storage::disk::RouteOwnershipLease>& served_owner,
+    std::string_view server_policy_seed_pack_root) try {
   clear_result(out_result);
   if (out_engine == nullptr) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 1003, "ENGINE.ABI.OUTPUT_POINTER_INVALID",
@@ -5120,6 +5132,9 @@ static sb_engine_status_t open_engine_impl(
                        "ENGINE.OPEN.PATH_INVALID", "engine.open.path_invalid", "database_path_required");
   }
   auto handle = std::make_unique<sb_engine_handle_s>();
+  // Q113 = 1 (SB_SERVER_POLICY_SEED_PACK_ROOT): only the server bridge open
+  // passes a value; the C ABI open passes none.
+  handle->server_policy_seed_pack_root.assign(server_policy_seed_pack_root);
   // Explicit built-in engine-instance policy, not a parser/carrier-selected
   // grant. Canonical bytes are reserved across receipts, with a 256 MiB pool.
   constexpr scratchbird::engine::internal_api::EngineDmlUpdateResourcePolicyV1
@@ -5211,7 +5226,7 @@ static sb_engine_status_t open_engine_impl(
 sb_engine_status_t sb_engine_open(const sb_engine_open_params_v1_t* params,
                                   sb_engine_handle_t* out_engine,
                                   sb_engine_result_t* out_result) {
-  return open_engine_impl(params, out_engine, out_result, {});
+  return open_engine_impl(params, out_engine, out_result, {}, {});
 }
 
 sb_engine_status_t sb_engine_close(sb_engine_handle_t engine, sb_engine_result_t* out_result) {
@@ -6455,7 +6470,20 @@ sb_engine_status_t OpenServedEngine(
     const std::shared_ptr<scratchbird::storage::disk::RouteOwnershipLease>& served_owner,
     sb_engine_handle_t* out_engine,
     sb_engine_result_t* out_result) {
-  return open_engine_impl(params, out_engine, out_result, served_owner);
+  return open_engine_impl(params, out_engine, out_result, served_owner, {});
+}
+
+// SEARCH_KEY: SB_SERVER_POLICY_SEED_PACK_ROOT (owner Q113 = 1, 2026-11-14).
+// As above, and the server attaches its own configured policy seed pack root
+// to the handle. Not part of the C ABI: no client can reach this parameter.
+sb_engine_status_t OpenServedEngine(
+    const sb_engine_open_params_v1_t* params,
+    const std::shared_ptr<scratchbird::storage::disk::RouteOwnershipLease>& served_owner,
+    std::string_view server_policy_seed_pack_root,
+    sb_engine_handle_t* out_engine,
+    sb_engine_result_t* out_result) {
+  return open_engine_impl(params, out_engine, out_result, served_owner,
+                          server_policy_seed_pack_root);
 }
 
 
@@ -7119,6 +7147,12 @@ sb_engine_status_t AcquireStatementContextReceipt(
   }
 
   auto engine_context = *request->engine_context;
+  // SEARCH_KEY: SB_SERVER_POLICY_SEED_PACK_ROOT (owner Q113 = 1, 2026-11-14).
+  // One source: the handle the server opened. Whatever the caller's context
+  // held is replaced, so every receipt (and every SBLR operation dispatched
+  // under it, CREATE DATABASE included) carries exactly the server's pack.
+  engine_context.server_policy_seed_pack_root =
+      session->engine->server_policy_seed_pack_root;
   const auto expected_trust_mode =
       session->trust_mode == SB_ENGINE_TRUST_EMBEDDED_TRUSTED
           ? scratchbird::engine::internal_api::EngineTrustMode::embedded_in_process

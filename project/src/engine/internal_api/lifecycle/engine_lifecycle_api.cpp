@@ -13,6 +13,7 @@
 #include "database_lifecycle.hpp"
 #include "native_catalog_relation_lease_reader.hpp"
 #include "native_database_create.hpp"
+#include "catalog_identifier_lookup_key.hpp"
 #include "admitted_datatype_cohort.hpp"
 #include "node_uuid_issuer.hpp"
 #include "extensibility/extensibility_support.hpp"
@@ -450,6 +451,19 @@ EngineCreateLifecycleResult NativeCreateLifecycle(const EngineCreateLifecycleReq
   if (request.database_name.empty() ||
       request.database_name.size() > 1024u) {
     return refuse("DATABASE.CREATE_NAME_INVALID", "database_name_required_as_data");
+  }
+  // SEARCH_KEY: SB_CATALOG_IDENTIFIER_TEXT_RULE (owner Q122 = 1, 2026-11-14).
+  // The catalog's own name rule (the one the name entry builder applies at
+  // database assembly, AdmitCatalogIdentifierText) is applied here, before the
+  // file is opened: a name the catalog would refuse (U+0000, ill-formed or
+  // non-canonical UTF-8) never creates a file. The identifier profile's own
+  // rules (maximum length, quoting) are still checked at assembly; the pack's
+  // profile sets no maximum length today and bootstrap names are unquoted.
+  // (Was: such a name was refused at database assembly, after the O_EXCL open,
+  // and Q108 then removed the still-empty file.)
+  if (scratchbird::core::catalog::AdmitCatalogIdentifierText(request.database_name) !=
+      scratchbird::core::catalog::CatalogIdentifierKeyError::none) {
+    return refuse("DATABASE.CREATE_NAME_INVALID", "database_name_refused_by_catalog_name_rule");
   }
   if (!scratchbird::core::catalog::IsKnownCatalogLanguage(request.database_language)) {
     return refuse("DATABASE.CREATE_LANGUAGE_UNKNOWN", "language_must_be_a_catalog_language_constant");

@@ -8549,6 +8549,28 @@ set_tests_properties(
   sbsql_sblr_alignment_c9_served_transaction_write PROPERTIES
   LABELS "sbsql_sblr_alignment;c9_route_served_device;storage_disk;database_ownership;fail_closed"
   TIMEOUT 120)
+# Owner Q113 = 1 (2026-11-14), SB_SERVER_POLICY_SEED_PACK_ROOT: the server
+# attaches its policy seed pack root to the engine handle it opens; every
+# statement context the handle issues carries it to a native CREATE DATABASE.
+add_executable(sbsql_sblr_alignment_q113_engine_handle_policy_pack_root
+  q113_engine_handle_policy_pack_root_test.cpp)
+target_compile_features(
+  sbsql_sblr_alignment_q113_engine_handle_policy_pack_root PRIVATE cxx_std_23)
+target_include_directories(
+  sbsql_sblr_alignment_q113_engine_handle_policy_pack_root PRIVATE
+  ${CMAKE_SOURCE_DIR}/src ${CMAKE_SOURCE_DIR}/include ${CMAKE_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(
+  sbsql_sblr_alignment_q113_engine_handle_policy_pack_root PRIVATE
+  sb_server_core sb_engine_sblr sb_engine_internal_api sb_storage_database OpenSSL::Crypto)
+target_compile_definitions(sbsql_sblr_alignment_q113_engine_handle_policy_pack_root PRIVATE
+  SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password")
+add_test(
+  NAME sbsql_sblr_alignment_q113_engine_handle_policy_pack_root
+  COMMAND sbsql_sblr_alignment_q113_engine_handle_policy_pack_root)
+set_tests_properties(
+  sbsql_sblr_alignment_q113_engine_handle_policy_pack_root PROPERTIES
+  LABELS "sbsql_sblr_alignment;native_database_create;database_lifecycle;server_policy_seed_pack_root;binary_uuid"
+  TIMEOUT 300)
 add_executable(sbsql_sblr_alignment_ia08_database_attach_codec
   ia08_database_attach_codec_test.cpp)
 target_compile_features(

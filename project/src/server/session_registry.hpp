@@ -611,6 +611,10 @@ struct ServerPublicAbiSessionContext {
   sb_engine_handle_t engine = nullptr;
   sb_engine_session_t engine_session = nullptr;
   std::string database_path;
+  // SEARCH_KEY: SB_SERVER_POLICY_SEED_PACK_ROOT (owner Q113 = 1). The server's
+  // policy seed pack root this context's engine handle was opened with; a
+  // change (config reload) retires the cached handle.
+  std::string server_policy_seed_pack_root;
   std::array<std::uint8_t, 16> session_uuid{};
   std::array<std::uint8_t, 16> effective_user_uuid{};
   bool embedded_in_process = false;

@@ -283,7 +283,12 @@ engine_api::EngineRequestContext EngineContextForManagement(
   engine_context.database_path = session.database_path;
   engine_context.served_route_owner = session.served_route_owner;
   // SB_SERVER_POLICY_SEED_PACK_ROOT (owner Q104 = 2): the server's own
-  // configured policy pack, never a client value.
+  // configured policy pack, never a client value. Owner Q113 = 1 makes the
+  // engine handle the source on the SBLR route; this route calls the
+  // lifecycle API directly and holds no engine handle, so it fills the field
+  // from the same server config itself. Its create stays legacy-format until
+  // the management wire carries name/language/format (Q109), so no native
+  // create reads this value yet.
   if (context.config != nullptr) {
     engine_context.server_policy_seed_pack_root =
         context.config->database_policy_seed_pack_root.string();

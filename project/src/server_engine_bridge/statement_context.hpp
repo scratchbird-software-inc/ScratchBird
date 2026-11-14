@@ -101,6 +101,18 @@ sb_engine_status_t OpenServedEngine(
     const std::shared_ptr<scratchbird::storage::disk::RouteOwnershipLease>& served_owner,
     sb_engine_handle_t* out_engine,
     sb_engine_result_t* out_result);
+// SEARCH_KEY: SB_SERVER_POLICY_SEED_PACK_ROOT (owner Q113 = 1, 2026-11-14).
+// The server's open: as above, and the handle carries the server's own
+// configured policy seed pack root (ServerBootstrapConfig::
+// database_policy_seed_pack_root). Every statement context the handle issues
+// carries that root and nothing else; a native CREATE DATABASE reads it. The
+// four-argument form attaches none (as sb_engine_open).
+sb_engine_status_t OpenServedEngine(
+    const sb_engine_open_params_v1_t* params,
+    const std::shared_ptr<scratchbird::storage::disk::RouteOwnershipLease>& served_owner,
+    std::string_view server_policy_seed_pack_root,
+    sb_engine_handle_t* out_engine,
+    sb_engine_result_t* out_result);
 
 sb_engine_status_t BeginStatementParameterExecutionCoordinationV1(
     const StatementParameterCoordinationBeginRequestV1* request,

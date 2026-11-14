@@ -22,6 +22,16 @@ struct CatalogIdentifierKeyResult {
   std::span<const byte> normalized,exact;
   bool ok()const noexcept{return error==CatalogIdentifierKeyError::none;}
 };
+// SEARCH_KEY: SB_CATALOG_IDENTIFIER_TEXT_RULE (owner Q122 = 1, 2026-11-14).
+// The text rule every catalog name obeys whatever its identifier profile:
+// non-empty, at most kCatalogIdentifierTextMaximumBytes, canonical UTF-8
+// (ValidateCanonicalUtf8) and no U+0000. Pure, allocation-free. invalid_text
+// on violation; on success *scalar_count (if given) is the scalar count the
+// profile's length rule uses. DeriveCatalogIdentifierLookupKeysInto and
+// CheckCatalogIdentifierLookupKeys apply exactly this, after their profile
+// checks; the profile's own rules (maximum length, quoting) need the profile.
+inline constexpr std::size_t kCatalogIdentifierTextMaximumBytes=131040;
+CatalogIdentifierKeyError AdmitCatalogIdentifierText(std::string_view text,u64* scalar_count=nullptr) noexcept;
 // Semantic primitive for explicit exact/ASCII fields. The caller must supply
 // an actually admitted profile and immutable input; no label selects behavior.
 // Resource/platform/dialect-dependent operations require their owning admission.

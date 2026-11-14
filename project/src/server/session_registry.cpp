@@ -3151,6 +3151,7 @@ ServerPublicAbiSessionContext* EnsureServerPublicAbiSessionForContext(
     const bool cache_matches =
         cached.engine != nullptr && cached.engine_session != nullptr &&
         cached.database_path == session.database_path &&
+        cached.server_policy_seed_pack_root == session.policy_seed_pack_root &&
         cached.session_uuid == session.session_uuid &&
         cached.effective_user_uuid == session.effective_user_uuid &&
         cached.embedded_in_process == session.embedded_in_process;
@@ -3172,6 +3173,7 @@ ServerPublicAbiSessionContext* EnsureServerPublicAbiSessionForContext(
     // successful engine/session handle can be lost to a later map allocation.
     ServerPublicAbiSessionContext cached_context;
     cached_context.database_path = session.database_path;
+    cached_context.server_policy_seed_pack_root = session.policy_seed_pack_root;
     cached_context.session_uuid = session.session_uuid;
     cached_context.effective_user_uuid = session.effective_user_uuid;
     cached_context.embedded_in_process = session.embedded_in_process;
@@ -3185,8 +3187,14 @@ ServerPublicAbiSessionContext* EnsureServerPublicAbiSessionForContext(
     open_params.database_path_size =
         static_cast<std::uint64_t>(session.database_path.size());
     open_params.mode = SB_ENGINE_OPEN_VALIDATION_ONLY;
+    // SEARCH_KEY: SB_SERVER_POLICY_SEED_PACK_ROOT (owner Q113 = 1,
+    // 2026-11-14). The server attaches its own configured policy seed pack
+    // root (ServerBootstrapConfig::database_policy_seed_pack_root, carried
+    // from the hosted database snapshot onto the session at attach) to the
+    // handle it opens; every statement context the handle issues carries it.
     if (scratchbird::server_engine_bridge::OpenServedEngine(
-            &open_params, session.served_route_owner, &owned.engine, nullptr) !=
+            &open_params, session.served_route_owner,
+            owned.server_policy_seed_pack_root, &owned.engine, nullptr) !=
             SB_ENGINE_STATUS_OK ||
         owned.engine == nullptr) {
       (void)CloseServerPublicAbiSessionForSession(registry, session.session_uuid);

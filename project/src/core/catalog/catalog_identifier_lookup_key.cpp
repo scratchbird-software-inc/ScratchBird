@@ -5,6 +5,20 @@
 #include <limits>
 
 namespace scratchbird::core::catalog {
+// SEARCH_KEY: SB_CATALOG_IDENTIFIER_TEXT_RULE (owner Q122 = 1, 2026-11-14).
+// The one copy of the profile-independent text rule; Admit below applies it
+// after the profile checks, and callers that must refuse a name before any
+// profile exists (native CREATE DATABASE, before its file is opened) call it
+// directly.
+CatalogIdentifierKeyError AdmitCatalogIdentifierText(std::string_view text,u64* scalar_count) noexcept {
+  u64 scalars=0;
+  if(scalar_count)*scalar_count=0;
+  if(text.empty()||text.size()>kCatalogIdentifierTextMaximumBytes||!datatypes::ValidateCanonicalUtf8(
+      reinterpret_cast<const byte*>(text.data()),text.size(),&scalars)||text.find('\0')!=text.npos)
+    return CatalogIdentifierKeyError::invalid_text;
+  if(scalar_count)*scalar_count=scalars;
+  return CatalogIdentifierKeyError::none;
+}
 namespace {
 using E=CatalogIdentifierKeyError;
 E Admit(const CatalogIdentifierKeyRequest& r) noexcept {
@@ -16,8 +30,7 @@ E Admit(const CatalogIdentifierKeyRequest& r) noexcept {
       p.comparison_mode==IdentifierComparisonMode::profile_platform||p.storage_display_mode==IdentifierDisplayMode::donor_projection)
     return E::resource_admission_required;
   u64 scalars=0;
-  if(r.text.empty()||r.text.size()>131040||!datatypes::ValidateCanonicalUtf8(
-      reinterpret_cast<const byte*>(r.text.data()),r.text.size(),&scalars)||r.text.find('\0')!=r.text.npos)return E::invalid_text;
+  if(const auto text=AdmitCatalogIdentifierText(r.text,&scalars);text!=E::none)return text;
   if(p.maximum_identifier_length&&(p.length_unit==IdentifierLengthUnit::encoded_octets?r.text.size():scalars)>p.maximum_identifier_length)
     return E::identifier_too_long;
   if(!r.was_quoted)return r.quote_style==CatalogNameQuoteStyle::none?E::none:E::invalid_quote_mode;

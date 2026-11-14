@@ -31,10 +31,15 @@
 //    server's (the context's server_policy_seed_pack_root); a client option
 //    naming it is refused, and without the server's value create is refused.
 //  - Q108 = 1 (SB_NATIVE_CREATE_EMPTY_FILE_UNLINK): a refusal after the
-//    O_EXCL open (bad fingerprint, bad policy pack, too few pages, non-UTF-8
-//    name sent straight to the API) leaves no file, and a retry on the same
-//    path succeeds; the removal never takes a non-empty file or a path that
-//    names another file.
+//    O_EXCL open (bad fingerprint, bad policy pack, too few pages) leaves no
+//    file, and a retry on the same path succeeds; the removal never takes a
+//    non-empty file or a path that names another file. (Q122: the non-UTF-8
+//    name case moved before the open; see below.)
+//  - Q122 = 1 (SB_CATALOG_IDENTIFIER_TEXT_RULE): a name the catalog's name
+//    rule refuses (U+0000, ill-formed or non-canonical UTF-8) is refused
+//    before the file is opened: DATABASE.CREATE_NAME_INVALID, no post-open
+//    detail, no file. The q122-* directories are what the strace check
+//    watches: no openat of a path in them may appear.
 //
 // Modes: none (every check) or
 //   create <path> <page size> <language: en|fr-CA>
@@ -585,8 +590,58 @@ int main(int argc, char** argv) {
       std::erase_if(r.option_envelopes, [](const auto& o) { return o.starts_with("total_pages:"); });
       r.option_envelopes.push_back("total_pages:2");
     }, "Q108: too few pages is refused after the open");
-    late("utf8", [](auto& r) { r.database_name = std::string("bad\xc3", 4); },
-         "Q108: a non-UTF-8 name sent straight to the API is refused after the open");
+    // Q122 = 1 (owner 2026-11-14): the non-UTF-8 name case is no longer a
+    // late refusal; it is refused before the open (the Q122 block below).
+    // Was: late("utf8", name "bad\xc3", "...is refused after the open").
+  }
+
+  // Q122 = 1 (owner 2026-11-14, SB_CATALOG_IDENTIFIER_TEXT_RULE): every name
+  // the catalog's name rule refuses is refused BEFORE the file is opened, by
+  // the same rule function the name entry builder uses at assembly
+  // (AdmitCatalogIdentifierText). Proof that no open happened: the refusal is
+  // the pre-open code with none of the post-open details
+  // (native_create_refused:, ;empty_file_removed / ;empty_file_not_removed),
+  // and nothing exists in the directory; the strace run (strace_q122.sh)
+  // shows no openat of any path in a q122-* directory.
+  {
+    const auto pre_open = [&](const char* label, std::string name, const char* what) {
+      const auto dir = artifacts.path() / (std::string("q122-") + label);
+      std::filesystem::create_directory(dir);
+      const auto path = (dir / "named.sdb").string();
+      const auto result = api::EngineCreateLifecycle(NativeRequest(path, 16384, c::kCatalogLanguage_en, std::move(name)));
+      if (result.ok || !HasDiagnostic(result, "DATABASE.CREATE_NAME_INVALID"))
+        for (const auto& diagnostic : result.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+      Check(!result.ok && HasDiagnostic(result, "DATABASE.CREATE_NAME_INVALID") &&
+                DetailHas(result, "database_name_refused_by_catalog_name_rule"), what);
+      Check(!DetailHas(result, "native_create_refused:") && !DetailHas(result, ";empty_file_removed") &&
+                !DetailHas(result, ";empty_file_not_removed") && !HasDiagnostic(result, "DATABASE.CREATE_FAILED"),
+            "Q122: the refusal is the pre-open one; no post-open refusal or empty-file removal happened");
+      Check(Entries(dir).empty() && !std::filesystem::exists(path), "Q122: the path never existed");
+      std::printf("Q122 %s: refused before the open, no file\n", label);
+    };
+    pre_open("nul", std::string("a\0b", 3), "Q122: a U+0000 in the name is refused before the open");
+    pre_open("nul-only", std::string("\0", 1), "Q122: a name that is only U+0000 is refused before the open");
+    pre_open("utf8-truncated", std::string("bad\xc3", 4),
+             "Q122: a truncated UTF-8 sequence is refused before the open (was a Q108 late refusal)");
+    pre_open("utf8-lone-continuation", std::string("a\x80", 2),
+             "Q122: a lone continuation byte is refused before the open");
+    pre_open("utf8-overlong", std::string("a\xc0\x80", 3),
+             "Q122: an overlong (non-canonical) encoding of U+0000 is refused before the open");
+    pre_open("utf8-surrogate", std::string("a\xed\xa0\x80", 4),
+             "Q122: an encoded UTF-16 surrogate is refused before the open");
+    pre_open("utf8-above-max", std::string("a\xf4\x90\x80\x80", 5),
+             "Q122: a scalar above U+10FFFF is refused before the open");
+    // A name the rule admits is unaffected: multi-byte UTF-8 creates.
+    {
+      const auto dir = artifacts.path() / "q122-valid-multibyte";
+      std::filesystem::create_directory(dir);
+      const auto path = (dir / "named.sdb").string();
+      const auto made = api::EngineCreateLifecycle(
+          NativeRequest(path, 16384, c::kCatalogLanguage_en, "commandes_\xc3\xa9t\xc3\xa9_\xe6\x97\xa5"));
+      if (!made.ok) for (const auto& diagnostic : made.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+      Check(made.ok && Entries(dir).size() == 1, "Q122: a valid multi-byte UTF-8 name still creates");
+      std::printf("Q122 valid multi-byte name: created\n");
+    }
   }
 
   // Q108: the removal itself, guard by guard, on FileDevice.
@@ -802,12 +857,16 @@ int main(int argc, char** argv) {
     DispatchCreateWithName(root, "mode-read-only", "mode:read_only;allow_writes:true");
     DispatchCreateWithName(root, "cluster", "cluster:true");
     // A NUL byte: the v2 codec admits U+0000 (well-formed UTF-8) and the
-    // envelope carries it; the catalog's identifier lookup-key builder refuses
-    // NUL in any name (catalog_identifier_lookup_key.cpp), so native create
-    // refuses at database assembly, after the open, and Q108 removes the
-    // still-empty file. Observed behaviour, recorded as is (OWNER Q: refuse
-    // NUL at the codec / before the open instead?). The name is never an
-    // option: the refusal is the name's own, not an option check.
+    // envelope carries it; the catalog's name rule refuses NUL in any name
+    // (AdmitCatalogIdentifierText, catalog_identifier_lookup_key.cpp). The
+    // name is never an option: the refusal is the name's own, not an option
+    // check.
+    // Q122 = 1 (owner 2026-11-14): native create now applies that rule BEFORE
+    // the open: DATABASE.CREATE_NAME_INVALID, no file ever created. Was
+    // (Q110, recorded as observed): refused at database assembly after the
+    // open (DATABASE.CREATE_FAILED, native_create_refused:database_assembly),
+    // with Q108 removing the still-empty file. The codec is unchanged and
+    // still admits the name.
     {
       const std::string nul_name("a\0unsafe_profile_combo", 22);
       sblr::SblrLifecycleCreateDatabaseDescriptorV2 decoded_v2;
@@ -817,18 +876,21 @@ int main(int argc, char** argv) {
       Check(!bytes.empty() && sblr::DecodeSblrLifecycleCreateDatabaseDescriptorV2(bytes.data(), bytes.size(), &decoded_v2, &detail) &&
                 decoded_v2.database_name == nul_name,
             "Q110: the v2 codec admits and round-trips a name containing NUL, byte for byte");
-      const auto dir = root / "q110-nul";
+      const auto dir = root / "q122-q110-nul";
       std::filesystem::create_directory(dir);
       const auto result = DispatchNamedCreate((dir / "named.sdb").string(), nul_name);
-      if (result.api_result.ok || !DetailHas(result.api_result, "native_create_refused:database_assembly"))
+      if (result.api_result.ok || !HasDiagnostic(result.api_result, "DATABASE.CREATE_NAME_INVALID"))
         for (const auto& diagnostic : result.api_result.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
       Check(result.envelope_validated && result.dispatched_to_api && !result.api_result.ok &&
-                HasDiagnostic(result.api_result, "DATABASE.CREATE_FAILED") &&
-                DetailHas(result.api_result, "native_create_refused:database_assembly") &&
+                HasDiagnostic(result.api_result, "DATABASE.CREATE_NAME_INVALID") &&
+                DetailHas(result.api_result, "database_name_refused_by_catalog_name_rule") &&
+                !HasDiagnostic(result.api_result, "DATABASE.CREATE_FAILED") &&
+                !DetailHas(result.api_result, "native_create_refused:") &&
+                !DetailHas(result.api_result, ";empty_file_") &&
                 !HasDiagnostic(result.api_result, "SB_ENGINE_API_LIFECYCLE_UNSAFE_PROFILE") && Entries(dir).empty(),
-            "Q110: a NUL in the name is refused by the catalog's name rules (database assembly), not by an option "
-            "check, and leaves no file");
-      std::printf("Q110 dispatch name nul: codec admits, catalog name rules refuse at assembly, no file\n");
+            "Q110/Q122: a NUL in the name is refused by the catalog's name rule before the file is opened, not by "
+            "an option check, and no file ever exists");
+      std::printf("Q110/Q122 dispatch name nul: codec admits, catalog name rule refuses before the open, no file\n");
     }
 
     // Option values that are user text (principal names) carrying a checked
