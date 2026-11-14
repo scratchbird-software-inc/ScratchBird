@@ -111,9 +111,18 @@ struct NativeInitialPolicyRequest {
   // aggregate positionally.
   std::optional<NativeInitialGeneratedDefinitions> generated_definitions=std::nullopt;
 };
+// SEARCH_KEY: SB_NATIVE_CREATE_NAMES_UNDER_PACK_PROFILE (owner Q130 = 2,
+// 2026-11-14). Which generated name was longer than the identifier profile's
+// maximum when generated naming refused it (error stays invalid_names, as
+// before): a name the pack or engine supplies, or one of the two principal
+// names the create's caller supplies. Classification only.
+enum class NativeInitialNameOverProfileMaximum {
+  none, pack_or_engine_name, bootstrap_principal_name, service_principal_name
+};
 struct NativeInitialPolicyResult {
   NativeInitialPolicyError error=NativeInitialPolicyError::invalid_request;
   core::catalog::CatalogNamedCreationError name_error=core::catalog::CatalogNamedCreationError::none;
+  NativeInitialNameOverProfileMaximum name_over_profile_maximum=NativeInitialNameOverProfileMaximum::none;  // Q130
   std::optional<core::platform::DiagnosticRecord> source_diagnostic;
   std::optional<core::catalog::CatalogNamedCreationSet> records;
   bool ok() const noexcept {return error==NativeInitialPolicyError::none&&records.has_value();}

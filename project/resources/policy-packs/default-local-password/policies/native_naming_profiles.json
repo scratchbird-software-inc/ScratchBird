@@ -42,7 +42,6 @@
   ],
   "review_flags": [
     "comparison_mode exact makes every catalog name case-sensitive and unfolded in the default identifier profile.",
-    "One collision group binds every built-in record kind with exact language tags and separate key lanes.",
-    "maximum_identifier_length 1024 (encoded_octets, the profile's length_unit) added 2026-11-14 for owner ruling Q127 = 3: it replaces the 1024-byte database-name cap that was hand-written in the engine's native CREATE DATABASE, and as the profile's maximum it applies to every name assembled under this profile. 0 would mean no project-defined limit (durable-format tag 12)."
+    "One collision group binds every built-in record kind with exact language tags and separate key lanes."
   ]
 }

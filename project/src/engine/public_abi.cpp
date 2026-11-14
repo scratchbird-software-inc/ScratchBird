@@ -22239,11 +22239,11 @@ sb_engine_status_t DispatchStatementContextReceipt(
   // q113_engine_handle_policy_pack_root before this change). Neither reached
   // a file, but neither said why, and neither was a decision.
   {
+    // Q132 (2026-11-14): the identity test is shared with
+    // DispatchSblrOperation (sblr::IsSblrCreateDatabaseOperation). Was a
+    // lambda here with the same four conditions.
     const auto is_create_database = [](const auto& member) {
-      return member.opcode_code == 5128 ||
-             member.opcode == "SBLR_LIFECYCLE_CREATE_DATABASE" ||
-             member.operation_id == "engine.op.lifecycle_create_database" ||
-             member.operation_id == "lifecycle.create_database";
+      return scratchbird::engine::sblr::IsSblrCreateDatabaseOperation(member);
     };
     bool create_database =
         !opcode_stream && is_create_database(operation.envelope);

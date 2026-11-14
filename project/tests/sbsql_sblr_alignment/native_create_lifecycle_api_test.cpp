@@ -66,6 +66,7 @@
 #include "filespace_page_zero.hpp"
 #include "filespace_bootstrap.hpp"
 #include "catalog_language.hpp"
+#include "catalog_identifier_text_rule.hpp"
 #include "catalog_name_record_codec.hpp"
 #include "catalog_native_catalog_index.hpp"
 #include "catalog_page.hpp"
@@ -327,6 +328,25 @@ void RehashPack(const std::filesystem::path& root) {
   Check(bool(out), "Q127: the rehashed manifest is written");
 }
 
+// Q129/Q130: a rehashed copy of the default pack whose identifier profile's
+// maximum_identifier_length is `maximum` (the Q127 128-octet copy is made the
+// same way, inline, below).
+std::filesystem::path PackWithMaximum(const std::filesystem::path& under, const std::string& label,
+                                      unsigned maximum) {
+  const auto pack = under / label;
+  std::filesystem::copy(SB_DEFAULT_POLICY_PACK_ROOT, pack, std::filesystem::copy_options::recursive);
+  const auto naming = pack / "policies" / "native_naming_profiles.json";
+  auto text = ReadAll(naming);
+  const std::string from = "\"maximum_identifier_length\": 1024";
+  const auto at = text.find(from);
+  Check(at != std::string::npos && text.find(from, at + 1) == std::string::npos,
+        "Q129/Q130: the default pack declares maximum_identifier_length 1024 exactly once");
+  text.replace(at, from.size(), "\"maximum_identifier_length\": " + std::to_string(maximum));
+  { std::ofstream out(naming, std::ios::binary | std::ios::trunc); out << text; }
+  RehashPack(pack);
+  return pack;
+}
+
 void DescriptorCodec() {
   // v1 unchanged: still 320 bytes and still requires its (drift) identities.
   sblr::SblrLifecycleCreateDatabaseDescriptorV1 v1;
@@ -364,7 +384,42 @@ void DescriptorCodec() {
     Check(sblr::EncodeSblrLifecycleCreateDatabaseDescriptorV2(changed).empty(), what);
   };
   refuses([](auto& x) { x.database_name.clear(); }, "S2: v2 refuses an empty name");
-  refuses([](auto& x) { x.database_name = std::string(1025, 'a'); }, "S2: v2 refuses a name over 1024 bytes");
+  // Q129 = 3 (owner 2026-11-14, SB_CATALOG_IDENTIFIER_PROFILE_LENGTH_RULE):
+  // the codec has no name cap of its own; the pack's identifier profile sets
+  // the name's maximum and the engine applies it (the Q129 block in main).
+  // The codec's one bound is the catalog text maximum, 131040 bytes.
+  // Was: refuses(1025 x 'a', "S2: v2 refuses a name over 1024 bytes").
+  {
+    auto long_name = V2(c::kCatalogLanguage_en, std::string(1025, 'a'), sblr::SblrLifecycleCreateDatabaseFormat::native);
+    const auto bytes = sblr::EncodeSblrLifecycleCreateDatabaseDescriptorV2(long_name);
+    sblr::SblrLifecycleCreateDatabaseDescriptorV2 back;
+    Check(bytes.size() == 352 + 1025 &&
+              sblr::DecodeSblrLifecycleCreateDatabaseDescriptorV2(bytes.data(), bytes.size(), &back, &detail) &&
+              back.database_name == long_name.database_name,
+          "Q129: v2 encodes and decodes a 1025-byte name (was refused: the codec's own 1024 cap is gone)");
+    long_name.database_name.assign(c::kCatalogIdentifierTextMaximumBytes, 'a');
+    const auto at_max = sblr::EncodeSblrLifecycleCreateDatabaseDescriptorV2(long_name);
+    Check(at_max.size() == 352 + c::kCatalogIdentifierTextMaximumBytes &&
+              sblr::DecodeSblrLifecycleCreateDatabaseDescriptorV2(at_max.data(), at_max.size(), &back, &detail),
+          "Q129: v2 encodes and decodes a name at the catalog text maximum (131040 bytes)");
+    refuses([](auto& x) { x.database_name.assign(c::kCatalogIdentifierTextMaximumBytes + 1, 'a'); },
+            "Q129: v2 still refuses a name over the catalog text maximum (131041 bytes): the codec's one name bound");
+    // Decode refuses a declared length over the catalog maximum (the bytes are
+    // the 131040 encoding with its name length patched to 131041 and one
+    // byte appended, so the size field agrees).
+    auto over = at_max;
+    over.push_back('a');
+    const auto put32 = [&](std::size_t at, std::uint32_t v) {
+      for (int i = 0; i < 4; ++i) over[at + i] = static_cast<std::uint8_t>(v >> (8 * i));
+    };
+    std::uint32_t le_size = 0;
+    for (int i = 3; i >= 0; --i) le_size = (le_size << 8) | at_max[8 + i];
+    Check(le_size == at_max.size(), "Q129: the descriptor size field is little-endian at offset 8");
+    put32(8, static_cast<std::uint32_t>(over.size()));
+    put32(336, static_cast<std::uint32_t>(c::kCatalogIdentifierTextMaximumBytes + 1));
+    Check(!sblr::DecodeSblrLifecycleCreateDatabaseDescriptorV2(over.data(), over.size(), &back, &detail),
+          "Q129: v2 decode refuses a name length over the catalog text maximum");
+  }
   refuses([](auto& x) { x.database_name = std::string("bad\xc3", 4); }, "S2: v2 refuses a name that is not UTF-8");
   // Q128 = 1 (owner 2026-11-14, SB_CATALOG_IDENTIFIER_TEXT_RULE): the codec
   // applies the catalog's name rule. New refusals (were admitted: the codec's
@@ -785,6 +840,8 @@ int main(int argc, char** argv) {
     // that profile, and a pack at 8 was observed to refuse at policy
     // assembly, after the open, because bootstrap names are longer; the
     // longest name text in the default pack is 80 octets.)
+    // Q130 = 2 (owner 2026-11-14): a pack at 8 is now refused BEFORE the
+    // open, naming the class of name (the Q130 block below).
     const auto pack = artifacts.path() / "q127-pack-max-128";
     std::filesystem::copy(SB_DEFAULT_POLICY_PACK_ROOT, pack, std::filesystem::copy_options::recursive);
     {
@@ -816,6 +873,160 @@ int main(int argc, char** argv) {
                 !DetailHas(result, "native_create_refused:") && Entries(dir).empty(),
             "Q127: a server pack that does not load is refused before the open (was: Q108, after the open), no file");
       std::printf("Q127 unloadable pack: refused before the open, no file\n");
+    }
+  }
+
+  // Q129 = 3 (owner 2026-11-14, SB_CATALOG_IDENTIFIER_PROFILE_LENGTH_RULE):
+  // the v2 codec has no name cap of its own. A name over the default pack's
+  // 1024 passes the codec and the server's gateway and is refused by the
+  // engine, from the pack, before the open; a pack with a larger maximum
+  // creates a longer name through the same codec, gateway and dispatch path.
+  // (Was: the codec refused any name over 1024 bytes, kSblrCreateDatabaseName-
+  // MaximumBytes, so neither case could reach the engine.)
+  {
+    const auto root = artifacts.path() / "q129";
+    std::filesystem::create_directory(root);
+    const auto through_codec = [&](const std::string& label, const std::string& name, const std::string& pack,
+                                   std::filesystem::path* dir_out) {
+      const auto body = sblr::EncodeSblrLifecycleCreateDatabaseDescriptorV2(
+          V2(c::kCatalogLanguage_en, name, sblr::SblrLifecycleCreateDatabaseFormat::native));
+      Check(body.size() == 352 + name.size(), "Q129: the v2 codec encodes the name (no codec cap)");
+      const auto admitted = Gateway(CreateOperand(body, "lifecycle_create_database_descriptor.v2"));
+      if (!admitted.ok) std::cerr << "Q129 gateway: " << admitted.diagnostic_id << '\n';
+      Check(admitted.ok, "Q129: the server's gateway admits the descriptor (it decodes it with the same codec)");
+      const auto decoded = sblr::DecodeSblrEnvelope(sblr::EncodeSblrEnvelope(
+          CreateEnvelope(CreateOperand(body, "lifecycle_create_database_descriptor.v2"))));
+      Check(decoded.ok, "Q129: the create envelope round trips");
+      const auto dir = root / label;
+      std::filesystem::create_directory(dir);
+      auto context = Context((dir / "named.sdb").string());
+      if (!pack.empty()) context.server_policy_seed_pack_root = pack;
+      api::EngineApiRequest options;
+      NativeOptions(options.option_envelopes, 16384, TotalPages(16384));
+      *dir_out = dir;
+      return sblr::DispatchSblrOperation({context, decoded.envelope, options});
+    };
+    {
+      std::filesystem::path dir;
+      const auto result = through_codec("q122-q129-1025-default-pack", std::string(1025, 'a'), {}, &dir);
+      if (result.api_result.ok || !DetailHas(result.api_result, "database_name_longer_than_policy_identifier_profile_maximum"))
+        for (const auto& diagnostic : result.api_result.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+      Check(result.envelope_validated && result.dispatched_to_api && !result.api_result.ok &&
+                HasDiagnostic(result.api_result, "DATABASE.CREATE_NAME_INVALID") &&
+                DetailHas(result.api_result, "database_name_longer_than_policy_identifier_profile_maximum") &&
+                !DetailHas(result.api_result, "native_create_refused:") && Entries(dir).empty(),
+            "Q129: a 1025-byte name passes the codec, the gateway and dispatch, and the engine refuses it from the "
+            "default pack's profile (1024) before the open, no file (was: refused by the codec's own 1024 cap)");
+      std::printf("Q129 1025 bytes, default pack: codec and gateway admit, engine refuses before the open, no file\n");
+    }
+    const auto pack_2048 = PackWithMaximum(artifacts.path(), "q129-pack-max-2048", 2048);
+    {
+      std::filesystem::path dir;
+      const std::string name(2048, 'n');
+      const auto result = through_codec("q129-ok-2048-pack-2048", name, pack_2048.string(), &dir);
+      if (!result.api_result.ok) {
+        for (const auto& diagnostic : result.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+        for (const auto& diagnostic : result.api_result.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+      }
+      Check(result.envelope_validated && result.dispatched_to_api && result.api_result.ok && Entries(dir).size() == 1,
+            "Q129: with the pack's maximum at 2048, a 2048-byte name creates through codec, gateway and dispatch");
+      const auto database = RowUuid(result.api_result, "database_uuid");
+      const auto filespace = RowUuid(result.api_result, "filespace_uuid");
+      Check(database && filespace, "Q129: the receipt identities are returned");
+      const auto rows = DatabaseNameRows((dir / "named.sdb").string(), *database, *filespace, 16384);
+      Check(rows.size() == 1 && rows.front().raw_name_text == name,
+            "Q129: the database's name row carries the 2048-byte name byte for byte");
+      std::printf("Q129 2048 bytes, pack at 2048: created, name row exact\n");
+    }
+    {
+      std::filesystem::path dir;
+      const auto result = through_codec("q122-q129-2049-pack-2048", std::string(2049, 'n'), pack_2048.string(), &dir);
+      Check(!result.api_result.ok && HasDiagnostic(result.api_result, "DATABASE.CREATE_NAME_INVALID") &&
+                DetailHas(result.api_result, "database_name_longer_than_policy_identifier_profile_maximum") &&
+                Entries(dir).empty(),
+            "Q129: with the pack's maximum at 2048, a 2049-byte name is refused before the open, no file");
+      std::printf("Q129 2049 bytes, pack at 2048: refused before the open, no file\n");
+    }
+  }
+
+  // Q130 = 2 (owner 2026-11-14, SB_NATIVE_CREATE_NAMES_UNDER_PACK_PROFILE):
+  // every name native create assembles is held to the pack's identifier
+  // profile before the open (the create's own assembly, run without a device,
+  // PlanNativeDatabaseCreate). Refusal directories are q122-* so the strace
+  // check holds them to no open at all.
+  {
+    const auto attempt = [&](const std::string& label, const std::filesystem::path& pack, auto edit) {
+      const auto dir = artifacts.path() / label;
+      std::filesystem::create_directory(dir);
+      auto request = NativeRequest((dir / "named.sdb").string(), 16384, c::kCatalogLanguage_en, "orders");
+      request.context.server_policy_seed_pack_root = pack.string();
+      edit(request);
+      auto result = api::EngineCreateLifecycle(request);
+      if (result.ok || !result.diagnostics.empty())
+        for (const auto& diagnostic : result.diagnostics) std::cerr << label << ' ' << diagnostic.code << ':' << diagnostic.detail << '\n';
+      return std::make_pair(std::move(result), dir);
+    };
+    const auto replace = [](std::vector<std::string>& options, std::string_view key, std::string value) {
+      std::erase_if(options, [&](const auto& o) { return o.starts_with(key); });
+      options.push_back(std::string(key) + value);
+    };
+    const auto pre_open = [&](const api::EngineApiResult& result, const std::filesystem::path& dir) {
+      return !result.ok && !DetailHas(result, "native_create_refused:") && !DetailHas(result, ";empty_file_removed") &&
+             !DetailHas(result, ";empty_file_not_removed") && !HasDiagnostic(result, "DATABASE.CREATE_FAILED") &&
+             Entries(dir).empty();
+    };
+    // A pack at 8: the database name "orders" (6) and short principal names
+    // fit, but the pack's own names (UUID text, 36 octets; role and group
+    // names) do not. Was (observed in the Q127 work, recorded in the Q127
+    // block above): refused after the open at policy assembly,
+    // DATABASE.CREATE_FAILED native_create_refused:policy_assembly, and Q108
+    // removed the still-empty file.
+    const auto pack_8 = PackWithMaximum(artifacts.path(), "q130-pack-max-8", 8);
+    {
+      const auto [result, dir] = attempt("q122-q130-pack-8", pack_8, [&](auto& r) {
+        replace(r.option_envelopes, "bootstrap_principal_name:", "Boot");
+        replace(r.option_envelopes, "internal_service_principal_name:", "Svc");
+      });
+      Check(HasDiagnostic(result, "DATABASE.CREATE_POLICY_PACK_INVALID") &&
+                DetailHas(result, "native_create_name_longer_than_policy_identifier_profile_maximum:policy_cohort_name") &&
+                pre_open(result, dir),
+            "Q130: a pack at 8 is refused before the open (DATABASE.CREATE_POLICY_PACK_INVALID, the pack's own "
+            "policy-cohort names), no file (was: refused after the open at policy_assembly, file removed)");
+      Check(!DetailHas(result, "Boot") && !DetailHas(result, "orders"), "Q130: the refusal names a class, never name text");
+      std::printf("Q130 pack at 8: refused before the open (policy_cohort_name), no file\n");
+    }
+    // A principal name longer than the profile allows, with a pack whose
+    // maximum fits every pack and engine name (96 > the pack's longest, 80):
+    // the caller's text, so a name refusal naming which principal.
+    const auto pack_96 = PackWithMaximum(artifacts.path(), "q130-pack-max-96", 96);
+    {
+      const auto [result, dir] = attempt("q122-q130-bootstrap-principal-97", pack_96, [&](auto& r) {
+        replace(r.option_envelopes, "bootstrap_principal_name:", std::string(97, 'b'));
+      });
+      Check(HasDiagnostic(result, "DATABASE.CREATE_NAME_INVALID") &&
+                DetailHas(result, "bootstrap_principal_name_longer_than_policy_identifier_profile_maximum") &&
+                pre_open(result, dir),
+            "Q130: a 97-octet bootstrap principal name under a pack at 96 is refused before the open, no file");
+      std::printf("Q130 bootstrap principal 97, pack at 96: refused before the open, no file\n");
+    }
+    {
+      const auto [result, dir] = attempt("q122-q130-service-principal-97", pack_96, [&](auto& r) {
+        replace(r.option_envelopes, "internal_service_principal_name:", std::string(97, 's'));
+      });
+      Check(HasDiagnostic(result, "DATABASE.CREATE_NAME_INVALID") &&
+                DetailHas(result, "internal_service_principal_name_longer_than_policy_identifier_profile_maximum") &&
+                pre_open(result, dir),
+            "Q130: a 97-octet service principal name under a pack at 96 is refused before the open, no file");
+      std::printf("Q130 service principal 97, pack at 96: refused before the open, no file\n");
+    }
+    {
+      const auto [result, dir] = attempt("q130-ok-pack-96", pack_96, [&](auto& r) {
+        replace(r.option_envelopes, "bootstrap_principal_name:", std::string(96, 'b'));
+        replace(r.option_envelopes, "internal_service_principal_name:", std::string(96, 's'));
+      });
+      Check(result.ok && Entries(dir).size() == 1,
+            "Q130 control: under a pack at 96, 96-octet principal names and every assembled name create");
+      std::printf("Q130 pack at 96, 96-octet principals: created\n");
     }
   }
 

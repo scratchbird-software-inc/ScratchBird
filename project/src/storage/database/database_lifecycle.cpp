@@ -9025,6 +9025,24 @@ static NativeInitialPolicyResult AssembleNativeInitialPolicyRecordsImpl(
         // from it with the engine's own key derivation and then hands the
         // finished entry back to the engine's verifier.
         input.identifier_profile=identifier_profile;
+        // SEARCH_KEY: SB_NATIVE_CREATE_NAMES_UNDER_PACK_PROFILE (owner Q130 =
+        // 2, 2026-11-14). A name longer than this profile's maximum is refused
+        // here exactly as before (the builder's key derivation refuses it,
+        // invalid_names); the result now also says which kind of name it was,
+        // by the same two rule functions key derivation applies, so native
+        // CREATE DATABASE can refuse it before its file is opened.
+        {
+          u64 scalars=0;
+          if(c::AdmitCatalogIdentifierText(input.name_text,&scalars)==c::CatalogIdentifierKeyError::none&&
+              c::AdmitCatalogIdentifierProfileLength(input.name_text,scalars,identifier_profile->maximum_identifier_length,
+                  identifier_profile->length_unit)!=c::CatalogIdentifierKeyError::none) {
+            using N=NativeInitialNameOverProfileMaximum;
+            auto refused=fail(E::invalid_names);
+            refused.name_over_profile_maximum=bootstrap&&identity==bootstrap->principal_uuid?N::bootstrap_principal_name:
+                service&&identity==service->principal_uuid?N::service_principal_name:N::pack_or_engine_name;
+            return refused;
+          }
+        }
         auto built=BuildBootstrapNamedCreationUnit(input);
         if(!built.ok()) {
           using U=BootstrapNamedCreationUnitError;
@@ -9251,12 +9269,19 @@ NativeInitialLocalServiceIdentityResult IssueNativeInitialLocalServiceIdentity(
 }
 
 // SEARCH_KEY: SB_NATIVE_DATABASE_CREATE_PRODUCER (native_database_create.hpp).
-NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& device,
+// SEARCH_KEY: SB_NATIVE_CREATE_NAMES_UNDER_PACK_PROFILE (owner Q130 = 2,
+// 2026-11-14). One body for the create and its plan: with no device
+// (PlanNativeDatabaseCreate) it runs every step before the first write and
+// stops there, writing nothing; with a device it is the create, unchanged.
+static NativeDatabaseCreateResult CreateNativeDatabaseImpl(disk::FileDevice* device,
     const NativeDatabaseCreateRequest& request,core::uuid::StandaloneUuidV7Issuer& issuer) noexcept {
   namespace c=scratchbird::core::catalog;namespace agent_catalog=scratchbird::core::catalog;
   using E=NativeDatabaseCreateError;
   NativeDatabaseCreateResult result;
   const auto fail=[&](E error){result.error=error;result.receipt.reset();return result;};
+  // Q130: the kind of object the next named unit is for (set before each
+  // stage below), reported when a name is longer than the profile allows.
+  NativeCreateNameClass naming=NativeCreateNameClass::none;
   try {
     // SB_CATALOG_LANGUAGE_CONSTANTS: the request carries the language constant
     // itself (S2, owner Q92 = 1); one that is no language constant is
@@ -9419,7 +9444,18 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
     policy.policy.generated_definitions=generated;
     auto catalogs=AssembleNativeInitialPolicySecurityCatalogs(policy);
     if(!catalogs.ok()){result.policy_error=catalogs.source_error;result.name_error=catalogs.name_error;
-      result.source_diagnostic=catalogs.source_diagnostic;return fail(E::policy_assembly);}
+      result.source_diagnostic=catalogs.source_diagnostic;
+      // Q130: a generated policy-cohort name longer than its profile allows.
+      switch(catalogs.name_over_profile_maximum) {
+        case NativeInitialNameOverProfileMaximum::none:break;
+        case NativeInitialNameOverProfileMaximum::pack_or_engine_name:
+          result.name_over_profile_maximum=NativeCreateNameClass::policy_cohort;break;
+        case NativeInitialNameOverProfileMaximum::bootstrap_principal_name:
+          result.name_over_profile_maximum=NativeCreateNameClass::bootstrap_principal;break;
+        case NativeInitialNameOverProfileMaximum::service_principal_name:
+          result.name_over_profile_maximum=NativeCreateNameClass::service_principal;break;
+      }
+      return fail(E::policy_assembly);}
     auto& seed=catalogs.plan->catalogs;
 
     // The pack's own identifier profile names everything else, too.
@@ -9450,6 +9486,15 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
       input.name_collision_policy_uuid=generated.name_collision_policy_uuid;input.dialect_profile_uuid=generated.dialect_profile_uuid;
       input.identifier_profile=&*profile;
       if(!identities_ok){units_ok=false;return nullptr;}
+      // Q130 (SB_NATIVE_CREATE_NAMES_UNDER_PACK_PROFILE): the builder refuses
+      // a name longer than the profile's maximum (unchanged); say which kind.
+      {
+        u64 scalars=0;
+        if(c::AdmitCatalogIdentifierText(input.name_text,&scalars)==c::CatalogIdentifierKeyError::none&&
+            c::AdmitCatalogIdentifierProfileLength(input.name_text,scalars,profile->maximum_identifier_length,
+                profile->length_unit)!=c::CatalogIdentifierKeyError::none)
+          result.name_over_profile_maximum=naming;
+      }
       auto built=BuildBootstrapNamedCreationUnit(input);
       if(!built.ok()){units_ok=false;return nullptr;}
       units.push_back(std::move(built.unit));return &units.back();
@@ -9458,7 +9503,9 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
 
     // Database and primary filespace (filespace_0, owner 2026-10-30).
     // SB_ONE_DATABASE_UUID: the database row's key is the database UUID.
+    naming=NativeCreateNameClass::database;
     auto* database_unit=unit(database,CatalogRecordKind::database,c::CatalogObjectSubtype::database,{},Uuid{},std::string(request.database_name));
+    naming=NativeCreateNameClass::filespace;
     auto* filespace_unit=unit(filespace_object,CatalogRecordKind::filespace,c::CatalogObjectSubtype::filespace,{},database,"filespace_0");
     if(!units_ok)return fail(E::database_assembly);
     database_unit->Bind();filespace_unit->Bind();
@@ -9474,6 +9521,7 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
     if(database_definition==database_records.records->definitions.end())return fail(E::database_assembly);
 
     // The schema tree.
+    naming=NativeCreateNameClass::schema;
     std::array<c::CatalogSchemaDefinition,28> schema_definitions{};
     std::array<BootstrapNamedCreationUnit*,28> schema_units{};
     for(std::size_t i=0;i<tree.size();++i) {
@@ -9509,6 +9557,7 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
     // named by its UUID text, as other unaddressed rows); each registration is
     // one object named by its profile_name.
     std::vector<c::CatalogNamedCreationInput> named;
+    naming=NativeCreateNameClass::agent;
     {
       std::vector<BootstrapNamedCreationUnit*> agent_units;agent_units.reserve(2*declarations.size());
       const auto& verification=families.identities->verification_descriptors;
@@ -9583,6 +9632,7 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
       for(auto& row:agent_records.records->names)seed[1].push_back(std::move(row));
     }
 
+    naming=NativeCreateNameClass::datatype;  // Q130
     // SB_NATIVE_BUILTIN_DATATYPE_DOMAIN_ROWS (content parity, 2026-11-05): one
     // row per built-in datatype and one per system domain, under sys.catalog,
     // in the relation that holds the database, filespace and schemas. Fixed
@@ -9653,6 +9703,7 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
       seed[5].push_back({std::move(m),{}});
     }
 
+    naming=NativeCreateNameClass::index;  // Q130
     // The catalog index profile and dependency-map rows (owner decision
     // 2026-11-04, option a), for every non-empty relation, under sys.catalog.
     // SB_NATIVE_COMMENT_RELATION (owner Q77 = 2): the comments relation (role
@@ -9707,7 +9758,9 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
       }
     }
 
-    const auto written=InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,construction,seed,index_rows.indexes,
+    // Q130: the plan stops here, before the first write; nothing was written.
+    if(device==nullptr){result.error=E::none;result.receipt.reset();return result;}
+    const auto written=InitializeIndexedNativeCreationWorkspaceOnOpenDevice(*device,construction,seed,index_rows.indexes,
         request.maximum_retained_image_bytes,issuer,index_rows.name_trees,index_rows.comment_tree);
     if(!written.ok()){result.workspace_error=written.error;return fail(E::workspace_failure);}
     NativeDatabaseCreateReceipt receipt;
@@ -9722,6 +9775,30 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
     result.receipt=std::move(receipt);result.error=E::none;return result;
   }catch(const std::bad_alloc&){return fail(E::resource_exhausted);}
    catch(const std::length_error&){return fail(E::resource_exhausted);}
+}
+NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& device,
+    const NativeDatabaseCreateRequest& request,core::uuid::StandaloneUuidV7Issuer& issuer) noexcept {
+  return CreateNativeDatabaseImpl(&device,request,issuer);
+}
+NativeDatabaseCreateResult PlanNativeDatabaseCreate(const NativeDatabaseCreateRequest& request,
+    core::uuid::StandaloneUuidV7Issuer& issuer) noexcept {
+  return CreateNativeDatabaseImpl(nullptr,request,issuer);
+}
+const char* NativeCreateNameClassName(NativeCreateNameClass name_class) noexcept {
+  using N=NativeCreateNameClass;
+  switch(name_class) {
+    case N::none:return "none";
+    case N::policy_cohort:return "policy_cohort_name";
+    case N::bootstrap_principal:return "bootstrap_principal_name";
+    case N::service_principal:return "internal_service_principal_name";
+    case N::database:return "database_name";
+    case N::filespace:return "filespace_name";
+    case N::schema:return "system_schema_name";
+    case N::agent:return "agent_declaration_name";
+    case N::datatype:return "builtin_datatype_or_domain_name";
+    case N::index:return "catalog_index_name";
+  }
+  return "unknown";
 }
 
 DatabaseArtifactCompatibilityResult ClassifyDatabaseArtifactVersionCompatibility(
@@ -9990,8 +10067,12 @@ PolicySeedPackDescriptor DefaultPolicyPackDescriptor() {
   // maximum_identifier_length 1024 (encoded_octets) in
   // policies/native_naming_profiles.json (SB_CATALOG_IDENTIFIER_PROFILE_LENGTH_RULE).
   // Previous: 3efd36aba950983c93d8dae9a6571e59be31729c552a3e7f5f4b4f65ecdce52a
+  // Owner ruling Q131 (2026-11-14): 1024 octets confirmed for the default
+  // pack; the Q127 review flag on that value is removed from
+  // policies/native_naming_profiles.json (the value is unchanged).
+  // Previous: 6ef052c62763142d7270ee5cd69ac9ae5b0dd52071f08892812216223dbae84b
   descriptor.content_sha256 =
-      "6ef052c62763142d7270ee5cd69ac9ae5b0dd52071f08892812216223dbae84b";
+      "261c56c6fd47b98dc78c1ba8d9424cfb35d3a1292d47e46ee44db860d78b14fd";
   descriptor.create_time_only = true;
   descriptor.post_create_filesystem_authority = false;
   descriptor.local_password_only = true;

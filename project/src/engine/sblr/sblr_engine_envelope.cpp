@@ -1378,11 +1378,16 @@ std::vector<std::uint8_t> EncodeSblrLifecycleCreateDatabaseDescriptorV2(
       (descriptor.database_format != SblrLifecycleCreateDatabaseFormat::legacy &&
        descriptor.database_format != SblrLifecycleCreateDatabaseFormat::native) ||
       descriptor.database_name.empty() ||
-      descriptor.database_name.size() > kSblrCreateDatabaseNameMaximumBytes ||
+      // Q129 = 3: no codec-local name cap (was `size() >
+      // kSblrCreateDatabaseNameMaximumBytes`, 1024). The catalog rule below
+      // bounds the name at kCatalogIdentifierTextMaximumBytes (131040).
       !ScddCatalogNameAdmitted(descriptor.database_name) ||  // Q128
       (descriptor.option_count == 0) != descriptor.option_vector.empty() ||
+      // The whole descriptor's size is a u32 (offset 8). The name is at most
+      // 131040 bytes here, so this cannot underflow. (Was: the bound used the
+      // 1024 cap in place of the actual name size.)
       descriptor.option_vector.size() >
-          UINT32_MAX - kScddV2Fixed - kSblrCreateDatabaseNameMaximumBytes) {
+          UINT32_MAX - kScddV2Fixed - descriptor.database_name.size()) {
     return {};
   }
   const auto option_hash = scratchbird::core::hash::ComputeSha256Digest(
@@ -1456,7 +1461,11 @@ bool DecodeSblrLifecycleCreateDatabaseDescriptorV2(
   }
   const std::uint64_t name_size = Load32(data + 336);
   const std::uint64_t option_size = Load32(data + 216);
-  if (name_size == 0 || name_size > kSblrCreateDatabaseNameMaximumBytes ||
+  // Q129 = 3: the name is bounded here only by the catalog text maximum
+  // (checked before the copy below; the catalog rule then applies in full).
+  // (Was: `name_size > kSblrCreateDatabaseNameMaximumBytes`, 1024.)
+  if (name_size == 0 ||
+      name_size > scratchbird::core::catalog::kCatalogIdentifierTextMaximumBytes ||
       kScddV2Fixed + name_size + option_size != size ||
       std::any_of(data + 341, data + kScddV2Fixed,
                   [](std::uint8_t byte) { return byte != 0; })) {

@@ -291,7 +291,10 @@ bool DecodeSblrLifecycleCreateDatabaseDescriptorV1(
 //   320 language_uuid[16]  the catalog_language constant (16 binary bytes,
 //                          never a text tag); nonzero here, a known language
 //                          at the engine
-//   336 u32 name_length    1..kSblrCreateDatabaseNameMaximumBytes
+//   336 u32 name_length    1..kCatalogIdentifierTextMaximumBytes (the
+//                          catalog text rule's bound; the name's own maximum
+//                          is the server pack's identifier profile's, checked
+//                          by the engine, Q129)
 //   340 u8  database_format  1 = legacy (the default until workstream C, Q93),
 //                            2 = native single-file; anything else refused
 //   341..351 reserved, zero
@@ -303,7 +306,14 @@ enum class SblrLifecycleCreateDatabaseFormat : std::uint8_t {
   legacy = 1,
   native = 2,
 };
-inline constexpr std::uint32_t kSblrCreateDatabaseNameMaximumBytes = 1024;
+// SEARCH_KEY: SB_CATALOG_IDENTIFIER_PROFILE_LENGTH_RULE (owner Q129 = 3,
+// 2026-11-14). The codec has no name cap of its own: the server pack's
+// identifier profile decides the name's maximum length, and native CREATE
+// DATABASE applies it before the file is opened. The codec's only bound is
+// the catalog text maximum (core::catalog::kCatalogIdentifierTextMaximumBytes,
+// 131040), which AdmitCatalogIdentifierText enforces at encode and decode.
+// (Was: `inline constexpr std::uint32_t kSblrCreateDatabaseNameMaximumBytes =
+// 1024;`, a hand-written cap applied at encode and decode.)
 struct SblrLifecycleCreateDatabaseDescriptorV2 : SblrLifecycleCreateDatabaseDescriptorV1 {
   std::array<std::uint8_t, 16> database_language_uuid{};
   SblrLifecycleCreateDatabaseFormat database_format =
@@ -388,6 +398,20 @@ struct SblrOperationEnvelope {
   bool requires_transaction_context = false;
   bool requires_cluster_authority = false;
 };
+
+// SEARCH_KEY: SB_CREATE_DATABASE_NOT_ON_SESSION_ROUTE (owner Q125 = 3,
+// Q132 = 2, 2026-11-14). The one opcode identity test for CREATE DATABASE
+// (lifecycle create, opcode 5128), any descriptor version: any one of its
+// identity fields marks the operation as a create, so a mislabelled create
+// is still caught. Used by DispatchStatementContextReceipt (the session
+// route) and by DispatchSblrOperation (a receipt-bearing context), which both
+// refuse it. (Was: a lambda inside DispatchStatementContextReceipt, Q125.)
+inline bool IsSblrCreateDatabaseOperation(const SblrOperationEnvelope& operation) {
+  return operation.opcode_code == 5128 ||
+         operation.opcode == "SBLR_LIFECYCLE_CREATE_DATABASE" ||
+         operation.operation_id == "engine.op.lifecycle_create_database" ||
+         operation.operation_id == "lifecycle.create_database";
+}
 
 struct SblrEnvelopeDiagnostic {
   std::string code;

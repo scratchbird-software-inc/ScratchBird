@@ -18,6 +18,9 @@ struct NativeInitialPolicyCatalogResult {
   NativeInitialPolicyError source_error = NativeInitialPolicyError::invalid_request;
   core::catalog::CatalogNamedCreationError name_error =
       core::catalog::CatalogNamedCreationError::none;
+  // Q130 (SB_NATIVE_CREATE_NAMES_UNDER_PACK_PROFILE): copied from the source.
+  NativeInitialNameOverProfileMaximum name_over_profile_maximum =
+      NativeInitialNameOverProfileMaximum::none;
   std::optional<core::platform::DiagnosticRecord> source_diagnostic;
   std::optional<NativeInitialPolicyCatalogPlan> plan;
   bool ok() const noexcept {

@@ -39,6 +39,7 @@ NativeInitialPolicyCatalogResult Route(NativeInitialPolicyResult source) noexcep
   NativeInitialPolicyCatalogResult result;
   result.source_error = source.error;
   result.name_error = source.name_error;
+  result.name_over_profile_maximum = source.name_over_profile_maximum;  // Q130
   result.source_diagnostic = std::move(source.source_diagnostic);
   if (!source.ok()) return result;
   try {

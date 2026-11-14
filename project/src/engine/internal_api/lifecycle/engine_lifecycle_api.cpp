@@ -466,6 +466,13 @@ EngineCreateLifecycleResult NativeCreateLifecycle(const EngineCreateLifecycleReq
   // profile sets no maximum length today and bootstrap names are unquoted.
   // (Was: such a name was refused at database assembly, after the O_EXCL open,
   // and Q108 then removed the still-empty file.)
+  // Update 2026-11-14 (Q127 = 3, Q130 = 2): the two statements above about
+  // the profile's maximum length are no longer true. The pack's profile now
+  // declares a maximum (default pack: 1024 encoded octets), the database name
+  // is held to it below (SB_CATALOG_IDENTIFIER_PROFILE_LENGTH_RULE), and
+  // every other assembled name is held to it before the open by the plan
+  // (SB_NATIVE_CREATE_NAMES_UNDER_PACK_PROFILE). Assembly still applies the
+  // same rule again after the open.
   if (scratchbird::core::catalog::AdmitCatalogIdentifierText(request.database_name) !=
       scratchbird::core::catalog::CatalogIdentifierKeyError::none) {
     return refuse("DATABASE.CREATE_NAME_INVALID", "database_name_refused_by_catalog_name_rule");
@@ -570,6 +577,45 @@ EngineCreateLifecycleResult NativeCreateLifecycle(const EngineCreateLifecycleReq
   create.service_principal_name = service_name;
   create.service_credential_fingerprint = service_fingerprint;
   create.maximum_retained_image_bytes = db::NativeHostedSourceBackingBytes(profile->page_size_bytes);
+
+  // SEARCH_KEY: SB_NATIVE_CREATE_NAMES_UNDER_PACK_PROFILE (owner Q130 = 2,
+  // 2026-11-14). Every name the create assembles (the pack's and the
+  // engine's, the two principal names, the schema tree, agent declarations,
+  // built-in datatypes and domains, catalog index rows) is held to the
+  // maximum length of the identifier profile it is named under, BEFORE the
+  // file is opened. The names are not listed here: the create's own assembly
+  // is run without a device (PlanNativeDatabaseCreate, the same body as
+  // CreateNativeDatabaseOnOpenDevice, stopped before its first write), so
+  // the names checked are exactly the names the create writes. Its issuer is
+  // a separate one bound like the create's; its identities are discarded.
+  // A plan refused for a name over the profile maximum refuses here, naming
+  // the kind of name, never its text. A plan refused for any other reason
+  // is not acted on here: the create below meets the same refusal after the
+  // open, as before (Q108 removes the empty file).
+  // (Was: such a name was refused at assembly after the O_EXCL open,
+  // DATABASE.CREATE_FAILED native_create_refused:policy_assembly (or the
+  // stage's error), and Q108 removed the still-empty file.)
+  {
+    scratchbird::core::uuid::StandaloneUuidV7Issuer plan_issuer(
+        {database_uuid.value.value, policy_snapshot_uuid.value.value},
+        scratchbird::core::uuid::kStandardLocalClockUuidV7Policy);
+    const auto plan = db::PlanNativeDatabaseCreate(create, plan_issuer);
+    using N = db::NativeCreateNameClass;
+    if (plan.name_over_profile_maximum == N::bootstrap_principal ||
+        plan.name_over_profile_maximum == N::service_principal) {
+      // The caller's own text, like the database name: a name refusal.
+      return refuse("DATABASE.CREATE_NAME_INVALID",
+                    std::string(db::NativeCreateNameClassName(plan.name_over_profile_maximum)) +
+                        "_longer_than_policy_identifier_profile_maximum");
+    }
+    if (plan.name_over_profile_maximum != N::none) {
+      // A name the pack or the engine supplies: the pack's profile cannot
+      // name this database's own objects.
+      return refuse("DATABASE.CREATE_POLICY_PACK_INVALID",
+                    std::string("native_create_name_longer_than_policy_identifier_profile_maximum:") +
+                        db::NativeCreateNameClassName(plan.name_over_profile_maximum));
+    }
+  }
 
   disk::FileDevice device;
   const auto opened = db::OpenNewNativeDatabaseFile(device, request.context.database_path);

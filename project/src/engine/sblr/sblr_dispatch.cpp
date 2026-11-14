@@ -10931,6 +10931,29 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   SblrDispatchResult result;
   result.api_result.operation_id = request.envelope.operation_id;
 
+  // SEARCH_KEY: SB_CREATE_DATABASE_NOT_ON_SESSION_ROUTE (owner Q132 = 2,
+  // 2026-11-14). CREATE DATABASE is pre-security: a file write, not a session
+  // statement. A context that carries a statement receipt
+  // (statement_receipt_uuid, stamped on every context derived from a receipt:
+  // CopyStatementContextEngineContextV1, ProjectStatementContextLiteral-
+  // AuthorityV2) is a session's statement context, so a create dispatched
+  // with one is refused here, with the session route's code
+  // (DispatchStatementContextReceipt, Q125), before the envelope is
+  // validated, before any operand is decoded and before any file work.
+  // (Was: such a create reached the engine and ran against the context's
+  // database_path: refused at the O_EXCL open of the receipt's own database,
+  // or, with that path swapped by the caller, created a new database.)
+  if (!request.context.statement_receipt_uuid.is_nil() &&
+      IsSblrCreateDatabaseOperation(request.envelope)) {
+    constexpr const char* detail =
+        "create_database_is_a_pre_security_file_write_not_a_session_statement";
+    result.diagnostics.push_back(DispatchDiagnostic("DATABASE.CREATE_NOT_ON_SESSION_ROUTE", detail));
+    result.api_result = FailureResult(request.context, request.envelope.operation_id,
+                                      "DATABASE.CREATE_NOT_ON_SESSION_ROUTE",
+                                      "database.create.not_on_session_route", detail);
+    return result;
+  }
+
   const auto validation = ValidateSblrEnvelope(request.envelope);
   result.envelope_validated = validation.ok;
   if (!validation.ok) {

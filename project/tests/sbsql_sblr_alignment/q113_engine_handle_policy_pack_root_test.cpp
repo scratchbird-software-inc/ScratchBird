@@ -44,6 +44,23 @@
 // entered DispatchStatementContextReceipt. It is kept below, relabelled as
 // what it is (the API-level dispatcher), because checks 3 and 4 depend on it
 // to show the handle's root reaching the engine; it is not the session route.
+//
+// Q132 = 2 (owner 2026-11-14, SB_CREATE_DATABASE_NOT_ON_SESSION_ROUTE):
+// DispatchSblrOperation itself now refuses CREATE DATABASE when the context
+// carries a statement receipt (statement_receipt_uuid, which every
+// receipt-derived context carries: CopyStatementContextEngineContextV1 sets
+// it). So every create above that used the receipt's context (checks 2, 3, 4
+// and the "as issued" note) is now refused DATABASE.CREATE_NOT_ON_SESSION_ROUTE
+// with no file; each changed check is annotated where it stands. What is
+// still shown: (1) the handle's root reaches every receipt context it
+// issues (check 1); (2) with NO receipt, a context carrying that same root
+// value creates through DispatchSblrOperation, and the client option and
+// missing-root refusals hold there. Recorded, not hidden: the hop between
+// (1) and (2) is this test copying the value; no production route now
+// carries a handle's root to a native create (the management route,
+// manager_control.cpp, fills the field from server config and does not yet
+// issue native creates, Q109). Where a production native create gets its
+// pack root is an owner question.
 #define SCRATCHBIRD_IA01_PACKAGE_FIXTURE_ONLY
 #include "ia01_package_cancellation_fault_test.cpp"
 
@@ -218,6 +235,28 @@ sblr::SblrDispatchResult DispatchCreate(api::EngineRequestContext context, const
                                         api::EngineApiRequest options = NativeOptions()) {
   context.database_path = path;
   return sblr::DispatchSblrOperation({std::move(context), NativeCreateEnvelope("orders"), std::move(options)});
+}
+
+// Q132 = 2 (owner 2026-11-14): a context with NO statement receipt, as
+// native_create_lifecycle_api_test's Context() builds one (the server's
+// stand-in), carrying the policy pack root the test passes in. Used to show
+// the engine creates with a root a handle issued; the transfer of that value
+// from the receipt context into this one is the test's, not a production
+// route's (recorded in the header).
+api::EngineRequestContext ReceiptFreeContext(const std::string& root) {
+  api::EngineRequestContext context;
+  context.request_id = "q132-receipt-free-create";
+  context.security_context_present = true;
+  context.statement_uuid = api::EngineUuid{Fixed(0x31)};
+  context.server_policy_seed_pack_root = root;
+  return context;
+}
+
+// Q132: a receipt-bearing context's create is refused by DispatchSblrOperation
+// itself, before validation and before any file work.
+bool RefusedNotOnSessionRoute(const sblr::SblrDispatchResult& result) {
+  return !result.envelope_validated && !result.dispatched_to_api && !result.api_result.ok &&
+         HasDiagnostic(result.api_result, "DATABASE.CREATE_NOT_ON_SESSION_ROUTE");
 }
 
 // Q125 (SB_CREATE_DATABASE_NOT_ON_SESSION_ROUTE): one CREATE DATABASE member
@@ -527,42 +566,73 @@ int main() {
           "Q113: the receipt context is pinned to the handle's own database");
     std::printf("Q113 receipt context: root from the handle (caller value replaced)\n");
 
+    Check(!issued.statement_receipt_uuid.is_nil(),
+          "Q132: the receipt's engine context carries its statement receipt (the marker the dispatcher reads)");
+
     // As issued: the create targets the handle's own (existing) database.
+    // Q132 = 2 (owner 2026-11-14, SB_CREATE_DATABASE_NOT_ON_SESSION_ROUTE):
+    // DispatchSblrOperation refuses a create whose context carries a
+    // statement receipt, before any file work. Was (Q113, recorded): the
+    // create reached the O_EXCL open of the handle's existing database and
+    // was refused there (native_database_file_open_refused:), past the pack
+    // check; the database was untouched, as it still is.
     {
       const auto before = std::filesystem::file_size(path);
       const auto as_issued = sblr::DispatchSblrOperation({issued, NativeCreateEnvelope("orders"), NativeOptions()});
-      Check(as_issued.dispatched_to_api && !as_issued.api_result.ok &&
-                DetailHas(as_issued.api_result, "native_database_file_open_refused:") &&
-                !HasDiagnostic(as_issued.api_result, "DATABASE.CREATE_POLICY_PACK_REQUIRED") &&
-                std::filesystem::file_size(path) == before,
-            "Q113 (recorded): with the receipt context unchanged, the create reaches the O_EXCL open of the "
-            "handle's existing database and is refused there, past the pack check; the database is untouched");
-      std::printf("Q113 receipt context unchanged: past the pack check, refused at the O_EXCL open (path exists)\n");
+      if (!RefusedNotOnSessionRoute(as_issued)) Dump(as_issued);
+      Check(RefusedNotOnSessionRoute(as_issued) && std::filesystem::file_size(path) == before,
+            "Q132: with the receipt context unchanged, DispatchSblrOperation refuses the create "
+            "DATABASE.CREATE_NOT_ON_SESSION_ROUTE; the handle's database is untouched");
+      std::printf("Q132 receipt context unchanged: refused DATABASE.CREATE_NOT_ON_SESSION_ROUTE, database untouched\n");
     }
 
+    // Q132 = 2: the same context with a fresh target path is refused too, no
+    // file. Was (Q113/Q125, relabelled "direct dispatcher, not the session
+    // route"): "the handle's root drives a native CREATE DATABASE through the
+    // in-process SBLR dispatcher to success", one file created.
     const auto dir = fresh("handle-root");
-    const auto created = DispatchCreate(issued, (dir / "created.sdb").string());
-    if (!created.api_result.ok) Dump(created);
-    Check(created.envelope_validated && created.dispatched_to_api && created.api_result.ok &&
-              std::filesystem::exists(dir / "created.sdb") &&
-              std::distance(std::filesystem::directory_iterator(dir), std::filesystem::directory_iterator{}) == 1,
-          "Q113: the handle's root drives a native CREATE DATABASE through the in-process SBLR dispatcher "
-          "(DispatchSblrOperation, NOT the session route) to success");
-    // Q125 (owner 2026-11-14): relabelled. Was printed as the receipt-route
-    // create; it is the API-level dispatcher called with a copy of the
-    // receipt context and a swapped path. Recorded: that dispatcher still
-    // creates; the session route (check 5 below) refuses.
-    std::printf("Q113 native create with the handle's root (direct dispatcher, not the session route): created, "
-                "one file\n");
+    {
+      const auto refused = DispatchCreate(issued, (dir / "created.sdb").string());
+      if (!RefusedNotOnSessionRoute(refused)) Dump(refused);
+      Check(RefusedNotOnSessionRoute(refused) && std::filesystem::is_empty(dir),
+            "Q132: a create with a copy of the receipt context and a swapped path is refused "
+            "DATABASE.CREATE_NOT_ON_SESSION_ROUTE; no file (was: created, one file)");
+      std::printf("Q132 receipt context, swapped path: refused DATABASE.CREATE_NOT_ON_SESSION_ROUTE, no file\n");
+    }
+    // The positive create, with no receipt: a context without a statement
+    // receipt (the server's stand-in), carrying the root the handle issued.
+    // This shows the engine creates with that value; it does not show a
+    // production route carrying it there (none does: see the header, Q132).
+    {
+      const auto created = DispatchCreate(ReceiptFreeContext(issued.server_policy_seed_pack_root),
+                                          (dir / "created.sdb").string());
+      if (!created.api_result.ok) Dump(created);
+      Check(created.envelope_validated && created.dispatched_to_api && created.api_result.ok &&
+                std::filesystem::exists(dir / "created.sdb") &&
+                std::distance(std::filesystem::directory_iterator(dir), std::filesystem::directory_iterator{}) == 1,
+            "Q132: with no receipt, the root the handle issued creates a native database through "
+            "DispatchSblrOperation (the value is carried over by this test, not by a route)");
+      std::printf("Q132 receipt-free context with the handle's root: created, one file\n");
+    }
 
     auto client_option = NativeOptions();
     client_option.option_envelopes.push_back("policy_seed_pack_root:/client/chosen/pack");
     const auto client_dir = fresh("client-option");
-    const auto refused = DispatchCreate(issued, (client_dir / "created.sdb").string(), client_option);
-    Check(!refused.api_result.ok &&
-              HasDiagnostic(refused.api_result, "DATABASE.CREATE_POLICY_PACK_CLIENT_REFUSED") &&
-              std::filesystem::is_empty(client_dir),
-          "Q104/Q113: a client option naming the pack is still refused, with the handle's root present");
+    // Q132 = 2: with the receipt context the create is refused before the
+    // option is read. Was (Q104/Q113): refused
+    // DATABASE.CREATE_POLICY_PACK_CLIENT_REFUSED with the handle's root
+    // present. That refusal is now shown on the receipt-free context.
+    {
+      const auto refused = DispatchCreate(issued, (client_dir / "created.sdb").string(), client_option);
+      Check(RefusedNotOnSessionRoute(refused) && std::filesystem::is_empty(client_dir),
+            "Q132: a client pack option on the receipt context: refused DATABASE.CREATE_NOT_ON_SESSION_ROUTE, no file");
+      const auto receipt_free = DispatchCreate(ReceiptFreeContext(issued.server_policy_seed_pack_root),
+                                               (client_dir / "created.sdb").string(), client_option);
+      Check(!receipt_free.api_result.ok &&
+                HasDiagnostic(receipt_free.api_result, "DATABASE.CREATE_POLICY_PACK_CLIENT_REFUSED") &&
+                std::filesystem::is_empty(client_dir),
+            "Q104/Q113: a client option naming the pack is still refused, with the handle's root present");
+    }
     std::printf("Q113 client pack option: refused\n");
 
     // 5. Q125 = 3 (owner 2026-11-14, SB_CREATE_DATABASE_NOT_ON_SESSION_ROUTE):
@@ -600,12 +670,22 @@ int main() {
     Check(issued.server_policy_seed_pack_root.empty(),
           "Q113: a handle opened without a root issues no root, whatever the caller's context held");
     const auto dir = fresh(label);
+    // Q132 = 2 (owner 2026-11-14): the receipt context's create is refused
+    // DATABASE.CREATE_NOT_ON_SESSION_ROUTE before the pack is looked at. Was:
+    // "with no root on the handle, native create refuses
+    // CREATE_POLICY_PACK_REQUIRED and makes no file". That refusal is shown
+    // on a receipt-free context carrying the (empty) root the handle issued.
     const auto refused = DispatchCreate(issued, (dir / "created.sdb").string());
-    Check(refused.dispatched_to_api && !refused.api_result.ok &&
-              HasDiagnostic(refused.api_result, "DATABASE.CREATE_POLICY_PACK_REQUIRED") &&
+    Check(RefusedNotOnSessionRoute(refused) && std::filesystem::is_empty(dir),
+          "Q132: a receipt context's create is refused DATABASE.CREATE_NOT_ON_SESSION_ROUTE, no file");
+    const auto receipt_free = DispatchCreate(ReceiptFreeContext(issued.server_policy_seed_pack_root),
+                                             (dir / "created.sdb").string());
+    Check(receipt_free.dispatched_to_api && !receipt_free.api_result.ok &&
+              HasDiagnostic(receipt_free.api_result, "DATABASE.CREATE_POLICY_PACK_REQUIRED") &&
               std::filesystem::is_empty(dir),
           "Q113: with no root on the handle, native create refuses CREATE_POLICY_PACK_REQUIRED and makes no file");
-    std::printf("Q113 %s handle without a root: CREATE_POLICY_PACK_REQUIRED, no file\n", label);
+    std::printf("Q113 %s handle without a root: receipt context refused NOT_ON_SESSION_ROUTE; "
+                "receipt-free CREATE_POLICY_PACK_REQUIRED, no file\n", label);
     Check(sb_engine_close(engine, nullptr) == SB_ENGINE_STATUS_OK, "close");
   };
   no_root("c-abi-open", false);

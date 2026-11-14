@@ -87,8 +87,22 @@ struct NativeDatabaseCreateReceipt {
   core::platform::Uuid service_provider_uuid,service_policy_uuid,service_runtime_binding_uuid;
   NativeCreationWorkspaceReceipt workspace;
 };
+// SEARCH_KEY: SB_NATIVE_CREATE_NAMES_UNDER_PACK_PROFILE (owner Q130 = 2,
+// 2026-11-14). The kind of object whose name was longer than the identifier
+// profile it is named under allows (the profile's maximum_identifier_length,
+// from the server's pack). Never the name text itself.
+enum class NativeCreateNameClass {
+  none,
+  policy_cohort,        // a pack or engine name in the security/policy cohort
+  bootstrap_principal,  // the caller's bootstrap principal name
+  service_principal,    // the caller's internal service principal name
+  database,filespace,schema,agent,datatype,index
+};
+const char* NativeCreateNameClassName(NativeCreateNameClass) noexcept;
 struct NativeDatabaseCreateResult {
   NativeDatabaseCreateError error=NativeDatabaseCreateError::invalid_request;
+  // Q130: set (with the stage's error) when a name was over the profile maximum.
+  NativeCreateNameClass name_over_profile_maximum=NativeCreateNameClass::none;
   NativeInitialPolicyError policy_error=NativeInitialPolicyError::none;
   core::catalog::CatalogNamedCreationError name_error=core::catalog::CatalogNamedCreationError::none;
   NativeInitialDatabaseError database_error=NativeInitialDatabaseError::none;
@@ -105,6 +119,18 @@ struct NativeDatabaseCreateResult {
 // file is never created beside an .sb.owner.lock, not even transiently.
 NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(
     disk::FileDevice& empty_owned,const NativeDatabaseCreateRequest&,core::uuid::StandaloneUuidV7Issuer&) noexcept;
+// SEARCH_KEY: SB_NATIVE_CREATE_NAMES_UNDER_PACK_PROFILE (owner Q130 = 2,
+// 2026-11-14). The same body as CreateNativeDatabaseOnOpenDevice, run with no
+// device: every step before the first write (pack intake, identity issue,
+// assembly of every name the create would write, layout and capacity checks),
+// then it stops. It opens and writes no database file; the issuer's
+// identities are spent and discarded. error == none (with no receipt) means
+// the create's assembly would pass; any refusal carries the same error, and
+// name_over_profile_maximum says which kind of name was too long for the
+// pack's identifier profile. Native CREATE DATABASE calls it before its
+// O_EXCL open, with a separate issuer bound like the create's.
+NativeDatabaseCreateResult PlanNativeDatabaseCreate(
+    const NativeDatabaseCreateRequest&,core::uuid::StandaloneUuidV7Issuer&) noexcept;
 // Opens a new, empty native database file for CreateNativeDatabaseOnOpenDevice:
 // O_CREAT|O_EXCL, then flock(LOCK_EX|LOCK_NB) on the new descriptor before any
 // write, and no lock file. If another opener flocks the new file between the
