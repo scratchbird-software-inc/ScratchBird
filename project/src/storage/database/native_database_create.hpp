@@ -78,7 +78,10 @@ enum class NativeDatabaseCreateError {
   name_path  // SB_NATIVE_NAME_PATH: a name entry's path does not resolve
 };
 struct NativeDatabaseCreateReceipt {
-  core::platform::Uuid database_uuid,filespace_uuid,database_object_uuid;
+  // SB_ONE_DATABASE_UUID (owner Q111 = 1): database_uuid is the page-zero
+  // identity AND the database catalog object's key, the schema-tree root and
+  // the name scope; there is no separate database_object_uuid any more.
+  core::platform::Uuid database_uuid,filespace_uuid;
   transaction::mga::TransactionIdentity construction_transaction;
   core::platform::Uuid bootstrap_principal_uuid,service_principal_uuid,service_credential_reference_uuid;
   core::platform::Uuid service_provider_uuid,service_policy_uuid,service_runtime_binding_uuid;

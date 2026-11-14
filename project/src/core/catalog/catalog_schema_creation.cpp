@@ -45,15 +45,20 @@ CatalogInitialSchemaResult AssembleLocalInitialSchemaRecords(
         !IsKnownCatalogLanguage(language)||!limits.maximum_records||!limits.maximum_encoded_bytes)
       return Fail(E::invalid_request);
     if(inputs.size()>limits.maximum_records/3)return Fail(E::resource_exhausted);
+    // SEARCH_KEY: SB_ONE_DATABASE_UUID (owner Q111 = 1, 2026-11-13). The
+    // database catalog object's key IS the database UUID (the page-zero
+    // identity), and the payload's database_uuid repeats it. The header keeps
+    // the object kind tag; the 16 bytes are the database's. (Was: the key had
+    // to be a second UUID that differed from the database UUID.)
     if(db.record.header.kind!=CatalogRecordKind::database||!First(db,tx)||
         db.record.header.object_uuid.kind!=UuidKind::object||
+        db.record.header.object_uuid.value!=database||
         !CatalogMetadataVersionEncodedBytes(BorrowCatalogMetadataVersion(db)))return Fail(E::invalid_database);
     const auto decoded=DecodeCatalogDatabaseRecord(db.record.payload);
     if(!decoded.ok()||decoded.record->database_uuid.value!=database||
         decoded.record->creator_transaction_number!=1||!decoded.record->datatype_cohort)
       return Fail(E::invalid_database);
-    const std::array<Uuid,4> enclosing{database,tx.value,
-        db.record.header.object_uuid.value,db.record.header.row_uuid.value};
+    const std::array<Uuid,3> enclosing{database,tx.value,db.record.header.row_uuid.value};
     for(std::size_t i=0;i<enclosing.size();++i)for(std::size_t j=0;j<i;++j)
       if(enclosing[i]==enclosing[j])return Fail(E::invalid_database);
     // Full borrowed metadata/name admission with canonical family bytes on the
@@ -81,13 +86,13 @@ CatalogInitialSchemaResult AssembleLocalInitialSchemaRecords(
       if(checked.error!=CatalogNamedCreationError::none)return Fail(NameError(checked.error),checked.error);
       records+=checked.records;bytes+=checked.encoded_bytes;
     }
-    if(records>(std::numeric_limits<std::size_t>::max()-4)/2)return Fail(E::resource_exhausted);
+    if(records>(std::numeric_limits<std::size_t>::max()-3)/2)return Fail(E::resource_exhausted);
     std::array<Uuid,256> small;
     std::vector<Uuid> large;
-    const auto count=static_cast<std::size_t>(2*records+4);
+    const auto count=static_cast<std::size_t>(2*records+3);
     if(count>small.size())large.resize(count);
     auto* ids=large.empty()?small.data():large.data();
-    std::copy(enclosing.begin(),enclosing.end(),ids);std::size_t at=4;
+    std::copy(enclosing.begin(),enclosing.end(),ids);std::size_t at=3;
     for(const auto& input:inputs) {
       const auto append=[&](const CatalogMetadataVersion& m) {
         ids[at++]=m.record.header.object_uuid.value;ids[at++]=m.record.header.row_uuid.value;

@@ -262,6 +262,19 @@ class FileDevice {
                       std::string database_path,
                       FileOpenMode mode);
   IoResult Close();
+  // SEARCH_KEY: SB_NATIVE_CREATE_EMPTY_FILE_UNLINK (owner Q108 = 1,
+  // 2026-11-13). For a native create that refuses after its O_EXCL open: while
+  // this device still holds the data-file flock (native_data_file_owner), and
+  // only if our descriptor's file is still 0 bytes AND the path still names
+  // that same file (st_dev/st_ino of the path equal our descriptor's), unlink
+  // the path, then close (closing releases the flock). Anything else unlinks
+  // nothing: a non-empty file, a path that now names another file or nothing,
+  // a device not opened for native ownership. Either way the device is closed
+  // when this returns. POSIX only; refused (nothing unlinked) on Windows.
+  enum class EmptyNativeCreateRemoval {
+    removed, not_owner, not_empty, path_replaced, inspect_failed, unlink_failed
+  };
+  EmptyNativeCreateRemoval RemoveAndCloseIfStillEmptyNativeCreate() noexcept;
   IoResult ReadAt(u64 offset, void* buffer, usize bytes);
   // Declare before ALL enclosing device/source guards; device outlives batch.
   // Fixed receipts include partial effects and numeric native errors. Captured

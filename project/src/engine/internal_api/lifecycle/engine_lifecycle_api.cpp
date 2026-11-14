@@ -402,19 +402,27 @@ const char* NativeCreateErrorName(scratchbird::storage::database::NativeDatabase
 //                      catalog_language constant
 //   page size          option page_size: (the API's existing option and its
 //                      16384 default); 8K-128K only, 4K refused (Q100)
-//   total pages        option total_pages:, required, no default (OWNER Q)
-//   policy pack        option policy_seed_pack_root:, required (OWNER Q: the
-//                      server's database_policy_seed_pack_root is its source)
+//   total pages        option total_pages:, required, no default (owner Q105 = 1)
+//   policy pack        the server's own configuration only (owner Q104 = 2,
+//                      SB_SERVER_POLICY_SEED_PACK_ROOT): the context's
+//                      server_policy_seed_pack_root, required; a client
+//                      option policy_seed_pack_root: is refused
 //   principals         options bootstrap_principal_name:/..._fingerprint: and
 //                      internal_service_principal_name:/..._fingerprint:, the
 //                      legacy create's options; native create requires both
 //   creation time      the engine clock, as legacy create
-//   database identity  minted here (GenerateEngineIdentityV7), as legacy create
-//   policy snapshot    minted here (PROVISIONAL, OWNER Q)
+//   database identity  minted here (GenerateEngineIdentityV7): ONE UUIDv7 from
+//                      the local clock at file creation; page zero, the
+//                      database catalog object key, the schema-tree root and
+//                      the name scope (owner Q111 = 1, SB_ONE_DATABASE_UUID)
+//   policy snapshot    minted here: the construction transaction's policy
+//                      snapshot reference (issuer binding, transaction header,
+//                      construction intent); not a database identity
 //   engine identity    a fresh runtime identity per create, as the hosted
-//                      runtime issues one per owner lifetime (PROVISIONAL, OWNER Q)
-//   issuer policy      PROVISIONAL default clock, no regression, 1000 ms
-//                      same-millisecond wait (OWNER Q)
+//                      runtime issues one per owner lifetime (owner Q106 = 1:
+//                      until a server engine-instance identity exists)
+//   issuer policy      the local machine's clock and standard RFC 9562 UUIDv7
+//                      (owner Q107, kStandardLocalClockUuidV7Policy)
 //   datatype cohort    the build's cohort V11, as legacy create writes it
 //   retained image     NativeHostedSourceBackingBytes(page size)
 EngineCreateLifecycleResult NativeCreateLifecycle(const EngineCreateLifecycleRequest& request,
@@ -442,9 +450,21 @@ EngineCreateLifecycleResult NativeCreateLifecycle(const EngineCreateLifecycleReq
   if (total_pages == 0) {
     return refuse("DATABASE.CREATE_TOTAL_PAGES_REQUIRED", "native_total_pages_required");
   }
-  const auto policy_root = OptionValue(request, "policy_seed_pack_root:");
+  // SEARCH_KEY: SB_SERVER_POLICY_SEED_PACK_ROOT (owner Q104 = 2, 2026-11-13).
+  // The policy pack is the server's, from its own configuration
+  // (ServerBootstrapConfig::database_policy_seed_pack_root), carried in the
+  // context's server-only field. A client never chooses it: a request option
+  // naming it is refused (exact option prefix, not a substring match), and
+  // without the server's value the create is refused. Nothing is opened yet.
+  for (const auto& option : request.option_envelopes) {
+    if (option.starts_with("policy_seed_pack_root:")) {
+      return refuse("DATABASE.CREATE_POLICY_PACK_CLIENT_REFUSED",
+                    "native_policy_seed_pack_root_is_server_configuration");
+    }
+  }
+  const auto& policy_root = request.context.server_policy_seed_pack_root;
   if (policy_root.empty()) {
-    return refuse("DATABASE.CREATE_POLICY_PACK_REQUIRED", "native_policy_seed_pack_root_required");
+    return refuse("DATABASE.CREATE_POLICY_PACK_REQUIRED", "native_server_policy_seed_pack_root_required");
   }
   const auto bootstrap_name = OptionValue(request, "bootstrap_principal_name:");
   const auto bootstrap_fingerprint = OptionValue(request, "bootstrap_credential_fingerprint:");
@@ -469,8 +489,10 @@ EngineCreateLifecycleResult NativeCreateLifecycle(const EngineCreateLifecycleReq
   if (!database_uuid.ok() || !policy_snapshot_uuid.ok() || !engine_uuid) {
     return refuse("DATABASE.CREATE_FAILED", "engine_owned_database_identity_generation_failed");
   }
+  // Q107 (owner 2026-11-14): local clock, standard RFC 9562 UUIDv7.
   scratchbird::core::uuid::StandaloneUuidV7Issuer issuer(
-      {database_uuid.value.value, policy_snapshot_uuid.value.value}, {{}, 0, 1000});
+      {database_uuid.value.value, policy_snapshot_uuid.value.value},
+      scratchbird::core::uuid::kStandardLocalClockUuidV7Policy);
 
   db::NativeDatabaseCreateRequest create;
   create.policy_seed_pack_root = policy_root;
@@ -496,13 +518,20 @@ EngineCreateLifecycleResult NativeCreateLifecycle(const EngineCreateLifecycleReq
                   "native_database_file_open_refused:" + opened.diagnostic.diagnostic_code);
   }
   const auto made = db::CreateNativeDatabaseOnOpenDevice(device, create, issuer);
-  const auto closed = device.Close();
   if (!made.ok()) {
-    // Native create refuses before its first write; the new file stays empty
-    // (cleanup of that empty file is an open owner question, S2).
+    // SEARCH_KEY: SB_NATIVE_CREATE_EMPTY_FILE_UNLINK (owner Q108 = 1,
+    // 2026-11-13). The refusal came after our O_EXCL open. While we still
+    // hold the flock, our own file is removed only if it is still empty and
+    // the path still names it; then the device is closed. A file that is not
+    // empty, or a path that names another file, is left alone.
+    const auto removal = device.RemoveAndCloseIfStillEmptyNativeCreate();
+    const bool removed =
+        removal == disk::FileDevice::EmptyNativeCreateRemoval::removed;
     return refuse("DATABASE.CREATE_FAILED",
-                  std::string("native_create_refused:") + NativeCreateErrorName(made.error));
+                  std::string("native_create_refused:") + NativeCreateErrorName(made.error) +
+                      (removed ? ";empty_file_removed" : ";empty_file_not_removed"));
   }
+  const auto closed = device.Close();
   if (!closed.ok()) {
     return refuse("DATABASE.CREATE_FAILED",
                   "native_database_file_close_failed:" + closed.diagnostic.diagnostic_code);
@@ -516,7 +545,6 @@ EngineCreateLifecycleResult NativeCreateLifecycle(const EngineCreateLifecycleReq
                     {{"operation_uuid", request.context.statement_uuid},
                      {"database_uuid", receipt.database_uuid},
                      {"filespace_uuid", receipt.filespace_uuid},
-                     {"database_object_uuid", receipt.database_object_uuid},
                      {"construction_transaction_uuid", receipt.construction_transaction.transaction_uuid.value},
                      {"bootstrap_principal_uuid", receipt.bootstrap_principal_uuid},
                      {"service_principal_uuid", receipt.service_principal_uuid},

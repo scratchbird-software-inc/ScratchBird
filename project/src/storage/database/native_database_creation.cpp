@@ -72,8 +72,13 @@ static NativeInitialDatabaseResult AssembleNativeInitialDatabaseRecordsImpl(
       for(std::size_t j=0;j<i;++j)if(enclosing[i]==enclosing[j])return Fail(E::invalid_construction);
     }
     const auto& metadata=*named.definition;
+    // SEARCH_KEY: SB_ONE_DATABASE_UUID (owner Q111 = 1, 2026-11-13): the
+    // database catalog object's key is the page-zero database UUID, never a
+    // second identity. The payload's database_uuid below repeats it (kept: the
+    // record format is unchanged; verification requires the two to be equal).
     if(metadata.record.header.kind!=c::CatalogRecordKind::database||
         metadata.object_subtype!=scratchbird::core::catalog::CatalogObjectSubtype::database||!metadata.record.payload.empty()||
+        metadata.record.header.object_uuid.value!=b.database_uuid||
         !metadata.record.header.parent_uuid.value.is_nil()||!metadata.owning_schema_uuid.value.is_nil())
       return Fail(E::invalid_definition);
     c::CatalogDatabaseRecord definition;
@@ -128,9 +133,12 @@ static NativeInitialDatabaseResult AssembleNativeInitialDatabaseRecordsImpl(
     // Do not allow any definition/name object or row to masquerade as the
     // primary, operation, issuer/source profile or actual construction owner.
     // Per-package duplicate admission remains in the shared named assembler.
+    // SB_ONE_DATABASE_UUID: the database definition's own key is the database
+    // UUID (checked above) and is the one identity exempt from this rule.
     const auto distinct=[&](const c::CatalogMetadataVersion& m) {
-      for(const auto& id:{m.record.header.object_uuid.value,m.record.header.row_uuid.value})
-        if(id==r.datatype_cohort.catalog_snapshot_uuid.value||
+      const std::array<Uuid,2> ids{m.record.header.object_uuid.value,m.record.header.row_uuid.value};
+      for(std::size_t k=(&m==&metadata?1:0);k<ids.size();++k)
+        if(const auto& id=ids[k];id==r.datatype_cohort.catalog_snapshot_uuid.value||
             std::find(enclosing.begin(),enclosing.end(),id)!=enclosing.end()||
             (r.text_defaults&&(id==r.text_defaults->charset_uuid.value||
                 id==r.text_defaults->collation_uuid.value||id==r.text_defaults->source_object_uuid.value||

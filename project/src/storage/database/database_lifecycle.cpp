@@ -9336,7 +9336,13 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
       for(std::size_t i=0;i<tree.size();++i)if(tree[i].label==label)return schema_objects[i];return Uuid{};};
     const Uuid sys_catalog=schema_at("catalog"),sys_agents=schema_at("agents"),sys_security=schema_at("security"),
         sys_configuration=schema_at("configuration"),sys_management=schema_at("management"),sys_audit=schema_at("audit");
-    const Uuid database_object=issue_kind(UuidKind::object),filespace_object=issue_kind(UuidKind::object);
+    // SEARCH_KEY: SB_ONE_DATABASE_UUID (owner Q111 = 1, 2026-11-13). A database
+    // has ONE identity: the UUIDv7 minted when its file is created (page zero,
+    // the issuer's binding). It is the database catalog object's key, the
+    // parent of every root schema and the scope of the database's name rows;
+    // the name can change, the UUID does not. (Was: a second, object-kind
+    // UUID minted here as the catalog object's key and schema-tree root.)
+    const Uuid filespace_object=issue_kind(UuidKind::object);
     const Uuid memory_configuration=issue_kind(UuidKind::object);
     if(!identities_ok)return fail(E::identity_failure);
 
@@ -9446,8 +9452,9 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
     const auto uuid_text=[](const Uuid& id){return scratchbird::core::uuid::UuidToString(id);};
 
     // Database and primary filespace (filespace_0, owner 2026-10-30).
-    auto* database_unit=unit(database_object,CatalogRecordKind::database,c::CatalogObjectSubtype::database,{},Uuid{},std::string(request.database_name));
-    auto* filespace_unit=unit(filespace_object,CatalogRecordKind::filespace,c::CatalogObjectSubtype::filespace,{},database_object,"filespace_0");
+    // SB_ONE_DATABASE_UUID: the database row's key is the database UUID.
+    auto* database_unit=unit(database,CatalogRecordKind::database,c::CatalogObjectSubtype::database,{},Uuid{},std::string(request.database_name));
+    auto* filespace_unit=unit(filespace_object,CatalogRecordKind::filespace,c::CatalogObjectSubtype::filespace,{},database,"filespace_0");
     if(!units_ok)return fail(E::database_assembly);
     database_unit->Bind();filespace_unit->Bind();
     NativeInitialDatabaseRequest database_request{&construction,request.datatype_cohort,*language,
@@ -9468,11 +9475,11 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
       const auto& node=tree[i];
       const bool root=node.parent<0;
       schema_units[i]=unit(schema_objects[i],CatalogRecordKind::schema,c::CatalogSchemaSubtype(node.type),
-          root?Uuid{}:schema_objects[node.parent],root?std::optional<Uuid>{database_object}:std::nullopt,std::string(node.label));
+          root?Uuid{}:schema_objects[node.parent],root?std::optional<Uuid>{database}:std::nullopt,std::string(node.label));
       if(!units_ok)return fail(E::schema_assembly);
       auto& s=schema_definitions[i];
       s.schema_object_uuid={UuidKind::object,schema_objects[i]};
-      s.database_catalog_object_uuid={UuidKind::object,database_object};
+      s.database_catalog_object_uuid={UuidKind::object,database};  // SB_ONE_DATABASE_UUID
       if(!root)s.parent_schema_uuid={UuidKind::object,schema_objects[node.parent]};
       s.schema_type=node.type;s.permissions_policy_uuid={UuidKind::object,service_identity.policy_uuid};
       s.origin_transaction_uuid=tx;s.origin_local_transaction_id=1;
@@ -9699,7 +9706,8 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
         request.maximum_retained_image_bytes,issuer,index_rows.name_trees,index_rows.comment_tree);
     if(!written.ok()){result.workspace_error=written.error;return fail(E::workspace_failure);}
     NativeDatabaseCreateReceipt receipt;
-    receipt.database_uuid=database;receipt.filespace_uuid=filespace;receipt.database_object_uuid=database_object;
+    // SB_ONE_DATABASE_UUID: no separate database-object UUID to return.
+    receipt.database_uuid=database;receipt.filespace_uuid=filespace;
     receipt.construction_transaction=construction.creator;
     receipt.bootstrap_principal_uuid=bootstrap.principal_uuid;receipt.service_principal_uuid=service_identity.principal_uuid;
     receipt.service_credential_reference_uuid=service_identity.credential_reference_uuid;

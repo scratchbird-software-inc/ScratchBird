@@ -469,6 +469,13 @@ struct EngineRequestContext {
   // database_path. Empty means the legacy path open. Never serialized and
   // never supplied by a parser; copies of the context share it.
   std::shared_ptr<scratchbird::storage::disk::RouteOwnershipLease> served_route_owner;
+  // SEARCH_KEY: SB_SERVER_POLICY_SEED_PACK_ROOT (owner Q104 = 2, 2026-11-13).
+  // The hosting server's own policy seed pack root
+  // (ServerBootstrapConfig::database_policy_seed_pack_root), set only by the
+  // server when it builds this context. Read by the native CREATE DATABASE.
+  // Never serialized, never filled from a parser, an SBLR operand or a
+  // request option; empty means no server value (native create refuses).
+  std::string server_policy_seed_pack_root;
   EngineUuid database_uuid;
   EngineApiU64 database_page_size_bytes = 0;
   EngineUuid cluster_uuid;

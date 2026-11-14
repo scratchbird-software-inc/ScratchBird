@@ -19,6 +19,24 @@ struct StandaloneUuidV7Policy {
   u64 max_uuid_regression_ms = 0;
   u64 same_ms_wait_timeout_ms = 0; // Missing policy is invalid, never a default authority.
 };
+// SEARCH_KEY: SB_STANDARD_LOCAL_CLOCK_UUIDV7 (owner Q107, 2026-11-14: "when a
+// database is generated, the uuid is based on the local machines time and
+// standard uuid v7 calculations"). The issuer already reads the local
+// machine's wall clock (std::chrono::system_clock, ReadLocalNodeClockSnapshot)
+// and lays each value out as RFC 9562 UUIDv7: 48-bit Unix milliseconds,
+// version 7, variant 10, 74 random bits; within one millisecond it increments
+// the previous value (RFC 9562 section 6.2, monotonic random). This policy is
+// the standard behaviour of that issuer, with no extra authority:
+//   clock                  default LocalTimeAuthorityPolicy: a wall-clock step
+//                          backwards, or a monotonic regression, is refused
+//                          (RFC 9562 6.2: "report an appropriate error")
+//   max_uuid_regression_ms 0: never issue a value timestamped before one
+//                          already issued (monotonic order kept)
+//   same_ms_wait_timeout   1000 ms: only after the 74-bit space of one
+//                          millisecond is exhausted does the issuer wait for
+//                          the clock to advance (RFC 9562 6.2); a clock that
+//                          does not advance within a second is refused
+inline constexpr StandaloneUuidV7Policy kStandardLocalClockUuidV7Policy{{}, 0, 1000};
 enum class StandaloneUuidV7Error {
   none, invalid_binding, invalid_policy, wrong_process, invalid_kind,
   clock_failure, timestamp_out_of_range, time_regression,

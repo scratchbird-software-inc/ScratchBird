@@ -20,6 +20,22 @@
 // test's producer-api mode, which runs this binary's `create` mode as its
 // creating process (native_local_service_enrollment_test.cpp).
 //
+// Owner rulings applied 2026-11-14 (marked in the checks):
+//  - Q111 = 1 (SB_ONE_DATABASE_UUID): one database identity; the receipt no
+//    longer returns a separate database_object_uuid (nine identities). The
+//    cold-reopened file is checked for it in the enrollment test.
+//  - Q107 (SB_STANDARD_LOCAL_CLOCK_UUIDV7): the identities are standard RFC
+//    9562 UUIDv7 from the local clock: version 7, variant 10, timestamps
+//    inside the create's own wall-clock bracket.
+//  - Q104 = 2 (SB_SERVER_POLICY_SEED_PACK_ROOT): the policy pack root is the
+//    server's (the context's server_policy_seed_pack_root); a client option
+//    naming it is refused, and without the server's value create is refused.
+//  - Q108 = 1 (SB_NATIVE_CREATE_EMPTY_FILE_UNLINK): a refusal after the
+//    O_EXCL open (bad fingerprint, bad policy pack, too few pages, non-UTF-8
+//    name sent straight to the API) leaves no file, and a retry on the same
+//    path succeeds; the removal never takes a non-empty file or a path that
+//    names another file.
+//
 // Modes: none (every check) or
 //   create <path> <page size> <language: en|fr-CA>
 // which performs one native create through the API and prints the receipt
@@ -40,6 +56,7 @@
 #include "../support/owned_temp_directory.hpp"
 
 #include <array>
+#include <chrono>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
@@ -88,13 +105,16 @@ api::EngineRequestContext Context(const std::string& path) {
   // Q95: the caller's server session authorises CREATE DATABASE.
   context.security_context_present = true;
   context.statement_uuid = api::EngineUuid{Fixed(0x31)};
+  // Q104 = 2: the hosting server fills its own configured policy pack root;
+  // this test stands in for that server.
+  context.server_policy_seed_pack_root = SB_DEFAULT_POLICY_PACK_ROOT;
   return context;
 }
 
 void NativeOptions(std::vector<std::string>& options, std::uint32_t page_size, std::uint64_t total_pages) {
   options.push_back("page_size:" + std::to_string(page_size));
   options.push_back("total_pages:" + std::to_string(total_pages));
-  options.push_back(std::string("policy_seed_pack_root:") + SB_DEFAULT_POLICY_PACK_ROOT);
+  // Q104 = 2: no policy_seed_pack_root option; the server's context carries it.
   options.push_back("bootstrap_principal_name:BootstrapAdmin");
   options.push_back("bootstrap_credential_fingerprint:" + std::string(kFingerprint));
   options.push_back("internal_service_principal_name:NodeService");
@@ -136,10 +156,30 @@ std::vector<std::string> Entries(const std::filesystem::path& dir) {
   return names;
 }
 
-constexpr std::array<const char*, 10> kReceiptKeys{
-    "database_uuid", "filespace_uuid", "database_object_uuid", "construction_transaction_uuid",
+// Q111: nine identities; database_object_uuid is gone (one database UUID).
+constexpr std::array<const char*, 9> kReceiptKeys{
+    "database_uuid", "filespace_uuid", "construction_transaction_uuid",
     "bootstrap_principal_uuid", "service_principal_uuid", "service_credential_reference_uuid",
     "service_provider_uuid", "service_policy_uuid", "service_runtime_binding_uuid"};
+
+std::uint64_t NowMillis() {
+  return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count());
+}
+
+// Q107: a standard RFC 9562 UUIDv7 (version 7, variant 10) whose 48-bit Unix
+// millisecond timestamp lies inside [from, to] of the local wall clock.
+bool StandardV7Within(const p::Uuid& id, std::uint64_t from, std::uint64_t to) {
+  std::uint64_t ms = 0;
+  for (int i = 0; i < 6; ++i) ms = (ms << 8) | id.bytes[i];
+  return (id.bytes[6] >> 4) == 7 && (id.bytes[8] & 0xc0) == 0x80 && ms >= from && ms <= to;
+}
+
+bool DetailHas(const api::EngineApiResult& result, std::string_view text) {
+  for (const auto& diagnostic : result.diagnostics)
+    if (diagnostic.detail.find(text) != std::string::npos) return true;
+  return false;
+}
 
 std::string Hex(const p::Uuid& id) {
   static constexpr char digits[] = "0123456789abcdef";
@@ -391,6 +431,109 @@ int main(int argc, char** argv) {
     no_session.context.security_context_present = false;
     const auto unauthorised = api::EngineCreateLifecycle(no_session);
     Check(!unauthorised.ok && Entries(dir).empty(), "S2 (Q95): without the caller's session, native create is refused");
+    // Q104 = 2: the policy pack root is the server's configuration only.
+    auto client_pack = NativeRequest(path, 16384, c::kCatalogLanguage_en);
+    client_pack.option_envelopes.push_back(std::string("policy_seed_pack_root:") + SB_DEFAULT_POLICY_PACK_ROOT);
+    refused(client_pack, "DATABASE.CREATE_POLICY_PACK_CLIENT_REFUSED",
+            "Q104: a client option naming the policy pack is refused, even with the server's own value");
+    auto client_other_pack = NativeRequest(path, 16384, c::kCatalogLanguage_en);
+    client_other_pack.option_envelopes.push_back("policy_seed_pack_root:/client/chosen/pack");
+    refused(client_other_pack, "DATABASE.CREATE_POLICY_PACK_CLIENT_REFUSED",
+            "Q104: a client cannot substitute its own policy pack");
+    auto no_server_pack = NativeRequest(path, 16384, c::kCatalogLanguage_en);
+    no_server_pack.context.server_policy_seed_pack_root.clear();
+    refused(no_server_pack, "DATABASE.CREATE_POLICY_PACK_REQUIRED",
+            "Q104: without the server's configured policy pack, native create is refused");
+  }
+
+  // Q108 = 1: refusals AFTER our O_EXCL open leave no file, and a retry on
+  // the same path succeeds.
+  {
+    const auto late = [&](const char* label, auto edit, const char* what) {
+      const auto dir = artifacts.path() / (std::string("late-") + label);
+      std::filesystem::create_directory(dir);
+      const auto path = (dir / "orders.sdb").string();
+      auto request = NativeRequest(path, 16384, c::kCatalogLanguage_en);
+      edit(request);
+      const auto result = api::EngineCreateLifecycle(request);
+      if (result.ok || !DetailHas(result, "native_create_refused:"))
+        for (const auto& diagnostic : result.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+      Check(!result.ok && HasDiagnostic(result, "DATABASE.CREATE_FAILED") && DetailHas(result, "native_create_refused:"),
+            what);
+      Check(DetailHas(result, ";empty_file_removed") && Entries(dir).empty(),
+            "Q108: the refused create removed its own still-empty file; nothing is left");
+      const auto retried = api::EngineCreateLifecycle(NativeRequest(path, 16384, c::kCatalogLanguage_en));
+      if (!retried.ok) for (const auto& diagnostic : retried.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+      Check(retried.ok && Entries(dir).size() == 1, "Q108: a retry on the same path succeeds");
+      std::printf("Q108 %s: refused after open, no file left, retry ok\n", label);
+    };
+    late("fingerprint", [](auto& r) {
+      std::erase_if(r.option_envelopes, [](const auto& o) { return o.starts_with("bootstrap_credential_fingerprint:"); });
+      r.option_envelopes.push_back("bootstrap_credential_fingerprint:not-a-fingerprint");
+    }, "Q108: a bad credential fingerprint is refused after the open");
+    late("policy-pack", [&](auto& r) {
+      r.context.server_policy_seed_pack_root = (artifacts.path() / "no-such-policy-pack").string();
+    }, "Q108: a bad (server) policy pack is refused after the open");
+    late("pages", [](auto& r) {
+      std::erase_if(r.option_envelopes, [](const auto& o) { return o.starts_with("total_pages:"); });
+      r.option_envelopes.push_back("total_pages:2");
+    }, "Q108: too few pages is refused after the open");
+    late("utf8", [](auto& r) { r.database_name = std::string("bad\xc3", 4); },
+         "Q108: a non-UTF-8 name sent straight to the API is refused after the open");
+  }
+
+  // Q108: the removal itself, guard by guard, on FileDevice.
+  {
+    using R = d::FileDevice::EmptyNativeCreateRemoval;
+    const auto dir = artifacts.path() / "removal";
+    std::filesystem::create_directory(dir);
+    const auto open_new = [&](d::FileDevice& device, const std::filesystem::path& path) {
+      Check(device.Open(path.string(), d::FileOpenMode::create_new, d::DatabaseFileOwnership::native_data_file).ok(),
+            "Q108: a new native file opens (O_EXCL + flock)");
+    };
+    {
+      d::FileDevice device;
+      open_new(device, dir / "empty");
+      Check(device.RemoveAndCloseIfStillEmptyNativeCreate() == R::removed && !device.is_open() &&
+                !std::filesystem::exists(dir / "empty"),
+            "Q108: our own still-empty file is removed, then the device is closed");
+    }
+    {
+      d::FileDevice device;
+      open_new(device, dir / "written");
+      const char byte = 'x';
+      Check(device.WriteAt(0, &byte, 1).ok(), "Q108: one byte written");
+      Check(device.RemoveAndCloseIfStillEmptyNativeCreate() == R::not_empty && !device.is_open() &&
+                std::filesystem::file_size(dir / "written") == 1,
+            "Q108: a non-empty file is never removed");
+    }
+    {
+      d::FileDevice device;
+      open_new(device, dir / "replaced");
+      { std::ofstream other(dir / "other"); }
+      std::filesystem::rename(dir / "other", dir / "replaced");
+      Check(device.RemoveAndCloseIfStillEmptyNativeCreate() == R::path_replaced && !device.is_open() &&
+                std::filesystem::exists(dir / "replaced"),
+            "Q108: a path that now names another file is never removed");
+    }
+    {
+      d::FileDevice device;
+      open_new(device, dir / "gone");
+      std::filesystem::remove(dir / "gone");
+      { std::ofstream later(dir / "gone"); }
+      Check(device.RemoveAndCloseIfStillEmptyNativeCreate() == R::path_replaced && !device.is_open() &&
+                std::filesystem::exists(dir / "gone"),
+            "Q108: an empty file someone else made at the path later is never removed");
+    }
+    {
+      { std::ofstream existing(dir / "read-only"); }
+      d::FileDevice device;
+      Check(device.Open((dir / "read-only").string(), d::FileOpenMode::open_existing_read_only,
+                        d::DatabaseFileOwnership::native_data_file).ok(), "Q108: an existing empty file opens read-only");
+      Check(device.RemoveAndCloseIfStillEmptyNativeCreate() == R::not_owner && !device.is_open() &&
+                std::filesystem::exists(dir / "read-only"),
+            "Q108: a device that did not create the file (read-only) removes nothing");
+    }
   }
 
   // Native create at every native profile: one file, receipt identities on page zero.
@@ -404,7 +547,9 @@ int main(int argc, char** argv) {
     // Q95: no management transaction exists before the database; none is required.
     Check(request.context.transaction_uuid.is_nil() && request.context.local_transaction_id == 0,
           "S2: the native request carries no transaction");
+    const auto before = NowMillis();
     const auto created = api::EngineCreateLifecycle(request);
+    const auto after = NowMillis();
     if (!created.ok)
       for (const auto& diagnostic : created.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
     Check(created.ok, "S2: native CREATE DATABASE through the engine API succeeds");
@@ -416,11 +561,21 @@ int main(int argc, char** argv) {
     for (std::size_t k = 0; k < kReceiptKeys.size(); ++k) {
       const auto id = RowUuid(created, kReceiptKeys[k]);
       Check(id && u::IsEngineIdentityUuid(*id), "S2: every receipt identity is returned as an engine UUIDv7 (binary16)");
+      // The pack's provider and policy profile are fixed identities that the
+      // policy pack carries, not minted by this create.
+      const std::string_view key = kReceiptKeys[k];
+      const bool minted = key != "service_provider_uuid" && key != "service_policy_uuid";
+      if (minted && !StandardV7Within(*id, before, after))
+        std::fprintf(stderr, "Q107 outside the create bracket: %s=%s\n", kReceiptKeys[k], Hex(*id).c_str());
+      if (minted)
+        Check(StandardV7Within(*id, before, after),
+              "Q107: every minted identity is a standard RFC 9562 UUIDv7 timestamped by the local clock during the create");
       receipt[k] = *id;
     }
     Check(RowUuid(created, "database_language_uuid") == language && RowUuid(created, "page_size_profile_uuid") == profile.uuid,
           "S2: the result reports the language constant and page profile it used");
     Check(created.primary_object.uuid == receipt[0], "S2: the primary object is the engine's database identity");
+    Check(!RowUuid(created, "database_object_uuid"), "Q111: no second database identity is returned");
     // The file carries the returned identities. Reopen with native ownership (S1).
     d::FileDevice device;
     Check(device.Open(path, d::FileOpenMode::open_existing_read_only, d::DatabaseFileOwnership::native_data_file).ok(),

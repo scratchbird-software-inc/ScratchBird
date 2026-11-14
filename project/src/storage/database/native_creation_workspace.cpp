@@ -212,6 +212,14 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
         b.checksum_profile_uuid,request.operation_uuid,request.writer_uuid,request.creator.transaction_uuid.value,
         request.policy_snapshot_uuid})
       if(!ids.insert(id).second) return Fail(E::invalid_request);
+    // SEARCH_KEY: SB_ONE_DATABASE_UUID (owner Q111 = 1, 2026-11-13): the one
+    // database row is keyed by the database UUID itself, already reserved
+    // above; that single key is the only identity admitted twice.
+    bool database_key_seen=false;
+    const auto database_key=[&](const core::catalog::CatalogMetadataVersion& m){
+      if(m.record.header.kind!=core::catalog::CatalogRecordKind::database||
+         m.record.header.object_uuid.value!=b.database_uuid||database_key_seen)return false;
+      database_key_seen=true;return true;};
     // Validate the complete batch before issuing storage identities or writing.
     // Every admitted row is a first version under this construction transaction.
     // Keep supplied object/row identities reserved against generated identities.
@@ -256,7 +264,7 @@ NativeCreationWorkspaceResult InitializeIndexedNativeCreationWorkspaceOnOpenDevi
            ((m.object_subtype==scratchbird::core::catalog::CatalogObjectSubtype::crypto_inline_private_key||core::catalog::IsCatalogCryptoInlinePrivateKeyPolicyPayload(m.record.payload))&&role!=3)||
            name!=record.name.has_value()||
            (name&&(!m.record.payload.empty()||!core::catalog::CatalogNamePayloadMatchesMetadata(*record.name,m)))||
-           !ids.insert(m.record.header.object_uuid.value).second||
+           !(database_key(m)||ids.insert(m.record.header.object_uuid.value).second)||
            !ids.insert(m.record.header.row_uuid.value).second) return Fail(E::invalid_catalog_input);
         if(core::catalog::IsCatalogNamingCollisionPolicyPayload(m.record.payload)){
           const auto body=core::catalog::DecodeCatalogNamingCollisionPolicy(m.record.payload);

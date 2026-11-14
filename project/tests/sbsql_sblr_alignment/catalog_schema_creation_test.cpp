@@ -64,7 +64,9 @@ c::CatalogMetadataVersion Metadata(unsigned n,c::CatalogRecordKind kind,scratchb
   return m;
 }
 c::CatalogMetadataVersion Database(unsigned profile=0) {
-  auto meta=Metadata(100,c::CatalogRecordKind::database,scratchbird::core::catalog::CatalogObjectSubtype::database);
+  // Q111 (owner 2026-11-13, SB_ONE_DATABASE_UUID): the database row's key is
+  // the database UUID, Id(1). (Was a second identity, Id(100).)
+  auto meta=Metadata(1,c::CatalogRecordKind::database,scratchbird::core::catalog::CatalogObjectSubtype::database);
   c::CatalogDatabaseRecord record;
   record.database_uuid=Typed(p::UuidKind::database,1);record.database_header_format_major=1;
   record.catalog_manifest_format_version=1;record.page_size=disk::kCanonicalFilespacePageProfiles[profile].page_size_bytes;
@@ -153,7 +155,8 @@ struct DatabasePackage {
       {p::UuidKind::object,scratchbird::core::datatypes::kDatatypeCohortV10},10,10};
   explicit DatabasePackage(unsigned profile=0):construction(Construction(profile)) {
     auto& x=aliases.items[0];
-    x.metadata=Metadata(100,c::CatalogRecordKind::database,scratchbird::core::catalog::CatalogObjectSubtype::database);
+    // Q111: keyed by the construction's database UUID, Id(1) (was Id(100)).
+    x.metadata=Metadata(1,c::CatalogRecordKind::database,scratchbird::core::catalog::CatalogObjectSubtype::database);
     x.metadata.name_vector_uuid=Typed(p::UuidKind::object,120);
     x.metadata.default_name_uuid=Typed(p::UuidKind::object,121);
     x.vector_metadata=Metadata(120,c::CatalogRecordKind::localized_name,scratchbird::core::catalog::CatalogObjectSubtype::name_vector);
@@ -322,6 +325,20 @@ void DatabaseChecks() {
       decoded.record->creator_transaction_number==1&&decoded.record->datatype_cohort==package.cohort,
       "exact actual construction values and independently admitted cohort, not legacy/default metadata");
   Check(package.aliases.items[0].metadata.record.payload.empty(),"native database source not mutated");
+  Check(made.records->definitions[0].metadata.record.header.object_uuid.value==Id(1),
+        "Q111: the database row's key is the page-zero database UUID");
+  {
+    // Q111 (SB_ONE_DATABASE_UUID): a database row keyed by any second identity
+    // is refused; there is one database UUID.
+    DatabasePackage second;auto& x=second.aliases.items[0];
+    x.metadata.record.header.object_uuid=Typed(p::UuidKind::object,100);
+    x.vector_metadata.record.header.parent_uuid=x.metadata.record.header.object_uuid;
+    x.vector.object_uuid=x.entry.object_uuid=x.metadata.record.header.object_uuid;
+    x.entry.scope_uuid=x.metadata.record.header.object_uuid;second.aliases.Rebind();
+    const auto refused=second.Assemble();
+    Check(refused.error==DE::invalid_definition&&!refused.records,
+          "Q111: a database row keyed by a second identity is refused");
+  }
   for(unsigned fault=0;fault<5;++fault) {
     auto request=package.Request();
     switch(fault) {
@@ -617,14 +634,16 @@ void LogicalChecks() {
       case 0:row=object;break;
       case 1:row=Id(1);break;
       case 2:row=tx.value;break;
-      case 3:object=Id(1);break;
+      // Q111: a database row keyed by a second identity is refused. (Was:
+      // object=Id(1), the database UUID, refused; that is now the required key.)
+      case 3:object=Id(100);break;
       case 4:object=tx.value;break;
       case 5:object=Id(1);row=tx.value;break;
     }
     allocation_calls=0;allocation_budget=0;const auto failed=bad.Assemble();
     const bool no_allocation=allocation_calls==0;allocation_budget=-1;
     Check(no_allocation&&failed.error==E::invalid_database&&!failed.records,
-          "enclosing database object/row/database/transaction identities remain distinct without replacements");
+          "Q111: the database row is keyed by the database UUID; its row and the transaction stay distinct");
   }
   for(unsigned field=0;field<3;++field) {
     Package bad;auto& x=bad.items.back();

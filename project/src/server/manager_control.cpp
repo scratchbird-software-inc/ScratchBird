@@ -282,6 +282,12 @@ engine_api::EngineRequestContext EngineContextForManagement(
   engine_context.request_id = IdentityBytes(frame.header.request_uuid);
   engine_context.database_path = session.database_path;
   engine_context.served_route_owner = session.served_route_owner;
+  // SB_SERVER_POLICY_SEED_PACK_ROOT (owner Q104 = 2): the server's own
+  // configured policy pack, never a client value.
+  if (context.config != nullptr) {
+    engine_context.server_policy_seed_pack_root =
+        context.config->database_policy_seed_pack_root.string();
+  }
   engine_context.database_uuid = session.database_uuid;
   engine_context.principal_uuid = NativeUuid{session.effective_user_uuid};
   engine_context.session_uuid = NativeUuid{session.session_uuid};

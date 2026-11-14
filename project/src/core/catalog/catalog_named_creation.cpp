@@ -101,13 +101,22 @@ CatalogNamedCreationResult AssembleLocalNamedCreationRecords(
     // bootstrap case needs no heap scratch. Larger cohorts use bounded scratch
     // and O(N log N) work, never quadratic repeated scans. Scratch is not a
     // grant, and no owning metadata/name copies precede identity validation.
+    // SEARCH_KEY: SB_ONE_DATABASE_UUID (owner Q111 = 1, 2026-11-13). The
+    // database catalog object's key IS the database UUID, so a database
+    // definition keyed by it is the one input allowed to carry that value; it
+    // then stands for the database in the identity set (counted once). Every
+    // other object, row, vector and entry identity must still differ from it.
+    bool database_keyed=false;
+    for(const auto& input:inputs)
+      if(input.definition->record.header.kind==CatalogRecordKind::database&&
+          input.definition->record.header.object_uuid.value==database){database_keyed=true;break;}
     if(records>(std::numeric_limits<std::size_t>::max()-2)/2)return Fail(E::resource_exhausted);
-    const auto identity_count=static_cast<std::size_t>(2*records+2);
+    const auto identity_count=static_cast<std::size_t>(2*records+(database_keyed?1:2));
     std::array<Uuid,256> small;
     std::vector<Uuid> large;
     if(identity_count>small.size())large.resize(identity_count);
     auto* identities=large.empty()?small.data():large.data();
-    std::size_t at=0;identities[at++]=database;identities[at++]=tx.value;
+    std::size_t at=0;if(!database_keyed)identities[at++]=database;identities[at++]=tx.value;
     Each(inputs,[&](const auto& m) {
       identities[at++]=m.record.header.object_uuid.value;identities[at++]=m.record.header.row_uuid.value;
     });

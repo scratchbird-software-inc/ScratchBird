@@ -2537,6 +2537,46 @@ IoResult FileDevice::Close() {
   return result;
 }
 
+// SEARCH_KEY: SB_NATIVE_CREATE_EMPTY_FILE_UNLINK (owner Q108 = 1). See the
+// header. The checks and the unlink run under the operation guard while our
+// descriptor still holds the flock; Close follows in every case.
+FileDevice::EmptyNativeCreateRemoval FileDevice::RemoveAndCloseIfStillEmptyNativeCreate() noexcept {
+  using R = EmptyNativeCreateRemoval;
+  R outcome = R::not_owner;
+  try {
+    {
+      const auto operation_guard = AcquireOperationGuard();
+      if (!is_open() || read_only_ || !native_data_file_owner_) {
+        outcome = R::not_owner;
+      } else {
+#ifdef _WIN32
+        outcome = R::not_owner;  // Native ownership is refused on Windows (S1).
+#else
+        struct stat ours {};
+        struct stat named {};
+        if (::fstat(file_fd_, &ours) != 0) {
+          outcome = R::inspect_failed;
+        } else if (ours.st_size != 0) {
+          outcome = R::not_empty;
+        } else if (::lstat(path_.c_str(), &named) != 0 ||
+                   named.st_dev != ours.st_dev || named.st_ino != ours.st_ino) {
+          outcome = R::path_replaced;
+        } else if (::unlink(path_.c_str()) != 0) {
+          outcome = R::unlink_failed;
+        } else {
+          outcome = R::removed;
+        }
+#endif
+      }
+    }
+    if (is_open()) (void)Close();
+  } catch (...) {
+    if (outcome == R::removed) return outcome;
+    outcome = R::inspect_failed;
+  }
+  return outcome;
+}
+
 FileDevice::NativeWriterDeviceClose FileDevice::CloseNativeWriterWithoutSync() {
   NativeWriterDeviceClose out;
   std::shared_ptr<RouteOwnershipLease> retired;

@@ -60,7 +60,13 @@ inline NativeCatalogNamespaceVerification VerifyNativeCatalogNamespaces(
     if(m.record.header.deleted||m.record.header.kind!=K::database)continue;
     if(database!=SIZE_MAX)return fail(E::duplicate_database,identity(i),identity(database));
     const auto decoded=c::DecodeCatalogDatabaseRecord(m.record.payload);
+    // SEARCH_KEY: SB_ONE_DATABASE_UUID (owner Q111 = 1, 2026-11-13): the
+    // database row's key IS the page-zero database UUID, and the payload's
+    // database_uuid (kept, format unchanged) must repeat it. A database row
+    // keyed by any second identity is refused.
     if(rows[i].role!=1||!decoded.ok()||
+        identity(i)!=capture.source()->database_uuid||
+        decoded.record->database_uuid.value!=identity(i)||
         decoded.record->database_uuid.value!=capture.source()->database_uuid||
         decoded.record->page_size!=capture.source()->page_size_bytes||
         !m.record.header.parent_uuid.value.is_nil()||!m.owning_schema_uuid.value.is_nil())

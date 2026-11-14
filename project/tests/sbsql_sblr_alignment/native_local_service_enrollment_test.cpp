@@ -20,6 +20,10 @@
 #include "native_database_creation.hpp"
 #include "native_catalog_index_rows.hpp"
 #include "native_database_create.hpp"
+#include "filespace_page_zero.hpp"
+#include "catalog_filespace_record_codec.hpp"
+#include "catalog_schema_definition.hpp"
+#include <set>
 #include "native_construction_audit.hpp"
 #include "catalog_schema_creation.hpp"
 #include "admitted_datatype_cohort.hpp"
@@ -331,7 +335,9 @@ void AddDatabaseDefinitionFixture(db::NativeCreationCatalogSeed& seed,
   const auto typed=[](platform::UuidKind kind,unsigned id){return platform::TypedUuid{kind,security_fixture::Id(id)};};
   auto& definition=input.definition;
   definition.record.header.kind=catalog::CatalogRecordKind::database;
-  definition.record.header.object_uuid=typed(platform::UuidKind::object,90000);
+  // Q111 (owner 2026-11-13, SB_ONE_DATABASE_UUID): the database row's key is
+  // the page-zero database UUID. (Was a separate fixture identity, Id(90000).)
+  definition.record.header.object_uuid={platform::UuidKind::object,construction.bootstrap.database_uuid};
   definition.record.header.row_uuid=typed(platform::UuidKind::row,90001);
   definition.record.header.parent_uuid={};definition.owning_schema_uuid={};
   definition.record.payload.clear();definition.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::database;
@@ -2630,7 +2636,8 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
               const auto namespace_heap=allocation_budget;allocation_budget=-1;
               using NE=runtime_security::NativeCatalogNamespaceError;
               if(!namespace_variant)Check(namespaces.ok()&&namespace_heap==0&&namespaces.schemas==3&&
-                  namespaces.database_object_uuid==security_fixture::Id(90000)&&namespaces.scoped_rows>0,
+                  // Q111: the database object IS the page-zero database UUID.
+                  namespaces.database_object_uuid==construction.bootstrap.database_uuid&&namespaces.scoped_rows>0,
                   "engine resolves the actual native database and every namespace through an acyclic schema forest");
               else{
                 const std::array expected{NE::none,NE::missing_schema,NE::database_binding,NE::cyclic_parent,
@@ -2648,7 +2655,7 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
                   "captured actual directory retains the original filespace identity and page profile after guards retire");
               allocation_budget=0;
               const auto filespaces=runtime_security::VerifyNativeCatalogFilespaces(read.catalog_capture(),
-                  security_fixture::Id(90000),namespace_colors);
+                  construction.bootstrap.database_uuid/*Q111*/,namespace_colors);
               const auto filespace_heap=allocation_budget;allocation_budget=-1;
               using FE=runtime_security::NativeCatalogFilespaceError;
               const std::array expected_filespace{FE::none,FE::missing_manifest,FE::database_binding,
@@ -2657,10 +2664,10 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
               Check(filespaces.error==expected_filespace[filespace_variant]&&filespace_heap==0&&
                   (filespace_variant?!filespaces.manifests:filespaces.manifests==1),
                   "engine binds every actual filespace manifest and refuses missing, foreign, duplicate or incompatible physical declarations");
-              Check(runtime_security::VerifyNativeCatalogFilespaces(read.catalog_capture(),security_fixture::Id(90000),{}).error==FE::workspace_required,
+              Check(runtime_security::VerifyNativeCatalogFilespaces(read.catalog_capture(),construction.bootstrap.database_uuid/*Q111*/,{}).error==FE::workspace_required,
                   "filespace closure requires bounded workspace before changing it");
               auto* alias=reinterpret_cast<platform::byte*>(const_cast<scratchbird::storage::page::NativeFilespaceDirectoryRecord*>(read.catalog_capture().filespaces().data()));
-              Check(runtime_security::VerifyNativeCatalogFilespaces(read.catalog_capture(),security_fixture::Id(90000),
+              Check(runtime_security::VerifyNativeCatalogFilespaces(read.catalog_capture(),construction.bootstrap.database_uuid/*Q111*/,
                   {alias,sizeof(scratchbird::storage::page::NativeFilespaceDirectoryRecord)}).error==FE::workspace_required,
                   "filespace verifier refuses scratch over its retained source directory");
               allocation_budget=0;
@@ -3243,7 +3250,7 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
         std::vector<Row> rows;const auto& receipt=*made.receipt;
         const std::set<platform::Uuid> kept{receipt.bootstrap_principal_uuid,receipt.service_principal_uuid,
             receipt.service_provider_uuid,receipt.service_policy_uuid,receipt.service_runtime_binding_uuid,
-            receipt.service_credential_reference_uuid,receipt.database_object_uuid};
+            receipt.service_credential_reference_uuid,receipt.database_uuid/*Q111: the database row's key*/};
         for(const auto n:bases){const auto leaf=db::DecodeNativeCatalogLeaf(page(n));Check(leaf.ok(),"a security leaf decodes");
           for(const auto& r:leaf.page->body.rows){const auto& m=leaf.metadata.at(r.version_uuid);
             if(m.record.header.kind==catalog::CatalogRecordKind::localized_name||kept.count(m.record.header.object_uuid.value))continue;
@@ -3813,7 +3820,9 @@ void ApiProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& 
     }
     receipt[line.substr(0,eq)]=id;
   }
-  Check(receipt.size()==10,"S2: the API returned all ten receipt identities");
+  // Q111 (owner 2026-11-13): nine; the separate database_object_uuid is gone.
+  Check(receipt.size()==9&&!receipt.count("database_object_uuid"),
+      "S2/Q111: the API returned all nine receipt identities and no second database identity");
   const auto database=receipt.at("database_uuid"),filespace=receipt.at("filespace_uuid");
   // S2 exit: the create left exactly one file, the database.
   std::vector<std::string> entries;
@@ -3865,6 +3874,54 @@ void ApiProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& 
   const db::NativeCatalogCaptureLimits capture_limits{4096,8*1024*1024,1,std::size_t{4},1024,128,8192};
   Check(Host::ReadStartupCatalogs(read,catalog_limits,catalog_scan_limits,capture_limits)==server::NativeHostedRuntimeError::none,
       "S2: the complete catalog is captured");
+  // SEARCH_KEY: SB_ONE_DATABASE_UUID (owner Q111 = 1, 2026-11-13), proven on
+  // the cold-reopened file, not the receipt: page zero's database UUID, the
+  // database row's key, its payload database_uuid, the parent of every root
+  // schema, every schema's database reference, the scope of the database's
+  // name entries and the filespace record's database_uuid are one value; and
+  // no other row is a database or carries another database identity.
+  {
+    // The host read page zero to open (its database_uuid); page zero is read
+    // again directly once the host has closed (below).
+    const platform::Uuid page_zero=host.runtime->database_uuid();
+    std::set<platform::Uuid> identities{page_zero};
+    std::size_t database_rows=0,root_schemas=0,schemas=0,database_name_entries=0,filespace_rows=0;
+    for(const auto& captured:read.catalog_capture().rows()){
+      const auto& m=captured.row.metadata;
+      if(m.record.header.deleted)continue;
+      if(captured.row.name_payload){
+        if(const auto* entry=std::get_if<cat::CatalogNameEntryView>(&*captured.row.name_payload);
+            entry&&entry->object_kind==cat::CatalogRecordKind::database){
+          ++database_name_entries;identities.insert(entry->scope_uuid.value);identities.insert(entry->object_uuid.value);}
+        continue;
+      }
+      if(m.record.header.kind==cat::CatalogRecordKind::database){
+        ++database_rows;identities.insert(m.record.header.object_uuid.value);
+        const auto decoded=cat::DecodeCatalogDatabaseRecord(m.record.payload);
+        Check(decoded.ok(),"Q111: the database payload decodes");
+        identities.insert(decoded.record->database_uuid.value);
+      }else if(m.record.header.kind==cat::CatalogRecordKind::schema){
+        ++schemas;
+        const auto decoded=cat::DecodeCatalogSchemaDefinition(m.record.payload);
+        Check(decoded.ok(),"Q111: a schema definition decodes");
+        identities.insert(decoded.definition->database_catalog_object_uuid.value);
+        if(decoded.definition->parent_schema_uuid.value.is_nil()){++root_schemas;identities.insert(m.record.header.parent_uuid.value);}
+      }else if(m.record.header.kind==cat::CatalogRecordKind::filespace){
+        ++filespace_rows;
+        const auto decoded=cat::DecodeCatalogFilespaceRecord(m.record.payload);
+        Check(decoded.ok(),"Q111: the filespace record decodes");
+        identities.insert(decoded.record->database_uuid.value);
+      }else{
+        Check(m.record.header.object_uuid.value!=page_zero,"Q111: no other catalog object is keyed by the database UUID");
+      }
+    }
+    Check(database_rows==1&&schemas==28&&root_schemas==6&&database_name_entries>=1&&filespace_rows==1,
+        "Q111: one database row, the 28-schema tree with 6 roots, the database's name entry, one filespace row");
+    Check(identities.size()==1&&*identities.begin()==database&&page_zero==database,
+        "Q111: page zero == database row key == payload database_uuid == every root schema's parent == every "
+        "schema's database reference == the database name scope == the filespace record's database_uuid; "
+        "no other database identity exists");
+  }
   // The name is a name row (data) in the language the create was given.
   std::size_t database_names=0,names=0,other_language=0;
   for(const auto& row:read.catalog_capture().rows()){
@@ -3872,7 +3929,7 @@ void ApiProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& 
     const auto* entry=std::get_if<cat::CatalogNameEntryView>(&*row.row.name_payload);
     if(!entry)continue;
     ++names;other_language+=entry->language_uuid.value!=language;
-    if(entry->object_uuid.value==receipt.at("database_object_uuid")){
+    if(entry->object_uuid.value==database){  // Q111: the database's own UUID
       ++database_names;
       Check(entry->object_kind==cat::CatalogRecordKind::database&&entry->raw_name_text=="enrolled_native_node"&&
             entry->language_uuid.value==language,
@@ -3928,6 +3985,15 @@ void ApiProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& 
   entries.clear();
   for(const auto& entry:std::filesystem::directory_iterator(artifacts.path()))entries.push_back(entry.path().filename().string());
   Check(entries.size()==1,"S2: the cold reopen left no file beside the database (no lock file)");
+  {
+    disk::FileDevice zero_device;
+    Check(zero_device.Open(path,disk::FileOpenMode::open_existing_read_only,disk::DatabaseFileOwnership::native_data_file).ok(),
+        "Q111: page zero reopens");
+    const auto zero=disk::ReadFilespacePageZeroFromOpenDevice(zero_device);
+    Check(zero.ok()&&zero.record->bootstrap.database_uuid==database,
+        "Q111: page zero's database UUID is the one identity the catalog carries");
+    Check(zero_device.Close().ok(),"Q111: page zero closes");
+  }
   std::cout<<"producer-api profile="<<sizes[profile]<<" language="<<language_text<<" verified\n";
 }
 
