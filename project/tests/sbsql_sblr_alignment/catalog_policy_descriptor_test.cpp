@@ -305,7 +305,7 @@ void Physical(){
     const auto extent=device.Size();Check(!refused.ok()&&extent.ok()&&!extent.size_bytes,"foreign native policy refuses before I/O");
     seed[0][0].metadata.record.payload=Golden(item.descriptor);
     const auto created=db::InitializePopulatedNativeCreationWorkspaceOnOpenDevice(device,request,seed,budget,issuer);Check(created.ok(),"real native policy/common/alias persistence");
-    Check(device.Close().ok()&&device.Open(path,d::FileOpenMode::open_existing).ok(),"independent native policy reopen");
+    Check(device.Close().ok()&&device.Open(path,d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok(),"independent native policy reopen");
     const std::vector<d::NativeFilespaceDevice> devices{{f::Id(2),profile.uuid,&device}};
     const auto rows=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(f::Id(1),devices,db::NativeCatalogSource::PageZero(created.receipt->filespace_uuid),2,1,{created.receipt->relations[0].object_uuid,{}},budget);
     Check(rows.ok()&&rows.rows.size()==1&&rows.rows[0].metadata.record.payload==Golden(item.descriptor)&&

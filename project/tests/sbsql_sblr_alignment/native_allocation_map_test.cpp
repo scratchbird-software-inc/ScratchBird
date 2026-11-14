@@ -368,7 +368,7 @@ void ChainMemoryChecks(d::FileDevice& device,const d::FilespaceBootstrapBinding&
     const auto path=device.path();const bool readonly=device.read_only();
     const auto before_close_writes=writes,before_close_syncs=syncs;
     Check(device.Close().ok(),"close source while full chain remains retained");SameChain(expected,retained.chain);
-    Check(device.Open(path,readonly?d::FileOpenMode::open_existing_read_only:d::FileOpenMode::open_existing).ok(),"reopen exact source");
+    Check(device.Open(path,readonly?d::FileOpenMode::open_existing_read_only:d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok(),"reopen exact source");
     // Explicit fixture reopening updates the process-ownership sidecar. Those
     // syscalls are not reader effects; exclude only this measured fixture step.
     fixture_writes+=writes-before_close_writes;fixture_syncs+=syncs-before_close_syncs;
@@ -433,7 +433,7 @@ void ChainMemoryChecks(d::FileDevice& device,const d::FilespaceBootstrapBinding&
       release.join();auto complete=reading.get();
       Check(entered&&blocked&&closed.ok()&&complete.ok(),"opening-thread Close waits for whole actual-grant chain verification");
       SameChain(expected,complete.chain);
-      Check(device.Open(path,readonly?d::FileOpenMode::open_existing_read_only:d::FileOpenMode::open_existing).ok(),"restore exact source after concurrent Close");
+      Check(device.Open(path,readonly?d::FileOpenMode::open_existing_read_only:d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok(),"restore exact source after concurrent Close");
       fixture_writes+=writes-fixture_before_writes;fixture_syncs+=syncs-fixture_before_syncs;
       complete={};clean();
       valid.memory={};valid.Empty();
@@ -528,7 +528,7 @@ void RetainedChain() {
       WritePage(device,1,head_bytes);Check(read(limit).ok(),"restored");
     }
     fail_hash=true;result=read(limit);Check(!fail_hash,"retained hash failure reached provider");Empty(result);
-    Check(device.Close().ok()&&device.Open(path,d::FileOpenMode::open_existing_read_only).ok(),"reopen read-only actual filespace");
+    Check(device.Close().ok()&&device.Open(path,d::FileOpenMode::open_existing_read_only,d::DatabaseFileOwnership::native_data_file).ok(),"reopen read-only actual filespace");
     Check(read(limit).ok()&&device.read_only(),"retained reader preserves read-only ownership");
     Check(device.Close().ok(),"close fixture");Empty(read(limit));
   }

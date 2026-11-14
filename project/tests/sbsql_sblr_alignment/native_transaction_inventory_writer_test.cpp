@@ -177,7 +177,7 @@ struct Base {
     }
     {
       d::FileDevice device;
-      Check(device.Open(path, d::FileOpenMode::open_existing_read_only).ok(), "reopen read-only");
+      Check(device.Open(path, d::FileOpenMode::open_existing_read_only,d::DatabaseFileOwnership::native_data_file).ok(), "reopen read-only");
       const std::vector<d::NativeFilespaceDevice> files{{primary, profile, &device}};
       std::vector<byte> backing(64u << 20);
       auto fixed = db::AcquireNativeFixedRootBackedLease(database, files, primary, {256ull * size, backing.size()},
@@ -393,7 +393,7 @@ struct Seen {
 };
 Seen LeaseRead(const Base& b, const std::string& path) {
   d::FileDevice device;
-  Check(device.Open(path, d::FileOpenMode::open_existing_read_only).ok(), "independent read-only open");
+  Check(device.Open(path, d::FileOpenMode::open_existing_read_only,d::DatabaseFileOwnership::native_data_file).ok(), "independent read-only open");
   Seen out;
   {
     const std::vector<d::NativeFilespaceDevice> files{{b.primary, b.profile, &device}};
@@ -466,7 +466,7 @@ void Rules(const Base& b) {
         "the create commits transaction 1 and stores Next = 2");
   Check(base.counters.horizons == pg::TipHorizons{2, 2, 2, 2, 2, 2}, "the created horizons are all Next");
   d::FileDevice device;
-  Check(device.Open(path, d::FileOpenMode::open_existing).ok(), "open");
+  Check(device.Open(path, d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok(), "open");
   Raw model = base;
   {
     d::FileDeviceCarefulWriteSink sink(device);
@@ -535,7 +535,7 @@ void Rules(const Base& b) {
             tip.subspan(edit.unit_offset, pg::kTransactionStateWriteUnitBytes));
   }
   Check(!LeaseRead(b, path).admissible, "the reader refuses a stored horizon ahead of the projection");
-  Check(device.Open(path, d::FileOpenMode::open_existing).ok(), "reopen");
+  Check(device.Open(path, d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok(), "reopen");
   {
     d::FileDeviceCarefulWriteSink sink(device);
     pg::TransactionInventoryWriter w(b.Binding());
@@ -566,7 +566,7 @@ void Rules(const Base& b) {
 void ReadOnly(const Base& b) {
   const auto path = b.Fresh("read-only.db");
   d::FileDevice device;
-  Check(device.Open(path, d::FileOpenMode::open_existing).ok(), "open");
+  Check(device.Open(path, d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok(), "open");
   {
     d::FileDeviceCarefulWriteSink sink(device);
     pg::TransactionInventoryWriter w(b.Binding());
@@ -597,7 +597,7 @@ void Capacity(const Base& b) {
   const u32 limit = pg::TransactionHeaderSlotsPerPage(b.size) - 2;  // 0 reserved, 1 the creator
   Check(limit + 2 < pg::TipSlotsPerPage(b.size), "the header page fills before the state page");
   d::FileDevice device;
-  Check(device.Open(path, d::FileOpenMode::open_existing).ok(), "open");
+  Check(device.Open(path, d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok(), "open");
   std::chrono::nanoseconds begin_time{}, complete_time{};
   u32 completions = 0;
   {
@@ -639,7 +639,7 @@ void Capacity(const Base& b) {
 [[noreturn]] void Child(const Base& b, const std::string& path, u32 limit, bool torn) {
   try {
     d::FileDevice device;
-    if (!device.Open(path, d::FileOpenMode::open_existing).ok()) _exit(kChildFailed);
+    if (!device.Open(path, d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok()) _exit(kChildFailed);
     int code = kChildCompleted;
     {
       d::FileDeviceCarefulWriteSink file(device);
@@ -724,7 +724,7 @@ void ProcessLoss(const Base& b, bool torn) {
     const auto commit = Commit(next, Ns(kT + 200000 + k));
     {
       d::FileDevice device;
-      Check(device.Open(path, d::FileOpenMode::open_existing).ok(), label + ": reopen");
+      Check(device.Open(path, d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok(), label + ": reopen");
       {
         d::FileDeviceCarefulWriteSink sink(device);
         pg::TransactionInventoryWriter w(b.Binding());
@@ -738,7 +738,7 @@ void ProcessLoss(const Base& b, bool torn) {
     {
       // Opened again: its restart finds nothing in progress.
       d::FileDevice device;
-      Check(device.Open(path, d::FileOpenMode::open_existing).ok(), label + ": reopen");
+      Check(device.Open(path, d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok(), label + ": reopen");
       {
         d::FileDeviceCarefulWriteSink sink(device);
         pg::TransactionInventoryWriter w(b.Binding());
@@ -818,7 +818,7 @@ void Faults(const Base& b) {
     const std::string label = "fault at call " + std::to_string(at);
     b.RestoreChains(path);
     d::FileDevice device;
-    Check(device.Open(path, d::FileOpenMode::open_existing).ok(), label + ": open");
+    Check(device.Open(path, d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok(), label + ": open");
     bool reached = false;
     u32 performed = 0;
     std::optional<Op> failed_completion;
@@ -880,7 +880,7 @@ void Faults(const Base& b) {
     Raw after = expected;
     const u64 marked = RestartOracle(after);
     {
-      Check(device.Open(path, d::FileOpenMode::open_existing).ok(), label + ": reopen");
+      Check(device.Open(path, d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok(), label + ": reopen");
       {
         d::FileDeviceCarefulWriteSink sink(device);
         pg::TransactionInventoryWriter w(b.Binding());

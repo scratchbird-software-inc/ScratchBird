@@ -398,13 +398,14 @@ struct Adoption {
       server::DatabaseOwnershipRequest request;
       request.database_path = path;
       request.storage_access = d::RouteStorageAccess::read_write;
+      request.ownership = d::DatabaseFileOwnership::native_data_file;  // S1b: native file, native owner
       route = server::AcquireDatabaseOwnership(request);
       Check(route.acquired && route.lock, "actual route owner for governed native source");
       transition = route.lock->BeginNativeSourceTransition();
       Check(transition.ok(), "actual private route transition for memory-backed source");
     } else {
       auto file = std::make_unique<d::FileDevice>();
-      Check(file->Open(path, d::FileOpenMode::open_existing).ok(), "open the production file for direct adoption");
+      Check(file->Open(path, d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok(), "open the production file for direct adoption");
       files.push_back(std::move(file));
     }
   }
@@ -454,6 +455,9 @@ void CompleteAdoption(unsigned profile, bool via_route) {
     std::shared_ptr<d::RouteOwnershipLease> legacy;
     if (via_route) {
       // A live legacy borrower blocks the transfer before any byte is read.
+      // S1b: deliberately a LEGACY route owner (the default mode): legacy
+      // borrowers exist only under legacy ownership, which stays until the
+      // production cut (Q93). This sub-case keeps its lock files on purpose.
       a.Release();
       server::DatabaseOwnershipRequest request;
       request.database_path = a.path;
@@ -589,7 +593,7 @@ void CompleteAdoption(unsigned profile, bool via_route) {
     {
       const auto copy = CopyOf(a.made);
       auto extra = std::make_unique<d::FileDevice>();
-      Check(extra->Open(copy, d::FileOpenMode::open_existing).ok(), "a byte copy of the primary as an extra member");
+      Check(extra->Open(copy, d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok(), "a byte copy of the primary as an extra member");
       a.files.push_back(std::move(extra));
       const auto r = a.Adopt(a.Limits(exact_owner), persistent, transient);
       Check(!r.ok() && !r.owner && a.files.size() == 2 && persistent.memory.Matches(persistent.binding),
@@ -848,6 +852,10 @@ struct WriterFixture {
     server::DatabaseOwnershipRequest request;
     request.database_path = path;
     request.storage_access = access;
+    // S1b: a native file is owned natively, except when the caller asks for a
+    // legacy borrower -- those exist only under (legacy) lock-file ownership,
+    // kept until the production cut (Q93).
+    if (!legacy) request.ownership = d::DatabaseFileOwnership::native_data_file;
     route = server::AcquireDatabaseOwnership(request);
     Check(route.acquired && route.lock, "actual initial route/storage/data ownership");
     if (legacy) {
@@ -1093,7 +1101,7 @@ void PhysicalOperations(unsigned profile) {
   f.transition.transition.reset();
   f.route.lock.reset();
   d::FileDevice reopened;
-  Check(reopened.Open(retained, d::FileOpenMode::open_existing_read_only).ok(), "independent reopen of original retained inode");
+  Check(reopened.Open(retained, d::FileOpenMode::open_existing_read_only,d::DatabaseFileOwnership::native_data_file).ok(), "independent reopen of original retained inode");
   Check(reopened.ReadAt(scratch, actual.data(), actual.size()).ok() && actual == payload && reopened.Close().ok(),
         "independent reopen proves physical write persistence");
   const int untouched = ::open(f.path.c_str(), O_RDONLY | O_CLOEXEC);

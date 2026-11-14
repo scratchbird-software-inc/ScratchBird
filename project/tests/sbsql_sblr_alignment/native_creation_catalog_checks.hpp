@@ -99,7 +99,7 @@ void PopulatedWorkspaceChecks() {
     if(!created.ok())std::cerr<<"populated error="<<static_cast<int>(created.error)<<'\n';
     Check(created.ok()&&created.receipt->catalog_rows[0]==4,"real populated native construction");
     Check(device.Close().ok(),"close populated owner");
-    Check(device.Open(path.string(),disk::FileOpenMode::open_existing).ok(),"reopen populated owner");
+    Check(device.Open(path.string(),disk::FileOpenMode::open_existing,disk::DatabaseFileOwnership::native_data_file).ok(),"reopen populated owner");
     const auto zero=disk::ReadFilespacePageZeroFromOpenDevice(device);
     Check(zero.ok()&&zero.record->bootstrap.lifecycle_state==1,"population never grants serving state: page zero stays as the create wrote it, an online filespace (owner 2026-11-07); serving is the server's act at open");
     const std::vector<disk::NativeFilespaceDevice> devices{{request.bootstrap.filespace_uuid,request.bootstrap.page_size_profile_uuid,&device}};

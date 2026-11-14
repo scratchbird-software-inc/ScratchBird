@@ -1465,7 +1465,8 @@ void RouteOwnershipLease::Withdraw() {
 
 #ifdef _WIN32
 std::shared_ptr<RouteOwnershipLease> RouteOwnershipLease::BorrowAlias(
-    const std::string& path) {
+    const std::string& path, bool* native_owned) {
+  if (native_owned) *native_owned = false;
   auto& registry = LeaseRegistry();
   if (registry.process_id != OwnershipProcessId()) return {};
   HANDLE requested_file = ::CreateFileA(path.c_str(), FILE_READ_ATTRIBUTES,
@@ -1479,10 +1480,17 @@ std::shared_ptr<RouteOwnershipLease> RouteOwnershipLease::BorrowAlias(
   std::lock_guard<std::mutex> guard(registry.mutex);
   for (const auto& entry : registry.leases) {
     auto lease = entry.second.lock();
-    if (!lease || !lease->accepting_ || !lease->valid() || !lease->data_handle_) continue;
+    if (!lease || !lease->data_handle_) continue;
     FILE_ID_INFO held{};
-    if (detail::WindowsDataFileIdentity(static_cast<HANDLE>(lease->data_handle_), &held) ==
-            ERROR_SUCCESS && detail::WindowsSameDataFile(requested, held)) return PinBorrowLocked(lease);
+    if (detail::WindowsDataFileIdentity(static_cast<HANDLE>(lease->data_handle_), &held) !=
+            ERROR_SUCCESS || !detail::WindowsSameDataFile(requested, held)) continue;
+    // S1b: a native-owned inode is refused to a legacy-mode open, never borrowed
+    // (also while the native owner withdraws: it still holds the file).
+    if (lease->native_data_file()) {
+      if (native_owned) *native_owned = true;
+      return {};
+    }
+    if (lease->accepting_ && lease->valid()) return PinBorrowLocked(lease);
   }
   return {};
 }
@@ -1538,7 +1546,8 @@ std::uint32_t RouteOwnershipLease::AcquireDataFile(const std::string& path) {
 }
 #else
 std::shared_ptr<RouteOwnershipLease> RouteOwnershipLease::BorrowAlias(
-    const std::string& path) {
+    const std::string& path, bool* native_owned) {
+  if (native_owned) *native_owned = false;
   auto& registry = LeaseRegistry();
   if (registry.process_id != OwnershipProcessId()) return {};
   struct stat requested{};
@@ -1546,11 +1555,17 @@ std::shared_ptr<RouteOwnershipLease> RouteOwnershipLease::BorrowAlias(
   std::lock_guard<std::mutex> guard(registry.mutex);
   for (const auto& entry : registry.leases) {
     auto lease = entry.second.lock();
-    if (!lease || !lease->accepting_ || !lease->valid() || lease->data_fd_ < 0) continue;
+    if (!lease || lease->data_fd_ < 0) continue;
     struct stat held{};
-    if (::fstat(lease->data_fd_, &held) == 0 &&
-        requested.st_dev == held.st_dev && requested.st_ino == held.st_ino)
-      return PinBorrowLocked(lease);
+    if (::fstat(lease->data_fd_, &held) != 0 ||
+        requested.st_dev != held.st_dev || requested.st_ino != held.st_ino) continue;
+    // S1b: a native-owned inode is refused to a legacy-mode open, never borrowed
+    // (also while the native owner withdraws: it still holds the flock).
+    if (lease->native_data_file()) {
+      if (native_owned) *native_owned = true;
+      return {};
+    }
+    if (lease->accepting_ && lease->valid()) return PinBorrowLocked(lease);
   }
   return {};
 }
@@ -2010,7 +2025,18 @@ IoResult FileDevice::Open(std::string path, FileOpenMode mode, DatabaseFileOwner
   std::shared_ptr<RouteOwnershipLease> route_owner_lease;
   if (!native_ownership) {
     route_owner_lease = RouteOwnershipLease::Borrow(path + ".sb.route.owner.lock");
-    if (!route_owner_lease) route_owner_lease = RouteOwnershipLease::BorrowAlias(path);
+    if (!route_owner_lease) {
+      // SB_NATIVE_DATA_FILE_OWNERSHIP (slice step S1b): a legacy-mode open never
+      // borrows or co-owns a natively owned file. Refuse here, before any route
+      // probe or .sb.owner.lock is touched; the refusal names no incumbent (Q94).
+      bool native_owned = false;
+      route_owner_lease = RouteOwnershipLease::BorrowAlias(path, &native_owned);
+      if (native_owned) {
+        return MakeIoError("SB-STORAGE-DISK-DATA-OWNER-LOCK-HELD",
+                           "storage.disk.data_owner_lock_held",
+                           path + ":native_data_file_owned");
+      }
+    }
   }
   const bool route_owned_by_current_process = static_cast<bool>(route_owner_lease);
   // OWNER_LOCK: only a live process-local pin on actual OS handles may bypass

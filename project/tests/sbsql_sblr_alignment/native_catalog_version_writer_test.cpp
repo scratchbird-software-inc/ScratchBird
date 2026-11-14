@@ -192,7 +192,7 @@ struct Db {
 
   void Roots(const std::string& path) {
     d::FileDevice device;
-    Check(device.Open(path, d::FileOpenMode::open_existing_read_only).ok(), "read-only open");
+    Check(device.Open(path, d::FileOpenMode::open_existing_read_only,d::DatabaseFileOwnership::native_data_file).ok(), "read-only open");
     const auto zero = d::ReadFilespacePageZeroFromOpenDevice(device);
     Check(zero.ok(), "page zero");
     for (const auto& root : zero.record->roots) {
@@ -460,7 +460,7 @@ struct Session {
   std::optional<d::FileDeviceCarefulWriteSink> file;
   std::optional<pg::TransactionInventoryWriter> w;
   Session(const Db& b, const std::string& path, bool restart = true) : db(&b) {
-    Check(device.Open(path, d::FileOpenMode::open_existing).ok(), "open for writing");
+    Check(device.Open(path, d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok(), "open for writing");
     file.emplace(device);
     w.emplace(b.TxBinding());
     if (restart) Check(w->Restart(*file).ok(), "restart");
@@ -657,7 +657,7 @@ struct Visible {
 };
 Visible Look(const Db& b, const std::string& path, const Uuid& row) {
   d::FileDevice device;
-  Check(device.Open(path, d::FileOpenMode::open_existing_read_only).ok(), "independent read-only open");
+  Check(device.Open(path, d::FileOpenMode::open_existing_read_only,d::DatabaseFileOwnership::native_data_file).ok(), "independent read-only open");
   Visible out;
   {
     const std::vector<d::NativeFilespaceDevice> files{{b.primary, b.profile, &device}};
@@ -1133,7 +1133,7 @@ bool Script(const Db& b, pg::TransactionInventoryWriter& w, d::CarefulWriteSink&
                         const db::CatalogVersionRequest& r, u32 limit, bool torn) {
   try {
     d::FileDevice device;
-    if (!device.Open(path, d::FileOpenMode::open_existing).ok()) _exit(kChildFailed);
+    if (!device.Open(path, d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok()) _exit(kChildFailed);
     int code = kChildCompleted;
     {
       d::FileDeviceCarefulWriteSink file(device);
@@ -1578,7 +1578,7 @@ bool RootScript(const Db& b, pg::TransactionInventoryWriter& w, d::CarefulWriteS
 [[noreturn]] void RootChild(const Db& b, const std::string& path, u32 limit, bool torn) {
   try {
     d::FileDevice device;
-    if (!device.Open(path, d::FileOpenMode::open_existing).ok()) _exit(kChildFailed);
+    if (!device.Open(path, d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok()) _exit(kChildFailed);
     int code = kChildCompleted;
     {
       d::FileDeviceCarefulWriteSink file(device);

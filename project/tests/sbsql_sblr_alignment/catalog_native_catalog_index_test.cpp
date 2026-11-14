@@ -219,7 +219,7 @@ void Physical(){scratchbird::tests::OwnedTempDirectory artifacts;
     "foreign dependency map refuses before physical effects");
   seed[4][2].metadata.record.payload=kept;
   const auto created=db::InitializePopulatedNativeCreationWorkspaceOnOpenDevice(device,request,seed,budget,issuer);
-  Check(created.ok(),"real native catalog index rows persist");Check(device.Close().ok()&&device.Open(path,d::FileOpenMode::open_existing).ok(),"independent reopen");
+  Check(created.ok(),"real native catalog index rows persist");Check(device.Close().ok()&&device.Open(path,d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok(),"independent reopen");
   const std::vector<d::NativeFilespaceDevice> devices{{f::Id(2),profile.uuid,&device}};
   const auto rows=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(f::Id(1),devices,db::NativeCatalogSource::PageZero(created.receipt->filespace_uuid),2,5,{created.receipt->relations[4].object_uuid,{}},budget);
   Check(rows.ok()&&rows.rows.size()==3,"three rows read back");

@@ -35,7 +35,7 @@ void NativeCatalogAuthorityChecks() {
         const auto encoded=disk::EncodeFilespacePageZero(zero);
         Check(encoded.ok(),"valid protected bootstrap, target page flags unchanged");
         Check(device.WriteAt(0,encoded.bytes->data(),encoded.bytes->size()).ok()&&device.Sync().ok(),"persist actual filespace authority");
-        Check(device.Close().ok()&&device.Open(path.string(),disk::FileOpenMode::open_existing).ok(),"reopen protected filespace");
+        Check(device.Close().ok()&&device.Open(path.string(),disk::FileOpenMode::open_existing,disk::DatabaseFileOwnership::native_data_file).ok(),"reopen protected filespace");
       };
       for(const u32 flags:{0u,2u,1u,3u,0u}) {
         zero_write(flags);
@@ -89,7 +89,7 @@ void NativeCatalogAuthorityChecks() {
           const auto encoded=page::EncodeNativeCatalogRoot(protected_root);
           Check(encoded.ok(),"structurally valid protected root image");
           Check(device.WriteAt(root_ref.page_number*page_bytes,encoded.bytes.data(),encoded.bytes.size()).ok()&&
-              device.Sync().ok()&&device.Close().ok()&&device.Open(path.string(),disk::FileOpenMode::open_existing).ok(),"persist and reopen protected root header");
+              device.Sync().ok()&&device.Close().ok()&&device.Open(path.string(),disk::FileOpenMode::open_existing,disk::DatabaseFileOwnership::native_data_file).ok(),"persist and reopen protected root header");
           Arm();const auto read=page::ReadNativeCatalogRootFromOpenDevice(device,Id(1),root_ref);Disarm();
           Check(!read.ok()&&!read.root&&read.bytes.empty()&&
               read.error==((flags&2u)?page::NativeCatalogRootError::cluster_requires_authority:page::NativeCatalogRootError::header_policy_requires_authority)&&

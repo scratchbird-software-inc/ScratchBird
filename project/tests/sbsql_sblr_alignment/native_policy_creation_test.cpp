@@ -849,7 +849,7 @@ void Physical(bool security=false,bool bootstrap=false,bool service=false) {
     Check(device.Open(path,d::FileOpenMode::create_new,d::DatabaseFileOwnership::native_data_file).ok(),"actual private native construction file");const auto budget=p::u64{db::NativeHostedSourceBackingBytes(profile.page_size_bytes)};
     const auto created=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,request,seed,indexes,budget,issuer);
     Check(created.ok(),"actual imported native policy/name cohort persists through indexed construction");
-    Check(device.Close().ok()&&device.Open(path,d::FileOpenMode::open_existing).ok(),"independent native policy reopen");
+    Check(device.Close().ok()&&device.Open(path,d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok(),"independent native policy reopen");
     const std::vector<d::NativeFilespaceDevice> devices{{f::Id(2),profile.uuid,&device}};
     std::vector<c::CatalogTypedRecord> security_records;
     std::size_t definition_count=0,name_count=0;

@@ -219,7 +219,7 @@ struct Base {
     }
     {
       d::FileDevice device;
-      Check(device.Open(path, d::FileOpenMode::open_existing_read_only).ok(), "read-only open");
+      Check(device.Open(path, d::FileOpenMode::open_existing_read_only,d::DatabaseFileOwnership::native_data_file).ok(), "read-only open");
       const auto zero = d::ReadFilespacePageZeroFromOpenDevice(device);
       Check(zero.ok(), "page zero");
       for (const auto& root : zero.record->roots) {
@@ -520,7 +520,7 @@ struct Seen {
 };
 Seen LeaseRead(const Base& b, const std::string& path) {
   d::FileDevice device;
-  Check(device.Open(path, d::FileOpenMode::open_existing_read_only).ok(), "independent read-only open");
+  Check(device.Open(path, d::FileOpenMode::open_existing_read_only,d::DatabaseFileOwnership::native_data_file).ok(), "independent read-only open");
   Seen out;
   {
     const std::vector<d::NativeFilespaceDevice> files{{b.primary, b.profile, &device}};
@@ -572,7 +572,7 @@ std::pair<std::vector<byte>, State> Advance(const Base& b, std::span<const byte>
   const auto path = b.Copy(from, "advance.db");
   const auto planned = Plan(model, ops, b);
   d::FileDevice device;
-  Check(device.Open(path, d::FileOpenMode::open_existing).ok(), "open");
+  Check(device.Open(path, d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok(), "open");
   {
     d::FileDeviceCarefulWriteSink sink(device);
     u::StandaloneUuidV7Issuer issuer({b.database, Fixed(10)}, {{}, 0, 1000});
@@ -672,7 +672,7 @@ void Growth(const Base& b, std::vector<byte>& boundary_file, State& boundary_sta
     const u64 marked = RestartOracle(restarted);
     Check(marked == 1, "the oracle marks 1920 dead");
     d::FileDevice device;
-    Check(device.Open(path, d::FileOpenMode::open_existing).ok(), "open");
+    Check(device.Open(path, d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok(), "open");
     {
       d::FileDeviceCarefulWriteSink sink(device);
       pg::TransactionInventoryWriter w(b.Binding(nullptr));
@@ -689,7 +689,7 @@ void Exhaustion(const Base& b, std::span<const byte> boundary_file) {
   // Every free page allocated, then the BEGIN that needs a new header page.
   const auto path = b.Copy(boundary_file, "full.db");
   d::FileDevice device;
-  Check(device.Open(path, d::FileOpenMode::open_existing).ok(), "open");
+  Check(device.Open(path, d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok(), "open");
   {
     d::FileDeviceCarefulWriteSink sink(device);
     for (unsigned i = 0;; ++i) {
@@ -715,7 +715,7 @@ void Exhaustion(const Base& b, std::span<const byte> boundary_file) {
 [[noreturn]] void Child(const Base& b, const std::string& path, std::span<const Op> ops, u32 limit, bool torn) {
   try {
     d::FileDevice device;
-    if (!device.Open(path, d::FileOpenMode::open_existing).ok()) _exit(kChildFailed);
+    if (!device.Open(path, d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok()) _exit(kChildFailed);
     int code = kChildCompleted;
     {
       d::FileDeviceCarefulWriteSink file(device);
@@ -745,7 +745,7 @@ void Recover(const Base& b, const std::string& path, State expected, const State
   State after = expected;
   (void)Plan(after, ops, b);
   d::FileDevice device;
-  Check(device.Open(path, d::FileOpenMode::open_existing).ok(), std::string(label) + ": reopen");
+  Check(device.Open(path, d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok(), std::string(label) + ": reopen");
   {
     d::FileDeviceCarefulWriteSink sink(device);
     u::StandaloneUuidV7Issuer issuer({b.database, Fixed(10)}, {{}, 0, 1000});
@@ -847,7 +847,7 @@ void Faults(const Base& b, std::span<const byte> from, const State& start, std::
     const std::string label = std::string(where) + " fault at call " + std::to_string(at);
     const auto path = b.Copy(from, "faults.db");
     d::FileDevice device;
-    Check(device.Open(path, d::FileOpenMode::open_existing).ok(), label + ": open");
+    Check(device.Open(path, d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok(), label + ": open");
     bool reached = false;
     u32 performed = 0;
     {

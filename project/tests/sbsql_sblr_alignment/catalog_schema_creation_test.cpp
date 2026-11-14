@@ -742,7 +742,7 @@ void PhysicalChecks() {
     const auto budget=512*p::u64{p.page_size_bytes};
     const auto created=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,request,seed,indexes,budget,issuer);
     Check(created.ok(),"actual typed schema package writes native construction graph");
-    Check(device.Close().ok()&&device.Open(path,disk::FileOpenMode::open_existing).ok(),"independent native schema reopen");
+    Check(device.Close().ok()&&device.Open(path,disk::FileOpenMode::open_existing,disk::DatabaseFileOwnership::native_data_file).ok(),"independent native schema reopen");
     const std::vector<disk::NativeFilespaceDevice> devices{{Id(2),p.uuid,&device}};
     const auto rows=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(Id(1),devices,db::NativeCatalogSource::PageZero(created.receipt->filespace_uuid),
         2,1,{indexes[0]->relation_uuid,indexes[0]->dependencies},budget);

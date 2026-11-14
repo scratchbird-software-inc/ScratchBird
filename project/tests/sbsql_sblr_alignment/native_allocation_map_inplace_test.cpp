@@ -317,7 +317,7 @@ void WriteAt(const std::string& path, u64 offset, std::span<const byte> bytes) {
 }
 pg::NativeAllocationChainResult Chain(const std::string& path, const d::FilespaceBootstrapBinding& binding) {
   d::FileDevice device;
-  Check(device.Open(path, d::FileOpenMode::open_existing_read_only).ok(), "read-only open");
+  Check(device.Open(path, d::FileOpenMode::open_existing_read_only,d::DatabaseFileOwnership::native_data_file).ok(), "read-only open");
   auto chain = pg::ReadNativeAllocationChainFromOpenDevice(device, binding, 64u << 20);
   Check(device.Close().ok(), "close");
   return chain;
@@ -354,7 +354,7 @@ void Production(unsigned index) {
   // The fixed-root lease (the production reader) reads it too.
   {
     d::FileDevice device;
-    Check(device.Open(c.path, d::FileOpenMode::open_existing_read_only).ok(), "read-only open");
+    Check(device.Open(c.path, d::FileOpenMode::open_existing_read_only,d::DatabaseFileOwnership::native_data_file).ok(), "read-only open");
     const std::vector<d::NativeFilespaceDevice> files{{c.primary, c.profile, &device}};
     std::vector<byte> backing(64u << 20);
     auto fixed = db::AcquireNativeFixedRootBackedLease(c.database, files, c.primary, {256ull * c.size, backing.size()},

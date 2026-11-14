@@ -404,7 +404,7 @@ struct Fixture {
   ~Fixture() { std::error_code e; std::filesystem::remove_all(root,e); }
 };
 void Exclusive(const std::string& path) {
-  disk::FileDevice second; Check(Locked(second.Open(path,disk::FileOpenMode::open_existing)),"local owner exclusion");
+  disk::FileDevice second; Check(Locked(second.Open(path,disk::FileOpenMode::open_existing,disk::DatabaseFileOwnership::native_data_file)),"local owner exclusion");
   const auto pid=::fork(); Check(pid>=0,"fork ownership probe");
   if(pid==0) { ::execl("/proc/self/exe","pagezero_test","--probe",path.c_str(),nullptr); ::_exit(125); }
   int s=0; Check(::waitpid(pid,&s,0)==pid&&WIFEXITED(s)&&WEXITSTATUS(s)==0,"fresh-exec process excluded");
@@ -430,7 +430,7 @@ void Files() {
     Check(!r.record&&r.error==Error::probe_changed&&!replace_on_second_read,"actual intervening page replacement rejected");
     Check(device.WriteAt(0,bytes.data(),bytes.size()).ok()&&device.Sync().ok(),"restore own race fixture");
     Exclusive(path);
-    Check(device.Close().ok()&&device.Open(path,disk::FileOpenMode::open_existing_read_only).ok(),"readonly reopen");
+    Check(device.Close().ok()&&device.Open(path,disk::FileOpenMode::open_existing_read_only,disk::DatabaseFileOwnership::native_data_file).ok(),"readonly reopen");
     r=disk::ReadFilespacePageZeroFromOpenDevice(device); Check(r.ok()&&device.read_only(),"readonly complete metadata probe");
     const disk::FilespaceBootstrapBinding wrong{Id(77),v.bootstrap.filespace_uuid,v.bootstrap.page_size_profile_uuid};
     r=disk::ReadFilespacePageZeroFromOpenDevice(device,&wrong); Check(!r.record&&r.error==Error::invalid_bootstrap,"wrong node binding");
@@ -456,14 +456,14 @@ void Files() {
       result.trailing_bytes==physical%size&&result.relation==(physical==declared?Relation::matching:physical<declared?Relation::shorter:Relation::longer),"exact declared versus physical recovery facts without rounding");};
     for(const u64 physical:{size-1,size,declared-size,declared-1,declared,declared+1,declared+size}){
       Check(file.WriteAt(0,image.data(),image.size()).ok(),"restore intact fixture metadata");std::filesystem::resize_file(recovery_path,physical);
-      Check(file.Close().ok()&&file.Open(recovery_path,disk::FileOpenMode::open_existing_read_only).ok(),"independent readonly recovery reopen");
+      Check(file.Close().ok()&&file.Open(recovery_path,disk::FileOpenMode::open_existing_read_only,disk::DatabaseFileOwnership::native_data_file).ok(),"independent readonly recovery reopen");
       stage_writes=stage_syncs=0;const auto result=observe();
       Check(!stage_writes&&!stage_syncs,"recovery observation never repairs writes or syncs");
       if(physical<size){empty(result);Check(result.error==Error::invalid_capacity,"incomplete page-zero image is not recoverable metadata");}
       else verify(result,physical);
       const auto strict=disk::ReadFilespacePageZeroFromOpenDevice(file,&binding);
       Check(physical==declared?strict.ok():(!strict.record&&strict.error==Error::invalid_capacity),"ordinary admission remains strict for every size discrepancy");
-      Check(file.Close().ok()&&file.Open(recovery_path,disk::FileOpenMode::open_existing).ok(),"restore retained writable test handle");
+      Check(file.Close().ok()&&file.Open(recovery_path,disk::FileOpenMode::open_existing,disk::DatabaseFileOwnership::native_data_file).ok(),"restore retained writable test handle");
     }
     auto foreign=binding;foreign.database_uuid=Id(77);const auto refused=disk::ObserveFilespacePageZeroForRecoveryFromOpenDevice(file,foreign);
     empty(refused);Check(refused.error==Error::invalid_bootstrap,"recovery cannot bypass binary node binding");
@@ -1042,7 +1042,7 @@ void CatalogRootFiles() {
     r=page::ReadNativeCatalogRootFromOpenDevice(device,Id(1),ref);
     Check(r.error==RootError::invalid_reference&&!r.root,"actual local target capacity checked");
     Check(device.WriteAt(ref.page_number*sizes[p],image.data(),image.size()).ok()&&device.Sync().ok(),"restore own root fixture");
-    Check(device.Close().ok()&&device.Open(path,disk::FileOpenMode::open_existing_read_only).ok(),"reopen canonical root read-only");
+    Check(device.Close().ok()&&device.Open(path,disk::FileOpenMode::open_existing_read_only,disk::DatabaseFileOwnership::native_data_file).ok(),"reopen canonical root read-only");
     r=page::ReadNativeCatalogRootFromOpenDevice(device,Id(1),ref);
     Check(r.ok()&&r.bytes==image&&device.read_only(),"read-only reopen actual root");
     Bytes actual(image.size()); Check(device.ReadAt(ref.page_number*sizes[p],actual.data(),actual.size()).ok()
@@ -1626,7 +1626,7 @@ void NativeBtreeTreeMemory() {
     Check(first.Close().ok()&&second.Close().ok()&&base.Close().ok(),"close actual devices with immutable tree still retained");oracle(result);grant.memory={};
     allocation_budget=0;result={};const auto release_budget=allocation_budget;allocation_budget=-1;
     Check(release_budget==0,"last whole-tree owner releases actual backing without heap allocation");grant.Empty();
-    Check(first.Open(path1,disk::FileOpenMode::open_existing_read_only).ok()&&second.Open(path2,disk::FileOpenMode::open_existing_read_only).ok()&&base.Open(path3,disk::FileOpenMode::open_existing_read_only).ok(),"fresh read-only tree devices");
+    Check(first.Open(path1,disk::FileOpenMode::open_existing_read_only,disk::DatabaseFileOwnership::native_data_file).ok()&&second.Open(path2,disk::FileOpenMode::open_existing_read_only,disk::DatabaseFileOwnership::native_data_file).ok()&&base.Open(path3,disk::FileOpenMode::open_existing_read_only,disk::DatabaseFileOwnership::native_data_file).ok(),"fresh read-only tree devices");
     LeafMemoryFixture reopened(amount);auto fresh=db::ReadNativeBtreeTreeWithMemoryFromOpenDevices(Id(1),devices,root,nodes[0].dependencies,limits,reopened.memory,reopened.binding);
     Check(fresh.ok()&&fresh.pages.size()==7&&fresh.retained_image_bytes==limits.maximum_retained_image_bytes,"new grant and reopened files reproduce complete tree");
   }
@@ -2194,7 +2194,7 @@ void BufferedReadTelemetry() {
       Check(queue->TryRemove(held.lease)==m::MetricQueueError::none,"retire component observation without durability claim");++samples[ordinal];
     }Check(samples==expected_samples,"exact per-series buffered telemetry sample counts");};
   drain({2,1,1});
-  Check(device.Open(path,disk::FileOpenMode::open_existing).ok(),"reopen physical telemetry source");
+  Check(device.Open(path,disk::FileOpenMode::open_existing,disk::DatabaseFileOwnership::native_data_file).ok(),"reopen physical telemetry source");
   const auto admitted=queue->Stats().admitted;
   {disk::FileDevice::ReadLatencyBatch batch(device);auto fence=device.AcquireOperationGuard();byte actual=0;
     for(unsigned i=0;i<17;++i){allocation_budget=0;const auto io=batch.ReadAt(0,&actual,1);
@@ -2320,7 +2320,7 @@ void CatalogLeafFiles() {
       Check(SameBorrowedRowBody(owned.leaf.page->body,r.page->body),"retained leaf remains valid after device close");
       allocation_budget=0;owned={};const auto remaining=allocation_budget;allocation_budget=-1;
       Check(remaining==0,"final leaf backing cleanup needs no allocation");grant.Empty();
-      Check(device.Open(path,disk::FileOpenMode::open_existing).ok(),"reopen leaf for existing storage regressions");
+      Check(device.Open(path,disk::FileOpenMode::open_existing,disk::DatabaseFileOwnership::native_data_file).ok(),"reopen leaf for existing storage regressions");
       LeafMemoryFixture short_grant(amount-1);reads=0;track_reads=true;
       const auto short_read=db::ReadNativeCatalogLeafWithMemoryFromOpenDevice(device,Id(1),ref,short_grant.memory,short_grant.binding);track_reads=false;
       no_page(short_read);Check(short_read.error==ME::memory_allocation_failure&&!reads&&!short_grant.manager.Snapshot().current_bytes,
@@ -2365,7 +2365,7 @@ void CatalogLeafFiles() {
     Check(device.WriteAt(21*sizes[p],encrypted_image.data(),encrypted_image.size()).ok(),"encrypted leaf fixture");
     LeafReject(db::ReadNativeCatalogLeafFromOpenDevice(device,Id(1),ref),Error::encrypted_requires_crypto_authority);
     Check(device.WriteAt(21*sizes[p],image.data(),image.size()).ok()&&device.Sync().ok(),"restore own leaf fixture");
-    Exclusive(path); Check(device.Close().ok()&&device.Open(path,disk::FileOpenMode::open_existing_read_only).ok(),"readonly leaf reopen");
+    Exclusive(path); Check(device.Close().ok()&&device.Open(path,disk::FileOpenMode::open_existing_read_only,disk::DatabaseFileOwnership::native_data_file).ok(),"readonly leaf reopen");
     r=db::ReadNativeCatalogLeafFromOpenDevice(device,Id(1),ref);
     Check(r.ok()&&r.bytes==image&&device.read_only(),"actual reopened leaf metadata");
     Bytes actual(image.size());Check(device.ReadAt(21*sizes[p],actual.data(),actual.size()).ok()&&actual==image,"leaf reads/faults never mutate image");
@@ -2549,7 +2549,7 @@ void CanonicalFilespaceInitialization(){using E=db::NativeFilespaceInitializatio
     if(fault==19)changed.policy_snapshot_uuid=Id(91);if(fault==20)changed.bootstrap.database_uuid=Id(91);if(fault==21)changed.policy_snapshot_uuid=changed.writer_uuid;
     result=db::InitializeNativeFilespaceOnOpenDevice(device,changed,budget,*issuer);empty(result);Check(device.Size().size_bytes==0,"invalid input preserves empty owned device");
     if(fault==16)Check(result.error==E::cluster_requires_authority,"cluster initialization stays at provider boundary");}
-  reset();Check(device.Close().ok()&&device.Open(path,disk::FileOpenMode::open_existing_read_only).ok(),"empty read-only fixture");result=initialize();empty(result);Check(result.error==E::invalid_device,"read-only initialization refused");
+  reset();Check(device.Close().ok()&&device.Open(path,disk::FileOpenMode::open_existing_read_only,disk::DatabaseFileOwnership::native_data_file).ok(),"empty read-only fixture");result=initialize();empty(result);Check(result.error==E::invalid_device,"read-only initialization refused");
   Check(device.Close().ok(),"closed initialization fixture");result=initialize();empty(result);Check(result.error==E::invalid_device,"closed initialization refused");
   reset();const byte unknown=0xa5;Check(device.WriteAt(0,&unknown,1).ok(),"one unknown existing byte");result=initialize();empty(result);Check(result.error==E::device_not_empty&&image()==Bytes{unknown},"unknown bytes are never truncated or converted");
   reset();pause_next_tree_read=true;tree_read_paused=false;resume_tree_read=false;std::atomic<bool> second_started=false,second_finished=false;
@@ -2623,13 +2623,13 @@ int main(int argc,char** argv) {
     catch(const std::exception& e){allocation_budget=-1;std::cerr<<"FAIL "<<e.what()<<" checks="<<checks<<'\n';return 1;}}
   if(argc==5&&std::string_view(argv[1])=="--filespace-initialization-probe"){
     try{const auto p=static_cast<unsigned>(std::stoul(argv[3]));if(p>=5)return 2;disk::FileDevice device;
-      if(!device.Open(argv[2],disk::FileOpenMode::open_existing_read_only).ok())return 3;
+      if(!device.Open(argv[2],disk::FileOpenMode::open_existing_read_only,disk::DatabaseFileOwnership::native_data_file).ok())return 3;
       VerifyInitializedFilespace(device,InitializationRequest(p,1,std::stoull(argv[4])),p);return 0;
     }catch(...){return 4;}}
   if(argc==4&&std::string_view(argv[1])=="--catalog-relation-probe") {
     const auto p=static_cast<unsigned>(std::stoul(argv[3])),q=(p+1)%5,s=(p+2)%5;const std::filesystem::path dir=argv[2];disk::FileDevice first,second,base;
-    if(!first.Open((dir/"catalog-index").string(),disk::FileOpenMode::open_existing_read_only).ok()||!second.Open((dir/"catalog-data").string(),disk::FileOpenMode::open_existing_read_only).ok()
-      ||!base.Open((dir/"catalog-primary").string(),disk::FileOpenMode::open_existing_read_only).ok())return 2;
+    if(!first.Open((dir/"catalog-index").string(),disk::FileOpenMode::open_existing_read_only,disk::DatabaseFileOwnership::native_data_file).ok()||!second.Open((dir/"catalog-data").string(),disk::FileOpenMode::open_existing_read_only,disk::DatabaseFileOwnership::native_data_file).ok()
+      ||!base.Open((dir/"catalog-primary").string(),disk::FileOpenMode::open_existing_read_only,disk::DatabaseFileOwnership::native_data_file).ok())return 2;
     const auto expected=CatalogBindingImages(p);const auto& h=expected.nodes[0].header;
     const auto result=db::ReadNativeCatalogRelationImagesFromOpenDevices(Id(1),{{Id(9),Profile(s),&base},{Id(7),Profile(q),&second},{Id(2),Profile(p),&first}},
       {1,0x200,{h.filespace_uuid,h.page_number,h.page_generation,h.page_size_profile_uuid},expected.nodes[0].dependencies.index_uuid},
@@ -2639,8 +2639,8 @@ int main(int argc,char** argv) {
   }
   if(argc==4&&(std::string_view(argv[1])=="--native-btree-tree-probe"||std::string_view(argv[1])=="--native-btree-deep-probe")) {
     const auto p=static_cast<unsigned>(std::stoul(argv[3])),q=(p+1)%5,s=(p+2)%5;const std::filesystem::path dir=argv[2];
-    disk::FileDevice first,second,base;if(!first.Open((dir/"tree-first").string(),disk::FileOpenMode::open_existing_read_only).ok()
-      ||!second.Open((dir/"tree-second").string(),disk::FileOpenMode::open_existing_read_only).ok()||!base.Open((dir/"tree-base").string(),disk::FileOpenMode::open_existing_read_only).ok())return 2;
+    disk::FileDevice first,second,base;if(!first.Open((dir/"tree-first").string(),disk::FileOpenMode::open_existing_read_only,disk::DatabaseFileOwnership::native_data_file).ok()
+      ||!second.Open((dir/"tree-second").string(),disk::FileOpenMode::open_existing_read_only,disk::DatabaseFileOwnership::native_data_file).ok()||!base.Open((dir/"tree-base").string(),disk::FileOpenMode::open_existing_read_only,disk::DatabaseFileOwnership::native_data_file).ok())return 2;
     const bool deep=std::string_view(argv[1])=="--native-btree-deep-probe";
     const auto expected=deep?BtreeDeepTreeExample(p):BtreeTreeExample(p);const auto& h=expected[0].header;
     const auto result=page::ReadNativeBtreeTreeFromOpenDevices(Id(1),{{Id(9),Profile(s),&base},{Id(7),Profile(q),&second},{Id(2),Profile(p),&first}},
@@ -2655,21 +2655,21 @@ int main(int argc,char** argv) {
   }
   if(argc==4&&std::string_view(argv[1])=="--native-btree-probe") {
     const auto p=static_cast<unsigned>(std::stoul(argv[3]));const auto expected=BtreeExample(p);disk::FileDevice device;
-    if(!device.Open(argv[2],disk::FileOpenMode::open_existing_read_only).ok())return 2;
+    if(!device.Open(argv[2],disk::FileOpenMode::open_existing_read_only,disk::DatabaseFileOwnership::native_data_file).ok())return 2;
     const auto result=page::ReadNativeBtreePageFromOpenDevice(device,Id(1),{Id(2),12,102,Profile(p)},0x200,expected.dependencies);
     return result.ok()&&result.bytes==BtreeOracle(expected)?0:3;
   }
   if(argc==4&&std::string_view(argv[1])=="--leaf-probe") {
     if(std::string_view(argv[3]).size()!=1||argv[3][0]<'0'||argv[3][0]>'4') return 2;
     const auto p=static_cast<unsigned>(argv[3][0]-'0');disk::FileDevice d;
-    if(!d.Open(argv[2],disk::FileOpenMode::open_existing_read_only).ok()) return 3;
+    if(!d.Open(argv[2],disk::FileOpenMode::open_existing_read_only,disk::DatabaseFileOwnership::native_data_file).ok()) return 3;
     const auto r=db::ReadNativeCatalogLeafFromOpenDevice(d,Id(1),RootExample(p).roots[0]);
     return r.ok()&&r.metadata.size()==2&&r.bytes==LeafOracle(LeafExample(p))?0:4;
   }
   if(argc==4&&std::string_view(argv[1])=="--range-probe") {
     disk::FileDevice first,second;
-    if(!first.Open(argv[2],disk::FileOpenMode::open_existing_read_only).ok()
-        ||!second.Open(argv[3],disk::FileOpenMode::open_existing_read_only).ok()) return 3;
+    if(!first.Open(argv[2],disk::FileOpenMode::open_existing_read_only,disk::DatabaseFileOwnership::native_data_file).ok()
+        ||!second.Open(argv[3],disk::FileOpenMode::open_existing_read_only,disk::DatabaseFileOwnership::native_data_file).ok()) return 3;
     const std::vector<page::NativeCatalogFilespaceDevice> devices{{Id(7),Profile(1),&second},{Id(2),Profile(0),&first}};
     auto initial=RootExample(),head=RootExample(); head.header.page_number=35; head.header.page_generation=302;
     const auto r=page::ReadNativeCatalogRootRangeFromOpenDevices(Id(1),devices,RootRef(head),RootRef(initial),32768);
@@ -2677,11 +2677,11 @@ int main(int argc,char** argv) {
       &&r.roots[0].root->catalog_generation==3&&r.roots[1].root->catalog_generation==2
       &&r.roots[2].root->catalog_generation==1?0:4;
   }
-  if(argc==3&&std::string_view(argv[1])=="--probe") { disk::FileDevice d; return Locked(d.Open(argv[2],disk::FileOpenMode::open_existing))?0:1; }
+  if(argc==3&&std::string_view(argv[1])=="--probe") { disk::FileDevice d; return Locked(d.Open(argv[2],disk::FileOpenMode::open_existing,disk::DatabaseFileOwnership::native_data_file))?0:1; }
   if(argc==4&&std::string_view(argv[1])=="--catalog-probe") {
     if(std::string_view(argv[3]).size()!=1||argv[3][0]<'0'||argv[3][0]>'4') return 2;
     const auto p=static_cast<unsigned>(argv[3][0]-'0'); disk::FileDevice d;
-    if(!d.Open(argv[2],disk::FileOpenMode::open_existing_read_only).ok()) return 3;
+    if(!d.Open(argv[2],disk::FileOpenMode::open_existing_read_only,disk::DatabaseFileOwnership::native_data_file).ok()) return 3;
     const auto r=page::ReadNativeCatalogRootFromOpenDevice(d,Id(1),Example(p).roots[1]);
     return r.ok()&&r.bytes==RootOracle(RootExample(p))?0:4;
   }

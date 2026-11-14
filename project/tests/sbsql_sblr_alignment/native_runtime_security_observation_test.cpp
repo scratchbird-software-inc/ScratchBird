@@ -158,7 +158,7 @@ struct SecurityFixture {
     const auto made=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,request,seed,indexes,budget,issuer);
     if(!made.ok())std::cerr<<"native security fixture creation="<<int(made.error)<<" profile="<<p<<" variant="<<variant<<'\n';
     Check(made.ok(),"actual native security/configuration creation in their declared roles");receipt=*made.receipt;
-    Check(device.Close().ok()&&device.Open(path,disk::FileOpenMode::open_existing).ok(),"independent physical native security reopen");
+    Check(device.Close().ok()&&device.Open(path,disk::FileOpenMode::open_existing,disk::DatabaseFileOwnership::native_data_file).ok(),"independent physical native security reopen");
   }
   // Page zero's catalog (2), transaction-state (4) and route (6, 7) roots.
   struct FixedRoots{disk::FilespaceRootReference catalog,state,configuration,security;};

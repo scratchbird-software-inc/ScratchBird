@@ -197,7 +197,7 @@ void Physical(){
     seed[0][0].metadata=metadata;
     const auto made=db::InitializePopulatedNativeCreationWorkspaceOnOpenDevice(device,request,seed,budget,issuer);
     Check(made.ok(),"actual audit row joins same native construction cohort");
-    Check(device.Close().ok()&&device.Open(path,d::FileOpenMode::open_existing).ok(),"independent actual file reopen");
+    Check(device.Close().ok()&&device.Open(path,d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok(),"independent actual file reopen");
     const std::vector<d::NativeFilespaceDevice> devices{{f::Id(2),profile.uuid,&device}};
     const auto rows=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(f::Id(1),devices,db::NativeCatalogSource::PageZero(made.receipt->filespace_uuid),2,1,
         {made.receipt->relations[0].object_uuid,{}},budget);

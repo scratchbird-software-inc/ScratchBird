@@ -285,7 +285,7 @@ struct Base {
       Check(device.Close().ok(), "close");
     }
     d::FileDevice device;
-    Check(device.Open(path, d::FileOpenMode::open_existing_read_only).ok(), "read-only open");
+    Check(device.Open(path, d::FileOpenMode::open_existing_read_only,d::DatabaseFileOwnership::native_data_file).ok(), "read-only open");
     const auto zero = d::ReadFilespacePageZeroFromOpenDevice(device);
     Check(zero.ok(), "page zero");
     const auto at = std::find_if(zero.record->roots.begin(), zero.record->roots.end(), [](const auto& x) { return x.kind == 3; });
@@ -314,7 +314,7 @@ struct Base {
   // count is the create's, not compared.
   void Readers(const std::string& file, std::string_view label) const {
     d::FileDevice device;
-    Check(device.Open(file, d::FileOpenMode::open_existing_read_only).ok(), std::string(label) + ": read-only open");
+    Check(device.Open(file, d::FileOpenMode::open_existing_read_only,d::DatabaseFileOwnership::native_data_file).ok(), std::string(label) + ": read-only open");
     const auto chain = pg::ReadNativeAllocationChainFromOpenDevice(device, {database, primary, profile}, 64u << 20);
     if (!chain.ok()) std::cerr << label << " chain error=" << int(chain.error) << '\n';
     Check(chain.ok(), std::string(label) + ": the chain reader admits the map");
@@ -337,7 +337,7 @@ pg::PageAllocationResult Allocate(d::CarefulWriteSink& sink, const Base& b, cons
 void Rules(const Base& b) {
   const auto path = b.Fresh("rules.db");
   d::FileDevice device;
-  Check(device.Open(path, d::FileOpenMode::open_existing).ok(), "open");
+  Check(device.Open(path, d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok(), "open");
   {
     d::FileDeviceCarefulWriteSink sink(device);
     const auto before = ReadAll(path);
@@ -373,7 +373,7 @@ void Rules(const Base& b) {
   {
     const auto forged_path = b.Fresh("unknown-family.db");
     d::FileDevice forged;
-    Check(forged.Open(forged_path, d::FileOpenMode::open_existing).ok(), "forgery device");
+    Check(forged.Open(forged_path, d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok(), "forgery device");
     std::vector<byte> image(b.size);
     const auto read = forged.ReadAt(b.root.page_number * b.size, image.data(), image.size());
     Check(read.ok() && read.bytes_transferred == image.size() && pg::IsAllocationMapInplaceImage(image),
@@ -404,7 +404,7 @@ void Exhaustion(const Base& b) {
   MapModel model = base;
   u64 shared = 0, split = 0;  // Q76: was merged (one write) vs split
   d::FileDevice device;
-  Check(device.Open(path, d::FileOpenMode::open_existing).ok(), "open");
+  Check(device.Open(path, d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok(), "open");
   {
     d::FileDeviceCarefulWriteSink sink(device);
     const bool forced = device.forced_ordered_writes();
@@ -443,7 +443,7 @@ void Exhaustion(const Base& b) {
 [[noreturn]] void Child(const Base& b, const std::string& path, u32 limit, bool torn) {
   try {
     d::FileDevice device;
-    if (!device.Open(path, d::FileOpenMode::open_existing).ok()) _exit(kChildFailed);
+    if (!device.Open(path, d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok()) _exit(kChildFailed);
     int code = kChildCompleted;
     {
       d::FileDeviceCarefulWriteSink file(device);
@@ -504,7 +504,7 @@ void ProcessLoss(const Base& b, bool torn) {
       if (s.state == 0 && s.record != std::array<byte, 128>{}) leftover = true;
     {
       d::FileDevice device;
-      Check(device.Open(path, d::FileOpenMode::open_existing).ok(), label + ": reopen");
+      Check(device.Open(path, d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok(), label + ": reopen");
       {
         d::FileDeviceCarefulWriteSink sink(device);
         Check(Allocate(sink, b, extra).ok(), label + ": the next allocation succeeds");
@@ -585,7 +585,7 @@ void ExposedTear(const Base& b) {
   MapModel model = base;
   {
     d::FileDevice device;
-    Check(device.Open(prepared, d::FileOpenMode::open_existing).ok(), "open");
+    Check(device.Open(prepared, d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok(), "open");
     {
       d::FileDeviceCarefulWriteSink sink(device);
       unsigned id = 70000;
@@ -617,7 +617,7 @@ void ExposedTear(const Base& b) {
     if (child == 0) {
       try {
         d::FileDevice device;
-        if (!device.Open(path, d::FileOpenMode::open_existing).ok()) _exit(kChildFailed);
+        if (!device.Open(path, d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok()) _exit(kChildFailed);
         {
           d::FileDeviceCarefulWriteSink file(device);
           scratchbird::tests::TornWriteSink tear(file, k, kPlannedCrash);
@@ -641,7 +641,7 @@ void ExposedTear(const Base& b) {
     b.Readers(path, label);  // the file opens
     {
       d::FileDevice device;
-      Check(device.Open(path, d::FileOpenMode::open_existing).ok(), label + ": reopen");
+      Check(device.Open(path, d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok(), label + ": reopen");
       {
         d::FileDeviceCarefulWriteSink sink(device);
         Check(Allocate(sink, b, {6, 95000 + 4 * k, false}).ok(), label + ": the next allocation succeeds");
@@ -702,7 +702,7 @@ void Faults(const Base& b) {
     const std::string label = "fault at call " + std::to_string(at);
     const auto path = b.Fresh("faults.db");
     d::FileDevice device;
-    Check(device.Open(path, d::FileOpenMode::open_existing).ok(), label + ": open");
+    Check(device.Open(path, d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok(), label + ": open");
     bool reached = false;
     u32 performed = 0;
     {

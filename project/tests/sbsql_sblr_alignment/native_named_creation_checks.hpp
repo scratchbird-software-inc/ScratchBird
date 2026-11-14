@@ -170,7 +170,7 @@ void NativeNamedCreationChecks(const db::NativeCreationCatalogSeed& supplied) {
     const auto created=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(d,r,seed,indexes,budget,*fixture.issuer);
     Check(created.ok()&&created.receipt->catalog_rows[0]==inputs.size()&&created.receipt->catalog_rows[1]==3*inputs.size(),
         "complete definitions and all supplied names actually publish on every page profile");
-    Check(d.Close().ok()&&d.Open(path.string(),disk::FileOpenMode::open_existing).ok(),"named package actual fresh reopen");
+    Check(d.Close().ok()&&d.Open(path.string(),disk::FileOpenMode::open_existing,disk::DatabaseFileOwnership::native_data_file).ok(),"named package actual fresh reopen");
     const std::vector<disk::NativeFilespaceDevice> devices{{r.bootstrap.filespace_uuid,r.bootstrap.page_size_profile_uuid,&d}};
     const auto definitions=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(r.bootstrap.database_uuid,devices,
         db::NativeCatalogSource::PageZero(created.receipt->filespace_uuid),2,1,{indexes[0]->relation_uuid,indexes[0]->dependencies},budget);

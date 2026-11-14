@@ -119,7 +119,7 @@ struct Open {
   d::FileDevice device;
   std::vector<d::NativeFilespaceDevice> devices;
   Open(const Created& made, const std::string& path) {
-    Check(device.Open(path, d::FileOpenMode::open_existing_read_only).ok(), "open the database file read-only");
+    Check(device.Open(path, d::FileOpenMode::open_existing_read_only,d::DatabaseFileOwnership::native_data_file).ok(), "open the database file read-only");
     devices = {{made.receipt.filespace_uuid, made.profile, &device}};
   }
 };
@@ -236,7 +236,7 @@ std::string Copy(const Created& made, std::string_view name) {
 }
 d::FilespacePageZero ReadZero(const std::string& path) {
   d::FileDevice device;
-  Check(device.Open(path, d::FileOpenMode::open_existing_read_only).ok(), "open for page zero");
+  Check(device.Open(path, d::FileOpenMode::open_existing_read_only,d::DatabaseFileOwnership::native_data_file).ok(), "open for page zero");
   const auto zero = d::ReadFilespacePageZeroFromOpenDevice(device);
   Check(zero.ok(), "decode page zero");
   auto out = *zero.record;
@@ -245,7 +245,7 @@ d::FilespacePageZero ReadZero(const std::string& path) {
 }
 void WriteAt(const std::string& path, u64 offset, const std::vector<byte>& bytes) {
   d::FileDevice device;
-  Check(device.Open(path, d::FileOpenMode::open_existing).ok(), "open for a negative");
+  Check(device.Open(path, d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok(), "open for a negative");
   const auto io = device.WriteAt(offset, bytes.data(), bytes.size());
   Check(io.ok() && io.bytes_transferred == bytes.size() && device.Sync().ok() && device.Close().ok(), "write the change");
 }
@@ -311,7 +311,7 @@ void Negatives(unsigned profile) {
     const auto root = std::find_if(zero.roots.begin(), zero.roots.end(), [](const auto& r) { return r.kind == 2; });
     Check(root != zero.roots.end(), "the catalog root reference");
     d::FileDevice device;
-    Check(device.Open(made.path, d::FileOpenMode::open_existing_read_only).ok(), "open for the catalog root");
+    Check(device.Open(made.path, d::FileOpenMode::open_existing_read_only,d::DatabaseFileOwnership::native_data_file).ok(), "open for the catalog root");
     const auto image = pg::ReadNativeCatalogRootFromOpenDevice(device, made.receipt.database_uuid, *root);
     Check(image.ok() && device.Close().ok(), "the stored catalog root");
     auto changed = *image.root;

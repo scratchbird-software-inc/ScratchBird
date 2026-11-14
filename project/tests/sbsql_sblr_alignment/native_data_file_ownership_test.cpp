@@ -17,6 +17,10 @@
 //       - a native-ownership FileDevice path-open in this process,
 //       - a native and a legacy owner in another process (fork + exec);
 //  3. served devices (FileDevice::OpenServed) read and write under the lock;
+//  3b. (S1b, 2026-11-14) a legacy-mode (default) FileDevice path-open in this
+//     process, read-write or read-only, is refused (DATA-OWNER-LOCK-HELD)
+//     before any lock file is probed or made; it never borrows the native
+//     owner's lease (BorrowAlias), and served devices keep working;
 //  4. releasing the owner (served devices closed) admits a new owner, in this
 //     process and in another;
 //  5. a legacy owner still creates its two lock files (legacy unchanged, Q93),
@@ -331,6 +335,26 @@ void Run(unsigned index, bool native_only) {
       Check(writer.Sync().ok(), "the served writer syncs");
       Check(OnlyDatabase(dir.path()), "served devices made no lock file");
       Check(Contend(path, "native") == 2, "served devices keep the file owned against another process");
+      // 3b (S1b). A legacy-mode (default) path-open in this process never
+      // borrows or co-owns the natively owned file, whether or not served
+      // devices are open: it is refused before any route probe or lock file
+      // (so it runs in native-only too and the strace stays free of .sb.*),
+      // naming no incumbent.
+      for (const auto mode : {d::FileOpenMode::open_existing, d::FileOpenMode::open_existing_read_only}) {
+        d::FileDevice legacy;
+        const auto opened = legacy.Open(path, mode);
+        Check(!opened.ok() && !legacy.is_open() &&
+                  opened.diagnostic.diagnostic_code == "SB-STORAGE-DISK-DATA-OWNER-LOCK-HELD" &&
+                  opened.diagnostic.message_key == "storage.disk.data_owner_lock_held",
+              "S1b: a legacy-mode path-open of a native-owned file is refused, not borrowed");
+        Check(OnlyDatabase(dir.path()), "S1b: the refused legacy-mode path-open made no lock file");
+      }
+      {
+        std::vector<char> page(p.page_size_bytes);
+        const auto read = reader.ReadAt(0, page.data(), page.size());
+        Check(read.ok() && std::equal(page.begin(), page.end(), created.begin()),
+              "S1b: the served reader still reads after the refused legacy-mode opens");
+      }
       Check(reader.Close().ok() && writer.Close().ok(), "served devices close");
     }
     Check(ReadFile(path) == created, "the served write changed no byte");

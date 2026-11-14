@@ -208,7 +208,7 @@ struct Database {
     auto made = db::CreateNativeDatabaseOnOpenDevice(device, r, issuer);
     Check(made.ok(), "the production create writes a complete native database");
     receipt = *made.receipt;
-    Check(device.Close().ok() && device.Open(path, d::FileOpenMode::open_existing).ok(), "independent reopen");
+    Check(device.Close().ok() && device.Open(path, d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok(), "independent reopen");
   }
   std::vector<d::NativeFilespaceDevice> Devices() { return {{receipt.filespace_uuid, profile, &device}}; }
 };

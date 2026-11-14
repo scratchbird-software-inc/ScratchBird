@@ -167,7 +167,13 @@ class RouteOwnershipLease final {
       const std::shared_ptr<RouteOwnershipLease>& owner);
   static RouteSourceTransitionResult BeginNativeSourceTransition(
       const std::shared_ptr<RouteOwnershipLease>& owner) noexcept;
-  static std::shared_ptr<RouteOwnershipLease> BorrowAlias(const std::string& path);
+  // In-process admission of a legacy-mode path-open by the owner's inode.
+  // SB_NATIVE_DATA_FILE_OWNERSHIP (slice step S1b, owner 2026-11-13): a
+  // native-owned inode is never borrowed or co-owned by a legacy-mode open;
+  // it returns empty and sets *native_owned so the open refuses before it
+  // probes or creates any lock file.
+  static std::shared_ptr<RouteOwnershipLease> BorrowAlias(const std::string& path,
+                                                         bool* native_owned);
 #ifdef _WIN32
   std::uint32_t AcquireDataFile(const std::string& path);
   std::uint32_t BindDataFile(void* file);

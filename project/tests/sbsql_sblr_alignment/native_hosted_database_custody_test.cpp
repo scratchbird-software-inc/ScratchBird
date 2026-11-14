@@ -239,7 +239,12 @@ struct Fixture {
     static unsigned next = 0;
     return (artifacts->directory.path() / ("hosted-" + std::to_string(next++))).string();
   }
-  explicit Fixture(unsigned profile = 0, d::RouteStorageAccess capability = d::RouteStorageAccess::read_write)
+  // S1b (owner 2026-11-13): a native file is owned natively (data-file flock,
+  // no lock files). Only the legacy-borrower cases ask for legacy lock-file
+  // ownership: legacy borrowers exist only there, kept until the production
+  // cut (Q93).
+  explicit Fixture(unsigned profile = 0, d::RouteStorageAccess capability = d::RouteStorageAccess::read_write,
+                   d::DatabaseFileOwnership ownership = d::DatabaseFileOwnership::native_data_file)
       : made(Production(profile)),
         path(NextPath()),
         persistent(made.receipt.database_uuid, 1u << 20),
@@ -249,6 +254,7 @@ struct Fixture {
     server::DatabaseOwnershipRequest request;
     request.database_path = path;
     request.storage_access = capability;
+    request.ownership = ownership;
     route = server::AcquireDatabaseOwnership(request);
     Check(route.acquired && route.lock, "actual original host route/OS owner");
   }
@@ -297,7 +303,7 @@ void InitialCustody() {
           "read-only initial route cannot become a hosted writer; refuses before allocation");
   }
   for (long budget : {0, 1, 2, 3}) {
-    Fixture f;
+    Fixture f(0, d::RouteStorageAccess::read_write, d::DatabaseFileOwnership::legacy_lock_files);  // S1b: legacy borrower case
     allocation_budget = budget;
     auto result = Host::Begin(f.route.lock);
     allocation_budget = -1;
@@ -305,7 +311,7 @@ void InitialCustody() {
     auto borrower = d::RouteOwnershipLease::Borrow(f.RouteLock());
     Check(bool(borrower), "host wrapper allocation failure precedes irreversible legacy-admission fence");
   }
-  Fixture f;
+  Fixture f(0, d::RouteStorageAccess::read_write, d::DatabaseFileOwnership::legacy_lock_files);  // S1b: legacy borrower case
   auto borrower = d::RouteOwnershipLease::Borrow(f.RouteLock());
   Check(bool(borrower), "actual pre-fence legacy pin");
   f.Begin();
@@ -443,6 +449,7 @@ void CloseObligations() {
         "backing retirement preserves actual adopted identity and original OS custody");
   server::DatabaseOwnershipRequest contender;
   contender.database_path = f.path;
+  contender.ownership = d::DatabaseFileOwnership::native_data_file;  // S1b: native file, native contender
   Check(!server::AcquireDatabaseOwnership(contender).acquired, "adopted-member close cannot expose node to a second host");
   Check(!Host::TryBeginOperation(f.host, Fixed(1002)).ok(), "retired writer cannot admit another operation");
   f.host.reset();

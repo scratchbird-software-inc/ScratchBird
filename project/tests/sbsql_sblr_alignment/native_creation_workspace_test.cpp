@@ -356,7 +356,7 @@ int main(int argc,char** argv){try{
     PopulatedWorkspaceChecks();std::cout<<"populated native workspace checks="<<checks<<'\n';return 0;
   }
   if(argc==4&&std::string_view(argv[1])=="--inspect"){
-    disk::FileDevice device;Check(device.Open(argv[2],disk::FileOpenMode::open_existing_read_only).ok(),"fresh process owns node");
+    disk::FileDevice device;Check(device.Open(argv[2],disk::FileOpenMode::open_existing_read_only,disk::DatabaseFileOwnership::native_data_file).ok(),"fresh process owns node");
     Inspect(device,Request(std::stoul(argv[3]),64));Check(device.Close().ok(),"fresh process closes owned node");return 0;
   }
   Fixture fixture;
@@ -502,7 +502,7 @@ int main(int argc,char** argv){try{
     std::thread observer([&]{entered=true;const auto guard=device.AcquireOperationGuard();acquired=true;});
     while(!entered.load())std::this_thread::yield();
     std::this_thread::sleep_for(std::chrono::milliseconds(10));const bool held=!acquired.load();
-    disk::FileDevice other;const auto competing=other.Open(path.string(),disk::FileOpenMode::open_existing_read_only);
+    disk::FileDevice other;const auto competing=other.Open(path.string(),disk::FileOpenMode::open_existing_read_only,disk::DatabaseFileOwnership::native_data_file);
     resume_write=true;writer.join();observer.join();
     Check(held&&acquired&&result.ok()&&!competing.ok(),"device and node ownership remain held through real initialization");}
   for(bool allocation:{false,true}){disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"issuer source failure fixture");

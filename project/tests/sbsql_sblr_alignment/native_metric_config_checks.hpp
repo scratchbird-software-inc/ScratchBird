@@ -109,7 +109,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
   const auto verify=[&](const db::NativeCreationWorkspaceResult& made,disk::FileDevice& device,
                         const std::filesystem::path& path,const auto& r,u64 budget,
                         const db::NativeCatalogRelationBinding& relation) {
-      Check(device.Close().ok()&&device.Open(path.string(),disk::FileOpenMode::open_existing).ok(),"complete batch reopens");
+      Check(device.Close().ok()&&device.Open(path.string(),disk::FileOpenMode::open_existing,disk::DatabaseFileOwnership::native_data_file).ok(),"complete batch reopens");
       const std::vector<disk::NativeFilespaceDevice> devices{{r.bootstrap.filespace_uuid,r.bootstrap.page_size_profile_uuid,&device}};
       const auto read=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(r.bootstrap.database_uuid,devices,
           db::NativeCatalogSource::PageZero(made.receipt->filespace_uuid),2,1,relation,budget);
@@ -190,7 +190,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     Check(made.ok(),"complete configured batch fits actual indexed construction on every profile");
     Check(made.receipt->relations[0].page_type==0x200&&made.receipt->relation_uuids[0]==Id(20000)&&
         made.receipt->index_dependencies[0]==deps,"exact distinct relation/index custody in receipt");
-    Check(device.Close().ok()&&device.Open(path.string(),disk::FileOpenMode::open_existing).ok(),"indexed complete metric reopen");
+    Check(device.Close().ok()&&device.Open(path.string(),disk::FileOpenMode::open_existing,disk::DatabaseFileOwnership::native_data_file).ok(),"indexed complete metric reopen");
     const std::vector<disk::NativeFilespaceDevice> devices{{r.bootstrap.filespace_uuid,r.bootstrap.page_size_profile_uuid,&device}};
     const auto read=db::ReadNativeCommittedCatalogVersionsFromOpenDevices(r.bootstrap.database_uuid,devices,
         db::NativeCatalogSource::PageZero(made.receipt->filespace_uuid),2,1,{Id(20000),deps},budget);
@@ -276,7 +276,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
         construction_indexes,budget,*fixture.issuer);Disarm();
     Check(made.ok(),"exact empty/root-full/split/multiple-child/branch-level indexed construction");
     if(count==two_level_maximum+1)deep_non_map_pages=made.receipt->total_pages-made.receipt->free_pages-made.receipt->map_pages;
-    Check(device.Close().ok()&&device.Open(path.string(),disk::FileOpenMode::open_existing).ok(),"actual indexed boundary reopen");
+    Check(device.Close().ok()&&device.Open(path.string(),disk::FileOpenMode::open_existing,disk::DatabaseFileOwnership::native_data_file).ok(),"actual indexed boundary reopen");
     const std::vector<disk::NativeFilespaceDevice> devices{{boundary_request.bootstrap.filespace_uuid,boundary_request.bootstrap.page_size_profile_uuid,&device}};
     const auto tree=page::ReadNativeBtreeTreeFromOpenDevices(boundary_request.bootstrap.database_uuid,devices,
         made.receipt->relations[0].page,construction_deps,budget);
@@ -468,7 +468,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
       }
       if(!created.ok())continue;
       auto& device=*owner;
-      Check(device.Close().ok()&&device.Open(path.string(),disk::FileOpenMode::open_existing).ok(),"close and reopen configured native owner");
+      Check(device.Close().ok()&&device.Open(path.string(),disk::FileOpenMode::open_existing,disk::DatabaseFileOwnership::native_data_file).ok(),"close and reopen configured native owner");
       const std::vector<disk::NativeFilespaceDevice> devices{{r.bootstrap.filespace_uuid,r.bootstrap.page_size_profile_uuid,&device}};
       // SB_NATIVE_FIXED_ROOT_READ (drift removal R3b3): the reopened file is
       // read from page zero's fixed roots; it has no checkpoint or selector.

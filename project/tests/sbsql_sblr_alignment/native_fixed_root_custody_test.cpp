@@ -172,6 +172,7 @@ struct Hosted {
     server::DatabaseOwnershipRequest ownership;
     ownership.database_path = n.path;
     ownership.storage_access = d::RouteStorageAccess::read_write;
+    ownership.ownership = d::DatabaseFileOwnership::native_data_file;  // S1b: native file, native owner
     route = server::AcquireDatabaseOwnership(ownership);
     Check(route.acquired && route.lock, "the original route owner");
     auto begun = Host::Begin(route.lock);

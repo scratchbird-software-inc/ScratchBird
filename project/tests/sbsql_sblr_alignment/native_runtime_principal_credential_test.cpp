@@ -214,7 +214,7 @@ struct CredentialNativeFixture {
     if(!made.ok())std::cerr<<"credential fixture creation="<<int(made.error)<<" variant="<<int(variant)<<" profile="<<p
       <<" catalog="<<(made.catalog_read_error?int(*made.catalog_read_error):-1)<<" relation="<<(made.catalog_relation_error?int(*made.catalog_relation_error):-1)<<'\n';
     Check(made.ok(),"actual security/provider definitions persisted in roles4/5");receipt=*made.receipt;
-    Check(device.Close().ok()&&device.Open(path,disk::FileOpenMode::open_existing).ok(),"independent native credential physical reopen");
+    Check(device.Close().ok()&&device.Open(path,disk::FileOpenMode::open_existing,disk::DatabaseFileOwnership::native_data_file).ok(),"independent native credential physical reopen");
   }
   auto Request()const {server::NativeRuntimePrincipalCredentialRequest r;r.security.database_uuid=Id(1);r.security.runtime_binding_uuid=Id(180);
     r.security.runtime_binding_generation=1;r.security.maximum_retained_image_bytes=budget;
@@ -301,6 +301,7 @@ template<class Work>void OnActualWriterSource(CredentialNativeFixture& fixture,W
   Check(prepared.ok(),"writer credential readers prepared before actual native guards");
   const auto path=fixture.device.path();Check(fixture.device.Close().ok(),"release fixture handle before real route ownership");
   server::DatabaseOwnershipRequest ownership;ownership.database_path=path;ownership.storage_access=disk::RouteStorageAccess::read_write;
+  ownership.ownership=disk::DatabaseFileOwnership::native_data_file;// S1b: native file, native owner
   auto route=server::AcquireDatabaseOwnership(ownership);Check(route.acquired&&route.lock,"real credential writer route ownership");
   auto transition=route.lock->BeginNativeSourceTransition();Check(transition.ok(),"real legacy drain and native writer transfer");
   std::vector<std::unique_ptr<disk::FileDevice>> secondary;
@@ -415,6 +416,7 @@ void HostedCredentials(unsigned profile,bool indexed,bool compose=false) {
   Check(prepared.ok()&&graph.ok(),"host credential and actual rights backing admitted before native guards");
   const auto path=fixture.device.path();Check(fixture.device.Close().ok(),"release independent fixture before hosted native ownership");
   server::DatabaseOwnershipRequest ownership;ownership.database_path=path;ownership.storage_access=disk::RouteStorageAccess::read_write;
+  ownership.ownership=disk::DatabaseFileOwnership::native_data_file;// S1b: native file, native owner
   auto route=server::AcquireDatabaseOwnership(ownership);Check(route.acquired&&route.lock,"actual original server route owner");
   auto hosted=Host::Begin(route.lock);Check(hosted.ok(),"host retains original route while fencing legacy borrowers");
   std::vector<std::unique_ptr<disk::FileDevice>> secondary;

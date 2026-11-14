@@ -237,7 +237,7 @@ void Physical(){
       }
       Check(writer.Rollback(sink,2,1789357072002000000ULL).ok(),"transaction 2 rolls back");
     }
-    Check(device.Close().ok()&&device.Open(path,d::FileOpenMode::open_existing_read_only).ok(),"independent read-only reopen");
+    Check(device.Close().ok()&&device.Open(path,d::FileOpenMode::open_existing_read_only,d::DatabaseFileOwnership::native_data_file).ok(),"independent read-only reopen");
     const std::vector<d::NativeFilespaceDevice> devices{{f::Id(2),profile.uuid,&device}};
     const db::NativeCatalogRelationBinding relation{created.receipt->relations[3].object_uuid,{}};
     const db::NativeCryptoInlinePrivateKeyPolicyLookupBinding binding{descriptor.policy_uuid,descriptor.policy_version_uuid,descriptor.generation};

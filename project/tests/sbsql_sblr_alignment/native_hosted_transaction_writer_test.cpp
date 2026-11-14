@@ -176,6 +176,7 @@ struct Hosted {
     server::DatabaseOwnershipRequest ownership;
     ownership.database_path = c.path;
     ownership.storage_access = d::RouteStorageAccess::read_write;
+    ownership.ownership = d::DatabaseFileOwnership::native_data_file;  // S1b: native file, native owner
     route = server::AcquireDatabaseOwnership(ownership);
     Check(route.acquired && route.lock, "the server owns the database file");
     auto begun = Host::Begin(route.lock);
@@ -247,7 +248,7 @@ void Run(unsigned profile) {
   // Independent: the file as an unrelated read-only process sees it.
   const auto check_file = [&](TipStateCode four, const char* label) {
     d::FileDevice device;
-    Check(device.Open(c.path, d::FileOpenMode::open_existing_read_only).ok(), "independent read-only open");
+    Check(device.Open(c.path, d::FileOpenMode::open_existing_read_only,d::DatabaseFileOwnership::native_data_file).ok(), "independent read-only open");
     {
       const std::vector<d::NativeFilespaceDevice> files{{c.primary, c.profile, &device}};
       std::vector<byte> backing(64u << 20);
