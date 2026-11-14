@@ -5307,6 +5307,14 @@ api::EngineApiRequest BuildBaseApiRequest(api::EngineApiRequest api_request,
          (request.envelope.operation_id == "query.evaluate_projection" &&
           (IsProjectionUuidLiteral(operand) || IsProjectionBinaryLiteral(operand) ||
            IsProjectionReal64Literal(operand) || IsProjectionBooleanLiteral(operand))))) continue;
+    // SEARCH_KEY: SB_CREATE_DESCRIPTOR_NOT_AN_OPTION (owner Q110 = 1,
+    // 2026-11-14). The CREATE DATABASE descriptor (v1 or v2) is user data (v2
+    // carries the database name). It reaches the engine only as the typed
+    // request fields dispatch decodes from it (database_format,
+    // database_name, database_language); it never joins the option list, where
+    // option checks would scan it. Before Q110 it became a bare "database:"
+    // entry (its operand.value is always empty; nothing read that key).
+    if (operand.value_kind == SblrValueKind::lifecycle_create_database_descriptor) continue;
     auto operand_value = OperandExecutionValue(operand);
     const bool binary_row = IsNativeRowFieldType(operand.type);
     const bool row_field = operand.type == "row_field" ||

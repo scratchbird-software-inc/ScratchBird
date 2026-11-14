@@ -31,12 +31,27 @@ std::string LifecycleIdentityBytes(const EngineUuid& identity) {
 }
 
 
-bool Contains(const std::string& value, const std::string& token) { return value.find(token) != std::string::npos; }
 bool StartsWith(const std::string& value, const std::string& prefix) { return value.rfind(prefix, 0) == 0; }
+
+// SEARCH_KEY: SB_LIFECYCLE_OPTION_WHOLE_KEY_MATCH (owner Q110 = 1,
+// 2026-11-14). An option check matches whole option entries by key, never a
+// substring anywhere in an option: option values carry user text (principal
+// names, an audit reason) and raw binary UUIDs, and a substring match let that
+// text trigger or defeat a check. Three token shapes:
+//   "key:"        the key is present (the entry starts with "key:");
+//   "key:value"   the entry is exactly "key:value";
+//   "key"         the entry is exactly "key" or starts with "key:".
+bool OptionTokenMatches(const std::string& option, const std::string& token) {
+  if (token.empty()) return false;
+  if (token.back() == ':') return StartsWith(option, token);
+  if (token.find(':') != std::string::npos) return option == token;
+  return option == token ||
+         (option.size() > token.size() && StartsWith(option, token) && option[token.size()] == ':');
+}
 
 bool HasOptionToken(const EngineApiRequest& request, const std::string& token) {
   for (const auto& option : request.option_envelopes) {
-    if (Contains(option, token)) { return true; }
+    if (OptionTokenMatches(option, token)) { return true; }
   }
   return false;
 }

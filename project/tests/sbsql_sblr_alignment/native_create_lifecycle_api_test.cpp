@@ -52,9 +52,15 @@
 #include "filespace_page_zero.hpp"
 #include "filespace_bootstrap.hpp"
 #include "catalog_language.hpp"
+#include "catalog_name_record_codec.hpp"
+#include "catalog_native_catalog_index.hpp"
+#include "catalog_page.hpp"
+#include "native_index_btree_page.hpp"
+#include "physical_mga_cow_store.hpp"
 #include "uuid.hpp"
 #include "../support/owned_temp_directory.hpp"
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstdio>
@@ -389,6 +395,107 @@ void GatewayAdmission() {
   Check(!mislabelled.ok, "S2: the gateway refuses a v2 body labelled v1");
 }
 
+// Q110 (owner 2026-11-14, SB_CREATE_DESCRIPTOR_NOT_AN_OPTION): the database's
+// name rows, read back in process from the created file through the production
+// committed-catalog reader (the names relation, role 2, whose identity is the
+// universal constant). The index binding is taken from the relation's own
+// root page; nothing here comes from the create's in-memory workspace.
+std::vector<c::CatalogNameEntry> DatabaseNameRows(const std::string& path, const p::Uuid& database,
+                                                  const p::Uuid& filespace, std::uint32_t page_size) {
+  namespace pg = scratchbird::storage::page;
+  namespace db = scratchbird::storage::database;
+  const auto* profile = d::FindCanonicalFilespacePageProfileForSize(page_size);
+  Check(profile != nullptr, "Q110: the created file's page profile");
+  d::FileDevice device;
+  Check(device.Open(path, d::FileOpenMode::open_existing_read_only, d::DatabaseFileOwnership::native_data_file).ok(),
+        "Q110: the created file reopens natively");
+  const auto zero = d::ReadFilespacePageZeroFromOpenDevice(device);
+  Check(zero.ok() && zero.record->bootstrap.database_uuid == database, "Q110: page zero names the returned database");
+  const auto catalog_ref = std::find_if(zero.record->roots.begin(), zero.record->roots.end(),
+                                        [](const auto& r) { return r.kind == 2; });
+  Check(catalog_ref != zero.record->roots.end(), "Q110: page zero references the catalog root");
+  const auto catalog = pg::ReadNativeCatalogRootFromOpenDevice(device, database, *catalog_ref);
+  Check(catalog.ok(), "Q110: the catalog root reads");
+  const auto names_root = std::find_if(catalog.root->roots.begin(), catalog.root->roots.end(),
+                                       [](const auto& r) { return r.role == 2; });
+  Check(names_root != catalog.root->roots.end() && names_root->page_type == 0x200,
+        "Q110: the names relation is an indexed relation on the catalog root");
+  std::vector<p::byte> page(page_size);
+  Check(device.ReadAt(names_root->page.page_number * page_size, page.data(), page.size()).ok(),
+        "Q110: the names relation's root page reads");
+  const auto tree = pg::DecodeNativeBtreePage(page);
+  Check(tree.ok(), "Q110: the names relation's root page decodes");
+  const db::NativeCatalogRelationBinding binding{c::kNativeNameCatalogRelationUuid, tree.page->dependencies};
+  const std::vector<d::NativeFilespaceDevice> devices{{filespace, profile->uuid, &device}};
+  const auto read = db::ReadNativeCommittedCatalogVersionsFromOpenDevices(
+      database, devices, db::NativeCatalogSource::PageZero(filespace), 2, 2, binding, 256u * 1024u * 1024u);
+  Check(read.ok(), "Q110: the names relation reads back through the production reader");
+  std::vector<c::CatalogNameEntry> out;
+  for (const auto& row : read.rows) {
+    if (!row.name_payload) continue;
+    if (const auto* entry = std::get_if<c::CatalogNameEntry>(&*row.name_payload);
+        entry && entry->object_uuid.value == database)
+      out.push_back(*entry);
+  }
+  Check(device.Close().ok(), "close");
+  return out;
+}
+
+// Q110: CREATE DATABASE through SBLR dispatch with the v2 descriptor, a name
+// that carries option-shaped text, and the stated options (16K, 512 pages).
+// The name is data: the create behaves as for a plain name, page zero has
+// the stated page size and the file the stated pages, and the database's name
+// row carries the name byte for byte.
+sblr::SblrDispatchResult DispatchNamedCreate(const std::string& path, const std::string& name) {
+  sblr::SblrOperand operand;
+  operand.type = "lifecycle_create_database_descriptor.v2";
+  operand.name = "database";
+  operand.ordinal = 1;
+  operand.value_kind = sblr::SblrValueKind::lifecycle_create_database_descriptor;
+  operand.value_body = sblr::EncodeSblrLifecycleCreateDatabaseDescriptorV2(
+      V2(c::kCatalogLanguage_en, name, sblr::SblrLifecycleCreateDatabaseFormat::native));
+  Check(!operand.value_body.empty(), "Q110: the v2 descriptor encodes the option-shaped name as data");
+  const auto decoded = sblr::DecodeSblrEnvelope(sblr::EncodeSblrEnvelope(CreateEnvelope(operand)));
+  Check(decoded.ok, "Q110: the v2 create envelope round trips");
+  api::EngineApiRequest options;
+  NativeOptions(options.option_envelopes, 16384, TotalPages(16384));
+  const sblr::SblrDispatchRequest dispatch{Context(path), decoded.envelope, options};
+  return sblr::DispatchSblrOperation(dispatch);
+}
+
+void DispatchCreateWithName(const std::filesystem::path& root, const std::string& label, const std::string& name) {
+  const auto dir = root / ("q110-" + label);
+  std::filesystem::create_directory(dir);
+  const auto path = (dir / "named.sdb").string();
+  const auto result = DispatchNamedCreate(path, name);
+  if (!result.api_result.ok) {
+    for (const auto& diagnostic : result.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.message << '\n';
+    for (const auto& diagnostic : result.api_result.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+  }
+  Check(result.envelope_validated && result.dispatched_to_api && result.api_result.ok,
+        "Q110: a name carrying option-shaped text creates exactly as a plain name does");
+  const auto database = RowUuid(result.api_result, "database_uuid");
+  const auto filespace = RowUuid(result.api_result, "filespace_uuid");
+  Check(database && filespace, "Q110: the receipt identities are returned");
+  {
+    d::FileDevice device;
+    Check(device.Open(path, d::FileOpenMode::open_existing_read_only, d::DatabaseFileOwnership::native_data_file).ok(),
+          "Q110: reopen");
+    const auto zero = d::ReadFilespacePageZeroFromOpenDevice(device);
+    const auto size = device.Size();
+    Check(zero.ok() && zero.record->bootstrap.page_size_bytes == 16384 && size.ok() &&
+              size.size_bytes == TotalPages(16384) * 16384u,
+          "Q110: the stated options decide the page size and pages; the name's text overrides nothing");
+    Check(device.Close().ok(), "close");
+  }
+  const auto rows = DatabaseNameRows(path, *database, *filespace, 16384);
+  Check(rows.size() == 1, "Q110: the database has one name row");
+  Check(rows.front().raw_name_text == name && rows.front().raw_name_text.size() == name.size() &&
+            rows.front().language_uuid.value == c::kCatalogLanguage_en,
+        "Q110: the name row carries CREATE's name byte for byte, in the given language");
+  std::printf("Q110 dispatch name %s: created as data, name row exact (%zu bytes)\n", label.c_str(), name.size());
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -675,6 +782,94 @@ int main(int argc, char** argv) {
     // Reported, not asserted: what dispatch itself leaves beside the database
     // (executor availability and the like are S3's).
     for (const auto& name : Entries(dir)) std::printf("dispatch dir entry: %s\n", name.c_str());
+  }
+
+  // Q110 = 1 (owner 2026-11-14, SB_CREATE_DESCRIPTOR_NOT_AN_OPTION): the
+  // create descriptor (user data: the database name) never joins the
+  // request's option list, and lifecycle option checks match whole option
+  // keys, never a substring anywhere in an option.
+  {
+    const auto root = artifacts.path() / "q110";
+    std::filesystem::create_directory(root);
+    // Names carrying each checked token, through SBLR dispatch (the v2
+    // descriptor), plus a plain control.
+    DispatchCreateWithName(root, "plain", "orders");
+    DispatchCreateWithName(root, "unsafe-profile-combo", "unsafe_profile_combo");
+    DispatchCreateWithName(root, "x-unsafe-profile-combo", "x_unsafe_profile_combo");
+    DispatchCreateWithName(root, "policy-seed-pack-root", "policy_seed_pack_root:/client/chosen/pack");
+    DispatchCreateWithName(root, "page-size", "page_size:4096");
+    DispatchCreateWithName(root, "total-pages", "total_pages:1");
+    DispatchCreateWithName(root, "mode-read-only", "mode:read_only;allow_writes:true");
+    DispatchCreateWithName(root, "cluster", "cluster:true");
+    // A NUL byte: the v2 codec admits U+0000 (well-formed UTF-8) and the
+    // envelope carries it; the catalog's identifier lookup-key builder refuses
+    // NUL in any name (catalog_identifier_lookup_key.cpp), so native create
+    // refuses at database assembly, after the open, and Q108 removes the
+    // still-empty file. Observed behaviour, recorded as is (OWNER Q: refuse
+    // NUL at the codec / before the open instead?). The name is never an
+    // option: the refusal is the name's own, not an option check.
+    {
+      const std::string nul_name("a\0unsafe_profile_combo", 22);
+      sblr::SblrLifecycleCreateDatabaseDescriptorV2 decoded_v2;
+      std::string detail;
+      const auto bytes = sblr::EncodeSblrLifecycleCreateDatabaseDescriptorV2(
+          V2(c::kCatalogLanguage_en, nul_name, sblr::SblrLifecycleCreateDatabaseFormat::native));
+      Check(!bytes.empty() && sblr::DecodeSblrLifecycleCreateDatabaseDescriptorV2(bytes.data(), bytes.size(), &decoded_v2, &detail) &&
+                decoded_v2.database_name == nul_name,
+            "Q110: the v2 codec admits and round-trips a name containing NUL, byte for byte");
+      const auto dir = root / "q110-nul";
+      std::filesystem::create_directory(dir);
+      const auto result = DispatchNamedCreate((dir / "named.sdb").string(), nul_name);
+      if (result.api_result.ok || !DetailHas(result.api_result, "native_create_refused:database_assembly"))
+        for (const auto& diagnostic : result.api_result.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+      Check(result.envelope_validated && result.dispatched_to_api && !result.api_result.ok &&
+                HasDiagnostic(result.api_result, "DATABASE.CREATE_FAILED") &&
+                DetailHas(result.api_result, "native_create_refused:database_assembly") &&
+                !HasDiagnostic(result.api_result, "SB_ENGINE_API_LIFECYCLE_UNSAFE_PROFILE") && Entries(dir).empty(),
+            "Q110: a NUL in the name is refused by the catalog's name rules (database assembly), not by an option "
+            "check, and leaves no file");
+      std::printf("Q110 dispatch name nul: codec admits, catalog name rules refuse at assembly, no file\n");
+    }
+
+    // Option values that are user text (principal names) carrying a checked
+    // token, through the API directly: whole-key matching does not see them.
+    const auto direct = [&](const char* label, auto edit, bool expect_ok, const char* what) {
+      const auto dir = root / (std::string("direct-") + label);
+      std::filesystem::create_directory(dir);
+      auto request = NativeRequest((dir / "orders.sdb").string(), 16384, c::kCatalogLanguage_en);
+      edit(request);
+      const auto result = api::EngineCreateLifecycle(request);
+      if (result.ok != expect_ok)
+        for (const auto& diagnostic : result.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+      if (expect_ok) {
+        Check(result.ok && Entries(dir).size() == 1, what);
+      } else {
+        Check(!result.ok && HasDiagnostic(result, "SB_ENGINE_API_LIFECYCLE_UNSAFE_PROFILE") && Entries(dir).empty(), what);
+      }
+    };
+    const auto replace = [](std::vector<std::string>& options, std::string_view key, std::string value) {
+      std::erase_if(options, [&](const auto& o) { return o.starts_with(key); });
+      options.push_back(std::string(key) + value);
+    };
+    direct("principal-unsafe", [&](auto& r) {
+      replace(r.option_envelopes, "bootstrap_principal_name:", "unsafe_profile_combo_admin");
+    }, true, "Q110: a principal name containing unsafe_profile_combo is a value, not the unsafe-profile key");
+    // Principal names refuse ':' (invalid_principal), so the free-text
+    // carrier here is the audit reason the management route sends
+    // (manager_control.cpp: "audit_reason:" + the administrator's text).
+    direct("audit-reason-mode", [&](auto& r) {
+      r.option_envelopes.push_back("audit_reason:mode:read_only");
+      r.option_envelopes.push_back("audit_reason_detail:allow_writes:true");
+    }, true, "Q110: mode:read_only and allow_writes:true inside other options' values are not those options");
+    // Positive controls: the whole-key options themselves are still refused.
+    direct("unsafe-key", [](auto& r) { r.option_envelopes.push_back("unsafe_profile_combo"); }, false,
+           "Q110 control: the unsafe_profile_combo option itself is still refused");
+    direct("unsafe-key-value", [](auto& r) { r.option_envelopes.push_back("unsafe_profile_combo:true"); }, false,
+           "Q110 control: the unsafe_profile_combo key with a value is still refused");
+    direct("read-only-writes", [](auto& r) {
+      r.option_envelopes.push_back("mode:read_only");
+      r.option_envelopes.push_back("allow_writes:true");
+    }, false, "Q110 control: mode:read_only with allow_writes:true is still refused");
   }
 
   std::printf("PASS native create lifecycle api checks=%d\n", checks);
