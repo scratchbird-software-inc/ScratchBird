@@ -10,6 +10,7 @@
 #include "relational_descriptor_codec.hpp"
 #include "relational_identity_codec.hpp"
 #include "core/uuid/uuid.hpp"
+#include "core/catalog/catalog_identifier_text_rule.hpp"
 #include "sblr_ddl_drop_sequence_runtime.hpp"
 #include "sblr_ddl_alter_timeseries_value_cache_runtime.hpp"
 #include "sblr_ddl_drop_timeseries_value_cache_runtime.hpp"
@@ -1326,28 +1327,17 @@ bool DecodeSblrLifecycleCreateDatabaseDescriptorV1(
 // SEARCH_KEY: SB_LIFECYCLE_CREATE_DATABASE_DESCRIPTOR_V2 (S2, owner Q92 = 1).
 namespace {
 constexpr std::size_t kScddV2Fixed = 352;
-bool ScddWellFormedUtf8(const std::string& text) {
-  std::size_t i = 0;
-  while (i < text.size()) {
-    const auto c = static_cast<unsigned char>(text[i]);
-    std::size_t extra = 0;
-    std::uint32_t code = 0;
-    if (c < 0x80) { ++i; continue; }
-    if (c >= 0xc2 && c <= 0xdf) { extra = 1; code = c & 0x1fu; }
-    else if (c >= 0xe0 && c <= 0xef) { extra = 2; code = c & 0x0fu; }
-    else if (c >= 0xf0 && c <= 0xf4) { extra = 3; code = c & 0x07u; }
-    else return false;
-    if (i + extra >= text.size()) return false;
-    for (std::size_t k = 1; k <= extra; ++k) {
-      const auto t = static_cast<unsigned char>(text[i + k]);
-      if ((t & 0xc0u) != 0x80u) return false;
-      code = (code << 6) | (t & 0x3fu);
-    }
-    if ((extra == 2 && (code < 0x800 || (code >= 0xd800 && code <= 0xdfff))) ||
-        (extra == 3 && (code < 0x10000 || code > 0x10ffff))) return false;
-    i += extra + 1;
-  }
-  return true;
+// SEARCH_KEY: SB_CATALOG_IDENTIFIER_TEXT_RULE (owner Q128 = 1, 2026-11-14).
+// The v2 descriptor's database name obeys the catalog's own name rule
+// (core::catalog::AdmitCatalogIdentifierText: non-empty, canonical UTF-8, no
+// U+0000), applied at encode and at decode, so the codec, and the server's
+// gateway that decodes it, refuse a name the catalog would refuse. Native
+// CREATE DATABASE keeps its own check (defence in depth).
+// (Was: ScddWellFormedUtf8, a second, codec-local UTF-8 check that admitted
+// U+0000; removed, the catalog rule replaces it.)
+bool ScddCatalogNameAdmitted(const std::string& text) {
+  return scratchbird::core::catalog::AdmitCatalogIdentifierText(text) ==
+         scratchbird::core::catalog::CatalogIdentifierKeyError::none;
 }
 }  // namespace
 
@@ -1389,7 +1379,7 @@ std::vector<std::uint8_t> EncodeSblrLifecycleCreateDatabaseDescriptorV2(
        descriptor.database_format != SblrLifecycleCreateDatabaseFormat::native) ||
       descriptor.database_name.empty() ||
       descriptor.database_name.size() > kSblrCreateDatabaseNameMaximumBytes ||
-      !ScddWellFormedUtf8(descriptor.database_name) ||
+      !ScddCatalogNameAdmitted(descriptor.database_name) ||  // Q128
       (descriptor.option_count == 0) != descriptor.option_vector.empty() ||
       descriptor.option_vector.size() >
           UINT32_MAX - kScddV2Fixed - kSblrCreateDatabaseNameMaximumBytes) {
@@ -1504,6 +1494,11 @@ bool DecodeSblrLifecycleCreateDatabaseDescriptorV2(
       static_cast<SblrLifecycleCreateDatabaseFormat>(data[340]);
   decoded.database_name.assign(reinterpret_cast<const char*>(data + kScddV2Fixed),
                                static_cast<std::size_t>(name_size));
+  // Q128 = 1 (SB_CATALOG_IDENTIFIER_TEXT_RULE): refused here with its own
+  // detail; the canonical re-encode below would refuse it too.
+  if (!ScddCatalogNameAdmitted(decoded.database_name)) {
+    return fail("SCDD v2 database name is refused by the catalog name rule");
+  }
   decoded.option_vector.assign(data + kScddV2Fixed + name_size, data + size);
   const auto canonical = EncodeSblrLifecycleCreateDatabaseDescriptorV2(decoded);
   if (canonical.size() != size ||

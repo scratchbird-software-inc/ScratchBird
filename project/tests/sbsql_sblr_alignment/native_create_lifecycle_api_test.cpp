@@ -40,6 +40,15 @@
 //    before the file is opened: DATABASE.CREATE_NAME_INVALID, no post-open
 //    detail, no file. The q122-* directories are what the strace check
 //    watches: no openat of a path in them may appear.
+//  - Q128 = 1 (SB_CATALOG_IDENTIFIER_TEXT_RULE in the v2 codec): the v2
+//    create descriptor codec applies the same rule at encode and decode, so
+//    the gateway and SBLR dispatch refuse such a name before the engine API.
+//    Engine API calls still meet the engine's own refusal (defence in depth).
+//  - Q127 = 3 (SB_CATALOG_IDENTIFIER_PROFILE_LENGTH_RULE): the name's maximum
+//    length is the server pack's identifier profile's (default pack: 1024
+//    encoded octets), checked before the open; the engine's hand-written
+//    1024-byte cap is removed. The pack is read before the open, so a pack
+//    that does not load is now a pre-open refusal (was a Q108 late case).
 //
 // Modes: none (every check) or
 //   create <path> <page size> <language: en|fr-CA>
@@ -73,6 +82,8 @@
 #include <filesystem>
 #include <fstream>
 #include <iostream>
+#include <iterator>
+#include <regex>
 #include <source_location>
 #include <string>
 #include <string_view>
@@ -268,6 +279,54 @@ sblr::SblrLifecycleCreateDatabaseDescriptorV2 V2(const p::Uuid& language, std::s
   return descriptor;
 }
 
+// Q128 = 1 (owner 2026-11-14): the encoder now refuses a name the catalog's
+// name rule refuses, so such bytes cannot come from the codec. They are made
+// from a valid encoding of `with_placeholder` by overwriting the name byte at
+// `at` with `byte` (the length and option hash are unchanged; the name is not
+// covered by any hash), to test the decoder and the gateway on them.
+std::vector<std::uint8_t> PatchedNameBytes(const std::string& with_placeholder, std::size_t at, std::uint8_t byte) {
+  auto bytes = sblr::EncodeSblrLifecycleCreateDatabaseDescriptorV2(
+      V2(c::kCatalogLanguage_en, with_placeholder, sblr::SblrLifecycleCreateDatabaseFormat::native));
+  Check(!bytes.empty() && at < with_placeholder.size(), "Q128: the placeholder name encodes");
+  bytes[352 + at] = byte;
+  return bytes;
+}
+
+// Q127: recompute a copied pack's content hashes the way the loader checks
+// them (as native_policy_families_test's Rehash does; the pack's files are
+// LF-only, so canonicalization is the identity).
+std::string Sha256Hex(const std::string& text) {
+  const auto digest = scratchbird::core::hash::ComputeSha256Digest(
+      reinterpret_cast<const p::byte*>(text.data()), text.size());
+  Check(digest.ok(), "sha256");
+  return scratchbird::core::hash::HexLower(digest.digest);
+}
+std::string ReadAll(const std::filesystem::path& path) {
+  std::ifstream in(path, std::ios::binary);
+  return std::string(std::istreambuf_iterator<char>(in), {});
+}
+void RehashPack(const std::filesystem::path& root) {
+  const auto manifest_path = root / "POLICY_PACK_MANIFEST.json";
+  const auto manifest = ReadAll(manifest_path);
+  const std::regex entry("\"path\": \"([^\"]+)\",\\s*\"sha256\": \"([0-9a-f]{64})\"");
+  std::string rebuilt, aggregate;
+  std::size_t from = 0;
+  for (auto it = std::sregex_iterator(manifest.begin(), manifest.end(), entry); it != std::sregex_iterator(); ++it) {
+    const auto& m = *it;
+    const auto sha = Sha256Hex(ReadAll(root / m[1].str()));
+    rebuilt += manifest.substr(from, m.position(2) - from) + sha;
+    from = m.position(2) + 64;
+    aggregate += m[1].str() + std::string(1, '\0') + sha + "\n";
+  }
+  rebuilt += manifest.substr(from);
+  rebuilt = std::regex_replace(rebuilt, std::regex("\"content_sha256\": \"[0-9a-f]{64}\""),
+                               "\"content_sha256\": \"" + Sha256Hex(aggregate) + "\"",
+                               std::regex_constants::format_first_only);
+  std::ofstream out(manifest_path, std::ios::binary | std::ios::trunc);
+  out << rebuilt;
+  Check(bool(out), "Q127: the rehashed manifest is written");
+}
+
 void DescriptorCodec() {
   // v1 unchanged: still 320 bytes and still requires its (drift) identities.
   sblr::SblrLifecycleCreateDatabaseDescriptorV1 v1;
@@ -307,6 +366,27 @@ void DescriptorCodec() {
   refuses([](auto& x) { x.database_name.clear(); }, "S2: v2 refuses an empty name");
   refuses([](auto& x) { x.database_name = std::string(1025, 'a'); }, "S2: v2 refuses a name over 1024 bytes");
   refuses([](auto& x) { x.database_name = std::string("bad\xc3", 4); }, "S2: v2 refuses a name that is not UTF-8");
+  // Q128 = 1 (owner 2026-11-14, SB_CATALOG_IDENTIFIER_TEXT_RULE): the codec
+  // applies the catalog's name rule. New refusals (were admitted: the codec's
+  // own UTF-8 check let U+0000 through).
+  refuses([](auto& x) { x.database_name = std::string("a\0b", 3); }, "Q128: v2 encode refuses a U+0000 in the name");
+  refuses([](auto& x) { x.database_name = std::string("\0", 1); }, "Q128: v2 encode refuses a name that is only U+0000");
+  refuses([](auto& x) { x.database_name = std::string("a\xc0\x80", 3); },
+          "Q128: v2 encode refuses an overlong encoding of U+0000");
+  {
+    const auto nul = PatchedNameBytes("aXb", 1, 0);
+    Check(!sblr::DecodeSblrLifecycleCreateDatabaseDescriptorV2(nul.data(), nul.size(), &decoded_v2, &detail) &&
+              detail == "SCDD v2 database name is refused by the catalog name rule",
+          "Q128: v2 decode refuses a U+0000 in the name, with the catalog name rule's own detail");
+    const auto truncated = PatchedNameBytes("badX", 3, 0xc3);
+    Check(!sblr::DecodeSblrLifecycleCreateDatabaseDescriptorV2(truncated.data(), truncated.size(), &decoded_v2, &detail) &&
+              detail == "SCDD v2 database name is refused by the catalog name rule",
+          "Q128: v2 decode refuses a truncated UTF-8 sequence in the name");
+    const auto good = PatchedNameBytes("aXb", 1, 'Y');
+    Check(sblr::DecodeSblrLifecycleCreateDatabaseDescriptorV2(good.data(), good.size(), &decoded_v2, &detail) &&
+              decoded_v2.database_name == "aYb",
+          "Q128 control: the same patch with an admitted byte decodes (the patch method itself is sound)");
+  }
   refuses([](auto& x) { x.database_language_uuid = {}; }, "S2: v2 refuses a missing language");
   refuses([](auto& x) { x.database_format = static_cast<sblr::SblrLifecycleCreateDatabaseFormat>(3); },
           "S2: v2 refuses an unknown format");
@@ -398,6 +478,15 @@ void GatewayAdmission() {
   Check(!refused.ok, "S2: the gateway refuses a malformed v2 descriptor");
   const auto mislabelled = Gateway(CreateOperand(v2_body, "lifecycle_create_database_descriptor.v1"));
   Check(!mislabelled.ok, "S2: the gateway refuses a v2 body labelled v1");
+  // Q128 = 1 (owner 2026-11-14): the gateway decodes the v2 descriptor, so a
+  // name the catalog's rule refuses is refused at the gateway, before any
+  // engine call. (Was: admitted here; refused by the engine.)
+  const auto nul_name = Gateway(CreateOperand(PatchedNameBytes("aXb", 1, 0), "lifecycle_create_database_descriptor.v2"));
+  std::fprintf(stderr, "Q128 gateway nul: ok=%d diagnostic=%s\n", int(nul_name.ok), nul_name.diagnostic_id.c_str());
+  Check(!nul_name.ok && nul_name.diagnostic_id == "SBLR.OPERAND.INVALID",
+        "Q128: the gateway refuses a v2 descriptor whose name holds U+0000 (SBLR.OPERAND.INVALID)");
+  const auto patched_ok = Gateway(CreateOperand(PatchedNameBytes("aXb", 1, 'Y'), "lifecycle_create_database_descriptor.v2"));
+  Check(patched_ok.ok, "Q128 control: the gateway admits the same patched descriptor with an admitted byte");
 }
 
 // Q110 (owner 2026-11-14, SB_CREATE_DESCRIPTOR_NOT_AN_OPTION): the database's
@@ -583,9 +672,11 @@ int main(int argc, char** argv) {
       std::erase_if(r.option_envelopes, [](const auto& o) { return o.starts_with("bootstrap_credential_fingerprint:"); });
       r.option_envelopes.push_back("bootstrap_credential_fingerprint:not-a-fingerprint");
     }, "Q108: a bad credential fingerprint is refused after the open");
-    late("policy-pack", [&](auto& r) {
-      r.context.server_policy_seed_pack_root = (artifacts.path() / "no-such-policy-pack").string();
-    }, "Q108: a bad (server) policy pack is refused after the open");
+    // Q127 = 3 (owner 2026-11-14): the server's pack is now read before the
+    // open (for its identifier profile), so a pack that does not load is a
+    // pre-open refusal; see the Q127 block below. Was: late("policy-pack",
+    // root = <artifacts>/no-such-policy-pack, "Q108: a bad (server) policy
+    // pack is refused after the open").
     late("pages", [](auto& r) {
       std::erase_if(r.option_envelopes, [](const auto& o) { return o.starts_with("total_pages:"); });
       r.option_envelopes.push_back("total_pages:2");
@@ -641,6 +732,90 @@ int main(int argc, char** argv) {
       if (!made.ok) for (const auto& diagnostic : made.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
       Check(made.ok && Entries(dir).size() == 1, "Q122: a valid multi-byte UTF-8 name still creates");
       std::printf("Q122 valid multi-byte name: created\n");
+    }
+  }
+
+  // Q127 = 3 (owner 2026-11-14, SB_CATALOG_IDENTIFIER_PROFILE_LENGTH_RULE):
+  // the database name's maximum length is the server pack's identifier
+  // profile's (maximum_identifier_length, in its length_unit), checked before
+  // the open; the engine's hand-written 1024-byte cap is gone. The default
+  // pack declares 1024 encoded octets. Refusal directories are named q122-*
+  // so the strace check holds them to "no open at all".
+  {
+    const auto attempt = [&](const std::string& label, std::string name, const std::string& root) {
+      const auto dir = artifacts.path() / label;
+      std::filesystem::create_directory(dir);
+      auto request = NativeRequest((dir / "named.sdb").string(), 16384, c::kCatalogLanguage_en, std::move(name));
+      if (!root.empty()) request.context.server_policy_seed_pack_root = root;
+      auto result = api::EngineCreateLifecycle(request);
+      return std::make_pair(std::move(result), dir);
+    };
+    const auto created = [&](const std::string& label, std::string name, const std::string& root, const char* what) {
+      const auto [result, dir] = attempt(label, std::move(name), root);
+      if (!result.ok) for (const auto& diagnostic : result.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+      Check(result.ok && Entries(dir).size() == 1, what);
+      std::printf("Q127 %s: created\n", label.c_str());
+    };
+    const auto too_long = [&](const std::string& label, std::string name, const std::string& root, const char* what) {
+      const auto [result, dir] = attempt(label, std::move(name), root);
+      if (result.ok || !DetailHas(result, "database_name_longer_than_policy_identifier_profile_maximum"))
+        for (const auto& diagnostic : result.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+      Check(!result.ok && HasDiagnostic(result, "DATABASE.CREATE_NAME_INVALID") &&
+                DetailHas(result, "database_name_longer_than_policy_identifier_profile_maximum") &&
+                !DetailHas(result, "native_create_refused:") && !HasDiagnostic(result, "DATABASE.CREATE_FAILED") &&
+                Entries(dir).empty(), what);
+      std::printf("Q127 %s: refused before the open, no file\n", label.c_str());
+    };
+    // The default pack: 1024 encoded octets.
+    created("q127-ok-1024-octets", std::string(1024, 'a'), {},
+            "Q127: a 1024-octet name creates under the default pack's profile (maximum 1024 encoded octets)");
+    too_long("q122-q127-1025-octets", std::string(1025, 'a'), {},
+             "Q127: a 1025-octet name is refused before the open by the pack's profile maximum "
+             "(was: the engine's hand-written size() > 1024 cap, detail database_name_required_as_data)");
+    std::string e_acute_512, e_acute_513;
+    for (int n = 0; n < 512; ++n) e_acute_512 += "\xc3\xa9";
+    e_acute_513 = e_acute_512 + "\xc3\xa9";
+    created("q127-ok-512-scalars-1024-octets", e_acute_512, {},
+            "Q127: 512 two-octet scalars (1024 octets) create: the unit is the profile's, encoded octets");
+    too_long("q122-q127-513-scalars-1026-octets", e_acute_513, {},
+             "Q127: 513 two-octet scalars (1026 octets, 513 scalars) are refused: octets are counted, not scalars");
+
+    // The value comes from the pack: a rehashed copy whose profile says 128.
+    // (Not smaller: the maximum governs every name the create assembles under
+    // that profile, and a pack at 8 was observed to refuse at policy
+    // assembly, after the open, because bootstrap names are longer; the
+    // longest name text in the default pack is 80 octets.)
+    const auto pack = artifacts.path() / "q127-pack-max-128";
+    std::filesystem::copy(SB_DEFAULT_POLICY_PACK_ROOT, pack, std::filesystem::copy_options::recursive);
+    {
+      const auto naming = pack / "policies" / "native_naming_profiles.json";
+      std::string text;
+      { std::ifstream in(naming, std::ios::binary); text.assign(std::istreambuf_iterator<char>(in), {}); }
+      const std::string from = "\"maximum_identifier_length\": 1024", to = "\"maximum_identifier_length\": 128";
+      const auto at = text.find(from);
+      Check(at != std::string::npos && text.find(from, at + 1) == std::string::npos,
+            "Q127: the default pack declares maximum_identifier_length 1024 exactly once");
+      text.replace(at, from.size(), to);
+      { std::ofstream out(naming, std::ios::binary | std::ios::trunc); out << text; }
+      RehashPack(pack);
+    }
+    created("q127-ok-pack-128-octets", std::string(128, 'p'), pack.string(),
+            "Q127: with the pack's maximum at 128, a 128-octet name creates");
+    too_long("q122-q127-pack-129-octets", std::string(129, 'p'), pack.string(),
+             "Q127: with the pack's maximum at 128, a 129-octet name is refused before the open: the limit is the "
+             "pack's");
+
+    // A pack that does not load is refused before the open (was: after the
+    // open, the Q108 late "policy-pack" case).
+    {
+      const auto [result, dir] = attempt("q122-q127-no-such-pack", "orders",
+                                         (artifacts.path() / "no-such-policy-pack").string());
+      if (result.ok || !HasDiagnostic(result, "DATABASE.CREATE_POLICY_PACK_INVALID"))
+        for (const auto& diagnostic : result.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+      Check(!result.ok && HasDiagnostic(result, "DATABASE.CREATE_POLICY_PACK_INVALID") &&
+                !DetailHas(result, "native_create_refused:") && Entries(dir).empty(),
+            "Q127: a server pack that does not load is refused before the open (was: Q108, after the open), no file");
+      std::printf("Q127 unloadable pack: refused before the open, no file\n");
     }
   }
 
@@ -868,29 +1043,51 @@ int main(int argc, char** argv) {
     // with Q108 removing the still-empty file. The codec is unchanged and
     // still admits the name.
     {
+      // Q128 = 1 (owner 2026-11-14, SB_CATALOG_IDENTIFIER_TEXT_RULE): the v2
+      // codec now applies the catalog's name rule, so it neither encodes nor
+      // decodes this name, and SBLR dispatch refuses it at envelope
+      // validation, before the engine API: no file. Was (Q110/Q122): the
+      // codec admitted and round-tripped the NUL name, dispatch reached the
+      // engine, and native create refused DATABASE.CREATE_NAME_INVALID before
+      // the open. That engine refusal is kept (defence in depth) and is
+      // checked on the engine API directly in the Q122 block.
       const std::string nul_name("a\0unsafe_profile_combo", 22);
-      sblr::SblrLifecycleCreateDatabaseDescriptorV2 decoded_v2;
-      std::string detail;
-      const auto bytes = sblr::EncodeSblrLifecycleCreateDatabaseDescriptorV2(
-          V2(c::kCatalogLanguage_en, nul_name, sblr::SblrLifecycleCreateDatabaseFormat::native));
-      Check(!bytes.empty() && sblr::DecodeSblrLifecycleCreateDatabaseDescriptorV2(bytes.data(), bytes.size(), &decoded_v2, &detail) &&
-                decoded_v2.database_name == nul_name,
-            "Q110: the v2 codec admits and round-trips a name containing NUL, byte for byte");
+      Check(sblr::EncodeSblrLifecycleCreateDatabaseDescriptorV2(
+                V2(c::kCatalogLanguage_en, nul_name, sblr::SblrLifecycleCreateDatabaseFormat::native)).empty(),
+            "Q128: the v2 codec refuses to encode a name containing NUL (was: admitted and round-tripped)");
       const auto dir = root / "q122-q110-nul";
       std::filesystem::create_directory(dir);
-      const auto result = DispatchNamedCreate((dir / "named.sdb").string(), nul_name);
-      if (result.api_result.ok || !HasDiagnostic(result.api_result, "DATABASE.CREATE_NAME_INVALID"))
-        for (const auto& diagnostic : result.api_result.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
-      Check(result.envelope_validated && result.dispatched_to_api && !result.api_result.ok &&
-                HasDiagnostic(result.api_result, "DATABASE.CREATE_NAME_INVALID") &&
-                DetailHas(result.api_result, "database_name_refused_by_catalog_name_rule") &&
-                !HasDiagnostic(result.api_result, "DATABASE.CREATE_FAILED") &&
-                !DetailHas(result.api_result, "native_create_refused:") &&
-                !DetailHas(result.api_result, ";empty_file_") &&
-                !HasDiagnostic(result.api_result, "SB_ENGINE_API_LIFECYCLE_UNSAFE_PROFILE") && Entries(dir).empty(),
-            "Q110/Q122: a NUL in the name is refused by the catalog's name rule before the file is opened, not by "
-            "an option check, and no file ever exists");
-      std::printf("Q110/Q122 dispatch name nul: codec admits, catalog name rule refuses before the open, no file\n");
+      const auto path = (dir / "named.sdb").string();
+      sblr::SblrOperand operand;
+      operand.type = "lifecycle_create_database_descriptor.v2";
+      operand.name = "database";
+      operand.ordinal = 1;
+      operand.value_kind = sblr::SblrValueKind::lifecycle_create_database_descriptor;
+      // The same name, made by patching the placeholder byte to NUL.
+      operand.value_body = PatchedNameBytes("aXunsafe_profile_combo", 1, 0);
+      api::EngineApiRequest options;
+      NativeOptions(options.option_envelopes, 16384, TotalPages(16384));
+      const auto envelope = CreateEnvelope(operand);
+      const auto result = sblr::DispatchSblrOperation({Context(path), envelope, options});
+      std::string first;
+      if (!result.diagnostics.empty()) first = result.diagnostics.front().code + ":" + result.diagnostics.front().message;
+      std::fprintf(stderr, "Q128 dispatch nul: envelope_validated=%d dispatched=%d first=%s\n",
+                   int(result.envelope_validated), int(result.dispatched_to_api), first.c_str());
+      Check(!result.envelope_validated && !result.dispatched_to_api && !result.api_result.ok && Entries(dir).empty(),
+            "Q128: SBLR dispatch refuses a v2 descriptor whose name holds NUL at envelope validation; no file");
+      // Control: the same patch with an admitted byte passes validation and
+      // creates, so the refusal above is the name rule's.
+      {
+        const auto control_dir = root / "q128-dispatch-control";
+        std::filesystem::create_directory(control_dir);
+        auto control = operand;
+        control.value_body = PatchedNameBytes("aXunsafe_profile_combo", 1, 'Y');
+        const auto made = sblr::DispatchSblrOperation(
+            {Context((control_dir / "named.sdb").string()), CreateEnvelope(control), options});
+        Check(made.envelope_validated && made.dispatched_to_api && made.api_result.ok && Entries(control_dir).size() == 1,
+              "Q128 control: the same patched descriptor with an admitted byte validates, dispatches and creates");
+      }
+      std::printf("Q110/Q122/Q128 dispatch name nul: codec refuses, dispatch refuses before the engine, no file\n");
     }
 
     // Option values that are user text (principal names) carrying a checked

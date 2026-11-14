@@ -3,13 +3,11 @@
 #pragma once
 #include "catalog_identifier_profile.hpp"
 #include "catalog_name_record_codec.hpp"
+#include "catalog_identifier_text_rule.hpp"
 
 namespace scratchbird::core::catalog {
-enum class CatalogIdentifierKeyError {
-  none,invalid_profile,invalid_text,invalid_quote_mode,identifier_too_long,
-  resource_admission_required,dialect_admission_required,invalid_backing,
-  size_limit,key_mismatch,display_mismatch
-};
+// CatalogIdentifierKeyError is defined in catalog_identifier_text_rule.hpp
+// (Q128, 2026-11-14: moved there unchanged with AdmitCatalogIdentifierText).
 struct CatalogIdentifierKeyRequest {
   const CatalogIdentifierResolutionProfile* profile=nullptr;
   std::string_view text;
@@ -23,15 +21,18 @@ struct CatalogIdentifierKeyResult {
   bool ok()const noexcept{return error==CatalogIdentifierKeyError::none;}
 };
 // SEARCH_KEY: SB_CATALOG_IDENTIFIER_TEXT_RULE (owner Q122 = 1, 2026-11-14).
-// The text rule every catalog name obeys whatever its identifier profile:
-// non-empty, at most kCatalogIdentifierTextMaximumBytes, canonical UTF-8
-// (ValidateCanonicalUtf8) and no U+0000. Pure, allocation-free. invalid_text
-// on violation; on success *scalar_count (if given) is the scalar count the
-// profile's length rule uses. DeriveCatalogIdentifierLookupKeysInto and
-// CheckCatalogIdentifierLookupKeys apply exactly this, after their profile
-// checks; the profile's own rules (maximum length, quoting) need the profile.
-inline constexpr std::size_t kCatalogIdentifierTextMaximumBytes=131040;
-CatalogIdentifierKeyError AdmitCatalogIdentifierText(std::string_view text,u64* scalar_count=nullptr) noexcept;
+// AdmitCatalogIdentifierText and kCatalogIdentifierTextMaximumBytes live in
+// catalog_identifier_text_rule.hpp (header-only since Q128 = 1, 2026-11-14,
+// so the SBLR create descriptor codec applies the same copy).
+// SEARCH_KEY: SB_CATALOG_IDENTIFIER_PROFILE_LENGTH_RULE (owner Q127 = 3,
+// 2026-11-14). The identifier profile's maximum-length rule, the one copy:
+// a maximum of 0 is no limit (durable-format tag 12); otherwise the text's
+// length in the profile's unit (encoded octets, or the scalar count from
+// AdmitCatalogIdentifierText) must not exceed it. identifier_too_long when
+// it does. Admit (key derivation) and native CREATE DATABASE (before its
+// file is opened, against the pack's profile) both call it.
+CatalogIdentifierKeyError AdmitCatalogIdentifierProfileLength(std::string_view text,u64 scalar_count,
+    u64 maximum_identifier_length,IdentifierLengthUnit length_unit) noexcept;
 // Semantic primitive for explicit exact/ASCII fields. The caller must supply
 // an actually admitted profile and immutable input; no label selects behavior.
 // Resource/platform/dialect-dependent operations require their owning admission.

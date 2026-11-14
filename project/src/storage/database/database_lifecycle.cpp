@@ -2205,6 +2205,8 @@ std::optional<PolicyPackLoadResult> ParseNativePolicyFamilies(
           !ExtractStringField(object,"storage_display_mode",&name)||!NativePolicyEnum(kIdentifierDisplayModeNames,name,&p.storage_display_mode)||
           !ExtractStringField(object,"reserved_word_behavior",&name)||!NativePolicyEnum(kIdentifierReservedWordModeNames,name,&p.reserved_word_behavior)||
           !ExtractStringField(object,"length_unit",&name)||!NativePolicyEnum(kIdentifierLengthUnitNames,name,&p.length_unit)||
+          // Q127 = 3 (SB_CATALOG_IDENTIFIER_PROFILE_LENGTH_RULE): required.
+          !u64_field(object,"maximum_identifier_length",&p.maximum_identifier_length)||
           !u64_field(object,"dialect_mode_flags",&p.dialect_mode_flags))return fail("identifier profile "+p.key);
       seeds.identifier_profiles.push_back(std::move(p));
     }
@@ -8553,6 +8555,9 @@ NativeInitialPolicyError BuildNativePolicyFamilyDefinitions(
     p.generation=1;p.escape_rule=seed.escape_rule;p.comparison_mode=seed.comparison_mode;
     p.storage_display_mode=seed.storage_display_mode;p.reserved_word_behavior=seed.reserved_word_behavior;
     p.length_unit=seed.length_unit;p.dialect_mode_flags=seed.dialect_mode_flags;
+    // Q127 = 3 (SB_CATALOG_IDENTIFIER_PROFILE_LENGTH_RULE): the pack's maximum.
+    // (Was: never set, so every native profile carried 0, no limit.)
+    p.maximum_identifier_length=seed.maximum_identifier_length;
     p.origin_transaction_uuid=tx;p.origin_local_transaction_id=kBootstrapCatalogTransactionId;
     // 3b: the pack's profile_name is the profile's reference name, not record data.
     if(!emit(p.profile_uuid,CatalogRecordKind::config_profile,c::CatalogObjectSubtype::identifier_resolution_profile,
@@ -9981,8 +9986,12 @@ PolicySeedPackDescriptor DefaultPolicyPackDescriptor() {
   // Owner direction 2026-11-04: the deadlock-detection interval defaults to
   // Firebird's 10 s DeadlockTimeout (native_transaction_policies.json).
   // Previous: 3c96d65ed3847aa45652a9ed1f168738161bbedf9b6ced4c4bf4960013f5e110
+  // Owner ruling Q127 = 3 (2026-11-14): the default identifier profile carries
+  // maximum_identifier_length 1024 (encoded_octets) in
+  // policies/native_naming_profiles.json (SB_CATALOG_IDENTIFIER_PROFILE_LENGTH_RULE).
+  // Previous: 3efd36aba950983c93d8dae9a6571e59be31729c552a3e7f5f4b4f65ecdce52a
   descriptor.content_sha256 =
-      "3efd36aba950983c93d8dae9a6571e59be31729c552a3e7f5f4b4f65ecdce52a";
+      "6ef052c62763142d7270ee5cd69ac9ae5b0dd52071f08892812216223dbae84b";
   descriptor.create_time_only = true;
   descriptor.post_create_filesystem_authority = false;
   descriptor.local_password_only = true;

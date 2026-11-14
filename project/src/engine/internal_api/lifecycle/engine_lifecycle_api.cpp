@@ -13,6 +13,7 @@
 #include "database_lifecycle.hpp"
 #include "native_catalog_relation_lease_reader.hpp"
 #include "native_database_create.hpp"
+#include "native_policy_families.hpp"
 #include "catalog_identifier_lookup_key.hpp"
 #include "admitted_datatype_cohort.hpp"
 #include "node_uuid_issuer.hpp"
@@ -448,8 +449,12 @@ EngineCreateLifecycleResult NativeCreateLifecycle(const EngineCreateLifecycleReq
   const auto refuse = [&](const char* code, const std::string& detail) {
     return LifecycleFailure<EngineCreateLifecycleResult>(request.context, operation, code, detail);
   };
-  if (request.database_name.empty() ||
-      request.database_name.size() > 1024u) {
+  // SEARCH_KEY: SB_CATALOG_IDENTIFIER_PROFILE_LENGTH_RULE (owner Q127 = 3,
+  // 2026-11-14). The name's maximum length is the server pack's identifier
+  // profile's, checked below once the pack is read (still before the open).
+  // (Was: `request.database_name.size() > 1024u` here, a hand-written cap
+  // refused with the detail database_name_required_as_data.)
+  if (request.database_name.empty()) {
     return refuse("DATABASE.CREATE_NAME_INVALID", "database_name_required_as_data");
   }
   // SEARCH_KEY: SB_CATALOG_IDENTIFIER_TEXT_RULE (owner Q122 = 1, 2026-11-14).
@@ -494,6 +499,32 @@ EngineCreateLifecycleResult NativeCreateLifecycle(const EngineCreateLifecycleReq
   const auto& policy_root = request.context.server_policy_seed_pack_root;
   if (policy_root.empty()) {
     return refuse("DATABASE.CREATE_POLICY_PACK_REQUIRED", "native_server_policy_seed_pack_root_required");
+  }
+  // SEARCH_KEY: SB_CATALOG_IDENTIFIER_PROFILE_LENGTH_RULE (owner Q127 = 3,
+  // 2026-11-14). The server's pack is read here, before the file is opened
+  // (LoadNativePolicyFamilies reads only the pack), and the database name is
+  // held to the maximum length of the identifier profile the create names it
+  // under: the pack's first identifier profile, as database assembly uses
+  // (CreateNativeDatabaseOnOpenDevice, "the pack's own identifier profile
+  // names everything else"). One rule, shared with key derivation
+  // (AdmitCatalogIdentifierProfileLength). A pack that does not load refuses
+  // here too. (Was: a pack that did not load was refused after the O_EXCL
+  // open, and Q108 removed the still-empty file.)
+  {
+    const auto families = db::LoadNativePolicyFamilies(policy_root);
+    if (!families.ok() || !families.seeds || families.seeds->identifier_profiles.empty()) {
+      return refuse("DATABASE.CREATE_POLICY_PACK_INVALID",
+                    "native_server_policy_pack_refused_before_open:" + families.diagnostic.diagnostic_code);
+    }
+    const auto& naming = families.seeds->identifier_profiles.front();
+    scratchbird::core::platform::u64 scalars = 0;
+    if (scratchbird::core::catalog::AdmitCatalogIdentifierText(request.database_name, &scalars) !=
+            scratchbird::core::catalog::CatalogIdentifierKeyError::none ||
+        scratchbird::core::catalog::AdmitCatalogIdentifierProfileLength(
+            request.database_name, scalars, naming.maximum_identifier_length, naming.length_unit) !=
+            scratchbird::core::catalog::CatalogIdentifierKeyError::none) {
+      return refuse("DATABASE.CREATE_NAME_INVALID", "database_name_longer_than_policy_identifier_profile_maximum");
+    }
   }
   const auto bootstrap_name = OptionValue(request, "bootstrap_principal_name:");
   const auto bootstrap_fingerprint = OptionValue(request, "bootstrap_credential_fingerprint:");

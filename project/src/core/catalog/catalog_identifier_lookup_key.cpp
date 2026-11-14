@@ -6,17 +6,18 @@
 
 namespace scratchbird::core::catalog {
 // SEARCH_KEY: SB_CATALOG_IDENTIFIER_TEXT_RULE (owner Q122 = 1, 2026-11-14).
-// The one copy of the profile-independent text rule; Admit below applies it
-// after the profile checks, and callers that must refuse a name before any
-// profile exists (native CREATE DATABASE, before its file is opened) call it
+// The one copy of the profile-independent text rule is
+// AdmitCatalogIdentifierText in catalog_identifier_text_rule.hpp (moved
+// there unchanged, header-only, for Q128 = 1); Admit below applies it after
+// the profile checks, and callers that must refuse a name before any profile
+// exists (native CREATE DATABASE, the SBLR create descriptor codec) call it
 // directly.
-CatalogIdentifierKeyError AdmitCatalogIdentifierText(std::string_view text,u64* scalar_count) noexcept {
-  u64 scalars=0;
-  if(scalar_count)*scalar_count=0;
-  if(text.empty()||text.size()>kCatalogIdentifierTextMaximumBytes||!datatypes::ValidateCanonicalUtf8(
-      reinterpret_cast<const byte*>(text.data()),text.size(),&scalars)||text.find('\0')!=text.npos)
-    return CatalogIdentifierKeyError::invalid_text;
-  if(scalar_count)*scalar_count=scalars;
+// SEARCH_KEY: SB_CATALOG_IDENTIFIER_PROFILE_LENGTH_RULE (owner Q127 = 3).
+CatalogIdentifierKeyError AdmitCatalogIdentifierProfileLength(std::string_view text,u64 scalar_count,
+    u64 maximum_identifier_length,IdentifierLengthUnit length_unit) noexcept {
+  if(maximum_identifier_length&&
+      (length_unit==IdentifierLengthUnit::encoded_octets?text.size():scalar_count)>maximum_identifier_length)
+    return CatalogIdentifierKeyError::identifier_too_long;
   return CatalogIdentifierKeyError::none;
 }
 namespace {
@@ -31,8 +32,9 @@ E Admit(const CatalogIdentifierKeyRequest& r) noexcept {
     return E::resource_admission_required;
   u64 scalars=0;
   if(const auto text=AdmitCatalogIdentifierText(r.text,&scalars);text!=E::none)return text;
-  if(p.maximum_identifier_length&&(p.length_unit==IdentifierLengthUnit::encoded_octets?r.text.size():scalars)>p.maximum_identifier_length)
-    return E::identifier_too_long;
+  // Q127: the same rule, now one function (was written inline here).
+  if(const auto length=AdmitCatalogIdentifierProfileLength(r.text,scalars,p.maximum_identifier_length,p.length_unit);
+      length!=E::none)return length;
   if(!r.was_quoted)return r.quote_style==CatalogNameQuoteStyle::none?E::none:E::invalid_quote_mode;
   if(!r.requires_exact_match)return E::invalid_quote_mode;
   u64 mask=0;

@@ -1303,6 +1303,13 @@ void AddNamingProfileFixture(db::NativeCreationCatalogSeed& seed,
   identifier.storage_display_mode=IdentifierDisplayMode::preserve_user_text;
   identifier.reserved_word_behavior=IdentifierReservedWordMode::parser_profile_specific;
   identifier.length_unit=IdentifierLengthUnit::encoded_octets;
+  // Q127 = 3 (owner 2026-11-14, SB_CATALOG_IDENTIFIER_PROFILE_LENGTH_RULE):
+  // the default pack's identifier profile now declares
+  // maximum_identifier_length 1024 (native_naming_profiles.json), and native
+  // assembly carries it into the record; this fixture mirrors the pack's
+  // values independently. Was: left at 0 (the pack carried no maximum and
+  // assembly never set one).
+  identifier.maximum_identifier_length=1024;
   identifier.origin_transaction_uuid=security_tx;identifier.origin_local_transaction_id=1;
   if(variant==6)identifier.dialect_mode_flags=1;
   if(variant==16)identifier.resources=CatalogIdentifierResourceBinding{security_fixture::Id(111),security_fixture::Id(112),1,1};

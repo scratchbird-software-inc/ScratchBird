@@ -84,6 +84,12 @@ struct NativeIdentifierProfileSeed {
   core::catalog::IdentifierDisplayMode storage_display_mode{};
   core::catalog::IdentifierReservedWordMode reserved_word_behavior{};
   core::catalog::IdentifierLengthUnit length_unit{};
+  // SEARCH_KEY: SB_CATALOG_IDENTIFIER_PROFILE_LENGTH_RULE (owner Q127 = 3,
+  // 2026-11-14). The profile's maximum identifier length, in length_unit;
+  // required in the pack (0 = no project-defined limit, durable-format tag 12).
+  // Native CREATE DATABASE applies it to the database name before its file is
+  // opened. (Was: not carried by the pack; the assembled profile always held 0.)
+  u64 maximum_identifier_length=0;
   u64 dialect_mode_flags=0;
 };
 struct NativeDialectProfileSeed {

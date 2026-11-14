@@ -22224,6 +22224,42 @@ sb_engine_status_t DispatchStatementContextReceipt(
         "sblr.operation.opcode_identity_mismatch",
         detail);
   }
+  // SEARCH_KEY: SB_CREATE_DATABASE_NOT_ON_SESSION_ROUTE (owner Q125 = 3,
+  // 2026-11-14). CREATE DATABASE is pre-security: a file write, not a
+  // connection. It never runs under a session's statement receipt, in any
+  // descriptor version (v1 or v2) or format (legacy or native): the receipt
+  // pins its context to the handle's own open database, so a create here has
+  // no target of its own. Refused here, on the decoded opcode identity of a
+  // bare envelope or of any opcode-stream member, before any operand is
+  // decoded and before any file work.
+  // Was: a bare create envelope was refused just below as an opcode identity
+  // mismatch (4058, code reading); a create admitted as an opcode-stream
+  // package member was refused later in this function as UNSUPPORTED,
+  // SBLR.OPERATION.OPCODE_IDENTITY_MISMATCH (observed by
+  // q113_engine_handle_policy_pack_root before this change). Neither reached
+  // a file, but neither said why, and neither was a decision.
+  {
+    const auto is_create_database = [](const auto& member) {
+      return member.opcode_code == 5128 ||
+             member.opcode == "SBLR_LIFECYCLE_CREATE_DATABASE" ||
+             member.operation_id == "engine.op.lifecycle_create_database" ||
+             member.operation_id == "lifecycle.create_database";
+    };
+    bool create_database =
+        !opcode_stream && is_create_database(operation.envelope);
+    if (opcode_stream) {
+      for (const auto& member : stream.stream.operations) {
+        create_database = create_database || is_create_database(member);
+      }
+    }
+    if (create_database) {
+      return fail_result(
+          SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4058,
+          "DATABASE.CREATE_NOT_ON_SESSION_ROUTE",
+          "database.create.not_on_session_route",
+          "create_database_is_a_pre_security_file_write_not_a_session_statement");
+    }
+  }
   if (!opcode_stream && !exact_ddl_create_table_as_query_operation && !exact_ddl_create_table_as_query_no_data_operation && !exact_ddl_create_continuous_view_operation && !exact_ddl_alter_continuous_view_operation && !exact_ddl_drop_continuous_view_operation && !exact_dml_async_insert_submit_operation && !exact_dml_async_insert_status_operation && !exact_dml_async_insert_cancel_operation && !exact_dml_counter_add_operation && !exact_dml_conditional_mutate_operation && !exact_dml_timeseries_schema_write_operation && !exact_ddl_alter_sequence_operation && !exact_ddl_drop_sequence_operation &&
       !exact_ddl_type_operation && !exact_ddl_drop_synonym_operation && !exact_ddl_drop_foreign_table_operation && !exact_ddl_create_fdw_operation && !exact_ddl_drop_fdw_operation && !exact_security_create_user_operation && !exact_security_alter_user_operation && !exact_bitemporal_as_of_operation && !exact_verifiable_history_prove_operation && !exact_verify_proof_descriptor_operation && !exact_versioned_merge_operation && !exact_versioned_hash_read_operation && !exact_versioned_status_read_operation &&
       (operation.envelope.operation_id != "query.execute" ||

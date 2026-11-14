@@ -146,6 +146,8 @@ int main() try {
     Check(static_cast<std::uint64_t>(s.management_profiles[i]) == i + 1, "management profile codes 1..10 in order");
   Check(s.identifier_profiles[0].comparison_mode == c::IdentifierComparisonMode::exact &&
             s.identifier_profiles[0].length_unit == c::IdentifierLengthUnit::encoded_octets &&
+            // Q127 = 3 (owner 2026-11-14): the profile's maximum, from the pack.
+            s.identifier_profiles[0].maximum_identifier_length == 1024 &&
             s.collision_policies[0].enforcement_points == (1ull << 13) && s.collision_policies[0].all_built_in_record_kinds &&
             s.collision_groups[0].language_lane == c::CatalogCollisionLanguageLane::exact_tag, "naming and collision values");
 
@@ -161,6 +163,16 @@ int main() try {
   Refuses(LoadEdited("policies/native_transaction_policies.json", "\"enforcement_points\": [0, 7]",
                      "\"enforcement_points\": [0, 0]"), "a repeated enforcement bit refuses");
   Refuses(LoadEdited(nullptr, "", "", true), "a partial native policy family set refuses");
+  // Q127 = 3 (owner 2026-11-14): maximum_identifier_length is required (0 is
+  // the explicit "no limit"); a profile without it refuses.
+  Refuses(LoadEdited("policies/native_naming_profiles.json", "\"maximum_identifier_length\": 1024,", ""),
+          "Q127: an identifier profile without maximum_identifier_length refuses");
+  {
+    const auto unlimited = LoadEdited("policies/native_naming_profiles.json", "\"maximum_identifier_length\": 1024",
+                                      "\"maximum_identifier_length\": 0");
+    Check(unlimited.ok() && unlimited.seeds && unlimited.seeds->identifier_profiles[0].maximum_identifier_length == 0,
+          "Q127: maximum_identifier_length 0 (no project-defined limit) loads");
+  }
   std::cout << "PASS native policy families " << checks << " checks\n";
   return 0;
 } catch (const std::exception& e) {
