@@ -10,6 +10,8 @@
 
 #include "api_types.hpp"
 
+#include <cstdint>
+#include <string>
 #include <string_view>
 
 namespace scratchbird::engine::internal_api {
@@ -23,7 +25,21 @@ struct EngineOpenLifecycleRequest : EngineApiRequest {};
 struct EngineOpenLifecycleResult : EngineApiResult {};
 EngineOpenLifecycleResult EngineOpenLifecycle(const EngineOpenLifecycleRequest& request);
 
-struct EngineCreateLifecycleRequest : EngineApiRequest {};
+// SEARCH_KEY: SB_ENGINE_CREATE_DATABASE_FORMAT (owner Q92/Q93/Q95 = 1,
+// 2026-11-13; plan 31 step S2). The database format is an explicit choice on
+// the request. legacy (the default) is the existing create, unchanged until
+// workstream C; native writes the single-file database (one file, no side
+// files, no lock files) through CreateNativeDatabaseOnOpenDevice. The native
+// format takes the database name as DATA and its language as the
+// catalog_language constant (16 binary bytes, never a text tag); the engine
+// mints every identity and returns them. The SBLR create descriptor v2
+// (SB_LIFECYCLE_CREATE_DATABASE_DESCRIPTOR_V2) fills these fields.
+enum class EngineDatabaseFormat : std::uint8_t { legacy = 0, native = 1 };
+struct EngineCreateLifecycleRequest : EngineApiRequest {
+  EngineDatabaseFormat database_format = EngineDatabaseFormat::legacy;
+  std::string database_name;      // native: data, written as the name row
+  EngineUuid database_language;   // native: a catalog_language constant
+};
 struct EngineCreateLifecycleResult : EngineApiResult {};
 EngineCreateLifecycleResult EngineCreateLifecycle(const EngineCreateLifecycleRequest& request);
 

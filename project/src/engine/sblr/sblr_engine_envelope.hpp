@@ -243,6 +243,15 @@ enum class SblrValueKind : std::uint16_t {
 struct SblrLifecycleCreateDatabaseDescriptorV1 {
   std::array<std::uint8_t, 16> operation_uuid{};
   std::array<std::uint8_t, 16> statement_receipt_uuid{};
+  // SEARCH_KEY: SB_DRIFT_CREATE_DESCRIPTOR_CLIENT_IDENTITIES (owner Q92 = 1,
+  // 2026-11-13; plan 31 step S2). database_uuid, database_name_uuid and
+  // filespace_uuid are identities a client supplies for an object that does
+  // not exist yet. That is drift: CREATE is the one place a name rides the
+  // packet, as DATA, and the engine mints every identity and returns it
+  // (CDE rule 5). The engine has never used them (EngineCreateLifecycle mints
+  // its own); they stay in v1 so the v1 wire format is unchanged, are not
+  // required by v2, and are ignored on every create path. v2 carries the
+  // database name and its language as data instead.
   std::array<std::uint8_t, 16> database_uuid{};
   std::array<std::uint8_t, 16> database_name_uuid{};
   std::array<std::uint8_t, 16> owner_uuid{};
@@ -273,6 +282,46 @@ bool DecodeSblrLifecycleCreateDatabaseDescriptorV1(
     std::size_t size,
     SblrLifecycleCreateDatabaseDescriptorV1* descriptor,
     std::string* detail);
+
+// SEARCH_KEY: SB_LIFECYCLE_CREATE_DATABASE_DESCRIPTOR_V2 (owner Q92/Q93 = 1,
+// 2026-11-13; plan 31 step S2). Additive: v1 (above) is parsed exactly as
+// before. v2 is the v1 header (version 2) with the client identity fields not
+// required (SB_DRIFT_CREATE_DESCRIPTOR_CLIENT_IDENTITIES: any value, ignored),
+// followed by:
+//   320 language_uuid[16]  the catalog_language constant (16 binary bytes,
+//                          never a text tag); nonzero here, a known language
+//                          at the engine
+//   336 u32 name_length    1..kSblrCreateDatabaseNameMaximumBytes
+//   340 u8  database_format  1 = legacy (the default until workstream C, Q93),
+//                            2 = native single-file; anything else refused
+//   341..351 reserved, zero
+//   352 database name      UTF-8 DATA (not an identifier): the engine writes
+//                          it as the database's name row in that language
+//   352+name_length        the option vector (as v1)
+// Size = 352 + name_length + option vector length.
+enum class SblrLifecycleCreateDatabaseFormat : std::uint8_t {
+  legacy = 1,
+  native = 2,
+};
+inline constexpr std::uint32_t kSblrCreateDatabaseNameMaximumBytes = 1024;
+struct SblrLifecycleCreateDatabaseDescriptorV2 : SblrLifecycleCreateDatabaseDescriptorV1 {
+  std::array<std::uint8_t, 16> database_language_uuid{};
+  SblrLifecycleCreateDatabaseFormat database_format =
+      SblrLifecycleCreateDatabaseFormat::legacy;
+  std::string database_name;
+};
+std::vector<std::uint8_t> EncodeSblrLifecycleCreateDatabaseDescriptorV2(
+    const SblrLifecycleCreateDatabaseDescriptorV2& descriptor);
+bool DecodeSblrLifecycleCreateDatabaseDescriptorV2(
+    const std::uint8_t* data,
+    std::size_t size,
+    SblrLifecycleCreateDatabaseDescriptorV2* descriptor,
+    std::string* detail);
+// The SCDD version halfword (1 or 2) of an encoded descriptor, 0 if the
+// buffer is too short or the magic is not SCDD. Selection only: the matching
+// decoder still validates the whole descriptor.
+std::uint16_t SblrLifecycleCreateDatabaseDescriptorVersion(
+    const std::uint8_t* data, std::size_t size);
 
 struct SblrOperand {
   std::string type;

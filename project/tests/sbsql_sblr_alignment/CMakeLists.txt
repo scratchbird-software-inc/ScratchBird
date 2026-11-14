@@ -2604,6 +2604,23 @@ add_test(NAME sbsql_sblr_alignment_native_database_create COMMAND sbsql_sblr_ali
 set_tests_properties(sbsql_sblr_alignment_native_database_create PROPERTIES
   LABELS "sbsql_sblr_alignment;catalog;binary_uuid;native_creation;not_runtime_acceptance" TIMEOUT 600)
 
+# S2 (plan 31, owner Q92/Q93/Q95/Q100 = 1, 2026-11-13): CREATE DATABASE through
+# the production engine API in the native single-file format, every native
+# profile. Its `create` mode is also the creating process of the enrollment
+# test's producer-api cold reopen.
+add_executable(sbsql_sblr_alignment_native_create_lifecycle_api native_create_lifecycle_api_test.cpp)
+target_compile_features(sbsql_sblr_alignment_native_create_lifecycle_api PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_create_lifecycle_api PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+  ${PROJECT_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(sbsql_sblr_alignment_native_create_lifecycle_api PRIVATE
+  sb_server_core sb_engine_sblr sb_engine_internal_api sb_storage_database OpenSSL::Crypto)
+target_compile_definitions(sbsql_sblr_alignment_native_create_lifecycle_api PRIVATE
+  SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password")
+add_test(NAME sbsql_sblr_alignment_native_create_lifecycle_api COMMAND sbsql_sblr_alignment_native_create_lifecycle_api)
+set_tests_properties(sbsql_sblr_alignment_native_create_lifecycle_api PROPERTIES
+  LABELS "sbsql_sblr_alignment;native_storage;native_database_create;database_lifecycle;binary_uuid" TIMEOUT 600)
+
 add_executable(sbsql_sblr_alignment_catalog_bootstrap_policy catalog_bootstrap_policy_test.cpp)
 target_compile_features(sbsql_sblr_alignment_catalog_bootstrap_policy PRIVATE cxx_std_23)
 target_link_libraries(sbsql_sblr_alignment_catalog_bootstrap_policy PRIVATE sb_core_catalog)
@@ -4008,6 +4025,12 @@ math(EXPR native_enrollment_last_shard "${native_enrollment_shard_count}-1")
 string(REPLACE ";" "," native_enrollment_shard_define "${native_enrollment_shard_first_cases}")
 target_compile_definitions(sbsql_sblr_alignment_native_local_service_enrollment PRIVATE
   SB_ENROLLMENT_SHARD_FIRST_CASES=${native_enrollment_shard_define})
+# S2: the producer-api mode runs the native create API test's `create` mode as
+# the creating process, then reopens its file cold in this process.
+add_dependencies(sbsql_sblr_alignment_native_local_service_enrollment
+  sbsql_sblr_alignment_native_create_lifecycle_api)
+target_compile_definitions(sbsql_sblr_alignment_native_local_service_enrollment PRIVATE
+  SB_S2_NATIVE_CREATE_API_BINARY="$<TARGET_FILE:sbsql_sblr_alignment_native_create_lifecycle_api>")
 foreach(native_enrollment_shard RANGE 0 ${native_enrollment_last_shard})
   add_test(NAME sbsql_sblr_alignment_native_local_service_enrollment_shard_${native_enrollment_shard}
     COMMAND sbsql_sblr_alignment_native_local_service_enrollment shard
@@ -4040,6 +4063,14 @@ add_test(NAME sbsql_sblr_alignment_native_local_service_enrollment_producer_unau
   COMMAND sbsql_sblr_alignment_native_local_service_enrollment producer-unaudited-catalog-change)
 set_tests_properties(sbsql_sblr_alignment_native_local_service_enrollment_producer_unaudited_catalog_change PROPERTIES
   LABELS "sbsql_sblr_alignment;native_storage;native_service_enrollment;native_database_create;catalog"
+  TIMEOUT 900)
+# S2 (plan 31): a database created through the production engine API (native
+# format) in another process opens cold and passes the read-only open
+# verification, and its name row carries the given language; every profile.
+add_test(NAME sbsql_sblr_alignment_native_local_service_enrollment_producer_api
+  COMMAND sbsql_sblr_alignment_native_local_service_enrollment producer-api)
+set_tests_properties(sbsql_sblr_alignment_native_local_service_enrollment_producer_api PROPERTIES
+  LABELS "sbsql_sblr_alignment;native_storage;native_service_enrollment;native_database_create;database_lifecycle"
   TIMEOUT 900)
 # SB_CATALOG_ROOT_ADVANCE: route roots behind the catalog root are admitted by
 # open verification; a route root ahead of it is a finding (owner Q24 = 1).

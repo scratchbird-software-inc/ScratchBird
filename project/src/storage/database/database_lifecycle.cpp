@@ -9253,11 +9253,12 @@ NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(disk::FileDevice& de
   NativeDatabaseCreateResult result;
   const auto fail=[&](E error){result.error=error;result.receipt.reset();return result;};
   try {
-    // SB_CATALOG_LANGUAGE_CONSTANTS: the one place create turns the requested
-    // language tag (text, from the caller) into the language constant; a tag
-    // with no constant is refused, never defaulted.
-    const auto language=c::CatalogLanguageForTag(request.database_default_language);
-    if(!language)return fail(E::invalid_request);
+    // SB_CATALOG_LANGUAGE_CONSTANTS: the request carries the language constant
+    // itself (S2, owner Q92 = 1); one that is no language constant is
+    // refused, never defaulted. (Was: the one place create turned a text tag
+    // into the constant, CatalogLanguageForTag.)
+    if(!c::IsKnownCatalogLanguage(request.database_default_language))return fail(E::invalid_request);
+    const std::optional<Uuid> language=request.database_default_language;
     if(request.policy_seed_pack_root.empty()||request.database_name.empty()||
         !request.page_size_bytes||!request.total_pages||!request.creation_utc_millis||
         !IsEngineIdentityUuid(request.engine_uuid)||!request.maximum_retained_image_bytes)return fail(E::invalid_request);

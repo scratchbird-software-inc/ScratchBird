@@ -851,8 +851,14 @@ bool ValidateValueBody(SblrValueKind kind,
           data, size, &operand, &detail);
     }
     case SblrValueKind::lifecycle_create_database_descriptor: {
-      SblrLifecycleCreateDatabaseDescriptorV1 operand;
       std::string detail;
+      // S2: v2 is additive; v1 decodes exactly as before.
+      if (SblrLifecycleCreateDatabaseDescriptorVersion(data, size) == 2) {
+        SblrLifecycleCreateDatabaseDescriptorV2 operand;
+        return DecodeSblrLifecycleCreateDatabaseDescriptorV2(
+            data, size, &operand, &detail);
+      }
+      SblrLifecycleCreateDatabaseDescriptorV1 operand;
       return DecodeSblrLifecycleCreateDatabaseDescriptorV1(
           data, size, &operand, &detail);
     }
@@ -1312,6 +1318,197 @@ bool DecodeSblrLifecycleCreateDatabaseDescriptorV1(
   if (canonical.size() != size ||
       !std::equal(canonical.begin(), canonical.end(), data)) {
     return fail("SCDD v1 identity, generation, option hash, or canonical bytes are invalid");
+  }
+  *descriptor = std::move(decoded);
+  return true;
+}
+
+// SEARCH_KEY: SB_LIFECYCLE_CREATE_DATABASE_DESCRIPTOR_V2 (S2, owner Q92 = 1).
+namespace {
+constexpr std::size_t kScddV2Fixed = 352;
+bool ScddWellFormedUtf8(const std::string& text) {
+  std::size_t i = 0;
+  while (i < text.size()) {
+    const auto c = static_cast<unsigned char>(text[i]);
+    std::size_t extra = 0;
+    std::uint32_t code = 0;
+    if (c < 0x80) { ++i; continue; }
+    if (c >= 0xc2 && c <= 0xdf) { extra = 1; code = c & 0x1fu; }
+    else if (c >= 0xe0 && c <= 0xef) { extra = 2; code = c & 0x0fu; }
+    else if (c >= 0xf0 && c <= 0xf4) { extra = 3; code = c & 0x07u; }
+    else return false;
+    if (i + extra >= text.size()) return false;
+    for (std::size_t k = 1; k <= extra; ++k) {
+      const auto t = static_cast<unsigned char>(text[i + k]);
+      if ((t & 0xc0u) != 0x80u) return false;
+      code = (code << 6) | (t & 0x3fu);
+    }
+    if ((extra == 2 && (code < 0x800 || (code >= 0xd800 && code <= 0xdfff))) ||
+        (extra == 3 && (code < 0x10000 || code > 0x10ffff))) return false;
+    i += extra + 1;
+  }
+  return true;
+}
+}  // namespace
+
+std::uint16_t SblrLifecycleCreateDatabaseDescriptorVersion(
+    const std::uint8_t* data, std::size_t size) {
+  if (data == nullptr || size < 8 || data[0] != 'S' || data[1] != 'C' ||
+      data[2] != 'D' || data[3] != 'D') {
+    return 0;
+  }
+  return Load16(data + 4);
+}
+
+std::vector<std::uint8_t> EncodeSblrLifecycleCreateDatabaseDescriptorV2(
+    const SblrLifecycleCreateDatabaseDescriptorV2& descriptor) {
+  const auto nonzero_uuid = [](const auto& value) {
+    return std::any_of(value.begin(), value.end(),
+                       [](std::uint8_t byte) { return byte != 0; });
+  };
+  // SB_DRIFT_CREATE_DESCRIPTOR_CLIENT_IDENTITIES: database_uuid,
+  // database_name_uuid and filespace_uuid are not required (any value; the
+  // engine ignores them and mints its own).
+  if (!nonzero_uuid(descriptor.operation_uuid) ||
+      !nonzero_uuid(descriptor.statement_receipt_uuid) ||
+      !nonzero_uuid(descriptor.owner_uuid) ||
+      !nonzero_uuid(descriptor.catalog_snapshot_uuid) ||
+      !nonzero_uuid(descriptor.security_context_uuid) ||
+      !nonzero_uuid(descriptor.policy_snapshot_uuid) ||
+      !nonzero_uuid(descriptor.transaction_uuid) ||
+      !nonzero_uuid(descriptor.durability_profile_uuid) ||
+      !nonzero_uuid(descriptor.resource_budget_uuid) ||
+      !nonzero_uuid(descriptor.descriptor_evidence_uuid) ||
+      !nonzero_uuid(descriptor.database_language_uuid) ||
+      descriptor.catalog_generation == 0 ||
+      descriptor.policy_generation == 0 ||
+      descriptor.transaction_generation == 0 ||
+      descriptor.resource_budget_generation == 0 ||
+      descriptor.executor_availability_generation == 0 ||
+      (descriptor.database_format != SblrLifecycleCreateDatabaseFormat::legacy &&
+       descriptor.database_format != SblrLifecycleCreateDatabaseFormat::native) ||
+      descriptor.database_name.empty() ||
+      descriptor.database_name.size() > kSblrCreateDatabaseNameMaximumBytes ||
+      !ScddWellFormedUtf8(descriptor.database_name) ||
+      (descriptor.option_count == 0) != descriptor.option_vector.empty() ||
+      descriptor.option_vector.size() >
+          UINT32_MAX - kScddV2Fixed - kSblrCreateDatabaseNameMaximumBytes) {
+    return {};
+  }
+  const auto option_hash = scratchbird::core::hash::ComputeSha256Digest(
+      descriptor.option_vector);
+  if (!option_hash.ok() || option_hash.digest != descriptor.option_vector_sha256) {
+    return {};
+  }
+  const std::size_t name_size = descriptor.database_name.size();
+  Bytes encoded(kScddV2Fixed + name_size + descriptor.option_vector.size(), 0);
+  encoded[0] = 'S';
+  encoded[1] = 'C';
+  encoded[2] = 'D';
+  encoded[3] = 'D';
+  Store16(&encoded, 4, 2);
+  Store16(&encoded, 6, static_cast<std::uint16_t>(kScddV2Fixed));
+  Store32(&encoded, 8, static_cast<std::uint32_t>(encoded.size()));
+  const auto copy_uuid = [&encoded](std::size_t offset, const auto& value) {
+    std::copy(value.begin(), value.end(),
+              encoded.begin() + static_cast<std::ptrdiff_t>(offset));
+  };
+  copy_uuid(16, descriptor.operation_uuid);
+  copy_uuid(32, descriptor.statement_receipt_uuid);
+  copy_uuid(48, descriptor.database_uuid);
+  copy_uuid(64, descriptor.database_name_uuid);
+  copy_uuid(80, descriptor.owner_uuid);
+  copy_uuid(96, descriptor.filespace_uuid);
+  copy_uuid(112, descriptor.template_database_uuid);
+  copy_uuid(128, descriptor.catalog_snapshot_uuid);
+  Store64(&encoded, 144, descriptor.catalog_generation);
+  copy_uuid(152, descriptor.security_context_uuid);
+  copy_uuid(168, descriptor.policy_snapshot_uuid);
+  Store64(&encoded, 184, descriptor.policy_generation);
+  copy_uuid(192, descriptor.transaction_uuid);
+  Store64(&encoded, 208, descriptor.transaction_generation);
+  Store32(&encoded, 216,
+          static_cast<std::uint32_t>(descriptor.option_vector.size()));
+  Store16(&encoded, 220, descriptor.option_count);
+  encoded[222] = descriptor.if_not_exists ? 1 : 0;
+  copy_uuid(224, descriptor.durability_profile_uuid);
+  copy_uuid(240, descriptor.resource_budget_uuid);
+  Store64(&encoded, 256, descriptor.resource_budget_generation);
+  Store64(&encoded, 264, descriptor.executor_availability_generation);
+  std::copy(descriptor.option_vector_sha256.begin(),
+            descriptor.option_vector_sha256.end(), encoded.begin() + 272);
+  copy_uuid(304, descriptor.descriptor_evidence_uuid);
+  copy_uuid(320, descriptor.database_language_uuid);
+  Store32(&encoded, 336, static_cast<std::uint32_t>(name_size));
+  encoded[340] = static_cast<std::uint8_t>(descriptor.database_format);
+  std::copy(descriptor.database_name.begin(), descriptor.database_name.end(),
+            encoded.begin() + static_cast<std::ptrdiff_t>(kScddV2Fixed));
+  std::copy(descriptor.option_vector.begin(), descriptor.option_vector.end(),
+            encoded.begin() + static_cast<std::ptrdiff_t>(kScddV2Fixed + name_size));
+  return encoded;
+}
+
+bool DecodeSblrLifecycleCreateDatabaseDescriptorV2(
+    const std::uint8_t* data,
+    std::size_t size,
+    SblrLifecycleCreateDatabaseDescriptorV2* descriptor,
+    std::string* detail) {
+  const auto fail = [detail](std::string message) {
+    if (detail != nullptr) *detail = std::move(message);
+    return false;
+  };
+  if (data == nullptr || descriptor == nullptr || size < kScddV2Fixed ||
+      data[0] != 'S' || data[1] != 'C' || data[2] != 'D' || data[3] != 'D' ||
+      Load16(data + 4) != 2 || Load16(data + 6) != kScddV2Fixed ||
+      Load32(data + 8) != size || Load32(data + 12) != 0 ||
+      data[222] > 1 || data[223] != 0) {
+    return fail("SCDD v2 header, length, flags, or reserved field is invalid");
+  }
+  const std::uint64_t name_size = Load32(data + 336);
+  const std::uint64_t option_size = Load32(data + 216);
+  if (name_size == 0 || name_size > kSblrCreateDatabaseNameMaximumBytes ||
+      kScddV2Fixed + name_size + option_size != size ||
+      std::any_of(data + 341, data + kScddV2Fixed,
+                  [](std::uint8_t byte) { return byte != 0; })) {
+    return fail("SCDD v2 name length, option length, or reserved bytes are invalid");
+  }
+  SblrLifecycleCreateDatabaseDescriptorV2 decoded;
+  const auto copy_uuid = [data](std::size_t offset, auto* value) {
+    std::copy_n(data + offset, value->size(), value->begin());
+  };
+  copy_uuid(16, &decoded.operation_uuid);
+  copy_uuid(32, &decoded.statement_receipt_uuid);
+  copy_uuid(48, &decoded.database_uuid);
+  copy_uuid(64, &decoded.database_name_uuid);
+  copy_uuid(80, &decoded.owner_uuid);
+  copy_uuid(96, &decoded.filespace_uuid);
+  copy_uuid(112, &decoded.template_database_uuid);
+  copy_uuid(128, &decoded.catalog_snapshot_uuid);
+  decoded.catalog_generation = Load64(data + 144);
+  copy_uuid(152, &decoded.security_context_uuid);
+  copy_uuid(168, &decoded.policy_snapshot_uuid);
+  decoded.policy_generation = Load64(data + 184);
+  copy_uuid(192, &decoded.transaction_uuid);
+  decoded.transaction_generation = Load64(data + 208);
+  decoded.option_count = Load16(data + 220);
+  decoded.if_not_exists = data[222] == 1;
+  copy_uuid(224, &decoded.durability_profile_uuid);
+  copy_uuid(240, &decoded.resource_budget_uuid);
+  decoded.resource_budget_generation = Load64(data + 256);
+  decoded.executor_availability_generation = Load64(data + 264);
+  std::copy_n(data + 272, decoded.option_vector_sha256.size(),
+              decoded.option_vector_sha256.begin());
+  copy_uuid(304, &decoded.descriptor_evidence_uuid);
+  copy_uuid(320, &decoded.database_language_uuid);
+  decoded.database_format =
+      static_cast<SblrLifecycleCreateDatabaseFormat>(data[340]);
+  decoded.database_name.assign(reinterpret_cast<const char*>(data + kScddV2Fixed),
+                               static_cast<std::size_t>(name_size));
+  decoded.option_vector.assign(data + kScddV2Fixed + name_size, data + size);
+  const auto canonical = EncodeSblrLifecycleCreateDatabaseDescriptorV2(decoded);
+  if (canonical.size() != size ||
+      !std::equal(canonical.begin(), canonical.end(), data)) {
+    return fail("SCDD v2 identity, generation, format, language, name, option hash, or canonical bytes are invalid");
   }
   *descriptor = std::move(decoded);
   return true;
@@ -1849,10 +2046,17 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
           envelope.opcode == "SBLR_LIFECYCLE_CREATE_DATABASE" &&
           envelope.opcode_code == 5128 && envelope.operands.size() == 1 &&
           operand.ordinal == 1 &&
-          operand.type == "lifecycle_create_database_descriptor.v1" &&
+          ((operand.type == "lifecycle_create_database_descriptor.v1" &&
+            SblrLifecycleCreateDatabaseDescriptorVersion(
+                operand.value_body.data(), operand.value_body.size()) == 1) ||
+           // S2 (owner Q92 = 1): the additive v2 descriptor; the type names
+           // the version the body carries.
+           (operand.type == "lifecycle_create_database_descriptor.v2" &&
+            SblrLifecycleCreateDatabaseDescriptorVersion(
+                operand.value_body.data(), operand.value_body.size()) == 2)) &&
           operand.name == "database")) {
       fail("SBLR.OPERAND_INVALID",
-           "SCDD v1 is admitted only as the lifecycle create database operand");
+           "SCDD v1/v2 is admitted only as the lifecycle create database operand");
       break;
     }
     if (operand.value_kind == SblrValueKind::expression_node_table) {
@@ -2545,7 +2749,7 @@ SblrEnvelopeValidationResult ValidateSblrEnvelope(const SblrOperationEnvelope& e
        envelope.operands.front().value_kind !=
            SblrValueKind::lifecycle_create_database_descriptor)) {
     fail("SBLR.OPERAND_INVALID",
-         "lifecycle create database requires exactly one canonical SCDD v1 operand");
+         "lifecycle create database requires exactly one canonical SCDD v1 or v2 operand");
   }
   if (envelope.opcode_code == 3 || envelope.opcode == "SBLR_LITERAL" ||
       envelope.operation_id == "engine.op.literal") {

@@ -989,6 +989,23 @@ LocalSblrGatewayDecision AdmitLocalNoClusterSblrGateway(
               member.operands.front().value_body.data(),
               member.operands.front().value_body.size(), &descriptor,
               &detail);
+    } else if (member.operands.size() == 1 &&
+               // S2 (owner Q92 = 1): the additive v2 descriptor (name and
+               // language as data, explicit format); v1 above is unchanged.
+               member.operands.front().type ==
+                   "lifecycle_create_database_descriptor.v2" &&
+               member.operands.front().name == "database" &&
+               member.operands.front().value_kind ==
+                   scratchbird::engine::sblr::SblrValueKind::
+                       lifecycle_create_database_descriptor) {
+      scratchbird::engine::sblr::SblrLifecycleCreateDatabaseDescriptorV2
+          descriptor;
+      std::string detail;
+      exact_local_lifecycle_create_database = scratchbird::engine::sblr::
+          DecodeSblrLifecycleCreateDatabaseDescriptorV2(
+              member.operands.front().value_body.data(),
+              member.operands.front().value_body.size(), &descriptor,
+              &detail);
     }
   }
   if (exact_lifecycle_create_database &&

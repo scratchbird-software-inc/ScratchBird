@@ -45,7 +45,7 @@ constexpr const char* kFingerprint="local-password-pbkdf2-sha256:v1:iterations=6
 p::Uuid Fixed(unsigned n){p::Uuid id;id.bytes[0]=1;id.bytes[6]=0x70;id.bytes[8]=0x80;id.bytes[14]=n>>8;id.bytes[15]=n;return id;}
 db::NativeDatabaseCreateRequest Request(const d::CanonicalFilespacePageProfile& profile) {
   db::NativeDatabaseCreateRequest r;
-  r.policy_seed_pack_root=SB_DEFAULT_POLICY_PACK_ROOT;r.database_name="orders";r.database_default_language="en";
+  r.policy_seed_pack_root=SB_DEFAULT_POLICY_PACK_ROOT;r.database_name="orders";r.database_default_language=scratchbird::core::catalog::kCatalogLanguage_en;/* S2: the language constant, not the tag "en" */
   r.page_size_profile_uuid=profile.uuid;r.page_size_bytes=profile.page_size_bytes;
   // As the enrollment fixture provisions them: 8 KiB needs more pages.
   r.total_pages=profile.page_size_bytes==8192?1024:512;
@@ -67,7 +67,7 @@ int main() {
   {
     const auto& profile=d::kCanonicalFilespacePageProfiles.front();
     using E=db::NativeDatabaseCreateError;
-    for(unsigned n=0;n<6;++n) {
+    for(unsigned n=0;n<8;++n) {  // S2: + 6 (no language) and 7 (a UUID that is no language constant)
       auto r=Request(profile);E expected=E::invalid_request;
       std::string bad_fingerprint=std::string(kFingerprint)+"x";
       switch(n){
@@ -77,6 +77,8 @@ int main() {
         case 3:r.bootstrap_credential_fingerprint={};expected=E::invalid_principal;break;
         case 4:r.total_pages=64;expected=E::capacity_exceeded;break;
         case 5:r.policy_seed_pack_root="/nonexistent-policy-pack";expected=E::policy_assembly;break;
+        case 6:r.database_default_language={};break;  // S2: the language constant is required
+        case 7:r.database_default_language=Fixed(0x99);break;  // S2: never a default, never a non-language UUID
       }
       const auto path=(artifacts.path()/("refused-"+std::to_string(n))).string();d::FileDevice device;
       Check(device.Open(path,d::FileOpenMode::create_new,d::DatabaseFileOwnership::native_data_file).ok(),"owned empty device");

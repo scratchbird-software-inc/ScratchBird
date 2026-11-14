@@ -11,6 +11,10 @@
 #include "api_diagnostics.hpp"
 #include "behavior_support/api_behavior_store.hpp"
 #include "database_lifecycle.hpp"
+#include "native_catalog_relation_lease_reader.hpp"
+#include "native_database_create.hpp"
+#include "admitted_datatype_cohort.hpp"
+#include "node_uuid_issuer.hpp"
 #include "extensibility/extensibility_support.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "uuid.hpp"
@@ -348,6 +352,194 @@ bool DropSafetyPreconditionsPresent(const EngineApiRequest& request) {
          OptionBool(request, "legal_hold_clear:", false);
 }
 
+std::uint64_t OptionU64(const EngineApiRequest& request,
+                        const std::string& prefix,
+                        std::uint64_t fallback) {
+  const auto value = OptionValue(request, prefix);
+  if (value.empty()) return fallback;
+  std::uint64_t parsed = 0;
+  for (const char ch : value) {
+    if (ch < '0' || ch > '9') return fallback;
+    const auto digit = static_cast<std::uint64_t>(ch - '0');
+    if (parsed > (UINT64_MAX - digit) / 10u) return fallback;
+    parsed = parsed * 10u + digit;
+  }
+  return parsed;
+}
+
+const char* NativeCreateErrorName(scratchbird::storage::database::NativeDatabaseCreateError error) {
+  using E = scratchbird::storage::database::NativeDatabaseCreateError;
+  switch (error) {
+    case E::none: return "none";
+    case E::invalid_request: return "invalid_request";
+    case E::invalid_principal: return "invalid_principal";
+    case E::identity_failure: return "identity_failure";
+    case E::policy_assembly: return "policy_assembly";
+    case E::database_assembly: return "database_assembly";
+    case E::schema_assembly: return "schema_assembly";
+    case E::agent_assembly: return "agent_assembly";
+    case E::audit_failure: return "audit_failure";
+    case E::index_failure: return "index_failure";
+    case E::capacity_exceeded: return "capacity_exceeded";
+    case E::workspace_failure: return "workspace_failure";
+    case E::resource_exhausted: return "resource_exhausted";
+    case E::datatype_assembly: return "datatype_assembly";
+    case E::name_path: return "name_path";
+  }
+  return "unknown";
+}
+
+// SEARCH_KEY: SB_ENGINE_CREATE_DATABASE_NATIVE (owner Q92/Q93/Q95/Q97/Q100 = 1,
+// 2026-11-13; plan 31 step S2). CREATE DATABASE in the native single-file
+// format through the production engine API. Authorised by the caller's server
+// session (ValidateLifecycleAuthority, Q95); the construction transaction the
+// native create writes is the MGA evidence, so no transaction is required
+// before the database exists. Every input is validated before the file is
+// opened; the file is opened by OpenNewNativeDatabaseFile only (O_EXCL + flock
+// on the data file, no lock file, S1). The result carries the engine's receipt
+// identities. Input sources (owner questions where marked, S2 report):
+//   name, language     the request's typed fields (descriptor v2): data, and a
+//                      catalog_language constant
+//   page size          option page_size: (the API's existing option and its
+//                      16384 default); 8K-128K only, 4K refused (Q100)
+//   total pages        option total_pages:, required, no default (OWNER Q)
+//   policy pack        option policy_seed_pack_root:, required (OWNER Q: the
+//                      server's database_policy_seed_pack_root is its source)
+//   principals         options bootstrap_principal_name:/..._fingerprint: and
+//                      internal_service_principal_name:/..._fingerprint:, the
+//                      legacy create's options; native create requires both
+//   creation time      the engine clock, as legacy create
+//   database identity  minted here (GenerateEngineIdentityV7), as legacy create
+//   policy snapshot    minted here (PROVISIONAL, OWNER Q)
+//   engine identity    a fresh runtime identity per create, as the hosted
+//                      runtime issues one per owner lifetime (PROVISIONAL, OWNER Q)
+//   issuer policy      PROVISIONAL default clock, no regression, 1000 ms
+//                      same-millisecond wait (OWNER Q)
+//   datatype cohort    the build's cohort V11, as legacy create writes it
+//   retained image     NativeHostedSourceBackingBytes(page size)
+EngineCreateLifecycleResult NativeCreateLifecycle(const EngineCreateLifecycleRequest& request,
+                                                  const char* operation) {
+  namespace db = scratchbird::storage::database;
+  namespace disk = scratchbird::storage::disk;
+  const auto refuse = [&](const char* code, const std::string& detail) {
+    return LifecycleFailure<EngineCreateLifecycleResult>(request.context, operation, code, detail);
+  };
+  if (request.database_name.empty() ||
+      request.database_name.size() > 1024u) {
+    return refuse("DATABASE.CREATE_NAME_INVALID", "database_name_required_as_data");
+  }
+  if (!scratchbird::core::catalog::IsKnownCatalogLanguage(request.database_language)) {
+    return refuse("DATABASE.CREATE_LANGUAGE_UNKNOWN", "language_must_be_a_catalog_language_constant");
+  }
+  const auto page_size = OptionU32(request, "page_size:", 16384u);
+  const auto* profile = disk::FindCanonicalFilespacePageProfileForSize(page_size);
+  if (profile == nullptr) {
+    // Q100: the native profiles are 8K-128K; 4K is not in the slice.
+    return refuse("DATABASE.CREATE_PAGE_SIZE_UNSUPPORTED",
+                  "native_page_size_profile_8k_to_128k_only");
+  }
+  const auto total_pages = OptionU64(request, "total_pages:", 0u);
+  if (total_pages == 0) {
+    return refuse("DATABASE.CREATE_TOTAL_PAGES_REQUIRED", "native_total_pages_required");
+  }
+  const auto policy_root = OptionValue(request, "policy_seed_pack_root:");
+  if (policy_root.empty()) {
+    return refuse("DATABASE.CREATE_POLICY_PACK_REQUIRED", "native_policy_seed_pack_root_required");
+  }
+  const auto bootstrap_name = OptionValue(request, "bootstrap_principal_name:");
+  const auto bootstrap_fingerprint = OptionValue(request, "bootstrap_credential_fingerprint:");
+  const auto service_name = OptionValue(request, "internal_service_principal_name:");
+  const auto service_fingerprint = OptionValue(request, "internal_service_credential_fingerprint:");
+  if (bootstrap_name.empty() || bootstrap_fingerprint.empty() ||
+      service_name.empty() || service_fingerprint.empty()) {
+    // The credentialed bootstrap principal and the L5 service principal are
+    // both required by native create (owner 2026-11-04); nothing is defaulted.
+    return refuse("DATABASE.CREATE_PRINCIPAL_REQUIRED",
+                  "native_bootstrap_and_service_principals_required");
+  }
+
+  const auto now = static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::milliseconds>(
+          std::chrono::system_clock::now().time_since_epoch()).count());
+  const auto database_uuid = scratchbird::core::uuid::GenerateEngineIdentityV7(
+      scratchbird::core::platform::UuidKind::database, now);
+  const auto policy_snapshot_uuid = scratchbird::core::uuid::GenerateEngineIdentityV7(
+      scratchbird::core::platform::UuidKind::object, now);
+  const auto engine_uuid = scratchbird::core::uuid::IssueRuntimeIdentityV7();
+  if (!database_uuid.ok() || !policy_snapshot_uuid.ok() || !engine_uuid) {
+    return refuse("DATABASE.CREATE_FAILED", "engine_owned_database_identity_generation_failed");
+  }
+  scratchbird::core::uuid::StandaloneUuidV7Issuer issuer(
+      {database_uuid.value.value, policy_snapshot_uuid.value.value}, {{}, 0, 1000});
+
+  db::NativeDatabaseCreateRequest create;
+  create.policy_seed_pack_root = policy_root;
+  create.database_name = request.database_name;
+  create.database_default_language = request.database_language;
+  create.page_size_profile_uuid = profile->uuid;
+  create.page_size_bytes = profile->page_size_bytes;
+  create.total_pages = total_pages;
+  create.creation_utc_millis = now;
+  create.engine_uuid = *engine_uuid;
+  create.datatype_cohort = {{scratchbird::core::platform::UuidKind::object,
+                             scratchbird::core::datatypes::kDatatypeCohortV11}, 11, 11};
+  create.bootstrap_principal_name = bootstrap_name;
+  create.bootstrap_credential_fingerprint = bootstrap_fingerprint;
+  create.service_principal_name = service_name;
+  create.service_credential_fingerprint = service_fingerprint;
+  create.maximum_retained_image_bytes = db::NativeHostedSourceBackingBytes(profile->page_size_bytes);
+
+  disk::FileDevice device;
+  const auto opened = db::OpenNewNativeDatabaseFile(device, request.context.database_path);
+  if (!opened.ok()) {
+    return refuse("DATABASE.CREATE_FAILED",
+                  "native_database_file_open_refused:" + opened.diagnostic.diagnostic_code);
+  }
+  const auto made = db::CreateNativeDatabaseOnOpenDevice(device, create, issuer);
+  const auto closed = device.Close();
+  if (!made.ok()) {
+    // Native create refuses before its first write; the new file stays empty
+    // (cleanup of that empty file is an open owner question, S2).
+    return refuse("DATABASE.CREATE_FAILED",
+                  std::string("native_create_refused:") + NativeCreateErrorName(made.error));
+  }
+  if (!closed.ok()) {
+    return refuse("DATABASE.CREATE_FAILED",
+                  "native_database_file_close_failed:" + closed.diagnostic.diagnostic_code);
+  }
+  const auto& receipt = *made.receipt;
+  auto result = MakeApiBehaviorSuccess<EngineCreateLifecycleResult>(request.context, operation);
+  result.primary_object.uuid = receipt.database_uuid;
+  result.primary_object.object_kind = "database";
+  result.transaction_uuid = receipt.construction_transaction.transaction_uuid.value;
+  AddApiBehaviorRow(&result,
+                    {{"operation_uuid", request.context.statement_uuid},
+                     {"database_uuid", receipt.database_uuid},
+                     {"filespace_uuid", receipt.filespace_uuid},
+                     {"database_object_uuid", receipt.database_object_uuid},
+                     {"construction_transaction_uuid", receipt.construction_transaction.transaction_uuid.value},
+                     {"bootstrap_principal_uuid", receipt.bootstrap_principal_uuid},
+                     {"service_principal_uuid", receipt.service_principal_uuid},
+                     {"service_credential_reference_uuid", receipt.service_credential_reference_uuid},
+                     {"service_provider_uuid", receipt.service_provider_uuid},
+                     {"service_policy_uuid", receipt.service_policy_uuid},
+                     {"service_runtime_binding_uuid", receipt.service_runtime_binding_uuid},
+                     {"page_size_profile_uuid", profile->uuid},
+                     {"database_language_uuid", request.database_language},
+                     {"database_format", std::string("native")},
+                     {"lifecycle_state", std::string("created")},
+                     // Construction only: the file stays initializing; open,
+                     // verification and serving are the server's (S3).
+                     {"creation_handoff", std::string("constructed_and_closed")},
+                     {"server_ready", std::string("false")},
+                     {"creation_request_id", request.context.request_id}});
+  AddApiBehaviorEvidence(&result, "engine_lifecycle", "database_created");
+  AddApiBehaviorEvidence(&result, "identity_authority", "engine");
+  AddApiBehaviorEvidence(&result, "database_format", "native_single_file");
+  AddApiBehaviorEvidence(&result, "mga_lifecycle_evidence", "construction_transaction_committed");
+  return result;
+}
+
 }  // namespace
 
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_LIFECYCLE_API_BEHAVIOR
@@ -363,8 +555,17 @@ EngineCreateLifecycleResult EngineCreateLifecycle(const EngineCreateLifecycleReq
   auto authority = ValidateLifecycleAuthority<EngineCreateLifecycleResult>(
       request, operation, true);
   if (!authority.ok) return authority;
-  if (request.context.transaction_uuid.is_nil() ||
-      request.context.local_transaction_id == 0) {
+  const bool native =
+      request.database_format == EngineDatabaseFormat::native;
+  // SEARCH_KEY: SB_DRIFT_CREATE_DATABASE_MANAGEMENT_TRANSACTION (owner Q95 = 1,
+  // 2026-11-13; plan 31 step S2). Requiring a management transaction before
+  // the database exists is drift: there is no transaction inventory to own
+  // one. A CREATE DATABASE is authorised by the caller's server session (the
+  // security context checked above); the engine's own construction
+  // transaction is the MGA evidence. The native format does not require it;
+  // the legacy create keeps it unchanged until workstream C (Q93).
+  if (!native && (request.context.transaction_uuid.is_nil() ||
+                  request.context.local_transaction_id == 0)) {
     return LifecycleFailure<EngineCreateLifecycleResult>(
         request.context, operation, "MGA.TRANSACTION.INVALID",
         "authenticated_management_transaction_required");
@@ -382,6 +583,7 @@ EngineCreateLifecycleResult EngineCreateLifecycle(const EngineCreateLifecycleReq
         request.context, operation, "PROCESS.CANCELLED",
         "database_create_cancelled_before_bootstrap");
   }
+  if (native) return NativeCreateLifecycle(request, operation);
 
   const auto now = static_cast<std::uint64_t>(
       std::chrono::duration_cast<std::chrono::milliseconds>(

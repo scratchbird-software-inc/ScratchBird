@@ -1059,6 +1059,10 @@ ServerManagementResponse HandleEngineLifecycleManagementOperation(
     std::string* state_after) {
   engine_api::EngineApiResult lifecycle_result;
   if (request.operation_key == "create_database") {
+    // S2 (plan 31, 2026-11-13): this route stays on the legacy (default)
+    // format. ServerManagementRequest carries no database name or language,
+    // so it cannot ask for the native format (SB_ENGINE_CREATE_DATABASE_FORMAT)
+    // until the management wire carries them: an open owner question.
     lifecycle_result = engine_api::EngineCreateLifecycle(
         EngineLifecycleRequestForManagement<engine_api::EngineCreateLifecycleRequest>(
             context, session, frame, request));

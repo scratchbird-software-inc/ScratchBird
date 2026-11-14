@@ -5,6 +5,7 @@
 #include "native_database_creation.hpp"
 #include "native_policy_creation.hpp"
 #include "catalog_schema_creation.hpp"
+#include "catalog_language.hpp"
 #include <optional>
 #include <string>
 #include <utility>
@@ -15,6 +16,9 @@ namespace scratchbird::storage::database {
 // 2026-11-03/04: everything in the one database file; CREATE produces a
 // native-format file; the L5 service credential is required; the default
 // language is "en"; one shared name/uuid catalog table.
+// S2 (2026-11-13): the request carries the language as a catalog_language
+// constant UUID, chosen by the caller ("en" above was the default the owner
+// named, not one this producer applies).
 //
 // The production composition of a complete initial native database on an
 // empty, exclusively owned primary device. The caller's issuer is bound to the
@@ -49,7 +53,11 @@ namespace scratchbird::storage::database {
 struct NativeDatabaseCreateRequest {
   std::string_view policy_seed_pack_root;
   std::string_view database_name;
-  std::string_view database_default_language;
+  // S2 (owner Q92 = 1, 2026-11-13): the language is the catalog_language
+  // constant (SB_CATALOG_LANGUAGE_CONSTANTS), 16 binary bytes, never a text
+  // tag; a UUID that is no language constant is refused (invalid_request),
+  // never defaulted. Was a text tag turned into the constant here.
+  core::platform::Uuid database_default_language;
   core::platform::Uuid page_size_profile_uuid;
   core::platform::u32 page_size_bytes=0;
   core::platform::u64 total_pages=0;

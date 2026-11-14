@@ -12,6 +12,9 @@
 // (the create request, sessions, the parser wire) still hand over a text tag;
 // it is the one place a tag becomes a language, and it refuses a tag with no
 // constant (never a default). It goes once the parser sends the UUID.
+// S2 (2026-11-13): the native CREATE DATABASE request now carries the
+// constant itself (NativeDatabaseCreateRequest, EngineCreateLifecycleRequest,
+// create descriptor v2); create no longer calls this adapter.
 #include "runtime_platform.hpp"
 
 #include <array>

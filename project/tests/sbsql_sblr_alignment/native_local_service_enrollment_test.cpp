@@ -3126,7 +3126,7 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
   const u64 budget=db::NativeHostedSourceBackingBytes(sizes[profile]);
   db::NativeDatabaseCreateRequest create;
   create.policy_seed_pack_root=SB_DEFAULT_POLICY_PACK_ROOT;create.database_name="enrolled_native_node";
-  create.database_default_language="en";create.page_size_profile_uuid=Profile(profile);create.page_size_bytes=sizes[profile];
+  create.database_default_language=scratchbird::core::catalog::kCatalogLanguage_en;/* S2: the language constant, not the tag "en" */create.page_size_profile_uuid=Profile(profile);create.page_size_bytes=sizes[profile];
   // As the variant-0 fixture provisions them, history-retaining 8 KiB included.
   create.total_pages=sizes[profile]==8192?2048:512;create.creation_utc_millis=1789357072000ULL;create.engine_uuid=Id(4);
   create.datatype_cohort={{platform::UuidKind::object,scratchbird::core::datatypes::kDatatypeCohortV11},11,11};
@@ -3764,6 +3764,173 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
   }
 }
 
+// S2 (plan 31, owner Q92/Q95 = 1, 2026-11-13): SB_ENGINE_CREATE_DATABASE_NATIVE.
+// A database created through the production engine API (EngineCreateLifecycle,
+// native format) by ANOTHER process (the API test's `create` mode, exec'd
+// fresh) is opened cold here, with native data-file ownership, and passes the
+// same startup chain and read-only open verification as the producer stage.
+// The identities come from the API's returned receipt (the L5 credential is
+// bound to them), and the database's name row carries the name and the
+// language the create was given (fr-CA at the odd profiles, en otherwise).
+void ApiProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& process) {
+  namespace cat=scratchbird::core::catalog;
+  scratchbird::tests::OwnedTempDirectory artifacts;
+  const auto path=(artifacts.path()/"api-native-node").string();
+  const u64 budget=db::NativeHostedSourceBackingBytes(sizes[profile]);
+  const bool french=profile%2==1;
+  const platform::Uuid language=french?cat::kCatalogLanguage_fr_CA:cat::kCatalogLanguage_en;
+  const u64 total_pages=sizes[profile]==8192?2048:512;  // as the API test's create mode states them
+  // Everything the child needs is prepared before fork: it only execs.
+  const std::string size_text=std::to_string(sizes[profile]);
+  const char* const language_text=french?"fr-CA":"en";
+  int fds[2]={-1,-1};
+  Check(::pipe(fds)==0,"S2: a pipe for the creating process's receipt");
+  const auto child=::fork();
+  Check(child>=0,"S2: fork the creating process");
+  if(!child){
+    ::dup2(fds[1],1);::close(fds[0]);::close(fds[1]);
+    ::execl(SB_S2_NATIVE_CREATE_API_BINARY,SB_S2_NATIVE_CREATE_API_BINARY,"create",path.c_str(),size_text.c_str(),
+        language_text,static_cast<char*>(nullptr));
+    ::_exit(72);
+  }
+  ::close(fds[1]);
+  std::string out;char chunk[512];ssize_t got=0;
+  while((got=::read(fds[0],chunk,sizeof chunk))>0)out.append(chunk,static_cast<std::size_t>(got));
+  ::close(fds[0]);
+  int status=0;
+  Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,
+      "S2: CREATE DATABASE through the engine API succeeds in the creating process");
+  std::map<std::string,platform::Uuid> receipt;
+  for(std::size_t at=0;at<out.size();){
+    const auto end=out.find('\n',at);const auto line=out.substr(at,end-at);at=end==std::string::npos?out.size():end+1;
+    const auto eq=line.find('=');
+    Check(eq!=std::string::npos&&line.size()==eq+33,"S2: a receipt line is key=<32 hex>");
+    platform::Uuid id;
+    for(std::size_t i=0;i<16;++i){
+      unsigned value=0;const auto* first=line.data()+eq+1+2*i;
+      Check(std::from_chars(first,first+2,value,16).ec==std::errc{},"S2: receipt hex");
+      id.bytes[i]=static_cast<platform::byte>(value);
+    }
+    receipt[line.substr(0,eq)]=id;
+  }
+  Check(receipt.size()==10,"S2: the API returned all ten receipt identities");
+  const auto database=receipt.at("database_uuid"),filespace=receipt.at("filespace_uuid");
+  // S2 exit: the create left exactly one file, the database.
+  std::vector<std::string> entries;
+  for(const auto& entry:std::filesystem::directory_iterator(artifacts.path()))entries.push_back(entry.path().filename().string());
+  Check(entries.size()==1&&entries.front()=="api-native-node","S2: the API create left exactly one file, the database");
+  const auto read_file=[&]{std::ifstream in(path,std::ios::binary);return std::vector<char>(std::istreambuf_iterator<char>(in),{});};
+  const auto created_bytes=read_file();
+  Check(created_bytes.size()==total_pages*sizes[profile],"S2: the created file reads back");
+
+  EnrolledCredentialCustodian provisioner(database,receipt.at("service_principal_uuid"),
+      receipt.at("service_provider_uuid"),receipt.at("service_credential_reference_uuid"));
+  const std::size_t credential_base_pages=db::NativeHostedCatalogBasePages(sizes[profile]);
+  constexpr auto bound=db::kNativeHostedCatalogRelationMaximumRows;
+  const db::NativeCatalogRelationMemoryLimits limits{Profile(profile),1,credential_base_pages,bound,bound,
+      db::NativeHostedCatalogNavigationLimits(sizes[profile])};
+  const runtime_security::NativeRuntimeAuthorizationLimits graph_limits{bound,128u,1000000u};
+  server::DatabaseOwnershipRequest ownership;ownership.database_path=path;ownership.storage_access=disk::RouteStorageAccess::read_write;
+  using Host=server::NativeHostedDatabaseRuntime;
+  std::vector<std::unique_ptr<disk::FileDevice>> secondary;
+  const server::NativeHostedRuntimeLimits host_limits{{64*1024,{budget,32*1024*1024}},limits,2*1024*1024,graph_limits};
+  auto host=Host::Open(process,ownership,host_limits,secondary);
+  if(!host.ok())std::cerr<<"api producer host open error="<<int(host.error)<<'\n';
+  Check(host.ok()&&host.runtime->database_uuid()==database&&host.runtime->primary_filespace_uuid()==filespace,
+      "S2: the production host opens the API-created database cold, with the returned identities");
+  server::NativeLocalServiceStartupCredentialsRequest request;
+  request.credential.security.database_uuid=database;
+  request.credential.security.runtime_binding_uuid=receipt.at("service_runtime_binding_uuid");
+  request.credential.security.runtime_binding_generation=1;request.credential.security.maximum_retained_image_bytes=budget;
+  request.credential.security.catalog_selection=runtime_security::NativeRuntimeCatalogSelection::discover_selected;
+  request.source={Id(231),Id(235),7,server::StartupCredentialSource::Mutex::Clock::now()+std::chrono::seconds(10),{}};
+  request.fixed_root_limits={budget,32*1024*1024};
+  auto read=Host::ReadStartupCredentials(host.runtime,request,provisioner.source,provisioner.tag,provisioner.derived);
+  if(!read.ok())std::cerr<<"api producer credentials error="<<int(read.error)<<" credential="<<int(read.credentials().error)
+      <<" configuration="<<int(read.configuration().error)<<'\n';
+  Check(read.ok()&&read.credentials().ok(),"S2: the API-created L5 service credential verifies through selected-root discovery");
+  Check(Host::RetainStartupObservation(read)==server::NativeHostedRuntimeError::none,"S2: the startup observation is retained");
+  Check(Host::ConstrainStartupMemory(read).ok()&&Host::InstallStartupAllocationBehavior(read).ok(),
+      "S2: the memory envelope and allocation behavior install");
+  const auto authenticated=Host::AuthenticateStartupService(read,provisioner.derived);
+  Check(authenticated.ok()&&authenticated.observation.principal_uuid==receipt.at("service_principal_uuid"),
+      "S2: the L5 service authenticates as the principal the API returned");
+  const db::NativeFixedRootMemoryLimits catalog_limits{budget,12*1024*1024};
+  const db::NativeCatalogRelationMemoryLimits catalog_scan_limits{Profile(profile),1,db::NativeCatalogScanBasePages(sizes[profile]),
+      db::kNativeCatalogScanRelationMaximumRows,db::kNativeCatalogScanRelationMaximumRows,
+      db::NativeCatalogScanNavigationLimits(sizes[profile]),
+      db::NativeNameTreeNavigationLimits(sizes[profile],db::kNativeCatalogScanRelationMaximumRows)};
+  Check(Host::ReadStartupCatalogs(read,catalog_limits,catalog_scan_limits)==server::NativeHostedRuntimeError::none,
+      "S2: the complete catalog scans");
+  const db::NativeCatalogCaptureLimits capture_limits{4096,8*1024*1024,1,std::size_t{4},1024,128,8192};
+  Check(Host::ReadStartupCatalogs(read,catalog_limits,catalog_scan_limits,capture_limits)==server::NativeHostedRuntimeError::none,
+      "S2: the complete catalog is captured");
+  // The name is a name row (data) in the language the create was given.
+  std::size_t database_names=0,names=0,other_language=0;
+  for(const auto& row:read.catalog_capture().rows()){
+    if(!row.row.name_payload)continue;
+    const auto* entry=std::get_if<cat::CatalogNameEntryView>(&*row.row.name_payload);
+    if(!entry)continue;
+    ++names;other_language+=entry->language_uuid.value!=language;
+    if(entry->object_uuid.value==receipt.at("database_object_uuid")){
+      ++database_names;
+      Check(entry->object_kind==cat::CatalogRecordKind::database&&entry->raw_name_text=="enrolled_native_node"&&
+            entry->language_uuid.value==language,
+            "S2: the database's name row carries CREATE's name, as data, in the given language");
+    }
+  }
+  Check(database_names==1&&names>0&&other_language==0,
+      "S2: one name row for the database, and every create-time name row is in the given language");
+  // The returned receipt is the file's: the principals' name rows, and the
+  // construction transaction as the one captured inventory entry.
+  std::size_t principal_names=0;
+  for(const auto& row:read.catalog_capture().rows()){
+    if(!row.row.name_payload)continue;
+    const auto* entry=std::get_if<cat::CatalogNameEntryView>(&*row.row.name_payload);
+    if(!entry)continue;
+    if(entry->object_uuid.value==receipt.at("bootstrap_principal_uuid")){++principal_names;
+      Check(entry->raw_name_text=="BootstrapAdmin","S2: the returned bootstrap principal is the file's BootstrapAdmin");}
+    if(entry->object_uuid.value==receipt.at("service_principal_uuid")){++principal_names;
+      Check(entry->raw_name_text=="NodeService","S2: the returned service principal is the file's NodeService");}
+  }
+  Check(principal_names==2,"S2: both returned principals are named in the file");
+  const auto inventory=read.catalog_capture().inventory();
+  Check(inventory&&inventory->inventory.entries.size()==1&&
+      inventory->inventory.entries.front().identity.transaction_uuid.value==receipt.at("construction_transaction_uuid"),
+      "S2: the returned construction transaction is the file's one inventory entry");
+  const auto metadata=Host::VerifyStartupCatalogMetadata(read);
+  const auto& m=read.catalog_metadata();
+  if(metadata!=server::NativeHostedRuntimeError::none)std::cerr<<"api producer catalog metadata error="<<int(metadata)
+      <<" names="<<int(m.names.error)<<" indexes="<<int(m.indexes.error)<<" audit="<<int(m.audit.error)<<'\n';
+  Check(metadata==server::NativeHostedRuntimeError::none&&m.ok()&&m.names.ok()&&m.name_trees.ok()&&m.name_trees.present&&
+      m.audit.ok()&&m.security.ok(),"S2: the engine verifies the API-created catalog");
+  Check(Host::ResolveStartupManagementDefinition(read)==server::NativeHostedRuntimeError::none&&
+      Host::ResolveConfiguredStartupVerificationPolicies(read)==server::NativeHostedRuntimeError::none,
+      "S2: the management descriptor and startup verification policies resolve");
+  const auto attached=Host::AttachStartupServiceSession(read);
+  Check(attached.ok()&&read.session()&&read.session()->database_uuid==database,"S2: the L5 startup session attaches");
+  Check(Host::ResolveStartupTransactionPolicies(read)==server::NativeHostedRuntimeError::none,
+      "S2: the transaction policies resolve");
+  const u64 open_image_budget=(total_pages==2048?32:8*total_pages/512)*512*u64{sizes[profile]};
+  const server::NativeOpenVerificationLimits open_limits{{open_image_budget,64*1024*1024},8*1024*1024};
+  const auto opened=Host::VerifyStartupDatabaseFile(read,open_limits);
+  if(!opened.ok())std::cerr<<"api producer open verification="<<int(opened.error)<<" stage="<<int(opened.stage)<<'\n';
+  using OpenStage=server::NativeOpenVerificationStage;
+  Check(opened.ok()&&opened.stage==OpenStage::complete&&opened.observation->identity.filespaces==1&&
+      opened.observation->identity.system_state.mode==db::NativeDatabaseMode::online&&
+      opened.observation->allocation.wasted_pages==0&&opened.observation->inventory.transactions==1u&&
+      opened.observation->inventory.active_transactions==0&&opened.observation->inventory.in_doubt_transactions==0&&
+      opened.observation->routes.routes==2,
+      "S2: the API-created file passes the read-only open verification: identity, allocation, inventory, catalog routes");
+  Check(read_file()==created_bytes,"S2: the cold reopen and its verification write nothing");
+  read.Reset();
+  Check(Host::Close(host.runtime).ok(),"S2: the API-created database closes");
+  entries.clear();
+  for(const auto& entry:std::filesystem::directory_iterator(artifacts.path()))entries.push_back(entry.path().filename().string());
+  Check(entries.size()==1,"S2: the cold reopen left no file beside the database (no lock file)");
+  std::cout<<"producer-api profile="<<sizes[profile]<<" language="<<language_text<<" verified\n";
+}
+
 // Fixture shards (owner 2026-11-05: split the fixture into several ctest
 // entries so -j runs them side by side). Shard k runs the cases numbered from
 // kShardFirstCase[k] up to the next shard's first case; the last shard is
@@ -3794,6 +3961,7 @@ int main(int argc,char** argv) {
   const bool producer_unaudited=argc==2&&std::string_view(argv[1])=="producer-unaudited-catalog-change";
   const bool producer_root_lag=argc==2&&std::string_view(argv[1])=="producer-root-lag";
   const bool producer_route_ahead=argc==2&&std::string_view(argv[1])=="producer-route-ahead";
+  const bool producer_api=argc==2&&std::string_view(argv[1])=="producer-api";  // S2
   const bool sharded=argc==4&&std::string_view(argv[1])=="shard";
   unsigned shard=0,shard_count=0;
   if(sharded&&(!ParseShardNumber(argv[2],shard)||!ParseShardNumber(argv[3],shard_count)||
@@ -3802,7 +3970,7 @@ int main(int argc,char** argv) {
     return 2;
   }
   unsigned death_mode=0;
-  if(argc==2&&!producer&&!producer_transactions&&!producer_unaudited&&!producer_root_lag&&!producer_route_ahead&&(!ParseShardNumber(argv[1],death_mode)||death_mode==0||death_mode>kAffinityModes)){
+  if(argc==2&&!producer&&!producer_transactions&&!producer_unaudited&&!producer_root_lag&&!producer_route_ahead&&!producer_api&&(!ParseShardNumber(argv[1],death_mode)||death_mode==0||death_mode>kAffinityModes)){
     std::cerr<<"native enrolled source FAIL unknown argument "<<argv[1]<<'\n';return 2;
   }
   if(argc!=1&&argc!=2&&!sharded){std::cerr<<"native enrolled source FAIL unknown arguments\n";return 2;}
@@ -3813,7 +3981,7 @@ int main(int argc,char** argv) {
   server::ServerProcessCryptoOwner process;
   ParentOwnedArtifacts artifacts;int outcome=0;
   try {
-  if(!death&&!producer&&!producer_transactions&&!producer_unaudited&&!producer_root_lag&&!producer_route_ahead&&once)for(unsigned mode=1;mode<=kAffinityModes;++mode){const auto child=::fork();Check(child>=0,"owned native host affinity fixture child");
+  if(!death&&!producer&&!producer_transactions&&!producer_unaudited&&!producer_root_lag&&!producer_route_ahead&&!producer_api&&once)for(unsigned mode=1;mode<=kAffinityModes;++mode){const auto child=::fork();Check(child>=0,"owned native host affinity fixture child");
     if(!child){const auto option=std::to_string(mode);::execl(argv[0],argv[0],option.c_str(),nullptr);::_exit(72);}
     int status=0;Check(::waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==73,
         "foreign thread host prerequisite access/move/reset refuses before governed custody");
@@ -3850,6 +4018,7 @@ int main(int argc,char** argv) {
       if(producer_unaudited){for(unsigned profile=0;profile<5;++profile)ProducerNativeSource(profile,process,true,true);return;}
       if(producer_root_lag){for(unsigned profile=0;profile<5;++profile)ProducerNativeSource(profile,process,true,false,1);return;}
       if(producer_route_ahead){for(unsigned profile=0;profile<5;++profile)ProducerNativeSource(profile,process,true,false,2);return;}
+      if(producer_api){for(unsigned profile=0;profile<5;++profile)ApiProducerNativeSource(profile,process);return;}  // S2
       if(once)PackPolicyFamiliesMatchFixture();
       for(unsigned profile=0;profile<5;++profile)for(bool indexed:{false,true})run(profile,indexed,process);
       for(unsigned variant=1;variant<=10;++variant)run(0,true,process,variant);

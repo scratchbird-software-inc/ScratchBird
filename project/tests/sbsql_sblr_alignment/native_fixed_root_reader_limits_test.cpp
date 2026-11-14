@@ -190,7 +190,7 @@ struct Database {
     db::NativeDatabaseCreateRequest r;
     r.policy_seed_pack_root = SB_DEFAULT_POLICY_PACK_ROOT;
     r.database_name = "orders";
-    r.database_default_language = "en";
+    r.database_default_language = scratchbird::core::catalog::kCatalogLanguage_en;/* S2: the language constant, not the tag "en" */
     r.page_size_profile_uuid = p.uuid;
     r.page_size_bytes = p.page_size_bytes;
     r.total_pages = p.page_size_bytes == 8192 ? 1024 : 512;

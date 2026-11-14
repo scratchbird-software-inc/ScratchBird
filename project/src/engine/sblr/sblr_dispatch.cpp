@@ -11411,7 +11411,26 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
     return result;
   }
 
-  if (request.envelope.operation_id != "dml.plan_import_rows" &&
+  // SB_DRIFT_CREATE_DATABASE_MANAGEMENT_TRANSACTION (owner Q95 = 1, S2): a
+  // native CREATE DATABASE (create descriptor v2, native format) is
+  // authorised by the caller's session (checked above); no transaction can
+  // exist before the database does, and the engine's construction transaction
+  // is the MGA evidence. Legacy creates (v1, or v2 legacy) keep the
+  // registry's transaction requirement unchanged until workstream C.
+  const bool native_create_database = [&] {
+    if (request.envelope.operation_id != "engine.op.lifecycle_create_database") return false;
+    for (const auto& operand : request.envelope.operands) {
+      if (operand.value_kind != SblrValueKind::lifecycle_create_database_descriptor ||
+          operand.type != "lifecycle_create_database_descriptor.v2") continue;
+      SblrLifecycleCreateDatabaseDescriptorV2 descriptor;
+      std::string detail;
+      if (DecodeSblrLifecycleCreateDatabaseDescriptorV2(operand.value_body.data(), operand.value_body.size(),
+                                                        &descriptor, &detail) &&
+          descriptor.database_format == SblrLifecycleCreateDatabaseFormat::native) return true;
+    }
+    return false;
+  }();
+  if (request.envelope.operation_id != "dml.plan_import_rows" && !native_create_database &&
       (request.envelope.requires_transaction_context ||
        (admission_entry != nullptr && admission_entry->requires_transaction_context)) &&
       request.context.local_transaction_id == 0 &&
@@ -12299,8 +12318,32 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   else if (op.starts_with("index.")) result.api_result = api::EngineIndexManagementOperation(TypedRequest<api::EngineIndexManagementRequest>(request));
   else if (op == "lifecycle.create_database" ||
            op == "engine.op.lifecycle_create_database") {
-    result.api_result = api::EngineCreateLifecycle(
-        TypedRequest<api::EngineCreateLifecycleRequest>(request));
+    auto typed = TypedRequest<api::EngineCreateLifecycleRequest>(request);
+    // SEARCH_KEY: SB_LIFECYCLE_CREATE_DATABASE_DESCRIPTOR_V2 (S2, owner Q92 =
+    // 1): the v2 descriptor carries the format, the database name (data) and
+    // its language constant; they become the typed request fields. The
+    // descriptor's client identity fields are not read
+    // (SB_DRIFT_CREATE_DESCRIPTOR_CLIENT_IDENTITIES). A v1 descriptor leaves
+    // the legacy default unchanged.
+    for (const auto& operand : request.envelope.operands) {
+      if (operand.value_kind != SblrValueKind::lifecycle_create_database_descriptor ||
+          operand.type != "lifecycle_create_database_descriptor.v2") {
+        continue;
+      }
+      SblrLifecycleCreateDatabaseDescriptorV2 descriptor;
+      std::string detail;
+      if (!DecodeSblrLifecycleCreateDatabaseDescriptorV2(
+              operand.value_body.data(), operand.value_body.size(), &descriptor, &detail)) {
+        continue;  // envelope validation already refused a malformed v2
+      }
+      typed.database_format =
+          descriptor.database_format == SblrLifecycleCreateDatabaseFormat::native
+              ? api::EngineDatabaseFormat::native
+              : api::EngineDatabaseFormat::legacy;
+      typed.database_name = descriptor.database_name;
+      typed.database_language = api::EngineUuid{descriptor.database_language_uuid};
+    }
+    result.api_result = api::EngineCreateLifecycle(typed);
   }
   else if (op == "lifecycle.open_database" ||
            op == "engine.op.lifecycle_open_database") {
