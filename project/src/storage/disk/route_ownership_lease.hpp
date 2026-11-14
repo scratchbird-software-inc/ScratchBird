@@ -27,6 +27,27 @@ class RouteSourceDrainWait;
 class FileDevice;
 // Initial OS capability selection only; neither mode grants engine mutation.
 enum class RouteStorageAccess : std::uint8_t { read_only, read_write };
+// SEARCH_KEY: SB_NATIVE_DATA_FILE_OWNERSHIP (slice step S1, owner 2026-11-13)
+// Which authority makes a process the exclusive owner of a database file. The
+// caller states it; nothing infers it from the file's contents.
+//  - legacy_lock_files: the legacy create/open path, unchanged until the one
+//    production cut (Q93): <db>.sb.route.owner.lock (with a pid/endpoint
+//    descriptor) + <db>.sb.owner.lock, plus flock on the data file.
+//  - native_data_file: the native single-file path. The ONLY authority is an
+//    exclusive non-blocking flock(LOCK_EX|LOCK_NB) on the owner's retained
+//    data-file descriptor, taken right after open and before any read or
+//    write. No lock file and no descriptor text file is ever created (owner
+//    2026-11-13: the lock files go the moment it is logical; S1 is that moment
+//    for the native path). A refusal names no incumbent pid/endpoint (Q94).
+// flock, not F_OFD_SETLK: legacy owners and legacy FileDevice::Open already
+// flock the data inode (LockDataFile). On Linux flock and fcntl locks
+// (including OFD locks) do not conflict, so an OFD-locking native owner and a
+// flock-ing legacy owner could both "own" one file during coexistence. flock
+// is also an open-file-description lock (dup'd served descriptors share it,
+// FINDING-17), is released only when the last descriptor of that description
+// closes, and exists on Linux and the BSDs. Classic F_SETLK is never used: it
+// is per-process and dropped by closing ANY descriptor of the file.
+enum class DatabaseFileOwnership : std::uint8_t { legacy_lock_files, native_data_file };
 enum class RouteWriteCustodyState : std::uint8_t {
   not_requested, retained, primary_not_bound, withdrawn, wrong_process, lock_failure
 };
@@ -157,10 +178,26 @@ class RouteOwnershipLease final {
   int data_fd_ = -1;  // actual primary inode; retained through the final reader
 #endif
   RouteOwnershipLease(std::string route_path, std::uint64_t owner_pid,
-      RouteStorageAccess access=RouteStorageAccess::read_only);
+      RouteStorageAccess access=RouteStorageAccess::read_only,
+      DatabaseFileOwnership ownership=DatabaseFileOwnership::legacy_lock_files);
   bool Publish(const std::shared_ptr<RouteOwnershipLease>& self);
   void Withdraw();
   bool valid() const;
+  // The owner's identity before the data file is bound: a native lease has no
+  // lock-file handles, so binding is admitted on the owning process alone.
+  bool may_bind() const;
+  bool native_data_file() const noexcept {
+    return ownership_ == DatabaseFileOwnership::native_data_file;
+  }
+  // SB_NATIVE_DATA_FILE_OWNERSHIP: the process-local registry key. Legacy keys
+  // are the route lock path (unchanged). A native lease is keyed by the bound
+  // data file's identity (st_dev/st_ino), set at binding: the flock that is the
+  // authority is attached to that inode, the key survives rename and hard
+  // links, and in-process lookups already match by inode (BorrowAlias). It is a
+  // process-memory index only, never persisted and never a database identifier.
+  const std::string& registry_key() const noexcept {
+    return native_data_file() ? native_registry_key_ : route_path_;
+  }
   using NativeHandle =
 #ifdef _WIN32
       void*;
@@ -181,9 +218,13 @@ class RouteOwnershipLease final {
       -1
 #endif
   };
+  // Legacy: the .sb.route.owner.lock path. Native: the database path, used
+  // for diagnostics only (never a registry key, never a lock file).
   const std::string route_path_;
   const std::uint64_t owner_pid_;
   const RouteStorageAccess storage_access_;
+  const DatabaseFileOwnership ownership_;
+  std::string native_registry_key_;  // set once at native binding
 #ifdef _WIN32
   void* write_data_handle_ = nullptr;
 #else

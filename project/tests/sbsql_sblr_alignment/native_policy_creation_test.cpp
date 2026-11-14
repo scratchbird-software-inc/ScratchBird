@@ -846,7 +846,7 @@ void Physical(bool security=false,bool bootstrap=false,bool service=false) {
     // cohort with every agent type's principal needs more at 8 KiB pages.
     request.total_pages=1024;request.creation_utc_millis=1789357072000ULL;
     u::StandaloneUuidV7Issuer issuer({f::Id(1),f::Id(10)},{{},0,1000});const auto path=(artifacts.path()/std::to_string(profile.page_size_bytes)).string();d::FileDevice device;
-    Check(device.Open(path,d::FileOpenMode::create_new).ok(),"actual private native construction file");const auto budget=p::u64{db::NativeHostedSourceBackingBytes(profile.page_size_bytes)};
+    Check(device.Open(path,d::FileOpenMode::create_new,d::DatabaseFileOwnership::native_data_file).ok(),"actual private native construction file");const auto budget=p::u64{db::NativeHostedSourceBackingBytes(profile.page_size_bytes)};
     const auto created=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,request,seed,indexes,budget,issuer);
     Check(created.ok(),"actual imported native policy/name cohort persists through indexed construction");
     Check(device.Close().ok()&&device.Open(path,d::FileOpenMode::open_existing).ok(),"independent native policy reopen");

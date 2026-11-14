@@ -121,7 +121,7 @@ struct Node {
     request.creator.scope = mga::TransactionScope::local_node;
     request.creation_utc_millis = 1789357072000ULL;
     request.total_pages = 64;
-    Check(device.Open(path.string(), d::FileOpenMode::create_new).ok(), "node device");
+    Check(device.Open(path.string(), d::FileOpenMode::create_new,d::DatabaseFileOwnership::native_data_file).ok(), "node device");
     scratchbird::core::uuid::StandaloneUuidV7Issuer issuer({Id(1), Id(10)}, {{}, 0, 1000});
     Check(db::InitializeNativeCreationWorkspaceOnOpenDevice(device, request, 256 * size, issuer).ok(), "real native create");
   }

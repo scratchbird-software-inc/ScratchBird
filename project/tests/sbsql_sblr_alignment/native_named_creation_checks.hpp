@@ -166,7 +166,7 @@ void NativeNamedCreationChecks(const db::NativeCreationCatalogSeed& supplied) {
     name_index.relation_uuid=Id(21000);name_index.dependencies.index_uuid=Id(21001);
     indexes[1]=name_index;
     disk::FileDevice d;const auto path=fixture.Next();
-    Check(d.Open(path.string(),disk::FileOpenMode::create_new).ok(),"named package actual owned file");
+    Check(d.Open(path.string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"named package actual owned file");
     const auto created=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(d,r,seed,indexes,budget,*fixture.issuer);
     Check(created.ok()&&created.receipt->catalog_rows[0]==inputs.size()&&created.receipt->catalog_rows[1]==3*inputs.size(),
         "complete definitions and all supplied names actually publish on every page profile");

@@ -106,7 +106,15 @@ NativeHostedRuntimeOpenResult NativeHostedDatabaseRuntime::OpenImpl(
       route_lock=std::move(held_ownership);
       out.ownership.acquired=true;
     } else {
-      out.ownership=AcquireDatabaseOwnership(command);
+      // SEARCH_KEY: SB_NATIVE_DATA_FILE_OWNERSHIP (slice step S1, owner
+      // 2026-11-13). This runtime is the native owner, so it states the native
+      // authority itself: the exclusive flock on the retained data-file
+      // descriptor, no .sb.route.owner.lock / .sb.owner.lock and no descriptor
+      // text (Q94). The held branch above adopts the caller's (legacy server)
+      // lock unchanged until the production cut (Q93).
+      auto native_command=command;
+      native_command.ownership=storage::disk::DatabaseFileOwnership::native_data_file;
+      out.ownership=AcquireDatabaseOwnership(native_command);
       if (!out.ownership.acquired) {out.error=E::ownership_failure;return out;}
       route_lock=std::move(out.ownership.lock);
     }

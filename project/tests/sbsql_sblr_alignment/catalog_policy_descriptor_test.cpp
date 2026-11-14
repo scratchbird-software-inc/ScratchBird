@@ -299,7 +299,7 @@ void Physical(){
     request.creator.scope=mga::TransactionScope::local_node;request.total_pages=64;request.creation_utc_millis=1789357072000ULL;
     const auto budget=128*p::u64{profile.page_size_bytes};u::StandaloneUuidV7Issuer issuer({f::Id(1),f::Id(10)},{{},0,1000});
     const auto path=(artifacts.path()/std::to_string(profile.page_size_bytes)).string();d::FileDevice device;
-    Check(device.Open(path,d::FileOpenMode::create_new).ok(),"real private native policy file");
+    Check(device.Open(path,d::FileOpenMode::create_new,d::DatabaseFileOwnership::native_data_file).ok(),"real private native policy file");
     auto bad=item.descriptor;bad.database_uuid=bad.scope_uuid=f::Id(9);seed[0][0].metadata.record.payload=Golden(bad);
     const auto refused=db::InitializePopulatedNativeCreationWorkspaceOnOpenDevice(device,request,seed,budget,issuer);
     const auto extent=device.Size();Check(!refused.ok()&&extent.ok()&&!extent.size_bytes,"foreign native policy refuses before I/O");

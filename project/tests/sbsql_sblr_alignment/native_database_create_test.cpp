@@ -79,7 +79,7 @@ int main() {
         case 5:r.policy_seed_pack_root="/nonexistent-policy-pack";expected=E::policy_assembly;break;
       }
       const auto path=(artifacts.path()/("refused-"+std::to_string(n))).string();d::FileDevice device;
-      Check(device.Open(path,d::FileOpenMode::create_new).ok(),"owned empty device");
+      Check(device.Open(path,d::FileOpenMode::create_new,d::DatabaseFileOwnership::native_data_file).ok(),"owned empty device");
       auto issue=issuer();
       const auto made=db::CreateNativeDatabaseOnOpenDevice(device,r,issue);
       if(made.error!=expected)std::fprintf(stderr,"case %u error=%d\n",n,static_cast<int>(made.error));
@@ -91,7 +91,7 @@ int main() {
 
   for(const auto& profile:d::kCanonicalFilespacePageProfiles) {
     const auto path=(artifacts.path()/("native-"+std::to_string(file++))).string();d::FileDevice device;
-    Check(device.Open(path,d::FileOpenMode::create_new).ok(),"owned empty primary device");
+    Check(device.Open(path,d::FileOpenMode::create_new,d::DatabaseFileOwnership::native_data_file).ok(),"owned empty primary device");
     auto issue=issuer();
     const auto request=Request(profile);
     const auto made=db::CreateNativeDatabaseOnOpenDevice(device,request,issue);
@@ -109,7 +109,8 @@ int main() {
     // comments relation, with its constant identity.
     Check(r.workspace.relations.size()==7&&r.workspace.relation_uuids[6]==c::kNativeCommentCatalogRelationUuid&&
           r.workspace.relations[6].role==7,"step4: the comments relation is role 7 and carries its constant identity");
-    Check(device.Close().ok()&&device.Open(path,d::FileOpenMode::open_existing).ok(),"independent reopen");
+    // S1 (owner 2026-11-13): the reopen of the native file uses native ownership too.
+    Check(device.Close().ok()&&device.Open(path,d::FileOpenMode::open_existing,d::DatabaseFileOwnership::native_data_file).ok(),"independent reopen");
     const std::vector<d::NativeFilespaceDevice> devices{{r.filespace_uuid,profile.uuid,&device}};
     const auto budget=request.maximum_retained_image_bytes;
     // step4: seven relations (was six).

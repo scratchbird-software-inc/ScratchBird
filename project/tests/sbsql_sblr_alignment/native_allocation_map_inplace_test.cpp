@@ -296,7 +296,7 @@ struct Created {
     r.maximum_retained_image_bytes = db::NativeHostedSourceBackingBytes(p.page_size_bytes);
     path = (dir.path() / "created").string();
     d::FileDevice device;
-    Check(device.Open(path, d::FileOpenMode::create_new).ok(), "node device");
+    Check(device.Open(path, d::FileOpenMode::create_new,d::DatabaseFileOwnership::native_data_file).ok(), "node device");
     u::StandaloneUuidV7Issuer issuer({V7(1), V7(10)}, {{}, 0, 1000});
     auto made = db::CreateNativeDatabaseOnOpenDevice(device, r, issuer);
     Check(made.ok(), "the production create writes a complete native database");

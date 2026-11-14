@@ -139,7 +139,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
   for(unsigned profile=0;profile<5;++profile) {
     const auto r=Request(profile);page_bytes=r.bootstrap.page_size_bytes;total_pages=r.total_pages;
     const auto budget=256*page_bytes;disk::FileDevice device;const auto path=fixture.Next();
-    Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"complete batch actual owned device");
+    Check(device.Open(path.string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"complete batch actual owned device");
     Arm();const auto made=db::InitializePopulatedNativeCreationWorkspaceOnOpenDevice(device,r,complete,budget,*fixture.issuer);Disarm();
     if(batch_bytes<=page_bytes-128-32-96) {
       Check(made.ok(),"all selected metric dependencies publish in one actual construction");
@@ -154,7 +154,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     total_pages=indexed_request.total_pages;
     const auto indexes=IndexedConstructionBindings();
     disk::FileDevice indexed_device;const auto indexed_path=fixture.Next();
-    Check(indexed_device.Open(indexed_path.string(),disk::FileOpenMode::create_new).ok(),"complete indexed batch actual owned device");
+    Check(indexed_device.Open(indexed_path.string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"complete indexed batch actual owned device");
     const auto indexed=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(
         indexed_device,indexed_request,complete,indexes,indexed_budget,*fixture.issuer);
     Check(indexed.ok(),"complete selected set publishes through multi-leaf indexed construction");
@@ -179,7 +179,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     Check(digest.ok(),"actual retained component index material digest");deps.dependency_map_sha256=digest.digest;
     indexes[0]=db::NativeCreationCatalogIndexBinding{Id(20000),deps};
     const auto budget=256*page_bytes;const auto path=fixture.Next();disk::FileDevice device;
-    Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"indexed complete metric actual device");
+    Check(device.Open(path.string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"indexed complete metric actual device");
     Arm();const auto made=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,r,complete,indexes,budget,*fixture.issuer);Disarm();
     if(!made.ok())std::cerr<<"indexed creation profile="<<profile<<" error="<<static_cast<unsigned>(made.error)
         
@@ -271,7 +271,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     total_pages=boundary_request.total_pages;
     const auto seed=deep?DenseIndexedCatalogSeed(request,count,deep_base,deep_stride):dense_seed(count);
     disk::FileDevice device;const auto path=fixture.Next();
-    Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"actual boundary construction owner");
+    Check(device.Open(path.string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"actual boundary construction owner");
     Arm();const auto made=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,boundary_request,seed,
         construction_indexes,budget,*fixture.issuer);Disarm();
     Check(made.ok(),"exact empty/root-full/split/multiple-child/branch-level indexed construction");
@@ -335,7 +335,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
   }
   for(unsigned fault=0;fault<6;++fault) {
     auto indices=construction_indexes;auto seed=dense_seed(root_capacity+1);const auto path=fixture.Next();disk::FileDevice device;
-    Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"invalid index construction owner");
+    Check(device.Open(path.string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"invalid index construction owner");
     switch(fault) {
       case 0:indices[0]->relation_uuid=indices[0]->dependencies.index_uuid;break;
       case 1:indices[0]->dependencies.descriptor_generation=2;break;
@@ -387,7 +387,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     // the header page; the comment tree is not requested here.
     const u64 exact=(maps+15+1+base_pages+navigation+2)*page_bytes;
     const auto path=fixture.Next();disk::FileDevice device;
-    Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"exact indexed image budget owner");
+    Check(device.Open(path.string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"exact indexed image budget owner");
     Arm();auto refused=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,dense_request,seed,
         construction_indexes,exact-1,*fixture.issuer);Disarm();
     Check(!refused.ok()&&refused.error==db::NativeCreationWorkspaceError::resource_exhausted&&
@@ -442,7 +442,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     for(unsigned profile=0;profile<5;++profile) {
       const auto r=Request(profile);page_bytes=r.bootstrap.page_size_bytes;total_pages=r.total_pages;
       const auto budget=256*page_bytes;auto path=fixture.Next();disk::FileDevice one_leaf_device;
-      Check(one_leaf_device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"configured owned file");
+      Check(one_leaf_device.Open(path.string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"configured owned file");
       // A family that does not fit one leaf on this profile is refused by the
       // one-leaf construction before any I/O and built through the indexed
       // construction instead (NATIVE-CATALOG-RELATION-IMAGE-BINDING-001).
@@ -459,7 +459,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
             one_leaf_device.Size().ok()&&one_leaf_device.Size().size_bytes==0,
             "a family over one leaf refuses one-leaf construction before any physical effects");
         path=fixture.Next();owner=&indexed_device;
-        Check(indexed_device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"configured indexed owned file");
+        Check(indexed_device.Open(path.string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"configured indexed owned file");
         const auto indexed_request=Request(profile,128);
         created=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(indexed_device,indexed_request,seed,indexes,budget,*fixture.issuer);
         if(!created.ok())std::cerr<<"indexed family error="<<static_cast<int>(created.error)<<'\n';

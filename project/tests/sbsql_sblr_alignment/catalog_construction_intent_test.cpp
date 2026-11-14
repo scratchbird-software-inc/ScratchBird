@@ -186,7 +186,7 @@ void Physical(){
     const auto expected=Golden(*acquired.event);const auto metadata=Metadata(*acquired.event,acquired.row_uuid.value);
     db::NativeCreationCatalogSeed seed;seed[0].push_back({metadata,{}});
     const auto path=(artifacts.path()/std::to_string(profile.page_size_bytes)).string();d::FileDevice device;
-    Check(device.Open(path,d::FileOpenMode::create_new).ok(),"real owned construction file");
+    Check(device.Open(path,d::FileOpenMode::create_new,d::DatabaseFileOwnership::native_data_file).ok(),"real owned construction file");
     const auto budget=128*p::u64{profile.page_size_bytes};
     for(unsigned n=0;n<4;++n){auto wrong=*acquired.event;if(n==0)wrong.database_uuid=f::Id(400);
       if(n==1)wrong.operation_uuid=f::Id(401);if(n==2)wrong.filespace_uuid=f::Id(402);if(n==3)wrong.origin_transaction_uuid.value=f::Id(403);

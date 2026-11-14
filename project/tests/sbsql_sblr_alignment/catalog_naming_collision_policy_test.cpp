@@ -128,7 +128,7 @@ void Physical(){
   scratchbird::tests::OwnedTempDirectory artifacts;const auto value=Profile();const auto meta=Metadata(value);
   for(const auto& profile:d::kCanonicalFilespacePageProfiles){
     const auto path=(artifacts.path()/std::to_string(profile.page_size_bytes)).string();d::FileDevice device;
-    Check(device.Open(path,d::FileOpenMode::create_new).ok(),"private real native construction file");
+    Check(device.Open(path,d::FileOpenMode::create_new,d::DatabaseFileOwnership::native_data_file).ok(),"private real native construction file");
     db::NativeCreationCatalogSeed seed;seed[0].push_back({meta,{}});db::NativeCreationCatalogIndexes indexes;
     scratchbird::storage::page::NativeBtreeDependencies deps;deps.index_uuid=f::Id(8010);deps.descriptor_generation=deps.storage_generation=1;
     deps.key_profile_uuid=f::Id(8020);deps.visibility_profile_uuid=f::Id(8030);deps.dependency_map_uuid=f::Id(8040);deps.dependency_map_sha256.fill(1);

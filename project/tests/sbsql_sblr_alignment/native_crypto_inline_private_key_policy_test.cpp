@@ -172,7 +172,7 @@ void Physical(){
         f::Metadata(0,origin,f::Id(60),{}));
      Check(intent.has_value(),"the fixture's construction intent");seed[5].push_back({*intent,{}});}
     const auto path=(artifacts.path()/(std::to_string(profile.page_size_bytes)+"-"+std::to_string(mode))).string();
-    d::FileDevice device;Check(device.Open(path,d::FileOpenMode::create_new).ok(),"real private native security-policy file");
+    d::FileDevice device;Check(device.Open(path,d::FileOpenMode::create_new,d::DatabaseFileOwnership::native_data_file).ok(),"real private native security-policy file");
     if(mode){
       auto foreign=body;foreign.database_uuid=f::Id(9);seed[3][0].metadata=BodyMetadata(foreign);
       const auto refused=db::InitializePopulatedNativeCreationWorkspaceOnOpenDevice(device,request,seed,budget,issuer);

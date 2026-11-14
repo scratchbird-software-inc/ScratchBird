@@ -7,6 +7,22 @@
 // SPDX-License-Identifier: MPL-2.0
 
 // SEARCH_KEY: SB_SERVER_DATABASE_OWNERSHIP_LOCK
+// SEARCH_KEY: SB_NATIVE_DATA_FILE_OWNERSHIP (slice step S1, owner 2026-11-13)
+// Two ownership authorities coexist until the one production cut (Q93):
+//  - legacy (default, unchanged): <db>.sb.route.owner.lock carrying a
+//    pid/endpoint descriptor, <db>.sb.owner.lock, and a flock on the data file.
+//  - native (DatabaseOwnershipRequest::ownership = native_data_file, chosen by
+//    the caller, never inferred from file contents): the exclusive flock on
+//    the owner's retained data-file descriptor is the ONLY authority. No lock
+//    file and no descriptor text file is created (owner 2026-11-13: remove the
+//    lock files the moment it is logical; S1 is that moment for the native
+//    path). A refused native owner gets ARCH.DATABASE_MULTI_OWNER with no
+//    incumbent pid/endpoint (Q94: the OS lock on the data file is the whole
+//    answer). Nothing holding database data lives outside the filespace (Q101).
+// The published storage lease (OpenServed, the in-process route registry)
+// works the same in both; a native lease is keyed by the data file's identity
+// (see RouteOwnershipLease::registry_key). Legacy and native owners exclude
+// each other through the shared data-file flock.
 
 #pragma once
 
@@ -66,6 +82,7 @@ class DatabaseOwnershipLock {
 #ifndef _WIN32
   [[nodiscard]] int fd() const { return native_handle(); }
 #endif
+  // Legacy only: the .sb.route.owner.lock path. Empty for a native owner.
   [[nodiscard]] const std::filesystem::path& lock_path() const { return lock_path_; }
   // SEARCH_KEY: SB_ROUTE_OWNER_SERVED_DEVICE (register C9). The owner's
   // published storage lease, for FileDevice::OpenServed by this process's own
@@ -98,9 +115,11 @@ class DatabaseOwnershipLock {
                         std::filesystem::path lock_path);
   bool PublishStorageLease();
 #ifdef _WIN32
-  std::uint32_t PrepareStorageLease(const std::string& database_path,storage::disk::RouteStorageAccess);
+  std::uint32_t PrepareStorageLease(const std::string& database_path,storage::disk::RouteStorageAccess,
+      storage::disk::DatabaseFileOwnership=storage::disk::DatabaseFileOwnership::legacy_lock_files);
 #else
-  int PrepareStorageLease(const std::string& database_path,storage::disk::RouteStorageAccess);
+  int PrepareStorageLease(const std::string& database_path,storage::disk::RouteStorageAccess,
+      storage::disk::DatabaseFileOwnership=storage::disk::DatabaseFileOwnership::legacy_lock_files);
 #endif
   std::shared_ptr<storage::disk::RouteOwnershipLease> lease_;
   NativeHandle handle_{
@@ -129,12 +148,17 @@ struct DatabaseOwnershipRequest {
   // Physical capability is retained privately at initial OS ownership only.
   // Read-source transfer still yields no writer or engine admission authority.
   storage::disk::RouteStorageAccess storage_access=storage::disk::RouteStorageAccess::read_only;
+  // SB_NATIVE_DATA_FILE_OWNERSHIP: the caller's explicit authority choice.
+  // The default is the legacy lock files, unchanged until the production cut.
+  storage::disk::DatabaseFileOwnership ownership=storage::disk::DatabaseFileOwnership::legacy_lock_files;
 };
 
 struct DatabaseOwnershipResult {
   bool acquired = false;
   std::shared_ptr<DatabaseOwnershipLock> lock;
+  // Legacy only. Always empty for a native request (Q94).
   DatabaseOwnershipDescriptor incumbent;
+  // Legacy only. Empty for a native request: there is no lock file.
   std::filesystem::path lock_path;
   std::string diagnostic_code;
   std::string diagnostic_detail;

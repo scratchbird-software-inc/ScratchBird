@@ -124,6 +124,12 @@ enum class NativeBootstrapLineagePolicy : std::uint8_t {
 // not activate configuration, authenticate a session or publish readiness.
 // Lifecycle entry is affine to the constructing process/thread. The process
 // owner and selected manager outlive this owner and every credential read.
+// SEARCH_KEY: SB_NATIVE_DATA_FILE_OWNERSHIP (slice step S1, owner 2026-11-13):
+// Open (and OpenUnderHeldAdmission without a held lock) owns the database with
+// the native authority -- the exclusive flock on the retained data-file
+// descriptor -- whatever the request's `ownership` says; it creates no
+// .sb.route.owner.lock / .sb.owner.lock. A held (legacy server) lock is adopted
+// unchanged (Q93).
 class NativeHostedDatabaseRuntime final {
  public:
   using Uuid = core::platform::Uuid;

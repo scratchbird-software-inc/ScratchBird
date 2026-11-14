@@ -413,7 +413,7 @@ void Files() {
   Fixture fixture;
   for(unsigned p=0;p<5;++p) {
     const auto path=(fixture.root/std::to_string(p)).string(); auto v=Example(p); const auto bytes=Oracle(v);
-    disk::FileDevice device; Check(device.Open(path,disk::FileOpenMode::create_new).ok(),"own fixture file");
+    disk::FileDevice device; Check(device.Open(path,disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"own fixture file");
     Check(device.WriteAt(0,bytes.data(),bytes.size()).ok(),"write actual page zero");
     const byte zero=0; Check(device.WriteAt(v.total_pages*sizes[p]-1,&zero,1).ok()&&device.Sync().ok(),"physical capacity");
     reads=0; observed_read_bytes=0; track_reads=true;
@@ -438,7 +438,7 @@ void Files() {
     Check(!r.record&&r.error==Error::device_not_open,"closed owned reader");
   }
   const auto path=(fixture.root/"capacity-mismatch").string(); auto v=Example(); const auto bytes=Oracle(v);
-  disk::FileDevice d; Check(d.Open(path,disk::FileOpenMode::create_new).ok(),"capacity fixture");
+  disk::FileDevice d; Check(d.Open(path,disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"capacity fixture");
   Check(d.WriteAt(0,bytes.data(),bytes.size()).ok(),"only pagezero persisted");
   auto r=disk::ReadFilespacePageZeroFromOpenDevice(d); Check(!r.record&&r.error==Error::invalid_capacity,"no fabricated remaining pages");
   const byte z=0; Check(d.WriteAt(v.total_pages*sizes[0],&z,1).ok(),"actual unaccounted appended byte");
@@ -448,7 +448,7 @@ void Files() {
     !result.observed_bytes&&!result.complete_pages&&!result.trailing_bytes&&result.relation==Relation::unknown,"failed recovery observation exposes no partial facts");};
   for(unsigned p=0;p<5;++p){const auto expected=Example(p);const auto image=Oracle(expected);const u64 size=sizes[p],declared=64*size;
     const auto recovery_path=(fixture.root/("recovery-"+std::to_string(p))).string();disk::FileDevice file;
-    Check(file.Open(recovery_path,disk::FileOpenMode::create_new).ok(),"own recovery observation fixture");
+    Check(file.Open(recovery_path,disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"own recovery observation fixture");
     const disk::FilespaceBootstrapBinding binding{expected.bootstrap.database_uuid,expected.bootstrap.filespace_uuid,expected.bootstrap.page_size_profile_uuid};
     const auto observe=[&](){return disk::ObserveFilespacePageZeroForRecoveryFromOpenDevice(file,binding);};
     const auto verify=[&](const auto& result,u64 physical){Check(result.ok()&&Oracle(*result.record)==image&&
@@ -727,7 +727,7 @@ void NativeBtreePages() {
   Check(encoder_success,"every B-tree encoder allocation fault position");
   for(unsigned p=0;p<5;++p){Fixture fixture;disk::FileDevice device;const auto path=(fixture.root/"native-btree").string();const auto r=BtreeExample(p);
     const auto z=Example(p,p%2?5:6);const auto zero=Oracle(z),image=BtreeOracle(r);const byte padding=0;
-    Check(device.Open(path,disk::FileOpenMode::create_new).ok()&&device.WriteAt(0,zero.data(),zero.size()).ok()
+    Check(device.Open(path,disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok()&&device.WriteAt(0,zero.data(),zero.size()).ok()
       &&device.WriteAt(z.total_pages*sizes[p]-1,&padding,1).ok()&&device.WriteAt(12*sizes[p],image.data(),image.size()).ok()&&device.Sync().ok(),"persist native B-tree in actual index/data filespace");
     const disk::NativePageReference ref{Id(2),12,102,Profile(p)};
     const auto read=[&]{return page::ReadNativeBtreePageFromOpenDevice(device,Id(1),ref,0x200,r.dependencies);};
@@ -809,7 +809,7 @@ void NativeBtreeTrees() {
     auto z1=Example(p,6),z2=Example(q,5),z3=Example(s,1);z2.bootstrap.filespace_uuid=Id(7);z3.bootstrap.filespace_uuid=Id(9);
     for(auto& r:z2.roots)r.filespace_uuid=Id(7);for(auto& r:z3.roots)r.filespace_uuid=Id(9);
     const auto prepare=[&](auto& device,const auto& path,const auto& zero){const auto image=Oracle(zero);const byte padding=0;
-      Check(device.Open(path,disk::FileOpenMode::create_new).ok()&&device.WriteAt(0,image.data(),image.size()).ok()
+      Check(device.Open(path,disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok()&&device.WriteAt(0,image.data(),image.size()).ok()
         &&device.WriteAt(zero.total_pages*zero.bootstrap.page_size_bytes-1,&padding,1).ok(),"prepare actual retained tree filespace");};
     prepare(first,path1,z1);prepare(second,path2,z2);prepare(base,path3,z3);
     const auto original=BtreeTreeExample(p);auto nodes=original;
@@ -996,7 +996,7 @@ void CatalogRootFiles() {
   for(unsigned p=0;p<5;++p) {
     auto z=Example(p); auto root=RootExample(p); const auto image=RootOracle(root);
     const auto path=(fixture.root/("catalog-"+std::to_string(p))).string();
-    disk::FileDevice device; Check(device.Open(path,disk::FileOpenMode::create_new).ok(),"own root file");
+    disk::FileDevice device; Check(device.Open(path,disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"own root file");
     const auto pagezero=Oracle(z); const byte zero=0;
     Check(device.WriteAt(0,pagezero.data(),pagezero.size()).ok()
       &&device.WriteAt(z.total_pages*sizes[p]-1,&zero,1).ok(),"real root filespace capacity");
@@ -1086,8 +1086,8 @@ struct RootRangeFixture {
       if(i) { roots[i].predecessor=PageRef(roots[i-1]); roots[i].predecessor_sha256=WholeRootHash(images[i-1]); }
       images[i]=RootOracle(roots[i]);
     }
-    Check(first.Open((files.root/"first").string(),disk::FileOpenMode::create_new).ok()
-      &&second.Open((files.root/"second").string(),disk::FileOpenMode::create_new).ok(),"own two filespaces of one node");
+    Check(first.Open((files.root/"first").string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok()
+      &&second.Open((files.root/"second").string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"own two filespaces of one node");
     auto a=Example(),b=Example(1); b.bootstrap.filespace_uuid=Id(7); b.page_uuid=Id(4);
     for(auto& ref:b.roots) ref.filespace_uuid=Id(7);
     a.roots[1]=RootRef(roots[2]); b.roots[1]=RootRef(roots[1]); const byte zero=0;
@@ -1147,7 +1147,7 @@ void CatalogRootRanges() {
   f.devices[0].page_size_profile_uuid=Profile(0); RangeReject(f.Read(),RootError::invalid_filespace); f.devices=ordered;
   RangeReject(page::ReadNativeCatalogRootRangeFromOpenDevices(Id(99),f.devices,RootRef(f.roots[2]),RootRef(f.roots[0]),32768),RootError::invalid_filespace);
   // An unused device cannot smuggle a second node into an owning-node range.
-  disk::FileDevice other; Check(other.Open((f.files.root/"other-node").string(),disk::FileOpenMode::create_new).ok(),"other-node fixture");
+  disk::FileDevice other; Check(other.Open((f.files.root/"other-node").string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"other-node fixture");
   auto z=Example(); z.bootstrap.database_uuid=Id(99); z.bootstrap.filespace_uuid=Id(88);
   for(auto& ref:z.roots) ref.filespace_uuid=Id(88);
   const auto zb=Oracle(z); const byte zero=0;
@@ -1339,7 +1339,7 @@ void NativeCatalogRelationBindings() {
     auto z1=Example(p,6),z2=Example(q,5),z3=Example(s,1);z2.bootstrap.filespace_uuid=Id(7);z3.bootstrap.filespace_uuid=Id(9);
     for(auto& r:z2.roots)r.filespace_uuid=Id(7);for(auto& r:z3.roots)r.filespace_uuid=Id(9);
     const auto prepare=[&](auto& device,const auto& path,const auto& zero){const auto image=Oracle(zero);const byte padding=0;
-      Check(device.Open(path,disk::FileOpenMode::create_new).ok()&&device.WriteAt(0,image.data(),image.size()).ok()
+      Check(device.Open(path,disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok()&&device.WriteAt(0,image.data(),image.size()).ok()
         &&device.WriteAt(zero.total_pages*zero.bootstrap.page_size_bytes-1,&padding,1).ok(),"prepare real catalog relation filespace");};
     prepare(first,path1,z1);prepare(second,path2,z2);prepare(base,path3,z3);
     const auto original=CatalogBindingImages(p);auto images=original;
@@ -1512,7 +1512,7 @@ void NativeBtreeTreeMemory() {
     auto z1=Example(p,6),z2=Example(q,5),z3=Example(s,1);z2.bootstrap.filespace_uuid=Id(7);z3.bootstrap.filespace_uuid=Id(9);
     for(auto& r:z2.roots)r.filespace_uuid=Id(7);for(auto& r:z3.roots)r.filespace_uuid=Id(9);
     const auto prepare=[&](auto& device,const auto& path,const auto& zero){const auto image=Oracle(zero);const byte padding=0;
-      Check(device.Open(path,disk::FileOpenMode::create_new).ok()&&device.WriteAt(0,image.data(),image.size()).ok()&&
+      Check(device.Open(path,disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok()&&device.WriteAt(0,image.data(),image.size()).ok()&&
         device.WriteAt(zero.total_pages*zero.bootstrap.page_size_bytes-1,&padding,1).ok(),"prepare actual governed tree filespace");};
     prepare(first,path1,z1);prepare(second,path2,z2);prepare(base,path3,z3);
     auto nodes=BtreeTreeExample(p);
@@ -2169,7 +2169,7 @@ void BufferedReadTelemetry() {
     Check(value.ok()&&registry.RegisterSeries(*value.record,policy).ok,"register exact raw16 sample series");series[i]=std::move(*value.record);
   }
   Fixture fixture;disk::FileDevice device;const auto path=(fixture.root/"buffered-telemetry").string();const byte expected=42;
-  Check(device.Open(path,disk::FileOpenMode::create_new).ok()&&device.WriteAt(0,&expected,1).ok(),"real telemetry read fixture");
+  Check(device.Open(path,disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok()&&device.WriteAt(0,&expected,1).ok(),"real telemetry read fixture");
   device.SetMetricContext(Id(1),Id(2),Id(3),"primary_system","first_device_class_long_label");
   const auto before_rejected=device.rejected_io_latency_observations();
   {
@@ -2221,7 +2221,7 @@ void CatalogLeafFiles() {
     auto leaf=LeafExample(p); const auto image=LeafOracle(leaf); auto z=Example(p,p==0?5:1);
     const auto ref=RootExample(p).roots[0]; const auto pagezero=Oracle(z);
     const auto path=(fixture.root/("leaf-"+std::to_string(p))).string(); disk::FileDevice device;
-    Check(device.Open(path,disk::FileOpenMode::create_new).ok(),"own canonical leaf file"); const byte zero=0;
+    Check(device.Open(path,disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"own canonical leaf file"); const byte zero=0;
     Check(device.WriteAt(0,pagezero.data(),pagezero.size()).ok()&&device.WriteAt(z.total_pages*sizes[p]-1,&zero,1).ok()
       &&device.WriteAt(21*sizes[p],image.data(),image.size()).ok()&&device.Sync().ok(),"actual canonical leaf persisted");
     auto r=db::ReadNativeCatalogLeafFromOpenDevice(device,Id(1),ref);
@@ -2485,7 +2485,7 @@ void CanonicalFilespaceInitialization(){using E=db::NativeFilespaceInitializatio
     auto issuer=std::make_unique<scratchbird::core::uuid::StandaloneUuidV7Issuer>(scratchbird::core::uuid::StandaloneUuidV7Binding{request.bootstrap.database_uuid,request.policy_snapshot_uuid},scratchbird::core::uuid::StandaloneUuidV7Policy{{},0,1000});
     const u64 count=(request.total_pages+InitializationCoverage(p)-1)/InitializationCoverage(p),budget=(count+2)*sizes[p];
     if(role==1)Check(count==2&&request.total_pages-InitializationCoverage(p)==1,"the two-map boundary: the second map covers exactly one page");
-    Check(device.Open(path,disk::FileOpenMode::create_new).ok(),"exclusively own empty initialization device");
+    Check(device.Open(path,disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"exclusively own empty initialization device");
     auto result=db::InitializeNativeFilespaceOnOpenDevice(device,request,budget-1,*issuer);
     Check(!result.ok()&&!result.receipt&&result.error==E::resource_exhausted&&device.Size().size_bytes==0,"one-byte image-budget deficit cannot write");
     result=db::InitializeNativeFilespaceOnOpenDevice(device,request,budget,*issuer);Check(result.ok(),"real initializing filespace writer");
@@ -2499,7 +2499,7 @@ void CanonicalFilespaceInitialization(){using E=db::NativeFilespaceInitializatio
   Fixture fixture;disk::FileDevice device;unsigned attempt=0;auto request=InitializationRequest();const u64 budget=3*sizes[0];std::string path;
   std::unique_ptr<scratchbird::core::uuid::StandaloneUuidV7Issuer> issuer;
   const auto reset=[&](){issuer=std::make_unique<scratchbird::core::uuid::StandaloneUuidV7Issuer>(scratchbird::core::uuid::StandaloneUuidV7Binding{request.bootstrap.database_uuid,request.policy_snapshot_uuid},scratchbird::core::uuid::StandaloneUuidV7Policy{{},0,1000});if(device.is_open())Check(device.Close().ok(),"close owned initialization fault fixture");path=(fixture.root/std::to_string(attempt++)).string();
-    Check(device.Open(path,disk::FileOpenMode::create_new).ok(),"new empty initialization fault fixture");};
+    Check(device.Open(path,disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"new empty initialization fault fixture");};
   const auto initialize=[&](){return db::InitializeNativeFilespaceOnOpenDevice(device,request,budget,*issuer);};
   const auto empty=[&](const auto& r,std::source_location at=std::source_location::current()){
     Check(!r.ok()&&!r.receipt,"initialization failure never returns a receipt",at);};

@@ -16,10 +16,10 @@ void NativeIndexedCreationFailureChecks(unsigned shard,unsigned first_allocation
   };
   // Warm process-owned codecs, then measure on a fresh actual device/issuer.
   for(unsigned i=0;i<2;++i) {Fixture f;disk::FileDevice d;
-    Check(d.Open(f.Next().string(),disk::FileOpenMode::create_new).ok(),"warm indexed creation owner");
+    Check(d.Open(f.Next().string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"warm indexed creation owner");
     Check(create(d,f).ok(),"warm indexed creation actual graph");}
   Fixture measured;disk::FileDevice d;const auto path=measured.Next();
-  Check(d.Open(path.string(),disk::FileOpenMode::create_new).ok(),"indexed fault measurement owner");
+  Check(d.Open(path.string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"indexed fault measurement owner");
   Arm();allocations=0;allocation_fault=0;count_allocations=true;
   const auto baseline=create(d,measured);count_allocations=false;Disarm();
   Check(baseline.ok(),"indexed construction fault baseline");
@@ -30,7 +30,7 @@ void NativeIndexedCreationFailureChecks(unsigned shard,unsigned first_allocation
   const auto original=Read(d,0,total_pages*size);
   for(unsigned mode=1;mode<=5;++mode) {
     if(mode%4!=shard)continue;
-    Fixture f;disk::FileDevice target;Check(target.Open(f.Next().string(),disk::FileOpenMode::create_new).ok(),"owned multipart hash fault");
+    Fixture f;disk::FileDevice target;Check(target.Open(f.Next().string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"owned multipart hash fault");
     Arm();context_fault=mode;const auto refused=create(target,f);context_fault=0;Disarm();
     Check(!refused.ok()&&!refused.receipt&&refused.error==db::NativeCreationWorkspaceError::hash_failure&&
         !calls[write_call]&&!target.Size().size_bytes,"multipart hash backend failure cannot publish an unsigned graph");
@@ -38,7 +38,7 @@ void NativeIndexedCreationFailureChecks(unsigned shard,unsigned first_allocation
   for(unsigned kind=0;kind<call_count;++kind)for(unsigned at=1;at<=create_counts[kind];++at) {
     if(first_allocation>1)continue; // Diagnostic range only; registered gates always start at1.
     if(at%4!=shard)continue;
-    Fixture f;disk::FileDevice target;Check(target.Open(f.Next().string(),disk::FileOpenMode::create_new).ok(),"owned construction fault device");
+    Fixture f;disk::FileDevice target;Check(target.Open(f.Next().string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"owned construction fault device");
     Arm(kind,at);const auto refused=create(target,f);Disarm();
     const auto expected=(kind==hash_call)?db::NativeCreationWorkspaceError::hash_failure:
         db::NativeCreationWorkspaceError::io_failure;
@@ -62,7 +62,7 @@ void NativeIndexedCreationFailureChecks(unsigned shard,unsigned first_allocation
   }
   for(unsigned at=1;at<=create_allocations;++at) {
     if(at<first_allocation||at%4!=shard)continue;
-    Fixture f;disk::FileDevice target;Check(target.Open(f.Next().string(),disk::FileOpenMode::create_new).ok(),"owned creation allocation fault");
+    Fixture f;disk::FileDevice target;Check(target.Open(f.Next().string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"owned creation allocation fault");
     const auto lost=target.failed_io_latency_observations();
     allocations=0;allocation_fault=at;count_allocations=true;
     const auto result=create(target,f);count_allocations=false;allocation_fault=0;

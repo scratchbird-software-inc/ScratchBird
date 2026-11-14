@@ -105,7 +105,7 @@ const Created& Production(unsigned profile_index) {
   r.maximum_retained_image_bytes = db::NativeHostedSourceBackingBytes(p.page_size_bytes);
   out.path = (artifacts->path() / ("created-" + std::to_string(profile_index))).string();
   d::FileDevice device;
-  Check(device.Open(out.path, d::FileOpenMode::create_new).ok(), "production create device");
+  Check(device.Open(out.path, d::FileOpenMode::create_new,d::DatabaseFileOwnership::native_data_file).ok(), "production create device");
   u::StandaloneUuidV7Issuer issuer({Fixed(1), Fixed(10)}, {{}, 0, 1000});
   auto result = db::CreateNativeDatabaseOnOpenDevice(device, r, issuer);
   Check(result.ok(), "the production create writes a complete native database");

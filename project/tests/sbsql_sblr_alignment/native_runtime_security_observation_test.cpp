@@ -148,7 +148,7 @@ struct SecurityFixture {
       if(invalid)std::cerr<<"native security fixture metadata="<<invalid->detail<<" profile="<<p<<" variant="<<variant<<'\n';
       Check(!invalid,"complete actual family/common metadata before native security fixture construction");
     }
-    const auto path=(artifacts.path()/"native-security").string();Check(device.Open(path,disk::FileOpenMode::create_new).ok(),"actual new native security filespace");
+    const auto path=(artifacts.path()/"native-security").string();Check(device.Open(path,disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"actual new native security filespace");
     // SB_NATIVE_FIXED_ROOT (in-place writes W4b): the production create's
     // fixed-root graph. Scenarios change the file in place as the engine does:
     // the transaction inventory writer (W1), the catalog version writer (W3a)

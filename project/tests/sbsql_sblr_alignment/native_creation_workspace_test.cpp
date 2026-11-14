@@ -324,7 +324,7 @@ int main(int argc,char** argv){try{
       const auto request=Request(profile,65);page_bytes=request.bootstrap.page_size_bytes;total_pages=request.total_pages;
       const u64 maps=profile?1:2;
       for(const u64 extra:{u64{0},u64{4},u64{64}}){
-        disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"zero batch device");
+        disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"zero batch device");
         // step4: one more image (role 7's head leaf), so the same batch sizes need one more page of budget (was maps+17).
         Arm();const auto result=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,(maps+18+extra)*page_bytes,*fixture.issuer);Disarm();
         const u64 batch=std::min<u64>(16,extra+1);
@@ -334,7 +334,7 @@ int main(int argc,char** argv){try{
         Inspect(device,request);
       }
       for(unsigned at=1;at<=5;++at){
-        disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"partial zero batch device");
+        disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"partial zero batch device");
         Arm();zero_partial_at=at;const auto result=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,256*page_bytes,*fixture.issuer);Disarm();zero_partial_at=0;
         Check(!result.ok()&&!result.receipt&&result.error==db::NativeCreationWorkspaceError::io_failure&&
           zero_writes==at&&!zero_phase&&!calls[sync_call],"partial zero batch cannot write page zero or a receipt");
@@ -370,11 +370,11 @@ int main(int argc,char** argv){try{
     // constructor sites. Otherwise a cold baseline includes one-time library
     // allocations that cannot be injected again in later attempts.
     {disk::FileDevice device;const auto path=fixture.Next();
-      Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"registry warm-up device");
+      Check(device.Open(path.string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"registry warm-up device");
       Check(db::InitializeNativeCreationWorkspaceOnOpenDevice(device,Request(),24*8192,*fixture.issuer).ok(),"actual constructor registry warm-up");
       Check(device.Close().ok()&&fs::remove(path),"clean closed warm-up construction");}
     {disk::FileDevice device;const auto path=fixture.Next();const auto request=Request();
-      Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"failure registry warm-up device");
+      Check(device.Open(path.string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"failure registry warm-up device");
       allocations=0;allocation_fault=1;count_allocations=true;
       const auto failure=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,24*8192,*fixture.issuer);count_allocations=false;
       Check(!failure.ok()&&!failure.receipt,"actual failure registry warm-up");
@@ -387,7 +387,7 @@ int main(int argc,char** argv){try{
         if(child>0){int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==0,
           "isolated allocation fault and preservation checks");continue;}}
       disk::FileDevice device;const auto path=fixture.Next();
-      Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"allocation fault device");
+      Check(device.Open(path.string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"allocation fault device");
       const auto request=Request();const auto lost=device.failed_io_latency_observations();allocations=0;allocation_fault=at;count_allocations=true;
       const auto r=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,24*8192,*fixture.issuer);count_allocations=false;
       if(at==0){Check(r.ok(),"allocation baseline");sites=allocations;
@@ -404,7 +404,7 @@ int main(int argc,char** argv){try{
     std::cout<<"PASS native creation allocation checks="<<checks<<" sites="<<sites<<" shard="<<shard<<'/'<<shards<<'\n';return 0;
   }
   for(unsigned profile=0;profile<5;++profile){auto request=Request(profile,64);disk::FileDevice device;const auto path=fixture.Next();
-    Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"exclusive new device");
+    Check(device.Open(path.string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"exclusive new device");
     page_bytes=request.bootstrap.page_size_bytes;total_pages=request.total_pages;
     Arm();const auto result=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,128*page_bytes,*fixture.issuer);Disarm();
     if(!result.ok())std::cerr<<"creation error="<<static_cast<int>(result.error)<<'\n';
@@ -428,7 +428,7 @@ int main(int argc,char** argv){try{
   // SB_NATIVE_FIXED_ROOT_READ (drift removal R3b3): a fixed root changed
   // after page zero is written and read back is caught by the create's own
   // read of the file, before any receipt.
-  {disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"post-commit mutation fixture");
+  {disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"post-commit mutation fixture");
     Arm();tamper_after_page_zero=true;tamper_done=false;tamper_page=3;  // the directory page (one map, then inventory)
     const auto result=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,minimum_budget,*fixture.issuer);
     tamper_after_page_zero=false;Disarm();
@@ -438,12 +438,15 @@ int main(int argc,char** argv){try{
   // read back, page zero is still zero, and the file is not a database.
   {const auto path=fixture.Next();const auto child=fork();Check(child>=0,"page-zero process-loss fork");
     if(child==0){disk::FileDevice device;
-      if(!device.Open(path.string(),disk::FileOpenMode::create_new).ok())_exit(88);
+      if(!device.Open(path.string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok())_exit(88);
       fixture.ResetIssuer();Arm();stop_before_page_zero=true;
       (void)db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,minimum_budget,*fixture.issuer);_exit(89);}
     int status=0;Check(waitpid(child,&status,0)==child&&WIFEXITED(status)&&WEXITSTATUS(status)==86,
       "process loss before page zero follows every other page's durability and readback");
-    disk::FileDevice device;Check(device.Open(path.string(),disk::FileOpenMode::open_existing).ok(),"new process owns interrupted construction");
+    // S1 (owner 2026-11-13): the restarting owner opens the native file with
+    // native ownership, as any native creator must; the replay is then refused
+    // for the reason under test (device_not_empty), not for the device mode.
+    disk::FileDevice device;Check(device.Open(path.string(),disk::FileOpenMode::open_existing,disk::DatabaseFileOwnership::native_data_file).ok(),"new process owns interrupted construction");
     const auto zero_page=Read(device,0,page_bytes);
     Check(std::all_of(zero_page.begin(),zero_page.end(),[](byte v){return !v;}),"page zero is still zero: the commit point was never reached");
     Check(!disk::ReadFilespacePageZeroFromOpenDevice(device).ok(),"an interrupted create has no page zero");
@@ -461,7 +464,7 @@ int main(int argc,char** argv){try{
     const u64 later=Request().creation_utc_millis+60000;
     Uuid creator=Id(5);for(unsigned n=0;n<6;++n)creator.bytes[n]=static_cast<byte>(later>>(8*(5-n)));
     auto request=Request();request.creator.transaction_uuid={UuidKind::transaction,creator};
-    disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"later creator fixture");
+    disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"later creator fixture");
     Check(db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,minimum_budget,*fixture.issuer).ok(),"later creator construction");
     const std::vector<disk::NativeFilespaceDevice> devices{{Id(2),request.bootstrap.page_size_profile_uuid,&device}};
     std::vector<byte> backing(2*256*page_bytes+(u64{1}<<20));
@@ -473,7 +476,7 @@ int main(int argc,char** argv){try{
         entry.identity.transaction_uuid.value==creator&&entry.begin_unix_epoch_millis==later&&
         entry.final_unix_epoch_millis==later,"construction completes at the later of creation and begin");}
   {const auto large=Request(0,3601);disk::FileDevice device;
-    Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"cross-map control fixture");
+    Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"cross-map control fixture");
     // The final admission's exact image budget: the maps twice, four controls,
     // and the in-place inventory's header page (SB_TRANSACTION_HEADER_PAGE).
     // 3601 pages at 59 per in-place map page: 62 map pages.
@@ -483,15 +486,15 @@ int main(int argc,char** argv){try{
     const auto r=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,large,required,*fixture.issuer);
     if(!r.ok())std::cerr<<"large creation error="<<static_cast<int>(r.error)<<'\n';
     Check(r.ok()&&r.receipt->map_pages==62,"control allocations span multiple coverage ranges");Inspect(device,large);}
-  {disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"duplicate entropy fixture");
+  {disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"duplicate entropy fixture");
     Arm();repeat_entropy=true;const auto r=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,minimum_budget,*fixture.issuer);repeat_entropy=false;Disarm();
     Check(!r.ok()&&r.error==db::NativeCreationWorkspaceError::identity_failure&&calls[write_call]==0&&device.Size().size_bytes==0,
       "duplicate generated identities refuse before all writes");}
   for(unsigned mode=1;mode<=5;++mode){disk::FileDevice device;
-    Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"multipart provider fixture");
+    Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"multipart provider fixture");
     Arm();context_fault=mode;const auto r=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,minimum_budget,*fixture.issuer);context_fault=0;Disarm();
     Check(!r.ok()&&!r.receipt&&calls[write_call]==0&&device.Size().size_bytes==0,"multipart hash failures cannot create unsigned roots");}
-  {disk::FileDevice device;const auto path=fixture.Next();Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"guard retention fixture");
+  {disk::FileDevice device;const auto path=fixture.Next();Check(device.Open(path.string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"guard retention fixture");
     pause_write=true;write_paused=false;resume_write=false;std::atomic<bool> entered=false,acquired=false;
     db::NativeCreationWorkspaceResult result;
     std::thread writer([&]{result=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,minimum_budget,*fixture.issuer);});
@@ -502,14 +505,14 @@ int main(int argc,char** argv){try{
     disk::FileDevice other;const auto competing=other.Open(path.string(),disk::FileOpenMode::open_existing_read_only);
     resume_write=true;writer.join();observer.join();
     Check(held&&acquired&&result.ok()&&!competing.ok(),"device and node ownership remain held through real initialization");}
-  for(bool allocation:{false,true}){disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"issuer source failure fixture");
+  for(bool allocation:{false,true}){disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"issuer source failure fixture");
     clock_failure=!allocation;clock_allocation_failure=allocation;Arm();
     const auto refused=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,minimum_budget,*fixture.issuer);
     Disarm();clock_failure=clock_allocation_failure=false;
     Check(!refused.ok()&&!refused.receipt&&refused.error==(allocation?db::NativeCreationWorkspaceError::resource_exhausted:db::NativeCreationWorkspaceError::identity_failure)&&!calls[write_call]&&!device.Size().size_bytes,"issuer failure remains exact and precedes writes");
   }
   std::array<unsigned,call_count> baseline{};
-  {disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"minimum capacity device");
+  {disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"minimum capacity device");
     Arm();const auto r=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,minimum_budget,*fixture.issuer);baseline=calls;Disarm();
     Check(r.ok()&&r.receipt->free_pages==0&&ordered&&zero_phase==3,"exact minimum capacity and image budget");Inspect(device,request);}
   const unsigned preparation_hashes=first_write_hashes;
@@ -523,7 +526,7 @@ int main(int argc,char** argv){try{
     return !db::AcquireNativeFixedRootBackedLease(Id(1),devices,Id(2),{minimum_budget,backing.size()},backing).ok();
   };
   for(unsigned kind=0;kind<call_count;++kind)for(unsigned at=1;at<=baseline[kind];++at){
-    disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"fault fixture");
+    disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"fault fixture");
     Arm(kind,at);const auto r=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,minimum_budget,*fixture.issuer);const auto observed=calls;Disarm();
     Check(!r.ok()&&!r.receipt&&observed[kind]>=at,"every injected physical/provider failure returns no receipt");
     const auto size=device.Size();Check(size.ok()&&device.is_open(),"failure preserves open owner");
@@ -537,7 +540,7 @@ int main(int argc,char** argv){try{
       Check(!replay.ok()&&replay.error==db::NativeCreationWorkspaceError::device_not_empty&&device.Size().size_bytes==size.size_bytes,
         "partial and unacknowledged construction is never truncated or retried");}
   }
-  for(unsigned at=1;at<=total_pages+1;++at){disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"readback corruption fixture");
+  for(unsigned at=1;at<=total_pages+1;++at){disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"readback corruption fixture");
     Arm();corrupt_at=at;const auto r=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,minimum_budget,*fixture.issuer);Disarm();
     Check(!r.ok()&&!r.receipt&&r.error==db::NativeCreationWorkspaceError::readback_mismatch,"every page and page-zero readback byte mismatch refuses");
     if(at<=total_pages){const auto zero_page=Read(device,0,page_bytes);
@@ -545,7 +548,7 @@ int main(int argc,char** argv){try{
   // Every write torn in half, page zero's included: the create refuses and the
   // file it leaves is not a database.
   for(unsigned at=1;at<=baseline[write_call];++at){disk::FileDevice device;
-    Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"torn write fixture");
+    Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"torn write fixture");
     Arm();torn_at=at;const auto r=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,minimum_budget,*fixture.issuer);torn_at=0;Disarm();
     Check(!r.ok()&&!r.receipt&&r.error==db::NativeCreationWorkspaceError::io_failure,"a torn write refuses the create");
     Check(refused_by_fixed_root(device),"a file left by a torn write, page zero's included, is not a database");}
@@ -558,7 +561,7 @@ int main(int argc,char** argv){try{
     if(variant==9){bad.bootstrap.flags=disk::FilespaceBootstrapFlag::payload_encrypted;bad.bootstrap.encryption_profile_uuid=Id(90);}
     if(variant==10)bad.policy_snapshot_uuid={};if(variant==11)bad.policy_snapshot_uuid.bytes[6]=0x40;
     if(variant==12)bad.policy_snapshot_uuid=Id(91);if(variant==13)bad.bootstrap.database_uuid=Id(91);if(variant==14)bad.policy_snapshot_uuid=bad.writer_uuid;
-    disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"invalid input fixture");
+    disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"invalid input fixture");
     Arm();const auto r=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,bad,budget,*fixture.issuer);Disarm();
     Check(!r.ok()&&!r.receipt&&calls[write_call]==0&&device.Size().size_bytes==0,"invalid lineage/capacity/provider never touches storage");}
   std::cout<<"PASS native creation workspace checks="<<checks<<" fault sites=";

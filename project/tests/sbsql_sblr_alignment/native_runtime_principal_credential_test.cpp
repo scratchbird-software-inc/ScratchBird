@@ -206,7 +206,7 @@ struct CredentialNativeFixture {
       const auto invalid=catalog::ValidateCatalogMetadataVersionView(catalog::BorrowCatalogMetadataVersion(row.metadata));
       if(invalid)std::cerr<<"credential metadata role="<<role+1<<" variant="<<int(variant)<<" detail="<<invalid->detail<<'\n';
       Check(!invalid,"complete native credential family/common metadata before physical construction");}
-    const auto path=(artifacts.path()/"native-credential").string();Check(device.Open(path,disk::FileOpenMode::create_new).ok(),"create real native credential fixture");
+    const auto path=(artifacts.path()/"native-credential").string();Check(device.Open(path,disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"create real native credential fixture");
     // SB_NATIVE_FIXED_ROOT (in-place writes W4b): the production create's
     // fixed-root graph; every reader below goes through page zero's roots.
     request.genesis_graph=db::NativeCreationGenesisGraph::fixed_roots;

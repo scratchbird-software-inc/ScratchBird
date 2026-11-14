@@ -6,6 +6,8 @@
 #include "native_policy_creation.hpp"
 #include "catalog_schema_creation.hpp"
 #include <optional>
+#include <string>
+#include <utility>
 #include <string_view>
 
 namespace scratchbird::storage::database {
@@ -85,6 +87,19 @@ struct NativeDatabaseCreateResult {
   std::optional<NativeDatabaseCreateReceipt> receipt;
   bool ok() const noexcept {return error==NativeDatabaseCreateError::none&&receipt.has_value();}
 };
+// SEARCH_KEY: SB_NATIVE_DATA_FILE_OWNERSHIP (owner 2026-11-13, slice step S1)
+// `empty_owned` must come from OpenNewNativeDatabaseFile (or any
+// FileDevice::Open(..., DatabaseFileOwnership::native_data_file)): the native
+// creation entry points refuse any other device (invalid_device), so a native
+// file is never created beside an .sb.owner.lock, not even transiently.
 NativeDatabaseCreateResult CreateNativeDatabaseOnOpenDevice(
     disk::FileDevice& empty_owned,const NativeDatabaseCreateRequest&,core::uuid::StandaloneUuidV7Issuer&) noexcept;
+// Opens a new, empty native database file for CreateNativeDatabaseOnOpenDevice:
+// O_CREAT|O_EXCL, then flock(LOCK_EX|LOCK_NB) on the new descriptor before any
+// write, and no lock file. If another opener flocks the new file between the
+// create and our flock, this refuses with SB-STORAGE-DISK-DATA-OWNER-LOCK-HELD
+// and leaves the (empty) file to its holder: it unlinks nothing.
+inline disk::IoResult OpenNewNativeDatabaseFile(disk::FileDevice& device,std::string path) {
+  return device.Open(std::move(path),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file);
+}
 } // namespace scratchbird::storage::database

@@ -1748,7 +1748,8 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
     ordinary.default_name_uuid={};ordinary.name_vector_uuid={};
   }
   const auto path=(artifacts.path()/"enrolled-native-node").string();disk::FileDevice created;
-  Check(created.Open(path,disk::FileOpenMode::create_new).ok(),"real native enrolled node construction");
+  // S1 (owner 2026-11-13): native create owns the file by its data-file lock alone.
+  Check(created.Open(path,disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"real native enrolled node construction");
   // The host's own source backing (512 pages, at least 8 MiB since 2026-11-03).
   const u64 budget=db::NativeHostedSourceBackingBytes(sizes[profile]);
   const auto construction_writes=stage_writes,construction_syncs=stage_syncs;
@@ -3135,17 +3136,25 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
   // Bound to the database being created: Id(1), as the fixture's.
   scratchbird::core::uuid::StandaloneUuidV7Issuer issuer({Id(1),Id(10)},{{},0,1000});
   disk::FileDevice created;
-  Check(created.Open(path,disk::FileOpenMode::create_new).ok(),"owned empty primary for the producer");
+  // S1 (owner 2026-11-13): native create owns the file by its data-file lock alone.
+  Check(created.Open(path,disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"owned empty primary for the producer");
+  // S1: native create made no lock file, transient or retained.
+  const auto no_lock_files=[&]{for(const auto& entry:std::filesystem::directory_iterator(artifacts.path())){
+      const auto name=entry.path().filename().string();
+      if(name.ends_with(".sb.owner.lock")||name.ends_with(".sb.route.owner.lock"))return false;}return true;};
+  Check(no_lock_files(),"S1: native create holds the primary without a lock file");
   const auto made=db::CreateNativeDatabaseOnOpenDevice(created,create,issuer);
   if(!made.ok())std::cerr<<"producer error="<<int(made.error)<<" policy="<<int(made.policy_error)<<" workspace="
       <<int(made.workspace_error)<<" profile="<<profile<<'\n';
   Check(made.ok()&&created.Close().ok(),"the production producer writes the database and its descriptor retires");
+  Check(no_lock_files(),"S1: native create leaves no lock file");
   if(transactions){
     namespace tip=scratchbird::storage::page;
     disk::FilespaceRootReference state_root,allocation_root,catalog_root,configuration_root,security_root;
     {
       disk::FileDevice device;
-      Check(device.Open(path,disk::FileOpenMode::open_existing_read_only).ok(),"read-only open of the produced file");
+      // S1: the test's own offline opens of the native file use native ownership too.
+      Check(device.Open(path,disk::FileOpenMode::open_existing_read_only,disk::DatabaseFileOwnership::native_data_file).ok(),"read-only open of the produced file");
       const std::vector<disk::NativeFilespaceDevice> files{{made.receipt->filespace_uuid,Profile(profile),&device}};
       std::vector<platform::byte> backing(64u<<20);
       auto fixed=db::AcquireNativeFixedRootBackedLease(made.receipt->database_uuid,files,made.receipt->filespace_uuid,
@@ -3159,7 +3168,7 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
       Check(device.Close().ok(),"close the read-only open");
     }
     disk::FileDevice device;
-    Check(device.Open(path,disk::FileOpenMode::open_existing).ok(),"writable open of the produced file");
+    Check(device.Open(path,disk::FileOpenMode::open_existing,disk::DatabaseFileOwnership::native_data_file).ok(),"writable open of the produced file");
     {
       disk::FileDeviceCarefulWriteSink sink(device);
       // SB_ALLOCATION_MAP_IN_PLACE (W2c): the writer may grow its chains.
@@ -3394,6 +3403,9 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
   if(!host.ok())std::cerr<<"producer host open error="<<int(host.error)<<'\n';
   Check(host.ok()&&host.runtime->database_uuid()==receipt.database_uuid&&host.runtime->primary_filespace_uuid()==receipt.filespace_uuid,
       "the production host opens the producer's database cold");
+  // S1 (owner 2026-11-13): the native runtime owns the file by its data-file
+  // lock alone; no .sb.route.owner.lock / .sb.owner.lock while it is open.
+  Check(no_lock_files(),"S1: the open native runtime holds the database without a lock file");
   server::NativeLocalServiceStartupCredentialsRequest request;
   request.credential.security.database_uuid=receipt.database_uuid;
   request.credential.security.runtime_binding_uuid=receipt.service_runtime_binding_uuid;
@@ -3639,6 +3651,7 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
       "opening, verifying and resolving startup policies leave every byte of the producer's file unchanged");
   read.Reset();
   Check(Host::Close(host.runtime).ok(),"the producer's database closes");
+  Check(no_lock_files(),"S1: the closed native runtime leaves no lock file");
 
   // The startup chain reads page zero's fixed roots, never the checkpoint
   // layer: with every read of the checkpoint, selector, watermark and horizon

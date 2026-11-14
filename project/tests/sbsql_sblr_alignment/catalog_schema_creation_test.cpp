@@ -738,7 +738,7 @@ void PhysicalChecks() {
     const auto& request=native.database.construction;
     u::StandaloneUuidV7Issuer issuer({Id(1),Id(10)},{{},0,1000});
     const auto path=(artifacts.path()/(std::to_string(profile)+"-"+std::to_string(source))).string();disk::FileDevice device;
-    Check(device.Open(path,disk::FileOpenMode::create_new).ok(),"actual native schema filespace owner");
+    Check(device.Open(path,disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"actual native schema filespace owner");
     const auto budget=512*p::u64{p.page_size_bytes};
     const auto created=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,request,seed,indexes,budget,issuer);
     Check(created.ok(),"actual typed schema package writes native construction graph");

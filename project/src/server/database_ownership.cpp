@@ -8,6 +8,9 @@
 
 // SEARCH_KEY: SB_SERVER_DATABASE_OWNERSHIP_LOCK
 // DATABASE_OWNERSHIP: server route ownership is a hard fail-closed token.
+// SEARCH_KEY: SB_NATIVE_DATA_FILE_OWNERSHIP -- native ownership (slice step S1,
+// owner 2026-11-13; Q94) is the native branch of AcquireDatabaseOwnership: the data-file
+// flock only, no lock files, no descriptor text. See database_ownership.hpp.
 
 #include "database_ownership.hpp"
 #include "../storage/disk/route_ownership_lease.hpp"
@@ -203,14 +206,20 @@ DatabaseOwnershipLock::AcquireCoordinatorLease(
 }
 
 #ifdef _WIN32
-std::uint32_t DatabaseOwnershipLock::PrepareStorageLease(const std::string& database_path,storage::disk::RouteStorageAccess access) {
+std::uint32_t DatabaseOwnershipLock::PrepareStorageLease(const std::string& database_path,storage::disk::RouteStorageAccess access,
+    storage::disk::DatabaseFileOwnership ownership) {
 #else
-int DatabaseOwnershipLock::PrepareStorageLease(const std::string& database_path,storage::disk::RouteStorageAccess access) {
+int DatabaseOwnershipLock::PrepareStorageLease(const std::string& database_path,storage::disk::RouteStorageAccess access,
+    storage::disk::DatabaseFileOwnership ownership) {
 #endif
   // Allocate before transferring either handle. Existing primary files are
   // locked by their opened inode before any descriptor publication.
+  // SB_NATIVE_DATA_FILE_OWNERSHIP: a native lease names the database file for
+  // diagnostics only; its registry key is the bound inode.
+  const bool native = ownership == storage::disk::DatabaseFileOwnership::native_data_file;
   auto lease = std::shared_ptr<storage::disk::RouteOwnershipLease>(
-      new storage::disk::RouteOwnershipLease(lock_path_.string(), owner_pid_,access));
+      new storage::disk::RouteOwnershipLease(native ? database_path : lock_path_.string(),
+                                             owner_pid_,access,ownership));
 #ifdef _WIN32
   lease->handle_ = std::exchange(handle_, nullptr);
   lease->storage_handle_ = std::exchange(storage_handle_, nullptr);
@@ -228,7 +237,9 @@ std::shared_ptr<storage::disk::RouteOwnershipLease> DatabaseOwnershipLock::Serve
 }
 
 bool DatabaseOwnershipLock::PublishStorageLease() {
-  // Publication still happens only after the checked durable descriptor write.
+  // Legacy: publication happens only after the checked durable descriptor
+  // write. Native: only after the data-file flock is held (there is no
+  // descriptor; SB_NATIVE_DATA_FILE_OWNERSHIP).
   return lease_ && lease_->Publish(lease_);
 }
 
@@ -345,8 +356,17 @@ DatabaseOwnershipDescriptor ReadDatabaseOwnershipDescriptor(
 }
 
 DatabaseOwnershipResult AcquireDatabaseOwnership(const DatabaseOwnershipRequest& request) {
+  if (request.ownership != storage::disk::DatabaseFileOwnership::legacy_lock_files &&
+      request.ownership != storage::disk::DatabaseFileOwnership::native_data_file) {
+    DatabaseOwnershipResult invalid;
+    invalid.diagnostic_code = "ARCH.DATABASE_OWNERSHIP_MODE_INVALID";
+    invalid.diagnostic_detail = "invalid_ownership_mode";
+    return invalid;
+  }
+  const bool native = request.ownership == storage::disk::DatabaseFileOwnership::native_data_file;
   DatabaseOwnershipResult result;
-  result.lock_path = DatabaseOwnershipLockPath(request.database_path);
+  // SB_NATIVE_DATA_FILE_OWNERSHIP: no lock path exists on the native path.
+  if (!native) result.lock_path = DatabaseOwnershipLockPath(request.database_path);
   if(request.storage_access!=storage::disk::RouteStorageAccess::read_only&&
       request.storage_access!=storage::disk::RouteStorageAccess::read_write) {
     result.diagnostic_code="ARCH.DATABASE_STORAGE_ACCESS_INVALID";
@@ -357,6 +377,50 @@ DatabaseOwnershipResult AcquireDatabaseOwnership(const DatabaseOwnershipRequest&
     result.diagnostic_code = "ARCH.DATABASE_OWNERSHIP_PATH_REQUIRED";
     result.diagnostic_detail = "database_path_required";
     return result;
+  }
+  if (native) {
+    // SEARCH_KEY: SB_NATIVE_DATA_FILE_OWNERSHIP (slice step S1, owner 2026-11-13)
+    // The native owner: open the data file, take flock(LOCK_EX|LOCK_NB) on the
+    // retained descriptor before anything is read or written, publish the
+    // process-local storage lease. Nothing else touches the filesystem: no lock
+    // directory, no .sb.route.owner.lock, no .sb.owner.lock, no descriptor
+    // text. A held lock (another process, or another open file description in
+    // this process) is ARCH.DATABASE_MULTI_OWNER with no incumbent pid or
+    // endpoint (Q94). A missing data file is refused: there is nothing to own.
+#ifdef _WIN32
+    // TODO(Windows storage team, SB_WINDOWS_OWNER_LOCK_FILE_RETAINED): the
+    // native equivalent is an exclusive share-mode / LockFileEx handle on the
+    // data file with no lock files. FileDevice::OpenServed is not implemented
+    // on Windows either, so a native owner could not serve its own threads.
+    // Refuse explicitly rather than fall back to lock files.
+    result.diagnostic_code = "ARCH.DATABASE_OWNERSHIP_LOCK_FAILED";
+    result.diagnostic_detail = "native_ownership_unsupported_platform";
+    return result;
+#else
+    DatabaseOwnershipLock ownership(-1, -1, std::filesystem::path{});
+    const int data_owner_error = ownership.PrepareStorageLease(
+        request.database_path.string(), request.storage_access,
+        storage::disk::DatabaseFileOwnership::native_data_file);
+    if (data_owner_error != 0) {
+      if (data_owner_error == EWOULDBLOCK || data_owner_error == EAGAIN) {
+        result.diagnostic_code = "ARCH.DATABASE_MULTI_OWNER";
+        result.diagnostic_detail = "database_data_file_owned";
+      } else {
+        result.diagnostic_code = "ARCH.DATABASE_OWNERSHIP_LOCK_FAILED";
+        result.diagnostic_detail = std::string("data_owner_acquire_failed:") +
+                                   std::strerror(data_owner_error);
+      }
+      return result;
+    }
+    if (!ownership.PublishStorageLease()) {
+      result.diagnostic_code = "ARCH.DATABASE_OWNERSHIP_LOCK_FAILED";
+      result.diagnostic_detail = "process_lease_publication_failed";
+      return result;
+    }
+    result.lock = std::make_shared<DatabaseOwnershipLock>(std::move(ownership));
+    result.acquired = true;
+    return result;
+#endif
   }
 
   std::error_code ec;

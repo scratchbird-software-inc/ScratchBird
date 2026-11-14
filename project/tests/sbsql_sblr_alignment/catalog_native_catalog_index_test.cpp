@@ -212,7 +212,7 @@ void Physical(){scratchbird::tests::OwnedTempDirectory artifacts;
   request.total_pages=64;request.creation_utc_millis=1789357072000ULL;const auto budget=128*p::u64{profile.page_size_bytes};
   u::StandaloneUuidV7Issuer issuer({f::Id(1),f::Id(10)},{{},0,1000});
   const auto path=(artifacts.path()/std::to_string(profile.page_size_bytes)).string();d::FileDevice device;
-  Check(device.Open(path,d::FileOpenMode::create_new).ok(),"real native catalog index profile file");
+  Check(device.Open(path,d::FileOpenMode::create_new,d::DatabaseFileOwnership::native_data_file).ok(),"real native catalog index profile file");
   auto foreign=MapValue();foreign.database_uuid=f::Id(9);const auto kept=seed[4][2].metadata.record.payload;
   seed[4][2].metadata.record.payload=Golden(foreign);
   Check(!db::InitializePopulatedNativeCreationWorkspaceOnOpenDevice(device,request,seed,budget,issuer).ok()&&device.Size().size_bytes==0,

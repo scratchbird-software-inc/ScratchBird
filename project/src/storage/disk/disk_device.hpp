@@ -9,6 +9,7 @@
 #pragma once
 
 #include "page_header.hpp"
+#include "route_ownership_lease.hpp"
 #include "runtime_platform.hpp"
 
 #include <memory>
@@ -236,7 +237,18 @@ class FileDevice {
   FileDevice& operator=(const FileDevice&) = delete;
   ~FileDevice();
 
-  IoResult Open(std::string path, FileOpenMode mode);
+  // SEARCH_KEY: SB_NATIVE_DATA_FILE_OWNERSHIP (slice step S1, owner 2026-11-13)
+  // `ownership` is the caller's explicit choice; the default keeps the legacy
+  // behaviour byte-for-byte (Q93). native_data_file (native create, offline
+  // native tools): no <path>.sb.owner.lock is created, no route lock file is
+  // probed and no in-process owner is borrowed. The device is an independent
+  // exclusive owner through flock(LOCK_EX|LOCK_NB) on its own data descriptor,
+  // taken before any read, write or truncate; it is refused while any other
+  // open file description holds that lock, in this process (FINDING-17) or
+  // another. An in-process owner's threads use OpenServed instead.
+  // Not yet implemented on Windows (refused; see SB_WINDOWS_OWNER_LOCK_FILE_RETAINED).
+  IoResult Open(std::string path, FileOpenMode mode,
+                DatabaseFileOwnership ownership = DatabaseFileOwnership::legacy_lock_files);
   // SEARCH_KEY: SB_ROUTE_OWNER_SERVED_DEVICE (register C9)
   // A device for one of the route owner's own threads: duplicates the owner's
   // open descriptor instead of opening the path. It holds a counted borrow of
@@ -351,6 +363,12 @@ class FileDevice {
 
   bool is_open() const;
   bool read_only() const;
+  // SB_NATIVE_DATA_FILE_OWNERSHIP: true only while this device was opened by
+  // Open(..., DatabaseFileOwnership::native_data_file) and holds that file by
+  // its own data-file flock (never for a served or legacy-opened device). The
+  // native creation entry points require it, so no native file can be built on
+  // a device that made an .sb.owner.lock (owner 2026-11-13).
+  bool native_data_file_owner() const noexcept { return native_data_file_owner_; }
   // SEARCH_KEY: SB_CAREFUL_WRITE_PRECEDENCE
   // True only while the open writable descriptor carries a forced-write flag
   // (POSIX O_DSYNC or O_SYNC, read back from the descriptor itself; Windows
@@ -417,6 +435,7 @@ class FileDevice {
   std::atomic<bool> forced_ordered_writes_{false};
   bool owner_lock_held_ = false;
   bool owner_lock_exclusive_ = false;
+  bool native_data_file_owner_ = false;
   std::shared_ptr<RouteOwnershipLease> route_owner_lease_;
   std::unique_lock<std::recursive_mutex> route_owner_storage_guard_;
 #ifdef _WIN32
@@ -469,6 +488,10 @@ void DisarmTestDeviceWriteFault();
 //    path still names the held inode, then closes.
 // A crash still leaves the file behind. That is harmless: the next owner
 // locks and reuses it, and removes it on its own close.
+// SB_NATIVE_DATA_FILE_OWNERSHIP (owner 2026-11-13, slice step S1): the native
+// path never calls this pair -- it creates no lock file at all; the data-file
+// flock is its only authority. The pair stays for the legacy path until the
+// production cut (Q93) and is deleted then.
 struct OwnerLockFileAcquireResult {
   int fd = -1;
   bool held_by_other = false;

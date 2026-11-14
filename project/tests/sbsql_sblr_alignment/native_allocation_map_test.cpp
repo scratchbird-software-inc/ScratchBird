@@ -477,7 +477,7 @@ void WritePage(d::FileDevice& device,u64 number,const Bytes& bytes){
 void RetainedChain() {
   for (unsigned profile=0;profile<5;++profile) {
     Fixture fixture;d::FileDevice device;const auto path=(fixture.root/"node").string();
-    Check(device.Open(path,d::FileOpenMode::create_new).ok(),"own filespace fixture");
+    Check(device.Open(path,d::FileOpenMode::create_new,d::DatabaseFileOwnership::native_data_file).ok(),"own filespace fixture");
     const InitializedFilespace made(device,profile);
     const u32 size=made.request.bootstrap.page_size_bytes;const u64 total=made.request.total_pages;
     const auto head_bytes=ReadPage(device,1,size),tail_bytes=ReadPage(device,2,size);

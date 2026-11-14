@@ -274,7 +274,7 @@ std::unique_ptr<Db> ProductionDb(unsigned index, u64 total_pages = 0) {
   const auto path = (b->dir.path() / "created").string();
   {
     d::FileDevice device;
-    Check(device.Open(path, d::FileOpenMode::create_new).ok(), "node device");
+    Check(device.Open(path, d::FileOpenMode::create_new,d::DatabaseFileOwnership::native_data_file).ok(), "node device");
     u::StandaloneUuidV7Issuer issuer({Fixed(1), Fixed(10)}, {{}, 0, 1000});
     auto made = db::CreateNativeDatabaseOnOpenDevice(device, r, issuer);
     Check(made.ok(), "the production create writes a complete native database");
@@ -356,7 +356,7 @@ std::unique_ptr<Db> SeededDb(unsigned index) {
   const auto path = (b->dir.path() / "seeded").string();
   {
     d::FileDevice device;
-    Check(device.Open(path, d::FileOpenMode::create_new).ok(), "seeded device");
+    Check(device.Open(path, d::FileOpenMode::create_new,d::DatabaseFileOwnership::native_data_file).ok(), "seeded device");
     const auto made =
         db::InitializePopulatedNativeCreationWorkspaceOnOpenDevice(device, request, seed, 128 * u64{p.page_size_bytes}, issuer);
     Check(made.ok(), "the create primitive writes the seeded database");

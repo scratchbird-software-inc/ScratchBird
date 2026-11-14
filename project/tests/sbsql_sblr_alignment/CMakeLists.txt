@@ -4084,6 +4084,25 @@ add_test(NAME sbsql_sblr_alignment_native_hosted_transaction_writer
 set_tests_properties(sbsql_sblr_alignment_native_hosted_transaction_writer PROPERTIES
   LABELS "sbsql_sblr_alignment;native_storage;transaction_inventory;hosted_custody"
   TIMEOUT 600)
+# SB_NATIVE_DATA_FILE_OWNERSHIP (slice step S1, owner 2026-11-13): native
+# create and native ownership make no lock file; the data-file flock alone
+# refuses a second owner (this process and another), every page size.
+add_executable(sbsql_sblr_alignment_native_data_file_ownership
+  native_data_file_ownership_test.cpp
+  ${PROJECT_SOURCE_DIR}/src/server/database_ownership.cpp)
+target_compile_features(sbsql_sblr_alignment_native_data_file_ownership PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_data_file_ownership PRIVATE ${PROJECT_SOURCE_DIR}/src)
+target_link_libraries(sbsql_sblr_alignment_native_data_file_ownership PRIVATE
+  sb_storage_database OpenSSL::Crypto Threads::Threads)
+# Deterministic create-then-lock race injection (case 6 of the test).
+target_link_options(sbsql_sblr_alignment_native_data_file_ownership PRIVATE "-Wl,--wrap=flock")
+target_compile_definitions(sbsql_sblr_alignment_native_data_file_ownership PRIVATE
+  SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password")
+add_test(NAME sbsql_sblr_alignment_native_data_file_ownership
+  COMMAND sbsql_sblr_alignment_native_data_file_ownership)
+set_tests_properties(sbsql_sblr_alignment_native_data_file_ownership PROPERTIES
+  LABELS "sbsql_sblr_alignment;native_storage;database_ownership;native_data_file_ownership"
+  TIMEOUT 600)
 # SB_NATIVE_FIXED_ROOT_READ (drift removal C3d): owned-source adoption and the
 # native writer over a production create, with real OS/provider fault sweeps.
 add_executable(sbsql_sblr_alignment_native_owned_adoption

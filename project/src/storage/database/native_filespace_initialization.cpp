@@ -44,7 +44,11 @@ NativeFilespaceInitializationResult InitializeNativeFilespaceOnOpenDevice(
       return Fail(E::invalid_request);
     if (b.flags & disk::FilespaceBootstrapFlag::cluster_authority_required)
       return Fail(E::cluster_requires_authority);
-    if (!device.is_open() || device.read_only()) return Fail(E::invalid_device);
+    // SB_NATIVE_DATA_FILE_OWNERSHIP (owner 2026-11-13, S1): native files are
+    // built only on a device that owns them by its data-file flock alone
+    // (FileDevice::Open(..., native_data_file)), never one that made a lock file.
+    if (!device.is_open() || device.read_only() ||
+        !device.native_data_file_owner()) return Fail(E::invalid_device);
     const auto existing = device.Size();
     if (!existing.ok()) return Fail(E::io_failure);
     if (existing.size_bytes) return Fail(E::device_not_empty);

@@ -10,7 +10,7 @@ void NativeCatalogAuthorityChecks() {
     for(bool index:{false,true}) {
       auto r=request;if(index)r.bootstrap.filespace_role=5;
       const auto path=fixture.Next();disk::FileDevice device;
-      Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"authority fixture owned device");
+      Check(device.Open(path.string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"authority fixture owned device");
       page::NativeCatalogRootReference leaf;
       page::NativeBtreePage node;
       if(index) {

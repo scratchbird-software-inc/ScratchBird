@@ -94,7 +94,7 @@ void PopulatedWorkspaceChecks() {
     const auto request=Request(profile);const auto seed=MetricSeed(request);
     page_bytes=request.bootstrap.page_size_bytes;total_pages=request.total_pages;
     const auto budget=256*page_bytes;const auto path=fixture.Next();disk::FileDevice device;
-    Check(device.Open(path.string(),disk::FileOpenMode::create_new).ok(),"populated workspace owned open");
+    Check(device.Open(path.string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"populated workspace owned open");
     const auto created=db::InitializePopulatedNativeCreationWorkspaceOnOpenDevice(device,request,seed,budget,*fixture.issuer);
     if(!created.ok())std::cerr<<"populated error="<<static_cast<int>(created.error)<<'\n';
     Check(created.ok()&&created.receipt->catalog_rows[0]==4,"real populated native construction");
@@ -134,7 +134,7 @@ void PopulatedWorkspaceChecks() {
     }
     for(unsigned fault=0;fault<11;++fault) {
       auto bad=seed;const auto badpath=fixture.Next();disk::FileDevice target;
-      Check(target.Open(badpath.string(),disk::FileOpenMode::create_new).ok(),"invalid populated fixture open");
+      Check(target.Open(badpath.string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"invalid populated fixture open");
       if(fault==0)bad[0][0].metadata.creator_local_transaction_id=2;
       if(fault==1)bad[0][0].metadata.creator_transaction_uuid.value=Id(999);
       if(fault==2)bad[1].push_back(bad[0][0]);
@@ -161,21 +161,21 @@ void PopulatedWorkspaceChecks() {
       const auto initial=db::NativeCreationCatalogRowBytes(row);Check(initial.has_value(),"exact capacity measurement");
       const auto available=page_bytes-128-32-page::kRowDataPageBodyHeaderBytes;
       row.metadata.record.payload.resize(available-*initial+1,'x');exact[0].push_back(row);
-      disk::FileDevice target;Check(target.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"exact fit owned open");
+      disk::FileDevice target;Check(target.Open(fixture.Next().string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"exact fit owned open");
       const auto fits=db::InitializePopulatedNativeCreationWorkspaceOnOpenDevice(target,request,exact,budget,*fixture.issuer);
       Check(fits.ok()&&fits.receipt->catalog_rows[0]==1,"exact physical leaf capacity succeeds");
       exact[0][0].metadata.record.payload.push_back('x');disk::FileDevice overflow;
-      Check(overflow.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"one byte overflow owned open");
+      Check(overflow.Open(fixture.Next().string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"one byte overflow owned open");
       Arm();const auto rejected=db::InitializePopulatedNativeCreationWorkspaceOnOpenDevice(overflow,request,exact,budget,*fixture.issuer);Disarm();
       Check(rejected.error==db::NativeCreationWorkspaceError::catalog_capacity_exceeded&&!calls[write_call]&&!overflow.Size().size_bytes,"one byte over physical capacity refuses before I/O");
     }
     for(const auto kind:{write_call,sync_call,read_call}) {
-      disk::FileDevice target;Check(target.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"populated fault owned open");
+      disk::FileDevice target;Check(target.Open(fixture.Next().string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"populated fault owned open");
       Arm(kind,1);const auto failed=db::InitializePopulatedNativeCreationWorkspaceOnOpenDevice(target,request,seed,budget,*fixture.issuer);Disarm();
       Check(!failed.ok()&&!failed.receipt&&calls[kind]>=1&&target.is_open(),"physical failure returns no successful populated receipt");
     }
     {
-      disk::FileDevice target;Check(target.Open(fixture.Next().string(),disk::FileOpenMode::create_new).ok(),"reference collision fixture");
+      disk::FileDevice target;Check(target.Open(fixture.Next().string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"reference collision fixture");
       zero_entropy=true;const auto predicted=fixture.issuer->Issue(UuidKind::object);
       Check(predicted.ok(),"predict deterministic test-only issuer identity");fixture.ResetIssuer();
       auto collision_seed=seed;collision_seed[0][0].metadata.audit_uuid=*predicted.value;
