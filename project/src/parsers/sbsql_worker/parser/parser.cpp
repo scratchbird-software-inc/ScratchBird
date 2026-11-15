@@ -43,21 +43,22 @@ std::string ToLowerAscii(std::string value) {
   return value;
 }
 
+// SB_CATALOG_IDENTIFIER_CASE_FOLD (owner Q177, Q185 = 1, 2026-11-14): two
+// presented names (source bindings, a MATCH_RECOGNIZE pattern variable and
+// its DEFINE) are the same name when their own keys are equal
+// (NativeIdentifierComponentKey: the spelling when quoted, upper ASCII fold
+// when not), the binder's rule. (Was: a quoted and an unquoted name were never
+// the same; two unquoted names compared lower-folded.)
 bool SameIdentifier(const NativeIdentifierAstNode& expected,
                     const Token& presented) {
-  if (expected.quoted != presented.quoted) return false;
-  return expected.quoted
-             ? expected.spelling == presented.text
-             : ToLowerAscii(expected.spelling) == ToLowerAscii(presented.text);
+  return NativeIdentifierComponentKey(expected) ==
+         NativeIdentifierComponentKey(presented.text, presented.quoted);
 }
 
 bool SameIdentifier(const NativeIdentifierAstNode& expected,
                     const NativeIdentifierAstNode& presented) {
-  if (expected.quoted != presented.quoted) return false;
-  return expected.quoted
-             ? expected.spelling == presented.spelling
-             : ToLowerAscii(expected.spelling) ==
-                   ToLowerAscii(presented.spelling);
+  return NativeIdentifierComponentKey(expected) ==
+         NativeIdentifierComponentKey(presented);
 }
 
 SourceRange Span(const Token& first, const Token& last) {
@@ -946,12 +947,10 @@ class NativeRelationalParser final {
           expression->qualified_identifier.size() != 1) {
         return false;
       }
-      const auto& presented = expression->qualified_identifier.front();
-      return presented.quoted == expected.quoted &&
-             (presented.quoted
-                  ? presented.spelling == expected.spelling
-                  : ToLowerAscii(presented.spelling) ==
-                        ToLowerAscii(expected.spelling));
+      // Q185 = 1 (SB_CATALOG_IDENTIFIER_CASE_FOLD): SameIdentifier's rule.
+      // (Was: quoted and unquoted never the same; unquoted lower-folded.)
+      return SameIdentifier(expected,
+                            expression->qualified_identifier.front());
     };
     const auto valid_geometry = [&](const NativeExpressionAstNode* expression) {
       return expression != nullptr &&
@@ -1300,12 +1299,10 @@ class NativeRelationalParser final {
       if (expression == nullptr ||
           expression->expression_kind != NativeExpressionAstKind::kIdentifier ||
           expression->qualified_identifier.size() != 1) return false;
-      const auto& presented = expression->qualified_identifier.front();
-      return presented.quoted == expected.quoted &&
-             (presented.quoted
-                  ? presented.spelling == expected.spelling
-                  : ToLowerAscii(presented.spelling) ==
-                        ToLowerAscii(expected.spelling));
+      // Q185 = 1 (SB_CATALOG_IDENTIFIER_CASE_FOLD): SameIdentifier's rule.
+      // (Was: quoted and unquoted never the same; unquoted lower-folded.)
+      return SameIdentifier(expected,
+                            expression->qualified_identifier.front());
     };
     NativeExpressionAstNode* select_project = nullptr;
     for (const auto expression_id : projection_expression_ids) {

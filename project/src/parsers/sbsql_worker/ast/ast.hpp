@@ -217,6 +217,29 @@ struct NativeIdentifierAstNode {
   SourceRange range;
 };
 
+// SEARCH_KEY: SB_CATALOG_IDENTIFIER_CASE_FOLD (owner Q177, Q180-Q183,
+// Q185 = 1, 2026-11-14). A presented SBsql name's own key: its spelling when
+// quoted, its spelling folded to upper case (ASCII letters only, Q182) when
+// unquoted. Two presented names are the same name when their keys are equal:
+// t, T and "T" are one name; "T" and "t" are two; "t" is not t. The one rule
+// for the parser's and binder's source-binding and pattern-variable
+// comparisons (column names wait for Q186). (Was: binder, parser and parser
+// wire each kept a copy that never equated a quoted and an unquoted name and
+// compared two unquoted names lower- or upper-folded.)
+inline std::string NativeIdentifierComponentKey(std::string_view spelling,
+                                                bool quoted) {
+  std::string key(spelling);
+  if (quoted) return key;
+  for (auto& ch : key)
+    if (ch >= 'a' && ch <= 'z') ch = static_cast<char>(ch - 'a' + 'A');
+  return key;
+}
+
+inline std::string NativeIdentifierComponentKey(
+    const NativeIdentifierAstNode& component) {
+  return NativeIdentifierComponentKey(component.spelling, component.quoted);
+}
+
 struct NativeCatalogRelationSourceAstNode {
   std::uint32_t source_id{0};
   NativeRelationSourceAstKind source_kind{

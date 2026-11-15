@@ -1055,7 +1055,9 @@ int main(int argc, char** argv) {
             "Q178: a database named system (no name it would share) creates");
       // A pack whose own names collide: the OPS group renamed role_dba, the
       // ROLE_DBA role's name under the upper fold (both in sys.security). No
-      // caller name is involved, so DATABASE.CREATE_FAILED, the class only.
+      // caller name is involved: the pack's fault, the class only.
+      // Owner Q184 = 1 (2026-11-14, consistent with Q130): refused
+      // DATABASE.CREATE_POLICY_PACK_INVALID. (Was: DATABASE.CREATE_FAILED.)
       const auto pack = artifacts.path() / "q178-pack-group-is-role";
       std::filesystem::copy(SB_DEFAULT_POLICY_PACK_ROOT, pack, std::filesystem::copy_options::recursive);
       const auto groups = pack / "policies" / "groups.json";
@@ -1071,14 +1073,15 @@ int main(int argc, char** argv) {
       auto request = NativeRequest((built_in_dir / "orders.sdb").string(), 16384, c::kCatalogLanguage_en);
       request.context.server_policy_seed_pack_root = pack.string();
       const auto result = api::EngineCreateLifecycle(request);
-      if (result.ok || !HasDiagnostic(result, "DATABASE.CREATE_FAILED"))
+      if (result.ok || !HasDiagnostic(result, "DATABASE.CREATE_POLICY_PACK_INVALID"))
         for (const auto& diagnostic : result.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
-      Check(!result.ok && HasDiagnostic(result, "DATABASE.CREATE_FAILED") &&
+      Check(!result.ok && HasDiagnostic(result, "DATABASE.CREATE_POLICY_PACK_INVALID") &&
+                !HasDiagnostic(result, "DATABASE.CREATE_FAILED") &&
                 DetailHas(result, "native_create_refused_before_open:name_collision:built_in_names_collide") &&
                 !DetailHas(result, "role_dba") && Entries(built_in_dir).empty(),
-            "Q178: a pack whose group and role share a name under the fold is refused before the open, "
-            "DATABASE.CREATE_FAILED name_collision:built_in_names_collide, no file (new case; under the pre-Q177 exact "
-            "profile these two names were different)");
+            "Q178/Q184: a pack whose group and role share a name under the fold is refused before the open, "
+            "DATABASE.CREATE_POLICY_PACK_INVALID name_collision:built_in_names_collide, no file (Q184 = 1; was: "
+            "DATABASE.CREATE_FAILED; under the pre-Q177 exact profile these two names were different)");
     }
     // Q177 (owner 2026-11-14), the owner's example, through the plan's own
     // check (FindNativeCreateNameEntryCollision) with entries keyed as the

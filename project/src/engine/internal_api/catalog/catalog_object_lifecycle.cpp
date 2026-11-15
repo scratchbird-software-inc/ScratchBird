@@ -104,13 +104,11 @@ bool StartsWith(const std::string& value, const std::string& prefix) {
   return value.rfind(prefix, 0) == 0;
 }
 
+// SB_CATALOG_IDENTIFIER_CASE_FOLD (owner Q182 = 1, 2026-11-14): ASCII
+// letters only, never the host locale. Used for profile labels only.
+// (Was: std::tolower, which follows the C locale.)
 std::string LowerAscii(std::string value) {
-  for (char& c : value) { c = static_cast<char>(std::tolower(static_cast<unsigned char>(c))); }
-  return value;
-}
-
-std::string UpperAscii(std::string value) {
-  for (char& c : value) { c = static_cast<char>(std::toupper(static_cast<unsigned char>(c))); }
+  for (char& c : value) { if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a'); }
   return value;
 }
 
@@ -118,23 +116,23 @@ std::string ProfileName(const std::string& profile) {
   return profile.empty() ? std::string("sbsql_v3") : LowerAscii(profile);
 }
 
-bool ProfileFoldsLower(const std::string& profile) {
-  const std::string p = ProfileName(profile);
-  return p.find("postgres") != std::string::npos || p.find("cockroach") != std::string::npos ||
-         p.find("yugabyte") != std::string::npos || p == "postgresql_family";
-}
-
-bool ProfileFoldsUpper(const std::string& profile) {
-  const std::string p = ProfileName(profile);
-  return p.empty() || p == "sbsql_v3" || p == "native" || p == "sbsql" ||
-         p.find("firebird") != std::string::npos;
-}
-
+// SEARCH_KEY: SB_CATALOG_IDENTIFIER_CASE_FOLD (owner Q177, Q180-Q183, Q185 = 1,
+// 2026-11-14). This store's lookup keys are the name registry's: the fold
+// NameRegistryLookupKey chooses from the profile label (native/sbsql/firebird
+// upper, PostgreSQL family, case-insensitive MySQL family and SQLite lower,
+// others none; ASCII only), and the exact key is the text. (Was: a copy of
+// the older label rules: PostgreSQL family lower, native/sbsql/firebird
+// upper, everything else, including the MySQL family, SQLite and XTDB, no
+// fold; through locale-dependent std::toupper / std::tolower.)
 std::string LookupKey(std::string text, const std::string& profile, bool exact) {
-  if (exact) { return text; }
-  if (ProfileFoldsLower(profile)) { return LowerAscii(std::move(text)); }
-  if (ProfileFoldsUpper(profile)) { return UpperAscii(std::move(text)); }
-  return text;
+  return NameRegistryLookupKey(std::move(text), profile, exact);
+}
+
+// SB_CATALOG_IDENTIFIER_CASE_FOLD (owner Q185 = 1): an entry's own-lane key,
+// the registry's rule (NameRegistryEntryOwnLaneKey) on this store's record:
+// the exact key of a quoted entry, the folded key of an unquoted one.
+const std::string& OwnLaneKey(const EngineCatalogNameRecord& name) {
+  return name.requires_exact_match ? name.exact_lookup_key : name.normalized_lookup_key;
 }
 
 std::string DefaultLanguageTag(const EngineRequestContext& context) {
@@ -170,14 +168,18 @@ bool CollisionScopeMatches(const EngineCatalogNameRecord& existing,
          AliasScopedName(wanted, default_language);
 }
 
+// SB_CATALOG_IDENTIFIER_CASE_FOLD (owner Q177, Q183 = 1, Q185 = 1,
+// 2026-11-14): the shared key lane, as the registry
+// (NameRegistryLookupKeysCollide): two names collide when their own-lane keys
+// are equal. Under the native profile unquoted hello collides with Hello and
+// with a quoted "HELLO", not with a quoted "Hello"; quoted "HELLO" and
+// "Hello" coexist. (Was: an unquoted name never collided with a quoted one,
+// and a quoted name compared both names' exact keys, so a quoted "HELLO" did
+// not collide with an unquoted hello and a quoted "Hello" did collide with
+// an unquoted Hello.)
 bool LookupKeysCollide(const EngineCatalogNameRecord& wanted,
                        const EngineCatalogNameRecord& existing) {
-  if (!wanted.requires_exact_match && existing.requires_exact_match) { return false; }
-  const std::string left_key = wanted.requires_exact_match ? wanted.exact_lookup_key
-                                                           : wanted.normalized_lookup_key;
-  const std::string right_key = wanted.requires_exact_match ? existing.exact_lookup_key
-                                                            : existing.normalized_lookup_key;
-  return left_key == right_key;
+  return OwnLaneKey(wanted) == OwnLaneKey(existing);
 }
 
 EngineApiDiagnostic CatalogDiagnostic(const char* code, std::string detail = {}) {
@@ -1298,9 +1300,12 @@ const EngineCatalogObjectRecord* ResolveNamedObjectInScope(
     if (!schema_uuid.is_nil() && entry.schema_uuid != schema_uuid) { continue; }
     if (entry.language_tag != wanted.language_tag) { continue; }
     if (ProfileName(entry.identifier_profile_uuid) != ProfileName(wanted.identifier_profile_uuid)) { continue; }
-    const std::string left_key = wanted.requires_exact_match ? wanted.exact_lookup_key : wanted.normalized_lookup_key;
-    const std::string right_key = wanted.requires_exact_match ? entry.exact_lookup_key : entry.normalized_lookup_key;
-    if (left_key != right_key) { continue; }
+    // Q180/Q181/Q185 (SB_CATALOG_IDENTIFIER_CASE_FOLD): the lookup key (the
+    // text when quoted, folded when not: the wanted name's own-lane key)
+    // against the entry's own-lane key. (Was: a quoted lookup compared the
+    // entry's exact key even for an unquoted entry, and an unquoted lookup
+    // its folded key even for a quoted entry.)
+    if (OwnLaneKey(wanted) != OwnLaneKey(entry)) { continue; }
     const auto* object = FindObject(state, entry.object_uuid);
     if (object != nullptr) { return object; }
   }
@@ -3123,9 +3128,9 @@ EngineCatalogResolveObjectNameResult EngineCatalogResolveObjectName(const Engine
       for (const auto& entry : all.state.names) {
         if (!object_kind.empty() && entry.object_kind != object_kind) { continue; }
         if (!schema_uuid.is_nil() && entry.schema_uuid != schema_uuid) { continue; }
-        const std::string left_key = wanted.requires_exact_match ? wanted.exact_lookup_key : wanted.normalized_lookup_key;
-        const std::string right_key = wanted.requires_exact_match ? entry.exact_lookup_key : entry.normalized_lookup_key;
-        if (left_key == right_key) {
+        // Q185 (SB_CATALOG_IDENTIFIER_CASE_FOLD): the same matching rule as
+        // ResolveNamedObjectInScope. (Was: the same old copy as there.)
+        if (OwnLaneKey(wanted) == OwnLaneKey(entry)) {
           return DiagnosticResult<EngineCatalogResolveObjectNameResult>(
               request.context, kOperation, CatalogDiagnostic(kCatalogObjectDiagnosticMgaVisibilityRefused, entry.object_uuid));
         }

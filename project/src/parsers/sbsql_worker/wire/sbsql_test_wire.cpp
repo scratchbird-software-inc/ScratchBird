@@ -649,13 +649,16 @@ std::string CanonicalUnquotedIdentifier(std::string value) {
   return value;
 }
 
+// SB_CATALOG_IDENTIFIER_CASE_FOLD (owner Q177, Q185 = 1, 2026-11-14): a
+// column qualifier against a model source's alias, the binder's rule
+// (NativeIdentifierComponentKey: the spelling when quoted, upper ASCII fold
+// when not). (Was: a quoted and an unquoted name were never the same; two
+// unquoted names compared lower-folded.) Column names themselves
+// (CanonicalColumnLookupKey below) wait for Q186.
 bool SameIdentifierComponent(const NativeIdentifierAstNode& left,
                              const NativeIdentifierAstNode& right) {
-  if (left.quoted != right.quoted) return false;
-  return left.quoted
-             ? left.spelling == right.spelling
-             : CanonicalUnquotedIdentifier(left.spelling) ==
-                   CanonicalUnquotedIdentifier(right.spelling);
+  return NativeIdentifierComponentKey(left) ==
+         NativeIdentifierComponentKey(right);
 }
 
 std::string CanonicalColumnLookupKey(

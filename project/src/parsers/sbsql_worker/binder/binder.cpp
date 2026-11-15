@@ -49,12 +49,11 @@ std::string ToLowerAscii(std::string value) {
 // and an unquoted name were never the same, and two unquoted names compared
 // lower-folded; for two unquoted names that is the same ASCII
 // case-insensitive answer.)
+// Update 2026-11-14 (owner Q185 = 1): the key is the shared
+// NativeIdentifierComponentKey (ast.hpp), also used by the parser and the
+// parser wire. (Was: this function's own copy of the same rule.)
 std::string IdentifierComponentKey(const NativeIdentifierAstNode& component) {
-  if (component.quoted) return component.spelling;
-  std::string key = component.spelling;
-  for (auto& ch : key)
-    if (ch >= 'a' && ch <= 'z') ch = static_cast<char>(ch - 'a' + 'A');
-  return key;
+  return NativeIdentifierComponentKey(component);
 }
 
 bool SameIdentifierComponent(const NativeIdentifierAstNode& left,
@@ -4255,10 +4254,10 @@ static BoundNativeRelationalDocument BindNativeRelationalAstImpl(
     }
     const auto same_alias = [](const NativeIdentifierAstNode& left,
                                const NativeIdentifierAstNode& right) {
-      return left.quoted == right.quoted &&
-             (left.quoted ? left.spelling == right.spelling
-                          : ToUpperAscii(left.spelling) ==
-                                ToUpperAscii(right.spelling));
+      // Q185 = 1 (SB_CATALOG_IDENTIFIER_CASE_FOLD, owner 2026-11-14): the
+      // source-binding rule, SameIdentifierComponent. (Was: a quoted and an
+      // unquoted alias never the same; two unquoted compared upper-folded.)
+      return SameIdentifierComponent(left, right);
     };
     if (!same_alias(alias->qualified_identifier.front(),
                     *vector_source_ast->alias)) {
@@ -5295,10 +5294,10 @@ static BoundNativeRelationalDocument BindNativeRelationalAstImpl(
         operation_expression->child_expression_ids.front());
     const auto same_alias = [](const NativeIdentifierAstNode& left,
                                const NativeIdentifierAstNode& right) {
-      return left.quoted == right.quoted &&
-             (left.quoted ? left.spelling == right.spelling
-                          : ToUpperAscii(left.spelling) ==
-                                ToUpperAscii(right.spelling));
+      // Q185 = 1 (SB_CATALOG_IDENTIFIER_CASE_FOLD, owner 2026-11-14): the
+      // source-binding rule, SameIdentifierComponent. (Was: a quoted and an
+      // unquoted alias never the same; two unquoted compared upper-folded.)
+      return SameIdentifierComponent(left, right);
     };
     if (alias_expression == nullptr ||
         alias_expression->expression_kind !=
@@ -5564,10 +5563,10 @@ static BoundNativeRelationalDocument BindNativeRelationalAstImpl(
         graph_source_ast->model_operation_id == "GRAPH_EXPAND";
     const auto same_graph_alias = [](const NativeIdentifierAstNode& left,
                                      const NativeIdentifierAstNode& right) {
-      return left.quoted == right.quoted &&
-             (left.quoted ? left.spelling == right.spelling
-                          : ToUpperAscii(left.spelling) ==
-                                ToUpperAscii(right.spelling));
+      // Q185 = 1 (SB_CATALOG_IDENTIFIER_CASE_FOLD, owner 2026-11-14): the
+      // source-binding rule, SameIdentifierComponent. (Was: a quoted and an
+      // unquoted alias never the same; two unquoted compared upper-folded.)
+      return SameIdentifierComponent(left, right);
     };
     const std::string_view expected_semantic =
         graph_expand ? "sblr.model-expand.graph-expand.v1"

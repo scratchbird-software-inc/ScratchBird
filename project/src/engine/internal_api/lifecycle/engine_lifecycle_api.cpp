@@ -814,17 +814,22 @@ EngineCreateLifecycleResult NativeCreateLifecycle(const EngineCreateLifecycleReq
     // 2026-11-14). The plan's own collision check found two names the create
     // would write the same: the caller's database name is a name refusal, a
     // caller principal name a principal refusal (the pre-plan check, Q176,
-    // normally refuses those first), and a pack or engine name stays
-    // DATABASE.CREATE_FAILED. The detail names whose name, never the text.
-    // (Was: no such check; e.g. a database named sys created, its name the
-    // same as the sys schema's in the database's root scope.)
+    // normally refuses those first). The detail names whose name, never the
+    // text. (Was: no such check; e.g. a database named sys created, its name
+    // the same as the sys schema's in the database's root scope.)
+    // Update 2026-11-14 (owner Q184 = 1, consistent with Q130 above): two
+    // built-in names (the pack's or the engine's) colliding is the pack's
+    // fault, so DATABASE.CREATE_POLICY_PACK_INVALID: the pack cannot name
+    // this database's own objects. (Was: DATABASE.CREATE_FAILED.) A class of
+    // none cannot reach here; it stays DATABASE.CREATE_FAILED.
     if (plan.error == db::NativeDatabaseCreateError::name_collision) {
       using K = db::NativeCreateNameCollisionClass;
       const char* code = plan.name_collision == K::database_name ? "DATABASE.CREATE_NAME_INVALID"
                          : plan.name_collision == K::bootstrap_principal_name ||
                                  plan.name_collision == K::service_principal_name
                              ? "DATABASE.CREATE_PRINCIPAL_INVALID"
-                             : "DATABASE.CREATE_FAILED";
+                         : plan.name_collision == K::built_in_name ? "DATABASE.CREATE_POLICY_PACK_INVALID"
+                                                                    : "DATABASE.CREATE_FAILED";
       return refuse(code, std::string("native_create_refused_before_open:name_collision:") +
                               db::NativeCreateNameCollisionClassName(plan.name_collision));
     }

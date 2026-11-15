@@ -2093,6 +2093,73 @@ void TestCatalogBatchProcessLoss(const std::filesystem::path& path) {
 
 }  // namespace
 
+// SB_CATALOG_IDENTIFIER_CASE_FOLD (owner Q177, Q180, Q181, Q183, Q185 = 1,
+// 2026-11-14): this store's create-time collision and resolve follow the
+// name registry's own-lane rule under the native profile (sbsql_v3: unquoted
+// folds to upper ASCII, quoted keeps its spelling). New test; each "was" is
+// what the older copies of the rule in catalog_object_lifecycle.cpp did.
+catalog_api::EngineLocalizedName QuotedName(std::string value) {
+  auto name = Name(std::move(value));
+  name.was_quoted = true;
+  name.quote_style = "double_quote";
+  name.requires_exact_match = true;
+  return name;
+}
+
+void TestIdentifierCaseOwnLane(const std::filesystem::path& path) {
+  const auto database_uuid = CreateDatabase(path);
+  const auto principal = scratchbird::tests::FixtureUuid(1385, 8);
+  const auto schema_uuid = scratchbird::tests::FixtureUuid(1385, 9);
+  auto setup = Begin(path, database_uuid, principal);
+  RequireOk(catalog_api::EngineCatalogCreateObject(CreateRequest(setup, schema_uuid, "schema", {}, "case_rules")),
+            "Q185: schema create failed");
+  Commit(setup);
+  const auto create = [&](std::uint64_t id, catalog_api::EngineLocalizedName name) {
+    auto context = Begin(path, database_uuid, principal);
+    auto request = CreateRequest(context, scratchbird::tests::FixtureUuid(1385, id), "domain", schema_uuid, "unused");
+    request.localized_names = {std::move(name)};
+    auto result = catalog_api::EngineCatalogCreateObject(request);
+    if (result.ok) Commit(context); else Rollback(context);
+    return result;
+  };
+  RequireOk(create(1, Name("Hello")), "Q185: unquoted Hello creates");
+  RequireDiagnostic(create(2, Name("hello")), catalog_api::kCatalogObjectDiagnosticDuplicateName,
+                    "Q185: unquoted hello is unquoted Hello (unchanged)");
+  RequireDiagnostic(create(3, QuotedName("HELLO")), catalog_api::kCatalogObjectDiagnosticDuplicateName,
+                    "Q181/Q185: quoted \"HELLO\" collides with unquoted Hello (was: created)");
+  RequireOk(create(4, QuotedName("Hello")),
+            "Q177/Q185: quoted \"Hello\" coexists with unquoted Hello (was: refused duplicate_name)");
+  RequireOk(create(5, QuotedName("World")), "Q185: quoted \"World\" creates");
+  RequireOk(create(6, QuotedName("WORLD")),
+            "Q177: quoted \"WORLD\" coexists with quoted \"World\" (unchanged)");
+  RequireDiagnostic(create(7, Name("world")), catalog_api::kCatalogObjectDiagnosticDuplicateName,
+                    "Q183/Q185: unquoted world collides with quoted \"WORLD\" (was: created; an unquoted name never collided with a quoted one)");
+  const auto resolve = [&](catalog_api::EngineLocalizedName name) {
+    auto context = Begin(path, database_uuid, principal);
+    auto request = ResolveRequest(context, "domain", schema_uuid, "unused");
+    request.localized_names = {std::move(name)};
+    auto result = catalog_api::EngineCatalogResolveObjectName(request);
+    Rollback(context);
+    return result;
+  };
+  const auto resolves_to = [&](catalog_api::EngineLocalizedName name, std::uint64_t id, const char* what) {
+    const auto result = resolve(std::move(name));
+    RequireOk(result, what);
+    Require(result.bound_object_identity.object_uuid == scratchbird::tests::FixtureUuid(1385, id), what);
+  };
+  resolves_to(Name("hello"), 1,
+              "Q180/Q185: unquoted hello finds unquoted Hello, not quoted \"Hello\" (was: the first of the two)");
+  resolves_to(Name("HELLO"), 1, "Q185: unquoted HELLO finds unquoted Hello");
+  resolves_to(QuotedName("HELLO"), 1, "Q181/Q185: quoted \"HELLO\" finds unquoted Hello (was: name not found)");
+  resolves_to(QuotedName("Hello"), 4, "Q185: quoted \"Hello\" finds quoted \"Hello\" only");
+  resolves_to(QuotedName("World"), 5, "Q185: quoted \"World\" finds quoted \"World\"");
+  resolves_to(Name("world"), 6,
+              "Q180/Q185: unquoted world finds quoted \"WORLD\", not quoted \"World\" "
+              "(was: the first of the two quoted entries whose folded key is WORLD)");
+  RequireDiagnostic(resolve(QuotedName("world")), catalog_api::kCatalogObjectDiagnosticNameNotFound,
+                    "Q185: quoted \"world\" finds nothing (unchanged)");
+}
+
 int main(int argc, char** argv) try {
 #if defined(SB_CATALOG_TEST_WRAP_SYNC)
   if (argc == 5 && std::string_view(argv[1]) == "--crash-catalog")
@@ -2118,6 +2185,7 @@ int main(int argc, char** argv) try {
   const auto path = artifacts.path() / "catalog.sbdb";
   const auto database_uuid = CreateDatabase(path);
   TestCreateAlterRenameDropAndDependencies(path, database_uuid);
+  TestIdentifierCaseOwnLane(artifacts.path() / "identifier-case.sbdb");  // Q185
   TestMissingUuidOwnershipCacheAndMga(path, database_uuid);
   TestDdlSynonymCreateDropRoute(path, database_uuid);
   RequireSequencedPublication(path);
