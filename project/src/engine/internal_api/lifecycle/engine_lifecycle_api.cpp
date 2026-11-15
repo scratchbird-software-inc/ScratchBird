@@ -454,7 +454,14 @@ const char* NativeCreationCapacityBoundName(scratchbird::storage::database::Nati
 // is engine- or pack-only: policy_assembly is also reached by the caller's
 // principal names colliding (bootstrap named as the service principal), and
 // the plan does not say which name collided, so no code is invented for it
-// (owner question). Stage by stage
+// (owner question).
+// Update 2026-11-14 (owner Q153 = 1, SB_NATIVE_CREATE_PRINCIPAL_NAME_COLLISION):
+// the bootstrap named as the service principal (under the pack's profile and
+// collision policy) is now refused before the plan, in NativeCreateLifecycle,
+// as DATABASE.CREATE_PRINCIPAL_INVALID with the class of collision. Only an
+// ASCII case variant the pack's profile does not collide, or a service
+// principal named ROOT, still reaches policy_assembly here (the plan's own
+// equal_name rule; owner question). Stage by stage
 // (NativeDatabaseCreateError; the bound decides for the capacity stages):
 //   invalid_principal                     -> DATABASE.CREATE_PRINCIPAL_INVALID
 //     (a principal name breaking the character rule, a credential
@@ -680,6 +687,37 @@ EngineCreateLifecycleResult NativeCreateLifecycle(const EngineCreateLifecycleReq
     if (over_profile(service_name)) {
       return refuse("DATABASE.CREATE_NAME_INVALID",
                     "internal_service_principal_name_longer_than_policy_identifier_profile_maximum");
+    }
+  }
+  // SEARCH_KEY: SB_NATIVE_CREATE_PRINCIPAL_NAME_COLLISION (owner Q152 = 1,
+  // Q153 = 1, 2026-11-14). A caller principal name that would hold the same
+  // name as another principal this create writes is refused here, after the
+  // Q133 length check and before any identity is issued or the plan runs,
+  // with DATABASE.CREATE_PRINCIPAL_INVALID. "The same" is the pack's: the
+  // lookup keys derived under the identifier profile the principals are
+  // named under (the pack's first dialect profile's), compared by the pack's
+  // collision policy and group (SB_NAME_COLLISION_ORDER); the agent principal
+  // names are the pack's agent_type_id values. The detail names the class of
+  // collision, never a name. The service-vs-agent case is the same class of
+  // caller input (internal_service_principal_name:) and is refused the same way.
+  // (Was: Q152, a bootstrap principal named like an agent principal, e.g.
+  // alert_manager, created; a service principal named like one created too.
+  // Q153, a bootstrap principal named like the service principal was refused
+  // by the plan's policy assembly, DATABASE.CREATE_FAILED
+  // native_create_refused_before_open:policy_assembly.)
+  // Not changed: the plan's own bootstrap/service rule compares ASCII
+  // case-insensitively and reserves "ROOT" for the service principal
+  // (AssembleNativeInitialPolicyRecordsImpl, equal_name); a case variant the
+  // pack's exact profile does not collide still reaches it and is refused as
+  // DATABASE.CREATE_FAILED policy_assembly (owner question, Q152 report).
+  {
+    using C = db::NativeCreatePrincipalNameCollision;
+    const auto collision =
+        db::CheckNativeCreatePrincipalNameCollisions(policy_root, request.database_language, bootstrap_name, service_name);
+    // pack_unusable is not a principal refusal: such a pack is refused by
+    // the plan below exactly as before (no new outcome for a pack).
+    if (collision != C::none && collision != C::pack_unusable) {
+      return refuse("DATABASE.CREATE_PRINCIPAL_INVALID", db::NativeCreatePrincipalNameCollisionName(collision));
     }
   }
 

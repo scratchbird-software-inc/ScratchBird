@@ -118,6 +118,7 @@ namespace c = scratchbird::core::catalog;
 namespace p = scratchbird::core::platform;
 namespace d = scratchbird::storage::disk;
 namespace u = scratchbird::core::uuid;
+namespace db = scratchbird::storage::database;  // Q152
 
 int checks = 0;
 void Check(bool ok, const char* what, std::source_location at = std::source_location::current()) {
@@ -818,38 +819,166 @@ int main(int argc, char** argv) {
     }, "capacity_exceeded:bound=row_bytes", "DATABASE.CREATE_ROW_EXCEEDS_PAGE_CAPACITY",
        "Q144/Q145: a 331-scalar four-byte name under the default pack at 8K is refused before the open, "
        "DATABASE.CREATE_ROW_EXCEEDS_PAGE_CAPACITY (new case)");
-    // Q144 = 1: input-driven but left DATABASE.CREATE_FAILED. A bootstrap
-    // principal named like the service principal is refused at the plan's
-    // policy assembly; the plan does not say which caller name collided, so
-    // no code is invented for it (owner question in the Q144 report).
+    // Q144 = 1 left a bootstrap principal named like the service principal
+    // DATABASE.CREATE_FAILED at the plan's policy assembly (no attribution).
+    // Q152 = 1 / Q153 = 1 (owner 2026-11-14, SB_NATIVE_CREATE_PRINCIPAL_NAME_COLLISION):
+    // a caller principal name that is the same, under the pack's identifier
+    // profile and collision policy, as another principal the create writes is
+    // refused before the plan, DATABASE.CREATE_PRINCIPAL_INVALID, the detail
+    // naming the class of collision and neither name; no file.
     {
-      const auto dir = artifacts.path() / "q122-q144-bootstrap-is-service";
+      const auto collides = [&](const char* label, const std::string& bootstrap, const std::string& service,
+                                const char* detail, const char* what) {
+        const auto dir = artifacts.path() / label;
+        std::filesystem::create_directory(dir);
+        auto request = NativeRequest((dir / "orders.sdb").string(), 16384, c::kCatalogLanguage_en);
+        std::erase_if(request.option_envelopes, [](const auto& o) {
+          return o.starts_with("bootstrap_principal_name:") || o.starts_with("internal_service_principal_name:"); });
+        request.option_envelopes.push_back("bootstrap_principal_name:" + bootstrap);
+        request.option_envelopes.push_back("internal_service_principal_name:" + service);
+        const auto result = api::EngineCreateLifecycle(request);
+        if (result.ok || !HasDiagnostic(result, "DATABASE.CREATE_PRINCIPAL_INVALID"))
+          for (const auto& diagnostic : result.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+        Check(!result.ok && HasDiagnostic(result, "DATABASE.CREATE_PRINCIPAL_INVALID") && DetailHas(result, detail) &&
+                  !DetailHas(result, bootstrap) && !DetailHas(result, service) && Entries(dir).empty(),
+              what);
+      };
+      // Q153 = 1. (Was: DATABASE.CREATE_FAILED
+      // native_create_refused_before_open:policy_assembly, no file.)
+      collides("q153-bootstrap-is-service", "NodeService", "NodeService",
+               "bootstrap_principal_name_collides_with_internal_service_principal_name",
+               "Q153: bootstrap principal named as the service principal: DATABASE.CREATE_PRINCIPAL_INVALID before the "
+               "plan, class only, no file (was: DATABASE.CREATE_FAILED policy_assembly)");
+      // Q152 = 1. (Was: created; recorded 2026-11-14 as "Q144 (recorded
+      // behaviour today): a bootstrap principal named like an agent principal
+      // (alert_manager) creates".)
+      collides("q152-bootstrap-is-agent", "alert_manager", "NodeService",
+               "bootstrap_principal_name_collides_with_agent_principal_name",
+               "Q152: bootstrap principal named as an agent principal (alert_manager): DATABASE.CREATE_PRINCIPAL_INVALID "
+               "before the plan, no file (was: created)");
+      // A worker agent type's principal too (the pack lists workers and
+      // readers with principals only). New case.
+      collides("q152-bootstrap-is-worker-agent", "archive_transfer_worker", "NodeService",
+               "bootstrap_principal_name_collides_with_agent_principal_name",
+               "Q152: bootstrap principal named as a worker agent principal: DATABASE.CREATE_PRINCIPAL_INVALID, no file "
+               "(new case; was: not probed with this name; the manager agent name backup_manager created, probed 2026-11-14)");
+      // Service named as an agent principal: the same class of caller input
+      // (internal_service_principal_name:), refused the same way. (Was:
+      // created; probed 2026-11-14.)
+      collides("q152-service-is-agent", "BootstrapAdmin", "alert_manager",
+               "internal_service_principal_name_collides_with_agent_principal_name",
+               "Q152: service principal named as an agent principal: DATABASE.CREATE_PRINCIPAL_INVALID, no file "
+               "(new case; was: created)");
+      // Both named as the same agent: the bootstrap/service pair is reported
+      // first. (Was: DATABASE.CREATE_FAILED policy_assembly; probed.)
+      collides("q153-both-are-agent", "alert_manager", "alert_manager",
+               "bootstrap_principal_name_collides_with_internal_service_principal_name",
+               "Q153: bootstrap and service both named as one agent principal: the bootstrap/service collision is "
+               "reported, no file (new case; was: DATABASE.CREATE_FAILED policy_assembly)");
+    }
+    // Case variants under the default pack. Its identifier profile compares
+    // exactly (comparison_mode exact, and the pack carries no fold mode), so a
+    // case variant is a different name: these collide with nothing under the
+    // pack and create. (Probed 2026-11-14: the same outcome before Q152.)
+    {
+      const auto creates = [&](const char* label, const std::string& bootstrap, const std::string& service,
+                               const char* what) {
+        const auto dir = artifacts.path() / label;
+        std::filesystem::create_directory(dir);
+        auto request = NativeRequest((dir / "orders.sdb").string(), 16384, c::kCatalogLanguage_en);
+        std::erase_if(request.option_envelopes, [](const auto& o) {
+          return o.starts_with("bootstrap_principal_name:") || o.starts_with("internal_service_principal_name:"); });
+        request.option_envelopes.push_back("bootstrap_principal_name:" + bootstrap);
+        request.option_envelopes.push_back("internal_service_principal_name:" + service);
+        const auto result = api::EngineCreateLifecycle(request);
+        if (!result.ok) for (const auto& diagnostic : result.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+        Check(result.ok && Entries(dir).size() == 1, what);
+      };
+      creates("q152-bootstrap-agent-case-variant", "Alert_Manager", "NodeService",
+              "Q152: Alert_Manager is not alert_manager under the pack's exact profile: creates");
+      creates("q152-bootstrap-agent-upper", "ALERT_MANAGER", "NodeService",
+              "Q152: ALERT_MANAGER is not alert_manager under the pack's exact profile: creates");
+      creates("q152-service-agent-case-variant", "BootstrapAdmin", "Alert_Manager",
+              "Q152: a service principal Alert_Manager is not alert_manager under the pack's exact profile: creates");
+    }
+    // Recorded, not a ruling: the plan's own bootstrap/service rule
+    // (AssembleNativeInitialPolicyRecordsImpl, equal_name) compares ASCII
+    // case-insensitively, not by the pack's profile, so a case variant the
+    // profile does not collide is still refused there, DATABASE.CREATE_FAILED
+    // policy_assembly. Owner question in the Q152 report.
+    {
+      const auto dir = artifacts.path() / "q153-bootstrap-service-case-variant";
       std::filesystem::create_directory(dir);
       auto request = NativeRequest((dir / "orders.sdb").string(), 16384, c::kCatalogLanguage_en);
       std::erase_if(request.option_envelopes, [](const auto& o) { return o.starts_with("bootstrap_principal_name:"); });
-      request.option_envelopes.push_back("bootstrap_principal_name:NodeService");
+      request.option_envelopes.push_back("bootstrap_principal_name:nodeservice");
       const auto result = api::EngineCreateLifecycle(request);
-      if (result.ok || !HasDiagnostic(result, "DATABASE.CREATE_FAILED"))
-        for (const auto& diagnostic : result.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
       Check(!result.ok && HasDiagnostic(result, "DATABASE.CREATE_FAILED") &&
                 DetailHas(result, "native_create_refused_before_open:policy_assembly") && Entries(dir).empty(),
-            "Q144: bootstrap principal named as the service principal: refused before the open, policy_assembly, "
-            "still DATABASE.CREATE_FAILED (recorded; no attribution invented)");
+            "Q153 (recorded behaviour today): bootstrap nodeservice vs service NodeService is not the same name under "
+            "the pack's exact profile, but the plan's ASCII case-insensitive rule refuses it, DATABASE.CREATE_FAILED "
+            "policy_assembly, no file");
     }
-    // Recorded, not a ruling: a bootstrap principal named like an agent
-    // type's principal (agent principals are named by their pack
-    // agent_type_id) is NOT refused; the create succeeds. Owner question in
-    // the Q144 report.
+    // The comparison under a profile that folds case. No pack can declare one
+    // today (the pack has no fold mode, and a folded comparison without one
+    // is not an admitted profile), so it is reached only through the check
+    // itself, with a profile built here: lower_ascii fold, folded comparison.
     {
-      const auto dir = artifacts.path() / "q144-bootstrap-is-agent";
-      std::filesystem::create_directory(dir);
-      auto request = NativeRequest((dir / "orders.sdb").string(), 16384, c::kCatalogLanguage_en);
-      std::erase_if(request.option_envelopes, [](const auto& o) { return o.starts_with("bootstrap_principal_name:"); });
-      request.option_envelopes.push_back("bootstrap_principal_name:alert_manager");
-      const auto result = api::EngineCreateLifecycle(request);
-      Check(result.ok && Entries(dir).size() == 1,
-            "Q144 (recorded behaviour today): a bootstrap principal named like an agent principal (alert_manager) creates");
-      std::printf("Q144 bootstrap named like an agent principal: creates (recorded; owner question)\n");
+      const auto id = [](std::uint8_t tag) {
+        p::Uuid u{};
+        u.bytes = {0x01, 0x90, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0x61, tag};
+        return u;
+      };
+      c::CatalogIdentifierResolutionProfile folded;
+      folded.profile_uuid = id(1); folded.database_uuid = id(2); folded.generation = 1;
+      folded.escape_rule = c::IdentifierEscapeRule::not_applicable;
+      folded.unquoted_fold_mode = c::IdentifierFoldMode::lower_ascii;
+      folded.comparison_mode = c::IdentifierComparisonMode::folded;
+      folded.storage_display_mode = c::IdentifierDisplayMode::preserve_user_text;
+      folded.reserved_word_behavior = c::IdentifierReservedWordMode::parser_profile_specific;
+      folded.length_unit = c::IdentifierLengthUnit::unicode_scalar_values;
+      folded.maximum_identifier_length = 512;
+      folded.origin_transaction_uuid = {p::UuidKind::transaction, id(3)};
+      folded.origin_local_transaction_id = 1;
+      auto exact = folded;
+      exact.unquoted_fold_mode = c::IdentifierFoldMode::none;
+      exact.comparison_mode = c::IdentifierComparisonMode::exact;
+      Check(c::CatalogIdentifierProfileEncodedBytes(folded).has_value() &&
+                c::CatalogIdentifierProfileEncodedBytes(exact).has_value(),
+            "Q152: the hand-built folded and exact profiles are admitted profiles");
+      using C = db::NativeCreatePrincipalNameCollision;
+      const std::vector<std::string> agents{"alert_manager", "backup_manager"};
+      const auto find = [&](const c::CatalogIdentifierResolutionProfile& profile, std::string_view bootstrap,
+                            std::string_view service, bool bound = true,
+                            c::CatalogCollisionLanguageLane language = c::CatalogCollisionLanguageLane::exact_tag,
+                            c::CatalogCollisionKeyLane key = c::CatalogCollisionKeyLane::separate) {
+        return db::FindNativeCreatePrincipalNameCollision(profile, language, key, bound, c::kCatalogLanguage_en,
+                                                          bootstrap, service, agents);
+      };
+      Check(find(folded, "Alert_Manager", "NodeService") == C::bootstrap_is_agent_principal &&
+                find(folded, "ALERT_MANAGER", "NodeService") == C::bootstrap_is_agent_principal,
+            "Q152: under a lower_ascii folding profile a case variant of an agent principal collides");
+      Check(find(folded, "nodeservice", "NodeService") == C::bootstrap_is_service_principal,
+            "Q153: under a folding profile a case variant of the service principal collides");
+      Check(find(folded, "BootstrapAdmin", "Backup_Manager") == C::service_is_agent_principal,
+            "Q152: under a folding profile a service principal case variant of an agent collides");
+      Check(find(exact, "Alert_Manager", "NodeService") == C::none &&
+                find(exact, "nodeservice", "NodeService") == C::none &&
+                find(exact, "alert_manager", "NodeService") == C::bootstrap_is_agent_principal,
+            "Q152: under an exact profile only the identical name collides");
+      Check(find(folded, "alert_manager_2", "NodeService") == C::none &&
+                find(folded, "alert_manage", "NodeService") == C::none,
+            "Q152: a longer or shorter name is not a collision under either profile");
+      Check(find(folded, "alert_manager", "NodeService", false) == C::none,
+            "Q152: a policy that does not bind user_account collides nothing");
+      Check(find(folded, "Alert_Manager", "NodeService", true, c::CatalogCollisionLanguageLane::all_languages,
+                 c::CatalogCollisionKeyLane::shared) == C::bootstrap_is_agent_principal,
+            "Q152: the group's other lanes give the same answer for principals (one language, unquoted)");
+      Check(find(folded, "alert_manager", "NodeService", true, static_cast<c::CatalogCollisionLanguageLane>(9)) ==
+                C::pack_unusable,
+            "Q152: a lane value the check cannot reduce is refused, never guessed");
+      Check(find(folded, "", "NodeService") == C::none,
+            "Q152: a name whose keys cannot be derived collides with nothing here (Q133 or the plan refuses it)");
     }
     {
       const auto dir = artifacts.path() / "q145-8k-330";

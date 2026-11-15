@@ -6,7 +6,10 @@
 #include "native_policy_creation.hpp"
 #include "catalog_schema_creation.hpp"
 #include "catalog_language.hpp"
+#include "catalog_identifier_profile.hpp"
+#include "catalog_naming_collision_policy.hpp"
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <string_view>
@@ -99,6 +102,49 @@ enum class NativeCreateNameClass {
   database,filespace,schema,agent,datatype,index
 };
 const char* NativeCreateNameClassName(NativeCreateNameClass) noexcept;
+// SEARCH_KEY: SB_NATIVE_CREATE_PRINCIPAL_NAME_COLLISION (owner Q152 = 1,
+// Q153 = 1, 2026-11-14). Native CREATE DATABASE refuses, before the plan, a
+// caller principal name that would hold the same name as another principal
+// the create writes, under the pack's naming collision policy and the
+// identifier profile the principals are named under. The class of collision
+// only, never the name text (the pack's agent names are names too).
+//   bootstrap_is_service_principal  bootstrap_principal_name: vs
+//                                   internal_service_principal_name: (Q153)
+//   bootstrap_is_agent_principal    bootstrap_principal_name: vs an agent
+//                                   principal (the pack's agent_type_id) (Q152)
+//   service_is_agent_principal      internal_service_principal_name: vs an
+//                                   agent principal (same class of caller
+//                                   input; refused the same way)
+//   pack_unusable                   the pack's naming family could not be
+//                                   turned into the profile/policy the plan
+//                                   would use (the plan refuses such a pack)
+enum class NativeCreatePrincipalNameCollision {
+  none,bootstrap_is_service_principal,bootstrap_is_agent_principal,service_is_agent_principal,pack_unusable
+};
+const char* NativeCreatePrincipalNameCollisionName(NativeCreatePrincipalNameCollision) noexcept;
+// The comparison itself, over an admitted identifier profile and the pack's
+// collision group: each principal name gets the name entry the plan would
+// write for it (user_account, one scope, `profile`, `language`, unquoted,
+// requires_exact_match false, both lanes from DeriveCatalogIdentifierLookupKeysInto)
+// and two entries collide exactly when SB_NAME_COLLISION_ORDER
+// (CompareCatalogNameCollisionScope / CompareCatalogNameCollisionLanes) says
+// so. `user_accounts_bound` is whether the policy body binds user_account to
+// `group` at all (false: nothing collides). A name whose keys cannot be
+// derived (text or length rule) collides with nothing here; Q133 or the plan
+// refuses it. Exposed for tests: a profile that folds case can only be built
+// by hand today (the pack carries no fold mode).
+NativeCreatePrincipalNameCollision FindNativeCreatePrincipalNameCollision(
+    const core::catalog::CatalogIdentifierResolutionProfile& profile,
+    core::catalog::CatalogCollisionLanguageLane language_lane,core::catalog::CatalogCollisionKeyLane key_lane,
+    bool user_accounts_bound,const core::platform::Uuid& language,std::string_view bootstrap_principal_name,
+    std::string_view service_principal_name,std::span<const std::string> agent_principal_names) noexcept;
+// The same, from the server's pack, as the plan reads it: the agent principal
+// names are the pack's agent_type_id values, the profile is the one the
+// pack's first dialect profile names (built by the same seed conversion the
+// plan uses), the policy is the pack's (one) collision policy and its group.
+NativeCreatePrincipalNameCollision CheckNativeCreatePrincipalNameCollisions(
+    std::string_view policy_seed_pack_root,const core::platform::Uuid& language,
+    std::string_view bootstrap_principal_name,std::string_view service_principal_name) noexcept;
 struct NativeDatabaseCreateResult {
   NativeDatabaseCreateError error=NativeDatabaseCreateError::invalid_request;
   // Q130: set (with the stage's error) when a name was over the profile maximum.

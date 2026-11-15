@@ -8421,6 +8421,26 @@ struct NativePolicyFamilyBuild {
   std::vector<Uuid> other_identities;
   std::vector<std::pair<scratchbird::core::catalog::BootstrapPolicyArea,Uuid>> bindings;
 };
+// SEARCH_KEY: SB_NATIVE_CREATE_PRINCIPAL_NAME_COLLISION (owner Q152 = 1,
+// Q153 = 1, 2026-11-14). The one conversion of a pack identifier-profile
+// seed into the profile record the create writes; the policy family assembly
+// below and the pre-plan principal-name collision check both use it, so the
+// check derives keys under exactly the profile the name rows are written
+// under. Generation 1, origin the construction transaction.
+static scratchbird::core::catalog::CatalogIdentifierResolutionProfile NativeIdentifierProfileFromSeed(
+    const NativeIdentifierProfileSeed& seed,const Uuid& profile_uuid,const Uuid& database_uuid,
+    const TypedUuid& origin_transaction) {
+  scratchbird::core::catalog::CatalogIdentifierResolutionProfile p;p.profile_uuid=profile_uuid;p.database_uuid=database_uuid;
+  p.generation=1;p.escape_rule=seed.escape_rule;p.comparison_mode=seed.comparison_mode;
+  p.storage_display_mode=seed.storage_display_mode;p.reserved_word_behavior=seed.reserved_word_behavior;
+  p.length_unit=seed.length_unit;p.dialect_mode_flags=seed.dialect_mode_flags;
+  // Q127 = 3 (SB_CATALOG_IDENTIFIER_PROFILE_LENGTH_RULE): the pack's maximum.
+  // (Was: never set, so every native profile carried 0, no limit.)
+  p.maximum_identifier_length=seed.maximum_identifier_length;
+  p.origin_transaction_uuid=origin_transaction;p.origin_local_transaction_id=kBootstrapCatalogTransactionId;
+  return p;
+}
+
 NativeInitialPolicyError BuildNativePolicyFamilyDefinitions(
     const NativePolicyFamilySeeds& s,const NativeInitialPolicyFamilyIdentities& ids,const Uuid& database_uuid,
     const TypedUuid& tx,const Uuid& authority_owner_uuid,std::set<Uuid>& seen,NativePolicyFamilyBuild* out) {
@@ -8610,14 +8630,11 @@ NativeInitialPolicyError BuildNativePolicyFamilyDefinitions(
   }
   for(std::size_t i=0;i<s.identifier_profiles.size();++i) {
     const auto& seed=s.identifier_profiles[i];
-    c::CatalogIdentifierResolutionProfile p;p.profile_uuid=ids.identifier_profiles[i];p.database_uuid=database_uuid;
-    p.generation=1;p.escape_rule=seed.escape_rule;p.comparison_mode=seed.comparison_mode;
-    p.storage_display_mode=seed.storage_display_mode;p.reserved_word_behavior=seed.reserved_word_behavior;
-    p.length_unit=seed.length_unit;p.dialect_mode_flags=seed.dialect_mode_flags;
-    // Q127 = 3 (SB_CATALOG_IDENTIFIER_PROFILE_LENGTH_RULE): the pack's maximum.
-    // (Was: never set, so every native profile carried 0, no limit.)
-    p.maximum_identifier_length=seed.maximum_identifier_length;
-    p.origin_transaction_uuid=tx;p.origin_local_transaction_id=kBootstrapCatalogTransactionId;
+    // Q152/Q153 (SB_NATIVE_CREATE_PRINCIPAL_NAME_COLLISION): the seed's values
+    // are copied by NativeIdentifierProfileFromSeed, shared with the
+    // pre-plan principal-name collision check. (Was: the same assignments
+    // inline here; the Q127 maximum is among them.)
+    const auto p=NativeIdentifierProfileFromSeed(seed,ids.identifier_profiles[i],database_uuid,tx);
     // 3b: the pack's profile_name is the profile's reference name, not record data.
     if(!emit(p.profile_uuid,CatalogRecordKind::config_profile,c::CatalogObjectSubtype::identifier_resolution_profile,
           c::EncodeCatalogIdentifierProfileInto(p,backing),seed.profile_name))return E::invalid_definition;
@@ -9901,6 +9918,118 @@ const char* NativeCreateNameClassName(NativeCreateNameClass name_class) noexcept
     case N::index:return "catalog_index_name";
   }
   return "unknown";
+}
+
+const char* NativeCreatePrincipalNameCollisionName(NativeCreatePrincipalNameCollision collision) noexcept {
+  using C=NativeCreatePrincipalNameCollision;
+  switch(collision) {
+    case C::none:return "none";
+    case C::bootstrap_is_service_principal:
+      return "bootstrap_principal_name_collides_with_internal_service_principal_name";
+    case C::bootstrap_is_agent_principal:return "bootstrap_principal_name_collides_with_agent_principal_name";
+    case C::service_is_agent_principal:return "internal_service_principal_name_collides_with_agent_principal_name";
+    case C::pack_unusable:return "policy_pack_naming_family_unusable_for_principal_names";
+  }
+  return "unknown";
+}
+
+// SEARCH_KEY: SB_NATIVE_CREATE_PRINCIPAL_NAME_COLLISION (owner Q152 = 1,
+// Q153 = 1, 2026-11-14). Why one name entry per principal, compared by
+// SB_NAME_COLLISION_ORDER, is what the plan would hold to the collision
+// policy (verified in PlanNativeDatabaseCreate / AssembleNativeInitialPolicyRecordsImpl,
+// 2026-11-14):
+//  - the bootstrap, service and every agent principal are user_account records
+//    (NativeBootstrapPrincipalDefinition, NativeLocalServicePrincipalDefinition,
+//    NativeAgentPrincipalDefinition), each named by its "principal_name"
+//    (NativeSecurityReferenceName), the agent's being its pack agent_type_id;
+//  - all are security records, placed under sys.security: one scope;
+//  - all are named under the pack's first dialect profile's identifier
+//    profile, in the database's default language, unquoted, with
+//    requires_exact_match false (BuildBootstrapNamedCreationUnit);
+//  - the pack's one collision policy binds every built-in record kind to its
+//    record_kind_group (the loader admits only "all_built_in").
+// The create workspace writes the name rows without the collision check the
+// catalog writer applies to later inserts (found 2026-11-14: such a pair
+// created), so this check is the create's.
+NativeCreatePrincipalNameCollision FindNativeCreatePrincipalNameCollision(
+    const core::catalog::CatalogIdentifierResolutionProfile& profile,
+    core::catalog::CatalogCollisionLanguageLane language_lane,core::catalog::CatalogCollisionKeyLane key_lane,
+    bool user_accounts_bound,const Uuid& language,std::string_view bootstrap_principal_name,
+    std::string_view service_principal_name,std::span<const std::string> agent_principal_names) noexcept {
+  namespace c=scratchbird::core::catalog;
+  using C=NativeCreatePrincipalNameCollision;
+  try {
+    const auto lane=static_cast<u64>(language_lane),keys=static_cast<u64>(key_lane);
+    if(lane<1||lane>3||keys<1||keys>2)return C::pack_unusable;
+    if(!user_accounts_bound)return C::none;
+    struct Named {std::vector<core::platform::byte> backing;c::CatalogNameEntryView view;};
+    // The entry the plan would write for `text`, keys only; nullopt when the
+    // text's keys cannot be derived (refused elsewhere).
+    const auto entry=[&](std::string_view text)->std::optional<Named> {
+      Named out;out.backing.resize(2*text.size()+1);
+      const c::CatalogIdentifierKeyRequest request{&profile,text,false,c::CatalogNameQuoteStyle::none,false};
+      const auto derived=c::DeriveCatalogIdentifierLookupKeysInto(request,out.backing);
+      if(!derived.ok())return std::nullopt;
+      out.view.object_kind=c::CatalogRecordKind::user_account;
+      out.view.identifier_profile_uuid={core::platform::UuidKind::object,profile.profile_uuid};
+      out.view.language_uuid=c::CatalogLanguageIdentity(language);
+      out.view.raw_name_text=text;out.view.was_quoted=false;out.view.quote_style=c::CatalogNameQuoteStyle::none;
+      out.view.requires_exact_match=false;
+      out.view.normalized_lookup_key=derived.normalized;out.view.exact_lookup_key=derived.exact;
+      return out;
+    };
+    const auto same=[&](const std::optional<Named>& x,const std::optional<Named>& y) {
+      return x&&y&&c::CompareCatalogNameCollisionScope(x->view,y->view)==0&&
+          c::CompareCatalogNameCollisionLanes(x->view,y->view,language_lane,key_lane)==0;
+    };
+    const auto bootstrap=entry(bootstrap_principal_name),service=entry(service_principal_name);
+    if(same(bootstrap,service))return C::bootstrap_is_service_principal;
+    std::vector<std::optional<Named>> agents;agents.reserve(agent_principal_names.size());
+    for(const auto& name:agent_principal_names)agents.push_back(entry(name));
+    for(const auto& agent:agents)if(same(bootstrap,agent))return C::bootstrap_is_agent_principal;
+    for(const auto& agent:agents)if(same(service,agent))return C::service_is_agent_principal;
+    return C::none;
+  }catch(...){return C::pack_unusable;}
+}
+
+NativeCreatePrincipalNameCollision CheckNativeCreatePrincipalNameCollisions(
+    std::string_view policy_seed_pack_root,const Uuid& language,
+    std::string_view bootstrap_principal_name,std::string_view service_principal_name) noexcept {
+  namespace c=scratchbird::core::catalog;
+  using C=NativeCreatePrincipalNameCollision;
+  try {
+    const auto loaded=LoadSelectedPolicySeedPack(std::string(policy_seed_pack_root));
+    if(!loaded.ok()||!loaded.pack.native_families)return C::pack_unusable;
+    const auto& s=*loaded.pack.native_families;
+    // The principals' profile: the first dialect profile's identifier
+    // profile, as the plan names the security cohort.
+    if(s.dialect_profiles.empty()||s.collision_policies.size()!=1)return C::pack_unusable;
+    const auto profile_seed=std::find_if(s.identifier_profiles.begin(),s.identifier_profiles.end(),
+        [&](const auto& p){return p.key==s.dialect_profiles.front().identifier_profile;});
+    const auto& policy=s.collision_policies.front();
+    const auto group=std::find_if(s.collision_groups.begin(),s.collision_groups.end(),
+        [&](const auto& g){return g.key==policy.record_kind_group;});
+    if(profile_seed==s.identifier_profiles.end()||group==s.collision_groups.end())return C::pack_unusable;
+    // The profile record needs engine identities to be admitted for key
+    // derivation; these three fixed UUIDv7 values are local to this check,
+    // never issued, written or returned (the plan issues the real ones).
+    const auto fixed=[](core::platform::u8 tag) {
+      Uuid id{};id.bytes={0x01,0x90,0x00,0x00,0x00,0x00,0x70,0x00,0x80,0x00,0x00,0x00,0x00,0x00,0x51,tag};
+      return id;
+    };
+    const auto profile=NativeIdentifierProfileFromSeed(*profile_seed,fixed(0x52),fixed(0x53),
+        TypedUuid{core::platform::UuidKind::transaction,fixed(0x54)});
+    if(!c::CatalogIdentifierProfileEncodedBytes(profile))return C::pack_unusable;
+    // Which kinds the body binds: every built-in kind, as the plan builds it.
+    bool user_accounts_bound=false;
+    if(policy.all_built_in_record_kinds)
+      for(const auto& kind:c::BuiltinCatalogRecordDescriptorViews())
+        if(kind.kind==c::CatalogRecordKind::user_account){user_accounts_bound=true;break;}
+    std::vector<std::string> agents;agents.reserve(loaded.pack.agent_types.size());
+    for(const auto& type:loaded.pack.agent_types)agents.push_back(type.agent_type_id);
+    return FindNativeCreatePrincipalNameCollision(profile,group->language_lane,group->key_lane,user_accounts_bound,
+        language,bootstrap_principal_name,service_principal_name,agents);
+  }catch(...){return C::pack_unusable;}
 }
 
 DatabaseArtifactCompatibilityResult ClassifyDatabaseArtifactVersionCompatibility(
