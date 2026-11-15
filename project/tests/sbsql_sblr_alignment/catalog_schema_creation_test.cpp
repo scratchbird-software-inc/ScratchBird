@@ -122,8 +122,7 @@ struct Package {
       e.object_uuid=x.definition.schema_object_uuid;e.object_kind=c::CatalogRecordKind::schema;
       e.scope_uuid=x.metadata.record.header.parent_uuid;if(i)e.parent_schema_uuid=x.metadata.owning_schema_uuid;
       e.language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_en_US);e.dialect_profile_uuid=Typed(p::UuidKind::object,56);e.identifier_profile_uuid=Typed(p::UuidKind::object,57);
-      e.raw_name_text=e.display_name="schema_"+std::to_string(i);
-      e.normalized_lookup_key.assign(e.raw_name_text.begin(),e.raw_name_text.end());
+      e.raw_name_text="schema_"+std::to_string(i);
       e.catalog_generation_id=1;e.created_transaction_uuid=tx;e.security_policy_uuid=x.metadata.security_policy_uuid;
       e.resource_epoch=e.name_resolution_epoch=1;e.default_for_language=e.default_for_object=true;
       e.lifecycle_state=c::CatalogNameLifecycle::active;
@@ -172,8 +171,7 @@ struct DatabasePackage {
     x.vector.default_name_entry_uuid=x.entry.name_entry_uuid=x.metadata.default_name_uuid;
     x.vector.object_kind=x.entry.object_kind=c::CatalogRecordKind::database;
     x.entry.scope_uuid=x.metadata.record.header.object_uuid;
-    x.entry.raw_name_text=x.entry.display_name="native_node";
-    x.entry.normalized_lookup_key.assign(x.entry.raw_name_text.begin(),x.entry.raw_name_text.end());
+    x.entry.raw_name_text="native_node";
     aliases.Rebind();
   }
   auto Request(c::CatalogNamedCreationLimits limits={100000,64*1024*1024}) const {
@@ -205,8 +203,7 @@ struct PrimaryPackage {
     x.vector.default_name_entry_uuid=x.entry.name_entry_uuid=x.metadata.default_name_uuid;
     x.vector.object_kind=x.entry.object_kind=c::CatalogRecordKind::filespace;
     x.entry.scope_uuid=database.aliases.items[0].metadata.record.header.object_uuid;
-    x.entry.raw_name_text=x.entry.display_name="initial_primary";
-    x.entry.normalized_lookup_key.assign(x.entry.raw_name_text.begin(),x.entry.raw_name_text.end());
+    x.entry.raw_name_text="initial_primary";
     primary.aliases.Rebind();
   }
   auto Request(c::CatalogNamedCreationLimits limits={100000,64*1024*1024}) const {
@@ -306,8 +303,10 @@ void PrimaryChecks() {
     Check(consumed&&failed.error==DE::resource_exhausted&&!failed.records,
           "every compound allocation failure discards both definition/name families");
   }
-  package.primary.aliases.items[0].entry.display_name="changed";
-  Check(std::get<c::CatalogNameEntry>(*made.records->names[3].name).display_name=="initial_primary",
+  // SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1): checked on the raw text, the
+  // entry's one name copy. (Was: display_name.)
+  package.primary.aliases.items[0].entry.raw_name_text="changed";
+  Check(std::get<c::CatalogNameEntry>(*made.records->names[3].name).raw_name_text=="initial_primary",
         "compound primary aliases own independent admitted bytes");
 }
 void DatabaseChecks() {
@@ -382,7 +381,9 @@ void DatabaseChecks() {
       case 13:x.metadata.record.payload="legacy SBDBV001";expected=DE::invalid_definition;break;
       case 14:x.metadata.owner_uuid={};expected=DE::invalid_definition;break;
       case 15:x.entry.default_for_object=false;expected=DE::invalid_names;break;
-      case 16:x.entry.display_name.assign(200000,'x');expected=DE::invalid_names;break;
+      // SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1): an oversized raw text (the one
+      // stored copy). (Was: an oversized display_name.)
+      case 16:x.entry.raw_name_text.assign(200000,'x');expected=DE::invalid_names;break;
       case 17:x.metadata.creator_local_transaction_id=2;expected=DE::invalid_definition;break;
       case 18:x.metadata.record.header.parent_uuid=Typed(p::UuidKind::object,77);expected=DE::invalid_definition;break;
       case 19:x.vector.object_kind=x.entry.object_kind=c::CatalogRecordKind::schema;expected=DE::invalid_names;break;
@@ -427,8 +428,7 @@ void DatabaseChecks() {
         metadata[i].default_name_uuid=metadata[i].record.header.object_uuid;
         names[i].name_entry_uuid=metadata[i].record.header.object_uuid;
         names[i].default_for_object=names[i].default_for_language=false;
-        names[i].raw_name_text=names[i].display_name="native_node_alias_"+std::to_string(i);
-        names[i].normalized_lookup_key.assign(names[i].raw_name_text.begin(),names[i].raw_name_text.end());
+        names[i].raw_name_text="native_node_alias_"+std::to_string(i);
       }
       entries[i]={&metadata[i],&names[i]};
     }
@@ -463,9 +463,9 @@ void DatabaseChecks() {
           "each database allocation failure drops complete staged output");
   }
   const auto preserved=made.records->definitions[0].metadata.record.payload;
-  package.construction.creation_utc_millis=1;package.aliases.items[0].entry.display_name="changed";
+  package.construction.creation_utc_millis=1;package.aliases.items[0].entry.raw_name_text="changed";
   Check(made.records->definitions[0].metadata.record.payload==preserved&&
-      std::get<c::CatalogNameEntry>(*made.records->names[1].name).display_name=="native_node",
+      std::get<c::CatalogNameEntry>(*made.records->names[1].name).raw_name_text=="native_node",
       "owning database definition and alias retain independent admitted input snapshot");
 }
 c::CatalogDatabaseTextDefaults DefaultSelectors(unsigned source) {
@@ -649,7 +649,7 @@ void LogicalChecks() {
     Package bad;auto& x=bad.items.back();
     if(field==0)x.metadata.object_subtype=static_cast<scratchbird::core::catalog::CatalogObjectSubtype>(0xfffd);  // (was the trace key: Q57 = 1)
     if(field==1)x.vector_metadata.object_subtype=static_cast<scratchbird::core::catalog::CatalogObjectSubtype>(0xfffd);
-    if(field==2)x.entry.display_name.assign(200000,'x');
+    if(field==2)x.entry.raw_name_text.assign(200000,'x');  // SB_NATIVE_NAME_ROW_V4 (Q147 = 1). (Was: display_name.)
     allocation_calls=0;allocation_budget=0;const auto failed=bad.Assemble();
     const bool no_allocation=allocation_calls==0;allocation_budget=-1;
     Check(no_allocation&&failed.error==(field==2?E::invalid_names:E::invalid_metadata)&&!failed.records,

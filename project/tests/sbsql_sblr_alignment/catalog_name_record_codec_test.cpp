@@ -49,14 +49,13 @@ c::CatalogNameEntry Entry() {
   r.case_fold_profile_uuid=Identity(UuidKind::object,13);
   r.quoted_identifier_profile_uuid=Identity(UuidKind::object,14);
   r.raw_name_text=std::string("A\n\r\0=B",6);
-  r.display_name="Nom";
+  // SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1): no display_name. (Was: "Nom".)
   r.was_quoted=true;
   r.quote_style=c::CatalogNameQuoteStyle::double_quote;
   r.requires_exact_match=true;
-  r.normalized_lookup_key={0xff,0,0xc0,0xaf}; // opaque, deliberately not valid UTF-8
-  r.exact_lookup_key={0,0x80,0xfe};
-  r.full_path_lookup_key={0xff,0,0xee};
-  r.path_component_count=2;
+  // SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1, Q157 = 1): no stored keys or path.
+  // (Was: normalized {0xff,0,0xc0,0xaf}, exact {0,0x80,0xfe}, full path
+  // {0xff,0,0xee}, count 2.)
   r.search_path_eligible=false;
   r.default_for_language=true;
   r.default_for_object=false;
@@ -105,10 +104,9 @@ std::vector<Field> Fields(const c::CatalogNameEntry& r) {
   Optional(f,10,r.reference_engine_uuid);f.push_back(Id(11,r.dialect_profile_uuid));
   f.push_back(Id(12,r.identifier_profile_uuid));Optional(f,13,r.case_fold_profile_uuid);
   Optional(f,14,r.quoted_identifier_profile_uuid);f.push_back(Text(15,r.raw_name_text));
-  f.push_back(Text(16,r.display_name));f.push_back(Bool(17,r.was_quoted));
+  // SB_NATIVE_NAME_ROW_V4: 16 and 20-23 are version 3's (see V3Fields).
+  f.push_back(Bool(17,r.was_quoted));
   f.push_back(Number(18,static_cast<u64>(r.quote_style)));f.push_back(Bool(19,r.requires_exact_match));
-  f.push_back(Bytes(20,r.normalized_lookup_key));f.push_back(Bytes(21,r.exact_lookup_key));
-  f.push_back(Bytes(22,r.full_path_lookup_key));f.push_back(Number(23,r.path_component_count));
   f.push_back(Bool(24,r.search_path_eligible));f.push_back(Bool(25,r.default_for_language));
   f.push_back(Bool(26,r.default_for_object));f.push_back(Number(27,r.catalog_generation_id));
   f.push_back(Id(28,r.created_transaction_uuid));Optional(f,29,r.dropped_transaction_uuid);
@@ -116,13 +114,26 @@ std::vector<Field> Fields(const c::CatalogNameEntry& r) {
   f.push_back(Number(32,r.name_resolution_epoch));f.push_back(Number(33,static_cast<u64>(r.lifecycle_state)));
   return f;
 }
-std::vector<byte> Oracle(u32 schema,const std::vector<Field>& fields) {
+// Version 3 of the entry (before SB_NATIVE_NAME_ROW_V4): the version 4 fields
+// with display_name (16), both lookup keys (20, 21), the full path (22) and its
+// count (23) in their places, as version 3 wrote them.
+std::vector<Field> V3Fields(const c::CatalogNameEntry& r) {
+  auto f=Fields(r);
+  const auto at=[&](u16 id){return std::find_if(f.begin(),f.end(),[&](const Field& x){return x.id>id;});};
+  f.insert(at(15),Text(16,r.raw_name_text));
+  f.insert(at(19),{Bytes(20,{'n'}),Bytes(21,{'e'}),Bytes(22,{'n',0,0}),Number(23,1)});
+  return f;
+}
+std::vector<byte> Oracle(u32 schema,const std::vector<Field>& fields,unsigned version=0) {
   std::vector<byte> out{0x53,0x42,0x43,0x56,1,0,24,0};
   u32 size=24;
   for(const auto& f:fields)size+=8+f.bytes.size();
   const auto append=[&](const std::vector<byte>& value){out.insert(out.end(),value.begin(),value.end());};
   append(Little(size,4));append(Little(fields.size(),4));append(Little(schema,4));
-  append({3,0,0,0});  // schema version 3 (SB_CATALOG_NO_TEXT_IDENTIFIERS)
+  // Schema version: the vector's 3 (SB_CATALOG_NO_TEXT_IDENTIFIERS), the
+  // entry's 4 (SB_NATIVE_NAME_ROW_V4). (Was: 3 for both.)
+  if(!version)version=schema==327682?4:3;
+  append({static_cast<byte>(version),0,0,0});
   for(const auto& f:fields){append(Little(f.id,2));append({f.tag,0});append(Little(f.bytes.size(),4));append(f.bytes);}
   return out;
 }
@@ -246,15 +257,21 @@ template<class Record>void Framing(const Record& record,const std::vector<u16>& 
     auto malformed=fields;malformed[i].id=0;Refused(Decode(record,Oracle(SchemaId(record),malformed)));
   }
   auto extra=fields;extra.push_back(Text(65535,"ignored?"));Refused(Decode(record,Oracle(SchemaId(record),extra)));
-  for(const byte old:{byte{1},byte{2}}){auto wrong_version=bytes;wrong_version[20]=old;Refused(Decode(record,wrong_version));}  // 1: text class, 2: text language
+  for(const byte old:{byte{1},byte{2},byte{3}}){auto wrong_version=bytes;wrong_version[20]=old;if(old!=bytes[20])Refused(Decode(record,wrong_version));}  // 1: text class, 2: text language, 3: the entry's stored keys (SB_NATIVE_NAME_ROW_V4)
   auto reversed=fields;std::reverse(reversed.begin(),reversed.end());Refused(Decode(record,Oracle(SchemaId(record),reversed)));
   const std::string legacy="kind=5\nrow_uuid=01921324-3546-7788-99aa-bbccddeeff01\npayload=name=x\n";
   Refused(Decode(record,{legacy.begin(),legacy.end()}));
 }
 void SchemaContract() {
   const auto& v=c::CatalogNameVectorSchema();const auto& e=c::CatalogNameEntrySchema();
-  Check(v.id==327681 && e.id==327682 && v.version==3 && e.version==3,"allocated schema identity drift");
-  Check(v.fields.size()==10 && e.fields.size()==33,"Core field omitted");
+  // SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1, Q157 = 1): the entry is version 4
+  // with 28 fields. (Was: version 3, 33 fields.)
+  Check(v.id==327681 && e.id==327682 && v.version==3 && e.version==4,"allocated schema identity drift");
+  Check(v.fields.size()==10 && e.fields.size()==28,"Core field omitted");
+  // A version 3 entry (with the retired fields) is refused: no migration (Q164 = 1).
+  Refused(c::DecodeCatalogNameEntry(Oracle(327682,V3Fields(Entry()),3)));
+  Refused(c::DecodeCatalogNameEntryView(Oracle(327682,V3Fields(Entry()),3)));
+  Refused(c::DecodeCatalogNameEntry(Oracle(327682,V3Fields(Entry()),4)));  // the retired fields under version 4
   const auto verify=[](const auto& schema,const auto& fields,const std::vector<u16>& optional) {
     for(std::size_t i=0;i<fields.size();++i) {
       const auto& s=schema.fields[i];const auto& f=fields[i];
@@ -305,16 +322,17 @@ void SemanticBoundaries() {
     e=Entry();e.*member=0;Invalid(e);
     e.*member=std::numeric_limits<u64>::max();Roundtrip(e);
   }
-  e=Entry();e.full_path_lookup_key.clear();Invalid(e);
-  e.path_component_count=0;Roundtrip(e);
-  e=Entry();e.path_component_count=0;Invalid(e);
+  // (Was: an empty full path with a count, or a count without a path, was
+  // invalid; version 4 stores neither, SB_NATIVE_NAME_ROW_V4.)
   v=Vector();v.lifecycle_state=static_cast<c::CatalogNameLifecycle>(std::numeric_limits<u64>::max());Invalid(v);
   e=Entry();e.name_class=static_cast<c::CatalogNameClass>(std::numeric_limits<u64>::max());Invalid(e);
   e=Entry();e.quote_style=static_cast<c::CatalogNameQuoteStyle>(std::numeric_limits<u64>::max());Invalid(e);
   // UTF-8 validation applies to text, not binary profile-derived keys.
-  e=Entry();e.display_name=std::string("\xed\xa0\x80",3);Invalid(e);
-  e=Entry();e.raw_name_text.clear();e.display_name.clear();Roundtrip(e);
-  e=Entry();e.display_name=std::string(131041,'x');Refused(Encode(e));
+  // SB_NATIVE_NAME_ROW_V4: checked on the raw text, the one text field. (Was:
+  // on display_name.)
+  e=Entry();e.raw_name_text=std::string("\xed\xa0\x80",3);Invalid(e);
+  e=Entry();e.raw_name_text.clear();Roundtrip(e);
+  e=Entry();e.raw_name_text=std::string(131041,'x');Refused(Encode(e));
   auto bytes=Oracle(327682,Fields(e));Refused(Decode(e,bytes));
 }
 int main() {

@@ -14,6 +14,11 @@
 #include "catalog_native_agent_record.hpp"
 #include "agent_bootstrap_configuration.hpp"
 #include "catalog_name_record_codec.hpp"
+#include "catalog_identifier_lookup_key.hpp"
+#include "catalog_identifier_profile.hpp"
+#include "catalog_name_path.hpp"
+#include "catalog_name_tree_keys.hpp"
+#include "hash_digest.hpp"
 #include "catalog_schema_definition.hpp"
 #include "native_catalog_relation_lease_reader.hpp"
 #include "physical_mga_cow_store.hpp"
@@ -158,6 +163,76 @@ int main() {
             "every row is at the initial catalog generation and epochs");
       if(m.object_subtype==scratchbird::core::catalog::CatalogObjectSubtype::name_entry)Check(m.resource_epoch!=0,"a name entry carries its key's resource epoch");
       else Check(m.resource_epoch==0,"no initial row claims a resource dependency the catalog lacks");
+    }
+
+    // SEARCH_KEY: SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1, Q157 = 1; plan 35
+    // S1/S2). Every bootstrap name entry's derived display, normalized and
+    // exact lanes, quoting and walked full path (the escaped own-lane keys,
+    // root side first, and their count) equal what version 3 stored: the
+    // tuples of a version 3 create at HEAD bd44413dd (raw, display,
+    // normalized, exact, was_quoted, quote_style, requires_exact_match, full
+    // path, count; hex), sorted, hashed with SHA-256, pinned. 579 of the
+    // 1,100 names are UUID texts issued at create time (agent configuration
+    // objects), different every run: each is checked here against the rule
+    // written out (display and exact lanes the raw text, normalized lane the
+    // raw text upper-cased, its path ending with that lane) and enters the
+    // digest as "uuid-named", its flags, its path above itself and its count.
+    // The same canonical lines of the version 3 fixture hash to the pinned
+    // value at every page size (fixture recorded from the v3 build's stored
+    // fields; not in the repository).
+    {
+      std::optional<c::CatalogIdentifierResolutionProfile> identifier;
+      c::CatalogNameIndex names;
+      std::vector<c::CatalogNameEntryView> entries;
+      for(unsigned i=0;i<7;++i)for(const auto& row:relations[i]) {
+        if(row.name_payload){
+          names.Add(c::BorrowCatalogNamePayload(*row.name_payload));
+          if(const auto* e=std::get_if<c::CatalogNameEntry>(&*row.name_payload))entries.push_back(c::BorrowCatalogNameEntry(*e));
+        }else if(c::IsCatalogIdentifierProfilePayload(row.metadata.record.payload)){
+          auto decoded=c::DecodeCatalogIdentifierProfile(row.metadata.record.payload);
+          Check(decoded.ok()&&!identifier,"one identifier profile in the create");
+          identifier=std::move(*decoded.record);
+        }
+      }
+      Check(identifier.has_value(),"the create's identifier profile");
+      const auto hex=[](const auto& bytes){std::string o;char t[3];
+        for(const auto b:bytes){std::snprintf(t,3,"%02x",static_cast<unsigned>(static_cast<unsigned char>(b)));o+=t;}return o;};
+      std::vector<std::string> lines;
+      for(const auto& e:entries){
+        const auto keys=c::DeriveCatalogNameEntryKeys(*identifier,e);
+        Check(keys.ok(),"every bootstrap name derives its lanes under the create's profile");
+        std::vector<p::byte> full_path;std::size_t count=0;
+        std::vector<std::vector<p::byte>> reversed;
+        const auto walked=c::WalkCatalogNamePath(e,names,[&](const c::CatalogNameEntryView& component){
+          const auto own=c::DeriveCatalogNameEntryKeys(*identifier,component);
+          Check(own.ok(),"every path component derives its lane");
+          std::vector<p::byte> escaped;c::AppendCatalogNameTreeEscaped(escaped,own.own);reversed.push_back(std::move(escaped));++count;});
+        Check(walked==c::CatalogNamePathError::none,"every bootstrap name's path walks");
+        for(auto at=reversed.rbegin();at!=reversed.rend();++at)full_path.insert(full_path.end(),at->begin(),at->end());
+        char flags[64];std::snprintf(flags,sizeof flags,"|%d|%d|%d|",e.was_quoted?1:0,static_cast<int>(e.quote_style),e.requires_exact_match?1:0);
+        const auto& raw=e.raw_name_text;
+        const bool uuid_named=raw.size()==36&&raw[8]=='-'&&raw[13]=='-'&&raw[18]=='-'&&raw[23]=='-'&&
+            std::all_of(raw.begin(),raw.end(),[](char ch){return ch=='-'||(ch>='0'&&ch<='9')||(ch>='a'&&ch<='f');});
+        if(uuid_named){
+          std::string upper(raw);for(auto& ch:upper)if(ch>='a'&&ch<='z')ch=static_cast<char>(ch-'a'+'A');
+          std::vector<p::byte> tail(upper.begin(),upper.end());tail.push_back(0);tail.push_back(0);
+          Check(keys.display.String()==raw&&keys.exact.String()==raw&&keys.normalized.String()==upper&&full_path.size()>=tail.size()&&
+                std::equal(tail.begin(),tail.end(),full_path.end()-static_cast<std::ptrdiff_t>(tail.size())),
+                "a UUID-named entry's lanes and path follow the rule written out");
+          full_path.resize(full_path.size()-tail.size());
+          lines.push_back(std::string("uuid-named")+flags+hex(full_path)+"|"+std::to_string(count));
+        }else
+          lines.push_back(hex(e.raw_name_text)+"|"+hex(keys.display.Bytes())+"|"+hex(keys.normalized.Bytes())+"|"+
+              hex(keys.exact.Bytes())+flags+hex(full_path)+"|"+std::to_string(count));
+      }
+      std::sort(lines.begin(),lines.end());
+      std::string joined;for(const auto& l:lines){joined+=l;joined+='\n';}
+      const auto digest=scratchbird::core::hash::ComputeSha256DigestNative(reinterpret_cast<const p::byte*>(joined.data()),joined.size());
+      const std::string pinned="d15cf444895b13ea24e2c99332cf162dc4e5e3a43e4bc01d100911d610af15a0";
+      if(digest.ok()&&hex(digest.digest)!=pinned)
+        std::fprintf(stderr,"p35 v4 derived digest page=%u got=%s lines=%zu\n",profile.page_size_bytes,hex(digest.digest).c_str(),lines.size());
+      Check(digest.ok()&&lines.size()==1100&&hex(digest.digest)==pinned,
+            "Q147/Q157: every bootstrap name's derived lanes and walked path equal version 3's stored ones");
     }
 
     // Every definition carries exactly one name, except the construction intent.

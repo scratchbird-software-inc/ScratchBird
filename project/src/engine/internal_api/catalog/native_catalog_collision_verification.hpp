@@ -122,11 +122,25 @@ inline NativeCatalogCollisionVerification VerifyNativeCatalogNamingCollisions(
     if(group==groups.end())return fail(E::invalid_body,identity(i),binding->group_uuid);
     const auto flags=static_cast<std::size_t>(group->language_lane)-1+
         (static_cast<std::size_t>(group->key_lane)-1)*4;
-    bindings[i]=(selected<<9)|(std::size_t(group-groups.begin())<<3)|flags;marks[i]=1;
+    // SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1): the entry's own-lane key is its
+    // raw text folded under its identifier profile (admitted above by
+    // VerifyNativeCatalogNamingProfileReferences); the fold rides in its mark
+    // (1 + fold), so the comparisons below allocate nothing. (Was: marks[i]=1
+    // and the entries' stored keys compared.)
+    const auto profile_row=find(entry->identifier_profile_uuid.value);
+    if(profile_row==SIZE_MAX)return fail(E::naming_profile,identity(i),entry->identifier_profile_uuid.value);
+    const auto profile=c::DecodeCatalogIdentifierProfile(rows[profile_row].row.metadata.record.payload);
+    if(!profile.ok())return fail(E::naming_profile,identity(i),entry->identifier_profile_uuid.value);
+    const auto keys=c::DeriveCatalogNameEntryKeys(*profile.record,*entry);
+    if(!keys.ok())return fail(E::naming_profile,identity(i),entry->identifier_profile_uuid.value);
+    bindings[i]=(selected<<9)|(std::size_t(group-groups.begin())<<3)|flags;
+    marks[i]=static_cast<core::platform::byte>(1+static_cast<unsigned>(keys.own.fold));
     ++out.entries;++out.policy_references;
   }
   std::size_t used=0;for(std::size_t i=0;i<count;++i)if(marks[i])order[used++]=i;auto entries=order.first(used);
   const auto name=[&](std::size_t i)->const c::CatalogNameEntryView&{return std::get<c::CatalogNameEntryView>(*rows[i].row.name_payload);};
+  const auto own=[&](std::size_t i){
+    return c::CatalogNameDerivedText{name(i).raw_name_text,static_cast<c::IdentifierFoldMode>(static_cast<unsigned>(marks[i])-1)};};
   // SB_NAME_COLLISION_ORDER: the order the native catalog writer also applies.
   const auto common=[&](std::size_t a,std::size_t b){return c::CompareCatalogNameCollisionScope(name(a),name(b));};
   std::sort(entries.begin(),entries.end(),[&](auto a,auto b){const auto c=common(a,b);return c?c<0:name(a).object_kind<name(b).object_kind;});
@@ -139,7 +153,7 @@ inline NativeCatalogCollisionVerification VerifyNativeCatalogNamingCollisions(
     const auto xgroup=bindings[a]>>3,ygroup=bindings[b]>>3;
     if(xgroup!=ygroup)return xgroup<ygroup?-1:1;
     const auto flags=bindings[a]&7;
-    return c::CompareCatalogNameCollisionLanes(name(a),name(b),
+    return c::CompareCatalogNameCollisionLanes(name(a),own(a),name(b),own(b),
         static_cast<c::CatalogCollisionLanguageLane>((flags&3)+1),static_cast<c::CatalogCollisionKeyLane>(((flags>>2)&1)+1));
   };
   std::sort(entries.begin(),entries.end(),[&](auto a,auto b){return compare(a,b)<0;});

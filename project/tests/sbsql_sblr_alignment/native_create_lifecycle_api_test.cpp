@@ -808,19 +808,24 @@ int main(int argc, char** argv) {
        "Q144: a page count past the device extent is refused before the open, "
        "DATABASE.CREATE_TOTAL_PAGES_EXCESSIVE (new case)");
     // A name the default pack admits (512 scalars) but an 8K page cannot
-    // store: 331 four-byte scalars (1,324 octets). Q145 measured the 8K bound
-    // at 330 such scalars (1,320 octets); the name row is over the row page's
-    // capacity: DATABASE.CREATE_ROW_EXCEEDS_PAGE_CAPACITY.
+    // store: 444 four-byte scalars (1,776 octets). SB_NATIVE_NAME_ROW_V4
+    // (owner Q147 = 1, Q157 = 1; plan 35 S1/S2): the name row stores its text
+    // once, so the row no longer binds; the authoritative name-tree cell (key
+    // + payload <= page/4, the operational limit owner Q159 documents with the
+    // page size) does, at 443 such scalars (1,772 octets; Q145 re-measured
+    // 2026-11-15): still DATABASE.CREATE_ROW_EXCEEDS_PAGE_CAPACITY, bound
+    // name_tree_cell, before the open. (Was: 331 scalars (1,324 octets),
+    // bound=row_bytes; the 8K bound was 330 scalars, 1,320 octets.)
     before_open("row-exceeds-8k", [](auto& r) {
       std::erase_if(r.option_envelopes, [](const auto& o) {
         return o.starts_with("page_size:") || o.starts_with("total_pages:"); });
       r.option_envelopes.push_back("page_size:8192");
       r.option_envelopes.push_back("total_pages:2048");
       r.database_name.clear();
-      for (int i = 0; i < 331; ++i) r.database_name += "\xf0\x9f\x98\x80";
-    }, "capacity_exceeded:bound=row_bytes", "DATABASE.CREATE_ROW_EXCEEDS_PAGE_CAPACITY",
-       "Q144/Q145: a 331-scalar four-byte name under the default pack at 8K is refused before the open, "
-       "DATABASE.CREATE_ROW_EXCEEDS_PAGE_CAPACITY (new case)");
+      for (int i = 0; i < 444; ++i) r.database_name += "\xf0\x9f\x98\x80";
+    }, "capacity_exceeded:bound=name_tree_cell", "DATABASE.CREATE_ROW_EXCEEDS_PAGE_CAPACITY",
+       "Q144/Q145/Q159: a 444-scalar four-byte name under the default pack at 8K is refused before the open "
+       "by the name-tree cell bound, DATABASE.CREATE_ROW_EXCEEDS_PAGE_CAPACITY (was: 331 scalars, row_bytes)");
     // Q144 = 1 left a bootstrap principal named like the service principal
     // DATABASE.CREATE_FAILED at the plan's policy assembly (no attribution).
     // Q152 = 1 / Q153 = 1 (owner 2026-11-14, SB_NATIVE_CREATE_PRINCIPAL_NAME_COLLISION):
@@ -1123,11 +1128,22 @@ int main(int argc, char** argv) {
         out.view.language_uuid = c::CatalogLanguageIdentity(c::kCatalogLanguage_en);
         out.view.raw_name_text = text; out.view.was_quoted = quoted; out.view.quote_style = style;
         out.view.requires_exact_match = quoted;
-        out.view.normalized_lookup_key = derived.normalized; out.view.exact_lookup_key = derived.exact;
+        // SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1): the view holds the raw text;
+        // its own lane is derived (lanes() below). (Was: both derived lanes
+        // stored in the view.)
         return out.view;
       };
+      const auto lanes = [&](const std::vector<c::CatalogNameEntryView>& entries) {
+        std::vector<c::CatalogNameDerivedText> out;
+        for (const auto& e : entries) {
+          const auto keys = c::DeriveCatalogNameEntryKeys(upper, e);
+          Check(keys.ok(), "Q177: the example's own lane derives under the pack's profile");
+          out.push_back(keys.own);
+        }
+        return out;
+      };
       const auto collide = [&](std::vector<c::CatalogNameEntryView> entries) {
-        return db::FindNativeCreateNameEntryCollision(entries, c::CatalogCollisionLanguageLane::exact_tag,
+        return db::FindNativeCreateNameEntryCollision(entries, lanes(entries), c::CatalogCollisionLanguageLane::exact_tag,
                                                       c::CatalogCollisionKeyLane::shared).has_value();
       };
       Check(collide({entry(1, "Hello", false), entry(2, "hello", false)}),
@@ -1147,21 +1163,23 @@ int main(int argc, char** argv) {
             "Q178: two entries of one object never collide with each other");
       // The pre-Q177 lane: separate keys never compare an unquoted name with
       // a quoted one (kept to show the lane is what changed).
-      Check(!db::FindNativeCreateNameEntryCollision(std::vector<c::CatalogNameEntryView>{entry(1, "hello", false),
-                                                        entry(2, "HELLO", true)},
+      const std::vector<c::CatalogNameEntryView> separate{entry(1, "hello", false), entry(2, "HELLO", true)};
+      Check(!db::FindNativeCreateNameEntryCollision(separate, lanes(separate),
                                                     c::CatalogCollisionLanguageLane::exact_tag,
                                                     c::CatalogCollisionKeyLane::separate).has_value(),
             "Q177: under the separate key lane (was the pack's) hello and \"HELLO\" did not collide");
     }
     {
-      const auto dir = artifacts.path() / "q145-8k-330";
+      // SB_NATIVE_NAME_ROW_V4: the 8K maximum is now 443 four-byte scalars
+      // (1,772 octets), the name-tree cell bound. (Was: 330, 1,320 octets.)
+      const auto dir = artifacts.path() / "q145-8k-443";
       std::filesystem::create_directory(dir);
       auto request = NativeRequest((dir / "orders.sdb").string(), 8192, c::kCatalogLanguage_en, "");
-      for (int i = 0; i < 330; ++i) request.database_name += "\xf0\x9f\x98\x80";
+      for (int i = 0; i < 443; ++i) request.database_name += "\xf0\x9f\x98\x80";
       const auto created = api::EngineCreateLifecycle(request);
       if (!created.ok) for (const auto& diagnostic : created.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
       Check(created.ok && Entries(dir).size() == 1,
-            "Q145: the 330-scalar four-byte name (1,320 octets) creates at 8K under the default pack");
+            "Q145: the 443-scalar four-byte name (1,772 octets) creates at 8K under the default pack (was: 330, 1,320)");
     }
     // Q122 = 1 (owner 2026-11-14): the non-UTF-8 name case is no longer a
     // late refusal; it is refused before the open (the Q122 block below).

@@ -24,8 +24,7 @@ template<class Record> bool ValidEntry(const Record& r) {
       r.catalog_generation_id != 0 && r.resource_epoch != 0 &&
       r.name_resolution_epoch != 0 && ValidLifecycle(r.lifecycle_state) &&
       static_cast<u64>(r.name_class) >= 1 && static_cast<u64>(r.name_class) <= 5 &&
-      static_cast<u64>(r.quote_style) <= 5 &&
-      (r.full_path_lookup_key.empty() == (r.path_component_count == 0));
+      static_cast<u64>(r.quote_style) <= 5;
 }
 template <typename Record, typename Visitor>
 void VisitVector(Record& r, Visitor visit) {
@@ -57,14 +56,11 @@ void VisitEntry(Record& r, Visitor visit) {
   visit(13, r.case_fold_profile_uuid);
   visit(14, r.quoted_identifier_profile_uuid);
   visit(15, r.raw_name_text);
-  visit(16, r.display_name);
+  // SB_NATIVE_NAME_ROW_V4: 16, 20, 21, 22 and 23 are retired (version 3's
+  // stored display, keys and path); their numbers are not reused.
   visit(17, r.was_quoted);
   visit(18, r.quote_style);
   visit(19, r.requires_exact_match);
-  visit(20, r.normalized_lookup_key);
-  visit(21, r.exact_lookup_key);
-  visit(22, r.full_path_lookup_key);
-  visit(23, r.path_component_count);
   visit(24, r.search_path_eligible);
   visit(25, r.default_for_language);
   visit(26, r.default_for_object);
@@ -167,14 +163,13 @@ CatalogValueSchemaView CatalogNameEntrySchemaView() {
     {13, Type::engine_identity, false, 16, UuidKind::object},  // case_fold_profile_uuid
     {14, Type::engine_identity, false, 16, UuidKind::object},  // quoted_identifier_profile_uuid
     {15, Type::utf8_text, true, 131040},  // raw_name_text
-    {16, Type::utf8_text, true, 131040},  // display_name
+    // SB_NATIVE_NAME_ROW_V4 (Q147 = 1, Q157 = 1): 16 display_name, 20
+    // normalized_lookup_key, 21 exact_lookup_key, 22 full_path_lookup_key and
+    // 23 path_component_count were version 3's; a version 3 block is refused
+    // (no migration, Q164 = 1).
     {17, Type::boolean, true, 1},  // was_quoted
     {18, Type::unsigned_integer, true, 8},  // quote_style
     {19, Type::boolean, true, 1},  // requires_exact_match
-    {20, Type::opaque_bytes, true, 131040},  // normalized_lookup_key
-    {21, Type::opaque_bytes, true, 131040},  // exact_lookup_key
-    {22, Type::opaque_bytes, true, 131040},  // full_path_lookup_key
-    {23, Type::unsigned_integer, true, 8},  // path_component_count
     {24, Type::boolean, true, 1},  // search_path_eligible
     {25, Type::boolean, true, 1},  // default_for_language
     {26, Type::boolean, true, 1},  // default_for_object
@@ -186,7 +181,9 @@ CatalogValueSchemaView CatalogNameEntrySchemaView() {
     {32, Type::unsigned_integer, true, 8},  // name_resolution_epoch
     {33, Type::unsigned_integer, true, 8},  // lifecycle_state
   };
-  return {327682, 3, fields};  // 2: kind, 3: language (SB_CATALOG_NO_TEXT_IDENTIFIERS)
+  // 2: kind, 3: language (SB_CATALOG_NO_TEXT_IDENTIFIERS); 4: raw name only
+  // (SB_NATIVE_NAME_ROW_V4). (Was: version 3.)
+  return {327682, 4, fields};
 }
 }  // namespace
 const CatalogValueSchema& CatalogNameEntrySchema() {
@@ -197,7 +194,7 @@ const CatalogValueSchema& CatalogNameEntrySchema() {
   return schema;
 }
 namespace {
-// At most 33 fields. Only scalars need stack backing; variable-length fields
+// At most 33 fields (28 for an entry since SB_NATIVE_NAME_ROW_V4). Only scalars need stack backing; variable-length fields
 // borrow the caller's immutable record. Never construct a value block merely
 // to validate its schema or metadata binding.
 struct NativeNameFields {
@@ -274,9 +271,7 @@ CatalogNameEntryView BorrowCatalogNameEntry(const CatalogNameEntry& r) {
       r.scope_uuid, r.parent_object_uuid, r.parent_schema_uuid, r.language_uuid,
       r.name_class, r.reference_engine_uuid, r.dialect_profile_uuid, r.identifier_profile_uuid,
       r.case_fold_profile_uuid, r.quoted_identifier_profile_uuid, r.raw_name_text,
-      r.display_name, r.was_quoted, r.quote_style, r.requires_exact_match,
-      r.normalized_lookup_key, r.exact_lookup_key, r.full_path_lookup_key,
-      r.path_component_count, r.search_path_eligible, r.default_for_language,
+      r.was_quoted, r.quote_style, r.requires_exact_match, r.search_path_eligible, r.default_for_language,
       r.default_for_object, r.catalog_generation_id, r.created_transaction_uuid,
       r.dropped_transaction_uuid, r.security_policy_uuid, r.resource_epoch,
       r.name_resolution_epoch, r.lifecycle_state};
@@ -348,14 +343,9 @@ CatalogNameEntry MaterializeCatalogNameEntry(const CatalogNameEntryView& record)
       record.case_fold_profile_uuid,
       record.quoted_identifier_profile_uuid,
       std::string(record.raw_name_text),
-      std::string(record.display_name),
       record.was_quoted,
       record.quote_style,
       record.requires_exact_match,
-      {record.normalized_lookup_key.begin(), record.normalized_lookup_key.end()},
-      {record.exact_lookup_key.begin(), record.exact_lookup_key.end()},
-      {record.full_path_lookup_key.begin(), record.full_path_lookup_key.end()},
-      record.path_component_count,
       record.search_path_eligible,
       record.default_for_language,
       record.default_for_object,

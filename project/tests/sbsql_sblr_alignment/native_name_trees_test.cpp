@@ -30,7 +30,9 @@
 //     changed, a cell removed (a row without its cell), root 23 removed from
 //     page zero, the two roots' objects swapped (all refused by storage);
 //     a cell's payload byte changed and a cell's key byte changed (bound by
-//     storage, refused by the engine: cell_payload, cell_key).
+//     storage, refused by the engine: cell_payload, cell_key); an
+//     authoritative key holding the unfolded raw text instead of the derived
+//     lane (cell_key, SB_NATIVE_NAME_ROW_V4).
 #define SB_CATALOG_VERSION_WRITER_TEST_WITHOUT_MAIN
 #include "native_catalog_version_writer_test.cpp"
 
@@ -43,6 +45,21 @@
 #include "engine/internal_api/catalog/native_catalog_metadata_verification.hpp"
 
 namespace {
+// SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1): an entry's own-lane key, as the
+// default pack's identifier profile derives it (Q177: unquoted names fold to
+// upper ASCII, quoted and exact-match names keep their spelling), written out
+// here rather than taken from the production derivation. (Was: the entry's
+// stored normalized/exact key.)
+std::string OwnLaneText(const scratchbird::core::catalog::CatalogNameEntryView& e) {
+  std::string out(e.raw_name_text);
+  if (!e.requires_exact_match)
+    for (auto& ch : out)
+      if (ch >= 'a' && ch <= 'z') ch = static_cast<char>(ch - 'a' + 'A');
+  return out;
+}
+scratchbird::core::catalog::CatalogNameDerivedText AsLane(const std::string& text) {
+  return {text, scratchbird::core::catalog::IdentifierFoldMode::none};
+}
 namespace ia = scratchbird::engine::internal_api;
 using CoE = db::NativeCatalogCohortError;
 
@@ -130,13 +147,14 @@ Trees Open(const Db& b, const std::string& path, bool with_trees, bool with_cell
           const auto* object = definition(e->object_uuid.value);
           if (!object) { ++out.cells_mismatched; continue; }
           const auto kind = object->metadata.record.header.kind;
-          if (cell.tree == 0) { key = c::CatalogNameAuthoritativeTreeKey(*e, kind); payload = c::CatalogNameAuthoritativeTreePayload(*e); }
+          const auto own = OwnLaneText(*e);
+          if (cell.tree == 0) { key = c::CatalogNameAuthoritativeTreeKey(*e, AsLane(own), kind); payload = c::CatalogNameAuthoritativeTreePayload(*e); }
           else {
+            // SB_NATIVE_NAME_ROW_V4 (owner Q158 = 1): the entry UUID only; its
+            // path must walk. (Was: with its path's display components.)
             key = c::CatalogNameUuidTreeEntryKey(*e, kind);
-            const auto path = c::ResolveCatalogNamePath(*e, names);
-            std::vector<std::string_view> components;
-            for (const auto& component : path.components) components.push_back(component.display_name);
-            payload = c::CatalogNameUuidTreeEntryPayload(e->name_entry_uuid.value, components);
+            if (!c::ResolveCatalogNamePath(*e, names).ok()) { ++out.cells_mismatched; continue; }
+            payload = c::CatalogNameUuidTreeEntryPayload(e->name_entry_uuid.value);
           }
         } else {
           const auto& v = std::get<c::CatalogNameVectorView>(*row->name_payload);
@@ -256,6 +274,28 @@ void Mutations(const Db& b, const std::string& original) {
       if (encoded.ok())
         expect(with_page(leaf, changed), CoE::none, "a cell whose key is not its row's is refused by the engine",
                std::nullopt, NE::cell_key);
+    }
+    // SEARCH_KEY: SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1; plan 35 risk R4): an
+    // authoritative cell whose own-lane key is not the lane derived under the
+    // entry's profile - the unfolded raw text where the profile folds it - is
+    // refused by the engine (cell_key): a derivation that disagrees with the
+    // stored tree key cannot pass silently. The last cell whose first own-lane
+    // byte is an upper-case ASCII letter gets it lower-cased (later in byte
+    // order, so the leaf's order holds when the cell is its leaf's last).
+    if (kind == 22) {
+      bool tried = false;
+      for (std::size_t at = page.cells.size(); at-- > 0 && !tried;) {
+        const auto& key = page.cells[at].key.encoded_key;
+        if (key.size() <= 48 || key[48] < 'A' || key[48] > 'Z') continue;
+        auto changed = page;
+        changed.cells[at].key.encoded_key[48] = static_cast<byte>(key[48] + ('a' - 'A'));
+        if (!pg::EncodeNativeBtreePage(changed).ok()) continue;
+        tried = true;
+        expect(with_page(leaf, changed), CoE::none,
+               "an authoritative cell keyed by the unfolded raw text is refused by the engine (derived lane mismatch)",
+               std::nullopt, NE::cell_key);
+      }
+      Check(tried, "an authoritative cell with a folded own-lane key could be unfolded");
     }
   }
   {

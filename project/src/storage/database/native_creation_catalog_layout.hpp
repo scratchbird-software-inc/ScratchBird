@@ -75,15 +75,24 @@ struct NativeCreationNameTreeCellSeed {
 // The cells of both trees, each in key order (then row UUID: the version UUID,
 // the last tie-break, is issued in row order and never needed to order cells
 // of distinct rows). The authoritative tree: one cell per name entry. The
-// UUID-to-name tree: one per vector, then one per entry with the display
-// components of its path (SB_NATIVE_NAME_PATH). Nullopt when a name's object
-// has no definition in the seed, or a path does not resolve.
+// UUID-to-name tree: one per vector, then one per entry (its entry UUID only,
+// SB_NATIVE_NAME_ROW_V4, owner Q158 = 1; was: with the display components of
+// its path). An entry's authoritative key uses its own-lane key derived under
+// its identifier profile, found among the seed's records (owner Q147 = 1; was:
+// the entry's stored key). Nullopt when a name's object has no definition in
+// the seed, an entry's identifier profile is not in the seed or does not admit
+// it, or a path does not walk.
 inline std::optional<std::array<std::vector<NativeCreationNameTreeCellSeed>,2>> BuildNativeCreationNameTreeCellSeeds(
     const NativeCreationCatalogSeed& seed) {
   namespace c=core::catalog;
   std::map<Uuid,c::CatalogRecordKind> kinds;
   for(const auto& relation:seed)for(const auto& record:relation)
     if(!record.name)kinds[record.metadata.record.header.object_uuid.value]=record.metadata.record.header.kind;
+  std::map<Uuid,c::CatalogIdentifierResolutionProfile> profiles;
+  for(const auto& relation:seed)for(const auto& record:relation)
+    if(!record.name&&c::IsCatalogIdentifierProfilePayload(record.metadata.record.payload))
+      if(auto decoded=c::DecodeCatalogIdentifierProfile(record.metadata.record.payload);decoded.ok())
+        profiles.emplace(decoded.record->profile_uuid,std::move(*decoded.record));
   c::CatalogNameIndex names;
   for(const auto& record:seed[1])if(record.name)names.Add(c::BorrowCatalogNamePayload(*record.name));
   std::array<std::vector<NativeCreationNameTreeCellSeed>,2> out;
@@ -98,13 +107,12 @@ inline std::optional<std::array<std::vector<NativeCreationNameTreeCellSeed>,2>> 
       const auto& entry=std::get<c::CatalogNameEntry>(*record.name);
       const auto kind=kinds.find(entry.object_uuid.value);if(kind==kinds.end())return std::nullopt;
       const auto view=c::BorrowCatalogNameEntry(entry);
-      out[0].push_back({i,c::CatalogNameAuthoritativeTreeKey(view,kind->second),c::CatalogNameAuthoritativeTreePayload(view)});
-      const auto path=c::ResolveCatalogNamePath(view,names);
-      if(!path.ok())return std::nullopt;
-      std::vector<std::string_view> components;components.reserve(path.components.size());
-      for(const auto& component:path.components)components.push_back(component.display_name);
+      const auto profile=profiles.find(entry.identifier_profile_uuid.value);if(profile==profiles.end())return std::nullopt;
+      const auto keys=c::DeriveCatalogNameEntryKeys(profile->second,view);if(!keys.ok())return std::nullopt;
+      out[0].push_back({i,c::CatalogNameAuthoritativeTreeKey(view,keys.own,kind->second),c::CatalogNameAuthoritativeTreePayload(view)});
+      if(c::CheckCatalogNameEntryPath(view,names)!=c::CatalogNamePathError::none)return std::nullopt;
       out[1].push_back({i,c::CatalogNameUuidTreeEntryKey(view,kind->second),
-          c::CatalogNameUuidTreeEntryPayload(entry.name_entry_uuid.value,components)});
+          c::CatalogNameUuidTreeEntryPayload(entry.name_entry_uuid.value)});
     }
   }
   for(auto& cells:out)std::sort(cells.begin(),cells.end(),[&](const auto& a,const auto& b){

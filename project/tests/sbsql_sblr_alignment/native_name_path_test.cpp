@@ -8,10 +8,14 @@
 //   - random name forests (one database, objects nested up to eight deep,
 //     names in two languages with language defaults, aliases, entries in a
 //     language no ancestor has, keys holding 0x00 and 0xFF, exact and
-//     normalized lanes): every entry's resolved components and lookup key are
-//     the oracle's, and its stored path checks;
-//   - a stored path with a changed byte, one byte short, a component too many
-//     or too few, two components swapped, or a wrong count does not check;
+//     normalized lanes): every entry's resolved components are the oracle's,
+//     and its path checks (walks);
+//   SB_NATIVE_NAME_ROW_V4 (owner Q157 = 1, plan 35 S2): the path is derived at
+//   read by the walk; nothing of it is stored, so the check is walk-only.
+//   (Was: each resolved component's own-lane key and the full-path lookup key
+//   were the oracle's, and a stored path with a changed byte, one byte short,
+//   a component too many or too few, two components swapped, or a wrong count
+//   did not check.)
 //   - refusals: an ancestor with no name, an ancestor with two language
 //     defaults (the entry's own object having two is not a refusal), a scope
 //     cycle, 65 components (64 resolve);
@@ -80,15 +84,6 @@ Uuid Id(unsigned n) {
 TypedUuid T(unsigned n) { return {UuidKind::object, Id(n)}; }
 
 // ---- The oracle -----------------------------------------------------------------
-void Esc(Bytes& out, const Bytes& in) {
-  for (byte b : in) {
-    out.push_back(b);
-    if (b == 0) out.push_back(255);
-  }
-  out.push_back(0);
-  out.push_back(0);
-}
-const Bytes& Own(const c::CatalogNameEntry& e) { return e.requires_exact_match ? e.exact_lookup_key : e.normalized_lookup_key; }
 
 // A forest of named objects. Object 1 is the database; its names scope to it.
 struct Forest {
@@ -108,10 +103,13 @@ struct Forest {
     e.object_kind = c::CatalogRecordKind::table_descriptor;
     e.scope_uuid = T(parent.at(object));
     e.language_uuid = c::CatalogLanguageIdentity(Lang(language));
-    e.display_name = std::move(display);
+    // SB_NATIVE_NAME_ROW_V4: the row holds its raw text (here the display the
+    // oracle expects, with the key's bytes appended so components differ in
+    // more than their display). (Was: display_name, and `key` stored in the
+    // entry's own lane.)
+    e.raw_name_text = std::move(display);
+    e.raw_name_text.append(key.begin(), key.end());
     e.requires_exact_match = exact;
-    (exact ? e.exact_lookup_key : e.normalized_lookup_key) = std::move(key);
-    (exact ? e.normalized_lookup_key : e.exact_lookup_key) = {byte{'z'}};
     e.default_for_language = language_default;
     e.default_for_object = object_default;
     if (object_default) {
@@ -133,9 +131,8 @@ struct Forest {
     return d == default_entry.end() ? nullptr : &entries.at(d->second);
   }
   struct Path {
-    Bytes key;
-    std::vector<std::string> display;
-    std::vector<Bytes> keys;
+    std::vector<std::string> display;  // each component's raw text
+    std::vector<Uuid> entries;         // each component's entry
   };
   Path OraclePath(const c::CatalogNameEntry& e) const {
     std::vector<const c::CatalogNameEntry*> chain{&e};
@@ -147,9 +144,8 @@ struct Forest {
     std::reverse(chain.begin(), chain.end());
     Path out;
     for (const auto* n : chain) {
-      Esc(out.key, Own(*n));
-      out.display.push_back(n->display_name);
-      out.keys.push_back(Own(*n));
+      out.display.push_back(n->raw_name_text);
+      out.entries.push_back(n->name_entry_uuid.value);
     }
     return out;
   }
@@ -166,17 +162,6 @@ struct Borrowed {
 };
 // Borrows `e` itself.
 c::CatalogNameEntryView View(const c::CatalogNameEntry& e) { return c::BorrowCatalogNameEntry(e); }
-// A copy of `e` that carries `path`, and the payload its view borrows.
-struct Stored {
-  c::CatalogNamePayload payload;
-  c::CatalogNameEntryView view;
-  Stored(c::CatalogNameEntry e, const Bytes& key, std::size_t count) : payload(([&] {
-      e.full_path_lookup_key = key;
-      e.path_component_count = count;
-      return c::CatalogNamePayload{std::move(e)};
-    })()), view(std::get<c::CatalogNameEntryView>(c::BorrowCatalogNamePayload(payload))) {}
-};
-
 Bytes RandomKey(std::mt19937_64& rng) {
   static const byte alphabet[] = {0, 0, 255, 255, 'a', 'b', 'c', 1};
   Bytes out(rng() % 6);
@@ -213,45 +198,11 @@ void RandomForests() {
       Check(got.ok(), "every name in a well-formed forest resolves");
       Check(got.components.size() == want.display.size(), "the component count is the oracle's");
       for (std::size_t i = 0; i < want.display.size(); ++i) {
-        Check(got.components[i].display_name == want.display[i], "each display component is the oracle's");
-        Check(std::equal(got.components[i].lookup_key.begin(), got.components[i].lookup_key.end(),
-                         want.keys[i].begin(), want.keys[i].end()),
-              "each component key is the oracle's own-lane key");
+        Check(got.components[i].entry.raw_name_text == want.display[i], "each component's raw text is the oracle's");
+        Check(got.components[i].entry.name_entry_uuid.value == want.entries[i], "each component is the oracle's entry");
       }
-      Check(c::CatalogNamePathLookupKey(got) == want.key, "the full-path lookup key is the oracle's");
       deepest = std::max(deepest, want.display.size());
-      const Stored good(e, want.key, want.display.size());
-      Check(c::CheckCatalogNameEntryPath(good.view, names.index) == c::CatalogNamePathError::none,
-            "the oracle's stored path checks");
-      const auto refused = [&](const Bytes& key, std::size_t count, const std::string& what) {
-        const Stored bad(e, key, count);
-        Check(c::CheckCatalogNameEntryPath(bad.view, names.index) == c::CatalogNamePathError::mismatch, what);
-      };
-      const auto n = want.display.size();
-      refused(want.key, n + 1, "a count one too many does not check");
-      refused(want.key, n - 1, "a count one too few does not check");
-      refused({}, 0, "no stored path does not check");
-      for (std::size_t at : {std::size_t{0}, want.key.size() / 2, want.key.size() - 1}) {
-        auto key = want.key;
-        key[at] ^= byte{0x5a};
-        refused(key, n, "a stored path with a changed byte does not check");
-      }
-      refused(Bytes(want.key.begin(), want.key.end() - 1), n, "a stored path one byte short does not check");
-      auto longer = want.key;
-      Esc(longer, {byte{'q'}});
-      refused(longer, n + 1, "a stored path with a component too many does not check");
-      if (n >= 2 && want.keys[0] != want.keys[1]) {
-        Bytes swapped;
-        Esc(swapped, want.keys[1]);
-        Esc(swapped, want.keys[0]);
-        for (std::size_t i = 2; i < n; ++i) Esc(swapped, want.keys[i]);
-        refused(swapped, n, "a stored path with two components swapped does not check");
-      }
-      if (n >= 2) {
-        Bytes short_path;
-        for (std::size_t i = 1; i < n; ++i) Esc(short_path, want.keys[i]);
-        refused(short_path, n, "a stored path missing its root-side component does not check");
-      }
+      Check(c::CheckCatalogNameEntryPath(view, names.index) == c::CatalogNamePathError::none, "the path walks");
       ++entries_checked;
     }
   }
@@ -328,7 +279,7 @@ void Refusals() {
     Borrowed names(f);
     const auto& db = f.entries.begin()->second;
     const auto path = c::ResolveCatalogNamePath(View(db), names.index);
-    Check(path.ok() && path.components.size() == 1 && path.components[0].display_name == "db",
+    Check(path.ok() && path.components.size() == 1 && path.components[0].entry.raw_name_text == "dbd",
           "the database's name is a path of one component");
   }
 }
@@ -344,13 +295,13 @@ void IndexReplacement() {
   const auto fr_payload = c::CatalogNamePayload{fr_name};
   names.index.Add(c::BorrowCatalogNamePayload(fr_payload));  // the same entry again
   auto path = c::ResolveCatalogNamePath(View(leaf), names.index);
-  Check(path.ok() && path.components[0].display_name == "f", "an entry added twice is one name");
+  Check(path.ok() && path.components[0].entry.raw_name_text == "ff", "an entry added twice is one name");
   auto moved = fr_name;
   moved.language_uuid = c::CatalogLanguageIdentity(Lang("de"));
   const auto moved_payload = c::CatalogNamePayload{moved};
   names.index.Add(c::BorrowCatalogNamePayload(moved_payload));
   path = c::ResolveCatalogNamePath(View(leaf), names.index);
-  Check(path.ok() && path.components[0].display_name == "a",
+  Check(path.ok() && path.components[0].entry.raw_name_text == "aa",
         "a re-added entry that moved language is no longer found under the old one");
 }
 
@@ -361,9 +312,7 @@ void NoAllocation() {
   const auto& a = f.Name(2, "en", {byte{'a'}, byte{0}}, false, true, true, "a");
   const auto& b = f.Name(3, "en", {byte{'b'}}, true, true, true, "b");
   const auto& c4 = f.Name(4, "en", {byte{0}, byte{'c'}}, false, true, true, "c");
-  const auto want = f.OraclePath(c4);
-  const Stored stored(c4, want.key, want.display.size());
-  const auto vdb = View(db), va = View(a), vb = View(b);
+  const auto vdb = View(db), va = View(a), vb = View(b), vc = View(c4);
   const auto lookup = [&](const Uuid& object, const Uuid&) {
     c::CatalogNamePathName out;
     if (object == vdb.object_uuid.value) out.name = vdb;
@@ -372,9 +321,9 @@ void NoAllocation() {
     return out;
   };
   const long before = allocations.load();
-  const auto checked = c::CheckCatalogNameEntryPath(stored.view, lookup);
+  const auto checked = c::CheckCatalogNameEntryPath(vc, lookup);
   const long during = allocations.load() - before;
-  Check(checked == c::CatalogNamePathError::none, "the in-place check accepts the oracle's path");
+  Check(checked == c::CatalogNamePathError::none, "the in-place check accepts a walking path");
   Check(during == 0, "the in-place check allocates nothing when its lookup allocates nothing");
 }
 }  // namespace

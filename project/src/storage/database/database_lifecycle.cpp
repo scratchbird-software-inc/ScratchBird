@@ -9883,7 +9883,15 @@ static NativeDatabaseCreateResult PlanNativeDatabaseCreateImpl(
       if(!body)return fail(E::policy_assembly);
       const auto classes=std::span(body->classes).first(body->class_count);
       const auto groups=std::span(body->groups).first(body->group_count);
+      // SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1): each entry's own lane derived
+      // under its identifier profile, from the plan's own profile records.
+      std::map<Uuid,c::CatalogIdentifierResolutionProfile> profiles;
+      for(const auto& relation:seed)for(const auto& row:relation)
+        if(!row.name&&c::IsCatalogIdentifierProfilePayload(row.metadata.record.payload))
+          if(auto decoded=c::DecodeCatalogIdentifierProfile(row.metadata.record.payload);decoded.ok())
+            profiles.emplace(decoded.record->profile_uuid,std::move(*decoded.record));
       std::vector<std::vector<c::CatalogNameEntryView>> grouped(groups.size());
+      std::vector<std::vector<c::CatalogNameDerivedText>> lanes(groups.size());
       for(const auto& row:seed[1]) {
         if(!row.name)continue;
         const auto* entry=std::get_if<c::CatalogNameEntry>(&*row.name);
@@ -9892,10 +9900,16 @@ static NativeDatabaseCreateResult PlanNativeDatabaseCreateImpl(
         if(binding==classes.end())continue;  // a kind the policy does not bind collides with nothing
         const auto group=std::find_if(groups.begin(),groups.end(),[&](const auto& g){return g.group_uuid==binding->group_uuid;});
         if(group==groups.end())return fail(E::policy_assembly);
-        grouped[static_cast<std::size_t>(group-groups.begin())].push_back(c::BorrowCatalogNameEntry(*entry));
+        const auto view=c::BorrowCatalogNameEntry(*entry);
+        const auto profile=profiles.find(entry->identifier_profile_uuid.value);
+        if(profile==profiles.end())return fail(E::policy_assembly);
+        const auto keys=c::DeriveCatalogNameEntryKeys(profile->second,view);
+        if(!keys.ok())return fail(E::policy_assembly);
+        grouped[static_cast<std::size_t>(group-groups.begin())].push_back(view);
+        lanes[static_cast<std::size_t>(group-groups.begin())].push_back(keys.own);
       }
       for(std::size_t g=0;g<groups.size();++g) {
-        const auto found=FindNativeCreateNameEntryCollision(grouped[g],groups[g].language_lane,groups[g].key_lane);
+        const auto found=FindNativeCreateNameEntryCollision(grouped[g],lanes[g],groups[g].language_lane,groups[g].key_lane);
         if(!found)continue;
         const auto is=[&](const Uuid& id){
           return grouped[g][found->first].object_uuid.value==id||grouped[g][found->second].object_uuid.value==id;};
@@ -9905,9 +9919,10 @@ static NativeDatabaseCreateResult PlanNativeDatabaseCreateImpl(
         return fail(E::name_collision);
       }
     }
-    // SB_NATIVE_NAME_PATH: every name entry carries its full path (the
-    // workspace fills its own copy the same way; both plans see these sizes).
-    if(!FillNativeCreationNamePaths(seed))return fail(E::name_path);
+    // SB_NATIVE_NAME_PATH: every name entry's path walks (SB_NATIVE_NAME_ROW_V4,
+    // owner Q157 = 1: derived at read, not stored). (Was: every entry carried
+    // its full path, FillNativeCreationNamePaths, before the plan sized rows.)
+    if(!CheckNativeCreationNamePaths(seed))return fail(E::name_path);
 
     // Refuse before any write unless the hosted reader can open what this
     // writes: the credential tier for the security and configuration
@@ -10035,11 +10050,13 @@ const char* NativeCreateNameCollisionClassName(NativeCreateNameCollisionClass na
 // a run of equal entries holding more than one object is a collision.
 std::optional<std::pair<std::size_t,std::size_t>> FindNativeCreateNameEntryCollision(
     std::span<const core::catalog::CatalogNameEntryView> entries,
+    std::span<const core::catalog::CatalogNameDerivedText> own_lanes,
     core::catalog::CatalogCollisionLanguageLane language_lane,core::catalog::CatalogCollisionKeyLane key_lane) {
   namespace c=scratchbird::core::catalog;
+  if(own_lanes.size()!=entries.size())return std::nullopt;
   const auto compare=[&](std::size_t a,std::size_t b) {
     if(const auto scope=c::CompareCatalogNameCollisionScope(entries[a],entries[b]))return scope;
-    return c::CompareCatalogNameCollisionLanes(entries[a],entries[b],language_lane,key_lane);
+    return c::CompareCatalogNameCollisionLanes(entries[a],own_lanes[a],entries[b],own_lanes[b],language_lane,key_lane);
   };
   std::vector<std::size_t> order(entries.size());
   for(std::size_t i=0;i<order.size();++i)order[i]=i;
@@ -10089,25 +10106,25 @@ NativeCreatePrincipalNameCollision FindNativeCreatePrincipalNameCollision(
     const auto lane=static_cast<u64>(language_lane),keys=static_cast<u64>(key_lane);
     if(lane<1||lane>3||keys<1||keys>2)return C::pack_unusable;
     if(!user_accounts_bound)return C::none;
-    struct Named {std::vector<core::platform::byte> backing;c::CatalogNameEntryView view;};
+    struct Named {c::CatalogNameEntryView view;c::CatalogNameDerivedText own;};
     // The entry the plan would write for `text`, keys only; nullopt when the
-    // text's keys cannot be derived (refused elsewhere).
+    // text's keys cannot be derived (refused elsewhere). SB_NATIVE_NAME_ROW_V4:
+    // the own lane is derived from the text (was: both lanes into a backing).
     const auto entry=[&](std::string_view text)->std::optional<Named> {
-      Named out;out.backing.resize(2*text.size()+1);
-      const c::CatalogIdentifierKeyRequest request{&profile,text,false,c::CatalogNameQuoteStyle::none,false};
-      const auto derived=c::DeriveCatalogIdentifierLookupKeysInto(request,out.backing);
-      if(!derived.ok())return std::nullopt;
+      Named out;
       out.view.object_kind=c::CatalogRecordKind::user_account;
       out.view.identifier_profile_uuid={core::platform::UuidKind::object,profile.profile_uuid};
       out.view.language_uuid=c::CatalogLanguageIdentity(language);
       out.view.raw_name_text=text;out.view.was_quoted=false;out.view.quote_style=c::CatalogNameQuoteStyle::none;
       out.view.requires_exact_match=false;
-      out.view.normalized_lookup_key=derived.normalized;out.view.exact_lookup_key=derived.exact;
+      const auto keys=c::DeriveCatalogNameEntryKeys(profile,out.view);
+      if(!keys.ok())return std::nullopt;
+      out.own=keys.own;
       return out;
     };
     const auto same=[&](const std::optional<Named>& x,const std::optional<Named>& y) {
       return x&&y&&c::CompareCatalogNameCollisionScope(x->view,y->view)==0&&
-          c::CompareCatalogNameCollisionLanes(x->view,y->view,language_lane,key_lane)==0;
+          c::CompareCatalogNameCollisionLanes(x->view,x->own,y->view,y->own,language_lane,key_lane)==0;
     };
     const auto bootstrap=entry(bootstrap_principal_name),service=entry(service_principal_name);
     if(same(bootstrap,service))return C::bootstrap_is_service_principal;

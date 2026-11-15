@@ -222,7 +222,7 @@ struct Item {
     vector.security_policy_uuid=definition.security_policy_uuid;vector.lifecycle_state=c::CatalogNameLifecycle::active;
     entry.scope_uuid=definition.record.header.parent_uuid;entry.parent_schema_uuid=definition.owning_schema_uuid;entry.language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_en_US);
     entry.dialect_profile_uuid={p::UuidKind::object,f::Id(56)};entry.identifier_profile_uuid={p::UuidKind::object,f::Id(57)};
-    entry.raw_name_text=entry.display_name="explicit_policy_"+std::to_string(n);entry.normalized_lookup_key.assign(entry.raw_name_text.begin(),entry.raw_name_text.end());
+    entry.raw_name_text="explicit_policy_"+std::to_string(n);
     entry.created_transaction_uuid=descriptor.creating_transaction_uuid;entry.security_policy_uuid=definition.security_policy_uuid;
     entry.resource_epoch=entry.name_resolution_epoch=entry.catalog_generation_id=1;entry.default_for_language=entry.default_for_object=true;
     entry.lifecycle_state=c::CatalogNameLifecycle::active;
@@ -263,7 +263,8 @@ void Creation(){
     second.descriptor.body_generation=2;
     Check(db::AssembleNativeInitialPolicyDescriptorRecords(request).ok(),"distinct policies may explicitly select different generations of the same typed body");
     second.descriptor=saved;}
-  first.entry.display_name="changed after assembly";
+  // SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1): the raw text, the entry's one name copy. (Was: display_name.)
+  first.entry.raw_name_text="changed after assembly";
   Check(made.records->definitions[0].metadata.record.payload==retained&&made.records->names[1].name.has_value(),"result owns exact admitted source after caller changes");
   // Cross the64-identity inline scratch threshold; test its real allocation
   // and the complete larger package, not only the small fixed-array lane.

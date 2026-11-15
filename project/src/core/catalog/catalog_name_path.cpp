@@ -40,16 +40,10 @@ CatalogNamePath ResolveCatalogNamePath(const CatalogNameEntryView& entry, const 
   CatalogNamePath out;
   std::vector<CatalogNamePathComponent> reversed;
   out.error = WalkCatalogNamePath(entry, names, [&](const CatalogNameEntryView& component) {
-    reversed.push_back({component.display_name, CatalogNameEntryOwnLaneKey(component)});
+    reversed.push_back({component});
   });
   if (out.ok()) out.components.assign(reversed.rbegin(), reversed.rend());
   return out;
 }
 
-std::vector<byte> CatalogNamePathLookupKey(const CatalogNamePath& path) {
-  std::vector<std::span<const byte>> keys;
-  keys.reserve(path.components.size());
-  for (const auto& component : path.components) keys.push_back(component.lookup_key);
-  return CatalogNameFullPathLookupKey(keys);
-}
 }  // namespace scratchbird::core::catalog

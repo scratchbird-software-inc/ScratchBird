@@ -40,10 +40,9 @@ void NativeNamedCreationChecks(const db::NativeCreationCatalogSeed& supplied) {
       e.object_uuid=definition.record.header.object_uuid;e.object_kind=definition.record.header.kind;
       e.security_policy_uuid=definition.security_policy_uuid;e.language_uuid=c::CatalogLanguageIdentity(alias?c::kCatalogLanguage_de_DE:c::kCatalogLanguage_en_US);
       e.name_class=alias?c::CatalogNameClass::alias:c::CatalogNameClass::primary;
-      e.raw_name_text=e.display_name=(alias?"de_":"en_")+std::to_string(static_cast<unsigned>(definition.object_subtype))+"_"+std::to_string(at);
+      e.raw_name_text=(alias?"de_":"en_")+std::to_string(static_cast<unsigned>(definition.object_subtype))+"_"+std::to_string(at);
       e.default_for_object=!alias;e.default_for_language=true;
       // Supplied fixture profile-derived material, not production admission.
-      e.normalized_lookup_key.assign(e.raw_name_text.begin(),e.raw_name_text.end());
       n.input_entries[alias]={&m,&e};
     }
     inputs.push_back({&definition,&n.vector_metadata,&n.vector,n.input_entries});
@@ -137,14 +136,24 @@ void NativeNamedCreationChecks(const db::NativeCreationCatalogSeed& supplied) {
     m=names[i].metadata[1];m.record.header.row_uuid={UuidKind::row,Id(22000+i)};
     m.record.header.object_uuid=m.default_name_uuid={UuidKind::object,Id(23000+i)};
     e=names[i].entries[1];e.name_entry_uuid=m.record.header.object_uuid;e.language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_fr_CA);
-    e.display_name=e.raw_name_text="fr_"+std::to_string(i);
-    e.normalized_lookup_key.assign(e.raw_name_text.begin(),e.raw_name_text.end());
+    // SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1): the raw text is now an entry's
+    // only owned variable field, so each extra name is longer than the
+    // std::string small-buffer capacity: its owning copy is a real heap
+    // allocation the sweep must fault. (Was: "fr_"+i, small-buffer text; the
+    // entry's stored normalized key supplied its one allocation.)
+    e.raw_name_text="fr_extra_language_alias_"+std::to_string(i);
     extra_inputs[i]={names[i].input_entries[0],names[i].input_entries[1],{&m,&e}};
     large_inputs[i].entries=extra_inputs[i];
   }
   const c::CatalogNamedCreationLimits large_limits{5*inputs.size(),limits.maximum_encoded_bytes};
   const auto large=assemble(large_inputs,large_limits);
   Check(large.ok()&&large.records->names.size()==4*inputs.size(),"large native identity scratch preserves every language alias");
+  {
+    std::size_t extra_found=0;
+    for(const auto& row:large.records->names)if(row.name)
+      if(const auto* e=std::get_if<c::CatalogNameEntry>(&*row.name);e&&e->raw_name_text.starts_with("fr_extra_language_alias_"))++extra_found;
+    Check(large.ok()&&extra_found==names.size(),"every extra name is assembled into the large package");
+  }
   auto duplicate=large_inputs;duplicate.back()=duplicate.front();
   const auto duplicate_result=assemble(duplicate,large_limits);
   Check(duplicate_result.error==E::duplicate_identity&&!duplicate_result.records,
@@ -157,7 +166,16 @@ void NativeNamedCreationChecks(const db::NativeCreationCatalogSeed& supplied) {
     ++large_sites;Check(!result.ok()&&!result.records&&result.error==E::resource_exhausted,
         "every large scratch/output allocation failure exposes no partial records");
   }
-  Check(completed&&large_sites>sites,"large package sweep includes identity scratch and all extra names");
+  // SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1): the sweep counts heap allocation
+  // sites. Both packages exceed the 256-identity stack array (the small one
+  // has 2*4*N+2 identities, the large one 2*5*N+2), so both include the heap
+  // identity scratch; the large one adds exactly one owning copy per extra
+  // name. (Was: Check(completed&&large_sites>sites,...): at HEAD bd44413dd,
+  // N=188, sites=567 and large_sites=755, each name entry's stored
+  // normalized key a heap copy; with version 4 rows and short names both
+  // were 191, which no longer proved the claim.)
+  Check(2*4*inputs.size()+2>256,"the small package already takes the heap identity scratch");
+  Check(completed&&large_sites==sites+names.size(),"large package sweep includes identity scratch and all extra names");
   db::NativeCreationCatalogSeed seed;seed[0]=made.records->definitions;seed[1]=made.records->names;
   Fixture fixture;
   for(unsigned profile=0;profile<5;++profile) {

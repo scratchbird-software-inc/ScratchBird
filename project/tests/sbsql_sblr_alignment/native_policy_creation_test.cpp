@@ -131,8 +131,7 @@ struct Package {
       auto& e=x.entry;e.name_entry_uuid=meta.default_name_uuid;e.name_vector_uuid=meta.name_vector_uuid;
       e.object_uuid=meta.record.header.object_uuid;e.object_kind=v.object_kind;e.scope_uuid=meta.record.header.parent_uuid;
       e.parent_schema_uuid=meta.owning_schema_uuid;e.language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_en_US);e.dialect_profile_uuid=Typed(p::UuidKind::object,56);
-      e.identifier_profile_uuid=Typed(p::UuidKind::object,57);e.raw_name_text=e.display_name="supplied_alias_"+std::to_string(n);
-      e.normalized_lookup_key.assign(e.raw_name_text.begin(),e.raw_name_text.end());e.catalog_generation_id=1;
+      e.identifier_profile_uuid=Typed(p::UuidKind::object,57);e.raw_name_text="supplied_alias_"+std::to_string(n);e.catalog_generation_id=1;
       e.created_transaction_uuid=tx;e.security_policy_uuid=meta.security_policy_uuid;
       e.resource_epoch=e.name_resolution_epoch=1;e.default_for_language=e.default_for_object=true;e.lifecycle_state=c::CatalogNameLifecycle::active;
   }
@@ -593,8 +592,9 @@ void Logical() {
     const auto refused=db::AssembleNativeInitialPolicyRecords(request);allocation_budget=-1;
     Check(allocation_failed&&!refused.ok()&&!refused.records,"actual intake/scratch/output allocation refusal cannot escape a partial native package");
   }
-  package.items[0].entry.display_name="changed after assembly";
-  Check(std::get<c::CatalogNameEntry>(*made.records->names[1].name).display_name=="supplied_alias_0","owning output does not borrow mutable caller or released import buffers");
+  // SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1): the raw text, the entry's one name copy. (Was: display_name.)
+  package.items[0].entry.raw_name_text="changed after assembly";
+  Check(std::get<c::CatalogNameEntry>(*made.records->names[1].name).raw_name_text=="supplied_alias_0","owning output does not borrow mutable caller or released import buffers");
 }
 void CustomSource(bool security=false) {
   scratchbird::tests::OwnedTempDirectory artifacts;
@@ -781,10 +781,11 @@ void PlacementLogical() {
     Verify(joined,security,bootstrap,service,&package.agents);
     for(const auto& row:catalogs[1])Check(row.name&&row.metadata.record.header.kind==c::CatalogRecordKind::localized_name,
         "all supplied localized names and vectors reside only in name registry");
-    package.items[0].entry.display_name="caller data changed after production placement";
-    Check(std::get<c::CatalogNameEntry>(*catalogs[1][1].name).display_name=="supplied_alias_0",
+    // SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1): the raw text, the entry's one name copy. (Was: display_name.)
+    package.items[0].entry.raw_name_text="caller data changed after production placement";
+    Check(std::get<c::CatalogNameEntry>(*catalogs[1][1].name).raw_name_text=="supplied_alias_0",
         "production placement owns localized data after caller mutation");
-    package.items[0].entry.display_name="supplied_alias_0";
+    package.items[0].entry.raw_name_text="supplied_alias_0";
     for(unsigned scenario=0;scenario<8;++scenario){
       Package bad(security,bootstrap,service);
       auto changed=service?bad.ServiceRequest():bootstrap?bad.BootstrapRequest():bad.SecurityRequest();

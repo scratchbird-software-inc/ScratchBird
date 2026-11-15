@@ -180,7 +180,9 @@ CatalogNameEnvelopeEncodeResult EncodeCatalogNameEnvelope(const CatalogNameEnvel
   bytes[0]='S'; bytes[1]='B'; bytes[2]='C'; bytes[3]='R';
   Put(bytes,4,1,2); Put(bytes,6,kHeaderBytes,2); Put(bytes,8,bytes.size(),4);
   Put(bytes,12,payload.bytes.size(),4); Put(bytes,16,schema_id,4);
-  Put(bytes,20,3,2); Put(bytes,22,5,2);  // payload schema version 3 (SB_CATALOG_NO_TEXT_IDENTIFIERS)
+  // Payload schema version: the vector's 3 (SB_CATALOG_NO_TEXT_IDENTIFIERS);
+  // the entry's 4 (SB_NATIVE_NAME_ROW_V4, owner Q147 = 1). (Was: 3 for both.)
+  Put(bytes,20,schema_id==327682?4:3,2); Put(bytes,22,5,2);
   const auto& b=record.binding;
   for (const auto& field:kIdentityFields) {
     const auto& id=b.*field.member;
@@ -201,11 +203,15 @@ CatalogNameEnvelopeViewResult DecodeCatalogNameEnvelopeView(
     return {Error::invalid_header,{}};
   if (Get(bytes,4,2)!=1) return {Error::unsupported_format,{}};
   if (Get(bytes,6,2)!=kHeaderBytes || Get(bytes,8,4)!=bytes.size() ||
-      Get(bytes,12,4)!=bytes.size()-kHeaderBytes || Get(bytes,20,2)!=3 ||
+      Get(bytes,12,4)!=bytes.size()-kHeaderBytes ||
       Get(bytes,22,2)!=5 || Get(bytes,132,4)!=0 || Get(bytes,168,8)!=0)
     return {Error::invalid_header,{}};
   const auto schema_id=Get(bytes,16,4);
   if (schema_id!=327681 && schema_id!=327682) return {Error::invalid_payload,{}};
+  // SB_NATIVE_NAME_ROW_V4: the header's payload version is the schema's own
+  // (vector 3, entry 4); an entry envelope of version 3 is refused (no
+  // migration, owner Q164 = 1).
+  if (Get(bytes,20,2)!=(schema_id==327682?4u:3u)) return {Error::invalid_header,{}};
   CatalogNameEnvelopeView record;
   record.binding=ReadBinding(bytes);
   const auto binding_error=Validate(record.binding);

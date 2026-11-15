@@ -339,13 +339,16 @@ int main() {
                                                 c::BorrowCatalogNameEntry(entry)) ==
             c::CatalogIdentifierKeyError::none,
             "the engine's lookup-key verifier accepts every assembled name entry");
-      Check(!entry.normalized_lookup_key.empty() && !entry.exact_lookup_key.empty(),
+      // SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1): the lanes are derived from the
+      // row under the profile. (Was: the same expectations on the stored
+      // normalized_lookup_key / exact_lookup_key.)
+      const auto lanes = c::DeriveCatalogNameEntryKeys(IdentifierProfile(), c::BorrowCatalogNameEntry(entry));
+      Check(lanes.ok() && !lanes.normalized.empty() && !lanes.exact.empty(),
             "both lookup lanes are populated; the exact lane was previously left empty");
-      Check(entry.normalized_lookup_key != entry.exact_lookup_key,
+      Check(lanes.normalized.String() != lanes.exact.String(),
             "the folded and exact lanes differ under this profile, so neither lane is "
             "incidentally correct");
-      Check(std::string(entry.exact_lookup_key.begin(), entry.exact_lookup_key.end()) ==
-            names.text[at],
+      Check(lanes.exact.String() == names.text[at],
             "the exact lane is the supplied label; this profile preserves quoted case");
       Check(entry.parent_schema_uuid.has_value() &&
             entry.parent_schema_uuid->value == SchemaFor(enumerated.definitions[at]) &&
@@ -731,7 +734,10 @@ int main() {
     Check(twins[0]->scope_uuid.value != twins[1]->scope_uuid.value,
           "specifically, their lookup scopes differ: the parent schema is what separates "
           "two identical labels in one language");
-    Check(twins[0]->normalized_lookup_key == twins[1]->normalized_lookup_key,
+    // SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1): the derived normalized lanes.
+    // (Was: the stored normalized_lookup_key.)
+    Check(c::DeriveCatalogNameEntryKeys(IdentifierProfile(), c::BorrowCatalogNameEntry(*twins[0])).normalized.String() ==
+              c::DeriveCatalogNameEntryKeys(IdentifierProfile(), c::BorrowCatalogNameEntry(*twins[1])).normalized.String(),
           "their normalized lookup keys are identical, so nothing about the text "
           "disambiguated them");
   }

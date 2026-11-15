@@ -556,30 +556,12 @@ inline BootstrapNamedCreationUnitResult BuildBootstrapNamedCreationUnit(
   e.quote_style = c::CatalogNameQuoteStyle::none;
   e.requires_exact_match = false;
 
-  // Both lanes come from the engine's own derivation, over caller-owned
-  // backing. Nothing here folds text itself.
-  {
-    const c::CatalogIdentifierKeyRequest key_request{
-        input.identifier_profile, input.name_text, e.was_quoted, e.quote_style,
-        e.requires_exact_match};
-    std::vector<p::byte> backing(2 * input.name_text.size());
-    const auto derived = c::DeriveCatalogIdentifierLookupKeysInto(key_request, backing);
-    if (!derived.ok()) {
-      out.error = E::lookup_key_derivation_refused;
-      return out;
-    }
-    e.normalized_lookup_key.assign(derived.normalized.begin(), derived.normalized.end());
-    e.exact_lookup_key.assign(derived.exact.begin(), derived.exact.end());
-    // The profile decides whether the displayed form is the user's text or the
-    // folded form; the verifier checks that choice, so follow it rather than
-    // assuming the text displays as supplied.
-    if (input.identifier_profile->storage_display_mode ==
-        c::IdentifierDisplayMode::preserve_user_text) {
-      e.display_name = input.name_text;
-    } else {
-      e.display_name.assign(derived.normalized.begin(), derived.normalized.end());
-    }
-  }
+  // SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1): the row stores the raw text and
+  // the lane inputs only; both lanes and the display form are derived at read
+  // under this profile. The check below derives them once, so the profile
+  // admits this text. (Was: both lanes from DeriveCatalogIdentifierLookupKeysInto
+  // stored as normalized_lookup_key / exact_lookup_key, and display_name the
+  // text or the folded lane by the profile's display mode.)
   e.catalog_generation_id = unit.entry_metadata.catalog_generation;
   e.created_transaction_uuid = unit.definition.creator_transaction_uuid;
   e.security_policy_uuid = policy;
@@ -591,10 +573,24 @@ inline BootstrapNamedCreationUnitResult BuildBootstrapNamedCreationUnit(
   e.default_for_object = true;
   e.lifecycle_state = c::CatalogNameLifecycle::active;
 
-  // Hand the finished entry back to the engine's verifier. It recomputes both
-  // lanes and the display form from the profile and compares. A unit that
+  // Hand the finished entry back to the engine's verifier. It derives both
+  // lanes and the display form from the profile (refusing what the profile
+  // does not admit). A unit that
   // leaves here has been checked by the same code that will check it later,
   // rather than by this builder's own opinion of what it wrote.
+  // The text and quoting the profile refuses are lookup_key_derivation_refused,
+  // as when the lanes were derived here; any other refusal (the entry's
+  // profile binding) is lookup_key_verification_failed.
+  {
+    const c::CatalogIdentifierKeyRequest admission{input.identifier_profile, input.name_text, e.was_quoted,
+                                                   e.quote_style, e.requires_exact_match};
+    std::array<p::byte, 0> none{};
+    const auto admitted = c::DeriveCatalogIdentifierLookupKeysInto(admission, none);
+    if (!admitted.ok() && admitted.error != c::CatalogIdentifierKeyError::size_limit) {
+      out.error = E::lookup_key_derivation_refused;
+      return out;
+    }
+  }
   if (c::CheckCatalogIdentifierLookupKeys(*input.identifier_profile,
                                           c::BorrowCatalogNameEntry(e)) !=
       c::CatalogIdentifierKeyError::none) {

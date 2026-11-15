@@ -320,9 +320,9 @@ std::string CatalogVariableBytes(const catalog::CatalogMetadataVersionView& meta
       append(std::to_string(static_cast<unsigned>(entry.object_kind)));
       append(entry.reference_engine_uuid?std::string_view(reinterpret_cast<const char*>(entry.reference_engine_uuid->value.bytes.data()),16):std::string_view{});
       append({reinterpret_cast<const char*>(entry.language_uuid.value.bytes.data()),16});
-      for(const auto value:{entry.raw_name_text,entry.display_name})append(value);
-      for(const auto value:{entry.normalized_lookup_key,entry.exact_lookup_key,entry.full_path_lookup_key})
-        append({reinterpret_cast<const char*>(value.data()),value.size()});
+      // SB_NATIVE_NAME_ROW_V4: the raw text is the entry's one variable field.
+      // (Was: also display, both keys and the full path.)
+      append(entry.raw_name_text);
     }
   }
   return bytes;
@@ -363,8 +363,7 @@ void AddDatabaseDefinitionFixture(db::NativeCreationCatalogSeed& seed,
   input.entry.object_uuid=definition.record.header.object_uuid;input.entry.object_kind=catalog::CatalogRecordKind::database;
   input.entry.scope_uuid=definition.record.header.object_uuid;
   input.entry.parent_schema_uuid.reset();input.entry.parent_object_uuid.reset();
-  input.entry.raw_name_text=input.entry.display_name="enrolled_native_node";
-  input.entry.normalized_lookup_key.assign(input.entry.raw_name_text.begin(),input.entry.raw_name_text.end());
+  input.entry.raw_name_text="enrolled_native_node";
   input.entries[0]={&input.entry_metadata,&input.entry};
   db::NativeInitialDatabaseRequest request{&construction,
       {{platform::UuidKind::object,scratchbird::core::datatypes::kDatatypeCohortV10},10,10},scratchbird::core::catalog::kCatalogLanguage_en_US,
@@ -392,8 +391,7 @@ void AddDatabaseDefinitionFixture(db::NativeCreationCatalogSeed& seed,
   file_input.vector.default_name_entry_uuid=file.default_name_uuid;file_input.vector.object_kind=catalog::CatalogRecordKind::filespace;
   file_input.entry.object_uuid=file.record.header.object_uuid;file_input.entry.name_vector_uuid=file.name_vector_uuid;
   file_input.entry.name_entry_uuid=file.default_name_uuid;file_input.entry.object_kind=catalog::CatalogRecordKind::filespace;
-  file_input.entry.raw_name_text=file_input.entry.display_name="enrolled_primary_filespace";
-  file_input.entry.normalized_lookup_key.assign(file_input.entry.raw_name_text.begin(),file_input.entry.raw_name_text.end());
+  file_input.entry.raw_name_text="enrolled_primary_filespace";
   file_input.entries[0]={&file_input.entry_metadata,&file_input.entry};
   request.limits.maximum_records=6;
   auto result=db::AssembleNativeInitialDatabaseFilespaceRecords({request,
@@ -441,8 +439,7 @@ void AddDatabaseDefinitionFixture(db::NativeCreationCatalogSeed& seed,
     named.entry.object_uuid=metadata.record.header.object_uuid;named.entry.object_kind=catalog::CatalogRecordKind::schema;
     named.entry.scope_uuid=metadata.record.header.parent_uuid;named.entry.parent_object_uuid.reset();
     named.entry.parent_schema_uuid=named.vector.owning_schema_uuid;
-    named.entry.raw_name_text=named.entry.display_name=i==2?"audit":i==1?"verification_child":"verification_system";
-    named.entry.normalized_lookup_key.assign(named.entry.raw_name_text.begin(),named.entry.raw_name_text.end());
+    named.entry.raw_name_text=i==2?"audit":i==1?"verification_child":"verification_system";
     named.entries[0]={&named.entry_metadata,&named.entry};
     schema_inputs[i]={&schema,&metadata,&named.vector_metadata,&named.vector,named.entries};
   }
@@ -524,8 +521,7 @@ void AddDatabaseDefinitionFixture(db::NativeCreationCatalogSeed& seed,
           if(copy.name)std::visit([&](auto& name){remap(name.object_uuid);remap(name.name_vector_uuid);},*copy.name);
           if(copy.name)if(auto* vector=std::get_if<catalog::CatalogNameVector>(&*copy.name))remap(vector->default_name_entry_uuid);
           else{auto& entry=std::get<catalog::CatalogNameEntry>(*copy.name);remap(entry.name_entry_uuid);
-            entry.raw_name_text=entry.display_name="duplicate_primary_manifest";
-            entry.normalized_lookup_key.assign(entry.raw_name_text.begin(),entry.raw_name_text.end());}
+            entry.raw_name_text="duplicate_primary_manifest";}
           duplicate.push_back(std::move(copy));
         }
         for(auto& row:duplicate)relation.push_back(std::move(row));
@@ -623,8 +619,7 @@ AgentError AddAgentConfigurationFixture(db::NativeCreationCatalogSeed& seed,
     item.entry_metadata.resource_epoch=1;
     item.entry.name_entry_uuid=m.default_name_uuid;item.entry.name_vector_uuid=m.name_vector_uuid;
     item.entry.object_uuid=m.record.header.object_uuid;item.entry.object_kind=item.vector.object_kind;
-    item.entry.raw_name_text=item.entry.display_name="native_agent_alias_"+std::to_string(n);
-    item.entry.normalized_lookup_key.assign(item.entry.raw_name_text.begin(),item.entry.raw_name_text.end());
+    item.entry.raw_name_text="native_agent_alias_"+std::to_string(n);
   };
   const auto bytes=[](const auto& encoded){Check(encoded.ok(),"agent fixture records remain legal typed native frames");
     return std::string(encoded.bytes.begin(),encoded.bytes.end());};
@@ -873,8 +868,7 @@ db::NativeCreationCatalogIndexes AddCatalogIndexRowsFixture(db::NativeCreationCa
     item.entry_metadata.resource_epoch=1;
     item.entry.name_entry_uuid=m.default_name_uuid;item.entry.name_vector_uuid=m.name_vector_uuid;
     item.entry.object_uuid=m.record.header.object_uuid;item.entry.object_kind=item.vector.object_kind;
-    item.entry.raw_name_text=item.entry.display_name=scratchbird::core::uuid::UuidToString(row.object_uuid);
-    item.entry.normalized_lookup_key.assign(item.entry.raw_name_text.begin(),item.entry.raw_name_text.end());
+    item.entry.raw_name_text=scratchbird::core::uuid::UuidToString(row.object_uuid);
   }
   std::vector<catalog::CatalogNamedCreationInput> named;
   for(auto& item:items){item.entries[0]={&item.entry_metadata,&item.entry};
@@ -1075,8 +1069,7 @@ void AddVerificationPolicies(db::NativeCreationCatalogSeed& seed,
     item.vector.object_uuid=item.entry.object_uuid=m.record.header.object_uuid;
     item.vector.default_name_entry_uuid=item.entry.name_entry_uuid=m.default_name_uuid;
     item.vector.object_kind=item.entry.object_kind=catalog::CatalogRecordKind::policy;
-    item.entry.raw_name_text=item.entry.display_name="verification_fixture_"+std::to_string(n);
-    item.entry.normalized_lookup_key.assign(item.entry.raw_name_text.begin(),item.entry.raw_name_text.end());
+    item.entry.raw_name_text="verification_fixture_"+std::to_string(n);
     item.entries[0]={&item.entry_metadata,&item.entry};
     named[n]={&m,&item.vector_metadata,&item.vector,item.entries};
   }
@@ -1145,8 +1138,7 @@ void AddManagementDefinitions(db::NativeCreationCatalogSeed& seed,
     item.vector.object_uuid=item.entry.object_uuid=m.record.header.object_uuid;
     item.vector.default_name_entry_uuid=item.entry.name_entry_uuid=m.default_name_uuid;
     item.vector.object_kind=item.entry.object_kind=catalog::CatalogRecordKind::management_operation;
-    item.entry.raw_name_text=item.entry.display_name="management_fixture_"+std::to_string(n);
-    item.entry.normalized_lookup_key.assign(item.entry.raw_name_text.begin(),item.entry.raw_name_text.end());
+    item.entry.raw_name_text="management_fixture_"+std::to_string(n);
     item.entries[0]={&item.entry_metadata,&item.entry};named.push_back({&m,&item.vector_metadata,&item.vector,item.entries});
   }
   auto result=AssembleLocalNamedCreationRecords(Id(1),security_tx,scratchbird::core::catalog::kCatalogLanguage_en_US,named,{36,1024*1024});
@@ -1267,8 +1259,7 @@ void AddTransactionPolicies(db::NativeCreationCatalogSeed& seed,
     item.vector.object_uuid=item.entry.object_uuid=m.record.header.object_uuid;
     item.vector.default_name_entry_uuid=item.entry.name_entry_uuid=m.default_name_uuid;
     item.vector.object_kind=item.entry.object_kind=catalog::CatalogRecordKind::policy;
-    item.entry.raw_name_text=item.entry.display_name="transaction_fixture_"+std::to_string(n);
-    item.entry.normalized_lookup_key.assign(item.entry.raw_name_text.begin(),item.entry.raw_name_text.end());
+    item.entry.raw_name_text="transaction_fixture_"+std::to_string(n);
     item.entries[0]={&item.entry_metadata,&item.entry};named.push_back({&m,&item.vector_metadata,&item.vector,item.entries});
   }
   auto result=AssembleLocalNamedCreationRecords(Id(1),security_tx,scratchbird::core::catalog::kCatalogLanguage_en_US,named,{3*item_count,1024*1024});
@@ -1367,8 +1358,7 @@ void AddNamingProfileFixture(db::NativeCreationCatalogSeed& seed,
     x.vector.object_kind=m.record.header.kind;x.vector.default_name_entry_uuid=m.default_name_uuid;
     x.entry.name_entry_uuid=m.default_name_uuid;x.entry.name_vector_uuid=m.name_vector_uuid;
     x.entry.object_uuid=m.record.header.object_uuid;x.entry.object_kind=x.vector.object_kind;
-    x.entry.raw_name_text=x.entry.display_name="native_naming_profile_"+std::to_string(n+2*copy);
-    x.entry.normalized_lookup_key.assign(x.entry.raw_name_text.begin(),x.entry.raw_name_text.end());
+    x.entry.raw_name_text="native_naming_profile_"+std::to_string(n+2*copy);
     x.entries[0]={&x.entry_metadata,&x.entry};named[n]={&m,&x.vector_metadata,&x.vector,x.entries};
   }
   auto assembled=AssembleLocalNamedCreationRecords(Id(1),security_tx,scratchbird::core::catalog::kCatalogLanguage_en_US,named,{6,1024*1024});
@@ -1387,11 +1377,16 @@ void AddNamingProfileFixture(db::NativeCreationCatalogSeed& seed,
       if(variant==2)entry->dialect_profile_uuid.value=enrollment::SourceId(0x402);
       if(variant==7)entry->identifier_profile_uuid.value=enrollment::SourceId(0x402);
       if(variant==8)entry->case_fold_profile_uuid=enrollment::Typed(platform::UuidKind::object,99982);
-      if(variant==11)entry->normalized_lookup_key[0]^=1;
-      if(variant==12)entry->normalized_lookup_key.clear();
-      if(variant==13)entry->display_name="forged_display";
+      // SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1): a row stores no key or display
+      // to forge, so 11, 12, 13 and 15 now forge the lane inputs instead. (Was:
+      // 11 a normalized key byte flipped, 12 the normalized key cleared, 13 a
+      // forged display, 15 a forged exact key: key_mismatch, key_mismatch,
+      // display_mismatch, key_mismatch.)
+      if(variant==11)entry->raw_name_text=std::string(513,'n');  // past the profile's 512 scalars
+      if(variant==12){entry->was_quoted=false;entry->quote_style=CatalogNameQuoteStyle::double_quote;}
+      if(variant==13){entry->was_quoted=true;entry->requires_exact_match=false;entry->quote_style=CatalogNameQuoteStyle::double_quote;}
       if(variant==14){entry->was_quoted=entry->requires_exact_match=true;entry->quote_style=CatalogNameQuoteStyle::double_quote;}
-      if(variant==15)entry->exact_lookup_key={1,2,3};
+      if(variant==15)entry->raw_name_text.clear();
       changed=true;break;
     }
     Check(changed,"naming reference fault changes an actual submitted entry");
@@ -1466,8 +1461,7 @@ void AddCollisionPolicyFixture(db::NativeCreationCatalogSeed& seed,
     x.vector.object_uuid=x.entry.object_uuid=m.record.header.object_uuid;
     x.vector.default_name_entry_uuid=x.entry.name_entry_uuid=m.default_name_uuid;
     x.vector.object_kind=x.entry.object_kind=CatalogRecordKind::policy;
-    x.entry.raw_name_text=x.entry.display_name="native_collision_policy_"+std::to_string(n+2*copy);
-    x.entry.normalized_lookup_key.assign(x.entry.raw_name_text.begin(),x.entry.raw_name_text.end());
+    x.entry.raw_name_text="native_collision_policy_"+std::to_string(n+2*copy);
     x.entries[0]={&x.entry_metadata,&x.entry};named[n]={&m,&x.vector_metadata,&x.vector,x.entries};
   }
   auto assembled=AssembleLocalNamedCreationRecords(Id(1),security_tx,scratchbird::core::catalog::kCatalogLanguage_en_US,named,{6,1024*1024});
@@ -1504,12 +1498,11 @@ void AddCollisionPolicyFixture(db::NativeCreationCatalogSeed& seed,
     }
     if(auto* entry=std::get_if<CatalogNameEntry>(&*row.name);entry&&entry->object_uuid.value==target){
       if((variant>=11&&variant<=17)||variant==19||variant==20){
-        entry->raw_name_text=entry->display_name=duplicate;
-        entry->normalized_lookup_key.assign(duplicate.begin(),duplicate.end());
+        entry->raw_name_text=duplicate;  // (was also display and normalized key: SB_NATIVE_NAME_ROW_V4)
       }
       if(variant==12||variant==13)entry->language_uuid=catalog::CatalogLanguageIdentity(catalog::kCatalogLanguage_fr_CA);
       if(variant==14||variant==15){entry->was_quoted=entry->requires_exact_match=true;
-        entry->quote_style=CatalogNameQuoteStyle::double_quote;entry->exact_lookup_key=entry->normalized_lookup_key;}
+        entry->quote_style=CatalogNameQuoteStyle::double_quote;}  // (was: and exact key = normalized key)
       if(variant==19){entry->dialect_profile_uuid.value=security_fixture::Id(156);entry->identifier_profile_uuid.value=security_fixture::Id(157);}
       if(variant==20){entry->parent_schema_uuid=enrollment::Typed(platform::UuidKind::schema,61);
         entry->scope_uuid=enrollment::Typed(platform::UuidKind::object,61);row.metadata.owning_schema_uuid=*entry->parent_schema_uuid;}
@@ -1794,9 +1787,11 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
   // The host's own source backing (512 pages, at least 8 MiB since 2026-11-03).
   const u64 budget=db::NativeHostedSourceBackingBytes(sizes[profile]);
   const auto construction_writes=stage_writes,construction_syncs=stage_syncs;
-  // SB_NATIVE_NAME_PATH: the seed's names carry their full paths, as the
-  // database create sets them where it assembles a seed. These variants break
-  // the scope chain on purpose, so their names cannot carry paths; startup
+  // SB_NATIVE_NAME_PATH: the seed's names' paths walk, as the database create
+  // checks where it assembles a seed (SB_NATIVE_NAME_ROW_V4: walked, not
+  // stored; was: the seed's names carried their full paths, filled here).
+  // These variants break the scope chain on purpose, so their paths do not
+  // walk; startup
   // refuses each with the variant's own error, from verifiers that run before
   // the path check: name_variant 5 scopes the database's entry to an object
   // that does not exist; namespace_variant 1 removes the root schema and its
@@ -1805,7 +1800,7 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
   // object that does not exist.
   const bool scope_chain_broken=name_variant==5||namespace_variant==1||namespace_variant==3||
       namespace_variant==4||namespace_variant==5||filespace_variant==8;
-  const bool paths_filled=db::FillNativeCreationNamePaths(catalogs.plan->catalogs);
+  const bool paths_filled=db::CheckNativeCreationNamePaths(catalogs.plan->catalogs);
   Check(paths_filled||scope_chain_broken,"the enrolled node seed's name paths resolve");
   auto initialized=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(created,construction,
       catalogs.plan->catalogs,indexes,budget,issuer);
@@ -2748,8 +2743,11 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
                   "actual dialect and identifier profiles bind every name with exact generation, allowed flags and available definitions");
               if(naming_profile_variant>=11){
                 using KE=catalog::CatalogIdentifierKeyError;
-                const std::array key_errors{KE::key_mismatch,KE::key_mismatch,KE::display_mismatch,
-                    KE::invalid_quote_mode,KE::key_mismatch,KE::resource_admission_required};
+                // SB_NATIVE_NAME_ROW_V4: 11-13 and 15 re-targeted (above). (Was:
+                // key_mismatch, key_mismatch, display_mismatch, invalid_quote_mode,
+                // key_mismatch, resource_admission_required.)
+                const std::array key_errors{KE::identifier_too_long,KE::invalid_quote_mode,KE::invalid_quote_mode,
+                    KE::invalid_quote_mode,KE::invalid_text,KE::resource_admission_required};
                 Check(naming_check.lookup_error==key_errors[naming_profile_variant-11],
                     "actual persisted keys, quoting, display and resource requirements retain their exact semantic refusal");
               }

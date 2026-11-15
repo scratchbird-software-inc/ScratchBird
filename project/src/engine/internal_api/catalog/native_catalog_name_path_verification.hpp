@@ -76,8 +76,11 @@ struct NativeCatalogNamePathLookup {
     return name;
   }
 };
-// SB_NATIVE_NAME_PATH: every live name entry's stored full path (lookup key and
-// component count) is the one the path rule resolves from the captured names.
+// SB_NATIVE_NAME_PATH: every live name entry's path walks over the captured
+// names (every scope named, unambiguously; no cycle; at most 64 components).
+// SB_NATIVE_NAME_ROW_V4 (owner Q157 = 1): walk only; nothing of the path is
+// stored. (Was: the entry's stored full path, lookup key and component count,
+// was the one the path rule resolved, else path_mismatch.)
 // An object with two live entries marked default_for_language in one language
 // is refused (the rule would have to pick). Allocation-free: `order` indexes the
 // rows by object UUID, `parents` the language-default entries by (object,

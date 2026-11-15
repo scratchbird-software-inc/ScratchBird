@@ -594,7 +594,9 @@ void NativeCatalogNames() {
   entry.object_uuid=vector.object_uuid;entry.object_kind=vector.object_kind;entry.scope_uuid=Id(UuidKind::object);
   entry.language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_en);entry.parent_schema_uuid=vector.owning_schema_uuid;
   entry.dialect_profile_uuid=Id(UuidKind::object);entry.identifier_profile_uuid=Id(UuidKind::object);
-  entry.raw_name_text=entry.display_name="Native name";entry.normalized_lookup_key={0,0xff,42};entry.exact_lookup_key={0xfe,0,41};
+  // SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1): the raw text only. (Was: also
+  // stored keys {0,0xff,42} / {0xfe,0,41}.)
+  entry.raw_name_text="Native name";
   entry.default_for_language=entry.default_for_object=true;
   entry.catalog_generation_id=entry.resource_epoch=entry.name_resolution_epoch=1;
   entry.created_transaction_uuid=created.transaction_uuid;entry.security_policy_uuid=vector.security_policy_uuid;
@@ -664,7 +666,7 @@ void NativeCatalogNames() {
   expect(entry);const auto reader=f.Begin(true);
   mga::VisibilitySnapshot old;old.reader_transaction=reader.local_id;old.visible_through_local_transaction_id=created.local_id.value;
   old.visible_through_local_transaction_id_is_boundary=true;
-  auto renamed=entry;renamed.raw_name_text=renamed.display_name="Renamed";renamed.normalized_lookup_key={0xfa,1,2};
+  auto renamed=entry;renamed.raw_name_text="Renamed";  // (Was: also normalized_lookup_key={0xfa,1,2}.)
   ++renamed.catalog_generation_id;++renamed.name_resolution_epoch;
   e.name_payload=renamed;e.expected_version_uuid=staged.row_receipts[1].version_uuid;
   ++e.metadata.definition_version;++e.metadata.catalog_generation;

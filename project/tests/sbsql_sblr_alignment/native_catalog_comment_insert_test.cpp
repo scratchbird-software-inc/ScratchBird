@@ -61,6 +61,7 @@
 #include "catalog_localized_record_codec.hpp"
 
 namespace {
+// (OwnLaneText, AsLane: from native_catalog_insert_writer_test.cpp, through native_catalog_name_insert_test.cpp.)
 Uuid CommentId(unsigned k) { return V7(kT + 900000 + k, 0xc10000 + k); }
 Uuid CommentRowId(unsigned k) { return V7(kT + 900000 + k, 0xc20000 + k); }
 Uuid CommentVersionId(unsigned k) { return V7(kT + 900000 + k, 0xc30000 + k); }
@@ -1169,7 +1170,8 @@ void ExpectNameReplace(const Db& b, Session& s, const std::string& path, const d
           std::string(label) + ": every page but the name trees' is the oracle's (page " + std::to_string(p) + ")");
   }
   const auto& e = std::get<c::CatalogNameEntry>(*r.name);
-  const auto key = c::CatalogNameAuthoritativeTreeKey(c::BorrowCatalogNameEntry(e), e.object_kind);
+  const auto own = OwnLaneText(c::BorrowCatalogNameEntry(e));
+  const auto key = c::CatalogNameAuthoritativeTreeKey(c::BorrowCatalogNameEntry(e), AsLane(own), e.object_kind);
   std::size_t mine[2] = {0, 0};
   bool keyed = false;
   for (const auto& [t, cell] : NameTreeCells(b, after))
@@ -1377,7 +1379,6 @@ void OwnReplace(const Db& b) {
   Named o;
   const auto entry_of = [&](const std::string& text) {
     auto e = Keyed(std::get<c::CatalogNameEntry>(*o.entry.name), t, text);
-    PathBeside(e, t.entry);
     return c::CatalogNamePayload{e};
   };
   {

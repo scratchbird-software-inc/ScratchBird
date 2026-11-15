@@ -269,17 +269,22 @@ int main() {
           "the entry scope is the schema, under the kind that field requires");
     Check(e.raw_name_text == "Supplied_Name",
           "the supplied label text is carried verbatim");
-    Check(e.display_name == "Supplied_Name",
+    // SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1): the row stores the raw text;
+    // the display and both lanes are derived under the profile. (Was: the
+    // same expectations on the stored display_name, normalized_lookup_key
+    // and exact_lookup_key.)
+    const auto derived = c::DeriveCatalogNameEntryKeys(SharedProfile(), c::BorrowCatalogNameEntry(e));
+    Check(derived.ok() && derived.display.String() == "Supplied_Name",
           "this profile preserves user text, so the display form is the supplied text");
     Check(e.identifier_profile_uuid.value == SharedProfile().profile_uuid,
           "the entry names the profile its keys were derived from, which is what the "
           "engine's verifier requires");
     const std::string folded = "supplied_name";
-    Check(std::string(e.normalized_lookup_key.begin(), e.normalized_lookup_key.end()) == folded,
+    Check(derived.normalized.String() == folded,
           "the folded lane is derived by the engine's own key derivation, not supplied");
-    Check(std::string(e.exact_lookup_key.begin(), e.exact_lookup_key.end()) == "Supplied_Name",
+    Check(derived.exact.String() == "Supplied_Name",
           "the exact lane is derived too; it was previously left empty");
-    Check(e.normalized_lookup_key != e.exact_lookup_key,
+    Check(derived.normalized.String() != derived.exact.String(),
           "the two lanes actually differ under this profile, so neither is incidentally right");
     Check(!e.was_quoted && e.quote_style == c::CatalogNameQuoteStyle::none &&
           !e.requires_exact_match,

@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
+#include "catalog_identifier_lookup_key.hpp"
 #include "catalog_name_record_codec.hpp"
 #include "catalog_record_codec.hpp"
 #include "catalog_value_codec.hpp"
@@ -63,17 +64,18 @@ inline int CompareCatalogNameCollisionScope(const CatalogNameEntryView& x,const 
 // tags with ASCII case folded; tags are folded once where a tag becomes a
 // language (CatalogLanguageForTag), so it now compares the UUIDs too - its
 // distinction from exact_tag is gone (annotated as drift, value kept).
-inline int CompareCatalogNameCollisionLanes(const CatalogNameEntryView& x,const CatalogNameEntryView& y,
+// SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1): each entry's own-lane key is
+// derived from its row (DeriveCatalogNameEntryKeys(...).own) and handed in;
+// the scope order already holds both entries to one identifier profile.
+// (Was: read from the entries' stored normalized/exact keys.)
+inline int CompareCatalogNameCollisionLanes(const CatalogNameEntryView& x,const CatalogNameDerivedText& xown,
+    const CatalogNameEntryView& y,const CatalogNameDerivedText& yown,
     CatalogCollisionLanguageLane language,CatalogCollisionKeyLane key) noexcept {
   if(language!=CatalogCollisionLanguageLane::all_languages){
     const auto& a=x.language_uuid.value.bytes;const auto& b=y.language_uuid.value.bytes;
     if(a!=b)return a<b?-1:1;
   }
   if(key!=CatalogCollisionKeyLane::shared&&x.requires_exact_match!=y.requires_exact_match)return x.requires_exact_match?1:-1;
-  const auto xkey=x.requires_exact_match?x.exact_lookup_key:x.normalized_lookup_key;
-  const auto ykey=y.requires_exact_match?y.exact_lookup_key:y.normalized_lookup_key;
-  if(std::lexicographical_compare(xkey.begin(),xkey.end(),ykey.begin(),ykey.end()))return -1;
-  if(std::lexicographical_compare(ykey.begin(),ykey.end(),xkey.begin(),xkey.end()))return 1;
-  return 0;
+  return CompareCatalogNameDerivedText(xown,yown);
 }
 } // namespace scratchbird::core::catalog

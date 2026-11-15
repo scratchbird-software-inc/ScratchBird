@@ -29,8 +29,9 @@ struct NativeCatalogNameTreeVerification {
 //    is the cell's, the cell is not superseded (successors come with N4), the
 //    row is an entry for the authoritative tree, and the key and payload are
 //    what catalog_name_tree_keys derives from the row (the object's record
-//    kind from its captured definition; an entry's path components from the
-//    path rule over the captured names, SB_NATIVE_NAME_PATH);
+//    kind from its captured definition; an entry's own-lane key derived under
+//    its identifier profile, SB_NATIVE_NAME_ROW_V4; its UUID-to-name payload
+//    its entry UUID, its path walking, SB_NATIVE_NAME_PATH);
 //  - a cell whose version is not captured belongs to a version the snapshot
 //    does not see: either its creator did not commit (a rolled-back or still
 //    active insert) or a committed successor stamped it (owner Q42: a renamed
@@ -110,23 +111,27 @@ inline NativeCatalogNameTreeVerification VerifyNativeCatalogNameTrees(
     if(!object||object->name_payload)return fail(E::cell_row_kind,cell.version_uuid);
     const auto kind=object->metadata.record.header.kind;
     if(cell.tree==0){
-      if(!c::CatalogNameAuthoritativeTreeKeyEquals(e,kind,cell.key))return fail(E::cell_key,cell.version_uuid);
+      // SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1; plan 35 risk R4): the key is
+      // recomputed from the own lane derived under the entry's identifier
+      // profile and compared with the stored cell, so a derivation that would
+      // re-key a name is refused here, not trusted. (Was: from the row's
+      // stored key.)
+      const auto* profile_row=lookup.Find(e.identifier_profile_uuid.value);
+      if(!profile_row||profile_row->name_payload)return fail(E::cell_key,cell.version_uuid);
+      const auto profile=c::DecodeCatalogIdentifierProfile(profile_row->metadata.record.payload);
+      if(!profile.ok())return fail(E::cell_key,cell.version_uuid);
+      const auto keys=c::DeriveCatalogNameEntryKeys(*profile.record,e);
+      if(!keys.ok()||!c::CatalogNameAuthoritativeTreeKeyEquals(e,keys.own,kind,cell.key))return fail(E::cell_key,cell.version_uuid);
       if(!c::CatalogNameAuthoritativeTreePayloadEquals(e,cell.payload))return fail(E::cell_payload,cell.version_uuid);
       counts[found]=static_cast<core::platform::byte>(counts[found]+1);
       continue;
     }
     if(!c::CatalogNameUuidTreeEntryKeyEquals(e,kind,cell.key))return fail(E::cell_key,cell.version_uuid);
-    // The payload: the entry and its path's display components, root side
-    // first; the walk gives them entry first, so compare from the end.
-    std::array<std::string_view,c::kCatalogNamePathMaximumDepth> components;
-    core::platform::Uuid entry_uuid;std::size_t count=0;
-    if(!c::DecodeCatalogNameUuidTreeEntryPayloadInto(cell.payload,entry_uuid,components,count)||entry_uuid!=e.name_entry_uuid.value)
-      return fail(E::cell_payload,cell.version_uuid);
-    std::size_t walked=0;bool same=true;
-    const auto error=c::WalkCatalogNamePath(e,lookup,[&](const c::CatalogNameEntryView& component){
-      if(walked>=count||components[count-1-walked]!=component.display_name)same=false;
-      ++walked;});
-    if(error!=c::CatalogNamePathError::none||!same||walked!=count)return fail(E::cell_payload,cell.version_uuid);
+    // SB_NATIVE_NAME_ROW_V4 (owner Q158 = 1): the payload is the entry UUID;
+    // the entry's path must walk. (Was: the entry and its path's display
+    // components, root side first, compared with the walk.)
+    if(!c::CatalogNameUuidTreeEntryPayloadEquals(e,cell.payload))return fail(E::cell_payload,cell.version_uuid);
+    if(c::CheckCatalogNameEntryPath(e,lookup)!=c::CatalogNamePathError::none)return fail(E::cell_payload,cell.version_uuid);
     counts[found]=static_cast<core::platform::byte>(counts[found]+16);
   }
   for(std::size_t i=0;i<rows.size();++i){

@@ -555,6 +555,10 @@ class NameState {
   struct Verdict {
     E error = E::none;
     std::optional<u64> blocker;
+    // SB_NATIVE_NAME_ROW_V4: on success, the entry's own-lane fold under its
+    // identifier profile (the cell key's lane), so the profile is resolved
+    // once per written entry.
+    std::optional<catalog::IdentifierFoldMode> own_fold;
   };
   // `request_names`: the request's own name payloads (an insert's rows, a
   // successor's one), consulted for vectors and paths before stored names.
@@ -744,33 +748,32 @@ class NameState {
     if (group == groups.end()) return std::nullopt;
     return Group{policy.record->body_uuid, group->group_uuid, group->language_lane, group->key_lane};
   }
-  // An entry's keys, as startup checks them: its dialect profile, that
-  // profile's identifier profile, and the keys under it.
-  bool KeysAgree(const catalog::CatalogNamePayload& payload) const {
-    const auto& e = std::get<catalog::CatalogNameEntry>(payload);
-    if (e.case_fold_profile_uuid || e.quoted_identifier_profile_uuid) return false;
+  // An entry's identifier profile, as startup checks it: its dialect profile,
+  // that profile's identifier profile (active, this database's, the dialect's
+  // generation and mode flags). Nullopt when any of that does not hold.
+  std::optional<catalog::CatalogIdentifierResolutionProfile> IdentifierProfileOf(const catalog::CatalogNameEntry& e) const {
+    if (e.case_fold_profile_uuid || e.quoted_identifier_profile_uuid) return std::nullopt;
     const auto* dm = Current(5, e.dialect_profile_uuid.value);
     if (!dm || !Active(*dm) || dm->record.header.kind != catalog::CatalogRecordKind::config_profile ||
         dm->object_subtype != scratchbird::core::catalog::CatalogObjectSubtype::naming_dialect_profile || !catalog::CatalogNamingDialectProfileMatchesMetadata(View(*dm)) ||
         !catalog::CatalogNamingDialectProfileMatchesDatabase(View(*dm), binding_.database_uuid))
-      return false;
+      return std::nullopt;
     const auto dialect = catalog::DecodeCatalogNamingDialectProfile(dm->record.payload);
-    if (!dialect.record || dialect.record->identifier_profile_uuid != e.identifier_profile_uuid.value) return false;
+    if (!dialect.record || dialect.record->identifier_profile_uuid != e.identifier_profile_uuid.value) return std::nullopt;
     const auto* im = Current(5, dialect.record->identifier_profile_uuid);
     if (!im || !Active(*im) || im->record.header.kind != catalog::CatalogRecordKind::config_profile ||
         im->object_subtype != scratchbird::core::catalog::CatalogObjectSubtype::identifier_resolution_profile ||
         !catalog::CatalogIdentifierProfileMatchesMetadata(View(*im)) ||
         !catalog::CatalogIdentifierProfileMatchesDatabase(View(*im), binding_.database_uuid))
-      return false;
-    const auto identifier = catalog::DecodeCatalogIdentifierProfile(im->record.payload);
+      return std::nullopt;
+    auto identifier = catalog::DecodeCatalogIdentifierProfile(im->record.payload);
     if (!identifier.record || identifier.record->generation != dialect.record->identifier_profile_generation ||
         (identifier.record->dialect_mode_flags & ~dialect.record->allowed_dialect_mode_flags))
-      return false;
-    return catalog::CheckCatalogIdentifierLookupKeys(
-               *identifier.record, std::get<catalog::CatalogNameEntryView>(catalog::BorrowCatalogNamePayload(payload))) ==
-           catalog::CatalogIdentifierKeyError::none;
+      return std::nullopt;
+    return std::move(*identifier.record);
   }
-  // An entry about to be written: its keys, its stored full path, then the
+  // An entry about to be written: its keys (derived under its profile,
+  // SB_NATIVE_NAME_ROW_V4), that its path walks (was: its stored full path), then the
   // names it could collide with (another object's held entry in its scope and
   // lanes is duplicate_name; one in progress is a write_conflict with that
   // blocker; a holder whose group does not resolve is invalid_catalog unless it
@@ -778,8 +781,12 @@ class NameState {
   Verdict CheckEntry(const catalog::CatalogNamePayload& payload) const {
     const auto& x = std::get<catalog::CatalogNameEntry>(payload);
     const auto gx = GroupOf(x);
-    if (!gx || !KeysAgree(payload)) return {E::invalid_name};
+    if (!gx) return {E::invalid_name};
+    const auto profile = IdentifierProfileOf(x);
+    if (!profile) return {E::invalid_name};
     const auto xv = std::get<catalog::CatalogNameEntryView>(catalog::BorrowCatalogNamePayload(payload));
+    const auto xkeys = catalog::DeriveCatalogNameEntryKeys(*profile, xv);
+    if (!xkeys.ok()) return {E::invalid_name};
     if (const auto blocker = PendingOnPath(xv, path_names_)) return {E::write_conflict, blocker};  // Q47 = 1
     if (catalog::CheckCatalogNameEntryPath(xv, path_names_) != catalog::CatalogNamePathError::none) return {E::invalid_name};
     // SB_NATIVE_NAME_PROBE (N3): with the authoritative tree, the candidates
@@ -792,7 +799,7 @@ class NameState {
     // across language tags. The request's own entries are not in the tree yet.
     std::set<Uuid> probed;
     if (authoritative_) {
-      auto prefix = catalog::CatalogNameAuthoritativeTreeNamePrefix(xv);
+      auto prefix = catalog::CatalogNameAuthoritativeTreeNamePrefix(xv, xkeys.own);
       prefix.resize(32);  // scope16 | identifier profile16
       if (!ProbeTreePrefix(*authoritative_, prefix, probed)) return {E::invalid_catalog};
     }
@@ -811,15 +818,24 @@ class NameState {
         continue;
       }
       if (x.object_kind == y.object_kind && gy->body != gx->body) return {E::invalid_name};
-      if (gy->body != gx->body || gy->group != gx->group ||
-          catalog::CompareCatalogNameCollisionLanes(xv, yv, gx->language, gx->key))
+      if (gy->body != gx->body || gy->group != gx->group) continue;
+      // SB_NATIVE_NAME_ROW_V4: y shares x's scope and identifier profile (the
+      // scope order compares both), so its lane derives under x's profile. A
+      // holder that profile does not admit is invalid_catalog, as an
+      // unresolved group is.
+      const auto ykeys = catalog::DeriveCatalogNameEntryKeys(*profile, yv);
+      if (!ykeys.ok()) {
+        if (holder.state != Hold::pending) return {E::invalid_catalog};
+        if (!blocker) blocker = holder.order;
         continue;
+      }
+      if (catalog::CompareCatalogNameCollisionLanes(xv, xkeys.own, yv, ykeys.own, gx->language, gx->key)) continue;
       if (holder.state == Hold::held) held = true;
       else if (!blocker) blocker = holder.order;
     }
     if (held) return {E::duplicate_name};
     if (blocker) return {E::write_conflict, blocker};
-    return {};
+    return {E::none, std::nullopt, xkeys.own.fold};
   }
   // This request's entry, once placed: later entries of the request see it.
   void HoldEntry(const catalog::CatalogNamePayload& payload) {
@@ -1431,7 +1447,9 @@ bool StoredOwnEvent(const Relation& events, const scratchbird::core::platform::T
   return false;
 }
 
-// One new version of a row: a successor's own, or an entry the cascade moves.
+// One new version of a row: a successor's own, or a dependent drop's.
+// (Was also: an entry the name cascade moved, SB_NATIVE_NAME_CASCADE; retired
+// by SB_NATIVE_NAME_ROW_V4.)
 struct Succ {
   Uuid row, version;
   Version base;
@@ -1439,7 +1457,10 @@ struct Succ {
   catalog::CatalogMetadataVersion metadata;
   std::optional<catalog::CatalogNamePayload> name;
   const catalog::CatalogNamePayload* base_name = nullptr;
-  std::vector<std::string> components;  // an entry's UUID-to-name display components
+  // SB_NATIVE_NAME_ROW_V4: a live entry's own-lane fold under its identifier
+  // profile, decided by the entry check; its authoritative cell key is the
+  // raw text so folded. (Was: its UUID-to-name display components.)
+  std::optional<catalog::IdentifierFoldMode> own_fold;
   pg::RowDataRecord added;
   std::optional<std::size_t> target;
   // SB_CATALOG_OWN_VERSION_REPLACE (owner Q88 = 1): the base is this
@@ -1700,30 +1721,50 @@ CommentHold HoldOfCommentPair(const Relation& comments, const std::vector<TreePa
   return out;
 }
 
-// A live entry whose stored path or display components a change moves.
-struct Moved {
-  const NameState::StoredName* stored;
-  std::vector<byte> key;
-  u64 count = 0;
-  std::vector<std::string> components;
-};
-// Every other live entry (not of `skip`) whose stored full path, component
-// count or display components differ between the names a path runs through
-// before the change and after it. A cascaded version changes only those, so
-// it moves no other entry's path: one pass is complete. `changed`: the old
-// and new versions of the name rows the request writes.
-//   An entry whose newest version is another transaction's in progress cannot
-// be cascaded: write_conflict with it when the change moves its path (as
-// resolved here, before against after: its stored path is its creator's
-// view); when its path does not resolve in this transaction's view (it runs
-// through names that transaction has not committed), when a lookup its path
-// makes is one a changed row decides (SB_NATIVE_NAME_PATH_CONFLICT).
-//   A change that leaves an entry without a path is `unresolvable`. An entry
-// whose new path runs through another transaction's change in progress is a
-// write_conflict with it (Q47 = 1).
-Stop FindMoved(const NameState& names, const catalog::CatalogNameIndex& before, const catalog::CatalogNameIndex& after,
-               u64 order, std::span<const Uuid> skip, std::span<const catalog::CatalogNamePayload* const> changed,
-               E unresolvable, std::vector<Moved>& moved) {
+// SEARCH_KEY: SB_NATIVE_NAME_CASCADE (N4b), since SB_NATIVE_NAME_ROW_V4
+// (owner Q157 = 1, Q158 = 1, 2026-11-14; plan 35 S2): a change to a name
+// (rename, drop, a default_for_language or vector default change, an insert
+// that adds a language default) writes only its own rows. No entry stores its
+// path or its path's display, so nothing below the changed name is rewritten.
+// What N4b checked besides the regeneration is kept, over the names a path
+// runs through before the change and after it (`changed`: the old and new
+// versions of the name rows the request writes):
+//  - an entry this transaction sees (committed, or its own) that the change
+//    leaves without a path (an unnamed or ambiguous scope) is `unresolvable`,
+//    refused before any write: its path is walked at read and must walk;
+//  - another transaction's entry in progress whose path does not resolve
+//    before or after the change is a write_conflict with it when a lookup its
+//    path makes is one a changed row decides (SB_NATIVE_NAME_PATH_CONFLICT,
+//    Q47 = 1);
+//  - another transaction's entry in progress whose path the change moves (a
+//    component chosen differently, or a chosen component's text or lane
+//    inputs changed) is a write_conflict with it: the counterpart of the
+//    entry check's PendingOnPath (Q47 = 1), so the outcome does not depend on
+//    which transaction wrote first.
+// (Was: also each entry this transaction sees whose stored full path, count
+// or UUID-to-name display components the change moved got a successor version
+// in the same write, from the request's cascade_versions (too few:
+// cascade_versions_exhausted), after a PendingOnPath check of its new path;
+// FindMoved, BuildCascade.)
+namespace {
+// Whether two resolved paths differ in anything a rendering or key derivation
+// reads: the component chosen, its raw text and its lane inputs.
+bool PathMoved(const catalog::CatalogNamePath& was, const catalog::CatalogNamePath& now) {
+  if (was.components.size() != now.components.size()) return true;
+  for (std::size_t i = 0; i < was.components.size(); ++i) {
+    const auto& a = was.components[i].entry;
+    const auto& b = now.components[i].entry;
+    if (a.name_entry_uuid.value != b.name_entry_uuid.value || a.raw_name_text != b.raw_name_text ||
+        a.was_quoted != b.was_quoted || a.quote_style != b.quote_style || a.requires_exact_match != b.requires_exact_match ||
+        a.identifier_profile_uuid.value != b.identifier_profile_uuid.value)
+      return true;
+  }
+  return false;
+}
+}  // namespace
+Stop CheckPathsAfterChange(const NameState& names, const catalog::CatalogNameIndex& before,
+                           const catalog::CatalogNameIndex& after, u64 order, std::span<const Uuid> skip,
+                           std::span<const catalog::CatalogNamePayload* const> changed, E unresolvable) {
   const auto decided = [&](const Uuid& object, const Uuid& language) -> std::optional<u64> {
     for (const auto* p : changed)
       if (names.Decides(*p, object, language)) return order;
@@ -1741,104 +1782,16 @@ Stop FindMoved(const NameState& names, const catalog::CatalogNameIndex& before, 
     if (!seen && !other) continue;
     const auto view = catalog::BorrowCatalogNameEntry(*e);
     const auto now = catalog::ResolveCatalogNamePath(view, after);
+    if (seen) {
+      if (!now.ok()) return Refuse(unresolvable);
+      continue;
+    }
     const auto was = catalog::ResolveCatalogNamePath(view, before);
-    if (other && (!was.ok() || !now.ok())) {
+    if (!was.ok() || !now.ok()) {
       if (names.FirstOnPath(view, before, decided) || names.FirstOnPath(view, after, decided)) return Conflict(s.order);
       continue;
     }
-    // Another transaction's entry holds the path in its own view (names it
-    // has not committed included): it moves when this change moves its path
-    // here, not when this view's path differs from the stored one.
-    bool moves = !now.ok() || !was.ok() || now.components.size() != was.components.size();
-    std::vector<byte> key;
-    if (now.ok()) {
-      key = catalog::CatalogNamePathLookupKey(now);
-      if (other) moves = moves || key != catalog::CatalogNamePathLookupKey(was);
-      else moves = moves || key != e->full_path_lookup_key || now.components.size() != e->path_component_count;
-      for (std::size_t c = 0; !moves && c < now.components.size(); ++c)
-        moves = now.components[c].display_name != was.components[c].display_name;
-    }
-    if (!moves) continue;
-    if (other) return Conflict(s.order);
-    if (!now.ok()) return Refuse(unresolvable);
-    if (const auto blocker = names.PendingOnPath(view, after)) return Conflict(*blocker);
-    Moved m{&s, std::move(key), now.components.size(), {}};
-    for (const auto& c : now.components) m.components.emplace_back(c.display_name);
-    moved.push_back(std::move(m));
-  }
-  std::sort(moved.begin(), moved.end(), [](const auto& a, const auto& b) { return a.stored->row < b.stored->row; });
-  return std::nullopt;
-}
-
-// The cascade's versions, one per moved entry, from the request's
-// `cascade_versions` in that order: too few is cascade_versions_exhausted
-// (with the count needed); one repeated, `reserved` (the request's own row
-// and version UUIDs) or already in the relation is refused. Each changes only
-// the entry's full path, component count and catalog generation (the larger of
-// its base's and `generation`); the metadata is its base's with this
-// transaction as creator and the next definition version.
-Stop BuildCascade(const std::vector<Moved>& moved, std::span<const Uuid> versions,
-                  const std::function<bool(const Uuid&)>& reserved, const std::vector<Leaf>& leaves, const Uuid& transaction,
-                  u64 order, u64 generation, const pg::NativeCatalogRoot& root, std::vector<Succ>& succs) {
-  if (versions.size() < moved.size()) {
-    CatalogVersionWriteResult result;
-    result.cascade_needed = moved.size();
-    result.error = E::cascade_versions_exhausted;
-    return result;
-  }
-  for (std::size_t i = 0; i < moved.size(); ++i) {
-    const auto& m = moved[i];
-    Succ c;
-    c.row = m.stored->row;
-    c.version = versions[i];
-    if (!V7(c.version) || reserved(c.version)) return Refuse(E::invalid_request);
-    for (std::size_t j = 0; j < i; ++j)
-      if (versions[j] == c.version) return Refuse(E::invalid_request);
-    bool found = false;
-    u64 newest_row_version = 0;
-    for (std::size_t l = 0; l < leaves.size(); ++l)
-      for (std::size_t r = 0; r < leaves[l].page.body.rows.size(); ++r) {
-        const auto& row = leaves[l].page.body.rows[r];
-        if (row.version_uuid == c.version) return Refuse(E::invalid_successor);
-        if (row.row_uuid.value != c.row) continue;
-        newest_row_version = std::max(newest_row_version, row.row_version);
-        if (row.row_version == m.stored->row_version) {
-          c.base = {l, r};
-          found = true;
-        }
-      }
-    if (!found || newest_row_version == std::numeric_limits<u64>::max()) return Refuse(E::invalid_catalog);
-    const auto& cbase = leaves[c.base.leaf].page.body.rows[c.base.row];
-    c.base_metadata = &leaves[c.base.leaf].metadata.at(cbase.version_uuid);
-    c.base_name = &m.stored->payload;
-    auto payload = std::get<catalog::CatalogNameEntry>(m.stored->payload);
-    const u64 g = std::max(c.base_metadata->catalog_generation, generation);
-    payload.full_path_lookup_key = m.key;
-    payload.path_component_count = m.count;
-    payload.catalog_generation_id = g;
-    c.metadata = *c.base_metadata;
-    c.metadata.record.payload.clear();
-    c.metadata.creator_transaction_uuid = {UuidKind::transaction, transaction};
-    c.metadata.creator_local_transaction_id = order;
-    c.metadata.definition_version = c.base_metadata->definition_version + 1;
-    c.metadata.catalog_generation = g;
-    c.name = std::move(payload);
-    c.components = m.components;
-    if (!catalog::CatalogNamePayloadMatchesMetadata(*c.name, c.metadata) ||
-        !catalog::CatalogNamePayloadPreservesIdentity(*c.base_name, *c.name))
-      return Refuse(E::invalid_successor);
-    if (AheadOfRoot(c.metadata, root)) return Refuse(E::ahead_of_catalog_root);
-    c.added.row_uuid = {UuidKind::row, c.row};
-    c.added.version_uuid = c.version;
-    c.added.previous_version_uuid = cbase.version_uuid;
-    c.added.transaction_uuid = {UuidKind::transaction, transaction};
-    c.added.local_transaction_id = order;
-    c.added.row_version = newest_row_version + 1;
-    c.added.previous_row_version = cbase.row_version;
-    // SB_CATALOG_OWN_VERSION_REPLACE (Q88 = 1): an entry this transaction
-    // already moved is replaced in place (its cascade identity unused).
-    if (ReplacesOwn(*c.base_metadata, cbase, order)) MakeReplacement(c, cbase);
-    succs.push_back(std::move(c));
+    if (PathMoved(was, now)) return Conflict(s.order);
   }
   return std::nullopt;
 }
@@ -2065,13 +2018,13 @@ Stop StampAndAddNameCells(disk::CarefulWriteSink& sink, const CatalogVersionWrit
     } else {
       const auto& e = std::get<catalog::CatalogNameEntryView>(payload_view);
       const auto kind = KnownKind(e.object_kind);
-      if (!kind) return Refuse(E::invalid_name);
-      std::vector<std::string_view> components(c.components.begin(), c.components.end());
-      if (const auto error = add(0, catalog::CatalogNameAuthoritativeTreeKey(e, *kind),
+      if (!kind || !c.own_fold) return Refuse(E::invalid_name);
+      const catalog::CatalogNameDerivedText own{e.raw_name_text, *c.own_fold};
+      if (const auto error = add(0, catalog::CatalogNameAuthoritativeTreeKey(e, own, *kind),
                                  catalog::CatalogNameAuthoritativeTreePayload(e)))
         return Refuse(*error);
       if (const auto error = add(1, catalog::CatalogNameUuidTreeEntryKey(e, *kind),
-                                 catalog::CatalogNameUuidTreeEntryPayload(e.name_entry_uuid.value, components)))
+                                 catalog::CatalogNameUuidTreeEntryPayload(e.name_entry_uuid.value)))
         return Refuse(*error);
     }
   }
@@ -2605,11 +2558,12 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
     // SB_NATIVE_NAME_TREES (N4a): the name's rules.
     std::optional<NameState> names;
     const catalog::CatalogNamePayload* base_name = nullptr;
-    // SB_NATIVE_NAME_CASCADE (N4b): one successor per changed row: the
-    // request's first, then each entry whose path the change moves, in
-    // row-UUID order.
+    // The successor (SB_NATIVE_NAME_ROW_V4: a name change writes only its own
+    // row; was: then each entry whose stored path the change moved, in
+    // row-UUID order, SB_NATIVE_NAME_CASCADE).
     std::vector<Succ> succs;
     std::optional<catalog::CatalogNameIndex> moved_paths;
+    std::optional<catalog::IdentifierFoldMode> own_fold;
     // SB_NATIVE_NAME_TREES (Q42): each base version's cells are stamped with
     // this transaction; a version that is not a drop gets its own cells.
     std::vector<NameTree> name_trees;
@@ -2633,22 +2587,18 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
           if (verdict.blocker) result.blocker_order = verdict.blocker;
           return Refuse(verdict.error);
         }
+        own_fold = verdict.own_fold;
+        if (!own_fold) return Refuse(E::invalid_name);
       }
       // The names a path runs through before and after the change: the
       // stored names this transaction sees, then with the request's row
       // replaced by its new version (removed when it is a drop).
       const auto before_paths = names->StoredPaths(std::nullopt, nullptr);
       moved_paths = names->StoredPaths(request.row_uuid, request.metadata.record.header.deleted ? nullptr : &*request.name);
-      std::vector<Moved> moved;
       const std::array<const catalog::CatalogNamePayload*, 2> changed{base_name, &*request.name};
       const std::array<Uuid, 1> skip{request.row_uuid};
-      if (auto stop = FindMoved(*names, before_paths, *moved_paths, request.transaction_order, skip, changed,
-                                E::invalid_successor, moved))
-        return *stop;
-      if (auto stop = BuildCascade(
-              moved, request.cascade_versions,
-              [&](const Uuid& u) { return u == request.version_uuid || u == request.row_uuid; }, leaves,
-              request.transaction_uuid, request.transaction_order, request.metadata.catalog_generation, *root.root, succs))
+      if (auto stop = CheckPathsAfterChange(*names, before_paths, *moved_paths, request.transaction_order, skip, changed,
+                                            E::invalid_successor))
         return *stop;
     }
     {
@@ -2682,9 +2632,10 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
       primary.base_name = base_name;
       if (named && !request.metadata.record.header.deleted)
         if (const auto* e = std::get_if<catalog::CatalogNameEntry>(&*request.name)) {
-          const auto path = catalog::ResolveCatalogNamePath(catalog::BorrowCatalogNameEntry(*e), *moved_paths);
-          if (!path.ok()) return Refuse(E::invalid_name);
-          for (const auto& c : path.components) primary.components.emplace_back(c.display_name);
+          if (catalog::CheckCatalogNameEntryPath(catalog::BorrowCatalogNameEntry(*e), *moved_paths) !=
+              catalog::CatalogNamePathError::none)
+            return Refuse(E::invalid_name);
+          primary.own_fold = own_fold;
         }
       auto& added = primary.added;
       added.row_uuid = {UuidKind::row, request.row_uuid};
@@ -2899,7 +2850,7 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
     result.replaced = succs.front().replace;
     result.forward_link_page = bases[base->leaf].page_number;
     result.row_version = succs.front().added.row_version;
-    for (std::size_t i = 1; i < succs.size(); ++i) result.cascaded.emplace_back(succs[i].row, succs[i].version);
+
     for (const auto& d : dependents)
       for (const auto& c : d.succs) result.dependents.emplace_back(c.row, c.version);
     if (r.ok()) {
@@ -3044,7 +2995,8 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
     // page zero (kinds 22 and 23), when the request inserts name rows. Each
     // inserted name row gets its cells in the same careful-write plan as its
     // row: one in the authoritative tree per entry, one in the UUID-to-name
-    // tree per name row (the entry's with its path's display components). A
+    // tree per name row (an entry's carries its entry UUID only,
+    // SB_NATIVE_NAME_ROW_V4; was: with its path's display components). A
     // database without the roots (component fixtures) has no trees to
     // maintain; one root without the other is a damaged catalog.
     std::vector<NameTree> name_trees;
@@ -3079,10 +3031,10 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
     NameState names(binding, request.transaction_order, relations, entry, std::move(request_names));
     if (any_entry && !names.Load()) return Refuse(E::invalid_catalog);
     if (!name_trees.empty()) names.ProbeWith(&name_trees[0].tree);  // SB_NATIVE_NAME_PROBE (N3)
-    const std::size_t names_leaves_before = relations.contains(2) ? relations.at(2).leaves.size() : 0;
 
     for (std::size_t i = 0; i < request.rows.size(); ++i) {
       const auto& want = request.rows[i];
+      std::optional<catalog::IdentifierFoldMode> entry_fold;  // SB_NATIVE_NAME_ROW_V4: from the entry check
       auto& relation = relations.at(want.role);
       const auto& head = heads.at(want.role);
       const auto& m = want.metadata;
@@ -3201,6 +3153,7 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
           if (verdict.blocker) result.blocker_order = verdict.blocker;
           return refuse_row(verdict.error, i);
         }
+        entry_fold = verdict.own_fold;
         names.HoldEntry(*want.name);
       }
 
@@ -3349,16 +3302,18 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
           const auto& e = std::get<catalog::CatalogNameEntryView>(payload_view);
           const auto kind = KnownKind(e.object_kind);
           if (!kind) return refuse_row(E::invalid_name, i);
-          const auto path = catalog::ResolveCatalogNamePath(e, names.Paths());
-          if (!path.ok()) return refuse_row(E::invalid_name, i);
-          std::vector<std::string_view> components;
-          components.reserve(path.components.size());
-          for (const auto& component : path.components) components.push_back(component.display_name);
-          if (const auto error = add(0, catalog::CatalogNameAuthoritativeTreeKey(e, *kind),
+          // SB_NATIVE_NAME_ROW_V4: the path must walk (nothing of it is
+          // stored); the authoritative key is the own lane derived under the
+          // entry's profile; the UUID-to-name payload is the entry UUID.
+          if (catalog::CheckCatalogNameEntryPath(e, names.Paths()) != catalog::CatalogNamePathError::none)
+            return refuse_row(E::invalid_name, i);
+          if (!entry_fold) return refuse_row(E::invalid_name, i);
+          const catalog::CatalogNameDerivedText own{e.raw_name_text, *entry_fold};
+          if (const auto error = add(0, catalog::CatalogNameAuthoritativeTreeKey(e, own, *kind),
                                      catalog::CatalogNameAuthoritativeTreePayload(e)))
             return refuse_row(*error, i);
           if (const auto error = add(1, catalog::CatalogNameUuidTreeEntryKey(e, *kind),
-                                     catalog::CatalogNameUuidTreeEntryPayload(e.name_entry_uuid.value, components)))
+                                     catalog::CatalogNameUuidTreeEntryPayload(e.name_entry_uuid.value)))
             return refuse_row(*error, i);
         }
       }
@@ -3377,61 +3332,27 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
         return refuse_row(*error, i);
     }
 
-    // ---- the cascade (SB_NATIVE_NAME_CASCADE, owner Q48 = 1) ----------------
+    // ---- the paths (SB_NATIVE_NAME_CASCADE, owner Q48 = 1; since
+    // SB_NATIVE_NAME_ROW_V4, owner Q157 = 1) ----------------------------------
     // The request's names may change which name a stored entry's path uses (a
     // new entry marked default_for_language for an object whose entries in
-    // that language fell back to its vector's default): each stored entry the
-    // request's names move gets a successor version in this write, as a
-    // successor's cascade does. An entry they would leave without a path (an
-    // ambiguous scope: a second default in one language) is invalid_name.
-    // These refusals concern the request as a whole: no failed_row.
-    std::vector<Succ> succs;
-    std::set<std::size_t> link_pages;
+    // that language fell back to its vector's default). Nothing below is
+    // rewritten (paths are walked at read); an entry they would leave without
+    // a path (an ambiguous scope: a second default in one language) is
+    // invalid_name, and another transaction's entry in progress whose path
+    // they move or break is a write_conflict (CheckPathsAfterChange). These
+    // refusals concern the request as a whole: no failed_row. (Was: each
+    // stored entry the request's names moved got a successor version in this
+    // write, from cascade_versions.)
     if (any_entry) {
       std::vector<const catalog::CatalogNamePayload*> added;
-      u64 generation = 0;
       for (const auto& row : request.rows)
-        if (row.name) {
-          added.push_back(&*row.name);
-          generation = std::max(generation, row.metadata.catalog_generation);
-        }
+        if (row.name) added.push_back(&*row.name);
       const auto before_paths = names.StoredPaths(std::nullopt, nullptr);
       const auto after_paths = names.StoredPaths(std::nullopt, nullptr, added);
-      std::vector<Moved> moved;
-      if (auto stop = FindMoved(names, before_paths, after_paths, request.transaction_order, {}, added, E::invalid_name,
-                                moved))
+      if (auto stop = CheckPathsAfterChange(names, before_paths, after_paths, request.transaction_order, {}, added,
+                                            E::invalid_name))
         return *stop;
-      if (!moved.empty()) {
-        auto& relation = relations.at(2);
-        const auto reserved = [&](const Uuid& u) {
-          return std::any_of(request.rows.begin(), request.rows.end(),
-                             [&](const auto& r) { return r.row_uuid == u || r.version_uuid == u; });
-        };
-        if (auto stop = BuildCascade(moved, request.cascade_versions, reserved, relation.leaves, request.transaction_uuid,
-                                     request.transaction_order, generation, *root.root, succs))
-          return *stop;
-        std::vector<NativeCatalogLeafPage> work;
-        work.reserve(relation.leaves.size());
-        for (const auto& leaf : relation.leaves) work.push_back(leaf.page);
-        if (auto stop = PlaceSuccs(sink, binding, succs, relation, heads.at(2), work, link_pages, pages, page_size,
-                                   request.transaction_uuid, request.transaction_order))
-          return *stop;
-        for (std::size_t l = 0; l < work.size(); ++l) relation.leaves[l].page = std::move(work[l]);
-        for (const auto l : link_pages) changed_leaves.insert({2, l});
-        for (const auto& c : succs) changed_leaves.insert({2, *c.target});
-        if (heads.at(2).page_type == 0x200)
-          if (auto stop = IndexNewLeafVersions(sink, binding, succs, relation, names_leaves_before, changed_tree[2], pages,
-                                               page_size, request.transaction_order))
-            return *stop;
-        if (!name_trees.empty()) {
-          // SB_CATALOG_OWN_VERSION_REPLACE (Q88 = 1): entries this
-          // transaction already moved are replaced in place.
-          if (auto stop = RemoveReplacedNameCells(succs, name_trees)) return *stop;
-          if (auto stop = StampAndAddNameCells(sink, binding, succs, relation, name_trees.data(), entry, pages, page_size,
-                                               request.transaction_order))
-            return *stop;
-        }
-      }
     }
 
     // ---- the images --------------------------------------------------------
@@ -3454,7 +3375,7 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
         return result;
       }
       leaf_writes.push_back({relations.at(role).bases[l].page_number, std::move(encoded.bytes), &leaf.image, 1,
-                             role == 2 && link_pages.contains(l)});
+                             false});  // (was: a cascade's forward link, role 2)
     }
     for (const auto& [role, pages_changed] : changed_tree)
       for (const auto t : pages_changed) {
@@ -3530,7 +3451,6 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
     result.writes += r.written;  // after the removal writes, if any
     result.syncs += r.syncs;
     if (!leaf_writes.empty()) result.page_number = leaf_writes.front().page_number;
-    for (const auto& c : succs) result.cascaded.emplace_back(c.row, c.version);
     if (r.ok()) {
       result.error = E::none;
       return result;

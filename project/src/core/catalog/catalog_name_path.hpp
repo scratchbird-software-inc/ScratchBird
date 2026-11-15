@@ -17,19 +17,22 @@
 
 namespace scratchbird::core::catalog {
 // SEARCH_KEY: SB_NATIVE_NAME_PATH (owner, 2026-11-09: the name "should hold the
-// full path as part of its row"). The one rule for a name entry's path, used by
-// the create, the catalog writer, startup verification and the tests.
+// full path as part of its row"; owner Q157 = 1, 2026-11-14: "store path and
+// name separately" = the parent reference already in the row). The one rule for
+// a name entry's path, used by the create, the catalog writer, startup
+// verification and the tests.
 //
 // The path runs from below the database root to the entry. Each ancestor is
 // the scope object of the component after it; its component is its name in the
 // entry's language (its entry marked default_for_language), else its default
 // entry (the vector's). The chain ends at an entry whose scope is its own object:
-// the database's names, which are a path of one component. Every component
-// contributes its display name and its own-lane lookup key (the exact key when
-// it requires an exact match, else the normalized key). The entry row's
-// full_path_lookup_key is the escaped own-lane keys, root side first,
-// concatenated (CatalogNameFullPathLookupKey), and path_component_count counts
-// them.
+// the database's names, which are a path of one component.
+// SB_NATIVE_NAME_ROW_V4 (Q157 = 1, plan 35 S2): the path is derived at read by
+// walking the scope references; nothing of it is stored, so a rename, drop or
+// default change writes only its own row. (Was: every component contributed
+// its display name and own-lane key; the entry row stored the escaped own-lane
+// keys, root side first, as full_path_lookup_key, with path_component_count,
+// and a change regenerated every descendant's copy, SB_NATIVE_NAME_CASCADE.)
 // Refusals: an ancestor with no name; an ancestor with two entries marked
 // default_for_language in the entry's language (the spec does not say there is
 // at most one; the path rule needs it, so two are refused, not picked between:
@@ -38,6 +41,8 @@ namespace scratchbird::core::catalog {
 // kCatalogNamePathMaximumDepth.
 inline constexpr std::size_t kCatalogNamePathMaximumDepth = 64;
 
+// mismatch: a stored path that was not the walk's; no longer returned since
+// SB_NATIVE_NAME_ROW_V4 (kept so the values keep their numbers).
 enum class CatalogNamePathError : u8 { none, unnamed_scope, ambiguous_scope, cycle, too_deep, mismatch };
 
 // What a caller's lookup gives for (object, language): the name a path through
@@ -72,42 +77,13 @@ CatalogNamePathError WalkCatalogNamePath(const CatalogNameEntryView& entry, cons
   }
 }
 
-namespace detail {
-inline std::size_t CatalogNameEscapedSize(std::span<const byte> raw) noexcept {
-  return raw.size() + 2 + static_cast<std::size_t>(std::count(raw.begin(), raw.end(), byte{0}));
-}
-inline bool CatalogNameEscapedEquals(std::span<const byte> raw, std::span<const byte> escaped) noexcept {
-  std::size_t at = 0;
-  for (const byte b : raw) {
-    if (at >= escaped.size() || escaped[at++] != b) return false;
-    if (!b && (at >= escaped.size() || escaped[at++] != 0xff)) return false;
-  }
-  return at + 2 == escaped.size() && escaped[at] == 0 && escaped[at + 1] == 0;
-}
-}  // namespace detail
-
-// Whether an entry's stored full path (key and count) is the one the rule
-// resolves. Allocation-free: sizes first, then each component compared in
-// place from the end of the stored key.
+// Whether an entry's path walks: every scope named (unambiguously), no cycle,
+// at most kCatalogNamePathMaximumDepth components. Allocation-free when the
+// lookup is. (Was: also that the stored full path and count were the walk's,
+// else mismatch; SB_NATIVE_NAME_ROW_V4 stores none.)
 template <class PathName>
 CatalogNamePathError CheckCatalogNameEntryPath(const CatalogNameEntryView& entry, const PathName& path_name) {
-  std::size_t total = 0, count = 0;
-  const auto sized = WalkCatalogNamePath(entry, path_name, [&](const CatalogNameEntryView& component) {
-    total += detail::CatalogNameEscapedSize(CatalogNameEntryOwnLaneKey(component));
-    ++count;
-  });
-  if (sized != CatalogNamePathError::none) return sized;
-  if (count != entry.path_component_count || total != entry.full_path_lookup_key.size())
-    return CatalogNamePathError::mismatch;
-  std::size_t end = total;
-  bool same = true;
-  (void)WalkCatalogNamePath(entry, path_name, [&](const CatalogNameEntryView& component) {
-    const auto key = CatalogNameEntryOwnLaneKey(component);
-    const auto size = detail::CatalogNameEscapedSize(key);
-    end -= size;
-    same = same && detail::CatalogNameEscapedEquals(key, entry.full_path_lookup_key.subspan(end, size));
-  });
-  return same ? CatalogNamePathError::none : CatalogNamePathError::mismatch;
+  return WalkCatalogNamePath(entry, path_name, [](const CatalogNameEntryView&) {});
 }
 
 // The names a caller can see (its live vectors and entries), indexed. Views
@@ -129,9 +105,11 @@ class CatalogNameIndex {
   std::multimap<std::pair<Uuid, Uuid>, Uuid> by_language_;
 };
 
+// A component: the entry the walk chose (its raw text is its display under
+// preserve_user_text; DeriveCatalogNameEntryKeys gives the display and keys
+// under the entry's profile). (Was: its stored display name and own-lane key.)
 struct CatalogNamePathComponent {
-  std::string_view display_name;
-  std::span<const byte> lookup_key;  // own lane
+  CatalogNameEntryView entry;
 };
 struct CatalogNamePath {
   CatalogNamePathError error = CatalogNamePathError::none;
@@ -139,6 +117,4 @@ struct CatalogNamePath {
   bool ok() const noexcept { return error == CatalogNamePathError::none; }
 };
 CatalogNamePath ResolveCatalogNamePath(const CatalogNameEntryView& entry, const CatalogNameIndex& names);
-// The full-path lookup key of a resolved path.
-std::vector<byte> CatalogNamePathLookupKey(const CatalogNamePath& path);
 }  // namespace scratchbird::core::catalog

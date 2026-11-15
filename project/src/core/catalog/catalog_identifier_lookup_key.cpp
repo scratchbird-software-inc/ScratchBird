@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "catalog_identifier_lookup_key.hpp"
 #include "../datatypes/canonical_utf8.hpp"
+#include <algorithm>
 #include <limits>
 
 namespace scratchbird::core::catalog {
@@ -56,11 +57,6 @@ byte Value(const CatalogIdentifierKeyRequest& r,std::size_t at,bool exact) noexc
   const auto b=static_cast<byte>(r.text[at]);
   return exact&&(!r.was_quoted||r.profile->quoted_preserves_case)?b:Fold(b,r.profile->unquoted_fold_mode);
 }
-bool Matches(const CatalogIdentifierKeyRequest& r,std::span<const byte> stored,bool exact) noexcept {
-  if(stored.size()!=r.text.size()||(!stored.data()&&stored.size()))return false;
-  for(std::size_t i=0;i<stored.size();++i)if(stored[i]!=Value(r,i,exact))return false;
-  return true;
-}
 bool Overlap(std::span<byte> output,const void* input,std::size_t size) noexcept {
   const auto a=reinterpret_cast<std::uintptr_t>(output.data()),b=reinterpret_cast<std::uintptr_t>(input);
   if((output.size()&&!a)||(size&&!b)||output.size()>UINTPTR_MAX-a||size>UINTPTR_MAX-b)return true;
@@ -79,19 +75,56 @@ CatalogIdentifierKeyResult DeriveCatalogIdentifierLookupKeysInto(
   for(std::size_t i=0;i<size;++i){output[i]=Value(request,i,false);output[size+i]=Value(request,i,true);}
   return {E::none,output.first(size),output.subspan(size,size)};
 }
+// SEARCH_KEY: SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1). The lanes of a stored
+// entry, derived: the folds Value() applies, per lane, as a fold of the raw
+// text. normalized: the unquoted fold; exact: the raw byte unless the name was
+// quoted under a profile that does not preserve quoted case.
+std::vector<byte> CatalogNameDerivedText::Bytes() const {
+  std::vector<byte> out(size());
+  for(std::size_t i=0;i<out.size();++i)out[i]=(*this)[i];
+  return out;
+}
+std::string CatalogNameDerivedText::String() const {
+  std::string out(size(),'\0');
+  for(std::size_t i=0;i<out.size();++i)out[i]=static_cast<char>((*this)[i]);
+  return out;
+}
+bool CatalogNameDerivedText::Equals(std::span<const byte> bytes) const noexcept {
+  if(bytes.size()!=size())return false;
+  for(std::size_t i=0;i<bytes.size();++i)if(bytes[i]!=(*this)[i])return false;
+  return true;
+}
+int CompareCatalogNameDerivedText(const CatalogNameDerivedText& x,const CatalogNameDerivedText& y) noexcept {
+  const auto n=std::min(x.size(),y.size());
+  for(std::size_t i=0;i<n;++i){const auto a=x[i],b=y[i];if(a!=b)return a<b?-1:1;}
+  return x.size()==y.size()?0:(x.size()<y.size()?-1:1);
+}
+CatalogNameEntryKeys DeriveCatalogNameEntryKeys(
+    const CatalogIdentifierResolutionProfile& profile,const CatalogNameEntryView& entry) noexcept {
+  CatalogNameEntryKeys out;
+  const CatalogIdentifierKeyRequest request{&profile,entry.raw_name_text,entry.was_quoted,entry.quote_style,entry.requires_exact_match};
+  if(const auto error=Admit(request);error!=E::none){out.error=error;return out;}
+  if(entry.identifier_profile_uuid.kind!=UuidKind::object||entry.identifier_profile_uuid.value!=profile.profile_uuid){
+    out.error=E::invalid_profile;return out;}
+  if(entry.case_fold_profile_uuid||entry.quoted_identifier_profile_uuid){out.error=E::resource_admission_required;return out;}
+  const auto fold=profile.unquoted_fold_mode;
+  // Admit refuses the resource folds: only none, upper_ascii, lower_ascii remain.
+  if(fold!=IdentifierFoldMode::none&&fold!=IdentifierFoldMode::upper_ascii&&fold!=IdentifierFoldMode::lower_ascii){
+    out.error=E::resource_admission_required;return out;}
+  out.normalized={entry.raw_name_text,fold};
+  out.exact={entry.raw_name_text,(!entry.was_quoted||profile.quoted_preserves_case)?IdentifierFoldMode::none:fold};
+  out.own=entry.requires_exact_match?out.exact:out.normalized;
+  // Display (owner Q147: display = raw under preserve_user_text). The
+  // store_folded_display mode displays the own lane (the exact lane for an
+  // exact-match name, else the normalized one), the form version 3's verifier
+  // required of a stored display; donor_projection was refused by Admit.
+  if(profile.storage_display_mode==IdentifierDisplayMode::preserve_user_text)out.display={entry.raw_name_text,IdentifierFoldMode::none};
+  else if(profile.storage_display_mode==IdentifierDisplayMode::store_folded_display)out.display=out.own;
+  else{out.error=E::display_mismatch;return out;}
+  out.error=E::none;return out;
+}
 CatalogIdentifierKeyError CheckCatalogIdentifierLookupKeys(
     const CatalogIdentifierResolutionProfile& profile,const CatalogNameEntryView& entry) noexcept {
-  const CatalogIdentifierKeyRequest request{&profile,entry.raw_name_text,entry.was_quoted,entry.quote_style,entry.requires_exact_match};
-  const auto error=Admit(request);if(error!=E::none)return error;
-  if(entry.identifier_profile_uuid.kind!=UuidKind::object||entry.identifier_profile_uuid.value!=profile.profile_uuid)return E::invalid_profile;
-  if(entry.case_fold_profile_uuid||entry.quoted_identifier_profile_uuid)return E::resource_admission_required;
-  if((!entry.requires_exact_match||!entry.normalized_lookup_key.empty())&&!Matches(request,entry.normalized_lookup_key,false))return E::key_mismatch;
-  if((entry.requires_exact_match||!entry.exact_lookup_key.empty())&&!Matches(request,entry.exact_lookup_key,true))return E::key_mismatch;
-  if(!entry.display_name.data()&&!entry.display_name.empty())return E::display_mismatch;
-  const auto display=std::span<const byte>(reinterpret_cast<const byte*>(entry.display_name.data()),entry.display_name.size());
-  if(profile.storage_display_mode==IdentifierDisplayMode::preserve_user_text){
-    if(entry.display_name!=entry.raw_name_text)return E::display_mismatch;
-  }else if(!Matches(request,display,entry.requires_exact_match))return E::display_mismatch;
-  return E::none;
+  return DeriveCatalogNameEntryKeys(profile,entry).error;
 }
 } // namespace scratchbird::core::catalog

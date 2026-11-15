@@ -46,16 +46,15 @@ template<class F> auto WithoutEnvelopeHeap(F action){
 
 // SB_CATALOG_NO_TEXT_IDENTIFIERS: class, reference engine and language are
 // fixed-size identities now, so a vector holds no text and borrows nothing;
-// the entry's display name is the text these probes size and alias.
+// the entry's raw name is the text these probes size and alias
+// (SB_NATIVE_NAME_ROW_V4: its one text field; was the display name).
 template<class R> constexpr bool IsVector=std::is_same_v<std::decay_t<R>,c::CatalogNameVector>||
     std::is_same_v<std::decay_t<R>,c::CatalogNameVectorView>;
 void OwningEnvelopeFaults(bool entry){
   auto fixture=Fixture(entry);
   std::visit([](auto& r){
     if constexpr(!IsVector<decltype(r)>){
-      r.raw_name_text=std::string(64,'r');r.display_name=std::string(64,'s');
-      r.normalized_lookup_key.assign(128,0xfe);r.exact_lookup_key.assign(128,0xff);
-      r.full_path_lookup_key.assign(128,0x80);r.path_component_count=1;
+      r.raw_name_text=std::string(64,'r');  // (was also display, both keys, full path)
     }
   },fixture.payload);
   auto bytes=c::EncodeCatalogNameEnvelope(fixture).bytes;
@@ -65,8 +64,8 @@ void OwningEnvelopeFaults(bool entry){
   const auto copy=WithoutEnvelopeHeap([&]{return *view.record;});
   std::visit([&](const auto& payload){
     if constexpr(!IsVector<decltype(payload)>){
-      const auto* p=reinterpret_cast<const byte*>(payload.display_name.data());
-      Check(p>=bytes.data()+176&&p+payload.display_name.size()<=bytes.data()+bytes.size(),
+      const auto* p=reinterpret_cast<const byte*>(payload.raw_name_text.data());
+      Check(p>=bytes.data()+176&&p+payload.raw_name_text.size()<=bytes.data()+bytes.size(),
           "envelope payload aliases retained original bytes");
     }
   },copy.payload);
@@ -74,7 +73,9 @@ void OwningEnvelopeFaults(bool entry){
   const auto before=envelope_memory_fault::allocations;
   Check(action().ok(),"owning envelope allocation baseline");
   const auto count=envelope_memory_fault::allocations-before;
-  Check(count==(entry?5:0),"envelope only final fields allocate");  // was 8:2 (text class, donor_id, language)
+  // SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1): the entry's raw text is its one
+  // owned field. (Was 5: raw, display, two keys, full path; before that 8:2.)
+  Check(count==(entry?1:0),"envelope only final fields allocate");
   for(std::size_t point=0;point<count;++point){
     bool success=false;envelope_memory_fault::remaining=point;envelope_memory_fault::fired=false;
     try{success=action().ok();}catch(const std::bad_alloc&){}
@@ -98,9 +99,9 @@ void ExactEnvelopeBounds(bool entry){
   auto fixture=Fixture(entry);
   const auto initial=c::EncodeCatalogNameEnvelope(fixture);
   Check(initial.ok(),"envelope maximum fixture");
-  const auto fixed=std::visit([&](const auto& p)->std::size_t{if constexpr(IsVector<decltype(p)>)return 0;else return initial.bytes.size()-p.display_name.size();},fixture.payload);
+  const auto fixed=std::visit([&](const auto& p)->std::size_t{if constexpr(IsVector<decltype(p)>)return 0;else return initial.bytes.size()-p.raw_name_text.size();},fixture.payload);
   for(const auto size:{std::size_t(131071),std::size_t(131072),std::size_t(131073)}){
-    std::visit([&](auto& p){if constexpr(!IsVector<decltype(p)>)p.display_name.assign(size-fixed,'x');},fixture.payload);
+    std::visit([&](auto& p){if constexpr(!IsVector<decltype(p)>)p.raw_name_text.assign(size-fixed,'x');},fixture.payload);
     // Independently assemble outer lengths around the admitted payload; the
     // oversized case bypasses the owning envelope encoder's expected refusal.
     const auto payload=std::visit([](const auto& p){
@@ -174,9 +175,9 @@ void MetadataAdmission(bool entry){
   matches(dropped,m,true);
   auto invalid=payload;
   if(entry){  // the vector has no text to make invalid
-    std::visit([](auto& r){if constexpr(!IsVector<decltype(r)>)r.display_name=std::string(1,char(0x80));},invalid);
+    std::visit([](auto& r){if constexpr(!IsVector<decltype(r)>)r.raw_name_text=std::string(1,char(0x80));},invalid);  // (was display_name)
     matches(invalid,metadata,false);
-    invalid=payload;std::visit([](auto& r){if constexpr(!IsVector<decltype(r)>)r.display_name.assign(131041,'x');},invalid);
+    invalid=payload;std::visit([](auto& r){if constexpr(!IsVector<decltype(r)>)r.raw_name_text.assign(131041,'x');},invalid);
     matches(invalid,metadata,false);
   }
   // Individually valid fields exceed the total block: only the entry has text.
@@ -184,7 +185,9 @@ void MetadataAdmission(bool entry){
     invalid=payload;
     std::visit([](auto& r){
       if constexpr(std::is_same_v<std::decay_t<decltype(r)>,c::CatalogNameEntry>){
-        r.raw_name_text.assign(70000,'x');r.display_name.assign(70000,'y');
+        // SB_NATIVE_NAME_ROW_V4: one text field, within its own limit
+        // (131040) but past the block's. (Was: raw 70000 + display 70000.)
+        r.raw_name_text.assign(131000,'x');
       }
     },invalid);
     matches(invalid,metadata,false);

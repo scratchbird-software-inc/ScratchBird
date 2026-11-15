@@ -69,7 +69,7 @@ c::CatalogNameEnvelope Fixture(bool entry=false) {
     e.name_entry_uuid=b.catalog_object_uuid;e.name_vector_uuid=Id(UuidKind::object,2);
     e.object_uuid=Id(UuidKind::object,3);e.object_kind=c::CatalogRecordKind::table_descriptor;e.scope_uuid=Id(UuidKind::object,5);
     e.language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_en);e.dialect_profile_uuid=Id(UuidKind::object,11);
-    e.identifier_profile_uuid=Id(UuidKind::object,12);e.raw_name_text="a";e.display_name="a";
+    e.identifier_profile_uuid=Id(UuidKind::object,12);e.raw_name_text="a";  // (was also display_name "a": SB_NATIVE_NAME_ROW_V4)
     e.catalog_generation_id=b.catalog_generation;e.created_transaction_uuid=b.creating_transaction_uuid;
     e.security_policy_uuid=Id(UuidKind::object,30);e.resource_epoch=1;e.name_resolution_epoch=2;
     r.payload=e;
@@ -215,6 +215,19 @@ void BindingAndPayload() {
     bad=golden;bad[20]=old;Refused(CheckedEnvelopeDecode(bad,base.binding));
     bad=golden;bad[176+20]=old;Refused(CheckedEnvelopeDecode(bad,base.binding));
   }
+  // SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1): an entry envelope says payload
+  // version 4; one saying 3 (the stored-keys entry) is refused, in the
+  // envelope header and in the payload (no migration, Q164 = 1).
+  {
+    const auto entry=c::EncodeCatalogNameEnvelope(Fixture(true));
+    Check(entry.ok()&&entry.bytes.size()>176+20&&entry.bytes[20]==4&&entry.bytes[176+20]==4,"an entry envelope is payload version 4");
+    Check(CheckedEnvelopeDecode(entry.bytes,Fixture(true).binding).ok(),"the version 4 entry envelope decodes");
+    for(const byte old:{byte{1},byte{2},byte{3}}){
+      auto wrong=entry.bytes;wrong[20]=old;Refused(CheckedEnvelopeDecode(wrong,Fixture(true).binding));
+      wrong=entry.bytes;wrong[176+20]=old;Refused(CheckedEnvelopeDecode(wrong,Fixture(true).binding));
+    }
+    auto vector_as_4=golden;vector_as_4[20]=4;Refused(CheckedEnvelopeDecode(vector_as_4,base.binding));
+  }
   const std::string legacy="kind=5\nrow_uuid=01921324-3546-7788-99aa-bbccddeeff67\n";
   Refused(CheckedEnvelopeDecode({legacy.begin(),legacy.end()},base.binding));
   Check(!c::CatalogNameEnvelopeEncodeResult{}.ok() && !c::CatalogNameEnvelopeDecodeResult{}.ok(),
@@ -222,14 +235,15 @@ void BindingAndPayload() {
 }
 void SizeAndPageContainer() {
   // SB_CATALOG_NO_TEXT_IDENTIFIERS: a vector holds no text now (kind and
-  // language are fixed-size), so the entry's display name is padded to the
-  // exact maximum.
+  // language are fixed-size), so the entry's raw name is padded to the
+  // exact maximum (SB_NATIVE_NAME_ROW_V4: the one text field; was the
+  // display name).
   auto r=Fixture(true);auto& e=std::get<c::CatalogNameEntry>(r.payload);
-  const auto base_size=c::EncodeCatalogNameEnvelope(r).bytes.size()-e.display_name.size();
-  e.display_name=std::string(131072-base_size,'x');
+  const auto base_size=c::EncodeCatalogNameEnvelope(r).bytes.size()-e.raw_name_text.size();
+  e.raw_name_text=std::string(131072-base_size,'x');
   auto encoded=c::EncodeCatalogNameEnvelope(r);
   Check(encoded.ok() && encoded.bytes.size()==131072,"exact envelope size maximum");
-  Roundtrip(r);e.display_name.push_back('x');
+  Roundtrip(r);e.raw_name_text.push_back('x');
   Refused(c::EncodeCatalogNameEnvelope(r));
   encoded.bytes.push_back(0);Refused(CheckedEnvelopeDecode(encoded.bytes,r.binding));
   r=Fixture();encoded=c::EncodeCatalogNameEnvelope(r);

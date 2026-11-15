@@ -48,6 +48,21 @@
 #include <compare>
 
 namespace {
+// SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1): an entry's own-lane key, as the
+// default pack's identifier profile derives it (Q177: unquoted names fold to
+// upper ASCII, quoted and exact-match names keep their spelling), written out
+// here rather than taken from the production derivation. (Was: the entry's
+// stored normalized/exact key.)
+std::string OwnLaneText(const scratchbird::core::catalog::CatalogNameEntryView& e) {
+  std::string out(e.raw_name_text);
+  if (!e.requires_exact_match)
+    for (auto& ch : out)
+      if (ch >= 'a' && ch <= 'z') ch = static_cast<char>(ch - 'a' + 'A');
+  return out;
+}
+scratchbird::core::catalog::CatalogNameDerivedText AsLane(const std::string& text) {
+  return {text, scratchbird::core::catalog::IdentifierFoldMode::none};
+}
 
 // ---- Keys, compared here (not by the codec) --------------------------------------
 pg::NativeBtreeKey KeyOf(const Uuid& row, const Uuid& version) {
@@ -552,10 +567,12 @@ std::optional<std::vector<byte>> InsertOracle(const Db& b, std::span<const byte>
           Check(c::IsKnownCatalogRecordKind(*kind), "the entry's object kind is a record kind");
           const auto path = c::ResolveCatalogNamePath(e, names);
           Check(path.ok(), "the entry's path resolves for the oracle");
-          std::vector<std::string_view> components;
-          for (const auto& component : path.components) components.push_back(component.display_name);
-          cells.push_back({0, c::CatalogNameAuthoritativeTreeKey(e, *kind), c::CatalogNameAuthoritativeTreePayload(e)});
-          cells.push_back({1, c::CatalogNameUuidTreeEntryKey(e, *kind), c::CatalogNameUuidTreeEntryPayload(e.name_entry_uuid.value, components)});
+          // SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1, Q158 = 1): the key's own
+          // lane derived from the raw text; the UUID-to-name payload the entry
+          // UUID. (Was: the stored key; the path's display components.)
+          const auto own = OwnLaneText(e);
+          cells.push_back({0, c::CatalogNameAuthoritativeTreeKey(e, AsLane(own), *kind), c::CatalogNameAuthoritativeTreePayload(e)});
+          cells.push_back({1, c::CatalogNameUuidTreeEntryKey(e, *kind), c::CatalogNameUuidTreeEntryPayload(e.name_entry_uuid.value)});
         }
         for (auto& planned : cells) {
           pg::NativeBtreeCell entry;

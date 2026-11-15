@@ -124,7 +124,8 @@ enum class CatalogVersionWriteError : std::uint8_t {
   filespace_full,          // a new page was needed and the allocation map has no free slot
   // SB_NATIVE_NAME_CASCADE (N4b): a name change moves other entries' paths
   // and the request carries too few cascade_versions identities for them
-  // (result.cascade_needed says how many).
+  // (result.cascade_needed says how many). Retired by SB_NATIVE_NAME_ROW_V4
+  // (owner Q157 = 1): never returned; kept so later values keep their numbers.
   cascade_versions_exhausted,
   // SB_AUDIT_CATALOG_METADATA_CHANGE (W3b-2b): a definition (system-table) row
   // version that does not cite a catalog.metadata_change event of its own
@@ -260,31 +261,31 @@ struct CatalogVersionRequest {
   // that is not a drop gets its own cells, in the same careful-write plan. A
   // name whose entry other names' paths run through cannot yet be renamed or
   // dropped (invalid_successor; the cascade is N4b).
-  // N4b (SB_NATIVE_NAME_CASCADE) supersedes that last sentence: see
-  // cascade_versions.
+  // N4b (SB_NATIVE_NAME_CASCADE) supersedes that last sentence: see below.
   std::optional<core::catalog::CatalogNamePayload> name;
-  // SEARCH_KEY: SB_NATIVE_NAME_CASCADE (N4b). A name change (rename, drop,
-  // a default_for_language or vector default change) moves the path of every
-  // live entry whose path runs through the changed name. Each such entry gets
-  // a successor version in the same write, by this transaction, with its
-  // regenerated full_path_lookup_key, path_component_count and UUID-to-name
-  // display components and nothing else changed; these are its identities
-  // (UUIDv7, caller-issued), used in row-UUID order of the entries. Too few is
-  // cascade_versions_exhausted, decided before any write; an entry the change
-  // would leave without a path (an unnamed or ambiguous scope) is
-  // invalid_successor; one whose newest version is another transaction's in
-  // progress is a write_conflict with that blocker.
+  // SEARCH_KEY: SB_NATIVE_NAME_CASCADE (N4b), since SB_NATIVE_NAME_ROW_V4
+  // (owner Q157 = 1, Q158 = 1, 2026-11-14): a name change (rename, drop, a
+  // default_for_language or vector default change) writes this successor
+  // only; no other entry stores its path or its path's display. A change that
+  // would leave a live entry this transaction sees without a path (an unnamed
+  // or ambiguous scope) is invalid_successor, before any write; another
+  // transaction's entry in progress whose path the change moves, or breaks
+  // where a lookup reaches a changed name, is a write_conflict with it.
+  // (Was: every live entry whose path ran through the changed name got a
+  // successor version in the same write, with its regenerated
+  // full_path_lookup_key, path_component_count and UUID-to-name display
+  // components, from caller-issued cascade_versions identities; too few was
+  // cascade_versions_exhausted.)
   // SB_NATIVE_NAME_PATH_CONFLICT (owner Q47 = 1, 2026-11-11): a path is
   // resolved over the names this transaction sees (a name another
   // transaction is changing is seen as its committed version). Writing an
-  // entry (this one, or a cascaded one) whose path makes a lookup that a name
-  // row another transaction is changing decides (that object's vector, its
-  // entry marked default_for_language in the path's language, or the entry its
-  // vector names as default, old or new version) is a write_conflict with that
-  // transaction: the path would go stale whichever way it ends. Another
-  // transaction's entry in progress whose path does not resolve in this view
-  // conflicts when its path's lookups reach a name this request changes.
-  std::vector<core::platform::Uuid> cascade_versions;
+  // entry whose path makes a lookup that a name row another transaction is
+  // changing decides (that object's vector, its entry marked
+  // default_for_language in the path's language, or the entry its vector
+  // names as default, old or new version) is a write_conflict with that
+  // transaction. Another transaction's entry in progress whose path does not
+  // resolve in this view conflicts when its path's lookups reach a name this
+  // request changes.
   // SEARCH_KEY: SB_CATALOG_DEPENDENT_CASCADE (owner 2026-11-13, Q86, Q87 = 1).
   // The identities (UUIDv7, caller-issued) of the drop versions a definition
   // drop writes for its fully dependent rows (today: its live comments), used
@@ -320,10 +321,10 @@ struct CatalogVersionWriteResult {
   // the request's new_pages identities they took. Set also when the write
   // then failed: those pages are allocated and unreached (wasted, Q17 = 1).
   std::vector<core::platform::u64> allocated_pages;
-  // SB_NATIVE_NAME_CASCADE (N4b): the entries' versions the cascade wrote
-  // (row, version), in row-UUID order; on cascade_versions_exhausted, how
-  // many identities it needs.
-  std::vector<std::pair<core::platform::Uuid, core::platform::Uuid>> cascaded;
+  // On dependent_versions_exhausted, how many identities the drop needs.
+  // (Was also, SB_NATIVE_NAME_CASCADE: `cascaded`, the entries' versions the
+  // name cascade wrote, and the count on cascade_versions_exhausted; retired
+  // by SB_NATIVE_NAME_ROW_V4, owner Q157 = 1.)
   std::size_t cascade_needed = 0;
   // SB_CATALOG_DEPENDENT_CASCADE: the dependent rows' drop versions a
   // definition drop wrote (row, version), in the order their identities were
@@ -393,9 +394,11 @@ CatalogVersionWriteResult WriteCatalogSuccessorVersion(disk::CarefulWriteSink& s
 // name trees (kinds 22 and 23), every inserted name row gets its cells in the
 // same careful-write plan: one in the authoritative tree per entry, one in the
 // UUID-to-name tree per name row; a leaf without room is name_tree_full
-// (splits come with W3b-3). Its full path (full_path_lookup_key,
-// path_component_count) must be the one SB_NATIVE_NAME_PATH resolves from the
-// names this transaction sees and the request's own (invalid_name). Collisions
+// (splits come with W3b-3). Its path must walk (SB_NATIVE_NAME_PATH) over the
+// names this transaction sees and the request's own (invalid_name); its keys
+// are derived under its identifier profile (SB_NATIVE_NAME_ROW_V4: the row
+// stores the raw text only; was: its stored full_path_lookup_key and
+// path_component_count had to be the one the rule resolved). Collisions
 // (SB_NAME_COLLISION_ORDER, the order
 // startup verification applies): the entry's vector names a policy descriptor
 // whose body binds the object's class to a group. Another entry of a different
@@ -419,16 +422,17 @@ CatalogVersionWriteResult WriteCatalogSuccessorVersion(disk::CarefulWriteSink& s
 // (Since: successors and new pages are written; see WriteCatalogSuccessorVersion
 // and SB_CATALOG_NEW_PAGES. The audit event is still W3b-2.)
 //
-// SB_NATIVE_NAME_CASCADE (owner Q48 = 1, 2026-11-11): the request's names may
-// change which name a stored entry's path uses (an entry marked
-// default_for_language for an existing object, in a language whose entries
-// fell back to its vector's default). Each stored entry they move gets a
-// successor version in the same write, exactly as a successor's cascade
-// (CatalogVersionRequest::cascade_versions), from this request's
-// cascade_versions; too few is cascade_versions_exhausted with
-// result.cascade_needed; an entry left without a path (a second default in one
-// language makes its scope ambiguous) is invalid_name. Q47's write_conflict
-// applies to each inserted entry's path and each cascaded one.
+// SB_NATIVE_NAME_CASCADE (owner Q48 = 1, 2026-11-11), since
+// SB_NATIVE_NAME_ROW_V4 (owner Q157 = 1): the request's names may change which
+// name a stored entry's path uses (an entry marked default_for_language for an
+// existing object, in a language whose entries fell back to its vector's
+// default). Nothing else is written: paths are walked at read. An entry left
+// without a path (a second default in one language makes its scope ambiguous)
+// is invalid_name; another transaction's entry in progress whose path they
+// move or break is a write_conflict. Q47's write_conflict applies to each
+// inserted entry's path. (Was: each stored entry they moved got a successor
+// version in the same write, from this request's cascade_versions; too few
+// was cascade_versions_exhausted with result.cascade_needed.)
 struct CatalogInsertRow {
   core::platform::u16 role = 0;  // relation role 1..7 in the catalog root
   core::platform::Uuid row_uuid;
@@ -440,9 +444,8 @@ struct CatalogInsertRequest {
   core::platform::u64 transaction_order = 0;
   core::platform::Uuid transaction_uuid;
   std::vector<CatalogInsertRow> rows;
-  // SB_NATIVE_NAME_CASCADE (Q48 = 1): identities for the cascaded versions
-  // (UUIDv7, caller-issued), used in row-UUID order of the entries moved.
-  std::vector<core::platform::Uuid> cascade_versions;
+  // (Was: cascade_versions, identities for the cascaded versions,
+  // SB_NATIVE_NAME_CASCADE; retired by SB_NATIVE_NAME_ROW_V4.)
   // SB_CATALOG_NEW_PAGES: when no reached base leaf of an indexed relation has
   // room for a row, it goes on a new base leaf.
   std::vector<CatalogNewPageIdentity> new_pages;

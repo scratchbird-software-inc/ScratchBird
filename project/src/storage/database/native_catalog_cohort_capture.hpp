@@ -197,8 +197,9 @@ class NativeCatalogCapture {
       if(std::holds_alternative<core::catalog::CatalogNameEntryView>(*value.row.name_payload)){
         // (A vector holds no borrowed bytes: SB_CATALOG_NO_TEXT_IDENTIFIERS.)
         auto& entry=std::get<core::catalog::CatalogNameEntryView>(*value.row.name_payload);
-        if(!Copy(entry.raw_name_text)||!Copy(entry.display_name)||!Copy(entry.normalized_lookup_key)||
-            !Copy(entry.exact_lookup_key)||!Copy(entry.full_path_lookup_key))return false;
+        // SB_NATIVE_NAME_ROW_V4: the raw text is the entry's only borrowed
+        // bytes. (Was: also display, both keys and the full path.)
+        if(!Copy(entry.raw_name_text))return false;
       }
     }
     rows_[count_++]=value;return true;

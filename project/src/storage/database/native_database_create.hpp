@@ -97,9 +97,14 @@ const char* NativeCreateNameCollisionClassName(NativeCreateNameCollisionClass) n
 // different objects that hold the same name by SB_NAME_COLLISION_ORDER
 // (CompareCatalogNameCollisionScope, then CompareCatalogNameCollisionLanes),
 // as indices into `entries`; nullopt when none do. Entries of one object
-// never collide with each other.
+// never collide with each other. SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1):
+// `own_lanes[i]` is entries[i]'s own-lane key derived under its identifier
+// profile (DeriveCatalogNameEntryKeys(...).own); the sizes must be equal
+// (nullopt otherwise is not a collision: the caller derives every lane).
+// (Was: the entries' stored keys.)
 std::optional<std::pair<std::size_t,std::size_t>> FindNativeCreateNameEntryCollision(
     std::span<const core::catalog::CatalogNameEntryView> entries,
+    std::span<const core::catalog::CatalogNameDerivedText> own_lanes,
     core::catalog::CatalogCollisionLanguageLane language_lane,core::catalog::CatalogCollisionKeyLane key_lane);
 struct NativeDatabaseCreateReceipt {
   // SB_ONE_DATABASE_UUID (owner Q111 = 1): database_uuid is the page-zero
@@ -165,7 +170,8 @@ const char* NativeCreatePrincipalNameCollisionName(NativeCreatePrincipalNameColl
 // The comparison itself, over an admitted identifier profile and the pack's
 // collision group: each principal name gets the name entry the plan would
 // write for it (user_account, one scope, `profile`, `language`, unquoted,
-// requires_exact_match false, both lanes from DeriveCatalogIdentifierLookupKeysInto)
+// requires_exact_match false, its own lane from DeriveCatalogNameEntryKeys;
+// was DeriveCatalogIdentifierLookupKeysInto into a backing)
 // and two entries collide exactly when SB_NAME_COLLISION_ORDER
 // (CompareCatalogNameCollisionScope / CompareCatalogNameCollisionLanes) says
 // so. `user_accounts_bound` is whether the policy body binds user_account to

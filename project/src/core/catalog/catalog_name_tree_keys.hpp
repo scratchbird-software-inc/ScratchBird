@@ -1,6 +1,7 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #pragma once
+#include "catalog_identifier_lookup_key.hpp"
 #include "catalog_name_record_codec.hpp"
 #include "catalog_records.hpp"
 
@@ -33,22 +34,30 @@ namespace scratchbird::core::catalog {
 //     vector       vector UUID | default entry UUID | collision policy UUID
 //     entry key    object UUID | record kind (u16 BE) | 0x01 | esc(language tag)
 //                  | name class (u8)
-//     entry        entry UUID | LEB128 count | (LEB128 length | display bytes)*
-//   The entry payload's components are the display names of the entry's path
-//   from below the database root to the entry itself; the parser chooses the
+//     entry        entry UUID
+//   SB_NATIVE_NAME_ROW_V4 (owner Q158 = 1, 2026-11-14): the entry payload is
+//   the entry UUID only; rendering reads the row and walks its path
+//   (WalkCatalogNamePath), so a rename touches no other row's cell. (Was:
+//   entry UUID | LEB128 count | (LEB128 length | display bytes)*, the display
+//   names of the entry's path, root side first.) The parser chooses the
 //   separator and quoting (results are message vectors, owner direction
 //   2026-10-21).
 //
 // esc(): every 0x00 byte becomes 0x00 0xFF and the field ends with 0x00 0x00,
 // so byte order of the encoded keys is the order of the fields (an unsigned
 // byte comparison, field by field) and no encoded field is a prefix of another.
-// The entry row's full_path_lookup_key is esc() of each component's own-lane
-// lookup key, concatenated; path_component_count counts them.
+// SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1): the own-lane key is derived from the
+// row under its identifier profile (DeriveCatalogNameEntryKeys(...).own) and
+// handed in; a version 4 row stores no lane. (Was: read from the row's stored
+// normalized/exact key, CatalogNameEntryOwnLaneKey; and the row's
+// full_path_lookup_key, the escaped own-lane keys of its path, was built by
+// CatalogNameFullPathLookupKey.)
 // UUIDs are their 16 raw bytes. Nothing here admits identities or policy.
 void AppendCatalogNameTreeEscaped(std::vector<byte>& out, std::span<const byte> bytes);
-std::span<const byte> CatalogNameEntryOwnLaneKey(const CatalogNameEntryView& entry) noexcept;
+void AppendCatalogNameTreeEscaped(std::vector<byte>& out, const CatalogNameDerivedText& text);
 
-std::vector<byte> CatalogNameAuthoritativeTreeKey(const CatalogNameEntryView& entry, CatalogRecordKind kind);
+std::vector<byte> CatalogNameAuthoritativeTreeKey(const CatalogNameEntryView& entry, const CatalogNameDerivedText& own,
+                                                  CatalogRecordKind kind);
 std::vector<byte> CatalogNameAuthoritativeTreePayload(const CatalogNameEntryView& entry);
 struct CatalogNameAuthoritativeTreePayloadView {
   Uuid object_uuid, entry_uuid;
@@ -57,7 +66,8 @@ std::optional<CatalogNameAuthoritativeTreePayloadView> DecodeCatalogNameAuthorit
     std::span<const byte> payload) noexcept;
 // The authoritative key's prefix for one name in every class: scope, profile,
 // language and own-lane key, without the record kind.
-std::vector<byte> CatalogNameAuthoritativeTreeNamePrefix(const CatalogNameEntryView& entry);
+std::vector<byte> CatalogNameAuthoritativeTreeNamePrefix(const CatalogNameEntryView& entry,
+                                                         const CatalogNameDerivedText& own);
 
 std::vector<byte> CatalogNameUuidTreeVectorKey(const Uuid& object_uuid, CatalogRecordKind kind);
 std::vector<byte> CatalogNameUuidTreeVectorPayload(const CatalogNameVectorView& vector);
@@ -68,29 +78,21 @@ std::optional<CatalogNameUuidTreeVectorPayloadView> DecodeCatalogNameUuidTreeVec
     std::span<const byte> payload) noexcept;
 
 std::vector<byte> CatalogNameUuidTreeEntryKey(const CatalogNameEntryView& entry, CatalogRecordKind kind);
-std::vector<byte> CatalogNameUuidTreeEntryPayload(const Uuid& entry_uuid,
-                                                  std::span<const std::string_view> display_components);
-struct CatalogNameUuidTreeEntryPayloadView {
-  Uuid entry_uuid;
-  std::vector<std::string_view> display_components;  // borrow the payload
-};
-std::optional<CatalogNameUuidTreeEntryPayloadView> DecodeCatalogNameUuidTreeEntryPayload(
-    std::span<const byte> payload);
-
-std::vector<byte> CatalogNameFullPathLookupKey(std::span<const std::span<const byte>> component_keys);
+std::vector<byte> CatalogNameUuidTreeEntryPayload(const Uuid& entry_uuid);
+// The entry UUID; nullopt unless the payload is exactly 16 bytes.
+std::optional<Uuid> DecodeCatalogNameUuidTreeEntryPayload(std::span<const byte> payload) noexcept;
 
 // Allocation-free equality of stored bytes with what the functions above would
 // encode, for the startup verifiers (which allocate nothing).
-bool CatalogNameAuthoritativeTreeKeyEquals(const CatalogNameEntryView& entry, CatalogRecordKind kind,
-                                           std::span<const byte> key) noexcept;
+// SB_NATIVE_NAME_ROW_V4 (risk R4 of plan 35): startup verification recomputes
+// the key from the derived own lane and compares it with the stored cell, so a
+// derive change that would re-key a name cannot pass silently.
+bool CatalogNameAuthoritativeTreeKeyEquals(const CatalogNameEntryView& entry, const CatalogNameDerivedText& own,
+                                           CatalogRecordKind kind, std::span<const byte> key) noexcept;
 bool CatalogNameAuthoritativeTreePayloadEquals(const CatalogNameEntryView& entry, std::span<const byte> payload) noexcept;
 bool CatalogNameUuidTreeVectorKeyEquals(const Uuid& object_uuid, CatalogRecordKind kind, std::span<const byte> key) noexcept;
 bool CatalogNameUuidTreeVectorPayloadEquals(const CatalogNameVectorView& vector, std::span<const byte> payload) noexcept;
 bool CatalogNameUuidTreeEntryKeyEquals(const CatalogNameEntryView& entry, CatalogRecordKind kind,
                                        std::span<const byte> key) noexcept;
-// Decodes a UUID-to-name entry payload into caller storage: the entry UUID and
-// up to components.size() display components. False when malformed or when
-// there are more components than the storage holds.
-bool DecodeCatalogNameUuidTreeEntryPayloadInto(std::span<const byte> payload, Uuid& entry_uuid,
-                                               std::span<std::string_view> components, std::size_t& count) noexcept;
+bool CatalogNameUuidTreeEntryPayloadEquals(const CatalogNameEntryView& entry, std::span<const byte> payload) noexcept;
 }  // namespace scratchbird::core::catalog

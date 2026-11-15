@@ -80,7 +80,7 @@ db::NativeCreationCatalogSeed MetricSeed(const db::NativeFilespaceInitialization
   entry.scope_uuid={UuidKind::object,Id(700)};entry.parent_schema_uuid=names.owning_schema_uuid;
   entry.language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_en_US);entry.dialect_profile_uuid={UuidKind::object,Id(741)};
   entry.identifier_profile_uuid={UuidKind::object,Id(742)};
-  entry.raw_name_text=entry.display_name="fixture_construction_measurement";
+  entry.raw_name_text="fixture_construction_measurement";
   entry.catalog_generation_id=1;entry.created_transaction_uuid=request.creator.transaction_uuid;
   entry.security_policy_uuid=names.security_policy_uuid;entry.resource_epoch=entry.name_resolution_epoch=1;
   entry.lifecycle_state=c::CatalogNameLifecycle::active;

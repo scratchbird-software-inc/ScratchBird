@@ -203,16 +203,22 @@ void LookupKeys(){
     Check(result.ok()&&std::ranges::equal(result.normalized,bytes(expected[fold]))&&std::ranges::equal(result.exact,bytes(raw))&&
         std::all_of(output.begin()+2*raw.size(),output.end(),[](auto b){return b==0x5a;}),
         "explicit fold fields derive exact UTF-8 lanes, preserve non-ASCII and spaces, ignore profile label");
+    // SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1): the entry stores the raw text;
+    // its lanes and display are derived, heap-free, and equal the lanes
+    // version 3 stored (DeriveCatalogIdentifierLookupKeysInto, its producer).
+    // (Was: the stored normalized lane checked, and a missing or altered
+    // stored key refused key_mismatch, an altered display display_mismatch:
+    // a version 4 row has neither to alter.)
     c::CatalogNameEntryView entry;entry.identifier_profile_uuid={p::UuidKind::object,profile.profile_uuid};
-    entry.raw_name_text=entry.display_name=raw;entry.normalized_lookup_key=result.normalized;
-    heap_denied=true;const auto checked=c::CheckCatalogIdentifierLookupKeys(profile,entry);heap_denied=false;
-    Check(checked==E::none,"actual normalized lane validates without heap or optional exact lane");
-    for(unsigned corrupt=0;corrupt<4;++corrupt){auto wrong=entry;
-      if(corrupt==0)wrong.normalized_lookup_key={};if(corrupt==1)wrong.exact_lookup_key=bytes("wrong");
-      if(corrupt==2)wrong.display_name="wrong";if(corrupt==3)wrong.identifier_profile_uuid.value=f::Id(9);
+    entry.raw_name_text=raw;
+    heap_denied=true;const auto derived=c::DeriveCatalogNameEntryKeys(profile,entry);
+    const auto checked=c::CheckCatalogIdentifierLookupKeys(profile,entry);heap_denied=false;
+    Check(checked==E::none&&derived.ok()&&derived.normalized.Equals(result.normalized)&&derived.exact.Equals(result.exact)&&
+        derived.own.Equals(result.normalized)&&derived.display.Equals(bytes(raw)),
+        "derived lanes equal the version 3 producer's, without heap");
+    {auto wrong=entry;wrong.identifier_profile_uuid.value=f::Id(9);
       heap_denied=true;const auto e=c::CheckCatalogIdentifierLookupKeys(profile,wrong);heap_denied=false;
-      Check(e==(corrupt<2?E::key_mismatch:corrupt==2?E::display_mismatch:E::invalid_profile),"missing or altered key/display/profile refuses exactly");
-    }
+      Check(e==E::invalid_profile,"an entry of another profile refuses exactly");}
   }
   profile=Profile();profile.quote_styles=15;request={&profile,raw,true,c::CatalogNameQuoteStyle::double_quote,true};
   for(unsigned style=0;style<=5;++style)for(bool preserve:{false,true}){
@@ -221,20 +227,56 @@ void LookupKeys(){
     if(style==0||style==4){Check(result.error==E::invalid_quote_mode&&std::all_of(output.begin(),output.end(),[](auto b){return b==0x5a;}),"concrete admitted quote mode required");continue;}
     Check(result.ok()&&std::ranges::equal(result.normalized,bytes(expected[1]))&&std::ranges::equal(result.exact,bytes(preserve?raw:expected[1])),"quoted exact lane follows explicitly supplied preservation rule");
     c::CatalogNameEntryView entry;entry.identifier_profile_uuid={p::UuidKind::object,profile.profile_uuid};
-    entry.raw_name_text=entry.display_name=raw;entry.was_quoted=entry.requires_exact_match=true;entry.quote_style=request.quote_style;
-    entry.exact_lookup_key=result.exact;heap_denied=true;const auto e=c::CheckCatalogIdentifierLookupKeys(profile,entry);heap_denied=false;
-    Check(e==E::none,"quoted exact lane validated without requiring an unused normalized lane");
-    profile.storage_display_mode=c::IdentifierDisplayMode::store_folded_display;entry.display_name=preserve?raw:expected[1];
-    Check(c::CheckCatalogIdentifierLookupKeys(profile,entry)==E::none,"quoted display follows actual exact spelling");
+    entry.raw_name_text=raw;entry.was_quoted=entry.requires_exact_match=true;entry.quote_style=request.quote_style;
+    heap_denied=true;const auto derived=c::DeriveCatalogNameEntryKeys(profile,entry);heap_denied=false;
+    Check(derived.ok()&&derived.exact.Equals(result.exact)&&derived.own.Equals(result.exact)&&derived.normalized.Equals(result.normalized),
+        "quoted exact lane derived as the version 3 producer stored it");
+    profile.storage_display_mode=c::IdentifierDisplayMode::store_folded_display;
+    Check(c::DeriveCatalogNameEntryKeys(profile,entry).display.Equals(bytes(preserve?raw:expected[1])),
+        "quoted display follows actual exact spelling (was: a stored display_name checked)");
     profile.storage_display_mode=c::IdentifierDisplayMode::preserve_user_text;
   }
   profile=Profile();request={&profile,raw};
   request.requires_exact_match=true;profile.storage_display_mode=c::IdentifierDisplayMode::store_folded_display;
   const auto fixed=c::DeriveCatalogIdentifierLookupKeysInto(request,output);
   c::CatalogNameEntryView fixed_entry;fixed_entry.identifier_profile_uuid={p::UuidKind::object,profile.profile_uuid};
-  fixed_entry.raw_name_text=fixed_entry.display_name=raw;fixed_entry.requires_exact_match=true;fixed_entry.exact_lookup_key=fixed.exact;
-  Check(fixed.ok()&&c::CheckCatalogIdentifierLookupKeys(profile,fixed_entry)==E::none,
-      "fixed unquoted identifier retains its exact spelling despite the profile's unquoted fold");
+  fixed_entry.raw_name_text=raw;fixed_entry.requires_exact_match=true;
+  const auto fixed_keys=c::DeriveCatalogNameEntryKeys(profile,fixed_entry);
+  Check(fixed.ok()&&fixed_keys.ok()&&fixed_keys.own.Equals(fixed.exact)&&fixed_keys.own.Equals(bytes(raw))&&
+      fixed_keys.display.Equals(bytes(raw)),
+      "fixed unquoted identifier retains its exact spelling despite the profile's unquoted fold (derived; was: stored)");
+  // SB_NATIVE_NAME_ROW_V4 (plan 35 S1): every admitted combination of fold
+  // mode, quoting, quote style, exact match, quoted-case preservation and
+  // display mode, over texts with ASCII letters of both cases, digits, 0x7f
+  // and non-ASCII: the derived lanes (CatalogNameDerivedText) equal the
+  // version 3 producer's (DeriveCatalogIdentifierLookupKeysInto, a separate
+  // code path), the own lane is the lane the old tree key used, and the
+  // display is the raw text (preserve_user_text) or the own lane
+  // (store_folded_display); and each refusal of one is a refusal of the other.
+  {
+    std::size_t combinations=0;
+    for(const std::string text:{std::string("Hello_World9"),std::string("aZ\x7f\xc3\x89\xc3\xa9"),std::string("q"),raw})
+    for(unsigned fold=0;fold<3;++fold)for(bool preserve:{false,true})for(unsigned display=1;display<=2;++display)
+    for(bool quoted:{false,true})for(unsigned style=0;style<=5;++style)for(bool exact:{false,true}){
+      auto pr=Profile();pr.quote_styles=15;pr.unquoted_fold_mode=static_cast<c::IdentifierFoldMode>(fold);pr.quoted_preserves_case=preserve;
+      pr.comparison_mode=fold?c::IdentifierComparisonMode::folded:c::IdentifierComparisonMode::exact;  // no fold: exact comparison
+      pr.storage_display_mode=static_cast<c::IdentifierDisplayMode>(display);
+      const c::CatalogIdentifierKeyRequest rq{&pr,text,quoted,static_cast<c::CatalogNameQuoteStyle>(style),exact};
+      std::array<p::byte,256> out{};const auto old=c::DeriveCatalogIdentifierLookupKeysInto(rq,out);
+      c::CatalogNameEntryView en;en.identifier_profile_uuid={p::UuidKind::object,pr.profile_uuid};en.raw_name_text=text;
+      en.was_quoted=quoted;en.quote_style=rq.quote_style;en.requires_exact_match=exact;
+      const auto now=c::DeriveCatalogNameEntryKeys(pr,en);
+      Check(old.ok()==now.ok()&&(old.ok()||old.error==now.error),"derived lanes admit exactly what the version 3 producer admitted");
+      if(!old.ok())continue;
+      const auto own=exact?old.exact:old.normalized;
+      Check(now.normalized.Equals(old.normalized)&&now.exact.Equals(old.exact)&&now.own.Equals(own)&&
+          now.display.Equals(display==1?bytes(text):own),"each derived lane equals the version 3 stored lane");
+      ++combinations;
+    }
+    // 4 texts x 3 folds x 2 preservations x 2 display modes x (2 unquoted:
+    // exact or not + 4 admitted quote styles, quoted exact).
+    Check(combinations==4*3*2*2*(2+4),"every admitted combination was exercised");
+  }
   profile=Profile();request={&profile,raw};
   for(std::size_t n=0;n<2*raw.size();++n){output.fill(0x5a);heap_denied=true;
     const auto result=c::DeriveCatalogIdentifierLookupKeysInto(request,std::span(output).first(n));heap_denied=false;

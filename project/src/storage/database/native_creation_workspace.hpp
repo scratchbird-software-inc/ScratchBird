@@ -113,16 +113,18 @@ using NativeCreationCatalogRecord = core::catalog::CatalogCreationRecord;
 // never truncated. This bounded construction API does not replace subsequent
 // indexed catalog population or ordinary CREATE activation.
 using NativeCreationCatalogSeed = std::array<std::vector<NativeCreationCatalogRecord>,page::kNativeCatalogRelationRoles>;
-// SEARCH_KEY: SB_NATIVE_NAME_PATH. Sets every name entry's full path in the
-// names relation (role 2, seed[1]) by the one rule (core ResolveCatalogNamePath),
-// from the seed's own names. False, with the seed unchanged, when a path does not
-// resolve (an unnamed ancestor, two language defaults on an ancestor, a cycle,
-// too deep). Idempotent. The database create calls it where it assembles its
-// seed, before its pre-write plan, so both callers of the layout planner see the
-// same row sizes. The workspace writes the seed it is given and does not judge
+// SEARCH_KEY: SB_NATIVE_NAME_PATH. Whether every name entry's path in the
+// names relation (role 2, seed[1]) walks by the one rule (core
+// CheckCatalogNameEntryPath) over the seed's own names: false when one does
+// not (an unnamed ancestor, two language defaults on an ancestor, a cycle, too
+// deep). The database create calls it where it assembles its seed, before its
+// pre-write plan. The workspace writes the seed it is given and does not judge
 // whether it is a complete catalog (component tests write partial ones);
-// startup verification refuses a database whose stored paths do not hold.
-bool FillNativeCreationNamePaths(NativeCreationCatalogSeed& seed);
+// startup verification refuses a database whose paths do not walk.
+// SB_NATIVE_NAME_ROW_V4 (owner Q157 = 1, plan 35 S2): nothing of the path is
+// stored. (Was: FillNativeCreationNamePaths, which set every entry's
+// full_path_lookup_key and path_component_count, idempotently.)
+bool CheckNativeCreationNamePaths(const NativeCreationCatalogSeed& seed);
 NativeCreationWorkspaceResult InitializePopulatedNativeCreationWorkspaceOnOpenDevice(
     disk::FileDevice&,const NativeFilespaceInitializationRequest&,
     const NativeCreationCatalogSeed&,core::platform::u64 maximum_retained_image_bytes,

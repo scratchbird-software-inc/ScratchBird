@@ -44,15 +44,17 @@ struct CatalogNameEntry {
   TypedUuid identifier_profile_uuid;
   std::optional<TypedUuid> case_fold_profile_uuid;
   std::optional<TypedUuid> quoted_identifier_profile_uuid;
+  // SEARCH_KEY: SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1, Q157 = 1,
+  // 2026-11-14; plan 35 S1/S2). Schema 327682 version 4 stores the raw text
+  // and the lane inputs only; the display name, both lookup keys and the full
+  // path are derived at read (DeriveCatalogNameEntryKeys,
+  // WalkCatalogNamePath). (Was, version 3: display_name 16,
+  // normalized_lookup_key 20, exact_lookup_key 21, full_path_lookup_key 22,
+  // path_component_count 23, stored.)
   std::string raw_name_text;
-  std::string display_name;
   bool was_quoted = false;
   CatalogNameQuoteStyle quote_style = CatalogNameQuoteStyle::none;
   bool requires_exact_match = false;
-  std::vector<byte> normalized_lookup_key;
-  std::vector<byte> exact_lookup_key;
-  std::vector<byte> full_path_lookup_key;
-  u64 path_component_count = 0;
   bool search_path_eligible = false;
   bool default_for_language = false;
   bool default_for_object = false;
@@ -94,15 +96,10 @@ struct CatalogNameEntryView {
   TypedUuid identifier_profile_uuid;
   std::optional<TypedUuid> case_fold_profile_uuid;
   std::optional<TypedUuid> quoted_identifier_profile_uuid;
-  std::string_view raw_name_text;
-  std::string_view display_name;
+  std::string_view raw_name_text;  // SB_NATIVE_NAME_ROW_V4: the one stored copy of the name
   bool was_quoted = false;
   CatalogNameQuoteStyle quote_style = CatalogNameQuoteStyle::none;
   bool requires_exact_match = false;
-  std::span<const byte> normalized_lookup_key;
-  std::span<const byte> exact_lookup_key;
-  std::span<const byte> full_path_lookup_key;
-  u64 path_component_count = 0;
   bool search_path_eligible = false;
   bool default_for_language = false;
   bool default_for_object = false;
