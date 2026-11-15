@@ -5159,6 +5159,15 @@ class NativeRelationalParser final {
         parsed_sources.size() >= 3 && parsed_sources.size() <= 9 &&
         join_kind == NativeJoinAstKind::kCross &&
         parsed_model_source_count == 0 && all_ordinary_catalog_sources;
+    // SEARCH_KEY: SB_NATIVE_BINDING_QUALIFIER_NOT_FOUND (owner Q203 = 1,
+    // 2026-11-15). A JOIN projection or WHERE qualifier that names no source
+    // is not refused here: it reaches the native binding resolver, which
+    // refuses it as SBSQL.NATIVE_BINDING.QUALIFIER_NOT_FOUND with the
+    // qualifier as written. A qualifier that names more than one source is
+    // still refused here. (Was: exactly one match required, so a qualifier
+    // naming no source was refused as catalog_join_projection_qualifier_
+    // ambiguous / catalog_join_where_profile_unsupported,
+    // QOW-DIAG-QRY-001-AST-MALFORMED.)
     const auto exact_source_qualifier =
         [&](const NativeIdentifierAstNode& qualifier) {
           return std::ranges::count_if(
@@ -5169,7 +5178,7 @@ class NativeRelationalParser final {
                                ? *source.alias
                                : source.qualified_name.back();
                        return SameIdentifier(binding_name, qualifier);
-                     }) == 1;
+                     }) <= 1;
         };
     for (const auto expression_id : projection_expression_ids) {
       const auto& expression = document_.expressions[expression_id - 1];

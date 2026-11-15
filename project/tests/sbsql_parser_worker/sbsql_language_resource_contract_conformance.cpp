@@ -884,6 +884,77 @@ void VerifyStableFailureDiagnosticsNoDisclosure() {
   RequireNoSensitiveMaterial(rendered, "SML-091 non-export language-resource diagnostic");
 }
 
+// SB_MESSAGE_VECTOR_BINARY_FIELD (owner Q194 = 1, 2026-11-15): a vector
+// carrying a binary UUID field (16 raw bytes, bytes above 0x7F included)
+// renders as well-formed UTF-8 JSON, and the public renderings strip it,
+// whatever its name, as they strip a text UUID. A text value with malformed
+// UTF-8 renders with '?' in place of each byte that begins no sequence.
+// Owner Q201 = 1 (2026-11-15): moved here, an always-registered test, from
+// generated/security/sbsql_security_redaction_side_channel_gate.cpp, which
+// is built only with SB_BUILD_NON_ENGINE_GATES. The checks are the same;
+// Harness::Check became Require and Contains became ContainsText. (Was:
+// ValidateBinaryUuidFieldRedaction in that gate, not run by ctest here.)
+bool WellFormedUtf8(std::string_view text) {
+  for (std::size_t at = 0; at < text.size();) {
+    const auto lead = static_cast<unsigned char>(text[at]);
+    std::size_t length = lead < 0x80 ? 1 : lead >= 0xC2 && lead <= 0xDF ? 2
+                       : lead >= 0xE0 && lead <= 0xEF ? 3 : lead >= 0xF0 && lead <= 0xF4 ? 4 : 0;
+    if (length == 0 || at + length > text.size()) return false;
+    for (std::size_t i = 1; i < length; ++i) {
+      const auto next = static_cast<unsigned char>(text[at + i]);
+      if (next < 0x80 || next > 0xBF) return false;
+    }
+    if ((lead == 0xE0 && static_cast<unsigned char>(text[at + 1]) < 0xA0) ||
+        (lead == 0xED && static_cast<unsigned char>(text[at + 1]) > 0x9F) ||
+        (lead == 0xF0 && static_cast<unsigned char>(text[at + 1]) < 0x90) ||
+        (lead == 0xF4 && static_cast<unsigned char>(text[at + 1]) > 0x8F)) return false;
+    at += length;
+  }
+  return true;
+}
+
+void VerifyBinaryUuidFieldRedaction() {
+  const unsigned char raw[16] = {0x01, 0x9d, 0xff, 0xbb, 0xf0, 0x00, 0x70, 0xab,
+                                 0xbe, 0x24, 0xc8, 0xad, 0x1a, 0x86, 0x69, 0xe5};
+  const std::string_view bytes(reinterpret_cast<const char*>(raw), sizeof(raw));
+  const auto named = sbsql::BinaryUuidField("relation_uuid", bytes);
+  const auto unnamed = sbsql::BinaryUuidField("target", bytes);
+  Require(named.kind == sbsql::FieldKind::binary_uuid && named.value.size() == 16,
+          "binary UUID field keeps 16 raw bytes and its kind");
+  Require(sbsql::RenderFieldValue(named) == "019dffbb-f000-70ab-be24-c8ad1a8669e5",
+          "binary UUID field renders as canonical UUID text");
+  Require(!sbsql::IsPublicDiagnosticFieldAllowed(named) &&
+              !sbsql::IsPublicDiagnosticFieldAllowed(unnamed),
+          "public filter refuses a binary UUID field whatever its name");
+  Require(sbsql::IsPublicDiagnosticFieldAllowed(sbsql::Field{"line", "1"}),
+          "public filter still admits a safe text field");
+
+  sbsql::MessageVectorSet messages;
+  messages.diagnostics.push_back(sbsql::MakeDiagnostic(
+      "SBSQL.NATIVE_BINDING.COLUMN_NOT_FOUND", "ERROR",
+      "The column reference does not name a column of the bound relation.",
+      "sbp_sbsql.wire",
+      {{"column_reference", "missing_col"},
+       {"column_reference_quoted", "false"},
+       named,
+       unnamed,
+       {"line", std::string("bad\xff\xfe utf8 \xc3\xa9")}}));
+  const auto json = sbsql::MessageVectorToJson(messages);
+  const auto rendered = sbsql::RenderMessageVectorSet(messages);
+  Require(WellFormedUtf8(json), "message vector JSON with a binary field is well-formed UTF-8");
+  Require(WellFormedUtf8(rendered), "rendered message vector with a binary field is well-formed UTF-8");
+  Require(ContainsText(json, "\"column_reference\":\"missing_col\""),
+          "message vector JSON keeps the safe column reference");
+  Require(ContainsText(json, "\"line\":\"bad?? utf8 \xc3\xa9\""),
+          "malformed UTF-8 bytes become '?', well-formed ones stay");
+  Require(!ContainsText(json, "relation_uuid") && !ContainsText(json, "\"target\"") &&
+              !ContainsText(json, "019dffbb") && !ContainsText(json, bytes),
+          "public JSON strips binary UUID fields (no name, text or raw bytes)");
+  Require(!ContainsText(rendered, "relation_uuid") && !ContainsText(rendered, "target=") &&
+              !ContainsText(rendered, "019dffbb") && !ContainsText(rendered, bytes),
+          "public rendering strips binary UUID fields");
+}
+
 } // namespace
 
 int main() {
@@ -901,6 +972,7 @@ int main() {
   VerifyRestoreCompatibility();
   VerifyEditorToolProtocol();
   VerifyStableFailureDiagnosticsNoDisclosure();
+  VerifyBinaryUuidFieldRedaction();  // owner Q194 = 1, moved here by Q201 = 1
   std::cout << "sbsql_language_resource_contract_conformance=passed\n";
   return EXIT_SUCCESS;
 }

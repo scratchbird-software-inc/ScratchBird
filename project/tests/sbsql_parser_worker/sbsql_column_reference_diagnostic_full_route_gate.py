@@ -8,8 +8,19 @@ SEARCH_KEY: SB_NATIVE_BINDING_COLUMN_NOT_FOUND (owner Q193, Q197, Q198, Q199 = 1
 2026-11-14/15). A column reference that no column of the bound relation answers
 is refused with SBSQL.NATIVE_BINDING.COLUMN_NOT_FOUND and SQLSTATE 42703; one
 that more than one visible join column answers with
-SBSQL.NATIVE_BINDING.COLUMN_AMBIGUOUS (SQLSTATE 42000); neither is the generic
+SBSQL.NATIVE_BINDING.COLUMN_AMBIGUOUS (SQLSTATE 42702; owner Q202 = 1,
+2026-11-15; was 42000); neither is the generic
 SBSQL.NATIVE_BINDING.CONTEXT_INVALID. Controls that resolve return their rows.
+
+SEARCH_KEY: SB_NATIVE_BINDING_QUALIFIER_NOT_FOUND (owner Q203 = 1, 2026-11-15).
+A column qualifier that names no source of the query is refused with
+SBSQL.NATIVE_BINDING.QUALIFIER_NOT_FOUND (SQLSTATE 42000) instead of the
+generic refusal. Qualifiers follow the Q177 case rules: quoted "X" equals the
+fold of unquoted x and resolves; quoted "x" does not and is refused. The
+structured fields (qualifier, qualifier_quoted) are not carried by the SBWP
+error frame and are not observed here. The qualifier cases run on the
+two-source CROSS JOIN route; one single-source filter case covers the
+single-source site.
 
 Evidence scope: the error frame's SQLSTATE (C) and diagnostic code (D) as the
 client receives them. The structured diagnostic fields (column_reference,
@@ -40,7 +51,10 @@ from sbsql_sbwp_tls_engine_auth_route_smoke import (  # noqa: E402
 )
 
 NOT_FOUND = ("42703", "SBSQL.NATIVE_BINDING.COLUMN_NOT_FOUND")
-AMBIGUOUS = ("42000", "SBSQL.NATIVE_BINDING.COLUMN_AMBIGUOUS")
+# Owner Q202 = 1 (2026-11-15): 42702. (Was: "42000".)
+AMBIGUOUS = ("42702", "SBSQL.NATIVE_BINDING.COLUMN_AMBIGUOUS")
+# Owner Q203 = 1 (2026-11-15): new code; 42000 (no qualifier SQLSTATE).
+QUALIFIER_NOT_FOUND = ("42000", "SBSQL.NATIVE_BINDING.QUALIFIER_NOT_FOUND")
 
 SETUP = (
     "CREATE TABLE crg_left (id BIGINT, left_only BIGINT);",
@@ -73,6 +87,30 @@ CASES = (
     ("join_project_ambiguous",
      "SELECT id FROM crg_left AS a CROSS JOIN crg_right AS b WHERE a.id = 1;",
      None, AMBIGUOUS),
+    # Owner Q203 = 1 (2026-11-15). Before the change, x.id with no source x
+    # was refused by the parser as QOW-DIAG-QRY-001-AST-MALFORMED (join) or
+    # as COLUMN_NOT_FOUND / 42703 (single source); "X".id already resolved.
+    ("qualifier_unqualified_control",
+     "SELECT * FROM crg_left AS x CROSS JOIN crg_right AS b WHERE left_only = 10;",
+     [["1", "10", "2", "20"]], None),
+    ("qualifier_join_filter_not_found",
+     "SELECT * FROM crg_left AS a CROSS JOIN crg_right AS b WHERE x.id = 1;",
+     None, QUALIFIER_NOT_FOUND),
+    ("qualifier_join_project_not_found",
+     "SELECT x.id FROM crg_left AS a CROSS JOIN crg_right AS b WHERE a.id = 1;",
+     None, QUALIFIER_NOT_FOUND),
+    ("qualifier_quoted_upper_resolves",
+     'SELECT * FROM crg_left AS x CROSS JOIN crg_right AS b WHERE "X".id = 1;',
+     [["1", "10", "2", "20"]], None),
+    ("qualifier_quoted_lower_not_found",
+     'SELECT * FROM crg_left AS x CROSS JOIN crg_right AS b WHERE "x".id = 1;',
+     None, QUALIFIER_NOT_FOUND),
+    ("qualifier_quoted_lower_project_not_found",
+     'SELECT "x".id FROM crg_left AS x CROSS JOIN crg_right AS b WHERE x.id = 1;',
+     None, QUALIFIER_NOT_FOUND),
+    ("qualifier_single_filter_not_found",
+     "SELECT left_only FROM crg_left WHERE x.id = 1;",
+     None, QUALIFIER_NOT_FOUND),
 )
 
 

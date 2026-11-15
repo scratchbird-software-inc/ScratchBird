@@ -1219,6 +1219,46 @@ BuildEngineProjectedNativeBindingContext(
         "The column reference names more than one visible column.",
         std::move(detail), reference, relation_uuid);
   };
+  // SEARCH_KEY: SB_NATIVE_BINDING_QUALIFIER_NOT_FOUND (owner Q203 = 1,
+  // 2026-11-15). A column reference whose qualifier names no source of the
+  // query is refused with its own code in place of the generic
+  // CONTEXT_INVALID. Fields: qualifier (the qualifier component as written,
+  // user data), qualifier_quoted ("true"/"false") and detail (the refusal
+  // site, as the column refusals carry it); the message is fixed text and
+  // never carries the name. The qualifier is compared with each source's
+  // binding name (its alias, else the last component of its name) by
+  // SameIdentifierComponent (Q177 case rules). SQLSTATE stays 42000
+  // (SB_SBWP_SQLSTATE_BY_CODE). (Was: fail(...) with CONTEXT_INVALID at the
+  // join sites; COLUMN_NOT_FOUND at the single-source projection and window
+  // sites, which compared the whole qualified spelling.)
+  const auto qualifier_not_found = [&](std::string detail,
+                                       const NativeIdentifierAstNode& qualifier)
+      -> std::optional<NativeRelationalBindingContext> {
+    ipc::AppendNonAuthoritativeDiagnosticTraceLine(
+        "SCRATCHBIRD_SBSQL_PIPELINE_PHASE_TRACE_FILE",
+        "layer=native_binding\taccepted=false\tdetail=" + detail);
+    messages->diagnostics.push_back(MakeDiagnostic(
+        "SBSQL.NATIVE_BINDING.QUALIFIER_NOT_FOUND", "ERROR",
+        "The column qualifier does not name a source of the query.",
+        "sbp_sbsql.wire",
+        {{"detail", std::move(detail)},
+         {"qualifier", qualifier.spelling},
+         {"qualifier_quoted", qualifier.quoted ? "true" : "false"}}));
+    return std::nullopt;
+  };
+  // A two-component reference whose qualifier is not the one source's
+  // binding name (single-source sites, SB_NATIVE_BINDING_QUALIFIER_NOT_FOUND).
+  const auto foreign_single_source_qualifier =
+      [](const NativeExpressionAstNode& reference,
+         const auto& source) -> const NativeIdentifierAstNode* {
+    if (reference.qualified_identifier.size() != 2) return nullptr;
+    const auto& qualifier = reference.qualified_identifier.front();
+    if (source.qualified_name.empty()) return &qualifier;
+    const auto& binding_name =
+        source.alias.has_value() ? *source.alias : source.qualified_name.back();
+    return SameIdentifierComponent(binding_name, qualifier) ? nullptr
+                                                            : &qualifier;
+  };
   if (!ast.accepted() || !statement_context.complete() ||
       !core::uuid::IsEngineIdentityUuid(statement_context.bound_ast_uuid) ||
       !core::uuid::IsEngineIdentityUuid(statement_context.count_function_uuid) ||
@@ -4737,6 +4777,12 @@ BuildEngineProjectedNativeBindingContext(
           });
       // SB_NATIVE_BINDING_COLUMN_NOT_FOUND (owner Q193 = yes).
       if (column == projection.columns.end()) {
+        // SB_NATIVE_BINDING_QUALIFIER_NOT_FOUND (owner Q203 = 1).
+        if (const auto* qualifier =
+                foreign_single_source_qualifier(*expression, source)) {
+          return qualifier_not_found("catalog_window_source_column_unresolved",
+                                     *qualifier);
+        }
         return column_not_found("catalog_window_source_column_unresolved",
                                 *expression, resolved.object_uuid);
       }
@@ -7227,7 +7273,12 @@ BuildEngineProjectedNativeBindingContext(
     // source output is missing; these keep the generic refusal). The match
     // rules are unchanged (CanonicalColumnLookupKey, Q186/Q189). (Was: a
     // single pointer, null for every failure.)
-    enum class VisibleState : std::uint8_t { found, not_found, ambiguous, invalid };
+    // SB_NATIVE_BINDING_QUALIFIER_NOT_FOUND (owner Q203 = 1, 2026-11-15):
+    // qualifier_not_found (the qualifier names no source) is its own state
+    // and refusal. (Was: invalid, the generic CONTEXT_INVALID.)
+    enum class VisibleState : std::uint8_t {
+      found, not_found, ambiguous, qualifier_not_found, invalid
+    };
     struct VisibleResolution {
       VisibleState state = VisibleState::invalid;
       const NativeOutputBindingInput* selected = nullptr;
@@ -7288,7 +7339,10 @@ BuildEngineProjectedNativeBindingContext(
         }
         source_ordinal = ordinal;
       }
-      if (!source_ordinal.has_value()) return out;
+      if (!source_ordinal.has_value()) {
+        out.state = VisibleState::qualifier_not_found;
+        return out;
+      }
       out.relation_uuid = context.catalog_relations[*source_ordinal].object_uuid;
       const auto& columns =
           context.catalog_relations[*source_ordinal].columns;
@@ -7329,7 +7383,8 @@ BuildEngineProjectedNativeBindingContext(
       return counted(matching_visible_count, selected, visible_outputs.end());
     };
     // The refusal for a reference that did not resolve: the specific code
-    // for not_found / ambiguous, the generic one (detail) otherwise.
+    // for not_found / ambiguous / qualifier_not_found, the generic one
+    // (detail) otherwise.
     const auto refuse_visible = [&](const VisibleResolution& resolution,
                                     const NativeExpressionAstNode* identifier,
                                     std::string detail)
@@ -7343,6 +7398,12 @@ BuildEngineProjectedNativeBindingContext(
           resolution.state == VisibleState::ambiguous) {
         return column_ambiguous(std::move(detail), *identifier,
                                 resolution.relation_uuid);
+      }
+      if (identifier != nullptr &&
+          resolution.state == VisibleState::qualifier_not_found &&
+          identifier->qualified_identifier.size() == 2) {
+        return qualifier_not_found(std::move(detail),
+                                   identifier->qualified_identifier.front());
       }
       return fail(std::move(detail));
     };
@@ -7865,6 +7926,12 @@ BuildEngineProjectedNativeBindingContext(
               return candidate.canonical_name_key == expression->spelling;
             });
         if (column == projection.columns.end()) {
+          // SB_NATIVE_BINDING_QUALIFIER_NOT_FOUND (owner Q203 = 1).
+          if (const auto* qualifier =
+                  foreign_single_source_qualifier(*expression, source)) {
+            return qualifier_not_found("catalog_projection_column_unresolved",
+                                       *qualifier);
+          }
           // SB_NATIVE_BINDING_COLUMN_NOT_FOUND (owner Q193 = yes).
           return column_not_found("catalog_projection_column_unresolved",
                                   *expression, resolved.object_uuid);

@@ -4240,6 +4240,10 @@ std::vector<std::uint8_t> CommandCompletePayload(std::uint64_t rows, std::string
 // SBSQL.NATIVE_BINDING.COLUMN_NOT_FOUND. The code is matched as the whole
 // message or detail, or as its part before ';' (the senders that append a
 // detail). Every other code keeps 42000. (Was: 42000 for every such error.)
+// Owner Q202 = 1 (2026-11-15): SBSQL.NATIVE_BINDING.COLUMN_AMBIGUOUS sends
+// 42702 (ambiguous column). (Was: 42000.) Owner Q203 = 1 (2026-11-15):
+// SBSQL.NATIVE_BINDING.QUALIFIER_NOT_FOUND has no entry and keeps 42000; the
+// SQL standard has no qualifier code and no mapping in the tree names one.
 std::string_view SqlStateForCode(std::string_view sqlstate,
                                  std::string_view message,
                                  std::string_view detail) {
@@ -4249,7 +4253,9 @@ std::string_view SqlStateForCode(std::string_view sqlstate,
                             text[code.size()] == ';');
   };
   constexpr std::string_view kColumnNotFound = "SBSQL.NATIVE_BINDING.COLUMN_NOT_FOUND";
+  constexpr std::string_view kColumnAmbiguous = "SBSQL.NATIVE_BINDING.COLUMN_AMBIGUOUS";
   if (names(detail, kColumnNotFound) || names(message, kColumnNotFound)) return "42703";
+  if (names(detail, kColumnAmbiguous) || names(message, kColumnAmbiguous)) return "42702";
   return sqlstate;
 }
 
