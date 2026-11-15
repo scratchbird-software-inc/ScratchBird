@@ -548,6 +548,41 @@ DenseRowOrdinalValidation ValidateDenseRowOrdinalLocator(
   return result;
 }
 
+// SEARCH_KEY: SB_ROW_DATA_PAGE_FOOTPRINT (owner Q190, Q191, 2026-11-14). The
+// body byte arithmetic BuildRowDataPageBodyImpl lays a page out by, shared with
+// RowDataRecordFootprint so a caller can learn whether a row fits without
+// encoding the page: each row its header, each cell its header and encoded
+// value, each row one slot directory entry; the body at most
+// RowDataPageBodyCapacity bytes.
+namespace {
+u64 RowHeaderFootprint() { return kRowHeaderBytes; }
+u64 CellFootprint(u64 encoded_bytes) { return kCellHeaderBytes + encoded_bytes; }
+u64 SlotFootprint(u64 rows) { return rows * kSlotEntryBytes; }
+}  // namespace
+
+u64 RowDataPageBodyCapacity(u32 page_size) noexcept {
+  return page_size > kPageHeaderSerializedBytes ? page_size - kPageHeaderSerializedBytes : 0;
+}
+
+std::optional<u64> RowDataRecordFootprint(const RowDataRecord& row) noexcept {
+  try {
+    if (row.cells.size() > std::numeric_limits<u16>::max()) return std::nullopt;
+    u64 bytes = RowHeaderFootprint() + SlotFootprint(1);
+    for (const RowDataCell& cell : row.cells) {
+      // As BuildRowDataPageBodyImpl encodes an inline cell of a page with no
+      // column profile. An external value or an interval (which it refuses
+      // there) is left to the encoder: nullopt, the caller encodes the page.
+      if (cell.external_value || cell.value.type_id == dt::CanonicalTypeId::interval) return std::nullopt;
+      const auto encoded = EncodeDatatypeBinaryValue(cell.value);
+      if (!encoded.ok()) return std::nullopt;
+      bytes += CellFootprint(encoded.encoded.size());
+    }
+    return bytes;
+  } catch (...) {
+    return std::nullopt;
+  }
+}
+
 static RowDataPageResult BuildRowDataPageBodyImpl(RowDataPageBody body, u32 page_size,
                                                 const RowDataProfileReceiver* receiver) {
   if (page_size <= kPageHeaderSerializedBytes + kRowDataPageBodyHeaderBytes) {
@@ -609,7 +644,7 @@ static RowDataPageResult BuildRowDataPageBodyImpl(RowDataPageBody body, u32 page
     if (row.cells.size() > std::numeric_limits<u16>::max()) {
       return RowPageError("CATALOG.INVALID_INPUT", "storage.row_data_page.cell_count_invalid");
     }
-    body_bytes += kRowHeaderBytes;
+    body_bytes += RowHeaderFootprint();  // SB_ROW_DATA_PAGE_FOOTPRINT
     u16 previous_column = 0;
     for (const RowDataCell& cell : row.cells) {
       if (blob_format && cell.column_ordinal <= previous_column)
@@ -656,7 +691,7 @@ static RowDataPageResult BuildRowDataPageBodyImpl(RowDataPageBody body, u32 page
         return RowPageError("SB-ROW-DATA-PAGE-BODY-TOO-LARGE",
                             "storage.row_data_page.body_too_large");
       }
-      body_bytes += kCellHeaderBytes + payload_bytes;
+      body_bytes += CellFootprint(payload_bytes);  // SB_ROW_DATA_PAGE_FOOTPRINT
       if (raw_blob) encoded_cells.emplace_back(std::in_place_index<1>, cell.value.payload.data(), cell.value.payload.size());
       else encoded_cells.emplace_back(std::in_place_index<0>, std::move(encoded.encoded));
     }
@@ -668,8 +703,11 @@ static RowDataPageResult BuildRowDataPageBodyImpl(RowDataPageBody body, u32 page
   if (!PreviousLinksMatchPage(body_with_ordinals)) {
     return RowPageError("CATALOG.INVALID_INPUT", "storage.row_data_page.previous_identity_mismatch");
   }
-  body_bytes += static_cast<u64>(body_with_ordinals.rows.size()) * kSlotEntryBytes;
-  if (body_bytes > page_size - kPageHeaderSerializedBytes) {
+  // SB_ROW_DATA_PAGE_FOOTPRINT: the slot directory and the capacity bound.
+  // (Was: rows * kSlotEntryBytes and page_size - kPageHeaderSerializedBytes
+  // written out here.)
+  body_bytes += SlotFootprint(body_with_ordinals.rows.size());
+  if (body_bytes > RowDataPageBodyCapacity(page_size)) {
     return RowPageError("SB-ROW-DATA-PAGE-BODY-TOO-LARGE",
                         "storage.row_data_page.body_too_large",
                         std::to_string(body_bytes));

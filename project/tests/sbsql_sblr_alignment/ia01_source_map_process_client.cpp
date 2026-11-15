@@ -852,38 +852,43 @@ int main(int argc, char** argv) {
       bool cleanup_rollback;
       std::string_view source_label;
       bool source_label_quoted;
+      // SB_CATALOG_IDENTIFIER_CASE_FOLD (owner Q192 = yes, 2026-11-14): the
+      // label's normalized_lookup_key, NativeIdentifierComponentKey: the
+      // spelling when quoted, upper ASCII when not. (Was: the label itself,
+      // the unquoted one folded lower, which is its own spelling here.)
+      std::string_view source_label_key;
     };
     const TransactionArtifactCase cases[] = {
         {"BEGIN TRANSACTION", "engine.op.txn_begin", "SBLR_TXN_BEGIN",
-         "BEGIN TRANSACTION;", false, true, "", false},
+         "BEGIN TRANSACTION;", false, true, "", false, ""},
         {"COMMIT TRANSACTION", "engine.op.txn_commit", "SBLR_TXN_COMMIT",
-         "COMMIT;", true, false, "", false},
+         "COMMIT;", true, false, "", false, ""},
         {"ROLLBACK TRANSACTION", "engine.op.txn_rollback",
-         "SBLR_TXN_ROLLBACK", "ROLLBACK;", true, false, "", false},
+         "SBLR_TXN_ROLLBACK", "ROLLBACK;", true, false, "", false, ""},
         {"SAVEPOINT source_mark", "engine.op.txn_savepoint",
          "SBLR_TXN_SAVEPOINT", "SAVEPOINT source_mark;", true, false,
-         "source_mark", false},
+         "source_mark", false, "SOURCE_MARK"},
         {"ROLLBACK TO SAVEPOINT source_mark",
          "engine.op.txn_rollback_to_savepoint",
          "SBLR_TXN_ROLLBACK_TO_SAVEPOINT",
          "ROLLBACK TO SAVEPOINT source_mark;", false, false, "source_mark",
-         false},
+         false, "SOURCE_MARK"},
         {"RELEASE SAVEPOINT source_mark",
          "engine.op.txn_release_savepoint",
          "SBLR_TXN_RELEASE_SAVEPOINT", "RELEASE SAVEPOINT source_mark;",
-         false, true, "source_mark", false},
+         false, true, "source_mark", false, "SOURCE_MARK"},
         {"SAVEPOINT \"Case Mark\"", "engine.op.txn_savepoint",
          "SBLR_TXN_SAVEPOINT", "SAVEPOINT \"Case Mark\";", true, false,
-         "Case Mark", true},
+         "Case Mark", true, "Case Mark"},
         {"ROLLBACK TO SAVEPOINT \"Case Mark\"",
          "engine.op.txn_rollback_to_savepoint",
          "SBLR_TXN_ROLLBACK_TO_SAVEPOINT",
          "ROLLBACK TO SAVEPOINT \"Case Mark\";", false, false, "Case Mark",
-         true},
+         true, "Case Mark"},
         {"RELEASE SAVEPOINT \"Case Mark\"",
          "engine.op.txn_release_savepoint",
          "SBLR_TXN_RELEASE_SAVEPOINT", "RELEASE SAVEPOINT \"Case Mark\";",
-         false, true, "Case Mark", true},
+         false, true, "Case Mark", true, "Case Mark"},
     };
     for (const auto& artifact_case : cases) {
       if (artifact_case.setup_begin) {
@@ -990,7 +995,7 @@ int main(int argc, char** argv) {
                 decoded_artifact.artifact.symbols[0].raw_name_utf8 ==
                     artifact_case.source_label &&
                 decoded_artifact.artifact.symbols[0].normalized_lookup_key ==
-                    artifact_case.source_label &&
+                    artifact_case.source_label_key &&
                 decoded_artifact.artifact.symbols[0].was_quoted ==
                     artifact_case.source_label_quoted &&
                 decoded_artifact.artifact.symbols[0].quote_style ==

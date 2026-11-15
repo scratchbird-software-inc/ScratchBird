@@ -2070,10 +2070,17 @@ NativeCatalogLeafResult DecodeNativeCatalogLeaf(const std::vector<scratchbird::c
     if (!ValidLeafBinding(*header.header,body.body)) return LeafFailure(LeafError::invalid_body);
     // The generic row reader also supports other owners. The catalog family
     // requires the exact canonical body, including its zero unused region.
-    const auto canonical=BuildRowDataPageBody(body.body,header.header->page_size_bytes-32);
-    if (!canonical.ok()) return LeafFailure(canonical.resource_failure()
-        ?LeafError::resource_exhausted:LeafError::invalid_body);
-    if (!std::equal(canonical.serialized.begin(),canonical.serialized.end(),body_bytes.begin(),body_bytes.end()))
+    // SEARCH_KEY: SB_NATIVE_CATALOG_LEAF_ZERO_TAIL (owner Q200 = 1,
+    // 2026-11-15): as DecodeNativeCatalogLeafInto checks it. The row reader
+    // admits every encoded field exactly (header, rows, cells, slot
+    // directory, checksums; the canonical-binary cell owner admits exact
+    // direct-binary frames), so the only bytes a canonical re-encode could
+    // still differ in are the unused tail, which the encoder fills with zero.
+    // (Was: the body re-encoded with BuildRowDataPageBody and compared byte
+    // for byte, the writer's and the tests' largest decode cost.)
+    if (body.body.free_space_offset>body_bytes.size()
+        ||!std::all_of(body_bytes.begin()+body.body.free_space_offset,body_bytes.end(),
+            [](auto byte){return byte==0;}))
       return LeafFailure(LeafError::invalid_body);
     auto decoded=DecodeNativeCatalogRows(body.body,{UuidKind::database,header.header->database_uuid},
         {UuidKind::filespace,header.header->filespace_uuid});

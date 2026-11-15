@@ -42,6 +42,36 @@ std::string ToUpperAscii(std::string_view text) {
   return out;
 }
 
+namespace {
+// SB_MESSAGE_VECTOR_BINARY_FIELD (owner Q194 = 1): the length of the
+// well-formed UTF-8 sequence at text[at] (RFC 3629: no overlong form, no
+// surrogate, nothing above U+10FFFF), 0 when there is none.
+std::size_t Utf8SequenceLength(std::string_view text, std::size_t at) {
+  const auto byte = [&](std::size_t i) { return static_cast<unsigned char>(text[i]); };
+  const unsigned char lead = byte(at);
+  std::size_t length = 0;
+  unsigned char low = 0x80, high = 0xBF;
+  if (lead >= 0xC2 && lead <= 0xDF) {
+    length = 2;
+  } else if (lead >= 0xE0 && lead <= 0xEF) {
+    length = 3;
+    if (lead == 0xE0) low = 0xA0;
+    if (lead == 0xED) high = 0x9F;
+  } else if (lead >= 0xF0 && lead <= 0xF4) {
+    length = 4;
+    if (lead == 0xF0) low = 0x90;
+    if (lead == 0xF4) high = 0x8F;
+  } else {
+    return 0;
+  }
+  if (at + length > text.size()) return 0;
+  if (byte(at + 1) < low || byte(at + 1) > high) return 0;
+  for (std::size_t i = 2; i < length; ++i)
+    if (byte(at + i) < 0x80 || byte(at + i) > 0xBF) return 0;
+  return length;
+}
+}  // namespace
+
 std::string EscapeJson(std::string_view text) {
   std::string out;
   out.reserve(text.size() + 8);
@@ -62,6 +92,56 @@ std::string EscapeJson(std::string_view text) {
     }
   }
   return out;
+}
+
+// SB_MESSAGE_VECTOR_BINARY_FIELD (owner Q194 = 1, 2026-11-15): EscapeJson for
+// message-vector renderings only; the output is always well-formed UTF-8: a
+// byte that does not begin a well-formed sequence becomes '?', as a control
+// character does. EscapeJson itself is unchanged: it also serialises user
+// data (lowering payloads), which must not be rewritten.
+std::string EscapeDiagnosticJson(std::string_view text) {
+  std::string out;
+  out.reserve(text.size() + 8);
+  for (std::size_t at = 0; at < text.size();) {
+    if (static_cast<unsigned char>(text[at]) < 0x80) {
+      out += EscapeJson(text.substr(at, 1));
+      ++at;
+      continue;
+    }
+    const auto length = Utf8SequenceLength(text, at);
+    if (length == 0) {
+      out += "?";
+      ++at;
+    } else {
+      out.append(text.substr(at, length));
+      at += length;
+    }
+  }
+  return out;
+}
+
+Field BinaryUuidField(std::string name, std::string_view bytes) {
+  return {std::move(name), std::string(bytes), FieldKind::binary_uuid};
+}
+
+std::string RenderFieldValue(const Field& field) {
+  if (field.kind != FieldKind::binary_uuid) return field.value;
+  if (field.value.size() != 16) return "invalid_binary_uuid";
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string out;
+  out.reserve(36);
+  for (std::size_t i = 0; i < 16; ++i) {
+    if (i == 4 || i == 6 || i == 8 || i == 10) out.push_back('-');
+    const auto b = static_cast<unsigned char>(field.value[i]);
+    out.push_back(kHex[b >> 4]);
+    out.push_back(kHex[b & 0x0F]);
+  }
+  return out;
+}
+
+bool IsPublicDiagnosticFieldAllowed(const Field& field) {
+  if (field.kind == FieldKind::binary_uuid) return false;
+  return IsPublicDiagnosticFieldAllowed(field.name, field.value);
 }
 
 bool LooksLikeCanonicalUuid(std::string_view value) {
@@ -128,17 +208,20 @@ std::string MessageVectorToJson(const MessageVectorSet& messages) {
   for (std::size_t i = 0; i < messages.diagnostics.size(); ++i) {
     const auto& diagnostic = messages.diagnostics[i];
     if (i != 0) out << ',';
-    out << "{\"code\":\"" << EscapeJson(diagnostic.code)
-        << "\",\"severity\":\"" << EscapeJson(diagnostic.severity)
-        << "\",\"message\":\"" << EscapeJson(diagnostic.message)
-        << "\",\"component\":\"" << EscapeJson(diagnostic.component)
+    out << "{\"code\":\"" << EscapeDiagnosticJson(diagnostic.code)
+        << "\",\"severity\":\"" << EscapeDiagnosticJson(diagnostic.severity)
+        << "\",\"message\":\"" << EscapeDiagnosticJson(diagnostic.message)
+        << "\",\"component\":\"" << EscapeDiagnosticJson(diagnostic.component)
         << "\",\"fields\":{";
     bool first_field = true;
     for (const auto& field : diagnostic.fields) {
-      if (!IsPublicDiagnosticFieldAllowed(field.name, field.value)) continue;
+      // SB_MESSAGE_VECTOR_BINARY_FIELD: the field's kind decides (a
+      // binary_uuid is refused as a text UUID is); a value is rendered as
+      // its kind shows it. (Was: (name, value) and the raw value.)
+      if (!IsPublicDiagnosticFieldAllowed(field)) continue;
       if (!first_field) out << ',';
       first_field = false;
-      out << '\"' << EscapeJson(field.name) << "\":\"" << EscapeJson(field.value) << '\"';
+      out << '\"' << EscapeDiagnosticJson(field.name) << "\":\"" << EscapeDiagnosticJson(RenderFieldValue(field)) << '\"';
     }
     out << "}}";
   }

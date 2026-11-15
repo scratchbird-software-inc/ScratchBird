@@ -4234,12 +4234,32 @@ std::vector<std::uint8_t> ErrorPayload(std::string_view sqlstate,
 
 std::vector<std::uint8_t> CommandCompletePayload(std::uint64_t rows, std::string_view tag);
 
+// SEARCH_KEY: SB_SBWP_SQLSTATE_BY_CODE (owner Q197 = 1, 2026-11-15). A
+// sender that passes the generic 42000 sends the specific SQLSTATE a
+// diagnostic code has: 42703 (undefined column) for
+// SBSQL.NATIVE_BINDING.COLUMN_NOT_FOUND. The code is matched as the whole
+// message or detail, or as its part before ';' (the senders that append a
+// detail). Every other code keeps 42000. (Was: 42000 for every such error.)
+std::string_view SqlStateForCode(std::string_view sqlstate,
+                                 std::string_view message,
+                                 std::string_view detail) {
+  if (sqlstate != "42000") return sqlstate;
+  const auto names = [](std::string_view text, std::string_view code) {
+    return text == code || (text.starts_with(code) && text.size() > code.size() &&
+                            text[code.size()] == ';');
+  };
+  constexpr std::string_view kColumnNotFound = "SBSQL.NATIVE_BINDING.COLUMN_NOT_FOUND";
+  if (names(detail, kColumnNotFound) || names(message, kColumnNotFound)) return "42703";
+  return sqlstate;
+}
+
 bool SendError(ClientIo* io,
                SbwpSessionState* state,
                std::string_view sqlstate,
                std::string_view message,
                std::string_view detail = {}) {
-  return SendFrame(io, state, kError, ErrorPayload(sqlstate, message, detail));
+  return SendFrame(io, state, kError,
+                   ErrorPayload(SqlStateForCode(sqlstate, message, detail), message, detail));
 }
 
 bool SendFeatureNotNegotiated(ClientIo* io, SbwpSessionState* state, std::uint8_t msg_type) {

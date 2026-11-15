@@ -103,8 +103,10 @@ std::string RenderMessageVectorSet(const MessageVectorSet& messages) {
       out << " component=" << RenderSafe(diagnostic.component);
     }
     for (const auto& field : diagnostic.fields) {
-      if (!IsPublicDiagnosticFieldAllowed(field.name, field.value)) continue;
-      out << ' ' << RenderSafe(field.name) << '=' << RenderSafe(field.value);
+      // SB_MESSAGE_VECTOR_BINARY_FIELD (owner Q194 = 1): by the field's kind.
+      // (Was: (name, value) and the raw value.)
+      if (!IsPublicDiagnosticFieldAllowed(field)) continue;
+      out << ' ' << EscapeDiagnosticJson(field.name) << '=' << EscapeDiagnosticJson(RenderFieldValue(field));
     }
     out << "\n";
   }

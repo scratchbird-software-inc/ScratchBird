@@ -29,9 +29,12 @@
 
 #include <algorithm>
 #include <limits>
+#include <list>
 #include <map>
+#include <mutex>
 #include <new>
 #include <set>
+#include <unordered_map>
 
 namespace scratchbird::storage::database {
 namespace {
@@ -197,6 +200,141 @@ struct Relation {
   std::vector<disk::NativePageReference> bases;
   std::vector<Leaf> leaves;  // parallel to bases
 };
+}  // namespace
+
+// SEARCH_KEY: SB_CATALOG_WRITER_PAGE_CACHE (owner Q190, Q191). Entries keyed
+// by page number, each the image read and its decode (a leaf, without its
+// image, or a B-tree page); `recent` orders them for eviction.
+struct CatalogWriterPageCache::Impl {
+  struct Entry {
+    std::vector<byte> image;
+    std::optional<Leaf> leaf;
+    std::optional<pg::NativeBtreePage> tree;
+    std::list<u64>::iterator recent;
+  };
+  explicit Impl(std::size_t maximum_pages) : maximum(std::max<std::size_t>(maximum_pages, 1)) {}
+  // The entry for `number` when its image is `image`, made the most recent.
+  Entry* Find(u64 number, const std::vector<byte>& image) {
+    const auto at = entries.find(number);
+    if (at == entries.end() || at->second.image != image) return nullptr;
+    recent.splice(recent.begin(), recent, at->second.recent);
+    return &at->second;
+  }
+  // A new entry for `number` holding `image` (any older one replaced), the
+  // least recently used dropped while full.
+  Entry& Put(u64 number, const std::vector<byte>& image) {
+    if (const auto at = entries.find(number); at != entries.end()) {
+      recent.erase(at->second.recent);
+      entries.erase(at);
+    }
+    while (!recent.empty() && entries.size() >= maximum) {
+      entries.erase(recent.back());
+      recent.pop_back();
+    }
+    recent.push_front(number);
+    auto& entry = entries[number];
+    entry.image = image;
+    entry.recent = recent.begin();
+    return entry;
+  }
+  std::mutex mutex;
+  std::size_t maximum = 1, hits = 0, misses = 0;
+  std::unordered_map<u64, Entry> entries;
+  std::list<u64> recent;
+};
+
+CatalogWriterPageCache::CatalogWriterPageCache(std::size_t maximum_pages)
+    : impl_(std::make_unique<Impl>(maximum_pages)) {}
+CatalogWriterPageCache::~CatalogWriterPageCache() = default;
+std::size_t CatalogWriterPageCache::size() const noexcept {
+  std::lock_guard lock(impl_->mutex);
+  return impl_->entries.size();
+}
+std::size_t CatalogWriterPageCache::maximum_pages() const noexcept { return impl_->maximum; }
+std::size_t CatalogWriterPageCache::hits() const noexcept {
+  std::lock_guard lock(impl_->mutex);
+  return impl_->hits;
+}
+std::size_t CatalogWriterPageCache::misses() const noexcept {
+  std::lock_guard lock(impl_->mutex);
+  return impl_->misses;
+}
+void CatalogWriterPageCache::Clear() noexcept {
+  std::lock_guard lock(impl_->mutex);
+  impl_->entries.clear();
+  impl_->recent.clear();
+}
+
+namespace {
+// SB_CATALOG_WRITER_PAGE_CACHE: the decode of the leaf whose image was just
+// read into `leaf.image` at `number`, when the binding's cache holds that very
+// image; false (decode it) otherwise.
+bool CachedLeaf(const CatalogVersionWriterBinding& binding, u64 number, Leaf& leaf) {
+  if (!binding.page_cache) return false;
+  auto& cache = binding.page_cache->impl();
+  std::lock_guard lock(cache.mutex);
+  const auto* entry = cache.Find(number, leaf.image);
+  if (!entry || !entry->leaf) {
+    ++cache.misses;
+    return false;
+  }
+  ++cache.hits;
+  leaf.page = entry->leaf->page;
+  leaf.metadata = entry->leaf->metadata;
+  return true;
+}
+// Enters a leaf as read and decoded (never one this write changed).
+void CacheLeaf(const CatalogVersionWriterBinding& binding, u64 number, const Leaf& leaf) {
+  if (!binding.page_cache) return;
+  auto& cache = binding.page_cache->impl();
+  std::lock_guard lock(cache.mutex);
+  auto& entry = cache.Put(number, leaf.image);
+  entry.leaf.emplace();
+  entry.leaf->page = leaf.page;
+  entry.leaf->metadata = leaf.metadata;
+}
+// The same for a catalog B-tree page.
+bool CachedTreePage(const CatalogVersionWriterBinding& binding, u64 number, const std::vector<byte>& image,
+                    pg::NativeBtreePage& page) {
+  if (!binding.page_cache) return false;
+  auto& cache = binding.page_cache->impl();
+  std::lock_guard lock(cache.mutex);
+  const auto* entry = cache.Find(number, image);
+  if (!entry || !entry->tree) {
+    ++cache.misses;
+    return false;
+  }
+  ++cache.hits;
+  page = *entry->tree;
+  return true;
+}
+void CacheTreePage(const CatalogVersionWriterBinding& binding, u64 number, const std::vector<byte>& image,
+                   const pg::NativeBtreePage& page) {
+  if (!binding.page_cache) return;
+  auto& cache = binding.page_cache->impl();
+  std::lock_guard lock(cache.mutex);
+  cache.Put(number, image).tree = page;
+}
+
+// SEARCH_KEY: SB_CATALOG_FREE_SPACE (owner Q190, 2026-11-14). Whether `row`
+// fits on `page` by the encoder's own layout arithmetic
+// (SB_ROW_DATA_PAGE_FOOTPRINT), without encoding the page: the body bytes the
+// page uses now plus the row's footprint against the body capacity. A page
+// the writer holds carries its body bytes in body.free_space_offset: a page
+// decoded from its image (the leaf decoder admits only the image its encoder
+// produces, so the figure is the encoder's), or one this write encoded (set
+// from the encoder's result); 0 is unknown (a new base leaf). False: the
+// encoder would refuse the page as too large, so it is not tried. True or
+// nullopt (unknown, or a cell the arithmetic does not size): encode the page;
+// the encoder's verdict stands, with every refusal it gives.
+// (Was: every candidate page copied, the row added, and the whole page
+// encoded to learn whether it fits.)
+std::optional<bool> RowFits(const NativeCatalogLeafPage& page, const pg::RowDataRecord& row) {
+  if (!page.body.free_space_offset || page.header.page_size_bytes <= 32) return std::nullopt;
+  const auto adds = pg::RowDataRecordFootprint(row);
+  if (!adds) return std::nullopt;
+  return u64{page.body.free_space_offset} + *adds <= pg::RowDataPageBodyCapacity(page.header.page_size_bytes - 32);
+}
 // Reads the B-tree rooted at `head` through the sink, walked and checked as
 // the tree reader walks it; the base leaves its cells name go to `bases`
 // (distinct, unsorted). Shared by a relation's index and the name trees
@@ -232,9 +370,14 @@ bool ReadTree(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding& b
     if (!ReadPage(sink, page_size, next.ref.page_number, image, result)) return false;
     const u32 type = !next.parent ? 0x200 : next.level ? 0x201 : 0x202;
     if (!HeaderBinds(image, binding.database_uuid, next.ref, type)) return refuse(E::invalid_catalog);
-    auto decoded = pg::DecodeNativeBtreePage(image);
-    if (!decoded.ok()) return refuse(E::invalid_catalog);
-    auto& page = *decoded.page;
+    // SB_CATALOG_WRITER_PAGE_CACHE: an identical image's decode, or a new one.
+    pg::NativeBtreePage page;
+    if (!CachedTreePage(binding, next.ref.page_number, image, page)) {
+      auto decoded = pg::DecodeNativeBtreePage(image);
+      if (!decoded.ok()) return refuse(E::invalid_catalog);
+      page = std::move(*decoded.page);
+      CacheTreePage(binding, next.ref.page_number, image, page);
+    }
     if (!dependencies) {
       if (page.dependencies.index_uuid != head.object_uuid) return refuse(E::invalid_catalog);
       dependencies = page.dependencies;
@@ -358,17 +501,21 @@ bool ReadRelation(disk::CarefulWriteSink& sink, const CatalogVersionWriterBindin
       return refuse(E::invalid_catalog);
     if (!ReadPage(sink, page_size, ref.page_number, leaves[i].image, result)) return false;
     if (!HeaderBinds(leaves[i].image, binding.database_uuid, ref, 6)) return refuse(E::invalid_catalog);
-    auto decoded = DecodeNativeCatalogLeaf(leaves[i].image);
-    if (!decoded.ok()) {
-      result.error = E::invalid_catalog;
-      result.leaf_error = decoded.error;
-      return false;
+    // SB_CATALOG_WRITER_PAGE_CACHE: an identical image's decode, or a new one.
+    if (!CachedLeaf(binding, ref.page_number, leaves[i])) {
+      auto decoded = DecodeNativeCatalogLeaf(leaves[i].image);
+      if (!decoded.ok()) {
+        result.error = E::invalid_catalog;
+        result.leaf_error = decoded.error;
+        return false;
+      }
+      leaves[i].page = std::move(*decoded.page);
+      leaves[i].metadata = std::move(decoded.metadata);
+      CacheLeaf(binding, ref.page_number, leaves[i]);
     }
-    const auto& id = decoded.page->body.relation_uuid.value;
+    const auto& id = leaves[i].page.body.relation_uuid.value;
     if (head.page_type == 6 ? id != head.object_uuid : relation && *relation != id) return refuse(E::invalid_catalog);
     relation = id;
-    leaves[i].page = std::move(*decoded.page);
-    leaves[i].metadata = std::move(decoded.metadata);
   }
 
   return true;
@@ -820,6 +967,7 @@ std::optional<Leaf> NewBaseLeaf(disk::CarefulWriteSink& sink, const NativeCatalo
   leaf.page.body.rows.clear();
   leaf.page.body.page_number = taken.page_number;
   leaf.page.body.page_generation = 1;
+  leaf.page.body.free_space_offset = 0;  // SB_CATALOG_FREE_SPACE: unknown (encoded when tried)
   if (read_image) {
     leaf.image.assign(page_size, 0);
     const auto io = sink.ReadAt(taken.page_number * u64{page_size}, std::span<byte>(leaf.image));
@@ -1735,14 +1883,14 @@ Stop PlaceSuccs(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding&
     if (!c.replace) link_pages.insert(c.base.leaf);
   std::optional<E> place_error;
   const auto try_place = [&](Succ& c, std::size_t i) -> bool {
-    auto page = work[i];
+    const auto& candidate = work[i];
     u32 slot = 0;
-    for (const auto& row : page.body.rows) slot = std::max(slot, row.stable_slot_id);
+    for (const auto& row : candidate.body.rows) slot = std::max(slot, row.stable_slot_id);
     if (slot == std::numeric_limits<u32>::max()) return false;
     auto row = c.added;
     row.stable_slot_id = slot + 1;
-    row.storage_generation = page.header.page_generation;
-    auto payload = PlacedImage(c, page, slot + 1, transaction, order);
+    row.storage_generation = candidate.header.page_generation;
+    auto payload = PlacedImage(c, candidate, slot + 1, transaction, order);
     if (!payload) {
       place_error = E::invalid_successor;
       return false;
@@ -1751,6 +1899,10 @@ Stop PlaceSuccs(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding&
     cell.type_id = scratchbird::core::datatypes::CanonicalTypeId::binary;
     cell.payload = std::move(*payload);
     row.cells = {{1, std::move(cell), {}}};
+    // SB_CATALOG_FREE_SPACE: a page the row cannot fit is not copied or
+    // encoded; the page it may fit is, and the encoder decides.
+    if (RowFits(candidate, row) == false) return false;
+    auto page = candidate;
     page.body.rows.push_back(std::move(row));
     const auto fits = pg::BuildRowDataPageBody(page.body, page.header.page_size_bytes - 32);
     if (!fits.ok()) {
@@ -1758,6 +1910,7 @@ Stop PlaceSuccs(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding&
       place_error = fits.resource_failure() ? E::resource_exhausted : E::invalid_successor;
       return false;
     }
+    page.body.free_space_offset = fits.body.free_space_offset;  // SB_CATALOG_FREE_SPACE
     work[i] = std::move(page);
     c.target = i;
     return true;
@@ -1782,6 +1935,7 @@ Stop PlaceSuccs(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding&
       if (fits.diagnostic.diagnostic_code == "SB-ROW-DATA-PAGE-BODY-TOO-LARGE") return Refuse(E::relation_full);
       return Refuse(fits.resource_failure() ? E::resource_exhausted : E::invalid_successor);
     }
+    page.body.free_space_offset = fits.body.free_space_offset;  // SB_CATALOG_FREE_SPACE
     work[c.base.leaf] = std::move(page);
     c.target = c.base.leaf;
   }
@@ -3081,19 +3235,23 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
       // relation has one, its head).
       std::optional<std::size_t> target;
       for (std::size_t l = 0; l < relation.leaves.size() && !target; ++l) {
-        auto page = relation.leaves[l].page;
+        const auto& candidate = relation.leaves[l].page;
         u32 slot = 0;
-        for (const auto& row : page.body.rows) slot = std::max(slot, row.stable_slot_id);
+        for (const auto& row : candidate.body.rows) slot = std::max(slot, row.stable_slot_id);
         if (slot == std::numeric_limits<u32>::max()) continue;
-        auto final_row = placed(page, slot + 1);
+        auto final_row = placed(candidate, slot + 1);
         if (!final_row) return refuse_row(E::invalid_insert, i);
         auto row = added;
         row.stable_slot_id = slot + 1;
-        row.storage_generation = page.header.page_generation;
+        row.storage_generation = candidate.header.page_generation;
         scratchbird::core::datatypes::DatatypeBinaryValue cell_value;
         cell_value.type_id = scratchbird::core::datatypes::CanonicalTypeId::binary;
         cell_value.payload = std::move(final_row->second);
         row.cells = {{1, std::move(cell_value), {}}};
+        // SB_CATALOG_FREE_SPACE: only a page the row may fit is copied and
+        // encoded; the encoder decides.
+        if (RowFits(candidate, row) == false) continue;
+        auto page = candidate;
         page.body.rows.push_back(std::move(row));
         const auto fits = pg::BuildRowDataPageBody(page.body, page.header.page_size_bytes - 32);
         if (!fits.ok()) {
@@ -3101,6 +3259,7 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
           if (fits.resource_failure()) return Refuse(E::resource_exhausted);
           return refuse_row(E::invalid_insert, i);
         }
+        page.body.free_space_offset = fits.body.free_space_offset;  // SB_CATALOG_FREE_SPACE
         relation.leaves[l].page = std::move(page);
         relation.leaves[l].metadata.emplace(want.version_uuid, std::move(final_row->first));
         target = l;
@@ -3145,6 +3304,7 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
           return refuse_row(fits.diagnostic.diagnostic_code == "SB-ROW-DATA-PAGE-BODY-TOO-LARGE" ? E::relation_full
                                                                                                : E::invalid_insert, i);
         }
+        page.body.free_space_offset = fits.body.free_space_offset;  // SB_CATALOG_FREE_SPACE
         relation.leaves[l].page = std::move(page);
         relation.leaves[l].metadata.emplace(want.version_uuid, std::move(final_row->first));
         target = l;
@@ -3396,8 +3556,8 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
 // Runs a write as SB_CATALOG_NEW_PAGES describes: one pass when it needs no
 // page; otherwise a dry pass, the allocations, then the real pass.
 template <class Request, class Pass>
-CatalogVersionWriteResult WithNewPages(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding& binding,
-                                       const Request& request, Pass pass) noexcept {
+CatalogVersionWriteResult WithNewPagesCached(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding& binding,
+                                             const Request& request, Pass pass) {
   try {
     // Placeholder numbers far past any file's end; the real pass uses the
     // allocated ones. Every encoded size is independent of the number.
@@ -3420,6 +3580,27 @@ CatalogVersionWriteResult WithNewPages(disk::CarefulWriteSink& sink, const Catal
     }
     if (!second.ok()) second.attempted = true;  // the allocations were written
     return second;
+  } catch (...) {
+    return Refuse(E::resource_exhausted);
+  }
+}
+
+template <class Request, class Pass>
+CatalogVersionWriteResult WithNewPages(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding& binding,
+                                       const Request& request, Pass pass) noexcept {
+  try {
+    // SB_CATALOG_WRITER_PAGE_CACHE: the caller's cache, or one of this write's
+    // own (both passes read the same pages; each relation is read once).
+    std::optional<CatalogWriterPageCache> own;
+    const CatalogVersionWriterBinding* bound = &binding;
+    CatalogVersionWriterBinding with_cache;
+    if (!binding.page_cache) {
+      own.emplace(binding.maximum_base_pages + binding.maximum_index_pages);
+      with_cache = binding;
+      with_cache.page_cache = &*own;
+      bound = &with_cache;
+    }
+    return WithNewPagesCached(sink, *bound, request, pass);
   } catch (...) {
     return Refuse(E::resource_exhausted);
   }

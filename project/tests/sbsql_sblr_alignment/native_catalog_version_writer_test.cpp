@@ -189,6 +189,10 @@ struct Db {
   db::NativeCreationWorkspaceReceipt receipt;
   std::vector<byte> bytes;
   mutable u16 role = 0;  // the relation the scenarios change (RoleScope switches it)
+  // SB_CATALOG_WRITER_PAGE_CACHE (owner Q190, Q191, 2026-11-14): the page
+  // cache a caller keeps per open database, as an engine caller would; every
+  // write through Binding() uses it. The oracles read the files themselves.
+  std::shared_ptr<db::CatalogWriterPageCache> page_cache = std::make_shared<db::CatalogWriterPageCache>();
 
   void Roots(const std::string& path) {
     d::FileDevice device;
@@ -233,6 +237,7 @@ struct Db {
     b.state_root = state_root;
     b.configuration_root = configuration_root;
     b.security_root = security_root;
+    b.page_cache = page_cache.get();  // SB_CATALOG_WRITER_PAGE_CACHE
     return b;
   }
   db::NativeCatalogRelationBinding Relation() const {

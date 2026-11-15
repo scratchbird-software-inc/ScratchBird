@@ -15,7 +15,11 @@
 namespace scratchbird::parser::sbsql {
 using ipc::Diagnostic;
 using ipc::EscapeJson;
+using ipc::EscapeDiagnosticJson;  // SB_MESSAGE_VECTOR_BINARY_FIELD (owner Q194 = 1)
 using ipc::Field;
+using ipc::FieldKind;  // SB_MESSAGE_VECTOR_BINARY_FIELD (owner Q194 = 1)
+using ipc::BinaryUuidField;
+using ipc::RenderFieldValue;
 using ipc::IsPublicDiagnosticFieldAllowed;
 using ipc::LooksLikeCanonicalUuid;
 using ipc::MakeDiagnostic;

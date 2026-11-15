@@ -6828,6 +6828,24 @@ endif()
       LABELS "sbsql_acceleration_full_route_gate;sbsql_sblr_alignment;IA-04;IA-10;SBSQL-05DB282498F4;SBSQL-DF68DFFA5C1E;SBSQL-8E570F4EEEF3;SBLR_OBSERVABILITY_SHOW_ACCELERATION;CSC-TEST-000005;CSC-TEST-002065;CSC-TEST-002761;CSC-TEST-005277;sbsql_surface_to_sblr_full_implementation_closure;sblr_operation_matrix_gate;sbsql_e2e_passed;authenticated_full_route;independent_post_state;restart_recovery;security_auth_gate;nonmutating_observability;public_single_node_full_route_gate;public_release_foundation_full_route_gate;sbsql_parser_worker;database_lifecycle;database_lifecycle_server_route;database_lifecycle_parser_route;sbwp_tls_server_listener_gate;tls_regression_gate;local_ipc_gate;sbwp_wire_gate;routing_reconnect_finality_gate;mga_transaction_regression"
       TIMEOUT 300
     )
+    # SB_NATIVE_BINDING_COLUMN_NOT_FOUND (owner Q199 = 1, 2026-11-15): column
+    # reference refusals (COLUMN_NOT_FOUND / 42703, COLUMN_AMBIGUOUS) through
+    # the real SBsrv / SBgate / SBParser route.
+    add_test(
+      NAME sbsql_column_reference_diagnostic_full_route_gate
+      COMMAND "${SBSQL_PYTHON3}"
+              "${PROJECT_SOURCE_DIR}/tests/sbsql_parser_worker/sbsql_column_reference_diagnostic_full_route_gate.py"
+              --server $<TARGET_FILE:sb_server>
+              --listener $<TARGET_FILE:sb_listener>
+              --parser-worker $<TARGET_FILE:sbp_sbsql>
+              --example-db-seeder $<TARGET_FILE:sbsql_example_database_seed>
+              --openssl ${SBSQL_OPENSSL_EXECUTABLE}
+              --work-dir "${CMAKE_BINARY_DIR}/sbsql_column_reference_full_route"
+    )
+    set_tests_properties(sbsql_column_reference_diagnostic_full_route_gate PROPERTIES
+      LABELS "sbsql_column_reference_diagnostic_full_route_gate;sbsql_parser_worker;real_server_route;authenticated_full_route;sbwp_wire_gate;diagnostic_message_vector"
+      TIMEOUT 300
+    )
     add_test(
       NAME sbsql_savepoint_rollback_full_route_gate
       COMMAND "${SBSQL_PYTHON3}"

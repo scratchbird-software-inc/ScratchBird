@@ -10,6 +10,7 @@
 #include "transaction_inventory_writer.hpp"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <utility>
 #include <vector>
@@ -152,6 +153,49 @@ enum class CatalogVersionWriteError : std::uint8_t {
 };
 const char* CatalogVersionWriteErrorName(CatalogVersionWriteError error) noexcept;
 
+// SEARCH_KEY: SB_CATALOG_WRITER_PAGE_CACHE (owner Q190, Q191, 2026-11-14:
+// "can we not use buffers and cache to improve the performance? It will be
+// more than the tests that encounter this problem"). The decoded catalog pages
+// a writer has read: catalog leaves (page type 6) and catalog B-tree pages,
+// each with the exact image it was decoded from, keyed by page number. A
+// writer still reads every page it needs through its sink; it reuses a decode
+// only when the image it has just read is byte-for-byte the cached one (a
+// decode depends on the image alone), so a page another writer changed, a
+// torn page, or a page reused for something else is decoded afresh. Nothing
+// is entered that was not read back from the sink: an image a write intends
+// is never cached. MGA visibility and every refusal are the decoder's, as
+// without the cache.
+// Bounded: at most maximum_pages entries, least recently used evicted; each
+// holds one page image and its decode (about three page sizes). Not shared
+// between threads without the caller's own exclusion beyond the internal
+// mutex each call takes (SB_CATALOG_SINGLE_WRITER: one catalog writer per
+// database). A caller that keeps one per open database (binding.page_cache)
+// keeps decodes across writes; a write given none uses one of its own, for
+// that write's passes only.
+// SEARCH_KEY: SB_CATALOG_WRITER_PAGE_CACHE_MEMORY (owner Q196 = 1,
+// 2026-11-15): no change now. The cache's memory is ordinary heap, outside
+// BoundedAllocator / NativeStorageMemory accounting. Once an open-database
+// writer object exists, the cache moves under engine memory accounting there,
+// sized by maximum_base_pages (the default of 1024 entries, about 24 MiB at
+// 8 KiB pages, is below the 4096 leaves a first-fit scan may visit).
+class CatalogWriterPageCache {
+ public:
+  explicit CatalogWriterPageCache(std::size_t maximum_pages = 1024);
+  ~CatalogWriterPageCache();
+  CatalogWriterPageCache(const CatalogWriterPageCache&) = delete;
+  CatalogWriterPageCache& operator=(const CatalogWriterPageCache&) = delete;
+  std::size_t size() const noexcept;
+  std::size_t maximum_pages() const noexcept;
+  std::size_t hits() const noexcept;
+  std::size_t misses() const noexcept;
+  void Clear() noexcept;
+  struct Impl;
+  Impl& impl() noexcept { return *impl_; }
+
+ private:
+  std::unique_ptr<Impl> impl_;
+};
+
 struct CatalogVersionWriterBinding {
   core::platform::Uuid database_uuid;
   // Page-zero root kind 2 (the catalog) or 8 (the feature catalog).
@@ -173,6 +217,9 @@ struct CatalogVersionWriterBinding {
   std::size_t maximum_chain_pages = 4096;
   std::size_t maximum_index_pages = 4096;
   std::size_t maximum_base_pages = 4096;
+  // SB_CATALOG_WRITER_PAGE_CACHE: the caller's page cache for this database,
+  // kept across writes; null: each write uses its own (see the class).
+  CatalogWriterPageCache* page_cache = nullptr;
 };
 
 // SB_CATALOG_NEW_PAGES (W3b-3a, owner Q30 = 1). The caller-issued identities

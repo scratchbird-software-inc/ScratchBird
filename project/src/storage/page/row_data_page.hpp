@@ -209,6 +209,17 @@ DenseRowOrdinalLocator MakeDenseRowOrdinalLocator(const DenseRowOrdinalScope& sc
                                                   bool normal_mga_visibility_authority_available);
 DenseRowOrdinalValidation ValidateDenseRowOrdinalLocator(const RowDataPageBody& body,
                                                          const DenseRowOrdinalLocator& locator);
+// SEARCH_KEY: SB_ROW_DATA_PAGE_FOOTPRINT (owner Q190, Q191, 2026-11-14). The
+// layout arithmetic of BuildRowDataPageBody (one shared definition, so the two
+// cannot disagree), for a page with no column profile: a body of `page_size`
+// (as BuildRowDataPageBody takes it) holds at most RowDataPageBodyCapacity
+// bytes, header through slot directory; a body BuildRowDataPageBody laid out
+// uses free_space_offset of them; `row` adds RowDataRecordFootprint (its
+// header, cells and slot entry). A row fits when the sum is within the
+// capacity and the encoder admits it. Nullopt: a cell this arithmetic does
+// not size (external, interval, or one that does not encode); encode instead.
+u64 RowDataPageBodyCapacity(u32 page_size) noexcept;
+std::optional<u64> RowDataRecordFootprint(const RowDataRecord& row) noexcept;
 RowDataPageResult BuildRowDataPageBody(const RowDataPageBody& body, u32 page_size);
 RowDataPageResult BuildRowDataPageBodyOwned(RowDataPageBody body, u32 page_size);
 RowDataPageResult BuildRowDataPageBody(const RowDataPageBody& body, u32 page_size,

@@ -640,6 +640,9 @@ std::optional<std::string> EncodeQualifiedPresentedName(
   return presented_name;
 }
 
+// Lower ASCII. Since owner Q192 (2026-11-14) used only to match keywords
+// (SAVEPOINT, RELEASE, TO) and for column keys (CanonicalColumnLookupKey,
+// left for Q186/Q189); identifier keys use NativeIdentifierComponentKey.
 std::string CanonicalUnquotedIdentifier(std::string value) {
   for (auto& ch : value) {
     if (ch >= 'A' && ch <= 'Z') {
@@ -1153,6 +1156,68 @@ BuildEngineProjectedNativeBindingContext(
         "The engine-issued native binding cohort cannot cover this typed AST.",
         "sbp_sbsql.wire", {{"detail", std::move(detail)}}));
     return std::nullopt;
+  };
+  // SEARCH_KEY: SB_NATIVE_BINDING_COLUMN_NOT_FOUND (owner Q193 = yes,
+  // 2026-11-14: "when an error occurs, it needs to be clear so that the issue
+  // can be quickly found and resolved ... all errors are message vectors that
+  // get translated by the parser to the format the client expects"). A
+  // column reference the bound relation's projection does not carry is
+  // refused with its own code and the structured facts, in place of the
+  // generic CONTEXT_INVALID: column_reference (the component as written,
+  // user data), column_reference_quoted ("true"/"false"), relation_uuid (a
+  // binary_uuid field: the 16 bytes of the relation, when one is known;
+  // SB_MESSAGE_VECTOR_BINARY_FIELD, owner Q194 = 1) and detail (the refusal
+  // site, as fail() gives it). SBSQL.NATIVE_BINDING.COLUMN_AMBIGUOUS (owner
+  // Q198 = 1, 2026-11-15) carries the same fields for a reference that more
+  // than one visible column answers. A projection that is incomplete keeps
+  // its own refusal. (Was: fail("catalog_projection_column_unresolved"),
+  // fail("catalog_window_source_column_unresolved") and, at the join sites,
+  // fail("catalog_join_*_column_unresolved_or_ambiguous"), all
+  // CONTEXT_INVALID.)
+  const auto column_refused = [&](std::string_view code, std::string_view text,
+                                  std::string detail,
+                                  const NativeExpressionAstNode& reference,
+                                  const core::platform::Uuid& relation_uuid)
+      -> std::optional<NativeRelationalBindingContext> {
+    ipc::AppendNonAuthoritativeDiagnosticTraceLine(
+        "SCRATCHBIRD_SBSQL_PIPELINE_PHASE_TRACE_FILE",
+        "layer=native_binding\taccepted=false\tdetail=" + detail);
+    const bool has_component = !reference.qualified_identifier.empty();
+    std::vector<ipc::Field> fields{
+        {"detail", std::move(detail)},
+        {"column_reference",
+         has_component ? reference.qualified_identifier.back().spelling
+                       : reference.spelling},
+        {"column_reference_quoted",
+         has_component && reference.qualified_identifier.back().quoted
+             ? "true"
+             : "false"}};
+    if (!relation_uuid.is_nil()) {
+      fields.push_back(BinaryUuidField(
+          "relation_uuid",
+          std::string_view(reinterpret_cast<const char*>(relation_uuid.bytes.data()),
+                           relation_uuid.bytes.size())));
+    }
+    messages->diagnostics.push_back(MakeDiagnostic(
+        std::string(code), "ERROR", std::string(text), "sbp_sbsql.wire",
+        std::move(fields)));
+    return std::nullopt;
+  };
+  const auto column_not_found = [&](std::string detail,
+                                    const NativeExpressionAstNode& reference,
+                                    const core::platform::Uuid& relation_uuid) {
+    return column_refused(
+        "SBSQL.NATIVE_BINDING.COLUMN_NOT_FOUND",
+        "The column reference does not name a column of the bound relation.",
+        std::move(detail), reference, relation_uuid);
+  };
+  const auto column_ambiguous = [&](std::string detail,
+                                    const NativeExpressionAstNode& reference,
+                                    const core::platform::Uuid& relation_uuid) {
+    return column_refused(
+        "SBSQL.NATIVE_BINDING.COLUMN_AMBIGUOUS",
+        "The column reference names more than one visible column.",
+        std::move(detail), reference, relation_uuid);
   };
   if (!ast.accepted() || !statement_context.complete() ||
       !core::uuid::IsEngineIdentityUuid(statement_context.bound_ast_uuid) ||
@@ -4670,7 +4735,12 @@ BuildEngineProjectedNativeBindingContext(
           projection.columns, [&](const auto& candidate) {
             return candidate.canonical_name_key == expression->spelling;
           });
-      if (column == projection.columns.end() || column->column_uuid.is_nil() ||
+      // SB_NATIVE_BINDING_COLUMN_NOT_FOUND (owner Q193 = yes).
+      if (column == projection.columns.end()) {
+        return column_not_found("catalog_window_source_column_unresolved",
+                                *expression, resolved.object_uuid);
+      }
+      if (column->column_uuid.is_nil() ||
           column->canonical_type_name.empty() ||
           !CanonicalUuidBytes(column->type_descriptor_uuid).has_value()) {
         return fail("catalog_window_source_column_unresolved");
@@ -7148,17 +7218,46 @@ BuildEngineProjectedNativeBindingContext(
     for (auto& outputs : public_source_outputs) {
       std::ranges::sort(outputs, {}, &NativeOutputBindingInput::ordinal);
     }
-    const auto resolve_visible_identifier =
+    // SB_NATIVE_BINDING_COLUMN_NOT_FOUND (owner Q198 = 1, 2026-11-15): a join
+    // column reference resolved and classified, so a refusal says which:
+    // found (selected), not_found (no visible column answers; relation is
+    // the qualifying source's when qualified), ambiguous (more than one
+    // answers, or the qualifier names more than one source), or invalid (a
+    // malformed reference, a qualifier naming no source, or a column whose
+    // source output is missing; these keep the generic refusal). The match
+    // rules are unchanged (CanonicalColumnLookupKey, Q186/Q189). (Was: a
+    // single pointer, null for every failure.)
+    enum class VisibleState : std::uint8_t { found, not_found, ambiguous, invalid };
+    struct VisibleResolution {
+      VisibleState state = VisibleState::invalid;
+      const NativeOutputBindingInput* selected = nullptr;
+      core::platform::Uuid relation_uuid;
+    };
+    const auto classify_visible_identifier =
         [&](const NativeExpressionAstNode* identifier,
             const std::vector<NativeOutputBindingInput>& visible_outputs)
-        -> const NativeOutputBindingInput* {
+        -> VisibleResolution {
+      VisibleResolution out;
       if (identifier == nullptr ||
           (identifier->qualified_identifier.size() != 1 &&
            identifier->qualified_identifier.size() != 2)) {
-        return nullptr;
+        return out;
       }
       const auto column_key = CanonicalColumnLookupKey(
           identifier->qualified_identifier.back());
+      const auto counted = [&](const auto matching_count,
+                               const auto selected_at,
+                               const auto end) {
+        if (matching_count == 0) {
+          out.state = VisibleState::not_found;
+        } else if (matching_count > 1) {
+          out.state = VisibleState::ambiguous;
+        } else if (selected_at != end) {
+          out.state = VisibleState::found;
+          out.selected = &*selected_at;
+        }
+        return out;
+      };
       if (identifier->qualified_identifier.size() == 1) {
         const auto matching_count = std::ranges::count_if(
             visible_outputs, [&](const auto& output) {
@@ -7168,9 +7267,7 @@ BuildEngineProjectedNativeBindingContext(
             visible_outputs, [&](const auto& output) {
               return output.output_name_utf8 == column_key;
             });
-        return matching_count == 1 && selected != visible_outputs.end()
-                   ? &*selected
-                   : nullptr;
+        return counted(matching_count, selected, visible_outputs.end());
       }
       const auto& qualifier = identifier->qualified_identifier.front();
       std::optional<std::size_t> source_ordinal;
@@ -7185,10 +7282,14 @@ BuildEngineProjectedNativeBindingContext(
         if (!SameIdentifierComponent(binding_name, qualifier)) {
           continue;
         }
-        if (source_ordinal.has_value()) return nullptr;
+        if (source_ordinal.has_value()) {
+          out.state = VisibleState::ambiguous;
+          return out;
+        }
         source_ordinal = ordinal;
       }
-      if (!source_ordinal.has_value()) return nullptr;
+      if (!source_ordinal.has_value()) return out;
+      out.relation_uuid = context.catalog_relations[*source_ordinal].object_uuid;
       const auto& columns =
           context.catalog_relations[*source_ordinal].columns;
       const auto matching_column_count = std::ranges::count_if(
@@ -7199,16 +7300,22 @@ BuildEngineProjectedNativeBindingContext(
           columns, [&](const auto& candidate) {
             return candidate.canonical_name_key == column_key;
           });
-      if (matching_column_count != 1 || column == columns.end()) {
-        return nullptr;
+      if (matching_column_count == 0) {
+        out.state = VisibleState::not_found;
+        return out;
       }
+      if (matching_column_count > 1) {
+        out.state = VisibleState::ambiguous;
+        return out;
+      }
+      if (column == columns.end()) return out;
       const auto& source_outputs = public_source_outputs[*source_ordinal];
       const auto source_output = std::ranges::find_if(
           source_outputs, [&](const auto& output) {
             return output.ordinal == column->ordinal &&
                    output.descriptor_id == column->descriptor_id;
           });
-      if (source_output == source_outputs.end()) return nullptr;
+      if (source_output == source_outputs.end()) return out;
       const auto matching_visible_count = std::ranges::count_if(
           visible_outputs, [&](const auto& output) {
             return output.expression_id == source_output->expression_id &&
@@ -7219,9 +7326,25 @@ BuildEngineProjectedNativeBindingContext(
             return output.expression_id == source_output->expression_id &&
                    output.descriptor_id == source_output->descriptor_id;
           });
-      return matching_visible_count == 1 && selected != visible_outputs.end()
-                 ? &*selected
-                 : nullptr;
+      return counted(matching_visible_count, selected, visible_outputs.end());
+    };
+    // The refusal for a reference that did not resolve: the specific code
+    // for not_found / ambiguous, the generic one (detail) otherwise.
+    const auto refuse_visible = [&](const VisibleResolution& resolution,
+                                    const NativeExpressionAstNode* identifier,
+                                    std::string detail)
+        -> std::optional<NativeRelationalBindingContext> {
+      if (identifier != nullptr &&
+          resolution.state == VisibleState::not_found) {
+        return column_not_found(std::move(detail), *identifier,
+                                resolution.relation_uuid);
+      }
+      if (identifier != nullptr &&
+          resolution.state == VisibleState::ambiguous) {
+        return column_ambiguous(std::move(detail), *identifier,
+                                resolution.relation_uuid);
+      }
+      return fail(std::move(detail));
     };
     std::vector<NativeOutputBindingInput> accumulated_outputs =
         public_source_outputs.front();
@@ -7254,11 +7377,18 @@ BuildEngineProjectedNativeBindingContext(
         }
       }
       std::ranges::sort(join_outputs, {}, &NativeOutputBindingInput::ordinal);
-      const auto* selected_filter_column =
-          resolve_visible_identifier(filter_identifier, join_outputs);
-      if (join_outputs.empty() || selected_filter_column == nullptr) {
+      if (join_outputs.empty()) {
         return fail("catalog_join_filter_column_unresolved_or_ambiguous");
       }
+      // SB_NATIVE_BINDING_COLUMN_NOT_FOUND (owner Q198 = 1).
+      const auto filter_resolution =
+          classify_visible_identifier(filter_identifier, join_outputs);
+      if (filter_resolution.state != VisibleState::found) {
+        return refuse_visible(
+            filter_resolution, filter_identifier,
+            "catalog_join_filter_column_unresolved_or_ambiguous");
+      }
+      const auto* selected_filter_column = filter_resolution.selected;
       const auto boolean_profile = std::ranges::find_if(
           statement_context.descriptor_profiles, [&](const auto& candidate) {
             return candidate.profile_kind == 6 &&
@@ -7411,10 +7541,16 @@ BuildEngineProjectedNativeBindingContext(
       for (std::size_t ordinal = 0; ordinal < project_identifiers.size();
            ++ordinal) {
         const auto* identifier = project_identifiers[ordinal];
-        const auto* selected =
-            resolve_visible_identifier(identifier, predecessor_outputs);
-        if (selected == nullptr ||
-            !selected_predecessor_output_ids.insert(selected->output_id)
+        // SB_NATIVE_BINDING_COLUMN_NOT_FOUND (owner Q198 = 1).
+        const auto resolution =
+            classify_visible_identifier(identifier, predecessor_outputs);
+        if (resolution.state != VisibleState::found) {
+          return refuse_visible(
+              resolution, identifier,
+              "catalog_join_project_column_unresolved_or_ambiguous");
+        }
+        const auto* selected = resolution.selected;
+        if (!selected_predecessor_output_ids.insert(selected->output_id)
                  .second) {
           return fail("catalog_join_project_column_unresolved_or_ambiguous");
         }
@@ -7729,7 +7865,9 @@ BuildEngineProjectedNativeBindingContext(
               return candidate.canonical_name_key == expression->spelling;
             });
         if (column == projection.columns.end()) {
-          return fail("catalog_projection_column_unresolved");
+          // SB_NATIVE_BINDING_COLUMN_NOT_FOUND (owner Q193 = yes).
+          return column_not_found("catalog_projection_column_unresolved",
+                                  *expression, resolved.object_uuid);
         }
         const auto index = static_cast<std::size_t>(
             std::distance(projection.columns.begin(), column));
@@ -14503,9 +14641,13 @@ bool AttachExactSourceArtifact(
     symbol.declaration_node_id = 2;
     symbol.scope_node_id = 1;
     symbol.raw_name_utf8 = savepoint_label->text;
-    symbol.normalized_lookup_key = savepoint_label->quoted
-        ? savepoint_label->text
-        : CanonicalUnquotedIdentifier(savepoint_label->text);
+    // SB_CATALOG_IDENTIFIER_CASE_FOLD (owner Q192 = yes, 2026-11-14): the
+    // label's key folds as every native identifier does
+    // (NativeIdentifierComponentKey: the spelling when quoted, upper ASCII
+    // when not). Versioned change: an unquoted label's key and the artifact
+    // carrying it change. (Was: CanonicalUnquotedIdentifier, lower ASCII.)
+    symbol.normalized_lookup_key = NativeIdentifierComponentKey(
+        savepoint_label->text, savepoint_label->quoted);
     symbol.was_quoted = savepoint_label->quoted;
     if (savepoint_label->quoted) {
       if (savepoint_label->raw_text.front() == '"') {
@@ -14567,9 +14709,10 @@ bool AttachExactSourceArtifact(
                                     : descriptor.schema_uuid;
       }
       symbol.raw_name_utf8 = token->text;
+      // SB_CATALOG_IDENTIFIER_CASE_FOLD (owner Q192 = yes): a path atom's
+      // key, NativeIdentifierComponentKey. (Was: lower ASCII when unquoted.)
       symbol.normalized_lookup_key =
-          token->quoted ? token->text
-                        : CanonicalUnquotedIdentifier(token->text);
+          NativeIdentifierComponentKey(token->text, token->quoted);
       symbol.was_quoted = token->quoted;
       symbol.quote_style = supported_quote_style(*token);
       symbol.language_tag = source_artifact.language_tag;
@@ -28762,8 +28905,10 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
         continue;
       }
       if (expect_label && (token.kind == TokenKind::kIdentifier || token.quoted)) {
-        savepoint_label_key = token.quoted ? token.text
-                                         : CanonicalUnquotedIdentifier(token.text);
+        // SB_CATALOG_IDENTIFIER_CASE_FOLD (owner Q192 = yes): the handle
+        // key, as the symbol below. (Was: lower ASCII when unquoted.)
+        savepoint_label_key =
+            NativeIdentifierComponentKey(token.text, token.quoted);
         break;
       }
     }
@@ -28863,9 +29008,12 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
                 "The savepoint structural symbol or transaction handle was unavailable.",
                 "sbp_sbsql.wire"));
           } else {
-            const std::string normalized_symbol = symbol_token->quoted
-                ? symbol_token->text
-                : CanonicalUnquotedIdentifier(symbol_token->text);
+            // SB_CATALOG_IDENTIFIER_CASE_FOLD (owner Q192 = yes): the
+            // symbol hashed for the savepoint request folds as the label
+            // key above (NativeIdentifierComponentKey); an unquoted
+            // label's symbol_sha changes. (Was: lower ASCII.)
+            const std::string normalized_symbol = NativeIdentifierComponentKey(
+                symbol_token->text, symbol_token->quoted);
             CanonicalBytes symbol_material;
             constexpr std::string_view domain =
                 "ScratchBird.SblrSavepointSymbol.V1";
