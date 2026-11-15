@@ -70,13 +70,16 @@ bool ParseNameRegistryBool(const std::string& value) {
   return value == "1" || value == "true" || value == "TRUE";
 }
 
+// SB_CATALOG_IDENTIFIER_CASE_FOLD (owner Q182 = 1, 2026-11-14): ASCII
+// letters only, never the host locale; every other byte (UTF-8 included) is
+// kept. (Was: std::toupper / std::tolower, which follow the C locale.)
 std::string UpperAscii(std::string value) {
-  for (char& c : value) { c = static_cast<char>(std::toupper(static_cast<unsigned char>(c))); }
+  for (char& c : value) { if (c >= 'a' && c <= 'z') c = static_cast<char>(c - 'a' + 'A'); }
   return value;
 }
 
 std::string LowerAscii(std::string value) {
-  for (char& c : value) { c = static_cast<char>(std::tolower(static_cast<unsigned char>(c))); }
+  for (char& c : value) { if (c >= 'A' && c <= 'Z') c = static_cast<char>(c - 'A' + 'a'); }
   return value;
 }
 
@@ -152,17 +155,34 @@ std::string ProfileName(const std::string& identifier_profile_uuid) {
   return LowerAscii(identifier_profile_uuid);
 }
 
-bool ProfileFoldsLower(const std::string& profile) {
+// SEARCH_KEY: SB_CATALOG_IDENTIFIER_CASE_FOLD (owner Q177, Q180-Q183,
+// 2026-11-14). The fold an identifier profile applies to an unquoted name in
+// this (legacy, name-event) registry. No admitted profile record reaches the
+// registry: every caller passes a profile LABEL ("sbsql_v3", the engine
+// default; "firebird_v5" from the Firebird parser; the parser server's
+// canonicalised session labels), so the label is the only signal there is.
+//  - The native profile (sbsql_v3 and its aliases, the empty label) folds
+//    unquoted names to upper case, ASCII only: the semantics the native
+//    default identifier profile now declares (native_naming_profiles.json:
+//    unquoted_fold_mode upper_ascii, quoted_preserves_case true, owner Q177).
+//  - Donor profiles keep their own fold only where the donor genuinely
+//    differs: PostgreSQL-family labels and the case-insensitive MySQL-family
+//    and SQLite labels fold to lower case; Firebird folds to upper case like
+//    the native profile; any other label folds nothing.
+// (Was: the same three families chosen by the same labels, through
+// ProfileFoldsUpper / ProfileFoldsLower / ProfileFoldsMysqlInsensitive and a
+// sqlite test, with locale-dependent std::toupper / std::tolower.)
+enum class NameRegistryFold { none, upper_ascii, lower_ascii };
+bool ProfileFoldsMysqlInsensitive(const std::string& profile);
+NameRegistryFold ProfileFold(const std::string& profile) {
   const std::string p = ProfileName(profile);
-  return p.find("postgres") != std::string::npos || p.find("cockroach") != std::string::npos ||
-         p.find("yugabyte") != std::string::npos || p.find("xtdb") != std::string::npos ||
-         p == "postgresql_family";
-}
-
-bool ProfileFoldsUpper(const std::string& profile) {
-  const std::string p = ProfileName(profile);
-  return p.empty() || p == "sbsql_v3" || p.find("firebird") != std::string::npos ||
-         p == "native" || p == "sbsql";
+  if (p == "sbsql_v3" || p == "native" || p == "sbsql") return NameRegistryFold::upper_ascii;
+  if (p.find("postgres") != std::string::npos || p.find("cockroach") != std::string::npos ||
+      p.find("yugabyte") != std::string::npos || p.find("xtdb") != std::string::npos ||
+      p == "postgresql_family" || ProfileFoldsMysqlInsensitive(profile) || p == "sqlite")
+    return NameRegistryFold::lower_ascii;
+  if (p.find("firebird") != std::string::npos) return NameRegistryFold::upper_ascii;
+  return NameRegistryFold::none;
 }
 
 bool ObjectClassMatchesRequest(const std::string& entry_class,
@@ -226,15 +246,6 @@ bool NameRegistryCollisionScopeMatches(const NameRegistryEntry& existing,
          NameRegistryAliasScoped(wanted, default_language);
 }
 
-bool NameRegistryLookupKeysCollide(const NameRegistryEntry& wanted,
-                                   const NameRegistryEntry& existing) {
-  if (!wanted.requires_exact_match && existing.requires_exact_match) { return false; }
-  const std::string left_key = wanted.requires_exact_match ? wanted.exact_lookup_key
-                                                           : wanted.normalized_lookup_key;
-  const std::string right_key = wanted.requires_exact_match ? existing.exact_lookup_key
-                                                            : existing.normalized_lookup_key;
-  return left_key == right_key;
-}
 
 int NameRegistryNameClassRank(const std::string& name_class) {
   if (NameClassIsCanonical(name_class)) { return 0; }
@@ -442,9 +453,11 @@ std::vector<EngineUuid> ResolveQualifiedNameRegistryScopes(
           if (entry.language_tag != language) { continue; }
           const std::string entry_profile = entry.identifier_profile_uuid.empty() ? "sbsql_v3" : entry.identifier_profile_uuid;
           if (ProfileName(entry_profile) != ProfileName(profile)) { continue; }
-          if (!exact && entry.requires_exact_match) { continue; }
-          const std::string entry_key = exact ? entry.exact_lookup_key : entry.normalized_lookup_key;
-          if (entry_key != lookup_key) { continue; }
+          // Q180/Q181 (SB_CATALOG_IDENTIFIER_CASE_FOLD): the lookup key
+          // against the entry's own-lane key. (Was: an unquoted lookup skipped
+          // every quoted entry, and a quoted lookup compared the entry's exact
+          // key even for an unquoted entry.)
+          if (!NameRegistryEntryMatchesLookupKey(entry, lookup_key)) { continue; }
           push_next(entry.object_uuid);
         }
       }
@@ -478,12 +491,39 @@ std::string NameRegistryLookupKey(std::string text,
                                   const std::string& identifier_profile_uuid,
                                   bool requires_exact_match) {
   if (requires_exact_match) { return text; }
-  if (ProfileFoldsLower(identifier_profile_uuid) || ProfileFoldsMysqlInsensitive(identifier_profile_uuid) ||
-      ProfileName(identifier_profile_uuid) == "sqlite") {
-    return LowerAscii(std::move(text));
+  // SB_CATALOG_IDENTIFIER_CASE_FOLD: the profile's fold (ProfileFold).
+  switch (ProfileFold(identifier_profile_uuid)) {
+    case NameRegistryFold::upper_ascii: return UpperAscii(std::move(text));
+    case NameRegistryFold::lower_ascii: return LowerAscii(std::move(text));
+    case NameRegistryFold::none: break;
   }
-  if (ProfileFoldsUpper(identifier_profile_uuid)) { return UpperAscii(std::move(text)); }
   return text;
+}
+
+// SEARCH_KEY: SB_CATALOG_IDENTIFIER_CASE_FOLD (owner Q177, Q180-Q183,
+// 2026-11-14). An entry's own-lane key: the exact key of a quoted entry
+// (requires_exact_match), the folded key of an unquoted one. A lookup key
+// (NameRegistryLookupKey: folded when unquoted, the text when quoted) matches
+// an entry exactly when it equals the entry's own-lane key, and two entries
+// collide exactly when their own-lane keys are equal: the shared key lane.
+// Under the native profile: unquoted hello finds Hello, HELLO and a quoted
+// "HELLO", not a quoted "Hello" (Q180); quoted "HELLO" finds an unquoted Hello
+// (Q181), quoted "Hello" does not. A quoted entry's folded key is never used.
+std::string NameRegistryEntryOwnLaneKey(const NameRegistryEntry& entry) {
+  return entry.requires_exact_match ? entry.exact_lookup_key : entry.normalized_lookup_key;
+}
+
+bool NameRegistryEntryMatchesLookupKey(const NameRegistryEntry& entry, const std::string& lookup_key) {
+  return NameRegistryEntryOwnLaneKey(entry) == lookup_key;
+}
+
+// SB_CATALOG_IDENTIFIER_CASE_FOLD (owner Q177, Q183 = 1): the shared key
+// lane. (Was: an unquoted name never collided with a quoted one, and a quoted
+// name compared both entries' exact keys, so a quoted "HELLO" did not collide
+// with an unquoted hello, and a quoted "Hello" did collide with it.)
+bool NameRegistryLookupKeysCollide(const NameRegistryEntry& wanted,
+                                   const NameRegistryEntry& existing) {
+  return NameRegistryEntryOwnLaneKey(wanted) == NameRegistryEntryOwnLaneKey(existing);
 }
 
 NameRegistryEntry MakeNameRegistryEntry(const EngineRequestContext& context,
@@ -784,9 +824,10 @@ NameRegistryResolveResult ResolveNameRegistryPrivate(const EngineApiRequest& req
           if (entry.language_tag != language) { continue; }
           const std::string entry_profile = entry.identifier_profile_uuid.empty() ? "sbsql_v3" : entry.identifier_profile_uuid;
           if (ProfileName(entry_profile) != ProfileName(profile)) { continue; }
-          if (!exact && entry.requires_exact_match) { continue; }
-          const std::string entry_key = exact ? entry.exact_lookup_key : entry.normalized_lookup_key;
-          if (entry_key != lookup_key) { continue; }
+          // Q180/Q181 (SB_CATALOG_IDENTIFIER_CASE_FOLD): as the scope walk
+          // above. Two different objects matching stay two matches; the
+          // caller refuses the ambiguity (Q183 = 1).
+          if (!NameRegistryEntryMatchesLookupKey(entry, lookup_key)) { continue; }
           if (seen_objects.insert(entry.object_uuid).second) { result.matches.push_back(entry); }
         }
       }

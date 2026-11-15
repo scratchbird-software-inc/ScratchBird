@@ -31,7 +31,12 @@ struct CatalogIdentifierResolutionProfile {
   u64 quote_styles=0;
   IdentifierEscapeRule escape_rule=static_cast<IdentifierEscapeRule>(0);
   IdentifierFoldMode unquoted_fold_mode=IdentifierFoldMode::none;
-  bool quoted_preserves_case=false;
+  // SB_CATALOG_IDENTIFIER_CASE_FOLD (owner Q177, 2026-11-14): defaults to
+  // true, the specification's default (a quoted name keeps its spelling).
+  // Tag 8 is a required field of the record, always encoded and decoded, so
+  // this default changes no stored payload; it changes only a record built
+  // in code that does not set the field. (Was: false.)
+  bool quoted_preserves_case=true;
   IdentifierComparisonMode comparison_mode=static_cast<IdentifierComparisonMode>(0);
   IdentifierDisplayMode storage_display_mode=static_cast<IdentifierDisplayMode>(0);
   IdentifierReservedWordMode reserved_word_behavior=static_cast<IdentifierReservedWordMode>(0);

@@ -79,6 +79,20 @@ struct NativeManagementDescriptorSeed {
 };
 struct NativeIdentifierProfileSeed {
   std::string key, profile_name;
+  // SEARCH_KEY: SB_CATALOG_IDENTIFIER_CASE_FOLD (owner Q177, Q180-Q183,
+  // 2026-11-14). Required in the pack: quote_styles (names of the quote
+  // styles the profile admits, folded into the record's bit mask:
+  // double_quote 1, backtick 2, bracket 4, donor_api 8), unquoted_fold_mode
+  // and quoted_preserves_case. The loader refuses a profile without them and
+  // a combination the profile record would refuse (a quote mask with
+  // escape_rule not_applicable, no quote mask with any other escape rule, a
+  // folded comparison with no fold). (Was: not carried; the assembled
+  // profile had no quote style, no fold and quoted_preserves_case false, so
+  // every quoted name was refused invalid_quote_mode and every name compared
+  // byte for byte.)
+  u64 quote_styles=0;
+  core::catalog::IdentifierFoldMode unquoted_fold_mode=core::catalog::IdentifierFoldMode::none;
+  bool quoted_preserves_case=true;
   core::catalog::IdentifierEscapeRule escape_rule{};
   core::catalog::IdentifierComparisonMode comparison_mode{};
   core::catalog::IdentifierDisplayMode storage_display_mode{};

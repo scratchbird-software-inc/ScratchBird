@@ -86,6 +86,7 @@
 #include "filespace_bootstrap.hpp"
 #include "catalog_language.hpp"
 #include "catalog_identifier_text_rule.hpp"
+#include "catalog_identifier_lookup_key.hpp"
 #include "catalog_name_record_codec.hpp"
 #include "catalog_native_catalog_index.hpp"
 #include "catalog_page.hpp"
@@ -101,6 +102,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <deque>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -875,14 +877,40 @@ int main(int argc, char** argv) {
                "bootstrap_principal_name_collides_with_internal_service_principal_name",
                "Q153: bootstrap and service both named as one agent principal: the bootstrap/service collision is "
                "reported, no file (new case; was: DATABASE.CREATE_FAILED policy_assembly)");
+      // Q176 = 1 (owner 2026-11-14): every sys.security name the create
+      // writes, roles and groups too, from the loaded pack (groups.json
+      // group_code, roles.json role_code) and the engine's ROLE_SYSARCH.
+      // (Was: created; probed 2026-11-14 at the storage create for DBA, dba
+      // and ROLE_DBA.) With Q177 a case variant is the same name.
+      collides("q176-bootstrap-is-group", "DBA", "NodeService", "bootstrap_principal_name_collides_with_group_name",
+               "Q176: bootstrap principal named as the pack's DBA group: DATABASE.CREATE_PRINCIPAL_INVALID, no file "
+               "(new case; was: created)");
+      collides("q176-bootstrap-is-group-folded", "dba", "NodeService", "bootstrap_principal_name_collides_with_group_name",
+               "Q176/Q177: bootstrap principal dba is the DBA group's name under the upper fold: refused, no file "
+               "(new case; was: created)");
+      collides("q176-bootstrap-is-role", "ROLE_DBA", "NodeService", "bootstrap_principal_name_collides_with_role_name",
+               "Q176: bootstrap principal named as the pack's ROLE_DBA role: refused, no file (new case; was: created)");
+      collides("q176-bootstrap-is-sysarch-role", "role_sysarch", "NodeService",
+               "bootstrap_principal_name_collides_with_role_name",
+               "Q176/Q177: bootstrap principal named as the engine's ROLE_SYSARCH role (folded): refused, no file "
+               "(new case)");
+      collides("q176-service-is-group", "BootstrapAdmin", "Public", "internal_service_principal_name_collides_with_group_name",
+               "Q176/Q177: service principal Public is the PUBLIC group's name under the upper fold: refused, no file "
+               "(new case)");
+      collides("q176-service-is-role", "BootstrapAdmin", "agent_metrics_read",
+               "internal_service_principal_name_collides_with_role_name",
+               "Q176/Q177: service principal named as an agent task-group role (folded): refused, no file (new case)");
     }
-    // Case variants under the default pack. Its identifier profile compares
-    // exactly (comparison_mode exact, and the pack carries no fold mode), so a
-    // case variant is a different name: these collide with nothing under the
-    // pack and create. (Probed 2026-11-14: the same outcome before Q152.)
+    // Case variants under the default pack. Q177/Q180-Q183 (owner 2026-11-14,
+    // SB_CATALOG_IDENTIFIER_CASE_FOLD): the pack's identifier profile now folds
+    // unquoted names to upper ASCII, so a case variant of an agent principal
+    // is the same name and is refused like the agent's own name. (Was: the
+    // profile compared exactly, the pack carried no fold mode, and these three
+    // created: "Alert_Manager is not alert_manager under the pack's exact
+    // profile: creates".)
     {
       const auto creates = [&](const char* label, const std::string& bootstrap, const std::string& service,
-                               const char* what) {
+                               const char* detail, const char* what) {
         const auto dir = artifacts.path() / label;
         std::filesystem::create_directory(dir);
         auto request = NativeRequest((dir / "orders.sdb").string(), 16384, c::kCatalogLanguage_en);
@@ -891,21 +919,29 @@ int main(int argc, char** argv) {
         request.option_envelopes.push_back("bootstrap_principal_name:" + bootstrap);
         request.option_envelopes.push_back("internal_service_principal_name:" + service);
         const auto result = api::EngineCreateLifecycle(request);
-        if (!result.ok) for (const auto& diagnostic : result.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
-        Check(result.ok && Entries(dir).size() == 1, what);
+        if (result.ok || !DetailHas(result, detail))
+          for (const auto& diagnostic : result.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+        Check(!result.ok && HasDiagnostic(result, "DATABASE.CREATE_PRINCIPAL_INVALID") && DetailHas(result, detail) &&
+                  Entries(dir).empty(), what);
       };
       creates("q152-bootstrap-agent-case-variant", "Alert_Manager", "NodeService",
-              "Q152: Alert_Manager is not alert_manager under the pack's exact profile: creates");
+              "bootstrap_principal_name_collides_with_agent_principal_name",
+              "Q152/Q177: Alert_Manager is alert_manager under the pack's upper fold: refused, no file (was: created)");
       creates("q152-bootstrap-agent-upper", "ALERT_MANAGER", "NodeService",
-              "Q152: ALERT_MANAGER is not alert_manager under the pack's exact profile: creates");
+              "bootstrap_principal_name_collides_with_agent_principal_name",
+              "Q152/Q177: ALERT_MANAGER is alert_manager under the pack's upper fold: refused, no file (was: created)");
       creates("q152-service-agent-case-variant", "BootstrapAdmin", "Alert_Manager",
-              "Q152: a service principal Alert_Manager is not alert_manager under the pack's exact profile: creates");
+              "internal_service_principal_name_collides_with_agent_principal_name",
+              "Q152/Q177: a service principal Alert_Manager is alert_manager under the pack's upper fold: refused, "
+              "no file (was: created)");
     }
-    // Recorded, not a ruling: the plan's own bootstrap/service rule
+    // Was recorded, not a ruling: the plan's own bootstrap/service rule
     // (AssembleNativeInitialPolicyRecordsImpl, equal_name) compares ASCII
     // case-insensitively, not by the pack's profile, so a case variant the
-    // profile does not collide is still refused there, DATABASE.CREATE_FAILED
-    // policy_assembly. Owner question in the Q152 report.
+    // profile did not collide was refused there, DATABASE.CREATE_FAILED
+    // policy_assembly. Q177 (owner 2026-11-14): the pack's profile now folds
+    // to upper ASCII, so nodeservice IS NodeService under the pack and the
+    // pre-plan check refuses it first, DATABASE.CREATE_PRINCIPAL_INVALID.
     {
       const auto dir = artifacts.path() / "q153-bootstrap-service-case-variant";
       std::filesystem::create_directory(dir);
@@ -913,16 +949,21 @@ int main(int argc, char** argv) {
       std::erase_if(request.option_envelopes, [](const auto& o) { return o.starts_with("bootstrap_principal_name:"); });
       request.option_envelopes.push_back("bootstrap_principal_name:nodeservice");
       const auto result = api::EngineCreateLifecycle(request);
-      Check(!result.ok && HasDiagnostic(result, "DATABASE.CREATE_FAILED") &&
-                DetailHas(result, "native_create_refused_before_open:policy_assembly") && Entries(dir).empty(),
-            "Q153 (recorded behaviour today): bootstrap nodeservice vs service NodeService is not the same name under "
-            "the pack's exact profile, but the plan's ASCII case-insensitive rule refuses it, DATABASE.CREATE_FAILED "
-            "policy_assembly, no file");
+      Check(!result.ok && HasDiagnostic(result, "DATABASE.CREATE_PRINCIPAL_INVALID") &&
+                DetailHas(result, "bootstrap_principal_name_collides_with_internal_service_principal_name") &&
+                Entries(dir).empty(),
+            "Q153/Q177: bootstrap nodeservice is service NodeService under the pack's upper fold: refused before the "
+            "plan, DATABASE.CREATE_PRINCIPAL_INVALID, no file (was: DATABASE.CREATE_FAILED policy_assembly, the "
+            "plan's ASCII case-insensitive rule)");
     }
     // The comparison under a profile that folds case. No pack can declare one
     // today (the pack has no fold mode, and a folded comparison without one
     // is not an admitted profile), so it is reached only through the check
     // itself, with a profile built here: lower_ascii fold, folded comparison.
+    // Update 2026-11-14 (owner Q177): the pack now declares a fold mode and
+    // the default pack folds to upper ASCII (the case-variant cases above go
+    // through it); this hand-built lower_ascii profile still covers a fold
+    // the default pack does not use.
     {
       const auto id = [](std::uint8_t tag) {
         p::Uuid u{};
@@ -979,6 +1020,135 @@ int main(int argc, char** argv) {
             "Q152: a lane value the check cannot reduce is refused, never guessed");
       Check(find(folded, "", "NodeService") == C::none,
             "Q152: a name whose keys cannot be derived collides with nothing here (Q133 or the plan refuses it)");
+    }
+    // Q178 = 1 (owner 2026-11-14, SB_NATIVE_CREATE_NAME_COLLISION): the plan
+    // holds every name it writes to the pack's collision policy before the
+    // open. The caller's database name is named in the database's root scope
+    // beside the system schemas (sys, cluster, users, remote, emulated, app)
+    // and filespace_0. (Was: such a database created, probed 2026-11-14 at the
+    // storage create for sys and SYS; its name row then duplicated the
+    // schema's. Startup verification of such a file was not probed.)
+    {
+      const auto refused = [&](const char* label, const std::string& name, const char* what) {
+        const auto dir = artifacts.path() / label;
+        std::filesystem::create_directory(dir);
+        const auto request = NativeRequest((dir / "orders.sdb").string(), 16384, c::kCatalogLanguage_en, name);
+        const auto result = api::EngineCreateLifecycle(request);
+        if (result.ok || !HasDiagnostic(result, "DATABASE.CREATE_NAME_INVALID"))
+          for (const auto& diagnostic : result.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+        Check(!result.ok && HasDiagnostic(result, "DATABASE.CREATE_NAME_INVALID") &&
+                  DetailHas(result, "native_create_refused_before_open:name_collision:"
+                                    "database_name_collides_with_a_name_the_create_writes") &&
+                  !DetailHas(result, name) && Entries(dir).empty(), what);
+      };
+      refused("q178-database-sys", "sys", "Q178: a database named sys (the sys schema's name) is refused before the "
+              "open, DATABASE.CREATE_NAME_INVALID, no file (new case; was: created)");
+      refused("q178-database-SYS", "SYS", "Q178/Q177: a database named SYS is sys under the upper fold: refused, "
+              "no file (new case; was: created)");
+      refused("q178-database-filespace", "Filespace_0", "Q178/Q177: a database named Filespace_0 is the primary "
+              "filespace's name under the upper fold: refused, no file (new case)");
+      const auto dir = artifacts.path() / "q178-database-system";
+      std::filesystem::create_directory(dir);
+      const auto created = api::EngineCreateLifecycle(
+          NativeRequest((dir / "orders.sdb").string(), 16384, c::kCatalogLanguage_en, "system"));
+      Check(created.ok && Entries(dir).size() == 1,
+            "Q178: a database named system (no name it would share) creates");
+      // A pack whose own names collide: the OPS group renamed role_dba, the
+      // ROLE_DBA role's name under the upper fold (both in sys.security). No
+      // caller name is involved, so DATABASE.CREATE_FAILED, the class only.
+      const auto pack = artifacts.path() / "q178-pack-group-is-role";
+      std::filesystem::copy(SB_DEFAULT_POLICY_PACK_ROOT, pack, std::filesystem::copy_options::recursive);
+      const auto groups = pack / "policies" / "groups.json";
+      auto text = ReadAll(groups);
+      const std::string from = "\"group_code\": \"OPS\"";
+      const auto at = text.find(from);
+      Check(at != std::string::npos, "Q178: the default pack declares the OPS group");
+      text.replace(at, from.size(), "\"group_code\": \"role_dba\"");
+      { std::ofstream out(groups, std::ios::binary | std::ios::trunc); out << text; }
+      RehashPack(pack);
+      const auto built_in_dir = artifacts.path() / "q178-built-in";
+      std::filesystem::create_directory(built_in_dir);
+      auto request = NativeRequest((built_in_dir / "orders.sdb").string(), 16384, c::kCatalogLanguage_en);
+      request.context.server_policy_seed_pack_root = pack.string();
+      const auto result = api::EngineCreateLifecycle(request);
+      if (result.ok || !HasDiagnostic(result, "DATABASE.CREATE_FAILED"))
+        for (const auto& diagnostic : result.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
+      Check(!result.ok && HasDiagnostic(result, "DATABASE.CREATE_FAILED") &&
+                DetailHas(result, "native_create_refused_before_open:name_collision:built_in_names_collide") &&
+                !DetailHas(result, "role_dba") && Entries(built_in_dir).empty(),
+            "Q178: a pack whose group and role share a name under the fold is refused before the open, "
+            "DATABASE.CREATE_FAILED name_collision:built_in_names_collide, no file (new case; under the pre-Q177 exact "
+            "profile these two names were different)");
+    }
+    // Q177 (owner 2026-11-14), the owner's example, through the plan's own
+    // check (FindNativeCreateNameEntryCollision) with entries keyed as the
+    // create keys them (DeriveCatalogIdentifierLookupKeysInto) under a profile
+    // with the default pack's values (upper ASCII fold, double quotes,
+    // quoted_preserves_case) and the pack's group (exact language tags,
+    // shared key lane).
+    {
+      const auto id = [](std::uint8_t tag) {
+        p::Uuid u{};
+        u.bytes = {0x01, 0x90, 0, 0, 0, 0, 0x70, 0, 0x80, 0, 0, 0, 0, 0, 0x62, tag};
+        return u;
+      };
+      c::CatalogIdentifierResolutionProfile upper;
+      upper.profile_uuid = id(1); upper.database_uuid = id(2); upper.generation = 1;
+      upper.quote_styles = 1; upper.escape_rule = c::IdentifierEscapeRule::doubled_delimiter;
+      upper.unquoted_fold_mode = c::IdentifierFoldMode::upper_ascii; upper.quoted_preserves_case = true;
+      upper.comparison_mode = c::IdentifierComparisonMode::folded;
+      upper.storage_display_mode = c::IdentifierDisplayMode::preserve_user_text;
+      upper.reserved_word_behavior = c::IdentifierReservedWordMode::parser_profile_specific;
+      upper.length_unit = c::IdentifierLengthUnit::unicode_scalar_values;
+      upper.maximum_identifier_length = 512;
+      upper.origin_transaction_uuid = {p::UuidKind::transaction, id(3)};
+      upper.origin_local_transaction_id = 1;
+      Check(c::CatalogIdentifierProfileEncodedBytes(upper).has_value(), "Q177: the default pack's profile values are admitted");
+      struct Keyed {std::vector<p::byte> backing; c::CatalogNameEntryView view;};
+      std::deque<Keyed> keyed;
+      const auto entry = [&](std::uint8_t object, std::string_view text, bool quoted) -> const c::CatalogNameEntryView& {
+        auto& out = keyed.emplace_back();
+        out.backing.resize(2 * text.size() + 1);
+        const auto style = quoted ? c::CatalogNameQuoteStyle::double_quote : c::CatalogNameQuoteStyle::none;
+        const c::CatalogIdentifierKeyRequest request{&upper, text, quoted, style, quoted};
+        const auto derived = c::DeriveCatalogIdentifierLookupKeysInto(request, out.backing);
+        Check(derived.ok(), "Q177: the example's keys derive under the pack's profile (quoted names admitted)");
+        out.view.object_uuid = {p::UuidKind::object, id(static_cast<std::uint8_t>(0x80 + object))};
+        out.view.object_kind = c::CatalogRecordKind::table_descriptor;
+        out.view.scope_uuid = {p::UuidKind::object, id(9)};
+        out.view.identifier_profile_uuid = {p::UuidKind::object, upper.profile_uuid};
+        out.view.language_uuid = c::CatalogLanguageIdentity(c::kCatalogLanguage_en);
+        out.view.raw_name_text = text; out.view.was_quoted = quoted; out.view.quote_style = style;
+        out.view.requires_exact_match = quoted;
+        out.view.normalized_lookup_key = derived.normalized; out.view.exact_lookup_key = derived.exact;
+        return out.view;
+      };
+      const auto collide = [&](std::vector<c::CatalogNameEntryView> entries) {
+        return db::FindNativeCreateNameEntryCollision(entries, c::CatalogCollisionLanguageLane::exact_tag,
+                                                      c::CatalogCollisionKeyLane::shared).has_value();
+      };
+      Check(collide({entry(1, "Hello", false), entry(2, "hello", false)}),
+            "Q177: unquoted Hello and unquoted hello are one name (HELLO = Hello = hELLO = hello)");
+      Check(collide({entry(1, "HELLO", false), entry(2, "hELLO", false)}), "Q177: unquoted HELLO and hELLO are one name");
+      Check(!collide({entry(1, "HELLO", true), entry(2, "Hello", true)}),
+            "Q177: quoted \"HELLO\" and quoted \"Hello\" coexist (both quoted, different case)");
+      Check(collide({entry(1, "hello", false), entry(2, "HELLO", true)}),
+            "Q177/Q181: unquoted hello and quoted \"HELLO\" collide (\"HELLO\" = hello)");
+      Check(!collide({entry(1, "hello", false), entry(2, "Hello", true)}),
+            "Q177/Q180: unquoted hello and quoted \"Hello\" coexist");
+      Check(collide({entry(1, "HELLO", true), entry(2, "Hello", true), entry(3, "hello", false)}),
+            "Q177: with \"HELLO\" and \"Hello\" held, unquoted hello collides (with \"HELLO\")");
+      Check(!collide({entry(1, "\xc3\x89", false), entry(2, "\xc3\xa9", false)}),
+            "Q182: unquoted \u00c9 and \u00e9 stay distinct (ASCII fold only)");
+      Check(!collide({entry(1, "Hello", false), entry(1, "HELLO", true)}),
+            "Q178: two entries of one object never collide with each other");
+      // The pre-Q177 lane: separate keys never compare an unquoted name with
+      // a quoted one (kept to show the lane is what changed).
+      Check(!db::FindNativeCreateNameEntryCollision(std::vector<c::CatalogNameEntryView>{entry(1, "hello", false),
+                                                        entry(2, "HELLO", true)},
+                                                    c::CatalogCollisionLanguageLane::exact_tag,
+                                                    c::CatalogCollisionKeyLane::separate).has_value(),
+            "Q177: under the separate key lane (was the pack's) hello and \"HELLO\" did not collide");
     }
     {
       const auto dir = artifacts.path() / "q145-8k-330";

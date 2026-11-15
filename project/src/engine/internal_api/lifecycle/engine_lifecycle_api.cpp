@@ -402,6 +402,7 @@ const char* NativeCreateErrorName(scratchbird::storage::database::NativeDatabase
     case E::resource_exhausted: return "resource_exhausted";
     case E::datatype_assembly: return "datatype_assembly";
     case E::name_path: return "name_path";
+    case E::name_collision: return "name_collision";  // Q178 (SB_NATIVE_CREATE_NAME_COLLISION)
   }
   return "unknown";
 }
@@ -461,7 +462,12 @@ const char* NativeCreationCapacityBoundName(scratchbird::storage::database::Nati
 // as DATABASE.CREATE_PRINCIPAL_INVALID with the class of collision. Only an
 // ASCII case variant the pack's profile does not collide, or a service
 // principal named ROOT, still reaches policy_assembly here (the plan's own
-// equal_name rule; owner question). Stage by stage
+// equal_name rule; owner question).
+// Update 2026-11-14 (owner Q177, SB_CATALOG_IDENTIFIER_CASE_FOLD): the
+// default pack's profile folds unquoted names to upper ASCII, so an ASCII
+// case variant of the service principal is the same name and is refused
+// before the plan; with the default pack only a service principal named ROOT
+// still reaches policy_assembly. Q178 adds name_collision (below). Stage by stage
 // (NativeDatabaseCreateError; the bound decides for the capacity stages):
 //   invalid_principal                     -> DATABASE.CREATE_PRINCIPAL_INVALID
 //     (a principal name breaking the character rule, a credential
@@ -710,6 +716,15 @@ EngineCreateLifecycleResult NativeCreateLifecycle(const EngineCreateLifecycleReq
   // (AssembleNativeInitialPolicyRecordsImpl, equal_name); a case variant the
   // pack's exact profile does not collide still reaches it and is refused as
   // DATABASE.CREATE_FAILED policy_assembly (owner question, Q152 report).
+  // Update 2026-11-14 (owner Q176 = 1, Q177): the check also compares the
+  // two caller names with every role and group name the create writes in
+  // sys.security (the pack's roles and groups, the engine's ROLE_SYSARCH),
+  // refused the same way with ..._collides_with_role_name / _group_name; and
+  // under the default pack's profile (upper ASCII fold, Q177) a case variant
+  // is the same name, so nodeservice beside NodeService is now refused here
+  // (bootstrap_principal_name_collides_with_internal_service_principal_name),
+  // before the plan's equal_name rule. (Was: principals only; a bootstrap
+  // named DBA or dba created; nodeservice reached policy_assembly.)
   {
     using C = db::NativeCreatePrincipalNameCollision;
     const auto collision =
@@ -794,6 +809,24 @@ EngineCreateLifecycleResult NativeCreateLifecycle(const EngineCreateLifecycleReq
       return refuse("DATABASE.CREATE_POLICY_PACK_INVALID",
                     std::string("native_create_name_longer_than_policy_identifier_profile_maximum:") +
                         db::NativeCreateNameClassName(plan.name_over_profile_maximum));
+    }
+    // SEARCH_KEY: SB_NATIVE_CREATE_NAME_COLLISION (owner Q178 = 1,
+    // 2026-11-14). The plan's own collision check found two names the create
+    // would write the same: the caller's database name is a name refusal, a
+    // caller principal name a principal refusal (the pre-plan check, Q176,
+    // normally refuses those first), and a pack or engine name stays
+    // DATABASE.CREATE_FAILED. The detail names whose name, never the text.
+    // (Was: no such check; e.g. a database named sys created, its name the
+    // same as the sys schema's in the database's root scope.)
+    if (plan.error == db::NativeDatabaseCreateError::name_collision) {
+      using K = db::NativeCreateNameCollisionClass;
+      const char* code = plan.name_collision == K::database_name ? "DATABASE.CREATE_NAME_INVALID"
+                         : plan.name_collision == K::bootstrap_principal_name ||
+                                 plan.name_collision == K::service_principal_name
+                             ? "DATABASE.CREATE_PRINCIPAL_INVALID"
+                             : "DATABASE.CREATE_FAILED";
+      return refuse(code, std::string("native_create_refused_before_open:name_collision:") +
+                              db::NativeCreateNameCollisionClassName(plan.name_collision));
     }
     if (!plan.ok()) {
       // Any other assembly refusal, now before the open. No file exists.

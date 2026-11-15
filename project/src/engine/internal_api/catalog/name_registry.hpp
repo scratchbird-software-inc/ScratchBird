@@ -87,6 +87,14 @@ std::string NameRegistryDefaultIdentifierProfile(const EngineRequestContext& con
 std::string NameRegistryLookupKey(std::string text,
                                   const std::string& identifier_profile_uuid,
                                   bool requires_exact_match);
+// SEARCH_KEY: SB_CATALOG_IDENTIFIER_CASE_FOLD (owner Q177, Q180-Q183,
+// 2026-11-14). The one matching and collision rule of this registry (and of
+// the parser server's registry leaf lookup): an entry's own-lane key (exact
+// when quoted, folded when unquoted); a lookup key matches an entry when it
+// equals that key; two entries collide when their own-lane keys are equal.
+std::string NameRegistryEntryOwnLaneKey(const NameRegistryEntry& entry);
+bool NameRegistryEntryMatchesLookupKey(const NameRegistryEntry& entry, const std::string& lookup_key);
+bool NameRegistryLookupKeysCollide(const NameRegistryEntry& wanted, const NameRegistryEntry& existing);
 
 NameRegistryEntry MakeNameRegistryEntry(const EngineRequestContext& context,
                                         const EngineUuid& object_uuid,

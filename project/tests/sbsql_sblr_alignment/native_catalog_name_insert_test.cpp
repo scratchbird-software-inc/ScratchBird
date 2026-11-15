@@ -2551,6 +2551,22 @@ std::string Upper(std::string text) {
     if (ch >= 'a' && ch <= 'z') ch = static_cast<char>(ch - 'a' + 'A');
   return text;
 }
+// SB_CATALOG_IDENTIFIER_CASE_FOLD (owner Q177, 2026-11-14): `named` with its
+// default name quoted (double quote), keyed under the template's profile.
+Named Quoted(Named named, const NameTemplate& t) {
+  auto& e = std::get<c::CatalogNameEntry>(*named.entry.name);
+  const std::string text = e.raw_name_text;
+  e.was_quoted = e.requires_exact_match = true;
+  e.quote_style = c::CatalogNameQuoteStyle::double_quote;
+  const c::CatalogIdentifierKeyRequest request{&t.identifier, text, true, c::CatalogNameQuoteStyle::double_quote, true};
+  std::vector<byte> backing(2 * text.size() + 2);
+  const auto derived = c::DeriveCatalogIdentifierLookupKeysInto(request, backing);
+  Check(derived.ok(), "Q177: a quoted name's keys derive under the database's profile");
+  e.normalized_lookup_key.assign(derived.normalized.begin(), derived.normalized.end());
+  e.exact_lookup_key.assign(derived.exact.begin(), derived.exact.end());
+  PathBeside(e, t.entry);
+  return named;
+}
 void NameCollisions(const Db& b, const NameTemplate& t, u16 role, bool room) {
   const auto path = b.Copy(b.bytes, "collisions.db");
   Session s(b, path);
@@ -2566,6 +2582,15 @@ void NameCollisions(const Db& b, const NameTemplate& t, u16 role, bool room) {
   if (folds && upper != t.entry.raw_name_text)
     InsertRefused(b, s, path, Request(2, NamedAfter(b, file, t, role, ms, 2, 2, upper).EntryFirst()), CE::duplicate_name,
                   "the same name in another case (the profile folds it)");
+  // Q177/Q181 (owner 2026-11-14, SB_CATALOG_IDENTIFIER_CASE_FOLD): under the
+  // default pack's profile (double quotes admitted, quoted names keep their
+  // case, one shared key lane) a quoted name spelled as the template's
+  // unquoted name folded is the same name. (Was: the pack's profile admitted
+  // no quote style, so no quoted name could be keyed at all.)
+  const bool quotes = (t.identifier.quote_styles & 1) != 0 && t.identifier.quoted_preserves_case;
+  if (quotes && folds && upper != t.entry.raw_name_text)
+    InsertRefused(b, s, path, Request(2, Quoted(NamedAfter(b, file, t, role, ms, 10, 2, upper), t).EntryFirst()),
+                  CE::duplicate_name, "Q181: a quoted name equal to the template's name folded collides with it");
   if (!room) {
     std::cout << b.name << " name collisions page_size=" << b.size << " committed holder only (no room)\n";
     fs::remove(path);
@@ -2581,6 +2606,31 @@ void NameCollisions(const Db& b, const NameTemplate& t, u16 role, bool room) {
     const auto result = Insert(b, s.sink(), Request(2, rows));
     Check(result.error == CE::duplicate_name && result.failed_row == 5u && result.writes == 0 && ReadAll(path) == before,
           "two entries of one request with one key: the second refused duplicate_name");
+  }
+  // Q177 (owner 2026-11-14), the owner's example at the writer, in one
+  // request each, with no write: the request is refused at the third object's
+  // entry (row 8), so the first two coexist.
+  if (quotes) {
+    const auto three = [&](const Named& x, const Named& y, const Named& z, const char* what) {
+      auto rows = x.Rows();
+      for (const auto& r : y.Rows()) rows.push_back(r);
+      for (const auto& r : z.Rows()) rows.push_back(r);
+      const auto before = ReadAll(path);
+      const auto result = Insert(b, s.sink(), Request(2, rows));
+      if (result.error != CE::duplicate_name || result.failed_row != 8u)
+        std::cerr << what << ": got " << db::CatalogVersionWriteErrorName(result.error) << " row " << (result.failed_row ? static_cast<long long>(*result.failed_row) : -1) << '\n';
+      Check(result.error == CE::duplicate_name && result.failed_row == 8u && result.writes == 0 && ReadAll(path) == before,
+            what);
+    };
+    three(Quoted(NamedAfter(b, file, t, role, ms, 11, 2, "W3B_CASE"), t),
+          Quoted(NamedAfter(b, file, t, role, ms, 12, 2, "W3b_Case"), t), NamedAfter(b, file, t, role, ms, 13, 2, "w3b_case"),
+          "Q177: quoted \"W3B_CASE\" and \"W3b_Case\" coexist; unquoted w3b_case collides with \"W3B_CASE\"");
+    three(NamedAfter(b, file, t, role, ms, 14, 2, "w3b_hello"), Quoted(NamedAfter(b, file, t, role, ms, 15, 2, "W3b_Hello"), t),
+          NamedAfter(b, file, t, role, ms, 16, 2, "W3B_HELLO"),
+          "Q177/Q180: unquoted w3b_hello and quoted \"W3b_Hello\" coexist; unquoted W3B_HELLO is w3b_hello");
+    three(NamedAfter(b, file, t, role, ms, 17, 2, "w3b_\xc3\x89"), NamedAfter(b, file, t, role, ms, 18, 2, "w3b_\xc3\xa9"),
+          NamedAfter(b, file, t, role, ms, 19, 2, "W3B_\xc3\x89"),
+          "Q182: unquoted w3b_\u00c9 and w3b_\u00e9 coexist (ASCII fold only); W3B_\u00c9 is w3b_\u00c9");
   }
   // A name another transaction in progress holds.
   const auto x = NamedAfter(b, file, t, role, ms, 5, 2, "w3b_contended");

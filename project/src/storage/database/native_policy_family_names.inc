@@ -23,6 +23,15 @@ inline constexpr NativePolicyEnumName<core::catalog::IsolationMetadataVisibility
   {"transaction_epoch",core::catalog::IsolationMetadataVisibility::transaction_epoch},{"statement_epoch",core::catalog::IsolationMetadataVisibility::statement_epoch},{"cursor_epoch",core::catalog::IsolationMetadataVisibility::cursor_epoch},{"cluster_epoch",core::catalog::IsolationMetadataVisibility::cluster_epoch},{"historical_epoch",core::catalog::IsolationMetadataVisibility::historical_epoch}};
 inline constexpr NativePolicyEnumName<core::catalog::IdentifierEscapeRule> kIdentifierEscapeRuleNames[]{
   {"doubled_delimiter",core::catalog::IdentifierEscapeRule::doubled_delimiter},{"backslash",core::catalog::IdentifierEscapeRule::backslash},{"doubled_or_backslash",core::catalog::IdentifierEscapeRule::doubled_or_backslash},{"not_applicable",core::catalog::IdentifierEscapeRule::not_applicable}};
+// SB_CATALOG_IDENTIFIER_CASE_FOLD (owner Q177, 2026-11-14): the next two
+// tables were added by hand in the generated form (no generator is in the
+// tree); each name is the enumerator's own spelling. A quote style is a bit of
+// the profile record's quote_styles mask (catalog_identifier_profile.hpp,
+// bits 0..3), named after its CatalogNameQuoteStyle enumerator.
+inline constexpr NativePolicyEnumName<core::catalog::IdentifierFoldMode> kIdentifierFoldModeNames[]{
+  {"none",core::catalog::IdentifierFoldMode::none},{"upper_ascii",core::catalog::IdentifierFoldMode::upper_ascii},{"lower_ascii",core::catalog::IdentifierFoldMode::lower_ascii},{"resource_upper",core::catalog::IdentifierFoldMode::resource_upper},{"resource_lower",core::catalog::IdentifierFoldMode::resource_lower}};
+inline constexpr NativePolicyEnumName<u64> kIdentifierQuoteStyleBitNames[]{
+  {"double_quote",1},{"backtick",2},{"bracket",4},{"donor_api",8}};
 inline constexpr NativePolicyEnumName<core::catalog::IdentifierComparisonMode> kIdentifierComparisonModeNames[]{
   {"exact",core::catalog::IdentifierComparisonMode::exact},{"folded",core::catalog::IdentifierComparisonMode::folded},{"case_insensitive",core::catalog::IdentifierComparisonMode::case_insensitive},{"profile_platform",core::catalog::IdentifierComparisonMode::profile_platform}};
 inline constexpr NativePolicyEnumName<core::catalog::IdentifierDisplayMode> kIdentifierDisplayModeNames[]{

@@ -2865,6 +2865,18 @@ set_tests_properties(sbsql_sblr_alignment_name_registry_read_failure PROPERTIES
   LABELS "sbsql_sblr_alignment;IA-03;component_regression;name_registry_read_failure"
   TIMEOUT 60)
 
+# SB_CATALOG_IDENTIFIER_CASE_FOLD (owner Q177, Q180-Q183, 2026-11-14): the
+# legacy name registry's matching and collision rule.
+add_executable(sbsql_sblr_alignment_name_registry_identifier_case name_registry_identifier_case_test.cpp)
+target_compile_features(sbsql_sblr_alignment_name_registry_identifier_case PRIVATE cxx_std_23)
+target_link_libraries(sbsql_sblr_alignment_name_registry_identifier_case PRIVATE
+  sb_engine_internal_api sb_storage_database sb_core_uuid)
+add_test(NAME sbsql_sblr_alignment_name_registry_identifier_case
+  COMMAND sbsql_sblr_alignment_name_registry_identifier_case)
+set_tests_properties(sbsql_sblr_alignment_name_registry_identifier_case PROPERTIES
+  LABELS "sbsql_sblr_alignment;catalog;component_regression;name_registry_identifier_case"
+  TIMEOUT 60)
+
 add_executable(sbsql_sblr_alignment_canonical_access_candidates
   canonical_access_candidates_test.cpp
   ../../src/engine/internal_api/query/canonical_access_candidates.cpp)

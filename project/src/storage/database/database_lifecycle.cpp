@@ -2267,6 +2267,33 @@ std::optional<PolicyPackLoadResult> ParseNativePolicyFamilies(
           // Q127 = 3 (SB_CATALOG_IDENTIFIER_PROFILE_LENGTH_RULE): required.
           !u64_field(object,"maximum_identifier_length",&p.maximum_identifier_length)||
           !u64_field(object,"dialect_mode_flags",&p.dialect_mode_flags))return fail("identifier profile "+p.key);
+      // SEARCH_KEY: SB_CATALOG_IDENTIFIER_CASE_FOLD (owner Q177, Q180-Q183,
+      // 2026-11-14). quote_styles, unquoted_fold_mode and
+      // quoted_preserves_case are required (a missing field refuses the
+      // pack, never a default). quote_styles is a list of quote style names
+      // (an empty list admits no quotes); a repeated or unknown name refuses.
+      // The combinations the profile record refuses are refused here, at
+      // load, by name: a quote mask with escape_rule not_applicable, no
+      // quote mask with any other escape rule, and a folded comparison with
+      // no fold. (Was: none of the three fields was read; the profile the
+      // create wrote admitted no quotes and folded nothing.)
+      {
+        std::string quotes;
+        if(!ExtractArrayBody(object,"quote_styles",&quotes))return fail("identifier profile quote_styles "+p.key);
+        for(const auto& style:ExtractStringArrayField(object,"quote_styles")){
+          u64 bit=0;
+          if(!NativePolicyEnum(kIdentifierQuoteStyleBitNames,style,&bit)||(p.quote_styles&bit))
+            return fail("identifier profile quote style "+style);
+          p.quote_styles|=bit;
+        }
+        if(!ExtractStringField(object,"unquoted_fold_mode",&name)||!NativePolicyEnum(kIdentifierFoldModeNames,name,&p.unquoted_fold_mode)||
+            !ExtractBoolField(object,"quoted_preserves_case",&p.quoted_preserves_case))
+          return fail("identifier profile case "+p.key);
+        if((p.quote_styles!=0)==(p.escape_rule==c::IdentifierEscapeRule::not_applicable))
+          return fail("identifier profile quote_styles and escape_rule "+p.key);
+        if(p.comparison_mode==c::IdentifierComparisonMode::folded&&p.unquoted_fold_mode==c::IdentifierFoldMode::none)
+          return fail("identifier profile folded comparison without a fold "+p.key);
+      }
       seeds.identifier_profiles.push_back(std::move(p));
     }
     if(!ExtractArrayBody(file,"dialect_profiles",&body))return fail("dialect profiles");
@@ -8437,6 +8464,12 @@ static scratchbird::core::catalog::CatalogIdentifierResolutionProfile NativeIden
   // Q127 = 3 (SB_CATALOG_IDENTIFIER_PROFILE_LENGTH_RULE): the pack's maximum.
   // (Was: never set, so every native profile carried 0, no limit.)
   p.maximum_identifier_length=seed.maximum_identifier_length;
+  // SB_CATALOG_IDENTIFIER_CASE_FOLD (owner Q177, Q180-Q183, 2026-11-14): the
+  // pack's quote styles, fold and quoted-case rule. (Was: never set, so the
+  // profile admitted no quote style, folded nothing and carried
+  // quoted_preserves_case false.)
+  p.quote_styles=seed.quote_styles;p.unquoted_fold_mode=seed.unquoted_fold_mode;
+  p.quoted_preserves_case=seed.quoted_preserves_case;
   p.origin_transaction_uuid=origin_transaction;p.origin_local_transaction_id=kBootstrapCatalogTransactionId;
   return p;
 }
@@ -9826,6 +9859,52 @@ static NativeDatabaseCreateResult PlanNativeDatabaseCreateImpl(
       for(auto& row:index_records.records->names)seed[1].push_back(std::move(row));
     }
     for(auto& relation:seed)for(auto& row:relation)row.metadata.audit_uuid={UuidKind::object,audit_object};
+    // SEARCH_KEY: SB_NATIVE_CREATE_NAME_COLLISION (owner Q178 = 1,
+    // 2026-11-14). The plan holds every name it writes to the collision
+    // policy it writes, before the open: the one naming collision policy body
+    // in the plan's rows, each active name entry bound by its object kind to
+    // that body's group, and the entries of one group compared by
+    // SB_NAME_COLLISION_ORDER under the group's lanes, as startup verification
+    // (VerifyNativeCatalogNamingCollisions) and the catalog writer do. A
+    // collision refuses name_collision and says whose name it was (the
+    // database name, a principal name, else a built-in name); the pre-plan
+    // principal check (Q152/Q153/Q176) is the first line, this the second.
+    // (Was: the create workspace wrote the name rows with no collision check:
+    // a database named sys, the schema's name in the same scope, created, and
+    // the file was then refused at startup verification's duplicate_name.)
+    {
+      std::optional<c::CatalogNamingCollisionPolicyBody> body;
+      for(const auto& relation:seed)for(const auto& row:relation) {
+        if(row.name||row.metadata.object_subtype!=c::CatalogObjectSubtype::naming_collision_policy_body)continue;
+        auto decoded=c::DecodeCatalogNamingCollisionPolicy(row.metadata.record.payload);
+        if(!decoded.ok()||body)return fail(E::policy_assembly);
+        body=std::move(*decoded.record);
+      }
+      if(!body)return fail(E::policy_assembly);
+      const auto classes=std::span(body->classes).first(body->class_count);
+      const auto groups=std::span(body->groups).first(body->group_count);
+      std::vector<std::vector<c::CatalogNameEntryView>> grouped(groups.size());
+      for(const auto& row:seed[1]) {
+        if(!row.name)continue;
+        const auto* entry=std::get_if<c::CatalogNameEntry>(&*row.name);
+        if(!entry||entry->lifecycle_state!=c::CatalogNameLifecycle::active)continue;
+        const auto binding=std::find_if(classes.begin(),classes.end(),[&](const auto& b){return b.kind==entry->object_kind;});
+        if(binding==classes.end())continue;  // a kind the policy does not bind collides with nothing
+        const auto group=std::find_if(groups.begin(),groups.end(),[&](const auto& g){return g.group_uuid==binding->group_uuid;});
+        if(group==groups.end())return fail(E::policy_assembly);
+        grouped[static_cast<std::size_t>(group-groups.begin())].push_back(c::BorrowCatalogNameEntry(*entry));
+      }
+      for(std::size_t g=0;g<groups.size();++g) {
+        const auto found=FindNativeCreateNameEntryCollision(grouped[g],groups[g].language_lane,groups[g].key_lane);
+        if(!found)continue;
+        const auto is=[&](const Uuid& id){
+          return grouped[g][found->first].object_uuid.value==id||grouped[g][found->second].object_uuid.value==id;};
+        using N=NativeCreateNameCollisionClass;
+        result.name_collision=is(database)?N::database_name:is(bootstrap.principal_uuid)?N::bootstrap_principal_name:
+            is(service_identity.principal_uuid)?N::service_principal_name:N::built_in_name;
+        return fail(E::name_collision);
+      }
+    }
     // SB_NATIVE_NAME_PATH: every name entry carries its full path (the
     // workspace fills its own copy the same way; both plans see these sizes).
     if(!FillNativeCreationNamePaths(seed))return fail(E::name_path);
@@ -9929,8 +10008,51 @@ const char* NativeCreatePrincipalNameCollisionName(NativeCreatePrincipalNameColl
     case C::bootstrap_is_agent_principal:return "bootstrap_principal_name_collides_with_agent_principal_name";
     case C::service_is_agent_principal:return "internal_service_principal_name_collides_with_agent_principal_name";
     case C::pack_unusable:return "policy_pack_naming_family_unusable_for_principal_names";
+    // Q176 = 1 (owner 2026-11-14): roles and groups the create writes.
+    case C::bootstrap_is_role:return "bootstrap_principal_name_collides_with_role_name";
+    case C::bootstrap_is_group:return "bootstrap_principal_name_collides_with_group_name";
+    case C::service_is_role:return "internal_service_principal_name_collides_with_role_name";
+    case C::service_is_group:return "internal_service_principal_name_collides_with_group_name";
   }
   return "unknown";
+}
+
+const char* NativeCreateNameCollisionClassName(NativeCreateNameCollisionClass name_class) noexcept {
+  using N=NativeCreateNameCollisionClass;
+  switch(name_class) {
+    case N::none:return "none";
+    case N::database_name:return "database_name_collides_with_a_name_the_create_writes";
+    case N::bootstrap_principal_name:return "bootstrap_principal_name_collides_with_a_name_the_create_writes";
+    case N::service_principal_name:return "internal_service_principal_name_collides_with_a_name_the_create_writes";
+    case N::built_in_name:return "built_in_names_collide";
+  }
+  return "unknown";
+}
+
+// SEARCH_KEY: SB_NATIVE_CREATE_NAME_COLLISION (owner Q178 = 1, 2026-11-14).
+// The one collision order (SB_NAME_COLLISION_ORDER) over the entries the plan
+// writes: sort by scope (and identifier profile), then by the group's lanes;
+// a run of equal entries holding more than one object is a collision.
+std::optional<std::pair<std::size_t,std::size_t>> FindNativeCreateNameEntryCollision(
+    std::span<const core::catalog::CatalogNameEntryView> entries,
+    core::catalog::CatalogCollisionLanguageLane language_lane,core::catalog::CatalogCollisionKeyLane key_lane) {
+  namespace c=scratchbird::core::catalog;
+  const auto compare=[&](std::size_t a,std::size_t b) {
+    if(const auto scope=c::CompareCatalogNameCollisionScope(entries[a],entries[b]))return scope;
+    return c::CompareCatalogNameCollisionLanes(entries[a],entries[b],language_lane,key_lane);
+  };
+  std::vector<std::size_t> order(entries.size());
+  for(std::size_t i=0;i<order.size();++i)order[i]=i;
+  std::stable_sort(order.begin(),order.end(),[&](auto a,auto b){return compare(a,b)<0;});
+  for(std::size_t run=0;run<order.size();) {
+    std::size_t end=run+1;
+    while(end<order.size()&&compare(order[run],order[end])==0)++end;
+    for(std::size_t i=run+1;i<end;++i)
+      if(entries[order[i]].object_uuid.value!=entries[order[run]].object_uuid.value)
+        return std::pair{std::min(order[run],order[i]),std::max(order[run],order[i])};
+    run=end;
+  }
+  return std::nullopt;
 }
 
 // SEARCH_KEY: SB_NATIVE_CREATE_PRINCIPAL_NAME_COLLISION (owner Q152 = 1,
@@ -9951,11 +10073,16 @@ const char* NativeCreatePrincipalNameCollisionName(NativeCreatePrincipalNameColl
 // The create workspace writes the name rows without the collision check the
 // catalog writer applies to later inserts (found 2026-11-14: such a pair
 // created), so this check is the create's.
+// Update 2026-11-14 (owner Q178 = 1, SB_NATIVE_CREATE_NAME_COLLISION): the
+// plan now checks every name it writes before the open as well; this check
+// stays the first line for the caller's principal names (it names the class
+// of collision before any identity is issued), the plan's is the second.
 NativeCreatePrincipalNameCollision FindNativeCreatePrincipalNameCollision(
     const core::catalog::CatalogIdentifierResolutionProfile& profile,
     core::catalog::CatalogCollisionLanguageLane language_lane,core::catalog::CatalogCollisionKeyLane key_lane,
     bool user_accounts_bound,const Uuid& language,std::string_view bootstrap_principal_name,
-    std::string_view service_principal_name,std::span<const std::string> agent_principal_names) noexcept {
+    std::string_view service_principal_name,std::span<const std::string> agent_principal_names,
+    std::span<const std::string> role_names,std::span<const std::string> group_names) noexcept {
   namespace c=scratchbird::core::catalog;
   using C=NativeCreatePrincipalNameCollision;
   try {
@@ -9988,6 +10115,21 @@ NativeCreatePrincipalNameCollision FindNativeCreatePrincipalNameCollision(
     for(const auto& name:agent_principal_names)agents.push_back(entry(name));
     for(const auto& agent:agents)if(same(bootstrap,agent))return C::bootstrap_is_agent_principal;
     for(const auto& agent:agents)if(same(service,agent))return C::service_is_agent_principal;
+    // Q176 = 1 (owner 2026-11-14): the roles and groups the create writes in
+    // sys.security, compared exactly as the principals are (the entry's kind
+    // takes no part in SB_NAME_COLLISION_ORDER; the one group binds every
+    // built-in kind). (Was: not compared; a bootstrap principal named like a
+    // group or role created.)
+    const auto named=[&](std::span<const std::string> names) {
+      std::vector<std::optional<Named>> out;out.reserve(names.size());
+      for(const auto& name:names)out.push_back(entry(name));
+      return out;
+    };
+    const auto roles=named(role_names),groups=named(group_names);
+    for(const auto& role:roles)if(same(bootstrap,role))return C::bootstrap_is_role;
+    for(const auto& group:groups)if(same(bootstrap,group))return C::bootstrap_is_group;
+    for(const auto& role:roles)if(same(service,role))return C::service_is_role;
+    for(const auto& group:groups)if(same(service,group))return C::service_is_group;
     return C::none;
   }catch(...){return C::pack_unusable;}
 }
@@ -10027,8 +10169,18 @@ NativeCreatePrincipalNameCollision CheckNativeCreatePrincipalNameCollisions(
         if(kind.kind==c::CatalogRecordKind::user_account){user_accounts_bound=true;break;}
     std::vector<std::string> agents;agents.reserve(loaded.pack.agent_types.size());
     for(const auto& type:loaded.pack.agent_types)agents.push_back(type.agent_type_id);
+    // Q176 = 1 (owner 2026-11-14): the role and group names the create
+    // writes, from the loaded pack and the engine's own SYSARCH role, each
+    // named by the record builder the plan uses and NativeSecurityReferenceName
+    // (role_name else role_code; group_name else group_code), never a hand list.
+    const TypedUuid origin{core::platform::UuidKind::transaction,fixed(0x54)};
+    std::vector<std::string> roles,groups;
+    const auto add=[](std::vector<std::string>& out,const std::optional<std::string>& name){if(name)out.push_back(*name);};
+    for(const auto& role:loaded.pack.roles)add(roles,NativeSecurityReferenceName(NativeImportedRoleDefinition(loaded.pack,role,origin)));
+    add(roles,NativeSecurityReferenceName(NativeBootstrapRoleDefinition(origin,loaded.pack.image.policy_generation)));
+    for(const auto& seed:loaded.pack.groups)add(groups,NativeSecurityReferenceName(NativeImportedGroupDefinition(loaded.pack,seed,origin)));
     return FindNativeCreatePrincipalNameCollision(profile,group->language_lane,group->key_lane,user_accounts_bound,
-        language,bootstrap_principal_name,service_principal_name,agents);
+        language,bootstrap_principal_name,service_principal_name,agents,roles,groups);
   }catch(...){return C::pack_unusable;}
 }
 
@@ -10307,8 +10459,14 @@ PolicySeedPackDescriptor DefaultPolicyPackDescriptor() {
   // the unqualified name, the name row's text; a policy value, not an engine
   // constant). Supersedes Q131's 1024 encoded octets.
   // Previous: 261c56c6fd47b98dc78c1ba8d9424cfb35d3a1292d47e46ee44db860d78b14fd
+  // Owner rulings Q177, Q180-Q183 (2026-11-14, SB_CATALOG_IDENTIFIER_CASE_FOLD):
+  // the default identifier profile in policies/native_naming_profiles.json
+  // folds unquoted names to upper ASCII (unquoted_fold_mode upper_ascii,
+  // comparison folded), admits double quotes (doubled-delimiter escape),
+  // keeps a quoted name's case, and its collision group shares one key lane.
+  // Previous: 9c610876d2671c4b8d1cd65cd80a7481e7ddd6e80fc9cb57737c73e418019d81
   descriptor.content_sha256 =
-      "9c610876d2671c4b8d1cd65cd80a7481e7ddd6e80fc9cb57737c73e418019d81";
+      "b04aa3376b10c0285d91cae4fc7b5442a2710c330da3a19cad9d3fff24624024";
   descriptor.create_time_only = true;
   descriptor.post_create_filesystem_authority = false;
   descriptor.local_password_only = true;

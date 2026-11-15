@@ -1,13 +1,18 @@
 {
   "schema_version": 1,
   "review_status": "draft_requires_owner_review",
-  "review_note": "Drafted 2026-11-04 from the native enrollment test fixtures (AddNamingProfileFixture, AddCollisionPolicyFixture). Marked for owner review.",
+  "review_note": "Drafted 2026-11-04 from the native enrollment test fixtures (AddNamingProfileFixture, AddCollisionPolicyFixture). Marked for owner review. Updated 2026-11-14 for owner rulings Q177 and Q180-Q183 (upper ASCII fold of unquoted names, quoted names keep their case, one shared key lane).",
   "identifier_profiles": [
     {
       "key": "default_identifier",
       "profile_name": "explicit_internal_aliases",
-      "escape_rule": "not_applicable",
-      "comparison_mode": "exact",
+      "quote_styles": [
+        "double_quote"
+      ],
+      "escape_rule": "doubled_delimiter",
+      "unquoted_fold_mode": "upper_ascii",
+      "quoted_preserves_case": true,
+      "comparison_mode": "folded",
       "storage_display_mode": "preserve_user_text",
       "reserved_word_behavior": "parser_profile_specific",
       "length_unit": "unicode_scalar_values",
@@ -25,7 +30,7 @@
     {
       "key": "default_group",
       "language_lane": "exact_tag",
-      "key_lane": "separate"
+      "key_lane": "shared"
     }
   ],
   "collision_policies": [
@@ -41,7 +46,7 @@
     }
   ],
   "review_flags": [
-    "comparison_mode exact makes every catalog name case-sensitive and unfolded in the default identifier profile.",
-    "One collision group binds every built-in record kind with exact language tags and separate key lanes."
+    "Q177/Q180-Q183 (owner 2026-11-14): unquoted names fold to upper case, ASCII letters only (hello, Hello and HELLO are one name); a quoted name keeps its case and is compared exactly (\"HELLO\" and \"Hello\" are two names); an unquoted name and a quoted name collide when the quoted spelling equals the unquoted name folded (hello and \"HELLO\"). Non-ASCII letters are not folded until a case-folding resource is declared in the pack. (Was: comparison_mode exact makes every catalog name case-sensitive and unfolded in the default identifier profile.)",
+    "One collision group binds every built-in record kind with exact language tags and one shared key lane: each name is compared by its own lane's key (folded when unquoted, exact when quoted). (Was: One collision group binds every built-in record kind with exact language tags and separate key lanes.)"
   ]
 }

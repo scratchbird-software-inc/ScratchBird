@@ -21,6 +21,8 @@
 #include <regex>
 #include <stdexcept>
 #include <string>
+#include <utility>
+#include <vector>
 
 namespace {
 namespace db = scratchbird::storage::database;
@@ -144,7 +146,18 @@ int main() try {
   // must keep that order: a swap is the profile_code_mismatch refusal.
   for (std::size_t i = 0; i < s.management_profiles.size(); ++i)
     Check(static_cast<std::uint64_t>(s.management_profiles[i]) == i + 1, "management profile codes 1..10 in order");
-  Check(s.identifier_profiles[0].comparison_mode == c::IdentifierComparisonMode::exact &&
+  // Q177/Q180-Q183 (owner 2026-11-14, SB_CATALOG_IDENTIFIER_CASE_FOLD): the
+  // default profile folds unquoted names to upper ASCII, admits double
+  // quotes (doubled-delimiter escape), keeps a quoted name's case, compares
+  // folded, and its collision group shares one key lane. (Was: comparison
+  // exact, escape not_applicable, no quote style, no fold, quoted case not
+  // carried, key lane separate.)
+  Check(s.identifier_profiles[0].comparison_mode == c::IdentifierComparisonMode::folded &&
+            s.identifier_profiles[0].unquoted_fold_mode == c::IdentifierFoldMode::upper_ascii &&
+            s.identifier_profiles[0].quote_styles == 1 &&
+            s.identifier_profiles[0].escape_rule == c::IdentifierEscapeRule::doubled_delimiter &&
+            s.identifier_profiles[0].quoted_preserves_case &&
+            s.collision_groups[0].key_lane == c::CatalogCollisionKeyLane::shared &&
             // Q139 = 1 (owner 2026-11-14): unicode scalar values (was encoded_octets).
             s.identifier_profiles[0].length_unit == c::IdentifierLengthUnit::unicode_scalar_values &&
             // Q127 = 3 (owner 2026-11-14): the profile's maximum, from the pack.
@@ -176,6 +189,52 @@ int main() try {
                                       "\"maximum_identifier_length\": 0");
     Check(unlimited.ok() && unlimited.seeds && unlimited.seeds->identifier_profiles[0].maximum_identifier_length == 0,
           "Q127: maximum_identifier_length 0 (no project-defined limit) loads");
+  }
+  // Q177 (owner 2026-11-14, SB_CATALOG_IDENTIFIER_CASE_FOLD): the three new
+  // profile fields are required, and the combinations the profile record
+  // refuses are refused at load.
+  const char* naming = "policies/native_naming_profiles.json";
+  Refuses(LoadEdited(naming, "\"unquoted_fold_mode\": \"upper_ascii\",", ""),
+          "Q177: an identifier profile without unquoted_fold_mode refuses");
+  Refuses(LoadEdited(naming, "\"quoted_preserves_case\": true,", ""),
+          "Q177: an identifier profile without quoted_preserves_case refuses");
+  Refuses(LoadEdited(naming, "\"quote_styles\": [\n        \"double_quote\"\n      ],", ""),
+          "Q177: an identifier profile without quote_styles refuses");
+  Refuses(LoadEdited(naming, "\"double_quote\"\n", "\"double_quote\", \"double_quote\"\n"),
+          "Q177: a repeated quote style refuses");
+  Refuses(LoadEdited(naming, "\"double_quote\"\n", "\"single_quote\"\n"),
+          "Q177: an unknown quote style refuses");
+  Refuses(LoadEdited(naming, "\"unquoted_fold_mode\": \"upper_ascii\"", "\"unquoted_fold_mode\": \"title_case\""),
+          "Q177: an unknown fold mode refuses");
+  Refuses(LoadEdited(naming, "\"escape_rule\": \"doubled_delimiter\"", "\"escape_rule\": \"not_applicable\""),
+          "Q177: a quote style with escape_rule not_applicable refuses");
+  Refuses(LoadEdited(naming, "\"double_quote\"\n", ""),
+          "Q177: no quote style with an escape rule other than not_applicable refuses");
+  Refuses(LoadEdited(naming, "\"unquoted_fold_mode\": \"upper_ascii\"", "\"unquoted_fold_mode\": \"none\""),
+          "Q177: a folded comparison with no fold refuses");
+  {
+    // The pre-Q177 shape still loads when it is spelled out: no quotes, no
+    // fold, exact comparison.
+    scratchbird::tests::OwnedTempDirectory artifacts;
+    const auto root = artifacts.path() / "pack";
+    std::filesystem::copy(SB_DEFAULT_POLICY_PACK_ROOT, root, std::filesystem::copy_options::recursive);
+    auto text = Read(root / naming);
+    for (const auto& [from, to] : std::vector<std::pair<std::string, std::string>>{
+             {"\"double_quote\"\n", ""},
+             {"\"escape_rule\": \"doubled_delimiter\"", "\"escape_rule\": \"not_applicable\""},
+             {"\"unquoted_fold_mode\": \"upper_ascii\"", "\"unquoted_fold_mode\": \"none\""},
+             {"\"comparison_mode\": \"folded\"", "\"comparison_mode\": \"exact\""}}) {
+      const auto at = text.find(from);
+      Check(at != std::string::npos, "edited text exists in the pack file");
+      text.replace(at, from.size(), to);
+    }
+    Write(root / naming, text);
+    Rehash(root);
+    const auto exact = db::LoadNativePolicyFamilies(root.string());
+    Check(exact.ok() && exact.seeds && exact.seeds->identifier_profiles[0].quote_styles == 0 &&
+              exact.seeds->identifier_profiles[0].unquoted_fold_mode == c::IdentifierFoldMode::none &&
+              exact.seeds->identifier_profiles[0].comparison_mode == c::IdentifierComparisonMode::exact,
+          "Q177: an exact, unquoted profile spelled out in full still loads");
   }
   std::cout << "PASS native policy families " << checks << " checks\n";
   return 0;

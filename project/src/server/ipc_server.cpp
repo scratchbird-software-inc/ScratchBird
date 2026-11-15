@@ -1230,9 +1230,11 @@ std::optional<engine_api::NameRegistryEntry> PsNameResolveUniqueRegistryLeaf(
                                           ? "sbsql_v3"
                                           : entry.identifier_profile_uuid;
     if (PsNameCanonicalIdentifierProfile(entry_profile) != profile) continue;
-    if (!leaf.quoted && entry.requires_exact_match) continue;
-    const std::string entry_key = leaf.quoted ? entry.exact_lookup_key : entry.normalized_lookup_key;
-    if (entry_key != lookup_key) continue;
+    // SB_CATALOG_IDENTIFIER_CASE_FOLD (owner Q177, Q180-Q183, 2026-11-14):
+    // the registry's one matching rule, the lookup key against the entry's
+    // own-lane key. (Was: an unquoted leaf skipped every quoted entry and a
+    // quoted leaf compared every entry's exact key.)
+    if (!engine_api::NameRegistryEntryMatchesLookupKey(entry, lookup_key)) continue;
     if (match && match->object_uuid != entry.object_uuid) return std::nullopt;
     match = entry;
   }

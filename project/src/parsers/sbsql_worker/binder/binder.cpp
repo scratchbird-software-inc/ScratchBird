@@ -40,12 +40,26 @@ std::string ToLowerAscii(std::string value) {
   return value;
 }
 
+// SEARCH_KEY: SB_CATALOG_IDENTIFIER_CASE_FOLD (owner Q177, Q180-Q183,
+// 2026-11-14). Whether two presented names of a source binding (a FROM
+// source's alias, else its relation name, and a column qualifier) are the
+// same name: each compared by its own key, the spelling when quoted, the
+// spelling folded to upper case (ASCII letters only) when unquoted. So t, T
+// and "T" are one name, "T" and "t" are two, and "t" is not t. (Was: a quoted
+// and an unquoted name were never the same, and two unquoted names compared
+// lower-folded; for two unquoted names that is the same ASCII
+// case-insensitive answer.)
+std::string IdentifierComponentKey(const NativeIdentifierAstNode& component) {
+  if (component.quoted) return component.spelling;
+  std::string key = component.spelling;
+  for (auto& ch : key)
+    if (ch >= 'a' && ch <= 'z') ch = static_cast<char>(ch - 'a' + 'A');
+  return key;
+}
+
 bool SameIdentifierComponent(const NativeIdentifierAstNode& left,
                              const NativeIdentifierAstNode& right) {
-  if (left.quoted != right.quoted) return false;
-  return left.quoted
-             ? left.spelling == right.spelling
-             : ToLowerAscii(left.spelling) == ToLowerAscii(right.spelling);
+  return IdentifierComponentKey(left) == IdentifierComponentKey(right);
 }
 
 std::string CanonicalIdentifierKey(

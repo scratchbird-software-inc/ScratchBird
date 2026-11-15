@@ -1292,8 +1292,15 @@ void AddTransactionPolicies(db::NativeCreationCatalogSeed& seed,
 }
 
 
+// SB_CATALOG_IDENTIFIER_CASE_FOLD (owner Q177, Q180-Q183, 2026-11-14):
+// mirror_pack builds the identifier profile with the default pack's case
+// values (double quotes with the doubled-delimiter escape, upper ASCII fold,
+// quoted names keep their case, folded comparison) for the pack-equality
+// check (PackPolicyFamiliesMatchFixture). Every other use keeps this explicit
+// exact, unquoted fixture profile, whose hand-keyed names (normalized key =
+// raw text) the verification variants are built on.
 void AddNamingProfileFixture(db::NativeCreationCatalogSeed& seed,
-    const enrollment::NativeLocalServiceCreationItem& prototype,unsigned variant,unsigned copy=0) {
+    const enrollment::NativeLocalServiceCreationItem& prototype,unsigned variant,unsigned copy=0,bool mirror_pack=false) {
   using namespace catalog;
   CatalogIdentifierResolutionProfile identifier;
   identifier.profile_uuid=security_fixture::Id(57+100*copy);identifier.database_uuid=Id(1);identifier.generation=1;
@@ -1314,6 +1321,16 @@ void AddNamingProfileFixture(db::NativeCreationCatalogSeed& seed,
   // Q139 = 1 (owner 2026-11-14): 512 (unicode scalar values), mirroring the
   // pack. Was: 1024 (encoded octets, Q127/Q131).
   identifier.maximum_identifier_length=512;
+  if(mirror_pack){
+    identifier.quote_styles=1;identifier.escape_rule=IdentifierEscapeRule::doubled_delimiter;
+    identifier.unquoted_fold_mode=IdentifierFoldMode::upper_ascii;identifier.quoted_preserves_case=true;
+    identifier.comparison_mode=IdentifierComparisonMode::folded;
+  }else{
+    // Q177: the code default of quoted_preserves_case is now true (the
+    // specification's); this explicit exact fixture keeps false, the value it
+    // was built with. (Was: false by default.)
+    identifier.quoted_preserves_case=false;
+  }
   identifier.origin_transaction_uuid=security_tx;identifier.origin_local_transaction_id=1;
   if(variant==6)identifier.dialect_mode_flags=1;
   if(variant==16)identifier.resources=CatalogIdentifierResourceBinding{security_fixture::Id(111),security_fixture::Id(112),1,1};
@@ -1391,8 +1408,12 @@ runtime_security::NativeCatalogCollisionError ExpectedCollisionError(unsigned va
   return errors[variant];
 }
 
+// SB_CATALOG_IDENTIFIER_CASE_FOLD (owner Q177, Q183 = 1, 2026-11-14):
+// mirror_pack shares one key lane, as the default pack's collision group now
+// does, for the pack-equality check; every other use keeps the explicit
+// separate lane its variants are built on.
 void AddCollisionPolicyFixture(db::NativeCreationCatalogSeed& seed,
-    const enrollment::NativeLocalServiceCreationItem& prototype,unsigned variant,unsigned copy=0) {
+    const enrollment::NativeLocalServiceCreationItem& prototype,unsigned variant,unsigned copy=0,bool mirror_pack=false) {
   using namespace catalog;
   CatalogNamingCollisionPolicyBody body;
   body.body_uuid=security_fixture::Id(102000+1000*copy);body.database_uuid=Id(1);body.generation=1;
@@ -1402,7 +1423,7 @@ void AddCollisionPolicyFixture(db::NativeCreationCatalogSeed& seed,
   body.group_count=variant==17?2:1;
   body.groups[0]={security_fixture::Id(102100+1000*copy),
       variant==13?CatalogCollisionLanguageLane::all_languages:CatalogCollisionLanguageLane::exact_tag,
-      variant==15?CatalogCollisionKeyLane::shared:CatalogCollisionKeyLane::separate};
+      variant==15||mirror_pack?CatalogCollisionKeyLane::shared:CatalogCollisionKeyLane::separate};
   if(variant==17)body.groups[1]={security_fixture::Id(102101),CatalogCollisionLanguageLane::exact_tag,CatalogCollisionKeyLane::separate};
   for(const auto& kind:BuiltinCatalogRecordDescriptorViews()){
     if(variant==8&&kind.kind==CatalogRecordKind::config_profile)continue;
@@ -1538,8 +1559,11 @@ void PackPolicyFamiliesMatchFixture() {
   AddVerificationPolicies(expected.plan->catalogs,reference.items[0],0);
   AddManagementDefinitions(expected.plan->catalogs,reference.items[0],0);
   AddTransactionPolicies(expected.plan->catalogs,reference.items[0],0);
-  AddNamingProfileFixture(expected.plan->catalogs,reference.items[0],0);
-  AddCollisionPolicyFixture(expected.plan->catalogs,reference.items[0],0);
+  // Q177/Q183 (owner 2026-11-14): the pack's case values and shared key
+  // lane. (Was: the fixtures' exact profile and separate lane, which the pack
+  // then declared too.)
+  AddNamingProfileFixture(expected.plan->catalogs,reference.items[0],0,0,true);
+  AddCollisionPolicyFixture(expected.plan->catalogs,reference.items[0],0,0,true);
   // Descriptors 5+2+1, bodies 3+1+1+1+1, isolation 2, management 10+1,
   // identifier and dialect profiles, the collision body.
   constexpr std::size_t kFamilyObjects=5+3+1+1+2+1+1+2+10+1+1+1+1+1;
