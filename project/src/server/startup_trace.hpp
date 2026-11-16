@@ -4,6 +4,7 @@
 
 #include "config.hpp"
 #include "api_types.hpp"
+#include "native_catalog_cohort_lease_reader.hpp"
 #include <array>
 #include <atomic>
 #include <charconv>
@@ -50,10 +51,17 @@ inline std::atomic<std::uint64_t> sequence{0};
 // Only bounded phase/code labels and non-secret numeric observations are
 // emitted. Never serialize a context, credential, verifier, path or grant list.
 // These observations do not authenticate, authorize or establish readiness.
+// SB_NATIVE_CATALOG_CAPTURE_BOUND_TRACE (owner Q223 = yes, 2026-11-15): with
+// `catalog`, a refused native catalog read (NativeHostedRuntimeError::
+// catalog_failure) adds its structured fields: the cohort error number, the
+// capture bound by name (NativeCatalogCaptureBoundName), and the selector and
+// role of the relation being read when it was refused (0: none). Only bounded
+// labels and numbers; nothing of the catalog's content.
 inline void TraceServerStartupPhase(const ServerBootstrapConfig& config,
     std::string_view phase,std::string_view outcome,
     const engine::internal_api::EngineRequestContext* context=nullptr,
-    const engine::internal_api::EngineApiDiagnostic* diagnostic=nullptr) noexcept {
+    const engine::internal_api::EngineApiDiagnostic* diagnostic=nullptr,
+    const storage::database::NativeCatalogCohortInspection* catalog=nullptr) noexcept {
   if(config.log_level!="trace")return;
   startup_trace_detail::Record record;
   record.Append("{\"server_startup_trace\":{\"sequence\":");
@@ -80,6 +88,12 @@ inline void TraceServerStartupPhase(const ServerBootstrapConfig& config,
     for(const auto& field:diagnostic->fields)if(field.key=="authorization_context_failure"){
       record.Append(",\"authorization_context_failure\":");record.Quoted(field.value);break;
     }
+  }
+  if(catalog&&!catalog->ok()){
+    record.Append(",\"catalog_read_error\":");record.Number(static_cast<std::uint64_t>(catalog->error));
+    record.Append(",\"capture_bound\":");record.Quoted(storage::database::NativeCatalogCaptureBoundName(catalog->capture_bound));
+    record.Append(",\"failing_selector\":");record.Number(catalog->failing_selector);
+    record.Append(",\"failing_role\":");record.Number(catalog->failing_role);
   }
   record.Append("}}\n");
   if(record.complete)(void)std::fwrite(record.bytes.data(),1,record.used,stderr);

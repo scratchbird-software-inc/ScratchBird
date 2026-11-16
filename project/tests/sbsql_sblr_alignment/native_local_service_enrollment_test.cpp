@@ -10,6 +10,7 @@
 #include "../support/catalog_change_event_fixture.hpp"
 #include "../support/native_local_service_creation_fixture.hpp"
 #include "../../src/server/native_hosted_database_runtime.hpp"
+#include "../../src/server/startup_trace.hpp"
 #include "../../src/core/agents/agent_bootstrap_configuration.hpp"
 #include "../../src/core/agents/agent_policy_schema.hpp"
 #include "engine/internal_api/catalog/native_catalog_name_verification.hpp"
@@ -2490,12 +2491,22 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
                   <<" reopen="<<reopen<<" workspace="<<db::NativeCatalogCohortWorkspaceBytes(catalog_scan_limits)<<'\n';
               Check(catalog_io==server::NativeHostedRuntimeError::catalog_failure&&!read.catalogs().ok()&&reads>0,
                   "catalog source I/O failure produces no complete catalog observation");
+              {
+                // Owner Q223 = yes (SB_NATIVE_CATALOG_CAPTURE_BOUND_TRACE): the
+                // startup trace of a catalog_failure carries the read's
+                // structured fields (the trace writes to stderr at log level
+                // trace only).
+                server::ServerBootstrapConfig trace_config;trace_config.log_level="trace";
+                server::TraceServerStartupPhase(trace_config,"native_catalog_read","catalog_failure",nullptr,nullptr,&read.catalogs());
+              }
               reads=0;track_reads=true;
               const auto catalog_read=Host::ReadStartupCatalogs(read,catalog_limits,catalog_scan_limits);track_reads=false;
               if(catalog_read!=server::NativeHostedRuntimeError::none)std::cerr<<"startup catalogs="<<int(catalog_read)
                   <<" scan="<<int(read.catalogs().error)<<" root="<<int(read.catalogs().root_error)
                   <<" visibility="<<int(read.catalogs().visibility_error)<<" relation="<<int(read.catalogs().relation_error)
-                  <<" role="<<read.catalogs().failing_role<<" profile="<<profile<<'\n';
+                  <<" selector="<<read.catalogs().failing_selector<<" role="<<read.catalogs().failing_role
+                  <<" capture_bound="<<db::NativeCatalogCaptureBoundName(read.catalogs().capture_bound)  // owner Q223
+                  <<" profile="<<profile<<'\n';
               Check(catalog_read==server::NativeHostedRuntimeError::none&&read.catalogs().ok()&&reads>0&&
                   read.catalogs().relation_count==7/*step4*/&&db::SameReadSource(*read.catalogs().source,db::NativeReadSourceIdentityFromFixedRoot(*read.page_zero_anchor())),
                   "actual startup scan covers every catalog role, metadata chain and committed visibility on original custody");

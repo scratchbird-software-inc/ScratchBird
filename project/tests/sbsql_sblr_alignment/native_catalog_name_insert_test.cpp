@@ -53,6 +53,7 @@
 #include "catalog_policy_descriptor.hpp"
 #include "catalog_records.hpp"
 #include <memory>
+#include <sstream>
 #include "native_catalog_cohort_capture.hpp"
 #include "native_catalog_cohort_lease_reader.hpp"
 #include "engine/internal_api/catalog/native_catalog_metadata_verification.hpp"
@@ -1817,37 +1818,85 @@ std::size_t EntriesBelow(const Db& b, std::span<const byte> file, const Uuid& sc
     if (!v.deleted && v.entry.lifecycle_state == c::CatalogNameLifecycle::active && RunsThrough(v.entry, *names, scope_object)) ++n;
   return n;
 }
+// Startup verification of a file, as one line: the full verification's
+// first refusing verifier (the names binding verifier runs first, then the
+// paths verifier among the others), or "ok"; "refused_capture" when the
+// startup capture refuses the file.
+std::string VerificationOutcome(const Db& b, const std::string& path) {
+  auto v = Verify(b, path, true);
+  if (v.refused) v = Verify(b, path, false, 2);
+  std::ostringstream out;
+  if (v.full.ok()) {
+    out << "ok";
+  } else {
+    out << "names=" << int(v.full.names.error) << " paths=" << int(v.full.paths.error)
+        << " name_trees=" << int(v.full.name_trees.error) << " collisions=" << int(v.full.collisions.error);
+  }
+  return out.str();
+}
+// Case E's endings under owner Q226 (SB_NATIVE_NAME_CONFLICT_WRITE_WRITE_ONLY),
+// as observed 2026-11-15 at all five page sizes. PENDING AN OWNER RULING (the
+// Q226 follow-up on an object or scope left with no name): every ending in
+// which X's only name is dropped and committed is refused by startup
+// verification at the name-binding verifier, missing_default_name (X's
+// definition names a default entry that is no longer live), whether or not
+// the name under X also committed; the path verifier (which would report
+// unnamed_scope for the name under X) does not run. The writer itself accepts
+// dropping an object's only name while the object stays (no "every object
+// named" check exists in it). Only "drop first, first rolls back" (X keeps its
+// name, the name under X commits) verifies. Pinned so a change is seen; not a
+// statement that this is the intended behaviour. (Was, Q212: the second write
+// was a write_conflict with the first, and no ending committed both.)
+void ExpectEOutcome(const Db& b, const std::string& path, const std::string& label, bool drop_first, bool both,
+                    std::size_t definitions) {
+  if (drop_first && !both) {
+    ExpectNamedVerification(b, path, definitions + 2, label + ": X and the name under it", false, true);
+    return;
+  }
+  const auto outcome = VerificationOutcome(b, path);
+  std::cout << b.name << " page_size=" << b.size << " " << label << ": verification " << outcome << '\n';
+  const std::string want = "names=" + std::to_string(int(ia::NativeCatalogNameVerificationError::missing_default_name)) +
+                           " paths=" + std::to_string(int(ia::NativeCatalogNamePathVerificationError::source_required));
+  Check(outcome.starts_with(want), label + ": X's only name dropped and committed: startup verification refuses at "
+                                           "names missing_default_name (observed; pending owner ruling, Q226 follow-up)");
+}
 // SB_NATIVE_NAME_PATH_CONFLICT (owner Q47 = 1), relaxed by
-// SB_NATIVE_NAME_PATH_CONFLICT_BREAK (owner Q212, 2026-11-15): an entry and
-// another transaction's name change, both in progress, conflict only when the
-// entry's path walks in one ending of the change and not in the other,
-// whichever was written first; a rename no longer conflicts (paths are
-// derived at read). Cases:
+// SB_NATIVE_NAME_PATH_CONFLICT_BREAK (owner Q212, 2026-11-15), then removed by
+// SB_NATIVE_NAME_CONFLICT_WRITE_WRITE_ONLY (owner Q226, 2026-11-15): names
+// conflict only write-write on the same name row or by name-key uniqueness in
+// a scope; a path is checked in the writing transaction's own view only.
+// (Was, Q212: an entry and another transaction's name change, both in
+// progress, conflicted when the entry's path walked in one ending of the
+// change and not in the other.) Cases:
 //  A. the schema renamed by 2, in progress; 3 inserts a named object below it:
-//     it succeeds (Q212). 2 rolls back or commits; 3 commits; the database
-//     verifies. (Was, Q47: write_conflict with 2, no write; the insert then
-//     succeeded after 2 ended. Before SB_NATIVE_NAME_ROW_V4, after 2 committed
-//     the insert with its stored path through the old name was invalid_name.)
+//     it succeeds (Q212, kept by Q226). 2 rolls back or commits; 3 commits;
+//     the database verifies. (Was, Q47: write_conflict with 2, no write; the
+//     insert then succeeded after 2 ended. Before SB_NATIVE_NAME_ROW_V4, after
+//     2 committed the insert with its stored path through the old name was
+//     invalid_name.)
 //  B. 2 inserts a named object below the schema, in progress; 3 renames the
-//     schema: it succeeds (Q212), writing its own row only. 2 rolls back; the
-//     entries below still walk through the schema. (Was, Q47: write_conflict
-//     with 2, the rename succeeding once 2 rolled back; before that "N4b",
-//     cascading the entries below but 2's.)
+//     schema: it succeeds (Q212, kept by Q226), writing its own row only. 2
+//     rolls back; the entries below still walk through the schema. (Was, Q47:
+//     write_conflict with 2, the rename succeeding once 2 rolled back; before
+//     that "N4b", cascading the entries below but 2's.)
 //  C. 2 inserts a named object X, in progress; 3 inserts a name scoped under
-//     X: write_conflict with 2 (kept under Q212: the path walks only if 2
-//     commits; it was invalid_name before Q47: X's name was not in 3's view).
+//     X: invalid_name (owner Q226: X's name is not in 3's view, so the path
+//     does not walk there). (Was, Q212 and Q47: write_conflict with 2, the
+//     path walking only if 2 committed; before Q47: invalid_name.) A
+//     dependency row X->child under MGA write-write control (owner Q226, not
+//     yet in the native catalog) would make this a write_conflict again.
 //     2 rolls back: invalid_name (X has no name).
 //  D. the schema renamed by 2, in progress; 3 renames a name no path below
 //     the schema runs through: it succeeds (before Q47's fix the schema's
 //     name left the path index, and everything below it went unnamed), both
 //     commit, and the database verifies.
-//  E. (new, Q212) a change that breaks a path, in both orders and both
-//     endings: X named and committed, nothing below it; one transaction
-//     inserts a name under X, another drops X's only name. Whichever writes
-//     second gets a write_conflict with the first. The first rolls back: the
-//     second's write succeeds. The first commits: the drop is invalid_successor
-//     (the entry below would have no path) or the insert invalid_name (X has
-//     no name).
+//  E. (Q212, re-targeted by Q226) X named and committed, nothing below it; one
+//     transaction inserts a name under X, another drops X's only name, in both
+//     orders. Owner Q226: neither sees the other's row, neither is the same
+//     name row nor the same key, so both writes succeed. (Was, Q212: whichever
+//     wrote second got a write_conflict with the first.) The endings: the
+//     first rolls back and the second commits, or both commit; startup
+//     verification of each result is pinned as observed (see the case).
 void NameConflicts(const Db& b, const NameTemplate& t, u16 role, std::size_t definitions) {
   // A.
   for (const bool commit : {false, true}) {
@@ -1944,9 +1993,12 @@ void NameConflicts(const Db& b, const NameTemplate& t, u16 role, std::size_t def
       auto request = Request(3, child.Rows());
       request.new_pages = PageIds(9);
       const auto result = db::WriteCatalogInsertVersions(s.sink(), GrowingBinding(b), request);
-      if (result.error != CE::write_conflict) std::cerr << "C: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
-      Check(result.error == CE::write_conflict && result.blocker_order == u64{2} && !result.attempted && ReadAll(path) == file,
-            "C: a name under an object another transaction is creating is a write conflict with it, no write");
+      // Owner Q226 (SB_NATIVE_NAME_CONFLICT_WRITE_WRITE_ONLY): X's name is not
+      // in 3's view: invalid_name. (Was, Q212/Q47: write_conflict with 2.)
+      if (result.error != CE::invalid_name) std::cerr << "C: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+      Check(result.error == CE::invalid_name && !result.blocker_order && !result.attempted && ReadAll(path) == file,
+            "C: a name under an object another transaction is creating, not in this view: invalid_name, no write "
+            "(Q226; was: write_conflict with 2, Q212)");
     }
     Rollback(*s.w, s.sink(), 2);
     RefusedGrowing(b, s, path, Request(3, child.Rows()), CE::invalid_name, "C: X rolled back, the name under it has no path");
@@ -1999,13 +2051,15 @@ void NameConflicts(const Db& b, const NameTemplate& t, u16 role, std::size_t def
               << " beside the schema's rename\n";
     fs::remove(path);
   }
-  // E. (new, owner Q212) a change that breaks a path, both orders, both
-  // endings. `drop_first`: transaction 3 drops X's name and 4 inserts the name
-  // under X; else 3 inserts and 4 drops.
+  // E. (owner Q212, re-targeted by Q226) a drop of X's only name and an
+  // insert under X, both orders, two endings. `drop_first`: transaction 3
+  // drops X's name and 4 inserts the name under X; else 3 inserts and 4
+  // drops. `both`: both commit; else the first rolls back and the second
+  // commits.
   for (const bool drop_first : {false, true})
-    for (const bool commit : {false, true}) {
-      const std::string label = std::string("E (") + (drop_first ? "drop first" : "insert first") + ", first " +
-                                (commit ? "commits" : "rolls back") + ")";
+    for (const bool both : {false, true}) {
+      const std::string label = std::string("E (") + (drop_first ? "drop first" : "insert first") + ", " +
+                                (both ? "both commit" : "first rolls back") + ")";
       const auto path = b.Copy(b.bytes, "conflict-e.db");
       Session s(b, path);
       Begin(s, 2);
@@ -2036,7 +2090,7 @@ void NameConflicts(const Db& b, const NameTemplate& t, u16 role, std::size_t def
       dropped.lifecycle_state = c::CatalogNameLifecycle::dropped;
       dropped.dropped_transaction_uuid = {UuidKind::transaction, TxId(dropper)};
       const auto drop = NameSuccessor(parent.entry, parent.entry.version_uuid, dropper,
-                                      VersionId(9460 + 2 * unsigned{drop_first} + unsigned{commit}),
+                                      VersionId(9460 + 2 * unsigned{drop_first} + unsigned{both}),
                                       c::CatalogNamePayload{dropped}, true);
       const auto insert_child = [&] {
         return db::WriteCatalogInsertVersions(s.sink(), GrowingBinding(b), child_rows(ReadAll(path)));
@@ -2050,41 +2104,26 @@ void NameConflicts(const Db& b, const NameTemplate& t, u16 role, std::size_t def
       }
       Begin(s, 4);
       {
-        file = ReadAll(path);
+        // Owner Q226: no name conflict. (Was, Q212: write_conflict with 3, no
+        // write.)
         const auto second = drop_first ? insert_child() : drop_x();
-        if (second.error != CE::write_conflict)
-          std::cerr << label << ": second: " << db::CatalogVersionWriteErrorName(second.error) << '\n';
-        Check(second.error == CE::write_conflict && second.blocker_order == u64{3} && !second.attempted &&
-                  ReadAll(path) == file,
-              label + ": the second write would break (or depend on) the first's path: write conflict with 3, no write");
+        if (!second.ok()) std::cerr << label << ": second: " << db::CatalogVersionWriteErrorName(second.error) << '\n';
+        Check(second.ok(), label + ": the second write succeeds while the first is in progress (Q226; was: "
+                                   "write_conflict with 3, Q212)");
       }
-      if (!commit) {
-        Rollback(*s.w, s.sink(), 3);
-        const auto second = drop_first ? insert_child() : drop_x();
-        if (!second.ok()) std::cerr << label << ": after: " << db::CatalogVersionWriteErrorName(second.error) << '\n';
-        Check(second.ok(), label + ": the first rolled back, the second write succeeds");
-        if (drop_first) {
-          Commit(*s.w, s.sink(), 4);
-          ExpectNamedVerification(b, path, definitions + 2, label + ": X and the name under it", false, true);
-        } else {
-          Rollback(*s.w, s.sink(), 4);
-        }
-      } else {
+      if (both) {
         Commit(*s.w, s.sink(), 3);
-        file = ReadAll(path);
-        const auto second = drop_first ? insert_child() : drop_x();
-        const auto want = drop_first ? CE::invalid_name : CE::invalid_successor;
-        if (second.error != want) std::cerr << label << ": after: " << db::CatalogVersionWriteErrorName(second.error) << '\n';
-        Check(second.error == want && !second.attempted && ReadAll(path) == file,
-              label + (drop_first ? ": the drop committed, the name under X has no path: invalid_name"
-                                  : ": the name under X committed, dropping X's name would leave it without a path: "
-                                    "invalid_successor"));
-        Rollback(*s.w, s.sink(), 4);
-        if (!drop_first) ExpectNamedVerification(b, path, definitions + 2, label + ": X and the name under it", false, true);
+      } else {
+        Rollback(*s.w, s.sink(), 3);
       }
+      Commit(*s.w, s.sink(), 4);
+      // What startup verification makes of the result, pinned as observed
+      // (Q226 follow-up, pending an owner ruling on a scope or object left
+      // with no name; see ExpectEOutcome).
+      ExpectEOutcome(b, path, label, drop_first, both, definitions);
       fs::remove(path);
     }
-  std::cout << b.name << " name conflicts page_size=" << b.size << ": A (both endings), B, C, D, E (both orders, both endings)\n";
+  std::cout << b.name << " name conflicts page_size=" << b.size << ": A (both endings), B, C, D, E (both orders, two endings)\n";
 }
 
 // ---- Inserts that move paths (owner Q48 = 1) -----------------------------------------------
@@ -2241,6 +2280,212 @@ void NameInsertCascade(const Db& b, const NameTemplate& t, u16 role, std::size_t
 // ---- The catalog-change audit event (W3b-2a, owner Q31 = 1, Q49 = 1, Q50 = 1) -------------
 // The create's construction-intent row (role 6): the template an event row's
 // metadata starts from (its owner, schema and parent), and its intent.
+// Q226 case 4, observed 2026-11-15 at all five page sizes. PENDING AN OWNER
+// RULING: under Q226 no rule catches two transactions each adding an entry of
+// one object marked default_for_language in one language (the same object, so
+// not a uniqueness collision; different rows, so not write-write; each path
+// check sees only its own default). Both writes succeed and both commit; startup
+// verification then refuses at the path verifier, duplicate_language_default.
+// (Was, Q212: caught only indirectly, when a path below the object ran through
+// that language.) Pinned so a change is seen; not a statement that this is the
+// intended behaviour.
+void ExpectDefaultRaceWrite(const db::CatalogVersionWriteResult& result) {
+  Check(result.ok(), "Q226 4: a second default of A in that language by another transaction succeeds (observed; "
+                     "pending owner ruling)");
+}
+void ExpectDefaultRaceVerification(const Db& b, const std::string& path) {
+  const auto outcome = VerificationOutcome(b, path);
+  std::cout << b.name << " page_size=" << b.size << " Q226 4: both committed, verification " << outcome << '\n';
+  const std::string want = "names=0 paths=" +
+                           std::to_string(int(ia::NativeCatalogNamePathVerificationError::duplicate_language_default));
+  Check(outcome.starts_with(want), "Q226 4: two committed defaults of A in one language: startup verification refuses "
+                                   "at paths duplicate_language_default (observed; pending owner ruling)");
+}
+// ---- Name conflicts that remain (owner Q226) ------------------------------------------------
+// SB_NATIVE_NAME_CONFLICT_WRITE_WRITE_ONLY (owner Q226, 2026-11-15): the only
+// name conflicts between transactions are (1) write-write on the same name row
+// and (2) name-key uniqueness in a scope (the second writer of one own-lane
+// key in one scope, profile, language lane and collision group gets
+// write_conflict). Written out here (new cases, Q226):
+//  1. same row: 3 renames A's entry, in progress; 4's rename and 4's drop of
+//     the same row are write_conflict with 3, no write; 3 rolls back; 4's
+//     rename succeeds, commits and verifies;
+//  2. uniqueness, rename first: 5 renames A to K, in progress; 6 inserts an
+//     object named K in the same scope: write_conflict with 5;
+//  3. uniqueness, insert first: 7 inserts an object named K2, in progress; 8
+//     renames A to K2: write_conflict with 7;
+//  4. (owner question) two transactions each add an entry of A marked
+//     default_for_language in one language: no rule above catches it, both
+//     commit; startup verification then refuses (pinned as observed, see
+//     ExpectDefaultRaceVerification).
+void NameRowConflicts(const Db& b, const NameTemplate& t, u16 role, std::size_t definitions) {
+  const auto path = b.Copy(b.bytes, "row-conflicts.db");
+  Session s(b, path);
+  const auto insert = [&](u64 n, const Named& named) {
+    auto r = Request(n, named.Rows());
+    r.new_pages = PageIds(9);
+    return db::WriteCatalogInsertVersions(s.sink(), GrowingBinding(b), r);
+  };
+  const auto rename = [&](const db::CatalogInsertRow& base, const Uuid& predecessor, u64 n, unsigned k,
+                          const std::string& text, bool drop = false) {
+    auto e = Keyed(std::get<c::CatalogNameEntry>(*base.name), t, text);
+    if (drop) {
+      e.lifecycle_state = c::CatalogNameLifecycle::dropped;
+      e.dropped_transaction_uuid = {UuidKind::transaction, TxId(n)};
+    }
+    auto r = NameSuccessor(base, predecessor, n, VersionId(k), c::CatalogNamePayload{e}, drop);
+    for (unsigned i = 0; i < 16; ++i)
+      r.new_pages.push_back({V7(kT + 2300000 + 20 * u64{k} + i, 0xf70000 + k), V7(kT + 2300000 + 20 * u64{k} + i, 0xf80000 + k)});
+    return r;
+  };
+  const auto expect_conflict = [&](const db::CatalogVersionWriteResult& result, u64 blocker, const std::string& label,
+                                   std::span<const byte> before) {
+    if (result.error != CE::write_conflict || result.blocker_order != blocker)
+      std::cerr << label << ": got " << db::CatalogVersionWriteErrorName(result.error) << " blocker "
+                << (result.blocker_order ? static_cast<long long>(*result.blocker_order) : -1) << '\n';
+    Check(result.error == CE::write_conflict && result.blocker_order == blocker && !result.attempted &&
+              ReadAll(path) == std::vector<byte>(before.begin(), before.end()),
+          label + ": write_conflict with " + std::to_string(blocker) + ", no write");
+  };
+  // A, committed.
+  Begin(s, 2);
+  auto file = ReadAll(path);
+  const auto a = NamedAfter(b, file, t, role, After(b, file, role), 3701, 2, "w3b_ww_a");
+  {
+    const auto result = insert(2, a);
+    if (!result.ok()) std::cerr << "A: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+    Check(result.ok(), "Q226: a named object A");
+  }
+  Commit(*s.w, s.sink(), 2);
+  // 1. Same row.
+  Begin(s, 3);
+  {
+    const auto result = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), rename(a.entry, a.entry.version_uuid, 3, 9801, "w3b_ww_a3"));
+    if (!result.ok()) std::cerr << "1: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+    Check(result.ok(), "Q226 1: 3 renames A, in progress");
+  }
+  Begin(s, 4);
+  file = ReadAll(path);
+  expect_conflict(db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), rename(a.entry, a.entry.version_uuid, 4, 9802, "w3b_ww_a4")),
+                  3, "Q226 1: 4 renames the row 3 is renaming", file);
+  expect_conflict(db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), rename(a.entry, a.entry.version_uuid, 4, 9803, "w3b_ww_a", true)),
+                  3, "Q226 1: 4 drops the row 3 is renaming", file);
+  Rollback(*s.w, s.sink(), 3);
+  const auto r4 = rename(a.entry, a.entry.version_uuid, 4, 9804, "w3b_ww_a4");
+  {
+    const auto result = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), r4);
+    if (!result.ok()) std::cerr << "1 after: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+    Check(result.ok(), "Q226 1: 3 rolled back, 4's rename succeeds");
+  }
+  Commit(*s.w, s.sink(), 4);
+  ExpectNamedVerification(b, path, definitions + 1, "Q226 1: A renamed by 4", false, true);
+  const auto a_now = AsRow(r4);
+  // 2. Uniqueness, rename first.
+  Begin(s, 5);
+  {
+    const auto result = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), rename(a_now, r4.version_uuid, 5, 9805, "w3b_ww_k1"));
+    if (!result.ok()) std::cerr << "2: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+    Check(result.ok(), "Q226 2: 5 renames A to K, in progress");
+  }
+  Begin(s, 6);
+  file = ReadAll(path);
+  {
+    const auto result = insert(6, NamedAfter(b, file, t, role, After(b, file, role), 3702, 6, "w3b_ww_k1"));
+    expect_conflict(result, 5, "Q226 2: 6 inserts an object named K in the scope while 5's rename to K is in progress",
+                    file);
+    Check(result.failed_row == 2u, "Q226 2: the entry is the row refused");
+  }
+  Rollback(*s.w, s.sink(), 6);
+  Rollback(*s.w, s.sink(), 5);
+  // 3. Uniqueness, insert first.
+  Begin(s, 7);
+  file = ReadAll(path);
+  {
+    const auto result = insert(7, NamedAfter(b, file, t, role, After(b, file, role), 3703, 7, "w3b_ww_k2"));
+    if (!result.ok()) std::cerr << "3: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+    Check(result.ok(), "Q226 3: 7 inserts an object named K2, in progress");
+  }
+  Begin(s, 8);
+  file = ReadAll(path);
+  expect_conflict(db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), rename(a_now, r4.version_uuid, 8, 9806, "w3b_ww_k2")),
+                  7, "Q226 3: 8 renames A to K2 while 7's insert of K2 is in progress", file);
+  Rollback(*s.w, s.sink(), 8);
+  Rollback(*s.w, s.sink(), 7);
+  // 4. Two language defaults of A in one language, by two transactions.
+  const Uuid language = OtherLanguage(t.entry.language_uuid.value);
+  Begin(s, 9);
+  file = ReadAll(path);
+  {
+    auto r = Request(9, {EntryLike(a_now, t, V7(After(b, file, role), 0xd40001), 31, 9, "w3b_ww_fr_one", language, true,
+                                   c::CatalogNameClass::alias)});
+    r.new_pages = PageIds(9);
+    const auto result = db::WriteCatalogInsertVersions(s.sink(), GrowingBinding(b), r);
+    if (!result.ok()) std::cerr << "4 first: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+    Check(result.ok(), "Q226 4: 9 adds A's default in a second language, in progress");
+  }
+  Begin(s, 10);
+  file = ReadAll(path);
+  {
+    auto r = Request(10, {EntryLike(a_now, t, V7(After(b, file, role), 0xd40002), 32, 10, "w3b_ww_fr_two", language, true,
+                                    c::CatalogNameClass::alias)});
+    r.new_pages = PageIds(9);
+    const auto result = db::WriteCatalogInsertVersions(s.sink(), GrowingBinding(b), r);
+    std::cout << b.name << " page_size=" << b.size << " Q226 4: a second default of A in that language by 10: "
+              << db::CatalogVersionWriteErrorName(result.error) << '\n';
+    ExpectDefaultRaceWrite(result);
+  }
+  Commit(*s.w, s.sink(), 9);
+  Commit(*s.w, s.sink(), 10);
+  ExpectDefaultRaceVerification(b, path);
+  fs::remove(path);
+  std::cout << b.name << " name row conflicts page_size=" << b.size << ": same row, uniqueness both orders, default race\n";
+}
+
+// ---- A name too long for the page, after create (owner Q225) ------------------------------
+// SB_NATIVE_NAME_KEY_EXCEEDS_PAGE_CAPACITY (owner Q225 = yes, 2026-11-15): a
+// name whose name-tree cell does not fit a quarter of the page is refused with
+// its own code, name_key_exceeds_page_capacity, by an insert and by a rename,
+// with no write. 500 four-byte scalars (2,000 octets; the default pack admits
+// 512 scalars): at 8 KiB past the page limit (Q145: 443 scalars for the
+// database's own name); at 16 KiB and above it fits, and the write succeeds.
+// (Was: invalid_insert for the insert, invalid_successor for the rename; no
+// case covered it.)
+void NameKeyPageCapacity(const Db& b, const NameTemplate& t, u16 role) {
+  const auto path = b.Copy(b.bytes, "name-key-capacity.db");
+  Session s(b, path);
+  std::string text;
+  for (int i = 0; i < 500; ++i) text += "\xf0\x9f\x98\x80";
+  const bool over = b.size == 8192;
+  const CE want = over ? CE::name_key_exceeds_page_capacity : CE::none;
+  Begin(s, 2);
+  auto file = ReadAll(path);
+  {
+    auto r = Request(2, NamedAfter(b, file, t, role, After(b, file, role), 3704, 2, text).Rows());
+    r.new_pages = PageIds(9);
+    const auto result = db::WriteCatalogInsertVersions(s.sink(), GrowingBinding(b), r);
+    if (result.error != want) std::cerr << "Q225 insert: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+    Check(result.error == want && (!over || (!result.attempted && ReadAll(path) == file)),
+          over ? "Q225: an insert of a 500-scalar four-byte name at 8 KiB: name_key_exceeds_page_capacity, no write "
+                 "(was: invalid_insert)"
+               : "Q225: an insert of a 500-scalar four-byte name fits a larger page");
+  }
+  Rollback(*s.w, s.sink(), 2);
+  Begin(s, 3);
+  file = ReadAll(path);
+  {
+    const auto r = ScopeRename(b, t, file, 3, 9807, 0, text, {2});
+    const auto result = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), r);
+    if (result.error != want) std::cerr << "Q225 rename: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+    Check(result.error == want && (!over || (!result.attempted && ReadAll(path) == file)),
+          over ? "Q225: a rename to a 500-scalar four-byte name at 8 KiB: name_key_exceeds_page_capacity, no write "
+                 "(was: invalid_successor)"
+               : "Q225: a rename to a 500-scalar four-byte name fits a larger page");
+  }
+  Rollback(*s.w, s.sink(), 3);
+  std::cout << b.name << " name key capacity page_size=" << b.size << ": " << (over ? "refused" : "fits") << '\n';
+  fs::remove(path);
+}
+
 std::pair<c::CatalogMetadataVersion, c::CatalogConstructionIntent> ConstructionIntentOf(const Db& b, std::span<const byte> file) {
   RoleScope scope(b, 6);
   const auto rel = ReadRelation(b, file);
@@ -3132,6 +3377,8 @@ int main(int argc, char** argv) {
     if (room) NameCascadePaths(b, t, *role, fresh.names.definitions);
     if (room) NameConflicts(b, t, *role, fresh.names.definitions);
     if (room) NameInsertCascade(b, t, *role, fresh.names.definitions);
+    if (room) NameRowConflicts(b, t, *role, fresh.names.definitions);  // owner Q226
+    if (room) NameKeyPageCapacity(b, t, *role);                         // owner Q225
     if (room) AuditedChanges(b, t, *role, fresh.names.definitions);
     if (room) NameGrowth(b, t, *role, fresh.names.definitions);
     if (room) NameSplits(b, t, *role, fresh.names.definitions);

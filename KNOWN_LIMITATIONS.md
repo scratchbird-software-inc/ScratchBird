@@ -122,9 +122,12 @@ not to bind; the bootstrap principal name measured the same:
 - A create whose name exceeds the page limit is refused before any file is
   written, with `DATABASE.CREATE_NAME_KEY_EXCEEDS_PAGE_CAPACITY`. Use a larger
   page size or a shorter name.
-- Names written after create are held to the same quarter-page bound. Their
-  exact maxima have not been measured, and the refusal they get is not yet a
-  dedicated code.
+- Names written after create (a new object's name, or a rename) are held to
+  the same quarter-page bound. The catalog writer refuses one that exceeds it
+  with its own code, `name_key_exceeds_page_capacity`, and writes nothing.
+  The exact maxima for these names have not been measured; a name in a schema
+  carries the schema's identity in its key, so its limit is somewhat lower
+  than the database name's.
 
 ## Review Guidance
 

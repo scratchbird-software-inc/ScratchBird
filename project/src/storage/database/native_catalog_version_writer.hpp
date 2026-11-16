@@ -105,7 +105,9 @@ enum class CatalogVersionWriteError : std::uint8_t {
   ahead_of_catalog_root,   // a generation or epoch above the catalog root's
   transaction_not_committed,  // AdvanceCatalogRoot: the named transaction has not committed
   root_regression,         // AdvanceCatalogRoot: generation not the next, or an epoch lowered
-  name_record_unsupported,  // no longer produced since name successors (N4a); kept so values do not shift
+  // (Retired, owner Q224 = yes, 2026-11-15: name_record_unsupported, never
+  // produced since name successors (N4a). Not persisted, sent on a wire or
+  // pinned numerically; the later values are renumbered.)
   relation_full,           // no reached leaf has room
   duplicate_row,           // insert: the row UUID or version UUID is already in the relation (or the batch)
   duplicate_object,        // insert: a committed or own row of the relation (or the batch) carries the object UUID
@@ -150,6 +152,14 @@ enum class CatalogVersionWriteError : std::uint8_t {
   // version's tree cell would leave a non-root B-tree leaf empty, which the
   // page codec refuses (no leaf merge yet); nothing written.
   tree_leaf_emptied,
+  // SEARCH_KEY: SB_NATIVE_NAME_KEY_EXCEEDS_PAGE_CAPACITY (owner Q225 = yes,
+  // 2026-11-15): insert or successor: a name row's cell in a name tree (its
+  // key: the scope, profile and own-lane key; or its UUID-to-name key) is
+  // longer than a name-tree page admits for one cell (a quarter of the page,
+  // the same bound create reports as
+  // DATABASE.CREATE_NAME_KEY_EXCEEDS_PAGE_CAPACITY); nothing written. (Was:
+  // invalid_insert for an insert, invalid_successor for a successor.)
+  name_key_exceeds_page_capacity,
 };
 const char* CatalogVersionWriteErrorName(CatalogVersionWriteError error) noexcept;
 
@@ -267,11 +277,18 @@ struct CatalogVersionRequest {
   // default_for_language or vector default change) writes this successor
   // only; no other entry stores its path or its path's display. A change that
   // would leave a live entry this transaction sees without a path (an unnamed
-  // or ambiguous scope) is invalid_successor, before any write; another
-  // transaction's entry in progress whose path walks in one ending of this
-  // transaction and not in the other is a write_conflict with it
-  // (SB_NATIVE_NAME_PATH_CONFLICT_BREAK, owner Q212, 2026-11-15; was: whose
-  // path the change moves, or breaks where a lookup reaches a changed name).
+  // or ambiguous scope) is invalid_successor, before any write.
+  // SEARCH_KEY: SB_NATIVE_NAME_CONFLICT_WRITE_WRITE_ONLY (owner Q226,
+  // 2026-11-15): a name write conflicts with another transaction in progress
+  // only write-write on the same name row (write_conflict) or by name-key
+  // uniqueness in a scope (another transaction's in-progress entry with the
+  // same own-lane key in the same scope, profile, language lane and
+  // collision group: write_conflict); paths are checked in this
+  // transaction's view only. (Was, SB_NATIVE_NAME_PATH_CONFLICT_BREAK, owner
+  // Q212: another transaction's entry in progress whose path walked in one
+  // ending of this transaction and not in the other was a write_conflict with
+  // it; before that, whose path the change moved, or broke where a lookup
+  // reached a changed name.)
   // (Was: every live entry whose path ran through the changed name got a
   // successor version in the same write, with its regenerated
   // full_path_lookup_key, path_component_count and UUID-to-name display
@@ -279,7 +296,9 @@ struct CatalogVersionRequest {
   // cascade_versions_exhausted.)
   // SB_NATIVE_NAME_PATH_CONFLICT (owner Q47 = 1, 2026-11-11): a path is
   // resolved over the names this transaction sees (a name another
-  // transaction is changing is seen as its committed version). Writing an
+  // transaction is changing is seen as its committed version). (The rest of
+  // this note and the next are superseded by owner Q226 above; kept as
+  // history.) Writing an
   // entry whose path makes a lookup that a name row another transaction is
   // changing decides (that object's vector, its entry marked
   // default_for_language in the path's language, or the entry its vector
@@ -436,11 +455,13 @@ CatalogVersionWriteResult WriteCatalogSuccessorVersion(disk::CarefulWriteSink& s
 // existing object, in a language whose entries fell back to its vector's
 // default). Nothing else is written: paths are walked at read. An entry left
 // without a path (a second default in one language makes its scope ambiguous)
-// is invalid_name; another transaction's entry in progress whose path they
-// break (or make walk) is a write_conflict, and so is each inserted entry
-// whose path another transaction's change in progress breaks (or makes walk):
-// SB_NATIVE_NAME_PATH_CONFLICT_BREAK, owner Q212 (was: move or break, and
-// Q47's write_conflict for any lookup a changing row decides). (Was: each stored entry they moved got a successor
+// is invalid_name, in this transaction's view only
+// (SB_NATIVE_NAME_CONFLICT_WRITE_WRITE_ONLY, owner Q226, 2026-11-15; was,
+// SB_NATIVE_NAME_PATH_CONFLICT_BREAK, owner Q212: also a write_conflict with
+// another transaction's entry in progress whose path they broke or made walk,
+// and for each inserted entry whose path another transaction's change in
+// progress broke or made walk; before that, move or break, and Q47's
+// write_conflict for any lookup a changing row decides). (Was: each stored entry they moved got a successor
 // version in the same write, from this request's cascade_versions; too few
 // was cascade_versions_exhausted with result.cascade_needed.)
 struct CatalogInsertRow {
