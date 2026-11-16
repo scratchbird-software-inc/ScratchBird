@@ -71,6 +71,10 @@ struct BootstrapDefinitionMetadataInput {
   // and requires the supplied name vector to agree with both
   // (catalog_named_creation.cpp: v.name_vector_uuid == d.name_vector_uuid and
   // v.default_name_entry_uuid == d.default_name_uuid). They are therefore part
+  // [SB_CATALOG_NO_NAME_REFERENCE, owner Q248 = 1, 2026-11-16: the definition
+  // now carries name_vector_uuid only; default_name_entry_uuid is the identity
+  // the default entry is created with, checked by the preflight against the
+  // unit's entry marked default_for_object.]
   // of a complete definition envelope, not part of the name half: an envelope
   // without them encodes cleanly and is refused as invalid_names later.
   core::platform::Uuid name_vector_uuid;
@@ -260,7 +264,9 @@ inline BootstrapDefinitionMetadataResult BuildBootstrapDefinitionMetadata(
   m.record.payload.clear();  // By contract: the assembler fills this.
   // Read by PreflightLocalNamedCreationRecord against the supplied name vector.
   m.name_vector_uuid = {p::UuidKind::object, input.name_vector_uuid};
-  m.default_name_uuid = {p::UuidKind::object, input.default_name_entry_uuid};
+  // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16): the definition
+  // holds no name reference; default_name_entry_uuid is only the identity
+  // the entry is given below. (Was: m.default_name_uuid set from it.)
 
   m.authority_scope = c::CatalogAuthorityScope::local;
   m.visibility = c::CatalogVisibilityClass::internal_only;
@@ -493,7 +499,7 @@ inline BootstrapNamedCreationUnitResult BuildBootstrapNamedCreationUnit(
   // two halves cannot disagree about a kind label.
   const auto object = unit.definition.record.header.object_uuid;
   const auto name_vector = unit.definition.name_vector_uuid;
-  const auto name_entry = unit.definition.default_name_uuid;
+  const p::TypedUuid name_entry{p::UuidKind::object, input.definition.default_name_entry_uuid};
   const auto owning_schema = unit.definition.owning_schema_uuid;
   const auto schema_as_object = unit.definition.record.header.parent_uuid;
   const auto policy = unit.definition.security_policy_uuid;
@@ -524,8 +530,9 @@ inline BootstrapNamedCreationUnitResult BuildBootstrapNamedCreationUnit(
   // A root object has no owning schema: the optional is omitted, not a nil.
   if (owning_schema.value.is_nil()) v.owning_schema_uuid.reset();
   else v.owning_schema_uuid = owning_schema;
-  v.default_language_uuid = c::CatalogLanguageIdentity(input.language_uuid);
-  v.default_name_entry_uuid = name_entry;
+  // SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES (owner Q228 revisited): no default on
+  // the vector; the entry below is marked the object's default. (Was:
+  // default_language_uuid and default_name_entry_uuid set here.)
   v.name_collision_policy_uuid = {p::UuidKind::object, input.name_collision_policy_uuid};
   // Taken from the metadata version, not defaulted in parallel with it: the
   // matcher requires equality and two independent defaults drift silently.

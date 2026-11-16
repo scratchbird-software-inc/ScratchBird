@@ -200,7 +200,7 @@ void BorrowedPermissionMetadataChecks() {
     if(mutation==3)value.creator_transaction_uuid.kind=p::UuidKind::object;
     if(mutation==4)value.creator_local_transaction_id=0;
     if(mutation==5)value.definition_version=0;
-    if(mutation==6)value.default_name_uuid.kind=p::UuidKind::row;
+    if(mutation==6)value.name_vector_uuid.kind=p::UuidKind::row;/* (Was: default_name_uuid, retired by owner Q248 = 1; the name-vector fault) */
     if(mutation==7)value.name_vector_uuid.kind=p::UuidKind::row;
     if(mutation==8)value.security_policy_uuid.kind=p::UuidKind::row;
     if(mutation==9)value.owning_schema_uuid.kind=p::UuidKind::object;

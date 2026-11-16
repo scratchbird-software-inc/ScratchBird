@@ -43,7 +43,8 @@ template<class Reserve> void ReserveNativeCreationCatalogReferences(
     const NativeCreationCatalogRecord& r,Reserve reserve) {
   const auto& m=r.metadata;
   for(const auto& id:{m.record.header.parent_uuid,m.owner_uuid,m.creator_transaction_uuid,
-      m.retired_transaction_uuid,m.default_name_uuid,m.name_vector_uuid,m.security_policy_uuid,
+      // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16): (was: default_name_uuid also checked or set on the next line).
+      m.retired_transaction_uuid,m.name_vector_uuid,m.security_policy_uuid,
       m.dependency_group_uuid,m.storage_binding_uuid,m.donor_overlay_uuid,m.audit_uuid,m.owning_schema_uuid})
     if(!id.value.is_nil())reserve(id.value);
   if(m.record.header.kind==core::catalog::CatalogRecordKind::database) {
@@ -216,7 +217,7 @@ template<class Reserve> void ReserveNativeCreationCatalogReferences(
     const auto optional=[&](const auto& id){if(id)reserve(id->value);};
     reserve(n.object_uuid.value);reserve(n.name_vector_uuid.value);reserve(n.security_policy_uuid.value);
     if constexpr(std::is_same_v<std::decay_t<decltype(n)>,core::catalog::CatalogNameVector>) {
-      optional(n.owning_schema_uuid);reserve(n.default_name_entry_uuid.value);reserve(n.name_collision_policy_uuid.value);
+      optional(n.owning_schema_uuid);reserve(n.name_collision_policy_uuid.value);  // (SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES: was also the vector default entry)
     }else{
       reserve(n.name_entry_uuid.value);reserve(n.scope_uuid.value);optional(n.parent_object_uuid);optional(n.parent_schema_uuid);
       reserve(n.dialect_profile_uuid.value);reserve(n.identifier_profile_uuid.value);optional(n.case_fold_profile_uuid);

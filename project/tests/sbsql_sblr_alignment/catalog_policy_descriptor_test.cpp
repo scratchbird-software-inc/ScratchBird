@@ -71,7 +71,7 @@ std::string Golden(const c::CatalogPolicyDescriptor& r){
 c::CatalogMetadataVersion Metadata(const c::CatalogPolicyDescriptor& r,unsigned n=0){
   auto m=f::Metadata(0,r.creating_transaction_uuid,f::Id(60),Golden(r));m.record.header.kind=c::CatalogRecordKind::policy;
   m.record.header.object_uuid={p::UuidKind::object,r.policy_uuid};m.record.header.row_uuid={p::UuidKind::row,f::Id(1000+3*n)};
-  m.default_name_uuid={p::UuidKind::object,f::Id(2000+2*n)};m.name_vector_uuid={p::UuidKind::object,f::Id(2001+2*n)};
+  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */m.name_vector_uuid={p::UuidKind::object,f::Id(2001+2*n)};
   m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::policy_descriptor;m.owner_uuid.value=r.authority_owner_uuid;m.creator_local_transaction_id=r.creating_transaction_number;
   m.definition_version=r.generation;if(r.scope==c::CatalogPolicyScope::cluster_member||r.scope==c::CatalogPolicyScope::placement_unit)m.authority_scope=c::CatalogAuthorityScope::cluster;
   return m;
@@ -176,7 +176,7 @@ void Bindings(){
     if(n==0)bad.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;if(n==1)bad.record.header.kind=c::CatalogRecordKind::config_profile;
     if(n==2)bad.record.header.object_uuid.value=f::Id(9);if(n==3)bad.owner_uuid.value=f::Id(51);if(n==4)bad.definition_version=2;
     if(n==5)bad.creator_transaction_uuid.value=f::Id(6);if(n==6)bad.creator_local_transaction_id=2;
-    if(n==7)bad.record.header.parent_uuid.value=f::Id(61);if(n==8)bad.audit_uuid={};if(n==9)bad.default_name_uuid={};
+    if(n==7)bad.record.header.parent_uuid.value=f::Id(61);if(n==8)bad.audit_uuid={};if(n==9)bad.name_vector_uuid={};/* (Was: default_name_uuid, retired by owner Q248 = 1; the name-vector fault) */
     if(n==10)f::Put(bad.record.payload,16,65618,4);if(n==11)bad.record.payload="area=metadata;mode=strict";if(n==12)bad.authority_scope=c::CatalogAuthorityScope::cluster;
     allocation_budget=0;const auto size=c::CatalogMetadataVersionEncodedBytes(c::BorrowCatalogMetadataVersion(bad));allocation_budget=-1;Check(!size,"kind/subtype/schema/common mutation cannot bypass policy binding");
   }
@@ -213,11 +213,13 @@ struct Item {
     vector_metadata.record.header.kind=entry_metadata.record.header.kind=c::CatalogRecordKind::localized_name;
     vector_metadata.record.header.object_uuid=definition.name_vector_uuid;vector_metadata.record.header.row_uuid.value=f::Id(1001+3*n);
     vector_metadata.record.header.parent_uuid=definition.record.header.object_uuid;vector_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_vector;
-    entry_metadata.record.header.object_uuid=definition.default_name_uuid;entry_metadata.record.header.row_uuid.value=f::Id(1002+3*n);
+    entry_metadata.record.header.object_uuid=p::TypedUuid{p::UuidKind::object,f::Id(2000+2*n)};  // SB_CATALOG_NO_NAME_REFERENCE (Q248): was definition.default_name_uuid
+    entry_metadata.record.header.row_uuid.value=f::Id(1002+3*n);
     entry_metadata.record.header.parent_uuid=definition.name_vector_uuid;entry_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_entry;entry_metadata.resource_epoch=1;
     vector.name_vector_uuid=entry.name_vector_uuid=definition.name_vector_uuid;vector.object_uuid=entry.object_uuid=definition.record.header.object_uuid;
-    vector.default_name_entry_uuid=entry.name_entry_uuid=definition.default_name_uuid;vector.object_kind=entry.object_kind=c::CatalogRecordKind::policy;
-    vector.owning_schema_uuid=definition.owning_schema_uuid;vector.default_language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_en_US);
+    entry.name_entry_uuid=p::TypedUuid{p::UuidKind::object,f::Id(2000+2*n)};  // SB_CATALOG_NO_NAME_REFERENCE (Q248): was definition.default_name_uuid
+    vector.object_kind=entry.object_kind=c::CatalogRecordKind::policy;
+    vector.owning_schema_uuid=definition.owning_schema_uuid;/* SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES (owner Q228 revisited): no vector default */
     vector.name_collision_policy_uuid={p::UuidKind::object,f::Id(55)};vector.catalog_generation_id=1;
     vector.security_policy_uuid=definition.security_policy_uuid;vector.lifecycle_state=c::CatalogNameLifecycle::active;
     entry.scope_uuid=definition.record.header.parent_uuid;entry.parent_schema_uuid=definition.owning_schema_uuid;entry.language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_en_US);

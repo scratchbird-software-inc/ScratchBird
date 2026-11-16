@@ -52,9 +52,9 @@ CatalogNamedCreationPreflightResult PreflightLocalNamedCreationRecord(
       const CatalogNamePayloadView vector=BorrowCatalogNameVector(v);
       const auto name_extent=CatalogNameEnvelopeEncodedBytes(vector);
       if(!name_extent||!CatalogNamePayloadMatchesMetadata(vector,BorrowCatalogMetadataVersion(vm))||
-          v.lifecycle_state!=CatalogNameLifecycle::active||v.default_language_uuid.value!=language||
+          v.lifecycle_state!=CatalogNameLifecycle::active||
           v.object_uuid.value!=d.record.header.object_uuid.value||
-          v.name_vector_uuid.value!=d.name_vector_uuid.value||v.default_name_entry_uuid.value!=d.default_name_uuid.value||
+          v.name_vector_uuid.value!=d.name_vector_uuid.value||
           v.owning_schema_uuid.has_value()!=( !d.owning_schema_uuid.value.is_nil())||
           (v.owning_schema_uuid&&v.owning_schema_uuid->value!=d.owning_schema_uuid.value))return {E::invalid_names,0,0};
       account(*extent);account(*vector_extent+*name_extent);
@@ -67,11 +67,19 @@ CatalogNamedCreationPreflightResult PreflightLocalNamedCreationRecord(
         if(!metadata_extent)return {E::invalid_metadata,0,0};
         const CatalogNamePayloadView entry=BorrowCatalogNameEntry(e);
         const auto entry_extent=CatalogNameEnvelopeEncodedBytes(entry);
-        const bool is_default=e.name_entry_uuid.value==v.default_name_entry_uuid.value;
+        // SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES (owner Q228 revisited, Q248 = 1):
+        // the object default is the entry marked default_for_object, in the
+        // creation language and its language's default; at most one default
+        // per language. (Was: the entry the vector's default_name_entry_uuid,
+        // equal to the definition's default_name_uuid, named.)
+        const bool is_default=e.default_for_object;
+        if(e.default_for_language)
+          for(const auto& other:input.entries)
+            if(other.entry&&other.entry!=input_entry.entry&&other.entry->default_for_language&&
+                other.entry->language_uuid.value==e.language_uuid.value)return {E::invalid_names,0,0};
         if(!entry_extent||!CatalogNamePayloadMatchesMetadata(entry,BorrowCatalogMetadataVersion(m))||
             e.lifecycle_state!=CatalogNameLifecycle::active||e.object_uuid.value!=d.record.header.object_uuid.value||
             e.name_vector_uuid.value!=v.name_vector_uuid.value||e.object_kind!=v.object_kind||
-            e.default_for_object!=is_default||
             (is_default&&(e.language_uuid.value!=language||!e.default_for_language)))return {E::invalid_names,0,0};
         defaults+=is_default;
         account(*metadata_extent+*entry_extent);

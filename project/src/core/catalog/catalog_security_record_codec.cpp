@@ -278,7 +278,8 @@ bool CatalogSecurityPayloadMatchesMetadata(const CatalogMetadataVersionView& m) 
       m.object_subtype!=CatalogSecuritySubtype(m.record.header.kind) ||
       m.authority_scope!=CatalogAuthorityScope::local ||
       !typed(m.owner_uuid,UuidKind::principal) || !typed(m.audit_uuid,UuidKind::object) ||
-      !typed(m.security_policy_uuid,UuidKind::object) || !typed(m.default_name_uuid,UuidKind::object) ||
+      // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16): (was: default_name_uuid also checked or set on the next line).
+      !typed(m.security_policy_uuid,UuidKind::object) ||
       !typed(m.name_vector_uuid,UuidKind::object) || !typed(m.owning_schema_uuid,UuidKind::schema) ||
       !typed(m.creator_transaction_uuid,UuidKind::transaction) ||
       m.record.header.parent_uuid.value!=m.owning_schema_uuid.value) return false;

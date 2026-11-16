@@ -59,8 +59,10 @@ void Check(bool yes,const char* why,std::source_location at=std::source_location
 p::TypedUuid Id(K kind,unsigned id){
   p::TypedUuid r;r.kind=kind;r.value.bytes[6]=0x70;r.value.bytes[8]=0x80;r.value.bytes[15]=id;return r;
 }
-constexpr std::array refs{&M::owner_uuid,&M::creator_transaction_uuid,&M::retired_transaction_uuid,
-  &M::default_name_uuid,&M::name_vector_uuid,&M::security_policy_uuid,&M::dependency_group_uuid,
+// SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16): slot 3 was
+// default_name_uuid; it is reserved and zero. (Was: &M::default_name_uuid.)
+constexpr std::array<p::TypedUuid M::*,11> refs{&M::owner_uuid,&M::creator_transaction_uuid,&M::retired_transaction_uuid,
+  nullptr,&M::name_vector_uuid,&M::security_policy_uuid,&M::dependency_group_uuid,
   &M::storage_binding_uuid,&M::donor_overlay_uuid,&M::audit_uuid,&M::owning_schema_uuid};
 constexpr std::array counters{&M::definition_version,&M::schema_epoch,&M::security_epoch,&M::resource_epoch,
   &M::catalog_generation,&M::dependency_generation,&M::invalidation_generation,&M::creator_local_transaction_id};
@@ -81,7 +83,7 @@ M Fixture(){
   for(auto member:counters)m.*member=1;m.resource_epoch=0;
   m.owner_uuid=Id(K::principal,4);m.creator_transaction_uuid=Id(K::transaction,5);
   m.audit_uuid=Id(K::object,6);m.owning_schema_uuid=Id(K::schema,3);
-  m.default_name_uuid=Id(K::object,7);m.name_vector_uuid=Id(K::object,8);
+  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */m.name_vector_uuid=Id(K::object,8);
   m.security_policy_uuid=Id(K::object,9);m.dependency_group_uuid=Id(K::object,10);
   m.storage_binding_uuid=Id(K::object,11);m.donor_overlay_uuid=Id(K::object,12);
   m.lifecycle=c::CatalogObjectLifecycle::active;m.status=c::CatalogObjectStatus::active;
@@ -99,7 +101,7 @@ Bytes Golden(const M& m){
   Put(b,16,static_cast<unsigned>(m.authority_scope),2);Put(b,18,static_cast<unsigned>(m.lifecycle),2);
   Put(b,20,static_cast<unsigned>(m.status),2);Put(b,22,static_cast<unsigned>(m.visibility),2);
   for(unsigned i=0;i<8;++i)Put(b,32+8*i,m.*counters[i],8);
-  for(unsigned i=0;i<11;++i){const auto& id=m.*refs[i];b[272+i]=static_cast<unsigned>(id.kind);
+  for(unsigned i=0;i<11;++i){if(!refs[i])continue;const auto& id=m.*refs[i];b[272+i]=static_cast<unsigned>(id.kind);
     std::copy(id.value.bytes.begin(),id.value.bytes.end(),b.begin()+96+16*i);}
   Put(b,356,96+m.record.payload.size(),4);Put(b,360,static_cast<unsigned>(m.object_subtype),4);
   std::copy_n("SBCTREC2",8,b.begin()+start);Put(b,start+8,2,2);Put(b,start+10,96,2);
@@ -163,6 +165,7 @@ void Semantics(){
     if(!v.ok())Refused(b,"enum_invalid");
   }
   for(unsigned slot=0;slot<11;++slot)for(unsigned kind=0;kind<256;++kind){
+    if(!refs[slot])continue;  // SB_CATALOG_NO_NAME_REFERENCE: the retired slot, below
     auto m=base;if(slot==2){m.retired_transaction_uuid=m.creator_transaction_uuid;m.status=c::CatalogObjectStatus::retired;}
     auto& id=m.*refs[slot];id.kind=static_cast<K>(kind);
     // Native registry: database through transaction are codes0..7; principal9.
@@ -174,13 +177,19 @@ void Semantics(){
     if(!valid)Refused(b);
   }
   for(unsigned slot=0;slot<11;++slot)for(unsigned version=0;version<16;++version)for(unsigned variant=0;variant<4;++variant){
-    if(version==7&&variant==2)continue;auto m=base;
+    if(version==7&&variant==2)continue;if(!refs[slot])continue;auto m=base;
     if(slot==2){m.retired_transaction_uuid=m.creator_transaction_uuid;m.status=c::CatalogObjectStatus::retired;}
     auto& id=m.*refs[slot];id.value.bytes[6]=version<<4;id.value.bytes[8]=variant<<6;Refused(Golden(m),"reference_invalid");
   }
-  for(unsigned slot=0;slot<11;++slot){auto m=base;m.*refs[slot]={};const auto v=Decode(Golden(m));
-    const bool required=slot==0||slot==1||slot==9;const bool paired=slot==3||slot==4;
-    Check(v.ok()==(!required&&!paired),"exact optional absence and name pairing");}
+  // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): the name vector alone is
+  // optional (no pairing with a default name). (Was: slots 3 and 4 paired,
+  // either absent alone refused, name_vector_pair_invalid.)
+  for(unsigned slot=0;slot<11;++slot){if(!refs[slot])continue;auto m=base;m.*refs[slot]={};const auto v=Decode(Golden(m));
+    const bool required=slot==0||slot==1||slot==9;
+    Check(v.ok()==!required,"exact optional absence");}
+  // The retired slot (bytes 144..159, kind byte 275) must be zero: any byte
+  // set there is refused.
+  for(unsigned at:{144u,151u,159u,275u}){auto b=Golden(base);b[at]=1;Seal(b);Refused(b,"retired_name_reference");}
   // The subtype is a constant: every listed one is admitted (where no family
   // check applies to this opaque payload), none and every unlisted code refused.
   for(unsigned code=0;code<=0xffffu;++code){

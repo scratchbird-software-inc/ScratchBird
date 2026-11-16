@@ -73,7 +73,8 @@ bool Metadata(const CatalogMetadataVersionView& m, const CatalogMetadataChange& 
       m.authority_scope != CatalogAuthorityScope::local || !Typed(m.owner_uuid, UuidKind::principal) ||
       !Typed(m.owning_schema_uuid, UuidKind::schema) || !Typed(m.record.header.parent_uuid, UuidKind::object) ||
       m.record.header.parent_uuid.value != m.owning_schema_uuid.value || !Typed(m.audit_uuid, UuidKind::object) ||
-      m.audit_uuid.value != r.event_uuid || m.default_name_uuid.valid() || !m.default_name_uuid.value.is_nil() ||
+      // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16): (was: default_name_uuid also checked or set on the next line).
+      m.audit_uuid.value != r.event_uuid || 
       m.name_vector_uuid.valid() || !m.name_vector_uuid.value.is_nil() ||
       !Typed(m.creator_transaction_uuid, UuidKind::transaction) || !m.definition_version ||
       m.catalog_generation != r.catalog_generation ||

@@ -188,7 +188,7 @@ c::CatalogMetadataVersion Metadata(const c::CatalogCommentRecord& r, const std::
   m.record.header.row_uuid = {p::UuidKind::row, f::Id(701)};
   m.record.header.parent_uuid = {p::UuidKind::object, r.target_object_uuid};
   m.object_subtype = c::CatalogObjectSubtype::localized_comment;
-  m.default_name_uuid = {};
+  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
   m.name_vector_uuid = {};
   return m;
 }
@@ -217,7 +217,7 @@ void MetadataBinding() {
   x.object_subtype = c::CatalogObjectSubtype::name_entry;
   Check(!Valid(x), "another subtype refused");
   x = m;
-  x.default_name_uuid = {p::UuidKind::object, f::Id(703)};
+  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
   x.name_vector_uuid = {p::UuidKind::object, f::Id(704)};
   Check(!Valid(x), "a named comment refused (comment rows have no name)");
   x = m;

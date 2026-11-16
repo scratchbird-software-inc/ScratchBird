@@ -231,7 +231,8 @@ bool CatalogBootstrapPolicyMatchesMetadata(const CatalogMetadataVersionView& m) 
   if(m.record.header.kind!=CatalogRecordKind::policy||!Typed(m.record.header.object_uuid,UuidKind::object)||
       m.authority_scope!=CatalogAuthorityScope::local||
       !Typed(m.owner_uuid,UuidKind::principal)||!Typed(m.audit_uuid,UuidKind::object)||
-      !Typed(m.security_policy_uuid,UuidKind::object)||!Typed(m.default_name_uuid,UuidKind::object)||
+      // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16): (was: default_name_uuid also checked or set on the next line).
+      !Typed(m.security_policy_uuid,UuidKind::object)||
       !Typed(m.name_vector_uuid,UuidKind::object)||!Typed(m.owning_schema_uuid,UuidKind::schema)||
       !Typed(m.creator_transaction_uuid,UuidKind::transaction)||!m.creator_local_transaction_id||
       !Typed(m.record.header.parent_uuid,UuidKind::object)||

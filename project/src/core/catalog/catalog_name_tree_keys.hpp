@@ -31,10 +31,24 @@ namespace scratchbird::core::catalog {
 //
 //   UUID -> name tree (rendering without reading the entry rows):
 //     vector key   object UUID | record kind (u16 BE) | 0x00
-//     vector       vector UUID | default entry UUID | collision policy UUID
-//     entry key    object UUID | record kind (u16 BE) | 0x01 | esc(language tag)
-//                  | name class (u8)
-//     entry        entry UUID
+//     vector       vector UUID | collision policy UUID
+//     entry key    object UUID | record kind (u16 BE) | 0x01 | language UUID
+//                  | default marker (u8) | name class (u8)
+//     entry        entry UUID | raw name text
+//   SEARCH_KEY: SB_NATIVE_NAME_DEFAULT_INDEX (owner Q228 revisited, Q259,
+//   2026-11-16: "a index that holds data as well - such as the uuid if using
+//   the name index or name if using the uuid index - that is unique across
+//   the language, and default"). The UUID -> name tree is that index: the
+//   default marker is 0 for the object default (default_for_object, which is
+//   also its language's default), 1 for a language default only, 2 for any
+//   other name, so object | kind | 0x01 | language | {0, 1} holds exactly the
+//   default entries of one (object, language), and the payload carries the
+//   entry UUID and the name (covering: rendering reads no row). The writer
+//   probes that range for the per-language default's uniqueness; the object
+//   default's (across languages) is checked over the object's entries.
+//   (Was: vector payload vector | default entry | collision policy UUID;
+//   entry key without the marker; entry payload the entry UUID only,
+//   SB_NATIVE_NAME_ROW_V4.)
 //   SB_NATIVE_NAME_ROW_V4 (owner Q158 = 1, 2026-11-14): the entry payload is
 //   the entry UUID only; rendering reads the row and walks its path
 //   (WalkCatalogNamePath), so a rename touches no other row's cell. (Was:
@@ -72,15 +86,23 @@ std::vector<byte> CatalogNameAuthoritativeTreeNamePrefix(const CatalogNameEntryV
 std::vector<byte> CatalogNameUuidTreeVectorKey(const Uuid& object_uuid, CatalogRecordKind kind);
 std::vector<byte> CatalogNameUuidTreeVectorPayload(const CatalogNameVectorView& vector);
 struct CatalogNameUuidTreeVectorPayloadView {
-  Uuid vector_uuid, default_entry_uuid, collision_policy_uuid;
+  Uuid vector_uuid, collision_policy_uuid;  // (was also default_entry_uuid)
 };
 std::optional<CatalogNameUuidTreeVectorPayloadView> DecodeCatalogNameUuidTreeVectorPayload(
     std::span<const byte> payload) noexcept;
 
 std::vector<byte> CatalogNameUuidTreeEntryKey(const CatalogNameEntryView& entry, CatalogRecordKind kind);
-std::vector<byte> CatalogNameUuidTreeEntryPayload(const Uuid& entry_uuid);
-// The entry UUID; nullopt unless the payload is exactly 16 bytes.
+// SB_NATIVE_NAME_DEFAULT_INDEX: entry UUID | raw name text. (Was: the entry
+// UUID only.)
+std::vector<byte> CatalogNameUuidTreeEntryPayload(const CatalogNameEntryView& entry);
+// The entry UUID; nullopt when the payload is shorter than 16 bytes.
 std::optional<Uuid> DecodeCatalogNameUuidTreeEntryPayload(std::span<const byte> payload) noexcept;
+// The default marker of an entry's UUID -> name key (0 object default, 1
+// language default only, 2 neither).
+byte CatalogNameUuidTreeDefaultMarker(const CatalogNameEntryView& entry) noexcept;
+// object | kind | 0x01 | language: the prefix under which markers 0 and 1 are
+// the (object, language)'s default entries.
+std::vector<byte> CatalogNameUuidTreeLanguagePrefix(const Uuid& object_uuid, CatalogRecordKind kind, const Uuid& language);
 
 // Allocation-free equality of stored bytes with what the functions above would
 // encode, for the startup verifiers (which allocate nothing).

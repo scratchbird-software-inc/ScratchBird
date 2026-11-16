@@ -117,8 +117,8 @@ struct Forest {
       c::CatalogNameVector v;
       v.name_vector_uuid = T(object + 500000);
       v.object_uuid = T(object);
-      v.default_name_entry_uuid = T(id);
-      v.default_language_uuid = e.language_uuid;
+      /* SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES (owner Q228 revisited): no vector default */
+      /* SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES (owner Q228 revisited): no vector default */
       vectors[object] = v;
     }
     return entries[id] = std::move(e);

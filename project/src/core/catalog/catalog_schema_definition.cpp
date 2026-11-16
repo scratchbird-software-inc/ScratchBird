@@ -146,7 +146,8 @@ bool CatalogSchemaDefinitionMatchesMetadata(const CatalogMetadataVersionView& m)
   const auto& d=*decoded.definition;
   const auto& parent=Absent(d.parent_schema_uuid)?d.database_catalog_object_uuid:d.parent_schema_uuid;
   if (!Same(d.schema_object_uuid,m.record.header.object_uuid) || !Same(parent,m.record.header.parent_uuid) ||
-      !Identity(m.default_name_uuid,UuidKind::object) || !Identity(m.name_vector_uuid,UuidKind::object) ||
+      // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16): (was: default_name_uuid also checked or set on the next line).
+      !Identity(m.name_vector_uuid,UuidKind::object) ||
       !Same(d.permissions_policy_uuid,m.security_policy_uuid) ||
       m.object_subtype != CatalogSchemaSubtype(d.schema_type) ||
       // SB_DRIFT_CLUSTER_SCHEMA_IN_EVERY_DATABASE (owner direction 2026-11-04):

@@ -70,6 +70,9 @@ struct Name {
   bool exact = false;
   unsigned kind = 0;
   unsigned name_class = 1;
+  // SB_NATIVE_NAME_DEFAULT_INDEX (owner Q228 revisited, Q259): 0 object
+  // default, 1 language default only, 2 neither.
+  unsigned marker = 2;
 };
 Bytes OracleAuthoritative(const Name& n, bool with_kind = true) {
   Bytes out;
@@ -90,6 +93,7 @@ Bytes OracleUuidEntry(const Name& n) {
   out.push_back(static_cast<byte>(n.kind));
   out.push_back(1);
   U(out, n.language);
+  out.push_back(static_cast<byte>(n.marker));  // SB_NATIVE_NAME_DEFAULT_INDEX (was: none)
   out.push_back(static_cast<byte>(n.name_class));
   return out;
 }
@@ -113,6 +117,8 @@ Entry Make(const Name& n) {
   o.requires_exact_match = n.exact;
   o.raw_name_text.assign(n.key.begin(), n.key.end());
   o.name_class = static_cast<c::CatalogNameClass>(n.name_class);
+  o.default_for_object = n.marker == 0;
+  o.default_for_language = n.marker <= 1;
   return e;
 }
 
@@ -165,6 +171,7 @@ void Order(std::mt19937& rng) {
     n.exact = rng() % 2;
     n.kind = 1 + rng() % 600;
     n.name_class = 1 + rng() % 5;
+    n.marker = rng() % 3;
     names.push_back(n);
   }
   // Authoritative: field order scope, profile, language, key, kind.
@@ -172,7 +179,7 @@ void Order(std::mt19937& rng) {
     return std::tuple{n.scope.bytes, n.profile.bytes, n.language.bytes, n.key, n.kind};
   };
   const auto tuple_u = [](const Name& n) {
-    return std::tuple{n.object.bytes, n.kind, n.language.bytes, n.name_class};
+    return std::tuple{n.object.bytes, n.kind, n.language.bytes, n.marker, n.name_class};
   };
   for (std::size_t i = 0; i + 1 < names.size(); ++i) {
     const auto& a = names[i];
@@ -221,41 +228,60 @@ void Payloads() {
 
   c::CatalogNameVector v;
   v.name_vector_uuid = {UuidKind::object, Id(20)};
-  v.default_name_entry_uuid = {UuidKind::object, Id(21)};
+  // SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES (owner Q228 revisited): no vector
+  // default; the payload is vector | collision policy. (Was: vector, default
+  // entry Id(21), collision policy; 48 bytes.)
   v.name_collision_policy_uuid = {UuidKind::object, Id(22)};
   const auto vp = c::CatalogNameUuidTreeVectorPayload(c::BorrowCatalogNameVector(v));
   Bytes vw;
   U(vw, Id(20));
-  U(vw, Id(21));
   U(vw, Id(22));
-  Check(vp == vw, "vector payload: vector, default entry, collision policy");
+  Check(vp == vw, "vector payload: vector, collision policy");
   const auto vd = c::DecodeCatalogNameUuidTreeVectorPayload(vp);
-  Check(vd && vd->vector_uuid == Id(20) && vd->default_entry_uuid == Id(21) && vd->collision_policy_uuid == Id(22),
-        "vector payload round-trips");
-  Check(!c::DecodeCatalogNameUuidTreeVectorPayload(std::span(vp).first(47)), "vector payload of the wrong size refused");
+  Check(vd && vd->vector_uuid == Id(20) && vd->collision_policy_uuid == Id(22), "vector payload round-trips");
+  Check(!c::DecodeCatalogNameUuidTreeVectorPayload(std::span(vp).first(31)), "vector payload of the wrong size refused");
 
   // SB_NATIVE_NAME_ROW_V4 (owner Q158 = 1): the UUID-to-name entry payload is
   // the entry UUID only; rendering reads the row. (Was: entry, LEB128 count,
   // length-prefixed display components; malformed counts and lengths were
   // refused; and the full-path lookup key was the escaped components,
   // concatenated.)
-  const auto ep = c::CatalogNameUuidTreeEntryPayload(Id(30));
+  // SB_NATIVE_NAME_DEFAULT_INDEX (owner Q228 revisited, Q259: "an index that
+  // holds data as well"): the entry payload is the entry UUID then its raw
+  // name, so the index covers rendering. (Was, SB_NATIVE_NAME_ROW_V4: the
+  // entry UUID only, a trailing byte refused.)
+  Name pn;
+  pn.entry = Id(30);
+  pn.key = {'n', 0, 'm'};
+  const auto ep = c::CatalogNameUuidTreeEntryPayload(Make(pn).view());
   Bytes ew;
   U(ew, Id(30));
-  Check(ep == ew, "entry payload: the entry UUID");
+  for (byte b : pn.key) ew.push_back(b);
+  Check(ep == ew, "entry payload: the entry UUID and the name");
   const auto ed = c::DecodeCatalogNameUuidTreeEntryPayload(ep);
   Check(ed && *ed == Id(30), "entry payload round-trips");
-  Check(!c::DecodeCatalogNameUuidTreeEntryPayload(Bytes(ep.begin(), ep.end() - 1)), "entry payload refused: truncated");
+  Check(!c::DecodeCatalogNameUuidTreeEntryPayload(Bytes(ep.begin(), ep.begin() + 15)), "entry payload refused: truncated");
+  Check(c::CatalogNameUuidTreeEntryPayloadEquals(Make(pn).view(), ep), "the startup matcher accepts the entry's payload");
   {
     auto b = ep;
     b.push_back(0);
-    Check(!c::DecodeCatalogNameUuidTreeEntryPayload(b), "entry payload refused: a trailing byte (a version 3 payload's count)");
+    Check(!c::CatalogNameUuidTreeEntryPayloadEquals(Make(pn).view(), b), "the startup matcher refuses a payload with another name");
   }
-  Name pn;
-  pn.entry = Id(30);
-  Check(c::CatalogNameUuidTreeEntryPayloadEquals(Make(pn).view(), ep), "the startup matcher accepts the entry's payload");
   pn.entry = Id(31);
   Check(!c::CatalogNameUuidTreeEntryPayloadEquals(Make(pn).view(), ep), "the startup matcher refuses another entry's payload");
+  // The default prefix: object | kind | 0x01 | language holds markers 0 and
+  // 1 (the (object, language)'s defaults) before 2.
+  Name dn;
+  dn.object = Id(40);
+  dn.language = c::kCatalogLanguage_en;
+  dn.kind = 5;
+  const auto prefix = c::CatalogNameUuidTreeLanguagePrefix(dn.object, static_cast<c::CatalogRecordKind>(dn.kind), dn.language);
+  for (unsigned marker = 0; marker < 3; ++marker) {
+    dn.marker = marker;
+    const auto key = c::CatalogNameUuidTreeEntryKey(Make(dn).view(), static_cast<c::CatalogRecordKind>(dn.kind));
+    Check(std::equal(prefix.begin(), prefix.end(), key.begin()) && key[prefix.size()] == marker,
+          "the default marker follows the language prefix");
+  }
 }
 }  // namespace
 

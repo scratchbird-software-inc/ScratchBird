@@ -154,7 +154,9 @@ Trees Open(const Db& b, const std::string& path, bool with_trees, bool with_cell
             // path must walk. (Was: with its path's display components.)
             key = c::CatalogNameUuidTreeEntryKey(*e, kind);
             if (!c::ResolveCatalogNamePath(*e, names).ok()) { ++out.cells_mismatched; continue; }
-            payload = c::CatalogNameUuidTreeEntryPayload(e->name_entry_uuid.value);
+            // SB_NATIVE_NAME_DEFAULT_INDEX (owner Q228 revisited, Q259): the
+            // entry UUID and its name. (Was: the entry UUID only.)
+            payload = c::CatalogNameUuidTreeEntryPayload(*e);
           }
         } else {
           const auto& v = std::get<c::CatalogNameVectorView>(*row->name_payload);

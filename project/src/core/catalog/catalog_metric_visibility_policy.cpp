@@ -105,7 +105,8 @@ bool CatalogMetricVisibilityPolicyMatchesMetadata(const CatalogMetadataVersionVi
       m.authority_scope!=CatalogAuthorityScope::local || !Identity(m.owning_schema_uuid,UuidKind::schema) ||
       !Identity(m.record.header.parent_uuid,UuidKind::object) ||
       m.owning_schema_uuid.value!=m.record.header.parent_uuid.value ||
-      !Identity(m.default_name_uuid,UuidKind::object) || !Identity(m.name_vector_uuid,UuidKind::object) ||
+      // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16): (was: default_name_uuid also checked or set on the next line).
+      !Identity(m.name_vector_uuid,UuidKind::object) ||
       !Identity(m.creator_transaction_uuid,UuidKind::transaction)) return false;
   const auto policy=DecodeCatalogMetricVisibilityPolicyView(m.record.payload);
   const auto& p=*policy.record;

@@ -136,7 +136,7 @@ void Values(){
 template<class R> c::CatalogMetadataVersion Metadata(const R& r,const p::Uuid& object,scratchbird::core::catalog::CatalogObjectSubtype subtype,unsigned n){
  auto m=f::Metadata(0,r.creating_transaction_uuid,f::Id(60),Golden(r));m.record.header.kind=c::CatalogRecordKind::config_profile;
  m.record.header.object_uuid={p::UuidKind::object,object};m.record.header.row_uuid={p::UuidKind::row,f::Id(1000+3*n)};
- m.default_name_uuid={p::UuidKind::object,f::Id(2000+2*n)};m.name_vector_uuid={p::UuidKind::object,f::Id(2001+2*n)};
+ /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */m.name_vector_uuid={p::UuidKind::object,f::Id(2001+2*n)};
  m.object_subtype=subtype;m.creator_local_transaction_id=r.creating_local_transaction_id;m.definition_version=r.generation;return m;}
 c::CatalogMetadataVersion KeyMetadata(const Key& r){return Metadata(r,r.profile_uuid,scratchbird::core::catalog::CatalogObjectSubtype::native_catalog_index_key_profile,0);}
 c::CatalogMetadataVersion VisibilityMetadata(const Visibility& r){return Metadata(r,r.profile_uuid,scratchbird::core::catalog::CatalogObjectSubtype::native_catalog_index_visibility_profile,1);}
@@ -183,11 +183,13 @@ struct Item {
     vector_metadata.record.header.kind=entry_metadata.record.header.kind=c::CatalogRecordKind::localized_name;
     vector_metadata.record.header.object_uuid=definition.name_vector_uuid;vector_metadata.record.header.row_uuid.value=f::Id(1001+3*n);
     vector_metadata.record.header.parent_uuid=definition.record.header.object_uuid;vector_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_vector;
-    entry_metadata.record.header.object_uuid=definition.default_name_uuid;entry_metadata.record.header.row_uuid.value=f::Id(1002+3*n);
+    entry_metadata.record.header.object_uuid=p::TypedUuid{p::UuidKind::object,f::Id(2000+2*n)};  // SB_CATALOG_NO_NAME_REFERENCE (Q248): was definition.default_name_uuid
+    entry_metadata.record.header.row_uuid.value=f::Id(1002+3*n);
     entry_metadata.record.header.parent_uuid=definition.name_vector_uuid;entry_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_entry;entry_metadata.resource_epoch=1;
     vector.name_vector_uuid=entry.name_vector_uuid=definition.name_vector_uuid;vector.object_uuid=entry.object_uuid=definition.record.header.object_uuid;
-    vector.default_name_entry_uuid=entry.name_entry_uuid=definition.default_name_uuid;vector.object_kind=entry.object_kind=c::CatalogRecordKind::config_profile;
-    vector.owning_schema_uuid=definition.owning_schema_uuid;vector.default_language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_en_US);
+    entry.name_entry_uuid=p::TypedUuid{p::UuidKind::object,f::Id(2000+2*n)};  // SB_CATALOG_NO_NAME_REFERENCE (Q248): was definition.default_name_uuid
+    vector.object_kind=entry.object_kind=c::CatalogRecordKind::config_profile;
+    vector.owning_schema_uuid=definition.owning_schema_uuid;/* SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES (owner Q228 revisited): no vector default */
     vector.name_collision_policy_uuid={p::UuidKind::object,f::Id(55)};vector.catalog_generation_id=1;
     vector.security_policy_uuid=definition.security_policy_uuid;vector.lifecycle_state=c::CatalogNameLifecycle::active;
     entry.scope_uuid=definition.record.header.parent_uuid;entry.parent_schema_uuid=definition.owning_schema_uuid;entry.language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_en_US);

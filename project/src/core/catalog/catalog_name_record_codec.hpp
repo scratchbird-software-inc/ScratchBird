@@ -22,8 +22,12 @@ struct CatalogNameVector {
   TypedUuid object_uuid;
   CatalogRecordKind object_kind = CatalogRecordKind::unknown;  // SB_CATALOG_NO_TEXT_IDENTIFIERS
   std::optional<TypedUuid> owning_schema_uuid;
-  TypedUuid default_language_uuid;  // SB_CATALOG_LANGUAGE_CONSTANTS
-  TypedUuid default_name_entry_uuid;
+  // SEARCH_KEY: SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES (owner Q228 revisited,
+  // 2026-11-16: the default flag lives on each name/language row). Schema
+  // 327681 version 4 retires default_language_uuid (5) and
+  // default_name_entry_uuid (6): the object's default name is its entry
+  // marked default_for_object, its default language that entry's language.
+  // A default switch writes entry rows, never the vector. Numbers not reused.
   TypedUuid name_collision_policy_uuid;
   u64 catalog_generation_id = 0;
   TypedUuid security_policy_uuid;
@@ -74,9 +78,7 @@ struct CatalogNameVectorView {
   TypedUuid object_uuid;
   CatalogRecordKind object_kind = CatalogRecordKind::unknown;
   std::optional<TypedUuid> owning_schema_uuid;
-  TypedUuid default_language_uuid;
-  TypedUuid default_name_entry_uuid;
-  TypedUuid name_collision_policy_uuid;
+  TypedUuid name_collision_policy_uuid;  // (5, 6 retired: SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES)
   u64 catalog_generation_id = 0;
   TypedUuid security_policy_uuid;
   CatalogNameLifecycle lifecycle_state = CatalogNameLifecycle::creating;

@@ -76,14 +76,13 @@ std::vector<byte> CatalogNameUuidTreeVectorKey(const Uuid& object_uuid, CatalogR
 std::vector<byte> CatalogNameUuidTreeVectorPayload(const CatalogNameVectorView& vector) {
   std::vector<byte> out;
   PutUuid(out, vector.name_vector_uuid.value);
-  PutUuid(out, vector.default_name_entry_uuid.value);
-  PutUuid(out, vector.name_collision_policy_uuid.value);
+  PutUuid(out, vector.name_collision_policy_uuid.value);  // SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES: no default entry
   return out;
 }
 std::optional<CatalogNameUuidTreeVectorPayloadView> DecodeCatalogNameUuidTreeVectorPayload(
     std::span<const byte> payload) noexcept {
-  if (payload.size() != 48) return std::nullopt;
-  return CatalogNameUuidTreeVectorPayloadView{GetUuid(payload, 0), GetUuid(payload, 16), GetUuid(payload, 32)};
+  if (payload.size() != 32) return std::nullopt;
+  return CatalogNameUuidTreeVectorPayloadView{GetUuid(payload, 0), GetUuid(payload, 16)};
 }
 
 std::vector<byte> CatalogNameUuidTreeEntryKey(const CatalogNameEntryView& entry, CatalogRecordKind kind) {
@@ -92,16 +91,30 @@ std::vector<byte> CatalogNameUuidTreeEntryKey(const CatalogNameEntryView& entry,
   PutKind(out, kind);
   out.push_back(1);
   PutUuid(out, entry.language_uuid.value);
+  out.push_back(CatalogNameUuidTreeDefaultMarker(entry));  // SB_NATIVE_NAME_DEFAULT_INDEX
   out.push_back(static_cast<byte>(entry.name_class));
   return out;
 }
-std::vector<byte> CatalogNameUuidTreeEntryPayload(const Uuid& entry_uuid) {
+byte CatalogNameUuidTreeDefaultMarker(const CatalogNameEntryView& entry) noexcept {
+  return entry.default_for_object ? 0 : entry.default_for_language ? 1 : 2;
+}
+std::vector<byte> CatalogNameUuidTreeLanguagePrefix(const Uuid& object_uuid, CatalogRecordKind kind, const Uuid& language) {
   std::vector<byte> out;
-  PutUuid(out, entry_uuid);
+  PutUuid(out, object_uuid);
+  PutKind(out, kind);
+  out.push_back(1);
+  PutUuid(out, language);
+  return out;
+}
+std::vector<byte> CatalogNameUuidTreeEntryPayload(const CatalogNameEntryView& entry) {
+  std::vector<byte> out;
+  PutUuid(out, entry.name_entry_uuid.value);
+  out.insert(out.end(), reinterpret_cast<const byte*>(entry.raw_name_text.data()),
+             reinterpret_cast<const byte*>(entry.raw_name_text.data()) + entry.raw_name_text.size());
   return out;
 }
 std::optional<Uuid> DecodeCatalogNameUuidTreeEntryPayload(std::span<const byte> payload) noexcept {
-  if (payload.size() != 16) return std::nullopt;
+  if (payload.size() < 16) return std::nullopt;
   return GetUuid(payload, 0);
 }
 
@@ -135,8 +148,6 @@ class Matcher {
     return Byte(0);
   }
   bool Done() const noexcept { return ok_ && at_ == bytes_.size(); }
-
- private:
   Matcher& Raw(std::span<const byte> expected) noexcept {
     if (!ok_ || expected.size() > bytes_.size() - at_ ||
         !std::equal(expected.begin(), expected.end(), bytes_.begin() + static_cast<std::ptrdiff_t>(at_)))
@@ -145,6 +156,8 @@ class Matcher {
       at_ += expected.size();
     return *this;
   }
+
+ private:
   std::span<const byte> bytes_;
   std::size_t at_ = 0;
   bool ok_ = true;
@@ -170,7 +183,6 @@ bool CatalogNameUuidTreeVectorKeyEquals(const Uuid& object_uuid, CatalogRecordKi
 bool CatalogNameUuidTreeVectorPayloadEquals(const CatalogNameVectorView& vector, std::span<const byte> payload) noexcept {
   return Matcher(payload)
       .Uuid(vector.name_vector_uuid.value)
-      .Uuid(vector.default_name_entry_uuid.value)
       .Uuid(vector.name_collision_policy_uuid.value)
       .Done();
 }
@@ -181,10 +193,14 @@ bool CatalogNameUuidTreeEntryKeyEquals(const CatalogNameEntryView& entry, Catalo
       .Kind(kind)
       .Byte(1)
       .Uuid(entry.language_uuid.value)
+      .Byte(CatalogNameUuidTreeDefaultMarker(entry))
       .Byte(static_cast<byte>(entry.name_class))
       .Done();
 }
 bool CatalogNameUuidTreeEntryPayloadEquals(const CatalogNameEntryView& entry, std::span<const byte> payload) noexcept {
-  return Matcher(payload).Uuid(entry.name_entry_uuid.value).Done();
+  return Matcher(payload)
+      .Uuid(entry.name_entry_uuid.value)
+      .Raw({reinterpret_cast<const byte*>(entry.raw_name_text.data()), entry.raw_name_text.size()})
+      .Done();
 }
 }  // namespace scratchbird::core::catalog

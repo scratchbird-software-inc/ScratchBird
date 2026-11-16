@@ -25,7 +25,8 @@ namespace scratchbird::core::catalog {
 // The path runs from below the database root to the entry. Each ancestor is
 // the scope object of the component after it; its component is its name in the
 // entry's language (its entry marked default_for_language), else its default
-// entry (the vector's). The chain ends at an entry whose scope is its own object:
+// entry (its entry marked default_for_object; SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES,
+// owner Q228 revisited, 2026-11-16; was: the vector's). The chain ends at an entry whose scope is its own object:
 // the database's names, which are a path of one component.
 // SB_NATIVE_NAME_ROW_V4 (Q157 = 1, plan 35 S2): the path is derived at read by
 // walking the scope references; nothing of it is stored, so a rename, drop or
@@ -99,7 +100,9 @@ class CatalogNameIndex {
   CatalogNamePathName operator()(const Uuid& object, const Uuid& language) const;
 
  private:
-  std::map<Uuid, Uuid> default_entry_;  // object -> its vector's default entry
+  // object -> entry UUIDs ever added as default_for_object
+  // (SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES; was: its vector's default entry).
+  std::multimap<Uuid, Uuid> default_entry_;
   std::map<Uuid, CatalogNameEntryView> entries_;  // entry UUID -> entry
   // (object, language) -> entry UUIDs ever added as default_for_language there;
   // a lookup re-checks each against entries_, so a replaced entry drops out.

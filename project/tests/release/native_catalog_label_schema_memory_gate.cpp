@@ -33,7 +33,7 @@ c::CatalogMetadataVersion Metadata(const Bytes& b,bool cluster=false) {
   c::CatalogMetadataVersion x; x.record.header.kind=c::CatalogRecordKind::metric_label_schema;
   x.record.header.object_uuid={p::UuidKind::object,Id(1)};
   x.record.header.parent_uuid={p::UuidKind::object,Id(3)}; x.owning_schema_uuid={p::UuidKind::schema,Id(3)};
-  x.default_name_uuid={p::UuidKind::object,Id(4)}; x.name_vector_uuid={p::UuidKind::object,Id(5)};
+  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */ x.name_vector_uuid={p::UuidKind::object,Id(5)};
   x.security_policy_uuid={p::UuidKind::object,Id(6)};
   x.creator_transaction_uuid={p::UuidKind::transaction,Id(8)}; x.creator_local_transaction_id=1;
   x.definition_version=1; x.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::metric_label_schema; x.record.payload=View(b);

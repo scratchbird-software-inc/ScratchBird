@@ -112,7 +112,7 @@ inline std::optional<std::array<std::vector<NativeCreationNameTreeCellSeed>,2>> 
       out[0].push_back({i,c::CatalogNameAuthoritativeTreeKey(view,keys.own,kind->second),c::CatalogNameAuthoritativeTreePayload(view)});
       if(c::CheckCatalogNameEntryPath(view,names)!=c::CatalogNamePathError::none)return std::nullopt;
       out[1].push_back({i,c::CatalogNameUuidTreeEntryKey(view,kind->second),
-          c::CatalogNameUuidTreeEntryPayload(entry.name_entry_uuid.value)});
+          c::CatalogNameUuidTreeEntryPayload(view)});  // SB_NATIVE_NAME_DEFAULT_INDEX: entry UUID and name
     }
   }
   for(auto& cells:out)std::sort(cells.begin(),cells.end(),[&](const auto& a,const auto& b){

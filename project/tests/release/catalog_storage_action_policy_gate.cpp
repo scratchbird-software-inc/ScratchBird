@@ -52,7 +52,7 @@ P Example(unsigned profile){P p;p.policy_uuid=Id(UuidKind::object,1).value;p.gen
 c::CatalogMetadataVersion Metadata(const P& p){c::CatalogMetadataVersion m;
   m.record.header={c::CatalogRecordKind::policy,Id(UuidKind::row,10),{UuidKind::object,p.policy_uuid},Id(UuidKind::object,11),1,false};
   m.record.payload=Oracle(p);m.owning_schema_uuid=Id(UuidKind::schema,11);m.owner_uuid=Id(UuidKind::principal,12);
-  m.audit_uuid=Id(UuidKind::object,13);m.default_name_uuid=Id(UuidKind::object,14);m.name_vector_uuid=Id(UuidKind::object,15);
+  m.audit_uuid=Id(UuidKind::object,13);/* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */m.name_vector_uuid=Id(UuidKind::object,15);
   m.creator_transaction_uuid=p.origin_transaction_uuid;m.creator_local_transaction_id=p.origin_local_transaction_id;
   m.definition_version=p.generation;m.schema_epoch=m.security_epoch=m.catalog_generation=m.dependency_generation=m.invalidation_generation=1;
   m.lifecycle=c::CatalogObjectLifecycle::active;m.status=c::CatalogObjectStatus::active;m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::storage_action;
@@ -130,7 +130,7 @@ void Evolution(const P& p){const auto first=Metadata(p);auto next=p;++next.gener
     switch(fault){case 0:m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;break;case 1:m.record.header.kind=c::CatalogRecordKind::sql_object;break;
       case 2:m.record.header.object_uuid=Id(UuidKind::object,99);break;case 3:m.definition_version++;break;
       case 4:m.authority_scope=c::CatalogAuthorityScope::cluster;break;case 5:m.owning_schema_uuid=Id(UuidKind::schema,99);break;
-      case 6:m.default_name_uuid={};break;case 7:m.name_vector_uuid={};break;case 8:m.record.payload="caller supplied text policy";break;}
+      case 6:m.name_vector_uuid={};/* (Was: default_name_uuid, retired by owner Q248 = 1; the name-vector fault) */break;case 7:m.name_vector_uuid={};break;case 8:m.record.payload="caller supplied text policy";break;}
     Check(!c::CatalogStorageActionPolicyMatchesMetadata(m)&&!c::EncodeCatalogMetadataVersion(m).ok()&&
       !c::CatalogMetadataPreservesFamilyOrigin(first,m),"shared family validation rejects spoofed policy metadata");
   }
@@ -187,7 +187,7 @@ void Attachment(const P& p){using A=c::CatalogStorageActionAttachment;
     if(mode==0)changed.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;if(mode==1)changed.record.header.kind=c::CatalogRecordKind::policy;
     if(mode==2)changed.record.header.object_uuid=Id(UuidKind::object,33);if(mode==3)changed.definition_version++;
     if(mode==4)changed.authority_scope=c::CatalogAuthorityScope::cluster;if(mode==5)changed.owning_schema_uuid=Id(UuidKind::schema,33);
-    if(mode==6)changed.default_name_uuid={};if(mode==7)changed.name_vector_uuid={};if(mode==8)changed.record.payload="text attachment";
+    if(mode==6)changed.name_vector_uuid={};/* (Was: default_name_uuid, retired by owner Q248 = 1; the name-vector fault) */if(mode==7)changed.name_vector_uuid={};if(mode==8)changed.record.payload="text attachment";
     Check(!c::EncodeCatalogMetadataVersion(changed).ok()&&!c::CatalogMetadataPreservesFamilyOrigin(m,changed),"native dispatcher refuses forged attachment bindings");}
   auto retired=next;retired.record.header.deleted=true;retired.lifecycle=c::CatalogObjectLifecycle::dropped;
   retired.status=c::CatalogObjectStatus::retired;retired.retired_transaction_uuid=retired.creator_transaction_uuid;

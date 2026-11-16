@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "native_catalog_version_writer.hpp"
 
+#include <deque>
+
 #include "catalog_crypto_inline_private_key_policy.hpp"
 #include "catalog_identifier_lookup_key.hpp"
 #include "catalog_identifier_profile.hpp"
@@ -817,6 +819,77 @@ class NameState {
   // (a database without name trees: component fixtures, owner Q44 = 1) every
   // holder is a candidate.
   void ProbeWith(const std::vector<TreePage>* authoritative) { authoritative_ = authoritative; }
+  // SB_NATIVE_NAME_DEFAULT_INDEX (owner Q228 revisited, Q259): the UUID ->
+  // name tree (kind 23) as read for this request; CheckDefault takes its
+  // candidates from the object's entry range there. Without one every stored
+  // entry is a candidate.
+  void DefaultIndexWith(const std::vector<TreePage>* uuid_tree) { uuid_tree_ = uuid_tree; }
+  static bool LiveName(const StoredName& s) {
+    const auto state = std::visit([](const auto& r) { return r.lifecycle_state; }, s.payload);
+    return !s.deleted && state != catalog::CatalogNameLifecycle::dropped && state != catalog::CatalogNameLifecycle::archived;
+  }
+  // SEARCH_KEY: SB_NATIVE_NAME_DEFAULT_INDEX. Whether `x` (an entry about to
+  // be written; `self_row` its row for a successor) may hold the defaults it
+  // is marked with: at most one live default_for_language entry per (object,
+  // language) and one default_for_object entry per object, the object
+  // default also being its language's default (else invalid_name).
+  // Unique-index semantics over every version not rolled back or dead
+  // (FirebirdSQL keeps an index entry per record version): a candidate row
+  // whose version this transaction sees (committed, or its own newest) holds
+  // the default: duplicate_default_name; a row whose newest version is another
+  // transaction's in progress conflicts when that version or the committed
+  // one below it holds the default (write_conflict with it): if it rolls back
+  // the committed default stands, if it commits its own does. The request's
+  // own earlier entries (HoldEntry) are held.
+  // `other`: the paired row of a default switch (SB_NATIVE_NAME_DEFAULT_SWITCH)
+  // and its new version, which stands for that row.
+  Verdict CheckDefault(const catalog::CatalogNameEntry& x, const std::optional<Uuid>& self_row,
+                       const std::pair<Uuid, const catalog::CatalogNameEntry*>* other = nullptr) const {
+    if (!x.default_for_language && !x.default_for_object) return {};
+    if (x.default_for_object && !x.default_for_language) return {E::invalid_name};
+    const auto conflicts = [&](const catalog::CatalogNameEntry& y) {
+      if (y.object_uuid.value != x.object_uuid.value || y.name_entry_uuid.value == x.name_entry_uuid.value) return false;
+      return (x.default_for_language && y.default_for_language && y.language_uuid.value == x.language_uuid.value) ||
+             (x.default_for_object && y.default_for_object);
+    };
+    std::set<Uuid> probed;
+    const bool probe = uuid_tree_ != nullptr;
+    if (probe) {
+      const auto kind = KnownKind(x.object_kind);
+      if (!kind) return {E::invalid_name};
+      // object | kind | 0x01: every entry of the object (the per-language
+      // range, object | kind | 0x01 | language | {0, 1}, does not cover the
+      // object default, which is unique across languages).
+      auto prefix = catalog::CatalogNameUuidTreeLanguagePrefix(x.object_uuid.value, *kind, x.language_uuid.value);
+      prefix.resize(19);
+      if (!ProbeTreePrefix(*uuid_tree_, prefix, probed)) return {E::invalid_catalog};
+    }
+    bool held = false;
+    std::optional<u64> blocker;
+    for (const auto& [row, k] : newest_name_) {
+      if ((self_row && row == *self_row) || (other && row == other->first) || (probe && !probed.contains(row))) continue;
+      const auto& s = stored_[k];
+      const auto* y = std::get_if<catalog::CatalogNameEntry>(&s.payload);
+      if (!y) continue;
+      if (s.state && InProgress(*s.state) && s.order != order_) {
+        bool c = LiveName(s) && conflicts(*y);
+        if (const auto seen = visible_name_.find(row); seen != visible_name_.end()) {
+          const auto& v = stored_[seen->second];
+          if (const auto* w = std::get_if<catalog::CatalogNameEntry>(&v.payload); w && LiveName(v) && conflicts(*w)) c = true;
+        }
+        if (c && !blocker) blocker = s.order;
+        continue;
+      }
+      if (LiveName(s) && conflicts(*y)) held = true;  // committed, or this transaction's own newest
+    }
+    for (const auto& holder : holders_)
+      if (!holder.row)
+        if (const auto* y = std::get_if<catalog::CatalogNameEntry>(holder.payload); y && conflicts(*y)) held = true;
+    if (other && other->second && conflicts(*other->second)) held = true;
+    if (held) return {E::duplicate_default_name};
+    if (blocker) return {E::write_conflict, blocker};
+    return {};
+  }
   const catalog::CatalogNameIndex& Paths() const { return path_names_; }
   // SB_NATIVE_NAME_CASCADE (N4b): the names a path may run through as stored
   // (the newest version of each name row this transaction sees, not deleted:
@@ -850,6 +923,7 @@ class NameState {
     std::optional<Uuid> row;  // a stored entry's row; none for the request's own
   };
   const std::vector<TreePage>* authoritative_ = nullptr;
+  const std::vector<TreePage>* uuid_tree_ = nullptr;  // SB_NATIVE_NAME_DEFAULT_INDEX
   std::optional<mga::TransactionState> StateOf(const pg::RowDataRecord& row) const {
     const auto* creator = entry_(row.local_transaction_id);
     if (!creator || creator->identity.transaction_uuid.value != row.transaction_uuid.value) return std::nullopt;
@@ -1375,6 +1449,11 @@ const char* CatalogVersionWriteErrorName(CatalogVersionWriteError error) noexcep
     case E::dependent_versions_exhausted: return "dependent_versions_exhausted";
     case E::tree_leaf_emptied: return "tree_leaf_emptied";
     case E::name_key_exceeds_page_capacity: return "name_key_exceeds_page_capacity";
+    case E::object_last_name: return "object_last_name";
+    case E::default_name_in_use: return "default_name_in_use";
+    case E::duplicate_default_name: return "duplicate_default_name";
+    case E::name_language_read_only: return "name_language_read_only";
+    case E::definition_not_locked: return "definition_not_locked";
   }
   return "unknown";
 }
@@ -1737,6 +1816,97 @@ Stop CheckPathsAfterChange(const NameState& names, const catalog::CatalogNameInd
   return std::nullopt;
 }
 
+// SEARCH_KEY: SB_NATIVE_NAME_DEFINITION_LOCK (owner Q247 = yes,
+// 2026-11-16). Whether this transaction has written a version of a
+// definition row carrying `object` (any relation but the names and the
+// comments): its "touch" (a successor changing nothing else), its drop, or
+// its insert.
+bool OwnDefinitionVersion(const std::map<u16, Relation>& relations, const Uuid& object, u64 order) {
+  for (const auto& [role, relation] : relations) {
+    if (role == 2 || role == pg::kNativeCommentRelationRole) continue;
+    for (const auto& leaf : relation.leaves)
+      for (const auto& row : leaf.page.body.rows) {
+        if (row.local_transaction_id != order) continue;
+        const auto m = leaf.metadata.find(row.version_uuid);
+        if (m == leaf.metadata.end()) continue;
+        const auto& h = m->second.record.header;
+        if (h.object_uuid.value == object && h.kind != catalog::CatalogRecordKind::localized_name &&
+            h.kind != catalog::CatalogRecordKind::localized_comment)
+          return true;
+      }
+  }
+  return false;
+}
+// The name list rules for a name row's successor, in this transaction's own
+// view (each name row's version it sees: committed, or its own;
+// NameState::Visible). In order:
+//  - SB_NATIVE_NAME_LANGUAGE_READ_ONLY (owner Q250): an entry's language
+//    never changes: name_language_read_only;
+//  - a vector removed (deleted, lifecycle dropped or archived):
+//    object_last_name (only the object's drop removes it, Q249);
+//  - SB_NATIVE_NAME_LAST_NAME (Q227): an entry removed when the object has no
+//    other live entry: object_last_name;
+//  - SB_NATIVE_NAME_DEFAULT_IN_USE (Q235 = 1): an entry removed whose version
+//    seen is marked default_for_language or default_for_object:
+//    default_name_in_use;
+//  - SB_NATIVE_NAME_DEFAULT_INDEX (Q228 revisited): an entry kept whose flags
+//    mark a default: NameState::CheckDefault;
+//  - SB_NATIVE_NAME_DEFINITION_LOCK (Q247): an entry removed, or its default
+//    flags changed, needs this transaction's version of the object's
+//    definition row (definition_not_locked). `read_definitions` reads the
+//    definition relations into `relations` when needed.
+// Another transaction's in-progress versions are consulted only by the
+// default index (unique-index semantics); the rest is write-write on rows
+// (owner Q226, Q247).
+// `other` (SB_NATIVE_NAME_DEFAULT_SWITCH): the paired row of a default switch
+// and its new version; the default index sees it in place of that row's
+// stored versions, and default_for_object may be cleared only when it sets
+// it (else default_name_in_use: the object would lose its default).
+Stop CheckNameListChange(const NameState& names, const Uuid& row, const catalog::CatalogNamePayload& before,
+                         const catalog::CatalogNamePayload& after, bool deleted, u64 order,
+                         const std::map<u16, Relation>& relations, const std::function<Stop()>& read_definitions,
+                         const std::pair<Uuid, const catalog::CatalogNameEntry*>* other = nullptr) {
+  const auto stored = names.Stored();
+  const auto removes = [](const catalog::CatalogNamePayload& p, bool d) {
+    const auto state = std::visit([](const auto& r) { return r.lifecycle_state; }, p);
+    return d || state == catalog::CatalogNameLifecycle::dropped || state == catalog::CatalogNameLifecycle::archived;
+  };
+  if (std::holds_alternative<catalog::CatalogNameVector>(after)) {
+    if (removes(after, deleted)) return Refuse(E::object_last_name);
+    return std::nullopt;
+  }
+  const auto& e = std::get<catalog::CatalogNameEntry>(after);
+  const auto& b = std::get<catalog::CatalogNameEntry>(before);
+  if (e.language_uuid.value != b.language_uuid.value) return Refuse(E::name_language_read_only);
+  const bool removed = removes(after, deleted);
+  if (removed) {
+    std::size_t others = 0;
+    for (const auto& [r, k] : names.Visible()) {
+      if (r == row) continue;
+      const auto* o = std::get_if<catalog::CatalogNameEntry>(&stored[k].payload);
+      if (o && o->object_uuid.value == e.object_uuid.value && NameState::LiveName(stored[k])) ++others;
+    }
+    if (!others) return Refuse(E::object_last_name);
+    if (b.default_for_language || b.default_for_object) return Refuse(E::default_name_in_use);
+  } else {
+    if (b.default_for_object && !e.default_for_object &&
+        !(other && other->second && other->second->default_for_object &&
+          other->second->object_uuid.value == e.object_uuid.value))
+      return Refuse(E::default_name_in_use);
+    const auto verdict = names.CheckDefault(e, row, other);
+    if (verdict.error != E::none) {
+      auto refused = Refuse(verdict.error);
+      refused.blocker_order = verdict.blocker;
+      return refused;
+    }
+  }
+  if (removed || e.default_for_language != b.default_for_language || e.default_for_object != b.default_for_object) {
+    if (auto stop = read_definitions()) return stop;
+    if (!OwnDefinitionVersion(relations, e.object_uuid.value, order)) return Refuse(E::definition_not_locked);
+  }
+  return std::nullopt;
+}
+
 // A version's metadata as placed on `page` at `slot`: a name's envelope binds
 // where it is (SB_NATIVE_NAME_TREES), and must then follow the base.
 std::optional<std::vector<byte>> PlacedImage(const Succ& c, const NativeCatalogLeafPage& page, u32 slot,
@@ -1968,7 +2138,7 @@ Stop StampAndAddNameCells(disk::CarefulWriteSink& sink, const CatalogVersionWrit
                                  catalog::CatalogNameAuthoritativeTreePayload(e)))
         return Refuse(*error);
       if (const auto error = add(1, catalog::CatalogNameUuidTreeEntryKey(e, *kind),
-                                 catalog::CatalogNameUuidTreeEntryPayload(e.name_entry_uuid.value)))
+                                 catalog::CatalogNameUuidTreeEntryPayload(e)))
         return Refuse(*error);
     }
   }
@@ -2130,8 +2300,11 @@ TargetVerdict CheckCommentTarget(const std::map<u16, Relation>& relations, const
 // The classes of rows fully dependent on a definition, dropped with it in the
 // same write. Comments are the only class now; triggers, indexes and
 // constraints of a table are to be added here, each with its collector.
-enum class DependentClass : std::uint8_t { comment };
-inline constexpr std::array<DependentClass, 1> kDependentClasses{DependentClass::comment};
+// SB_NATIVE_NAME_DROP_CASCADE (owner Q249, 2026-11-16: "dropping an object
+// automatically drops all its name rows"): the object's name vector and
+// entries are the second class, after its comments.
+enum class DependentClass : std::uint8_t { comment, name };
+inline constexpr std::array<DependentClass, 2> kDependentClasses{DependentClass::comment, DependentClass::name};
 
 // One class's dependent rows of the dropped definition, as one relation's
 // successors: its relation (read into the request's relation map), the drop
@@ -2143,6 +2316,10 @@ struct Dependents {
   std::vector<Succ> succs;
   std::optional<NameTree> tree;
   std::vector<catalog::CatalogCommentRecord> comments;  // per succ, owned (the records the stamps key)
+  // SB_NATIVE_NAME_DROP_CASCADE: the name trees (kinds 22, 23) the name drops
+  // stamp, and the base payloads the succs point to (stable addresses).
+  std::vector<NameTree> name_trees;
+  std::deque<catalog::CatalogNamePayload> base_names;
 };
 
 // The drop version of a dependent row: its base's metadata with this
@@ -2150,7 +2327,8 @@ struct Dependents {
 // lifecycle dropped, status retired, retired by this transaction; the payload
 // unchanged. Checked as any successor's.
 Stop BuildDependentDrop(const Relation& relation, const Uuid& row_id, Version base, u64 newest_row_version,
-                        const Uuid& transaction, u64 order, u64 generation, const pg::NativeCatalogRoot& root, Succ& c) {
+                        const Uuid& transaction, u64 order, u64 generation, const pg::NativeCatalogRoot& root, Succ& c,
+                        bool named = false) {
   const auto& base_row = relation.leaves[base.leaf].page.body.rows[base.row];
   c.row = row_id;
   c.base = base;
@@ -2164,9 +2342,13 @@ Stop BuildDependentDrop(const Relation& relation, const Uuid& row_id, Version ba
   c.metadata.lifecycle = catalog::CatalogObjectLifecycle::dropped;
   c.metadata.status = catalog::CatalogObjectStatus::retired;
   c.metadata.retired_transaction_uuid = {UuidKind::transaction, transaction};
+  // A name row's metadata is complete only once its envelope is encoded at
+  // placement (PlacedImage checks FollowsAs there), as a request's name
+  // successor's (SB_NATIVE_NAME_DROP_CASCADE).
+  if (named) c.metadata.record.payload.clear();
   if (c.base_metadata->definition_version == std::numeric_limits<u64>::max() ||
       newest_row_version == std::numeric_limits<u64>::max() ||
-      !FollowsAs(*c.base_metadata, c.metadata, row_id, transaction, order))
+      (!named && !FollowsAs(*c.base_metadata, c.metadata, row_id, transaction, order)))
     return Refuse(E::invalid_successor);
   if (AheadOfRoot(c.metadata, root)) return Refuse(E::ahead_of_catalog_root);
   c.added.row_uuid = {UuidKind::row, row_id};
@@ -2262,6 +2444,83 @@ Stop CollectCommentDependents(disk::CarefulWriteSink& sink, const CatalogVersion
   return std::nullopt;
 }
 
+// SEARCH_KEY: SB_NATIVE_NAME_DROP_CASCADE (owner Q249, 2026-11-16). The
+// dropped object's names (class name): its name vector (the row whose object
+// is the definition's name_vector_uuid) and every entry of that vector (rows
+// whose parent is it), in the names relation (role 2), row-UUID order. As
+// for comments: any version by another transaction in progress is a
+// write_conflict with it; a row whose newest version (rolled-back and dead
+// ones passed over) is committed and live gets a drop version (a vector:
+// lifecycle dropped; an entry: lifecycle dropped, dropped by this
+// transaction); this transaction's own live version is replaced in place
+// (owner Q88 = 1). The base versions' cells in both name trees are stamped
+// with this transaction; a drop adds no cell. (Was: a definition drop left
+// its names to the caller, which dropped the entry and the vector itself.)
+Stop CollectNameDependents(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding& binding, u32 page_size,
+                           const pg::NativeCatalogRoot& root, std::vector<byte>& image, const Uuid& vector_id,
+                           const Uuid& transaction, u64 order, u64 generation,
+                           const std::function<const mga::TransactionInventoryEntry*(u64)>& entry,
+                           std::map<u16, Relation>& relations, Dependents& out) {
+  out.kind = DependentClass::name;
+  out.role = 2;
+  if (vector_id.is_nil()) return std::nullopt;  // an unnamed definition
+  const auto head = std::find_if(root.roots.begin(), root.roots.end(), [](const auto& r) { return r.role == 2; });
+  if (head == root.roots.end()) return std::nullopt;
+  if (head->page_type != 6 && head->page_type != 0x200) return Refuse(E::invalid_catalog);
+  out.head = *head;
+  CatalogVersionWriteResult result;
+  if (!relations.contains(2) && !ReadRelation(sink, binding, page_size, *head, relations[2], result)) return result;
+  if (!ReadNameTrees(sink, binding, page_size, image, out.name_trees, result)) return result;
+  const auto& relation = relations.at(2);
+  std::map<Uuid, std::vector<Version>> rows;
+  for (std::size_t l = 0; l < relation.leaves.size(); ++l)
+    for (std::size_t r = 0; r < relation.leaves[l].page.body.rows.size(); ++r) {
+      const auto& row = relation.leaves[l].page.body.rows[r];
+      const auto m = relation.leaves[l].metadata.find(row.version_uuid);
+      if (m == relation.leaves[l].metadata.end()) return Refuse(E::invalid_catalog);
+      const auto& h = m->second.record.header;
+      if (h.object_uuid.value == vector_id || h.parent_uuid.value == vector_id) rows[row.row_uuid.value].push_back({l, r});
+    }
+  for (const auto& [id, versions] : rows) {  // row-UUID order
+    std::optional<Version> newest;
+    u64 newest_row_version = 0;
+    for (const auto& v : versions) {
+      const auto& row = relation.leaves[v.leaf].page.body.rows[v.row];
+      newest_row_version = std::max(newest_row_version, row.row_version);
+      const auto* creator = entry(row.local_transaction_id);
+      if (!creator || creator->identity.transaction_uuid.value != row.transaction_uuid.value) return Refuse(E::invalid_catalog);
+      const auto state = mga::InventoryVisibilityState(*creator);
+      if (state == mga::TransactionState::rolled_back || state == mga::TransactionState::failed_terminal) continue;
+      if (InProgress(state) && row.local_transaction_id != order) return Conflict(row.local_transaction_id);
+      if (!newest || row.row_version > relation.leaves[newest->leaf].page.body.rows[newest->row].row_version) newest = v;
+    }
+    if (!newest) continue;
+    const auto& leaf = relation.leaves[newest->leaf];
+    const auto& base_row = leaf.page.body.rows[newest->row];
+    const auto& base_metadata = leaf.metadata.at(base_row.version_uuid);
+    if (base_metadata.record.header.deleted) continue;  // already dropped
+    const catalog::CatalogNameVersionBinding at{
+        {UuidKind::database, leaf.page.header.database_uuid}, {UuidKind::filespace, leaf.page.header.filespace_uuid},
+        base_row.row_uuid, {UuidKind::row, base_row.version_uuid}, base_metadata.record.header.object_uuid,
+        base_row.transaction_uuid, leaf.page.body.page_number, base_row.stable_slot_id, base_row.storage_generation,
+        base_row.row_version, base_row.local_transaction_id, base_metadata.catalog_generation};
+    const auto& bytes = base_metadata.record.payload;
+    const auto decoded = catalog::DecodeCatalogNameEnvelopeView({reinterpret_cast<const byte*>(bytes.data()), bytes.size()}, at);
+    if (!decoded.ok()) return Refuse(E::invalid_catalog);
+    out.base_names.push_back(catalog::MaterializeCatalogNameEnvelope(*decoded.record).payload);
+    Succ c;
+    if (auto stop = BuildDependentDrop(relation, id, *newest, newest_row_version, transaction, order, generation, root, c, true))
+      return stop;
+    auto dropped = out.base_names.back();
+    std::visit([&](auto& r) { r.lifecycle_state = catalog::CatalogNameLifecycle::dropped; }, dropped);
+    if (auto* e = std::get_if<catalog::CatalogNameEntry>(&dropped)) e->dropped_transaction_uuid = {UuidKind::transaction, transaction};
+    c.name = std::move(dropped);
+    c.base_name = &out.base_names.back();
+    out.succs.push_back(std::move(c));
+  }
+  return std::nullopt;
+}
+
 // The hook: every dependent class's rows of the dropped definition `target`,
 // then their identities from `identities` in class order (row-UUID order
 // within a class). Too few: dependent_versions_exhausted with the count.
@@ -2277,6 +2536,13 @@ Stop CollectDependents(disk::CarefulWriteSink& sink, const CatalogVersionWriterB
         if (auto stop = CollectCommentDependents(sink, binding, page_size, root, image, target, request.transaction_uuid,
                                                  request.transaction_order, request.metadata.catalog_generation, entry,
                                                  relations, d))
+          return stop;
+        break;
+      case DependentClass::name:
+        if (auto stop = CollectNameDependents(sink, binding, page_size, root, image,
+                                              request.metadata.name_vector_uuid.value, request.transaction_uuid,
+                                              request.transaction_order, request.metadata.catalog_generation, entry,
+                                              relations, d))
           return stop;
         break;
     }
@@ -2466,6 +2732,61 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
       result.error = E::row_deleted;
       return result;
     }
+    // SB_NATIVE_NAME_DEFAULT_SWITCH (owner Q228 revisited): the paired entry
+    // row of a default switch, found and conflict-checked as the request's.
+    std::optional<Version> pair_base;
+    u64 pair_newest = 0;
+    if (request.paired) {
+      const auto& pr = *request.paired;
+      if (!named || request.role != 2 || !V7(pr.row_uuid) || !V7(pr.predecessor_version_uuid) || !V7(pr.version_uuid) ||
+          pr.row_uuid == request.row_uuid || pr.version_uuid == request.version_uuid ||
+          pr.version_uuid == pr.predecessor_version_uuid || pr.version_uuid == request.row_uuid ||
+          pr.version_uuid == pr.row_uuid || request.metadata.record.header.deleted || pr.metadata.record.header.deleted ||
+          pr.metadata.record.header.kind != catalog::CatalogRecordKind::localized_name ||
+          !pr.metadata.record.payload.empty() || !catalog::CatalogNamePayloadMatchesMetadata(pr.name, pr.metadata) ||
+          !std::holds_alternative<catalog::CatalogNameEntry>(pr.name) ||
+          !std::holds_alternative<catalog::CatalogNameEntry>(*request.name))
+        return Refuse(E::invalid_successor);
+      std::vector<Version> pair_versions;
+      for (std::size_t l = 0; l < leaves.size(); ++l)
+        for (std::size_t r = 0; r < leaves[l].page.body.rows.size(); ++r)
+          if (leaves[l].page.body.rows[r].row_uuid.value == pr.row_uuid) pair_versions.push_back({l, r});
+      if (pair_versions.empty()) return Refuse(E::row_not_found);
+      std::sort(pair_versions.begin(), pair_versions.end(),
+                [&](const auto& a, const auto& b) { return row_of(a).row_version > row_of(b).row_version; });
+      pair_newest = row_of(pair_versions.front()).row_version;
+      if (pair_newest == std::numeric_limits<u64>::max()) return Refuse(E::invalid_successor);
+      for (const auto& v : pair_versions) {
+        const auto& row = row_of(v);
+        const auto* creator = entry(row.local_transaction_id);
+        if (!creator || creator->identity.transaction_uuid.value != row.transaction_uuid.value)
+          return Refuse(E::invalid_catalog);
+        if (row.local_transaction_id == request.transaction_order) {
+          pair_base = v;
+          break;
+        }
+        const auto state = mga::InventoryVisibilityState(*creator);
+        if (InProgress(state)) {
+          result.error = E::write_conflict;
+          result.blocker_order = row.local_transaction_id;
+          return result;
+        }
+        if (state == mga::TransactionState::committed) {
+          pair_base = v;
+          break;
+        }
+      }
+      if (!pair_base) return Refuse(E::row_not_found);
+      if (row_of(*pair_base).version_uuid != pr.predecessor_version_uuid) {
+        result.error = E::update_conflict;
+        result.base_version_uuid = row_of(*pair_base).version_uuid;
+        return result;
+      }
+      if (leaves[pair_base->leaf].metadata.at(row_of(*pair_base).version_uuid).record.header.deleted) {
+        result.error = E::row_deleted;
+        return result;
+      }
+    }
     // A name row's metadata is complete only once its envelope is encoded at
     // placement; Follows is checked there. Everything else is checked now.
     if (!named && !Follows(base_metadata, request.metadata, request)) {
@@ -2507,22 +2828,56 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
     // row-UUID order, SB_NATIVE_NAME_CASCADE).
     std::vector<Succ> succs;
     std::optional<catalog::CatalogNameIndex> moved_paths;
-    std::optional<catalog::IdentifierFoldMode> own_fold;
+    std::optional<catalog::IdentifierFoldMode> own_fold, pair_fold;
+    const catalog::CatalogNamePayload* pair_base_name = nullptr;  // SB_NATIVE_NAME_DEFAULT_SWITCH
     // SB_NATIVE_NAME_TREES (Q42): each base version's cells are stamped with
     // this transaction; a version that is not a drop gets its own cells.
     std::vector<NameTree> name_trees;
     if (named) {
-      names.emplace(binding, request.transaction_order, relations, entry,
-                    std::vector<const catalog::CatalogNamePayload*>{&*request.name});
+      std::vector<const catalog::CatalogNamePayload*> request_names{&*request.name};
+      if (request.paired) request_names.push_back(&request.paired->name);
+      names.emplace(binding, request.transaction_order, relations, entry, std::move(request_names));
       if (!names->Load()) return Refuse(E::invalid_catalog);
-      for (const auto& s : names->Stored())
+      for (const auto& s : names->Stored()) {
         if (s.row == request.row_uuid && s.row_version == base_row.row_version) base_name = &s.payload;
+        if (pair_base && s.row == request.paired->row_uuid && s.row_version == row_of(*pair_base).row_version)
+          pair_base_name = &s.payload;
+      }
       if (!base_name || !catalog::CatalogNamePayloadPreservesIdentity(*base_name, *request.name))
+        return Refuse(E::invalid_successor);
+      // SB_NATIVE_NAME_DEFAULT_SWITCH: the paired row is another entry of the
+      // same object.
+      if (request.paired &&
+          (!pair_base_name || !catalog::CatalogNamePayloadPreservesIdentity(*pair_base_name, request.paired->name) ||
+           std::get<catalog::CatalogNameEntry>(request.paired->name).object_uuid.value !=
+               std::get<catalog::CatalogNameEntry>(*request.name).object_uuid.value))
         return Refuse(E::invalid_successor);
       // SB_NATIVE_NAME_TREES: read before the checks; the collision check
       // probes the authoritative tree (SB_NATIVE_NAME_PROBE, N3).
       if (!ReadNameTrees(sink, binding, page_size, image, name_trees, result)) return result;
       if (!name_trees.empty()) names->ProbeWith(&name_trees[0].tree);
+      if (name_trees.size() > 1) names->DefaultIndexWith(&name_trees[1].tree);
+      // Owner Q250, Q227, Q235 = 1, Q228 revisited, Q247 (2026-11-15/16): the
+      // name list rules (CheckNameListChange), before any write.
+      {
+        const auto read_definitions = [&]() -> Stop {
+          if (!ReadDefinitionRelations(sink, binding, page_size, *root.root, relations, nullptr, result)) return result;
+          return std::nullopt;
+        };
+        std::optional<std::pair<Uuid, const catalog::CatalogNameEntry*>> to_pair, to_primary;
+        if (request.paired) {
+          to_pair.emplace(request.paired->row_uuid, &std::get<catalog::CatalogNameEntry>(request.paired->name));
+          to_primary.emplace(request.row_uuid, &std::get<catalog::CatalogNameEntry>(*request.name));
+        }
+        if (auto stop = CheckNameListChange(*names, request.row_uuid, *base_name, *request.name,
+                                            request.metadata.record.header.deleted, request.transaction_order, relations,
+                                            read_definitions, to_pair ? &*to_pair : nullptr))
+          return *stop;
+        if (request.paired)
+          if (auto stop = CheckNameListChange(*names, request.paired->row_uuid, *pair_base_name, request.paired->name, false,
+                                              request.transaction_order, relations, read_definitions, &*to_primary))
+            return *stop;
+      }
       const auto* entry_payload = std::get_if<catalog::CatalogNameEntry>(&*request.name);
       if (!request.metadata.record.header.deleted && entry_payload) {
         const auto verdict = names->CheckEntry(*request.name);
@@ -2538,6 +2893,17 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
         own_fold = verdict.own_fold;
         if (!own_fold) return Refuse(E::invalid_name);
       }
+      if (request.paired) {  // SB_NATIVE_NAME_DEFAULT_SWITCH: the paired entry's keys and collisions
+        const auto verdict = names->CheckEntry(request.paired->name);
+        if (verdict.error == E::invalid_catalog) return Refuse(E::invalid_catalog);
+        if (verdict.error != E::none) {
+          auto refused = Refuse(verdict.error);
+          refused.blocker_order = verdict.blocker;
+          return refused;
+        }
+        pair_fold = verdict.own_fold;
+        if (!pair_fold) return Refuse(E::invalid_name);
+      }
       // The names a path runs through after the change: the stored names this
       // transaction sees, with the request's row replaced by its new version
       // (removed when it is a drop). Owner Q226: checked in this
@@ -2546,8 +2912,11 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
       // also before_paths, the names before the change as this transaction
       // sees them.)
       const auto* replacement = request.metadata.record.header.deleted ? nullptr : &*request.name;
-      moved_paths = names->StoredPaths(request.row_uuid, replacement);
-      const std::array<Uuid, 1> skip{request.row_uuid};
+      // SB_NATIVE_NAME_DEFAULT_SWITCH: both rows' new versions at once.
+      std::vector<const catalog::CatalogNamePayload*> added_names;
+      if (request.paired) added_names.push_back(&request.paired->name);
+      moved_paths = names->StoredPaths(request.row_uuid, replacement, added_names);
+      const std::array<Uuid, 2> skip{request.row_uuid, request.paired ? request.paired->row_uuid : request.row_uuid};
       if (auto stop = CheckPathsAfterChange(*names, *moved_paths, skip, E::invalid_successor)) return *stop;
     }
     {
@@ -2599,6 +2968,38 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
       // place; request.version_uuid is then unused.
       if (ReplacesOwn(base_metadata, base_row, request.transaction_order)) MakeReplacement(primary, base_row);
       succs.insert(succs.begin(), std::move(primary));
+    }
+    // SB_NATIVE_NAME_DEFAULT_SWITCH: the paired entry's version, after it.
+    if (request.paired) {
+      const auto& pr = *request.paired;
+      auto& pair_row = row_of(*pair_base);
+      const auto& pair_metadata = leaves[pair_base->leaf].metadata.at(pair_row.version_uuid);
+      for (const auto& leaf : leaves)
+        for (const auto& row : leaf.page.body.rows)
+          if (row.version_uuid == pr.version_uuid) return Refuse(E::invalid_successor);
+      if (AheadOfRoot(pr.metadata, *root.root)) return Refuse(E::ahead_of_catalog_root);
+      if (catalog::CheckCatalogNameEntryPath(catalog::BorrowCatalogNameEntry(std::get<catalog::CatalogNameEntry>(pr.name)),
+                                             *moved_paths) != catalog::CatalogNamePathError::none)
+        return Refuse(E::invalid_name);
+      Succ paired;
+      paired.row = pr.row_uuid;
+      paired.version = pr.version_uuid;
+      paired.base = *pair_base;
+      paired.base_metadata = &pair_metadata;
+      paired.metadata = pr.metadata;
+      paired.name = pr.name;
+      paired.base_name = pair_base_name;
+      paired.own_fold = pair_fold;
+      auto& added = paired.added;
+      added.row_uuid = {UuidKind::row, pr.row_uuid};
+      added.version_uuid = pr.version_uuid;
+      added.previous_version_uuid = pair_row.version_uuid;
+      added.transaction_uuid = {UuidKind::transaction, request.transaction_uuid};
+      added.local_transaction_id = request.transaction_order;
+      added.row_version = pair_newest + 1;
+      added.previous_row_version = pair_row.row_version;
+      if (ReplacesOwn(pair_metadata, pair_row, request.transaction_order)) MakeReplacement(paired, pair_row);
+      succs.push_back(std::move(paired));
     }
     // Placement (SB_NATIVE_NAME_CASCADE): PlaceSuccs; pages carrying forward
     // links are written last.
@@ -2676,6 +3077,14 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
                 return *stop;
             }
           break;
+        case DependentClass::name:  // SB_NATIVE_NAME_DROP_CASCADE: both name trees, as a name successor's
+          if (!dep.name_trees.empty()) {
+            if (auto stop = RemoveReplacedNameCells(dep.succs, dep.name_trees)) return *stop;
+            if (auto stop = StampAndAddNameCells(sink, binding, dep.succs, relation, dep.name_trees.data(), entry, pages,
+                                                 page_size, request.transaction_order))
+              return *stop;
+          }
+          break;
       }
     }
 
@@ -2705,8 +3114,10 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
       std::vector<NameTree*> trees;
       for (auto& t : name_trees) trees.push_back(&t);
       if (comment_tree) trees.push_back(&*comment_tree);
-      for (auto& d : dependents)
+      for (auto& d : dependents) {
         if (d.tree) trees.push_back(&*d.tree);
+        for (auto& t : d.name_trees) trees.push_back(&t);  // SB_NATIVE_NAME_DROP_CASCADE
+      }
       for (auto* t : trees)
         if (const auto error = BuildRemovalWrites(*t, removals)) return Refuse(*error);
     }
@@ -2769,6 +3180,8 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
       for (const auto t : dependent_pages[d].changed_index_pages) tree_writes.push_back({&relation.tree[t], {}});
       if (dependents[d].tree)
         for (const auto t : dependents[d].tree->changed) tree_writes.push_back({&dependents[d].tree->tree[t], {}});
+      for (auto& tree : dependents[d].name_trees)  // SB_NATIVE_NAME_DROP_CASCADE
+        for (const auto t : tree.changed) tree_writes.push_back({&tree.tree[t], {}});
     }
     for (auto& w : tree_writes) {
       auto encoded = pg::EncodeNativeBtreePage(w.page->page);
@@ -2980,6 +3393,8 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
     NameState names(binding, request.transaction_order, relations, entry, std::move(request_names));
     if (any_entry && !names.Load()) return Refuse(E::invalid_catalog);
     if (!name_trees.empty()) names.ProbeWith(&name_trees[0].tree);  // SB_NATIVE_NAME_PROBE (N3)
+    if (name_trees.size() > 1) names.DefaultIndexWith(&name_trees[1].tree);  // SB_NATIVE_NAME_DEFAULT_INDEX
+    bool definitions_read = any_comment;  // ReadDefinitionRelations above
 
     for (std::size_t i = 0; i < request.rows.size(); ++i) {
       const auto& want = request.rows[i];
@@ -3103,6 +3518,30 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
           return refuse_row(verdict.error, i);
         }
         entry_fold = verdict.own_fold;
+        // SB_NATIVE_NAME_DEFAULT_INDEX (owner Q228 revisited, Q259): at most
+        // one default per (object, language) and one object default.
+        const auto& x = std::get<catalog::CatalogNameEntry>(*want.name);
+        const auto defaults = names.CheckDefault(x, std::nullopt);
+        if (defaults.error == E::invalid_catalog) return Refuse(E::invalid_catalog);
+        if (defaults.error != E::none) {
+          if (defaults.blocker) result.blocker_order = defaults.blocker;
+          return refuse_row(defaults.error, i);
+        }
+        // SB_NATIVE_NAME_DEFINITION_LOCK (owner Q247 = yes): ADD NAME for an
+        // existing object needs this transaction's version of its definition
+        // row (a create inserts the definition in the same request).
+        const bool created_here = std::any_of(request.rows.begin(), request.rows.end(), [&](const auto& r) {
+          return !r.name && r.metadata.record.header.object_uuid.value == x.object_uuid.value &&
+                 r.metadata.record.header.kind != catalog::CatalogRecordKind::localized_comment;
+        });
+        if (!created_here) {
+          if (!definitions_read) {
+            if (!ReadDefinitionRelations(sink, binding, page_size, *root.root, relations, &heads, result)) return result;
+            definitions_read = true;
+          }
+          if (!OwnDefinitionVersion(relations, x.object_uuid.value, request.transaction_order))
+            return refuse_row(E::definition_not_locked, i);
+        }
         names.HoldEntry(*want.name);
       }
 
@@ -3266,7 +3705,7 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
                                      catalog::CatalogNameAuthoritativeTreePayload(e)))
             return refuse_row(*error, i);
           if (const auto error = add(1, catalog::CatalogNameUuidTreeEntryKey(e, *kind),
-                                     catalog::CatalogNameUuidTreeEntryPayload(e.name_entry_uuid.value)))
+                                     catalog::CatalogNameUuidTreeEntryPayload(e)))
             return refuse_row(*error, i);
         }
       }

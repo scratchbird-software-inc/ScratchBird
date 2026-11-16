@@ -92,7 +92,7 @@ struct Package {
       auto& x=items[i];const auto type=static_cast<c::CatalogSchemaType>(1+i%6);
       const unsigned oid=1000+4*i;
       x.metadata=Metadata(oid,c::CatalogRecordKind::schema,c::CatalogSchemaSubtype(type));
-      x.metadata.default_name_uuid=Typed(p::UuidKind::object,oid+2);x.metadata.name_vector_uuid=Typed(p::UuidKind::object,oid+1);
+      /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */x.metadata.name_vector_uuid=Typed(p::UuidKind::object,oid+1);
       x.definition.schema_object_uuid=x.metadata.record.header.object_uuid;
       x.definition.database_catalog_object_uuid=database.record.header.object_uuid;
       if(i)x.definition.parent_schema_uuid=items[i-1].definition.schema_object_uuid;
@@ -105,20 +105,20 @@ struct Package {
       if(i)x.metadata.owning_schema_uuid={p::UuidKind::schema,x.definition.parent_schema_uuid.value};
       x.vector_metadata=Metadata(oid+1,c::CatalogRecordKind::localized_name,scratchbird::core::catalog::CatalogObjectSubtype::name_vector);
       x.vector_metadata.record.header.parent_uuid=x.definition.schema_object_uuid;
-      x.vector_metadata.default_name_uuid=x.metadata.default_name_uuid;
+      /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
       x.vector_metadata.name_vector_uuid=x.metadata.name_vector_uuid;
       x.vector_metadata.owning_schema_uuid=x.metadata.owning_schema_uuid;
       x.vector.name_vector_uuid=x.metadata.name_vector_uuid;x.vector.object_uuid=x.definition.schema_object_uuid;
       x.vector.object_kind=c::CatalogRecordKind::schema;if(i)x.vector.owning_schema_uuid=x.metadata.owning_schema_uuid;
-      x.vector.default_language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_en_US);x.vector.default_name_entry_uuid=x.metadata.default_name_uuid;
+      /* SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES (owner Q228 revisited): no vector default *//* SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES (owner Q228 revisited): no vector default */
       x.vector.name_collision_policy_uuid=Typed(p::UuidKind::object,55);
       x.vector.catalog_generation_id=1;x.vector.security_policy_uuid=x.metadata.security_policy_uuid;
       x.vector.lifecycle_state=c::CatalogNameLifecycle::active;
       x.entry_metadata=Metadata(oid+2,c::CatalogRecordKind::localized_name,scratchbird::core::catalog::CatalogObjectSubtype::name_entry);
       x.entry_metadata.record.header.parent_uuid=x.metadata.name_vector_uuid;
-      x.entry_metadata.default_name_uuid=x.metadata.default_name_uuid;x.entry_metadata.name_vector_uuid=x.metadata.name_vector_uuid;
+      /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */x.entry_metadata.name_vector_uuid=x.metadata.name_vector_uuid;
       x.entry_metadata.owning_schema_uuid=x.metadata.owning_schema_uuid;x.entry_metadata.resource_epoch=1;
-      auto& e=x.entry;e.name_entry_uuid=x.metadata.default_name_uuid;e.name_vector_uuid=x.metadata.name_vector_uuid;
+      auto& e=x.entry;e.name_entry_uuid=(Typed(p::UuidKind::object,oid+2));e.name_vector_uuid=x.metadata.name_vector_uuid;
       e.object_uuid=x.definition.schema_object_uuid;e.object_kind=c::CatalogRecordKind::schema;
       e.scope_uuid=x.metadata.record.header.parent_uuid;if(i)e.parent_schema_uuid=x.metadata.owning_schema_uuid;
       e.language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_en_US);e.dialect_profile_uuid=Typed(p::UuidKind::object,56);e.identifier_profile_uuid=Typed(p::UuidKind::object,57);
@@ -157,18 +157,18 @@ struct DatabasePackage {
     // Q111: keyed by the construction's database UUID, Id(1) (was Id(100)).
     x.metadata=Metadata(1,c::CatalogRecordKind::database,scratchbird::core::catalog::CatalogObjectSubtype::database);
     x.metadata.name_vector_uuid=Typed(p::UuidKind::object,120);
-    x.metadata.default_name_uuid=Typed(p::UuidKind::object,121);
+    /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
     x.vector_metadata=Metadata(120,c::CatalogRecordKind::localized_name,scratchbird::core::catalog::CatalogObjectSubtype::name_vector);
     x.vector_metadata.record.header.parent_uuid=x.metadata.record.header.object_uuid;
-    x.vector_metadata.default_name_uuid=x.metadata.default_name_uuid;
+    /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
     x.vector_metadata.name_vector_uuid=x.metadata.name_vector_uuid;
     x.entry_metadata=Metadata(121,c::CatalogRecordKind::localized_name,scratchbird::core::catalog::CatalogObjectSubtype::name_entry);
     x.entry_metadata.record.header.parent_uuid=x.metadata.name_vector_uuid;
-    x.entry_metadata.default_name_uuid=x.metadata.default_name_uuid;
+    /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
     x.entry_metadata.name_vector_uuid=x.metadata.name_vector_uuid;x.entry_metadata.resource_epoch=1;
     x.vector.object_uuid=x.entry.object_uuid=x.metadata.record.header.object_uuid;
     x.vector.name_vector_uuid=x.entry.name_vector_uuid=x.metadata.name_vector_uuid;
-    x.vector.default_name_entry_uuid=x.entry.name_entry_uuid=x.metadata.default_name_uuid;
+    x.entry.name_entry_uuid=(Typed(p::UuidKind::object,121));
     x.vector.object_kind=x.entry.object_kind=c::CatalogRecordKind::database;
     x.entry.scope_uuid=x.metadata.record.header.object_uuid;
     x.entry.raw_name_text="native_node";
@@ -190,17 +190,17 @@ struct PrimaryPackage {
     x.metadata=Metadata(130,c::CatalogRecordKind::filespace,scratchbird::core::catalog::CatalogObjectSubtype::filespace);
     x.metadata.record.header.parent_uuid=database.aliases.items[0].metadata.record.header.object_uuid;
     x.metadata.name_vector_uuid=Typed(p::UuidKind::object,150);
-    x.metadata.default_name_uuid=Typed(p::UuidKind::object,151);
+    /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
     x.vector_metadata=Metadata(150,c::CatalogRecordKind::localized_name,scratchbird::core::catalog::CatalogObjectSubtype::name_vector);
     x.vector_metadata.record.header.parent_uuid=x.metadata.record.header.object_uuid;
-    x.vector_metadata.default_name_uuid=x.metadata.default_name_uuid;x.vector_metadata.name_vector_uuid=x.metadata.name_vector_uuid;
+    /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */x.vector_metadata.name_vector_uuid=x.metadata.name_vector_uuid;
     x.entry_metadata=Metadata(151,c::CatalogRecordKind::localized_name,scratchbird::core::catalog::CatalogObjectSubtype::name_entry);
     x.entry_metadata.record.header.parent_uuid=x.metadata.name_vector_uuid;
-    x.entry_metadata.default_name_uuid=x.metadata.default_name_uuid;x.entry_metadata.name_vector_uuid=x.metadata.name_vector_uuid;
+    /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */x.entry_metadata.name_vector_uuid=x.metadata.name_vector_uuid;
     x.entry_metadata.resource_epoch=1;
     x.vector.object_uuid=x.entry.object_uuid=x.metadata.record.header.object_uuid;
     x.vector.name_vector_uuid=x.entry.name_vector_uuid=x.metadata.name_vector_uuid;
-    x.vector.default_name_entry_uuid=x.entry.name_entry_uuid=x.metadata.default_name_uuid;
+    x.entry.name_entry_uuid=(Typed(p::UuidKind::object,151));
     x.vector.object_kind=x.entry.object_kind=c::CatalogRecordKind::filespace;
     x.entry.scope_uuid=database.aliases.items[0].metadata.record.header.object_uuid;
     x.entry.raw_name_text="initial_primary";
@@ -425,7 +425,7 @@ void DatabaseChecks() {
       if(i) {
         metadata[i].record.header.object_uuid=Typed(p::UuidKind::object,200+i);
         metadata[i].record.header.row_uuid=Typed(p::UuidKind::row,200200+i);
-        metadata[i].default_name_uuid=metadata[i].record.header.object_uuid;
+        /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
         names[i].name_entry_uuid=metadata[i].record.header.object_uuid;
         names[i].default_for_object=names[i].default_for_language=false;
         names[i].raw_name_text="native_node_alias_"+std::to_string(i);

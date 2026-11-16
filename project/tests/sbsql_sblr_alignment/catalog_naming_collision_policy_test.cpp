@@ -114,7 +114,7 @@ void Bindings(){
     if(n==2)bad.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;if(n==3)bad.definition_version=2;if(n==4)bad.authority_scope=c::CatalogAuthorityScope::cluster;
     if(n==5)bad.record.header.parent_uuid.value=f::Id(61);if(n==6)bad.owner_uuid={};if(n==7)bad.audit_uuid={};
     if(n==8)bad.creator_local_transaction_id=2;if(n==9)bad.creator_transaction_uuid.value=f::Id(6);
-    if(n==10)bad.security_policy_uuid={};if(n==11)bad.default_name_uuid={};if(n==12)bad.name_vector_uuid={};
+    if(n==10)bad.security_policy_uuid={};if(n==11)bad.name_vector_uuid={};/* (Was: default_name_uuid, retired by owner Q248 = 1; the name-vector fault) */if(n==12)bad.name_vector_uuid={};
     if(n==13)bad.record.header.row_uuid.value=body.groups[0].group_uuid;if(n==14)bad.record.payload="not native";
     Check(!c::CatalogNamingCollisionPolicyMatchesMetadata(c::BorrowCatalogMetadataVersion(bad))&&
         !c::CatalogMetadataVersionEncodedBytes(c::BorrowCatalogMetadataVersion(bad)),"common dispatcher rejects body/header/subtype/creator disguise");}

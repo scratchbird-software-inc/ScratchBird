@@ -16,8 +16,8 @@ bool ValidLifecycle(CatalogNameLifecycle state) {
   return raw >= 1 && raw <= 7;
 }
 template<class Record> bool ValidVector(const Record& r) {
-  return IsKnownCatalogRecordKind(r.object_kind) && IsKnownCatalogLanguage(r.default_language_uuid.value) &&
-      r.catalog_generation_id != 0 && ValidLifecycle(r.lifecycle_state);
+  // SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES: (was: also a known default language).
+  return IsKnownCatalogRecordKind(r.object_kind) && r.catalog_generation_id != 0 && ValidLifecycle(r.lifecycle_state);
 }
 template<class Record> bool ValidEntry(const Record& r) {
   return IsKnownCatalogRecordKind(r.object_kind) && IsKnownCatalogLanguage(r.language_uuid.value) &&
@@ -32,8 +32,8 @@ void VisitVector(Record& r, Visitor visit) {
   visit(2, r.object_uuid);
   visit(3, r.object_kind);
   visit(4, r.owning_schema_uuid);
-  visit(5, r.default_language_uuid);
-  visit(6, r.default_name_entry_uuid);
+  // SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES (version 4): 5 default_language_uuid
+  // and 6 default_name_entry_uuid retired, numbers not reused.
   visit(7, r.name_collision_policy_uuid);
   visit(8, r.catalog_generation_id);
   visit(9, r.security_policy_uuid);
@@ -128,14 +128,17 @@ CatalogValueSchemaView CatalogNameVectorSchemaView() {
     {2, Type::engine_identity, true, 16, UuidKind::object},  // object_uuid
     {3, Type::unsigned_integer, true, 8},  // object_kind (CatalogRecordKind)
     {4, Type::engine_identity, false, 16, UuidKind::schema},  // owning_schema_uuid
-    {5, Type::engine_identity, true, 16, UuidKind::object},  // default_language_uuid (a language constant)
-    {6, Type::engine_identity, true, 16, UuidKind::object},  // default_name_entry_uuid
+    // SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES (owner Q228 revisited): 5
+    // default_language_uuid and 6 default_name_entry_uuid were version 3's;
+    // a version 3 block is refused (no migration, Q164 = 1).
     {7, Type::engine_identity, true, 16, UuidKind::object},  // name_collision_policy_uuid
     {8, Type::unsigned_integer, true, 8},  // catalog_generation_id
     {9, Type::engine_identity, true, 16, UuidKind::object},  // security_policy_uuid
     {10, Type::unsigned_integer, true, 8},  // lifecycle_state
   };
-  return {327681, 3, fields};  // 2: kind, 3: language (SB_CATALOG_NO_TEXT_IDENTIFIERS)
+  // 2: kind, 3: language (SB_CATALOG_NO_TEXT_IDENTIFIERS); 4: no defaults on
+  // the vector (SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES). (Was: version 3.)
+  return {327681, 4, fields};
 }
 }  // namespace
 const CatalogValueSchema& CatalogNameVectorSchema() {
@@ -263,7 +266,7 @@ CatalogValueError ValidateCatalogNameEntry(const CatalogNameEntryView& record) {
 }
 CatalogNameVectorView BorrowCatalogNameVector(const CatalogNameVector& r) {
   return {r.name_vector_uuid, r.object_uuid, r.object_kind, r.owning_schema_uuid,
-      r.default_language_uuid, r.default_name_entry_uuid, r.name_collision_policy_uuid,
+      r.name_collision_policy_uuid,
       r.catalog_generation_id, r.security_policy_uuid, r.lifecycle_state};
 }
 CatalogNameEntryView BorrowCatalogNameEntry(const CatalogNameEntry& r) {
@@ -289,7 +292,7 @@ CatalogValueEncodeResult EncodeCatalogNameEntry(const CatalogNameEntry& record) 
   return EncodeCatalogValueBlock(CatalogNameEntrySchema(), fields);
 }
 CatalogNameRecordDecodeResult<CatalogNameVectorView> DecodeCatalogNameVectorView(std::span<const byte> bytes) {
-  std::array<CatalogValueFieldView, 10> fields;
+  std::array<CatalogValueFieldView, 8> fields;
   const auto decoded = DecodeCatalogValueBlockInto(CatalogNameVectorSchemaView(), bytes, fields);
   if (!decoded.ok()) return {decoded.error, {}};
   CatalogNameVectorView record;
@@ -304,8 +307,6 @@ CatalogNameVector MaterializeCatalogNameVector(const CatalogNameVectorView& reco
       record.object_uuid,
       record.object_kind,
       record.owning_schema_uuid,
-      record.default_language_uuid,
-      record.default_name_entry_uuid,
       record.name_collision_policy_uuid,
       record.catalog_generation_id,
       record.security_policy_uuid,

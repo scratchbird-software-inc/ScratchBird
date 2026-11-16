@@ -163,7 +163,7 @@ Named NamedObject(const Db& b, std::span<const byte> file, const NameTemplate& t
   const scratchbird::core::platform::TypedUuid vector{UuidKind::object, V7(Ms(key), 0x710000 + k)};
   const scratchbird::core::platform::TypedUuid entry{UuidKind::object, V7(Ms(key), 0x720000 + k)};
   d.name_vector_uuid = vector;
-  d.default_name_uuid = entry;
+  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
   d.retired_transaction_uuid = {};  // live: no retiring transaction
 
   auto vm = d;
@@ -187,7 +187,7 @@ Named NamedObject(const Db& b, std::span<const byte> file, const NameTemplate& t
   v.object_uuid = object;
   if (d.owning_schema_uuid.value.is_nil()) v.owning_schema_uuid.reset();
   else v.owning_schema_uuid = d.owning_schema_uuid;
-  v.default_name_entry_uuid = entry;
+  /* SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES (owner Q228 revisited): no vector default */
   v.catalog_generation_id = vm.catalog_generation;
   v.security_policy_uuid = d.security_policy_uuid;
   v.lifecycle_state = c::CatalogNameLifecycle::active;
@@ -200,7 +200,7 @@ Named NamedObject(const Db& b, std::span<const byte> file, const NameTemplate& t
   if (d.owning_schema_uuid.value.is_nil()) e.parent_schema_uuid.reset();
   else e.parent_schema_uuid = d.owning_schema_uuid;
   e.parent_object_uuid.reset();
-  e.language_uuid = v.default_language_uuid;
+  e.language_uuid = t.entry.language_uuid;  // (was v.default_language_uuid: SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES)
   e.name_class = c::CatalogNameClass::primary;
   e.catalog_generation_id = em.catalog_generation;
   e.created_transaction_uuid = d.creator_transaction_uuid;
@@ -227,7 +227,7 @@ db::CatalogInsertRow Alias(const Named& of, const NameTemplate& t, const Uuid& k
   const scratchbird::core::platform::TypedUuid id{UuidKind::object, V7(Ms(key), 0x730000 + k)};
   row.metadata.record.header.object_uuid = id;
   row.metadata.record.header.row_uuid = {UuidKind::row, key};
-  row.metadata.default_name_uuid = id;
+  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
   row.metadata.creator_transaction_uuid = {UuidKind::transaction, TxId(n)};
   row.metadata.creator_local_transaction_id = n;
   auto e = Keyed(std::get<c::CatalogNameEntry>(*of.entry.name), t, text);
@@ -239,6 +239,52 @@ db::CatalogInsertRow Alias(const Named& of, const NameTemplate& t, const Uuid& k
   row.name = c::CatalogNamePayload{e};
   Check(c::CatalogNamePayloadMatchesMetadata(*row.name, row.metadata), "the alias agrees with its metadata");
   return row;
+}
+
+// SEARCH_KEY: SB_NATIVE_NAME_DEFINITION_LOCK (owner Q247 = yes, 2026-11-16:
+// every name drop, default switch and add also updates the object's
+// definition row, a successor that changes nothing else). The successor of
+// `object`'s definition row by `n` (version VersionId(k)), citing n's event,
+// with page identities should its relation need a leaf. (Was: name writes
+// took no definition version.)
+// The base: n's own newest version, else the committed one (a committed
+// read of the file: rolled-back versions passed over).
+db::CatalogVersionRequest TouchRequest(const Db& b, const std::string& path, const Uuid& object, u64 n, unsigned k) {
+  const auto file = ReadAll(path);
+  std::optional<db::CatalogVersionRequest> r;
+  for (const u16 at : {u16{1}, u16{3}, u16{4}, u16{5}, u16{6}}) {
+    if (r) break;
+    RoleScope scope(b, at);
+    const auto rel = ReadRelation(b, file);
+    for (const auto& l : rel.leaves)
+      for (const auto& row : l.leaf.body.rows)
+        if (!r && l.metadata.at(row.version_uuid).record.header.object_uuid.value == object) {
+          std::optional<Uuid> base;
+          for (const auto& v : rel.Versions(row.row_uuid.value))
+            if (!base && rel.At(v.first).leaf.body.rows[v.second].local_transaction_id == n)
+              base = rel.At(v.first).leaf.body.rows[v.second].version_uuid;
+          if (!base) {
+            const auto seen = Peek(b, path, row.row_uuid.value);
+            Check(seen.read && seen.version.has_value() && !seen.deleted, "the definition's committed version");
+            base = seen.version;
+          }
+          r = Successor(b, rel, row.row_uuid.value, *base, n, VersionId(k));
+        }
+  }
+  Check(r.has_value(), "the object's definition is found");
+  for (unsigned i = 0; i < 8; ++i)
+    r->new_pages.push_back({V7(kT + 3700000 + 20 * u64{k} + i, 0x5e0000 + k), V7(kT + 3700000 + 20 * u64{k} + i, 0x5f0000 + k)});
+  return *r;
+}
+db::CatalogVersionWriteResult TouchDefinition(const Db& b, d::CarefulWriteSink& sink, const std::string& path, const Uuid& object,
+                                              u64 n, unsigned k) {
+  return db::WriteCatalogSuccessorVersion(sink, GrowingBinding(b), TouchRequest(b, path, object, n, k));
+}
+void Touch(const Db& b, d::CarefulWriteSink& sink, const std::string& path, const Uuid& object, u64 n, unsigned k,
+           const std::string& label) {
+  const auto result = TouchDefinition(b, sink, path, object, n, k);
+  if (!result.ok()) std::cerr << label << ": touch: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+  Check(result.ok(), label + ": the object's definition row written (Q247)");
 }
 
 // ---- Startup verification on a committed capture -----------------------------------------
@@ -454,6 +500,9 @@ bool NamedStates(const Db& b, const NameTemplate& t, u16 role, std::size_t defin
   // An alias of the same object, same name: admitted (one object).
   Begin(s, 3);
   {
+    // Owner Q247 (SB_NATIVE_NAME_DEFINITION_LOCK): ADD NAME writes the
+    // object's definition row first. (Was: the alias alone.)
+    Touch(b, s.sink(), path, named.definition.metadata.record.header.object_uuid.value, 3, 9601, "an alias");
     const auto now = ReadAll(path);
     const auto alias = Alias(named, t, V7(After(b, now, role), 0xd00001), 2, 3, "w3b_named_object");
     // 3c: native create now writes 34 more objects (the agent config records,
@@ -1070,7 +1119,7 @@ std::optional<NameSuccessorExpected> NameSuccessorOracle(const Db& b, std::span<
       // (Was: the stored key; the path's display components.)
       const auto own = OwnLaneText(e);
       cells.push_back({0, c::CatalogNameAuthoritativeTreeKey(e, AsLane(own), *kind), c::CatalogNameAuthoritativeTreePayload(e)});
-      cells.push_back({1, c::CatalogNameUuidTreeEntryKey(e, *kind), c::CatalogNameUuidTreeEntryPayload(e.name_entry_uuid.value)});
+      cells.push_back({1, c::CatalogNameUuidTreeEntryKey(e, *kind), c::CatalogNameUuidTreeEntryPayload(e)});
     }
     for (auto& planned : cells) {
       pg::NativeBtreeCell entry;
@@ -1484,8 +1533,11 @@ void NameCascade(const Db& b, const NameTemplate& t, u16 role, std::size_t defin
               << result.writes << " writes, " << result.allocated_pages.size() << " new pages\n";
     Commit(*s.w, s.sink(), 4);
     ExpectNamedVerification(b, path, definitions + 1, "a scope rename, committed", false, true);
-    // Dropping the scope's only name in its language would leave the entries
-    // below without a path: refused (kept). Q212: transaction 5 (was 4).
+    // Dropping the scope's only name: refused. SB_NATIVE_NAME_LAST_NAME (owner
+    // Q227, 2026-11-15): it is the schema's last name, so object_last_name,
+    // checked before the paths below it. (Was: invalid_successor, because it
+    // would leave the entries below without a path; that check is kept for a
+    // change that leaves the object other names.) Q212: transaction 5 (was 4).
     Begin(s, 5);
     const auto now = ReadAll(path);
     const auto renamed_scope = scope_entry(now);
@@ -1493,7 +1545,7 @@ void NameCascade(const Db& b, const NameTemplate& t, u16 role, std::size_t defin
     dropped.lifecycle_state = c::CatalogNameLifecycle::dropped;
     dropped.dropped_transaction_uuid = {UuidKind::transaction, TxId(5)};
     auto drop = NameSuccessor(as_row(now, renamed_scope), renamed_scope.version, 5, VersionId(9900), c::CatalogNamePayload{dropped}, true);
-    Refused(b, s, path, drop, CE::invalid_successor, "dropping the scope's name, which paths below it need");
+    Refused(b, s, path, drop, CE::object_last_name, "dropping the scope's only name (Q227; was invalid_successor: paths below need it)");
     Rollback(*s.w, s.sink(), 5);
   }
   // SB_CATALOG_SPLIT_LAG / careful write: the rename again on copies of the
@@ -1563,6 +1615,46 @@ db::CatalogInsertRow NameRowOf(const Db& b, std::span<const byte> file, Match ma
   Check(out.has_value(), what + " is found");
   return *out;
 }
+// The version of the name row whose payload `match` accepts that
+// transaction `n` sees: its own newest, else the committed one (rolled-back
+// versions passed over), as a request row. (NameRowOf takes the newest
+// version, whoever wrote it.)
+template <class Match>
+db::CatalogInsertRow NameRowSeen(const Db& b, const std::string& path, u64 n, Match match, const std::string& what) {
+  const auto file = ReadAll(path);
+  const auto any = NameRowOf(b, file, match, what);
+  RoleScope scope(b, 2);
+  const auto rel = ReadRelation(b, file);
+  std::optional<Uuid> version;
+  for (const auto& v : rel.Versions(any.row_uuid))
+    if (!version && rel.At(v.first).leaf.body.rows[v.second].local_transaction_id == n)
+      version = rel.At(v.first).leaf.body.rows[v.second].version_uuid;
+  if (!version) {
+    const auto seen = Peek(b, path, any.row_uuid);
+    Check(seen.read && seen.version.has_value(), what + ": a version is seen");
+    version = seen.version;
+  }
+  std::optional<db::CatalogInsertRow> out;
+  {
+    for (const auto& l : rel.leaves)
+      for (const auto& row : l.leaf.body.rows) {
+        if (row.version_uuid != *version) continue;
+        const auto& m = l.metadata.at(row.version_uuid);
+        const c::CatalogNameVersionBinding at{
+            {UuidKind::database, l.leaf.header.database_uuid}, {UuidKind::filespace, l.leaf.header.filespace_uuid},
+            row.row_uuid, {UuidKind::row, row.version_uuid}, m.record.header.object_uuid, row.transaction_uuid, l.page,
+            row.stable_slot_id, row.storage_generation, row.row_version, row.local_transaction_id, m.catalog_generation};
+        const std::vector<byte> bytes(reinterpret_cast<const byte*>(m.record.payload.data()),
+                                      reinterpret_cast<const byte*>(m.record.payload.data()) + m.record.payload.size());
+        const auto decoded = c::DecodeCatalogNameEnvelope(bytes, at);
+        Check(decoded.ok(), "the seen name version decodes");
+        out = db::CatalogInsertRow{2, row.row_uuid.value, row.version_uuid, m, decoded.record->payload};
+        out->metadata.record.payload.clear();
+      }
+  }
+  Check(out.has_value(), what + ": the seen version is read");
+  return *out;
+}
 // A further entry for the object `of` names (by `n`, at row `key`): `text`
 // in `language`, as `name_class`, default for its language or not, named in
 // the same scope.
@@ -1580,7 +1672,7 @@ db::CatalogInsertRow EntryLike(const db::CatalogInsertRow& of, const NameTemplat
   const scratchbird::core::platform::TypedUuid id{UuidKind::object, V7(Ms(key), 0x750000 + k)};
   row.metadata.record.header.object_uuid = id;
   row.metadata.record.header.row_uuid = {UuidKind::row, key};
-  row.metadata.default_name_uuid = id;
+  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
   row.metadata.creator_transaction_uuid = {UuidKind::transaction, TxId(n)};
   row.metadata.creator_local_transaction_id = n;
   row.metadata.definition_version = 1;
@@ -1639,6 +1731,9 @@ void NameCascadePaths(const Db& b, const NameTemplate& t, u16 role, std::size_t 
   ExpectInsertOrGrow(b, s, path, Request(2, {foreign}), "its name in another language, through the schema's vector default", 6);
   // An English alias of the schema, not its English default.
   file = ReadAll(path);
+  // Owner Q247: ADD NAME writes the schema's definition row first.
+  Touch(b, s.sink(), path, schema, 2, 9602, "an alias of the schema");
+  file = ReadAll(path);
   const auto alias = EntryLike(entry_of(file, t.entry.language_uuid.value, true), t, V7(After(b, file, role), 0xd10002), 2, 2,
                                "w3b_paths_alias", t.entry.language_uuid.value, false, c::CatalogNameClass::alias);
   ExpectInsertOrGrow(b, s, path, Request(2, {alias}), "an alias of the schema", 2);
@@ -1673,96 +1768,61 @@ void NameCascadePaths(const Db& b, const NameTemplate& t, u16 role, std::size_t 
       Check(through(*now, v.entry, to.name_entry_uuid.value), label + ": its walked path runs through the new name");
     }
   };
-  // (Was: cascade_ids, 64 caller-issued cascade identities per request.)
-  const auto cascade_ids = [&](db::CatalogVersionRequest& r, unsigned k) {
-    for (unsigned i = 0; i < 16; ++i)
-      r.new_pages.push_back({V7(kT + 1600000 + 100 * u64{k} + i, 0xf70000 + k), V7(kT + 1600000 + 100 * u64{k} + i, 0xf80000 + k)});
-  };
-  // The schema's default name becomes the alias: four rows by one
-  // transaction, since the default name is the definition's, the vector's,
-  // and the one entry marked default for the object and for the vector's
-  // language (the startup name rules). Each step's cascade is checked.
+  // The schema's default name becomes the alias: ONE request writing two
+  // entry rows (SB_NATIVE_NAME_DEFAULT_SWITCH, owner Q228 revisited,
+  // 2026-11-16: "A default switch updates TWO entry rows"; the flags live on
+  // the entries): the English entry's default_for_language and
+  // default_for_object cleared, the alias's set, after the schema's
+  // definition row is written (Q247). Every English entry below, and the
+  // entry in the other language (which falls back to the object default),
+  // now walk through the alias. (Was: four rows - the two entries' flags in
+  // two requests, the vector's default and the definition's default_name_uuid.)
   Begin(s, 3);
   {
-    const auto successor_of = [&](const db::CatalogInsertRow& row, unsigned k, c::CatalogNamePayload payload) {
-      auto r = NameSuccessor(row, row.version_uuid, 3, VersionId(k), std::move(payload), false);
-      cascade_ids(r, k - 9300);
-      return r;
-    };
-    const auto write = [&](const db::CatalogVersionRequest& r, const std::string& label) {
-      const auto result = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), r);
-      if (!result.ok()) std::cerr << label << ": " << db::CatalogVersionWriteErrorName(result.error) << '\n';
-      Check(result.ok(), label + ": written");
-      return result;
-    };
-    // 1. The English entry no longer the default: paths still reach it as
-    //    the vector's default, so nothing moves.
+    Touch(b, s.sink(), path, schema, 3, 9300, "the default switch");
     file = ReadAll(path);
+    const auto old_row = entry_of(file, t.entry.language_uuid.value, true);
+    auto old_entry = std::get<c::CatalogNameEntry>(*old_row.name);
+    old_entry.default_for_language = false;
+    old_entry.default_for_object = false;
+    auto r = NameSuccessor(old_row, old_row.version_uuid, 3, VersionId(9301), c::CatalogNamePayload{old_entry}, false);
+    const auto alias_row = NameRowOf(b, file, [&](const c::CatalogNamePayload& p) {
+      const auto* e = std::get_if<c::CatalogNameEntry>(&p);
+      return e && e->name_entry_uuid.value == alias_entry.name_entry_uuid.value;
+    }, "the alias");
+    auto new_entry = std::get<c::CatalogNameEntry>(*alias_row.name);
+    new_entry.default_for_language = true;
+    new_entry.default_for_object = true;
+    const auto pair = NameSuccessor(alias_row, alias_row.version_uuid, 3, VersionId(9302), c::CatalogNamePayload{new_entry}, false);
+    r.paired = db::CatalogVersionRequest::PairedName{pair.row_uuid, pair.predecessor_version_uuid, pair.version_uuid, pair.metadata,
+                                                      *pair.name};
+    for (unsigned i = 0; i < 16; ++i)
+      r.new_pages.push_back({V7(kT + 1600000 + i, 0xf70000 + i), V7(kT + 1600000 + i, 0xf80000 + i)});
+    // Each half alone is refused before any write: the clear leaves the
+    // object without a default (default_name_in_use), the set doubles it
+    // (duplicate_default_name).
     {
-      const auto row = entry_of(file, t.entry.language_uuid.value, true);
-      auto e = std::get<c::CatalogNameEntry>(*row.name);
-      e.default_for_language = false;
-      e.default_for_object = false;
-      const auto before = ReadAll(path);
-      write(successor_of(row, 9301, c::CatalogNamePayload{e}), "the English entry no longer the default");
-      // (Was: result.cascaded empty.) Paths still reach it as the vector's default.
-      expect_moves(before, ReadAll(path), {}, english, english, true, "the English entry no longer the default");
+      auto clear_only = r;
+      clear_only.paired.reset();
+      Refused(b, s, path, clear_only, CE::default_name_in_use, "clearing the object default alone");
+      auto set_only = pair;
+      for (unsigned i = 0; i < 16; ++i)
+        set_only.new_pages.push_back({V7(kT + 1610000 + i, 0xf70000 + i), V7(kT + 1610000 + i, 0xf80000 + i)});
+      Refused(b, s, path, set_only, CE::duplicate_default_name, "setting a second object default alone");
     }
-    // 2. The alias default for English and for the object: every English
-    //    entry below moves onto it.
-    file = ReadAll(path);
-    {
-      const auto row = NameRowOf(b, file, [&](const c::CatalogNamePayload& p) {
-        const auto* e = std::get_if<c::CatalogNameEntry>(&p);
-        return e && e->name_entry_uuid.value == alias_entry.name_entry_uuid.value;
-      }, "the alias");
-      auto e = std::get<c::CatalogNameEntry>(*row.name);
-      e.default_for_language = true;
-      e.default_for_object = true;
-      const auto result = write(successor_of(row, 9302, c::CatalogNamePayload{e}), "the alias default for English");
-      expect_moves(file, ReadAll(path), result, english, alias_entry, true, "the alias default for English");
-    }
-    // 3. The vector's default the alias: the entry in the other language,
-    //    which runs through the vector's default, moves onto it.
-    file = ReadAll(path);
-    {
-      const auto vector = NameRowOf(b, file, [&](const c::CatalogNamePayload& p) {
-        const auto* v = std::get_if<c::CatalogNameVector>(&p);
-        return v && v->object_uuid.value == schema;
-      }, "the schema's vector");
-      auto v = std::get<c::CatalogNameVector>(*vector.name);
-      v.default_name_entry_uuid = alias_entry.name_entry_uuid;
-      auto r = successor_of(vector, 9303, c::CatalogNamePayload{v});
-      r.metadata.default_name_uuid = alias_entry.name_entry_uuid;
-      const auto result = write(r, "the vector's default the alias");
-      expect_moves(file, ReadAll(path), result, english, alias_entry, false, "the vector's default the alias");
-    }
-    // 4. The schema's definition names the alias as its default.
-    file = ReadAll(path);
-    {
-      std::optional<db::CatalogVersionRequest> r;
-      for (const u16 at : {u16{1}, u16{3}, u16{4}, u16{5}, u16{6}}) {
-        RoleScope scope(b, at);
-        const auto rel = ReadRelation(b, file);
-        for (const auto& l : rel.leaves)
-          for (const auto& row : l.leaf.body.rows)
-            if (l.metadata.at(row.version_uuid).record.header.object_uuid.value == schema && !r) {
-              const auto newest = rel.Versions(row.row_uuid.value).front();
-              const auto& version = rel.At(newest.first).leaf.body.rows[newest.second].version_uuid;
-              r = Successor(b, rel, row.row_uuid.value, version, 3, VersionId(9304));
-            }
-      }
-      Check(r.has_value(), "the schema's definition is found");
-      r->metadata.default_name_uuid = alias_entry.name_entry_uuid;
-      cascade_ids(*r, 4);  // page identities, should its relation need a new leaf
-      write(*r, "the schema's definition names the alias");
-    }
+    const auto result = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), r);
+    if (!result.ok()) std::cerr << "the default switch: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+    Check(result.ok(), "the schema's default switched: two entry rows in one write");
+    const auto after = ReadAll(path);
+    expect_moves(file, after, result, english, alias_entry, true, "the alias default for English");
+    expect_moves(file, after, result, english, alias_entry, false, "the alias the object default");
     Commit(*s.w, s.sink(), 3);
-    ExpectNamedVerification(b, path, definitions + 1, "the schema's default name changed and its cascades, committed", false, true);
+    ExpectNamedVerification(b, path, definitions + 1, "the schema's default name switched, committed", false, true);
   }
   // The old English entry, now on no path, dropped: nothing moves.
   Begin(s, 4);
   {
+    Touch(b, s.sink(), path, schema, 4, 9319, "the unused name's drop");
     file = ReadAll(path);
     const auto row = NameRowOf(b, file, [&](const c::CatalogNamePayload& p) {
       const auto* e = std::get_if<c::CatalogNameEntry>(&p);
@@ -1778,7 +1838,7 @@ void NameCascadePaths(const Db& b, const NameTemplate& t, u16 role, std::size_t 
     Commit(*s.w, s.sink(), 4);
     ExpectNamedVerification(b, path, definitions + 1, "the unused name dropped, committed", false, true);
   }
-  std::cout << b.name << " name cascade paths page_size=" << b.size << ": default name changed (4 rows), unused drop\n";
+  std::cout << b.name << " name cascade paths page_size=" << b.size << ": default name switched (two entry rows in one request; was 4 rows), unused drop\n";
   fs::remove(path);
 }
 
@@ -1834,31 +1894,19 @@ std::string VerificationOutcome(const Db& b, const std::string& path) {
   }
   return out.str();
 }
-// Case E's endings under owner Q226 (SB_NATIVE_NAME_CONFLICT_WRITE_WRITE_ONLY),
-// as observed 2026-11-15 at all five page sizes. PENDING AN OWNER RULING (the
-// Q226 follow-up on an object or scope left with no name): every ending in
-// which X's only name is dropped and committed is refused by startup
-// verification at the name-binding verifier, missing_default_name (X's
-// definition names a default entry that is no longer live), whether or not
-// the name under X also committed; the path verifier (which would report
-// unnamed_scope for the name under X) does not run. The writer itself accepts
-// dropping an object's only name while the object stays (no "every object
-// named" check exists in it). Only "drop first, first rolls back" (X keeps its
-// name, the name under X commits) verifies. Pinned so a change is seen; not a
-// statement that this is the intended behaviour. (Was, Q212: the second write
-// was a write_conflict with the first, and no ending committed both.)
-void ExpectEOutcome(const Db& b, const std::string& path, const std::string& label, bool drop_first, bool both,
+// Case E's endings, SB_NATIVE_NAME_LAST_NAME (owner Q227, 2026-11-15: "you
+// can not delete the last name but you can drop the sqlobject itself, which
+// removes the last name"): the drop of X's only name is refused by the writer,
+// object_last_name, with nothing written, so X keeps its name in every
+// ending; the database verifies with X and, when the name under X committed,
+// with it too. (Was, Q226 observed 2026-11-15 and pinned pending this
+// ruling: the writer accepted the drop, and every ending in which it
+// committed was refused by startup verification at the name-binding verifier,
+// missing_default_name; only "drop first, first rolls back" verified.)
+void ExpectEOutcome(const Db& b, const std::string& path, const std::string& label, bool child_committed,
                     std::size_t definitions) {
-  if (drop_first && !both) {
-    ExpectNamedVerification(b, path, definitions + 2, label + ": X and the name under it", false, true);
-    return;
-  }
-  const auto outcome = VerificationOutcome(b, path);
-  std::cout << b.name << " page_size=" << b.size << " " << label << ": verification " << outcome << '\n';
-  const std::string want = "names=" + std::to_string(int(ia::NativeCatalogNameVerificationError::missing_default_name)) +
-                           " paths=" + std::to_string(int(ia::NativeCatalogNamePathVerificationError::source_required));
-  Check(outcome.starts_with(want), label + ": X's only name dropped and committed: startup verification refuses at "
-                                           "names missing_default_name (observed; pending owner ruling, Q226 follow-up)");
+  ExpectNamedVerification(b, path, definitions + (child_committed ? 2 : 1),
+                          label + (child_committed ? ": X and the name under it" : ": X keeps its name"), false, true);
 }
 // SB_NATIVE_NAME_PATH_CONFLICT (owner Q47 = 1), relaxed by
 // SB_NATIVE_NAME_PATH_CONFLICT_BREAK (owner Q212, 2026-11-15), then removed by
@@ -1890,13 +1938,15 @@ void ExpectEOutcome(const Db& b, const std::string& path, const std::string& lab
 //     the schema runs through: it succeeds (before Q47's fix the schema's
 //     name left the path index, and everything below it went unnamed), both
 //     commit, and the database verifies.
-//  E. (Q212, re-targeted by Q226) X named and committed, nothing below it; one
-//     transaction inserts a name under X, another drops X's only name, in both
-//     orders. Owner Q226: neither sees the other's row, neither is the same
-//     name row nor the same key, so both writes succeed. (Was, Q212: whichever
-//     wrote second got a write_conflict with the first.) The endings: the
-//     first rolls back and the second commits, or both commit; startup
-//     verification of each result is pinned as observed (see the case).
+//  E. (Q212, re-targeted by Q226, then Q227) X named and committed, nothing
+//     below it; one transaction inserts a name under X, another drops X's only
+//     name, in both orders. Owner Q227: the drop is refused object_last_name
+//     (X keeps a name; only the drop of X itself removes it), nothing
+//     written, in either order; the insert succeeds. (Was, Q226: both writes
+//     succeeded, and startup refused the result, missing_default_name; Q212:
+//     whichever wrote second got a write_conflict with the first.) The
+//     endings: the first rolls back and the second commits, or both commit;
+//     each verifies.
 void NameConflicts(const Db& b, const NameTemplate& t, u16 role, std::size_t definitions) {
   // A.
   for (const bool commit : {false, true}) {
@@ -2096,20 +2146,39 @@ void NameConflicts(const Db& b, const NameTemplate& t, u16 role, std::size_t def
         return db::WriteCatalogInsertVersions(s.sink(), GrowingBinding(b), child_rows(ReadAll(path)));
       };
       const auto drop_x = [&] { return db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), drop); };
+      // Owner Q227 (SB_NATIVE_NAME_LAST_NAME): the drop of X's only name is
+      // refused object_last_name with nothing written; the insert under X
+      // succeeds. (Was, Q226: both succeeded; Q212: the second was a
+      // write_conflict with the first.)
+      const auto expect_drop_refused = [&](const db::CatalogVersionWriteResult& result, const std::vector<byte>& before,
+                                           const std::string& which) {
+        if (result.error != CE::object_last_name)
+          std::cerr << label << ": " << which << ": " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+        Check(result.error == CE::object_last_name && !result.attempted && result.writes == 0 && ReadAll(path) == before,
+              label + ": " + which + ", the drop of X's only name: object_last_name, nothing written (Q227; was: "
+                                     "written, then refused at startup, missing_default_name)");
+      };
       Begin(s, 3);
       {
+        const auto before = ReadAll(path);
         const auto first = drop_first ? drop_x() : insert_child();
-        if (!first.ok()) std::cerr << label << ": first: " << db::CatalogVersionWriteErrorName(first.error) << '\n';
-        Check(first.ok(), label + ": the first write, in progress");
+        if (drop_first) {
+          expect_drop_refused(first, before, "first");
+        } else {
+          if (!first.ok()) std::cerr << label << ": first: " << db::CatalogVersionWriteErrorName(first.error) << '\n';
+          Check(first.ok(), label + ": the first write (the name under X), in progress");
+        }
       }
       Begin(s, 4);
       {
-        // Owner Q226: no name conflict. (Was, Q212: write_conflict with 3, no
-        // write.)
+        const auto before = ReadAll(path);
         const auto second = drop_first ? insert_child() : drop_x();
-        if (!second.ok()) std::cerr << label << ": second: " << db::CatalogVersionWriteErrorName(second.error) << '\n';
-        Check(second.ok(), label + ": the second write succeeds while the first is in progress (Q226; was: "
-                                   "write_conflict with 3, Q212)");
+        if (drop_first) {
+          if (!second.ok()) std::cerr << label << ": second: " << db::CatalogVersionWriteErrorName(second.error) << '\n';
+          Check(second.ok(), label + ": the second write (the name under X) succeeds");
+        } else {
+          expect_drop_refused(second, before, "second");
+        }
       }
       if (both) {
         Commit(*s.w, s.sink(), 3);
@@ -2117,10 +2186,9 @@ void NameConflicts(const Db& b, const NameTemplate& t, u16 role, std::size_t def
         Rollback(*s.w, s.sink(), 3);
       }
       Commit(*s.w, s.sink(), 4);
-      // What startup verification makes of the result, pinned as observed
-      // (Q226 follow-up, pending an owner ruling on a scope or object left
-      // with no name; see ExpectEOutcome).
-      ExpectEOutcome(b, path, label, drop_first, both, definitions);
+      // X keeps its name; the name under X committed unless its inserter (3,
+      // inserting first) rolled back. (Was: pinned as observed pending Q227.)
+      ExpectEOutcome(b, path, label, drop_first || both, definitions);
       fs::remove(path);
     }
   std::cout << b.name << " name conflicts page_size=" << b.size << ": A (both endings), B, C, D, E (both orders, two endings)\n";
@@ -2202,7 +2270,10 @@ void NameInsertCascade(const Db& b, const NameTemplate& t, u16 role, std::size_t
   // needed, no row blamed, nothing written; SB_NATIVE_NAME_ROW_V4 needs none.)
   (void)begun;
   {
-    auto [r, name] = schema_name(pre, 3, 21, "w3b_schema_nom", 4);
+    // Owner Q247 (SB_NATIVE_NAME_DEFINITION_LOCK): the schema's definition
+    // row first. (Was: the insert alone.)
+    Touch(b, s.sink(), path, schema, 3, 9611, "the schema's second-language name");
+    auto [r, name] = schema_name(ReadAll(path), 3, 21, "w3b_schema_nom", 4);
     const auto result = db::WriteCatalogInsertVersions(s.sink(), GrowingBinding(b), r);
     if (!result.ok()) std::cerr << "insert cascade: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
     Check(result.ok(), "the schema's second-language default name is inserted (was: cascading)");
@@ -2218,6 +2289,7 @@ void NameInsertCascade(const Db& b, const NameTemplate& t, u16 role, std::size_t
   // with 3, no write.)
   Begin(s, 4);
   {
+    Touch(b, s.sink(), path, named.definition.metadata.record.header.object_uuid.value, 4, 9612, "a second-language alias");
     file = ReadAll(path);
     const auto alias = EntryLike(named.entry, t, V7(After(b, file, role), 0xd20002), 12, 4, "w3b_insert_alias", language, false,
                                  c::CatalogNameClass::alias);
@@ -2231,15 +2303,19 @@ void NameInsertCascade(const Db& b, const NameTemplate& t, u16 role, std::size_t
   Rollback(*s.w, s.sink(), 4);
   Commit(*s.w, s.sink(), 3);
   ExpectNamedVerification(b, path, definitions + 1, "the cascading insert, committed", false, true);
-  // A second default in that language: the entry below's scope is ambiguous.
+  // A second default in that language: refused by the default index,
+  // duplicate_default_name, the new row blamed (SB_NATIVE_NAME_DEFAULT_INDEX,
+  // owner Q228 revisited, Q259). (Was: invalid_name for the request, the entry
+  // below's scope ambiguous.)
   Begin(s, 5);
   {
+    Touch(b, s.sink(), path, schema, 5, 9613, "a second default");
     file = ReadAll(path);
     auto [r, name] = schema_name(file, 5, 22, "w3b_schema_nom_deux", 4);
     const auto result = db::WriteCatalogInsertVersions(s.sink(), GrowingBinding(b), r);
-    if (result.error != CE::invalid_name) std::cerr << "ambiguous: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
-    Check(result.error == CE::invalid_name && !result.failed_row && !result.attempted && ReadAll(path) == file,
-          "a second default in one language leaves the entry below ambiguous: invalid_name, nothing written");
+    if (result.error != CE::duplicate_default_name) std::cerr << "second default: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+    Check(result.error == CE::duplicate_default_name && result.failed_row == 0u && !result.attempted && ReadAll(path) == file,
+          "a second default in one language: duplicate_default_name, nothing written (was invalid_name)");
   }
   Rollback(*s.w, s.sink(), 5);
   // The cascading insert again on copies of the file before it, failing each
@@ -2250,7 +2326,8 @@ void NameInsertCascade(const Db& b, const NameTemplate& t, u16 role, std::size_t
     const auto copy = b.Copy(pre, "insert-cascade-crash.db");
     Session c(b, copy);
     Begin(c, 3);
-    auto [r, name] = schema_name(pre, 3, 23, "w3b_schema_nom", 4);
+    Touch(b, c.sink(), copy, schema, 3, 9614, "the cascading insert again");
+    auto [r, name] = schema_name(ReadAll(copy), 3, 23, "w3b_schema_nom", 4);
     KindFaultSink sink(c.sink(), KindFaultSink::Kind::write, w);
     const auto result = db::WriteCatalogInsertVersions(sink, GrowingBinding(b), r);
     if (result.ok()) {
@@ -2262,6 +2339,7 @@ void NameInsertCascade(const Db& b, const NameTemplate& t, u16 role, std::size_t
     Rollback(*c.w, c.sink(), 3);
     if (w <= 3 || w % 4 == 0) ExpectNamedVerification(b, copy, definitions + 1, "after failed insert-cascade write " + std::to_string(w), false, true);
     Begin(c, 4);
+    Touch(b, c.sink(), copy, schema, 4, 9615, "the insert after a failed write");
     const auto now = ReadAll(copy);
     auto [next, next_name] = schema_name(now, 4, 24, "w3b_schema_nom", 4);
     const auto done = db::WriteCatalogInsertVersions(c.sink(), GrowingBinding(b), next);
@@ -2280,27 +2358,12 @@ void NameInsertCascade(const Db& b, const NameTemplate& t, u16 role, std::size_t
 // ---- The catalog-change audit event (W3b-2a, owner Q31 = 1, Q49 = 1, Q50 = 1) -------------
 // The create's construction-intent row (role 6): the template an event row's
 // metadata starts from (its owner, schema and parent), and its intent.
-// Q226 case 4, observed 2026-11-15 at all five page sizes. PENDING AN OWNER
-// RULING: under Q226 no rule catches two transactions each adding an entry of
-// one object marked default_for_language in one language (the same object, so
-// not a uniqueness collision; different rows, so not write-write; each path
-// check sees only its own default). Both writes succeed and both commit; startup
-// verification then refuses at the path verifier, duplicate_language_default.
-// (Was, Q212: caught only indirectly, when a path below the object ran through
-// that language.) Pinned so a change is seen; not a statement that this is the
-// intended behaviour.
-void ExpectDefaultRaceWrite(const db::CatalogVersionWriteResult& result) {
-  Check(result.ok(), "Q226 4: a second default of A in that language by another transaction succeeds (observed; "
-                     "pending owner ruling)");
-}
-void ExpectDefaultRaceVerification(const Db& b, const std::string& path) {
-  const auto outcome = VerificationOutcome(b, path);
-  std::cout << b.name << " page_size=" << b.size << " Q226 4: both committed, verification " << outcome << '\n';
-  const std::string want = "names=0 paths=" +
-                           std::to_string(int(ia::NativeCatalogNamePathVerificationError::duplicate_language_default));
-  Check(outcome.starts_with(want), "Q226 4: two committed defaults of A in one language: startup verification refuses "
-                                   "at paths duplicate_language_default (observed; pending owner ruling)");
-}
+// (Retired with owner Q228 revisited, 2026-11-16: ExpectDefaultRaceWrite and
+// ExpectDefaultRaceVerification, which pinned as observed "Q226 case 4" - two
+// transactions each adding a default of A in one language both succeeded and
+// committed, then startup refused at the path verifier,
+// duplicate_language_default. The default index refuses the second now:
+// NameRowConflicts case 4 and NameDefaults.)
 // ---- Name conflicts that remain (owner Q226) ------------------------------------------------
 // SB_NATIVE_NAME_CONFLICT_WRITE_WRITE_ONLY (owner Q226, 2026-11-15): the only
 // name conflicts between transactions are (1) write-write on the same name row
@@ -2314,10 +2377,12 @@ void ExpectDefaultRaceVerification(const Db& b, const std::string& path) {
 //     object named K in the same scope: write_conflict with 5;
 //  3. uniqueness, insert first: 7 inserts an object named K2, in progress; 8
 //     renames A to K2: write_conflict with 7;
-//  4. (owner question) two transactions each add an entry of A marked
-//     default_for_language in one language: no rule above catches it, both
-//     commit; startup verification then refuses (pinned as observed, see
-//     ExpectDefaultRaceVerification).
+//  4. two transactions each add a default of A in one language
+//     (SB_NATIVE_NAME_DEFAULT_INDEX, owner Q228 revisited, Q259): the second
+//     insert is a write_conflict with the first through the default index (no
+//     definition row written); with the definition row written first (Q247)
+//     the second transaction's write of that row conflicts instead. (Was:
+//     both committed, then startup refused duplicate_language_default.)
 void NameRowConflicts(const Db& b, const NameTemplate& t, u16 role, std::size_t definitions) {
   const auto path = b.Copy(b.bytes, "row-conflicts.db");
   Session s(b, path);
@@ -2411,9 +2476,12 @@ void NameRowConflicts(const Db& b, const NameTemplate& t, u16 role, std::size_t 
                   7, "Q226 3: 8 renames A to K2 while 7's insert of K2 is in progress", file);
   Rollback(*s.w, s.sink(), 8);
   Rollback(*s.w, s.sink(), 7);
-  // 4. Two language defaults of A in one language, by two transactions.
+  // 4. Two transactions each add a default of A in one language
+  // (SB_NATIVE_NAME_DEFAULT_INDEX). (Was: both committed; startup refused.)
   const Uuid language = OtherLanguage(t.entry.language_uuid.value);
+  const auto a_object = a.definition.metadata.record.header.object_uuid.value;
   Begin(s, 9);
+  Touch(b, s.sink(), path, a_object, 9, 9811, "Q228 4: 9's French default");
   file = ReadAll(path);
   {
     auto r = Request(9, {EntryLike(a_now, t, V7(After(b, file, role), 0xd40001), 31, 9, "w3b_ww_fr_one", language, true,
@@ -2421,7 +2489,7 @@ void NameRowConflicts(const Db& b, const NameTemplate& t, u16 role, std::size_t 
     r.new_pages = PageIds(9);
     const auto result = db::WriteCatalogInsertVersions(s.sink(), GrowingBinding(b), r);
     if (!result.ok()) std::cerr << "4 first: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
-    Check(result.ok(), "Q226 4: 9 adds A's default in a second language, in progress");
+    Check(result.ok(), "Q228 4: 9 adds A's default in a second language, in progress");
   }
   Begin(s, 10);
   file = ReadAll(path);
@@ -2430,15 +2498,332 @@ void NameRowConflicts(const Db& b, const NameTemplate& t, u16 role, std::size_t 
                                     c::CatalogNameClass::alias)});
     r.new_pages = PageIds(9);
     const auto result = db::WriteCatalogInsertVersions(s.sink(), GrowingBinding(b), r);
-    std::cout << b.name << " page_size=" << b.size << " Q226 4: a second default of A in that language by 10: "
-              << db::CatalogVersionWriteErrorName(result.error) << '\n';
-    ExpectDefaultRaceWrite(result);
+    expect_conflict(result, 9, "Q228 4: 10 adds a second default of A in that language (the default index)", file);
+    expect_conflict(TouchDefinition(b, s.sink(), path, a_object, 10, 9812), 9,
+                    "Q228 4: 10 writes A's definition row (Q247)", file);
   }
+  Rollback(*s.w, s.sink(), 10);
   Commit(*s.w, s.sink(), 9);
-  Commit(*s.w, s.sink(), 10);
-  ExpectDefaultRaceVerification(b, path);
+  ExpectNamedVerification(b, path, definitions + 1, "Q228 4: 9's default committed", false, true);
   fs::remove(path);
-  std::cout << b.name << " name row conflicts page_size=" << b.size << ": same row, uniqueness both orders, default race\n";
+  std::cout << b.name << " name row conflicts page_size=" << b.size << ": same row, uniqueness both orders, default index (Q228)\n";
+}
+
+// ---- Name list rules (owner Q227, Q235 = 1, Q228 revisited, Q247, Q249, Q250; 2026-11-15/16) --
+// SEARCH_KEY: SB_NATIVE_NAME_LAST_NAME, SB_NATIVE_NAME_DEFAULT_IN_USE,
+// SB_NATIVE_NAME_DEFAULT_INDEX, SB_NATIVE_NAME_DEFAULT_SWITCH,
+// SB_NATIVE_NAME_DEFINITION_LOCK, SB_NATIVE_NAME_DROP_CASCADE,
+// SB_NATIVE_NAME_LANGUAGE_READ_ONLY. Written out here (new, 2026-11-16):
+//  1. a non-default name of several dropped (definition row first): succeeds;
+//     without the definition row: definition_not_locked (also ADD NAME);
+//  2. the object default, or a language default, dropped while other names
+//     exist: default_name_in_use (Q235 = 1, no promotion);
+//  3. AS DEFAULT as one request writing two entry rows, then the old default
+//     dropped, one transaction: succeeds, verifies;
+//  4. SET DEFAULT LANGUAGE: default_for_object moved to the other language's
+//     default (two entry rows); the old default language keeps its default;
+//  5. a successor changing an entry's language: name_language_read_only;
+//  6. the default index: a pending clear of the French default against
+//     another transaction's new French default (write_conflict: unique-index
+//     semantics), a committed default against an insert
+//     (duplicate_default_name), a pending default against an insert
+//     (write_conflict);
+//  7. switch vs switch, switch vs drop of either row, drop vs drop (the last
+//     two names besides the default), in both orders: the second
+//     transaction's definition row write conflicts (Q247), and its name row
+//     write conflicts on the same row where the rows meet;
+//  8. an object's only name, or its vector, dropped: object_last_name;
+//  9. the object dropped: its definition's drop drops its vector and entries
+//     (Q249), verifies without it.
+void NameDefaults(const Db& b, const NameTemplate& t, u16 role, std::size_t definitions) {
+  const auto path = b.Copy(b.bytes, "name-defaults.db");
+  Session s(b, path);
+  const Uuid english = t.entry.language_uuid.value;
+  const Uuid french = OtherLanguage(english);
+  unsigned next_k = 9850;
+  const auto write = [&](const db::CatalogVersionRequest& r, const std::string& label) {
+    const auto result = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), r);
+    if (!result.ok()) std::cerr << label << ": " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+    Check(result.ok(), label + ": written");
+  };
+  const auto refused = [&](const db::CatalogVersionRequest& r, CE error, const std::string& label, std::optional<u64> blocker = {}) {
+    const auto before = ReadAll(path);
+    const auto result = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), r);
+    if (result.error != error || result.blocker_order != blocker)
+      std::cerr << label << ": got " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+    Check(result.error == error && result.blocker_order == blocker && !result.attempted && ReadAll(path) == before,
+          label + ": " + db::CatalogVersionWriteErrorName(error) + ", nothing written");
+  };
+  // Each insert its own page identities (a page identity is used once per
+  // database).
+  unsigned page_seed = 60;
+  const auto insert = [&](u64 n, std::vector<db::CatalogInsertRow> rows) {
+    auto r = Request(n, std::move(rows));
+    r.new_pages = PageIds(page_seed++);
+    return db::WriteCatalogInsertVersions(s.sink(), GrowingBinding(b), r);
+  };
+  // An entry's newest version, as a successor by n with `change` applied.
+  const auto entry_successor = [&](const Uuid& id, u64 n, const std::function<void(c::CatalogNameEntry&)>& change,
+                                   bool drop = false) {
+    const auto row = NameRowSeen(b, path, n, [&](const c::CatalogNamePayload& p) {
+      const auto* e = std::get_if<c::CatalogNameEntry>(&p);
+      return e && e->name_entry_uuid.value == id;
+    }, "the entry");
+    auto e = std::get<c::CatalogNameEntry>(*row.name);
+    change(e);
+    if (drop) {
+      e.lifecycle_state = c::CatalogNameLifecycle::dropped;
+      e.dropped_transaction_uuid = {UuidKind::transaction, TxId(n)};
+    }
+    auto r = NameSuccessor(row, row.version_uuid, n, VersionId(++next_k), c::CatalogNamePayload{e}, drop);
+    for (unsigned i = 0; i < 8; ++i)
+      r.new_pages.push_back({V7(kT + 3900000 + 20 * u64{next_k} + i, 0x700000 + next_k), V7(kT + 3900000 + 20 * u64{next_k} + i, 0x710000 + next_k)});
+    return r;
+  };
+  const auto drop_entry = [&](const Uuid& id, u64 n) { return entry_successor(id, n, [](c::CatalogNameEntry&) {}, true); };
+  // AS DEFAULT / SET DEFAULT LANGUAGE: `from` changed by from_change, `to` by
+  // to_change, one request (SB_NATIVE_NAME_DEFAULT_SWITCH).
+  const auto switch_request = [&](const Uuid& from, const Uuid& to, u64 n, const std::function<void(c::CatalogNameEntry&)>& from_change,
+                                  const std::function<void(c::CatalogNameEntry&)>& to_change) {
+    auto r = entry_successor(from, n, from_change);
+    const auto pair = entry_successor(to, n, to_change);
+    r.paired = db::CatalogVersionRequest::PairedName{pair.row_uuid, pair.predecessor_version_uuid, pair.version_uuid, pair.metadata,
+                                                      *pair.name};
+    return r;
+  };
+  const auto as_default = [&](const Uuid& from, const Uuid& to, u64 n, bool object) {
+    return switch_request(from, to, n,
+                          [&](c::CatalogNameEntry& e) {
+                            e.default_for_language = false;
+                            if (object) e.default_for_object = false;
+                          },
+                          [&](c::CatalogNameEntry& e) {
+                            e.default_for_language = true;
+                            if (object) e.default_for_object = true;
+                          });
+  };
+  const auto flags_of = [&](const Uuid& id, u64 n) {
+    const auto row = NameRowSeen(b, path, n, [&](const c::CatalogNamePayload& p) {
+      const auto* e = std::get_if<c::CatalogNameEntry>(&p);
+      return e && e->name_entry_uuid.value == id;
+    }, "the entry");
+    const auto& e = std::get<c::CatalogNameEntry>(*row.name);
+    return std::pair{e.default_for_language, e.default_for_object};
+  };
+  const auto touch = [&](const Uuid& object, u64 n, const std::string& label) { Touch(b, s.sink(), path, object, n, ++next_k, label); };
+  const auto id_of = [](const db::CatalogInsertRow& row) { return std::get<c::CatalogNameEntry>(*row.name).name_entry_uuid.value; };
+  // A (English default, English alias, French default, French alias), B (one
+  // name), C (a default and two aliases). Committed.
+  Begin(s, 2);
+  auto file = ReadAll(path);
+  const auto a = NamedAfter(b, file, t, role, After(b, file, role), 3801, 2, "w3b_nd_a");
+  Check(insert(2, a.Rows()).ok(), "names: a named object A");
+  const auto a_object = a.definition.metadata.record.header.object_uuid.value;
+  const auto a_default = id_of(a.entry);
+  file = ReadAll(path);
+  const auto a_alias = EntryLike(a.entry, t, V7(After(b, file, role), 0xd50001), 51, 2, "w3b_nd_a_alias", english, false,
+                                 c::CatalogNameClass::alias);
+  const auto a_fr = EntryLike(a.entry, t, V7(After(b, file, role), 0xd50002), 52, 2, "w3b_nd_a_un", french, true,
+                              c::CatalogNameClass::primary);
+  const auto a_fr2 = EntryLike(a.entry, t, V7(After(b, file, role), 0xd50003), 53, 2, "w3b_nd_a_deux", french, false,
+                               c::CatalogNameClass::alias);
+  Check(insert(2, {a_alias, a_fr, a_fr2}).ok(), "names: A's alias and its French names (A's definition is 2's)");
+  file = ReadAll(path);
+  const auto bn = NamedAfter(b, file, t, role, After(b, file, role), 3802, 2, "w3b_nd_b");
+  Check(insert(2, bn.Rows()).ok(), "names: a named object B");
+  const auto b_object = bn.definition.metadata.record.header.object_uuid.value;
+  file = ReadAll(path);
+  const auto cn = NamedAfter(b, file, t, role, After(b, file, role), 3803, 2, "w3b_nd_c");
+  Check(insert(2, cn.Rows()).ok(), "names: a named object C");
+  const auto c_object = cn.definition.metadata.record.header.object_uuid.value;
+  file = ReadAll(path);
+  const auto c1 = EntryLike(cn.entry, t, V7(After(b, file, role), 0xd50004), 54, 2, "w3b_nd_c_un", english, false, c::CatalogNameClass::alias);
+  const auto c2 = EntryLike(cn.entry, t, V7(After(b, file, role), 0xd50005), 55, 2, "w3b_nd_c_deux", english, false, c::CatalogNameClass::alias);
+  Check(insert(2, {c1, c2}).ok(), "names: C's two aliases");
+  Commit(*s.w, s.sink(), 2);
+  ExpectNamedVerification(b, path, definitions + 3, "names: A, B and C committed", false, true);
+
+  // 1. A non-default name dropped; the definition row first.
+  Begin(s, 3);
+  refused(drop_entry(id_of(a_fr2), 3), CE::definition_not_locked, "names 1: a name dropped without the definition row (Q247)");
+  file = ReadAll(path);
+  {
+    const auto result = insert(3, {EntryLike(a.entry, t, V7(After(b, file, role), 0xd50006), 56, 3, "w3b_nd_a_trois", french, false,
+                                             c::CatalogNameClass::alias)});
+    Check(result.error == CE::definition_not_locked && result.failed_row == 0u && ReadAll(path) == file,
+          "names 1: ADD NAME without the definition row: definition_not_locked, nothing written (Q247)");
+  }
+  touch(a_object, 3, "names 1");
+  write(drop_entry(id_of(a_fr2), 3), "names 1: A's French alias (not a default) dropped");
+  Commit(*s.w, s.sink(), 3);
+  ExpectNamedVerification(b, path, definitions + 3, "names 1: the alias dropped, committed", false, true);
+
+  // 2. A default dropped while other names exist (Q235 = 1).
+  Begin(s, 4);
+  touch(a_object, 4, "names 2");
+  refused(drop_entry(a_default, 4), CE::default_name_in_use, "names 2: A's object default dropped");
+  refused(drop_entry(id_of(a_fr), 4), CE::default_name_in_use, "names 2: A's French default dropped");
+  Rollback(*s.w, s.sink(), 4);
+
+  // 3. AS DEFAULT (two entry rows, one request), then the old default dropped.
+  // (The drop in a transaction of its own: in the switching transaction the
+  // drop would replace that transaction's own version in place (Q88), and a
+  // drop version is longer than the version it replaces, which at 32 KiB did
+  // not fit its page: relation_full, a writer limitation reported.)
+  Begin(s, 5);
+  touch(a_object, 5, "names 3");
+  write(as_default(a_default, id_of(a_alias), 5, true), "names 3: A's alias AS DEFAULT (English, the object default)");
+  Check(flags_of(id_of(a_alias), 5) == std::pair{true, true} && flags_of(a_default, 5) == std::pair{false, false},
+        "names 3: the flags moved");
+  Commit(*s.w, s.sink(), 5);
+  Begin(s, 6);
+  touch(a_object, 6, "names 3 drop");
+  write(drop_entry(a_default, 6), "names 3: the old object default dropped once it is not the default");
+  Commit(*s.w, s.sink(), 6);
+  ExpectNamedVerification(b, path, definitions + 3, "names 3: default switched and the old one dropped, committed", false, true);
+
+  // 4. SET DEFAULT LANGUAGE: the object default moves to the French default.
+  Begin(s, 7);
+  touch(a_object, 7, "names 4");
+  write(switch_request(id_of(a_alias), id_of(a_fr), 7, [](c::CatalogNameEntry& e) { e.default_for_object = false; },
+                       [](c::CatalogNameEntry& e) { e.default_for_object = true; }),
+        "names 4: SET DEFAULT LANGUAGE to French");
+  Check(flags_of(id_of(a_fr), 7) == std::pair{true, true} && flags_of(id_of(a_alias), 7) == std::pair{true, false},
+        "names 4: French is the object default; English keeps its language default");
+  refused(drop_entry(id_of(a_alias), 7), CE::default_name_in_use, "names 4: the English default dropped after the switch");
+  Commit(*s.w, s.sink(), 7);
+  ExpectNamedVerification(b, path, definitions + 3, "names 4: SET DEFAULT LANGUAGE, committed", false, true);
+
+  // 5. An entry's language is read-only (Q250).
+  Begin(s, 8);
+  touch(a_object, 8, "names 5");
+  refused(entry_successor(id_of(a_alias), 8, [&](c::CatalogNameEntry& e) {
+            e.language_uuid = c::CatalogLanguageIdentity(french);
+            e.default_for_language = false;
+          }),
+          CE::name_language_read_only, "names 5: an entry moved to another language (Q250)");
+  Rollback(*s.w, s.sink(), 8);
+
+  // 6. The default index (unique-index semantics).
+  Begin(s, 9);
+  touch(a_object, 9, "names 6");
+  // 9 clears the English language default (A's alias; French is the object
+  // default, so English falls back to it): allowed alone.
+  write(entry_successor(id_of(a_alias), 9, [](c::CatalogNameEntry& e) { e.default_for_language = false; }),
+        "names 6: 9 clears A's English default");
+  Begin(s, 10);
+  file = ReadAll(path);
+  {
+    // 10 inserts a new English default for A (no definition row: the index
+    // decides first): the alias's committed version is the default and 9's
+    // clear is pending.
+    const auto result = insert(10, {EntryLike(a.entry, t, V7(After(b, file, role), 0xd50007), 57, 10, "w3b_nd_a_quatre", english, true,
+                                              c::CatalogNameClass::alias)});
+    Check(result.error == CE::write_conflict && result.blocker_order == 9u && ReadAll(path) == file,
+          "names 6: a new English default while 9's clear of the committed one is in progress: write_conflict with 9");
+  }
+  Rollback(*s.w, s.sink(), 10);
+  Rollback(*s.w, s.sink(), 9);
+  Begin(s, 11);
+  file = ReadAll(path);
+  {
+    const auto result = insert(11, {EntryLike(a.entry, t, V7(After(b, file, role), 0xd50008), 58, 11, "w3b_nd_a_cinq", english, true,
+                                              c::CatalogNameClass::alias)});
+    Check(result.error == CE::duplicate_default_name && ReadAll(path) == file,
+          "names 6: a second English default against the committed one: duplicate_default_name");
+  }
+  Rollback(*s.w, s.sink(), 11);
+
+  // 7. Concurrency, both orders. C: c0 (default), c1, c2.
+  const auto c0 = id_of(cn.entry);
+  u64 tx = 12;
+  for (const bool first_is_switch : {true, false}) {
+    // switch vs switch: the first switches C's default c0 -> c1; the second
+    // then tries c0 -> c2. "first_is_switch": the transaction begun first
+    // writes first; else the one begun second does.
+    u64 one = tx++, two = tx++;
+    Begin(s, one);
+    Begin(s, two);
+    const u64 first = first_is_switch ? one : two, second = first_is_switch ? two : one;
+    touch(c_object, first, "names 7 switch");
+    write(as_default(c0, id_of(c1), first, true), "names 7: the first switch, in progress");
+    file = ReadAll(path);
+    const auto expect = [&](const db::CatalogVersionWriteResult& result, const std::string& label) {
+      if (result.error != CE::write_conflict || result.blocker_order != first)
+        std::cerr << label << ": got " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+      Check(result.error == CE::write_conflict && result.blocker_order == first && ReadAll(path) == file,
+            label + ": write_conflict with the first, nothing written");
+    };
+    expect(TouchDefinition(b, s.sink(), path, c_object, second, ++next_k), "names 7: switch vs switch, the definition row");
+    expect(db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), as_default(c0, id_of(c2), second, true)),
+           "names 7: switch vs switch, the old default's row");
+    expect(db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), drop_entry(c0, second)),
+           "names 7: switch vs drop of the old default's row");
+    expect(db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), drop_entry(id_of(c1), second)),
+           "names 7: switch vs drop of the new default's row");
+    Rollback(*s.w, s.sink(), second);
+    Rollback(*s.w, s.sink(), first);
+    // drop vs switch: the first drops c1 (not a default); the second's switch
+    // to c1 meets it.
+    one = tx++;
+    two = tx++;
+    Begin(s, one);
+    Begin(s, two);
+    const u64 dropper = first_is_switch ? one : two, other = first_is_switch ? two : one;
+    const auto expect_from = [&](const db::CatalogVersionWriteResult& result, const std::string& label) {
+      if (result.error != CE::write_conflict || result.blocker_order != dropper)
+        std::cerr << label << ": got " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+      Check(result.error == CE::write_conflict && result.blocker_order == dropper && ReadAll(path) == file,
+            label + ": write_conflict with the first, nothing written");
+    };
+    touch(c_object, dropper, "names 7 drop");
+    write(drop_entry(id_of(c1), dropper), "names 7: the first drops c1, in progress");
+    file = ReadAll(path);
+    expect_from(TouchDefinition(b, s.sink(), path, c_object, other, ++next_k), "names 7: drop vs switch, the definition row");
+    expect_from(db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), as_default(c0, id_of(c1), other, true)),
+                "names 7: drop vs switch, the dropped row");
+    // drop vs drop: the second drops c2, the last name besides the default.
+    expect_from(TouchDefinition(b, s.sink(), path, c_object, other, ++next_k), "names 7: drop vs drop, the definition row");
+    refused(drop_entry(id_of(c2), other), CE::definition_not_locked, "names 7: drop vs drop without the definition row");
+    Rollback(*s.w, s.sink(), other);
+    Rollback(*s.w, s.sink(), dropper);
+  }
+  ExpectNamedVerification(b, path, definitions + 3, "names 7: every concurrent attempt rolled back", false, true);
+
+  // 8. B's only name, and B's vector.
+  const u64 t8 = tx++;
+  Begin(s, t8);
+  refused(drop_entry(id_of(bn.entry), t8), CE::object_last_name, "names 8: B's only name dropped");
+  {
+    auto v = std::get<c::CatalogNameVector>(*bn.vector.name);
+    v.lifecycle_state = c::CatalogNameLifecycle::dropped;
+    refused(NameSuccessor(bn.vector, bn.vector.version_uuid, t8, VersionId(++next_k), c::CatalogNamePayload{v}, true),
+            CE::object_last_name, "names 8: B's vector dropped while B stays");
+  }
+  Rollback(*s.w, s.sink(), t8);
+
+  // 9. The object dropped: its names with it (Q249).
+  const u64 t9 = tx++;
+  Begin(s, t9);
+  {
+    RoleScope scope(b, role);
+    const auto rel = ReadRelation(b, ReadAll(path));
+    auto drop = Successor(b, rel, bn.definition.row_uuid, bn.definition.version_uuid, t9, VersionId(++next_k), true);
+    const auto short_of = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), drop);
+    Check(short_of.error == CE::dependent_versions_exhausted && short_of.cascade_needed == 2,
+          "names 9: the object's drop needs identities for its vector and entry");
+    for (unsigned i = 0; i < 2; ++i) drop.dependent_versions.push_back(V7(kT + 3950000 + i, 0x720000 + i));
+    for (unsigned i = 0; i < 8; ++i) drop.new_pages.push_back({V7(kT + 3960000 + i, 0x730000 + i), V7(kT + 3960000 + i, 0x740000 + i)});
+    const auto result = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), drop);
+    if (!result.ok()) std::cerr << "names 9: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+    Check(result.ok() && result.dependents.size() == 2, "names 9: B dropped with its vector and entry");
+  }
+  Commit(*s.w, s.sink(), t9);
+  ExpectNamedVerification(b, path, definitions + 2, "names 9: B dropped with its names, committed", true, true);
+  fs::remove(path);
+  std::cout << b.name << " name defaults page_size=" << b.size
+            << ": lock, default in use, AS DEFAULT, SET DEFAULT LANGUAGE, language read-only, default index, "
+               "concurrency both orders, last name, object drop\n";
 }
 
 // ---- A name too long for the page, after create (owner Q225) ------------------------------
@@ -2751,29 +3136,35 @@ void NameSuccessors(const Db& b, const NameTemplate& t, u16 role, std::size_t de
   // cascades it: NameCascade.)
   // A drop: the definition, the vector and the entry retired together; the
   // entry's and vector's cells stamped, no new cells.
+  // SB_NATIVE_NAME_DROP_CASCADE (owner Q249, 2026-11-16: "dropping an object
+  // automatically drops all its name rows"): the definition's drop writes the
+  // vector's and the entry's drop versions in the same write (dependent
+  // identities, after the comments: there are none). Dropping the entry or
+  // the vector alone is refused, object_last_name (owner Q227). (Was: the
+  // entry, the vector and the definition dropped by three requests.)
   {
     auto e = std::get<c::CatalogNameEntry>(*renamed.name);
     e.lifecycle_state = c::CatalogNameLifecycle::dropped;
     e.dropped_transaction_uuid = scratchbird::core::platform::TypedUuid{UuidKind::transaction, TxId(5)};
     auto entry_drop = NameSuccessor(AsRow(renamed), VersionId(9001), 5, VersionId(9004), c::CatalogNamePayload{e}, true);
-    entry_drop.metadata.record.payload.clear();
-    if (!ExpectNameSuccessor(b, s, path, entry_drop, "the entry dropped")) {
-      Rollback(*s.w, s.sink(), 5);
-      fs::remove(path);
-      return;
-    }
+    Refused(b, s, path, entry_drop, CE::object_last_name, "the object's only name dropped alone (Q227)");
     auto v = std::get<c::CatalogNameVector>(*named.vector.name);
     v.lifecycle_state = c::CatalogNameLifecycle::dropped;
-    if (!ExpectNameSuccessor(b, s, path, NameSuccessor(named.vector, named.vector.version_uuid, 5, VersionId(9005), c::CatalogNamePayload{v}, true),
-                             "the vector dropped")) {
-      Rollback(*s.w, s.sink(), 5);
-      fs::remove(path);
-      return;
-    }
+    Refused(b, s, path, NameSuccessor(named.vector, named.vector.version_uuid, 5, VersionId(9005), c::CatalogNamePayload{v}, true),
+            CE::object_last_name, "the object's vector dropped alone (Q227)");
     RoleScope a(b, role);
     const auto rel = ReadRelation(b, ReadAll(path));
-    Expect(b, s, path, Successor(b, rel, named.definition.row_uuid, named.definition.version_uuid, 5, VersionId(9006), true),
-           "the definition dropped");
+    auto drop = Successor(b, rel, named.definition.row_uuid, named.definition.version_uuid, 5, VersionId(9006), true);
+    for (unsigned i = 0; i < 4; ++i) drop.dependent_versions.push_back(V7(kT + 3800000 + i, 0x6c0000 + i));
+    for (unsigned i = 0; i < 8; ++i) drop.new_pages.push_back({V7(kT + 3810000 + i, 0x6d0000 + i), V7(kT + 3810000 + i, 0x6e0000 + i)});
+    const auto result = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), drop);
+    if (!result.ok()) std::cerr << "the definition dropped: " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+    Check(result.ok() && result.dependents.size() == 2 &&
+              result.dependents[0].first == std::min(named.vector.row_uuid, named.entry.row_uuid) &&
+              result.dependents[1].first == std::max(named.vector.row_uuid, named.entry.row_uuid),
+          "the definition dropped, with its vector and entry (row-UUID order, Q249)");
+    RoleScope names(b, 2);
+    PeekSees(b, path, named.entry.row_uuid, VersionId(9001), "the entry while its drop is in progress");
   }
   Commit(*s.w, s.sink(), 5);
   ExpectNamedVerification(b, path, definitions, "a dropped named object", true);
@@ -3236,7 +3627,7 @@ void ConflictingPolicy(const Db& b, const NameTemplate& t, u16 role) {
     m.creator_transaction_uuid = tx;
     m.creator_local_transaction_id = n;
     m.audit_uuid = EventRef(n);  // W3b-2b: the transaction's event
-    m.default_name_uuid = {UuidKind::object, V7(ms, 0xf30000 + k)};
+    /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
     m.name_vector_uuid = {UuidKind::object, V7(ms, 0xf40000 + k)};
     db::CatalogInsertRow r;
     r.role = 5;
@@ -3378,6 +3769,7 @@ int main(int argc, char** argv) {
     if (room) NameConflicts(b, t, *role, fresh.names.definitions);
     if (room) NameInsertCascade(b, t, *role, fresh.names.definitions);
     if (room) NameRowConflicts(b, t, *role, fresh.names.definitions);  // owner Q226
+    if (room) NameDefaults(b, t, *role, fresh.names.definitions);      // owner Q227, Q235, Q228, Q247, Q249, Q250
     if (room) NameKeyPageCapacity(b, t, *role);                         // owner Q225
     if (room) AuditedChanges(b, t, *role, fresh.names.definitions);
     if (room) NameGrowth(b, t, *role, fresh.names.definitions);

@@ -418,9 +418,14 @@ constexpr std::size_t kMetadataMaxBytes = 262144;
 using scratchbird::core::platform::LoadLittle64;
 using scratchbird::core::platform::StoreLittle64;
 using Metadata = CatalogMetadataVersionView;
-constexpr auto kMetadataReferences = std::array{
+// SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16): reference index 3
+// was default_name_uuid; its slot (96 + 48, kind byte 275) is reserved and
+// zero, so every later index (audit_uuid = 9) keeps its place. (Was:
+// &Metadata::default_name_uuid.)
+constexpr std::size_t kRetiredNameReference = 3;
+constexpr auto kMetadataReferences = std::array<TypedUuid Metadata::*, 11>{
     &Metadata::owner_uuid, &Metadata::creator_transaction_uuid,
-    &Metadata::retired_transaction_uuid, &Metadata::default_name_uuid,
+    &Metadata::retired_transaction_uuid, nullptr,
     &Metadata::name_vector_uuid, &Metadata::security_policy_uuid,
     &Metadata::dependency_group_uuid, &Metadata::storage_binding_uuid,
     &Metadata::donor_overlay_uuid, &Metadata::audit_uuid, &Metadata::owning_schema_uuid};
@@ -465,6 +470,7 @@ std::optional<CatalogRecordDiagnosticView> ValidateCatalogMetadataVersionView(co
   };
   if (!IsKnownCatalogObjectSubtype(value.object_subtype)) return MetadataViewError("subtype_invalid");
   for (std::size_t i = 0; i < kMetadataReferences.size(); ++i) {
+    if (!kMetadataReferences[i]) continue;  // SB_CATALOG_NO_NAME_REFERENCE
     const auto& id = value.*kMetadataReferences[i];
     if (!IsSuppliedIdentity(id)) {
       if (i == 0 || i == 1 || i == 9)
@@ -476,11 +482,11 @@ std::optional<CatalogRecordDiagnosticView> ValidateCatalogMetadataVersionView(co
       (IsSuppliedIdentity(value.retired_transaction_uuid) &&
        !IsTypedIdentity(value.retired_transaction_uuid, UuidKind::transaction)))
     return MetadataViewError("transaction_reference_kind");
-  if (IsSuppliedIdentity(value.default_name_uuid) != IsSuppliedIdentity(value.name_vector_uuid))
-    return MetadataViewError("name_vector_pair_invalid");
+  // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): (was: default_name_uuid
+  // and name_vector_uuid supplied together, else name_vector_pair_invalid).
   if (IsSuppliedIdentity(value.owning_schema_uuid) && !IsTypedIdentity(value.owning_schema_uuid, UuidKind::schema))
     return MetadataViewError("owning_schema_kind_invalid");
-  for (auto member : {&Metadata::default_name_uuid, &Metadata::name_vector_uuid,
+  for (auto member : {&Metadata::name_vector_uuid,
                      &Metadata::security_policy_uuid, &Metadata::dependency_group_uuid,
                      &Metadata::storage_binding_uuid, &Metadata::donor_overlay_uuid})
     if (IsSuppliedIdentity(value.*member) && !IsTypedIdentity(value.*member, UuidKind::object))
@@ -670,6 +676,11 @@ CatalogMetadataVersionCodecResult EncodeCatalogMetadataVersion(const CatalogMeta
   for (std::size_t i = 0; i < kMetadataCounters.size(); ++i)
     StoreLittle64(out + 32 + 8 * i, view.*kMetadataCounters[i]);
   for (std::size_t i = 0; i < kMetadataReferences.size(); ++i) {
+    if (!kMetadataReferences[i]) {  // SB_CATALOG_NO_NAME_REFERENCE: reserved, zero
+      std::fill(out + 96 + 16 * i, out + 112 + 16 * i, byte{0});
+      out[272 + i] = 0;
+      continue;
+    }
     const auto& id = view.*kMetadataReferences[i];
     std::copy(id.value.bytes.begin(), id.value.bytes.end(), out + 96 + 16 * i);
     out[272 + i] = static_cast<byte>(id.kind);
@@ -723,7 +734,14 @@ CatalogMetadataVersionViewResult DecodeCatalogMetadataVersionView(std::span<cons
   value.status=static_cast<CatalogObjectStatus>(LoadLittle16(in+20));
   value.visibility=static_cast<CatalogVisibilityClass>(LoadLittle16(in+22));
   for(std::size_t i=0;i<kMetadataCounters.size();++i)value.*kMetadataCounters[i]=LoadLittle64(in+32+8*i);
+  // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): the retired name slot is
+  // zero; a record carrying a name reference there is refused (no migration,
+  // Q164 = 1).
+  if(in[272+kRetiredNameReference]!=0||
+      !std::all_of(in+96+16*kRetiredNameReference,in+112+16*kRetiredNameReference,[](byte b){return b==0;}))
+    return invalid("retired_name_reference");
   for(std::size_t i=0;i<kMetadataReferences.size();++i) {
+    if(!kMetadataReferences[i])continue;
     auto& id=value.*kMetadataReferences[i];id.kind=static_cast<UuidKind>(in[272+i]);
     std::copy(in+96+16*i,in+112+16*i,id.value.bytes.begin());
   }
@@ -765,7 +783,6 @@ CatalogMetadataVersion MaterializeCatalogMetadataVersion(const CatalogMetadataVe
       v.owner_uuid,
       v.creator_transaction_uuid,
       v.retired_transaction_uuid,
-      v.default_name_uuid,
       v.name_vector_uuid,
       v.security_policy_uuid,
       v.dependency_group_uuid,

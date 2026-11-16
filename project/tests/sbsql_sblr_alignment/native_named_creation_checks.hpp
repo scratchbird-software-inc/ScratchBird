@@ -21,19 +21,19 @@ void NativeNamedCreationChecks(const db::NativeCreationCatalogSeed& supplied) {
     n.vector_metadata.record.header.object_uuid=definition.name_vector_uuid;
     n.vector_metadata.record.header.row_uuid={UuidKind::row,Id(18000+3*at)};
     n.vector_metadata.record.header.parent_uuid=definition.record.header.object_uuid;
-    n.vector_metadata.default_name_uuid=definition.default_name_uuid;
+    /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
     n.vector_metadata.name_vector_uuid=definition.name_vector_uuid;
     n.vector_metadata.security_policy_uuid=definition.security_policy_uuid;
     n.vector=std::get<c::CatalogNameVector>(*example[1][0].name);
     n.vector.name_vector_uuid=definition.name_vector_uuid;n.vector.object_uuid=definition.record.header.object_uuid;
-    n.vector.default_name_entry_uuid=definition.default_name_uuid;n.vector.security_policy_uuid=definition.security_policy_uuid;
+    /* SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES (owner Q228 revisited): no vector default */n.vector.security_policy_uuid=definition.security_policy_uuid;
     n.vector.object_kind=definition.record.header.kind;
     for(unsigned alias=0;alias<2;++alias) {
       auto& m=n.metadata[alias];auto& e=n.entries[alias];
       m=example[1][1].metadata;m.record.header.row_uuid={UuidKind::row,Id(18001+3*at+alias)};
-      m.record.header.object_uuid=alias?scratchbird::core::platform::TypedUuid{UuidKind::object,Id(19000+at)}:definition.default_name_uuid;
+      m.record.header.object_uuid=alias?scratchbird::core::platform::TypedUuid{UuidKind::object,Id(19000+at)}:scratchbird::core::platform::TypedUuid{UuidKind::object,Id(19500+at)};  // SB_CATALOG_NO_NAME_REFERENCE (Q248): was definition.default_name_uuid
       m.record.header.parent_uuid=definition.name_vector_uuid;
-      m.default_name_uuid=m.record.header.object_uuid;m.name_vector_uuid=definition.name_vector_uuid;
+      /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */m.name_vector_uuid=definition.name_vector_uuid;
       m.security_policy_uuid=definition.security_policy_uuid;
       e=std::get<c::CatalogNameEntry>(*example[1][1].name);
       e.name_entry_uuid=m.record.header.object_uuid;e.name_vector_uuid=definition.name_vector_uuid;
@@ -88,7 +88,10 @@ void NativeNamedCreationChecks(const db::NativeCreationCatalogSeed& supplied) {
     bad.back()={&definition,&altered.vector_metadata,&altered.vector,altered.input_entries};
     if(fault==0)bad.back().definition=nullptr;
     if(fault==1)bad.back().entries={};
-    if(fault==2)altered.vector.default_language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_fr_CA);
+    // SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES (owner Q228 revisited): the object
+    // default in another language than the creation's. (Was: the vector's
+    // default language set to fr-CA; the vector has none now.)
+    if(fault==2)altered.entries[0].language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_fr_CA);
     if(fault==3)altered.entries[0].default_for_object=false;
     if(fault==4)altered.entries[1].default_for_object=true;
     if(fault==5)altered.entries[1].object_uuid.value=Id(30000);
@@ -134,7 +137,7 @@ void NativeNamedCreationChecks(const db::NativeCreationCatalogSeed& supplied) {
   for(unsigned i=0;i<names.size();++i) {
     auto& m=extra_metadata[i];auto& e=extra_entries[i];
     m=names[i].metadata[1];m.record.header.row_uuid={UuidKind::row,Id(22000+i)};
-    m.record.header.object_uuid=m.default_name_uuid={UuidKind::object,Id(23000+i)};
+    m.record.header.object_uuid = {UuidKind::object,Id(23000+i)};
     e=names[i].entries[1];e.name_entry_uuid=m.record.header.object_uuid;e.language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_fr_CA);
     // SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1): the raw text is now an entry's
     // only owned variable field, so each extra name is longer than the

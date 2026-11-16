@@ -130,7 +130,8 @@ inline bool CatalogStorageActionPolicyMatchesMetadata(const CatalogMetadataVersi
   if(!CatalogStorageActionPolicyMatchesHeader(m.record)||m.object_subtype!=CatalogObjectSubtype::storage_action||
       m.authority_scope!=CatalogAuthorityScope::local||!storage_action_policy_detail::Identity(m.owning_schema_uuid,UuidKind::schema)||
       !storage_action_policy_detail::Identity(m.record.header.parent_uuid,UuidKind::object)||m.owning_schema_uuid.value!=m.record.header.parent_uuid.value||
-      !storage_action_policy_detail::Identity(m.default_name_uuid,UuidKind::object)||!storage_action_policy_detail::Identity(m.name_vector_uuid,UuidKind::object)||
+      // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16): (was: default_name_uuid also checked or set on the next line).
+      !storage_action_policy_detail::Identity(m.name_vector_uuid,UuidKind::object)||
       !storage_action_policy_detail::Identity(m.creator_transaction_uuid,UuidKind::transaction))return false;
   const auto decoded=DecodeCatalogStorageActionPolicy(m.record.payload);const auto& r=*decoded.record;
   // Local transaction numbers identify creators; they do not prove commit
@@ -225,7 +226,8 @@ inline bool CatalogStorageActionAttachmentMatchesMetadata(const CatalogMetadataV
   if(!CatalogStorageActionAttachmentMatchesHeader(m.record)||m.object_subtype!=CatalogObjectSubtype::storage_action_attachment||
       m.authority_scope!=CatalogAuthorityScope::local||!storage_action_policy_detail::Identity(m.owning_schema_uuid,UuidKind::schema)||
       !storage_action_policy_detail::Identity(m.record.header.parent_uuid,UuidKind::object)||m.owning_schema_uuid.value!=m.record.header.parent_uuid.value||
-      !storage_action_policy_detail::Identity(m.default_name_uuid,UuidKind::object)||!storage_action_policy_detail::Identity(m.name_vector_uuid,UuidKind::object)||
+      // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16): (was: default_name_uuid also checked or set on the next line).
+      !storage_action_policy_detail::Identity(m.name_vector_uuid,UuidKind::object)||
       !storage_action_policy_detail::Identity(m.creator_transaction_uuid,UuidKind::transaction))return false;
   const auto decoded=DecodeCatalogStorageActionAttachment(m.record.payload);const auto& r=*decoded.record;
   return r.generation==m.definition_version&&

@@ -78,23 +78,39 @@ inline NativeCatalogNameVerification VerifyNativeCatalogNameBindings(
           return fail(E::invalid_unnamed_event,id);
         continue;
       }
-      const auto* vector=find(m.name_vector_uuid.value);const auto* entry=find(m.default_name_uuid.value);
+      // SEARCH_KEY: SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES (owner Q228 revisited,
+      // Q248 = 1, 2026-11-16): the object's default name is its one live
+      // entry marked default_for_object (found by object, the definition
+      // holding no name reference); none is missing_default_name, two are
+      // default_binding. (Was: the entry the definition's default_name_uuid
+      // named, equal to the vector's default_name_entry_uuid, in the vector's
+      // default language.)
+      const auto* vector=find(m.name_vector_uuid.value);
       if(!vector||!vector->name_payload||!std::holds_alternative<c::CatalogNameVectorView>(*vector->name_payload))
         return fail(E::missing_vector,id,m.name_vector_uuid.value);
-      if(!entry||!entry->name_payload||!std::holds_alternative<c::CatalogNameEntryView>(*entry->name_payload))
-        return fail(E::missing_default_name,id,m.default_name_uuid.value);
+      const c::CatalogNameEntryView* default_entry=nullptr;
+      for(const auto& candidate:rows){
+        if(candidate.row.metadata.record.header.deleted||!candidate.row.name_payload)continue;
+        const auto* x=std::get_if<c::CatalogNameEntryView>(&*candidate.row.name_payload);
+        if(!x||x->object_uuid.value!=id||!x->default_for_object)continue;
+        if(default_entry)return fail(E::default_binding,id,x->name_entry_uuid.value);
+        default_entry=x;
+      }
+      if(!default_entry)return fail(E::missing_default_name,id);
       const auto& v=std::get<c::CatalogNameVectorView>(*vector->name_payload);
-      const auto& e=std::get<c::CatalogNameEntryView>(*entry->name_payload);
+      const auto& e=*default_entry;
       if(v.object_uuid.value!=id||e.object_uuid.value!=id||v.object_kind!=m.record.header.kind||
           e.object_kind!=v.object_kind||!schema(v.owning_schema_uuid,m.owning_schema_uuid))return fail(E::object_binding,id);
-      if(v.default_name_entry_uuid.value!=m.default_name_uuid.value||e.name_vector_uuid.value!=m.name_vector_uuid.value)
+      if(e.name_vector_uuid.value!=m.name_vector_uuid.value)
         return fail(E::vector_binding,id);
-      if(v.default_language_uuid.value!=e.language_uuid.value||!e.default_for_object||!e.default_for_language)
-        return fail(E::default_binding,id,m.default_name_uuid.value);
+      if(!e.default_for_language)
+        return fail(E::default_binding,id,e.name_entry_uuid.value);
     }else if(const auto* v=std::get_if<c::CatalogNameVectorView>(&*row.name_payload)){
       ++out.vectors;const auto* object=find(v->object_uuid.value);
       if(!object||object->name_payload)return fail(E::missing_object,id,v->object_uuid.value);
-      if(object->metadata.name_vector_uuid.value!=id||object->metadata.default_name_uuid.value!=v->default_name_entry_uuid.value)
+      // (SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES: was also the definition's
+      // default_name_uuid equal to the vector's default_name_entry_uuid.)
+      if(object->metadata.name_vector_uuid.value!=id)
         return fail(E::vector_binding,id,v->object_uuid.value);
     }else{
       ++out.entries;const auto& e=std::get<c::CatalogNameEntryView>(*row.name_payload);
@@ -109,7 +125,10 @@ inline NativeCatalogNameVerification VerifyNativeCatalogNameBindings(
           object->metadata.name_vector_uuid.value!=e.name_vector_uuid.value||
           !schema(e.parent_schema_uuid,object->metadata.owning_schema_uuid)||
           e.scope_uuid.value!=expected_scope)return fail(E::object_binding,id,e.object_uuid.value);
-      if(e.default_for_object!=(parent_vector.default_name_entry_uuid.value==id))return fail(E::default_binding,id);
+      // SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES: the object default is also its
+      // language's default. (Was: default_for_object equal to being the
+      // vector's default_name_entry_uuid.)
+      if(e.default_for_object&&!e.default_for_language)return fail(E::default_binding,id);
     }
   }
   out.error=E::none;return out;

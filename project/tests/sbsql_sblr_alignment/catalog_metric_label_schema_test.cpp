@@ -138,7 +138,7 @@ void LabelBinding() {
       case 1:m.record.header.kind=c::CatalogRecordKind::table_descriptor;break;
       case 2:m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;break;case 3:m.definition_version++;break;
       case 4:m.record.header.parent_uuid.value.bytes[15]++;break;case 5:m.owning_schema_uuid={};break;
-      case 6:m.default_name_uuid={};break;case 7:m.name_vector_uuid={};break;
+      case 6:m.name_vector_uuid={};/* (Was: default_name_uuid, retired by owner Q248 = 1; the name-vector fault) */break;case 7:m.name_vector_uuid={};break;
       case 8:m.security_policy_uuid={};break;case 9:m.authority_scope=c::CatalogAuthorityScope::cluster;break;
       case 10:m.creator_transaction_uuid.value.bytes[15]++;break;case 11:m.creator_local_transaction_id--;break;
       case 12:m.creator_local_transaction_id++;break;case 13:m.record.payload="schema=CommonLabels";break;

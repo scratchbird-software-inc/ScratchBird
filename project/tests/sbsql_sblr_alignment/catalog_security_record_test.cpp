@@ -151,7 +151,7 @@ void CheckOrigin(c::CatalogRecordKind kind,unsigned physical_kind,unsigned prima
   m.owner_uuid={p::UuidKind::principal,Identity(4)};
   m.audit_uuid={p::UuidKind::object,Identity(5)};
   m.security_policy_uuid={p::UuidKind::object,Identity(6)};
-  m.default_name_uuid={p::UuidKind::object,Identity(7)};
+  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
   m.name_vector_uuid={p::UuidKind::object,Identity(8)};
   m.owning_schema_uuid={p::UuidKind::schema,Identity(3)};
   m.creator_transaction_uuid={p::UuidKind::transaction,Origin()};m.creator_local_transaction_id=1;
@@ -166,7 +166,7 @@ void CheckOrigin(c::CatalogRecordKind kind,unsigned physical_kind,unsigned prima
     if(fault==2)bad.creator_transaction_uuid.kind=p::UuidKind::object;
     if(fault==3)bad.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;
     if(fault==4)bad.record.header.object_uuid.value=Identity(91);
-    if(fault==5)bad.default_name_uuid={};
+    if(fault==5)bad.name_vector_uuid={};/* (Was: default_name_uuid, retired by owner Q248 = 1; the name-vector fault) */
     if(fault==6)bad.security_policy_uuid={};
     if(fault==7)bad.owning_schema_uuid.value=Identity(92);
     if(fault==8)bad.record.header.row_uuid.value=Origin();

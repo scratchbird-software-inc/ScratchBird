@@ -585,12 +585,13 @@ void NativeCatalogNames() {
   Fixture f; const auto created=f.Begin();
   c::CatalogNameVector vector;
   vector.name_vector_uuid=Id(UuidKind::object);vector.object_uuid=Id(UuidKind::object);
-  vector.object_kind=c::CatalogRecordKind::schema;vector.default_language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_en);vector.owning_schema_uuid=Id(UuidKind::schema);
-  vector.default_name_entry_uuid=Id(UuidKind::object);vector.name_collision_policy_uuid=Id(UuidKind::object);
+  vector.object_kind=c::CatalogRecordKind::schema;/* SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES (owner Q228 revisited): no vector default */vector.owning_schema_uuid=Id(UuidKind::schema);
+  /* SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES (owner Q228 revisited): no vector default */vector.name_collision_policy_uuid=Id(UuidKind::object);
   vector.catalog_generation_id=1;vector.security_policy_uuid=Id(UuidKind::object);
   vector.lifecycle_state=c::CatalogNameLifecycle::active;
   c::CatalogNameEntry entry;
-  entry.name_entry_uuid=vector.default_name_entry_uuid;entry.name_vector_uuid=vector.name_vector_uuid;
+  // (Was: vector.default_name_entry_uuid: SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES.)
+  entry.name_entry_uuid=Id(UuidKind::object);entry.name_vector_uuid=vector.name_vector_uuid;
   entry.object_uuid=vector.object_uuid;entry.object_kind=vector.object_kind;entry.scope_uuid=Id(UuidKind::object);
   entry.language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_en);entry.parent_schema_uuid=vector.owning_schema_uuid;
   entry.dialect_profile_uuid=Id(UuidKind::object);entry.identifier_profile_uuid=Id(UuidKind::object);
@@ -606,7 +607,7 @@ void NativeCatalogNames() {
     m.record.header.kind=c::CatalogRecordKind::localized_name;m.record.header.row_uuid=Id(UuidKind::row);
     m.record.header.object_uuid=is_entry?entry.name_entry_uuid:vector.name_vector_uuid;
     m.record.header.parent_uuid=is_entry?vector.name_vector_uuid:vector.object_uuid;
-    m.name_vector_uuid=vector.name_vector_uuid;m.default_name_uuid=entry.name_entry_uuid;
+    m.name_vector_uuid=vector.name_vector_uuid;/* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
     m.owning_schema_uuid=*vector.owning_schema_uuid;
     m.security_policy_uuid=vector.security_policy_uuid;m.owner_uuid=Id(UuidKind::principal);m.audit_uuid=Id(UuidKind::object);
     m.creator_transaction_uuid=created.transaction_uuid;m.creator_local_transaction_id=created.local_id.value;
@@ -917,7 +918,7 @@ void NativeCatalogMetadataVersions() {
     definition.record.header.object_uuid=schema.schema_object_uuid;
     definition.record.header.parent_uuid=schema.database_catalog_object_uuid;
     definition.owning_schema_uuid={};
-    definition.default_name_uuid=Id(UuidKind::object);
+    /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
     definition.name_vector_uuid=Id(UuidKind::object);
     definition.creator_transaction_uuid=birth.transaction_uuid;
     definition.creator_local_transaction_id=birth.local_id.value;

@@ -146,7 +146,7 @@ void SeriesBindings() {
   for(unsigned which=0;which<13;++which){auto v=metadata;
     if(which==0)v.record.header.kind=c::CatalogRecordKind::table_descriptor;if(which==1)v.record.header.object_uuid.value.bytes[15]++;
     if(which==2)v.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;if(which==3)v.definition_version++;if(which==4)v.record.header.parent_uuid.value.bytes[15]++;
-    if(which==5)v.owning_schema_uuid={};if(which==6)v.default_name_uuid={};if(which==7)v.name_vector_uuid={};
+    if(which==5)v.owning_schema_uuid={};if(which==6)v.name_vector_uuid={};/* (Was: default_name_uuid, retired by owner Q248 = 1; the name-vector fault) */if(which==7)v.name_vector_uuid={};
     if(which==8)v.security_policy_uuid={};if(which==9)v.creator_transaction_uuid.value.bytes[15]++;
     if(which==10)v.creator_local_transaction_id++;if(which==11)v.authority_scope=c::CatalogAuthorityScope::cluster;
     if(which==12)v.record.payload="series_uuid=text";

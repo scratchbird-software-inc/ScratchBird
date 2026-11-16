@@ -80,7 +80,7 @@ Fixture MakeFixture() {
   f.column.datatype_descriptor={{p::UuidKind::object,id.descriptor_uuid},id.descriptor_generation};
   f.column.type_uuid={p::UuidKind::object,id.type_uuid};
   f.column_metadata=Common();f.column_metadata.record.header.kind=c::CatalogRecordKind::column_descriptor;
-  f.column_metadata.default_name_uuid=Id(70);f.column_metadata.name_vector_uuid=Id(71);
+  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */f.column_metadata.name_vector_uuid=Id(71);
   f.column_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::persistent_table_column;
   const auto encoded=c::EncodeCatalogColumnDefinition(f.column);Check(encoded.ok(),"column fixture invalid");
   f.column_metadata.record.payload={encoded.bytes.begin(),encoded.bytes.end()};
@@ -194,7 +194,7 @@ void Bindings(const Fixture& f) {
     m->status=c::CatalogObjectStatus::retired;m->retired_transaction_uuid=m->creator_transaction_uuid;
   }
   Check(Bind(retired).ok(),"retained structural history rejected; visibility belongs to caller");
-  auto renamed=f;renamed.column_metadata.default_name_uuid=Id(75);renamed.column_metadata.name_vector_uuid=Id(76);
+  auto renamed=f;/* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */renamed.column_metadata.name_vector_uuid=Id(76);
   Check(Bind(renamed).ok(),"name reference change altered occurrence binding");
 }
 bool Cancel(void*) noexcept{return true;}

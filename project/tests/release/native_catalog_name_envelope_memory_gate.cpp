@@ -129,11 +129,11 @@ c::CatalogMetadataVersion NameMetadata(const c::CatalogNamePayload& payload){
     m.catalog_generation=r.catalog_generation_id;
     if constexpr(std::is_same_v<std::decay_t<decltype(r)>,c::CatalogNameVector>){
       m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_vector;m.record.header.object_uuid=r.name_vector_uuid;
-      m.record.header.parent_uuid=r.object_uuid;m.default_name_uuid=r.default_name_entry_uuid;
+      m.record.header.parent_uuid=r.object_uuid;/* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
       m.owning_schema_uuid=r.owning_schema_uuid.value_or(TypedUuid{});
     }else{
       m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_entry;m.record.header.object_uuid=r.name_entry_uuid;
-      m.record.header.parent_uuid=r.name_vector_uuid;m.default_name_uuid=r.name_entry_uuid;
+      m.record.header.parent_uuid=r.name_vector_uuid;/* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
       m.owning_schema_uuid=r.parent_schema_uuid.value_or(TypedUuid{});
       m.retired_transaction_uuid=r.dropped_transaction_uuid.value_or(TypedUuid{});
       m.creator_transaction_uuid=r.created_transaction_uuid;m.resource_epoch=r.resource_epoch;
@@ -159,7 +159,7 @@ void MetadataAdmission(bool entry){
   matches(payload,metadata,true);
   auto m=metadata;m.record.header.kind=c::CatalogRecordKind::sql_object;matches(payload,m,false);
   m=metadata;m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;matches(payload,m,false);
-  for(auto member:{&c::CatalogMetadataVersion::name_vector_uuid,&c::CatalogMetadataVersion::default_name_uuid,
+  for(auto member:{&c::CatalogMetadataVersion::name_vector_uuid,  /* (was also default_name_uuid: Q248) */
       &c::CatalogMetadataVersion::owning_schema_uuid,&c::CatalogMetadataVersion::security_policy_uuid}){
     m=metadata;(m.*member).value.bytes[15]^=0x80;matches(payload,m,false);
     m=metadata;(m.*member).kind=UuidKind::unknown;matches(payload,m,false);

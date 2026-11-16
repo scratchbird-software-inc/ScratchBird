@@ -27,7 +27,7 @@ c::CatalogMetadataVersionView Metadata(std::string_view payload,Uuid object,scra
   m.record.header.object_uuid={UuidKind::object,object};m.record.header.row_uuid={UuidKind::row,Id(90)};
   m.record.header.parent_uuid={UuidKind::object,Id(91)};m.record.payload=payload;m.object_subtype=subtype;m.definition_version=1;
   m.owning_schema_uuid={UuidKind::schema,Id(91)};m.owner_uuid={UuidKind::principal,Id(92)};
-  m.audit_uuid={UuidKind::object,Id(93)};m.default_name_uuid={UuidKind::object,Id(94)};m.name_vector_uuid={UuidKind::object,Id(95)};
+  m.audit_uuid={UuidKind::object,Id(93)};/* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */m.name_vector_uuid={UuidKind::object,Id(95)};
   m.creator_transaction_uuid={UuidKind::transaction,Id(3)};m.creator_local_transaction_id=1;return m;
 }
 }

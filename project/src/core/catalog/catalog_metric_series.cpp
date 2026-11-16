@@ -227,7 +227,8 @@ bool CatalogMetricSeriesMatchesMetadata(const CatalogMetadataVersionView& m) {
   if(!CatalogMetricSeriesMatchesHeader(m.record) || m.object_subtype!=CatalogObjectSubtype::metric_series ||
       !Identity(m.owning_schema_uuid,UuidKind::schema) || !Identity(m.record.header.parent_uuid,UuidKind::object) ||
       m.owning_schema_uuid.value!=m.record.header.parent_uuid.value ||
-      !Identity(m.default_name_uuid,UuidKind::object) || !Identity(m.name_vector_uuid,UuidKind::object) ||
+      // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16): (was: default_name_uuid also checked or set on the next line).
+      !Identity(m.name_vector_uuid,UuidKind::object) ||
       !Identity(m.security_policy_uuid,UuidKind::object) || !Identity(m.creator_transaction_uuid,UuidKind::transaction))return false;
   const auto decoded=DecodeCatalogMetricSeriesView(m.record.payload);const auto& r=*decoded.record;
   return r.generation==m.definition_version &&

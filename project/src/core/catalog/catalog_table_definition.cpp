@@ -84,10 +84,9 @@ CatalogValueSchema Owning(CatalogValueSchemaView view) {
   return {view.id,view.version,{view.fields.begin(),view.fields.end()}};
 }
 bool Common(const CatalogMetadataVersionView& m, const TypedUuid& origin, u64 number) {
-  return Identity(m.default_name_uuid,UuidKind::object) && Identity(m.name_vector_uuid,UuidKind::object) &&
-      m.default_name_uuid.value != m.record.header.object_uuid.value &&
+  // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16): (was: default_name_uuid also checked or set on the next line).
+  return Identity(m.name_vector_uuid,UuidKind::object) &&
       m.name_vector_uuid.value != m.record.header.object_uuid.value &&
-      m.default_name_uuid.value != m.name_vector_uuid.value &&
       Identity(m.owning_schema_uuid,UuidKind::schema) && m.definition_version != 0 &&
       number <= m.creator_local_transaction_id &&
       (m.definition_version != 1 || (Same(origin,m.creator_transaction_uuid) && number == m.creator_local_transaction_id));

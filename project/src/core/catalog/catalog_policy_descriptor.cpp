@@ -101,7 +101,8 @@ bool Metadata(const CatalogMetadataVersionView& m,const CatalogPolicyDescriptor&
       AuthorityOwner(m.owner_uuid)&&m.owner_uuid.value==r.authority_owner_uuid&&
       Typed(m.owning_schema_uuid,UuidKind::schema)&&Typed(m.record.header.parent_uuid,UuidKind::object)&&
       m.record.header.parent_uuid.value==m.owning_schema_uuid.value&&Typed(m.audit_uuid,UuidKind::object)&&
-      Typed(m.default_name_uuid,UuidKind::object)&&Typed(m.name_vector_uuid,UuidKind::object)&&
+      // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16): (was: default_name_uuid also checked or set on the next line).
+      Typed(m.name_vector_uuid,UuidKind::object)&&
       Typed(m.creator_transaction_uuid,UuidKind::transaction)&&m.creator_transaction_uuid.value==r.creating_transaction_uuid.value&&
       m.creator_local_transaction_id==r.creating_transaction_number&&
       (!(m.authority_scope==CatalogAuthorityScope::cluster)||r.cluster_uuid.has_value())&&

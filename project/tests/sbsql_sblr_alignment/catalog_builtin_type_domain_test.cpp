@@ -116,7 +116,7 @@ c::CatalogMetadataVersion Metadata(const std::string& payload,c::CatalogRecordKi
     u64 generation,const p::TypedUuid& creating,u64 creating_local,unsigned n){
  auto m=f::Metadata(0,creating,f::Id(60),payload);m.record.header.kind=kind;
  m.record.header.object_uuid={p::UuidKind::object,object};m.record.header.row_uuid={p::UuidKind::row,f::Id(1000+3*n)};
- m.default_name_uuid={p::UuidKind::object,f::Id(2000+2*n)};m.name_vector_uuid={p::UuidKind::object,f::Id(2001+2*n)};
+ /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */m.name_vector_uuid={p::UuidKind::object,f::Id(2001+2*n)};
  m.object_subtype=subtype;m.creator_local_transaction_id=creating_local;m.definition_version=generation;return m;}
 c::CatalogMetadataVersion DatatypeMetadata(const Datatype& r){return Metadata(Golden(r),c::CatalogRecordKind::datatype_descriptor,
   r.descriptor_uuid,c::kBuiltinDatatypeDescriptorSubtype,r.generation,r.creating_transaction_uuid,r.creating_local_transaction_id,0);}

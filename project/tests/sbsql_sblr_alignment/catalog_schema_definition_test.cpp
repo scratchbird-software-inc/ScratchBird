@@ -76,7 +76,7 @@ c::CatalogMetadataVersion Metadata(const c::CatalogSchemaDefinition& d) {
   m.record.header.object_uuid=d.schema_object_uuid;
   m.record.header.parent_uuid=d.parent_schema_uuid.value.is_nil()?d.database_catalog_object_uuid:d.parent_schema_uuid;
   m.record.payload=Golden(d);m.owner_uuid=Id(p::UuidKind::principal,10);m.audit_uuid=Id(p::UuidKind::object,11);
-  m.default_name_uuid=Id(p::UuidKind::object,12);m.name_vector_uuid=Id(p::UuidKind::object,13);
+  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */m.name_vector_uuid=Id(p::UuidKind::object,13);
   m.security_policy_uuid=d.permissions_policy_uuid;
   if(!d.parent_schema_uuid.value.is_nil()){m.owning_schema_uuid=d.parent_schema_uuid;m.owning_schema_uuid.kind=p::UuidKind::schema;}
   m.creator_transaction_uuid=d.origin_transaction_uuid;m.creator_local_transaction_id=d.origin_local_transaction_id;
@@ -141,7 +141,7 @@ int main() {
   for(unsigned fault=0;fault<15;++fault){auto bad=metadata;
     if(fault==0)bad.record.header.object_uuid=Id(p::UuidKind::object,20);
     if(fault==1)bad.record.header.parent_uuid=Id(p::UuidKind::object,20);
-    if(fault==2)bad.default_name_uuid={};if(fault==3)bad.name_vector_uuid={};
+    if(fault==2)bad.name_vector_uuid={};/* (Was: default_name_uuid, retired by owner Q248 = 1; the name-vector fault) */if(fault==3)bad.name_vector_uuid={};
     if(fault==4)bad.security_policy_uuid={};if(fault==5)bad.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::agent_registration;
     if(fault==6)bad.owning_schema_uuid={};if(fault==7)bad.owning_schema_uuid.kind=p::UuidKind::object;
     if(fault==8)bad.creator_local_transaction_id=10;if(fault==9)bad.creator_local_transaction_id=12;

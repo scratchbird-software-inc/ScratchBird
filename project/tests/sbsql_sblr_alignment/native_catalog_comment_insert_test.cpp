@@ -97,7 +97,7 @@ db::CatalogInsertRow CommentRow(const c::CatalogMetadataVersion& database, u64 n
   m.record.header.parent_uuid = {UuidKind::object, target};
   m.record.header.deleted = false;
   m.object_subtype = c::CatalogObjectSubtype::localized_comment;
-  m.default_name_uuid = {};
+  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
   m.name_vector_uuid = {};
   m.owning_schema_uuid = {};
   m.retired_transaction_uuid = {};
@@ -653,23 +653,10 @@ db::CatalogVersionRequest DefinitionDrop(const Db& b, std::span<const byte> file
   r.new_pages = DropPages(version_k);
   return r;
 }
-// The entry and the vector of `o` dropped by n (names are data: no event).
-void DropNames(const Db& b, Session& s, const Named& o, u64 n, unsigned version_k) {
-  auto e = std::get<c::CatalogNameEntry>(*o.entry.name);
-  e.lifecycle_state = c::CatalogNameLifecycle::dropped;
-  e.dropped_transaction_uuid = scratchbird::core::platform::TypedUuid{UuidKind::transaction, TxId(n)};
-  auto entry_drop = NameSuccessor(o.entry, o.entry.version_uuid, n, VersionId(version_k), c::CatalogNamePayload{e}, true);
-  entry_drop.metadata.record.payload.clear();
-  const auto entry_written = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), entry_drop);
-  if (!entry_written.ok()) std::cerr << "entry drop: " << db::CatalogVersionWriteErrorName(entry_written.error) << '\n';
-  Check(entry_written.ok(), "the entry dropped");
-  auto v = std::get<c::CatalogNameVector>(*o.vector.name);
-  v.lifecycle_state = c::CatalogNameLifecycle::dropped;
-  const auto vector_written = db::WriteCatalogSuccessorVersion(
-      s.sink(), GrowingBinding(b), NameSuccessor(o.vector, o.vector.version_uuid, n, VersionId(version_k + 1), c::CatalogNamePayload{v}, true));
-  if (!vector_written.ok()) std::cerr << "vector drop: " << db::CatalogVersionWriteErrorName(vector_written.error) << '\n';
-  Check(vector_written.ok(), "the vector dropped");
-}
+// (Retired, owner Q249 / Q227, 2026-11-16: DropNames, which dropped `o`'s
+// entry and vector by n before its definition's drop. The definition's drop
+// takes its names now, SB_NATIVE_NAME_DROP_CASCADE; dropping them first is
+// refused, object_last_name.)
 // The oracle for a drop that takes comments: the version writer's successor
 // oracle (Oracle) for the definition's drop version in its relation, then, for
 // each comment (row-UUID order) its drop version as the test builds it (the
@@ -742,6 +729,75 @@ std::optional<std::vector<byte>> CascadeOracle(const Db& b, std::span<const byte
     std::copy(image.bytes.begin(), image.bytes.end(), file.begin() + static_cast<std::ptrdiff_t>(n * b.size));
   }
   if (found != stamped.size()) return std::nullopt;
+  return file;
+}
+// SEARCH_KEY: SB_NATIVE_NAME_DROP_CASCADE (owner Q249, 2026-11-16: "dropping
+// an object automatically drops all its name rows"). The oracle for the name
+// drops a definition drop `r` writes after its comments: the object's vector
+// and entries (the rows of role 2 whose object is the definition's
+// name_vector_uuid, or whose parent is), row-UUID order, each the base's
+// metadata by the dropping transaction (next definition version, generation
+// the larger, dropped and retired) with its name payload dropped (an entry:
+// dropped by it), placed and its cells stamped by the name successor oracle
+// (NameSuccessorOracle), with the request's dependent identities from
+// `first_identity` on. nullopt when the oracle cannot place one.
+std::optional<std::vector<byte>> NameDropsOracle(const Db& b, std::vector<byte> file, const db::CatalogVersionRequest& r,
+                                                 std::size_t first_identity) {
+  const auto vector_id = r.metadata.name_vector_uuid.value;
+  std::map<Uuid, std::pair<Uuid, c::CatalogMetadataVersion>> newest;  // row -> (version, metadata), newest
+  std::map<Uuid, u64> newest_rv;
+  std::map<Uuid, c::CatalogNamePayload> payloads;
+  {
+    RoleScope scope(b, 2);
+    const auto rel = ReadRelation(b, file);
+    for (const auto& l : rel.leaves)
+      for (const auto& row : l.leaf.body.rows) {
+        const auto& m = l.metadata.at(row.version_uuid);
+        const auto& h = m.record.header;
+        if (h.object_uuid.value != vector_id && h.parent_uuid.value != vector_id) continue;
+        if (newest_rv.contains(row.row_uuid.value) && newest_rv.at(row.row_uuid.value) >= row.row_version) continue;
+        newest_rv[row.row_uuid.value] = row.row_version;
+        newest.insert_or_assign(row.row_uuid.value, std::pair{row.version_uuid, m});
+        const c::CatalogNameVersionBinding at{
+            {UuidKind::database, l.leaf.header.database_uuid}, {UuidKind::filespace, l.leaf.header.filespace_uuid},
+            row.row_uuid, {UuidKind::row, row.version_uuid}, m.record.header.object_uuid, row.transaction_uuid, l.page,
+            row.stable_slot_id, row.storage_generation, row.row_version, row.local_transaction_id, m.catalog_generation};
+        const std::vector<byte> bytes(reinterpret_cast<const byte*>(m.record.payload.data()),
+                                      reinterpret_cast<const byte*>(m.record.payload.data()) + m.record.payload.size());
+        const auto decoded = c::DecodeCatalogNameEnvelope(bytes, at);
+        Check(decoded.ok(), "a dropped object's name decodes for the oracle");
+        payloads.insert_or_assign(row.row_uuid.value, decoded.record->payload);
+      }
+  }
+  std::size_t used = first_identity;
+  for (const auto& [row, base] : newest) {
+    if (base.second.record.header.deleted) continue;
+    db::CatalogVersionRequest cr;
+    cr.role = 2;
+    cr.transaction_order = r.transaction_order;
+    cr.transaction_uuid = r.transaction_uuid;
+    cr.row_uuid = row;
+    cr.predecessor_version_uuid = base.first;
+    if (used >= r.dependent_versions.size()) return std::nullopt;
+    cr.version_uuid = r.dependent_versions[used++];
+    cr.metadata = base.second;
+    cr.metadata.record.payload.clear();
+    cr.metadata.definition_version += 1;
+    cr.metadata.creator_transaction_uuid = {UuidKind::transaction, r.transaction_uuid};
+    cr.metadata.creator_local_transaction_id = r.transaction_order;
+    cr.metadata.catalog_generation = std::max(base.second.catalog_generation, r.metadata.catalog_generation);
+    cr.metadata.record.header.deleted = true;
+    cr.metadata.lifecycle = c::CatalogObjectLifecycle::dropped;
+    cr.metadata.status = c::CatalogObjectStatus::retired;
+    cr.metadata.retired_transaction_uuid = {UuidKind::transaction, r.transaction_uuid};
+    auto payload = payloads.at(row);
+    std::visit([](auto& x) { x.lifecycle_state = c::CatalogNameLifecycle::dropped; }, payload);
+    if (auto* e = std::get_if<c::CatalogNameEntry>(&payload)) e->dropped_transaction_uuid = {UuidKind::transaction, r.transaction_uuid};
+    cr.name = std::move(payload);
+    const auto expected = NameSuccessorOracle(b, file, cr);
+    if (!expected) return std::nullopt;
+    file = expected->file;
+  }
   return file;
 }
 // Whether the committed read of a copy sees no live version of comment row k.
@@ -841,9 +897,11 @@ void DropCascade(const Db& b) {
     Rollback(*s.w, s.sink(), 7);
     // Now 5 drops the target (its comments with it: rolled-back versions passed over).
     {
-      const auto r = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), DefinitionDrop(b, ReadAll(x), role, a, 5, 9704, 3));
+      // SB_NATIVE_NAME_DROP_CASCADE (owner Q249): and its vector and entry:
+      // five identities, one to spare. (Was: three, two comments.)
+      const auto r = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), DefinitionDrop(b, ReadAll(x), role, a, 5, 9704, 5));
       if (!r.ok()) std::cerr << "drop by 5: " << db::CatalogVersionWriteErrorName(r.error) << '\n';
-      Check(r.ok() && r.dependents.size() == 2, "the target dropped by 5, its two committed comments with it");
+      Check(r.ok() && r.dependents.size() == 4, "the target dropped by 5, its two committed comments and its two names with it");
     }
     // Another transaction's comment insert while 5's drop of the target is in progress.
     Begin(s, 8);
@@ -895,12 +953,17 @@ void DropCascade(const Db& b) {
       Check(r.ok() && r.replaced && r.version_uuid == CommentVersionId(79),
             "Q88 = 1: an edit of the transaction's own uncommitted comment replaces it in place");
     }
-    DropNames(b, s, cc, 11, 9710);
+    // (Was: DropNames(b, s, cc, 11, 9710) before the definition's drop; the
+    // drop now takes the names, SB_NATIVE_NAME_DROP_CASCADE, Q249, and
+    // dropping them first is refused, object_last_name, Q227.)
     {
-      const auto r = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), DefinitionDrop(b, ReadAll(x), role, cc, 11, 9712, 0));
+      // SB_NATIVE_NAME_DROP_CASCADE (owner Q249): and the object's vector and
+      // entry, after its comments: two identities. (Was: 0 identities, one
+      // dependent, the names dropped by DropNames before the definition.)
+      const auto r = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), DefinitionDrop(b, ReadAll(x), role, cc, 11, 9712, 2));
       if (!r.ok()) std::cerr << "own drop: " << db::CatalogVersionWriteErrorName(r.error) << '\n';
-      Check(r.ok() && r.dependents.size() == 1 && r.dependents.front() == std::pair{CommentRowId(79), CommentVersionId(79)},
-            "Q88 = 1: the drop takes the transaction's own comment, replacing it in place (no identity used)");
+      Check(r.ok() && r.dependents.size() == 3 && r.dependents.front() == std::pair{CommentRowId(79), CommentVersionId(79)},
+            "Q88 = 1: the drop takes the transaction's own comment, replacing it in place (no identity used), then its names");
       RoleScope scope(b, 7);
       const auto rel = ReadRelation(b, ReadAll(x));
       const auto versions = rel.Versions(CommentRowId(79));
@@ -939,29 +1002,34 @@ void DropCascade(const Db& b) {
   {
     Session s(b, path);
     Begin(s, 4);
-    DropNames(b, s, a, 4, 9730);
+    // (Was: DropNames(b, s, a, 4, 9730) first; Q249 / Q227.)
     const auto now = ReadAll(path);
     {
       auto r = DefinitionDrop(b, now, role, a, 4, 9720, 1);
       const auto refused = Unwritten(path, [&] { return db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), r); },
                                      "a drop with too few identities for its comments");
-      Check(refused.error == CE::dependent_versions_exhausted && refused.cascade_needed == 2,
-            "a drop with too few identities for its comments: dependent_versions_exhausted, two needed");
+      // SB_NATIVE_NAME_DROP_CASCADE: two comments and two names. (Was: two
+      // needed, the comments only.)
+      Check(refused.error == CE::dependent_versions_exhausted && refused.cascade_needed == 4,
+            "a drop with too few identities for its comments and names: dependent_versions_exhausted, four needed");
     }
-    const auto r = DefinitionDrop(b, now, role, a, 4, 9720, 2);
-    const auto expected = CascadeOracle(b, now, role, r, comments);
+    const auto r = DefinitionDrop(b, now, role, a, 4, 9720, 4);
+    auto expected = CascadeOracle(b, now, role, r, comments);
+    if (expected) expected = NameDropsOracle(b, *expected, r, comments.size());
     Check(expected.has_value(), "the oracle places the drop and its comments' drops");
     pre = now;
     RecordingSink rec(s.sink());
     const auto written = db::WriteCatalogSuccessorVersion(rec, GrowingBinding(b), r);
     if (!written.ok()) std::cerr << "cascade drop: " << db::CatalogVersionWriteErrorName(written.error) << '\n';
     Check(written.ok() && written.allocated_pages.empty(), "the commented object's drop is written (no page added)");
-    Check(written.dependents.size() == 2 && written.dependents[0] == std::pair{CommentRowId(71), comments[0].second} &&
-              written.dependents[1] == std::pair{CommentRowId(72), comments[1].second},
-          "its two comments dropped in the same write, in row-UUID order, with the request's identities");
+    Check(written.dependents.size() == 4 && written.dependents[0] == std::pair{CommentRowId(71), comments[0].second} &&
+              written.dependents[1] == std::pair{CommentRowId(72), comments[1].second} &&
+              written.dependents[2].second == r.dependent_versions[2] && written.dependents[3].second == r.dependent_versions[3],
+          "its two comments dropped in the same write, in row-UUID order, with the request's identities, then its "
+          "two names (Q249; was: the comments only)");
     recorded = rec.writes;
     const auto after = ReadAll(path);
-    Check(after == *expected, "the file is the oracle's: the definition's and both comments' drop versions, the cells stamped");
+    Check(after == *expected, "the file is the oracle's: the definition's, both comments' and both names' drop versions, the cells stamped");
     bool tree_seen = false, leaf_after_tree = false;
     for (const auto& [offset, bytes] : recorded) {
       const auto type = TypeAt(b, after, offset / b.size);
@@ -995,16 +1063,22 @@ void DropCascade(const Db& b) {
     const auto y = b.Copy(committed, "comment-drop-uncommented.db");
     Session s(b, y);
     Begin(s, 4);
-    DropNames(b, s, bb, 4, 9740);
+    // (Was: DropNames(b, s, bb, 4, 9740) first; Q249 / Q227.)
     const auto r = DefinitionDrop(b, ReadAll(y), role, bb, 4, 9742, 2);
-    RoleScope scope(b, role);
-    auto plain = r;
-    plain.dependent_versions.clear();
-    const auto expected = Oracle(b, ReadAll(y), plain);
-    Check(expected.has_value(), "the oracle places the uncommented drop");
+    std::optional<std::vector<byte>> expected;
+    {
+      RoleScope scope(b, role);
+      auto plain = r;
+      plain.dependent_versions.clear();
+      const auto definition_only = Oracle(b, ReadAll(y), plain);
+      Check(definition_only.has_value(), "the oracle places the uncommented drop");
+      if (definition_only) expected = NameDropsOracle(b, definition_only->file, r, 0);
+    }
+    Check(expected.has_value(), "the oracle places the uncommented object's name drops");
     const auto written = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), r);
-    Check(written.ok() && written.dependents.empty() && written.allocated_pages.empty() && ReadAll(y) == expected->file,
-          "an uncommented object's drop is unchanged: the successor oracle's file, no dependents, identities unused");
+    Check(written.ok() && written.dependents.size() == 2 && written.allocated_pages.empty() && expected && ReadAll(y) == *expected,
+          "an uncommented object's drop: the successor oracle's file with its two names dropped (Q249; was: no "
+          "dependents, identities unused)");
     Commit(*s.w, s.sink(), 4);
     ExpectComments(b, y, 2, "an uncommented object dropped (the other object's comments untouched)");
   }

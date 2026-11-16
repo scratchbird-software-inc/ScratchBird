@@ -301,7 +301,7 @@ c::CatalogMetadataVersion SeedMetadata(const Uuid& object, unsigned row, scratch
   r.record.header.object_uuid = {UuidKind::object, object};
   r.record.header.row_uuid = {UuidKind::row, f::Id(row)};
   r.object_subtype = subtype;
-  r.default_name_uuid = {UuidKind::object, f::Id(row + 1000)};
+  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
   r.name_vector_uuid = {UuidKind::object, f::Id(row + 2000)};
   return r;
 }
@@ -352,7 +352,7 @@ std::unique_ptr<Db> SeededDb(unsigned index) {
     m.record.header.kind = c::CatalogRecordKind::audit_evidence;
     m.record.header.row_uuid = audit.row_uuid;
     m.record.header.parent_uuid = {UuidKind::object, m.owning_schema_uuid.value};
-    m.default_name_uuid = {};
+    /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
     m.name_vector_uuid = {};
     m.audit_uuid = m.record.header.object_uuid;
     seed[3].front().metadata.audit_uuid = m.audit_uuid;
@@ -639,6 +639,95 @@ db::CatalogVersionWriteResult Expect(const Db& b, Session& s, const std::string&
   Check(ReadAll(path) == expected->file, std::string(label) + ": the file is the oracle's");
   return result;
 }
+// SEARCH_KEY: SB_NATIVE_NAME_DROP_CASCADE (owner Q249, 2026-11-16: "dropping
+// an object automatically drops all its name rows"). A drop of a named
+// definition, checked as Expect checks a successor for the definition's own
+// pages (placement, the oracle's bytes on every page the oracle changes),
+// with one dependent identity per live name row of the object, and:
+//  - the result names each name row (row-UUID order) with its identity;
+//  - each name row's newest version is that identity: a drop by n, its
+//    row_version one more than its old newest's, linked back to it;
+//  - every other page that changed is a base leaf of the names relation, a
+//    B-tree page (the name trees, the relation's row-UUID index) or, when the
+//    write added pages, the allocation map. (The name versions' exact bytes
+//    and cells are the name successor oracle's: NameDropsOracle in
+//    native_catalog_comment_insert_test, which includes this file.)
+// (Was: Expect, the drop writing the definition's version only.)
+db::CatalogVersionWriteResult ExpectNamedDrop(const Db& b, Session& s, const std::string& path, db::CatalogVersionRequest r,
+                                              std::string_view label) {
+  const std::string what(label);
+  const auto before = ReadAll(path);
+  const auto expected = Oracle(b, before, r);
+  Check(expected.has_value(), what + ": the oracle finds room");
+  const auto vector_id = r.metadata.name_vector_uuid.value;
+  std::map<Uuid, std::pair<Uuid, u64>> names;  // row -> newest (version, row_version), live
+  {
+    RoleScope scope(b, 2);
+    const auto rel = ReadRelation(b, before);
+    for (const auto& l : rel.leaves)
+      for (const auto& row : l.leaf.body.rows) {
+        const auto& h = l.metadata.at(row.version_uuid).record.header;
+        if (h.object_uuid.value != vector_id && h.parent_uuid.value != vector_id) continue;
+        auto& at = names[row.row_uuid.value];
+        if (row.row_version >= at.second) at = {row.version_uuid, row.row_version};
+      }
+  }
+  // A seed fixture's definition names a vector the fixture never wrote: no
+  // name rows, nothing cascades, and the drop is checked as before.
+  if (names.empty()) return Expect(b, s, path, r, label);
+  for (std::size_t i = 0; i < names.size(); ++i) r.dependent_versions.push_back(V7(kT + 3990000 + i, 0x7a0000 + static_cast<unsigned>(i)));
+  const auto result = Write(b, s.sink(), r);
+  if (!result.ok()) std::cerr << label << ": " << db::CatalogVersionWriteErrorName(result.error) << '\n';
+  Check(result.ok(), what + ": the drop is written");
+  Check(result.page_number == expected->target && result.forward_link_page == expected->link,
+        what + ": placed where the oracle places it");
+  Check(result.dependents.size() == names.size(), what + ": every name row of the object dropped with it (Q249)");
+  {
+    std::size_t i = 0;
+    for (const auto& [row, base] : names) {
+      Check(i < result.dependents.size() && result.dependents[i].first == row && result.dependents[i].second == r.dependent_versions[i],
+            what + ": the name rows in row-UUID order, with the request's identities");
+      ++i;
+    }
+  }
+  const auto after = ReadAll(path);
+  std::set<u64> name_leaves;
+  {
+    RoleScope scope(b, 2);
+    const auto rel = ReadRelation(b, after);
+    for (const auto& l : rel.leaves) name_leaves.insert(l.page);
+    std::size_t i = 0;
+    for (const auto& [row, base] : names) {
+      bool found = false;
+      for (const auto& l : rel.leaves)
+        for (const auto& x : l.leaf.body.rows)
+          if (x.version_uuid == r.dependent_versions[i]) {
+            found = x.row_uuid.value == row && l.metadata.at(x.version_uuid).record.header.deleted &&
+                    x.local_transaction_id == r.transaction_order && x.row_version == base.second + 1 &&
+                    x.previous_version_uuid == base.first;
+          }
+      Check(found, what + ": a name row's drop version follows its newest");
+      ++i;
+    }
+  }
+  const u64 pages = after.size() / b.size;
+  for (u64 n = 0; n < pages; ++n) {
+    const auto at = static_cast<std::ptrdiff_t>(n * b.size);
+    const bool changed = !std::equal(after.begin() + at, after.begin() + at + b.size, before.begin() + at);
+    const bool oracle = !std::equal(expected->file.begin() + at, expected->file.begin() + at + b.size, before.begin() + at);
+    if (oracle) {
+      Check(std::equal(after.begin() + at, after.begin() + at + b.size, expected->file.begin() + at),
+            what + ": a page the oracle changes holds the oracle's bytes");
+      continue;
+    }
+    if (!changed) continue;
+    const bool map_page = n >= 1 && n <= b.receipt.map_pages && !result.allocated_pages.empty();
+    const bool tree_page = pg::DecodeNativeBtreePage(PageOf(after, n, b.size)).ok();
+    Check(name_leaves.contains(n) || tree_page || map_page,
+          what + ": every other changed page is a names leaf, a tree page or the allocation map");
+  }
+  return result;
+}
 // A refused write changes nothing.
 void Refused(const Db& b, Session& s, const std::string& path, const db::CatalogVersionRequest& r, CE error,
              std::string_view label, bool read_only = false) {
@@ -870,7 +959,11 @@ void States(const Db& b) {
   {
     Session s(b, drop);
     Begin(s, 2);
-    Expect(b, s, drop, Next(b, drop, row, v0, 2, VersionId(1), true), "a drop");
+    // SB_NATIVE_NAME_DROP_CASCADE (owner Q249): the row is a named
+    // definition; its drop takes its names (ExpectNamedDrop). (Was: Expect,
+    // the definition's version only; now refused dependent_versions_exhausted
+    // without identities for the names.)
+    ExpectNamedDrop(b, s, drop, Next(b, drop, row, v0, 2, VersionId(1), true), "a drop");
     Refused(b, s, drop, Next(b, drop, row, VersionId(1), 2, VersionId(2)), CE::row_deleted,
             "the dropping transaction changes the dropped row");
     Commit(*s.w, s.sink(), 2);

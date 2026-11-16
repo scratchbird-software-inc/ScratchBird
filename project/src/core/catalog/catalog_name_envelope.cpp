@@ -102,13 +102,10 @@ bool CatalogNamePayloadMatchesMetadata(const CatalogNamePayloadView& payload, co
         SameIdentity(v->name_vector_uuid,m.record.header.object_uuid) &&
         SameIdentity(v->object_uuid,m.record.header.parent_uuid) &&
         SameIdentity(v->name_vector_uuid,m.name_vector_uuid) &&
-        SameIdentity(v->default_name_entry_uuid,m.default_name_uuid) &&
         optional_matches(v->owning_schema_uuid,m.owning_schema_uuid) &&
         SameIdentity(v->security_policy_uuid,m.security_policy_uuid) &&
         v->catalog_generation_id == m.catalog_generation &&
         v->name_vector_uuid.value != v->object_uuid.value &&
-        v->name_vector_uuid.value != v->default_name_entry_uuid.value &&
-        v->object_uuid.value != v->default_name_entry_uuid.value &&
         (!m.record.header.deleted || v->lifecycle_state == CatalogNameLifecycle::dropped);
   }
   if (const auto* e=std::get_if<CatalogNameEntryView>(&payload)) {
@@ -116,7 +113,6 @@ bool CatalogNamePayloadMatchesMetadata(const CatalogNamePayloadView& payload, co
         SameIdentity(e->name_entry_uuid,m.record.header.object_uuid) &&
         SameIdentity(e->name_vector_uuid,m.record.header.parent_uuid) &&
         SameIdentity(e->name_vector_uuid,m.name_vector_uuid) &&
-        SameIdentity(e->name_entry_uuid,m.default_name_uuid) &&
         optional_matches(e->parent_schema_uuid,m.owning_schema_uuid) &&
         optional_matches(e->dropped_transaction_uuid,m.retired_transaction_uuid) &&
         SameIdentity(e->security_policy_uuid,m.security_policy_uuid) &&
@@ -180,9 +176,11 @@ CatalogNameEnvelopeEncodeResult EncodeCatalogNameEnvelope(const CatalogNameEnvel
   bytes[0]='S'; bytes[1]='B'; bytes[2]='C'; bytes[3]='R';
   Put(bytes,4,1,2); Put(bytes,6,kHeaderBytes,2); Put(bytes,8,bytes.size(),4);
   Put(bytes,12,payload.bytes.size(),4); Put(bytes,16,schema_id,4);
-  // Payload schema version: the vector's 3 (SB_CATALOG_NO_TEXT_IDENTIFIERS);
-  // the entry's 4 (SB_NATIVE_NAME_ROW_V4, owner Q147 = 1). (Was: 3 for both.)
-  Put(bytes,20,schema_id==327682?4:3,2); Put(bytes,22,5,2);
+  // Payload schema version 4 for both: the vector's
+  // (SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES, owner Q228 revisited) and the entry's
+  // (SB_NATIVE_NAME_ROW_V4, owner Q147 = 1). (Was: the vector's 3,
+  // SB_CATALOG_NO_TEXT_IDENTIFIERS; before that 3 for both.)
+  Put(bytes,20,4,2); Put(bytes,22,5,2);
   const auto& b=record.binding;
   for (const auto& field:kIdentityFields) {
     const auto& id=b.*field.member;
@@ -211,7 +209,9 @@ CatalogNameEnvelopeViewResult DecodeCatalogNameEnvelopeView(
   // SB_NATIVE_NAME_ROW_V4: the header's payload version is the schema's own
   // (vector 3, entry 4); an entry envelope of version 3 is refused (no
   // migration, owner Q164 = 1).
-  if (Get(bytes,20,2)!=(schema_id==327682?4u:3u)) return {Error::invalid_header,{}};
+  // SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES: a version 3 vector envelope is
+  // refused too (Q164 = 1).
+  if (Get(bytes,20,2)!=4u) return {Error::invalid_header,{}};
   CatalogNameEnvelopeView record;
   record.binding=ReadBinding(bytes);
   const auto binding_error=Validate(record.binding);

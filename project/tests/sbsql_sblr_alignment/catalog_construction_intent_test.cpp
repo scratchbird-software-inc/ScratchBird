@@ -62,7 +62,7 @@ c::CatalogMetadataVersion Metadata(const c::CatalogConstructionIntent& r,p::Uuid
   auto m=f::Metadata(0,r.origin_transaction_uuid,f::Id(60),Golden(r));m.record.header.kind=c::CatalogRecordKind::audit_evidence;
   m.record.header.object_uuid={p::UuidKind::object,r.event_uuid};m.record.header.row_uuid={p::UuidKind::row,row};
   m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::node_construction_intent;m.audit_uuid=m.record.header.object_uuid;
-  m.default_name_uuid={};m.name_vector_uuid={};return m;
+  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */m.name_vector_uuid={};return m;
 }
 void Roundtrip(const c::CatalogConstructionIntent& r){
   const auto wire=Golden(r);std::array<p::byte,400> out;out.fill(0x5a);
@@ -130,7 +130,10 @@ void Bindings(){
     if(n==6)bad.creator_local_transaction_id=2;if(n==7)bad.record.header.parent_uuid.value=f::Id(202);
     if(n==8)bad.owning_schema_uuid.kind=p::UuidKind::object;if(n==9)bad.authority_scope=c::CatalogAuthorityScope::cluster;
     if(n==10)f::Put(bad.record.payload,16,65617,4);if(n==11)bad.record.payload="legacy fake audit string";
-    if(n==12)bad.default_name_uuid={p::UuidKind::object,f::Id(300)};if(n==13)bad.record.header.row_uuid.value=v.engine_uuid;
+    // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): the event carries no name
+    // reference, so fault 12 supplies a name vector instead. (Was: a
+    // default_name_uuid supplied.)
+    if(n==12)bad.name_vector_uuid={p::UuidKind::object,f::Id(300)};if(n==13)bad.record.header.row_uuid.value=v.engine_uuid;
     heap_denied=true;const auto result=c::CatalogMetadataVersionEncodedBytes(c::BorrowCatalogMetadataVersion(bad));heap_denied=false;
     Check(!result,"common dispatcher cannot bypass exact family binding");
   }

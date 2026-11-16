@@ -195,7 +195,7 @@ c::CatalogMetadataVersion FixtureRow(const Db& b, std::span<const byte> file, u1
   m.audit_uuid = EventRef(n);  // W3b-2b: the transaction's catalog.metadata_change event
   m.security_policy_uuid = like->security_policy_uuid;
   m.owning_schema_uuid = like->owning_schema_uuid;
-  m.default_name_uuid = {};
+  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
   m.name_vector_uuid = {};
   m.creator_local_transaction_id = n;
   m.object_subtype = scratchbird::core::catalog::CatalogObjectSubtype::schema_application;
@@ -572,7 +572,7 @@ std::optional<std::vector<byte>> InsertOracle(const Db& b, std::span<const byte>
           // UUID. (Was: the stored key; the path's display components.)
           const auto own = OwnLaneText(e);
           cells.push_back({0, c::CatalogNameAuthoritativeTreeKey(e, AsLane(own), *kind), c::CatalogNameAuthoritativeTreePayload(e)});
-          cells.push_back({1, c::CatalogNameUuidTreeEntryKey(e, *kind), c::CatalogNameUuidTreeEntryPayload(e.name_entry_uuid.value)});
+          cells.push_back({1, c::CatalogNameUuidTreeEntryKey(e, *kind), c::CatalogNameUuidTreeEntryPayload(e)});
         }
         for (auto& planned : cells) {
           pg::NativeBtreeCell entry;

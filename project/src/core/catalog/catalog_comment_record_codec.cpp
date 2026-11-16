@@ -81,7 +81,8 @@ bool CatalogCommentMatchesHeader(const CatalogTypedRecordView& m) {
 bool CatalogCommentMatchesMetadata(const CatalogMetadataVersionView& m) {
   const auto r = DecodeCatalogComment(m.record.payload);
   return r.ok() && Header(m.record, *r.record) && m.object_subtype == CatalogObjectSubtype::localized_comment &&
-         !m.default_name_uuid.valid() && m.default_name_uuid.value.is_nil() && !m.name_vector_uuid.valid() &&
+         // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16): (was: default_name_uuid also checked or set on the next line).
+         !m.name_vector_uuid.valid() &&
          m.name_vector_uuid.value.is_nil();
 }
 bool CatalogCommentPreservesIdentity(const CatalogCommentRecordView& a, const CatalogCommentRecordView& b) {

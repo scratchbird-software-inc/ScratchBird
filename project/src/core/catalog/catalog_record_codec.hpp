@@ -95,7 +95,11 @@ struct CatalogMetadataVersion {
   TypedUuid owner_uuid;
   TypedUuid creator_transaction_uuid;
   TypedUuid retired_transaction_uuid;
-  TypedUuid default_name_uuid;
+  // SEARCH_KEY: SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16:
+  // "the system only uses the binary 16 uuid ... the names, which are used
+  // for humans, hold the uuid of the object they are nameing"). No
+  // default_name_uuid: names point to objects, never the reverse. Its 16-byte
+  // slot in the encoded header (reference index 3) is reserved and zero.
   TypedUuid name_vector_uuid;
   TypedUuid security_policy_uuid;
   TypedUuid dependency_group_uuid;
@@ -129,7 +133,11 @@ struct CatalogMetadataVersionView {
   TypedUuid owner_uuid;
   TypedUuid creator_transaction_uuid;
   TypedUuid retired_transaction_uuid;
-  TypedUuid default_name_uuid;
+  // SEARCH_KEY: SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16:
+  // "the system only uses the binary 16 uuid ... the names, which are used
+  // for humans, hold the uuid of the object they are nameing"). No
+  // default_name_uuid: names point to objects, never the reverse. Its 16-byte
+  // slot in the encoded header (reference index 3) is reserved and zero.
   TypedUuid name_vector_uuid;
   TypedUuid security_policy_uuid;
   TypedUuid dependency_group_uuid;
@@ -156,7 +164,6 @@ inline CatalogMetadataVersionView BorrowCatalogMetadataVersion(const CatalogMeta
       r.owner_uuid,
       r.creator_transaction_uuid,
       r.retired_transaction_uuid,
-      r.default_name_uuid,
       r.name_vector_uuid,
       r.security_policy_uuid,
       r.dependency_group_uuid,

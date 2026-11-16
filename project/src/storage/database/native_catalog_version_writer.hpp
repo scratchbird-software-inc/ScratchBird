@@ -160,6 +160,44 @@ enum class CatalogVersionWriteError : std::uint8_t {
   // DATABASE.CREATE_NAME_KEY_EXCEEDS_PAGE_CAPACITY); nothing written. (Was:
   // invalid_insert for an insert, invalid_successor for a successor.)
   name_key_exceeds_page_capacity,
+  // SEARCH_KEY: SB_NATIVE_NAME_LAST_NAME (owner Q227, 2026-11-15: "you can
+  // not delete the last name but you can drop the sqlobject itself, which
+  // removes the last name"). A successor that drops (deleted, or lifecycle
+  // dropped / archived) a name entry of an object with no other live entry
+  // in this transaction's view, or that drops a name vector; nothing written.
+  // Only the object's drop removes them (SB_NATIVE_NAME_DROP_CASCADE). (Was:
+  // written; startup then refused, missing_default_name.)
+  object_last_name,
+  // SEARCH_KEY: SB_NATIVE_NAME_DEFAULT_IN_USE (owner Q235 = 1, 2026-11-15: no
+  // auto-promotion). A successor that drops an entry marked
+  // default_for_language or default_for_object (as this transaction sees it)
+  // while the object has other names; the default must be moved first.
+  // object_last_name takes precedence for an only name. Nothing written.
+  default_name_in_use,
+  // SEARCH_KEY: SB_NATIVE_NAME_DEFAULT_INDEX (owner Q228 revisited, Q259,
+  // 2026-11-16). An insert or successor that marks an entry default for its
+  // (object, language) - or the object default - while another live entry of
+  // the object holds that default, committed or this transaction's own (or an
+  // earlier row of the request); another transaction's in-progress entry
+  // that holds it, or whose row's committed version holds it, is a
+  // write_conflict with that transaction instead (unique-index semantics:
+  // if that transaction rolls back, its committed default stands). Nothing
+  // written.
+  duplicate_default_name,
+  // SEARCH_KEY: SB_NATIVE_NAME_LANGUAGE_READ_ONLY (owner Q250, 2026-11-16: a
+  // name row's language is set at insert and read-only; "ALTER SCHEMA x SET
+  // NAME y" changes only the text). A successor whose entry language differs
+  // from its base's; nothing written.
+  name_language_read_only,
+  // SEARCH_KEY: SB_NATIVE_NAME_DEFINITION_LOCK (owner Q247 = yes,
+  // 2026-11-16: every name drop, default switch and add also updates the
+  // object's definition row, a successor that changes nothing else, so two
+  // transactions changing an object's names collide write-write there). A
+  // name entry insert for an object whose definition this request does not
+  // insert, or an entry successor that drops it or changes its default flags,
+  // while this transaction has written no version of the object's definition
+  // row; nothing written. (A rename does not need it: owner Q226.)
+  definition_not_locked,
 };
 const char* CatalogVersionWriteErrorName(CatalogVersionWriteError error) noexcept;
 
@@ -324,6 +362,24 @@ struct CatalogVersionRequest {
   // on a new base leaf, reached by a cell for this version in the relation's
   // row-UUID tree (which otherwise indexes a row's first version only).
   std::vector<CatalogNewPageIdentity> new_pages;
+  // SEARCH_KEY: SB_NATIVE_NAME_DEFAULT_SWITCH (owner Q228 revisited,
+  // 2026-11-16: "A default switch updates TWO entry rows"). A name entry
+  // successor may carry a second entry successor of the same object, written
+  // in the same careful-write plan and checked together: the old default's
+  // flag cleared and the new one's set (AS DEFAULT), or default_for_object
+  // moved to another language's default entry (SET DEFAULT LANGUAGE). Each
+  // row is found and conflict-checked as the request's own (write_conflict,
+  // update_conflict, row_deleted); neither may be a drop. The default index,
+  // the paths and the collision rules see both new versions at once, so the
+  // object never lacks or doubles a default in between. (Without it, clearing
+  // then setting would leave the paths below without a component, and setting
+  // then clearing would hold two defaults: each refused alone.)
+  struct PairedName {
+    core::platform::Uuid row_uuid, predecessor_version_uuid, version_uuid;
+    core::catalog::CatalogMetadataVersion metadata;
+    core::catalog::CatalogNamePayload name;
+  };
+  std::optional<PairedName> paired;
 };
 
 struct CatalogVersionWriteResult {

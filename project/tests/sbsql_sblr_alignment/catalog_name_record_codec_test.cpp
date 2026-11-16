@@ -24,8 +24,8 @@ c::CatalogNameVector Vector() {
   r.object_uuid=Identity(UuidKind::object,2);
   r.object_kind=c::CatalogRecordKind::table_descriptor;
   r.owning_schema_uuid=Identity(UuidKind::schema,4);
-  r.default_language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_fr_CA);
-  r.default_name_entry_uuid=Identity(UuidKind::object,6);
+  // SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES (owner Q228 revisited): no
+  // default_language_uuid (was fr-CA) or default_name_entry_uuid (was 6).
   r.name_collision_policy_uuid=Identity(UuidKind::object,7);
   r.catalog_generation_id=0x0102030405060708;
   r.security_policy_uuid=Identity(UuidKind::object,9);
@@ -91,7 +91,7 @@ void Optional(std::vector<Field>& f,u16 id,const std::optional<TypedUuid>& v) { 
 std::vector<Field> Fields(const c::CatalogNameVector& r) {
   std::vector<Field> f{Id(1,r.name_vector_uuid),Id(2,r.object_uuid),Number(3,static_cast<u64>(r.object_kind))};
   Optional(f,4,r.owning_schema_uuid);
-  f.push_back(Id(5,r.default_language_uuid));f.push_back(Id(6,r.default_name_entry_uuid));
+  // (Was: 5 default_language_uuid, 6 default_name_entry_uuid; vector version 3.)
   f.push_back(Id(7,r.name_collision_policy_uuid));f.push_back(Number(8,r.catalog_generation_id));
   f.push_back(Id(9,r.security_policy_uuid));f.push_back(Number(10,static_cast<u64>(r.lifecycle_state)));
   return f;
@@ -130,9 +130,10 @@ std::vector<byte> Oracle(u32 schema,const std::vector<Field>& fields,unsigned ve
   for(const auto& f:fields)size+=8+f.bytes.size();
   const auto append=[&](const std::vector<byte>& value){out.insert(out.end(),value.begin(),value.end());};
   append(Little(size,4));append(Little(fields.size(),4));append(Little(schema,4));
-  // Schema version: the vector's 3 (SB_CATALOG_NO_TEXT_IDENTIFIERS), the
-  // entry's 4 (SB_NATIVE_NAME_ROW_V4). (Was: 3 for both.)
-  if(!version)version=schema==327682?4:3;
+  // Schema version 4 for both: the vector's (SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES,
+  // owner Q228 revisited) and the entry's (SB_NATIVE_NAME_ROW_V4). (Was: the
+  // vector's 3, SB_CATALOG_NO_TEXT_IDENTIFIERS; before that 3 for both.)
+  if(!version)version=4;
   append({static_cast<byte>(version),0,0,0});
   for(const auto& f:fields){append(Little(f.id,2));append({f.tag,0});append(Little(f.bytes.size(),4));append(f.bytes);}
   return out;
@@ -212,7 +213,7 @@ void Identities() {
   MutateUuid(v,1,[](auto& r)->auto&{return r.name_vector_uuid;});
   MutateUuid(v,2,[](auto& r)->auto&{return r.object_uuid;});
   MutateUuid(v,4,[](auto& r)->auto&{return *r.owning_schema_uuid;});
-  MutateUuid(v,6,[](auto& r)->auto&{return r.default_name_entry_uuid;});
+  // (Was: MutateUuid of field 6, default_name_entry_uuid; retired.)
   MutateUuid(v,7,[](auto& r)->auto&{return r.name_collision_policy_uuid;});
   MutateUuid(v,9,[](auto& r)->auto&{return r.security_policy_uuid;});
   auto e=Entry();
@@ -266,8 +267,18 @@ void SchemaContract() {
   const auto& v=c::CatalogNameVectorSchema();const auto& e=c::CatalogNameEntrySchema();
   // SB_NATIVE_NAME_ROW_V4 (owner Q147 = 1, Q157 = 1): the entry is version 4
   // with 28 fields. (Was: version 3, 33 fields.)
-  Check(v.id==327681 && e.id==327682 && v.version==3 && e.version==4,"allocated schema identity drift");
-  Check(v.fields.size()==10 && e.fields.size()==28,"Core field omitted");
+  // SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES (owner Q228 revisited): the vector is
+  // version 4 with 8 fields (5 and 6 retired). (Was: version 3, 10 fields.)
+  Check(v.id==327681 && e.id==327682 && v.version==4 && e.version==4,"allocated schema identity drift");
+  Check(v.fields.size()==8 && e.fields.size()==28,"Core field omitted");
+  // A version 3 vector (with the default fields) is refused (Q164 = 1).
+  {
+    auto v3=Fields(Vector());
+    const auto at=std::find_if(v3.begin(),v3.end(),[](const Field& x){return x.id>4;});
+    v3.insert(at,{Id(5,c::CatalogLanguageIdentity(c::kCatalogLanguage_fr_CA)),Id(6,Identity(UuidKind::object,6))});
+    Refused(c::DecodeCatalogNameVector(Oracle(327681,v3,3)));
+    Refused(c::DecodeCatalogNameVector(Oracle(327681,v3,4)));  // the retired fields under version 4
+  }
   // A version 3 entry (with the retired fields) is refused: no migration (Q164 = 1).
   Refused(c::DecodeCatalogNameEntry(Oracle(327682,V3Fields(Entry()),3)));
   Refused(c::DecodeCatalogNameEntryView(Oracle(327682,V3Fields(Entry()),3)));
@@ -303,14 +314,13 @@ void SemanticBoundaries() {
   // SB_CATALOG_LANGUAGE_CONSTANTS: a language is one of the constants, typed
   // object; every constant round-trips, anything else is refused.
   for(const auto& language:c::kCatalogLanguages){
-    v=Vector();v.default_language_uuid=c::CatalogLanguageIdentity(language.uuid);Roundtrip(v);
     e=Entry();e.language_uuid=c::CatalogLanguageIdentity(language.uuid);Roundtrip(e);
   }
-  v=Vector();v.default_language_uuid={};Invalid(v);
-  v=Vector();v.default_language_uuid=Identity(UuidKind::object,5);Invalid(v);  // an engine UUID, no language
+  // (Was: a vector without a default language, or with an engine UUID as
+  // one, invalid; the vector has no default language now,
+  // SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES.)
   e=Entry();e.language_uuid=Identity(UuidKind::object,8);Invalid(e);
   for(unsigned kind=0;kind<256;++kind)if(kind!=static_cast<unsigned>(UuidKind::object)){
-    v=Vector();v.default_language_uuid.kind=static_cast<UuidKind>(kind);Refused(Encode(v));
     e=Entry();e.language_uuid.kind=static_cast<UuidKind>(kind);Refused(Encode(e));
   }
   v=Vector();e=Entry();

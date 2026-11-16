@@ -54,7 +54,7 @@ c::CatalogMetadataVersion Metadata(const Bytes& b,c::CatalogRecordKind kind,scra
   c::CatalogMetadataVersion m;m.record.header.kind=kind;m.record.header.object_uuid={p::UuidKind::object,Id(1)};
   m.record.header.parent_uuid={p::UuidKind::object,Id(20)};m.owning_schema_uuid={p::UuidKind::schema,Id(20)};
   m.record.payload=View(b);m.object_subtype=subtype;m.authority_scope=c::CatalogAuthorityScope::local;
-  m.default_name_uuid={p::UuidKind::object,Id(21)};m.name_vector_uuid={p::UuidKind::object,Id(22)};
+  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */m.name_vector_uuid={p::UuidKind::object,Id(22)};
   m.creator_transaction_uuid={p::UuidKind::transaction,Id(8)};m.creator_local_transaction_id=1;
   m.definition_version=1;m.status=c::CatalogObjectStatus::active;return m;
 }

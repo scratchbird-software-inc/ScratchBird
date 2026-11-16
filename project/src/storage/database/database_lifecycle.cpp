@@ -9818,7 +9818,8 @@ static NativeDatabaseCreateResult PlanNativeDatabaseCreateImpl(
       m.record.header.kind=CatalogRecordKind::audit_evidence;
       m.record.header.object_uuid={UuidKind::object,audit_object};m.record.header.row_uuid=audit.row_uuid;
       m.record.header.parent_uuid={UuidKind::object,sys_audit};m.owning_schema_uuid={UuidKind::schema,sys_audit};
-      m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::node_construction_intent;m.default_name_uuid={};m.name_vector_uuid={};
+      // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16): (was: default_name_uuid also checked or set on the next line).
+      m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::node_construction_intent;m.name_vector_uuid={};
       m.audit_uuid=m.record.header.object_uuid;
       m.record.payload.assign(reinterpret_cast<const char*>(encoded.bytes.data()),encoded.bytes.size());
       seed[5].push_back({std::move(m),{}});

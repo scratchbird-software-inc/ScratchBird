@@ -10,7 +10,10 @@ namespace scratchbird::engine::internal_api {
 // not the walk's; SB_NATIVE_NAME_ROW_V4 stores none). Last value: no value moves.
 enum class NativeCatalogNamePathVerificationError {
   none,source_required,workspace_required,duplicate_language_default,
-  unnamed_scope,ambiguous_scope,cycle,too_deep
+  unnamed_scope,ambiguous_scope,cycle,too_deep,
+  // SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES (owner Q228 revisited, 2026-11-16): an
+  // object with two live entries marked default_for_object.
+  duplicate_object_default
 };
 struct NativeCatalogNamePathVerification {
   NativeCatalogNamePathVerificationError error=NativeCatalogNamePathVerificationError::source_required;
@@ -22,16 +25,21 @@ struct NativeCatalogNamePathVerification {
 // without allocating: `order` indexes the live rows by object UUID, `parents`
 // the live entries marked default_for_language by (object, language). Built
 // once by a verifier; shared by the path and name-tree verifiers.
+// SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES: `by_object` (the rest of `parents`)
+// the live entries marked default_for_object, by object: the fallback.
+// (Was: the fallback was the definition's default_name_uuid, removed by owner
+// Q248 = 1.)
 struct NativeCatalogNamePathLookup {
   std::span<const storage::database::NativeCapturedCatalogRow> rows;
-  std::span<std::size_t> order,by_language;
+  std::span<std::size_t> order,by_language,by_object;
   // False with `duplicate` set when an object has two live entries marked
   // default_for_language in one language (owner Q43 = 1: refused, not picked
   // between); false with `workspace` set when the spans do not fit.
   static bool Build(const storage::database::NativeCatalogCapture& capture,NativeCatalogNamespaceWorkspace workspace,
-      NativeCatalogNamePathLookup& out,bool& workspace_short,core::platform::Uuid& duplicate) noexcept {
+      NativeCatalogNamePathLookup& out,bool& workspace_short,core::platform::Uuid& duplicate,
+      bool* object_duplicate=nullptr) noexcept {
     namespace c=core::catalog;namespace ranges=storage::disk::detail;
-    workspace_short=false;duplicate={};
+    workspace_short=false;duplicate={};if(object_duplicate)*object_duplicate=false;
     const auto rows=capture.rows();const auto count=rows.size();
     if(workspace.order.size()<count||workspace.parents.size()<count||
         !ranges::DisjointNativeDecodeRegions(workspace.order,workspace.parents)||
@@ -47,6 +55,19 @@ struct NativeCatalogNamePathLookup {
     std::sort(out.by_language.begin(),out.by_language.end(),[&](auto a,auto b){return out.LanguageKey(a)<out.LanguageKey(b);});
     for(std::size_t i=1;i<out.by_language.size();++i)if(out.LanguageKey(out.by_language[i-1])==out.LanguageKey(out.by_language[i])){
       duplicate=out.Entry(out.by_language[i])->name_entry_uuid.value;return false;}
+    // The object defaults after them: at most one live default_for_object
+    // entry per object, which (startup's binding rule) is also a language
+    // default, so both segments together fit `parents`.
+    std::size_t objects=0;
+    for(std::size_t i=0;i<count;++i)if(const auto* e=out.Entry(i);e&&e->default_for_object){
+      if(defaults+objects==workspace.parents.size()){workspace_short=true;return false;}
+      workspace.parents[defaults+objects++]=i;
+    }
+    out.by_object=workspace.parents.subspan(defaults,objects);
+    std::sort(out.by_object.begin(),out.by_object.end(),[&](auto a,auto b){return out.Entry(a)->object_uuid.value<out.Entry(b)->object_uuid.value;});
+    for(std::size_t i=1;i<out.by_object.size();++i)
+      if(out.Entry(out.by_object[i-1])->object_uuid.value==out.Entry(out.by_object[i])->object_uuid.value){
+        duplicate=out.Entry(out.by_object[i])->name_entry_uuid.value;if(object_duplicate)*object_duplicate=true;return false;}
     return true;
   }
   // The live name entry captured row i holds, or nullptr.
@@ -72,9 +93,9 @@ struct NativeCatalogNamePathLookup {
     if(at!=by_language.end()&&LanguageKey(*at)==key){name.name=*Entry(*at);return name;}
     const auto* definition=Find(object);
     if(!definition||definition->name_payload)return name;
-    const auto* entry=Find(definition->metadata.default_name_uuid.value);
-    if(!entry||!entry->name_payload)return name;
-    if(const auto* e=std::get_if<core::catalog::CatalogNameEntryView>(&*entry->name_payload))name.name=*e;
+    const auto d=std::lower_bound(by_object.begin(),by_object.end(),object,
+        [&](auto i,const auto& value){return Entry(i)->object_uuid.value<value;});
+    if(d!=by_object.end()&&Entry(*d)->object_uuid.value==object)name.name=*Entry(*d);
     return name;
   }
 };
@@ -95,9 +116,10 @@ inline NativeCatalogNamePathVerification VerifyNativeCatalogNamePaths(
   NativeCatalogNamePathVerification out;
   const auto fail=[&](E error,core::platform::Uuid entry={}){out.error=error;out.entry_uuid=entry;out.entries=0;return out;};
   if(!capture.ok())return out;
-  NativeCatalogNamePathLookup lookup;bool workspace_short=false;core::platform::Uuid duplicate;
-  if(!NativeCatalogNamePathLookup::Build(capture,workspace,lookup,workspace_short,duplicate))
-    return workspace_short?fail(E::workspace_required):fail(E::duplicate_language_default,duplicate);
+  NativeCatalogNamePathLookup lookup;bool workspace_short=false,object_duplicate=false;core::platform::Uuid duplicate;
+  if(!NativeCatalogNamePathLookup::Build(capture,workspace,lookup,workspace_short,duplicate,&object_duplicate))
+    return workspace_short?fail(E::workspace_required):
+        object_duplicate?fail(E::duplicate_object_default,duplicate):fail(E::duplicate_language_default,duplicate);
   for(std::size_t i=0;i<lookup.rows.size();++i){
     const auto* e=lookup.Entry(i);if(!e)continue;
     ++out.entries;

@@ -65,7 +65,8 @@ bool Metadata(const CatalogMetadataVersionView& m,const CatalogConstructionInten
       !Typed(m.owner_uuid,UuidKind::principal)||!Typed(m.owning_schema_uuid,UuidKind::schema)||
       !Typed(m.record.header.parent_uuid,UuidKind::object)||m.record.header.parent_uuid.value!=m.owning_schema_uuid.value||
       !Typed(m.audit_uuid,UuidKind::object)||m.audit_uuid.value!=r.event_uuid||
-      m.default_name_uuid.valid()||!m.default_name_uuid.value.is_nil()||m.name_vector_uuid.valid()||!m.name_vector_uuid.value.is_nil()||
+      // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16): (was: default_name_uuid also checked or set on the next line).
+      m.name_vector_uuid.valid()||!m.name_vector_uuid.value.is_nil()||
       !Typed(m.creator_transaction_uuid,UuidKind::transaction)||m.creator_local_transaction_id<r.origin_local_transaction_id||
       !m.definition_version||
       (m.definition_version==1&&(m.creator_transaction_uuid.value!=r.origin_transaction_uuid.value||m.creator_local_transaction_id!=1)))return false;

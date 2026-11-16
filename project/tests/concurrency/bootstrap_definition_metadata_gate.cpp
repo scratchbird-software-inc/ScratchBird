@@ -106,14 +106,11 @@ int main() {
           m.name_vector_uuid.value == Id(0x58),
           "the definition carries its name-vector identity, which the named "
           "creation preflight checks the supplied vector against");
-    Check(m.default_name_uuid.kind == p::UuidKind::object &&
-          m.default_name_uuid.value == Id(0x59),
-          "the definition carries its default name-entry identity, which the "
-          "named creation preflight checks the supplied vector against");
-    Check(m.name_vector_uuid.value != m.record.header.object_uuid.value &&
-          m.name_vector_uuid.value != m.default_name_uuid.value &&
-          m.default_name_uuid.value != m.record.header.object_uuid.value,
-          "object, name-vector and name-entry identities are all distinct");
+    // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16): the
+    // definition carries no default name-entry identity. (Was: m.default_name_uuid
+    // == Id(0x59), distinct from the object and the vector.)
+    Check(m.name_vector_uuid.value != m.record.header.object_uuid.value,
+          "object and name-vector identities are distinct");
     Check(m.object_subtype == scratchbird::core::catalog::CatalogObjectSubtype::agent_runtime_authority, "subtype preserved verbatim");
     // (No trace search key or retention class to carry: SB_CATALOG_NO_TEXT_IDENTIFIERS,
     // owner Q57 = 1, Q58 = 1; the metadata codec no longer has them.)
@@ -226,8 +223,8 @@ int main() {
           "the vector version is identified by the definition's name-vector identity");
     Check(vm.record.header.parent_uuid.value == d.record.header.object_uuid.value,
           "the vector version is parented to the object");
-    Check(em.record.header.object_uuid.value == d.default_name_uuid.value,
-          "the entry version is identified by the definition's name-entry identity");
+    Check(em.record.header.object_uuid.value == Id(0x59),
+          "the entry version is identified by the supplied name-entry identity (was: the definition's, Q248)");
     Check(em.record.header.parent_uuid.value == d.name_vector_uuid.value,
           "the entry version is parented to the name vector");
     Check(vm.record.header.row_uuid.value == Id(0x5a) &&
@@ -238,8 +235,8 @@ int main() {
 
     Check(v.name_vector_uuid.value == d.name_vector_uuid.value,
           "the vector value agrees with the definition on the vector identity");
-    Check(v.default_name_entry_uuid.value == d.default_name_uuid.value,
-          "the vector value agrees with the definition on the default entry identity");
+    // (Was: the vector's default_name_entry_uuid equal to the definition's
+    // default_name_uuid; SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES, Q248.)
     Check(v.object_uuid.value == d.record.header.object_uuid.value,
           "the vector value names the object it belongs to");
     // SB_CATALOG_NO_TEXT_IDENTIFIERS: the class is the definition's kind itself
@@ -255,9 +252,11 @@ int main() {
           "the vector value carries the definition's security policy");
     Check(v.lifecycle_state == c::CatalogNameLifecycle::active,
           "the vector is active, not left in the creating default");
-    Check(v.default_language_uuid.value == c::kCatalogLanguage_en_US, "the vector default language is the supplied language");
+    // (Was: the vector default language the supplied language;
+    // SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES: the default entry's language.)
+    Check(e.language_uuid.value == c::kCatalogLanguage_en_US, "the default entry is in the supplied language");
 
-    Check(e.name_entry_uuid.value == d.default_name_uuid.value &&
+    Check(e.name_entry_uuid.value == Id(0x59) &&
           e.name_vector_uuid.value == d.name_vector_uuid.value &&
           e.object_uuid.value == d.record.header.object_uuid.value,
           "the entry value carries all three identities it links");

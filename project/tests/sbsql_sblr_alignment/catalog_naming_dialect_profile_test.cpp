@@ -96,7 +96,7 @@ void Bindings(){
     if(n==9)bad.creator_transaction_uuid.value=f::Id(6);if(n==10)bad.creator_local_transaction_id=2;
     if(n==11)f::Put(bad.record.payload,16,65617,4);if(n==12)bad.record.payload="not a native family";
     if(n==13)bad.record.header.object_uuid.kind=p::UuidKind::schema;
-    if(n==14)bad.security_policy_uuid={};if(n==15)bad.default_name_uuid={};if(n==16)bad.name_vector_uuid={};
+    if(n==14)bad.security_policy_uuid={};if(n==15)bad.name_vector_uuid={};/* (Was: default_name_uuid, retired by owner Q248 = 1; the name-vector fault) */if(n==16)bad.name_vector_uuid={};
     if(n==17)bad.record.header.row_uuid.value=profile.identifier_profile_uuid;
     const auto b=c::BorrowCatalogMetadataVersion(bad);Check(!c::CatalogNamingDialectProfileMatchesMetadata(b)&&!c::CatalogMetadataVersionEncodedBytes(b),"common dispatcher refuses disguised or mismatched profile");}
   auto next=profile;next.generation=2;next.creating_transaction_uuid.value=f::Id(6);next.creating_local_transaction_id=2;

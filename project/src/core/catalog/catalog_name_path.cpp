@@ -3,13 +3,15 @@
 #include "catalog_name_path.hpp"
 
 namespace scratchbird::core::catalog {
-void CatalogNameIndex::Add(const CatalogNameVectorView& vector) {
-  default_entry_[vector.object_uuid.value] = vector.default_name_entry_uuid.value;
-}
+// SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES (owner Q228 revisited): a vector holds
+// no default; the object default is its entry marked default_for_object.
+// (Was: default_entry_ from the vector's default_name_entry_uuid.)
+void CatalogNameIndex::Add(const CatalogNameVectorView&) {}
 void CatalogNameIndex::Add(const CatalogNameEntryView& entry) {
   entries_.insert_or_assign(entry.name_entry_uuid.value, entry);
   if (entry.default_for_language)
     by_language_.emplace(std::pair{entry.object_uuid.value, entry.language_uuid.value}, entry.name_entry_uuid.value);
+  if (entry.default_for_object) default_entry_.emplace(entry.object_uuid.value, entry.name_entry_uuid.value);
 }
 void CatalogNameIndex::Add(const CatalogNamePayloadView& payload) {
   std::visit([&](const auto& value) { Add(value); }, payload);
@@ -30,9 +32,19 @@ CatalogNamePathName CatalogNameIndex::operator()(const Uuid& object, const Uuid&
     out.name = e;
   }
   if (out.name) return out;
-  const auto vector = default_entry_.find(object);
-  if (vector == default_entry_.end()) return out;
-  if (const auto entry = entries_.find(vector->second); entry != entries_.end()) out.name = entry->second;
+  // The object default: its entry marked default_for_object (re-checked, so a
+  // replaced entry drops out; two are ambiguous).
+  const auto [dfirst, dlast] = default_entry_.equal_range(object);
+  for (auto at = dfirst; at != dlast; ++at) {
+    const auto entry = entries_.find(at->second);
+    if (entry == entries_.end() || entry->second.object_uuid.value != object || !entry->second.default_for_object) continue;
+    if (out.name && out.name->name_entry_uuid.value == entry->second.name_entry_uuid.value) continue;
+    if (out.name) {
+      out.ambiguous = true;
+      return out;
+    }
+    out.name = entry->second;
+  }
   return out;
 }
 

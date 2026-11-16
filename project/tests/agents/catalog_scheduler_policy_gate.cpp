@@ -81,7 +81,7 @@ c::CatalogMetadataVersion Metadata(const Policy& p) {
       {UuidKind::object,p.policy_uuid},Id(UuidKind::object,11),1,false};
   m.record.payload = Oracle(p); m.owning_schema_uuid = Id(UuidKind::schema,11);
   m.owner_uuid = Id(UuidKind::principal,12); m.audit_uuid = Id(UuidKind::object,13);
-  m.default_name_uuid = Id(UuidKind::object,14); m.name_vector_uuid = Id(UuidKind::object,15);
+  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */ m.name_vector_uuid = Id(UuidKind::object,15);
   m.creator_transaction_uuid = p.origin_transaction_uuid; m.creator_local_transaction_id = p.origin_local_transaction_id;
   m.definition_version = p.generation;
   m.schema_epoch = m.security_epoch = m.catalog_generation = m.dependency_generation = m.invalidation_generation = 1;
@@ -179,7 +179,7 @@ void BoundariesAndOrigin() {
     if (which == 2) wrong.record.header.object_uuid = Id(UuidKind::object,32);
     if (which == 3) ++wrong.definition_version;
     if (which == 4) wrong.owning_schema_uuid = Id(UuidKind::schema,33);
-    if (which == 5) wrong.default_name_uuid = {};
+    if (which == 5) wrong.name_vector_uuid = {};/* (Was: default_name_uuid, retired by owner Q248 = 1; the name-vector fault) */
     if (which == 6) wrong.name_vector_uuid = {};
     if (which == 7) ++wrong.creator_local_transaction_id;
     if (which == 8) wrong.authority_scope = static_cast<c::CatalogAuthorityScope>(255);
@@ -318,7 +318,7 @@ void QueueDefinition() {
     if (field == 2) wrong.record.header.object_uuid = Id(UuidKind::object,32);
     if (field == 3) ++wrong.definition_version;
     if (field == 4) wrong.owning_schema_uuid = Id(UuidKind::schema,33);
-    if (field == 5) wrong.default_name_uuid = {};
+    if (field == 5) wrong.name_vector_uuid = {};/* (Was: default_name_uuid, retired by owner Q248 = 1; the name-vector fault) */
     if (field == 6) wrong.name_vector_uuid = {};
     if (field == 7) ++wrong.creator_local_transaction_id;
     if (field == 8) wrong.authority_scope = static_cast<c::CatalogAuthorityScope>(255);
@@ -492,7 +492,7 @@ void FairnessDefinition() {
     if (field == 2) wrong.record.header.object_uuid = Id(UuidKind::object,32);
     if (field == 3) ++wrong.definition_version;
     if (field == 4) wrong.owning_schema_uuid = Id(UuidKind::schema,33);
-    if (field == 5) wrong.default_name_uuid = {};
+    if (field == 5) wrong.name_vector_uuid = {};/* (Was: default_name_uuid, retired by owner Q248 = 1; the name-vector fault) */
     if (field == 6) wrong.name_vector_uuid = {};
     if (field == 7) ++wrong.creator_local_transaction_id;
     if (field == 8) wrong.authority_scope = static_cast<c::CatalogAuthorityScope>(255);
