@@ -6,9 +6,11 @@
 #include <numeric>
 
 namespace scratchbird::engine::internal_api {
+// Retired (owner Q217 = yes, 2026-11-15): path_mismatch (the stored path was
+// not the walk's; SB_NATIVE_NAME_ROW_V4 stores none). Last value: no value moves.
 enum class NativeCatalogNamePathVerificationError {
   none,source_required,workspace_required,duplicate_language_default,
-  unnamed_scope,ambiguous_scope,cycle,too_deep,path_mismatch
+  unnamed_scope,ambiguous_scope,cycle,too_deep
 };
 struct NativeCatalogNamePathVerification {
   NativeCatalogNamePathVerificationError error=NativeCatalogNamePathVerificationError::source_required;
@@ -105,7 +107,6 @@ inline NativeCatalogNamePathVerification VerifyNativeCatalogNamePaths(
       case c::CatalogNamePathError::ambiguous_scope:return fail(E::ambiguous_scope,e->name_entry_uuid.value);
       case c::CatalogNamePathError::cycle:return fail(E::cycle,e->name_entry_uuid.value);
       case c::CatalogNamePathError::too_deep:return fail(E::too_deep,e->name_entry_uuid.value);
-      case c::CatalogNamePathError::mismatch:return fail(E::path_mismatch,e->name_entry_uuid.value);
     }
   }
   out.error=E::none;return out;

@@ -53,6 +53,12 @@ struct NativeCatalogCohortInspection {
   NativeBtreeTreeMemoryError name_tree_error=NativeBtreeTreeMemoryError::none;
   page::NativeBtreeError name_tree_page_error=page::NativeBtreeError::none;
   u16 failing_selector=0,failing_role=0;
+  // SB_NATIVE_CATALOG_CAPTURE_BOUND (owner Q219 = yes, 2026-11-15): on
+  // resource_exhausted, the bound that filled (rows or text bytes, and so on);
+  // failing_role / failing_selector name the relation being read when it
+  // filled (0: none, the inventory, filespaces or control pages). none on
+  // every other result.
+  NativeCatalogCaptureBound capture_bound=NativeCatalogCaptureBound::none;
   Uuid unresolved_transaction_uuid;
   u64 unresolved_local_transaction_id=0,physical_bytes_read=0,verified_image_bytes=0;
   bool ok() const noexcept{return error==NativeCatalogCohortError::none&&source.has_value();}
@@ -126,6 +132,9 @@ class NativeCatalogCohortLeaseReader {
     if(capture)capture->Begin();
     const auto fail=[&](E error){out.error=error;out.source.reset();out.relations={};out.relation_count=0;
       if(capture)capture->Begin();return out;};
+    // SB_NATIVE_CATALOG_CAPTURE_BOUND (Q219): resource_exhausted, naming the bound.
+    const auto exhausted=[&](NativeCatalogCaptureBound bound){out.capture_bound=bound;return fail(E::resource_exhausted);};
+    using Bound=NativeCatalogCaptureBound;
     if(!workspace||source.retained_image_bytes()>=maximum_image_bytes)return fail(E::invalid_request);
     if(capture&&(!*capture||!view.inventory||capture->arena_.binding().database_uuid!=view.database_uuid))
       return fail(E::invalid_request);
@@ -136,7 +145,7 @@ class NativeCatalogCohortLeaseReader {
     if(!view.inventory||!view.directory||!view.allocation)return fail(E::invalid_request);
     const auto& inventory=*view.inventory;
     if(capture&&!capture->transactions_.empty()){
-      if(inventory.entries.size()>capture->transactions_.size())return fail(E::resource_exhausted);
+      if(inventory.entries.size()>capture->transactions_.size())return exhausted(Bound::transactions);
       std::copy(inventory.entries.begin(),inventory.entries.end(),capture->transactions_.begin());
       capture->inventory_=NativeCapturedTransactionInventory{
           view.inventory_generation,
@@ -146,11 +155,11 @@ class NativeCatalogCohortLeaseReader {
     for(usize catalog_index=0;catalog_index<roots.catalogs.size();++catalog_index){
       const u16 selector=catalog_index==roots.feature_root_index&&catalog_index!=0?8:2;
       const auto& root=roots.catalogs[catalog_index].root;
-      if(capture&&!capture->AppendPhysical(root.header,root.object_uuid))return fail(E::resource_exhausted);
+      if(capture)if(const auto b=capture->AppendPhysical(root.header,root.object_uuid);b!=Bound::none)return exhausted(b);
       for(const auto& relation:root.roots){
         out.failing_selector=selector;out.failing_role=relation.role;
-        if(out.relation_count==out.relations.size()||out.verified_image_bytes>=maximum_image_bytes)
-          return fail(E::resource_exhausted);
+        if(out.relation_count==out.relations.size())return exhausted(Bound::relation_slots);
+        if(out.verified_image_bytes>=maximum_image_bytes)return exhausted(Bound::image_bytes);
         const auto allowance=maximum_image_bytes-out.verified_image_bytes+source.retained_image_bytes();
         const auto read=NativeCatalogVisibilityLeaseReader::ReadCommittedSelected(source,selector,relation.role,
           allowance,workspace.visibility);
@@ -159,7 +168,7 @@ class NativeCatalogCohortLeaseReader {
         if(!read.ok())return fail(E::relation_failure);
         if(read.source.retained_image_bytes<source.retained_image_bytes())return fail(E::binding_mismatch);
         const auto additional=read.source.retained_image_bytes-source.retained_image_bytes();
-        if(additional>maximum_image_bytes-out.verified_image_bytes)return fail(E::resource_exhausted);
+        if(additional>maximum_image_bytes-out.verified_image_bytes)return exhausted(Bound::image_bytes);
         out.verified_image_bytes+=additional;
         for(const auto& creator:read.source.row_creators){
           if(creator.inventory_entry_index>=inventory.entries.size())return fail(E::binding_mismatch);
@@ -185,17 +194,17 @@ class NativeCatalogCohortLeaseReader {
         inspection.bindings=read.source.bindings.size();inspection.navigation_image_bytes=read.source.tree.retained_image_bytes;
         if(capture){
           for(const auto& leaf:read.source.bases)
-            if(!capture->AppendPhysical(leaf.page.header,read.source.relation.relation_uuid))return fail(E::resource_exhausted);
+            if(const auto b=capture->AppendPhysical(leaf.page.header,read.source.relation.relation_uuid);b!=Bound::none)return exhausted(b);
           for(const auto& page:read.source.tree.pages)
-            if(!capture->AppendPhysical(page.page->header,page.page->dependencies.index_uuid))return fail(E::resource_exhausted);
+            if(const auto b=capture->AppendPhysical(page.page->header,page.page->dependencies.index_uuid);b!=Bound::none)return exhausted(b);
         }
         inspection.maximum_page_bytes=root.header.page_size_bytes;
         for(const auto& leaf:read.source.bases)inspection.maximum_page_bytes=std::max<usize>(inspection.maximum_page_bytes,leaf.page.header.page_size_bytes);
         for(const auto& page:read.source.tree.pages)inspection.maximum_page_bytes=std::max<usize>(inspection.maximum_page_bytes,page.page->header.page_size_bytes);
         if(capture)for(const auto& row:read.rows)
-          if(!capture->Append(selector,relation.role,row))return fail(E::resource_exhausted);
-        if(capture&&!capture->AppendRelation({selector,relation.role,read.source.relation.relation_uuid,
-            read.source.relation.index_dependencies}))return fail(E::resource_exhausted);
+          if(const auto b=capture->Append(selector,relation.role,row);b!=Bound::none)return exhausted(b);
+        if(capture)if(const auto b=capture->AppendRelation({selector,relation.role,read.source.relation.relation_uuid,
+            read.source.relation.index_dependencies});b!=Bound::none)return exhausted(b);
         if(selector==2&&(relation.role==2||relation.role==page::kNativeCommentRelationRole)){
           // SB_CATALOG_OWN_VERSION_REPLACE (owner Q88 = 1): at most one
           // version per (row, creator transaction) in the names and comments
@@ -218,18 +227,18 @@ class NativeCatalogCohortLeaseReader {
           const auto* first=view.Root(22);const auto* second=view.Root(23);
           if((first!=nullptr)!=(second!=nullptr))return fail(E::name_tree_failure);
           if(first){
-            if(!workspace.name_trees)return fail(E::resource_exhausted);
+            if(!workspace.name_trees)return exhausted(Bound::tree_workspace);
             out.name_trees_present=true;
             const auto& bases=read.source.bases;
             for(unsigned t=0;t<2;++t){
               const auto& tree_root=t?*second:*first;
               if(tree_root.page_type!=0x200)return fail(E::name_tree_failure);
-              if(out.verified_image_bytes>=maximum_image_bytes)return fail(E::resource_exhausted);
+              if(out.verified_image_bytes>=maximum_image_bytes)return exhausted(Bound::image_bytes);
               const auto limit=static_cast<usize>(std::min<u64>(maximum_image_bytes-out.verified_image_bytes,std::numeric_limits<usize>::max()));
               const auto tree=NativeBtreeTreeLeaseReader::ReadPageZeroTree(view,tree_root,workspace.name_trees,limit);
               out.physical_bytes_read+=tree.physical_bytes_read;
               if(!tree.ok()){out.name_tree_error=tree.error;out.name_tree_page_error=tree.tree_error;return fail(E::name_tree_failure);}
-              if(tree.retained_image_bytes>maximum_image_bytes-out.verified_image_bytes)return fail(E::resource_exhausted);
+              if(tree.retained_image_bytes>maximum_image_bytes-out.verified_image_bytes)return exhausted(Bound::image_bytes);
               out.verified_image_bytes+=tree.retained_image_bytes;
               const auto& dependencies=tree.pages.front().page->dependencies;
               if(dependencies.index_uuid!=tree_root.object_uuid)return fail(E::name_tree_failure);
@@ -256,7 +265,7 @@ class NativeCatalogCohortLeaseReader {
                   if(row.row_uuid.value!=cell.key.row_uuid||row.local_transaction_id!=cell.creator_local_transaction_id)
                     return fail(E::name_tree_mismatch);
                   if(t==0&&!std::holds_alternative<core::catalog::CatalogNameEntryView>(*found->name))return fail(E::name_tree_mismatch);
-                  if(capture&&!capture->AppendNameTreeCell(static_cast<u16>(t),cell))return fail(E::resource_exhausted);
+                  if(capture)if(const auto b=capture->AppendNameTreeCell(static_cast<u16>(t),cell);b!=Bound::none)return exhausted(b);
                 }}
               // Every row version has its cells: one in the authoritative tree
               // per entry, one in the UUID-to-name tree per name row (a deleted
@@ -301,7 +310,7 @@ class NativeCatalogCohortLeaseReader {
               out.name_tree_cells[t]=cells;out.name_tree_pages[t]=tree.pages.size();
               if(capture){
                 for(const auto& page:tree.pages)
-                  if(!capture->AppendPhysical(page.page->header,dependencies.index_uuid))return fail(E::resource_exhausted);
+                  if(const auto b=capture->AppendPhysical(page.page->header,dependencies.index_uuid);b!=Bound::none)return exhausted(b);
                 capture->name_trees_[t]=NativeCapturedNameTree{tree_root.kind,dependencies,tree_root.page,cells,tree.pages.size()};
               }
             }
@@ -316,16 +325,16 @@ class NativeCatalogCohortLeaseReader {
           // a drop has exactly one cell (the name trees' rule, with the same
           // admission for an uncommitted writer's version that lost its cell).
           if(const auto* comment_root=view.Root(24)){
-            if(!workspace.name_trees)return fail(E::resource_exhausted);
+            if(!workspace.name_trees)return exhausted(Bound::tree_workspace);
             out.comment_tree_present=true;
             const auto& bases=read.source.bases;
             if(comment_root->page_type!=0x200)return fail(E::comment_tree_failure);
-            if(out.verified_image_bytes>=maximum_image_bytes)return fail(E::resource_exhausted);
+            if(out.verified_image_bytes>=maximum_image_bytes)return exhausted(Bound::image_bytes);
             const auto limit=static_cast<usize>(std::min<u64>(maximum_image_bytes-out.verified_image_bytes,std::numeric_limits<usize>::max()));
             const auto tree=NativeBtreeTreeLeaseReader::ReadPageZeroTree(view,*comment_root,workspace.name_trees,limit);
             out.physical_bytes_read+=tree.physical_bytes_read;
             if(!tree.ok()){out.name_tree_error=tree.error;out.name_tree_page_error=tree.tree_error;return fail(E::comment_tree_failure);}
-            if(tree.retained_image_bytes>maximum_image_bytes-out.verified_image_bytes)return fail(E::resource_exhausted);
+            if(tree.retained_image_bytes>maximum_image_bytes-out.verified_image_bytes)return exhausted(Bound::image_bytes);
             out.verified_image_bytes+=tree.retained_image_bytes;
             const auto& dependencies=tree.pages.front().page->dependencies;
             if(dependencies.index_uuid!=comment_root->object_uuid)return fail(E::comment_tree_failure);
@@ -382,7 +391,7 @@ class NativeCatalogCohortLeaseReader {
             out.comment_tree_cells=cells;out.comment_tree_pages=tree.pages.size();
             if(capture){
               for(const auto& page:tree.pages)
-                if(!capture->AppendPhysical(page.page->header,dependencies.index_uuid))return fail(E::resource_exhausted);
+                if(const auto b=capture->AppendPhysical(page.page->header,dependencies.index_uuid);b!=Bound::none)return exhausted(b);
               capture->comment_tree_=NativeCapturedNameTree{comment_root->kind,dependencies,comment_root->page,cells,tree.pages.size()};
             }
           }
@@ -396,7 +405,7 @@ class NativeCatalogCohortLeaseReader {
       // as the catalog rows. No current device or caller-supplied manifest is
       // substituted after the selected-source fence retires.
       for(const auto& page:view.directory->pages)for(const auto& member:page.directory.records){
-        if(capture->filespace_count_==capture->filespaces_.size())return fail(E::resource_exhausted);
+        if(capture->filespace_count_==capture->filespaces_.size())return exhausted(Bound::filespaces);
         capture->filespaces_[capture->filespace_count_++]=member;
       }
       if(!capture->filespace_count_)return fail(E::binding_mismatch);
@@ -410,7 +419,7 @@ class NativeCatalogCohortLeaseReader {
           (a.header.filespace_uuid==b.header.filespace_uuid&&a.header.page_number<b.header.page_number);});
       if(!capture->initial_control_pages_.empty()){
         const auto append=[&](const auto& header,const auto& owner){return capture->AppendPhysicalTo(
-            capture->initial_control_pages_,capture->initial_control_page_count_,header,owner);};
+            capture->initial_control_pages_,capture->initial_control_page_count_,header,owner,Bound::initial_control_pages);};
         if constexpr(fixed_root){
           // As created: page zero and its root set at generation one. Page
           // zero's roots are the root set; the open verifier reads them from
@@ -418,12 +427,12 @@ class NativeCatalogCohortLeaseReader {
           const auto& id=source.identity();
           if(id.page_generation!=1||id.root_set_generation!=1)return fail(E::binding_mismatch);
           for(const auto& page:source.inventory_pages())
-            if(!append(page.header,page.object_uuid))return fail(E::resource_exhausted);
+            if(const auto b=append(page.header,page.object_uuid);b!=Bound::none)return exhausted(b);
         }
         for(const auto& map:view.allocation->pages)
-          if(!append(map.map.header,map.map.object_uuid))return fail(E::resource_exhausted);
+          if(const auto b=append(map.map.header,map.map.object_uuid);b!=Bound::none)return exhausted(b);
         for(const auto& page:view.directory->pages)
-          if(!append(page.directory.header,page.directory.object_uuid))return fail(E::resource_exhausted);
+          if(const auto b=append(page.directory.header,page.directory.object_uuid);b!=Bound::none)return exhausted(b);
         auto controls=capture->initial_control_pages_.first(capture->initial_control_page_count_);
         std::sort(controls.begin(),controls.end(),[](const auto& a,const auto& b){return
             a.header.filespace_uuid<b.header.filespace_uuid||

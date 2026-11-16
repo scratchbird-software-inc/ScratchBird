@@ -120,7 +120,9 @@ CatalogNameEntryKeys DeriveCatalogNameEntryKeys(
   // required of a stored display; donor_projection was refused by Admit.
   if(profile.storage_display_mode==IdentifierDisplayMode::preserve_user_text)out.display={entry.raw_name_text,IdentifierFoldMode::none};
   else if(profile.storage_display_mode==IdentifierDisplayMode::store_folded_display)out.display=out.own;
-  else{out.error=E::display_mismatch;return out;}
+  // Unreachable: Admit requires an encodable profile (display mode 1..3) and
+  // refuses donor_projection. (Was: display_mismatch, retired by owner Q217.)
+  else{out.error=E::invalid_profile;return out;}
   out.error=E::none;return out;
 }
 CatalogIdentifierKeyError CheckCatalogIdentifierLookupKeys(

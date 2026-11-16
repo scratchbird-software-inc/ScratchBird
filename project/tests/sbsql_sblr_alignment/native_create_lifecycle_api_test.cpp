@@ -813,9 +813,13 @@ int main(int argc, char** argv) {
     // once, so the row no longer binds; the authoritative name-tree cell (key
     // + payload <= page/4, the operational limit owner Q159 documents with the
     // page size) does, at 443 such scalars (1,772 octets; Q145 re-measured
-    // 2026-11-15): still DATABASE.CREATE_ROW_EXCEEDS_PAGE_CAPACITY, bound
-    // name_tree_cell, before the open. (Was: 331 scalars (1,324 octets),
-    // bound=row_bytes; the 8K bound was 330 scalars, 1,320 octets.)
+    // 2026-11-15), bound name_tree_cell, before the open.
+    // Owner Q214 = yes (2026-11-15): the name-tree cell bound has its own code,
+    // DATABASE.CREATE_NAME_KEY_EXCEEDS_PAGE_CAPACITY (row_bytes keeps
+    // DATABASE.CREATE_ROW_EXCEEDS_PAGE_CAPACITY). (Was, 46cac9bec:
+    // DATABASE.CREATE_ROW_EXCEEDS_PAGE_CAPACITY with bound name_tree_cell;
+    // before it, 331 scalars (1,324 octets), bound=row_bytes, the 8K bound
+    // 330 scalars, 1,320 octets.)
     before_open("row-exceeds-8k", [](auto& r) {
       std::erase_if(r.option_envelopes, [](const auto& o) {
         return o.starts_with("page_size:") || o.starts_with("total_pages:"); });
@@ -823,9 +827,10 @@ int main(int argc, char** argv) {
       r.option_envelopes.push_back("total_pages:2048");
       r.database_name.clear();
       for (int i = 0; i < 444; ++i) r.database_name += "\xf0\x9f\x98\x80";
-    }, "capacity_exceeded:bound=name_tree_cell", "DATABASE.CREATE_ROW_EXCEEDS_PAGE_CAPACITY",
-       "Q144/Q145/Q159: a 444-scalar four-byte name under the default pack at 8K is refused before the open "
-       "by the name-tree cell bound, DATABASE.CREATE_ROW_EXCEEDS_PAGE_CAPACITY (was: 331 scalars, row_bytes)");
+    }, "capacity_exceeded:bound=name_tree_cell", "DATABASE.CREATE_NAME_KEY_EXCEEDS_PAGE_CAPACITY",
+       "Q144/Q145/Q159/Q214: a 444-scalar four-byte name under the default pack at 8K is refused before the open "
+       "by the name-tree cell bound, DATABASE.CREATE_NAME_KEY_EXCEEDS_PAGE_CAPACITY (was: "
+       "DATABASE.CREATE_ROW_EXCEEDS_PAGE_CAPACITY; before that 331 scalars, row_bytes)");
     // Q144 = 1 left a bootstrap principal named like the service principal
     // DATABASE.CREATE_FAILED at the plan's policy assembly (no attribution).
     // Q152 = 1 / Q153 = 1 (owner 2026-11-14, SB_NATIVE_CREATE_PRINCIPAL_NAME_COLLISION):

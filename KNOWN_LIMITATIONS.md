@@ -96,6 +96,36 @@ Compatibility parsers must not own ScratchBird storage, recovery, security,
 filesystem, cluster, or MGA transaction finality. Unsafe surfaces fail closed or
 route through native ScratchBird management and policy-admitted bridge paths.
 
+## Operational Limits
+
+### Identifier key limit depends on page size
+
+A name's lookup key and its index entry must fit in a quarter of a database
+page. The longest name a database can therefore hold depends on the page size
+chosen at create. Measured maxima for the database name at native create
+(2026-11-15), using a policy pack whose identifier maximum is set high enough
+not to bind; the bootstrap principal name measured the same:
+
+| Page size | Longest database name (UTF-8 octets) | As four-byte characters |
+| --- | --- | --- |
+| 8 KiB | 1,772 | 443 |
+| 16 KiB | 3,820 | 955 |
+| 32 KiB | 7,916 | 1,979 |
+| 64 KiB | 16,108 | 4,027 |
+| 128 KiB | 32,492 | 8,123 |
+
+- The identifier profile's own maximum applies as well, and whichever limit is
+  smaller refuses first. The default pack allows 512 Unicode characters. Under
+  it, only a name made mostly of four-byte characters can reach the page limit,
+  and only at 8 KiB pages. At 16 KiB and larger pages the profile maximum
+  always refuses first.
+- A create whose name exceeds the page limit is refused before any file is
+  written, with `DATABASE.CREATE_NAME_KEY_EXCEEDS_PAGE_CAPACITY`. Use a larger
+  page size or a shorter name.
+- Names written after create are held to the same quarter-page bound. Their
+  exact maxima have not been measured, and the refusal they get is not yet a
+  dedicated code.
+
 ## Review Guidance
 
 The presence of a source file, generated artifact, manifest row, test fixture, benchmark entry, or compatibility profile means the area is tracked. It is not by itself a support claim.

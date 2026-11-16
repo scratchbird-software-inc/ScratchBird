@@ -16,10 +16,14 @@
 #include <string_view>
 
 namespace scratchbird::core::catalog {
+// Retired (owner Q217 = yes, 2026-11-15; plan 35 follow-up): key_mismatch
+// and display_mismatch, the comparison of a version 3 row's stored lanes and
+// display with a fresh derivation (SB_NATIVE_NAME_ROW_V4 stores neither). The
+// values were never persisted or sent; the enum is renumbered.
 enum class CatalogIdentifierKeyError {
   none,invalid_profile,invalid_text,invalid_quote_mode,identifier_too_long,
   resource_admission_required,dialect_admission_required,invalid_backing,
-  size_limit,key_mismatch,display_mismatch
+  size_limit
 };
 // Non-empty, at most kCatalogIdentifierTextMaximumBytes, canonical UTF-8
 // (ValidateCanonicalUtf8) and no U+0000. Pure, allocation-free. invalid_text

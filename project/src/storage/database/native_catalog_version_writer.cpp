@@ -616,7 +616,8 @@ class NameState {
     // newest version is another transaction's in progress is seen as its
     // newest committed version (it was dropped from the index outright, which
     // left everything below that name unnamed to an unrelated writer); the
-    // row is also recorded as contended, for PendingOnPath.
+    // row is also recorded as contended, for PathConflict (Q212; was
+    // PendingOnPath).
     for (std::size_t k = 0; k < stored_.size(); ++k) {
       const auto& s = stored_[k];
       if (!s.state || (*s.state != mga::TransactionState::committed && s.order != order_)) continue;
@@ -673,17 +674,43 @@ class NameState {
         [](const catalog::CatalogNameEntryView&) {});
     return found;
   }
-  // Q47 = 1: the transaction whose change in progress a path over `index`
-  // runs through (a name row another transaction is changing, whose old or
-  // new version decides a lookup on the path), if any. A write of such a path
-  // is a write_conflict with it, as a cascade reaching its entry is: the path
-  // goes stale whichever way that transaction ends.
-  std::optional<u64> PendingOnPath(const catalog::CatalogNameEntryView& entry, const catalog::CatalogNameIndex& index) const {
-    return FirstOnPath(entry, index, [&](const Uuid& object, const Uuid& language) -> std::optional<u64> {
+  // SEARCH_KEY: SB_NATIVE_NAME_PATH_CONFLICT_BREAK (owner Q212, 2026-11-15;
+  // relaxes Q47 = 1). The symmetric rule, used by this check and by
+  // CheckPathsAfterChange: an entry E of one transaction and another
+  // transaction C changing name rows, both in progress, conflict exactly when
+  // E's path walks in one ending of C and not in the other: walked over the
+  // names E's writer sees (committed, its own and its request's), once
+  // without C's name rows and once with all of them (a commit applies them
+  // together). A rename or a default change that leaves E's path walking
+  // through other text or another component no longer conflicts (paths are
+  // derived at read, Q157); a drop or a second default that breaks it does;
+  // a path that walks only once C commits (C names E's scope) still waits on
+  // C. Which transaction writes second does not change the outcome: here E
+  // is this request's and C each other transaction holding a contended row;
+  // in CheckPathsAfterChange C is this request and E another's.
+  // Only a transaction one of whose rows decides a lookup on E's walk without
+  // it is tried (a row deciding none cannot change the walk), so a write with
+  // nothing contended on its path builds no further index.
+  // (Was, Q47 = 1: a write_conflict with the first transaction whose old or
+  // new version decided any lookup on the path, PendingOnPath, so a rename of
+  // a scope conflicted with every entry being written below it.)
+  std::optional<u64> PathConflict(const catalog::CatalogNameEntryView& entry) const {
+    if (contended_.empty()) return std::nullopt;
+    std::vector<u64> orders;
+    (void)FirstOnPath(entry, path_names_, [&](const Uuid& object, const Uuid& language) -> std::optional<u64> {
       for (const auto& c : contended_)
-        if (Decides(*c.newest, object, language) || (c.seen && Decides(*c.seen, object, language))) return c.order;
-      return std::nullopt;
+        if ((Decides(*c.newest, object, language) || (c.seen && Decides(*c.seen, object, language))) &&
+            std::find(orders.begin(), orders.end(), c.order) == orders.end())
+          orders.push_back(c.order);
+      return std::nullopt;  // every lookup of the walk
     });
+    if (orders.empty()) return std::nullopt;
+    const bool walks = catalog::CheckCatalogNameEntryPath(entry, path_names_) == catalog::CatalogNamePathError::none;
+    for (const auto other : orders) {
+      const auto with = StoredPaths(std::nullopt, nullptr, request_names_, other);
+      if ((catalog::CheckCatalogNameEntryPath(entry, with) == catalog::CatalogNamePathError::none) != walks) return other;
+    }
+    return std::nullopt;
   }
 
   // The newest version of an object this transaction sees (its creator
@@ -787,7 +814,7 @@ class NameState {
     const auto xv = std::get<catalog::CatalogNameEntryView>(catalog::BorrowCatalogNamePayload(payload));
     const auto xkeys = catalog::DeriveCatalogNameEntryKeys(*profile, xv);
     if (!xkeys.ok()) return {E::invalid_name};
-    if (const auto blocker = PendingOnPath(xv, path_names_)) return {E::write_conflict, blocker};  // Q47 = 1
+    if (const auto blocker = PathConflict(xv)) return {E::write_conflict, blocker};  // Q212 (was: PendingOnPath, Q47 = 1)
     if (catalog::CheckCatalogNameEntryPath(xv, path_names_) != catalog::CatalogNamePathError::none) return {E::invalid_name};
     // SB_NATIVE_NAME_PROBE (N3): with the authoritative tree, the candidates
     // are the rows its (scope, identifier profile) range holds - every entry
@@ -852,12 +879,33 @@ class NameState {
   // the rows Paths() holds), with `row`'s replaced by `replacement` (none:
   // removed). The payloads must outlive the index.
   // Q48 = 1: an insert's `added` names are added after the stored ones.
+  // Q212 (SB_NATIVE_NAME_PATH_CONFLICT_BREAK): with `with`, also that
+  // transaction's name rows in progress (its newest version in place of the
+  // one this transaction sees, or added): the names as they would be once it
+  // commits.
   catalog::CatalogNameIndex StoredPaths(const std::optional<Uuid>& row, const catalog::CatalogNamePayload* replacement,
-                                        std::span<const catalog::CatalogNamePayload* const> added = {}) const {
+                                        std::span<const catalog::CatalogNamePayload* const> added = {},
+                                        std::optional<u64> with = std::nullopt) const {
     catalog::CatalogNameIndex out;
-    for (const auto& [r, k] : visible_name_) {
-      if (row && r == *row) continue;
-      if (!stored_[k].deleted) out.Add(catalog::BorrowCatalogNamePayload(stored_[k].payload));
+    if (!with) {
+      for (const auto& [r, k] : visible_name_) {
+        if (row && r == *row) continue;
+        if (!stored_[k].deleted) out.Add(catalog::BorrowCatalogNamePayload(stored_[k].payload));
+      }
+    } else {
+      // newest_name_ holds every row visible_name_ does (a version this
+      // transaction sees is not dead), and the rows only `with` has written.
+      for (const auto& [r, k] : newest_name_) {
+        if (row && r == *row) continue;
+        const auto& s = stored_[k];
+        std::optional<std::size_t> use;
+        if (s.state && InProgress(*s.state) && s.order == *with && s.order != order_) {
+          use = k;
+        } else if (const auto seen = visible_name_.find(r); seen != visible_name_.end()) {
+          use = seen->second;
+        }
+        if (use && !stored_[*use].deleted) out.Add(catalog::BorrowCatalogNamePayload(stored_[*use].payload));
+      }
     }
     if (replacement) out.Add(catalog::BorrowCatalogNamePayload(*replacement));
     for (const auto* name : added) out.Add(catalog::BorrowCatalogNamePayload(*name));
@@ -1403,7 +1451,6 @@ const char* CatalogVersionWriteErrorName(CatalogVersionWriteError error) noexcep
     case E::name_tree_full: return "name_tree_full";
     case E::new_pages_exhausted: return "new_pages_exhausted";
     case E::filespace_full: return "filespace_full";
-    case E::cascade_versions_exhausted: return "cascade_versions_exhausted";
     case E::unaudited_change: return "unaudited_change";
     case E::duplicate_comment: return "duplicate_comment";
     case E::comment_tree_full: return "comment_tree_full";
@@ -1732,44 +1779,39 @@ CommentHold HoldOfCommentPair(const Relation& comments, const std::vector<TreePa
 //  - an entry this transaction sees (committed, or its own) that the change
 //    leaves without a path (an unnamed or ambiguous scope) is `unresolvable`,
 //    refused before any write: its path is walked at read and must walk;
-//  - another transaction's entry in progress whose path does not resolve
-//    before or after the change is a write_conflict with it when a lookup its
-//    path makes is one a changed row decides (SB_NATIVE_NAME_PATH_CONFLICT,
-//    Q47 = 1);
-//  - another transaction's entry in progress whose path the change moves (a
-//    component chosen differently, or a chosen component's text or lane
-//    inputs changed) is a write_conflict with it: the counterpart of the
-//    entry check's PendingOnPath (Q47 = 1), so the outcome does not depend on
-//    which transaction wrote first.
+//  - another transaction's entry in progress conflicts with this change by
+//    the rule of SB_NATIVE_NAME_PATH_CONFLICT_BREAK (owner Q212, 2026-11-15):
+//    exactly when its path walks in one ending of this transaction and not in
+//    the other, walked over the names its own transaction sees (committed and
+//    its own rows), without this transaction's names and with them (`changed`
+//    applied: `row` replaced by `replacement`, or `added`). The entry check's
+//    PathConflict applies the same rule from the other side, so the outcome
+//    does not depend on which transaction wrote first. Only an entry whose
+//    walk without the change makes a lookup a changed row decides is walked
+//    again.
+// (Was, Q47 = 1: such an entry conflicted when a changed row decided a lookup
+// on its path and the path did not resolve before or after the change, or
+// when the change moved it: a component chosen differently, or a chosen
+// component's text or lane inputs changed (PathMoved), so a rename of a scope
+// conflicted with every entry in progress below it.)
 // (Was: also each entry this transaction sees whose stored full path, count
 // or UUID-to-name display components the change moved got a successor version
 // in the same write, from the request's cascade_versions (too few:
 // cascade_versions_exhausted), after a PendingOnPath check of its new path;
 // FindMoved, BuildCascade.)
-namespace {
-// Whether two resolved paths differ in anything a rendering or key derivation
-// reads: the component chosen, its raw text and its lane inputs.
-bool PathMoved(const catalog::CatalogNamePath& was, const catalog::CatalogNamePath& now) {
-  if (was.components.size() != now.components.size()) return true;
-  for (std::size_t i = 0; i < was.components.size(); ++i) {
-    const auto& a = was.components[i].entry;
-    const auto& b = now.components[i].entry;
-    if (a.name_entry_uuid.value != b.name_entry_uuid.value || a.raw_name_text != b.raw_name_text ||
-        a.was_quoted != b.was_quoted || a.quote_style != b.quote_style || a.requires_exact_match != b.requires_exact_match ||
-        a.identifier_profile_uuid.value != b.identifier_profile_uuid.value)
-      return true;
-  }
-  return false;
-}
-}  // namespace
-Stop CheckPathsAfterChange(const NameState& names, const catalog::CatalogNameIndex& before,
-                           const catalog::CatalogNameIndex& after, u64 order, std::span<const Uuid> skip,
-                           std::span<const catalog::CatalogNamePayload* const> changed, E unresolvable) {
+// (Was: PathMoved, whether two resolved paths differed in the component
+// chosen, its raw text or its lane inputs; retired by owner Q212.)
+Stop CheckPathsAfterChange(const NameState& names, const catalog::CatalogNameIndex& after, u64 order,
+                           std::span<const Uuid> skip, std::span<const catalog::CatalogNamePayload* const> changed,
+                           E unresolvable, const std::optional<Uuid>& row, const catalog::CatalogNamePayload* replacement,
+                           std::span<const catalog::CatalogNamePayload* const> added) {
   const auto decided = [&](const Uuid& object, const Uuid& language) -> std::optional<u64> {
     for (const auto* p : changed)
       if (names.Decides(*p, object, language)) return order;
     return std::nullopt;
   };
+  // Per other transaction: the names without this change and with it.
+  std::map<u64, std::pair<catalog::CatalogNameIndex, catalog::CatalogNameIndex>> views;
   for (const auto& s : names.Stored()) {
     if (std::find(skip.begin(), skip.end(), s.row) != skip.end() || names.Newest(s.row) != &s || s.deleted || !s.state)
       continue;
@@ -1781,17 +1823,19 @@ Stop CheckPathsAfterChange(const NameState& names, const catalog::CatalogNameInd
     const bool other = InProgress(*s.state) && s.order != order;
     if (!seen && !other) continue;
     const auto view = catalog::BorrowCatalogNameEntry(*e);
-    const auto now = catalog::ResolveCatalogNamePath(view, after);
     if (seen) {
-      if (!now.ok()) return Refuse(unresolvable);
+      if (catalog::CheckCatalogNameEntryPath(view, after) != catalog::CatalogNamePathError::none) return Refuse(unresolvable);
       continue;
     }
-    const auto was = catalog::ResolveCatalogNamePath(view, before);
-    if (!was.ok() || !now.ok()) {
-      if (names.FirstOnPath(view, before, decided) || names.FirstOnPath(view, after, decided)) return Conflict(s.order);
-      continue;
-    }
-    if (PathMoved(was, now)) return Conflict(s.order);
+    auto at = views.find(s.order);
+    if (at == views.end())
+      at = views.emplace(s.order, std::pair{names.StoredPaths(std::nullopt, nullptr, {}, s.order),
+                                            names.StoredPaths(row, replacement, added, s.order)}).first;
+    const auto& [without, with] = at->second;
+    if (!names.FirstOnPath(view, without, decided)) continue;
+    const bool walked = catalog::CheckCatalogNameEntryPath(view, without) == catalog::CatalogNamePathError::none;
+    const bool walks = catalog::CheckCatalogNameEntryPath(view, with) == catalog::CatalogNamePathError::none;
+    if (walked != walks) return Conflict(s.order);
   }
   return std::nullopt;
 }
@@ -2590,15 +2634,18 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
         own_fold = verdict.own_fold;
         if (!own_fold) return Refuse(E::invalid_name);
       }
-      // The names a path runs through before and after the change: the
-      // stored names this transaction sees, then with the request's row
-      // replaced by its new version (removed when it is a drop).
-      const auto before_paths = names->StoredPaths(std::nullopt, nullptr);
-      moved_paths = names->StoredPaths(request.row_uuid, request.metadata.record.header.deleted ? nullptr : &*request.name);
+      // The names a path runs through after the change: the stored names this
+      // transaction sees, with the request's row replaced by its new version
+      // (removed when it is a drop). Q212: CheckPathsAfterChange builds, per
+      // other transaction with an entry in progress, its own views. (Was: also
+      // before_paths, the names before the change as this transaction sees
+      // them.)
+      const auto* replacement = request.metadata.record.header.deleted ? nullptr : &*request.name;
+      moved_paths = names->StoredPaths(request.row_uuid, replacement);
       const std::array<const catalog::CatalogNamePayload*, 2> changed{base_name, &*request.name};
       const std::array<Uuid, 1> skip{request.row_uuid};
-      if (auto stop = CheckPathsAfterChange(*names, before_paths, *moved_paths, request.transaction_order, skip, changed,
-                                            E::invalid_successor))
+      if (auto stop = CheckPathsAfterChange(*names, *moved_paths, request.transaction_order, skip, changed,
+                                            E::invalid_successor, request.row_uuid, replacement, {}))
         return *stop;
     }
     {
@@ -3340,7 +3387,8 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
     // rewritten (paths are walked at read); an entry they would leave without
     // a path (an ambiguous scope: a second default in one language) is
     // invalid_name, and another transaction's entry in progress whose path
-    // they move or break is a write_conflict (CheckPathsAfterChange). These
+    // they break (or make walk) is a write_conflict (CheckPathsAfterChange;
+    // owner Q212, was: move or break). These
     // refusals concern the request as a whole: no failed_row. (Was: each
     // stored entry the request's names moved got a successor version in this
     // write, from cascade_versions.)
@@ -3348,10 +3396,10 @@ CatalogVersionWriteResult InsertPass(disk::CarefulWriteSink& sink, const Catalog
       std::vector<const catalog::CatalogNamePayload*> added;
       for (const auto& row : request.rows)
         if (row.name) added.push_back(&*row.name);
-      const auto before_paths = names.StoredPaths(std::nullopt, nullptr);
+      // (Q212: was also before_paths; see CheckPathsAfterChange.)
       const auto after_paths = names.StoredPaths(std::nullopt, nullptr, added);
-      if (auto stop = CheckPathsAfterChange(names, before_paths, after_paths, request.transaction_order, {}, added,
-                                            E::invalid_name))
+      if (auto stop = CheckPathsAfterChange(names, after_paths, request.transaction_order, {}, added, E::invalid_name,
+                                            std::nullopt, nullptr, added))
         return *stop;
     }
 

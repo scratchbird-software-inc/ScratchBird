@@ -477,10 +477,14 @@ const char* NativeCreationCapacityBoundName(scratchbird::storage::database::Nati
 //   any stage, bound total_pages_excessive -> DATABASE.CREATE_TOTAL_PAGES_EXCESSIVE
 //     (total_pages: over the device extent, or more allocation maps than the
 //     page size's image budget holds)
-//   any stage, bound row_bytes or name_tree_cell
-//                                         -> DATABASE.CREATE_ROW_EXCEEDS_PAGE_CAPACITY
-//     (one row or name-tree cell, in practice a long caller name, is larger
-//     than this page size holds: a larger page size or a shorter name)
+//   any stage, bound row_bytes            -> DATABASE.CREATE_ROW_EXCEEDS_PAGE_CAPACITY
+//     (one row is larger than this page size holds)
+//   any stage, bound name_tree_cell       -> DATABASE.CREATE_NAME_KEY_EXCEEDS_PAGE_CAPACITY
+//     (one name-tree cell, key + payload over a quarter page, in practice a
+//     long caller name: a larger page size or a shorter name; the page-size
+//     dependent identifier key limit, owner Q213/Q159, KNOWN_LIMITATIONS.md)
+//     (Owner Q214 = yes, 2026-11-15. Was: name_tree_cell also
+//     DATABASE.CREATE_ROW_EXCEEDS_PAGE_CAPACITY.)
 //   capacity_exceeded with bound relation_rows / relation_hosted_bound, and
 //   resource_exhausted with bound image_budget (the pack's content against
 //   this page size's fixed bounds), invalid_request, identity_failure,
@@ -498,8 +502,9 @@ const char* NativeCreatePlanRefusalCode(const scratchbird::storage::database::Na
   switch (plan.capacity_bound) {
     case B::total_pages: return "DATABASE.CREATE_TOTAL_PAGES_INSUFFICIENT";
     case B::total_pages_excessive: return "DATABASE.CREATE_TOTAL_PAGES_EXCESSIVE";
-    case B::row_bytes:
-    case B::name_tree_cell: return "DATABASE.CREATE_ROW_EXCEEDS_PAGE_CAPACITY";
+    case B::row_bytes: return "DATABASE.CREATE_ROW_EXCEEDS_PAGE_CAPACITY";
+    // Owner Q214 = yes (2026-11-15): its own code. (Was: the row code.)
+    case B::name_tree_cell: return "DATABASE.CREATE_NAME_KEY_EXCEEDS_PAGE_CAPACITY";
     case B::none:
     case B::relation_rows:
     case B::relation_hosted_bound:

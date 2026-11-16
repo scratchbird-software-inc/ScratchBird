@@ -41,9 +41,10 @@ namespace scratchbird::core::catalog {
 // kCatalogNamePathMaximumDepth.
 inline constexpr std::size_t kCatalogNamePathMaximumDepth = 64;
 
-// mismatch: a stored path that was not the walk's; no longer returned since
-// SB_NATIVE_NAME_ROW_V4 (kept so the values keep their numbers).
-enum class CatalogNamePathError : u8 { none, unnamed_scope, ambiguous_scope, cycle, too_deep, mismatch };
+// Retired (owner Q217 = yes, 2026-11-15): mismatch, a stored path that was
+// not the walk's, no longer returned since SB_NATIVE_NAME_ROW_V4. The values
+// were never persisted or sent; nothing follows it, so no value moves.
+enum class CatalogNamePathError : u8 { none, unnamed_scope, ambiguous_scope, cycle, too_deep };
 
 // What a caller's lookup gives for (object, language): the name a path through
 // that object uses, or none, or that it is ambiguous.

@@ -122,11 +122,10 @@ enum class CatalogVersionWriteError : std::uint8_t {
   // the request carries no further caller-issued identity for one.
   new_pages_exhausted,
   filespace_full,          // a new page was needed and the allocation map has no free slot
-  // SB_NATIVE_NAME_CASCADE (N4b): a name change moves other entries' paths
-  // and the request carries too few cascade_versions identities for them
-  // (result.cascade_needed says how many). Retired by SB_NATIVE_NAME_ROW_V4
-  // (owner Q157 = 1): never returned; kept so later values keep their numbers.
-  cascade_versions_exhausted,
+  // (Retired, owner Q217 = yes, 2026-11-15: cascade_versions_exhausted, SB_NATIVE_NAME_CASCADE
+  // N4b's "too few cascade_versions identities", never returned since
+  // SB_NATIVE_NAME_ROW_V4. The values were never persisted or sent; the later
+  // values are renumbered.)
   // SB_AUDIT_CATALOG_METADATA_CHANGE (W3b-2b): a definition (system-table) row
   // version that does not cite a catalog.metadata_change event of its own
   // transaction (in the same request, or already written by that transaction).
@@ -269,8 +268,10 @@ struct CatalogVersionRequest {
   // only; no other entry stores its path or its path's display. A change that
   // would leave a live entry this transaction sees without a path (an unnamed
   // or ambiguous scope) is invalid_successor, before any write; another
-  // transaction's entry in progress whose path the change moves, or breaks
-  // where a lookup reaches a changed name, is a write_conflict with it.
+  // transaction's entry in progress whose path walks in one ending of this
+  // transaction and not in the other is a write_conflict with it
+  // (SB_NATIVE_NAME_PATH_CONFLICT_BREAK, owner Q212, 2026-11-15; was: whose
+  // path the change moves, or breaks where a lookup reaches a changed name).
   // (Was: every live entry whose path ran through the changed name got a
   // successor version in the same write, with its regenerated
   // full_path_lookup_key, path_component_count and UUID-to-name display
@@ -286,6 +287,13 @@ struct CatalogVersionRequest {
   // transaction. Another transaction's entry in progress whose path does not
   // resolve in this view conflicts when its path's lookups reach a name this
   // request changes.
+  // SB_NATIVE_NAME_PATH_CONFLICT_BREAK (owner Q212, 2026-11-15) relaxes Q47:
+  // an entry and another transaction's name change, both in progress,
+  // conflict only when the entry's path walks in one ending of that change
+  // and not in the other (the change breaks it, or it walks only once the
+  // change commits), whichever was written first. A rename, or a default
+  // change that leaves the path walking, no longer conflicts. (Was: any
+  // lookup the path makes that the other transaction's row decides.)
   // SEARCH_KEY: SB_CATALOG_DEPENDENT_CASCADE (owner 2026-11-13, Q86, Q87 = 1).
   // The identities (UUIDv7, caller-issued) of the drop versions a definition
   // drop writes for its fully dependent rows (today: its live comments), used
@@ -429,8 +437,10 @@ CatalogVersionWriteResult WriteCatalogSuccessorVersion(disk::CarefulWriteSink& s
 // default). Nothing else is written: paths are walked at read. An entry left
 // without a path (a second default in one language makes its scope ambiguous)
 // is invalid_name; another transaction's entry in progress whose path they
-// move or break is a write_conflict. Q47's write_conflict applies to each
-// inserted entry's path. (Was: each stored entry they moved got a successor
+// break (or make walk) is a write_conflict, and so is each inserted entry
+// whose path another transaction's change in progress breaks (or makes walk):
+// SB_NATIVE_NAME_PATH_CONFLICT_BREAK, owner Q212 (was: move or break, and
+// Q47's write_conflict for any lookup a changing row decides). (Was: each stored entry they moved got a successor
 // version in the same write, from this request's cascade_versions; too few
 // was cascade_versions_exhausted with result.cascade_needed.)
 struct CatalogInsertRow {

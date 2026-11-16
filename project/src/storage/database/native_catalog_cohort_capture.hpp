@@ -6,6 +6,48 @@
 #include "native_read_source_identity.hpp"
 
 namespace scratchbird::storage::database {
+// SEARCH_KEY: SB_NATIVE_CATALOG_CAPTURE_BOUND (owner Q219 = yes, 2026-11-15).
+// Which bound a cohort read's resource_exhausted filled: one of the capture's
+// own limits (NativeCatalogCaptureLimits), or the read's own (its relation
+// slots, its verification image budget, a tree workspace it was not given).
+// NativeCatalogCohortInspection::capture_bound carries it, with failing_role
+// and failing_selector naming the relation when the bound filled while one
+// was read (0 otherwise). (Was: resource_exhausted alone; rows and text bytes
+// were not told apart.)
+enum class NativeCatalogCaptureBound : u8 {
+  none,
+  rows,                   // maximum_rows: the captured row slots
+  text_bytes,             // maximum_text_bytes: row payloads, name text, name-tree cell keys and payloads
+  name_tree_cells,        // maximum_name_tree_cells
+  physical_pages,         // maximum_physical_pages
+  physical_page_conflict, // a page captured twice with different identities (not a size bound)
+  initial_control_pages,  // maximum_initial_control_pages
+  filespaces,             // maximum_filespaces
+  transactions,           // maximum_transactions: the inventory is larger
+  relations,              // the capture's fixed relation slots
+  relation_slots,         // the inspection's fixed relation slots
+  image_bytes,            // the read's maximum verification image bytes
+  tree_workspace          // a name or comment tree on page zero, no tree workspace prepared
+};
+inline const char* NativeCatalogCaptureBoundName(NativeCatalogCaptureBound bound) noexcept {
+  using B=NativeCatalogCaptureBound;
+  switch(bound){
+    case B::none:return "none";
+    case B::rows:return "rows";
+    case B::text_bytes:return "text_bytes";
+    case B::name_tree_cells:return "name_tree_cells";
+    case B::physical_pages:return "physical_pages";
+    case B::physical_page_conflict:return "physical_page_conflict";
+    case B::initial_control_pages:return "initial_control_pages";
+    case B::filespaces:return "filespaces";
+    case B::transactions:return "transactions";
+    case B::relations:return "relations";
+    case B::relation_slots:return "relation_slots";
+    case B::image_bytes:return "image_bytes";
+    case B::tree_workspace:return "tree_workspace";
+  }
+  return "unknown";
+}
 struct NativeCatalogCaptureLimits {
   usize maximum_rows=0,maximum_text_bytes=0,maximum_filespaces=0;
   // Zero requests catalog/directory data only. A nonzero bound retains the
@@ -149,33 +191,37 @@ class NativeCatalogCapture {
   void Begin() noexcept {source_.reset();inventory_.reset();count_=used_=filespace_count_=physical_page_count_=0;
     initial_control_page_count_=0;initial_controls_complete_=false;relation_count_=0;
     name_trees_={};name_tree_cell_count_=0;comment_tree_.reset();}
-  bool AppendNameTreeCell(u16 tree,const page::NativeBtreeCellView& cell) noexcept {
-    if(name_tree_cells_.empty())return true;
-    if(name_tree_cell_count_==name_tree_cells_.size())return false;
+  // SB_NATIVE_CATALOG_CAPTURE_BOUND (Q219): each append says which bound it
+  // filled, none on success. (Was: bool.)
+  using Bound=NativeCatalogCaptureBound;
+  Bound AppendNameTreeCell(u16 tree,const page::NativeBtreeCellView& cell) noexcept {
+    if(name_tree_cells_.empty())return Bound::none;
+    if(name_tree_cell_count_==name_tree_cells_.size())return Bound::name_tree_cells;
     NativeCapturedNameTreeCell value{tree,cell.key.encoded_key,cell.payload,cell.key.row_uuid,cell.key.version_uuid,
         cell.creator_local_transaction_id,cell.superseding_local_transaction_id};
-    if(!Copy(value.key)||!Copy(value.payload))return false;
-    name_tree_cells_[name_tree_cell_count_++]=value;return true;
+    if(!Copy(value.key)||!Copy(value.payload))return Bound::text_bytes;
+    name_tree_cells_[name_tree_cell_count_++]=value;return Bound::none;
   }
-  bool AppendRelation(const NativeCapturedCatalogRelation& relation) noexcept {
-    if(relation_count_==relations_.size())return false;
-    relations_[relation_count_++]=relation;return true;
+  Bound AppendRelation(const NativeCapturedCatalogRelation& relation) noexcept {
+    if(relation_count_==relations_.size())return Bound::relations;
+    relations_[relation_count_++]=relation;return Bound::none;
   }
-  bool AppendPhysical(const disk::NativeCommonPageHeader& h,const Uuid& owner) noexcept {
-    if(physical_pages_.empty())return true;
-    return AppendPhysicalTo(physical_pages_,physical_page_count_,h,owner);
+  Bound AppendPhysical(const disk::NativeCommonPageHeader& h,const Uuid& owner) noexcept {
+    if(physical_pages_.empty())return Bound::none;
+    return AppendPhysicalTo(physical_pages_,physical_page_count_,h,owner,Bound::physical_pages);
   }
-  static bool AppendPhysicalTo(std::span<NativeCapturedCatalogPage> pages,usize& count,
-      const disk::NativeCommonPageHeader& h,const Uuid& owner) noexcept {
+  // `full`: the bound a full `pages` is (physical or initial control pages).
+  static Bound AppendPhysicalTo(std::span<NativeCapturedCatalogPage> pages,usize& count,
+      const disk::NativeCommonPageHeader& h,const Uuid& owner,Bound full) noexcept {
     for(const auto& prior:pages.first(count)){
       const auto& p=prior.header;
       if(p.filespace_uuid!=h.filespace_uuid||p.page_number!=h.page_number)continue;
       return prior.owner_uuid==owner&&p.database_uuid==h.database_uuid&&p.page_size_profile_uuid==h.page_size_profile_uuid&&
           p.page_size_bytes==h.page_size_bytes&&p.page_type==h.page_type&&p.page_uuid==h.page_uuid&&
-          p.page_generation==h.page_generation&&p.flags==h.flags;
+          p.page_generation==h.page_generation&&p.flags==h.flags?Bound::none:Bound::physical_page_conflict;
     }
-    if(count==pages.size())return false;
-    pages[count++]={h,owner};return true;
+    if(count==pages.size())return full;
+    pages[count++]={h,owner};return Bound::none;
   }
   bool Copy(std::string_view& value) noexcept {
     if(value.size()>text_.size()-used_)return false;
@@ -189,20 +235,20 @@ class NativeCatalogCapture {
     auto target=text_.subspan(used_,value.size());std::memcpy(target.data(),value.data(),value.size());
     used_+=value.size();value=target;return true;
   }
-  bool Append(u16 selector,u16 role,const NativeCatalogVisibleRow& source) noexcept {
-    if(count_==rows_.size())return false;
+  Bound Append(u16 selector,u16 role,const NativeCatalogVisibleRow& source) noexcept {
+    if(count_==rows_.size())return Bound::rows;
     NativeCapturedCatalogRow value{selector,role,source};auto& metadata=value.row.metadata;
-    if(!Copy(metadata.record.payload))return false;
+    if(!Copy(metadata.record.payload))return Bound::text_bytes;
     if(value.row.name_payload){
       if(std::holds_alternative<core::catalog::CatalogNameEntryView>(*value.row.name_payload)){
         // (A vector holds no borrowed bytes: SB_CATALOG_NO_TEXT_IDENTIFIERS.)
         auto& entry=std::get<core::catalog::CatalogNameEntryView>(*value.row.name_payload);
         // SB_NATIVE_NAME_ROW_V4: the raw text is the entry's only borrowed
         // bytes. (Was: also display, both keys and the full path.)
-        if(!Copy(entry.raw_name_text))return false;
+        if(!Copy(entry.raw_name_text))return Bound::text_bytes;
       }
     }
-    rows_[count_++]=value;return true;
+    rows_[count_++]=value;return Bound::none;
   }
   NativeStorageArena arena_;
   std::span<NativeCapturedCatalogRow> rows_;
