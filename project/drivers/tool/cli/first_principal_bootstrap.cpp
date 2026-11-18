@@ -34,7 +34,9 @@
 
 #include "bootstrap_os_authority.hpp"
 #include "bootstrap_password_verifier.hpp"
+#include "catalog_language.hpp"
 #include "database_lifecycle.hpp"
+#include "lifecycle/engine_lifecycle_api.hpp"
 #include "memory.hpp"
 #include "uuid.hpp"
 
@@ -159,6 +161,18 @@ bool readRequiredOptionValue(int& index,
     return true;
 }
 
+bool parseTotalPages(const std::string& text, std::uint64_t* out) {
+    if (text.empty() || text.size() > 19) return false;
+    std::uint64_t value = 0;
+    for (const char ch : text) {
+        if (ch < '0' || ch > '9') return false;
+        value = value * 10u + static_cast<std::uint64_t>(ch - '0');
+    }
+    if (value == 0) return false;
+    *out = value;
+    return true;
+}
+
 bool isForbiddenBootstrapOption(std::string_view token) {
     // The parser is closed, so this list exists only to attach a precise,
     // stable diagnostic to the main option families instead of silently
@@ -193,7 +207,15 @@ void PrintFirstPrincipalBootstrapUsage(const char* program, std::ostream& output
            << " bootstrap <first-principal> <database-path> --mode=embedded"
               " --platform-profile <file> --resource-seed-pack-root <dir>"
               " --policy-seed-pack-root <dir> --metric-policy-defaults <file>"
-              " --metric-policy-families <file> [--password-stdin]\n\n";
+              " --metric-policy-families <file> --total-pages <n>"
+              " --service-principal <name> [--database-name <name>]"
+              " [--language <tag>] [--password-stdin]\n\n";
+    output << "The database is created in the native single-file format: --total-pages"
+              " sizes the file, --database-name is the database's name (data; default:"
+              " the file stem), --language its catalog language (default en), and"
+              " --service-principal names the internal service principal, whose"
+              " password is read after the first principal's (second line with"
+              " --password-stdin).\n";
     output << "This is an explicit embedded, root/Administrator-authorized "
               "bootstrap operation. It does not connect to a listener, manager, "
               "or parser and it never auto-creates a database during an ordinary "
@@ -221,6 +243,10 @@ FirstPrincipalBootstrapParseResult ParseCreationArgs(
     bool metric_families_seen = false;
     bool password_stdin_seen = false;
     bool option_seen = false;
+    bool database_name_seen = false;
+    bool language_seen = false;
+    bool total_pages_seen = false;
+    bool service_principal_seen = false;
 
     for (int index = 0; index < argc; ++index) {
         if (argv[index] == nullptr) {
@@ -295,6 +321,49 @@ FirstPrincipalBootstrapParseResult ParseCreationArgs(
             option_seen = true;
             continue;
         }
+        // SB_CLI_NATIVE_BOOTSTRAP (owner Q254 = 1, 2026-11-16): the native
+        // create's inputs. Each at most once; values never start with '-'.
+        if (isExactOption(token, "--database-name")) {
+            if (database_name_seen ||
+                !readRequiredOptionValue(index, argc, argv, token, "--database-name",
+                                         &result.request.database_name)) {
+                return parseFailure(kBootstrapInputInvalid);
+            }
+            database_name_seen = true;
+            option_seen = true;
+            continue;
+        }
+        if (isExactOption(token, "--language")) {
+            if (language_seen ||
+                !readRequiredOptionValue(index, argc, argv, token, "--language",
+                                         &result.request.language_tag)) {
+                return parseFailure(kBootstrapInputInvalid);
+            }
+            language_seen = true;
+            option_seen = true;
+            continue;
+        }
+        if (isExactOption(token, "--total-pages")) {
+            std::string pages;
+            if (total_pages_seen ||
+                !readRequiredOptionValue(index, argc, argv, token, "--total-pages", &pages) ||
+                !parseTotalPages(pages, &result.request.total_pages)) {
+                return parseFailure(kBootstrapInputInvalid);
+            }
+            total_pages_seen = true;
+            option_seen = true;
+            continue;
+        }
+        if (isExactOption(token, "--service-principal")) {
+            if (service_principal_seen ||
+                !readRequiredOptionValue(index, argc, argv, token, "--service-principal",
+                                         &result.request.service_principal_name)) {
+                return parseFailure(kBootstrapInputInvalid);
+            }
+            service_principal_seen = true;
+            option_seen = true;
+            continue;
+        }
         if (isExactOption(token, "--policy-seed-pack-root")) {
             if (policy_seed_pack_seen ||
                 !readRequiredOptionValue(index, argc, argv, token,
@@ -332,6 +401,13 @@ FirstPrincipalBootstrapParseResult ParseCreationArgs(
     }
     if ((service_profile_required && !platform_profile_seen) || !resource_seed_pack_seen ||
         !policy_seed_pack_seen || positional_arguments.size() != 2) {
+        return parseFailure(kBootstrapInputInvalid);
+    }
+    // SB_CLI_NATIVE_BOOTSTRAP: the native create has no default for the file's
+    // size (owner Q105 = 1) and requires a service principal.
+    if (!total_pages_seen || !service_principal_seen ||
+        !validBootstrapPrincipalName(result.request.service_principal_name) ||
+        result.request.language_tag.empty()) {
         return parseFailure(kBootstrapInputInvalid);
     }
 
@@ -430,58 +506,85 @@ FirstPrincipalBootstrapResult RunFirstPrincipalBootstrap(
     }
     clearSensitive(password);
 
-    namespace db = scratchbird::storage::database;
+    // SEARCH_KEY: SB_CLI_NATIVE_BOOTSTRAP (owner Q254 = 1, 2026-11-16). The
+    // internal service principal's password, by the same protected path (never
+    // argv or the environment): the second stdin line, or a second prompt.
+    std::string service_password;
+    if (request.password_source == FirstPrincipalBootstrapPasswordSource::kProtectedStdin) {
+        if (!std::getline(input, service_password)) {
+            clearSensitive(credential_fingerprint);
+            return bootstrapFailure(kBootstrapInputInvalid);
+        }
+    } else {
+        service_password = readProtectedPassword(
+            input, output, "Enter password for service principal " + request.service_principal_name + ": ");
+        std::string confirmation = readProtectedPassword(input, output, "Confirm service password: ");
+        const bool matches = service_password == confirmation;
+        clearSensitive(confirmation);
+        if (!matches) {
+            clearSensitive(service_password);
+            clearSensitive(credential_fingerprint);
+            return bootstrapFailure("BOOTSTRAP.SERVICE_PASSWORD_POLICY_INVALID");
+        }
+    }
+    std::string service_fingerprint;
+    if (!BootstrapPasswordSecretValid(service_password) ||
+        !DeriveBootstrapPasswordVerifier(service_password, &service_fingerprint)) {
+        clearSensitive(service_password);
+        clearSensitive(credential_fingerprint);
+        return bootstrapFailure("BOOTSTRAP.SERVICE_PASSWORD_POLICY_INVALID");
+    }
+    clearSensitive(service_password);
+
+    namespace api = scratchbird::engine::internal_api;
     namespace memory = scratchbird::core::memory;
     namespace uuid = scratchbird::core::uuid;
-    using scratchbird::core::platform::UuidKind;
     const auto configured_memory = memory::ConfigureDefaultMemoryManager(
         memory::DefaultLocalEngineMemoryPolicy(), "sbcli.first_principal_bootstrap");
     if (!configured_memory.ok()) {
         clearSensitive(credential_fingerprint);
+        clearSensitive(service_fingerprint);
         return bootstrapFailure(kBootstrapInputInvalid);
     }
-    const auto now = static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            std::chrono::system_clock::now().time_since_epoch())
-            .count());
-    const auto database_uuid = uuid::GenerateEngineIdentityV7(UuidKind::database, now);
-    const auto filespace_uuid = uuid::GenerateEngineIdentityV7(UuidKind::filespace, now + 1);
-    if (!database_uuid.ok() || !filespace_uuid.ok()) {
+    // The language tag is adapted to its catalog_language constant here, at
+    // the command-line boundary; the engine sees only the constant.
+    const auto language = scratchbird::core::catalog::CatalogLanguageForTag(request.language_tag);
+    if (!language) {
         clearSensitive(credential_fingerprint);
-        return bootstrapFailure(kBootstrapInputInvalid);
+        clearSensitive(service_fingerprint);
+        return bootstrapFailure("BOOTSTRAP.LANGUAGE_UNKNOWN");
     }
 
-    db::DatabaseCreateConfig create_request;
-    create_request.path = request.database_path;
-    create_request.database_uuid = database_uuid.value;
-    create_request.filespace_uuid = filespace_uuid.value;
-    create_request.page_size = 16u * 1024u;
-    create_request.creation_unix_epoch_millis = now;
-    create_request.resource_seed_pack_root = request.resource_seed_pack_root;
-    create_request.require_resource_seed_pack = true;
-    create_request.policy_seed_pack_root = request.policy_seed_pack_root;
-    create_request.metric_policy_defaults_path = request.metric_policy_defaults_path;
-    create_request.metric_policy_families_path = request.metric_policy_families_path;
-    create_request.require_policy_seed_pack = true;
-    create_request.bootstrap_principal_name = request.principal_name;
-    create_request.bootstrap_credential_fingerprint = credential_fingerprint;
-    create_request.require_bootstrap_principal = true;
-    create_request.allow_uncredentialed_bootstrap = false;
-    create_request.allow_overwrite = false;
-    const auto create_result = db::CreateDatabaseFile(create_request);
-    clearSensitive(create_request.bootstrap_credential_fingerprint);
+    // The native create through the engine API. This command stands in for the
+    // hosting server: the policy pack root it was given is the server's
+    // configuration (owner Q104 = 2), and its own invocation is the security
+    // context (Q95). The engine mints every identity. --resource-seed-pack-root
+    // and the metric policy files have no native counterpart and are not
+    // passed. (Was: CreateDatabaseFile, legacy SBDBV001, with those inputs.)
+    api::EngineCreateLifecycleRequest create_request;
+    create_request.context.request_id = "sbcli.first_principal_bootstrap";
+    create_request.context.database_path = request.database_path;
+    create_request.context.security_context_present = true;
+    create_request.context.server_policy_seed_pack_root = request.policy_seed_pack_root;
+    create_request.database_format = api::EngineDatabaseFormat::native;
+    create_request.database_name = request.database_name.empty()
+        ? std::filesystem::path(request.database_path).stem().string()
+        : request.database_name;
+    create_request.database_language = *language;
+    create_request.option_envelopes.push_back("page_size:16384");
+    create_request.option_envelopes.push_back("total_pages:" + std::to_string(request.total_pages));
+    create_request.option_envelopes.push_back("bootstrap_principal_name:" + request.principal_name);
+    create_request.option_envelopes.push_back("bootstrap_credential_fingerprint:" + credential_fingerprint);
+    create_request.option_envelopes.push_back("internal_service_principal_name:" + request.service_principal_name);
+    create_request.option_envelopes.push_back("internal_service_credential_fingerprint:" + service_fingerprint);
+    const auto created = api::EngineCreateLifecycle(create_request);
+    for (auto& option : create_request.option_envelopes) clearSensitive(option);
     clearSensitive(credential_fingerprint);
-    if (!create_result.ok()) {
-        return bootstrapFailure(
-            create_result.diagnostic.diagnostic_code.empty()
-                ? kBootstrapInputInvalid
-                : create_result.diagnostic.diagnostic_code);
-    }
-    if (!create_result.creation_ready_for_handoff()) {
-        auto result = bootstrapFailure("BOOTSTRAP.CREATE_VERIFICATION_REQUIRED");
-        result.committed_with_warning =
-            create_result.create_finality == db::DatabaseCreateFinalityClass::committed_with_warning;
-        return result;
+    clearSensitive(service_fingerprint);
+    if (!created.ok) {
+        return bootstrapFailure(created.diagnostics.empty() || created.diagnostics.front().code.empty()
+                                    ? std::string(kBootstrapInputInvalid)
+                                    : created.diagnostics.front().code);
     }
 
     if (service_handoff) {
@@ -494,25 +597,37 @@ FirstPrincipalBootstrapResult RunFirstPrincipalBootstrap(
         }
     }
 
-    // Use the constructor's verification through its original exclusive
-    // device. A second pathname open cannot certify the creator's file.
-    const std::string principal_uuid =
-        uuid::UuidToString(create_result.bootstrap_principal_uuid.value);
-    const std::string sysarch_role_uuid =
-        uuid::UuidToString(create_result.bootstrap_sysarch_role_uuid.value);
-    if (sysarch_role_uuid != db::kCanonicalSysarchRoleObjectUuid ||
-        create_result.bootstrap_principal_uuid.value.is_nil()) {
-        return bootstrapFailure("BOOTSTRAP.SECURITY_DATABASE_UNAVAILABLE");
-    }
-
+    // The receipt's identities (binary on the wire; rendered here, at the
+    // command-line boundary). What the native receipt does NOT carry, and this
+    // command no longer reports or checks: the sysarch role UUID, a policy
+    // generation, a "verified_and_closed" handoff state. The native create
+    // writes, verifies by read-back and closes inside the engine; a complete
+    // receipt is the handoff.
+    const auto receipt_uuid = [&](std::string_view key, std::string* out) {
+        for (const auto& row : created.result_shape.rows) {
+            for (const auto& field : row.fields) {
+                if (field.first != key) continue;
+                if (field.second.isSqlNull() || field.second.binary_value.size() != 16) return false;
+                scratchbird::core::platform::Uuid id;
+                std::copy(field.second.binary_value.begin(), field.second.binary_value.end(), id.bytes.begin());
+                if (!uuid::IsEngineIdentityUuid(id)) return false;
+                *out = uuid::UuidToString(id);
+                return true;
+            }
+        }
+        return false;
+    };
     FirstPrincipalBootstrapResult result;
+    if (!receipt_uuid("database_uuid", &result.database_uuid) ||
+        !receipt_uuid("filespace_uuid", &result.filespace_uuid) ||
+        !receipt_uuid("bootstrap_principal_uuid", &result.principal_uuid) ||
+        !receipt_uuid("service_principal_uuid", &result.service_principal_uuid) ||
+        !receipt_uuid("construction_transaction_uuid", &result.construction_transaction_uuid)) {
+        return bootstrapFailure("BOOTSTRAP.CREATE_RECEIPT_INCOMPLETE");
+    }
     result.ok = true;
-    result.principal_uuid = principal_uuid;
-    result.policy_generation = create_result.bootstrap_policy_generation;
     result.creation_handoff_ready = true;
-    result.database_uuid = uuid::UuidToString(create_result.state.database_uuid.value);
-    result.committed_with_warning =
-        create_result.create_finality == db::DatabaseCreateFinalityClass::committed_with_warning;
+    result.committed_with_warning = false;
     return result;
 }
 
@@ -546,13 +661,17 @@ int RunFirstPrincipalBootstrapCli(
         return 1;
     }
 
-    output << "First security principal created and committed by transaction-1 "
-              "catalog authority\n";
+    output << "First security principal created and committed by the native "
+              "construction transaction\n";
+    output << "database_uuid=" << result.database_uuid << "\n";
+    output << "filespace_uuid=" << result.filespace_uuid << "\n";
     output << "bootstrap_principal_uuid=" << result.principal_uuid << "\n";
+    output << "service_principal_uuid=" << result.service_principal_uuid << "\n";
+    output << "construction_transaction_uuid=" << result.construction_transaction_uuid << "\n";
     output << "bootstrap_scope=initial_local_embedded_database_security_tree\n";
-    output << "policy_generation=" << result.policy_generation << "\n";
-    output << "database_state=created\n"
-              "creation_handoff=verified_and_closed\n"
+    output << "database_format=native\n"
+              "database_state=created\n"
+              "creation_handoff=constructed_and_closed\n"
               "server_ready=false\n";
     if (result.committed_with_warning) {
         output << "Create finality: committed_with_warning\n";

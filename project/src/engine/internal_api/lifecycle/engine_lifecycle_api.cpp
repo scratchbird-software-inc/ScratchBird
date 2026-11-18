@@ -13,6 +13,7 @@
 #include "database_lifecycle.hpp"
 #include "native_catalog_relation_lease_reader.hpp"
 #include "native_database_create.hpp"
+#include "native_database_open_discovery.hpp"
 #include "native_policy_families.hpp"
 #include "catalog_identifier_lookup_key.hpp"
 #include "admitted_datatype_cohort.hpp"
@@ -938,11 +939,46 @@ EngineCreateLifecycleResult NativeCreateLifecycle(const EngineCreateLifecycleReq
 
 }  // namespace
 
+// SEARCH_KEY: SB_LEGACY_CUT_LIFECYCLE_DISCOVERY (owner 2026-11-16; Q253, Q258 = 1).
+// Every lifecycle operation on an existing database first discovers it the
+// native way (SB_NATIVE_DATABASE_OPEN_DISCOVERY): native data-file ownership,
+// the first block, then page zero; no lock file, no side file, no write. A file
+// that is not a valid native database refuses with the discovery's own code
+// (DATABASE.OPEN_NOT_A_VALID_DATABASE, detail = the bootstrap/page-zero error),
+// so a legacy file is refused untouched. A valid native file refuses with the
+// operation's native-pending code: open and attach with
+// DATABASE.OPEN_NATIVE_RUNTIME_PENDING (native serving is S3b-S3f), every other
+// operation with DATABASE.LIFECYCLE_OPERATION_UNAVAILABLE (Q258 = 1) until its
+// native version exists. A supplied key (option decryption_available:true or
+// decryption_key:) refuses DATABASE.OPEN_DECRYPTION_UNAVAILABLE before the open
+// (Q253: encryption is not implemented). The legacy bodies below the gate stay
+// in place, unreachable from these entry points, until they are deleted family
+// by family.
+namespace {
+template <typename TResult>
+TResult NativeLifecycleRefusal(const EngineApiRequest& request,
+                               const std::string& operation_id,
+                               std::string_view native_code,
+                               const char* native_detail) {
+  namespace db = scratchbird::storage::database;
+  const bool key_supplied = OptionBool(request, "decryption_available:", false) ||
+                            HasOptionToken(request, "decryption_key:");
+  const auto discovered = db::DiscoverNativeDatabaseAtPath(request.context.database_path, key_supplied);
+  if (!discovered.ok()) {
+    return LifecycleFailure<TResult>(request.context, operation_id, discovered.code, discovered.detail);
+  }
+  return LifecycleFailure<TResult>(request.context, operation_id, std::string(native_code), native_detail);
+}
+constexpr std::string_view kNativePending = scratchbird::storage::database::kOpenNativeRuntimePendingCode;
+constexpr std::string_view kUnavailable = scratchbird::storage::database::kLifecycleOperationUnavailableCode;
+}  // namespace
+
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_LIFECYCLE_API_BEHAVIOR
 EngineOpenLifecycleResult EngineOpenLifecycle(const EngineOpenLifecycleRequest& request) {
   constexpr const char* operation = "lifecycle.open_database";
   auto authority = ValidateLifecycleAuthority<EngineOpenLifecycleResult>(request, operation, false);
   if (!authority.ok) { return authority; }
+  return NativeLifecycleRefusal<EngineOpenLifecycleResult>(request, operation, kNativePending, "native_open_runtime_pending");
   return OpenAndReport<EngineOpenLifecycleResult>(request, operation, RequestedMode(request, "opened"), false);
 }
 
@@ -953,19 +989,26 @@ EngineCreateLifecycleResult EngineCreateLifecycle(const EngineCreateLifecycleReq
   if (!authority.ok) return authority;
   const bool native =
       request.database_format == EngineDatabaseFormat::native;
+  // SEARCH_KEY: SB_LEGACY_CUT_CREATE_REFUSED (owner 2026-11-16: "The moment you
+  // can create a valid database, the legacy support is dropped."). Only the
+  // native single-file create remains; every other format refuses here, before
+  // any identity is minted or any file is touched. The legacy create code below
+  // is kept unreachable from this entry point and is deleted family by family
+  // as native replacements land (not in the cut step).
+  if (!native) {
+    return LifecycleFailure<EngineCreateLifecycleResult>(
+        request.context, operation,
+        std::string(scratchbird::storage::database::kCreateLegacyFormatRefusedCode),
+        "legacy_database_format_refused");
+  }
   // SEARCH_KEY: SB_DRIFT_CREATE_DATABASE_MANAGEMENT_TRANSACTION (owner Q95 = 1,
   // 2026-11-13; plan 31 step S2). Requiring a management transaction before
   // the database exists is drift: there is no transaction inventory to own
   // one. A CREATE DATABASE is authorised by the caller's server session (the
   // security context checked above); the engine's own construction
-  // transaction is the MGA evidence. The native format does not require it;
-  // the legacy create keeps it unchanged until workstream C (Q93).
-  if (!native && (request.context.transaction_uuid.is_nil() ||
-                  request.context.local_transaction_id == 0)) {
-    return LifecycleFailure<EngineCreateLifecycleResult>(
-        request.context, operation, "MGA.TRANSACTION.INVALID",
-        "authenticated_management_transaction_required");
-  }
+  // transaction is the MGA evidence. The native format does not require it.
+  // (Was: the legacy create kept a management-transaction requirement here;
+  // the legacy create is refused above since the cut, 2026-11-16.)
   if (request.context.cluster_transaction_active ||
       request.context.route_fence_present) {
     return LifecycleFailure<EngineCreateLifecycleResult>(
@@ -1079,6 +1122,7 @@ EngineAttachLifecycleResult EngineAttachLifecycle(const EngineAttachLifecycleReq
   constexpr const char* operation = "lifecycle.attach_database";
   auto authority = ValidateLifecycleAuthority<EngineAttachLifecycleResult>(request, operation, true);
   if (!authority.ok) { return authority; }
+  return NativeLifecycleRefusal<EngineAttachLifecycleResult>(request, operation, kNativePending, "native_attach_runtime_pending");
   return OpenAndReport<EngineAttachLifecycleResult>(request, operation, "attached", false);
 }
 
@@ -1086,6 +1130,7 @@ EngineDetachLifecycleResult EngineDetachLifecycle(const EngineDetachLifecycleReq
   constexpr const char* operation = "lifecycle.detach_database";
   auto authority = ValidateLifecycleAuthority<EngineDetachLifecycleResult>(request, operation, true);
   if (!authority.ok) { return authority; }
+  return NativeLifecycleRefusal<EngineDetachLifecycleResult>(request, operation, kUnavailable, "native_detach_unavailable");
   auto result = PersistedRecordResult<EngineDetachLifecycleResult>(request, operation, "engine_lifecycle", false, "detached");
   if (result.ok) {
     AddApiBehaviorEvidence(&result, "engine_lifecycle", "detached");
@@ -1098,6 +1143,7 @@ EngineShutdownLifecycleResult EngineShutdownLifecycle(const EngineShutdownLifecy
   constexpr const char* operation = "lifecycle.shutdown_database";
   auto authority = ValidateLifecycleAuthority<EngineShutdownLifecycleResult>(request, operation, true);
   if (!authority.ok) { return authority; }
+  return NativeLifecycleRefusal<EngineShutdownLifecycleResult>(request, operation, kUnavailable, "native_shutdown_mark_unavailable");
   const auto clean = scratchbird::storage::database::MarkDatabaseCleanShutdown(
       request.context.database_path, request.context.database_uuid);
   if (!clean.ok()) {
@@ -1119,6 +1165,7 @@ EngineEnterMaintenanceLifecycleResult EngineEnterMaintenanceLifecycle(const Engi
   constexpr const char* operation = "lifecycle.enter_maintenance";
   auto authority = ValidateLifecycleAuthority<EngineEnterMaintenanceLifecycleResult>(request, operation, true);
   if (!authority.ok) { return authority; }
+  return NativeLifecycleRefusal<EngineEnterMaintenanceLifecycleResult>(request, operation, kUnavailable, "native_maintenance_unavailable");
   const auto entered =
       scratchbird::storage::database::EnterDatabaseMaintenanceMode(LifecycleOperationConfig(request, true));
   if (!entered.ok()) {
@@ -1133,6 +1180,7 @@ EngineExitMaintenanceLifecycleResult EngineExitMaintenanceLifecycle(const Engine
   constexpr const char* operation = "lifecycle.exit_maintenance";
   auto authority = ValidateLifecycleAuthority<EngineExitMaintenanceLifecycleResult>(request, operation, true);
   if (!authority.ok) { return authority; }
+  return NativeLifecycleRefusal<EngineExitMaintenanceLifecycleResult>(request, operation, kUnavailable, "native_maintenance_unavailable");
   const auto exited =
       scratchbird::storage::database::ExitDatabaseMaintenanceMode(LifecycleOperationConfig(request, true));
   if (!exited.ok()) {
@@ -1152,6 +1200,7 @@ EngineEnterRestrictedOpenLifecycleResult EngineEnterRestrictedOpenLifecycle(cons
   constexpr const char* operation = "lifecycle.enter_restricted_open";
   auto authority = ValidateLifecycleAuthority<EngineEnterRestrictedOpenLifecycleResult>(request, operation, true);
   if (!authority.ok) { return authority; }
+  return NativeLifecycleRefusal<EngineEnterRestrictedOpenLifecycleResult>(request, operation, kUnavailable, "native_restricted_open_unavailable");
   const auto entered =
       scratchbird::storage::database::EnterDatabaseRestrictedOpenMode(LifecycleOperationConfig(request, true));
   if (!entered.ok()) {
@@ -1171,6 +1220,7 @@ EngineExitRestrictedOpenLifecycleResult EngineExitRestrictedOpenLifecycle(const 
   constexpr const char* operation = "lifecycle.exit_restricted_open";
   auto authority = ValidateLifecycleAuthority<EngineExitRestrictedOpenLifecycleResult>(request, operation, true);
   if (!authority.ok) { return authority; }
+  return NativeLifecycleRefusal<EngineExitRestrictedOpenLifecycleResult>(request, operation, kUnavailable, "native_restricted_open_unavailable");
   const auto exited =
       scratchbird::storage::database::ExitDatabaseRestrictedOpenMode(LifecycleOperationConfig(request, true));
   if (!exited.ok()) {
@@ -1190,6 +1240,7 @@ EngineInspectLifecycleResult EngineInspectLifecycle(const EngineInspectLifecycle
   constexpr const char* operation = "lifecycle.inspect_database";
   auto authority = ValidateLifecycleAuthority<EngineInspectLifecycleResult>(request, operation, false);
   if (!authority.ok) { return authority; }
+  return NativeLifecycleRefusal<EngineInspectLifecycleResult>(request, operation, kUnavailable, "native_inspect_unavailable");
   return OpenReadOnlyInspection<EngineInspectLifecycleResult>(request, operation, "inspected");
 }
 
@@ -1197,6 +1248,7 @@ EngineVerifyLifecycleResult EngineVerifyLifecycle(const EngineVerifyLifecycleReq
   constexpr const char* operation = "lifecycle.verify_database";
   auto authority = ValidateLifecycleAuthority<EngineVerifyLifecycleResult>(request, operation, true);
   if (!authority.ok) { return authority; }
+  return NativeLifecycleRefusal<EngineVerifyLifecycleResult>(request, operation, kUnavailable, "native_verify_unavailable");
   return OpenReadOnlyInspection<EngineVerifyLifecycleResult>(request, operation, "verified");
 }
 
@@ -1204,6 +1256,7 @@ EngineRepairLifecycleResult EngineRepairLifecycle(const EngineRepairLifecycleReq
   constexpr const char* operation = "lifecycle.repair_database";
   auto authority = ValidateLifecycleAuthority<EngineRepairLifecycleResult>(request, operation, true);
   if (!authority.ok) { return authority; }
+  return NativeLifecycleRefusal<EngineRepairLifecycleResult>(request, operation, kUnavailable, "native_repair_unavailable");
   const auto repaired =
       scratchbird::storage::database::RepairDatabaseLifecycle(LifecycleRepairConfig(request));
   if (!repaired.ok()) {
@@ -1228,6 +1281,7 @@ EngineForceShutdownLifecycleResult EngineForceShutdownLifecycle(const EngineForc
   constexpr const char* operation = "lifecycle.shutdown_force";
   auto authority = ValidateLifecycleAuthority<EngineForceShutdownLifecycleResult>(request, operation, true);
   if (!authority.ok) { return authority; }
+  return NativeLifecycleRefusal<EngineForceShutdownLifecycleResult>(request, operation, kUnavailable, "native_force_shutdown_unavailable");
   std::string force_policy_uuid = OptionValue(request, "force_termination_policy_uuid:");
   if (force_policy_uuid.empty()) { force_policy_uuid = OptionValue(request, "force_policy_uuid:"); }
   if (force_policy_uuid.empty()) {
@@ -1276,6 +1330,7 @@ EngineAcknowledgeShutdownLifecycleResult EngineAcknowledgeShutdownLifecycle(
   constexpr const char* operation = "lifecycle.shutdown_acknowledge";
   auto authority = ValidateLifecycleAuthority<EngineAcknowledgeShutdownLifecycleResult>(request, operation, true);
   if (!authority.ok) { return authority; }
+  return NativeLifecycleRefusal<EngineAcknowledgeShutdownLifecycleResult>(request, operation, kUnavailable, "native_shutdown_acknowledge_unavailable");
   const std::string acknowledger_kind = OptionValue(request, "acknowledger_kind:");
   EngineUuid acknowledger_uuid, process_uuid, route_uuid;
   bool has_acknowledger = false, has_process = false, has_route = false;
@@ -1336,6 +1391,7 @@ EngineDropLifecycleResult EngineDropLifecycle(const EngineDropLifecycleRequest& 
   constexpr const char* operation = "lifecycle.drop_database";
   auto authority = ValidateLifecycleAuthority<EngineDropLifecycleResult>(request, operation, true);
   if (!authority.ok) { return authority; }
+  return NativeLifecycleRefusal<EngineDropLifecycleResult>(request, operation, kUnavailable, "native_drop_unavailable");
   if (!DropSafetyPreconditionsPresent(request)) {
     return LifecycleFailure<EngineDropLifecycleResult>(
         request.context,

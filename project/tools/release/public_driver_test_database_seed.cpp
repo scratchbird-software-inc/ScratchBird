@@ -10,6 +10,7 @@
 #include "catalog/schema_tree_api.hpp"
 #include "catalog/datatype_bootstrap_identity.hpp"
 #include "database_lifecycle.hpp"
+#include "../../tests/support/native_database_create_fixture.hpp"
 #include "datatype_catalog_manifest.hpp"
 #include "datatype_type_codec_identity_v3.hpp"
 #include "datatype_operations.hpp"
@@ -75,6 +76,8 @@ constexpr std::string_view kSecurityAlterPolicySourceExpressionUuid =
 
 struct CreatedDatabaseFixture {
   api::EngineUuid database_uuid;
+  // The native receipt's bootstrap principal (SB_NATIVE_CREATE_TEST_FIXTURE).
+  api::EngineUuid bootstrap_principal_uuid;
   db::DatabaseLifecycleState state;
 };
 
@@ -275,16 +278,8 @@ std::array<std::uint8_t, 32> EvidenceSha256(std::string_view value) {
   return digest.digest;
 }
 
-scratchbird::core::platform::TypedUuid MakeIdentity(UuidKind kind,
-                                                    scratchbird::core::platform::u64 millis) {
-  const auto generated = uuid::GenerateEngineIdentityV7(kind, millis);
-  if (!generated.ok()) {
-    std::cerr << generated.diagnostic.diagnostic_code << ':'
-              << generated.diagnostic.message_key << '\n';
-    std::exit(EXIT_FAILURE);
-  }
-  return generated.value;
-}
+// (MakeIdentity removed 2026-11-16: the native create mints every identity;
+// SB_NATIVE_CREATE_TEST_FIXTURE.)
 
 std::string JsonString(std::string_view value) {
   std::string out;
@@ -493,10 +488,11 @@ api::EngineRequestContext BaseContext(const Args& args, const CreatedDatabaseFix
   context.database_path = args.output.string();
   context.database_uuid = fixture.database_uuid;
   context.default_root_uuid = fixture.state.filespace_uuid.value;
-  const auto bootstrap = db::ReadDatabaseBootstrapSecurityCatalog(args.output.string());
-  if (!bootstrap.ok() || !bootstrap.state.present || !bootstrap.state.committed_by_inventory)
-    Fail("driver fixture durable bootstrap principal unavailable");
-  context.principal_uuid = bootstrap.state.principal_uuid.value;
+  // SB_NATIVE_CREATE_TEST_FIXTURE: the principal is the native receipt's, not a
+  // legacy security-catalog read. (RefreshFixtureAuthorization below still
+  // reads the legacy catalog and fails on a native file until a native reader
+  // exists; expected, owner 2026-11-16.)
+  context.principal_uuid = fixture.bootstrap_principal_uuid;
   context.session_uuid = ClientFixtureUuid("019f0a11-ce00-7000-8000-0000000000ff");
   context.catalog_generation_id = 1;
   context.security_epoch = 1;
@@ -574,48 +570,37 @@ CreatedDatabaseFixture CreateDatabase(const Args& args) {
   }
   std::filesystem::create_directories(args.output.parent_path());
 
-  const auto database_uuid = MakeIdentity(UuidKind::database, kDriverFixtureCreationMillis);
-  const auto filespace_uuid = MakeIdentity(UuidKind::filespace, kDriverFixtureCreationMillis + 1);
-
-  db::DatabaseCreateConfig create;
-  create.path = args.output.string();
-  create.database_uuid = database_uuid;
-  create.filespace_uuid = filespace_uuid;
-  create.page_size = args.page_size;
-  create.creation_unix_epoch_millis = kDriverFixtureCreationMillis;
-  create.resource_seed_pack_root = args.resource_seed_pack_root.string();
-  create.require_resource_seed_pack = true;
-  create.allow_minimal_resource_bootstrap = false;
-  create.bootstrap_principal_name = "alice";
-  create.bootstrap_credential_fingerprint =
-      std::string(kAliceBootstrapCredentialFingerprint);
-  create.require_bootstrap_principal = true;
-  create.allow_uncredentialed_bootstrap = false;
-  create.allow_overwrite = false;
-  const auto created = db::CreateDatabaseFile(create);
-  if (!created.ok()) {
-    std::cerr << created.diagnostic.diagnostic_code << ':'
-              << created.diagnostic.message_key;
-    for (const auto& argument : created.diagnostic.arguments) {
-      std::cerr << ':' << argument.key << '=';
-      if (const auto* text = argument.text()) std::cerr << *text;
-      else if (const auto* uuid = argument.uuid())
-        std::cerr << scratchbird::core::uuid::UuidToString(*uuid);
-    }
-    std::cerr << '\n';
+  // SEARCH_KEY: SB_NATIVE_CREATE_TEST_FIXTURE (owner Q256 = 1, 2026-11-16 legacy
+  // cut). The driver test database is the NATIVE single-file database, made
+  // through the production native create: the engine mints the identities, the
+  // bootstrap principal "alice" keeps her verifier, and a service principal is
+  // provisioned (native create requires one). The resource seed pack has no
+  // native counterpart (argument kept for the callers, not consumed) and no
+  // legacy open follows the create. The fixture's `state` carries only what
+  // the native receipt gives (database and filespace identity); the bootstrap
+  // principal is taken from the receipt by BaseContext.
+  // (Was: CreateDatabaseFile legacy + OpenDatabaseFile with the resource seed
+  // activation check.)
+  scratchbird::tests::NativeFixtureCreateRequest request;
+  request.path = args.output;
+  request.database_name = "driver_test_database";
+  request.page_size = args.page_size;
+  request.bootstrap_principal_name = "alice";
+  request.bootstrap_credential_fingerprint = std::string(kAliceBootstrapCredentialFingerprint);
+  request.service_principal_name = "driver_test_service";
+  const auto created = scratchbird::tests::CreateNativeFixtureDatabase(request);
+  if (!created.ok) {
+    std::cerr << created.diagnostic_code << ':' << created.diagnostic_detail << '\n';
     Fail("driver test database create failed");
   }
-
-  db::DatabaseOpenConfig open;
-  open.path = args.output.string();
-  open.suppress_background_agents = true;
-  const auto opened = db::OpenDatabaseFile(open);
-  if (!opened.ok() || !opened.state.resource_seed_catalog_present) {
-    Fail("driver test database full resource seed activation failed");
-  }
   CreatedDatabaseFixture fixture;
-  fixture.database_uuid = database_uuid.value;
-  fixture.state = created.state;
+  fixture.database_uuid = created.database_uuid;
+  fixture.bootstrap_principal_uuid = created.bootstrap_principal_uuid;
+  fixture.state.path = args.output.string();
+  fixture.state.database_uuid = {UuidKind::database, created.database_uuid};
+  fixture.state.filespace_uuid = {UuidKind::filespace, created.filespace_uuid};
+  fixture.state.header.database_uuid = created.database_uuid;
+  fixture.state.header.page_size = args.page_size;
   return fixture;
 }
 

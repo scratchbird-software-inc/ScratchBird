@@ -4146,6 +4146,43 @@ add_test(NAME sbsql_sblr_alignment_native_data_file_ownership
 set_tests_properties(sbsql_sblr_alignment_native_data_file_ownership PROPERTIES
   LABELS "sbsql_sblr_alignment;native_storage;database_ownership;native_data_file_ownership"
   TIMEOUT 600)
+
+# SEARCH_KEY: SB_LEGACY_CUT_TEST (owner 2026-11-16; plan 38 S3a). Every create
+# and open entry point refuses legacy with its specific code and creates no
+# file; a native file is discovered (first block, page zero) and refused with
+# the temporary native-pending code; ServedRouteOwnerFor resolves a native
+# owner by lease identity. The Python half runs the same binary's single-step
+# modes under strace: 0 ".sb." syscalls, 0 lock files, directory unchanged.
+add_executable(sbsql_sblr_alignment_native_legacy_cut native_legacy_cut_test.cpp)
+target_compile_features(sbsql_sblr_alignment_native_legacy_cut PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_legacy_cut PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+  ${PROJECT_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(sbsql_sblr_alignment_native_legacy_cut PRIVATE
+  sb_server_core sb_engine sb_engine_sblr sb_engine_internal_api sb_storage_database OpenSSL::Crypto)
+target_compile_definitions(sbsql_sblr_alignment_native_legacy_cut PRIVATE
+  SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password")
+add_test(NAME sbsql_sblr_alignment_native_legacy_cut COMMAND sbsql_sblr_alignment_native_legacy_cut)
+set_tests_properties(sbsql_sblr_alignment_native_legacy_cut PROPERTIES
+  LABELS "sbsql_sblr_alignment;native_storage;legacy_cut;database_lifecycle;database_ownership;binary_uuid"
+  TIMEOUT 900)
+find_program(SB_STRACE_EXECUTABLE strace)
+# The CLI tools (sb_backup, sb_verify) are added by the top level AFTER this
+# directory, so their TARGETs cannot be tested here; the generator expressions
+# resolve at generate time. Gate on the option that adds them instead.
+if(SB_STRACE_EXECUTABLE AND SB_BUILD_PUBLIC_STANDALONE_OUTPUT)
+  find_package(Python3 COMPONENTS Interpreter)
+endif()
+if(SB_STRACE_EXECUTABLE AND SB_BUILD_PUBLIC_STANDALONE_OUTPUT AND Python3_EXECUTABLE)
+  add_test(NAME sbsql_sblr_alignment_native_legacy_cut_strace
+    COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_legacy_cut_strace.py"
+      --test-bin $<TARGET_FILE:sbsql_sblr_alignment_native_legacy_cut>
+      --sb-backup $<TARGET_FILE:sb_backup>
+      --sb-verify $<TARGET_FILE:sb_verify>)
+  set_tests_properties(sbsql_sblr_alignment_native_legacy_cut_strace PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;legacy_cut;database_lifecycle;strace"
+    TIMEOUT 900)
+endif()
 # SB_NATIVE_FIXED_ROOT_READ (drift removal C3d): owned-source adoption and the
 # native writer over a production create, with real OS/provider fault sweeps.
 add_executable(sbsql_sblr_alignment_native_owned_adoption

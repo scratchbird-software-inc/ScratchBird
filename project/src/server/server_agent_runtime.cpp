@@ -1011,8 +1011,9 @@ bool ServerAgentRuntime::StartImpl(const ServerBootstrapConfig& config,
       engine_state, database->database_uuid, database->database_path);
   const auto owner = std::find_if(engine_state.database_ownership_locks.begin(),
       engine_state.database_ownership_locks.end(), [&](const auto& candidate) {
-        return candidate && candidate->valid() &&
-            candidate->lock_path() == DatabaseOwnershipLockPath(database->database_path);
+        // SB_SERVED_OWNER_LEASE_IDENTITY (S3a): lease identity, not the
+        // legacy lock path (a native owner has none).
+        return candidate && candidate->OwnsDatabasePath(database->database_path);
       });
   const bool retained_owner =
       hosted_runtime && owner != engine_state.database_ownership_locks.end();

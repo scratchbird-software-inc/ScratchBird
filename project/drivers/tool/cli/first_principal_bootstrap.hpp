@@ -41,16 +41,38 @@ struct FirstPrincipalBootstrapRequest {
     std::string metric_policy_families_path;
     FirstPrincipalBootstrapPasswordSource password_source =
         FirstPrincipalBootstrapPasswordSource::kProtectedPrompt;
+    // SEARCH_KEY: SB_CLI_NATIVE_BOOTSTRAP (owner Q254 = 1, 2026-11-16). The
+    // native create's inputs that the legacy bootstrap never had:
+    //   --database-name   the database's name, as DATA (default: the file stem)
+    //   --language        a catalog language tag (default "en"); the parser-side
+    //                     adapter turns it into the catalog_language constant
+    //   --total-pages     the file's size in pages, required (owner Q105 = 1)
+    //   --service-principal  the internal service principal's name, required;
+    //                     its password is read after the first principal's, by
+    //                     the same protected path (second stdin line or prompt)
+    // --resource-seed-pack-root and the metric policy files stay in the
+    // grammar for the callers but have no native counterpart and are not
+    // consumed by the native create.
+    std::string database_name;
+    std::string language_tag = "en";
+    std::uint64_t total_pages = 0;
+    std::string service_principal_name;
 };
 
 struct FirstPrincipalBootstrapResult {
     bool ok = false;
     std::string diagnostic_code;
     std::string principal_uuid;
+    // SB_CLI_NATIVE_BOOTSTRAP: the native receipt carries no policy generation
+    // (stays 0, not printed) and no sysarch role UUID; it does carry the
+    // service principal and the construction transaction, reported below.
     std::uint64_t policy_generation = 0;
     bool committed_with_warning = false;
     bool creation_handoff_ready = false;
     std::string database_uuid;
+    std::string filespace_uuid;
+    std::string service_principal_uuid;
+    std::string construction_transaction_uuid;
 };
 
 struct FirstPrincipalBootstrapParseResult {

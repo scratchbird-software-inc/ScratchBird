@@ -90,6 +90,7 @@
 #include "extensibility/parser_package_api.hpp"
 #include "extensibility/udr_api.hpp"
 #include "lifecycle/engine_lifecycle_api.hpp"
+#include "native_database_open_discovery.hpp"
 #include "management/config_api.hpp"
 #include "management/index_management_api.hpp"
 #include "management/management_api.hpp"
@@ -11460,21 +11461,53 @@ SblrDispatchResult DispatchSblrOperation(SblrDispatchRequest request) {
   // native CREATE DATABASE (create descriptor v2, native format) is
   // authorised by the caller's session (checked above); no transaction can
   // exist before the database does, and the engine's construction transaction
-  // is the MGA evidence. Legacy creates (v1, or v2 legacy) keep the
-  // registry's transaction requirement unchanged until workstream C.
+  // is the MGA evidence.
+  // SEARCH_KEY: SB_LEGACY_CUT_CREATE_REFUSED (owner 2026-11-16: "The moment you
+  // can create a valid database, the legacy support is dropped."). Every other
+  // create shape refuses here, under both create operation names, BEFORE the
+  // transaction gate below (so the refusal is the format's own code, never a
+  // transaction-context refusal) and before any engine call: a v1 descriptor,
+  // a v2 descriptor naming the legacy format, or no create descriptor at all
+  // (a bare operation). Each refusal is DATABASE.CREATE_LEGACY_FORMAT_REFUSED
+  // with its own detail. The gateway still admits these shapes (admission is
+  // decoding, not execution); dispatch refuses them. (Was: legacy creates kept
+  // the registry's transaction requirement and ran the legacy create.)
+  const bool create_database_operation =
+      request.envelope.operation_id == "engine.op.lifecycle_create_database" ||
+      request.envelope.operation_id == "lifecycle.create_database";
+  const char* legacy_create_refusal = nullptr;
   const bool native_create_database = [&] {
-    if (request.envelope.operation_id != "engine.op.lifecycle_create_database") return false;
+    if (!create_database_operation) return false;
+    bool v1_seen = false, v2_legacy_seen = false;
     for (const auto& operand : request.envelope.operands) {
-      if (operand.value_kind != SblrValueKind::lifecycle_create_database_descriptor ||
-          operand.type != "lifecycle_create_database_descriptor.v2") continue;
+      if (operand.value_kind != SblrValueKind::lifecycle_create_database_descriptor) continue;
+      if (operand.type != "lifecycle_create_database_descriptor.v2") {
+        v1_seen = true;
+        continue;
+      }
       SblrLifecycleCreateDatabaseDescriptorV2 descriptor;
       std::string detail;
       if (DecodeSblrLifecycleCreateDatabaseDescriptorV2(operand.value_body.data(), operand.value_body.size(),
-                                                        &descriptor, &detail) &&
-          descriptor.database_format == SblrLifecycleCreateDatabaseFormat::native) return true;
+                                                        &descriptor, &detail)) {
+        if (descriptor.database_format == SblrLifecycleCreateDatabaseFormat::native) return true;
+        v2_legacy_seen = true;
+      }
     }
+    legacy_create_refusal = v2_legacy_seen ? "create_descriptor_v2_legacy_format_refused"
+                            : v1_seen      ? "create_descriptor_v1_refused"
+                                           : "create_descriptor_absent_refused";
     return false;
   }();
+  if (legacy_create_refusal != nullptr) {
+    const std::string code(scratchbird::storage::database::kCreateLegacyFormatRefusedCode);
+    result.diagnostics.push_back(DispatchDiagnostic(code, legacy_create_refusal));
+    result.api_result = FailureResult(request.context,
+                                      request.envelope.operation_id,
+                                      code,
+                                      "engine.lifecycle.create_legacy_format_refused",
+                                      legacy_create_refusal);
+    return result;
+  }
   if (request.envelope.operation_id != "dml.plan_import_rows" && !native_create_database &&
       (request.envelope.requires_transaction_context ||
        (admission_entry != nullptr && admission_entry->requires_transaction_context)) &&

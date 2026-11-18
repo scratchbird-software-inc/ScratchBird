@@ -3,6 +3,7 @@
 #pragma once
 #include "engine_statement_fixture.hpp"
 #include "owned_temp_directory.hpp"
+#include "native_database_create_fixture.hpp"
 #include "../../src/engine/internal_api/transaction/transaction_api.hpp"
 
 namespace scratchbird::tests {
@@ -16,24 +17,49 @@ inline void ConfigureOwnedBootstrapFixtureMemory(std::string_view label) {
 // Administrative component fixture, not a runtime service-principal fallback.
 // Creation publishes the credentialed bootstrap owner; rights are read from
 // that durable catalog. No trace tags or caller-invented grants confer rights.
+//
+// SEARCH_KEY: SB_NATIVE_CREATE_TEST_FIXTURE (owner Q256 = 1, 2026-11-16 legacy
+// cut). The database is the NATIVE single-file database, made through the
+// production native create (native_database_create_fixture.hpp). The engine
+// mints the database identity, so the caller's `database` argument is no longer
+// the file's identity (native create has no such input; the argument is kept so
+// the 8 includers compile and is recorded in `requested_database_uuid`). The
+// owner context is built from the native receipt: the bootstrap principal UUID
+// comes from the receipt, not from the legacy security catalog read.
+// What this fixture can no longer provide until the native serving path exists
+// (S3b+): the materialized durable authorization and the engine transaction,
+// both of which read the legacy catalog (MaterializeBootstrapFixtureAuthorization,
+// EngineBeginTransaction) and fail at runtime on a native file. That failure is
+// expected (owner 2026-11-16) and is reported, not hidden: Context() throws
+// with the engine's own refusal.
+// (Was: CreateDatabaseFile legacy + BootstrapFixtureOwnerContext.)
 class OwnedBootstrapDatabaseFixture final {
  public:
   explicit OwnedBootstrapDatabaseFixture(core::platform::Uuid database) {
-    storage::database::DatabaseCreateConfig create;
-    create.path = (directory_.path() / "node.sbdb").string();
-    create.database_uuid = {core::platform::UuidKind::database, database};
-    create.filespace_uuid = {core::platform::UuidKind::filespace,
-        engine::internal_api::GenerateCrudEngineUuid("object")};
-    ConfigureCredentialedFixtureBootstrap(create);
-    const auto made = storage::database::CreateDatabaseFile(create);
-    if (!made.ok() || made.create_finality != storage::database::DatabaseCreateFinalityClass::committed) {
-      std::cerr << made.diagnostic.message_key << '\n';
-      for (const auto& argument : made.diagnostic.arguments)
-        if (const auto* value = argument.text()) std::cerr << argument.key << '=' << *value << '\n';
+    requested_database_uuid_ = database;
+    NativeFixtureCreateRequest request;
+    request.path = directory_.path() / "node.sbdb";
+    request.database_name = "owned_bootstrap_fixture";
+    const auto made = CreateNativeFixtureDatabase(request);
+    if (!made.ok) {
+      std::cerr << made.diagnostic_code << ':' << made.diagnostic_detail << '\n';
       directory_.Cleanup();
       throw std::runtime_error("owned credentialed database creation failed");
     }
-    base_ = BootstrapFixtureOwnerContext(create);
+    base_.database_path = request.path.string();
+    base_.database_uuid = made.database_uuid;
+    base_.default_root_uuid = made.filespace_uuid;
+    base_.principal_uuid = made.bootstrap_principal_uuid;
+    base_.session_uuid = engine::internal_api::GenerateCrudEngineUuid("object");
+    base_.trust_mode = engine::internal_api::EngineTrustMode::server_isolated;
+    base_.security_context_present = true;
+    base_.catalog_generation_id = 1;
+    base_.security_epoch = 1;
+    base_.resource_epoch = 1;
+    base_.name_resolution_epoch = 1;
+    base_.datatype_catalog_snapshot_uuid = engine::internal_api::kBootstrapDatatypeCatalogUuid;
+    base_.datatype_catalog_generation = engine::internal_api::kBootstrapDatatypeCatalogGeneration;
+    base_.datatype_registry_generation = engine::internal_api::kBootstrapDatatypeRegistryGeneration;
   }
   OwnedBootstrapDatabaseFixture(const OwnedBootstrapDatabaseFixture&) = delete;
   OwnedBootstrapDatabaseFixture& operator=(const OwnedBootstrapDatabaseFixture&) = delete;
@@ -44,6 +70,9 @@ class OwnedBootstrapDatabaseFixture final {
     if (!engine::internal_api::EngineRollbackTransaction(rollback).ok)
       std::terminate(); // Never delete storage still owned by an unresolved txn.
   }
+  const std::filesystem::path& database_path() const noexcept { return database_path_; }
+  const core::platform::Uuid& database_uuid() const noexcept { return base_.database_uuid; }
+  const core::platform::Uuid& requested_database_uuid() const noexcept { return requested_database_uuid_; }
   engine::internal_api::EngineRequestContext Context(bool mutation = false) {
     if (finished_) throw std::runtime_error("owned database fixture already closed");
     if (mutation && !transaction_) {
@@ -82,6 +111,8 @@ class OwnedBootstrapDatabaseFixture final {
     throw std::runtime_error(phase);
   }
   OwnedTempDirectory directory_;
+  std::filesystem::path database_path_ = directory_.path() / "node.sbdb";
+  core::platform::Uuid requested_database_uuid_{};
   engine::internal_api::EngineRequestContext base_, active_;
   bool transaction_ = false, finished_ = false;
 };

@@ -10,8 +10,8 @@
 //  - the language is the catalog_language constant: a missing or unknown one
 //    is refused before any file exists, as is the 4K profile (Q100) and any
 //    size with no native profile;
-//  - no management transaction is required (Q95); the legacy default still
-//    requires one and still writes the legacy format;
+//  - no management transaction is required (Q95); the legacy default is
+//    refused (owner 2026-11-16 cut; was: still created the legacy format);
 //  - through SBLR dispatch, the v2 create descriptor selects the format and
 //    carries the name and language; its client identity fields are ignored
 //    (SB_DRIFT_CREATE_DESCRIPTOR_CLIENT_IDENTITIES); v1 is unchanged.
@@ -1802,8 +1802,13 @@ int main(int argc, char** argv) {
     ++n;
   }
 
-  // The legacy default is unchanged: still requires a management transaction
-  // and still writes the legacy (SBDBV001) format when given one.
+  // SB_LEGACY_CUT_CREATE_REFUSED (owner 2026-11-16: "The moment you can create
+  // a valid database, the legacy support is dropped"). The enum default is
+  // still legacy, and it is REFUSED with its own code before any identity is
+  // minted or file touched, with or without the management transaction the
+  // legacy create used to require. (Was, S2: "the legacy default still requires
+  // the management transaction" and "still writes the legacy SBDBV001 format";
+  // changed as a declared decision to track the cut, 2026-11-16.)
   {
     const auto dir = artifacts.path() / "legacy";
     std::filesystem::create_directory(dir);
@@ -1813,19 +1818,18 @@ int main(int argc, char** argv) {
     legacy.database_language = c::kCatalogLanguage_en;
     legacy.option_envelopes.push_back("allow_minimal_resource_bootstrap:true");
     legacy.option_envelopes.push_back("page_size:16384");
-    Check(legacy.database_format == api::EngineDatabaseFormat::legacy, "S2: legacy is the default format (Q93)");
+    Check(legacy.database_format == api::EngineDatabaseFormat::legacy, "the enum default is still legacy");
     const auto refused = api::EngineCreateLifecycle(legacy);
-    Check(!refused.ok && HasDiagnostic(refused, "MGA.TRANSACTION.INVALID") && Entries(dir).empty(),
-          "S2: the legacy default still requires the management transaction (unchanged until C)");
+    Check(!refused.ok && HasDiagnostic(refused, "DATABASE.CREATE_LEGACY_FORMAT_REFUSED") &&
+              DetailHas(refused, "legacy_database_format_refused") && Entries(dir).empty(),
+          "cut: the legacy default is refused with its own code, no file");
     legacy.context.transaction_uuid = api::EngineUuid{Fixed(0x60)};
     legacy.context.local_transaction_id = 1;
-    const auto made = api::EngineCreateLifecycle(legacy);
-    if (!made.ok) for (const auto& diagnostic : made.diagnostics) std::cerr << diagnostic.code << ':' << diagnostic.detail << '\n';
-    Check(made.ok, "S2: the legacy default still creates");
-    std::ifstream in(dir / "legacy.sdb", std::ios::binary);
-    std::array<char, 8> magic{};
-    in.read(magic.data(), magic.size());
-    Check(std::string_view(magic.data(), 8) == "SBDBV001", "S2: the legacy default still writes the legacy format");
+    const auto still_refused = api::EngineCreateLifecycle(legacy);
+    Check(!still_refused.ok && HasDiagnostic(still_refused, "DATABASE.CREATE_LEGACY_FORMAT_REFUSED") &&
+              Entries(dir).empty(),
+          "cut: a management transaction does not admit the legacy create");
+    std::printf("legacy cut: EngineCreateLifecycle legacy format refused (with and without a transaction)\n");
   }
 
   // Through SBLR dispatch: the v2 descriptor selects native and carries the

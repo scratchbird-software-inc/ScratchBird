@@ -134,6 +134,10 @@ target_include_directories(sb_cli_first_principal_bootstrap
 )
 target_link_libraries(sb_cli_first_principal_bootstrap
     PUBLIC
+        # SB_CLI_NATIVE_BOOTSTRAP (owner Q254 = 1, 2026-11-16): the bootstrap
+        # creates through the engine's native create (EngineCreateLifecycle).
+        sb_engine_internal_api
+        sb_core_catalog
         sb_storage_database
         # Shared single implementation of local-password verifier derivation.
         sb_core_hash
@@ -434,6 +438,19 @@ if (BUILD_TESTING)
     add_test(NAME cli_bootstrap_os_authority_tests COMMAND sb_bootstrap_os_authority_tests)
     add_test(NAME cli_bootstrap_password_verifier_tests COMMAND sb_bootstrap_password_verifier_tests)
     add_test(NAME cli_first_principal_bootstrap_args_tests COMMAND sb_first_principal_bootstrap_args_tests)
+    # SB_CLI_NATIVE_BOOTSTRAP: RunFirstPrincipalBootstrap end to end on the
+    # native create (current-process ownership, protected stdin), then the file
+    # is discovered as a native database and nothing else was created.
+    add_executable(sb_first_principal_bootstrap_native_test first_principal_bootstrap_native_test.cpp)
+    target_include_directories(sb_first_principal_bootstrap_native_test PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/include)
+    target_link_libraries(sb_first_principal_bootstrap_native_test PRIVATE sb_cli_first_principal_bootstrap)
+    target_compile_definitions(sb_first_principal_bootstrap_native_test PRIVATE
+        SB_BOOTSTRAP_SEED_PACK_ROOT="${SB_PROJECT_ROOT}/resources/seed-packs/initial-resource-pack"
+        SB_BOOTSTRAP_POLICY_PACK_ROOT="${SB_PROJECT_ROOT}/resources/policy-packs/default-local-password"
+        SB_BOOTSTRAP_METRIC_TEMPLATES="${SB_PROJECT_ROOT}/config/templates")
+    add_test(NAME cli_first_principal_bootstrap_native_test COMMAND sb_first_principal_bootstrap_native_test)
+    set_tests_properties(cli_first_principal_bootstrap_native_test PROPERTIES
+        TIMEOUT 600 LABELS "cli_tool_gate;native_database_create;legacy_cut;actual_files")
     # The shared set_tests_properties below was split: the python smoke gate is
     # non-engine and is guarded, while cli_first_principal_bootstrap_args_tests
     # is a native test that stays, so its properties must be set unconditionally.

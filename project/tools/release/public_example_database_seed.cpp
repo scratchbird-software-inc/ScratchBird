@@ -8,6 +8,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "database_lifecycle.hpp"
+#include "../../tests/support/native_database_create_fixture.hpp"
 #include "memory.hpp"
 #include "uuid.hpp"
 
@@ -117,16 +118,8 @@ bool ConfigureMemory() {
   return true;
 }
 
-scratchbird::core::platform::TypedUuid MakeIdentity(UuidKind kind,
-                                                    scratchbird::core::platform::u64 millis) {
-  const auto generated = uuid::GenerateEngineIdentityV7(kind, millis);
-  if (!generated.ok()) {
-    std::cerr << generated.diagnostic.diagnostic_code << ':'
-              << generated.diagnostic.message_key << '\n';
-    std::exit(EXIT_FAILURE);
-  }
-  return generated.value;
-}
+// (MakeIdentity removed 2026-11-16: the native create mints every identity;
+// SB_NATIVE_CREATE_TEST_FIXTURE.)
 
 bool WriteManifest(const Args& args,
                    const scratchbird::core::platform::TypedUuid& database_uuid,
@@ -185,48 +178,35 @@ int main(int argc, char** argv) {
     return EXIT_FAILURE;
   }
 
-  const auto database_uuid = MakeIdentity(UuidKind::database, kExampleCreationMillis);
-  const auto filespace_uuid = MakeIdentity(UuidKind::filespace, kExampleCreationMillis + 1);
-
-  db::DatabaseCreateConfig create;
-  create.path = args.output.string();
-  create.database_uuid = database_uuid;
-  create.filespace_uuid = filespace_uuid;
-  create.page_size = kExamplePageSize;
-  create.creation_unix_epoch_millis = kExampleCreationMillis;
-  create.resource_seed_pack_root = args.resource_seed_pack_root.string();
-  create.require_resource_seed_pack = true;
-  create.allow_minimal_resource_bootstrap = false;
-  create.allow_overwrite = false;
-
-  const auto created = db::CreateDatabaseFile(create);
-  if (!created.ok()) {
-    std::cerr << created.diagnostic.diagnostic_code << ':'
-              << created.diagnostic.message_key;
-    for (const auto& argument : created.diagnostic.arguments) {
-      std::cerr << ':' << argument.key << '=';
-      if (const auto* text = argument.text()) std::cerr << *text;
-      else if (const auto* uuid = argument.uuid())
-        std::cerr << scratchbird::core::uuid::UuidToString(*uuid);
-    }
-    std::cerr << '\n';
+  // SEARCH_KEY: SB_NATIVE_CREATE_TEST_FIXTURE (owner Q256 = 1, 2026-11-16 legacy
+  // cut). The example database is the NATIVE single-file database, made
+  // through the production native create. The engine mints the identities
+  // (the fixed creation millis no longer seed them), takes the database name
+  // as data and the server's policy pack; the resource seed pack has no native
+  // counterpart (kept as an argument for the callers; checked to exist, not
+  // consumed), and no legacy open follows the create (owner: no legacy open
+  // path). `resource_seed_catalog_present` in the manifest is therefore false
+  // until a native reader reports it; it is not faked.
+  // (Was: CreateDatabaseFile legacy + OpenDatabaseFile.)
+  scratchbird::tests::NativeFixtureCreateRequest request;
+  request.path = args.output;
+  request.database_name = "scratchbird_example";
+  request.page_size = kExamplePageSize;
+  request.bootstrap_principal_name = "example_owner";
+  request.service_principal_name = "example_service";
+  const auto created = scratchbird::tests::CreateNativeFixtureDatabase(request);
+  if (!created.ok) {
+    std::cerr << created.diagnostic_code << ':' << created.diagnostic_detail << '\n';
     return EXIT_FAILURE;
   }
-
-  db::DatabaseOpenConfig open;
-  open.path = args.output.string();
-  open.suppress_background_agents = true;
-  const auto opened = db::OpenDatabaseFile(open);
-  if (!opened.ok()) {
-    std::cerr << opened.diagnostic.diagnostic_code << ':'
-              << opened.diagnostic.message_key << '\n';
-    return EXIT_FAILURE;
-  }
+  const scratchbird::core::platform::TypedUuid database_uuid{UuidKind::database, created.database_uuid};
+  const scratchbird::core::platform::TypedUuid filespace_uuid{UuidKind::filespace, created.filespace_uuid};
+  const bool resource_seed_catalog_present = false;
 
   if (!WriteManifest(args,
                      database_uuid,
                      filespace_uuid,
-                     opened.state.resource_seed_catalog_present)) {
+                     resource_seed_catalog_present)) {
     return EXIT_FAILURE;
   }
 

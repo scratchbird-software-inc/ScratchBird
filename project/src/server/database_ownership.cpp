@@ -252,6 +252,26 @@ DatabaseOwnershipLock::NativeHandle DatabaseOwnershipLock::native_handle() const
   return lease_ ? lease_->handle_ : handle_;
 }
 
+bool DatabaseOwnershipLock::OwnsDatabasePath(const std::filesystem::path& database_path) const {
+  if (database_path.empty() || !valid()) return false;
+  if (lease_ && lease_->native_data_file()) {
+#ifdef _WIN32
+    // SB_WINDOWS_OWNER_LOCK_FILE_RETAINED: native ownership is refused on
+    // Windows (AcquireDatabaseOwnership), so no native lease exists here.
+    return false;
+#else
+    if (lease_->data_fd_ < 0) return false;
+    struct stat requested {};
+    struct stat held {};
+    if (::stat(database_path.c_str(), &requested) != 0) return false;
+    if (::fstat(lease_->data_fd_, &held) != 0) return false;
+    return S_ISREG(requested.st_mode) && requested.st_dev == held.st_dev &&
+           requested.st_ino == held.st_ino;
+#endif
+  }
+  return !lock_path_.empty() && lock_path_ == DatabaseOwnershipLockPath(database_path);
+}
+
 bool DatabaseOwnershipLock::valid() const {
   if (lease_) return lease_->valid();
   if (owner_pid_ != CurrentProcessId()) return false;

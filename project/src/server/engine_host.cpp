@@ -14,6 +14,7 @@
 #include "engine_host.hpp"
 #include "hosted_process_admission.hpp"
 #include "native_hosted_database_runtime.hpp"
+#include "native_database_open_discovery.hpp"
 #include "startup_trace.hpp"
 
 #include "config_policy_security_lifecycle.hpp"
@@ -203,6 +204,104 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
       if (callback && (std::uncaught_exceptions() > exceptions || !completed)) callback();
     }
   } failure_cleanup_arm{startup_completed, before_failure_cleanup};
+
+  // SEARCH_KEY: SB_LEGACY_CUT_NATIVE_OPEN (owner 2026-11-16; thin-slice S3a).
+  // "The moment you can create a valid database, the legacy support is
+  // dropped." This process assumes the file is native and discovers it
+  // (SB_NATIVE_DATABASE_OPEN_DISCOVERY) BEFORE any other step: no legacy
+  // ownership, no lock file, no legacy security read, no OpenDatabaseFile, no
+  // descriptor recovery, no bulk-import directory, no agent. Order:
+  //  1. a prelocked handoff carries no native lease and refuses;
+  //  2. a missing file refuses (stat only, nothing created);
+  //  3. native data-file ownership (S1: flock on the data descriptor, no lock
+  //     file), the first block, then page zero through the owner's own device;
+  //  4. ownership is released; an invalid file refuses with
+  //     DATABASE.OPEN_NOT_A_VALID_DATABASE (detail = the bootstrap/page-zero
+  //     error, the file untouched); a valid native file refuses with the
+  //     temporary DATABASE.OPEN_NATIVE_RUNTIME_PENDING (S3a exit: serving a
+  //     native database is S3b-S3f).
+  // No decryption key reaches this entry point today (no configuration field
+  // carries one), so Q253's refusal is applied where a key can be given (the
+  // lifecycle operations' decryption options), not invented here.
+  // The legacy hosted open below this block is kept, unreachable from this
+  // entry point, until it is deleted family by family.
+  {
+    const auto refuse = [&](HostedDatabaseState state, std::string code, std::string detail,
+                            const char* message) {
+      snapshot.state = state;
+      snapshot.database_open = false;
+      snapshot.diagnostic_code = code;
+      snapshot.diagnostic_message_key = code;
+      result.diagnostics.push_back(ServerDiagnostic{
+          std::move(code), snapshot.diagnostic_message_key, ServerDiagnosticSeverity::kError, message,
+          {{"database_path", snapshot.database_path}, {"detail", std::move(detail)}}});
+      result.state.databases.push_back(snapshot);
+      return result;
+    };
+    if (config.database_ownership_prelocked) {
+      return refuse(HostedDatabaseState::kFailed, "ARCH.DATABASE_OWNERSHIP_LEGACY_REFUSED",
+                    "prelocked_ownership_handoff_carries_no_native_lease",
+                    "A prelocked ownership handoff is the legacy route; native open takes its own ownership.");
+    }
+    std::error_code exists_error;
+    const bool database_exists = std::filesystem::exists(config.database_default_path, exists_error);
+    if (!database_exists && !config.database_auto_create) {
+      return refuse(HostedDatabaseState::kFailed, "SERVER.ENGINE_HOST.DATABASE_NOT_FOUND",
+                    exists_error ? "database_path_status_failed" : "database_not_found",
+                    "The configured database does not exist and auto-create is disabled.");
+    }
+    if (!database_exists) {
+      return refuse(HostedDatabaseState::kFailed, "BOOTSTRAP.SERVICE_START_FORBIDDEN",
+                    "server_start_never_creates",
+                    "Public server startup cannot create a missing database; run the approved embedded bootstrap first.");
+    }
+    DatabaseOwnershipRequest native_request;
+    native_request.database_path = config.database_default_path;
+    native_request.owner_kind = config.database_ownership_owner_kind.empty()
+                                    ? "server"
+                                    : config.database_ownership_owner_kind;
+    native_request.ownership = storage::disk::DatabaseFileOwnership::native_data_file;
+    native_request.storage_access = OpenModeForConfig(config) == SB_ENGINE_OPEN_NORMAL
+        ? storage::disk::RouteStorageAccess::read_write
+        : storage::disk::RouteStorageAccess::read_only;
+    auto native_ownership = AcquireDatabaseOwnership(native_request);
+    if (!native_ownership.acquired || !native_ownership.lock) {
+      return refuse(HostedDatabaseState::kFailed,
+                    native_ownership.diagnostic_code.empty() ? "ARCH.DATABASE_OWNERSHIP_LOCK_FAILED"
+                                                             : native_ownership.diagnostic_code,
+                    native_ownership.diagnostic_detail,
+                    "The configured database file could not be owned for native open.");
+    }
+    scratchbird::storage::database::NativeOpenDiscoveryResult discovered;
+    {
+      storage::disk::FileDevice device;
+      const auto served = device.OpenServed(native_ownership.lock->ServedStorageLease(),
+                                            snapshot.database_path,
+                                            storage::disk::FileOpenMode::open_existing_read_only);
+      if (!served.ok()) {
+        discovered.code = served.diagnostic.diagnostic_code.empty() ? "ARCH.DATABASE_OWNERSHIP_LOCK_FAILED"
+                                                                    : served.diagnostic.diagnostic_code;
+        discovered.detail = "native_owner_device_refused";
+      } else {
+        discovered = scratchbird::storage::database::DiscoverNativeDatabaseOnOpenDevice(device);
+        (void)device.Close();
+      }
+    }
+    native_ownership.lock->release();
+    native_ownership.lock.reset();
+    if (!discovered.ok()) {
+      return refuse(HostedDatabaseState::kFailed, discovered.code, discovered.detail,
+                    "The configured file is not a valid database.");
+    }
+    snapshot.database_uuid = discovered.page_zero->bootstrap.database_uuid;
+    snapshot.filespace_uuid = discovered.page_zero->bootstrap.filespace_uuid;
+    snapshot.page_size_bytes = discovered.page_zero->bootstrap.page_size_bytes;
+    return refuse(HostedDatabaseState::kFailed,
+                  std::string(scratchbird::storage::database::kOpenNativeRuntimePendingCode),
+                  "native_database_discovered_serving_not_yet_implemented",
+                  "The native database was verified; native serving is not implemented yet.");
+  }
+
   if (!config.database_ownership_prelocked) {
     DatabaseOwnershipRequest ownership_request;
     ownership_request.database_path = config.database_default_path;
@@ -1063,9 +1162,13 @@ std::string HostedEngineStatusJson(const HostedEngineState& state) {
 std::shared_ptr<storage::disk::RouteOwnershipLease> ServedRouteOwnerFor(
     const HostedEngineState& engine_state, const std::string& database_path) {
   if (database_path.empty()) return {};
-  const auto lock_path = DatabaseOwnershipLockPath(database_path);
+  // SEARCH_KEY: SB_SERVED_OWNER_LEASE_IDENTITY (S3a): keyed on the owner's
+  // lease identity (a native owner's data-file st_dev/st_ino; a legacy owner's
+  // lock path), so a native owner, which has no lock path, is found.
+  // (Was: matched lock->lock_path() against DatabaseOwnershipLockPath, which
+  // never matched a native owner.)
   for (const auto& lock : engine_state.database_ownership_locks) {
-    if (lock && lock->valid() && lock->lock_path() == lock_path) return lock->ServedStorageLease();
+    if (lock && lock->OwnsDatabasePath(database_path)) return lock->ServedStorageLease();
   }
   return {};
 }

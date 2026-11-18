@@ -1205,6 +1205,9 @@ add_executable(public_example_database_seed
 )
 target_compile_features(public_example_database_seed PRIVATE cxx_std_23)
 target_link_libraries(public_example_database_seed PRIVATE
+  # SB_NATIVE_CREATE_TEST_FIXTURE (2026-11-16): the seeder creates through the
+  # production native create (EngineCreateLifecycle).
+  sb_engine_internal_api
   sb_storage_database
   sb_core_memory
   sb_core_uuid

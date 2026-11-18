@@ -16,6 +16,8 @@
 #include "manager_control.hpp"
 
 #include "lifecycle/engine_lifecycle_api.hpp"
+#include "api_diagnostics.hpp"
+#include "native_database_open_discovery.hpp"
 #include "management/support_bundle_api.hpp"
 #include "process_association_registry.hpp"
 #include "security/authorization_api.hpp"
@@ -1074,9 +1076,17 @@ ServerManagementResponse HandleEngineLifecycleManagementOperation(
     // format. ServerManagementRequest carries no database name or language,
     // so it cannot ask for the native format (SB_ENGINE_CREATE_DATABASE_FORMAT)
     // until the management wire carries them: an open owner question.
-    lifecycle_result = engine_api::EngineCreateLifecycle(
-        EngineLifecycleRequestForManagement<engine_api::EngineCreateLifecycleRequest>(
-            context, session, frame, request));
+    // SEARCH_KEY: SB_LEGACY_CUT_CREATE_REFUSED (owner 2026-11-16, Q109): the
+    // legacy format is dropped, and this route cannot ask for the native one,
+    // so it refuses without calling the engine (no identity minted, no file).
+    // (Was: EngineCreateLifecycle with the legacy default format.)
+    lifecycle_result.ok = false;
+    lifecycle_result.operation_id = "lifecycle.create_database";
+    lifecycle_result.diagnostics.push_back(engine_api::MakeEngineApiDiagnostic(
+        std::string(scratchbird::storage::database::kCreateLegacyFormatRefusedCode),
+        "engine.lifecycle.create_legacy_format_refused",
+        "management_route_carries_no_database_name_or_language",
+        true));
   } else if (request.operation_key == "open_database") {
     lifecycle_result = engine_api::EngineOpenLifecycle(
         EngineLifecycleRequestForManagement<engine_api::EngineOpenLifecycleRequest>(

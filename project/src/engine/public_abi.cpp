@@ -42,6 +42,7 @@
 #include "cluster_provider/cluster_provider.hpp"
 #include "database_format.hpp"
 #include "disk_device.hpp"
+#include "native_database_open_discovery.hpp"
 #include "hash_digest.hpp"
 #include "catalog/name_resolution_api.hpp"
 #include "catalog/schema_tree_api.hpp"
@@ -5152,6 +5153,43 @@ static sb_engine_status_t open_engine_impl(
     if (handle->database_path.find('\0') != std::string::npos)
       return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 1005,
                          "ENGINE.OPEN.PATH_INVALID", "engine.open.path_invalid", "database_path_contains_nul");
+    // SEARCH_KEY: SB_LEGACY_CUT_NATIVE_OPEN (owner 2026-11-16; S3a). The ABI
+    // open assumes a native file and discovers it before anything else
+    // (SB_NATIVE_DATABASE_OPEN_DISCOVERY): through the served owner's own
+    // device when one is attached, else a read-only native data-file open (no
+    // lock file) that is closed again. Not a valid database ->
+    // DATABASE.OPEN_NOT_A_VALID_DATABASE (detail = bootstrap/page-zero error;
+    // a legacy file is refused untouched); a refused device open keeps the
+    // device's own code. A valid native file -> the temporary
+    // DATABASE.OPEN_NATIVE_RUNTIME_PENDING (native serving is S3b-S3f). The
+    // legacy header snapshot and descriptor recovery below stay unreachable
+    // from this entry point until they are deleted.
+    {
+      namespace sdb = scratchbird::storage::database;
+      sdb::NativeOpenDiscoveryResult discovered;
+      if (served_owner) {
+        scratchbird::storage::disk::FileDevice device;
+        const auto served = device.OpenServed(served_owner, handle->database_path,
+                                              scratchbird::storage::disk::FileOpenMode::open_existing_read_only);
+        if (!served.ok()) {
+          discovered.code = served.diagnostic.diagnostic_code;
+          discovered.detail = "native_owner_device_refused";
+        } else {
+          discovered = sdb::DiscoverNativeDatabaseOnOpenDevice(device);
+          (void)device.Close();
+        }
+      } else {
+        discovered = sdb::DiscoverNativeDatabaseAtPath(handle->database_path);
+      }
+      if (!discovered.ok()) {
+        return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 1005, discovered.code,
+                           "engine.open.native_discovery_refused", discovered.detail);
+      }
+      return fail_result(SB_ENGINE_STATUS_UNSUPPORTED, out_result, 1005,
+                         std::string(sdb::kOpenNativeRuntimePendingCode),
+                         "engine.open.native_runtime_pending",
+                         "native_database_discovered_serving_not_yet_implemented");
+    }
     const auto snapshot = database_header_snapshot(handle->database_path, served_owner);
     if (!snapshot.failure_detail.empty()) {
       namespace api = scratchbird::engine::internal_api;

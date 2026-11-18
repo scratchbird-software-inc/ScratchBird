@@ -489,6 +489,14 @@ int main(int argc, char* argv[]) {
         return 4;
     }
 
+    // SEARCH_KEY: SB_LEGACY_CUT_TOOL_REFUSED (owner Q255 = 1, 2026-11-16). This
+    // tool reads a stale page format (magic "SBRD", matching neither the legacy
+    // nor the native file) and is refused until it is rebuilt on the native
+    // format. The refusal precedes every file access, including the -o output
+    // file, so nothing is opened or created.
+    std::cerr << "Error: DATABASE.VERIFY_NATIVE_UNAVAILABLE: sb_verify is not yet rebuilt for native databases\n";
+    return 4;
+
     // Setup output file if specified
     if (!g_config.output_file.empty()) {
         g_output_file = new std::ofstream(g_config.output_file);

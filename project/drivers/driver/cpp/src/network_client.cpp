@@ -48,6 +48,7 @@
 #if defined(SCRATCHBIRD_CLIENT_ENABLE_LOCAL_SBSQL_BRIDGE) && \
     defined(SCRATCHBIRD_SBSQL_ENABLE_EMBEDDED_ENGINE_DIRECT)
 #include "database_ownership.hpp"
+#include "native_database_open_discovery.hpp"
 #include "memory.hpp"
 #endif
 
@@ -2414,6 +2415,27 @@ core::Status NetworkClient::openEmbeddedBridge(core::ErrorContext* ctx) {
         return memory_status;
     }
 
+    // SEARCH_KEY: SB_LEGACY_CUT_NATIVE_OPEN (owner 2026-11-16; S3a). Embedded
+    // mode assumes a native file and discovers it before anything else
+    // (SB_NATIVE_DATABASE_OPEN_DISCOVERY): a read-only native data-file open (no
+    // lock file), the first block, page zero, close. The legacy route below
+    // (legacy lock-file ownership, an incumbent-endpoint redirect, a prelocked
+    // handoff to the embedded engine) is unreachable: a native owner publishes
+    // no endpoint (Q94), and native serving is S3b-S3f. Not a valid database ->
+    // DATABASE.OPEN_NOT_A_VALID_DATABASE; a valid native file -> the temporary
+    // DATABASE.OPEN_NATIVE_RUNTIME_PENDING. (Was: AcquireDatabaseOwnership with
+    // the legacy lock files, then the embedded engine.)
+    {
+        namespace sdb = scratchbird::storage::database;
+        const auto discovered = sdb::DiscoverNativeDatabaseAtPath(config_.database);
+        if (!discovered.ok()) {
+            return setError(ctx, core::Status::CONNECTION_FAILURE,
+                            discovered.code + ":" + discovered.detail);
+        }
+        return setError(ctx, core::Status::NOT_SUPPORTED,
+                        std::string(sdb::kOpenNativeRuntimePendingCode) +
+                            ":native_database_discovered_serving_not_yet_implemented");
+    }
     scratchbird::server::DatabaseOwnershipRequest ownership_request;
     ownership_request.database_path = config_.database;
     ownership_request.owner_kind = "embedded";

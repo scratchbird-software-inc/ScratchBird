@@ -633,6 +633,18 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    // SEARCH_KEY: SB_LEGACY_CUT_TOOL_REFUSED (owner Q255 = 1, 2026-11-16). Every
+    // command reads or writes the legacy page/backup format (backup reads legacy
+    // page headers; restore writes a database file raw from an SBAK backup), so
+    // each refuses with its own code before any stream is opened; help and
+    // version (handled in parseArgs) still work. Rebuilt later on native.
+    {
+        const char* code = g_config.command == BackupCommand::RESTORE ? "DATABASE.RESTORE_NOT_NATIVE"
+                         : g_config.command == BackupCommand::BACKUP  ? "DATABASE.BACKUP_NATIVE_UNAVAILABLE"
+                                                                       : "DATABASE.BACKUP_FORMAT_LEGACY_REFUSED";
+        std::cerr << "Error: " << code << ": sb_backup is not yet rebuilt for native databases\n";
+        return 1;
+    }
     switch (g_config.command) {
         case BackupCommand::BACKUP:
             return createBackup() ? 0 : 1;

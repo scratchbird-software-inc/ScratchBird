@@ -84,6 +84,14 @@ class DatabaseOwnershipLock {
 #endif
   // Legacy only: the .sb.route.owner.lock path. Empty for a native owner.
   [[nodiscard]] const std::filesystem::path& lock_path() const { return lock_path_; }
+  // SEARCH_KEY: SB_SERVED_OWNER_LEASE_IDENTITY (S3a, owner 2026-11-16). True
+  // when this valid owner holds the database file `database_path` names. A
+  // native owner (no lock path) matches by the lease's own data-file identity:
+  // the path's st_dev/st_ino equal the retained data descriptor's, so a native
+  // owner is found through any name of its file (a hard link, a rename) and
+  // never through the text of a lock path. A legacy owner keeps its lock-path
+  // match, unchanged. Process-memory lookup only; never persisted.
+  [[nodiscard]] bool OwnsDatabasePath(const std::filesystem::path& database_path) const;
   // SEARCH_KEY: SB_ROUTE_OWNER_SERVED_DEVICE (register C9). The owner's
   // published storage lease, for FileDevice::OpenServed by this process's own
   // threads. Empty in any other process or once released.

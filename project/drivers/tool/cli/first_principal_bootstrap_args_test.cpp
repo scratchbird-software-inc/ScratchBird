@@ -48,9 +48,53 @@ int main() {
         "--platform-profile", "/tmp/SBbootstrap.profile",
         "--resource-seed-pack-root=/tmp/resource-pack",
         "--policy-seed-pack-root", "/tmp/policy-pack",
+        // SB_CLI_NATIVE_BOOTSTRAP (owner Q254 = 1, 2026-11-16): the native
+        // create's inputs are part of the valid grammar.
+        "--total-pages", "512",
+        "--service-principal=node_service",
+        "--database-name", "qa database",
+        "--language=en-CA",
         "--password-stdin",
     });
     require(valid.ok && !valid.help_requested, "valid bootstrap grammar must parse");
+    require(valid.request.total_pages == 512 &&
+                valid.request.service_principal_name == "node_service" &&
+                valid.request.database_name == "qa database" &&
+                valid.request.language_tag == "en-CA",
+            "bootstrap must preserve the native create inputs");
+    const auto defaults = parse({
+        "qa_admin", "/tmp/qa.sbdb", "--mode=embedded",
+        "--platform-profile=/tmp/SBbootstrap.profile",
+        "--resource-seed-pack-root=/tmp/resource-pack",
+        "--policy-seed-pack-root=/tmp/policy-pack",
+        "--total-pages=512", "--service-principal=node_service",
+    });
+    require(defaults.ok && defaults.request.database_name.empty() &&
+                defaults.request.language_tag == "en",
+            "database name defaults to the file stem at run time; language defaults to en");
+    for (const char* missing : {"--total-pages=512", "--service-principal=node_service"}) {
+        const auto incomplete = parse({
+            "qa_admin", "/tmp/qa.sbdb", "--mode=embedded",
+            "--platform-profile=/tmp/SBbootstrap.profile",
+            "--resource-seed-pack-root=/tmp/resource-pack",
+            "--policy-seed-pack-root=/tmp/policy-pack",
+        "--total-pages=512", "--service-principal=node_service",
+            missing,
+        });
+        require(!incomplete.ok && incomplete.diagnostic_code == "BOOTSTRAP.AUTH_DB_INPUT_INVALID",
+                "native create requires both --total-pages and --service-principal");
+    }
+    for (const char* bad_pages : {"--total-pages=0", "--total-pages=12x", "--total-pages=-5"}) {
+        const auto refused = parse({
+            "qa_admin", "/tmp/qa.sbdb", "--mode=embedded",
+            "--platform-profile=/tmp/SBbootstrap.profile",
+            "--resource-seed-pack-root=/tmp/resource-pack",
+            "--policy-seed-pack-root=/tmp/policy-pack",
+        "--total-pages=512", "--service-principal=node_service",
+            bad_pages, "--service-principal=node_service",
+        });
+        require(!refused.ok, "total pages must be a positive decimal count");
+    }
     require(valid.request.explicit_embedded_mode,
             "bootstrap must preserve the explicit embedded mode");
     require(valid.request.principal_name == "qa_admin",
@@ -64,6 +108,7 @@ int main() {
         "qa_admin", "/tmp/qa.sbdb", "--mode=embedded",
         "--resource-seed-pack-root=/tmp/resource-pack",
         "--policy-seed-pack-root=/tmp/policy-pack",
+        "--total-pages=512", "--service-principal=node_service",
     });
     require(!missing_service_profile.ok,
             "installer bootstrap still requires its explicit service profile");
@@ -73,6 +118,7 @@ int main() {
         "--platform-profile=/tmp/SBbootstrap.profile",
         "--resource-seed-pack-root=/tmp/resource-pack",
         "--policy-seed-pack-root=/tmp/policy-pack",
+        "--total-pages=512", "--service-principal=node_service",
     });
     require(!missing_mode.ok &&
                 missing_mode.diagnostic_code == "BOOTSTRAP.MODE_EMBEDDED_REQUIRED",
@@ -83,6 +129,7 @@ int main() {
         "--platform-profile=/tmp/SBbootstrap.profile",
         "--resource-seed-pack-root=/tmp/resource-pack",
         "--policy-seed-pack-root=/tmp/policy-pack",
+        "--total-pages=512", "--service-principal=node_service",
     });
     require(!network_mode.ok &&
                 network_mode.diagnostic_code == "BOOTSTRAP.MODE_EMBEDDED_REQUIRED",
@@ -93,6 +140,7 @@ int main() {
         "--platform-profile=/tmp/SBbootstrap.profile",
         "--resource-seed-pack-root=/tmp/resource-pack",
         "--policy-seed-pack-root=/tmp/policy-pack",
+        "--total-pages=512", "--service-principal=node_service",
         "--password=secret",
     });
     require(!password_argv.ok &&
@@ -108,6 +156,7 @@ int main() {
             "--platform-profile=/tmp/SBbootstrap.profile",
             "--resource-seed-pack-root=/tmp/resource-pack",
             "--policy-seed-pack-root=/tmp/policy-pack",
+        "--total-pages=512", "--service-principal=node_service",
             forbidden_option,
         });
         require(!forbidden.ok &&
@@ -121,6 +170,7 @@ int main() {
         "--resource-seed-pack-root=/tmp/resource-pack-a",
         "--resource-seed-pack-root=/tmp/resource-pack-b",
         "--policy-seed-pack-root=/tmp/policy-pack",
+        "--total-pages=512", "--service-principal=node_service",
     });
     require(!duplicate_seed_root.ok &&
                 duplicate_seed_root.diagnostic_code == "BOOTSTRAP.AUTH_DB_INPUT_INVALID",
@@ -131,6 +181,7 @@ int main() {
         "--platform-profile=/tmp/SBbootstrap.profile",
         "--resource-seed-pack-root=/tmp/resource-pack",
         "--policy-seed-pack-root=/tmp/policy-pack",
+        "--total-pages=512", "--service-principal=node_service",
     });
     require(!extra_positional.ok &&
                 extra_positional.diagnostic_code == "BOOTSTRAP.AUTH_DB_INPUT_INVALID",
@@ -141,6 +192,7 @@ int main() {
         "--platform-profile=/tmp/SBbootstrap.profile",
         "--resource-seed-pack-root=/tmp/resource-pack",
         "--policy-seed-pack-root=/tmp/policy-pack",
+        "--total-pages=512", "--service-principal=node_service",
     });
     require(!positional_after_option.ok &&
                 positional_after_option.diagnostic_code ==
@@ -152,6 +204,7 @@ int main() {
         "--platform-profile=/tmp/SBbootstrap.profile",
         "--resource-seed-pack-root=/tmp/resource-pack",
         "--policy-seed-pack-root=/tmp/policy-pack",
+        "--total-pages=512", "--service-principal=node_service",
     });
     require(!malformed_principal.ok &&
                 malformed_principal.diagnostic_code ==

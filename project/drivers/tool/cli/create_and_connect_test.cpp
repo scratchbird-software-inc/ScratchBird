@@ -52,7 +52,7 @@ int ServerProcessFixture(int argc,char** argv){
 }
 int main(int argc,char** argv)try{
     if(argc>1&&std::string_view(argv[1])=="--foreground")return ServerProcessFixture(argc,argv);
-    const std::vector<std::string> base={"architect","/tmp/create-node","--mode=embedded","--platform-profile=/tmp/platform","--resource-seed-pack-root=/tmp/resources","--policy-seed-pack-root=/tmp/policies","--start-server=/tmp/SBsrv","--server-config=/tmp/server.conf","--ipc-path=/tmp/server.sock"};
+    const std::vector<std::string> base={"architect","/tmp/create-node","--mode=embedded","--platform-profile=/tmp/platform","--resource-seed-pack-root=/tmp/resources","--policy-seed-pack-root=/tmp/policies","--total-pages=512","--service-principal=node_service","--start-server=/tmp/SBsrv","--server-config=/tmp/server.conf","--ipc-path=/tmp/server.sock"};
     auto args=base;args.insert(args.end(),{"--password-stdin","--connect-password-stdin","--startup-timeout-ms=1234","--","-c","SELECT 1","--quiet"});
     auto parsed=Parse(args);Check(parsed.ok&&parsed.request.connect_password_stdin&&parsed.request.startup_timeout_ms==1234,"separate creation and connection argument stages");
     Check(parsed.request.creation.ownership==cli::EmbeddedCreationOwnership::kServiceIdentity,"explicit platform profile selects service account handoff");

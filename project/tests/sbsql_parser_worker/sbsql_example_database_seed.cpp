@@ -15,6 +15,7 @@
 #include "security/security_model.hpp"
 #include "server_engine_bridge/statement_context.hpp"
 #include "database_lifecycle.hpp"
+#include "../support/native_database_create_fixture.hpp"
 #include "ddl/create_api.hpp"
 #include "dml/insert_api.hpp"
 #include "security/security_principal_lifecycle.hpp"
@@ -69,6 +70,8 @@ constexpr std::string_view kBenchmarkCredentialFingerprint =
     "salt=0123456789abcdef0123456789abcdef:"
     "verifier=58a793aad0bd6840ad8d92f6627a23f6142c4ce58210c5f135ea3e2134d43142";
 api::EngineUuid seed_filespace_uuid;
+// SB_NATIVE_CREATE_TEST_FIXTURE: the native receipt's bootstrap principal.
+api::EngineUuid seed_bootstrap_principal_uuid;
 
 void Fail(std::string_view message) {
   std::cerr << message << '\n';
@@ -226,10 +229,10 @@ api::EngineRequestContext BaseContext(const std::filesystem::path& database_path
   context.request_id = "sbsql-example-database-seed";
   context.database_path = database_path.string();
   context.database_uuid = database_uuid;
-  const auto bootstrap = db::ReadDatabaseBootstrapSecurityCatalog(database_path.string());
-  if (!bootstrap.ok() || !bootstrap.state.present || !bootstrap.state.committed_by_inventory)
-    Fail("example fixture durable bootstrap principal unavailable");
-  context.principal_uuid = bootstrap.state.principal_uuid.value;
+  // SB_NATIVE_CREATE_TEST_FIXTURE: the native receipt's principal, not a legacy
+  // security-catalog read (RefreshFixtureAuthorization below still reads the
+  // legacy catalog and fails on a native file until a native reader exists).
+  context.principal_uuid = seed_bootstrap_principal_uuid;
   context.default_root_uuid = seed_filespace_uuid;
   context.session_uuid = seeder_session_uuid;
   context.security_context_present = true;
@@ -280,42 +283,33 @@ void CommitSeedTransaction(const SeedTransaction& transaction) {
   }
 }
 
+// SEARCH_KEY: SB_NATIVE_CREATE_TEST_FIXTURE (owner Q256 = 1, 2026-11-16 legacy
+// cut). The example database is the NATIVE single-file database, made through
+// the production native create: the engine mints the identities, the named
+// bootstrap principal keeps the fixture verifier, a service principal is
+// provisioned (native create requires one). The resource seed pack and the
+// metric policy files have no native counterpart and are not passed. The
+// receipt's bootstrap principal is kept for BaseContext instead of a legacy
+// security-catalog read. (Was: CreateDatabaseFile legacy.)
 api::EngineUuid CreateDatabase(const std::filesystem::path& database_path,
                            const std::string& bootstrap_principal) {
   if (std::filesystem::exists(database_path)) {
     Fail("example database already exists; refusing to seed without the database UUID association");
   }
-  const auto now = CurrentUnixMillis();
-  const auto database_uuid = uuid::GenerateEngineIdentityV7(UuidKind::database, now);
-  const auto filespace_uuid = uuid::GenerateEngineIdentityV7(UuidKind::filespace, now + 1);
-  if (!database_uuid.ok() || !filespace_uuid.ok()) Fail("example database UUID generation failed");
-
-  db::DatabaseCreateConfig create;
-  create.path = database_path.string();
-  create.database_uuid = database_uuid.value;
-  create.filespace_uuid = filespace_uuid.value;
-  create.page_size = 16384;
-  create.creation_unix_epoch_millis = now;
-  create.resource_seed_pack_root = SB_EXAMPLE_SEED_PACK_ROOT;
-  // The installed metric policy files, as production create passes them
-  // (METRIC-BOOTSTRAP-CONFIG-DEFAULTS-001).
-  create.metric_policy_defaults_path = SB_EXAMPLE_METRIC_TEMPLATES "/metric-policy-defaults.conf";
-  create.metric_policy_families_path = SB_EXAMPLE_METRIC_TEMPLATES "/metric-policy-families.conf";
-  create.allow_minimal_resource_bootstrap = false;
-  create.require_resource_seed_pack = true;
-  create.bootstrap_principal_name = bootstrap_principal;
-  create.bootstrap_credential_fingerprint =
-      std::string(kBenchmarkCredentialFingerprint);
-  create.require_bootstrap_principal = true;
-  create.allow_uncredentialed_bootstrap = false;
-  create.allow_overwrite = false;
-  const auto created = db::CreateDatabaseFile(create);
-  if (!created.ok()) {
-    std::cerr << created.diagnostic.diagnostic_code << ':' << created.diagnostic.message_key << '\n';
+  scratchbird::tests::NativeFixtureCreateRequest request;
+  request.path = database_path;
+  request.database_name = "sbsql_example";
+  request.bootstrap_principal_name = bootstrap_principal;
+  request.bootstrap_credential_fingerprint = std::string(kBenchmarkCredentialFingerprint);
+  request.service_principal_name = "sbsql_example_service";
+  const auto created = scratchbird::tests::CreateNativeFixtureDatabase(request);
+  if (!created.ok) {
+    std::cerr << created.diagnostic_code << ':' << created.diagnostic_detail << '\n';
     Fail("example database creation failed");
   }
-  seed_filespace_uuid = created.state.filespace_uuid.value;
-  return database_uuid.value.value;
+  seed_filespace_uuid = created.filespace_uuid;
+  seed_bootstrap_principal_uuid = created.bootstrap_principal_uuid;
+  return created.database_uuid;
 }
 
 api::EngineUuid SchemaUuidForPath(const api::EngineRequestContext& context, const std::string& path) {
