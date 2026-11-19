@@ -252,6 +252,10 @@ class NativeOwnedCheckpointWriter final {
   // Never returned through the legacy mutable-device read facade.
   std::shared_ptr<NativeOwnedCheckpointSource> cohort_;
   std::atomic<bool> accepting_{true},busy_{false};
+  // Q283 = yes (owner 2026-11-19): set by any write this writer attempts (a failed attempt too:
+  // its effect is unknown). Close syncs a writable member only when it is set. (Was: Close always
+  // synchronised, so shutting down an unwritten open cost one fsync of the data file.)
+  std::atomic<bool> dirty_{false};
   bool close_uncertain_=false;
   Uuid first_uncertain_filespace_;
   u32 first_uncertain_native_error_=0;
@@ -328,7 +332,7 @@ inline NativeWriterCloseResult NativeOwnedCheckpointWriter::Close(std::shared_pt
   for(std::size_t n=0;n<devices.size();++n){auto& receipt=receipts[n];receipt={};const auto& member=devices[n];
     receipt.filespace_uuid=member.filespace_uuid;receipt.page_size_profile_uuid=member.page_size_profile_uuid;
     try{
-      if(member.device->is_open()&&!member.device->read_only()){
+      if(member.device->is_open()&&!member.device->read_only()&&owner->dirty_.load(std::memory_order_acquire)){
         disk::FileDevice::BoundedIoBatch batch(*member.device);receipt.synchronization=batch.Sync();
         if(!receipt.synchronization->ok()){
           out.error=NativeWriterError::io_failure;out.all_members_retired=false;continue;}
@@ -475,6 +479,8 @@ inline NativeWriterIoResult NativeOwnedCheckpointWriter::Io(Operation& operation
     // before its destructor publishes any allocating observation/callback.
     disk::FileDevice::BoundedIoBatch batch(*found->device);
     if(kind==disk::BoundedIoOperation::write){
+      // Marked before the attempt: a write that fails part-way still needs the close-time sync.
+      state.owner->dirty_.store(true,std::memory_order_release);
       out.size_observation=batch.Size();if(out.size_observation->native_attempted)add(state.effects.size_attempts,1);
       if(!out.size_observation->ok())return fail(E::io_failure);
       if(offset>out.size_observation->size_bytes||count>out.size_observation->size_bytes-offset)return fail(E::extent_outside_file);

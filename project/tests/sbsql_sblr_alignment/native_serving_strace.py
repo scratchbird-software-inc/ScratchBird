@@ -16,9 +16,15 @@ Creates a native database at each of the five page sizes, runs one serve child
   - 0 write-class syscalls (write, pwrite64, pwritev, ftruncate, fallocate,
     fsync, fdatasync) on any descriptor opened on the data file, or duplicated
     from one, BEFORE the SERVING line: nothing is written or synced before
-    Restart (the TIP, S3d). After it (the shutdown) only fsync is allowed, and
-    its count is printed: the writer's retire syncs the device once on close
-    (found, not changed; owner question in the S3b report);
+    Restart (the TIP, S3d). After it (the shutdown) NO write-class syscall on a
+    data descriptor either: Q283 = yes (owner 2026-11-19), the writer syncs at
+    close only when something was written. (Was: one close-time fsync allowed.)
+  - S3c (owner Q239 = 1, 2026-11-19): the serve child runs in its "read" variant,
+    which after SERVING obtains read-only served devices on eight threads and
+    reads them (native_serving_test.cpp ServedReads). Between the SERVING line
+    and the READ line 0 openat/open of the database path appears: the reads use
+    duplicates of the lease's retained descriptor, never a path open. (The one
+    later open of the path is the test's own re-ownership probe after the close.)
   - the database loop thread existed (a clone and the sb-db-loop name).
 """
 import argparse
@@ -94,7 +100,7 @@ def main():
                 fail(f"native create made more than its file: {os.listdir(directory)}")
             before = snapshot(directory)
             log = os.path.join(work, f"serve-{size}.strace")
-            command = ["strace", "-f", "-qq", "-s", "256", "-o", log, args.test_bin, "serve", path]
+            command = ["strace", "-f", "-qq", "-s", "256", "-o", log, args.test_bin, "serve", path, "read"]
             served = subprocess.run(command, capture_output=True, text=True, timeout=900)
             if served.returncode != 0:
                 fail(f"serve {size}: exit {served.returncode}: {served.stderr[-2000:]} {served.stdout[-500:]}")
@@ -119,6 +125,17 @@ def main():
             if serving_at is None:
                 fail(f"serve {size}: the SERVING output line was not traced")
             before_writes, closing_syncs, closing_writes = [], [], []
+            read_at = next((i for i, line in enumerate(lines) if re.search(r'write\(1, "READ ', line)), None)
+            if read_at is None or read_at < serving_at:
+                fail(f"serve {size}: the READ line (the served reads after custody) was not traced after SERVING")
+            path_opens_after_serving = [
+                line.strip() for line in lines[serving_at:read_at]
+                if re.search(r'\bopen(?:at)?2?\(.*"' + re.escape(path) + r'"', line)]
+            if path_opens_after_serving:
+                fail(f"serve {size}: {len(path_opens_after_serving)} opens of the database path after serving, first: {path_opens_after_serving[0]}")
+            if not re.search(r'write\(1, "READ pages=\d+ threads=8 .* path_opens=0 file_opens=0 sidecar_opens=0 writable_refused=SB-STORAGE-DISK-SERVED-NATIVE-WRITE-REFUSED',
+                             lines[read_at]):
+                fail(f"serve {size}: the READ line is not the expected one: {lines[read_at].strip()[:300]}")
             for index, line in enumerate(lines):
                 match = re.search(r'\b' + WRITE_CALLS + r'\((\d+)', line)
                 if not match:
@@ -132,6 +149,8 @@ def main():
                     closing_syncs.append(line.strip())
                 else:
                     closing_writes.append(line.strip())
+            if closing_syncs:
+                fail(f"serve {size}: {len(closing_syncs)} fsync/fdatasync on a data descriptor after serving (Q283: an unwritten open syncs nothing), first: {closing_syncs[0]}")
             if before_writes:
                 fail(f"serve {size}: {len(before_writes)} write-class syscalls on a data descriptor before serving, first: {before_writes[0]}")
             if closing_writes:
@@ -140,7 +159,7 @@ def main():
                 fail(f"serve {size}: the sb-db-loop thread was not observed")
             print(f"native_serving_strace {size}: serving; 0 .sb. syscalls; 0 write-class syscalls on {len(spans)} data "
                   f"descriptor(s) before serving; shutdown: {len(closing_syncs)} fsync(s) on the data descriptor, 0 writes; "
-                  f"directory unchanged; {len(lines)} syscalls traced")
+                  f"served reads: 0 opens of the database path between SERVING and the reads; directory unchanged; {len(lines)} syscalls traced")
         # Negative control: the same detector must see the create's writes, so a
         # pass above is not a detector that sees nothing.
         control_dir = os.path.join(work, "control")

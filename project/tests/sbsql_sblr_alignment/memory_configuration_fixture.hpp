@@ -12,7 +12,8 @@ inline c::CatalogMemoryConfiguration Values(p::TypedUuid tx) {
   r.generation=r.policy_pack_generation=r.imported_schema_version=1;
   // 3b: no policy_key, policy_name or provenance in the record (version 2).
   r.origin_transaction_uuid=tx;r.origin_local_transaction_id=1;
-  r.hard_limit_bytes=1073741824;r.soft_limit_bytes=805306368;r.per_context_limit_bytes=268435456;
+  // Q282 = 1 (owner 2026-11-19): the shipped default per-context limit is 512 MiB. (Was: 268435456 = 256 MiB.)
+  r.hard_limit_bytes=1073741824;r.soft_limit_bytes=805306368;r.per_context_limit_bytes=536870912;
   r.page_buffer_pool_limit_bytes=536870912;r.openssl_budget_bytes=4194304;r.min_startup_available_bytes=1073741824;
   r.failure_mode=c::MemoryConfigurationFailureMode::return_error;
   r.track_allocations=r.zero_memory_on_release=r.enable_platform_memory_probe=true;

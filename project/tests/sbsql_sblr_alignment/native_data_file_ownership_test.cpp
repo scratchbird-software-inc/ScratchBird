@@ -322,17 +322,24 @@ void Run(unsigned index, bool native_only) {
     {
       d::FileDevice reader, writer;
       Check(reader.OpenServed(lease, path, d::FileOpenMode::open_existing_read_only).ok(), "served reader");
-      Check(writer.OpenServed(lease, path, d::FileOpenMode::open_existing).ok(), "served writer");
+      // S3c (owner Q239 = 1, 2026-11-19): a native lease serves READ-ONLY devices only; writes go through
+      // the loop thread's custody operation. (Was: "served writer" -- a writable served open succeeded
+      // and the test wrote and synced through it.)
+      const auto refused_writer = writer.OpenServed(lease, path, d::FileOpenMode::open_existing);
+      Check(!refused_writer.ok() && !writer.is_open() &&
+                refused_writer.diagnostic.diagnostic_code == "SB-STORAGE-DISK-SERVED-NATIVE-WRITE-REFUSED",
+            "a writable served open of a native lease is refused with its specific code");
       std::vector<char> page(p.page_size_bytes);
       const auto read = reader.ReadAt(0, page.data(), page.size());
       Check(read.ok() && read.bytes_transferred == page.size() &&
                 std::equal(page.begin(), page.end(), created.begin()),
             "the served reader reads page zero as written");
-      // Write the last page's own bytes back: a real write that changes nothing.
+      // The read-only served device cannot write (the descriptor itself is read-only, and the device
+      // refuses before touching it). (Was: the last page's own bytes were written back and synced
+      // through a served writer.)
       const u64 last = created.size() - p.page_size_bytes;
-      const auto wrote = writer.WriteAt(last, created.data() + last, p.page_size_bytes);
-      Check(wrote.ok() && wrote.bytes_transferred == p.page_size_bytes, "the served writer writes");
-      Check(writer.Sync().ok(), "the served writer syncs");
+      const auto wrote = reader.WriteAt(last, created.data() + last, p.page_size_bytes);
+      Check(!wrote.ok(), "the read-only served device refuses a write");
       Check(OnlyDatabase(dir.path()), "served devices made no lock file");
       Check(Contend(path, "native") == 2, "served devices keep the file owned against another process");
       // 3b (S1b). A legacy-mode (default) path-open in this process never
@@ -355,9 +362,10 @@ void Run(unsigned index, bool native_only) {
         Check(read.ok() && std::equal(page.begin(), page.end(), created.begin()),
               "S1b: the served reader still reads after the refused legacy-mode opens");
       }
-      Check(reader.Close().ok() && writer.Close().ok(), "served devices close");
+      // (Was: "reader.Close().ok() && writer.Close().ok()"; the refused writer never opened.)
+      Check(reader.Close().ok(), "the served device closes");
     }
-    Check(ReadFile(path) == created, "the served write changed no byte");
+    Check(ReadFile(path) == created, "no byte changed (the refused served write and the read-only write changed nothing)");
     Check(OnlyDatabase(dir.path()), "after served devices close, still no lock file");
   }
 

@@ -1298,10 +1298,37 @@ void CallbackCustody() {
   callback_operation = nullptr;
 }
 
+// Q283 = yes (owner 2026-11-19): a writer that wrote nothing is not synchronised at close. A real write (the
+// byte at offset 0 read and written back, which changes nothing) marks it dirty, so the controls that
+// exercise the close-time sync (its receipt, its failure and retry) still run. (Was: every close of a
+// writable member synchronised, so those controls needed no write.)
+void WriteByteBack(WriterFixture& f) {
+  auto operation = Writer::TryBeginOperation(f.writer, Fixed(1005));
+  Check(operation.ok(), "operation for the dirtying write");
+  std::array<byte, 1> one{};
+  Check(operation.operation.ReadAtBounded(f.primary(), f.made.profile, 0, one).ok() &&
+            operation.operation.WriteAtBounded(f.primary(), f.made.profile, 0, one).ok(),
+        "a real write marks the writer dirty");
+}
+
 void CloseControls() {
+  {
+    // Q283: nothing written, so closing syncs nothing; the member is still released.
+    WriterFixture f;
+    f.Accept();
+    std::array<db::NativeWriterMemberCloseReceipt, 1> members{};
+    reads = writes = syncs = 0;
+    io_counting = true;
+    const auto clean = Writer::Close(f.writer, members);
+    io_counting = false;
+    Check(clean.ok() && clean.member_count == 1 && !syncs && !writes && !members[0].synchronization &&
+              members[0].data.attempted && members[0].data.disposition == db::NativeWriterHandleCloseDisposition::released,
+          "closing a writer that wrote nothing performs no fsync and no write, and still releases the member");
+  }
   {
     WriterFixture f;
     f.Accept();
+    WriteByteBack(f);
     std::array<db::NativeWriterMemberCloseReceipt, 1> members{};
     reads = writes = syncs = 0;
     io_counting = true;
@@ -1341,6 +1368,7 @@ void CloseControls() {
   {
     WriterFixture f;
     f.Accept();
+    WriteByteBack(f);
     std::array<db::NativeWriterMemberCloseReceipt, 1> members{};
     io_counting = true;
     syncs = 0;

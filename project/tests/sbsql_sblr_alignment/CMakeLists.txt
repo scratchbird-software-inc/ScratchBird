@@ -4209,6 +4209,19 @@ if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
   set_tests_properties(sbsql_sblr_alignment_native_serving_strace PROPERTIES
     LABELS "sbsql_sblr_alignment;native_storage;native_serving;strace"
     TIMEOUT 1800)
+  # S3c (Q282 = 1, Q283 = yes, 2026-11-19): the REAL SBsrv, NO --config (the installed default
+  # SBsrv.conf), serves a natively created file at five page sizes, shuts down cleanly on SIGTERM, with
+  # the file's sha256 unchanged, 0 ".sb." syscalls and 0 write/fsync syscalls on the data descriptor.
+  add_test(NAME sbsql_sblr_alignment_native_default_sbsrv_run
+    COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_default_sbsrv_run.py"
+      --sbsrv $<TARGET_FILE:sb_server>
+      --test-bin $<TARGET_FILE:sbsql_sblr_alignment_native_serving>
+      --pack-root "${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password"
+      --template-conf "${CMAKE_SOURCE_DIR}/config/templates/SBsrv.conf"
+      --installed-conf "${SB_PUBLIC_ARTIFACT_ROOT}/etc/scratchbird/SBsrv.conf")
+  set_tests_properties(sbsql_sblr_alignment_native_default_sbsrv_run PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;native_serving;strace;default_config"
+    TIMEOUT 1800)
 endif()
 # SB_NATIVE_FIXED_ROOT_READ (drift removal C3d): owned-source adoption and the
 # native writer over a production create, with real OS/provider fault sweeps.

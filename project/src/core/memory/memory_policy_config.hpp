@@ -76,7 +76,9 @@ struct MemoryPolicyConfig {
   u64 metadata_format_version = 2;
   u64 hard_limit_bytes = 1024ull * 1024ull * 1024ull;
   u64 soft_limit_bytes = 768ull * 1024ull * 1024ull;
-  u64 per_context_limit_bytes = 256ull * 1024ull * 1024ull;
+  // Q282 = 1 (owner 2026-11-19): 512 MiB; the shipped pack, SBsrv.conf template and ServerBootstrapConfig agree.
+  // (Was: 256 MiB; the SBsrv.conf template said 128 MiB, which a native open exceeds.)
+  u64 per_context_limit_bytes = 512ull * 1024ull * 1024ull;
   u64 page_buffer_pool_limit_bytes = 512ull * 1024ull * 1024ull;
   AllocationFailureMode failure_mode = AllocationFailureMode::return_error;
   bool track_allocations = true;

@@ -1902,6 +1902,19 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
     Check(scratchbird::core::uuid::IsEngineIdentityUuid(engine_instance)&&engine_instance!=Id(1)&&
         engine_instance!=previous_engine_instance,"a successful native owner has its own instance identity and cold reopen cannot reuse it");
     previous_engine_instance=engine_instance;
+    if(profile==0&&reopen==0) {
+      // Q283 = yes (owner 2026-11-19): closing a writer that wrote nothing no longer syncs, so the
+      // injected close-time sync failure further down needs a real write first. It is made here, while
+      // the custody operation is free (a refused or busy close withdraws new operations): the byte at
+      // offset 0 is read and written back, a write that changes nothing. (Was: the clean close synced,
+      // and that fault fired with no write before it.)
+      auto writing=Host::TryBeginWriterOperation(host.runtime,Id(7001));
+      Check(writing.ok(),"the runtime hands the owning thread a custody operation for the write");
+      std::array<byte,1> one{};
+      Check(writing.operation.ReadAtBounded(host.runtime->primary_filespace_uuid(),Profile(profile),0,one).ok()&&
+          writing.operation.WriteAtBounded(host.runtime->primary_filespace_uuid(),Profile(profile),0,one).ok(),
+          "a real write (the byte at offset 0 written back) marks the writer dirty");
+    }
     const auto concurrent=Host::Open(process,ownership,host_limits,secondary);
     Check(concurrent.error==server::NativeHostedRuntimeError::process_admission_failure&&
         concurrent.process_admission_error==server::HostedProcessAdmissionError::opening&&!concurrent.runtime,
@@ -3074,6 +3087,7 @@ void EnrolledNativeSource(unsigned profile,bool indexed,server::ServerProcessCry
         callback_retain==server::NativeHostedRuntimeError::busy&&!callback_read_ok,
         "reset invalidates observed access and retains a busy original host through resource cleanup callbacks");
     if(profile==0&&reopen==0) {
+      // (Q283: the writer was made dirty by a real write right after the open; see there.)
       stage_sync_fault=1;
       const auto failed_close=Host::Close(host.runtime);
       const auto receipts=host.runtime->close_receipts();

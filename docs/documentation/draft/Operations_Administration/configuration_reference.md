@@ -123,7 +123,7 @@ The memory section governs the engine's allocation policy. The template ships a 
 | `policy_name` | `production_gate` | Named policy applied to memory management. |
 | `hard_limit_bytes` | `1073741824` (1 GiB) | Absolute memory ceiling. Allocations that would exceed this are rejected. |
 | `soft_limit_bytes` | `805306368` (768 MiB) | Soft ceiling. When `reject_over_soft_limit = true`, allocations beyond this are refused. |
-| `per_context_limit_bytes` | `134217728` (128 MiB) | Per-session or per-context allocation cap. |
+| `per_context_limit_bytes` | `536870912` (512 MiB) | Per-session or per-context allocation cap. (Was 128 MiB; raised 2026-11-19, owner Q282, so a native database open fits: measured peak about 185 MB in one context and about 320 MB cumulative.) |
 | `page_buffer_pool_limit_bytes` | `536870912` (512 MiB) | Page buffer pool size. |
 | `failure_mode` | `fail_closed` | How to respond when memory limits are hit. `fail_closed` rejects the operation. |
 | `track_allocations` | `true` | Enable per-allocation tracking for diagnostics. |

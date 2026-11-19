@@ -2386,11 +2386,27 @@ IoResult FileDevice::OpenServed(const std::shared_ptr<RouteOwnershipLease>& owne
   std::shared_ptr<RouteOwnershipLease> pin;
   int duplicate = -1;
   const char* refusal = nullptr;
+  bool native_lease = false;
+  bool native_write_refused = false;
   {
     std::lock_guard<std::mutex> guard(registry.mutex);
     // BorrowPin's destructor takes this mutex: duplicate before pinning and
     // let every failure drop the pin only after the guard is released.
-    if (!owner->accepting_ || !owner->issuing_ || !owner->valid()) {
+    // S3c (plan 38 2e, owner Q239 = 1, 2026-11-19). A native data-file lease is
+    // never "withdrawn" by custody: BeginNativeSourceTransition clears accepting_
+    // to stop LEGACY borrowing, but the lease keeps issuing read-only served
+    // duplicates of its retained descriptor for as long as it issues (Withdraw,
+    // the ownership release, still refuses). Writes only ever go through the
+    // loop thread's custody operation, so a writable served open of a native
+    // lease is refused whatever the custody state. A reader never waits on a
+    // writer: no counted borrow (the drain does not wait for it) and no path
+    // serialization guard below. Legacy leases are unchanged.
+    // (Was: every served open, native included, was refused "withdrawn" once custody began.)
+    native_lease = owner->native_data_file();
+    if (native_lease && writing) {
+      native_write_refused = true;
+    } else if (native_lease ? (!owner->issuing_ || !owner->valid())
+                            : (!owner->accepting_ || !owner->issuing_ || !owner->valid())) {
       refusal = "withdrawn";
     } else if (writing && owner->storage_access_ != RouteStorageAccess::read_write) {
       refusal = "writable_not_requested";
@@ -2411,7 +2427,15 @@ IoResult FileDevice::OpenServed(const std::shared_ptr<RouteOwnershipLease>& owne
         if (duplicate < 0) {
           refusal = "descriptor_duplicate_failed";
         } else {
-          pin = RouteOwnershipLease::PinBorrowLocked(owner);
+          if (native_lease) {
+            // An uncounted pin: it keeps the lease (and its retained descriptors)
+            // alive for this device, but is not a legacy borrower, so it neither
+            // delays a source admission or drain nor is delayed by one.
+            pin = std::shared_ptr<RouteOwnershipLease>(
+                std::make_shared<RouteOwnershipLease::BorrowPin>(owner), owner.get());
+          } else {
+            pin = RouteOwnershipLease::PinBorrowLocked(owner);
+          }
           if (!pin) {
             (void)::close(duplicate);
             duplicate = -1;
@@ -2420,6 +2444,10 @@ IoResult FileDevice::OpenServed(const std::shared_ptr<RouteOwnershipLease>& owne
         }
       }
     }
+  }
+  if (native_write_refused) {
+    return MakeIoError("SB-STORAGE-DISK-SERVED-NATIVE-WRITE-REFUSED",
+                       "storage.disk.served_native_write_refused", database_path);
   }
   if (refusal != nullptr) {
     return MakeIoError("SB-STORAGE-DISK-SERVED-REFUSED", "storage.disk.served_refused",
@@ -2434,8 +2462,11 @@ IoResult FileDevice::OpenServed(const std::shared_ptr<RouteOwnershipLease>& owne
     return MakeIoError("SB-STORAGE-DISK-SERVED-PATH-MISMATCH",
                        "storage.disk.served_path_mismatch", database_path);
   }
-  std::unique_lock<std::recursive_mutex> storage_guard =
-      AcquireRouteOwnedStorageGuard(database_path);
+  // A native read-only device takes no path guard: it shares no mutable state
+  // (reads are positional on its own duplicate), and a reader must never wait
+  // on another device (S3c).
+  std::unique_lock<std::recursive_mutex> storage_guard;
+  if (!native_lease) storage_guard = AcquireRouteOwnedStorageGuard(database_path);
   path_ = std::move(database_path);
   owner_lock_path_.clear();
   route_owner_lease_ = std::move(pin);

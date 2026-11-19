@@ -623,7 +623,9 @@ AllocationPolicy DefaultLocalEngineMemoryPolicy() {
   policy.policy_name = "default_local_server_memory_cache_v1";
   policy.hard_limit_bytes = 1024ull * 1024ull * 1024ull;
   policy.soft_limit_bytes = 768ull * 1024ull * 1024ull;
-  policy.per_context_limit_bytes = 256ull * 1024ull * 1024ull;
+  // Q282 = 1 (owner 2026-11-19): 512 MiB. (Was: 256 MiB.) A native open peaks at ~185 MB in one
+  // context and ~320 MB cumulative (measured, 8K-128K pages); one value everywhere.
+  policy.per_context_limit_bytes = 512ull * 1024ull * 1024ull;
   policy.page_buffer_pool_limit_bytes = 512ull * 1024ull * 1024ull;
   policy.failure_mode = AllocationFailureMode::return_error;
   policy.track_allocations = true;

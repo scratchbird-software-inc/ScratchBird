@@ -10501,7 +10501,7 @@ PolicySeedPackDescriptor DefaultPolicyPackDescriptor() {
   // keeps a quoted name's case, and its collision group shares one key lane.
   // Previous: 9c610876d2671c4b8d1cd65cd80a7481e7ddd6e80fc9cb57737c73e418019d81
   descriptor.content_sha256 =
-      "b04aa3376b10c0285d91cae4fc7b5442a2710c330da3a19cad9d3fff24624024";
+      "a75c1f49626d2025b1315761415ef784dfd879a10ffa0e975f3f711605799456";
   descriptor.create_time_only = true;
   descriptor.post_create_filesystem_authority = false;
   descriptor.local_password_only = true;

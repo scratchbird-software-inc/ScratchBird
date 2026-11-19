@@ -21,6 +21,8 @@
 //   create-lowlevel <path> <ps> <kind>   storage-level create: kind seedless | mismatched
 //   serve <path> [variant]               one StartHostedEngine, then a clean shutdown
 //   serve-hold <path>                    serve, wait for SIGTERM, shut down
+//   serve <path> read                    S3c: serve, then served reads after custody (below), shut down
+//   memory-defaults                      prints the three in-code per-context memory defaults (Q282)
 // With no argument the binary drives the cases for all five page sizes
 // (8K..128K) and checks: serving; the file's bytes unchanged (no write before
 // Restart) and no file made; the loop thread named sb-db-loop; L5 authenticated
@@ -30,7 +32,13 @@
 // every page-zero root page refused with a specific code, the file unchanged;
 // an L5 seed row absent or inconsistent refused with a specific code.
 // The strace half (0 ".sb." syscalls, 0 lock files, 0 pwrite/fsync/fdatasync on
-// the data descriptor) is native_serving_strace.py.
+// the data descriptor, 0 opens of the database path after serving) is native_serving_strace.py.
+// SEARCH_KEY: SB_NATIVE_SERVED_READS_AFTER_CUSTODY (S3c, plan 38 2e, owner Q239 = 1,
+// 2026-11-19). After "serving" (custody taken, legacy borrowing fenced) a session/engine thread
+// still obtains READ-ONLY served device duplicates of the lease's retained descriptor (no path
+// open, no lock file, no wait on anything), a writable served open is refused with
+// SB-STORAGE-DISK-SERVED-NATIVE-WRITE-REFUSED, and eight threads read concurrently, byte-identical
+// to the file. Writes only ever go through the loop thread's custody operation.
 
 #include "lifecycle/engine_lifecycle_api.hpp"
 #include "hash_digest.hpp"
@@ -50,6 +58,8 @@
 #include "memory.hpp"
 #include "../support/owned_temp_directory.hpp"
 #include "../support/native_database_create_fixture.hpp"
+#include "../support/path_open_counter.hpp"
+#include "memory_policy_config.hpp"
 
 #include <csignal>
 #include <pthread.h>
@@ -59,6 +69,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
@@ -71,6 +82,7 @@
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 namespace {
@@ -200,6 +212,122 @@ std::string ThreadNames() {
   return out;
 }
 
+// S3c: served reads after custody. `file` is the whole database file, read BEFORE the server opened it,
+// so no path is opened once it is serving. Every read below goes through a served device (a duplicate of
+// the lease's retained descriptor).
+std::string ServedReads(const srv::HostedEngineState& state, const fs::path& path, std::uint32_t page_size,
+                        const std::vector<char>& file) {
+  namespace opens = scratchbird::tests::path_open_counter;
+  const auto lease = srv::ServedRouteOwnerFor(state, path.string());
+  Check(lease != nullptr, "the native lease is resolvable by its path after serving");
+  Check(lease->ObserveWriteCustody() == d::RouteWriteCustodyState::retained,
+        "write custody is retained by the lease (the runtime took it before serving)");
+  opens::Watch(path.string());
+  const auto before = d::ObserveFileDevicePathOpens();
+  const auto file_opens_before = opens::FileOpens(), sidecar_opens_before = opens::SidecarOpens();
+
+  // Page zero and every root page page zero names (the catalog's among them): what a session reads.
+  std::vector<std::uint64_t> pages{0};
+  {
+    d::FileDevice device;
+    Check(device.OpenServed(lease, path.string(), d::FileOpenMode::open_existing_read_only).ok(),
+          "a read-only served device is issued after custody");
+    Check(device.read_only(), "the served device is read-only");
+    const auto zero = d::ReadFilespacePageZeroFromOpenDevice(device);
+    Check(zero.ok(), "page zero reads through the served device");
+    std::set<std::uint64_t> roots;
+    for (const auto& root : zero.record->roots) roots.insert(root.page_number);
+    for (const auto root : roots)
+      if (root != 0) pages.push_back(root);
+    Check(device.Close().ok(), "the served device closes");
+  }
+  Check(pages.size() >= 3, "page zero names root pages to compare");
+
+  // A writable served open of a native lease is refused with its specific code, custody or not.
+  std::string refusal_code;
+  {
+    d::FileDevice writer;
+    const auto refused = writer.OpenServed(lease, path.string(), d::FileOpenMode::open_existing);
+    Check(!refused.ok() && !writer.is_open(), "a writable served open of the native lease is refused");
+    refusal_code = refused.diagnostic.diagnostic_code;
+    Check(refusal_code == "SB-STORAGE-DISK-SERVED-NATIVE-WRITE-REFUSED", "refused with the specific code: " + refusal_code);
+  }
+
+  const auto compare = [&](d::FileDevice& device, std::string& why) {
+    std::vector<char> page(page_size);
+    for (const auto number : pages) {
+      const auto read = device.ReadAt(number * page_size, page.data(), page.size());
+      if (!read.ok() || read.bytes_transferred != page.size()) { why = "read failed, page " + std::to_string(number); return false; }
+      if (!std::equal(page.begin(), page.end(), file.begin() + static_cast<std::ptrdiff_t>(number * page_size))) {
+        why = "page " + std::to_string(number) + " differs from the file";
+        return false;
+      }
+    }
+    return true;
+  };
+
+  // Another thread (a session/engine thread) obtains its own device and reads the pages.
+  {
+    std::string why = "not run";
+    bool ok = false;
+    std::thread reader([&] {
+      d::FileDevice device;
+      if (!device.OpenServed(lease, path.string(), d::FileOpenMode::open_existing_read_only).ok()) { why = "open refused"; return; }
+      ok = compare(device, why);
+      // The device cannot write: positional write on a read-only duplicate is refused by the device.
+      if (device.WriteAt(0, file.data(), page_size).ok()) { ok = false; why = "a read-only served device accepted a write"; }
+      if (!device.Close().ok()) { ok = false; why = "close failed"; }
+    });
+    reader.join();
+    Check(ok, "another thread's served device reads page 0 and the catalog pages byte-identical to the file: " + why);
+  }
+
+  // Eight threads at once, each opening, reading and closing its own device repeatedly. No thread
+  // waits on another (a barrier releases them together and the whole run has a deadline).
+  constexpr int kThreads = 8, kRounds = 25;
+  std::atomic<int> arrived{0}, failures{0}, completed{0};
+  std::atomic<bool> go{false};
+  std::vector<std::string> reasons(kThreads);
+  std::vector<std::thread> threads;
+  for (int t = 0; t < kThreads; ++t)
+    threads.emplace_back([&, t] {
+      ++arrived;
+      while (!go.load()) std::this_thread::yield();
+      for (int round = 0; round < kRounds; ++round) {
+        d::FileDevice device;
+        if (!device.OpenServed(lease, path.string(), d::FileOpenMode::open_existing_read_only).ok()) {
+          reasons[t] = "open refused"; ++failures; return;
+        }
+        if (!compare(device, reasons[t])) { ++failures; return; }
+        if (!device.Close().ok()) { reasons[t] = "close failed"; ++failures; return; }
+        ++completed;
+      }
+    });
+  while (arrived.load() < kThreads) std::this_thread::yield();
+  const auto started = std::chrono::steady_clock::now();
+  go = true;
+  for (auto& thread : threads) thread.join();
+  const auto elapsed_ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
+  std::string first_reason;
+  for (const auto& r : reasons) if (!r.empty()) { first_reason = r; break; }
+  Check(failures.load() == 0 && completed.load() == kThreads * kRounds,
+        "eight concurrent readers each read every page byte-identical: " + first_reason);
+
+  const auto after = d::ObserveFileDevicePathOpens();
+  const auto served_opens = after.served_opens - before.served_opens;
+  const auto path_opens = (after.opens_without_route_owner - before.opens_without_route_owner) +
+                          (after.opens_with_route_owner - before.opens_with_route_owner);
+  const auto file_opens = opens::FileOpens() - file_opens_before, sidecar_opens = opens::SidecarOpens() - sidecar_opens_before;
+  opens::Watch({});
+  Check(path_opens == 0, "no served read counted as a FileDevice path open");
+  Check(file_opens == 0 && sidecar_opens == 0, "no open of the database file or a sidecar reached libc during the served reads");
+  Check(served_opens == 1 + 1 + kThreads * kRounds, "every read used a served device: " + std::to_string(served_opens));
+  return "READ pages=" + std::to_string(pages.size()) + " threads=" + std::to_string(kThreads) + " rounds=" +
+         std::to_string(kRounds) + " served_opens=" + std::to_string(served_opens) + " path_opens=" + std::to_string(path_opens) +
+         " file_opens=" + std::to_string(file_opens) + " sidecar_opens=" + std::to_string(sidecar_opens) +
+         " writable_refused=" + refusal_code + " elapsed_ms=" + std::to_string(elapsed_ms);
+}
+
 // One StartHostedEngine in this process, as a server process does: the process
 // crypto owner started first (it outlives the hosted state), then the open.
 // variant: "" normal | keyed | readonly | nocrypto.
@@ -215,6 +343,12 @@ int ServeMode(const fs::path& path, std::string_view variant, bool hold) {
       !crypto.Start(config, policy).ok())
     return 3;
   config.database_default_path = path;
+  // S3c: the whole file is read BEFORE the open, so nothing opens the path once the server is serving.
+  std::vector<char> whole_file;
+  if (variant == "read") {
+    std::ifstream in(path, std::ios::binary);
+    whole_file.assign(std::istreambuf_iterator<char>(in), {});
+  }
   if (variant == "keyed") config.startup_credential_source = "operator_file";
   if (variant == "readonly") config.database_open_mode = "read_only";
   sigset_t blocked;
@@ -244,6 +378,7 @@ int ServeMode(const fs::path& path, std::string_view variant, bool hold) {
                 << " status_has_state=" << (srv::HostedEngineStatusJson(started.state).find("\"native_serving_state\":\"serving\"") != std::string::npos)
                 << " served_owner=" << (srv::ServedRouteOwnerFor(started.state, path.string()) != nullptr)
                 << std::endl;
+      if (variant == "read") std::cout << ServedReads(started.state, path, snapshot.page_size_bytes, whole_file) << std::endl;
       if (hold) {
         int signal_number = 0;
         sigwait(&blocked, &signal_number);
@@ -413,6 +548,22 @@ void ServePageSize(const std::string& self, const fs::path& root, std::uint32_t 
   Check(Snapshot(dir) == before, tag + "serving and shutdown wrote nothing (bytes unchanged) and made no file");
   ExpectOwnable(path, tag + "after shutdown");
 
+  // 1b. S3c: served reads after custody (read-only duplicates; writable refused; eight concurrent readers).
+  {
+    const auto reads = RunChild(self, {"serve", path.string(), "read"});
+    Check(reads.status == 0, tag + "serve-read child exits 0: " + reads.first_line + " / " + reads.rest);
+    Check(reads.first_line.starts_with("SERVING state=serving "), tag + "serving before the reads: " + reads.first_line);
+    const auto at = reads.rest.find("READ ");
+    Check(at != std::string::npos, tag + "the served reads ran: " + reads.rest);
+    const auto line = reads.rest.substr(at, reads.rest.find('\n', at) - at);
+    Check(Field(line, "path_opens") == "0" && Field(line, "file_opens") == "0" && Field(line, "sidecar_opens") == "0",
+          tag + "no path open after serving: " + line);
+    Check(Field(line, "writable_refused") == "SB-STORAGE-DISK-SERVED-NATIVE-WRITE-REFUSED", tag + "writable refused: " + line);
+    Check(Has(reads.rest, "AFTER_CLOSE reowned=true"), tag + "clean shutdown after the reads");
+    Check(Snapshot(dir) == before, tag + "the served reads changed nothing");
+    std::printf("[%u] %s\n", page_size, line.c_str());
+  }
+
   // 2. a second server on the file while the first serves.
   {
     auto holder = Spawn(self, {"serve-hold", path.string()});
@@ -509,6 +660,13 @@ int main(int argc, char** argv) {
       return CreateLowLevelMode(argv[2], static_cast<std::uint32_t>(std::stoul(argv[3])), argv[4]);
     if (mode == "serve" && (argc == 3 || argc == 4)) return ServeMode(argv[2], argc == 4 ? argv[3] : "", false);
     if (mode == "serve-hold" && argc == 3) return ServeMode(argv[2], "", true);
+    if (mode == "memory-defaults" && argc == 2) {
+      // Q282 = 1: the three in-code defaults, for the default-SBsrv test to compare with the shipped files.
+      std::cout << "MEMORY_DEFAULTS bootstrap_config=" << srv::ServerBootstrapConfig{}.memory_per_context_limit_bytes
+                << " engine_policy=" << scratchbird::core::memory::DefaultLocalEngineMemoryPolicy().per_context_limit_bytes
+                << " policy_config=" << scratchbird::core::memory::MemoryPolicyConfig{}.per_context_limit_bytes << std::endl;
+      return 0;
+    }
     return 2;
   }
   const std::string self = fs::read_symlink("/proc/self/exe").string();

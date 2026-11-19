@@ -155,7 +155,8 @@ bool DefaultPolicyPackMemoryPolicyLoads() {
                 "default policy-pack hard limit mismatch") &&
          Expect(loaded.config.memory_soft_limit_bytes == 768ull * kMiB,
                 "default policy-pack soft limit mismatch") &&
-         Expect(loaded.config.memory_per_context_limit_bytes == 256ull * kMiB,
+         // Q282 = 1 (owner 2026-11-19): the shipped default is 512 MiB. (Was: 256 MiB.)
+         Expect(loaded.config.memory_per_context_limit_bytes == 512ull * kMiB,
                 "default policy-pack per-context limit mismatch") &&
          Expect(loaded.config.memory_page_buffer_pool_limit_bytes == 512ull * kMiB,
                 "default policy-pack page-buffer pool mismatch") &&
@@ -180,7 +181,9 @@ bool ExplicitConfigOverridesPolicyPackMemoryFields() {
                            "policy_name = operator_override\n"
                            "hard_limit_bytes = 2147483648\n"
                            "soft_limit_bytes = 1073741824\n"
-                           "per_context_limit_bytes = 536870912\n"
+                           // Q282 = 1: the override must differ from the shipped default (512 MiB), so
+                           // it is 768 MiB. (Was: 536870912 = 512 MiB, equal to the new default.)
+                           "per_context_limit_bytes = 805306368\n"
                            "page_buffer_pool_limit_bytes = 268435456\n"
                            "min_startup_available_bytes = 2147483648\n"
                            "trim_heap_on_disconnect = true\n"
@@ -197,7 +200,7 @@ bool ExplicitConfigOverridesPolicyPackMemoryFields() {
                 "explicit hard limit override mismatch") &&
          Expect(loaded.config.memory_soft_limit_bytes == 1024ull * kMiB,
                 "explicit soft limit override mismatch") &&
-         Expect(loaded.config.memory_per_context_limit_bytes == 512ull * kMiB,
+         Expect(loaded.config.memory_per_context_limit_bytes == 768ull * kMiB,
                 "explicit per-context override mismatch") &&
          Expect(loaded.config.memory_page_buffer_pool_limit_bytes == 256ull * kMiB,
                 "explicit page-buffer pool override mismatch") &&

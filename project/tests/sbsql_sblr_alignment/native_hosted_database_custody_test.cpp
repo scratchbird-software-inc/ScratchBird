@@ -410,6 +410,18 @@ void CloseObligations() {
   f.Mount();
   const auto route = std::weak_ptr(f.route.lock);
   f.route.lock.reset();
+  {
+    // Q283 = yes (owner 2026-11-19): a writer that wrote nothing is not synchronised at close, so the
+    // close-time sync failure below needs a real write first (the byte at offset 0 written back). It is
+    // made before the first close attempt: a refused or busy close withdraws new operations.
+    // (Was: the clean close synchronised, and the fault fired with no write before it.)
+    auto writing = Host::TryBeginOperation(f.host, Fixed(1003));
+    Check(writing.ok(), "operation for the dirtying write");
+    std::array<byte, 1> one{};
+    Check(writing.operation.ReadAtBounded(f.primary(), f.made.profile, 0, one).ok() &&
+              writing.operation.WriteAtBounded(f.primary(), f.made.profile, 0, one).ok(),
+          "a real write marks the writer dirty");
+  }
   auto operation = Host::TryBeginOperation(f.host, Fixed(1001));
   Check(operation.ok(), "host close fixture operation");
   auto reader = f.Read(operation.operation);

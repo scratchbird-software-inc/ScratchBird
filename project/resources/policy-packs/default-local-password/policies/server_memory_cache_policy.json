@@ -9,7 +9,7 @@
   "limits": {
     "hard_limit_bytes": 1073741824,
     "soft_limit_bytes": 805306368,
-    "per_context_limit_bytes": 268435456,
+    "per_context_limit_bytes": 536870912,
     "page_buffer_pool_limit_bytes": 536870912,
     "openssl_budget_bytes": 4194304,
     "min_startup_available_bytes": 1073741824

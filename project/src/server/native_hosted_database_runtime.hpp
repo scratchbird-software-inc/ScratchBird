@@ -210,6 +210,13 @@ class NativeHostedDatabaseRuntime final {
       std::vector<std::unique_ptr<storage::disk::FileDevice>>&,
       std::shared_ptr<DatabaseOwnershipLock> held_ownership) noexcept;
   static NativeHostedRuntimeCloseResult Close(std::shared_ptr<NativeHostedDatabaseRuntime>) noexcept;
+  // S3c/S3d: the one write door. Writes only ever go through a custody
+  // operation taken on the owning (database loop) thread; served devices are
+  // read-only. Refused (default result) off the owning thread, after close, or
+  // when the writer is not retained. The caller releases the operation before
+  // Close (a live operation makes Close busy).
+  static NativeHostedDatabaseCustody::OperationResult TryBeginWriterOperation(
+      std::shared_ptr<NativeHostedDatabaseRuntime>, const Uuid& operation_identity) noexcept;
  private:
   // Shared body. Owns the reservation when Open reserved it, borrows when the
   // caller already holds one.

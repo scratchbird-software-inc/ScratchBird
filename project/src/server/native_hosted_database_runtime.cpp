@@ -184,6 +184,14 @@ NativeHostedRuntimeCloseResult NativeHostedDatabaseRuntime::Close(
   return CloseImpl(*owner);
 }
 
+NativeHostedDatabaseCustody::OperationResult NativeHostedDatabaseRuntime::TryBeginWriterOperation(
+    std::shared_ptr<NativeHostedDatabaseRuntime> runtime, const Uuid& operation_identity) noexcept {
+  NativeHostedDatabaseCustody::OperationResult out;
+  if (!runtime || !runtime->SameOwner() || runtime->closed_ || runtime->writer_retired_ || !runtime->custody_)
+    return out;
+  return NativeHostedDatabaseCustody::TryBeginOperation(runtime->custody_, operation_identity);
+}
+
 NativeHostedRuntimeCloseResult NativeHostedDatabaseRuntime::CloseImpl(
     NativeHostedDatabaseRuntime& self) noexcept {
   using E=NativeHostedRuntimeError;NativeHostedRuntimeCloseResult out;
