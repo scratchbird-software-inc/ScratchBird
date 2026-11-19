@@ -20,8 +20,7 @@ db::NativeCreationCatalogSeed DenseIndexedCatalogSeed(const db::NativeFilespaceI
   for(unsigned i=0;i<count;++i) {
     auto row=fixture[0][1];row.metadata.record.header.object_uuid={UuidKind::object,Id(base+i)};
     row.metadata.record.header.row_uuid={UuidKind::row,Id(base+stride+i)};
-    /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
-    row.metadata.name_vector_uuid={UuidKind::object,Id(base+3*stride+i)};
+    /* SB_CATALOG_NO_NAME_REFERENCE (Q248 = 1; Q261(b) = 1, 2026-11-18): no default_name_uuid, no name_vector_uuid */
     c::CatalogMetricLabelSchema labels{Id(base+i),1,descriptor.record->definition.labels,false,request.creator.transaction_uuid,1};
     const auto encoded=c::EncodeCatalogMetricLabelSchema(labels);Check(encoded.ok(),"independent native label definition");
     row.metadata.record.payload.assign(encoded.bytes.begin(),encoded.bytes.end());seed[0].push_back(std::move(row));
@@ -80,8 +79,7 @@ void NativeMetricConfigChecks(const fs::path& directory) {
       auto& meta=records[j].metadata;
       meta.record.header.object_uuid={UuidKind::object,ids[j]};
       meta.record.header.row_uuid={UuidKind::row,Id(1020+100*i+j)};
-      /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
-      meta.name_vector_uuid={UuidKind::object,Id(1060+100*i+j)};
+      /* SB_CATALOG_NO_NAME_REFERENCE (Q248 = 1; Q261(b) = 1, 2026-11-18): no default_name_uuid, no name_vector_uuid */
       meta.security_policy_uuid={UuidKind::object,ids[3]};
     }
     const auto replace=[&](unsigned at,const auto& encoded) {

@@ -115,10 +115,15 @@ not to bind; the bootstrap principal name measured the same:
 | 128 KiB | 32,492 | 8,123 |
 
 - The identifier profile's own maximum applies as well, and whichever limit is
-  smaller refuses first. The default pack allows 512 Unicode characters. Under
-  it, only a name made mostly of four-byte characters can reach the page limit,
-  and only at 8 KiB pages. At 16 KiB and larger pages the profile maximum
-  always refuses first.
+  smaller refuses first. The default pack's profile allows 512 Unicode scalars
+  (the engine's limit); each SQL dialect advertises its own, and SBsql
+  advertises 256 characters, a parser-side limit below the engine's. Under the
+  pack's 512, only a name made mostly of four-byte characters can reach the
+  page limit, and only at 8 KiB pages. At 16 KiB and larger pages the profile
+  maximum always refuses first.
+- Re-measured 2026-11-18 after the metadata header shrank to 352 bytes
+  (names found by object UUID, no name reference on definitions): the maxima
+  above are unchanged at 8, 16, 64 and 128 KiB (the key, not the row, binds).
 - A create whose name exceeds the page limit is refused before any file is
   written, with `DATABASE.CREATE_NAME_KEY_EXCEEDS_PAGE_CAPACITY`. Use a larger
   page size or a shorter name.

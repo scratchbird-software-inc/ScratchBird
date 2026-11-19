@@ -124,8 +124,7 @@ inline bool CatalogSchedulerPolicyMatchesMetadata(const CatalogMetadataVersionVi
       !identity(m.owning_schema_uuid, UuidKind::schema) ||
       !identity(m.record.header.parent_uuid, UuidKind::object) ||
       m.owning_schema_uuid.value != m.record.header.parent_uuid.value ||
-      // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16): (was: default_name_uuid also checked or set on the next line).
-      !identity(m.name_vector_uuid, UuidKind::object) ||
+      // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16; Q261(b) = 1, 2026-11-18): the definition carries no default_name_uuid and no name_vector_uuid (was: both checked here).
       !identity(m.creator_transaction_uuid, UuidKind::transaction)) return false;
   const auto decoded = DecodeCatalogSchedulerPolicy(m.record.payload);
   const auto& r = *decoded.record;
@@ -268,8 +267,7 @@ inline bool CatalogSchedulerQueueProfileMatchesMetadata(const CatalogMetadataVer
       m.authority_scope != CatalogAuthorityScope::local ||
       !identity(m.owning_schema_uuid,UuidKind::schema) || !identity(m.record.header.parent_uuid,UuidKind::object) ||
       m.owning_schema_uuid.value != m.record.header.parent_uuid.value ||
-      // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16): (was: default_name_uuid also checked or set on the next line).
-      !identity(m.name_vector_uuid,UuidKind::object) ||
+      // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16; Q261(b) = 1, 2026-11-18): the definition carries no default_name_uuid and no name_vector_uuid (was: both checked here).
       !identity(m.creator_transaction_uuid,UuidKind::transaction)) return false;
   const auto decoded = DecodeCatalogSchedulerQueueProfile(m.record.payload); const auto& r = *decoded.record;
   return r.generation == m.definition_version &&

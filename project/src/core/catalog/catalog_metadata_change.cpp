@@ -75,7 +75,7 @@ bool Metadata(const CatalogMetadataVersionView& m, const CatalogMetadataChange& 
       m.record.header.parent_uuid.value != m.owning_schema_uuid.value || !Typed(m.audit_uuid, UuidKind::object) ||
       // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16): (was: default_name_uuid also checked or set on the next line).
       m.audit_uuid.value != r.event_uuid || 
-      m.name_vector_uuid.valid() || !m.name_vector_uuid.value.is_nil() ||
+      // SB_CATALOG_NO_NAME_REFERENCE (Q248 = 1; Q261(b) = 1, 2026-11-18): no name reference at all (was: name_vector_uuid required nil).
       !Typed(m.creator_transaction_uuid, UuidKind::transaction) || !m.definition_version ||
       m.catalog_generation != r.catalog_generation ||
       (m.definition_version == 1 && (m.creator_transaction_uuid.value != r.origin_transaction_uuid.value ||

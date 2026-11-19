@@ -174,9 +174,14 @@ sudo /opt/ScratchBird/bin/SBsql \
   bootstrap qa_admin "$SB_INSTANCE/data/default.sbdb" \
   --mode=embedded \
   --platform-profile="$SB_INSTANCE/config/SBbootstrap.profile" \
-  --resource-seed-pack-root=/opt/ScratchBird/share/scratchbird/resources/seed-packs/initial-resource-pack \
-  --policy-seed-pack-root=/opt/ScratchBird/share/scratchbird/resources/policy-packs/default-local-password
+  --policy-seed-pack-root=/opt/ScratchBird/share/scratchbird/resources/policy-packs/default-local-password \
+  --total-pages=1024 --service-principal=node_service
 ```
+
+The service principal's credential is derived and kept inside the database;
+nothing is printed for it (the command reports
+`service_principal_credential=provisioned_internal_only`), and it cannot be used
+from outside the engine.
 
 On Windows, open an elevated PowerShell only for the manual MSI diagnostic
 system-service flow. The public ZIP-only testing flow uses an extracted private
@@ -190,8 +195,8 @@ Set-Location "$env:ProgramFiles\ScratchBird"
 .\bin\SBsql.exe bootstrap qa_admin "$Instance\data\default.sbdb" `
   --mode=embedded `
   --platform-profile="$Instance\config\SBbootstrap.profile" `
-  --resource-seed-pack-root="$PWD\share\scratchbird\resources\seed-packs\initial-resource-pack" `
-  --policy-seed-pack-root="$PWD\share\scratchbird\resources\policy-packs\default-local-password"
+  --policy-seed-pack-root="$PWD\share\scratchbird\resources\policy-packs\default-local-password" `
+  --total-pages=1024 --service-principal=node_service
 ```
 
 Re-running either command against the created database must be refused. A

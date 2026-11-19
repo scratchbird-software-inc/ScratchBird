@@ -29,12 +29,12 @@ inline api::RuntimePrincipalCredentialRequest CredentialRequest(
 }
 
 inline api::EngineAuthenticateRequest AuthenticationRequest(
-    const api::RuntimePrincipalObservationRequest& source) {
+    const api::RuntimePrincipalObservationRequest& source, const std::string& claim = "runtime_service") {
   api::EngineAuthenticateRequest request;
   request.context.database_path = source.database_path;
   request.context.database_uuid = source.database_uuid;
   request.provider_family = "local_password";
-  request.principal_claim = "runtime_service";
+  request.principal_claim = claim;
   request.credential_evidence = "DBLC013G-fixture-password";
   request.durable_principal_uuid = source.principal_uuid;
   return request;
@@ -91,10 +91,26 @@ inline int ColdMain(const char* path) {
   const auto authentication = api::EngineAuthenticate(AuthenticationRequest(request));
   const auto credential = api::VerifyRuntimePrincipalCredential(CredentialRequest(request));
   if (expect_active != 0) {
-    if (!authentication.ok || !authentication.authenticated ||
-        !authentication.durable_security_state ||
-        authentication.connection_security_context.effective_user_uuid != request.principal_uuid)
+    // SEARCH_KEY: SB_AGENT_PRINCIPAL_EXTERNAL_BINDING_REFUSED (owner Q274,
+    // 2026-11-19: agents "can not have a connection outside the database
+    // itself ie even if you have the password, you can not run it from any
+    // location except inside the program itself"). This principal is a
+    // service principal (asserted below): the EXTERNAL authentication path
+    // (EngineAuthenticate) now refuses it with its own code, with the right
+    // password and before the password is verified, and builds no session
+    // context or durable security state. The INTERNAL credential verification
+    // (VerifyRuntimePrincipalCredential, the L5-style binding) still verifies
+    // the same password. (Was: EngineAuthenticate authenticated the service
+    // principal, with the connection context's effective user equal to it and
+    // a retained durable security state; the cold child returned 6 for any
+    // other result. Q278: the refusal is keyed on principal_kind "service"
+    // until the native loader supplies authority_class.)
+    if (authentication.ok || authentication.authenticated || authentication.durable_security_state)
       return 6;
+    if (authentication.diagnostics.empty() ||
+        authentication.diagnostics.front().code != "SECURITY.AGENT_PRINCIPAL_EXTERNAL_BINDING_REFUSED" ||
+        authentication.diagnostics.front().detail != "service_principals_authenticate_only_inside_the_engine")
+      return 10;
     if (!credential.ok() || credential.lease->principal_uuid() != request.principal_uuid ||
         credential.lease->security_context_generation() != context_generation) return 8;
   } else if (authentication.ok || authentication.authenticated || authentication.durable_security_state) {
@@ -253,12 +269,38 @@ inline void ProjectionChecks(const api::EngineRequestContext& admin,
   Check(selected(project()).empty(), "committed revoke removes projected grant");
 }
 
-inline void AuthenticationIdentityChecks(const api::RuntimePrincipalObservationRequest& source) {
-  auto request = AuthenticationRequest(source);
+// SEARCH_KEY: SB_AGENT_PRINCIPAL_EXTERNAL_BINDING_REFUSED (owner Q274,
+// 2026-11-19). These checks pin how EngineAuthenticate binds a raw password to
+// an exact binary principal (candidate mismatch, name-only resolution, text or
+// malformed identities, wrong password). They now run against the bootstrap
+// USER principal (`user_source`, named `user_name`, the same fixture password):
+// a service principal can no longer authenticate through this external path at
+// all, which the first check pins with the right password. (Was: every check
+// ran against the "runtime_service" service principal, `source`, and
+// `accepted` required it to authenticate.)
+inline void AuthenticationIdentityChecks(const api::RuntimePrincipalObservationRequest& source,
+                                         const api::RuntimePrincipalObservationRequest& user_source,
+                                         const std::string& user_name) {
+  {
+    const auto service_refused = api::EngineAuthenticate(AuthenticationRequest(source));
+    Check(!service_refused.ok && !service_refused.authenticated && !service_refused.durable_security_state &&
+          service_refused.diagnostics.size() == 1 &&
+          service_refused.diagnostics.front().code == "SECURITY.AGENT_PRINCIPAL_EXTERNAL_BINDING_REFUSED" &&
+          service_refused.diagnostics.front().detail == "service_principals_authenticate_only_inside_the_engine",
+          "a service principal with the right password is refused on the external path, with its own code");
+    auto by_name_request = AuthenticationRequest(source);
+    by_name_request.durable_principal_uuid = {};
+    const auto service_by_name = api::EngineAuthenticate(by_name_request);
+    Check(!service_by_name.ok && !service_by_name.authenticated && !service_by_name.durable_security_state &&
+          service_by_name.diagnostics.size() == 1 &&
+          service_by_name.diagnostics.front().code == "SECURITY.AGENT_PRINCIPAL_EXTERNAL_BINDING_REFUSED",
+          "a service principal named without a UUID candidate is refused too, with its own code");
+  }
+  auto request = AuthenticationRequest(user_source, user_name);
   const auto accepted = api::EngineAuthenticate(request);
   Check(accepted.ok && accepted.authenticated && accepted.durable_security_state &&
-        accepted.connection_security_context.effective_user_uuid == source.principal_uuid,
-        "real service password authenticates exact binary principal");
+        accepted.connection_security_context.effective_user_uuid == user_source.principal_uuid,
+        "real password authenticates exact binary principal (the bootstrap user; was the service principal)");
   request.durable_principal_uuid = NewId(platform::UuidKind::principal).value;
   const auto mismatched = api::EngineAuthenticate(request);
   Check(!mismatched.ok && !mismatched.authenticated && !mismatched.durable_security_state &&
@@ -268,11 +310,11 @@ inline void AuthenticationIdentityChecks(const api::RuntimePrincipalObservationR
   request.durable_principal_uuid = {};
   const auto by_name = api::EngineAuthenticate(request);
   Check(by_name.ok && by_name.authenticated &&
-        by_name.connection_security_context.effective_user_uuid == source.principal_uuid,
+        by_name.connection_security_context.effective_user_uuid == user_source.principal_uuid,
         "absent candidate still resolves the actual durable identity");
   for (int candidate = 0; candidate < 3; ++candidate) {
     for (const auto* option : {"durable_principal_uuid:text", "durable_principal_uuid:"}) {
-      request = AuthenticationRequest(source);
+      request = AuthenticationRequest(user_source, user_name);
       if (candidate == 1) request.durable_principal_uuid = {};
       if (candidate == 2) request.durable_principal_uuid = NewId(platform::UuidKind::principal).value;
       request.option_envelopes.emplace_back(option);
@@ -283,15 +325,15 @@ inline void AuthenticationIdentityChecks(const api::RuntimePrincipalObservationR
             "text or empty identity option cannot become name-only authentication");
     }
   }
-  request = AuthenticationRequest(source);
-  request.credential_evidence = "scheme=local_password_v1;principal=runtime_service;principal_uuid=text";
+  request = AuthenticationRequest(user_source, user_name);
+  request.credential_evidence = "scheme=local_password_v1;principal=" + user_name + ";principal_uuid=text";
   const auto text_evidence = api::EngineAuthenticate(request);
   Check(!text_evidence.ok && !text_evidence.authenticated &&
         text_evidence.diagnostics.size() == 1 &&
         text_evidence.diagnostics.front().detail == "binary_principal_identity_required",
         "text credential identity is rejected rather than treated as absent");
   for (int invalid = 0; invalid < 2; ++invalid) {
-    request = AuthenticationRequest(source);
+    request = AuthenticationRequest(user_source, user_name);
     if (invalid == 0) request.durable_principal_uuid.bytes[6] &= 0x0f;
     else request.durable_principal_uuid.bytes[8] &= 0x3f;
     const auto refused = api::EngineAuthenticate(request);
@@ -301,7 +343,7 @@ inline void AuthenticationIdentityChecks(const api::RuntimePrincipalObservationR
           "malformed binary identity never falls back to name resolution");
   }
   for (bool with_candidate : {false, true}) {
-    request = AuthenticationRequest(source);
+    request = AuthenticationRequest(user_source, user_name);
     if (!with_candidate) request.durable_principal_uuid = {};
     request.credential_evidence = "incorrect-fixture-password";
     const auto refused = api::EngineAuthenticate(request);
@@ -501,7 +543,11 @@ inline void Run(const std::filesystem::path& root, std::uint32_t page_size) {
   ColdRead(request, original);
   Check(bytes() == committed_bytes, "active warm and cold observation writes no bytes");
   ProjectionChecks(admin, request);
-  AuthenticationIdentityChecks(request);
+  {
+    auto user_request = request;
+    user_request.principal_uuid = bootstrap.state.principal_uuid.value;
+    AuthenticationIdentityChecks(request, user_request, bootstrap.state.principal_name);
+  }
   auto invalid = request;
   invalid.database_uuid = NewId(platform::UuidKind::database).value;
   auto refused = api::InspectRuntimePrincipal(invalid);
@@ -525,12 +571,16 @@ inline void Run(const std::filesystem::path& root, std::uint32_t page_size) {
   Check(api::EngineSecurityAlterPrincipal(alter).ok, "actual service disable");
   const auto uncommitted = api::InspectRuntimePrincipal(request);
   Check(uncommitted.observation && uncommitted.observation->lifecycle_state == "active", "uncommitted disable hidden");
-  Check(api::EngineAuthenticate(AuthenticationRequest(request)).authenticated,
+  // Q274 (2026-11-19): the service principal authenticates only through the
+  // internal credential verification; EngineAuthenticate refuses it. (Was:
+  // EngineAuthenticate(...).authenticated.)
+  Check(api::VerifyRuntimePrincipalCredential(CredentialRequest(request)).ok(),
         "uncommitted disable does not replace committed authentication state");
   Finish(transaction, false);
   const auto rolled_back = api::InspectRuntimePrincipal(request);
   Check(rolled_back.observation && rolled_back.observation->lifecycle_state == "active", "rollback preserves active state");
-  Check(api::EngineAuthenticate(AuthenticationRequest(request)).authenticated,
+  // (Was: EngineAuthenticate(...).authenticated; Q274, see above.)
+  Check(api::VerifyRuntimePrincipalCredential(CredentialRequest(request)).ok(),
         "rolled back disable preserves actual password authentication");
   // This final disable now goes through actual engine commit while a retained
   // credential lease excludes publication, rather than direct fixture finality.
@@ -549,6 +599,10 @@ inline void Run(const std::filesystem::path& root, std::uint32_t page_size) {
   Check(!disabled_authentication.ok && !disabled_authentication.authenticated &&
         !disabled_authentication.durable_security_state,
         "committed disable revokes fresh authentication without cached success");
+  // Q274: the internal credential verification is revoked too (the external
+  // path above never authenticated this service principal).
+  Check(api::VerifyRuntimePrincipalCredential(CredentialRequest(request)).error == CredentialError::credential_rejected,
+        "committed disable revokes the internal credential verification without cached success");
   ColdRead(request, original, false);
   const auto before = bytes();
   Check(api::InspectRuntimePrincipal(request).outcome == O::no_active_principal, "repeat disabled read");

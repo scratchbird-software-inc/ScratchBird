@@ -34,9 +34,16 @@ inline constexpr u32 kNativeSecurityPrincipalSchemaId = 65635;
 inline constexpr u32 kNativeSecurityRoleSchemaId = 65636;
 inline constexpr u32 kNativeSecurityGroupSchemaId = 65637;
 inline constexpr u32 kNativeSecurityGrantSchemaId = 65638;
-inline constexpr u16 kNativeSecuritySchemaVersion = 1;
+// SEARCH_KEY: SB_AGENT_PASSWORD_SEED (owner Q279, 2026-11-19). Version 2: the
+// principal schema gained field 19, the optional password seed (Q274). The four
+// native security schemas share this version; a version-1 payload of any of
+// them is refused (invalid framing), no migration (Q164 = 1) - the create
+// writes every security row fresh. (Was: 1.)
+inline constexpr u16 kNativeSecuritySchemaVersion = 2;
 // Upper bounds of an encoded block (every optional field present).
-inline constexpr std::size_t kNativeSecurityPrincipalMaxBytes = 347;
+// Principal: 347 + 24 for the optional password seed (field 19, 8-byte field
+// header + 16 bytes; SB_AGENT_PASSWORD_SEED, owner Q274, 2026-11-19).
+inline constexpr std::size_t kNativeSecurityPrincipalMaxBytes = 371;
 inline constexpr std::size_t kNativeSecurityRoleMaxBytes = 237;
 inline constexpr std::size_t kNativeSecurityGroupMaxBytes = 162;
 inline constexpr std::size_t kNativeSecurityGrantMaxBytes = 424;
@@ -61,6 +68,16 @@ struct NativeSecurityPrincipal {
   bool active = false, create_time_only = false, bootstrap_principal = false;
   u64 security_generation = 0, security_context_authority_version = 0, security_context_generation = 0;
   std::optional<NativeSecurityCredential> credential;
+  // SEARCH_KEY: SB_AGENT_PASSWORD_SEED (owner Q274, 2026-11-19: "Q237 uses the
+  // database UUID, xor'd with the security tables password's uuid. This is
+  // derivable from the database"). An internal (agent / L5) principal's
+  // password seed: 16 CSPRNG bytes (Q276) minted by the create such that
+  // database_uuid XOR seed holds no zero byte; the password itself is that
+  // XOR (SB_AGENT_PASSWORD_DERIVED) and is never stored. Field 19, optional,
+  // present only with a credential (the PBKDF2 verifier of the derived
+  // password, so authentication runs the normal verifier path). No
+  // migration (Q164 = 1): a row without it has no derivable password.
+  std::optional<std::array<byte, 16>> password_seed;
 };
 struct NativeSecurityRole {
   Uuid role_uuid;

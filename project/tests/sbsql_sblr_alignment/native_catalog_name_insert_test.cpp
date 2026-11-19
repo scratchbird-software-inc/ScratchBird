@@ -162,8 +162,7 @@ Named NamedObject(const Db& b, std::span<const byte> file, const NameTemplate& t
   const auto object = d.record.header.object_uuid;
   const scratchbird::core::platform::TypedUuid vector{UuidKind::object, V7(Ms(key), 0x710000 + k)};
   const scratchbird::core::platform::TypedUuid entry{UuidKind::object, V7(Ms(key), 0x720000 + k)};
-  d.name_vector_uuid = vector;
-  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
+  /* SB_CATALOG_NO_NAME_REFERENCE (Q248 = 1; Q261(b) = 1, 2026-11-18): no default_name_uuid, no name_vector_uuid */
   d.retired_transaction_uuid = {};  // live: no retiring transaction
 
   auto vm = d;
@@ -2665,22 +2664,32 @@ void NameDefaults(const Db& b, const NameTemplate& t, u16 role, std::size_t defi
   refused(drop_entry(id_of(a_fr), 4), CE::default_name_in_use, "names 2: A's French default dropped");
   Rollback(*s.w, s.sink(), 4);
 
-  // 3. AS DEFAULT (two entry rows, one request), then the old default dropped.
-  // (The drop in a transaction of its own: in the switching transaction the
-  // drop would replace that transaction's own version in place (Q88), and a
-  // drop version is longer than the version it replaces, which at 32 KiB did
-  // not fit its page: relation_full, a writer limitation reported.)
+  // 3. AS DEFAULT (two entry rows, one request), then the old default dropped
+  // in the SAME transaction (owner Q263 = 1, 2026-11-18,
+  // SB_CATALOG_OWN_VERSION_MOVE): the drop replaces this transaction's own
+  // version in place (Q88); a drop version is longer than the version it
+  // replaces, and where it no longer fits its page (32 KiB here) the writer
+  // moves it to another page instead of refusing. All five page sizes run
+  // this. (Was: the drop in a transaction of its own, because the switching
+  // transaction's drop was refused relation_full at 32 KiB - "a writer
+  // limitation reported".)
   Begin(s, 5);
   touch(a_object, 5, "names 3");
   write(as_default(a_default, id_of(a_alias), 5, true), "names 3: A's alias AS DEFAULT (English, the object default)");
   Check(flags_of(id_of(a_alias), 5) == std::pair{true, true} && flags_of(a_default, 5) == std::pair{false, false},
         "names 3: the flags moved");
+  write(drop_entry(a_default, 5),
+        "names 3 (Q263 = 1): the old object default dropped in the switching transaction, its own version replaced "
+        "(moved to another page where it no longer fits; was relation_full at 32 KiB)");
   Commit(*s.w, s.sink(), 5);
+  ExpectNamedVerification(b, path, definitions + 3, "names 3: default switched and the old one dropped in one transaction, committed", false, true);
+  // Transaction 6 (its number kept): after the switch the French language
+  // default is still in use (Q235 = 1), so its drop is refused as before.
   Begin(s, 6);
-  touch(a_object, 6, "names 3 drop");
-  write(drop_entry(a_default, 6), "names 3: the old object default dropped once it is not the default");
+  touch(a_object, 6, "names 3 after");
+  refused(drop_entry(id_of(a_fr), 6), CE::default_name_in_use, "names 3: A's French default dropped after the switch");
   Commit(*s.w, s.sink(), 6);
-  ExpectNamedVerification(b, path, definitions + 3, "names 3: default switched and the old one dropped, committed", false, true);
+  ExpectNamedVerification(b, path, definitions + 3, "names 3: nothing else changed, committed", false, true);
 
   // 4. SET DEFAULT LANGUAGE: the object default moves to the French default.
   Begin(s, 7);
@@ -3511,8 +3520,7 @@ void NameRefusals(const Db& b, const NameTemplate& t, u16 role) {
   // one too many, no stored path - each invalid_name; a row stores none.)
   entry([](auto& e, auto&) { e.scope_uuid.value = V7(1, 6); }, CE::invalid_name, "an entry whose scope has no name");
   entry([](auto& e, auto& named) {
-    e.name_vector_uuid.value = V7(1, 5);
-    named.entry.metadata.name_vector_uuid.value = V7(1, 5);
+    e.name_vector_uuid.value = V7(1, 5);  // (Q261(b) = 1: the entry metadata carries no name_vector_uuid any more)
     named.entry.metadata.record.header.parent_uuid.value = V7(1, 5);
   }, CE::invalid_name, "an entry whose vector does not exist");
   {
@@ -3627,8 +3635,7 @@ void ConflictingPolicy(const Db& b, const NameTemplate& t, u16 role) {
     m.creator_transaction_uuid = tx;
     m.creator_local_transaction_id = n;
     m.audit_uuid = EventRef(n);  // W3b-2b: the transaction's event
-    /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
-    m.name_vector_uuid = {UuidKind::object, V7(ms, 0xf40000 + k)};
+    /* SB_CATALOG_NO_NAME_REFERENCE (Q248 = 1; Q261(b) = 1, 2026-11-18): no default_name_uuid, no name_vector_uuid */
     db::CatalogInsertRow r;
     r.role = 5;
     r.row_uuid = m.record.header.row_uuid.value;

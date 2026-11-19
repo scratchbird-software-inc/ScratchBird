@@ -173,8 +173,8 @@ void Tests() {
     const auto reopened=c::DecodeCatalogMetadataVersion(encoded.bytes);Check(reopened.ok()&&reopened.record.record.payload==payloads[i],"complete common byte roundtrip");
     for(unsigned bad=0;bad<8;++bad) {
       auto altered=m;if(bad==0)altered.record.header.object_uuid.value=f::Id(9999);
-      if(bad==1)altered.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;if(bad==2)altered.name_vector_uuid={};/* (Was: default_name_uuid, retired by owner Q248 = 1; the name-vector fault) */
-      if(bad==3)altered.name_vector_uuid={};if(bad==4)altered.owning_schema_uuid={};
+      if(bad==1)altered.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;if(bad==2||bad==3)continue;/* (Was: the name-vector fault; Q261(b) = 1 removed the field, 2026-11-18) */
+     if(bad==4)altered.owning_schema_uuid={};
       if(bad==5)altered.record.header.parent_uuid.value=f::Id(9999);if(bad==6)altered.definition_version=2;
       if(bad==7)altered.record.header.kind=c::CatalogRecordKind::config_profile;
       heap_denied=true;const auto refused=c::CatalogMetadataVersionEncodedBytes(c::BorrowCatalogMetadataVersion(altered));heap_denied=false;

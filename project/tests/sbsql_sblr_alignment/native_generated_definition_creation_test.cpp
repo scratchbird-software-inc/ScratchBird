@@ -602,10 +602,10 @@ int main() {
       enumerated_order = enumerated_order &&
           metadata.record.header.object_uuid.value == enumerated.definitions[at].object_uuid;
       positional = positional &&
-          metadata.record.header.row_uuid.value == Id(base + 5 * at) &&
-          metadata.name_vector_uuid.value == Id(base + 5 * at + 1);
-      // (Was also: metadata.default_name_uuid == Id(base + 5 * at + 2); the
-      // definition carries no name reference, SB_CATALOG_NO_NAME_REFERENCE, Q248.)
+          metadata.record.header.row_uuid.value == Id(base + 5 * at);
+      // (Was also: metadata.default_name_uuid == Id(base + 5 * at + 2) [Q248] and
+      // metadata.name_vector_uuid == Id(base + 5 * at + 1) [Q261(b) = 1, 2026-11-18];
+      // the definition carries no name reference, SB_CATALOG_NO_NAME_REFERENCE.)
     }
     Check(enumerated_order,
           "assembly reports objects in the same order the enumeration did, which is what "

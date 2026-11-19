@@ -78,13 +78,16 @@ authority and a protected initial password are still required.
 SBsql bootstrap <first-principal> <database-path> \
   --mode=embedded \
   --platform-profile <instance-config>/SBbootstrap.profile \
-  --resource-seed-pack-root <install-root>/share/scratchbird/resources/seed-packs/initial-resource-pack \
-  --policy-seed-pack-root <install-root>/share/scratchbird/resources/policy-packs/default-local-password
+  --policy-seed-pack-root <install-root>/share/scratchbird/resources/policy-packs/default-local-password \
+  --total-pages <n> --service-principal <name>
 ```
 
 The command prompts twice for the first principal password unless
 `--password-stdin` is supplied. Never pass that password as an argument or
-environment variable. The equivalent `SBsec bootstrap` entry point uses the
+environment variable. The internal service principal's credential is derived
+and kept inside the database; nothing is printed for it (the command reports
+`service_principal_credential=provisioned_internal_only`), and it authenticates
+only from inside the engine. The equivalent `SBsec bootstrap` entry point uses the
 same implementation; the listener, manager, and all parser processes remain
 unable to create a database.
 

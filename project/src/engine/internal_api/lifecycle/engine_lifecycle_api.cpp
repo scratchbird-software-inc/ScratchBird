@@ -18,10 +18,16 @@
 #include "catalog_identifier_lookup_key.hpp"
 #include "admitted_datatype_cohort.hpp"
 #include "node_uuid_issuer.hpp"
+#include "local_password_verifier.hpp"
+#include "security/agent_password_derivation.hpp"
+#include "../../../core/common/crypto_random.hpp"
 #include "extensibility/extensibility_support.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "uuid.hpp"
 
+#include <openssl/crypto.h>
+
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <string>
@@ -533,8 +539,15 @@ const char* NativeCreatePlanRefusalCode(const scratchbird::storage::database::Na
 //                      server_policy_seed_pack_root, required; a client
 //                      option policy_seed_pack_root: is refused
 //   principals         options bootstrap_principal_name:/..._fingerprint: and
-//                      internal_service_principal_name:/..._fingerprint:, the
-//                      legacy create's options; native create requires both
+//                      internal_service_principal_name:, the legacy create's
+//                      options; native create requires all three. The service
+//                      principal's password is DERIVED (owner Q267 = 2,
+//                      2026-11-18; Q276 + Q274, 2026-11-19,
+//                      SB_NATIVE_CREATE_MINTED_SERVICE_PASSWORD): database
+//                      UUID XOR a 16-byte CSPRNG seed minted here; the seed and
+//                      the PBKDF2 verifier of the derived password go to the
+//                      security row; the receipt carries neither. A supplied
+//                      internal_service_credential_fingerprint: is refused.
 //   creation time      the engine clock, as legacy create
 //   database identity  minted here (GenerateEngineIdentityV7): ONE UUIDv7 from
 //                      the local clock at file creation; page zero, the
@@ -554,7 +567,20 @@ EngineCreateLifecycleResult NativeCreateLifecycle(const EngineCreateLifecycleReq
                                                   const char* operation) {
   namespace db = scratchbird::storage::database;
   namespace disk = scratchbird::storage::disk;
+  // SB_NATIVE_CREATE_MINTED_SERVICE_PASSWORD (Q267 = 2, Q276, Q274): the minted
+  // seed, the derived password and its verifier text live for this call only;
+  // every exit cleanses them (the seed is written to the file, the others
+  // never leave this function).
+  std::array<scratchbird::core::platform::byte, 16> service_seed{};
+  std::array<unsigned char, 16> service_password{};
+  std::string service_fingerprint;
+  const auto cleanse_password = [&] {
+    OPENSSL_cleanse(service_seed.data(), service_seed.size());
+    OPENSSL_cleanse(service_password.data(), service_password.size());
+    if (!service_fingerprint.empty()) OPENSSL_cleanse(service_fingerprint.data(), service_fingerprint.size());
+  };
   const auto refuse = [&](const char* code, const std::string& detail) {
+    cleanse_password();
     return LifecycleFailure<EngineCreateLifecycleResult>(request.context, operation, code, detail);
   };
   // SEARCH_KEY: SB_CATALOG_IDENTIFIER_PROFILE_LENGTH_RULE (owner Q127 = 3,
@@ -648,9 +674,17 @@ EngineCreateLifecycleResult NativeCreateLifecycle(const EngineCreateLifecycleReq
   const auto bootstrap_name = OptionValue(request, "bootstrap_principal_name:");
   const auto bootstrap_fingerprint = OptionValue(request, "bootstrap_credential_fingerprint:");
   const auto service_name = OptionValue(request, "internal_service_principal_name:");
-  const auto service_fingerprint = OptionValue(request, "internal_service_credential_fingerprint:");
-  if (bootstrap_name.empty() || bootstrap_fingerprint.empty() ||
-      service_name.empty() || service_fingerprint.empty()) {
+  // SEARCH_KEY: SB_NATIVE_CREATE_MINTED_SERVICE_PASSWORD (owner Q267 = 2,
+  // 2026-11-18; Q237). The internal service principal's password is minted by
+  // this create, never supplied: a caller fingerprint for it is refused with
+  // its own code, before any identity is issued. (Was: Q254,
+  // internal_service_credential_fingerprint: required, the CLI's second typed
+  // password.)
+  if (!OptionValue(request, "internal_service_credential_fingerprint:").empty()) {
+    return refuse("DATABASE.CREATE_SERVICE_CREDENTIAL_SUPPLIED",
+                  "internal_service_credential_is_engine_minted");
+  }
+  if (bootstrap_name.empty() || bootstrap_fingerprint.empty() || service_name.empty()) {
     // The credentialed bootstrap principal and the L5 service principal are
     // both required by native create (owner 2026-11-04); nothing is defaulted.
     return refuse("DATABASE.CREATE_PRINCIPAL_REQUIRED",
@@ -753,6 +787,40 @@ EngineCreateLifecycleResult NativeCreateLifecycle(const EngineCreateLifecycleReq
   if (!database_uuid.ok() || !policy_snapshot_uuid.ok() || !engine_uuid) {
     return refuse("DATABASE.CREATE_FAILED", "engine_owned_database_identity_generation_failed");
   }
+  // SB_NATIVE_CREATE_MINTED_SERVICE_PASSWORD (owner Q267 = 2, 2026-11-18; Q276
+  // and Q274, 2026-11-19). The internal service (L5) principal's password is
+  // DERIVED, never handed out: database_uuid XOR a 16-byte password SEED the
+  // create mints here from the project's CSPRNG wrapper
+  // (core::FillCryptographicRandomBytes, OpenSSL RAND_bytes; Q276: "pure
+  // random is fine", no UUIDv7). The seed is re-drawn until the derived
+  // password holds no zero byte (the shared derivation and the engine's
+  // verifier refuse a NUL; each draw is independent, P(no zero byte) ~ 94%),
+  // bounded at 64 draws (P(all fail) ~ 1e-78); exhaustion, or the CSPRNG
+  // refusing, is DATABASE.CREATE_FAILED
+  // engine_owned_service_password_generation_failed. The security row stores
+  // the SEED (SB_AGENT_PASSWORD_SEED) and the PBKDF2 verifier of the derived
+  // password (as every local-password principal's credential is stored); the
+  // receipt carries neither the seed nor the password: an agent authenticates
+  // only from inside the engine, deriving the password from the file and its
+  // row (SB_AGENT_PASSWORD_DERIVED). (Was: a UUIDv7 password returned in the
+  // receipt; then 16 CSPRNG bytes returned in the receipt.)
+  {
+    bool minted = false;
+    for (unsigned attempt = 0; attempt < 64 && !minted; ++attempt) {
+      if (!scratchbird::core::FillCryptographicRandomBytes(
+              reinterpret_cast<unsigned char*>(service_seed.data()), service_seed.size()))
+        break;
+      service_password = DeriveAgentPassword(database_uuid.value.value, std::span<const scratchbird::core::platform::byte, 16>(service_seed));
+      if (!AgentPasswordAdmissible(service_password)) continue;
+      minted = true;
+    }
+    if (!minted ||
+        !scratchbird::core::crypto::DeriveLocalPasswordVerifier(
+            std::string_view(reinterpret_cast<const char*>(service_password.data()), service_password.size()),
+            &service_fingerprint)) {
+      return refuse("DATABASE.CREATE_FAILED", "engine_owned_service_password_generation_failed");
+    }
+  }
   // Q107 (owner 2026-11-14): local clock, standard RFC 9562 UUIDv7.
   scratchbird::core::uuid::StandaloneUuidV7Issuer issuer(
       {database_uuid.value.value, policy_snapshot_uuid.value.value},
@@ -773,6 +841,7 @@ EngineCreateLifecycleResult NativeCreateLifecycle(const EngineCreateLifecycleReq
   create.bootstrap_credential_fingerprint = bootstrap_fingerprint;
   create.service_principal_name = service_name;
   create.service_credential_fingerprint = service_fingerprint;
+  create.service_password_seed = service_seed;  // SB_AGENT_PASSWORD_SEED (Q274)
   create.maximum_retained_image_bytes = db::NativeHostedSourceBackingBytes(profile->page_size_bytes);
 
   // SEARCH_KEY: SB_NATIVE_CREATE_NAMES_UNDER_PACK_PROFILE (owner Q130 = 2,
@@ -910,30 +979,37 @@ EngineCreateLifecycleResult NativeCreateLifecycle(const EngineCreateLifecycleReq
   result.primary_object.uuid = receipt.database_uuid;
   result.primary_object.object_kind = "database";
   result.transaction_uuid = receipt.construction_transaction.transaction_uuid.value;
-  AddApiBehaviorRow(&result,
-                    {{"operation_uuid", request.context.statement_uuid},
-                     {"database_uuid", receipt.database_uuid},
-                     {"filespace_uuid", receipt.filespace_uuid},
-                     {"construction_transaction_uuid", receipt.construction_transaction.transaction_uuid.value},
-                     {"bootstrap_principal_uuid", receipt.bootstrap_principal_uuid},
-                     {"service_principal_uuid", receipt.service_principal_uuid},
-                     {"service_credential_reference_uuid", receipt.service_credential_reference_uuid},
-                     {"service_provider_uuid", receipt.service_provider_uuid},
-                     {"service_policy_uuid", receipt.service_policy_uuid},
-                     {"service_runtime_binding_uuid", receipt.service_runtime_binding_uuid},
-                     {"page_size_profile_uuid", profile->uuid},
-                     {"database_language_uuid", request.database_language},
-                     {"database_format", std::string("native")},
-                     {"lifecycle_state", std::string("created")},
-                     // Construction only: the file stays initializing; open,
-                     // verification and serving are the server's (S3).
-                     {"creation_handoff", std::string("constructed_and_closed")},
-                     {"server_ready", std::string("false")},
-                     {"creation_request_id", request.context.request_id}});
+  // The receipt row, built explicitly: identities as EngineUuid values, the
+  // minted password as a typed binary value (Q276), the rest as text.
+  ApiBehaviorFields receipt_fields;
+  receipt_fields.emplace_back("operation_uuid", EngineUuid{request.context.statement_uuid});
+  receipt_fields.emplace_back("database_uuid", EngineUuid{receipt.database_uuid});
+  receipt_fields.emplace_back("filespace_uuid", EngineUuid{receipt.filespace_uuid});
+  receipt_fields.emplace_back("construction_transaction_uuid", EngineUuid{receipt.construction_transaction.transaction_uuid.value});
+  receipt_fields.emplace_back("bootstrap_principal_uuid", EngineUuid{receipt.bootstrap_principal_uuid});
+  receipt_fields.emplace_back("service_principal_uuid", EngineUuid{receipt.service_principal_uuid});
+  receipt_fields.emplace_back("service_credential_reference_uuid", EngineUuid{receipt.service_credential_reference_uuid});
+  receipt_fields.emplace_back("service_provider_uuid", EngineUuid{receipt.service_provider_uuid});
+  receipt_fields.emplace_back("service_policy_uuid", EngineUuid{receipt.service_policy_uuid});
+  receipt_fields.emplace_back("service_runtime_binding_uuid", EngineUuid{receipt.service_runtime_binding_uuid});
+  // SB_NATIVE_CREATE_MINTED_SERVICE_PASSWORD (Q274, 2026-11-19): the receipt
+  // carries NO service password and no seed; nothing outside the engine may
+  // use them. (Was: service_principal_password, binary16.)
+  receipt_fields.emplace_back("page_size_profile_uuid", EngineUuid{profile->uuid});
+  receipt_fields.emplace_back("database_language_uuid", EngineUuid{request.database_language});
+  receipt_fields.emplace_back("database_format", std::string("native"));
+  receipt_fields.emplace_back("lifecycle_state", std::string("created"));
+  // Construction only: the file stays initializing; open, verification and
+  // serving are the server's (S3).
+  receipt_fields.emplace_back("creation_handoff", std::string("constructed_and_closed"));
+  receipt_fields.emplace_back("server_ready", std::string("false"));
+  receipt_fields.emplace_back("creation_request_id", std::string(request.context.request_id));
+  AddApiBehaviorRow(&result, std::move(receipt_fields));
   AddApiBehaviorEvidence(&result, "engine_lifecycle", "database_created");
   AddApiBehaviorEvidence(&result, "identity_authority", "engine");
   AddApiBehaviorEvidence(&result, "database_format", "native_single_file");
   AddApiBehaviorEvidence(&result, "mga_lifecycle_evidence", "construction_transaction_committed");
+  cleanse_password();
   return result;
 }
 

@@ -175,8 +175,9 @@ api::EngineApiRequest NativeOptions() {
       "page_size:16384", "total_pages:512",
       "bootstrap_principal_name:BootstrapAdmin",
       "bootstrap_credential_fingerprint:" + std::string(kFingerprint),
-      "internal_service_principal_name:NodeService",
-      "internal_service_credential_fingerprint:" + std::string(kFingerprint)};
+      // Q267 = 2 (2026-11-18): the service password is minted by the create.
+      // (Was: internal_service_credential_fingerprint:kFingerprint.)
+      "internal_service_principal_name:NodeService"};
   return options;
 }
 

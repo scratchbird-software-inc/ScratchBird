@@ -8,12 +8,19 @@
 
 // SEARCH_KEY: SB_CLI_NATIVE_BOOTSTRAP (owner Q254 = 1, 2026-11-16). The shared
 // SBsql/SBsec bootstrap, end to end, on the native create: current-process
-// ownership, both passwords from protected stdin, the default policy pack.
-// Afterwards the path names exactly one file, it is discovered as a native
-// database (first block, then page zero: the stated page count, one filespace),
-// the receipt identities are engine identities, and a second bootstrap on the
-// same path refuses without touching the file. Refusals: a short password, a
-// mismatched service password, an unknown language, a missing policy pack.
+// ownership, the first principal's password from protected stdin, the default
+// policy pack. Afterwards the path names exactly one file, it is discovered as
+// a native database (first block, then page zero: the stated page count, one
+// filespace), the receipt identities are engine identities, and a second
+// bootstrap on the same path refuses without touching the file. Refusals: a
+// short password, an unknown language, a missing policy pack.
+// SB_CLI_MINTED_SERVICE_PASSWORD (owner Q267 = 2, 2026-11-18; Q274, 2026-11-19):
+// the service principal's credential is derived inside the engine (database
+// UUID XOR a stored seed) and never returned; the CLI reads no second password
+// and prints none. (Was: both passwords from protected stdin, with refusals for
+// a missing and for a short service password; then a password in the receipt.)
+// SB_CLI_NATIVE_BOOTSTRAP_GRAMMAR (owner Q268 = 1): the request carries no
+// resource seed pack root or metric policy files any more.
 
 #include "first_principal_bootstrap.hpp"
 #include "native_database_open_discovery.hpp"
@@ -46,10 +53,7 @@ cli::FirstPrincipalBootstrapRequest Request(const fs::path& database) {
   request.ownership = cli::EmbeddedCreationOwnership::kCurrentProcess;
   request.principal_name = "qa_admin";
   request.database_path = database.string();
-  request.resource_seed_pack_root = SB_BOOTSTRAP_SEED_PACK_ROOT;
   request.policy_seed_pack_root = SB_BOOTSTRAP_POLICY_PACK_ROOT;
-  request.metric_policy_defaults_path = std::string(SB_BOOTSTRAP_METRIC_TEMPLATES) + "/metric-policy-defaults.conf";
-  request.metric_policy_families_path = std::string(SB_BOOTSTRAP_METRIC_TEMPLATES) + "/metric-policy-families.conf";
   request.password_source = cli::FirstPrincipalBootstrapPasswordSource::kProtectedStdin;
   request.database_name = "qa native database";
   request.language_tag = "en";
@@ -79,7 +83,9 @@ int main() {
   Check(::mkdtemp(name.data()) != nullptr, "fixture directory");
   const fs::path root = name;
   const auto database = root / "qa.sdb";
-  const std::string passwords = "CorrectHorse-Battery-Staple-77\nService-Secret-Rotated-Later-88\n";
+  // Q267 = 2: one password, the first principal's. (Was: a second line,
+  // "Service-Secret-Rotated-Later-88", for the service principal.)
+  const std::string passwords = "CorrectHorse-Battery-Staple-77\n";
 
   std::string text;
   const auto created = Run(Request(database), passwords, &text);
@@ -93,6 +99,11 @@ int main() {
           "receipt identity is an engine identity: " + *id);
   }
   Check(created.policy_generation == 0, "the native receipt carries no policy generation (not faked)");
+  // SB_CLI_MINTED_SERVICE_PASSWORD (Q274, 2026-11-19): the service principal is
+  // provisioned; its password is derived inside the engine and never returned
+  // or printed. (Was, Q267/Q276: the receipt's 16-byte password checked here:
+  // no zero byte, no receipt identity, distinct per create.)
+  Check(created.service_principal_provisioned, "the service principal is provisioned (no password returned)");
   const auto discovered = db::DiscoverNativeDatabaseAtPath(database.string());
   Check(discovered.ok(), "the file is a native database: " + discovered.code + " " + discovered.detail);
   Check(discovered.page_zero->bootstrap.page_size_bytes == 16384 && discovered.page_zero->total_pages == 512,
@@ -112,15 +123,18 @@ int main() {
   // Refusals, each leaving the directory with only the first database.
   const auto other = root / "other.sdb";
   {
-    const auto short_password = Run(Request(other), "short\nService-Secret-Rotated-Later-88\n", nullptr);
+    const auto short_password = Run(Request(other), "short\n", nullptr);
     Check(!short_password.ok && short_password.diagnostic_code == "BOOTSTRAP.SYSARCH_PASSWORD_POLICY_INVALID",
           "first principal password policy");
-    const auto no_service = Run(Request(other), "CorrectHorse-Battery-Staple-77\n", nullptr);
-    Check(!no_service.ok && no_service.diagnostic_code == "BOOTSTRAP.AUTH_DB_INPUT_INVALID",
-          "the service password is required");
-    const auto short_service = Run(Request(other), "CorrectHorse-Battery-Staple-77\nx\n", nullptr);
-    Check(!short_service.ok && short_service.diagnostic_code == "BOOTSTRAP.SERVICE_PASSWORD_POLICY_INVALID",
-          "service password policy");
+    // Q267 = 2: no service password is read, so a second stdin line is
+    // simply never consumed. (Was: a missing second line
+    // BOOTSTRAP.AUTH_DB_INPUT_INVALID, a short one
+    // BOOTSTRAP.SERVICE_PASSWORD_POLICY_INVALID.)
+    const auto extra_line = Run(Request(root / "extra.sdb"), "CorrectHorse-Battery-Staple-77\nx\n", nullptr);
+    Check(extra_line.ok && extra_line.service_principal_provisioned,
+          "a second stdin line is not read as a service password (Q267 = 2): " + extra_line.diagnostic_code);
+    std::error_code remove_ec;
+    fs::remove(root / "extra.sdb", remove_ec);
     auto unknown_language = Request(other);
     unknown_language.language_tag = "tlh";
     const auto refused_language = Run(unknown_language, passwords, nullptr);

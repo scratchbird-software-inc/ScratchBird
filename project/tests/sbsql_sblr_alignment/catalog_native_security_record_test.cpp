@@ -67,7 +67,9 @@ struct Wire {
 } wire;
 struct G {
   f::Golden g;
-  explicit G(unsigned schema) : g(schema) {}
+  // Q279 (2026-11-19): the native security schemas are version 2 (the principal
+  // gained the password seed). (Was: Golden's default, version 1.)
+  explicit G(unsigned schema) : g(schema, 2) {}
   void Id(unsigned tag, const p::Uuid& id) {
     if (!wire.omit.count(tag)) g.Identity(tag, id);
   }
@@ -125,6 +127,8 @@ std::string Golden(const c::NativeSecurityPrincipal& r) {
     g.Opaque(17, r.credential->salt);
     g.Opaque(18, r.credential->verifier);
   }
+  // SB_AGENT_PASSWORD_SEED (owner Q274, 2026-11-19): field 19, optional.
+  if (r.password_seed) g.Opaque(19, *r.password_seed);
   return g.Finish();
 }
 std::string Golden(const c::NativeSecurityRole& r) {
@@ -281,6 +285,20 @@ void CommonRefusals(R base, p::Uuid R::*primary) {
     invalid[offset] ^= 0x7f;
     RefuseWire<R>(invalid, "invalid framing/schema/tag/type refused");
   }
+  // SB_AGENT_PASSWORD_SEED (owner Q279, 2026-11-19): a version-1 payload (the
+  // version before the principal's password seed) is refused, for every one of
+  // the four native security schemas: no migration. The version is the u16 at
+  // byte 20 of the SBCV block header.
+  {
+    auto v1 = raw;
+    v1[20] = 1;
+    v1[21] = 0;
+    RefuseWire<R>(v1, "a version-1 native security payload is refused (Q279, no migration)");
+    auto v3 = raw;
+    v3[20] = 3;
+    v3[21] = 0;
+    RefuseWire<R>(v3, "a version-3 native security payload is refused (unknown future version)");
+  }
 }
 p::TypedUuid Tx(unsigned n) { return {p::UuidKind::transaction, f::Id(n)}; }
 
@@ -329,6 +347,23 @@ void Principals() {
   full.policy_pack_uuid = f::Id(90);
   full.authority_class = c::CatalogSecurityAuthorityClass::request_action;
   full.credential = Credential();
+  // SB_AGENT_PASSWORD_SEED (owner Q274, 2026-11-19): the optional password seed
+  // (field 19, 16 bytes) is part of "every optional field present"; the
+  // registered maximum grew by 24 (header + 16). (Was: 347, no seed.)
+  {
+    auto seeded_only = full;
+    Roundtrip(seeded_only);  // a credential without a seed still round-trips
+    std::array<p::byte, 16> seed{};
+    for (unsigned i = 0; i < 16; ++i) seed[i] = p::byte(0x40 + i);
+    full.password_seed = seed;
+    auto seed_without_credential = base;
+    seed_without_credential.password_seed = seed;
+    Refuse(seed_without_credential);  // a seed needs the verifier it derives to
+    auto zero_seed = full;
+    zero_seed.password_seed->fill(p::byte{0});
+    Refuse(zero_seed);
+    RefuseWire<c::NativeSecurityPrincipal>(GoldenWith(full, [](Wire& w) { w.opaque[19] = std::string(15, '\x01'); }), "15-byte seed refused");
+  }
   Roundtrip(full);
   Check(Golden(full).size() == c::kNativeSecurityPrincipalMaxBytes, "every optional field present = registered maximum");
   for (const p::u64 it : {600000ull, 600001ull, 9999999ull, 10000000ull}) {
@@ -367,8 +402,10 @@ void Principals() {
   RefuseWire<P>(GoldenWith(full, [](Wire& w) { w.boolean[9] = std::string(1, '\x02'); }), "boolean other than 0/1 refused");
   RequiredOnWire(full, {1, 2, 3, 4, 5, 7, 9, 10, 11, 12, 13, 14});
   // Optional fields absent on the wire decode as absent.
-  const auto bare = c::DecodeNativeSecurityPrincipal(GoldenWith(full, [](Wire& w) { w.omit = {6, 8, 15, 16, 17, 18}; }));
-  Check(bare.ok() && !bare.record->policy_pack_uuid && !bare.record->authority_class && !bare.record->credential,
+  // (Q274: 19, the seed, omitted too - a seed without its credential is refused.)
+  const auto bare = c::DecodeNativeSecurityPrincipal(GoldenWith(full, [](Wire& w) { w.omit = {6, 8, 15, 16, 17, 18, 19}; }));
+  Check(bare.ok() && !bare.record->policy_pack_uuid && !bare.record->authority_class && !bare.record->credential &&
+            !bare.record->password_seed,
         "optional principal fields absent");
   // A principal block is not a role/group/grant block.
   RefuseWire<c::NativeSecurityRole>(Golden(base), "principal schema id refused by the role decoder");
@@ -502,7 +539,7 @@ void Grants() {
   Check(rights == 122, "all 122 listed rights exercised");
   // Maximum: every optional field present (not a valid class shape; bounded by size only).
   {
-    f::Golden g(65638);
+    f::Golden g(65638, 2);  // Q279: version 2
     for (unsigned t = 1; t <= 20; ++t) {
       if (t == 2) g.Identity(t, f::Id(5));
       else if (t == 1 || t == 6 || (t >= 8 && t <= 14)) g.Identity(t, f::Id(400 + t));

@@ -59,10 +59,11 @@ void Check(bool yes,const char* why,std::source_location at=std::source_location
 p::TypedUuid Id(K kind,unsigned id){
   p::TypedUuid r;r.kind=kind;r.value.bytes[6]=0x70;r.value.bytes[8]=0x80;r.value.bytes[15]=id;return r;
 }
-// SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16): slot 3 was
-// default_name_uuid; it is reserved and zero. (Was: &M::default_name_uuid.)
-constexpr std::array<p::TypedUuid M::*,11> refs{&M::owner_uuid,&M::creator_transaction_uuid,&M::retired_transaction_uuid,
-  nullptr,&M::name_vector_uuid,&M::security_policy_uuid,&M::dependency_group_uuid,
+// SB_CATALOG_METADATA_HEADER_V4 (owner Q261(a) = b, Q261(b) = 1, 2026-11-18):
+// nine references; no name slot at all. (Was: eleven, slot 3 reserved zero
+// for default_name_uuid [Q248] and slot 4 name_vector_uuid.)
+constexpr std::array<p::TypedUuid M::*,9> refs{&M::owner_uuid,&M::creator_transaction_uuid,&M::retired_transaction_uuid,
+  &M::security_policy_uuid,&M::dependency_group_uuid,
   &M::storage_binding_uuid,&M::donor_overlay_uuid,&M::audit_uuid,&M::owning_schema_uuid};
 constexpr std::array counters{&M::definition_version,&M::schema_epoch,&M::security_epoch,&M::resource_epoch,
   &M::catalog_generation,&M::dependency_generation,&M::invalidation_generation,&M::creator_local_transaction_id};
@@ -74,8 +75,8 @@ hash::Digest256 Digest(const p::byte* b,std::size_t size){
   Check(EVP_Digest(b,size,d.data(),&n,EVP_sha256(),nullptr)==1&&n==32,"independent provider oracle");return d;
 }
 void Seal(Bytes& b){
-  std::fill(b.begin()+320,b.begin()+352,0);const auto d=Digest(b.data(),b.size());
-  std::copy(d.begin(),d.end(),b.begin()+320);
+  std::fill(b.begin()+288,b.begin()+320,0);const auto d=Digest(b.data(),b.size());  // v4: the version digest at 288
+  std::copy(d.begin(),d.end(),b.begin()+288);
 }
 M Fixture(){
   M m;m.record.header.kind=c::CatalogRecordKind::sql_object;m.record.header.row_uuid=Id(K::row,1);
@@ -83,27 +84,28 @@ M Fixture(){
   for(auto member:counters)m.*member=1;m.resource_epoch=0;
   m.owner_uuid=Id(K::principal,4);m.creator_transaction_uuid=Id(K::transaction,5);
   m.audit_uuid=Id(K::object,6);m.owning_schema_uuid=Id(K::schema,3);
-  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */m.name_vector_uuid=Id(K::object,8);
+  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1; Q261(b) = 1): no default_name_uuid, no name_vector_uuid (was Id 8) */
   m.security_policy_uuid=Id(K::object,9);m.dependency_group_uuid=Id(K::object,10);
   m.storage_binding_uuid=Id(K::object,11);m.donor_overlay_uuid=Id(K::object,12);
   m.lifecycle=c::CatalogObjectLifecycle::active;m.status=c::CatalogObjectStatus::active;
   m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;
   m.record.payload=std::string("opaque\0\r\n",9)+std::string(40,'x');return m;
 }
-// Offset oracle from SBCMV001 version 2 (no trace key or retention class: owner Q57 = 1,
-// Q58 = 1; their length slots 352 and 364 are reserved zero)/SBCTREC2. No production
-// serializers or integer helpers.
+// Offset oracle from SBCMV001 version 4 (SB_CATALOG_METADATA_HEADER_V4, owner
+// Q261, 2026-11-18: 352 bytes, nine references at 96, kinds at 240, definition
+// digest 256, version digest 288, reserved 320, inner size 324, subtype 328,
+// reserved 332)/SBCTREC2. (Was: version 3, 384 bytes, eleven reference slots,
+// digests 288/320, lengths 352/356/360/364.) No production serializers or
+// integer helpers.
 Bytes Golden(const M& m){
-  // Version 3 (SB_CATALOG_OBJECT_CONSTANTS, Q52 = 1): 360 holds the subtype
-  // constant; the envelope has no text.
-  const auto start=384u;Bytes b(start+96+m.record.payload.size());
-  std::copy_n("SBCMV001",8,b.begin());Put(b,8,3,2);Put(b,10,384,2);Put(b,12,b.size(),4);
+  const auto start=352u;Bytes b(start+96+m.record.payload.size());
+  std::copy_n("SBCMV001",8,b.begin());Put(b,8,4,2);Put(b,10,352,2);Put(b,12,b.size(),4);
   Put(b,16,static_cast<unsigned>(m.authority_scope),2);Put(b,18,static_cast<unsigned>(m.lifecycle),2);
   Put(b,20,static_cast<unsigned>(m.status),2);Put(b,22,static_cast<unsigned>(m.visibility),2);
   for(unsigned i=0;i<8;++i)Put(b,32+8*i,m.*counters[i],8);
-  for(unsigned i=0;i<11;++i){if(!refs[i])continue;const auto& id=m.*refs[i];b[272+i]=static_cast<unsigned>(id.kind);
+  for(unsigned i=0;i<9;++i){const auto& id=m.*refs[i];b[240+i]=static_cast<unsigned>(id.kind);
     std::copy(id.value.bytes.begin(),id.value.bytes.end(),b.begin()+96+16*i);}
-  Put(b,356,96+m.record.payload.size(),4);Put(b,360,static_cast<unsigned>(m.object_subtype),4);
+  Put(b,324,96+m.record.payload.size(),4);Put(b,328,static_cast<unsigned>(m.object_subtype),4);
   std::copy_n("SBCTREC2",8,b.begin()+start);Put(b,start+8,2,2);Put(b,start+10,96,2);
   Put(b,start+12,96+m.record.payload.size(),4);Put(b,start+16,static_cast<unsigned>(m.record.header.kind),2);
   Put(b,start+20,m.record.header.record_version,4);Put(b,start+24,m.record.header.deleted,4);
@@ -112,7 +114,7 @@ Bytes Golden(const M& m){
     b[start+32+i]=static_cast<unsigned>(id->kind);
     std::copy(id->value.bytes.begin(),id->value.bytes.end(),b.begin()+start+40+16*i);++i;}
   std::copy(m.record.payload.begin(),m.record.payload.end(),b.begin()+start+96);
-  const auto d=Digest(b.data()+start,b.size()-start);std::copy(d.begin(),d.end(),b.begin()+288);Seal(b);return b;
+  const auto d=Digest(b.data()+start,b.size()-start);std::copy(d.begin(),d.end(),b.begin()+256);Seal(b);return b;
 }
 auto Decode(std::span<const p::byte> b){return WithoutRecordHeap([&]{return c::DecodeCatalogMetadataVersionView(b);});}
 void Parity(const c::CatalogRecordDiagnosticView& a,const p::DiagnosticRecord& b){
@@ -137,16 +139,20 @@ void Framing(){
   for(std::size_t size=0;size<good.size();++size)Check(!Decode(std::span(good).first(size)).ok(),"every truncation");
   for(std::size_t at=0;at<good.size();++at){auto b=good;b[at]^=1;Refused(b);}
   auto bad=good;bad.push_back(0);Refused(bad,"header_invalid");
-  for(auto [begin,end]:{std::pair{24,32},std::pair{283,288},std::pair{368,384}})
+  // v4 reserved ranges (were {283,288} and {368,384}); the definition digest at 256 (was 288).
+  for(auto [begin,end]:{std::pair{24,32},std::pair{249,256},std::pair{336,352}})
     for(int at=begin;at<end;++at)for(unsigned value=1;value<256;++value){
       bad=good;bad[at]=value;Seal(bad);Refused(bad,"digest_reserved_or_canonical_mismatch");}
-  bad=good;bad[288]^=1;Seal(bad);Refused(bad,"digest_reserved_or_canonical_mismatch");
-  bad=good;Put(bad,352,1,4);Refused(bad,"length_invalid");  // reserved (version 1's trace-key length)
-  bad=good;Put(bad,364,1,4);Refused(bad,"length_invalid");  // reserved (version 1's retention-class length)
+  bad=good;bad[256]^=1;Seal(bad);Refused(bad,"digest_reserved_or_canonical_mismatch");
+  bad=good;Put(bad,320,1,4);Refused(bad,"length_invalid");  // reserved (version 1's trace-key length; was 352)
+  bad=good;Put(bad,332,1,4);Refused(bad,"length_invalid");  // reserved (version 1's retention-class length; was 364)
+  // A version-3 header (384 bytes) is refused outright: no migration (Q164 = 1).
+  bad=good;Put(bad,8,3,2);Seal(bad);Refused(bad,"header_invalid");
+  bad=good;Put(bad,10,384,2);Seal(bad);Refused(bad,"header_invalid");
   bad=good;Put(bad,8,1,2);Refused(bad,"header_invalid");  // version 1
   bad=good;Put(bad,8,2,2);Refused(bad,"header_invalid");  // version 2 (text subtype)
-  bad=good;Put(bad,360,0x10000,4);Seal(bad);Refused(bad,"length_invalid");  // a subtype code past u16
-  bad=good;Put(bad,356,0xffffffffu,4);Refused(bad,"length_invalid");
+  bad=good;Put(bad,328,0x10000,4);Seal(bad);Refused(bad,"length_invalid");  // a subtype code past u16 (v4 offset; was 360)
+  bad=good;Put(bad,324,0xffffffffu,4);Refused(bad,"length_invalid");  // inner size (v4 offset; was 356)
   bad=Bytes(262145,0);Refused(bad,"size_invalid");
   auto copy=*view.record;
   Check(copy.object_subtype==m.object_subtype,"subtype constant decoded");
@@ -164,32 +170,31 @@ void Semantics(){
     Check(v.ok()==(n>=1&&n<=maximum[index]),"all metadata enum boundaries");
     if(!v.ok())Refused(b,"enum_invalid");
   }
-  for(unsigned slot=0;slot<11;++slot)for(unsigned kind=0;kind<256;++kind){
-    if(!refs[slot])continue;  // SB_CATALOG_NO_NAME_REFERENCE: the retired slot, below
+  // v4 (Q261): nine slots; audit is 7, owning schema 8 (were 9 and 10 of eleven).
+  for(unsigned slot=0;slot<9;++slot)for(unsigned kind=0;kind<256;++kind){
     auto m=base;if(slot==2){m.retired_transaction_uuid=m.creator_transaction_uuid;m.status=c::CatalogObjectStatus::retired;}
     auto& id=m.*refs[slot];id.kind=static_cast<K>(kind);
     // Native registry: database through transaction are codes0..7; principal9.
     // Session8 is not durable; unknown10 and all unregistered codes refuse.
     const bool durable=kind<=7||kind==9;
-    const bool valid=durable&&((slot==0||slot==9)||((slot==1||slot==2)?id.kind==K::transaction:
-      (slot==10?id.kind==K::schema:id.kind==K::object)));
+    const bool valid=durable&&((slot==0||slot==7)||((slot==1||slot==2)?id.kind==K::transaction:
+      (slot==8?id.kind==K::schema:id.kind==K::object)));
     const auto b=Golden(m);Check(Decode(b).ok()==valid,"every binary reference kind");
     if(!valid)Refused(b);
   }
-  for(unsigned slot=0;slot<11;++slot)for(unsigned version=0;version<16;++version)for(unsigned variant=0;variant<4;++variant){
-    if(version==7&&variant==2)continue;if(!refs[slot])continue;auto m=base;
+  for(unsigned slot=0;slot<9;++slot)for(unsigned version=0;version<16;++version)for(unsigned variant=0;variant<4;++variant){
+    if(version==7&&variant==2)continue;auto m=base;
     if(slot==2){m.retired_transaction_uuid=m.creator_transaction_uuid;m.status=c::CatalogObjectStatus::retired;}
     auto& id=m.*refs[slot];id.value.bytes[6]=version<<4;id.value.bytes[8]=variant<<6;Refused(Golden(m),"reference_invalid");
   }
   // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): the name vector alone is
   // optional (no pairing with a default name). (Was: slots 3 and 4 paired,
   // either absent alone refused, name_vector_pair_invalid.)
-  for(unsigned slot=0;slot<11;++slot){if(!refs[slot])continue;auto m=base;m.*refs[slot]={};const auto v=Decode(Golden(m));
-    const bool required=slot==0||slot==1||slot==9;
+  for(unsigned slot=0;slot<9;++slot){auto m=base;m.*refs[slot]={};const auto v=Decode(Golden(m));
+    const bool required=slot==0||slot==1||slot==7;  // v4: audit is slot 7 (was 9)
     Check(v.ok()==!required,"exact optional absence");}
-  // The retired slot (bytes 144..159, kind byte 275) must be zero: any byte
-  // set there is refused.
-  for(unsigned at:{144u,151u,159u,275u}){auto b=Golden(base);b[at]=1;Seal(b);Refused(b,"retired_name_reference");}
+  // (Was: the retired slot 3, bytes 144..159 / kind byte 275, refused
+  // retired_name_reference when set; version 4 has no such slot, Q261.)
   // The subtype is a constant: every listed one is admitted (where no family
   // check applies to this opaque payload), none and every unlisted code refused.
   for(unsigned code=0;code<=0xffffu;++code){

@@ -141,8 +141,7 @@ bool CatalogMetricLabelSchemaMatchesMetadata(const CatalogMetadataVersionView& m
   if (!CatalogMetricLabelSchemaMatchesHeader(m.record) || m.object_subtype != CatalogObjectSubtype::metric_label_schema ||
       !Identity(m.owning_schema_uuid,UuidKind::schema) || !Identity(m.record.header.parent_uuid,UuidKind::object) ||
       m.owning_schema_uuid.value != m.record.header.parent_uuid.value ||
-      // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16): (was: default_name_uuid also checked or set on the next line).
-      !Identity(m.name_vector_uuid,UuidKind::object) ||
+      // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16; Q261(b) = 1, 2026-11-18): the definition carries no default_name_uuid and no name_vector_uuid (was: both checked here).
       !Identity(m.security_policy_uuid,UuidKind::object) || !Identity(m.creator_transaction_uuid,UuidKind::transaction)) return false;
   const auto decoded = DecodeCatalogMetricLabelSchemaView(m.record.payload);
   const auto& r = *decoded.record;

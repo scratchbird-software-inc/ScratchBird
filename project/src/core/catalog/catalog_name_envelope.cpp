@@ -101,7 +101,7 @@ bool CatalogNamePayloadMatchesMetadata(const CatalogNamePayloadView& payload, co
     return ValidateCatalogNameVector(*v) == CatalogValueError::none && m.object_subtype == CatalogObjectSubtype::name_vector &&
         SameIdentity(v->name_vector_uuid,m.record.header.object_uuid) &&
         SameIdentity(v->object_uuid,m.record.header.parent_uuid) &&
-        SameIdentity(v->name_vector_uuid,m.name_vector_uuid) &&
+        // (Q261(b) = 1, 2026-11-18: was also SameIdentity(v->name_vector_uuid, m.name_vector_uuid).)
         optional_matches(v->owning_schema_uuid,m.owning_schema_uuid) &&
         SameIdentity(v->security_policy_uuid,m.security_policy_uuid) &&
         v->catalog_generation_id == m.catalog_generation &&
@@ -112,7 +112,7 @@ bool CatalogNamePayloadMatchesMetadata(const CatalogNamePayloadView& payload, co
     return ValidateCatalogNameEntry(*e) == CatalogValueError::none && m.object_subtype == CatalogObjectSubtype::name_entry &&
         SameIdentity(e->name_entry_uuid,m.record.header.object_uuid) &&
         SameIdentity(e->name_vector_uuid,m.record.header.parent_uuid) &&
-        SameIdentity(e->name_vector_uuid,m.name_vector_uuid) &&
+        // (Q261(b) = 1, 2026-11-18: was also SameIdentity(e->name_vector_uuid, m.name_vector_uuid).)
         optional_matches(e->parent_schema_uuid,m.owning_schema_uuid) &&
         optional_matches(e->dropped_transaction_uuid,m.retired_transaction_uuid) &&
         SameIdentity(e->security_policy_uuid,m.security_policy_uuid) &&

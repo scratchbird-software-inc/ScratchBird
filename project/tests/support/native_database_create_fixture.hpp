@@ -19,13 +19,16 @@
 //
 // Inputs native create needs and the legacy fixtures never gave: the database
 // name (data), its language constant, total_pages (no default, Q105 = 1), and
-// an internal service principal with a credential verifier. Legacy inputs with
-// no native counterpart are not passed: resource seed pack, metric policy
-// files.
+// an internal service principal (its password is derived inside the engine
+// from the database UUID and a seed the create stores, owner Q267 = 2 /
+// Q274, 2026-11-19; was: a credential verifier supplied here, then the
+// receipt's password). Legacy inputs with no native counterpart are not
+// passed: resource seed pack, metric policy files.
 
 #include "lifecycle/engine_lifecycle_api.hpp"
 #include "catalog_language.hpp"
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <string>
@@ -44,8 +47,8 @@ inline std::string DefaultNativeFixturePolicyPackRoot() {
 #endif
 }
 
-// A verifier the fixtures already use (engine_statement_fixture.hpp); the
-// service principal reuses it unless the caller gives its own.
+// A verifier the fixtures already use (engine_statement_fixture.hpp), for the
+// bootstrap principal. (Was: also the service principal's default; Q267 = 2.)
 inline constexpr std::string_view kNativeFixtureCredentialFingerprint =
     "local-password-pbkdf2-sha256:v1:iterations=600000:"
     "salt=0123456789abcdef0123456789abcdef:"
@@ -60,7 +63,6 @@ struct NativeFixtureCreateRequest {
   std::string bootstrap_principal_name = "fixture_owner";
   std::string bootstrap_credential_fingerprint = std::string(kNativeFixtureCredentialFingerprint);
   std::string service_principal_name = "fixture_service";
-  std::string service_credential_fingerprint = std::string(kNativeFixtureCredentialFingerprint);
   std::string policy_seed_pack_root = DefaultNativeFixturePolicyPackRoot();
 };
 
@@ -72,6 +74,8 @@ struct NativeFixtureCreateResult {
   core::platform::Uuid bootstrap_principal_uuid{};
   core::platform::Uuid service_principal_uuid{};
   core::platform::Uuid construction_transaction_uuid{};
+  // (Q274, 2026-11-19: the receipt carries no service password; was a
+  // 16-byte field here.)
   std::string diagnostic_code;
   std::string diagnostic_detail;
 };
@@ -104,7 +108,6 @@ inline NativeFixtureCreateResult CreateNativeFixtureDatabase(const NativeFixture
   request.option_envelopes.push_back("bootstrap_principal_name:" + in.bootstrap_principal_name);
   request.option_envelopes.push_back("bootstrap_credential_fingerprint:" + in.bootstrap_credential_fingerprint);
   request.option_envelopes.push_back("internal_service_principal_name:" + in.service_principal_name);
-  request.option_envelopes.push_back("internal_service_credential_fingerprint:" + in.service_credential_fingerprint);
   NativeFixtureCreateResult out;
   out.api = api::EngineCreateLifecycle(request);
   if (!out.api.ok) {

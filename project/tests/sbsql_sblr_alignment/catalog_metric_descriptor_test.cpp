@@ -154,7 +154,7 @@ c::CatalogMetadataVersion Metadata(const c::CatalogMetricDescriptor& r){
   v.record.header.row_uuid=Id(p::UuidKind::row,6);v.record.header.object_uuid={p::UuidKind::object,r.binding.metric_uuid};
   v.record.header.parent_uuid=Id(p::UuidKind::object,7);v.record.payload=Golden(r);v.owning_schema_uuid=Id(p::UuidKind::schema,7);
   v.owner_uuid=Id(p::UuidKind::principal,8);v.audit_uuid=Id(p::UuidKind::object,9);
-  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */v.name_vector_uuid=Id(p::UuidKind::object,11);
+  /* SB_CATALOG_NO_NAME_REFERENCE (Q248 = 1; Q261(b) = 1, 2026-11-18): no default_name_uuid, no name_vector_uuid */
   v.security_policy_uuid={p::UuidKind::object,r.binding.visibility_policy_uuid};v.definition_version=r.binding.descriptor_generation;
   v.creator_transaction_uuid=r.origin_transaction_uuid;v.creator_local_transaction_id=r.origin_local_transaction_id;
   v.schema_epoch=v.security_epoch=v.catalog_generation=v.dependency_generation=v.invalidation_generation=1;
@@ -276,7 +276,7 @@ void Binding(){
       case 0:v.record.header.object_uuid.value.bytes[15]++;break;case 1:v.record.header.kind=c::CatalogRecordKind::table_descriptor;break;
       case 2:v.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;break;case 3:v.definition_version++;break;
       case 4:v.record.header.parent_uuid.value.bytes[15]++;break;case 5:v.owning_schema_uuid={};break;
-      case 6:v.name_vector_uuid={};/* (Was: default_name_uuid, retired by owner Q248 = 1; the name-vector fault) */break;case 7:v.name_vector_uuid={};break;
+      case 6:case 7:continue;/* (Was: the name-vector fault; Q261(b) = 1 removed the field, 2026-11-18) */
       case 8:v.security_policy_uuid.value.bytes[15]++;break;case 9:v.authority_scope=c::CatalogAuthorityScope::cluster;break;
       case 10:v.creator_transaction_uuid.value.bytes[15]++;break;case 11:v.creator_local_transaction_id--;break;
       case 12:v.creator_local_transaction_id++;break;case 13:v.record.payload="metric_uuid=seed";break;

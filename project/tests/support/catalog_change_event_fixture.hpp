@@ -43,8 +43,7 @@ inline std::optional<cat::CatalogMetadataVersion> IntentSeedRow(const sdb::Nativ
   m.record.header.deleted = false;
   m.record.payload.assign(reinterpret_cast<const char*>(encoded.bytes.data()), encoded.bytes.size());
   m.object_subtype = scratchbird::core::catalog::CatalogObjectSubtype::node_construction_intent;
-  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
-  m.name_vector_uuid = {};
+  /* SB_CATALOG_NO_NAME_REFERENCE (Q248 = 1; Q261(b) = 1, 2026-11-18): no default_name_uuid, no name_vector_uuid */
   m.audit_uuid = m.record.header.object_uuid;
   m.creator_transaction_uuid = request.creator.transaction_uuid;
   m.creator_local_transaction_id = 1;

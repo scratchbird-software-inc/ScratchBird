@@ -78,7 +78,7 @@ inline c::CatalogMetadataVersion Metadata(unsigned index,const p::TypedUuid& tx,
   m.record.header.parent_uuid={p::UuidKind::object,schema};m.record.payload=std::move(payload);
   m.owner_uuid={p::UuidKind::principal,Id(50)};m.audit_uuid={p::UuidKind::object,Id(51)};
   m.security_policy_uuid={p::UuidKind::object,Id(52)};m.owning_schema_uuid={p::UuidKind::schema,schema};
-  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */m.name_vector_uuid={p::UuidKind::object,Id(9101+2*index)};
+  /* SB_CATALOG_NO_NAME_REFERENCE (Q248 = 1; Q261(b) = 1, 2026-11-18): no default_name_uuid, no name_vector_uuid */
   m.creator_transaction_uuid=tx;m.creator_local_transaction_id=1;
   m.definition_version=m.catalog_generation=m.schema_epoch=m.security_epoch=m.dependency_generation=m.invalidation_generation=1;
   m.status=c::CatalogObjectStatus::active;m.lifecycle=c::CatalogObjectLifecycle::active;

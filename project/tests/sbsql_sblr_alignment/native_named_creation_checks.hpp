@@ -17,26 +17,26 @@ void NativeNamedCreationChecks(const db::NativeCreationCatalogSeed& supplied) {
   std::vector<c::CatalogNamedCreationInput> inputs;
   for(unsigned at=0;at<names.size();++at) {
     const auto& definition=supplied[0][at].metadata;auto& n=names[at];
+    // Q261(b) = 1 (2026-11-18): the seed's vector identity for this object (native_creation_catalog_checks.hpp, Id(720+index)); was definition.name_vector_uuid.
+    const scratchbird::core::platform::TypedUuid name_vector{UuidKind::object,Id(720+at)};
     n.vector_metadata=example[1][0].metadata;
-    n.vector_metadata.record.header.object_uuid=definition.name_vector_uuid;
+    n.vector_metadata.record.header.object_uuid=name_vector;
     n.vector_metadata.record.header.row_uuid={UuidKind::row,Id(18000+3*at)};
     n.vector_metadata.record.header.parent_uuid=definition.record.header.object_uuid;
-    /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
-    n.vector_metadata.name_vector_uuid=definition.name_vector_uuid;
+    /* SB_CATALOG_NO_NAME_REFERENCE (Q248 = 1; Q261(b) = 1, 2026-11-18): no default_name_uuid, no name_vector_uuid */
     n.vector_metadata.security_policy_uuid=definition.security_policy_uuid;
     n.vector=std::get<c::CatalogNameVector>(*example[1][0].name);
-    n.vector.name_vector_uuid=definition.name_vector_uuid;n.vector.object_uuid=definition.record.header.object_uuid;
+    n.vector.name_vector_uuid=name_vector;n.vector.object_uuid=definition.record.header.object_uuid;
     /* SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES (owner Q228 revisited): no vector default */n.vector.security_policy_uuid=definition.security_policy_uuid;
     n.vector.object_kind=definition.record.header.kind;
     for(unsigned alias=0;alias<2;++alias) {
       auto& m=n.metadata[alias];auto& e=n.entries[alias];
       m=example[1][1].metadata;m.record.header.row_uuid={UuidKind::row,Id(18001+3*at+alias)};
       m.record.header.object_uuid=alias?scratchbird::core::platform::TypedUuid{UuidKind::object,Id(19000+at)}:scratchbird::core::platform::TypedUuid{UuidKind::object,Id(19500+at)};  // SB_CATALOG_NO_NAME_REFERENCE (Q248): was definition.default_name_uuid
-      m.record.header.parent_uuid=definition.name_vector_uuid;
-      /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */m.name_vector_uuid=definition.name_vector_uuid;
+      m.record.header.parent_uuid=name_vector;
       m.security_policy_uuid=definition.security_policy_uuid;
       e=std::get<c::CatalogNameEntry>(*example[1][1].name);
-      e.name_entry_uuid=m.record.header.object_uuid;e.name_vector_uuid=definition.name_vector_uuid;
+      e.name_entry_uuid=m.record.header.object_uuid;e.name_vector_uuid=name_vector;
       e.object_uuid=definition.record.header.object_uuid;e.object_kind=definition.record.header.kind;
       e.security_policy_uuid=definition.security_policy_uuid;e.language_uuid=c::CatalogLanguageIdentity(alias?c::kCatalogLanguage_de_DE:c::kCatalogLanguage_en_US);
       e.name_class=alias?c::CatalogNameClass::alias:c::CatalogNameClass::primary;

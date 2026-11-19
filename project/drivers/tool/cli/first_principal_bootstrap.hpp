@@ -8,6 +8,7 @@
 
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <iosfwd>
 #include <string>
@@ -33,12 +34,13 @@ struct FirstPrincipalBootstrapRequest {
     std::string principal_name;
     std::string database_path;
     std::string platform_profile_path;
-    std::string resource_seed_pack_root;
     std::string policy_seed_pack_root;
-    // METRIC-BOOTSTRAP-CONFIG-DEFAULTS-001: both installed metric policy files,
-    // always explicit. Create publishes every selected family.
-    std::string metric_policy_defaults_path;
-    std::string metric_policy_families_path;
+    // SEARCH_KEY: SB_CLI_NATIVE_BOOTSTRAP_GRAMMAR (owner Q268 = 1, 2026-11-18):
+    // --resource-seed-pack-root, --metric-policy-defaults and
+    // --metric-policy-families are no longer part of the grammar; the native
+    // create has no such inputs. (Was: Q254, accepted and unused:
+    // resource_seed_pack_root, metric_policy_defaults_path,
+    // metric_policy_families_path, METRIC-BOOTSTRAP-CONFIG-DEFAULTS-001.)
     FirstPrincipalBootstrapPasswordSource password_source =
         FirstPrincipalBootstrapPasswordSource::kProtectedPrompt;
     // SEARCH_KEY: SB_CLI_NATIVE_BOOTSTRAP (owner Q254 = 1, 2026-11-16). The
@@ -47,12 +49,11 @@ struct FirstPrincipalBootstrapRequest {
     //   --language        a catalog language tag (default "en"); the parser-side
     //                     adapter turns it into the catalog_language constant
     //   --total-pages     the file's size in pages, required (owner Q105 = 1)
-    //   --service-principal  the internal service principal's name, required;
-    //                     its password is read after the first principal's, by
-    //                     the same protected path (second stdin line or prompt)
-    // --resource-seed-pack-root and the metric policy files stay in the
-    // grammar for the callers but have no native counterpart and are not
-    // consumed by the native create.
+    //   --service-principal  the internal service principal's name, required.
+    //                     Its password is derived inside the engine (owner
+    //                     Q267 = 2 / Q274, 2026-11-19) and never returned;
+    //                     nothing is read or printed for it. (Was: a second
+    //                     protected password; then the receipt's password.)
     std::string database_name;
     std::string language_tag = "en";
     std::uint64_t total_pages = 0;
@@ -73,6 +74,13 @@ struct FirstPrincipalBootstrapResult {
     std::string filespace_uuid;
     std::string service_principal_uuid;
     std::string construction_transaction_uuid;
+    // SEARCH_KEY: SB_CLI_MINTED_SERVICE_PASSWORD (owner Q267 = 2, 2026-11-18;
+    // Q274, 2026-11-19). The service principal's password is derived inside
+    // the engine (database UUID XOR a stored seed, SB_AGENT_PASSWORD_DERIVED)
+    // and is never returned: the receipt carries no password and this command
+    // prints none; it reports only that the principal was provisioned.
+    // (Was: the receipt's 16 bytes, printed once as 32 hex digits.)
+    bool service_principal_provisioned = false;
 };
 
 struct FirstPrincipalBootstrapParseResult {

@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import argparse
+import re
 import gzip
 from io import BytesIO
 import json
@@ -112,6 +113,15 @@ BOOTSTRAP_POLICY_PACK_ROOT = Path(
 BOOTSTRAP_DATA_ROOT = Path("/var/lib/scratchbird/data")
 BOOTSTRAP_DATABASE_NAME = "installer-first-principal.smoke.sbdb"
 BOOTSTRAP_PRINCIPAL = "installer_qa_admin"
+# SB_CLI_NATIVE_BOOTSTRAP (owner Q254 = 1) / SB_CLI_NATIVE_BOOTSTRAP_GRAMMAR
+# (owner Q268 = 1, 2026-11-18): the native create needs the file's size in
+# pages and the internal service principal's name; the resource seed pack and
+# the metric policy files are no longer bootstrap inputs (they stay installed
+# package files, checked as such below). The service principal's credential is
+# derived inside the engine and never printed (Q274, 2026-11-19; was: a
+# minted password printed once in the receipt, Q267 = 2, and redacted here).
+BOOTSTRAP_TOTAL_PAGES = 1024
+BOOTSTRAP_SERVICE_PRINCIPAL = "installer_service"
 BOOTSTRAP_PACKAGE_FILES = (
     "opt/ScratchBird/bin/SBsql",
     "opt/ScratchBird/bin/SBsec",
@@ -915,6 +925,8 @@ def redact_secrets(value: str, secrets_to_redact: tuple[str, ...]) -> str:
     for secret in sorted(set(secrets_to_redact), key=len, reverse=True):
         if secret:
             value = redact_secret(value, secret)
+    # (Q274, 2026-11-19: the bootstrap prints no service password any more; the
+    # redaction of that line, added for Q267, is gone with it.)
     return value
 
 
@@ -1071,8 +1083,9 @@ def bootstrap_command(prefix: list[str], tool: Path, database: Path) -> list[str
         str(database),
         "--mode=embedded",
         f"--platform-profile={BOOTSTRAP_PROFILE_PATH}",
-        f"--resource-seed-pack-root={BOOTSTRAP_RESOURCE_PACK_ROOT}",
         f"--policy-seed-pack-root={BOOTSTRAP_POLICY_PACK_ROOT}",
+        f"--total-pages={BOOTSTRAP_TOTAL_PAGES}",
+        f"--service-principal={BOOTSTRAP_SERVICE_PRINCIPAL}",
         "--password-stdin",
     ]
 

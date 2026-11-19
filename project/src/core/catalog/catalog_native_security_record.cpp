@@ -34,7 +34,8 @@ constexpr CatalogValueFieldSchema principal_fields[]{
     {15, T::unsigned_integer, false, 8}, // credential_scheme
     {16, T::unsigned_integer, false, 8}, // credential_iterations
     {17, T::opaque_bytes, false, 16},    // credential_salt
-    {18, T::opaque_bytes, false, 32}};   // credential_verifier
+    {18, T::opaque_bytes, false, 32},    // credential_verifier
+    {19, T::opaque_bytes, false, 16}};   // password_seed, optional (SB_AGENT_PASSWORD_SEED, owner Q274, 2026-11-19)
 constexpr CatalogValueFieldSchema role_fields[]{
     SB_NATIVE_SECURITY_COMMON_FIELDS,
     {7, T::unsigned_integer, false, 8},  // authority_class
@@ -126,7 +127,9 @@ bool Valid(const NativeSecurityCredential& c) {
 }
 bool Valid(const NativeSecurityPrincipal& r) {
   return CommonValid(r, r.principal_uuid) && Known(r.principal_kind) && KnownIfPresent(r.authority_class) &&
-         (!r.credential || Valid(*r.credential));
+         (!r.credential || Valid(*r.credential)) &&
+         // SB_AGENT_PASSWORD_SEED: a seed needs the verifier it derives to, and is never all zero.
+         (!r.password_seed || (r.credential && !AllZero(*r.password_seed)));
 }
 bool Valid(const NativeSecurityRole& r) { return CommonValid(r, r.role_uuid) && KnownIfPresent(r.authority_class); }
 bool Valid(const NativeSecurityGroup& r) { return CommonValid(r, r.group_uuid); }
@@ -215,6 +218,7 @@ struct Fields {
       Opaque(17, r.credential->salt);
       Opaque(18, r.credential->verifier);
     }
+    if (r.password_seed) Opaque(19, *r.password_seed);  // SB_AGENT_PASSWORD_SEED
   }
   explicit Fields(const NativeSecurityRole& r) {
     Common(r, r.role_uuid);
@@ -343,6 +347,8 @@ NativeSecurityDecodeResult<NativeSecurityPrincipal> DecodeNativeSecurityPrincipa
   NativeSecurityPrincipal r;
   NativeSecurityCredential c;
   unsigned credential_fields = 0;
+  std::array<byte, 16> seed{};
+  bool seed_present = false;
   for (const auto& f : d.fields) {
     if (DecodeCommon(f, r, r.principal_uuid)) continue;
     bool ok = true;
@@ -367,12 +373,18 @@ NativeSecurityDecodeResult<NativeSecurityPrincipal> DecodeNativeSecurityPrincipa
         if (ok) std::copy(f.bytes.begin(), f.bytes.end(), c.verifier.begin());
         ++credential_fields;
         break;
+      case 19:  // SB_AGENT_PASSWORD_SEED (Q274)
+        ok = f.bytes.size() == seed.size();
+        if (ok) std::copy(f.bytes.begin(), f.bytes.end(), seed.begin());
+        seed_present = true;
+        break;
       default: ok = false;
     }
     if (!ok) return {E::invalid_value, {}};
   }
   if (credential_fields != 0 && credential_fields != 4) return {E::invalid_value, {}};
   if (credential_fields) r.credential = c;
+  if (seed_present) r.password_seed = seed;
   if (!Valid(r)) return {E::invalid_value, {}};
   return {E::none, r};
 }
@@ -579,7 +591,7 @@ bool NativeSecurityRecordMatchesMetadata(const CatalogMetadataVersionView& m) {
   if (!bound || !NativeSecurityPayloadMatchesHeader(m.record) || !V7(m.owner_uuid, UuidKind::principal) ||
       // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16): (was: default_name_uuid also checked or set on the next line).
       !V7(m.audit_uuid, kObj) || !V7(m.security_policy_uuid, kObj) ||
-      !V7(m.name_vector_uuid, kObj) || !V7(m.owning_schema_uuid, UuidKind::schema) ||
+      !V7(m.owning_schema_uuid, UuidKind::schema) ||  // (Q261(b) = 1: was also name_vector_uuid)
       !V7(m.creator_transaction_uuid, UuidKind::transaction) ||
       m.record.header.parent_uuid.value != m.owning_schema_uuid.value)
     return false;

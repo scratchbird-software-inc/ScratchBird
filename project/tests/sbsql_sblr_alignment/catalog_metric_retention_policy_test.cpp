@@ -80,7 +80,7 @@ c::CatalogMetadataVersion Metadata(const c::CatalogMetricRetentionPolicy& r) {
   v.record.payload = Golden(r);
   v.owning_schema_uuid = Id(p::UuidKind::schema, 4);
   v.owner_uuid = Id(p::UuidKind::principal, 5); v.audit_uuid = Id(p::UuidKind::object, 6);
-  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */ v.name_vector_uuid = Id(p::UuidKind::object, 8);
+  /* SB_CATALOG_NO_NAME_REFERENCE (Q248 = 1; Q261(b) = 1, 2026-11-18): no default_name_uuid, no name_vector_uuid */
   v.creator_transaction_uuid = r.origin_transaction_uuid;
   v.creator_local_transaction_id = r.origin_local_transaction_id;
   v.definition_version = r.policy.generation;
@@ -111,10 +111,10 @@ void RoundTrip(const c::CatalogMetricRetentionPolicy& r) {
 }
 // Rehash independently so decode refusals cannot be attributed to digest mismatch.
 void Reseal(std::vector<p::byte>& bytes) {
-  std::fill(bytes.begin() + 320, bytes.begin() + 352, 0);
+  std::fill(bytes.begin() + 288, bytes.begin() + 320, 0);  // v4 version digest at 288 (was 320; SB_CATALOG_METADATA_HEADER_V4, Q261)
   std::array<unsigned char, 32> hash{};
   SHA256(bytes.data(), bytes.size(), hash.data());
-  std::copy(hash.begin(), hash.end(), bytes.begin() + 320);
+  std::copy(hash.begin(), hash.end(), bytes.begin() + 288);
 }
 void Binding() {
   const auto initial = Metadata(Policy());
@@ -129,8 +129,7 @@ void Binding() {
       case 5: v.record.header.parent_uuid.value.bytes[15]++; break;
       case 6: v.record.header.parent_uuid.kind = p::UuidKind::schema; break;
       case 7: v.owning_schema_uuid = {}; break;
-      case 8: v.name_vector_uuid = {};/* (Was: default_name_uuid, retired by owner Q248 = 1; the name-vector fault) */ break;
-      case 9: v.name_vector_uuid = {}; break;
+      case 8: case 9: continue;/* (Was: the name-vector fault; Q261(b) = 1 removed the field, 2026-11-18) */
       case 10: v.authority_scope = c::CatalogAuthorityScope::cluster; break;
       case 11: v.creator_transaction_uuid.value.bytes[15]++; break;
       case 12: v.creator_local_transaction_id--; break;

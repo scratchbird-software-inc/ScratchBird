@@ -12,6 +12,7 @@
 #include "security/security_model.hpp"
 
 #include <memory>
+#include <string_view>
 
 namespace scratchbird::engine::internal_api {
 
@@ -40,6 +41,26 @@ struct EngineAuthenticateResult : EngineApiResult {
   bool authenticated = false;
 };
 EngineAuthenticateResult EngineAuthenticate(const EngineAuthenticateRequest& request);
+
+// SEARCH_KEY: SB_AGENT_PRINCIPAL_EXTERNAL_BINDING_REFUSED (owner Q274,
+// 2026-11-19: agents "can not have a connection outside the database itself
+// ie even if you have the password, you can not run it from any location
+// except inside the program itself"). The one decision every EXTERNAL
+// authentication (server session attach, the SBLR authenticate operation,
+// embedded attach - all of which reach EngineAuthenticate) applies to the
+// principal it resolved, BEFORE any password is verified: a service principal
+// (the L5 principal and every agent principal) is internal and is refused
+// SECURITY.AGENT_PRINCIPAL_EXTERNAL_BINDING_REFUSED. Internal startup
+// authentication (VerifyNativeRuntimePrincipalCredential, the L5 binding)
+// does not pass through here. `principal_kind` is the durable record's kind
+// text ("user" | "service"). The result's `error` is false when admitted.
+// SEARCH_KEY: SB_AGENT_PRINCIPAL_EXTERNAL_BINDING_KIND_KEYED (owner Q278 = 1,
+// 2026-11-19): the refusal is keyed on principal_kind "service" ONLY because the
+// legacy principal record carries no authority_class; it therefore also refuses
+// an operator-created service-kind principal. When the native security loader
+// supplies authority_class (S4), re-key it on authority_class (l5_database and
+// the agent classes) and decide the application-service-account policy.
+EngineApiDiagnostic CheckExternalAuthenticationBinding(std::string_view principal_kind);
 
 struct EngineRefreshSecurityContextRequest : EngineApiRequest {};
 struct EngineRefreshSecurityContextResult : EngineApiResult {

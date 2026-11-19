@@ -46,7 +46,6 @@ int main() {
         "/tmp/qa.sbdb",
         "--mode=embedded",
         "--platform-profile", "/tmp/SBbootstrap.profile",
-        "--resource-seed-pack-root=/tmp/resource-pack",
         "--policy-seed-pack-root", "/tmp/policy-pack",
         // SB_CLI_NATIVE_BOOTSTRAP (owner Q254 = 1, 2026-11-16): the native
         // create's inputs are part of the valid grammar.
@@ -65,7 +64,6 @@ int main() {
     const auto defaults = parse({
         "qa_admin", "/tmp/qa.sbdb", "--mode=embedded",
         "--platform-profile=/tmp/SBbootstrap.profile",
-        "--resource-seed-pack-root=/tmp/resource-pack",
         "--policy-seed-pack-root=/tmp/policy-pack",
         "--total-pages=512", "--service-principal=node_service",
     });
@@ -76,8 +74,7 @@ int main() {
         const auto incomplete = parse({
             "qa_admin", "/tmp/qa.sbdb", "--mode=embedded",
             "--platform-profile=/tmp/SBbootstrap.profile",
-            "--resource-seed-pack-root=/tmp/resource-pack",
-            "--policy-seed-pack-root=/tmp/policy-pack",
+                "--policy-seed-pack-root=/tmp/policy-pack",
         "--total-pages=512", "--service-principal=node_service",
             missing,
         });
@@ -88,8 +85,7 @@ int main() {
         const auto refused = parse({
             "qa_admin", "/tmp/qa.sbdb", "--mode=embedded",
             "--platform-profile=/tmp/SBbootstrap.profile",
-            "--resource-seed-pack-root=/tmp/resource-pack",
-            "--policy-seed-pack-root=/tmp/policy-pack",
+                "--policy-seed-pack-root=/tmp/policy-pack",
         "--total-pages=512", "--service-principal=node_service",
             bad_pages, "--service-principal=node_service",
         });
@@ -106,7 +102,6 @@ int main() {
             "--password-stdin must select protected stdin");
     const auto missing_service_profile = parse({
         "qa_admin", "/tmp/qa.sbdb", "--mode=embedded",
-        "--resource-seed-pack-root=/tmp/resource-pack",
         "--policy-seed-pack-root=/tmp/policy-pack",
         "--total-pages=512", "--service-principal=node_service",
     });
@@ -116,7 +111,6 @@ int main() {
     const auto missing_mode = parse({
         "qa_admin", "/tmp/qa.sbdb",
         "--platform-profile=/tmp/SBbootstrap.profile",
-        "--resource-seed-pack-root=/tmp/resource-pack",
         "--policy-seed-pack-root=/tmp/policy-pack",
         "--total-pages=512", "--service-principal=node_service",
     });
@@ -127,7 +121,6 @@ int main() {
     const auto network_mode = parse({
         "qa_admin", "/tmp/qa.sbdb", "--mode=inet",
         "--platform-profile=/tmp/SBbootstrap.profile",
-        "--resource-seed-pack-root=/tmp/resource-pack",
         "--policy-seed-pack-root=/tmp/policy-pack",
         "--total-pages=512", "--service-principal=node_service",
     });
@@ -138,7 +131,6 @@ int main() {
     const auto password_argv = parse({
         "qa_admin", "/tmp/qa.sbdb", "--mode=embedded",
         "--platform-profile=/tmp/SBbootstrap.profile",
-        "--resource-seed-pack-root=/tmp/resource-pack",
         "--policy-seed-pack-root=/tmp/policy-pack",
         "--total-pages=512", "--service-principal=node_service",
         "--password=secret",
@@ -154,8 +146,7 @@ int main() {
         const auto forbidden = parse({
             "qa_admin", "/tmp/qa.sbdb", "--mode=embedded",
             "--platform-profile=/tmp/SBbootstrap.profile",
-            "--resource-seed-pack-root=/tmp/resource-pack",
-            "--policy-seed-pack-root=/tmp/policy-pack",
+                "--policy-seed-pack-root=/tmp/policy-pack",
         "--total-pages=512", "--service-principal=node_service",
             forbidden_option,
         });
@@ -164,22 +155,38 @@ int main() {
                 "bootstrap must reject ordinary route, parser, query, and auth options");
     }
 
+    // SB_CLI_NATIVE_BOOTSTRAP_GRAMMAR (owner Q268 = 1, 2026-11-18): the
+    // duplicate-option case now uses --policy-seed-pack-root. (Was: two
+    // --resource-seed-pack-root values, an option no longer in the grammar.)
     const auto duplicate_seed_root = parse({
         "qa_admin", "/tmp/qa.sbdb", "--mode=embedded",
         "--platform-profile=/tmp/SBbootstrap.profile",
-        "--resource-seed-pack-root=/tmp/resource-pack-a",
-        "--resource-seed-pack-root=/tmp/resource-pack-b",
-        "--policy-seed-pack-root=/tmp/policy-pack",
+        "--policy-seed-pack-root=/tmp/policy-pack-a",
+        "--policy-seed-pack-root=/tmp/policy-pack-b",
         "--total-pages=512", "--service-principal=node_service",
     });
     require(!duplicate_seed_root.ok &&
                 duplicate_seed_root.diagnostic_code == "BOOTSTRAP.AUTH_DB_INPUT_INVALID",
             "bootstrap must reject duplicate required options");
+    // Q268 = 1: the dropped options are refused like any unknown option.
+    // (Was: each accepted once and unused; --resource-seed-pack-root required.)
+    for (const char* dropped_option :
+         {"--resource-seed-pack-root=/tmp/resource-pack", "--metric-policy-defaults=/tmp/defaults.conf",
+          "--metric-policy-families=/tmp/families.conf"}) {
+        const auto dropped = parse({
+            "qa_admin", "/tmp/qa.sbdb", "--mode=embedded",
+            "--platform-profile=/tmp/SBbootstrap.profile",
+            "--policy-seed-pack-root=/tmp/policy-pack",
+            "--total-pages=512", "--service-principal=node_service",
+            dropped_option,
+        });
+        require(!dropped.ok && dropped.diagnostic_code == "BOOTSTRAP.OPTION_NOT_ALLOWED",
+                "bootstrap must refuse the resource-seed and metric-policy options dropped by Q268");
+    }
 
     const auto extra_positional = parse({
         "qa_admin", "/tmp/qa.sbdb", "extra", "--mode=embedded",
         "--platform-profile=/tmp/SBbootstrap.profile",
-        "--resource-seed-pack-root=/tmp/resource-pack",
         "--policy-seed-pack-root=/tmp/policy-pack",
         "--total-pages=512", "--service-principal=node_service",
     });
@@ -190,7 +197,6 @@ int main() {
     const auto positional_after_option = parse({
         "qa_admin", "--mode=embedded", "/tmp/qa.sbdb",
         "--platform-profile=/tmp/SBbootstrap.profile",
-        "--resource-seed-pack-root=/tmp/resource-pack",
         "--policy-seed-pack-root=/tmp/policy-pack",
         "--total-pages=512", "--service-principal=node_service",
     });
@@ -202,7 +208,6 @@ int main() {
     const auto malformed_principal = parse({
         "1not_a_principal", "/tmp/qa.sbdb", "--mode=embedded",
         "--platform-profile=/tmp/SBbootstrap.profile",
-        "--resource-seed-pack-root=/tmp/resource-pack",
         "--policy-seed-pack-root=/tmp/policy-pack",
         "--total-pages=512", "--service-principal=node_service",
     });

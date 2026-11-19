@@ -68,8 +68,11 @@ def exercise_tool(tool: str, work: Path) -> None:
         str(work / f"{tool_name}.sbdb"),
         "--mode=embedded",
         f"--platform-profile={work / 'SBbootstrap.profile'}",
-        f"--resource-seed-pack-root={work / 'resource-pack'}",
+        # Q268 = 1 (2026-11-18): no --resource-seed-pack-root; the native
+        # create's --total-pages and --service-principal instead (Q254).
         f"--policy-seed-pack-root={work / 'policy-pack'}",
+        "--total-pages=512",
+        "--service-principal=node_service",
     ]
 
     help_result = run_command([tool, "bootstrap", "--help"], work, f"{tool_name}-help")
@@ -98,8 +101,9 @@ def exercise_tool(tool: str, work: Path) -> None:
             str(route_database),
             "--mode=embedded",
             f"--platform-profile={work / 'SBbootstrap.profile'}",
-            f"--resource-seed-pack-root={work / 'resource-pack'}",
             f"--policy-seed-pack-root={work / 'policy-pack'}",
+            "--total-pages=512",
+            "--service-principal=node_service",
             "--manager-auth-token=must-not-reach-manager",
         ],
         work,

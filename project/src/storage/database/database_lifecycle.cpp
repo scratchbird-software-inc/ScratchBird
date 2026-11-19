@@ -3713,6 +3713,15 @@ scratchbird::core::catalog::CatalogSecurityRecord NativeLocalServicePrincipalDef
   // option 3): it is admitted only by the engine binding its session at open.
   if(!service.credential_fingerprint.empty())
     record.attributes.emplace("credential_fingerprint",std::string(service.credential_fingerprint));
+  // SB_AGENT_PASSWORD_SEED (owner Q274, 2026-11-19): the seed the derived
+  // password's verifier above belongs to, 32 hex digits in the bag (the typed
+  // row stores the 16 bytes, field 19). Absent when none was supplied.
+  if(std::any_of(service.password_seed.begin(),service.password_seed.end(),[](auto b){return b!=0;})) {
+    static constexpr char kHex[]="0123456789abcdef";
+    std::string hex;hex.reserve(32);
+    for(const auto b:service.password_seed){hex.push_back(kHex[static_cast<unsigned>(b)>>4]);hex.push_back(kHex[static_cast<unsigned>(b)&15]);}
+    record.attributes.emplace("password_seed",hex);
+  }
   record.attributes.emplace("kind","service");record.attributes.emplace("principal_kind","service");
   record.attributes.emplace("security_generation",u64{1});record.attributes.emplace("bootstrap_principal",false);
   return record;
@@ -8358,6 +8367,13 @@ std::optional<std::string> NativeTypedSecurityPayload(const scratchbird::core::c
         };
         if(!unhex(parsed.salt_hex,credential.salt)||!unhex(parsed.verifier_hex,credential.verifier))return std::nullopt;
         r.credential=credential;
+        // SB_AGENT_PASSWORD_SEED (Q274): the seed, 32 hex digits, with the credential.
+        if(bag.attributes.count("password_seed")) {
+          const auto seed_hex=text("password_seed");
+          std::array<scratchbird::core::platform::byte,16> seed{};
+          if(!seed_hex||!unhex(*seed_hex,seed))return std::nullopt;
+          r.password_seed=seed;
+        }
       }
       if(!typed_ok)return std::nullopt;
       encoded=c::EncodeNativeSecurityPrincipal(r);break;
@@ -9352,7 +9368,8 @@ NativeInitialMembershipIdentitiesResult IssueNativeInitialMembershipIdentities(
 
 NativeInitialLocalServiceIdentityResult IssueNativeInitialLocalServiceIdentity(
     std::string_view policy_seed_pack_root,std::string_view principal_name,std::string_view credential_fingerprint,
-    const std::function<std::optional<core::platform::Uuid>()>& issue) noexcept {
+    const std::function<std::optional<core::platform::Uuid>()>& issue,
+    std::array<core::platform::byte,16> password_seed) noexcept {
   namespace c=scratchbird::core::catalog;
   NativeInitialLocalServiceIdentityResult out;
   try {
@@ -9371,7 +9388,7 @@ NativeInitialLocalServiceIdentityResult IssueNativeInitialLocalServiceIdentity(
     std::array<Uuid,9> ids{};
     for(auto& id:ids){const auto issued=issue();if(!issued||!IsEngineIdentityUuid(*issued))return out;id=*issued;}
     out.service=NativeInitialLocalServiceIdentity{ids[0],ids[1],ids[2],provider->provider_uuid,policy->profile_uuid,
-        {ids[3],ids[4],ids[5],ids[6],ids[7]},principal_name,credential_fingerprint,ids[8]};
+        {ids[3],ids[4],ids[5],ids[6],ids[7]},principal_name,credential_fingerprint,ids[8],password_seed};
     out.error=NativeInitialPolicyError::none;
   }catch(const std::bad_alloc&){out.error=NativeInitialPolicyError::resource_exhausted;out.service.reset();}
    catch(...){out.error=NativeInitialPolicyError::invalid_request;out.service.reset();}
@@ -9500,7 +9517,7 @@ static NativeDatabaseCreateResult PlanNativeDatabaseCreateImpl(
     // The pack's security cohort and its policy families.
     auto memberships=IssueNativeInitialMembershipIdentities(request.policy_seed_pack_root,issue);
     auto service=IssueNativeInitialLocalServiceIdentity(request.policy_seed_pack_root,request.service_principal_name,
-        request.service_credential_fingerprint,issue);
+        request.service_credential_fingerprint,issue,request.service_password_seed);  // SB_AGENT_PASSWORD_SEED (Q274)
     auto agents=IssueNativeInitialAgentIdentities(request.policy_seed_pack_root,issue);
     auto families=IssueNativeInitialPolicyFamilyIdentities(request.policy_seed_pack_root,issue);
     for(const auto* error:{&memberships.error,&service.error,&agents.error,&families.error})
@@ -9818,8 +9835,8 @@ static NativeDatabaseCreateResult PlanNativeDatabaseCreateImpl(
       m.record.header.kind=CatalogRecordKind::audit_evidence;
       m.record.header.object_uuid={UuidKind::object,audit_object};m.record.header.row_uuid=audit.row_uuid;
       m.record.header.parent_uuid={UuidKind::object,sys_audit};m.owning_schema_uuid={UuidKind::schema,sys_audit};
-      // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16): (was: default_name_uuid also checked or set on the next line).
-      m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::node_construction_intent;m.name_vector_uuid={};
+      // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16; Q261(b) = 1, 2026-11-18): (was: default_name_uuid, then name_vector_uuid, cleared here).
+      m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::node_construction_intent;
       m.audit_uuid=m.record.header.object_uuid;
       m.record.payload.assign(reinterpret_cast<const char*>(encoded.bytes.data()),encoded.bytes.size());
       seed[5].push_back({std::move(m),{}});

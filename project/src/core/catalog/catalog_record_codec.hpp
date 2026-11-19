@@ -97,10 +97,14 @@ struct CatalogMetadataVersion {
   TypedUuid retired_transaction_uuid;
   // SEARCH_KEY: SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16:
   // "the system only uses the binary 16 uuid ... the names, which are used
-  // for humans, hold the uuid of the object they are nameing"). No
-  // default_name_uuid: names point to objects, never the reverse. Its 16-byte
-  // slot in the encoded header (reference index 3) is reserved and zero.
-  TypedUuid name_vector_uuid;
+  // for humans, hold the uuid of the object they are nameing"; Q261(a) = b,
+  // Q261(b) = 1, 2026-11-18). No default_name_uuid and no name_vector_uuid:
+  // names point to objects, never the reverse; an object's name vector is
+  // found by the object's UUID (the vector row's parent / the UUID-to-name
+  // index). Header version 4 (kMetadataHeaderBytes 352) drops both 16-byte
+  // slots and renumbers the references after them; no migration (Q164 = 1).
+  // (Was: v3, 384 bytes, slot 3 reserved zero for default_name_uuid and
+  // slot 4 name_vector_uuid.)
   TypedUuid security_policy_uuid;
   TypedUuid dependency_group_uuid;
   TypedUuid storage_binding_uuid;
@@ -133,12 +137,7 @@ struct CatalogMetadataVersionView {
   TypedUuid owner_uuid;
   TypedUuid creator_transaction_uuid;
   TypedUuid retired_transaction_uuid;
-  // SEARCH_KEY: SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16:
-  // "the system only uses the binary 16 uuid ... the names, which are used
-  // for humans, hold the uuid of the object they are nameing"). No
-  // default_name_uuid: names point to objects, never the reverse. Its 16-byte
-  // slot in the encoded header (reference index 3) is reserved and zero.
-  TypedUuid name_vector_uuid;
+  // SB_CATALOG_NO_NAME_REFERENCE (Q248 = 1; Q261(b) = 1): no name reference.
   TypedUuid security_policy_uuid;
   TypedUuid dependency_group_uuid;
   TypedUuid storage_binding_uuid;
@@ -164,7 +163,6 @@ inline CatalogMetadataVersionView BorrowCatalogMetadataVersion(const CatalogMeta
       r.owner_uuid,
       r.creator_transaction_uuid,
       r.retired_transaction_uuid,
-      r.name_vector_uuid,
       r.security_policy_uuid,
       r.dependency_group_uuid,
       r.storage_binding_uuid,

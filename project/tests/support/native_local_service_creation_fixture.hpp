@@ -86,19 +86,19 @@ class NativeLocalServiceCreationFixture {
       meta.record.header.object_uuid={p::UuidKind::object,object};meta.record.header.row_uuid=Typed(p::UuidKind::row,200000+3*n);
       meta.object_subtype=subtype;if(kind)meta.record.header.kind=*kind;
       meta.security_policy_uuid={p::UuidKind::object,SourceId(0x402)};
-      /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */meta.name_vector_uuid=Typed(p::UuidKind::object,300001+2*n);
+      const auto name_vector=Typed(p::UuidKind::object,300001+2*n);  // Q261(b) = 1: the vector row's identity (was meta.name_vector_uuid)
       x.vector_metadata=meta;x.vector_metadata.record.header.kind=c::CatalogRecordKind::localized_name;
-      x.vector_metadata.record.header.object_uuid=meta.name_vector_uuid;x.vector_metadata.record.header.row_uuid=Typed(p::UuidKind::row,200001+3*n);
+      x.vector_metadata.record.header.object_uuid=name_vector;x.vector_metadata.record.header.row_uuid=Typed(p::UuidKind::row,200001+3*n);
       x.vector_metadata.record.header.parent_uuid=meta.record.header.object_uuid;x.vector_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_vector;
-      auto& v=x.vector;v.name_vector_uuid=meta.name_vector_uuid;v.object_uuid=meta.record.header.object_uuid;
+      auto& v=x.vector;v.name_vector_uuid=name_vector;v.object_uuid=meta.record.header.object_uuid;
       v.object_kind=meta.record.header.kind;v.owning_schema_uuid=meta.owning_schema_uuid;
       /* SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES (owner Q228 revisited): no vector default *//* SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES (owner Q228 revisited): no vector default */
       v.name_collision_policy_uuid=Typed(p::UuidKind::object,55);v.catalog_generation_id=1;
       v.security_policy_uuid=meta.security_policy_uuid;v.lifecycle_state=c::CatalogNameLifecycle::active;
       x.entry_metadata=meta;x.entry_metadata.record.header.kind=c::CatalogRecordKind::localized_name;
       x.entry_metadata.record.header.object_uuid=(Typed(p::UuidKind::object,300000+2*n));x.entry_metadata.record.header.row_uuid=Typed(p::UuidKind::row,200002+3*n);
-      x.entry_metadata.record.header.parent_uuid=meta.name_vector_uuid;x.entry_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_entry;x.entry_metadata.resource_epoch=1;
-      auto& e=x.entry;e.name_entry_uuid=(Typed(p::UuidKind::object,300000+2*n));e.name_vector_uuid=meta.name_vector_uuid;
+      x.entry_metadata.record.header.parent_uuid=name_vector;x.entry_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_entry;x.entry_metadata.resource_epoch=1;
+      auto& e=x.entry;e.name_entry_uuid=(Typed(p::UuidKind::object,300000+2*n));e.name_vector_uuid=name_vector;
       e.object_uuid=meta.record.header.object_uuid;e.object_kind=v.object_kind;e.scope_uuid=meta.record.header.parent_uuid;
       e.parent_schema_uuid=meta.owning_schema_uuid;e.language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_en_US);e.dialect_profile_uuid=Typed(p::UuidKind::object,56);
       e.identifier_profile_uuid=Typed(p::UuidKind::object,57);e.raw_name_text="supplied_alias_"+std::to_string(n);e.catalog_generation_id=1;

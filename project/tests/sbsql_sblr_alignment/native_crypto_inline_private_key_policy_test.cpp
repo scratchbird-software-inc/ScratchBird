@@ -51,8 +51,8 @@ c::CatalogPolicyDescriptor Descriptor(const c::CatalogCryptoInlinePrivateKeyPoli
 c::CatalogMetadataVersion Metadata(const p::Uuid& object,unsigned row,scratchbird::core::catalog::CatalogObjectSubtype subtype,std::string payload){
   auto r=f::Metadata(0,origin,f::Id(60),std::move(payload));r.record.header.kind=c::CatalogRecordKind::policy;
   r.record.header.object_uuid={p::UuidKind::object,object};r.record.header.row_uuid={p::UuidKind::row,f::Id(row)};
-  r.object_subtype=subtype;/* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
-  r.name_vector_uuid={p::UuidKind::object,f::Id(row+2000)};return r;
+  r.object_subtype=subtype;/* SB_CATALOG_NO_NAME_REFERENCE (Q248 = 1; Q261(b) = 1, 2026-11-18): no default_name_uuid, no name_vector_uuid */
+  return r;
 }
 auto BodyMetadata(const c::CatalogCryptoInlinePrivateKeyPolicy& b){return Metadata(b.body_uuid,101,scratchbird::core::catalog::CatalogObjectSubtype::crypto_inline_private_key,Golden(b));}
 auto DescriptorMetadata(const c::CatalogPolicyDescriptor& v){

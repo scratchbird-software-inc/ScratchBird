@@ -79,8 +79,7 @@ bool Metadata(const CatalogMetadataVersionView& m,const CatalogIdentifierResolut
       m.record.header.parent_uuid.kind==UuidKind::object&&m.record.header.parent_uuid.value==m.owning_schema_uuid.value&&
       m.owner_uuid.kind==UuidKind::principal&&Id(m.owner_uuid.value)&&m.audit_uuid.kind==UuidKind::object&&Id(m.audit_uuid.value)&&
       m.security_policy_uuid.kind==UuidKind::object&&Id(m.security_policy_uuid.value)&&
-      // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16): (was: default_name_uuid also checked or set on the next line).
-      m.name_vector_uuid.kind==UuidKind::object&&Id(m.name_vector_uuid.value)&&
+      // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16; Q261(b) = 1, 2026-11-18): the definition carries no default_name_uuid and no name_vector_uuid (was: both checked here).
       m.creator_transaction_uuid.kind==UuidKind::transaction&&Id(m.creator_transaction_uuid.value)&&
       r.origin_local_transaction_id<=m.creator_local_transaction_id&&
       (m.definition_version!=1||(r.origin_transaction_uuid.value==m.creator_transaction_uuid.value&&r.origin_local_transaction_id==m.creator_local_transaction_id));

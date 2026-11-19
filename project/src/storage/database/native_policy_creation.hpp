@@ -163,6 +163,12 @@ struct NativeInitialLocalServiceIdentity {
   // L5 is a member of SYSARCH (D5, as legacy create writes it). Appended last:
   // callers initialize this aggregate positionally. Required with a service.
   core::platform::Uuid l5_membership_uuid{};
+  // SB_AGENT_PASSWORD_SEED (owner Q274, 2026-11-19): the L5 principal's
+  // password seed (16 CSPRNG bytes; the password is database_uuid XOR seed,
+  // SB_AGENT_PASSWORD_DERIVED), written to its security row beside the
+  // verifier of the derived password. All zero: none supplied (a caller that
+  // supplies only a verifier, e.g. the storage-level tests), nothing written.
+  std::array<core::platform::byte,16> password_seed{};
 };
 // SEARCH_KEY: SB_NATIVE_CREATE_AGENT_PRINCIPALS (owner 2026-10-29/30: create lays
 // down every agent role and right from the policy files; rights not granted =
@@ -244,7 +250,8 @@ struct NativeInitialLocalServiceIdentityResult {
 };
 NativeInitialLocalServiceIdentityResult IssueNativeInitialLocalServiceIdentity(
     std::string_view policy_seed_pack_root,std::string_view principal_name,std::string_view credential_fingerprint,
-    const std::function<std::optional<core::platform::Uuid>()>& issue) noexcept;
+    const std::function<std::optional<core::platform::Uuid>()>& issue,
+    std::array<core::platform::byte,16> password_seed={}) noexcept;  // SB_AGENT_PASSWORD_SEED (Q274)
 struct NativeInitialPolicySecurityRequest {
   NativeInitialPolicyRequest policy;
   std::span<const NativeInitialMembershipIdentity> group_memberships;

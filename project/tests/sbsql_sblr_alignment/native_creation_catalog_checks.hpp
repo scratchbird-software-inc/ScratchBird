@@ -43,7 +43,7 @@ db::NativeCreationCatalogSeed MetricSeed(const db::NativeFilespaceInitialization
     meta.record.payload.assign(encoded.bytes.begin(),encoded.bytes.end());
     meta.owning_schema_uuid={UuidKind::schema,Id(700)};meta.owner_uuid={UuidKind::principal,Id(701)};
     meta.audit_uuid={UuidKind::object,Id(702)};
-    /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */meta.name_vector_uuid={UuidKind::object,Id(720+index)};
+    /* SB_CATALOG_NO_NAME_REFERENCE (Q248 = 1; Q261(b) = 1, 2026-11-18): no default_name_uuid, no name_vector_uuid */  // (the vector rows below carry Id(720+index) as their own identity)
     meta.security_policy_uuid={UuidKind::object,Id(503)};
     meta.definition_version=meta.schema_epoch=meta.security_epoch=meta.catalog_generation=1;
     meta.dependency_generation=meta.invalidation_generation=1;
@@ -62,9 +62,10 @@ db::NativeCreationCatalogSeed MetricSeed(const db::NativeFilespaceInitialization
   names.record.header.row_uuid={UuidKind::row,Id(620)};
   names.record.header.object_uuid={UuidKind::object,Id(720)};
   names.record.header.parent_uuid={UuidKind::object,Id(500)};
-  names.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_vector;names.name_vector_uuid=names.record.header.object_uuid;
+  names.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_vector;
+  const scratchbird::core::platform::TypedUuid name_vector=names.record.header.object_uuid;  // Q261(b) = 1 (was names.name_vector_uuid)
   c::CatalogNameVector vector;
-  vector.name_vector_uuid=names.name_vector_uuid;vector.object_uuid=names.record.header.parent_uuid;
+  vector.name_vector_uuid=name_vector;vector.object_uuid=names.record.header.parent_uuid;
   vector.object_kind=c::CatalogRecordKind::metric_descriptor;vector.owning_schema_uuid=names.owning_schema_uuid;
   /* SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES (owner Q228 revisited): no vector default *//* SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES (owner Q228 revisited): no vector default */
   vector.name_collision_policy_uuid={UuidKind::object,Id(740)};vector.catalog_generation_id=1;
@@ -72,10 +73,10 @@ db::NativeCreationCatalogSeed MetricSeed(const db::NativeFilespaceInitialization
   seed[1].push_back({names,vector});
   names.record.header.row_uuid={UuidKind::row,Id(621)};
   names.record.header.object_uuid={UuidKind::object,Id(710)};  // (was names.default_name_uuid, Id(710): Q248)
-  names.record.header.parent_uuid=names.name_vector_uuid;
+  names.record.header.parent_uuid=name_vector;
   names.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_entry;names.resource_epoch=1;
   c::CatalogNameEntry entry;
-  entry.name_entry_uuid=names.record.header.object_uuid;entry.name_vector_uuid=names.name_vector_uuid;
+  entry.name_entry_uuid=names.record.header.object_uuid;entry.name_vector_uuid=name_vector;
   entry.object_uuid={UuidKind::object,Id(500)};entry.object_kind=c::CatalogRecordKind::metric_descriptor;
   entry.scope_uuid={UuidKind::object,Id(700)};entry.parent_schema_uuid=names.owning_schema_uuid;
   entry.language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_en_US);entry.dialect_profile_uuid={UuidKind::object,Id(741)};

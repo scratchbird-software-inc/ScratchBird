@@ -41,7 +41,7 @@ inline c::CatalogMetadataVersion Metadata(const c::CatalogMemoryConfiguration& r
   m.record.header.kind=c::CatalogRecordKind::config_profile;
   m.record.header.object_uuid={p::UuidKind::object,r.configuration_uuid};
   m.record.header.row_uuid={p::UuidKind::row,f::Id(112000)};
-  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */m.name_vector_uuid={p::UuidKind::object,f::Id(12201)};
+  /* SB_CATALOG_NO_NAME_REFERENCE (Q248 = 1; Q261(b) = 1, 2026-11-18): no default_name_uuid, no name_vector_uuid */
   m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::memory_configuration;m.definition_version=r.generation;return m;
 }
 } // namespace scratchbird::tests::memory_configuration

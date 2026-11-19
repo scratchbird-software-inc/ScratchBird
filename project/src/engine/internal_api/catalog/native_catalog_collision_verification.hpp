@@ -96,8 +96,9 @@ inline NativeCatalogCollisionVerification VerifyNativeCatalogNamingCollisions(
     if(vector==SIZE_MAX||rows[vector].role!=2||!rows[vector].row.name_payload)return fail(E::missing_vector,identity(i),entry->name_vector_uuid.value);
     const auto* names=std::get_if<c::CatalogNameVectorView>(&*rows[vector].row.name_payload);
     const auto& definition=rows[object].row.metadata;
+    // (Q261(b) = 1, 2026-11-18: was also definition.name_vector_uuid == entry->name_vector_uuid; the definition holds no name reference.)
     if(!names||names->object_uuid.value!=entry->object_uuid.value||entry->object_kind!=definition.record.header.kind||
-        names->object_kind!=entry->object_kind||definition.name_vector_uuid.value!=entry->name_vector_uuid.value)
+        names->object_kind!=entry->object_kind)
       return fail(E::invalid_name,identity(i));
     const auto descriptor=find(names->name_collision_policy_uuid.value);
     if(descriptor==SIZE_MAX)return fail(E::missing_policy,identity(i),names->name_collision_policy_uuid.value);

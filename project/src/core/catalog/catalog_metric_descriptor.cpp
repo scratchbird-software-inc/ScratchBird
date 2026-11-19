@@ -263,8 +263,7 @@ bool CatalogMetricDescriptorMatchesMetadata(const CatalogMetadataVersionView& m)
   if (!CatalogMetricDescriptorMatchesHeader(m.record) || m.object_subtype!=CatalogObjectSubtype::metric_descriptor ||
       !Identity(m.owning_schema_uuid,UuidKind::schema) || !Identity(m.record.header.parent_uuid,UuidKind::object) ||
       m.record.header.parent_uuid.value!=m.owning_schema_uuid.value ||
-      // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16): (was: default_name_uuid also checked or set on the next line).
-      !Identity(m.name_vector_uuid,UuidKind::object) ||
+      // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16; Q261(b) = 1, 2026-11-18): the definition carries no default_name_uuid and no name_vector_uuid (was: both checked here).
       !Identity(m.security_policy_uuid,UuidKind::object) || !Identity(m.creator_transaction_uuid,UuidKind::transaction)) return false;
   const auto decoded=DecodeCatalogMetricDescriptorView(m.record.payload); const auto& r=*decoded.record;
   return m.definition_version==r.binding.descriptor_generation && m.security_policy_uuid.value==r.binding.visibility_policy_uuid &&

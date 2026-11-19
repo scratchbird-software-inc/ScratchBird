@@ -470,8 +470,13 @@ class NativeQaBootstrapTest(unittest.TestCase):
         bootstrap_source = (
             REPO_ROOT / "project/drivers/tool/cli/first_principal_bootstrap.cpp"
         ).read_text(encoding="utf-8")
+        # The bootstrap principal is the name the operator gave, never the OS
+        # service identity. (Was: "create_request.bootstrap_principal_name =
+        # request.principal_name;" - the legacy struct assignment, gone with the
+        # legacy cut, 2026-11-18: the native create receives the same name as an
+        # option envelope.)
         self.assertIn(
-            "create_request.bootstrap_principal_name = request.principal_name;",
+            '"bootstrap_principal_name:" + request.principal_name',
             bootstrap_source,
         )
         self.assertNotIn(

@@ -669,11 +669,16 @@ CatalogVersionWriteResult WriteCatalogInsertVersions(disk::CarefulWriteSink& sin
 // drop (definition_version 1), and no tree cell; its row-UUID index cell
 // stays. A rollback leaves the committed predecessor (if any) visible again:
 // its cell's stamp by the rolled-back transaction is void.
-// Refusals: a replacement that does not fit its page is relation_full (moving
-// it would leave its version UUID on two pages between writes); removing a
-// cell that would empty a non-root tree leaf is tree_leaf_emptied (the codec
-// refuses an empty non-root leaf; there is no leaf merge). Both before any
-// write. Startup refuses a name or comment row with two versions by one
+// SB_CATALOG_OWN_VERSION_MOVE (owner Q263 = 1, 2026-11-18): a replacement
+// that does not fit its page moves to another page (a new base leaf when none
+// has room): the base's row leaves its page, which is written after the page
+// now holding the version; the version's row-UUID and comment-tree cells, when
+// it has them, are retargeted; its name-tree cells are rebuilt as for any
+// replacement. Only the transaction's own uncommitted version moves. (Was:
+// refused relation_full, "moving it would leave its version UUID on two pages
+// between writes".) Refusals: removing a cell that would empty a non-root tree
+// leaf is tree_leaf_emptied (the codec refuses an empty non-root leaf; there
+// is no leaf merge), before any write. Startup refuses a name or comment row with two versions by one
 // transaction (cohort reader: own_version_repeated).
 //
 // SEARCH_KEY: SB_AUDIT_CATALOG_METADATA_CHANGE (W3b-2b). Every definition

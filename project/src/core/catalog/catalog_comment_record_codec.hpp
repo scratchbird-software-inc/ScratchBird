@@ -37,14 +37,15 @@ inline constexpr u16 kCatalogCommentSchemaVersion = 1;
 // writer places rows under is the page less its 32-byte seal tail (8160);
 // from it come the row-data body header, one slot, the row record's fixed
 // fields (both version links included, so a successor is no larger), the
-// cell header, the 384-byte metadata version header, the typed record header,
-// the 24-byte SBCV block header, three 24-byte identity fields and the text
-// field's 8-byte header, leaving 7136 bytes of text. A row with a comment of
+// cell header, the 352-byte metadata version header (SB_CATALOG_METADATA_
+// HEADER_V4, owner Q261, 2026-11-18; was 384, leaving 7136), the typed record
+// header, the 24-byte SBCV block header, three 24-byte identity fields and the
+// text field's 8-byte header, leaving 7168 bytes of text. A row with a comment of
 // this length fits an empty leaf as a first version and as a successor; one
 // byte more does not (pinned by catalog_comment_record_test). Longer text is
 // refused (size_limit). An overflow store for large catalog text is an open
 // item, not invented here.
-inline constexpr std::size_t kCatalogCommentTextMaxBytes = 7136;
+inline constexpr std::size_t kCatalogCommentTextMaxBytes = 7168;
 
 struct CatalogCommentRecord {
   Uuid comment_uuid, target_object_uuid, language_uuid;

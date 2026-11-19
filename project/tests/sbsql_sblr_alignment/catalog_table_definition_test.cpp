@@ -216,7 +216,7 @@ c::CatalogMetadataVersion Metadata(bool table) {
   m.record.header.parent_uuid=table?Id(80):t.table_uuid;
   m.record.payload=table?Wire(65700,Fields(t)):Wire(65701,Fields(col));
   m.owner_uuid=Id(81,p::UuidKind::principal);m.audit_uuid=Id(82);
-  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */m.name_vector_uuid=Id(84);m.owning_schema_uuid=Id(80,p::UuidKind::schema);
+  /* SB_CATALOG_NO_NAME_REFERENCE (Q248 = 1; Q261(b) = 1, 2026-11-18): no default_name_uuid, no name_vector_uuid */m.owning_schema_uuid=Id(80,p::UuidKind::schema);
   m.creator_transaction_uuid=t.origin_transaction_uuid;m.creator_local_transaction_id=9;
   m.definition_version=m.schema_epoch=m.security_epoch=m.catalog_generation=m.dependency_generation=m.invalidation_generation=1;
   m.lifecycle=c::CatalogObjectLifecycle::active;m.status=c::CatalogObjectStatus::active;
@@ -234,8 +234,7 @@ void MetadataAndEvolution() {
       auto bad=original;
       if(mutation==0)bad.record.header.object_uuid=Id(90);
       if(mutation==1)bad.record.header.parent_uuid=Id(91);
-      if(mutation==2)bad.name_vector_uuid={};/* (Was: default_name_uuid, retired by owner Q248 = 1; the name-vector fault) */
-      if(mutation==3)bad.name_vector_uuid={};
+      if(mutation==2||mutation==3)continue;/* (Was: the name-vector fault; Q261(b) = 1 removed the field, 2026-11-18) */
       if(mutation==4)bad.owning_schema_uuid={};
       if(mutation==5)bad.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;
       if(mutation==6)bad.creator_transaction_uuid=Id(92,p::UuidKind::transaction);
@@ -287,28 +286,11 @@ void NativeNameIdentities() {
     // name vector equal to the object. (Was: collisions 0-3 - default name
     // equal to the object, vector equal to the object, default name equal to
     // the vector, and the first two together.)
-    for(unsigned collision=1;collision!=2;++collision) {
-      auto bad=original;
-      bad.name_vector_uuid=bad.record.header.object_uuid;
-      no_heap=true;
-      const bool accepted=table?c::CatalogTableDefinitionMatchesMetadata(c::BorrowCatalogMetadataVersion(bad)):
-                                c::CatalogColumnDefinitionMatchesMetadata(c::BorrowCatalogMetadataVersion(bad));
-      no_heap=false;
-      Check(!accepted,"native named object/vector/entry identities collided");
-      no_heap=true;
-      const auto diagnostic=c::ValidateCatalogMetadataVersionView(c::BorrowCatalogMetadataVersion(bad));
-      no_heap=false;
-      Check(diagnostic&&diagnostic->diagnostic_code=="CATALOG.INVALID_INPUT"&&
-            diagnostic->message_key=="catalog.metadata_version.invalid"&&
-            diagnostic->detail==(table?"table_definition_binding_invalid":"column_definition_binding_invalid"),
-            "native name collision diagnostic changed");
-      const auto encoded=c::EncodeCatalogMetadataVersion(bad);
-      Check(!encoded.ok()&&encoded.bytes.empty(),"shared encoder published colliding native names");
-      bad.definition_version=0;
-      no_heap=true;const auto earlier=c::ValidateCatalogMetadataVersionView(c::BorrowCatalogMetadataVersion(bad));no_heap=false;
-      Check(earlier&&earlier->detail=="counter_zero","native family bypassed common counter precedence");
-    }
-    auto next=original;/* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */next.name_vector_uuid=Id(111);
+    // Q261(b) = 1 (2026-11-18): the definition carries no name reference at
+    // all, so no name-identity collision remains on the definition. (Was: the
+    // vector-equal-to-object collision refused table/column_definition_binding_
+    // invalid, the encoder refused it, and counter_zero still took precedence.)
+    auto next=original;/* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1; Q261(b) = 1): no name identities on the definition (was next.name_vector_uuid=Id(111)) */
     next.definition_version=2;next.creator_transaction_uuid=Id(112,p::UuidKind::transaction);
     next.creator_local_transaction_id=10;
     Check(c::EncodeCatalogMetadataVersion(next).ok(),"distinct replacement name identities rejected");
@@ -581,7 +563,7 @@ void NativeCohorts() {
     auto d=Column();d.column_uuid=Id(10+i);d.ordinal=i;d.value_descriptor={Id(20+i),1};
     columns[i].record.header.object_uuid=d.column_uuid;
     columns[i].record.header.row_uuid=Id(100+i,p::UuidKind::row);
-    /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */columns[i].name_vector_uuid=Id(120+i);
+    /* SB_CATALOG_NO_NAME_REFERENCE (Q248 = 1; Q261(b) = 1, 2026-11-18): no default_name_uuid, no name_vector_uuid */
     columns[i].record.payload=Wire(65701,Fields(d));
   }
   std::array views{c::BorrowCatalogMetadataVersion(columns[0]),c::BorrowCatalogMetadataVersion(columns[1])};

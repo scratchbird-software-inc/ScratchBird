@@ -75,6 +75,7 @@
 // identities as `key=<32 hex>` lines; the strace measurement and the
 // enrollment test's cold reopen run it.
 #include "lifecycle/engine_lifecycle_api.hpp"
+#include "security/authentication_api.hpp"
 #include "sblr_dispatch.hpp"
 #include "sblr_engine_envelope.hpp"
 #include "sblr_opcode_registry.hpp"
@@ -165,7 +166,10 @@ void NativeOptions(std::vector<std::string>& options, std::uint32_t page_size, s
   options.push_back("bootstrap_principal_name:BootstrapAdmin");
   options.push_back("bootstrap_credential_fingerprint:" + std::string(kFingerprint));
   options.push_back("internal_service_principal_name:NodeService");
-  options.push_back("internal_service_credential_fingerprint:" + std::string(kFingerprint));
+  // SB_NATIVE_CREATE_MINTED_SERVICE_PASSWORD (owner Q267 = 2, 2026-11-18): the
+  // service principal's password is minted by the create and returned in the
+  // receipt; a supplied fingerprint is refused. (Was:
+  // internal_service_credential_fingerprint:kFingerprint, required.)
 }
 
 api::EngineCreateLifecycleRequest NativeRequest(const std::string& path, std::uint32_t page_size,
@@ -192,6 +196,20 @@ std::optional<p::Uuid> RowUuid(const api::EngineApiResult& result, std::string_v
   return std::nullopt;
 }
 
+// Q276: a 16-byte secret field, as bytes (no identity rule).
+std::optional<std::array<std::uint8_t, 16>> RowBytes(const api::EngineApiResult& result, std::string_view name) {
+  for (const auto& row : result.result_shape.rows)
+    for (const auto& field : row.fields)
+      if (field.first == name) {
+        if (field.second.isSqlNull() || !field.second.encoded_value.empty() ||
+            field.second.binary_value.size() != 16) return std::nullopt;
+        std::array<std::uint8_t, 16> out{};
+        std::copy(field.second.binary_value.begin(), field.second.binary_value.end(), out.begin());
+        return out;
+      }
+  return std::nullopt;
+}
+
 bool HasDiagnostic(const api::EngineApiResult& result, std::string_view code) {
   for (const auto& diagnostic : result.diagnostics) if (diagnostic.code == code) return true;
   return false;
@@ -204,10 +222,15 @@ std::vector<std::string> Entries(const std::filesystem::path& dir) {
 }
 
 // Q111: nine identities; database_object_uuid is gone (one database UUID).
+// Q274 (2026-11-19): the receipt carries NO service password; the service
+// principal's password is derived inside the engine (database UUID XOR a seed
+// stored in its security row) and authenticates only from inside. (Was, Q267
+// 2026-11-18: a tenth field, service_principal_password.)
 constexpr std::array<const char*, 9> kReceiptKeys{
     "database_uuid", "filespace_uuid", "construction_transaction_uuid",
     "bootstrap_principal_uuid", "service_principal_uuid", "service_credential_reference_uuid",
     "service_provider_uuid", "service_policy_uuid", "service_runtime_binding_uuid"};
+constexpr const char* kReceiptPasswordKey = "service_principal_password";  // must be absent
 
 std::uint64_t NowMillis() {
   return static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
@@ -252,6 +275,7 @@ int CreateMode(const std::string& path, const std::string& page_size_text, const
     if (!id || !u::IsEngineIdentityUuid(*id)) return 1;
     std::cout << key << '=' << Hex(*id) << '\n';
   }
+  if (RowBytes(created, kReceiptPasswordKey)) return 3;  // Q274: no password in the receipt
   return 0;
 }
 
@@ -709,6 +733,13 @@ int main(int argc, char** argv) {
     auto no_service = NativeRequest(path, 16384, c::kCatalogLanguage_en);
     std::erase_if(no_service.option_envelopes, [](const auto& o) { return o.starts_with("internal_service_principal_name:"); });
     refused(no_service, "DATABASE.CREATE_PRINCIPAL_REQUIRED", "S2: the L5 service principal is required");
+    // SB_NATIVE_CREATE_MINTED_SERVICE_PASSWORD (owner Q267 = 2, 2026-11-18).
+    auto supplied_service_credential = NativeRequest(path, 16384, c::kCatalogLanguage_en);
+    supplied_service_credential.option_envelopes.push_back("internal_service_credential_fingerprint:" +
+                                                           std::string(kFingerprint));
+    refused(supplied_service_credential, "DATABASE.CREATE_SERVICE_CREDENTIAL_SUPPLIED",
+            "Q267 = 2: a caller-supplied service credential fingerprint is refused; the create mints the password "
+            "(was: required)");
     auto no_session = NativeRequest(path, 16384, c::kCatalogLanguage_en);
     no_session.context.security_context_present = false;
     const auto unauthorised = api::EngineCreateLifecycle(no_session);
@@ -1776,6 +1807,45 @@ int main(int argc, char** argv) {
         Check(StandardV7Within(*id, before, after),
               "Q107: every minted identity is a standard RFC 9562 UUIDv7 timestamped by the local clock during the create");
       receipt[k] = *id;
+    }
+    // SB_NATIVE_CREATE_MINTED_SERVICE_PASSWORD (owner Q274, 2026-11-19): the
+    // receipt carries no service password and no seed; the seed, the verifier
+    // and the derived password are checked on the file by the enrollment
+    // producer-api test. (Was, Q267/Q276: the password returned, checked for
+    // 16 bytes, no zero byte, no identity, distinct per create.)
+    Check(!RowBytes(created, kReceiptPasswordKey), "Q274: the receipt carries no service password");
+    // SEARCH_KEY: SB_AGENT_PRINCIPAL_EXTERNAL_BINDING_REFUSED (owner Q274,
+    // 2026-11-19): agents authenticate only from inside the engine. The one
+    // decision external authentication applies after resolving a principal -
+    // before any password is verified - refuses a service principal (the L5
+    // principal this create just wrote, and every agent principal) with its
+    // own code, and admits a user.
+    {
+      namespace sec = scratchbird::engine::internal_api;
+      const auto service = sec::CheckExternalAuthenticationBinding("service");
+      Check(service.error && service.code == "SECURITY.AGENT_PRINCIPAL_EXTERNAL_BINDING_REFUSED" &&
+                service.detail == "service_principals_authenticate_only_inside_the_engine",
+            "Q274: a service (agent / L5) principal is refused on an external binding, with its own code");
+      Check(!sec::CheckExternalAuthenticationBinding("user").error,
+            "Q274: a user principal is admitted by the external-binding decision");
+      // The end-to-end path on this native file is NOT reachable yet, and the
+      // refusal code above is NOT what it returns today: external
+      // authentication loads the security state through the legacy lifecycle
+      // loader (S4), which refuses a native file before any principal is
+      // resolved. Pinned as observed - SECURITY.CATALOG.PRIVATE_LIFECYCLE_CORRUPT
+      // / bootstrap_security_catalog_invalid, never authenticated. When S4 lands
+      // the native loader this expectation must become
+      // SECURITY.AGENT_PRINCIPAL_EXTERNAL_BINDING_REFUSED / "NodeService".
+      sec::EngineAuthenticateRequest auth;
+      auth.context = Context(path);
+      auth.principal_claim = "NodeService";
+      auth.credential_evidence = "a-password-that-is-not-checked-1234";
+      const auto verdict = sec::EngineAuthenticate(auth);
+      Check(!verdict.ok && !verdict.authenticated && !verdict.diagnostics.empty() &&
+                verdict.diagnostics.front().code == "SECURITY.CATALOG.PRIVATE_LIFECYCLE_CORRUPT" &&
+                verdict.diagnostics.front().detail == "bootstrap_security_catalog_invalid",
+            "Q274 (observed until S4): the external path refuses the native file at the legacy security loader, "
+            "before any principal is resolved or password checked");
     }
     Check(RowUuid(created, "database_language_uuid") == language && RowUuid(created, "page_size_profile_uuid") == profile.uuid,
           "S2: the result reports the language constant and page profile it used");

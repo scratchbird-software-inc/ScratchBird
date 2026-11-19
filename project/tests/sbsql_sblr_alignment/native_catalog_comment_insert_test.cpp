@@ -97,8 +97,7 @@ db::CatalogInsertRow CommentRow(const c::CatalogMetadataVersion& database, u64 n
   m.record.header.parent_uuid = {UuidKind::object, target};
   m.record.header.deleted = false;
   m.object_subtype = c::CatalogObjectSubtype::localized_comment;
-  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
-  m.name_vector_uuid = {};
+  /* SB_CATALOG_NO_NAME_REFERENCE (Q248 = 1; Q261(b) = 1, 2026-11-18): no default_name_uuid, no name_vector_uuid */
   m.owning_schema_uuid = {};
   m.retired_transaction_uuid = {};
   m.definition_version = 1;
@@ -734,27 +733,46 @@ std::optional<std::vector<byte>> CascadeOracle(const Db& b, std::span<const byte
 // SEARCH_KEY: SB_NATIVE_NAME_DROP_CASCADE (owner Q249, 2026-11-16: "dropping
 // an object automatically drops all its name rows"). The oracle for the name
 // drops a definition drop `r` writes after its comments: the object's vector
-// and entries (the rows of role 2 whose object is the definition's
-// name_vector_uuid, or whose parent is), row-UUID order, each the base's
+// and entries (the role-2 name_vector rows whose parent is the object, and
+// the rows whose parent is such a vector; Q261(b) = 1), row-UUID order, each the base's
 // metadata by the dropping transaction (next definition version, generation
 // the larger, dropped and retired) with its name payload dropped (an entry:
 // dropped by it), placed and its cells stamped by the name successor oracle
 // (NameSuccessorOracle), with the request's dependent identities from
 // `first_identity` on. nullopt when the oracle cannot place one.
+// SB_CATALOG_NEW_PAGES (2026-11-18): `new_pages`, the pages the writer
+// allocated, handed to each name drop's successor oracle in order, those a
+// drop took (a new base leaf of the names relation) removed for the next.
+// (Was: no growth model; 5 name rows per 8 KiB leaf under the 384-byte header
+// left room for the drops, 6 under the 352-byte header leave none.)
 std::optional<std::vector<byte>> NameDropsOracle(const Db& b, std::vector<byte> file, const db::CatalogVersionRequest& r,
-                                                 std::size_t first_identity) {
-  const auto vector_id = r.metadata.name_vector_uuid.value;
+                                                 std::size_t first_identity, std::span<const u64> new_pages = {}) {
+  std::vector<u64> remaining(new_pages.begin(), new_pages.end());
+  // The page identities the writer binds to those pages, in the same order
+  // (one consumed per page taken); each drop's request carries what is left.
+  std::vector<db::CatalogNewPageIdentity> remaining_ids(r.new_pages.begin(), r.new_pages.end());
+  std::set<u64> added_leaves;  // base leaves of the names relation this write added
+  // Q261(b) = 1 (2026-11-18): the vector rows are found by the dropped object
+  // (role-2 name_vector rows whose parent is it); was r.metadata.name_vector_uuid.
+  const auto object_id = r.metadata.record.header.object_uuid.value;
   std::map<Uuid, std::pair<Uuid, c::CatalogMetadataVersion>> newest;  // row -> (version, metadata), newest
   std::map<Uuid, u64> newest_rv;
   std::map<Uuid, c::CatalogNamePayload> payloads;
   {
     RoleScope scope(b, 2);
     const auto rel = ReadRelation(b, file);
+    std::set<Uuid> vector_ids;
+    for (const auto& l : rel.leaves)
+      for (const auto& row : l.leaf.body.rows) {
+        const auto& m = l.metadata.at(row.version_uuid);
+        if (m.record.header.parent_uuid.value == object_id && m.object_subtype == c::CatalogObjectSubtype::name_vector)
+          vector_ids.insert(m.record.header.object_uuid.value);
+      }
     for (const auto& l : rel.leaves)
       for (const auto& row : l.leaf.body.rows) {
         const auto& m = l.metadata.at(row.version_uuid);
         const auto& h = m.record.header;
-        if (h.object_uuid.value != vector_id && h.parent_uuid.value != vector_id) continue;
+        if (!vector_ids.contains(h.object_uuid.value) && !vector_ids.contains(h.parent_uuid.value)) continue;
         if (newest_rv.contains(row.row_uuid.value) && newest_rv.at(row.row_uuid.value) >= row.row_version) continue;
         newest_rv[row.row_uuid.value] = row.row_version;
         newest.insert_or_assign(row.row_uuid.value, std::pair{row.version_uuid, m});
@@ -794,9 +812,37 @@ std::optional<std::vector<byte>> NameDropsOracle(const Db& b, std::vector<byte> 
     std::visit([](auto& x) { x.lifecycle_state = c::CatalogNameLifecycle::dropped; }, payload);
     if (auto* e = std::get_if<c::CatalogNameEntry>(&payload)) e->dropped_transaction_uuid = {UuidKind::transaction, r.transaction_uuid};
     cr.name = std::move(payload);
-    const auto expected = NameSuccessorOracle(b, file, cr);
+    cr.new_pages = remaining_ids;
+    const auto expected = NameSuccessorOracle(b, file, cr, remaining);
     if (!expected) return std::nullopt;
     file = expected->file;
+    const auto before_erase = remaining.size();
+    std::erase_if(remaining, [&](u64 page) { return expected->pages.contains(page); });
+    const auto consumed = before_erase - remaining.size();
+    for (const auto page : new_pages)
+      if (expected->pages.contains(page) && !std::count(remaining.begin(), remaining.end(), page) && TypeAt(b, file, page) == 6)
+        added_leaves.insert(page);
+    remaining_ids.erase(remaining_ids.begin(), remaining_ids.begin() + static_cast<std::ptrdiff_t>(std::min(consumed, remaining_ids.size())));
+    // SB_CATALOG_NEW_PAGES: every version on a leaf this write added gets its
+    // own cell in the row-UUID tree (IndexNewLeafVersions), not only the one
+    // whose placement added the leaf (which the successor oracle models): a
+    // later drop placed on that leaf gets its cell here.
+    if (consumed == 0 && !added_leaves.empty()) {
+      RoleScope scope(b, 2);
+      const auto rel = ReadRelation(b, file);
+      for (const auto& l : rel.leaves) {
+        if (!added_leaves.contains(l.page)) continue;
+        for (const auto& x : l.leaf.body.rows) {
+          if (x.version_uuid != cr.version_uuid) continue;
+          pg::NativeBtreeCell entry;
+          entry.key = KeyOf(cr.row_uuid, cr.version_uuid);
+          entry.base_page = d::NativePageReference{b.primary, l.page, 1, b.profile};
+          entry.creator_local_transaction_id = cr.transaction_order;
+          std::size_t taken = 0;
+          if (!OracleInsertCell(b, file, HeadPage(b, file), std::move(entry), {}, {}, taken)) return std::nullopt;
+        }
+      }
+    }
   }
   return file;
 }
@@ -1014,14 +1060,23 @@ void DropCascade(const Db& b) {
             "a drop with too few identities for its comments and names: dependent_versions_exhausted, four needed");
     }
     const auto r = DefinitionDrop(b, now, role, a, 4, 9720, 4);
-    auto expected = CascadeOracle(b, now, role, r, comments);
-    if (expected) expected = NameDropsOracle(b, *expected, r, comments.size());
-    Check(expected.has_value(), "the oracle places the drop and its comments' drops");
     pre = now;
     RecordingSink rec(s.sink());
     const auto written = db::WriteCatalogSuccessorVersion(rec, GrowingBinding(b), r);
     if (!written.ok()) std::cerr << "cascade drop: " << db::CatalogVersionWriteErrorName(written.error) << '\n';
-    Check(written.ok() && written.allocated_pages.empty(), "the commented object's drop is written (no page added)");
+    // SB_CATALOG_NEW_PAGES (2026-11-18): the names relation may have no leaf
+    // with room for the two name drops (at 8 KiB it has none), so the write
+    // may add base leaves, as ExpectGrowingInsert allows; the oracle is then
+    // given the pages the writer added and the map pages are taken from the
+    // file once each allocation's record is checked. (Was: no growth model -
+    // "no page added" - 5 name rows per 8 KiB leaf under the 384-byte header.)
+    Check(written.ok() && written.allocated_pages.size() <= r.new_pages.size(),
+          "the commented object's drop is written (pages added only as its page identities allow)");
+    auto expected = CascadeOracle(b, now, role, r, comments);
+    if (expected) expected = NameDropsOracle(b, *expected, r, comments.size(), written.allocated_pages);
+    Check(expected.has_value(), "the oracle places the drop and its comments' drops");
+    if (!written.allocated_pages.empty())
+      Check(AllocationOf(b, now, written.allocated_pages.front()).lower_all_allocated, "a new leaf takes the lowest free slot");
     Check(written.dependents.size() == 4 && written.dependents[0] == std::pair{CommentRowId(71), comments[0].second} &&
               written.dependents[1] == std::pair{CommentRowId(72), comments[1].second} &&
               written.dependents[2].second == r.dependent_versions[2] && written.dependents[3].second == r.dependent_versions[3],
@@ -1029,6 +1084,18 @@ void DropCascade(const Db& b) {
           "two names (Q249; was: the comments only)");
     recorded = rec.writes;
     const auto after = ReadAll(path);
+    for (const auto page : written.allocated_pages) {
+      const auto was = AllocationOf(b, now, page);
+      const auto is = AllocationOf(b, after, page);
+      const auto leaf = db::DecodeNativeCatalogLeaf(PageOf(after, page, b.size));
+      Check(!was.record && leaf.ok() && leaf.page->header.page_type == 6 && is.record && is.record->page_type == 6 &&
+                is.record->owner_uuid == leaf.page->body.relation_uuid.value && is.record->page_generation == 1 &&
+                is.record->creator_transaction_uuid.is_nil(),
+            "a page the cascade added is a new base leaf of the names relation with the system's allocation record");
+    }
+    for (u64 m = 1; m <= b.receipt.map_pages; ++m)
+      std::copy(after.begin() + static_cast<std::ptrdiff_t>(m * b.size), after.begin() + static_cast<std::ptrdiff_t>((m + 1) * b.size),
+                expected->begin() + static_cast<std::ptrdiff_t>(m * b.size));
     Check(after == *expected, "the file is the oracle's: the definition's, both comments' and both names' drop versions, the cells stamped");
     bool tree_seen = false, leaf_after_tree = false;
     for (const auto& [offset, bytes] : recorded) {
@@ -1064,21 +1131,31 @@ void DropCascade(const Db& b) {
     Session s(b, y);
     Begin(s, 4);
     // (Was: DropNames(b, s, bb, 4, 9740) first; Q249 / Q227.)
-    const auto r = DefinitionDrop(b, ReadAll(y), role, bb, 4, 9742, 2);
+    const auto before_y = ReadAll(y);
+    const auto r = DefinitionDrop(b, before_y, role, bb, 4, 9742, 2);
+    // SB_CATALOG_NEW_PAGES (2026-11-18): as the commented drop above, the
+    // names relation may grow; written first, the oracle given the pages.
+    // (Was: oracle first, "allocated_pages.empty()".)
+    const auto written = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), r);
     std::optional<std::vector<byte>> expected;
     {
       RoleScope scope(b, role);
       auto plain = r;
       plain.dependent_versions.clear();
-      const auto definition_only = Oracle(b, ReadAll(y), plain);
+      const auto definition_only = Oracle(b, before_y, plain);
       Check(definition_only.has_value(), "the oracle places the uncommented drop");
-      if (definition_only) expected = NameDropsOracle(b, definition_only->file, r, 0);
+      if (definition_only) expected = NameDropsOracle(b, definition_only->file, r, 0, written.allocated_pages);
     }
     Check(expected.has_value(), "the oracle places the uncommented object's name drops");
-    const auto written = db::WriteCatalogSuccessorVersion(s.sink(), GrowingBinding(b), r);
-    Check(written.ok() && written.dependents.size() == 2 && written.allocated_pages.empty() && expected && ReadAll(y) == *expected,
+    const auto after_y = ReadAll(y);
+    if (expected)
+      for (u64 m = 1; m <= b.receipt.map_pages; ++m)
+        std::copy(after_y.begin() + static_cast<std::ptrdiff_t>(m * b.size), after_y.begin() + static_cast<std::ptrdiff_t>((m + 1) * b.size),
+                  expected->begin() + static_cast<std::ptrdiff_t>(m * b.size));
+    Check(written.ok() && written.dependents.size() == 2 && written.allocated_pages.size() <= r.new_pages.size() && expected &&
+              after_y == *expected,
           "an uncommented object's drop: the successor oracle's file with its two names dropped (Q249; was: no "
-          "dependents, identities unused)");
+          "dependents, identities unused; no page added)");
     Commit(*s.w, s.sink(), 4);
     ExpectComments(b, y, 2, "an uncommented object dropped (the other object's comments untouched)");
   }

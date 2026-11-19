@@ -43,8 +43,8 @@ template<class Reserve> void ReserveNativeCreationCatalogReferences(
     const NativeCreationCatalogRecord& r,Reserve reserve) {
   const auto& m=r.metadata;
   for(const auto& id:{m.record.header.parent_uuid,m.owner_uuid,m.creator_transaction_uuid,
-      // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16): (was: default_name_uuid also checked or set on the next line).
-      m.retired_transaction_uuid,m.name_vector_uuid,m.security_policy_uuid,
+      // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16; Q261(b) = 1, 2026-11-18): (was: default_name_uuid, then name_vector_uuid, reserved here too).
+      m.retired_transaction_uuid,m.security_policy_uuid,
       m.dependency_group_uuid,m.storage_binding_uuid,m.donor_overlay_uuid,m.audit_uuid,m.owning_schema_uuid})
     if(!id.value.is_nil())reserve(id.value);
   if(m.record.header.kind==core::catalog::CatalogRecordKind::database) {

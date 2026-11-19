@@ -85,23 +85,32 @@ inline NativeCatalogNameVerification VerifyNativeCatalogNameBindings(
       // default_binding. (Was: the entry the definition's default_name_uuid
       // named, equal to the vector's default_name_entry_uuid, in the vector's
       // default language.)
-      const auto* vector=find(m.name_vector_uuid.value);
-      if(!vector||!vector->name_payload||!std::holds_alternative<c::CatalogNameVectorView>(*vector->name_payload))
-        return fail(E::missing_vector,id,m.name_vector_uuid.value);
+      // SB_CATALOG_NO_NAME_REFERENCE (Q261(b) = 1, 2026-11-18): the object's
+      // vector is the one live vector row whose object_uuid is the object
+      // (found by object, the definition holding no vector reference); none
+      // is missing_vector, two are vector_binding. (Was: the vector the
+      // definition's name_vector_uuid named.)
+      const c::CatalogNameVectorView* vector=nullptr;const storage::database::NativeCatalogVisibleRow* vector_row=nullptr;
       const c::CatalogNameEntryView* default_entry=nullptr;
       for(const auto& candidate:rows){
         if(candidate.row.metadata.record.header.deleted||!candidate.row.name_payload)continue;
+        if(const auto* vv=std::get_if<c::CatalogNameVectorView>(&*candidate.row.name_payload)){
+          if(vv->object_uuid.value!=id)continue;
+          if(vector)return fail(E::vector_binding,id,vv->name_vector_uuid.value);
+          vector=vv;vector_row=&candidate.row;continue;
+        }
         const auto* x=std::get_if<c::CatalogNameEntryView>(&*candidate.row.name_payload);
         if(!x||x->object_uuid.value!=id||!x->default_for_object)continue;
         if(default_entry)return fail(E::default_binding,id,x->name_entry_uuid.value);
         default_entry=x;
       }
+      if(!vector||!vector_row)return fail(E::missing_vector,id);
       if(!default_entry)return fail(E::missing_default_name,id);
-      const auto& v=std::get<c::CatalogNameVectorView>(*vector->name_payload);
+      const auto& v=*vector;
       const auto& e=*default_entry;
       if(v.object_uuid.value!=id||e.object_uuid.value!=id||v.object_kind!=m.record.header.kind||
           e.object_kind!=v.object_kind||!schema(v.owning_schema_uuid,m.owning_schema_uuid))return fail(E::object_binding,id);
-      if(e.name_vector_uuid.value!=m.name_vector_uuid.value)
+      if(e.name_vector_uuid.value!=v.name_vector_uuid.value)
         return fail(E::vector_binding,id);
       if(!e.default_for_language)
         return fail(E::default_binding,id,e.name_entry_uuid.value);
@@ -109,9 +118,9 @@ inline NativeCatalogNameVerification VerifyNativeCatalogNameBindings(
       ++out.vectors;const auto* object=find(v->object_uuid.value);
       if(!object||object->name_payload)return fail(E::missing_object,id,v->object_uuid.value);
       // (SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES: was also the definition's
-      // default_name_uuid equal to the vector's default_name_entry_uuid.)
-      if(object->metadata.name_vector_uuid.value!=id)
-        return fail(E::vector_binding,id,v->object_uuid.value);
+      // default_name_uuid equal to the vector's default_name_entry_uuid;
+      // Q261(b) = 1: was also the definition's name_vector_uuid equal to this
+      // vector. The definition branch now checks one vector per object.)
     }else{
       ++out.entries;const auto& e=std::get<c::CatalogNameEntryView>(*row.name_payload);
       const auto* object=find(e.object_uuid.value);const auto* vector=find(e.name_vector_uuid.value);
@@ -121,8 +130,8 @@ inline NativeCatalogNameVerification VerifyNativeCatalogNameBindings(
       const auto& parent_vector=std::get<c::CatalogNameVectorView>(*vector->name_payload);
       const auto expected_scope=object->metadata.record.header.kind==c::CatalogRecordKind::database?
           object->metadata.record.header.object_uuid.value:object->metadata.record.header.parent_uuid.value;
+      // (Q261(b) = 1: was also the definition's name_vector_uuid equal to the entry's.)
       if(e.object_uuid.value!=parent_vector.object_uuid.value||e.object_kind!=parent_vector.object_kind||
-          object->metadata.name_vector_uuid.value!=e.name_vector_uuid.value||
           !schema(e.parent_schema_uuid,object->metadata.owning_schema_uuid)||
           e.scope_uuid.value!=expected_scope)return fail(E::object_binding,id,e.object_uuid.value);
       // SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES: the object default is also its

@@ -3748,8 +3748,9 @@ void printUsage(const char* program) {
     std::cout << "First-principal local bootstrap:\n";
     std::cout << "  " << program
               << " bootstrap <principal> <database> --mode=embedded"
-                 " --platform-profile <file> --resource-seed-pack-root <dir>"
-                 " --policy-seed-pack-root <dir> [--password-stdin]\n";
+                 " --platform-profile <file> --policy-seed-pack-root <dir>"
+                 " --total-pages <n> --service-principal <name>"
+                 " [--database-name <name>] [--language <tag>] [--password-stdin]\n";
     std::cout << "  This one-shot embedded operation creates the database and its "
                  "initial security catalog without an existing database login. "
                  "It never uses a listener, manager, parser, or normal connection "
@@ -3843,8 +3844,8 @@ void printUsage(const char* program) {
     std::cout << "Examples:\n";
     std::cout << "  " << program << " bootstrap qa_admin mydb.sbdb --mode=embedded "
                  "--platform-profile=SBbootstrap.profile "
-                 "--resource-seed-pack-root=resource-pack "
-                 "--policy-seed-pack-root=policy-pack\n";
+                 "--policy-seed-pack-root=policy-pack "
+                 "--total-pages=1024 --service-principal=node_service\n";
     std::cout << "  " << program << " /path/to/mydb.sbdb\n";
     std::cout << "  " << program << " mydb.sbdb -U admin -c \"SELECT * FROM users\"\n";
     std::cout << "  " << program << " mydb.sbdb -f queries.sql -o results.txt\n";

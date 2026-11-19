@@ -52,7 +52,7 @@ int ServerProcessFixture(int argc,char** argv){
 }
 int main(int argc,char** argv)try{
     if(argc>1&&std::string_view(argv[1])=="--foreground")return ServerProcessFixture(argc,argv);
-    const std::vector<std::string> base={"architect","/tmp/create-node","--mode=embedded","--platform-profile=/tmp/platform","--resource-seed-pack-root=/tmp/resources","--policy-seed-pack-root=/tmp/policies","--total-pages=512","--service-principal=node_service","--start-server=/tmp/SBsrv","--server-config=/tmp/server.conf","--ipc-path=/tmp/server.sock"};
+    const std::vector<std::string> base={"architect","/tmp/create-node","--mode=embedded","--platform-profile=/tmp/platform",/* Q268 = 1: --resource-seed-pack-root gone */"--policy-seed-pack-root=/tmp/policies","--total-pages=512","--service-principal=node_service","--start-server=/tmp/SBsrv","--server-config=/tmp/server.conf","--ipc-path=/tmp/server.sock"};
     auto args=base;args.insert(args.end(),{"--password-stdin","--connect-password-stdin","--startup-timeout-ms=1234","--","-c","SELECT 1","--quiet"});
     auto parsed=Parse(args);Check(parsed.ok&&parsed.request.connect_password_stdin&&parsed.request.startup_timeout_ms==1234,"separate creation and connection argument stages");
     Check(parsed.request.creation.ownership==cli::EmbeddedCreationOwnership::kServiceIdentity,"explicit platform profile selects service account handoff");
@@ -67,10 +67,13 @@ int main(int argc,char** argv)try{
     cli::FirstPrincipalBootstrapRequest create;
     create.explicit_embedded_mode=true;create.ownership=cli::EmbeddedCreationOwnership::kCurrentProcess;
     create.database_path=(fixture.root/"node.sbdb").string();create.principal_name="architect";
-    create.resource_seed_pack_root=SB_BOOTSTRAP_SEED_PACK_ROOT;create.policy_seed_pack_root=SB_BOOTSTRAP_POLICY_PACK_ROOT;
-    {const auto templates=std::filesystem::path(__FILE__).parent_path().parent_path().parent_path().parent_path()/"config"/"templates";
-     create.metric_policy_defaults_path=(templates/"metric-policy-defaults.conf").string();
-     create.metric_policy_families_path=(templates/"metric-policy-families.conf").string();}
+    // Q268 = 1 (2026-11-18): the request carries no resource seed pack root or
+    // metric policy files any more; the native create's inputs instead (Q254).
+    // (Was: resource_seed_pack_root, metric_policy_defaults_path,
+    // metric_policy_families_path set from SB_BOOTSTRAP_SEED_PACK_ROOT and
+    // config/templates.)
+    create.policy_seed_pack_root=SB_BOOTSTRAP_POLICY_PACK_ROOT;
+    create.total_pages=512;create.service_principal_name="node_service";
     create.password_source=cli::FirstPrincipalBootstrapPasswordSource::kProtectedStdin;
     const auto user_before=::geteuid();const auto group_before=::getegid();
     const int group_count=::getgroups(0,nullptr);Check(group_count>=0,"read caller groups");

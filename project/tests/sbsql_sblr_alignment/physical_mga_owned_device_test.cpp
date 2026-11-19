@@ -607,7 +607,7 @@ void NativeCatalogNames() {
     m.record.header.kind=c::CatalogRecordKind::localized_name;m.record.header.row_uuid=Id(UuidKind::row);
     m.record.header.object_uuid=is_entry?entry.name_entry_uuid:vector.name_vector_uuid;
     m.record.header.parent_uuid=is_entry?vector.name_vector_uuid:vector.object_uuid;
-    m.name_vector_uuid=vector.name_vector_uuid;/* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
+    /* SB_CATALOG_NO_NAME_REFERENCE (Q248 = 1; Q261(b) = 1, 2026-11-18): no default_name_uuid, no name_vector_uuid */
     m.owning_schema_uuid=*vector.owning_schema_uuid;
     m.security_policy_uuid=vector.security_policy_uuid;m.owner_uuid=Id(UuidKind::principal);m.audit_uuid=Id(UuidKind::object);
     m.creator_transaction_uuid=created.transaction_uuid;m.creator_local_transaction_id=created.local_id.value;
@@ -629,7 +629,7 @@ void NativeCatalogNames() {
     if(mode==5)std::get<c::CatalogNameEntry>(*bad.name_payload).created_transaction_uuid=Id(UuidKind::transaction);
     if(mode==6)std::get<c::CatalogNameEntry>(*bad.name_payload).name_entry_uuid=entry.object_uuid;
     if(mode==7)bad.metadata.record.header.kind=c::CatalogRecordKind::sql_object;
-    if(mode==8)bad.metadata.name_vector_uuid=Id(UuidKind::object);
+    if(mode==8)continue;/* (Was: a definition name_vector_uuid fault; Q261(b) = 1 removed the field, 2026-11-18) */
     if(mode==9)bad.metadata.owning_schema_uuid={};
     if(mode==10)bad.metadata.owning_schema_uuid.kind=UuidKind::object;
     const auto bytes=f.Bytes();const auto count=write_calls;
@@ -753,10 +753,12 @@ void NativeCatalogMetadataVersions() {
   const auto encoded = catalog::EncodeCatalogMetadataVersion(metadata);
   Check(encoded.ok(), "encode native metadata version");
   // (Version 2: no trace key or retention class, owner Q57 = 1, Q58 = 1.)
-  Check(encoded.bytes.size() == 384 + 96 + metadata.record.payload.size(),  // version 3: no text
+  // Version 4 (SB_CATALOG_METADATA_HEADER_V4, owner Q261, 2026-11-18): 352-byte
+  // header, nine references. (Was: version 3, 384.)
+  Check(encoded.bytes.size() == 352 + 96 + metadata.record.payload.size(),
       "independent metadata extent");
   Check(std::equal(encoded.bytes.begin(), encoded.bytes.begin() + 8, "SBCMV001") &&
-      platform::LoadLittle16(encoded.bytes.data() + 8) == 3 && platform::LoadLittle16(encoded.bytes.data() + 10) == 384 &&
+      platform::LoadLittle16(encoded.bytes.data() + 8) == 4 && platform::LoadLittle16(encoded.bytes.data() + 10) == 352 &&
       platform::LoadLittle64(encoded.bytes.data() + 88) == created.local_id.value &&
       std::equal(created.transaction_uuid.value.bytes.begin(), created.transaction_uuid.value.bytes.end(), encoded.bytes.begin() + 112),
       "independent metadata UUID/counter offsets");
@@ -918,8 +920,7 @@ void NativeCatalogMetadataVersions() {
     definition.record.header.object_uuid=schema.schema_object_uuid;
     definition.record.header.parent_uuid=schema.database_catalog_object_uuid;
     definition.owning_schema_uuid={};
-    /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
-    definition.name_vector_uuid=Id(UuidKind::object);
+    /* SB_CATALOG_NO_NAME_REFERENCE (Q248 = 1; Q261(b) = 1, 2026-11-18): no default_name_uuid, no name_vector_uuid */
     definition.creator_transaction_uuid=birth.transaction_uuid;
     definition.creator_local_transaction_id=birth.local_id.value;
     const auto set_payload=[&](auto& m,const auto& d){const auto e=catalog::EncodeCatalogSchemaDefinition(d);

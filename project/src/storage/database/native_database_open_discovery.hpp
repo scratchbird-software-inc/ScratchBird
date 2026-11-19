@@ -115,6 +115,14 @@ struct NativeOpenDiscoveryResult {
   // bootstrap:<error> | page_zero:<error> | native_open_refused | ...
   std::string detail;
   std::optional<disk::FilespacePageZero> page_zero;
+  // SEARCH_KEY: SB_OPEN_MISSING_KEEPS_ABI_CONTRACT (owner Q272 = 1, 2026-11-18).
+  // On open_failed from the path form: the device's typed diagnostic (e.g.
+  // SB-STORAGE-DISK-OPEN-MISSING), so an entry point can keep its own
+  // contract for a file that is missing or cannot be opened (the ABI's
+  // ENGINE.OPEN.PATH_INVALID / database_source_unavailable with the typed
+  // source) and use the discovery code only for a file that exists but is
+  // not a valid native database.
+  std::optional<core::platform::DiagnosticRecord> device_diagnostic;
   bool ok() const noexcept { return error == NativeOpenDiscoveryError::none && page_zero.has_value(); }
 };
 
@@ -163,6 +171,7 @@ inline NativeOpenDiscoveryResult DiscoverNativeDatabaseAtPath(const std::string&
     result.code = opened.diagnostic.diagnostic_code.empty() ? std::string("SB-STORAGE-DISK-OPEN-FAILED")
                                                             : opened.diagnostic.diagnostic_code;
     result.detail = "native_open_refused";
+    result.device_diagnostic = opened.diagnostic;  // Q272 = 1
     return result;
   }
   result = DiscoverNativeDatabaseOnOpenDevice(device);

@@ -64,7 +64,7 @@ c::CatalogMetadataVersion Metadata(const c::CatalogContextNamespace& r) {
   m.creator_local_transaction_id=r.origin_local_transaction_id;
   m.owner_uuid={p::UuidKind::principal,r.owner_uuid};
   m.creator_transaction_uuid={p::UuidKind::transaction,r.origin_transaction_uuid};
-  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */m.name_vector_uuid={p::UuidKind::object,Id(9)};
+  /* SB_CATALOG_NO_NAME_REFERENCE (Q248 = 1; Q261(b) = 1, 2026-11-18): no default_name_uuid, no name_vector_uuid */
   m.audit_uuid={p::UuidKind::object,Id(10)};m.owning_schema_uuid={p::UuidKind::schema,r.schema_uuid};
   m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::application_context_namespace;
   return m;

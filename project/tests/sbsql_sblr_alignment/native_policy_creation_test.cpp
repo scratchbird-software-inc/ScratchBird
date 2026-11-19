@@ -116,19 +116,19 @@ struct Package {
       meta.record.header.object_uuid={p::UuidKind::object,object};meta.record.header.row_uuid=Typed(p::UuidKind::row,200000+3*n);
       meta.object_subtype=subtype;if(kind)meta.record.header.kind=*kind;
       if(service_policy)meta.security_policy_uuid={p::UuidKind::object,SourceId(0x402)};
-      /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */meta.name_vector_uuid=Typed(p::UuidKind::object,300001+2*n);
+      const auto name_vector=Typed(p::UuidKind::object,300001+2*n);  // Q261(b) = 1: the vector row's identity (was meta.name_vector_uuid)
       x.vector_metadata=meta;x.vector_metadata.record.header.kind=c::CatalogRecordKind::localized_name;
-      x.vector_metadata.record.header.object_uuid=meta.name_vector_uuid;x.vector_metadata.record.header.row_uuid=Typed(p::UuidKind::row,200001+3*n);
+      x.vector_metadata.record.header.object_uuid=name_vector;x.vector_metadata.record.header.row_uuid=Typed(p::UuidKind::row,200001+3*n);
       x.vector_metadata.record.header.parent_uuid=meta.record.header.object_uuid;x.vector_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_vector;
-      auto& v=x.vector;v.name_vector_uuid=meta.name_vector_uuid;v.object_uuid=meta.record.header.object_uuid;
+      auto& v=x.vector;v.name_vector_uuid=name_vector;v.object_uuid=meta.record.header.object_uuid;
       v.object_kind=meta.record.header.kind;v.owning_schema_uuid=meta.owning_schema_uuid;
       /* SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES (owner Q228 revisited): no vector default *//* SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES (owner Q228 revisited): no vector default */
       v.name_collision_policy_uuid=Typed(p::UuidKind::object,55);v.catalog_generation_id=1;
       v.security_policy_uuid=meta.security_policy_uuid;v.lifecycle_state=c::CatalogNameLifecycle::active;
       x.entry_metadata=meta;x.entry_metadata.record.header.kind=c::CatalogRecordKind::localized_name;
       x.entry_metadata.record.header.object_uuid=(Typed(p::UuidKind::object,300000+2*n));x.entry_metadata.record.header.row_uuid=Typed(p::UuidKind::row,200002+3*n);
-      x.entry_metadata.record.header.parent_uuid=meta.name_vector_uuid;x.entry_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_entry;x.entry_metadata.resource_epoch=1;
-      auto& e=x.entry;e.name_entry_uuid=(Typed(p::UuidKind::object,300000+2*n));e.name_vector_uuid=meta.name_vector_uuid;
+      x.entry_metadata.record.header.parent_uuid=name_vector;x.entry_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_entry;x.entry_metadata.resource_epoch=1;
+      auto& e=x.entry;e.name_entry_uuid=(Typed(p::UuidKind::object,300000+2*n));e.name_vector_uuid=name_vector;
       e.object_uuid=meta.record.header.object_uuid;e.object_kind=v.object_kind;e.scope_uuid=meta.record.header.parent_uuid;
       e.parent_schema_uuid=meta.owning_schema_uuid;e.language_uuid=c::CatalogLanguageIdentity(c::kCatalogLanguage_en_US);e.dialect_profile_uuid=Typed(p::UuidKind::object,56);
       e.identifier_profile_uuid=Typed(p::UuidKind::object,57);e.raw_name_text="supplied_alias_"+std::to_string(n);e.catalog_generation_id=1;
@@ -149,7 +149,8 @@ struct Package {
     request.agents=agents;return request;}
 };
 // ---- 3a-2: independent hand-built SBCV goldens of the typed native security
-// schema (65635 principal, 65636 role, 65637 group, 65638 grant; version 1).
+// schema (65635 principal, 65636 role, 65637 group, 65638 grant; version 2 since
+// the principal's password seed, owner Q279 2026-11-19; was version 1).
 // Field numbers and enumeration codes are written out here, not taken from
 // the production schema or encoder. A right's code is its coding-time
 // constant (catalog_security_constants.hpp), the definition of that code.
@@ -185,7 +186,7 @@ void TypedCommon(f::Golden& g,const p::Uuid& id,const std::optional<p::Uuid>& pa
 // fixture fingerprint's parts (600000, salt, verifier); agents have none.
 std::string TypedPrincipal(const p::Uuid& id,p::u64 kind,std::optional<p::u64> authority,bool active,bool create_time_only,
     bool bootstrap,bool credential=true){
-  f::Golden g(65635);TypedCommon(g,id,std::nullopt);g.Integer(7,kind);if(authority)g.Integer(8,*authority);
+  f::Golden g(65635,2);TypedCommon(g,id,std::nullopt);g.Integer(7,kind);if(authority)g.Integer(8,*authority);
   g.Boolean(9,active);g.Boolean(10,create_time_only);g.Boolean(11,bootstrap);g.Integer(12,1);g.Integer(13,1);g.Integer(14,1);
   if(credential){g.Integer(15,1);g.Integer(16,600000);g.Field(17,4,HexBytes("89abcdef0123456789abcdef01234567"));
     g.Field(18,4,HexBytes("abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"));}
@@ -193,18 +194,18 @@ std::string TypedPrincipal(const p::Uuid& id,p::u64 kind,std::optional<p::u64> a
 }
 std::string TypedRole(const p::Uuid& id,const std::optional<p::Uuid>& pack,std::optional<p::u64> authority,bool engine_owned,
     bool immutable,bool active,bool loaded,bool create_time_only,p::u64 context_version,p::u64 context_generation){
-  f::Golden g(65636);TypedCommon(g,id,pack);if(authority)g.Integer(7,*authority);g.Boolean(8,engine_owned);g.Boolean(9,immutable);
+  f::Golden g(65636,2);TypedCommon(g,id,pack);if(authority)g.Integer(7,*authority);g.Boolean(8,engine_owned);g.Boolean(9,immutable);
   g.Boolean(10,active);g.Boolean(11,loaded);g.Boolean(12,create_time_only);g.Integer(13,context_version);g.Integer(14,context_generation);
   return g.Finish();
 }
 std::string TypedGroup(const p::Uuid& id,const p::Uuid& pack){
-  f::Golden g(65637);TypedCommon(g,id,pack);g.Boolean(7,true);g.Boolean(8,true);return g.Finish();}
+  f::Golden g(65637,2);TypedCommon(g,id,pack);g.Boolean(7,true);g.Boolean(8,true);return g.Finish();}
 // grant_class 1 privilege / 2 role_membership / 3 group_membership; subject,
 // member and parent kinds 1 principal / 2 role / 3 group; effect 1 allow.
 struct GrantGolden{p::Uuid id;std::optional<p::Uuid> pack,subject,member,parent,target,principal,role;
   p::u64 cls=0,sk=0,mk=0,pk=0,effect=0,right=0,security_generation=0;};
 std::string TypedGrant(const GrantGolden& r){
-  f::Golden g(65638);TypedCommon(g,r.id,r.pack);g.Integer(7,r.cls);
+  f::Golden g(65638,2);TypedCommon(g,r.id,r.pack);g.Integer(7,r.cls);
   if(r.subject)g.Identity(8,*r.subject);if(r.member)g.Identity(9,*r.member);if(r.parent)g.Identity(10,*r.parent);
   if(r.target)g.Identity(11,*r.target);if(r.principal)g.Identity(13,*r.principal);if(r.role)g.Identity(14,*r.role);
   if(r.sk)g.Integer(15,r.sk);if(r.mk)g.Integer(16,r.mk);if(r.pk)g.Integer(17,r.pk);if(r.effect)g.Integer(18,r.effect);

@@ -102,15 +102,11 @@ int main() {
           "row identity differs from object identity");
     Check(m.record.payload.empty(),
           "payload stays empty; the assembler refuses a supplied payload");
-    Check(m.name_vector_uuid.kind == p::UuidKind::object &&
-          m.name_vector_uuid.value == Id(0x58),
-          "the definition carries its name-vector identity, which the named "
-          "creation preflight checks the supplied vector against");
-    // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16): the
-    // definition carries no default name-entry identity. (Was: m.default_name_uuid
-    // == Id(0x59), distinct from the object and the vector.)
-    Check(m.name_vector_uuid.value != m.record.header.object_uuid.value,
-          "object and name-vector identities are distinct");
+    // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16; Q261(b) = 1,
+    // 2026-11-18): the definition carries no name reference at all; the
+    // vector identity Id(0x58) is the vector row's own (checked below).
+    // (Was: m.default_name_uuid == Id(0x59); then m.name_vector_uuid ==
+    // Id(0x58), distinct from the object.)
     Check(m.object_subtype == scratchbird::core::catalog::CatalogObjectSubtype::agent_runtime_authority, "subtype preserved verbatim");
     // (No trace search key or retention class to carry: SB_CATALOG_NO_TEXT_IDENTIFIERS,
     // owner Q57 = 1, Q58 = 1; the metadata codec no longer has them.)
@@ -219,13 +215,13 @@ int main() {
     Check(d.record.header.kind == c::CatalogRecordKind::config_profile,
           "the definition keeps its own kind");
 
-    Check(vm.record.header.object_uuid.value == d.name_vector_uuid.value,
-          "the vector version is identified by the definition's name-vector identity");
+    Check(vm.record.header.object_uuid.value == Id(0x58),
+          "the vector version is identified by the input's name-vector identity (Q261(b) = 1; was the definition's)");
     Check(vm.record.header.parent_uuid.value == d.record.header.object_uuid.value,
           "the vector version is parented to the object");
     Check(em.record.header.object_uuid.value == Id(0x59),
           "the entry version is identified by the supplied name-entry identity (was: the definition's, Q248)");
-    Check(em.record.header.parent_uuid.value == d.name_vector_uuid.value,
+    Check(em.record.header.parent_uuid.value == Id(0x58),
           "the entry version is parented to the name vector");
     Check(vm.record.header.row_uuid.value == Id(0x5a) &&
           em.record.header.row_uuid.value == Id(0x5b),
@@ -233,8 +229,8 @@ int main() {
     Check(vm.record.payload.empty() && em.record.payload.empty(),
           "name versions carry no definition payload");
 
-    Check(v.name_vector_uuid.value == d.name_vector_uuid.value,
-          "the vector value agrees with the definition on the vector identity");
+    Check(v.name_vector_uuid.value == Id(0x58),
+          "the vector value carries the input's vector identity (Q261(b) = 1; was the definition's)");
     // (Was: the vector's default_name_entry_uuid equal to the definition's
     // default_name_uuid; SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES, Q248.)
     Check(v.object_uuid.value == d.record.header.object_uuid.value,
@@ -257,7 +253,7 @@ int main() {
     Check(e.language_uuid.value == c::kCatalogLanguage_en_US, "the default entry is in the supplied language");
 
     Check(e.name_entry_uuid.value == Id(0x59) &&
-          e.name_vector_uuid.value == d.name_vector_uuid.value &&
+          e.name_vector_uuid.value == Id(0x58) &&
           e.object_uuid.value == d.record.header.object_uuid.value,
           "the entry value carries all three identities it links");
     Check(e.object_kind == v.object_kind, "entry and vector agree on object_kind");

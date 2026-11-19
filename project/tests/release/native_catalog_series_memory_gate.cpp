@@ -38,7 +38,7 @@ c::CatalogMetadataVersion Metadata(const Bytes& b,bool cluster=false){
   c::CatalogMetadataVersion x;x.record.header.kind=c::CatalogRecordKind::metric_series;
   x.record.header.object_uuid={p::UuidKind::object,Id(1)};
   x.record.header.parent_uuid={p::UuidKind::object,Id(30)};x.owning_schema_uuid={p::UuidKind::schema,Id(30)};
-  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */x.name_vector_uuid={p::UuidKind::object,Id(32)};
+  /* SB_CATALOG_NO_NAME_REFERENCE (Q248 = 1; Q261(b) = 1, 2026-11-18): no default_name_uuid, no name_vector_uuid */
   x.security_policy_uuid={p::UuidKind::object,Id(12)};x.creator_transaction_uuid={p::UuidKind::transaction,Id(19)};
   x.creator_local_transaction_id=1;x.definition_version=1;x.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::metric_series;x.record.payload=View(b);
   x.authority_scope=cluster?c::CatalogAuthorityScope::cluster:c::CatalogAuthorityScope::local;return x;

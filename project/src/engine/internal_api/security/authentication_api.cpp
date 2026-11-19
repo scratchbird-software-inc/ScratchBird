@@ -250,6 +250,16 @@ EngineApiDiagnostic DurableCredentialFingerprintForPrincipal(
       return MakeSecurityDiagnostic("SECURITY.AUTHENTICATION.FAILED",
                                     "durable_principal_disabled");
     }
+    // SEARCH_KEY: SB_AGENT_PRINCIPAL_EXTERNAL_BINDING_REFUSED (owner Q274,
+    // 2026-11-19: agents "can not have a connection outside the database
+    // itself ie even if you have the password, you can not run it from any
+    // location except inside the program itself"). Every service principal
+    // (L5 and the agent principals) is internal; this entry point serves
+    // external attaches (server sessions, the SBLR authenticate op), so it
+    // refuses them before any password is verified.
+    if (const auto binding = CheckExternalAuthenticationBinding(record.principal_kind); binding.error) {
+      return binding;
+    }
     if (record.credential_fingerprint.empty()) {
       return MakeSecurityDiagnostic("SECURITY.AUTHENTICATION.FAILED",
                                     "durable_credential_fingerprint_required");
@@ -307,6 +317,10 @@ EngineApiDiagnostic DurableCredentialFingerprintForPrincipalName(
   if (matched->lifecycle_state != "active") {
     return MakeSecurityDiagnostic("SECURITY.AUTHENTICATION.FAILED",
                                   "durable_principal_disabled");
+  }
+  // SB_AGENT_PRINCIPAL_EXTERNAL_BINDING_REFUSED (Q274): see the UUID form above.
+  if (const auto binding = CheckExternalAuthenticationBinding(matched->principal_kind); binding.error) {
+    return binding;
   }
   if (matched->credential_fingerprint.empty()) {
     return MakeSecurityDiagnostic("SECURITY.AUTHENTICATION.FAILED",
@@ -478,6 +492,15 @@ EngineApiDiagnostic VerifySecurityDatabaseTemporaryTokenEvidence(
 }
 
 }  // namespace
+
+// SB_AGENT_PRINCIPAL_EXTERNAL_BINDING_REFUSED (Q274): see the declaration.
+EngineApiDiagnostic CheckExternalAuthenticationBinding(std::string_view principal_kind) {
+  if (principal_kind == "service") {
+    return MakeSecurityDiagnostic("SECURITY.AGENT_PRINCIPAL_EXTERNAL_BINDING_REFUSED",
+                                  "service_principals_authenticate_only_inside_the_engine");
+  }
+  return EngineApiDiagnostic{"SB_ENGINE_API_OK", "engine.api.ok", {}, false};
+}
 
 DurableAuthorizationMaterializeResult RuntimePrincipalCredentialLease::MaterializeLocalAuthorization(
     std::uint64_t security_epoch, std::uint64_t policy_epoch,
@@ -680,6 +703,17 @@ EngineAuthenticateResult EngineAuthenticate(const EngineAuthenticateRequest& req
   }
   authenticated_principal_uuid = ResolveAuthenticatedPrincipalIdentity(
       *authentication_durable_security_state, principal, authenticated_principal_uuid);
+  // SB_AGENT_PRINCIPAL_EXTERNAL_BINDING_REFUSED (owner Q274, 2026-11-19): the
+  // gate every provider passes - the local-password lookups above refuse a
+  // service principal before its password is verified; this one covers the
+  // others (e.g. the temporary-token provider), which have no such lookup,
+  // once the final principal is known and before any session context is built.
+  for (const auto& record : authentication_durable_security_state->principals) {
+    if (record.principal_uuid != authenticated_principal_uuid || record.deleted) continue;
+    if (const auto binding = CheckExternalAuthenticationBinding(record.principal_kind); binding.error) {
+      return AuthenticationFailureResult(request, binding.code, binding.detail);
+    }
+  }
   EngineApiRequest context_request = request;
   context_request.target_object.uuid = request.target_object.uuid;
   auto context = ConnectionSecurityContextFromRequest(context_request);

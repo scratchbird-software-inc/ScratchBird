@@ -301,8 +301,7 @@ c::CatalogMetadataVersion SeedMetadata(const Uuid& object, unsigned row, scratch
   r.record.header.object_uuid = {UuidKind::object, object};
   r.record.header.row_uuid = {UuidKind::row, f::Id(row)};
   r.object_subtype = subtype;
-  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
-  r.name_vector_uuid = {UuidKind::object, f::Id(row + 2000)};
+  /* SB_CATALOG_NO_NAME_REFERENCE (Q248 = 1; Q261(b) = 1, 2026-11-18): no default_name_uuid, no name_vector_uuid */
   return r;
 }
 std::string SeedBody() {
@@ -352,8 +351,7 @@ std::unique_ptr<Db> SeededDb(unsigned index) {
     m.record.header.kind = c::CatalogRecordKind::audit_evidence;
     m.record.header.row_uuid = audit.row_uuid;
     m.record.header.parent_uuid = {UuidKind::object, m.owning_schema_uuid.value};
-    /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
-    m.name_vector_uuid = {};
+    /* SB_CATALOG_NO_NAME_REFERENCE (Q248 = 1; Q261(b) = 1, 2026-11-18): no default_name_uuid, no name_vector_uuid */
     m.audit_uuid = m.record.header.object_uuid;
     seed[3].front().metadata.audit_uuid = m.audit_uuid;
     seed[5].push_back({std::move(m), {}});
@@ -659,15 +657,25 @@ db::CatalogVersionWriteResult ExpectNamedDrop(const Db& b, Session& s, const std
   const auto before = ReadAll(path);
   const auto expected = Oracle(b, before, r);
   Check(expected.has_value(), what + ": the oracle finds room");
-  const auto vector_id = r.metadata.name_vector_uuid.value;
+  // Q261(b) = 1 (2026-11-18): the object's vector rows are found by the dropped
+  // object (role-2 name_vector rows whose parent is it), then the vector's
+  // entries; the definition holds no vector reference. (Was: r.metadata.name_vector_uuid.)
+  const auto object_id = r.metadata.record.header.object_uuid.value;
   std::map<Uuid, std::pair<Uuid, u64>> names;  // row -> newest (version, row_version), live
   {
     RoleScope scope(b, 2);
     const auto rel = ReadRelation(b, before);
+    std::set<Uuid> vector_ids;
+    for (const auto& l : rel.leaves)
+      for (const auto& row : l.leaf.body.rows) {
+        const auto& m = l.metadata.at(row.version_uuid);
+        if (m.record.header.parent_uuid.value == object_id && m.object_subtype == c::CatalogObjectSubtype::name_vector)
+          vector_ids.insert(m.record.header.object_uuid.value);
+      }
     for (const auto& l : rel.leaves)
       for (const auto& row : l.leaf.body.rows) {
         const auto& h = l.metadata.at(row.version_uuid).record.header;
-        if (h.object_uuid.value != vector_id && h.parent_uuid.value != vector_id) continue;
+        if (!vector_ids.contains(h.object_uuid.value) && !vector_ids.contains(h.parent_uuid.value)) continue;
         auto& at = names[row.row_uuid.value];
         if (row.row_version >= at.second) at = {row.version_uuid, row.row_version};
       }
@@ -676,7 +684,20 @@ db::CatalogVersionWriteResult ExpectNamedDrop(const Db& b, Session& s, const std
   // name rows, nothing cascades, and the drop is checked as before.
   if (names.empty()) return Expect(b, s, path, r, label);
   for (std::size_t i = 0; i < names.size(); ++i) r.dependent_versions.push_back(V7(kT + 3990000 + i, 0x7a0000 + static_cast<unsigned>(i)));
-  const auto result = Write(b, s.sink(), r);
+  // Q261(b) = 1 (2026-11-18): the cascade is found by the dropped object, so
+  // a production-created definition's two name rows are dropped with it
+  // (before, this fixture's definition named a vector that did not exist and
+  // nothing cascaded). Their drop versions need room in the names relation;
+  // with the 352-byte metadata header the create packs six name rows per
+  // 8/16 KiB leaf (was five), leaving ~925 free bytes where a drop version
+  // needs ~1032, so the write may add base leaves as any successor may
+  // (SB_CATALOG_NEW_PAGES): an allocation root and page identities. (Was:
+  // Write(b, s.sink(), r), no growth.)
+  for (unsigned i = 0; i < 8; ++i)
+    r.new_pages.push_back({V7(kT + 3995000 + 20 * i, 0x7b1000 + i), V7(kT + 3995000 + 20 * i, 0x7b2000 + i)});
+  auto binding = b.Binding();
+  binding.allocation_root = b.map_root;
+  const auto result = db::WriteCatalogSuccessorVersion(s.sink(), binding, r);
   if (!result.ok()) std::cerr << label << ": " << db::CatalogVersionWriteErrorName(result.error) << '\n';
   Check(result.ok(), what + ": the drop is written");
   Check(result.page_number == expected->target && result.forward_link_page == expected->link,

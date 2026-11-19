@@ -43,8 +43,7 @@ bool MetadataMatches(const CatalogMetadataVersionView& m, const CatalogContextNa
       r.generation == m.definition_version &&
       Identity(m.owning_schema_uuid,UuidKind::schema,r.schema_uuid) &&
       Identity(m.owner_uuid,UuidKind::principal,r.owner_uuid) &&
-      // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16): (was: default_name_uuid also checked or set on the next line).
-      m.name_vector_uuid.kind == UuidKind::object && uuid::IsEngineIdentityUuid(m.name_vector_uuid.value) &&
+      // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16; Q261(b) = 1, 2026-11-18): the definition carries no default_name_uuid and no name_vector_uuid (was: both checked here).
       m.creator_transaction_uuid.kind == UuidKind::transaction &&
       uuid::IsEngineIdentityUuid(m.creator_transaction_uuid.value) &&
       r.origin_local_transaction_id <= m.creator_local_transaction_id &&

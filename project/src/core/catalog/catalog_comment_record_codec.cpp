@@ -80,10 +80,10 @@ bool CatalogCommentMatchesHeader(const CatalogTypedRecordView& m) {
 }
 bool CatalogCommentMatchesMetadata(const CatalogMetadataVersionView& m) {
   const auto r = DecodeCatalogComment(m.record.payload);
-  return r.ok() && Header(m.record, *r.record) && m.object_subtype == CatalogObjectSubtype::localized_comment &&
-         // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16): (was: default_name_uuid also checked or set on the next line).
-         !m.name_vector_uuid.valid() &&
-         m.name_vector_uuid.value.is_nil();
+  // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16; Q261(b) = 1,
+  // 2026-11-18): the metadata carries no name reference at all (was: no
+  // default_name_uuid, then name_vector_uuid required nil here).
+  return r.ok() && Header(m.record, *r.record) && m.object_subtype == CatalogObjectSubtype::localized_comment;
 }
 bool CatalogCommentPreservesIdentity(const CatalogCommentRecordView& a, const CatalogCommentRecordView& b) {
   return a.comment_uuid == b.comment_uuid && a.target_object_uuid == b.target_object_uuid &&

@@ -1511,6 +1511,18 @@ struct Succ {
   // transaction's own version of a name or comment row, and this version
   // replaces it in place (its slot, version UUID and row_version kept).
   bool replace = false;
+  // SEARCH_KEY: SB_CATALOG_OWN_VERSION_MOVE (owner Q263 = 1, 2026-11-18): a
+  // replacement that no longer fits its base's page is placed on another
+  // page (a new base leaf if none has room) instead of being refused
+  // relation_full; the base's row leaves its page (written last), the
+  // version UUID and row_version are kept, and the version's cells in the
+  // row-UUID tree (retargeted) and the comment tree (retargeted) point at the
+  // new page. Only this transaction's own, uncommitted version moves;
+  // committed versions are never touched. (Was: relation_full.)
+  bool moved = false;
+  // The row-UUID tree already held this version's cell and it was retargeted
+  // (IndexNewLeafVersions then adds none).
+  bool retargeted = false;
 };
 struct NameTree {
   std::vector<TreePage> tree;
@@ -1980,9 +1992,14 @@ Stop PlaceSuccs(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding&
     return true;
   };
   // SB_CATALOG_OWN_VERSION_REPLACE (Q88 = 1): a replacement takes its
-  // base's record, in its slot, on its page (one whole-page write); one that
-  // does not fit there is refused relation_full (moving it would leave its
-  // version UUID on two pages between the writes).
+  // base's record, in its slot, on its page (one whole-page write).
+  // SB_CATALOG_OWN_VERSION_MOVE (owner Q263 = 1, 2026-11-18): one that does
+  // not fit there is moved: placed below like any version without a page,
+  // its base's row removed from the base page, which is written after the
+  // page that now holds the version (so a fault between the writes leaves
+  // this transaction's uncommitted version on two pages, never on none).
+  // (Was: refused relation_full, "moving it would leave its version UUID on
+  // two pages between the writes".)
   for (auto& c : succs) {
     if (!c.replace) continue;
     auto page = work[c.base.leaf];
@@ -1996,7 +2013,10 @@ Stop PlaceSuccs(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding&
     page.body.rows[c.base.row] = std::move(row);
     const auto fits = pg::BuildRowDataPageBody(page.body, page.header.page_size_bytes - 32);
     if (!fits.ok()) {
-      if (fits.diagnostic.diagnostic_code == "SB-ROW-DATA-PAGE-BODY-TOO-LARGE") return Refuse(E::relation_full);
+      if (fits.diagnostic.diagnostic_code == "SB-ROW-DATA-PAGE-BODY-TOO-LARGE") {
+        c.moved = true;
+        continue;
+      }
       return Refuse(fits.resource_failure() ? E::resource_exhausted : E::invalid_successor);
     }
     page.body.free_space_offset = fits.body.free_space_offset;  // SB_CATALOG_FREE_SPACE
@@ -2010,6 +2030,29 @@ Stop PlaceSuccs(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding&
     row.next_row_version = c.added.row_version;
     if (try_place(c, c.base.leaf)) continue;
     if (place_error) return Refuse(*place_error);
+  }
+  // SB_CATALOG_OWN_VERSION_MOVE: the moved replacements' base rows leave
+  // their pages (highest row index first, so the indices of the others on
+  // the same page stay valid; nothing below indexes `work` by base.row), and
+  // those pages are written last (link_pages). Each moved version is then
+  // placed by the loop below: on a page with room, else on a new base leaf.
+  {
+    std::vector<Succ*> moved;
+    for (auto& c : succs)
+      if (c.moved) moved.push_back(&c);
+    std::sort(moved.begin(), moved.end(), [](const Succ* a, const Succ* b) {
+      return a->base.leaf != b->base.leaf ? a->base.leaf < b->base.leaf : a->base.row > b->base.row;
+    });
+    for (auto* c : moved) {
+      auto& page = work[c->base.leaf];
+      if (c->base.row >= page.body.rows.size() || page.body.rows[c->base.row].version_uuid != c->version)
+        return Refuse(E::invalid_successor);
+      page.body.rows.erase(page.body.rows.begin() + static_cast<std::ptrdiff_t>(c->base.row));
+      const auto rebuilt = pg::BuildRowDataPageBody(page.body, page.header.page_size_bytes - 32);
+      if (!rebuilt.ok()) return Refuse(rebuilt.resource_failure() ? E::resource_exhausted : E::invalid_successor);
+      page.body.free_space_offset = rebuilt.body.free_space_offset;  // SB_CATALOG_FREE_SPACE
+      link_pages.insert(c->base.leaf);
+    }
   }
   for (auto& c : succs) {
     if (c.target) continue;
@@ -2036,6 +2079,36 @@ Stop PlaceSuccs(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding&
   return std::nullopt;
 }
 
+// SB_CATALOG_OWN_VERSION_MOVE (owner Q263 = 1, 2026-11-18): a moved
+// replacement's cell in the row-UUID tree, when the tree holds one (the row's
+// first version, or a version a new leaf was added for), now names the page
+// the version moved to. Changed in place (the key is unchanged, so the cell's
+// size is); the page is written with the other changed tree pages, after the
+// base leaves. A moved version without a cell gets none here (it is reached
+// as any later version is); IndexNewLeafVersions adds one when it moved onto
+// a leaf this write added and it had none.
+Stop RetargetMovedRowCells(std::vector<Succ>& succs, Relation& relation, std::set<std::size_t>& changed) {
+  for (auto& c : succs) {
+    if (!c.moved) continue;
+    for (std::size_t p = 0; p < relation.tree.size() && !c.retargeted; ++p) {
+      auto& page = relation.tree[p];
+      if (page.page.tree_level) continue;
+      for (auto& cell : page.page.cells) {
+        if (cell.key.row_uuid != c.row || cell.key.version_uuid != c.version) continue;
+        auto changed_page = page.page;
+        changed_page.cells[&cell - page.page.cells.data()].base_page = relation.bases[*c.target];
+        const auto fits = pg::EncodeNativeBtreePage(changed_page);
+        if (!fits.ok()) return Refuse(fits.error == pg::NativeBtreeError::resource_exhausted ? E::resource_exhausted : E::invalid_catalog);
+        page.page = std::move(changed_page);
+        changed.insert(p);
+        c.retargeted = true;
+        break;
+      }
+    }
+  }
+  return std::nullopt;
+}
+
 // SB_CATALOG_NEW_PAGES: a version on a leaf this write added is reached by its
 // own cell in the row-UUID tree (the tree otherwise indexes first versions
 // only; the visibility reader selects one visible version per row however
@@ -2045,6 +2118,7 @@ Stop IndexNewLeafVersions(disk::CarefulWriteSink& sink, const CatalogVersionWrit
                           std::set<std::size_t>& changed, PageSource& pages, u32 page_size, u64 order) {
   for (const auto& c : succs) {
     if (*c.target < first_new) continue;
+    if (c.retargeted) continue;  // SB_CATALOG_OWN_VERSION_MOVE: its existing cell was retargeted
     pg::NativeBtreeCell cell;
     cell.key.encoded_key.assign(c.row.bytes.begin(), c.row.bytes.end());
     cell.key.row_uuid = c.row;
@@ -2155,8 +2229,27 @@ Stop StampAndAddCommentCell(disk::CarefulWriteSink& sink, const CatalogVersionWr
                             u32 page_size, u64 order, const catalog::CatalogCommentRecordView& comment) {
   // SB_CATALOG_OWN_VERSION_REPLACE: a replacement's cell is its base's: kept
   // for an edit (its key cannot change), removed for a drop
-  // (RemoveReplacedCommentCell).
-  if (c.replace) return std::nullopt;
+  // (RemoveReplacedCommentCell). SB_CATALOG_OWN_VERSION_MOVE (Q263 = 1): a
+  // kept cell of a replacement that moved pages now names the new page.
+  if (c.replace) {
+    if (!c.moved || c.metadata.record.header.deleted) return std::nullopt;
+    for (std::size_t p = 0; p < tree.tree.size(); ++p) {
+      auto& page = tree.tree[p];
+      if (page.page.tree_level) continue;
+      for (auto& cell : page.page.cells) {
+        if (cell.key.version_uuid != c.version || cell.key.row_uuid != c.row) continue;
+        auto changed = page.page;
+        changed.cells[&cell - page.page.cells.data()].base_page = relation.bases[*c.target];
+        const auto fits = pg::EncodeNativeBtreePage(changed);
+        if (!fits.ok())
+          return Refuse(fits.error == pg::NativeBtreeError::resource_exhausted ? E::comment_tree_full : E::invalid_catalog);
+        page.page = std::move(changed);
+        tree.changed.insert(p);
+        return std::nullopt;
+      }
+    }
+    return Refuse(E::invalid_catalog);  // a moved comment version without its cell
+  }
   const auto& base_row = relation.leaves[c.base.leaf].page.body.rows[c.base.row];
   bool stamped = false;
   for (std::size_t p = 0; p < tree.tree.size() && !stamped; ++p) {
@@ -2445,9 +2538,11 @@ Stop CollectCommentDependents(disk::CarefulWriteSink& sink, const CatalogVersion
 }
 
 // SEARCH_KEY: SB_NATIVE_NAME_DROP_CASCADE (owner Q249, 2026-11-16). The
-// dropped object's names (class name): its name vector (the row whose object
-// is the definition's name_vector_uuid) and every entry of that vector (rows
-// whose parent is it), in the names relation (role 2), row-UUID order. As
+// dropped object's names (class name): its name vector (the role-2 row of
+// subtype name_vector whose parent is the dropped object - found by the
+// object's UUID, Q261(b) = 1, 2026-11-18; was: the row whose object is the
+// definition's name_vector_uuid) and every entry of that vector (rows whose
+// parent is the vector), in the names relation (role 2), row-UUID order. As
 // for comments: any version by another transaction in progress is a
 // write_conflict with it; a row whose newest version (rolled-back and dead
 // ones passed over) is committed and live gets a drop version (a vector:
@@ -2457,21 +2552,35 @@ Stop CollectCommentDependents(disk::CarefulWriteSink& sink, const CatalogVersion
 // with this transaction; a drop adds no cell. (Was: a definition drop left
 // its names to the caller, which dropped the entry and the vector itself.)
 Stop CollectNameDependents(disk::CarefulWriteSink& sink, const CatalogVersionWriterBinding& binding, u32 page_size,
-                           const pg::NativeCatalogRoot& root, std::vector<byte>& image, const Uuid& vector_id,
+                           const pg::NativeCatalogRoot& root, std::vector<byte>& image, const Uuid& object_id,
                            const Uuid& transaction, u64 order, u64 generation,
                            const std::function<const mga::TransactionInventoryEntry*(u64)>& entry,
                            std::map<u16, Relation>& relations, Dependents& out) {
   out.kind = DependentClass::name;
   out.role = 2;
-  if (vector_id.is_nil()) return std::nullopt;  // an unnamed definition
+  if (object_id.is_nil()) return Refuse(E::invalid_successor);
   const auto head = std::find_if(root.roots.begin(), root.roots.end(), [](const auto& r) { return r.role == 2; });
   if (head == root.roots.end()) return std::nullopt;
   if (head->page_type != 6 && head->page_type != 0x200) return Refuse(E::invalid_catalog);
   out.head = *head;
   CatalogVersionWriteResult result;
   if (!relations.contains(2) && !ReadRelation(sink, binding, page_size, *head, relations[2], result)) return result;
-  if (!ReadNameTrees(sink, binding, page_size, image, out.name_trees, result)) return result;
   const auto& relation = relations.at(2);
+  // Q261(b) = 1: the object's vector(s) first - the name_vector rows whose
+  // parent is the object (every version of that row carries the same object
+  // identity) - then the vector's entries. An object with no vector row is
+  // unnamed: nothing cascades.
+  std::set<Uuid> vector_ids;
+  for (const auto& leaf : relation.leaves)
+    for (const auto& row : leaf.page.body.rows) {
+      const auto m = leaf.metadata.find(row.version_uuid);
+      if (m == leaf.metadata.end()) return Refuse(E::invalid_catalog);
+      const auto& h = m->second.record.header;
+      if (h.parent_uuid.value == object_id && m->second.object_subtype == catalog::CatalogObjectSubtype::name_vector)
+        vector_ids.insert(h.object_uuid.value);
+    }
+  if (vector_ids.empty()) return std::nullopt;  // an unnamed definition
+  if (!ReadNameTrees(sink, binding, page_size, image, out.name_trees, result)) return result;
   std::map<Uuid, std::vector<Version>> rows;
   for (std::size_t l = 0; l < relation.leaves.size(); ++l)
     for (std::size_t r = 0; r < relation.leaves[l].page.body.rows.size(); ++r) {
@@ -2479,7 +2588,7 @@ Stop CollectNameDependents(disk::CarefulWriteSink& sink, const CatalogVersionWri
       const auto m = relation.leaves[l].metadata.find(row.version_uuid);
       if (m == relation.leaves[l].metadata.end()) return Refuse(E::invalid_catalog);
       const auto& h = m->second.record.header;
-      if (h.object_uuid.value == vector_id || h.parent_uuid.value == vector_id) rows[row.row_uuid.value].push_back({l, r});
+      if (vector_ids.contains(h.object_uuid.value) || vector_ids.contains(h.parent_uuid.value)) rows[row.row_uuid.value].push_back({l, r});
     }
   for (const auto& [id, versions] : rows) {  // row-UUID order
     std::optional<Version> newest;
@@ -2540,7 +2649,7 @@ Stop CollectDependents(disk::CarefulWriteSink& sink, const CatalogVersionWriterB
         break;
       case DependentClass::name:
         if (auto stop = CollectNameDependents(sink, binding, page_size, root, image,
-                                              request.metadata.name_vector_uuid.value, request.transaction_uuid,
+                                              target, request.transaction_uuid,  // Q261(b) = 1: by the dropped object
                                               request.transaction_order, request.metadata.catalog_generation, entry,
                                               relations, d))
           return stop;
@@ -3025,6 +3134,8 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
       leaf_images.emplace(i, std::move(encoded));
     }
     std::set<std::size_t> changed_index_pages;
+    // SB_CATALOG_OWN_VERSION_MOVE (Q263 = 1): moved replacements' row-UUID cells first.
+    if (auto stop = RetargetMovedRowCells(succs, relation_read, changed_index_pages)) return *stop;
     if (auto stop = IndexNewLeafVersions(sink, binding, succs, relation_read, original_leaves, changed_index_pages, pages,
                                          page_size, request.transaction_order))
       return *stop;
@@ -3059,6 +3170,7 @@ CatalogVersionWriteResult SuccessorPass(disk::CarefulWriteSink& sink, const Cata
         }
         at.images.emplace(i, std::move(encoded));
       }
+      if (auto stop = RetargetMovedRowCells(dep.succs, relation, at.changed_index_pages)) return *stop;  // Q263 = 1
       if (auto stop = IndexNewLeafVersions(sink, binding, dep.succs, relation, before, at.changed_index_pages, pages,
                                            page_size, request.transaction_order))
         return *stop;

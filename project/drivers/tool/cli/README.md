@@ -60,23 +60,30 @@ mode flags with `--conn-opt key=value` for additional driver parameters.
 
 ```text
 SBsql bootstrap <first-principal> <database-path> --mode=embedded \
-  --platform-profile <file> --resource-seed-pack-root <dir> \
-  --policy-seed-pack-root <dir> [--password-stdin]
+  --platform-profile <file> --policy-seed-pack-root <dir> \
+  --total-pages <n> --service-principal <name> \
+  [--database-name <name>] [--language <tag>] [--password-stdin]
 ```
 
 It is an embedded engine lifecycle operation rather than a normal connection.
-It creates the new database and its transaction-1 security catalog atomically,
-so no existing database login is needed. It still requires Root/Administrator
-authority and protected initial-password input. Ordinary `SBsql` embedded
-connections, listeners, managers, and parser processes never create a missing
-database.
+It creates the new database (native single-file format, `--total-pages` pages
+of 16 KiB) and its construction-transaction security catalog atomically, so no
+existing database login is needed. It still requires Root/Administrator
+authority and protected initial-password input for the first principal. The
+internal service principal named by `--service-principal` is provisioned with
+a credential the engine derives and keeps inside the database (the database
+UUID combined with a seed stored in the principal's security row, plus the
+verifier of the result). It is never printed or returned: the command reports
+only `service_principal_credential=provisioned_internal_only`, and the service
+and agent principals authenticate only from inside the engine. Ordinary `SBsql` embedded connections,
+listeners, managers, and parser processes never create a missing database.
 
 For a local POSIX create-and-connect sequence, use:
 
 ```text
 SBsql create <first-principal> <database-path> --mode=embedded \
-  --resource-seed-pack-root <dir> \
-  --policy-seed-pack-root <dir> --start-server <SBsrv-executable> \
+  --policy-seed-pack-root <dir> --total-pages <n> --service-principal <name> \
+  --start-server <SBsrv-executable> \
   --server-config <file> --ipc-path <socket-path> -- -c "SELECT 1"
 ```
 

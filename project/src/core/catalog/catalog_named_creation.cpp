@@ -54,7 +54,7 @@ CatalogNamedCreationPreflightResult PreflightLocalNamedCreationRecord(
       if(!name_extent||!CatalogNamePayloadMatchesMetadata(vector,BorrowCatalogMetadataVersion(vm))||
           v.lifecycle_state!=CatalogNameLifecycle::active||
           v.object_uuid.value!=d.record.header.object_uuid.value||
-          v.name_vector_uuid.value!=d.name_vector_uuid.value||
+          // (Q261(b) = 1, 2026-11-18: was also v.name_vector_uuid != d.name_vector_uuid; the definition holds no name reference.)
           v.owning_schema_uuid.has_value()!=( !d.owning_schema_uuid.value.is_nil())||
           (v.owning_schema_uuid&&v.owning_schema_uuid->value!=d.owning_schema_uuid.value))return {E::invalid_names,0,0};
       account(*extent);account(*vector_extent+*name_extent);

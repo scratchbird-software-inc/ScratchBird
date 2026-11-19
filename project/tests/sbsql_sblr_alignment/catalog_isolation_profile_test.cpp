@@ -50,7 +50,7 @@ std::string Golden(const Body& r){f::Golden g(65625);
  if(r.cluster_uuid)g.Identity(22,*r.cluster_uuid);return g.Finish();}
 c::CatalogMetadataVersion Metadata(const Body& r,unsigned n=0){auto m=f::Metadata(0,r.creating_transaction_uuid,f::Id(60),Golden(r));
  m.record.header.object_uuid={p::UuidKind::object,r.profile_uuid};m.record.header.row_uuid={p::UuidKind::row,f::Id(1000+3*n)};
- /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */m.name_vector_uuid={p::UuidKind::object,f::Id(2001+2*n)};
+ /* SB_CATALOG_NO_NAME_REFERENCE (Q248 = 1; Q261(b) = 1, 2026-11-18): no default_name_uuid, no name_vector_uuid */
  m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::isolation_profile;m.creator_local_transaction_id=r.creating_local_transaction_id;m.definition_version=r.generation;
  if(r.cluster_uuid)m.authority_scope=c::CatalogAuthorityScope::cluster;return m;}
 void Roundtrip(const Body& value){const auto expected=Golden(value);std::array<p::byte,c::kCatalogIsolationProfileMaxBytes+2> output;output.fill(0xa7);
@@ -154,12 +154,13 @@ struct Item {
   explicit Item(unsigned n):descriptor(Value(n)),definition(Metadata(descriptor,n)){
     vector_metadata=entry_metadata=definition;vector_metadata.record.payload.clear();entry_metadata.record.payload.clear();
     vector_metadata.record.header.kind=entry_metadata.record.header.kind=c::CatalogRecordKind::localized_name;
-    vector_metadata.record.header.object_uuid=definition.name_vector_uuid;vector_metadata.record.header.row_uuid.value=f::Id(1001+3*n);
+    const p::TypedUuid name_vector{p::UuidKind::object,f::Id(2001+2*n)};  // Q261(b) = 1: the vector row's identity (was definition.name_vector_uuid)
+    vector_metadata.record.header.object_uuid=name_vector;vector_metadata.record.header.row_uuid.value=f::Id(1001+3*n);
     vector_metadata.record.header.parent_uuid=definition.record.header.object_uuid;vector_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_vector;
     entry_metadata.record.header.object_uuid=p::TypedUuid{p::UuidKind::object,f::Id(2000+2*n)};  // SB_CATALOG_NO_NAME_REFERENCE (Q248): was definition.default_name_uuid
     entry_metadata.record.header.row_uuid.value=f::Id(1002+3*n);
-    entry_metadata.record.header.parent_uuid=definition.name_vector_uuid;entry_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_entry;entry_metadata.resource_epoch=1;
-    vector.name_vector_uuid=entry.name_vector_uuid=definition.name_vector_uuid;vector.object_uuid=entry.object_uuid=definition.record.header.object_uuid;
+    entry_metadata.record.header.parent_uuid=name_vector;entry_metadata.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::name_entry;entry_metadata.resource_epoch=1;
+    vector.name_vector_uuid=entry.name_vector_uuid=name_vector;vector.object_uuid=entry.object_uuid=definition.record.header.object_uuid;
     entry.name_entry_uuid=p::TypedUuid{p::UuidKind::object,f::Id(2000+2*n)};  // SB_CATALOG_NO_NAME_REFERENCE (Q248): was definition.default_name_uuid
     vector.object_kind=entry.object_kind=c::CatalogRecordKind::policy;
     vector.owning_schema_uuid=definition.owning_schema_uuid;/* SB_NATIVE_NAME_DEFAULTS_ON_ENTRIES (owner Q228 revisited): no vector default */

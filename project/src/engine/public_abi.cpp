@@ -5159,14 +5159,27 @@ static sb_engine_status_t open_engine_impl(
     // device when one is attached, else a read-only native data-file open (no
     // lock file) that is closed again. Not a valid database ->
     // DATABASE.OPEN_NOT_A_VALID_DATABASE (detail = bootstrap/page-zero error;
-    // a legacy file is refused untouched); a refused device open keeps the
-    // device's own code. A valid native file -> the temporary
-    // DATABASE.OPEN_NATIVE_RUNTIME_PENDING (native serving is S3b-S3f). The
-    // legacy header snapshot and descriptor recovery below stay unreachable
-    // from this entry point until they are deleted.
+    // a legacy file is refused untouched). A valid native file -> the
+    // temporary DATABASE.OPEN_NATIVE_RUNTIME_PENDING (native serving is
+    // S3b-S3f). The legacy header snapshot and descriptor recovery below stay
+    // unreachable from this entry point until they are deleted.
+    // SEARCH_KEY: SB_OPEN_MISSING_KEEPS_ABI_CONTRACT (owner Q272 = 1,
+    // 2026-11-18): a file that is MISSING or cannot be opened keeps this ABI's
+    // old contract - ENGINE.OPEN.PATH_INVALID / engine.open.path_invalid /
+    // database_source_unavailable carrying the device's typed source
+    // (SB-STORAGE-DISK-OPEN-MISSING), with the same source fields the legacy
+    // snapshot branch below attached; the discovery code is used only when
+    // the file exists but is not a valid native database. (Was, the cut: the
+    // device's own code under engine.open.native_discovery_refused.)
     {
       namespace sdb = scratchbird::storage::database;
       sdb::NativeOpenDiscoveryResult discovered;
+      // Q272 = 1: a filesystem lookup failure (e.g. ENAMETOOLONG) is an input
+      // admission failure, not an exception escaping the C ABI: the old
+      // contract's PATH_INVALID / database_source_unavailable with the typed OS
+      // cause, as the legacy snapshot branch reported it.
+      std::optional<std::error_code> discovery_exception;
+      try {
       if (served_owner) {
         scratchbird::storage::disk::FileDevice device;
         const auto served = device.OpenServed(served_owner, handle->database_path,
@@ -5181,7 +5194,36 @@ static sb_engine_status_t open_engine_impl(
       } else {
         discovered = sdb::DiscoverNativeDatabaseAtPath(handle->database_path);
       }
+      } catch (const std::system_error& error) {
+        discovery_exception = error.code();
+      }
+      if (discovery_exception) {
+        namespace api = scratchbird::engine::internal_api;
+        auto diagnostic = api::MakeEngineApiDiagnostic("ENGINE.OPEN.PATH_INVALID", "engine.open.path_invalid",
+                                                       "database_source_unavailable", true);
+        diagnostic.fields.push_back({"source_error_value", std::to_string(discovery_exception->value())});
+        diagnostic.fields.push_back({"source_error_category", discovery_exception->category().name()});
+        return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 1005,
+            diagnostic.code, diagnostic.message_key, diagnostic.detail, {}, nullptr, &diagnostic);
+      }
       if (!discovered.ok()) {
+        if (discovered.error == sdb::NativeOpenDiscoveryError::open_failed && discovered.device_diagnostic) {
+          namespace api = scratchbird::engine::internal_api;
+          const auto& source = *discovered.device_diagnostic;
+          auto diagnostic = api::MakeEngineApiDiagnosticFromNative(
+              source, "ENGINE.OPEN.PATH_INVALID", "engine.open.path_invalid", "database_source_unavailable", true);
+          diagnostic.fields.push_back({"source_code", source.diagnostic_code});
+          diagnostic.fields.push_back({"source_message_key", source.message_key});
+          diagnostic.fields.push_back({"source_component", source.source_component});
+          for (const auto& argument : source.arguments) {
+            if (const auto* identity = argument.uuid())
+              diagnostic.identity_fields.push_back({argument.key, *identity});
+            else if (const auto* text = argument.text())
+              diagnostic.fields.push_back({argument.key, *text});
+          }
+          return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 1005,
+              diagnostic.code, diagnostic.message_key, diagnostic.detail, {}, nullptr, &diagnostic);
+        }
         return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 1005, discovered.code,
                            "engine.open.native_discovery_refused", discovered.detail);
       }

@@ -196,8 +196,8 @@ void Tests() {
   const auto reopened=c::DecodeCatalogMetadataVersion(encoded.bytes);Check(reopened.ok()&&reopened.record.record.payload==metadata.record.payload,"complete native envelope roundtrip");
   for(unsigned scenario=0;scenario<7;++scenario){auto bad=metadata;
     if(scenario==0)bad.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;if(scenario==1)bad.record.header.kind=c::CatalogRecordKind::policy;
-    if(scenario==2)bad.record.header.object_uuid.value=f::Id(100);if(scenario==3)bad.name_vector_uuid={};/* (Was: default_name_uuid, retired by owner Q248 = 1; the name-vector fault) */
-    if(scenario==4)bad.name_vector_uuid={};if(scenario==5)bad.owning_schema_uuid={};if(scenario==6)bad.definition_version=2;
+    if(scenario==2)bad.record.header.object_uuid.value=f::Id(100);if(scenario==3||scenario==4)continue;/* (Was: the name-vector fault; Q261(b) = 1 removed the field, 2026-11-18) */
+   if(scenario==5)bad.owning_schema_uuid={};if(scenario==6)bad.definition_version=2;
     heap_denied=true;const auto size=c::CatalogMetadataVersionEncodedBytes(c::BorrowCatalogMetadataVersion(bad));heap_denied=false;
     Check(!size,"shared family/header/name/generation/ownership confusion refuses");}
   auto next=metadata;auto replacement=base;replacement.generation=2;replacement.soft_limit_bytes=700000000;

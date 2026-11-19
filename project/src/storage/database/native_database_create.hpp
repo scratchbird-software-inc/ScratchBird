@@ -73,6 +73,11 @@ struct NativeDatabaseCreateRequest {
   std::string_view bootstrap_principal_name,bootstrap_credential_fingerprint;
   std::string_view service_principal_name,service_credential_fingerprint;
   core::platform::u64 maximum_retained_image_bytes=0;
+  // SB_AGENT_PASSWORD_SEED (owner Q274, 2026-11-19): the L5 principal's
+  // password seed, stored in its security row beside
+  // service_credential_fingerprint (the verifier of database_uuid XOR seed).
+  // All zero: none (the row then carries the verifier only).
+  std::array<core::platform::byte,16> service_password_seed{};
 };
 enum class NativeDatabaseCreateError {
   none,invalid_request,invalid_principal,identity_failure,policy_assembly,database_assembly,

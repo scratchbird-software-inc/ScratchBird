@@ -28,7 +28,7 @@ Fixture Catalog() {
   lm.record.header.object_uuid={p::UuidKind::object,b.label_schema_uuid};lm.definition_version=b.label_schema_generation;
   lm.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::metric_label_schema;lm.record.payload.assign(encoded_labels.bytes.begin(),encoded_labels.bytes.end());
   lm.record.header.row_uuid=Id(p::UuidKind::row,50);
-  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */lm.name_vector_uuid=Id(p::UuidKind::object,52);
+  /* SB_CATALOG_NO_NAME_REFERENCE (Q248 = 1; Q261(b) = 1, 2026-11-18): no default_name_uuid, no name_vector_uuid */
   f.rows.push_back(std::move(lm));
   c::CatalogMetricRetentionPolicy policy;
   policy.policy.policy_uuid=b.retention_policy_uuid;policy.policy.generation=b.retention_policy_generation;
@@ -40,7 +40,7 @@ Fixture Catalog() {
   pm.record.header.object_uuid={p::UuidKind::object,b.retention_policy_uuid};pm.definition_version=b.retention_policy_generation;
   pm.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::metric_retention;pm.record.payload.assign(encoded_policy.bytes.begin(),encoded_policy.bytes.end());
   pm.record.header.row_uuid=Id(p::UuidKind::row,53);
-  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */pm.name_vector_uuid=Id(p::UuidKind::object,55);
+  /* SB_CATALOG_NO_NAME_REFERENCE (Q248 = 1; Q261(b) = 1, 2026-11-18): no default_name_uuid, no name_vector_uuid */
   f.rows.push_back(std::move(pm));
   // The selector deliberately does not interpret a security policy. Opaque
   // fixture bytes verify preservation only; they are no executable grant.
@@ -48,7 +48,7 @@ Fixture Catalog() {
   vm.record.header.object_uuid={p::UuidKind::object,b.visibility_policy_uuid};vm.definition_version=b.visibility_policy_generation;
   vm.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;vm.record.payload=std::string(16,char(0xa5));
   vm.record.header.row_uuid=Id(p::UuidKind::row,56);
-  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */vm.name_vector_uuid=Id(p::UuidKind::object,58);
+  /* SB_CATALOG_NO_NAME_REFERENCE (Q248 = 1; Q261(b) = 1, 2026-11-18): no default_name_uuid, no name_vector_uuid */
   f.rows.push_back(std::move(vm));return f;
 }
 std::vector<c::CatalogMetricRowView> Views(const Fixture& f) {
@@ -122,7 +122,7 @@ void DependencySelection() {
 }
 c::CatalogMetadataVersion CounterMetadata(const c::CatalogMetricDescriptor& descriptor) {
   auto row=Metadata(descriptor);row.record.header.row_uuid=Id(p::UuidKind::row,60);
-  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */row.name_vector_uuid=Id(p::UuidKind::object,62);
+  /* SB_CATALOG_NO_NAME_REFERENCE (Q248 = 1; Q261(b) = 1, 2026-11-18): no default_name_uuid, no name_vector_uuid */
   return row;
 }
 Fixture RateCatalog() {
@@ -173,7 +173,7 @@ c::CatalogMetadataVersion SeriesRow(const Fixture& f,const c::CatalogMetricSerie
   row.record.header.kind=c::CatalogRecordKind::metric_series;
   row.record.header.object_uuid={p::UuidKind::object,series.series_uuid};
   row.record.header.row_uuid=Id(p::UuidKind::row,84);
-  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */row.name_vector_uuid=Id(p::UuidKind::object,86);
+  /* SB_CATALOG_NO_NAME_REFERENCE (Q248 = 1; Q261(b) = 1, 2026-11-18): no default_name_uuid, no name_vector_uuid */
   row.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::metric_series;row.definition_version=series.generation;
   row.authority_scope=series.binding.cluster_uuid.is_nil()?c::CatalogAuthorityScope::local:c::CatalogAuthorityScope::cluster;
   row.creator_transaction_uuid=series.origin_transaction_uuid;row.creator_local_transaction_id=series.origin_local_transaction_id;
@@ -371,8 +371,7 @@ void BorrowedMetadataValidationParity() {
     if(mutation==3)value.creator_transaction_uuid.kind=p::UuidKind::object;
     if(mutation==4)value.creator_local_transaction_id=0;
     if(mutation==5)value.definition_version=0;
-    if(mutation==6)value.name_vector_uuid.kind=p::UuidKind::row;/* (Was: default_name_uuid, retired by owner Q248 = 1; the name-vector fault) */
-    if(mutation==7)value.name_vector_uuid.kind=p::UuidKind::row;
+    if(mutation==6||mutation==7)continue;/* (Was: the name-vector fault; Q261(b) = 1 removed the field, 2026-11-18) */
     if(mutation==8)value.security_policy_uuid.kind=p::UuidKind::row;
     if(mutation==9)value.owning_schema_uuid.kind=p::UuidKind::object;
     if(mutation==10)value.record.header.parent_uuid.value.bytes.back()^=1;

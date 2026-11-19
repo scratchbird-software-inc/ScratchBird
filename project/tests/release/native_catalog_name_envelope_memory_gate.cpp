@@ -124,7 +124,7 @@ c::CatalogMetadataVersion NameMetadata(const c::CatalogNamePayload& payload){
   m.record.header.kind=c::CatalogRecordKind::localized_name;
   m.definition_version=1;
   std::visit([&](const auto& r){
-    m.name_vector_uuid=r.name_vector_uuid;
+    /* SB_CATALOG_NO_NAME_REFERENCE (Q248 = 1; Q261(b) = 1, 2026-11-18): no default_name_uuid, no name_vector_uuid */
     m.security_policy_uuid=r.security_policy_uuid;
     m.catalog_generation=r.catalog_generation_id;
     if constexpr(std::is_same_v<std::decay_t<decltype(r)>,c::CatalogNameVector>){
@@ -159,7 +159,7 @@ void MetadataAdmission(bool entry){
   matches(payload,metadata,true);
   auto m=metadata;m.record.header.kind=c::CatalogRecordKind::sql_object;matches(payload,m,false);
   m=metadata;m.object_subtype=scratchbird::core::catalog::CatalogObjectSubtype::schema_application;matches(payload,m,false);
-  for(auto member:{&c::CatalogMetadataVersion::name_vector_uuid,  /* (was also default_name_uuid: Q248) */
+  for(auto member:{/* (was also default_name_uuid [Q248] and name_vector_uuid [Q261(b) = 1]) */
       &c::CatalogMetadataVersion::owning_schema_uuid,&c::CatalogMetadataVersion::security_policy_uuid}){
     m=metadata;(m.*member).value.bytes[15]^=0x80;matches(payload,m,false);
     m=metadata;(m.*member).kind=UuidKind::unknown;matches(payload,m,false);

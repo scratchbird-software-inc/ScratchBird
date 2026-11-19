@@ -818,9 +818,9 @@ void printUsage(const char* program) {
     std::cout << "First-principal bootstrap (shared with SBsql):\n";
     std::cout << "  " << program
               << " bootstrap <principal> <database> --mode=embedded"
-                 " --platform-profile <file> --resource-seed-pack-root <dir>"
-                 " --policy-seed-pack-root <dir> --metric-policy-defaults <file>"
-                 " --metric-policy-families <file> [--password-stdin]\n\n";
+                 " --platform-profile <file> --policy-seed-pack-root <dir>"
+                 " --total-pages <n> --service-principal <name>"
+                 " [--database-name <name>] [--language <tag>] [--password-stdin]\n\n";
     std::cout << "User Commands:\n";
     std::cout << "  user list                    List all users\n";
     std::cout << "  user create <username>       Create a new user\n";
@@ -881,10 +881,8 @@ void printUsage(const char* program) {
     std::cout << "Examples:\n";
     std::cout << "  " << program << " bootstrap qa_admin mydb.sbdb --mode=embedded "
                  "--platform-profile=SBbootstrap.profile "
-                 "--resource-seed-pack-root=resource-pack "
                  "--policy-seed-pack-root=policy-pack "
-                 "--metric-policy-defaults=metric-policy-defaults.conf "
-                 "--metric-policy-families=metric-policy-families.conf\n";
+                 "--total-pages=1024 --service-principal=node_service\n";
     std::cout << "  " << program << " user list mydb.sbdb\n";
     std::cout << "  " << program << " user create admin mydb.sbdb -U root\n";
     std::cout << "  " << program << " check mydb.sbdb -v\n";

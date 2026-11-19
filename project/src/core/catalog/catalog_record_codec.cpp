@@ -413,22 +413,42 @@ DiagnosticRecord MaterializeCatalogRecordDiagnostic(const CatalogRecordDiagnosti
 }
 
 namespace {
-constexpr std::size_t kMetadataHeaderBytes = 384;
+// SEARCH_KEY: SB_CATALOG_METADATA_HEADER_V4 (owner Q261(a) = b, Q261(b) = 1,
+// 2026-11-18; SB_CATALOG_NO_NAME_REFERENCE). Header version 4, 352 bytes:
+//   0 "SBCMV001"  8 version u16 (4)  10 header bytes u16 (352)  12 total u32
+//   16..24 the four enums (u16)  24..32 zero
+//   32..96 eight u64 counters
+//   96..240 nine 16-byte references, index i at 96 + 16 i:
+//     0 owner  1 creator transaction  2 retired transaction
+//     3 security policy  4 dependency group  5 storage binding
+//     6 donor overlay  7 audit  8 owning schema
+//   240..249 the references' kind bytes  249..256 zero
+//   256..288 definition digest (SHA-256 of the nested typed record)
+//   288..320 version digest (SHA-256 of the whole envelope, this slot zero)
+//   320 reserved u32 (zero)  324 inner size u32  328 subtype u32
+//   332 reserved u32 (zero)  336..352 zero
+// Version 3 (384 bytes) held eleven reference slots: 3 reserved zero for the
+// removed default_name_uuid (Q248) and 4 name_vector_uuid; both are gone
+// (names point to objects, never the reverse; an object's vector is found by
+// the object's UUID), the later references move up two slots, and the
+// digests, sizes and subtype move up 32 bytes. A version-3 envelope is
+// refused (header_invalid); no migration (Q164 = 1).
+constexpr std::size_t kMetadataHeaderBytes = 352;
 constexpr std::size_t kMetadataMaxBytes = 262144;
+constexpr u16 kMetadataHeaderVersion = 4;
+constexpr std::size_t kMetadataReferenceBytesAt = 96, kMetadataReferenceKindsAt = 240;
+constexpr std::size_t kMetadataDefinitionDigestAt = 256, kMetadataVersionDigestAt = 288;
+constexpr std::size_t kMetadataReservedAAt = 320, kMetadataInnerSizeAt = 324, kMetadataSubtypeAt = 328,
+                      kMetadataReservedBAt = 332;
 using scratchbird::core::platform::LoadLittle64;
 using scratchbird::core::platform::StoreLittle64;
 using Metadata = CatalogMetadataVersionView;
-// SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16): reference index 3
-// was default_name_uuid; its slot (96 + 48, kind byte 275) is reserved and
-// zero, so every later index (audit_uuid = 9) keeps its place. (Was:
-// &Metadata::default_name_uuid.)
-constexpr std::size_t kRetiredNameReference = 3;
-constexpr auto kMetadataReferences = std::array<TypedUuid Metadata::*, 11>{
+constexpr auto kMetadataReferences = std::array<TypedUuid Metadata::*, 9>{
     &Metadata::owner_uuid, &Metadata::creator_transaction_uuid,
-    &Metadata::retired_transaction_uuid, nullptr,
-    &Metadata::name_vector_uuid, &Metadata::security_policy_uuid,
+    &Metadata::retired_transaction_uuid, &Metadata::security_policy_uuid,
     &Metadata::dependency_group_uuid, &Metadata::storage_binding_uuid,
     &Metadata::donor_overlay_uuid, &Metadata::audit_uuid, &Metadata::owning_schema_uuid};
+constexpr std::size_t kMetadataAuditReference = 7;
 constexpr auto kMetadataCounters = std::array{
     &Metadata::definition_version, &Metadata::schema_epoch, &Metadata::security_epoch,
     &Metadata::resource_epoch, &Metadata::catalog_generation,
@@ -470,10 +490,9 @@ std::optional<CatalogRecordDiagnosticView> ValidateCatalogMetadataVersionView(co
   };
   if (!IsKnownCatalogObjectSubtype(value.object_subtype)) return MetadataViewError("subtype_invalid");
   for (std::size_t i = 0; i < kMetadataReferences.size(); ++i) {
-    if (!kMetadataReferences[i]) continue;  // SB_CATALOG_NO_NAME_REFERENCE
     const auto& id = value.*kMetadataReferences[i];
     if (!IsSuppliedIdentity(id)) {
-      if (i == 0 || i == 1 || i == 9)
+      if (i == 0 || i == 1 || i == kMetadataAuditReference)
         return MetadataViewError("required_reference_missing");
     } else if (DurableIdentityError(id).has_value())
       return MetadataViewError("reference_invalid");
@@ -482,12 +501,13 @@ std::optional<CatalogRecordDiagnosticView> ValidateCatalogMetadataVersionView(co
       (IsSuppliedIdentity(value.retired_transaction_uuid) &&
        !IsTypedIdentity(value.retired_transaction_uuid, UuidKind::transaction)))
     return MetadataViewError("transaction_reference_kind");
-  // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): (was: default_name_uuid
-  // and name_vector_uuid supplied together, else name_vector_pair_invalid).
+  // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1; Q261(b) = 1): no name
+  // reference of either kind (was: default_name_uuid and name_vector_uuid
+  // supplied together, else name_vector_pair_invalid; then name_vector_uuid
+  // an optional object reference).
   if (IsSuppliedIdentity(value.owning_schema_uuid) && !IsTypedIdentity(value.owning_schema_uuid, UuidKind::schema))
     return MetadataViewError("owning_schema_kind_invalid");
-  for (auto member : {&Metadata::name_vector_uuid,
-                     &Metadata::security_policy_uuid, &Metadata::dependency_group_uuid,
+  for (auto member : {&Metadata::security_policy_uuid, &Metadata::dependency_group_uuid,
                      &Metadata::storage_binding_uuid, &Metadata::donor_overlay_uuid})
     if (IsSuppliedIdentity(value.*member) && !IsTypedIdentity(value.*member, UuidKind::object))
       return MetadataViewError("object_reference_kind_invalid");
@@ -664,10 +684,11 @@ CatalogMetadataVersionCodecResult EncodeCatalogMetadataVersion(const CatalogMeta
   auto* out = result.bytes.data();
   std::memcpy(out, "SBCMV001", 8);
   // Version 2 (SB_CATALOG_NO_TEXT_IDENTIFIERS, owner Q57/Q58 = 1): the trace-key
-  // and retention-class length slots (352, 364) are reserved, zero. Version 3
-  // (SB_CATALOG_OBJECT_CONSTANTS, Q52 = 1): 360 holds the subtype constant, and
-  // the envelope carries no text.
-  StoreLittle16(out + 8, 3); StoreLittle16(out + 10, kMetadataHeaderBytes);
+  // and retention-class length slots are reserved, zero. Version 3
+  // (SB_CATALOG_OBJECT_CONSTANTS, Q52 = 1): the subtype constant, and the
+  // envelope carries no text. Version 4 (SB_CATALOG_METADATA_HEADER_V4):
+  // nine references, 352 bytes; see the layout above.
+  StoreLittle16(out + 8, kMetadataHeaderVersion); StoreLittle16(out + 10, kMetadataHeaderBytes);
   StoreLittle32(out + 12, static_cast<u32>(result.bytes.size()));
   StoreLittle16(out + 16, static_cast<u16>(value.authority_scope));
   StoreLittle16(out + 18, static_cast<u16>(value.lifecycle));
@@ -676,14 +697,9 @@ CatalogMetadataVersionCodecResult EncodeCatalogMetadataVersion(const CatalogMeta
   for (std::size_t i = 0; i < kMetadataCounters.size(); ++i)
     StoreLittle64(out + 32 + 8 * i, view.*kMetadataCounters[i]);
   for (std::size_t i = 0; i < kMetadataReferences.size(); ++i) {
-    if (!kMetadataReferences[i]) {  // SB_CATALOG_NO_NAME_REFERENCE: reserved, zero
-      std::fill(out + 96 + 16 * i, out + 112 + 16 * i, byte{0});
-      out[272 + i] = 0;
-      continue;
-    }
     const auto& id = view.*kMetadataReferences[i];
-    std::copy(id.value.bytes.begin(), id.value.bytes.end(), out + 96 + 16 * i);
-    out[272 + i] = static_cast<byte>(id.kind);
+    std::copy(id.value.bytes.begin(), id.value.bytes.end(), out + kMetadataReferenceBytesAt + 16 * i);
+    out[kMetadataReferenceKindsAt + i] = static_cast<byte>(id.kind);
   }
   auto* nested=out+kMetadataHeaderBytes;
   WriteTypedRecord(view.record,nested);
@@ -692,15 +708,15 @@ CatalogMetadataVersionCodecResult EncodeCatalogMetadataVersion(const CatalogMeta
     CatalogMetadataVersionCodecResult failure;
     failure.status=definition.status;failure.diagnostic=definition.diagnostic;return failure;
   }
-  std::copy(definition.digest.begin(), definition.digest.end(), out + 288);
-  StoreLittle32(out + 356, static_cast<u32>(inner_size));
-  StoreLittle32(out + 360, static_cast<u32>(value.object_subtype));
+  std::copy(definition.digest.begin(), definition.digest.end(), out + kMetadataDefinitionDigestAt);
+  StoreLittle32(out + kMetadataInnerSizeAt, static_cast<u32>(inner_size));
+  StoreLittle32(out + kMetadataSubtypeAt, static_cast<u32>(value.object_subtype));
   const auto digest = scratchbird::core::hash::ComputeSha256Digest(result.bytes);
   if (!digest.ok()) {
     CatalogMetadataVersionCodecResult failure;
     failure.status = digest.status; failure.diagnostic = digest.diagnostic; return failure;
   }
-  std::copy(digest.digest.begin(), digest.digest.end(), out + 320);
+  std::copy(digest.digest.begin(), digest.digest.end(), out + kMetadataVersionDigestAt);
   result.status = CodecOkStatus(); result.record = value; result.definition_sha256 = definition.digest;
   return result;
 }
@@ -712,21 +728,23 @@ CatalogMetadataVersionViewResult DecodeCatalogMetadataVersionView(std::span<cons
   const auto invalid=[&](const char* detail) { return failure(MetadataViewError(detail)); };
   if(bytes.size()<kMetadataHeaderBytes || bytes.size()>kMetadataMaxBytes)return invalid("size_invalid");
   const auto* in=bytes.data();
-  if(std::memcmp(in,"SBCMV001",8) || LoadLittle16(in+8)!=3 ||
+  // A version-3 (384-byte) envelope fails here: header_invalid (Q261, no migration).
+  if(std::memcmp(in,"SBCMV001",8) || LoadLittle16(in+8)!=kMetadataHeaderVersion ||
       LoadLittle16(in+10)!=kMetadataHeaderBytes || LoadLittle32(in+12)!=bytes.size())
     return invalid("header_invalid");
-  const auto inner_size=LoadLittle32(in+356),subtype=LoadLittle32(in+360);
-  // 352 and 364 (version 1's trace-key and retention-class lengths) are reserved;
-  // 360 is the subtype constant.
-  if(LoadLittle32(in+352)!=0 || LoadLittle32(in+364)!=0 || subtype>0xffffu ||
+  const auto inner_size=LoadLittle32(in+kMetadataInnerSizeAt),subtype=LoadLittle32(in+kMetadataSubtypeAt);
+  // The two reserved u32 slots (version 1's trace-key and retention-class
+  // lengths) are zero; the subtype is a constant.
+  if(LoadLittle32(in+kMetadataReservedAAt)!=0 || LoadLittle32(in+kMetadataReservedBAt)!=0 || subtype>0xffffu ||
       static_cast<u64>(kMetadataHeaderBytes)+inner_size!=bytes.size())
     return invalid("length_invalid");
   constexpr std::array<byte,32> zero{};
   const scratchbird::core::hash::HashDigestSegment parts[]{
-      {in,320},{zero.data(),zero.size()},{in+352,bytes.size()-352}};
+      {in,kMetadataVersionDigestAt},{zero.data(),zero.size()},
+      {in+kMetadataReservedAAt,bytes.size()-kMetadataReservedAAt}};
   const auto digest=scratchbird::core::hash::ComputeSha256DigestPartsNative(parts,3);
   if(!digest.ok())return failure(MetadataHashError(digest.error));
-  if(!std::equal(digest.digest.begin(),digest.digest.end(),in+320))
+  if(!std::equal(digest.digest.begin(),digest.digest.end(),in+kMetadataVersionDigestAt))
     return invalid("version_digest_mismatch");
   CatalogMetadataVersionView value;
   value.authority_scope=static_cast<CatalogAuthorityScope>(LoadLittle16(in+16));
@@ -734,16 +752,11 @@ CatalogMetadataVersionViewResult DecodeCatalogMetadataVersionView(std::span<cons
   value.status=static_cast<CatalogObjectStatus>(LoadLittle16(in+20));
   value.visibility=static_cast<CatalogVisibilityClass>(LoadLittle16(in+22));
   for(std::size_t i=0;i<kMetadataCounters.size();++i)value.*kMetadataCounters[i]=LoadLittle64(in+32+8*i);
-  // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): the retired name slot is
-  // zero; a record carrying a name reference there is refused (no migration,
-  // Q164 = 1).
-  if(in[272+kRetiredNameReference]!=0||
-      !std::all_of(in+96+16*kRetiredNameReference,in+112+16*kRetiredNameReference,[](byte b){return b==0;}))
-    return invalid("retired_name_reference");
+  // SB_CATALOG_NO_NAME_REFERENCE (Q248 = 1; Q261 = 1): version 4 has no name
+  // slot at all (was: a reserved-zero slot 3, refused retired_name_reference).
   for(std::size_t i=0;i<kMetadataReferences.size();++i) {
-    if(!kMetadataReferences[i])continue;
-    auto& id=value.*kMetadataReferences[i];id.kind=static_cast<UuidKind>(in[272+i]);
-    std::copy(in+96+16*i,in+112+16*i,id.value.bytes.begin());
+    auto& id=value.*kMetadataReferences[i];id.kind=static_cast<UuidKind>(in[kMetadataReferenceKindsAt+i]);
+    std::copy(in+kMetadataReferenceBytesAt+16*i,in+kMetadataReferenceBytesAt+16*(i+1),id.value.bytes.begin());
   }
   value.object_subtype=static_cast<CatalogObjectSubtype>(subtype);
   const auto* nested=in+kMetadataHeaderBytes;
@@ -760,8 +773,9 @@ CatalogMetadataVersionViewResult DecodeCatalogMetadataVersionView(std::span<cons
   };
   // Common/nested fields have exact canonical encodings. These are the only
   // remaining bytes the old re-encode comparison could reject.
-  if(!std::equal(definition.digest.begin(),definition.digest.end(),in+288) ||
-      !zeros(in+24,in+32) || !zeros(in+283,in+288) || !zeros(in+368,in+384))
+  if(!std::equal(definition.digest.begin(),definition.digest.end(),in+kMetadataDefinitionDigestAt) ||
+      !zeros(in+24,in+32) || !zeros(in+kMetadataReferenceKindsAt+kMetadataReferences.size(),in+kMetadataDefinitionDigestAt) ||
+      !zeros(in+kMetadataReservedBAt+4,in+kMetadataHeaderBytes))
     return invalid("digest_reserved_or_canonical_mismatch");
   return {value,definition.digest,{}};
 }
@@ -783,7 +797,6 @@ CatalogMetadataVersion MaterializeCatalogMetadataVersion(const CatalogMetadataVe
       v.owner_uuid,
       v.creator_transaction_uuid,
       v.retired_transaction_uuid,
-      v.name_vector_uuid,
       v.security_policy_uuid,
       v.dependency_group_uuid,
       v.storage_binding_uuid,

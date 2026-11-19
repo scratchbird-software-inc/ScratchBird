@@ -188,8 +188,7 @@ c::CatalogMetadataVersion Metadata(const c::CatalogCommentRecord& r, const std::
   m.record.header.row_uuid = {p::UuidKind::row, f::Id(701)};
   m.record.header.parent_uuid = {p::UuidKind::object, r.target_object_uuid};
   m.object_subtype = c::CatalogObjectSubtype::localized_comment;
-  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
-  m.name_vector_uuid = {};
+  /* SB_CATALOG_NO_NAME_REFERENCE (Q248 = 1; Q261(b) = 1, 2026-11-18): no default_name_uuid, no name_vector_uuid */
   return m;
 }
 bool Valid(const c::CatalogMetadataVersion& m) {
@@ -216,10 +215,8 @@ void MetadataBinding() {
   x = m;
   x.object_subtype = c::CatalogObjectSubtype::name_entry;
   Check(!Valid(x), "another subtype refused");
-  x = m;
-  /* SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1): no default_name_uuid */
-  x.name_vector_uuid = {p::UuidKind::object, f::Id(704)};
-  Check(!Valid(x), "a named comment refused (comment rows have no name)");
+  // (Was: a comment metadata carrying a name_vector_uuid refused; no metadata
+  // carries a name reference now, Q261(b) = 1, 2026-11-18.)
   x = m;
   x.record.payload = Golden(Value(), 65542);
   Check(!Valid(x), "the localized_comment subtype with another payload schema refused");

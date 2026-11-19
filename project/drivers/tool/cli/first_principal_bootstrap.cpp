@@ -205,17 +205,15 @@ void PrintFirstPrincipalBootstrapUsage(const char* program, std::ostream& output
               "principal.\n\n";
     output << "Usage:\n  " << program
            << " bootstrap <first-principal> <database-path> --mode=embedded"
-              " --platform-profile <file> --resource-seed-pack-root <dir>"
-              " --policy-seed-pack-root <dir> --metric-policy-defaults <file>"
-              " --metric-policy-families <file> --total-pages <n>"
-              " --service-principal <name> [--database-name <name>]"
-              " [--language <tag>] [--password-stdin]\n\n";
+              " --platform-profile <file> --policy-seed-pack-root <dir>"
+              " --total-pages <n> --service-principal <name>"
+              " [--database-name <name>] [--language <tag>] [--password-stdin]\n\n";
     output << "The database is created in the native single-file format: --total-pages"
               " sizes the file, --database-name is the database's name (data; default:"
               " the file stem), --language its catalog language (default en), and"
               " --service-principal names the internal service principal, whose"
-              " password is read after the first principal's (second line with"
-              " --password-stdin).\n";
+              " credential the engine derives and keeps inside the database (it is"
+              " never printed; agents authenticate only from inside the engine).\n";
     output << "This is an explicit embedded, root/Administrator-authorized "
               "bootstrap operation. It does not connect to a listener, manager, "
               "or parser and it never auto-creates a database during an ordinary "
@@ -237,10 +235,7 @@ FirstPrincipalBootstrapParseResult ParseCreationArgs(
     std::vector<std::string> positional_arguments;
     bool mode_seen = false;
     bool platform_profile_seen = false;
-    bool resource_seed_pack_seen = false;
     bool policy_seed_pack_seen = false;
-    bool metric_defaults_seen = false;
-    bool metric_families_seen = false;
     bool password_stdin_seen = false;
     bool option_seen = false;
     bool database_name_seen = false;
@@ -288,39 +283,11 @@ FirstPrincipalBootstrapParseResult ParseCreationArgs(
             option_seen = true;
             continue;
         }
-        if (isExactOption(token, "--resource-seed-pack-root")) {
-            if (resource_seed_pack_seen ||
-                !readRequiredOptionValue(index, argc, argv, token,
-                                         "--resource-seed-pack-root",
-                                         &result.request.resource_seed_pack_root)) {
-                return parseFailure(kBootstrapInputInvalid);
-            }
-            resource_seed_pack_seen = true;
-            option_seen = true;
-            continue;
-        }
-        if (isExactOption(token, "--metric-policy-defaults")) {
-            if (metric_defaults_seen ||
-                !readRequiredOptionValue(index, argc, argv, token,
-                                         "--metric-policy-defaults",
-                                         &result.request.metric_policy_defaults_path)) {
-                return parseFailure(kBootstrapInputInvalid);
-            }
-            metric_defaults_seen = true;
-            option_seen = true;
-            continue;
-        }
-        if (isExactOption(token, "--metric-policy-families")) {
-            if (metric_families_seen ||
-                !readRequiredOptionValue(index, argc, argv, token,
-                                         "--metric-policy-families",
-                                         &result.request.metric_policy_families_path)) {
-                return parseFailure(kBootstrapInputInvalid);
-            }
-            metric_families_seen = true;
-            option_seen = true;
-            continue;
-        }
+        // SB_CLI_NATIVE_BOOTSTRAP_GRAMMAR (owner Q268 = 1, 2026-11-18):
+        // --resource-seed-pack-root, --metric-policy-defaults and
+        // --metric-policy-families are gone from the grammar; like any other
+        // unknown option they fall through to BOOTSTRAP.OPTION_NOT_ALLOWED
+        // below. (Was: each accepted once, its value stored and unused.)
         // SB_CLI_NATIVE_BOOTSTRAP (owner Q254 = 1, 2026-11-16): the native
         // create's inputs. Each at most once; values never start with '-'.
         if (isExactOption(token, "--database-name")) {
@@ -399,7 +366,7 @@ FirstPrincipalBootstrapParseResult ParseCreationArgs(
     if (!mode_seen) {
         return parseFailure(kBootstrapEmbeddedModeRequired);
     }
-    if ((service_profile_required && !platform_profile_seen) || !resource_seed_pack_seen ||
+    if ((service_profile_required && !platform_profile_seen) ||
         !policy_seed_pack_seen || positional_arguments.size() != 2) {
         return parseFailure(kBootstrapInputInvalid);
     }
@@ -447,10 +414,7 @@ FirstPrincipalBootstrapResult RunFirstPrincipalBootstrap(
         (service_handoff && request.platform_profile_path.empty()) ||
         (current_process && !request.platform_profile_path.empty()) ||
         !validBootstrapPrincipalName(request.principal_name) ||
-        request.database_path.empty() ||
-        request.resource_seed_pack_root.empty() || request.policy_seed_pack_root.empty() ||
-        request.metric_policy_defaults_path.empty() ||
-        request.metric_policy_families_path.empty()) {
+        request.database_path.empty() || request.policy_seed_pack_root.empty()) {
         return bootstrapFailure(kBootstrapInputInvalid);
     }
     if (std::filesystem::exists(request.database_path)) {
@@ -506,35 +470,13 @@ FirstPrincipalBootstrapResult RunFirstPrincipalBootstrap(
     }
     clearSensitive(password);
 
-    // SEARCH_KEY: SB_CLI_NATIVE_BOOTSTRAP (owner Q254 = 1, 2026-11-16). The
-    // internal service principal's password, by the same protected path (never
-    // argv or the environment): the second stdin line, or a second prompt.
-    std::string service_password;
-    if (request.password_source == FirstPrincipalBootstrapPasswordSource::kProtectedStdin) {
-        if (!std::getline(input, service_password)) {
-            clearSensitive(credential_fingerprint);
-            return bootstrapFailure(kBootstrapInputInvalid);
-        }
-    } else {
-        service_password = readProtectedPassword(
-            input, output, "Enter password for service principal " + request.service_principal_name + ": ");
-        std::string confirmation = readProtectedPassword(input, output, "Confirm service password: ");
-        const bool matches = service_password == confirmation;
-        clearSensitive(confirmation);
-        if (!matches) {
-            clearSensitive(service_password);
-            clearSensitive(credential_fingerprint);
-            return bootstrapFailure("BOOTSTRAP.SERVICE_PASSWORD_POLICY_INVALID");
-        }
-    }
-    std::string service_fingerprint;
-    if (!BootstrapPasswordSecretValid(service_password) ||
-        !DeriveBootstrapPasswordVerifier(service_password, &service_fingerprint)) {
-        clearSensitive(service_password);
-        clearSensitive(credential_fingerprint);
-        return bootstrapFailure("BOOTSTRAP.SERVICE_PASSWORD_POLICY_INVALID");
-    }
-    clearSensitive(service_password);
+    // SEARCH_KEY: SB_CLI_MINTED_SERVICE_PASSWORD (owner Q267 = 2, 2026-11-18;
+    // Q274, 2026-11-19). The internal service principal's credential is
+    // derived by the engine's native create and kept inside the database (never
+    // returned); this command reads nothing for it and derives nothing. (Was: SB_CLI_NATIVE_BOOTSTRAP, Q254 = 1, a
+    // second protected password - the second stdin line or a second prompt -
+    // whose verifier went to the engine as
+    // internal_service_credential_fingerprint:, which the engine now refuses.)
 
     namespace api = scratchbird::engine::internal_api;
     namespace memory = scratchbird::core::memory;
@@ -543,7 +485,6 @@ FirstPrincipalBootstrapResult RunFirstPrincipalBootstrap(
         memory::DefaultLocalEngineMemoryPolicy(), "sbcli.first_principal_bootstrap");
     if (!configured_memory.ok()) {
         clearSensitive(credential_fingerprint);
-        clearSensitive(service_fingerprint);
         return bootstrapFailure(kBootstrapInputInvalid);
     }
     // The language tag is adapted to its catalog_language constant here, at
@@ -551,16 +492,16 @@ FirstPrincipalBootstrapResult RunFirstPrincipalBootstrap(
     const auto language = scratchbird::core::catalog::CatalogLanguageForTag(request.language_tag);
     if (!language) {
         clearSensitive(credential_fingerprint);
-        clearSensitive(service_fingerprint);
         return bootstrapFailure("BOOTSTRAP.LANGUAGE_UNKNOWN");
     }
 
     // The native create through the engine API. This command stands in for the
     // hosting server: the policy pack root it was given is the server's
     // configuration (owner Q104 = 2), and its own invocation is the security
-    // context (Q95). The engine mints every identity. --resource-seed-pack-root
-    // and the metric policy files have no native counterpart and are not
-    // passed. (Was: CreateDatabaseFile, legacy SBDBV001, with those inputs.)
+    // context (Q95). The engine mints every identity and the service
+    // principal's password (Q267 = 2). (Was: CreateDatabaseFile, legacy
+    // SBDBV001, with resource-seed and metric-policy inputs; then Q254, the
+    // service credential fingerprint from a second typed password.)
     api::EngineCreateLifecycleRequest create_request;
     create_request.context.request_id = "sbcli.first_principal_bootstrap";
     create_request.context.database_path = request.database_path;
@@ -576,11 +517,9 @@ FirstPrincipalBootstrapResult RunFirstPrincipalBootstrap(
     create_request.option_envelopes.push_back("bootstrap_principal_name:" + request.principal_name);
     create_request.option_envelopes.push_back("bootstrap_credential_fingerprint:" + credential_fingerprint);
     create_request.option_envelopes.push_back("internal_service_principal_name:" + request.service_principal_name);
-    create_request.option_envelopes.push_back("internal_service_credential_fingerprint:" + service_fingerprint);
     const auto created = api::EngineCreateLifecycle(create_request);
     for (auto& option : create_request.option_envelopes) clearSensitive(option);
     clearSensitive(credential_fingerprint);
-    clearSensitive(service_fingerprint);
     if (!created.ok) {
         return bootstrapFailure(created.diagnostics.empty() || created.diagnostics.front().code.empty()
                                     ? std::string(kBootstrapInputInvalid)
@@ -617,6 +556,12 @@ FirstPrincipalBootstrapResult RunFirstPrincipalBootstrap(
         }
         return false;
     };
+    // SB_CLI_MINTED_SERVICE_PASSWORD (Q274): the receipt carries no service
+    // password (was: 16 bytes copied out here); a receipt that still did would
+    // be a defect, so its presence is refused.
+    for (const auto& row : created.result_shape.rows)
+        for (const auto& field : row.fields)
+            if (field.first == "service_principal_password") return bootstrapFailure("BOOTSTRAP.CREATE_RECEIPT_INCOMPLETE");
     FirstPrincipalBootstrapResult result;
     if (!receipt_uuid("database_uuid", &result.database_uuid) ||
         !receipt_uuid("filespace_uuid", &result.filespace_uuid) ||
@@ -625,6 +570,7 @@ FirstPrincipalBootstrapResult RunFirstPrincipalBootstrap(
         !receipt_uuid("construction_transaction_uuid", &result.construction_transaction_uuid)) {
         return bootstrapFailure("BOOTSTRAP.CREATE_RECEIPT_INCOMPLETE");
     }
+    result.service_principal_provisioned = true;
     result.ok = true;
     result.creation_handoff_ready = true;
     result.committed_with_warning = false;
@@ -667,6 +613,10 @@ int RunFirstPrincipalBootstrapCli(
     output << "filespace_uuid=" << result.filespace_uuid << "\n";
     output << "bootstrap_principal_uuid=" << result.principal_uuid << "\n";
     output << "service_principal_uuid=" << result.service_principal_uuid << "\n";
+    // SB_CLI_MINTED_SERVICE_PASSWORD (owner Q274, 2026-11-19): no password is
+    // printed; the principal's credential is derived and kept inside the
+    // database. (Was: service_principal_password=<32 hex>, once.)
+    if (result.service_principal_provisioned) output << "service_principal_credential=provisioned_internal_only\n";
     output << "construction_transaction_uuid=" << result.construction_transaction_uuid << "\n";
     output << "bootstrap_scope=initial_local_embedded_database_security_tree\n";
     output << "database_format=native\n"

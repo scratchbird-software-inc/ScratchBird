@@ -66,17 +66,13 @@ struct BootstrapDefinitionMetadataInput {
   // row_uuid is therefore not a cosmetic omission: every definition would carry
   // nil and the request would be refused as duplicate_identity.
   core::platform::Uuid row_uuid;
-  // The two name identities this object's name half will carry.
-  // PreflightLocalNamedCreationRecord reads them off the DEFINITION metadata
-  // and requires the supplied name vector to agree with both
-  // (catalog_named_creation.cpp: v.name_vector_uuid == d.name_vector_uuid and
-  // v.default_name_entry_uuid == d.default_name_uuid). They are therefore part
-  // [SB_CATALOG_NO_NAME_REFERENCE, owner Q248 = 1, 2026-11-16: the definition
-  // now carries name_vector_uuid only; default_name_entry_uuid is the identity
-  // the default entry is created with, checked by the preflight against the
-  // unit's entry marked default_for_object.]
-  // of a complete definition envelope, not part of the name half: an envelope
-  // without them encodes cleanly and is refused as invalid_names later.
+  // The two name identities this object's name half is created with: the
+  // vector row's and the default entry's object identities. [SB_CATALOG_NO_
+  // NAME_REFERENCE, owner Q248 = 1, 2026-11-16, Q261(b) = 1, 2026-11-18: the
+  // definition metadata carries NEITHER (names point to objects, never the
+  // reverse); the preflight finds the vector by its object_uuid and the
+  // default by the entry marked default_for_object. (Was: default_name_uuid
+  // and name_vector_uuid read off the definition and required to agree.)]
   core::platform::Uuid name_vector_uuid;
   core::platform::Uuid default_name_entry_uuid;
   core::catalog::CatalogRecordKind kind = core::catalog::CatalogRecordKind::config_profile;
@@ -262,11 +258,10 @@ inline BootstrapDefinitionMetadataResult BuildBootstrapDefinitionMetadata(
       ? (input.root_parent_uuid.is_nil() ? p::TypedUuid{} : p::TypedUuid{p::UuidKind::object, input.root_parent_uuid})
       : p::TypedUuid{p::UuidKind::object, input.owning_schema_uuid};
   m.record.payload.clear();  // By contract: the assembler fills this.
-  // Read by PreflightLocalNamedCreationRecord against the supplied name vector.
-  m.name_vector_uuid = {p::UuidKind::object, input.name_vector_uuid};
-  // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16): the definition
-  // holds no name reference; default_name_entry_uuid is only the identity
-  // the entry is given below. (Was: m.default_name_uuid set from it.)
+  // SB_CATALOG_NO_NAME_REFERENCE (owner Q248 = 1, 2026-11-16; Q261(b) = 1,
+  // 2026-11-18): the definition holds no name reference; name_vector_uuid and
+  // default_name_entry_uuid are only the identities the name rows are given
+  // below. (Was: m.default_name_uuid, then m.name_vector_uuid set from them.)
 
   m.authority_scope = c::CatalogAuthorityScope::local;
   m.visibility = c::CatalogVisibilityClass::internal_only;
@@ -498,7 +493,7 @@ inline BootstrapNamedCreationUnitResult BuildBootstrapNamedCreationUnit(
   // Read back from the envelope rather than re-deriving from the input, so the
   // two halves cannot disagree about a kind label.
   const auto object = unit.definition.record.header.object_uuid;
-  const auto name_vector = unit.definition.name_vector_uuid;
+  const p::TypedUuid name_vector{p::UuidKind::object, input.definition.name_vector_uuid};  // Q261(b) = 1: from the input, not the definition
   const p::TypedUuid name_entry{p::UuidKind::object, input.definition.default_name_entry_uuid};
   const auto owning_schema = unit.definition.owning_schema_uuid;
   const auto schema_as_object = unit.definition.record.header.parent_uuid;
