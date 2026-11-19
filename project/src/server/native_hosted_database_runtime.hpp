@@ -7,7 +7,9 @@
 #include "native_local_service_agent_configuration.hpp"
 #include "process_crypto_owner.hpp"
 #include "hosted_process_admission.hpp"
+#include <array>
 #include <optional>
+#include <openssl/crypto.h>
 #include "native_owned_checkpoint_writer.hpp"
 #include "native_catalog_cohort_lease_reader.hpp"
 #include "engine/internal_api/security/native_local_service_authentication.hpp"
@@ -118,6 +120,40 @@ enum class NativeBootstrapLineagePolicy : std::uint8_t {
   accept_production_lineage
 };
 
+// SEARCH_KEY: SB_NATIVE_SERVICE_IDENTITY_DISCOVERY. What the opened file says
+// about its L5 service principal; see NativeHostedDatabaseRuntime::
+// ReadStartupServiceIdentity.
+enum class NativeServiceIdentityError {
+  none, invalid_request, wrong_owner, busy, closed, preparation_failure,
+  custody_failure, crypto_failure, memory_failure,
+  configuration_source_failure, binding_absent, binding_ambiguous, binding_invalid,
+  binding_not_active, external_authority_required, credential_reference_absent,
+  security_source_failure, principal_absent, principal_wrong_family,
+  principal_not_active, principal_not_service, principal_credential_absent,
+  seed_absent, password_inadmissible
+};
+struct NativeServiceIdentity {
+  core::platform::Uuid database_uuid, runtime_binding_uuid, service_principal_uuid,
+      provider_uuid, credential_reference_uuid;
+  std::uint64_t runtime_binding_generation = 0;
+  // SB_AGENT_PASSWORD_SEED: a secret; erased on destruction.
+  std::array<core::platform::byte, 16> password_seed{};
+  NativeServiceIdentity() = default;
+  NativeServiceIdentity(const NativeServiceIdentity&) = default;
+  NativeServiceIdentity& operator=(const NativeServiceIdentity&) = default;
+  ~NativeServiceIdentity() { OPENSSL_cleanse(password_seed.data(), password_seed.size()); }
+};
+struct NativeServiceIdentityResult {
+  NativeServiceIdentityError error = NativeServiceIdentityError::invalid_request;
+  engine::internal_api::NativeRuntimeSecurityReadError security_error =
+      engine::internal_api::NativeRuntimeSecurityReadError::none;
+  storage::database::NativePinnedCatalogReadError source_error =
+      storage::database::NativePinnedCatalogReadError::none;
+  NativeHostedCustodyError custody_error = NativeHostedCustodyError::none;
+  std::optional<NativeServiceIdentity> identity;
+  bool ok() const noexcept { return error == NativeServiceIdentityError::none && identity.has_value(); }
+};
+
 // Owning native host resource path. The original route, selected inode,
 // complete writer cohort, database crypto and read preparation use the actual
 // process budget. A successful Open establishes physical custody only; it does
@@ -159,6 +195,20 @@ class NativeHostedDatabaseRuntime final {
       std::shared_ptr<DatabaseOwnershipLock> held_ownership = nullptr,
       NativeBootstrapLineagePolicy =
           NativeBootstrapLineagePolicy::native_only) noexcept;
+  // SEARCH_KEY: SB_NATIVE_DATABASE_LOOP_OPEN (thin-slice S3b). The open for the
+  // engine-owned database-loop thread. The process-to-database admission
+  // (HostedProcessAdmission::Reservation) is thread-affine and lives on the
+  // thread that took it (StartHostedEngine's caller, which also commits it);
+  // the loop cannot even test it without terminating. So the caller states, by
+  // calling this entry, that it holds that admission for the whole open and
+  // the runtime's life, and the runtime borrows it exactly as
+  // OpenUnderHeldAdmission does. `held_ownership` is required: this entry
+  // adopts the caller's already-held native ownership and never acquires one.
+  // Native lineage only (no production-lineage probe).
+  static NativeHostedRuntimeOpenResult OpenAdmissionHeldByCaller(ServerProcessCryptoOwner&,
+      const DatabaseOwnershipRequest&, NativeHostedRuntimeLimits,
+      std::vector<std::unique_ptr<storage::disk::FileDevice>>&,
+      std::shared_ptr<DatabaseOwnershipLock> held_ownership) noexcept;
   static NativeHostedRuntimeCloseResult Close(std::shared_ptr<NativeHostedDatabaseRuntime>) noexcept;
  private:
   // Shared body. Owns the reservation when Open reserved it, borrows when the
@@ -343,6 +393,21 @@ class NativeHostedDatabaseRuntime final {
   static CredentialRead ReadStartupCredentials(std::shared_ptr<NativeHostedDatabaseRuntime>,
       NativeLocalServiceStartupCredentialsRequest, std::shared_ptr<StartupCredentialSource>,
       const core::memory::MemoryTag&, const core::memory::ScopedProtectedBuffer&);
+
+  // SEARCH_KEY: SB_NATIVE_SERVICE_IDENTITY_DISCOVERY (thin-slice S3b, owner
+  // Q281 + Q274). The server has no create receipt: the L5 service principal,
+  // the runtime authority binding that names it, its provider and credential
+  // reference, and the principal's stored password seed are all read from the
+  // opened file. Reads the configuration relation (kind 2 role 5) for the ONE
+  // committed, active, database-local runtime authority binding, then the
+  // committed security rows for the principal it names, through page zero's
+  // fixed roots under a custody operation that is released before this
+  // returns. Nothing is written. The seed is a secret: the result cleanses it.
+  // No binding, more than one, a binding that is not database-local, a
+  // principal that is absent, inactive or of the wrong family, or a principal
+  // row without a seed are each a distinct error.
+  static NativeServiceIdentityResult ReadStartupServiceIdentity(std::shared_ptr<NativeHostedDatabaseRuntime>,
+      storage::database::NativeFixedRootMemoryLimits) noexcept;
 
   // Transfer the exact initial writer reservation into the private comparison
   // owner, then retire its selected device guards. Retained catalog/grant views,

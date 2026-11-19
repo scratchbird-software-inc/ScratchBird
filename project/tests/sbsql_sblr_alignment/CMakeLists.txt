@@ -4183,6 +4183,33 @@ if(SB_STRACE_EXECUTABLE AND SB_BUILD_PUBLIC_STANDALONE_OUTPUT AND Python3_EXECUT
     LABELS "sbsql_sblr_alignment;native_storage;legacy_cut;database_lifecycle;strace"
     TIMEOUT 900)
 endif()
+# SEARCH_KEY: SB_NATIVE_SERVING_TEST (thin-slice S3b, plan 38; owner Q236/Q237,
+# Q274/Q281). The server opens a natively created database and serves it to
+# "serving": read-only verification on the database loop thread, L5's
+# credential derived inside the server and authenticated, Restart (S3d) not
+# run, nothing written. Each open runs in its own child process (the process
+# gate binds after one open). The Python half runs a serve child under strace.
+add_executable(sbsql_sblr_alignment_native_serving native_serving_test.cpp)
+target_compile_features(sbsql_sblr_alignment_native_serving PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_serving PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+  ${PROJECT_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(sbsql_sblr_alignment_native_serving PRIVATE
+  sb_server_core sb_engine sb_engine_sblr sb_engine_internal_api sb_storage_database OpenSSL::Crypto)
+target_compile_definitions(sbsql_sblr_alignment_native_serving PRIVATE
+  SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password")
+add_test(NAME sbsql_sblr_alignment_native_serving COMMAND sbsql_sblr_alignment_native_serving)
+set_tests_properties(sbsql_sblr_alignment_native_serving PROPERTIES
+  LABELS "sbsql_sblr_alignment;native_storage;native_serving;database_lifecycle;database_ownership;binary_uuid"
+  TIMEOUT 1800)
+if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
+  add_test(NAME sbsql_sblr_alignment_native_serving_strace
+    COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_serving_strace.py"
+      --test-bin $<TARGET_FILE:sbsql_sblr_alignment_native_serving>)
+  set_tests_properties(sbsql_sblr_alignment_native_serving_strace PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;native_serving;strace"
+    TIMEOUT 1800)
+endif()
 # SB_NATIVE_FIXED_ROOT_READ (drift removal C3d): owned-source adoption and the
 # native writer over a production create, with real OS/provider fault sweeps.
 add_executable(sbsql_sblr_alignment_native_owned_adoption

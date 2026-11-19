@@ -35,6 +35,20 @@ bool ServerProcessCryptoOwner::SameOwner() const noexcept {
   // Check process before touching any possibly inherited synchronization.
   return process_id_==ProcessId()&&thread_id_==std::this_thread::get_id();
 }
+bool ServerProcessCryptoOwner::SameOwnerOrNativeDelegate() const noexcept {
+  if(process_id_!=ProcessId())return false;
+  const auto me=std::this_thread::get_id();
+  return thread_id_==me||native_delegate_.load(std::memory_order_acquire)==me;
+}
+bool ServerProcessCryptoOwner::DelegateNativeDatabaseThread(std::thread::id delegate) noexcept {
+  if(!SameOwner()||delegate==std::thread::id{}||delegate==thread_id_)return false;
+  std::thread::id none{};
+  return native_delegate_.compare_exchange_strong(none,delegate,std::memory_order_acq_rel);
+}
+void ServerProcessCryptoOwner::ClearNativeDatabaseDelegate() noexcept {
+  if(process_id_!=ProcessId())return;
+  native_delegate_.store(std::thread::id{},std::memory_order_release);
+}
 ServerProcessCryptoOwner::~ServerProcessCryptoOwner() {
   if(!CloseAfterUserDrain().ok())std::terminate();
 }
@@ -95,7 +109,7 @@ ProcessCryptoStartResult ServerProcessCryptoOwner::Start(
 NativeBootstrapMemoryResult ServerProcessCryptoOwner::AcquireNativeBootstrapResource(
     NativeBootstrapMemoryRequest input) noexcept {
   namespace m=core::memory;using E=NativeBootstrapMemoryError;
-  if(!SameOwner())return {E::wrong_owner};
+  if(!SameOwnerOrNativeDelegate())return {E::wrong_owner};
   if(acquiring_native_)return {E::busy};
   if(!installed_||provider_cleaned_)return {E::not_ready};
   if(!input.bytes||input.bytes>std::numeric_limits<core::platform::usize>::max()||
@@ -168,7 +182,7 @@ NativeDatabaseMemoryEnvelopeResult ServerProcessCryptoOwner::ConstrainNativeData
     core::platform::Uuid database, const core::catalog::CatalogMemoryConfiguration& config,
     core::platform::Uuid version) noexcept {
   namespace m=core::memory;using E=NativeDatabaseMemoryEnvelopeError;
-  if(!SameOwner())return {E::wrong_owner};
+  if(!SameOwnerOrNativeDelegate())return {E::wrong_owner};
   if(acquiring_native_)return {E::busy};
   if(!installed_||provider_cleaned_)return {E::not_ready};
   if(!m::MemorySystemUuidValid(database.bytes)||!m::MemorySystemUuidValid(config.configuration_uuid.bytes)||
@@ -282,7 +296,7 @@ NativeDatabaseAllocationBehaviorResult ServerProcessCryptoOwner::InstallNativeDa
     core::platform::Uuid database, const core::catalog::CatalogMemoryConfiguration& config,
     core::platform::Uuid version) noexcept {
   namespace m=core::memory;using E=NativeDatabaseMemoryEnvelopeError;
-  if(!SameOwner())return {E::wrong_owner};
+  if(!SameOwnerOrNativeDelegate())return {E::wrong_owner};
   if(acquiring_native_)return {E::busy};
   if(!installed_||provider_cleaned_)return {E::not_ready};
   acquiring_native_=true;
@@ -311,7 +325,7 @@ NativeDatabaseAllocationBehaviorResult ServerProcessCryptoOwner::InstallNativeDa
 bool ServerProcessCryptoOwner::HasNativeDatabaseAllocationBehavior(
     core::platform::Uuid database, const core::catalog::CatalogMemoryConfiguration& config,
     core::platform::Uuid version) const noexcept {
-  if(!SameOwner()||acquiring_native_||!installed_||provider_cleaned_)return false;
+  if(!SameOwnerOrNativeDelegate()||acquiring_native_||!installed_||provider_cleaned_)return false;
   const auto found=native_memory_envelopes_.find(database);
   if(found==native_memory_envelopes_.end()||!found->second.allocation_behavior_installed)return false;
   const auto& envelope=found->second.envelope;
@@ -321,7 +335,7 @@ bool ServerProcessCryptoOwner::HasNativeDatabaseAllocationBehavior(
 NativeDatabaseMemoryEnvelopeError ServerProcessCryptoOwner::RetireNativeDatabaseMemory(
     core::platform::Uuid database) noexcept {
   using E=NativeDatabaseMemoryEnvelopeError;
-  if(!SameOwner())return E::wrong_owner;
+  if(!SameOwnerOrNativeDelegate())return E::wrong_owner;
   if(acquiring_native_)return E::busy;
   acquiring_native_=true;
   struct Release {bool& flag;~Release(){flag=false;}} release{acquiring_native_};
@@ -343,7 +357,7 @@ NativeDatabaseMemoryEnvelopeError ServerProcessCryptoOwner::RetireNativeDatabase
 }
 core::runtime::RuntimeCryptoPoolResult ServerProcessCryptoOwner::PrepareNativeLocalPasswordAlgorithms() noexcept {
   namespace r=core::runtime;namespace h=core::hash;
-  if(!SameOwner())return {r::RuntimeCryptoPoolError::invalid_binding};
+  if(!SameOwnerOrNativeDelegate())return {r::RuntimeCryptoPoolError::invalid_binding};
   if(!installed_||provider_cleaned_)return {r::RuntimeCryptoPoolError::invalid_grant};
   if(preparing_native_password_)return {r::RuntimeCryptoPoolError::adapter_failure,h::CryptoMemoryError::busy};
   preparing_native_password_=true;
@@ -373,6 +387,7 @@ core::runtime::RuntimeCryptoPoolResult ServerProcessCryptoOwner::PrepareNativeLo
 core::runtime::RuntimeCryptoPoolResult ServerProcessCryptoOwner::CloseAfterUserDrain() noexcept {
   namespace r=core::runtime;namespace h=core::hash;
   if(!SameOwner())return {r::RuntimeCryptoPoolError::invalid_binding};
+  if(native_delegate_.load(std::memory_order_acquire)!=std::thread::id{})return {r::RuntimeCryptoPoolError::invalid_binding};
   if(acquiring_native_||preparing_native_password_||!native_memory_envelopes_.empty())
     return {r::RuntimeCryptoPoolError::adapter_failure,h::CryptoMemoryError::busy};
   try {

@@ -10,7 +10,7 @@
 
 Runs one open step of native_legacy_cut_test per process under strace and
 asserts, for a native file and for a legacy file:
-  - the step's refusal code (OPEN_NATIVE_RUNTIME_PENDING / OPEN_NOT_A_VALID_DATABASE);
+  - the step's refusal code (OPEN_NATIVE_RUNTIME_PENDING / OPEN_NATIVE_CRYPTO_OWNER_REQUIRED / OPEN_NOT_A_VALID_DATABASE);
   - 0 syscalls naming a ".sb." path (no lock file, no side file, no probe);
   - the directory afterwards is byte-identical (names, sizes, SHA-256): no
     file created, the presented file untouched;
@@ -116,7 +116,14 @@ def main():
         logs = os.path.join(work, "logs")
         os.mkdir(logs)
         for mode in ("hosted-open", "embedded-open", "abi-open", "lifecycle-open"):
-            check_step(args.test_bin, mode, native, "DATABASE.OPEN_NATIVE_RUNTIME_PENDING", logs)
+            # S3b: StartHostedEngine (server and embedded entries, no crypto
+            # owner in this harness) has its own code for a valid native file;
+            # serving is native_serving_strace.py. The engine-handle open and
+            # the lifecycle open stay pending until S3e-S3f.
+            # (Was: DATABASE.OPEN_NATIVE_RUNTIME_PENDING for all four modes.)
+            native_code = ("DATABASE.OPEN_NATIVE_CRYPTO_OWNER_REQUIRED" if mode in ("hosted-open", "embedded-open")
+                           else "DATABASE.OPEN_NATIVE_RUNTIME_PENDING")
+            check_step(args.test_bin, mode, native, native_code, logs)
             check_step(args.test_bin, mode, legacy, "DATABASE.OPEN_NOT_A_VALID_DATABASE", logs)
         tools_dir = os.path.join(work, "tools")
         os.mkdir(tools_dir)

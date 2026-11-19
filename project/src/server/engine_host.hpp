@@ -26,6 +26,9 @@
 namespace scratchbird::engine::internal_api {
 class SblrBulkImportStreamRegistry;
 }
+namespace scratchbird::server {
+class NativeDatabaseLoop;
+}
 
 namespace scratchbird::server {
 
@@ -75,6 +78,19 @@ struct HostedDatabaseSnapshot {
   // local-service session. False is a served database without them, not a
   // failure.
   bool native_hosted_runtime_open = false;
+  // SEARCH_KEY: SB_NATIVE_SERVING_OPEN (thin-slice S3b). The native database
+  // loop's state name ("serving" once the open verified it read-only); empty
+  // for a database not opened natively. native_restart_pending is true until
+  // the TIP Restart (S3d) runs: the database is verified and serving-ready but
+  // write-fenced, and nothing has written to it.
+  std::string native_serving_state;
+  bool native_restart_pending = false;
+  std::uint64_t native_verified_transactions = 0;
+  // Immutable facts the verified open published: L5's principal (read from the
+  // file, authenticated by the derived credential) and this open's engine
+  // instance. Nil for a database not opened natively.
+  scratchbird::core::platform::Uuid native_service_principal_uuid;
+  scratchbird::core::platform::Uuid native_engine_instance_uuid;
   // SEARCH_KEY: DATABASE_COMMITTED_AGENT_POLICY_READ
   // Agent policy this database committed at creation, as read back at open.
   // Reported, not yet authoritative for selection: `selected_agent_type_ids`
@@ -184,6 +200,11 @@ struct HostedDatabaseRuntime {
   // session here keeps that refusal intact. Putting it on the snapshot would
   // silently hand authority to any copy.
   InternalStartupSession internal_startup_session;
+  // SEARCH_KEY: SB_NATIVE_DATABASE_LOOP. The engine-owned thread that opened
+  // and owns this native database (runtime, custody, credential read). Closing
+  // and joining it, on destruction of this object, is what retires the native
+  // runtime on its own thread before the database ownership is released.
+  std::shared_ptr<NativeDatabaseLoop> native_loop;
 };
 
 struct HostedEngineState {

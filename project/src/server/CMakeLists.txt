@@ -165,6 +165,7 @@ if(SB_BUILD_SERVER)
     listener_orchestrator.cpp
     maintenance_coordinator.cpp
     manager_control.cpp
+    native_database_loop.cpp
     native_hosted_database_runtime.cpp
     native_hosted_open_verification.cpp
     native_local_service_agent_policy.cpp

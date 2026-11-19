@@ -17,8 +17,12 @@
 //                                                  DATABASE.CREATE_LEGACY_FORMAT_REFUSED + detail
 //  open    StartHostedEngine, sb_engine_open, the 14 lifecycle operations:
 //          a legacy, junk, short or empty file     DATABASE.OPEN_NOT_A_VALID_DATABASE (bootstrap:/page_zero:)
-//          a valid native file                     DATABASE.OPEN_NATIVE_RUNTIME_PENDING (open, attach, ABI, server)
+//          a valid native file                     DATABASE.OPEN_NATIVE_RUNTIME_PENDING (open, attach, ABI)
 //                                                  DATABASE.LIFECYCLE_OPERATION_UNAVAILABLE (the others)
+//                                                  StartHostedEngine (S3b): serves it when a process crypto
+//                                                  owner is supplied (native_serving_test); without one,
+//                                                  DATABASE.OPEN_NATIVE_CRYPTO_OWNER_REQUIRED
+//                                                  (Was: DATABASE.OPEN_NATIVE_RUNTIME_PENDING for the server)
 //          a decryption key option                 DATABASE.OPEN_DECRYPTION_UNAVAILABLE
 //          a prelocked server handoff              ARCH.DATABASE_OWNERSHIP_LEGACY_REFUSED
 // Each refusal leaves its directory exactly as it was (names, sizes, SHA-256),
@@ -421,11 +425,17 @@ void OpenRefusals(const fs::path& root) {
 
   // The server and embedded hosted open.
   {
-    const auto pending = HostedOpen(native);
-    Check(pending.starts_with(std::string(db::kOpenNativeRuntimePendingCode) + "|"),
-          "StartHostedEngine on a native file: " + pending);
+    // S3b (thin-slice, plan 38): a valid native file now goes on to the
+    // database loop, which needs the server process's crypto owner. A caller
+    // that supplies none (this harness; the embedded entry) is refused with
+    // its own code; serving with a crypto owner is native_serving_test.
+    // (Was: DATABASE.OPEN_NATIVE_RUNTIME_PENDING for both; that code now stays
+    // for the lifecycle operations and the engine-handle open, S3e-S3f.)
+    const auto no_crypto = HostedOpen(native);
+    Check(no_crypto.starts_with("DATABASE.OPEN_NATIVE_CRYPTO_OWNER_REQUIRED|no_process_crypto_owner_supplied"),
+          "StartHostedEngine on a native file, no crypto owner: " + no_crypto);
     const auto embedded = HostedOpen(native, false, true);
-    Check(embedded.starts_with(std::string(db::kOpenNativeRuntimePendingCode) + "|"),
+    Check(embedded.starts_with("DATABASE.OPEN_NATIVE_CRYPTO_OWNER_REQUIRED|embedded_native_open_not_built"),
           "StartHostedEngine (embedded) on a native file: " + embedded);
     const auto refused = HostedOpen(legacy);
     Check(refused.starts_with(std::string(db::kOpenNotAValidDatabaseCode) + "|bootstrap:"),

@@ -52,6 +52,20 @@ NativeHostedRuntimeOpenResult NativeHostedDatabaseRuntime::OpenUnderHeldAdmissio
                   std::move(held_ownership),lineage);
 }
 
+NativeHostedRuntimeOpenResult NativeHostedDatabaseRuntime::OpenAdmissionHeldByCaller(
+    ServerProcessCryptoOwner& process,
+    const DatabaseOwnershipRequest& request, NativeHostedRuntimeLimits limits,
+    std::vector<std::unique_ptr<storage::disk::FileDevice>>& secondary,
+    std::shared_ptr<DatabaseOwnershipLock> held_ownership) noexcept {
+  if (!held_ownership) {
+    NativeHostedRuntimeOpenResult out;
+    out.error=NativeHostedRuntimeError::ownership_failure;
+    return out;
+  }
+  return OpenImpl(process,request,limits,secondary,std::nullopt,
+                  std::move(held_ownership),NativeBootstrapLineagePolicy::native_only);
+}
+
 NativeHostedRuntimeOpenResult NativeHostedDatabaseRuntime::OpenImpl(
     ServerProcessCryptoOwner& process,
     const DatabaseOwnershipRequest& request, NativeHostedRuntimeLimits limits,
@@ -258,6 +272,109 @@ NativeHostedDatabaseRuntime::CredentialRead NativeHostedDatabaseRuntime::ReadSta
     if(!out.authorization_.ok())out.error=E::authorization_failure;
   }
   return out;
+}
+
+// SEARCH_KEY: SB_NATIVE_SERVICE_IDENTITY_DISCOVERY (thin-slice S3b).
+NativeServiceIdentityResult NativeHostedDatabaseRuntime::ReadStartupServiceIdentity(
+    std::shared_ptr<NativeHostedDatabaseRuntime> owner,
+    storage::database::NativeFixedRootMemoryLimits limits) noexcept {
+  using E=NativeServiceIdentityError;namespace api=engine::internal_api;namespace db=storage::database;
+  namespace c=core::catalog;
+  NativeServiceIdentityResult out;
+  if (!owner) return out;
+  if (!owner->SameOwner()) {out.error=E::wrong_owner;return out;}
+  auto& self=*owner;
+  if (self.entering_||self.read_active_) {out.error=E::busy;return out;}
+  if (self.closed_||self.writer_retired_) {out.error=E::closed;return out;}
+  if (!self.writer_adopted_||!limits.maximum_backing_bytes||!limits.maximum_verification_image_bytes||
+      limits.maximum_backing_bytes>self.limits_.writer.source.maximum_backing_bytes||
+      limits.maximum_verification_image_bytes>self.limits_.writer.source.maximum_verification_image_bytes) {
+    out.error=E::invalid_request;return out;
+  }
+  try {
+    self.entering_=true;
+    struct Leave {bool& flag;~Leave(){flag=false;}} leave{self.entering_};
+    if(!self.reading_.Matches(self.reading_.binding())) {
+      auto allocation=self.Acquire(self.limits_.writer.source.maximum_backing_bytes,NativeBootstrapMemoryKind::storage);
+      if(!allocation.ok()){out.error=E::memory_failure;return out;}
+      auto memory=storage::database::AdoptNativeStorageMemory(StorageBinding(*allocation.admission.resource),allocation.admission.resource);
+      if(!memory.ok()){out.error=E::memory_failure;return out;}
+      self.reading_=std::move(memory.memory);
+    }
+    // The two governed readers are prepared before any device guard exists and
+    // retire (reverse order) after the lease and operation below.
+    auto preparation=PrepareNativeRuntimePrincipalCredential(self.limits_.catalog,self.catalog_,self.catalog_.binding());
+    if (!preparation.ok()) {out.error=E::preparation_failure;return out;}
+    const auto id=core::uuid::IssueRuntimeIdentityV7();
+    if (!id) {out.error=E::custody_failure;return out;}
+    auto operation=NativeHostedDatabaseCustody::TryBeginOperation(self.custody_,*id);
+    out.custody_error=operation.error;
+    if (!operation.ok()) {out.error=E::custody_failure;return out;}
+    const auto crypto=self.database_crypto_.WithMemoryScope(self.crypto_binding_,[&] {
+      auto source=operation.operation.ReadFixedRootWithMemory(limits,self.reading_,self.reading_.binding());
+      if (!source.ok()) {out.error=E::custody_failure;return;}
+      const auto& lease=source.lease.source();
+      // 1. The one committed, active, database-local runtime authority binding.
+      const auto rows=db::NativeCatalogVisibilityLeaseReader::ReadCommittedSelected(lease,2,5,
+          limits.maximum_verification_image_bytes,preparation.workspace.provider);
+      if (!rows.ok()) {out.source_error=rows.error;out.error=E::configuration_source_failure;source.lease.Reset();return;}
+      const db::NativeCatalogVisibleRow* found=nullptr;
+      for (const auto& row:rows.rows) {
+        if (row.metadata.record.header.deleted||!c::CatalogRuntimeAuthorityBindingMatchesMetadata(row.metadata)) continue;
+        if (found) {out.error=E::binding_ambiguous;source.lease.Reset();return;}
+        found=&row;
+      }
+      if (!found) {out.error=E::binding_absent;source.lease.Reset();return;}
+      if (found->provisional||found->effective_lifecycle!=c::CatalogObjectLifecycle::active||
+          found->effective_status!=c::CatalogObjectStatus::active) {out.error=E::binding_not_active;source.lease.Reset();return;}
+      const auto decoded=c::DecodeCatalogRuntimeAuthorityBinding(found->metadata.record.payload);
+      if (!decoded.ok()||decoded.record->database_uuid!=self.database_||
+          decoded.record->binding_uuid!=found->metadata.record.header.object_uuid.value) {
+        out.error=E::binding_invalid;source.lease.Reset();return;
+      }
+      if (decoded.record->authority_mode!=c::RuntimeAuthorityMode::database_local) {
+        out.error=E::external_authority_required;source.lease.Reset();return;
+      }
+      if (!decoded.record->credential_reference_uuid) {out.error=E::credential_reference_absent;source.lease.Reset();return;}
+      NativeServiceIdentity identity;
+      identity.database_uuid=self.database_;
+      identity.runtime_binding_uuid=decoded.record->binding_uuid;
+      identity.runtime_binding_generation=decoded.record->generation;
+      identity.service_principal_uuid=decoded.record->service_principal_uuid;
+      identity.provider_uuid=decoded.record->provider_uuid;
+      identity.credential_reference_uuid=*decoded.record->credential_reference_uuid;
+      // 2. The principal's committed security row and its stored seed.
+      api::NativeRuntimeSecurityReadRequest request;
+      request.database_uuid=self.database_;request.runtime_binding_uuid=identity.runtime_binding_uuid;
+      request.runtime_binding_generation=identity.runtime_binding_generation;
+      request.maximum_retained_image_bytes=limits.maximum_verification_image_bytes;
+      request.catalog_selection=api::NativeRuntimeCatalogSelection::discover_selected;
+      const auto observed=api::ReadCommittedNativeRuntimeSecurityOnLease(lease,request,preparation.workspace.security);
+      using R=api::NativeRuntimeSecurityReadError;
+      if (!observed.ok()) {
+        out.security_error=observed.error;out.source_error=observed.source_error;
+        out.error=observed.error==R::principal_absent?E::principal_absent
+            :observed.error==R::principal_wrong_family?E::principal_wrong_family
+            :observed.error==R::principal_not_active?E::principal_not_active
+            :observed.error==R::principal_not_service?E::principal_not_service
+            :observed.error==R::external_authority_required?E::external_authority_required
+            :E::security_source_failure;
+        source.lease.Reset();return;
+      }
+      const c::NativeSecurityPrincipal* principal=nullptr;
+      for (const auto& record:observed.records)
+        if (record.object_uuid==identity.service_principal_uuid) principal=record.record.principal();
+      if (!principal) {out.error=E::principal_absent;source.lease.Reset();return;}
+      if (!principal->credential) {out.error=E::principal_credential_absent;source.lease.Reset();return;}
+      if (!principal->password_seed) {out.error=E::seed_absent;source.lease.Reset();return;}
+      identity.password_seed=*principal->password_seed;
+      source.lease.Reset();
+      out.identity.emplace(identity);
+      out.error=E::none;
+    });
+    if (!crypto.ok()) {out.identity.reset();out.error=E::crypto_failure;}
+    return out;
+  } catch (const std::bad_alloc&) {out.identity.reset();out.error=E::memory_failure;return out;}
 }
 
 NativeHostedRuntimeError NativeHostedDatabaseRuntime::RetainStartupObservation(

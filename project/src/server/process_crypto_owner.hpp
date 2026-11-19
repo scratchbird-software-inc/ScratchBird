@@ -5,6 +5,7 @@
 #include "diagnostics.hpp"
 #include "../core/runtime/runtime_crypto_pool_owner.hpp"
 #include "../core/catalog/catalog_memory_configuration.hpp"
+#include <atomic>
 #include <optional>
 #include <thread>
 #include <map>
@@ -89,13 +90,27 @@ class ServerProcessCryptoOwner final {
     }
     return pool_.Snapshot();
   }
-  bool installed() const noexcept {return SameOwner()&&installed_;}
+  bool installed() const noexcept {return SameOwnerOrNativeDelegate()&&installed_;}
+  // SEARCH_KEY: SB_PROCESS_CRYPTO_OWNER_NATIVE_DELEGATE (thin-slice S3b). The
+  // process owner is affine to the thread that constructed it, but the native
+  // hosted runtime is constructed, used and destroyed on ONE engine-owned
+  // database-loop thread (SB_NATIVE_DATABASE_LOOP) and calls the native-database
+  // entry points of this owner from there. The owner thread names that loop
+  // thread as the delegate for those entry points ONLY (the memory-bootstrap,
+  // envelope, allocation-behavior, algorithm-preparation and provider-scope
+  // calls). Start and CloseAfterUserDrain stay owner-thread-only, and
+  // CloseAfterUserDrain refuses while a delegate is set. Only the owner thread
+  // may set it, and only one delegate exists; the clear is callable from any
+  // thread of this process because the caller guarantees the delegate thread
+  // has been joined (nothing else could observe the value).
+  bool DelegateNativeDatabaseThread(std::thread::id delegate) noexcept;
+  void ClearNativeDatabaseDelegate() noexcept;
   // Serialized host work; callback cannot acquire a pool pointer or transfer
   // custody. The actual reservation is checked again by the private owner.
   template<class Work>
     requires std::is_same_v<std::invoke_result_t<Work>,void>
   core::runtime::RuntimeCryptoPoolResult WithProviderScope(Work&& work) {
-    if(!SameOwner())return {core::runtime::RuntimeCryptoPoolError::invalid_binding};
+    if(!SameOwnerOrNativeDelegate())return {core::runtime::RuntimeCryptoPoolError::invalid_binding};
     const auto state=pool_.Snapshot();
     if(state.observation_error!=core::hash::CryptoMemoryError::none)
       return {core::runtime::RuntimeCryptoPoolError::adapter_failure,state.observation_error};
@@ -115,8 +130,11 @@ class ServerProcessCryptoOwner final {
   bool HasNativeDatabaseAllocationBehavior(core::platform::Uuid database,
       const core::catalog::CatalogMemoryConfiguration&, core::platform::Uuid version) const noexcept;
   bool SameOwner() const noexcept;
+  bool SameOwnerOrNativeDelegate() const noexcept;
   const std::uint64_t process_id_;
   const std::thread::id thread_id_;
+  // The database-loop thread, or a default (no thread) id.
+  std::atomic<std::thread::id> native_delegate_{};
   std::optional<BootstrapDiagnosticScope> diagnostics_;
   core::memory::HierarchicalMemoryBudgetLedger ledger_;
   core::runtime::RuntimeCryptoPoolOwner pool_;

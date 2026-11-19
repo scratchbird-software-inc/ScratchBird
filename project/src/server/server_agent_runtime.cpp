@@ -927,6 +927,20 @@ bool ServerAgentRuntime::StartImpl(const ServerBootstrapConfig& config,
   if (config.embedded_direct_mode) {
     return true;
   }
+  // SEARCH_KEY: SB_NATIVE_COORDINATOR_L5_ONLY (thin-slice S3b, plan 38 Q242 = 1).
+  // A natively opened database is owned by the database loop (SB_NATIVE_DATABASE_LOOP),
+  // which opened it and authenticated L5's credential read-only. The coordinator
+  // starts NO child agents on it: not the legacy durable agent catalog load,
+  // the legacy authority source, the committed-agent binding, nor the agent
+  // principal sessions (all legacy-format readers that refuse or misread a
+  // native file); children wait for S5, which starts them as bound internal
+  // clients. Listeners still start (StartManagedListeners is the caller's next
+  // step). Looked up by database UUID, which the loop's runtime carries.
+  if (const auto native = FindHostedDatabaseRuntime(engine_state, database->database_uuid);
+      native && native->native_loop) {
+    TraceServerStartupPhase(config, "agent_runtime", "native_open_no_child_agents");
+    return true;
+  }
   if (database->database_uuid.is_nil() || database->filespace_uuid.is_nil()) {
     if (diagnostics != nullptr) {
       diagnostics->push_back(RuntimeDiagnostic(
