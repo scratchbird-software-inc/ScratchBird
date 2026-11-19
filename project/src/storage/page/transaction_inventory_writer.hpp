@@ -113,6 +113,10 @@ enum class TransactionWriterError : std::uint8_t {
   invalid_header,       // the header record was refused by its codec
   write_failed,         // a write or sync failed; the writer is now failed
   resource_exhausted,
+  // S3d (plan 38, owner Q241 = 1): Restart found committing / recovering slots
+  // and the binding asked to refuse then. Nothing was written, the writer is
+  // not failed and has not restarted; result.unresolved lists the orders.
+  unresolved_transactions,
 };
 const char* TransactionWriterErrorName(TransactionWriterError error) noexcept;
 
@@ -130,6 +134,13 @@ struct TransactionWriterBinding {
   // of the new pages' identities. Both absent: no growth (chain_full).
   std::optional<scratchbird::storage::disk::FilespaceRootReference> allocation_root;
   scratchbird::core::uuid::StandaloneUuidV7Issuer* issuer = nullptr;
+  // SB_TRANSACTION_RESTART_REFUSE_UNRESOLVED (S3d, owner Q241 = 1, 2026-11-16):
+  // Restart refuses, before any write, when a slot is committing or recovering
+  // (no current writer stores them; the outcome needs the header, which the
+  // TIP-only restart does not read). The caller opens the database restricted
+  // and reports the orders. False (the default): Restart marks the dead slots
+  // and reports the unresolved ones as it always did (existing writer tests).
+  bool refuse_restart_with_unresolved = false;
 };
 
 struct TransactionWriterOutcome {

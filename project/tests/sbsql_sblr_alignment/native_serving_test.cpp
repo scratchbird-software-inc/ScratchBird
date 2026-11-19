@@ -10,8 +10,10 @@
 // Q236/Q237, 2026-11-19 Q274/Q281). The server opens a natively created
 // database and SERVES it to "serving": read-only verification on the database
 // loop thread (sb-db-loop), L5's credential derived inside the server from the
-// file (database UUID XOR the stored seed) and authenticated, Restart (the TIP,
-// S3d) not run, nothing written.
+// file (database UUID XOR the stored seed) and authenticated. S3d (owner Q241 = 1,
+// Q284): the transaction-store Restart then runs once on the loop thread; a clean
+// file performs 0 writes and 0 syncs. (Was, S3b/S3c: Restart not run, nothing
+// written, the classification native_verified_restart_pending.)
 //
 // The process gate (HostedProcessAdmission) binds the process permanently after
 // one successful open, and the crypto owner is process-start state, so every
@@ -23,14 +25,25 @@
 //   serve-hold <path>                    serve, wait for SIGTERM, shut down
 //   serve <path> read                    S3c: serve, then served reads after custody (below), shut down
 //   memory-defaults                      prints the three in-code per-context memory defaults (Q282)
+//   fixture <path> <kind>                S3d: the WRITER leaves a crash state in a created file: active | unused |
+//                                        header | committing | recovering | prepared | limbo | committing_active |
+//                                        mixed | many (three dirty state units)
+//   serve <path> kill=N|torn=N|fail=N|failsync=N   S3d: a fault injected into the sink Restart writes through
 // With no argument the binary drives the cases for all five page sizes
-// (8K..128K) and checks: serving; the file's bytes unchanged (no write before
-// Restart) and no file made; the loop thread named sb-db-loop; L5 authenticated
+// (8K..128K) and checks: serving; the file's bytes unchanged (a clean file: no write
+// even after Restart) and no file made; the loop thread named sb-db-loop; L5 authenticated
 // as the principal the file names; a second server on the same file refused
 // (ARCH.DATABASE_MULTI_OWNER); clean shutdown on the loop thread (a wrong-thread
 // destroy terminates the process) with the flock released; a byte flipped in
 // every page-zero root page refused with a specific code, the file unchanged;
 // an L5 seed row absent or inconsistent refused with a specific code.
+// S3d (RestartCases): crash states made by the writer itself (an active slot, an unused slot below
+// Next, a header over an unused slot, a mixed inventory) are marked dead by the open, the file equal to
+// an oracle built from the old image (only the dead slots' state bytes change) and an independent TIP
+// reader sees them dead; kill -9 / torn write at every write of a three-unit Restart, then a reopen,
+// reaches the same final image; an injected write or sync failure gives the failed serving state
+// (fenced, status shows it, a reopen recovers); committing / recovering slots open RESTRICTED with a
+// specific code and write nothing; prepared / limbo slots are in doubt (reported, left alone).
 // The strace half (0 ".sb." syscalls, 0 lock files, 0 pwrite/fsync/fdatasync on
 // the data descriptor, 0 opens of the database path after serving) is native_serving_strace.py.
 // SEARCH_KEY: SB_NATIVE_SERVED_READS_AFTER_CUSTODY (S3c, plan 38 2e, owner Q239 = 1,
@@ -45,6 +58,10 @@
 #include "database_lifecycle.hpp"
 #include "native_database_loop.hpp"
 #include "native_database_open_discovery.hpp"
+#include "transaction_inventory_writer.hpp"
+#include "transaction_state_page.hpp"
+#include "native_fixed_root_memory_lease.hpp"
+#include "transaction_inventory_reader.hpp"
 #include "native_database_create.hpp"
 #include "admitted_datatype_cohort.hpp"
 #include "filespace_page_zero.hpp"
@@ -73,10 +90,12 @@
 #include <chrono>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <map>
+#include <optional>
 #include <set>
 #include <source_location>
 #include <sstream>
@@ -91,6 +110,7 @@ namespace d = scratchbird::storage::disk;
 namespace db = scratchbird::storage::database;
 namespace srv = scratchbird::server;
 namespace fs = std::filesystem;
+namespace pg = scratchbird::storage::page;
 
 int checks = 0;
 void Check(bool ok, const std::string& what, std::source_location at = std::source_location::current()) {
@@ -197,6 +217,178 @@ int CreateLowLevelMode(const fs::path& path, std::uint32_t page_size, std::strin
     return 1;
   }
   return 0;
+}
+
+
+// ---- S3d fixtures and fault sinks ---------------------------------------------------
+// SEARCH_KEY: SB_NATIVE_RESTART_TEST. A native file is left in a crash state by the WRITER ITSELF
+// (no hand-built byte patterns except the committing / recovering / prepared / limbo words, which no
+// current writer stores), and the server's Restart is then run on it.
+
+// Passes calls through until `limit` writes have been performed, then fails every write without
+// performing it: the writer is left exactly where a crash after `limit` writes would leave the file.
+class StopSink final : public d::CarefulWriteSink {
+ public:
+  StopSink(d::CarefulWriteSink& inner, unsigned limit) : inner_(inner), limit_(limit) {}
+  d::BoundedIoResult WriteAt(p::u64 offset, std::span<const p::byte> bytes) override {
+    if (writes_ >= limit_) {
+      d::BoundedIoResult r;
+      r.operation = d::BoundedIoOperation::write;
+      r.error = d::BoundedIoError::native_failure;
+      r.offset = offset;
+      r.requested_bytes = bytes.size();
+      r.native_error = EIO;
+      r.native_attempted = true;
+      return r;
+    }
+    const auto r = inner_.WriteAt(offset, bytes);
+    if (r.ok()) ++writes_;
+    return r;
+  }
+  d::BoundedIoResult ReadAt(p::u64 offset, std::span<p::byte> bytes) override { return inner_.ReadAt(offset, bytes); }
+  d::BoundedIoResult Sync() override { return inner_.Sync(); }
+  bool forced_ordered() const noexcept override { return inner_.forced_ordered(); }
+
+ private:
+  d::CarefulWriteSink& inner_;
+  unsigned limit_;
+  unsigned writes_ = 0;
+};
+
+// The fault the server's Restart sees. kill: SIGKILL the process after `at` writes were performed
+// (0 = before the first); torn: the write numbered `at` reaches the file only as its first half, then
+// SIGKILL; fail: write number `at` fails (not performed); failsync: sync number `at` fails.
+class RestartFaultSink final : public d::CarefulWriteSink {
+ public:
+  RestartFaultSink(d::CarefulWriteSink& inner, std::string kind, unsigned at)
+      : inner_(inner), kind_(std::move(kind)), at_(at) {
+    if (kind_ == "kill" && at_ == 0) ::kill(::getpid(), SIGKILL);
+  }
+  d::BoundedIoResult WriteAt(p::u64 offset, std::span<const p::byte> bytes) override {
+    ++write_calls_;
+    if (kind_ == "torn" && write_calls_ == at_) {
+      (void)inner_.WriteAt(offset, bytes.first(bytes.size() / 2));
+      ::kill(::getpid(), SIGKILL);
+    }
+    if (kind_ == "fail" && write_calls_ == at_) return Failure(d::BoundedIoOperation::write, offset, bytes.size());
+    const auto r = inner_.WriteAt(offset, bytes);
+    if (r.ok() && kind_ == "kill" && ++performed_ == at_) ::kill(::getpid(), SIGKILL);
+    return r;
+  }
+  d::BoundedIoResult ReadAt(p::u64 offset, std::span<p::byte> bytes) override { return inner_.ReadAt(offset, bytes); }
+  d::BoundedIoResult Sync() override {
+    if (kind_ == "failsync" && ++sync_calls_ == at_) return Failure(d::BoundedIoOperation::sync, 0, 0);
+    return inner_.Sync();
+  }
+  bool forced_ordered() const noexcept override { return inner_.forced_ordered(); }
+
+ private:
+  static d::BoundedIoResult Failure(d::BoundedIoOperation kind, p::u64 offset, std::size_t bytes) {
+    d::BoundedIoResult r;
+    r.operation = kind;
+    r.error = d::BoundedIoError::native_failure;
+    r.offset = offset;
+    r.requested_bytes = bytes;
+    r.native_error = EIO;
+    r.native_attempted = true;
+    return r;
+  }
+  d::CarefulWriteSink& inner_;
+  std::string kind_;
+  unsigned at_;
+  unsigned write_calls_ = 0, performed_ = 0, sync_calls_ = 0;
+};
+
+p::Uuid FixtureV7(std::uint64_t ms, unsigned salt) {
+  p::Uuid id;
+  for (int i = 0; i < 6; ++i) id.bytes[i] = static_cast<p::byte>(ms >> (8 * (5 - i)));
+  id.bytes[6] = 0x70;
+  id.bytes[7] = static_cast<p::byte>(salt);
+  id.bytes[8] = 0x80;
+  id.bytes[9] = 0x6c;
+  id.bytes[14] = static_cast<p::byte>(salt >> 8);
+  id.bytes[15] = static_cast<p::byte>(salt);
+  return id;
+}
+
+// fixture <path> <kind>. kinds: active | unused | header | committing | recovering | prepared | limbo |
+// committing_active | mixed | many. Orders: active/unused/header/committing/recovering/prepared/limbo use order 2; mixed:
+// 2 active, 3 committed, 4 rolled back, 5 active, 6 header over an unused slot; many: 2..258 active
+// (three 512-byte state units).
+int FixtureMode(const fs::path& path, std::string_view kind) {
+  d::FileDevice device;
+  if (!device.Open(path.string(), d::FileOpenMode::open_existing, d::DatabaseFileOwnership::native_data_file).ok()) return 1;
+  const auto zero = d::ReadFilespacePageZeroFromOpenDevice(device);
+  if (!zero.ok()) return 1;
+  pg::TransactionWriterBinding binding;
+  binding.database_uuid = zero.record->bootstrap.database_uuid;
+  std::optional<d::FilespaceRootReference> state_root;
+  for (const auto& root : zero.record->roots) {
+    if (root.kind == 4) state_root = root;
+    if (root.kind == 3) binding.allocation_root = root;
+  }
+  if (!state_root) return 1;
+  binding.state_root = *state_root;
+  const auto policy = scratchbird::core::uuid::IssueRuntimeIdentityV7();
+  if (!policy) return 1;
+  scratchbird::core::uuid::StandaloneUuidV7Issuer issuer({binding.database_uuid, *policy},
+                                                         scratchbird::core::uuid::kStandardLocalClockUuidV7Policy);
+  binding.issuer = &issuer;
+  const auto now_ms = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::milliseconds>(
+      std::chrono::system_clock::now().time_since_epoch()).count());
+  const std::uint64_t now_ns = now_ms * 1000000ULL;
+  int code = 0;
+  {
+    d::FileDeviceCarefulWriteSink file(device);
+    pg::TransactionInventoryWriter w(binding);
+    const auto begin = [&](unsigned n, d::CarefulWriteSink& sink) {
+      pg::TransactionHeaderRecord h;
+      h.transaction_uuid = FixtureV7(now_ms + n, n);
+      return w.Begin(sink, h);
+    };
+    const auto set_word = [&](unsigned slot, pg::TipStateCode state) {
+      const auto ps = zero.record->bootstrap.page_size_bytes;
+      std::vector<p::byte> page(ps);
+      if (!device.ReadAt(state_root->page_number * ps, page.data(), page.size()).ok()) return false;
+      const auto edit = pg::SetTransactionStateCode(page, slot, state);
+      if (!edit.ok()) return false;
+      return device.WriteAt(state_root->page_number * ps + edit.unit_offset, page.data() + edit.unit_offset,
+                            pg::kTransactionStateWriteUnitBytes).ok() && file.Sync().ok();
+    };
+    if (!w.Restart(file).ok()) return 1;
+    if (kind == "active") {
+      code = begin(2, file).ok() ? 0 : 1;
+    } else if (kind == "unused") {
+      StopSink stop(file, 1);  // Next := 3 is durable; the header and the word never were
+      (void)begin(2, stop);
+    } else if (kind == "header") {
+      StopSink stop(file, 2);  // Next := 3 and the header record are durable; the word never was
+      (void)begin(2, stop);
+    } else if (kind == "committing" || kind == "recovering" || kind == "prepared" || kind == "limbo") {
+      const auto state = kind == "committing" ? pg::TipStateCode::committing
+                         : kind == "recovering" ? pg::TipStateCode::recovering
+                         : kind == "prepared"   ? pg::TipStateCode::prepared
+                                                : pg::TipStateCode::limbo;
+      code = begin(2, file).ok() && set_word(2, state) ? 0 : 1;
+    } else if (kind == "committing_active") {
+      // 2 committing (unresolved), 3 active: Restart must refuse BEFORE marking 3 dead (Q241 = 1).
+      code = begin(2, file).ok() && begin(3, file).ok() && set_word(2, pg::TipStateCode::committing) ? 0 : 1;
+    } else if (kind == "mixed") {
+      bool ok = begin(2, file).ok() && begin(3, file).ok() && w.Commit(file, 3, now_ns + 1000000).ok() &&
+                begin(4, file).ok() && w.Rollback(file, 4, now_ns + 2000000).ok() && begin(5, file).ok();
+      StopSink stop(file, 2);
+      (void)begin(6, stop);
+      code = ok ? 0 : 1;
+    } else if (kind == "many") {
+      for (unsigned n = 2; n <= 258 && code == 0; ++n)
+        if (!begin(n, file).ok()) code = 1;
+    } else {
+      code = 2;
+    }
+  }
+  if (!device.Close().ok()) code = 1;
+  if (code == 0) std::cout << "FIXTURE ok kind=" << kind << std::endl;
+  return code;
 }
 
 std::string ThreadNames() {
@@ -328,9 +520,37 @@ std::string ServedReads(const srv::HostedEngineState& state, const fs::path& pat
          " writable_refused=" + refusal_code + " elapsed_ms=" + std::to_string(elapsed_ms);
 }
 
+// The S3d fields of a started database, as "key=value" words: the serving state and its status
+// rendering, the Restart report and the stored horizons.
+std::string RestartFields(const srv::HostedEngineState& state) {
+  const auto& snapshot = state.databases.front();
+  const auto json = srv::HostedEngineStatusJson(state);
+  const auto json_has = [&](const std::string& part) { return json.find(part) != std::string::npos; };
+  std::string unresolved;
+  for (const auto order : snapshot.native_restart_unresolved) unresolved += (unresolved.empty() ? "" : ",") + std::to_string(order);
+  std::ostringstream out;
+  out << " serving_state=" << snapshot.native_serving_state << " classification=" << snapshot.startup_recovery_classification
+      << " restart_ran=" << snapshot.native_restart_ran << " marked_dead=" << snapshot.native_restart_marked_dead
+      << " restart_writes=" << snapshot.native_restart_writes << " restart_syncs=" << snapshot.native_restart_syncs
+      << " next=" << snapshot.native_restart_next_transaction << " scanned_from=" << snapshot.native_restart_scanned_from
+      << " unresolved=" << (unresolved.empty() ? "-" : unresolved) << " uncertain=" << snapshot.native_uncertain_transactions
+      << " writer_failed=" << snapshot.native_writer_failed
+      << " horizons=" << snapshot.native_horizon_oit << "/" << snapshot.native_horizon_oat << "/" << snapshot.native_horizon_ost
+      << "/" << snapshot.native_horizon_oct << "/" << snapshot.native_horizon_oar << "/" << snapshot.native_horizon_olr
+      << " diag=" << (snapshot.diagnostic_code.empty() ? "-" : snapshot.diagnostic_code)
+      << " status_serving=" << json_has("\"native_serving_state\":\"" + snapshot.native_serving_state + "\"")
+      << " status_restart_pending=" << json_has(std::string("\"native_restart_pending\":") + (snapshot.native_restart_pending ? "true" : "false"))
+      << " status_marked_dead=" << json_has("\"native_restart_marked_dead\":" + std::to_string(snapshot.native_restart_marked_dead))
+      << " status_writer_failed=" << json_has(std::string("\"native_writer_failed\":") + (snapshot.native_writer_failed ? "true" : "false"))
+      << " status_diag=" << json_has("\"diagnostic_code\":\"" + snapshot.diagnostic_code + "\"")
+      << " status_state=" << json_has(std::string("{\"state\":\"") + srv::HostedDatabaseStateName(snapshot.state) + "\"");
+  return out.str();
+}
+
 // One StartHostedEngine in this process, as a server process does: the process
 // crypto owner started first (it outlives the hosted state), then the open.
-// variant: "" normal | keyed | readonly | nocrypto.
+// variant: "" normal | keyed | readonly | nocrypto | read | probe | nopack | and the S3d Restart
+// faults kill=N | torn=N | fail=N | failsync=N (SB_TEST_SEAM, see RestartFaultSink).
 int ServeMode(const fs::path& path, std::string_view variant, bool hold) {
   srv::ServerBootstrapConfig config;
   if (variant != "nopack") config.database_policy_seed_pack_root = SB_DEFAULT_POLICY_PACK_ROOT;
@@ -351,6 +571,15 @@ int ServeMode(const fs::path& path, std::string_view variant, bool hold) {
   }
   if (variant == "keyed") config.startup_credential_source = "operator_file";
   if (variant == "readonly") config.database_open_mode = "read_only";
+  // S3d: a fault injected into the sink Restart writes through.
+  for (const std::string kind : {"kill", "torn", "fail", "failsync"}) {
+    if (variant.starts_with(kind + "=")) {
+      const unsigned at = static_cast<unsigned>(std::stoul(std::string(variant.substr(kind.size() + 1))));
+      srv::SetNativeRestartSinkWrapperForTest([kind, at](d::CarefulWriteSink& inner) -> std::unique_ptr<d::CarefulWriteSink> {
+        return std::make_unique<RestartFaultSink>(inner, kind, at);
+      });
+    }
+  }
   sigset_t blocked;
   sigemptyset(&blocked);
   sigaddset(&blocked, SIGTERM);
@@ -364,6 +593,14 @@ int ServeMode(const fs::path& path, std::string_view variant, bool hold) {
       for (const auto& [key, value] : diagnostic.fields)
         if (key != "database_path") std::cout << ' ' << key << '=' << value;
       std::cout << std::endl;
+      // A failed serving state (S3d) is reported by the status as well: the database is open and
+      // fenced, and the state says it requires a reopen.
+      if (!started.state.databases.empty()) {
+        const auto& snapshot = started.state.databases.front();
+        std::cout << "STATE db_state=" << srv::HostedDatabaseStateName(snapshot.state)
+                  << " open=" << snapshot.database_open << " fenced=" << snapshot.write_admission_fenced
+                  << " restart_pending=" << snapshot.native_restart_pending << RestartFields(started.state) << std::endl;
+      }
     } else {
       const auto& snapshot = started.state.databases.front();
       std::string listing;
@@ -377,7 +614,7 @@ int ServeMode(const fs::path& path, std::string_view variant, bool hold) {
                 << " threads=" << ThreadNames() << " listing=" << listing
                 << " status_has_state=" << (srv::HostedEngineStatusJson(started.state).find("\"native_serving_state\":\"serving\"") != std::string::npos)
                 << " served_owner=" << (srv::ServedRouteOwnerFor(started.state, path.string()) != nullptr)
-                << std::endl;
+                << RestartFields(started.state) << std::endl;
       if (variant == "read") std::cout << ServedReads(started.state, path, snapshot.page_size_bytes, whole_file) << std::endl;
       if (hold) {
         int signal_number = 0;
@@ -527,14 +764,27 @@ void ServePageSize(const std::string& self, const fs::path& root, std::uint32_t 
   const auto before = Snapshot(dir);
   Check(before.size() == 1, "native create left one file");
 
-  // 1. serving: verified, write-fenced, Restart pending, nothing written.
+  // 1. serving: verified, Restart ran (S3d), write-fenced, nothing written (a clean file needs no
+  //    dead-marking: 0 writes and 0 syncs even after Restart).
   const auto served = RunChild(self, {"serve", path.string()});
   const std::string tag = "[" + std::to_string(page_size) + "] ";
   Check(served.status == 0, tag + "serve child exits 0 (a wrong-thread destroy would terminate): " + served.first_line);
   Check(served.first_line.starts_with("SERVING state=serving "), tag + "serving: " + served.first_line);
-  Check(Field(served.first_line, "restart_pending") == "1" && Field(served.first_line, "fenced") == "1" &&
+  // S3d: Restart ran. (Was, S3b/S3c: restart_pending == "1", classification native_verified_restart_pending.)
+  Check(Field(served.first_line, "restart_pending") == "0" && Field(served.first_line, "fenced") == "1" &&
             Field(served.first_line, "open") == "1" && Field(served.first_line, "db_state") == "open",
-        tag + "verified, open, write-fenced, Restart pending: " + served.first_line);
+        tag + "verified, open, write-fenced, Restart ran: " + served.first_line);
+  Check(Field(served.first_line, "restart_ran") == "1" && Field(served.first_line, "marked_dead") == "0" &&
+            Field(served.first_line, "restart_writes") == "0" && Field(served.first_line, "restart_syncs") == "0" &&
+            Field(served.first_line, "classification") == "native_verified_restart_clean" &&
+            Field(served.first_line, "serving_state") == "serving" && Field(served.first_line, "writer_failed") == "0" &&
+            Field(served.first_line, "unresolved") == "-" && Field(served.first_line, "next") == "2" &&
+            Field(served.first_line, "diag") == "-",
+        tag + "a clean file: Restart ran, marked 0 dead, performed 0 writes and 0 syncs; Next = 2: " + served.first_line);
+  Check(Field(served.first_line, "status_serving") == "1" && Field(served.first_line, "status_restart_pending") == "1" &&
+            Field(served.first_line, "status_marked_dead") == "1" && Field(served.first_line, "status_writer_failed") == "1" &&
+            Field(served.first_line, "status_state") == "1",
+        tag + "the status JSON reports the serving state, Restart pending false, the marked count and writer_failed false");
   Check(Field(served.first_line, "transactions") == "1", tag + "the verified inventory is the create's one transaction");
   Check(Field(served.first_line, "page_size") == std::to_string(page_size), tag + "page size reported");
   Check(Field(served.first_line, "principal") == service_principal,
@@ -545,7 +795,7 @@ void ServePageSize(const std::string& self, const fs::path& root, std::uint32_t 
         tag + "the status reports serving; the served owner resolves");
   Check(Has(served.rest, "AFTER_CLOSE reowned=true") && !Has(Field(served.rest.substr(served.rest.find("threads=")), "threads"), "sb-db-loop"),
         tag + "clean shutdown: the loop thread is gone and the flock released by the close: " + served.rest);
-  Check(Snapshot(dir) == before, tag + "serving and shutdown wrote nothing (bytes unchanged) and made no file");
+  Check(Snapshot(dir) == before, tag + "serving, Restart and shutdown wrote nothing (bytes unchanged) and made no file");
   ExpectOwnable(path, tag + "after shutdown");
 
   // 1b. S3c: served reads after custody (read-only duplicates; writable refused; eight concurrent readers).
@@ -605,6 +855,304 @@ void ServePageSize(const std::string& self, const fs::path& root, std::uint32_t 
   Check(!codes.empty(), tag + "root pages were exercised");
 }
 
+
+// ---- S3d: Restart on files a crash left behind ---------------------------------------------
+// SEARCH_KEY: SB_NATIVE_RESTART_TEST (plan 38 sub-step S3d, owner Q241 = 1, Q284).
+std::vector<unsigned char> ReadWhole(const fs::path& path) {
+  std::ifstream in(path, std::ios::binary);
+  const std::string bytes((std::istreambuf_iterator<char>(in)), {});
+  return {bytes.begin(), bytes.end()};
+}
+
+// Byte-for-byte equality (a size check, then memcmp; the vector == operator draws a library warning).
+bool SameBytes(const std::vector<unsigned char>& a, const std::vector<unsigned char>& b) {
+  return a.size() == b.size() && (a.empty() || std::memcmp(a.data(), b.data(), a.size()) == 0);
+}
+
+// Page number of the transaction-state chain's first page (page-zero root kind 4).
+std::uint64_t StatePageNumber(const fs::path& path) {
+  d::FileDevice device;
+  Check(device.Open(path.string(), d::FileOpenMode::open_existing_read_only, d::DatabaseFileOwnership::native_data_file).ok(),
+        "open for the state root");
+  const auto zero = d::ReadFilespacePageZeroFromOpenDevice(device);
+  Check(zero.ok(), "page zero reads");
+  std::uint64_t page = 0;
+  for (const auto& root : zero.record->roots)
+    if (root.kind == 4) page = root.page_number;
+  Check(device.Close().ok() && page != 0, "the state root");
+  return page;
+}
+
+// The oracle: the old image with ONLY the state byte of each listed slot set to dead (9) in the first
+// state page. Built from the old bytes and the transaction-state word layout (word = 4 bytes at 512 +
+// 4 * order; byte 0 = state code), not from the restart planner.
+std::vector<unsigned char> Oracle(std::vector<unsigned char> image, std::uint64_t state_page, std::uint32_t page_size,
+                                  const std::vector<unsigned>& dead_orders) {
+  for (const auto order : dead_orders) {
+    const auto at = state_page * page_size + 512 + 4ull * order;
+    Check(at < image.size() && image[at] != 9, "the oracle's slot is a live word in the old image");
+    image[at] = 9;
+  }
+  return image;
+}
+
+std::string Sha(const std::vector<unsigned char>& bytes) {
+  const auto digest = scratchbird::core::hash::ComputeSha256Digest(bytes.data(), bytes.size());
+  Check(digest.ok(), "sha256");
+  return scratchbird::core::hash::HexLower(digest.digest);
+}
+
+// The file as an independent read-only reader (the production fixed-root lease over a read-only
+// device, no server) sees the transaction inventory: order -> state name, and Next.
+std::map<std::uint64_t, std::string> ReaderStates(const fs::path& path, std::uint64_t& next) {
+  namespace mga = scratchbird::transaction::mga;
+  d::FileDevice device;
+  Check(device.Open(path.string(), d::FileOpenMode::open_existing_read_only, d::DatabaseFileOwnership::native_data_file).ok(),
+        "independent read-only open");
+  const auto zero = d::ReadFilespacePageZeroFromOpenDevice(device);
+  Check(zero.ok(), "page zero reads");
+  const auto size = zero.record->bootstrap.page_size_bytes;
+  std::map<std::uint64_t, std::string> out;
+  {
+    const std::vector<d::NativeFilespaceDevice> files{
+        {zero.record->bootstrap.filespace_uuid, zero.record->bootstrap.page_size_profile_uuid, &device}};
+    std::vector<p::byte> backing(64u << 20);
+    auto fixed = db::AcquireNativeFixedRootBackedLease(zero.record->bootstrap.database_uuid, files,
+                                                       zero.record->bootstrap.filespace_uuid, {256ull * size, backing.size()}, backing);
+    Check(fixed.ok(), "the production fixed-root lease reads the file");
+    const auto& inventory = fixed.lease->inventory();
+    next = inventory.next_local_transaction_id;
+    for (const auto& e : inventory.entries) {
+      const auto state = e.state;
+      out[e.identity.local_id.value] = state == mga::TransactionState::committed ? "committed"
+                                       : state == mga::TransactionState::rolled_back ? "rolled_back"
+                                       : state == mga::TransactionState::active ? "active"
+                                       : state == mga::TransactionState::failed_terminal ? "dead" : "other";
+    }
+    fixed.lease.Reset();
+  }
+  Check(device.Close().ok(), "close");
+  return out;
+}
+
+// Every byte of `file` is the old byte or the oracle's byte, and every byte outside the state page is
+// the old byte: what a process killed at any point of Restart leaves. Returns the number of 512-byte
+// units of the state page that equal the oracle's (new) bytes and are not the old bytes.
+unsigned OldOrNewOnly(const std::vector<unsigned char>& file, const std::vector<unsigned char>& old,
+                      const std::vector<unsigned char>& expected, std::uint64_t state_page, std::uint32_t page_size,
+                      const std::string& what) {
+  Check(file.size() == old.size(), what + ": the file size is unchanged");
+  // One pass, one Check: the first byte that is neither the old nor the new byte, or that changed outside the state page.
+  std::optional<std::size_t> outside_change, neither;
+  const auto lo = state_page * page_size, hi = (state_page + 1) * page_size;
+  for (std::size_t i = 0; i < file.size(); ++i) {
+    if (file[i] == old[i]) continue;
+    if (i < lo || i >= hi) { outside_change = i; break; }
+    if (file[i] != expected[i]) { neither = i; break; }
+  }
+  Check(!outside_change, what + ": a byte outside the transaction-state page changed at " + std::to_string(outside_change.value_or(0)));
+  Check(!neither, what + ": a state-page byte is neither old nor new at " + std::to_string(neither.value_or(0)));
+  unsigned fully_new = 0;
+  for (std::size_t unit = state_page * page_size; unit < (state_page + 1) * page_size; unit += 512) {
+    const bool is_old = std::equal(file.begin() + unit, file.begin() + unit + 512, old.begin() + unit);
+    const bool is_new = std::equal(file.begin() + unit, file.begin() + unit + 512, expected.begin() + unit);
+    if (is_new && !is_old) ++fully_new;
+  }
+  return fully_new;
+}
+
+// The state code of one transaction's word, decoded by the TIP page codec from the file's bytes (a
+// slot with no header record, such as an unused slot Restart marked dead, is not an inventory entry,
+// so the reader above cannot show it; the word still can).
+const char* TipWordName(const fs::path& path, std::uint32_t page_size, std::uint64_t order) {
+  const auto image = ReadWhole(path);
+  const auto state_page = StatePageNumber(path);
+  const auto decoded = pg::DecodeTransactionStatePage(
+      std::span<const p::byte>(reinterpret_cast<const p::byte*>(image.data()) + state_page * page_size, page_size));
+  Check(decoded.ok(), "the state page decodes");
+  const auto word = pg::TipWordAt(*decoded.view, static_cast<std::uint32_t>(order));
+  Check(word.has_value(), "the slot has a word");
+  return pg::TipStateCodeName(word->state);
+}
+
+std::vector<unsigned> Orders(unsigned from, unsigned to) {
+  std::vector<unsigned> v;
+  for (unsigned n = from; n <= to; ++n) v.push_back(n);
+  return v;
+}
+
+void RestartCases(const std::string& self, const fs::path& root, std::uint32_t page_size) {
+  const std::string tag = "[" + std::to_string(page_size) + "] ";
+  const auto make = [&](const std::string& name, const std::string& kind) {
+    const auto dir = root / ("r" + std::to_string(page_size) + "_" + name);
+    fs::create_directory(dir);
+    const auto path = dir / "restart.sdb";
+    Check(RunChild(self, {"create", path.string(), std::to_string(page_size)}).status == 0, tag + name + ": create");
+    if (!kind.empty()) {
+      const auto fixture = RunChild(self, {"fixture", path.string(), kind});
+      Check(fixture.status == 0 && fixture.first_line == "FIXTURE ok kind=" + kind, tag + name + ": the writer built the fixture: " + fixture.first_line);
+    }
+    return path;
+  };
+
+  // (b) single crash states: the writer left one transaction behind; Restart marks it dead, nothing else changes.
+  struct Single { const char* kind; const char* left_as; };
+  for (const Single& s : {Single{"active", "active"}, Single{"unused", "unused slot below Next"},
+                          Single{"header", "header record over an unused slot"}}) {
+    const auto path = make(s.kind, s.kind);
+    const auto old = ReadWhole(path);
+    const auto state_page = StatePageNumber(path);
+    const auto expected = Oracle(old, state_page, page_size, {2});
+    std::uint64_t next = 0;
+    const auto before = ReaderStates(path, next);
+    std::string listing;
+    for (const auto& [order, state] : before) listing += std::to_string(order) + "=" + state + " ";
+    // The reader's view of the crash state itself (it reads an in-progress slot as active and an unused
+    // slot below Next as a transaction that crashed while starting).
+    Check(next == 3 && before.count(1) && before.at(1) == "committed",
+          tag + s.kind + ": before Restart the reader sees Next 3 and 1 committed: " + listing);
+    std::printf("%s%s before Restart, the reader sees: %s(Next %llu)\n", tag.c_str(), s.kind, listing.c_str(), static_cast<unsigned long long>(next));
+    const auto run = RunChild(self, {"serve", path.string()});
+    Check(run.status == 0 && run.first_line.starts_with("SERVING state=serving "), tag + s.kind + ": serves: " + run.first_line);
+    Check(Field(run.first_line, "restart_ran") == "1" && Field(run.first_line, "marked_dead") == "1" &&
+              Field(run.first_line, "restart_writes") == "1" && Field(run.first_line, "restart_syncs") == "1" &&
+              Field(run.first_line, "next") == "3" && Field(run.first_line, "classification") == "native_verified_restarted" &&
+              Field(run.first_line, "restart_pending") == "0" && Field(run.first_line, "fenced") == "1" &&
+              Field(run.first_line, "unresolved") == "-" && Field(run.first_line, "writer_failed") == "0",
+          tag + s.kind + " (" + s.left_as + "): Restart marked it dead with one 512-byte write and one sync: " + run.first_line);
+    Check(Field(run.first_line, "status_serving") == "1" && Field(run.first_line, "status_marked_dead") == "1" &&
+              Field(run.first_line, "status_restart_pending") == "1",
+          tag + s.kind + ": the status reports the Restart");
+    const auto after = ReadWhole(path);
+    Check(SameBytes(after, expected), tag + s.kind + ": the file is byte-identical to the oracle (the old image with slot 2's state byte = dead)");
+    const auto states = ReaderStates(path, next);
+    Check(next == 3 && states.at(1) == "committed" &&
+              (states.count(2) ? states.at(2) == "dead" : std::string(s.kind) == "unused"),
+          tag + s.kind + ": an independent TIP reader sees 1 committed, Next 3 and 2 dead (an unused slot has no header, so no entry)");
+    Check(std::string(TipWordName(path, page_size, 2)) == "dead" && std::string(TipWordName(path, page_size, 1)) == "committed",
+          tag + s.kind + ": the TIP page codec decodes word 2 as dead and word 1 as committed");
+    // Restart is once per open and idempotent: a second open finds nothing to mark and writes nothing.
+    const auto again = RunChild(self, {"serve", path.string()});
+    Check(Field(again.first_line, "marked_dead") == "0" && Field(again.first_line, "restart_writes") == "0" &&
+              Field(again.first_line, "classification") == "native_verified_restart_clean" && SameBytes(ReadWhole(path), expected),
+          tag + s.kind + ": a second open marks 0 and writes 0, the file unchanged: " + again.first_line);
+  }
+
+  // (b2) a mixed inventory: 2 active, 3 committed, 4 rolled back, 5 active, 6 a header over an unused slot.
+  {
+    const auto path = make("mixed", "mixed");
+    const auto old = ReadWhole(path);
+    const auto state_page = StatePageNumber(path);
+    const auto expected = Oracle(old, state_page, page_size, {2, 5, 6});
+    const auto run = RunChild(self, {"serve", path.string()});
+    Check(run.status == 0 && Field(run.first_line, "marked_dead") == "3" && Field(run.first_line, "next") == "7" &&
+              Field(run.first_line, "restart_writes") == "1" && Field(run.first_line, "serving_state") == "serving",
+          tag + "mixed: Restart marked 2, 5 and 6 dead: " + run.first_line);
+    Check(SameBytes(ReadWhole(path), expected), tag + "mixed: the file equals the oracle: only the dead slots' state bytes changed");
+    std::uint64_t next = 0;
+    const auto states = ReaderStates(path, next);
+    Check(next == 7 && states.at(2) == "dead" && states.at(3) == "committed" && states.at(4) == "rolled_back" &&
+              states.at(5) == "dead" && states.at(6) == "dead",
+          tag + "mixed: an independent reader sees dead, committed, rolled back, dead, dead");
+  }
+
+  // (c) kill -9 / torn write during Restart, then a reopen completes it. Three 512-byte state units are dirty.
+  {
+    std::map<std::string, unsigned> seen;
+    for (const std::string fault : {"kill=0", "kill=1", "kill=2", "kill=3", "torn=1", "torn=2", "torn=3"}) {
+      // Each file is its own database (identities, times): its oracle comes from its own old image.
+      const auto path = make("crash_" + fault.substr(0, 4) + fault.substr(5), "many");
+      const auto old = ReadWhole(path);
+      const auto state_page = StatePageNumber(path);
+      const auto expected = Oracle(old, state_page, page_size, Orders(2, 258));
+      const auto killed = RunChild(self, {"serve", path.string(), fault});
+      Check(killed.status == 128 + SIGKILL, tag + fault + ": the server process was killed by SIGKILL mid-Restart (status " + std::to_string(killed.status) + "): " + killed.first_line);
+      const auto crashed = ReadWhole(path);
+      const unsigned new_units = OldOrNewOnly(crashed, old, expected, state_page, page_size, tag + fault);
+      if (fault.starts_with("kill=")) Check(new_units == static_cast<unsigned>(fault[5] - '0'), tag + fault + ": exactly " + fault.substr(5) + " units are written: " + std::to_string(new_units));
+      // The reopen: verification admits the crash state and Restart completes it, whatever the point.
+      const auto reopened = RunChild(self, {"serve", path.string()});
+      Check(reopened.status == 0 && reopened.first_line.starts_with("SERVING state=serving ") &&
+                Field(reopened.first_line, "restart_ran") == "1" && Field(reopened.first_line, "serving_state") == "serving" &&
+                Field(reopened.first_line, "next") == "259" && Field(reopened.first_line, "writer_failed") == "0",
+            tag + fault + ": the reopen verifies and serves: " + reopened.first_line);
+      Check(SameBytes(ReadWhole(path), expected), tag + fault + ": after the reopen the file equals the oracle (the same final image whatever the crash point)");
+      std::uint64_t next = 0;
+      const auto states = ReaderStates(path, next);
+      Check(next == 259 && states.at(1) == "committed" && states.at(2) == "dead" && states.at(258) == "dead",
+            tag + fault + ": an independent reader sees every in-progress slot dead");
+      seen[fault] = new_units;
+    }
+    std::string summary;
+    for (const auto& [k, v] : seen) summary += " " + k + "->" + std::to_string(v) + "new";
+    std::printf("%s kill -9 / torn Restart, reopened to the same final image:%s\n", tag.c_str(), summary.c_str());
+
+    // (d) an injected write / sync failure: the database goes to the failed serving state, fenced, the
+    // status shows it, and a reopen recovers.
+    for (const std::string fault : {"fail=1", "fail=2", "fail=3", "failsync=1"}) {
+      const auto path = make("fail_" + fault.substr(0, 5) + fault.substr(fault.find('=') + 1), "many");
+      const auto old = ReadWhole(path);
+      const auto state_page = StatePageNumber(path);
+      const auto expected = Oracle(old, state_page, page_size, Orders(2, 258));
+      const auto failed = RunChild(self, {"serve", path.string(), fault});
+      Check(failed.status == 0 && failed.first_line.starts_with("REFUSED code=DATABASE.RESTART_WRITE_FAILED") &&
+                Has(failed.first_line, "requires=reopen"),
+            tag + fault + ": a failed write is refused with the specific code: " + failed.first_line);
+      const auto at = failed.rest.find("STATE ");
+      Check(at != std::string::npos, tag + fault + ": the failed state is reported: " + failed.rest);
+      const auto state = failed.rest.substr(at, failed.rest.find('\n', at) - at);
+      Check(Field(state, "serving_state") == "failed" && Field(state, "db_state") == "failed" && Field(state, "fenced") == "1" &&
+                Field(state, "writer_failed") == "1" && Field(state, "restart_pending") == "1" && Field(state, "restart_ran") == "0" &&
+                Field(state, "diag") == "DATABASE.RESTART_WRITE_FAILED" && Field(state, "status_serving") == "1" &&
+                Field(state, "status_writer_failed") == "1" && Field(state, "status_diag") == "1" && Field(state, "status_state") == "1" &&
+                Field(state, "classification") == "native_restart_write_failed_reopen_required",
+            tag + fault + ": failed, fenced, writer failed, status shows it: " + state);
+      Check(Has(failed.rest, "AFTER_CLOSE reowned=true"), tag + fault + ": the failed database still closes cleanly (flock released)");
+      const unsigned written = OldOrNewOnly(ReadWhole(path), old, expected, state_page, page_size, tag + fault);
+      if (fault.starts_with("fail=")) Check(written == static_cast<unsigned>(fault[5] - '0') - 1, tag + fault + ": the units written before the failure: " + std::to_string(written));
+      if (fault == "failsync=1") Check(written == 3, tag + fault + ": every unit reached the file, the barrier failed");
+      const auto reopened = RunChild(self, {"serve", path.string()});
+      Check(reopened.status == 0 && reopened.first_line.starts_with("SERVING state=serving ") &&
+                Field(reopened.first_line, "serving_state") == "serving" && Field(reopened.first_line, "writer_failed") == "0" &&
+                Field(reopened.first_line, "restart_pending") == "0",
+            tag + fault + ": a reopen recovers: " + reopened.first_line);
+      Check(SameBytes(ReadWhole(path), expected), tag + fault + ": after the reopen the file equals the oracle");
+    }
+    std::printf("%s injected write/sync failures: failed state, fenced, status, reopen recovers\n", tag.c_str());
+  }
+
+  // (e) unresolved committing / recovering slots: restricted, specific code, NOTHING written (not even the
+  // dead-markable slot 3 beside them); prepared / limbo are in doubt, not unresolved: served, left alone.
+  for (const std::string kind : {"committing", "recovering", "committing_active"}) {
+    const auto path = make("unres_" + kind, kind);
+    const auto old = ReadWhole(path);
+    const auto run = RunChild(self, {"serve", path.string()});
+    Check(run.status == 0 && run.first_line.starts_with("SERVING state=restricted db_state=restricted_open "),
+          tag + kind + ": opened restricted, not served normally: " + run.first_line);
+    Check(Field(run.first_line, "restart_pending") == "1" && Field(run.first_line, "fenced") == "1" &&
+              Field(run.first_line, "restart_ran") == "0" && Field(run.first_line, "marked_dead") == "0" &&
+              Field(run.first_line, "restart_writes") == "0" && Field(run.first_line, "restart_syncs") == "0" &&
+              Field(run.first_line, "unresolved") == "2" && Field(run.first_line, "serving_state") == "restricted" &&
+              Field(run.first_line, "uncertain") == "1" &&  // the verification's count includes the committing slot itself
+              Field(run.first_line, "diag") == "DATABASE.OPEN_RESTRICTED_UNRESOLVED_TRANSACTIONS" &&
+              Field(run.first_line, "classification") == "native_verified_restart_unresolved_restricted" &&
+              Field(run.first_line, "status_serving") == "1" && Field(run.first_line, "status_diag") == "1",
+          tag + kind + ": restricted with the specific code and the unresolved order reported: " + run.first_line);
+    Check(SameBytes(ReadWhole(path), old), tag + kind + ": the restricted open wrote nothing");
+    Check(Has(run.rest, "AFTER_CLOSE reowned=true"), tag + kind + ": clean shutdown");
+  }
+  for (const std::string kind : {"prepared", "limbo"}) {
+    const auto path = make("indoubt_" + kind, kind);
+    const auto old = ReadWhole(path);
+    const auto run = RunChild(self, {"serve", path.string()});
+    Check(run.status == 0 && run.first_line.starts_with("SERVING state=serving ") && Field(run.first_line, "uncertain") == "1" &&
+              Field(run.first_line, "marked_dead") == "0" && Field(run.first_line, "restart_writes") == "0" &&
+              Field(run.first_line, "unresolved") == "-" && SameBytes(ReadWhole(path), old),
+          tag + kind + ": in doubt (left alone, reported), not unresolved; served, 0 writes: " + run.first_line);
+  }
+  std::printf("%s restart: single crash states, mixed, kill/torn sweep, failures, unresolved (restricted), in doubt\n", tag.c_str());
+}
+
 void L5SeedCases(const std::string& self, const fs::path& root) {
   const std::uint32_t page_size = 16384;
   for (const std::string kind : {"seedless", "mismatched"}) {
@@ -658,6 +1206,7 @@ int main(int argc, char** argv) {
     if (mode == "create" && argc == 4) return CreateMode(argv[2], static_cast<std::uint32_t>(std::stoul(argv[3])));
     if (mode == "create-lowlevel" && argc == 5)
       return CreateLowLevelMode(argv[2], static_cast<std::uint32_t>(std::stoul(argv[3])), argv[4]);
+    if (mode == "fixture" && argc == 4) return FixtureMode(argv[2], argv[3]);
     if (mode == "serve" && (argc == 3 || argc == 4)) return ServeMode(argv[2], argc == 4 ? argv[3] : "", false);
     if (mode == "serve-hold" && argc == 3) return ServeMode(argv[2], "", true);
     if (mode == "memory-defaults" && argc == 2) {
@@ -674,6 +1223,8 @@ int main(int argc, char** argv) {
   LoopLifecycle();
   for (const std::uint32_t page_size : {8192u, 16384u, 32768u, 65536u, 131072u})
     ServePageSize(self, artifacts.path(), page_size);
+  for (const std::uint32_t page_size : {8192u, 16384u, 32768u, 65536u, 131072u})
+    RestartCases(self, artifacts.path(), page_size);
   L5SeedCases(self, artifacts.path());
   RefusalsBeforeTheLoop(self, artifacts.path());
   artifacts.Cleanup();

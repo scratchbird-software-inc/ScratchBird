@@ -25,17 +25,27 @@
 // Lifecycle: opening -> verifying -> serving | failed -> closing -> closed.
 //   opening    custody begun, the runtime constructing
 //   verifying  the read-only verification sequence (plan 38 section 2c)
-//   serving    verified and serving-ready; the writer is adopted; Restart (the
-//              TIP) has NOT run (S3d), so nothing may write yet
+//   serving    verified, the transaction-store Restart (S3d) has run (or the
+//              file needed none) and the loop's single TransactionInventoryWriter
+//              is restarted: the database is serving-ready. Write admission for
+//              statements stays fenced until a statement path exists (S3e/S3f).
+//              (Was, S3b/S3c: Restart had NOT run, the classification was
+//              native_verified_restart_pending.) The loop state stays serving
+//              while the DATABASE's serving state (NativeServingState below)
+//              is serving | restricted | failed.
 //   failed     the open or its verification refused; resources already closed
 //              on this thread, the cause reported
 //   closing/closed  a submitted close request tore everything down on this
 //              thread; the thread is then joined by Close()
 //
 // Requests: a bounded queue (a mutex and a condition variable; the thread
-// sleeps on the variable, nothing polls). Kinds today: open, close. Plan 36
-// adds complete_and_begin (the atomic commit + replacement begin); the request
-// variant below is where it goes.
+// sleeps on the variable, nothing polls). Kinds today: open, close. The Restart
+// (S3d) runs inside the open request: once per open, as its last step. Plan 36
+// (T1) adds complete_and_begin (the atomic commit + replacement begin) as a new
+// method of the SAME TransactionInventoryWriter the loop constructs once per
+// open, with the same restarted precondition; the request variant below is
+// where it goes. Nothing in S3d begins a transaction (owner Q284: L5's first
+// session and transaction are S5).
 //
 // Ownership: the HostedDatabaseRuntime holds the loop by shared_ptr; the loop
 // never holds a shared_ptr to itself (the thread function holds a raw pointer
@@ -44,6 +54,7 @@
 // the database ownership (the flock) is never released before the loop thread
 // has retired every resource that depends on it.
 
+#include "careful_write.hpp"
 #include "database_ownership.hpp"
 #include "native_hosted_database_runtime.hpp"
 #include "process_crypto_owner.hpp"
@@ -54,6 +65,7 @@
 #include <cstdint>
 #include <deque>
 #include <filesystem>
+#include <functional>
 #include <future>
 #include <memory>
 #include <mutex>
@@ -76,6 +88,40 @@ struct NativeLoopDiagnostic {
   std::vector<std::pair<std::string, std::string>> fields;
 };
 
+// SB_NATIVE_RESTART (thin-slice S3d, plan 38; owner Q241 = 1). The serving state
+// of the DATABASE after the open, separate from the loop thread's lifecycle state:
+//   serving     Restart ran (or the file needed none); the writer is restarted.
+//   restricted  Restart found committing / recovering slots (no current writer
+//               stores them; the outcome needs the header): NOTHING was written,
+//               the writer has not restarted, write admission stays fenced and
+//               the database is not served normally. The orders are reported.
+//   failed      a write or sync failed inside Restart (the file is in one of the
+//               crash states the careful-write order allows); the writer refuses
+//               everything until the database is closed and opened again, new
+//               statements are fenced. Requires a reopen.
+enum class NativeServingState : std::uint8_t { serving, restricted, failed };
+const char* NativeServingStateName(NativeServingState state) noexcept;
+
+// What the Restart did, as values (message-vector material, no names): the
+// engine-owned TRA_cleanup of the transaction inventory. `horizons` are the
+// STORED horizons read back after Restart (Restart never rewrites them).
+struct NativeRestartReport {
+  bool ran = false;               // Restart completed (marking done; clean file: nothing to mark)
+  bool writer_failed = false;     // a write or sync failed; reopen required
+  bool read_only_skipped = false; // a read-only database: checked, nothing written
+  std::uint64_t next_transaction = 0, scanned_from = 0, marked_dead = 0;
+  std::uint64_t writes = 0, syncs = 0;  // sink writes that succeeded / syncs issued by Restart
+  // The open verification's count of entries in an UNCERTAIN state (created, preparing, prepared, committing,
+  // rolling_back, limbo, recovering), as verified BEFORE Restart. It INCLUDES the committing / recovering slots
+  // listed in `unresolved`; prepared / limbo are the ones that are uncertain but left alone, not unresolved.
+  std::uint64_t uncertain_transactions = 0;
+  std::vector<std::uint64_t> unresolved;    // committing / recovering orders
+  std::uint64_t horizon_oit = 0, horizon_oat = 0, horizon_ost = 0, horizon_oct = 0, horizon_oar = 0, horizon_olr = 0;
+  std::string writer_error;       // TransactionWriterErrorName of the Restart outcome
+  std::string write_error;        // CarefulWriteError detail of a failed write, if any
+  std::int32_t native_io_error = 0;
+};
+
 struct NativeLoopOpenRequest {
   // The process crypto owner (thread-affine to its constructing thread; the
   // loop thread is made its native-database delegate for the open's lifetime).
@@ -88,7 +134,20 @@ struct NativeLoopOpenRequest {
   core::platform::Uuid filespace_uuid;
   std::uint32_t page_size_bytes = 0;
   std::uint64_t total_pages = 0;
+  // SB_TEST_SEAM (S3d): null in production. A test sets it to wrap the careful-write sink Restart
+  // writes through (crash / torn / failing sinks, as the writer tests use); the returned sink wraps
+  // the one passed in and lives until Restart returns. Never serialized, never set by a server.
+  std::function<std::unique_ptr<storage::disk::CarefulWriteSink>(storage::disk::CarefulWriteSink&)>
+      restart_sink_wrapper;
 };
+
+// SB_TEST_SEAM (S3d): a process-wide default for NativeLoopOpenRequest::restart_sink_wrapper, copied
+// into the request by StartHostedEngine, so a test child process can inject crash / torn / failing
+// sinks into the real server open path. Empty in production; nothing outside tests sets it.
+void SetNativeRestartSinkWrapperForTest(
+    std::function<std::unique_ptr<storage::disk::CarefulWriteSink>(storage::disk::CarefulWriteSink&)> wrapper);
+std::function<std::unique_ptr<storage::disk::CarefulWriteSink>(storage::disk::CarefulWriteSink&)>
+NativeRestartSinkWrapperForTest();
 
 // Immutable facts about the verified, serving-ready database. Copied values
 // only; no custody, no readiness authority.
@@ -99,8 +158,13 @@ struct NativeLoopServingFacts {
   std::uint64_t transactions = 0, active_transactions = 0, in_doubt_transactions = 0;
   std::uint64_t filespaces = 0, catalog_pages = 0, wasted_pages = 0;
   std::uint64_t verification_workspace_bytes = 0;
-  // Restart (the TIP) is S3d: this open ends before it.
+  // True until Restart has completed: false for serving; true for restricted (not run) and failed
+  // (did not complete). (Was, S3b/S3c: always true, Restart did not exist.)
   bool restart_pending = true;
+  NativeServingState serving_state = NativeServingState::serving;
+  NativeRestartReport restart;
+  // Specific code for a restricted or failed serving state, empty for serving.
+  NativeLoopDiagnostic serving_diagnostic;
 };
 
 struct NativeLoopOpenResult {
@@ -140,6 +204,8 @@ class NativeDatabaseLoop final {
   NativeLoopCloseResult Close() noexcept;
 
   NativeLoopState state() const noexcept { return state_.load(std::memory_order_acquire); }
+  // The database's serving state (see NativeServingState); meaningful once the open completed.
+  NativeServingState serving_state() const noexcept { return serving_state_.load(std::memory_order_acquire); }
   std::thread::id thread_id() const noexcept { return thread_id_; }
   bool on_loop_thread() const noexcept { return std::this_thread::get_id() == thread_id_; }
 
@@ -160,10 +226,16 @@ class NativeDatabaseLoop final {
   void HandleOpen(OpenWork&) noexcept;
   NativeLoopCloseResult HandleClose() noexcept;
   struct Serving;  // loop-thread-only state
+  // S3d: the single transaction-store Restart, on this thread, under the custody write operation.
+  // Returns false with `refusal` set when the open must be refused (nothing written, or a broken
+  // invariant); true when the database reached serving, restricted or failed (facts updated).
+  bool RunRestart(const NativeLoopOpenRequest&, const NativeOpenVerificationObservation&,
+                  NativeLoopDiagnostic& refusal) noexcept;
 
   std::thread thread_;
   std::thread::id thread_id_;
   std::atomic<NativeLoopState> state_{NativeLoopState::opening};
+  std::atomic<NativeServingState> serving_state_{NativeServingState::serving};
   std::mutex mutex_;
   std::condition_variable wake_;
   std::deque<Work> queue_;

@@ -18,12 +18,17 @@
 //   management definition -> verification policies -> the startup service
 //   session attached -> transaction policies -> the open verification
 //   (identity, allocation, inventory, catalog routes).
-// NOTHING here writes: Restart (the TIP) is S3d and runs after this.
+// NOTHING in the verification writes. S3d: after it the credential read is
+// released (its custody operation), then the transaction-store Restart runs ONCE
+// on this thread under the custody write operation (RunRestart below).
 
 #include "native_database_loop.hpp"
 
 #include "engine/internal_api/security/agent_password_derivation.hpp"
+#include "native_hosted_careful_write_sink.hpp"
+#include "node_uuid_issuer.hpp"
 #include "startup_credential_source_adapter.hpp"
+#include "transaction_inventory_writer.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -53,7 +58,32 @@ const char* NativeLoopStateName(NativeLoopState state) noexcept {
 }
 
 namespace {
+std::mutex test_wrapper_mutex;
+std::function<std::unique_ptr<storage::disk::CarefulWriteSink>(storage::disk::CarefulWriteSink&)> test_wrapper;
+}  // namespace
+void SetNativeRestartSinkWrapperForTest(
+    std::function<std::unique_ptr<storage::disk::CarefulWriteSink>(storage::disk::CarefulWriteSink&)> wrapper) {
+  std::lock_guard<std::mutex> guard(test_wrapper_mutex);
+  test_wrapper = std::move(wrapper);
+}
+std::function<std::unique_ptr<storage::disk::CarefulWriteSink>(storage::disk::CarefulWriteSink&)>
+NativeRestartSinkWrapperForTest() {
+  std::lock_guard<std::mutex> guard(test_wrapper_mutex);
+  return test_wrapper;
+}
+
+const char* NativeServingStateName(NativeServingState state) noexcept {
+  switch (state) {
+    case NativeServingState::serving: return "serving";
+    case NativeServingState::restricted: return "restricted";
+    case NativeServingState::failed: return "failed";
+  }
+  return "failed";
+}
+
+namespace {
 namespace db = storage::database;
+namespace pg = storage::page;
 namespace api = engine::internal_api;
 using Host = NativeHostedDatabaseRuntime;
 
@@ -265,12 +295,20 @@ struct NativeDatabaseLoop::Serving {
   core::memory::ScopedProtectedBuffer derived;
   std::optional<Host::CredentialRead> read;
   NativeLoopServingFacts facts;
+  // S3d: the single writer of this open, constructed once by RunRestart and owned here (thread-affine
+  // by its callers, not by itself; only this thread ever calls it). The issuer is the chain-growth
+  // identity source its binding names; both are released before the runtime closes. PLAN36_T1:
+  // CompleteAndBegin is a new method of THIS writer, same restarted precondition (not implemented).
+  std::optional<core::uuid::StandaloneUuidV7Issuer> issuer;
+  std::optional<pg::TransactionInventoryWriter> writer;
 
   // Reverse of acquisition, explicit because the close result must be seen.
   // The read first (it pins the host and holds the source lease), then the
   // runtime, then the credential source.
   bool Teardown(NativeLoopDiagnostic* failure) noexcept {
     bool ok = true;
+    writer.reset();
+    issuer.reset();
     read.reset();
     if (runtime) {
       const auto closed = Host::Close(runtime);
@@ -430,6 +468,139 @@ NativeLoopCloseResult NativeDatabaseLoop::HandleClose() noexcept {
   state_.store(NativeLoopState::closed, std::memory_order_release);
   result.state = NativeLoopState::closed;
   return result;
+}
+
+// SEARCH_KEY: SB_NATIVE_RESTART (thin-slice S3d, plan 38 2d; owner Q241 = 1, Q284).
+// The transaction-store Restart (FirebirdSQL TRA_cleanup) of this open, run ONCE on the loop thread
+// through the runtime's write door (TryBeginWriterOperation, S3c). Binding: state_root = page-zero
+// root kind 4, allocation_root = kind 3 + an identity issuer (chain growth; Restart itself never
+// grows), read_only_database from the verified system state (SBSYS002), default barrier policy.
+// Restart marks every in-progress slot, every unused slot below Next (a header over an unused slot is
+// one) dead; a CLEAN file performs 0 writes and 0 syncs (checked here: a clean Restart that wrote is
+// refused). Counters are not rewritten. committing / recovering slots are "unresolved": Restart
+// refuses BEFORE any write and the database opens restricted (Q241 = 1). A write or sync failure
+// leaves the writer failed (refuses everything) and the database in the failed serving state.
+// Nothing begins a transaction here (Q284: L5's first transaction is S5).
+bool NativeDatabaseLoop::RunRestart(const NativeLoopOpenRequest& request,
+                                    const NativeOpenVerificationObservation& observed,
+                                    NativeLoopDiagnostic& refusal) noexcept {
+  try {
+    auto& serving = *serving_;
+    auto& facts = serving.facts;
+    auto& report = facts.restart;
+    report.uncertain_transactions = observed.inventory.in_doubt_transactions;
+    const auto reject = [&](const char* step, std::vector<std::pair<std::string, std::string>> fields) {
+      refusal = Refusal("DATABASE.OPEN_NATIVE_RESTART_REFUSED", step, std::move(fields));
+      return false;
+    };
+
+    pg::TransactionWriterBinding binding;
+    binding.database_uuid = request.database_uuid;
+    const storage::disk::FilespaceRootReference* state_root = nullptr;
+    const storage::disk::FilespaceRootReference* map_root = nullptr;
+    for (std::size_t i = 0; i < observed.identity.primary_root_count && i < observed.identity.primary_roots.size(); ++i) {
+      const auto& root = observed.identity.primary_roots[i];
+      if (root.kind == 4 && !state_root) state_root = &root;
+      if (root.kind == 3 && !map_root) map_root = &root;
+    }
+    if (!state_root) return reject("restart_binding", {{"error", "state_root_absent"}});
+    binding.state_root = *state_root;
+    binding.read_only_database = (observed.identity.system_state.flags & db::NativeDatabaseStateFlag::read_only) != 0;
+    binding.refuse_restart_with_unresolved = true;
+    // Chain growth needs the allocation map and an issuer. The issuer's policy-snapshot input is the
+    // engine instance for now: no policy snapshot exists before plan 32 (owner question). Restart
+    // never issues, so this is only the binding the later BEGIN will use.
+    if (map_root) {
+      serving.issuer.emplace(core::uuid::StandaloneUuidV7Binding{request.database_uuid, facts.engine_instance_uuid},
+                             core::uuid::kStandardLocalClockUuidV7Policy);
+      binding.allocation_root = *map_root;
+      binding.issuer = &*serving.issuer;
+    }
+    serving.writer.emplace(binding);
+    if (serving.writer->page_size() == 0) return reject("restart_binding", {{"error", "writer_binding_invalid"}});
+
+    const auto operation_identity = core::uuid::IssueRuntimeIdentityV7();
+    if (!operation_identity) return reject("writer_operation", {{"error", "identity_issue_failed"}});
+    // Declared before the sink: released after it.
+    auto write_operation = Host::TryBeginWriterOperation(serving.runtime, *operation_identity);
+    if (!write_operation.ok())
+      return reject("writer_operation", {{"custody_error", Num(static_cast<unsigned>(write_operation.error))},
+                                         {"writer_error", Num(static_cast<unsigned>(write_operation.writer_error))},
+                                         {"route_error", Num(static_cast<unsigned>(write_operation.route_error))}});
+    NativeHostedCarefulWriteSink sink(write_operation.operation, request.filespace_uuid,
+                                      observed.identity.primary_profile_uuid);
+    std::unique_ptr<storage::disk::CarefulWriteSink> decorated;
+    storage::disk::CarefulWriteSink* writing = &sink;
+    if (request.restart_sink_wrapper) {
+      decorated = request.restart_sink_wrapper(sink);
+      if (decorated) writing = decorated.get();
+    }
+
+    const auto restart = serving.writer->Restart(*writing);
+    // The stored horizons, read back (Restart never rewrites them), unless a write failed (the
+    // writer is failed and the file is in a crash state: report nothing it might misstate).
+    const auto read_horizons = [&] {
+      const auto chains = pg::ReadTransactionChainsThroughSink(sink, binding);
+      if (!chains.ok()) return;
+      report.next_transaction = chains.counters.next_transaction;
+      report.horizon_oit = chains.counters.horizons.oldest_interesting;
+      report.horizon_oat = chains.counters.horizons.oldest_active;
+      report.horizon_ost = chains.counters.horizons.oldest_snapshot;
+      report.horizon_oct = chains.counters.horizons.oldest_cleanup;
+      report.horizon_oar = chains.counters.horizons.oldest_archive_required;
+      report.horizon_olr = chains.counters.horizons.oldest_limbo_resolution;
+    };
+    if (!serving.writer->failed()) read_horizons();
+    report.writes = restart.writes;
+    report.syncs = restart.syncs;
+    report.next_transaction = restart.next_transaction;
+    report.scanned_from = restart.scanned_from;
+    report.marked_dead = restart.marked_dead;
+    report.unresolved = restart.unresolved;
+    report.writer_error = pg::TransactionWriterErrorName(restart.error);
+    report.read_only_skipped = restart.read_only_skipped;
+    if (restart.write_error != storage::disk::CarefulWriteError::none)
+      report.write_error = storage::disk::CarefulWriteErrorName(restart.write_error);
+    report.native_io_error = static_cast<std::int32_t>(restart.io.native_error);
+
+    if (restart.ok()) {
+      // A clean file performs no write and no sync.
+      if (restart.marked_dead == 0 && (restart.writes != 0 || restart.syncs != 0))
+        return reject("restart", {{"error", "clean_restart_wrote"}, {"writes", Num(restart.writes)}});
+      report.ran = true;
+      facts.restart_pending = false;
+      facts.serving_state = NativeServingState::serving;
+    } else if (restart.error == pg::TransactionWriterError::unresolved_transactions) {
+      facts.restart_pending = true;
+      facts.serving_state = NativeServingState::restricted;
+      facts.serving_diagnostic = Refusal(
+          "DATABASE.OPEN_RESTRICTED_UNRESOLVED_TRANSACTIONS", "restart",
+          {{"unresolved_count", Num(restart.unresolved.size())},
+           {"first_unresolved_order", Num(restart.unresolved.empty() ? 0 : restart.unresolved.front())},
+           {"uncertain_count_including_unresolved", Num(report.uncertain_transactions)},
+           {"written", "0"}});
+    } else if (serving.writer->failed()) {
+      report.writer_failed = true;
+      facts.restart_pending = true;
+      facts.serving_state = NativeServingState::failed;
+      facts.serving_diagnostic = Refusal(
+          "DATABASE.RESTART_WRITE_FAILED", "restart",
+          {{"error", report.writer_error}, {"write_error", report.write_error},
+           {"native_io_error", Num(static_cast<std::uint32_t>(restart.io.native_error))},
+           {"writes_done", Num(restart.writes)}, {"syncs_issued", Num(restart.syncs)},
+           {"requires", "reopen"}});
+    } else {
+      // Refused before any write (a read failed, the inventory no longer checks, resources): the
+      // file is unchanged; the open is refused.
+      return reject("restart", {{"error", report.writer_error},
+                                {"page_error", Num(static_cast<unsigned>(restart.page_error))}});
+    }
+    serving_state_.store(facts.serving_state, std::memory_order_release);
+    return true;
+  } catch (...) {
+    refusal = Refusal("DATABASE.OPEN_NATIVE_LOOP_EXCEPTION", "restart");
+    return false;
+  }
 }
 
 void NativeDatabaseLoop::HandleOpen(OpenWork& work) noexcept {
@@ -658,7 +829,7 @@ void NativeDatabaseLoop::HandleOpen(OpenWork& work) noexcept {
                            {"error", VerificationErrorName(verified.error)},
                            {"source_error", Num(static_cast<unsigned>(verified.source_error))}}));
 
-    // ---- verified, serving-ready; Restart (S3d) has not run ----
+    // ---- verified; S3d: the credential read ends, then Restart ----
     const auto& observed = *verified.observation;
     serving.facts.engine_instance_uuid = serving.runtime->engine_instance_uuid();
     serving.facts.service_principal_uuid = service.service_principal_uuid;
@@ -670,6 +841,14 @@ void NativeDatabaseLoop::HandleOpen(OpenWork& work) noexcept {
     serving.facts.catalog_pages = observed.allocation.catalog_pages;
     serving.facts.wasted_pages = observed.allocation.wasted_pages;
     serving.facts.verification_workspace_bytes = observed.workspace_bytes;
+    // SB_NATIVE_RESTART ordering (plan 38 risk "custody operation exclusivity"): the credential read
+    // retains the custody's ONE operation until it is reset, and an owned-writer operation is
+    // exclusive (a second TryBeginOperation is busy), so the read is released here, BEFORE the writer
+    // takes the write operation. Everything the verification published is copied above; the read's
+    // retained session / catalog capture end with it (S3e re-acquires what it needs).
+    serving.read.reset();
+    NativeLoopDiagnostic restart_refusal;
+    if (!RunRestart(request, observed, restart_refusal)) return fail(std::move(restart_refusal));
     result.facts = serving.facts;
     work.request.ownership.reset();  // custody holds the runtime's reference
     result.ok = true;

@@ -286,6 +286,7 @@ const char* TransactionWriterErrorName(TransactionWriterError error) noexcept {
     case E::invalid_header: return "invalid_header";
     case E::write_failed: return "write_failed";
     case E::resource_exhausted: return "resource_exhausted";
+    case E::unresolved_transactions: return "unresolved_transactions";
   }
   return "unknown";
 }
@@ -325,6 +326,13 @@ TransactionRestartResult TransactionInventoryWriter::Restart(disk::CarefulWriteS
     result.scanned_from = planned.scanned_from;
     result.marked_dead = planned.marked_dead;
     result.unresolved = planned.unresolved;
+    if (binding_.refuse_restart_with_unresolved && !planned.unresolved.empty()) {
+      // Q241 = 1: nothing is written; the planner worked on copies, so the
+      // file and the writer (not restarted, not failed) are as they were.
+      result.marked_dead = 0;  // the planned count was not applied
+      result.error = E::unresolved_transactions;
+      return result;
+    }
     if (planned.units.empty()) {
       restarted_ = true;
       result.error = E::none;

@@ -55,6 +55,12 @@ std::string JsonEscape(const std::string& value) {
   return EscapeMessageVectorText(value);
 }
 
+std::string UnsignedArrayJson(const std::vector<std::uint64_t>& values) {
+  std::string out = "[";
+  for (std::size_t i = 0; i < values.size(); ++i) out += (i ? "," : "") + std::to_string(values[i]);
+  return out + "]";
+}
+
 ServerDiagnostic EngineHostDiagnostic(std::string code,
                                       std::string key,
                                       std::string message,
@@ -309,8 +315,10 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
 
     // SEARCH_KEY: SB_NATIVE_SERVING_OPEN (thin-slice S3b, plan 38). A valid
     // native file is opened and verified READ-ONLY on the database loop thread
-    // (SB_NATIVE_DATABASE_LOOP) and reported as serving; Restart (the TIP) is
-    // S3d, so the snapshot stays write-fenced. Refusals that precede the loop,
+    // (SB_NATIVE_DATABASE_LOOP), the transaction-store Restart runs once on that
+    // thread (S3d, SB_NATIVE_RESTART), and the database is reported serving |
+    // restricted | failed; write admission stays fenced (no statement path until
+    // S3e/S3f). Refusals that precede the loop,
     // each specific:
     //  * a configured startup credential source: under Q281 an outside party
     //    hands the server a secret ONLY as the decryption key of an encrypted
@@ -350,6 +358,7 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
     loop_request.filespace_uuid = snapshot.filespace_uuid;
     loop_request.page_size_bytes = static_cast<std::uint32_t>(snapshot.page_size_bytes);
     loop_request.total_pages = discovered.page_zero->total_pages;
+    loop_request.restart_sink_wrapper = NativeRestartSinkWrapperForTest();  // SB_TEST_SEAM, empty in production
     TraceServerStartupPhase(config, "native_database_loop", "opening");
     const auto loop_opened = native_loop->SubmitOpen(std::move(loop_request)).get();
     if (!loop_opened.ok) {
@@ -383,19 +392,69 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
     snapshot.database_created = false;
     snapshot.database_open = true;
     snapshot.native_hosted_runtime_open = true;
-    snapshot.native_serving_state = NativeLoopStateName(NativeLoopState::serving);
+    // S3d: the database's serving state after the loop's Restart (serving | restricted | failed).
+    // (Was: NativeLoopStateName(serving), always "serving", with Restart pending.)
+    const auto& restart = loop_opened.facts.restart;
+    snapshot.native_serving_state = NativeServingStateName(loop_opened.facts.serving_state);
     snapshot.native_restart_pending = loop_opened.facts.restart_pending;
     snapshot.native_verified_transactions = loop_opened.facts.transactions;
     snapshot.native_service_principal_uuid = loop_opened.facts.service_principal_uuid;
     snapshot.native_engine_instance_uuid = loop_opened.facts.engine_instance_uuid;
-    snapshot.startup_recovery_classification = "native_verified_restart_pending";
-    // No write before Restart (S3d): the snapshot stays fenced.
-    snapshot.read_only = false;
+    snapshot.native_restart_ran = restart.ran;
+    snapshot.native_writer_failed = restart.writer_failed;
+    snapshot.native_restart_next_transaction = restart.next_transaction;
+    snapshot.native_restart_scanned_from = restart.scanned_from;
+    snapshot.native_restart_marked_dead = restart.marked_dead;
+    snapshot.native_restart_writes = restart.writes;
+    snapshot.native_restart_syncs = restart.syncs;
+    snapshot.native_uncertain_transactions = restart.uncertain_transactions;
+    snapshot.native_restart_unresolved = restart.unresolved;
+    snapshot.native_horizon_oit = restart.horizon_oit;
+    snapshot.native_horizon_oat = restart.horizon_oat;
+    snapshot.native_horizon_ost = restart.horizon_ost;
+    snapshot.native_horizon_oct = restart.horizon_oct;
+    snapshot.native_horizon_oar = restart.horizon_oar;
+    snapshot.native_horizon_olr = restart.horizon_olr;
+    // Classification (Was, S3b/S3c: native_verified_restart_pending).
+    switch (loop_opened.facts.serving_state) {
+      case NativeServingState::serving:
+        snapshot.startup_recovery_classification =
+            restart.marked_dead == 0 ? "native_verified_restart_clean" : "native_verified_restarted";
+        break;
+      case NativeServingState::restricted:
+        snapshot.startup_recovery_classification = "native_verified_restart_unresolved_restricted";
+        snapshot.state = HostedDatabaseState::kRestrictedOpen;
+        break;
+      case NativeServingState::failed:
+        snapshot.startup_recovery_classification = "native_restart_write_failed_reopen_required";
+        snapshot.state = HostedDatabaseState::kFailed;
+        break;
+    }
+    if (loop_opened.facts.serving_state != NativeServingState::serving) {
+      snapshot.diagnostic_code = loop_opened.facts.serving_diagnostic.code;
+      snapshot.diagnostic_message_key = loop_opened.facts.serving_diagnostic.code;
+    }
+    // Writes stay fenced: no statement exists yet (S3e/S3f), and a restricted or failed database
+    // never admits one. A read-only database reports it.
+    snapshot.read_only = restart.read_only_skipped || snapshot.state == HostedDatabaseState::kRestrictedOpen;
     snapshot.write_admission_fenced = true;
     snapshot.lifecycle_mode = config.database_open_mode;
     result.state.database_ownership_locks.push_back(std::move(native_ownership.lock));
     result.state.database_runtimes.push_back(std::move(native_runtime));
     result.state.databases.push_back(snapshot);
+    if (loop_opened.facts.serving_state == NativeServingState::failed) {
+      // A write failed inside Restart: the database is open (so the failure is reportable through the
+      // status and closes cleanly) but the process must not serve it; requires a reopen. main() exits
+      // on any diagnostic, with this specific code. The state above is kept for the caller to read.
+      std::vector<ServerDiagnosticField> fields{{"database_path", snapshot.database_path},
+                                                {"step", loop_opened.facts.serving_diagnostic.step}};
+      for (const auto& field : loop_opened.facts.serving_diagnostic.fields) fields.push_back({field.first, field.second});
+      result.diagnostics.push_back(ServerDiagnostic{loop_opened.facts.serving_diagnostic.code,
+                                                    loop_opened.facts.serving_diagnostic.code,
+                                                    ServerDiagnosticSeverity::kError,
+                                                    "The native database's transaction-store restart failed to write; reopen it.",
+                                                    std::move(fields)});
+    }
     if (!process_admission.reservation.Commit()) std::terminate();
     startup_completed = true;
     return result;
@@ -1023,6 +1082,19 @@ std::string HostedEngineStatusJson(const HostedEngineState& state) {
         << JsonEscape(database.startup_recovery_classification) << "\","
         << "\"native_serving_state\":\"" << JsonEscape(database.native_serving_state) << "\","
         << "\"native_restart_pending\":" << (database.native_restart_pending ? "true" : "false") << ","
+        << "\"native_restart_ran\":" << (database.native_restart_ran ? "true" : "false") << ","
+        << "\"native_writer_failed\":" << (database.native_writer_failed ? "true" : "false") << ","
+        << "\"native_restart_next_transaction\":" << database.native_restart_next_transaction << ","
+        << "\"native_restart_scanned_from\":" << database.native_restart_scanned_from << ","
+        << "\"native_restart_marked_dead\":" << database.native_restart_marked_dead << ","
+        << "\"native_restart_writes\":" << database.native_restart_writes << ","
+        << "\"native_restart_syncs\":" << database.native_restart_syncs << ","
+        << "\"native_uncertain_transactions\":" << database.native_uncertain_transactions << ","
+        << "\"native_restart_unresolved\":" << UnsignedArrayJson(database.native_restart_unresolved) << ","
+        << "\"native_stored_horizons\":{\"oit\":" << database.native_horizon_oit
+        << ",\"oat\":" << database.native_horizon_oat << ",\"ost\":" << database.native_horizon_ost
+        << ",\"oct\":" << database.native_horizon_oct << ",\"oar\":" << database.native_horizon_oar
+        << ",\"olr\":" << database.native_horizon_olr << "},"
         << "\"native_service_principal_uuid\":\""
         << scratchbird::wire::binary_status::Identity(database.native_service_principal_uuid) << "\","
         << "\"diagnostic_code\":\"" << JsonEscape(database.diagnostic_code) << "\"}";

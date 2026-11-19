@@ -4186,8 +4186,11 @@ endif()
 # SEARCH_KEY: SB_NATIVE_SERVING_TEST (thin-slice S3b, plan 38; owner Q236/Q237,
 # Q274/Q281). The server opens a natively created database and serves it to
 # "serving": read-only verification on the database loop thread, L5's
-# credential derived inside the server and authenticated, Restart (S3d) not
-# run, nothing written. Each open runs in its own child process (the process
+# credential derived inside the server and authenticated, then (S3d, owner
+# Q241 = 1) the transaction-store Restart on the loop thread: a clean file
+# writes nothing; crash states, kill -9 / torn / failing writes, and
+# unresolved committing / recovering slots (restricted) are driven by the same
+# binary. (Was, S3b/S3c: Restart not run.) Each open runs in its own child process (the process
 # gate binds after one open). The Python half runs a serve child under strace.
 add_executable(sbsql_sblr_alignment_native_serving native_serving_test.cpp)
 target_compile_features(sbsql_sblr_alignment_native_serving PRIVATE cxx_std_23)
@@ -4208,6 +4211,16 @@ if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
       --test-bin $<TARGET_FILE:sbsql_sblr_alignment_native_serving>)
   set_tests_properties(sbsql_sblr_alignment_native_serving_strace PROPERTIES
     LABELS "sbsql_sblr_alignment;native_storage;native_serving;strace"
+    TIMEOUT 1800)
+  # S3d (plan 38, owner Q241 = 1, Q284): the transaction-store Restart at the syscall level. Clean file:
+  # Restart ran, 0 write-class syscalls on any data descriptor, sha256 unchanged. Dirty file (257
+  # transactions left in progress by the writer itself): exactly 3 pwrite64 of 512 bytes on a dup'd data
+  # descriptor in one page, then one fsync, before SERVING; one shutdown fsync (dirty writer).
+  add_test(NAME sbsql_sblr_alignment_native_restart_strace
+    COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_restart_strace.py"
+      --test-bin $<TARGET_FILE:sbsql_sblr_alignment_native_serving>)
+  set_tests_properties(sbsql_sblr_alignment_native_restart_strace PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_restart;strace"
     TIMEOUT 1800)
   # S3c (Q282 = 1, Q283 = yes, 2026-11-19): the REAL SBsrv, NO --config (the installed default
   # SBsrv.conf), serves a natively created file at five page sizes, shuts down cleanly on SIGTERM, with

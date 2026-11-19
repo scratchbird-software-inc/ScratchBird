@@ -83,9 +83,24 @@ struct HostedDatabaseSnapshot {
   // for a database not opened natively. native_restart_pending is true until
   // the TIP Restart (S3d) runs: the database is verified and serving-ready but
   // write-fenced, and nothing has written to it.
+  // S3d: "serving" | "restricted" | "failed" (NativeServingState). native_restart_pending is now
+  // true only when Restart did not complete (restricted: refused before any write; failed: a write
+  // failed, reopen required). (Was, S3b/S3c: always true after open, Restart did not exist.)
   std::string native_serving_state;
   bool native_restart_pending = false;
   std::uint64_t native_verified_transactions = 0;
+  // SB_NATIVE_RESTART report (S3d): values only. Counts are Restart's own; the horizons are the
+  // STORED ones read back after it. native_verified_transactions above is the count verified BEFORE
+  // Restart. native_restart_unresolved lists committing / recovering orders (restricted).
+  bool native_restart_ran = false;
+  bool native_writer_failed = false;
+  std::uint64_t native_restart_next_transaction = 0, native_restart_scanned_from = 0;
+  std::uint64_t native_restart_marked_dead = 0, native_restart_writes = 0, native_restart_syncs = 0;
+  // The verification's count of uncertain-state entries before Restart (includes the unresolved ones).
+  std::uint64_t native_uncertain_transactions = 0;
+  std::vector<std::uint64_t> native_restart_unresolved;
+  std::uint64_t native_horizon_oit = 0, native_horizon_oat = 0, native_horizon_ost = 0;
+  std::uint64_t native_horizon_oct = 0, native_horizon_oar = 0, native_horizon_olr = 0;
   // Immutable facts the verified open published: L5's principal (read from the
   // file, authenticated by the derived credential) and this open's engine
   // instance. Nil for a database not opened natively.

@@ -15,8 +15,11 @@ Creates a native database at each of the five page sizes, runs one serve child
   - the directory afterwards is byte-identical (names, sizes, SHA-256);
   - 0 write-class syscalls (write, pwrite64, pwritev, ftruncate, fallocate,
     fsync, fdatasync) on any descriptor opened on the data file, or duplicated
-    from one, BEFORE the SERVING line: nothing is written or synced before
-    Restart (the TIP, S3d). After it (the shutdown) NO write-class syscall on a
+    from one, BEFORE the SERVING line. S3d: the SERVING line now follows the
+    transaction-store Restart, so this reads "0 writes and 0 syncs even after
+    Restart" for a clean file (the dirty cases: native_restart_strace.py).
+    (Was, S3b/S3c: nothing is written or synced before Restart, which did not
+    exist yet.) After it (the shutdown) NO write-class syscall on a
     data descriptor either: Q283 = yes (owner 2026-11-19), the writer syncs at
     close only when something was written. (Was: one close-time fsync allowed.)
   - S3c (owner Q239 = 1, 2026-11-19): the serve child runs in its "read" variant,
@@ -117,10 +120,11 @@ def main():
             spans = data_descriptors(lines, path)
             if not spans:
                 fail(f"serve {size}: no open of the data file was traced")
-            # The SERVING line marks the end of the open; everything after it is
-            # the shutdown. Nothing may write, or sync, a data descriptor
-            # before it; after it, the close path may fsync (reported), never
-            # write.
+            # The SERVING line marks the end of the open, which since S3d includes
+            # the Restart of the transaction store (a clean file marks nothing
+            # dead, so it writes nothing); everything after it is the shutdown.
+            # Nothing may write, or sync, a data descriptor before it; after it,
+            # the close path may fsync (reported), never write.
             serving_at = next((i for i, line in enumerate(lines) if re.search(r'write\(1, "SERVING', line)), None)
             if serving_at is None:
                 fail(f"serve {size}: the SERVING output line was not traced")
