@@ -27,6 +27,9 @@ class SblrBulkImportStreamRegistry;
 enum class SessionValueOperation : std::uint8_t;
 }
 
+namespace scratchbird::engine::internal_api {
+struct NativeServedDatabaseFacts;
+}
 namespace scratchbird::engine::sblr {
 struct SblrSessionSettingSetRequestV1;
 struct SblrSessionSettingSetDescriptorV1;
@@ -111,6 +114,18 @@ sb_engine_status_t OpenServedEngine(
     const sb_engine_open_params_v1_t* params,
     const std::shared_ptr<scratchbird::storage::disk::RouteOwnershipLease>& served_owner,
     std::string_view server_policy_seed_pack_root,
+    sb_engine_handle_t* out_engine,
+    sb_engine_result_t* out_result);
+
+// SEARCH_KEY: SB_NATIVE_SERVED_DATABASE_FACTS (thin-slice S3e, owner Q238 = 1). The server's open of a handle on a
+// verified, served native database: the handle carries the immutable facts the database loop published, the header
+// snapshot is the facts, no .sb.* file is touched. The only way a handle becomes native; sb_engine_open and the
+// forms above still refuse a native file (DATABASE.OPEN_NATIVE_RUNTIME_PENDING, owner Q285).
+sb_engine_status_t OpenServedEngine(
+    const sb_engine_open_params_v1_t* params,
+    const std::shared_ptr<scratchbird::storage::disk::RouteOwnershipLease>& served_owner,
+    std::string_view server_policy_seed_pack_root,
+    std::shared_ptr<const scratchbird::engine::internal_api::NativeServedDatabaseFacts> native_facts,
     sb_engine_handle_t* out_engine,
     sb_engine_result_t* out_result);
 

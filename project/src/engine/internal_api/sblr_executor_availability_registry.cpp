@@ -1,11 +1,13 @@
 #include "sblr_executor_availability_registry.hpp"
 #include "sblr_executor_row_identity_hash.hpp"
+#include "native_served_database_facts.hpp"
 
 #include "api_diagnostics.hpp"
 #include "mga_relation_store/mga_metadata_record_codec.hpp"
 #include "hash_digest.hpp"
 #include "uuid.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
@@ -1216,6 +1218,68 @@ std::string ComputeSblrExecutorAvailabilityRowIdentitySha256(
   return HashSblrExecutorRowIdentityMaterial(identity);
 }
 
+const EngineUuid& NativeExecutorAvailabilityTableUuid() {
+  // A build constant (coding-time identity, not text-derived): UUIDv7-shaped, ASCII tag "SBENAV" in the tail.
+  static const EngineUuid table{std::array<std::uint8_t, 16>{
+      0x01, 0x9e, 0x5a, 0x00, 0x00, 0x00, 0x70, 0x00, 0x80, 0x00, 'S', 'B', 'E', 'N', 'A', 'V'}};
+  return table;
+}
+
+const std::vector<SblrExecutorAvailabilityRowIdentity>& NativeExecutorAvailabilityAllowList() {
+  // EMPTY by design (see the header): an executor is listed only once it is shown to run natively.
+  static const std::vector<SblrExecutorAvailabilityRowIdentity> allowed;
+  return allowed;
+}
+
+SblrExecutorAvailabilityLoadResult NativeExecutorAvailabilityLookup(
+    const EngineUuid& database_uuid, const SblrExecutorAvailabilityRowIdentity& exact_row_identity,
+    const std::vector<SblrExecutorAvailabilityRowIdentity>& allow_list) {
+  SblrExecutorAvailabilityLoadResult result;
+  const auto row_sha = ComputeSblrExecutorAvailabilityRowIdentitySha256(exact_row_identity);
+  const bool available = std::find_if(allow_list.begin(), allow_list.end(), [&](const auto& allowed) {
+    return SameExecutorAvailabilityIdentity(allowed, exact_row_identity);
+  }) != allow_list.end();
+  if (!available || row_sha.empty()) {
+    result.diagnostic = MakeEngineApiDiagnostic("SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED",
+                                                "sblr.executor.native_not_implemented", {}, true);
+    result.diagnostic.fields.push_back({"opcode_code", std::to_string(exact_row_identity.opcode_code)});
+    result.diagnostic.fields.push_back({"row_identity_sha256", row_sha});
+    result.diagnostic.identity_fields.push_back({"availability_table_uuid", NativeExecutorAvailabilityTableUuid()});
+    result.diagnostic.identity_fields.push_back({"database_uuid", database_uuid});
+    return result;
+  }
+  auto& snapshot = result.snapshot;
+  snapshot.snapshot_uuid = NativeExecutorAvailabilityTableUuid();
+  snapshot.generation = 1;
+  snapshot.database_uuid = database_uuid;
+  snapshot.row_identity_sha256 = row_sha;
+  snapshot.installed = true;
+  snapshot.availability_state = SblrExecutorAvailabilityState::installed;
+  std::string evidence(reinterpret_cast<const char*>(NativeExecutorAvailabilityTableUuid().bytes.data()), 16);
+  evidence.append(row_sha);
+  snapshot.decision_evidence_sha256 = Sha256(evidence);
+  result.ok = true;
+  result.diagnostic = MakeEngineApiDiagnostic("OK", "ok", {}, false);
+  return result;
+}
+
+namespace {
+// A native context's lookup: the facts must name the context's own database.
+SblrExecutorAvailabilityLoadResult NativeLoad(const EngineRequestContext& context,
+                                              const SblrExecutorAvailabilityRowIdentity& exact_row_identity) {
+  if (context.native_served_facts->database_uuid != context.database_uuid) {
+    SblrExecutorAvailabilityLoadResult result;
+    result.diagnostic = MakeEngineApiDiagnostic("SBLR.EXECUTOR.NATIVE_FACTS_DATABASE_MISMATCH",
+                                                "sblr.executor.native_facts_database_mismatch", {}, true);
+    result.diagnostic.identity_fields.push_back({"facts_database_uuid", context.native_served_facts->database_uuid});
+    result.diagnostic.identity_fields.push_back({"context_database_uuid", context.database_uuid});
+    return result;
+  }
+  return NativeExecutorAvailabilityLookup(context.database_uuid, exact_row_identity,
+                                          NativeExecutorAvailabilityAllowList());
+}
+}  // namespace
+
 SblrExecutorAvailabilityLoadResult LoadSblrExecutorAvailabilitySnapshot(
     const EngineRequestContext& context) {
   return LoadSblrExecutorAvailabilitySnapshot(
@@ -1232,6 +1296,8 @@ SblrExecutorAvailabilityLoadResult LoadSblrExecutorAvailabilitySnapshot(
         "exact admitted executor row required");
     return result;
   }
+  // SB_NATIVE_EXECUTOR_AVAILABILITY_TABLE (S3e): a native context answers from the per-build table.
+  if (context.native_served_facts) return NativeLoad(context, exact_row_identity);
   if (context.statement_executor_availability_cohort != nullptr) {
     const auto& cohort = *context.statement_executor_availability_cohort;
     if (cohort.database_path != context.database_path ||
@@ -1292,7 +1358,8 @@ SblrExecutorAvailabilityBatchLoadResult LoadSblrExecutorAvailabilitySnapshots(
   const std::lock_guard<std::recursive_mutex> guard(RegistryMutex());
   bool complete = true;
   for (const auto& identity : exact_row_identities) {
-    auto loaded = LoadLocked(context, identity, true);
+    auto loaded = context.native_served_facts ? NativeLoad(context, identity)  // S3e: no side file
+                                              : LoadLocked(context, identity, true);
     if (!loaded.ok && complete) {
       result.diagnostic = loaded.diagnostic;
       complete = false;
@@ -1332,6 +1399,8 @@ LoadCurrentSblrExecutorAvailabilitySnapshot(
         "exact admitted executor row required");
     return result;
   }
+  // SB_NATIVE_EXECUTOR_AVAILABILITY_TABLE (S3e): a native context answers from the per-build table.
+  if (context.native_served_facts) return NativeLoad(context, exact_row_identity);
   auto result = LoadLocked(context, exact_row_identity, false);
   if (!result.ok && result.diagnostic.code.empty()) {
     result.diagnostic = RegistryDiagnostic(
@@ -1346,6 +1415,14 @@ SblrExecutorAvailabilitySetResult SetSblrExecutorAvailability(
     const EngineRequestContext& context,
     const SblrExecutorAvailabilitySetRequest& request) {
   SblrExecutorAvailabilitySetResult result;
+  // SB_NATIVE_EXECUTOR_AVAILABILITY_TABLE (S3e): the native table is a build constant; nothing sets it.
+  if (context.native_served_facts) {
+    result.diagnostic = MakeEngineApiDiagnostic("SBLR.EXECUTOR.NATIVE_AVAILABILITY_IMMUTABLE",
+                                                "sblr.executor.native_availability_immutable", {}, true);
+    result.diagnostic.fields.push_back({"opcode_code", std::to_string(request.exact_row_identity.opcode_code)});
+    result.diagnostic.identity_fields.push_back({"availability_table_uuid", NativeExecutorAvailabilityTableUuid()});
+    return result;
+  }
   if (!HasAdminAuthority(context)) {
     result.diagnostic = RegistryDiagnostic(
         "SECURITY.ACCESS_DENIED", "security.access_denied",

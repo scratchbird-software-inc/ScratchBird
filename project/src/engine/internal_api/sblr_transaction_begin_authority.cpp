@@ -1,5 +1,6 @@
 #include "sblr_transaction_begin_authority.hpp"
 #include "api_diagnostics.hpp"
+#include "native_legacy_registry_refusal.hpp"
 #include "uuid.hpp"
 #include "hash_digest.hpp"
 #include "mga_relation_store/mga_binary_fields.hpp"
@@ -64,6 +65,12 @@ bool Decode(const std::string& bytes,const EngineUuid& database,
 // durable MGA inventory remains the transaction authority.
 SblrTransactionBeginAuthorityResultV1 LoadSblrTransactionBeginAuthorityV1(const EngineRequestContext& context) {
   SblrTransactionBeginAuthorityResultV1 result;
+  // SB_NATIVE_LEGACY_REGISTRY_REFUSAL (S3e, plan 38 Q243 = 1): the begin authority lives in a side file; a native
+  // context refuses (the native transaction-begin policy arrives with S4, not as a process-local invention).
+  if (NativeServedContext(context)) {
+    result.diagnostic = NativeLegacyRegistryRefusal("transaction_begin_authority", context);
+    return result;
+  }
   if (!context.security_context_present || !context.statement_metadata_snapshot_engine_owned ||
       context.database_path.empty() || !core::uuid::IsEngineIdentityUuid(context.database_uuid)) {
     result.diagnostic=Diagnostic("SECURITY.ACCESS_DENIED","sblr.txn_begin.authority_hidden");return result;

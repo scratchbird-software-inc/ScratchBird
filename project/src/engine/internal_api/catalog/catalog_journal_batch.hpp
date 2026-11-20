@@ -3,6 +3,7 @@
 #pragma once
 
 #include "catalog/catalog_journal_publication.hpp"
+#include "native_legacy_registry_refusal.hpp"
 #include "catalog/catalog_table_storage_creation.hpp"
 #include "catalog/catalog_comment_publication.hpp"
 #include "catalog/catalog_view_storage_creation.hpp"
@@ -66,6 +67,8 @@ class CatalogJournalBatchPublisher final {
     return MakeInvalidRequestDiagnostic(std::string(operation), std::move(detail));
   };
   if (records.empty()) return refused("catalog_batch_records_required");
+  // SB_NATIVE_LEGACY_REGISTRY_REFUSAL (S3e, plan 38 Q243 = 1): see AppendSequencedCatalogJournalRecord.
+  if (NativeServedContext(context)) return NativeLegacyRegistryRefusal("catalog_object_events", context);
   const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   if (storage) {
     if (!table_custody) return refused("table_creation_owned_publication_required");

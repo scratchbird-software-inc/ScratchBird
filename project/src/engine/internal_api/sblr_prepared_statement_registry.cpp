@@ -4,6 +4,7 @@
 #include "sblr_prepared_statement_registry.hpp"
 
 #include "api_diagnostics.hpp"
+#include "native_legacy_registry_refusal.hpp"
 #include "api_result_snapshot_codec.hpp"
 #include "engine/sblr/sblr_stmt_execute_runtime.hpp"
 #include "hash_digest.hpp"
@@ -917,6 +918,9 @@ SblrPreparedStatementRegistryResultV1 Loaded(
 
 SblrPreparedStatementRegistryResultV1 LoadExact(
     const EngineRequestContext& context) {
+  // SB_NATIVE_LEGACY_REGISTRY_REFUSAL (S3e, plan 38 Q243 = 1): on a native context the registry is process-local
+  // and empty (nothing durable, no .sb.* file read); every durable write refuses (below).
+  if (NativeServedContext(context)) return Loaded({}, false);
   std::vector<std::uint8_t> bytes;
   const auto status = ReadFile(RegistryPath(context), &bytes);
   if (status == ReadStatus::absent) return Loaded({}, false);
@@ -1152,6 +1156,11 @@ SblrPreparedStatementRegistryResultV1 PublishSblrPreparedStatementV1(
     const EngineRequestContext& context,
     const SblrPreparedStatementRegistryRecordV1& input) {
   std::lock_guard lock(g_registry_mutex);
+  if (NativeServedContext(context)) {
+    SblrPreparedStatementRegistryResultV1 native_refused;
+    native_refused.diagnostic = NativeLegacyRegistryRefusal("prepared_statement_registry", context);
+    return native_refused;
+  }
   if (!HasAuthority(context)) {
     return Refused("SECURITY.ACCESS_DENIED",
                    "sblr.prepared_statement_registry.publish_denied");
@@ -1317,6 +1326,11 @@ PublishSblrPreparedStatementExecutionV1(
     const SblrPreparedStatementRegistryHashV1& prepared_descriptor_sha256,
     const SblrPreparedStatementExecutionRecordV1& input) {
   std::lock_guard lock(g_registry_mutex);
+  if (NativeServedContext(context)) {
+    SblrPreparedStatementRegistryResultV1 native_refused;
+    native_refused.diagnostic = NativeLegacyRegistryRefusal("prepared_statement_registry", context);
+    return native_refused;
+  }
   if (!HasAuthority(context)) {
     return Refused("SECURITY.ACCESS_DENIED",
                    "sblr.prepared_statement_registry.execution_publish_denied");
@@ -1434,6 +1448,11 @@ SblrPreparedStatementRegistryResultV1 FreeSblrPreparedStatementV1(
     const SblrPreparedStatementRegistryHashV1& free_descriptor_sha256,
     const std::vector<std::uint8_t>& canonical_free_result_bytes) {
   std::lock_guard lock(g_registry_mutex);
+  if (NativeServedContext(context)) {
+    SblrPreparedStatementRegistryResultV1 native_refused;
+    native_refused.diagnostic = NativeLegacyRegistryRefusal("prepared_statement_registry", context);
+    return native_refused;
+  }
   if (!HasAuthority(context)) {
     return Refused("SECURITY.ACCESS_DENIED",
                    "sblr.prepared_statement_registry.free_denied");

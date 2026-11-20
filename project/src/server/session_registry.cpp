@@ -3192,9 +3192,12 @@ ServerPublicAbiSessionContext* EnsureServerPublicAbiSessionForContext(
     // root (ServerBootstrapConfig::database_policy_seed_pack_root, carried
     // from the hosted database snapshot onto the session at attach) to the
     // handle it opens; every statement context the handle issues carries it.
+    // SB_NATIVE_SERVED_DATABASE_FACTS (S3e, owner Q238 = 1): a native database's handle carries the facts the
+    // database loop published (null for a legacy database: the same call as before).
     if (scratchbird::server_engine_bridge::OpenServedEngine(
             &open_params, session.served_route_owner,
-            owned.server_policy_seed_pack_root, &owned.engine, nullptr) !=
+            owned.server_policy_seed_pack_root, session.native_served_facts,
+            &owned.engine, nullptr) !=
             SB_ENGINE_STATUS_OK ||
         owned.engine == nullptr) {
       (void)CloseServerPublicAbiSessionForSession(registry, session.session_uuid);
@@ -6007,6 +6010,7 @@ SessionOperationResult HandleAuthHandoff(ServerSessionRegistry* registry,
   session.provider_family = auth_request.provider_family;
   session.database_path = FirstOpenDatabasePath(engine_state);
   session.served_route_owner = ServedRouteOwnerFor(engine_state, session.database_path);
+  session.native_served_facts = ServedNativeFactsFor(engine_state, session.database_path);
   session.database_uuid = FirstOpenDatabaseUuid(engine_state);
   ApplyRequestedLanguageProfile(&session, decoded->requested_language);
   ApplyDatabaseHealthToSession(&session, *database);
@@ -6331,6 +6335,7 @@ SessionOperationResult HandleAttachDatabase(ServerSessionRegistry* registry,
   session.attach_mode = attach_mode;
   session.database_path = database->database_path;
   session.served_route_owner = ServedRouteOwnerFor(engine_state, session.database_path);
+  session.native_served_facts = ServedNativeFactsFor(engine_state, session.database_path);
   session.database_uuid = database->database_uuid;
   ApplyDatabaseHealthToSession(&session, *database);
   // Attach needs one fresh, durable security snapshot. Reuse that same immutable
@@ -6529,6 +6534,7 @@ SessionOperationResult HandleEmbeddedSysarchAttach(ServerSessionRegistry* regist
   session.application_name = application_name.empty() ? "sb_isql" : std::move(application_name);
   session.database_path = database->database_path;
   session.served_route_owner = ServedRouteOwnerFor(engine_state, session.database_path);
+  session.native_served_facts = ServedNativeFactsFor(engine_state, session.database_path);
   session.database_uuid = database->database_uuid;
   session.attach_mode = "read_write";
   session.embedded_in_process = true;

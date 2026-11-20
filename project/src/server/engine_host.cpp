@@ -358,7 +358,6 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
     loop_request.filespace_uuid = snapshot.filespace_uuid;
     loop_request.page_size_bytes = static_cast<std::uint32_t>(snapshot.page_size_bytes);
     loop_request.total_pages = discovered.page_zero->total_pages;
-    loop_request.restart_sink_wrapper = NativeRestartSinkWrapperForTest();  // SB_TEST_SEAM, empty in production
     TraceServerStartupPhase(config, "native_database_loop", "opening");
     const auto loop_opened = native_loop->SubmitOpen(std::move(loop_request)).get();
     if (!loop_opened.ok) {
@@ -388,6 +387,7 @@ HostedEngineResult StartHostedEngine(const ServerBootstrapConfig& config,
     native_runtime->canonical_database_path = canonical_error ? snapshot.database_path : native_canonical.string();
     native_runtime->database_uuid = snapshot.database_uuid;
     native_runtime->native_loop = std::move(native_loop);
+    native_runtime->native_served_facts = loop_opened.facts.served_facts;
     snapshot.state = HostedDatabaseState::kOpen;
     snapshot.database_created = false;
     snapshot.database_open = true;
@@ -1114,6 +1114,19 @@ std::shared_ptr<storage::disk::RouteOwnershipLease> ServedRouteOwnerFor(
   for (const auto& lock : engine_state.database_ownership_locks) {
     if (lock && lock->OwnsDatabasePath(database_path)) return lock->ServedStorageLease();
   }
+  return {};
+}
+
+std::shared_ptr<const engine::internal_api::NativeServedDatabaseFacts> ServedNativeFactsFor(
+    const HostedEngineState& engine_state, const std::string& database_path) {
+  if (database_path.empty()) return {};
+  std::error_code error;
+  const auto canonical = std::filesystem::canonical(database_path, error);
+  const std::string wanted = error ? database_path : canonical.string();
+  for (const auto& runtime : engine_state.database_runtimes)
+    if (runtime && runtime->native_served_facts &&
+        (runtime->canonical_database_path == wanted || runtime->canonical_database_path == database_path))
+      return runtime->native_served_facts;
   return {};
 }
 

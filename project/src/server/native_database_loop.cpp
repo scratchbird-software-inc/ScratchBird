@@ -25,6 +25,8 @@
 #include "native_database_loop.hpp"
 
 #include "engine/internal_api/security/agent_password_derivation.hpp"
+#include "engine/internal_api/sblr_executor_availability_registry.hpp"
+#include "core/catalog/catalog_database_record_codec.hpp"
 #include "native_hosted_careful_write_sink.hpp"
 #include "node_uuid_issuer.hpp"
 #include "startup_credential_source_adapter.hpp"
@@ -57,6 +59,8 @@ const char* NativeLoopStateName(NativeLoopState state) noexcept {
   return "failed";
 }
 
+#if defined(SB_NATIVE_LOOP_TEST_SEAMS)
+// SB_TEST_SEAM (owner Q295): compiled only into test targets; see the header.
 namespace {
 std::mutex test_wrapper_mutex;
 std::function<std::unique_ptr<storage::disk::CarefulWriteSink>(storage::disk::CarefulWriteSink&)> test_wrapper;
@@ -71,6 +75,7 @@ NativeRestartSinkWrapperForTest() {
   std::lock_guard<std::mutex> guard(test_wrapper_mutex);
   return test_wrapper;
 }
+#endif
 
 const char* NativeServingStateName(NativeServingState state) noexcept {
   switch (state) {
@@ -531,10 +536,12 @@ bool NativeDatabaseLoop::RunRestart(const NativeLoopOpenRequest& request,
                                       observed.identity.primary_profile_uuid);
     std::unique_ptr<storage::disk::CarefulWriteSink> decorated;
     storage::disk::CarefulWriteSink* writing = &sink;
-    if (request.restart_sink_wrapper) {
-      decorated = request.restart_sink_wrapper(sink);
+#if defined(SB_NATIVE_LOOP_TEST_SEAMS)
+    if (const auto wrapper = NativeRestartSinkWrapperForTest()) {
+      decorated = wrapper(sink);
       if (decorated) writing = decorated.get();
     }
+#endif
 
     const auto restart = serving.writer->Restart(*writing);
     // The stored horizons, read back (Restart never rewrites them), unless a write failed (the
@@ -841,6 +848,21 @@ void NativeDatabaseLoop::HandleOpen(OpenWork& work) noexcept {
     serving.facts.catalog_pages = observed.allocation.catalog_pages;
     serving.facts.wasted_pages = observed.allocation.wasted_pages;
     serving.facts.verification_workspace_bytes = observed.workspace_bytes;
+    // SB_NATIVE_SERVED_DATABASE_FACTS (S3e): the datatype cohort of the captured database record (the one live,
+    // unprovisional row of kind database whose key is the page-zero database UUID). Read from the read's own
+    // capture BEFORE the read is released; absent when the record carries none (the statement path then
+    // refuses; a frozen record needs an explicit migration, never a relabel).
+    std::optional<core::catalog::CatalogDatabaseDatatypeCohort> captured_cohort;
+    for (const auto& captured : read.catalog_capture().rows()) {
+      const auto& metadata = captured.row.metadata;
+      if (captured.row.provisional || metadata.record.header.deleted ||
+          metadata.record.header.kind != core::catalog::CatalogRecordKind::database ||
+          metadata.record.header.object_uuid.value != request.database_uuid)
+        continue;
+      const auto decoded = core::catalog::DecodeCatalogDatabaseRecord(metadata.record.payload);
+      if (decoded.ok()) captured_cohort = decoded.record->datatype_cohort;
+      break;
+    }
     // SB_NATIVE_RESTART ordering (plan 38 risk "custody operation exclusivity"): the credential read
     // retains the custody's ONE operation until it is reset, and an owned-writer operation is
     // exclusive (a second TryBeginOperation is busy), so the read is released here, BEFORE the writer
@@ -849,6 +871,37 @@ void NativeDatabaseLoop::HandleOpen(OpenWork& work) noexcept {
     serving.read.reset();
     NativeLoopDiagnostic restart_refusal;
     if (!RunRestart(request, observed, restart_refusal)) return fail(std::move(restart_refusal));
+    {
+      // SB_NATIVE_SERVED_DATABASE_FACTS (S3e): the immutable marker, complete only after Restart (the stored
+      // horizons are the ones RunRestart read back).
+      auto marker = std::make_shared<engine::internal_api::NativeServedDatabaseFacts>();
+      marker->database_uuid = request.database_uuid;
+      marker->filespace_uuid = request.filespace_uuid;
+      marker->page_profile_uuid = observed.identity.primary_profile_uuid;
+      marker->engine_instance_uuid = serving.facts.engine_instance_uuid;
+      marker->page_size_bytes = request.page_size_bytes;
+      marker->total_pages = request.total_pages;
+      for (std::size_t i = 0; i < observed.identity.primary_root_count && i < observed.identity.primary_roots.size(); ++i)
+        marker->fixed_roots.push_back(observed.identity.primary_roots[i]);
+      if (captured_cohort) {
+        marker->datatype_cohort_present = true;
+        marker->datatype_catalog_snapshot_uuid = captured_cohort->catalog_snapshot_uuid.value;
+        marker->datatype_catalog_generation = captured_cohort->catalog_generation;
+        marker->datatype_registry_generation = captured_cohort->registry_generation;
+      }
+      const auto& restarted = serving.facts.restart;
+      marker->tip_next_transaction = restarted.next_transaction;
+      marker->tip_horizon_oit = restarted.horizon_oit;
+      marker->tip_horizon_oat = restarted.horizon_oat;
+      marker->tip_horizon_ost = restarted.horizon_ost;
+      marker->tip_horizon_oct = restarted.horizon_oct;
+      marker->tip_horizon_oar = restarted.horizon_oar;
+      marker->tip_horizon_olr = restarted.horizon_olr;
+      marker->availability_table_uuid = api::NativeExecutorAvailabilityTableUuid();
+      marker->serving_state = static_cast<engine::internal_api::NativeServedServingState>(
+          static_cast<std::uint8_t>(serving.facts.serving_state));
+      serving.facts.served_facts = std::move(marker);
+    }
     result.facts = serving.facts;
     work.request.ownership.reset();  // custody holds the runtime's reference
     result.ok = true;

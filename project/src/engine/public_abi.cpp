@@ -25,6 +25,8 @@
 #include "engine/statement_cancellation.hpp"
 #include "engine/statement_monotonic_clock.hpp"
 #include "engine/internal_api/api_diagnostics.hpp"
+#include "engine/internal_api/native_served_database_facts.hpp"
+#include "engine/internal_api/sblr_executor_availability_registry.hpp"
 #include "engine/statement_identity_binding.hpp"
 #include "session/scoped_value_store.hpp"
 #include "engine/authority_hash_material.hpp"
@@ -601,6 +603,13 @@ struct sb_engine_handle_s {
   // pack. Empty for every sb_engine_open caller (native create then refuses
   // with DATABASE.CREATE_POLICY_PACK_REQUIRED).
   std::string server_policy_seed_pack_root;
+  // SEARCH_KEY: SB_NATIVE_SERVED_DATABASE_FACTS (thin-slice S3e, owner Q238 = 1, 2026-11-19). The immutable facts of
+  // the verified, served NATIVE database this handle was opened on. Set ONLY by the server through
+  // OpenServedEngine (the loop publishes them); never serialized, never taken from a client, a parser, an SBLR
+  // operand or an option. Null for every sb_engine_open caller (a native file then refuses, Q285) and for a
+  // legacy handle. Every statement context this handle issues carries exactly this pointer
+  // (AcquireStatementContextReceipt overwrites the caller's field).
+  std::shared_ptr<const scratchbird::engine::internal_api::NativeServedDatabaseFacts> native_served_facts;
 };
 
 struct EnginePreparedStatementRecordV1 {
@@ -3267,6 +3276,8 @@ prepared_statement_registry_context(sb_engine_session_t session,
   if (session == nullptr || session->engine == nullptr) return context;
   context.database_path = session->engine->database_path;
   context.served_route_owner = session->engine->served_route_owner;
+  // SB_NATIVE_SERVED_DATABASE_FACTS (S3e): the handle's native marker rides every context built from the handle.
+  context.native_served_facts = session->engine->native_served_facts;
   context.database_uuid = session->engine->database_uuid;
   context.principal_uuid =
       engine_uuid(session->effective_user_uuid);
@@ -3727,6 +3738,17 @@ struct DatabaseHeaderSnapshot {
   std::optional<scratchbird::core::platform::DiagnosticRecord> cleanup_failure;
   std::optional<std::error_code> source_exception;
 };
+
+// SEARCH_KEY: SB_NATIVE_SERVED_DATABASE_FACTS (S3e). On a native handle the header snapshot IS the facts: no
+// legacy ParseDatabaseHeader, no path open, no read (the server's loop verified the file and published them).
+DatabaseHeaderSnapshot database_header_snapshot_from_native_facts(
+    const scratchbird::engine::internal_api::NativeServedDatabaseFacts& facts) {
+  DatabaseHeaderSnapshot snapshot;
+  snapshot.database_uuid = facts.database_uuid;
+  snapshot.page_size_bytes = facts.page_size_bytes;
+  snapshot.failure_detail.clear();
+  return snapshot;
+}
 
 DatabaseHeaderSnapshot database_header_snapshot(
     std::string_view database_path,
@@ -5042,6 +5064,19 @@ sb_engine_status_t fail_result(sb_engine_status_t status,
   return status;
 }
 
+// SEARCH_KEY: SB_NATIVE_HANDLE_OPERATION_NOT_BUILT (thin-slice S3e, plan 38 2f). A handle on a native database
+// (OpenServedEngine with the loop's facts) opens, begins and ends sessions and closes; every other operation that
+// would need a native session, transaction or statement path reads or writes legacy side files keyed on the
+// database path (the transaction inventory loaders, the prepared-coordination journal, ...), so it refuses,
+// specifically, until S4/S5 build it natively. The vector carries the operation as a build-time token.
+static bool native_handle_session(sb_engine_session_t session) {
+  return session != nullptr && session->engine != nullptr && session->engine->native_served_facts != nullptr;
+}
+static sb_engine_status_t native_operation_not_built(sb_engine_result_t* out_result, const char* operation) {
+  return fail_result(SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4038, "ENGINE.NATIVE.OPERATION_NOT_BUILT",
+                     "engine.native.operation_not_built", {}, {{"operation", operation}, {"requires", "native_session_and_transaction_s4"}});
+}
+
 sb_engine_status_t check_struct(std::uint32_t struct_size,
                                 std::uint32_t abi_version,
                                 std::uint32_t minimum_size,
@@ -5105,7 +5140,8 @@ static sb_engine_status_t open_engine_impl(
     sb_engine_handle_t* out_engine,
     sb_engine_result_t* out_result,
     const std::shared_ptr<scratchbird::storage::disk::RouteOwnershipLease>& served_owner,
-    std::string_view server_policy_seed_pack_root) try {
+    std::string_view server_policy_seed_pack_root,
+    std::shared_ptr<const scratchbird::engine::internal_api::NativeServedDatabaseFacts> native_facts = {}) try {
   clear_result(out_result);
   if (out_engine == nullptr) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 1003, "ENGINE.ABI.OUTPUT_POINTER_INVALID",
@@ -5132,6 +5168,11 @@ static sb_engine_status_t open_engine_impl(
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 1005,
                        "ENGINE.OPEN.PATH_INVALID", "engine.open.path_invalid", "database_path_required");
   }
+  // SB_NATIVE_SERVED_DATABASE_FACTS (S3e): facts mean a served native database; a handle without a path
+  // cannot carry them (it would silently open unmarked).
+  if (native_facts && (params->database_path_utf8 == nullptr || params->database_path_size == 0))
+    return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 1005, "ENGINE.OPEN.NATIVE_FACTS_PATH_REQUIRED",
+                       "engine.open.native_facts_refused", "native_facts_without_database_path");
   auto handle = std::make_unique<sb_engine_handle_s>();
   // Q113 = 1 (SB_SERVER_POLICY_SEED_PACK_ROOT): only the server bridge open
   // passes a value; the C ABI open passes none.
@@ -5153,6 +5194,45 @@ static sb_engine_status_t open_engine_impl(
     if (handle->database_path.find('\0') != std::string::npos)
       return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 1005,
                          "ENGINE.OPEN.PATH_INVALID", "engine.open.path_invalid", "database_path_contains_nul");
+    // SEARCH_KEY: SB_NATIVE_SERVED_DATABASE_FACTS (thin-slice S3e, owner Q238 = 1). The SERVER's open of a
+    // handle on a verified, served native database: the facts come from the loop that verified the file. The
+    // header snapshot is the facts, SBLR descriptor recovery is skipped (the single-file model has no
+    // .sb.sblr_* descriptors), and no .sb.* file is opened or created. The one read is a cross-check through
+    // the served owner's own read-only device (no path open): page zero must still say what the facts say, so
+    // facts cannot be paired with another file. Refusals are specific.
+    if (native_facts) {
+      namespace sdb = scratchbird::storage::database;
+      const auto refuse_native = [&](const char* code, const char* detail,
+                                     std::vector<std::pair<std::string, std::string>> fields = {}) {
+        return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 1005, code, "engine.open.native_facts_refused",
+                           detail, std::move(fields));
+      };
+      if (!served_owner)
+        return refuse_native("ENGINE.OPEN.NATIVE_FACTS_OWNER_REQUIRED", "native_facts_without_served_owner");
+      scratchbird::storage::disk::FileDevice device;
+      const auto served = device.OpenServed(served_owner, handle->database_path,
+                                            scratchbird::storage::disk::FileOpenMode::open_existing_read_only);
+      if (!served.ok())
+        return refuse_native("ENGINE.OPEN.NATIVE_OWNER_DEVICE_REFUSED", "native_owner_device_refused",
+                             {{"source_code", served.diagnostic.diagnostic_code}});
+      const auto discovered = sdb::DiscoverNativeDatabaseOnOpenDevice(device);
+      (void)device.Close();
+      if (!discovered.ok())
+        return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 1005, discovered.code,
+                           "engine.open.native_discovery_refused", discovered.detail);
+      const auto& zero = *discovered.page_zero;
+      if (zero.bootstrap.database_uuid != native_facts->database_uuid ||
+          zero.bootstrap.filespace_uuid != native_facts->filespace_uuid ||
+          zero.bootstrap.page_size_bytes != native_facts->page_size_bytes)
+        return refuse_native("ENGINE.OPEN.NATIVE_FACTS_MISMATCH", "page_zero_differs_from_the_served_facts");
+      const auto snapshot = database_header_snapshot_from_native_facts(*native_facts);
+      handle->database_uuid = snapshot.database_uuid;
+      handle->database_page_size_bytes = snapshot.page_size_bytes;
+      handle->served_route_owner = served_owner;
+      handle->native_served_facts = std::move(native_facts);
+      *out_engine = handle.release();
+      return SB_ENGINE_STATUS_OK;
+    }
     // SEARCH_KEY: SB_LEGACY_CUT_NATIVE_OPEN (owner 2026-11-16; S3a). The ABI
     // open assumes a native file and discovers it before anything else
     // (SB_NATIVE_DATABASE_OPEN_DISCOVERY): through the served owner's own
@@ -5231,6 +5311,8 @@ static sb_engine_status_t open_engine_impl(
                          std::string(sdb::kOpenNativeRuntimePendingCode),
                          "engine.open.native_runtime_pending",
                          "native_database_discovered_serving_not_yet_implemented");
+      // (S3e: the SERVER's open passes the facts and returns above; this refusal now stands for the C ABI
+      // sb_engine_open and every caller without server-published facts. Embedded stays refused until S4, Q285.)
     }
     const auto snapshot = database_header_snapshot(handle->database_path, served_owner);
     if (!snapshot.failure_detail.empty()) {
@@ -5306,7 +5388,8 @@ static sb_engine_status_t open_engine_impl(
 sb_engine_status_t sb_engine_open(const sb_engine_open_params_v1_t* params,
                                   sb_engine_handle_t* out_engine,
                                   sb_engine_result_t* out_result) {
-  return open_engine_impl(params, out_engine, out_result, {}, {});
+  // No server-published facts exist on this entry: a native file refuses (Q285).
+  return open_engine_impl(params, out_engine, out_result, {}, {}, {});
 }
 
 sb_engine_status_t sb_engine_close(sb_engine_handle_t engine, sb_engine_result_t* out_result) {
@@ -5415,6 +5498,8 @@ sb_engine_status_t sb_engine_session_begin(sb_engine_handle_t engine,
                          "RESOURCE.BUDGET_EXCEEDED", "engine.session.scoped_state_admission_failed");
     }
     session->scoped_values = std::move(state.owner);
+    // SB_NATIVE_SERVED_DATABASE_FACTS (S3e, plan 38 Q243 = 1): LoadSblrPreparedStatementRegistryV1 on a native
+    // context is the process-local form (empty: nothing durable to recover, no .sb.* file read or created).
     const auto recovered = scratchbird::engine::internal_api::
         LoadSblrPreparedStatementRegistryV1(
             prepared_statement_registry_context(session, true));
@@ -5540,6 +5625,8 @@ sb_engine_status_t sb_engine_transaction_begin(sb_engine_session_t session,
   if (status != SB_ENGINE_STATUS_OK) {
     return status;
   }
+  // SB_NATIVE_HANDLE_OPERATION_NOT_BUILT (S3e): no native transaction before S4/S5.
+  if (native_handle_session(session)) return native_operation_not_built(out_result, "transaction_begin");
   auto* transaction = new sb_engine_transaction_s();
   transaction->session = session;
   {
@@ -6563,7 +6650,21 @@ sb_engine_status_t OpenServedEngine(
     sb_engine_handle_t* out_engine,
     sb_engine_result_t* out_result) {
   return open_engine_impl(params, out_engine, out_result, served_owner,
-                          server_policy_seed_pack_root);
+                          server_policy_seed_pack_root, {});
+}
+
+// SEARCH_KEY: SB_NATIVE_SERVED_DATABASE_FACTS (thin-slice S3e, owner Q238 = 1). The server's open of a handle on a
+// verified, served native database: as above, and the handle carries the facts the database loop published. The
+// ONLY way a handle becomes native. Not part of the C ABI: no client can reach this parameter.
+sb_engine_status_t OpenServedEngine(
+    const sb_engine_open_params_v1_t* params,
+    const std::shared_ptr<scratchbird::storage::disk::RouteOwnershipLease>& served_owner,
+    std::string_view server_policy_seed_pack_root,
+    std::shared_ptr<const scratchbird::engine::internal_api::NativeServedDatabaseFacts> native_facts,
+    sb_engine_handle_t* out_engine,
+    sb_engine_result_t* out_result) {
+  return open_engine_impl(params, out_engine, out_result, served_owner,
+                          server_policy_seed_pack_root, std::move(native_facts));
 }
 
 
@@ -6953,6 +7054,10 @@ sb_engine_status_t BeginStatementParameterExecutionCoordinationV1(
                        "SBLR.OPERAND_INVALID",
                        "sblr.parameter_coordination.begin_invalid");
   }
+  // SB_NATIVE_HANDLE_OPERATION_NOT_BUILT (S3e): the coordination journal is a side file; a caller-built
+  // context carries no marker, so the handle decides.
+  if (native_handle_session(request->engine_session))
+    return native_operation_not_built(out_result, "parameter_coordination_begin");
   const auto& context = *request->engine_context;
   if (!scratchbird::core::uuid::IsEngineIdentityUuid(context.database_uuid) ||
       !scratchbird::core::uuid::IsEngineIdentityUuid(context.session_uuid) ||
@@ -7233,6 +7338,9 @@ sb_engine_status_t AcquireStatementContextReceipt(
   // under it, CREATE DATABASE included) carries exactly the server's pack.
   engine_context.server_policy_seed_pack_root =
       session->engine->server_policy_seed_pack_root;
+  // SEARCH_KEY: SB_NATIVE_SERVED_DATABASE_FACTS (S3e, owner Q238 = 1). The native marker has one source too:
+  // the handle the server opened. Whatever the caller's context held is replaced (null for a legacy handle).
+  engine_context.native_served_facts = session->engine->native_served_facts;
   const auto expected_trust_mode =
       session->trust_mode == SB_ENGINE_TRUST_EMBEDDED_TRUSTED
           ? scratchbird::engine::internal_api::EngineTrustMode::embedded_in_process
@@ -7280,6 +7388,28 @@ sb_engine_status_t AcquireStatementContextReceipt(
         4037,
         "ENGINE.STATEMENT_CONTEXT.CALLER_AUTHORITY_FORBIDDEN",
         "engine.statement_context.caller_authority_forbidden");
+  }
+  // SEARCH_KEY: SB_NATIVE_RECEIPT_SESSION_REQUIRED (thin-slice S3e, plan 38 section 2f). A native handle opens
+  // and answers every registry lookup natively, but no native session or transaction exists until S4/S5: this
+  // receipt needs a transaction (local id, exact UUID) and a session, and the legacy structures below (the
+  // catalog identity read, the strong transaction inventory snapshot, txn_publish, the prepared-statement,
+  // diagnostic-identity and transaction-begin registries, catalog object events) read .sb.* files. It therefore
+  // refuses, specifically, instead of inventing state. S4 replaces this refusal with the native receipt: cohort
+  // from the facts, inventory snapshot from the native TIP reader, availability from the native table.
+  if (engine_context.native_served_facts) {
+    scratchbird::engine::internal_api::EngineApiDiagnostic native_diagnostic =
+        scratchbird::engine::internal_api::MakeEngineApiDiagnostic(
+            "ENGINE.STATEMENT_CONTEXT.SESSION_REQUIRED_NATIVE_S4",
+            "engine.statement_context.session_required_native_s4", {}, true);
+    native_diagnostic.fields.push_back({"native_session_available", "false"});
+    native_diagnostic.fields.push_back({"native_transaction_available", "false"});
+    native_diagnostic.fields.push_back(
+        {"serving_state", std::to_string(static_cast<unsigned>(engine_context.native_served_facts->serving_state))});
+    native_diagnostic.identity_fields.push_back({"database_uuid", engine_context.native_served_facts->database_uuid});
+    return fail_result(SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4038,
+                       "ENGINE.STATEMENT_CONTEXT.SESSION_REQUIRED_NATIVE_S4",
+                       "engine.statement_context.session_required_native_s4", {}, {}, nullptr,
+                       &native_diagnostic);
   }
   if (engine_context.local_transaction_id == 0 ||
       request->exact_transaction_uuid.is_nil() ||
@@ -36289,6 +36419,8 @@ sb_engine_status_t sb_engine_dispatch_sblr(sb_engine_session_t session,
     return fail_result(SB_ENGINE_STATUS_INVALID_HANDLE, out_result, 1007, "ENGINE.ABI.INVALID_HANDLE",
                        "engine.abi.invalid_handle");
   }
+  // SB_NATIVE_HANDLE_OPERATION_NOT_BUILT (S3e): no native SBLR dispatch before S4/S5.
+  if (native_handle_session(session)) return native_operation_not_built(out_result, "dispatch_sblr");
   if (context == nullptr || params == nullptr) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 1004, "ENGINE.ABI.PARAMETER_NULL",
                        "engine.abi.parameter_null");

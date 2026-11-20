@@ -28,6 +28,11 @@ struct ServerDaemonDatabaseAssociation {
   bool database_open = false;
   bool failed = false;
   bool quarantined = false;
+  // SB_LIFECYCLE_RESTRICTED (owner Q296 = yes, 2026-11-19): the database is open but restricted (a native
+  // database whose Restart found committing / recovering slots, plan 38 S3d). `serving_state` is the
+  // native serving state (serving | restricted | failed), empty for a database with none.
+  bool restricted = false;
+  std::string serving_state;
 };
 
 struct ServerDaemonLifecycleSnapshot {
@@ -50,6 +55,10 @@ struct ServerDaemonLifecycleSnapshot {
   std::uint64_t hosted_database_count = 0;
   std::uint64_t open_database_count = 0;
   std::uint64_t failed_database_count = 0;
+  // SB_LIFECYCLE_RESTRICTED (Q296): databases that are open but restricted. NEW field: service_ready and
+  // state keep their meaning (the daemon accepts connections); a restricted database does not make the
+  // daemon fail, so readers that need "fully serving" must also read this.
+  std::uint64_t restricted_database_count = 0;
   std::vector<ServerDaemonDatabaseAssociation> databases;
   std::vector<ServerDiagnostic> diagnostics;
 };

@@ -4,6 +4,7 @@
 
 #include "behavior_support/api_behavior_store.hpp"
 #include "catalog/catalog_object_lifecycle_codec.hpp"
+#include "native_legacy_registry_refusal.hpp"
 #include "catalog/name_registry_codec.hpp"
 #include "disk_device.hpp"
 #include "local_transaction_store.hpp"
@@ -39,6 +40,9 @@ inline EngineApiDiagnostic AppendSequencedCatalogJournalRecord(
   const auto refused = [&](const std::string& detail) {
     return MakeInvalidRequestDiagnostic(record.operation_id, detail);
   };
+  // SB_NATIVE_LEGACY_REGISTRY_REFUSAL (S3e, plan 38 Q243 = 1): the catalog journals are side files
+  // (.sb.catalog_object_events / .sb.name_events.v2); a native context refuses.
+  if (NativeServedContext(context)) return NativeLegacyRegistryRefusal("catalog_object_events", context);
   if (context.database_path.empty() || context.local_transaction_id == 0 ||
       !core::uuid::IsEngineIdentityUuid(context.database_uuid) ||
       !core::uuid::IsEngineIdentityUuid(context.transaction_uuid) ||

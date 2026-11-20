@@ -10,6 +10,7 @@
 #include "catalog/catalog_object_lifecycle_codec.hpp"
 #include "catalog/catalog_journal_publication.hpp"
 #include "catalog/catalog_journal_batch.hpp"
+#include "native_legacy_registry_refusal.hpp"
 #include "catalog/catalog_read_admission.hpp"
 #include "catalog/schema_tree_api.hpp"
 #include "ddl/comment_api.hpp"
@@ -823,6 +824,13 @@ void StoreCatalogLifecycleLoadCache(
 
 EngineLoadCatalogObjectLifecycleStateResult LoadState(const EngineRequestContext& context,
                                                       LoadOptions options) {
+  // SB_NATIVE_LEGACY_REGISTRY_REFUSAL (S3e, plan 38 Q243 = 1): catalog object events are a side file
+  // (.sb.catalog_object_events); a native context refuses until the native catalog relations answer.
+  if (NativeServedContext(context)) {
+    EngineLoadCatalogObjectLifecycleStateResult native_refused;
+    native_refused.diagnostic = NativeLegacyRegistryRefusal("catalog_object_events", context);
+    return native_refused;
+  }
   const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   EngineLoadCatalogObjectLifecycleStateResult result;
   if (context.database_path.empty()) {
@@ -1370,6 +1378,12 @@ EngineLoadCatalogObjectLifecycleStateResult LoadCatalogObjectLifecycleState(
 
 EngineLoadCatalogObjectLifecycleStateResult LoadCatalogObjectLifecycleEpochState(
     const EngineRequestContext& context) {
+  // SB_NATIVE_LEGACY_REGISTRY_REFUSAL (S3e): see LoadState.
+  if (NativeServedContext(context)) {
+    EngineLoadCatalogObjectLifecycleStateResult native_refused;
+    native_refused.diagnostic = NativeLegacyRegistryRefusal("catalog_object_events", context);
+    return native_refused;
+  }
   const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   EngineLoadCatalogObjectLifecycleStateResult result;
   if (context.database_path.empty()) {

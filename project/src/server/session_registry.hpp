@@ -156,6 +156,10 @@ struct ServerSessionRecord {
   // projection, disconnect cleanup) copy it, so they read through the owner's
   // open file. Storage, not authority; empty means a path open.
   std::shared_ptr<scratchbird::storage::disk::RouteOwnershipLease> served_route_owner;
+  // SEARCH_KEY: SB_NATIVE_SERVED_DATABASE_FACTS (S3e, owner Q238 = 1). The immutable facts of the native
+  // database this session attached to, resolved once at attach from the hosted engine state exactly like the
+  // owner above; null for a legacy database. Handed only to OpenServedEngine. Process-local, never serialized.
+  std::shared_ptr<const scratchbird::engine::internal_api::NativeServedDatabaseFacts> native_served_facts;
   scratchbird::core::platform::Uuid database_uuid;
   std::string resource_seed_pack_root;
   std::string policy_seed_pack_root;

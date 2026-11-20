@@ -431,6 +431,8 @@ void OpenRefusals(const fs::path& root) {
     // its own code; serving with a crypto owner is native_serving_test.
     // (Was: DATABASE.OPEN_NATIVE_RUNTIME_PENDING for both; that code now stays
     // for the lifecycle operations and the engine-handle open, S3e-S3f.)
+    // (S3e, owner Q238 = 1: the SERVER's handle open with the loop's facts now succeeds -- native_handle_test;
+    // sb_engine_open (the C ABI, no facts), embedded and the lifecycle operations still refuse as below.)
     const auto no_crypto = HostedOpen(native);
     Check(no_crypto.starts_with("DATABASE.OPEN_NATIVE_CRYPTO_OWNER_REQUIRED|no_process_crypto_owner_supplied"),
           "StartHostedEngine on a native file, no crypto owner: " + no_crypto);

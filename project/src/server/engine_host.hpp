@@ -220,6 +220,9 @@ struct HostedDatabaseRuntime {
   // and joining it, on destruction of this object, is what retires the native
   // runtime on its own thread before the database ownership is released.
   std::shared_ptr<NativeDatabaseLoop> native_loop;
+  // SEARCH_KEY: SB_NATIVE_SERVED_DATABASE_FACTS (S3e, owner Q238 = 1). The immutable facts the loop published
+  // for this native database. Process-local; handed to OpenServedEngine and nowhere else; never serialized.
+  std::shared_ptr<const engine::internal_api::NativeServedDatabaseFacts> native_served_facts;
 };
 
 struct HostedEngineState {
@@ -236,6 +239,11 @@ struct HostedEngineState {
 // builders put it on EngineRequestContext::served_route_owner so converted
 // reads use the owner's open device instead of re-opening the path.
 std::shared_ptr<storage::disk::RouteOwnershipLease> ServedRouteOwnerFor(
+    const HostedEngineState& engine_state, const std::string& database_path);
+
+// SEARCH_KEY: SB_NATIVE_SERVED_DATABASE_FACTS (S3e). The facts the loop published for the native database at
+// database_path in this process, or null (a legacy database, or none). Found by the database's canonical path.
+std::shared_ptr<const engine::internal_api::NativeServedDatabaseFacts> ServedNativeFactsFor(
     const HostedEngineState& engine_state, const std::string& database_path);
 
 struct HostedEngineResult {

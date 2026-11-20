@@ -4192,7 +4192,12 @@ endif()
 # unresolved committing / recovering slots (restricted) are driven by the same
 # binary. (Was, S3b/S3c: Restart not run.) Each open runs in its own child process (the process
 # gate binds after one open). The Python half runs a serve child under strace.
-add_executable(sbsql_sblr_alignment_native_serving native_serving_test.cpp)
+# SB_TEST_SEAM (owner Q295, 2026-11-19): the restart fault-injection seam is compiled ONLY here. This test
+# compiles native_database_loop.cpp itself with SB_NATIVE_LOOP_TEST_SEAMS (its definitions then win over the
+# archive member of sb_server_core, which is built without the guard and contains no seam symbols).
+add_executable(sbsql_sblr_alignment_native_serving native_serving_test.cpp
+  ${PROJECT_SOURCE_DIR}/src/server/native_database_loop.cpp)
+target_compile_definitions(sbsql_sblr_alignment_native_serving PRIVATE SB_NATIVE_LOOP_TEST_SEAMS=1)
 target_compile_features(sbsql_sblr_alignment_native_serving PRIVATE cxx_std_23)
 target_include_directories(sbsql_sblr_alignment_native_serving PRIVATE
   ${PROJECT_SOURCE_DIR}/src
@@ -4235,6 +4240,54 @@ if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
   set_tests_properties(sbsql_sblr_alignment_native_default_sbsrv_run PROPERTIES
     LABELS "sbsql_sblr_alignment;native_storage;native_serving;strace;default_config"
     TIMEOUT 1800)
+endif()
+# SB_NATIVE_HANDLE_TEST (thin-slice S3e, plan 38 sections 1 and 2f; owner Q238 = 1, Q240 = 1, Q243 = 1, Q285,
+# 2026-11-19): an ENGINE HANDLE on a native database. The real StartHostedEngine publishes the loop's immutable
+# facts; OpenServedEngine with them succeeds (header snapshot = the facts, no .sb.* file, no descriptor recovery);
+# sb_engine_open still refuses a native file; forged / missing facts refuse; every executor-availability entry
+# point answers from the per-build native table; the legacy side-file registries answer process-locally or refuse;
+# the receipt refuses SESSION_REQUIRED_NATIVE_S4. A NEW target (not native_serving, whose headroom against its 1800 s
+# timeout is the thing to watch). Five page sizes; one child process per served open.
+add_executable(sbsql_sblr_alignment_native_handle native_handle_test.cpp)
+target_compile_features(sbsql_sblr_alignment_native_handle PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_handle PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+  ${PROJECT_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(sbsql_sblr_alignment_native_handle PRIVATE
+  sb_server_core sb_engine sb_engine_sblr sb_engine_internal_api sb_storage_database OpenSSL::Crypto)
+target_compile_definitions(sbsql_sblr_alignment_native_handle PRIVATE
+  SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password")
+add_test(NAME sbsql_sblr_alignment_native_handle COMMAND sbsql_sblr_alignment_native_handle)
+set_tests_properties(sbsql_sblr_alignment_native_handle PROPERTIES
+  LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_handle;database_ownership;binary_uuid"
+  TIMEOUT 1800)
+if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
+  add_test(NAME sbsql_sblr_alignment_native_handle_strace
+    COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_handle_strace.py"
+      --test-bin $<TARGET_FILE:sbsql_sblr_alignment_native_handle>)
+  set_tests_properties(sbsql_sblr_alignment_native_handle_strace PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_handle;strace"
+    TIMEOUT 1800)
+endif()
+# SB_NATIVE_RESTRICTED_SBSRV_RUN (S3e, owner Q296 = yes): the REAL SBsrv on a file with a committing slot opens
+# RESTRICTED and the lifecycle state file shows it (restricted_database_count / database_serving_state), the
+# daemon-level lines unchanged; a clean file shows serving. Fixtures are made by native_serving_test (the writer).
+if(Python3_EXECUTABLE)
+  add_test(NAME sbsql_sblr_alignment_native_restricted_sbsrv_run
+    COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_restricted_sbsrv_run.py"
+      --sbsrv $<TARGET_FILE:sb_server>
+      --test-bin $<TARGET_FILE:sbsql_sblr_alignment_native_serving>)
+  set_tests_properties(sbsql_sblr_alignment_native_restricted_sbsrv_run PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_restart;lifecycle_state"
+    TIMEOUT 1800)
+  # SB_NATIVE_SEAM_SYMBOLS (owner Q295): production sb_server_core / sb_server carry no restart test seam
+  # symbol; the one guarded test binary does.
+  add_test(NAME sbsql_sblr_alignment_native_seam_symbols
+    COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_seam_symbols.py"
+      --production $<TARGET_FILE:sb_server_core> $<TARGET_FILE:sb_server>
+      --guarded $<TARGET_FILE:sbsql_sblr_alignment_native_serving>)
+  set_tests_properties(sbsql_sblr_alignment_native_seam_symbols PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;native_serving;test_seam" TIMEOUT 600)
 endif()
 # SB_NATIVE_FIXED_ROOT_READ (drift removal C3d): owned-source adoption and the
 # native writer over a production create, with real OS/provider fault sweeps.

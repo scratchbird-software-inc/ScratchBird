@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "sblr_diagnostic_identity_registry.hpp"
 #include "api_diagnostics.hpp"
+#include "native_legacy_registry_refusal.hpp"
 #include "core/diagnostics/canonical_diagnostic_catalog.hpp"
 #include "hash_digest.hpp"
 #include "security/security_model.hpp"
@@ -301,6 +302,12 @@ std::uint16_t SblrDiagnosticIdentityVisibilityMaskV1(const EngineRequestContext&
   return mask;
 }
 SblrDiagnosticIdentityResultV1 LoadSblrDiagnosticIdentitySnapshotV1(const EngineRequestContext& c) {
+  // SB_NATIVE_LEGACY_REGISTRY_REFUSAL (S3e, plan 38 Q243 = 1): the registry's snapshot identities are minted at
+  // first load and persisted in a side file; a process-local copy would mint different identities after every
+  // restart, so a native context refuses (stable constants arrive with the native relation).
+  if(NativeServedContext(c)) {
+    SblrDiagnosticIdentityResultV1 refused;refused.diagnostic=NativeLegacyRegistryRefusal("diagnostic_identity_registry",c);return refused;
+  }
   try {
     try {
       std::lock_guard guard(registry_mutex);auto snapshot=Load(c);Filter(c,&snapshot);

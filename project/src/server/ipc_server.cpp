@@ -196,6 +196,21 @@ void WriteServingState(const ServerBootstrapConfig& config,
   out << "daemon_scope=" << daemon_lifecycle.daemon_scope << "\n";
   out << "hosted_database_count=" << daemon_lifecycle.hosted_database_count << "\n";
   out << "open_database_count=" << daemon_lifecycle.open_database_count << "\n";
+  // SB_LIFECYCLE_RESTRICTED (owner Q296 = yes, 2026-11-19): NEW lines. `state` and `service_ready` above keep
+  // their meaning (the daemon is serving connections); a database that is open but restricted (a native
+  // restart found committing / recovering slots) shows here. database_serving_state is the worst state across
+  // the hosted databases: failed > restricted > serving ("none" when no hosted database reports one).
+  {
+    bool any_failed = false, any_serving = false;
+    for (const auto& database : daemon_lifecycle.databases) {
+      any_failed = any_failed || database.serving_state == "failed";
+      any_serving = any_serving || database.serving_state == "serving";
+    }
+    out << "restricted_database_count=" << daemon_lifecycle.restricted_database_count << "\n";
+    out << "database_serving_state="
+        << (any_failed ? "failed" : daemon_lifecycle.restricted_database_count != 0 ? "restricted"
+                                   : any_serving ? "serving" : "none") << "\n";
+  }
   out << "sbps_endpoint=" << config.sbps_endpoint.string() << "\n";
   out.close();
 #ifndef _WIN32

@@ -32,6 +32,7 @@ class RouteOwnershipLease;
 namespace scratchbird::engine::internal_api {
 
 struct SblrExecutorAvailabilityStatementCohort;
+struct NativeServedDatabaseFacts;
 class EngineDmlUpdateResourceReceiptV1;
 struct EngineQueryResultMetadataV1;
 struct EngineQueryResultValuesV1;
@@ -481,6 +482,15 @@ struct EngineRequestContext {
   // manager_control, which calls the lifecycle API without a handle, still
   // fills it from the server config itself.
   std::string server_policy_seed_pack_root;
+  // SEARCH_KEY: SB_NATIVE_SERVED_DATABASE_FACTS (thin-slice S3e, owner Q238 = 1). The server-set native marker:
+  // immutable facts the database loop published for a verified, served NATIVE database. Process-local: never
+  // serialized, never filled from a client, a parser, an SBLR operand or a request option. Set only by the
+  // server through OpenServedEngine onto the handle; AcquireStatementContextReceipt OVERWRITES this field from
+  // the handle (a caller value is replaced). Null for every sb_engine_open caller and every legacy context.
+  // When set, the legacy side-file registries behind it (executor availability, prepared-statement registry,
+  // diagnostic identity, transaction begin authority, catalog object events) answer natively or refuse with a
+  // specific code; none reads or writes an .sb.* file.
+  std::shared_ptr<const NativeServedDatabaseFacts> native_served_facts;
   EngineUuid database_uuid;
   EngineApiU64 database_page_size_bytes = 0;
   EngineUuid cluster_uuid;

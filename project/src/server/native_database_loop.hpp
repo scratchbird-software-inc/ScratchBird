@@ -55,6 +55,7 @@
 // has retired every resource that depends on it.
 
 #include "careful_write.hpp"
+#include "engine/internal_api/native_served_database_facts.hpp"
 #include "database_ownership.hpp"
 #include "native_hosted_database_runtime.hpp"
 #include "process_crypto_owner.hpp"
@@ -134,20 +135,20 @@ struct NativeLoopOpenRequest {
   core::platform::Uuid filespace_uuid;
   std::uint32_t page_size_bytes = 0;
   std::uint64_t total_pages = 0;
-  // SB_TEST_SEAM (S3d): null in production. A test sets it to wrap the careful-write sink Restart
-  // writes through (crash / torn / failing sinks, as the writer tests use); the returned sink wraps
-  // the one passed in and lives until Restart returns. Never serialized, never set by a server.
-  std::function<std::unique_ptr<storage::disk::CarefulWriteSink>(storage::disk::CarefulWriteSink&)>
-      restart_sink_wrapper;
 };
 
-// SB_TEST_SEAM (S3d): a process-wide default for NativeLoopOpenRequest::restart_sink_wrapper, copied
-// into the request by StartHostedEngine, so a test child process can inject crash / torn / failing
-// sinks into the real server open path. Empty in production; nothing outside tests sets it.
+#if defined(SB_NATIVE_LOOP_TEST_SEAMS)
+// SB_TEST_SEAM (S3d; owner Q295 = gate behind a compile-time test guard, 2026-11-19). Compiled ONLY when a
+// test target defines SB_NATIVE_LOOP_TEST_SEAMS and compiles native_database_loop.cpp itself; the production
+// sb_server_core does not define it and contains neither symbol (verified with nm). A process-wide wrapper of
+// the careful-write sink the Restart writes through, so a test child process can inject crash / torn / failing
+// sinks into the real server open path. (Was: an always-compiled NativeLoopOpenRequest::restart_sink_wrapper
+// member plus these two functions in sb_server_core, copied in by StartHostedEngine.)
 void SetNativeRestartSinkWrapperForTest(
     std::function<std::unique_ptr<storage::disk::CarefulWriteSink>(storage::disk::CarefulWriteSink&)> wrapper);
 std::function<std::unique_ptr<storage::disk::CarefulWriteSink>(storage::disk::CarefulWriteSink&)>
 NativeRestartSinkWrapperForTest();
+#endif
 
 // Immutable facts about the verified, serving-ready database. Copied values
 // only; no custody, no readiness authority.
@@ -165,6 +166,11 @@ struct NativeLoopServingFacts {
   NativeRestartReport restart;
   // Specific code for a restricted or failed serving state, empty for serving.
   NativeLoopDiagnostic serving_diagnostic;
+  // SEARCH_KEY: SB_NATIVE_SERVED_DATABASE_FACTS (S3e, owner Q238 = 1). The immutable marker the SERVER hands to
+  // OpenServedEngine: identity, page profile, page-zero fixed roots, the datatype cohort of the captured database
+  // record, the engine instance, the TIP Next/horizons after Restart, the availability table identity and the
+  // serving state. Built once by the loop at the end of the open; process-local, never serialized.
+  std::shared_ptr<const engine::internal_api::NativeServedDatabaseFacts> served_facts;
 };
 
 struct NativeLoopOpenResult {

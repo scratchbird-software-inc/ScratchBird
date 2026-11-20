@@ -94,10 +94,13 @@ ServerDaemonLifecycleSnapshot EvaluateServerDaemonLifecycle(
     association.database_open = database.database_open;
     association.failed = database.state == HostedDatabaseState::kFailed;
     association.quarantined = database.state == HostedDatabaseState::kQuarantined;
+    association.restricted = database.state == HostedDatabaseState::kRestrictedOpen;
+    association.serving_state = database.native_serving_state;
     snapshot.databases.push_back(association);
     ++snapshot.hosted_database_count;
     if (association.database_open) ++snapshot.open_database_count;
     if (association.failed) ++snapshot.failed_database_count;
+    if (association.restricted) ++snapshot.restricted_database_count;
     if (association.failed) snapshot.hosted_database_failure = true;
     if (association.failed || association.quarantined) snapshot.quarantine_required = true;
     if (database.cluster_authority_required) {
@@ -191,6 +194,7 @@ std::string ServerDaemonLifecycleStatusJson(
       << ",\"hosted_database_count\":" << snapshot.hosted_database_count
       << ",\"open_database_count\":" << snapshot.open_database_count
       << ",\"failed_database_count\":" << snapshot.failed_database_count
+      << ",\"restricted_database_count\":" << snapshot.restricted_database_count
       << ",\"scope_ambiguous\":" << (snapshot.scope_ambiguous ? "true" : "false")
       << ",\"dedicated_database_daemon\":"
       << (snapshot.dedicated_database_daemon ? "true" : "false")
@@ -223,7 +227,9 @@ std::string ServerDaemonLifecycleStatusJson(
         << "\",\"database_open\":" << (database.database_open ? "true" : "false")
         << ",\"failed\":" << (database.failed ? "true" : "false")
         << ",\"quarantined\":" << (database.quarantined ? "true" : "false")
-        << "}";
+        << ",\"restricted\":" << (database.restricted ? "true" : "false")
+        << ",\"serving_state\":\"" << JsonEscape(database.serving_state)
+        << "\"}";
   }
   out << "]}}\n";
   return out.str();

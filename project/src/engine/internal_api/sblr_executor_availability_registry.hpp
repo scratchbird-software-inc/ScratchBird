@@ -578,6 +578,24 @@ EngineApiDiagnostic RevalidateSblrExecutorAvailability(
     const SblrExecutorAvailabilitySnapshot& admitted_snapshot,
     SblrExecutorAvailabilitySnapshot* current_snapshot);
 
+// SEARCH_KEY: SB_NATIVE_EXECUTOR_AVAILABILITY_TABLE (thin-slice S3e, plan 38 Q240 = 1, owner-approved).
+// On a context that carries EngineRequestContext::native_served_facts, every entry point above answers from ONE
+// per-build constant table instead of the .sb.sblr_executor_availability_registry.* side files: an executor row
+// is "available" only if a native implementation of it exists in this build. Every other row refuses
+// SBLR.EXECUTOR.NATIVE_NOT_IMPLEMENTED (structured fields, no prose). SetSblrExecutorAvailability refuses with
+// SBLR.EXECUTOR.NATIVE_AVAILABILITY_IMMUTABLE. Nothing is read or written on disk.
+//
+// The table's identity (a build constant, published in the facts).
+const EngineUuid& NativeExecutorAvailabilityTableUuid();
+// The rows with a native implementation in this build. EMPTY today: no executor has been proven to run on a
+// native database yet (the constant-SELECT rows are added by S3f when they can be shown to; candidates are
+// literal 3, project 1280, return_result_set 1286 -- NOT enabled by S3e).
+const std::vector<SblrExecutorAvailabilityRowIdentity>& NativeExecutorAvailabilityAllowList();
+// The pure table logic, with the allow-list passed in (the entry points pass NativeExecutorAvailabilityAllowList()).
+SblrExecutorAvailabilityLoadResult NativeExecutorAvailabilityLookup(
+    const EngineUuid& database_uuid, const SblrExecutorAvailabilityRowIdentity& exact_row_identity,
+    const std::vector<SblrExecutorAvailabilityRowIdentity>& allow_list);
+
 std::string ComputeSblrExecutorAvailabilityRowIdentitySha256(
     const SblrExecutorAvailabilityRowIdentity& identity);
 
