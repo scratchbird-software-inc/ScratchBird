@@ -5,7 +5,6 @@
 #include "engine/internal_api/security/authentication_api.hpp"
 #include "engine/internal_api/security/local_password_credential.hpp"
 #include "catalog_authorization_policy.hpp"
-#include "catalog_identifier_lookup_key.hpp"
 #include "catalog_identifier_profile.hpp"
 #include "native_catalog_visibility_lease_reader.hpp"
 
@@ -1174,67 +1173,9 @@ NativeLoginMaterialResult NativeHostedDatabaseRuntime::ReadNativeLoginMaterial(
   } catch(const std::bad_alloc&) {out.material.reset();out.error=E::memory_failure;return out;}
     catch(...) {out.material.reset();out.error=E::security_source_failure;return out;}
 }
-// SEARCH_KEY: SB_NATIVE_NAME_RESOLVE (thin-slice S4b). See the declaration and NativeNameResolveError.
-const char* NativeNameResolveErrorName(NativeNameResolveError e) noexcept {
-  using E=NativeNameResolveError;
-  switch(e){
-    case E::none: return "none";
-    case E::invalid_request: return "invalid_request";
-    case E::name_invalid: return "name_invalid";
-    case E::database_not_serving: return "database_not_serving";
-    case E::database_failed: return "database_failed";
-    case E::wrong_owner: return "wrong_owner";
-    case E::busy: return "busy";
-    case E::closed: return "closed";
-    case E::preparation_failure: return "preparation_failure";
-    case E::custody_failure: return "custody_failure";
-    case E::crypto_failure: return "crypto_failure";
-    case E::memory_failure: return "memory_failure";
-    case E::configuration_source_failure: return "configuration_source_failure";
-    case E::names_source_failure: return "names_source_failure";
-    case E::scope_unresolved: return "scope_unresolved";
-    case E::scope_ambiguous: return "scope_ambiguous";
-    case E::profile_unresolved: return "profile_unresolved";
-    case E::name_not_found: return "name_not_found";
-    case E::name_ambiguous: return "name_ambiguous";
-  }
-  return "";
-}
-const char* NativeNameResolveErrorCode(NativeNameResolveError e) noexcept {
-  using E=NativeNameResolveError;
-  switch(e){
-    case E::none: return "";
-    case E::invalid_request: return "CATALOG.NAME_RESOLVE_NATIVE_REQUEST_INVALID";
-    case E::name_invalid: return "CATALOG.NAME_RESOLVE_NATIVE_NAME_INVALID";
-    case E::database_not_serving: return "CATALOG.NAME_RESOLVE_NATIVE_DATABASE_NOT_SERVING";
-    case E::database_failed: return "CATALOG.NAME_RESOLVE_NATIVE_DATABASE_FAILED";
-    case E::wrong_owner: return "CATALOG.NAME_RESOLVE_NATIVE_READ_WRONG_OWNER";
-    case E::busy: return "CATALOG.NAME_RESOLVE_NATIVE_READ_BUSY";
-    case E::closed: return "CATALOG.NAME_RESOLVE_NATIVE_READ_CLOSED";
-    case E::preparation_failure: return "CATALOG.NAME_RESOLVE_NATIVE_READ_PREPARATION_FAILED";
-    case E::custody_failure: return "CATALOG.NAME_RESOLVE_NATIVE_READ_CUSTODY_FAILED";
-    case E::crypto_failure: return "CATALOG.NAME_RESOLVE_NATIVE_READ_CRYPTO_SCOPE_FAILED";
-    case E::memory_failure: return "CATALOG.NAME_RESOLVE_NATIVE_READ_MEMORY_FAILED";
-    case E::configuration_source_failure: return "CATALOG.NAME_RESOLVE_NATIVE_CONFIGURATION_SOURCE_FAILED";
-    case E::names_source_failure: return "CATALOG.NAME_RESOLVE_NATIVE_NAMES_SOURCE_FAILED";
-    case E::scope_unresolved: return "CATALOG.NAME_RESOLVE_NATIVE_SCOPE_UNRESOLVED";
-    case E::scope_ambiguous: return "CATALOG.NAME_RESOLVE_NATIVE_SCOPE_AMBIGUOUS";
-    case E::profile_unresolved: return "CATALOG.NAME_RESOLVE_NATIVE_PROFILE_UNRESOLVED";
-    case E::name_not_found: return "CATALOG.NAME_RESOLVE_NATIVE_NAME_NOT_FOUND";
-    case E::name_ambiguous: return "CATALOG.NAME_RESOLVE_NATIVE_NAME_AMBIGUOUS";
-  }
-  return "";
-}
-
+// SEARCH_KEY: SB_NATIVE_NAMES_SOURCE (S4b rework "Part A"). See the declaration.
 namespace {
-// What the names read copies out of the configuration relation before the workspace is reused for the names
-// relation. Owning values only (an identifier profile and a binary UUID borrow nothing).
-struct NativeNameProfileCopy {
-  core::catalog::CatalogIdentifierResolutionProfile profile;
-  bool lanes_ready = false;
-  core::catalog::CatalogIdentifierKeyError lane_error = core::catalog::CatalogIdentifierKeyError::none;
-  std::vector<core::platform::byte> lanes;  // both lanes of the input under this profile: normalized | exact
-};
+// A live, committed, unprovisional row of the visibility reader (the S4b liveness predicate, kept).
 bool NativeNameRowLive(const storage::database::NativeCatalogVisibleRow& row) noexcept {
   namespace c=core::catalog;
   return !row.provisional&&!row.metadata.record.header.deleted&&
@@ -1242,23 +1183,14 @@ bool NativeNameRowLive(const storage::database::NativeCatalogVisibleRow& row) no
 }
 }  // namespace
 
-NativeNameResolveResult NativeHostedDatabaseRuntime::ResolveNativeName(
-    std::shared_ptr<NativeHostedDatabaseRuntime> owner, const NativeNameResolveRequest& request) noexcept {
-  using E=NativeNameResolveError;namespace db=storage::database;namespace c=core::catalog;
-  NativeNameResolveResult out;
+engine::internal_api::NativeNamesSnapshot NativeHostedDatabaseRuntime::ReadNativeNamesSnapshot(
+    std::shared_ptr<NativeHostedDatabaseRuntime> owner, const NativeNamesSnapshotRequest& request) noexcept {
+  using E=engine::internal_api::NativeNamesSnapshotError;namespace db=storage::database;namespace c=core::catalog;
+  engine::internal_api::NativeNamesSnapshot out;
   try {
-    const auto& in=request.input;
     if(!owner||!request.limits.maximum_backing_bytes||!request.limits.maximum_verification_image_bytes||
-        !db::NativeCatalogVisibilityWorkspaceBytes(request.catalog)||
-        (in.scope_kind!=NativeNameScopeKind::explicit_uuid&&in.scope_kind!=NativeNameScopeKind::principal_namespace)||
-        (in.scope_kind==NativeNameScopeKind::explicit_uuid&&!core::uuid::IsEngineIdentityUuid(in.scope_uuid))||
-        (in.language&&!core::uuid::IsEngineIdentityUuid(*in.language))||(in.object_kind&&!*in.object_kind)||
-        (in.quoted&&in.quote_style==c::CatalogNameQuoteStyle::none)||(!in.quoted&&in.quote_style!=c::CatalogNameQuoteStyle::none)) {
+        !db::NativeCatalogVisibilityWorkspaceBytes(request.catalog)) {
       out.error=E::invalid_request;return out;
-    }
-    // The profile-independent text rule, decided from the input alone, before the file is read.
-    if(const auto text=c::AdmitCatalogIdentifierText(in.text);text!=c::CatalogIdentifierKeyError::none) {
-      out.error=E::name_invalid;out.key_error=text;return out;
     }
     auto& self=*owner;
     if(!self.SameOwner()) {out.error=E::wrong_owner;return out;}
@@ -1290,28 +1222,22 @@ NativeNameResolveResult NativeHostedDatabaseRuntime::ResolveNativeName(
     const auto id=core::uuid::IssueRuntimeIdentityV7();
     if(!id) {out.error=E::custody_failure;return out;}
     auto operation=NativeHostedDatabaseCustody::TryBeginOperation(self.custody_,*id);
-    out.custody_error=operation.error;
+    out.custody_error=static_cast<std::uint32_t>(operation.error);
     if(!operation.ok()) {out.error=E::custody_failure;return out;}
 
-    // ---- the committed read, no lock, nothing written; every comparison happens before the lease ends and only
-    //      UUIDs and constants leave it ----
-    std::vector<NativeNameProfileCopy> profiles;
-    std::vector<core::platform::Uuid> schemas;  // the authorization policy bodies' user schema
+    // ---- the committed read, no lock, nothing written; everything is copied out before the lease ends ----
+    // SB_NAME_SNAPSHOT_OWN_TXN: no transaction exists yet (S4e); this is the committed snapshot, as S4a/S4b read it.
     E phase=E::none;
-    std::optional<NativeResolvedName> resolved;
-    bool ambiguous=false,profile_missing=false;
-    c::CatalogIdentifierKeyError lane_error=c::CatalogIdentifierKeyError::none;
-    core::platform::Uuid scope;
     const auto crypto=self.database_crypto_.WithMemoryScope(self.crypto_binding_,[&] {
       auto source=operation.operation.ReadFixedRootWithMemory(request.limits,self.reading_,self.reading_.binding());
       if(!source.ok()) {phase=E::custody_failure;return;}
       const auto& lease=source.lease.source();
-      // 1. The configuration relation: identifier profiles, and the security schema the principals live under.
+      // 1. The configuration relation (role 5): identifier profiles, and the security schema the principals live under.
       {
         const auto config=db::NativeCatalogVisibilityLeaseReader::ReadCommittedSelected(lease,2,5,
             request.limits.maximum_verification_image_bytes,prepared.workspace);
         if(!config.ok()) {
-          out.source_error=config.error;out.relation_error=config.source.error;
+          out.source_error=static_cast<std::uint32_t>(config.error);out.relation_error=static_cast<std::uint32_t>(config.source.error);
           phase=E::configuration_source_failure;source.lease.Reset();return;
         }
         for(const auto& row:config.rows) {
@@ -1320,82 +1246,52 @@ NativeNameResolveResult NativeHostedDatabaseRuntime::ResolveNativeName(
           if(c::IsCatalogIdentifierProfilePayload(m.record.payload)&&c::CatalogIdentifierProfileMatchesMetadata(m)&&
               c::CatalogIdentifierProfileMatchesDatabase(m,self.database_)) {
             auto decoded=c::DecodeCatalogIdentifierProfile(m.record.payload);
-            if(decoded.ok()) profiles.push_back(NativeNameProfileCopy{std::move(*decoded.record),false,{},{}});
-          } else if(in.scope_kind==NativeNameScopeKind::principal_namespace&&c::IsCatalogAuthorizationPolicyPayload(m.record.payload)&&
+            if(decoded.ok()) out.profiles.push_back({decoded.record->profile_uuid,static_cast<std::uint64_t>(decoded.record->unquoted_fold_mode)});
+          } else if(c::IsCatalogAuthorizationPolicyPayload(m.record.payload)&&
               c::CatalogAuthorizationPolicyMatchesMetadata(m)&&c::CatalogAuthorizationPolicyMatchesDatabase(m,self.database_)) {
             const auto body=c::DecodeCatalogAuthorizationPolicy(m.record.payload);
-            if(body.record&&std::find(schemas.begin(),schemas.end(),body.record->user_schema_uuid)==schemas.end())
-              schemas.push_back(body.record->user_schema_uuid);
+            if(body.record&&std::find(out.principal_schemas.begin(),out.principal_schemas.end(),body.record->user_schema_uuid)==out.principal_schemas.end())
+              out.principal_schemas.push_back(body.record->user_schema_uuid);
           }
         }
       }
-      if(in.scope_kind==NativeNameScopeKind::explicit_uuid) scope=in.scope_uuid;
-      else if(schemas.empty()) {phase=E::scope_unresolved;source.lease.Reset();return;}
-      else if(schemas.size()>1) {phase=E::scope_ambiguous;source.lease.Reset();return;}
-      else scope=schemas.front();
-      // 2. The names relation (the same workspace: nothing borrowed from the configuration read is used below).
+      // 2. The names relation (role 2; the same workspace: nothing borrowed from the configuration read is used below).
       {
         const auto names=db::NativeCatalogVisibilityLeaseReader::ReadCommittedSelected(lease,2,2,
             request.limits.maximum_verification_image_bytes,prepared.workspace);
         if(!names.ok()) {
-          out.source_error=names.error;out.relation_error=names.source.error;
+          out.source_error=static_cast<std::uint32_t>(names.error);out.relation_error=static_cast<std::uint32_t>(names.source.error);
           phase=E::names_source_failure;source.lease.Reset();return;
         }
         for(const auto& row:names.rows) {
           if(!row.name_payload||!NativeNameRowLive(row)) continue;
           const auto* entry=std::get_if<c::CatalogNameEntryView>(&*row.name_payload);
           if(!entry||entry->lifecycle_state!=c::CatalogNameLifecycle::active||entry->dropped_transaction_uuid) continue;
-          if(entry->scope_uuid.value!=scope) continue;
-          if(in.language&&entry->language_uuid.value!=*in.language) continue;
-          if(in.object_kind&&static_cast<std::uint16_t>(entry->object_kind)!=*in.object_kind) continue;
-          const auto at=std::find_if(profiles.begin(),profiles.end(),[&](const NativeNameProfileCopy& p) {
-            return p.profile.profile_uuid==entry->identifier_profile_uuid.value;});
-          if(at==profiles.end()) {profile_missing=true;continue;}
-          if(!at->lanes_ready) {
-            // The input's two lanes under this profile (the profile's own admission: length, quote style).
-            at->lanes_ready=true;
-            at->lanes.assign(2*in.text.size(),core::platform::byte{0});
-            const c::CatalogIdentifierKeyRequest key_request{&at->profile,in.text,in.quoted,in.quote_style,in.quoted};
-            const auto lanes=c::DeriveCatalogIdentifierLookupKeysInto(key_request,std::span<core::platform::byte>(at->lanes));
-            at->lane_error=lanes.error;
-          }
-          if(at->lane_error!=c::CatalogIdentifierKeyError::none) {lane_error=at->lane_error;continue;}
-          const auto keys=c::DeriveCatalogNameEntryKeys(at->profile,*entry);
-          if(!keys.ok()) continue;
-          // The input's lane: exact when quoted, normalized otherwise; compared with the entry's own lane.
-          const auto* lane=at->lanes.data()+(in.quoted?in.text.size():0);
-          if(!keys.own.Equals(std::span<const core::platform::byte>(lane,in.text.size()))) continue;
-          const auto object=entry->object_uuid.value;
-          if(resolved&&resolved->object_uuid!=object) {ambiguous=true;continue;}
-          if(!resolved) {
-            NativeResolvedName r;
-            r.database_uuid=self.database_;r.object_uuid=object;r.scope_uuid=scope;r.language_uuid=entry->language_uuid.value;
-            r.name_entry_uuid=entry->name_entry_uuid.value;r.object_kind=static_cast<std::uint16_t>(entry->object_kind);
-            r.name_class=entry->name_class;r.default_for_object=entry->default_for_object;
-            r.default_for_language=entry->default_for_language;r.matched_entries=1;
-            resolved=r;
-          } else {
-            ++resolved->matched_entries;
-            // Report the object's default entry when several of its names compare equal.
-            if(entry->default_for_object&&!resolved->default_for_object) {
-              resolved->language_uuid=entry->language_uuid.value;resolved->name_entry_uuid=entry->name_entry_uuid.value;
-              resolved->name_class=entry->name_class;resolved->default_for_object=true;
-              resolved->default_for_language=entry->default_for_language;
-            }
-          }
+          engine::internal_api::NativeNameRowValue v;
+          v.name_entry_uuid=entry->name_entry_uuid.value;v.object_uuid=entry->object_uuid.value;v.scope_uuid=entry->scope_uuid.value;
+          v.language_uuid=entry->language_uuid.value;v.dialect_profile_uuid=entry->dialect_profile_uuid.value;
+          v.identifier_profile_uuid=entry->identifier_profile_uuid.value;
+          if(entry->parent_object_uuid) {v.has_parent_object=true;v.parent_object_uuid=entry->parent_object_uuid->value;}
+          if(entry->parent_schema_uuid) {v.has_parent_schema=true;v.parent_schema_uuid=entry->parent_schema_uuid->value;}
+          v.object_kind=static_cast<std::uint16_t>(entry->object_kind);
+          v.name_class=static_cast<std::uint8_t>(entry->name_class);v.quote_style=static_cast<std::uint8_t>(entry->quote_style);
+          v.was_quoted=entry->was_quoted;v.requires_exact_match=entry->requires_exact_match;
+          v.default_for_language=entry->default_for_language;v.default_for_object=entry->default_for_object;
+          v.raw_name_text.assign(entry->raw_name_text.data(),entry->raw_name_text.size());
+          v.catalog_generation_id=entry->catalog_generation_id;v.resource_epoch=entry->resource_epoch;
+          v.name_resolution_epoch=entry->name_resolution_epoch;
+          out.rows.push_back(std::move(v));
         }
       }
       source.lease.Reset();
     });
-    if(!crypto.ok()) {out.error=E::crypto_failure;return out;}
-    if(phase!=E::none) {out.error=phase;return out;}
-    if(ambiguous) {out.error=E::name_ambiguous;return out;}
-    if(resolved) {out.resolved=resolved;out.error=E::none;return out;}
-    if(lane_error!=c::CatalogIdentifierKeyError::none) {out.error=E::name_invalid;out.key_error=lane_error;return out;}
-    out.error=profile_missing?E::profile_unresolved:E::name_not_found;
+    if(!crypto.ok()) {out.error=E::crypto_failure;out.rows.clear();return out;}
+    if(phase!=E::none) {out.error=phase;out.rows.clear();return out;}
+    out.database_uuid=self.database_;
+    out.error=E::none;
     return out;
-  } catch(const std::bad_alloc&) {out.resolved.reset();out.error=E::memory_failure;return out;}
-    catch(...) {out.resolved.reset();out.error=E::names_source_failure;return out;}
+  } catch(const std::bad_alloc&) {out.rows.clear();out.error=E::memory_failure;return out;}
+    catch(...) {out.rows.clear();out.error=E::names_source_failure;return out;}
 }
 
 } // namespace scratchbird::server

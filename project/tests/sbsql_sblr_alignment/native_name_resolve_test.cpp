@@ -6,9 +6,15 @@
 //
 // SPDX-License-Identifier: MPL-2.0
 
-// SEARCH_KEY: SB_NATIVE_NAME_RESOLVE_TEST (thin-slice S4b, plan 40; owner Q306 = 1, Q309, 2026-11-19/20). The minimal,
-// read-only, resolve-only names reader: NativeDatabaseLoop::SubmitResolveName resolves a name given AS DATA to the
-// object UUID of the committed names relation of a served native database, or refuses with a specific code.
+// SEARCH_KEY: SB_NATIVE_NAME_RESOLVE_TEST (thin-slice S4b, plan 40; owner Q306 = 1, Q309, 2026-11-19/20; re-pointed
+// 2026-11-20/21, "Part A" of the name-resolution rework). The engine's EXISTING resolver (EngineResolveName ->
+// ResolveNameRegistryPublic -> LoadNameRegistryState) resolves a name given AS DATA to the object UUID of the committed
+// names relation of a served native database, or refuses with a specific code. (Until Part A this file drove S4b's
+// private NativeDatabaseLoop::SubmitResolveName, a duplicate of that resolver, now deleted.) The native read is the
+// names source the loop publishes in the served facts (NativeNamesSource): a native context never reads a legacy side
+// file. No session is needed at this level; the session's own uncommitted names arrive with S4e
+// (SB_NAME_SNAPSHOT_OWN_TXN). Assertions that depend on the engine's fold / language fallback / "" refusal are marked
+// "CHANGES WITH PART B".
 //
 // Every case runs against a PRODUCTION-created database (EngineCreateLifecycle through the native create fixture).
 // Extra names (a second language, a quoted name, a case twin, a dropped name, an uncommitted name) are written by the
@@ -22,6 +28,10 @@
 // With no argument the driver runs every size and state; "size <bytes>" runs one page size. The strace half is
 // native_name_resolve_strace.py.
 
+#include "engine/internal_api/catalog/name_registry.hpp"
+#include "engine/internal_api/catalog/name_resolution_api.hpp"
+#include "engine/internal_api/native_served_database_facts.hpp"
+#include "catalog_identifier_text_rule.hpp"
 #include "engine/internal_api/security/agent_password_derivation.hpp"
 #include "hash_digest.hpp"
 #include "lifecycle/engine_lifecycle_api.hpp"
@@ -79,7 +89,6 @@ namespace srv = scratchbird::server;
 namespace mem = scratchbird::core::memory;
 namespace cat = scratchbird::core::catalog;
 namespace fs = std::filesystem;
-using E = srv::NativeNameResolveError;
 
 constexpr std::string_view kBootstrapPassword = "S4b-Bootstrap-Pw-5e1d77a0c3";
 
@@ -612,77 +621,135 @@ class FailFirstWriteSink final : public d::CarefulWriteSink {
   d::CarefulWriteSink& inner_;
 };
 
-struct Outcome {
-  srv::NativeNameResolveResult result;
-  std::string summary;  // everything the test says about the result: structured only
-  double milliseconds = 0;
-};
-std::vector<std::string> all_summaries;
-std::set<std::string> asked_texts;  // every name the test asked about (to prove none appears in a summary)
-std::vector<double> resolve_ms;
+// ---- the EXISTING resolver on a native context -------------------------------------------------------------------------
+// Part A (2026-11-20): the name -> UUID step is EngineResolveName (and, for the entry itself, ResolveNameRegistryPublic),
+// the engine's existing resolver, on a context that carries the served facts a native handle's contexts carry
+// (ServedNativeFactsFor: the facts the loop published). It needs NO session: the registry load on a native context reads
+// the committed names through the facts' names source. What a session (S4) will add is the transaction: the names of the
+// session's own uncommitted work (SB_NAME_SNAPSHOT_OWN_TXN).
+// Assertions marked "CHANGES WITH PART B" depend on what the engine's resolver does today (it folds, falls back across
+// languages, refuses "", takes no language filter) and are expected to change when Part B removes that.
+namespace eng = scratchbird::engine::internal_api;
 
-std::string Summary(const srv::NativeNameResolveResult& r) {
-  std::ostringstream out;
-  out << "error=" << srv::NativeNameResolveErrorName(r.error) << " code=" << srv::NativeNameResolveErrorCode(r.error)
-      << " key_error=" << static_cast<unsigned>(r.key_error) << " source_error=" << static_cast<unsigned>(r.source_error)
-      << " relation_error=" << static_cast<unsigned>(r.relation_error) << " custody_error=" << static_cast<unsigned>(r.custody_error);
-  if (r.resolved) {
-    const auto& x = *r.resolved;
-    out << " object=" << Hex(x.object_uuid) << " scope=" << Hex(x.scope_uuid) << " language=" << Hex(x.language_uuid)
-        << " entry=" << Hex(x.name_entry_uuid) << " kind=" << x.object_kind << " class=" << static_cast<unsigned>(x.name_class)
-        << " default_object=" << x.default_for_object << " default_language=" << x.default_for_language
-        << " matched=" << x.matched_entries;
-  }
-  return out.str();
+struct Env {
+  std::shared_ptr<const eng::NativeServedDatabaseFacts> facts;
+  p::Uuid database, security_scope;
+};
+Env env;
+
+constexpr const char* kNotFound = "CATALOG.NAME.NOT_FOUND";
+
+eng::EngineUuid ToEngine(const p::Uuid& id) {
+  eng::EngineUuid out;
+  std::copy(id.bytes.begin(), id.bytes.end(), out.bytes.begin());
+  return out;
+}
+bool Same(const eng::EngineUuid& a, const p::Uuid& b) { return std::equal(a.bytes.begin(), a.bytes.end(), b.bytes.begin()); }
+// The language tag the registry projection gives a known language constant (the boundary adapter's spelling).
+std::string TagFor(const p::Uuid& language) {
+  for (const auto& known : cat::kCatalogLanguages)
+    if (known.uuid == language) return std::string(known.tag);
+  Check(false, "a language constant");
+  return {};
+}
+// The class text the projection gives a record kind (name_registry.cpp NativeKindClassText: user and role are the
+// legacy classes, every other kind its catalog token).
+std::string ClassFor(std::uint16_t kind) {
+  const auto k = static_cast<cat::CatalogRecordKind>(kind);
+  if (k == cat::CatalogRecordKind::user_account) return "user";
+  if (k == cat::CatalogRecordKind::role_account) return "role";
+  return cat::CatalogRecordKindName(k);
 }
 
 struct Ask {
   std::string text;
   bool quoted = false;
-  cat::CatalogNameQuoteStyle style = cat::CatalogNameQuoteStyle::none;  // none with quoted: double_quote
-  std::optional<p::Uuid> language;
-  srv::NativeNameScopeKind scope_kind = srv::NativeNameScopeKind::principal_namespace;
-  p::Uuid scope;
-  std::optional<std::uint16_t> kind;
-  bool raw_style = false;  // use `style` as given (to test the refusal of a bad combination)
+  std::string quote_style;                // "" : double_quote when quoted, none otherwise
+  std::string language = "en";            // the session language tag (the existing resolver falls back from it)
+  std::optional<p::Uuid> scope;           // default: the file's security schema (the principals' scope)
+  std::string object_class;               // "" : any
 };
 
-Outcome Resolve(srv::NativeDatabaseLoop& loop, const Ask& ask) {
-  srv::NativeLoopResolveNameRequest request;
-  request.text = ask.text;
-  request.quoted = ask.quoted;
-  request.quote_style = ask.raw_style ? ask.style
-                        : ask.quoted ? (ask.style == cat::CatalogNameQuoteStyle::none ? cat::CatalogNameQuoteStyle::double_quote : ask.style)
-                                     : cat::CatalogNameQuoteStyle::none;
-  request.language = ask.language;
-  request.scope_kind = ask.scope_kind;
-  request.scope_uuid = ask.scope;
-  request.object_kind = ask.kind;
-  if (ask.text.size() < 200) asked_texts.insert(ask.text);
-  const auto started = std::chrono::steady_clock::now();
-  Outcome out;
-  out.result = loop.SubmitResolveName(std::move(request)).get();
-  out.milliseconds = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
-  out.summary = Summary(out.result);
-  all_summaries.push_back(out.summary);
-  if (out.result.error != E::database_failed && out.result.error != E::database_not_serving) resolve_ms.push_back(out.milliseconds);
-  return out;
-}
-Outcome ResolveText(srv::NativeDatabaseLoop& loop, std::string_view text, bool quoted = false) {
-  return Resolve(loop, Ask{std::string(text), quoted});
+eng::EngineResolveNameRequest MakeRequest(const Ask& ask) {
+  eng::EngineResolveNameRequest request;
+  request.context.native_served_facts = env.facts;
+  request.context.database_uuid = ToEngine(env.database);
+  request.context.language_context.language_tag = ask.language;
+  request.context.language_context.default_language_tag = ask.language;
+  request.context.identifier_profile_uuid = "sbsql_v3";
+  request.target_schema.uuid = ToEngine(ask.scope ? *ask.scope : env.security_scope);
+  request.sql_object_reference.expected_object_type = ask.object_class;
+  auto& name = request.sql_object_reference.object_name;
+  name.raw_text = ask.text;
+  name.was_quoted = ask.quoted;
+  name.requires_exact_match = ask.quoted;
+  name.quote_style = !ask.quote_style.empty() ? ask.quote_style : ask.quoted ? "double_quote" : "none";
+  name.identifier_profile_uuid = "sbsql_v3";
+  return request;
 }
 
-void ExpectRefusal(const Outcome& o, E expected, const std::string& what) {
-  Check(!o.result.ok() && !o.result.resolved.has_value(), what + ": no resolution: " + o.summary);
-  Check(o.result.error == expected, what + ": expected " + srv::NativeNameResolveErrorName(expected) + ", got " + o.summary);
-  Check(std::string(srv::NativeNameResolveErrorCode(o.result.error)).starts_with("CATALOG.NAME_RESOLVE_NATIVE_"), what + ": a stable code");
+struct Outcome {
+  eng::EngineResolveNameResult result;
+  std::string code;     // the first diagnostic's code when the resolution is refused
+  std::string summary;  // everything the test says about the result: structured only
+  double milliseconds = 0;
+  bool ok() const { return result.ok; }
+};
+std::vector<std::string> all_summaries;
+std::set<std::string> asked_texts;  // every name the test asked about (to prove none appears in a summary)
+std::vector<double> resolve_ms;
+
+Outcome Resolve(const Ask& ask) {
+  if (ask.text.size() < 200) asked_texts.insert(ask.text);
+  const auto request = MakeRequest(ask);
+  const auto started = std::chrono::steady_clock::now();
+  Outcome out;
+  out.result = eng::EngineResolveName(request);
+  out.milliseconds = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
+  if (!out.result.ok && !out.result.diagnostics.empty()) out.code = out.result.diagnostics.front().code;
+  std::ostringstream summary;
+  summary << "ok=" << out.result.ok << " code=" << out.code;
+  if (out.result.ok)
+    summary << " object=" << Hex(out.result.primary_object.uuid) << " class=" << out.result.primary_object.object_kind
+            << " schema=" << Hex(out.result.bound_object_identity.resolved_schema_uuid)
+            << " generation=" << out.result.bound_object_identity.catalog_generation_id;
+  out.summary = summary.str();
+  all_summaries.push_back(out.summary);
+  resolve_ms.push_back(out.milliseconds);
+  return out;
+}
+Outcome ResolveText(std::string_view text, bool quoted = false) { return Resolve(Ask{std::string(text), quoted}); }
+
+// The registry-level matches of the same question: the entries (entry UUID, class text, language tag, scope) behind a
+// resolution. ResolveNameRegistryPublic is the lookup EngineResolveName calls.
+std::vector<eng::NameRegistryEntry> Entries(const Ask& ask) {
+  const auto matches = eng::ResolveNameRegistryPublic(MakeRequest(ask), ask.object_class);
+  Check(matches.ok, "the registry-level lookup of the same question: " + matches.diagnostic.code);
+  return matches.matches;
+}
+
+void ExpectRefusal(const Outcome& o, const std::string& code, const std::string& what) {
+  Check(!o.ok(), what + ": no resolution: " + o.summary);
+  Check(o.code == code, what + ": expected " + code + ", got " + o.summary);
 }
 void ExpectObject(const Outcome& o, const p::Uuid& object, const std::string& what) {
-  Check(o.result.ok(), what + ": resolved: " + o.summary);
-  Check(o.result.resolved->object_uuid == object, what + ": the expected object UUID: " + o.summary);
+  Check(o.ok(), what + ": resolved: " + o.summary);
+  Check(Same(o.result.primary_object.uuid, object), what + ": the expected object UUID: " + o.summary);
 }
 
 constexpr std::uint16_t kUserKind = static_cast<std::uint16_t>(cat::CatalogRecordKind::user_account);
+
+// The names source's own rows (the committed role-2 entries as values): the evidence that the projection's input is the
+// file's, field by field, and where the default flags (not part of the legacy entry) are checked.
+eng::NativeNamesSnapshot Rows() {
+  Check(env.facts && env.facts->names_source, "the served facts carry a names source");
+  return env.facts->names_source->Read();
+}
+const eng::NativeNameRowValue* RowOf(const eng::NativeNamesSnapshot& snapshot, const p::Uuid& entry) {
+  for (const auto& row : snapshot.rows)
+    if (row.name_entry_uuid == entry) return &row;
+  return nullptr;
+}
 
 int ServeMode(const fs::path& path, const std::string& state, const p::Uuid& database, const p::Uuid& bootstrap,
               const p::Uuid& service) {
@@ -730,146 +797,178 @@ int ServeMode(const fs::path& path, const std::string& state, const p::Uuid& dat
   const auto before = state == "uncommitted" ? Snapshot(directory) : before_start;
   (void)before_start;
 
+  // The facts a native handle's contexts carry: the ones the loop published, found by the database's path (the lookup
+  // the session layer uses). No session is involved.
+  env.facts = srv::ServedNativeFactsFor(started.state, path.string());
+  env.database = database;
+  env.security_scope = offline.security_schema;
+  Check(env.facts != nullptr && env.facts->names_source != nullptr, "the loop published served facts with a names source");
   const auto security_scope = offline.security_schema;
   std::size_t agents_resolved = 0, names_resolved = 0, database_scope_resolved = 0;
 
   if (state == "failed") {
-    const auto o = ResolveText(loop, kBootstrapName);
-    ExpectRefusal(o, E::database_failed, "failed state");
-    Check(std::string(srv::NativeNameResolveErrorCode(E::database_failed)) != srv::NativeNameResolveErrorCode(E::database_not_serving),
+    const auto o = ResolveText(kBootstrapName);
+    ExpectRefusal(o, eng::NativeNamesSnapshotErrorCode(eng::NativeNamesSnapshotError::database_failed), "failed state");
+    Check(std::string(eng::NativeNamesSnapshotErrorCode(eng::NativeNamesSnapshotError::database_failed)) !=
+              eng::NativeNamesSnapshotErrorCode(eng::NativeNamesSnapshotError::database_not_serving),
           "failed and not-serving are distinct codes");
   } else {
+    // 0. The names source itself (A1): its rows are the file's, field by field, and it names the principals' scope.
+    //    (New in Part A: replaces S4b's per-result field checks; the default flags live only here.)
+    {
+      const auto snapshot = Rows();
+      Check(snapshot.ok() && snapshot.database_uuid == database, "the names source reads the served file");
+      Check(snapshot.principal_schemas.size() == 1 && snapshot.principal_schemas.front() == security_scope,
+            "the names source reports the authorization policy's user schema as the principals' scope");
+      Check(!snapshot.profiles.empty(), "the names source reports the identifier profiles");
+      Check(snapshot.rows.size() == offline.names.size(), "the names source lists exactly the offline live entries");
+      for (const auto& fact : offline.names) {
+        const auto* row = RowOf(snapshot, fact.entry_uuid);
+        Check(row != nullptr, "every offline entry is a source row");
+        Check(row->object_uuid == fact.object && row->scope_uuid == fact.scope && row->language_uuid == fact.language &&
+                  row->object_kind == fact.kind && row->was_quoted == fact.quoted && row->raw_name_text == fact.text &&
+                  row->default_for_object == fact.default_for_object && row->default_for_language == fact.default_for_language &&
+                  row->name_class == static_cast<std::uint8_t>(fact.name_class),
+              "a source row equals the offline entry (identities, kind, text, flags, class)");
+        Check(row->catalog_generation_id != 0, "a source row carries its catalog generation");
+      }
+      // The registry projection (what the existing resolver matches): one entry per source row, nothing from any
+      // legacy store.
+      const auto loaded = eng::LoadNameRegistryState(MakeRequest(Ask{}).context, 0);
+      Check(loaded.ok && loaded.state.entries.size() == snapshot.rows.size(), "the registry state is the source's rows, projected");
+    }
     // 1. The bootstrap principal's own name resolves to the bootstrap principal UUID; the S4a login-material read of the
     //    same file for that UUID reports the same principal (the cross-check the owner asked for).
     {
-      const auto o = ResolveText(loop, kBootstrapName);
+      const auto o = ResolveText(kBootstrapName);
       ExpectObject(o, bootstrap, "the bootstrap principal's name");
-      const auto& x = *o.result.resolved;
-      Check(x.database_uuid == database && x.scope_uuid == security_scope, "the database and the security schema scope are reported");
-      Check(x.object_kind == kUserKind, "the object's kind is the user account kind");
-      Check(x.default_for_object && x.default_for_language && x.name_class == cat::CatalogNameClass::primary && x.matched_entries == 1,
-            "the create's name is the primary default name, matched once");
+      const auto& x = o.result;
+      Check(Same(x.bound_object_identity.resolved_schema_uuid, security_scope), "the security schema scope is reported");
+      Check(x.primary_object.object_kind == "user", "the object's kind is the user account kind (projected class text)");
       const auto* fact = EntryOf(offline, bootstrap, std::string(kBootstrapName));
-      Check(fact != nullptr && x.language_uuid == fact->language && x.name_entry_uuid == fact->entry_uuid,
+      Check(fact != nullptr, "the create's entry");
+      const auto entries = Entries(Ask{std::string(kBootstrapName)});
+      Check(entries.size() == 1, "the name matches one entry (one distinct object)");
+      Check(Same(entries.front().name_entry_uuid, fact->entry_uuid) && entries.front().language_tag == TagFor(fact->language),
             "the language and the entry UUID are the file's");
+      Check(entries.front().name_class == "primary", "the create's name is a primary name");
+      const auto snapshot = Rows();
+      const auto* row = RowOf(snapshot, fact->entry_uuid);
+      Check(row != nullptr && row->default_for_object && row->default_for_language, "and the object's and its language's default (source row)");
+      // The generation and the epochs the SBLR bind/execute checks read come from the row.
+      Check(x.bound_object_identity.catalog_generation_id == row->catalog_generation_id &&
+                x.bound_object_identity.object_descriptor_generation == row->catalog_generation_id &&
+                x.bound_object_identity.resource_epoch == row->resource_epoch,
+            "the resolution carries the row's catalog generation and resource epoch");
       PasswordFactory passwords(database);
       srv::NativeLoopLoginRequest login;
-      login.principal_uuid = x.object_uuid;
+      login.principal_uuid = [&] { p::Uuid id; std::copy(x.primary_object.uuid.bytes.begin(), x.primary_object.uuid.bytes.end(), id.bytes.begin()); return id; }();
       login.password = passwords.Make(kBootstrapPassword);
       login.password_length = kBootstrapPassword.size();
       const auto material = loop.SubmitReadLoginMaterial(std::move(login)).get();
-      Check(material.ok() && material.material->principal_uuid == x.object_uuid && material.material->database_uuid == database,
+      Check(material.ok() && material.material->principal_uuid == bootstrap && material.material->database_uuid == database,
             "the S4a login-material read of the resolved UUID reports the same principal");
     }
     // 2. Unquoted names fold ASCII upper-case and match case-insensitively (created case is kept).
+    //    CHANGES WITH PART B (the engine's fold).
     for (const char* spelling : {"FIXTURE_OWNER", "Fixture_Owner", "fIxTuRe_oWnEr"})
-      ExpectObject(ResolveText(loop, spelling), bootstrap, std::string("unquoted ") + spelling);
+      ExpectObject(ResolveText(spelling), bootstrap, std::string("unquoted ") + spelling);
     // 3. Quoted names match exactly: the unquoted-created name's own lane is its upper-case fold (Q181), so a quoted
-    //    "FIXTURE_OWNER" finds it and any other spelling inside quotes does not.
-    ExpectObject(ResolveText(loop, "FIXTURE_OWNER", true), bootstrap, "quoted exact fold spelling");
-    ExpectRefusal(ResolveText(loop, "fixture_owner", true), E::name_not_found, "quoted created spelling");
-    ExpectRefusal(ResolveText(loop, "Fixture_Owner", true), E::name_not_found, "quoted mixed spelling");
+    //    "FIXTURE_OWNER" finds it and any other spelling inside quotes does not. CHANGES WITH PART B.
+    ExpectObject(ResolveText("FIXTURE_OWNER", true), bootstrap, "quoted exact fold spelling");
+    ExpectRefusal(ResolveText("fixture_owner", true), kNotFound, "quoted created spelling");
+    ExpectRefusal(ResolveText("Fixture_Owner", true), kNotFound, "quoted mixed spelling");
     // 4. A name that is a prefix or an extension of a real one, an unknown name, and a name with surrounding blanks.
     for (const char* text : {"fixture_owne", "fixture_ownerx", "xfixture_owner", "fixture_owner ", " fixture_owner", "f", "fixture",
                              "no_such_principal_anywhere", "fixture_ownerfixture_owner"})
-      ExpectRefusal(ResolveText(loop, text), E::name_not_found, std::string("not a name of the file: ") + text);
-    // 5. Inputs that cannot be an identifier: decided before the file is read, each with its own key error.
+      ExpectRefusal(ResolveText(text), kNotFound, std::string("not a name of the file: ") + text);
+    // 5. Inputs S4b refused as "cannot be an identifier". The existing resolver has no such rules: the engine stores
+    //    names as given and the parser owns them (owner 2026-11-20). CHANGES WITH PART B for the empty name (a valid
+    //    name, refused today as a missing name); every other one is a plain not-found now (was name_invalid).
     {
-      const auto empty = ResolveText(loop, "");
-      ExpectRefusal(empty, E::name_invalid, "empty name");
-      const auto nul = ResolveText(loop, std::string_view("fixture\0owner", 13));
-      ExpectRefusal(nul, E::name_invalid, "a NUL in the name");
-      ExpectRefusal(ResolveText(loop, std::string_view("\xC3\x28", 2)), E::name_invalid, "invalid UTF-8 (a truncated sequence)");
-      ExpectRefusal(ResolveText(loop, std::string_view("\xFF\xFEname", 6)), E::name_invalid, "invalid UTF-8 (bytes never valid)");
-      ExpectRefusal(ResolveText(loop, std::string_view("\xED\xA0\x80", 3)), E::name_invalid, "a UTF-16 surrogate encoded in UTF-8");
-      const auto too_long = ResolveText(loop, std::string(cat::kCatalogIdentifierTextMaximumBytes + 1, 'a'));
-      ExpectRefusal(too_long, E::name_invalid, "over the text limit");
-      Check(empty.result.key_error == cat::CatalogIdentifierKeyError::invalid_text && too_long.result.key_error == cat::CatalogIdentifierKeyError::invalid_text,
-            "the text rule's own key error is carried");
-      // Over the identifier profile's length rule (512 scalar values), under the text limit: the profile refuses it.
-      const auto profile_long = ResolveText(loop, std::string(513, 'a'));
-      ExpectRefusal(profile_long, E::name_invalid, "over the profile's maximum identifier length");
-      Check(profile_long.result.key_error == cat::CatalogIdentifierKeyError::identifier_too_long, "the length rule's key error is carried");
-      ExpectRefusal(ResolveText(loop, std::string(512, 'a')), E::name_not_found, "a 512-character name is admissible and simply absent");
-      // A quote style the profile does not admit.
-      Ask backtick{std::string(kBootstrapName), true, cat::CatalogNameQuoteStyle::backtick};
-      const auto bt = Resolve(loop, backtick);
-      ExpectRefusal(bt, E::name_invalid, "a quote style the profile does not admit");
-      Check(bt.result.key_error == cat::CatalogIdentifierKeyError::invalid_quote_mode, "invalid_quote_mode is carried");
-      // Requests that are malformed in themselves.
-      Ask quoted_without_style{std::string(kBootstrapName), true, cat::CatalogNameQuoteStyle::none};
-      quoted_without_style.raw_style = true;
-      ExpectRefusal(Resolve(loop, quoted_without_style), E::invalid_request, "quoted with no quote style");
-      Ask unquoted_with_style{std::string(kBootstrapName), false, cat::CatalogNameQuoteStyle::double_quote};
-      unquoted_with_style.raw_style = true;
-      ExpectRefusal(Resolve(loop, unquoted_with_style), E::invalid_request, "unquoted with a quote style");
+      const auto empty = ResolveText("");
+      ExpectRefusal(empty, "SB_ENGINE_API_INVALID_REQUEST", "empty name (refused today as name_required; \"\" is a valid name)");
+      ExpectRefusal(ResolveText(std::string_view("fixture\0owner", 13)), kNotFound, "a NUL in the name");
+      ExpectRefusal(ResolveText(std::string_view("\xC3\x28", 2)), kNotFound, "invalid UTF-8 (a truncated sequence)");
+      ExpectRefusal(ResolveText(std::string_view("\xFF\xFEname", 6)), kNotFound, "invalid UTF-8 (bytes never valid)");
+      ExpectRefusal(ResolveText(std::string_view("\xED\xA0\x80", 3)), kNotFound, "a UTF-16 surrogate encoded in UTF-8");
+      ExpectRefusal(ResolveText(std::string(cat::kCatalogIdentifierTextMaximumBytes + 1, 'a')), kNotFound, "over the old text limit");
+      ExpectRefusal(ResolveText(std::string(513, 'a')), kNotFound, "over the old profile length rule");
+      ExpectRefusal(ResolveText(std::string(512, 'a')), kNotFound, "a 512-character name is simply absent");
+      // A quote style the profile did not admit (backtick): the quoted spelling is compared exactly, as given.
+      Ask backtick{std::string(kBootstrapName), true, "backtick"};
+      ExpectRefusal(Resolve(backtick), kNotFound, "a backtick-quoted created spelling (exact lane)");
+      // Malformed-request refusals of S4b with no counterpart in the existing request: a quoted name with no quote
+      // style is just a quoted name; an unquoted name with a quote style ignores the style; a nil scope is an unknown
+      // scope. (S4b's kind filter of zero and nil language filter have no field in the existing request: not testable.)
+      Ask quoted_without_style{std::string(kBootstrapName), true, "none"};
+      ExpectRefusal(Resolve(quoted_without_style), kNotFound, "quoted with no quote style (exact lane)");
+      Ask unquoted_with_style{std::string(kBootstrapName), false, "double_quote"};
+      ExpectObject(Resolve(unquoted_with_style), bootstrap, "unquoted with a quote style (the style is not used for an unquoted name)");
       Ask nil_scope{std::string(kBootstrapName)};
-      nil_scope.scope_kind = srv::NativeNameScopeKind::explicit_uuid;
-      ExpectRefusal(Resolve(loop, nil_scope), E::invalid_request, "an explicit scope that is nil");
-      Ask zero_kind{std::string(kBootstrapName)};
-      zero_kind.kind = 0;
-      ExpectRefusal(Resolve(loop, zero_kind), E::invalid_request, "a record-kind filter of zero");
-      Ask nil_language{std::string(kBootstrapName)};
-      nil_language.language = p::Uuid{};
-      ExpectRefusal(Resolve(loop, nil_language), E::invalid_request, "a language filter that is nil");
+      nil_scope.scope = p::Uuid{};
+      ExpectRefusal(Resolve(nil_scope), kNotFound, "a nil scope");
     }
-    // 6. Scope: an explicit scope UUID equal to the file's security schema gives the same answer as the principal
-    //    namespace; another scope does not hold the name; names under the database scope resolve under it.
+    // 6. Scope: an explicit scope equal to the file's security schema gives the answer; another scope does not hold the
+    //    name; names under the database scope resolve under it.
     {
       Ask explicit_scope{std::string(kBootstrapName)};
-      explicit_scope.scope_kind = srv::NativeNameScopeKind::explicit_uuid;
       explicit_scope.scope = security_scope;
-      ExpectObject(Resolve(loop, explicit_scope), bootstrap, "the explicit security schema scope");
+      ExpectObject(Resolve(explicit_scope), bootstrap, "the explicit security schema scope");
       explicit_scope.scope = database;
-      ExpectRefusal(Resolve(loop, explicit_scope), E::name_not_found, "the database scope does not hold a principal's name");
+      ExpectRefusal(Resolve(explicit_scope), kNotFound, "the database scope does not hold a principal's name");
       explicit_scope.scope = NewId();
-      ExpectRefusal(Resolve(loop, explicit_scope), E::name_not_found, "an unknown scope");
+      ExpectRefusal(Resolve(explicit_scope), kNotFound, "an unknown scope");
       std::size_t n = 0;
       for (const auto& fact : offline.names) {
         if (fact.scope != database) continue;
         Ask a{fact.text, fact.quoted};
-        a.scope_kind = srv::NativeNameScopeKind::explicit_uuid;
+        a.language = TagFor(fact.language);
         a.scope = database;
-        a.kind = fact.kind;
-        const auto o = Resolve(loop, a);
+        a.object_class = ClassFor(fact.kind);
+        const auto o = Resolve(a);
         ExpectObject(o, fact.object, "a name under the database scope");
-        Check(o.result.resolved->scope_uuid == database && o.result.resolved->object_kind == fact.kind, "its scope and kind are reported");
+        Check(Same(o.result.bound_object_identity.resolved_schema_uuid, database) && o.result.primary_object.object_kind == ClassFor(fact.kind),
+              "its scope and kind are reported");
         ++n;
       }
       Check(n >= 1, "the database scope holds names");
       database_scope_resolved = n;
     }
-    // 7. Language and kind filters.
+    // 7. Language and kind. The existing resolver has no language FILTER: the session language (then the database
+    //    default, then "und") is tried in order. The entry's own language finds it; another language does not.
     {
       Ask by_language{std::string(kBootstrapName)};
       const auto* fact = EntryOf(offline, bootstrap, std::string(kBootstrapName));
       Check(fact != nullptr, "the create's entry");
-      by_language.language = fact->language;
-      ExpectObject(Resolve(loop, by_language), bootstrap, "the entry's own language");
-      by_language.language = cat::kCatalogLanguage_fr_CA == fact->language ? cat::kCatalogLanguage_de_DE : cat::kCatalogLanguage_fr_CA;
-      ExpectRefusal(Resolve(loop, by_language), E::name_not_found, "another language");
+      by_language.language = TagFor(fact->language);
+      ExpectObject(Resolve(by_language), bootstrap, "the entry's own language");
+      by_language.language = cat::kCatalogLanguage_fr_CA == fact->language ? "de-DE" : "fr-CA";
+      ExpectRefusal(Resolve(by_language), kNotFound, "another language");
       Ask by_kind{std::string(kBootstrapName)};
-      by_kind.kind = kUserKind;
-      ExpectObject(Resolve(loop, by_kind), bootstrap, "the user kind");
-      by_kind.kind = static_cast<std::uint16_t>(cat::CatalogRecordKind::role_account);
-      ExpectRefusal(Resolve(loop, by_kind), E::name_not_found, "the role kind");
+      by_kind.object_class = "user";
+      ExpectObject(Resolve(by_kind), bootstrap, "the user class");
+      by_kind.object_class = "role";
+      ExpectRefusal(Resolve(by_kind), kNotFound, "the role class");
     }
     // 8. Service (agent) principals resolve: resolution is a lookup; refusing an agent for external login is the login's
     //    job. L5 by its name, then every principal name of the file (the L5 principal included).
     {
-      const auto l5 = ResolveText(loop, kServiceName);
+      const auto l5 = ResolveText(kServiceName);
       ExpectObject(l5, service, "the L5 service principal's name");
-      Check(l5.result.resolved->object_kind == kUserKind, "a service principal is the same record kind as a user");
-      // A resolve is a scan of the visible name rows (about 50 ms); the bootstrap principal, L5 and every fourth other
+      Check(l5.result.primary_object.object_kind == "user", "a service principal is the same record kind as a user");
+      // A resolve loads the committed name rows (about 50-70 ms); the bootstrap principal, L5 and every fourth other
       // principal name of the file are resolved (each name is checked against the file's own list, not assumed).
       std::set<p::Uuid> distinct;
       std::size_t seen = 0;
       for (const auto& fact : offline.names) {
         if (fact.scope != security_scope || fact.kind != kUserKind) continue;
         if (fact.object != bootstrap && fact.object != service && (seen++ % 4) != 0) continue;
-        const auto o = Resolve(loop, Ask{fact.text, fact.quoted});
+        Ask a{fact.text, fact.quoted};
+        a.language = TagFor(fact.language);
+        const auto o = Resolve(a);
         ExpectObject(o, fact.object, "a principal name of the file");
-        distinct.insert(o.result.resolved->object_uuid);
+        distinct.insert(fact.object);
         if (fact.object != bootstrap) ++agents_resolved;
         ++names_resolved;
       }
@@ -884,43 +983,50 @@ int ServeMode(const fs::path& path, const std::string& state, const p::Uuid& dat
     Check(state != "uncommitted" || EntryOf(offline, bootstrap, std::string(kNeverCommitted)) == nullptr,
           "the offline committed read does not list the uncommitted name");
     Check(alias != nullptr && french != nullptr, "the offline read lists the forged names");
+    const auto snapshot = Rows();
     // A second name in the same language: the same UUID, an alias, not the default.
     for (const char* spelling : {"Owner_Alias_Keep", "owner_alias_keep", "OWNER_ALIAS_KEEP"}) {
-      const auto o = ResolveText(loop, spelling);
+      const auto o = ResolveText(spelling);
       ExpectObject(o, bootstrap, std::string("the alias ") + spelling);
-      Check(o.result.resolved->name_class == cat::CatalogNameClass::alias && !o.result.resolved->default_for_object &&
-                o.result.resolved->name_entry_uuid == alias->entry_uuid,
+      const auto entries = Entries(Ask{spelling});
+      const auto* row = RowOf(snapshot, alias->entry_uuid);
+      Check(entries.size() == 1 && entries.front().name_class == "alias" && Same(entries.front().name_entry_uuid, alias->entry_uuid) &&
+                row != nullptr && !row->default_for_object,
             "the alias is reported as an alias that is not the default name, with its own entry UUID");
     }
-    // A name in a second language: reachable without a language, with its language, and not with another.
+    // A name in a second language. S4b found it with no language filter; the existing resolver tries the session
+    // language only (then the default, then "und"): CHANGES WITH PART B (the language fallback). In French and not in
+    // another language, as before.
     {
-      const auto any = ResolveText(loop, kAliasFrench);
-      ExpectObject(any, bootstrap, "the French name, any language");
-      Check(any.result.resolved->language_uuid == cat::kCatalogLanguage_fr_CA && any.result.resolved->default_for_language &&
-                !any.result.resolved->default_for_object,
-            "the French name reports its language and that it is its language's default");
+      ExpectRefusal(ResolveText(kAliasFrench), kNotFound, "the French name, asked in the English session (no any-language search)");
       Ask in_french{std::string(kAliasFrench)};
-      in_french.language = cat::kCatalogLanguage_fr_CA;
-      ExpectObject(Resolve(loop, in_french), bootstrap, "the French name in French");
-      in_french.language = french->language == cat::kCatalogLanguage_fr_CA ? cat::kCatalogLanguage_en : french->language;
-      ExpectRefusal(Resolve(loop, in_french), E::name_not_found, "the French name asked in the other language");
+      in_french.language = "fr-CA";
+      const auto o = Resolve(in_french);
+      ExpectObject(o, bootstrap, "the French name in French");
+      const auto entries = Entries(in_french);
+      const auto* row = RowOf(snapshot, french->entry_uuid);
+      Check(entries.size() == 1 && entries.front().language_tag == "fr-CA" && Same(entries.front().name_entry_uuid, french->entry_uuid) &&
+                row != nullptr && row->default_for_language && !row->default_for_object,
+            "the French name reports its language and that it is its language's default (source row)");
+      in_french.language = french->language == cat::kCatalogLanguage_fr_CA ? "en" : TagFor(french->language);
+      ExpectRefusal(Resolve(in_french), kNotFound, "the French name asked in the other language");
     }
     // A quoted name matches exactly; unquoted spellings fold to upper-case and do not find a quoted-only mixed-case name.
     {
-      ExpectObject(ResolveText(loop, kQuotedMixed, true), bootstrap, "the quoted name, quoted");
-      ExpectRefusal(ResolveText(loop, "mixed_q", true), E::name_not_found, "the quoted name in another case, quoted");
-      ExpectRefusal(ResolveText(loop, kQuotedMixed), E::name_not_found, "a quoted-only mixed-case name asked unquoted (Q180)");
-      ExpectRefusal(ResolveText(loop, "MIXED_Q"), E::name_not_found, "the quoted name's fold asked unquoted (Q180)");
-      ExpectRefusal(ResolveText(loop, "MIXED_Q", true), E::name_not_found, "the quoted name's fold asked quoted");
+      ExpectObject(ResolveText(kQuotedMixed, true), bootstrap, "the quoted name, quoted");
+      ExpectRefusal(ResolveText("mixed_q", true), kNotFound, "the quoted name in another case, quoted");
+      ExpectRefusal(ResolveText(kQuotedMixed), kNotFound, "a quoted-only mixed-case name asked unquoted (Q180)");
+      ExpectRefusal(ResolveText("MIXED_Q"), kNotFound, "the quoted name's fold asked unquoted (Q180)");
+      ExpectRefusal(ResolveText("MIXED_Q", true), kNotFound, "the quoted name's fold asked quoted");
     }
     // A quoted case-only twin: both exist (each quoted), each finds its own object, quoted; unquoted finds only the
     // upper-case twin (the quoted upper-case name's own lane is its exact upper-case text).
     {
-      ExpectObject(ResolveText(loop, kTwinBootstrap, true), bootstrap, "the quoted twin on the bootstrap principal");
-      ExpectObject(ResolveText(loop, kTwinService, true), service, "the quoted twin on L5");
-      ExpectRefusal(ResolveText(loop, "twinname", true), E::name_not_found, "a third spelling, quoted");
-      ExpectObject(ResolveText(loop, "twinname"), service, "unquoted twin spelling folds to the upper-case twin");
-      ExpectObject(ResolveText(loop, "TwinName"), service, "unquoted twin spelling, mixed case");
+      ExpectObject(ResolveText(kTwinBootstrap, true), bootstrap, "the quoted twin on the bootstrap principal");
+      ExpectObject(ResolveText(kTwinService, true), service, "the quoted twin on L5");
+      ExpectRefusal(ResolveText("twinname", true), kNotFound, "a third spelling, quoted");
+      ExpectObject(ResolveText("twinname"), service, "unquoted twin spelling folds to the upper-case twin");
+      ExpectObject(ResolveText("TwinName"), service, "unquoted twin spelling, mixed case");
     }
     // Every live name of the bootstrap principal (the file's own list) resolves to the one UUID.
     {
@@ -928,8 +1034,8 @@ int ServeMode(const fs::path& path, const std::string& state, const p::Uuid& dat
       for (const auto& fact : offline.names) {
         if (fact.object != bootstrap) continue;
         Ask a{fact.text, fact.quoted};
-        a.language = fact.language;
-        ExpectObject(Resolve(loop, a), bootstrap, "every name the bootstrap principal has");
+        a.language = TagFor(fact.language);
+        ExpectObject(Resolve(a), bootstrap, "every name the bootstrap principal has");
         ++count;
       }
       Check(count == (state == "dead" ? 5u : 6u), "the bootstrap principal carries the create's name and the forged live ones");
@@ -938,31 +1044,52 @@ int ServeMode(const fs::path& path, const std::string& state, const p::Uuid& dat
     // does not resolve, whatever its case.
     if (state == "dead") {
       Check(EntryOf(offline, bootstrap, std::string(kAliasDrop)) == nullptr, "the dropped alias is not listed offline either");
-      ExpectRefusal(ResolveText(loop, kAliasDrop), E::name_not_found, "the dropped alias");
-      ExpectRefusal(ResolveText(loop, "drop_alias"), E::name_not_found, "the dropped alias, other case");
-      ExpectRefusal(ResolveText(loop, "DROP_ALIAS", true), E::name_not_found, "the dropped alias, quoted");
+      ExpectRefusal(ResolveText(kAliasDrop), kNotFound, "the dropped alias");
+      ExpectRefusal(ResolveText("drop_alias"), kNotFound, "the dropped alias, other case");
+      ExpectRefusal(ResolveText("DROP_ALIAS", true), kNotFound, "the dropped alias, quoted");
     } else {
-      ExpectObject(ResolveText(loop, kAliasDrop), bootstrap, "the alias that a later transaction drops, still live");
+      ExpectObject(ResolveText(kAliasDrop), bootstrap, "the alias that a later transaction drops, still live");
     }
     if (state == "uncommitted") {
       // The never-committed name's transaction was killed by the open's Restart: it must not resolve.
-      ExpectRefusal(ResolveText(loop, kNeverCommitted), E::name_not_found, "a name written by a transaction that never committed");
+      ExpectRefusal(ResolveText(kNeverCommitted), kNotFound, "a name written by a transaction that never committed");
     }
   }
 
-  // Concurrent callers: serialized on the loop thread; each gets its own correct answer.
   if (state != "failed") {
+    // The direct in-loop path (A1; S4c's login runs as loop work). The names source called ON the loop thread reads
+    // directly and returns the same rows as the cross-thread call; the loop-thread-only entry refuses elsewhere; the
+    // cross-thread submit refuses from the loop thread (the loop never waits on itself). New in Part A.
+    {
+      const auto off_loop = Rows();
+      Check(off_loop.ok(), "the cross-thread read");
+      const auto refused_here = loop.ReadNamesSnapshotOnLoopThread();
+      Check(refused_here.error == eng::NativeNamesSnapshotError::invalid_request, "the loop-thread entry refuses a caller off the loop thread");
+      eng::NativeNamesSnapshot in_loop, direct, submit_from_loop;
+      const bool ran = loop.RunOnLoopThreadForTest([&] {
+        in_loop = env.facts->names_source->Read();             // the source, on the loop thread: the direct path
+        direct = loop.ReadNamesSnapshotOnLoopThread();         // the loop-thread entry itself
+        submit_from_loop = loop.SubmitReadNamesSnapshot().get();  // refused, never deadlocks
+        // And the whole existing resolver from loop work: S4c's login will do exactly this.
+        const auto resolved = eng::EngineResolveName(MakeRequest(Ask{std::string(kBootstrapName)}));
+        if (!resolved.ok || !Same(resolved.primary_object.uuid, bootstrap)) in_loop.error = eng::NativeNamesSnapshotError::names_source_failure;
+      });
+      Check(ran, "work ran on the loop thread");
+      Check(in_loop.ok() && direct.ok() && in_loop.rows.size() == off_loop.rows.size() && direct.rows.size() == off_loop.rows.size(),
+            "the in-loop path returns the same rows (and EngineResolveName works from loop work)");
+      Check(submit_from_loop.error == eng::NativeNamesSnapshotError::invalid_request, "the cross-thread submit refuses from the loop thread");
+    }
+    // Concurrent callers: the existing resolver from three threads; every load is a request on the loop's queue,
+    // serialized there; each gets its own correct answer.
     std::vector<std::thread> callers;
     std::vector<std::string> failures(3);
     for (int t = 0; t < 3; ++t)
       callers.emplace_back([&, t] {
         for (int i = 0; i < 4; ++i) {
-          srv::NativeLoopResolveNameRequest known, unknown;
-          known.text = std::string(kBootstrapName);
-          unknown.text = "no_such_principal_anywhere";
-          const auto a = loop.SubmitResolveName(std::move(known)).get();
-          const auto b = loop.SubmitResolveName(std::move(unknown)).get();
-          if (!a.ok() || a.resolved->object_uuid != bootstrap || b.error != E::name_not_found) failures[t] = Summary(a) + " / " + Summary(b);
+          const auto a = eng::EngineResolveName(MakeRequest(Ask{std::string(kBootstrapName)}));
+          const auto b = eng::EngineResolveName(MakeRequest(Ask{"no_such_principal_anywhere"}));
+          if (!a.ok || !Same(a.primary_object.uuid, bootstrap) || b.ok || b.diagnostics.empty() || b.diagnostics.front().code != kNotFound)
+            failures[t] = "wrong answer";
         }
       });
     for (auto& c : callers) c.join();
@@ -986,7 +1113,9 @@ int ServeMode(const fs::path& path, const std::string& state, const p::Uuid& dat
     Check(entry.path().filename().string().find(".sb.") == std::string::npos, "no .sb.* file exists");
 
   Check(loop.Close().ok, "the loop closes");
-  ExpectRefusal(ResolveText(loop, kBootstrapName), E::database_not_serving, "a resolution after the loop closed");
+  // A source that outlives its loop answers `closed` (the binding is cleared when the loop starts to close).
+  ExpectRefusal(ResolveText(kBootstrapName), eng::NativeNamesSnapshotErrorCode(eng::NativeNamesSnapshotError::closed),
+                "a resolution after the loop closed");
   std::cout << "NAME_RESOLVE_OK checks=" << checks << " state=" << state << std::endl;
   return 0;
 }

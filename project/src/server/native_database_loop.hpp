@@ -195,18 +195,18 @@ struct NativeLoopLoginRequest {
   std::size_t password_length = 0;                     // bytes of `password` that are the password
 };
 
-// SEARCH_KEY: SB_NATIVE_NAME_RESOLVE (thin-slice S4b, plan 40; owner Q306 = 1, Q309). A read-only, resolve-only names
-// lookup: the name is DATA (see NativeNameResolveInput) and the answer the object UUID of the committed names
-// relation, read from the served file ON THIS THREAD (the runtime is thread-affine), like the login-material read
-// and without any lock or write. Allowed while the database is `serving` or `restricted`; refused with
-// NativeNameResolveError::database_failed when it is `failed`, and with database_not_serving when the loop has no
-// serving database. No session or transaction is issued; the returned result carries binary UUIDs and constants only.
-using NativeLoopResolveNameRequest = NativeNameResolveInput;
-
 struct NativeLoopCloseResult {
   bool ok = false;
   NativeLoopState state = NativeLoopState::closed;
   NativeLoopDiagnostic diagnostic;  // when !ok
+};
+
+class NativeDatabaseLoop;
+// SB_NATIVE_NAMES_SOURCE: the link between the names source in the served facts and its loop. The loop clears `loop`
+// (under the lock) when it starts to close, so a source that outlives the loop answers `closed`.
+struct NativeNamesBinding {
+  std::mutex mutex;
+  NativeDatabaseLoop* loop = nullptr;
 };
 
 class NativeDatabaseLoop final {
@@ -228,9 +228,21 @@ class NativeDatabaseLoop final {
   // NativeLoginMaterialResult carrying its specific error. Callable from any thread except the loop thread.
   std::future<NativeLoginMaterialResult> SubmitReadLoginMaterial(NativeLoopLoginRequest request);
 
-  // S4b: queue a name resolution (see NativeLoopResolveNameRequest). The future is always satisfied; a refusal is a
-  // NativeNameResolveResult carrying its specific error. Callable from any thread except the loop thread.
-  std::future<NativeNameResolveResult> SubmitResolveName(NativeLoopResolveNameRequest request);
+  // SEARCH_KEY: SB_NATIVE_NAMES_SOURCE (S4b rework "Part A"). A read-only read of the committed names (role 2) and
+  // identifier profiles (role 5) of the served file, as values, ON THIS THREAD (the runtime is thread-affine); no
+  // lock, no write, no session or transaction (SB_NAME_SNAPSHOT_OWN_TXN seam: committed snapshot until S4e).
+  // Allowed while the database is `serving` or `restricted` (Q309); refused when `failed` or not serving.
+  // The cross-thread submit: the future is always satisfied; a refusal is a snapshot carrying its specific error.
+  // Callable from any thread EXCEPT the loop thread (the loop never waits on itself; refused with invalid_request).
+  std::future<engine::internal_api::NativeNamesSnapshot> SubmitReadNamesSnapshot();
+  // The direct in-loop path: the same read, run now. Callable ONLY on the loop thread (S4c's login runs as loop
+  // work); refused with invalid_request elsewhere. It must not be called while another runtime read is in progress
+  // on this thread (the runtime answers `busy`): a loop-work step reads, ends its read, then asks for names.
+  engine::internal_api::NativeNamesSnapshot ReadNamesSnapshotOnLoopThread() noexcept;
+  // SB_NATIVE_NAMES_SOURCE TEST SEAM: run `work` on the loop thread and wait (refused, false, from the loop thread or
+  // when the loop is not accepting). It exists so the direct in-loop names path has a real caller before S4c's login
+  // (the first real loop work that needs it) exists; S4c's own loop work replaces its use. `work` must not throw.
+  bool RunOnLoopThreadForTest(std::function<void()> work);
 
   // Queue a close: tear down on the loop thread (read, runtime, credential),
   // then leave the loop. Idempotent.
@@ -259,19 +271,23 @@ class NativeDatabaseLoop final {
     NativeLoopLoginRequest request;
     std::promise<NativeLoginMaterialResult> done;
   };
-  struct ResolveNameWork {
-    NativeLoopResolveNameRequest request;
-    std::promise<NativeNameResolveResult> done;
+  struct NamesWork {
+    std::promise<engine::internal_api::NativeNamesSnapshot> done;
+  };
+  struct TestWork {
+    std::function<void()> work;
+    std::promise<void> done;
   };
   // plan 36: struct CompleteAndBeginWork { ... } joins this variant.
-  using Work = std::variant<OpenWork, CloseWork, LoginWork, ResolveNameWork>;
+  using Work = std::variant<OpenWork, CloseWork, LoginWork, NamesWork, TestWork>;
   static constexpr std::size_t kQueueCapacity = 8;
 
   void Run() noexcept;
   void HandleOpen(OpenWork&) noexcept;
   NativeLoopCloseResult HandleClose() noexcept;
   void HandleLogin(LoginWork&) noexcept;
-  void HandleResolveName(ResolveNameWork&) noexcept;
+  void HandleNames(NamesWork&) noexcept;
+  engine::internal_api::NativeNamesSnapshot ReadNamesSnapshotNow() noexcept;  // loop thread only
   struct Serving;  // loop-thread-only state
   // S3d: the single transaction-store Restart, on this thread, under the custody write operation.
   // Returns false with `refusal` set when the open must be refused (nothing written, or a broken
@@ -291,6 +307,8 @@ class NativeDatabaseLoop final {
   ServerProcessCryptoOwner* delegated_crypto_ = nullptr;
   // Created, used and destroyed on the loop thread only.
   std::unique_ptr<Serving> serving_;
+  // SB_NATIVE_NAMES_SOURCE: what the NativeNamesSource handed out in the served facts points at.
+  std::shared_ptr<NativeNamesBinding> names_binding_ = std::make_shared<NativeNamesBinding>();
 };
 
 }  // namespace scratchbird::server

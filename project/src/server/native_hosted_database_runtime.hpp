@@ -14,8 +14,7 @@
 #include <openssl/crypto.h>
 #include "native_owned_checkpoint_writer.hpp"
 #include "native_catalog_cohort_lease_reader.hpp"
-#include "catalog_name_record_codec.hpp"
-#include "catalog_identifier_text_rule.hpp"
+#include "engine/internal_api/native_served_database_facts.hpp"
 #include "engine/internal_api/security/native_local_service_authentication.hpp"
 #include "engine/internal_api/security/native_local_service_session.hpp"
 #include "engine/internal_api/catalog/native_catalog_metadata_verification.hpp"
@@ -244,84 +243,12 @@ struct NativeLoginMaterialRequest {
   storage::database::NativeFixedRootMemoryLimits limits;
 };
 
-// SEARCH_KEY: SB_NATIVE_NAME_RESOLVE (thin-slice S4b, plan 40; owner Q306 = 1, Q309). The minimal, READ-ONLY,
-// resolve-only names reader of a served native database: a name given AS DATA (bytes, a quoted flag and quote
-// style, an optional language, a scope and an optional record-kind filter) is resolved to the object UUID the
-// committed names relation binds it to. The engine never accepts text as an identifier: this is the one dedicated
-// lookup function that takes text as data (the parser-side name -> UUID step for the bootstrap case, owner Q306), and
-// it returns binary UUIDs and constants only. One UUID carries many names: every live name of an object resolves to
-// that one UUID. Matching is the catalog's own rule (core/catalog): the input's lane under each candidate entry's
-// identifier profile (the normalized lane when unquoted, the exact lane when quoted) is compared byte for byte with
-// the entry's own lane, derived from its raw text; a quoted name finds an unquoted-created name through the lanes
-// (owner Q181) and an unquoted name never finds a quoted-only one (Q180); a prefix or an extension never matches.
-// Visibility is the committed state of the reader's snapshot: a dropped (delete-marker) or superseded name row, a
-// name of a not-yet-committed or rolled-back writer, and a not-active entry do not resolve.
-// Every refusal is an enum value with its own stable code (NativeNameResolveErrorCode); no refusal carries text,
-// a name, a path or a secret. The codes are INTERNAL: the later wire layer decides which a client may see.
-enum class NativeNameResolveError : std::uint8_t {
-  none,
-  // The request itself: a missing database binding, an explicit scope that is not an identity UUID, a record-kind
-  // filter of zero, a quoted name with no quote style. Decided from the input alone, before the file is read.
-  invalid_request,
-  // The name cannot be an identifier: empty, longer than the text limit, a NUL, not canonical UTF-8, or refused by
-  // the identifier profile that governs the scope's names (over its length rule, a quote style it does not admit).
-  // `key_error` carries the specific CatalogIdentifierKeyError.
-  name_invalid,
-  // The database is not serving (the loop has no serving database). `failed` is refused (Q299 / Q309); `restricted`
-  // is NOT refused (Q309): resolution is a read.
-  database_not_serving,
-  database_failed,
-  // Reading the file failed; no resolution verdict exists. Infrastructure causes, not answers.
-  wrong_owner, busy, closed, preparation_failure, custody_failure, crypto_failure, memory_failure,
-  configuration_source_failure, names_source_failure,
-  // The verdicts, each its own cause.
-  scope_unresolved,       // principal_namespace was asked and the file has no active authorization policy body
-  scope_ambiguous,        // principal_namespace was asked and the active bodies name different schemas
-  profile_unresolved,     // a candidate entry's identifier profile is absent, deleted or not active
-  name_not_found,
-  name_ambiguous          // two or more DIFFERENT objects match; impossible under name-key uniqueness
-};
-const char* NativeNameResolveErrorName(NativeNameResolveError) noexcept;
-const char* NativeNameResolveErrorCode(NativeNameResolveError) noexcept;
-
-// Which scope the name lives under. Principals (users, roles, groups, agents) are named under the database's
-// SECURITY schema, a per-database identity (not a fixed constant) that the file itself records as the
-// authorization policy body's user schema: `principal_namespace` resolves it from there, as a binary reference,
-// never by looking up a schema name as text. Anything else is addressed by an explicit scope UUID.
-enum class NativeNameScopeKind : std::uint8_t { explicit_uuid, principal_namespace };
-
-// The input, copied by the loop request: the name is DATA (raw bytes, as the catalog stores a name's raw text).
-struct NativeNameResolveInput {
-  std::string text;                                     // the name's raw bytes, unquoted form (no delimiters)
-  bool quoted = false;                                  // quoted: compared on the exact lane
-  core::catalog::CatalogNameQuoteStyle quote_style = core::catalog::CatalogNameQuoteStyle::none;  // required if quoted
-  std::optional<core::platform::Uuid> language;         // only names in this language; absent: any language
-  NativeNameScopeKind scope_kind = NativeNameScopeKind::principal_namespace;
-  core::platform::Uuid scope_uuid;                      // binary(16); used when scope_kind is explicit_uuid
-  std::optional<std::uint16_t> object_kind;             // CatalogRecordKind of the object; absent: any kind
-};
-// What a resolution reports: owning binary values and constants only. No text of any kind.
-struct NativeResolvedName {
-  core::platform::Uuid database_uuid, object_uuid, scope_uuid, language_uuid, name_entry_uuid;
-  std::uint16_t object_kind = 0;                        // CatalogRecordKind (the u16 kind; no fixed kind UUID exists yet)
-  core::catalog::CatalogNameClass name_class = core::catalog::CatalogNameClass::primary;
-  // Whether the matched name is the object's default name / its language's default name.
-  bool default_for_object = false, default_for_language = false;
-  // How many live entries of this one object matched (an object may carry several names that compare equal).
-  std::uint32_t matched_entries = 0;
-};
-struct NativeNameResolveResult {
-  NativeNameResolveError error = NativeNameResolveError::invalid_request;
-  // Structured detail of a refusal (enum numbers, never text).
-  core::catalog::CatalogIdentifierKeyError key_error = core::catalog::CatalogIdentifierKeyError::none;
-  storage::database::NativePinnedCatalogReadError source_error = storage::database::NativePinnedCatalogReadError::none;
-  storage::database::NativeCatalogRelationLeaseError relation_error = storage::database::NativeCatalogRelationLeaseError::none;
-  NativeHostedCustodyError custody_error = NativeHostedCustodyError::none;
-  std::optional<NativeResolvedName> resolved;
-  bool ok() const noexcept { return error == NativeNameResolveError::none && resolved.has_value(); }
-};
-struct NativeNameResolveRequest {
-  NativeNameResolveInput input;
+// SEARCH_KEY: SB_NATIVE_NAMES_SOURCE (S4b rework "Part A", owner 2026-11-20). The READ-ONLY names reader of a served
+// native database: the committed role-2 name entries and the role-5 identifier profiles of the single file, copied out
+// as values (engine::internal_api::NativeNamesSnapshot). It replaces S4b's private resolver: the name -> UUID step is
+// the engine's EXISTING resolver (EngineResolveName -> LoadNameRegistryState), which now reads these rows for a native
+// database instead of the legacy side files. No matching, folding or filtering of names happens here.
+struct NativeNamesSnapshotRequest {
   storage::database::NativeFixedRootMemoryLimits limits;          // the fixed-root lease (as the login read)
   storage::database::NativeCatalogRelationMemoryLimits catalog;   // the SCAN tier: the names relation is the largest
 };
@@ -601,15 +528,13 @@ class NativeHostedDatabaseRuntime final {
       const NativeLoginMaterialRequest&, const core::memory::ScopedProtectedBuffer& password,
       core::platform::usize password_length, const core::memory::ScopedProtectedBuffer& derived) noexcept;
 
-  // SEARCH_KEY: SB_NATIVE_NAME_RESOLVE (S4b). Resolve a name given as data to the object UUID of the committed names
-  // relation: the same read-only custody operation and fixed-root lease as ReadNativeLoginMaterial, reading the
-  // configuration relation (identifier profiles, the authorization policy's security schema) and then the names
-  // relation through the existing MGA-visibility reader, comparing, and copying out UUIDs and constants before the
-  // lease ends. Takes no lock, writes nothing, issues no session or transaction. The names workspace is the SCAN
-  // tier and is acquired for the call and released at its end (a minimal reader: a row scan of the visible name
-  // rows, not a probe of the SBBTP002 name trees).
-  static NativeNameResolveResult ResolveNativeName(std::shared_ptr<NativeHostedDatabaseRuntime>,
-      const NativeNameResolveRequest&) noexcept;
+  // SEARCH_KEY: SB_NATIVE_NAMES_SOURCE (S4b rework). Read the committed names (role 2) and identifier profiles (role 5)
+  // of the single file as values: the same read-only custody operation and fixed-root lease as ReadNativeLoginMaterial,
+  // the existing MGA-visibility reader, everything copied out before the lease ends. Takes no lock, writes nothing,
+  // issues no session or transaction (SB_NAME_SNAPSHOT_OWN_TXN seam: the committed snapshot until S4e). The names
+  // workspace is the SCAN tier, acquired for the call and released at its end.
+  static engine::internal_api::NativeNamesSnapshot ReadNativeNamesSnapshot(std::shared_ptr<NativeHostedDatabaseRuntime>,
+      const NativeNamesSnapshotRequest&) noexcept;
 
   // Transfer the exact initial writer reservation into the private comparison
   // owner, then retire its selected device guards. Retained catalog/grant views,

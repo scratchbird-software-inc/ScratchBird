@@ -7,6 +7,10 @@
 // SPDX-License-Identifier: MPL-2.0
 
 #include "catalog/name_registry.hpp"
+#include "native_legacy_registry_refusal.hpp"
+#include "native_served_database_facts.hpp"
+#include "catalog_language.hpp"
+#include "catalog_records.hpp"
 #include "catalog/name_registry_codec.hpp"
 #include "catalog/catalog_journal_publication.hpp"
 #include "catalog/catalog_read_admission.hpp"
@@ -618,8 +622,150 @@ EngineApiDiagnostic RetireNameRegistryEntriesForObject(const EngineRequestContex
   return AppendNativeNameRecord(context,record);
 }
 
+// SEARCH_KEY: SB_NATIVE_NAMES_SOURCE (S4b rework "Part A", owner 2026-11-20). A native database's registry state is
+// PROJECTED from the committed name rows of its single file (the names source the loop published in the served
+// facts), never read from the legacy side files (.sb.name_events.v2, the CRUD / MGA relation / schema-tree /
+// behavior-record / domain stores): no legacy file is opened, created or probed for a native context.
+//
+// The projection is a type adaptation, not a decision: the native row carries a u16 kind, a language UUID and a
+// profile UUID where the legacy entry carries a class text, a language tag and a profile LABEL. The label is the
+// minimum the existing matcher needs (NameRegistryLookupKey folds by label); it is derived from the profile row's
+// own fold mode. PART B (a separate, later step) removes the engine fold, the label, the "" refusals, the language
+// fallback and the search-path walk; this projection then shrinks to a copy. Marked SB_PART_B_PROFILE_LABEL.
+//
+// SB_NAME_SNAPSHOT_OWN_TXN (owner rule 2026-11-20: every read runs inside a full MGA transaction and sees its own
+// uncommitted names): SEAM. `observer_tx` is not used here yet: the source reads the committed snapshot, as S4a/S4b
+// did, until S4e's session/transaction exists. Do not invent a transaction here.
+namespace {
+const char* NativeKindClassText(std::uint16_t kind) {
+  namespace c = scratchbird::core::catalog;
+  switch (static_cast<c::CatalogRecordKind>(kind)) {
+    case c::CatalogRecordKind::user_account: return "user";
+    case c::CatalogRecordKind::role_account: return "role";
+    case c::CatalogRecordKind::group_account: return "group";
+    case c::CatalogRecordKind::table_descriptor: return "table";
+    case c::CatalogRecordKind::index_descriptor: return "index";
+    default: return c::CatalogRecordKindName(static_cast<c::CatalogRecordKind>(kind));
+  }
+}
+
+const char* NativeNameClassText(std::uint8_t name_class) {
+  switch (name_class) {
+    case 1: return "primary";
+    case 2: return "alias";
+    case 3: return "compatibility";
+    case 4: return "generated";
+    case 5: return "hidden";
+    default: return "unknown";
+  }
+}
+
+const char* NativeQuoteStyleText(std::uint8_t quote_style) {
+  switch (quote_style) {
+    case 0: return "none";
+    case 1: return "double_quote";
+    case 2: return "backtick";
+    case 3: return "bracket";
+    case 4: return "sqlite_any";
+    case 5: return "donor_api";
+    default: return "unknown";
+  }
+}
+
+std::string NativeUuidHex(const scratchbird::core::platform::Uuid& id) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string out;
+  for (const auto byte : id.bytes) {
+    out.push_back(kHex[byte >> 4]);
+    out.push_back(kHex[byte & 15]);
+  }
+  return out;
+}
+
+// The language tag of a known language constant; any other language UUID gets its own hex (a token no request names).
+std::string NativeLanguageTag(const scratchbird::core::platform::Uuid& language) {
+  for (const auto& known : scratchbird::core::catalog::kCatalogLanguages)
+    if (known.uuid == language) return std::string(known.tag);
+  return NativeUuidHex(language);
+}
+
+EngineUuid NativeEngineUuid(const scratchbird::core::platform::Uuid& id) {
+  EngineUuid out;
+  std::copy(id.bytes.begin(), id.bytes.end(), out.bytes.begin());
+  return out;
+}
+
+// SB_PART_B_PROFILE_LABEL: the legacy matcher folds by a profile LABEL; the label of a native profile row is derived
+// from that row's own fold mode (the same three folds ProfileFold knows). An entry whose profile row is absent from
+// the snapshot gets a label that folds nothing (and never equals a request's label).
+std::string NativeProfileLabel(const NativeNamesSnapshot& snapshot, const scratchbird::core::platform::Uuid& profile) {
+  for (const auto& known : snapshot.profiles) {
+    if (known.profile_uuid != profile) continue;
+    switch (known.unquoted_fold_mode) {
+      case 1:
+      case 3: return "sbsql_v3";
+      case 2:
+      case 4: return "postgresql_family";
+      default: return "identifier_fold_none";
+    }
+  }
+  return "identifier_profile_unresolved";
+}
+
+NameRegistryLoadResult LoadNativeNameRegistryState(const EngineRequestContext& context) {
+  NameRegistryLoadResult result;
+  const auto& source = context.native_served_facts->names_source;
+  if (!source) {
+    result.diagnostic = NativeLegacyRegistryRefusal("name_registry_names_source", context);
+    return result;
+  }
+  const auto snapshot = source->Read();
+  if (!snapshot.ok()) {
+    result.diagnostic = MakeEngineApiDiagnostic(NativeNamesSnapshotErrorCode(snapshot.error),
+                                                "engine.native.names_snapshot_refused", {}, true);
+    result.diagnostic.fields.push_back({"cause", NativeNamesSnapshotErrorName(snapshot.error)});
+    result.diagnostic.identity_fields.push_back({"database_uuid", context.database_uuid});
+    return result;
+  }
+  result.state.entries.reserve(snapshot.rows.size());
+  for (const auto& row : snapshot.rows) {
+    NameRegistryEntry entry;
+    entry.name_entry_uuid = NativeEngineUuid(row.name_entry_uuid);
+    entry.object_uuid = NativeEngineUuid(row.object_uuid);
+    entry.object_class = NativeKindClassText(row.object_kind);
+    entry.scope_uuid = NativeEngineUuid(row.scope_uuid);
+    if (row.has_parent_object) entry.parent_object_uuid = NativeEngineUuid(row.parent_object_uuid);
+    if (row.has_parent_schema) entry.parent_schema_uuid = NativeEngineUuid(row.parent_schema_uuid);
+    entry.language_tag = NativeLanguageTag(row.language_uuid);
+    entry.name_class = NativeNameClassText(row.name_class);
+    entry.identifier_profile_uuid = NativeProfileLabel(snapshot, row.identifier_profile_uuid);
+    entry.raw_name_text = row.raw_name_text;
+    entry.display_name = row.raw_name_text;
+    entry.was_quoted = row.was_quoted;
+    entry.quote_style = NativeQuoteStyleText(row.quote_style);
+    entry.requires_exact_match = row.requires_exact_match;
+    entry.normalized_lookup_key = NameRegistryLookupKey(row.raw_name_text, entry.identifier_profile_uuid, false);
+    entry.exact_lookup_key = row.raw_name_text;
+    entry.full_path_lookup_key = entry.normalized_lookup_key;
+    // The generation and both epochs are the ROW's: the SBLR bind and execute generation checks compare them with
+    // the receipt view (public_abi: bind namespace, execute lookup_authority_stale).
+    entry.catalog_generation_id = row.catalog_generation_id;
+    entry.resource_epoch = row.resource_epoch;
+    entry.name_resolution_epoch = row.name_resolution_epoch;
+    entry.lifecycle_state = "active";
+    result.state.entries.push_back(std::move(entry));
+  }
+  result.ok = true;
+  result.diagnostic = MakeEngineApiDiagnostic("SB_ENGINE_API_OK", "engine.api.ok", {}, false);
+  return result;
+}
+}  // namespace
+
 NameRegistryLoadResult LoadNameRegistryState(const EngineRequestContext& context,
                                              std::uint64_t observer_tx) {
+  // SB_NATIVE_NAMES_SOURCE: a native context never reaches a legacy source (see above). Before the transaction
+  // inventory guard, which is keyed by the legacy database path.
+  if (NativeServedContext(context)) return LoadNativeNameRegistryState(context);
   const auto owner = AcquireTransactionInventoryGuard(context.database_path);
   NameRegistryLoadResult result;
   const auto path_status = ValidateApiBehaviorContext(context, "catalog.name_registry.load", false, true);

@@ -342,6 +342,7 @@ struct NativeDatabaseLoop::Serving {
 
 std::shared_ptr<NativeDatabaseLoop> NativeDatabaseLoop::Create() {
   std::shared_ptr<NativeDatabaseLoop> loop(new NativeDatabaseLoop());
+  loop->names_binding_->loop = loop.get();
   std::promise<void> started;
   auto running = started.get_future();
   loop->thread_ = std::thread([raw = loop.get(), &started] {
@@ -449,52 +450,116 @@ void NativeDatabaseLoop::HandleLogin(LoginWork& work) noexcept {
   work.done.set_value(std::move(result));
 }
 
-// SEARCH_KEY: SB_NATIVE_NAME_RESOLVE (S4b). Same admission as the login-material read: serving and restricted are
-// allowed (Q309), failed and not-serving are refused before anything is queued.
-std::future<NativeNameResolveResult> NativeDatabaseLoop::SubmitResolveName(NativeLoopResolveNameRequest request) {
-  std::promise<NativeNameResolveResult> refused;
-  const auto refuse = [&](NativeNameResolveError error) {
-    NativeNameResolveResult result;
+// SEARCH_KEY: SB_NATIVE_NAMES_SOURCE (S4b rework "Part A"). Same admission as the login-material read: serving and
+// restricted are allowed (Q309), failed and not-serving are refused before anything is queued.
+std::future<engine::internal_api::NativeNamesSnapshot> NativeDatabaseLoop::SubmitReadNamesSnapshot() {
+  using Snapshot = engine::internal_api::NativeNamesSnapshot;
+  using Error = engine::internal_api::NativeNamesSnapshotError;
+  std::promise<Snapshot> refused;
+  const auto refuse = [&](Error error) {
+    Snapshot result;
     result.error = error;
     refused.set_value(std::move(result));
     return refused.get_future();
   };
-  if (on_loop_thread()) return refuse(NativeNameResolveError::invalid_request);  // the loop never waits on itself
-  ResolveNameWork work{std::move(request), {}};
+  if (on_loop_thread()) return refuse(Error::invalid_request);  // the loop never waits on itself
+  NamesWork work{{}};
   auto future = work.done.get_future();
   {
     std::lock_guard<std::mutex> guard(mutex_);
-    if (!accepting_ || state() != NativeLoopState::serving) return refuse(NativeNameResolveError::database_not_serving);
-    if (serving_state() == NativeServingState::failed) return refuse(NativeNameResolveError::database_failed);
-    if (queue_.size() >= kQueueCapacity) return refuse(NativeNameResolveError::busy);
+    if (!accepting_ || state() != NativeLoopState::serving) return refuse(Error::database_not_serving);
+    if (serving_state() == NativeServingState::failed) return refuse(Error::database_failed);
+    if (queue_.size() >= kQueueCapacity) return refuse(Error::busy);
     queue_.emplace_back(std::move(work));
   }
   wake_.notify_one();
   return future;
 }
 
-void NativeDatabaseLoop::HandleResolveName(ResolveNameWork& work) noexcept {
-  NativeNameResolveResult result;
+engine::internal_api::NativeNamesSnapshot NativeDatabaseLoop::ReadNamesSnapshotOnLoopThread() noexcept {
+  if (!on_loop_thread()) {
+    engine::internal_api::NativeNamesSnapshot refused;
+    refused.error = engine::internal_api::NativeNamesSnapshotError::invalid_request;
+    return refused;
+  }
+  return ReadNamesSnapshotNow();
+}
+
+engine::internal_api::NativeNamesSnapshot NativeDatabaseLoop::ReadNamesSnapshotNow() noexcept {
+  using Error = engine::internal_api::NativeNamesSnapshotError;
+  engine::internal_api::NativeNamesSnapshot result;
   try {
     if (!serving_ || state() != NativeLoopState::serving) {
-      result.error = NativeNameResolveError::database_not_serving;
+      result.error = Error::database_not_serving;
     } else if (serving_state() == NativeServingState::failed) {
-      result.error = NativeNameResolveError::database_failed;
+      result.error = Error::database_failed;
     } else {
       // serving or restricted (Q309): a names read has no write and no transaction.
       auto& serving = *serving_;
-      NativeNameResolveRequest request;
-      request.input = std::move(work.request);
+      NativeNamesSnapshotRequest request;
       request.limits = serving.login_limits;
       request.catalog = serving.name_scan_limits;
-      result = Host::ResolveNativeName(serving.runtime, request);
+      result = Host::ReadNativeNamesSnapshot(serving.runtime, request);
     }
   } catch (...) {
     result = {};
-    result.error = NativeNameResolveError::names_source_failure;
+    result.error = Error::names_source_failure;
   }
-  work.done.set_value(std::move(result));
+  return result;
 }
+
+bool NativeDatabaseLoop::RunOnLoopThreadForTest(std::function<void()> work) {
+  if (on_loop_thread() || !work) return false;
+  TestWork item{std::move(work), {}};
+  auto future = item.done.get_future();
+  {
+    std::lock_guard<std::mutex> guard(mutex_);
+    if (!accepting_ || queue_.size() >= kQueueCapacity) return false;
+    queue_.emplace_back(std::move(item));
+  }
+  wake_.notify_one();
+  future.get();
+  return true;
+}
+
+void NativeDatabaseLoop::HandleNames(NamesWork& work) noexcept {
+  work.done.set_value(ReadNamesSnapshotNow());
+}
+
+namespace {
+// SB_NATIVE_NAMES_SOURCE: the source the served facts carry. From the loop thread it reads directly; from any other
+// thread it submits to the loop and waits. A source that outlives its loop answers `closed`.
+class NativeLoopNamesSource final : public engine::internal_api::NativeNamesSource {
+ public:
+  explicit NativeLoopNamesSource(std::shared_ptr<NativeNamesBinding> binding)
+      : binding_(std::move(binding)) {}
+  engine::internal_api::NativeNamesSnapshot Read() const noexcept override {
+    using Error = engine::internal_api::NativeNamesSnapshotError;
+    engine::internal_api::NativeNamesSnapshot closed;
+    closed.error = Error::closed;
+    try {
+      NativeDatabaseLoop* loop = nullptr;
+      std::future<engine::internal_api::NativeNamesSnapshot> future;
+      {
+        std::lock_guard<std::mutex> guard(binding_->mutex);
+        loop = binding_->loop;
+        if (loop == nullptr) return closed;
+        if (!loop->on_loop_thread()) future = loop->SubmitReadNamesSnapshot();
+      }
+      // On the loop thread the loop is alive by construction: read directly, outside the binding lock.
+      if (!future.valid()) return loop->ReadNamesSnapshotOnLoopThread();
+      return future.get();
+    } catch (...) {
+      engine::internal_api::NativeNamesSnapshot failed;
+      failed.error = Error::names_source_failure;
+      return failed;
+    }
+  }
+
+ private:
+  std::shared_ptr<NativeNamesBinding> binding_;
+};
+}  // namespace
 
 std::future<NativeLoopCloseResult> NativeDatabaseLoop::SubmitClose() {
   CloseWork work;
@@ -562,8 +627,13 @@ void NativeDatabaseLoop::Run() noexcept {
       HandleLogin(*login);
       continue;
     }
-    if (auto* resolve = std::get_if<ResolveNameWork>(&work)) {
-      HandleResolveName(*resolve);
+    if (auto* names = std::get_if<NamesWork>(&work)) {
+      HandleNames(*names);
+      continue;
+    }
+    if (auto* test = std::get_if<TestWork>(&work)) {
+      test->work();
+      test->done.set_value();
       continue;
     }
     auto& close = std::get<CloseWork>(work);
@@ -574,6 +644,11 @@ void NativeDatabaseLoop::Run() noexcept {
 
 NativeLoopCloseResult NativeDatabaseLoop::HandleClose() noexcept {
   NativeLoopCloseResult result;
+  {
+    // SB_NATIVE_NAMES_SOURCE: a source handed out in the served facts stops reaching this loop now.
+    std::lock_guard<std::mutex> guard(names_binding_->mutex);
+    names_binding_->loop = nullptr;
+  }
   state_.store(NativeLoopState::closing, std::memory_order_release);
   result.ok = true;
   if (serving_) {
@@ -1022,6 +1097,7 @@ void NativeDatabaseLoop::HandleOpen(OpenWork& work) noexcept {
       marker->serving_state = static_cast<engine::internal_api::NativeServedServingState>(
           static_cast<std::uint8_t>(serving.facts.serving_state));
       marker->serving_diagnostic_code = serving.facts.serving_diagnostic.code;
+      marker->names_source = std::make_shared<NativeLoopNamesSource>(names_binding_);
       serving.facts.served_facts = std::move(marker);
     }
     result.facts = serving.facts;

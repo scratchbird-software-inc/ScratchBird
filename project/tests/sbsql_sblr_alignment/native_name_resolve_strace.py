@@ -11,7 +11,9 @@
 The served name-resolve child (native_name_resolve_test, mode "serve") run under strace -f at one page size, for the
 `serving` and `restricted` databases (a committing slot left by the native_serving binary's own writer) or for the
 `names` and `dead` databases (names written by the production storage writers BEFORE the trace, by a separate child).
-Every resolve case of the child runs inside the trace. Asserts:
+Every resolve case of the child runs inside the trace. Since Part A (2026-11-20) the cases call the engine's EXISTING
+resolver (EngineResolveName) on a native context, so the trace also proves that the legacy registry loader reads, creates
+and probes NO side file for a native database (0 ".sb." syscalls) and writes nothing. Asserts:
   - the child reports NAME_RESOLVE_OK;
   - 0 syscalls name a ".sb." path (no lock file, no side file);
   - the directory holds only the data file, byte-identical afterwards;

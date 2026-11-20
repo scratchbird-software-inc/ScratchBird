@@ -14,6 +14,7 @@
 #include "catalog/global_aggregate_view.hpp"
 #include "catalog/name_registry.hpp"
 #include "catalog/temporary_name_visibility.hpp"
+#include "native_legacy_registry_refusal.hpp"
 #include "crud_support/crud_store.hpp"
 #include "domain_support/domain_store.hpp"
 #include "mga_relation_store/mga_relation_store.hpp"
@@ -71,6 +72,14 @@ std::optional<EngineResolveNameResult> ResolveEngineResourceName(
       LowerResourceClass(request.sql_object_reference.expected_object_type);
   if (!IsEngineResourceClass(resource_class)) {
     return std::nullopt;
+  }
+  // SB_NATIVE_LEGACY_REGISTRY_REFUSAL (S4b rework "Part A"): the charset / collation seed catalog is opened from the
+  // database path through the legacy open (OpenEngineResourceCatalog); a native context refuses until a native
+  // resource relation answers. Nothing is opened.
+  if (NativeServedContext(request.context)) {
+    return MakeApiBehaviorDiagnostic<EngineResolveNameResult>(
+        request.context, "catalog.resolve_name",
+        NativeLegacyRegistryRefusal("resource_seed_catalog", request.context));
   }
   if (!request.sql_object_reference.path_components.empty() ||
       request.sql_object_reference.object_name.raw_text.empty()) {
@@ -140,6 +149,15 @@ TemporaryFilteredNameMatches FilterTemporaryNameMatches(
     if (!NameRegistryMatchCanBeTemporaryTable(match)) {
       filtered.durable_matches.push_back(match);
       continue;
+    }
+    // SB_NATIVE_LEGACY_REGISTRY_REFUSAL (S4b rework "Part A"): whether a table name is a session's temporary table is
+    // decided from the legacy MGA temporary-relation store; a native context refuses until a native relation
+    // answers.
+    if (NativeServedContext(request.context)) {
+      filtered.ok = false;
+      filtered.diagnostic =
+          NativeLegacyRegistryRefusal("temporary_table_visibility", request.context);
+      return filtered;
     }
     const auto visibility =
         CheckMgaTemporaryTableVisibility(request.context, match.object_uuid);
@@ -352,6 +370,10 @@ EngineApiDiagnostic AttachViewSemanticProjection(
     const std::string& object_kind,
     const EngineUuid& object_uuid,
     EngineResolveNameResult* result) {
+  // SB_NATIVE_LEGACY_REGISTRY_REFUSAL (S4b rework "Part A"): the view semantic descriptors live in legacy stores.
+  if (object_kind == "view" && NativeServedContext(request.context)) {
+    return NativeLegacyRegistryRefusal("view_semantic_projection", request.context);
+  }
   const auto aggregate = AttachGlobalAggregateViewSemanticProjection(
       request, object_kind, object_uuid, result);
   if (aggregate.error ||

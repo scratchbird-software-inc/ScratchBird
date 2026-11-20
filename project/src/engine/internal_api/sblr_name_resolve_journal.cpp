@@ -4,6 +4,7 @@
 #include "sblr_name_resolve_journal.hpp"
 
 #include "api_diagnostics.hpp"
+#include "native_legacy_registry_refusal.hpp"
 #include "hash_digest.hpp"
 
 #include <algorithm>
@@ -416,6 +417,14 @@ bool InputsValid(const EngineRequestContext& context,
 SblrNameResolveJournalResultV1 LookupSblrNameResolveJournalV1(
     const EngineRequestContext& context,
     const SblrNameResolveJournalKeyV1& key) {
+  // SB_NATIVE_LEGACY_REGISTRY_REFUSAL (S4b rework "Part A", owner Q3 = a): the resolve journal is the side file
+  // .sb.sblr_name_resolve_journal.v1.*; a native context refuses (nothing is read, created or probed) until the
+  // journal moves into the single file.
+  if (NativeServedContext(context)) {
+    SblrNameResolveJournalResultV1 refused;
+    refused.diagnostic = NativeLegacyRegistryRefusal("sblr_name_resolve_journal", context);
+    return refused;
+  }
   std::lock_guard lock(g_journal_mutex);
   if (!InputsValid(context, key)) {
     return Refused("SECURITY.ACCESS_DENIED",
@@ -427,6 +436,14 @@ SblrNameResolveJournalResultV1 LookupSblrNameResolveJournalV1(
 SblrNameResolveJournalResultV1 EnsureSblrNameResolveJournalV1(
     const EngineRequestContext& context,
     const SblrNameResolveJournalKeyV1& key) {
+  // SB_NATIVE_LEGACY_REGISTRY_REFUSAL (S4b rework "Part A", owner Q3 = a): the resolve journal is the side file
+  // .sb.sblr_name_resolve_journal.v1.*; a native context refuses (nothing is read, created or probed) until the
+  // journal moves into the single file.
+  if (NativeServedContext(context)) {
+    SblrNameResolveJournalResultV1 refused;
+    refused.diagnostic = NativeLegacyRegistryRefusal("sblr_name_resolve_journal", context);
+    return refused;
+  }
   std::lock_guard lock(g_journal_mutex);
   if (!InputsValid(context, key)) {
     return Refused("SECURITY.ACCESS_DENIED",
@@ -458,6 +475,14 @@ SblrNameResolveJournalResultV1 PublishSblrNameResolveJournalResultV1(
     const EngineRequestContext& context,
     const SblrNameResolveJournalKeyV1& key,
     const std::vector<std::uint8_t>& canonical_result_bytes) {
+  // SB_NATIVE_LEGACY_REGISTRY_REFUSAL (S4b rework "Part A", owner Q3 = a): the resolve journal is the side file
+  // .sb.sblr_name_resolve_journal.v1.*; a native context refuses (nothing is read, created or probed) until the
+  // journal moves into the single file.
+  if (NativeServedContext(context)) {
+    SblrNameResolveJournalResultV1 refused;
+    refused.diagnostic = NativeLegacyRegistryRefusal("sblr_name_resolve_journal", context);
+    return refused;
+  }
   std::lock_guard lock(g_journal_mutex);
   if (!InputsValid(context, key)) {
     return Refused("SECURITY.ACCESS_DENIED",
