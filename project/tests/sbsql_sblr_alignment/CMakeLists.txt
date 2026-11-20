@@ -4397,6 +4397,50 @@ if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
       TIMEOUT 1800)
   endforeach()
 endif()
+# SB_NATIVE_LOOP_TRANSACTION_TEST (thin-slice S4d, plan 40; owner Q305, Q309, Q315): the database loop's transaction queue
+# (BeginWork / CompleteWork / CompleteAndBeginWork), its ownership table and the engine-owned read-transaction scope.
+# Production-created databases at the five page sizes, served by StartHostedEngine; per size one driver process runs
+# serving, restricted, failed, a failed write inside begin (then reopen), and abandoned transactions (graceful close and
+# forced exit, then reopen) as separate served children, and reads the file's TIP offline afterwards. One ctest entry
+# per page size, each its own process and temp directory; the strace half (the `measure` scenario) checks 0 .sb.*, the
+# data-descriptor writes and syncs against what the loop reported, and that only TIP / header pages changed.
+add_executable(sbsql_sblr_alignment_native_loop_transaction native_loop_transaction_test.cpp
+  ${PROJECT_SOURCE_DIR}/src/server/native_database_loop.cpp)
+add_dependencies(sbsql_sblr_alignment_native_loop_transaction sbsql_sblr_alignment_native_serving)
+target_compile_definitions(sbsql_sblr_alignment_native_loop_transaction PRIVATE SB_NATIVE_LOOP_TEST_SEAMS=1)
+target_compile_features(sbsql_sblr_alignment_native_loop_transaction PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_loop_transaction PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+  ${PROJECT_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(sbsql_sblr_alignment_native_loop_transaction PRIVATE
+  sb_server_core sb_engine sb_engine_sblr sb_engine_internal_api sb_storage_database OpenSSL::Crypto)
+target_compile_definitions(sbsql_sblr_alignment_native_loop_transaction PRIVATE
+  SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password"
+  SB_NATIVE_SERVING_TEST_BIN="$<TARGET_FILE:sbsql_sblr_alignment_native_serving>")
+foreach(sb_loop_txn_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
+  string(REPLACE ":" ";" sb_loop_txn_parts "${sb_loop_txn_size}")
+  list(GET sb_loop_txn_parts 0 sb_loop_txn_bytes)
+  list(GET sb_loop_txn_parts 1 sb_loop_txn_label)
+  add_test(NAME sbsql_sblr_alignment_native_loop_transaction_${sb_loop_txn_label}
+    COMMAND sbsql_sblr_alignment_native_loop_transaction size ${sb_loop_txn_bytes})
+  set_tests_properties(sbsql_sblr_alignment_native_loop_transaction_${sb_loop_txn_label} PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_transaction;database_ownership;binary_uuid"
+    TIMEOUT 1800)
+endforeach()
+if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
+  foreach(sb_loop_txn_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
+    string(REPLACE ":" ";" sb_loop_txn_parts "${sb_loop_txn_size}")
+    list(GET sb_loop_txn_parts 0 sb_loop_txn_bytes)
+    list(GET sb_loop_txn_parts 1 sb_loop_txn_label)
+    add_test(NAME sbsql_sblr_alignment_native_loop_transaction_strace_${sb_loop_txn_label}
+      COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_loop_transaction_strace.py"
+        --test-bin $<TARGET_FILE:sbsql_sblr_alignment_native_loop_transaction>
+        --size ${sb_loop_txn_bytes})
+    set_tests_properties(sbsql_sblr_alignment_native_loop_transaction_strace_${sb_loop_txn_label} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_transaction;strace"
+      TIMEOUT 1800)
+  endforeach()
+endif()
 # SB_NATIVE_RESTRICTED_SBSRV_RUN (S3e, owner Q296 = yes): the REAL SBsrv on a file with a committing slot opens
 # RESTRICTED and the lifecycle state file shows it (restricted_database_count / database_serving_state), the
 # daemon-level lines unchanged; a clean file shows serving. Fixtures are made by native_serving_test (the writer).

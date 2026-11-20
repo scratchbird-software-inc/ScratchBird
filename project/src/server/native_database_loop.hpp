@@ -40,7 +40,8 @@
 //
 // Requests: a bounded queue (a mutex and a condition variable; the thread
 // sleeps on the variable, nothing polls). Kinds today: open, read_login_material (S4a: a credential read with no
-// session, below), close. The Restart
+// session, below), read_names, begin / complete / complete_and_begin work and the engine read-transaction scope
+// (S4d, SB_NATIVE_LOOP_TRANSACTIONS below), close. The Restart
 // (S3d) runs inside the open request: once per open, as its last step. Plan 36
 // (T1) adds complete_and_begin (the atomic commit + replacement begin) as a new
 // method of the SAME TransactionInventoryWriter the loop constructs once per
@@ -149,6 +150,12 @@ void SetNativeRestartSinkWrapperForTest(
     std::function<std::unique_ptr<storage::disk::CarefulWriteSink>(storage::disk::CarefulWriteSink&)> wrapper);
 std::function<std::unique_ptr<storage::disk::CarefulWriteSink>(storage::disk::CarefulWriteSink&)>
 NativeRestartSinkWrapperForTest();
+// SB_TEST_SEAM (S4d): the same, for the sink every loop transaction request (begin, complete, complete-and-begin)
+// writes through; nothing set = the real sink. Lets a test child make a real transaction write or sync fail.
+void SetNativeTransactionSinkWrapperForTest(
+    std::function<std::unique_ptr<storage::disk::CarefulWriteSink>(storage::disk::CarefulWriteSink&)> wrapper);
+std::function<std::unique_ptr<storage::disk::CarefulWriteSink>(storage::disk::CarefulWriteSink&)>
+NativeTransactionSinkWrapperForTest();
 #endif
 
 // Immutable facts about the verified, serving-ready database. Copied values
@@ -193,6 +200,107 @@ struct NativeLoopLoginRequest {
   core::platform::Uuid principal_uuid;                 // binary(16); never a name
   core::memory::ScopedProtectedBuffer password;        // consumed
   std::size_t password_length = 0;                     // bytes of `password` that are the password
+};
+
+// SEARCH_KEY: SB_NATIVE_LOOP_TRANSACTIONS (thin-slice S4d, plan 40; owner Q305, Q309, Q315, 2026-11-19/21).
+// Begin, complete (commit or rollback) and complete-and-begin of a native MGA transaction, as REQUESTS to the loop
+// thread, which owns the thread-affine TransactionInventoryWriter (plan 36 T1). Every transaction has a durable
+// header (owner 2026-11-05). Allowed only while the database is `serving`: `restricted` refuses with the Q299 code
+// (ENGINE.NATIVE.DATABASE_RESTRICTED_READ_ONLY) until the S5 resolver, `failed` and not-serving refuse specifically.
+// OWNERSHIP (Q315): the writer has no session notion, so the loop keeps an in-memory table, transaction order ->
+// opaque owner key (a binary(16) the caller chooses; S4e passes the session UUID), and checks it before every
+// complete / complete-and-begin; the replacement transaction of a complete-and-begin belongs to the same owner. A
+// completion by a non-owner, or of an order the table does not hold, is refused before anything is written. The
+// table is memory only (a restart empties it; the file's dead slots are the record): no session records exist yet
+// (S4e) and the header's attachment (+80) and session (+96) stay zero unless the caller supplies them.
+enum class NativeLoopTransactionError : std::uint8_t {
+  none,
+  invalid_request,        // nil owner key, nil/unknown completion kind, a loop-thread caller of a cross-thread submit
+  database_not_serving,   // no serving database, the loop is closing / closed, or the work cannot be queued
+  database_failed,        // the database is `failed` (or became so): requires reopen
+  database_restricted,    // Q299: ENGINE.NATIVE.DATABASE_RESTRICTED_READ_ONLY
+  busy,                   // the bounded queue is full
+  unknown_transaction,    // the order is not in the loop's table
+  not_owner,              // the owner key is not the transaction's owner
+  identity_failure,       // no transaction UUID could be issued
+  writer_refused,         // the writer refused BEFORE any write; nothing changed, the writer is usable
+  writer_failed,          // a write or sync failed: the file is in a crash state, the database is now `failed`
+};
+const char* NativeLoopTransactionErrorName(NativeLoopTransactionError error) noexcept;
+const char* NativeLoopTransactionErrorCode(NativeLoopTransactionError error) noexcept;
+
+enum class NativeLoopCompletion : std::uint8_t { commit, rollback };
+
+// What a begin states about the transaction. Identities are as the caller gives them (all zero = not yet bound; the
+// header codec admits zero). The engine instance (+48) is the loop's own, never the caller's.
+struct NativeLoopTransactionIdentity {
+  core::platform::Uuid principal_uuid;   // header +64: the AUTHENTICATED principal, supplied explicitly by the caller (S4e, at approval)
+  core::platform::Uuid attachment_uuid;  // header +80 (zero until S4e / T2-T4)
+  core::platform::Uuid session_uuid;     // header +96 (zero until S4e / T2-T4)
+};
+struct NativeLoopBeginRequest {
+  core::platform::Uuid owner_key;            // binary(16), not nil
+  bool read_only = false;
+  std::uint8_t isolation_profile = 0;        // IsolationProfileKind as the header's u8; 0 = not stated
+  NativeLoopTransactionIdentity identity;
+};
+struct NativeLoopCompleteRequest {
+  core::platform::Uuid owner_key;
+  std::uint64_t transaction_order = 0;
+  NativeLoopCompletion completion = NativeLoopCompletion::commit;
+};
+struct NativeLoopCompleteAndBeginRequest {
+  core::platform::Uuid owner_key;            // owns n, and becomes the owner of the replacement m
+  std::uint64_t transaction_order = 0;       // n
+  NativeLoopCompletion completion = NativeLoopCompletion::commit;
+  bool read_only = false;                    // the replacement's
+  std::uint8_t isolation_profile = 0;
+  NativeLoopTransactionIdentity identity;
+};
+// One result for the three requests. Begin fills begun_*; complete fills completed_*; complete-and-begin fills both.
+struct NativeLoopTransactionResult {
+  NativeLoopTransactionError error = NativeLoopTransactionError::invalid_request;
+  std::uint64_t begun_order = 0;
+  core::platform::Uuid begun_uuid;
+  std::uint64_t completed_order = 0;
+  bool committed = false;                    // the completed transaction's final state
+  std::uint64_t completed_at_utc_ns = 0;
+  // From the writer (message-vector material): its own error name, the plan's successful writes and issued syncs
+  // (chain growth, when it was needed, is counted apart), and whether the completion's outcome is decided only by
+  // the file at the next open.
+  std::string writer_error;
+  std::uint32_t writes = 0, syncs = 0, growth_writes = 0, growth_syncs = 0;
+  bool outcome_uncertain = false;
+  bool ok() const noexcept { return error == NativeLoopTransactionError::none; }
+};
+
+// SB_NATIVE_ENGINE_READ_TRANSACTION (owner 2026-11-21: the credential read and the names read of a native login run
+// in an engine-owned SHORT READ-ONLY SNAPSHOT TRANSACTION, as Firebird's server reads its security database). The
+// work runs ON THE LOOP THREAD between a begin and a completion; the completion is ALWAYS made (commit, as Firebird
+// does for a read-only transaction) even when the work throws.
+// The two bodies of the scope. Owner ruling 2026-11-21: login reads run at an in-memory snapshot point and the user's
+// transaction begins only on approval, so snapshot_point is the DEFAULT; durable_transaction stays as an optional path:
+//   durable_transaction  a durable read-only transaction (header, TIP slot, 5 writes / 5 syncs per scope, one number)
+//   snapshot_point       NO header, NO write, NO number: the TIP's Next and stored horizons captured in memory at the
+//                        start (like Firebird's in-memory system transaction 0). The user's own transaction would begin
+//                        only on approval. Allowed on `restricted` too (a read of the file, no write).
+enum class NativeLoopReadScopeMode : std::uint8_t { durable_transaction, snapshot_point };
+struct NativeLoopReadTransaction {
+  NativeLoopReadScopeMode mode = NativeLoopReadScopeMode::durable_transaction;
+  // snapshot_point: the inventory as it stood at the capture (order stays 0, transaction_uuid nil).
+  std::uint64_t snapshot_next_transaction = 0, snapshot_oit = 0, snapshot_oat = 0, snapshot_ost = 0;
+  std::uint64_t order = 0;
+  core::platform::Uuid transaction_uuid;
+  core::platform::Uuid owner_key;            // the scope's own key, issued per scope
+};
+struct NativeLoopReadScopeResult {
+  NativeLoopReadScopeMode mode = NativeLoopReadScopeMode::durable_transaction;
+  NativeLoopTransactionResult begin;         // the work did not run unless begin.ok(); snapshot_point: the capture
+  std::uint64_t snapshot_next_transaction = 0;
+  bool work_ran = false;
+  bool work_threw = false;                   // the work threw; the exception was absorbed
+  NativeLoopTransactionResult complete;      // meaningful when begin.ok()
+  bool ok() const noexcept { return begin.ok() && work_ran && !work_threw && complete.ok(); }
 };
 
 struct NativeLoopCloseResult {
@@ -244,6 +352,35 @@ class NativeDatabaseLoop final {
   // (the first real loop work that needs it) exists; S4c's own loop work replaces its use. `work` must not throw.
   bool RunOnLoopThreadForTest(std::function<void()> work);
 
+  // SEARCH_KEY: SB_NATIVE_LOOP_TRANSACTIONS (S4d). The direct in-loop login read: the S4a credential read (the same
+  // code the submit runs), run now. Callable ONLY on the loop thread (refused with invalid_request elsewhere); it
+  // consumes the password as the submit does. Inside RunInEngineReadTransaction it and ReadNamesSnapshotOnLoopThread
+  // run under ONE transaction. NOTE the PBKDF2 compare is part of this call (S4a), so it runs inside the scope.
+  NativeLoginMaterialResult ReadLoginMaterialOnLoopThread(NativeLoopLoginRequest request) noexcept;
+
+  // Transactions (see SB_NATIVE_LOOP_TRANSACTIONS above). The cross-thread submits queue the work and the future is
+  // always satisfied (a refusal is a result carrying its specific error); they are refused with invalid_request on
+  // the loop thread (the loop never waits on itself). The OnLoopThread forms run the same work now and are refused
+  // with invalid_request anywhere else: login and later loop work use them.
+  std::future<NativeLoopTransactionResult> SubmitBeginWork(NativeLoopBeginRequest request);
+  std::future<NativeLoopTransactionResult> SubmitCompleteWork(NativeLoopCompleteRequest request);
+  std::future<NativeLoopTransactionResult> SubmitCompleteAndBeginWork(NativeLoopCompleteAndBeginRequest request);
+  NativeLoopTransactionResult BeginWorkOnLoopThread(const NativeLoopBeginRequest& request) noexcept;
+  NativeLoopTransactionResult CompleteWorkOnLoopThread(const NativeLoopCompleteRequest& request) noexcept;
+  NativeLoopTransactionResult CompleteAndBeginWorkOnLoopThread(const NativeLoopCompleteAndBeginRequest& request) noexcept;
+  // Orders of the transactions the loop's ownership table holds, ascending. Loop thread only (empty elsewhere).
+  std::vector<std::uint64_t> OpenTransactionOrdersOnLoopThread() const;
+
+  // SB_NATIVE_ENGINE_READ_TRANSACTION: begin an engine-owned read-only transaction, run `work` on the loop thread,
+  // complete it (commit) whatever `work` did, report both. From a non-loop thread this queues a scope request and
+  // waits; ON the loop thread it runs the scope directly (login is loop work). `work` may throw (absorbed, reported)
+  // and may call the OnLoopThread reads above. Refused (the work does not run, begin.error says why) exactly as the
+  // transactions are: not serving, failed, restricted (Q299), queue full.
+  // SB_READ_TXN_SNAPSHOT_SEAM: the reads inside this scope see COMMITTED state as the catalog visibility reader
+  // computes it from the file's inventory at read time, not THIS transaction's snapshot (see the .cpp).
+  NativeLoopReadScopeResult RunInEngineReadTransaction(std::function<void(const NativeLoopReadTransaction&)> work,
+                                                       NativeLoopReadScopeMode mode = NativeLoopReadScopeMode::snapshot_point);
+
   // Queue a close: tear down on the loop thread (read, runtime, credential),
   // then leave the loop. Idempotent.
   std::future<NativeLoopCloseResult> SubmitClose();
@@ -278,8 +415,25 @@ class NativeDatabaseLoop final {
     std::function<void()> work;
     std::promise<void> done;
   };
-  // plan 36: struct CompleteAndBeginWork { ... } joins this variant.
-  using Work = std::variant<OpenWork, CloseWork, LoginWork, NamesWork, TestWork>;
+  struct BeginWork {
+    NativeLoopBeginRequest request;
+    std::promise<NativeLoopTransactionResult> done;
+  };
+  struct CompleteWork {
+    NativeLoopCompleteRequest request;
+    std::promise<NativeLoopTransactionResult> done;
+  };
+  struct CompleteAndBeginWork {
+    NativeLoopCompleteAndBeginRequest request;
+    std::promise<NativeLoopTransactionResult> done;
+  };
+  struct ReadScopeWork {
+    std::function<void(const NativeLoopReadTransaction&)> work;
+    NativeLoopReadScopeMode mode = NativeLoopReadScopeMode::durable_transaction;
+    std::promise<NativeLoopReadScopeResult> done;
+  };
+  using Work = std::variant<OpenWork, CloseWork, LoginWork, NamesWork, TestWork, BeginWork, CompleteWork,
+                            CompleteAndBeginWork, ReadScopeWork>;
   static constexpr std::size_t kQueueCapacity = 8;
 
   void Run() noexcept;
@@ -287,6 +441,26 @@ class NativeDatabaseLoop final {
   NativeLoopCloseResult HandleClose() noexcept;
   void HandleLogin(LoginWork&) noexcept;
   void HandleNames(NamesWork&) noexcept;
+  NativeLoginMaterialResult ReadLoginMaterialNow(NativeLoopLoginRequest&) noexcept;  // loop thread only
+  // S4d: admission shared by every transaction request (loop thread only; checked again when the work runs).
+  NativeLoopTransactionError AdmitTransactionWork() noexcept;
+  // Admission at the queue (any thread, lock held): the refusal of a request that must not be queued, or none.
+  NativeLoopTransactionError AdmitQueuedTransaction() const noexcept;
+  NativeLoopTransactionResult BeginNow(const NativeLoopBeginRequest&) noexcept;
+  NativeLoopTransactionResult CompleteNow(const NativeLoopCompleteRequest&) noexcept;
+  NativeLoopTransactionResult CompleteAndBeginNow(const NativeLoopCompleteAndBeginRequest&) noexcept;
+  NativeLoopReadScopeResult RunReadScopeNow(const std::function<void(const NativeLoopReadTransaction&)>&,
+                                            NativeLoopReadScopeMode) noexcept;
+  NativeLoopReadScopeResult RunSnapshotScopeNow(const std::function<void(const NativeLoopReadTransaction&)>&) noexcept;
+  void HandleTransaction(BeginWork&) noexcept;
+  void HandleTransaction(CompleteWork&) noexcept;
+  void HandleTransaction(CompleteAndBeginWork&) noexcept;
+  void HandleReadScope(ReadScopeWork&) noexcept;
+  // The one cross-thread submit of the three transaction requests (defined and only instantiated in the .cpp).
+  template <class WorkT, class Request>
+  std::future<NativeLoopTransactionResult> SubmitTransaction(Request request);
+  // A writer failure (a write or sync failed): the database is now `failed` (reopen), as after a failed Restart.
+  void NoteTransactionWriterFailure() noexcept;
   engine::internal_api::NativeNamesSnapshot ReadNamesSnapshotNow() noexcept;  // loop thread only
   struct Serving;  // loop-thread-only state
   // S3d: the single transaction-store Restart, on this thread, under the custody write operation.

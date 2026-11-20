@@ -27,6 +27,7 @@
 #include "engine/internal_api/security/agent_password_derivation.hpp"
 #include "engine/internal_api/sblr_executor_availability_registry.hpp"
 #include "core/catalog/catalog_database_record_codec.hpp"
+#include "core/catalog/catalog_isolation_profile.hpp"
 #include "native_hosted_careful_write_sink.hpp"
 #include "node_uuid_issuer.hpp"
 #include "startup_credential_source_adapter.hpp"
@@ -36,6 +37,7 @@
 #include <chrono>
 #include <array>
 #include <exception>
+#include <map>
 #include <optional>
 #include <span>
 #include <string_view>
@@ -75,7 +77,59 @@ NativeRestartSinkWrapperForTest() {
   std::lock_guard<std::mutex> guard(test_wrapper_mutex);
   return test_wrapper;
 }
+namespace {
+std::mutex test_transaction_wrapper_mutex;
+std::function<std::unique_ptr<storage::disk::CarefulWriteSink>(storage::disk::CarefulWriteSink&)>
+    test_transaction_wrapper;
+}  // namespace
+void SetNativeTransactionSinkWrapperForTest(
+    std::function<std::unique_ptr<storage::disk::CarefulWriteSink>(storage::disk::CarefulWriteSink&)> wrapper) {
+  std::lock_guard<std::mutex> guard(test_transaction_wrapper_mutex);
+  test_transaction_wrapper = std::move(wrapper);
+}
+std::function<std::unique_ptr<storage::disk::CarefulWriteSink>(storage::disk::CarefulWriteSink&)>
+NativeTransactionSinkWrapperForTest() {
+  std::lock_guard<std::mutex> guard(test_transaction_wrapper_mutex);
+  return test_transaction_wrapper;
+}
 #endif
+
+const char* NativeLoopTransactionErrorName(NativeLoopTransactionError error) noexcept {
+  using E = NativeLoopTransactionError;
+  switch (error) {
+    case E::none: return "none";
+    case E::invalid_request: return "invalid_request";
+    case E::database_not_serving: return "database_not_serving";
+    case E::database_failed: return "database_failed";
+    case E::database_restricted: return "database_restricted";
+    case E::busy: return "busy";
+    case E::unknown_transaction: return "unknown_transaction";
+    case E::not_owner: return "not_owner";
+    case E::identity_failure: return "identity_failure";
+    case E::writer_refused: return "writer_refused";
+    case E::writer_failed: return "writer_failed";
+  }
+  return "invalid";
+}
+
+// One distinct code per cause (owner Q193). database_restricted is the Q299 code the native handle already uses.
+const char* NativeLoopTransactionErrorCode(NativeLoopTransactionError error) noexcept {
+  using E = NativeLoopTransactionError;
+  switch (error) {
+    case E::none: return "";
+    case E::invalid_request: return "ENGINE.NATIVE.TRANSACTION_REQUEST_INVALID";
+    case E::database_not_serving: return "ENGINE.NATIVE.TRANSACTION_DATABASE_NOT_SERVING";
+    case E::database_failed: return "ENGINE.NATIVE.TRANSACTION_DATABASE_FAILED";
+    case E::database_restricted: return "ENGINE.NATIVE.DATABASE_RESTRICTED_READ_ONLY";
+    case E::busy: return "ENGINE.NATIVE.TRANSACTION_QUEUE_BUSY";
+    case E::unknown_transaction: return "ENGINE.NATIVE.TRANSACTION_UNKNOWN";
+    case E::not_owner: return "ENGINE.NATIVE.TRANSACTION_NOT_OWNER";
+    case E::identity_failure: return "ENGINE.NATIVE.TRANSACTION_IDENTITY_FAILED";
+    case E::writer_refused: return "ENGINE.NATIVE.TRANSACTION_WRITER_REFUSED";
+    case E::writer_failed: return "ENGINE.NATIVE.TRANSACTION_WRITER_FAILED";
+  }
+  return "";
+}
 
 const char* NativeServingStateName(NativeServingState state) noexcept {
   switch (state) {
@@ -306,6 +360,16 @@ struct NativeDatabaseLoop::Serving {
   // CompleteAndBegin is a new method of THIS writer, same restarted precondition (not implemented).
   std::optional<core::uuid::StandaloneUuidV7Issuer> issuer;
   std::optional<pg::TransactionInventoryWriter> writer;
+  // S4d (SB_NATIVE_LOOP_TRANSACTIONS): what a transaction request needs to write through the runtime's write door
+  // (the filespace and page profile the careful-write sink addresses), kept from the open, and the ownership
+  // table: transaction order -> the opaque owner key and the transaction's UUID. Loop thread only; memory only.
+  core::platform::Uuid filespace_uuid, page_profile_uuid;
+  pg::TransactionWriterBinding txn_binding;  // for the snapshot-point capture (reads the chains through the sink)
+  struct OwnedTransaction {
+    core::platform::Uuid owner_key;
+    core::platform::Uuid transaction_uuid;
+  };
+  std::map<std::uint64_t, OwnedTransaction> transactions;
   // S4a (SB_NATIVE_LOGIN_MATERIAL): what a login-material read needs beyond the runtime, kept from the open: the
   // runtime authority binding's generation (the security reader is addressed through that binding) and the
   // fixed-root read limits. Values only.
@@ -319,6 +383,7 @@ struct NativeDatabaseLoop::Serving {
   // runtime, then the credential source.
   bool Teardown(NativeLoopDiagnostic* failure) noexcept {
     bool ok = true;
+    transactions.clear();  // abandoned transactions stay active in the file: dead at the next open's Restart
     writer.reset();
     issuer.reset();
     read.reset();
@@ -423,7 +488,9 @@ std::future<NativeLoginMaterialResult> NativeDatabaseLoop::SubmitReadLoginMateri
   return future;
 }
 
-void NativeDatabaseLoop::HandleLogin(LoginWork& work) noexcept {
+// SB_NATIVE_LOOP_TRANSACTIONS (S4d): the S4a read as a function of the loop thread, so a login's loop work can call it
+// inside RunInEngineReadTransaction. The submit's HandleLogin calls the same code (one read path, no copy).
+NativeLoginMaterialResult NativeDatabaseLoop::ReadLoginMaterialNow(NativeLoopLoginRequest& request) noexcept {
   NativeLoginMaterialResult result;
   try {
     if (!serving_ || state() != NativeLoopState::serving) {
@@ -431,20 +498,39 @@ void NativeDatabaseLoop::HandleLogin(LoginWork& work) noexcept {
     } else if (serving_state() == NativeServingState::failed) {
       result.error = NativeLoginMaterialError::database_failed;
     } else {
-      // serving or restricted (Q309): the credential read has no write and no transaction.
+      // serving or restricted (Q309): the credential read has no write and no transaction of its own.
       auto& serving = *serving_;
-      NativeLoginMaterialRequest request;
-      request.principal_uuid = work.request.principal_uuid;
-      request.runtime_binding_uuid = serving.facts.runtime_binding_uuid;
-      request.runtime_binding_generation = serving.runtime_binding_generation;
-      request.limits = serving.login_limits;
-      result = Host::ReadNativeLoginMaterial(serving.runtime, request, work.request.password,
-                                             work.request.password_length, serving.derived);
+      NativeLoginMaterialRequest read;
+      read.principal_uuid = request.principal_uuid;
+      read.runtime_binding_uuid = serving.facts.runtime_binding_uuid;
+      read.runtime_binding_generation = serving.runtime_binding_generation;
+      read.limits = serving.login_limits;
+      result = Host::ReadNativeLoginMaterial(serving.runtime, read, request.password, request.password_length,
+                                             serving.derived);
     }
   } catch (...) {
     result = {};
     result.error = NativeLoginMaterialError::security_source_failure;
   }
+  return result;
+}
+
+NativeLoginMaterialResult NativeDatabaseLoop::ReadLoginMaterialOnLoopThread(NativeLoopLoginRequest request) noexcept {
+  if (!on_loop_thread()) {
+    ConsumeLoginPassword(request);
+    NativeLoginMaterialResult refused;
+    refused.error = NativeLoginMaterialError::invalid_request;
+    request.password = {};
+    return refused;
+  }
+  auto result = ReadLoginMaterialNow(request);
+  ConsumeLoginPassword(request);  // consumed whatever happened (the callee also zeroes it)
+  request.password = {};          // released on this thread
+  return result;
+}
+
+void NativeDatabaseLoop::HandleLogin(LoginWork& work) noexcept {
+  auto result = ReadLoginMaterialNow(work.request);
   ConsumeLoginPassword(work.request);  // consumed whatever happened (the callee also zeroes it)
   work.request.password = {};          // released on this thread
   work.done.set_value(std::move(result));
@@ -561,6 +647,494 @@ class NativeLoopNamesSource final : public engine::internal_api::NativeNamesSour
 };
 }  // namespace
 
+// ===================================================================================================================
+// SEARCH_KEY: SB_NATIVE_LOOP_TRANSACTIONS (thin-slice S4d, plan 40; owner Q305, Q309, Q315). See the header.
+// Everything below runs on the loop thread: the writer is thread-affine by its callers, and every write goes through
+// the runtime's write door (TryBeginWriterOperation), one custody operation per request, released before the request
+// returns. The writer's own refusals (restart not run, unknown order, header codec, horizon regression, chain full,
+// read-only database) all come BEFORE any write: the request is `writer_refused`, nothing changed, and the loop
+// goes on. A write or sync failure leaves the file in a crash state the next open's Restart resolves: the request is
+// `writer_failed` and the database becomes `failed` (reopen), exactly as after a failed Restart.
+// ===================================================================================================================
+namespace {
+std::uint64_t NowUtcNs() noexcept {
+  return static_cast<std::uint64_t>(
+      std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+}
+
+// Opens the write door, builds the careful-write sink (decorated by the test seam when one is set) and runs `body`
+// with it; the operation is released when this returns. False, with `out` filled, when the door could not be opened.
+template <class S, class Body>
+bool WithTransactionSink(S& serving, NativeLoopTransactionResult& out, Body&& body) {
+  const auto operation_identity = core::uuid::IssueRuntimeIdentityV7();
+  if (!operation_identity) {
+    out.error = NativeLoopTransactionError::identity_failure;
+    return false;
+  }
+  // Declared before the sink: released after it.
+  auto write_operation = Host::TryBeginWriterOperation(serving.runtime, *operation_identity);
+  if (!write_operation.ok()) {
+    out.error = NativeLoopTransactionError::writer_refused;
+    out.writer_error = "writer_operation_refused";
+    return false;
+  }
+  NativeHostedCarefulWriteSink sink(write_operation.operation, serving.filespace_uuid, serving.page_profile_uuid);
+  std::unique_ptr<storage::disk::CarefulWriteSink> decorated;
+  storage::disk::CarefulWriteSink* writing = &sink;
+#if defined(SB_NATIVE_LOOP_TEST_SEAMS)
+  if (const auto wrapper = NativeTransactionSinkWrapperForTest()) {
+    decorated = wrapper(sink);
+    if (decorated) writing = decorated.get();
+  }
+#endif
+  body(*writing);
+  return true;
+}
+
+template <class S>
+bool IssueTransactionUuid(S& serving, core::platform::Uuid& out) noexcept {
+  if (!serving.issuer) return false;
+  const auto issued = serving.issuer->Issue(core::platform::UuidKind::transaction);
+  if (!issued.ok()) return false;
+  out = issued.value->value;
+  return true;
+}
+
+// The header of a transaction as S4d states it: local authority, intent 0, the caller's isolation profile and
+// identities, the loop's own engine instance (+48). Policy (+112), security (+128) and start snapshot (+144) stay
+// zero (no policy snapshot exists before plan 32; Q316: the writer takes +144 as given). The writer sets the
+// database id and the order.
+template <class S>
+pg::TransactionHeaderRecord MakeTransactionHeader(const S& serving, const core::platform::Uuid& transaction_uuid,
+                                                  bool read_only, std::uint8_t isolation_profile,
+                                                  const NativeLoopTransactionIdentity& identity) noexcept {
+  pg::TransactionHeaderRecord header;
+  header.authority = pg::TipAuthorityClass::local;
+  header.intent = 0;
+  header.isolation_profile = isolation_profile;
+  header.read_only = read_only;
+  header.transaction_uuid = transaction_uuid;
+  header.engine_instance_uuid = serving.facts.engine_instance_uuid;
+  header.principal_or_agent_uuid = identity.principal_uuid;
+  header.attachment_uuid = identity.attachment_uuid;
+  header.session_uuid = identity.session_uuid;
+  return header;
+}
+}  // namespace
+
+NativeLoopTransactionError NativeDatabaseLoop::AdmitTransactionWork() noexcept {
+  if (!serving_ || state() != NativeLoopState::serving) return NativeLoopTransactionError::database_not_serving;
+  switch (serving_state()) {
+    case NativeServingState::failed: return NativeLoopTransactionError::database_failed;
+    case NativeServingState::restricted: return NativeLoopTransactionError::database_restricted;
+    case NativeServingState::serving: break;
+  }
+  if (!serving_->writer || !serving_->writer->restarted()) return NativeLoopTransactionError::database_not_serving;
+  if (serving_->writer->failed()) return NativeLoopTransactionError::database_failed;
+  return NativeLoopTransactionError::none;
+}
+
+NativeLoopTransactionError NativeDatabaseLoop::AdmitQueuedTransaction() const noexcept {
+  if (!accepting_ || state() != NativeLoopState::serving) return NativeLoopTransactionError::database_not_serving;
+  if (serving_state() == NativeServingState::failed) return NativeLoopTransactionError::database_failed;
+  if (serving_state() == NativeServingState::restricted) return NativeLoopTransactionError::database_restricted;
+  if (queue_.size() >= kQueueCapacity) return NativeLoopTransactionError::busy;
+  return NativeLoopTransactionError::none;
+}
+
+void NativeDatabaseLoop::NoteTransactionWriterFailure() noexcept {
+  if (!serving_) return;
+  auto& facts = serving_->facts;
+  facts.serving_state = NativeServingState::failed;
+  facts.serving_diagnostic = Refusal("DATABASE.TRANSACTION_WRITE_FAILED", "transaction", {{"requires", "reopen"}});
+  serving_state_.store(NativeServingState::failed, std::memory_order_release);
+}
+
+NativeLoopTransactionResult NativeDatabaseLoop::BeginNow(const NativeLoopBeginRequest& request) noexcept {
+  NativeLoopTransactionResult out;
+  try {
+    out.error = AdmitTransactionWork();
+    if (out.error != NativeLoopTransactionError::none) return out;
+    if (request.owner_key.is_nil()) {
+      out.error = NativeLoopTransactionError::invalid_request;
+      return out;
+    }
+    auto& serving = *serving_;
+    core::platform::Uuid transaction_uuid;
+    if (!IssueTransactionUuid(serving, transaction_uuid)) {
+      out.error = NativeLoopTransactionError::identity_failure;
+      return out;
+    }
+    const auto header = MakeTransactionHeader(serving, transaction_uuid, request.read_only, request.isolation_profile,
+                                              request.identity);
+    pg::TransactionBeginResult begun;
+    if (!WithTransactionSink(serving, out, [&](storage::disk::CarefulWriteSink& sink) {
+          begun = serving.writer->Begin(sink, header);
+        }))
+      return out;
+    out.writes = begun.writes;
+    out.syncs = begun.syncs;
+    out.growth_writes = begun.growth_writes;
+    out.growth_syncs = begun.growth_syncs;
+    if (!begun.ok()) {
+      out.writer_error = pg::TransactionWriterErrorName(begun.error);
+      if (serving.writer->failed()) {
+        out.error = NativeLoopTransactionError::writer_failed;
+        NoteTransactionWriterFailure();
+      } else {
+        out.error = NativeLoopTransactionError::writer_refused;
+      }
+      return out;
+    }
+    serving.transactions[*begun.transaction_order] = {request.owner_key, transaction_uuid};
+    out.begun_order = *begun.transaction_order;
+    out.begun_uuid = transaction_uuid;
+    out.error = NativeLoopTransactionError::none;
+    return out;
+  } catch (...) {
+    out = {};
+    out.error = NativeLoopTransactionError::writer_refused;
+    out.writer_error = "exception";
+    return out;
+  }
+}
+
+NativeLoopTransactionResult NativeDatabaseLoop::CompleteNow(const NativeLoopCompleteRequest& request) noexcept {
+  NativeLoopTransactionResult out;
+  try {
+    out.error = AdmitTransactionWork();
+    if (out.error != NativeLoopTransactionError::none) return out;
+    if (request.owner_key.is_nil() || request.transaction_order == 0 ||
+        (request.completion != NativeLoopCompletion::commit && request.completion != NativeLoopCompletion::rollback)) {
+      out.error = NativeLoopTransactionError::invalid_request;
+      return out;
+    }
+    auto& serving = *serving_;
+    const auto owned = serving.transactions.find(request.transaction_order);
+    if (owned == serving.transactions.end()) {
+      out.error = NativeLoopTransactionError::unknown_transaction;
+      return out;
+    }
+    if (!(owned->second.owner_key == request.owner_key)) {  // Q315: before anything is written
+      out.error = NativeLoopTransactionError::not_owner;
+      return out;
+    }
+    pg::TransactionCompleteResult done;
+    if (!WithTransactionSink(serving, out, [&](storage::disk::CarefulWriteSink& sink) {
+          done = request.completion == NativeLoopCompletion::commit
+                     ? serving.writer->Commit(sink, request.transaction_order, NowUtcNs())
+                     : serving.writer->Rollback(sink, request.transaction_order, NowUtcNs());
+        }))
+      return out;
+    out.writes = done.writes;
+    out.syncs = done.syncs;
+    out.outcome_uncertain = done.outcome_uncertain;
+    if (!done.ok()) {
+      out.writer_error = pg::TransactionWriterErrorName(done.error);
+      if (serving.writer->failed()) {
+        out.error = NativeLoopTransactionError::writer_failed;
+        NoteTransactionWriterFailure();
+      } else {
+        out.error = NativeLoopTransactionError::writer_refused;
+      }
+      return out;
+    }
+    serving.transactions.erase(owned);
+    out.completed_order = request.transaction_order;
+    out.committed = done.final_state == pg::TipStateCode::committed;
+    out.completed_at_utc_ns = done.completed_at_utc_ns;
+    out.error = NativeLoopTransactionError::none;
+    return out;
+  } catch (...) {
+    out = {};
+    out.error = NativeLoopTransactionError::writer_refused;
+    out.writer_error = "exception";
+    return out;
+  }
+}
+
+NativeLoopTransactionResult NativeDatabaseLoop::CompleteAndBeginNow(
+    const NativeLoopCompleteAndBeginRequest& request) noexcept {
+  NativeLoopTransactionResult out;
+  try {
+    out.error = AdmitTransactionWork();
+    if (out.error != NativeLoopTransactionError::none) return out;
+    if (request.owner_key.is_nil() || request.transaction_order == 0 ||
+        (request.completion != NativeLoopCompletion::commit && request.completion != NativeLoopCompletion::rollback)) {
+      out.error = NativeLoopTransactionError::invalid_request;
+      return out;
+    }
+    auto& serving = *serving_;
+    const auto owned = serving.transactions.find(request.transaction_order);
+    if (owned == serving.transactions.end()) {
+      out.error = NativeLoopTransactionError::unknown_transaction;
+      return out;
+    }
+    if (!(owned->second.owner_key == request.owner_key)) {  // Q315: before CompleteAndBegin writes anything
+      out.error = NativeLoopTransactionError::not_owner;
+      return out;
+    }
+    core::platform::Uuid replacement_uuid;
+    if (!IssueTransactionUuid(serving, replacement_uuid)) {
+      out.error = NativeLoopTransactionError::identity_failure;
+      return out;
+    }
+    const auto header = MakeTransactionHeader(serving, replacement_uuid, request.read_only, request.isolation_profile,
+                                              request.identity);
+    pg::TransactionCompleteAndBeginResult done;
+    if (!WithTransactionSink(serving, out, [&](storage::disk::CarefulWriteSink& sink) {
+          done = serving.writer->CompleteAndBegin(sink, request.transaction_order,
+                                                  request.completion == NativeLoopCompletion::commit
+                                                      ? pg::TipStateCode::committed
+                                                      : pg::TipStateCode::rolled_back,
+                                                  header, NowUtcNs());
+        }))
+      return out;
+    out.writes = done.writes;
+    out.syncs = done.syncs;
+    out.growth_writes = done.growth_writes;
+    out.growth_syncs = done.growth_syncs;
+    out.outcome_uncertain = done.outcome_uncertain;
+    if (!done.ok()) {
+      out.writer_error = pg::TransactionWriterErrorName(done.error);
+      if (serving.writer->failed()) {
+        out.error = NativeLoopTransactionError::writer_failed;
+        NoteTransactionWriterFailure();
+      } else {
+        out.error = NativeLoopTransactionError::writer_refused;
+      }
+      return out;
+    }
+    const auto owner = owned->second.owner_key;
+    serving.transactions.erase(owned);
+    serving.transactions[done.replacement_order] = {owner, replacement_uuid};  // the replacement has the same owner
+    out.completed_order = request.transaction_order;
+    out.committed = done.final_state == pg::TipStateCode::committed;
+    out.completed_at_utc_ns = done.completed_at_utc_ns;
+    out.begun_order = done.replacement_order;
+    out.begun_uuid = replacement_uuid;
+    out.error = NativeLoopTransactionError::none;
+    return out;
+  } catch (...) {
+    out = {};
+    out.error = NativeLoopTransactionError::writer_refused;
+    out.writer_error = "exception";
+    return out;
+  }
+}
+
+template <class WorkT, class Request>
+std::future<NativeLoopTransactionResult> NativeDatabaseLoop::SubmitTransaction(Request request) {
+  const auto refused = [](NativeLoopTransactionError error) {
+    std::promise<NativeLoopTransactionResult> promise;
+    NativeLoopTransactionResult result;
+    result.error = error;
+    promise.set_value(std::move(result));
+    return promise.get_future();
+  };
+  if (on_loop_thread()) return refused(NativeLoopTransactionError::invalid_request);  // the loop never waits on itself
+  WorkT work{std::move(request), {}};
+  auto future = work.done.get_future();
+  {
+    std::lock_guard<std::mutex> guard(mutex_);
+    if (const auto error = AdmitQueuedTransaction(); error != NativeLoopTransactionError::none) return refused(error);
+    queue_.emplace_back(std::move(work));
+  }
+  wake_.notify_one();
+  return future;
+}
+
+std::future<NativeLoopTransactionResult> NativeDatabaseLoop::SubmitBeginWork(NativeLoopBeginRequest request) {
+  return SubmitTransaction<BeginWork>(std::move(request));
+}
+std::future<NativeLoopTransactionResult> NativeDatabaseLoop::SubmitCompleteWork(NativeLoopCompleteRequest request) {
+  return SubmitTransaction<CompleteWork>(std::move(request));
+}
+std::future<NativeLoopTransactionResult> NativeDatabaseLoop::SubmitCompleteAndBeginWork(
+    NativeLoopCompleteAndBeginRequest request) {
+  return SubmitTransaction<CompleteAndBeginWork>(std::move(request));
+}
+
+NativeLoopTransactionResult NativeDatabaseLoop::BeginWorkOnLoopThread(const NativeLoopBeginRequest& request) noexcept {
+  if (!on_loop_thread()) {
+    NativeLoopTransactionResult refused;
+    refused.error = NativeLoopTransactionError::invalid_request;
+    return refused;
+  }
+  return BeginNow(request);
+}
+NativeLoopTransactionResult NativeDatabaseLoop::CompleteWorkOnLoopThread(
+    const NativeLoopCompleteRequest& request) noexcept {
+  if (!on_loop_thread()) {
+    NativeLoopTransactionResult refused;
+    refused.error = NativeLoopTransactionError::invalid_request;
+    return refused;
+  }
+  return CompleteNow(request);
+}
+NativeLoopTransactionResult NativeDatabaseLoop::CompleteAndBeginWorkOnLoopThread(
+    const NativeLoopCompleteAndBeginRequest& request) noexcept {
+  if (!on_loop_thread()) {
+    NativeLoopTransactionResult refused;
+    refused.error = NativeLoopTransactionError::invalid_request;
+    return refused;
+  }
+  return CompleteAndBeginNow(request);
+}
+
+std::vector<std::uint64_t> NativeDatabaseLoop::OpenTransactionOrdersOnLoopThread() const {
+  std::vector<std::uint64_t> orders;
+  if (!on_loop_thread() || !serving_) return orders;
+  for (const auto& entry : serving_->transactions) orders.push_back(entry.first);
+  return orders;
+}
+
+void NativeDatabaseLoop::HandleTransaction(BeginWork& work) noexcept { work.done.set_value(BeginNow(work.request)); }
+void NativeDatabaseLoop::HandleTransaction(CompleteWork& work) noexcept { work.done.set_value(CompleteNow(work.request)); }
+void NativeDatabaseLoop::HandleTransaction(CompleteAndBeginWork& work) noexcept {
+  work.done.set_value(CompleteAndBeginNow(work.request));
+}
+
+// SEARCH_KEY: SB_NATIVE_ENGINE_READ_TRANSACTION (owner 2026-11-21). begin (read-only, isolation read_committed_statement,
+// the engine instance as +48, principal and session identities ZERO) -> work -> complete (commit) -> report.
+//
+// HEADER PRINCIPAL (+64) of an engine-owned read transaction is UNSETTLED (owner question). The codec admits zero
+// ("not yet bound"); the only provisioned internal principal in a created file is L5's service principal (the
+// facts' service_principal_uuid), which this scope must not borrow (L5 is an agent with its own session and
+// transactions), and a principal may not be minted here. So the least-invented value is zero.
+//
+// SB_READ_TXN_SNAPSHOT_SEAM: the reads the work makes (ReadLoginMaterialOnLoopThread, ReadNamesSnapshotOnLoopThread)
+// are NOT bound to this transaction's snapshot. They call the catalog visibility reader's committed entries
+// (ReadCommittedSelected / ReadCommitted), which compute visibility from the inventory read at that moment:
+// "committed through next_transaction - 1 / next_commit_sequence - 1, own uncommitted rows hidden". The reader's
+// only snapshot-bound entry, ReadPinned, needs a mga::TransactionIdentity and a published snapshot pin
+// (mga::PublishedSnapshotPin from the MGA snapshot publisher: descriptor with visible_committed_high_watermark and
+// the active / in-doubt exclusion lists); the native TIP writer publishes no snapshot, a native transaction has no
+// TransactionIdentity of that kind, and neither security read passes a pin. What IS true today: the loop is the only
+// writer and runs the reads right after the begin with nothing interleaved, so "committed now" equals "committed as
+// of this transaction's start" for this scope. That is a property of the loop's serialisation, not of the
+// transaction. A scope that spans loop turns, or a session transaction, needs the snapshot (built from the file's
+// TIP at BEGIN: visible-through order, commit sequence and the active list) passed to the reader.
+// SB_NATIVE_ENGINE_READ_TRANSACTION mode snapshot_point: NO header, NO write, NO transaction number. The capture is
+// the TIP counters (Next and the stored horizons) read through the write door's sink (reads only) once, held in
+// memory for the work, like Firebird's in-memory system transaction 0. Needs only a served, not failed database
+// (restricted included). What a snapshot-bound read still needs from the visibility reader: see SB_READ_TXN_SNAPSHOT_SEAM.
+NativeLoopReadScopeResult NativeDatabaseLoop::RunSnapshotScopeNow(
+    const std::function<void(const NativeLoopReadTransaction&)>& work) noexcept {
+  NativeLoopReadScopeResult out;
+  out.mode = NativeLoopReadScopeMode::snapshot_point;
+  try {
+    if (!serving_ || state() != NativeLoopState::serving) {
+      out.begin.error = NativeLoopTransactionError::database_not_serving;
+      return out;
+    }
+    if (serving_state() == NativeServingState::failed) {
+      out.begin.error = NativeLoopTransactionError::database_failed;
+      return out;
+    }
+    auto& serving = *serving_;
+    NativeLoopReadTransaction info;
+    info.mode = NativeLoopReadScopeMode::snapshot_point;
+    if (!WithTransactionSink(serving, out.begin, [&](storage::disk::CarefulWriteSink& sink) {
+          const auto chains = pg::ReadTransactionChainsThroughSink(sink, serving.txn_binding);
+          if (!chains.ok()) {
+            out.begin.error = NativeLoopTransactionError::writer_refused;
+            out.begin.writer_error = pg::TransactionWriterErrorName(chains.error);
+            return;
+          }
+          info.snapshot_next_transaction = chains.counters.next_transaction;
+          info.snapshot_oit = chains.counters.horizons.oldest_interesting;
+          info.snapshot_oat = chains.counters.horizons.oldest_active;
+          info.snapshot_ost = chains.counters.horizons.oldest_snapshot;
+          out.begin.error = NativeLoopTransactionError::none;
+        }))
+      return out;
+    if (!out.begin.ok()) return out;
+    out.snapshot_next_transaction = info.snapshot_next_transaction;
+    if (work) {
+      try {
+        work(info);
+        out.work_ran = true;
+      } catch (...) {
+        out.work_ran = true;
+        out.work_threw = true;
+      }
+    }
+    out.complete.error = NativeLoopTransactionError::none;  // nothing to complete: no transaction exists
+    return out;
+  } catch (...) {
+    out.work_threw = true;
+    return out;
+  }
+}
+
+NativeLoopReadScopeResult NativeDatabaseLoop::RunReadScopeNow(
+    const std::function<void(const NativeLoopReadTransaction&)>& work, NativeLoopReadScopeMode mode) noexcept {
+  if (mode == NativeLoopReadScopeMode::snapshot_point) return RunSnapshotScopeNow(work);
+  NativeLoopReadScopeResult out;
+  try {
+    const auto owner = core::uuid::IssueRuntimeIdentityV7();
+    if (!owner) {
+      out.begin.error = NativeLoopTransactionError::identity_failure;
+      return out;
+    }
+    NativeLoopBeginRequest begin;
+    begin.owner_key = *owner;
+    begin.read_only = true;
+    begin.isolation_profile = static_cast<std::uint8_t>(core::catalog::IsolationProfileKind::read_committed_statement);
+    out.begin = BeginNow(begin);
+    if (!out.begin.ok()) return out;  // the work does not run
+    NativeLoopReadTransaction info;
+    info.order = out.begin.begun_order;
+    info.transaction_uuid = out.begin.begun_uuid;
+    info.owner_key = *owner;
+    if (work) {
+      try {
+        work(info);
+        out.work_ran = true;
+      } catch (...) {
+        out.work_ran = true;
+        out.work_threw = true;
+      }
+    }
+    // ALWAYS completed: a read-only transaction commits (as Firebird's), refusal or exception of the work included.
+    NativeLoopCompleteRequest complete;
+    complete.owner_key = *owner;
+    complete.transaction_order = info.order;
+    complete.completion = NativeLoopCompletion::commit;
+    out.complete = CompleteNow(complete);
+    return out;
+  } catch (...) {
+    out.work_threw = true;
+    return out;
+  }
+}
+
+NativeLoopReadScopeResult NativeDatabaseLoop::RunInEngineReadTransaction(
+    std::function<void(const NativeLoopReadTransaction&)> work, NativeLoopReadScopeMode mode) {
+  if (on_loop_thread()) return RunReadScopeNow(work, mode);
+  const auto refused = [](NativeLoopTransactionError error) {
+    NativeLoopReadScopeResult result;
+    result.begin.error = error;
+    return result;
+  };
+  ReadScopeWork item{std::move(work), mode, {}};
+  auto future = item.done.get_future();
+  {
+    std::lock_guard<std::mutex> guard(mutex_);
+    auto error = AdmitQueuedTransaction();
+    // snapshot_point is a read: a restricted database serves it (Q309), only the queue bound and failed refuse.
+    if (mode == NativeLoopReadScopeMode::snapshot_point && error == NativeLoopTransactionError::database_restricted)
+      error = queue_.size() >= kQueueCapacity ? NativeLoopTransactionError::busy : NativeLoopTransactionError::none;
+    if (error != NativeLoopTransactionError::none) return refused(error);
+    queue_.emplace_back(std::move(item));
+  }
+  wake_.notify_one();
+  return future.get();
+}
+
+void NativeDatabaseLoop::HandleReadScope(ReadScopeWork& work) noexcept { work.done.set_value(RunReadScopeNow(work.work, work.mode)); }
+
 std::future<NativeLoopCloseResult> NativeDatabaseLoop::SubmitClose() {
   CloseWork work;
   auto future = work.done.get_future();
@@ -631,6 +1205,22 @@ void NativeDatabaseLoop::Run() noexcept {
       HandleNames(*names);
       continue;
     }
+    if (auto* begin = std::get_if<BeginWork>(&work)) {
+      HandleTransaction(*begin);
+      continue;
+    }
+    if (auto* complete = std::get_if<CompleteWork>(&work)) {
+      HandleTransaction(*complete);
+      continue;
+    }
+    if (auto* replace = std::get_if<CompleteAndBeginWork>(&work)) {
+      HandleTransaction(*replace);
+      continue;
+    }
+    if (auto* scope = std::get_if<ReadScopeWork>(&work)) {
+      HandleReadScope(*scope);
+      continue;
+    }
     if (auto* test = std::get_if<TestWork>(&work)) {
       test->work();
       test->done.set_value();
@@ -686,6 +1276,8 @@ bool NativeDatabaseLoop::RunRestart(const NativeLoopOpenRequest& request,
     auto& serving = *serving_;
     auto& facts = serving.facts;
     auto& report = facts.restart;
+    serving.filespace_uuid = request.filespace_uuid;           // S4d: the write door's addressing, kept
+    serving.page_profile_uuid = observed.identity.primary_profile_uuid;
     report.uncertain_transactions = observed.inventory.in_doubt_transactions;
     const auto reject = [&](const char* step, std::vector<std::pair<std::string, std::string>> fields) {
       refusal = Refusal("DATABASE.OPEN_NATIVE_RESTART_REFUSED", step, std::move(fields));
@@ -714,6 +1306,7 @@ bool NativeDatabaseLoop::RunRestart(const NativeLoopOpenRequest& request,
       binding.allocation_root = *map_root;
       binding.issuer = &*serving.issuer;
     }
+    serving.txn_binding = binding;
     serving.writer.emplace(binding);
     if (serving.writer->page_size() == 0) return reject("restart_binding", {{"error", "writer_binding_invalid"}});
 
