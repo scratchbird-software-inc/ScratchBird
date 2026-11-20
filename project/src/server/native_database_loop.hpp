@@ -195,6 +195,14 @@ struct NativeLoopLoginRequest {
   std::size_t password_length = 0;                     // bytes of `password` that are the password
 };
 
+// SEARCH_KEY: SB_NATIVE_NAME_RESOLVE (thin-slice S4b, plan 40; owner Q306 = 1, Q309). A read-only, resolve-only names
+// lookup: the name is DATA (see NativeNameResolveInput) and the answer the object UUID of the committed names
+// relation, read from the served file ON THIS THREAD (the runtime is thread-affine), like the login-material read
+// and without any lock or write. Allowed while the database is `serving` or `restricted`; refused with
+// NativeNameResolveError::database_failed when it is `failed`, and with database_not_serving when the loop has no
+// serving database. No session or transaction is issued; the returned result carries binary UUIDs and constants only.
+using NativeLoopResolveNameRequest = NativeNameResolveInput;
+
 struct NativeLoopCloseResult {
   bool ok = false;
   NativeLoopState state = NativeLoopState::closed;
@@ -219,6 +227,10 @@ class NativeDatabaseLoop final {
   // S4a: queue a login-material read (see NativeLoopLoginRequest). The future is always satisfied; a refusal is a
   // NativeLoginMaterialResult carrying its specific error. Callable from any thread except the loop thread.
   std::future<NativeLoginMaterialResult> SubmitReadLoginMaterial(NativeLoopLoginRequest request);
+
+  // S4b: queue a name resolution (see NativeLoopResolveNameRequest). The future is always satisfied; a refusal is a
+  // NativeNameResolveResult carrying its specific error. Callable from any thread except the loop thread.
+  std::future<NativeNameResolveResult> SubmitResolveName(NativeLoopResolveNameRequest request);
 
   // Queue a close: tear down on the loop thread (read, runtime, credential),
   // then leave the loop. Idempotent.
@@ -247,14 +259,19 @@ class NativeDatabaseLoop final {
     NativeLoopLoginRequest request;
     std::promise<NativeLoginMaterialResult> done;
   };
+  struct ResolveNameWork {
+    NativeLoopResolveNameRequest request;
+    std::promise<NativeNameResolveResult> done;
+  };
   // plan 36: struct CompleteAndBeginWork { ... } joins this variant.
-  using Work = std::variant<OpenWork, CloseWork, LoginWork>;
+  using Work = std::variant<OpenWork, CloseWork, LoginWork, ResolveNameWork>;
   static constexpr std::size_t kQueueCapacity = 8;
 
   void Run() noexcept;
   void HandleOpen(OpenWork&) noexcept;
   NativeLoopCloseResult HandleClose() noexcept;
   void HandleLogin(LoginWork&) noexcept;
+  void HandleResolveName(ResolveNameWork&) noexcept;
   struct Serving;  // loop-thread-only state
   // S3d: the single transaction-store Restart, on this thread, under the custody write operation.
   // Returns false with `refusal` set when the open must be refused (nothing written, or a broken

@@ -311,6 +311,8 @@ struct NativeDatabaseLoop::Serving {
   // fixed-root read limits. Values only.
   std::uint64_t runtime_binding_generation = 0;
   db::NativeFixedRootMemoryLimits login_limits;
+  // S4b (SB_NATIVE_NAME_RESOLVE): the SCAN-tier relation limits the names relation needs (the open's own).
+  db::NativeCatalogRelationMemoryLimits name_scan_limits;
 
   // Reverse of acquisition, explicit because the close result must be seen.
   // The read first (it pins the host and holds the source lease), then the
@@ -447,6 +449,53 @@ void NativeDatabaseLoop::HandleLogin(LoginWork& work) noexcept {
   work.done.set_value(std::move(result));
 }
 
+// SEARCH_KEY: SB_NATIVE_NAME_RESOLVE (S4b). Same admission as the login-material read: serving and restricted are
+// allowed (Q309), failed and not-serving are refused before anything is queued.
+std::future<NativeNameResolveResult> NativeDatabaseLoop::SubmitResolveName(NativeLoopResolveNameRequest request) {
+  std::promise<NativeNameResolveResult> refused;
+  const auto refuse = [&](NativeNameResolveError error) {
+    NativeNameResolveResult result;
+    result.error = error;
+    refused.set_value(std::move(result));
+    return refused.get_future();
+  };
+  if (on_loop_thread()) return refuse(NativeNameResolveError::invalid_request);  // the loop never waits on itself
+  ResolveNameWork work{std::move(request), {}};
+  auto future = work.done.get_future();
+  {
+    std::lock_guard<std::mutex> guard(mutex_);
+    if (!accepting_ || state() != NativeLoopState::serving) return refuse(NativeNameResolveError::database_not_serving);
+    if (serving_state() == NativeServingState::failed) return refuse(NativeNameResolveError::database_failed);
+    if (queue_.size() >= kQueueCapacity) return refuse(NativeNameResolveError::busy);
+    queue_.emplace_back(std::move(work));
+  }
+  wake_.notify_one();
+  return future;
+}
+
+void NativeDatabaseLoop::HandleResolveName(ResolveNameWork& work) noexcept {
+  NativeNameResolveResult result;
+  try {
+    if (!serving_ || state() != NativeLoopState::serving) {
+      result.error = NativeNameResolveError::database_not_serving;
+    } else if (serving_state() == NativeServingState::failed) {
+      result.error = NativeNameResolveError::database_failed;
+    } else {
+      // serving or restricted (Q309): a names read has no write and no transaction.
+      auto& serving = *serving_;
+      NativeNameResolveRequest request;
+      request.input = std::move(work.request);
+      request.limits = serving.login_limits;
+      request.catalog = serving.name_scan_limits;
+      result = Host::ResolveNativeName(serving.runtime, request);
+    }
+  } catch (...) {
+    result = {};
+    result.error = NativeNameResolveError::names_source_failure;
+  }
+  work.done.set_value(std::move(result));
+}
+
 std::future<NativeLoopCloseResult> NativeDatabaseLoop::SubmitClose() {
   CloseWork work;
   auto future = work.done.get_future();
@@ -511,6 +560,10 @@ void NativeDatabaseLoop::Run() noexcept {
     }
     if (auto* login = std::get_if<LoginWork>(&work)) {
       HandleLogin(*login);
+      continue;
+    }
+    if (auto* resolve = std::get_if<ResolveNameWork>(&work)) {
+      HandleResolveName(*resolve);
       continue;
     }
     auto& close = std::get<CloseWork>(work);
@@ -746,6 +799,7 @@ void NativeDatabaseLoop::HandleOpen(OpenWork& work) noexcept {
     const auto& service = *identity.identity;
     serving.runtime_binding_generation = service.runtime_binding_generation;
     serving.login_limits = limits.fixed_root;
+    serving.name_scan_limits = limits.scan;
 
     // ---- SB_AGENT_PASSWORD_DERIVED (owner Q274 + Q281): the password is the
     //      database UUID XOR the stored seed, derived here from the file; no

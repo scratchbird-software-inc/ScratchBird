@@ -12216,3 +12216,60 @@ target_link_libraries(sbsql_sblr_alignment_catalog_agent_constants PRIVATE sb_st
 add_test(NAME sbsql_sblr_alignment_catalog_agent_constants COMMAND sbsql_sblr_alignment_catalog_agent_constants)
 set_tests_properties(sbsql_sblr_alignment_catalog_agent_constants PROPERTIES
   LABELS "sbsql_sblr_alignment;catalog;binary_uuid;native_policy;not_runtime_acceptance" TIMEOUT 120)
+# SB_NATIVE_NAME_RESOLVE_TEST (thin-slice S4b, plan 40; owner Q306 = 1, Q309, 2026-11-19/20): the minimal read-only,
+# resolve-only names reader (NativeDatabaseLoop::SubmitResolveName). Production-created databases at the five page
+# sizes; per size one served child each for serving, restricted (a committing slot written by the native_serving
+# binary's own writer), failed (an active slot and the loop's Restart test seam), names / dead / uncommitted (names
+# written by the production storage writers: a second language, quoted names, a quoted case twin, a dropped name,
+# a name of a transaction that never committed). Per size two ctest entries (base states; forged-name states) and two
+# strace entries (serving+restricted; names+dead; the open of `failed` and `uncommitted` writes by construction):
+# 0 .sb.* and 0 write-class syscalls on the data descriptor.
+add_executable(sbsql_sblr_alignment_native_name_resolve native_name_resolve_test.cpp
+  ${PROJECT_SOURCE_DIR}/src/server/native_database_loop.cpp)
+add_dependencies(sbsql_sblr_alignment_native_name_resolve sbsql_sblr_alignment_native_serving)
+target_compile_definitions(sbsql_sblr_alignment_native_name_resolve PRIVATE SB_NATIVE_LOOP_TEST_SEAMS=1)
+target_compile_features(sbsql_sblr_alignment_native_name_resolve PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_name_resolve PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+  ${PROJECT_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(sbsql_sblr_alignment_native_name_resolve PRIVATE
+  sb_server_core sb_engine sb_engine_sblr sb_engine_internal_api sb_storage_database OpenSSL::Crypto)
+target_compile_definitions(sbsql_sblr_alignment_native_name_resolve PRIVATE
+  SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password"
+  SB_NATIVE_SERVING_TEST_BIN="$<TARGET_FILE:sbsql_sblr_alignment_native_serving>")
+# Two entries per size, each well under the 200 s bound at -j8: the base file states, and the states whose names the
+# production storage writers wrote.
+foreach(sb_name_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
+  string(REPLACE ":" ";" sb_name_parts "${sb_name_size}")
+  list(GET sb_name_parts 0 sb_name_bytes)
+  list(GET sb_name_parts 1 sb_name_label)
+  add_test(NAME sbsql_sblr_alignment_native_name_resolve_${sb_name_label}
+    COMMAND sbsql_sblr_alignment_native_name_resolve size ${sb_name_bytes} serving restricted failed)
+  add_test(NAME sbsql_sblr_alignment_native_name_resolve_forged_${sb_name_label}
+    COMMAND sbsql_sblr_alignment_native_name_resolve size ${sb_name_bytes} names dead uncommitted)
+  set_tests_properties(sbsql_sblr_alignment_native_name_resolve_${sb_name_label}
+      sbsql_sblr_alignment_native_name_resolve_forged_${sb_name_label} PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_name_resolve;database_ownership;binary_uuid"
+    TIMEOUT 1800)
+endforeach()
+if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
+  foreach(sb_name_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
+    string(REPLACE ":" ";" sb_name_parts "${sb_name_size}")
+    list(GET sb_name_parts 0 sb_name_bytes)
+    list(GET sb_name_parts 1 sb_name_label)
+    add_test(NAME sbsql_sblr_alignment_native_name_resolve_strace_${sb_name_label}
+      COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_name_resolve_strace.py"
+        --test-bin $<TARGET_FILE:sbsql_sblr_alignment_native_name_resolve>
+        --serving-bin $<TARGET_FILE:sbsql_sblr_alignment_native_serving>
+        --size ${sb_name_bytes} --states serving restricted)
+    add_test(NAME sbsql_sblr_alignment_native_name_resolve_strace_forged_${sb_name_label}
+      COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_name_resolve_strace.py"
+        --test-bin $<TARGET_FILE:sbsql_sblr_alignment_native_name_resolve>
+        --serving-bin $<TARGET_FILE:sbsql_sblr_alignment_native_serving>
+        --size ${sb_name_bytes} --states names dead)
+    set_tests_properties(sbsql_sblr_alignment_native_name_resolve_strace_${sb_name_label}
+        sbsql_sblr_alignment_native_name_resolve_strace_forged_${sb_name_label} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_name_resolve;strace"
+      TIMEOUT 1800)
+  endforeach()
+endif()
