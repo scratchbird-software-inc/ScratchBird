@@ -1564,6 +1564,23 @@ endif()
       LABELS "sbsql_sblr_alignment;native_storage;transaction_inventory;careful_write;fault_injection"
       TIMEOUT 900)
   endforeach()
+  # SB_TRANSACTION_COMPLETE_AND_BEGIN: plan 36 T1 (owner Q150 = 1, Q305/Q308
+  # 2026-11-19), the atomic commit/rollback + replacement step of the writer:
+  # refusals, plan shapes per page size, the crash/tear sweep against the plan
+  # 36 crash table, I/O faults, real-file process loss, and the write/sync
+  # measurement. One page size per test.
+  add_executable(sbsql_sblr_alignment_native_transaction_complete_and_begin native_transaction_complete_and_begin_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_native_transaction_complete_and_begin PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_native_transaction_complete_and_begin PRIVATE sb_storage_database)
+  target_compile_definitions(sbsql_sblr_alignment_native_transaction_complete_and_begin PRIVATE
+    SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password")
+  foreach(profile RANGE 0 4)
+    add_test(NAME sbsql_sblr_alignment_native_transaction_complete_and_begin_${profile}
+      COMMAND sbsql_sblr_alignment_native_transaction_complete_and_begin --profile ${profile})
+    set_tests_properties(sbsql_sblr_alignment_native_transaction_complete_and_begin_${profile} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_storage;transaction_inventory;careful_write;fault_injection"
+      TIMEOUT 900)
+  endforeach()
   # SB_NATIVE_FIXED_ROOT_READ: reader memory, image-budget and digest limits on
   # the fixed-root source (drift removal R4b).
   add_executable(sbsql_sblr_alignment_native_fixed_root_reader_limits native_fixed_root_reader_limits_test.cpp)
@@ -4243,6 +4260,14 @@ if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
   set_tests_properties(sbsql_sblr_alignment_native_restart_strace PROPERTIES
     LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_restart;strace"
     TIMEOUT 1800)
+  # Plan 36 T1 (owner Q150 = 1): CompleteAndBegin's writes and syncs at the syscall level against BEGIN +
+  # COMMIT today (the S5 baseline), five page sizes, two barrier policies.
+  add_test(NAME sbsql_sblr_alignment_native_complete_and_begin_strace
+    COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_complete_and_begin_strace.py"
+      --test-bin $<TARGET_FILE:sbsql_sblr_alignment_native_transaction_complete_and_begin>)
+  set_tests_properties(sbsql_sblr_alignment_native_complete_and_begin_strace PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;transaction_inventory;strace"
+    TIMEOUT 900)
   # S3c (Q282 = 1, Q283 = yes, 2026-11-19): the REAL SBsrv, NO --config (the installed default
   # SBsrv.conf), serves a natively created file at five page sizes, shuts down cleanly on SIGTERM, with
   # the file's sha256 unchanged, 0 ".sb." syscalls and 0 write/fsync syscalls on the data descriptor.

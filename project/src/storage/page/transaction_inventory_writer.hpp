@@ -70,6 +70,55 @@ namespace scratchbird::storage::page {
 // commit sequences by commit time, so a clock that steps back or two commits
 // in one nanosecond must not reorder them.
 //
+// CompleteAndBegin (plan 36 T1, owner Q150 = 1, Q305/Q308 2026-11-19): the
+// commit or rollback of transaction n and the start of its replacement m, as
+// ONE careful-write plan, m = the stored Next. All refusals come before any
+// write (chain growth for m's slots, when needed, is its own earlier plan, as
+// for BEGIN). The writes, in the order of plan 36:
+//   W1 first state page: Next := m + 1 and the six horizons;
+//   W2 the header record of m (all identities as the caller gives them);
+//   W3 the state word of m: active (or read-only active);
+//   W4 the header of n: final state, commit time, completion time;
+//   W5 the state byte of n: committed or rolled back (the visibility point).
+// A barrier follows every node that has a successor. Edits that land in the
+// same 512-byte write unit are MERGED into one node (one write per offset, no
+// overlapping extents), always on ONE page image:
+//   - W2 and W4 share a unit when n's header slot is even (two 256-byte
+//     records per unit and an even slot count at every page size: n and m =
+//     n + 1 are the two records of one unit; at the end of a header page m is
+//     on the next page and they do not share). The merged node sits at W2's
+//     place: W4 only has to precede W5, so it may come early.
+//   - W3 and W5 share a unit unless n's word is the last of a 128-word unit
+//     or the last of its page. The merged node sits at W5's place, after W4.
+// Plans, in write order (syncs on a sink that is not forced-ordered; one
+// final sync only on a forced one): no merge W1 W2 W3 W4 W5 (5 syncs); headers
+// W1 [W2 W4] W3 W5 (4); words W1 W2 W4 [W3 W5] (4); both W1 [W2 W4] [W3 W5]
+// (3). BEGIN then COMMIT today is 3 + 2 = 5.
+// Crash table (every row is a file a reopen's Restart resolves): after W1 n is
+// still active and m is an unused slot below Next; after W2 a header of m sits
+// over an unused word; after W3 m is active and n is unchanged; after W4 n's
+// header says final over an active word; after W5 n is final and m is active.
+// Restart marks every one of those in-progress or unused slots dead: n is dead
+// before W5 (it never committed), m is always dead (the server that began it
+// crashed), and no number is reused. A merged node has only its before and
+// after.
+// Horizons are computed over the inventory as it stands before the plan, with
+// n still active, exactly as BEGIN does: stored horizons may not exceed what
+// the file projects (StoredTransactionHorizonsAdmissible), and until W5 the
+// file still shows n active. Computing them with n final (the first reading
+// of plan 36) makes the file after W1..W4 inadmissible to the reader, so
+// open verification would refuse the database after such a crash (measured by
+// this slice's tear sweep, see the T1 log). The stored OAT/OST therefore
+// trail by the completing transaction, which is the same trailing COMMIT
+// leaves today until the next BEGIN.
+// m's visibility snapshot is the caller's: taken in memory from the file after
+// this call returns (it sees n as final); the header's start-snapshot
+// identity (+144) is whatever the caller gives, plan 36 gives none.
+// PLAN36_RETAINING: COMMIT/ROLLBACK RETAINING (owner Q169 = BOTH, Firebird
+// retain_context) will attach here: the new number keeps the old snapshot and
+// the list of earlier numbers whose committed work it sees, and the horizon
+// projection below passes that retained snapshot instead of none. NOT
+// implemented; a plain call is the fresh-snapshot replacement (Q168/Q169).
 // The file is authoritative: every call reads both chains through the sink
 // and checks them (CheckTransactionInventoryImages) before it plans a write;
 // no transaction state is kept in memory. A write or sync failure leaves the
@@ -183,6 +232,23 @@ struct TransactionCompleteResult : TransactionWriterOutcome {
   bool outcome_uncertain = false;
 };
 
+// CompleteAndBegin: transaction_order is n (the transaction completed or
+// refused), replacement_order and replacement_uuid are m. writes/syncs are the
+// one plan's own; growth_* are chain growth before it.
+struct TransactionCompleteAndBeginResult : TransactionBeginResult {
+  TipStateCode final_state = TipStateCode::unused;
+  u64 completed_at_utc_ns = 0;
+  u64 replacement_order = 0;
+  scratchbird::core::platform::Uuid replacement_uuid;
+  // A failure at or after the write that holds n's state byte: n's outcome is
+  // decided by the file when it is next opened (final if the byte reached it,
+  // dead otherwise); m is dead either way. False for every other failure: n is
+  // still in progress and becomes dead at restart.
+  bool outcome_uncertain = false;
+  // Which merges the plan made (see the design comment above).
+  bool merged_headers = false, merged_state_words = false;
+};
+
 class TransactionInventoryWriter {
  public:
   explicit TransactionInventoryWriter(const TransactionWriterBinding& binding) noexcept;
@@ -203,6 +269,15 @@ class TransactionInventoryWriter {
                                    u64 now_utc_ns) noexcept;
   TransactionCompleteResult Rollback(scratchbird::storage::disk::CarefulWriteSink& sink, u64 transaction_order,
                                      u64 now_utc_ns) noexcept;
+
+  // Commits (final_state = committed) or rolls back (rolled_back) transaction n
+  // and begins m = the stored Next in one plan; see the design comment.
+  // `header_m` is as for Begin. now_utc_ns as for Commit. Any other
+  // final_state is invalid_request.
+  TransactionCompleteAndBeginResult CompleteAndBegin(scratchbird::storage::disk::CarefulWriteSink& sink,
+                                                     u64 transaction_order, TipStateCode final_state,
+                                                     const TransactionHeaderRecord& header_m,
+                                                     u64 now_utc_ns) noexcept;
 
   bool restarted() const noexcept { return restarted_; }
   bool failed() const noexcept { return failed_; }

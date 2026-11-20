@@ -264,9 +264,149 @@ bool GrowChain(disk::CarefulWriteSink& sink, const TransactionWriterBinding& bin
   return true;
 }
 
+// Chain growth (W2c): grow each chain that lacks the slot of n (= Next) by its
+// next page, re-reading the chains after each step. Only the next page: a slot
+// further away would mean a Next the chains never covered. Then the capacity
+// check: n needs a formatted state slot and header slot. Returns nullopt when
+// both exist, else the refusal (BEGIN and CompleteAndBegin share it).
+std::optional<TransactionBeginResult> GrowForNext(disk::CarefulWriteSink& sink, const TransactionWriterBinding& binding,
+                                                  u32 page_size, Chains& chains, u64 n, TransactionBeginResult& result,
+                                                  bool& failed) {
+  using R = TransactionBeginResult;
+  for (int round = 0; round < 2; ++round) {
+    const auto state_need = LocateTransactionStateSlot(page_size, n);
+    const auto header_need = LocateTransactionHeaderSlot(page_size, n);
+    if (!state_need || !header_need) break;
+    const bool grow_state = state_need->tip_sequence == chains.state_pages.size();
+    const bool grow_header = header_need->sequence == chains.header_pages.size();
+    if ((!grow_state && !grow_header) || !binding.allocation_root || !binding.issuer) break;
+    if (!GrowChain(sink, binding, page_size, chains, grow_state, result, failed)) return result;
+    chains = Chains{};
+    if (!ReadChains(sink, binding, page_size, chains, result)) return result;
+    if (chains.counters.next_transaction != n) return Refuse<R>(E::invalid_inventory, TipPageError::invalid_counters);
+  }
+  const auto state_slot = LocateTransactionStateSlot(page_size, n);
+  const auto header_slot = LocateTransactionHeaderSlot(page_size, n);
+  if (!state_slot || !header_slot || state_slot->tip_sequence >= chains.state_pages.size() ||
+      header_slot->sequence >= chains.header_pages.size()) {
+    auto refused = Refuse<R>(E::chain_full, TipPageError::invalid_slot);
+    refused.transaction_order = n;
+    refused.grown_state_pages = result.grown_state_pages;
+    refused.grown_header_pages = result.grown_header_pages;
+    return refused;
+  }
+  return std::nullopt;
+}
+
+// The counters BEGIN of `n` stores (n = Next): Next := n + 1 and the six
+// horizons projected over the inventory as the images stand (retained
+// snapshots: none; PLAN36_RETAINING attaches here), each of OIT, OAT, OST at
+// most n, none below the stored one. Returns nullopt on success, else the
+// refusal.
+std::optional<TransactionBeginResult> BuildBeginCounters(u32 page_size, const Chains& chains, u64 n,
+                                                         TipCounters& counters) {
+  using R = TransactionBeginResult;
+  const auto built = BuildLocalTransactionInventoryFromImages(page_size, chains.state, chains.headers);
+  if (!built.ok()) {
+    auto refused = Refuse<R>(E::invalid_inventory, built.error);
+    refused.transaction_order = built.transaction_order;  // the entry that could not be built
+    return refused;
+  }
+  mga::LocalTransactionHorizons projected;
+  if (mga::detail::ProjectValidatedLocalHorizons(built.inventory, {}, projected))
+    return Refuse<R>(E::invalid_inventory, TipPageError::invalid_counters);
+  counters = TipCounters{};
+  counters.next_transaction = n + 1;
+  auto& h = counters.horizons;
+  h.oldest_interesting = projected.oldest_interesting_transaction.value;
+  h.oldest_active = projected.oldest_active_transaction.value;
+  h.oldest_snapshot = projected.oldest_snapshot_transaction.value;
+  h.oldest_archive_required = n + 1;
+  h.oldest_limbo_resolution = n + 1;
+  for (const auto& entry : built.inventory.entries)
+    if (entry.state == mga::TransactionState::prepared || entry.state == mga::TransactionState::limbo)
+      h.oldest_limbo_resolution = std::min(h.oldest_limbo_resolution, entry.identity.local_id.value);
+  h.oldest_cleanup = std::min({h.oldest_active, h.oldest_snapshot, h.oldest_limbo_resolution,
+                               h.oldest_archive_required});
+  const auto& stored = chains.counters.horizons;
+  if (h.oldest_interesting < stored.oldest_interesting || h.oldest_active < stored.oldest_active ||
+      h.oldest_snapshot < stored.oldest_snapshot || h.oldest_cleanup < stored.oldest_cleanup ||
+      h.oldest_archive_required < stored.oldest_archive_required ||
+      h.oldest_limbo_resolution < stored.oldest_limbo_resolution ||
+      h.oldest_interesting > n || h.oldest_active > n || h.oldest_snapshot > n) {
+    auto refused = Refuse<R>(E::horizon_regression);
+    refused.transaction_order = n;
+    return refused;
+  }
+  return std::nullopt;
+}
+
 bool InProgress(TipStateCode code) {
   return code == TipStateCode::active || code == TipStateCode::read_only_active;
 }
+// A transaction in progress, as the file shows it: its two slots, its header
+// record, and the completion time it would get.
+struct ActiveTransaction {
+  TipSlotLocation state_slot;
+  TransactionHeaderSlotLocation header_slot;
+  TransactionHeaderRecord record;
+};
+
+// Finds n in the chains and checks that it is in progress with an
+// unfinished header. Returns none or the refusal code (unknown_transaction,
+// invalid_state, invalid_inventory). Reads only.
+E FindActiveTransaction(const Chains& chains, u32 page_size, u64 n, ActiveTransaction& out) {
+  if (n >= chains.counters.next_transaction) return E::unknown_transaction;
+  const auto state_slot = LocateTransactionStateSlot(page_size, n);
+  const auto header_slot = LocateTransactionHeaderSlot(page_size, n);
+  if (!state_slot || !header_slot || state_slot->tip_sequence >= chains.state_pages.size() ||
+      header_slot->sequence >= chains.header_pages.size())
+    return E::unknown_transaction;
+  const auto state_image = std::span<const byte>(chains.state).subspan(
+      static_cast<std::size_t>(state_slot->tip_sequence) * page_size, page_size);
+  const auto header_image = std::span<const byte>(chains.headers).subspan(
+      static_cast<std::size_t>(header_slot->sequence) * page_size, page_size);
+  const auto state_view = DecodeTransactionStatePage(state_image);
+  const auto header_view = DecodeTransactionHeaderPage(header_image);
+  if (!state_view.ok() || !header_view.ok()) return E::invalid_inventory;
+  const auto word = TipWordAt(*state_view.view, state_slot->slot);
+  if (!word || word->state == TipStateCode::unused) return E::unknown_transaction;
+  if (!InProgress(word->state)) return E::invalid_state;
+  auto record = TransactionHeaderAt(*header_view.view, header_slot->slot);
+  if (!record) return E::invalid_inventory;  // an in-progress word always has its header
+  if (record->final_state != TipStateCode::unused) return E::invalid_state;
+  out.state_slot = *state_slot;
+  out.header_slot = *header_slot;
+  out.record = *record;
+  return E::none;
+}
+
+// The completion time and the completed header record: never before the
+// transaction began; on commit, also after every commit time already stored.
+// Returns none or invalid_inventory / invalid_header (header_error set).
+E CompleteRecord(const Chains& chains, u32 page_size, u64 now_utc_ns, TipStateCode final_state,
+                 TransactionHeaderRecord& record, u64& at, TransactionHeaderError& header_error) {
+  const auto begun = scratchbird::core::uuid::ExtractUuidV7TimePrefix(record.transaction_uuid);
+  if (!begun.ok || begun.unix_epoch_millis > std::numeric_limits<u64>::max() / 1'000'000)
+    return E::invalid_inventory;
+  at = std::max<u64>(now_utc_ns, begun.unix_epoch_millis * 1'000'000);
+  if (final_state == TipStateCode::committed) {
+    u64 latest = 0;
+    for (std::size_t i = 0; i < chains.header_pages.size(); ++i) {
+      const auto view = DecodeTransactionHeaderPage(
+          std::span<const byte>(chains.headers).subspan(i * page_size, page_size));
+      if (!view.ok()) return E::invalid_inventory;
+      for (u32 slot = 0; slot < view.view->slots; ++slot)
+        if (const auto other = TransactionHeaderAt(*view.view, slot))
+          latest = std::max(latest, other->commit_time_utc_ns);
+    }
+    if (latest == std::numeric_limits<u64>::max()) return E::invalid_inventory;
+    at = std::max(at, latest + 1);
+  }
+  header_error = CompleteTransactionHeader(record, final_state, at);
+  return header_error == TransactionHeaderError::none ? E::none : E::invalid_header;
+}
+
 }  // namespace
 
 const char* TransactionWriterErrorName(TransactionWriterError error) noexcept {
@@ -380,32 +520,9 @@ TransactionBeginResult TransactionInventoryWriter::Begin(disk::CarefulWriteSink&
     const u64 n = chains.counters.next_transaction;
     result.transaction_order = n;
     if (n == std::numeric_limits<u64>::max()) return Refuse<R>(E::chain_full, TipPageError::invalid_counters);
-    // Chain growth (W2c): grow each chain that lacks n's slot by its next
-    // page, re-reading the chains after each step. Only the next page: a slot
-    // further away would mean a Next the chains never covered.
-    for (int round = 0; round < 2; ++round) {
-      const auto state_need = LocateTransactionStateSlot(page_size_, n);
-      const auto header_need = LocateTransactionHeaderSlot(page_size_, n);
-      if (!state_need || !header_need) break;
-      const bool grow_state = state_need->tip_sequence == chains.state_pages.size();
-      const bool grow_header = header_need->sequence == chains.header_pages.size();
-      if ((!grow_state && !grow_header) || !binding_.allocation_root || !binding_.issuer) break;
-      if (!GrowChain(sink, binding_, page_size_, chains, grow_state, result, failed_)) return result;
-      chains = Chains{};
-      if (!ReadChains(sink, binding_, page_size_, chains, result)) return result;
-      if (chains.counters.next_transaction != n) return Refuse<R>(E::invalid_inventory, TipPageError::invalid_counters);
-    }
-    // Capacity: n needs a formatted state slot and header slot.
+    if (auto refused = GrowForNext(sink, binding_, page_size_, chains, n, result, failed_)) return *refused;
     const auto state_slot = LocateTransactionStateSlot(page_size_, n);
     const auto header_slot = LocateTransactionHeaderSlot(page_size_, n);
-    if (!state_slot || !header_slot || state_slot->tip_sequence >= chains.state_pages.size() ||
-        header_slot->sequence >= chains.header_pages.size()) {
-      auto refused = Refuse<R>(E::chain_full, TipPageError::invalid_slot);
-      refused.transaction_order = n;
-      refused.grown_state_pages = result.grown_state_pages;
-      refused.grown_header_pages = result.grown_header_pages;
-      return refused;
-    }
     // The record, validated before anything is planned.
     TransactionHeaderRecord record = header;
     record.transaction_order = n;
@@ -417,38 +534,8 @@ TransactionBeginResult TransactionInventoryWriter::Begin(disk::CarefulWriteSink&
       return refused;
     }
     // Horizons over the inventory before n exists (its Next is n).
-    const auto built = BuildLocalTransactionInventoryFromImages(page_size_, chains.state, chains.headers);
-    if (!built.ok()) {
-      auto refused = Refuse<R>(E::invalid_inventory, built.error);
-      refused.transaction_order = built.transaction_order;  // the entry that could not be built
-      return refused;
-    }
-    mga::LocalTransactionHorizons projected;
-    if (mga::detail::ProjectValidatedLocalHorizons(built.inventory, {}, projected))
-      return Refuse<R>(E::invalid_inventory, TipPageError::invalid_counters);
     TipCounters counters;
-    counters.next_transaction = n + 1;
-    auto& h = counters.horizons;
-    h.oldest_interesting = projected.oldest_interesting_transaction.value;
-    h.oldest_active = projected.oldest_active_transaction.value;
-    h.oldest_snapshot = projected.oldest_snapshot_transaction.value;
-    h.oldest_archive_required = n + 1;
-    h.oldest_limbo_resolution = n + 1;
-    for (const auto& entry : built.inventory.entries)
-      if (entry.state == mga::TransactionState::prepared || entry.state == mga::TransactionState::limbo)
-        h.oldest_limbo_resolution = std::min(h.oldest_limbo_resolution, entry.identity.local_id.value);
-    h.oldest_cleanup = std::min({h.oldest_active, h.oldest_snapshot, h.oldest_limbo_resolution,
-                                 h.oldest_archive_required});
-    const auto& stored = chains.counters.horizons;
-    if (h.oldest_interesting < stored.oldest_interesting || h.oldest_active < stored.oldest_active ||
-        h.oldest_snapshot < stored.oldest_snapshot || h.oldest_cleanup < stored.oldest_cleanup ||
-        h.oldest_archive_required < stored.oldest_archive_required ||
-        h.oldest_limbo_resolution < stored.oldest_limbo_resolution ||
-        h.oldest_interesting > n || h.oldest_active > n || h.oldest_snapshot > n) {
-      auto refused = Refuse<R>(E::horizon_regression);
-      refused.transaction_order = n;
-      return refused;
-    }
+    if (auto refused = BuildBeginCounters(page_size_, chains, n, counters)) return *refused;
     // The three edits, each one unit of a page image held here.
     auto first = PageOf(chains.state, page_size_, 0);
     const auto counters_edit = SetTransactionStateCounters(first, counters);
@@ -518,55 +605,30 @@ TransactionCompleteResult TransactionInventoryWriter::Complete(disk::CarefulWrit
       refused.final_state = final_state;
       return refused;
     };
-    if (n >= chains.counters.next_transaction) return refuse(E::unknown_transaction);
-    const auto state_slot = LocateTransactionStateSlot(page_size_, n);
-    const auto header_slot = LocateTransactionHeaderSlot(page_size_, n);
-    if (!state_slot || !header_slot || state_slot->tip_sequence >= chains.state_pages.size() ||
-        header_slot->sequence >= chains.header_pages.size())
-      return refuse(E::unknown_transaction);
-    auto state_image = PageOf(chains.state, page_size_, static_cast<std::size_t>(state_slot->tip_sequence));
-    auto header_image = PageOf(chains.headers, page_size_, static_cast<std::size_t>(header_slot->sequence));
-    const auto state_view = DecodeTransactionStatePage(state_image);
-    const auto header_view = DecodeTransactionHeaderPage(header_image);
-    if (!state_view.ok() || !header_view.ok()) return refuse(E::invalid_inventory);
-    const auto word = TipWordAt(*state_view.view, state_slot->slot);
-    if (!word || word->state == TipStateCode::unused) return refuse(E::unknown_transaction);
-    if (!InProgress(word->state)) return refuse(E::invalid_state);
-    auto record = TransactionHeaderAt(*header_view.view, header_slot->slot);
-    if (!record) return refuse(E::invalid_inventory);  // an in-progress word always has its header
-    if (record->final_state != TipStateCode::unused) return refuse(E::invalid_state);
-    // The completion time: never before the transaction began; on commit,
-    // also after every commit time already stored.
-    const auto begun = scratchbird::core::uuid::ExtractUuidV7TimePrefix(record->transaction_uuid);
-    if (!begun.ok || begun.unix_epoch_millis > std::numeric_limits<u64>::max() / 1'000'000)
-      return refuse(E::invalid_inventory);
-    u64 at = std::max<u64>(now_utc_ns, begun.unix_epoch_millis * 1'000'000);
-    if (final_state == TipStateCode::committed) {
-      u64 latest = 0;
-      for (std::size_t i = 0; i < chains.header_pages.size(); ++i) {
-        const auto view = DecodeTransactionHeaderPage(PageOf(chains.headers, page_size_, i));
-        if (!view.ok()) return refuse(E::invalid_inventory);
-        for (u32 slot = 0; slot < view.view->slots; ++slot)
-          if (const auto other = TransactionHeaderAt(*view.view, slot))
-            latest = std::max(latest, other->commit_time_utc_ns);
-      }
-      if (latest == std::numeric_limits<u64>::max()) return refuse(E::invalid_inventory);
-      at = std::max(at, latest + 1);
-    }
-    if (const auto completed = CompleteTransactionHeader(*record, final_state, at);
-        completed != TransactionHeaderError::none) {
-      auto refused = refuse(E::invalid_header);
-      refused.header_error = completed;
+    ActiveTransaction active;
+    if (const auto found = FindActiveTransaction(chains, page_size_, n, active); found != E::none)
+      return refuse(found);
+    const auto state_slot = active.state_slot;
+    const auto header_slot = active.header_slot;
+    auto state_image = PageOf(chains.state, page_size_, static_cast<std::size_t>(state_slot.tip_sequence));
+    auto header_image = PageOf(chains.headers, page_size_, static_cast<std::size_t>(header_slot.sequence));
+    auto record = &active.record;
+    u64 at = 0;
+    TransactionHeaderError completed = TransactionHeaderError::none;
+    if (const auto done = CompleteRecord(chains, page_size_, now_utc_ns, final_state, *record, at, completed);
+        done != E::none) {
+      auto refused = refuse(done);
+      if (done == E::invalid_header) refused.header_error = completed;
       return refused;
     }
     const auto header_edit = UpdateTransactionHeader(header_image, *record);
-    const auto word_edit = SetTransactionStateCode(state_image, state_slot->slot, final_state);
+    const auto word_edit = SetTransactionStateCode(state_image, state_slot.slot, final_state);
     if (!header_edit.ok() || !word_edit.ok() || !header_edit.changed || !word_edit.changed)
       return refuse(E::invalid_inventory);
     disk::CarefulWritePlan plan;
-    const auto a = AddUnit(plan, chains.header_pages[header_slot->sequence], page_size_, header_image, header_edit);
+    const auto a = AddUnit(plan, chains.header_pages[header_slot.sequence], page_size_, header_image, header_edit);
     const auto b =
-        AddUnit(plan, chains.state_pages[state_slot->tip_sequence], page_size_, state_image, word_edit);
+        AddUnit(plan, chains.state_pages[state_slot.tip_sequence], page_size_, state_image, word_edit);
     if (!a.ok() || !b.ok() || plan.Before(a.node, b.node) != CarefulWriteError::none)
       return refuse(E::resource_exhausted);
     result.completed_at_utc_ns = at;
@@ -579,6 +641,169 @@ TransactionCompleteResult TransactionInventoryWriter::Complete(disk::CarefulWrit
           result.write_error == CarefulWriteError::final_sync_failed ||
           (stopped == b.node && (result.write_error == CarefulWriteError::write_failed ||
                                  result.write_error == CarefulWriteError::sink_exception));
+    }
+    return result;
+  } catch (const std::bad_alloc&) {
+    return Refuse<R>(E::resource_exhausted);
+  } catch (const std::length_error&) {
+    return Refuse<R>(E::resource_exhausted);
+  }
+}
+
+TransactionCompleteAndBeginResult TransactionInventoryWriter::CompleteAndBegin(
+    disk::CarefulWriteSink& sink, u64 n, TipStateCode final_state, const TransactionHeaderRecord& header_m,
+    u64 now_utc_ns) noexcept {
+  using R = TransactionCompleteAndBeginResult;
+  if (!page_size_) return Refuse<R>(E::invalid_request);
+  if (failed_) return Refuse<R>(E::writer_failed);
+  if (binding_.read_only_database) return Refuse<R>(E::read_only_database);
+  if (!restarted_) return Refuse<R>(E::restart_required);
+  if (n == 0 || now_utc_ns == 0 ||
+      (final_state != TipStateCode::committed && final_state != TipStateCode::rolled_back))
+    return Refuse<R>(E::invalid_request);
+  if (header_m.authority != TipAuthorityClass::local || header_m.transaction_order != 0 ||
+      header_m.final_state != TipStateCode::unused || header_m.commit_time_utc_ns != 0 ||
+      header_m.completed_at_utc_ns != 0 || header_m.intent_generation != 0 ||
+      !(header_m.database_uuid.is_nil() || header_m.database_uuid == binding_.database_uuid))
+    return Refuse<R>(E::invalid_request);
+  try {
+    R result;
+    result.transaction_order = n;
+    result.final_state = final_state;
+    Chains chains;
+    if (!ReadChains(sink, binding_, page_size_, chains, result)) return result;
+    auto refuse = [&](E error) {
+      auto refused = Refuse<R>(error);
+      refused.transaction_order = n;
+      refused.final_state = final_state;
+      return refused;
+    };
+    const u64 m = chains.counters.next_transaction;
+    if (m == std::numeric_limits<u64>::max()) return refuse(E::chain_full);
+    // m's record, validated before anything is planned.
+    TransactionHeaderRecord record_m = header_m;
+    record_m.transaction_order = m;
+    record_m.database_uuid = binding_.database_uuid;
+    if (const auto valid = ValidateTransactionHeaderRecord(record_m); valid != TransactionHeaderError::none) {
+      auto refused = refuse(E::invalid_header);
+      refused.header_error = valid;
+      refused.replacement_order = m;
+      return refused;
+    }
+    // Everything about n that can be refused, before the first write (chain
+    // growth for m is a write): n in progress, its completed record.
+    ActiveTransaction active;
+    TransactionHeaderRecord record_n;
+    u64 at = 0;
+    auto prepare_n = [&]() -> std::optional<R> {
+      if (const auto found = FindActiveTransaction(chains, page_size_, n, active); found != E::none)
+        return refuse(found);
+      record_n = active.record;
+      TransactionHeaderError completed = TransactionHeaderError::none;
+      if (const auto done = CompleteRecord(chains, page_size_, now_utc_ns, final_state, record_n, at, completed);
+          done != E::none) {
+        auto refused = refuse(done);
+        if (done == E::invalid_header) refused.header_error = completed;
+        return refused;
+      }
+      return std::nullopt;
+    };
+    if (auto refused = prepare_n()) return *refused;
+    // Chain growth for m's slots (its own plan, as BEGIN), then the capacity
+    // check.
+    if (auto refused = GrowForNext(sink, binding_, page_size_, chains, m, result, failed_)) {
+      static_cast<TransactionBeginResult&>(result) = *refused;
+      result.transaction_order = n;
+      result.replacement_order = m;
+      return result;
+    }
+    if (result.grown_state_pages || result.grown_header_pages)
+      if (auto refused = prepare_n()) return *refused;  // the chains were re-read
+    const auto state_slot_m = LocateTransactionStateSlot(page_size_, m);
+    const auto header_slot_m = LocateTransactionHeaderSlot(page_size_, m);
+    const auto state_slot_n = active.state_slot;
+    const auto header_slot_n = active.header_slot;
+    // Horizons over the inventory as the file shows it, n still active (see
+    // the design comment: the file stays admissible after every write).
+    TipCounters counters;
+    if (auto refused = BuildBeginCounters(page_size_, chains, m, counters)) {
+      static_cast<TransactionBeginResult&>(result) = *refused;
+      result.transaction_order = n;
+      result.replacement_order = m;
+      return result;
+    }
+    // W1..W5 as edits of the page images held here, applied in plan order so
+    // that the first edit of a write unit carries the unit's preimage.
+    auto first = PageOf(chains.state, page_size_, 0);
+    const auto w1 = SetTransactionStateCounters(first, counters);
+    auto header_image_m = PageOf(chains.headers, page_size_, static_cast<std::size_t>(header_slot_m->sequence));
+    const auto w2 = WriteTransactionHeader(header_image_m, record_m);
+    auto state_image_m = PageOf(chains.state, page_size_, static_cast<std::size_t>(state_slot_m->tip_sequence));
+    TipStateWord word;
+    word.state = record_m.read_only ? TipStateCode::read_only_active : TipStateCode::active;
+    word.flags = kTipFlagHasDetailRecord;
+    word.authority = TipAuthorityClass::local;
+    word.intent = record_m.intent;
+    const auto w3 = SetTransactionStateWord(state_image_m, state_slot_m->slot, word);
+    auto header_image_n = PageOf(chains.headers, page_size_, static_cast<std::size_t>(header_slot_n.sequence));
+    const auto w4 = UpdateTransactionHeader(header_image_n, record_n);
+    auto state_image_n = PageOf(chains.state, page_size_, static_cast<std::size_t>(state_slot_n.tip_sequence));
+    const auto w5 = SetTransactionStateCode(state_image_n, state_slot_n.slot, final_state);
+    if (!w1.ok() || !w2.ok() || !w3.ok() || !w4.ok() || !w5.ok() || !w1.changed || !w2.changed || !w3.changed ||
+        !w4.changed || !w5.changed) {
+      auto refused = refuse(E::invalid_inventory);
+      refused.replacement_order = m;
+      return refused;
+    }
+    const bool merge_headers = header_slot_m->sequence == header_slot_n.sequence && w2.unit_offset == w4.unit_offset;
+    const bool merge_words = state_slot_m->tip_sequence == state_slot_n.tip_sequence && w3.unit_offset == w5.unit_offset;
+    disk::CarefulWritePlan plan;
+    std::vector<disk::CarefulWriteAddResult> nodes;  // in write order
+    const auto page_h_m = chains.header_pages[header_slot_m->sequence];
+    const auto page_h_n = chains.header_pages[header_slot_n.sequence];
+    const auto page_s_m = chains.state_pages[state_slot_m->tip_sequence];
+    const auto page_s_n = chains.state_pages[state_slot_n.tip_sequence];
+    nodes.push_back(AddUnit(plan, chains.state_pages[0], page_size_, first, w1));  // W1
+    disk::CarefulWriteAddResult n5{};
+    if (merge_headers) {
+      nodes.push_back(AddUnit(plan, page_h_m, page_size_, header_image_m, w2));  // [W2 W4]: W4 may come early
+    } else {
+      nodes.push_back(AddUnit(plan, page_h_m, page_size_, header_image_m, w2));  // W2
+      if (merge_words) nodes.push_back(AddUnit(plan, page_h_n, page_size_, header_image_n, w4));  // W4 before [W3 W5]
+    }
+    if (merge_words) {
+      n5 = AddUnit(plan, page_s_m, page_size_, state_image_m, w3);  // [W3 W5]: after W4
+      nodes.push_back(n5);
+    } else {
+      nodes.push_back(AddUnit(plan, page_s_m, page_size_, state_image_m, w3));  // W3
+      if (!merge_headers) nodes.push_back(AddUnit(plan, page_h_n, page_size_, header_image_n, w4));  // W4
+      n5 = AddUnit(plan, page_s_n, page_size_, state_image_n, w5);  // W5
+      nodes.push_back(n5);
+    }
+    bool built = true;
+    for (const auto& node : nodes) built = built && node.ok();
+    for (std::size_t i = 1; built && i < nodes.size(); ++i)
+      built = plan.Before(nodes[i - 1].node, nodes[i].node) == CarefulWriteError::none;
+    if (!built) {
+      auto refused = refuse(E::resource_exhausted);
+      refused.replacement_order = m;
+      return refused;
+    }
+    result.counters = counters;
+    result.completed_at_utc_ns = at;
+    result.replacement_order = m;
+    result.replacement_uuid = record_m.transaction_uuid;
+    result.merged_headers = merge_headers;
+    result.merged_state_words = merge_words;
+    disk::CarefulWriteNodeId stopped = disk::kCarefulWriteNoNode;
+    if (!Run(plan, sink, binding_.barrier_policy, result, failed_, &stopped)) {
+      // Uncertain only once the write that holds n's state byte was attempted
+      // (a failed write of it may have reached the file), or when the final
+      // sync after it failed.
+      result.outcome_uncertain =
+          result.write_error == CarefulWriteError::final_sync_failed ||
+          (stopped == n5.node && (result.write_error == CarefulWriteError::write_failed ||
+                                  result.write_error == CarefulWriteError::sink_exception));
     }
     return result;
   } catch (const std::bad_alloc&) {
