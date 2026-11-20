@@ -4206,10 +4206,26 @@ target_link_libraries(sbsql_sblr_alignment_native_serving PRIVATE
   sb_server_core sb_engine sb_engine_sblr sb_engine_internal_api sb_storage_database OpenSSL::Crypto)
 target_compile_definitions(sbsql_sblr_alignment_native_serving PRIVATE
   SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password")
-add_test(NAME sbsql_sblr_alignment_native_serving COMMAND sbsql_sblr_alignment_native_serving)
-set_tests_properties(sbsql_sblr_alignment_native_serving PROPERTIES
+# SB_NATIVE_SERVING_SPLIT (owner Q304, 2026-11-19). Was: ONE ctest entry, sbsql_sblr_alignment_native_serving,
+# running the whole binary with no argument (785 s under -j8 of its 1800 s timeout). Now the same binary runs as
+# six entries, each its own process and temp directory: "size <bytes>" for each of the five page sizes
+# (ServePageSize + RestartCases) and "common" (LoopLifecycle + L5SeedCases + RefusalsBeforeTheLoop). The checks
+# are exactly the ones the no-argument run performs (that run is their sum and stays available by hand; it has no
+# ctest entry). The timeout is unchanged (1800 s, never raised).
+add_test(NAME sbsql_sblr_alignment_native_serving_common COMMAND sbsql_sblr_alignment_native_serving common)
+set_tests_properties(sbsql_sblr_alignment_native_serving_common PROPERTIES
   LABELS "sbsql_sblr_alignment;native_storage;native_serving;database_lifecycle;database_ownership;binary_uuid"
   TIMEOUT 1800)
+foreach(sb_serving_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
+  string(REPLACE ":" ";" sb_serving_parts "${sb_serving_size}")
+  list(GET sb_serving_parts 0 sb_serving_bytes)
+  list(GET sb_serving_parts 1 sb_serving_label)
+  add_test(NAME sbsql_sblr_alignment_native_serving_${sb_serving_label}
+    COMMAND sbsql_sblr_alignment_native_serving size ${sb_serving_bytes})
+  set_tests_properties(sbsql_sblr_alignment_native_serving_${sb_serving_label} PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;native_serving;database_lifecycle;database_ownership;binary_uuid"
+    TIMEOUT 1800)
+endforeach()
 if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
   add_test(NAME sbsql_sblr_alignment_native_serving_strace
     COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_serving_strace.py"
@@ -4267,6 +4283,48 @@ if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
       --test-bin $<TARGET_FILE:sbsql_sblr_alignment_native_handle>)
   set_tests_properties(sbsql_sblr_alignment_native_handle_strace PROPERTIES
     LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_handle;strace"
+    TIMEOUT 1800)
+endif()
+# SB_NATIVE_HANDLE_STATE_TEST (S3f0, owner Q299 = a, 2026-11-19): serving / restricted / failed decide what a handle
+# on a native database may do. The restricted fixture (a committing slot) is written by the native_serving binary's
+# own writer ("fixture <path> committing"); a NEW target so native_handle and native_serving stay as fast as they were.
+add_executable(sbsql_sblr_alignment_native_handle_state native_handle_state_test.cpp)
+add_dependencies(sbsql_sblr_alignment_native_handle_state sbsql_sblr_alignment_native_serving)
+target_compile_features(sbsql_sblr_alignment_native_handle_state PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_handle_state PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+  ${PROJECT_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(sbsql_sblr_alignment_native_handle_state PRIVATE
+  sb_server_core sb_engine sb_engine_sblr sb_engine_internal_api sb_storage_database OpenSSL::Crypto)
+target_compile_definitions(sbsql_sblr_alignment_native_handle_state PRIVATE
+  SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password"
+  SB_NATIVE_SERVING_TEST_BIN="$<TARGET_FILE:sbsql_sblr_alignment_native_serving>")
+add_test(NAME sbsql_sblr_alignment_native_handle_state COMMAND sbsql_sblr_alignment_native_handle_state)
+set_tests_properties(sbsql_sblr_alignment_native_handle_state PROPERTIES
+  LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_handle;native_restart;database_ownership;binary_uuid"
+  TIMEOUT 1800)
+# SB_NATIVE_LOGIN_REFUSAL_TEST (S3f0, owner Q301 = yes, 2026-11-19): a login on a native database refuses
+# SECURITY.AUTHENTICATION.NATIVE_LOGIN_UNAVAILABLE (reason=native_login_s4) through the real login handoff and
+# EngineAuthenticate, before any legacy security loader; strace half: 0 .sb. syscalls, 0 writes, nothing created.
+add_executable(sbsql_sblr_alignment_native_login_refusal native_login_refusal_test.cpp)
+target_compile_features(sbsql_sblr_alignment_native_login_refusal PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_login_refusal PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+  ${PROJECT_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(sbsql_sblr_alignment_native_login_refusal PRIVATE
+  sb_server_core sb_engine sb_engine_sblr sb_engine_internal_api sb_storage_database OpenSSL::Crypto)
+target_compile_definitions(sbsql_sblr_alignment_native_login_refusal PRIVATE
+  SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password")
+add_test(NAME sbsql_sblr_alignment_native_login_refusal COMMAND sbsql_sblr_alignment_native_login_refusal)
+set_tests_properties(sbsql_sblr_alignment_native_login_refusal PROPERTIES
+  LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_login;database_ownership;binary_uuid"
+  TIMEOUT 1800)
+if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
+  add_test(NAME sbsql_sblr_alignment_native_login_strace
+    COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_login_strace.py"
+      --test-bin $<TARGET_FILE:sbsql_sblr_alignment_native_login_refusal>)
+  set_tests_properties(sbsql_sblr_alignment_native_login_strace PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_login;strace"
     TIMEOUT 1800)
 endif()
 # SB_NATIVE_RESTRICTED_SBSRV_RUN (S3e, owner Q296 = yes): the REAL SBsrv on a file with a committing slot opens

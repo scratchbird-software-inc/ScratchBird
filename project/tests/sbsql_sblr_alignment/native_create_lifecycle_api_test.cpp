@@ -1829,23 +1829,30 @@ int main(int argc, char** argv) {
       Check(!sec::CheckExternalAuthenticationBinding("user").error,
             "Q274: a user principal is admitted by the external-binding decision");
       // The end-to-end path on this native file is NOT reachable yet, and the
-      // refusal code above is NOT what it returns today: external
-      // authentication loads the security state through the legacy lifecycle
-      // loader (S4), which refuses a native file before any principal is
-      // resolved. Pinned as observed - SECURITY.CATALOG.PRIVATE_LIFECYCLE_CORRUPT
-      // / bootstrap_security_catalog_invalid, never authenticated. When S4 lands
-      // the native loader this expectation must become
+      // refusal code above is NOT what it returns today. SB_NATIVE_LOGIN_UNAVAILABLE
+      // (owner Q301 = yes, 2026-11-19): external authentication on a native
+      // database refuses specifically and first,
+      // SECURITY.AUTHENTICATION.NATIVE_LOGIN_UNAVAILABLE with reason=native_login_s4,
+      // before any security loader runs (here a path-only context: the engine's own
+      // read-only discovery of page zero decides). Never authenticated, no principal
+      // resolved. When S4 lands the native loader this expectation must become
       // SECURITY.AGENT_PRINCIPAL_EXTERNAL_BINDING_REFUSED / "NodeService".
+      // (Was, until Q301: SECURITY.CATALOG.PRIVATE_LIFECYCLE_CORRUPT /
+      // bootstrap_security_catalog_invalid from the legacy lifecycle loader.)
       sec::EngineAuthenticateRequest auth;
       auth.context = Context(path);
       auth.principal_claim = "NodeService";
       auth.credential_evidence = "a-password-that-is-not-checked-1234";
       const auto verdict = sec::EngineAuthenticate(auth);
+      const bool reason_native_login_s4 =
+          !verdict.diagnostics.empty() &&
+          std::any_of(verdict.diagnostics.front().fields.begin(), verdict.diagnostics.front().fields.end(),
+                      [](const auto& field) { return field.key == "reason" && field.value == "native_login_s4"; });
       Check(!verdict.ok && !verdict.authenticated && !verdict.diagnostics.empty() &&
-                verdict.diagnostics.front().code == "SECURITY.CATALOG.PRIVATE_LIFECYCLE_CORRUPT" &&
-                verdict.diagnostics.front().detail == "bootstrap_security_catalog_invalid",
-            "Q274 (observed until S4): the external path refuses the native file at the legacy security loader, "
-            "before any principal is resolved or password checked");
+                verdict.diagnostics.front().code == "SECURITY.AUTHENTICATION.NATIVE_LOGIN_UNAVAILABLE" &&
+                verdict.diagnostics.front().detail.empty() && reason_native_login_s4,
+            "Q301 (until S4): the external path refuses the native file with NATIVE_LOGIN_UNAVAILABLE "
+            "(reason native_login_s4) before any security loader, principal resolution or password check");
     }
     Check(RowUuid(created, "database_language_uuid") == language && RowUuid(created, "page_size_profile_uuid") == profile.uuid,
           "S2: the result reports the language constant and page profile it used");

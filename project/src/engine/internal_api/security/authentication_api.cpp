@@ -11,6 +11,8 @@
 #include "behavior_support/api_behavior_store.hpp"
 #include "metric_contracts.hpp"
 #include "metric_producer.hpp"
+#include "native_database_open_discovery.hpp"
+#include "native_served_database_facts.hpp"
 #include "security/auth_provider_model.hpp"
 #include "security/security_crypto_policy.hpp"
 #include "security/security_principal_lifecycle.hpp"
@@ -79,6 +81,36 @@ EngineAuthenticateResult AuthenticationFailureResult(
   RecordAuthenticationFailure(request, diagnostic.code);
   return SecurityFailure<EngineAuthenticateResult>(
       request.context, "security.authenticate", std::move(diagnostic));
+}
+
+// SEARCH_KEY: SB_NATIVE_LOGIN_UNAVAILABLE (owner Q301 = yes, 2026-11-19; plan 38/40). Native login does not
+// exist until S4: the security state a native file carries (principal rows, credential verifiers, role and grant
+// rows) is not read by any loader here, and the legacy loader refuses a native file with a corruption code that
+// names no cause. A login against a native database therefore refuses, specifically and first, before any
+// loader runs and without opening, creating or writing any file beyond a read-only discovery of page zero:
+// the server's marker (the served facts the database loop published) decides when the caller carries one, else a
+// read-only path discovery (the S3a helper) does. A file that is not a valid native database (legacy, missing,
+// owned elsewhere) falls through to the present behaviour unchanged. The vector is structured: reason, binary
+// database identity when known; never prose, never the principal claim.
+bool NativeLoginRefusal(const EngineRequestContext& context, EngineApiDiagnostic* out) {
+  EngineUuid database_uuid;
+  bool native = false;
+  if (context.native_served_facts != nullptr) {
+    native = true;
+    database_uuid = context.native_served_facts->database_uuid;
+  } else if (!context.database_path.empty()) {
+    const auto discovered = scratchbird::storage::database::DiscoverNativeDatabaseAtPath(context.database_path);
+    if (discovered.ok()) {
+      native = true;
+      database_uuid = discovered.page_zero->bootstrap.database_uuid;
+    }
+  }
+  if (!native) return false;
+  *out = MakeEngineApiDiagnostic("SECURITY.AUTHENTICATION.NATIVE_LOGIN_UNAVAILABLE",
+                                 "security.authentication.native_login_unavailable", {}, true);
+  out->fields.push_back({"reason", "native_login_s4"});
+  out->identity_fields.push_back({"database_uuid", database_uuid});
+  return true;
 }
 
 bool IsHexVerifier(std::string_view value) {
@@ -592,6 +624,8 @@ RuntimePrincipalCredentialResult VerifyRuntimePrincipalCredential(
 // SEARCH_KEY: SB_ENGINE_INTERNAL_API_SECURITY_AUTHENTICATION_API_BEHAVIOR
 EngineAuthenticateResult EngineAuthenticate(const EngineAuthenticateRequest& request) {
   RecordAuthenticationAttempt(request);
+  if (EngineApiDiagnostic native_refusal; NativeLoginRefusal(request.context, &native_refusal))
+    return AuthenticationFailureResult(request, std::move(native_refusal));
   const std::string provider = !request.provider_family.empty()
       ? request.provider_family
       : SecurityOptionValue(request, "provider:");

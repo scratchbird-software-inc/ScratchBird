@@ -900,6 +900,7 @@ void NativeDatabaseLoop::HandleOpen(OpenWork& work) noexcept {
       marker->availability_table_uuid = api::NativeExecutorAvailabilityTableUuid();
       marker->serving_state = static_cast<engine::internal_api::NativeServedServingState>(
           static_cast<std::uint8_t>(serving.facts.serving_state));
+      marker->serving_diagnostic_code = serving.facts.serving_diagnostic.code;
       serving.facts.served_facts = std::move(marker);
     }
     result.facts = serving.facts;

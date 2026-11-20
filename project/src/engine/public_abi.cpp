@@ -5072,7 +5072,25 @@ sb_engine_status_t fail_result(sb_engine_status_t status,
 static bool native_handle_session(sb_engine_session_t session) {
   return session != nullptr && session->engine != nullptr && session->engine->native_served_facts != nullptr;
 }
-static sb_engine_status_t native_operation_not_built(sb_engine_result_t* out_result, const char* operation) {
+// SEARCH_KEY: SB_NATIVE_HANDLE_RESTRICTED_READ_ONLY (owner Q299 = a, 2026-11-19). A handle opened on a RESTRICTED
+// native database (the restart left committing / recovering slots unresolved) is read-only until the S5 resolver
+// exists: every operation that could write (transaction begin, SBLR dispatch, parameter coordination) refuses with
+// this specific code instead of the generic not-built one. The vector carries the operation, the loop's own
+// diagnostic code as the reason (a machine token) and the database identity (binary); no prose.
+static sb_engine_status_t native_operation_not_built(sb_engine_session_t session, sb_engine_result_t* out_result,
+                                                     const char* operation) {
+  const auto& facts = session->engine->native_served_facts;
+  if (facts && facts->serving_state == scratchbird::engine::internal_api::NativeServedServingState::restricted) {
+    scratchbird::engine::internal_api::EngineApiDiagnostic restricted =
+        scratchbird::engine::internal_api::MakeEngineApiDiagnostic(
+            "ENGINE.NATIVE.DATABASE_RESTRICTED_READ_ONLY", "engine.native.database_restricted_read_only", {}, true);
+    restricted.fields.push_back({"operation", operation});
+    restricted.fields.push_back({"reason", facts->serving_diagnostic_code});
+    restricted.fields.push_back({"requires", "unresolved_transaction_resolver_s5"});
+    restricted.identity_fields.push_back({"database_uuid", facts->database_uuid});
+    return fail_result(SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4038, "ENGINE.NATIVE.DATABASE_RESTRICTED_READ_ONLY",
+                       "engine.native.database_restricted_read_only", {}, {}, nullptr, &restricted);
+  }
   return fail_result(SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4038, "ENGINE.NATIVE.OPERATION_NOT_BUILT",
                      "engine.native.operation_not_built", {}, {{"operation", operation}, {"requires", "native_session_and_transaction_s4"}});
 }
@@ -5202,6 +5220,21 @@ static sb_engine_status_t open_engine_impl(
     // facts cannot be paired with another file. Refusals are specific.
     if (native_facts) {
       namespace sdb = scratchbird::storage::database;
+      // SEARCH_KEY: SB_NATIVE_HANDLE_FAILED_REFUSED (owner Q299 = a, 2026-11-19). A database whose restart write
+      // failed is open in the server only so the failure is reportable and it closes cleanly; no handle is
+      // issued on it. Refused before any I/O, with the loop's own diagnostic code as the reason and the
+      // database identity (binary); no prose. A RESTRICTED database opens (read-only, see
+      // SB_NATIVE_HANDLE_RESTRICTED_READ_ONLY); the flag travels on the facts the handle carries.
+      if (native_facts->serving_state == scratchbird::engine::internal_api::NativeServedServingState::failed) {
+        scratchbird::engine::internal_api::EngineApiDiagnostic failed =
+            scratchbird::engine::internal_api::MakeEngineApiDiagnostic(
+                "ENGINE.OPEN.NATIVE_DATABASE_FAILED", "engine.open.native_database_failed", {}, true);
+        failed.fields.push_back({"reason", native_facts->serving_diagnostic_code});
+        failed.fields.push_back({"requires", "reopen"});
+        failed.identity_fields.push_back({"database_uuid", native_facts->database_uuid});
+        return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 1005, "ENGINE.OPEN.NATIVE_DATABASE_FAILED",
+                           "engine.open.native_database_failed", {}, {}, nullptr, &failed);
+      }
       const auto refuse_native = [&](const char* code, const char* detail,
                                      std::vector<std::pair<std::string, std::string>> fields = {}) {
         return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 1005, code, "engine.open.native_facts_refused",
@@ -5626,7 +5659,7 @@ sb_engine_status_t sb_engine_transaction_begin(sb_engine_session_t session,
     return status;
   }
   // SB_NATIVE_HANDLE_OPERATION_NOT_BUILT (S3e): no native transaction before S4/S5.
-  if (native_handle_session(session)) return native_operation_not_built(out_result, "transaction_begin");
+  if (native_handle_session(session)) return native_operation_not_built(session, out_result, "transaction_begin");
   auto* transaction = new sb_engine_transaction_s();
   transaction->session = session;
   {
@@ -7057,7 +7090,7 @@ sb_engine_status_t BeginStatementParameterExecutionCoordinationV1(
   // SB_NATIVE_HANDLE_OPERATION_NOT_BUILT (S3e): the coordination journal is a side file; a caller-built
   // context carries no marker, so the handle decides.
   if (native_handle_session(request->engine_session))
-    return native_operation_not_built(out_result, "parameter_coordination_begin");
+    return native_operation_not_built(request->engine_session, out_result, "parameter_coordination_begin");
   const auto& context = *request->engine_context;
   if (!scratchbird::core::uuid::IsEngineIdentityUuid(context.database_uuid) ||
       !scratchbird::core::uuid::IsEngineIdentityUuid(context.session_uuid) ||
@@ -36420,7 +36453,7 @@ sb_engine_status_t sb_engine_dispatch_sblr(sb_engine_session_t session,
                        "engine.abi.invalid_handle");
   }
   // SB_NATIVE_HANDLE_OPERATION_NOT_BUILT (S3e): no native SBLR dispatch before S4/S5.
-  if (native_handle_session(session)) return native_operation_not_built(out_result, "dispatch_sblr");
+  if (native_handle_session(session)) return native_operation_not_built(session, out_result, "dispatch_sblr");
   if (context == nullptr || params == nullptr) {
     return fail_result(SB_ENGINE_STATUS_INVALID_ARGUMENT, out_result, 1004, "ENGINE.ABI.PARAMETER_NULL",
                        "engine.abi.parameter_null");

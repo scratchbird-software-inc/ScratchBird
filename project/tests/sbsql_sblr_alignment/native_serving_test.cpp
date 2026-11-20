@@ -1216,10 +1216,34 @@ int main(int argc, char** argv) {
                 << " policy_config=" << scratchbird::core::memory::MemoryPolicyConfig{}.per_context_limit_bytes << std::endl;
       return 0;
     }
-    return 2;
+    if (mode != "common" && mode != "size") return 2;  // those two are handled below (they need the temp directory)
   }
   const std::string self = fs::read_symlink("/proc/self/exe").string();
   scratchbird::tests::OwnedTempDirectory artifacts;
+  // SB_NATIVE_SERVING_SPLIT (owner Q304, 2026-11-19): the five-size run takes ~785 s under -j8 of a 1800 s timeout, so
+  // ctest runs it as separate targets with the SAME checks, each in its own process and temp directory:
+  //   size <bytes>  ServePageSize + RestartCases at that one page size (8192..131072), registered per size;
+  //   common        LoopLifecycle + L5SeedCases + RefusalsBeforeTheLoop (the page-size independent cases, which
+  //                 use their own fixed sizes), registered once.
+  // The no-argument run below is the sum of those (kept for a manual full run; no ctest entry).
+  if (argc == 2 && std::string(argv[1]) == "common") {
+    LoopLifecycle();
+    L5SeedCases(self, artifacts.path());
+    RefusalsBeforeTheLoop(self, artifacts.path());
+    artifacts.Cleanup();
+    std::printf("native_serving[common]: %d checks passed\n", checks);
+    return 0;
+  }
+  if (argc == 3 && std::string(argv[1]) == "size") {
+    const auto page_size = static_cast<std::uint32_t>(std::stoul(argv[2]));
+    if (page_size != 8192 && page_size != 16384 && page_size != 32768 && page_size != 65536 && page_size != 131072) return 2;
+    ServePageSize(self, artifacts.path(), page_size);
+    RestartCases(self, artifacts.path(), page_size);
+    artifacts.Cleanup();
+    std::printf("native_serving[%u]: %d checks passed\n", page_size, checks);
+    return 0;
+  }
+  if (argc != 1) return 2;
   LoopLifecycle();
   for (const std::uint32_t page_size : {8192u, 16384u, 32768u, 65536u, 131072u})
     ServePageSize(self, artifacts.path(), page_size);

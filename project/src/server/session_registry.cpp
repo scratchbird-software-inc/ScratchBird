@@ -5854,6 +5854,10 @@ SessionOperationResult HandleAuthHandoff(ServerSessionRegistry* registry,
   }
   engine_api::EngineAuthenticateRequest auth_request;
   auth_request.context = EngineContextBase(engine_state, request, decoded->requested_language);
+  // SB_NATIVE_LOGIN_UNAVAILABLE (owner Q301 = yes, 2026-11-19): the served native facts (null for any other
+  // database) let the engine refuse a login on a native database specifically, before any security loader runs
+  // (a served file is owned by this process, so the engine's own path discovery could not open it).
+  auth_request.context.native_served_facts = ServedNativeFactsFor(engine_state, database->database_path);
   auth_request.context.security_epoch = lifecycle.security_epoch;
   auth_request.context.catalog_generation_id = lifecycle.policy_generation;
   auth_request.provider_family = decoded->provider_family.empty() ? "local_password" : decoded->provider_family;
@@ -5912,9 +5916,19 @@ SessionOperationResult HandleAuthHandoff(ServerSessionRegistry* registry,
   }
   const auto auth_result = engine_api::EngineAuthenticate(auth_request);
   if (!auth_result.ok || !auth_result.authenticated) {
+    // SB_NATIVE_LOGIN_UNAVAILABLE (Q301): the refusal's cause is its structured `reason` field
+    // (native_login_s4), not the generic credential_rejected the handoff reports for an empty detail.
+    std::string native_login_reason;
+    if (!auth_result.diagnostics.empty() &&
+        auth_result.diagnostics.front().code == "SECURITY.AUTHENTICATION.NATIVE_LOGIN_UNAVAILABLE") {
+      for (const auto& field : auth_result.diagnostics.front().fields)
+        if (field.key == "reason") native_login_reason = field.value;
+    }
     const auto detail = tls_denial.denied
                             ? tls_denial.detail
-                            : EngineDiagnosticDetail(auth_result.diagnostics, "credential_rejected");
+                            : !native_login_reason.empty()
+                                  ? native_login_reason
+                                  : EngineDiagnosticDetail(auth_result.diagnostics, "credential_rejected");
     if (detail == "mfa_evidence_required") {
       result.diagnostics.push_back(AuthDiagnostic("SECURITY.AUTHENTICATION.CHALLENGE_REQUIRED",
                                                   "Additional authentication evidence is required.",

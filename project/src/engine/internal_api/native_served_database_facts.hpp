@@ -26,6 +26,7 @@
 #include "../../storage/disk/filespace_page_zero.hpp"
 
 #include <cstdint>
+#include <string>
 #include <vector>
 
 namespace scratchbird::engine::internal_api {
@@ -60,6 +61,9 @@ struct NativeServedDatabaseFacts {
   // entry points answer from this table, never from a side file). A build constant.
   core::platform::Uuid availability_table_uuid;
   NativeServedServingState serving_state = NativeServedServingState::serving;
+  // The code of the loop's diagnostic behind a restricted / failed state (e.g. DATABASE.RESTART_WRITE_FAILED,
+  // DATABASE.OPEN_RESTRICTED_UNRESOLVED_TRANSACTIONS); empty when serving. A machine token, not prose.
+  std::string serving_diagnostic_code;
 };
 
 }  // namespace scratchbird::engine::internal_api
