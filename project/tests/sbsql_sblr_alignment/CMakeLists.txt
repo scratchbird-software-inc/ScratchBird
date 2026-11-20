@@ -4352,6 +4352,51 @@ if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
     LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_login;strace"
     TIMEOUT 1800)
 endif()
+# SB_NATIVE_LOGIN_MATERIAL_TEST (thin-slice S4a, plan 40; owner Q306-Q312, 2026-11-19/20): a native credential read with
+# NO session (NativeDatabaseLoop::SubmitReadLoginMaterial). Production-created databases at the five page sizes; per
+# size one served child each for serving, restricted (a committing slot written by the native_serving binary's own
+# writer) and failed (an active slot and the loop's Restart test seam failing its first write, so the loop test
+# seam guard is compiled here like native_serving does). One ctest entry per page size, each its own process and temp
+# directory; the strace half checks 0 .sb.* and 0 write-class syscalls on the data descriptor.
+add_executable(sbsql_sblr_alignment_native_login_material native_login_material_test.cpp
+  ${PROJECT_SOURCE_DIR}/src/server/native_database_loop.cpp)
+add_dependencies(sbsql_sblr_alignment_native_login_material sbsql_sblr_alignment_native_serving)
+target_compile_definitions(sbsql_sblr_alignment_native_login_material PRIVATE SB_NATIVE_LOOP_TEST_SEAMS=1)
+target_compile_features(sbsql_sblr_alignment_native_login_material PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_login_material PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+  ${PROJECT_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(sbsql_sblr_alignment_native_login_material PRIVATE
+  sb_server_core sb_engine sb_engine_sblr sb_engine_internal_api sb_storage_database OpenSSL::Crypto)
+target_compile_definitions(sbsql_sblr_alignment_native_login_material PRIVATE
+  SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password"
+  SB_NATIVE_SERVING_TEST_BIN="$<TARGET_FILE:sbsql_sblr_alignment_native_serving>")
+foreach(sb_login_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
+  string(REPLACE ":" ";" sb_login_parts "${sb_login_size}")
+  list(GET sb_login_parts 0 sb_login_bytes)
+  list(GET sb_login_parts 1 sb_login_label)
+  add_test(NAME sbsql_sblr_alignment_native_login_material_${sb_login_label}
+    COMMAND sbsql_sblr_alignment_native_login_material size ${sb_login_bytes})
+  set_tests_properties(sbsql_sblr_alignment_native_login_material_${sb_login_label} PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_login;database_ownership;binary_uuid"
+    TIMEOUT 1800)
+endforeach()
+if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
+  # One entry per page size (the five sizes in one entry took 111 s idle; the timeout is unchanged, never raised).
+  foreach(sb_login_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
+    string(REPLACE ":" ";" sb_login_parts "${sb_login_size}")
+    list(GET sb_login_parts 0 sb_login_bytes)
+    list(GET sb_login_parts 1 sb_login_label)
+    add_test(NAME sbsql_sblr_alignment_native_login_material_strace_${sb_login_label}
+      COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_login_material_strace.py"
+        --test-bin $<TARGET_FILE:sbsql_sblr_alignment_native_login_material>
+        --serving-bin $<TARGET_FILE:sbsql_sblr_alignment_native_serving>
+        --size ${sb_login_bytes})
+    set_tests_properties(sbsql_sblr_alignment_native_login_material_strace_${sb_login_label} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_login;strace"
+      TIMEOUT 1800)
+  endforeach()
+endif()
 # SB_NATIVE_RESTRICTED_SBSRV_RUN (S3e, owner Q296 = yes): the REAL SBsrv on a file with a committing slot opens
 # RESTRICTED and the lifecycle state file shows it (restricted_database_count / database_serving_state), the
 # daemon-level lines unchanged; a clean file shows serving. Fixtures are made by native_serving_test (the writer).

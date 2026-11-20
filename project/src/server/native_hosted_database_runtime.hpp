@@ -9,6 +9,7 @@
 #include "hosted_process_admission.hpp"
 #include <array>
 #include <optional>
+#include <vector>
 #include <openssl/crypto.h>
 #include "native_owned_checkpoint_writer.hpp"
 #include "native_catalog_cohort_lease_reader.hpp"
@@ -152,6 +153,92 @@ struct NativeServiceIdentityResult {
   NativeHostedCustodyError custody_error = NativeHostedCustodyError::none;
   std::optional<NativeServiceIdentity> identity;
   bool ok() const noexcept { return error == NativeServiceIdentityError::none && identity.has_value(); }
+};
+
+// SEARCH_KEY: SB_NATIVE_LOGIN_MATERIAL (thin-slice S4a, plan 40; owner Q306-Q312). A native credential read with
+// NO session: given a principal UUID and a supplied password, read that principal's committed native security rows
+// from the served file, verify the password against the stored PBKDF2 verifier in constant time and report the
+// facts the later native authorization adapter (Q307) needs, or a specific refusal. Every refusal is an enum value
+// with its own stable code (NativeLoginMaterialErrorCode); no refusal carries text, a name, a path or a secret.
+// The codes are INTERNAL: the later wire layer decides which of them a client may see (owner question).
+enum class NativeLoginMaterialError : std::uint8_t {
+  none,
+  // The request itself: a nil / non-identity principal UUID, a missing database binding, a protected buffer that is
+  // not usable. Never reached for a well-formed request.
+  invalid_request,
+  // The supplied password cannot be a local password (empty, longer than 1024 bytes, or holds a NUL). Decided from
+  // the input alone, before the file is read.
+  password_inadmissible,
+  // The database is not serving (the loop has no serving database to read). `failed` is refused (Q299 / Q309);
+  // `restricted` is NOT refused: login material reads on a restricted database (Q309).
+  database_not_serving,
+  database_failed,
+  // Reading the file failed; no credential verdict exists. These are infrastructure causes, not answers.
+  wrong_owner, busy, closed, preparation_failure, custody_failure, crypto_failure, memory_failure,
+  security_source_failure, security_binding_failure, protected_workspace_required, verifier_provider_failure,
+  // The verdicts, each its own cause.
+  principal_absent,
+  principal_wrong_family,     // the UUID names a row that is not a principal
+  principal_not_active,       // deleted, not active, or its active flag is false
+  credential_absent,          // the principal row carries no verifier
+  credential_unsupported,     // a scheme or parameters this build does not verify
+  password_mismatch,
+  principal_generation_invalid,
+  external_binding_refused    // an agent / service principal: refused on every external path (Q274)
+};
+const char* NativeLoginMaterialErrorName(NativeLoginMaterialError) noexcept;
+// The stable refusal code (SECURITY.AUTHENTICATION.NATIVE_LOGIN_*; the external-binding refusal carries Q274's own
+// SECURITY.AGENT_PRINCIPAL_EXTERNAL_BINDING_REFUSED, the code CheckExternalAuthenticationBinding returns).
+const char* NativeLoginMaterialErrorCode(NativeLoginMaterialError) noexcept;
+
+// One direct edge or privilege row of the authenticated principal, copied (binary identities and constants only).
+// NOT resolved: no transitive membership, no deny/allow evaluation, no effective privilege.
+struct NativeLoginGrantEdge {
+  core::platform::Uuid grant_uuid;
+  core::catalog::CatalogSecurityGrantClass grant_class = core::catalog::CatalogSecurityGrantClass::none;
+  // privilege: subject_* and right/effect/target; membership: member -> parent.
+  core::platform::Uuid subject_uuid, member_uuid, parent_uuid, target_uuid;
+  core::catalog::CatalogSecuritySubjectKind subject_kind = core::catalog::CatalogSecuritySubjectKind::none;
+  core::catalog::CatalogSecuritySubjectKind member_kind = core::catalog::CatalogSecuritySubjectKind::none;
+  core::catalog::CatalogSecuritySubjectKind parent_kind = core::catalog::CatalogSecuritySubjectKind::none;
+  std::optional<core::catalog::CatalogSecurityEffect> effect;
+  std::optional<core::catalog::CatalogSecurityRight> right;
+  core::platform::u64 security_generation = 0;
+};
+// What an authenticated login read reports. Owning copies only: no verifier, salt or password byte is in it.
+struct NativeLoginMaterial {
+  core::platform::Uuid database_uuid, principal_uuid, principal_version_uuid;
+  core::catalog::CatalogSecurityPrincipalKind principal_kind = core::catalog::CatalogSecurityPrincipalKind::none;
+  std::optional<core::catalog::CatalogSecurityAuthorityClass> authority_class;
+  bool bootstrap_principal = false;
+  core::platform::u64 definition_generation = 0, security_context_authority_version = 0,
+      security_context_generation = 0, security_generation = 0, policy_generation = 0;
+  // The selected catalog the rows were read from (descriptive; a fence for the later adapter).
+  core::platform::u64 catalog_generation = 0, schema_epoch = 0, security_epoch = 0;
+  // Direct role / group memberships of the principal (member = the principal), active and not retired, in object
+  // order. The rows behind them are in `edges`.
+  std::vector<core::platform::Uuid> role_uuids, group_uuids;
+  // Every committed, active grant-family row that names the principal as subject or member (privileges,
+  // memberships, agent bindings): the later adapter's input.
+  std::vector<NativeLoginGrantEdge> edges;
+};
+struct NativeLoginMaterialResult {
+  NativeLoginMaterialError error = NativeLoginMaterialError::invalid_request;
+  // Structured detail of an infrastructure refusal (enum numbers, never text).
+  engine::internal_api::NativeRuntimeSecurityReadError security_error = engine::internal_api::NativeRuntimeSecurityReadError::none;
+  storage::database::NativePinnedCatalogReadError source_error = storage::database::NativePinnedCatalogReadError::none;
+  NativeHostedCustodyError custody_error = NativeHostedCustodyError::none;
+  engine::internal_api::LocalPasswordCredentialError verifier_error = engine::internal_api::LocalPasswordCredentialError::invalid_verifier;
+  std::optional<NativeLoginMaterial> material;
+  bool ok() const noexcept { return error == NativeLoginMaterialError::none && material.has_value(); }
+};
+struct NativeLoginMaterialRequest {
+  core::platform::Uuid principal_uuid;
+  // The runtime authority binding the security reader is addressed through (the one L5's startup read found;
+  // the reader returns every committed security row of the database, not only the bound principal's).
+  core::platform::Uuid runtime_binding_uuid;
+  core::platform::u64 runtime_binding_generation = 0;
+  storage::database::NativeFixedRootMemoryLimits limits;
 };
 
 // Owning native host resource path. The original route, selected inode,
@@ -415,6 +502,19 @@ class NativeHostedDatabaseRuntime final {
   // row without a seed are each a distinct error.
   static NativeServiceIdentityResult ReadStartupServiceIdentity(std::shared_ptr<NativeHostedDatabaseRuntime>,
       storage::database::NativeFixedRootMemoryLimits) noexcept;
+
+  // SEARCH_KEY: SB_NATIVE_LOGIN_MATERIAL (S4a). The credential read of a USER login, with no session: the same
+  // read-only custody operation and fixed-root lease ReadStartupServiceIdentity uses, driven by a principal UUID
+  // instead of the binding's principal. The caller (the database loop thread, which owns this runtime) supplies
+  // the password in protected memory (`password`, its first `password_length` bytes) and a protected 32-byte
+  // workspace tagged with the database UUID (`derived`, the one the L5 verification already uses). BOTH are
+  // consumed: the password bytes and the workspace are zeroed on every path that reached them. Reads nothing but
+  // the committed security rows, takes no lock, writes nothing, issues no session or transaction. Runs exactly ONE
+  // PBKDF2 on every path that gets past the input check (see the body: a dummy verifier stands in when there is no
+  // usable real one). Result: the principal's facts or one specific NativeLoginMaterialError.
+  static NativeLoginMaterialResult ReadNativeLoginMaterial(std::shared_ptr<NativeHostedDatabaseRuntime>,
+      const NativeLoginMaterialRequest&, const core::memory::ScopedProtectedBuffer& password,
+      core::platform::usize password_length, const core::memory::ScopedProtectedBuffer& derived) noexcept;
 
   // Transfer the exact initial writer reservation into the private comparison
   // owner, then retire its selected device guards. Retained catalog/grant views,

@@ -203,8 +203,16 @@ int CreateLowLevelMode(const fs::path& path, std::uint32_t page_size, std::strin
     // A non-zero seed whose derived password is not the one the fingerprint
     // was made from: the row carries a seed, the verifier rejects the derived
     // credential.
-    for (std::size_t i = 0; i < create.service_password_seed.size(); ++i)
-      create.service_password_seed[i] = static_cast<p::byte>(0x11 + i);
+    // S4a (2026-11-20): the derived password is database UUID XOR seed, and a zero byte in it is refused as
+    // password_inadmissible (no-NUL rule) BEFORE the verifier is consulted. A fixed seed against a time-based
+    // database UUID hit that about 1 run in 16, so the expected 'verifier rejects' result flaked. Production
+    // re-draws the seed until the XOR has no zero byte; this fixture does the same: bump any seed byte equal
+    // to the database UUID byte at the same position.
+    for (std::size_t i = 0; i < create.service_password_seed.size(); ++i) {
+      auto seed_byte = static_cast<p::byte>(0x11 + i);
+      if (static_cast<p::byte>(database_uuid.value.value.bytes[i]) == seed_byte) seed_byte = static_cast<p::byte>(seed_byte + 1);
+      create.service_password_seed[i] = seed_byte;
+    }
   } else if (kind != "seedless") {
     return 2;
   }

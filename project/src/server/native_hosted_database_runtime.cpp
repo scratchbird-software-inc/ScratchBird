@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: MPL-2.0
 #include "native_hosted_database_runtime.hpp"
 
+#include "engine/internal_api/security/authentication_api.hpp"
+#include "engine/internal_api/security/local_password_credential.hpp"
+
 namespace scratchbird::server {
 // SEARCH_KEY: NATIVE_HOSTED_OPEN_UNDER_HELD_PROCESS_ADMISSION
 // Open reserves the single process-to-database admission itself, so a caller
@@ -850,5 +853,321 @@ NativeHostedDatabaseRuntime::AuthenticateStartupService(
     read.authentication_.emplace(std::move(*authenticated));
   }
   return out;
+}
+
+// SEARCH_KEY: SB_NATIVE_LOGIN_MATERIAL (thin-slice S4a). See the declaration and NativeLoginMaterialError.
+const char* NativeLoginMaterialErrorName(NativeLoginMaterialError e) noexcept {
+  using E=NativeLoginMaterialError;
+  switch(e){
+    case E::none: return "none";
+    case E::invalid_request: return "invalid_request";
+    case E::password_inadmissible: return "password_inadmissible";
+    case E::database_not_serving: return "database_not_serving";
+    case E::database_failed: return "database_failed";
+    case E::wrong_owner: return "wrong_owner";
+    case E::busy: return "busy";
+    case E::closed: return "closed";
+    case E::preparation_failure: return "preparation_failure";
+    case E::custody_failure: return "custody_failure";
+    case E::crypto_failure: return "crypto_failure";
+    case E::memory_failure: return "memory_failure";
+    case E::security_source_failure: return "security_source_failure";
+    case E::security_binding_failure: return "security_binding_failure";
+    case E::protected_workspace_required: return "protected_workspace_required";
+    case E::verifier_provider_failure: return "verifier_provider_failure";
+    case E::principal_absent: return "principal_absent";
+    case E::principal_wrong_family: return "principal_wrong_family";
+    case E::principal_not_active: return "principal_not_active";
+    case E::credential_absent: return "credential_absent";
+    case E::credential_unsupported: return "credential_unsupported";
+    case E::password_mismatch: return "password_mismatch";
+    case E::principal_generation_invalid: return "principal_generation_invalid";
+    case E::external_binding_refused: return "external_binding_refused";
+  }
+  return "unknown";
+}
+
+const char* NativeLoginMaterialErrorCode(NativeLoginMaterialError e) noexcept {
+  using E=NativeLoginMaterialError;
+  switch(e){
+    case E::none: return "";
+    case E::invalid_request: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_REQUEST_INVALID";
+    case E::password_inadmissible: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_PASSWORD_INADMISSIBLE";
+    case E::database_not_serving: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_DATABASE_NOT_SERVING";
+    case E::database_failed: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_DATABASE_FAILED";
+    case E::wrong_owner: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_READ_WRONG_OWNER";
+    case E::busy: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_READ_BUSY";
+    case E::closed: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_READ_CLOSED";
+    case E::preparation_failure: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_READ_PREPARATION_FAILED";
+    case E::custody_failure: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_READ_CUSTODY_FAILED";
+    case E::crypto_failure: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_READ_CRYPTO_SCOPE_FAILED";
+    case E::memory_failure: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_READ_MEMORY_FAILED";
+    case E::security_source_failure: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_SECURITY_SOURCE_FAILED";
+    case E::security_binding_failure: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_SECURITY_BINDING_FAILED";
+    case E::protected_workspace_required: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_PROTECTED_WORKSPACE_REQUIRED";
+    case E::verifier_provider_failure: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_VERIFIER_PROVIDER_FAILED";
+    case E::principal_absent: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_PRINCIPAL_ABSENT";
+    case E::principal_wrong_family: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_PRINCIPAL_WRONG_FAMILY";
+    case E::principal_not_active: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_PRINCIPAL_NOT_ACTIVE";
+    case E::credential_absent: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_CREDENTIAL_ABSENT";
+    case E::credential_unsupported: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_CREDENTIAL_UNSUPPORTED";
+    case E::password_mismatch: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_PASSWORD_MISMATCH";
+    case E::principal_generation_invalid: return "SECURITY.AUTHENTICATION.NATIVE_LOGIN_PRINCIPAL_GENERATION_INVALID";
+    // Q274: the SAME code CheckExternalAuthenticationBinding returns for a service principal.
+    case E::external_binding_refused: return "SECURITY.AGENT_PRINCIPAL_EXTERNAL_BINDING_REFUSED";
+  }
+  return "";
+}
+
+namespace {
+// What phase A (the file read) copies out before the lease and the custody operation end. Owning values only.
+struct NativeLoginSnapshot {
+  bool found = false, family_ok = false, active = false, had_credential = false;
+  core::catalog::NativeSecurityPrincipal principal;  // meaningful when family_ok
+  core::platform::Uuid version_uuid;
+  core::platform::u64 definition_generation = 0;
+  NativeLoginMaterial material;                      // filled for an active principal
+};
+// A stand-in verifier for the paths with no usable real one. Public, fixed, non-secret bytes (never all zero).
+// Its iteration count is the minimum a stored verifier may carry, which is what the create writes.
+constexpr core::platform::u64 kDummyIterations = core::catalog::kNativeSecurityCredentialMinIterations;
+constexpr std::array<unsigned char,16> kDummySalt{0x53,0x42,0x4c,0x4f,0x47,0x49,0x4e,0x44,0x55,0x4d,0x4d,0x59,0x53,0x41,0x4c,0x54};
+constexpr std::array<unsigned char,32> kDummyVerifier{0x53,0x42,0x4c,0x4f,0x47,0x49,0x4e,0x44,0x55,0x4d,0x4d,0x59,0x56,0x45,0x52,0x46,
+                                                      0x53,0x42,0x4c,0x4f,0x47,0x49,0x4e,0x44,0x55,0x4d,0x4d,0x59,0x56,0x45,0x52,0x46};
+}  // namespace
+
+NativeLoginMaterialResult NativeHostedDatabaseRuntime::ReadNativeLoginMaterial(
+    std::shared_ptr<NativeHostedDatabaseRuntime> owner, const NativeLoginMaterialRequest& request,
+    const core::memory::ScopedProtectedBuffer& password, core::platform::usize password_length,
+    const core::memory::ScopedProtectedBuffer& derived) noexcept {
+  using E=NativeLoginMaterialError;namespace api=engine::internal_api;namespace db=storage::database;
+  namespace c=core::catalog;
+  NativeLoginMaterialResult out;
+  // The password and the workspace are CONSUMED: zeroed on every exit, whatever was decided.
+  struct Consume {
+    const core::memory::ScopedProtectedBuffer& a;const core::memory::ScopedProtectedBuffer& b;
+    ~Consume() {
+      if(a.valid())OPENSSL_cleanse(a.data(),a.size());
+      if(b.valid())OPENSSL_cleanse(b.data(),b.size());
+    }
+  } consume{password,derived};
+  try {
+    if(!owner||!core::uuid::IsEngineIdentityUuid(request.principal_uuid)||
+        !core::uuid::IsEngineIdentityUuid(request.runtime_binding_uuid)||!request.runtime_binding_generation||
+        !request.limits.maximum_backing_bytes||!request.limits.maximum_verification_image_bytes||
+        !password.valid()||password_length>password.size()) {out.error=E::invalid_request;return out;}
+    // A password that cannot be a local password is decided from the input alone, before the file is read.
+    {
+      const auto* bytes=static_cast<const unsigned char*>(password.data());
+      bool admissible=password_length>=1&&password_length<=1024;
+      for(core::platform::usize i=0;admissible&&i<password_length;++i)if(bytes[i]==0)admissible=false;
+      if(!admissible) {out.error=E::password_inadmissible;return out;}
+    }
+    auto& self=*owner;
+    if(!self.SameOwner()) {out.error=E::wrong_owner;return out;}
+    if(!derived.valid()||derived.size()!=32||!derived.evidence().platform_lock_succeeded||
+        !derived.evidence().no_dump_succeeded||
+        derived.tag().binary_ownership[core::memory::MemoryBinaryScopeKind::database]!=self.database_.bytes||
+        !password.evidence().platform_lock_succeeded||!password.evidence().no_dump_succeeded) {
+      out.error=E::protected_workspace_required;return out;
+    }
+    if(self.entering_||self.read_active_) {out.error=E::busy;return out;}
+    if(self.closed_||self.writer_retired_) {out.error=E::closed;return out;}
+    if(!self.writer_adopted_||
+        request.limits.maximum_backing_bytes>self.limits_.writer.source.maximum_backing_bytes||
+        request.limits.maximum_verification_image_bytes>self.limits_.writer.source.maximum_verification_image_bytes) {
+      out.error=E::invalid_request;return out;
+    }
+    self.entering_=true;
+    struct Leave {bool& flag;~Leave(){flag=false;}} leave{self.entering_};
+
+    // ---- phase A: the committed security rows, read-only, no lock; everything needed is copied out, then the
+    //      lease and the custody operation end BEFORE the (long) PBKDF2 below. ----
+    NativeLoginSnapshot snapshot;
+    E phase_a=E::none;
+    {
+      if(!self.reading_.Matches(self.reading_.binding())) {
+        auto allocation=self.Acquire(self.limits_.writer.source.maximum_backing_bytes,NativeBootstrapMemoryKind::storage);
+        if(!allocation.ok()) {out.error=E::memory_failure;return out;}
+        auto memory=storage::database::AdoptNativeStorageMemory(StorageBinding(*allocation.admission.resource),allocation.admission.resource);
+        if(!memory.ok()) {out.error=E::memory_failure;return out;}
+        self.reading_=std::move(memory.memory);
+      }
+      auto preparation=PrepareNativeRuntimePrincipalCredential(self.limits_.catalog,self.catalog_,self.catalog_.binding());
+      if(!preparation.ok()) {out.error=E::preparation_failure;return out;}
+      const auto id=core::uuid::IssueRuntimeIdentityV7();
+      if(!id) {out.error=E::custody_failure;return out;}
+      auto operation=NativeHostedDatabaseCustody::TryBeginOperation(self.custody_,*id);
+      out.custody_error=operation.error;
+      if(!operation.ok()) {out.error=E::custody_failure;return out;}
+      const auto crypto=self.database_crypto_.WithMemoryScope(self.crypto_binding_,[&] {
+        auto source=operation.operation.ReadFixedRootWithMemory(request.limits,self.reading_,self.reading_.binding());
+        if(!source.ok()) {phase_a=E::custody_failure;return;}
+        const auto& lease=source.lease.source();
+        api::NativeRuntimeSecurityReadRequest read;
+        read.database_uuid=self.database_;read.runtime_binding_uuid=request.runtime_binding_uuid;
+        read.runtime_binding_generation=request.runtime_binding_generation;
+        read.maximum_retained_image_bytes=request.limits.maximum_verification_image_bytes;
+        read.catalog_selection=api::NativeRuntimeCatalogSelection::discover_selected;
+        const auto observed=api::ReadCommittedNativeRuntimeSecurityOnLease(lease,read,preparation.workspace.security);
+        using R=api::NativeRuntimeSecurityReadError;
+        if(!observed.ok()) {
+          out.security_error=observed.error;out.source_error=observed.source_error;
+          // The reader judges the BINDING's principal (L5) as well; those verdicts are about L5, never about the
+          // principal being logged in, so they are reported as a binding failure, not as principal_absent etc.
+          switch(observed.error) {
+            case R::backing_unavailable: case R::resource_exhausted: phase_a=E::memory_failure;break;
+            case R::binding_source_failure: case R::binding_absent: case R::binding_ambiguous: case R::binding_invalid:
+            case R::binding_not_active: case R::binding_generation_mismatch: case R::external_authority_required:
+            case R::binding_catalog_generation_mismatch: case R::binding_security_epoch_mismatch:
+            case R::principal_absent: case R::principal_wrong_family: case R::principal_not_active:
+            case R::principal_not_service: case R::principal_generation_invalid:
+              phase_a=E::security_binding_failure;break;
+            default: phase_a=E::security_source_failure;break;
+          }
+          source.lease.Reset();return;
+        }
+        // Everything below is copied into `snapshot`; nothing borrowed from the lease leaves this block.
+        for(const auto& record:observed.records) {
+          if(record.object_uuid!=request.principal_uuid) continue;
+          snapshot.found=true;
+          const auto* principal=record.record.principal();
+          if(!principal) break;
+          snapshot.family_ok=true;snapshot.principal=*principal;snapshot.version_uuid=record.version_uuid;
+          snapshot.had_credential=principal->credential.has_value();
+          snapshot.definition_generation=record.definition_generation;
+          snapshot.active=!record.deleted&&record.lifecycle==c::CatalogObjectLifecycle::active&&
+              record.status==c::CatalogObjectStatus::active&&principal->active;
+          auto& m=snapshot.material;
+          m.database_uuid=self.database_;m.principal_uuid=record.object_uuid;m.principal_version_uuid=record.version_uuid;
+          m.principal_kind=principal->principal_kind;m.authority_class=principal->authority_class;
+          m.bootstrap_principal=principal->bootstrap_principal;m.definition_generation=record.definition_generation;
+          m.security_context_authority_version=principal->security_context_authority_version;
+          m.security_context_generation=principal->security_context_generation;
+          m.security_generation=principal->security_generation;m.policy_generation=principal->policy_generation;
+          if(observed.selected_catalog) {
+            m.catalog_generation=observed.selected_catalog->catalog_generation;
+            m.schema_epoch=observed.selected_catalog->schema_epoch;m.security_epoch=observed.selected_catalog->security_epoch;
+          }
+          break;
+        }
+        if(snapshot.found&&snapshot.family_ok&&snapshot.active) {
+          // Direct grant-family rows of the principal (observed records are sorted by object UUID: edge order is
+          // that order). Retired, dropped and not-active rows are not edges. Nothing is resolved transitively.
+          for(const auto& record:observed.records) {
+            const auto* grant=record.record.grant();
+            if(!grant||record.deleted||record.lifecycle!=c::CatalogObjectLifecycle::active||
+                record.status!=c::CatalogObjectStatus::active||!record.retired_transaction_uuid.is_nil()) continue;
+            const bool names_principal=(grant->subject_uuid&&*grant->subject_uuid==request.principal_uuid)||
+                (grant->member_uuid&&*grant->member_uuid==request.principal_uuid)||
+                (grant->principal_uuid&&*grant->principal_uuid==request.principal_uuid);
+            if(!names_principal) continue;
+            NativeLoginGrantEdge edge;
+            edge.grant_uuid=record.object_uuid;edge.grant_class=grant->grant_class;
+            if(grant->subject_uuid)edge.subject_uuid=*grant->subject_uuid;
+            if(grant->member_uuid)edge.member_uuid=*grant->member_uuid;
+            if(grant->parent_uuid)edge.parent_uuid=*grant->parent_uuid;
+            if(grant->target_uuid)edge.target_uuid=*grant->target_uuid;
+            if(grant->subject_kind)edge.subject_kind=*grant->subject_kind;
+            if(grant->member_kind)edge.member_kind=*grant->member_kind;
+            if(grant->parent_kind)edge.parent_kind=*grant->parent_kind;
+            edge.effect=grant->effect;edge.right=grant->right;edge.security_generation=grant->security_generation;
+            snapshot.material.edges.push_back(edge);
+            const bool membership=grant->grant_class==c::CatalogSecurityGrantClass::role_membership||
+                grant->grant_class==c::CatalogSecurityGrantClass::group_membership;
+            if(membership&&grant->member_uuid&&*grant->member_uuid==request.principal_uuid&&
+                grant->member_kind==c::CatalogSecuritySubjectKind::principal&&grant->parent_uuid&&
+                grant->effect!=c::CatalogSecurityEffect::deny) {
+              if(grant->parent_kind==c::CatalogSecuritySubjectKind::role)snapshot.material.role_uuids.push_back(*grant->parent_uuid);
+              if(grant->parent_kind==c::CatalogSecuritySubjectKind::group)snapshot.material.group_uuids.push_back(*grant->parent_uuid);
+            }
+          }
+        }
+        source.lease.Reset();
+      });
+      if(!crypto.ok()) {out.error=E::crypto_failure;return out;}
+      if(phase_a!=E::none) {out.error=phase_a;return out;}
+    }
+
+    // ---- phase B: exactly ONE PBKDF2 on every path from here. The real verifier when the principal has a
+    //      usable one; otherwise a fixed dummy verifier (public, non-secret bytes) at the minimum iteration
+    //      count, so that an absent, inactive, wrong-family, credential-less or unsupported principal costs the
+    //      same KDF as a wrong password. The refusals below are decided AFTER it and never from its result
+    //      except the one verdict that is about the password; an agent / service principal is refused
+    //      identically whether or not its password matched (no oracle for a derived password). Unavoidable
+    //      remaining differences (the row read is identical for all; the decision itself is a few compares) are
+    //      not made worse by the code. ----
+    const bool usable=snapshot.found&&snapshot.family_ok&&snapshot.active&&snapshot.principal.credential&&
+        snapshot.principal.credential->scheme==c::CatalogSecurityCredentialScheme::pbkdf2_sha256_v1;
+    std::array<unsigned char,16> salt=kDummySalt;
+    std::array<unsigned char,32> verifier=kDummyVerifier;
+    core::platform::u64 iterations=kDummyIterations;
+    if(usable) {
+      const auto& credential=*snapshot.principal.credential;
+      for(std::size_t i=0;i<salt.size();++i)salt[i]=static_cast<unsigned char>(credential.salt[i]);
+      for(std::size_t i=0;i<verifier.size();++i)verifier[i]=static_cast<unsigned char>(credential.verifier[i]);
+      iterations=credential.iterations;
+    }
+    snapshot.principal.credential.reset();  // the copy's verifier is not needed again
+    struct Wipe {
+      std::array<unsigned char,16>& salt;std::array<unsigned char,32>& verifier;
+      ~Wipe() {OPENSSL_cleanse(salt.data(),salt.size());OPENSSL_cleanse(verifier.data(),verifier.size());}
+    } wipe{salt,verifier};
+    api::LocalPasswordCredentialError verdict=api::LocalPasswordCredentialError::invalid_verifier;
+    bool scope_failed=false;
+    const auto verify=[&](bool real) {
+      const api::LocalPasswordStoredVerifier stored{real?iterations:kDummyIterations,
+          std::span<const unsigned char,16>(real?salt:kDummySalt),std::span<const unsigned char,32>(real?verifier:kDummyVerifier)};
+      return api::VerifyLocalPasswordCredential(stored,std::string_view(static_cast<const char*>(password.data()),password_length),
+          std::span<std::byte,32>{static_cast<std::byte*>(derived.data()),32}).error;
+    };
+    const auto crypto=self.database_crypto_.WithMemoryScope(self.crypto_binding_,[&] {
+      if(core::hash::CheckExplicitCryptoMemoryScope(self.database_)!=core::hash::CryptoMemoryError::none) {scope_failed=true;return;}
+      verdict=verify(usable);
+      // A real verifier the KDF refused before running (parameters it will not accept) spent no KDF: spend the
+      // one on the dummy so the cost is the same. Its result is discarded.
+      if(usable&&verdict==api::LocalPasswordCredentialError::invalid_verifier)(void)verify(false);
+    });
+    if(!crypto.ok()||scope_failed) {out.error=E::crypto_failure;return out;}
+    // NOTE: `verdict` is copied to out.verifier_error ONLY on the paths below that are about the password or the
+    // verifier itself. It is never reported with an agent / absent / inactive refusal (it would be an oracle).
+
+    // ---- the verdict, in a fixed order. Nothing but the password comparison depends on the password. ----
+    if(!snapshot.found) {out.error=E::principal_absent;return out;}
+    if(!snapshot.family_ok) {out.error=E::principal_wrong_family;return out;}
+    if(!snapshot.active) {out.error=E::principal_not_active;return out;}
+    {
+      // Q274: agents are refused on every external path, whether or not the password matched. The check is the
+      // engine's own (CheckExternalAuthenticationBinding takes the kind as a name for the diagnostic mapping); a
+      // principal that carries an agent password seed is an agent whatever its kind constant says (defensive).
+      const char* kind_name=snapshot.principal.principal_kind==c::CatalogSecurityPrincipalKind::service?"service":
+          snapshot.principal.principal_kind==c::CatalogSecurityPrincipalKind::user?"user":"unknown";
+      if(api::CheckExternalAuthenticationBinding(kind_name).error||snapshot.principal.password_seed) {
+        if(snapshot.principal.password_seed)OPENSSL_cleanse(snapshot.principal.password_seed->data(),16);
+        out.error=E::external_binding_refused;return out;
+      }
+    }
+    if(!usable) {
+      // The row has no verifier at all, or one of a scheme this build does not verify.
+      out.error=snapshot.had_credential?E::credential_unsupported:E::credential_absent;return out;
+    }
+    if(verdict==api::LocalPasswordCredentialError::invalid_verifier||verdict==api::LocalPasswordCredentialError::invalid_workspace) {
+      out.verifier_error=verdict;
+      out.error=verdict==api::LocalPasswordCredentialError::invalid_workspace?E::protected_workspace_required:E::credential_unsupported;
+      return out;
+    }
+    out.verifier_error=verdict;
+    if(verdict==api::LocalPasswordCredentialError::invalid_credential) {out.error=E::password_inadmissible;return out;}
+    if(verdict==api::LocalPasswordCredentialError::provider_failure) {out.error=E::verifier_provider_failure;return out;}
+    if(verdict!=api::LocalPasswordCredentialError::none) {out.error=E::password_mismatch;return out;}
+    const auto& m=snapshot.material;
+    if(m.security_context_authority_version!=1||!m.security_context_generation||!m.security_generation||!m.policy_generation) {
+      out.error=E::principal_generation_invalid;return out;
+    }
+    out.material.emplace(snapshot.material);
+    out.error=E::none;
+    return out;
+  } catch(const std::bad_alloc&) {out.material.reset();out.error=E::memory_failure;return out;}
+    catch(...) {out.material.reset();out.error=E::security_source_failure;return out;}
 }
 } // namespace scratchbird::server

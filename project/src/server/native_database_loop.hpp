@@ -39,7 +39,8 @@
 //              thread; the thread is then joined by Close()
 //
 // Requests: a bounded queue (a mutex and a condition variable; the thread
-// sleeps on the variable, nothing polls). Kinds today: open, close. The Restart
+// sleeps on the variable, nothing polls). Kinds today: open, read_login_material (S4a: a credential read with no
+// session, below), close. The Restart
 // (S3d) runs inside the open request: once per open, as its last step. Plan 36
 // (T1) adds complete_and_begin (the atomic commit + replacement begin) as a new
 // method of the SAME TransactionInventoryWriter the loop constructs once per
@@ -180,6 +181,20 @@ struct NativeLoopOpenResult {
   NativeLoopServingFacts facts;     // when ok
 };
 
+// SEARCH_KEY: SB_NATIVE_LOGIN_MATERIAL (thin-slice S4a, plan 40; owner Q306-Q312). A native credential read with NO
+// session: the principal's committed native security rows are read from the served file ON THIS THREAD (the runtime
+// is thread-affine) and the supplied password is verified against the stored PBKDF2 verifier. The password arrives
+// in protected memory (a ScopedProtectedBuffer the caller allocated; ownership moves into the request) and is zeroed
+// and released on the loop thread, whatever the result. Allowed while the database is `serving` or `restricted`
+// (Q309); refused with NativeLoginMaterialError::database_failed when it is `failed`, and with database_not_serving
+// when the loop has no serving database. Reads take no lock and write nothing; no session or transaction is issued.
+// Name resolution (S4b), the authorization adapter (Q307) and EngineAuthenticate (S4c) are NOT here.
+struct NativeLoopLoginRequest {
+  core::platform::Uuid principal_uuid;                 // binary(16); never a name
+  core::memory::ScopedProtectedBuffer password;        // consumed
+  std::size_t password_length = 0;                     // bytes of `password` that are the password
+};
+
 struct NativeLoopCloseResult {
   bool ok = false;
   NativeLoopState state = NativeLoopState::closed;
@@ -200,6 +215,10 @@ class NativeDatabaseLoop final {
   // The future is ready when the open reached serving or failed; on failure
   // everything the open acquired is already closed on the loop thread.
   std::future<NativeLoopOpenResult> SubmitOpen(NativeLoopOpenRequest request);
+
+  // S4a: queue a login-material read (see NativeLoopLoginRequest). The future is always satisfied; a refusal is a
+  // NativeLoginMaterialResult carrying its specific error. Callable from any thread except the loop thread.
+  std::future<NativeLoginMaterialResult> SubmitReadLoginMaterial(NativeLoopLoginRequest request);
 
   // Queue a close: tear down on the loop thread (read, runtime, credential),
   // then leave the loop. Idempotent.
@@ -224,13 +243,18 @@ class NativeDatabaseLoop final {
   struct CloseWork {
     std::promise<NativeLoopCloseResult> done;
   };
+  struct LoginWork {
+    NativeLoopLoginRequest request;
+    std::promise<NativeLoginMaterialResult> done;
+  };
   // plan 36: struct CompleteAndBeginWork { ... } joins this variant.
-  using Work = std::variant<OpenWork, CloseWork>;
+  using Work = std::variant<OpenWork, CloseWork, LoginWork>;
   static constexpr std::size_t kQueueCapacity = 8;
 
   void Run() noexcept;
   void HandleOpen(OpenWork&) noexcept;
   NativeLoopCloseResult HandleClose() noexcept;
+  void HandleLogin(LoginWork&) noexcept;
   struct Serving;  // loop-thread-only state
   // S3d: the single transaction-store Restart, on this thread, under the custody write operation.
   // Returns false with `refusal` set when the open must be refused (nothing written, or a broken

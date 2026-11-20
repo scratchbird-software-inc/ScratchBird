@@ -306,6 +306,11 @@ struct NativeDatabaseLoop::Serving {
   // CompleteAndBegin is a new method of THIS writer, same restarted precondition (not implemented).
   std::optional<core::uuid::StandaloneUuidV7Issuer> issuer;
   std::optional<pg::TransactionInventoryWriter> writer;
+  // S4a (SB_NATIVE_LOGIN_MATERIAL): what a login-material read needs beyond the runtime, kept from the open: the
+  // runtime authority binding's generation (the security reader is addressed through that binding) and the
+  // fixed-root read limits. Values only.
+  std::uint64_t runtime_binding_generation = 0;
+  db::NativeFixedRootMemoryLimits login_limits;
 
   // Reverse of acquisition, explicit because the close result must be seen.
   // The read first (it pins the host and holds the source lease), then the
@@ -386,6 +391,62 @@ std::future<NativeLoopOpenResult> NativeDatabaseLoop::SubmitOpen(NativeLoopOpenR
   return future;
 }
 
+// SEARCH_KEY: SB_NATIVE_LOGIN_MATERIAL (S4a). Zeroes the protected password bytes of a request.
+static void ConsumeLoginPassword(NativeLoopLoginRequest& request) noexcept {
+  if (request.password.valid()) OPENSSL_cleanse(request.password.data(), request.password.size());
+}
+
+std::future<NativeLoginMaterialResult> NativeDatabaseLoop::SubmitReadLoginMaterial(NativeLoopLoginRequest request) {
+  std::promise<NativeLoginMaterialResult> refused;
+  const auto refuse = [&](NativeLoginMaterialError error) {
+    ConsumeLoginPassword(request);
+    NativeLoginMaterialResult result;
+    result.error = error;
+    refused.set_value(std::move(result));
+    return refused.get_future();
+  };
+  if (on_loop_thread()) return refuse(NativeLoginMaterialError::invalid_request);  // the loop never waits on itself
+  LoginWork work{std::move(request), {}};
+  auto future = work.done.get_future();
+  {
+    std::lock_guard<std::mutex> guard(mutex_);
+    if (!accepting_ || state() != NativeLoopState::serving)
+      return refuse(NativeLoginMaterialError::database_not_serving);
+    if (serving_state() == NativeServingState::failed) return refuse(NativeLoginMaterialError::database_failed);
+    if (queue_.size() >= kQueueCapacity) return refuse(NativeLoginMaterialError::busy);
+    queue_.emplace_back(std::move(work));
+  }
+  wake_.notify_one();
+  return future;
+}
+
+void NativeDatabaseLoop::HandleLogin(LoginWork& work) noexcept {
+  NativeLoginMaterialResult result;
+  try {
+    if (!serving_ || state() != NativeLoopState::serving) {
+      result.error = NativeLoginMaterialError::database_not_serving;
+    } else if (serving_state() == NativeServingState::failed) {
+      result.error = NativeLoginMaterialError::database_failed;
+    } else {
+      // serving or restricted (Q309): the credential read has no write and no transaction.
+      auto& serving = *serving_;
+      NativeLoginMaterialRequest request;
+      request.principal_uuid = work.request.principal_uuid;
+      request.runtime_binding_uuid = serving.facts.runtime_binding_uuid;
+      request.runtime_binding_generation = serving.runtime_binding_generation;
+      request.limits = serving.login_limits;
+      result = Host::ReadNativeLoginMaterial(serving.runtime, request, work.request.password,
+                                             work.request.password_length, serving.derived);
+    }
+  } catch (...) {
+    result = {};
+    result.error = NativeLoginMaterialError::security_source_failure;
+  }
+  ConsumeLoginPassword(work.request);  // consumed whatever happened (the callee also zeroes it)
+  work.request.password = {};          // released on this thread
+  work.done.set_value(std::move(result));
+}
+
 std::future<NativeLoopCloseResult> NativeDatabaseLoop::SubmitClose() {
   CloseWork work;
   auto future = work.done.get_future();
@@ -446,6 +507,10 @@ void NativeDatabaseLoop::Run() noexcept {
     }
     if (auto* open = std::get_if<OpenWork>(&work)) {
       HandleOpen(*open);
+      continue;
+    }
+    if (auto* login = std::get_if<LoginWork>(&work)) {
+      HandleLogin(*login);
       continue;
     }
     auto& close = std::get<CloseWork>(work);
@@ -679,6 +744,8 @@ void NativeDatabaseLoop::HandleOpen(OpenWork& work) noexcept {
                            {"security_error", Num(static_cast<unsigned>(identity.security_error))},
                            {"source_error", Num(static_cast<unsigned>(identity.source_error))}}));
     const auto& service = *identity.identity;
+    serving.runtime_binding_generation = service.runtime_binding_generation;
+    serving.login_limits = limits.fixed_root;
 
     // ---- SB_AGENT_PASSWORD_DERIVED (owner Q274 + Q281): the password is the
     //      database UUID XOR the stored seed, derived here from the file; no
