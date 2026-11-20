@@ -32,7 +32,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from native_serving_strace import SIZES, data_descriptors, fail, snapshot  # noqa: E402
+from native_serving_strace import SIZES, data_descriptors, fail, merge_split_lines, snapshot  # noqa: E402
 
 PASSWORDS = ("S4d-Bootstrap-Pw-5b19e0c47a", "S4d-Wrong-Pw-91d03c7ee2")
 OTHER_WRITES = r'(write|pwritev2?|ftruncate|fallocate|sync_file_range)'
@@ -89,7 +89,7 @@ def main():
             if not reported:
                 fail(f"{size}: the child reported no measurement")
             with open(log, encoding="utf-8", errors="replace") as handle:
-                lines = handle.readlines()
+                lines = merge_split_lines(handle.readlines())
             sb_lines = [line for line in lines if ".sb." in line]
             if sb_lines:
                 fail(f"{size}: {len(sb_lines)} syscalls name a .sb. path, first: {sb_lines[0].strip()}")
@@ -100,7 +100,8 @@ def main():
                 fail(f"{size}: no open of the data file was traced")
 
             def on_data(fd, index):
-                return any(f == fd and start < index < end for f, start, end in spans)
+                # `fd` is the call's first argument; spans attributes by the calling pid's own descriptor table.
+                return spans.covers(index)
 
             region = "startup"
             counts = {"startup": [0, 0]}

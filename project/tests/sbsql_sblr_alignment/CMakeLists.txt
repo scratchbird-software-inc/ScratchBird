@@ -4190,6 +4190,16 @@ find_program(SB_STRACE_EXECUTABLE strace)
 if(SB_STRACE_EXECUTABLE AND SB_BUILD_PUBLIC_STANDALONE_OUTPUT)
   find_package(Python3 COMPONENTS Interpreter)
 endif()
+# SEARCH_KEY: SB_STRACE_ATTRIBUTION. Self-test of the pid-aware strace attribution helper every strace-based native
+# test uses (strace_attribution.py): hand-built `strace -f` logs with split close / open / dup, descriptor reuse by a
+# pipe in another pid, threads (CLONE_FILES) and forks. Needs Python only (no strace).
+if(SB_BUILD_PUBLIC_STANDALONE_OUTPUT AND Python3_EXECUTABLE)
+  add_test(NAME sbsql_sblr_alignment_strace_helper_selftest
+    COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/strace_attribution_selftest.py")
+  set_tests_properties(sbsql_sblr_alignment_strace_helper_selftest PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;strace"
+    TIMEOUT 120)
+endif()
 if(SB_STRACE_EXECUTABLE AND SB_BUILD_PUBLIC_STANDALONE_OUTPUT AND Python3_EXECUTABLE)
   add_test(NAME sbsql_sblr_alignment_native_legacy_cut_strace
     COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_legacy_cut_strace.py"

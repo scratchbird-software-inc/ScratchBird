@@ -28,7 +28,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from native_serving_strace import SIZES, WRITE_CALLS, data_descriptors, fail, snapshot  # noqa: E402
+from native_serving_strace import SIZES, WRITE_CALLS, data_descriptors, fail, merge_split_lines, snapshot  # noqa: E402
 
 
 def main():
@@ -53,7 +53,7 @@ def main():
             if served.returncode != 0 or not served.stdout.startswith("HANDLE_OK"):
                 fail(f"handle {size}: exit {served.returncode}: {served.stdout[-500:]} {served.stderr[-2000:]}")
             with open(log, encoding="utf-8", errors="replace") as handle:
-                lines = handle.readlines()
+                lines = merge_split_lines(handle.readlines())
             sb_lines = [line for line in lines if ".sb." in line]
             if sb_lines:
                 fail(f"handle {size}: {len(sb_lines)} syscalls name a .sb. path, first: {sb_lines[0].strip()}")
@@ -65,7 +65,7 @@ def main():
             writes = []
             for index, line in enumerate(lines):
                 match = re.search(r'\b' + WRITE_CALLS + r'\((\d+)', line)
-                if match and any(f == match.group(2) and start < index < end for f, start, end in spans):
+                if match and spans.covers(index):
                     writes.append(line.strip())
             if writes:
                 fail(f"handle {size}: {len(writes)} write-class syscalls on the data file, first: {writes[0]}")
@@ -78,11 +78,11 @@ def main():
         subprocess.run(["strace", "-f", "-qq", "-s", "256", "-o", control_log, args.test_bin, "create", control, "16384"],
                        capture_output=True, text=True, timeout=600)
         with open(control_log, encoding="utf-8", errors="replace") as handle:
-            control_lines = handle.readlines()
+            control_lines = merge_split_lines(handle.readlines())
         control_spans = data_descriptors(control_lines, control)
         control_writes = [line for index, line in enumerate(control_lines)
                           if (m := re.search(r'\b' + WRITE_CALLS + r'\((\d+)', line))
-                          and any(f == m.group(2) and start < index < end for f, start, end in control_spans)]
+                          and control_spans.covers(index)]
         if not control_writes:
             fail("the detector saw no write-class syscall during a create: it cannot be trusted")
         print(f"negative control: {len(control_writes)} write-class syscalls on the data file during create")

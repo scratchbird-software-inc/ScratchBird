@@ -33,7 +33,7 @@ import sys
 import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from native_serving_strace import SIZES, WRITE_CALLS, data_descriptors, fail, snapshot  # noqa: E402
+from native_serving_strace import SIZES, WRITE_CALLS, data_descriptors, fail, merge_split_lines, snapshot  # noqa: E402
 
 # The same constant as native_name_resolve_test.cpp (kBootstrapPassword).
 PASSWORDS = ("S4b-Bootstrap-Pw-5e1d77a0c3",)
@@ -49,7 +49,7 @@ def writes_on_data(lines, path):
     out = []
     for index, line in enumerate(lines):
         match = re.search(r'\b' + WRITE_CALLS + r'\((\d+)', line)
-        if match and any(f == match.group(2) and start < index < end for f, start, end in spans):
+        if match and spans.covers(index):
             out.append(line.strip())
     return spans, out
 
@@ -96,7 +96,7 @@ def main():
                 if ran.returncode != 0 or "NAME_RESOLVE_OK" not in ran.stdout:
                     fail(f"{state} {size}: exit {ran.returncode}: {ran.stdout[-800:]} {ran.stderr[-2000:]}")
                 with open(log, encoding="utf-8", errors="replace") as handle:
-                    lines = handle.readlines()
+                    lines = merge_split_lines(handle.readlines())
                 sb_lines = [line for line in lines if ".sb." in line]
                 if sb_lines:
                     fail(f"{state} {size}: {len(sb_lines)} syscalls name a .sb. path, first: {sb_lines[0].strip()}")
@@ -125,7 +125,7 @@ def main():
         subprocess.run(["strace", "-f", "-qq", "-s", "256", "-o", control_log, args.test_bin, "create", control, "16384"],
                        capture_output=True, text=True, timeout=600)
         with open(control_log, encoding="utf-8", errors="replace") as handle:
-            control_lines = handle.readlines()
+            control_lines = merge_split_lines(handle.readlines())
         _, control_writes = writes_on_data(control_lines, control)
         if not control_writes:
             fail("the detector saw no write-class syscall during a create: it cannot be trusted")

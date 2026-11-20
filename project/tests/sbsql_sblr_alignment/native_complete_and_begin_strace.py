@@ -23,6 +23,9 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from strace_attribution import data_descriptors, merge_split_lines  # noqa: E402
+
 SIZES = (8192, 16384, 32768, 65536, 131072)
 
 
@@ -54,32 +57,30 @@ def main():
                 if m:
                     reported[(m.group(2), m.group(3))] = (int(m.group(4)), int(m.group(5)), m.group(1))
             with open(log, encoding="utf-8", errors="replace") as handle:
-                lines = handle.readlines()
-            fd = None
+                lines = merge_split_lines(handle.readlines())
+            # Pid-aware attribution (strace_attribution.py): every descriptor opened on, or duplicated from, measure.db,
+            # in the table of the pid that makes the call.
+            spans = data_descriptors(lines, re.compile(r'[^"]*measure\.db'))
             current = None
             counts = {}
-            for text in lines:
-                m = re.search(r'openat\(.*measure\.db".*\)\s*=\s*(\d+)', text)
-                if m:
-                    fd = m.group(1)
-                    continue
+            for index, text in enumerate(lines):
                 m = re.search(r'write\(2, "MARK (\S+) (\S+)\\n"', text)
                 if m:
                     current = None if m.group(1) in ("end", "idle") else (m.group(2), m.group(1))
                     if current:
                         counts[current] = [0, 0]
                     continue
-                if current is None or fd is None:
+                if current is None:
                     continue
                 m = re.search(r'\bpwrite64\((\d+),.*,\s*(\d+),\s*\d+\)\s*=\s*(\d+)', text)
-                if m and m.group(1) == fd:
+                if m and spans.covers(index):
                     if m.group(2) != "512":
                         fail(f"{size}: a {m.group(2)}-byte data write in {current}")
                     counts[current][0] += 1
                 m = re.search(r'\b(?:fsync|fdatasync)\((\d+)\)\s*=\s*0', text)
-                if m and m.group(1) == fd:
+                if m and spans.covers(index):
                     counts[current][1] += 1
-            if not counts or fd is None:
+            if not counts or not spans:
                 fail(f"{size}: no measured calls were traced")
             # Each MARK names the first op of its region; BEGIN+COMMIT and COMMIT+BEGIN regions are single ops.
             for policy in ("trust_forced_writes", "sync_every_dependency"):

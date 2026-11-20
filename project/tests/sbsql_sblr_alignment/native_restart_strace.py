@@ -36,8 +36,11 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from strace_attribution import data_descriptors, merge_split_lines  # noqa: E402
+
 SIZES = (8192, 16384, 32768, 65536, 131072)
-WRITE_CALLS = r'(pwrite64|write|pwritev2?|ftruncate|fallocate|fsync|fdatasync|sync_file_range)'
+WRITE_CALLS = r'(pwrite64|pwrite|write|writev|pwritev2?|ftruncate|fallocate|fsync|fdatasync|sync_file_range)'
 
 
 def fail(message):
@@ -50,35 +53,6 @@ def sha(path):
         return hashlib.sha256(handle.read()).hexdigest()
 
 
-def descriptor_spans(lines, path):
-    """(fd, first_line, last_line, origin) for every descriptor opened on the data file or duplicated
-    from one. origin is "open" or "dup"."""
-    live = {}
-    spans = []
-    for index, line in enumerate(lines):
-        match = re.search(r'open(?:at)?\(.*"' + re.escape(path) + r'".*\)\s*=\s*(\d+)', line)
-        if match:
-            live[match.group(1)] = (index, "open")
-        match = re.search(r'\bfcntl\((\d+),\s*F_DUPFD(?:_CLOEXEC)?,\s*\d+\)\s*=\s*(\d+)', line) or \
-            re.search(r'\bdup(?:2|3)?\((\d+)(?:,\s*\d+)*\)\s*=\s*(\d+)', line)
-        if match and match.group(1) in live:
-            live[match.group(2)] = (index, "dup")
-        match = re.search(r'\bclose\((\d+)\)\s*=\s*0', line)
-        if match and match.group(1) in live:
-            start, origin = live.pop(match.group(1))
-            spans.append((match.group(1), start, index, origin))
-    for fd, (start, origin) in live.items():
-        spans.append((fd, start, len(lines), origin))
-    return spans
-
-
-def span_of(spans, fd, index):
-    for f, start, end, origin in spans:
-        if f == fd and start < index < end:
-            return origin
-    return None
-
-
 def run_serve(test_bin, directory, path, size, label, work):
     log = os.path.join(work, f"{label}-{size}.strace")
     command = ["strace", "-f", "-qq", "-s", "64", "-o", log, test_bin, "serve", path]
@@ -89,11 +63,11 @@ def run_serve(test_bin, directory, path, size, label, work):
     if not first.startswith("SERVING state=serving "):
         fail(f"{label} {size}: {first!r}")
     with open(log, encoding="utf-8", errors="replace") as handle:
-        lines = handle.readlines()
+        lines = merge_split_lines(handle.readlines())
     sb_lines = [line for line in lines if ".sb." in line]
     if sb_lines:
         fail(f"{label} {size}: {len(sb_lines)} syscalls name a .sb. path, first: {sb_lines[0].strip()}")
-    spans = descriptor_spans(lines, path)
+    spans = data_descriptors(lines, path)
     if not spans:
         fail(f"{label} {size}: no open of the data file was traced")
     serving_at = next((i for i, line in enumerate(lines) if re.search(r'write\(1, "SERVING', line)), None)
@@ -104,7 +78,7 @@ def run_serve(test_bin, directory, path, size, label, work):
         match = re.search(r'\b' + WRITE_CALLS + r'\((\d+)', line)
         if not match:
             continue
-        origin = span_of(spans, match.group(2), index)
+        origin = spans.origin(index)
         if origin is None:
             continue
         (before if index < serving_at else after).append((index, match.group(1), match.group(2), origin, line.strip()))

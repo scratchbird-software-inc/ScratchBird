@@ -26,6 +26,9 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from strace_attribution import data_descriptors, merge_split_lines  # noqa: E402
+
 
 def snapshot(directory):
     out = {}
@@ -51,18 +54,8 @@ def traced(binary, mode, path, log):
     if run.returncode != 0:
         fail(f"{mode} {path}: exit {run.returncode}: {run.stderr[-2000:]}")
     with open(log, encoding="utf-8", errors="replace") as handle:
-        lines = handle.readlines()
+        lines = merge_split_lines(handle.readlines())
     return run.stdout.strip().splitlines()[-1] if run.stdout.strip() else "", lines
-
-
-def database_fds(lines, path):
-    fds = set()
-    pattern = re.compile(r'open(?:at)?\(.*"' + re.escape(path) + r'".*\)\s*=\s*(\d+)')
-    for line in lines:
-        match = pattern.search(line)
-        if match:
-            fds.add(match.group(1))
-    return fds
 
 
 def check_step(binary, mode, path, expected_prefix, work):
@@ -78,17 +71,16 @@ def check_step(binary, mode, path, expected_prefix, work):
     after = snapshot(directory)
     if after != before:
         fail(f"{mode} {path}: directory changed {before} -> {after}")
-    fds = database_fds(lines, path)
-    writes = [line for line in lines
-              if re.search(r'\b(pwrite64|write|pwritev2?|ftruncate|fallocate|fsync|fdatasync)\((\d+)', line)
-              and re.search(r'\((\d+)', line).group(1) in fds]
-    # Descriptor numbers are reused; only count writes while a db fd is live is
-    # out of scope; a write to a reused number would show as a false failure,
-    # never a false pass.
+    # Pid-aware attribution (strace_attribution.py): a write counts only on a descriptor that the calling pid's own
+    # table holds for the database file (opened on it or duplicated from one).
+    spans = data_descriptors(lines, path)
+    writes = [line for index, line in enumerate(lines)
+              if re.search(r'\b(pwrite64|pwrite|write|writev|pwritev2?|ftruncate|fallocate|fsync|fdatasync|sync_file_range)\((\d+)', line)
+              and spans.covers(index)]
     if writes:
         fail(f"{mode} {path}: write-class syscall on a database descriptor: {writes[0].strip()}")
     print(f"{mode} {os.path.basename(path)}: {code}; 0 .sb. syscalls; directory unchanged; "
-          f"{len(lines)} syscalls traced, {len(fds)} database opens")
+          f"{len(lines)} syscalls traced, {len(spans)} database descriptors")
 
 
 def main():

@@ -43,7 +43,7 @@ import tempfile
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from native_serving_strace import SIZES, WRITE_CALLS, data_descriptors, fail, snapshot  # noqa: E402
+from native_serving_strace import SIZES, WRITE_CALLS, data_descriptors, fail, merge_split_lines, snapshot  # noqa: E402
 
 PER_CONTEXT = re.compile(r"^\s*per_context_limit_bytes\s*=\s*(\d+)\s*$", re.M)
 
@@ -152,7 +152,7 @@ def main():
             finally:
                 os.close(descriptor)
             with open(log, encoding="utf-8", errors="replace") as handle:
-                lines = handle.readlines()
+                lines = merge_split_lines(handle.readlines())
             sb_lines = [line for line in lines if ".sb." in line]
             if sb_lines:
                 fail(f"SBsrv {size}: {len(sb_lines)} syscalls name a .sb. path, first: {sb_lines[0].strip()}")
@@ -162,7 +162,7 @@ def main():
             writes = []
             for index, line in enumerate(lines):
                 match = re.search(r'\b' + WRITE_CALLS + r'\((\d+)', line)
-                if match and any(f == match.group(2) and start < index < end for f, start, end in spans):
+                if match and spans.covers(index):
                     writes.append(line.strip())
             if writes:
                 fail(f"SBsrv {size}: {len(writes)} write-class syscalls on the data file over the whole run, first: {writes[0]}")

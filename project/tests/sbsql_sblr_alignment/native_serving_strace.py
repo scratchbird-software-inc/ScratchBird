@@ -39,8 +39,12 @@ import subprocess
 import sys
 import tempfile
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from strace_attribution import data_descriptors, merge_split_lines  # noqa: E402,F401  (re-exported for the sibling strace tests)
+
 SIZES = (8192, 16384, 32768, 65536, 131072)
-WRITE_CALLS = r'(pwrite64|write|pwritev2?|ftruncate|fallocate|fsync|fdatasync|sync_file_range)'
+# writev / pwrite added with the pid-aware attribution (strace_attribution.py): both write to a descriptor.
+WRITE_CALLS = r'(pwrite64|pwrite|write|writev|pwritev2?|ftruncate|fallocate|fsync|fdatasync|sync_file_range)'
 
 
 def snapshot(directory):
@@ -59,29 +63,6 @@ def snapshot(directory):
 def fail(message):
     print("FAIL " + message)
     sys.exit(1)
-
-
-def data_descriptors(lines, path):
-    """Every descriptor number returned by an open of the data file, with the
-    line range during which it is live (numbers are reused after close)."""
-    live = {}
-    spans = []
-    open_re = re.compile(r'\[pid\s+\d+\]\s*|^\d+\s+')
-    for index, line in enumerate(lines):
-        match = re.search(r'open(?:at)?\(.*"' + re.escape(path) + r'".*\)\s*=\s*(\d+)', line)
-        if match:
-            live[match.group(1)] = index
-        # A duplicate of a live data descriptor (the served-lease dups) is one too.
-        match = re.search(r'\bfcntl\((\d+),\s*F_DUPFD(?:_CLOEXEC)?,\s*\d+\)\s*=\s*(\d+)', line) or \
-            re.search(r'\bdup(?:2|3)?\((\d+)(?:,\s*\d+)*\)\s*=\s*(\d+)', line)
-        if match and match.group(1) in live:
-            live[match.group(2)] = index
-        match = re.search(r'\bclose\((\d+)\)\s*=\s*0', line)
-        if match and match.group(1) in live:
-            spans.append((match.group(1), live.pop(match.group(1)), index))
-    for fd, start in live.items():
-        spans.append((fd, start, len(lines)))
-    return spans
 
 
 def main():
@@ -111,7 +92,7 @@ def main():
             if not first.startswith("SERVING state=serving "):
                 fail(f"serve {size}: {first!r}")
             with open(log, encoding="utf-8", errors="replace") as handle:
-                lines = handle.readlines()
+                lines = merge_split_lines(handle.readlines())
             sb_lines = [line for line in lines if ".sb." in line]
             if sb_lines:
                 fail(f"serve {size}: {len(sb_lines)} syscalls name a .sb. path, first: {sb_lines[0].strip()}")
@@ -145,7 +126,7 @@ def main():
                 if not match:
                     continue
                 call, fd = match.group(1), match.group(2)
-                if not any(f == fd and start < index < end for f, start, end in spans):
+                if not spans.covers(index):
                     continue
                 if index < serving_at:
                     before_writes.append(line.strip())
@@ -173,11 +154,10 @@ def main():
         subprocess.run(["strace", "-f", "-qq", "-s", "256", "-o", control_log, args.test_bin, "create", control, "16384"],
                        capture_output=True, text=True, timeout=600)
         with open(control_log, encoding="utf-8", errors="replace") as handle:
-            control_lines = handle.readlines()
+            control_lines = merge_split_lines(handle.readlines())
         control_spans = data_descriptors(control_lines, control)
         control_writes = [line for index, line in enumerate(control_lines)
-                          if (m := re.search(r'\b' + WRITE_CALLS + r'\((\d+)', line))
-                          and any(f == m.group(2) and start < index < end for f, start, end in control_spans)]
+                          if re.search(r'\b' + WRITE_CALLS + r'\((\d+)', line) and control_spans.covers(index)]
         if not control_writes:
             fail("the detector saw no write-class syscall during a create: it cannot be trusted")
         print(f"negative control: {len(control_writes)} write-class syscalls on the data file during create")
