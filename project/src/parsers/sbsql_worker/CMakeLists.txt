@@ -25,6 +25,13 @@ if(NOT TARGET sbl_parser_server_ipc_schema)
   add_subdirectory(${PROJECT_SOURCE_DIR}/src/wire/parser_server_ipc ${CMAKE_CURRENT_BINARY_DIR}/parser_server_ipc_schema)
 endif()
 
+# SB_PARSER_NAME_RESOLUTION (Part B step S1): the parser-side name resolver
+# shared by every parser; standard library only.
+if(NOT TARGET sb_parser_name_resolution)
+  add_subdirectory(${PROJECT_SOURCE_DIR}/src/parsers/shared/name_resolution
+                   ${CMAKE_CURRENT_BINARY_DIR}/parsers_shared_name_resolution)
+endif()
+
 add_library(sbl_sbsql_reservation_projection STATIC
   wire/contextual_reservation_freeze.cpp)
 target_compile_features(sbl_sbsql_reservation_projection PUBLIC cxx_std_20)
@@ -73,7 +80,8 @@ target_include_directories(sbl_sbsql_parser_pipeline PUBLIC
 )
 target_link_libraries(sbl_sbsql_parser_pipeline PUBLIC
   sbl_parser_server_ipc_schema sb_sblr_operation_wire_codec
-  sbl_sbsql_reservation_projection sb_core_datatypes)
+  sbl_sbsql_reservation_projection sb_core_datatypes
+  sb_parser_name_resolution)
 
 set(SBSQL_PARSER_WORKER_CORE_SOURCES
   embedded/embedded_engine_client.cpp

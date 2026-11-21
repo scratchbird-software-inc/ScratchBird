@@ -2,6 +2,7 @@
 #include "wire/parameter_slot_table.hpp"
 #include "engine/sblr/relational_descriptor_codec.hpp"
 #include "cache/binary_cache_key.hpp"
+#include "name_resolution/name_resolution.hpp"
 #include "../../../wire/parser_server_ipc/public_relation_projection_codec.hpp"
 // Copyright (c) 2026 ScratchBird Software Inc.
 //
@@ -638,6 +639,23 @@ std::optional<std::string> EncodeQualifiedPresentedName(
     presented_name.push_back('"');
   }
   return presented_name;
+}
+
+// SB_PARSER_NAME_RESOLUTION (Part B step S1, owner 2026-11-20..22: folding and
+// quoting are the parser's job). The name this parser puts on the socket
+// wire (schemas 7001-7008, externally unchanged) is already folded by the
+// SBsql rule: unquoted -> upper ASCII, quoted exact. The server and engine
+// still fold too, which is idempotent on a folded SBsql name (S2 removes
+// that). The server echoes the text it received as the canonical name of a
+// resolved name; the typed text is put back so the parser's caches and
+// diagnostics hold what they always held. The embedded route does the same in
+// EmbeddedEngineClient::ResolveNamePublic.
+void RestoreTypedNameEcho(
+    const scratchbird::parsers::name_resolution::PreparedWireName& prepared,
+    PublicNameResolutionResult* resolved) {
+  if (resolved == nullptr) return;
+  resolved->canonical_name =
+      prepared.RestoreEcho(std::move(resolved->canonical_name));
 }
 
 // Lower ASCII. Since owner Q192 (2026-11-14) used only to match keywords
@@ -27606,11 +27624,14 @@ void SbsqlTestWireSession::SeedCreatedDdlNameResolutionCache(
       resolved = embedded_client_->ResolveNamePublic(session_, created->presented_name,
           created->quoted, object_class, config_);
     } else if (server_client_) {
+      const auto prepared = scratchbird::parsers::name_resolution::PrepareSbsqlWireName(
+          created->presented_name, created->quoted, object_class);
       resolved = transaction.present()
-          ? server_client_->ResolveNamePublicOnTransaction(session_, created->presented_name,
-                created->quoted, object_class, config_, transaction)
-          : server_client_->ResolveNamePublicUncached(session_, created->presented_name,
-                created->quoted, object_class, config_);
+          ? server_client_->ResolveNamePublicOnTransaction(session_, prepared.presented_name,
+                prepared.quoted, object_class, config_, transaction)
+          : server_client_->ResolveNamePublicUncached(session_, prepared.presented_name,
+                prepared.quoted, object_class, config_);
+      RestoreTypedNameEcho(prepared, &resolved);
     }
     if (!resolved.resolved || !core::uuid::IsEngineIdentityUuid(resolved.object_uuid)) continue;
     StoreNameResolutionCacheEntry(created->presented_name, created->quoted, object_class,
@@ -27636,16 +27657,20 @@ PublicNameResolutionResult SbsqlTestWireSession::ResolveNameOnRouteUncached(
     ParserTransactionSelector transaction;
     transaction.local_transaction_id = session_.local_transaction_id;
     transaction.transaction_uuid = session_.transaction_uuid;
+    const auto prepared = scratchbird::parsers::name_resolution::PrepareSbsqlWireName(
+        presented_name, quoted, lookup_object_class);
     if ((lookup_object_class == "relation" ||
          lookup_object_class == "table") &&
         transaction.present()) {
       resolved = server_client_->ResolveRelationDescriptorPublicOnTransaction(
-          session_, presented_name, quoted, lookup_object_class, config_,
-          transaction);
+          session_, prepared.presented_name, prepared.quoted,
+          lookup_object_class, config_, transaction);
     } else {
       resolved = server_client_->ResolveNamePublicUncached(
-          session_, presented_name, quoted, lookup_object_class, config_);
+          session_, prepared.presented_name, prepared.quoted,
+          lookup_object_class, config_);
     }
+    RestoreTypedNameEcho(prepared, &resolved);
   }
   NormalizeNameNotFoundDiagnostic(&resolved);
   if (resolved.resolved) {
@@ -28705,9 +28730,32 @@ PipelineResult SbsqlTestWireSession::RunPipeline(std::string_view sql,
           transaction.local_transaction_id = session_.local_transaction_id;
           transaction.transaction_uuid = session_.transaction_uuid;
           if (transaction.present()) {
+            // Fold each name by the SBsql rule on the way out (see
+            // RestoreTypedNameEcho); the typed text is put back on the way in.
+            std::vector<ipc::PublicRelationResolutionRequest> wire_requests;
+            std::vector<scratchbird::parsers::name_resolution::PreparedWireName>
+                prepared_names;
+            wire_requests.reserve(batch_requests.size());
+            prepared_names.reserve(batch_requests.size());
+            for (const auto& request : batch_requests) {
+              prepared_names.push_back(
+                  scratchbird::parsers::name_resolution::PrepareSbsqlWireName(
+                      request.presented_name, request.quoted,
+                      request.object_class));
+              wire_requests.push_back({prepared_names.back().presented_name,
+                                       prepared_names.back().quoted,
+                                       request.object_class});
+            }
             batch_results =
                 server_client_->ResolveRelationDescriptorsPublicOnTransaction(
-                    session_, batch_requests, config_, transaction);
+                    session_, wire_requests, config_, transaction);
+            if (batch_results.size() == prepared_names.size()) {
+              for (std::size_t index = 0; index < batch_results.size();
+                   ++index) {
+                RestoreTypedNameEcho(prepared_names[index],
+                                     &batch_results[index]);
+              }
+            }
           }
         }
         if (!batch_results.empty() &&

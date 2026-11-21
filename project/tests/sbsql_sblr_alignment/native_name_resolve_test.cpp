@@ -27,6 +27,12 @@
 //   serve <path> <state> ...         state: serving | restricted | failed | names | dead | uncommitted
 // With no argument the driver runs every size and state; "size <bytes>" runs one page size. The strace half is
 // native_name_resolve_strace.py.
+//
+// SB_PARSER_NAME_RESOLUTION differential (Part B step S1, 2026-11-24): every state also runs a table of typed names through the
+// parser-side resolver (parsers/shared/name_resolution) and asserts that what the module sends to the CURRENT engine, and what the
+// module itself resolves from the engine's own entries, equal the engine's answer to the raw typed spelling. The engine's fold is
+// still there in S1 and the module's output is already folded, so the two agree; S2 removes the engine's fold and this block
+// then proves the module alone carries the rule.
 
 #include "engine/internal_api/catalog/name_registry.hpp"
 #include "engine/internal_api/catalog/name_resolution_api.hpp"
@@ -55,6 +61,7 @@
 #include "server/native_database_loop.hpp"
 #include "server/process_crypto_owner.hpp"
 #include "uuid.hpp"
+#include "name_resolution/name_resolution.hpp"
 #include "../support/catalog_change_event_fixture.hpp"
 #include "../support/native_database_create_fixture.hpp"
 #include "../support/owned_temp_directory.hpp"
@@ -775,6 +782,221 @@ const eng::NativeNameRowValue* RowOf(const eng::NativeNamesSnapshot& snapshot, c
   return nullptr;
 }
 
+// ---- SB_PARSER_NAME_RESOLUTION differential: the parser-side module against the CURRENT engine ----------------------------------
+// For each typed name the engine's answer to the RAW spelling (the call every parser makes today) is compared with
+//  (W) what the SBsql parser puts on the wire after the module (PrepareSbsqlWireName: unquoted components folded, quoted
+//      exact), split as the server splits it, through the same engine call (the engine still folds: idempotent), and
+//  (E) the module's key for each step sent as an EXACT spelling (what the engine will receive after S2 removes its fold), and
+//  (M) the module's own walk over the engine's own name entries (language fallback, scope walk, own lanes, ambiguity).
+// A module that does not fold, or folds wrongly, fails (E) and (M) here and the unit test there.
+namespace nr = scratchbird::parsers::name_resolution;
+
+nr::Uuid16 Uuid16Of(const eng::EngineUuid& id) {
+  nr::Uuid16 out{};
+  std::copy(id.bytes.begin(), id.bytes.begin() + 16, out.begin());
+  return out;
+}
+std::string HexOf(const nr::Uuid16& id) {
+  static constexpr char kHex[] = "0123456789abcdef";
+  std::string out;
+  for (const auto byte : id) {
+    out.push_back(kHex[byte >> 4]);
+    out.push_back(kHex[byte & 15]);
+  }
+  return out;
+}
+
+// The names the engine's registry holds for the served database, as the module's source: nothing but the engine's current
+// projection (LoadNameRegistryState), filtered by the profile equality the engine's matcher applies today.
+class RegistryNameSource final : public nr::NameSource {
+ public:
+  RegistryNameSource() {
+    const auto loaded = eng::LoadNameRegistryState(MakeRequest(Ask{}).context, 0);
+    Check(loaded.ok, "the registry state loads for the differential");
+    entries_ = loaded.state.entries;
+  }
+  std::vector<nr::NameEntry> List(const nr::Uuid16& scope, std::string_view language) override {
+    std::vector<nr::NameEntry> out;
+    for (const auto& entry : entries_) {
+      if (entry.identifier_profile_uuid != "sbsql_v3") continue;
+      if (Uuid16Of(entry.scope_uuid) != scope || entry.language_tag != language) continue;
+      out.push_back({scope, Uuid16Of(entry.object_uuid), entry.language_tag, entry.object_class, entry.raw_name_text,
+                     entry.requires_exact_match});
+    }
+    return out;
+  }
+
+ private:
+  std::vector<eng::NameRegistryEntry> entries_;
+};
+
+std::string VerdictOf(const eng::EngineResolveNameResult& result) {
+  if (result.ok) return "found:" + HexOf(Uuid16Of(result.primary_object.uuid));
+  return "refused:" + (result.diagnostics.empty() ? std::string() : result.diagnostics.front().code);
+}
+std::string VerdictOf(const nr::ResolveOutcome& outcome) {
+  switch (outcome.status) {
+    case nr::ResolveStatus::found: return "found:" + HexOf(outcome.entry.object);
+    case nr::ResolveStatus::not_found: return "refused:CATALOG.NAME.NOT_FOUND";
+    case nr::ResolveStatus::ambiguous: return "refused:CATALOG.NAME.AMBIGUOUS";
+    case nr::ResolveStatus::invalid_request: return "refused:SB_ENGINE_API_INVALID_REQUEST";
+  }
+  return "?";
+}
+
+// The engine call for a typed path (qualifier steps, then the leaf), each step as (text, quoted, exact).
+struct EngineStep {
+  std::string text;
+  bool quoted = false;
+  bool exact = false;
+};
+eng::EngineResolveNameResult AskEngine(const std::vector<EngineStep>& steps, const std::string& language, const p::Uuid& scope,
+                                       const std::string& object_class) {
+  Ask ask{steps.back().text, steps.back().quoted};
+  ask.language = language;
+  ask.scope = scope;
+  ask.object_class = object_class;
+  auto request = MakeRequest(ask);
+  request.sql_object_reference.object_name.requires_exact_match = steps.back().exact || steps.back().quoted;
+  for (std::size_t i = 0; i + 1 < steps.size(); ++i) {
+    eng::EngineIdentifierAtom atom;
+    atom.raw_text = steps[i].text;
+    atom.was_quoted = steps[i].quoted;
+    atom.requires_exact_match = steps[i].exact || steps[i].quoted;
+    atom.quote_style = steps[i].quoted ? "double_quote" : "none";
+    atom.identifier_profile_uuid = "sbsql_v3";
+    request.sql_object_reference.path_components.push_back(atom);
+  }
+  if (steps.size() > 1) request.sql_object_reference.no_search_path = true;
+  return eng::EngineResolveName(request);
+}
+
+struct DifferentialCounts {
+  std::size_t cases = 0, engine_calls = 0, found = 0, not_found = 0, invalid = 0, rewritten = 0;
+};
+
+void DifferentialCase(RegistryNameSource& source, DifferentialCounts* counts, const std::vector<nr::NameComponent>& typed,
+                      const std::string& language, const p::Uuid& scope, const std::string& object_class,
+                      const std::string& what) {
+  std::vector<EngineStep> raw, wire, exact;
+  for (const auto& step : typed) raw.push_back({step.spelling, step.quoted, step.quoted});
+  // (W): the text the SBsql parser sends, split the way the server splits it.
+  const auto prepared = nr::PrepareSbsqlWireName(nr::RenderPresentedName(typed), false, "relation");
+  const auto split = nr::SplitPresentedName(prepared.presented_name, prepared.quoted);
+  if (prepared.rewritten) ++counts->rewritten;
+  if (split) {
+    for (const auto& step : *split) wire.push_back({step.spelling, step.quoted, step.quoted});
+  } else {
+    wire = raw;  // text that does not split is sent unchanged
+  }
+  // (E): the module's key for each step, exact.
+  const auto& rule = nr::SbsqlNameFoldRule();
+  for (const auto& step : typed) exact.push_back({rule.Key(step.spelling, step.quoted), true, true});
+
+  const auto verdict_raw = VerdictOf(AskEngine(raw, language, scope, object_class));
+  const auto verdict_wire = VerdictOf(AskEngine(wire, language, scope, object_class));
+  const auto verdict_exact = VerdictOf(AskEngine(exact, language, scope, object_class));
+  counts->engine_calls += 3;
+  Check(verdict_wire == verdict_raw, "differential (W) the wire text the module prepares: " + what + ": " + verdict_wire + " vs raw " + verdict_raw);
+  Check(verdict_exact == verdict_raw, "differential (E) the module's keys sent exact: " + what + ": " + verdict_exact + " vs raw " + verdict_raw);
+
+  // (M): the module's own walk over the engine's entries.
+  nr::NameListCache cache(source);
+  nr::ResolutionContext context;
+  context.target_schema = Uuid16Of(scope);
+  context.session_language = context.default_language = language;
+  nr::ResolveRequest request;
+  request.path = typed;
+  if (!object_class.empty()) request.accepts_class = [object_class](const std::string& c) { return c == object_class; };
+  const auto verdict_walk = VerdictOf(nr::Resolve(rule, cache, context, request));
+  Check(verdict_walk == verdict_raw, "differential (M) the module's own walk: " + what + ": " + verdict_walk + " vs raw " + verdict_raw);
+
+  ++counts->cases;
+  if (verdict_raw.rfind("found:", 0) == 0) ++counts->found;
+  else if (verdict_raw == "refused:CATALOG.NAME.NOT_FOUND") ++counts->not_found;
+  else ++counts->invalid;
+}
+
+std::string AsciiCase(std::string text, int mode) {  // 0 upper, 1 lower, 2 alternating
+  for (std::size_t i = 0; i < text.size(); ++i) {
+    char& ch = text[i];
+    const bool up = mode == 0 || (mode == 2 && i % 2 == 0);
+    if (up && ch >= 'a' && ch <= 'z') ch = static_cast<char>(ch - 'a' + 'A');
+    if (!up && ch >= 'A' && ch <= 'Z') ch = static_cast<char>(ch - 'A' + 'a');
+  }
+  return text;
+}
+
+DifferentialCounts DifferentialAgainstModule(const Offline& offline, const p::Uuid& bootstrap, const p::Uuid& service) {
+  DifferentialCounts counts;
+  RegistryNameSource source;
+  const auto& database = offline.database;
+  const auto& security_scope = offline.security_schema;
+  const auto language_of = [](const NameFact& f) { return TagFor(f.language); };
+
+  // Unqualified names of the principals' scope: every name of the bootstrap and the L5 principal (the forged names are
+  // among them) and every thirty-second other principal name, each in seven spellings, in its own language and in en.
+  std::size_t other = 0;
+  for (const auto& fact : offline.names) {
+    if (fact.scope != security_scope || fact.kind != kUserKind) continue;
+    if (fact.object != bootstrap && fact.object != service && (other++ % 32) != 0) continue;
+    std::set<std::pair<std::string, bool>> spellings{
+        {fact.text, false},      {AsciiCase(fact.text, 0), false}, {AsciiCase(fact.text, 1), false},
+        {AsciiCase(fact.text, 2), false}, {fact.text, true},       {AsciiCase(fact.text, 0), true},
+        {AsciiCase(fact.text, 1), true}};
+    std::set<std::string> languages{language_of(fact), "en"};
+    for (const auto& language : languages)
+      for (const auto& [text, quoted] : spellings)
+        DifferentialCase(source, &counts, {{text, quoted}}, language, security_scope, "",
+                         std::string(quoted ? "quoted " : "unquoted ") + "name in " + language);
+  }
+  // Names that are not names, and the empty name (a plain refusal today: name_required).
+  for (const char* text : {"", "fixture_owne", "fixture_ownerx", " fixture_owner", "no_such_principal_anywhere", "f"})
+    DifferentialCase(source, &counts, {{text, false}}, "en", security_scope, "", std::string("a non-name: ") + text);
+  DifferentialCase(source, &counts, {{"", true}}, "en", security_scope, "", "the quoted empty name");
+  // A kind filter and another scope.
+  DifferentialCase(source, &counts, {{std::string(kBootstrapName), false}}, "en", security_scope, "user", "the user class");
+  DifferentialCase(source, &counts, {{std::string(kBootstrapName), false}}, "en", security_scope, "role", "the role class");
+  DifferentialCase(source, &counts, {{std::string(kBootstrapName), false}}, "en", database, "", "a scope that does not hold it");
+  DifferentialCase(source, &counts, {{std::string(kBootstrapName), false}}, "de-DE", security_scope, "", "another language");
+
+  // Qualified: schema.name, from the root. The schema's own name is whatever the database scope calls the principals' scope.
+  for (const auto& schema : offline.names) {
+    if (schema.object != security_scope || schema.scope != database) continue;
+    for (const auto& leaf : offline.names) {
+      if (leaf.scope != security_scope || leaf.kind != kUserKind || (leaf.object != bootstrap && leaf.object != service) ||
+          !leaf.default_for_object)
+        continue;
+      for (int mode : {0, 1}) {
+        for (bool quoted_schema : {false, true}) {
+          DifferentialCase(source, &counts,
+                           {{AsciiCase(schema.text, mode), quoted_schema}, {leaf.text, leaf.quoted}},
+                           TagFor(leaf.language), database, "",
+                           std::string("a qualified name, schema ") + (quoted_schema ? "quoted" : "unquoted"));
+        }
+      }
+      DifferentialCase(source, &counts, {{schema.text, schema.quoted}, {AsciiCase(leaf.text, 0), false}},
+                       TagFor(leaf.language), database, "", "a qualified name, unquoted leaf");
+      DifferentialCase(source, &counts, {{"no_such_schema", false}, {leaf.text, leaf.quoted}},
+                       TagFor(leaf.language), database, "", "a qualified name, unknown schema");
+      DifferentialCase(source, &counts, {{"", false}, {leaf.text, leaf.quoted}}, TagFor(leaf.language), database, "",
+                       "a qualified name, empty schema step");
+    }
+  }
+  // The database scope's own names (the schemas), by class.
+  std::size_t in_database = 0;
+  for (const auto& fact : offline.names) {
+    if (fact.scope != database || (in_database++ % 3) != 0) continue;
+    DifferentialCase(source, &counts, {{fact.text, fact.quoted}}, TagFor(fact.language), database, ClassFor(fact.kind),
+                     "a name of the database scope");
+    DifferentialCase(source, &counts, {{AsciiCase(fact.text, 1), false}}, TagFor(fact.language), database, "",
+                     "a name of the database scope, lower unquoted");
+  }
+  Check(counts.cases >= 40 && counts.found >= 10 && counts.not_found >= 10 && counts.invalid >= 1 && counts.rewritten >= 10,
+        "the differential table covers found, not-found and refused cases, and the module rewrote names");
+  return counts;
+}
+
 int ServeMode(const fs::path& path, const std::string& state, const p::Uuid& database, const p::Uuid& bootstrap,
               const p::Uuid& service) {
   const auto directory = path.parent_path();
@@ -1081,6 +1303,15 @@ int ServeMode(const fs::path& path, const std::string& state, const p::Uuid& dat
   }
 
   if (state != "failed") {
+    // SB_PARSER_NAME_RESOLUTION differential (Part B step S1): see DifferentialAgainstModule.
+    {
+      const auto started_at = std::chrono::steady_clock::now();
+      const auto counts = DifferentialAgainstModule(offline, bootstrap, service);
+      std::cout << "INFO name_module_differential cases=" << counts.cases << " engine_calls=" << counts.engine_calls
+                << " found=" << counts.found << " not_found=" << counts.not_found << " refused_other=" << counts.invalid
+                << " rewritten=" << counts.rewritten << " seconds="
+                << std::chrono::duration<double>(std::chrono::steady_clock::now() - started_at).count() << std::endl;
+    }
     // The direct in-loop path (A1; S4c's login runs as loop work). The names source called ON the loop thread reads
     // directly and returns the same rows as the cross-thread call; the loop-thread-only entry refuses elsewhere; the
     // cross-thread submit refuses from the loop thread (the loop never waits on itself). New in Part A.

@@ -12471,6 +12471,13 @@ set_tests_properties(sbsql_sblr_alignment_catalog_agent_constants PROPERTIES
 # a name of a transaction that never committed). Per size two ctest entries (base states; forged-name states) and two
 # strace entries (serving+restricted; names+dead; the open of `failed` and `uncommitted` writes by construction):
 # 0 .sb.* and 0 write-class syscalls on the data descriptor.
+# SB_PARSER_NAME_RESOLUTION (Part B step S1): the differential half of this test links the parser-side name resolver.
+if(NOT TARGET sb_parser_name_resolution)
+  add_subdirectory(
+    "${PROJECT_SOURCE_DIR}/src/parsers/shared/name_resolution"
+    "${CMAKE_CURRENT_BINARY_DIR}/parsers_shared_name_resolution"
+  )
+endif()
 add_executable(sbsql_sblr_alignment_native_name_resolve native_name_resolve_test.cpp
   ${PROJECT_SOURCE_DIR}/src/server/native_database_loop.cpp)
 add_dependencies(sbsql_sblr_alignment_native_name_resolve sbsql_sblr_alignment_native_serving)
@@ -12480,7 +12487,7 @@ target_include_directories(sbsql_sblr_alignment_native_name_resolve PRIVATE
   ${PROJECT_SOURCE_DIR}/src
   ${PROJECT_SOURCE_DIR}/src/engine/internal_api)
 target_link_libraries(sbsql_sblr_alignment_native_name_resolve PRIVATE
-  sb_server_core sb_engine sb_engine_sblr sb_engine_internal_api sb_storage_database OpenSSL::Crypto)
+  sb_server_core sb_engine sb_engine_sblr sb_engine_internal_api sb_storage_database OpenSSL::Crypto sb_parser_name_resolution)
 target_compile_definitions(sbsql_sblr_alignment_native_name_resolve PRIVATE
   SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password"
   SB_NATIVE_SERVING_TEST_BIN="$<TARGET_FILE:sbsql_sblr_alignment_native_serving>")

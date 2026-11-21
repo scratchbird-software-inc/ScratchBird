@@ -11,6 +11,7 @@
 
 #include "embedded/embedded_engine_client.hpp"
 #include "core/uuid/uuid.hpp"
+#include "name_resolution/name_resolution.hpp"
 #include "wire/parser_server_ipc/binary_identity_io.hpp"
 #include "wire/parser_server_ipc/disconnect_result_validation.hpp"
 #include "wire/parser_server_ipc/sbps_statement_management_bind_codec.hpp"
@@ -984,6 +985,11 @@ PublicNameResolutionResult EmbeddedEngineClient::ResolveNamePublic(
         "sbp_sbsql.embedded"));
     return result;
   }
+  // SB_PARSER_NAME_RESOLUTION (Part B step S1): the name this parser sends is
+  // already folded by the SBsql rule (unquoted -> upper ASCII, quoted exact);
+  // the engine still folds too, which is idempotent on a folded name.
+  const auto prepared = scratchbird::parsers::name_resolution::PrepareSbsqlWireName(
+      presented_name, quoted, object_class);
   auto frame = BaseFrame(static_cast<std::uint16_t>(
                              scratchbird::server::sbps::MessageType::kResolveNameRequest),
                          session);
@@ -992,10 +998,10 @@ PublicNameResolutionResult EmbeddedEngineClient::ResolveNamePublic(
       : scratchbird::server::sbps::kSchemaResolveNameRequestV1;
   frame.payload = require_relation_descriptor
       ? ipc::EncodeResolveNameRequestPayloadV3(
-            session, presented_name, quoted, object_class, config, transaction,
-            0x01u)
-      : EncodeResolveNamePayload(session, presented_name, quoted, object_class,
-                                 config);
+            session, prepared.presented_name, prepared.quoted, object_class,
+            config, transaction, 0x01u)
+      : EncodeResolveNamePayload(session, prepared.presented_name,
+                                 prepared.quoted, object_class, config);
   const auto encoded = scratchbird::server::ResolveNamePublicFrameForEmbedded(
       frame, impl_->engine_state, &impl_->registry);
   const auto decoded = scratchbird::server::sbps::DecodeFrameBytes(
@@ -1032,9 +1038,14 @@ PublicNameResolutionResult EmbeddedEngineClient::ResolveNamePublic(
     ipc::PublicNameResolutionResult projected;
     ipc::DecodeResolveNameResultPayloadV3(decoded.frame->payload, true,
                                           &projected);
+    projected.canonical_name =
+        prepared.RestoreEcho(std::move(projected.canonical_name));
     return projected;
   }
-  return DecodePublicNamePayload(decoded.frame->payload, "resolved");
+  auto resolved = DecodePublicNamePayload(decoded.frame->payload, "resolved");
+  resolved.canonical_name =
+      prepared.RestoreEcho(std::move(resolved.canonical_name));
+  return resolved;
 #else
   (void)session;
   (void)presented_name;

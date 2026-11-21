@@ -10,6 +10,7 @@
 
 #include "cst/cst.hpp"
 #include "parser/cte_clause.hpp"
+#include "../../shared/name_resolution/name_resolution.hpp"
 
 #include <algorithm>
 #include <cstdint>
@@ -226,13 +227,14 @@ struct NativeIdentifierAstNode {
 // comparisons (column names wait for Q186). (Was: binder, parser and parser
 // wire each kept a copy that never equated a quoted and an unquoted name and
 // compared two unquoted names lower- or upper-folded.)
+// Update 2026-11-24 (Part B step S1): the one copy of this rule is the
+// parser-side name resolver, parsers/shared/name_resolution (SbsqlIdentifierKey,
+// SB_PARSER_NAME_RESOLUTION), which every parser-side name consumer shares.
+// (Was: the rule's body written out here.)
 inline std::string NativeIdentifierComponentKey(std::string_view spelling,
                                                 bool quoted) {
-  std::string key(spelling);
-  if (quoted) return key;
-  for (auto& ch : key)
-    if (ch >= 'a' && ch <= 'z') ch = static_cast<char>(ch - 'a' + 'A');
-  return key;
+  return scratchbird::parsers::name_resolution::SbsqlIdentifierKey(spelling,
+                                                                   quoted);
 }
 
 inline std::string NativeIdentifierComponentKey(

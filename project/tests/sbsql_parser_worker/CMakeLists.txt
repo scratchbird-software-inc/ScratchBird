@@ -7676,3 +7676,19 @@ if(NOT WIN32 AND TARGET sbl_sbsql_embedded_client_bridge AND TARGET sb_server_co
     LABELS "sbsql_central_import_refusal_wire_conformance;central_command_authority;exact_refusal;no_execution;sbsql_parser_worker"
   )
 endif()
+
+# SB_PARSER_NAME_RESOLUTION (Part B step S1): unit tests of the parser-side
+# name resolver. Standard library only; no engine, no server.
+if(NOT TARGET sb_parser_name_resolution)
+  add_subdirectory(
+    "${PROJECT_SOURCE_DIR}/src/parsers/shared/name_resolution"
+    "${CMAKE_CURRENT_BINARY_DIR}/parsers_shared_name_resolution"
+  )
+endif()
+add_executable(sbsql_name_resolution_test sbsql_name_resolution_test.cpp)
+target_compile_features(sbsql_name_resolution_test PRIVATE cxx_std_23)
+target_link_libraries(sbsql_name_resolution_test PRIVATE sb_parser_name_resolution)
+add_test(NAME sbsql_name_resolution_unit COMMAND sbsql_name_resolution_test)
+set_tests_properties(sbsql_name_resolution_unit PROPERTIES
+  LABELS "sbsql_parser_worker;sbsql_name_resolution;name_resolution;component_regression"
+  TIMEOUT 60)
