@@ -86,6 +86,10 @@ add_library(sb_storage_page
   transaction_header_page.cpp
   transaction_inventory_reader.cpp
   transaction_inventory_writer.cpp
+  careful_chain_support.cpp
+  session_ledger_record.cpp
+  session_ledger_page.cpp
+  session_ledger_chain.cpp
   allocation_map_inplace_page.cpp
   allocation_map_writer.cpp
 )

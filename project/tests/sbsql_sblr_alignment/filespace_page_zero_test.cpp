@@ -313,10 +313,11 @@ void Codecs() {
   for(unsigned k=0;k<root_types.size();++k) Check(disk::CanonicalPageZeroRootPageType(static_cast<disk::u16>(k))==root_types[k],"exact root symbol mapping");
   Check(disk::CanonicalPageZeroRootPageType(65535)==0,"unknown root kind");
   // SB_NATIVE_NAME_TREES: the name trees' roots, B-tree root pages (0x200).
-  // step4 (SB_NATIVE_COMMENT_TREE): kind 24 is the comment tree's root; nothing at 25.
+  // step4 (SB_NATIVE_COMMENT_TREE): kind 24 is the comment tree's root; plan 36 T3 (Q165): kind 25 is the session ledger's first page (type 0x301), nothing at 26.
   Check(disk::CanonicalPageZeroRootPageType(22)==0x200&&disk::CanonicalPageZeroRootPageType(23)==0x200&&
-      disk::CanonicalPageZeroRootPageType(24)==0x200&&disk::CanonicalPageZeroRootPageType(25)==0,
-      "step4: name tree root kinds 22 and 23, the comment tree at 24, nothing at 25");
+      disk::CanonicalPageZeroRootPageType(24)==0x200&&disk::CanonicalPageZeroRootPageType(25)==0x301&&
+      disk::CanonicalPageZeroRootPageType(26)==0,
+      "step4: name tree root kinds 22 and 23, the comment tree at 24; plan 36 T3 (Q165): the session ledger page at 25 (was: nothing at 25), nothing at 26");
   for(unsigned p=0;p<5;++p) for(unsigned role=1;role<=14;++role)
     for(unsigned state=1;state<=15;++state) for(unsigned flags=0;flags<4;++flags) {
       const auto v=Example(p,role,state,flags); const auto b=Oracle(v);

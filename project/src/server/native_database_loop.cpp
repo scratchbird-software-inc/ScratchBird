@@ -31,6 +31,7 @@
 #include "native_hosted_careful_write_sink.hpp"
 #include "node_uuid_issuer.hpp"
 #include "startup_credential_source_adapter.hpp"
+#include "session_ledger_chain.hpp"
 #include "transaction_inventory_reader.hpp"
 #include "transaction_inventory_writer.hpp"
 #include "transaction_snapshot.hpp"
@@ -232,6 +233,28 @@ const char* VerificationErrorName(NativeOpenVerificationError e) noexcept {
     case E::source_failure: return "source_failure";
     case E::source_mismatch: return "source_mismatch";
     case E::finding: return "finding";
+    case E::ledger_missing: return "ledger_missing";
+    case E::ledger_invalid: return "ledger_invalid";
+  }
+  return "unknown";
+}
+
+const char* LedgerFindingName(NativeLedgerFinding f) noexcept {
+  using F = NativeLedgerFinding;
+  switch (f) {
+    case F::none: return "none";
+    case F::root_type: return "root_type";
+    case F::root_filespace: return "root_filespace";
+    case F::root_unallocated: return "root_unallocated";
+    case F::root_creator: return "root_creator";
+    case F::root_owner: return "root_owner";
+    case F::chain_unreadable: return "chain_unreadable";
+    case F::chain_page_unallocated: return "chain_page_unallocated";
+    case F::chain_page_type: return "chain_page_type";
+    case F::chain_page_owner: return "chain_page_owner";
+    case F::record_reference: return "record_reference";
+    case F::header_citation: return "header_citation";
+    case F::inventory_unreadable: return "inventory_unreadable";
   }
   return "unknown";
 }
@@ -243,6 +266,7 @@ const char* VerificationStageName(NativeOpenVerificationStage s) noexcept {
     case S::identity: return "identity";
     case S::allocation: return "allocation";
     case S::inventory: return "inventory";
+    case S::session_ledger: return "session_ledger";
     case S::catalog_routes: return "catalog_routes";
     case S::complete: return "complete";
   }
@@ -363,6 +387,9 @@ struct NativeDatabaseLoop::Serving {
   // CompleteAndBegin is a new method of THIS writer, same restarted precondition (not implemented).
   std::optional<core::uuid::StandaloneUuidV7Issuer> issuer;
   std::optional<pg::TransactionInventoryWriter> writer;
+  // SB_SESSION_LEDGER (plan 36 T3/T4): the durable session ledger, constructed before the writer (the writer's binding
+  // names it), loaded by RunRestart, destroyed after the writer. Loop thread only.
+  std::optional<pg::SessionLedger> ledger;
   // S4d (SB_NATIVE_LOOP_TRANSACTIONS): what a transaction request needs to write through the runtime's write door
   // (the filespace and page profile the careful-write sink addresses), kept from the open, and the ownership
   // table: transaction order -> the opaque owner key and the transaction's UUID. Loop thread only; memory only.
@@ -388,6 +415,7 @@ struct NativeDatabaseLoop::Serving {
     bool ok = true;
     transactions.clear();  // abandoned transactions stay active in the file: dead at the next open's Restart
     writer.reset();
+    ledger.reset();  // the writer's binding named it
     issuer.reset();
     read.reset();
     if (runtime) {
@@ -1149,6 +1177,103 @@ NativeLoopTransactionResult NativeDatabaseLoop::CompleteAndBeginWorkOnLoopThread
   return CompleteAndBeginNow(request);
 }
 
+// SEARCH_KEY: SB_NATIVE_LOOP_LEDGER (plan 36 T4). See the header.
+NativeLoopLedgerResult NativeDatabaseLoop::AppendLedgerNow(const storage::page::SessionLedgerRecord& record) noexcept {
+  NativeLoopLedgerResult out;
+  try {
+    out.record_uuid = record.record_uuid;
+    out.error = AdmitTransactionWork();
+    if (out.error != NativeLoopTransactionError::none) return out;
+    auto& serving = *serving_;
+    if (!serving.ledger || !serving.ledger->loaded()) {
+      out.error = NativeLoopTransactionError::writer_refused;
+      out.ledger_error = pg::TransactionWriterErrorName(pg::TransactionWriterError::ledger_not_loaded);
+      return out;
+    }
+    pg::SessionLedgerAppendResult appended;
+    NativeLoopTransactionResult door;
+    if (!WithTransactionSink(serving, door, [&](storage::disk::CarefulWriteSink& sink) {
+          appended = serving.ledger->Append(sink, record);
+        })) {
+      out.error = door.error;
+      out.ledger_error = door.writer_error;
+      return out;
+    }
+    out.ordinal = appended.ordinal;
+    out.writes = appended.writes;
+    out.syncs = appended.syncs;
+    out.growth_writes = appended.growth_writes;
+    out.growth_syncs = appended.growth_syncs;
+    if (!appended.ok()) {
+      out.ledger_error = pg::TransactionWriterErrorName(appended.error);
+      if (appended.record_error != pg::SessionLedgerRecordError::none)
+        out.record_error = pg::SessionLedgerRecordErrorName(appended.record_error);
+      if (serving.ledger->failed()) {
+        out.error = NativeLoopTransactionError::writer_failed;
+        out.outcome_uncertain = true;
+        NoteTransactionWriterFailure();
+      } else {
+        out.error = NativeLoopTransactionError::writer_refused;
+      }
+      return out;
+    }
+    out.error = NativeLoopTransactionError::none;
+    return out;
+  } catch (...) {
+    out = {};
+    out.error = NativeLoopTransactionError::writer_refused;
+    out.ledger_error = "exception";
+    return out;
+  }
+}
+
+void NativeDatabaseLoop::HandleLedger(LedgerWork& work) noexcept { work.done.set_value(AppendLedgerNow(work.record)); }
+
+NativeLoopLedgerResult NativeDatabaseLoop::AppendLedgerRecordOnLoopThread(
+    const storage::page::SessionLedgerRecord& record) noexcept {
+  if (!on_loop_thread()) {
+    NativeLoopLedgerResult refused;
+    refused.error = NativeLoopTransactionError::invalid_request;
+    return refused;
+  }
+  return AppendLedgerNow(record);
+}
+
+std::future<NativeLoopLedgerResult> NativeDatabaseLoop::SubmitAppendLedgerRecord(storage::page::SessionLedgerRecord record) {
+  const auto refused = [](NativeLoopTransactionError error) {
+    std::promise<NativeLoopLedgerResult> promise;
+    NativeLoopLedgerResult result;
+    result.error = error;
+    promise.set_value(std::move(result));
+    return promise.get_future();
+  };
+  if (on_loop_thread()) return refused(NativeLoopTransactionError::invalid_request);  // the loop never waits on itself
+  LedgerWork work{std::move(record), {}};
+  auto future = work.done.get_future();
+  {
+    std::lock_guard<std::mutex> guard(mutex_);
+    if (const auto error = AdmitQueuedTransaction(); error != NativeLoopTransactionError::none) return refused(error);
+    queue_.emplace_back(std::move(work));
+  }
+  wake_.notify_one();
+  return future;
+}
+
+std::optional<storage::page::SessionLedgerEntry> NativeDatabaseLoop::FindLedgerEntryOnLoopThread(
+    const core::platform::Uuid& uuid) const {
+  if (!on_loop_thread() || !serving_ || !serving_->ledger) return std::nullopt;
+  if (const auto* entry = serving_->ledger->Find(uuid)) return *entry;
+  return std::nullopt;
+}
+std::optional<NativeLoopServingFacts> NativeDatabaseLoop::FactsOnLoopThread() const {
+  if (!on_loop_thread() || !serving_) return std::nullopt;
+  return serving_->facts;
+}
+std::uint64_t NativeDatabaseLoop::LedgerRecordCountOnLoopThread() const noexcept {
+  if (!on_loop_thread() || !serving_ || !serving_->ledger) return 0;
+  return serving_->ledger->record_count();
+}
+
 std::vector<std::uint64_t> NativeDatabaseLoop::OpenTransactionOrdersOnLoopThread() const {
   std::vector<std::uint64_t> orders;
   if (!on_loop_thread() || !serving_) return orders;
@@ -1418,6 +1543,10 @@ void NativeDatabaseLoop::Run() noexcept {
       HandleReadScope(*scope);
       continue;
     }
+    if (auto* ledger = std::get_if<LedgerWork>(&work)) {
+      HandleLedger(*ledger);
+      continue;
+    }
     if (auto* test = std::get_if<TestWork>(&work)) {
       test->work();
       test->done.set_value();
@@ -1503,6 +1632,21 @@ bool NativeDatabaseLoop::RunRestart(const NativeLoopOpenRequest& request,
       binding.allocation_root = *map_root;
       binding.issuer = &*serving.issuer;
     }
+    // SB_SESSION_LEDGER: page-zero root kind 25. The open verification already refused a file without one; the
+    // binding is built here, before the writer, because the writer's citation check names it.
+    const storage::disk::FilespaceRootReference* ledger_root = nullptr;
+    for (std::size_t i = 0; i < observed.identity.primary_root_count && i < observed.identity.primary_roots.size(); ++i)
+      if (observed.identity.primary_roots[i].kind == 25 && !ledger_root) ledger_root = &observed.identity.primary_roots[i];
+    if (!ledger_root) return reject("restart_binding", {{"error", "ledger_root_absent"}});
+    pg::SessionLedgerBinding ledger_binding;
+    ledger_binding.database_uuid = request.database_uuid;
+    ledger_binding.root = *ledger_root;
+    ledger_binding.read_only_database = binding.read_only_database;
+    ledger_binding.allocation_root = binding.allocation_root;
+    ledger_binding.issuer = binding.issuer;
+    serving.ledger.emplace(ledger_binding);
+    if (serving.ledger->page_size() == 0) return reject("restart_binding", {{"error", "ledger_binding_invalid"}});
+    binding.session_ledger = &*serving.ledger;
     serving.txn_binding = binding;
     serving.writer.emplace(binding);
     if (serving.writer->page_size() == 0) return reject("restart_binding", {{"error", "writer_binding_invalid"}});
@@ -1552,6 +1696,20 @@ bool NativeDatabaseLoop::RunRestart(const NativeLoopOpenRequest& request,
     if (restart.write_error != storage::disk::CarefulWriteError::none)
       report.write_error = storage::disk::CarefulWriteErrorName(restart.write_error);
     report.native_io_error = static_cast<std::int32_t>(restart.io.native_error);
+
+    // SB_SESSION_LEDGER: the ledger is read once (no write; a torn last record is only noted) and indexed, for the
+    // restarted and the restricted database alike (a restricted database reads its ledger, it cannot append).
+    if (!serving.writer->failed()) {
+      const auto loaded = serving.ledger->Load(sink);
+      if (!loaded.ok())
+        return reject("session_ledger", {{"error", pg::TransactionWriterErrorName(loaded.error)},
+                                         {"rule", pg::TransactionWriterErrorName(loaded.rule)},
+                                         {"page_error", Num(static_cast<unsigned>(loaded.page_error))},
+                                         {"ordinal", Num(loaded.failing_ordinal)}});
+      facts.ledger_records = loaded.records;
+      facts.ledger_pages = loaded.pages;
+      facts.ledger_torn_tail = loaded.torn_tail;
+    }
 
     if (restart.ok()) {
       // A clean file performs no write and no sync.
@@ -1815,12 +1973,21 @@ void NativeDatabaseLoop::HandleOpen(OpenWork& work) noexcept {
     if (!step("transaction_policies", Host::ResolveStartupTransactionPolicies(read))) return;
     const auto verified = Host::VerifyStartupDatabaseFile(read, limits.verification);
     if (!verified.ok())
-      return fail(Refusal(verified.error == NativeOpenVerificationError::finding ? "DATABASE.OPEN_VERIFICATION_FINDING"
-                                                                                 : "DATABASE.OPEN_VERIFICATION_FAILED",
-                          "open_verification",
-                          {{"stage", VerificationStageName(verified.stage)},
-                           {"error", VerificationErrorName(verified.error)},
-                           {"source_error", Num(static_cast<unsigned>(verified.source_error))}}));
+      return fail(Refusal(
+          verified.error == NativeOpenVerificationError::finding           ? "DATABASE.OPEN_VERIFICATION_FINDING"
+          : verified.error == NativeOpenVerificationError::ledger_missing ? "DATABASE.OPEN_VERIFICATION_LEDGER_MISSING"
+          : verified.error == NativeOpenVerificationError::ledger_invalid ? "DATABASE.OPEN_VERIFICATION_LEDGER_INVALID"
+                                                                          : "DATABASE.OPEN_VERIFICATION_FAILED",
+          "open_verification",
+          {{"stage", VerificationStageName(verified.stage)},
+           {"error", VerificationErrorName(verified.error)},
+           {"source_error", Num(static_cast<unsigned>(verified.source_error))},
+           {"ledger_finding", LedgerFindingName(verified.ledger_finding)},
+           {"ledger_rule", pg::TransactionWriterErrorName(static_cast<pg::TransactionWriterError>(verified.ledger_rule))},
+           {"ledger_page_error", Num(verified.ledger_page_error)},
+           {"ledger_record_error", Num(verified.ledger_record_error)},
+           {"ledger_ordinal", Num(verified.ledger_ordinal)},
+           {"ledger_page", Num(verified.ledger_page)}}));
 
     // ---- verified; S3d: the credential read ends, then Restart ----
     const auto& observed = *verified.observation;

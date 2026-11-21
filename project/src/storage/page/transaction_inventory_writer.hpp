@@ -146,6 +146,8 @@ namespace scratchbird::storage::page {
 // Not thread-safe: the owner serializes calls and holds whatever device guard
 // its sink needs across each call.
 
+class SessionLedger;  // session_ledger_chain.hpp
+
 enum class TransactionWriterError : std::uint8_t {
   none,
   invalid_request,      // bad binding or argument; nothing read or written
@@ -166,6 +168,26 @@ enum class TransactionWriterError : std::uint8_t {
   // and the binding asked to refuse then. Nothing was written, the writer is
   // not failed and has not restarted; result.unresolved lists the orders.
   unresolved_transactions,
+  // Plan 36 T4 (owner Q165 = 1): the session ledger. One distinct code per
+  // cause (owner Q193). The "durable before cited" refusals (Begin and
+  // CompleteAndBegin, header +80 attachment and +96 session) come before any
+  // write; the others are the ledger append's own refusals.
+  ledger_unavailable,                 // a header cites +80 or +96 and no session ledger is bound (or it is not loaded)
+  ledger_unknown_attachment,          // +80 names no complete attachment record
+  ledger_unknown_session,             // +96 (or a record's session) names no complete session record
+  ledger_wrong_kind,                  // the cited UUID is a complete record of another kind
+  ledger_principal_mismatch,          // the cited session's principal is not header +64
+  ledger_session_ended,               // the cited session has an end record
+  ledger_attachment_session_mismatch, // +80's attachment belongs to another session than +96
+  ledger_invalid,                     // the ledger chain on disk fails its checks, or changed underneath
+  ledger_full,                        // the ledger's bounded index is full
+  ledger_duplicate_record,            // a record with that UUID is already in the ledger
+  ledger_unknown_connection,          // an attachment names no complete connection record
+  ledger_unknown_predecessor,         // an attachment's predecessor is not a complete attachment record
+  ledger_predecessor_mismatch,        // the predecessor belongs to another session
+  ledger_generation_order,            // a settings change is not the session's next generation
+  ledger_invalid_record,              // the codec refused the record (record_error says why)
+  ledger_not_loaded,                  // the ledger was not loaded (or its load failed)
 };
 const char* TransactionWriterErrorName(TransactionWriterError error) noexcept;
 
@@ -190,6 +212,14 @@ struct TransactionWriterBinding {
   // and reports the orders. False (the default): Restart marks the dead slots
   // and reports the unresolved ones as it always did (existing writer tests).
   bool refuse_restart_with_unresolved = false;
+  // SB_SESSION_LEDGER (plan 36 T4, owner Q165 = 1): the durable session ledger
+  // the loop owns, loaded at open. "Durable before cited": a header that cites
+  // an attachment (+80) or a session (+96) is checked against it BEFORE the
+  // writer writes anything (Begin, CompleteAndBegin), and refused with a
+  // specific code (ledger_*) otherwise. A zero +80 and +96 cite nothing and
+  // need no ledger. A non-zero citation with NO ledger bound is refused
+  // ledger_unavailable (never a bypass). Not owned; it must outlive the writer.
+  const SessionLedger* session_ledger = nullptr;
 };
 
 struct TransactionWriterOutcome {

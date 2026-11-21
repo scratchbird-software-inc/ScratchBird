@@ -3772,8 +3772,12 @@ void ProducerNativeSource(unsigned profile,server::ServerProcessCryptoOwner& pro
             corrupt_last_byte_at=0;read_fault=0;
             if(!reached){Check(attempt.ok(),"the verification completes once no read is damaged");break;}
             ++positions;
-            const auto expected=sweep==2?OpenError::finding:OpenError::io_failure;
-            if(attempt.error!=expected||r.open_verification()){
+            // plan 36 T3 (Q165): a damaged read in the new session-ledger stage is a finding of that stage with its own
+            // code (ledger_invalid / ledger_missing), not the generic `finding` (was: only `finding`).
+            const bool ledger_finding=attempt.stage==server::NativeOpenVerificationStage::session_ledger&&
+                (attempt.error==OpenError::ledger_invalid||attempt.error==OpenError::ledger_missing);
+            const bool as_expected=sweep==2?(attempt.error==OpenError::finding||ledger_finding):attempt.error==OpenError::io_failure;
+            if(!as_expected||r.open_verification()){
               if(!misreported++)std::cerr<<"open verification "<<(sweep==2?"corrupted":"failed")<<" read "<<at
                   <<" reported="<<int(attempt.error)<<" stage="<<int(attempt.stage)<<" source="<<int(attempt.source_error)<<'\n';
             }

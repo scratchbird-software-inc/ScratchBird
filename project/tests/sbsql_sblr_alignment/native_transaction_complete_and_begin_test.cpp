@@ -44,6 +44,7 @@
 #include "native_catalog_relation_lease_reader.hpp"
 #include "filespace_page_zero.hpp"
 #include "transaction_inventory_writer.hpp"
+#include "session_ledger_chain.hpp"
 #include "transaction_inventory_reader.hpp"
 #include "transaction_inventory_page.hpp"
 #include "transaction_horizon_projection.hpp"
@@ -237,8 +238,15 @@ struct Base {
   std::string path;
   u32 size = 0;
   Uuid database, primary, profile;
-  d::FilespaceRootReference state_root, map_root;
+  d::FilespaceRootReference state_root, map_root, ledger_root;
   std::vector<byte> bytes;
+  // plan 36 T4 (owner Q165 = 1): "durable before cited". A header that cites an attachment (+80) or a session (+96) is
+  // checked against the session ledger, so the scenarios that state identities (identities = true) cite THESE records,
+  // appended once into the created file through the real ledger writer (was: random identities no record backed).
+  std::unique_ptr<pg::SessionLedger> ledger;
+  static Uuid LedgerPrincipal() { return Fixed(500); }
+  static Uuid LedgerSession() { return Fixed(502); }
+  static Uuid LedgerAttachment() { return Fixed(503); }
   explicit Base(unsigned index) {
     const auto& p = d::kCanonicalFilespacePageProfiles[index];
     size = p.page_size_bytes;
@@ -278,8 +286,9 @@ struct Base {
       for (const auto& root : zero.record->roots) {
         if (root.kind == 4) state_root = root;
         if (root.kind == 3) map_root = root;
+        if (root.kind == 25) ledger_root = root;
       }
-      Check(state_root.kind == 4 && map_root.kind == 3, "page zero names both chains' roots");
+      Check(state_root.kind == 4 && map_root.kind == 3 && ledger_root.kind == 25, "page zero names the chains' roots");
       Check(device.Close().ok(), "close");
     }
     bytes = ReadAll(path);
@@ -291,12 +300,44 @@ struct Base {
     const auto creator = pg::TransactionHeaderAt(*headers.view, 1);
     Check(creator && creator->commit_time_utc_ns, "the creator is committed with a commit time");
     kT = creator->commit_time_utc_ns / 1'000'000 + 1000;
+    // The cited records: a connection, a session of LedgerPrincipal, and an attachment of that session to it.
+    {
+      pg::SessionLedgerBinding lb;
+      lb.database_uuid = database;
+      lb.root = ledger_root;
+      ledger = std::make_unique<pg::SessionLedger>(lb);
+      Check(ledger->Load(sink).ok(), "the created file's empty session ledger loads");
+      pg::LedgerConnectionRecord c;
+      c.listener_uuid = Fixed(504);
+      c.parser_instance_uuid = Fixed(505);
+      c.opened_at_utc_ns = 1'000'000'000;
+      pg::LedgerSessionRecord se;
+      se.principal_uuid = LedgerPrincipal();
+      se.engine_instance_uuid = Fixed(506);
+      se.opened_at_utc_ns = 1'000'000'001;
+      pg::LedgerAttachmentRecord a;
+      a.session_uuid = LedgerSession();
+      a.connection_uuid = Fixed(501);
+      a.engine_instance_uuid = Fixed(506);
+      a.at_utc_ns = 1'000'000'002;
+      const auto put = [&](Uuid id, pg::LedgerBody body) {
+        pg::SessionLedgerRecord r;
+        r.record_uuid = id;
+        r.body = std::move(body);
+        Check(ledger->Append(sink, r).ok(), "append a cited ledger record");
+      };
+      put(Fixed(501), c);
+      put(LedgerSession(), se);
+      put(LedgerAttachment(), a);
+      bytes = sink.image();
+    }
   }
   pg::TransactionWriterBinding Binding(u::StandaloneUuidV7Issuer* issuer, bool read_only = false) const {
     pg::TransactionWriterBinding b;
     b.database_uuid = database;
     b.state_root = state_root;
     b.read_only_database = read_only;
+    b.session_ledger = ledger.get();
     if (issuer) {
       b.allocation_root = map_root;
       b.issuer = issuer;
@@ -525,9 +566,11 @@ pg::TransactionHeaderRecord Header(u64 ms, unsigned salt, bool read_only = false
   r.isolation_profile = 2;
   if (identities) {
     r.engine_instance_uuid = V7(ms, salt + 1000);
-    r.principal_or_agent_uuid = V7(ms, salt + 2000);
-    r.attachment_uuid = V7(ms, salt + 3000);
-    r.session_uuid = V7(ms, salt + 4000);
+    // plan 36 T4 (Q165): the cited records exist in the ledger (Base): same principal, session and attachment for
+    // every scenario (was: V7(ms, salt + 2000 / 3000 / 4000), backed by no record).
+    r.principal_or_agent_uuid = Base::LedgerPrincipal();
+    r.attachment_uuid = Base::LedgerAttachment();
+    r.session_uuid = Base::LedgerSession();
     r.policy_snapshot_uuid = V7(ms, salt + 5000);
   }
   return r;

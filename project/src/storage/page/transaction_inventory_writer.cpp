@@ -1,6 +1,8 @@
 // Copyright (c) 2026 ScratchBird Software Inc.
 // SPDX-License-Identifier: MPL-2.0
 #include "transaction_inventory_writer.hpp"
+#include "careful_chain_support.hpp"
+#include "session_ledger_chain.hpp"
 #include "transaction_inventory_reader.hpp"
 #include "transaction_state_restart.hpp"
 #include "transaction_horizon_projection.hpp"
@@ -34,25 +36,6 @@ Result Refuse(E error, TipPageError page_error = TipPageError::none) {
   return r;
 }
 
-// Reads one page through the sink into `out` (appended).
-bool ReadPage(disk::CarefulWriteSink& sink, u32 page_size, u64 number, std::vector<byte>& out,
-              TransactionWriterOutcome& result) {
-  if (number == 0 || number > std::numeric_limits<u64>::max() / page_size) {
-    result.error = E::invalid_inventory;
-    result.page_error = TipPageError::invalid_link;
-    return false;
-  }
-  const auto at = out.size();
-  out.resize(at + page_size);
-  const auto io = sink.ReadAt(number * page_size, std::span<byte>(out).subspan(at, page_size));
-  if (!io.ok() || io.bytes_transferred != page_size) {
-    result.error = E::io_failure;
-    result.io = io;
-    return false;
-  }
-  return true;
-}
-
 // Reads and checks both chains. The first state page is bound to the root's
 // identity; the rest of the structure is CheckTransactionInventoryImages.
 bool ReadChains(disk::CarefulWriteSink& sink, const TransactionWriterBinding& binding, u32 page_size, Chains& chains,
@@ -70,7 +53,7 @@ bool ReadChains(disk::CarefulWriteSink& sink, const TransactionWriterBinding& bi
       result.page_error = TipPageError::invalid_link;
       return false;
     }
-    if (!ReadPage(sink, page_size, page, chains.state, result)) return false;
+    if (!detail::ReadChainPage(sink, page_size, page, chains.state, result)) return false;
     const auto image = std::span<const byte>(chains.state).subspan(i * page_size, page_size);
     const auto d = DecodeTransactionStatePage(image, i == 0 ? &first : nullptr);
     if (!d.ok() || d.view->tip_sequence != i || d.view->header.page_number != page) {
@@ -89,7 +72,7 @@ bool ReadChains(disk::CarefulWriteSink& sink, const TransactionWriterBinding& bi
       result.page_error = TipPageError::invalid_link;
       return false;
     }
-    if (!ReadPage(sink, page_size, page, chains.headers, result)) return false;
+    if (!detail::ReadChainPage(sink, page_size, page, chains.headers, result)) return false;
     const auto image = std::span<const byte>(chains.headers).subspan(i * page_size, page_size);
     const auto d = DecodeTransactionHeaderPage(image);
     if (!d.ok() || d.view->sequence != i || d.view->header.page_number != page) {
@@ -115,149 +98,52 @@ std::span<byte> PageOf(std::vector<byte>& images, u32 page_size, std::size_t ind
   return std::span<byte>(images).subspan(index * page_size, page_size);
 }
 
-// Adds one edited unit to the plan: the unit's new bytes, and its bytes
-// before the edit as the preimage the plan checks on disk before writing.
-disk::CarefulWriteAddResult AddUnit(disk::CarefulWritePlan& plan, u64 page_number, u32 page_size,
-                                    std::span<const byte> image, const TipPageEdit& edit) {
-  return plan.Add(page_number * page_size + edit.unit_offset,
-                  image.subspan(edit.unit_offset, kTransactionStateWriteUnitBytes),
-                  std::span<const byte>(edit.preimage));
-}
-
-// Runs a plan and records its effects. Returns true on success. A failure
-// after a write or sync was attempted fails the writer.
-bool Run(disk::CarefulWritePlan& plan, disk::CarefulWriteSink& sink, disk::CarefulWriteBarrierPolicy policy,
-         TransactionWriterOutcome& result, bool& failed,
-         disk::CarefulWriteNodeId* failed_node = nullptr) {
-  const auto r = plan.Execute(sink, policy);
-  if (failed_node) *failed_node = r.failed_node;
-  result.write_error = r.error;
-  result.io = r.io;
-  result.writes = r.written;
-  result.syncs = r.syncs;
-  if (r.ok()) {
-    result.error = E::none;
-    return true;
-  }
-  const bool attempted = r.written > 0 || r.syncs > 0 || r.error == CarefulWriteError::write_failed ||
-                         r.error == CarefulWriteError::barrier_sync_failed ||
-                         r.error == CarefulWriteError::final_sync_failed ||
-                         r.error == CarefulWriteError::sink_exception;
-  if (attempted) {
-    failed = true;
-    result.error = E::write_failed;
-  } else if (r.error == CarefulWriteError::preimage_read_failed) {
-    result.error = E::io_failure;
-  } else if (r.error == CarefulWriteError::preimage_mismatch) {
-    result.error = E::invalid_inventory;  // the file changed after it was read
-  } else {
-    result.error = E::resource_exhausted;
-  }
-  return false;
-}
-
-// One growth step (W2c): allocate a page from the map (created by the
-// system), format it as the next page of the state chain (state = true) or the
-// header chain, then link it from the chain's last page; its own plan, each
-// write durable before the next. On failure result carries the refusal.
+// One growth step (W2c): the shared careful-write growth of an in-place chain
+// (careful_chain_support.cpp, also the session ledger's), told how to format a
+// state or header page and how to link it from the chain's last page. On
+// failure result carries the refusal.
 bool GrowChain(disk::CarefulWriteSink& sink, const TransactionWriterBinding& binding, u32 page_size, Chains& chains,
                bool state, TransactionBeginResult& result, bool& failed) {
-  auto loaded = AllocationMapChain::Load(sink, {binding.database_uuid, *binding.allocation_root});
-  if (!loaded.ok()) {
-    result.allocation_error = loaded.error;
-    result.error = loaded.error == AllocationWriteError::io_failure ? E::io_failure : E::invalid_inventory;
-    result.io = loaded.io;
-    return false;
-  }
-  const auto page_id = binding.issuer->Issue(scratchbird::core::platform::UuidKind::page);
-  const auto allocation_id = binding.issuer->Issue(scratchbird::core::platform::UuidKind::object);
-  if (!page_id.ok() || !allocation_id.ok()) {
-    result.error = E::resource_exhausted;
-    return false;
-  }
-  disk::CarefulWritePlan plan;
-  const PageAllocationRequest request{kTransactionStatePageType, binding.state_root.object_uuid, page_id.value->value,
-                                      allocation_id.value->value, {}, 0};
-  const auto planned = loaded.chain->PlanAllocate(plan, request);
-  if (!planned.ok()) {
-    result.allocation_error = planned.error;
-    result.error = planned.error == AllocationWriteError::filespace_full ? E::chain_full : E::invalid_inventory;
-    if (planned.error == AllocationWriteError::filespace_full) result.page_error = TipPageError::invalid_slot;
-    return false;
-  }
-  // The new page, formatted empty; nothing reaches it until the link.
-  std::vector<byte> image(page_size);
-  const disk::NativeCommonPageHeader header{page_size, kTransactionStatePageType, binding.database_uuid,
-                                            binding.state_root.filespace_uuid, page_id.value->value,
-                                            planned.page_number, 1, 0, binding.state_root.page_size_profile_uuid};
-  TipPageError formatted = TipPageError::none;
-  if (state) {
-    TipPageFormat f;
-    f.header = header;
-    f.tip_sequence = chains.state_pages.size();
-    formatted = FormatTransactionStatePage(f, image);
-  } else {
-    TransactionHeaderPageFormat f;
-    f.header = header;
-    f.sequence = chains.header_pages.size();
-    formatted = FormatTransactionHeaderPage(f, image);
-  }
-  if (formatted != TipPageError::none) {
-    result.error = E::invalid_inventory;
-    result.page_error = formatted;
-    return false;
-  }
   auto& images = state ? chains.state : chains.headers;
   const auto& numbers = state ? chains.state_pages : chains.header_pages;
-  auto last = PageOf(images, page_size, numbers.size() - 1);
-  const auto link = state ? SetTransactionStateNextPage(last, planned.page_number)
-                          : SetTransactionHeaderNextPage(last, planned.page_number);
-  if (!link.ok() || !link.changed) {
-    result.error = E::invalid_inventory;
-    result.page_error = link.ok() ? TipPageError::invalid_link : link.error;
-    return false;
-  }
-  const auto page_node = plan.Add(planned.page_number * page_size, image);
-  const auto link_node = AddUnit(plan, numbers.back(), page_size, last, link);
-  if (!page_node.ok() || !link_node.ok() || plan.Before(planned.last_node, page_node.node) != CarefulWriteError::none ||
-      plan.Before(page_node.node, link_node.node) != CarefulWriteError::none) {
-    result.error = E::resource_exhausted;
-    return false;
-  }
-  // Owner Q76 = 1: a record sharing the state's map unit is written, durable,
-  // by its own plan first.
-  bool record_written = false;
-  if (planned.record_first()) {
-    disk::CarefulWritePlan first;
-    if (!PlanAllocationRecordFirst(first, planned).ok()) {
-      result.error = E::resource_exhausted;
-      return false;
+  detail::ChainGrowthSpec spec;
+  spec.database_uuid = binding.database_uuid;
+  spec.allocation_root = *binding.allocation_root;
+  spec.issuer = binding.issuer;
+  spec.barrier_policy = binding.barrier_policy;
+  spec.page_size = page_size;
+  spec.page_type = kTransactionStatePageType;
+  spec.owner_object = binding.state_root.object_uuid;
+  spec.filespace_uuid = binding.state_root.filespace_uuid;
+  spec.page_size_profile_uuid = binding.state_root.page_size_profile_uuid;
+  spec.last_image = PageOf(images, page_size, numbers.size() - 1);
+  spec.last_page_number = numbers.back();
+  const u64 sequence = numbers.size();
+  spec.format = [&](const disk::NativeCommonPageHeader& header, std::span<byte> image) {
+    if (state) {
+      TipPageFormat f;
+      f.header = header;
+      f.tip_sequence = sequence;
+      return FormatTransactionStatePage(f, image);
     }
-    TransactionWriterOutcome record;
-    const bool wrote = Run(first, sink, binding.barrier_policy, record, failed);
-    result.growth_writes += record.writes;
-    result.growth_syncs += record.syncs;
-    record_written = record.writes > 0;
-    if (!wrote) {
-      result.error = record.error;
-      result.write_error = record.write_error;
-      result.io = record.io;
-      return false;
-    }
-  }
-  TransactionWriterOutcome growth;
-  bool ran = Run(plan, sink, binding.barrier_policy, growth, failed);
-  if (!ran && record_written && !failed) {
-    // The record is already on the file: the allocation was attempted.
-    failed = true;
-    growth.error = E::write_failed;
-  }
-  result.growth_writes += growth.writes;
-  result.growth_syncs += growth.syncs;
-  if (!ran) {
-    result.error = growth.error;
-    result.write_error = growth.write_error;
-    result.io = growth.io;
+    TransactionHeaderPageFormat f;
+    f.header = header;
+    f.sequence = sequence;
+    return FormatTransactionHeaderPage(f, image);
+  };
+  spec.link = [&](std::span<byte> last, u64 next_page) {
+    return state ? SetTransactionStateNextPage(last, next_page) : SetTransactionHeaderNextPage(last, next_page);
+  };
+  detail::ChainGrowthOutcome grown;
+  const bool ok = detail::GrowChainByOnePage(sink, spec, grown, failed);
+  result.growth_writes += grown.growth_writes;
+  result.growth_syncs += grown.growth_syncs;
+  if (!ok) {
+    result.error = grown.error;
+    result.page_error = grown.page_error;
+    result.allocation_error = grown.allocation_error;
+    result.write_error = grown.write_error;
+    result.io = grown.io;
     return false;
   }
   ++(state ? result.grown_state_pages : result.grown_header_pages);
@@ -407,6 +293,17 @@ E CompleteRecord(const Chains& chains, u32 page_size, u64 now_utc_ns, TipStateCo
   return header_error == TransactionHeaderError::none ? E::none : E::invalid_header;
 }
 
+// SB_SESSION_LEDGER, durable before cited (plan 36 T4): the citations of a
+// header (+80 attachment, +96 session; the session's principal must be +64),
+// against the ledger bound to the writer. none when the header cites nothing.
+// Reads only; every caller runs it before its first write.
+E CheckLedgerCitations(const TransactionWriterBinding& binding, const TransactionHeaderRecord& header) {
+  if (header.attachment_uuid.is_nil() && header.session_uuid.is_nil()) return E::none;
+  if (!binding.session_ledger) return E::ledger_unavailable;
+  return binding.session_ledger->CheckHeaderCitation(header.attachment_uuid, header.session_uuid,
+                                                     header.principal_or_agent_uuid);
+}
+
 }  // namespace
 
 const char* TransactionWriterErrorName(TransactionWriterError error) noexcept {
@@ -427,6 +324,22 @@ const char* TransactionWriterErrorName(TransactionWriterError error) noexcept {
     case E::write_failed: return "write_failed";
     case E::resource_exhausted: return "resource_exhausted";
     case E::unresolved_transactions: return "unresolved_transactions";
+    case E::ledger_unavailable: return "ledger_unavailable";
+    case E::ledger_unknown_attachment: return "ledger_unknown_attachment";
+    case E::ledger_unknown_session: return "ledger_unknown_session";
+    case E::ledger_wrong_kind: return "ledger_wrong_kind";
+    case E::ledger_principal_mismatch: return "ledger_principal_mismatch";
+    case E::ledger_session_ended: return "ledger_session_ended";
+    case E::ledger_attachment_session_mismatch: return "ledger_attachment_session_mismatch";
+    case E::ledger_invalid: return "ledger_invalid";
+    case E::ledger_full: return "ledger_full";
+    case E::ledger_duplicate_record: return "ledger_duplicate_record";
+    case E::ledger_unknown_connection: return "ledger_unknown_connection";
+    case E::ledger_unknown_predecessor: return "ledger_unknown_predecessor";
+    case E::ledger_predecessor_mismatch: return "ledger_predecessor_mismatch";
+    case E::ledger_generation_order: return "ledger_generation_order";
+    case E::ledger_invalid_record: return "ledger_invalid_record";
+    case E::ledger_not_loaded: return "ledger_not_loaded";
   }
   return "unknown";
 }
@@ -492,7 +405,7 @@ TransactionRestartResult TransactionInventoryWriter::Restart(disk::CarefulWriteS
                .ok())
         return Refuse<R>(E::resource_exhausted);
     }
-    if (Run(plan, sink, binding_.barrier_policy, result, failed_)) restarted_ = true;
+    if (detail::RunChainPlan(plan, sink, binding_.barrier_policy, result, failed_)) restarted_ = true;
     return result;
   } catch (const std::bad_alloc&) {
     return Refuse<R>(E::resource_exhausted);
@@ -514,6 +427,20 @@ TransactionBeginResult TransactionInventoryWriter::Begin(disk::CarefulWriteSink&
       !(header.database_uuid.is_nil() || header.database_uuid == binding_.database_uuid))
     return Refuse<R>(E::invalid_request);
   try {
+    // Durable before cited: the header is validated (with a provisional order,
+    // the codec's only order rule is non-zero) and its citations are checked
+    // BEFORE anything is read for a write, so chain growth cannot run first.
+    {
+      TransactionHeaderRecord probe = header;
+      probe.transaction_order = 1;
+      probe.database_uuid = binding_.database_uuid;
+      if (const auto valid = ValidateTransactionHeaderRecord(probe); valid != TransactionHeaderError::none) {
+        auto refused = Refuse<R>(E::invalid_header);
+        refused.header_error = valid;
+        return refused;
+      }
+      if (const auto cited = CheckLedgerCitations(binding_, header); cited != E::none) return Refuse<R>(cited);
+    }
     R result;
     Chains chains;
     if (!ReadChains(sink, binding_, page_size_, chains, result)) return result;
@@ -558,15 +485,15 @@ TransactionBeginResult TransactionInventoryWriter::Begin(disk::CarefulWriteSink&
       return refused;
     }
     disk::CarefulWritePlan plan;
-    const auto a = AddUnit(plan, chains.state_pages[0], page_size_, first, counters_edit);
-    const auto b = AddUnit(plan, chains.header_pages[header_slot->sequence], page_size_, header_image, header_edit);
+    const auto a = detail::AddChainUnit(plan, chains.state_pages[0], page_size_, first, counters_edit);
+    const auto b = detail::AddChainUnit(plan, chains.header_pages[header_slot->sequence], page_size_, header_image, header_edit);
     const auto c =
-        AddUnit(plan, chains.state_pages[state_slot->tip_sequence], page_size_, state_image, word_edit);
+        detail::AddChainUnit(plan, chains.state_pages[state_slot->tip_sequence], page_size_, state_image, word_edit);
     if (!a.ok() || !b.ok() || !c.ok() || plan.Before(a.node, b.node) != CarefulWriteError::none ||
         plan.Before(b.node, c.node) != CarefulWriteError::none)
       return Refuse<R>(E::resource_exhausted);
     result.counters = counters;
-    Run(plan, sink, binding_.barrier_policy, result, failed_);
+    detail::RunChainPlan(plan, sink, binding_.barrier_policy, result, failed_);
     return result;
   } catch (const std::bad_alloc&) {
     return Refuse<R>(E::resource_exhausted);
@@ -626,14 +553,14 @@ TransactionCompleteResult TransactionInventoryWriter::Complete(disk::CarefulWrit
     if (!header_edit.ok() || !word_edit.ok() || !header_edit.changed || !word_edit.changed)
       return refuse(E::invalid_inventory);
     disk::CarefulWritePlan plan;
-    const auto a = AddUnit(plan, chains.header_pages[header_slot.sequence], page_size_, header_image, header_edit);
+    const auto a = detail::AddChainUnit(plan, chains.header_pages[header_slot.sequence], page_size_, header_image, header_edit);
     const auto b =
-        AddUnit(plan, chains.state_pages[state_slot.tip_sequence], page_size_, state_image, word_edit);
+        detail::AddChainUnit(plan, chains.state_pages[state_slot.tip_sequence], page_size_, state_image, word_edit);
     if (!a.ok() || !b.ok() || plan.Before(a.node, b.node) != CarefulWriteError::none)
       return refuse(E::resource_exhausted);
     result.completed_at_utc_ns = at;
     disk::CarefulWriteNodeId stopped = disk::kCarefulWriteNoNode;
-    if (!Run(plan, sink, binding_.barrier_policy, result, failed_, &stopped)) {
+    if (!detail::RunChainPlan(plan, sink, binding_.barrier_policy, result, failed_, &stopped)) {
       // Uncertain only once the state byte's write was attempted: a failed
       // write of it (which may have reached the file) or a failed final sync
       // after it was written.
@@ -687,6 +614,13 @@ TransactionCompleteAndBeginResult TransactionInventoryWriter::CompleteAndBegin(
     if (const auto valid = ValidateTransactionHeaderRecord(record_m); valid != TransactionHeaderError::none) {
       auto refused = refuse(E::invalid_header);
       refused.header_error = valid;
+      refused.replacement_order = m;
+      return refused;
+    }
+    // Durable before cited (plan 36 T4): m's citations, before anything is
+    // prepared or written (chain growth below is a write).
+    if (const auto cited = CheckLedgerCitations(binding_, record_m); cited != E::none) {
+      auto refused = refuse(cited);
       refused.replacement_order = m;
       return refused;
     }
@@ -763,21 +697,21 @@ TransactionCompleteAndBeginResult TransactionInventoryWriter::CompleteAndBegin(
     const auto page_h_n = chains.header_pages[header_slot_n.sequence];
     const auto page_s_m = chains.state_pages[state_slot_m->tip_sequence];
     const auto page_s_n = chains.state_pages[state_slot_n.tip_sequence];
-    nodes.push_back(AddUnit(plan, chains.state_pages[0], page_size_, first, w1));  // W1
+    nodes.push_back(detail::AddChainUnit(plan, chains.state_pages[0], page_size_, first, w1));  // W1
     disk::CarefulWriteAddResult n5{};
     if (merge_headers) {
-      nodes.push_back(AddUnit(plan, page_h_m, page_size_, header_image_m, w2));  // [W2 W4]: W4 may come early
+      nodes.push_back(detail::AddChainUnit(plan, page_h_m, page_size_, header_image_m, w2));  // [W2 W4]: W4 may come early
     } else {
-      nodes.push_back(AddUnit(plan, page_h_m, page_size_, header_image_m, w2));  // W2
-      if (merge_words) nodes.push_back(AddUnit(plan, page_h_n, page_size_, header_image_n, w4));  // W4 before [W3 W5]
+      nodes.push_back(detail::AddChainUnit(plan, page_h_m, page_size_, header_image_m, w2));  // W2
+      if (merge_words) nodes.push_back(detail::AddChainUnit(plan, page_h_n, page_size_, header_image_n, w4));  // W4 before [W3 W5]
     }
     if (merge_words) {
-      n5 = AddUnit(plan, page_s_m, page_size_, state_image_m, w3);  // [W3 W5]: after W4
+      n5 = detail::AddChainUnit(plan, page_s_m, page_size_, state_image_m, w3);  // [W3 W5]: after W4
       nodes.push_back(n5);
     } else {
-      nodes.push_back(AddUnit(plan, page_s_m, page_size_, state_image_m, w3));  // W3
-      if (!merge_headers) nodes.push_back(AddUnit(plan, page_h_n, page_size_, header_image_n, w4));  // W4
-      n5 = AddUnit(plan, page_s_n, page_size_, state_image_n, w5);  // W5
+      nodes.push_back(detail::AddChainUnit(plan, page_s_m, page_size_, state_image_m, w3));  // W3
+      if (!merge_headers) nodes.push_back(detail::AddChainUnit(plan, page_h_n, page_size_, header_image_n, w4));  // W4
+      n5 = detail::AddChainUnit(plan, page_s_n, page_size_, state_image_n, w5);  // W5
       nodes.push_back(n5);
     }
     bool built = true;
@@ -796,7 +730,7 @@ TransactionCompleteAndBeginResult TransactionInventoryWriter::CompleteAndBegin(
     result.merged_headers = merge_headers;
     result.merged_state_words = merge_words;
     disk::CarefulWriteNodeId stopped = disk::kCarefulWriteNoNode;
-    if (!Run(plan, sink, binding_.barrier_policy, result, failed_, &stopped)) {
+    if (!detail::RunChainPlan(plan, sink, binding_.barrier_policy, result, failed_, &stopped)) {
       // Uncertain only once the write that holds n's state byte was attempted
       // (a failed write of it may have reached the file), or when the final
       // sync after it failed.

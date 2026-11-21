@@ -62,6 +62,10 @@ struct NativeCreationCatalogLayout {
   // caller asked for it. The comments relation is empty at create, so the tree
   // is its root alone, with no cells.
   std::optional<u64> comment_tree_root;
+  // SB_SESSION_LEDGER_ROOT (plan 36 T3, owner Q165 = 1): the session ledger's
+  // first page, the LAST page planned (after every page that existed before it,
+  // so no earlier page number moves), when the caller asked for it.
+  std::optional<u64> session_ledger_page;
 };
 // SB_NATIVE_NAME_TREES. One cell of a name tree before placement: the names
 // relation row it indexes (an index into seed[1]), its key and its included
@@ -157,7 +161,7 @@ struct NativeCreationLayoutResult {
 // No identities, authorization, memory grants, writes or configuration defaults.
 inline NativeCreationLayoutResult PlanNativeCreationCatalogLayout(
     u64 size,u64 maps,u64 total,u64 budget,const NativeCreationCatalogSeed& seed,
-    const NativeCreationCatalogIndexes& indexes,bool name_trees=false,bool comment_tree=false) noexcept {
+    const NativeCreationCatalogIndexes& indexes,bool name_trees=false,bool comment_tree=false,bool session_ledger=false) noexcept {
   using E=NativeCreationLayoutError;
   using B=NativeCreationCapacityBound;
   B bound=B::none;  // Q144: set before each capacity refusal below
@@ -279,6 +283,12 @@ inline NativeCreationLayoutResult PlanNativeCreationCatalogLayout(
       if(plan.image_count>=total){bound=B::total_pages;return fail(E::capacity_exceeded);}
       if(plan.image_count>=budget/size-2){bound=B::image_budget;return fail(E::resource_exhausted);}
       plan.comment_tree_root=plan.image_count++;
+    }
+    if(session_ledger){
+      // SB_SESSION_LEDGER_ROOT: one empty page, after everything else.
+      if(plan.image_count>=total){bound=B::total_pages;return fail(E::capacity_exceeded);}
+      if(plan.image_count>=budget/size-2){bound=B::image_budget;return fail(E::resource_exhausted);}
+      plan.session_ledger_page=plan.image_count++;
     }
     return {E::none,std::move(plan),B::none};
   }catch(E e){return fail(e);}

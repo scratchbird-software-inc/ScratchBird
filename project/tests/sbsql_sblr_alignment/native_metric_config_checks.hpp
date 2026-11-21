@@ -325,7 +325,8 @@ void NativeMetricConfigChecks(const fs::path& directory) {
         .template operator()<db::NativeFilespaceInitializationRequest>(),
         "a create request carries no inventory-format choice");
     const auto plan_for=[&](u64 total){return db::detail::PlanNativeCreationCatalogLayout(page_bytes,
-        (total+coverage-1)/coverage,total,deep_pages*page_bytes,deep_seed,construction_indexes);};
+        (total+coverage-1)/coverage,total,deep_pages*page_bytes,deep_seed,construction_indexes,
+        false,false,true);};  // plan 36 T3 (Q165): plan with the session ledger page the production create always adds (was: default, no ledger)
     const auto fits=plan_for(exhausted_total),short_one=plan_for(exhausted_total-1);
     Check(fits.ok()&&fits.layout->image_count==exhausted_total&&fits.layout->relations[0].branches.size()==1&&
         short_one.error==db::detail::NativeCreationLayoutError::capacity_exceeded,
@@ -383,7 +384,8 @@ void NativeMetricConfigChecks(const fs::path& directory) {
     // step4 (SB_NATIVE_COMMENT_RELATION): + one page, the head leaf of role 7
     // (the comments relation; unindexed here, only role 1 is), allocated after
     // the header page; the comment tree is not requested here.
-    const u64 exact=(maps+15+1+base_pages+navigation+2)*page_bytes;
+    // plan 36 T3 (Q165): + the session ledger page (was maps+15+1).
+    const u64 exact=(maps+15+1+1+base_pages+navigation+2)*page_bytes;
     const auto path=fixture.Next();disk::FileDevice device;
     Check(device.Open(path.string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"exact indexed image budget owner");
     Arm();auto refused=db::InitializeIndexedNativeCreationWorkspaceOnOpenDevice(device,dense_request,seed,

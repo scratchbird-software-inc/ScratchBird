@@ -56,6 +56,7 @@
 // the database ownership (the flock) is never released before the loop thread
 // has retired every resource that depends on it.
 
+#include "session_ledger_chain.hpp"
 #include "careful_write.hpp"
 #include "engine/internal_api/native_served_database_facts.hpp"
 #include "database_ownership.hpp"
@@ -168,6 +169,10 @@ struct NativeLoopServingFacts {
   core::platform::Uuid runtime_binding_uuid;
   std::uint64_t transactions = 0, active_transactions = 0, in_doubt_transactions = 0;
   std::uint64_t filespaces = 0, catalog_pages = 0, wasted_pages = 0;
+  // SB_SESSION_LEDGER (plan 36 T3/T4): what the open's ledger stage read (records and pages of the chain; a torn
+  // last record was found and ignored).
+  std::uint64_t ledger_records = 0, ledger_pages = 0;
+  bool ledger_torn_tail = false;
   std::uint64_t verification_workspace_bytes = 0;
   // True until Restart has completed: false for serving; true for restricted (not run) and failed
   // (did not complete). (Was, S3b/S3c: always true, Restart did not exist.)
@@ -276,6 +281,26 @@ struct NativeLoopTransactionResult {
   bool ok() const noexcept { return error == NativeLoopTransactionError::none; }
 };
 
+// SEARCH_KEY: SB_NATIVE_LOOP_LEDGER (plan 36 T4, owner Q165 = 1, Q308). Appends of session-ledger records as REQUESTS
+// to the loop thread, which owns the thread-affine SessionLedger (and the TransactionInventoryWriter whose Begin and
+// CompleteAndBegin check the ledger: a header's attachment (+80) and session (+96) must already be COMPLETE ledger
+// records, "durable before cited"). Admission is exactly the transaction requests' (NativeLoopTransactionError): only
+// while the database is `serving`; `restricted` refuses with the Q299 code (ENGINE.NATIVE.DATABASE_RESTRICTED_READ_ONLY),
+// `failed` and not-serving refuse specifically. One custody operation per request. A refusal of the ledger itself
+// (codec, references, duplicate, bound) is `writer_refused` with ledger_error naming the cause: nothing was written and
+// the loop goes on. A write or sync failure is `writer_failed` and the database becomes `failed` (reopen). No session
+// semantics: a record is only appended (S4e creates real sessions); the record UUID is the caller's (a v7 engine id).
+struct NativeLoopLedgerResult {
+  NativeLoopTransactionError error = NativeLoopTransactionError::invalid_request;
+  std::uint64_t ordinal = 0;                // the appended record's ordinal (the refused one's, on a refusal)
+  core::platform::Uuid record_uuid;
+  std::string ledger_error;                 // the ledger's own error name (a refusal or a failure)
+  std::string record_error;                 // the codec's cause when the record itself was refused
+  std::uint32_t writes = 0, syncs = 0, growth_writes = 0, growth_syncs = 0;
+  bool outcome_uncertain = false;           // writer_failed: the record may or may not be on disk (a reopen decides)
+  bool ok() const noexcept { return error == NativeLoopTransactionError::none; }
+};
+
 // SB_NATIVE_ENGINE_READ_TRANSACTION (owner 2026-11-21: the credential read and the names read of a native login run
 // in an engine-owned SHORT READ-ONLY SNAPSHOT TRANSACTION, as Firebird's server reads its security database). The
 // work runs ON THE LOOP THREAD between a begin and a completion; the completion is ALWAYS made (commit, as Firebird
@@ -381,6 +406,15 @@ class NativeDatabaseLoop final {
   NativeLoopTransactionResult BeginWorkOnLoopThread(const NativeLoopBeginRequest& request) noexcept;
   NativeLoopTransactionResult CompleteWorkOnLoopThread(const NativeLoopCompleteRequest& request) noexcept;
   NativeLoopTransactionResult CompleteAndBeginWorkOnLoopThread(const NativeLoopCompleteAndBeginRequest& request) noexcept;
+  // SB_NATIVE_LOOP_LEDGER: append one session-ledger record (see above). The cross-thread submit is refused with
+  // invalid_request on the loop thread; the OnLoopThread form is refused with invalid_request anywhere else.
+  std::future<NativeLoopLedgerResult> SubmitAppendLedgerRecord(storage::page::SessionLedgerRecord record);
+  NativeLoopLedgerResult AppendLedgerRecordOnLoopThread(const storage::page::SessionLedgerRecord& record) noexcept;
+  // Loop thread only (empty / zero elsewhere): the ledger's current entry for a record UUID, and its sizes.
+  std::optional<storage::page::SessionLedgerEntry> FindLedgerEntryOnLoopThread(const core::platform::Uuid& uuid) const;
+  std::uint64_t LedgerRecordCountOnLoopThread() const noexcept;
+  // Loop thread only: the verified open's facts as the loop holds them now (wasted_pages, ledger_records, ...).
+  std::optional<NativeLoopServingFacts> FactsOnLoopThread() const;
   // Orders of the transactions the loop's ownership table holds, ascending. Loop thread only (empty elsewhere).
   std::vector<std::uint64_t> OpenTransactionOrdersOnLoopThread() const;
 
@@ -463,13 +497,17 @@ class NativeDatabaseLoop final {
     NativeLoopCompleteAndBeginRequest request;
     std::promise<NativeLoopTransactionResult> done;
   };
+  struct LedgerWork {
+    storage::page::SessionLedgerRecord record;
+    std::promise<NativeLoopLedgerResult> done;
+  };
   struct ReadScopeWork {
     std::function<void(const NativeLoopReadTransaction&)> work;
     NativeLoopReadScopeMode mode = NativeLoopReadScopeMode::durable_transaction;
     std::promise<NativeLoopReadScopeResult> done;
   };
   using Work = std::variant<OpenWork, CloseWork, LoginWork, NamesWork, TestWork, BeginWork, CompleteWork,
-                            CompleteAndBeginWork, ReadScopeWork>;
+                            CompleteAndBeginWork, ReadScopeWork, LedgerWork>;
   static constexpr std::size_t kQueueCapacity = 8;
 
   void Run() noexcept;
@@ -487,6 +525,7 @@ class NativeDatabaseLoop final {
   NativeLoopTransactionResult BeginNow(const NativeLoopBeginRequest&) noexcept;
   NativeLoopTransactionResult CompleteNow(const NativeLoopCompleteRequest&) noexcept;
   NativeLoopTransactionResult CompleteAndBeginNow(const NativeLoopCompleteAndBeginRequest&) noexcept;
+  NativeLoopLedgerResult AppendLedgerNow(const storage::page::SessionLedgerRecord&) noexcept;
   NativeLoopReadScopeResult RunReadScopeNow(const std::function<void(const NativeLoopReadTransaction&)>&,
                                             NativeLoopReadScopeMode) noexcept;
   NativeLoopReadScopeResult RunSnapshotScopeNow(const std::function<void(const NativeLoopReadTransaction&)>&) noexcept;
@@ -494,6 +533,7 @@ class NativeDatabaseLoop final {
   void HandleTransaction(CompleteWork&) noexcept;
   void HandleTransaction(CompleteAndBeginWork&) noexcept;
   void HandleReadScope(ReadScopeWork&) noexcept;
+  void HandleLedger(LedgerWork&) noexcept;
   // The one cross-thread submit of the three transaction requests (defined and only instantiated in the .cpp).
   template <class WorkT, class Request>
   std::future<NativeLoopTransactionResult> SubmitTransaction(Request request);

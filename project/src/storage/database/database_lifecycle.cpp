@@ -9947,7 +9947,7 @@ static NativeDatabaseCreateResult PlanNativeDatabaseCreateImpl(
     // relations, the complete-scan tier for all (SB_NATIVE_HOSTED_CATALOG_ROW_BOUND).
     {
       const auto plan=detail::PlanNativeCreationCatalogLayout(request.page_size_bytes,0,request.total_pages,
-          request.maximum_retained_image_bytes,seed,index_rows.indexes,true,index_rows.comment_tree.has_value());
+          request.maximum_retained_image_bytes,seed,index_rows.indexes,true,index_rows.comment_tree.has_value(),true);
       // Q144 (SB_NATIVE_CREATE_CAPACITY_BOUND): the bound is carried out.
       if(!plan.ok()){result.capacity_bound=plan.bound;
         return fail(plan.error==detail::NativeCreationLayoutError::resource_exhausted?E::resource_exhausted:E::capacity_exceeded);}

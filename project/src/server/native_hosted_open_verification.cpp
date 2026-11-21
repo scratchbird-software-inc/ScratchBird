@@ -14,6 +14,8 @@
 #include "native_retention_root.hpp"
 #include "transaction/mga/transaction_horizon_projection.hpp"
 #include "transaction_inventory_reader.hpp"
+#include "session_ledger_chain.hpp"
+#include "native_hosted_careful_write_sink.hpp"
 #include "engine/internal_api/verification/native_startup_catalog_allocation.hpp"
 #include "engine/internal_api/verification/native_startup_root_allocation.hpp"
 #include "engine/internal_api/verification/native_startup_initial_control_allocation.hpp"
@@ -351,6 +353,112 @@ NativeOpenVerificationResult NativeHostedDatabaseRuntime::VerifyStartupDatabaseF
           pins.page->first_record||pins.page->next||!pins.page->records.empty()){error=VE::finding;return;}
       scan.horizon_records=0;scan.retention_pins=pins.page->total_pins;
       observed.inventory=scan;
+    }
+    // Session ledger (plan 36 T3, owner Q165 = 1): page-zero root kind 25 names
+    // the first page of the SBSESL01 chain. Present, an allocated transaction-
+    // inventory-type page of its own object created by the committed construction
+    // transaction; the whole chain is read once (read only: Load writes nothing)
+    // and every page is allocated to that object; every record's references
+    // resolve; and every non-zero attachment (+80) or session (+96) a
+    // transaction header cites is a complete ledger record of the right kind
+    // whose principal is the header's +64, so a torn or damaged last record that
+    // a header cites is refused here rather than ignored. An empty chain is valid.
+    {
+      stage=VS::session_ledger;
+      auto source=operation.ReadFixedRootWithMemory(fixed_limits,memory,memory.binding());
+      if(!source.ok()){refuse(source);return;}
+      const auto& lease=source.lease.source();
+      if(!same_source(lease.identity())){error=VE::source_mismatch;return;}
+      const auto finding=[&](VE e,NativeLedgerFinding f){error=e;result.ledger_finding=f;};
+      const auto* root=lease.Root(25);
+      if(!root){finding(VE::ledger_missing,NativeLedgerFinding::none);return;}
+      if(root->page_type!=0x301){finding(VE::ledger_invalid,NativeLedgerFinding::root_type);return;}
+      if(root->filespace_uuid!=self.primary_){finding(VE::ledger_invalid,NativeLedgerFinding::root_filespace);return;}
+      const auto& inventory=lease.inventory();
+      if(inventory.entries.empty()||!mga::HasCommittedInventoryOutcome(inventory.entries.front())){error=VE::finding;return;}
+      const auto creator=inventory.entries.front().identity;
+      const auto root_record=api::FindNativeStartupRootAllocation(lease.allocation(),*root);
+      if(!root_record){finding(VE::ledger_invalid,NativeLedgerFinding::root_unallocated);return;}
+      if(!root_record->creator_operation_uuid.is_nil()||root_record->creator_transaction_uuid!=creator.transaction_uuid.value||
+          root_record->creator_local_transaction_id!=creator.local_id.value){finding(VE::ledger_invalid,NativeLedgerFinding::root_creator);return;}
+      if(root_record->owner_uuid!=root->object_uuid||root_record->page_type!=0x301){finding(VE::ledger_invalid,NativeLedgerFinding::root_owner);return;}
+      // The retained operation reads through its own batch: copy what is needed, retire the lease's read first
+      // (as the stages above do before load_root), and read the allocation of the chain's pages again afterwards.
+      const disk::FilespaceRootReference ledger_root=*root;
+      const auto* state_root_ptr=lease.Root(4);
+      if(!state_root_ptr){error=VE::finding;return;}
+      const disk::FilespaceRootReference state_root=*state_root_ptr;
+      source.lease.Reset();
+      root=&ledger_root;
+      if(cancelled()){error=VE::cancelled;return;}
+      NativeHostedCarefulWriteSink sink(operation,root->filespace_uuid,root->page_size_profile_uuid);
+      page::SessionLedgerBinding binding;
+      binding.database_uuid=self.database_;binding.root=*root;binding.read_only_database=true;  // verification never writes
+      page::SessionLedger ledger(binding);
+      const auto fault=[&](const page::SessionLedgerLoadResult& r){
+        result.ledger_rule=static_cast<std::uint8_t>(r.rule);result.ledger_page_error=static_cast<std::uint8_t>(r.page_error);
+        result.ledger_record_error=static_cast<std::uint8_t>(r.record_error);result.ledger_ordinal=r.failing_ordinal;
+        result.ledger_page=r.failing_page;};
+      const auto loaded=ledger.Load(sink);
+      if(!loaded.ok()){
+        fault(loaded);
+        if(loaded.error==page::TransactionWriterError::io_failure)error=VE::io_failure;
+        else if(loaded.error==page::TransactionWriterError::resource_exhausted)error=VE::memory_failure;
+        else if(loaded.error==page::TransactionWriterError::ledger_invalid)
+          finding(VE::ledger_invalid,loaded.rule!=page::TransactionWriterError::none?NativeLedgerFinding::record_reference:NativeLedgerFinding::chain_unreadable);
+        else finding(VE::ledger_invalid,NativeLedgerFinding::chain_unreadable);
+        return;
+      }
+      // Every chain page is an allocated transaction-inventory-type page of the ledger's object.
+      {
+      auto again=operation.ReadFixedRootWithMemory(fixed_limits,memory,memory.binding());
+      if(!again.ok()){refuse(again);return;}
+      const auto& lease2=again.lease.source();
+      if(!same_source(lease2.identity())){error=VE::source_mismatch;return;}
+      for(const auto number:ledger.pages()){
+        const auto* record=db::detail::NativeFixedRootRecord(lease2.allocation(),number);
+        if(!record){result.ledger_page=number;finding(VE::ledger_invalid,NativeLedgerFinding::chain_page_unallocated);return;}
+        if(record->page_type!=0x301){result.ledger_page=number;finding(VE::ledger_invalid,NativeLedgerFinding::chain_page_type);return;}
+        if(record->owner_uuid!=root->object_uuid){result.ledger_page=number;finding(VE::ledger_invalid,NativeLedgerFinding::chain_page_owner);return;}
+      }
+      }
+      // The allocation stage counted every system-created transaction-inventory-type page that no capture reaches as
+      // wasted space (owner Q17 = 1); the pages the ledger chain grew are reached through the chain, so they are not.
+      if(ledger.pages().size()>1){
+        const u64 grown=ledger.pages().size()-1;
+        if(observed.allocation.wasted_pages<grown){finding(VE::finding,NativeLedgerFinding::chain_page_unallocated);return;}
+        observed.allocation.wasted_pages-=grown;
+      }
+      // Durable before cited: every header's citations resolve in the ledger.
+      page::TransactionWriterBinding tb;
+      tb.database_uuid=self.database_;tb.read_only_database=true;
+      tb.state_root=state_root;
+      const auto chains=page::ReadTransactionChainsThroughSink(sink,tb);
+      if(!chains.ok()){
+        if(chains.error==page::TransactionWriterError::io_failure)error=VE::io_failure;
+        else if(chains.error==page::TransactionWriterError::resource_exhausted)error=VE::memory_failure;
+        else finding(VE::finding,NativeLedgerFinding::inventory_unreadable);
+        return;
+      }
+      u64 checked=0;
+      for(std::size_t i=0;i<chains.header_pages.size();++i){
+        const auto view=page::DecodeTransactionHeaderPage(
+            std::span<const byte>(chains.header_images).subspan(i*chains.page_size,chains.page_size));
+        if(!view.ok()){finding(VE::finding,NativeLedgerFinding::inventory_unreadable);return;}
+        for(std::uint32_t slot=0;slot<view.view->slots;++slot){
+          const auto header=page::TransactionHeaderAt(*view.view,slot);
+          if(!header||(header->attachment_uuid.is_nil()&&header->session_uuid.is_nil()))continue;
+          ++checked;
+          const auto cited=ledger.CheckHeaderCitation(header->attachment_uuid,header->session_uuid,header->principal_or_agent_uuid);
+          if(cited!=page::TransactionWriterError::none){
+            result.ledger_rule=static_cast<std::uint8_t>(cited);result.ledger_ordinal=header->transaction_order;
+            finding(VE::ledger_invalid,NativeLedgerFinding::header_citation);return;
+          }
+        }
+      }
+      observed.ledger.records=loaded.records;observed.ledger.pages=loaded.pages;
+      observed.ledger.torn_tail=loaded.torn_tail;observed.ledger.index_bytes=ledger.index_bytes_estimate();
+      observed.ledger.header_citations_checked=checked;
     }
     // Catalog routes: the configuration and security roots (page-zero kinds
     // 6 and 7) resolve to the catalog relations this open already traversed.

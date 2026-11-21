@@ -147,9 +147,11 @@ u32 CanonicalPageZeroRootPageType(u16 kind) noexcept {
   // Kinds 22 and 23 (SB_NATIVE_NAME_TREES, owner Q34 = the database's own root
   // page holds them): the authoritative name tree and the UUID -> name tree,
   // both B-tree roots. Kind 24 (SB_NATIVE_COMMENT_TREE, 2026-11-13): the
-  // comments relation's (target, language) tree, a B-tree root.
-  constexpr std::array<u32,25> types{{0,0x8,0x5,0x3,0x301,0x9,0xa,0xb,0x5,
-      0x300,0x303,0x305,0x307,0x30b,0x515,0x406,0x401,0x309,0x30e,0x30e,0x500,0x500,0x200,0x200,0x200}};
+  // comments relation's (target, language) tree, a B-tree root. Kind 25
+  // (SB_SESSION_LEDGER_ROOT, plan 36 T3, owner Q165 = 1): the first page of the
+  // session ledger chain (SBSESL01, under the transaction inventory page type).
+  constexpr std::array<u32,26> types{{0,0x8,0x5,0x3,0x301,0x9,0xa,0xb,0x5,
+      0x300,0x303,0x305,0x307,0x30b,0x515,0x406,0x401,0x309,0x30e,0x30e,0x500,0x500,0x200,0x200,0x200,0x301}};
   return kind<types.size()?types[kind]:0;
 }
 namespace {
@@ -374,7 +376,7 @@ FilespaceRecoveryRootCandidates ProbeFilespaceRecoveryRootCandidatesFromOpenDevi
         LoadLittle64(entry+24),LoadLittle64(entry+32),GetUuid(entry+40),GetUuid(entry+56)};
       // Kinds 22 and 23 are the name trees (SB_NATIVE_NAME_TREES), 24 the
       // comment tree (SB_NATIVE_COMMENT_TREE).
-      require(r.kind>previous&&r.kind<=24&&CanonicalPageZeroRootPageType(r.kind)==r.page_type&&r.page_type&&
+      require(r.kind>previous&&r.kind<=25&&CanonicalPageZeroRootPageType(r.kind)==r.page_type&&r.page_type&&
         !LoadLittle16(entry+2)&&Zero(entry+72,8)&&V7(r.filespace_uuid)&&V7(r.object_uuid)&&r.page_number&&r.page_generation,E::invalid_directory);
       const auto* profile=FindCanonicalFilespacePageProfile(r.page_size_profile_uuid);require(profile,E::invalid_directory);
       require(r.page_number<=std::numeric_limits<u64>::max()/profile->page_size_bytes&&

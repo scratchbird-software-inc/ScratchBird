@@ -70,9 +70,17 @@ struct NativeAgentPolicyValidation {
 // captured. Both mean the file is not in a known good state.
 enum class NativeOpenVerificationError {
   none, not_ready, busy, cancelled, invalid_request, policy_refused, memory_failure,
-  crypto_failure, io_failure, source_failure, source_mismatch, finding
+  crypto_failure, io_failure, source_failure, source_mismatch, finding,
+  // SB_SESSION_LEDGER_ROOT (plan 36 T3, owner Q165 = 1): the session ledger stage.
+  ledger_missing,   // page zero names no kind-25 root
+  ledger_invalid    // the ledger root, chain or a header citation fails its check (ledger_cause says which)
 };
-enum class NativeOpenVerificationStage { none, identity, allocation, inventory, catalog_routes, complete };
+// Where the ledger stage found fault (one distinct cause each, owner Q193).
+enum class NativeLedgerFinding {
+  none, root_type, root_filespace, root_unallocated, root_creator, root_owner, chain_unreadable, chain_page_unallocated,
+  chain_page_type, chain_page_owner, record_reference, header_citation, inventory_unreadable
+};
+enum class NativeOpenVerificationStage { none, identity, allocation, inventory, session_ledger, catalog_routes, complete };
 struct NativeOpenVerificationLimits {
   // One read through page zero's fixed roots at a time; each stage releases
   // its read. (Named `selected` until the checkpoint layer was deleted, W4d.)
@@ -85,6 +93,12 @@ struct NativeOpenVerificationObservation {
   engine::internal_api::NativeStartupStorageIdentityObservation identity;
   engine::internal_api::NativeStartupStorageScanObservation allocation, inventory;
   engine::internal_api::NativeStartupCatalogRouteObservation routes;
+  // SB_SESSION_LEDGER_ROOT: what the ledger stage read (values only).
+  struct Ledger {
+    std::uint64_t records = 0, pages = 0, header_citations_checked = 0;
+    bool torn_tail = false;
+    std::size_t index_bytes = 0;  // the index's memory estimate while the stage ran (released after it)
+  } ledger;
   std::size_t workspace_bytes = 0;
 };
 struct NativeOpenVerificationResult {
@@ -93,6 +107,11 @@ struct NativeOpenVerificationResult {
   NativeOpenVerificationStage stage = NativeOpenVerificationStage::none;
   // The selected-source refusal behind a stage's error, for the report.
   storage::database::NativeOwnedSourceError source_error = storage::database::NativeOwnedSourceError::none;
+  // ledger_missing / ledger_invalid: the finding, the ledger writer's rule code, the page-level cause and the
+  // record or page at fault (values; message-vector material).
+  NativeLedgerFinding ledger_finding = NativeLedgerFinding::none;
+  std::uint8_t ledger_rule = 0, ledger_page_error = 0, ledger_record_error = 0;
+  std::uint64_t ledger_ordinal = 0, ledger_page = 0;
   std::optional<NativeOpenVerificationObservation> observation;
   bool ok() const noexcept {return error==NativeOpenVerificationError::none&&observation.has_value();}
 };

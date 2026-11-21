@@ -64,6 +64,9 @@ struct NativeCreationWorkspaceReceipt {
   // SB_NATIVE_COMMENT_TREE: the comment tree's page-zero root (kind 24), when
   // it was built (empty: the create writes no comments).
   std::optional<disk::FilespaceRootReference> comment_tree_root;
+  // SB_SESSION_LEDGER_ROOT (plan 36 T3, owner Q165 = 1): the session ledger's
+  // page-zero root (kind 25): one empty SBSESL01 page, in every create.
+  std::optional<disk::FilespaceRootReference> session_ledger_root;
 };
 // SEARCH_KEY: SB_NATIVE_CREATE_PARTIAL_FILE_UNLINK (owner Q140 = 1,
 // 2026-11-14). How far a native create's write got, recorded by the write

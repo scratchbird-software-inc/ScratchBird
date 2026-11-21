@@ -1398,6 +1398,32 @@ endif()
   set_tests_properties(sbsql_sblr_alignment_transaction_state_page PROPERTIES
     LABELS "sbsql_sblr_alignment;native_storage;careful_write;transaction_inventory"
     TIMEOUT 120)
+  # SEARCH_KEY: SB_SESSION_LEDGER_RECORD / SB_SESSION_LEDGER_PAGE (plan 36 T2,
+  # owner Q165 = 1). The session ledger codec: four fixed 256-byte record kinds,
+  # the SBSESL01 page family, every-bit corruption, the torn-slot rule.
+  add_executable(sbsql_sblr_alignment_session_ledger_codec session_ledger_codec_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_session_ledger_codec PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_session_ledger_codec PRIVATE sb_storage_page sb_storage_disk)
+  add_test(NAME sbsql_sblr_alignment_session_ledger_codec COMMAND sbsql_sblr_alignment_session_ledger_codec)
+  set_tests_properties(sbsql_sblr_alignment_session_ledger_codec PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;careful_write;session_ledger"
+    TIMEOUT 120)
+  # SEARCH_KEY: SB_SESSION_LEDGER_CHAIN (plan 36 T3/T4, owner Q165 = 1). The
+  # session ledger on a production-created file, one page size per test: the
+  # empty chain at create, appends, growth, the tear sweep, "durable before
+  # cited" in Begin / CompleteAndBegin, I/O faults and the combined crash sweep.
+  add_executable(sbsql_sblr_alignment_native_session_ledger_writer native_session_ledger_writer_test.cpp)
+  target_compile_features(sbsql_sblr_alignment_native_session_ledger_writer PRIVATE cxx_std_23)
+  target_link_libraries(sbsql_sblr_alignment_native_session_ledger_writer PRIVATE sb_storage_database)
+  target_compile_definitions(sbsql_sblr_alignment_native_session_ledger_writer PRIVATE
+    SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password")
+  foreach(profile RANGE 0 4)
+    add_test(NAME sbsql_sblr_alignment_native_session_ledger_writer_${profile}
+      COMMAND sbsql_sblr_alignment_native_session_ledger_writer --profile ${profile})
+    set_tests_properties(sbsql_sblr_alignment_native_session_ledger_writer_${profile} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_storage;session_ledger;careful_write;fault_injection"
+      TIMEOUT 200)
+  endforeach()
   # SEARCH_KEY: SB_TRANSACTION_INVENTORY_READER. Read-only load and check of
   # the in-place transaction inventory (state chain + header chain).
   # SB_NATIVE_FIXED_ROOT_READ: the lease readers on the fixed-root source (R2a).
@@ -4503,6 +4529,45 @@ if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
     set_tests_properties(sbsql_sblr_alignment_native_loop_transaction_strace_${sb_loop_txn_label} PROPERTIES
       LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_transaction;strace"
       TIMEOUT 1800)
+  endforeach()
+endif()
+# SEARCH_KEY: SB_NATIVE_LOOP_LEDGER (plan 36 T3/T4, owner Q165 = 1, Q308). The session ledger through the database
+# loop on a real, served, production-created database; one page size per test (native_session_ledger_loop_test.cpp).
+add_executable(sbsql_sblr_alignment_native_session_ledger_loop native_session_ledger_loop_test.cpp
+  ${PROJECT_SOURCE_DIR}/src/server/native_database_loop.cpp)
+target_compile_definitions(sbsql_sblr_alignment_native_session_ledger_loop PRIVATE SB_NATIVE_LOOP_TEST_SEAMS=1)
+add_dependencies(sbsql_sblr_alignment_native_session_ledger_loop sbsql_sblr_alignment_native_serving)
+target_compile_features(sbsql_sblr_alignment_native_session_ledger_loop PRIVATE cxx_std_23)
+target_include_directories(sbsql_sblr_alignment_native_session_ledger_loop PRIVATE
+  ${PROJECT_SOURCE_DIR}/src
+  ${PROJECT_SOURCE_DIR}/src/engine/internal_api)
+target_link_libraries(sbsql_sblr_alignment_native_session_ledger_loop PRIVATE
+  sb_server_core sb_engine sb_engine_sblr sb_engine_internal_api sb_storage_database OpenSSL::Crypto)
+target_compile_definitions(sbsql_sblr_alignment_native_session_ledger_loop PRIVATE
+  SB_DEFAULT_POLICY_PACK_ROOT="${CMAKE_SOURCE_DIR}/resources/policy-packs/default-local-password"
+  SB_NATIVE_SERVING_TEST_BIN="$<TARGET_FILE:sbsql_sblr_alignment_native_serving>")
+foreach(sb_ledger_loop_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
+  string(REPLACE ":" ";" sb_ledger_loop_parts "${sb_ledger_loop_size}")
+  list(GET sb_ledger_loop_parts 0 sb_ledger_loop_bytes)
+  list(GET sb_ledger_loop_parts 1 sb_ledger_loop_label)
+  add_test(NAME sbsql_sblr_alignment_native_session_ledger_loop_${sb_ledger_loop_label}
+    COMMAND sbsql_sblr_alignment_native_session_ledger_loop size ${sb_ledger_loop_bytes})
+  set_tests_properties(sbsql_sblr_alignment_native_session_ledger_loop_${sb_ledger_loop_label} PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;native_serving;session_ledger;database_ownership;binary_uuid"
+    TIMEOUT 190)
+endforeach()
+if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
+  foreach(sb_ledger_loop_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
+    string(REPLACE ":" ";" sb_ledger_loop_parts "${sb_ledger_loop_size}")
+    list(GET sb_ledger_loop_parts 0 sb_ledger_loop_bytes)
+    list(GET sb_ledger_loop_parts 1 sb_ledger_loop_label)
+    add_test(NAME sbsql_sblr_alignment_native_session_ledger_strace_${sb_ledger_loop_label}
+      COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_session_ledger_strace.py"
+        --test-bin $<TARGET_FILE:sbsql_sblr_alignment_native_session_ledger_loop>
+        --size ${sb_ledger_loop_bytes})
+    set_tests_properties(sbsql_sblr_alignment_native_session_ledger_strace_${sb_ledger_loop_label} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_storage;native_serving;session_ledger;strace"
+      TIMEOUT 190)
   endforeach()
 endif()
 # SB_NATIVE_RESTRICTED_SBSRV_RUN (S3e, owner Q296 = yes): the REAL SBsrv on a file with a committing slot opens

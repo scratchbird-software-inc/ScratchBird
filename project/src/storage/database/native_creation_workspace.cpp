@@ -10,6 +10,7 @@
 #include "hash_digest.hpp"
 #include "physical_mga_cow_store.hpp"
 #include "native_creation_transaction_inventory.hpp"
+#include "session_ledger_page.hpp"
 #include "uuid.hpp"
 #include <algorithm>
 #include <limits>
@@ -237,7 +238,7 @@ NativeCreationWorkspaceResult PlanWorkspaceImpl(
        maps>std::numeric_limits<std::size_t>::max()-controls) return Fail(E::resource_exhausted,Bound::total_pages_excessive);
 
     auto planned=detail::PlanNativeCreationCatalogLayout(size,maps,total,budget,seed,indexes,name_trees.requested(),
-        comment_tree.has_value());
+        comment_tree.has_value(),true);
     if(!planned.ok())return Fail(planned.error==detail::NativeCreationLayoutError::resource_exhausted?E::resource_exhausted:
         planned.error==detail::NativeCreationLayoutError::capacity_exceeded?E::catalog_capacity_exceeded:E::invalid_catalog_input,
         planned.bound);
@@ -543,6 +544,24 @@ NativeCreationWorkspaceResult PlanWorkspaceImpl(
       save(n,std::move(encoded));
       receipt.comment_tree_root=root(24,n);
     }
+    {
+      // SB_SESSION_LEDGER_ROOT (plan 36 T3, owner Q165 = 1): the session
+      // ledger's first page, empty (no connection, session, attachment or
+      // settings-change record exists at create), under the transaction
+      // inventory page type, named by page-zero root kind 25. Allocated to its
+      // own object by the construction transaction like every control page.
+      if(!plan.session_ledger_page)return Fail(E::encoding_failure);
+      const u64 n=*plan.session_ledger_page;
+      images[n].header.page_type=0x301;
+      page::SessionLedgerPageFormat ledger;ledger.header=images[n].header;ledger.sequence=0;ledger.next_page=0;
+      std::vector<byte> bytes(size);
+      if(page::FormatSessionLedgerPage(ledger,bytes)!=page::TipPageError::none)return Fail(E::encoding_failure);
+      images[n].bytes=std::move(bytes);
+      const auto hash=core::hash::ComputeSha256Digest(images[n].bytes);
+      if(!hash.ok())return Fail(E::hash_failure);
+      images[n].sha256=hash.digest;
+      receipt.session_ledger_root=root(25,n);
+    }
     for(const auto control:{catalog,configuration,security}) {
       const u64 n=at(control);
       page::NativeCatalogRoot c;c.header=images[n].header;c.object_uuid=images[n].owner;
@@ -600,6 +619,8 @@ NativeCreationWorkspaceResult PlanWorkspaceImpl(
     for(const auto& tree_root:receipt.name_tree_roots)if(tree_root)zero.roots.push_back(*tree_root);
     // SB_NATIVE_COMMENT_TREE: kind 24, after them.
     if(receipt.comment_tree_root)zero.roots.push_back(*receipt.comment_tree_root);
+    // SB_SESSION_LEDGER_ROOT: kind 25, after them.
+    if(receipt.session_ledger_root)zero.roots.push_back(*receipt.session_ledger_root);
     auto encoded_zero=disk::EncodeFilespacePageZero(zero);
     if(!encoded_zero.ok()) return Fail(
         encoded_zero.error==disk::FilespacePageZeroError::resource_exhausted?E::resource_exhausted:
@@ -718,6 +739,11 @@ NativeCreationWorkspaceResult WriteWorkspaceImpl(disk::FileDevice& device,
             receipt.comment_tree_root->object_uuid!=r.object_uuid||r.page_type!=0x200)return Fail(E::graph_failure);
         continue;
       }
+      if(r.kind==25) {  // SB_SESSION_LEDGER_ROOT
+        if(!receipt.session_ledger_root||receipt.session_ledger_root->page_number!=r.page_number||
+            receipt.session_ledger_root->object_uuid!=r.object_uuid||r.page_type!=0x301)return Fail(E::graph_failure);
+        continue;
+      }
       const bool tree=r.kind==22||r.kind==23;
       if(r.kind==9||(r.kind>10&&!tree)||(tree&&!name_trees.requested()))return Fail(E::graph_failure);
       if(tree&&(!receipt.name_tree_roots[r.kind-22]||receipt.name_tree_roots[r.kind-22]->page_number!=r.page_number||
@@ -725,6 +751,7 @@ NativeCreationWorkspaceResult WriteWorkspaceImpl(disk::FileDevice& device,
     }
     if(name_trees.requested()&&(!lease.Root(22)||!lease.Root(23)))return Fail(E::graph_failure);
     if(comment_tree.has_value()!=(lease.Root(24)!=nullptr))return Fail(E::graph_failure);
+    if(!lease.Root(25))return Fail(E::graph_failure);  // SB_SESSION_LEDGER_ROOT: every create has one
     const auto allocated=[&](const auto& target,u32 type,const Uuid& owner)->E {
       if(target.filespace_uuid!=b.filespace_uuid||target.page_size_profile_uuid!=b.page_size_profile_uuid)return E::graph_failure;
       std::vector<byte> bytes(size);
@@ -749,6 +776,9 @@ NativeCreationWorkspaceResult WriteWorkspaceImpl(disk::FileDevice& device,
       for(const auto& level:layouts[i].branches)for(const auto n:level)
         if(const auto error=allocated(ref(n),0x201,receipt.index_dependencies[i]->index_uuid);error!=E::none){auto failed=Fail(error);failed.failed_page_number=n;return failed;}
     }
+    if(plan.session_ledger_page)  // SB_SESSION_LEDGER_ROOT: allocated to its own object, the transaction inventory type.
+      if(const auto error=allocated(ref(*plan.session_ledger_page),0x301,receipt.session_ledger_root->object_uuid);error!=E::none){
+        auto failed=Fail(error);failed.failed_page_number=*plan.session_ledger_page;return failed;}
     if(plan.comment_tree_root)  // SB_NATIVE_COMMENT_TREE: allocated to the tree's index.
       if(const auto error=allocated(ref(*plan.comment_tree_root),0x200,comment_tree->index_uuid);error!=E::none){
         auto failed=Fail(error);failed.failed_page_number=*plan.comment_tree_root;return failed;}

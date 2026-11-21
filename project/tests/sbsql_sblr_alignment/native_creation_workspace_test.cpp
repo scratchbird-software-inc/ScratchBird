@@ -55,7 +55,9 @@ u64 zero_bytes=0,largest_zero_write=0;
 // step4 (SB_NATIVE_COMMENT_RELATION): + the head leaf of role 7, the comments
 // relation (unindexed here, so it has a head leaf), allocated after the header
 // page: 17 pages.
-u64 page_bytes=8192,total_pages=17;
+// plan 36 T3 (owner Q165 = 1): + the session ledger's first page, allocated last (page-zero root kind 25): 18 pages
+// (was 17).
+u64 page_bytes=8192,total_pages=18;
 unsigned first_write_hashes=~0u;  // digest calls before the first physical write
 unsigned torn_at=0;  // the write torn in half (then failed), counted as calls[write_call]
 bool ordered=true;
@@ -64,7 +66,7 @@ void Arm(unsigned kind=call_count,unsigned at=0){calls={};fault_kind=kind;fault_
 void Disarm(){armed=false;}
 // 32 bits in the last four bytes; below 65536 the UUIDs are those of the earlier 16-bit form.
 Uuid Id(unsigned n){Uuid id;id.bytes[0]=1;id.bytes[6]=0x70;id.bytes[8]=0x80;id.bytes[12]=n>>24;id.bytes[13]=n>>16;id.bytes[14]=n>>8;id.bytes[15]=n;return id;}
-db::NativeFilespaceInitializationRequest Request(unsigned profile=0,u64 total=17){  // step4: + role 7's head leaf (was 16)
+db::NativeFilespaceInitializationRequest Request(unsigned profile=0,u64 total=18){  // step4: + role 7's head leaf (was 16); plan 36 T3 (Q165): + the session ledger page (was 17)
   const auto& p=disk::kCanonicalFilespacePageProfiles[profile];
   db::NativeFilespaceInitializationRequest r;
   r.bootstrap={Id(1),Id(2),p.uuid,disk::kNativeBootstrapIntegrityProfile,{},p.page_size_bytes,1,0,1,7};
@@ -137,7 +139,7 @@ void Inspect(disk::FileDevice& device,const db::NativeFilespaceInitializationReq
   unsigned profile=0;while(disk::kCanonicalFilespacePageProfiles[profile].page_size_bytes!=size)++profile;
   // Page zero, the maps, 13 control pages and the transaction header page;
   // step4: then role 7's head leaf.
-  const u64 maps=(request.total_pages+coverage[profile]-1)/coverage[profile],used=maps+16;
+  const u64 maps=(request.total_pages+coverage[profile]-1)/coverage[profile],used=maps+17;  // plan 36 T3 (Q165): was maps+16, + the session ledger page
   const auto& chain=lease.allocation();
   Check(z.total_pages==request.total_pages&&z.free_pages==request.total_pages-used&&!z.preallocated_pages&&
     chain.pages.size()==maps&&chain.state_counts[2]==used&&chain.state_counts[0]==z.free_pages,
@@ -146,9 +148,10 @@ void Inspect(disk::FileDevice& device,const db::NativeFilespaceInitializationReq
   // configuration, security, six relation heads; then the header page, a
   // second family under the inventory page type.
   // step4: role 7's head leaf (type 6) after the header page.
-  const std::array<u32,16> control_types{0,0x301,9,8,0x303,5,10,11,6,6,6,6,6,6,0x301,6};
-  const std::array<u16,9> kinds{1,2,3,4,5,6,7,8,10};
-  const std::array<u64,9> zero_slots{maps+3,maps+5,1,maps+1,maps+2,maps+6,maps+7,maps+5,maps+4};
+  const std::array<u32,17> control_types{0,0x301,9,8,0x303,5,10,11,6,6,6,6,6,6,0x301,6,0x301};  // plan 36 T3 (Q165): + the ledger page
+  // plan 36 T3 (Q165): kind 25, the session ledger's page (the last page planned), joins the root set (was 9 roots).
+  const std::array<u16,10> kinds{1,2,3,4,5,6,7,8,10,25};
+  const std::array<u64,10> zero_slots{maps+3,maps+5,1,maps+1,maps+2,maps+6,maps+7,maps+5,maps+4,maps+16};
   Check(z.roots.size()==kinds.size(),"exact fixed root set: kinds 1-8 and 10, no checkpoint, selector or watermark root");
   for(unsigned i=0;i<z.roots.size();++i){
     Check(z.roots[i].kind==kinds[i]&&z.roots[i].page_number==zero_slots[i]&&z.roots[i].page_generation==1&&
@@ -325,8 +328,8 @@ int main(int argc,char** argv){try{
       const u64 maps=profile?1:2;
       for(const u64 extra:{u64{0},u64{4},u64{64}}){
         disk::FileDevice device;Check(device.Open(fixture.Next().string(),disk::FileOpenMode::create_new,disk::DatabaseFileOwnership::native_data_file).ok(),"zero batch device");
-        // step4: one more image (role 7's head leaf), so the same batch sizes need one more page of budget (was maps+17).
-        Arm();const auto result=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,(maps+18+extra)*page_bytes,*fixture.issuer);Disarm();
+        // step4: one more image (role 7's head leaf), so the same batch sizes need one more page of budget (was maps+17); plan 36 T3 (Q165): one more again for the ledger page, now maps+19 (was maps+18).
+        Arm();const auto result=db::InitializeNativeCreationWorkspaceOnOpenDevice(device,request,(maps+19+extra)*page_bytes,*fixture.issuer);Disarm();
         const u64 batch=std::min<u64>(16,extra+1);
         Check(result.ok()&&ordered&&zero_phase==3&&zero_writes==(total_pages+batch-1)/batch&&
           zero_bytes==total_pages*page_bytes&&largest_zero_write==batch*page_bytes,
@@ -423,8 +426,9 @@ int main(int argc,char** argv){try{
   // The smallest fixed-root file: page zero, one map, 13 controls and the
   // header page; the smallest image budget adds an encoder and a readback image.
   // step4: + role 7's head leaf: 17 pages, 19 images.
-  const auto request=Request();page_bytes=8192;total_pages=17;
-  const u64 minimum_budget=19*page_bytes;
+  // plan 36 T3 (Q165): + the session ledger page: 18 pages, 20 images (was 17 and 19).
+  const auto request=Request();page_bytes=8192;total_pages=18;
+  const u64 minimum_budget=20*page_bytes;
   // SB_NATIVE_FIXED_ROOT_READ (drift removal R3b3): a fixed root changed
   // after page zero is written and read back is caught by the create's own
   // read of the file, before any receipt.
