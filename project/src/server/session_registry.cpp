@@ -16,6 +16,8 @@
 #include "native_identity_selector.hpp"
 #include "hash_digest.hpp"
 #include "login_throttle.hpp"
+#include "native_database_loop.hpp"
+#include "engine/internal_api/native_login_material.hpp"
 #include <stdexcept>
 #include "statement_receipt_release.hpp"
 
@@ -1059,7 +1061,11 @@ engine_api::DurableAuthorizationState DurableAuthorizationStateFromLifecycle(
   // SB_NATIVE_LOGIN (S4c): ResolveEngineOwnedSysarchRoleIdentity reads the LEGACY bootstrap security catalog from the
   // database PATH; a native session has no such file read (the SYSARCH role is not part of the native login's
   // authorization input in this slice: no engine-owned sysarch role UUID is set for a native session).
-  if (context.native_served_facts == nullptr) {
+  if (context.native_served_facts != nullptr) {
+    // S4e Part 1: a native session's engine-owned SYSARCH role is the one its login read VERIFIED (nil when the principal is
+    // not effectively a member); no bootstrap-catalog file read. (OLD, S4c: not set at all for a native session.)
+    state.engine_owned_sysarch_role_uuid = lifecycle.verified_native_sysarch_role_uuid;
+  } else {
     const auto sysarch_identity =
         engine_api::ResolveEngineOwnedSysarchRoleIdentity(context);
     if (sysarch_identity.ok) {
@@ -5812,6 +5818,137 @@ LoginThrottle::Digest NativeLoginNameDigest(const std::array<std::uint8_t, 16>& 
   return out;
 }
 
+
+// SEARCH_KEY: SB_NATIVE_SESSION_APPROVAL (S4e; owner 2026-11-21: the user's session and first transaction begin only when
+// authentication is APPROVED). Called by HandleAuthHandoff for a NATIVE database after the login was approved, the
+// authorization projection applied and CONNECT authorized, and nothing was written yet. It issues the server-side identities,
+// asks the database loop for the whole approval (connection, session and attachment ledger records, each durable before the
+// next, then the first transaction with header +64 = the AUTHENTICATED principal; see SB_NATIVE_LOOP_SESSIONS), and on success
+// fills the session record (its own session UUID, the attachment, the transaction) and the typed approval. Remote-identity rule:
+// the principal comes ONLY from the engine's authentication result; no request field reaches the ledger or a header.
+struct NativeApprovalRefusal {
+  std::string code, message, detail;
+};
+std::optional<NativeApprovalRefusal> ApproveNativeSessionOnLoop(ServerSessionRegistry* registry,
+                                                               const HostedEngineState& engine_state,
+                                                               const engine_api::EngineAuthenticateResult& auth_result,
+                                                               ServerSessionRecord* session,
+                                                               ServerNativeApproval* approval) {
+  const auto loop = ServedNativeLoopFor(engine_state, session->database_path);
+  if (!loop || session->native_served_facts == nullptr) {
+    return NativeApprovalRefusal{"PARSER_SERVER_IPC.NATIVE_SESSION_LOOP_UNAVAILABLE",
+                                 "The native database loop is not available for this session.", "native_loop_unavailable"};
+  }
+  using scratchbird::core::platform::Uuid;
+  namespace pg = scratchbird::storage::page;
+  const auto issue = [](Uuid* out) {
+    const auto id = scratchbird::core::uuid::IssueRuntimeIdentityV7();
+    if (!id) return false;
+    *out = *id;
+    return true;
+  };
+  NativeLoopSessionOpenRequest request;
+  if (!issue(&request.session_uuid) || !issue(&request.attachment_uuid)) {
+    return NativeApprovalRefusal{"PARSER_SERVER_IPC.NATIVE_SESSION_IDENTITY_FAILED",
+                                 "A session identity could not be issued.", "identity_issue_failed"};
+  }
+  // The CONNECTION record's UUID is the server-issued channel identity (never the client's connection id); a channel the
+  // server did not register (no admitted parser channel) gets a freshly issued one.
+  request.connection_uuid = {};
+  const auto channel = registry->physical_channel_by_connection_uuid.find(Uuid{session->connection_uuid});
+  if (channel != registry->physical_channel_by_connection_uuid.end() &&
+      scratchbird::core::uuid::IsEngineIdentityUuid(Uuid{channel->second})) {
+    request.connection_uuid = Uuid{channel->second};
+  } else if (!issue(&request.connection_uuid)) {
+    return NativeApprovalRefusal{"PARSER_SERVER_IPC.NATIVE_SESSION_IDENTITY_FAILED",
+                                 "A connection identity could not be issued.", "identity_issue_failed"};
+  }
+  const auto now_ns = [] {
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+  };
+  // Listener and parser instance: what the admitted HELLO stated (already validated as identities), zero when the server does
+  // not know them. The peer address of the end user is unknown to the server (T10): type none.
+  const auto admitted = registry->admitted_parser_identity_by_connection_uuid.find(Uuid{session->connection_uuid});
+  if (admitted != registry->admitted_parser_identity_by_connection_uuid.end()) {
+    request.connection.listener_uuid = Uuid{admitted->second.listener_uuid};
+    request.connection.parser_instance_uuid = Uuid{admitted->second.parser_instance_uuid};
+  }
+  request.connection.opened_at_utc_ns = now_ns();
+  request.connection.transport = static_cast<pg::LedgerTransport>(registry->native_ledger_transport);
+  request.connection.peer_address_type = pg::LedgerPeerAddressType::none;
+  // The SESSION record. Principal = the authenticated principal of the engine's result. Role-set digest = the effective
+  // roles, the group-set digest the same over the effective groups (both defined in native_login_material.hpp,
+  // NativeUuidSetDigest). Settings: the session's defaults, the Firebird-like
+  // snapshot default (every user is always in its own snapshot transaction): snapshot_stable, read-write, no lock-wait limit;
+  // the language UUID is zero until the session language maps to a language UUID.
+  auto& record = request.session;
+  record.principal_uuid = Uuid{auth_result.connection_security_context.effective_user_uuid.bytes};
+  const Uuid auth_context{session->auth_context_uuid};
+  record.auth_context_uuid = scratchbird::core::uuid::IsEngineIdentityUuid(auth_context) ? auth_context : Uuid{};
+  std::vector<Uuid> roles;
+  for (const auto& role : session->effective_role_uuids) roles.push_back(Uuid{role});
+  if (!engine_api::NativeUuidSetDigest(roles, record.role_set_digest)) {
+    return NativeApprovalRefusal{"PARSER_SERVER_IPC.NATIVE_SESSION_DIGEST_FAILED", "The role-set digest could not be computed.",
+                                 "role_set_digest_failed"};
+  }
+  record.settings.isolation_profile =
+      static_cast<std::uint8_t>(scratchbird::core::catalog::IsolationProfileKind::snapshot_stable);
+  record.settings.read_only = session->default_transaction_read_only;
+  record.opened_at_utc_ns = now_ns();
+  std::vector<Uuid> groups;
+  for (const auto& group : session->effective_group_uuids) groups.push_back(Uuid{group});
+  if (!engine_api::NativeUuidSetDigest(groups, record.group_set_digest)) {
+    return NativeApprovalRefusal{"PARSER_SERVER_IPC.NATIVE_SESSION_DIGEST_FAILED", "The group-set digest could not be computed.",
+                                 "group_set_digest_failed"};
+  }
+
+  const auto opened = loop->SubmitOpenSession(request).get();
+  if (!opened.ok()) {
+    std::string detail = std::string(NativeLoopSessionStepName(opened.failed_step));
+    if (!opened.detail.empty()) detail += ":" + opened.detail;
+    if (opened.failed_step != NativeLoopSessionStep::none && opened.failed_step != NativeLoopSessionStep::connection &&
+        opened.failed_step != NativeLoopSessionStep::session)
+      detail += opened.setup_failed_recorded ? ":ended_recorded" : ":ended_not_recorded";
+    return NativeApprovalRefusal{NativeLoopTransactionErrorCode(opened.error),
+                                 "The database could not begin the session and its first transaction.", detail};
+  }
+  // The session record of the server's registry: its own session UUID (distinct from the auth context), the attachment, the
+  // first transaction and the loop that holds them.
+  session->session_uuid = request.session_uuid.bytes;
+  session->attachment_id = request.attachment_uuid.bytes;
+  session->ledger_connection_uuid = request.connection_uuid.bytes;
+  session->native_loop = loop;
+  session->native_session_approved = true;
+  ServerTransactionState transaction;
+  transaction.local_transaction_id = opened.begun_order;
+  transaction.snapshot_visible_through_local_transaction_id = 0;  // the native snapshot value is derived with the receipt (S4f)
+  transaction.transaction_uuid = opened.begun_uuid;
+  transaction.transaction_timestamp = CurrentUtcTimestampText();
+  transaction.isolation_level = "snapshot";
+  transaction.read_only = record.settings.read_only;
+  transaction.begin_ordinal = session->next_transaction_begin_ordinal++;
+  session->default_transaction_isolation_level = "snapshot";
+  session->transactions_by_local_id.emplace(transaction.local_transaction_id, transaction);
+  session->local_transaction_id = transaction.local_transaction_id;
+  session->snapshot_visible_through_local_transaction_id = 0;
+  session->transaction_uuid = transaction.transaction_uuid;
+  session->transaction_timestamp = transaction.transaction_timestamp;
+  session->default_local_transaction_id = transaction.local_transaction_id;
+  approval->present = true;
+  approval->session_uuid = request.session_uuid.bytes;
+  approval->attachment_uuid = request.attachment_uuid.bytes;
+  approval->connection_record_uuid = request.connection_uuid.bytes;
+  approval->transaction_order = opened.begun_order;
+  approval->transaction_uuid = opened.begun_uuid;
+  approval->connection_ordinal = opened.connection_ordinal;
+  approval->session_ordinal = opened.session_ordinal;
+  approval->attachment_ordinal = opened.attachment_ordinal;
+  approval->writes = opened.writes;
+  approval->syncs = opened.syncs;
+  return std::nullopt;
+}
+
 SessionOperationResult HandleAuthHandoff(ServerSessionRegistry* registry,
                                          const HostedEngineState& engine_state,
                                          const sbps::Frame& request) {
@@ -6144,7 +6281,48 @@ SessionOperationResult HandleAuthHandoff(ServerSessionRegistry* registry,
     RecordFinality(registry, request, {}, {}, "auth_handoff", "rejected", detail);
     return result;
   }
+  if (native_login) {
+    // SB_NATIVE_SESSION_APPROVAL (S4e): approved = authenticated AND authorized to connect. CONNECT is decided here, before
+    // anything is written, so an authenticated principal without CONNECT never gets a session or a transaction. Then the
+    // session and its first transaction begin (the loop writes the ledger records and the header). Nothing above this point
+    // wrote anything; a refusal here leaves the registry without a context or a session.
+    engine_api::EngineAuthorizeRequest authorize;
+    authorize.context = EngineContextForSession(session, engine_state, request, auth_result.durable_security_state.get());
+    authorize.required_right = "CONNECT";
+    authorize.target_database.uuid = session.database_uuid;
+    authorize.target_database.object_kind = "database";
+    authorize.target_object.uuid = session.database_uuid;
+    authorize.target_object.object_kind = "database";
+    const auto authz_result = engine_api::EngineAuthorize(authorize);
+    if (!authz_result.ok || !authz_result.authorized) {
+      const auto detail = EngineDiagnosticDetail(authz_result.diagnostics, "connect_denied");
+      result.diagnostics.push_back(AuthDiagnostic(
+          EngineDiagnosticCode(authz_result.diagnostics, "SECURITY.AUTHORIZATION.DENIED"),
+          "Database connection was not authorized by the engine.", detail));
+      AddAttachAdmissionDenied(&result.diagnostics, "auth_handoff", detail);
+      result.payload = EncodeAuthResultPayload("rejected", nullptr, detail);
+      result.frame_flags = sbps::kFlagResponse | sbps::kFlagError | sbps::kFlagFinal;
+      registry->channel_state = ServerChannelState::kFailed;
+      RecordFinality(registry, request, {}, {}, "auth_handoff", "rejected", detail);
+      return result;
+    }
+    if (const auto refusal = ApproveNativeSessionOnLoop(registry, engine_state, auth_result, &session, &result.native_approval)) {
+      result.native_approval = {};
+      result.diagnostics.push_back(AuthDiagnostic(refusal->code, refusal->message, refusal->detail));
+      AddAttachAdmissionDenied(&result.diagnostics, "auth_handoff", refusal->detail);
+      result.payload = EncodeAuthResultPayload("rejected", nullptr, refusal->detail);
+      result.frame_flags = sbps::kFlagResponse | sbps::kFlagError | sbps::kFlagFinal;
+      registry->channel_state = ServerChannelState::kFailed;
+      RecordFinality(registry, request, {}, {}, "auth_handoff", "rejected", refusal->detail);
+      return result;
+    }
+  }
   registry->auth_contexts_by_uuid[AuthContextKey(session.auth_context_uuid)] = session;
+  if (native_login) {
+    // Published at approval: the session exists from here (ledger records durable, first transaction active). The attach
+    // step only BINDS it (HandleAttachDatabase, native branch).
+    registry->sessions_by_uuid[scratchbird::core::platform::Uuid{session.session_uuid}] = session;
+  }
   result.session_uuid = session.session_uuid;
   result.payload = EncodeAuthResultPayload("accepted", &session);
   result.frame_flags = sbps::kFlagResponse | sbps::kFlagFinal;
@@ -6229,6 +6407,68 @@ SessionOperationResult HandleAttachDatabase(ServerSessionRegistry* registry,
                    "attach_database",
                    "rejected",
                    "attach_channel_binding_mismatch");
+    return result;
+  }
+  if (found->second.native_session_approved) {
+    // SEARCH_KEY: SB_NATIVE_SESSION_APPROVAL (S4e; REPLACES the S4c refusal native_attach_requires_s4e). The session and its
+    // first transaction were made when authentication was approved; the attach only BINDS them. Nothing is written here
+    // and no second transaction is begun; the legacy sibling-session / replay checks below do not apply (the approved session
+    // is the channel's one session).
+    const auto native_reject = [&](const char* code, const char* message, const char* detail) {
+      result.diagnostics.push_back(AuthDiagnostic(code, message, detail));
+      AddAttachAdmissionDenied(&result.diagnostics, "attach_database", detail);
+      result.payload = EncodeAttachResultPayload("rejected", nullptr, detail);
+      result.frame_flags = sbps::kFlagResponse | sbps::kFlagError | sbps::kFlagFinal;
+      registry->channel_state = ServerChannelState::kFailed;
+      RecordFinality(registry, request, found->second.session_uuid, decoded->auth_context_uuid, "attach_database", "rejected",
+                     detail);
+      return result;
+    };
+    const auto approved = registry->sessions_by_uuid.find(scratchbird::core::platform::Uuid{found->second.session_uuid});
+    if (approved == registry->sessions_by_uuid.end())
+      return native_reject("PARSER_SERVER_IPC.SESSION_NOT_BOUND", "The approved session is no longer open.", "native_session_ended");
+    if (approved->second.session_binding_present)
+      return native_reject("PARSER_SERVER_IPC.AUTH_CONTEXT_REPLAY_REFUSED",
+                           "The authentication context has already been consumed by an attached session.",
+                           "auth_context_replay_refused");
+    // S4e Part 4: a session approved before the database FAILED (the loop's writer failed later) is not bound: the live
+    // serving state answers, not the state at open.
+    if (found->second.native_served_facts != nullptr &&
+        found->second.native_served_facts->CurrentServingState() ==
+            scratchbird::engine::internal_api::NativeServedServingState::failed)
+      return native_reject("ENGINE.NATIVE.TRANSACTION_DATABASE_FAILED", "The native database has failed and must be reopened.",
+                           "database_failed");
+    const HostedDatabaseSnapshot* native_database = FirstOpenDatabase(engine_state);
+    if (native_database == nullptr)
+      return native_reject("PARSER_SERVER_IPC.ATTACH_DATABASE_UNAVAILABLE", "No hosted database is available for attach.",
+                           "database_unavailable");
+    if (!ConnectionHeaderMatchesSession(request, found->second))
+      return native_reject("PARSER_SERVER_IPC.ROUTE_ASSOCIATION_MISMATCH",
+                           "Attach route association did not match the authenticated parser connection.",
+                           "connection_route_mismatch");
+    if (!RequestedDatabaseMatches(*native_database, decoded->requested_database) ||
+        !AuthContextMatchesHostedDatabase(found->second, *native_database))
+      return native_reject("PARSER_SERVER_IPC.ATTACH_DATABASE_MISMATCH",
+                           "Attach requested a database that is not associated with this authenticated route.",
+                           "database_route_mismatch");
+    const std::string native_mode = CanonicalAttachMode(decoded->requested_attachment_mode);
+    if (!AttachmentModeSupported(native_mode))
+      return native_reject("PARSER_SERVER_IPC.ATTACH_MODE_UNSUPPORTED", "The requested database attachment mode is not supported.",
+                           "attachment_mode_unsupported");
+    // The first transaction was begun read-write at approval (the session default); a different mode cannot be applied to it.
+    if (native_mode != approved->second.attach_mode)
+      return native_reject("PARSER_SERVER_IPC.ATTACH_MODE_DENIED",
+                           "The requested attachment mode differs from the mode the session was approved with.",
+                           "native_attach_mode_mismatch");
+    approved->second.session_binding_present = true;
+    found->second.session_binding_present = true;
+    registry->channel_state = ServerChannelState::kReady;
+    result.accepted = true;
+    result.session_uuid = approved->second.session_uuid;
+    result.payload = EncodeAttachResultPayload("accepted", &approved->second);
+    result.frame_flags = sbps::kFlagResponse | sbps::kFlagFinal;
+    RecordFinality(registry, request, approved->second.session_uuid, approved->second.auth_context_uuid, "attach_database",
+                   "accepted");
     return result;
   }
   if (!sbps::IsZeroUuid(found->second.server_channel_uuid)) {
@@ -6518,20 +6758,21 @@ SessionOperationResult HandleAttachDatabase(ServerSessionRegistry* registry,
   }
   std::string transaction_diagnostic_code;
   std::string transaction_diagnostic_detail;
-  // SB_NATIVE_ATTACH_TRANSACTION_UNAVAILABLE (S4c; owner Q305-Q308: the session's first transaction is S4e's, begun
-  // through the loop with the authenticated principal in header +64). StartAlwaysActiveTransactionForSession ->
-  // EngineBeginTransaction is the LEGACY inventory keyed on the database path and must not run for a native session:
-  // refused here, specifically, after the connect authorization, before anything is begun or written.
+  // SB_NATIVE_ATTACH_TRANSACTION_UNAVAILABLE (S4c; S4e): a native session's first transaction is begun at APPROVAL (see
+  // HandleAuthHandoff / the native branch above), never here. StartAlwaysActiveTransactionForSession ->
+  // EngineBeginTransaction is the LEGACY inventory keyed on the database path and must never run for a native session. A native
+  // auth context that was not approved cannot be produced by the handoff; if one reaches this point it is refused. (S4c: the
+  // detail was native_attach_requires_s4e and EVERY native attach was refused; S4e: only an unapproved context is.)
   if (session.native_served_facts != nullptr) {
     result.diagnostics.push_back(AuthDiagnostic("PARSER_SERVER_IPC.NATIVE_ATTACH_TRANSACTION_UNAVAILABLE",
-                                                "A native session's first transaction is not built yet.",
-                                                "native_attach_requires_s4e"));
-    AddAttachAdmissionDenied(&result.diagnostics, "attach_database", "native_attach_requires_s4e");
-    result.payload = EncodeAttachResultPayload("rejected", nullptr, "native_attach_requires_s4e");
+                                                "A native session's first transaction begins at approval.",
+                                                "native_session_not_approved"));
+    AddAttachAdmissionDenied(&result.diagnostics, "attach_database", "native_session_not_approved");
+    result.payload = EncodeAttachResultPayload("rejected", nullptr, "native_session_not_approved");
     result.frame_flags = sbps::kFlagResponse | sbps::kFlagError | sbps::kFlagFinal;
     registry->channel_state = ServerChannelState::kFailed;
     RecordFinality(registry, request, session.session_uuid, session.auth_context_uuid, "attach_database", "rejected",
-                   "native_attach_requires_s4e");
+                   "native_session_not_approved");
     return result;
   }
   if (!StartAlwaysActiveTransactionForSession(&session,
@@ -6873,7 +7114,56 @@ SessionOperationResult HandleDisconnectNotice(ServerSessionRegistry* registry,
       session.transactions_by_local_id.emplace(legacy.local_transaction_id,
                                                std::move(legacy));
     }
-    for (auto it = session.transactions_by_local_id.begin();
+    // SEARCH_KEY: SB_NATIVE_SESSION_APPROVAL (S4e Part 3). A session approved on a NATIVE database ends THROUGH ITS DATABASE
+    // LOOP, which owns its transactions and its ledger records: ONE request rolls back every owned transaction (rolled_back,
+    // no replacement) and then appends the session's ended record (a new record, never an overwrite). The legacy
+    // EngineRollbackTransaction loop below does not run for it (it would act on the LEGACY inventory keyed on a path).
+    // end reason: client notice -> closed_by_client; lost channel / killed parser -> connection_lost; server shutdown ->
+    // server_shutdown; anything else -> closed_by_server.
+    const bool native_session = session.native_session_approved;
+    if (native_session) {
+      namespace pg = scratchbird::storage::page;
+      pg::LedgerEndReason end_reason = pg::LedgerEndReason::closed_by_server;
+      if (disconnect_reason == "parser_disconnect_notice") end_reason = pg::LedgerEndReason::closed_by_client;
+      else if (disconnect_reason == "physical_parser_channel_lost" || disconnect_reason == "parser_killed")
+        end_reason = pg::LedgerEndReason::connection_lost;
+      else if (disconnect_reason == "server_shutdown" || disconnect_reason == "shutdown_drain_complete")
+        end_reason = pg::LedgerEndReason::server_shutdown;
+      const auto loop = session.native_loop.lock();
+      bool settled = false;  // every owned transaction is known rolled back and the session is known ended
+      std::string native_detail = "native_loop_closed";
+      if (loop) {
+        NativeLoopSessionEndRequest end_request;
+        end_request.session_uuid = scratchbird::core::platform::Uuid{session_uuid};
+        end_request.reason = end_reason;
+        const auto ended = loop->SubmitEndSession(end_request).get();
+        // A session the loop no longer holds open (it ended already) has nothing left to roll back.
+        // database_not_serving: the loop closed (or is closing) before this disconnect: its graceful close rolled back what it
+        // owned and ended the sessions (EndAllSessionsAtClose), so nothing is left to do and the outcome is known.
+        const bool loop_closed = ended.error == NativeLoopTransactionError::database_not_serving;
+        settled = ended.ok() || ended.session_unknown || loop_closed;
+        native_detail = loop_closed ? "native_loop_closed"
+                        : settled   ? "native_loop_rolled_back"
+                                    : std::string("native_end_failed:") + NativeLoopTransactionErrorCode(ended.error);
+      } else {
+        settled = true;  // the loop closed: its graceful close rolled back what it owned and ended the sessions
+      }
+      for (auto& [order, owned] : session.transactions_by_local_id) {
+        (void)order;
+        if (settled) {
+          rolled_back_local_transaction_id = owned.local_transaction_id;
+          ++rolled_back_transaction_count;
+          rolled_back_transactions.push_back({owned, "known_applied", native_detail, false});
+        } else {
+          owned.lifecycle_state = ServerTransactionLifecycleState::kFinalityUnknown;
+          active_local_transaction_id = owned.local_transaction_id;
+          ++unresolved_transaction_count;
+          retained_transactions.push_back({owned, "unknown", native_detail, false});
+        }
+      }
+      if (settled) session.transactions_by_local_id.clear();
+    }
+    for (auto it = native_session ? session.transactions_by_local_id.end() : session.transactions_by_local_id.begin();
          it != session.transactions_by_local_id.end();) {
       const auto transaction = it->second;
       if (disconnect_reason == "parser_killed" ||
@@ -7005,7 +7295,10 @@ SessionOperationResult HandleDisconnectNotice(ServerSessionRegistry* registry,
         session.detached_recovery_quarantined = true;
       }
     }
-    if (active_local_transaction_id == 0 && !temporary_cleanup_failed) {
+    if (native_session && active_local_transaction_id == 0 && !temporary_cleanup_failed) {
+      // A native session has no temporary-relation state yet (the legacy cleanup reads the LEGACY side files by path).
+      temporary_cleanup_state = "not_applicable_native";
+    } else if (active_local_transaction_id == 0 && !temporary_cleanup_failed) {
       engine_api::EngineCleanupTemporarySessionRequest cleanup;
       cleanup.context = EngineContextForSession(session_found->second,
                                                 HostedEngineState{},

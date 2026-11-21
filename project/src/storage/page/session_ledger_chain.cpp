@@ -95,7 +95,7 @@ const SessionLedgerEntry* SessionLedger::Find(const Uuid& record_uuid) const noe
 }
 
 TransactionWriterError SessionLedger::CheckHeaderCitation(const Uuid& attachment, const Uuid& session,
-                                                          const Uuid& principal) const noexcept {
+                                                          const Uuid& principal, bool allow_ended_session) const noexcept {
   if (attachment.is_nil() && session.is_nil()) return E::none;
   if (!loaded_) return E::ledger_not_loaded;
   const SessionLedgerEntry* a = nullptr;
@@ -108,7 +108,7 @@ TransactionWriterError SessionLedger::CheckHeaderCitation(const Uuid& attachment
     const auto* s = Find(session);
     if (!s) return E::ledger_unknown_session;
     if (s->kind != SessionLedgerKind::session) return E::ledger_wrong_kind;
-    if (s->ended) return E::ledger_session_ended;
+    if (s->ended && !allow_ended_session) return E::ledger_session_ended;
     if (!(s->ref == principal)) return E::ledger_principal_mismatch;
     if (a && !(a->ref == session)) return E::ledger_attachment_session_mismatch;
   }

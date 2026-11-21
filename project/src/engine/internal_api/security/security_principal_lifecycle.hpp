@@ -257,6 +257,10 @@ struct EngineSecurityPrincipalLifecycleState {
   std::uint64_t security_generation = 0;
   std::uint64_t policy_generation = 0;
   std::uint64_t cache_invalidation_epoch = 0;
+  // SB_NATIVE_AUTH_ADAPTER_DELETE_WHEN_NATIVE_AUTHORIZATION (S4e Part 1): set ONLY by the native login adapter: the verified
+  // engine-owned SYSARCH role UUID of a principal that is effectively a member of it (see NativeLoginMaterial). Nil on every
+  // legacy state (there the role comes from the bootstrap catalog read).
+  EngineUuid verified_native_sysarch_role_uuid;
 };
 
 struct EngineLoadSecurityPrincipalLifecycleStateResult {

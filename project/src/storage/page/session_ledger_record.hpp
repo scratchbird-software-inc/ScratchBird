@@ -59,7 +59,7 @@ using scratchbird::core::platform::Uuid;
 //   +20 u32 lock wait timeout ms (0 = unset)  +24..+47 zero (reserved)
 //
 // Connection (kind 1), fields from +48:
-//   +48 listener UUID (v7)           +64 parser instance UUID (v7)
+//   +48 listener UUID (zero = unknown, else v7)  +64 parser instance UUID (zero = unknown, else v7)   [S4e: was both v7]
 //   +80 tunnel or route UUID (zero = direct, else v7)
 //   +96 u64 opened_at, UTC ns (non-zero)
 //   +104 u8 transport (1 tcp, 2 unix socket, 3 shared memory, 4 pipe, 5 in-process)
@@ -79,8 +79,16 @@ using scratchbird::core::platform::Uuid;
 //   +192 u64 opened_at (non-zero)    +200 u64 ended_at (0 in state 1; in state
 //        2 at least opened_at)
 //   +208 u16 end reason (0 in state 1; in state 2: 1 closed by client, 2 closed
-//        by server, 3 ended by policy, 4 connection lost, 5 server shutdown)
-//   +210..+247 zero
+//        by server, 3 ended by policy, 4 connection lost, 5 server shutdown, 6 setup failed [S4e])
+//   +210 [32] group-set digest (S4e Part 0, owner 2026-11-22: the spec's group_set_hash; SHA-256 of the group set defined as
+//        the role-set digest is; zero = none stated)
+//   +242..+247 zero (6 bytes reserved)
+//   SPEC SessionDescriptorRecord FIELDS NOT STORED (they do not fit: 38 bytes were free after +210, group_set_hash takes 32):
+//   external_authorization_hash (32; null for every local-authority session, so it has no value to record yet),
+//   policy_generation (8) and security_generation (8) (the session's policy snapshot UUID at +128 names the policy state;
+//   the generations are re-derivable only from the catalog as it stood, an owner decision), parser_profile_uuid (16) and
+//   donor_profile_uuid (16) (the connection record names the parser instance; the profiles are parser-layer facts). The
+//   owner chooses between a larger record and a fifth record kind for them (S4e report). role_set_hash is the digest at +80.
 // Attachment (kind 3), fields from +48:
 //   +48 session UUID (v7)            +64 connection UUID (v7)
 //   +80 predecessor attachment UUID (zero or v7)
@@ -105,6 +113,7 @@ enum class LedgerEndReason : std::uint16_t {
   ended_by_policy = 3,
   connection_lost = 4,
   server_shutdown = 5,
+  setup_failed = 6,  // S4e: the session record was made but a later step of the approval failed (attachment / first transaction)
 };
 inline constexpr std::size_t kLedgerPeerAddressBytes = 32;
 inline constexpr std::size_t kLedgerDigestBytes = 32;
@@ -142,6 +151,8 @@ struct LedgerSessionRecord {
   u64 opened_at_utc_ns = 0;
   u64 ended_at_utc_ns = 0;  // 0 = the open record
   LedgerEndReason end_reason = LedgerEndReason::none;
+  // S4e Part 0: the spec's group_set_hash (see the layout note; the other new spec fields did not fit).
+  std::array<byte, kLedgerDigestBytes> group_set_digest{};
   bool ended() const noexcept { return ended_at_utc_ns != 0; }
   bool operator==(const LedgerSessionRecord&) const = default;
 };

@@ -272,9 +272,10 @@ bool NativeMaterialErrorIsCredentialCause(NativeLoginMaterialError e) {
 // directly). It builds the shape the legacy path hands to ApplyDurableAuthorizationProjectionToSession /
 // DurableAuthorizationStateFromLifecycle (EngineSecurityPrincipalLifecycleState) from the native login material:
 // binary identities, generations and constants only - NO names (definitions hold no names), no fingerprint, and
-// authority_class is IGNORED for users (S4a Q6). Direct edges only: what the material reports (the principal's own
-// rows and its direct role / group memberships) - no transitive membership and no role-owned privileges, which the
-// material does not carry.
+// authority_class is IGNORED for users (S4a Q6). S4e Part 1: the state carries the principal's EFFECTIVE role and group
+// records (the transitive closure the material reports), the allow-effect membership rows of the principal and of those
+// roles / groups, and the privilege rows of the principal AND of those roles / groups (allow and deny), the same
+// facts the legacy lifecycle state hands the shared materializer, which resolves the effective subjects from them.
 std::string NativeRightTag(scratchbird::core::catalog::CatalogSecurityRight right) {
   for (const auto& known : scratchbird::core::catalog::kCatalogSecurityRights)
     if (known.right == right) return std::string(known.tag);
@@ -294,19 +295,20 @@ std::shared_ptr<const EngineSecurityPrincipalLifecycleState> NativeLoginLifecycl
   state->security_context_generation = material.security_context_generation;
   state->security_generation = material.security_generation;
   state->policy_generation = material.policy_generation;
+  state->verified_native_sysarch_role_uuid = material.sysarch_role_uuid;
   EngineSecurityPrincipalRecord principal;
   principal.principal_uuid = material.principal_uuid;
   principal.principal_kind = material.principal_kind == cat::CatalogSecurityPrincipalKind::service ? "service" : "user";
   principal.lifecycle_state = "active";
   principal.security_generation = material.security_generation;
   state->principals.push_back(std::move(principal));
-  for (const auto& role : material.role_uuids) {
+  for (const auto& role : material.effective_role_uuids) {
     EngineSecurityRoleRecord record;
     record.role_uuid = role;
     record.security_generation = material.security_generation;
     state->roles.push_back(std::move(record));
   }
-  for (const auto& group : material.group_uuids) {
+  for (const auto& group : material.effective_group_uuids) {
     EngineSecurityGroupRecord record;
     record.group_uuid = group;
     record.security_generation = material.security_generation;
@@ -315,12 +317,22 @@ std::shared_ptr<const EngineSecurityPrincipalLifecycleState> NativeLoginLifecycl
   for (const auto& edge : material.edges) {
     if (edge.grant_class == cat::CatalogSecurityGrantClass::role_membership ||
         edge.grant_class == cat::CatalogSecurityGrantClass::group_membership) {
-      if (edge.member_uuid != material.principal_uuid) continue;
+      // A deny-effect membership never makes anyone a member. A membership whose member is a role / group is kept
+      // only when that role / group is in the effective sets (the material already filtered; stated again here).
+      if (edge.effect.has_value() && *edge.effect == cat::CatalogSecurityEffect::deny) continue;
+      const auto in = [&](const std::vector<scratchbird::core::platform::Uuid>& set, const scratchbird::core::platform::Uuid& id) {
+        return std::find(set.begin(), set.end(), id) != set.end();
+      };
+      if (!in(material.effective_role_uuids, edge.parent_uuid) && !in(material.effective_group_uuids, edge.parent_uuid)) continue;
       EngineSecurityMembershipRecord record;
       record.membership_uuid = edge.grant_uuid;
       record.member_principal_uuid = edge.member_uuid;
       record.container_uuid = edge.parent_uuid;
-      record.container_kind = edge.grant_class == cat::CatalogSecurityGrantClass::role_membership ? "role" : "group";
+      // The member / parent KINDS decide the edge, not the legacy class label (coordinator correction 2026-11-12: a
+      // principal may be a member of a group through a row of class role_membership). OLD: the class label chose the kind.
+      record.container_kind = edge.parent_kind == cat::CatalogSecuritySubjectKind::group  ? "group"
+                              : edge.parent_kind == cat::CatalogSecuritySubjectKind::role ? "role"
+                              : edge.grant_class == cat::CatalogSecurityGrantClass::role_membership ? "role" : "group";
       record.security_generation = edge.security_generation;
       state->memberships.push_back(std::move(record));
     } else if (edge.grant_class == cat::CatalogSecurityGrantClass::privilege && edge.right.has_value()) {

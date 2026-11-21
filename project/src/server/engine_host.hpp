@@ -246,6 +246,10 @@ std::shared_ptr<storage::disk::RouteOwnershipLease> ServedRouteOwnerFor(
 std::shared_ptr<const engine::internal_api::NativeServedDatabaseFacts> ServedNativeFactsFor(
     const HostedEngineState& engine_state, const std::string& database_path);
 
+// SEARCH_KEY: SB_NATIVE_SESSION_APPROVAL (S4e). The database loop of the native database at database_path in this process
+// (the one that holds its session ledger and its transactions), or null (a legacy database, or none).
+std::shared_ptr<NativeDatabaseLoop> ServedNativeLoopFor(const HostedEngineState& engine_state, const std::string& database_path);
+
 struct HostedEngineResult {
   HostedEngineState state;
   std::vector<ServerDiagnostic> diagnostics;

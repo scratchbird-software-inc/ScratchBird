@@ -22,7 +22,9 @@
 //                                 own SB_TEST_SEAM), then the login cases for that state; prints "LOGIN_MATERIAL_OK"
 //   forge <path> <kind>           a committed successor version of the bootstrap principal's security row, written
 //                                 by the engine's own in-place writers (BEGIN, change event, successor, COMMIT):
-//                                 kind disabled | nocredential
+//                                 kind disabled | nocredential | (S4e Part 1) role_connect | role_noconnect | group_connect |
+//                                 transitive | role_revoked | role_deny: successors of the bootstrap principal's membership row
+//                                 (another parent) and of the policy pack's CONNECT grant (retired / deny)
 // With no argument the driver runs every size and state; "size <bytes>" runs one page size; "common" the cases that
 // need no page size. The strace half is native_login_material_strace.py.
 
@@ -399,6 +401,7 @@ int ForgeMode(const fs::path& path, const std::string& kind, const p::Uuid& prin
   cv.state_root = *state_root;
   cv.configuration_root = *configuration_root;
   cv.security_root = *security_root;
+  cv.allocation_root = *allocation_root;   // S4e: a successor that finds no room on its page goes on a new base leaf (needs the allocation map)
   const auto event = id(), event_row = id(), event_version = id(), engine = id();
   const auto now_us = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(
       std::chrono::system_clock::now().time_since_epoch()).count());
@@ -432,45 +435,124 @@ int ForgeMode(const fs::path& path, const std::string& kind, const p::Uuid& prin
         if (cell.base_page) bases.insert(cell.base_page->page_number);
       }
     }
-  std::optional<cat::CatalogMetadataVersion> found;
-  p::Uuid found_row, found_version;
-  for (const auto number : bases) {
-    const auto leaf = db::DecodeNativeCatalogLeaf(page(number));
-    Check(leaf.ok(), "a security leaf decodes");
-    for (const auto& row : leaf.page->body.rows) {
-      const auto& m = leaf.metadata.at(row.version_uuid);
-      if (m.record.header.object_uuid.value == principal_uuid && m.record.header.kind == cat::CatalogRecordKind::user_account) {
-        found = m;
-        found_row = row.row_uuid.value;
-        found_version = row.version_uuid;
+  // ---- what to change: one or two committed successor versions in the one transaction ----
+  struct Planned {
+    cat::CatalogMetadataVersion meta;
+    p::Uuid row, version;
+    std::string payload;
+    bool retire = false;   // the successor also RETIRES the row (a revoked grant): retired_transaction_uuid = this transaction
+  };
+  std::vector<Planned> planned;
+  struct Found {
+    cat::CatalogMetadataVersion meta;
+    p::Uuid row, version;
+  };
+  // The newest version of the first row that satisfies `want` (rows are visited in leaf order; a fresh file has one version each).
+  const auto find = [&](const auto& want) {
+    std::optional<Found> out;
+    for (const auto number : bases) {
+      const auto leaf = db::DecodeNativeCatalogLeaf(page(number));
+      Check(leaf.ok(), "a security leaf decodes");
+      for (const auto& row : leaf.page->body.rows) {
+        const auto& m = leaf.metadata.at(row.version_uuid);
+        if (want(m)) out = Found{m, row.row_uuid.value, row.version_uuid};
       }
     }
+    return out;
+  };
+  const auto grant_of = [&](const Found& f) {
+    auto record = cat::DecodeNativeSecurityRecord(f.meta.record.header.kind, f.meta.record.payload);
+    Check(record.ok() && record.record->grant(), "the grant row decodes");
+    return *record.record->grant();
+  };
+  // S4e Part 1 (NEW) forge kinds: the role / group privilege cases need NO new row (the writer has no insert): the
+  // bootstrap principal's own membership row (member = principal, parent = the engine-owned SYSARCH role) gets a successor
+  // with another PARENT, and the default policy pack's own grant rows get successors. Pack identities (resources/
+  // policy-packs/default-local-password): role ...0100 holds CONNECT (grant ...0300), role ...0101 holds no CONNECT, group
+  // ...0200 holds CONNECT (grant ...030a), group ...0201 is a member of role ...0100 (pack membership).
+  const auto role_0100 = FromHex("018f7a10128070008000000000000100"), role_0101 = FromHex("018f7a10128070008000000000000101"),
+             group_0200 = FromHex("018f7a10128070008000000000000200"), group_0201 = FromHex("018f7a10128070008000000000000201"),
+             grant_0300 = FromHex("018f7a10128070008000000000000300");
+  if (kind == "role_connect" || kind == "role_noconnect" || kind == "group_connect" || kind == "transitive" ||
+      kind == "role_revoked" || kind == "role_deny") {
+    const auto membership = find([&](const cat::CatalogMetadataVersion& m) {
+      if (m.record.header.kind != cat::CatalogRecordKind::grant_record) return false;
+      const auto r = cat::DecodeNativeSecurityRecord(m.record.header.kind, m.record.payload);
+      if (!r.ok() || !r.record->grant()) return false;
+      const auto& g = *r.record->grant();
+      return g.grant_class == cat::CatalogSecurityGrantClass::role_membership && g.member_uuid && *g.member_uuid == principal_uuid;
+    });
+    Check(membership.has_value(), "the bootstrap principal's membership row is in the relation");
+    auto grant = grant_of(*membership);
+    p::Uuid parent = role_0100;
+    cat::CatalogSecuritySubjectKind parent_kind = cat::CatalogSecuritySubjectKind::role;
+    if (kind == "role_noconnect") parent = role_0101;
+    if (kind == "group_connect") { parent = group_0200; parent_kind = cat::CatalogSecuritySubjectKind::group; }
+    if (kind == "transitive") { parent = group_0201; parent_kind = cat::CatalogSecuritySubjectKind::group; }
+    grant.parent_uuid = parent;
+    grant.parent_kind = parent_kind;
+    grant.role_uuid = parent_kind == cat::CatalogSecuritySubjectKind::role ? std::optional<p::Uuid>(parent) : std::nullopt;
+    const auto payload = cat::EncodeNativeSecurityGrant(grant);
+    Check(payload.ok(), "the successor membership encodes under the production codec");
+    planned.push_back({membership->meta, membership->row, membership->version,
+                       std::string(payload.bytes.begin(), payload.bytes.end()), false});
+    if (kind == "role_revoked" || kind == "role_deny") {
+      const auto connect = find([&](const cat::CatalogMetadataVersion& m) { return m.record.header.object_uuid.value == grant_0300; });
+      Check(connect.has_value(), "the pack's CONNECT grant of role ...0100 is in the relation");
+      auto cg = grant_of(*connect);
+      Check(cg.right == cat::CatalogSecurityRight::CONNECT && cg.effect == cat::CatalogSecurityEffect::allow, "it is an allow CONNECT");
+      if (kind == "role_deny") cg.effect = cat::CatalogSecurityEffect::deny;
+      const auto cpayload = cat::EncodeNativeSecurityGrant(cg);
+      Check(cpayload.ok(), "the successor grant encodes under the production codec");
+      planned.push_back({connect->meta, connect->row, connect->version,
+                         std::string(cpayload.bytes.begin(), cpayload.bytes.end()), kind == "role_revoked"});
+    }
+  } else {
+    const auto principal_row = find([&](const cat::CatalogMetadataVersion& m) {
+      return m.record.header.object_uuid.value == principal_uuid && m.record.header.kind == cat::CatalogRecordKind::user_account;
+    });
+    Check(principal_row.has_value(), "the bootstrap principal's security row is in the relation");
+    auto record = cat::DecodeNativeSecurityRecord(principal_row->meta.record.header.kind, principal_row->meta.record.payload);
+    Check(record.ok() && record.record->principal(), "the principal row decodes");
+    auto principal = *record.record->principal();
+    if (kind == "disabled") principal.active = false;
+    else if (kind == "nocredential") principal.credential.reset();
+    else return 2;
+    const auto payload = cat::EncodeNativeSecurityPrincipal(principal);
+    Check(payload.ok(), "the successor payload encodes under the production codec");
+    planned.push_back({principal_row->meta, principal_row->row, principal_row->version,
+                       std::string(payload.bytes.begin(), payload.bytes.end()), false});
   }
-  Check(found.has_value(), "the bootstrap principal's security row is in the relation");
-  auto record = cat::DecodeNativeSecurityRecord(found->record.header.kind, found->record.payload);
-  Check(record.ok() && record.record->principal(), "the principal row decodes");
-  auto principal = *record.record->principal();
-  if (kind == "disabled") principal.active = false;
-  else if (kind == "nocredential") principal.credential.reset();
-  else return 2;
-  const auto payload = cat::EncodeNativeSecurityPrincipal(principal);
-  Check(payload.ok(), "the successor payload encodes under the production codec");
-  db::CatalogVersionRequest request;
-  request.role = 4;
-  request.transaction_order = order;
-  request.transaction_uuid = header.transaction_uuid;
-  request.row_uuid = found_row;
-  request.predecessor_version_uuid = found_version;
-  request.version_uuid = id();
-  request.metadata = *found;
-  request.metadata.record.payload.assign(payload.bytes.begin(), payload.bytes.end());
-  ++request.metadata.definition_version;
-  request.metadata.creator_transaction_uuid = {p::UuidKind::transaction, header.transaction_uuid};
-  request.metadata.creator_local_transaction_id = order;
-  request.metadata.audit_uuid = {p::UuidKind::object, event};
-  const auto written = db::WriteCatalogSuccessorVersion(sink, cv, request);
-  if (!written.ok()) std::cerr << "successor refused: " << db::CatalogVersionWriteErrorName(written.error) << '\n';
-  Check(written.ok(), "the catalog version writer writes the successor in place");
+  for (const auto& plan : planned) {
+    db::CatalogVersionRequest request;
+    request.role = 4;
+    request.transaction_order = order;
+    request.transaction_uuid = header.transaction_uuid;
+    request.row_uuid = plan.row;
+    request.predecessor_version_uuid = plan.version;
+    request.version_uuid = id();
+    request.metadata = plan.meta;
+    request.metadata.record.payload.assign(plan.payload.begin(), plan.payload.end());
+    ++request.metadata.definition_version;
+    request.metadata.creator_transaction_uuid = {p::UuidKind::transaction, header.transaction_uuid};
+    request.metadata.creator_local_transaction_id = order;
+    request.metadata.audit_uuid = {p::UuidKind::object, event};
+    if (plan.retire) {
+      // A revoked grant is a DROPPED row: the shape the version writer's own drop uses (header deleted, lifecycle dropped,
+      // status retired, retired by this transaction, payload unchanged); the writer refuses any other retirement.
+      request.metadata.record.header.deleted = true;
+      request.metadata.lifecycle = cat::CatalogObjectLifecycle::dropped;
+      request.metadata.status = cat::CatalogObjectStatus::retired;
+      request.metadata.retired_transaction_uuid = {p::UuidKind::transaction, header.transaction_uuid};
+      // A definition drop also drops its fully dependent rows (live comments): their identities, caller-issued; unused ones
+      // are not consumed.
+      for (int i = 0; i < 8; ++i) request.dependent_versions.push_back(id());
+      for (int i = 0; i < 8; ++i) request.new_pages.push_back({id(), id()});
+    }
+    const auto written = db::WriteCatalogSuccessorVersion(sink, cv, request);
+    if (!written.ok()) std::cerr << "successor refused: " << db::CatalogVersionWriteErrorName(written.error) << '\n';
+    Check(written.ok(), "the catalog version writer writes the successor in place");
+  }
   const auto done_ns = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::nanoseconds>(
       std::chrono::system_clock::now().time_since_epoch()).count());
   Check(writer.Commit(sink, order, done_ns).ok(), "COMMIT of the change transaction");
@@ -605,6 +687,7 @@ int ServeMode(const fs::path& path, const std::string& state, const p::Uuid& dat
               << " principals=" << offline.principals.size() << " roles_in_file=" << offline.roles.size()
               << " groups_in_file=" << offline.groups.size() << " bootstrap_roles=" << m.role_uuids.size()
               << " bootstrap_groups=" << m.group_uuids.size() << " bootstrap_edges=" << m.edges.size()
+              << " effective_roles=" << m.effective_role_uuids.size() << " effective_groups=" << m.effective_group_uuids.size()  // S4e Part 1 (NEW)
               << " generations=" << m.security_generation << "/" << m.policy_generation << "/" << m.security_context_generation
               << std::endl;
 

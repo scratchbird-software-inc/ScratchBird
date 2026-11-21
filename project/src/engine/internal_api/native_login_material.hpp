@@ -17,6 +17,10 @@
 #include "catalog_security_constants.hpp"
 #include "uuid.hpp"
 #include "native_served_database_facts.hpp"
+#include "hash_digest.hpp"
+
+#include <algorithm>
+#include <array>
 
 #include <cstdint>
 #include <functional>
@@ -88,10 +92,44 @@ struct NativeLoginMaterial {
   // Direct role / group memberships of the principal (member = the principal), active and not retired, in object
   // order. The rows behind them are in `edges`.
   std::vector<core::platform::Uuid> role_uuids, group_uuids;
+  // S4e Part 1 (owner S4c Q1 = extend, 2026-11-21): the EFFECTIVE role / group sets, i.e. the transitive closure of the
+  // principal's allow-effect membership edges through ACTIVE role / group rows (a membership whose parent row is absent,
+  // retired, deleted or not active is not followed), sorted ascending by UUID bytes, without duplicates. They carry
+  // the same set the legacy materializer derives as `effective_subjects`; `role_uuids` / `group_uuids` above stay the
+  // principal's DIRECT memberships.
+  std::vector<core::platform::Uuid> effective_role_uuids, effective_group_uuids;
+  // S4e Part 1: the create-fixed canonical SYSARCH role UUID when the principal is EFFECTIVELY a member of it AND the role row
+  // is the engine-owned, immutable, active SYSARCH role (authority class engine_owned_sysarch, as the native runtime
+  // projection verifies it for L5); nil otherwise. It is what the legacy path derived from the bootstrap catalog
+  // (ResolveEngineOwnedSysarchRoleIdentity): the authorization materializer grants the engine-owned bundle to a member.
+  core::platform::Uuid sysarch_role_uuid;
   // Every committed, active grant-family row that names the principal as subject or member (privileges,
-  // memberships, agent bindings): the later adapter's input.
+  // memberships, agent bindings) PLUS (S4e Part 1) the membership rows whose member is a role or group of the
+  // effective sets and the privilege rows (allow and deny) whose subject is the principal's effective role or
+  // group: the adapter's input. Retired / deleted / not-active rows are never edges.
   std::vector<NativeLoginGrantEdge> edges;
 };
+
+// SEARCH_KEY: SB_NATIVE_ROLE_SET_DIGEST (S4e Part 1). The role-set digest the session ledger's SESSION record stores
+// at +80 (the spec's role_set_hash). DEFINITION: SHA-256 over the concatenation of the 16-byte binary UUIDs of the
+// role set (the effective roles), sorted ascending by their bytes, duplicates and nil UUIDs removed, with no prefix,
+// separator or count. The empty set digests to SHA-256 of the empty input (a fixed non-zero value), so "computed, no
+// roles" is told apart from the ledger's all-zero "none stated". The same function serves the group set (not stored:
+// see the ledger record's layout note). Returns false only when the hash provider fails.
+inline bool NativeUuidSetDigest(std::vector<core::platform::Uuid> uuids, std::array<core::platform::byte, 32>& out) {
+  std::sort(uuids.begin(), uuids.end(), [](const auto& a, const auto& b) { return a.bytes < b.bytes; });
+  uuids.erase(std::unique(uuids.begin(), uuids.end(), [](const auto& a, const auto& b) { return a.bytes == b.bytes; }),
+              uuids.end());
+  std::vector<core::platform::byte> bytes;
+  for (const auto& id : uuids) {
+    if (id.is_nil()) continue;
+    bytes.insert(bytes.end(), id.bytes.begin(), id.bytes.end());
+  }
+  const auto digest = core::hash::ComputeSha256Digest(bytes);
+  if (!digest.ok() || digest.digest.size() != out.size()) return false;
+  std::copy(digest.digest.begin(), digest.digest.end(), out.begin());
+  return true;
+}
 
 // SEARCH_KEY: SB_NATIVE_LOGIN_MATERIAL (thin-slice S4a). See the declaration and NativeLoginMaterialError.
 inline const char* NativeLoginMaterialErrorName(NativeLoginMaterialError e) noexcept {

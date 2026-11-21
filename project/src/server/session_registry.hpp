@@ -168,6 +168,13 @@ struct ServerSessionRecord {
   // snapshot instead of loading a legacy security state; it is the state as of the login (staleness between login and
   // attach is S4e's to close: the session's own transaction then reads through the loop). Null on a legacy session.
   std::shared_ptr<const scratchbird::engine::internal_api::EngineSecurityPrincipalLifecycleState> native_login_security_state;
+  // SEARCH_KEY: SB_NATIVE_SESSION_APPROVAL (S4e; owner 2026-11-21: the user's session and first transaction begin only when
+  // authentication is APPROVED). For a session approved on a NATIVE database: the database loop that holds its ledger records
+  // and its transaction (a weak link: the loop is owned by the hosted runtime), whether the approval ran (the session record,
+  // attachment and first transaction exist), and the ledger identities the approval issued. Process-local; never serialized.
+  std::weak_ptr<NativeDatabaseLoop> native_loop;
+  bool native_session_approved = false;
+  std::array<std::uint8_t, 16> ledger_connection_uuid{};  // the CONNECTION record's UUID (the server-issued channel UUID)
   scratchbird::core::platform::Uuid database_uuid;
   std::string resource_seed_pack_root;
   std::string policy_seed_pack_root;
@@ -735,6 +742,11 @@ struct ServerSessionRegistry {
   // remote address once the listener hands one down); empty = unavailable, and then only the per-name throttle entry
   // applies. Never a parser-claimed value. Nothing sets it today.
   std::string login_source_key;
+  // SEARCH_KEY: SB_NATIVE_SESSION_APPROVAL (S4e). The transport kind the CONNECTION ledger record states (1 tcp, 2 unix socket, 3
+  // shared memory, 4 pipe, 5 in-process). The server sees only its untrusted PARSER peer, which reaches it over the local IPC
+  // socket, so the default is 2; the peer address of the end user is not known here (the record states type none) until the
+  // listener hands one down (plan 36 T10).
+  std::uint8_t native_ledger_transport = 2;
   ServerChannelState channel_state = ServerChannelState::kProtocolAdmitted;
   std::map<scratchbird::core::platform::Uuid, ServerSessionRecord> sessions_by_uuid;
   std::map<scratchbird::core::platform::Uuid, ServerSessionRecord> auth_contexts_by_uuid;
@@ -846,8 +858,20 @@ struct ServerNativeLoginAudit {
   std::string internal_code;
   std::array<std::uint8_t, 16> principal_uuid{};
 };
+// SEARCH_KEY: SB_NATIVE_SESSION_APPROVAL (S4e). What an APPROVED native login produced, as values: the session and its first
+// transaction (authentication gives session id + txn id, no BEGIN), the ledger identities and ordinals. The wire payload of the
+// auth result is unchanged (a payload carrying the transaction id is S4h); this is the typed result for the caller.
+struct ServerNativeApproval {
+  bool present = false;
+  std::array<std::uint8_t, 16> session_uuid{}, attachment_uuid{}, connection_record_uuid{};
+  std::uint64_t transaction_order = 0;
+  scratchbird::core::platform::Uuid transaction_uuid;
+  std::uint64_t connection_ordinal = 0, session_ordinal = 0, attachment_ordinal = 0;
+  std::uint32_t writes = 0, syncs = 0;
+};
 struct SessionOperationResult {
   ServerNativeLoginAudit native_login_audit;
+  ServerNativeApproval native_approval;
   bool accepted = false;
   // Set by the authoritative execute ingress handler. Serializers use this
   // typed decision instead of attempting to recover the request schema after

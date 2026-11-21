@@ -5080,12 +5080,12 @@ static bool native_handle_session(sb_engine_session_t session) {
 static sb_engine_status_t native_operation_not_built(sb_engine_session_t session, sb_engine_result_t* out_result,
                                                      const char* operation) {
   const auto& facts = session->engine->native_served_facts;
-  if (facts && facts->serving_state == scratchbird::engine::internal_api::NativeServedServingState::restricted) {
+  if (facts && facts->CurrentServingState() == scratchbird::engine::internal_api::NativeServedServingState::restricted) {
     scratchbird::engine::internal_api::EngineApiDiagnostic restricted =
         scratchbird::engine::internal_api::MakeEngineApiDiagnostic(
             "ENGINE.NATIVE.DATABASE_RESTRICTED_READ_ONLY", "engine.native.database_restricted_read_only", {}, true);
     restricted.fields.push_back({"operation", operation});
-    restricted.fields.push_back({"reason", facts->serving_diagnostic_code});
+    restricted.fields.push_back({"reason", facts->CurrentServingDiagnosticCode()});
     restricted.fields.push_back({"requires", "unresolved_transaction_resolver_s5"});
     restricted.identity_fields.push_back({"database_uuid", facts->database_uuid});
     return fail_result(SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4038, "ENGINE.NATIVE.DATABASE_RESTRICTED_READ_ONLY",
@@ -5225,11 +5225,11 @@ static sb_engine_status_t open_engine_impl(
       // issued on it. Refused before any I/O, with the loop's own diagnostic code as the reason and the
       // database identity (binary); no prose. A RESTRICTED database opens (read-only, see
       // SB_NATIVE_HANDLE_RESTRICTED_READ_ONLY); the flag travels on the facts the handle carries.
-      if (native_facts->serving_state == scratchbird::engine::internal_api::NativeServedServingState::failed) {
+      if (native_facts->CurrentServingState() == scratchbird::engine::internal_api::NativeServedServingState::failed) {
         scratchbird::engine::internal_api::EngineApiDiagnostic failed =
             scratchbird::engine::internal_api::MakeEngineApiDiagnostic(
                 "ENGINE.OPEN.NATIVE_DATABASE_FAILED", "engine.open.native_database_failed", {}, true);
-        failed.fields.push_back({"reason", native_facts->serving_diagnostic_code});
+        failed.fields.push_back({"reason", native_facts->CurrentServingDiagnosticCode()});
         failed.fields.push_back({"requires", "reopen"});
         failed.identity_fields.push_back({"database_uuid", native_facts->database_uuid});
         return fail_result(SB_ENGINE_STATUS_CONFLICT, out_result, 1005, "ENGINE.OPEN.NATIVE_DATABASE_FAILED",
@@ -7437,7 +7437,7 @@ sb_engine_status_t AcquireStatementContextReceipt(
     native_diagnostic.fields.push_back({"native_session_available", "false"});
     native_diagnostic.fields.push_back({"native_transaction_available", "false"});
     native_diagnostic.fields.push_back(
-        {"serving_state", std::to_string(static_cast<unsigned>(engine_context.native_served_facts->serving_state))});
+        {"serving_state", std::to_string(static_cast<unsigned>(engine_context.native_served_facts->CurrentServingState()))});
     native_diagnostic.identity_fields.push_back({"database_uuid", engine_context.native_served_facts->database_uuid});
     return fail_result(SB_ENGINE_STATUS_UNSUPPORTED, out_result, 4038,
                        "ENGINE.STATEMENT_CONTEXT.SESSION_REQUIRED_NATIVE_S4",

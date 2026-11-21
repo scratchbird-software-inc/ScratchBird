@@ -4470,6 +4470,38 @@ foreach(sb_nl_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
     LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_login;database_ownership;binary_uuid"
     TIMEOUT 1800)
 endforeach()
+# SB_NATIVE_SESSION_APPROVAL_TEST (S4e; owner 2026-11-21 / 2026-11-22): the same binary, the S4e states, per page size:
+# `s4e <size>` = approve (+ reopen), crash (+ reopen_crash), failed_later; `roles <size>` = the role / group privilege cases.
+foreach(sb_nl_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
+  string(REPLACE ":" ";" sb_nl_parts "${sb_nl_size}")
+  list(GET sb_nl_parts 0 sb_nl_bytes)
+  list(GET sb_nl_parts 1 sb_nl_label)
+  add_test(NAME sbsql_sblr_alignment_native_session_approval_${sb_nl_label}
+    COMMAND sbsql_sblr_alignment_native_login s4e ${sb_nl_bytes})
+  set_tests_properties(sbsql_sblr_alignment_native_session_approval_${sb_nl_label} PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_login;session_ledger;database_ownership;binary_uuid"
+    TIMEOUT 900)
+  add_test(NAME sbsql_sblr_alignment_native_session_roles_${sb_nl_label}
+    COMMAND sbsql_sblr_alignment_native_login roles ${sb_nl_bytes})
+  set_tests_properties(sbsql_sblr_alignment_native_session_roles_${sb_nl_label} PROPERTIES
+    LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_login;database_ownership;binary_uuid"
+    TIMEOUT 900)
+endforeach()
+if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
+  foreach(sb_nl_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
+    string(REPLACE ":" ";" sb_nl_parts "${sb_nl_size}")
+    list(GET sb_nl_parts 0 sb_nl_bytes)
+    list(GET sb_nl_parts 1 sb_nl_label)
+    add_test(NAME sbsql_sblr_alignment_native_session_approval_strace_${sb_nl_label}
+      COMMAND ${Python3_EXECUTABLE} -B "${CMAKE_CURRENT_SOURCE_DIR}/native_session_approval_strace.py"
+        --test-bin $<TARGET_FILE:sbsql_sblr_alignment_native_login>
+        --material-bin $<TARGET_FILE:sbsql_sblr_alignment_native_login_material>
+        --size ${sb_nl_bytes})
+    set_tests_properties(sbsql_sblr_alignment_native_session_approval_strace_${sb_nl_label} PROPERTIES
+      LABELS "sbsql_sblr_alignment;native_storage;native_serving;native_login;session_ledger;strace"
+      TIMEOUT 900)
+  endforeach()
+endif()
 if(SB_STRACE_EXECUTABLE AND Python3_EXECUTABLE)
   foreach(sb_nl_size IN ITEMS 8192:8k 16384:16k 32768:32k 65536:64k 131072:128k)
     string(REPLACE ":" ";" sb_nl_parts "${sb_nl_size}")

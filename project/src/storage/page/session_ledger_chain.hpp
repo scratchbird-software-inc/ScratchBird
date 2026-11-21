@@ -119,14 +119,27 @@ class SessionLedger {
   // The "durable before cited" rule; none, or the refusal code. A nil
   // attachment / session is not a citation (the caller decides whether a zero
   // is allowed); `principal` is the header's +64.
-  TransactionWriterError CheckHeaderCitation(const Uuid& attachment, const Uuid& session,
-                                             const Uuid& principal) const noexcept;
+  // S4e: `allow_ended_session` (false for Begin / CompleteAndBegin: a NEW header never cites an ended session; true for
+  // the OPEN verification of existing headers: the header of a transaction that was rolled back when its session ended
+  // still cites that session, and a file closed gracefully must open). Every other rule is the same in both modes.
+  TransactionWriterError CheckHeaderCitation(const Uuid& attachment, const Uuid& session, const Uuid& principal,
+                                             bool allow_ended_session = false) const noexcept;
 
   bool loaded() const noexcept { return loaded_; }
   bool failed() const noexcept { return failed_; }
   u32 page_size() const noexcept { return page_size_; }
   u64 record_count() const noexcept { return records_; }
   u64 page_count() const noexcept { return pages_.size(); }
+  // S4e: sessions whose latest record is not an end record (a session still open in this process, or, right after
+  // Load, one an earlier engine instance never ended: a crash or kill left it, "orphaned"). One pass over the index.
+  u64 OpenSessionCount() const noexcept {
+    u64 n = 0;
+    for (const auto& [uuid, entry] : index_) {
+      (void)uuid;
+      if (entry.kind == SessionLedgerKind::session && !entry.ended) ++n;
+    }
+    return n;
+  }
   const std::vector<u64>& pages() const noexcept { return pages_; }  // page numbers, chain order
   // 90 bytes per indexed record UUID (see above); an estimate for reports.
   static constexpr std::size_t kIndexBytesPerRecord = 90;

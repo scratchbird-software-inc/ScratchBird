@@ -1117,8 +1117,11 @@ std::shared_ptr<storage::disk::RouteOwnershipLease> ServedRouteOwnerFor(
   return {};
 }
 
-std::shared_ptr<const engine::internal_api::NativeServedDatabaseFacts> ServedNativeFactsFor(
-    const HostedEngineState& engine_state, const std::string& database_path) {
+namespace {
+// The hosted runtime of the native database at database_path (found by its canonical path), or null. ONE lookup for the
+// served facts and for the database loop (S4e: the loop lookup was a second copy of this loop).
+std::shared_ptr<HostedDatabaseRuntime> FindServedNativeRuntime(const HostedEngineState& engine_state,
+                                                               const std::string& database_path) {
   if (database_path.empty()) return {};
   std::error_code error;
   const auto canonical = std::filesystem::canonical(database_path, error);
@@ -1126,8 +1129,20 @@ std::shared_ptr<const engine::internal_api::NativeServedDatabaseFacts> ServedNat
   for (const auto& runtime : engine_state.database_runtimes)
     if (runtime && runtime->native_served_facts &&
         (runtime->canonical_database_path == wanted || runtime->canonical_database_path == database_path))
-      return runtime->native_served_facts;
+      return runtime;
   return {};
+}
+}  // namespace
+
+std::shared_ptr<const engine::internal_api::NativeServedDatabaseFacts> ServedNativeFactsFor(
+    const HostedEngineState& engine_state, const std::string& database_path) {
+  const auto runtime = FindServedNativeRuntime(engine_state, database_path);
+  return runtime ? runtime->native_served_facts : nullptr;
+}
+
+std::shared_ptr<NativeDatabaseLoop> ServedNativeLoopFor(const HostedEngineState& engine_state, const std::string& database_path) {
+  const auto runtime = FindServedNativeRuntime(engine_state, database_path);
+  return runtime ? runtime->native_loop : nullptr;
 }
 
 }  // namespace scratchbird::server

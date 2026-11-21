@@ -15,14 +15,15 @@
 //
 // What is asserted, per page size (a child process each, `serve <path> <state> ...`):
 //   * the right name + password is accepted with the BINARY bootstrap principal UUID and the role UUIDs the S4a read
-//     reports; an alias name logs in too; no session record and no transaction exists afterwards;
+//     reports; an alias name logs in too; [S4e: an approved login ALSO holds a session record and its first transaction
+//     (was: none exists afterwards); the approval, the ledger records and the disconnect are asserted by the s4e states];
 //   * EVERY credential cause - wrong password, unknown name, hidden-class name, a name two different objects match,
 //     an empty name, a role's name, an inadmissible password, L5 with its correct derived password, a named agent with
 //     its correct derived password - returns the SAME client-visible failure: the full serialized result (diagnostics,
 //     payload, flags) is compared byte for byte; the SPECIFIC internal code (result.native_login_audit) differs;
 //   * a disabled principal and a credential-less principal (forged by the engine's own writers) fail the same way;
 //   * infrastructure causes keep their own codes (failed database, closed loop, an unsupported provider);
-//   * a restricted database logs in (Q309);
+//   * a restricted database logs in (Q309) [S4e: but its session is refused with the Q299 code, nothing written];
 //   * no field of the request can inject a principal, a role or a "trusted" flag: a claimed principal UUID is refused,
 //     option envelopes and evidence fields are ignored;
 //   * nothing is written: the file bytes and the directory are unchanged, no .sb.* file exists, the TIP's Next is the
@@ -54,6 +55,7 @@
 #include "server/native_database_loop.hpp"
 #include "server/process_crypto_owner.hpp"
 #include "session_registry.hpp"
+#include "../support/native_offline_file_reader.hpp"
 #include "../support/owned_temp_directory.hpp"
 
 #include <sys/wait.h>
@@ -68,6 +70,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <future>
 #include <iostream>
 #include <map>
@@ -299,10 +302,12 @@ struct Attempt {
   double milliseconds = 0;
   std::array<std::uint8_t, 16> connection{};
 };
+std::uint64_t g_approvals = 0;            // S4e: logins approved through Handoff (each took one transaction number)
 std::vector<std::string> all_wires;       // every client-visible serialization the test saw
 std::vector<std::string> all_internal;    // every internal code the test saw
 
-Attempt Handoff(const LoginAsk& ask, srv::ServerSessionRegistry* shared_registry = nullptr, const std::string& source = {}) {
+// The handoff itself, with no test-global state touched: safe to call from several threads (each attempt has its own registry).
+Attempt HandoffRaw(const LoginAsk& ask, srv::ServerSessionRegistry* shared_registry = nullptr, const std::string& source = {}) {
   Attempt attempt;
   auto* registry = shared_registry ? shared_registry : attempt.registry.get();
   registry->login_source_key = source;
@@ -312,8 +317,17 @@ Attempt Handoff(const LoginAsk& ask, srv::ServerSessionRegistry* shared_registry
   attempt.result = srv::HandleAuthHandoff(registry, served.started.state, frame);
   attempt.milliseconds = std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - started).count();
   attempt.wire = Wire(attempt.result);
+  return attempt;
+}
+// What the test records of an attempt (single thread).
+void Record(const Attempt& attempt) {
   all_wires.push_back(attempt.wire);
   all_internal.push_back(attempt.result.native_login_audit.internal_code);
+  if (attempt.result.native_approval.present) ++g_approvals;
+}
+Attempt Handoff(const LoginAsk& ask, srv::ServerSessionRegistry* shared_registry = nullptr, const std::string& source = {}) {
+  auto attempt = HandoffRaw(ask, shared_registry, source);
+  Record(attempt);
   return attempt;
 }
 
@@ -339,6 +353,8 @@ api::EngineAuthenticateResult Engine(const LoginAsk& ask) {
 constexpr const char* kPrefix = "SECURITY.AUTHENTICATION.NATIVE_LOGIN_";
 std::string Internal(std::string_view tail) { return std::string(kPrefix) + std::string(tail); }
 
+std::uint64_t NextTransaction();   // defined below (the TIP's Next at a snapshot point)
+
 // One credential-cause case: both entry points refuse with the SAME client-visible vector, the internal code is the
 // expected specific one, and the throttle (cleared first: each case is its own name) never sees a non-credential cause.
 struct Collected {
@@ -347,8 +363,10 @@ struct Collected {
 std::vector<std::pair<std::string, Collected>> credential_cases;
 Collected CredentialCase(const std::string& what, const LoginAsk& ask, const std::vector<std::string>& expected_internal) {
   srv::NativeLoginThrottle().Clear();
+  const auto next_around = NextTransaction();   // S4e: a failed login takes no transaction number
   const auto handoff = Handoff(ask);
   Check(!handoff.result.accepted, what + ": the handoff refuses");
+  Check(NextTransaction() == next_around, what + ": a failed login took no transaction number (and wrote nothing)");
   Check(handoff.result.native_login_audit.present && handoff.result.native_login_audit.reached_loop && !handoff.result.native_login_audit.throttled,
         what + ": the audit says it reached the loop and was not throttled");
   const auto internal = handoff.result.native_login_audit.internal_code;
@@ -384,6 +402,528 @@ void NoNameOrPasswordInOutput(const std::vector<std::string>& outputs) {
   for (const auto& [uuid, password] : served.derived)
     for (const auto& output : outputs)
       Check(password.empty() || output.find(password) == std::string::npos, "no derived agent password in any output");
+}
+
+// ============================================================================================================================
+// SEARCH_KEY: SB_NATIVE_SESSION_APPROVAL_TEST (S4e; owner 2026-11-21: the user's session and first transaction begin only when
+// authentication is APPROVED; 2026-11-22: session end = a NEW ledger record; S4d answer 3: close rolls back). The states below
+// are served children like the S4c ones: a PRODUCTION-created database served by StartHostedEngine, logged in through the real
+// HandleAuthHandoff. The file is read BYTES ONLY (tests/support/native_offline_file_reader.hpp), by hand: txn id -> header ->
+// +96 session record -> principal equals +64; +80 attachment -> connection.
+//   approve         success returns a session id and a transaction id; the ledger holds connection, session, attachment in
+//                   that order and the TIP slot is active with header +48/+64/+80/+96 correct; a second session; six logins
+//                   from six threads; an abrupt disconnect rolls the transaction back and appends the session-ended record;
+//                   the graceful close does the same for every session that is left; a disconnect AFTER the close is settled.
+//   reopen          the next open: the verification accepts the ended sessions, nothing is orphaned, Restart marks nothing.
+//   crash           two approvals, then a forced _Exit; the driver reads the file, then runs `reopen_crash`.
+//   reopen_crash    after the kill: Restart marks the slots dead, the facts report the orphaned (un-ended) sessions, login works.
+//   failed_later    the writer FAILS after an approval: the next approval is refused, the live serving state is `failed`
+//                   (the facts' cell), login and attach refuse with the failed codes.
+//   role_*, group_connect, transitive   the role / group privilege cases (forged by the engine's own writers).
+// ============================================================================================================================
+namespace off = scratchbird::tests::offline;
+namespace pgs = scratchbird::storage::page;
+
+constexpr std::uint8_t kSnapshotStableProfile = 4;   // IsolationProfileKind::snapshot_stable (the Firebird-like snapshot default)
+
+std::array<p::byte, 32> SetDigest(std::vector<p::Uuid> uuids) {
+  std::array<p::byte, 32> out{};
+  Check(api::NativeUuidSetDigest(std::move(uuids), out), "the set digest computes");
+  return out;
+}
+
+// Everything the S4a read says of the bootstrap principal (the effective sets the digests are computed from).
+api::NativeLoginMaterial BootstrapMaterial() {
+  PasswordFactory passwords(served.database);
+  srv::NativeLoopLoginRequest request;
+  request.principal_uuid = served.bootstrap;
+  request.password = passwords.Make(kBootstrapPassword);
+  request.password_length = kBootstrapPassword.size();
+  const auto read = served.loop->SubmitReadLoginMaterial(std::move(request)).get();
+  Check(read.ok() && read.material.has_value(), "the S4a read of the bootstrap principal");
+  return *read.material;
+}
+
+srv::SessionOperationResult Disconnect(Attempt& attempt, std::string_view reason) {
+  const auto& approval = attempt.result.native_approval;
+  sbps::Frame frame;
+  frame.header.message_type = static_cast<std::uint16_t>(sbps::MessageType::kDisconnectNotice);
+  frame.header.request_uuid = sbps::MakeUuidV7Bytes();
+  frame.header.connection_uuid = attempt.connection;
+  frame.header.session_uuid = approval.session_uuid;
+  frame.payload.assign(approval.session_uuid.begin(), approval.session_uuid.end());
+  PutString(&frame.payload, reason);
+  return srv::HandleDisconnectNotice(attempt.registry.get(), frame);
+}
+
+std::size_t IndexOf(const off::FileView& file, const p::Uuid& uuid, pgs::SessionLedgerKind kind, bool latest = false) {
+  std::size_t found = file.ledger.size();
+  for (std::size_t i = 0; i < file.ledger.size(); ++i)
+    if (file.ledger[i].record_uuid == uuid && file.ledger[i].kind() == kind && (latest || found == file.ledger.size())) found = i;
+  return found;
+}
+
+// The audit trace of one approved session BY HAND, from its transaction id.
+void CheckAuditTrace(const off::FileView& file, const srv::ServerNativeApproval& approval, const p::Uuid& principal,
+                     const p::Uuid& instance, pgs::TipStateCode expected_state, const std::string& what) {
+  const p::Uuid session{approval.session_uuid}, attachment{approval.attachment_uuid}, connection{approval.connection_record_uuid};
+  const auto word = file.words.find(approval.transaction_order);
+  Check(word != file.words.end() && word->second.state == expected_state,
+        what + ": the TIP slot of order " + std::to_string(approval.transaction_order) + " is " +
+            (word == file.words.end() ? std::string("absent") : std::string(pgs::TipStateCodeName(word->second.state))) + ", expected " +
+            pgs::TipStateCodeName(expected_state));
+  // 1. txn id -> header
+  const auto header = file.headers.find(approval.transaction_order);
+  Check(header != file.headers.end(), what + ": the transaction has a durable header");
+  const auto& h = header->second;
+  Check(h.transaction_order == approval.transaction_order && h.transaction_uuid == approval.transaction_uuid, what + ": header order and UUID are the approval's");
+  Check(h.engine_instance_uuid == instance, what + ": header +48 is the engine instance");
+  Check(h.principal_or_agent_uuid == principal, what + ": header +64 is the AUTHENTICATED principal (the create's bootstrap UUID)");
+  Check(h.attachment_uuid == attachment, what + ": header +80 is the attachment");
+  Check(h.session_uuid == session, what + ": header +96 is the session");
+  Check(h.isolation_profile == kSnapshotStableProfile && !h.read_only, what + ": isolation = the snapshot default, read-write");
+  // 2. +96 -> the session record; its principal equals +64
+  const auto s_open = IndexOf(file, session, pgs::SessionLedgerKind::session);
+  Check(s_open < file.ledger.size(), what + ": the session record is in the ledger");
+  const auto& s = std::get<pgs::LedgerSessionRecord>(file.ledger[s_open].body);
+  Check(s.principal_uuid == h.principal_or_agent_uuid && s.principal_uuid == principal, what + ": session principal == header +64 == the authenticated principal");
+  Check(s.engine_instance_uuid == instance && !s.ended() && s.opened_at_utc_ns != 0, what + ": the opening record: engine instance, not ended, opened_at set");
+  // 3. +80 -> the attachment record -> the session and the connection
+  const auto a_at = IndexOf(file, attachment, pgs::SessionLedgerKind::attachment);
+  Check(a_at < file.ledger.size(), what + ": the attachment record is in the ledger");
+  const auto& a = std::get<pgs::LedgerAttachmentRecord>(file.ledger[a_at].body);
+  Check(a.session_uuid == session && a.connection_uuid == connection && a.engine_instance_uuid == instance && a.predecessor_uuid.is_nil(),
+        what + ": the attachment names the session and the connection record");
+  const auto c_at = IndexOf(file, connection, pgs::SessionLedgerKind::connection);
+  Check(c_at < file.ledger.size(), what + ": the connection record is in the ledger");
+  // 4. durable before cited, in the order the approval wrote them
+  Check(c_at < s_open && s_open < a_at, what + ": ledger order is connection, session, attachment");
+  Check(file.ledger[c_at].ordinal == c_at && file.ledger[s_open].ordinal == s_open && file.ledger[a_at].ordinal == a_at, what + ": ordinals are the chain positions");
+  Check(file.ledger[s_open].ordinal == approval.session_ordinal && file.ledger[a_at].ordinal == approval.attachment_ordinal, what + ": the approval reports the same ordinals");
+}
+
+struct Approved {
+  Attempt attempt;
+  srv::ServerNativeApproval approval;
+};
+Approved Approve(const LoginAsk& ask = {std::string(kBootstrapName), std::string(kBootstrapPassword)}) {
+  Approved out;
+  out.attempt = Handoff(ask);
+  Check(out.attempt.result.accepted && out.attempt.result.native_approval.present, "the login is approved: " + out.attempt.wire);
+  out.approval = out.attempt.result.native_approval;
+  const auto& ap = out.approval;
+  const p::Uuid session{ap.session_uuid};
+  Check(out.attempt.result.session_uuid == ap.session_uuid, "the success result carries the session id");
+  Check(ap.transaction_order != 0 && !ap.transaction_uuid.is_nil() && !session.is_nil(), "and the transaction id (order and UUID)");
+  const auto found = out.attempt.registry->sessions_by_uuid.find(session);
+  Check(found != out.attempt.registry->sessions_by_uuid.end(), "the session is recorded in the registry (sessions_by_uuid) under its own session UUID");
+  const auto& rec = found->second;
+  Check(rec.session_uuid == ap.session_uuid && rec.local_transaction_id == ap.transaction_order && rec.transaction_uuid == ap.transaction_uuid &&
+            rec.default_local_transaction_id == ap.transaction_order && rec.transactions_by_local_id.size() == 1 &&
+            rec.attachment_id == ap.attachment_uuid && rec.native_session_approved && !rec.native_loop.expired(),
+        "the registry record carries the transaction order and UUID, the attachment, and the loop that holds them");
+  Check(rec.session_uuid != rec.auth_context_uuid, "the session UUID is the server's own issue, not the auth context's");
+  return out;
+}
+
+void CheckSetDigestDefinition();
+
+p::Uuid Fresh() {
+  const auto id = scratchbird::core::uuid::IssueRuntimeIdentityV7();
+  Check(id.has_value(), "an identity");
+  return *id;
+}
+
+int S4eState(const std::string& state, const fs::path& path) {
+  using TS = pgs::TipStateCode;
+  const auto page_size = served.facts->page_size_bytes;
+  const p::Uuid instance = served.facts->engine_instance_uuid;
+  const auto read = [&] { return off::ReadFile(path, page_size); };
+  const auto dir_before = Snapshot(served.directory);
+
+  if (state == "approve") {
+    const auto file0 = read();
+    Check(file0.ledger.empty(), "the created file's ledger is empty");
+    const auto next0 = file0.counters.next_transaction;
+    const auto material = BootstrapMaterial();
+    Check(!material.effective_role_uuids.empty() && !material.sysarch_role_uuid.is_nil(), "the bootstrap principal is effectively a SYSARCH member (Part 1)");
+    CheckSetDigestDefinition();
+    // A FAILED login writes nothing: not a byte of the file, no ledger record, Next unchanged.
+    {
+      const auto bytes = Snapshot(served.directory);
+      const auto failed = Handoff({std::string(kBootstrapName), std::string(kWrongPassword)});
+      Check(!failed.result.accepted && !failed.result.native_approval.present && failed.registry->sessions_by_uuid.empty(), "a wrong password is refused, no session");
+      Check(Snapshot(served.directory) == bytes && read().ledger.empty() && read().counters.next_transaction == next0, "and wrote NOTHING: bytes, ledger and Next are unchanged");
+      srv::NativeLoginThrottle().Clear();
+    }
+    // Session 1.
+    auto s1 = Approve();
+    Check(s1.approval.transaction_order == next0, "the first user transaction takes the TIP's Next (" + std::to_string(next0) + ")");
+    Check(s1.approval.writes >= 4 && s1.approval.syncs >= 4, "the approval wrote three ledger records and began a transaction (writes=" + std::to_string(s1.approval.writes) + " syncs=" + std::to_string(s1.approval.syncs) + ")");
+    auto f1 = read();
+    Check(f1.ledger.size() == 3, "three ledger records after one approval");
+    CheckAuditTrace(f1, s1.approval, served.bootstrap, instance, TS::active, "session 1");
+    {
+      const auto& conn = std::get<pgs::LedgerConnectionRecord>(f1.ledger[0].body);
+      const auto& sess = std::get<pgs::LedgerSessionRecord>(f1.ledger[1].body);
+      Check(conn.listener_uuid.is_nil() && conn.parser_instance_uuid.is_nil(), "the connection record: listener and parser instance are zero (no HELLO was admitted)");
+      Check(conn.transport == pgs::LedgerTransport::unix_socket && conn.peer_address_type == pgs::LedgerPeerAddressType::none && conn.peer_port == 0 &&
+                conn.tls_evidence_kind == 0 && conn.route_uuid.is_nil() && conn.opened_at_utc_ns != 0,
+            "the connection record: unix socket, no peer address (the server sees only its untrusted parser peer), no TLS evidence");
+      Check(sess.role_set_digest == SetDigest(material.effective_role_uuids), "the session's role-set digest is the digest of the EFFECTIVE roles (sorted binary UUIDs)");
+      Check(sess.group_set_digest == SetDigest(material.effective_group_uuids), "and its group-set digest that of the effective groups");
+      Check(sess.settings.isolation_profile == kSnapshotStableProfile && !sess.settings.read_only && sess.settings.lock_wait_timeout_ms == 0 && sess.settings.language_uuid.is_nil(),
+            "the settings block: snapshot default, read-write, no lock wait limit, language unset");
+      Check(sess.policy_snapshot_uuid.is_nil(), "no policy snapshot before plan 32");
+      Check(sess.auth_context_uuid.is_nil() || sess.auth_context_uuid == p::Uuid{s1.attempt.registry->auth_contexts_by_uuid.begin()->second.auth_context_uuid},
+            "the auth context field is the registry's auth context (or zero when it is not a v7 identity)");
+    }
+    // Session 2: a different session, a different transaction.
+    auto s2 = Approve();
+    Check(s2.approval.session_uuid != s1.approval.session_uuid && s2.approval.transaction_uuid != s1.approval.transaction_uuid &&
+              s2.approval.transaction_order > s1.approval.transaction_order && s2.approval.attachment_uuid != s1.approval.attachment_uuid &&
+              s2.approval.connection_record_uuid != s1.approval.connection_record_uuid,
+          "a second session gets a different session, transaction, attachment and connection record");
+    // Six logins from six threads.
+    constexpr int kThreads = 6;
+    std::vector<std::future<Attempt>> futures;
+    for (int i = 0; i < kThreads; ++i)
+      futures.push_back(std::async(std::launch::async, [] { return HandoffRaw({std::string(kBootstrapName), std::string(kBootstrapPassword)}); }));
+    std::vector<Attempt> concurrent;
+    for (auto& f : futures) {
+      concurrent.push_back(f.get());
+      Record(concurrent.back());
+    }
+    std::set<std::array<std::uint8_t, 16>> sessions;
+    std::set<std::uint64_t> orders;
+    for (const auto& c : concurrent) {
+      Check(c.result.accepted && c.result.native_approval.present, "a concurrent login is approved: " + c.wire);
+      sessions.insert(c.result.native_approval.session_uuid);
+      orders.insert(c.result.native_approval.transaction_order);
+    }
+    Check(sessions.size() == kThreads && orders.size() == kThreads && *orders.begin() > s2.approval.transaction_order,
+          "six concurrent logins: six distinct sessions, six distinct transaction numbers, none reused");
+    auto f2 = read();
+    Check(f2.ledger.size() == 3 * (2 + kThreads), "the ledger holds three records per approval (" + std::to_string(f2.ledger.size()) + ")");
+    for (std::size_t i = 0; i < f2.ledger.size(); i += 3)
+      Check(f2.ledger[i].kind() == pgs::SessionLedgerKind::connection && f2.ledger[i + 1].kind() == pgs::SessionLedgerKind::session &&
+                f2.ledger[i + 2].kind() == pgs::SessionLedgerKind::attachment,
+            "every approval's three records are contiguous, in order (one request on the loop)");
+    CheckAuditTrace(f2, s1.approval, served.bootstrap, instance, TS::active, "session 1 again");
+    CheckAuditTrace(f2, s2.approval, served.bootstrap, instance, TS::active, "session 2");
+    for (const auto& c : concurrent) CheckAuditTrace(f2, c.result.native_approval, served.bootstrap, instance, TS::active, "a concurrent session");
+    Check(f2.counters.next_transaction == next0 + 2 + kThreads, "Next advanced by exactly one per approval");
+    // The loop's own view agrees.
+    {
+      std::vector<std::uint64_t> orders_on_loop;
+      std::vector<p::Uuid> sessions_on_loop;
+      Check(served.loop->RunOnLoopThreadForTest([&] {
+              orders_on_loop = served.loop->OpenTransactionOrdersOnLoopThread();
+              sessions_on_loop = served.loop->OpenSessionsOnLoopThread();
+            }),
+            "the loop answers");
+      Check(orders_on_loop.size() == 2 + kThreads && sessions_on_loop.size() == 2 + kThreads, "the loop owns one open transaction and one open session per approval");
+    }
+    // ---- a setup that fails AFTER the session record is durable: the session is ENDED (setup_failed), never left half-visible ----
+    // The request reuses session 2's CONNECTION record (a second approval on the same channel: ledger UUIDs are write-once, so the
+    // durable connection record is reused, not appended again) and a DUPLICATE attachment UUID (session 2's), which the ledger refuses
+    // as a rule (writer_refused, nothing written for that step): the connection step is skipped, the session record is appended, the
+    // attachment step is refused, the ended record (setup_failed) is appended, no transaction is begun, no number is taken.
+    {
+      const auto before_setup = read();
+      const auto session2 = p::Uuid{s2.approval.session_uuid};
+      const auto session2_open = IndexOf(before_setup, session2, pgs::SessionLedgerKind::session);
+      const auto connection2 = IndexOf(before_setup, p::Uuid{s2.approval.connection_record_uuid}, pgs::SessionLedgerKind::connection);
+      Check(session2_open < before_setup.ledger.size() && connection2 < before_setup.ledger.size(), "session 2's records are in the file");
+      srv::NativeLoopSessionOpenRequest request;
+      request.connection_uuid = p::Uuid{s2.approval.connection_record_uuid};
+      request.connection = std::get<pgs::LedgerConnectionRecord>(before_setup.ledger[connection2].body);
+      request.session_uuid = Fresh();
+      request.session = std::get<pgs::LedgerSessionRecord>(before_setup.ledger[session2_open].body);
+      request.attachment_uuid = p::Uuid{s2.approval.attachment_uuid};   // already in the ledger: refused
+      const auto refused = served.loop->SubmitOpenSession(request).get();
+      Check(!refused.ok() && refused.error == srv::NativeLoopTransactionError::writer_refused && refused.failed_step == srv::NativeLoopSessionStep::attachment &&
+                refused.detail.find("ledger_duplicate_record") != std::string::npos,
+            "the approval is refused at the attachment step by the ledger's rule: " + refused.detail);
+      Check(refused.connection_ordinal == before_setup.ledger[connection2].ordinal && refused.session_ordinal == before_setup.ledger.size() && refused.attachment_ordinal == 0 &&
+                refused.begun_order == 0 && refused.setup_failed_recorded,
+            "the durable connection record was reused, the session record was appended, no attachment, no transaction, and the ended record was appended");
+      const auto after_setup = read();
+      Check(after_setup.ledger.size() == before_setup.ledger.size() + 2 && std::equal(before_setup.ledger.begin(), before_setup.ledger.end(), after_setup.ledger.begin()),
+            "exactly two records were appended (the session, then its end), nothing rewritten");
+      const auto& ended = std::get<pgs::LedgerSessionRecord>(after_setup.ledger.back().body);
+      Check(after_setup.ledger.back().record_uuid == request.session_uuid && ended.ended() && ended.end_reason == pgs::LedgerEndReason::setup_failed,
+            "the last record is that session's end, reason setup_failed");
+      Check(after_setup.counters.next_transaction == before_setup.counters.next_transaction, "no transaction number was taken");
+      std::vector<p::Uuid> sessions_on_loop;
+      Check(served.loop->RunOnLoopThreadForTest([&] { sessions_on_loop = served.loop->OpenSessionsOnLoopThread(); }), "the loop answers");
+      Check(std::find(sessions_on_loop.begin(), sessions_on_loop.end(), request.session_uuid) == sessions_on_loop.end(), "the half-made session is not open on the loop");
+      f2 = after_setup;   // the later comparisons are against the file as it stands now
+    }
+    // ---- abrupt disconnect of session 1: its transaction is rolled back and the session-ended record is appended ----
+    const auto before_disconnect = read();
+    {
+      const auto d = Disconnect(s1.attempt, "physical_parser_channel_lost");
+      Check(d.accepted, "the disconnect of session 1 is accepted");
+      Check(s1.attempt.registry->sessions_by_uuid.empty(), "the session left the registry");
+      bool rolled_back_reported = false;
+      for (const auto& diag : d.diagnostics)
+        if (diag.code == "ENGINE.DBLC_DETACH_TRANSACTION_ROLLED_BACK") rolled_back_reported = true;
+      Check(rolled_back_reported, "the detach reports the transaction as rolled back");
+    }
+    auto f3 = read();
+    Check(f3.ledger.size() == f2.ledger.size() + 1, "exactly ONE record was appended: the session-ended record");
+    Check(std::equal(f2.ledger.begin(), f2.ledger.end(), f3.ledger.begin()), "every earlier record is byte-for-byte the record it was (no overwrite)");
+    {
+      const auto& end = f3.ledger.back();
+      Check(end.kind() == pgs::SessionLedgerKind::session && end.record_uuid == p::Uuid{s1.approval.session_uuid}, "the new record is session 1's");
+      const auto& body = std::get<pgs::LedgerSessionRecord>(end.body);
+      const auto& open_body = std::get<pgs::LedgerSessionRecord>(f2.ledger[IndexOf(f2, p::Uuid{s1.approval.session_uuid}, pgs::SessionLedgerKind::session)].body);
+      Check(body.ended() && body.end_reason == pgs::LedgerEndReason::connection_lost && body.ended_at_utc_ns >= body.opened_at_utc_ns, "ended, reason connection_lost");
+      Check(body.principal_uuid == open_body.principal_uuid && body.opened_at_utc_ns == open_body.opened_at_utc_ns && body.role_set_digest == open_body.role_set_digest &&
+                body.group_set_digest == open_body.group_set_digest && body.settings == open_body.settings && body.engine_instance_uuid == open_body.engine_instance_uuid,
+            "the ended record repeats the session's own facts");
+    }
+    {
+      const auto word = f3.words.find(s1.approval.transaction_order);
+      Check(word != f3.words.end() && word->second.state == TS::rolled_back, "session 1's transaction is ROLLED BACK in the file (no replacement was begun)");
+      const auto header = f3.headers.at(s1.approval.transaction_order);
+      Check(header.final_state == TS::rolled_back && header.commit_time_utc_ns == 0 && header.completed_at_utc_ns != 0, "its header says rolled back");
+      Check(f3.counters.next_transaction == f2.counters.next_transaction, "no replacement transaction took a number");
+      CheckAuditTrace(f3, s2.approval, served.bootstrap, instance, TS::active, "session 2 is untouched");
+      std::vector<std::uint64_t> orders_on_loop;
+      std::vector<p::Uuid> sessions_on_loop;
+      Check(served.loop->RunOnLoopThreadForTest([&] {
+              orders_on_loop = served.loop->OpenTransactionOrdersOnLoopThread();
+              sessions_on_loop = served.loop->OpenSessionsOnLoopThread();
+            }),
+            "the loop answers");
+      Check(std::find(orders_on_loop.begin(), orders_on_loop.end(), s1.approval.transaction_order) == orders_on_loop.end() && orders_on_loop.size() == 1 + kThreads &&
+                std::find(sessions_on_loop.begin(), sessions_on_loop.end(), p::Uuid{s1.approval.session_uuid}) == sessions_on_loop.end(),
+            "the loop no longer owns session 1's transaction or session");
+    }
+    // ---- an orderly client disconnect of session 2: reason closed_by_client ----
+    {
+      const auto d = Disconnect(s2.attempt, "parser_disconnect_notice");
+      Check(d.accepted && s2.attempt.registry->sessions_by_uuid.empty(), "session 2's orderly disconnect is accepted");
+      const auto f = read();
+      const auto& end = std::get<pgs::LedgerSessionRecord>(f.ledger.back().body);
+      Check(f.ledger.back().record_uuid == p::Uuid{s2.approval.session_uuid} && end.ended() && end.end_reason == pgs::LedgerEndReason::closed_by_client, "its ended record: closed_by_client");
+    }
+    // ---- the graceful close: every session left is ended (server_shutdown) and its transaction rolled back ----
+    const auto before_close = read();
+    Check(served.loop->Close().ok, "the loop closes");
+    const auto after_close = read();
+    Check(after_close.ledger.size() == before_close.ledger.size() + kThreads, "the close appended exactly one ended record per remaining session");
+    Check(std::equal(before_close.ledger.begin(), before_close.ledger.end(), after_close.ledger.begin()), "and rewrote nothing before it");
+    for (std::size_t i = before_close.ledger.size(); i < after_close.ledger.size(); ++i) {
+      const auto& body = std::get<pgs::LedgerSessionRecord>(after_close.ledger[i].body);
+      Check(after_close.ledger[i].kind() == pgs::SessionLedgerKind::session && body.ended() && body.end_reason == pgs::LedgerEndReason::server_shutdown, "a close-time record: ended, server_shutdown");
+    }
+    for (const auto& c : concurrent) {
+      const auto order = c.result.native_approval.transaction_order;
+      Check(after_close.words.at(order).state == TS::rolled_back, "after the close the transaction of order " + std::to_string(order) + " is rolled back (OLD: left in progress, dead at the next open)");
+    }
+    for (const auto& [order, word] : after_close.words)
+      Check(word.state != TS::active && word.state != TS::dead, "no slot of the file is left in progress or dead after a graceful close");
+    // ---- shutdown ordering: the loop is closed BEFORE the registry's disconnect arrives ----
+    {
+      auto& late = concurrent.front();
+      const auto d = Disconnect(late, "server_shutdown");
+      Check(d.accepted && late.registry->sessions_by_uuid.empty(), "a disconnect that arrives after the loop closed is settled (the close already rolled back and ended): the session is released");
+    }
+    for (const auto& entry : fs::directory_iterator(served.directory))
+      Check(entry.path().filename().string().find(".sb.") == std::string::npos, "no .sb.* file exists");
+    Check(Snapshot(served.directory).size() == dir_before.size(), "the directory holds the database file only");
+    std::printf("INFO approve ledger_records=%zu writes_per_approval=%u syncs_per_approval=%u\n", after_close.ledger.size(), s1.approval.writes, s1.approval.syncs);
+    NoNameOrPasswordInOutput(all_wires);
+    NoNameOrPasswordInOutput(all_internal);
+  } else if (state == "trace") {
+    // The strace half's child (native_session_approval_strace.py): regions marked on stderr (the script splits the data-file
+    // writes by region), the loop's own counts printed per region. A failed login (writes nothing), two approvals, both sessions
+    // ended through the loop (so every write of the run is one the loop reports), then the close, which finds nothing to write.
+    const auto mark = [](const char* name) { ::dprintf(2, "MARK %s\n", name); };
+    const auto measure = [](const char* op, std::uint32_t writes, std::uint32_t syncs) {
+      std::printf("MEASURE op=%s writes=%u syncs=%u\n", op, writes, syncs);
+      std::fflush(stdout);
+    };
+    mark("failed");
+    const auto failed = Handoff({std::string(kBootstrapName), std::string(kWrongPassword)});
+    Check(!failed.result.accepted, "a wrong password is refused");
+    measure("failed", 0, 0);
+    srv::NativeLoginThrottle().Clear();
+    mark("approve");
+    auto a = Approve();
+    auto b = Approve();
+    measure("approve", a.approval.writes + b.approval.writes, a.approval.syncs + b.approval.syncs);
+    mark("end_sessions");
+    std::uint32_t writes = 0, syncs = 0;
+    for (const auto* approval : {&a.approval, &b.approval}) {
+      srv::NativeLoopSessionEndRequest end;
+      end.session_uuid = p::Uuid{approval->session_uuid};
+      end.reason = pgs::LedgerEndReason::closed_by_client;
+      const auto ended = served.loop->SubmitEndSession(end).get();
+      Check(ended.ok() && ended.transactions_rolled_back == 1, "the loop ends the session and rolls its transaction back");
+      writes += ended.writes;
+      syncs += ended.syncs;
+    }
+    measure("end_sessions", writes, syncs);
+    mark("end");
+    NoNameOrPasswordInOutput(all_wires);
+  } else if (state == "reopen") {
+    // The next open after a graceful close: the verification accepted ENDED sessions (their rolled-back headers still cite them).
+    const auto file = read();
+    const auto facts = [&] {
+      std::optional<srv::NativeLoopServingFacts> out;
+      Check(served.loop->RunOnLoopThreadForTest([&] { out = served.loop->FactsOnLoopThread(); }), "the loop answers");
+      Check(out.has_value(), "the loop has its facts");
+      return *out;
+    }();
+    Check(facts.ledger_records == file.ledger.size() && facts.ledger_orphaned_sessions == 0 && !facts.ledger_torn_tail,
+          "reopen: the ledger loaded (" + std::to_string(facts.ledger_records) + " records), no orphaned session");
+    Check(facts.restart.marked_dead == 0 && facts.serving_state == srv::NativeServingState::serving, "reopen: Restart marked nothing dead (nothing was left in progress)");
+    auto again = Approve();
+    Check(again.approval.transaction_order == file.counters.next_transaction, "reopen: the next approval takes the next number; none is reused");
+    std::printf("REOPEN orphans=%llu marked_dead=%llu ledger=%llu\n", static_cast<unsigned long long>(facts.ledger_orphaned_sessions),
+                static_cast<unsigned long long>(facts.restart.marked_dead), static_cast<unsigned long long>(facts.ledger_records));
+    Check(served.loop->Close().ok, "the loop closes");
+  } else if (state == "crash") {
+    const auto a = Approve();
+    const auto b = Approve();
+    std::printf("CRASH orders=%llu,%llu sessions=%s,%s\n", static_cast<unsigned long long>(a.approval.transaction_order),
+                static_cast<unsigned long long>(b.approval.transaction_order), Hex(p::Uuid{a.approval.session_uuid}).c_str(), Hex(p::Uuid{b.approval.session_uuid}).c_str());
+    std::printf("LOGIN_OK checks=%d state=%s\n", checks, state.c_str());
+    std::fflush(stdout);
+    std::_Exit(0);   // forced: no close, no disconnect, no ended record, nothing flushed that the engine holds
+  } else if (state == "reopen_crash") {
+    const auto file = read();
+    Check(file.ledger.size() >= 6, "the crashed file's ledger is still there");
+    std::size_t open_sessions = 0;
+    for (const auto& r : file.ledger)
+      if (r.kind() == pgs::SessionLedgerKind::session && !std::get<pgs::LedgerSessionRecord>(r.body).ended()) ++open_sessions;
+    std::optional<srv::NativeLoopServingFacts> facts;
+    Check(served.loop->RunOnLoopThreadForTest([&] { facts = served.loop->FactsOnLoopThread(); }) && facts.has_value(), "the loop has its facts");
+    Check(facts->ledger_orphaned_sessions == open_sessions && open_sessions >= 2,
+          "after the kill the facts report the un-ended sessions as orphaned: " + std::to_string(facts->ledger_orphaned_sessions) + " (the ledger shows " + std::to_string(open_sessions) + ")");
+    Check(facts->restart.marked_dead >= 2 && facts->serving_state == srv::NativeServingState::serving, "Restart marked the killed transactions dead and the database serves");
+    // The killed sessions' transactions are dead in the file (Restart wrote), their sessions un-ended.
+    std::size_t dead = 0;
+    for (const auto& [order, word] : file.words)
+      if (word.state == TS::dead) ++dead;
+    Check(dead >= 2, "the killed slots are dead in the file");
+    auto fresh = Approve();
+    Check(fresh.approval.transaction_order >= file.counters.next_transaction, "a new login after the crash takes a new number");
+    std::printf("REOPEN_CRASH orphans=%llu marked_dead=%llu\n", static_cast<unsigned long long>(facts->ledger_orphaned_sessions), static_cast<unsigned long long>(facts->restart.marked_dead));
+    Check(served.loop->Close().ok, "the loop closes (the new session is ended; the orphans stay un-ended: reported, never repaired)");
+  } else if (state == "failed_later") {
+    auto ok = Approve();
+    Check(served.facts->CurrentServingState() == api::NativeServedServingState::serving, "serving before the failure");
+    // The writer fails on the NEXT write the loop makes: the second login is refused, the database becomes `failed`.
+    srv::SetNativeTransactionSinkWrapperForTest([](scratchbird::storage::disk::CarefulWriteSink& inner) -> std::unique_ptr<scratchbird::storage::disk::CarefulWriteSink> {
+      return std::make_unique<FailFirstWriteSink>(inner);
+    });
+    srv::NativeLoginThrottle().Clear();
+    const auto broken = Handoff({std::string(kBootstrapName), std::string(kBootstrapPassword)});
+    Check(!broken.result.accepted && !broken.result.native_approval.present && !broken.result.diagnostics.empty() &&
+              broken.result.diagnostics.front().code == "ENGINE.NATIVE.TRANSACTION_WRITER_FAILED",
+          "the approval whose write failed is refused with the writer-failed code: " + broken.wire);
+    Check(broken.registry->sessions_by_uuid.empty() && broken.registry->auth_contexts_by_uuid.empty(), "and leaves no session and no auth context");
+    // Part 4: the facts are immutable and were built `serving`, but the live state is the cell's.
+    Check(served.facts->serving_state == api::NativeServedServingState::serving && served.facts->CurrentServingState() == api::NativeServedServingState::failed,
+          "the facts' state at open is serving, the LIVE state is failed (the atomic cell beside the immutable facts)");
+    Check(served.facts->CurrentServingDiagnosticCode() == "DATABASE.TRANSACTION_WRITE_FAILED", "with the writer-failure token as its reason");
+    const auto login = Handoff({std::string(kBootstrapName), std::string(kBootstrapPassword)});
+    Check(!login.result.accepted && !login.result.diagnostics.empty() && login.result.diagnostics.front().code == "SECURITY.AUTHENTICATION.NATIVE_LOGIN_DATABASE_FAILED",
+          "a login on the failed database is refused with the failed code, not the generic failure: " + login.wire);
+    // A session approved BEFORE the failure is not bound by an attach: the native branch asks the live state.
+    {
+      const auto context = srv::DecodeAuthContextUuidForTest(ok.attempt.result.payload);
+      Check(context.has_value(), "the first session's auth context decodes");
+      const auto frame = MakeFrame(sbps::MessageType::kAttachDatabase, AttachPayload(ok.attempt.connection, *context), ok.attempt.connection);
+      const auto attached = srv::HandleAttachDatabase(ok.attempt.registry.get(), served.started.state, frame);
+      bool failed_code = false;
+      for (const auto& d : attached.diagnostics)
+        if (d.code == "ENGINE.NATIVE.TRANSACTION_DATABASE_FAILED") failed_code = true;
+      Check(!attached.accepted && failed_code, "the attach of a session approved before the failure is refused with the failed code");
+    }
+    const auto direct = Engine({std::string(kBootstrapName), std::string(kBootstrapPassword)});
+    Check(!direct.ok && direct.diagnostics.front().code == "SECURITY.AUTHENTICATION.NATIVE_LOGIN_DATABASE_FAILED", "EngineAuthenticate refuses with the same failed code");
+    // The loop cannot end the session on a failed database: the server keeps it for recovery (outcome unknown), it does not lie.
+    const auto d = Disconnect(ok.attempt, "parser_disconnect_notice");
+    Check(!ok.attempt.registry->sessions_by_uuid.empty(), "a disconnect on a failed database cannot end the session: it is retained for recovery (outcome unknown)");
+    (void)d;
+    srv::SetNativeTransactionSinkWrapperForTest(nullptr);
+    std::printf("FAILED_LATER order=%llu\n", static_cast<unsigned long long>(ok.approval.transaction_order));
+  } else {
+    // ---- role / group privilege cases ----
+    const bool refused_case = state == "role_noconnect" || state == "role_revoked" || state == "role_deny";
+    const auto material = BootstrapMaterial();
+    const auto role_0100 = FromHex("018f7a10128070008000000000000100"), group_0200 = FromHex("018f7a10128070008000000000000200"),
+               group_0201 = FromHex("018f7a10128070008000000000000201");
+    Check(material.sysarch_role_uuid.is_nil(), state + ": the principal is no longer a member of SYSARCH (the forge moved its membership)");
+    if (state == "role_connect" || state == "role_revoked" || state == "role_deny")
+      Check(material.effective_role_uuids == std::vector<p::Uuid>{role_0100} && material.effective_group_uuids.empty(), state + ": effective roles = {...0100}");
+    if (state == "group_connect")
+      Check(material.effective_role_uuids.empty() && material.effective_group_uuids == std::vector<p::Uuid>{group_0200}, state + ": effective groups = {...0200}, no role");
+    if (state == "transitive")
+      Check(material.effective_role_uuids == std::vector<p::Uuid>{role_0100} && material.effective_group_uuids == std::vector<p::Uuid>{group_0201},
+            state + ": the group's own membership is followed: effective roles {...0100}, groups {...0201}");
+    // The privilege rows of the roles / groups are in the material (the adapter's input), not only the principal's own.
+    std::size_t privilege_edges = 0;
+    for (const auto& edge : material.edges)
+      if (edge.grant_class == cat::CatalogSecurityGrantClass::privilege && edge.subject_uuid != served.bootstrap) ++privilege_edges;
+    if (state == "role_revoked") Check(privilege_edges == 0, state + ": the REVOKED grant (a dropped row) is not in the material");
+    else if (state != "role_noconnect") Check(privilege_edges >= 1, state + ": the material carries privilege rows owned by the role / group (" + std::to_string(privilege_edges) + ")");
+    const auto next_before_login = NextTransaction();
+    const auto bytes_before = Snapshot(served.directory);
+    srv::NativeLoginThrottle().Clear();
+    const auto a = Handoff({std::string(kBootstrapName), std::string(kBootstrapPassword)});
+    if (refused_case) {
+      Check(!a.result.accepted && !a.result.native_approval.present && !a.result.diagnostics.empty() && a.result.diagnostics.front().code == "SECURITY.AUTHORIZATION.DENIED",
+            state + ": authenticated but NOT authorized to CONNECT: refused with SECURITY.AUTHORIZATION.DENIED: " + a.wire);
+      Check(a.registry->auth_contexts_by_uuid.empty() && a.registry->sessions_by_uuid.empty(), state + ": no auth context, no session");
+      Check(Snapshot(served.directory) == bytes_before && NextTransaction() == next_before_login, state + ": nothing was written (bytes and Next unchanged)");
+    } else {
+      Check(a.result.accepted && a.result.native_approval.present, state + ": CONNECT granted through the role / group is honoured: " + a.wire);
+      const auto file = read();
+      CheckAuditTrace(file, a.result.native_approval, served.bootstrap, instance, TS::active, state);
+      const auto& sess = std::get<pgs::LedgerSessionRecord>(file.ledger[1].body);
+      Check(sess.role_set_digest == SetDigest(material.effective_role_uuids) && sess.group_set_digest == SetDigest(material.effective_group_uuids),
+            state + ": the ledger's role-set and group-set digests are those of the effective sets");
+      const auto& rec = a.registry->sessions_by_uuid.begin()->second;
+      Check(rec.effective_role_uuids.size() == material.effective_role_uuids.size() && rec.effective_group_uuids.size() == material.effective_group_uuids.size(),
+            state + ": the session's effective sets are the closure");
+    }
+  }
+  return 0;
+}
+
+// The role-set digest, defined (see NativeUuidSetDigest): known answers, order independence, duplicates and nil removed.
+void CheckSetDigestDefinition() {
+  const auto id = [](std::uint8_t n) {
+    p::Uuid u;
+    for (std::size_t i = 0; i < 16; ++i) u.bytes[i] = static_cast<p::byte>(n + i);
+    return u;
+  };
+  const auto sha = [](const std::vector<p::byte>& bytes) {
+    const auto d = scratchbird::core::hash::ComputeSha256Digest(bytes);
+    Check(d.ok(), "sha256");
+    std::array<p::byte, 32> out{};
+    std::copy(d.digest.begin(), d.digest.end(), out.begin());
+    return out;
+  };
+  const auto a = id(0x10), b = id(0x40), c = id(0x70);
+  std::vector<p::byte> sorted_concat;
+  for (const auto* u : {&a, &b, &c}) sorted_concat.insert(sorted_concat.end(), u->bytes.begin(), u->bytes.end());
+  const auto expected = sha(sorted_concat);
+  Check(SetDigest({a, b, c}) == expected, "digest = SHA-256 over the sorted 16-byte UUIDs, concatenated, no prefix or count");
+  Check(SetDigest({c, a, b}) == expected && SetDigest({b, c, a}) == expected, "the order the set is given in does not matter");
+  Check(SetDigest({c, a, a, b, b, p::Uuid{}}) == expected, "duplicates and nil UUIDs are removed");
+  Check(SetDigest({a, b}) != expected && SetDigest({a, b, c, id(0x90)}) != expected, "a different set digests differently");
+  Check(SetDigest({}) == sha({}) && SetDigest({p::Uuid{}}) == sha({}), "the empty set is SHA-256 of the empty input (non-zero: told apart from the ledger's 'none stated')");
+  const auto empty = SetDigest({});
+  Check(HexBytes(std::vector<std::uint8_t>(empty.begin(), empty.end())) == "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "and that is the well-known SHA-256 of nothing");
 }
 
 int ServeMode(const fs::path& path, const std::string& state) {
@@ -431,6 +971,18 @@ int ServeMode(const fs::path& path, const std::string& state) {
   Check(!served.loop->on_loop_thread(), "the test is not on the loop thread");
   srv::NativeLoginThrottle().Clear();
   srv::NativeLoginThrottleClockHook() = nullptr;
+  if (state == "approve" || state == "reopen" || state == "crash" || state == "reopen_crash" || state == "failed_later" ||
+      state == "role_connect" || state == "role_noconnect" || state == "group_connect" || state == "transitive" ||
+      state == "role_revoked" || state == "role_deny" || state == "trace") {
+    if (const int rc = S4eState(state, path); rc != 0) return rc;
+    if (state != "approve" && state != "reopen" && state != "reopen_crash") {
+      (void)served.loop->Close();   // idempotent; the S4e states that close themselves already did
+    }
+    served.facts.reset();
+    served.started = {};
+    std::cout << "LOGIN_OK checks=" << checks << " state=" << state << std::endl;
+    return 0;
+  }
   const auto next_before = state == "failed" ? 0 : NextTransaction();
   std::vector<double> right_ms, wrong_ms, unknown_ms;
 
@@ -538,11 +1090,28 @@ int ServeMode(const fs::path& path, const std::string& state) {
     const bool restricted = state == "restricted";
     // 1. The right name + password: accepted, with the BINARY bootstrap principal UUID and the S4a role UUIDs.
     const auto good = Handoff({std::string(kBootstrapName), std::string(kBootstrapPassword)});
+    // S4e (owner 2026-11-21: the user's session and first transaction begin only when authentication is APPROVED). OLD (S4c):
+    // an accepted handoff left one auth context and NO session record. NOW an approved login on a SERVING database also holds
+    // the session and its first transaction (see native_session_approval below / the approve state for the file-level
+    // assertions); on a RESTRICTED database the login is allowed (Q309) but the session is refused with the Q299 code
+    // before anything is written (Q299 / Q309; the loop refuses the approval).
+    if (restricted) {
+      Check(!good.result.accepted, "restricted: the approval is refused although the login succeeded: " + good.wire);
+      Check(!good.result.diagnostics.empty() && good.result.diagnostics.front().code == "ENGINE.NATIVE.DATABASE_RESTRICTED_READ_ONLY",
+            "restricted: the refusal is the Q299 code, got " + (good.result.diagnostics.empty() ? std::string("none") : good.result.diagnostics.front().code));
+      Check(good.result.native_login_audit.accepted && good.result.native_login_audit.internal_code == "SECURITY.AUTHENTICATION.NATIVE_LOGIN_ACCEPTED",
+            "restricted: the login itself was accepted (the audit says so)");
+      Check(good.registry->auth_contexts_by_uuid.empty() && good.registry->sessions_by_uuid.empty() && !good.result.native_approval.present,
+            "restricted: no auth context, no session, no approval");
+      Check(Snapshot(served.directory) == before && NextTransaction() == next_before,
+            "restricted: nothing was written (every file's bytes and the TIP's Next are unchanged)");
+    } else {
     Check(good.result.accepted, "bootstrap name + right password: accepted by the handoff: " + good.wire);
     Check(good.result.native_login_audit.accepted && good.result.native_login_audit.internal_code == "SECURITY.AUTHENTICATION.NATIVE_LOGIN_ACCEPTED",
           "the audit records the acceptance");
-    Check(good.registry->auth_contexts_by_uuid.size() == 1 && good.registry->sessions_by_uuid.empty(),
-          "one auth context, NO session record (the session and its transaction are S4e's)");
+    Check(good.registry->auth_contexts_by_uuid.size() == 1 && good.registry->sessions_by_uuid.size() == 1 && good.result.native_approval.present &&
+              good.result.native_approval.transaction_order != 0,
+          "one auth context AND one session record with its first transaction (S4e; was: no session record)");
     const auto& session = good.registry->auth_contexts_by_uuid.begin()->second;
     Check(std::equal(session.principal_uuid.begin(), session.principal_uuid.end(), served.bootstrap.bytes.begin()),
           "the session's principal is the bootstrap principal's BINARY UUID, equal to the create's");
@@ -576,6 +1145,7 @@ int ServeMode(const fs::path& path, const std::string& state) {
                             [](const auto& r) { return r.role_name.empty(); }),
             "the adapter state holds binary identities only: no principal or role name");
       Check(direct.diagnostics.empty(), "the success result carries no diagnostic (and AddSecurityRow holds only binary identities: see the native branch)");
+    }
     }
     // 2. An alias name logs in as the same principal.
     if (!restricted) {
@@ -683,10 +1253,15 @@ int ServeMode(const fs::path& path, const std::string& state) {
       Check(!a.result.accepted && role_refused, "a requested role by name is refused specifically (SECURITY.ROLE_INVALID) after authentication");
       Check(a.registry->auth_contexts_by_uuid.empty(), "and no auth context is kept for it");
     }
-    // 7. Attach and the embedded attach on a native database: refused specifically, before anything is begun.
-    {
+    // 7. Attach and the embedded attach on a native database. S4e (owner 2026-11-21): the session and its first transaction
+    //    begin at APPROVAL, so the attach only BINDS the approved session. OLD (S4c): the attach was refused at CONNECT ("no
+    //    role-owned privilege rows in the material"), and, with CONNECT amended into the adapter state in memory, with
+    //    native_attach_requires_s4e. NOW (Part 1 made the material carry role-owned privileges and the SYSARCH bundle): the
+    //    approved bootstrap principal connects, the attach is accepted with NO second transaction, and a replay is refused.
+    //    A restricted database has no approved session to attach (Q299 above); only the embedded attach is checked there.
+    if (!restricted) {
       const auto auth = Handoff({std::string(kBootstrapName), std::string(kBootstrapPassword)});
-      Check(auth.result.accepted, "the login for the attach case");
+      Check(auth.result.accepted && auth.result.native_approval.present, "the login for the attach case is approved");
       const auto context = srv::DecodeAuthContextUuidForTest(auth.result.payload);
       Check(context.has_value(), "the auth context UUID decodes");
       const auto attach_codes = [&](const srv::SessionOperationResult& r) {
@@ -698,44 +1273,20 @@ int ServeMode(const fs::path& path, const std::string& state) {
         }
         return codes;
       };
-      // (a) As the login built it. The first-slice adapter holds only what the S4a material carries: the principal's OWN
-      //     rows and its direct memberships; the privileges its ROLES own are not in the material, so CONNECT is not
-      //     authorized. The attach refuses at CONNECT, before anything is begun: a finding for the owner (S4e / material).
+      const auto approved_order = auth.result.native_approval.transaction_order;
+      const auto next_at_attach = NextTransaction();
       const auto attach_frame = MakeFrame(sbps::MessageType::kAttachDatabase, AttachPayload(auth.connection, *context), auth.connection);
       const auto attached = srv::HandleAttachDatabase(auth.registry.get(), served.started.state, attach_frame);
-      const auto first_codes = attach_codes(attached);
-      Check(!attached.accepted && auth.registry->sessions_by_uuid.empty(), "the native attach is not accepted and no session exists: " + first_codes);
-      if (restricted) {
-        // A restricted database is read-only: a read_write attach is denied by its existing attach-mode rule before any
-        // authorization (Q309: the login was allowed; transactions are the S5 resolver's).
-        Check(first_codes.find("read_only_database") != std::string::npos, "restricted: the attach is denied as a read-only database: " + first_codes);
-      } else
-      Check(first_codes.find("SECURITY.AUTHORIZATION.DENIED") != std::string::npos && first_codes.find("CONNECT") != std::string::npos,
-            "as the adapter built it the attach is refused at the CONNECT authorization (no role-owned privilege rows in the material): " + first_codes);
-      std::cout << "INFO attach_as_built=" << first_codes << std::endl;
-      if (!restricted) {
-      // (b) With a CONNECT privilege added to the retained adapter state IN MEMORY (the test's own mutation of the
-      //     registry's record; nothing is mocked in the engine): the attach reaches the specific refusal that stands in
-      //     for the legacy transaction begin, still before anything is begun or written.
-      {
-        auto amended = std::make_shared<api::EngineSecurityPrincipalLifecycleState>(*auth.registry->auth_contexts_by_uuid.begin()->second.native_login_security_state);
-        api::EngineSecurityPrivilegeGrantRecord grant;
-        grant.grant_uuid = *scratchbird::core::uuid::IssueRuntimeIdentityV7();
-        grant.grantee_uuid = served.bootstrap;
-        grant.grantee_kind = "principal";
-        grant.privilege = "CONNECT";
-        grant.grant_effect = "allow";
-        grant.security_generation = amended->security_generation;
-        amended->grants.push_back(grant);
-        auth.registry->auth_contexts_by_uuid.begin()->second.native_login_security_state = amended;
-      }
-      const auto attach_frame2 = MakeFrame(sbps::MessageType::kAttachDatabase, AttachPayload(auth.connection, *context), auth.connection);
-      const auto attached2 = srv::HandleAttachDatabase(auth.registry.get(), served.started.state, attach_frame2);
-      const auto codes = attach_codes(attached2);
-      Check(!attached2.accepted && auth.registry->sessions_by_uuid.empty(), "the amended native attach is not accepted and no session exists: " + codes);
-      Check(codes.find("native_attach_requires_s4e") != std::string::npos,
-            "with CONNECT the attach reaches the specific refusal native_attach_requires_s4e (the legacy transaction begin is not run): " + codes);
-      }
+      Check(attached.accepted, "the native attach of the approved session is accepted: " + attach_codes(attached));
+      Check(auth.registry->sessions_by_uuid.size() == 1 && auth.registry->sessions_by_uuid.begin()->second.session_binding_present &&
+                auth.registry->sessions_by_uuid.begin()->second.local_transaction_id == approved_order,
+            "the registry still holds the ONE approved session, now bound, with the transaction begun at approval");
+      Check(NextTransaction() == next_at_attach, "the attach began no transaction and wrote nothing (the TIP's Next is unchanged)");
+      const auto replay = srv::HandleAttachDatabase(auth.registry.get(), served.started.state, attach_frame);
+      Check(!replay.accepted && attach_codes(replay).find("auth_context_replay_refused") != std::string::npos,
+            "a second attach with the same context is refused as a replay: " + attach_codes(replay));
+    }
+    {
       srv::ServerSessionRegistry embedded_registry;
       const auto embedded = srv::HandleEmbeddedSysarchAttach(&embedded_registry, served.started.state, "default", "native_login_test");
       bool embedded_refused = false;
@@ -758,11 +1309,19 @@ int ServeMode(const fs::path& path, const std::string& state) {
     }
   }
 
-  // ---- nothing was written, whatever happened -------------------------------------------------------------------------
-  Check(Snapshot(served.directory) == before, "the directory and every file's bytes are unchanged after every attempt");
+  // ---- nothing was written by a failed login, whatever happened ---------------------------------------------------------
+  // S4e: an APPROVED login writes (three ledger records and the first transaction) and takes exactly one transaction number.
+  // OLD (S4c): the file's bytes and the TIP's Next were unchanged after every attempt. NOW that holds for every state in which
+  // no login was approved (restricted, failed, disabled, nocredential); where logins were approved (serving, throttle) the
+  // directory still holds only the database file, and Next advanced by EXACTLY the number of approvals: no failed login, no
+  // throttled attempt and no refusal took a number. (Each failure case also checks Next around itself, in CredentialCase.)
+  if (g_approvals == 0) Check(Snapshot(served.directory) == before, "the directory and every file's bytes are unchanged after every attempt");
+  else Check(Snapshot(served.directory).size() == before.size(), "the directory holds the same files (the database file only)");
   for (const auto& entry : fs::directory_iterator(served.directory))
     Check(entry.path().filename().string().find(".sb.") == std::string::npos, "no .sb.* file exists");
-  if (state != "failed") Check(NextTransaction() == next_before, "the TIP's Next is unchanged: no login, successful or failed, took a transaction number");
+  if (state != "failed")
+    Check(NextTransaction() == next_before + g_approvals,
+          "the TIP's Next advanced by exactly the number of approved logins (" + std::to_string(g_approvals) + "): no failed login took a transaction number");
   NoNameOrPasswordInOutput(all_wires);
   NoNameOrPasswordInOutput(all_internal);
 
@@ -800,7 +1359,16 @@ std::string Field(const std::string& text, std::string_view key) {
   return text.substr(from, to == std::string::npos ? std::string::npos : to - from);
 }
 
-void RunState(const std::string& self, const fs::path& root, std::uint32_t page_size, const std::string& state) {
+bool IsRoleState(const std::string& state) {
+  return state == "role_connect" || state == "role_noconnect" || state == "group_connect" || state == "transitive" ||
+         state == "role_revoked" || state == "role_deny";
+}
+
+// `then`: S4e follow-up children run on the SAME file after the first one ended (a reopen after a close or after a crash);
+// `between(state_just_run, child_output)` lets the driver read the file between them.
+void RunState(const std::string& self, const fs::path& root, std::uint32_t page_size, const std::string& state,
+              const std::vector<std::string>& then = {},
+              const std::function<void(const std::string&, const std::string&, const fs::path&)>& between = {}) {
   const std::string tag = "[" + std::to_string(page_size) + "] ";
   const auto dir = root / (state + std::to_string(page_size));
   fs::create_directory(dir);
@@ -820,9 +1388,9 @@ void RunState(const std::string& self, const fs::path& root, std::uint32_t page_
   if (state == "restricted") {
     Check(Capture(std::string("'") + SB_NATIVE_SERVING_TEST_BIN + "' fixture '" + path.string() + "' committing", &status).find("FIXTURE ok") != std::string::npos && status == 0,
           tag + "the native_serving writer left a committing slot");
-  } else if (state == "disabled" || state == "nocredential") {
+  } else if (state == "disabled" || state == "nocredential" || IsRoleState(state)) {
     const auto forged = Capture("'" + material + "' forge '" + path.string() + "' " + state + " " + bootstrap, &status);
-    Check(status == 0 && forged.find("FORGED kind=" + state) != std::string::npos, tag + state + ": the engine's writers changed the row: " + forged.substr(0, 1500));
+    Check(status == 0 && forged.find("FORGED kind=" + state) != std::string::npos, tag + state + ": the engine's writers changed the rows: " + forged.substr(0, 1500));
   } else if (state == "failed") {
     Check(Capture(std::string("'") + SB_NATIVE_SERVING_TEST_BIN + "' fixture '" + path.string() + "' active", &status).find("FIXTURE ok") != std::string::npos && status == 0,
           tag + "the native_serving writer left an active slot (the Restart will write; the seam fails it)");
@@ -836,27 +1404,82 @@ void RunState(const std::string& self, const fs::path& root, std::uint32_t page_
     while (!derived.empty() && (derived.back() == '\n' || derived.back() == ' ')) derived.pop_back();
     if (!derived.empty() && derived.front() == ' ') derived.erase(0, 1);
   }
-  const auto start = std::chrono::steady_clock::now();
-  std::string command = "'" + self + "' serve '" + path.string() + "' " + state + " " + database + " " + bootstrap + " " + service;
-  if (!derived.empty()) {
-    ::setenv("SB_LOGIN_TEST_DERIVED", derived.c_str(), 1);
-  } else {
+  std::vector<std::string> sequence{state};
+  sequence.insert(sequence.end(), then.begin(), then.end());
+  for (const auto& child : sequence) {
+    const auto start = std::chrono::steady_clock::now();
+    std::string command = "'" + self + "' serve '" + path.string() + "' " + child + " " + database + " " + bootstrap + " " + service;
+    if (!derived.empty()) {
+      ::setenv("SB_LOGIN_TEST_DERIVED", derived.c_str(), 1);
+    } else {
+      ::unsetenv("SB_LOGIN_TEST_DERIVED");
+    }
+    const auto served_out = Capture(command, &status);
     ::unsetenv("SB_LOGIN_TEST_DERIVED");
+    const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+    Check(status == 0 && served_out.find("LOGIN_OK") != std::string::npos, tag + child + ": serve child: " + served_out.substr(0, 3000));
+    for (const auto& output : {created, served_out})
+      Check(output.find(kBootstrapPassword) == std::string::npos && output.find(kWrongPassword) == std::string::npos, tag + child + ": no test password in any child output");
+    if (const auto info = served_out.find("INFO "); info != std::string::npos)
+      std::printf("%s%s: %s\n", tag.c_str(), child.c_str(), served_out.substr(info, served_out.find('\n', info) - info).c_str());
+    if (const auto timing = served_out.find("TIMING"); timing != std::string::npos)
+      std::printf("%s%s: %.1f s; %s\n", tag.c_str(), child.c_str(), seconds, served_out.substr(timing, served_out.find('\n', timing) - timing).c_str());
+    else
+      std::printf("%s%s: %.1f s\n", tag.c_str(), child.c_str(), seconds);
+    fflush(stdout);
+    if (between) between(child, served_out, path);
   }
-  const auto served_out = Capture(command, &status);
-  ::unsetenv("SB_LOGIN_TEST_DERIVED");
-  const auto seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
-  Check(status == 0 && served_out.find("LOGIN_OK") != std::string::npos, tag + state + ": serve child: " + served_out.substr(0, 3000));
-  for (const auto& output : {created, served_out})
-    Check(output.find(kBootstrapPassword) == std::string::npos && output.find(kWrongPassword) == std::string::npos, tag + state + ": no test password in any child output");
-  if (const auto info = served_out.find("INFO "); info != std::string::npos)
-    std::printf("%s%s: %s\n", tag.c_str(), state.c_str(), served_out.substr(info, served_out.find('\n', info) - info).c_str());
-  if (const auto timing = served_out.find("TIMING"); timing != std::string::npos)
-    std::printf("%s%s: %.1f s; %s\n", tag.c_str(), state.c_str(), seconds, served_out.substr(timing, served_out.find('\n', timing) - timing).c_str());
-  else
-    std::printf("%s%s: %.1f s\n", tag.c_str(), state.c_str(), seconds);
-  fflush(stdout);
 }
+
+// The S4e driver for one page size: the chains that need the file between children.
+void RunS4e(const std::string& self, const fs::path& root, std::uint32_t page_size) {
+  const std::string tag = "[" + std::to_string(page_size) + "] ";
+  namespace pgx = scratchbird::storage::page;
+  // approve -> reopen: after the graceful close the file opens (ended sessions verify), nothing orphaned.
+  RunState(self, root, page_size, "approve", {"reopen"}, [&](const std::string& child, const std::string& out, const fs::path& path) {
+    if (child != "reopen") return;
+    Check(out.find("REOPEN orphans=0 marked_dead=0") != std::string::npos, tag + "reopen after a graceful close: no orphan, nothing marked dead: " + out.substr(0, 500));
+    const auto file = off::ReadFile(path, page_size);
+    std::size_t open = 0;
+    for (const auto& [uuid, word] : file.words) {
+      (void)uuid;
+      if (word.state == pgx::TipStateCode::active || word.state == pgx::TipStateCode::dead) ++open;
+    }
+    Check(open == 0, tag + "the file after approve + reopen + close has no slot in progress or dead");
+  });
+  // crash -> reopen_crash: the killed sessions stay un-ended (orphaned), their slots are dead at the next open.
+  RunState(self, root, page_size, "crash", {"reopen_crash"}, [&](const std::string& child, const std::string& out, const fs::path& path) {
+    const auto file = off::ReadFile(path, page_size);
+    if (child == "crash") {
+      const auto at = out.find("CRASH orders=");
+      Check(at != std::string::npos, tag + "the crash child reported its orders");
+      const auto line = out.substr(at, out.find('\n', at) - at);
+      const auto first = std::stoull(line.substr(std::string("CRASH orders=").size()));
+      const auto second = std::stoull(line.substr(line.find(',') + 1));
+      Check(file.ledger.size() == 6, tag + "after the kill the ledger holds the two approvals' six records, written before the kill");
+      for (const auto order : {first, second}) {
+        Check(file.words.at(order).state == pgx::TipStateCode::active, tag + "after the kill the slot of order " + std::to_string(order) + " is still ACTIVE in the file");
+        Check(file.headers.at(order).session_uuid != p::Uuid{}, tag + "its header cites the session");
+      }
+      for (const auto& r : file.ledger)
+        if (r.kind() == pgx::SessionLedgerKind::session) Check(!std::get<pgx::LedgerSessionRecord>(r.body).ended(), tag + "the killed sessions' records are un-ended");
+    } else {
+      std::size_t orphans = 0, dead = 0;
+      for (const auto& r : file.ledger)
+        if (r.kind() == pgx::SessionLedgerKind::session) {
+          const auto& body = std::get<pgx::LedgerSessionRecord>(r.body);
+          if (!body.ended()) ++orphans;
+        }
+      for (const auto& [order, word] : file.words)
+        if (word.state == pgx::TipStateCode::dead) ++dead;
+      Check(dead >= 2, tag + "after the reopen the killed slots are dead in the file");
+      // the two killed sessions never got an end record (3 new records for the post-crash session: 6 + 3 + its end)
+      Check(file.ledger.size() == 6 + 3 + 1 && orphans >= 2, tag + "the orphans stay un-ended: reported, never repaired (ledger " + std::to_string(file.ledger.size()) + ")");
+    }
+  });
+  RunState(self, root, page_size, "failed_later");
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -864,6 +1487,30 @@ int main(int argc, char** argv) {
     served.bootstrap = FromHex(argv[5]);
     served.service = FromHex(argv[6]);
     return ServeMode(argv[2], argv[3]);
+  }
+  if (argc == 4 && std::string(argv[1]) == "pages") {   // pages <path> <page_size>: the chains' page numbers (for the strace half)
+    const auto file = off::ReadFile(argv[2], static_cast<std::uint32_t>(std::stoul(argv[3])));
+    const auto list = [](const std::vector<p::u64>& pages) {
+      std::string out;
+      for (std::size_t i = 0; i < pages.size(); ++i) out += (i ? "," : "") + std::to_string(pages[i]);
+      return out;
+    };
+    std::printf("PAGES state=%s header=%s ledger=%s next=%llu\n", list(file.state_pages).c_str(), list(file.header_pages).c_str(),
+                list(file.ledger_pages).c_str(), static_cast<unsigned long long>(file.counters.next_transaction));
+    return 0;
+  }
+  if (argc == 3 && (std::string(argv[1]) == "s4e" || std::string(argv[1]) == "roles")) {
+    // S4e: `s4e <size>` the approval, reopen, crash and failed-later chains; `roles <size>` the role / group privilege cases.
+    const std::string self = fs::read_symlink("/proc/self/exe").string();
+    scratchbird::tests::OwnedTempDirectory artifacts;
+    const auto size = static_cast<std::uint32_t>(std::stoul(argv[2]));
+    if (std::string(argv[1]) == "s4e") RunS4e(self, artifacts.path(), size);
+    else
+      for (const char* state : {"role_connect", "group_connect", "transitive", "role_noconnect", "role_revoked", "role_deny"})
+        RunState(self, artifacts.path(), size, state);
+    artifacts.Cleanup();
+    std::printf("native_login %s: %d driver checks passed\n", argv[1], checks);
+    return 0;
   }
   if (argc == 1 || (argc == 3 && std::string(argv[1]) == "size") || (argc == 2 && std::string(argv[1]) == "common")) {
     const std::string self = fs::read_symlink("/proc/self/exe").string();

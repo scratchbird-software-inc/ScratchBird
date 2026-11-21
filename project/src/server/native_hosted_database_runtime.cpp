@@ -7,6 +7,7 @@
 #include "catalog_authorization_policy.hpp"
 #include "catalog_identifier_profile.hpp"
 #include "native_catalog_visibility_lease_reader.hpp"
+#include <set>
 
 namespace scratchbird::server {
 // SEARCH_KEY: NATIVE_HOSTED_OPEN_UNDER_HELD_PROCESS_ADMISSION
@@ -996,7 +997,52 @@ NativeLoginMaterialResult NativeHostedDatabaseRuntime::ReadNativeLoginMaterial(
         }
         if(snapshot.found&&snapshot.family_ok&&snapshot.active) {
           // Direct grant-family rows of the principal (observed records are sorted by object UUID: edge order is
-          // that order). Retired, dropped and not-active rows are not edges. Nothing is resolved transitively.
+          // that order). Retired, dropped and not-active rows are not edges. S4e Part 1 (owner S4c Q1 = extend,
+          // 2026-11-21): the effective role / group sets are the transitive closure of the principal's allow-effect
+          // membership edges through ACTIVE role / group rows, and the membership and privilege rows of those
+          // roles / groups are edges too, so privileges granted to a role reach the login (CONNECT at attach).
+          const auto row_live=[&](const auto& rec) {
+            return !rec.deleted&&rec.lifecycle==c::CatalogObjectLifecycle::active&&rec.status==c::CatalogObjectStatus::active&&
+                rec.retired_transaction_uuid.is_nil();
+          };
+          std::set<core::platform::Uuid> live_roles,live_groups,closure;
+          for(const auto& record:observed.records) {
+            if(!row_live(record)) continue;
+            if(const auto* role=record.record.role()) {if(role->active)live_roles.insert(record.object_uuid);}
+            else if(record.record.group()) live_groups.insert(record.object_uuid);  // a group row has no active flag: the row lifecycle decides
+          }
+          closure.insert(request.principal_uuid);
+          for(bool grew=true;grew;) {
+            grew=false;
+            for(const auto& record:observed.records) {
+              const auto* grant=record.record.grant();
+              if(!grant||!row_live(record)) continue;
+              const bool membership=grant->grant_class==c::CatalogSecurityGrantClass::role_membership||
+                  grant->grant_class==c::CatalogSecurityGrantClass::group_membership;
+              if(!membership||!grant->member_uuid||!grant->parent_uuid||grant->effect==c::CatalogSecurityEffect::deny) continue;
+              if(!closure.contains(*grant->member_uuid)) continue;
+              // The member's kind must match what the closure holds (the principal, or a role / group of the set).
+              const auto member_kind=grant->member_kind.value_or(c::CatalogSecuritySubjectKind::none);
+              if(*grant->member_uuid==request.principal_uuid?member_kind!=c::CatalogSecuritySubjectKind::principal:
+                  (member_kind==c::CatalogSecuritySubjectKind::role?!live_roles.contains(*grant->member_uuid):
+                   member_kind==c::CatalogSecuritySubjectKind::group?!live_groups.contains(*grant->member_uuid):true)) continue;
+              const auto parent_kind=grant->parent_kind.value_or(c::CatalogSecuritySubjectKind::none);
+              const bool parent_live=(parent_kind==c::CatalogSecuritySubjectKind::role&&live_roles.contains(*grant->parent_uuid))||
+                  (parent_kind==c::CatalogSecuritySubjectKind::group&&live_groups.contains(*grant->parent_uuid));
+              if(!parent_live||closure.contains(*grant->parent_uuid)) continue;
+              closure.insert(*grant->parent_uuid);grew=true;
+            }
+          }
+          for(const auto& record:observed.records) {   // the engine-owned SYSARCH role, verified as the native projection verifies it
+            const auto* role=record.record.role();
+            if(role&&row_live(record)&&record.object_uuid==storage::database::kCanonicalSysarchRoleIdentity&&closure.contains(record.object_uuid)&&
+                role->active&&role->engine_owned&&role->immutable&&role->authority_class==c::CatalogSecurityAuthorityClass::engine_owned_sysarch)
+              snapshot.material.sysarch_role_uuid=record.object_uuid;
+          }
+          for(const auto& id:closure) {
+            if(live_roles.contains(id))snapshot.material.effective_role_uuids.push_back(id);
+            else if(live_groups.contains(id))snapshot.material.effective_group_uuids.push_back(id);
+          }
           for(const auto& record:observed.records) {
             const auto* grant=record.record.grant();
             if(!grant||record.deleted||record.lifecycle!=c::CatalogObjectLifecycle::active||
@@ -1004,7 +1050,16 @@ NativeLoginMaterialResult NativeHostedDatabaseRuntime::ReadNativeLoginMaterial(
             const bool names_principal=(grant->subject_uuid&&*grant->subject_uuid==request.principal_uuid)||
                 (grant->member_uuid&&*grant->member_uuid==request.principal_uuid)||
                 (grant->principal_uuid&&*grant->principal_uuid==request.principal_uuid);
-            if(!names_principal) continue;
+            const bool membership_class=grant->grant_class==c::CatalogSecurityGrantClass::role_membership||
+                grant->grant_class==c::CatalogSecurityGrantClass::group_membership;
+            // A role / group of the effective sets: its own membership rows (to a parent that is in the sets) and
+            // its privilege rows.
+            const bool of_effective_set=
+                (membership_class&&grant->member_uuid&&closure.contains(*grant->member_uuid)&&grant->parent_uuid&&
+                    closure.contains(*grant->parent_uuid))||
+                (grant->grant_class==c::CatalogSecurityGrantClass::privilege&&grant->subject_uuid&&
+                    closure.contains(*grant->subject_uuid));
+            if(!names_principal&&!of_effective_set) continue;
             NativeLoginGrantEdge edge;
             edge.grant_uuid=record.object_uuid;edge.grant_class=grant->grant_class;
             if(grant->subject_uuid)edge.subject_uuid=*grant->subject_uuid;
@@ -1021,8 +1076,11 @@ NativeLoginMaterialResult NativeHostedDatabaseRuntime::ReadNativeLoginMaterial(
             if(membership&&grant->member_uuid&&*grant->member_uuid==request.principal_uuid&&
                 grant->member_kind==c::CatalogSecuritySubjectKind::principal&&grant->parent_uuid&&
                 grant->effect!=c::CatalogSecurityEffect::deny) {
-              if(grant->parent_kind==c::CatalogSecuritySubjectKind::role)snapshot.material.role_uuids.push_back(*grant->parent_uuid);
-              if(grant->parent_kind==c::CatalogSecuritySubjectKind::group)snapshot.material.group_uuids.push_back(*grant->parent_uuid);
+              // S4e Part 1: a direct membership counts only when the role / group row is itself active.
+              if(grant->parent_kind==c::CatalogSecuritySubjectKind::role&&live_roles.contains(*grant->parent_uuid))
+                snapshot.material.role_uuids.push_back(*grant->parent_uuid);
+              if(grant->parent_kind==c::CatalogSecuritySubjectKind::group&&live_groups.contains(*grant->parent_uuid))
+                snapshot.material.group_uuids.push_back(*grant->parent_uuid);
             }
           }
         }

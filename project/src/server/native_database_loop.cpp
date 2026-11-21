@@ -400,6 +400,10 @@ struct NativeDatabaseLoop::Serving {
     core::platform::Uuid transaction_uuid;
   };
   std::map<std::uint64_t, OwnedTransaction> transactions;
+  // S4e (SB_NATIVE_LOOP_SESSIONS): the sessions this loop approved and has not ended, with the record that opened them (the
+  // ended record is that record again with the end time and reason). Loop thread only; memory only (a restart empties it;
+  // the ledger's un-ended session records are then "orphaned").
+  std::map<core::platform::Uuid, pg::LedgerSessionRecord> open_sessions;
   // S4a (SB_NATIVE_LOGIN_MATERIAL): what a login-material read needs beyond the runtime, kept from the open: the
   // runtime authority binding's generation (the security reader is addressed through that binding) and the
   // fixed-root read limits. Values only.
@@ -413,7 +417,8 @@ struct NativeDatabaseLoop::Serving {
   // runtime, then the credential source.
   bool Teardown(NativeLoopDiagnostic* failure) noexcept {
     bool ok = true;
-    transactions.clear();  // abandoned transactions stay active in the file: dead at the next open's Restart
+    transactions.clear();  // (S4e: the graceful close rolled them back first; after a crash they stay active: dead at Restart)
+    open_sessions.clear();
     writer.reset();
     ledger.reset();  // the writer's binding named it
     issuer.reset();
@@ -932,6 +937,9 @@ void NativeDatabaseLoop::NoteTransactionWriterFailure() noexcept {
   facts.serving_state = NativeServingState::failed;
   facts.serving_diagnostic = Refusal("DATABASE.TRANSACTION_WRITE_FAILED", "transaction", {{"requires", "reopen"}});
   serving_state_.store(NativeServingState::failed, std::memory_order_release);
+  // S4e Part 4: the published (immutable) facts answer CurrentServingState() from this cell, so a later failure is seen.
+  if (served_state_cell_)
+    served_state_cell_->state.store(engine::internal_api::NativeServedServingState::failed, std::memory_order_release);
 }
 
 NativeLoopTransactionResult NativeDatabaseLoop::BeginNow(const NativeLoopBeginRequest& request) noexcept {
@@ -1281,6 +1289,276 @@ std::vector<std::uint64_t> NativeDatabaseLoop::OpenTransactionOrdersOnLoopThread
   return orders;
 }
 
+// ---- SEARCH_KEY: SB_NATIVE_LOOP_SESSIONS (S4e) -----------------------------------------------------------------------
+const char* NativeLoopSessionStepName(NativeLoopSessionStep step) noexcept {
+  switch (step) {
+    case NativeLoopSessionStep::none: return "none";
+    case NativeLoopSessionStep::connection: return "connection";
+    case NativeLoopSessionStep::session: return "session";
+    case NativeLoopSessionStep::attachment: return "attachment";
+    case NativeLoopSessionStep::begin: return "begin";
+    case NativeLoopSessionStep::ended: return "ended";
+  }
+  return "unknown";
+}
+
+std::vector<core::platform::Uuid> NativeDatabaseLoop::OpenSessionsOnLoopThread() const {
+  std::vector<core::platform::Uuid> sessions;
+  if (!on_loop_thread() || !serving_) return sessions;
+  for (const auto& entry : serving_->open_sessions) sessions.push_back(entry.first);
+  return sessions;
+}
+
+NativeLoopSessionOpenResult NativeDatabaseLoop::OpenSessionNow(const NativeLoopSessionOpenRequest& request) noexcept {
+  NativeLoopSessionOpenResult out;
+  try {
+    // Admission first: a restricted, failed or not-serving database refuses BEFORE anything is written.
+    out.error = AdmitTransactionWork();
+    if (out.error != NativeLoopTransactionError::none) return out;
+    auto& serving = *serving_;
+    if (!serving.facts.served_facts || request.session_uuid.is_nil() || request.connection_uuid.is_nil() ||
+        request.attachment_uuid.is_nil()) {
+      out.error = NativeLoopTransactionError::invalid_request;
+      return out;
+    }
+    const auto database_uuid = serving.facts.served_facts->database_uuid;
+    const auto engine_instance = serving.facts.engine_instance_uuid;
+    const auto account = [&](const NativeLoopLedgerResult& r) {
+      out.writes += r.writes;
+      out.syncs += r.syncs;
+    };
+    const auto step_failed = [&](NativeLoopSessionStep step, NativeLoopTransactionError error, std::string detail) {
+      out.error = error;
+      out.failed_step = step;
+      out.detail = std::move(detail);
+    };
+    const auto make = [&](const core::platform::Uuid& record_uuid, pg::LedgerBody body) {
+      pg::SessionLedgerRecord record;
+      record.database_uuid = database_uuid;
+      record.record_uuid = record_uuid;
+      record.body = std::move(body);
+      return record;
+    };
+    // 1. the CONNECTION record (durable before the attachment names it). A channel's record UUID is written once (ledger
+    // UUIDs are write-once): a second approval on the same channel (a retry after a failed setup, a reconnect on the same
+    // channel) REUSES the durable connection record; it is never appended twice.
+    {
+      const auto* existing = serving.ledger ? serving.ledger->Find(request.connection_uuid) : nullptr;
+      if (existing && existing->kind == pg::SessionLedgerKind::connection) {
+        out.connection_ordinal = existing->ordinal;
+      } else {
+        const auto r = AppendLedgerNow(make(request.connection_uuid, request.connection));
+        account(r);
+        if (!r.ok()) {
+          step_failed(NativeLoopSessionStep::connection, r.error,
+                      r.ledger_error + (r.record_error.empty() ? "" : "/" + r.record_error));
+          return out;
+        }
+        out.connection_ordinal = r.ordinal;
+      }
+    }
+    // 2. the SESSION record: the authenticated principal, the loop's own engine instance.
+    auto session_record = request.session;
+    session_record.engine_instance_uuid = engine_instance;
+    session_record.ended_at_utc_ns = 0;
+    session_record.end_reason = pg::LedgerEndReason::none;
+    {
+      const auto r = AppendLedgerNow(make(request.session_uuid, session_record));
+      account(r);
+      if (!r.ok()) {
+        step_failed(NativeLoopSessionStep::session, r.error, r.ledger_error + (r.record_error.empty() ? "" : "/" + r.record_error));
+        return out;
+      }
+      out.session_ordinal = r.ordinal;
+    }
+    serving.open_sessions[request.session_uuid] = session_record;
+    // From here a failure leaves a durable session that must be ended (setup_failed) before this request answers.
+    const auto fail_and_end = [&](NativeLoopSessionStep step, NativeLoopTransactionError error, std::string detail) {
+      step_failed(step, error, std::move(detail));
+      if (error == NativeLoopTransactionError::writer_failed) return;  // the database is failed: nothing more can be written
+      const auto ended = EndSessionNow(request.session_uuid, pg::LedgerEndReason::setup_failed);
+      out.writes += ended.writes;
+      out.syncs += ended.syncs;
+      out.setup_failed_recorded = ended.ended_recorded;
+    };
+    // 3. the ATTACHMENT record.
+    {
+      pg::LedgerAttachmentRecord attachment;
+      attachment.session_uuid = request.session_uuid;
+      attachment.connection_uuid = request.connection_uuid;
+      attachment.engine_instance_uuid = engine_instance;
+      attachment.at_utc_ns = NowUtcNs();
+      const auto r = AppendLedgerNow(make(request.attachment_uuid, attachment));
+      account(r);
+      if (!r.ok()) {
+        fail_and_end(NativeLoopSessionStep::attachment, r.error, r.ledger_error + (r.record_error.empty() ? "" : "/" + r.record_error));
+        return out;
+      }
+      out.attachment_ordinal = r.ordinal;
+    }
+    // 4. BEGIN: +64 is the session record's principal (never a caller's separate value), +80 the attachment, +96 the session.
+    {
+      NativeLoopBeginRequest begin;
+      begin.owner_key = request.session_uuid;
+      begin.read_only = session_record.settings.read_only;
+      begin.isolation_profile = session_record.settings.isolation_profile;
+      begin.identity.principal_uuid = session_record.principal_uuid;
+      begin.identity.attachment_uuid = request.attachment_uuid;
+      begin.identity.session_uuid = request.session_uuid;
+      const auto r = BeginNow(begin);
+      out.writes += r.writes;
+      out.syncs += r.syncs;
+      if (!r.ok()) {
+        fail_and_end(NativeLoopSessionStep::begin, r.error, r.writer_error);
+        return out;
+      }
+      out.begun_order = r.begun_order;
+      out.begun_uuid = r.begun_uuid;
+    }
+    out.error = NativeLoopTransactionError::none;
+    return out;
+  } catch (...) {
+    out = {};
+    out.error = NativeLoopTransactionError::writer_refused;
+    out.detail = "exception";
+    return out;
+  }
+}
+
+NativeLoopSessionEndResult NativeDatabaseLoop::EndSessionNow(const core::platform::Uuid& session_uuid,
+                                                             pg::LedgerEndReason reason) noexcept {
+  NativeLoopSessionEndResult out;
+  try {
+    out.error = AdmitTransactionWork();
+    if (out.error != NativeLoopTransactionError::none) return out;
+    auto& serving = *serving_;
+    const auto open = serving.open_sessions.find(session_uuid);
+    if (open == serving.open_sessions.end() || reason == pg::LedgerEndReason::none) {
+      out.error = NativeLoopTransactionError::invalid_request;
+      out.session_unknown = open == serving.open_sessions.end();
+      return out;
+    }
+    // Roll back every transaction the session owns: CompleteWork rolled_back, no replacement (the ownership table is keyed
+    // by the session UUID). A refused rollback is counted and the end record is still made (the transaction is then dead at
+    // the next open's Restart); a FAILED write stops everything (the database is failed).
+    std::vector<std::uint64_t> owned;
+    for (const auto& entry : serving.transactions)
+      if (entry.second.owner_key == session_uuid) owned.push_back(entry.first);
+    for (const auto order : owned) {
+      NativeLoopCompleteRequest rollback;
+      rollback.owner_key = session_uuid;
+      rollback.transaction_order = order;
+      rollback.completion = NativeLoopCompletion::rollback;
+      const auto r = CompleteNow(rollback);
+      out.writes += r.writes;
+      out.syncs += r.syncs;
+      if (r.ok()) {
+        ++out.transactions_rolled_back;
+      } else {
+        ++out.rollbacks_failed;
+        out.detail = r.writer_error;
+        if (r.error == NativeLoopTransactionError::writer_failed) {
+          out.error = r.error;
+          return out;
+        }
+      }
+    }
+    // The ended record: the opening record again, with the end time and the reason (never an overwrite).
+    pg::SessionLedgerRecord record;
+    record.database_uuid = serving.facts.served_facts ? serving.facts.served_facts->database_uuid : core::platform::Uuid{};
+    record.record_uuid = session_uuid;
+    auto ended = open->second;
+    ended.ended_at_utc_ns = std::max<std::uint64_t>(NowUtcNs(), ended.opened_at_utc_ns);
+    ended.end_reason = reason;
+    record.body = ended;
+    const auto r = AppendLedgerNow(record);
+    out.writes += r.writes;
+    out.syncs += r.syncs;
+    if (!r.ok()) {
+      out.error = r.error;
+      out.detail = r.ledger_error + (r.record_error.empty() ? "" : "/" + r.record_error);
+      return out;
+    }
+    serving.open_sessions.erase(open);
+    out.ended_recorded = true;
+    out.error = NativeLoopTransactionError::none;
+    return out;
+  } catch (...) {
+    out = {};
+    out.error = NativeLoopTransactionError::writer_refused;
+    out.detail = "exception";
+    return out;
+  }
+}
+
+void NativeDatabaseLoop::EndAllSessionsAtClose() noexcept {
+  try {
+    if (!serving_ || AdmitTransactionWork() != NativeLoopTransactionError::none) return;  // restricted / failed: nothing is written
+    std::vector<core::platform::Uuid> sessions;
+    for (const auto& entry : serving_->open_sessions) sessions.push_back(entry.first);
+    // 1. each session: its transactions rolled back, then its ended record (reason server_shutdown).
+    for (const auto& session : sessions) {
+      if (EndSessionNow(session, pg::LedgerEndReason::server_shutdown).error == NativeLoopTransactionError::writer_failed) return;
+    }
+    // 2. transactions that belong to no session (owned by an arbitrary key through the transaction requests): rolled back too.
+    std::vector<std::pair<std::uint64_t, core::platform::Uuid>> rest;
+    for (const auto& entry : serving_->transactions) rest.emplace_back(entry.first, entry.second.owner_key);
+    for (const auto& [order, owner] : rest) {
+      NativeLoopCompleteRequest rollback;
+      rollback.owner_key = owner;
+      rollback.transaction_order = order;
+      rollback.completion = NativeLoopCompletion::rollback;
+      if (CompleteNow(rollback).error == NativeLoopTransactionError::writer_failed) return;
+    }
+  } catch (...) {
+  }
+}
+
+void NativeDatabaseLoop::HandleSession(SessionOpenWork& work) noexcept { work.done.set_value(OpenSessionNow(work.request)); }
+void NativeDatabaseLoop::HandleSession(SessionEndWork& work) noexcept {
+  work.done.set_value(EndSessionNow(work.request.session_uuid, work.request.reason));
+}
+
+std::future<NativeLoopSessionOpenResult> NativeDatabaseLoop::SubmitOpenSession(NativeLoopSessionOpenRequest request) {
+  const auto refused = [](NativeLoopTransactionError error) {
+    std::promise<NativeLoopSessionOpenResult> promise;
+    NativeLoopSessionOpenResult result;
+    result.error = error;
+    promise.set_value(std::move(result));
+    return promise.get_future();
+  };
+  if (on_loop_thread()) return refused(NativeLoopTransactionError::invalid_request);  // the loop never waits on itself
+  SessionOpenWork work{std::move(request), {}};
+  auto future = work.done.get_future();
+  {
+    std::lock_guard<std::mutex> guard(mutex_);
+    if (const auto error = AdmitQueuedTransaction(); error != NativeLoopTransactionError::none) return refused(error);
+    queue_.emplace_back(std::move(work));
+  }
+  wake_.notify_one();
+  return future;
+}
+
+std::future<NativeLoopSessionEndResult> NativeDatabaseLoop::SubmitEndSession(NativeLoopSessionEndRequest request) {
+  const auto refused = [](NativeLoopTransactionError error) {
+    std::promise<NativeLoopSessionEndResult> promise;
+    NativeLoopSessionEndResult result;
+    result.error = error;
+    promise.set_value(std::move(result));
+    return promise.get_future();
+  };
+  if (on_loop_thread()) return refused(NativeLoopTransactionError::invalid_request);
+  SessionEndWork work{std::move(request), {}};
+  auto future = work.done.get_future();
+  {
+    std::lock_guard<std::mutex> guard(mutex_);
+    if (const auto error = AdmitQueuedTransaction(); error != NativeLoopTransactionError::none) return refused(error);
+    queue_.emplace_back(std::move(work));
+  }
+  wake_.notify_one();
+  return future;
+}
+
 void NativeDatabaseLoop::HandleTransaction(BeginWork& work) noexcept { work.done.set_value(BeginNow(work.request)); }
 void NativeDatabaseLoop::HandleTransaction(CompleteWork& work) noexcept { work.done.set_value(CompleteNow(work.request)); }
 void NativeDatabaseLoop::HandleTransaction(CompleteAndBeginWork& work) noexcept {
@@ -1547,6 +1825,14 @@ void NativeDatabaseLoop::Run() noexcept {
       HandleLedger(*ledger);
       continue;
     }
+    if (auto* open_session = std::get_if<SessionOpenWork>(&work)) {
+      HandleSession(*open_session);
+      continue;
+    }
+    if (auto* end_session = std::get_if<SessionEndWork>(&work)) {
+      HandleSession(*end_session);
+      continue;
+    }
     if (auto* test = std::get_if<TestWork>(&work)) {
       test->work();
       test->done.set_value();
@@ -1565,6 +1851,10 @@ NativeLoopCloseResult NativeDatabaseLoop::HandleClose() noexcept {
     std::lock_guard<std::mutex> guard(names_binding_->mutex);
     names_binding_->loop = nullptr;
   }
+  // S4e (owner: S4d answer 3): a graceful close first rolls back what is owned and ends the sessions (reason server_shutdown),
+  // while the database is still serving; only then does the teardown begin. After a crash none of this happens: the slots are
+  // dead at the next open and the session records are un-ended (orphaned).
+  EndAllSessionsAtClose();
   state_.store(NativeLoopState::closing, std::memory_order_release);
   result.ok = true;
   if (serving_) {
@@ -1709,6 +1999,8 @@ bool NativeDatabaseLoop::RunRestart(const NativeLoopOpenRequest& request,
       facts.ledger_records = loaded.records;
       facts.ledger_pages = loaded.pages;
       facts.ledger_torn_tail = loaded.torn_tail;
+      // S4e: every session still open right after Load was left open by an earlier engine instance (a crash or a kill).
+      facts.ledger_orphaned_sessions = serving.ledger->OpenSessionCount();
     }
 
     if (restart.ok()) {
@@ -2054,6 +2346,9 @@ void NativeDatabaseLoop::HandleOpen(OpenWork& work) noexcept {
       marker->serving_state = static_cast<engine::internal_api::NativeServedServingState>(
           static_cast<std::uint8_t>(serving.facts.serving_state));
       marker->serving_diagnostic_code = serving.facts.serving_diagnostic.code;
+      served_state_cell_ = std::make_shared<engine::internal_api::NativeServedServingStateCell>();
+      served_state_cell_->state.store(marker->serving_state, std::memory_order_release);
+      marker->serving_state_cell = served_state_cell_;
       marker->names_source = std::make_shared<NativeLoopNamesSource>(names_binding_);
       marker->login_source = std::make_shared<NativeLoopLoginSource>(names_binding_);
       serving.facts.served_facts = std::move(marker);

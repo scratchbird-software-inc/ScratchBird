@@ -113,6 +113,8 @@ page::LedgerSessionRecord Session(unsigned tag, bool ended = false) {
   s.policy_snapshot_uuid = V7(tag + 700);
   s.settings = Settings(tag, true);
   s.opened_at_utc_ns = 2'000'000'000ull * (tag + 1);
+  // S4e Part 0 (owner 2026-11-22): the spec's session fields that fit the record (NEW).
+  for (unsigned i = 0; i < 32; ++i) s.group_set_digest[i] = static_cast<byte>(0x90 + i + tag);
   if (ended) {
     s.ended_at_utc_ns = s.opened_at_utc_ns + 5;
     s.end_reason = page::LedgerEndReason::connection_lost;
@@ -204,7 +206,8 @@ void TestRoundTrips() {
         auto s = Session(tag, rng.Below(2));
         if (rng.Below(2)) s.auth_context_uuid = Uuid{};
         if (rng.Below(2)) s.policy_snapshot_uuid = Uuid{};
-        if (s.ended()) s.end_reason = static_cast<page::LedgerEndReason>(1 + rng.Below(5));
+        if (rng.Below(2)) s.group_set_digest = {};                 // S4e Part 0: zero = none stated is valid
+        if (s.ended()) s.end_reason = static_cast<page::LedgerEndReason>(1 + rng.Below(6));
         s.settings.read_only = rng.Below(2);
         r = Rec(s, tag, rng.Below(100000));
         break;
@@ -262,8 +265,21 @@ void TestValidationCodes() {
   expect(mod(0, [](auto& r) { r.database_uuid = Uuid{}; }), RE::invalid_identity, "nil database");
   expect(mod(0, [](auto& r) { r.record_uuid = V4(3); }), RE::invalid_identity, "v4 record uuid");
   // connection
-  expect(mod(0, [&](auto& r) { conn(r).listener_uuid = Uuid{}; }), RE::invalid_required_identity, "nil listener");
-  expect(mod(0, [&](auto& r) { conn(r).parser_instance_uuid = V4(3); }), RE::invalid_required_identity, "v4 parser instance");
+  // S4e (owner 2026-11-22: zero when the server does not know them): OLD expectations were
+  // invalid_required_identity for a nil listener and a v4 parser instance; NOW a nil listener and a nil parser instance
+  // are valid, a non-zero value must still be v7 (invalid_optional_identity).
+  expect(mod(0, [&](auto& r) { conn(r).listener_uuid = V4(3); }), RE::invalid_optional_identity, "v4 listener");
+  expect(mod(0, [&](auto& r) { conn(r).parser_instance_uuid = V4(3); }), RE::invalid_optional_identity, "v4 parser instance");
+  {
+    auto unknown = base[0];
+    conn(unknown).listener_uuid = Uuid{};
+    conn(unknown).parser_instance_uuid = Uuid{};
+    CheckRec(page::ValidateSessionLedgerRecord(unknown), RE::none, "nil listener and nil parser instance (unknown) are valid");
+    std::array<byte, 256> out{};
+    CheckRec(page::EncodeSessionLedgerRecord(unknown, out), RE::none, "and encode");
+    const auto back = page::DecodeSessionLedgerRecord(out);
+    Check(back.ok() && *back.record == unknown, "and round-trip");
+  }
   expect(mod(0, [&](auto& r) { conn(r).route_uuid = V4(3); }), RE::invalid_optional_identity, "v4 route");
   expect(mod(0, [&](auto& r) { conn(r).opened_at_utc_ns = 0; }), RE::invalid_time, "no open time");
   expect(mod(0, [&](auto& r) { conn(r).transport = static_cast<page::LedgerTransport>(0); }), RE::invalid_enum, "transport 0");
@@ -298,7 +314,10 @@ void TestValidationCodes() {
          "a reason without an end time");
   expect(mod(2, [&](auto& r) { sess(r).ended_at_utc_ns = sess(r).opened_at_utc_ns - 1; }), RE::invalid_time, "ended before opened");
   expect(mod(2, [&](auto& r) { sess(r).end_reason = page::LedgerEndReason::none; }), RE::invalid_enum, "an end without a reason");
-  expect(mod(2, [&](auto& r) { sess(r).end_reason = static_cast<page::LedgerEndReason>(6); }), RE::invalid_enum, "reason 6");
+  // S4e: reason 6 (setup_failed) is now valid; 7 is the first invalid value (OLD: 6 was invalid).
+  expect(mod(2, [&](auto& r) { sess(r).end_reason = static_cast<page::LedgerEndReason>(7); }), RE::invalid_enum, "reason 7");
+  CheckRec(page::ValidateSessionLedgerRecord(mod(2, [&](auto& r) { sess(r).end_reason = page::LedgerEndReason::setup_failed; })),
+           RE::none, "reason 6 (setup_failed) is valid");
   // attachment
   expect(mod(3, [&](auto& r) { att(r).session_uuid = Uuid{}; }), RE::invalid_required_identity, "nil session");
   expect(mod(3, [&](auto& r) { att(r).connection_uuid = V4(1); }), RE::invalid_required_identity, "v4 connection");
@@ -341,7 +360,9 @@ void TestResealedRefusals() {
     const auto kind = good[4];
     std::vector<std::pair<std::size_t, std::size_t>> reserved;  // [from, to)
     if (kind == 1) reserved = {{110, 112}, {176, 248}};
-    else if (kind == 2) reserved = {{210, 248}};
+    // S4e Part 0: session +210..+241 now hold the generations and the parser profile; only
+    // +242..+247 stay reserved (OLD: {210, 248}).
+    else if (kind == 2) reserved = {{242, 248}};
     else if (kind == 3) reserved = {{120, 248}};
     else reserved = {{136, 248}};
     for (const auto& [from, to] : reserved)
@@ -353,6 +374,21 @@ void TestResealedRefusals() {
       Reseal(other);
       CheckRec(page::DecodeSessionLedgerRecord(other).error, RE::invalid_state, "state byte vs ended_at");
     }
+  }
+  // S4e Part 0 (NEW): the byte table of the added session field: the group-set digest at +210..+241, +242..+247 reserved.
+  {
+    auto s = Session(1);
+    for (unsigned i = 0; i < 32; ++i) s.group_set_digest[i] = static_cast<byte>(0xA0 + i);
+    const auto img = Encode(Rec(s, 1));
+    for (unsigned i = 0; i < 32; ++i) Check(img[210 + i] == static_cast<byte>(0xA0 + i), "group-set digest at +210");
+    for (unsigned at = 242; at < 248; ++at) Check(img[at] == 0, "+242..+247 stay zero");
+    Check(std::equal(img.begin() + 80, img.begin() + 112, s.role_set_digest.begin()), "the role-set digest stays at +80");
+    auto none = s;
+    none.group_set_digest = {};
+    const auto z = Encode(Rec(none, 1));
+    Check(std::all_of(z.begin() + 210, z.begin() + 248, [](byte b) { return b == 0; }), "an unstated digest encodes as zero");
+    const auto back = page::DecodeSessionLedgerRecord(z);
+    Check(back.ok() && *back.record == Rec(none, 1), "a zero group digest round-trips");
   }
   // Settings-block reserved bytes (session +162..+163 and +168..+191; change +90..+91 and +96..+119).
   {

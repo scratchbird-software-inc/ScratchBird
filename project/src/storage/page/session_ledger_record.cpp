@@ -62,7 +62,10 @@ bool GetSettings(const byte* p, LedgerSettings& s, E& error) {
 }
 
 E ValidateBody(const LedgerConnectionRecord& c) {
-  if (!V7(c.listener_uuid) || !V7(c.parser_instance_uuid)) return E::invalid_required_identity;
+  // S4e (owner 2026-11-22: "listener and parser-instance UUIDs from what the server knows, or zero if unknown"): both
+  // may be zero (unknown, e.g. no HELLO was admitted on the channel) but a non-zero value must be v7. (OLD, T2: both
+  // required v7, invalid_required_identity.)
+  if (!NoneOrV7(c.listener_uuid) || !NoneOrV7(c.parser_instance_uuid)) return E::invalid_optional_identity;
   if (!NoneOrV7(c.route_uuid)) return E::invalid_optional_identity;
   if (c.opened_at_utc_ns == 0) return E::invalid_time;
   const auto transport = static_cast<std::uint8_t>(c.transport);
@@ -92,7 +95,7 @@ E ValidateBody(const LedgerSessionRecord& s) {
   const auto reason = static_cast<std::uint16_t>(s.end_reason);
   if (s.ended_at_utc_ns == 0) return reason == 0 ? E::none : E::invalid_state;
   if (s.ended_at_utc_ns < s.opened_at_utc_ns) return E::invalid_time;
-  if (reason < 1 || reason > 5) return E::invalid_enum;
+  if (reason < 1 || reason > 6) return E::invalid_enum;  // S4e: 6 = setup_failed (was 1..5)
   return E::none;
 }
 E ValidateBody(const LedgerAttachmentRecord& a) {
@@ -182,6 +185,7 @@ SessionLedgerRecordError EncodeSessionLedgerRecord(const SessionLedgerRecord& r,
     StoreLittle64(f + 144, s->opened_at_utc_ns);
     StoreLittle64(f + 152, s->ended_at_utc_ns);
     StoreLittle16(f + 160, static_cast<u16>(s->end_reason));
+    std::copy(s->group_set_digest.begin(), s->group_set_digest.end(), f + 162);
   } else if (const auto* a = std::get_if<LedgerAttachmentRecord>(&r.body)) {
     PutUuid(f + 0, a->session_uuid);
     PutUuid(f + 16, a->connection_uuid);
@@ -252,7 +256,8 @@ SessionLedgerDecodeResult DecodeSessionLedgerRecord(std::span<const byte> bytes)
       s.opened_at_utc_ns = LoadLittle64(f + 144);
       s.ended_at_utc_ns = LoadLittle64(f + 152);
       s.end_reason = static_cast<LedgerEndReason>(LoadLittle16(f + 160));
-      if (!reserved(162)) { result.error = E::invalid_reserved; return result; }
+      std::copy_n(f + 162, kLedgerDigestBytes, s.group_set_digest.begin());
+      if (!reserved(194)) { result.error = E::invalid_reserved; return result; }
       if ((state == 2) != s.ended()) { result.error = E::invalid_state; return result; }
       r.body = s;
       break;

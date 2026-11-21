@@ -1058,15 +1058,25 @@ void OneSize(const std::string& self, const fs::path& root, std::uint32_t page_s
     const auto out = serve(path, scenario, ids);
     auto expected = Expectations(out);
     Check(expected.size() == 2, tag + scenario + ": two transactions left open");
-    const auto open = verify(path, expected, scenario + " before reopen", true);
-    for (const auto& [order, state] : expected) Check(StateName(open.words.at(order)) == state, tag + scenario + ": the slot is still in progress in the file");
+    // S4e (owner S4d answer 3, 2026-11-21: "keep until S4e's disconnect rollback exists, then roll back owned transactions at
+    // close"): a GRACEFUL close now ROLLS BACK every transaction the loop still owns, so after abandon_close the two slots are
+    // rolled_back in the file and the next open's Restart finds nothing to mark. OLD (S4d): they stayed in progress at close
+    // and were dead after the reopen. abandon_exit (a forced exit = a crash) is UNCHANGED: in progress, then dead.
+    const bool graceful = scenario == "abandon_close";
+    auto at_rest = expected;
+    if (graceful)
+      for (auto& [order, state] : at_rest) state = "rolled_back";
+    const auto open = verify(path, at_rest, scenario + " before reopen", true);
+    for (const auto& [order, state] : at_rest)
+      Check(StateName(open.words.at(order)) == state, tag + scenario + (graceful ? ": the close rolled the slot back in the file" : ": the slot is still in progress in the file"));
     const auto reopened = serve(path, "reopen", ids);
     const auto first = std::stoull(Field(reopened, "REOPEN_FIRST_ORDER"));
     Check(first > expected.rbegin()->first, tag + scenario + ": numbers are not reused");
     auto after = Expectations(reopened);
-    for (const auto& [order, state] : expected) after[order] = "dead";
+    for (const auto& [order, state] : expected) after[order] = graceful ? "rolled_back" : "dead";
     verify(path, after, scenario + " after reopen", false);
-    std::printf("%s%s: open transactions become dead at the next open's Restart\n", tag.c_str(), scenario.c_str());
+    std::printf(graceful ? "%s%s: a graceful close rolled the open transactions back; the next Restart marks nothing\n"
+                         : "%s%s: open transactions become dead at the next open's Restart\n", tag.c_str(), scenario.c_str());
   }
 }
 }  // namespace

@@ -173,6 +173,9 @@ struct NativeLoopServingFacts {
   // last record was found and ignored).
   std::uint64_t ledger_records = 0, ledger_pages = 0;
   bool ledger_torn_tail = false;
+  // S4e: sessions the ledger shows as never ended when the file was opened (a crash or kill of an earlier engine
+  // instance left them; this open's Restart already marked their transactions dead). Reported, never repaired here.
+  std::uint64_t ledger_orphaned_sessions = 0;
   std::uint64_t verification_workspace_bytes = 0;
   // True until Restart has completed: false for serving; true for restricted (not run) and failed
   // (did not complete). (Was, S3b/S3c: always true, Restart did not exist.)
@@ -301,6 +304,54 @@ struct NativeLoopLedgerResult {
   bool ok() const noexcept { return error == NativeLoopTransactionError::none; }
 };
 
+// SEARCH_KEY: SB_NATIVE_LOOP_SESSIONS (S4e; owner 2026-11-21: "the user's transaction begins only on approval", 2026-11-22:
+// session end = a NEW ledger record with the ended state; S4d answer 3: close rolls back owned transactions).
+// A session's APPROVAL and its END are each ONE request to the loop thread, composed of the same on-loop steps the ledger
+// and transaction requests use (AppendLedgerNow, BeginNow, CompleteNow), so the order is fixed and a half-made session is
+// ended in the same request. APPROVAL: append the CONNECTION record, then the SESSION record, then the ATTACHMENT record,
+// each durable (written, then synced) before the next, then BEGIN the user's transaction with header +48 = the loop's engine
+// instance, +64 = the session record's principal, +80 = the attachment, +96 = the session, the owner key = the session UUID
+// (the durable-before-cited check of Begin refuses anything else). If any step after the session record fails, an ended
+// record (reason setup_failed) is appended before the request answers. The loop fills the database UUID and the engine
+// instance of the records; the caller supplies every other identity (v7, server-issued) and the principal, which is the
+// AUTHENTICATED one (the server takes it from the authentication result, never from a request field). END: roll back every
+// transaction the session owns (CompleteWork rolled_back, no replacement), then append the session's ended record.
+enum class NativeLoopSessionStep : std::uint8_t { none, connection, session, attachment, begin, ended };
+const char* NativeLoopSessionStepName(NativeLoopSessionStep step) noexcept;
+struct NativeLoopSessionOpenRequest {
+  core::platform::Uuid connection_uuid;   // the CONNECTION record's UUID: the server-issued channel UUID (v7)
+  storage::page::LedgerConnectionRecord connection;
+  core::platform::Uuid session_uuid;      // the SESSION record's UUID, the transactions' owner key (v7)
+  storage::page::LedgerSessionRecord session;  // open state; engine_instance_uuid is filled by the loop; settings give
+                                               // the first transaction's isolation profile and read-only flag
+  core::platform::Uuid attachment_uuid;   // the ATTACHMENT record's UUID, header +80 (v7)
+};
+struct NativeLoopSessionOpenResult {
+  NativeLoopTransactionError error = NativeLoopTransactionError::invalid_request;
+  NativeLoopSessionStep failed_step = NativeLoopSessionStep::none;  // the step that refused or failed (error != none)
+  std::uint64_t connection_ordinal = 0, session_ordinal = 0, attachment_ordinal = 0;  // 0 = not appended
+  std::uint64_t begun_order = 0;
+  core::platform::Uuid begun_uuid;
+  // After a failure past the session record: the ended record (setup_failed) was appended (true) or could not be.
+  bool setup_failed_recorded = false;
+  std::string detail;                     // the failing step's ledger / writer error name
+  std::uint32_t writes = 0, syncs = 0;    // every successful write and every sync of the whole request
+  bool ok() const noexcept { return error == NativeLoopTransactionError::none; }
+};
+struct NativeLoopSessionEndRequest {
+  core::platform::Uuid session_uuid;
+  storage::page::LedgerEndReason reason = storage::page::LedgerEndReason::none;  // 1..6
+};
+struct NativeLoopSessionEndResult {
+  NativeLoopTransactionError error = NativeLoopTransactionError::invalid_request;
+  bool session_unknown = false;           // this loop holds no open session by that UUID (never opened here, or ended)
+  std::uint32_t transactions_rolled_back = 0, rollbacks_failed = 0;
+  bool ended_recorded = false;            // the ended record is durable
+  std::string detail;
+  std::uint32_t writes = 0, syncs = 0;
+  bool ok() const noexcept { return error == NativeLoopTransactionError::none && ended_recorded; }
+};
+
 // SB_NATIVE_ENGINE_READ_TRANSACTION (owner 2026-11-21: the credential read and the names read of a native login run
 // in an engine-owned SHORT READ-ONLY SNAPSHOT TRANSACTION, as Firebird's server reads its security database). The
 // work runs ON THE LOOP THREAD between a begin and a completion; the completion is ALWAYS made (commit, as Firebird
@@ -410,6 +461,13 @@ class NativeDatabaseLoop final {
   // invalid_request on the loop thread; the OnLoopThread form is refused with invalid_request anywhere else.
   std::future<NativeLoopLedgerResult> SubmitAppendLedgerRecord(storage::page::SessionLedgerRecord record);
   NativeLoopLedgerResult AppendLedgerRecordOnLoopThread(const storage::page::SessionLedgerRecord& record) noexcept;
+  // SB_NATIVE_LOOP_SESSIONS: approval and end of a session (see above). Cross-thread submits; refused with invalid_request on
+  // the loop thread. Admission is the transaction requests' (serving only; restricted refuses with the Q299 code BEFORE
+  // anything is written; failed and not-serving refuse specifically).
+  std::future<NativeLoopSessionOpenResult> SubmitOpenSession(NativeLoopSessionOpenRequest request);
+  std::future<NativeLoopSessionEndResult> SubmitEndSession(NativeLoopSessionEndRequest request);
+  // Loop thread only: the sessions this loop has open (approved and not yet ended), ascending by UUID.
+  std::vector<core::platform::Uuid> OpenSessionsOnLoopThread() const;
   // Loop thread only (empty / zero elsewhere): the ledger's current entry for a record UUID, and its sizes.
   std::optional<storage::page::SessionLedgerEntry> FindLedgerEntryOnLoopThread(const core::platform::Uuid& uuid) const;
   std::uint64_t LedgerRecordCountOnLoopThread() const noexcept;
@@ -501,13 +559,21 @@ class NativeDatabaseLoop final {
     storage::page::SessionLedgerRecord record;
     std::promise<NativeLoopLedgerResult> done;
   };
+  struct SessionOpenWork {
+    NativeLoopSessionOpenRequest request;
+    std::promise<NativeLoopSessionOpenResult> done;
+  };
+  struct SessionEndWork {
+    NativeLoopSessionEndRequest request;
+    std::promise<NativeLoopSessionEndResult> done;
+  };
   struct ReadScopeWork {
     std::function<void(const NativeLoopReadTransaction&)> work;
     NativeLoopReadScopeMode mode = NativeLoopReadScopeMode::durable_transaction;
     std::promise<NativeLoopReadScopeResult> done;
   };
   using Work = std::variant<OpenWork, CloseWork, LoginWork, NamesWork, TestWork, BeginWork, CompleteWork,
-                            CompleteAndBeginWork, ReadScopeWork, LedgerWork>;
+                            CompleteAndBeginWork, ReadScopeWork, LedgerWork, SessionOpenWork, SessionEndWork>;
   static constexpr std::size_t kQueueCapacity = 8;
 
   void Run() noexcept;
@@ -534,6 +600,14 @@ class NativeDatabaseLoop final {
   void HandleTransaction(CompleteAndBeginWork&) noexcept;
   void HandleReadScope(ReadScopeWork&) noexcept;
   void HandleLedger(LedgerWork&) noexcept;
+  NativeLoopSessionOpenResult OpenSessionNow(const NativeLoopSessionOpenRequest&) noexcept;
+  NativeLoopSessionEndResult EndSessionNow(const core::platform::Uuid& session_uuid,
+                                           storage::page::LedgerEndReason reason) noexcept;
+  void HandleSession(SessionOpenWork&) noexcept;
+  void HandleSession(SessionEndWork&) noexcept;
+  // The graceful close's first act (S4d answer 3, S4e): end every session this loop holds open (reason server_shutdown) and
+  // roll back every transaction still in the ownership table, while the database is still serving.
+  void EndAllSessionsAtClose() noexcept;
   // The one cross-thread submit of the three transaction requests (defined and only instantiated in the .cpp).
   template <class WorkT, class Request>
   std::future<NativeLoopTransactionResult> SubmitTransaction(Request request);
@@ -551,6 +625,8 @@ class NativeDatabaseLoop final {
   std::thread::id thread_id_;
   std::atomic<NativeLoopState> state_{NativeLoopState::opening};
   std::atomic<NativeServingState> serving_state_{NativeServingState::serving};
+  // S4e Part 4: the cell shared with the published facts (see NativeServedServingStateCell); set when the facts are built.
+  std::shared_ptr<engine::internal_api::NativeServedServingStateCell> served_state_cell_;
   std::mutex mutex_;
   std::condition_variable wake_;
   std::deque<Work> queue_;

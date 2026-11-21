@@ -449,7 +449,8 @@ NativeOpenVerificationResult NativeHostedDatabaseRuntime::VerifyStartupDatabaseF
           const auto header=page::TransactionHeaderAt(*view.view,slot);
           if(!header||(header->attachment_uuid.is_nil()&&header->session_uuid.is_nil()))continue;
           ++checked;
-          const auto cited=ledger.CheckHeaderCitation(header->attachment_uuid,header->session_uuid,header->principal_or_agent_uuid);
+          // S4e: an ENDED session is a valid citation at open (its rolled-back transaction's header still names it).
+          const auto cited=ledger.CheckHeaderCitation(header->attachment_uuid,header->session_uuid,header->principal_or_agent_uuid,true);
           if(cited!=page::TransactionWriterError::none){
             result.ledger_rule=static_cast<std::uint8_t>(cited);result.ledger_ordinal=header->transaction_order;
             finding(VE::ledger_invalid,NativeLedgerFinding::header_citation);return;

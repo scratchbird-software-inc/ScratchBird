@@ -296,6 +296,8 @@ pg::LedgerSessionRecord Sess(const Uuid& principal, unsigned n, bool ended = fal
   s.settings.language_uuid = Fixed(7500);
   s.settings.isolation_profile = 2;
   s.opened_at_utc_ns = 2'000'000'000ull + n;
+  // S4e Part 0 (NEW): the added spec fields go through the page, the chain and the reload too.
+  for (unsigned i = 0; i < 32; ++i) s.group_set_digest[i] = static_cast<byte>(0x70 + i + n);
   if (ended) {
     s.ended_at_utc_ns = s.opened_at_utc_ns + 100;
     s.end_reason = pg::LedgerEndReason::closed_by_client;

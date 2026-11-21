@@ -25,6 +25,7 @@
 
 #include "../../storage/disk/filespace_page_zero.hpp"
 
+#include <atomic>
 #include <cstdint>
 #include <memory>
 #include <string>
@@ -35,6 +36,15 @@ namespace scratchbird::engine::internal_api {
 // The serving state of the DATABASE after the open (mirror of the server's NativeServingState; the engine
 // does not include server headers).
 enum class NativeServedServingState : std::uint8_t { serving = 0, restricted = 1, failed = 2 };
+
+// SEARCH_KEY: SB_NATIVE_SERVING_STATE_CELL (S4e Part 4; found at S4d). The facts below are immutable and built once at
+// open, so a LATER failure of the database (the loop's writer failed: the database is `failed` and needs a reopen) cannot
+// be written into them. The loop shares this one atomic cell with the facts it publishes and stores the later failure in
+// it; the facts' CurrentServingState() answers from the cell. Only the loop writes it (a state can only get worse:
+// serving -> failed; restricted and failed are final for the open). Readers load it with acquire; it carries no other data.
+struct NativeServedServingStateCell {
+  std::atomic<NativeServedServingState> state{NativeServedServingState::serving};
+};
 
 // SEARCH_KEY: SB_NATIVE_NAMES_SOURCE (thin-slice S4b rework "Part A", owner 2026-11-20). The one native source of
 // NAME ROWS for the existing name registry (LoadNameRegistryState): the committed role-2 name entries of the single
@@ -151,7 +161,21 @@ struct NativeServedDatabaseFacts {
   // The identity of the per-build native executor availability table in force (SBLR availability registry
   // entry points answer from this table, never from a side file). A build constant.
   core::platform::Uuid availability_table_uuid;
-  NativeServedServingState serving_state = NativeServedServingState::serving;
+  NativeServedServingState serving_state = NativeServedServingState::serving;  // AS AT OPEN; readers use CurrentServingState()
+  // S4e Part 4: the live cell (see NativeServedServingStateCell); null only in a marker built without a loop.
+  std::shared_ptr<NativeServedServingStateCell> serving_state_cell;
+  // The serving state NOW: the open's state, or `failed` when the loop later failed (never better than the open's).
+  NativeServedServingState CurrentServingState() const noexcept {
+    if (!serving_state_cell) return serving_state;
+    const auto live = serving_state_cell->state.load(std::memory_order_acquire);
+    return serving_state == NativeServedServingState::serving ? live : serving_state;
+  }
+  // The machine token behind the state NOW: the open's, or the writer-failure token when the loop failed later.
+  std::string CurrentServingDiagnosticCode() const {
+    if (serving_state == NativeServedServingState::serving && CurrentServingState() == NativeServedServingState::failed)
+      return "DATABASE.TRANSACTION_WRITE_FAILED";
+    return serving_diagnostic_code;
+  }
   // The code of the loop's diagnostic behind a restricted / failed state (e.g. DATABASE.RESTART_WRITE_FAILED,
   // DATABASE.OPEN_RESTRICTED_UNRESOLVED_TRANSACTIONS); empty when serving. A machine token, not prose.
   std::string serving_diagnostic_code;
